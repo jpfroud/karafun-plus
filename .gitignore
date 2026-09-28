@@ -9,6 +9,12 @@
 /node/
 /node_modules/
 *.zip
+/KaraFun Plus.exe
+/solver-runtime/
+/solver/target/
+/solver/karafun-solver.jar
+/solver/dependency-reduced-pom.xml
+*.sha256
 /dist/
 /release/
 

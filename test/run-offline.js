@@ -13,6 +13,7 @@ function run(file, env = {}) {
 }
 (async () => {
   for (const f of ['check-inline.js','scheduler.test.js','scheduler-race.test.js','first-turn-fairness.test.js',
+    'rotation-recent-physical.test.js','timefold-integration.test.js','appearance-persistence.test.js','solo-capacity.test.js',
     'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js',
     'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js',

@@ -520,15 +520,15 @@
     $('peopleCount').hidden = individual;
     renderStage(queue);
     $('joinIntro').textContent = individual
-      ? 'Inscris-toi avec ton prénom. Déjà inscrit mais tu as changé de téléphone ? Demande au bar un code de reprise avant de créer un autre profil. Au Comptoir, chaque téléphone gère uniquement ses propres chansons.'
+      ? 'Inscris-toi avec ton prénom. Déjà inscrit mais tu as changé de téléphone ? Demande au bar un code de reprise avant de créer un autre profil. Dans « En solo », chaque téléphone gère uniquement ses propres chansons.'
       : 'Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.';
     $('joinNameLabel').textContent = individual ? 'Ton prénom' : 'Prénom de la première personne';
     $('quickSongIntro').textContent = individual
-      ? 'Ajoute les chansons que tu veux chanter. Les autres personnes du Comptoir gèrent les leurs.'
+      ? 'Ajoute les chansons que tu veux chanter. Les autres personnes venues seules gèrent les leurs.'
       : 'Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.';
     $('peopleHeading').textContent = individual ? 'Mes chansons' : 'Les personnes de la table';
     $('peopleIntro').textContent = individual
-      ? 'Tes chansons sont visibles ici. Les autres personnes du Comptoir ne peuvent pas les modifier.'
+      ? 'Tes chansons sont visibles ici. Les autres personnes ne peuvent pas les modifier.'
       : 'Seul le téléphone associé à une personne peut modifier ses chansons.';
     $('peopleCard').hidden = individual && owned.length === 0;
     $('waitingLabel').textContent = individual ? 'Mes chansons à choisir' : 'À notre table, sans chanson';
@@ -540,7 +540,7 @@
     $('claimBox').hidden = individual ? recoveryPeople.length === 0 : others.length === 0;
     $('claimHeading').textContent = individual ? 'Récupérer mes chansons' : 'Déjà inscrit à cette table ?';
     $('claimIntro').textContent = individual
-      ? 'Si tu étais déjà inscrit au Comptoir, choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.'
+      ? 'Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.'
       : 'Ton prénom est déjà inscrit ? Demande au bar ou à ton ancien téléphone un code de reprise à 4 chiffres.';
     $('claimPeople').innerHTML = individual
       ? recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">Je suis ${esc(person.name)} · reprendre mes chansons</button>`).join('')
@@ -572,12 +572,12 @@
       const explanation = recoveryPeople.length
         ? canRegister
           ? 'Déjà inscrit ? Reprends tes chansons avec le code à 4 chiffres du bar. Sinon, inscris-toi avec ton prénom.'
-          : 'Le Comptoir est complet pour les nouvelles inscriptions. Si tu étais déjà inscrit, reprends tes chansons avec le code à 4 chiffres du bar.'
+          : 'Le groupe « En solo » est complet pour les nouvelles inscriptions. Si tu étais déjà inscrit, reprends tes chansons avec le code à 4 chiffres du bar.'
         : canRegister
-          ? 'Inscris-toi avec ton prénom pour choisir tes chansons. Si tu avais déjà un profil, demande plutôt un code de reprise au bar. Chaque personne du Comptoir gère seulement les siennes.'
-          : 'Le Comptoir est complet. Demande au bar d’augmenter le nombre de places.';
+          ? 'Inscris-toi avec ton prénom pour choisir tes chansons. Si tu avais déjà un profil, demande plutôt un code de reprise au bar. Chaque personne venue seule gère seulement les siennes.'
+          : 'Le groupe « En solo » est complet. Demande au bar d’augmenter le nombre de places.';
       const actions = `${recoveryPeople.length ? '<button type="button" class="btn" data-access-go="claim">Récupérer mes chansons</button>' : ''}${canRegister
-        ? '<button type="button" class="btn primary" data-access-go="register">M’inscrire au Comptoir</button>' : ''}`;
+        ? '<button type="button" class="btn primary" data-access-go="register">M’inscrire</button>' : ''}`;
       $('noSingerBox').hidden = owned.length > 0 || !full;
       $('noSingerText').textContent = explanation;
       $('noSingerActions').innerHTML = actions;
@@ -738,7 +738,7 @@
 
   $('joinForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (state?.table?.individual && managedPeople().length) return toast('Ce téléphone gère déjà une personne au Comptoir.', true);
+    if (state?.table?.individual && managedPeople().length) return toast('Ce téléphone gère déjà une personne dans « En solo ».', true);
     const name = $('firstName').value.trim();
     if (!name) return toast('Indique un prénom.', true);
     const button = $('joinForm').querySelector('button[type=submit]');
@@ -754,7 +754,7 @@
 
   $('addPersonForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (state?.table?.individual) return toast('Au Comptoir, inscris-toi depuis ton propre téléphone.', true);
+    if (state?.table?.individual) return toast('Dans « En solo », inscris-toi depuis ton propre téléphone.', true);
     const name = $('newName').value.trim();
     if (!name) return toast('Indique un prénom.', true);
     const button = $('addPersonForm').querySelector('button[type=submit]');
@@ -986,7 +986,7 @@
     $('catalogTarget').textContent = duetMode && person ? `Choisis un titre pour un duo avec ${person.name}.` : person
       ? managedPeople().length === 1 ? `Chansons pour ${person.name}.` : `Chansons pour ${person.name}. Tu pourras changer de chanteur avant de valider.`
       : managedPeople().length ? 'Choisis un titre, puis la personne qui le chantera.'
-        : state?.table?.individual ? 'Explore le catalogue. Pour ajouter un titre, inscris-toi au Comptoir.'
+        : state?.table?.individual ? 'Explore le catalogue. Pour ajouter un titre, inscris-toi dans « En solo ».'
           : 'Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.';
   }
 

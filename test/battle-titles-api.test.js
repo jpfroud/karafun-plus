@@ -13,6 +13,9 @@ async function request(route, body) {
 }
 
 (async () => {
+  assert.equal((await request('/api/staff/settings', {
+    auto: true, autoPlay: true, playDelaySec: 0, pushDelaySec: 0,
+  })).status, 200);
   assert.equal((await request('/api/staff/table', { id: 'battle', headcount: 5 })).status, 200);
   const staff = () => request('/api/staff/state');
   const table = (await staff()).data.tables.find(item => item.id === 'battle');
@@ -59,12 +62,23 @@ async function request(route, body) {
   assert.equal(outcome.data.battle.phase, 'requested');
   assert.equal(outcome.data.battle.selectedSong.songId, songs[1].songId);
   assert.equal(outcome.data.battle.noVotes, 1);
-  const final = (await staff()).data;
-  assert.equal(final.battle.songOptions.find(item => item.songId === songs[1].songId).votes, 3);
-  assert.ok(!final.queue.some(item => item.kind === 'battle'), 'le bar organise manuellement la Battle');
+  const voted = (await staff()).data;
+  assert.equal(voted.battle.songOptions.find(item => item.songId === songs[1].songId).votes, 3);
   const publicState = (await request(`/api/state?table=battle&access=${access}`)).data;
   assert.equal(publicState.battle.selectedSong.title, songs[1].title);
-  assert.equal((await request('/api/staff/battle/resolve', { outcome: 'done' })).data.battle.phase, 'cooldown');
+  let final;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    final = (await staff()).data;
+    if (final.battle.automation?.status === 'queued') break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(final.battle.automation.status, 'queued',
+    'la Battle votée entre automatiquement dans la fausse file KaraFun en mode Battle');
+  assert.equal(final.queue.find(item => item.kind === 'battle')?.song?.songId, songs[1].songId);
+  assert.equal(final.battle.phase, 'cooldown', 'les 15 minutes commencent après confirmation KaraFun');
+  assert.equal(final.stage, null, 'le bar doit laisser les téléphones rejoindre avant de lancer');
+  assert.equal((await request('/api/staff/kf', { action: 'play' })).status, 400,
+    'le bouton du helper ne doit pas lancer la Battle avant le bar');
   assert.equal((await request('/api/table/battle/propose', body(1, { songs }))).status, 400);
-  console.log('API Battle : 3 titres, vote contre, majorité, résultat bar et pause OK');
+  console.log('API Battle : 3 titres, vote contre, majorité, ajout simulé, lecture manuelle et pause OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

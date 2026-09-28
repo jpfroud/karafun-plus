@@ -1,7 +1,7 @@
 'use strict';
 
-// Vote pour demander une Battle collective. Aucun code ni commande KaraFun
-// n'est exposé aux participants : le bar lance le titre retenu manuellement.
+// Vote pour demander une Battle collective et suivi de sa lecture dans KaraFun.
+// Aucun code de télécommande n'est exposé aux participants.
 const { randomUUID } = require('node:crypto');
 
 const VOTE_DURATION_MS = 2 * 60 * 1000;
@@ -18,7 +18,7 @@ class BattleVote {
     if (!Number.isSafeInteger(this.cooldownMs) || this.cooldownMs < 1 ||
         this.cooldownMs > 120 * 60 * 1000) throw new Error('Délai entre Battles invalide.');
     this.onChange = onChange;
-    if (saved && (![1, 2].includes(saved.version) || (saved.ballot &&
+    if (saved && (![1, 2, 3].includes(saved.version) || (saved.ballot &&
       (!Array.isArray(saved.ballot.eligiblePersonIds) || !Array.isArray(saved.ballot.votes) ||
        saved.ballot.votes.some(vote => !Array.isArray(vote) || vote.length !== 2 || typeof vote[1] !== 'string') ||
        !['voting', 'requested', 'cooldown'].includes(saved.ballot.phase) ||
@@ -28,7 +28,13 @@ class BattleVote {
            song.songId <= 0 || typeof song.title !== 'string' || !song.title.trim()))))))) {
       throw new Error('État de vote Battle invalide.');
     }
+    if (saved?.automation && (typeof saved.automation !== 'object' ||
+      !['waiting', 'sending', 'queued', 'playing', 'manual', 'after', 'resuming', 'released', 'failed'].includes(saved.automation.status) ||
+      typeof saved.automation.ballotId !== 'string' ||
+      !Number.isSafeInteger(saved.automation.songId) || saved.automation.songId < 0 ||
+      !Array.isArray(saved.automation.before))) throw new Error('Suivi Battle invalide.');
     this.ballot = saved?.ballot ? structuredClone(saved.ballot) : null;
+    this.automation = saved?.automation ? structuredClone(saved.automation) : null;
     this.lastOutcome = saved?.lastOutcome || null;
   }
 
@@ -52,7 +58,8 @@ class BattleVote {
       if (this.ballot.mode === 'songs') this._finishSongVote(closedAt, 'expired');
       else this._cooldown('expired', closedAt);
     }
-    if (this.ballot?.phase === 'cooldown' && time >= this.ballot.cooldownUntil) {
+    if (this.ballot?.phase === 'cooldown' && time >= this.ballot.cooldownUntil &&
+        (!this.automation || this.automation.status === 'released')) {
       this.ballot = null;
       this._changed('idle');
     }
@@ -71,6 +78,9 @@ class BattleVote {
     if (this.ballot?.phase === 'voting') throw new Error('Un vote Battle est déjà en cours.');
     if (this.ballot?.phase === 'requested') throw new Error('La demande de Battle attend le bar.');
     if (this.ballot?.phase === 'cooldown') throw new Error('Attends la fin du délai avant un nouveau vote Battle.');
+    if (this.automation && this.automation.status !== 'released') {
+      throw new Error('La Battle précédente attend encore le bar.');
+    }
     if (!Array.isArray(eligiblePersonIds)) throw new Error('Électorat Battle manquant.');
     const eligible = [...new Set(eligiblePersonIds.map(String))];
     const proposer = String(personId || '');
@@ -127,6 +137,8 @@ class BattleVote {
       this.ballot.selectedSong = scores[0].song;
     } else this.ballot.selectedSong = this.ballot.suggestedSong || null;
     this.ballot.phase = 'requested';
+    this.automation = { ballotId: this.ballot.id, songId: this.ballot.selectedSong?.songId || 0,
+      status: 'waiting', before: [], sentAt: null, queueId: null, failure: null };
     this.ballot.requestedAt = time;
     this.ballot.cooldownUntil = time + this.cooldownMs;
     this.ballot.outcome = 'approved';
@@ -173,7 +185,17 @@ class BattleVote {
     this.tick();
     if (!this.ballot || this.ballot.phase !== 'requested') throw new Error('Aucune Battle à traiter par le bar.');
     if (outcome !== 'done' && outcome !== 'dismissed') throw new Error('Résolution Battle invalide.');
+    if (this.automation?.status === 'sending') {
+      throw new Error('Attends la réponse de KaraFun avant de traiter cette Battle.');
+    }
     const time = this.now();
+    if (this.automation) {
+      if (outcome === 'dismissed') this.automation.status = 'released';
+      else if (['waiting', 'failed'].includes(this.automation.status)) {
+        this.automation.status = 'manual';
+        this.automation.manualStartedAt = time;
+      }
+    }
     this.ballot.phase = 'cooldown';
     this.ballot.outcome = outcome;
     this.ballot.resolvedAt = time;
@@ -181,6 +203,85 @@ class BattleVote {
     this.lastOutcome = { id: this.ballot.id, outcome, at: time,
       proposalName: this.ballot.proposalName, selectedSong: this.ballot.selectedSong || null };
     this._changed(outcome);
+    return this.view();
+  }
+
+  beginAutomation(before) {
+    if (this.ballot?.phase !== 'requested' || this.automation?.status !== 'waiting' ||
+      !Array.isArray(before) || before.some(id => typeof id !== 'string')) {
+      throw new Error('La Battle ne peut pas être préparée.');
+    }
+    this.automation.before = [...before];
+    this.automation.sentAt = this.now();
+    this.automation.status = 'sending';
+    this._changed('automation-sending');
+  }
+
+  confirmAutomation(queueId) {
+    if (this.ballot?.phase !== 'requested' ||
+      !['waiting', 'sending', 'failed'].includes(this.automation?.status) || queueId == null) {
+      throw new Error('Confirmation Battle inattendue.');
+    }
+    this.automation.queueId = String(queueId);
+    this.automation.status = 'queued';
+    return this.resolve({ outcome: 'done' });
+  }
+
+  confirmManualAutomation(queueId) {
+    if (this.ballot?.phase !== 'cooldown' || this.automation?.status !== 'manual' || queueId == null) {
+      throw new Error('Confirmation Battle manuelle inattendue.');
+    }
+    this.automation.queueId = String(queueId);
+    this.automation.status = 'queued';
+    this._changed('automation-manual-confirmed');
+    return this.view();
+  }
+
+  finishManual() {
+    if (this.ballot?.phase !== 'cooldown' || this.automation?.status !== 'manual') {
+      throw new Error('Aucune Battle manuelle en cours.');
+    }
+    return this.updateAutomation('after');
+  }
+
+  observeExternalBattle({ queueId, songId, title, artist }) {
+    if (queueId == null || String(queueId) === '') throw new Error('Identifiant de Battle manquant.');
+    const time = this.now();
+    const id = randomUUID();
+    const song = { songId: Number.isSafeInteger(Number(songId)) ? Number(songId) : 0,
+      title: String(title || 'Battle collective').slice(0, 100),
+      artist: String(artist || '').slice(0, 80) };
+    // Une Battle organisée dans KaraFun prime sur un vote encore ouvert :
+    // il ne faut ni envoyer une seconde Battle, ni relancer l'autoplay après elle.
+    this.ballot = { id, phase: 'cooldown', mode: 'external', proposalName: 'Le bar',
+      proposerId: null, suggestedSong: song, songs: null, selectedSong: song,
+      eligiblePersonIds: [], votes: [], threshold: 0, openedAt: time,
+      closesAt: null, requestedAt: time, resolvedAt: time,
+      cooldownUntil: time + this.cooldownMs, outcome: 'done' };
+    this.automation = { ballotId: id, songId: song.songId, status: 'queued',
+      before: [], sentAt: null, queueId: String(queueId), failure: null };
+    this.lastOutcome = { id, outcome: 'done', at: time,
+      proposalName: 'Le bar', selectedSong: song };
+    this._changed('external');
+    return this.view();
+  }
+
+  updateAutomation(status, failure = null) {
+    if (!this.automation || !['playing', 'after', 'resuming', 'released', 'failed'].includes(status)) {
+      throw new Error('Transition Battle invalide.');
+    }
+    const allowed = {
+      waiting: ['failed'],
+      sending: ['failed'], queued: ['playing', 'after', 'failed'],
+      playing: ['after'], manual: ['after'], after: ['resuming', 'released'],
+      resuming: ['released'], failed: ['after', 'released'],
+    };
+    if (!(allowed[this.automation.status] || []).includes(status)) {
+      throw new Error('Transition Battle inattendue.');
+    }
+    this.automation.status = status;
+    this.automation.failure = status === 'failed' ? String(failure || 'KaraFun n’a pas confirmé le mode Battle.') : null;
+    this._changed(`automation-${status}`);
     return this.view();
   }
 
@@ -203,6 +304,7 @@ class BattleVote {
 
   reset() {
     this.ballot = null;
+    this.automation = null;
     this.lastOutcome = null;
     this._changed('reset');
   }
@@ -214,7 +316,9 @@ class BattleVote {
       cooldownMinutes: this.cooldownMs / 60000,
       proposalName: null, suggestedSong: null, selectedSong: null, songOptions: [],
       mode: null, eligiblePersonIds: [],
-      votedPersonIds: [], lastOutcome: this.lastOutcome };
+      votedPersonIds: [], lastOutcome: this.lastOutcome,
+      automation: this.automation ? { status: this.automation.status,
+        queueId: this.automation.queueId, failure: this.automation.failure } : null };
     const songOptions = (b.songs || []).map(song => ({ ...song,
       votes: b.votes.filter(([, choice]) => choice === `song:${song.songId}`).length }));
     return { id: b.id, phase: b.phase, proposalName: b.proposalName,
@@ -227,15 +331,18 @@ class BattleVote {
       requestedAt: b.requestedAt, outcome: b.outcome,
       cooldownMinutes: this.cooldownMs / 60000,
       eligiblePersonIds: [...b.eligiblePersonIds],
-      votedPersonIds: b.votes.map(([id]) => id), lastOutcome: this.lastOutcome };
+      votedPersonIds: b.votes.map(([id]) => id), lastOutcome: this.lastOutcome,
+      automation: this.automation ? { status: this.automation.status,
+        queueId: this.automation.queueId, failure: this.automation.failure } : null };
   }
 
   view() { this.tick(); return this.viewWithoutTick(); }
 
   serialize() {
     this.tick();
-    return { version: 2, cooldownMs: this.cooldownMs,
+    return { version: 3, cooldownMs: this.cooldownMs,
       ballot: this.ballot ? structuredClone(this.ballot) : null,
+      automation: this.automation ? structuredClone(this.automation) : null,
       lastOutcome: this.lastOutcome ? { ...this.lastOutcome } : null };
   }
 }

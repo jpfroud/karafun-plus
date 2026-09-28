@@ -38,6 +38,12 @@ function fixture() {
   assert.equal(state.phase, 'cooldown');
   assert.equal(state.cooldownUntil, 2_300_000);
   assert.throws(() => vote.propose({ personId: 'a', personName: 'Alice', eligiblePersonIds: electorate }), /délai/);
+  assert.equal(state.automation.status, 'manual', 'organiser une Battle manuelle ne relance pas la file');
+  assert.throws(() => vote.propose({ personId: 'a', personName: 'Alice', eligiblePersonIds: electorate }), /délai/);
+  state = vote.finishManual();
+  assert.equal(state.automation.status, 'after', 'seule la fin annoncée autorise la reprise manuelle');
+  vote.updateAutomation('resuming');
+  vote.updateAutomation('released');
   f.clock(600_000);
   assert.equal(vote.view().phase, 'idle');
   assert.equal(vote.view().lastOutcome.outcome, 'done');
@@ -101,6 +107,44 @@ function fixture() {
 
 {
   const f = fixture(), vote = new BattleVote(f.opts);
+  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a'],
+    songs: [{ songId: 5091, title: 'Battle', artist: 'Test' }] });
+  vote.beginAutomation(['titre-deja-present']);
+  const restored = new BattleVote({ ...f.opts, saved: vote.serialize() });
+  assert.equal(restored.view().phase, 'requested');
+  assert.equal(restored.view().automation.status, 'sending');
+  assert.deepEqual(restored.automation.before, ['titre-deja-present']);
+  assert.throws(() => restored.beginAutomation([]), /ne peut pas être préparée/,
+    'une reprise après panne ne renvoie pas automatiquement la Battle');
+  restored.confirmAutomation('battle-confirmee');
+  assert.equal(restored.view().phase, 'cooldown');
+  assert.equal(restored.view().automation.queueId, 'battle-confirmee');
+  const afterAck = new BattleVote({ ...f.opts, saved: restored.serialize() });
+  assert.equal(afterAck.view().automation.status, 'queued', 'le mode confirmé persiste après un autre crash');
+}
+
+{
+  const f = fixture(), vote = new BattleVote(f.opts);
+  vote.observeExternalBattle({ queueId: 'native-1', songId: 5091,
+    title: 'Battle organisée dans KaraFun', artist: 'Artiste' });
+  assert.equal(vote.view().automation.status, 'queued');
+  assert.equal(vote.view().phase, 'cooldown');
+  assert.equal(vote.view().cooldownUntil, 1_600_000);
+  const recovered = new BattleVote({ ...f.opts, saved: vote.serialize() });
+  assert.equal(recovered.view().automation.queueId, 'native-1',
+    'une Battle native reste surveillée après redémarrage');
+  recovered.updateAutomation('playing');
+  recovered.updateAutomation('after');
+  f.clock(700_000);
+  assert.equal(recovered.view().phase, 'cooldown',
+    'la pause de sécurité persiste même après expiration du délai entre votes');
+  recovered.updateAutomation('resuming');
+  recovered.updateAutomation('released');
+  assert.equal(recovered.view().phase, 'idle');
+}
+
+{
+  const f = fixture(), vote = new BattleVote(f.opts);
   assert.throws(() => vote.setCooldownMinutes(0), /1 à 120/);
   assert.throws(() => vote.setCooldownMinutes(121), /1 à 120/);
   vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a'] });
@@ -109,6 +153,11 @@ function fixture() {
     'changer le délai recalcule immédiatement la pause en cours');
   const restored = new BattleVote({ ...f.opts, saved: vote.serialize() });
   assert.equal(restored.cooldownMs, 180_000, 'réglage conservé après redémarrage');
+  assert.equal(restored.view().automation.status, 'manual');
+  restored.finishManual();
+  assert.equal(restored.view().automation.status, 'after');
+  restored.updateAutomation('resuming');
+  restored.updateAutomation('released');
   f.clock(180_000);
   assert.equal(restored.view().phase, 'idle');
   restored.reset();

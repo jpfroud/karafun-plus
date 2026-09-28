@@ -81,10 +81,16 @@ async function main() {
       await sleep(100);
     }
     assert.ok(ready, 'La démo isolée n’a pas démarré.');
+    let state = await staff();
+    const soloBefore = state.tables.find(table => table.id === 'Comptoir');
+    assert.ok(soloBefore?.individual && soloBefore.url && soloBefore.qrUrl,
+      'Le groupe En solo et son QR doivent exister dès le démarrage.');
+    assert.equal(soloBefore.name, 'En solo');
+    const oldSoloPath = new URL(soloBefore.url).pathname;
     await ok('/api/staff/settings', { auto: false, autoPlay: false });
     await ok('/api/staff/table', { id: '1', headcount: 2 });
     await ok('/api/staff/table', { id: '2', headcount: 1 });
-    let state = await staff();
+    state = await staff();
     const oldTable = state.tables.find(table => table.id === '1');
     const secondTable = state.tables.find(table => table.id === '2');
     assert.ok(oldTable?.url && oldTable.qrUrl && secondTable?.url);
@@ -208,7 +214,7 @@ async function main() {
     }
     assert.equal(state.queueClearPending, false, 'Le vidage reste bloqué malgré les confirmations KaraFun.');
     assert.equal(state.queue.length, 0, 'Des chansons restent visibles dans la file.');
-    assert.equal(state.tables.length, 2);
+    assert.equal(state.tables.length, 3);
     assert.equal(state.people.length, 2);
     assert.ok(state.people.some(person => person.id === alice.id));
     assert.ok(state.people.some(person => person.id === bob.id));
@@ -227,13 +233,19 @@ async function main() {
     if ((await staff()).stage) await ok('/api/staff/kf', { action: 'next' });
 
     assert.equal((await request('/api/staff/tables-clear', { confirmation: 'NON' })).status, 400);
-    assert.equal((await staff()).tables.length, 2, 'Un reset non confirmé ne modifie rien.');
+    assert.equal((await staff()).tables.length, 3, 'Un reset non confirmé ne modifie rien.');
     const cleared = await ok('/api/staff/tables-clear', {
       confirmation: 'SUPPRIMER TOUTES LES TABLES',
     });
     assert.equal(cleared.ok, true);
     state = await staff();
-    assert.deepEqual(state.tables, []);
+    assert.equal(state.tables.length, 1, 'Seul le groupe En solo est prêt pour une nouvelle soirée.');
+    const soloAfter = state.tables[0];
+    assert.equal(soloAfter.id, 'Comptoir');
+    assert.equal(soloAfter.name, 'En solo');
+    assert.notEqual(soloAfter.url, soloBefore.url, 'Le QR En solo est renouvelé à la fin de la soirée.');
+    assert.equal((await request(oldSoloPath)).status, 403, 'L’ancien QR En solo est révoqué.');
+    assert.equal((await request(new URL(soloAfter.url).pathname)).status, 200);
     assert.deepEqual(state.people, []);
     assert.deepEqual(state.queue, []);
     assert.equal(state.battle.phase, 'idle');

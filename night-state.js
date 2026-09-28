@@ -73,6 +73,7 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       reservedNext: scheduler.reservedNext ? clone(scheduler.reservedNext) : null,
       roundGroups: [...scheduler.roundGroups], roundPeople: [...scheduler.roundPeople],
       roundPeoplePhysical: true,
+      appearanceSerial: scheduler.appearanceSerial,
       manualOrder: [...scheduler.manualOrder],
       manualOrderActive: !!scheduler.manualOrderActive,
       manualChanges: clone(scheduler.manualChanges),
@@ -113,6 +114,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       typeof p.name !== 'string' || !p.name.trim() || !tmp.tables.has(p.tableId) ||
       tmp.people.has(p.id) || tmp.byToken.has(p.token) ||
       !songValid(p.song) || !Array.isArray(p.backlog) || !p.backlog.every(songValid)) fail('personne mal formée');
+    if (p.lastAppearanceTurn != null &&
+        (!Number.isSafeInteger(p.lastAppearanceTurn) || p.lastAppearanceTurn < 0)) {
+      fail('passage physique mal formé');
+    }
     const person = clone(p);
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');
@@ -154,6 +159,13 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   }
   tmp.roundGroups = new Set(list(data.roundGroups, 'tables du tour'));
   tmp.roundPeople = new Set(list(data.roundPeople, 'personnes du tour'));
+  tmp.appearanceSerial = data.appearanceSerial == null ?
+    Math.max(0, ...[...tmp.people.values()].map(p => p.lastAppearanceTurn || 0)) :
+    data.appearanceSerial;
+  if (!Number.isSafeInteger(tmp.appearanceSerial) || tmp.appearanceSerial < 0 ||
+      [...tmp.people.values()].some(p => (p.lastAppearanceTurn || 0) > tmp.appearanceSerial)) {
+    fail('compteur des passages physiques mal formé');
+  }
   if ([...tmp.roundPeople].some(pid => !tmp.people.has(pid))) fail('personne du tour inconnue');
   if (data.roundPeoplePhysical != null && typeof data.roundPeoplePhysical !== 'boolean') {
     fail('version du tour physique mal formée');
@@ -219,7 +231,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   for (const id of scheduler.tables.keys()) access.revoke(id);
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
-    'roundPeople', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
+    'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
     'slotSamples', 'version']) scheduler[field] = tmp[field];
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

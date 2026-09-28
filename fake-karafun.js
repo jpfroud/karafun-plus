@@ -53,15 +53,24 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
   };
   const broadcast = () => { io.emit('queue', withIds()); io.emit('status', statusPayload()); };
 
-  function playFirst() {
+  function playFirst(manual = false) {
     clearTimeout(timer);
     if (!queue.length) { state = 'infoscreen'; broadcast(); return; }
+    // Une Battle en attente laisse d'abord les téléphones rejoindre. Le faux
+    // KaraFun ne la lance que lorsque le bar demande explicitement la lecture.
+    if (queue[0].options?.mod?.data?.battle && !manual) {
+      state = 'infoscreen'; broadcast(); return;
+    }
     state = 'playing';
     startedAt = Date.now();
     queue[0].status = 'playing';
     log(`[faux KaraFun] lecture : ${queue[0].title} (${queue[0].singer})`);
     broadcast();
-    timer = setTimeout(() => { queue.shift(); if (autoplay) playFirst(); else { state = 'infoscreen'; broadcast(); } }, songSeconds * 1000);
+    timer = setTimeout(() => {
+      const wasBattle = !!queue.shift()?.options?.mod?.data?.battle;
+      if (autoplay && !wasBattle) playFirst();
+      else { state = 'infoscreen'; broadcast(); }
+    }, songSeconds * 1000);
   }
 
   io.on('connection', (socket) => {
@@ -75,7 +84,9 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     });
     socket.on('queueAdd', (p) => {
       const song = CATALOG.find(s => s.songId === Number(p && p.songId)) || { songId: Number(p && p.songId), title: `Chanson ${p && p.songId}`, artist: '?' };
-      const item = { queueId: qid++, songId: song.songId, title: song.title, artist: song.artist, singer: String((p && p.singer) || ''), status: 'ready' };
+      const item = { queueId: qid++, songId: song.songId, title: song.title, artist: song.artist,
+        singer: String((p && p.singer) || ''), status: 'ready',
+        ...(p?.mod ? { options: { mod: p.mod } } : {}) };
       const pos = Math.max(0, Math.min(queue.length, Number(p && p.pos) || queue.length));
       queue.splice(Math.max(pos, state === 'playing' ? 1 : 0), 0, item);
       if (state !== 'playing' && autoplay) playFirst(); else broadcast();
@@ -91,14 +102,19 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
       broadcast();
     });
     socket.on('next', () => { if (state === 'playing') { queue.shift(); state = 'infoscreen'; clearTimeout(timer); broadcast(); } });
-    socket.on('play', () => { if (state !== 'playing') playFirst(); });
+    socket.on('play', () => { if (state !== 'playing') playFirst(true); });
   });
 
   return new Promise((resolve) => server.listen(port, () => resolve({
     base: `http://localhost:${port}`, code, close: () => { clearTimeout(timer); io.close(); server.close(); },
     // pour les tests : ajouter une chanson « à la main » comme le ferait le bar dans KaraFun
     manualAdd: (songId, singer) => { const s = CATALOG.find(x => x.songId === songId) || CATALOG[0]; queue.push({ queueId: qid++, songId: s.songId, title: s.title, artist: s.artist, singer, status: 'ready' }); broadcast(); },
-    skip: () => { if (state === 'playing') { queue.shift(); clearTimeout(timer); if (autoplay) playFirst(); else { state = 'infoscreen'; broadcast(); } } },
+    skip: () => { if (state === 'playing') {
+      const wasBattle = !!queue.shift()?.options?.mod?.data?.battle;
+      clearTimeout(timer);
+      if (autoplay && !wasBattle) playFirst();
+      else { state = 'infoscreen'; broadcast(); }
+    } },
     state: () => ({ state, queue: withIds() }),
   })));
 }

@@ -1,0 +1,42 @@
+name: Tests Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: solver/pom.xml
+      - run: npm ci
+      - name: Construire Timefold et les notices des dependances
+        run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:2.7.1:add-third-party org.codehaus.mojo:license-maven-plugin:2.7.1:download-licenses
+      - name: Tests automatiques hors ligne
+        run: node test/run-offline.js
+      - name: Tester le hook gstack
+        shell: pwsh
+        run: .\test\gstack-hook.test.ps1
+      - name: Preparer et verifier le kit Windows
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path node | Out-Null
+          $nodeSource = (Get-Command node).Source
+          Copy-Item -LiteralPath $nodeSource -Destination node\node.exe -Force
+          Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $nodeSource) 'LICENSE') -Destination node\LICENSE -Force
+          .\PREPARER-KIT-BAR.ps1
+          .\test\verify-portable-kit.ps1

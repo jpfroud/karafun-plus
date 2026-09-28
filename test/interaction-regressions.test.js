@@ -65,4 +65,28 @@ const song = n => ({ songId: n, title: `Titre ${n}`, artist: 'Artiste' });
   assert.equal(b.song.songId, 502, 'la chanson solo du partenaire reste pour plus tard');
 }
 
+{
+  const s = new Scheduler({ tableRotation: true });
+  const a = s.join({ tableId: 'A', name: 'A', headcount: 1 });
+  const b = s.join({ tableId: 'B', name: 'B', headcount: 1 });
+  const c = s.join({ tableId: 'C', name: 'C', headcount: 1 });
+  const d = s.join({ tableId: 'D', name: 'D', headcount: 1 });
+  s.inviteDuet(a, b.id, song(601));
+  s.answerDuet(b, true);
+  s.chooseSong(c, song(602));
+  s.chooseSong(d, song(603));
+  s.roundGroups = new Set(['A', 'D']);
+  s.roundPeople = new Set([a.id, d.id]);
+  a.sung = d.sung = 1;
+  s.reservedNext = { personId: a.id, reservedAt: Date.now() };
+  const duet = s.select();
+  assert.deepEqual(duet.ids, [a.id, b.id]);
+  assert.equal(duet.newGroupRound, false,
+    'le duo A déjà servie + B nouvelle ne démarre pas un nouveau tour de tables');
+  s.commit(duet);
+  assert.deepEqual(s.roundGroups, new Set(['A', 'D', 'B']),
+    'la table D déjà servie ne perd pas son historique du tour');
+  assert.equal(s.select().ids[0], c.id, 'la table C encore neuve garde la priorité');
+}
+
 console.log('Identité, duos et présence OK');

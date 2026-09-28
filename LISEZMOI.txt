@@ -18,8 +18,9 @@ DÉMARRAGE AU BAR
 1. Sur le PC du bar, décompresse KIT-BAR-KARAFUN.zip entièrement, puis ouvre
    le dossier karaoke-bar. Rien à installer pour la file : Node.js et ses
    dépendances sont dans le kit. KaraFun doit être installé séparément.
-   Double-clique sur DEMARRER.bat : il cherche KaraFun aux emplacements
-   Windows habituels, démarre la file et ouvre la page du bar. Si KaraFun
+   Double-clique sur KaraFun Plus.exe : il cherche KaraFun aux emplacements
+   Windows habituels, démarre la file et ouvre la page du bar. DEMARRER.bat
+   reste disponible en secours pour voir les messages techniques. Si KaraFun
    ne s'ouvre pas, lance-le manuellement. Active sa Télécommande et lis le
    code affiché. Il peut changer après un redémarrage ou une réactivation.
 
@@ -32,8 +33,7 @@ DÉMARRAGE AU BAR
      pas se connecter.
    - La page du bar s'ouvre avec une clé de session réservée aux gérants.
      Sur ce PC, http://localhost:3000/ ouvre la bonne adresse.
-   - Laisse la fenêtre noire ouverte pendant tout le test.
-   - Si la file tourne déjà, DEMARRER.bat ouvre simplement la page du bar.
+   - Si la file tourne déjà, KaraFun Plus.exe ouvre simplement la page du bar.
      Sur ce PC, l'adresse ci-dessus retrouve aussi la bonne page.
 
 3. Sur la page du bar, bloc « Diagnostic KaraFun » :
@@ -46,9 +46,9 @@ DÉMARRAGE AU BAR
 
    Dans le bloc « Tables », ajoute les tables une par une. L'effectif proposé
    est 4 et peut être changé par table : c'est le plafond d'inscriptions.
-   Pour les personnes venues seules, « Ajouter un groupe Comptoir » crée un
-   QR commun. Chaque personne y garde son propre
-   tour et son téléphone ne peut gérer qu'un seul chanteur du Comptoir.
+   Pour les personnes venues seules, le groupe « En solo » et son QR commun
+   sont prêts dès le démarrage. Chaque personne y garde son propre tour et
+   son téléphone ne peut gérer qu'un seul chanteur de ce groupe.
 
 4. Avec ton téléphone, sur le même Wi-Fi que le PC, scanne le QR code de la
    table créée par le bar (ou son QR imprimé depuis « Imprimer les QR codes des
@@ -73,9 +73,9 @@ DÉMARRAGE AU BAR
    Une personne peut être renommée. Pour un duo, choisis son titre et invite
    un partenaire : dans la même table le duo est accepté tout de suite, entre
    deux tables le partenaire accepte sur sa page. Seul l'initiateur utilise
-   son tour, l'invité garde le sien. Deux personnes du Comptoir doivent aussi
+   son tour, l'invité garde le sien. Deux personnes du groupe « En solo » doivent aussi
    confirmer leur duo, car elles sont des solistes indépendants. En cas de
-   téléphone perdu au Comptoir, demande au bar un code de reprise : seul le
+   téléphone perdu dans « En solo », demande au bar un code de reprise : seul le
    profil muni d'un code actif peut être repris sur un nouveau téléphone.
 
 5. S'il y a un souci, envoie-moi les fichiers du dossier « journal »

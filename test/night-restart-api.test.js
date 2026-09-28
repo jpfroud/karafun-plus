@@ -47,6 +47,10 @@ async function main() {
   for (const name of fs.readdirSync(root).filter(name => name.endsWith('.js'))) {
     fs.copyFileSync(path.join(root, name), path.join(sandbox, name));
   }
+  // La copie de crash teste le repli sans JAR, tout en chargeant le même
+  // module que le serveur du bar.
+  fs.mkdirSync(path.join(sandbox, 'solver'));
+  fs.copyFileSync(path.join(root, 'solver', 'bridge.js'), path.join(sandbox, 'solver', 'bridge.js'));
   // Injection limitée à cette copie : le prochain instantané demandé après
   // création du marqueur échoue comme lors d'un disque plein.
   const failMarker = path.join(sandbox, 'fail-next-save');
@@ -251,18 +255,23 @@ NightStateStore.prototype.save = function(snapshot, options) {
     console.log('ok - transfert transactionnel : panne d’écriture, ancien accès gardé, code réutilisable');
 
     await second.ok('/api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
-    assert.deepEqual((await second.staff()).tables, []);
+    const renewedSolo = (await second.staff()).tables;
+    assert.equal(renewedSolo.length, 1);
+    assert.equal(renewedSolo[0].id, 'Comptoir');
+    assert.equal(renewedSolo[0].name, 'En solo');
+    assert.equal(renewedSolo[0].individual, true);
     assert.deepEqual(fs.readdirSync(photoDir), [], 'Le reset retire aussi les fichiers photo.');
     await stop(second, true); // Le reset doit survivre lui aussi à une coupure.
 
     const third = await launch();
     state = await third.staff();
-    assert.deepEqual(state.tables, []);
+    assert.equal(state.tables.length, 1, 'Le QR En solo reste prêt après un crash et un reset.');
+    assert.equal(state.tables[0].url, renewedSolo[0].url);
     assert.deepEqual(state.people, []);
     assert.deepEqual(state.queue, []);
     assert.equal((await third.request(new URL(oldUrl).pathname)).status, 403);
     await third.ok('/api/staff/table', { id: 'R1', headcount: 1 });
-    assert.notEqual((await third.staff()).tables[0].url, oldUrl);
+    assert.notEqual((await third.staff()).tables.find(table => table.id === 'R1').url, oldUrl);
     await stop(third);
     console.log(`ok - reset persistant après crash, anciens QR révoqués sur les ports ${port}/${port + 1}`);
   } finally {

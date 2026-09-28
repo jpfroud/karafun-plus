@@ -75,6 +75,14 @@ test('un duo absent après chargement retrouve son titre sans prendre le tour de
   assert.equal(guest.sung, 0, 'le duo non chanté ne consomme pas le solo de Bob');
   assert.equal(guest.duetGuestCount, 0, 'Bob ne garde pas un passage duo fictif');
   assert.equal(f.sched.duetCooldowns.has(guest.id), false, 'aucun répit fictif après absence');
+  assert.equal(f.sched.appearanceSerial, 0, 'la réservation non chantée ne devient pas une apparition réelle');
+  assert.equal(owner.lastAppearanceTurn, 0);
+  assert.equal(guest.lastAppearanceTurn, 0);
+  assert.equal(f.sched.roundPeople.has(owner.id), false);
+  assert.equal(f.sched.roundPeople.has(guest.id), false);
+  assert.equal(f.sched.tableServeCounts.get(owner.group) || 0, 0);
+  assert.equal(f.sched.tableServeCounts.get(guest.group) || 0, 0);
+  assert.deepEqual([...f.sched.roundGroups], [], 'aucune table non chantée ne reçoit un crédit');
   assert.equal(new Set(f.sched.Q).size, f.sched.Q.length, 'un seul ticket par personne');
   assert.equal(f.sched.Q.indexOf(owner.id), 3, 'Alice revient à la quatrième place');
   const announced = f.sched.readyView().map(turn => turn.entryId);
@@ -94,4 +102,32 @@ test('un duo absent après chargement retrouve son titre sans prendre le tour de
   }
   assert.deepEqual(played, expected, 'tous les titres passent exactement une fois');
   assert.equal(f.sched.readyView().length, 0);
+});
+
+test('retirer un titre chargé mais non chanté conserve la chanson suivante à sa place', () => {
+  const f = harness();
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const bob = f.sched.join({ tableId: '2', name: 'Bob', headcount: 1 });
+  f.sched.chooseSong(alice, song(301));
+  f.sched.chooseSong(alice, song(302), 'append');
+  f.sched.chooseSong(bob, song(303));
+  f.sched.confirm(alice);
+  const selected = f.sched.select();
+  assert.equal(selected.ids[0], alice.id);
+  f.sched.commit(selected);
+  const loaded = { queueId: 'a-retirer', songId: 301, title: 'Titre 301',
+    singer: selected.label };
+  f.tracked().push({ queueId: loaded.queueId, sel: selected, addedAt: Date.now(), startedAt: null });
+  f.bridge.queue = [loaded];
+  f.sync();
+  f.bridge.queue = []; // le bar l'a retiré depuis KaraFun avant la scène
+  f.sync();
+  assert.equal(alice.sung, 0);
+  assert.equal(alice.lastAppearanceTurn, 0);
+  assert.equal(f.sched.appearanceSerial, 0);
+  assert.equal(alice.confirmedAt, 0, 'une ancienne présence ne valide pas le titre de remplacement');
+  assert.deepEqual(f.sched.Q.slice(0, 2), [alice.id, bob.id]);
+  assert.equal(alice.song.songId, 302, 'le titre suivant reste prêt sans renvoyer le titre retiré');
+  assert.equal(f.sched.readyView()[0].song.songId, 302,
+    'le titre suivant conserve la place annoncée de la chanteuse');
 });

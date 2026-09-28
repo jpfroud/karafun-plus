@@ -1,0 +1,116 @@
+name: Release Windows
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version à publier, par exemple v0.1.0
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  portable-kit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verifier la source de la publication manuelle
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') {
+            throw 'Une publication manuelle doit partir de main.'
+          }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: solver/pom.xml
+      - run: npm ci
+      - name: Construire Timefold et les notices des dependances
+        run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:2.7.1:add-third-party org.codehaus.mojo:license-maven-plugin:2.7.1:download-licenses
+      - name: Tests automatiques hors ligne
+        run: node test/run-offline.js
+      - name: Tester le hook gstack
+        shell: pwsh
+        run: .\test\gstack-hook.test.ps1
+      - name: Ajouter Node.js portable au kit
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path node | Out-Null
+          $nodeSource = (Get-Command node).Source
+          Copy-Item -LiteralPath $nodeSource -Destination node\node.exe -Force
+          Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $nodeSource) 'LICENSE') -Destination node\LICENSE -Force
+      - name: Construire le kit et vérifier son lancement
+        shell: powershell
+        run: |
+          .\PREPARER-KIT-BAR.ps1
+          .\test\verify-portable-kit.ps1
+      - name: Empreinte SHA-256
+        shell: powershell
+        run: |
+          $hash = (Get-FileHash -LiteralPath KIT-BAR-KARAFUN.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  KIT-BAR-KARAFUN.zip" | Set-Content -LiteralPath KIT-BAR-KARAFUN.zip.sha256 -Encoding Ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: karafun-plus-windows
+          path: |
+            KIT-BAR-KARAFUN.zip
+            KIT-BAR-KARAFUN.zip.sha256
+      - name: Creer le tag apres validation, si publication manuelle
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            if ($env:INPUT_VERSION -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+              throw 'La version doit ressembler à v0.1.0.'
+            }
+            $existing = git ls-remote --tags origin "refs/tags/$env:INPUT_VERSION"
+            if ($LASTEXITCODE -ne 0) { throw 'Impossible de verifier les tags distants.' }
+            if ($existing) {
+              $peeled = git ls-remote --tags origin "refs/tags/$env:INPUT_VERSION^{}"
+              if ($LASTEXITCODE -ne 0) { throw 'Impossible de verifier le commit du tag.' }
+              $commit = if ($peeled) { ($peeled -split '\s+')[0] } else { ($existing -split '\s+')[0] }
+              if ($commit -ne $env:GITHUB_SHA) {
+                throw 'Cette version désigne déjà un autre commit.'
+              }
+            } else {
+              git tag $env:INPUT_VERSION $env:GITHUB_SHA
+              if ($LASTEXITCODE -ne 0) { throw 'Creation du tag impossible.' }
+              git push origin "refs/tags/$env:INPUT_VERSION"
+              if ($LASTEXITCODE -ne 0) { throw 'Publication du tag impossible.' }
+            }
+            $tag = $env:INPUT_VERSION
+          } else {
+            $tag = $env:GITHUB_REF_NAME
+          }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Publier la release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          gh release view "$env:RELEASE_TAG" --json tagName --jq '.tagName' 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:RELEASE_TAG" KIT-BAR-KARAFUN.zip KIT-BAR-KARAFUN.zip.sha256 --title "$env:RELEASE_TAG" --generate-notes --verify-tag
+            if ($LASTEXITCODE -ne 0) { throw 'Création de la release impossible.' }
+          } else {
+            gh release upload "$env:RELEASE_TAG" KIT-BAR-KARAFUN.zip KIT-BAR-KARAFUN.zip.sha256 --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Mise à jour des fichiers de release impossible.' }
+            Write-Host 'Release existante actualisée pour le même commit.'
+          }

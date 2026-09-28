@@ -29,14 +29,17 @@ const singer = { id: 'alice', name: 'Alice', tableId: '1', active: true, songCou
 let connected = true;
 let manualChanges = [];
 let queue = [];
+let stage = null;
+let extraSingers = [];
 const posts = [];
 const state = () => ({
   kf: { ready: connected, connected, base: 'demo', code: '1234', queue: [], events: [] },
   karafun: { demo: true }, code: '1234',
   settings: { gap: 4, cap: 2, requirePresence: false, pushDelaySec: 10,
     playDelaySec: 8, auto: false, autoPlay: false, tableRotation: false, weightedTables: false },
-  tables: [{ id: '1', name: 'Table 1', headcount: 2, activeCount: 1, count: 1 }],
-  people: [singer], tracked: [], ips: [], queue, blocked: [], log: [], manualChanges,
+  tables: [{ id: '1', name: 'Table 1', headcount: 2, activeCount: 1, count: 1 },
+    { id: '2', name: 'Table 2', headcount: 2, activeCount: 1, count: 1 }],
+  people: [singer, ...extraSingers], stage, tracked: [], ips: [], queue, blocked: [], log: [], manualChanges,
   phoneBase: 'http://127.0.0.1:3000', port: 3000, avgSlotMin: 4,
   battle: { phase: 'idle' },
 });
@@ -97,5 +100,16 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   await settle();
   assert.match(get('qBody').innerHTML, /Ajouté dans KaraFun/,
     'un titre manuel dans KaraFun est visiblement distinct d’un titre envoyé par la file');
+  stage = { ours: true, ids: ['alice'], queueId: 'live', singer: 'Alice', title: 'Titre en cours' };
+  extraSingers = [
+    { id: 'same', name: 'Camille', tableId: '1', active: true },
+    { id: 'other', name: 'Yannick', tableId: '2', active: true },
+    { id: 'gone', name: 'Parti', tableId: '2', active: false },
+  ];
+  poll();
+  await settle();
+  assert.equal(get('markDuoBox').hidden, false);
+  assert.match(get('markDuoPartner').innerHTML, /Même table[\s\S]*Camille[\s\S]*Autres tables et personnes en solo[\s\S]*Yannick/);
+  assert.doesNotMatch(get('markDuoPartner').innerHTML, /Parti/);
   console.log('Bar : connexion et repères chanteurs OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

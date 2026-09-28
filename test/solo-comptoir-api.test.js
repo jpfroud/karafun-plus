@@ -24,6 +24,10 @@ async function ok(path, body, cookie = '') {
 
 (async () => {
   await ok('/api/staff/settings', { auto: false });
+  const forbiddenMode = await request('/api/staff/table', { id: 'Comptoir', individual: false });
+  assert.equal(forbiddenMode.status, 400, 'le groupe En solo ne devient jamais une table collective');
+  const forbiddenDeparture = await request('/api/staff/table-left', { id: 'Comptoir' });
+  assert.equal(forbiddenDeparture.status, 400, 'le groupe En solo ne peut pas disparaître pendant la soirée');
   await ok('/api/staff/table', { id: 'Comptoir', headcount: 40, individual: true });
   const staff = (await ok('/api/staff/state')).value;
   const table = staff.tables.find(row => row.id === 'Comptoir');
@@ -85,5 +89,32 @@ async function ok(path, body, cookie = '') {
   assert.equal(oldPhone.status, 403, 'l’ancien téléphone reste associé à Alice après le transfert');
   await ok('/api/table/song', fields({ personId: alice.value.id,
     token: replacement.value.token, song: { songId: 102, title: 'Reprise' } }), replacement.cookie);
+  await ok('/api/staff/table', { id: 'Table voisine', headcount: 1 });
+  const neighborTable = (await ok('/api/staff/state')).value.tables.find(t => t.id === 'Table voisine');
+  const neighborAccess = new URL(neighborTable.url).pathname.split('/').pop();
+  const neighbor = await ok('/api/table/person', { table: 'Table voisine', access: neighborAccess,
+    name: 'Camille' });
+  await ok('/api/staff/settings', { auto: true, autoPlay: false, pushDelaySec: 0 });
+  let live;
+  for (let i = 0; i < 80; i++) {
+    live = (await ok('/api/staff/state')).value;
+    if (live.tracked.some(t => t.ids?.includes(alice.value.id))) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(live.tracked.some(t => t.ids?.includes(alice.value.id)),
+    'La chanson du premier soliste est chargée dans le faux KaraFun.');
+  await ok('/api/staff/kf', { action: 'play' });
+  for (let i = 0; i < 80; i++) {
+    live = (await ok('/api/staff/state')).value;
+    if (live.stage?.ids?.includes(alice.value.id)) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(live.stage?.ids?.includes(alice.value.id));
+  await ok('/api/staff/duo-mark', { queueId: live.stage.queueId, partnerId: neighbor.value.id });
+  live = (await ok('/api/staff/state')).value;
+  assert.deepEqual(live.stage.ids, [alice.value.id, neighbor.value.id]);
+  assert.match(live.stage.singer, /Alice.*Camille/);
+  assert.equal(live.people.find(p => p.id === neighbor.value.id).sung, 0,
+    'Le duo joué avec une autre table ne consomme pas le tour de l’invitée.');
   console.log('Comptoir : tours individuels, une seule fiche par téléphone, reprise sans accès aux autres OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

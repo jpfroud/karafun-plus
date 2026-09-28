@@ -8,6 +8,7 @@ const { createRequire } = require('node:module');
 const { Scheduler } = require('../scheduler');
 const { TableAccess } = require('../table-access');
 const { snapshotNight, restoreNight } = require('../night-state');
+const { KaraFunBridge, BATTLE_MOD, isBattleItem, normalizeKcsItem } = require('../karafun');
 
 const root = path.join(__dirname, '..');
 const fromServer = createRequire(path.join(root, 'server.js'));
@@ -27,30 +28,290 @@ function harness() {
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate,
   };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, access, sync, publicState, settings, clearEvening, clearQueue,
+    globalThis.fixture = { sched, access, sync, publicState, presenceCandidate,
+      settings, clearEvening, clearQueue, battleVote,
+      staffPlay() { return handlers['POST /api/staff/kf'](null, null, { action: 'play' }); },
+      finishBattle() { return handlers['POST /api/staff/battle/resolve'](null, null, { outcome: 'finished' }); },
       setBridge(value) { bridge = value; },
       setIdleSince(value) { idleSince = value; },
+      setEmptySince(value) { emptySince = value; },
       tracked() { return tracked; }, pending() { return pending; } };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
   f.sched.table('1');
   f.access.issue('1');
   const adds = [];
+  const battleAdds = [];
   const removes = [];
   const plays = [];
   const bridge = {
     ready: true, connected: true, queue: [], status: { state: 'idle' },
     add(songId, singer) { adds.push({ songId, singer }); },
+    addBattle(songId, position) { battleAdds.push({ songId, position }); },
     play() { plays.push(Date.now()); }, next() {}, remove(queueId) { removes.push(queueId); },
   };
   f.setBridge(bridge);
-  return { ...f, bridge, adds, removes, plays };
+  return { ...f, bridge, adds, battleAdds, removes, plays };
 }
 
 const song = (id, title = `Titre ${id}`) => ({ songId: id, title, artist: 'Artiste' });
 const item = (id, s, singer) => ({ queueId: id, songId: s.songId, title: s.title, artist: s.artist, singer });
+const battleItem = (id, s) => ({ ...item(id, s, 'Battle collective'), options: { mod: BATTLE_MOD } });
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
+
+test('la trame KCS Battle reprend le mode observé dans les événements réels', () => {
+  const bridge = new KaraFunBridge();
+  const sent = [];
+  bridge.protocol = 'kcs';
+  bridge.ready = bridge.connected = true;
+  bridge.raw.configuration = { compatibleMods: { battle: [1] } };
+  bridge.socket = { send(type, payload) { sent.push({ type, payload }); } };
+  bridge.addBattle(5091, 1);
+  assert.equal(sent[0].type, 'remote.AddToQueueRequest');
+  assert.deepEqual(sent[0].payload.song, { type: 1, id: 5091 });
+  assert.equal(sent[0].payload.position, 1);
+  assert.deepEqual(sent[0].payload.options.mod, BATTLE_MOD);
+  assert.equal(Object.hasOwn(sent[0].payload.options, 'singer'), false,
+    'la trame Battle observée dans KaraFun ne comporte pas de chanteur solo');
+  const confirmed = normalizeKcsItem({ id: 'battle-uuid', song: {
+    id: { id: 5091 }, title: 'Battle', options: { mod: BATTLE_MOD },
+  } });
+  assert.equal(isBattleItem(confirmed), true);
+  bridge.raw.configuration.compatibleMods.battle = [];
+  assert.throws(() => bridge.addBattle(5091), /ne confirme pas le mode Battle/);
+  assert.equal(sent.length, 1, 'un mode non annoncé par KaraFun ne doit jamais être envoyé');
+});
+
+test('une Battle approuvée est confirmée en mode Battle, attend les joueurs puis le bar après les résultats', () => {
+  const f = harness();
+  f.settings.autoPlay = true;
+  f.settings.playDelaySec = 0;
+  f.settings.pushDelaySec = 0;
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(alice, song(91, 'Après la Battle'));
+  const choice = song(5091, 'Battle collective');
+  f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client'],
+    songs: [choice], proposerChoice: choice.songId });
+  assert.equal(f.battleVote.view().phase, 'requested');
+  f.sync();
+  assert.deepEqual(f.battleAdds, [{ songId: 5091, position: 0 }]);
+  assert.equal(f.adds.length, 0, 'le prochain solo n’est pas ajouté derrière la Battle');
+  assert.equal(f.battleVote.view().automation.status, 'sending');
+  const battle = battleItem('battle-uuid', choice);
+  f.bridge.queue = [battle];
+  f.sync();
+  assert.equal(f.battleVote.view().phase, 'cooldown', 'pause de 15 min après confirmation, pas après le vote');
+  assert.equal(f.battleVote.view().automation.status, 'queued');
+  f.setIdleSince(Date.now() - 9_000);
+  f.sync();
+  assert.equal(f.plays.length, 0, 'aucune lecture helper pendant la connexion des joueurs');
+  assert.equal(f.publicState(null, '1').queue[0].kind, 'battle');
+  f.bridge.status = { state: 'playing', current: battle };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'playing');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'after');
+  assert.equal(f.adds.length, 0, 'le titre suivant attend les félicitations');
+  f.battleVote.updateAutomation('resuming'); // clic manuel du bar
+  f.setEmptySince(Date.now() - 2_000);
+  f.sync();
+  assert.equal(f.adds.length, 1, 'le prochain titre n’est envoyé que sur action du bar');
+  const next = item('solo-uuid', song(91, 'Après la Battle'), f.adds[0].singer);
+  f.bridge.queue = [next];
+  f.sync();
+  assert.equal(f.plays.length, 1, 'le clic manuel lance le titre confirmé');
+  f.sync();
+  assert.equal(f.plays.length, 1, 'pas de double lecture pendant la réponse KaraFun');
+  f.bridge.status = { state: 'playing', current: next };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'released');
+});
+
+test('la Battle attend le chanteur suivant déjà garanti et un accusé perdu ne provoque pas de doublon', () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(alice, song(92, 'Passage garanti'));
+  f.sched.reserveNext();
+  const choice = song(5091, 'Battle collective');
+  f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client'],
+    songs: [choice], proposerChoice: choice.songId });
+  f.sync();
+  assert.equal(f.battleAdds.length, 0, 'une Battle ne prend pas la place garantie');
+  assert.equal(f.adds.length, 1, 'le chanteur garanti est bien envoyé');
+  const stage = item('garanti', song(92, 'Passage garanti'), f.adds[0].singer);
+  f.bridge.queue = [stage];
+  f.bridge.status = { state: 'playing', current: stage };
+  f.sync(); // réception KaraFun : commit du passage promis
+  f.sync(); // tick suivant : la place d'après est libre pour la Battle
+  assert.deepEqual(f.battleAdds, [{ songId: 5091, position: 1 }]);
+  f.battleVote.automation.sentAt = Date.now() - 16000;
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'failed');
+  f.sync();
+  assert.equal(f.battleAdds.length, 1, 'une commande Battle sans accusé ne repart jamais');
+  f.bridge.queue.push(battleItem('late-battle', choice));
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'queued', 'un accusé tardif est rapproché');
+  assert.equal(f.battleAdds.length, 1);
+});
+
+test('un titre ajouté sans option Battle ne valide pas la demande et ne part pas en lecture automatique', () => {
+  const f = harness();
+  f.settings.autoPlay = true;
+  const choice = song(5091, 'Titre non compatible');
+  f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client'],
+    songs: [choice], proposerChoice: choice.songId });
+  f.sync();
+  assert.equal(f.battleAdds.length, 1);
+  f.bridge.queue = [item('sans-battle', choice, 'Battle collective')];
+  f.sync();
+  assert.equal(f.battleVote.view().phase, 'requested');
+  assert.equal(f.battleVote.view().automation.status, 'failed');
+  assert.match(f.battleVote.view().automation.failure, /sans le mode Battle/);
+  f.setIdleSince(Date.now() - 9_000);
+  f.sync();
+  assert.equal(f.plays.length, 0);
+  assert.equal(f.battleAdds.length, 1, 'aucune nouvelle commande en cas de mode refusé');
+});
+
+test('une Battle créée directement dans KaraFun suspend aussi la lecture du titre suivant', () => {
+  const f = harness();
+  f.settings.auto = true;
+  f.settings.autoPlay = true;
+  f.settings.playDelaySec = 0;
+  f.settings.pushDelaySec = 0;
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(alice, song(99, 'Après la Battle native'));
+  const native = battleItem('native-battle', song(5091, 'Battle native'));
+  f.bridge.queue = [native];
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'queued');
+  assert.equal(f.battleVote.view().cooldownUntil > Date.now(), true,
+    'une Battle créée au bar déclenche aussi le délai entre votes');
+  assert.equal(f.adds.length, 0);
+  f.setIdleSince(Date.now() - 9_000);
+  f.sync();
+  assert.equal(f.plays.length, 0, 'le bar laisse les participants rejoindre depuis le QR');
+  f.bridge.status = { state: 'playing', current: native };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'playing');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'after');
+  assert.equal(f.adds.length, 0, 'aucun nouveau titre envoyé avant que le bar reprenne');
+  f.battleVote.updateAutomation('resuming');
+  f.setEmptySince(Date.now() - 2_000);
+  f.sync();
+  assert.equal(f.adds.length, 1, 'la reprise manuelle envoie le titre prévu');
+  const next = item('apres-native', song(99, 'Après la Battle native'), f.adds[0].singer);
+  f.bridge.queue = [next];
+  f.sync();
+  assert.equal(f.plays.length, 1, 'la lecture ne reprend qu’après confirmation de la commande');
+  f.bridge.status = { state: 'playing', current: next };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'released');
+});
+
+test('une Battle native interrompt un vote en attente sans envoyer une seconde Battle', () => {
+  const f = harness();
+  const choice = song(5091, 'Battle votée');
+  f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client'],
+    songs: [choice], proposerChoice: choice.songId });
+  f.bridge.queue = [battleItem('native-other', song(5092, 'Battle du bar'))];
+  f.sync();
+  assert.equal(f.battleVote.view().automation.queueId, 'native-other');
+  assert.equal(f.battleVote.view().selectedSong.title, 'Battle du bar');
+  assert.equal(f.battleAdds.length, 0, 'la Battle votée est supplantée sans doublon');
+});
+
+test('un QueueEvent arrivé avant StatusEvent ne conclut pas prématurément la Battle', () => {
+  const f = harness();
+  const old = item('ancien', song(88, 'Ancien titre'), 'Le bar');
+  const battle = battleItem('native-transition', song(5091, 'Battle'));
+  f.bridge.queue = [old, battle];
+  f.bridge.status = { state: 'playing', current: old };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'queued');
+  f.bridge.queue = [old];
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'queued',
+    'la disparition de la file attend la mise à jour de la lecture');
+  f.bridge.queue = [battle];
+  f.bridge.status = { state: 'playing', current: battle };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'playing');
+});
+
+test('la reprise après Battle refuse une file vide et ne déclenche pas un futur titre ajouté plus tard', async () => {
+  const f = harness();
+  f.battleVote.observeExternalBattle(battleItem('native-empty', song(5091, 'Battle')));
+  f.battleVote.updateAutomation('after');
+  await assert.rejects(f.staffPlay(), /Aucun titre suivant/);
+  assert.equal(f.battleVote.view().automation.status, 'after');
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(p, song(100, 'Nouveau titre'));
+  assert.equal(f.battleVote.view().automation.status, 'after',
+    'ajouter un titre après le clic refusé ne libère pas la pause');
+  await f.staffPlay();
+  assert.equal(f.battleVote.view().automation.status, 'resuming');
+});
+
+test('la reprise après Battle refuse un titre local si l’envoi automatique est désactivé', async () => {
+  const f = harness();
+  f.settings.auto = false;
+  f.battleVote.observeExternalBattle(battleItem('native-disabled', song(5091, 'Battle')));
+  f.battleVote.updateAutomation('after');
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(p, song(101, 'Titre local'));
+  await assert.rejects(f.staffPlay(), /envoi automatique/i);
+  assert.equal(f.battleVote.view().automation.status, 'after');
+  f.settings.auto = true;
+  await f.staffPlay();
+  assert.equal(f.battleVote.view().automation.status, 'resuming');
+});
+
+test('une Battle manuelle organisée ne libère la suite qu’après les résultats', async () => {
+  const f = harness();
+  f.settings.auto = true;
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(p, song(101, 'Titre après Battle'));
+  f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client'],
+    songs: [song(5091, 'Battle')] });
+  f.battleVote.updateAutomation('failed', 'Mode distant indisponible');
+  f.battleVote.resolve({ outcome: 'done' });
+  assert.equal(f.battleVote.view().automation.status, 'manual');
+  f.sync();
+  assert.equal(f.adds.length, 0, 'la chanson suivante ne part pas pendant les connexions');
+  await assert.rejects(f.staffPlay(), /Battle/);
+  await f.finishBattle();
+  assert.equal(f.battleVote.view().automation.status, 'after');
+});
+
+test('une Battle manuelle reconnue par KaraFun revient au suivi automatique de sa fin', () => {
+  const f = harness();
+  const choice = song(5091, 'Battle du bar');
+  f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client'],
+    songs: [choice] });
+  f.battleVote.updateAutomation('failed', 'Accusé absent');
+  f.battleVote.resolve({ outcome: 'done' });
+  const native = battleItem('manual-confirmed', choice);
+  f.bridge.queue = [native];
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'queued');
+  assert.equal(f.battleVote.view().automation.queueId, 'manual-confirmed');
+  f.bridge.status = { state: 'playing', current: native };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'playing');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'after');
+});
 
 test('la lecture automatique ne lance pas une Battle ou un titre ajouté directement dans KaraFun', () => {
   const f = harness();
@@ -181,7 +442,8 @@ test('reset pendant la déconnexion conserve la piste à retirer jusqu’à la r
   assert.equal(reset.removalPending, 1);
   assert.equal(reset.removalRequests, 0, 'aucun retrait ne peut être confirmé hors connexion');
   assert.equal(f.settings.auto, false, 'aucun nouvel envoi automatique pendant le retrait différé');
-  assert.equal(f.sched.tables.size, 0);
+  assert.equal(f.sched.tables.size, 1, 'Le groupe En solo est prêt pour la nouvelle soirée.');
+  assert.equal(f.sched.table('Comptoir', false)?.name, 'En solo');
   assert.equal(f.sched.people.size, 0);
   assert.equal(f.tracked().length, 1, 'la piste envoyée reste suivie malgré le reset');
   assert.equal(f.tracked()[0].cancelled, true);
@@ -242,6 +504,9 @@ test('vider la file conserve les tables, les téléphones et l’historique mais
 test('vider pendant un envoi non confirmé retire son accusé tardif sans renvoyer le titre', () => {
   const f = harness();
   const p = f.sched.join({ tableId: '1', name: 'Marine', headcount: 1 });
+  p.sung = 1; // un vrai passage antérieur ne doit pas être débité par ce retrait
+  p.lastAppearanceTurn = 1;
+  f.sched.appearanceSerial = 1;
   const s = song(411);
   f.sched.chooseSong(p, s);
   f.sync();
@@ -253,7 +518,9 @@ test('vider pendant un envoi non confirmé retire son accusé tardif sans renvoy
   f.sync();
   assert.equal(f.pending(), null);
   assert.deepEqual(f.removes, ['tardif']);
-  assert.equal(p.sung, 0, 'un titre annulé avant lecture ne consomme pas un tour');
+  assert.equal(p.sung, 1, 'un accusé annulé sans commit ne débite pas un vrai passage antérieur');
+  assert.equal(p.lastAppearanceTurn, 1);
+  assert.equal(f.sched.appearanceSerial, 1);
   f.bridge.queue = [];
   f.sync();
   assert.equal(f.tracked().length, 0);
@@ -404,6 +671,31 @@ test('avant la première chanson, seule la première personne peut confirmer sa 
   assert.equal(f.publicState(a, '1').queue[0].ids[0], a.id);
 });
 
+test('le bar ne notifie pas Je suis là pendant le calcul Timefold', async () => {
+  const f = harness();
+  f.settings.auto = false;
+  f.sched.opts.requirePresence = true;
+  f.sched.table('2').headcount = 1; f.access.issue('2');
+  const a = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const b = f.sched.join({ tableId: '2', name: 'Bob' });
+  f.sched.chooseSong(a, song(520));
+  f.sched.chooseSong(b, song(521));
+  const original = f.sched.presenceView();
+  let complete;
+  f.sched.solverBridge = { available: true, lastError: null,
+    solve: request => new Promise(resolve => {
+      complete = () => resolve({ requestId: request.requestId,
+        order: original.map(row => row.entryId).reverse() });
+    }) };
+  assert.equal(f.presenceCandidate(), null, 'aucun passage annoncé pendant le calcul');
+  assert.equal(f.publicState(a, '1').tablePeople[0].needConfirm, false);
+  assert.equal(f.publicState(b, '2').tablePeople[0].needConfirm, false);
+  complete();
+  assert.equal(await f.sched.solverPromise, true);
+  assert.equal(f.presenceCandidate().ids[0], b.id,
+    'la notification suit le plan validé, pas le repli temporaire');
+});
+
 test('une file composée de tickets sans chanson ne promet ni rang ni heure', () => {
   const f = harness();
   f.settings.auto = false;
@@ -423,10 +715,12 @@ test('une file composée de tickets sans chanson ne promet ni rang ni heure', ()
   assert.equal(state.me.eta, null);
 });
 
-let failed = 0;
-for (const t of tests) {
-  try { t.fn(); console.log('PASS', t.name); }
-  catch (e) { failed++; console.error('FAIL', t.name, '\n ', e.message); }
-}
-console.log(`${tests.length - failed} PASS, ${failed} FAIL`);
-if (failed) process.exitCode = 1;
+(async () => {
+  let failed = 0;
+  for (const t of tests) {
+    try { await t.fn(); console.log('PASS', t.name); }
+    catch (e) { failed++; console.error('FAIL', t.name, '\n ', e.message); }
+  }
+  console.log(`${tests.length - failed} PASS, ${failed} FAIL`);
+  if (failed) process.exitCode = 1;
+})().catch(error => { console.error(error); process.exitCode = 1; });

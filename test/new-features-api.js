@@ -66,8 +66,15 @@ const personTokens = new Map();
   await post('/api/table/battle/vote', body('beta', b.id, { choice: 'none' }));
   s = await state();
   assert.equal(s.battle.phase, 'requested');
-  assert.ok(!s.queue.some(q => q.kind === 'battle'), 'la battle est organisée manuellement dans KaraFun');
+  assert.equal(s.battle.automation.status, 'waiting');
+  assert.ok(!s.queue.some(q => q.kind === 'battle'),
+    'envoi automatique désactivé : le bar organise la Battle dans KaraFun');
   await post('/api/staff/battle/resolve', { outcome: 'done' });
-  assert.equal((await state()).battle.phase, 'cooldown');
+  s = await state();
+  assert.equal(s.battle.phase, 'cooldown');
+  assert.equal(s.battle.automation.status, 'manual',
+    'une Battle préparée manuellement reste bloquante jusqu’à ses résultats');
+  await post('/api/staff/battle/resolve', { outcome: 'finished' });
+  assert.equal((await state()).battle.automation.status, 'after');
   console.log('API identité, duos inter-tables, battle collective, réglages live et accès bar OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

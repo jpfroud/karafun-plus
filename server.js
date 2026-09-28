@@ -16,7 +16,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const QRCode = require('qrcode');
 const { Scheduler } = require('./scheduler');
-const { KaraFunBridge } = require('./karafun');
+const { KaraFunBridge, isBattleItem } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
 const { Catalog } = require('./catalog');
@@ -75,7 +75,7 @@ function certifiedBattleSongs(songs) {
   });
 }
 
-const sched = new Scheduler();
+const sched = new Scheduler({ solverEnabled: !DEMO || argv.includes('--solver') });
 const access = new TableAccess();
 const battleVote = new BattleVote({
   saved: !DEMO && fs.existsSync(BATTLE_FILE) ? JSON.parse(fs.readFileSync(BATTLE_FILE, 'utf8')) : null,
@@ -153,6 +153,7 @@ function stopHelper() {
   shuttingDown = true;
   saveNight();
   appLog('Arrêt de la file karaoké demandé par le bar.');
+  sched.closeSolver();
   try { bridge?.disconnect(); } catch (_) { /* arrêt en cours */ }
   try { fake?.close(); } catch (_) { /* arrêt en cours */ }
   try {
@@ -197,7 +198,20 @@ function loadTables() {
     t.individual = !!row.individual;
     access.restore(id, row.secret);
   }
-  // Un fichier vide après « supprimer toutes les tables » doit rester vide.
+}
+
+// Le QR commun aux personnes venues seules reste disponible sans préparation
+// du bar. L'identifiant historique ne change pas : les QR déjà imprimés
+// continuent à fonctionner pendant une soirée restaurée.
+function ensureSoloGroup() {
+  let solo = sched.table('Comptoir', false);
+  if (solo && !solo.individual && sched.tableSingers(solo.id).length) return;
+  if (!solo) solo = sched.table('Comptoir');
+  if (!solo.name || solo.name === 'Comptoir') solo.name = 'En solo';
+  solo.individual = true;
+  if (solo.headcount == null) solo.headcount = 40;
+  if (!access.get(solo.id)) access.issue(solo.id);
+  saveTables();
 }
 
 // ------------------------------------------------------------------ KaraFun : lecture de l'état
@@ -224,6 +238,13 @@ function presenceCandidate({ current, upcoming } = analyze()) {
   if (pending && !pending.cancelled) return { ...pending.sel, source: 'envoi' };
   const onStage = tracked.find(tr => isOnStage(tr, current));
   const excluded = onStage?.sel.ids || [];
+  // Une notification « Je suis là » promet le prochain passage. Attendons
+  // la même version du plan que l'envoi, y compris si cette lecture précède
+  // le prochain balayage de synchronisation.
+  if (!sched.reservedNext) {
+    sched.whenPlanReady();
+    if (sched.solverStatus().pending) return null;
+  }
   const planned = sched.presenceView(excluded).find(turn => !turn.future && turn.song);
   return planned ? { ...planned, source: 'helper' } : null;
 }
@@ -238,6 +259,9 @@ function presenceMissing(candidate) {
 }
 
 function restore(tr, reason) {
+  // L'ajout dans KaraFun avait réservé un passage, mais personne n'a chanté.
+  // Annuler le crédit physique complet avant de remettre le titre en attente.
+  sched.rollbackUnplayed(tr.sel);
   const owner = sched.people.get(tr.sel.ids[0]);
   if (!owner) return;
   // Une autre chanson peut avoir été ajoutée pendant que la première était
@@ -246,21 +270,110 @@ function restore(tr, reason) {
     if (owner.song) owner.backlog.unshift(owner.song);
     owner.song = tr.sel.song;
   }
-  // Un duo n'a dépensé que le ticket de l'initiateur. Une absence avant
-  // lecture ne doit ni retirer un ancien passage à l'invité ni le pénaliser.
-  if (tr.sel.kind === 'duo' && tr.sel.ids[1]) {
-    sched.duetCooldowns.delete(tr.sel.ids[1]);
-    const guest = sched.people.get(tr.sel.ids[1]);
-    if (guest) guest.duetGuestCount = Math.max(0, (guest.duetGuestCount || 0) - 1);
-  }
   for (const pid of (tr.sel.consumedIds || tr.sel.ids)) {
     const p = sched.people.get(pid);
     if (!p) continue;
-    p.sung = Math.max(0, p.sung - 1);
     const i = sched.Q.indexOf(pid);
     if (i >= 0) { sched.Q.splice(i, 1); sched.Q.splice(Math.min(3, sched.Q.length), 0, pid); }
   }
   sched.note(`« ${tr.sel.song.title} » (${tr.sel.label}) ${reason} : garde sa chanson et reprend la 4e place`, 'staff');
+}
+
+function battleHoldsQueue() {
+  const state = battleVote.automation?.status;
+  return !!state && !['released', 'resuming'].includes(state) &&
+    !(state === 'waiting' && sched.reservedNext);
+}
+
+function syncBattle({ current, upcoming, q }, now) {
+  let state = battleVote.automation;
+  const native = [current, ...q].filter(Boolean).find(item => isBattleItem(item) &&
+    item.queueId != null && String(item.queueId) !== String(state?.queueId || ''));
+  if (!settings.queueClearPending && native && state?.status === 'manual' &&
+      Number(native.songId) === state.songId) {
+    battleVote.confirmManualAutomation(native.queueId);
+    sched.note('KaraFun confirme la Battle manuelle : la fin sera détectée automatiquement.', 'battle');
+    state = battleVote.automation;
+  } else if (!settings.queueClearPending && native &&
+      (!state || state.status === 'released' || state.status === 'manual' ||
+        (state.status === 'waiting' && Number(native.songId) !== state.songId))) {
+    battleVote.observeExternalBattle(native);
+    sched.note('Battle ajoutée dans KaraFun : lancement et reprise du titre suivant réservés au bar.', 'battle');
+    state = battleVote.automation;
+  }
+  if (!state || state.status === 'released') return;
+  const matches = q.filter(item => Number(item.songId) === state.songId && isBattleItem(item));
+  if (state.status === 'waiting') {
+    if (matches.length === 1) {
+      battleVote.confirmAutomation(matches[0].queueId);
+      sched.note('Battle reconnue dans KaraFun : le bar laisse les téléphones rejoindre avant le départ.', 'battle');
+    } else if (matches.length > 1) {
+      battleVote.updateAutomation('failed', 'Plusieurs Battles identiques sont dans KaraFun. Vérifie la file.');
+    } else if (!state.songId) {
+      battleVote.updateAutomation('failed', 'Le vote ne contient pas de titre KaraFun compatible.');
+    } else if (settings.auto &&
+        (bridge.protocol !== 'kcs' || bridge.raw?.configuration) &&
+        !upcoming.length && !pending && !recoveredPending && !settings.queueClearPending &&
+        !sched.reservedNext && bridge.permissions?.addToQueue !== false) {
+      // Le passage suivant déjà garanti garde sa place. Une Battle approuvée
+      // attend qu'il ait chanté avant d'occuper la prochaine case libre.
+      battleVote.beginAutomation(q.map(item => String(item.queueId)));
+      try {
+        bridge.addBattle(state.songId, current ? 1 : 0);
+        sched.note('Titre Battle envoyé à KaraFun : attente de la confirmation du mode Battle.', 'battle');
+      } catch (error) {
+        battleVote.updateAutomation('failed', error.message);
+        sched.note(`Battle à préparer manuellement : ${error.message}`, 'battle');
+      }
+    }
+  } else if (state.status === 'sending' || state.status === 'failed') {
+    const fresh = q.filter(item => !state.before.includes(String(item.queueId)) &&
+      Number(item.songId) === state.songId);
+    const battles = fresh.filter(isBattleItem);
+    if (battles.length === 1) {
+      battleVote.confirmAutomation(battles[0].queueId);
+      sched.note('KaraFun confirme le mode Battle : la pause entre votes commence.', 'battle');
+    } else if (battles.length > 1) {
+      if (state.status !== 'failed') battleVote.updateAutomation('failed', 'Plusieurs Battles identiques sont apparues dans KaraFun.');
+    } else if (fresh.some(item => item.singer === 'Battle collective')) {
+      if (state.status !== 'failed') battleVote.updateAutomation('failed', 'KaraFun a ajouté le titre sans le mode Battle. Vérifie-le avant de lancer.');
+    } else if (state.status === 'sending' && now - state.sentAt > 15000) {
+      // Pas de seconde commande : un accusé tardif pourrait créer un doublon.
+      battleVote.updateAutomation('failed', 'KaraFun n’a pas confirmé l’ajout Battle. Vérifie sa file avant d’agir.');
+    }
+  } else if (state.status === 'queued' || state.status === 'playing') {
+    const queueHasBattle = q.some(item => String(item.queueId) === state.queueId);
+    const statusId = bridge.status?.current?.queueId || bridge.status?.songPlaying?.queueId;
+    if (current && String(current.queueId) === state.queueId && state.status === 'queued') {
+      battleVote.updateAutomation('playing');
+    } else if (!queueHasBattle && String(statusId || '') !== state.queueId) {
+      // QueueEvent peut arriver avant StatusEvent. Si le titre prêt disparaît
+      // momentanément de la file, patienter avant de conclure qu'il est fini.
+      if (state.status === 'queued' && !state.missingSince) {
+        state.missingSince = now;
+        battleVote._changed('automation-missing');
+      } else if (state.status === 'playing' || now - state.missingSince >= 1500) {
+        battleVote.updateAutomation('after');
+        sched.note('Battle terminée : le prochain titre attend le lancement manuel du bar.', 'battle');
+      }
+    } else if (state.missingSince) {
+      state.missingSince = null;
+      battleVote._changed('automation-found');
+    }
+  } else if (state.status === 'resuming') {
+    if (current && !isBattleItem(current)) {
+      battleVote.updateAutomation('released');
+    } else if (!state.resumePlaySentAt && upcoming.length && !current) {
+      const first = upcoming[0];
+      if (!isBattleItem(first)) {
+        try {
+          bridge.play();
+          state.resumePlaySentAt = now;
+          battleVote._changed('automation-resume-play');
+        } catch (error) { sched.note(`Reprise Battle à relancer : ${error.message}`, 'battle'); }
+      }
+    }
+  }
 }
 
 // ------------------------------------------------------------------ synchronisation avec KaraFun
@@ -273,6 +386,7 @@ function sync() {
   const { current, upcoming, q } = analyze();
   const qids = new Set(q.map(it => it.queueId));
   const now = Date.now();
+  syncBattle({ current, upcoming, q }, now);
   if (q.length) { hadNativeQueue = true; emptySince = null; }
   else if (hadNativeQueue && emptySince === null) emptySince = now;
 
@@ -351,17 +465,27 @@ function sync() {
     // conclure qu'elle a disparu (notamment après le bouton Suivant natif).
     const statusId = bridge.status && (bridge.status.current || bridge.status.songPlaying || {}).queueId;
     if (!qids.has(tr.queueId) && !onStage && statusId !== tr.queueId) {
-      if (tr.cancelled) sched.note(`Retrait KaraFun confirmé : « ${tr.sel.song.title} »`, 'staff');
+      if (tr.cancelled) {
+        // Un accusé tardif d'un envoi annulé peut avoir été suivi sans
+        // `commit()` : il n'a alors aucun crédit à rendre.
+        if (!tr.startedAt && tr.sel.turnCredit) sched.rollbackUnplayed(tr.sel);
+        sched.note(`Retrait KaraFun confirmé : « ${tr.sel.song.title} »`, 'staff');
+      }
       else if (tr.startedAt) { sched.recordSlot((Date.now() - tr.startedAt) / 1000); sched.songEnded(tr.sel.ids); }
       else if (tr.absent) restore(tr, 'retirée (absent à l\'appel)');
       else {
-        sched.songEnded(tr.sel.ids);
+        sched.rollbackUnplayed(tr.sel, { requeue: true });
         sched.note(`« ${tr.sel.song.title} » (${tr.sel.label}) a été passée dans KaraFun avant la lecture : elle ne sera pas renvoyée automatiquement`, 'skip');
       }
       tracked = tracked.filter(x => x !== tr);
       sched.version++;
     }
   }
+
+  // Le même événement QueueEvent peut confirmer un solo promis puis libérer
+  // immédiatement la place pour la Battle, ou confirmer le premier titre
+  // après Battle. Éviter d'attendre le prochain balayage de deux secondes.
+  syncBattle({ current, upcoming, q }, now);
 
   if (settings.queueClearPending && !upcoming.length && !pending &&
       !tracked.some(tr => tr.cancelled && !isOnStage(tr, current))) {
@@ -374,7 +498,7 @@ function sync() {
   if (key !== curKey) { curKey = key; curSince = Date.now(); }
   // Dès qu'un titre est sur scène, le nom annoncé pour le passage suivant
   // reste fixe. L'envoi physique à KaraFun peut attendre le délai configuré.
-  if (!upcoming.length && !pending && !settings.queueClearPending) {
+  if (!upcoming.length && !pending && !settings.queueClearPending && !battleHoldsQueue()) {
     if (sched.opts.requirePresence) {
       const onStage = tracked.find(tr => isOnStage(tr, current));
       sched.reservePresenceNext(onStage?.sel.ids || []);
@@ -385,7 +509,7 @@ function sync() {
   const canPush = !current || Date.now() - curSince >= settings.pushDelaySec * 1000;
   const staleTracked = tracked.some(tr => !qids.has(tr.queueId));
   const emptySettled = emptySince === null || now - emptySince >= 1000;
-  if (settings.auto && !settings.queueClearPending && !recoveredPending && !awaitingPresence &&
+  if (settings.auto && !settings.queueClearPending && !battleHoldsQueue() && !recoveredPending && !awaitingPresence &&
       bridge.ready && !staleTracked && upcoming.length === 0 && canPush && emptySettled) {
     if (!pending) {
       // Après un échec, la chanson du chanteur peut avoir changé : le choix
@@ -412,7 +536,10 @@ function sync() {
     const owner = firstQueueId === null ? null : tracked.find(tr => String(tr.queueId) === firstQueueId);
     const present = owner && !owner.cancelled && (owner.sel.ids.every(pid => sched.people.has(pid)) &&
       (!sched.opts.requirePresence || owner.sel.presenceConfirmed || sched.confirmedForTurn(owner.sel.ids)));
-    if (settings.autoPlay && !settings.queueClearPending && present && Date.now() - idleSince >= settings.playDelaySec * 1000) {
+    if (settings.autoPlay && !settings.queueClearPending &&
+        (!battleVote.automation || battleVote.automation.status === 'released' ||
+          (battleVote.automation.status === 'waiting' && !isBattleItem(upcoming[0]))) &&
+        present && Date.now() - idleSince >= settings.playDelaySec * 1000) {
       try { bridge.play(); idleSince = Date.now() + 20000; } catch (e) { /* */ }
     }
   } else { idleSince = null; idleQueueId = null; }
@@ -426,8 +553,10 @@ const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title
 function describe(item, byQid) {
   const tr = byQid.get(item.queueId);
   return {
-    ours: !!tr, queueId: item.queueId || null, singer: tr ? tr.sel.label : (item.singer || ''), title: item.title || '', artist: item.artist || '',
-    kind: tr?.sel.kind || null,
+    ours: !!tr, queueId: item.queueId || null,
+    singer: tr ? tr.sel.label : (item.singer || (isBattleItem(item) ? 'Battle collective' : '')),
+    title: item.title || '', artist: item.artist || '',
+    kind: tr?.sel.kind || (isBattleItem(item) ? 'battle' : null),
     ids: tr ? tr.sel.ids : [], photos: tr ? tr.sel.ids.filter(pid => (sched.people.get(pid) || {}).photo).map(pid => `/photo/${pid}`) : [],
   };
 }
@@ -444,7 +573,8 @@ function publicState(person, tableId) {
   const queue = upcoming.map((it, i) => ({ ...describe(it, byQid),
     source: 'karafun', pos: i + 1, eta: firstFreeAt + i * slot,
     waitingPresence: i === 0 && presence?.source === 'karafun' && presenceMissingIds.size > 0,
-    name: byQid.has(it.queueId) ? byQid.get(it.queueId).sel.names.join(' & ') : (it.singer || 'KaraFun'),
+    name: byQid.has(it.queueId) ? byQid.get(it.queueId).sel.names.join(' & ') :
+      (it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
     song: fmtSong(it), table: byQid.has(it.queueId) ? sched.table(sched.people.get(byQid.get(it.queueId).sel.ids[0])?.tableId, false)?.name || '' : '',
   }));
   if (pending) queue.push({ source: 'envoi', ours: true, queueId: null,
@@ -616,6 +746,7 @@ function staffState() {
     settings: { ...settings, gap: sched.opts.gap, cap: sched.opts.cap, requirePresence: sched.opts.requirePresence,
       tableRotation: sched.opts.tableRotation, weightedTables: sched.opts.weightedTables,
       battleCooldownMin: battleVote.cooldownMs / 60000 },
+    solver: sched.solverStatus(),
     phoneBase: phoneBase(), ips, port: PORT, staffKey: STAFF_KEY,
     tables: [...sched.tables.values()].map(t => ({ ...t,
       url: access.get(t.id) ? access.url(phoneBase(), t.id) : null,
@@ -763,7 +894,7 @@ function soloDeviceOwner(req) {
 
 function soloDeviceError(code) {
   const error = new Error(code === 'SOLO_DEVICE_USED' ?
-    'Ce téléphone gère déjà une personne du Comptoir. Chacun utilise son propre téléphone.' :
+    'Ce téléphone gère déjà une personne dans « En solo ». Chacun utilise son propre téléphone.' :
     'Ce téléphone ne gère pas cette personne. Demande au bar un code de reprise si tu as changé de téléphone.');
   error.code = code;
   return error;
@@ -926,6 +1057,7 @@ function clearQueue() {
   sched.duetCooldowns.clear();
   sched.releaseNext();
   settings.queueClearPending = true;
+  battleVote.reset();
   sched.note('Le bar a vidé toutes les chansons en attente ; les tables, accès et passages précédents sont conservés.', 'staff');
   // Écrire les deux générations avant toute commande distante : un crash ne
   // doit jamais recréer une file que le bar a décidé d'effacer.
@@ -972,9 +1104,10 @@ function clearEvening() {
   sched.log = [];
   personShareCodes.clear();
   battleVote.reset();
+  ensureSoloGroup();
   settings.autoPlay = false;
   if (tracked.length || pending) settings.auto = false;
-  sched.note('Nouvelle soirée : toutes les tables et leurs accès ont été effacés.', 'staff');
+  sched.note('Nouvelle soirée : anciens accès effacés et nouvel accès « En solo » créé.', 'staff');
   saveNight({ required: true, replaceBoth: true });
   saveTables();
   // Les photos ne sont plus nécessaires après deux instantanés sans personnes.
@@ -1126,9 +1259,12 @@ const handlers = {
   'POST /api/staff/table': async (req, res, body) => {
     const id = TableAccess.key(body.id);
     const existing = sched.table(id, false);
+    if (id === 'Comptoir' && 'individual' in body && !body.individual) {
+      throw new Error('Le groupe En solo garde ses tours individuels pendant toute la soirée.');
+    }
     if (existing && 'individual' in body && existing.individual !== !!body.individual &&
         sched.tableSingers(id).length) {
-      throw new Error('Le mode Comptoir ne peut pas changer après l’inscription de chanteurs. Crée un autre groupe.');
+      throw new Error('Le mode individuel ne peut pas changer après l’inscription de chanteurs. Crée un autre groupe.');
     }
     const t = existing || sched.table(id);
     if (!access.get(t.id)) access.issue(t.id);
@@ -1150,13 +1286,15 @@ const handlers = {
     }
     const comptoir = sched.table('Comptoir');
     if (!access.get(comptoir.id)) access.issue(comptoir.id);
-    if (body.headcount) sched.setHeadcount(comptoir.id, body.headcount, 'staff');
     sched.version++;
     saveTables();
     return { ok: true };
   },
   'POST /api/staff/table-left': async (req, res, body) => {
     const tableId = String(body.id);
+    if (tableId === 'Comptoir') {
+      throw new Error('Le groupe En solo reste disponible. Termine la soirée pour renouveler son QR.');
+    }
     const people = sched.tableSingers(tableId);
     const ids = new Set(people.map(person => person.id));
     const { current } = analyze();
@@ -1292,11 +1430,14 @@ const handlers = {
     tr.sel.ids.push(partner.id);
     tr.sel.names.push(partner.name);
     tr.sel.kind = 'duo';
-    tr.sel.label = `${tr.sel.names.join(' & ')} · ${sched.table(partner.tableId).name}`;
+    const ownerTable = sched.table(sched.people.get(tr.sel.ids[0]).tableId);
+    const partnerTable = sched.table(partner.tableId);
+    tr.sel.label = `${tr.sel.names.join(' & ')} · ${ownerTable.name}${ownerTable.id === partnerTable.id ? '' : ` + ${partnerTable.name}`}`;
     sync(); return { ok: true };
   },
   'POST /api/staff/battle/resolve': async (req, res, body) => {
-    const battle = battleVote.resolve({ outcome: body.outcome });
+    const battle = body.outcome === 'finished' ? battleVote.finishManual() :
+      battleVote.resolve({ outcome: body.outcome });
     return { ok: true, battle };
   },
   'POST /api/staff/reconcile-pending': async () => {
@@ -1320,7 +1461,30 @@ const handlers = {
   'POST /api/staff/shutdown': async () => { setTimeout(stopHelper, 150); return { ok: true }; },
   'POST /api/staff/kf': async (req, res, body) => {
     if (!bridge) throw new Error('KaraFun non connecté');
-    if (body.action === 'play') bridge.play();
+    if (body.action === 'play') {
+      const status = battleVote.automation?.status;
+      if (status === 'after') {
+        if (!bridge.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de reprendre après la Battle.');
+        const upcoming = analyze().upcoming;
+        const nextNative = !!upcoming[0] && !isBattleItem(upcoming[0]);
+        const nextPending = !!pending && !pending.cancelled && !recoveredPending;
+        const nextLocal = nextPending || sched.readyView().some(turn => !turn.future && turn.song);
+        if (!nextNative && !nextLocal) {
+          throw new Error('Aucun titre suivant. Ajoute d’abord une chanson, puis lance la reprise.');
+        }
+        if (!nextNative && !nextPending && !settings.auto) {
+          throw new Error('Active l’envoi automatique à KaraFun avant de lancer le titre suivant.');
+        }
+        if (!nextNative && !nextPending && (recoveredPending || bridge.permissions?.addToQueue === false)) {
+          throw new Error('KaraFun ne peut pas recevoir ce titre. Vérifie l’envoi interrompu et ses droits avant de reprendre.');
+        }
+        battleVote.updateAutomation('resuming');
+        sched.note('Le bar lance manuellement le premier titre après la Battle.', 'battle');
+        sync();
+      } else if (['sending', 'queued', 'playing', 'manual', 'failed'].includes(status)) {
+        throw new Error('La Battle attend le bar : vérifie KaraFun et laisse les téléphones rejoindre avant de lancer.');
+      } else bridge.play();
+    }
     else if (body.action === 'next') bridge.next();
     else if (body.action === 'reconnect') connectKaraFun();
     else if (body.action === 'absent') {
@@ -1485,6 +1649,10 @@ async function main() {
     appLog(`Soirée restaurée : ${sched.tables.size} tables, ${sched.people.size} personnes, ${sched.Q.length} tickets.`);
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');
   } else loadTables();
+  ensureSoloGroup();
+  if (!DEMO && !sched.solverStatus().available) {
+    appLog(`Solveur Timefold indisponible au démarrage : ${sched.solverStatus().fallbackLastError || 'cause inconnue'}. Rotation locale de secours.`);
+  }
   saveNight({ required: true });
   if (DEMO) {
     const { startFakeKaraFun } = require('./fake-karafun');

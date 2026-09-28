@@ -35,6 +35,14 @@ function normalizeKcsItem(item) {
   };
 }
 
+// Forme observée dans les QueueEvent et StatusEvent d'une vraie Battle KaraFun.
+// Le mode est confirmé par la réponse de KaraFun, jamais par le seul envoi.
+const BATTLE_MOD = Object.freeze({ id: 1, caption: 'Battle', data: { battle: { subtype: 1 } } });
+function isBattleItem(item) {
+  const mod = item?.options?.mod || item?.song?.options?.mod;
+  return Number(mod?.id) === 1 && Number(mod?.data?.battle?.subtype) === 1;
+}
+
 class KaraFunBridge extends EventEmitter {
   constructor({ logDir, bases } = {}) {
     super();
@@ -189,6 +197,7 @@ class KaraFunBridge extends EventEmitter {
         this._accept('preferences', { ...p.preferences, askSingerName: !!(p.preferences && p.preferences.askOptions) });
       } else if (m.type === 'remote.ConfigurationUpdateEvent') {
         this.raw.configuration = p.configuration;
+        this.emit('change');
       } else if (m.type === 'remote.AppLeftEvent') {
         this.unreachable = true;
         this.lastError = 'KaraFun est fermé ou sa télécommande a été désactivée.';
@@ -303,7 +312,8 @@ class KaraFunBridge extends EventEmitter {
     if (!this.socket || !this.connected || !this.ready) throw new Error('Pas connecté à KaraFun');
     if (this.protocol === 'kcs') {
       const messages = {
-        queueAdd: ['remote.AddToQueueRequest', payload && { song: { type: 1, id: payload.songId }, options: { singer: payload.singer }, position: payload.pos }],
+        queueAdd: ['remote.AddToQueueRequest', payload && { song: { type: 1, id: payload.songId },
+          options: payload.mod ? { mod: payload.mod } : { singer: payload.singer }, position: payload.pos }],
         queueRemove: ['remote.RemoveFromQueueRequest', { queueItemId: String(payload) }],
         queueMove: ['remote.MoveInQueueRequest', payload && { queueItemId: String(payload.queueId), to: payload.to }],
         play: ['remote.PlayRequest', {}], next: ['remote.NextRequest', {}],
@@ -318,6 +328,20 @@ class KaraFunBridge extends EventEmitter {
   }
 
   add(songId, singer, pos = 99999) { this._emit('queueAdd', { songId: Number(songId), pos, singer: String(singer || '') }); }
+  addBattle(songId, pos = 0) {
+    const id = Number(songId);
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Titre Battle invalide.');
+    if (this.protocol === 'kcs') {
+      const compatible = this.raw.configuration?.compatibleMods?.battle;
+      if (!Array.isArray(compatible) || !compatible.includes(1)) {
+        throw new Error('Cette version de KaraFun ne confirme pas le mode Battle à distance.');
+      }
+    } else if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(this.base).hostname)) {
+      throw new Error('Le mode Battle automatique nécessite la télécommande KaraFun récente.');
+    }
+    this._emit('queueAdd', { songId: id, pos,
+      singer: 'Battle collective', mod: BATTLE_MOD });
+  }
   remove(queueId) { this._emit('queueRemove', queueId); }
   move(queueId, from, to) { this._emit('queueMove', { queueId, from, to }); }
   play() { this._emit('play', null); }
@@ -363,4 +387,4 @@ function normalizeResults(data) {
   })).filter(s => s.songId && s.title).slice(0, 40);
 }
 
-module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem };
+module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, isBattleItem };

@@ -8,6 +8,8 @@ assert.equal(locateKaraFun({ KARAFUN_EXE: process.execPath }), process.execPath,
   'Le chemin KaraFun fourni explicitement est accepté');
 assert.equal(locateKaraFun({
   KARAFUN_EXE: path.join(__dirname, 'inexistant.exe'),
-  ProgramFiles: path.dirname(path.dirname(process.execPath)),
+  ProgramFiles: path.join(__dirname, 'faux-programmes'),
+  'ProgramFiles(x86)': path.join(__dirname, 'faux-programmes-x86'),
+  LOCALAPPDATA: path.join(__dirname, 'faux-localappdata'),
 }), null, 'Un chemin inexistant ne déclenche pas un processus au hasard');
 console.log('Démarrage KaraFun : détection des chemins OK');
