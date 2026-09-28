@@ -1,0 +1,151 @@
+FILE KARAOKÉ — démarrage et mode d'emploi
+================================================
+
+Ce programme tourne sur le PC qui fait tourner KaraFun. C'est lui qui décide
+de l'ordre de passage et qui envoie à KaraFun uniquement la chanson suivante.
+Un téléphone peut inscrire plusieurs personnes d'une table et préparer
+plusieurs chansons pour chacune. Plusieurs téléphones peuvent se partager la
+table : chacun ne modifie que les personnes qu'il gère. Il affiche la file réelle, les positions et
+les heures estimées, ainsi que les personnes qui attendent encore de choisir
+une chanson.
+
+Pour préparer le bar, les QR utilisables en 4G/5G et le déroulement du jour J,
+lis GUIDE-BAR.md. Les étapes ci-dessous servent aussi à un essai sur le Wi-Fi.
+
+
+DÉMARRAGE AU BAR
+----------------------------------
+1. Sur le PC du bar, décompresse KIT-BAR-KARAFUN.zip entièrement, puis ouvre
+   le dossier karaoke-bar. Rien à installer pour la file : Node.js et ses
+   dépendances sont dans le kit. KaraFun doit être installé séparément.
+   Double-clique sur DEMARRER.bat : il cherche KaraFun aux emplacements
+   Windows habituels, démarre la file et ouvre la page du bar. Si KaraFun
+   ne s'ouvre pas, lance-le manuellement. Active sa Télécommande et lis le
+   code affiché. Il peut changer après un redémarrage ou une réactivation.
+
+2. Vérifie que le code KaraFun affiché sur la page du bar est le bon et que
+   « KaraFun connecté » apparaît. Le dernier code saisi est mémorisé sur ce
+   PC ; au premier démarrage ou s'il a changé, saisis le nouveau code dans
+   la page du bar et clique « Connecter ». Il n'est pas détecté automatiquement.
+   - Au premier lancement, le pare-feu Windows demande d'autoriser node.exe :
+     accepte pour les « réseaux privés », sinon les téléphones ne pourront
+     pas se connecter.
+   - La page du bar s'ouvre avec une clé de session réservée aux gérants.
+     Sur ce PC, http://localhost:3000/ ouvre la bonne adresse.
+   - Laisse la fenêtre noire ouverte pendant tout le test.
+   - Si la file tourne déjà, DEMARRER.bat ouvre simplement la page du bar.
+     Sur ce PC, l'adresse ci-dessus retrouve aussi la bonne page.
+
+3. Sur la page du bar, bloc « Diagnostic KaraFun » :
+   - « Connecté : oui » et « Données reçues : oui » → la connexion marche.
+   - Tu peux chercher un titre dans le catalogue. N'utilise pas « Ajouter à
+     KaraFun (test) » sur une soirée réelle : cela modifie sa file.
+   - Pour une soirée autonome, coche « Lancer la lecture automatiquement ».
+     La pause avant ce lancement se règle dans « Règles de la soirée ».
+     Sinon, utilise le bouton Lecture pour démarrer les chansons.
+
+   Dans le bloc « Tables », ajoute les tables une par une. L'effectif proposé
+   est 4 et peut être changé par table : c'est le plafond d'inscriptions.
+   Pour les personnes venues seules, « Ajouter un groupe Comptoir » crée un
+   QR commun. Chaque personne y garde son propre
+   tour et son téléphone ne peut gérer qu'un seul chanteur du Comptoir.
+
+4. Avec ton téléphone, sur le même Wi-Fi que le PC, scanne le QR code de la
+   table créée par le bar (ou son QR imprimé depuis « Imprimer les QR codes des
+   tables »). Chaque table a un lien secret différent : utilise son QR ou le
+   bouton « Lien » du bar pour ouvrir sa page. Inscris un premier chanteur,
+   ajoute les autres depuis le même téléphone, puis prépare et gère leurs
+   listes de chansons. Si l'envoi automatique est actif, la première chanson
+   prête part dans KaraFun au moment prévu par les réglages du bar.
+   « La file des chansons » montre d'abord les titres confirmés par KaraFun,
+   puis les passages encore prévus, avec leur rang et une heure estimée ;
+   « En attente de chanson » affiche uniquement les personnes de ta table
+   sans titre, pour ne pas brouiller la file commune.
+
+   Plusieurs téléphones peuvent scanner le même QR : chacun ajoute les personnes
+   qu'il gère, par exemple deux personnes sur chaque téléphone pour une table
+   de quatre. Sans téléphone ou sans batterie, une personne peut être inscrite
+   par le téléphone d'un proche. Pour changer de téléphone, elle récupère un
+   code de partage à 4 chiffres auprès du téléphone actuel ou du bar si ce
+   téléphone est perdu ou déchargé. Le code dure dix minutes, fonctionne une
+   fois et expire après cinq essais incorrects. L'ajout reste sur
+   « Ma table » ; le formulaire disparaît quand l'effectif est atteint.
+   Une personne peut être renommée. Pour un duo, choisis son titre et invite
+   un partenaire : dans la même table le duo est accepté tout de suite, entre
+   deux tables le partenaire accepte sur sa page. Seul l'initiateur utilise
+   son tour, l'invité garde le sien. Deux personnes du Comptoir doivent aussi
+   confirmer leur duo, car elles sont des solistes indépendants. En cas de
+   téléphone perdu au Comptoir, demande au bar un code de reprise : seul le
+   profil muni d'un code actif peut être repris sur un nouveau téléphone.
+
+5. S'il y a un souci, envoie-moi les fichiers du dossier « journal »
+   (karafun-AAAA-MM-JJ.jsonl et serveur-AAAA-MM-JJ.log) : ils contiennent
+   tout ce que KaraFun a répondu.
+
+
+ESSAYER SANS KARAFUN
+--------------------
+Double-clique sur DEMO.bat : un faux KaraFun intégré « joue » des chansons de
+45 secondes. Pratique pour voir le fonctionnement sur les téléphones.
+
+
+BON À SAVOIR
+------------
+- Le programme utilise le canal de la télécommande web de KaraFun. Ce n'est
+  pas une API officielle : une mise à jour de KaraFun peut le casser.
+  Le pont détecte le protocole KCS des versions Windows récentes ; le mode
+  démo et les anciennes télécommandes utilisent encore socket.io.
+- Avec une adresse locale, les téléphones doivent être sur le même réseau que
+  le PC (certains Wi-Fi « invités » isolent les appareils). Pour des QR qui
+  marchent sans Wi-Fi, configure un domaine HTTPS et un tunnel vers le port
+  client 3001 selon GUIDE-BAR.md. Le port 3000 du bar ne doit pas être publié.
+- La soirée réelle est sauvegardée automatiquement sur deux générations,
+  data\soiree-a.json et data\soiree-b.json : tables, chanteurs, listes de
+  chansons, file et réglages sont repris après un redémarrage. Les tables,
+  leurs effectifs, leurs liens QR secrets et l'adresse des QR sont aussi
+  conservés dans data\tables.json. Pour sauvegarder ou changer de PC,
+  arrête la file puis copie le dossier data ; protège cette copie, car elle
+  contient des accès privés. Après un crash, vérifie la file réelle dans
+  KaraFun avant de continuer. Si un envoi était interrompu, l'automatique
+  reste suspendu jusqu'au bouton « J'ai vérifié la file KaraFun : reprendre »
+  sur la page du bar.
+- « Supprimer toutes les tables » prépare une nouvelle soirée : chanteurs,
+  titres prévus et anciens QR sont effacés. Le titre sur scène continue ;
+  vérifie et vide les titres restants directement dans KaraFun. Quand le bar
+  marque une seule table « Partie », son ancien lien cesse de fonctionner ;
+  recrée-la pour révoquer aussi les accès personnels déjà remis.
+- « Vider toutes les chansons », sous la file du bar, retire les titres en
+  attente sans supprimer tables, chanteurs, QR, droits des téléphones ni
+  historique. Le titre sur scène continue ; l'envoi automatique attend que
+  KaraFun confirme le retrait des suivants. Vérifie sa file si cela tarde.
+- « Priorité » avance un passage devant les autres titres encore prévus,
+  y compris après un duo. Les titres déjà chargés dans KaraFun restent devant.
+  Le bouton n'est plus proposé sur le premier passage déplaçable. « Annuler
+  la priorité » rétablit l'ordre précédent si la file n'a pas changé entretemps.
+- « Je suis là » est demandé seulement à la personne prévue juste après celle
+  sur scène (aux deux chanteurs d'un duo), pas aux suivants plus éloignés.
+- Lorsqu'un nom apparaît « Prochain confirmé », les nouvelles inscriptions
+  et la rotation ne le déplacent plus. Le bar ou une indisponibilité peuvent
+  encore modifier ce passage ; son envoi à KaraFun peut attendre le délai
+  configuré.
+- Le QR Battle de KaraFun ne doit être montré qu'après un contrôle réel des
+  droits sur un abonnement Pro : invités empêchés d'ajouter des titres, de
+  gérer la file et la lecture ; compte FileKaraoke indiqué au bar conservant
+  les droits d'administrateur. Teste avec un téléphone invité. Un essai avec
+  Premium à la maison ne vérifie pas cette protection. Lis GUIDE-BAR.md.
+- Pour arrêter : clique « Arrêter la soirée » sur la page du bar ou
+  double-clique sur ARRETER.bat. Tu peux aussi fermer la fenêtre noire.
+  La soirée est sauvegardée et la clé du bar change à chaque démarrage ;
+  retrouve-la sur ce PC via
+  http://localhost:3000/. Depuis un téléphone de gérant sur le Wi-Fi local,
+  utilise le lien complet sous « Accès du bar depuis un téléphone ».
+
+ESSAIS SANS TOUCHER À UNE SOIRÉE RÉELLE
+---------------------------------------
+Utilise DEMO.bat et la suite hors ligne node test/run-offline.js. Ne lance pas
+test\verif-karafun.js sur une session KaraFun réelle : ce parcours crée des
+tables et modifie la file. Vérifie ensuite les pages du bar et des clients
+dans la simulation locale. Pour une recette sur place, suis GUIDE-BAR.md.
+Contexte complet pour un agent qui reprend le projet : A-LIRE-AGENT.md
+Résultats des essais sur ce PC et consignes réseau : RAPPORT-TEST.md
+Mode d'emploi du jour J et accès Internet : GUIDE-BAR.md

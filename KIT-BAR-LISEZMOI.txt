@@ -1,0 +1,30 @@
+FILE KARAOKÉ — KIT POUR LE PC DU BAR (WINDOWS 64 BITS)
+=======================================================
+
+Ce dossier contient déjà Node.js et toutes les dépendances de la file.
+Il n'y a rien à installer pour cette application, ni npm à lancer. KaraFun
+doit être installé séparément sur le PC du bar.
+
+1. Décompresse entièrement KIT-BAR-KARAFUN.zip sur le PC, par exemple sur
+   le Bureau. Ouvre le dossier karaoke-bar obtenu. Ne lance pas les fichiers
+   depuis l'aperçu du ZIP : la sauvegarde doit pouvoir écrire dans data/.
+2. Double-clique sur DEMARRER.bat. Garde la fenêtre noire ouverte. Le
+   programme tente d'ouvrir KaraFun ; s'il ne le trouve pas, ouvre KaraFun
+   manuellement. Active la Télécommande dans KaraFun.
+3. La page du bar s'ouvre. Saisis le code actuel de la Télécommande si
+   « KaraFun connecté » n'apparaît pas ; il sera mémorisé sur ce PC.
+4. Crée une table ou un groupe Comptoir, puis teste son QR sur un téléphone.
+   Sans domaine HTTPS préparé, utilise le Wi-Fi du bar pour cet essai : les
+   données mobiles ne peuvent pas joindre une adresse 192.168.x.x.
+5. Pour arrêter proprement, utilise « Arrêter la soirée » sur la page du
+   bar ou double-clique sur ARRETER.bat. Pour reprendre, DEMARRER.bat.
+
+Si Windows demande l'accès réseau pour node.exe, autorise les réseaux
+privés. N'ouvre pas le port du bar (3000) vers Internet. Pour que les clients
+puissent scanner en 4G/5G, suis GUIDE-BAR.md : il faut un domaine HTTPS et un
+tunnel limité au port clients 3001. Utilise ensuite ce domaine pour TOUS les
+QR clients, y compris sur le Wi-Fi, afin de chiffrer leurs accès.
+
+Le dossier data/ est créé au premier démarrage et conserve la soirée.
+Sauvegarde-le en entier après arrêt normal. Ce ZIP de livraison ne contient
+aucun code KaraFun, lien QR personnel ni donnée de la soirée de test.

@@ -1,0 +1,15 @@
+'use strict';
+const assert = require('assert/strict');
+const { analyzeState } = require('../karafun-state');
+const a = {queueId:'a', songId:1, title:'Même titre'};
+const b = {queueId:'b', songId:1, title:'Même titre'};
+assert.equal(analyzeState([a,b], {state:'idle',current:a}).current, null);
+assert.equal(analyzeState([a,b], {state:'loading',current:a}).current, null);
+assert.equal(analyzeState([a,b], {state:'playing',current:b}).current.queueId, 'b');
+const betweenMessages = analyzeState([b], {state:'playing',current:a});
+assert.equal(betweenMessages.current.queueId, 'a');
+assert.deepEqual(betweenMessages.upcoming, [b]);
+assert.equal(analyzeState([b], {state:'paused',current:b}).current.queueId, 'b');
+assert.equal(analyzeState([b], {state:'playing'}).current.queueId, 'b');
+assert.equal(analyzeState([b], {state:'stop'}).current, null);
+console.log('7 tests de détection KaraFun OK');

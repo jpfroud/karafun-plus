@@ -1,0 +1,243 @@
+'use strict';
+
+// Vote pour demander une Battle collective. Aucun code ni commande KaraFun
+// n'est exposé aux participants : le bar lance le titre retenu manuellement.
+const { randomUUID } = require('node:crypto');
+
+const VOTE_DURATION_MS = 2 * 60 * 1000;
+const COOLDOWN_MS = 15 * 60 * 1000;
+
+class BattleVote {
+  constructor({ now = Date.now, voteDurationMs = VOTE_DURATION_MS,
+    cooldownMs = COOLDOWN_MS, onChange = () => {}, saved = null } = {}) {
+    if (!Number.isSafeInteger(voteDurationMs) || voteDurationMs < 1 ||
+        !Number.isSafeInteger(cooldownMs) || cooldownMs < 1) throw new Error('Durées de vote invalides.');
+    this.now = now;
+    this.voteDurationMs = voteDurationMs;
+    this.cooldownMs = saved?.cooldownMs ?? cooldownMs;
+    if (!Number.isSafeInteger(this.cooldownMs) || this.cooldownMs < 1 ||
+        this.cooldownMs > 120 * 60 * 1000) throw new Error('Délai entre Battles invalide.');
+    this.onChange = onChange;
+    if (saved && (![1, 2].includes(saved.version) || (saved.ballot &&
+      (!Array.isArray(saved.ballot.eligiblePersonIds) || !Array.isArray(saved.ballot.votes) ||
+       saved.ballot.votes.some(vote => !Array.isArray(vote) || vote.length !== 2 || typeof vote[1] !== 'string') ||
+       !['voting', 'requested', 'cooldown'].includes(saved.ballot.phase) ||
+       (saved.ballot.mode === 'songs' && (!Array.isArray(saved.ballot.songs) ||
+         saved.ballot.songs.length < 1 || saved.ballot.songs.length > 3 ||
+         saved.ballot.songs.some(song => !Number.isSafeInteger(song?.songId) ||
+           song.songId <= 0 || typeof song.title !== 'string' || !song.title.trim()))))))) {
+      throw new Error('État de vote Battle invalide.');
+    }
+    this.ballot = saved?.ballot ? structuredClone(saved.ballot) : null;
+    this.lastOutcome = saved?.lastOutcome || null;
+  }
+
+  _changed(event) { this.onChange(event, this.viewWithoutTick()); }
+
+  _cooldown(outcome, time) {
+    this.ballot.phase = 'cooldown';
+    this.ballot.outcome = outcome;
+    this.ballot.cooldownUntil = time + this.cooldownMs;
+    this.lastOutcome = { id: this.ballot.id, outcome, at: time,
+      proposalName: this.ballot.proposalName, selectedSong: this.ballot.selectedSong || null };
+    this._changed(outcome);
+  }
+
+  tick() {
+    const time = this.now();
+    if (this.ballot?.phase === 'voting' && time >= this.ballot.closesAt) {
+      // Une reprise après panne peut observer la clôture très en retard. La
+      // pause commence à l'heure prévue, pas au redémarrage du serveur.
+      const closedAt = this.ballot.closesAt;
+      if (this.ballot.mode === 'songs') this._finishSongVote(closedAt, 'expired');
+      else this._cooldown('expired', closedAt);
+    }
+    if (this.ballot?.phase === 'cooldown' && time >= this.ballot.cooldownUntil) {
+      this.ballot = null;
+      this._changed('idle');
+    }
+    return this.viewWithoutTick();
+  }
+
+  nextDeadline() {
+    this.tick();
+    return this.ballot?.phase === 'voting' ? this.ballot.closesAt :
+      this.ballot?.phase === 'cooldown' ? this.ballot.cooldownUntil : null;
+  }
+
+  propose({ personId, personName, eligiblePersonIds, suggestedSong = null,
+    songs, proposerChoice }) {
+    this.tick();
+    if (this.ballot?.phase === 'voting') throw new Error('Un vote Battle est déjà en cours.');
+    if (this.ballot?.phase === 'requested') throw new Error('La demande de Battle attend le bar.');
+    if (this.ballot?.phase === 'cooldown') throw new Error('Attends la fin du délai avant un nouveau vote Battle.');
+    if (!Array.isArray(eligiblePersonIds)) throw new Error('Électorat Battle manquant.');
+    const eligible = [...new Set(eligiblePersonIds.map(String))];
+    const proposer = String(personId || '');
+    const name = String(personName || '').trim().slice(0, 80);
+    if (!proposer || !name || !eligible.includes(proposer) || eligible.length > 5000 ||
+        eligible.some(id => !id)) throw new Error('Proposition Battle non autorisée.');
+    let song = null;
+    if (suggestedSong != null) {
+      const songId = Number(suggestedSong.songId);
+      const title = String(suggestedSong.title || '').trim().slice(0, 100);
+      if (!Number.isSafeInteger(songId) || songId <= 0 || !title) throw new Error('Titre suggéré invalide.');
+      song = { songId, title, artist: String(suggestedSong.artist || '').trim().slice(0, 80) };
+    }
+    let options = null;
+    if (songs !== undefined) {
+      if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {
+        throw new Error('Propose entre un et trois titres pour la Battle.');
+      }
+      options = songs.map(item => {
+        const songId = Number(item?.songId);
+        const title = String(item?.title || '').trim();
+        const artist = String(item?.artist || '').trim();
+        if (!Number.isSafeInteger(songId) || songId <= 0 || !title || title.length > 100 || artist.length > 80) {
+          throw new Error('Titre Battle invalide.');
+        }
+        return { songId, title, artist };
+      });
+      if (new Set(options.map(item => item.songId)).size !== options.length) {
+        throw new Error('Chaque titre Battle doit être différent.');
+      }
+      const picked = Number(proposerChoice ?? options[0].songId);
+      if (!options.some(item => item.songId === picked)) throw new Error('Vote du proposant invalide.');
+      proposerChoice = `song:${picked}`;
+      song = options[0];
+    }
+    const time = this.now();
+    const threshold = Math.floor(eligible.length / 2) + 1;
+    this.ballot = { id: randomUUID(), phase: 'voting', proposalName: name,
+      proposerId: proposer, suggestedSong: song, songs: options, mode: options ? 'songs' : 'legacy',
+      selectedSong: null, eligiblePersonIds: eligible,
+      votes: [[proposer, options ? proposerChoice : 'yes']], threshold, openedAt: time,
+      closesAt: time + this.voteDurationMs, requestedAt: null,
+      cooldownUntil: null, outcome: null, resolvedAt: null };
+    if (threshold === 1) this._requested(time);
+    else this._changed('proposed');
+    return this.view();
+  }
+
+  _requested(time) {
+    if (this.ballot.mode === 'songs') {
+      const scores = this.ballot.songs.map((song, index) => ({ song, index,
+        votes: this.ballot.votes.filter(([, answer]) => answer === `song:${song.songId}`).length }));
+      scores.sort((a, b) => b.votes - a.votes || a.index - b.index);
+      this.ballot.selectedSong = scores[0].song;
+    } else this.ballot.selectedSong = this.ballot.suggestedSong || null;
+    this.ballot.phase = 'requested';
+    this.ballot.requestedAt = time;
+    this.ballot.cooldownUntil = time + this.cooldownMs;
+    this.ballot.outcome = 'approved';
+    this.lastOutcome = { id: this.ballot.id, outcome: 'approved', at: time,
+      proposalName: this.ballot.proposalName, selectedSong: this.ballot.selectedSong };
+    this._changed('requested');
+  }
+
+  _finishSongVote(time, failedOutcome = 'rejected') {
+    const positive = this.ballot.votes.filter(([, answer]) => answer.startsWith('song:')).length;
+    if (positive >= this.ballot.threshold) this._requested(time);
+    else this._cooldown(failedOutcome, time);
+  }
+
+  vote({ personId, choice }) {
+    this.tick();
+    const b = this.ballot;
+    if (!b || b.phase !== 'voting') throw new Error('Aucun vote Battle ouvert.');
+    const id = String(personId || '');
+    if (!b.eligiblePersonIds.includes(id)) throw new Error('Cette personne ne peut pas voter.');
+    if (b.votes.some(([voter]) => voter === id)) throw new Error('Cette personne a déjà voté.');
+    if (b.mode === 'songs') {
+      if (choice === 'none') choice = 'none';
+      else {
+        const chosenId = Number(choice);
+        if (!Number.isSafeInteger(chosenId) || !b.songs.some(song => song.songId === chosenId)) {
+          throw new Error('Vote Battle invalide.');
+        }
+        choice = `song:${chosenId}`;
+      }
+    } else if (choice !== 'yes' && choice !== 'no') throw new Error('Vote Battle invalide.');
+    b.votes.push([id, choice]);
+    const yes = b.votes.filter(([, answer]) => answer === 'yes' || answer.startsWith('song:')).length;
+    const remaining = b.eligiblePersonIds.length - b.votes.length;
+    if (b.mode === 'songs' && b.votes.length === b.eligiblePersonIds.length) {
+      this._finishSongVote(this.now());
+    } else if (b.mode !== 'songs' && yes >= b.threshold) this._requested(this.now());
+    else if (yes + remaining < b.threshold) this._cooldown('rejected', this.now());
+    else this._changed('voted');
+    return this.view();
+  }
+
+  resolve({ outcome }) {
+    this.tick();
+    if (!this.ballot || this.ballot.phase !== 'requested') throw new Error('Aucune Battle à traiter par le bar.');
+    if (outcome !== 'done' && outcome !== 'dismissed') throw new Error('Résolution Battle invalide.');
+    const time = this.now();
+    this.ballot.phase = 'cooldown';
+    this.ballot.outcome = outcome;
+    this.ballot.resolvedAt = time;
+    this.ballot.cooldownUntil = Math.max(this.ballot.cooldownUntil || 0, time + this.cooldownMs);
+    this.lastOutcome = { id: this.ballot.id, outcome, at: time,
+      proposalName: this.ballot.proposalName, selectedSong: this.ballot.selectedSong || null };
+    this._changed(outcome);
+    return this.view();
+  }
+
+  setCooldownMinutes(minutes) {
+    const value = Number(minutes);
+    if (!Number.isInteger(value) || value < 1 || value > 120) {
+      throw new Error('Le délai entre Battles doit être de 1 à 120 minutes.');
+    }
+    if (this.cooldownMs === value * 60 * 1000) return this.view();
+    this.cooldownMs = value * 60 * 1000;
+    if (this.ballot?.phase === 'cooldown') {
+      const base = this.ballot.resolvedAt || this.lastOutcome?.at || this.now();
+      this.ballot.cooldownUntil = base + this.cooldownMs;
+    } else if (this.ballot?.phase === 'requested') {
+      this.ballot.cooldownUntil = this.ballot.requestedAt + this.cooldownMs;
+    }
+    this._changed('settings');
+    return this.view();
+  }
+
+  reset() {
+    this.ballot = null;
+    this.lastOutcome = null;
+    this._changed('reset');
+  }
+
+  viewWithoutTick() {
+    const b = this.ballot;
+    if (!b) return { phase: 'idle', yesVotes: 0, noVotes: 0, eligible: 0,
+      threshold: 0, closesAt: null, cooldownUntil: null, requestedAt: null,
+      cooldownMinutes: this.cooldownMs / 60000,
+      proposalName: null, suggestedSong: null, selectedSong: null, songOptions: [],
+      mode: null, eligiblePersonIds: [],
+      votedPersonIds: [], lastOutcome: this.lastOutcome };
+    const songOptions = (b.songs || []).map(song => ({ ...song,
+      votes: b.votes.filter(([, choice]) => choice === `song:${song.songId}`).length }));
+    return { id: b.id, phase: b.phase, proposalName: b.proposalName,
+      mode: b.mode || 'legacy', suggestedSong: b.suggestedSong,
+      selectedSong: b.selectedSong || null, songOptions,
+      yesVotes: b.votes.filter(([, v]) => v === 'yes' || v.startsWith('song:')).length,
+      noVotes: b.votes.filter(([, v]) => v === 'no' || v === 'none').length,
+      eligible: b.eligiblePersonIds.length, threshold: b.threshold,
+      closesAt: b.closesAt, cooldownUntil: b.cooldownUntil,
+      requestedAt: b.requestedAt, outcome: b.outcome,
+      cooldownMinutes: this.cooldownMs / 60000,
+      eligiblePersonIds: [...b.eligiblePersonIds],
+      votedPersonIds: b.votes.map(([id]) => id), lastOutcome: this.lastOutcome };
+  }
+
+  view() { this.tick(); return this.viewWithoutTick(); }
+
+  serialize() {
+    this.tick();
+    return { version: 2, cooldownMs: this.cooldownMs,
+      ballot: this.ballot ? structuredClone(this.ballot) : null,
+      lastOutcome: this.lastOutcome ? { ...this.lastOutcome } : null };
+  }
+}
+
+module.exports = { BattleVote, VOTE_DURATION_MS, COOLDOWN_MS };

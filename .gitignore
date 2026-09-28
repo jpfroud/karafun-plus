@@ -1,0 +1,25 @@
+# État de soirée, codes d'accès, journaux et captures locales.
+/data/
+/journal/
+/.gstack/
+/RAPPORT-TEST.md
+/A-LIRE-AGENT.md
+
+# Dépendances et binaires reconstruits pour Windows.
+/node/
+/node_modules/
+*.zip
+/dist/
+/release/
+
+# Configuration privée et fichiers temporaires.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.log
+Thumbs.db
+.DS_Store

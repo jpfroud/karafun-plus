@@ -1,0 +1,1271 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f0d1a">
+<meta name="referrer" content="no-referrer">
+<title>Karaoké — ma table</title>
+<link rel="stylesheet" href="/app.css">
+<style>
+  .client .intro { margin: 0 0 14px; }
+  .client h2 { font-size: 20px; margin: 0 0 8px; }
+  .client h3 { font-size: 17px; margin: 0; }
+  .client .card + .card { margin-top: 12px; }
+  .client .table-head, .client .person-head, .client .queue-head { display: flex; align-items: flex-start; gap: 10px; }
+  .client .person-list, .client .song-stack { list-style: none; margin: 0; padding: 0; }
+  .client .person-card { background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-top: 12px; }
+  .client .person-name { font-weight: 800; font-size: 17px; overflow-wrap: anywhere; }
+  .client .person-state { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .client .person-card .btn { margin-top: 10px; }
+  .client .person-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .client .person-actions .btn { width: auto; }
+  .client .person-actions .btn.primary { flex: 1 1 100%; }
+  .client .solo-person .person-actions { margin-top: 8px; }
+  .client .solo-person .person-actions .btn { flex: 1 1 150px; }
+  .client .solo-person .person-head .btn { white-space: nowrap; }
+  .client .invite-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .client .invite-actions .btn { flex: 1; margin: 0; }
+  .client .song-stack { margin-top: 10px; border-top: 1px solid var(--line); }
+  .client .song-stack li { display: flex; gap: 8px; align-items: flex-start; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .client .song-stack li:last-child { border-bottom: 0; }
+  .client .song-stack .song-title { font-weight: 650; overflow-wrap: anywhere; }
+  .client .song-stack .song-detail { font-size: 12px; color: var(--muted); }
+  .client .song-stack .btn { margin: 0; min-height: 32px; padding: 4px 8px; font-size: 12px; }
+  .client .song-stack .song-actions { display: flex; gap: 5px; flex: none; flex-wrap: wrap; justify-content: flex-end; align-items: center; max-width: 62%; }
+  .client .song-stack li .grow { min-width: 0; }
+  .client .song-stack .song-order { white-space: nowrap; }
+  .client .alerts-toggle { margin: 8px 0 0; width: 100%; }
+  .client .alert-help { margin: 5px 0 0; }
+  .client .alert-stack { position: sticky; top: 62px; z-index: 4; max-width: 528px; margin: 0 16px; }
+  .client .alert-stack .notice { margin-top: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.25); }
+  .client .alert-stack .btn { margin-top: 8px; width: 100%; }
+  @media (min-width: 592px) { .client .alert-stack { margin-left: auto; margin-right: auto; } }
+  .client .song-mark { display: inline-block; color: var(--accent); font-size: 12px; font-weight: 700; margin: 10px 0 0; }
+  .client .form-row { display: flex; gap: 8px; align-items: flex-end; }
+  .client .form-row .field-wrap { flex: 1; min-width: 0; }
+  .client .form-row .field { margin-top: 12px; }
+  .client .form-row .btn { flex: none; }
+  .client .queue-summary { margin: 0 0 12px; }
+  .client .qlist .eta { white-space: nowrap; }
+  .client .qlist .song { white-space: normal; overflow: visible; }
+  .client .qlist .grow { min-width: 0; }
+  .client .waiting-list { list-style: none; margin: 8px 0 0; padding: 0; }
+  .client .waiting-list li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .client .waiting-list li:last-child { border: 0; }
+  .client .catalog-target { margin: 8px 0 12px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); color: var(--muted); font-size: 14px; }
+  .client .catalog-filters { display: flex; gap: 7px; overflow-x: auto; padding: 12px 0 4px; scrollbar-width: thin; }
+  .client .catalog-filters button { white-space: nowrap; min-height: 36px; padding: 6px 10px; font-size: 13px; }
+  .client .catalog-filters button.on { border-color: var(--accent); color: var(--text); }
+  .client .catalog-content { min-height: 120px; }
+  .client .catalog-list { list-style: none; padding: 0; margin: 8px 0 0; }
+  .client .catalog-list li { border-bottom: 1px solid var(--line); }
+  .client .catalog-list li:last-child { border: 0; }
+  .client .catalog-list button { display: block; width: 100%; text-align: left; appearance: none; background: transparent; border: 0; color: var(--text); padding: 12px 2px; min-height: 48px; cursor: pointer; }
+  .client .catalog-list button:focus-visible, .client .catalog-list button:hover { color: var(--accent); outline-color: var(--accent); }
+  .client .catalog-list .song-title { font-weight: 700; overflow-wrap: anywhere; }
+  .client .catalog-list .song-artist { font-size: 13px; color: var(--muted); }
+  .client .catalog-tools { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .client .battle-voter { border-top: 1px solid var(--line); padding: 10px 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .client .battle-vote-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .client .battle-options { list-style: none; padding: 0; margin: 12px 0 0; }
+  .client .battle-options li { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .client .battle-options li span { min-width: 0; overflow-wrap: anywhere; }
+  .client .battle-choice { width: 100%; margin-top: 6px; }
+  .client .battle-voter { display: block; }
+  .client .battle-voter .btn { width: 100%; margin-top: 8px; }
+  .client .battle-picked { list-style: none; padding: 0; margin: 8px 0 12px; }
+  .client .battle-picked li { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding: 7px 0; }
+  .client .battle-picked li span { min-width: 0; overflow-wrap: anywhere; }
+  .client .battle-search-results { max-height: 180px; overflow: auto; }
+  .client #battleSearch { flex: 1; min-width: 0; width: auto; }
+  .client #battleSelectedTitle { margin: 12px 0 6px; color: var(--muted); font-size: 14px; }
+  .client .sheet .panel { max-height: 88dvh; }
+  .client .sheet-actions { display: grid; gap: 8px; margin-top: 14px; }
+  .client .sheet-actions .btn { width: 100%; }
+  .client .empty-copy { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+  .client .claim-people { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .client .quick-song-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .client .quick-song-actions .btn { flex: 1 1 150px; }
+  .client .access-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .client .access-actions .btn { flex: 1 1 180px; }
+  .client .catalog-access { margin-bottom: 12px; }
+  @media (max-width: 380px) { .client .form-row { display: block; } .client .form-row .btn { width: 100%; margin-top: 8px; } }
+</style>
+</head>
+<body class="client">
+<header class="top">
+  <div class="brand">🎤 <span id="tableName">Karaoké</span></div>
+  <span id="conn" class="pill" role="status">Connexion…</span>
+</header>
+
+<div class="alert-stack">
+  <div id="presenceBanner" class="notice warn" role="alert" hidden>
+    <b id="presenceBannerText"></b>
+    <button type="button" class="btn primary small" id="presenceBannerGo">Voir les confirmations</button>
+  </div>
+  <div id="activityBanner" class="notice warn" role="alert" hidden>
+    <b id="activityBannerText"></b>
+    <button type="button" class="btn primary small" id="activityBannerGo">Voir la demande</button>
+  </div>
+</div>
+
+<div class="stagebox">
+  <section class="card stage" aria-labelledby="stageLabel">
+    <div id="stageLabel" class="label">Sur scène</div>
+    <div class="stage-row">
+      <span class="avatar lg" aria-hidden="true">🎤</span>
+      <div class="grow">
+        <div class="who" id="stageWho">Chargement…</div>
+        <div class="what" id="stageWhat"></div>
+      </div>
+    </div>
+    <div class="next" id="nextBox" hidden>
+      <span class="label">Ensuite</span>
+      <span class="grow" id="nextTxt"></span>
+      <span class="small muted" id="nextEta"></span>
+    </div>
+  </section>
+</div>
+
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button type="button" id="nav-table" role="tab" aria-controls="tab-table" data-tab="table" class="on" aria-selected="true">Ma table</button>
+  <button type="button" id="nav-queue" role="tab" aria-controls="tab-queue" data-tab="queue" aria-selected="false">La file <span id="qCount"></span></button>
+  <button type="button" id="nav-catalog" role="tab" aria-controls="tab-catalog" data-tab="catalog" aria-selected="false">Catalogue</button>
+</nav>
+
+<main>
+  <div id="fatalBox" class="card notice warn" hidden>
+    <b>Lien de table invalide.</b> Scanne le QR code affiché par le bar pour accéder à ta table.
+  </div>
+
+  <section id="tab-table" role="tabpanel" aria-labelledby="nav-table">
+    <div id="joinBox" class="card" hidden>
+      <h2>Bienvenue à <span id="joinTable">ta table</span> !</h2>
+      <p id="joinIntro" class="muted small intro">Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.</p>
+      <p id="headcountNotice" class="notice warn" hidden>Le bar doit d’abord indiquer combien de personnes sont à cette table.</p>
+      <form id="joinForm">
+        <label class="field" for="firstName" id="joinNameLabel">Prénom de la première personne</label>
+        <input id="firstName" type="text" maxlength="24" autocomplete="given-name" required placeholder="Ex. Marie">
+        <button class="btn primary wide" type="submit" style="margin-top:12px">Commencer</button>
+      </form>
+    </div>
+
+    <div id="tableBox" hidden>
+      <div class="card" id="noSingerBox" hidden>
+        <h2>Pour ajouter une chanson</h2>
+        <p id="noSingerText" class="small muted"></p>
+        <div class="access-actions" id="noSingerActions"></div>
+      </div>
+      <div class="card" id="quickSongBox" hidden>
+        <h2 id="quickSongHeading">Choisir une chanson</h2>
+        <p class="small muted" id="quickSongIntro">Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.</p>
+        <div id="quickSongActions" class="quick-song-actions"></div>
+      </div>
+      <div class="card" id="claimBox" hidden>
+        <h2 id="claimHeading">Déjà inscrit à cette table ?</h2>
+        <p id="claimIntro" class="muted small intro">Ton prénom est déjà inscrit ? Demande au bar ou à ton ancien téléphone un code de reprise à 4 chiffres.</p>
+        <div id="claimPeople" class="claim-people"></div>
+      </div>
+      <div class="card" id="peopleCard">
+        <div class="table-head">
+          <div class="grow">
+            <h2 id="peopleHeading">Les personnes de la table</h2>
+            <p class="muted small intro" id="peopleIntro">Seul le téléphone associé à une personne peut modifier ses chansons.</p>
+          </div>
+          <span id="peopleCount" class="pill"></span>
+        </div>
+        <ul id="peopleList" class="person-list"></ul>
+        <button type="button" class="btn small alerts-toggle" id="alertsToggle">Activer les alertes de présence</button>
+        <p class="tiny muted alert-help" id="alertsHelp">Les duos, votes Battle et présences à confirmer apparaissent ici. Active le son et la vibration si tu veux être prévenu tant que cette page reste ouverte.</p>
+      </div>
+      <div class="card" id="addPersonBox">
+        <h3>Ajouter une personne</h3>
+        <p id="capacityNotice" class="empty-copy" hidden>La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.</p>
+        <form id="addPersonForm" class="form-row">
+          <div class="field-wrap">
+            <label class="field" for="newName">Son prénom (chanteur ou votant)</label>
+            <input id="newName" type="text" maxlength="24" autocomplete="off" required placeholder="Ex. Karim">
+          </div>
+          <button type="submit" class="btn primary">Ajouter</button>
+        </form>
+      </div>
+    </div>
+    <div id="battleBox" class="card" hidden>
+      <h2>Battle : toute la salle chante</h2>
+      <p class="small muted">Le bar lance un titre collectif. Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.</p>
+      <p id="battleText" class="small"></p>
+      <div id="battleVotes"></div>
+    </div>
+  </section>
+
+  <section id="tab-queue" role="tabpanel" aria-labelledby="nav-queue" hidden>
+    <div class="card">
+      <div class="queue-head"><div class="grow"><h2>La file des chansons</h2><p class="muted small queue-summary">Les chansons déjà prêtes passent en premier, suivies des prochains tours prévus par le bar. Une personne sans chanson n’a pas encore de place dans la file.</p></div></div>
+      <ul class="qlist" id="queueList"></ul>
+      <p id="queueEmpty" class="empty-copy" hidden>Aucune chanson en attente pour le moment.</p>
+    </div>
+    <div class="card" id="waitingCard">
+      <div class="label" id="waitingLabel">À notre table, sans chanson</div>
+      <ul class="waiting-list" id="waitingList"></ul>
+      <p id="waitingEmpty" class="empty-copy" hidden>Personne à notre table n’attend sans chanson.</p>
+    </div>
+  </section>
+
+  <section id="tab-catalog" role="tabpanel" aria-labelledby="nav-catalog" hidden>
+    <div class="card">
+      <h2>Choisir une chanson</h2>
+      <div id="catalogAccessBox" class="notice warn catalog-access" hidden>
+        <b>Tu ne peux pas encore ajouter de chanson depuis ce téléphone.</b>
+        <p id="catalogAccessText" class="small"></p>
+        <div id="catalogAccessActions" class="access-actions"></div>
+      </div>
+      <div id="catalogTarget" class="catalog-target">Choisis un titre, puis son chanteur.</div>
+      <label class="field" for="searchInput">Rechercher un titre ou un artiste</label>
+      <input id="searchInput" type="search" autocomplete="off" enterkeyhint="search" placeholder="Ex. Queen">
+      <div class="catalog-filters" aria-label="Explorer le catalogue">
+        <button type="button" class="btn small on" data-catalog="playlist">Playlists</button>
+        <button type="button" class="btn small" data-catalog="styles">Styles</button>
+        <button type="button" class="btn small" data-catalog="top">Top</button>
+        <button type="button" class="btn small" data-catalog="news">Nouveautés</button>
+        <button type="button" class="btn small" data-catalog="featured">À découvrir</button>
+      </div>
+      <div id="catalogContent" class="catalog-content" aria-live="polite"></div>
+    </div>
+  </section>
+</main>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="panel" id="sheetPanel" role="dialog" aria-modal="true"></div>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const segments = location.pathname.split('/').filter(Boolean);
+  let tableId = '', access = '';
+  try { tableId = decodeURIComponent(segments[1] || ''); access = decodeURIComponent(segments[2] || ''); }
+  catch (_) { /* Le lien est signalé ci-dessous. */ }
+  const tokenKey = `kfTok:${tableId}:${access}`;
+  const tokensKey = `kfPeople:${tableId}:${access}`;
+  const alertsKey = `kfAlerts:${tableId}:${access}`;
+  let legacyToken = '';
+  let personTokens = {};
+  try {
+    legacyToken = localStorage.getItem(tokenKey) || '';
+    const saved = JSON.parse(localStorage.getItem(tokensKey) || '{}');
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) personTokens = saved;
+  } catch (_) { /* Stockage désactivé. */ }
+  let alertsEnabled = false;
+  try { alertsEnabled = localStorage.getItem(alertsKey) === '1'; } catch (_) { /* Stockage désactivé. */ }
+  let lastPresencePending = new Set();
+  let lastActivityKeys = new Set();
+  let currentActivity = null;
+  let audioContext = null;
+  let state = null;
+  let battleVotesSignature = '';
+  let stateRequest = 0;
+  let invalidAccess = !tableId || !access;
+  let activeTab = 'table';
+  let targetPersonId = '';
+  let duetMode = false;
+  let catalogType = 'playlist';
+  let catalogMode = 'categories';
+  let categories = [];
+  let songs = [];
+  let totalSongs = 0;
+  let currentCategory = null;
+  let catalogRequest = 0;
+  let searchTimer = null;
+  let lastFocus = null;
+  let pendingSong = null;
+
+  const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const list = value => Array.isArray(value) ? value : [];
+  const fullSong = song => `${song.title || 'Sans titre'}${song.artist ? ' — ' + song.artist : ''}`;
+  const position = n => n === 1 ? '1re' : `${n}e`;
+  const personById = id => list(state && state.tablePeople).find(p => String(p.id) === String(id));
+  const ownIds = () => state?.table?.individual
+    ? managedIds()
+    : new Set(list(state && state.tablePeople).map(p => String(p.id)));
+  const managedIds = () => new Set(list(state?.managedIds).map(String));
+  const manages = id => managedIds().has(String(id));
+  const managedPeople = () => list(state?.tablePeople).filter(person => person.active !== false && manages(person.id));
+
+  function eta(value) {
+    if (value == null || value === '') return '';
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function toast(message, bad = false) {
+    const node = $('toast');
+    node.textContent = message;
+    node.className = 'toast' + (bad ? ' bad' : '');
+    node.hidden = false;
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => { node.hidden = true; }, 4000);
+  }
+
+  function savePersonToken(id, value) {
+    if (!id || !value) return;
+    personTokens[String(id)] = value;
+    try { localStorage.setItem(tokensKey, JSON.stringify(personTokens)); }
+    catch (_) { /* La page fonctionne tant que cet onglet reste ouvert. */ }
+  }
+
+  function saveAlertPreference(value) {
+    alertsEnabled = !!value;
+    try { localStorage.setItem(alertsKey, alertsEnabled ? '1' : '0'); }
+    catch (_) { /* Les alertes restent actives pendant cette visite. */ }
+    renderAlertPreference();
+  }
+
+  function renderAlertPreference() {
+    $('alertsToggle').textContent = alertsEnabled ? 'Désactiver les alertes sonores' : 'Activer les alertes sonores';
+    $('alertsToggle').setAttribute('aria-pressed', String(alertsEnabled));
+    $('alertsHelp').textContent = alertsEnabled
+      ? 'Le son et la vibration peuvent fonctionner tant que cette page reste ouverte. Les notifications système dépendent du navigateur et d’une connexion sécurisée.'
+      : 'Les demandes restent visibles sur cette page. Active le son et la vibration pour être averti tant qu’elle reste ouverte.';
+  }
+
+  function soundAlert() {
+    try {
+      const Audio = window.AudioContext || window.webkitAudioContext;
+      if (!Audio) return;
+      audioContext ||= new Audio();
+      if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+      const start = audioContext.currentTime;
+      for (const [delay, frequency] of [[0, 660], [0.18, 880]]) {
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0.001, start + delay);
+        gain.gain.exponentialRampToValueAtTime(0.08, start + delay + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + delay + 0.16);
+        oscillator.connect(gain).connect(audioContext.destination);
+        oscillator.start(start + delay);
+        oscillator.stop(start + delay + 0.18);
+      }
+    } catch (_) { /* L'alerte visuelle reste disponible. */ }
+  }
+
+  document.addEventListener('pointerdown', () => {
+    if (!alertsEnabled) return;
+    try {
+      const Audio = window.AudioContext || window.webkitAudioContext;
+      audioContext ||= Audio ? new Audio() : null;
+      audioContext?.resume?.().catch(() => {});
+    } catch (_) { /* L'alerte visuelle reste disponible. */ }
+  }, { once: true });
+
+  function announcePresence(people) {
+    if (!people.length || !alertsEnabled) return;
+    soundAlert();
+    try { navigator.vibrate?.([160, 80, 160]); } catch (_) { /* Vibration facultative. */ }
+    if (document.hidden && window.Notification && Notification.permission === 'granted') {
+      try {
+        const names = people.map(person => person.name).join(', ');
+        const notice = new Notification('Karaoké : présence à confirmer', {
+          body: `${names} : ouvre la page pour confirmer avant le passage.`, tag: `presence-${tableId}`,
+        });
+        notice.onclick = () => { window.focus(); setTab('table'); notice.close(); };
+      } catch (_) { /* La bannière dans la page reste visible. */ }
+    }
+  }
+
+  function renderPresenceBanner(people) {
+    const pending = people.filter(person => person.needConfirm);
+    const ids = new Set(pending.map(person => String(person.id)));
+    const fresh = pending.filter(person => !lastPresencePending.has(String(person.id)));
+    lastPresencePending = ids;
+    $('presenceBanner').hidden = pending.length === 0;
+    if (pending.length) {
+      const names = pending.map(person => person.name).join(', ');
+      $('presenceBannerText').textContent = `Présence à confirmer pour ${names}. Sans confirmation, la chanson peut être reportée.`;
+      announcePresence(fresh);
+    }
+  }
+
+  function announceActivity(activity) {
+    if (!alertsEnabled) return;
+    soundAlert();
+    try { navigator.vibrate?.([160, 80, 160]); } catch (_) { /* Vibration facultative. */ }
+    if (document.hidden && window.Notification && Notification.permission === 'granted') {
+      try {
+        const notice = new Notification('Karaoké : nouvelle demande', {
+          body: activity.text, tag: `demande-${tableId}-${activity.key}`,
+        });
+        notice.onclick = () => { window.focus(); setTab('table'); notice.close(); };
+      } catch (_) { /* La bannière dans la page reste visible. */ }
+    }
+  }
+
+  function renderActivityBanner() {
+    const people = managedPeople();
+    const invitations = people.flatMap(person => {
+      const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
+      return invites.map(invite => ({ key: `duo:${person.id}:${invite.entryId || invite.song?.songId || ''}`,
+        text: `${invite.fromName || 'Quelqu’un'} propose un duo à ${person.name}. Réponds depuis « Ma table ».`,
+        target: 'duo', personId: person.id }));
+    });
+    const battle = state?.battle || {};
+    const eligible = new Set(list(battle.eligiblePersonIds).map(String));
+    const voted = new Set(list(battle.votedPersonIds).map(String));
+    const voters = people.filter(person => eligible.has(String(person.id)) && !voted.has(String(person.id)));
+    const activities = [...invitations];
+    if (battle.phase === 'voting' && voters.length) activities.push({ key: `battle-vote:${battle.id}`,
+      text: `Un vote Battle est ouvert. ${voters.map(person => person.name).join(', ')} peut voter avant la fin du délai.`, target: 'battle' });
+    const fresh = activities.find(activity => !lastActivityKeys.has(activity.key));
+    lastActivityKeys = new Set(activities.map(activity => activity.key));
+    currentActivity = fresh || activities[0] || null;
+    $('activityBanner').hidden = !currentActivity;
+    $('activityBannerText').textContent = !currentActivity ? '' : invitations.length > 1 && currentActivity.target === 'duo'
+      ? `${invitations.length} invitations de duo attendent une réponse. ${currentActivity.text}` : currentActivity.text;
+    $('activityBannerGo').textContent = currentActivity?.target === 'duo' ? 'Répondre au duo' : 'Voir la Battle';
+    const pageTitle = state?.table?.individual ? 'Karaoké — mes chansons' : 'Karaoké — ma table';
+    document.title = activities.length ? `(${activities.length}) ${pageTitle}` : pageTitle;
+    if (fresh) announceActivity(fresh);
+  }
+
+  async function request(path, options = {}) {
+    const response = await fetch(path, { cache: 'no-store', ...options });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.error || (response.status === 403 ? 'Lien de table invalide.' : 'Une erreur est survenue.'));
+      error.status = response.status;
+      error.code = data.code;
+      throw error;
+    }
+    return data;
+  }
+
+  async function post(path, body) {
+    const singerToken = body?.personId && path !== '/api/table/person/claim' ? personTokens[String(body.personId)] : null;
+    return request(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table: tableId, access, ...body, ...(singerToken ? { token: singerToken } : {}) }),
+    });
+  }
+
+  async function refresh() {
+    if (invalidAccess) return showInvalidLink();
+    const number = ++stateRequest;
+    const params = new URLSearchParams({ table: tableId, access });
+    const credentials = Object.values(personTokens).filter(value => typeof value === 'string');
+    if (legacyToken && !credentials.includes(legacyToken)) credentials.push(legacyToken);
+    try {
+      const data = await request(`/api/state?${params}`, {
+        headers: { 'x-person-tokens': JSON.stringify(credentials) },
+      });
+      if (number !== stateRequest) return;
+      state = data;
+      if (legacyToken) {
+        if (data.me && !personTokens[String(data.me.id)]) savePersonToken(data.me.id, legacyToken);
+        legacyToken = '';
+        try { localStorage.removeItem(tokenKey); } catch (_) { /* Aucun stockage à nettoyer. */ }
+      }
+      const granted = new Set(list(data.managedIds).map(String));
+      let changed = false;
+      for (const id of Object.keys(personTokens)) if (!granted.has(id)) { delete personTokens[id]; changed = true; }
+      if (changed) try { localStorage.setItem(tokensKey, JSON.stringify(personTokens)); } catch (_) {}
+      if (targetPersonId && !managedPeople().some(person => String(person.id) === targetPersonId)) {
+        targetPersonId = '';
+        duetMode = false;
+      }
+      render();
+      $('conn').textContent = 'À jour';
+      $('conn').className = 'pill ok';
+    } catch (error) {
+      if (number !== stateRequest) return;
+      if (error.status === 403) { invalidAccess = true; return showInvalidLink(); }
+      $('conn').textContent = 'Hors ligne';
+      $('conn').className = 'pill bad';
+    }
+  }
+
+  function showInvalidLink() {
+    $('fatalBox').hidden = false;
+    $('tab-table').hidden = true;
+    $('tab-queue').hidden = true;
+    $('tab-catalog').hidden = true;
+    document.querySelector('.tabs').hidden = true;
+    $('stageWho').textContent = 'Lien invalide';
+    $('stageWhat').textContent = '';
+    $('nextBox').hidden = true;
+    $('conn').textContent = 'Accès refusé';
+    $('conn').className = 'pill bad';
+  }
+
+  function render() {
+    const people = list(state.tablePeople);
+    const queue = list(state.queue);
+    const waiting = list(state.waiting);
+    const individual = !!state.table?.individual;
+    const owned = managedPeople();
+    const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
+    const count = individual ? Number(state.table?.count ?? people.length) : people.length;
+    const full = Number.isInteger(state.table?.headcount) && count >= state.table.headcount;
+    const tableName = state.table && state.table.name ? state.table.name : `Table ${tableId}`;
+    $('tableName').textContent = tableName;
+    $('joinTable').textContent = tableName;
+    $('nav-table').textContent = individual ? 'Mes titres' : 'Ma table';
+    $('quickSongBox').classList.toggle('solo-song-cta', individual);
+    $('quickSongHeading').hidden = individual;
+    $('quickSongIntro').hidden = individual;
+    $('peopleIntro').hidden = individual;
+    $('peopleCount').hidden = individual;
+    renderStage(queue);
+    $('joinIntro').textContent = individual
+      ? 'Inscris-toi avec ton prénom. Déjà inscrit mais tu as changé de téléphone ? Demande au bar un code de reprise avant de créer un autre profil. Au Comptoir, chaque téléphone gère uniquement ses propres chansons.'
+      : 'Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.';
+    $('joinNameLabel').textContent = individual ? 'Ton prénom' : 'Prénom de la première personne';
+    $('quickSongIntro').textContent = individual
+      ? 'Ajoute les chansons que tu veux chanter. Les autres personnes du Comptoir gèrent les leurs.'
+      : 'Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.';
+    $('peopleHeading').textContent = individual ? 'Mes chansons' : 'Les personnes de la table';
+    $('peopleIntro').textContent = individual
+      ? 'Tes chansons sont visibles ici. Les autres personnes du Comptoir ne peuvent pas les modifier.'
+      : 'Seul le téléphone associé à une personne peut modifier ses chansons.';
+    $('peopleCard').hidden = individual && owned.length === 0;
+    $('waitingLabel').textContent = individual ? 'Mes chansons à choisir' : 'À notre table, sans chanson';
+    $('joinBox').hidden = individual ? owned.length > 0 || full : people.length > 0;
+    $('headcountNotice').hidden = !!state.table?.headcount;
+    $('joinForm').querySelector('button[type=submit]').disabled = !state.table?.headcount || full;
+    $('tableBox').hidden = individual ? owned.length === 0 && !full && recoveryPeople.length === 0 : people.length === 0;
+    const others = individual ? [] : people.filter(person => person.active && !manages(person.id));
+    $('claimBox').hidden = individual ? recoveryPeople.length === 0 : others.length === 0;
+    $('claimHeading').textContent = individual ? 'Récupérer mes chansons' : 'Déjà inscrit à cette table ?';
+    $('claimIntro').textContent = individual
+      ? 'Si tu étais déjà inscrit au Comptoir, choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.'
+      : 'Ton prénom est déjà inscrit ? Demande au bar ou à ton ancien téléphone un code de reprise à 4 chiffres.';
+    $('claimPeople').innerHTML = individual
+      ? recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">Je suis ${esc(person.name)} · reprendre mes chansons</button>`).join('')
+      : others.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">Je suis ${esc(person.name)}</button>`).join('');
+    $('peopleCount').textContent = individual ? 'Mon profil'
+      : `${state.table?.activeCount ?? people.length} présente${(state.table?.activeCount ?? people.length) > 1 ? 's' : ''} · ${people.length} inscrite${people.length > 1 ? 's' : ''}`;
+    $('addPersonBox').hidden = individual || full;
+    $('addPersonForm').hidden = individual || full;
+    $('capacityNotice').hidden = individual || !full;
+    renderSongAccess(people, others, full);
+    renderPeople(individual ? owned : people, queue);
+    renderPresenceBanner(owned);
+    renderBattle(individual ? owned : people);
+    renderActivityBanner();
+    renderQueue(queue, waiting);
+    updateTarget();
+    if (state.catalogAvailable === false && activeTab === 'catalog' && catalogMode === 'categories' && !categories.length) {
+      $('catalogContent').innerHTML = '<p class="empty-copy">Le catalogue est momentanément indisponible. Réessaie dans un instant.</p>';
+    }
+  }
+
+  function renderSongAccess(people, others, full) {
+    const owned = managedPeople();
+    const individual = !!state.table?.individual;
+    const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
+    const canRegister = !full && (!individual || !owned.length) &&
+      Number.isInteger(state.table?.headcount) && state.table.headcount > 0;
+    if (individual) {
+      const explanation = recoveryPeople.length
+        ? canRegister
+          ? 'Déjà inscrit ? Reprends tes chansons avec le code à 4 chiffres du bar. Sinon, inscris-toi avec ton prénom.'
+          : 'Le Comptoir est complet pour les nouvelles inscriptions. Si tu étais déjà inscrit, reprends tes chansons avec le code à 4 chiffres du bar.'
+        : canRegister
+          ? 'Inscris-toi avec ton prénom pour choisir tes chansons. Si tu avais déjà un profil, demande plutôt un code de reprise au bar. Chaque personne du Comptoir gère seulement les siennes.'
+          : 'Le Comptoir est complet. Demande au bar d’augmenter le nombre de places.';
+      const actions = `${recoveryPeople.length ? '<button type="button" class="btn" data-access-go="claim">Récupérer mes chansons</button>' : ''}${canRegister
+        ? '<button type="button" class="btn primary" data-access-go="register">M’inscrire au Comptoir</button>' : ''}`;
+      $('noSingerBox').hidden = owned.length > 0 || !full;
+      $('noSingerText').textContent = explanation;
+      $('noSingerActions').innerHTML = actions;
+      $('catalogAccessBox').hidden = owned.length > 0;
+      $('catalogAccessText').textContent = explanation;
+      $('catalogAccessActions').innerHTML = actions;
+      $('quickSongBox').hidden = owned.length === 0;
+      $('quickSongActions').innerHTML = owned.map(person => `<button type="button" class="btn primary" data-quick-song="${esc(person.id)}">Choisir une chanson</button>`).join('');
+      return;
+    }
+    const actions = `${others.length ? '<button type="button" class="btn primary" data-access-go="claim">Reprendre un chanteur inscrit</button>' : ''}${canRegister ? '<button type="button" class="btn primary" data-access-go="register">Inscrire une personne</button>' : ''}`;
+    const explanation = others.length
+      ? 'Choisis une personne déjà inscrite et demande un code à 4 chiffres à son téléphone ou au bar. Même si son téléphone est éteint, le bar peut fournir un code.'
+      : canRegister ? 'Inscris-toi, ou inscris quelqu’un sans téléphone, puis choisis ses chansons.'
+        : 'Demande au bar de vérifier les personnes inscrites et le nombre de places de cette table.';
+    $('noSingerBox').hidden = true;
+    $('noSingerText').textContent = explanation;
+    $('noSingerActions').innerHTML = actions;
+    $('catalogAccessBox').hidden = owned.length > 0;
+    $('catalogAccessText').textContent = explanation;
+    $('catalogAccessActions').innerHTML = actions;
+    $('quickSongBox').hidden = true;
+    $('quickSongActions').innerHTML = '';
+  }
+
+  function continuePendingSong() {
+    if (!pendingSong || !managedPeople().length) return;
+    const song = pendingSong;
+    pendingSong = null;
+    chooseSong(song);
+  }
+
+  function goToAccess(kind) {
+    if (state?.table?.individual && kind === 'claim' &&
+      (managedPeople().length || !list(state.recoveryPeople).length)) return;
+    closeSheet({ keepPending: true });
+    setTab('table');
+    const target = kind === 'claim' ? $('claimBox')
+      : state?.table?.individual ? $('joinBox')
+        : list(state?.tablePeople).length ? $('addPersonBox') : $('joinBox');
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.querySelector(kind === 'claim' ? '[data-claim-person]' : 'input')?.focus({ preventScroll: true });
+  }
+
+  document.addEventListener('click', event => {
+    const accessButton = event.target.closest('[data-access-go]');
+    if (accessButton) { goToAccess(accessButton.dataset.accessGo); return; }
+    const songButton = event.target.closest('[data-quick-song]');
+    if (songButton) openCatalog(songButton.dataset.quickSong);
+  });
+
+  function renderStage(queue) {
+    const stage = state.stage;
+    $('stageWho').textContent = stage ? (stage.singer || 'Chanteur') : 'Personne sur scène';
+    $('stageWhat').textContent = stage ? fullSong(stage) : 'La prochaine chanson arrive bientôt.';
+    const next = state.next || queue[0];
+    $('nextBox').hidden = !next;
+    if (next) {
+      $('nextTxt').textContent = `${next.singer || 'Chanteur'} · ${next.title || 'Chanson'}`;
+      $('nextEta').textContent = eta(next.eta || state.nextEta);
+    }
+  }
+
+  function renderPeople(people, queue) {
+    $('peopleList').innerHTML = people.map(person => {
+      const canEdit = person.active !== false && manages(person.id);
+      const ready = list(person.songs);
+      const sent = list(person.inKaraFun).length ? list(person.inKaraFun)
+        : (state.me && String(state.me.id) === String(person.id) ? list(state.me.inKaraFun) : []);
+      const turn = queue.find(item => list(item.ids).some(id => String(id) === String(person.id)));
+      const status = person.active === false ? 'Parti · historique conservé' : (person.onStage || sent.some(song => song.stage)) ? 'Sur scène' : turn ? `${position(turn.pos)} dans la file${eta(turn.eta) ? ' · vers ' + eta(turn.eta) : ''}`
+        : sent.length ? 'Chanson prête dans la file' : ready.length ? 'Chansons choisies' : 'Pas encore de chanson';
+      const sentMarkup = sent.length ? `<div class="song-mark">DÉJÀ PRÊTE DANS LA FILE</div><ul class="song-stack">${sent.map(song =>
+        `<li><div class="grow"><div class="song-title">${esc(song.title || 'Chanson')}</div><div class="song-detail">${esc(song.artist || '')}${song.stage ? ' · sur scène' : ' · bientôt sur scène'}</div></div></li>`).join('')}</ul>` : '';
+      const readyMarkup = ready.length ? `<div class="song-mark">${state?.table?.individual ? 'MES CHANSONS' : 'SA LISTE'} · ${ready.length} CHANSON${ready.length > 1 ? 'S' : ''}</div><ul class="song-stack">${ready.map((song, index) => {
+        const duet = song.duet;
+        const duetDetail = duet ? ` · duo avec ${esc(duet.partnerName || 'un autre chanteur')}${duet.state === 'pending' ? ' (en attente de sa réponse)' : ''}` : '';
+        return `<li><div class="grow"><div class="song-title">${esc(song.title || 'Chanson')}</div><div class="song-detail">${esc(song.artist || '')}${index === 0 ? ' · prochain titre' : ' · à suivre'}${duetDetail}</div></div>${canEdit && song.entryId != null ? `<div class="song-actions">${ready.length > 1 ? `<button type="button" class="btn small ghost song-order" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="Changer l’ordre de ${esc(song.title || 'cette chanson')}">Ordre</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="Annuler le duo sur ${esc(song.title || 'cette chanson')}">Annuler duo</button>` : ''}<button type="button" class="btn small ghost danger" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="Retirer ${esc(song.title || 'cette chanson')}">Retirer</button></div>` : ''}</li>`;
+      }).join('')}</ul>`
+        : canEdit ? '<p class="empty-copy">Aucune chanson préparée.</p>' : '';
+      const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
+      const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(invite.fromName || 'Un chanteur')} propose un duo</b> sur « ${esc(invite.song?.title || 'une chanson')} »${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}.
+        ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">Accepter</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">Refuser</button></div>` : '<div class="small muted">Son téléphone doit répondre.</div>'}</div>`).join('');
+      const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(person.name)} chantera aussi en duo avec ${esc(duo.fromName)} sur « ${esc(duo.song?.title || 'une chanson')} ». Son propre tour reste disponible.</div>`).join('');
+      const presenceMarkup = person.needConfirm && canEdit ? `<div class="notice warn"><b>Confirme la présence de ${esc(person.name)} pour son prochain passage.</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">Je suis là</button></div>`
+        : state.rules?.requirePresence && person.confirmed ? '<div class="notice ok small">Présence confirmée pour ce passage.</div>' : '';
+      return `<li class="person-card ${state?.table?.individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}${state?.table?.individual ? '' : ` · ${canEdit ? 'géré sur ce téléphone' : 'autre téléphone'}`}</div></div>${canEdit ? `<button type="button" class="btn small ghost" data-rename-person="${esc(person.id)}" aria-label="${state?.table?.individual ? 'Corriger mon nom' : `Renommer ${esc(person.name)}`}">${state?.table?.individual ? 'Corriger mon nom' : 'Renommer'}</button>` : ''}</div>${inviteMarkup}${guestMarkup}${presenceMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${state?.table?.individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}">Ajouter une chanson</button>`}<button type="button" class="btn" data-duet-song="${esc(person.id)}">${state?.table?.individual ? 'Chanter en duo' : 'Ajouter un duo'}</button><button type="button" class="btn small ghost" data-share-person="${esc(person.id)}">${state?.table?.individual ? 'Changer de téléphone' : 'Transférer la gestion'}</button></div>` : ''}</li>`;
+    }).join('');
+  }
+
+  function renderQueue(queue, waiting) {
+    const ids = ownIds();
+    $('waitingCard').hidden = !!state?.table?.individual;
+    $('qCount').textContent = queue.length ? `(${queue.length})` : '';
+    $('queueEmpty').hidden = queue.length > 0;
+    $('queueList').innerHTML = queue.map((item, index) => {
+      const mine = list(item.ids).some(id => ids.has(String(id)));
+      const name = item.singer || 'Chanteur';
+      const when = eta(item.eta);
+      const source = item.waitingPresence ? 'Présence à confirmer' : item.source === 'karafun' ? 'Prête dans KaraFun' : item.source === 'envoi' ? 'Ajout en cours' : item.future ? 'Titre suivant, après son premier passage' : 'Passage prévu';
+      return `<li class="${mine ? 'me' : ''}"><span class="num">${esc(item.pos || index + 1)}</span><div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${state?.table?.individual ? 'ta chanson' : 'ta table'}</span>` : ''}</div><div class="song">${esc(fullSong(item))} · ${source}</div></div><span class="eta">${when ? esc(when) : '—'}</span></li>`;
+    }).join('');
+    const localWaiting = waiting.filter(person => ids.has(String(person.id)));
+    $('waitingEmpty').hidden = localWaiting.length > 0;
+    $('waitingEmpty').textContent = state?.table?.individual
+      ? 'Tu n’as pas de chanson à choisir pour le moment.'
+      : 'Personne à notre table n’attend sans chanson.';
+    $('waitingList').innerHTML = localWaiting.map(person => `<li>${esc(person.name || 'Chanteur')}</li>`).join('');
+  }
+
+  function renderBattle(people) {
+    const battle = state.battle || { phase: 'idle' };
+    $('battleBox').hidden = false;
+    const mins = value => Math.max(0, Math.ceil((Number(value || 0) - Date.now()) / 60000));
+    const songVote = battle.mode === 'songs';
+    const selectedTitle = battle.selectedSong ? fullSong(battle.selectedSong) : '';
+    $('battleText').textContent = battle.phase === 'voting'
+      ? songVote
+        ? `Choisis un titre ou « Pas de Battle ». ${battle.yesVotes} pour une Battle, ${battle.noVotes} contre ; il faut ${battle.threshold} voix pour une Battle. Encore ${mins(battle.closesAt)} min.`
+        : `Vote ouvert · ${battle.yesVotes} oui, ${battle.noVotes} non. Il faut ${battle.threshold} oui ; encore ${mins(battle.closesAt)} min.`
+      : battle.phase === 'requested' ? `Majorité obtenue ! ${selectedTitle ? `${selectedTitle}. ` : ''}Le bar prépare la Battle et affichera son QR code.`
+      : battle.phase === 'cooldown' ? `Un autre vote sera possible dans ${mins(battle.cooldownUntil)} min.`
+      : 'Envie de chanter tous ensemble ? Propose jusqu’à trois titres. Chaque personne inscrite vote pour un titre ou contre la Battle.';
+    const voted = new Set(battle.votedPersonIds || []);
+    const eligible = new Set(battle.eligiblePersonIds || []);
+    const owned = managedPeople();
+    const eligibleOwned = owned.filter(person => eligible.has(person.id));
+    const remaining = eligibleOwned.filter(person => !voted.has(person.id));
+    const options = list(battle.songOptions);
+    // L'état arrive toutes les quelques secondes. Ne pas recréer un sélecteur
+    // pendant qu'une personne choisit son titre : son vote serait effacé.
+    const signature = JSON.stringify([battle.phase, battle.mode, owned.map(p => p.id),
+      remaining.map(p => p.id), options.map(song => song.songId)]);
+    if (signature === battleVotesSignature) {
+      [...$('battleVotes').querySelectorAll('.battle-options li b')].forEach((count, index) => {
+        count.textContent = `${options[index]?.votes || 0} voix`;
+      });
+      return;
+    }
+    battleVotesSignature = signature;
+    const choices = songVote ? `<ul class="battle-options">${options.map(song => `<li><span>${esc(fullSong(song))}</span><b>${song.votes || 0} voix</b></li>`).join('')}</ul>` : '';
+    $('battleVotes').innerHTML = battle.phase === 'idle'
+      ? owned.length ? `<button type="button" class="btn primary wide" data-battle-propose="${owned.length === 1 ? esc(owned[0].id) : ''}">Proposer une Battle</button>` : ''
+      : battle.phase === 'voting' ? `${choices}${remaining.map(person => songVote
+        ? `<div class="battle-voter"><label class="field" for="battleChoice-${esc(person.id)}">Vote de ${esc(person.name)}</label><select class="battle-choice" id="battleChoice-${esc(person.id)}"><option value="">Choisir…</option>${options.map(song => `<option value="${song.songId}">${esc(fullSong(song))}</option>`).join('')}<option value="none">Pas de Battle</option></select><button type="button" class="btn small primary" data-battle-vote="${esc(person.id)}">Valider mon vote</button></div>`
+        : `<div class="battle-voter"><b>${esc(person.name)}</b><div class="battle-vote-actions"><button type="button" class="btn small primary" data-battle-vote="${esc(person.id)}" data-choice="yes">Oui</button><button type="button" class="btn small" data-battle-vote="${esc(person.id)}" data-choice="no">Non</button></div></div>`).join('')}${eligibleOwned.length > remaining.length ? `<p class="tiny muted">${eligibleOwned.length - remaining.length} vote${eligibleOwned.length - remaining.length > 1 ? 's' : ''} déjà enregistré${eligibleOwned.length - remaining.length > 1 ? 's' : ''} sur ce téléphone.</p>` : ''}`
+        : battle.phase === 'requested' ? choices : '';
+  }
+
+  async function perform(button, work) {
+    if (button) button.disabled = true;
+    try { await work(); }
+    catch (error) {
+      if (error.status === 403 && error.code === 'TABLE_ACCESS') { invalidAccess = true; showInvalidLink(); }
+      else toast(error.message, true);
+    } finally { if (button) button.disabled = false; }
+  }
+
+  $('joinForm').addEventListener('submit', event => {
+    event.preventDefault();
+    if (state?.table?.individual && managedPeople().length) return toast('Ce téléphone gère déjà une personne au Comptoir.', true);
+    const name = $('firstName').value.trim();
+    if (!name) return toast('Indique un prénom.', true);
+    const button = $('joinForm').querySelector('button[type=submit]');
+    perform(button, async () => {
+      const result = await post('/api/join', { name });
+      if (result.token) savePersonToken(result.id, result.token);
+      $('firstName').value = '';
+      await refresh();
+      toast(`${name} est inscrit.`);
+      continuePendingSong();
+    });
+  });
+
+  $('addPersonForm').addEventListener('submit', event => {
+    event.preventDefault();
+    if (state?.table?.individual) return toast('Au Comptoir, inscris-toi depuis ton propre téléphone.', true);
+    const name = $('newName').value.trim();
+    if (!name) return toast('Indique un prénom.', true);
+    const button = $('addPersonForm').querySelector('button[type=submit]');
+    perform(button, async () => {
+      const result = await post('/api/table/person', { name });
+      if (result.token) savePersonToken(result.id, result.token);
+      $('newName').value = '';
+      await refresh();
+      toast(`${name} est ajouté à la table.`);
+      continuePendingSong();
+    });
+  });
+
+  $('claimPeople').addEventListener('click', event => {
+    const button = event.target.closest('[data-claim-person]');
+    if (!button) return;
+    const individual = !!state?.table?.individual;
+    if (individual && managedPeople().length) return;
+    const person = individual
+      ? list(state.recoveryPeople).find(candidate => String(candidate.id) === String(button.dataset.claimPerson))
+      : personById(button.dataset.claimPerson);
+    if (!person) return;
+    openSheet(`<div class="row"><h3 class="grow">${individual ? 'Récupérer mes chansons' : `Gérer les chansons de ${esc(person.name)}`}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+      <p class="small muted">${individual ? `Tu es ${esc(person.name)} ? Demande le code au bar ou à ton ancien téléphone.` : 'Demande le code à son téléphone actuel ou au bar, même si l’ancien téléphone est éteint.'} Le code dure 10 minutes.</p>
+      <form id="claimForm"><label class="field" for="claimCode">Code de reprise à 4 chiffres</label><input id="claimCode" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" required>
+      <div class="sheet-actions"><button type="submit" id="claimSubmit" class="btn primary">Prendre en charge</button></div></form>`);
+    $('claimForm').addEventListener('submit', e => {
+      e.preventDefault();
+      perform($('claimSubmit'), async () => {
+        const result = await post('/api/table/person/claim', { personId: person.id, code: $('claimCode').value });
+        savePersonToken(result.id, result.token);
+        closeSheet({ keepPending: true }); await refresh(); toast(`${person.name} est maintenant géré sur ce téléphone.`);
+        continuePendingSong();
+      });
+    });
+  });
+
+  $('peopleList').addEventListener('click', event => {
+    const share = event.target.closest('[data-share-person]');
+    if (share) {
+      perform(share, async () => {
+        const person = personById(share.dataset.sharePerson);
+        const { code } = await post('/api/table/person/share', { personId: share.dataset.sharePerson });
+        openSheet(`<div class="row"><h3 class="grow">Transférer ${esc(person?.name || 'cette personne')}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+          <p class="small muted">Communique ce code uniquement à la personne qui doit gérer ses chansons. Dès qu’elle l’utilise, ce téléphone perd la gestion de cette personne${state?.table?.individual ? '.' : ' mais garde ses autres chanteurs.'} Le code vaut 10 minutes et une seule utilisation.</p><p class="share-code">${esc(code)}</p>`);
+      });
+      return;
+    }
+    const confirmButton = event.target.closest('[data-confirm-person]');
+    if (confirmButton) {
+      perform(confirmButton, async () => {
+        await post('/api/table/confirm', { personId: confirmButton.dataset.confirmPerson });
+        await refresh();
+        toast('Présence confirmée.');
+      });
+      return;
+    }
+    const add = event.target.closest('[data-add-song]');
+    if (add) { openCatalog(add.dataset.addSong, false); return; }
+    const duetSong = event.target.closest('[data-duet-song]');
+    if (duetSong) { openCatalog(duetSong.dataset.duetSong, true); return; }
+    const rename = event.target.closest('[data-rename-person]');
+    if (rename) { openRename(rename.dataset.renamePerson); return; }
+    const reorder = event.target.closest('[data-reorder-song]');
+    if (reorder) { openReorder(reorder.dataset.personId, reorder.dataset.reorderSong); return; }
+    const answer = event.target.closest('[data-duet-answer]');
+    if (answer) {
+      perform(answer, async () => {
+        await post('/api/table/duet/answer', { personId: answer.dataset.personId,
+          entryId: answer.dataset.inviteEntry, accept: answer.dataset.duetAnswer === 'yes' });
+        await refresh();
+        toast(answer.dataset.duetAnswer === 'yes' ? 'Duo accepté.' : 'Invitation refusée.');
+      });
+      return;
+    }
+    const cancel = event.target.closest('[data-duet-cancel]');
+    if (cancel) {
+      perform(cancel, async () => {
+        await post('/api/table/duet/cancel', { personId: cancel.dataset.personId, entryId: cancel.dataset.duetCancel });
+        await refresh();
+        toast('Duo annulé.');
+      });
+      return;
+    }
+    const remove = event.target.closest('[data-remove-song]');
+    if (!remove) return;
+    perform(remove, async () => {
+      await post('/api/table/song/remove', { personId: remove.dataset.personId, entryId: remove.dataset.removeSong });
+      await refresh();
+      toast('Chanson retirée de la liste.');
+    });
+  });
+
+  $('presenceBannerGo').addEventListener('click', () => {
+    setTab('table');
+    const person = list(state?.tablePeople).find(item => item.needConfirm);
+    if (!person) return;
+    const card = [...$('peopleList').querySelectorAll('[data-person-card]')].find(item => item.dataset.personCard === String(person.id));
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card?.querySelector('[data-confirm-person]')?.focus({ preventScroll: true });
+  });
+
+  $('activityBannerGo').addEventListener('click', () => {
+    if (!currentActivity) return;
+    setTab('table');
+    const target = currentActivity.target === 'duo'
+      ? [...$('peopleList').querySelectorAll('[data-person-card]')].find(card => card.dataset.personCard === String(currentActivity.personId))
+      : $('battleBox');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target?.querySelector('[data-duet-answer], [data-battle-vote]')?.focus({ preventScroll: true });
+  });
+
+  $('alertsToggle').addEventListener('click', async () => {
+    if (alertsEnabled) { saveAlertPreference(false); toast('Alertes sonores désactivées.'); return; }
+    saveAlertPreference(true);
+    // Le clic débloque l'audio sur les navigateurs mobiles qui l'exigent.
+    soundAlert();
+    if (window.isSecureContext && window.Notification && Notification.permission === 'default') {
+      try { await Notification.requestPermission(); } catch (_) { /* Notification système facultative. */ }
+    }
+    toast('Alertes activées sur ce téléphone tant que la page reste ouverte.');
+  });
+  function openBattleProposal() {
+    const owned = managedPeople();
+    if (!owned.length) return;
+    const selected = [];
+    let found = [];
+    openSheet(`<div class="row"><h3 class="grow">Proposer une Battle</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+      <p class="small muted">Toute la salle chante ensemble. Propose de 1 à 3 titres du catalogue ; chaque personne votera pour un titre ou « Pas de Battle ». Le bar organise ensuite la Battle dans KaraFun.</p>
+      ${owned.length === 1 ? `<input type="hidden" id="battleProposer" value="${esc(owned[0].id)}">` : `<label class="field" for="battleProposer">Qui propose la Battle ?</label><select id="battleProposer">${owned.map(person => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}</select>`}
+      <form id="battleSearchForm"><label class="field" for="battleSearch">Chercher un titre ou un artiste</label><div class="form-row"><input id="battleSearch" type="search" placeholder="Ex. Queen" autocomplete="off" required><button type="submit" id="battleFind" class="btn">Chercher</button></div></form>
+      <div id="battleSearchResults" class="battle-search-results small muted"></div>
+      <p class="field" id="battleSelectedTitle">Titres proposés (3 maximum)</p><ul id="battleSelected" class="battle-picked" aria-labelledby="battleSelectedTitle"><li>Aucun titre choisi.</li></ul>
+      <label class="field" for="battleMyChoice">Ton vote</label><select id="battleMyChoice" disabled><option value="">Ajoute d’abord un titre</option></select>
+      <div class="sheet-actions"><button type="button" id="startBattleVote" class="btn primary" disabled>Lancer le vote</button></div>`);
+    const resultsNode = $('battleSearchResults');
+    const renderPicked = () => {
+      const current = $('battleMyChoice').value;
+      $('battleSelected').innerHTML = selected.length
+        ? selected.map((song, index) => `<li><span>${esc(fullSong(song))}</span><button type="button" class="btn small" data-battle-remove="${index}" aria-label="Retirer ${esc(song.title)}">Retirer</button></li>`).join('')
+        : '<li>Aucun titre choisi.</li>';
+      $('battleMyChoice').innerHTML = selected.length
+        ? selected.map(song => `<option value="${song.songId}">${esc(fullSong(song))}</option>`).join('')
+        : '<option value="">Ajoute d’abord un titre</option>';
+      $('battleMyChoice').value = selected.some(song => String(song.songId) === current)
+        ? current : String(selected[0]?.songId || '');
+      $('battleMyChoice').disabled = !selected.length;
+      $('startBattleVote').disabled = !selected.length;
+    };
+    $('battleSearchForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const term = $('battleSearch').value.trim();
+      if (term.length < 2) return toast('Tape au moins deux lettres.', true);
+      perform($('battleFind'), async () => {
+        resultsNode.textContent = 'Recherche…';
+        const data = await request(`/api/search?q=${encodeURIComponent(term)}`);
+        if ($('sheet').hidden || $('battleSearchResults') !== resultsNode) return;
+        found = list(data).slice(0, 20).filter(song => Number.isSafeInteger(Number(song?.songId)) &&
+          Number(song.songId) > 0 && String(song.title || '').trim());
+        resultsNode.innerHTML = found.length
+          ? `<ul class="catalog-list">${found.map((song, index) => `<li><button type="button" data-battle-result="${index}"><b>${esc(song.title)}</b><br><span class="tiny muted">${esc(song.artist || '')}</span></button></li>`).join('')}</ul>`
+          : '<p>Aucun titre trouvé.</p>';
+      });
+    });
+    $('battleSearchResults').addEventListener('click', event => {
+      const button = event.target.closest('[data-battle-result]');
+      if (!button) return;
+      const song = found[Number(button.dataset.battleResult)];
+      if (!song) return;
+      if (selected.some(item => Number(item.songId) === Number(song.songId))) return toast('Titre déjà proposé.', true);
+      if (selected.length >= 3) return toast('Trois titres maximum.', true);
+      selected.push({ songId: Number(song.songId), title: String(song.title), artist: String(song.artist || '') });
+      renderPicked();
+    });
+    $('battleSelected').addEventListener('click', event => {
+      const button = event.target.closest('[data-battle-remove]');
+      if (!button) return;
+      selected.splice(Number(button.dataset.battleRemove), 1);
+      renderPicked();
+    });
+    $('startBattleVote').addEventListener('click', () => perform($('startBattleVote'), async () => {
+      if (!selected.length) throw new Error('Choisis au moins un titre.');
+      const result = await post('/api/table/battle/propose', { personId: $('battleProposer').value,
+        songs: selected, proposerChoice: Number($('battleMyChoice').value) });
+      closeSheet();
+      await refresh();
+      toast(result.battle?.phase === 'requested'
+        ? 'Majorité obtenue : le bar est prévenu.' : 'Vote Battle ouvert pendant deux minutes.');
+    }));
+  }
+
+  $('battleVotes').addEventListener('click', event => {
+    const propose = event.target.closest('[data-battle-propose]');
+    if (propose) { openBattleProposal(); return; }
+    const button = event.target.closest('[data-battle-vote]');
+    if (!button) return;
+    perform(button, async () => {
+      const choice = state.battle?.mode === 'songs'
+        ? $(`battleChoice-${button.dataset.battleVote}`).value : button.dataset.choice;
+      if (!choice) throw new Error('Choisis un titre ou « Pas de Battle ».');
+      await post('/api/table/battle/vote', { personId: button.dataset.battleVote,
+        choice });
+      await refresh();
+      toast('Vote enregistré.');
+    });
+  });
+
+  function setTab(name) {
+    activeTab = name;
+    if (name !== 'catalog') duetMode = false;
+    document.querySelectorAll('.tabs button').forEach(button => {
+      const selected = button.dataset.tab === name;
+      button.classList.toggle('on', selected);
+      button.setAttribute('aria-selected', String(selected));
+    });
+    for (const tab of ['table', 'queue', 'catalog']) $('tab-' + tab).hidden = tab !== name;
+    if (name === 'catalog' && !categories.length && catalogMode === 'categories') showCategories(catalogType);
+  }
+
+  document.querySelectorAll('.tabs button').forEach(button => {
+    button.addEventListener('click', () => {
+      if (button.dataset.tab === 'catalog') { duetMode = false; targetPersonId = ''; updateTarget(); }
+      setTab(button.dataset.tab);
+    });
+  });
+
+  function updateTarget() {
+    const person = managedPeople().find(candidate => String(candidate.id) === targetPersonId);
+    $('catalogTarget').textContent = duetMode && person ? `Choisis un titre pour un duo avec ${person.name}.` : person
+      ? managedPeople().length === 1 ? `Chansons pour ${person.name}.` : `Chansons pour ${person.name}. Tu pourras changer de chanteur avant de valider.`
+      : managedPeople().length ? 'Choisis un titre, puis la personne qui le chantera.'
+        : state?.table?.individual ? 'Explore le catalogue. Pour ajouter un titre, inscris-toi au Comptoir.'
+          : 'Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.';
+  }
+
+  function openCatalog(personId, forDuet = false) {
+    if (!manages(personId)) return toast('Ce téléphone ne gère pas ce chanteur.', true);
+    targetPersonId = String(personId || '');
+    duetMode = forDuet;
+    updateTarget();
+    setTab('catalog');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openRename(personId) {
+    const person = personById(personId);
+    if (!person) return toast('Chanteur introuvable.', true);
+    openSheet(`<div class="row"><h3 class="grow">Renommer ${esc(person.name)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+      <form id="renameForm"><label class="field" for="renameInput">Nouveau prénom</label><input id="renameInput" type="text" maxlength="24" required value="${esc(person.name)}" autocomplete="off">
+      <div class="sheet-actions"><button type="submit" id="renameSubmit" class="btn primary">Enregistrer</button></div></form>`);
+    $('renameInput').focus();
+    $('renameInput').select();
+    $('renameForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const name = $('renameInput').value.trim();
+      if (!name) return toast('Indique un prénom.', true);
+      if (name === person.name) return closeSheet();
+      perform($('renameSubmit'), async () => {
+        await post('/api/table/person/rename', { personId, name });
+        closeSheet();
+        await refresh();
+        toast('Prénom modifié.');
+      });
+    });
+  }
+
+  function openReorder(personId, entryId) {
+    const person = personById(personId);
+    const items = list(person?.songs);
+    const current = items.findIndex(song => String(song.entryId) === String(entryId));
+    if (current < 0 || items.length < 2) return toast('Cette chanson ne peut plus être déplacée.', true);
+    openSheet(`<div class="row"><h3 class="grow">Ordre des chansons de ${esc(person.name)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+      <p class="small muted">Déplace « ${esc(items[current].title || 'cette chanson')} » sans changer la place de ${esc(person.name)} dans la file.</p>
+      <label class="field" for="newSongPosition">Nouvelle position dans sa liste</label>
+      <select id="newSongPosition">${items.map((song, index) => `<option value="${index}" ${index === current ? 'selected' : ''}>${index + 1}. ${esc(song.title || 'Chanson')}</option>`).join('')}</select>
+      <div class="sheet-actions"><button type="button" id="saveSongPosition" class="btn primary">Changer l’ordre</button></div>`);
+    $('saveSongPosition').addEventListener('click', () => {
+      perform($('saveSongPosition'), async () => {
+        const toIndex = Number($('newSongPosition').value);
+        if (toIndex === current) { closeSheet(); return; }
+        await post('/api/table/song/reorder', { personId, entryId, toIndex });
+        closeSheet();
+        await refresh();
+        toast('Ordre des chansons mis à jour.');
+      });
+    });
+  }
+
+  function setCatalogType(type) {
+    catalogType = type;
+    document.querySelectorAll('[data-catalog]').forEach(button => button.classList.toggle('on', button.dataset.catalog === type));
+  }
+
+  function renderCategories() {
+    $('catalogContent').innerHTML = categories.length
+      ? `<p class="muted small" style="margin:12px 0 0">Choisis une sélection.</p><ul class="catalog-list">${categories.map((cat, index) => `<li><button type="button" data-category-index="${index}">${esc(cat.name)}</button></li>`).join('')}</ul>`
+      : '<p class="empty-copy">Aucune sélection disponible.</p>';
+  }
+
+  async function showCategories(type) {
+    setCatalogType(type);
+    $('searchInput').value = '';
+    currentCategory = null;
+    const number = ++catalogRequest;
+    if (type === 'news' || type === 'featured') {
+      catalogMode = 'highlights';
+      $('catalogContent').innerHTML = '<p class="empty-copy">Chargement des chansons…</p>';
+      try {
+        const data = await request(`/api/catalog/highlights?type=${encodeURIComponent(type)}`);
+        if (number !== catalogRequest) return;
+        songs = list(data);
+        totalSongs = songs.length;
+        renderSongs(type === 'news' ? 'Nouveautés' : 'À découvrir');
+      } catch (error) { if (number === catalogRequest) catalogError(error); }
+      return;
+    }
+    catalogMode = 'categories';
+    $('catalogContent').innerHTML = '<p class="empty-copy">Chargement des sélections…</p>';
+    try {
+      const data = await request(`/api/catalog/categories?type=${encodeURIComponent(type)}`);
+      if (number !== catalogRequest) return;
+      categories = list(data);
+      renderCategories();
+    } catch (error) { if (number === catalogRequest) catalogError(error); }
+  }
+
+  function catalogError(error) {
+    $('catalogContent').innerHTML = `<p class="empty-copy">${esc(error.message || 'Catalogue indisponible.')}</p><button type="button" class="btn small" data-retry style="margin-top:10px">Réessayer</button>`;
+  }
+
+  async function showCategory(index, append = false) {
+    if (!append && index != null) currentCategory = categories[index];
+    if (!currentCategory || !currentCategory.filter) return;
+    const number = ++catalogRequest;
+    catalogMode = 'songs';
+    if (!append) { songs = []; totalSongs = 0; $('catalogContent').innerHTML = '<p class="empty-copy">Chargement des chansons…</p>'; }
+    try {
+      const data = await request(`/api/catalog/songs?filter=${encodeURIComponent(currentCategory.filter)}&offset=${songs.length}`);
+      if (number !== catalogRequest) return;
+      songs = songs.concat(list(data.songs));
+      totalSongs = Number(data.total) || songs.length;
+      renderSongs(currentCategory.name, true);
+    } catch (error) { if (number === catalogRequest) catalogError(error); }
+  }
+
+  function renderSongs(heading, back = false) {
+    $('catalogContent').innerHTML = `<div class="catalog-tools">${back ? '<button type="button" class="btn small" data-back>← Sélections</button>' : ''}<b class="grow">${esc(heading)}</b></div>`
+      + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => `<li><button type="button" data-song-index="${index}"><div class="song-title">${esc(song.title)}</div><div class="song-artist">${esc(song.artist || '')}</div></button></li>`).join('')}</ul>` : '<p class="empty-copy">Aucune chanson trouvée.</p>')
+      + (catalogMode === 'songs' && songs.length < totalSongs ? '<button type="button" class="btn wide" data-more style="margin-top:12px">Voir plus</button>' : '');
+  }
+
+  function searchSongs(term) {
+    const number = ++catalogRequest;
+    catalogMode = 'search';
+    $('catalogContent').innerHTML = '<p class="empty-copy">Recherche…</p>';
+    request(`/api/search?q=${encodeURIComponent(term)}`).then(data => {
+      if (number !== catalogRequest) return;
+      songs = list(data);
+      totalSongs = songs.length;
+      renderSongs(`Résultats pour « ${term} »`);
+    }).catch(error => { if (number === catalogRequest) catalogError(error); });
+  }
+
+  $('searchInput').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const term = $('searchInput').value.trim();
+    if (!term) { showCategories(catalogType); return; }
+    if (term.length < 2) { ++catalogRequest; $('catalogContent').innerHTML = '<p class="empty-copy">Tape au moins 2 lettres.</p>'; return; }
+    searchTimer = setTimeout(() => searchSongs(term), 300);
+  });
+
+  document.querySelectorAll('[data-catalog]').forEach(button => {
+    button.addEventListener('click', () => { clearTimeout(searchTimer); showCategories(button.dataset.catalog); });
+  });
+
+  $('catalogContent').addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.hasAttribute('data-retry')) {
+      if (catalogMode === 'songs') showCategory(null, false);
+      else if (catalogMode === 'search') searchSongs($('searchInput').value.trim());
+      else showCategories(catalogType);
+    } else if (button.hasAttribute('data-back')) showCategories(catalogType);
+    else if (button.hasAttribute('data-category-index')) showCategory(Number(button.dataset.categoryIndex));
+    else if (button.hasAttribute('data-song-index')) chooseSong(songs[Number(button.dataset.songIndex)]);
+    else if (button.hasAttribute('data-more')) showCategory(0, true);
+  });
+
+  function openSheet(html) {
+    if ($('sheet').hidden) lastFocus = document.activeElement;
+    $('sheetPanel').innerHTML = html;
+    const title = $('sheetPanel').querySelector('h3');
+    if (title) { title.id = 'sheetTitle'; $('sheetPanel').setAttribute('aria-labelledby', title.id); }
+    else $('sheetPanel').setAttribute('aria-label', 'Options de la chanson');
+    $('sheet').hidden = false;
+    const first = $('sheetPanel').querySelector('input, select, button');
+    if (first) first.focus();
+  }
+
+  function closeSheet({ keepPending = false } = {}) {
+    $('sheet').hidden = true;
+    $('sheetPanel').innerHTML = '';
+    if (!keepPending) pendingSong = null;
+    if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
+  }
+
+  $('sheet').addEventListener('click', event => { if (event.target === $('sheet') || event.target.closest('[data-close-sheet]')) closeSheet(); });
+  document.addEventListener('keydown', event => {
+    if ($('sheet').hidden) return;
+    if (event.key === 'Escape') { closeSheet(); return; }
+    if (event.key !== 'Tab') return;
+    const focusable = [...$('sheetPanel').querySelectorAll('button:not([hidden]):not([disabled]), input:not([hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled])')];
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+
+  function chooseSong(song) {
+    if (!song || !song.songId) return;
+    const people = managedPeople();
+    if (!people.length) {
+      pendingSong = song;
+      openSheet(`<div class="row"><h3 class="grow">Avant d’ajouter « ${esc(song.title)} »</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+        <p class="small muted">${esc($('catalogAccessText').textContent)} Ton titre restera sélectionné pendant l’inscription.</p>
+        <div class="sheet-actions">${$('catalogAccessActions').innerHTML || '<p class="small">Demande de l’aide au bar pour accéder à tes chansons.</p>'}</div>`);
+      return;
+    }
+    pendingSong = null;
+    const selected = people.find(person => String(person.id) === targetPersonId) || people[0];
+    if (duetMode) return openDuoPartner(song, selected.id);
+    openSheet(`<div class="row"><h3 class="grow">${esc(song.title)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+      <p class="muted small" style="margin:4px 0 12px">${esc(song.artist || '')}</p>
+      ${people.length === 1 ? `<p class="small muted">Pour ${esc(selected.name)}</p><input type="hidden" id="songPerson" value="${esc(selected.id)}">`
+        : `<label class="field" for="songPerson">Chanteur</label><select id="songPerson">${people.map(person => `<option value="${esc(person.id)}" ${String(person.id) === String(selected.id) ? 'selected' : ''}>${esc(person.name)}</option>`).join('')}</select>`}
+      <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${state?.table?.individual ? 'Ajouter à ma liste' : 'Ajouter à sa liste'}</button><button type="button" class="btn" id="replaceSong">Remplacer ma prochaine chanson</button><button type="button" class="btn" id="duetSongChoice">Chanter en duo</button></div>
+      <p class="tiny muted" style="margin:10px 0 0">Une chanson déjà prête dans la file ne peut plus être remplacée ici.</p>`);
+    const updateReplace = () => {
+      const person = personById($('songPerson').value);
+      $('replaceSong').hidden = !person || !list(person.songs).length;
+      $('replaceSong').textContent = list(person?.songs)[0]?.duet ? 'Remplacer le 1er titre (annule son duo)'
+        : state?.table?.individual ? 'Remplacer ma prochaine chanson' : 'Remplacer sa prochaine chanson';
+      $('duetSongChoice').hidden = !person;
+    };
+    $('songPerson').addEventListener('change', updateReplace);
+    updateReplace();
+    $('duetSongChoice').addEventListener('click', () => openDuoPartner(song, $('songPerson').value));
+    for (const [id, mode] of [['appendSong', 'append'], ['replaceSong', 'replace']]) {
+      $(id).addEventListener('click', () => {
+        const personId = $('songPerson').value;
+        perform($(id), async () => {
+          await post('/api/table/song', { personId, song: { songId: song.songId, title: song.title, artist: song.artist, duration: song.duration }, mode });
+          closeSheet();
+          targetPersonId = personId;
+          await refresh();
+          setTab('table');
+          toast(mode === 'append' ? 'Chanson ajoutée à la liste.' : 'Prochaine chanson remplacée.');
+        });
+      });
+    }
+  }
+
+  async function openDuoPartner(song, personId) {
+    const owner = personById(personId);
+    if (!owner || !manages(personId)) return toast('Ce téléphone ne gère pas ce chanteur.', true);
+    let all;
+    try { all = await request(`/api/duo/partners?${new URLSearchParams({ table: tableId, access })}`); }
+    catch (error) { return toast(error.message, true); }
+    const seen = new Set();
+    const partners = all.filter(person => {
+      const id = String(person.id);
+      if (id === String(personId) || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (!partners.length) return toast('Aucun partenaire disponible pour un duo.', true);
+    const ownTable = partners.filter(person => String(person.tableId) === String(state?.table?.id));
+    const otherTables = partners.filter(person => String(person.tableId) !== String(state?.table?.id));
+    const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table ? ' · ' + esc(person.table) : ''}</option>`;
+    openSheet(`<div class="row"><h3 class="grow">Duo sur « ${esc(song.title)} »</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+      <p class="muted small">${esc(owner.name)} utilise son tour ; son partenaire garde le sien. ${state?.table?.individual ? 'Son accord est nécessaire.' : 'Une autre table devra accepter l’invitation.'}</p>
+      <label class="field" for="duoPartner">Avec qui ?</label>
+      <select id="duoPartner">${ownTable.length ? `<optgroup label="À ma table">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres tables · invitation à accepter">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
+      <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">Ajouter le duo</button></div>`);
+    const updateDuoAction = () => {
+      const partner = partners.find(p => String(p.id) === String($('duoPartner').value));
+      $('sendDuo').textContent = state?.table?.individual || String(partner?.tableId) !== String(state?.table?.id)
+        ? 'Envoyer l’invitation' : 'Ajouter le duo';
+    };
+    $('duoPartner').addEventListener('change', updateDuoAction);
+    updateDuoAction();
+    $('sendDuo').addEventListener('click', () => {
+      perform($('sendDuo'), async () => {
+        const partnerId = $('duoPartner').value;
+        const partner = partners.find(p => String(p.id) === String(partnerId));
+        await post('/api/table/duet', { personId, partnerId,
+          song: { songId: song.songId, title: song.title, artist: song.artist, duration: song.duration } });
+        closeSheet();
+        await refresh();
+        setTab('table');
+        toast(!state?.table?.individual && partner && String(partner.tableId) === String(state?.table?.id)
+          ? 'Duo ajouté à la liste.' : 'Invitation de duo envoyée.');
+      });
+    });
+  }
+
+  if (invalidAccess) showInvalidLink(); else refresh();
+  renderAlertPreference();
+  setInterval(() => { if ((!document.hidden || alertsEnabled) && !invalidAccess) refresh(); }, 4000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !invalidAccess) refresh(); });
+})();
+</script>
+</body>
+</html>

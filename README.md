@@ -1,3 +1,11 @@
 # KaraFun Plus
 
-Initialisation du dépôt. Le code source et les tests suivent dans le commit de sauvegarde.
+File de karaoké pour un bar : les clients choisissent leurs titres depuis le QR de leur table et les gérants pilotent la rotation et la file KaraFun. L'application est une interface web locale qui communique avec la télécommande KaraFun. Ce protocole n'est pas une API publique garantie par KaraFun.
+
+## Démarrage
+
+Sur le PC du bar, télécharger et décompresser le kit Windows de la dernière release, puis lancer l'application. KaraFun doit être installé séparément ; activer sa télécommande et saisir son code sur la page du bar. Le kit contient Node.js et ne demande aucun outil de développement sur ce PC. Voir [le guide du bar](GUIDE-BAR.md) pour les QR, les droits, la sauvegarde et l'accès des téléphones hors Wi-Fi.
+
+Pour travailler depuis les sources : `npm ci`, puis `node test/run-offline.js` pour la recette isolée. `npm run demo` démarre une simulation sans toucher à KaraFun.
+
+Les fichiers `data/`, `journal/` et les codes de télécommande ne doivent pas être publiés. Les QR clients donnent accès à une table ; le lien de gestion du bar reste privé.

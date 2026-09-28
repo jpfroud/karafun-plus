@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QR codes des tables</title>
+<style>
+  body { font-family: system-ui, "Segoe UI", sans-serif; margin: 20px; color: #111; background: #fff; }
+  .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+  .notice { padding: 12px 16px; border: 2px solid #bd6900; border-radius: 10px; background: #fff5e6; margin-bottom: 12px; }
+  .notice.public { border-color: #24734e; background: #ecf8f1; }
+  .check { display: block; margin: 12px 0 20px; font-weight: 600; }
+  .check input { margin-right: 6px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card { border: 2px dashed #bbb; border-radius: 14px; padding: 16px; text-align: center; break-inside: avoid; }
+  .card h2 { margin: 0 0 4px; font-size: 26px; }
+  .card p { margin: 4px 0; font-size: 14px; }
+  .card img { width: 190px; height: 190px; }
+  .url { font-size: 11px; color: #555; word-break: break-all; }
+  @media print { .bar, .check { display: none; } body { margin: 0; } .notice { background: #fff; } .grid { gap: 8px; } }
+</style>
+</head>
+<body>
+<div class="bar"><button id="printBtn" onclick="print()" disabled>Imprimer</button> <span id="info"></span></div>
+<div class="notice" id="accessNotice" role="status">Vérification du type d'accès des QR codes…</div>
+<label class="check"><input type="checkbox" id="confirmAccess" disabled> <span id="confirmLabel">Je vérifie l'accès des clients avant d'imprimer.</span></label>
+<div class="grid" id="grid"></div>
+<script>
+(async () => {
+  const key = new URLSearchParams(location.search).get('key') || '';
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  function isPublicHttps(value) {
+    let url;
+    try { url = new URL(value); } catch (_) { return false; }
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    const ip = host.split('.').map(Number);
+    const privateIp = ip.length === 4 && ip.every(n => Number.isInteger(n) && n >= 0 && n <= 255) &&
+      (ip[0] === 10 || ip[0] === 127 || (ip[0] === 192 && ip[1] === 168) ||
+        (ip[0] === 172 && ip[1] >= 16 && ip[1] <= 31) || (ip[0] === 169 && ip[1] === 254));
+    return url.protocol === 'https:' && !privateIp && host !== 'localhost' && host !== '::1' &&
+      !host.endsWith('.local') && !host.endsWith('.localhost');
+  }
+  function qrSrc(table) {
+    let hash = 2166136261;
+    for (const char of table.url) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+    return table.qrUrl + (table.qrUrl.includes('?') ? '&' : '?') + 'v=' + (hash >>> 0).toString(16) + (key ? '&key=' + encodeURIComponent(key) : '');
+  }
+  const info = document.getElementById('info');
+  const grid = document.getElementById('grid');
+  const notice = document.getElementById('accessNotice');
+  const confirmAccess = document.getElementById('confirmAccess');
+  const confirmLabel = document.getElementById('confirmLabel');
+  const printBtn = document.getElementById('printBtn');
+  try {
+    const r = await fetch('/api/staff/state' + (key ? `?key=${encodeURIComponent(key)}` : ''), { cache: 'no-store', headers: { 'x-staff-key': key } });
+    const S = await r.json();
+    if (!r.ok) throw new Error(S.error || 'Impossible de charger les tables.');
+    const tables = S.tables || [];
+    if (!tables.length) {
+      info.textContent = 'Crée les tables depuis la page du bar avant d’imprimer leurs QR codes.';
+      notice.textContent = 'Aucun QR code à imprimer.';
+      return;
+    }
+    const missing = tables.filter(t => !t.url || !t.qrUrl);
+    const publicHttps = isPublicHttps(S.phoneBase || '');
+    const localOnly = !publicHttps;
+    notice.classList.toggle('public', publicHttps);
+    notice.innerHTML = publicHttps
+      ? '<b>QR configurés pour une adresse publique HTTPS.</b> Un téléphone en données mobiles peut les ouvrir uniquement si cette adresse mène bien à la page du karaoké et reste active pendant la soirée. Teste un QR en coupant le Wi-Fi du téléphone.'
+      : '<b>QR réservés au Wi-Fi local.</b> Les téléphones en données mobiles ou sans accès au Wi-Fi du lieu ne pourront pas les ouvrir. Pour eux, configure d’abord une adresse publique HTTPS stable sur la page du bar, puis réimprime les QR.';
+    confirmLabel.textContent = publicHttps
+      ? 'J’ai ouvert un de ces QR depuis un téléphone en données mobiles et confirmé que la page du karaoké répond.'
+      : 'Je confirme que les clients utiliseront le même Wi-Fi que le PC KaraFun.';
+    info.textContent = missing.length
+      ? 'Lien ou QR manquant pour certaines tables : vérifie la page du bar.'
+      : 'Vérifie l’accès ci-dessous avant d’imprimer : chaque QR contient le lien unique de sa table.';
+    confirmAccess.disabled = missing.length > 0;
+    confirmAccess.onchange = () => { printBtn.disabled = missing.length > 0 || !confirmAccess.checked; };
+    grid.innerHTML = tables.map(t => `<div class="card">
+      <h2>${esc(t.name)}</h2>
+      <p><b>Scanne pour chanter 🎤</b></p>
+      ${t.url && t.qrUrl ? `<img src="${esc(qrSrc(t))}" alt="QR de ${esc(t.name)}">` : '<p>QR indisponible</p>'}
+      <p>Un téléphone peut inscrire tous les chanteurs de la table. Un seul scan suffit.</p>
+      <p><b>${localOnly ? 'Connexion au Wi-Fi du lieu requise' : 'Accès HTTPS par Internet'}</b></p>
+      <p>1 ticket par personne · l'ordre s'affiche sur ton téléphone</p>
+      <p class="url">${t.url ? esc(t.url) : 'Lien indisponible'}</p></div>`).join('');
+  } catch (e) {
+    info.textContent = e.message;
+    notice.textContent = 'QR codes indisponibles. Reviens à la page du bar pour vérifier la configuration.';
+  }
+})();
+</script>
+</body>
+</html>
