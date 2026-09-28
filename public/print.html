@@ -78,9 +78,9 @@
     confirmAccess.onchange = () => { printBtn.disabled = missing.length > 0 || !confirmAccess.checked; };
     grid.innerHTML = tables.map(t => `<div class="card">
       <h2>${esc(t.name)}</h2>
-      <p><b>Scanne pour chanter 🎤</b></p>
+      <p><b>${t.individual ? 'Voir la file ou retrouver mes chansons' : 'Scanne pour chanter 🎤'}</b></p>
       ${t.url && t.qrUrl ? `<img src="${esc(qrSrc(t))}" alt="QR de ${esc(t.name)}">` : '<p>QR indisponible</p>'}
-      <p>Un téléphone peut inscrire tous les chanteurs de la table. Un seul scan suffit.</p>
+      <p>${t.individual ? 'Pour une première inscription en solo, demande un QR individuel au bar. Ce QR commun ne crée pas de profil.' : 'Un téléphone peut inscrire tous les chanteurs de la table. Un seul scan suffit.'}</p>
       <p><b>${localOnly ? 'Connexion au Wi-Fi du lieu requise' : 'Accès HTTPS par Internet'}</b></p>
       <p>1 ticket par personne · l'ordre s'affiche sur ton téléphone</p>
       <p class="url">${t.url ? esc(t.url) : 'Lien indisponible'}</p></div>`).join('');

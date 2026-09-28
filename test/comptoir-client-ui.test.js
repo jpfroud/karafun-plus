@@ -32,7 +32,7 @@ const get = id => elements.get(id) || (elements.set(id, new Element(id)), elemen
 get('sheet').hidden = true;
 const tabs = ['table', 'queue', 'catalog'].map(name => Object.assign(get(`nav-${name}`), { dataset: { tab: name } }));
 const document = {
-  title: '', activeElement: null, listeners: {},
+  title: '', activeElement: null, hidden: true, listeners: {},
   getElementById: get,
   querySelectorAll(selector) { return selector === '.tabs button' ? tabs : []; },
   addEventListener(name, listener) { this.listeners[name] = listener; },
@@ -50,8 +50,10 @@ let posts = 0;
 let claimPosts = 0;
 let lastClaimCode = null;
 let count = 2;
+let invitationReady = true;
 const state = () => ({
   table: { id: 'Comptoir', name: 'Comptoir', individual: true, headcount, count, activeCount: count },
+  soloInvitationReady: invitationReady,
   tablePeople: privacyFiltered ? managedId === 'alice' ? [alice] : managedId === 'zoe' ? [singer] : []
     : [alice, bob, ...(singer ? [singer] : [])],
   managedIds: managedId ? [managedId] : [], recoveryPeople,
@@ -66,7 +68,8 @@ const fetch = async (url, options = {}) => {
   if (url.startsWith('/api/state?')) return response(state());
   if (url === '/api/join') {
     posts++;
-    singer = { id: 'zoe', name: JSON.parse(options.body).name, active: true, songs: [], invites: [], inKaraFun: [] };
+    const body = JSON.parse(options.body);
+    singer = { id: 'zoe', name: body.name, active: true, songs: [], invites: [], inKaraFun: [] };
     managedId = singer.id;
     count++;
     return response({ id: singer.id, token: 'zoe-token' });
@@ -84,9 +87,18 @@ const fetch = async (url, options = {}) => {
 const saved = new Map();
 const localStorage = { getItem: key => saved.get(key) || null,
   setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+const notices = [];
+let permissionRequests = 0;
+class FakeNotification {
+  static permission = 'default';
+  static async requestPermission() { permissionRequests++; this.permission = 'granted'; return 'granted'; }
+  constructor(title, options) { notices.push({ title, ...options }); }
+  close() {}
+}
 let poll;
-const context = { document, fetch, localStorage, location: { pathname: '/t/Comptoir/secret' },
-  window: { isSecureContext: false, scrollTo() {} }, navigator: {}, URLSearchParams,
+const context = { document, fetch, localStorage, location: { pathname: '/t/Comptoir/secret', search: '?invitation=personal-one-use-token' },
+  window: { isSecureContext: true, Notification: FakeNotification, scrollTo() {} }, Notification: FakeNotification,
+  navigator: {}, URLSearchParams,
   setInterval: fn => { poll = fn; }, setTimeout: () => 1, clearTimeout() {},
   console, Date, Number, String, Set, Array, JSON, Math };
 vm.runInNewContext(script, context, { filename: 'client.html' });
@@ -99,10 +111,24 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(get('claimBox').hidden, true, 'aucune reprise d’un autre client');
   assert.equal(get('addPersonBox').hidden, true, 'aucun bouton pour créer plusieurs profils');
   assert.equal(get('waitingCard').hidden, true, 'la file ne montre pas un faux groupe à la cliente solo');
-  assert.match(get('joinIntro').textContent, /chaque téléphone gère uniquement ses propres chansons/);
+  assert.match(get('joinIntro').textContent, /invitation du bar est personnelle/);
   assert.match(get('catalogAccessActions').innerHTML, /M’inscrire/);
   assert.doesNotMatch(get('catalogAccessActions').innerHTML, /Reprendre/);
   assert.equal(get('peopleCard').hidden, true);
+  assert.doesNotMatch(get('queueList').innerHTML, /Passage prévu/,
+    'le rang et l’heure suffisent pour une chanson simplement prévue');
+  assert.equal(get('alertsToggle').textContent, 'Activer les notifications');
+  await get('alertsToggle').listeners.click();
+  assert.equal(permissionRequests, 1, 'le clic demande réellement la permission du navigateur en HTTPS');
+  assert.equal(get('alertsToggle').textContent, 'Désactiver les notifications');
+
+  invitationReady = false;
+  poll(); await settle();
+  assert.equal(get('joinBox').hidden, true, 'une invitation utilisée ou expirée masque le formulaire solo');
+  assert.doesNotMatch(get('catalogAccessActions').innerHTML, /M’inscrire/);
+  assert.match(get('catalogAccessText').textContent, /déjà été utilisée ou a expiré/);
+  invitationReady = true;
+  poll(); await settle();
 
   privacyFiltered = true;
   poll(); await settle();
@@ -129,6 +155,15 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(get('claimBox').hidden, true, 'la reprise disparaît dès que le téléphone gère Alice');
   assert.match(get('quickSongActions').innerHTML, /data-quick-song="alice"/);
   assert.doesNotMatch(get('peopleList').innerHTML, /Bob/);
+  alice.needConfirm = true;
+  alice.invites = [{ entryId: 'duo-1', fromName: 'Bob', song: { title: 'En duo' } }];
+  poll(); await settle();
+  assert.ok(notices.some(notice => notice.title === 'Karaoké : présence à confirmer'));
+  assert.ok(notices.some(notice => notice.title === 'Karaoké : nouvelle demande' && /duo/.test(notice.body)),
+    'une invitation de duo déclenche une notification si la page est ouverte en arrière-plan');
+  alice.needConfirm = false;
+  alice.invites = [];
+  poll(); await settle();
   recoveryPeople = [{ id: 'bob', name: 'Bob' }];
   poll(); await settle();
   assert.equal(get('claimBox').hidden, true, 'un téléphone déjà lié ne voit pas une autre reprise');
@@ -175,7 +210,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   poll(); await settle();
   assert.equal(get('joinBox').hidden, true, 'aucun formulaire si le groupe est complet');
   assert.equal(get('noSingerBox').hidden, false);
-  assert.match(get('catalogAccessText').textContent, /En solo » est complet/);
+  assert.match(get('catalogAccessText').textContent, /places « En solo » sont toutes prises/);
   assert.equal(get('addPersonBox').hidden, true);
   console.log('Comptoir client : inscription, reprise avec code, isolation visuelle et capacité OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

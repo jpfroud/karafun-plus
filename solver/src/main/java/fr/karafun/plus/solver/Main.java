@@ -2,6 +2,7 @@ package fr.karafun.plus.solver;
 
 import ai.timefold.solver.core.api.solver.Solver;
 import ai.timefold.solver.core.api.solver.SolverFactory;
+import ai.timefold.solver.core.config.solver.SolverConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
@@ -16,12 +17,21 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Long-lived local JSON-lines worker. It never opens a network port. */
 public final class Main {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final SolverFactory<QueuePlan> FACTORY =
-            SolverFactory.createFromXmlResource("solverConfig.xml");
+    private static final int DEFAULT_BUDGET_MS = 3_000;
+    private static final Map<Integer, SolverFactory<QueuePlan>> FACTORIES = new ConcurrentHashMap<>();
+
+    private static SolverFactory<QueuePlan> factoryFor(int budgetMs) {
+        return FACTORIES.computeIfAbsent(budgetMs, duration -> {
+            SolverConfig config = SolverConfig.createFromXmlResource("solverConfig.xml");
+            config.getTerminationConfig().setMillisecondsSpentLimit((long) duration);
+            return SolverFactory.create(config);
+        });
+    }
 
     private Main() { }
 
@@ -45,6 +55,10 @@ public final class Main {
 
     private static Map<String, Object> solve(JsonNode input) {
         long start = System.nanoTime();
+        int budgetMs = input.path("budgetMs").asInt(DEFAULT_BUDGET_MS);
+        if (budgetMs < 100 || budgetMs > 30_000) {
+            throw new IllegalArgumentException("Budget Timefold invalide");
+        }
         String requestId = input.path("requestId").asText("");
         List<Performance> performances = new ArrayList<>();
         Set<String> songIds = new HashSet<>();
@@ -76,7 +90,7 @@ public final class Main {
                 integers(input.path("tableServeCounts")), integers(input.path("groupReadyCounts")),
                 input.path("tableRotation").asBoolean(false),
                 input.path("weightedTables").asBoolean(false));
-        Solver<QueuePlan> solver = FACTORY.buildSolver();
+        Solver<QueuePlan> solver = factoryFor(budgetMs).buildSolver();
         QueuePlan solution = solver.solve(plan);
         if (solution.getScore() == null || solution.getScore().hardScore() < 0) {
             throw new IllegalStateException("Aucun ordre admissible");

@@ -67,6 +67,11 @@ test('la trame KCS Battle reprend le mode observé dans les événements réels'
   bridge.ready = bridge.connected = true;
   bridge.raw.configuration = { compatibleMods: { battle: [1] } };
   bridge.socket = { send(type, payload) { sent.push({ type, payload }); } };
+  bridge.raw.permissions = { addToQueue: true, shownTypes: { battle: false } };
+  assert.throws(() => bridge.addBattle(5091, 1), /permission Battle/i,
+    'KaraFun peut annoncer le mode Battle compatible tout en refusant son ajout à cette télécommande');
+  assert.equal(sent.length, 0, 'une permission Battle refusée ne doit pas émettre de commande');
+  bridge.raw.permissions.shownTypes.battle = true;
   bridge.addBattle(5091, 1);
   assert.equal(sent[0].type, 'remote.AddToQueueRequest');
   assert.deepEqual(sent[0].payload.song, { type: 1, id: 5091 });
@@ -81,6 +86,25 @@ test('la trame KCS Battle reprend le mode observé dans les événements réels'
   bridge.raw.configuration.compatibleMods.battle = [];
   assert.throws(() => bridge.addBattle(5091), /ne confirme pas le mode Battle/);
   assert.equal(sent.length, 1, 'un mode non annoncé par KaraFun ne doit jamais être envoyé');
+});
+
+test('le vote Battle signale immédiatement la permission refusée et attend le bar', () => {
+  const f = harness();
+  const remote = new KaraFunBridge();
+  const sent = [];
+  remote.protocol = 'kcs';
+  remote.ready = remote.connected = true;
+  remote.raw.configuration = { compatibleMods: { battle: [1] } };
+  remote.raw.permissions = { addToQueue: true, shownTypes: { battle: false } };
+  remote.socket = { send(type, payload) { sent.push({ type, payload }); } };
+  f.bridge.addBattle = (...args) => remote.addBattle(...args);
+  f.battleVote.propose({ personId: 'client', personName: 'Client',
+    eligiblePersonIds: ['client'], songs: [song(5091, 'Battle demandée')] });
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'failed');
+  assert.match(f.battleVote.view().automation.failure, /permission Battle refusée/i);
+  assert.equal(sent.length, 0, 'aucune commande rejetée par KaraFun ne part');
+  assert.equal(f.adds.length, 0, 'la file ordinaire attend que le bar traite la Battle');
 });
 
 test('une Battle approuvée est confirmée en mode Battle, attend les joueurs puis le bar après les résultats', () => {
@@ -694,6 +718,46 @@ test('le bar ne notifie pas Je suis là pendant le calcul Timefold', async () =>
   assert.equal(await f.sched.solverPromise, true);
   assert.equal(f.presenceCandidate().ids[0], b.id,
     'la notification suit le plan validé, pas le repli temporaire');
+});
+
+test('un calcul Timefold long réserve le prochain après une courte attente et ne change plus sa présence', async () => {
+  const f = harness();
+  f.settings.auto = false;
+  f.sched.opts.requirePresence = true;
+  f.sched.table('2').headcount = 1; f.access.issue('2');
+  const a = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const b = f.sched.join({ tableId: '2', name: 'Bob' });
+  f.sched.chooseSong(a, song(530));
+  f.sched.chooseSong(b, song(531));
+  const fallback = f.sched.presenceView();
+  const solves = [];
+  f.sched.solverBridge = { available: true, lastError: null,
+    solve: request => new Promise(resolve => {
+      solves.push({ request, resolve });
+    }) };
+  f.sync();
+  const firstSolve = f.sched.solverPromise;
+  assert.equal(f.presenceCandidate(), null, 'la fenêtre initiale laisse Timefold chercher un meilleur prochain');
+  assert.equal(f.publicState(a, '1').tablePeople[0].needConfirm, false);
+  f.sched.solverNextStartedAt = Date.now() - 2501;
+  f.sync();
+  const reservedId = f.sched.reservedNext?.personId;
+  assert.equal(reservedId, fallback[0].ids[0], 'le prochain est garanti même pendant le calcul profond');
+  assert.equal(f.presenceCandidate().ids[0], reservedId);
+  assert.equal(f.publicState(a, '1').tablePeople[0].needConfirm, reservedId === a.id);
+  assert.equal(f.publicState(b, '2').tablePeople[0].needConfirm, reservedId === b.id);
+  solves[0].resolve({ requestId: solves[0].request.requestId,
+    order: fallback.map(row => row.entryId).reverse() });
+  assert.equal(await firstSolve, false, 'le calcul lancé avant la réservation est devenu périmé');
+  f.sched.whenPlanReady();
+  assert.equal(solves.length, 2, 'un nouveau calcul tient compte du prochain réservé');
+  const secondSolve = f.sched.solverPromise;
+  const reservedEntry = fallback.find(row => row.ids[0] === reservedId).entryId;
+  solves[1].resolve({ requestId: solves[1].request.requestId,
+    order: [reservedEntry, ...fallback.filter(row => row.entryId !== reservedEntry).map(row => row.entryId)] });
+  assert.equal(await secondSolve, true);
+  assert.equal(f.presenceCandidate().ids[0], reservedId,
+    'le résultat final du solveur ne retire pas la confirmation demandée');
 });
 
 test('une file composée de tickets sans chanson ne promet ni rang ni heure', () => {

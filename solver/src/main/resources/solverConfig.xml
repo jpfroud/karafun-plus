@@ -8,6 +8,6 @@
     <easyScoreCalculatorClass>fr.karafun.plus.solver.QueueScore</easyScoreCalculatorClass>
   </scoreDirectorFactory>
   <termination>
-    <millisecondsSpentLimit>200</millisecondsSpentLimit>
+    <millisecondsSpentLimit>3000</millisecondsSpentLimit>
   </termination>
 </solver>

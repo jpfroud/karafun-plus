@@ -19,6 +19,7 @@ const { Scheduler } = require('./scheduler');
 const { KaraFunBridge, isBattleItem } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
+const { SoloInvitations } = require('./solo-invitations');
 const { Catalog } = require('./catalog');
 const { BattleVote } = require('./battle-vote');
 const { NightStateStore, snapshotNight, restoreNight } = require('./night-state');
@@ -77,6 +78,7 @@ function certifiedBattleSongs(songs) {
 
 const sched = new Scheduler({ solverEnabled: !DEMO || argv.includes('--solver') });
 const access = new TableAccess();
+const soloInvitations = new SoloInvitations();
 const battleVote = new BattleVote({
   saved: !DEMO && fs.existsSync(BATTLE_FILE) ? JSON.parse(fs.readFileSync(BATTLE_FILE, 'utf8')) : null,
   onChange(event) {
@@ -120,6 +122,7 @@ function saveNight({ required = false, replaceBoth = false } = {}) {
   if (!nightStore) return true;
   try {
     const snapshot = snapshotNight({ scheduler: sched, access, settings, pending, tracked,
+      soloInvitations,
       photoDir: PHOTO_DIR });
     nightStore.save(snapshot);
     if (replaceBoth) nightStore.save(snapshot, { force: true });
@@ -747,6 +750,7 @@ function staffState() {
       tableRotation: sched.opts.tableRotation, weightedTables: sched.opts.weightedTables,
       battleCooldownMin: battleVote.cooldownMs / 60000 },
     solver: sched.solverStatus(),
+    soloInvitations: soloInvitations.view(),
     phoneBase: phoneBase(), ips, port: PORT, staffKey: STAFF_KEY,
     tables: [...sched.tables.values()].map(t => ({ ...t,
       url: access.get(t.id) ? access.url(phoneBase(), t.id) : null,
@@ -900,6 +904,14 @@ function soloDeviceError(code) {
   return error;
 }
 
+function requireSoloInvitation(table, token) {
+  if (!soloInvitations.verify(token, table.id)) {
+    const error = new Error('Demande au bar une invitation personnelle pour t’inscrire en solo. Ce lien sert à consulter la file.');
+    error.code = 'SOLO_INVITATION';
+    throw error;
+  }
+}
+
 function requireSoloControl(req, person) {
   if (sched.table(person.tableId, false)?.individual && soloDeviceOwner(req)?.id !== person.id) {
     throw soloDeviceError('SOLO_DEVICE_ACCESS');
@@ -911,6 +923,43 @@ function bindSoloDevice(req, res, person) {
   const hash = crypto.createHash('sha256').update(value).digest('hex');
   person.soloDeviceHashes = [...new Set([...(person.soloDeviceHashes || []), hash])];
   res.setHeader('Set-Cookie', `${SOLO_COOKIE}=${value}; Path=/; Max-Age=7776000; HttpOnly; SameSite=Lax${req.socket.localPort === PUBLIC_PORT ? '; Secure' : ''}`);
+}
+
+function joinPersonDurably(req, res, table, body, photo = null) {
+  const before = {
+    headcount: table.headcount, log: sched.log.slice(), version: sched.version,
+    invitations: soloInvitations.serialize(),
+    cookie: res.getHeader('Set-Cookie'),
+  };
+  let person;
+  try {
+    person = sched.join({ tableId: table.id, name: body.name, photo,
+      headcount: body.headcount });
+    if (table.individual) {
+      soloInvitations.consume(body.invitation, table.id);
+      bindSoloDevice(req, res, person);
+    }
+    // Ne jamais annoncer une inscription que le disque n'a pas conservée :
+    // sinon un QR individuel est brûlé et une place devient inaccessible.
+    saveNight({ required: true });
+  } catch (error) {
+    if (person) {
+      sched.people.delete(person.id);
+      sched.byToken.delete(person.token);
+    }
+    table.headcount = before.headcount;
+    soloInvitations.restore(before.invitations);
+    sched.log = before.log;
+    sched.version = before.version;
+    if (before.cookie === undefined) res.removeHeader('Set-Cookie');
+    else res.setHeader('Set-Cookie', before.cookie);
+    throw error;
+  }
+  res.nightAlreadySaved = true;
+  // Cette personne n'a pas encore de chanson : une erreur de synchronisation
+  // ne doit pas transformer une inscription sauvegardée en échec côté client.
+  try { sync(); } catch (error) { appLog(`Synchronisation après inscription différée : ${error.message}`); }
+  return { id: person.id, token: person.token };
 }
 
 function personAtTable(body) {
@@ -975,6 +1024,7 @@ function claimPersonDurably(body, req, res) {
   const attempts = code?.attempts;
   const oldToken = person?.token;
   const oldDeviceHashes = person?.soloDeviceHashes?.slice();
+  const oldSoloInvitations = soloInvitations.serialize();
   const oldLog = sched.log.slice();
   const oldVersion = sched.version;
   const hadCookie = res.hasHeader('Set-Cookie');
@@ -982,6 +1032,10 @@ function claimPersonDurably(body, req, res) {
   // Un code erroné continue de compter comme tentative. Le retour arrière
   // ci-dessous n'a lieu qu'après un code valide et une erreur de sauvegarde.
   const result = claimPerson(body, req, res);
+  if (person && sched.table(person.tableId, false)?.individual &&
+      soloInvitations.verify(body.invitation, person.tableId)) {
+    soloInvitations.consume(body.invitation, person.tableId);
+  }
   try {
     saveNight({ required: true });
   } catch (error) {
@@ -990,6 +1044,7 @@ function claimPersonDurably(body, req, res) {
     sched.byToken.set(oldToken, person.id);
     if (oldDeviceHashes) person.soloDeviceHashes = oldDeviceHashes;
     else delete person.soloDeviceHashes;
+    soloInvitations.restore(oldSoloInvitations);
     if (code) { code.attempts = attempts; personShareCodes.set(id, code); }
     sched.log = oldLog;
     sched.version = oldVersion;
@@ -1089,6 +1144,7 @@ function clearEvening() {
   if (pending) pending.cancelled = true;
   tracked = tracked.filter(tr => tr.cancelled || tr.startedAt || isOnStage(tr, current));
   for (const tableId of sched.tables.keys()) access.revoke(tableId);
+  soloInvitations.clear();
   sched.tables.clear();
   sched.people.clear();
   sched.byToken.clear();
@@ -1124,24 +1180,21 @@ const handlers = {
   'POST /api/join': async (req, res, body) => {
     const t = tableByAccess(body.table, body.access);
     if (t.individual && soloDeviceOwner(req)) throw soloDeviceError('SOLO_DEVICE_USED');
+    if (t.individual) requireSoloInvitation(t, body.invitation);
     if (t.headcount == null) {
       const e = new Error('Le bar doit d’abord indiquer le nombre de personnes à cette table.');
       e.code = 'NEED_HEADCOUNT'; throw e;
     }
     const photo = decodePhoto(body.photo);
-    const p = sched.join({ tableId: t.id, name: body.name, photo });
-    if (t.individual) bindSoloDevice(req, res, p);
-    sync();
-    return { token: p.token, id: p.id };
+    return joinPersonDurably(req, res, t, body, photo);
   },
   'POST /api/song': async (req, res, body, me) => { chooseFor(me, body.song, body.mode || 'replace'); return { ok: true }; },
   'POST /api/table/person': async (req, res, body) => {
     const t = tableByAccess(body.table, body.access);
     if (t.individual && soloDeviceOwner(req)) throw soloDeviceError('SOLO_DEVICE_USED');
+    if (t.individual) requireSoloInvitation(t, body.invitation);
     if (t.headcount == null) { const e = new Error('Effectif de la table à définir au bar.'); e.code = 'NEED_HEADCOUNT'; throw e; }
-    const p = sched.join({ tableId: t.id, name: body.name });
-    if (t.individual) bindSoloDevice(req, res, p);
-    sync(); return { id: p.id, token: p.token };
+    return joinPersonDurably(req, res, t, body);
   },
   'POST /api/table/person/share': async (req, res, body) => createPersonShareCode(personAtTable(body)),
   'POST /api/table/person/claim': async (req, res, body) => claimPersonDurably(body, req, res),
@@ -1273,6 +1326,23 @@ const handlers = {
     saveTables();
     return { ok: true };
   },
+  'POST /api/staff/solo-invite': async (req, res, body) => {
+    const t = sched.table(TableAccess.key(body.tableId || 'Comptoir'), false);
+    if (!t?.individual || !access.get(t.id)) throw new Error('Groupe de personnes seules indisponible.');
+    const free = t.headcount - sched.tableSingers(t.id).filter(p => !p.withdrawnAt).length;
+    const invitation = soloInvitations.issue(t.id, free);
+    const url = `${access.url(phoneBase(), t.id)}?invitation=${invitation.token}`;
+    let qr;
+    try { qr = await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' }); }
+    catch (error) { soloInvitations.revoke(invitation.id); throw error; }
+    sched.note(`Le bar a préparé une invitation individuelle pour ${t.name}.`, 'staff');
+    return { id: invitation.id, url, qr, expiresAt: invitation.expiresAt };
+  },
+  'POST /api/staff/solo-invite/revoke': async (req, res, body) => {
+    if (!soloInvitations.revoke(String(body.id || ''))) throw new Error('Invitation inconnue ou déjà utilisée.');
+    sched.note('Le bar a annulé une invitation individuelle.', 'staff');
+    return { ok: true };
+  },
   'POST /api/staff/table/rename': async (req, res, body) => {
     const t = sched.renameTable(TableAccess.key(body.tableId), body.name);
     saveTables(); sync(); return { ok: true, table: { id: t.id, name: t.name } };
@@ -1301,6 +1371,7 @@ const handlers = {
     const upcomingTracks = tracked.filter(tr => !isOnStage(tr, current) && tr.sel.ids.some(id => ids.has(id)));
     if (pending?.sel.ids.some(id => ids.has(id))) pending.cancelled = true;
     sched.tableLeft(tableId);
+    soloInvitations.revokeTable(tableId);
     access.revoke(tableId);
     saveTables();
     for (const tr of upcomingTracks) {
@@ -1424,8 +1495,6 @@ const handlers = {
     const tr = tracked.find(x => String(x.queueId) === String(body.queueId));
     if (!tr || tr.sel.ids.length !== 1) throw new Error('Choisis un passage solo encore visible dans KaraFun.');
     const partnerId = String(body.partnerId || '');
-    if (tracked.some(x => x !== tr && x.sel.ids.includes(partnerId)) ||
-        (pending && pending.sel.ids.includes(partnerId))) throw new Error('Ce partenaire a déjà une chanson envoyée à KaraFun.');
     const partner = sched.staffCountPartner(tr.sel.ids[0], partnerId);
     tr.sel.ids.push(partner.id);
     tr.sel.names.push(partner.name);
@@ -1536,6 +1605,7 @@ const server = http.createServer(async (req, res) => {
         const owned = [...u.searchParams.getAll('token'), ...headerTokens].slice(0, 40).map(token => sched.person(token))
           .filter(person => person && person.tableId === t.id && (!t.individual || person.id === soloOwner?.id));
         const view = publicState(owned[0] || null, t.id);
+        if (t.individual) view.soloInvitationReady = !!soloInvitations.verify(u.searchParams.get('invitation'), t.id);
         if (t.individual && soloOwner) {
           view.recoveryPeople = (view.recoveryPeople || []).filter(person => person.id === soloOwner.id);
         }
@@ -1611,12 +1681,12 @@ const server = http.createServer(async (req, res) => {
         }
       }
       const out = await h(req, res, body, me);
-      if (p !== '/api/table/person/claim') saveNight({ required: true });
+      if (p !== '/api/table/person/claim' && !res.nightAlreadySaved) saveNight({ required: true });
       return send(res, 200, out || { ok: true });
     }
     send(res, 405, 'Méthode non gérée', 'text/plain');
   } catch (e) {
-    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null });
+    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null });
   }
 });
 // Point d'entrée réservé au tunnel HTTPS. Lié uniquement à la boucle locale et
@@ -1645,6 +1715,7 @@ async function main() {
       photoDir: PHOTO_DIR });
     pending = recovered.pending;
     tracked = recovered.tracked;
+    soloInvitations.restore(recovered.soloInvitations);
     recoveredPending = recovered.recoveredPending;
     appLog(`Soirée restaurée : ${sched.tables.size} tables, ${sched.people.size} personnes, ${sched.Q.length} tickets.`);
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');

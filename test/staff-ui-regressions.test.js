@@ -20,6 +20,8 @@ class Element {
   querySelectorAll() { return []; }
   contains() { return false; }
   getAttribute() { return null; }
+  showModal() { this.open = true; }
+  close() { this.open = false; }
 }
 const elements = new Map();
 const get = id => elements.get(id) || (elements.set(id, new Element()), elements.get(id));
@@ -30,7 +32,10 @@ let connected = true;
 let manualChanges = [];
 let queue = [];
 let stage = null;
+let tracked = [];
 let extraSingers = [];
+let battle = { phase: 'idle' };
+let soloInvitations = [];
 const posts = [];
 const state = () => ({
   kf: { ready: connected, connected, base: 'demo', code: '1234', queue: [], events: [] },
@@ -38,10 +43,12 @@ const state = () => ({
   settings: { gap: 4, cap: 2, requirePresence: false, pushDelaySec: 10,
     playDelaySec: 8, auto: false, autoPlay: false, tableRotation: false, weightedTables: false },
   tables: [{ id: '1', name: 'Table 1', headcount: 2, activeCount: 1, count: 1 },
-    { id: '2', name: 'Table 2', headcount: 2, activeCount: 1, count: 1 }],
-  people: [singer, ...extraSingers], stage, tracked: [], ips: [], queue, blocked: [], log: [], manualChanges,
+    { id: '2', name: 'Table 2', headcount: 2, activeCount: 1, count: 1 },
+    { id: 'Comptoir', name: 'En solo', individual: true, headcount: 40, activeCount: 0, count: 0 }],
+  people: [singer, ...extraSingers], stage, tracked, ips: [], queue, blocked: [], log: [], manualChanges,
+  soloInvitations,
   phoneBase: 'http://127.0.0.1:3000', port: 3000, avgSlotMin: 4,
-  battle: { phase: 'idle' },
+  battle,
 });
 const response = data => ({ ok: true, json: async () => data });
 const fetch = async (url, options = {}) => {
@@ -49,6 +56,11 @@ const fetch = async (url, options = {}) => {
   if (url.startsWith('/api/staff/person/identify')) {
     posts.push(JSON.parse(options.body));
     return response({ ok: true });
+  }
+  if (url.startsWith('/api/staff/solo-invite')) {
+    soloInvitations = [{ id: 'one', tableId: 'Comptoir', expiresAt: Date.now() + 30 * 60 * 1000 }];
+    return response({ id: 'one', url: 'https://bar.example/t/Comptoir/secret?invitation=private',
+      qr: 'data:image/png;base64,abc', expiresAt: soloInvitations[0].expiresAt });
   }
   throw new Error(`Requête inattendue : ${url}`);
 };
@@ -67,6 +79,14 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.doesNotMatch(get('identityBody').innerHTML, /data-identity-verified|> Vérifié</,
     'le contrôle sans effet a disparu');
   assert.match(get('identityBody').innerHTML, /t-shirt rouge/, 'le repère reste affiché');
+  assert.equal(get('issueSoloInvitation').disabled, false);
+  await get('issueSoloInvitation').onclick();
+  await settle();
+  assert.equal(get('soloInviteDialog').open, true, 'le bar voit le QR individuel après sa création');
+  assert.match(get('soloInviteQr').src, /^data:image\/png;base64,/);
+  assert.match(get('soloInviteUrl').value, /\?invitation=private$/);
+  assert.match(get('soloInvitationList').innerHTML, /data-solo-revoke="one"/,
+    'le bar peut retrouver et annuler une invitation en attente');
 
   const row = { dataset: { identityPerson: 'alice' }, querySelector: () => ({ value: 'veste bleue' }) };
   get('identityBody').listeners.click({ target: { closest: selector =>
@@ -106,10 +126,19 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     { id: 'other', name: 'Yannick', tableId: '2', active: true },
     { id: 'gone', name: 'Parti', tableId: '2', active: false },
   ];
+  tracked = [{ queueId: 'following', ids: ['other'], startedAt: null }];
   poll();
   await settle();
   assert.equal(get('markDuoBox').hidden, false);
-  assert.match(get('markDuoPartner').innerHTML, /Même table[\s\S]*Camille[\s\S]*Autres tables et personnes en solo[\s\S]*Yannick/);
+  assert.match(get('markDuoPartner').innerHTML, /Même table[\s\S]*Camille[\s\S]*Autres tables et personnes en solo[\s\S]*Yannick/,
+    'un chanteur déjà chargé comme prochain titre KaraFun peut aussi chanter sur scène en duo');
   assert.doesNotMatch(get('markDuoPartner').innerHTML, /Parti/);
+  battle = { phase: 'requested', selectedSong: { title: 'Titre Battle' },
+    automation: { status: 'failed', failure: 'Permission Battle refusée par KaraFun pour cette télécommande.' } };
+  poll();
+  await settle();
+  assert.match(get('battleStatus').textContent, /Ajout automatique impossible : Permission Battle refusée/,
+    'un refus explicite ne doit pas être présenté comme un simple délai de confirmation');
+  assert.doesNotMatch(get('battleStatus').textContent, /\.\./, 'la ponctuation du message reste lisible');
   console.log('Bar : connexion et repères chanteurs OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

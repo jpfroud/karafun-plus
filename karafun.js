@@ -336,6 +336,12 @@ class KaraFunBridge extends EventEmitter {
       if (!Array.isArray(compatible) || !compatible.includes(1)) {
         throw new Error('Cette version de KaraFun ne confirme pas le mode Battle à distance.');
       }
+      // compatibleMods décrit les modes disponibles sur le PC, tandis que
+      // shownTypes décrit ceux autorisés pour cette télécommande. KaraFun peut
+      // annoncer battle: [1] tout en refusant AddToQueueRequest pour Battle.
+      if (this.raw.permissions?.shownTypes?.battle === false) {
+        throw new Error('Permission Battle refusée par KaraFun pour cette télécommande. Prépare la Battle dans KaraFun.');
+      }
     } else if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(this.base).hostname)) {
       throw new Error('Le mode Battle automatique nécessite la télécommande KaraFun récente.');
     }

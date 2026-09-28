@@ -176,7 +176,7 @@
           <span id="peopleCount" class="pill"></span>
         </div>
         <ul id="peopleList" class="person-list"></ul>
-        <button type="button" class="btn small alerts-toggle" id="alertsToggle">Activer les alertes de présence</button>
+        <button type="button" class="btn small alerts-toggle" id="alertsToggle">Activer les notifications</button>
         <p class="tiny muted alert-help" id="alertsHelp">Les duos, votes Battle et présences à confirmer apparaissent ici. Active le son et la vibration si tu veux être prévenu tant que cette page reste ouverte.</p>
       </div>
       <div class="card" id="addPersonBox">
@@ -201,7 +201,7 @@
 
   <section id="tab-queue" role="tabpanel" aria-labelledby="nav-queue" hidden>
     <div class="card">
-      <div class="queue-head"><div class="grow"><h2>La file des chansons</h2><p class="muted small queue-summary">Les chansons déjà prêtes passent en premier, suivies des prochains tours prévus par le bar. Une personne sans chanson n’a pas encore de place dans la file.</p></div></div>
+      <div class="queue-head"><div class="grow"><h2>La file des chansons</h2><p class="muted small queue-summary">Voici l’ordre actuel. Les horaires peuvent changer ; le prochain chanteur annoncé garde sa place, sauf imprévu.</p></div></div>
       <ul class="qlist" id="queueList"></ul>
       <p id="queueEmpty" class="empty-copy" hidden>Aucune chanson en attente pour le moment.</p>
     </div>
@@ -247,6 +247,11 @@
   let tableId = '', access = '';
   try { tableId = decodeURIComponent(segments[1] || ''); access = decodeURIComponent(segments[2] || ''); }
   catch (_) { /* Le lien est signalé ci-dessous. */ }
+  let soloInvitation = new URLSearchParams(location.search || '').get('invitation') || '';
+  function forgetSoloInvitation() {
+    soloInvitation = '';
+    window.history?.replaceState?.(null, '', location.pathname);
+  }
   const tokenKey = `kfTok:${tableId}:${access}`;
   const tokensKey = `kfPeople:${tableId}:${access}`;
   const alertsKey = `kfAlerts:${tableId}:${access}`;
@@ -323,11 +328,13 @@
   }
 
   function renderAlertPreference() {
-    $('alertsToggle').textContent = alertsEnabled ? 'Désactiver les alertes sonores' : 'Activer les alertes sonores';
+    const systemAvailable = !!(window.isSecureContext && window.Notification &&
+      (alertsEnabled ? Notification.permission === 'granted' : Notification.permission !== 'denied'));
+    $('alertsToggle').textContent = alertsEnabled ? 'Désactiver les notifications' : 'Activer les notifications';
     $('alertsToggle').setAttribute('aria-pressed', String(alertsEnabled));
-    $('alertsHelp').textContent = alertsEnabled
-      ? 'Le son et la vibration peuvent fonctionner tant que cette page reste ouverte. Les notifications système dépendent du navigateur et d’une connexion sécurisée.'
-      : 'Les demandes restent visibles sur cette page. Active le son et la vibration pour être averti tant qu’elle reste ouverte.';
+    $('alertsHelp').textContent = systemAvailable
+      ? 'Sur cette connexion sécurisée, autorise les notifications du navigateur. Elles, le son et la vibration fonctionnent tant que la page reste ouverte.'
+      : 'Les demandes restent visibles ici. Le son et la vibration peuvent alerter si la page reste ouverte ; les notifications du navigateur nécessitent HTTPS et son autorisation.';
   }
 
   function soundAlert() {
@@ -455,6 +462,7 @@
     if (invalidAccess) return showInvalidLink();
     const number = ++stateRequest;
     const params = new URLSearchParams({ table: tableId, access });
+    if (soloInvitation) params.set('invitation', soloInvitation);
     const credentials = Object.values(personTokens).filter(value => typeof value === 'string');
     if (legacyToken && !credentials.includes(legacyToken)) credentials.push(legacyToken);
     try {
@@ -520,7 +528,7 @@
     $('peopleCount').hidden = individual;
     renderStage(queue);
     $('joinIntro').textContent = individual
-      ? 'Inscris-toi avec ton prénom. Déjà inscrit mais tu as changé de téléphone ? Demande au bar un code de reprise avant de créer un autre profil. Dans « En solo », chaque téléphone gère uniquement ses propres chansons.'
+      ? 'Cette invitation du bar est personnelle et ne sert qu’une fois. Inscris-toi avec ton prénom pour choisir tes chansons.'
       : 'Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.';
     $('joinNameLabel').textContent = individual ? 'Ton prénom' : 'Prénom de la première personne';
     $('quickSongIntro').textContent = individual
@@ -532,10 +540,10 @@
       : 'Seul le téléphone associé à une personne peut modifier ses chansons.';
     $('peopleCard').hidden = individual && owned.length === 0;
     $('waitingLabel').textContent = individual ? 'Mes chansons à choisir' : 'À notre table, sans chanson';
-    $('joinBox').hidden = individual ? owned.length > 0 || full : people.length > 0;
+    $('joinBox').hidden = individual ? owned.length > 0 || full || !state.soloInvitationReady : people.length > 0;
     $('headcountNotice').hidden = !!state.table?.headcount;
-    $('joinForm').querySelector('button[type=submit]').disabled = !state.table?.headcount || full;
-    $('tableBox').hidden = individual ? owned.length === 0 && !full && recoveryPeople.length === 0 : people.length === 0;
+    $('joinForm').querySelector('button[type=submit]').disabled = !state.table?.headcount || full || (individual && !state.soloInvitationReady);
+    $('tableBox').hidden = individual ? owned.length === 0 && !full && recoveryPeople.length === 0 && state.soloInvitationReady : people.length === 0;
     const others = individual ? [] : people.filter(person => person.active && !manages(person.id));
     $('claimBox').hidden = individual ? recoveryPeople.length === 0 : others.length === 0;
     $('claimHeading').textContent = individual ? 'Récupérer mes chansons' : 'Déjà inscrit à cette table ?';
@@ -566,19 +574,17 @@
     const owned = managedPeople();
     const individual = !!state.table?.individual;
     const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
-    const canRegister = !full && (!individual || !owned.length) &&
+    const canRegister = !full && (!individual || (!owned.length && state.soloInvitationReady)) &&
       Number.isInteger(state.table?.headcount) && state.table.headcount > 0;
     if (individual) {
-      const explanation = recoveryPeople.length
-        ? canRegister
-          ? 'Déjà inscrit ? Reprends tes chansons avec le code à 4 chiffres du bar. Sinon, inscris-toi avec ton prénom.'
-          : 'Le groupe « En solo » est complet pour les nouvelles inscriptions. Si tu étais déjà inscrit, reprends tes chansons avec le code à 4 chiffres du bar.'
-        : canRegister
-          ? 'Inscris-toi avec ton prénom pour choisir tes chansons. Si tu avais déjà un profil, demande plutôt un code de reprise au bar. Chaque personne venue seule gère seulement les siennes.'
-          : 'Le groupe « En solo » est complet. Demande au bar d’augmenter le nombre de places.';
+      const explanation = full
+        ? 'Les places « En solo » sont toutes prises. Demande au bar de vérifier les départs.'
+        : canRegister ? 'Cette invitation personnelle permet de t’inscrire. Si tu avais déjà un profil, demande plutôt un code de reprise au bar.'
+          : soloInvitation ? 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.'
+            : 'Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.';
       const actions = `${recoveryPeople.length ? '<button type="button" class="btn" data-access-go="claim">Récupérer mes chansons</button>' : ''}${canRegister
         ? '<button type="button" class="btn primary" data-access-go="register">M’inscrire</button>' : ''}`;
-      $('noSingerBox').hidden = owned.length > 0 || !full;
+      $('noSingerBox').hidden = owned.length > 0 || canRegister;
       $('noSingerText').textContent = explanation;
       $('noSingerActions').innerHTML = actions;
       $('catalogAccessBox').hidden = owned.length > 0;
@@ -677,8 +683,8 @@
       const mine = list(item.ids).some(id => ids.has(String(id)));
       const name = item.singer || 'Chanteur';
       const when = eta(item.eta);
-      const source = item.waitingPresence ? 'Présence à confirmer' : item.source === 'karafun' ? 'Prête dans KaraFun' : item.source === 'envoi' ? 'Ajout en cours' : item.future ? 'Titre suivant, après son premier passage' : 'Passage prévu';
-      return `<li class="${mine ? 'me' : ''}"><span class="num">${esc(item.pos || index + 1)}</span><div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${state?.table?.individual ? 'ta chanson' : 'ta table'}</span>` : ''}</div><div class="song">${esc(fullSong(item))} · ${source}</div></div><span class="eta">${when ? esc(when) : '—'}</span></li>`;
+      const source = item.waitingPresence ? 'Présence à confirmer' : item.source === 'karafun' ? 'Prête dans KaraFun' : item.source === 'envoi' ? 'Ajout en cours' : item.future ? 'Titre suivant, après son premier passage' : '';
+      return `<li class="${mine ? 'me' : ''}"><span class="num">${esc(item.pos || index + 1)}</span><div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${state?.table?.individual ? 'ta chanson' : 'ta table'}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${source}` : ''}</div></div><span class="eta">${when ? esc(when) : '—'}</span></li>`;
     }).join('');
     const localWaiting = waiting.filter(person => ids.has(String(person.id)));
     $('waitingEmpty').hidden = localWaiting.length > 0;
@@ -743,8 +749,9 @@
     if (!name) return toast('Indique un prénom.', true);
     const button = $('joinForm').querySelector('button[type=submit]');
     perform(button, async () => {
-      const result = await post('/api/join', { name });
+      const result = await post('/api/join', { name, ...(state?.table?.individual ? { invitation: soloInvitation } : {}) });
       if (result.token) savePersonToken(result.id, result.token);
+      if (state?.table?.individual) forgetSoloInvitation();
       $('firstName').value = '';
       await refresh();
       toast(`${name} est inscrit.`);
@@ -784,8 +791,10 @@
     $('claimForm').addEventListener('submit', e => {
       e.preventDefault();
       perform($('claimSubmit'), async () => {
-        const result = await post('/api/table/person/claim', { personId: person.id, code: $('claimCode').value });
+        const result = await post('/api/table/person/claim', { personId: person.id, code: $('claimCode').value,
+          ...(individual && soloInvitation ? { invitation: soloInvitation } : {}) });
         savePersonToken(result.id, result.token);
+        if (individual && soloInvitation) forgetSoloInvitation();
         closeSheet({ keepPending: true }); await refresh(); toast(`${person.name} est maintenant géré sur ce téléphone.`);
         continuePendingSong();
       });
@@ -868,14 +877,17 @@
   });
 
   $('alertsToggle').addEventListener('click', async () => {
-    if (alertsEnabled) { saveAlertPreference(false); toast('Alertes sonores désactivées.'); return; }
+    if (alertsEnabled) { saveAlertPreference(false); toast('Alertes désactivées.'); return; }
     saveAlertPreference(true);
     // Le clic débloque l'audio sur les navigateurs mobiles qui l'exigent.
     soundAlert();
     if (window.isSecureContext && window.Notification && Notification.permission === 'default') {
       try { await Notification.requestPermission(); } catch (_) { /* Notification système facultative. */ }
     }
-    toast('Alertes activées sur ce téléphone tant que la page reste ouverte.');
+    renderAlertPreference();
+    toast(window.isSecureContext && window.Notification?.permission === 'granted'
+      ? 'Notifications activées tant que la page reste ouverte.'
+      : 'Alertes dans la page activées tant qu’elle reste ouverte.');
   });
   function openBattleProposal() {
     const owned = managedPeople();

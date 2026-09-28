@@ -187,6 +187,9 @@ NightStateStore.prototype.save = function(snapshot, options) {
     const latest = snapshots.map(file => JSON.parse(fs.readFileSync(file, 'utf8')))
       .sort((a, b) => b.sequence - a.sequence)[0];
     assert.equal(latest.payload.scheduler.people.filter(person => person.photo?.file).length, 39);
+    const pendingSolo = await first.ok('/api/staff/solo-invite', { tableId: 'Comptoir' });
+    const pendingSoloToken = new URL(pendingSolo.url).searchParams.get('invitation');
+    assert.ok(pendingSoloToken);
     await stop(first, true); // Coupure abrupte après sauvegarde, sans routine d’arrêt.
 
     const second = await launch();
@@ -196,6 +199,8 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.equal(state.settings.requirePresence, true);
     assert.equal(state.settings.battleCooldownMin, 4);
     assert.equal(state.people.length, 41);
+    assert.ok(state.soloInvitations.some(invitation => invitation.id === pendingSolo.id),
+      'une invitation non consommée survit à un crash');
     assert.ok(state.queue.some(row => row.ids?.includes(alice.id)), 'La file est restaurée.');
     for (const [id, digest] of photoHashes) {
       assert.equal(state.people.find(person => person.id === id).photoUrl, `/photo/${id}`);
@@ -220,10 +225,38 @@ NightStateStore.prototype.save = function(snapshot, options) {
     const soloAccess = new URL((await second.staff()).tables.find(table =>
       table.id === 'Comptoir').url).pathname.split('/').pop();
     const soloBody = extra => ({ table: 'Comptoir', access: soloAccess, ...extra });
-    const soloJoin = await second.request('/api/table/person', soloBody({ name: 'Soliste' }));
+    fs.writeFileSync(failMarker, 'fail once');
+    const failedSoloJoin = await second.request('/api/table/person', soloBody({
+      name: 'Soliste', invitation: pendingSoloToken,
+    }));
+    assert.equal(failedSoloJoin.status, 400, 'une inscription solo sans sauvegarde échoue proprement');
+    assert.equal(failedSoloJoin.cookie, '', 'aucun cookie n’est remis après la panne');
+    assert.ok(!(await second.staff()).people.some(person => person.name === 'Soliste'),
+      'la personne n’occupe pas de place fantôme après la panne');
+    assert.ok((await second.staff()).soloInvitations.some(invitation => invitation.id === pendingSolo.id),
+      'le QR individuel reste utilisable après la panne');
+    const soloJoin = await second.request('/api/table/person', soloBody({
+      name: 'Soliste', invitation: pendingSoloToken,
+    }));
     assert.equal(soloJoin.status, 200);
+    assert.equal((await second.request('/api/table/person', soloBody({
+      name: 'Rejeu', invitation: pendingSoloToken,
+    }))).status, 403, 'le code déjà utilisé reste consommé après restauration');
     const solo = soloJoin.data;
     assert.ok(soloJoin.cookie, 'le premier téléphone possède un cookie');
+    const secondInvite = await second.ok('/api/staff/solo-invite', { tableId: 'Comptoir' });
+    const secondToken = new URL(secondInvite.url).searchParams.get('invitation');
+    fs.writeFileSync(failMarker, 'fail once');
+    const failedLegacyJoin = await second.request('/api/join', soloBody({
+      name: 'Autre soliste', invitation: secondToken,
+    }));
+    assert.equal(failedLegacyJoin.status, 400, 'l’autre route d’inscription suit la même transaction');
+    assert.equal(failedLegacyJoin.cookie, '');
+    assert.ok(!(await second.staff()).people.some(person => person.name === 'Autre soliste'));
+    const secondJoin = await second.request('/api/join', soloBody({
+      name: 'Autre soliste', invitation: secondToken,
+    }));
+    assert.equal(secondJoin.status, 200, 'le même QR fonctionne après retour du disque');
     const code = await second.ok('/api/table/person/share', soloBody({
       personId: solo.id, token: solo.token,
     }), soloJoin.cookie);

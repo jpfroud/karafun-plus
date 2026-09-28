@@ -62,7 +62,11 @@ class Scheduler {
     this.solverBridge = this.opts.solverEnabled ? new TimefoldBridge() : null;
     this.solverPlan = null;
     this.solverRequestedVersion = -1;
+    this.solverRequestedFingerprint = null;
     this.solverPendingVersion = -1;
+    this.solverPendingFingerprint = null;
+    this.solverPendingRequestId = null;
+    this.solverNextStartedAt = 0;
     this.solverPromise = null;
     this.solverLastError = null;
   }
@@ -102,6 +106,41 @@ class Scheduler {
         (p.backlog || []).map(song => [song.entryId, song.duet || null])] : [pid];
     });
     const context = { people, Q: this.Q, lastGroup: this.lastGroup,
+      roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
+      tableServeCounts: [...this.tableServeCounts], duetCooldowns: [...this.duetCooldowns],
+      opts: this.opts, appearanceSerial: this.appearanceSerial,
+      ...this.manualOverrideState() };
+    return crypto.createHash('sha256').update(JSON.stringify(context)).digest('hex');
+  }
+
+  // Empreinte séparée de celle des annulations manuelles. Une inscription sans
+  // chanson ou un ticket vide ne change aucun problème soumis à Timefold ;
+  // elle ne doit pas interrompre quinze secondes de recherche pour les autres.
+  solverContextFingerprint() {
+    const readyQ = this.Q.filter(pid => {
+      const p = this.people.get(pid);
+      return p && !p.withdrawnAt && this.songsOf(p).length > 0;
+    });
+    const relevant = new Set();
+    const entries = readyQ.map(pid => {
+      const p = this.people.get(pid);
+      relevant.add(pid);
+      const songs = this.songsOf(p);
+      for (const song of songs) {
+        if (song.duet?.state === 'accepted') relevant.add(song.duet.partnerId);
+      }
+      return [pid, p.group, p.sung, p.duetGuestCount || 0,
+        p.lastAppearanceTurn || 0, p.over, p.held, p.waitingSince || 0,
+        songs.map(song => [song.entryId, song.duet || null])];
+    });
+    // Un invité sans ticket reste pertinent : son dernier passage physique
+    // influence directement le score et la distance de son prochain duo.
+    const physical = [...relevant].map(pid => {
+      const p = this.people.get(pid);
+      return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
+        p.lastAppearanceTurn || 0] : [pid];
+    });
+    const context = { entries, physical, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
       tableServeCounts: [...this.tableServeCounts], duetCooldowns: [...this.duetCooldowns],
       opts: this.opts, appearanceSerial: this.appearanceSerial,
@@ -663,9 +702,22 @@ class Scheduler {
   // version courante ; un résultat ancien ne peut jamais déplacer un titre.
   _maybeRequestSolver() {
     if (!this.solverBridge || !this.solverBridge.available) return false;
-    if (this.solverPlan?.version === this.version) return false;
-    if (this.solverRequestedVersion === this.version) {
-      return this.solverPendingVersion === this.version;
+    // `version` sert aussi aux rafraîchissements d'interface et au journal.
+    // Une note ou une photo ne doit donc pas redémarrer Timefold, ni faire
+    // vaciller un classement déjà publié.
+    const fingerprint = this.solverContextFingerprint();
+    if (this.solverPlan?.fingerprint === fingerprint) {
+      this.solverPlan.version = this.version;
+      this.solverRequestedVersion = this.version;
+      return false;
+    }
+    if (this.solverRequestedFingerprint === fingerprint) {
+      this.solverRequestedVersion = this.version;
+      if (this.solverPendingFingerprint === fingerprint) {
+        this.solverPendingVersion = this.version;
+        return true;
+      }
+      return false;
     }
     const before = this.version;
     const base = this._forecast(false, [], null, true);
@@ -674,6 +726,8 @@ class Scheduler {
         'Plus de 200 titres prêts : ordonnanceur de repli actif.' :
         base.some(item => !item.entryId) ? 'Titre sans identifiant : ordonnanceur de repli actif.' : null;
       this.solverRequestedVersion = before;
+      this.solverRequestedFingerprint = fingerprint;
+      this.solverNextStartedAt = 0;
       return false;
     }
     const rows = base.map((item, previousIndex) => {
@@ -703,7 +757,15 @@ class Scheduler {
       if (!groupReadySets.has(singer.group)) groupReadySets.set(singer.group, new Set());
       groupReadySets.get(singer.group).add(singerId);
     }
-    const request = { requestId: `${before}-${id()}`, performances: rows,
+    // Un petit groupe est vite stabilisé ; les grandes soirées bénéficient
+    // de plus de recherche. Un seul plan final est publié pour cette version.
+    const adaptiveBudgetMs = rows.length < 20 ? 3000 : rows.length < 60 ? 8000 : 15000;
+    // Les tests de simulation peuvent réduire le temps, sans changer la
+    // politique de production ni la fonction de score utilisée.
+    const budgetMs = Number.isInteger(this.opts.solverBudgetMs) &&
+      this.opts.solverBudgetMs >= 100 && this.opts.solverBudgetMs <= 30000 ?
+      this.opts.solverBudgetMs : adaptiveBudgetMs;
+    const request = { requestId: `${before}-${id()}`, budgetMs, performances: rows,
       pastAppearance, physicalCount, pinnedUntil,
       roundPeople: [...this.roundPeople],
       roundGroups: [...this.roundGroups],
@@ -713,9 +775,16 @@ class Scheduler {
         this.lastGroup ? [this.lastGroup] : [],
       tableRotation: !!this.opts.tableRotation, weightedTables: !!this.opts.weightedTables };
     this.solverRequestedVersion = before;
+    this.solverRequestedFingerprint = fingerprint;
     this.solverPendingVersion = before;
+    this.solverPendingFingerprint = fingerprint;
+    this.solverPendingRequestId = request.requestId;
+    if (!this.solverNextStartedAt && !this.reservedNext && !this.manualOrderActive) {
+      this.solverNextStartedAt = Date.now();
+    }
     this.solverPromise = this.solverBridge.solve(request).then(response => {
-      if (this.version !== before) return false;
+      if (this.solverPendingRequestId !== request.requestId ||
+          this.solverContextFingerprint() !== fingerprint) return false;
       const order = response.order;
       const originalIds = rows.map(row => row.id);
       if (!Array.isArray(order) || order.length !== originalIds.length ||
@@ -725,15 +794,25 @@ class Scheduler {
       }
       this.version++;
       this.solverPlan = { version: this.version,
+        fingerprint,
         ranks: new Map(order.map((entry, index) => [entry, index])) };
       this.solverRequestedVersion = this.version;
       this.solverPendingVersion = -1;
+      this.solverPendingFingerprint = null;
+      this.solverPendingRequestId = null;
       this.solverLastError = null;
       return true;
     }).catch(error => {
-      if (this.solverPendingVersion === before) this.solverPendingVersion = -1;
-      this.solverLastError = error.message;
-      if (!this.solverBridge.available) this.solverRequestedVersion = -1;
+      if (this.solverPendingRequestId === request.requestId) {
+        this.solverPendingVersion = -1;
+        this.solverPendingFingerprint = null;
+        this.solverPendingRequestId = null;
+        this.solverLastError = error.message;
+        if (!this.solverBridge.available) {
+          this.solverRequestedVersion = -1;
+          this.solverRequestedFingerprint = null;
+        }
+      }
       return false; // l'ancien ordonnanceur reste disponible
     });
     return true;
@@ -743,10 +822,20 @@ class Scheduler {
     const pending = this._maybeRequestSolver();
     return pending ? this.solverPromise : Promise.resolve(this.solverPlan?.version === this.version);
   }
+  // Une chanson ne doit pas rester muette 15 s lorsque la file vient d'être
+  // créée. Après cette courte fenêtre, l'heuristique locale peut annoncer et
+  // réserver le prochain passage ; Timefold poursuit le reste en arrière-plan.
+  _solverBlocksNext() {
+    return this.solverPendingFingerprint !== null &&
+      this.solverNextStartedAt > 0 &&
+      Date.now() - this.solverNextStartedAt < 2500 &&
+      !this.reservedNext && !this.manualOrderActive;
+  }
   solverStatus() {
     return { configured: !!this.solverBridge,
       available: !!this.solverBridge?.available,
       pending: this.solverPendingVersion === this.version,
+      blockingNext: this._solverBlocksNext(),
       fallbackLastError: this.solverLastError || this.solverBridge?.lastError || null };
   }
   closeSolver() { this.solverBridge?.close(); }
@@ -936,7 +1025,7 @@ class Scheduler {
   // Renvoie la prochaine chanson à envoyer (sans rien modifier), ou null.
   select() {
     const waitingForPlan = this._maybeRequestSolver();
-    if (waitingForPlan && !this.reservedNext && !this.manualOrderActive) return null;
+    if (waitingForPlan && this._solverBlocksNext()) return null;
     if (this.reservedNext) {
       const p = this.people.get(this.reservedNext.personId);
       const duet = p?.song?.duet;
@@ -969,6 +1058,7 @@ class Scheduler {
     if (!selected) return null;
     if (!this.reservedNext || this.reservedNext.personId !== selected.ids[0]) {
       this.reservedNext = { personId: selected.ids[0], reservedAt: Date.now() };
+      this.solverNextStartedAt = 0;
       this.version++;
     }
     return selected;
@@ -981,7 +1071,7 @@ class Scheduler {
     // En mode confirmation, la réservation annonce effectivement quelqu'un
     // aux clients. Elle attend donc le plan courant comme `select()` ; sinon
     // le nom affiché pourrait changer deux secondes plus tard.
-    if (this._maybeRequestSolver() && !this.reservedNext && !this.manualOrderActive) return null;
+    if (this._maybeRequestSolver() && this._solverBlocksNext()) return null;
     const visible = this.presenceView(excludeIds, provisional).filter(v => !v.future);
     const kept = visible.find(v => v.ids[0] === this.reservedNext?.personId);
     if (kept) return kept;
@@ -989,12 +1079,17 @@ class Scheduler {
     const first = visible[0];
     if (!first) return null;
     this.reservedNext = { personId: first.ids[0], reservedAt: Date.now() };
+    this.solverNextStartedAt = 0;
     this.version++;
     return first;
   }
 
   releaseNext() {
-    if (this.reservedNext) { this.reservedNext = null; this.version++; }
+    if (this.reservedNext) {
+      this.reservedNext = null;
+      this.solverNextStartedAt = 0;
+      this.version++;
+    }
   }
 
   // Simule les titres suivants sans consommer les vrais tickets. Une personne
