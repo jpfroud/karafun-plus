@@ -29,7 +29,7 @@
       <button class="btn small" id="skipBtn">⏭ Passer</button>
       <button class="btn small danger" id="absentBtn" hidden>Absent : retirer la suivante</button>
     </div>
-    <div id="markDuoBox" class="mark-duo" hidden><label for="markDuoPartner">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button></div></div>
+    <div id="markDuoBox" class="mark-duo" hidden><label for="markDuoPartner">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button></div><p class="tiny muted">Si son titre est déjà dans KaraFun, cette action ne change pas sa place.</p></div>
     <div class="control-stack">
       <label class="switch"><input type="checkbox" id="auto"> Envoi automatique à KaraFun</label>
       <label class="switch"><input type="checkbox" id="autoPlay"> Lancer la lecture automatiquement</label>
@@ -59,7 +59,13 @@
       <label for="tableHeadcount">Nombre de personnes <input id="tableHeadcount" type="number" value="4" min="1" max="40" required></label>
       <button class="btn primary" id="createTable">Ajouter la table</button>
     </div>
-    <p class="small muted">Laisse le nom vide pour ajouter le prochain numéro. L'effectif proposé est 4 pour une table. Le groupe « En solo » est toujours disponible pour les clients venus seuls ; chacun garde son propre tour.</p>
+    <p class="small muted">Laisse le nom vide pour ajouter le prochain numéro. L'effectif proposé est 4 pour une table. Le groupe « En solo » est toujours disponible ; chacun garde son propre tour.</p>
+    <div class="solo-invite-panel">
+      <div><strong>Accueillir une personne seule</strong><p class="small muted">Crée un QR individuel et montre-le à cette personne. Il permet une seule inscription pendant 30 minutes. Le QR commun « En solo » sert seulement à voir la file ou à reprendre ses chansons.</p></div>
+      <button type="button" class="btn primary" id="issueSoloInvitation">Créer un QR individuel</button>
+      <div id="soloInvitationStatus" class="small muted" role="status"></div>
+      <div id="soloInvitationList" class="solo-invite-list"></div>
+    </div>
     <div id="tBody" class="table-cards"></div>
     <div class="table-reset"><button class="btn small danger" id="clearTables">Supprimer toutes les tables</button><span class="small muted">À la fin de la soirée : efface les chanteurs, leurs titres et les anciens QR. Le titre déjà sur scène continue.</span></div>
   </section>
@@ -117,10 +123,11 @@
 
   <section class="card battle-panel">
     <div class="section-heading"><div><div class="eyebrow">Animation de la salle</div><h2>Battle KaraFun</h2></div><span class="pill" id="battlePill">Aucune demande</span></div>
-    <p class="small muted">Tout le monde chante avec son téléphone comme micro. Après un vote favorable, le titre est préparé dans KaraFun en mode Battle ; le bar laisse les joueurs rejoindre avant de le lancer.</p>
+    <p class="small muted">Tout le monde chante avec son téléphone comme micro. Après un vote favorable, l’application tente de préparer le titre en mode Battle si KaraFun l’autorise. Le bar laisse les joueurs rejoindre avant de le lancer.</p>
     <p class="battle-safety">Avant de montrer le QR KaraFun, vérifie sur l’abonnement Pro que les invités ne peuvent ni ajouter de titre ni modifier la file ou la lecture, et que le compte <b id="helperLogin">FileKaraoke</b> garde ces droits. Teste avec un téléphone client. Si ce réglage est impossible, ne montre pas le QR Battle et ferme la demande.</p>
     <div id="battleStatus" class="battle-status" role="status">Aucun vote en cours.</div>
-    <div class="battle-settings"><label for="battleCooldownMin">Délai entre deux votes Battle <input id="battleCooldownMin" type="number" min="1" max="120"> minutes</label><button class="btn small" id="saveBattleCooldown">Enregistrer</button><button class="btn small" id="enableStaffAlerts">Activer les alertes sonores</button></div>
+    <div class="battle-settings"><label for="battleCooldownMin">Délai entre deux votes Battle <input id="battleCooldownMin" type="number" min="1" max="120"> minutes</label><button class="btn small" id="saveBattleCooldown">Enregistrer</button><button class="btn small" id="enableStaffAlerts">Activer les notifications</button></div>
+    <p class="tiny muted">Sur HTTPS avec autorisation, le navigateur peut notifier si cette page reste ouverte. Sur HTTP, les demandes restent visibles dans la page et une alerte sonore peut retentir ; aucune alerte ne fonctionne après fermeture du navigateur.</p>
     <div class="row wrap" id="battleActions" hidden><button class="btn small primary" id="battleDone">Battle organisée</button><button class="btn small" id="battleDismiss">Ne pas lancer cette fois</button></div>
     <button class="btn small primary" id="battleFinished" hidden>Battle terminée, résultats annoncés</button>
   </section>
@@ -138,6 +145,7 @@
 </main>
 <div id="toast" class="toast" hidden></div>
 <dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle">Transférer un chanteur</h2></div><p class="small">Sur l’autre téléphone, scanne le QR de la table, choisis son nom et saisis ce code. L’ancien téléphone perdra la gestion de ce chanteur.</p><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
+<dialog id="soloInviteDialog" class="staff-dialog" aria-labelledby="soloInviteTitle"><h2 id="soloInviteTitle">QR pour une personne seule</h2><p class="small">Montre ce QR à une seule personne. Dès son inscription, il ne fonctionnera plus pour créer un autre profil.</p><div class="staff-qr solo-invite-qr"><img id="soloInviteQr" alt="QR individuel pour une inscription En solo"></div><p class="small muted" id="soloInviteExpires"></p><input id="soloInviteUrl" class="solo-invite-url" readonly aria-label="Lien individuel d’inscription"><div class="row wrap"><button type="button" class="btn small" id="soloInviteCopy">Copier le lien</button><button type="button" class="btn small primary" id="soloInviteClose">Fermer</button></div></dialog>
 
 <script>
 (() => {
@@ -146,6 +154,9 @@
   const kq = key ? `?key=${encodeURIComponent(key)}` : '';
   let S = null; let formInit = false; let dragging = null; let moveArmed = null;
   let alertsEnabled = localStorage.getItem('bar-alerts') === 'yes';
+  function renderStaffAlerts() {
+    $('enableStaffAlerts').textContent = alertsEnabled ? 'Désactiver les notifications' : 'Activer les notifications';
+  }
   let audioContext = null;
   $('staffQr').onerror = () => { $('staffQr').hidden = true; $('staffQrError').hidden = false; };
   $('staffQr').onload = () => { $('staffQr').hidden = false; $('staffQrError').hidden = true; };
@@ -342,7 +353,7 @@
       if (S.battle?.phase === 'requested' && previousBattle !== currentBattle) {
         toast('La salle demande une Battle : organise-la dans KaraFun.');
         ring();
-        if (document.hidden && window.Notification?.permission === 'granted') {
+        if (alertsEnabled && document.hidden && window.Notification?.permission === 'granted') {
           try { new Notification('Battle demandée par la salle', {
             body: 'Ouvre la page du bar pour organiser la Battle dans KaraFun.', tag: 'battle-karaoke',
           }); } catch (_) { /* Le panneau reste visible dans la page. */ }
@@ -370,7 +381,7 @@
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     if (document.activeElement !== $('battleCooldownMin')) $('battleCooldownMin').value = S.settings.battleCooldownMin || 15;
-    $('enableStaffAlerts').textContent = alertsEnabled ? 'Alertes sonores activées' : 'Activer les alertes sonores';
+    renderStaffAlerts();
     if (!formInit) {
       $('code').value = S.code || '';
       $('gap').value = S.settings.gap; $('cap').value = S.settings.cap; $('requirePresence').checked = S.settings.requirePresence;
@@ -389,8 +400,7 @@
     $('absentBtn').dataset.qid = nextTracked ? nextTracked.queueId : '';
     $('pendingTxt').textContent = S.pending ? `Envoi en cours à KaraFun : ${S.pending.label} — ${S.pending.title}` : '';
     const stageOwner = S.stage?.ours && S.stage.ids?.length === 1 ? S.people.find(p => p.id === S.stage.ids[0]) : null;
-    const candidates = stageOwner ? S.people.filter(p => p.active !== false && p.id !== stageOwner.id &&
-      !S.tracked.some(t => t.queueId !== S.stage.queueId && t.ids?.includes(p.id))) : [];
+    const candidates = stageOwner ? S.people.filter(p => p.active !== false && p.id !== stageOwner.id) : [];
     const sameTable = candidates.filter(p => p.tableId === stageOwner.tableId);
     const otherTables = candidates.filter(p => p.tableId !== stageOwner.tableId);
     const partnerOption = p => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(S.tables.find(t => t.id === p.tableId)?.name || p.tableId)}</option>`;
@@ -498,6 +508,20 @@
       let n = 1; while (used.has(String(n))) n++;
       $('tableName').placeholder = `Table ${n}`;
     }
+    const soloTable = S.tables.find(t => t.id === 'Comptoir' && t.individual);
+    const soloPending = (S.soloInvitations || []).filter(invitation => invitation.tableId === soloTable?.id);
+    const soloFree = soloTable ? Math.max(0, soloTable.headcount - soloTable.activeCount - soloPending.length) : 0;
+    $('issueSoloInvitation').disabled = soloFree === 0;
+    $('soloInvitationStatus').textContent = soloTable
+      ? `${soloPending.length} invitation${soloPending.length > 1 ? 's' : ''} en attente · ${soloFree} place${soloFree > 1 ? 's' : ''} encore disponible${soloFree > 1 ? 's' : ''}`
+      : 'Le groupe « En solo » est indisponible.';
+    $('soloInvitationList').innerHTML = soloPending.map((invitation, index) =>
+      `<span class="small">QR ${index + 1} valable jusqu’à ${hhmm(invitation.expiresAt)} <button type="button" class="btn small danger" data-solo-revoke="${esc(invitation.id)}">Annuler</button></span>`).join('');
+    $('soloInvitationList').querySelectorAll('[data-solo-revoke]').forEach(button => button.onclick = () => {
+      if (confirm('Annuler ce QR individuel ? Il ne permettra plus de s’inscrire.')) {
+        act('/api/staff/solo-invite/revoke', { id: button.dataset.soloRevoke }, 'Invitation annulée');
+      }
+    });
     renderIdentities();
     const battle = S.battle || { phase: 'idle' };
     const remaining = (at) => Math.max(0, Math.ceil((Number(at) - Date.now()) / 1000));
@@ -520,10 +544,11 @@
     $('battlePill').className = 'pill' + (['failed', 'after'].includes(battleStep) ? ' bad' :
       ['queued', 'playing'].includes(battleStep) || battle.phase === 'voting' ? ' ok' : '');
     $('battleStatus').className = 'battle-status' + (['failed', 'after'].includes(battleStep) ? ' battle-requested' : '');
+    const battleFailure = String(battle.automation?.failure || 'Vérifie KaraFun').replace(/[.!?\s]+$/, '');
     $('battleStatus').textContent = battleStep === 'waiting'
       ? `Battle demandée sur ${selectedSong}. Le prochain chanteur déjà annoncé garde sa place ; la Battle sera ajoutée ensuite.`
       : battleStep === 'sending' ? `Envoi de ${selectedSong} à KaraFun. Le mode Battle doit être confirmé avant de lancer le titre.`
-      : battleStep === 'failed' ? `Ajout automatique non confirmé : ${battle.automation.failure || 'vérifie KaraFun'}. Organise la Battle manuellement ou ferme la demande.`
+      : battleStep === 'failed' ? `${battleFailure.startsWith('Permission Battle refusée') ? 'Ajout automatique impossible' : 'Ajout automatique non confirmé'} : ${battleFailure}. Organise la Battle manuellement ou ferme la demande.`
       : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis lance la Battle depuis KaraFun. Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'
       : battleStep === 'manual' ? 'Battle organisée manuellement : laisse les téléphones rejoindre, lance-la dans KaraFun, annonce les résultats, puis indique ici qu’elle est terminée. La file reste en pause.'
@@ -634,10 +659,30 @@
         try { await Notification.requestPermission(); } catch (_) { /* Alerte visible dans la page. */ }
       }
     }
-    $('enableStaffAlerts').textContent = alertsEnabled ? 'Alertes sonores activées' : 'Activer les alertes sonores';
+    renderStaffAlerts();
   };
   $('shareClose').onclick = () => $('shareDialog').close();
   $('shareDialog').addEventListener('close', () => { $('shareCode').textContent = ''; });
+  $('issueSoloInvitation').onclick = async () => {
+    try {
+      const invite = await post('/api/staff/solo-invite', { tableId: 'Comptoir' });
+      $('soloInviteQr').src = invite.qr;
+      $('soloInviteUrl').value = invite.url;
+      $('soloInviteExpires').textContent = `Valable jusqu’à ${hhmm(invite.expiresAt)} ; une seule inscription.`;
+      $('soloInviteDialog').showModal();
+      load();
+    } catch (error) { toast(error.message, true); }
+  };
+  $('soloInviteCopy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($('soloInviteUrl').value);
+      toast('Lien individuel copié');
+    } catch (_) {
+      $('soloInviteUrl').select();
+      toast('Sélectionne le lien pour le copier.', true);
+    }
+  };
+  $('soloInviteClose').onclick = () => $('soloInviteDialog').close();
   $('useLocal').onclick = () => {
     if (!$('ipSel').value) return;
     act('/api/staff/settings', { baseUrl: $('ipSel').value }, 'QR configurés pour le Wi-Fi local');

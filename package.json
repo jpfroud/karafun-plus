@@ -1,6 +1,6 @@
 {
   "name": "karaoke-file",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "File d'attente équitable pour bar karaoké, pilote la file de KaraFun via la télécommande",
   "main": "server.js",
   "private": true,
@@ -9,10 +9,12 @@
     "demo": "node server.js --demo",
     "test": "node test/scheduler.test.js"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "qrcode": "1.5.4",
-    "socket.io": "2.5.0",
+    "socket.io": "2.5.1",
     "socket.io-client": "2.5.0"
   }
 }

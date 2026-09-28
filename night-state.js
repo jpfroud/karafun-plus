@@ -7,6 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { Scheduler } = require('./scheduler');
 const { TableAccess } = require('./table-access');
+const { SoloInvitations } = require('./solo-invitations');
 
 const FORMAT = 1;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -52,7 +53,8 @@ function savePhoto(photo, directory) {
   return { type: photo.type, file: filename };
 }
 
-function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null }) {
+function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null,
+  soloInvitations = null }) {
   if (!scheduler || !access || !settings) throw new Error('État de soirée incomplet.');
   const tables = [...scheduler.tables.values()].map(t => ({ ...clone(t), secret: access.get(t.id) }));
   if (tables.some(t => !t.secret)) throw new Error('Secret QR manquant dans une table.');
@@ -83,6 +85,7 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       version: scheduler.version,
     },
     settings: clone(settings),
+    soloInvitations: soloInvitations ? soloInvitations.serialize() : [],
     pending: pending ? { ...clone(pending), before: [...pending.before] } : null,
     tracked: clone(tracked),
   };
@@ -94,6 +97,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   object(snapshot, 'racine');
   if (snapshot.version !== FORMAT) fail('version inconnue');
   const data = object(snapshot.scheduler, 'ordonnanceur');
+  const restoredSoloInvitations = new SoloInvitations(snapshot.soloInvitations ?? []);
   object(data.opts, 'règles');
   const tmp = new Scheduler(data.opts);
   const tmpAccess = new TableAccess();
@@ -239,7 +243,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // garde les titres et doit regarder la file KaraFun avant de réarmer l'envoi.
   if (restoredPending) settings.auto = false;
   return { pending: restoredPending, tracked: restoredTracked,
-    recoveredPending: !!restoredPending };
+    recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize() };
 }
 
 // À utiliser uniquement après le premier instantané QueueEvent frais de

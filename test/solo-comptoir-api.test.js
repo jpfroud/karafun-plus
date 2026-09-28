@@ -34,8 +34,33 @@ async function ok(path, body, cookie = '') {
   assert.equal(table.individual, true);
   const access = new URL(table.url).pathname.split('/').pop();
   const fields = extra => ({ table: 'Comptoir', access, ...extra });
-  const alice = await ok('/api/join', fields({ name: 'Alice' }));
-  const bob = await ok('/api/join', fields({ name: 'Bob' }));
+  const sharedLinkJoin = await request('/api/join', fields({ name: 'Intrus' }));
+  assert.equal(sharedLinkJoin.status, 403,
+    'le QR solo commun ne doit jamais suffire à inscrire un nouveau chanteur');
+  assert.equal(sharedLinkJoin.value.code, 'SOLO_INVITATION');
+  const legacyJoin = await request('/api/table/person', fields({ name: 'Intrus' }));
+  assert.equal(legacyJoin.status, 403, 'l’ancienne API d’inscription solo exige aussi une invitation');
+  const withoutStaffKey = await fetch(BASE + '/api/staff/solo-invite', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: 'Comptoir' }),
+  });
+  assert.equal(withoutStaffKey.status, 403, 'un client ne peut pas fabriquer ses propres invitations');
+  const invite = async () => {
+    const result = (await ok('/api/staff/solo-invite', { tableId: 'Comptoir' })).value;
+    assert.match(result.qr, /^data:image\/png;base64,/);
+    assert.equal(new URL(result.url).pathname, new URL(table.url).pathname);
+    const token = new URL(result.url).searchParams.get('invitation');
+    assert.match(token, /^[A-Za-z0-9_-]{32}$/);
+    return { ...result, token };
+  };
+  const aliceInvite = await invite();
+  const bobInvite = await invite();
+  const beforeJoin = (await ok('/api/staff/state')).value;
+  assert.equal(beforeJoin.soloInvitations.length, 2);
+  assert.ok(!JSON.stringify(beforeJoin).includes(aliceInvite.token), 'le jeton ne fuit pas dans l’état du bar');
+  const alice = await ok('/api/join', fields({ name: 'Alice', invitation: aliceInvite.token }));
+  const replay = await request('/api/join', fields({ name: 'Faux', invitation: aliceInvite.token }));
+  assert.equal(replay.status, 403, 'un lien individuel déjà utilisé ne crée aucun autre profil sur un nouveau navigateur');
+  const bob = await ok('/api/join', fields({ name: 'Bob', invitation: bobInvite.token }));
   assert.ok(alice.cookie && bob.cookie && alice.cookie !== bob.cookie,
     'chaque téléphone solo reçoit une identité distincte');
   for (const [owner, newName] of [[alice, 'Fausse Alice'], [bob, 'Faux Bob']]) {
@@ -57,6 +82,15 @@ async function ok(path, body, cookie = '') {
   assert.deepEqual((await tableState(alice.value.token)).managedIds, [],
     'le jeton seul ne contourne pas l’association au téléphone');
   assert.equal(aliceView.table.activeCount, 2, 'l’effectif total reste visible');
+  const anonymousState = (await ok('/api/state?' + new URLSearchParams({
+    table: 'Comptoir', access,
+  }))).value;
+  assert.equal(anonymousState.soloInvitationReady, false,
+    'la page ouverte par le QR commun n’affiche pas de formulaire d’inscription');
+  const usedState = (await ok('/api/state?' + new URLSearchParams({
+    table: 'Comptoir', access, invitation: aliceInvite.token,
+  }))).value;
+  assert.equal(usedState.soloInvitationReady, false, 'un QR personnel consommé perd son droit côté interface');
 
   const denied = await request('/api/table/song', fields({ personId: alice.value.id,
     token: bob.value.token, song: { songId: 101, title: 'Usurpation' } }), bob.cookie);
@@ -80,8 +114,12 @@ async function ok(path, body, cookie = '') {
     code: share.code }), bob.cookie);
   assert.equal(takenPhone.status, 403, 'le téléphone de Bob ne peut pas gérer Alice aussi');
   assert.equal(takenPhone.value.code, 'SOLO_DEVICE_USED');
+  const unusedNewSlot = await invite();
   const replacement = await ok('/api/table/person/claim', fields({ personId: alice.value.id,
-    code: share.code }));
+    code: share.code, invitation: unusedNewSlot.token }));
+  assert.equal((await request('/api/join', fields({
+    name: 'En trop', invitation: unusedNewSlot.token,
+  }))).status, 403, 'reprendre ses titres avec un QR neuf ne laisse pas une deuxième place disponible');
   assert.deepEqual((await tableState()).recoveryPeople, [], 'une reprise consommée disparaît du parcours');
   assert.ok(replacement.cookie && replacement.cookie !== alice.cookie);
   assert.notEqual(replacement.value.token, alice.value.token);
@@ -116,5 +154,23 @@ async function ok(path, body, cookie = '') {
   assert.match(live.stage.singer, /Alice.*Camille/);
   assert.equal(live.people.find(p => p.id === neighbor.value.id).sung, 0,
     'Le duo joué avec une autre table ne consomme pas le tour de l’invitée.');
+  const revoked = await invite();
+  await ok('/api/staff/solo-invite/revoke', { id: revoked.id });
+  assert.equal((await request('/api/join', fields({ name: 'Annulée', invitation: revoked.token }))).status, 403,
+    'un QR annulé ne permet plus aucune inscription');
+  const concurrent = await invite();
+  const race = await Promise.all(['Eva', 'Léa'].map(name =>
+    request('/api/join', fields({ name, invitation: concurrent.token }))));
+  assert.deepEqual(race.map(result => result.status).sort(), [200, 403],
+    'deux navigateurs qui scannent le même QR créent exactement un profil');
+  const capacity = await invite();
+  const active = (await ok('/api/staff/state')).value.tables.find(t => t.id === 'Comptoir').activeCount;
+  await ok('/api/staff/table', { id: 'Comptoir', headcount: active, individual: true });
+  const tooFull = await request('/api/join', fields({ name: 'Attente', invitation: capacity.token }));
+  assert.equal(tooFull.value.code, 'TABLE_FULL', 'une erreur de capacité refuse la création du profil');
+  await ok('/api/staff/table', { id: 'Comptoir', headcount: active + 1, individual: true });
+  await ok('/api/join', fields({ name: 'Attente', invitation: capacity.token }));
+  assert.equal((await request('/api/join', fields({ name: 'Rejeu', invitation: capacity.token }))).status, 403,
+    'une inscription enfin réussie consomme l’invitation une fois');
   console.log('Comptoir : tours individuels, une seule fiche par téléphone, reprise sans accès aux autres OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

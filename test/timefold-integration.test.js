@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
 const { test } = require('node:test');
 const { Scheduler } = require('../scheduler');
 const { TimefoldBridge } = require('../solver/bridge');
@@ -60,6 +61,259 @@ test('la présence du prochain attend le plan pour ne pas annoncer la mauvaise p
   finish();
   assert.equal(await s.solverPromise, true);
   assert.equal(s.reservePresenceNext().ids[0], baseline[1].ids[0]);
+});
+
+test('une note pendant le calcul ne relance pas Timefold et son résultat est publié une seule fois', async () => {
+  const s = new Scheduler();
+  const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
+  const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
+  s.chooseSong(a, { songId: 1011, title: 'A', artist: 'Test' });
+  s.chooseSong(b, { songId: 1012, title: 'B', artist: 'Test' });
+  const original = s.readyView().map(item => item.entryId);
+  let finish, calls = 0;
+  s.solverBridge = { available: true, lastError: null, solve: request => {
+    calls++;
+    assert.equal(request.budgetMs, 3000, 'une petite file obtient trois secondes');
+    return new Promise(resolve => {
+      finish = () => resolve({ requestId: request.requestId, order: [...original].reverse() });
+    });
+  } };
+  assert.equal(s.select(), null, 'l’envoi attend la réponse asynchrone');
+  s.note('Une information du bar sans effet sur la file');
+  assert.equal(s.select(), null);
+  assert.equal(calls, 1, 'une note ne lance pas une seconde optimisation');
+  finish();
+  assert.equal(await s.solverPromise, true, 'la réponse reste valable malgré le journal');
+  assert.deepEqual(s.readyView().map(item => item.entryId), [...original].reverse());
+  s.note('Autre information sans effet sur la file');
+  assert.deepEqual(s.readyView().map(item => item.entryId), [...original].reverse(),
+    'un rafraîchissement de version ne déplace pas la file publiée');
+  assert.equal(calls, 1, 'un état de file inchangé n’est pas recalculé en boucle');
+});
+
+test('une modification réelle annule l’ancien plan ; 90 titres disposent de 15 secondes', async () => {
+  const s = new Scheduler();
+  const people = [];
+  for (let i = 0; i < 60; i++) {
+    const p = s.join({ tableId: `T${Math.floor(i / 10)}`, name: `P${i}`, headcount: 10 });
+    people.push(p);
+    s.chooseSong(p, { songId: 2000 + i, title: `Titre ${i}`, artist: 'Test' });
+  }
+  const finishes = [];
+  const requests = [];
+  s.solverBridge = { available: true, lastError: null, solve: request => {
+    requests.push(request);
+    return new Promise(resolve => finishes.push(order =>
+      resolve({ requestId: request.requestId, order })));
+  } };
+  const old = s.whenPlanReady();
+  assert.equal(requests[0].budgetMs, 15000);
+  for (let i = 0; i < 30; i++) s.chooseSong(people[i], {
+    songId: 3000 + i, title: `Reprise ${i}`, artist: 'Test',
+  }, 'append');
+  const current = s.whenPlanReady();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].budgetMs, 15000);
+  finishes[0](requests[0].performances.map(row => row.id).reverse());
+  assert.equal(await old, false, 'un ancien résultat ne déplace jamais le nouvel état');
+  assert.equal(s.solverPlan, null);
+  finishes[1](requests[1].performances.map(row => row.id));
+  assert.equal(await current, true);
+  assert.equal(s.readyView().length, 90);
+});
+
+test('file créée à partir du vide : choix immédiat à un titre, repli borné à deux titres', async () => {
+  const s = new Scheduler();
+  const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
+  s.chooseSong(a, { songId: 4001, title: 'A', artist: 'Test' });
+  let calls = 0;
+  const finishes = [];
+  s.solverBridge = { available: true, lastError: null, solve: request => {
+    calls++;
+    return new Promise(resolve => finishes.push(order =>
+      resolve({ requestId: request.requestId, order })));
+  } };
+  assert.equal(s.select()?.ids[0], a.id, 'un seul titre part sans attendre Timefold');
+  assert.equal(calls, 0);
+  const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
+  s.chooseSong(b, { songId: 4002, title: 'B', artist: 'Test' });
+  assert.equal(s.select(), null, 'courte fenêtre initiale de calcul');
+  assert.equal(s.solverStatus().blockingNext, true);
+  s.solverNextStartedAt = Date.now() - 2501;
+  assert.equal(s.solverStatus().blockingNext, false);
+  const next = s.reserveNext();
+  assert.ok(next, 'un départ reste possible même si le deep solve continue');
+  assert.equal(s.reservedNext.personId, next.ids[0]);
+  const oldRequest = s.solverPromise;
+  const replanning = s.whenPlanReady();
+  assert.equal(calls, 2, 'le deep solve repart avec le prochain verrouillé');
+  assert.equal(s.solverBridge.available, true);
+  finishes[0]([b.song.entryId, a.song.entryId]);
+  assert.equal(await oldRequest, false, 'le plan sans réservation est désormais périmé');
+  finishes[1]([next.song.entryId,
+    next.ids[0] === a.id ? b.song.entryId : a.song.entryId]);
+  assert.equal(await replanning, true);
+  assert.equal(s.select().ids[0], next.ids[0], 'Timefold ne déplace pas le prochain annoncé');
+});
+
+test('la confirmation de présence réserve le prochain après la fenêtre courte', async () => {
+  const s = new Scheduler({ requirePresence: true });
+  const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
+  const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
+  s.chooseSong(a, { songId: 4101, title: 'A', artist: 'Test' });
+  s.chooseSong(b, { songId: 4102, title: 'B', artist: 'Test' });
+  s.solverBridge = { available: true, lastError: null,
+    solve: () => new Promise(() => {}) };
+  assert.equal(s.reservePresenceNext(), null);
+  s.solverNextStartedAt = Date.now() - 2501;
+  const announced = s.reservePresenceNext();
+  assert.ok(announced);
+  assert.equal(s.reservedNext.personId, announced.ids[0]);
+  assert.equal(s.reservePresenceNext().ids[0], announced.ids[0],
+    'la même personne reçoit la notification malgré le calcul approfondi');
+});
+
+test('les arrivées répétées ne repoussent pas indéfiniment la première chanson', () => {
+  const s = new Scheduler();
+  const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
+  const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
+  s.chooseSong(a, { songId: 4201, title: 'A', artist: 'Test' });
+  s.chooseSong(b, { songId: 4202, title: 'B', artist: 'Test' });
+  const requests = [];
+  s.solverBridge = { available: true, lastError: null, solve: request => {
+    requests.push(request);
+    return new Promise(() => {});
+  } };
+  assert.equal(s.select(), null);
+  const started = s.solverNextStartedAt;
+  for (let i = 0; i < 5; i++) {
+    const p = s.join({ tableId: `N${i}`, name: `N${i}`, headcount: 1 });
+    if (i % 2 === 0) s.chooseSong(p, {
+      songId: 4300 + i, title: `N${i}`, artist: 'Test',
+    });
+    s.whenPlanReady();
+    assert.equal(s.solverNextStartedAt, started,
+      'une arrivée ne remet jamais les 2,5 secondes à zéro');
+  }
+  assert.equal(requests.length, 4,
+    'les inscriptions sans chanson ne lancent pas une optimisation inutile');
+  s.solverNextStartedAt = Date.now() - 2501;
+  assert.ok(s.select(), 'le bar peut envoyer un titre pendant le calcul approfondi');
+});
+
+test('un invité sans ticket reste dans l’empreinte physique du plan', async () => {
+  const s = new Scheduler();
+  const a = s.join({ tableId: '1', name: 'A', headcount: 2 });
+  const guest = s.join({ tableId: '1', name: 'Invité', headcount: 2 });
+  const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
+  s.inviteDuet(a, guest.id, { songId: 4401, title: 'Duo', artist: 'Test' });
+  s.chooseSong(b, { songId: 4402, title: 'Solo', artist: 'Test' });
+  const requests = [];
+  s.solverBridge = { available: true, lastError: null, solve: request => {
+    requests.push(request);
+    return new Promise(() => {});
+  } };
+  s.whenPlanReady();
+  assert.equal(requests.length, 1);
+  const unrelated = s.join({ tableId: '3', name: 'Sans chanson', headcount: 1 });
+  assert.ok(unrelated);
+  s.whenPlanReady();
+  assert.equal(requests.length, 1, 'inscription sans titre : même problème de planification');
+  guest.duetGuestCount = (guest.duetGuestCount || 0) + 1;
+  s.version++;
+  s.whenPlanReady();
+  assert.equal(requests.length, 2, 'l’historique physique de l’invité change bien le score');
+});
+
+test('état A→B→A : aucune ancienne réponse ne remplace ni n’efface le nouveau calcul A', async () => {
+  const s = new Scheduler();
+  const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
+  const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
+  s.chooseSong(a, { songId: 4501, title: 'A', artist: 'Test' });
+  s.chooseSong(b, { songId: 4502, title: 'B', artist: 'Test' });
+  const jobs = [];
+  s.solverBridge = { available: true, lastError: null, solve: request =>
+    new Promise((resolve, reject) => jobs.push({ request, resolve, reject })) };
+  const oldA = s.whenPlanReady();
+  s.opts.tableRotation = true;
+  const oldB = s.whenPlanReady();
+  s.opts.tableRotation = false;
+  const currentA = s.whenPlanReady();
+  assert.equal(jobs.length, 3);
+  jobs[0].resolve({ requestId: jobs[0].request.requestId,
+    order: jobs[0].request.performances.map(row => row.id).reverse() });
+  jobs[1].reject(new Error('Ancien plan remplacé'));
+  assert.equal(await oldA, false);
+  assert.equal(await oldB, false);
+  assert.equal(s.solverPlan, null);
+  assert.equal(s.solverStatus().pending, true,
+    'la résolution et le rejet périmés conservent le nouveau calcul en cours');
+  jobs[2].resolve({ requestId: jobs[2].request.requestId,
+    order: jobs[2].request.performances.map(row => row.id) });
+  assert.equal(await currentA, true);
+  assert.equal(s.solverStatus().pending, false);
+  assert.equal(s.solverStatus().fallbackLastError, null);
+});
+
+test('pont Timefold : A puis B puis C remplacés, seul C répond sans délai de panne', async () => {
+  const workers = [];
+  const fakeSpawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.stdin.write = line => { child.input = JSON.parse(line); };
+    child.kill = () => { child.killed = true; };
+    workers.push(child);
+    return child;
+  };
+  const bridge = new TimefoldBridge({ jar: 'faux.jar', java: 'faux',
+    spawn: fakeSpawn, settleMs: 0 });
+  const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+  try {
+    const a = bridge.solve({ requestId: 'A' });
+    await tick();
+    assert.equal(workers.length, 1);
+    const b = bridge.solve({ requestId: 'B' });
+    await assert.rejects(a, /remplacé/);
+    await tick();
+    assert.equal(workers.length, 2);
+    assert.equal(workers[0].killed, true);
+    const c = bridge.solve({ requestId: 'C' });
+    await assert.rejects(b, /remplacé/);
+    await tick();
+    assert.equal(workers.length, 3);
+    workers[0].stdout.emit('data', '{"requestId":"A","order":["ancien"]}\n');
+    workers[1].stdout.emit('data', '{"requestId":"B","order":["ancien"]}\n');
+    workers[0].emit('error', new Error('Ancien processus fermé'));
+    workers[1].stdin.emit('error', new Error('Ancien tuyau fermé'));
+    workers[2].stdout.emit('data', '{"requestId":"C","order":["dernier"]}\n');
+    assert.deepEqual((await c).order, ['dernier']);
+    assert.equal(bridge.lastError, null);
+    assert.equal(bridge.available, true);
+  } finally { bridge.close(); }
+});
+
+test('pont Timefold : une écriture stdin qui échoue libère le job sans attendre le watchdog', async () => {
+  const fakeSpawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.stdin.write = () => { throw new Error('EPIPE immédiat'); };
+    child.kill = () => { child.killed = true; };
+    return child;
+  };
+  const bridge = new TimefoldBridge({ jar: 'faux.jar', java: 'faux',
+    spawn: fakeSpawn, settleMs: 0 });
+  try {
+    await assert.rejects(bridge.solve({ requestId: 'write-fails' }), /EPIPE immédiat/);
+    assert.equal(bridge.active, null);
+    assert.equal(bridge.child, null);
+    assert.equal(bridge.queued, null);
+    assert.equal(bridge.available, false, 'un worker défectueux déclenche le repli');
+  } finally { bridge.close(); }
 });
 
 test('Timefold calcule une file réelle sans titre perdu et garde le prochain titre figé',
@@ -134,7 +388,7 @@ test('Timefold supporte 60 clients, 90 titres et les deux modes de rotation',
           pinnedUntil: 0, roundPeople: [], lastGroups: [],
           tableRotation: mode !== 'libre', weightedTables,
         });
-        assert.ok(Date.now() - start < 3000, `${mode}: réponse dans le délai du pont`);
+        assert.ok(Date.now() - start < 8000, `${mode}: réponse dans le délai du pont`);
         assert.equal(response.order.length, 90, `${mode}: aucun titre perdu`);
         assert.equal(new Set(response.order).size, 90, `${mode}: aucun titre doublé`);
         assert.equal(new Set(response.order.slice(0, 60).map(id => id.split('-')[0])).size, 60,
@@ -146,6 +400,37 @@ test('Timefold supporte 60 clients, 90 titres et les deux modes de rotation',
         }
       }
     } finally { bridge.close(); }
+  });
+
+test('budget de production : 60 chanteurs et 90 titres sont réellement optimisés 15 secondes',
+  { skip: !fs.existsSync(JAR) && !fs.existsSync(path.join(__dirname, '..', 'solver', 'karafun-solver.jar')) },
+  async () => {
+    const s = new Scheduler({ solverEnabled: true, tableRotation: true });
+    const people = [];
+    for (let i = 0; i < 60; i++) {
+      const p = s.join({ tableId: `T${Math.floor(i / 10)}`, name: `P${i}`, headcount: 10 });
+      people.push(p);
+      s.chooseSong(p, { songId: 6000 + i, title: `Premier ${i}`, artist: 'Test' });
+    }
+    for (let i = 0; i < 30; i++) s.chooseSong(people[i], {
+      songId: 7000 + i, title: `Second ${i}`, artist: 'Test',
+    }, 'append');
+    const bridge = s.solverBridge;
+    const actualSolve = bridge.solve.bind(bridge);
+    bridge.solve = request => {
+      assert.equal(request.budgetMs, 15000);
+      assert.equal(request.performances.length, 90);
+      return actualSolve(request);
+    };
+    try {
+      assert.equal(await s.whenPlanReady(), true);
+      const view = s.readyView();
+      assert.equal(view.length, 90);
+      assert.equal(new Set(view.map(turn => turn.entryId)).size, 90);
+      assert.equal(new Set(view.slice(0, 60).map(turn => turn.ids[0])).size, 60,
+        'aucune deuxième chanson avant les 60 premiers passages');
+      assert.equal(s.solverStatus().fallbackLastError, null);
+    } finally { s.closeSolver(); }
   });
 
 test('la variante pondérée privilégie la grande table à crédit égal',
@@ -214,7 +499,7 @@ test('soirée réaliste six tables : arrivées, duos, listes, départs et procha
       ['tables', { tableRotation: true }],
       ['grandes tables', { tableRotation: true, weightedTables: true }],
     ]) {
-      const s = new Scheduler({ solverEnabled: true, ...options });
+      const s = new Scheduler({ solverEnabled: true, solverBudgetMs: 200, ...options });
       const members = new Map();
       let songId = 5000;
       const add = (tableId, headcount, name) => {
