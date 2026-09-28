@@ -64,12 +64,6 @@ jobs:
         run: |
           $hash = (Get-FileHash -LiteralPath KIT-BAR-KARAFUN.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  KIT-BAR-KARAFUN.zip" | Set-Content -LiteralPath KIT-BAR-KARAFUN.zip.sha256 -Encoding Ascii
-      - uses: actions/upload-artifact@v4
-        with:
-          name: karafun-plus-windows
-          path: |
-            KIT-BAR-KARAFUN.zip
-            KIT-BAR-KARAFUN.zip.sha256
       - name: Creer le tag apres validation, si publication manuelle
         shell: pwsh
         env:
