@@ -171,18 +171,21 @@ async function main() {
     await ok('/api/table/battle/vote', body('2', secondAccess, bob.id, resumedBob.token,
       { choice: battleSong.songId }));
     assert.equal((await staff()).battle.phase, 'requested');
-    const resolvedAt = Date.now();
     await ok('/api/staff/battle/resolve', { outcome: 'done' });
     state = await staff();
     assert.equal(state.battle.phase, 'cooldown');
-    assert.ok(state.battle.cooldownUntil >= resolvedAt + 3 * 60_000);
+    assert.equal(state.battle.cooldownUntil, null, 'la pause attend la fin de la Battle manuelle');
+    const endedAt = Date.now();
+    await ok('/api/staff/battle/resolve', { outcome: 'finished' });
+    state = await staff();
+    assert.ok(state.battle.cooldownUntil >= endedAt + 3 * 60_000, 'pause comptée depuis la fin de la Battle');
     assert.ok(state.battle.cooldownUntil <= Date.now() + 3 * 60_000);
     await ok('/api/staff/settings', { battleCooldownMin: 5 });
     state = await staff();
     assert.equal(state.settings.battleCooldownMin, 5);
-    assert.ok(state.battle.cooldownUntil >= resolvedAt + 5 * 60_000);
+    assert.ok(state.battle.cooldownUntil >= endedAt + 5 * 60_000);
     assert.ok(state.battle.cooldownUntil <= Date.now() + 5 * 60_000);
-    console.log('ok - délai Battle réglable, borné et appliqué au vote en pause');
+    console.log('ok - délai Battle réglable, borné et compté depuis la fin de la Battle');
 
     await ok('/api/staff/settings', { auto: false });
     await ok('/api/table/song', body('2', secondAccess, bob.id, resumedBob.token,

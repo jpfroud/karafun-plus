@@ -163,7 +163,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   poll(); await settle();
   assert.equal(get('activityBanner').hidden, true,
     'après le vote, la Battle reste dans son panneau sans laisser Voir la Battle en haut');
-  assert.match(get('battleText').textContent, /Majorité obtenue/);
+  assert.match(get('battleText').textContent, /La Battle aura lieu/);
   managedIds = ['alice', 'bob'];
   battle = { phase: 'idle', eligiblePersonIds: [], votedPersonIds: [] };
   poll(); await settle();

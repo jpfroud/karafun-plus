@@ -20,7 +20,7 @@ class TimefoldBridge {
     this.jar = options.jar || JARS.find(fs.existsSync) || null;
     this.java = options.java || (fs.existsSync(BUNDLED_JAVA) ? BUNDLED_JAVA : 'java');
     this.spawn = options.spawn || spawn;
-    // Jusqu'à 15 s d'optimisation + démarrage éventuel de la JVM.
+    // Garde minimale ; chaque calcul reçoit en plus son propre budget.
     this.timeoutMs = options.timeoutMs || 30000;
     this.settleMs = options.settleMs ?? 1000;
     this.startTimer = null;
@@ -95,28 +95,35 @@ class TimefoldBridge {
       if (!line) continue;
       const active = this.active;
       if (!active) continue;
+      let response;
+      try { response = JSON.parse(line); }
+      catch (error) { this._failed(new Error('Réponse Timefold illisible.')); return; }
+      // Un calcul interrompu par un état plus récent répond encore : ignoré.
+      if (response.requestId !== active.request.requestId) continue;
       clearTimeout(active.timer);
       this.active = null;
-      try {
-        const response = JSON.parse(line);
-        if (response.error) throw new Error(response.error);
-        if (response.requestId !== active.request.requestId) throw new Error('Réponse Timefold périmée.');
+      if (response.error) {
+        this.lastError = response.error;
+        active.reject(new Error(response.error));
+      } else {
         this.lastError = null;
         active.resolve(response);
-      } catch (error) { this.lastError = error.message; active.reject(error); }
-      // Le seul état en attente est lancé par son temporisateur de coalescence.
+      }
     }
   }
 
   _pump() {
-    if (this.active || !this.queued) return;
+    if (!this.queued) return;
     const job = this.queued;
     this.queued = null;
     try {
       this._start();
       this.active = job;
+      // Budget demandé + démarrage éventuel de la JVM : au-delà, le worker
+      // est considéré bloqué et l'ordre local continue seul.
+      const budget = Number(job.request?.budgetMs) || 15000;
       job.timer = setTimeout(() => this._failed(new Error('Délai du solveur Timefold dépassé.')),
-        this.timeoutMs);
+        Math.max(this.timeoutMs, budget + 15000));
       this.child.stdin.write(JSON.stringify(job.request) + '\n');
     } catch (error) {
       if (this.active === job) this._failed(error);
@@ -124,9 +131,11 @@ class TimefoldBridge {
     }
   }
 
-  // Une soirée change vite : conserver seulement la dernière requête encore
-  // en attente. La réponse de l'ancienne version sera ignorée par Scheduler.
-  solve(request) {
+  // Une soirée change vite : conserver seulement la dernière requête. Le
+  // worker Java reste démarré ; la nouvelle ligne interrompt immédiatement la
+  // recherche périmée (terminateEarly) et sa réponse éventuelle est ignorée.
+  // `immediate` saute la fenêtre de regroupement (bouton Recalculer du bar).
+  solve(request, { immediate = false } = {}) {
     return new Promise((resolve, reject) => {
       if (!this.available) return reject(new Error('Solveur Timefold indisponible.'));
       if (this.queued) this.queued.reject(new Error('Plan remplacé par un état plus récent.'));
@@ -134,16 +143,13 @@ class TimefoldBridge {
         clearTimeout(this.active.timer);
         this.active.reject(new Error('Plan remplacé par un état plus récent.'));
         this.active = null;
-        // Un calcul de 15 s pour un état ancien ne doit pas retenir le nouveau
-        // pendant encore 15 s. Le worker local est redémarré sans pénalité.
-        this._stopChild();
       }
       this.queued = { request, resolve, reject, timer: null };
       clearTimeout(this.startTimer);
       this.startTimer = setTimeout(() => {
         this.startTimer = null;
         this._pump();
-      }, this.settleMs);
+      }, immediate ? 0 : this.settleMs);
     });
   }
 

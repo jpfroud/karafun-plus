@@ -71,6 +71,10 @@
   .client .battle-options { list-style: none; padding: 0; margin: 12px 0 0; }
   .client .battle-options li { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
   .client .battle-options li span { min-width: 0; overflow-wrap: anywhere; }
+  .client .battle-options.live li { position: relative; overflow: hidden; border-radius: 8px; padding: 8px 10px; margin-top: 6px; border: 1px solid var(--line); }
+  .client .battle-options.live li span, .client .battle-options.live li b { position: relative; z-index: 1; }
+  .client .battle-options.live li i { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(124,92,255,.28); transition: width .4s; }
+  .client .battle-options.live li.against i { background: rgba(255,93,108,.22); }
   .client .battle-choice { width: 100%; margin-top: 6px; }
   .client .battle-voter { display: block; }
   .client .battle-voter .btn { width: 100%; margin-top: 8px; }
@@ -698,14 +702,15 @@
     const battle = state.battle || { phase: 'idle' };
     $('battleBox').hidden = false;
     const mins = value => Math.max(0, Math.ceil((Number(value || 0) - Date.now()) / 60000));
+    const clock = value => { const left = Math.max(0, Math.ceil((Number(value || 0) - Date.now()) / 1000));
+      return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`; };
     const songVote = battle.mode === 'songs';
     const selectedTitle = battle.selectedSong ? fullSong(battle.selectedSong) : '';
+    const voters = battle.voters ?? ((battle.yesVotes || 0) + (battle.noVotes || 0));
     $('battleText').textContent = battle.phase === 'voting'
-      ? songVote
-        ? `Choisis un titre ou « Pas de Battle ». ${battle.yesVotes} pour une Battle, ${battle.noVotes} contre ; il faut ${battle.threshold} voix pour une Battle. Encore ${mins(battle.closesAt)} min.`
-        : `Vote ouvert · ${battle.yesVotes} oui, ${battle.noVotes} non. Il faut ${battle.threshold} oui ; encore ${mins(battle.closesAt)} min.`
-      : battle.phase === 'requested' ? `Majorité obtenue ! ${selectedTitle ? `${selectedTitle}. ` : ''}Le bar prépare la Battle et affichera son QR code.`
-      : battle.phase === 'cooldown' ? `Un autre vote sera possible dans ${mins(battle.cooldownUntil)} min.`
+      ? `${songVote ? 'Choisis un titre ou « Pas de Battle ».' : 'Vote ouvert : oui ou non.'} Fin du vote dans ${clock(battle.closesAt)}. ${voters} votant${voters > 1 ? 's' : ''} sur ${battle.eligible || 0} ; il en faut au moins ${battle.threshold || 0}. La Battle a lieu s’il y a plus de voix pour elle que contre ; le titre en tête gagne.`
+      : battle.phase === 'requested' ? `${battle.mode === 'staff' ? 'Le bar lance une Battle' : 'La Battle aura lieu'} ! ${selectedTitle ? `${selectedTitle}. ` : ''}Elle passera après le prochain chanteur annoncé ; le bar affichera son QR code.`
+      : battle.phase === 'cooldown' ? (battle.cooldownUntil ? `Un autre vote sera possible dans ${mins(battle.cooldownUntil)} min.` : 'Battle en préparation ou en cours. Un nouveau vote sera possible après la pause qui suit la Battle.')
       : 'Envie de chanter tous ensemble ? Propose jusqu’à trois titres. Chaque personne inscrite vote pour un titre ou contre la Battle.';
     const voted = new Set(battle.votedPersonIds || []);
     const eligible = new Set(battle.eligiblePersonIds || []);
@@ -717,14 +722,23 @@
     // pendant qu'une personne choisit son titre : son vote serait effacé.
     const signature = JSON.stringify([battle.phase, battle.mode, owned.map(p => p.id),
       remaining.map(p => p.id), options.map(song => song.songId)]);
+    // Résultats en direct : chacun voit quel titre mène et évite d'éparpiller
+    // les voix sur un titre sans chance (moins d'égalités).
+    const rows = [...options.map(song => ({ label: fullSong(song), votes: song.votes || 0 })),
+      ...(songVote ? [{ label: 'Pas de Battle', votes: battle.noVotes || 0, against: true }] : [])];
+    const most = Math.max(1, ...rows.map(row => row.votes));
+    const leader = Math.max(0, ...options.map(song => song.votes || 0));
     if (signature === battleVotesSignature) {
-      [...$('battleVotes').querySelectorAll('.battle-options li b')].forEach((count, index) => {
-        count.textContent = `${options[index]?.votes || 0} voix`;
+      [...$('battleVotes').querySelectorAll('.battle-options li')].forEach((item, index) => {
+        const row = rows[index];
+        if (!row) return;
+        item.querySelector('b').textContent = `${row.votes} voix${!row.against && leader && row.votes === leader ? ' · en tête' : ''}`;
+        item.querySelector('i').style.width = `${Math.round(100 * row.votes / most)}%`;
       });
       return;
     }
     battleVotesSignature = signature;
-    const choices = songVote ? `<ul class="battle-options">${options.map(song => `<li><span>${esc(fullSong(song))}</span><b>${song.votes || 0} voix</b></li>`).join('')}</ul>` : '';
+    const choices = songVote ? `<ul class="battle-options live">${rows.map(row => `<li class="${row.against ? 'against' : ''}"><span>${esc(row.label)}</span><b>${row.votes} voix${!row.against && leader && row.votes === leader ? ' · en tête' : ''}</b><i style="width:${Math.round(100 * row.votes / most)}%"></i></li>`).join('')}</ul>` : '';
     $('battleVotes').innerHTML = battle.phase === 'idle'
       ? owned.length ? `<button type="button" class="btn primary wide" data-battle-propose="${owned.length === 1 ? esc(owned[0].id) : ''}">Proposer une Battle</button>` : ''
       : battle.phase === 'voting' ? `${choices}${remaining.map(person => songVote
@@ -1276,6 +1290,11 @@
   if (invalidAccess) showInvalidLink(); else refresh();
   renderAlertPreference();
   setInterval(() => { if ((!document.hidden || alertsEnabled) && !invalidAccess) refresh(); }, 4000);
+  // Compte à rebours du vote Battle à la seconde, sans recharger la page.
+  (function tickBattleClock() {
+    if (state?.battle?.phase === 'voting' && !document.hidden) renderBattle();
+    setTimeout(tickBattleClock, 1000);
+  })();
   document.addEventListener('visibilitychange', () => { if (!document.hidden && !invalidAccess) refresh(); });
 })();
 </script>

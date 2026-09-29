@@ -119,7 +119,9 @@ function planned(state) {
 
     await ok('/api/staff/move', { personId: advanced, toIndex: 0, priority: true });
     await ok('/api/staff/move', { personId: before[1], toIndex: 0, priority: true });
-    await ok('/api/staff/move', { personId: advanced, toIndex: 1 });
+    // Une priorité ne déplace que sa ligne : la précédente glisse d'un rang.
+    assert.equal(planned(await ok('/api/staff/state'))[1], advanced);
+    await ok('/api/staff/move', { personId: advanced, toIndex: 2 });
     state = await ok('/api/staff/state');
     assert.equal(state.manualChanges.length, 3);
     assert.equal((await ok('/api/staff/queue-recalculate', {})).undone, 3);

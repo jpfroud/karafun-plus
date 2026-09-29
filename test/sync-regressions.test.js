@@ -32,6 +32,7 @@ function harness() {
       settings, clearEvening, clearQueue, battleVote,
       staffPlay() { return handlers['POST /api/staff/kf'](null, null, { action: 'play' }); },
       finishBattle() { return handlers['POST /api/staff/battle/resolve'](null, null, { outcome: 'finished' }); },
+      handle(route, body) { return handlers[route](null, null, body); },
       setBridge(value) { bridge = value; },
       setIdleSince(value) { idleSince = value; },
       setEmptySince(value) { emptySince = value; },
@@ -214,8 +215,10 @@ test('une Battle créée directement dans KaraFun suspend aussi la lecture du ti
   f.bridge.queue = [native];
   f.sync();
   assert.equal(f.battleVote.view().automation.status, 'queued');
-  assert.equal(f.battleVote.view().cooldownUntil > Date.now(), true,
-    'une Battle créée au bar déclenche aussi le délai entre votes');
+  assert.equal(f.battleVote.view().phase, 'cooldown',
+    'une Battle créée au bar bloque aussi les votes');
+  assert.equal(f.battleVote.view().cooldownUntil, null,
+    'le délai entre Battles ne part qu’à la fin de la Battle');
   assert.equal(f.adds.length, 0);
   f.setIdleSince(Date.now() - 9_000);
   f.sync();
@@ -227,6 +230,7 @@ test('une Battle créée directement dans KaraFun suspend aussi la lecture du ti
   f.bridge.status = { state: 'idle', current: null };
   f.sync();
   assert.equal(f.battleVote.view().automation.status, 'after');
+  assert.ok(f.battleVote.view().cooldownUntil > Date.now(), 'le délai démarre à la fin de la Battle');
   assert.equal(f.adds.length, 0, 'aucun nouveau titre envoyé avant que le bar reprenne');
   f.battleVote.updateAutomation('resuming');
   f.setEmptySince(Date.now() - 2_000);
@@ -695,7 +699,7 @@ test('avant la première chanson, seule la première personne peut confirmer sa 
   assert.equal(f.publicState(a, '1').queue[0].ids[0], a.id);
 });
 
-test('le bar ne notifie pas Je suis là pendant le calcul Timefold', async () => {
+test('le bar notifie Je suis là sans attendre Timefold, et son résultat ne change pas la personne notifiée', async () => {
   const f = harness();
   f.settings.auto = false;
   f.sched.opts.requirePresence = true;
@@ -711,16 +715,18 @@ test('le bar ne notifie pas Je suis là pendant le calcul Timefold', async () =>
       complete = () => resolve({ requestId: request.requestId,
         order: original.map(row => row.entryId).reverse() });
     }) };
-  assert.equal(f.presenceCandidate(), null, 'aucun passage annoncé pendant le calcul');
-  assert.equal(f.publicState(a, '1').tablePeople[0].needConfirm, false);
-  assert.equal(f.publicState(b, '2').tablePeople[0].needConfirm, false);
+  f.sync();
+  const notified = f.presenceCandidate();
+  assert.equal(notified.ids[0], original[0].ids[0], 'le prochain de l’ordre local est prévenu tout de suite');
+  assert.equal(f.sched.reservedNext?.personId, notified.ids[0], 'et sa place est réservée');
+  f.sched._planMetric = slots => slots[0]?.ids[0] === b.id ? 0 : 1000;
   complete();
-  assert.equal(await f.sched.solverPromise, true);
-  assert.equal(f.presenceCandidate().ids[0], b.id,
-    'la notification suit le plan validé, pas le repli temporaire');
+  await f.sched.solverPromise;
+  assert.equal(f.presenceCandidate().ids[0], notified.ids[0],
+    'un meilleur ordre de Timefold ne retire pas la place annoncée');
 });
 
-test('un calcul Timefold long réserve le prochain après une courte attente et ne change plus sa présence', async () => {
+test('un calcul Timefold long ne retarde pas la réservation du prochain ni sa confirmation', async () => {
   const f = harness();
   f.settings.auto = false;
   f.sched.opts.requirePresence = true;
@@ -736,28 +742,60 @@ test('un calcul Timefold long réserve le prochain après une courte attente et 
       solves.push({ request, resolve });
     }) };
   f.sync();
-  const firstSolve = f.sched.solverPromise;
-  assert.equal(f.presenceCandidate(), null, 'la fenêtre initiale laisse Timefold chercher un meilleur prochain');
-  assert.equal(f.publicState(a, '1').tablePeople[0].needConfirm, false);
-  f.sched.solverNextStartedAt = Date.now() - 2501;
-  f.sync();
   const reservedId = f.sched.reservedNext?.personId;
   assert.equal(reservedId, fallback[0].ids[0], 'le prochain est garanti même pendant le calcul profond');
   assert.equal(f.presenceCandidate().ids[0], reservedId);
   assert.equal(f.publicState(a, '1').tablePeople[0].needConfirm, reservedId === a.id);
   assert.equal(f.publicState(b, '2').tablePeople[0].needConfirm, reservedId === b.id);
+  assert.equal(solves.length, 1, 'la réservation réalise le plan : pas de nouveau calcul');
   solves[0].resolve({ requestId: solves[0].request.requestId,
     order: fallback.map(row => row.entryId).reverse() });
-  assert.equal(await firstSolve, false, 'le calcul lancé avant la réservation est devenu périmé');
-  f.sched.whenPlanReady();
-  assert.equal(solves.length, 2, 'un nouveau calcul tient compte du prochain réservé');
-  const secondSolve = f.sched.solverPromise;
-  const reservedEntry = fallback.find(row => row.ids[0] === reservedId).entryId;
-  solves[1].resolve({ requestId: solves[1].request.requestId,
-    order: [reservedEntry, ...fallback.filter(row => row.entryId !== reservedEntry).map(row => row.entryId)] });
-  assert.equal(await secondSolve, true);
+  await f.sched.solverPromise;
   assert.equal(f.presenceCandidate().ids[0], reservedId,
     'le résultat final du solveur ne retire pas la confirmation demandée');
+});
+
+test('droits KaraFun perdus puis retrouvés : l’envoi automatique reprend seul', () => {
+  const f = harness();
+  f.settings.auto = true;
+  f.bridge.username = 'FileKaraoke-1234';
+  f.bridge.permissions = { addToQueue: false };
+  f.sync();
+  assert.equal(f.settings.auto, false, 'aucun envoi tant que KaraFun refuse');
+  f.bridge.permissions = { addToQueue: true };
+  f.sync();
+  assert.equal(f.settings.auto, true, 'reprise automatique quand les droits reviennent');
+  f.bridge.permissions = { addToQueue: false };
+  f.sync();
+  f.settings.auto = false;
+  f.handle('POST /api/staff/settings', { auto: false });
+  f.bridge.permissions = { addToQueue: true };
+  f.sync();
+  assert.equal(f.settings.auto, false, 'une coupure décidée par le bar est respectée');
+});
+
+test('changer de mode de rotation au bar garde le tour des personnes en cours', async () => {
+  const f = harness();
+  f.settings.auto = false;
+  for (const id of ['2', '3']) { f.sched.table(id).headcount = 2; f.access.issue(id); }
+  f.sched.table('1').headcount = 2;
+  const people = [];
+  for (const [tableId, names] of [['1', ['A1', 'A2']], ['2', ['B1', 'B2']], ['3', ['C1', 'C2']]]) {
+    for (const name of names) {
+      const p = f.sched.join({ tableId, name });
+      f.sched.chooseSong(p, song(600 + people.length));
+      f.sched.chooseSong(p, song(700 + people.length), 'append');
+      people.push(p);
+    }
+  }
+  for (let i = 0; i < 3; i++) { const sel = f.sched.select(); f.sched.commit(sel); f.sched.songEnded(sel.ids); }
+  const round = new Set(f.sched.roundPeople);
+  assert.equal(round.size, 3);
+  await f.handle('POST /api/staff/settings', { tableRotation: true, weightedTables: false });
+  assert.deepEqual(new Set(f.sched.roundPeople), round, 'le tour n’est plus effacé par un changement de mode');
+  const next = f.sched.readyView().slice(0, 3);
+  assert.ok(next.every(item => !round.has(item.ids[0])),
+    `les trois personnes pas encore passées chantent d’abord : ${next.map(item => item.name)}`);
 });
 
 test('une file composée de tickets sans chanson ne promet ni rang ni heure', () => {

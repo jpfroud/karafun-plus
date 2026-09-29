@@ -55,7 +55,9 @@
     const r = await fetch('/api/staff/state' + (key ? `?key=${encodeURIComponent(key)}` : ''), { cache: 'no-store', headers: { 'x-staff-key': key } });
     const S = await r.json();
     if (!r.ok) throw new Error(S.error || 'Impossible de charger les tables.');
-    const tables = S.tables || [];
+    // Le QR commun « En solo » ne permet pas de s'inscrire : chaque personne
+    // seule reçoit son QR individuel au bar. Ne pas l'imprimer évite la confusion.
+    const tables = (S.tables || []).filter(t => !t.individual);
     if (!tables.length) {
       info.textContent = 'Crée les tables depuis la page du bar avant d’imprimer leurs QR codes.';
       notice.textContent = 'Aucun QR code à imprimer.';
@@ -78,9 +80,9 @@
     confirmAccess.onchange = () => { printBtn.disabled = missing.length > 0 || !confirmAccess.checked; };
     grid.innerHTML = tables.map(t => `<div class="card">
       <h2>${esc(t.name)}</h2>
-      <p><b>${t.individual ? 'Voir la file ou retrouver mes chansons' : 'Scanne pour chanter 🎤'}</b></p>
+      <p><b>Scanne pour chanter 🎤</b></p>
       ${t.url && t.qrUrl ? `<img src="${esc(qrSrc(t))}" alt="QR de ${esc(t.name)}">` : '<p>QR indisponible</p>'}
-      <p>${t.individual ? 'Pour une première inscription en solo, demande un QR individuel au bar. Ce QR commun ne crée pas de profil.' : 'Un téléphone peut inscrire tous les chanteurs de la table. Un seul scan suffit.'}</p>
+      <p>Un téléphone peut inscrire tous les chanteurs de la table. Un seul scan suffit.</p>
       <p><b>${localOnly ? 'Connexion au Wi-Fi du lieu requise' : 'Accès HTTPS par Internet'}</b></p>
       <p>1 ticket par personne · l'ordre s'affiche sur ton téléphone</p>
       <p class="url">${t.url ? esc(t.url) : 'Lien indisponible'}</p></div>`).join('');
