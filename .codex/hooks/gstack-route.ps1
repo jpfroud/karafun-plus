@@ -3,23 +3,30 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
 
-# Adds context to Codex. An error must never block a command.
+# Codex hook: at session start, checks that gstack is installed; on each
+# prompt, recalls the project workflow. It never installs anything and an
+# error must never block Codex. Keep this file ASCII (Windows PowerShell 5.1).
 try {
     $raw = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
     $event = $raw | ConvertFrom-Json
-    if ($event.hook_event_name -ne 'UserPromptSubmit') { exit 0 }
+    $name = [string]$event.hook_event_name
+    if ($name -ne 'UserPromptSubmit' -and $name -ne 'SessionStart') { exit 0 }
 
-    $skillsRoot = Join-Path $env:USERPROFILE '.codex\skills'
-    $gstackReady = Test-Path -LiteralPath (Join-Path $skillsRoot 'gstack-review\SKILL.md')
+    $homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $homeDir '.codex' }
+    $skillsRoot = Join-Path $codexHome 'skills'
+    $gstackReady = (Test-Path -LiteralPath (Join-Path $skillsRoot 'gstack-review/SKILL.md')) -or
+        ($env:GSTACK_ROOT -and (Test-Path -LiteralPath (Join-Path $env:GSTACK_ROOT 'bin')))
+    $rules = 'This project requires gstack for code changes: gstack-investigate for bugs, gstack-spec or gstack-plan-eng-review for features, gstack-qa for browser testing, and gstack-review before delivery. Run node test/run-offline.js and record results in RAPPORT-TEST.md. Explicit user instructions take precedence.'
     if ($gstackReady) {
-        $message = 'This project requires gstack for code changes: gstack-investigate for bugs, gstack-spec or gstack-plan-eng-review for features, gstack-qa for browser testing, and gstack-review before delivery. Run the tests and record results in RAPPORT-TEST.md. Explicit user instructions take precedence.'
+        $message = if ($name -eq 'SessionStart') { "GSTACK_OK: gstack skills found in $skillsRoot. $rules" } else { $rules }
     } else {
-        $message = 'gstack is required by AGENTS.md but missing from Codex skills. Install it from https://github.com/garrytan/gstack with setup --host codex --prefix, or report it unavailable and perform equivalent checks. Explicit user instructions take precedence.'
+        $message = 'GSTACK_MISSING: gstack is required by AGENTS.md but missing from Codex skills. Tell the user before any code change and give the official install: git clone --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack, then ./setup --host codex --prefix, then restart Codex. Do not install it without their agreement. Meanwhile perform equivalent checks and never claim a skill was run. ' + $rules
     }
     $result = @{
         hookSpecificOutput = @{
-            hookEventName = 'UserPromptSubmit'
+            hookEventName = $name
             additionalContext = $message
         }
     }

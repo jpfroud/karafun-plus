@@ -46,9 +46,10 @@ DÉMARRAGE AU BAR
 
    Dans le bloc « Tables », ajoute les tables une par une. L'effectif proposé
    est 4 et peut être changé par table : c'est le plafond d'inscriptions.
-   Pour les personnes venues seules, le groupe « En solo » et son QR commun
-   sont prêts dès le démarrage. Chaque personne y garde son propre tour et
-   son téléphone ne peut gérer qu'un seul chanteur de ce groupe.
+   Pour les personnes venues seules, le groupe « En solo » est prêt dès le
+   démarrage : le bar crée un QR individuel par personne (« Créer un QR
+   individuel »). Chaque personne y garde son propre tour et son téléphone
+   ne peut gérer qu'un seul chanteur de ce groupe.
 
 4. Avec ton téléphone, sur le même Wi-Fi que le PC, scanne le QR code de la
    table créée par le bar (ou son QR imprimé depuis « Imprimer les QR codes des
@@ -119,9 +120,18 @@ BON À SAVOIR
   historique. Le titre sur scène continue ; l'envoi automatique attend que
   KaraFun confirme le retrait des suivants. Vérifie sa file si cela tarde.
 - « Priorité » avance un passage devant les autres titres encore prévus,
-  y compris après un duo. Les titres déjà chargés dans KaraFun restent devant.
+  y compris après un duo. Seule cette ligne bouge : les autres gardent leur
+  ordre. Les titres déjà chargés dans KaraFun restent devant.
   Le bouton n'est plus proposé sur le premier passage déplaçable. « Annuler
   la priorité » rétablit l'ordre précédent si la file n'a pas changé entretemps.
+- Tant que la file ne change pas, l'optimisation continue cherche un meilleur
+  ordre (« 🔄 Optimisation continue ») ; un nouvel ordre n'est affiché que
+  s'il est meilleur, sans jamais toucher au prochain annoncé.
+- « Recalculer la file » relance le calcul complet (30 s au plus) ;
+  l'indicateur au-dessus de la file montre quand un calcul est en cours.
+- Des cases à cocher permettent de retirer plusieurs titres d'un coup.
+- Bonus/malus (cartes des tables, repères chanteurs) : réservé au bar,
+  invisible des clients, de -3 (un tour sur deux) à +3 (deux fois plus).
 - « Je suis là » est demandé seulement à la personne prévue juste après celle
   sur scène (aux deux chanteurs d'un duo), pas aux suivants plus éloignés.
 - Lorsqu'un nom apparaît « Prochain confirmé », les nouvelles inscriptions

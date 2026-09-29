@@ -20,6 +20,12 @@
  * - Duo : le partenaire accepte l'invitation ; seul l'initiateur dépense son
  *   ticket. Le partenaire garde son titre, avec deux passages de répit si possible.
  * - Table plafonnée à son nombre de personnes (anti faux noms / navigation privée).
+ * - Dans un tour, les tables se partagent les passages selon le mode : au
+ *   prorata des chanteurs (par défaut), à parts égales, ou entre les deux.
+ *   La même table ne reprend pas le micro quand une autre peut chanter.
+ * - Le bar peut accorder un bonus ou un malus (niveaux -3 à +3) à une table
+ *   ou à une personne : il change la fréquence de passage, jamais la priorité
+ *   des premiers passages. Les clients ne le voient pas.
  */
 const crypto = require('crypto');
 const { TimefoldBridge } = require('./solver/bridge');
@@ -29,15 +35,40 @@ const DEFAULTS = {
   cap: 2,               // reculs max pendant une attente
   protectTop: 5,        // les N prochains ne bougent jamais
   requirePresence: false, // confirmation « je suis là » obligatoire quand on approche
-  tableRotation: false,  // une table prête passe avant de revenir à la précédente
-  weightedTables: false, // alternance par table avec crédit proportionnel à sqrt(chanteurs prêts)
+  tableRotation: false,  // parts égales entre tables (sinon au prorata des chanteurs)
+  weightedTables: false, // compromis : part proportionnelle à la racine du nombre de chanteurs
+  interleaveArrivals: true, // une table arrivée d'un coup est intercalée avec la rotation en cours
   presenceWindow: 3,    // on demande la confirmation dans les N prochains
   defaultSlotSec: 240,  // durée moyenne d'un passage avant mesure réelle
   solverEnabled: false,  // activé par le serveur quand le solveur Java est empaqueté
+  solverSettleMs: 1000,  // regroupement des changements rapprochés avant Timefold
+  continuousSolver: true, // file inchangée : Timefold continue de chercher un meilleur ordre
+  solverRefinePauseMs: 2000, // pause entre deux passes d'optimisation continue
 };
+
+// Niveau de bonus → facteur de fréquence. +2 : une fois et demie plus de
+// passages ; -3 : un tour sur deux. Le niveau 0 est neutre.
+const BONUS_WEIGHTS = Object.freeze({ '-3': 0.5, '-2': 2 / 3, '-1': 0.8, 0: 1, 1: 1.25, 2: 1.5, 3: 2 });
+const bonusWeight = level => BONUS_WEIGHTS[String(Number(level) || 0)] || 1;
+const HISTORY_LIMIT = 120;
+const EPS = 1e-9;
 
 const id = () => crypto.randomBytes(6).toString('hex');
 const token = () => crypto.randomBytes(16).toString('hex');
+const overlaps = (a, b) => a.some(x => b.includes(x));
+// Score « 0hard/-1500medium/-30soft » : gain réel si le niveau dur ou moyen
+// progresse (le niveau doux ne mesure que la stabilité de l'ordre).
+const parseSolverScore = text => {
+  const match = /(-?\d+)hard\/(-?\d+)medium\/(-?\d+)soft/.exec(String(text || ''));
+  return match ? match.slice(1, 3).map(Number) : null;
+};
+const solverScoreGain = (seedScore, score) => {
+  const before = parseSolverScore(seedScore), after = parseSolverScore(score);
+  if (!before || !after) return false;
+  return after[0] > before[0] || (after[0] === before[0] && after[1] > before[1]);
+};
+const plainSolverError = message => message == null ? null :
+  String(message).replace(/\bTimefold\b/gi, 'd’optimisation').replace(/^\w+(Exception|Error): /, '');
 
 class Scheduler {
   constructor(opts = {}) {
@@ -52,23 +83,95 @@ class Scheduler {
     this.manualOrder = [];    // ordre explicite du bar pour les chansons encore dans le helper
     this.manualOrderActive = false; // préfixe déplacé volontairement, valable jusqu'au prochain changement de titres
     this.manualChanges = [];  // interventions du bar encore annulables, de la plus ancienne à la plus récente
-    this.tableServeCounts = new Map(); // passages par groupe pour l'alternance pondérée
+    this.tableServeCounts = new Map(); // passages par groupe (historique, affichage)
+    this.recentGroups = [];   // groupes des derniers passages, pour le partage entre tables
+    this.roundUse = new Map(); // crédit de tour consommé par les personnes avec bonus/malus
     this.duetCooldowns = new Map(); // invité : nombre d'autres chansons à laisser passer
     this.reservedNext = null; // personne annoncée comme prochain passage, hors KaraFun
+    this.stageHistory = [];   // derniers passages sur scène (bar uniquement)
     this.log = [];            // journal visible par tous
     this.slotSamples = [];    // durées réelles mesurées (s)
     this.version = 0;
     this.appearanceSerial = 0; // passages physiques, invités de duo compris
     this.solverBridge = this.opts.solverEnabled ? new TimefoldBridge() : null;
+    // Plan adopté (Timefold ou ordre manuel du bar) : un classement des titres
+    // prêts, valable tant que l'état de la file n'a pas changé autrement que
+    // par le passage attendu de sa tête.
     this.solverPlan = null;
-    this.solverRequestedVersion = -1;
     this.solverRequestedFingerprint = null;
-    this.solverPendingVersion = -1;
     this.solverPendingFingerprint = null;
     this.solverPendingRequestId = null;
-    this.solverNextStartedAt = 0;
+    this.solverPendingSince = 0;
+    this.solverPendingBudgetMs = 0;
     this.solverPromise = null;
     this.solverLastError = null;
+    this.solverLastRun = null;
+    this.solverForced = null;
+    // Optimisation continue : passes successives sur une file inchangée.
+    this.solverRefine = null;       // passe en cours
+    this.solverRefineTimer = null;
+    this.solverRefineAt = null;     // heure de la prochaine passe
+    this.solverRefineStats = { fingerprint: null, runs: 0, improvements: 0, fruitless: 0 };
+  }
+
+  // ------------------------------------------------------------------ bonus
+  // Réglage réservé au bar : jamais exposé aux pages clients.
+  bonusLevel(value) {
+    const level = Number(value);
+    if (!Number.isInteger(level) || level < -3 || level > 3) throw new Error('Le bonus doit être un niveau de -3 à +3.');
+    return level;
+  }
+
+  setTableBonus(tableId, level) {
+    const t = this.table(tableId, false);
+    if (!t) throw new Error('Table inconnue.');
+    t.bonus = this.bonusLevel(level);
+    this.version++;
+    return t;
+  }
+
+  setPersonBonus(personId, level) {
+    const p = this.people.get(String(personId));
+    if (!p) throw new Error('Chanteur inconnu.');
+    p.bonus = this.bonusLevel(level);
+    this.version++;
+    return p;
+  }
+
+  tableWeight(group) {
+    const person = [...this.people.values()].find(p => p.group === group);
+    const tableId = person ? person.tableId : group;
+    return bonusWeight(this.tables.get(tableId)?.bonus);
+  }
+
+  personWeight(pid) {
+    const p = this.people.get(pid);
+    if (!p) return 1;
+    return bonusWeight(p.bonus) * bonusWeight(this.tables.get(p.tableId)?.bonus);
+  }
+
+  // Un passage consomme 1/poids de crédit de tour. Sans bonus ni malus, cela
+  // revient exactement à « une fois par tour » (ensemble roundPeople).
+  _useRound(roundPeople, roundUse, pid) {
+    const cost = 1 / this.personWeight(pid);
+    if (Math.abs(cost - 1) < EPS && !roundUse.has(pid)) { roundPeople.add(pid); return; }
+    const used = (roundUse.get(pid) || 0) + cost;
+    roundUse.set(pid, used);
+    if (used >= 1 - EPS) roundPeople.add(pid);
+  }
+
+  // Nouveau tour : chacun récupère un crédit. Un malus reporte sa dette et
+  // peut laisser passer un tour ; un bonus non utilisé ne se cumule pas.
+  _resetRound(roundPeople, roundUse) {
+    roundPeople.clear();
+    for (const [pid, used] of [...roundUse]) {
+      const left = used - 1;
+      if (left <= EPS) roundUse.delete(pid);
+      else {
+        roundUse.set(pid, left);
+        if (left >= 1 - EPS) roundPeople.add(pid);
+      }
+    }
   }
 
   // ------------------------------------------------------------------ journal
@@ -107,15 +210,21 @@ class Scheduler {
     });
     const context = { people, Q: this.Q, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
+      roundUse: [...this.roundUse], recentGroups: this.recentGroups.slice(-40),
       tableServeCounts: [...this.tableServeCounts], duetCooldowns: [...this.duetCooldowns],
-      opts: this.opts, appearanceSerial: this.appearanceSerial,
+      opts: this.opts, appearanceSerial: this.appearanceSerial, bonus: this._bonusContext(),
       ...this.manualOverrideState() };
     return crypto.createHash('sha256').update(JSON.stringify(context)).digest('hex');
   }
 
-  // Empreinte séparée de celle des annulations manuelles. Une inscription sans
-  // chanson ou un ticket vide ne change aucun problème soumis à Timefold ;
-  // elle ne doit pas interrompre quinze secondes de recherche pour les autres.
+  _bonusContext() {
+    return [[...this.tables.values()].filter(t => t.bonus).map(t => [t.id, t.bonus]),
+      [...this.people.values()].filter(p => p.bonus).map(p => [p.id, p.bonus])];
+  }
+
+  // Empreinte de tout ce qui détermine l'ordre prévu. Les heures, reculs,
+  // confirmations, notes et photos n'y figurent pas : la fin d'une chanson ou
+  // une inscription sans titre ne relancent donc pas Timefold.
   solverContextFingerprint() {
     const readyQ = this.Q.filter(pid => {
       const p = this.people.get(pid);
@@ -130,7 +239,7 @@ class Scheduler {
         if (song.duet?.state === 'accepted') relevant.add(song.duet.partnerId);
       }
       return [pid, p.group, p.sung, p.duetGuestCount || 0,
-        p.lastAppearanceTurn || 0, p.over, p.held, p.waitingSince || 0,
+        p.lastAppearanceTurn || 0, p.readySerial || 0,
         songs.map(song => [song.entryId, song.duet || null])];
     });
     // Un invité sans ticket reste pertinent : son dernier passage physique
@@ -142,8 +251,10 @@ class Scheduler {
     });
     const context = { entries, physical, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
-      tableServeCounts: [...this.tableServeCounts], duetCooldowns: [...this.duetCooldowns],
-      opts: this.opts, appearanceSerial: this.appearanceSerial,
+      roundUse: [...this.roundUse], recentGroups: this.recentGroups.slice(-HISTORY_LIMIT),
+      duetCooldowns: [...this.duetCooldowns],
+      rotation: [!!this.opts.tableRotation, !!this.opts.weightedTables, this.opts.interleaveArrivals !== false],
+      appearanceSerial: this.appearanceSerial, bonus: this._bonusContext(),
       ...this.manualOverrideState() };
     return crypto.createHash('sha256').update(JSON.stringify(context)).digest('hex');
   }
@@ -154,11 +265,26 @@ class Scheduler {
       latest.after === this.manualContextFingerprint();
   }
 
-  recordManualChange({ kind, personId, name, from, to, before, native }) {
+  recordManualChange({ kind, personId, name, from, to, before, native, planBefore = this._planBeforeManual }) {
     const change = { id: id(), kind, personId, name, from, to, at: Date.now(),
-      before, after: this.manualContextFingerprint(), native };
+      before, after: this.manualContextFingerprint(), native, planBefore: planBefore || null };
+    this._planBeforeManual = null;
     this.manualChanges.push(change);
     return change;
+  }
+
+  _planSnapshot() {
+    const plan = this.solverPlan;
+    if (!plan?.ranks || plan.fingerprint === undefined) return null;
+    return { source: plan.source || 'timefold', fingerprint: plan.fingerprint,
+      order: [...plan.ranks].sort((a, b) => a[1] - b[1]).map(([entry]) => entry) };
+  }
+
+  // Revenir sur une intervention redonne aussi l'ordre affiché avant elle.
+  _restorePlan(snapshot) {
+    this.solverPlan = snapshot && Array.isArray(snapshot.order) ? { version: this.version,
+      fingerprint: snapshot.fingerprint, source: snapshot.source,
+      ranks: new Map(snapshot.order.map((entry, index) => [entry, index])) } : null;
   }
 
   undoLastManualChange(changeId, nativeFingerprint) {
@@ -172,6 +298,7 @@ class Scheduler {
       throw new Error('La file a changé depuis cette intervention ; elle ne peut plus être annulée sans déplacer d’autres titres.');
     }
     this.restoreManualOverride(latest.before);
+    this._restorePlan(latest.planBefore);
     this.manualChanges.pop();
     this.note(`Le bar a annulé ${latest.kind === 'priority' ? 'la priorité' : 'le déplacement'} de ${latest.name}`, 'staff');
     return latest;
@@ -185,6 +312,7 @@ class Scheduler {
     }
     const count = this.manualChanges.length;
     this.restoreManualOverride(this.manualChanges[0].before);
+    this._restorePlan(this.manualChanges[0].planBefore);
     this.manualChanges = [];
     this.note(`Le bar a annulé ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} dans la file`, 'staff');
     return count;
@@ -347,6 +475,9 @@ class Scheduler {
       const e = new Error('La liste est limitée à 20 chansons par chanteur.'); e.code = 'LIST_FULL'; throw e;
     }
     this.invalidateManualOrder();
+    // Début de l'attente pour ce titre : ceux qui ont chanté avant ne sont pas
+    // passés « devant » cette personne (voir la règle anti-série de _pick).
+    if (!this.songsOf(p).length) p.readySerial = this.appearanceSerial;
     if (mode === 'append' && p.song) p.backlog.push(next);
     else {
       if (mode === 'replace') {
@@ -545,7 +676,9 @@ class Scheduler {
   staffMove(personId, toIndex, excludeIds = [], provisional = null) {
     // Les titres supplémentaires d'un même chanteur ont une place prévue mais
     // ne sont pas des tickets indépendants déplaçables par le bar.
-    const visible = this.presenceView(excludeIds, provisional).filter(v => !v.future);
+    const full = this.presenceView(excludeIds, provisional);
+    const visible = full.filter(v => !v.future);
+    this._planBeforeManual = this._planSnapshot();
     // L'invité d'un duo peut aussi posséder un solo plus loin dans la file :
     // son bouton Priorité doit viser son propre titre, pas celui du duo.
     const i = visible.findIndex(v => v.ids[0] === personId);
@@ -569,6 +702,15 @@ class Scheduler {
     this.manualOrder = visible.slice(0, target + 1).map(v => v.ids[0]);
     this.manualOrderActive = this.manualOrder.length > 0;
     this.note(`Le bar a déplacé ${this.people.get(item.ids[0]).name} de la place ${i + 1} à la place ${target + 1}`, 'staff');
+    // Une priorité ou un déplacement ne touche qu'une ligne : les autres
+    // gardent exactement l'ordre affiché, sans nouveau calcul de Timefold,
+    // jusqu'au prochain changement réel de la file ou au bouton Recalculer.
+    const order = full.filter(v => v.entryId !== item.entryId).map(v => v.entryId);
+    const after = visible[target + 1]?.entryId, before = visible[target - 1]?.entryId;
+    const at = after ? order.indexOf(after) : before ? order.indexOf(before) + 1 : 0;
+    order.splice(at < 0 ? order.length : at, 0, item.entryId);
+    this.solverPlan = { version: this.version, fingerprint: this.solverContextFingerprint(),
+      ranks: new Map(order.filter(Boolean).map((entry, index) => [entry, index])), source: 'manual' };
   }
 
   staffRemove(personId) {
@@ -612,6 +754,20 @@ class Scheduler {
     // Garder le ticket au même endroit : retirer un titre ne remet pas le
     // chanteur en fin de file, même si le prochain titre devient actif.
     this.note(`Le bar a retiré ${removed ? `« ${removed.title} »` : 'le titre'} de ${p.name}${p.song ? ` ; « ${p.song.title} » prend sa place` : ''}`, 'staff');
+  }
+
+  // Retrait d'un titre précis, y compris un titre suivant de la liste d'une
+  // personne (sélection multiple dans la page du bar).
+  staffRemoveEntry(personId, entryId) {
+    const p = this.people.get(String(personId || ''));
+    if (!p) throw new Error('Chanteur inconnu.');
+    if (!entryId || p.song?.entryId === String(entryId)) return this.staffRemove(p.id);
+    const index = (p.backlog || []).findIndex(song => song.entryId === String(entryId));
+    if (index < 0) throw new Error('Titre introuvable dans la liste de ce chanteur.');
+    const [removed] = p.backlog.splice(index, 1);
+    this.invalidateManualOrder();
+    this._refreshDuetViews();
+    this.note(`Le bar a retiré « ${removed.title} » de la liste de ${p.name}`, 'staff');
   }
 
   // Remet des personnes en tête (ex. chanson envoyée mais la personne n'était pas là)
@@ -697,40 +853,80 @@ class Scheduler {
     return p.confirmedAt && Date.now() - p.confirmedAt < 30 * 60 * 1000;
   }
 
-  // Le solveur est un processus local asynchrone. Les lectures restent
-  // synchrones, mais l'envoi automatique attend le plan correspondant à la
-  // version courante ; un résultat ancien ne peut jamais déplacer un titre.
+  // ------------------------------------------------------------------ plan et Timefold
+  // L'ordre prévu est toujours calculé tout de suite par la règle locale
+  // (_pick) : la file ne reste jamais muette en attendant Java. Timefold
+  // cherche ensuite en arrière-plan un meilleur ordre pour les mêmes règles.
+  // Son résultat n'est adopté que s'il n'est pas moins bon selon la mesure
+  // locale (_planMetric) et si l'état n'a pas changé entre-temps. Un plan
+  // adopté survit au passage normal des chansons (réservation, envoi, fin) ;
+  // un titre ajouté ou retiré, un duo, un réglage, un bonus ou une action du
+  // bar en demandent un nouveau.
+  _activePlanRanks(fingerprint = null) {
+    const plan = this.solverPlan;
+    if (!plan) return null;
+    // Compatibilité : un plan sans empreinte ne vaut que pour sa version.
+    if (plan.fingerprint === undefined) return plan.version === this.version ? plan.ranks : null;
+    if (plan.fingerprint !== (fingerprint || this.solverContextFingerprint())) return null;
+    plan.version = this.version;
+    return plan.ranks;
+  }
+
+  // Une réservation ou un envoi prévu ne rendent pas le plan faux : ils le
+  // réalisent. Le plan et un calcul encore en cours sont donc conservés.
+  _carryPlanAcross(mutate) {
+    const before = this.solverContextFingerprint();
+    const keepPlan = !!this.solverPlan && this.solverPlan.fingerprint === before;
+    const keepPending = this.solverPendingFingerprint === before;
+    const keepRequested = this.solverRequestedFingerprint === before;
+    const keepRefine = this.solverRefine?.fingerprint === before;
+    const keepStats = this.solverRefineStats.fingerprint === before;
+    const result = mutate();
+    if (keepPlan || keepPending || keepRequested || keepRefine || keepStats) {
+      const after = this.solverContextFingerprint();
+      if (keepPlan) this.solverPlan.fingerprint = after;
+      if (keepPending) this.solverPendingFingerprint = after;
+      if (keepRequested) this.solverRequestedFingerprint = after;
+      if (keepRefine) this.solverRefine.fingerprint = after;
+      if (keepStats) this.solverRefineStats.fingerprint = after;
+    }
+    return result;
+  }
+
   _maybeRequestSolver() {
-    if (!this.solverBridge || !this.solverBridge.available) return false;
-    // `version` sert aussi aux rafraîchissements d'interface et au journal.
-    // Une note ou une photo ne doit donc pas redémarrer Timefold, ni faire
-    // vaciller un classement déjà publié.
     const fingerprint = this.solverContextFingerprint();
+    if (this.solverPlan && this.solverPlan.fingerprint !== undefined &&
+        this.solverPlan.fingerprint !== fingerprint) this.solverPlan = null;
     if (this.solverPlan?.fingerprint === fingerprint) {
       this.solverPlan.version = this.version;
-      this.solverRequestedVersion = this.version;
+      // Relance la chaîne d'optimisation continue si elle s'est arrêtée.
+      if (!this.solverRefineTimer && !this.solverRefine) this._scheduleRefine();
       return false;
     }
-    if (this.solverRequestedFingerprint === fingerprint) {
-      this.solverRequestedVersion = this.version;
-      if (this.solverPendingFingerprint === fingerprint) {
-        this.solverPendingVersion = this.version;
-        return true;
-      }
-      return false;
-    }
-    const before = this.version;
-    const base = this._forecast(false, [], null, true);
-    if (base.length < 2 || base.length > 200 || base.some(item => !item.entryId)) {
-      this.solverLastError = base.length > 200 ?
-        'Plus de 200 titres prêts : ordonnanceur de repli actif.' :
-        base.some(item => !item.entryId) ? 'Titre sans identifiant : ordonnanceur de repli actif.' : null;
-      this.solverRequestedVersion = before;
+    if (!this.solverBridge || !this.solverBridge.available) return false;
+    if (this.solverRequestedFingerprint === fingerprint) return this.solverPendingFingerprint === fingerprint;
+    return this._requestSolver(fingerprint);
+  }
+
+  _requestSolver(fingerprint, { budgetMs = null, forced = false, refine = false } = {}) {
+    // Une passe d'optimisation continue part du plan adopté ; un nouveau
+    // calcul part de l'ordre local.
+    const baseRanks = refine ? this._activePlanRanks(fingerprint) : null;
+    if (refine && !baseRanks) return false;
+    const seed = this._forecast(false, [], null, true, { ranks: baseRanks });
+    if (!refine) {
       this.solverRequestedFingerprint = fingerprint;
-      this.solverNextStartedAt = 0;
+      this._cancelRefine();
+    }
+    if (seed.length < 2 || seed.length > 200 || seed.some(item => !item.entryId)) {
+      if (refine) return false;
+      this.solverLastError = seed.length > 200 ?
+        'Plus de 200 titres prêts : ordonnanceur local seul.' :
+        seed.some(item => !item.entryId) ? 'Titre sans identifiant : ordonnanceur local seul.' : null;
+      this.solverForced = null;
       return false;
     }
-    const rows = base.map((item, previousIndex) => {
+    const rows = seed.map((item, previousIndex) => {
       const owner = this.people.get(item.ids[0]);
       return { id: item.entryId, owner: owner.id,
         ownerSongIndex: this.songsOf(owner).findIndex(song => song.entryId === item.entryId),
@@ -743,48 +939,78 @@ class Scheduler {
         pinnedUntil++;
       }
     }
-    const pastAppearance = {}, physicalCount = {};
-    const groupReadySets = new Map();
+    const pastAppearance = {}, physicalCount = {}, readyAt = {}, personWeights = {};
+    const involved = new Set(rows.flatMap(row => row.singers));
     for (const p of this.people.values()) {
       physicalCount[p.id] = (p.sung || 0) + (p.duetGuestCount || 0);
       if (p.lastAppearanceTurn) {
         pastAppearance[p.id] = p.lastAppearanceTurn - this.appearanceSerial - 1;
       } else if (physicalCount[p.id]) pastAppearance[p.id] = -1000;
+      if (involved.has(p.id)) {
+        readyAt[p.id] = (p.readySerial || 0) - this.appearanceSerial - 1;
+        const weight = this.personWeight(p.id);
+        if (Math.abs(weight - 1) > EPS) personWeights[p.id] = weight;
+      }
     }
-    for (const row of rows) for (const singerId of row.singers) {
-      const singer = this.people.get(singerId);
-      if (!singer) continue;
-      if (!groupReadySets.has(singer.group)) groupReadySets.set(singer.group, new Set());
-      groupReadySets.get(singer.group).add(singerId);
+    const tableWeights = {};
+    for (const group of new Set(rows.flatMap(row => row.groups))) {
+      const weight = this.tableWeight(group);
+      if (Math.abs(weight - 1) > EPS) tableWeights[group] = weight;
     }
-    // Un petit groupe est vite stabilisé ; les grandes soirées bénéficient
-    // de plus de recherche. Un seul plan final est publié pour cette version.
     const adaptiveBudgetMs = rows.length < 20 ? 3000 : rows.length < 60 ? 8000 : 15000;
     // Les tests de simulation peuvent réduire le temps, sans changer la
     // politique de production ni la fonction de score utilisée.
-    const budgetMs = Number.isInteger(this.opts.solverBudgetMs) &&
+    const configured = Number.isInteger(this.opts.solverBudgetMs) &&
       this.opts.solverBudgetMs >= 100 && this.opts.solverBudgetMs <= 30000 ?
       this.opts.solverBudgetMs : adaptiveBudgetMs;
-    const request = { requestId: `${before}-${id()}`, budgetMs, performances: rows,
-      pastAppearance, physicalCount, pinnedUntil,
-      roundPeople: [...this.roundPeople],
-      roundGroups: [...this.roundGroups],
-      tableServeCounts: Object.fromEntries(this.tableServeCounts),
-      groupReadyCounts: Object.fromEntries([...groupReadySets].map(([g, singers]) => [g, singers.size])),
+    const budget = Number.isInteger(budgetMs) ? Math.max(100, Math.min(30000, budgetMs)) : configured;
+    const stats = this._refineStatsFor(fingerprint);
+    const request = { requestId: `${this.version}-${id()}`, budgetMs: budget, performances: rows,
+      pastAppearance, physicalCount, readyAt, pinnedUntil,
+      roundPeople: [...this.roundPeople].filter(pid => this.people.has(pid)),
+      roundUse: Object.fromEntries([...this.roundUse].filter(([pid]) => this.people.has(pid))),
+      personWeights, tableWeights,
+      history: this.recentGroups.slice(-HISTORY_LIMIT),
+      rotation: !this.opts.tableRotation ? 'people' : this.opts.weightedTables ? 'sqrt' : 'equal',
+      interleaveArrivals: this.opts.interleaveArrivals !== false,
       lastGroups: Array.isArray(this.lastGroup) ? this.lastGroup :
         this.lastGroup ? [this.lastGroup] : [],
+      // Champs historiques conservés pour les anciens workers.
+      roundGroups: [...this.roundGroups], tableServeCounts: Object.fromEntries(this.tableServeCounts),
       tableRotation: !!this.opts.tableRotation, weightedTables: !!this.opts.weightedTables };
-    this.solverRequestedVersion = before;
-    this.solverRequestedFingerprint = fingerprint;
-    this.solverPendingVersion = before;
-    this.solverPendingFingerprint = fingerprint;
-    this.solverPendingRequestId = request.requestId;
-    if (!this.solverNextStartedAt && !this.reservedNext && !this.manualOrderActive) {
-      this.solverNextStartedAt = Date.now();
+    // Chaque passe explore un autre voisinage : refaire la même recherche
+    // sur la même file ne trouverait rien de nouveau.
+    if (refine) request.randomSeed = (stats.runs % 16) + 1;
+    if (refine) {
+      this.solverRefine = { requestId: request.requestId, fingerprint,
+        since: Date.now(), budgetMs: budget };
+    } else {
+      this.solverPendingFingerprint = fingerprint;
+      this.solverPendingRequestId = request.requestId;
+      this.solverPendingSince = Date.now();
+      this.solverPendingBudgetMs = budget;
+      this.solverForced = forced ? { at: Date.now(), budgetMs: budget } : null;
+      this.version++;
     }
-    this.solverPromise = this.solverBridge.solve(request).then(response => {
-      if (this.solverPendingRequestId !== request.requestId ||
-          this.solverContextFingerprint() !== fingerprint) return false;
+    const current = () => refine ? this.solverRefine?.requestId === request.requestId :
+      this.solverPendingRequestId === request.requestId;
+    let claimed = false; // réponse prise en charge : une erreur ensuite reste la nôtre
+    const promise = this.solverBridge.solve(request, { immediate: forced || refine }).then(response => {
+      if (!current()) return false;
+      claimed = true;
+      let expected;
+      if (refine) {
+        expected = this.solverRefine.fingerprint;
+        this.solverRefine = null;
+      } else {
+        expected = this.solverPendingFingerprint;
+        this.solverPendingFingerprint = null;
+        this.solverPendingRequestId = null;
+        this.solverForced = null;
+        this.version++;
+      }
+      if (this.solverContextFingerprint() !== expected) return false;
+      if (refine && (this.solverPlan?.source === 'manual' || !this._activePlanRanks(expected))) return false;
       const order = response.order;
       const originalIds = rows.map(row => row.id);
       if (!Array.isArray(order) || order.length !== originalIds.length ||
@@ -792,61 +1018,230 @@ class Scheduler {
           originalIds.slice(0, pinnedUntil).some((entry, index) => order[index] !== entry)) {
         throw new Error('Le solveur a répondu avec une file invalide.');
       }
-      this.version++;
-      this.solverPlan = { version: this.version,
-        fingerprint,
-        ranks: new Map(order.map((entry, index) => [entry, index])) };
-      this.solverRequestedVersion = this.version;
-      this.solverPendingVersion = -1;
-      this.solverPendingFingerprint = null;
-      this.solverPendingRequestId = null;
+      const ranks = new Map(order.map((entry, index) => [entry, index]));
+      const baseOrder = this._forecast(false, [], null, true,
+        { ranks: refine ? this._activePlanRanks(expected) : null });
+      const local = this._planMetric(baseOrder);
+      const proposedOrder = this._forecast(false, [], null, true, { ranks });
+      const proposed = this._planMetric(proposedOrder);
+      // À qualité égale, l'ordre déjà affiché est conservé : Timefold le
+      // confirme sans faire bouger la file pour rien. Un gain que seule la
+      // mesure complète voit (part de chaque table, premiers passages) est
+      // adopté s'il ne dégrade pas la mesure locale et si la règle locale
+      // reproduit exactement l'ordre proposé.
+      const sameOrder = proposedOrder.length === order.length &&
+        proposedOrder.every((slot, index) => slot.entryId === order[index]);
+      const improved = proposed < local ||
+        (proposed === local && sameOrder && solverScoreGain(response.seedScore, response.score));
+      const now = Date.now();
+      if (refine) {
+        stats.runs++;
+        if (improved) { stats.improvements++; stats.fruitless = 0; stats.lastImprovedAt = now; } else stats.fruitless++;
+      }
+      this.solverLastRun = { at: now, elapsedMs: Number(response.elapsedMs) || null,
+        budgetMs: budget, titles: rows.length, forced, refine, improved,
+        localMetric: local, solverMetric: proposed };
+      if (improved) {
+        this.solverPlan = { version: this.version, fingerprint: expected, ranks, source: 'timefold' };
+        if (refine) this.version++;
+      } else if (!refine) {
+        this.solverPlan = { version: this.version, fingerprint: expected,
+          ranks: new Map(baseOrder.map((item, index) => [item.entryId, index])), source: 'confirmed' };
+      }
       this.solverLastError = null;
-      return true;
+      this._scheduleRefine();
+      return improved || !refine;
     }).catch(error => {
-      if (this.solverPendingRequestId === request.requestId) {
-        this.solverPendingVersion = -1;
+      if (!claimed && !current()) return false;
+      if (refine) {
+        this.solverRefine = null;
+        this.solverLastError = error.message;
+        // Solveur arrêté : il redevient disponible après sa pause de sécurité.
+        this._scheduleRefine(60_000);
+        return false;
+      }
+      if (!claimed) {
         this.solverPendingFingerprint = null;
         this.solverPendingRequestId = null;
-        this.solverLastError = error.message;
-        if (!this.solverBridge.available) {
-          this.solverRequestedVersion = -1;
-          this.solverRequestedFingerprint = null;
-        }
+        this.solverForced = null;
+        this.version++;
       }
-      return false; // l'ancien ordonnanceur reste disponible
+      this.solverLastError = error.message;
+      if (!this.solverBridge.available) this.solverRequestedFingerprint = null;
+      return false; // l'ordre local reste disponible
     });
+    if (refine) this.solverRefinePromise = promise;
+    else this.solverPromise = promise;
     return true;
+  }
+
+  // ------------------------------------------------------------------ optimisation continue
+  // Donner plus de temps à la recherche trouve souvent une meilleure rotation
+  // sur les mêmes données. Tant que la file ne change pas, des passes de 10,
+  // 20 puis 30 secondes repartent du meilleur ordre connu avec une autre
+  // graine. Après plusieurs passes sans gain, les pauses s'allongent (2 s
+  // jusqu'à 2 min) pour ne pas occuper le PC du bar inutilement. Tout
+  // changement réel interrompt la passe en cours ; le prochain chanteur
+  // annoncé et les titres déjà dans KaraFun ne bougent jamais.
+  _refineStatsFor(fingerprint) {
+    if (this.solverRefineStats.fingerprint !== fingerprint) {
+      this.solverRefineStats = { fingerprint, runs: 0, improvements: 0, fruitless: 0 };
+    }
+    return this.solverRefineStats;
+  }
+
+  _refineAllowed() {
+    return !!(this.opts.solverEnabled && this.opts.continuousSolver && this.solverBridge?.available &&
+      this.solverPlan && this.solverPlan.source !== 'manual' && !this.manualOrderActive &&
+      this.solverPendingFingerprint === null && !this.solverRefine);
+  }
+
+  _cancelRefine() {
+    clearTimeout(this.solverRefineTimer);
+    this.solverRefineTimer = null;
+    this.solverRefineAt = null;
+    this.solverRefine = null;
+  }
+
+  _scheduleRefine(delayMs = null) {
+    clearTimeout(this.solverRefineTimer);
+    this.solverRefineTimer = null;
+    this.solverRefineAt = null;
+    if (!this._refineAllowed()) return false;
+    const stats = this._refineStatsFor(this.solverPlan.fingerprint);
+    const base = Math.max(10, Number(this.opts.solverRefinePauseMs) || 2000);
+    const pause = delayMs ?? (stats.fruitless < 3 ? base : Math.min(120_000, base * 2 ** (stats.fruitless - 2)));
+    this.solverRefineAt = Date.now() + pause;
+    this.solverRefineTimer = setTimeout(() => {
+      this.solverRefineTimer = null;
+      this.solverRefineAt = null;
+      this._refineNow();
+    }, pause);
+    this.solverRefineTimer.unref?.();
+    return true;
+  }
+
+  _refineNow() {
+    const fingerprint = this.solverContextFingerprint();
+    if (!this._refineAllowed() || this.solverPlan.fingerprint !== fingerprint) return false;
+    const stats = this._refineStatsFor(fingerprint);
+    const configured = Number.isInteger(this.opts.solverBudgetMs) ? this.opts.solverBudgetMs : 10_000;
+    const budgetMs = Math.min(30_000, Math.max(100, configured) * Math.min(3, stats.runs + 1));
+    return this._requestSolver(fingerprint, { budgetMs, refine: true });
+  }
+
+  // Le bar demande un nouveau calcul complet : les déplacements manuels sont
+  // abandonnés (le prochain annoncé reste garanti) et Timefold dispose de son
+  // budget maximal, sans attendre la fenêtre de regroupement.
+  forceReplan(budgetMs = 30000) {
+    const manual = this.manualOrderActive || this.solverPlan?.source === 'manual';
+    this.invalidateManualOrder();
+    this.solverPlan = null;
+    this.solverRequestedFingerprint = null;
+    this._cancelRefine();
+    this.note(`Le bar relance le calcul de la file${manual ? ' ; les déplacements manuels sont abandonnés' : ''}`, 'staff');
+    if (!this.solverBridge?.available) return false;
+    return this._requestSolver(this.solverContextFingerprint(), { budgetMs, forced: true });
+  }
+
+  // Mesure commune pour comparer deux ordres : une table qui reprend le micro
+  // compte beaucoup, un retour trop rapide d'une même personne un peu moins.
+  _planMetric(slots) {
+    let adjacency = 0, recency = 0;
+    let previous = Array.isArray(this.lastGroup) ? this.lastGroup : this.lastGroup ? [this.lastGroup] : [];
+    const seen = new Map();
+    slots.forEach((slot, index) => {
+      const groups = slot.groups || [slot.group];
+      if (previous.length && overlaps(groups, previous)) adjacency++;
+      for (const pid of slot.ids) {
+        if (seen.has(pid)) {
+          const distance = index - seen.get(pid);
+          if (distance < 4) recency += (4 - distance) ** 2;
+        }
+        seen.set(pid, index);
+      }
+      previous = groups;
+    });
+    return adjacency * 1000 + recency;
   }
 
   whenPlanReady() {
     const pending = this._maybeRequestSolver();
-    return pending ? this.solverPromise : Promise.resolve(this.solverPlan?.version === this.version);
+    return pending ? this.solverPromise : Promise.resolve(!!this._activePlanRanks());
   }
-  // Une chanson ne doit pas rester muette 15 s lorsque la file vient d'être
-  // créée. Après cette courte fenêtre, l'heuristique locale peut annoncer et
-  // réserver le prochain passage ; Timefold poursuit le reste en arrière-plan.
-  _solverBlocksNext() {
-    return this.solverPendingFingerprint !== null &&
-      this.solverNextStartedAt > 0 &&
-      Date.now() - this.solverNextStartedAt < 2500 &&
-      !this.reservedNext && !this.manualOrderActive;
-  }
+
   solverStatus() {
+    this._maybeRequestSolver();
+    const ranks = this._activePlanRanks();
+    const stats = this.solverRefineStats.fingerprint === this.solverPlan?.fingerprint ?
+      this.solverRefineStats : { runs: 0, improvements: 0, fruitless: 0 };
     return { configured: !!this.solverBridge,
       available: !!this.solverBridge?.available,
-      pending: this.solverPendingVersion === this.version,
-      blockingNext: this._solverBlocksNext(),
-      fallbackLastError: this.solverLastError || this.solverBridge?.lastError || null };
+      pending: this.solverPendingFingerprint !== null,
+      pendingSince: this.solverPendingFingerprint !== null ? this.solverPendingSince : null,
+      budgetMs: this.solverPendingFingerprint !== null ? this.solverPendingBudgetMs : null,
+      forced: !!this.solverForced,
+      plan: ranks ? this.solverPlan.source || 'timefold' : 'local',
+      lastRun: this.solverLastRun,
+      continuous: !!(this.opts.solverEnabled && this.opts.continuousSolver),
+      refining: !!this.solverRefine,
+      refineSince: this.solverRefine?.since ?? null,
+      refineBudgetMs: this.solverRefine?.budgetMs ?? null,
+      nextRefineAt: this.solverRefineAt,
+      refineRuns: ranks ? stats.runs : 0,
+      refineImprovements: ranks ? stats.improvements : 0,
+      lastImprovedAt: ranks ? stats.lastImprovedAt || null : null,
+      blockingNext: false,
+      // Texte montré au bar : sans nom de bibliothèque ni détail Java.
+      fallbackLastError: plainSolverError(this.solverLastError || this.solverBridge?.lastError || null) };
   }
-  closeSolver() { this.solverBridge?.close(); }
+  closeSolver() { this._cancelRefine(); this.solverBridge?.close(); }
 
-  // Chaque chanteur prêt passe une fois par tour. Parmi ceux qui attendent leur
-  // tour, on privilégie une table qui n'a pas encore chanté dans ce tour.
+  // Poids de chaque groupe dans le partage d'un tour. Par défaut, au prorata
+  // des chanteurs prêts (chacun chante une fois par tour, une table de 10
+  // obtient deux fois plus de passages qu'une table de 5) ; en rotation des
+  // tables, parts égales ; en compromis, racine du nombre de chanteurs.
+  _groupWeights(cands) {
+    const members = new Map();
+    for (const c of cands) {
+      const owner = this.people.get(c.ids[0]);
+      if (!owner) continue;
+      if (!members.has(owner.group)) members.set(owner.group, new Set());
+      members.get(owner.group).add(owner.id);
+    }
+    for (const c of cands) for (const g of c.groups) if (!members.has(g)) members.set(g, new Set());
+    const mode = !this.opts.tableRotation ? 'people' : this.opts.weightedTables ? 'sqrt' : 'equal';
+    const out = new Map();
+    for (const [group, set] of members) {
+      const sum = [...set].reduce((total, pid) => total + this.personWeight(pid), 0);
+      out.set(group, !set.size ? 0 : mode === 'people' ? sum :
+        mode === 'sqrt' ? Math.sqrt(sum) : this.tableWeight(group));
+    }
+    return out;
+  }
+
+  // Écart entre la part méritée et les passages réellement obtenus sur la
+  // dernière fenêtre d'environ un tour. Le plus grand écart passe d'abord.
+  _groupDeficits(weights, history, owners) {
+    const total = [...weights.values()].reduce((a, b) => a + b, 0);
+    const out = new Map();
+    const recent = history.slice(-Math.max(4, owners));
+    for (const [group, weight] of weights) {
+      const served = recent.reduce((n, groups) => n + (groups.includes(group) ? 1 : 0), 0);
+      out.set(group, total > EPS ? (recent.length + 1) * weight / total - served : -served);
+    }
+    return out;
+  }
+
+  // Chaque chanteur prêt passe une fois par tour (crédit ajusté par un bonus
+  // ou un malus). Les premiers passages de la soirée restent prioritaires.
+  // Parmi les passages équitables, la table la plus en retard sur sa part
+  // chante, sans reprendre le micro juste après elle-même si possible.
   // `predict` : on suppose que chaque ticket sera prêt à temps.
   _pick(order, lastGroup, predict, roundGroups = this.roundGroups, roundPeople = this.roundPeople,
     servedCounts = this.tableServeCounts, cooldowns = this.duetCooldowns, projectedSongs = null,
     reservation = null, appearances = null, ignorePresence = false,
-    recentTurns = null) {
+    recentTurns = null, sim = null) {
     const idx = new Map(order.map((pid, i) => [pid, i]));
     const cands = [];
     for (const pid of order) {
@@ -875,19 +1270,29 @@ class Scheduler {
       cands.push({ ids: [p.id], consumedIds: [p.id], song, group: p.group, groups: [p.group], at: idx.get(p.id) });
     }
     if (!cands.length) return null;
+    const roundUse = sim ? sim.roundUse : this.roundUse;
+    const history = sim ? sim.history : this.recentGroups;
+    const serial = sim ? sim.serial : this.appearanceSerial;
+    const ranks = sim ? sim.ranks : this._activePlanRanks();
     // Le tour mesure les personnes réellement montées sur scène, invitées de
     // duo comprises. Un tour neuf commence seulement quand plus aucun titre
     // prêt ne peut présenter une personne qui n'a pas chanté dans ce tour.
-    const newPersonRound = cands.every(c => c.ids.every(pid => roundPeople.has(pid)));
-    const physicalRound = newPersonRound ? new Set() : roundPeople;
+    // Un malus peut prolonger l'attente d'une personne sur plusieurs tours.
+    let physicalRound = roundPeople, roundResets = 0;
+    const blocked = set => cands.every(c => c.ids.every(pid => set.has(pid)));
+    if (blocked(roundPeople)) {
+      const people = new Set(roundPeople), use = new Map(roundUse);
+      do { this._resetRound(people, use); roundResets++; } while (roundResets < 4 && blocked(people));
+      physicalRound = people;
+    }
+    const newPersonRound = roundResets > 0;
     const withRound = c => {
       // Un duo peut réunir une table déjà servie et une table encore neuve.
       // Ce passage complète alors le tour ; il ne remet pas à zéro les tables
-      // restantes. Un nouveau tour ne démarre que si toutes les tables ayant
-      // un titre prêt ont déjà été servies dans le tour courant.
+      // restantes (compteurs conservés pour l'historique).
       const newGroupRound = newPersonRound || cands.every(candidate =>
         candidate.groups.every(group => roundGroups.has(group)));
-      return { ...c, newPersonRound, newGroupRound };
+      return { ...c, newPersonRound, roundResets, newGroupRound };
     };
     const reserved = reservation && cands.find(c => c.ids[0] === reservation.personId);
     if (reserved) return withRound(reserved);
@@ -896,17 +1301,6 @@ class Scheduler {
         (!projectedSongs || c.song === this.people.get(c.ids[0])?.song))
         .sort((a, b) => this.manualOrder.indexOf(a.ids[0]) - this.manualOrder.indexOf(b.ids[0]));
       if (explicit.length) return withRound(explicit[0]);
-    }
-    // Le plan Timefold classe tous les titres admissibles. Les garde-fous
-    // ci-dessus (prochain annoncé et ordre manuel) et la construction de
-    // `cands` (présence, duo accepté, ordre des titres d'un même chanteur)
-    // restent impératifs. En l'absence de plan valide, l'heuristique
-    // historique ci-dessous assure un fonctionnement hors ligne.
-    const solverRanks = this.solverPlan?.version === this.version ? this.solverPlan.ranks : null;
-    if (solverRanks) {
-      const planned = cands.filter(c => solverRanks.has(c.song?.entryId))
-        .sort((a, b) => solverRanks.get(a.song.entryId) - solverRanks.get(b.song.entryId) || a.at - b.at);
-      if (planned.length) return withRound(planned[0]);
     }
     // Le ticket de l'invité d'un duo reste intact, mais sa présence sur scène
     // compte pour l'équité. Tant qu'un passage sans chanteur déjà entendu est
@@ -921,9 +1315,9 @@ class Scheduler {
       if (introducing.length) {
         // À premier passage égal, un duo avec une personne déjà souvent montée
         // sur scène attend derrière celui dont le partenaire a moins chanté.
-        const appearances = c => c.ids.reduce((n, pid) => n + appearancesOf(pid), 0);
-        const least = Math.min(...introducing.map(appearances));
-        choices = introducing.filter(c => appearances(c) === least);
+        const total = c => c.ids.reduce((n, pid) => n + appearancesOf(pid), 0);
+        const least = Math.min(...introducing.map(total));
+        choices = introducing.filter(c => total(c) === least);
       }
     }
     // Une fois les premières apparitions de la soirée servies, refaire la
@@ -942,90 +1336,77 @@ class Scheduler {
           c.ids.filter(pid => physicalRound.has(pid)).length === fewestRepeats);
       }
     }
+    const lastTable = new Set(Array.isArray(lastGroup) ? lastGroup : lastGroup ? [lastGroup] : []);
+    const lastApp = pid => recentTurns ? (recentTurns.get(pid) || 0) :
+      (this.people.get(pid)?.lastAppearanceTurn || 0);
+    // Anti-série : quand tous les passages prioritaires sont de la table qui
+    // vient de chanter (typiquement une grande table arrivée d'un coup), une
+    // personne d'une autre table peut s'intercaler, à condition de n'avoir
+    // chanté avant AUCUNE personne encore en attente depuis son dernier
+    // passage. Ainsi personne ne voit quelqu'un chanter deux fois pendant
+    // sa propre attente, et la table nouvelle ne monopolise pas le micro.
+    if (this.opts.interleaveArrivals !== false && lastTable.size && choices.every(c => c.groups.some(g => lastTable.has(g)))) {
+      const waitStart = pid => Math.max(lastApp(pid), this.people.get(pid)?.readySerial || 0);
+      const alternates = cands.filter(c => !choices.includes(c) &&
+        c.groups.every(g => !lastTable.has(g)) &&
+        c.ids.every(pid => {
+          const seen = lastApp(pid);
+          return seen > 0 && cands.every(other => other.consumedIds.every(q =>
+            c.ids.includes(q) || seen <= waitStart(q)));
+        }));
+      if (alternates.length) choices = alternates;
+    }
+    // Un plan (Timefold ou ordre manuel du bar) départage les passages que
+    // l'équité autorise ; il ne peut jamais contourner les règles ci-dessus.
+    if (ranks) {
+      const planned = choices.filter(c => ranks.has(c.song?.entryId))
+        .sort((a, b) => ranks.get(a.song.entryId) - ranks.get(b.song.entryId) || a.at - b.at);
+      if (planned.length) return withRound(planned[0]);
+    }
     // Le répit d'un invité évite les passages trop rapprochés seulement entre
     // candidats de même niveau d'équité : il ne retarde pas un premier passage
     // au profit d'une personne déjà montée sur scène.
     const cooled = choices.filter(c => c.ids.every(pid => (cooldowns.get(pid) || 0) <= 0));
     if (cooled.length) choices = cooled;
-    // Le tour des tables passe avant le départage par ancienneté individuelle.
-    // Après Marine (table 1) puis table 2, table 3 doit chanter avant JP de
-    // table 1, même si JP a chanté plus tôt dans la soirée.
-    if (!newPersonRound && choices.every(c => c.ids.every(pid => !physicalRound.has(pid)))) {
-      const awaitingTable = choices.filter(c => c.groups.some(g => !roundGroups.has(g)));
-      if (awaitingTable.length) choices = awaitingTable;
-    }
-    // Le répit d'une personne ne doit pas faire chanter deux fois de suite la
-    // même table alors qu'une autre table de même niveau d'équité est prête.
-    const lastTable = new Set(Array.isArray(lastGroup) ? lastGroup : lastGroup ? [lastGroup] : []);
+    // Pas deux chansons de suite pour la même table quand une autre est prête.
     const otherTable = choices.filter(c => c.groups.every(g => !lastTable.has(g)));
     if (otherTable.length) choices = otherTable;
-    // La première apparition de Yannick dans « Yannick & Marine » doit passer
-    // avant « Osark & Johnny » quand Marine a chanté au #1 et Johnny au #3.
-    // Le tour de l'invité reste intact, mais sa présence physique est réelle.
-    const mostRecent = c => Math.max(0, ...c.ids.map(pid =>
-      recentTurns ? (recentTurns.get(pid) || 0) :
-        (this.people.get(pid)?.lastAppearanceTurn || 0)));
-    const oldestRepeat = Math.min(...choices.map(mostRecent));
-    choices = choices.filter(c => mostRecent(c) === oldestRepeat);
-    const plannedFirst = available => available[0];
+    // Quelqu'un qui vient de monter sur scène (dans les deux derniers
+    // passages) laisse passer les autres : « Yannick & Marine » passe avant
+    // « Osark & Johnny » quand Johnny vient de chanter.
+    const mostRecent = c => Math.max(0, ...c.ids.map(lastApp));
+    const rested = choices.filter(c => mostRecent(c) <= serial - 2);
+    if (rested.length) choices = rested;
     // Le glisser-déposer du bar départage les candidats équitables. Une
     // priorité ponctuelle explicite est déjà traitée par reservedNext ci-dessus.
     const manual = choices.filter(c => this.manualOrder.includes(c.ids[0]) &&
       (!projectedSongs || c.song === this.people.get(c.ids[0])?.song))
       .sort((a, b) => this.manualOrder.indexOf(a.ids[0]) - this.manualOrder.indexOf(b.ids[0]));
     if (manual.length) return withRound(manual[0]);
-    if (this.opts.tableRotation) {
-      const groups = [...new Set(choices.flatMap(c => c.groups))];
-      const last = new Set(Array.isArray(lastGroup) ? lastGroup : lastGroup ? [lastGroup] : []);
-      const tableIds = [...this.tables.keys()];
-      const rank = group => {
-        const p = [...this.people.values()].find(x => x.group === group);
-        return p ? tableIds.indexOf(p.tableId) * 100000 + p.joinedAt % 100000 : Number.MAX_SAFE_INTEGER;
-      };
-      groups.sort((a, b) => rank(a) - rank(b));
-      const possible = groups.length > 1 ? groups.filter(g => !last.has(g)) : groups;
-      const options = possible.length ? possible : groups;
-      let chosenGroup;
-      if (this.opts.weightedTables) {
-        const readyCount = group => new Set(choices.flatMap(c => c.ids).filter(pid => this.people.get(pid)?.group === group)).size || 1;
-        const allZero = groups.every(g => (servedCounts.get(g) || 0) === 0);
-        chosenGroup = allZero && !last.size ? groups[0] : options.slice().sort((a, b) => {
-          const wa = Math.sqrt(readyCount(a)), wb = Math.sqrt(readyCount(b));
-          const debt = (servedCounts.get(a) || 0) / wa - (servedCounts.get(b) || 0) / wb;
-          return Math.abs(debt) > 1e-9 ? debt : wb - wa || rank(a) - rank(b);
-        })[0];
-      } else {
-        // Garder le cercle de toutes les tables inscrites. Une table qui vient
-        // de passer peut ne plus avoir de titre prêt et ne figure plus dans
-        // `groups` ; elle reste pourtant le point de départ de la rotation.
-        const circle = [...new Set([...this.people.values()].filter(p => !p.withdrawnAt).map(p => p.group))]
-          .sort((a, b) => rank(a) - rank(b));
-        const anchor = Array.isArray(lastGroup) ? lastGroup[0] : lastGroup;
-        const previous = circle.indexOf(anchor);
-        chosenGroup = options.slice().sort((a, b) => {
-          const da = (circle.indexOf(a) - previous + circle.length) % circle.length || circle.length;
-          const db = (circle.indexOf(b) - previous + circle.length) % circle.length || circle.length;
-          return da - db || rank(a) - rank(b);
-        })[0];
-      }
-      const c = plannedFirst(choices.filter(x => x.groups.includes(chosenGroup)));
-      return withRound(c);
-    }
-    const groupWaiting = choices.filter(c => newPersonRound || c.groups.some(g => !roundGroups.has(g)));
-    const newGroupRound = newPersonRound || groupWaiting.length === 0;
-    const eligible = newGroupRound ? choices : groupWaiting;
-    // Au début d'un tour, éviter aussi de faire revenir immédiatement la table
-    // de la dernière chanson si une autre table est déjà prête.
-    const last = new Set(Array.isArray(lastGroup) ? lastGroup : lastGroup ? [lastGroup] : []);
-    const c = plannedFirst(eligible.filter(x => x.groups.every(g => !last.has(g)))) ||
-      plannedFirst(eligible);
-    return { ...c, newPersonRound, newGroupRound };
+    // Partage du tour entre les tables selon le mode choisi.
+    const weights = this._groupWeights(cands);
+    const deficits = this._groupDeficits(weights, history,
+      new Set(cands.map(c => c.ids[0])).size);
+    const need = c => Math.max(...c.groups.map(g => deficits.get(g) ?? -Infinity));
+    const size = c => Math.max(...c.groups.map(g => weights.get(g) || 0));
+    const tableIds = [...this.tables.keys()];
+    const tableRank = c => Math.min(...c.ids.map(pid => {
+      const index = tableIds.indexOf(this.people.get(pid)?.tableId);
+      return index < 0 ? tableIds.length : index;
+    }));
+    choices = choices.slice().sort((a, b) => {
+      const byNeed = need(b) - need(a);
+      if (Math.abs(byNeed) > EPS) return byNeed;
+      return size(b) - size(a) || tableRank(a) - tableRank(b) ||
+        this.personWeight(b.ids[0]) - this.personWeight(a.ids[0]) ||
+        mostRecent(a) - mostRecent(b) || a.at - b.at;
+    });
+    return withRound(choices[0]);
   }
 
   // Renvoie la prochaine chanson à envoyer (sans rien modifier), ou null.
   select() {
-    const waitingForPlan = this._maybeRequestSolver();
-    if (waitingForPlan && this._solverBlocksNext()) return null;
+    this._maybeRequestSolver();
     if (this.reservedNext) {
       const p = this.people.get(this.reservedNext.personId);
       const duet = p?.song?.duet;
@@ -1057,8 +1438,9 @@ class Scheduler {
     const selected = this.select();
     if (!selected) return null;
     if (!this.reservedNext || this.reservedNext.personId !== selected.ids[0]) {
-      this.reservedNext = { personId: selected.ids[0], reservedAt: Date.now() };
-      this.solverNextStartedAt = 0;
+      this._carryPlanAcross(() => {
+        this.reservedNext = { personId: selected.ids[0], reservedAt: Date.now() };
+      });
       this.version++;
     }
     return selected;
@@ -1068,18 +1450,15 @@ class Scheduler {
   // Les tickets sans chanson et les duos encore en attente ne figurent pas
   // ici. Une réservation existante reste stable tant que son titre existe.
   reservePresenceNext(excludeIds = [], provisional = null) {
-    // En mode confirmation, la réservation annonce effectivement quelqu'un
-    // aux clients. Elle attend donc le plan courant comme `select()` ; sinon
-    // le nom affiché pourrait changer deux secondes plus tard.
-    if (this._maybeRequestSolver() && this._solverBlocksNext()) return null;
     const visible = this.presenceView(excludeIds, provisional).filter(v => !v.future);
     const kept = visible.find(v => v.ids[0] === this.reservedNext?.personId);
     if (kept) return kept;
     if (this.reservedNext) this.releaseNext();
     const first = visible[0];
     if (!first) return null;
-    this.reservedNext = { personId: first.ids[0], reservedAt: Date.now() };
-    this.solverNextStartedAt = 0;
+    this._carryPlanAcross(() => {
+      this.reservedNext = { personId: first.ids[0], reservedAt: Date.now() };
+    });
     this.version++;
     return first;
   }
@@ -1087,7 +1466,6 @@ class Scheduler {
   releaseNext() {
     if (this.reservedNext) {
       this.reservedNext = null;
-      this.solverNextStartedAt = 0;
       this.version++;
     }
   }
@@ -1095,7 +1473,7 @@ class Scheduler {
   // Simule les titres suivants sans consommer les vrais tickets. Une personne
   // reste dans le cercle tant que sa liste contient un autre titre ; seul
   // `select()` peut envoyer son titre courant à KaraFun.
-  _forecast(predict, excludeIds = [], provisional = null, ignorePresence = false) {
+  _forecast(predict, excludeIds = [], provisional = null, ignorePresence = false, options = {}) {
     const excluded = new Set(excludeIds);
     const pendingIds = new Set(provisional ? (provisional.consumedIds || provisional.ids) : []);
     const lists = new Map(), positions = new Map(), songs = new Map(), remaining = [];
@@ -1110,9 +1488,12 @@ class Scheduler {
       lists.set(pid, list); positions.set(pid, start); songs.set(pid, list[start]);
       remaining.push(pid);
     }
+    const ranks = 'ranks' in options ? options.ranks : this._activePlanRanks();
     let last = this.lastGroup;
     const round = new Set(this.roundGroups);
     const roundPeople = new Set(this.roundPeople);
+    const roundUse = new Map(this.roundUse);
+    const history = this.recentGroups.slice(-HISTORY_LIMIT);
     const served = new Map(this.tableServeCounts);
     const cooldowns = new Map(this.duetCooldowns);
     const appearances = new Map([...this.people.values()].map(p =>
@@ -1121,24 +1502,27 @@ class Scheduler {
       [p.id, p.lastAppearanceTurn || 0]));
     let appearanceTurn = this.appearanceSerial;
     const slots = [];
-    if (provisional) {
-      if (provisional.newPersonRound) roundPeople.clear();
-      if (provisional.newGroupRound) round.clear();
-      provisional.ids.forEach(pid => roundPeople.add(pid));
-      (provisional.groups || [provisional.group]).forEach(g => {
-        round.add(g); served.set(g, (served.get(g) || 0) + 1);
-      });
-      this._advanceCooldowns(cooldowns, provisional);
-      provisional.ids.forEach(pid => appearances.set(pid, (appearances.get(pid) || 0) + 1));
+    const apply = c => {
+      const resets = c.roundResets ?? (c.newPersonRound ? 1 : 0);
+      for (let k = 0; k < resets; k++) this._resetRound(roundPeople, roundUse);
+      if (c.newGroupRound) round.clear();
+      c.ids.forEach(pid => this._useRound(roundPeople, roundUse, pid));
+      const groups = c.groups || [c.group];
+      groups.forEach(g => { round.add(g); served.set(g, (served.get(g) || 0) + 1); });
+      history.push(groups);
+      this._advanceCooldowns(cooldowns, c);
+      c.ids.forEach(pid => appearances.set(pid, (appearances.get(pid) || 0) + 1));
       appearanceTurn++;
-      provisional.ids.forEach(pid => recentTurns.set(pid, appearanceTurn));
-      last = provisional.groups || [provisional.group];
-    }
+      c.ids.forEach(pid => recentTurns.set(pid, appearanceTurn));
+      last = groups;
+    };
+    if (provisional) apply(provisional);
     let reservation = this.reservedNext && !pendingIds.has(this.reservedNext.personId) ?
       this.reservedNext : null;
     while (remaining.length) {
       const c = this._pick(remaining, last, predict, round, roundPeople, served,
-        cooldowns, songs, reservation, appearances, ignorePresence, recentTurns);
+        cooldowns, songs, reservation, appearances, ignorePresence, recentTurns,
+        { roundUse, history, serial: appearanceTurn, ranks });
       if (!c) break;
       reservation = null;
       slots.push({ ...c, entryId: c.song?.entryId || null, future: positions.get(c.ids[0]) > 0 });
@@ -1153,15 +1537,7 @@ class Scheduler {
           remaining.push(pid); // alterner aussi les chanteurs d'une même table
         } else songs.delete(pid);
       }
-      if (c.newPersonRound) roundPeople.clear();
-      if (c.newGroupRound) round.clear();
-      c.ids.forEach(pid => roundPeople.add(pid));
-      c.groups.forEach(g => { round.add(g); served.set(g, (served.get(g) || 0) + 1); });
-      this._advanceCooldowns(cooldowns, c);
-      c.ids.forEach(pid => appearances.set(pid, (appearances.get(pid) || 0) + 1));
-      appearanceTurn++;
-      c.ids.forEach(pid => recentTurns.set(pid, appearanceTurn));
-      last = c.groups;
+      apply(c);
     }
     if (predict) for (const pid of remaining) slots.push({ ids: [pid], group: (this.people.get(pid) || {}).group });
     return slots;
@@ -1182,7 +1558,7 @@ class Scheduler {
       const table = this.table(owner.tableId);
       const tables = [...new Set(c.ids.map(pid => this.table(this.people.get(pid).tableId).name))];
       out.push({ ids: c.ids, song: c.song, entryId: c.entryId, future: c.future, kind: c.kind,
-        name: c.ids.map(pid => this.people.get(pid)?.name).filter(Boolean).join(' & '),
+        groups: c.groups, name: c.ids.map(pid => this.people.get(pid)?.name).filter(Boolean).join(' & '),
         table: tables.join(' + ') || table?.name || '', tableId: owner.tableId, qi: qIndex.get(owner.id),
         over: owner.over, cap: this.opts.cap, confirmed: !!this._confirmedRecently(owner) });
     }
@@ -1209,6 +1585,7 @@ class Scheduler {
       appearanceSerial: this.appearanceSerial,
       lastGroup: Array.isArray(this.lastGroup) ? [...this.lastGroup] : this.lastGroup,
       roundPeople: [...this.roundPeople], roundGroups: [...this.roundGroups],
+      roundUse: [...this.roundUse], recentGroups: this.recentGroups.map(groups => [...groups]),
       tableServeCounts: [...this.tableServeCounts], duetCooldowns: [...this.duetCooldowns],
       qIndex: this.Q.indexOf(sel.ids[0]),
       people: sel.ids.map(pid => {
@@ -1239,7 +1616,8 @@ class Scheduler {
         }
       }
       const globals = ['appearanceSerial', 'lastGroup', 'roundPeople', 'roundGroups',
-        'tableServeCounts', 'duetCooldowns'];
+        'tableServeCounts', 'duetCooldowns', 'roundUse', 'recentGroups']
+        .filter(field => field in after);
       const current = this._turnCreditState(sel);
       const matches = globals.every(field => JSON.stringify(current[field]) === JSON.stringify(after[field]));
       if (matches) {
@@ -1249,7 +1627,22 @@ class Scheduler {
         this.roundGroups = new Set(before.roundGroups);
         this.tableServeCounts = new Map(before.tableServeCounts);
         this.duetCooldowns = new Map(before.duetCooldowns);
+        if (before.roundUse) this.roundUse = new Map(before.roundUse);
+        if (before.recentGroups) this.recentGroups = before.recentGroups.map(groups => [...groups]);
       } else {
+        // Le passage n'a pas eu lieu : il ne compte plus dans le partage des tables.
+        const groups = JSON.stringify(sel.groups || [sel.group]);
+        for (let i = this.recentGroups.length - 1; i >= 0; i--) {
+          if (JSON.stringify(this.recentGroups[i]) === groups) { this.recentGroups.splice(i, 1); break; }
+        }
+        if (before.roundUse && after.roundUse) {
+          const oldUse = new Map(before.roundUse), newUse = new Map(after.roundUse);
+          for (const pid of sel.ids) {
+            if ((this.roundUse.get(pid) || 0) !== (newUse.get(pid) || 0)) continue;
+            if (oldUse.has(pid)) this.roundUse.set(pid, oldUse.get(pid));
+            else this.roundUse.delete(pid);
+          }
+        }
         // Une autre intervention du bar a changé l'état entre-temps. Retirer
         // seulement le crédit de ce passage, sans effacer cette intervention.
         if (this.appearanceSerial === after.appearanceSerial) {
@@ -1304,8 +1697,11 @@ class Scheduler {
     return true;
   }
 
-  // Appelé quand la chanson a bien été ajoutée dans KaraFun.
-  commit(sel) {
+  // Appelé quand la chanson a bien été ajoutée dans KaraFun. Le plan en cours
+  // (Timefold ou ordre manuel) reste valable : ce passage était prévu.
+  commit(sel) { return this._carryPlanAcross(() => this._commit(sel)); }
+
+  _commit(sel) {
     const now = Date.now();
     this.manualChanges = [];
     const [first, second] = sel.ids;
@@ -1345,13 +1741,16 @@ class Scheduler {
       }
     }
     this._refreshDuetViews();
-    if (sel.newPersonRound) this.roundPeople.clear();
+    const resets = sel.roundResets ?? (sel.newPersonRound ? 1 : 0);
+    for (let k = 0; k < resets; k++) this._resetRound(this.roundPeople, this.roundUse);
     if (sel.newGroupRound) this.roundGroups.clear();
-    sel.ids.forEach(pid => { if (this.people.has(pid)) this.roundPeople.add(pid); });
+    sel.ids.forEach(pid => { if (this.people.has(pid)) this._useRound(this.roundPeople, this.roundUse, pid); });
     (sel.groups || [sel.group]).forEach(g => {
       this.roundGroups.add(g);
       this.tableServeCounts.set(g, (this.tableServeCounts.get(g) || 0) + 1);
     });
+    this.recentGroups.push([...(sel.groups || [sel.group])]);
+    if (this.recentGroups.length > HISTORY_LIMIT) this.recentGroups.splice(0, this.recentGroups.length - HISTORY_LIMIT);
     this.lastGroup = sel.groups || [sel.group];
     this._advanceCooldowns(this.duetCooldowns, sel);
     if (sel.kind === 'duo' && partner) partner.duetGuestCount = (partner.duetGuestCount || 0) + 1;
@@ -1365,6 +1764,29 @@ class Scheduler {
     if (this.reservedNext?.personId === sel.ids[0]) this.releaseNext();
     sel.turnCredit = { before: creditBefore, after: this._turnCreditState(sel), rolledBack: false };
     this.note(`À suivre : ${sel.label} — « ${sel.song.title} »`, 'next');
+  }
+
+  // Historique réservé au bar : qui est réellement monté sur scène, pour
+  // retrouver un visage ou marquer parti quelqu'un qui n'était pas là.
+  recordStage(sel, at = Date.now()) {
+    if (!sel?.song) return null;
+    const entry = { id: id(), at, endedAt: null, ids: [...sel.ids],
+      names: sel.ids.map(pid => this.people.get(pid)?.name || '?'),
+      tableIds: sel.ids.map(pid => this.people.get(pid)?.tableId || null),
+      title: sel.song.title, artist: sel.song.artist || '', entryId: sel.song.entryId || null,
+      kind: sel.kind || (sel.ids.length > 1 ? 'duo' : 'solo') };
+    this.stageHistory.push(entry);
+    if (this.stageHistory.length > 60) this.stageHistory.splice(0, this.stageHistory.length - 60);
+    this.version++;
+    return entry;
+  }
+
+  endStage(sel, at = Date.now()) {
+    const entryId = sel?.song?.entryId;
+    const entry = [...this.stageHistory].reverse().find(item => !item.endedAt &&
+      (entryId ? item.entryId === entryId : item.title === sel?.song?.title));
+    if (entry) { entry.endedAt = at; this.version++; }
+    return entry || null;
   }
 
   // Appelé quand la chanson est terminée : l'attente de ces personnes commence maintenant.

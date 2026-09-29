@@ -43,8 +43,35 @@ function isBattleItem(item) {
   return Number(mod?.id) === 1 && Number(mod?.data?.battle?.subtype) === 1;
 }
 
+// Les droits d'administrateur sont donnés dans KaraFun à un participant
+// nommé. Le nom de ce programme doit donc rester le même d'une reconnexion à
+// l'autre, et même après un redémarrage : il est conservé dans data/.
+function loadIdentity(file) {
+  if (!file) return null;
+  try {
+    const value = Number(JSON.parse(fs.readFileSync(file, 'utf8')).suffix);
+    return Number.isInteger(value) && value >= 1000 && value <= 9999 ? value : null;
+  } catch { return null; }
+}
+
+function saveIdentity(file, suffix) {
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ suffix }));
+    fs.renameSync(temporary, file);
+  } catch { /* nom stable pour cette exécution seulement */ }
+}
+
+const IMPORTANT_PERMISSIONS = [
+  ['addToQueue', p => p?.addToQueue !== false, 'ajout de titres'],
+  ['battle', p => p?.shownTypes?.battle !== false, 'mode Battle'],
+  ['playback', p => !!(p?.managePlayback ?? p?.managePlayer), 'lecture'],
+];
+
 class KaraFunBridge extends EventEmitter {
-  constructor({ logDir, bases } = {}) {
+  constructor({ logDir, bases, identityFile = null } = {}) {
     super();
     this.bases = bases || ['https://www.karafun.com', 'https://www.karafun.fr'];
     this.baseIdx = 0;
@@ -62,13 +89,38 @@ class KaraFunBridge extends EventEmitter {
     this.lastError = null;
     this.events = [];
     this.retryTimer = null;
-    this.loginSuffix = Math.floor(1000 + Math.random() * 9000);
+    this.identityFile = identityFile;
+    this.loginSuffix = loadIdentity(identityFile) || Math.floor(1000 + Math.random() * 9000);
+    saveIdentity(identityFile, this.loginSuffix);
+    this.identityNotice = null;
+    this.permissionWarning = null;
+    this.bestPermissions = null;
     this._generation = 0;
     this._attempt = 0;
     this._fresh = { queue: false, status: false };
   }
 
   get base() { return this.bases[this.baseIdx % this.bases.length]; }
+  get username() { return `FileKaraoke-${this.loginSuffix}`; }
+
+  // Dernier recours : KaraFun refuse durablement le nom habituel. Le bar doit
+  // alors redonner les droits d'administrateur au nouveau nom.
+  _changeIdentity() {
+    const previous = this.username;
+    this.loginSuffix = Math.floor(1000 + Math.random() * 9000);
+    saveIdentity(this.identityFile, this.loginSuffix);
+    this.identityNotice = `KaraFun refusait encore le nom ${previous} : la file s’appelle maintenant ${this.username}. Redonne-lui les droits d’administrateur dans KaraFun.`;
+    this._record('info', 'identity-changed', { previous, next: this.username });
+  }
+
+  _checkPermissions(permissions) {
+    const now = Object.fromEntries(IMPORTANT_PERMISSIONS.map(([key, read]) => [key, read(permissions)]));
+    const lost = IMPORTANT_PERMISSIONS.filter(([key]) => this.bestPermissions?.[key] && !now[key]);
+    this.permissionWarning = lost.length ?
+      `KaraFun ne donne plus à ${this.username} : ${lost.map(([, , label]) => label).join(', ')}. Redonne-lui les droits d’administrateur dans les participants de la télécommande KaraFun.` : null;
+    this.bestPermissions = Object.fromEntries(IMPORTANT_PERMISSIONS.map(([key]) =>
+      [key, !!(now[key] || this.bestPermissions?.[key])]));
+  }
 
   _record(dir, name, data) {
     const entry = { t: new Date().toISOString(), dir, name, data };
@@ -84,6 +136,7 @@ class KaraFunBridge extends EventEmitter {
     code = String(code || '').replace(/\D/g, '');
     if (!code) throw new Error('Code KaraFun manquant');
     this.disconnect();
+    if (this.code !== code) { this.bestPermissions = null; this.permissionWarning = null; }
     this.code = code;
     this.queue = [];
     this.status = this.permissions = this.preferences = null;
@@ -138,6 +191,7 @@ class KaraFunBridge extends EventEmitter {
 
   _accept(name, data) {
     this[name] = data;
+    if (name === 'permissions') this._checkPermissions(data);
     if (name === 'queue' || name === 'status') {
       this._fresh[name] = true;
       this.ready = this._fresh.queue && this._fresh.status;
@@ -152,10 +206,12 @@ class KaraFunBridge extends EventEmitter {
     const socket = new KcsTransport(url);
     this.socket = socket;
     // KaraFun garde parfois l'ancien nom quelques secondes après une coupure.
-    // Chaque nouvelle connexion doit donc choisir une autre identité.
-    this.loginSuffix = Math.floor(1000 + Math.random() * 9000);
+    // On redemande alors le MÊME nom un moment, pour conserver les droits
+    // d'administrateur donnés à ce participant, avant d'en changer.
     let usernameRetries = 0;
-    const updateUsername = () => socket.send('remote.UpdateUsernameRequest', { username: `FileKaraoke-${this.loginSuffix}` });
+    let usernameTimer = null;
+    socket.once('close', () => clearTimeout(usernameTimer));
+    const updateUsername = () => socket.send('remote.UpdateUsernameRequest', { username: this.username });
     socket.on('open', () => {
       if (!active()) return;
       this.connected = true;
@@ -203,9 +259,14 @@ class KaraFunBridge extends EventEmitter {
         this.lastError = 'KaraFun est fermé ou sa télécommande a été désactivée.';
         this._retry(3000);
       } else if (m.type === 'Error') {
-        if (p.type === 4 && /username is already used/i.test(p.message || '') && usernameRetries++ < 5) {
-          this.loginSuffix = Math.floor(1000 + Math.random() * 9000);
-          updateUsername();
+        if (p.type === 4 && /username is already used/i.test(p.message || '')) {
+          usernameRetries++;
+          if (usernameRetries > 8) this._changeIdentity();
+          else this.lastError = `KaraFun garde encore l’ancienne connexion de ${this.username} ; nouvel essai dans quelques secondes.`;
+          clearTimeout(usernameTimer);
+          usernameTimer = setTimeout(() => { if (active()) { try { updateUsername(); } catch (_) { /* reconnexion */ } } },
+            usernameRetries > 8 ? 0 : 4000);
+          this.emit('change');
           return;
         }
         this.lastError = `Commande KaraFun refusée : ${p.message || p.type || 'erreur inconnue'}`;
@@ -264,10 +325,11 @@ class KaraFunBridge extends EventEmitter {
       this._record('info', 'disconnect', reason);
       this._retry(3000);
     });
+    let loginRetries = 0;
     socket.on('loginAlreadyTaken', () => {
       if (!active()) return;
-      this.loginSuffix = Math.floor(1000 + Math.random() * 9000);
-      this._auth();
+      if (++loginRetries > 8) this._changeIdentity();
+      setTimeout(() => { if (active()) this._auth(); }, loginRetries > 8 ? 0 : 4000);
     });
     const unreachable = () => {
       if (!active()) return;
@@ -288,7 +350,7 @@ class KaraFunBridge extends EventEmitter {
   }
 
   _auth() {
-    const payload = { login: `FileKaraoke-${this.loginSuffix}`, channel: this.code, role: 'participant', app: 'karafun', socket_id: null };
+    const payload = { login: this.username, channel: this.code, role: 'participant', app: 'karafun', socket_id: null };
     this._record('out', 'authenticate', payload);
     this.socket.emit('authenticate', payload, null);
   }
@@ -372,7 +434,8 @@ class KaraFunBridge extends EventEmitter {
 
   snapshot() {
     return {
-      code: this.code, username: `FileKaraoke-${this.loginSuffix}`,
+      code: this.code, username: this.username,
+      identityNotice: this.identityNotice, permissionWarning: this.permissionWarning,
       base: this.base, protocol: this.protocol, connected: this.connected, ready: this.ready,
       unreachable: this.unreachable, lastError: this.lastError, lastEventAt: this.lastEventAt,
       queue: this.queue, status: this.status, permissions: this.permissions, preferences: this.preferences,

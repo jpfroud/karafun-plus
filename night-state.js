@@ -81,6 +81,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       manualChanges: clone(scheduler.manualChanges),
       tableServeCounts: [...scheduler.tableServeCounts],
       duetCooldowns: [...scheduler.duetCooldowns],
+      recentGroups: clone(scheduler.recentGroups || []), roundUse: [...(scheduler.roundUse || new Map())],
+      stageHistory: clone(scheduler.stageHistory || []),
       log: clone(scheduler.log), slotSamples: [...scheduler.slotSamples],
       version: scheduler.version,
     },
@@ -203,6 +205,22 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   }
   tmp.tableServeCounts = new Map(list(data.tableServeCounts, 'compteurs des tables'));
   tmp.duetCooldowns = new Map(list(data.duetCooldowns, 'répit des duos'));
+  // Champs ajoutés après la v0.1.1 : absents des anciennes sauvegardes.
+  tmp.recentGroups = list(data.recentGroups ?? [], 'historique des tables')
+    .filter(groups => Array.isArray(groups) && groups.every(g => typeof g === 'string')).slice(-120);
+  tmp.roundUse = new Map(list(data.roundUse ?? [], 'crédits de tour').filter(row =>
+    Array.isArray(row) && tmp.people.has(row[0]) && Number.isFinite(row[1]) && row[1] >= 0 && row[1] <= 10));
+  tmp.stageHistory = clone(list(data.stageHistory ?? [], 'historique de scène')).filter(item =>
+    item && typeof item === 'object' && Array.isArray(item.ids) && Number.isFinite(item.at)).slice(-60);
+  for (const t of list(data.tables, 'tables')) {
+    if (t.bonus != null) {
+      if (!Number.isInteger(t.bonus) || t.bonus < -3 || t.bonus > 3) fail('bonus de table mal formé');
+      tmp.tables.get(TableAccess.key(t.id)).bonus = t.bonus;
+    }
+  }
+  for (const p of tmp.people.values()) {
+    if (p.bonus != null && (!Number.isInteger(p.bonus) || p.bonus < -3 || p.bonus > 3)) fail('bonus de personne mal formé');
+  }
   tmp.log = clone(list(data.log, 'journal')).slice(-300);
   tmp.slotSamples = [...list(data.slotSamples, 'durées mesurées')].slice(-20);
   tmp.version = Number.isSafeInteger(data.version) ? data.version : 0;
@@ -236,7 +254,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
-    'slotSamples', 'version']) scheduler[field] = tmp[field];
+    'slotSamples', 'version', 'recentGroups', 'roundUse', 'stageHistory']) scheduler[field] = tmp[field];
+  scheduler.solverPlan = null;
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);
   // Un AddToQueueRequest sans confirmation est ambigu après un crash. Le bar

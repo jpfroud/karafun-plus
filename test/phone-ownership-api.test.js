@@ -79,7 +79,7 @@ async function request(path, body, base = BASE) {
   assert.ok(battleSong);
   const proposed = await request('/api/table/battle/propose', singer(b, { songs: [battleSong] }));
   assert.equal(proposed.battle.eligible, 5);
-  assert.equal(proposed.battle.threshold, 3);
+  assert.equal(proposed.battle.threshold, 5, 'cinq votants au minimum (réglage par défaut)');
   await assert.rejects(request('/api/table/battle/vote', body('quatre', {
     personId: c.id, token: b.token, choice: battleSong.songId,
   })), error => error.status === 403 && error.code === 'PERSON_ACCESS');

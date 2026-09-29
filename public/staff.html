@@ -35,11 +35,18 @@
       <label class="switch"><input type="checkbox" id="autoPlay"> Lancer la lecture automatiquement</label>
     </div>
     <p class="small muted" id="pendingTxt" role="status"></p>
+    <div class="stage-history">
+      <div class="section-heading compact"><h3>Derniers passages sur scène</h3></div>
+      <p class="tiny muted">Pour reconnaître qui vient de chanter, noter un repère ou marquer parti quelqu’un qui n’était pas là.</p>
+      <div id="stageHistory" class="stage-history-list"><p class="small muted">Aucun passage pour le moment.</p></div>
+    </div>
     <div id="recoveryBox" class="recovery-box" hidden><strong>Envoi à vérifier</strong><p>KaraFun n’a pas confirmé un titre, ou l’application a redémarré pendant son envoi. Vérifie la file dans KaraFun avant de reprendre. Le titre n’a pas été envoyé une seconde fois.</p><button class="btn small primary" id="reconcilePending">J’ai vérifié la file KaraFun : reprendre</button></div>
   </section>
 
   <section class="card queue-panel">
     <div class="section-heading"><div><div class="eyebrow">Ordre réel et prévu</div><h2>File <span class="count" id="qn">0</span></h2></div><span class="small muted" id="queueHint">Glisse une ligne prévue, ou touche sa poignée puis sa destination.</span></div>
+    <div class="solver-bar"><span id="solverPill" class="pill" role="status">Ordre local</span><span id="solverText" class="small muted"></span><button class="btn small" id="optimizeQueue" title="Recalcule tout l’ordre avec les règles de la soirée ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas">Recalculer la file</button></div>
+    <div class="bulk-bar"><label class="small"><input type="checkbox" id="selectAllQueue"> Tout sélectionner</label><button class="btn small danger" id="removeSelected" disabled>Retirer la sélection</button><span class="tiny muted">Coche les titres à retirer ; les chanteurs restent inscrits.</span></div>
     <div class="queue-head"><span></span><span>#</span><span>Chanteur</span><span>Chanson</span><span>Vers</span><span></span></div>
     <div id="qBody" class="queue-rows"></div>
     <details id="manualHistory" class="manual-history" hidden><summary>Changements manuels de la file <span class="count" id="manualCount">0</span></summary>
@@ -61,7 +68,7 @@
     </div>
     <p class="small muted">Laisse le nom vide pour ajouter le prochain numéro. L'effectif proposé est 4 pour une table. Le groupe « En solo » est toujours disponible ; chacun garde son propre tour.</p>
     <div class="solo-invite-panel">
-      <div><strong>Accueillir une personne seule</strong><p class="small muted">Crée un QR individuel et montre-le à cette personne. Il permet une seule inscription pendant 30 minutes. Le QR commun « En solo » sert seulement à voir la file ou à reprendre ses chansons.</p></div>
+      <div><strong>Accueillir une personne seule</strong><p class="small muted">Crée un QR individuel et montre-le à cette personne. Il permet une seule inscription pendant 30 minutes. Il n’y a pas de QR commun à afficher : pour un changement de téléphone, utilise « Donner accès à un autre téléphone » dans les repères chanteurs.</p></div>
       <button type="button" class="btn primary" id="issueSoloInvitation">Créer un QR individuel</button>
       <div id="soloInvitationStatus" class="small muted" role="status"></div>
       <div id="soloInvitationList" class="solo-invite-list"></div>
@@ -100,11 +107,16 @@
 
   <section class="card rules-panel">
     <div class="section-heading"><div><div class="eyebrow">Comportement</div><h2>Règles de la soirée</h2></div></div>
-    <div class="rotation-options">
-      <label class="switch"><input id="tableRotation" type="checkbox"> Rotation des tables en priorité</label>
-      <p class="small muted">Chaque table prête passe une fois avant qu’une table revienne, même si leurs effectifs diffèrent.</p>
-      <label class="switch"><input id="weightedTables" type="checkbox"> Faire passer les grandes tables plus souvent</label>
-      <p class="small muted">Quand plusieurs tables attendent, celles qui ont plus de chanteurs prêts obtiennent davantage de passages. On évite deux chansons de suite pour la même table. Nécessite la rotation des tables.</p>
+    <div class="rotation-options" role="radiogroup" aria-label="Partage des passages entre les tables">
+      <p class="small">Dans tous les modes, chacun chante une fois par tour, personne ne rechante avant les premiers passages, et la même table ne reprend pas le micro quand une autre peut chanter. Le mode change seulement la part de chaque table dans un tour.</p>
+      <label class="switch"><input type="radio" name="rotationMode" id="rotationPeople" value="people"> Chacun son tour (recommandé)</label>
+      <p class="small muted">Les tables sont entremêlées au prorata de leurs chanteurs : une table de 10 chante deux fois plus souvent qu’une table de 5, mais jamais d’affilée si une autre table attend.</p>
+      <label class="switch"><input type="radio" name="rotationMode" id="rotationTables" value="tables"> Tables à tour de rôle</label>
+      <p class="small muted">Chaque table obtient la même part, quel que soit son effectif. Les petites tables chantent tôt dans le tour ; en fin de tour, la grande table enchaîne ses chanteurs restants.</p>
+      <label class="switch"><input type="radio" name="rotationMode" id="rotationCompromise" value="compromise"> Compromis</label>
+      <p class="small muted">Les grandes tables passent plus souvent que les petites, mais moins qu’en « Chacun son tour ».</p>
+      <label class="switch"><input id="interleaveArrivals" type="checkbox"> Intercaler une table qui arrive en nombre</label>
+      <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>
     <label class="switch presence-switch"><input id="requirePresence" type="checkbox"> Exiger « Je suis là » avant l’envoi du titre</label>
     <p class="small muted">La confirmation est demandée seulement au prochain passage après celui sur scène, aux deux personnes d’un duo. Un titre déjà chargé dans KaraFun peut nécessiter une action du bar.</p>
@@ -123,10 +135,18 @@
 
   <section class="card battle-panel">
     <div class="section-heading"><div><div class="eyebrow">Animation de la salle</div><h2>Battle KaraFun</h2></div><span class="pill" id="battlePill">Aucune demande</span></div>
-    <p class="small muted">Tout le monde chante avec son téléphone comme micro. Après un vote favorable, l’application tente de préparer le titre en mode Battle si KaraFun l’autorise. Le bar laisse les joueurs rejoindre avant de le lancer.</p>
+    <p class="small muted">Tout le monde chante avec son téléphone comme micro. Après un vote favorable (ou sur décision du bar), l’application ajoute le titre en mode Battle si KaraFun l’autorise. Le bar laisse les joueurs rejoindre, puis lance la Battle avec « ▶ Lancer la Battle » ici ou dans KaraFun.</p>
     <p class="battle-safety">Avant de montrer le QR KaraFun, vérifie sur l’abonnement Pro que les invités ne peuvent ni ajouter de titre ni modifier la file ou la lecture, et que le compte <b id="helperLogin">FileKaraoke</b> garde ces droits. Teste avec un téléphone client. Si ce réglage est impossible, ne montre pas le QR Battle et ferme la demande.</p>
     <div id="battleStatus" class="battle-status" role="status">Aucun vote en cours.</div>
-    <div class="battle-settings"><label for="battleCooldownMin">Délai entre deux votes Battle <input id="battleCooldownMin" type="number" min="1" max="120"> minutes</label><button class="btn small" id="saveBattleCooldown">Enregistrer</button><button class="btn small" id="enableStaffAlerts">Activer les notifications</button></div>
+    <div id="battleVotes" class="battle-votes" hidden></div>
+    <div class="row wrap" id="battleVoteActions" hidden><button class="btn small" id="battleCloseVote">Clore le vote maintenant</button></div>
+    <div class="battle-launch"><strong>Lancer une Battle sans vote</strong>
+      <p class="small muted">Choisis un titre : il sera ajouté en mode Battle après le prochain passage annoncé, comme après un vote réussi. Le délai entre Battles ne s’applique pas au bar, mais il redémarre à la fin de celle-ci.</p>
+      <div class="row wrap"><input id="battleLaunchSearch" type="search" placeholder="Chercher un titre dans KaraFun…"><button class="btn small" id="battleLaunchFind">Chercher</button></div>
+      <ul class="results" id="battleLaunchResults"></ul>
+    </div>
+    <div class="battle-settings"><label for="battleCooldownMin">Délai entre deux Battles <input id="battleCooldownMin" type="number" min="1" max="120"> min</label><label for="battleVoteMin">Durée du vote <input id="battleVoteMin" type="number" min="1" max="10"> min</label><label for="battleMinVoters">Votants minimum <input id="battleMinVoters" type="number" min="1" max="100"></label><button class="btn small" id="saveBattleCooldown">Enregistrer</button><button class="btn small" id="enableStaffAlerts">Activer les notifications</button></div>
+    <p class="tiny muted">Le vote dure le temps indiqué et se décide avec ceux qui ont voté : il faut au moins le nombre de votants indiqué (ou tous les inscrits s’ils sont moins nombreux) et plus de voix pour la Battle que contre. Le délai entre Battles part de la fin de la Battle.</p>
     <p class="tiny muted">Sur HTTPS avec autorisation, le navigateur peut notifier si cette page reste ouverte. Sur HTTP, les demandes restent visibles dans la page et une alerte sonore peut retentir ; aucune alerte ne fonctionne après fermeture du navigateur.</p>
     <div class="row wrap" id="battleActions" hidden><button class="btn small primary" id="battleDone">Battle organisée</button><button class="btn small" id="battleDismiss">Ne pas lancer cette fois</button></div>
     <button class="btn small primary" id="battleFinished" hidden>Battle terminée, résultats annoncés</button>
@@ -144,7 +164,7 @@
   <section class="card journal-panel"><details class="disclosure"><summary>Journal de la soirée</summary><ul class="log" id="log"></ul></details></section>
 </main>
 <div id="toast" class="toast" hidden></div>
-<dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle">Transférer un chanteur</h2></div><p class="small">Sur l’autre téléphone, scanne le QR de la table, choisis son nom et saisis ce code. L’ancien téléphone perdra la gestion de ce chanteur.</p><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
+<dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle">Transférer un chanteur</h2></div><p class="small" id="shareHelp">Sur l’autre téléphone, scanne le QR de la table, choisis son nom et saisis ce code. L’ancien téléphone perdra la gestion de ce chanteur.</p><div class="staff-qr solo-invite-qr" id="shareQrBox" hidden><img id="shareQr" alt="QR de reprise pour une personne seule"></div><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
 <dialog id="soloInviteDialog" class="staff-dialog" aria-labelledby="soloInviteTitle"><h2 id="soloInviteTitle">QR pour une personne seule</h2><p class="small">Montre ce QR à une seule personne. Dès son inscription, il ne fonctionnera plus pour créer un autre profil.</p><div class="staff-qr solo-invite-qr"><img id="soloInviteQr" alt="QR individuel pour une inscription En solo"></div><p class="small muted" id="soloInviteExpires"></p><input id="soloInviteUrl" class="solo-invite-url" readonly aria-label="Lien individuel d’inscription"><div class="row wrap"><button type="button" class="btn small" id="soloInviteCopy">Copier le lien</button><button type="button" class="btn small primary" id="soloInviteClose">Fermer</button></div></dialog>
 
 <script>
@@ -153,6 +173,11 @@
   const key = new URLSearchParams(location.search).get('key') || '';
   const kq = key ? `?key=${encodeURIComponent(key)}` : '';
   let S = null; let formInit = false; let dragging = null; let moveArmed = null;
+  const selectedLines = new Set();
+  const BONUS_LABELS = { '-3': '−3 : un tour sur deux', '-2': '−2 : deux tours sur trois', '-1': '−1 : un peu moins souvent',
+    0: 'Aucun', 1: '+1 : un peu plus souvent', 2: '+2 : une fois et demie plus', 3: '+3 : deux fois plus' };
+  const bonusOptions = level => [-3, -2, -1, 0, 1, 2, 3].map(value =>
+    `<option value="${value}" ${Number(level || 0) === value ? 'selected' : ''}>${BONUS_LABELS[value]}</option>`).join('');
   let alertsEnabled = localStorage.getItem('bar-alerts') === 'yes';
   function renderStaffAlerts() {
     $('enableStaffAlerts').textContent = alertsEnabled ? 'Désactiver les notifications' : 'Activer les notifications';
@@ -225,10 +250,18 @@
       ${p.photoUrl ? `<img class="identity-photo" src="${esc(p.photoUrl)}" alt="Photo de ${esc(p.name)}">` : `<span class="identity-photo identity-avatar" aria-hidden="true">${esc(p.name.charAt(0).toUpperCase())}</span>`}
       <div class="identity-who"><strong>${esc(p.name)}</strong><span class="small muted">${esc(tables.get(p.tableId)?.name || p.tableId)} · ${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span></div>
       <input data-identity-note type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Signe distinctif, ex. t-shirt rouge" aria-label="Description privée de ${esc(p.name)}">
+      <label class="bonus-field small" title="Réglage réservé au bar, jamais montré aux clients">Bonus <select data-person-bonus aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select></label>
       <div class="identity-actions"><button type="button" class="btn small" data-identity-save>Enregistrer</button><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'}>Donner accès à un autre téléphone</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave>Marquer parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
     </div>`).join('') : '<p class="small muted">Aucun chanteur pour ce filtre.</p>';
   }
 
+  $('identityBody').addEventListener('change', event => {
+    const select = event.target?.closest?.('[data-person-bonus]');
+    const row = event.target?.closest?.('[data-identity-person]');
+    if (!select || !row) return;
+    act('/api/staff/bonus', { personId: row.dataset.identityPerson, level: Number(select.value) },
+      Number(select.value) ? 'Bonus enregistré (invisible des clients) ; la file est recalculée' : 'Bonus retiré');
+  });
   $('identityTable').onchange = () => renderIdentities(true);
   $('identitySearch').oninput = () => renderIdentities(true);
   $('identityBody').addEventListener('click', event => {
@@ -251,6 +284,11 @@
           const result = await post('/api/staff/person/share', { personId });
           $('shareTitle').textContent = `Accès à ${row.querySelector('.identity-who strong').textContent}`;
           $('shareCode').textContent = result.code;
+          $('shareQrBox').hidden = !result.qr;
+          if (result.qr) $('shareQr').src = result.qr;
+          $('shareHelp').textContent = result.qr ?
+            'Sur le nouveau téléphone, scanne ce QR, choisis le nom de la personne puis saisis ce code. Le QR seul ne permet ni de s’inscrire ni de gérer quelqu’un.' :
+            'Sur l’autre téléphone, scanne le QR de la table, choisis son nom et saisis ce code. L’ancien téléphone perdra la gestion de ce chanteur.';
           $('shareExpires').textContent = result.expiresAt ? `Valable jusqu’à ${hhmm(result.expiresAt)} ; utilisable une seule fois.` : 'Code à usage unique.';
           $('shareDialog').showModal();
         } catch (e) { toast(e.message, true); }
@@ -362,6 +400,57 @@
     } catch (e) { $('kfPill').textContent = 'Programme arrêté ?'; $('kfPill').className = 'pill bad'; }
   }
 
+  function renderSolver() {
+    const solver = S.solver || {};
+    const pill = $('solverPill');
+    const progress = (at, budget) => {
+      const since = at ? Math.max(0, Math.round((Date.now() - at) / 1000)) : 0;
+      return since ? ` (${since} s${budget ? ` / ${Math.round(budget / 1000)} s` : ''})` : '';
+    };
+    const last = solver.lastRun;
+    if (!solver.configured) {
+      pill.textContent = 'Ordre calculé localement'; pill.className = 'pill';
+      $('solverText').textContent = 'Optimisation approfondie non utilisée dans ce mode.';
+    } else if (!solver.available) {
+      pill.textContent = 'Optimisation indisponible'; pill.className = 'pill warn';
+      $('solverText').textContent = `Ordre calculé localement, mêmes règles. ${solver.fallbackLastError || ''}`;
+    } else if (solver.pending) {
+      pill.textContent = `⏳ Calcul de la file en cours${progress(solver.pendingSince, solver.budgetMs)}`;
+      pill.className = 'pill warn';
+      $('solverText').textContent = 'La file affichée est déjà utilisable ; le calcul cherche un meilleur ordre.';
+    } else {
+      const labels = { timefold: 'Ordre optimisé', confirmed: 'Ordre vérifié',
+        manual: 'Ordre modifié par le bar', local: 'Ordre calculé localement' };
+      pill.textContent = solver.refining ?
+        `🔄 Optimisation continue${progress(solver.refineSince, solver.refineBudgetMs)}` :
+        labels[solver.plan] || labels.local;
+      pill.className = 'pill ok';
+      const gains = solver.refineImprovements || 0;
+      const lastText = last ? `Dernier calcul à ${hhmm(last.at)} : ${last.improved ? 'meilleur ordre trouvé' : 'rien de mieux'}.` : '';
+      const gainText = gains ? `${gains} amélioration${gains > 1 ? 's' : ''} depuis le dernier changement de la file.` : '';
+      const nextText = solver.refining ?
+        'La file ne change pas : la recherche continue et n’affiche un nouvel ordre que s’il est meilleur.' :
+        solver.nextRefineAt ? `Prochaine recherche dans ${Math.max(1, Math.round((solver.nextRefineAt - Date.now()) / 1000))} s.` :
+        solver.plan === 'manual' ? 'Ordre du bar conservé ; « Recalculer la file » le remplace.' : '';
+      $('solverText').textContent = [lastText, gainText, nextText].filter(Boolean).join(' ');
+    }
+    $('optimizeQueue').disabled = !!solver.pending && !!solver.forced;
+  }
+
+  function renderStageHistory() {
+    const container = $('stageHistory');
+    if (container.contains(document.activeElement)) return;
+    const history = S.stageHistory || [];
+    container.innerHTML = history.length ? history.slice(0, 10).map(item => `<div class="stage-history-item">
+      <div class="stage-history-time">${hhmm(item.at)}</div>
+      <div class="stage-history-body"><b>${esc(item.title)}</b>${item.artist ? ` <span class="muted small">· ${esc(item.artist)}</span>` : ''}
+        ${item.people.map(person => `<div class="stage-history-person" data-history-person="${esc(person.id)}">
+          ${person.photoUrl ? `<img class="identity-photo" src="${esc(person.photoUrl)}" alt="Photo de ${esc(person.name)}">` : `<span class="identity-photo identity-avatar" aria-hidden="true">${esc(person.name.charAt(0).toUpperCase())}</span>`}
+          <span><b>${esc(person.name)}</b> <span class="small muted">${esc(person.table)}${person.active ? '' : ' · parti'}</span>${person.privateNote ? `<br><span class="small">${esc(person.privateNote)}</span>` : ''}</span>
+          <span class="stage-history-actions"><button class="btn small" data-history-note>Repère</button>${person.active ? '<button class="btn small danger" data-history-leave>Marquer parti</button>' : ''}</span>
+        </div>`).join('')}</div></div>`).join('') : '<p class="small muted">Aucun passage pour le moment.</p>';
+  }
+
   function render() {
     const kf = S.kf;
     const ok = kf && kf.ready;
@@ -374,6 +463,8 @@
       : S.queueClearPending ? 'Vidage de la file en cours : vérifie KaraFun. Les nouveaux titres attendent la confirmation des retraits.'
       : S.presencePending?.length ? `En attente de « Je suis là » pour ${S.presencePending.join(' et ')}. Si la personne est absente, retire son titre ou désactive la règle dans les réglages.`
       : S.removalPending ? `${S.removalPending} retrait${S.removalPending > 1 ? 's' : ''} en attente de confirmation dans KaraFun. Vérifie sa file.`
+      : S.kf?.identityNotice ? S.kf.identityNotice
+      : S.kf?.permissionWarning ? S.kf.permissionWarning
       : S.kf?.permissions?.addToQueue === false ? `KaraFun refuse l’ajout de titres pour ${S.kf.username || 'FileKaraoke'}. Donne-lui les droits dans KaraFun Pro.`
       : S.battle?.phase === 'requested' ? 'La salle demande une Battle : une action du bar est nécessaire.' : '';
     $('staffAlert').textContent = alertText;
@@ -381,6 +472,8 @@
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     if (document.activeElement !== $('battleCooldownMin')) $('battleCooldownMin').value = S.settings.battleCooldownMin || 15;
+    if (document.activeElement !== $('battleVoteMin')) $('battleVoteMin').value = S.settings.battleVoteMin || 5;
+    if (document.activeElement !== $('battleMinVoters')) $('battleMinVoters').value = S.settings.battleMinVoters || 5;
     renderStaffAlerts();
     if (!formInit) {
       $('code').value = S.code || '';
@@ -389,9 +482,12 @@
       formInit = true;
     }
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
-    $('tableRotation').checked = !!S.settings.tableRotation;
-    $('weightedTables').checked = !!S.settings.weightedTables;
-    $('weightedTables').disabled = !S.settings.tableRotation;
+    $('rotationPeople').checked = !S.settings.tableRotation;
+    $('rotationTables').checked = !!S.settings.tableRotation && !S.settings.weightedTables;
+    $('rotationCompromise').checked = !!S.settings.tableRotation && !!S.settings.weightedTables;
+    $('interleaveArrivals').checked = S.settings.interleaveArrivals !== false;
+    renderSolver();
+    renderStageHistory();
 
     $('stage').innerHTML = S.stage ? `<b>${esc(S.stage.singer || 'Hors file')}</b> — ${esc(S.stage.title)}` : '<span class="muted">rien</span>';
     $('next').innerHTML = S.next ? `<b>${esc(S.next.singer || 'Hors file')}</b> — ${esc(S.next.title)}${S.next.ours ? '' : ' <span class="badge">ajouté dans KaraFun</span>'}` : '<span class="muted">rien</span>';
@@ -409,7 +505,7 @@
     $('markDuoPartner').innerHTML = `${sameTable.length ? `<optgroup label="Même table">${sameTable.map(partnerOption).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres tables et personnes en solo">${otherTables.map(partnerOption).join('')}</optgroup>` : ''}`;
 
     const publicHttps = isPublicHttps(S.phoneBase || '');
-    const readyQrCount = S.tables.filter(t => t.url && t.qrUrl).length;
+    const readyQrCount = S.tables.filter(t => t.url && t.qrUrl && !t.individual).length;
     $('phoneLabel').textContent = readyQrCount ? `${readyQrCount} QR code${readyQrCount > 1 ? 's' : ''} disponible${readyQrCount > 1 ? 's' : ''} · adresse utilisée` : 'Adresse utilisée pour les QR codes';
     $('phoneBase').textContent = readyQrCount ? S.phoneBase : 'Ajoute une table pour créer son QR code.';
     $('accessMode').textContent = publicHttps
@@ -441,14 +537,22 @@
     $('blockedBox').hidden = !S.blocked?.length;
     $('blockedBody').innerHTML = (S.blocked || []).map(p => `<div class="blocked-item"><span><b>${esc(p.name)}</b> · ${esc(p.table)} — ${esc(p.title)}${p.artist ? ` · ${esc(p.artist)}` : ''}</span><span class="badge">${esc(p.reason)}</span></div>`).join('');
     let plannedIndex = 0;
+    const lineKey = q => q.source === 'helper' && q.id ? `p:${q.id}|${q.song?.entryId || ''}` :
+      q.source === 'karafun' && q.ours && q.queueId ? `k:${q.queueId}` : null;
+    const liveKeys = new Set(S.queue.map(lineKey).filter(Boolean));
+    for (const key of [...selectedLines]) if (!liveKeys.has(key)) selectedLines.delete(key);
+    $('removeSelected').disabled = selectedLines.size === 0;
+    $('removeSelected').textContent = selectedLines.size ? `Retirer la sélection (${selectedLines.size})` : 'Retirer la sélection';
+    $('selectAllQueue').checked = liveKeys.size > 0 && selectedLines.size === liveKeys.size;
     $('qBody').innerHTML = S.queue.map(q => {
       const movable = q.source === 'helper' && q.id && !q.future;
       const index = movable ? plannedIndex++ : -1;
+      const key = lineKey(q);
       const title = q.song?.title || q.title || '—';
       const artist = q.song?.artist || q.artist || '';
       const status = q.waitingPresence ? (q.source === 'karafun' ? 'Dans KaraFun · Je suis là attendu' : 'Je suis là attendu') : q.source === 'karafun' ? (q.ours ? 'Dans KaraFun' : 'Ajouté dans KaraFun') : q.source === 'envoi' ? 'Envoi' : q.future ? 'Titre suivant' : 'À venir';
-      return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
-        <button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button>
+      return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
+        <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
         <div class="person-cell"><span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span><span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}</span></div>
         <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}"><span class="song-title">${esc(title)}</span>${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
@@ -479,14 +583,24 @@
         else render();
       });
     });
+    $('qBody').querySelectorAll('[data-pick]').forEach(box => box.onchange = () => {
+      if (box.checked) selectedLines.add(box.dataset.pick); else selectedLines.delete(box.dataset.pick);
+      render();
+    });
     $('qBody').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson ? Le chanteur reste inscrit à sa table.')) act('/api/staff/remove', { personId: b.dataset.rm }, 'Chanson retirée'); });
     $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => act('/api/staff/move', { personId: b.dataset.urgent, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun'));
     $('qBody').querySelectorAll('[data-kfrm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson de KaraFun ?')) act('/api/staff/kf', { action: 'remove', queueId: b.dataset.kfrm }, 'Chanson retirée de KaraFun'); });
-    const focused = document.activeElement && document.activeElement.dataset && (document.activeElement.dataset.hc || document.activeElement.dataset.tableName);
+    const focused = document.activeElement && document.activeElement.dataset && (document.activeElement.dataset.hc || document.activeElement.dataset.tableName || document.activeElement.dataset.tableBonus);
     if (!focused) {
       $('tBody').innerHTML = S.tables.map(t => `<div class="table-card"><div class="table-card-head"><label class="table-name-editor"><span class="sr-only">Nom affiché de ${esc(t.name)}</span><input type="text" maxlength="40" value="${esc(t.name)}" aria-label="Nom affiché de ${esc(t.name)}" data-table-name="${esc(t.id)}"></label><button class="btn small" data-rename="${esc(t.id)}">Renommer</button>${t.individual ? '<span class="badge">Solos · tours individuels</span>' : ''}<span class="occupancy" title="${t.individual ? `${t.activeCount} solistes présents` : `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'}, ${t.count} inscrit${t.count === 1 ? '' : 's'}, ${t.headcount || '—'} places`}">${t.individual ? `${t.activeCount} soliste${t.activeCount === 1 ? '' : 's'}` : `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'} / ${t.count} inscrit${t.count === 1 ? '' : 's'} / ${t.headcount || '—'} places`}</span></div>
         <div class="table-actions">${t.individual ? '' : `<label class="small" for="hc-${esc(t.id)}">Effectif</label><input id="hc-${esc(t.id)}" type="number" min="1" max="40" value="${t.headcount || ''}" data-hc="${esc(t.id)}"><button class="btn small" data-hcok="${esc(t.id)}">Enregistrer</button>`}
-        ${t.url ? `<a class="btn small" href="${esc(t.url)}" target="_blank" rel="noopener" title="Ouvrir la page de ${esc(t.name)}">Page</a>` : ''}${t.url && t.qrUrl ? `<a class="btn small" href="${esc(qrSrc(t))}" target="_blank" rel="noopener" title="Afficher le QR code de ${esc(t.name)}">Voir le QR</a>` : ''}${t.id === 'Comptoir' && t.individual ? '' : `<button class="btn small danger" data-left="${esc(t.id)}" data-table-label="${esc(t.name)}">Table partie</button>`}</div></div>`).join('');
+        ${t.individual ? '<button class="btn small primary" data-solo-invite>Créer un QR individuel</button><span class="tiny muted">Chaque personne seule reçoit son propre QR : le QR commun ne permet pas de s’inscrire.</span>' :
+          `${t.url ? `<a class="btn small" href="${esc(t.url)}" target="_blank" rel="noopener" title="Ouvrir la page de ${esc(t.name)}">Page</a>` : ''}${t.url && t.qrUrl ? `<a class="btn small" href="${esc(qrSrc(t))}" target="_blank" rel="noopener" title="Afficher le QR code de ${esc(t.name)}">Voir le QR</a>` : ''}`}${t.id === 'Comptoir' && t.individual ? '' : `<button class="btn small danger" data-left="${esc(t.id)}" data-table-label="${esc(t.name)}">Table partie</button>`}
+        <label class="bonus-field small" title="Réglage réservé au bar, jamais montré aux clients">Bonus table <select data-table-bonus="${esc(t.id)}">${bonusOptions(t.bonus)}</select></label></div></div>`).join('');
+      $('tBody').querySelectorAll('[data-solo-invite]').forEach(b => b.onclick = () => $('issueSoloInvitation').onclick());
+      $('tBody').querySelectorAll('[data-table-bonus]').forEach(select => select.onchange = () =>
+        act('/api/staff/bonus', { tableId: select.dataset.tableBonus, level: Number(select.value) },
+          Number(select.value) ? 'Bonus de table enregistré (invisible des clients)' : 'Bonus de table retiré'));
       $('tBody').querySelectorAll('[data-rename]').forEach(b => b.onclick = () => {
         const input = b.closest('.table-card').querySelector('[data-table-name]');
         const name = input.value.trim();
@@ -526,9 +640,8 @@
     const battle = S.battle || { phase: 'idle' };
     const remaining = (at) => Math.max(0, Math.ceil((Number(at) - Date.now()) / 1000));
     const countdown = (at) => { const seconds = remaining(at); return `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, '0')} s`; };
-    const voteCount = `${battle.yesVotes || 0} pour une Battle · ${battle.noVotes || 0} Pas de Battle · majorité à ${battle.threshold || 0} sur ${battle.eligible || 0} personnes inscrites`;
+    const voteCount = `${battle.voters || 0} votant${battle.voters > 1 ? 's' : ''} sur ${battle.eligible || 0} inscrit${battle.eligible > 1 ? 's' : ''} (minimum ${battle.threshold || 0}) · ${battle.yesVotes || 0} pour une Battle, ${battle.noVotes || 0} contre`;
     const battleSong = song => song ? `${song.title}${song.artist ? ` — ${song.artist}` : ''}` : '';
-    const songVotes = (battle.songOptions || []).map(song => `${battleSong(song)} : ${song.votes || 0} voix`).join(' ; ');
     const selectedSong = battleSong(battle.selectedSong);
     const battleStep = battle.automation?.status;
     $('battlePill').textContent = battleStep === 'failed' ? 'À vérifier' :
@@ -549,19 +662,31 @@
       ? `Battle demandée sur ${selectedSong}. Le prochain chanteur déjà annoncé garde sa place ; la Battle sera ajoutée ensuite.`
       : battleStep === 'sending' ? `Envoi de ${selectedSong} à KaraFun. Le mode Battle doit être confirmé avant de lancer le titre.`
       : battleStep === 'failed' ? `${battleFailure.startsWith('Permission Battle refusée') ? 'Ajout automatique impossible' : 'Ajout automatique non confirmé'} : ${battleFailure}. Organise la Battle manuellement ou ferme la demande.`
-      : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis lance la Battle depuis KaraFun. Le titre suivant attendra le bar.`
+      : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'
       : battleStep === 'manual' ? 'Battle organisée manuellement : laisse les téléphones rejoindre, lance-la dans KaraFun, annonce les résultats, puis indique ici qu’elle est terminée. La file reste en pause.'
-      : battleStep === 'after' ? 'Battle terminée. Félicite les gagnants, puis clique sur « Lancer le prochain titre » dans le panneau En direct.'
+      : battleStep === 'after' ? `Battle terminée. Félicite les gagnants, puis clique sur « ▶ Lancer le prochain titre » dans le panneau En direct.${battle.cooldownUntil ? ` Prochaine Battle possible dans ${countdown(battle.cooldownUntil)}.` : ''}`
       : battleStep === 'resuming' ? 'Reprise demandée par le bar. Le prochain titre est envoyé puis lancé dès sa confirmation dans KaraFun.'
       : battle.phase === 'requested' ? `Battle demandée : ${selectedSong}. ${voteCount}. Prépare-la dans KaraFun et laisse les téléphones rejoindre.`
-      : battle.phase === 'voting' ? `La salle vote pour une Battle${battle.proposalName ? ` (proposition de ${battle.proposalName})` : ''}. ${voteCount}.${songVotes ? ` Titres : ${songVotes}.` : ''} Fin du vote dans ${countdown(battle.closesAt)}.`
-      : battle.phase === 'cooldown' ? `Prochain vote possible dans ${countdown(battle.cooldownUntil)}.`
-      : 'Aucun vote en cours. Les clients peuvent proposer une Battle depuis leur table.';
+      : battle.phase === 'voting' ? `La salle vote pour une Battle${battle.proposalName ? ` (proposition de ${battle.proposalName})` : ''}. Résultats en direct ci-dessous ; tu peux clore le vote avant la fin.`
+      : battle.phase === 'cooldown' ? (battle.cooldownUntil ? `Prochain vote possible dans ${countdown(battle.cooldownUntil)} (pause comptée depuis la fin de la dernière Battle).` : 'La pause entre Battles démarrera à la fin de la Battle.')
+      : Number.isFinite(battle.registered) && battle.registered < (battle.minVoters || 1)
+        ? `Aucun vote en cours. Les clients pourront proposer une Battle à partir de ${battle.minVoters} personnes inscrites (${battle.registered} pour l’instant) ; tu peux en lancer une toi-même ci-dessous.`
+        : 'Aucun vote en cours. Les clients peuvent proposer une Battle depuis leur table.';
     $('battleActions').hidden = battle.phase !== 'requested' || battleStep === 'sending';
     $('battleDone').hidden = battleStep !== 'failed';
     $('battleFinished').hidden = battleStep !== 'manual';
-    $('playBtn').textContent = battleStep === 'after' ? '▶ Lancer le prochain titre' : '▶ Lecture';
+    const battleNext = S.queue?.[0]?.kind === 'battle' && !S.stage;
+    $('playBtn').textContent = battleStep === 'after' ? '▶ Lancer le prochain titre' :
+      ['queued', 'manual', 'failed'].includes(battleStep) && battleNext ? '▶ Lancer la Battle' : '▶ Lecture';
+    const options = battle.songOptions || [];
+    const showVotes = battle.phase === 'voting' || (battle.phase === 'requested' && options.length > 1);
+    $('battleVotes').hidden = !showVotes;
+    const most = Math.max(1, ...options.map(song => song.votes || 0), battle.noVotes || 0);
+    $('battleVotes').innerHTML = showVotes ? `${options.map(song => `<div class="vote-bar"><span>${esc(battleSong(song))}</span><b>${song.votes || 0}</b><i style="width:${Math.round(100 * (song.votes || 0) / most)}%"></i></div>`).join('')}
+      <div class="vote-bar against"><span>Pas de Battle</span><b>${battle.noVotes || 0}</b><i style="width:${Math.round(100 * (battle.noVotes || 0) / most)}%"></i></div>
+      <p class="small muted">${esc(voteCount)}${battle.phase === 'voting' ? ` · fin dans ${countdown(battle.closesAt)}` : ''}</p>` : '';
+    $('battleVoteActions').hidden = battle.phase !== 'voting';
 
     const p = kf && kf.preferences, perm = kf && kf.permissions;
     $('diag').innerHTML = kf ? [
@@ -570,7 +695,7 @@
       ['Nom du chanteur demandé', p ? (p.askSingerName ? 'oui' : 'non (active « Demander le nom du chanteur » dans la télécommande KaraFun)') : '—'],
       ['Droits reçus', perm ? esc(JSON.stringify(perm)) : '—'], ['Durée moyenne mesurée', `${String(S.avgSlotMin).replace('.', ',')} min`],
       ['Ordonnancement', !S.solver?.configured ? 'Simulation locale' : S.solver.available ?
-        (S.solver.pending ? 'Timefold : calcul en cours' : 'Timefold prêt') :
+        (S.solver.pending ? 'Optimisation : calcul en cours' : S.solver.refining ? 'Optimisation continue en cours' : 'Optimisation prête') :
         `Rotation locale de secours : ${esc(S.solver.fallbackLastError || 'solveur indisponible')}`],
     ].map(([a, b]) => `<div>${a}</div><div>${b}</div>`).join('') : '<div>État</div><div>Saisis le code KaraFun en haut à droite.</div>';
     $('kfQueue').textContent = kf ? JSON.stringify(kf.queue, null, 1) : '';
@@ -628,9 +753,6 @@
       act('/api/staff/duo-mark', { queueId, partnerId }, 'Duo comptabilisé');
     }
   };
-  $('tableRotation').onchange = () => act('/api/staff/settings', { tableRotation: $('tableRotation').checked,
-    weightedTables: $('tableRotation').checked && $('weightedTables').checked }, 'File recalculée');
-  $('weightedTables').onchange = () => act('/api/staff/settings', { weightedTables: $('weightedTables').checked }, 'File recalculée');
   $('saveRules').onclick = () => act('/api/staff/settings', { gap: $('gap').value, cap: $('cap').value,
     requirePresence: $('requirePresence').checked, playDelaySec: $('playDelaySec').value, pushDelaySec: $('pushDelaySec').value }, 'Règles enregistrées');
   $('createTable').onclick = () => {
@@ -649,7 +771,8 @@
   $('battleDone').onclick = () => act('/api/staff/battle/resolve', { outcome: 'done' }, 'Battle manuelle en cours ; la file reste en pause');
   $('battleFinished').onclick = () => act('/api/staff/battle/resolve', { outcome: 'finished' }, 'Battle terminée ; lance la prochaine chanson quand le bar est prêt');
   $('battleDismiss').onclick = () => act('/api/staff/battle/resolve', { outcome: 'dismissed' }, 'Demande close ; pause entre votes démarrée');
-  $('saveBattleCooldown').onclick = () => act('/api/staff/settings', { battleCooldownMin: Number($('battleCooldownMin').value) }, 'Délai Battle enregistré');
+  $('saveBattleCooldown').onclick = () => act('/api/staff/settings', { battleCooldownMin: Number($('battleCooldownMin').value),
+    battleVoteMin: Number($('battleVoteMin').value), battleMinVoters: Number($('battleMinVoters').value) }, 'Réglages Battle enregistrés');
   $('enableStaffAlerts').onclick = async () => {
     alertsEnabled = !alertsEnabled;
     localStorage.setItem('bar-alerts', alertsEnabled ? 'yes' : 'no');
@@ -707,6 +830,73 @@
     } catch (e) { $('testRes').innerHTML = `<li class="muted">${esc(e.message)}</li>`; }
   };
   $('testQ').onkeydown = (e) => { if (e.key === 'Enter') $('testSearch').click(); };
+
+  $('stageHistory').addEventListener('click', event => {
+    const row = event.target?.closest?.('[data-history-person]');
+    if (!row) return;
+    const personId = row.dataset.historyPerson;
+    const person = S.people.find(p => String(p.id) === String(personId));
+    if (event.target.closest('[data-history-leave]') &&
+        confirm(`Marquer ${person?.name || 'cette personne'} comme partie ? Ses titres en attente seront retirés, sa fiche reste inscrite.`)) {
+      act('/api/staff/person/leave', { personId }, 'Personne marquée partie ; ses titres en attente ont été retirés');
+    }
+    if (event.target.closest('[data-history-note]')) {
+      const note = prompt(`Repère privé pour ${person?.name || 'cette personne'} (ex. t-shirt rouge)`, person?.privateNote || '');
+      if (note !== null) act('/api/staff/person/identify', { personId, note, verified: !!person?.verified }, 'Repère privé enregistré');
+    }
+  });
+  $('selectAllQueue').onchange = () => {
+    if ($('selectAllQueue').checked) {
+      for (const q of S?.queue || []) {
+        if (q.source === 'helper' && q.id) selectedLines.add(`p:${q.id}|${q.song?.entryId || ''}`);
+        else if (q.source === 'karafun' && q.ours && q.queueId) selectedLines.add(`k:${q.queueId}`);
+      }
+    } else selectedLines.clear();
+    render();
+  };
+  $('removeSelected').onclick = async () => {
+    if (!selectedLines.size) return;
+    if (!confirm(`Retirer les ${selectedLines.size} titre${selectedLines.size > 1 ? 's' : ''} sélectionné${selectedLines.size > 1 ? 's' : ''} ? Les chanteurs restent inscrits.`)) return;
+    const items = [], queueIds = [];
+    for (const key of selectedLines) {
+      if (key.startsWith('k:')) queueIds.push(key.slice(2));
+      else { const [personId, entryId] = key.slice(2).split('|'); items.push({ personId, entryId: entryId || null }); }
+    }
+    selectedLines.clear();
+    await act('/api/staff/remove-many', { items, queueIds });
+  };
+  $('optimizeQueue').onclick = () => {
+    const manual = (S?.manualChanges || []).length || S?.solver?.plan === 'manual';
+    if (manual && !confirm('Recalculer toute la file ? Les déplacements manuels seront abandonnés ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas.')) return;
+    act('/api/staff/queue-optimize', {});
+  };
+  for (const id of ['rotationPeople', 'rotationTables', 'rotationCompromise']) {
+    $(id).onchange = () => {
+      if (!$(id).checked) return;
+      act('/api/staff/settings', { tableRotation: id !== 'rotationPeople', weightedTables: id === 'rotationCompromise' }, 'Mode de rotation enregistré ; la file est recalculée');
+    };
+  }
+  $('interleaveArrivals').onchange = () => act('/api/staff/settings', { interleaveArrivals: $('interleaveArrivals').checked }, 'Réglage enregistré');
+  $('battleCloseVote').onclick = () => {
+    if (confirm('Clore le vote maintenant et décider avec les votes déjà exprimés ?')) act('/api/staff/battle/close', {}, 'Vote clos');
+  };
+  $('battleLaunchFind').onclick = async () => {
+    const q = $('battleLaunchSearch').value.trim(); if (q.length < 2) return;
+    $('battleLaunchResults').innerHTML = '<li class="muted">Recherche…</li>';
+    try {
+      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
+      if (!r.ok) throw new Error(j.error);
+      $('battleLaunchResults').innerHTML = j.length ? j.slice(0, 12).map((song, index) => `<li><div class="grow"><b>${esc(song.title)}</b> <span class="muted">${esc(song.artist || '')}</span></div><button class="btn small primary" data-battle-launch="${index}">Lancer en Battle</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';
+      $('battleLaunchResults').querySelectorAll('[data-battle-launch]').forEach(button => button.onclick = () => {
+        const song = j[Number(button.dataset.battleLaunch)];
+        if (confirm(`Lancer une Battle sur « ${song.title} » ? Elle sera ajoutée après le prochain passage annoncé.`)) {
+          act('/api/staff/battle/launch', { song }, 'Battle programmée : elle passera après le prochain chanteur annoncé');
+          $('battleLaunchResults').innerHTML = '';
+        }
+      });
+    } catch (e) { $('battleLaunchResults').innerHTML = `<li class="muted">${esc(e.message)}</li>`; }
+  };
+  $('battleLaunchSearch').onkeydown = (e) => { if (e.key === 'Enter') $('battleLaunchFind').click(); };
 
   load(); setInterval(load, 2000);
 })();

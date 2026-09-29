@@ -24,8 +24,17 @@ foreach ($directory in @($root, (Join-Path $root 'test'))) {
         throw "Le rappel gstack est absent dans $directory."
     }
 }
+$startCommand = $config.hooks.SessionStart[0].hooks[0].commandWindows
+if ($startCommand -ne $hookCommand) { throw 'Le hook de demarrage Codex doit lancer le meme script.' }
+$start = Invoke-Hook '{"hook_event_name":"SessionStart","source":"startup"}' $root
+if ($start.ExitCode -ne 0) { throw 'Le hook de demarrage a bloque Codex.' }
+$started = $start.Stdout | ConvertFrom-Json
+if ($started.hookSpecificOutput.hookEventName -ne 'SessionStart' -or
+    $started.hookSpecificOutput.additionalContext -notmatch '^GSTACK_(OK|MISSING)') {
+    throw 'La verification gstack au demarrage est absente.'
+}
 $unrelated = Invoke-Hook '{"hook_event_name":"Stop"}' $root
 if ($unrelated.ExitCode -ne 0 -or $unrelated.Stdout) { throw 'Le hook doit ignorer les autres evenements.' }
 $broken = Invoke-Hook '{' $root
 if ($broken.ExitCode -ne 0 -or $broken.Stdout) { throw 'Un JSON invalide ne doit pas bloquer Codex.' }
-Write-Host 'Hook gstack: valid JSON, non-blocking, resolved from root and a subdirectory.'
+Write-Host 'Hook gstack: startup check and prompt reminder, valid JSON, non-blocking, resolved from root and a subdirectory.'

@@ -17,6 +17,7 @@ function run(file, env = {}) {
     'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js',
     'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','staff-duo-tracked-api.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js',
+    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js',
     'sim-night.js','start-evening.test.js','startup-port.test.js']) await run(`test/${f}`);
   async function demoTest(port, songSeconds, script) {
   const base = `http://127.0.0.1:${port}`;
@@ -50,6 +51,7 @@ function run(file, env = {}) {
   await demoTest(3108, 10, 'test/solo-comptoir-api.test.js');
   await demoTest(3109, 20, 'test/presence-next-api.test.js');
   await demoTest(3110, 10, 'test/battle-titles-api.test.js');
+  await demoTest(3111, 4, 'test/bar-feedback-api.test.js');
   await run('test/evening-controls-api.test.js');
   await run('test/priority-undo-api.test.js');
   await run('test/night-restart-api.test.js');

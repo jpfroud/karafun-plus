@@ -90,10 +90,18 @@ const battleVote = new BattleVote({
     }
     if (event === 'requested') {
       const title = battleVote.ballot?.selectedSong?.title;
-      sched.note(`La salle demande une Battle collective${title ? ` sur « ${title} »` : ''} : le bar doit l’organiser dans KaraFun.`, 'battle');
+      sched.note(`La salle demande une Battle collective${title ? ` sur « ${title} »` : ''} : elle sera ajoutée après le prochain passage annoncé.`, 'battle');
     }
-    else if (event === 'proposed') sched.note('Un vote pour une Battle collective est ouvert pendant deux minutes.', 'battle');
-    else if (event === 'expired' || event === 'rejected') sched.note('Vote Battle terminé sans majorité. Prochain vote après la pause.', 'battle');
+    else if (event === 'staff-launch') {
+      const title = battleVote.ballot?.selectedSong?.title;
+      sched.note(`Le bar lance une Battle${title ? ` sur « ${title} »` : ''} : elle sera ajoutée après le prochain passage annoncé.`, 'battle');
+    }
+    else if (event === 'proposed') {
+      const minutes = battleVote.voteDurationMs / 60000;
+      sched.note(`Un vote pour une Battle collective est ouvert pendant ${minutes} minute${minutes > 1 ? 's' : ''}.`, 'battle');
+    }
+    else if (event === 'quorum') sched.note('Vote Battle terminé : pas assez de votants. Prochain vote après la pause.', 'battle');
+    else if (event === 'expired' || event === 'rejected') sched.note('Vote Battle terminé sans majorité pour la Battle. Prochain vote après la pause.', 'battle');
     else if (event === 'done' || event === 'dismissed') sched.note('Demande Battle traitée par le bar. Pause entre les votes.', 'battle');
     if (!DEMO) setImmediate(() => saveNight());
   },
@@ -117,6 +125,9 @@ let emptySince = null;  // transition après Suivant : KaraFun peut ignorer un a
 let hadNativeQueue = false;
 let recoveredPending = false;
 let persistenceError = null;
+// Envoi coupé par KaraFun (droits perdus, souvent après une reconnexion) :
+// il reprend seul dès que les droits reviennent, sauf décision du bar.
+let permissionPause = false;
 
 function saveNight({ required = false, replaceBoth = false } = {}) {
   if (!nightStore) return true;
@@ -241,13 +252,8 @@ function presenceCandidate({ current, upcoming } = analyze()) {
   if (pending && !pending.cancelled) return { ...pending.sel, source: 'envoi' };
   const onStage = tracked.find(tr => isOnStage(tr, current));
   const excluded = onStage?.sel.ids || [];
-  // Une notification « Je suis là » promet le prochain passage. Attendons
-  // la même version du plan que l'envoi, y compris si cette lecture précède
-  // le prochain balayage de synchronisation.
-  if (!sched.reservedNext) {
-    sched.whenPlanReady();
-    if (sched.solverStatus().pending) return null;
-  }
+  // L'ordre local est immédiat et Timefold ne déplace jamais le prochain
+  // réservé : la notification « Je suis là » vise donc la bonne personne.
   const planned = sched.presenceView(excluded).find(turn => !turn.future && turn.song);
   return planned ? { ...planned, source: 'helper' } : null;
 }
@@ -384,7 +390,14 @@ function sync() {
   if (!bridge || !bridge.ready) return;
   if (settings.auto && bridge.permissions?.addToQueue === false) {
     settings.auto = false;
-    sched.note('KaraFun refuse l’ajout de titres pour le compte FileKaraoke : donne-lui le rôle administrateur dans KaraFun Pro.', 'error');
+    permissionPause = true;
+    sched.note(`KaraFun refuse l’ajout de titres pour ${bridge.username || 'FileKaraoke'} : redonne-lui le rôle administrateur dans KaraFun Pro. L’envoi reprendra seul ensuite.`, 'error');
+  } else if (permissionPause && bridge.permissions && bridge.permissions.addToQueue !== false) {
+    permissionPause = false;
+    if (!recoveredPending && !persistenceError) {
+      settings.auto = true;
+      sched.note('Droits KaraFun retrouvés : envoi automatique réactivé.', 'staff');
+    }
   }
   const { current, upcoming, q } = analyze();
   const qids = new Set(q.map(it => it.queueId));
@@ -407,6 +420,7 @@ function sync() {
             sched.Q = sched.Q.filter(pid => !consumed.has(pid));
           }
           tracked.push({ queueId: hit.queueId, sel: pending.sel, addedAt: now, startedAt: now });
+          sched.recordStage(pending.sel, now);
           sched.note(`« ${pending.sel.song.title} » a commencé sur scène pendant le retrait ; elle continue.`, 'stage');
         } else {
           tracked.push({ queueId: hit.queueId, sel: pending.sel,
@@ -461,6 +475,7 @@ function sync() {
     }
     if (onStage && !tr.startedAt) {
       tr.startedAt = Date.now();
+      sched.recordStage(tr.sel, tr.startedAt);
       sched.note(`Sur scène : ${tr.sel.label} — « ${tr.sel.song.title} »`, 'stage');
     }
     // QueueEvent et StatusEvent ne sont pas atomiques. Quand l'ancienne chanson
@@ -474,7 +489,11 @@ function sync() {
         if (!tr.startedAt && tr.sel.turnCredit) sched.rollbackUnplayed(tr.sel);
         sched.note(`Retrait KaraFun confirmé : « ${tr.sel.song.title} »`, 'staff');
       }
-      else if (tr.startedAt) { sched.recordSlot((Date.now() - tr.startedAt) / 1000); sched.songEnded(tr.sel.ids); }
+      else if (tr.startedAt) {
+        sched.recordSlot((Date.now() - tr.startedAt) / 1000);
+        sched.songEnded(tr.sel.ids);
+        sched.endStage(tr.sel);
+      }
       else if (tr.absent) restore(tr, 'retirée (absent à l\'appel)');
       else {
         sched.rollbackUnplayed(tr.sel, { requeue: true });
@@ -564,6 +583,11 @@ function describe(item, byQid) {
   };
 }
 
+// Chaque personne inscrite (même sans chanson) a une voix pour la Battle.
+function battleElectorate() {
+  return [...sched.people.values()].filter(person => !person.withdrawnAt).map(person => person.id);
+}
+
 function publicState(person, tableId) {
   const { current, upcoming } = analyze();
   const presence = presenceCandidate({ current, upcoming });
@@ -620,7 +644,9 @@ function publicState(person, tableId) {
       weightedTables: sched.opts.weightedTables },
     log: sched.log.slice(-30).reverse(),
     v: sched.version,
-    battle: battleVote.view(),
+    // « registered » : personnes qui pourraient voter. En dessous du minimum
+    // de votants, les téléphones ne proposent pas de Battle.
+    battle: { ...battleVote.view(), registered: battleElectorate().length },
   };
 
   const guestDuosOf = person => {
@@ -731,7 +757,7 @@ function staffState() {
   const latestManual = sched.manualChanges.at(-1);
   return {
     ...pub,
-    battle: battleVote.view(),
+    battle: { ...battleVote.view(), registered: battleElectorate().length },
     blocked,
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
@@ -748,8 +774,11 @@ function staffState() {
     log: sched.log.slice(-120).reverse(),
     settings: { ...settings, gap: sched.opts.gap, cap: sched.opts.cap, requirePresence: sched.opts.requirePresence,
       tableRotation: sched.opts.tableRotation, weightedTables: sched.opts.weightedTables,
-      battleCooldownMin: battleVote.cooldownMs / 60000 },
+      interleaveArrivals: sched.opts.interleaveArrivals !== false,
+      battleCooldownMin: battleVote.cooldownMs / 60000,
+      battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters },
     solver: sched.solverStatus(),
+    stageHistory: stageHistoryView(),
     soloInvitations: soloInvitations.view(),
     phoneBase: phoneBase(), ips, port: PORT, staffKey: STAFF_KEY,
     tables: [...sched.tables.values()].map(t => ({ ...t,
@@ -761,7 +790,8 @@ function staffState() {
     people: [...sched.people.values()].map(p => ({ id: p.id, name: p.name, tableId: p.tableId,
       sung: p.sung, inQueue: sched.Q.includes(p.id), lastSeen: p.lastSeen,
       active: !p.withdrawnAt, songCount: sched.songsOf(p).length,
-      privateNote: p.privateNote || '', verified: !!p.verifiedAt,
+      privateNote: p.privateNote || '', verified: !!p.verifiedAt, bonus: p.bonus || 0,
+      appearances: (p.sung || 0) + (p.duetGuestCount || 0),
       photoUrl: p.photo ? `/photo/${p.id}` : null })),
     pending: pending ? { label: pending.sel.label, title: pending.sel.song.title } : null,
     tracked: tracked.map(tr => ({ queueId: tr.queueId, label: tr.sel.label, title: tr.sel.song.title,
@@ -769,6 +799,22 @@ function staffState() {
     kf: bridge ? bridge.snapshot() : null,
     code: CODE,
   };
+}
+
+// Derniers passages réellement montés sur scène, du plus récent au plus
+// ancien, avec les repères privés du bar pour reconnaître les personnes.
+function stageHistoryView() {
+  return sched.stageHistory.slice(-20).reverse().map(item => ({
+    id: item.id, at: item.at, endedAt: item.endedAt, title: item.title, artist: item.artist,
+    kind: item.kind,
+    people: item.ids.map((pid, index) => {
+      const p = sched.people.get(pid);
+      return { id: pid, name: p?.name || item.names[index] || '?',
+        table: sched.table(p?.tableId || item.tableIds?.[index] || '', false)?.name || '',
+        privateNote: p?.privateNote || '', active: !!p && !p.withdrawnAt,
+        photoUrl: p?.photo ? `/photo/${pid}` : null, appearances: p ? (p.sung || 0) + (p.duetGuestCount || 0) : null };
+    }),
+  }));
 }
 
 // L'historique ne peut restaurer que la file du helper. Une évolution de la
@@ -1241,8 +1287,7 @@ const handlers = {
   },
   'POST /api/table/battle/propose': async (req, res, body) => {
     const p = personAtTable(body);
-    const eligiblePersonIds = [...sched.people.values()].filter(person => !person.withdrawnAt).map(person => person.id);
-    const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds,
+    const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds: battleElectorate(),
       songs: certifiedBattleSongs(body.songs), proposerChoice: body.proposerChoice });
     return { ok: true, battle };
   },
@@ -1281,6 +1326,14 @@ const handlers = {
         nextBattleCooldown < 1 || nextBattleCooldown > 120)) {
       throw new Error('Le délai entre Battles doit être de 1 à 120 minutes.');
     }
+    const nextVoteMin = 'battleVoteMin' in body ? Number(body.battleVoteMin) : null;
+    if (nextVoteMin !== null && (!Number.isInteger(nextVoteMin) || nextVoteMin < 1 || nextVoteMin > 10)) {
+      throw new Error('La durée du vote Battle doit être de 1 à 10 minutes.');
+    }
+    const nextMinVoters = 'battleMinVoters' in body ? Number(body.battleMinVoters) : null;
+    if (nextMinVoters !== null && (!Number.isInteger(nextMinVoters) || nextMinVoters < 1 || nextMinVoters > 100)) {
+      throw new Error('Le nombre minimal de votants doit être de 1 à 100.');
+    }
     if (body.auto && recoveredPending) throw new Error('Vérifie d’abord l’envoi interrompu dans KaraFun.');
     if (body.auto && persistenceError) throw new Error('Sauvegarde indisponible : l’envoi automatique reste suspendu.');
     if (body.auto && bridge?.permissions?.addToQueue === false) {
@@ -1289,14 +1342,19 @@ const handlers = {
     if (nextTableRotation !== sched.opts.tableRotation || nextWeighted !== sched.opts.weightedTables) {
       sched.opts.tableRotation = nextTableRotation;
       sched.opts.weightedTables = nextWeighted;
-      sched.tableServeCounts.clear();
-      sched.roundGroups.clear();
-      sched.roundPeople.clear();
+      // Le tour des personnes est conservé : changer de mode ne doit jamais
+      // permettre à quelqu'un de rechanter avant ceux qui attendent ce tour.
       sched.invalidateManualOrder();
-      sched.note(`Rotation : ${nextWeighted ? 'tables pondérées par les chanteurs prêts' : nextTableRotation ? 'tables en priorité' : 'personnes en priorité'}`, 'staff');
+      sched.note(`Rotation : ${nextWeighted ? 'compromis, grandes tables un peu plus souvent' : nextTableRotation ? 'tables à tour de rôle' : 'chacun son tour, tables au prorata des chanteurs'}`, 'staff');
+    }
+    if ('interleaveArrivals' in body && !!body.interleaveArrivals !== (sched.opts.interleaveArrivals !== false)) {
+      sched.opts.interleaveArrivals = !!body.interleaveArrivals;
+      sched.invalidateManualOrder();
+      sched.note(`Grande table qui arrive : ${sched.opts.interleaveArrivals ? 'intercalée avec la rotation' : 'passe d’abord en entier'}`, 'staff');
     }
     if ('auto' in body) {
       settings.auto = !!body.auto;
+      permissionPause = false;
     }
     if ('autoPlay' in body) settings.autoPlay = !!body.autoPlay;
     if ('baseUrl' in body) { settings.baseUrl = nextBaseUrl; saveTables(); }
@@ -1306,6 +1364,8 @@ const handlers = {
     settings.pushDelaySec = nextPushDelay;
     settings.playDelaySec = nextPlayDelay;
     if (nextBattleCooldown !== null) battleVote.setCooldownMinutes(nextBattleCooldown);
+    if (nextVoteMin !== null) battleVote.setVoteMinutes(nextVoteMin);
+    if (nextMinVoters !== null) battleVote.setMinVoters(nextMinVoters);
     sched.version++; sync();
     return { ok: true };
   },
@@ -1454,6 +1514,48 @@ const handlers = {
     return { ok: true, undone: count };
   },
   'POST /api/staff/remove': async (req, res, body) => { sched.staffRemove(body.personId); sync(); return { ok: true }; },
+  'POST /api/staff/remove-many': async (req, res, body) => {
+    const items = Array.isArray(body.items) ? body.items.slice(0, 200) : [];
+    const queueIds = Array.isArray(body.queueIds) ? body.queueIds.slice(0, 50).map(String) : [];
+    if (!items.length && !queueIds.length) throw new Error('Coche au moins un titre à retirer.');
+    let removed = 0;
+    const skipped = [];
+    for (const item of items) {
+      const personId = String(item?.personId || '');
+      const entryId = item?.entryId ? String(item.entryId) : null;
+      if (pending && !pending.cancelled && pending.sel.ids[0] === personId &&
+          (!entryId || pending.sel.song.entryId === entryId)) {
+        skipped.push('titre en cours d’envoi à KaraFun');
+        continue;
+      }
+      try { sched.staffRemoveEntry(personId, entryId); removed++; }
+      catch (error) { skipped.push(error.message); }
+    }
+    for (const queueId of queueIds) {
+      const tr = tracked.find(item => String(item.queueId) === queueId && !item.cancelled);
+      const { current } = analyze();
+      if (!tr || isOnStage(tr, current)) { skipped.push('titre déjà sur scène ou absent de KaraFun'); continue; }
+      try { bridge?.remove(tr.queueId); removed++; }
+      catch (error) { skipped.push(error.message); }
+    }
+    sync();
+    return { ok: true, removed, skipped: skipped.length,
+      message: `${removed} titre${removed > 1 ? 's' : ''} retiré${removed > 1 ? 's' : ''}${skipped.length ? ` ; ${skipped.length} ignoré${skipped.length > 1 ? 's' : ''} (${[...new Set(skipped)].join(', ')})` : ''}.` };
+  },
+  'POST /api/staff/queue-optimize': async () => {
+    const started = sched.forceReplan(30000);
+    sync();
+    return { ok: true, started, message: started ?
+      'Calcul complet lancé : 30 secondes au plus, puis la recherche continue tant que la file ne change pas. La file affichée reste utilisable pendant ce temps.' :
+      'Optimisation indisponible : la file a été recalculée par la règle locale.' };
+  },
+  'POST /api/staff/bonus': async (req, res, body) => {
+    if (body.tableId != null && body.tableId !== '') sched.setTableBonus(TableAccess.key(body.tableId), body.level);
+    else if (body.personId) sched.setPersonBonus(String(body.personId), body.level);
+    else throw new Error('Choisis une table ou une personne.');
+    sync();
+    return { ok: true };
+  },
   'POST /api/staff/person/identify': async (req, res, body) => {
     const p = sched.staffIdentify(body.personId, body.note, !!body.verified);
     return { ok: true, personId: p.id };
@@ -1461,7 +1563,16 @@ const handlers = {
   'POST /api/staff/person/share': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p || p.withdrawnAt) throw new Error('Chanteur inconnu ou parti.');
-    return createPersonShareCode(p);
+    const share = createPersonShareCode(p);
+    const table = sched.table(p.tableId, false);
+    // Une personne seule n'a pas de QR de table imprimé : le bar montre ici
+    // le lien de reprise, utilisable seulement avec ce code à usage unique.
+    if (table?.individual && access.get(table.id)) {
+      const url = access.url(phoneBase(), table.id);
+      share.tableUrl = url;
+      share.qr = await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' });
+    }
+    return share;
   },
   'POST /api/staff/person/leave': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
@@ -1503,6 +1614,17 @@ const handlers = {
     const partnerTable = sched.table(partner.tableId);
     tr.sel.label = `${tr.sel.names.join(' & ')} · ${ownerTable.name}${ownerTable.id === partnerTable.id ? '' : ` + ${partnerTable.name}`}`;
     sync(); return { ok: true };
+  },
+  'POST /api/staff/battle/launch': async (req, res, body) => {
+    const [song] = certifiedBattleSongs([body.song]);
+    const battle = battleVote.staffLaunch({ song });
+    sync();
+    return { ok: true, battle };
+  },
+  'POST /api/staff/battle/close': async () => {
+    const battle = battleVote.closeNow();
+    sync();
+    return { ok: true, battle };
   },
   'POST /api/staff/battle/resolve': async (req, res, body) => {
     const battle = body.outcome === 'finished' ? battleVote.finishManual() :
@@ -1550,8 +1672,22 @@ const handlers = {
         battleVote.updateAutomation('resuming');
         sched.note('Le bar lance manuellement le premier titre après la Battle.', 'battle');
         sync();
-      } else if (['sending', 'queued', 'playing', 'manual', 'failed'].includes(status)) {
-        throw new Error('La Battle attend le bar : vérifie KaraFun et laisse les téléphones rejoindre avant de lancer.');
+      } else if (['queued', 'manual', 'failed'].includes(status)) {
+        // Lancer la Battle depuis cette page, comme depuis KaraFun : le titre
+        // Battle doit être le prochain et rien ne doit être en lecture.
+        if (!bridge.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de lancer la Battle.');
+        const { current, upcoming } = analyze();
+        if (current && isBattleItem(current)) throw new Error('La Battle est déjà en cours.');
+        if (current) throw new Error('Un titre est en cours : la Battle pourra être lancée à sa fin.');
+        if (!upcoming[0] || !isBattleItem(upcoming[0])) {
+          throw new Error('La Battle n’est pas le prochain titre dans KaraFun. Vérifie sa file.');
+        }
+        bridge.play();
+        sched.note('Le bar lance la Battle depuis la page du bar.', 'battle');
+      } else if (status === 'sending') {
+        throw new Error('KaraFun n’a pas encore confirmé la Battle. Réessaie dans un instant.');
+      } else if (status === 'playing') {
+        throw new Error('La Battle est déjà en cours.');
       } else bridge.play();
     }
     else if (body.action === 'next') bridge.next();
@@ -1698,7 +1834,8 @@ async function connectKaraFun() {
   if (!CODE) { appLog('Pas de code KaraFun : saisis-le sur la page du bar.'); return; }
   rememberCode();
   if (!bridge) {
-    bridge = new KaraFunBridge({ logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined });
+    bridge = new KaraFunBridge({ logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined,
+      identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json') });
     bridge.on('change', () => setImmediate(sync));
   }
   appLog(`Connexion à KaraFun (code ${CODE})...`);
@@ -1722,7 +1859,7 @@ async function main() {
   } else loadTables();
   ensureSoloGroup();
   if (!DEMO && !sched.solverStatus().available) {
-    appLog(`Solveur Timefold indisponible au démarrage : ${sched.solverStatus().fallbackLastError || 'cause inconnue'}. Rotation locale de secours.`);
+    appLog(`Optimiseur de file indisponible au démarrage : ${sched.solverStatus().fallbackLastError || 'cause inconnue'}. Rotation locale de secours.`);
   }
   saveNight({ required: true });
   if (DEMO) {

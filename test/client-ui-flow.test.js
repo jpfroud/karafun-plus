@@ -163,10 +163,16 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   poll(); await settle();
   assert.equal(get('activityBanner').hidden, true,
     'après le vote, la Battle reste dans son panneau sans laisser Voir la Battle en haut');
-  assert.match(get('battleText').textContent, /Majorité obtenue/);
+  assert.match(get('battleText').textContent, /La Battle aura lieu/);
   managedIds = ['alice', 'bob'];
-  battle = { phase: 'idle', eligiblePersonIds: [], votedPersonIds: [] };
+  battle = { phase: 'idle', eligiblePersonIds: [], votedPersonIds: [], minVoters: 5, registered: 4 };
   poll(); await settle();
+  assert.equal(get('battleBox').hidden, true, 'moins d’inscrits que le minimum : pas de proposition de Battle');
+  assert.doesNotMatch(get('battleVotes').innerHTML, /data-battle-propose/);
+  battle = { phase: 'idle', eligiblePersonIds: [], votedPersonIds: [], minVoters: 5, registered: 5 };
+  poll(); await settle();
+  assert.equal(get('battleBox').hidden, false);
+  assert.match(get('battleText').textContent, /au moins 5 votants/);
   assert.equal((get('battleVotes').innerHTML.match(/data-battle-propose/g) || []).length, 1,
     'un seul bouton Battle pour plusieurs chanteurs sur un téléphone');
   get('battleVotes').listeners.click({ target: { closest: selector => selector === '[data-battle-propose]'

@@ -4,11 +4,13 @@ File de karaoké pour un bar : les clients choisissent leurs titres depuis le QR
 
 ## Démarrage
 
-Sur le PC du bar, télécharger et décompresser le kit Windows de la dernière release, puis double-cliquer sur **KaraFun Plus.exe**. KaraFun doit être installé séparément ; activer sa télécommande et saisir son code sur la page du bar. Le kit contient Node.js, le solveur Timefold et son Java intégré : aucun outil de développement n'est nécessaire sur ce PC. Voir [le guide du bar](GUIDE-BAR.md) pour les QR, les droits, la sauvegarde et l'accès des téléphones hors Wi-Fi.
+Sur le PC du bar, télécharger et décompresser le kit Windows de la dernière release, puis double-cliquer sur **KaraFun Plus.exe**. KaraFun doit être installé séparément ; activer sa télécommande et saisir son code sur la page du bar. Le kit contient Node.js, l'optimiseur de file et son Java intégré : aucun outil de développement n'est nécessaire sur ce PC. Voir [le guide du bar](GUIDE-BAR.md) pour les QR, les droits, la sauvegarde et l'accès des téléphones hors Wi-Fi.
 
-Pour accueillir une personne venue seule, le bar émet un QR individuel à usage unique depuis sa page de gestion. Le QR commun « En solo » permet de consulter la file ou de reprendre son profil, mais ne crée pas de nouveaux profils.
+Pour accueillir une personne venue seule, le bar émet un QR individuel à usage unique depuis sa page de gestion. Il n'y a pas de QR commun « En solo » à afficher ; pour un changement de téléphone, le bar montre un QR de reprise accompagné d'un code à usage unique.
 
-Pour travailler depuis les sources : `npm ci`, Java 21 et Maven pour construire `solver/pom.xml`, puis `node test/run-offline.js` pour la recette isolée. `npm run demo` démarre une simulation sans toucher à KaraFun. La CI Windows construit le solveur, lance les tests et vérifie le kit. Un tag `v*` publie une release Windows ; le workflow peut aussi être déclenché manuellement depuis GitHub.
+Pour travailler depuis les sources : `npm ci`, Java 21 et Maven pour construire `solver/pom.xml`, puis `node test/run-offline.js` pour la recette isolée. `npm run demo` démarre une simulation sans toucher à KaraFun. La CI Windows construit le solveur, lance les tests et vérifie le kit. Un tag `v*` publie une release Windows ; le workflow de publication peut aussi être déclenché manuellement depuis GitHub, mais seulement depuis `main`.
+
+**Version de test d'une branche** (sans publication) : chaque exécution de « Tests Windows » garde le kit construit pendant 14 jours. Ouvrir l'onglet Actions → « Tests Windows » → « Run workflow », choisir la branche, puis, une fois l'exécution verte, télécharger l'artefact `kit-bar-test-…` en bas de sa page. Il contient `KIT-BAR-KARAFUN.zip`, à décompresser sur le PC du bar comme une release. Une PR produit le même artefact automatiquement.
 
 Les fichiers `data/`, `journal/` et les codes de télécommande ne doivent pas être publiés. Les QR clients donnent accès à une table ; le lien de gestion du bar reste privé.
 

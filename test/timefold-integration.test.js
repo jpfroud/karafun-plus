@@ -43,7 +43,7 @@ test('échec du solveur : repli disponible et erreur visible au bar', async () =
   assert.ok(s.select(), 'le repli hors Java continue la soirée');
 });
 
-test('la présence du prochain attend le plan pour ne pas annoncer la mauvaise personne', async () => {
+test('la présence du prochain est annoncée tout de suite et le plan Timefold ne la change plus', async () => {
   const s = new Scheduler({ requirePresence: true });
   const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
   const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
@@ -56,11 +56,14 @@ test('la présence du prochain attend le plan pour ne pas annoncer la mauvaise p
       finish = () => resolve({ requestId: request.requestId,
         order: baseline.map(item => item.entryId).reverse() });
     }) };
-  assert.equal(s.reservePresenceNext(), null);
-  assert.equal(s.reservedNext, null, 'aucun nom annoncé pendant le calcul');
+  const announced = s.reservePresenceNext();
+  assert.ok(announced, 'aucune attente de Java pour annoncer le prochain');
+  assert.equal(announced.ids[0], baseline[0].ids[0]);
+  assert.equal(s.solverStatus().pending, true, 'Timefold continue en arrière-plan');
   finish();
-  assert.equal(await s.solverPromise, true);
-  assert.equal(s.reservePresenceNext().ids[0], baseline[1].ids[0]);
+  await s.solverPromise;
+  assert.equal(s.reservePresenceNext().ids[0], announced.ids[0],
+    'le résultat de Timefold ne retire pas l’annonce faite à la personne');
 });
 
 test('une note pendant le calcul ne relance pas Timefold et son résultat est publié une seule fois', async () => {
@@ -78,17 +81,41 @@ test('une note pendant le calcul ne relance pas Timefold et son résultat est pu
       finish = () => resolve({ requestId: request.requestId, order: [...original].reverse() });
     });
   } };
-  assert.equal(s.select(), null, 'l’envoi attend la réponse asynchrone');
+  assert.equal(s.select()?.song.entryId, original[0], 'l’ordre local répond sans attendre Java');
+  assert.equal(s.solverStatus().pending, true, 'le calcul Timefold est signalé en cours');
   s.note('Une information du bar sans effet sur la file');
-  assert.equal(s.select(), null);
+  s.select();
   assert.equal(calls, 1, 'une note ne lance pas une seconde optimisation');
+  // Mesure de qualité simulée : l'ordre de Timefold est ici meilleur.
+  s._planMetric = slots => slots[0]?.entryId === original[1] ? 0 : 1000;
   finish();
   assert.equal(await s.solverPromise, true, 'la réponse reste valable malgré le journal');
+  assert.equal(s.solverStatus().plan, 'timefold');
+  assert.equal(s.solverStatus().lastRun.improved, true);
   assert.deepEqual(s.readyView().map(item => item.entryId), [...original].reverse());
   s.note('Autre information sans effet sur la file');
   assert.deepEqual(s.readyView().map(item => item.entryId), [...original].reverse(),
     'un rafraîchissement de version ne déplace pas la file publiée');
   assert.equal(calls, 1, 'un état de file inchangé n’est pas recalculé en boucle');
+});
+
+test('à qualité égale, Timefold confirme l’ordre affiché sans le bouleverser', async () => {
+  const s = new Scheduler();
+  const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
+  const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
+  s.chooseSong(a, { songId: 1021, title: 'A', artist: 'Test' });
+  s.chooseSong(b, { songId: 1022, title: 'B', artist: 'Test' });
+  const original = s.readyView().map(item => item.entryId);
+  let finish;
+  s.solverBridge = { available: true, lastError: null, solve: request => new Promise(resolve => {
+    finish = () => resolve({ requestId: request.requestId, order: [...original].reverse() });
+  }) };
+  s.select();
+  finish();
+  assert.equal(await s.solverPromise, true);
+  assert.equal(s.solverStatus().plan, 'confirmed');
+  assert.equal(s.solverStatus().lastRun.improved, false);
+  assert.deepEqual(s.readyView().map(item => item.entryId), original);
 });
 
 test('une modification réelle annule l’ancien plan ; 90 titres disposent de 15 secondes', async () => {
@@ -122,7 +149,7 @@ test('une modification réelle annule l’ancien plan ; 90 titres disposent de 1
   assert.equal(s.readyView().length, 90);
 });
 
-test('file créée à partir du vide : choix immédiat à un titre, repli borné à deux titres', async () => {
+test('file créée à partir du vide : choix immédiat, le calcul approfondi ne déplace pas le prochain', async () => {
   const s = new Scheduler();
   const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
   s.chooseSong(a, { songId: 4001, title: 'A', artist: 'Test' });
@@ -137,26 +164,20 @@ test('file créée à partir du vide : choix immédiat à un titre, repli borné
   assert.equal(calls, 0);
   const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
   s.chooseSong(b, { songId: 4002, title: 'B', artist: 'Test' });
-  assert.equal(s.select(), null, 'courte fenêtre initiale de calcul');
-  assert.equal(s.solverStatus().blockingNext, true);
-  s.solverNextStartedAt = Date.now() - 2501;
-  assert.equal(s.solverStatus().blockingNext, false);
+  assert.ok(s.select(), 'deux titres : l’ordre local répond immédiatement');
+  assert.equal(s.solverStatus().blockingNext, false, 'plus aucune fenêtre d’attente');
   const next = s.reserveNext();
   assert.ok(next, 'un départ reste possible même si le deep solve continue');
   assert.equal(s.reservedNext.personId, next.ids[0]);
-  const oldRequest = s.solverPromise;
-  const replanning = s.whenPlanReady();
-  assert.equal(calls, 2, 'le deep solve repart avec le prochain verrouillé');
-  assert.equal(s.solverBridge.available, true);
-  finishes[0]([b.song.entryId, a.song.entryId]);
-  assert.equal(await oldRequest, false, 'le plan sans réservation est désormais périmé');
-  finishes[1]([next.song.entryId,
-    next.ids[0] === a.id ? b.song.entryId : a.song.entryId]);
-  assert.equal(await replanning, true);
+  assert.equal(calls, 1, 'la réservation du prochain réalise le plan : pas de nouveau calcul');
+  const other = next.ids[0] === a.id ? b : a;
+  s._planMetric = slots => slots[0]?.ids[0] === other.id ? 0 : 1000;
+  finishes[0]([other.song.entryId, next.song.entryId]);
+  await s.solverPromise;
   assert.equal(s.select().ids[0], next.ids[0], 'Timefold ne déplace pas le prochain annoncé');
 });
 
-test('la confirmation de présence réserve le prochain après la fenêtre courte', async () => {
+test('la confirmation de présence réserve le prochain sans attendre Timefold', async () => {
   const s = new Scheduler({ requirePresence: true });
   const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
   const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
@@ -164,8 +185,6 @@ test('la confirmation de présence réserve le prochain après la fenêtre court
   s.chooseSong(b, { songId: 4102, title: 'B', artist: 'Test' });
   s.solverBridge = { available: true, lastError: null,
     solve: () => new Promise(() => {}) };
-  assert.equal(s.reservePresenceNext(), null);
-  s.solverNextStartedAt = Date.now() - 2501;
   const announced = s.reservePresenceNext();
   assert.ok(announced);
   assert.equal(s.reservedNext.personId, announced.ids[0]);
@@ -173,7 +192,7 @@ test('la confirmation de présence réserve le prochain après la fenêtre court
     'la même personne reçoit la notification malgré le calcul approfondi');
 });
 
-test('les arrivées répétées ne repoussent pas indéfiniment la première chanson', () => {
+test('les arrivées répétées ne bloquent jamais la première chanson', () => {
   const s = new Scheduler();
   const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
   const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
@@ -184,21 +203,17 @@ test('les arrivées répétées ne repoussent pas indéfiniment la première cha
     requests.push(request);
     return new Promise(() => {});
   } };
-  assert.equal(s.select(), null);
-  const started = s.solverNextStartedAt;
+  assert.ok(s.select());
   for (let i = 0; i < 5; i++) {
     const p = s.join({ tableId: `N${i}`, name: `N${i}`, headcount: 1 });
     if (i % 2 === 0) s.chooseSong(p, {
       songId: 4300 + i, title: `N${i}`, artist: 'Test',
     });
     s.whenPlanReady();
-    assert.equal(s.solverNextStartedAt, started,
-      'une arrivée ne remet jamais les 2,5 secondes à zéro');
+    assert.ok(s.select(), 'le bar peut toujours envoyer un titre pendant le calcul');
   }
   assert.equal(requests.length, 4,
     'les inscriptions sans chanson ne lancent pas une optimisation inutile');
-  s.solverNextStartedAt = Date.now() - 2501;
-  assert.ok(s.select(), 'le bar peut envoyer un titre pendant le calcul approfondi');
 });
 
 test('un invité sans ticket reste dans l’empreinte physique du plan', async () => {
@@ -255,7 +270,7 @@ test('état A→B→A : aucune ancienne réponse ne remplace ni n’efface le no
   assert.equal(s.solverStatus().fallbackLastError, null);
 });
 
-test('pont Timefold : A puis B puis C remplacés, seul C répond sans délai de panne', async () => {
+test('pont Timefold : A puis B puis C remplacés, la JVM reste chaude et seul C répond', async () => {
   const workers = [];
   const fakeSpawn = () => {
     const child = new EventEmitter();
@@ -263,7 +278,8 @@ test('pont Timefold : A puis B puis C remplacés, seul C répond sans délai de 
     child.stdout.setEncoding = () => {};
     child.stderr = new EventEmitter();
     child.stdin = new EventEmitter();
-    child.stdin.write = line => { child.input = JSON.parse(line); };
+    child.inputs = [];
+    child.stdin.write = line => { child.inputs.push(JSON.parse(line)); };
     child.kill = () => { child.killed = true; };
     workers.push(child);
     return child;
@@ -278,20 +294,40 @@ test('pont Timefold : A puis B puis C remplacés, seul C répond sans délai de 
     const b = bridge.solve({ requestId: 'B' });
     await assert.rejects(a, /remplacé/);
     await tick();
-    assert.equal(workers.length, 2);
-    assert.equal(workers[0].killed, true);
     const c = bridge.solve({ requestId: 'C' });
     await assert.rejects(b, /remplacé/);
     await tick();
-    assert.equal(workers.length, 3);
+    assert.equal(workers.length, 1, 'un seul processus Java pour toute la soirée');
+    assert.notEqual(workers[0].killed, true, 'la JVM n’est pas redémarrée à chaque changement');
+    assert.deepEqual(workers[0].inputs.map(input => input.requestId), ['A', 'B', 'C'],
+      'chaque nouvelle ligne interrompt la recherche précédente côté Java');
     workers[0].stdout.emit('data', '{"requestId":"A","order":["ancien"]}\n');
-    workers[1].stdout.emit('data', '{"requestId":"B","order":["ancien"]}\n');
-    workers[0].emit('error', new Error('Ancien processus fermé'));
-    workers[1].stdin.emit('error', new Error('Ancien tuyau fermé'));
-    workers[2].stdout.emit('data', '{"requestId":"C","order":["dernier"]}\n');
+    workers[0].stdout.emit('data', '{"requestId":"B","order":["ancien"]}\n');
+    workers[0].stdout.emit('data', '{"requestId":"C","order":["dernier"]}\n');
     assert.deepEqual((await c).order, ['dernier']);
     assert.equal(bridge.lastError, null);
     assert.equal(bridge.available, true);
+  } finally { bridge.close(); }
+});
+
+test('pont Timefold : un calcul forcé part sans fenêtre de regroupement', async () => {
+  const workers = [];
+  const fakeSpawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.write = line => { child.input = JSON.parse(line); };
+    child.kill = () => {};
+    workers.push(child);
+    return child;
+  };
+  const bridge = new TimefoldBridge({ jar: 'faux.jar', java: 'faux', spawn: fakeSpawn, settleMs: 60000 });
+  try {
+    const forced = bridge.solve({ requestId: 'F', budgetMs: 30000 }, { immediate: true });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(workers[0]?.input?.requestId, 'F');
+    workers[0].stdout.emit('data', '{"requestId":"F","order":[]}\n');
+    assert.deepEqual((await forced).order, []);
   } finally { bridge.close(); }
 });
 

@@ -1,0 +1,2 @@
+# Scripts des hooks lancés par bash, y compris sous Windows (Git Bash).
+*.sh text eol=lf

@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Version de test d'une branche : Actions → Tests Windows → Run workflow.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,6 +33,9 @@ jobs:
       - name: Tester le hook gstack
         shell: pwsh
         run: .\test\gstack-hook.test.ps1
+      - name: Tester les hooks gstack de Claude Code
+        shell: bash
+        run: bash test/gstack-session-hook.test.sh
       - name: Preparer et verifier le kit Windows
         shell: powershell
         run: |
@@ -40,3 +45,12 @@ jobs:
           Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $nodeSource) 'LICENSE') -Destination node\LICENSE -Force
           .\PREPARER-KIT-BAR.ps1
           .\test\verify-portable-kit.ps1
+      # Kit de test téléchargeable depuis la page de l'exécution (Artifacts).
+      # Ce n'est pas une publication : les releases partent seulement de main.
+      - name: Garder le kit de test
+        uses: actions/upload-artifact@v4
+        with:
+          name: kit-bar-test-${{ github.sha }}
+          path: KIT-BAR-KARAFUN.zip
+          if-no-files-found: error
+          retention-days: 14
