@@ -13,8 +13,8 @@
 EVENT="${1:-SessionStart}"
 case "$EVENT" in SessionStart|UserPromptSubmit) ;; *) EVENT=SessionStart ;; esac
 
-# Le JSON de l'événement arrive sur l'entrée standard ; il n'est pas utile ici.
-[ -t 0 ] || cat >/dev/null 2>&1 || true
+# Le JSON de l'événement (entrée standard) n'est pas lu : un agent qui lance
+# ce script sans fermer son entrée le bloquerait jusqu'à son délai.
 
 # Même résolution que check-gstack.sh et que le mode équipe officiel.
 GSTACK_DIR=""

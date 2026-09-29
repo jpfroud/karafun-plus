@@ -48,7 +48,17 @@ out="$(printf '{}' | HOME="$empty" GSTACK_ROOT="$custom" bash "$START" Autre)"
 [ "$(printf '%s' "$out" | field hookEventName)" = "SessionStart" ] || fail "événement par défaut"
 printf '%s' "$out" | field additionalContext | grep -q "($custom)" || fail "GSTACK_ROOT ignoré"
 
-# 5. Les réglages du projet enregistrent bien les deux hooks.
+# 5. Lancé à la main par un agent dont l'entrée standard reste ouverte : le
+#    hook ne l'attend pas (auparavant bloqué jusqu'au délai de l'agent).
+# Regression: ISSUE-001 — hook de démarrage bloqué par une entrée standard ouverte
+# Found by /review on 2026-09-29
+# Report: .gstack/qa-reports/run-20260929T220650Z/qa-report-127.0.0.1-2026-09-29.md
+started=$(date +%s)
+out="$(HOME="$empty" bash "$START" < <(sleep 20))" || fail "démarrage avec entrée ouverte"
+[ $(( $(date +%s) - started )) -lt 10 ] || fail "le hook attend une entrée standard qui ne se ferme pas"
+printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail "sortie invalide avec entrée ouverte"
+
+# 6. Les réglages du projet enregistrent bien les deux hooks.
 SETTINGS="$ROOT/.claude/settings.json"
 command -v cygpath >/dev/null 2>&1 && SETTINGS="$(cygpath -w "$SETTINGS")"
 node -e '
