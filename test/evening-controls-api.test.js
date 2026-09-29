@@ -164,6 +164,7 @@ async function main() {
     }
     const battleSong = (await ok('/api/search?q=Queen')).find(item => item.title === 'Bohemian Rhapsody');
     assert.ok(battleSong);
+    await ok('/api/staff/settings', { battleMinVoters: 2 });
     await ok('/api/table/battle/propose', body('1', oldAccess, alice.id, resumed.token,
       { songs: [battleSong] }));
     state = await staff();

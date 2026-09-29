@@ -1,6 +1,19 @@
 {
-  "description": "Rappelle le parcours gstack du projet sans bloquer le démarrage de Codex.",
+  "description": "Vérifie gstack au démarrage et rappelle son parcours à chaque demande, sans bloquer Codex.",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -NonInteractive -File \"$(git rev-parse --show-toplevel)/.codex/hooks/gstack-route.ps1\"",
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"& (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/gstack-route.ps1')\"",
+            "timeout": 5,
+            "statusMessage": "Vérification de gstack"
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [

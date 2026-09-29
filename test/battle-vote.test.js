@@ -3,9 +3,9 @@ const assert = require('node:assert/strict');
 const { BattleVote, COOLDOWN_MS, MIN_VOTERS } = require('../battle-vote');
 
 assert.equal(COOLDOWN_MS, 15 * 60_000, 'le délai Battle par défaut est quinze minutes');
-assert.equal(MIN_VOTERS, 4, 'quatre votants au minimum par défaut');
+assert.equal(MIN_VOTERS, 5, 'cinq votants au minimum par défaut');
 assert.equal(new BattleVote().view().cooldownMinutes, 15);
-assert.equal(new BattleVote().view().voteMinutes, 2);
+assert.equal(new BattleVote().view().voteMinutes, 5, 'vote de cinq minutes par défaut');
 
 function fixture(extra = {}) {
   let time = 1_000_000;
@@ -99,11 +99,20 @@ function fixture(extra = {}) {
 }
 
 {
-  // Moins d'inscrits que le minimum : tous doivent voter.
+  // Moins d'inscrits que le minimum de votants : pas de vote possible
+  // (le bar peut toujours lancer une Battle).
   const f = fixture(), vote = new BattleVote(f.opts);
-  const state = vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b'] });
-  assert.equal(state.threshold, 2);
-  assert.equal(vote.vote({ personId: 'b', choice: 'yes' }).phase, 'requested');
+  assert.throws(() => vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b'] }),
+    /à partir de 3 personnes/);
+  assert.equal(vote.view().phase, 'idle');
+  const state = vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b', 'c'] });
+  assert.equal(state.threshold, 3, 'le minimum n’est plus abaissé au nombre d’inscrits');
+  vote.vote({ personId: 'b', choice: 'no' });
+  assert.equal(vote.vote({ personId: 'c', choice: 'no' }).outcome, 'rejected');
+  const byDefault = new BattleVote();
+  assert.throws(() => byDefault.propose({ personId: 'a', personName: 'A', eligiblePersonIds: 'abcd'.split('') }),
+    /à partir de 5 personnes/, 'par défaut, il faut cinq inscrits');
+  assert.equal(byDefault.propose({ personId: 'a', personName: 'A', eligiblePersonIds: 'abcde'.split('') }).threshold, 5);
 }
 
 {
@@ -154,7 +163,7 @@ function fixture(extra = {}) {
 }
 
 {
-  const f = fixture(), vote = new BattleVote(f.opts);
+  const f = fixture({ minVoters: 1 }), vote = new BattleVote(f.opts);
   vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a'],
     songs: [{ songId: 5091, title: 'Battle', artist: 'Test' }] });
   vote.beginAutomation(['titre-deja-present']);
@@ -227,7 +236,7 @@ function fixture(extra = {}) {
   assert.throws(() => vote.setVoteMinutes(11), /1 à 10/);
   assert.throws(() => vote.setMinVoters(0), /1 à 100/);
   vote.setVoteMinutes(3);
-  vote.setMinVoters(5);
+  vote.setMinVoters(1);
   vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a'] });
   vote.resolve({ outcome: 'done' });
   vote.finishManual();
@@ -236,7 +245,7 @@ function fixture(extra = {}) {
   const restored = new BattleVote({ ...f.opts, saved: vote.serialize() });
   assert.equal(restored.cooldownMs, 180_000, 'réglage conservé après redémarrage');
   assert.equal(restored.voteDurationMs, 180_000);
-  assert.equal(restored.minVoters, 5);
+  assert.equal(restored.minVoters, 1);
   assert.equal(restored.view().automation.status, 'after');
   restored.updateAutomation('resuming');
   restored.updateAutomation('released');
@@ -283,10 +292,10 @@ function fixture(extra = {}) {
   for (const invalid of [[], [...songs, songs[0], songs[1]], [songs[0], songs[0]],
     [{ songId: 0, title: 'Invalide' }], [{ songId: 3, title: '' }]]) {
     assert.throws(() => vote.propose({ personId: 'a', personName: 'Alice',
-      eligiblePersonIds: ['a', 'b'], songs: invalid }), /titre|titres|différent/i);
+      eligiblePersonIds: ['a', 'b', 'c'], songs: invalid }), /titre|titres|différent/i);
   }
   assert.throws(() => vote.propose({ personId: 'a', personName: 'Alice',
-    eligiblePersonIds: ['a', 'b'], songs, proposerChoice: 99 }), /proposant invalide/);
+    eligiblePersonIds: ['a', 'b', 'c'], songs, proposerChoice: 99 }), /proposant invalide/);
   vote.propose({ personId: 'a', personName: 'Alice', eligiblePersonIds: ['a', 'b', 'c', 'd'], songs });
   vote.vote({ personId: 'b', choice: 2 });
   vote.vote({ personId: 'c', choice: 'none' });

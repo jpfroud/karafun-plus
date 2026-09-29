@@ -39,6 +39,8 @@ function harness() {
       tracked() { return tracked; }, pending() { return pending; } };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
+  // Ces rejeux n'ont qu'un votant : le minimum de la salle ne les concerne pas.
+  f.battleVote.setMinVoters(1);
   f.sched.table('1');
   f.access.issue('1');
   const adds = [];

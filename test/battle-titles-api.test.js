@@ -48,7 +48,7 @@ async function request(route, body) {
   }));
   assert.equal(proposed.status, 200);
   assert.equal(proposed.data.battle.phase, 'voting');
-  assert.equal(proposed.data.battle.threshold, 4, 'quatre votants au minimum parmi cinq inscrits');
+  assert.equal(proposed.data.battle.threshold, 5, 'cinq votants au minimum parmi cinq inscrits');
   assert.equal(proposed.data.battle.songOptions[0].title, songs[0].title,
     'le titre affiché doit provenir du catalogue KaraFun, pas du formulaire');
   assert.deepEqual(proposed.data.battle.songOptions.map(item => item.votes), [1, 0, 0]);

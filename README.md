@@ -4,7 +4,7 @@ File de karaoké pour un bar : les clients choisissent leurs titres depuis le QR
 
 ## Démarrage
 
-Sur le PC du bar, télécharger et décompresser le kit Windows de la dernière release, puis double-cliquer sur **KaraFun Plus.exe**. KaraFun doit être installé séparément ; activer sa télécommande et saisir son code sur la page du bar. Le kit contient Node.js, le solveur Timefold et son Java intégré : aucun outil de développement n'est nécessaire sur ce PC. Voir [le guide du bar](GUIDE-BAR.md) pour les QR, les droits, la sauvegarde et l'accès des téléphones hors Wi-Fi.
+Sur le PC du bar, télécharger et décompresser le kit Windows de la dernière release, puis double-cliquer sur **KaraFun Plus.exe**. KaraFun doit être installé séparément ; activer sa télécommande et saisir son code sur la page du bar. Le kit contient Node.js, l'optimiseur de file et son Java intégré : aucun outil de développement n'est nécessaire sur ce PC. Voir [le guide du bar](GUIDE-BAR.md) pour les QR, les droits, la sauvegarde et l'accès des téléphones hors Wi-Fi.
 
 Pour accueillir une personne venue seule, le bar émet un QR individuel à usage unique depuis sa page de gestion. Il n'y a pas de QR commun « En solo » à afficher ; pour un changement de téléphone, le bar montre un QR de reprise accompagné d'un code à usage unique.
 

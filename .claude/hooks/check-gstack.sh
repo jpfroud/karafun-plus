@@ -3,9 +3,13 @@
 # Empêche l'emploi des compétences de code si gstack n'est pas installé.
 set -eu
 
+# Même résolution que le mode équipe officiel (tous les hôtes gstack).
 GSTACK_DIR=""
-for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" "$HOME/.gstack/repos/gstack"; do
-  if [ -z "$GSTACK_DIR" ] && [ -n "$candidate" ] && [ -f "$candidate/gstack/SKILL.md" -o -f "$candidate/SKILL.md" ]; then
+for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
+  "$HOME/.factory/skills/gstack" "$HOME/.kiro/skills/gstack" "$HOME/.config/opencode/skills/gstack" \
+  "$HOME/.slate/skills/gstack" "$HOME/.cursor/skills/gstack" "$HOME/.openclaw/skills/gstack" \
+  "$HOME/.hermes/skills/gstack" "$HOME/.gbrain/skills/gstack" "$HOME/.gstack/repos/gstack"; do
+  if [ -z "$GSTACK_DIR" ] && [ -n "$candidate" ] && [ -d "$candidate/bin" ]; then
     GSTACK_DIR="$candidate"
   fi
 done

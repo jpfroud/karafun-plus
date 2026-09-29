@@ -60,6 +60,13 @@ const personTokens = new Map();
 
   const battleSong = (await request('/api/search?q=Queen')).find(item => item.title === 'Bohemian Rhapsody');
   assert.ok(battleSong, 'titre réel fourni par le catalogue de la simulation');
+  // Trois inscrits : sous le minimum par défaut (5), la salle ne peut pas
+  // proposer de Battle et les téléphones masquent le bouton.
+  const fewPeople = await alphaState();
+  assert.deepEqual([fewPeople.battle.phase, fewPeople.battle.minVoters, fewPeople.battle.registered], ['idle', 5, 3]);
+  await assert.rejects(post('/api/table/battle/propose', body('alpha', a.id, { songs: [battleSong] })),
+    /à partir de 5 personnes/);
+  await post('/api/staff/settings', { battleMinVoters: 3 });
   await post('/api/table/battle/propose', body('alpha', a.id, { songs: [battleSong] }));
   assert.equal((await alphaState()).battle.phase, 'voting');
   await post('/api/table/battle/vote', body('alpha', mate.id, { choice: battleSong.songId }));

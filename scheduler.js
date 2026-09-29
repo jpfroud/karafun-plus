@@ -42,6 +42,8 @@ const DEFAULTS = {
   defaultSlotSec: 240,  // durée moyenne d'un passage avant mesure réelle
   solverEnabled: false,  // activé par le serveur quand le solveur Java est empaqueté
   solverSettleMs: 1000,  // regroupement des changements rapprochés avant Timefold
+  continuousSolver: true, // file inchangée : Timefold continue de chercher un meilleur ordre
+  solverRefinePauseMs: 2000, // pause entre deux passes d'optimisation continue
 };
 
 // Niveau de bonus → facteur de fréquence. +2 : une fois et demie plus de
@@ -54,6 +56,19 @@ const EPS = 1e-9;
 const id = () => crypto.randomBytes(6).toString('hex');
 const token = () => crypto.randomBytes(16).toString('hex');
 const overlaps = (a, b) => a.some(x => b.includes(x));
+// Score « 0hard/-1500medium/-30soft » : gain réel si le niveau dur ou moyen
+// progresse (le niveau doux ne mesure que la stabilité de l'ordre).
+const parseSolverScore = text => {
+  const match = /(-?\d+)hard\/(-?\d+)medium\/(-?\d+)soft/.exec(String(text || ''));
+  return match ? match.slice(1, 3).map(Number) : null;
+};
+const solverScoreGain = (seedScore, score) => {
+  const before = parseSolverScore(seedScore), after = parseSolverScore(score);
+  if (!before || !after) return false;
+  return after[0] > before[0] || (after[0] === before[0] && after[1] > before[1]);
+};
+const plainSolverError = message => message == null ? null :
+  String(message).replace(/\bTimefold\b/gi, 'd’optimisation').replace(/^\w+(Exception|Error): /, '');
 
 class Scheduler {
   constructor(opts = {}) {
@@ -92,6 +107,11 @@ class Scheduler {
     this.solverLastError = null;
     this.solverLastRun = null;
     this.solverForced = null;
+    // Optimisation continue : passes successives sur une file inchangée.
+    this.solverRefine = null;       // passe en cours
+    this.solverRefineTimer = null;
+    this.solverRefineAt = null;     // heure de la prochaine passe
+    this.solverRefineStats = { fingerprint: null, runs: 0, improvements: 0, fruitless: 0 };
   }
 
   // ------------------------------------------------------------------ bonus
@@ -859,12 +879,16 @@ class Scheduler {
     const keepPlan = !!this.solverPlan && this.solverPlan.fingerprint === before;
     const keepPending = this.solverPendingFingerprint === before;
     const keepRequested = this.solverRequestedFingerprint === before;
+    const keepRefine = this.solverRefine?.fingerprint === before;
+    const keepStats = this.solverRefineStats.fingerprint === before;
     const result = mutate();
-    if (keepPlan || keepPending || keepRequested) {
+    if (keepPlan || keepPending || keepRequested || keepRefine || keepStats) {
       const after = this.solverContextFingerprint();
       if (keepPlan) this.solverPlan.fingerprint = after;
       if (keepPending) this.solverPendingFingerprint = after;
       if (keepRequested) this.solverRequestedFingerprint = after;
+      if (keepRefine) this.solverRefine.fingerprint = after;
+      if (keepStats) this.solverRefineStats.fingerprint = after;
     }
     return result;
   }
@@ -875,6 +899,8 @@ class Scheduler {
         this.solverPlan.fingerprint !== fingerprint) this.solverPlan = null;
     if (this.solverPlan?.fingerprint === fingerprint) {
       this.solverPlan.version = this.version;
+      // Relance la chaîne d'optimisation continue si elle s'est arrêtée.
+      if (!this.solverRefineTimer && !this.solverRefine) this._scheduleRefine();
       return false;
     }
     if (!this.solverBridge || !this.solverBridge.available) return false;
@@ -882,10 +908,18 @@ class Scheduler {
     return this._requestSolver(fingerprint);
   }
 
-  _requestSolver(fingerprint, { budgetMs = null, forced = false } = {}) {
-    const seed = this._forecast(false, [], null, true, { ranks: null });
-    this.solverRequestedFingerprint = fingerprint;
+  _requestSolver(fingerprint, { budgetMs = null, forced = false, refine = false } = {}) {
+    // Une passe d'optimisation continue part du plan adopté ; un nouveau
+    // calcul part de l'ordre local.
+    const baseRanks = refine ? this._activePlanRanks(fingerprint) : null;
+    if (refine && !baseRanks) return false;
+    const seed = this._forecast(false, [], null, true, { ranks: baseRanks });
+    if (!refine) {
+      this.solverRequestedFingerprint = fingerprint;
+      this._cancelRefine();
+    }
     if (seed.length < 2 || seed.length > 200 || seed.some(item => !item.entryId)) {
+      if (refine) return false;
       this.solverLastError = seed.length > 200 ?
         'Plus de 200 titres prêts : ordonnanceur local seul.' :
         seed.some(item => !item.entryId) ? 'Titre sans identifiant : ordonnanceur local seul.' : null;
@@ -930,6 +964,7 @@ class Scheduler {
       this.opts.solverBudgetMs >= 100 && this.opts.solverBudgetMs <= 30000 ?
       this.opts.solverBudgetMs : adaptiveBudgetMs;
     const budget = Number.isInteger(budgetMs) ? Math.max(100, Math.min(30000, budgetMs)) : configured;
+    const stats = this._refineStatsFor(fingerprint);
     const request = { requestId: `${this.version}-${id()}`, budgetMs: budget, performances: rows,
       pastAppearance, physicalCount, readyAt, pinnedUntil,
       roundPeople: [...this.roundPeople].filter(pid => this.people.has(pid)),
@@ -943,20 +978,39 @@ class Scheduler {
       // Champs historiques conservés pour les anciens workers.
       roundGroups: [...this.roundGroups], tableServeCounts: Object.fromEntries(this.tableServeCounts),
       tableRotation: !!this.opts.tableRotation, weightedTables: !!this.opts.weightedTables };
-    this.solverPendingFingerprint = fingerprint;
-    this.solverPendingRequestId = request.requestId;
-    this.solverPendingSince = Date.now();
-    this.solverPendingBudgetMs = budget;
-    this.solverForced = forced ? { at: Date.now(), budgetMs: budget } : null;
-    this.version++;
-    this.solverPromise = this.solverBridge.solve(request, { immediate: forced }).then(response => {
-      if (this.solverPendingRequestId !== request.requestId) return false;
-      const expected = this.solverPendingFingerprint;
-      this.solverPendingFingerprint = null;
-      this.solverPendingRequestId = null;
-      this.solverForced = null;
+    // Chaque passe explore un autre voisinage : refaire la même recherche
+    // sur la même file ne trouverait rien de nouveau.
+    if (refine) request.randomSeed = (stats.runs % 16) + 1;
+    if (refine) {
+      this.solverRefine = { requestId: request.requestId, fingerprint,
+        since: Date.now(), budgetMs: budget };
+    } else {
+      this.solverPendingFingerprint = fingerprint;
+      this.solverPendingRequestId = request.requestId;
+      this.solverPendingSince = Date.now();
+      this.solverPendingBudgetMs = budget;
+      this.solverForced = forced ? { at: Date.now(), budgetMs: budget } : null;
       this.version++;
+    }
+    const current = () => refine ? this.solverRefine?.requestId === request.requestId :
+      this.solverPendingRequestId === request.requestId;
+    let claimed = false; // réponse prise en charge : une erreur ensuite reste la nôtre
+    const promise = this.solverBridge.solve(request, { immediate: forced || refine }).then(response => {
+      if (!current()) return false;
+      claimed = true;
+      let expected;
+      if (refine) {
+        expected = this.solverRefine.fingerprint;
+        this.solverRefine = null;
+      } else {
+        expected = this.solverPendingFingerprint;
+        this.solverPendingFingerprint = null;
+        this.solverPendingRequestId = null;
+        this.solverForced = null;
+        this.version++;
+      }
       if (this.solverContextFingerprint() !== expected) return false;
+      if (refine && (this.solverPlan?.source === 'manual' || !this._activePlanRanks(expected))) return false;
       const order = response.order;
       const originalIds = rows.map(row => row.id);
       if (!Array.isArray(order) || order.length !== originalIds.length ||
@@ -965,32 +1019,115 @@ class Scheduler {
         throw new Error('Le solveur a répondu avec une file invalide.');
       }
       const ranks = new Map(order.map((entry, index) => [entry, index]));
-      const localOrder = this._forecast(false, [], null, true, { ranks: null });
-      const local = this._planMetric(localOrder);
-      const proposed = this._planMetric(this._forecast(false, [], null, true, { ranks }));
+      const baseOrder = this._forecast(false, [], null, true,
+        { ranks: refine ? this._activePlanRanks(expected) : null });
+      const local = this._planMetric(baseOrder);
+      const proposedOrder = this._forecast(false, [], null, true, { ranks });
+      const proposed = this._planMetric(proposedOrder);
       // À qualité égale, l'ordre déjà affiché est conservé : Timefold le
-      // confirme sans faire bouger la file pour rien.
-      const improved = proposed < local;
-      this.solverLastRun = { at: Date.now(), elapsedMs: Number(response.elapsedMs) || null,
-        budgetMs: budget, titles: rows.length, forced, improved,
+      // confirme sans faire bouger la file pour rien. Un gain que seule la
+      // mesure complète voit (part de chaque table, premiers passages) est
+      // adopté s'il ne dégrade pas la mesure locale et si la règle locale
+      // reproduit exactement l'ordre proposé.
+      const sameOrder = proposedOrder.length === order.length &&
+        proposedOrder.every((slot, index) => slot.entryId === order[index]);
+      const improved = proposed < local ||
+        (proposed === local && sameOrder && solverScoreGain(response.seedScore, response.score));
+      const now = Date.now();
+      if (refine) {
+        stats.runs++;
+        if (improved) { stats.improvements++; stats.fruitless = 0; stats.lastImprovedAt = now; } else stats.fruitless++;
+      }
+      this.solverLastRun = { at: now, elapsedMs: Number(response.elapsedMs) || null,
+        budgetMs: budget, titles: rows.length, forced, refine, improved,
         localMetric: local, solverMetric: proposed };
-      this.solverPlan = { version: this.version, fingerprint: expected,
-        ranks: improved ? ranks : new Map(localOrder.map((item, index) => [item.entryId, index])),
-        source: improved ? 'timefold' : 'confirmed' };
+      if (improved) {
+        this.solverPlan = { version: this.version, fingerprint: expected, ranks, source: 'timefold' };
+        if (refine) this.version++;
+      } else if (!refine) {
+        this.solverPlan = { version: this.version, fingerprint: expected,
+          ranks: new Map(baseOrder.map((item, index) => [item.entryId, index])), source: 'confirmed' };
+      }
       this.solverLastError = null;
-      return true;
+      this._scheduleRefine();
+      return improved || !refine;
     }).catch(error => {
-      if (this.solverPendingRequestId === request.requestId) {
+      if (!claimed && !current()) return false;
+      if (refine) {
+        this.solverRefine = null;
+        this.solverLastError = error.message;
+        // Solveur arrêté : il redevient disponible après sa pause de sécurité.
+        this._scheduleRefine(60_000);
+        return false;
+      }
+      if (!claimed) {
         this.solverPendingFingerprint = null;
         this.solverPendingRequestId = null;
         this.solverForced = null;
-        this.solverLastError = error.message;
         this.version++;
-        if (!this.solverBridge.available) this.solverRequestedFingerprint = null;
       }
+      this.solverLastError = error.message;
+      if (!this.solverBridge.available) this.solverRequestedFingerprint = null;
       return false; // l'ordre local reste disponible
     });
+    if (refine) this.solverRefinePromise = promise;
+    else this.solverPromise = promise;
     return true;
+  }
+
+  // ------------------------------------------------------------------ optimisation continue
+  // Donner plus de temps à la recherche trouve souvent une meilleure rotation
+  // sur les mêmes données. Tant que la file ne change pas, des passes de 10,
+  // 20 puis 30 secondes repartent du meilleur ordre connu avec une autre
+  // graine. Après plusieurs passes sans gain, les pauses s'allongent (2 s
+  // jusqu'à 2 min) pour ne pas occuper le PC du bar inutilement. Tout
+  // changement réel interrompt la passe en cours ; le prochain chanteur
+  // annoncé et les titres déjà dans KaraFun ne bougent jamais.
+  _refineStatsFor(fingerprint) {
+    if (this.solverRefineStats.fingerprint !== fingerprint) {
+      this.solverRefineStats = { fingerprint, runs: 0, improvements: 0, fruitless: 0 };
+    }
+    return this.solverRefineStats;
+  }
+
+  _refineAllowed() {
+    return !!(this.opts.solverEnabled && this.opts.continuousSolver && this.solverBridge?.available &&
+      this.solverPlan && this.solverPlan.source !== 'manual' && !this.manualOrderActive &&
+      this.solverPendingFingerprint === null && !this.solverRefine);
+  }
+
+  _cancelRefine() {
+    clearTimeout(this.solverRefineTimer);
+    this.solverRefineTimer = null;
+    this.solverRefineAt = null;
+    this.solverRefine = null;
+  }
+
+  _scheduleRefine(delayMs = null) {
+    clearTimeout(this.solverRefineTimer);
+    this.solverRefineTimer = null;
+    this.solverRefineAt = null;
+    if (!this._refineAllowed()) return false;
+    const stats = this._refineStatsFor(this.solverPlan.fingerprint);
+    const base = Math.max(10, Number(this.opts.solverRefinePauseMs) || 2000);
+    const pause = delayMs ?? (stats.fruitless < 3 ? base : Math.min(120_000, base * 2 ** (stats.fruitless - 2)));
+    this.solverRefineAt = Date.now() + pause;
+    this.solverRefineTimer = setTimeout(() => {
+      this.solverRefineTimer = null;
+      this.solverRefineAt = null;
+      this._refineNow();
+    }, pause);
+    this.solverRefineTimer.unref?.();
+    return true;
+  }
+
+  _refineNow() {
+    const fingerprint = this.solverContextFingerprint();
+    if (!this._refineAllowed() || this.solverPlan.fingerprint !== fingerprint) return false;
+    const stats = this._refineStatsFor(fingerprint);
+    const configured = Number.isInteger(this.opts.solverBudgetMs) ? this.opts.solverBudgetMs : 10_000;
+    const budgetMs = Math.min(30_000, Math.max(100, configured) * Math.min(3, stats.runs + 1));
+    return this._requestSolver(fingerprint, { budgetMs, refine: true });
   }
 
   // Le bar demande un nouveau calcul complet : les déplacements manuels sont
@@ -1001,6 +1138,7 @@ class Scheduler {
     this.invalidateManualOrder();
     this.solverPlan = null;
     this.solverRequestedFingerprint = null;
+    this._cancelRefine();
     this.note(`Le bar relance le calcul de la file${manual ? ' ; les déplacements manuels sont abandonnés' : ''}`, 'staff');
     if (!this.solverBridge?.available) return false;
     return this._requestSolver(this.solverContextFingerprint(), { budgetMs, forced: true });
@@ -1035,6 +1173,8 @@ class Scheduler {
   solverStatus() {
     this._maybeRequestSolver();
     const ranks = this._activePlanRanks();
+    const stats = this.solverRefineStats.fingerprint === this.solverPlan?.fingerprint ?
+      this.solverRefineStats : { runs: 0, improvements: 0, fruitless: 0 };
     return { configured: !!this.solverBridge,
       available: !!this.solverBridge?.available,
       pending: this.solverPendingFingerprint !== null,
@@ -1043,10 +1183,19 @@ class Scheduler {
       forced: !!this.solverForced,
       plan: ranks ? this.solverPlan.source || 'timefold' : 'local',
       lastRun: this.solverLastRun,
+      continuous: !!(this.opts.solverEnabled && this.opts.continuousSolver),
+      refining: !!this.solverRefine,
+      refineSince: this.solverRefine?.since ?? null,
+      refineBudgetMs: this.solverRefine?.budgetMs ?? null,
+      nextRefineAt: this.solverRefineAt,
+      refineRuns: ranks ? stats.runs : 0,
+      refineImprovements: ranks ? stats.improvements : 0,
+      lastImprovedAt: ranks ? stats.lastImprovedAt || null : null,
       blockingNext: false,
-      fallbackLastError: this.solverLastError || this.solverBridge?.lastError || null };
+      // Texte montré au bar : sans nom de bibliothèque ni détail Java.
+      fallbackLastError: plainSolverError(this.solverLastError || this.solverBridge?.lastError || null) };
   }
-  closeSolver() { this.solverBridge?.close(); }
+  closeSolver() { this._cancelRefine(); this.solverBridge?.close(); }
 
   // Poids de chaque groupe dans le partage d'un tour. Par défaut, au prorata
   // des chanteurs prêts (chacun chante une fois par tour, une table de 10

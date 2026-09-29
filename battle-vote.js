@@ -4,14 +4,15 @@
 // Aucun code de télécommande n'est exposé aux participants.
 const { randomUUID } = require('node:crypto');
 
-const VOTE_DURATION_MS = 2 * 60 * 1000;
+const VOTE_DURATION_MS = 5 * 60 * 1000;
 const COOLDOWN_MS = 15 * 60 * 1000;
-const MIN_VOTERS = 4;
+const MIN_VOTERS = 5;
 
 // Règles du vote : il dure un temps fixe (compte à rebours visible) et se
 // décide avec les personnes qui ont voté. Il faut un nombre minimal de
-// votants (plafonné au nombre d'inscrits) et plus de voix pour la Battle que
-// pour « Pas de Battle ». Le titre le plus voté gagne ; à égalité, le premier
+// votants et plus de voix pour la Battle que pour « Pas de Battle » ; avec
+// moins d'inscrits que ce minimum, la salle ne peut pas proposer de Battle
+// (le bar peut toujours en lancer une). Le titre le plus voté gagne ; à égalité, le premier
 // proposé. Le vote se clôt plus tôt si tout le monde a voté.
 class BattleVote {
   constructor({ now = Date.now, voteDurationMs = VOTE_DURATION_MS,
@@ -125,6 +126,9 @@ class BattleVote {
     const name = String(personName || '').trim().slice(0, 80);
     if (!proposer || !name || !eligible.includes(proposer) || eligible.length > 5000 ||
         eligible.some(id => !id)) throw new Error('Proposition Battle non autorisée.');
+    if (eligible.length < this.minVoters) {
+      throw new Error(`Une Battle se propose à partir de ${this.minVoters} personnes inscrites.`);
+    }
     let song = null;
     if (suggestedSong != null) {
       const songId = Number(suggestedSong.songId);
@@ -155,7 +159,7 @@ class BattleVote {
       song = options[0];
     }
     const time = this.now();
-    const threshold = Math.min(this.minVoters, eligible.length);
+    const threshold = this.minVoters;
     this.ballot = { id: randomUUID(), phase: 'voting', proposalName: name, rule: 'voters',
       proposerId: proposer, suggestedSong: song, songs: options, mode: options ? 'songs' : 'legacy',
       selectedSong: null, eligiblePersonIds: eligible,

@@ -403,24 +403,36 @@
   function renderSolver() {
     const solver = S.solver || {};
     const pill = $('solverPill');
-    const since = solver.pendingSince ? Math.max(0, Math.round((Date.now() - solver.pendingSince) / 1000)) : 0;
+    const progress = (at, budget) => {
+      const since = at ? Math.max(0, Math.round((Date.now() - at) / 1000)) : 0;
+      return since ? ` (${since} s${budget ? ` / ${Math.round(budget / 1000)} s` : ''})` : '';
+    };
     const last = solver.lastRun;
     if (!solver.configured) {
       pill.textContent = 'Ordre calculé localement'; pill.className = 'pill';
-      $('solverText').textContent = 'Timefold n’est pas utilisé dans ce mode.';
+      $('solverText').textContent = 'Optimisation approfondie non utilisée dans ce mode.';
     } else if (!solver.available) {
-      pill.textContent = 'Timefold indisponible'; pill.className = 'pill warn';
+      pill.textContent = 'Optimisation indisponible'; pill.className = 'pill warn';
       $('solverText').textContent = `Ordre calculé localement, mêmes règles. ${solver.fallbackLastError || ''}`;
     } else if (solver.pending) {
-      pill.textContent = `⏳ Calcul Timefold en cours${since ? ` (${since} s${solver.budgetMs ? ` / ${Math.round(solver.budgetMs / 1000)} s` : ''})` : ''}`;
+      pill.textContent = `⏳ Calcul de la file en cours${progress(solver.pendingSince, solver.budgetMs)}`;
       pill.className = 'pill warn';
-      $('solverText').textContent = 'La file affichée est déjà juste ; Timefold cherche seulement mieux.';
+      $('solverText').textContent = 'La file affichée est déjà utilisable ; le calcul cherche un meilleur ordre.';
     } else {
-      const labels = { timefold: 'Ordre amélioré par Timefold', confirmed: 'Ordre vérifié par Timefold',
+      const labels = { timefold: 'Ordre optimisé', confirmed: 'Ordre vérifié',
         manual: 'Ordre modifié par le bar', local: 'Ordre calculé localement' };
-      pill.textContent = labels[solver.plan] || labels.local;
+      pill.textContent = solver.refining ?
+        `🔄 Optimisation continue${progress(solver.refineSince, solver.refineBudgetMs)}` :
+        labels[solver.plan] || labels.local;
       pill.className = 'pill ok';
-      $('solverText').textContent = last ? `Dernier calcul à ${hhmm(last.at)}${last.elapsedMs ? ` en ${Math.round(last.elapsedMs / 100) / 10} s` : ''}${last.improved ? ' : meilleur ordre trouvé' : ' : rien à améliorer'}.` : '';
+      const gains = solver.refineImprovements || 0;
+      const lastText = last ? `Dernier calcul à ${hhmm(last.at)} : ${last.improved ? 'meilleur ordre trouvé' : 'rien de mieux'}.` : '';
+      const gainText = gains ? `${gains} amélioration${gains > 1 ? 's' : ''} depuis le dernier changement de la file.` : '';
+      const nextText = solver.refining ?
+        'La file ne change pas : la recherche continue et n’affiche un nouvel ordre que s’il est meilleur.' :
+        solver.nextRefineAt ? `Prochaine recherche dans ${Math.max(1, Math.round((solver.nextRefineAt - Date.now()) / 1000))} s.` :
+        solver.plan === 'manual' ? 'Ordre du bar conservé ; « Recalculer la file » le remplace.' : '';
+      $('solverText').textContent = [lastText, gainText, nextText].filter(Boolean).join(' ');
     }
     $('optimizeQueue').disabled = !!solver.pending && !!solver.forced;
   }
@@ -460,8 +472,8 @@
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     if (document.activeElement !== $('battleCooldownMin')) $('battleCooldownMin').value = S.settings.battleCooldownMin || 15;
-    if (document.activeElement !== $('battleVoteMin')) $('battleVoteMin').value = S.settings.battleVoteMin || 2;
-    if (document.activeElement !== $('battleMinVoters')) $('battleMinVoters').value = S.settings.battleMinVoters || 4;
+    if (document.activeElement !== $('battleVoteMin')) $('battleVoteMin').value = S.settings.battleVoteMin || 5;
+    if (document.activeElement !== $('battleMinVoters')) $('battleMinVoters').value = S.settings.battleMinVoters || 5;
     renderStaffAlerts();
     if (!formInit) {
       $('code').value = S.code || '';
@@ -658,7 +670,9 @@
       : battle.phase === 'requested' ? `Battle demandée : ${selectedSong}. ${voteCount}. Prépare-la dans KaraFun et laisse les téléphones rejoindre.`
       : battle.phase === 'voting' ? `La salle vote pour une Battle${battle.proposalName ? ` (proposition de ${battle.proposalName})` : ''}. Résultats en direct ci-dessous ; tu peux clore le vote avant la fin.`
       : battle.phase === 'cooldown' ? (battle.cooldownUntil ? `Prochain vote possible dans ${countdown(battle.cooldownUntil)} (pause comptée depuis la fin de la dernière Battle).` : 'La pause entre Battles démarrera à la fin de la Battle.')
-      : 'Aucun vote en cours. Les clients peuvent proposer une Battle depuis leur table.';
+      : Number.isFinite(battle.registered) && battle.registered < (battle.minVoters || 1)
+        ? `Aucun vote en cours. Les clients pourront proposer une Battle à partir de ${battle.minVoters} personnes inscrites (${battle.registered} pour l’instant) ; tu peux en lancer une toi-même ci-dessous.`
+        : 'Aucun vote en cours. Les clients peuvent proposer une Battle depuis leur table.';
     $('battleActions').hidden = battle.phase !== 'requested' || battleStep === 'sending';
     $('battleDone').hidden = battleStep !== 'failed';
     $('battleFinished').hidden = battleStep !== 'manual';
@@ -681,7 +695,7 @@
       ['Nom du chanteur demandé', p ? (p.askSingerName ? 'oui' : 'non (active « Demander le nom du chanteur » dans la télécommande KaraFun)') : '—'],
       ['Droits reçus', perm ? esc(JSON.stringify(perm)) : '—'], ['Durée moyenne mesurée', `${String(S.avgSlotMin).replace('.', ',')} min`],
       ['Ordonnancement', !S.solver?.configured ? 'Simulation locale' : S.solver.available ?
-        (S.solver.pending ? 'Timefold : calcul en cours' : 'Timefold prêt') :
+        (S.solver.pending ? 'Optimisation : calcul en cours' : S.solver.refining ? 'Optimisation continue en cours' : 'Optimisation prête') :
         `Rotation locale de secours : ${esc(S.solver.fallbackLastError || 'solveur indisponible')}`],
     ].map(([a, b]) => `<div>${a}</div><div>${b}</div>`).join('') : '<div>État</div><div>Saisis le code KaraFun en haut à droite.</div>';
     $('kfQueue').textContent = kf ? JSON.stringify(kf.queue, null, 1) : '';

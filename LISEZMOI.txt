@@ -124,7 +124,10 @@ BON À SAVOIR
   ordre. Les titres déjà chargés dans KaraFun restent devant.
   Le bouton n'est plus proposé sur le premier passage déplaçable. « Annuler
   la priorité » rétablit l'ordre précédent si la file n'a pas changé entretemps.
-- « Recalculer la file » relance le calcul complet (Timefold, 30 s au plus) ;
+- Tant que la file ne change pas, l'optimisation continue cherche un meilleur
+  ordre (« 🔄 Optimisation continue ») ; un nouvel ordre n'est affiché que
+  s'il est meilleur, sans jamais toucher au prochain annoncé.
+- « Recalculer la file » relance le calcul complet (30 s au plus) ;
   l'indicateur au-dessus de la file montre quand un calcul est en cours.
 - Des cases à cocher permettent de retirer plusieurs titres d'un coup.
 - Bonus/malus (cartes des tables, repères chanteurs) : réservé au bar,

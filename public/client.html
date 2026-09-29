@@ -700,7 +700,12 @@
 
   function renderBattle(people) {
     const battle = state.battle || { phase: 'idle' };
-    $('battleBox').hidden = false;
+    // Trop peu d'inscrits pour atteindre le minimum de votants : inutile de
+    // proposer une Battle (le bar peut toujours en lancer une).
+    const tooFew = battle.phase === 'idle' && Number.isFinite(battle.registered) &&
+      battle.registered < (battle.minVoters || 1);
+    $('battleBox').hidden = tooFew;
+    if (tooFew) { battleVotesSignature = ''; $('battleVotes').innerHTML = ''; return; }
     const mins = value => Math.max(0, Math.ceil((Number(value || 0) - Date.now()) / 60000));
     const clock = value => { const left = Math.max(0, Math.ceil((Number(value || 0) - Date.now()) / 1000));
       return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`; };
@@ -711,7 +716,7 @@
       ? `${songVote ? 'Choisis un titre ou « Pas de Battle ».' : 'Vote ouvert : oui ou non.'} Fin du vote dans ${clock(battle.closesAt)}. ${voters} votant${voters > 1 ? 's' : ''} sur ${battle.eligible || 0} ; il en faut au moins ${battle.threshold || 0}. La Battle a lieu s’il y a plus de voix pour elle que contre ; le titre en tête gagne.`
       : battle.phase === 'requested' ? `${battle.mode === 'staff' ? 'Le bar lance une Battle' : 'La Battle aura lieu'} ! ${selectedTitle ? `${selectedTitle}. ` : ''}Elle passera après le prochain chanteur annoncé ; le bar affichera son QR code.`
       : battle.phase === 'cooldown' ? (battle.cooldownUntil ? `Un autre vote sera possible dans ${mins(battle.cooldownUntil)} min.` : 'Battle en préparation ou en cours. Un nouveau vote sera possible après la pause qui suit la Battle.')
-      : 'Envie de chanter tous ensemble ? Propose jusqu’à trois titres. Chaque personne inscrite vote pour un titre ou contre la Battle.';
+      : `Envie de chanter tous ensemble ? Propose jusqu’à trois titres. Chaque personne inscrite vote pour un titre ou contre la Battle${battle.minVoters > 1 ? ` ; il faut au moins ${battle.minVoters} votants` : ''}.`;
     const voted = new Set(battle.votedPersonIds || []);
     const eligible = new Set(battle.eligiblePersonIds || []);
     const owned = managedPeople();

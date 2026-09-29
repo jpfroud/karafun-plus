@@ -33,12 +33,22 @@ public final class Main {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int DEFAULT_BUDGET_MS = 3_000;
     private static final String EOF = new String("EOF");
-    private static final Map<Integer, SolverFactory<QueuePlan>> FACTORIES = new ConcurrentHashMap<>();
+    private static final int MAX_RANDOM_SEED = 1_000;
+    private static final Map<String, SolverFactory<QueuePlan>> FACTORIES = new ConcurrentHashMap<>();
 
-    private static SolverFactory<QueuePlan> factoryFor(int budgetMs) {
-        return FACTORIES.computeIfAbsent(budgetMs, duration -> {
+    /**
+     * La graine 0 garde la recherche reproductible par défaut. Les passes
+     * d'optimisation continue en changent pour explorer d'autres voisinages
+     * au lieu de refaire la même recherche sur une file inchangée.
+     */
+    private static SolverFactory<QueuePlan> factoryFor(int budgetMs, long randomSeed) {
+        // Node n'utilise que quelques budgets et graines ; garde-fou mémoire
+        // si un autre client en envoyait beaucoup au cours d'une soirée.
+        if (FACTORIES.size() > 64) FACTORIES.clear();
+        return FACTORIES.computeIfAbsent(budgetMs + "/" + randomSeed, key -> {
             SolverConfig config = SolverConfig.createFromXmlResource("solverConfig.xml");
-            config.getTerminationConfig().setMillisecondsSpentLimit((long) duration);
+            config.getTerminationConfig().setMillisecondsSpentLimit((long) budgetMs);
+            if (randomSeed != 0) config.setRandomSeed(randomSeed);
             return SolverFactory.create(config);
         });
     }
@@ -105,7 +115,11 @@ public final class Main {
         long start = System.nanoTime();
         int budgetMs = input.path("budgetMs").asInt(DEFAULT_BUDGET_MS);
         if (budgetMs < 100 || budgetMs > 30_000) {
-            throw new IllegalArgumentException("Budget Timefold invalide");
+            throw new IllegalArgumentException("Budget de calcul invalide");
+        }
+        long randomSeed = input.path("randomSeed").asLong(0);
+        if (randomSeed < 0 || randomSeed > MAX_RANDOM_SEED) {
+            throw new IllegalArgumentException("Graine de recherche invalide");
         }
         String requestId = input.path("requestId").asText("");
         List<Performance> performances = new ArrayList<>();
@@ -126,7 +140,7 @@ public final class Main {
         }
         int pinned = input.path("pinnedUntil").asInt(0);
         if (pinned < 0 || pinned > performances.size()) throw new IllegalArgumentException("Préfixe figé invalide");
-        // L'ordre reçu est celui que Node applique déjà : Timefold part de là
+        // L'ordre reçu est celui que Node applique déjà : la recherche part de là
         // et ne propose un changement que s'il améliore le score.
         QueueLine line = new QueueLine(performances, pinned);
         QueuePlan plan = new QueuePlan(performances, line,
@@ -136,7 +150,7 @@ public final class Main {
                 doubles(input.path("roundUse"), 0, 10), doubles(input.path("personWeights"), 0.1, 10),
                 doubles(input.path("tableWeights"), 0.1, 10), history(input.path("history")),
                 rotation(input), input.path("interleaveArrivals").asBoolean(true));
-        SolverFactory<QueuePlan> factory = factoryFor(budgetMs);
+        SolverFactory<QueuePlan> factory = factoryFor(budgetMs, randomSeed);
         SolutionManager<QueuePlan, HardMediumSoftScore> manager = SolutionManager.create(factory);
         HardMediumSoftScore seedScore = manager.update(plan);
         if (seedScore.hardScore() < 0) {

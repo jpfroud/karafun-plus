@@ -29,14 +29,14 @@ class TimefoldBridge {
     this.active = null;
     this.queued = null;
     this.disabledUntil = 0;
-    this.lastError = this.jar ? null : 'JAR Timefold absent.';
+    this.lastError = this.jar ? null : 'Moteur d’optimisation absent du kit.';
   }
 
   get available() { return !!this.jar && Date.now() >= this.disabledUntil; }
 
   _start() {
     if (this.child) return;
-    if (!this.available) throw new Error('Solveur Timefold indisponible.');
+    if (!this.available) throw new Error('Optimiseur de file indisponible.');
     const child = this.spawn(this.java, ['-jar', this.jar], {
       cwd: ROOT, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, JAVA_TOOL_OPTIONS: '-Dorg.slf4j.simpleLogger.defaultLogLevel=warn' },
@@ -50,7 +50,7 @@ class TimefoldBridge {
     }
     child.on('error', error => { if (this.child === child) this._failed(error); });
     child.on('exit', () => {
-      if (this.child === child) this._failed(new Error('Le solveur Timefold s’est arrêté.'));
+      if (this.child === child) this._failed(new Error('L’optimiseur de file s’est arrêté.'));
     });
   }
 
@@ -86,7 +86,7 @@ class TimefoldBridge {
   _receive(chunk) {
     this.buffer += chunk;
     if (this.buffer.length > 1_000_000) {
-      this._failed(new Error('Réponse Timefold trop grande.'));
+      this._failed(new Error('Réponse de l’optimiseur trop grande.'));
       return;
     }
     for (let at; (at = this.buffer.indexOf('\n')) >= 0;) {
@@ -97,7 +97,7 @@ class TimefoldBridge {
       if (!active) continue;
       let response;
       try { response = JSON.parse(line); }
-      catch (error) { this._failed(new Error('Réponse Timefold illisible.')); return; }
+      catch (error) { this._failed(new Error('Réponse de l’optimiseur illisible.')); return; }
       // Un calcul interrompu par un état plus récent répond encore : ignoré.
       if (response.requestId !== active.request.requestId) continue;
       clearTimeout(active.timer);
@@ -122,7 +122,7 @@ class TimefoldBridge {
       // Budget demandé + démarrage éventuel de la JVM : au-delà, le worker
       // est considéré bloqué et l'ordre local continue seul.
       const budget = Number(job.request?.budgetMs) || 15000;
-      job.timer = setTimeout(() => this._failed(new Error('Délai du solveur Timefold dépassé.')),
+      job.timer = setTimeout(() => this._failed(new Error('Délai de l’optimiseur dépassé.')),
         Math.max(this.timeoutMs, budget + 15000));
       this.child.stdin.write(JSON.stringify(job.request) + '\n');
     } catch (error) {
@@ -137,7 +137,7 @@ class TimefoldBridge {
   // `immediate` saute la fenêtre de regroupement (bouton Recalculer du bar).
   solve(request, { immediate = false } = {}) {
     return new Promise((resolve, reject) => {
-      if (!this.available) return reject(new Error('Solveur Timefold indisponible.'));
+      if (!this.available) return reject(new Error('Optimiseur de file indisponible.'));
       if (this.queued) this.queued.reject(new Error('Plan remplacé par un état plus récent.'));
       if (this.active) {
         clearTimeout(this.active.timer);

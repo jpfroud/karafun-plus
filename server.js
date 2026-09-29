@@ -583,6 +583,11 @@ function describe(item, byQid) {
   };
 }
 
+// Chaque personne inscrite (même sans chanson) a une voix pour la Battle.
+function battleElectorate() {
+  return [...sched.people.values()].filter(person => !person.withdrawnAt).map(person => person.id);
+}
+
 function publicState(person, tableId) {
   const { current, upcoming } = analyze();
   const presence = presenceCandidate({ current, upcoming });
@@ -639,7 +644,9 @@ function publicState(person, tableId) {
       weightedTables: sched.opts.weightedTables },
     log: sched.log.slice(-30).reverse(),
     v: sched.version,
-    battle: battleVote.view(),
+    // « registered » : personnes qui pourraient voter. En dessous du minimum
+    // de votants, les téléphones ne proposent pas de Battle.
+    battle: { ...battleVote.view(), registered: battleElectorate().length },
   };
 
   const guestDuosOf = person => {
@@ -750,7 +757,7 @@ function staffState() {
   const latestManual = sched.manualChanges.at(-1);
   return {
     ...pub,
-    battle: battleVote.view(),
+    battle: { ...battleVote.view(), registered: battleElectorate().length },
     blocked,
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
@@ -1280,8 +1287,7 @@ const handlers = {
   },
   'POST /api/table/battle/propose': async (req, res, body) => {
     const p = personAtTable(body);
-    const eligiblePersonIds = [...sched.people.values()].filter(person => !person.withdrawnAt).map(person => person.id);
-    const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds,
+    const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds: battleElectorate(),
       songs: certifiedBattleSongs(body.songs), proposerChoice: body.proposerChoice });
     return { ok: true, battle };
   },
@@ -1540,8 +1546,8 @@ const handlers = {
     const started = sched.forceReplan(30000);
     sync();
     return { ok: true, started, message: started ?
-      'Calcul Timefold lancé : 30 secondes au plus. La file affichée reste utilisable pendant ce temps.' :
-      'Timefold indisponible : la file a été recalculée par la règle locale.' };
+      'Calcul complet lancé : 30 secondes au plus, puis la recherche continue tant que la file ne change pas. La file affichée reste utilisable pendant ce temps.' :
+      'Optimisation indisponible : la file a été recalculée par la règle locale.' };
   },
   'POST /api/staff/bonus': async (req, res, body) => {
     if (body.tableId != null && body.tableId !== '') sched.setTableBonus(TableAccess.key(body.tableId), body.level);
@@ -1853,7 +1859,7 @@ async function main() {
   } else loadTables();
   ensureSoloGroup();
   if (!DEMO && !sched.solverStatus().available) {
-    appLog(`Solveur Timefold indisponible au démarrage : ${sched.solverStatus().fallbackLastError || 'cause inconnue'}. Rotation locale de secours.`);
+    appLog(`Optimiseur de file indisponible au démarrage : ${sched.solverStatus().fallbackLastError || 'cause inconnue'}. Rotation locale de secours.`);
   }
   saveNight({ required: true });
   if (DEMO) {
