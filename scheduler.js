@@ -29,6 +29,7 @@
  */
 const crypto = require('crypto');
 const { TimefoldBridge } = require('./solver/bridge');
+const { PLAYED_LIMIT } = require('./song-repeats');
 
 const DEFAULTS = {
   gap: 4,               // espacement visé entre deux chanteurs d'une même table
@@ -89,6 +90,7 @@ class Scheduler {
     this.duetCooldowns = new Map(); // invité : nombre d'autres chansons à laisser passer
     this.reservedNext = null; // personne annoncée comme prochain passage, hors KaraFun
     this.stageHistory = [];   // derniers passages sur scène (bar uniquement)
+    this.playedSongs = [];    // titres lancés dans KaraFun, y compris hors file, pour les doublons
     this.log = [];            // journal visible par tous
     this.slotSamples = [];    // durées réelles mesurées (s)
     this.version = 0;
@@ -1778,6 +1780,23 @@ class Scheduler {
     this.stageHistory.push(entry);
     if (this.stageHistory.length > 60) this.stageHistory.splice(0, this.stageHistory.length - 60);
     this.version++;
+    return entry;
+  }
+
+  // Tout titre lancé dans KaraFun, même ajouté directement dans KaraFun ou en
+  // Battle : la salle l'a entendu. Un même queueId n'est compté qu'une fois
+  // (redémarrage de l'application ou pause pendant la chanson).
+  recordPlayed(item, at = Date.now()) {
+    const title = String(item?.title || '').slice(0, 100);
+    if (!title) return null;
+    const queueId = item.queueId == null ? null : String(item.queueId);
+    const last = this.playedSongs.at(-1);
+    if (last && queueId !== null && last.queueId === queueId) return null;
+    const songId = Number(item.songId);
+    const entry = { at, queueId, songId: Number.isSafeInteger(songId) && songId > 0 ? songId : null,
+      title, artist: String(item.artist || '').slice(0, 80) };
+    this.playedSongs.push(entry);
+    if (this.playedSongs.length > PLAYED_LIMIT) this.playedSongs.splice(0, this.playedSongs.length - PLAYED_LIMIT);
     return entry;
   }
 

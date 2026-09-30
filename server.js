@@ -23,6 +23,7 @@ const { SoloInvitations } = require('./solo-invitations');
 const { Catalog } = require('./catalog');
 const { BattleVote } = require('./battle-vote');
 const { NightStateStore, snapshotNight, restoreNight } = require('./night-state');
+const { DEFAULT_REPEAT_MIN, songNotice, queueRepeats } = require('./song-repeats');
 
 // ------------------------------------------------------------------ paramètres
 const argv = process.argv.slice(2);
@@ -114,6 +115,8 @@ const SONG_SECONDS = parseInt(arg('song-seconds', 45), 10);
 // mais assez tôt pour que KaraFun la charge : `pushDelaySec` après le début de la chanson en cours.
 const settings = { auto: true, autoPlay: false, baseUrl: null,
   pushDelaySec: DEMO ? Math.max(1, Math.round(SONG_SECONDS / 3)) : 45, playDelaySec: 8,
+  // Alerte « titre déjà chanté » : fenêtre en minutes, 0 pour la couper.
+  repeatWarnMin: DEFAULT_REPEAT_MIN,
   queueClearPending: false };
 const queueClearRemovalRequests = new Map();
 let curKey = null, curSince = 0;
@@ -517,7 +520,10 @@ function sync() {
   }
 
   const key = current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
-  if (key !== curKey) { curKey = key; curSince = Date.now(); }
+  if (key !== curKey) {
+    curKey = key; curSince = Date.now();
+    if (current) sched.recordPlayed(current, curSince);
+  }
   // Dès qu'un titre est sur scène, le nom annoncé pour le passage suivant
   // reste fixe. L'envoi physique à KaraFun peut attendre le délai configuré.
   if (!upcoming.length && !pending && !settings.queueClearPending && !battleHoldsQueue()) {
@@ -687,7 +693,8 @@ function publicState(person, tableId) {
       // Seules les personnes qui ont demandé un code de reprise au bar (ou
       // sur leur ancien téléphone) apparaissent dans ce parcours temporaire.
       out.recoveryPeople = person ? [] : sched.tableSingers(tid).filter(p => !p.withdrawnAt &&
-        personShareCodes.get(p.id)?.expiresAt > Date.now()).map(p => ({ id: p.id, name: p.name }));
+        personShareCodes.get(p.id)?.expiresAt > Date.now() && personShareCodes.get(p.id).attempts < 5)
+        .map(p => ({ id: p.id, name: p.name }));
     }
     out.tablePeople = sched.tableSingers(tid).filter(p => !t?.individual || p.id === person?.id)
       .map(p => ({ id: p.id, name: p.name,
@@ -755,8 +762,10 @@ function staffState() {
       title: p.song.title, artist: p.song.artist || '', reason: 'Duo à accepter' }));
   const canUndoManual = sched.canUndoManualChange(priorityNativeFingerprint());
   const latestManual = sched.manualChanges.at(-1);
+  const repeats = queueRepeats(pub.queue, sched.playedSongs, Date.now(), repeatWindowMs());
   return {
     ...pub,
+    queue: pub.queue.map((line, index) => repeats[index] ? { ...line, repeat: repeats[index] } : line),
     battle: { ...battleVote.view(), registered: battleElectorate().length },
     blocked,
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
@@ -1025,11 +1034,39 @@ function personAtTable(body) {
   return p;
 }
 
-function createPersonShareCode(p) {
+const sha256 = value => crypto.createHash('sha256').update(String(value)).digest();
+const TRANSFER_LINK_MS = 30 * 60 * 1000;
+
+// Un transfert se fait par lien (QR à scanner ou message WhatsApp, SMS,
+// e-mail…) ou, à défaut, par un code à 4 chiffres saisi sur la page de la
+// table. Les deux servent une seule fois : le premier utilisé annule l'autre.
+async function createPersonShareCode(p) {
   const code = String(crypto.randomInt(0, 10000)).padStart(4, '0');
-  const expiresAt = Date.now() + 10 * 60 * 1000;
-  personShareCodes.set(p.id, { hash: crypto.createHash('sha256').update(code).digest(), expiresAt, attempts: 0 });
-  return { code, expiresAt };
+  const link = crypto.randomBytes(16).toString('base64url');
+  const now = Date.now();
+  const expiresAt = now + 10 * 60 * 1000;
+  const linkExpiresAt = now + TRANSFER_LINK_MS;
+  let url = null, qr = null;
+  try {
+    url = `${access.url(phoneBase(), p.tableId)}?reprise=${link}`;
+    qr = await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' });
+  } catch (error) { url = null; appLog(`Lien de transfert indisponible : ${error.message}`); }
+  personShareCodes.set(p.id, { hash: sha256(code), expiresAt, attempts: 0,
+    linkHash: url ? sha256(link) : null, linkExpiresAt: url ? linkExpiresAt : 0 });
+  return { code, expiresAt, url, qr, linkExpiresAt: url ? linkExpiresAt : null, name: p.name };
+}
+
+// Retrouve la personne visée par un lien de transfert encore valable.
+function transferTarget(link, table) {
+  if (typeof link !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(link)) return null;
+  const digest = sha256(link);
+  for (const [personId, saved] of personShareCodes) {
+    if (!saved.linkHash || Date.now() > saved.linkExpiresAt ||
+        !crypto.timingSafeEqual(saved.linkHash, digest)) continue;
+    const person = sched.people.get(personId);
+    return person && !person.withdrawnAt && person.tableId === table.id ? person : null;
+  }
+  return null;
 }
 
 function claimPerson(body, req, res) {
@@ -1041,16 +1078,23 @@ function claimPerson(body, req, res) {
     if (owner && owner.id !== p.id) throw soloDeviceError('SOLO_DEVICE_USED');
   }
   const saved = personShareCodes.get(p.id);
-  if (!saved || Date.now() > saved.expiresAt || saved.attempts >= 5) {
-    personShareCodes.delete(p.id);
-    throw new Error('Code de partage expiré. Demande un nouveau code au chanteur ou au bar.');
-  }
-  saved.attempts++;
-  const input = String(body.code || '').trim();
-  const digest = crypto.createHash('sha256').update(input).digest();
-  if (!/^[0-9]{4}$/.test(input) || !crypto.timingSafeEqual(saved.hash, digest)) {
-    if (saved.attempts >= 5) personShareCodes.delete(p.id);
-    throw new Error('Code de partage incorrect.');
+  if (body.link !== undefined) {
+    // Le lien contient un secret de 128 bits : pas de limite de tentatives.
+    if (transferTarget(body.link, t)?.id !== p.id) {
+      throw new Error('Ce lien de transfert a expiré ou a déjà servi. Demande un nouveau lien ou un code au bar.');
+    }
+  } else {
+    if (!saved || Date.now() > saved.expiresAt || saved.attempts >= 5) {
+      if (saved && Date.now() > saved.linkExpiresAt) personShareCodes.delete(p.id);
+      throw new Error('Code de partage expiré. Demande un nouveau code au chanteur ou au bar.');
+    }
+    saved.attempts++;
+    const input = String(body.code || '').trim();
+    if (!/^[0-9]{4}$/.test(input) || !crypto.timingSafeEqual(saved.hash, sha256(input))) {
+      // Trop d'erreurs : le code est brûlé, le lien reste utilisable.
+      if (saved.attempts >= 5 && Date.now() > saved.linkExpiresAt) personShareCodes.delete(p.id);
+      throw new Error('Code de partage incorrect.');
+    }
   }
   personShareCodes.delete(p.id);
   // Une reprise transfère la gestion : l'ancien téléphone perd immédiatement
@@ -1064,6 +1108,11 @@ function claimPerson(body, req, res) {
 }
 
 function claimPersonDurably(body, req, res) {
+  if (body.link !== undefined) {
+    const target = transferTarget(body.link, tableByAccess(body.table, body.access));
+    if (!target) throw new Error('Ce lien de transfert a expiré ou a déjà servi. Demande un nouveau lien ou un code au bar.');
+    body = { ...body, personId: target.id };
+  }
   const id = String(body.personId || '');
   const person = sched.people.get(id);
   const code = personShareCodes.get(id);
@@ -1101,6 +1150,18 @@ function claimPersonDurably(body, req, res) {
   return result;
 }
 
+function repeatWindowMs() {
+  return (Number(settings.repeatWarnMin) || 0) * 60000;
+}
+
+// Alerte non bloquante pour la personne qui choisit un titre déjà chanté
+// récemment ou déjà prévu dans la file. `entryId` : le titre qu'elle vient
+// d'ajouter, pour dire si l'autre passage est prévu avant le sien.
+function repeatNotice(song, tableId, entryId = null) {
+  return songNotice({ song, entryId, queue: publicState(null, tableId).queue,
+    played: sched.playedSongs, now: Date.now(), windowMs: repeatWindowMs() });
+}
+
 function chooseFor(p, song, mode) {
   const songId = Number(song?.songId);
   if ([...(pending && pending.sel.ids.includes(p.id) ? [pending.sel.song] : []),
@@ -1111,6 +1172,8 @@ function chooseFor(p, song, mode) {
   }
   sched.chooseSong(p, song, mode);
   sync();
+  const added = sched.songsOf(p).find(item => item.songId === songId);
+  return added ? repeatNotice(added, p.tableId, added.entryId) : null;
 }
 
 function confirmPresence(p) {
@@ -1204,6 +1267,7 @@ function clearEvening() {
   sched.releaseNext();
   sched.slotSamples = [];
   sched.log = [];
+  sched.playedSongs = [];
   personShareCodes.clear();
   battleVote.reset();
   ensureSoloGroup();
@@ -1254,7 +1318,8 @@ const handlers = {
   },
   'POST /api/table/song': async (req, res, body) => {
     const p = personAtTable(body);
-    chooseFor(p, body.song, body.mode || 'append'); return { ok: true };
+    const notice = chooseFor(p, body.song, body.mode || 'append');
+    return { ok: true, notice };
   },
   'POST /api/table/song/remove': async (req, res, body) => {
     const p = personAtTable(body);
@@ -1275,7 +1340,8 @@ const handlers = {
   },
   'POST /api/table/duet': async (req, res, body) => {
     const p = personAtTable(body);
-    sched.inviteDuet(p, String(body.partnerId || ''), body.song); sync(); return { ok: true };
+    const duet = sched.inviteDuet(p, String(body.partnerId || ''), body.song); sync();
+    return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
     const p = personAtTable(body);
@@ -1330,6 +1396,10 @@ const handlers = {
     if (nextVoteMin !== null && (!Number.isInteger(nextVoteMin) || nextVoteMin < 1 || nextVoteMin > 10)) {
       throw new Error('La durée du vote Battle doit être de 1 à 10 minutes.');
     }
+    const nextRepeatWarn = 'repeatWarnMin' in body ? Number(body.repeatWarnMin) : settings.repeatWarnMin;
+    if (!Number.isInteger(nextRepeatWarn) || nextRepeatWarn < 0 || nextRepeatWarn > 240) {
+      throw new Error('L’alerte « titre déjà chanté » doit être entre 0 et 240 minutes (0 la désactive).');
+    }
     const nextMinVoters = 'battleMinVoters' in body ? Number(body.battleMinVoters) : null;
     if (nextMinVoters !== null && (!Number.isInteger(nextMinVoters) || nextMinVoters < 1 || nextMinVoters > 100)) {
       throw new Error('Le nombre minimal de votants doit être de 1 à 100.');
@@ -1363,6 +1433,7 @@ const handlers = {
     if ('requirePresence' in body) sched.opts.requirePresence = !!body.requirePresence;
     settings.pushDelaySec = nextPushDelay;
     settings.playDelaySec = nextPlayDelay;
+    settings.repeatWarnMin = nextRepeatWarn;
     if (nextBattleCooldown !== null) battleVote.setCooldownMinutes(nextBattleCooldown);
     if (nextVoteMin !== null) battleVote.setVoteMinutes(nextVoteMin);
     if (nextMinVoters !== null) battleVote.setMinVoters(nextMinVoters);
@@ -1563,16 +1634,9 @@ const handlers = {
   'POST /api/staff/person/share': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p || p.withdrawnAt) throw new Error('Chanteur inconnu ou parti.');
-    const share = createPersonShareCode(p);
-    const table = sched.table(p.tableId, false);
-    // Une personne seule n'a pas de QR de table imprimé : le bar montre ici
-    // le lien de reprise, utilisable seulement avec ce code à usage unique.
-    if (table?.individual && access.get(table.id)) {
-      const url = access.url(phoneBase(), table.id);
-      share.tableUrl = url;
-      share.qr = await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' });
-    }
-    return share;
+    // Le QR mène directement à la reprise de cette personne ; le code sert
+    // si le téléphone ne peut pas scanner (saisie après le QR de la table).
+    return createPersonShareCode(p);
   },
   'POST /api/staff/person/leave': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
@@ -1742,6 +1806,11 @@ const server = http.createServer(async (req, res) => {
           .filter(person => person && person.tableId === t.id && (!t.individual || person.id === soloOwner?.id));
         const view = publicState(owned[0] || null, t.id);
         if (t.individual) view.soloInvitationReady = !!soloInvitations.verify(u.searchParams.get('invitation'), t.id);
+        if (u.searchParams.has('reprise')) {
+          const target = transferTarget(u.searchParams.get('reprise'), t);
+          view.transferOffer = target ? { personId: target.id, name: target.name,
+            expiresAt: personShareCodes.get(target.id)?.linkExpiresAt || null } : { invalid: true };
+        }
         if (t.individual && soloOwner) {
           view.recoveryPeople = (view.recoveryPeople || []).filter(person => person.id === soloOwner.id);
         }
@@ -1749,6 +1818,14 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, view);
       }
       if (p === '/api/staff/state') { if (!isStaff(req, u)) return send(res, 403, { error: 'Réservé au bar' }); return send(res, 200, staffState()); }
+      if (p === '/api/song/notice') {
+        const table = tableByAccess(u.searchParams.get('table'), u.searchParams.get('access'));
+        const song = { songId: Number(u.searchParams.get('songId')) || null,
+          title: String(u.searchParams.get('title') || '').slice(0, 100),
+          artist: String(u.searchParams.get('artist') || '').slice(0, 80) };
+        if (!song.songId && !song.title) return send(res, 400, { error: 'Titre manquant.' });
+        return send(res, 200, { notice: repeatNotice(song, table.id) });
+      }
       if (p === '/api/duo/partners') {
         const table = tableByAccess(u.searchParams.get('table'), u.searchParams.get('access'));
         return send(res, 200, [...sched.people.values()].filter(person => !person.withdrawnAt)
