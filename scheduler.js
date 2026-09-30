@@ -225,7 +225,7 @@ class Scheduler {
     const people = this.Q.map(pid => {
       const p = this.people.get(pid);
       return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
-        p.lastAppearanceTurn || 0, !!p.presenceRetry,
+        p.lastAppearanceTurn || 0, this._isPresenceRetry(p),
         p.over, p.held, p.song?.entryId || null, p.song?.duet || null,
         (p.backlog || []).map(song => [song.entryId, song.duet || null])] : [pid];
     });
@@ -269,7 +269,7 @@ class Scheduler {
     const physical = [...relevant].map(pid => {
       const p = this.people.get(pid);
       return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
-        p.lastAppearanceTurn || 0, !!p.presenceRetry] : [pid];
+        p.lastAppearanceTurn || 0, this._isPresenceRetry(p)] : [pid];
     });
     const context = { entries, physical, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
@@ -707,7 +707,8 @@ class Scheduler {
     if (!p || p.withdrawnAt || !p.song) return null;
     const title = p.song.title;
     if (this.reservedNext?.personId === p.id) this.releaseNext();
-    p.presenceSkips = (p.presenceSkips || 0) + 1;
+    p.presenceSkips = this.presenceSkipsOf(p) + 1;
+    p.presenceEntryId = p.song.entryId;
     if (p.presenceSkips >= maxSkips) {
       const skips = p.presenceSkips;
       p.presenceSkips = 0;
@@ -723,12 +724,19 @@ class Scheduler {
     return { removed: false, skips: p.presenceSkips, title };
   }
 
+  // Les manques comptent pour le titre qui a été passé : un titre remplacé,
+  // retiré ou nouveau repart de zéro et reprend sa place normale.
+  presenceSkipsOf(p) {
+    return p?.song && p.presenceEntryId === p.song.entryId ? p.presenceSkips || 0 : 0;
+  }
+
+  _isPresenceRetry(p) {
+    return !!(p && !p.withdrawnAt && p.presenceRetry && p.song && p.presenceEntryId === p.song.entryId);
+  }
+
   // Titres passés faute de présence, dans l'ordre de la file.
   _presenceRetries() {
-    return this.Q.filter(pid => {
-      const p = this.people.get(pid);
-      return p && !p.withdrawnAt && p.presenceRetry && p.song;
-    });
+    return this.Q.filter(pid => this._isPresenceRetry(this.people.get(pid)));
   }
 
   clearPresenceRetries() {
@@ -1022,7 +1030,7 @@ class Scheduler {
     let pinnedUntil = 0;
     if (this.reservedNext && rows[0]?.owner === this.reservedNext.personId) pinnedUntil = 1;
     // Titre passé faute de présence : il suit le prochain passage, sans exception.
-    if (rows[1] && this.people.get(rows[1].owner)?.presenceRetry) pinnedUntil = 2;
+    if (rows[1] && this._isPresenceRetry(this.people.get(rows[1].owner))) pinnedUntil = 2;
     if (this.manualOrderActive) {
       while (pinnedUntil < rows.length && this.manualOrder.includes(rows[pinnedUntil].owner)) {
         pinnedUntil++;
@@ -1786,6 +1794,15 @@ class Scheduler {
   rollbackUnplayed(sel, { requeue = false } = {}) {
     const credit = sel?.turnCredit;
     if (credit?.rolledBack) return false;
+    // Le titre passé faute de présence était annoncé après ce passage, qui
+    // n'a finalement pas été chanté : sans confirmation entre-temps, il
+    // attend de nouveau qu'un autre passage chante devant lui.
+    const retry = sel?.presenceRetryOf && this.people.get(sel.presenceRetryOf);
+    if (retry && this.reservedNext?.personId === retry.id && !this._confirmedRecently(retry) &&
+        retry.song && retry.presenceEntryId === retry.song.entryId) {
+      this.releaseNext();
+      retry.presenceRetry = true;
+    }
     const before = credit?.before, after = credit?.after;
     if (before && after && Array.isArray(before.people) && Array.isArray(after.people)) {
       const fields = ['sung', 'duetGuestCount', 'lastAppearanceTurn', 'lastSungAt',
@@ -1913,7 +1930,7 @@ class Scheduler {
     if (this.opts.requirePresence) {
       for (let i = 0; i < sel.at && i < this.Q.length; i++) {
         const q = this.people.get(this.Q[i]);
-        if (q && q.song && !q.presenceRetry && !this._confirmedRecently(q) && !sel.ids.includes(q.id)) {
+        if (q && q.song && !this._isPresenceRetry(q) && !this._confirmedRecently(q) && !sel.ids.includes(q.id)) {
           q.held++;
           if (q.held >= 2) {
             const k = this.Q.indexOf(q.id);
@@ -1982,6 +1999,7 @@ class Scheduler {
     if (retry && !this.reservedNext) {
       this.people.get(retry).presenceRetry = false;
       this.reservedNext = { personId: retry, reservedAt: Date.now() };
+      sel.presenceRetryOf = retry; // à défaire si ce passage n'est finalement pas chanté
     }
     sel.turnCredit = { before: creditBefore, after: this._turnCreditState(sel), rolledBack: false };
     this.note(`À suivre : ${sel.label} — « ${sel.song.title} »`, 'next');

@@ -36,6 +36,9 @@ let tracked = [];
 let extraSingers = [];
 let battle = { phase: 'idle' };
 let soloInvitations = [];
+let presencePending = [];
+let bootId = 'boot-1';
+const stored = new Map();
 const posts = [];
 const state = () => ({
   kf: { ready: connected, connected, base: 'demo', code: '1234', queue: [], events: [] },
@@ -46,7 +49,7 @@ const state = () => ({
     { id: '2', name: 'Table 2', headcount: 2, activeCount: 1, count: 1 },
     { id: 'Comptoir', name: 'En solo', individual: true, headcount: 40, activeCount: 0, count: 0 }],
   people: [singer, ...extraSingers], stage, tracked, ips: [], queue, blocked: [], log: [], manualChanges,
-  soloInvitations,
+  soloInvitations, presencePending, bootId,
   phoneBase: 'http://127.0.0.1:3000', port: 3000, avgSlotMin: 4,
   battle,
 });
@@ -66,7 +69,7 @@ const fetch = async (url, options = {}) => {
 };
 let poll;
 const context = { document, fetch, location: { search: '' }, window: {}, URL, URLSearchParams,
-  localStorage: { getItem: () => null, setItem() {} },
+  localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, String(value)) },
   setInterval: fn => { poll = fn; }, setTimeout: () => 1, clearTimeout() {},
   console, Date, Number, String, Set, Map, Array, JSON, Math, confirm: () => true };
 vm.runInNewContext(script, context, { filename: 'staff.html' });
@@ -140,5 +143,24 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.match(get('battleStatus').textContent, /Ajout automatique impossible : Permission Battle refusée/,
     'un refus explicite ne doit pas être présenté comme un simple délai de confirmation');
   assert.doesNotMatch(get('battleStatus').textContent, /\.\./, 'la ponctuation du message reste lisible');
+
+  // Alerte fermée : elle reste fermée pendant ce démarrage, revient après un redémarrage.
+  battle = { phase: 'idle' };
+  presencePending = ['Zoé'];
+  poll();
+  await settle();
+  assert.match(get('staffAlerts').innerHTML, /Je suis là » pour Zoé[\s\S]*data-dismiss-alert="presence"/);
+  const text = get('staffAlerts').innerHTML.match(/<span>([^<]*Zoé[^<]*)<\/span>/)[1];
+  const alertBox = { querySelector: () => ({ textContent: text }) };
+  const closeButton = { dataset: { dismissAlert: 'presence' }, closest: () => alertBox };
+  get('staffAlerts').listeners.click({ target: { closest: selector => selector === '[data-dismiss-alert]' ? closeButton : null } });
+  assert.doesNotMatch(get('staffAlerts').innerHTML, /Zoé/, 'l’alerte fermée disparaît');
+  poll();
+  await settle();
+  assert.doesNotMatch(get('staffAlerts').innerHTML, /Zoé/, 'elle reste fermée tant que rien ne change');
+  bootId = 'boot-2';
+  poll();
+  await settle();
+  assert.match(get('staffAlerts').innerHTML, /Zoé/, 'après un redémarrage, la même alerte réapparaît');
   console.log('Bar : connexion et repères chanteurs OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

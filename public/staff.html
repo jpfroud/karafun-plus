@@ -469,12 +469,20 @@
   }
 
   // Alertes du bar. Chacune se ferme ; elle revient si la situation change
-  // (autre texte) ou si l'erreur disparaît puis se reproduit.
-  let dismissedAlerts = {};
-  try { dismissedAlerts = JSON.parse(localStorage.getItem('bar-dismissed-alerts') || '{}') || {}; }
-  catch (_) { dismissedAlerts = {}; }
-  const saveDismissed = () => { try { localStorage.setItem('bar-dismissed-alerts', JSON.stringify(dismissedAlerts)); } catch (_) { /* mémoire du navigateur indisponible */ } };
+  // (autre texte), si l'erreur disparaît puis se reproduit, ou après un
+  // redémarrage de l'application (autre bootId).
+  let dismissedAlerts = {}, dismissedBoot = null;
+  try {
+    const saved = JSON.parse(localStorage.getItem('bar-dismissed-alerts') || '{}') || {};
+    dismissedBoot = typeof saved.boot === 'string' ? saved.boot : null;
+    dismissedAlerts = saved.alerts && typeof saved.alerts === 'object' ? saved.alerts : {};
+  } catch (_) { dismissedAlerts = {}; }
+  const saveDismissed = () => {
+    try { localStorage.setItem('bar-dismissed-alerts', JSON.stringify({ boot: dismissedBoot, alerts: dismissedAlerts })); }
+    catch (_) { /* mémoire du navigateur indisponible */ }
+  };
   function renderAlerts() {
+    if (S.bootId && S.bootId !== dismissedBoot) { dismissedBoot = S.bootId; dismissedAlerts = {}; saveDismissed(); }
     const grace = S.settings?.presenceGraceSec || 30;
     const alerts = [
       ['persistence', S.persistenceError ? `Sauvegarde impossible : ${S.persistenceError}. Envoi automatique suspendu.` : ''],

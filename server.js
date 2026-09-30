@@ -37,6 +37,8 @@ function readBuildInfo() {
   return { version, commit, builtAt: null };
 }
 const BUILD = readBuildInfo();
+// Identifie ce démarrage : une alerte fermée au bar revient après un redémarrage.
+const BOOT_ID = crypto.randomBytes(6).toString('hex');
 const { Scheduler } = require('./scheduler');
 const { KaraFunBridge, isBattleItem } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
@@ -828,7 +830,8 @@ function staffState() {
     ...pub,
     // Repères réservés au bar : titres en double, « Je suis là » manqués.
     queue: pub.queue.map((line, index) => {
-      const skips = line.source === 'helper' ? sched.people.get(line.id)?.presenceSkips || 0 : 0;
+      const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
+      const skips = owner && owner.song?.entryId === line.song?.entryId ? sched.presenceSkipsOf(owner) : 0;
       return repeats[index] || skips ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
         ...(skips ? { presenceSkips: skips } : {}) } : line;
     }),
@@ -857,7 +860,7 @@ function staffState() {
       battleCooldownMin: battleVote.cooldownMs / 60000,
       battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters },
     solver: sched.solverStatus(),
-    app: BUILD,
+    app: BUILD, bootId: BOOT_ID,
     stageHistory: stageHistoryView(),
     soloInvitations: soloInvitations.view(),
     phoneBase: phoneBase(), ips, port: PORT, staffKey: STAFF_KEY,
@@ -872,7 +875,7 @@ function staffState() {
       active: !p.withdrawnAt, songCount: sched.songsOf(p).length,
       privateNote: p.privateNote || '', verified: !!p.verifiedAt, bonus: p.bonus || 0,
       appearances: (p.sung || 0) + (p.duetGuestCount || 0),
-      presenceSkips: p.presenceSkips || 0, presenceRetry: !!p.presenceRetry,
+      presenceSkips: sched.presenceSkipsOf(p), presenceRetry: sched._isPresenceRetry(p),
       photoUrl: p.photo ? `/photo/${p.id}` : null })),
     pending: pending ? { label: pending.sel.label, title: pending.sel.song.title } : null,
     tracked: tracked.map(tr => ({ queueId: tr.queueId, label: tr.sel.label, title: tr.sel.song.title,
