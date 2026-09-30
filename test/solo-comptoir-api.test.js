@@ -127,6 +127,19 @@ async function ok(path, body, cookie = '') {
   assert.equal(oldPhone.status, 403, 'l’ancien téléphone reste associé à Alice après le transfert');
   await ok('/api/table/song', fields({ personId: alice.value.id,
     token: replacement.value.token, song: { songId: 102, title: 'Reprise' } }), replacement.cookie);
+  // Transfert par QR ou lien : même règle d'un seul profil par téléphone solo.
+  const soloShare = (await ok('/api/staff/person/share', { personId: alice.value.id })).value;
+  const reprise = new URL(soloShare.url).searchParams.get('reprise');
+  assert.equal(new URL(soloShare.url).pathname, new URL(table.url).pathname, 'le lien ouvre la page « En solo »');
+  const bobTakesAlice = await request('/api/table/person/claim', fields({ link: reprise }), bob.cookie);
+  assert.equal(bobTakesAlice.value.code, 'SOLO_DEVICE_USED', 'le téléphone de Bob ne gère pas Alice en plus');
+  assert.equal((await ok('/api/state?' + new URLSearchParams({ table: 'Comptoir', access, reprise })))
+    .value.transferOffer.personId, alice.value.id, 'ce refus ne consomme pas le lien');
+  const byLink = await ok('/api/table/person/claim', fields({ link: reprise }));
+  assert.ok(byLink.cookie && byLink.cookie !== replacement.cookie, 'le nouveau téléphone reçoit son identité solo');
+  assert.deepEqual((await tableState(byLink.value.token, byLink.cookie)).managedIds, [alice.value.id]);
+  assert.deepEqual((await tableState(replacement.value.token, replacement.cookie)).managedIds, [],
+    'le téléphone précédent perd la gestion d’Alice');
   await ok('/api/staff/table', { id: 'Table voisine', headcount: 1 });
   const neighborTable = (await ok('/api/staff/state')).value.tables.find(t => t.id === 'Table voisine');
   const neighborAccess = new URL(neighborTable.url).pathname.split('/').pop();

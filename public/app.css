@@ -52,6 +52,7 @@ label.field { display: block; margin: 12px 0 6px; color: var(--muted); font-size
 .badge.new { color: var(--accent-2); border-color: rgba(124,92,255,.4); }
 .badge.duo { color: var(--accent); border-color: rgba(255,79,163,.4); }
 .badge.wait { color: var(--warn); border-color: rgba(255,176,32,.4); }
+.badge.repeat { color: var(--warn); border-color: rgba(255,176,32,.55); background: rgba(255,176,32,.1); }
 .avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex: none; background: var(--surface-2); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; color: var(--muted); border: 1px solid var(--line); }
 .avatar.lg { width: 56px; height: 56px; font-size: 20px; }
 
@@ -109,6 +110,7 @@ body.client { padding: 0 0 calc(24px + env(safe-area-inset-bottom)); }
 .sheet h3 { margin: 4px 0 10px; }
 .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--line); padding: 12px 16px; border-radius: 12px; z-index: 30; max-width: 90vw; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
 .toast.bad { border-color: var(--bad); }
+.toast.warn { border-color: var(--warn); }
 .photo-pick { display: flex; gap: 12px; align-items: center; margin-top: 6px; }
 .stepper { display: flex; align-items: center; gap: 8px; }
 .stepper input { text-align: center; width: 90px; }
@@ -204,6 +206,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .queue-item .song-artist { color: var(--muted); font-size: 11px; }
 .queue-item .queue-tags { display: inline-flex; gap: 3px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .queue-item .queue-tags .badge { font-size: 10px; padding: 1px 5px; }
+.queue-item .song-cell .badge.repeat { font-size: 10px; padding: 1px 5px; margin-right: 5px; vertical-align: 1px; }
 .queue-item .eta { font-size: 12px; font-weight: 700; white-space: nowrap; }
 .queue-item .queue-actions { display: flex; justify-content: flex-end; gap: 5px; }
 .queue-item .queue-actions button { white-space: nowrap; min-height: 30px; padding: 3px 7px; font-size: 11px; }

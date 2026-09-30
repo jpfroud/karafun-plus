@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { Scheduler } = require('./scheduler');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
+const { PLAYED_LIMIT } = require('./song-repeats');
 
 const FORMAT = 1;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -54,7 +55,7 @@ function savePhoto(photo, directory) {
 }
 
 function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null,
-  soloInvitations = null }) {
+  soloInvitations = null, transfers = [] }) {
   if (!scheduler || !access || !settings) throw new Error('État de soirée incomplet.');
   const tables = [...scheduler.tables.values()].map(t => ({ ...clone(t), secret: access.get(t.id) }));
   if (tables.some(t => !t.secret)) throw new Error('Secret QR manquant dans une table.');
@@ -84,11 +85,14 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       recentGroups: clone(scheduler.recentGroups || []), roundUse: [...(scheduler.roundUse || new Map())],
       roundApps: [...(scheduler.roundApps || new Map())],
       stageHistory: clone(scheduler.stageHistory || []),
+      playedSongs: clone(scheduler.playedSongs || []),
       log: clone(scheduler.log), slotSamples: [...scheduler.slotSamples],
       version: scheduler.version,
     },
     settings: clone(settings),
     soloInvitations: soloInvitations ? soloInvitations.serialize() : [],
+    // Transferts en cours : empreintes seulement, jamais le lien ni le code.
+    transfers: clone(transfers),
     pending: pending ? { ...clone(pending), before: [...pending.before] } : null,
     tracked: clone(tracked),
   };
@@ -215,6 +219,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     Array.isArray(row) && tmp.people.has(row[0]) && Number.isInteger(row[1]) && row[1] >= 1 && row[1] <= 20));
   tmp.stageHistory = clone(list(data.stageHistory ?? [], 'historique de scène')).filter(item =>
     item && typeof item === 'object' && Array.isArray(item.ids) && Number.isFinite(item.at)).slice(-60);
+  tmp.playedSongs = clone(list(data.playedSongs ?? [], 'titres chantés')).filter(item =>
+    item && typeof item === 'object' && Number.isFinite(item.at) &&
+    typeof item.title === 'string' && item.title.length > 0).slice(-PLAYED_LIMIT);
   for (const t of list(data.tables, 'tables')) {
     if (t.bonus != null) {
       if (!Number.isInteger(t.bonus) || t.bonus < -3 || t.bonus > 3) fail('bonus de table mal formé');
@@ -232,7 +239,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   const restoredSettings = clone(object(snapshot.settings, 'réglages'));
   if (typeof restoredSettings.auto !== 'boolean' || typeof restoredSettings.autoPlay !== 'boolean' ||
     !Number.isInteger(restoredSettings.pushDelaySec) || restoredSettings.pushDelaySec < 0 || restoredSettings.pushDelaySec > 180 ||
-    !Number.isInteger(restoredSettings.playDelaySec) || restoredSettings.playDelaySec < 0 || restoredSettings.playDelaySec > 30) fail('réglages mal formés');
+    !Number.isInteger(restoredSettings.playDelaySec) || restoredSettings.playDelaySec < 0 || restoredSettings.playDelaySec > 30 ||
+    ('repeatWarnMin' in restoredSettings && (!Number.isInteger(restoredSettings.repeatWarnMin) ||
+      restoredSettings.repeatWarnMin < 0 || restoredSettings.repeatWarnMin > 240))) fail('réglages mal formés');
 
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||
@@ -249,6 +258,14 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       for (const pid of selection.ids) if (tmp.people.has(pid)) tmp.roundPeople.add(pid);
     }
   }
+  // Un lien de transfert déjà envoyé (WhatsApp, SMS…) reste valable après un
+  // redémarrage. Les lignes expirées ou mal formées sont simplement ignorées.
+  const hex = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+  const restoredTransfers = clone(list(snapshot.transfers ?? [], 'transferts')).filter(row =>
+    row && typeof row === 'object' && tmp.people.has(row.personId) && hex(row.hash) &&
+    (row.linkHash === null || hex(row.linkHash)) && Number.isFinite(row.expiresAt) &&
+    Number.isFinite(row.linkExpiresAt) && Number.isInteger(row.attempts) && row.attempts >= 0 &&
+    row.attempts <= 5 && Math.max(row.expiresAt, row.linkExpiresAt) > Date.now());
   const restoredPending = pending ? { ...clone(pending), before: new Set(pending.before) } : null;
   const restoredTracked = clone(tracked);
 
@@ -257,7 +274,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
-    'slotSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'stageHistory']) scheduler[field] = tmp[field];
+    'slotSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
   scheduler.solverPlan = null;
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);
@@ -265,7 +282,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // garde les titres et doit regarder la file KaraFun avant de réarmer l'envoi.
   if (restoredPending) settings.auto = false;
   return { pending: restoredPending, tracked: restoredTracked,
-    recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize() };
+    recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize(),
+    transfers: restoredTransfers };
 }
 
 // À utiliser uniquement après le premier instantané QueueEvent frais de
