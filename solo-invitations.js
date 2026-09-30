@@ -4,6 +4,10 @@ const crypto = require('crypto');
 const { TableAccess } = require('./table-access');
 
 const LIFE_MS = 30 * 60 * 1000;
+// Les versions précédentes lisaient l'horloge deux fois à l'émission : une
+// sauvegarde peut donc porter une durée de vie supérieure de quelques
+// millisecondes. Cette marge l'accepte sans admettre une durée prolongée.
+const CLOCK_SLACK_MS = 1000;
 const TOKEN_RE = /^[A-Za-z0-9_-]{32}$/;
 
 // Le QR commun ne donne aucun droit d'inscription. Seule une invitation émise
@@ -32,8 +36,11 @@ class SoloInvitations {
     }
     const token = crypto.randomBytes(24).toString('base64url');
     const hash = SoloInvitations.digest(token);
+    // Une seule lecture de l'horloge : deux lectures peuvent tomber de part et
+    // d'autre d'une milliseconde et rendre la sauvegarde illisible.
+    const now = Date.now();
     const entry = { id: hash.slice(0, 12), hash, tableId: table,
-      issuedAt: Date.now(), expiresAt: Date.now() + LIFE_MS };
+      issuedAt: now, expiresAt: now + LIFE_MS };
     this.entries.set(hash, entry);
     return { token, id: entry.id, expiresAt: entry.expiresAt };
   }
@@ -85,7 +92,7 @@ class SoloInvitations {
         entry.id !== entry.hash.slice(0, 12) ||
         typeof entry.tableId !== 'string' || TableAccess.key(entry.tableId) !== entry.tableId ||
         !Number.isFinite(entry.issuedAt) || !Number.isFinite(entry.expiresAt) ||
-        entry.expiresAt <= entry.issuedAt || entry.expiresAt - entry.issuedAt > LIFE_MS ||
+        entry.expiresAt <= entry.issuedAt || entry.expiresAt - entry.issuedAt > LIFE_MS + CLOCK_SLACK_MS ||
         next.has(entry.hash)) throw new Error('Invitations solo invalides.');
       if (entry.expiresAt > Date.now()) next.set(entry.hash, { ...entry });
     }

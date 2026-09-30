@@ -27,4 +27,23 @@ assert.equal(restored.verify(expired.token, 'Comptoir'), null, 'un QR périmé e
 assert.deepEqual(restored.view(), [], 'les invitations expirées ne restent pas affichées au bar');
 assert.deepEqual(new SoloInvitations(restored.serialize()).view(), [],
   'un redémarrage ne ressuscite pas un QR expiré');
+
+// L'horloge peut changer de milliseconde pendant l'émission : la sauvegarde
+// doit rester relisible (échec observé sur la CI Windows).
+const realNow = Date.now;
+let tick = realNow();
+Date.now = () => tick++;
+let ticking;
+try {
+  ticking = new SoloInvitations();
+  ticking.issue('Comptoir', 1);
+} finally { Date.now = realNow; }
+const [ticked] = ticking.serialize();
+assert.equal(ticked.expiresAt - ticked.issuedAt, 30 * 60 * 1000, 'une seule lecture de l’horloge à l’émission');
+assert.equal(new SoloInvitations(ticking.serialize()).view().length, 1);
+// Sauvegarde écrite par l'ancienne version, décalée d'une milliseconde.
+const legacy = { ...ticked, expiresAt: ticked.expiresAt + 1 };
+assert.equal(new SoloInvitations([legacy]).view().length, 1, 'ancienne sauvegarde décalée d’1 ms relue');
+assert.throws(() => new SoloInvitations([{ ...ticked, expiresAt: ticked.expiresAt + 60_000 }]),
+  /Invitations solo invalides/, 'une durée de vie prolongée reste refusée');
 console.log('Invitations solo : table liée, capacité, expiration, révocation, restauration et usage unique OK');
