@@ -13,8 +13,30 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const QRCode = require('qrcode');
+
+// Version affichée au bar : celle du kit publié (build-info.json écrit par
+// PREPARER-KIT-BAR.ps1), sinon package.json et le commit git local.
+function readBuildInfo() {
+  try {
+    const info = JSON.parse(fs.readFileSync(path.join(__dirname, 'build-info.json'), 'utf8').replace(/^\uFEFF/, ''));
+    if (typeof info.version === 'string' && info.version) {
+      return { version: info.version.slice(0, 40), commit: String(info.commit || '').slice(0, 7) || null,
+        builtAt: Number.isFinite(Date.parse(info.builtAt)) ? info.builtAt : null };
+    }
+  } catch (_) { /* pas de kit publié : version de développement */ }
+  let commit = null;
+  try {
+    commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: __dirname, timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().slice(0, 7) || null;
+  } catch (_) { /* pas de dépôt git */ }
+  let version = 'version inconnue';
+  try { version = `v${JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version}`; }
+  catch (_) { /* copie partielle : la version ne doit jamais empêcher le démarrage */ }
+  return { version, commit, builtAt: null };
+}
+const BUILD = readBuildInfo();
 const { Scheduler } = require('./scheduler');
 const { KaraFunBridge, isBattleItem } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
@@ -117,9 +139,13 @@ const settings = { auto: true, autoPlay: false, baseUrl: null,
   pushDelaySec: DEMO ? Math.max(1, Math.round(SONG_SECONDS / 3)) : 45, playDelaySec: 8,
   // Alerte « titre déjà chanté » : fenêtre en minutes, 0 pour la couper.
   repeatWarnMin: DEFAULT_REPEAT_MIN,
+  // « Je suis là » : délai une fois la scène libre, puis nombre de passages
+  // manqués avant de retirer le titre et de prévenir le bar.
+  presenceGraceSec: 30, presenceMaxSkips: 3,
   queueClearPending: false };
 const queueClearRemovalRequests = new Map();
 let curKey = null, curSince = 0;
+let presenceWait = null; // { key, askedAt, freeSince } : demande « Je suis là » en cours
 let pending = null;     // chanson envoyée à KaraFun, en attente de confirmation
 let tracked = [];       // nos chansons présentes dans KaraFun
 let idleSince = null;
@@ -226,7 +252,6 @@ function ensureSoloGroup() {
   if (!solo) solo = sched.table('Comptoir');
   if (!solo.name || solo.name === 'Comptoir') solo.name = 'En solo';
   solo.individual = true;
-  if (solo.headcount == null) solo.headcount = 40;
   if (!access.get(solo.id)) access.issue(solo.id);
   saveTables();
 }
@@ -264,10 +289,30 @@ function presenceCandidate({ current, upcoming } = analyze()) {
 function presenceMissing(candidate) {
   if (!candidate) return [];
   const selectionConfirmed = candidate.source !== 'helper' && candidate.presenceConfirmed;
-  return candidate.ids.filter(pid => {
-    const p = sched.people.get(pid);
-    return p && !p.withdrawnAt && !selectionConfirmed && !sched._confirmedRecently(p);
-  });
+  // Un duo est présent dès que l'un des deux a confirmé.
+  const people = candidate.ids.map(pid => sched.people.get(pid)).filter(p => p && !p.withdrawnAt);
+  if (selectionConfirmed || people.some(p => sched._confirmedRecently(p))) return [];
+  return people.map(p => p.id);
+}
+
+// Le prochain passage n'a pas confirmé alors que la scène est libre depuis
+// `presenceGraceSec` (ou depuis la demande, si rien ne jouait) : la soirée
+// continue avec le passage suivant, et ce titre revient juste après lui.
+function skipAbsentIfDue({ current, upcoming }, presence, missing, now) {
+  if (!sched.opts.requirePresence || presence?.source !== 'helper' || !missing.length) {
+    presenceWait = null;
+    return false;
+  }
+  const key = `${presence.ids.join('+')}|${presence.song?.entryId || ''}`;
+  if (presenceWait?.key !== key) presenceWait = { key, askedAt: now, freeSince: null };
+  if (current || upcoming.length || pending) { presenceWait.freeSince = null; return false; }
+  presenceWait.freeSince ??= now;
+  if (!settings.auto || settings.queueClearPending || battleHoldsQueue() || recoveredPending || !bridge?.ready) return false;
+  if (now - Math.max(presenceWait.askedAt, presenceWait.freeSince) < settings.presenceGraceSec * 1000) return false;
+  presenceWait = null;
+  const result = sched.skipUnconfirmed(presence.ids[0], settings.presenceMaxSkips);
+  if (result) appLog(`Présence non confirmée : ${presence.name || presence.label || presence.ids[0]} ${result.removed ? 'retiré' : 'passe après le titre suivant'}.`);
+  return !!result;
 }
 
 function restore(tr, reason) {
@@ -532,7 +577,12 @@ function sync() {
       sched.reservePresenceNext(onStage?.sel.ids || []);
     } else if (current) sched.reserveNext();
   }
-  const presence = presenceCandidate({ current, upcoming });
+  let presence = presenceCandidate({ current, upcoming });
+  if (skipAbsentIfDue({ current, upcoming }, presence, presenceMissing(presence), now)) {
+    const onStage = tracked.find(tr => isOnStage(tr, current));
+    sched.reservePresenceNext(onStage?.sel.ids || []);
+    presence = presenceCandidate({ current, upcoming });
+  }
   const awaitingPresence = presenceMissing(presence).length > 0;
   const canPush = !current || Date.now() - curSince >= settings.pushDelaySec * 1000;
   const staleTracked = tracked.some(tr => !qids.has(tr.queueId));
@@ -578,12 +628,22 @@ function sync() {
 const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: s.img || null, duration: s.duration || null,
   duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo' } : null } : null;
 
+// Chanteurs d'un passage avec leur table (ou « En solo »), pour l'affichage.
+function singersOf(ids = []) {
+  return ids.map(pid => sched.people.get(pid)).filter(Boolean).map(p => {
+    const table = sched.table(p.tableId, false);
+    return { id: p.id, name: p.name, table: table?.name || '', individual: !!table?.individual };
+  });
+}
+
 function describe(item, byQid) {
   const tr = byQid.get(item.queueId);
   return {
+    singers: tr ? singersOf(tr.sel.ids) : [],
     ours: !!tr, queueId: item.queueId || null,
     singer: tr ? tr.sel.label : (item.singer || (isBattleItem(item) ? 'Battle collective' : '')),
-    title: item.title || '', artist: item.artist || '',
+    // Pour nos titres, le catalogue KaraFun choisi par le chanteur fait foi.
+    title: (tr && tr.sel.song.title) || item.title || '', artist: (tr && tr.sel.song.artist) || item.artist || '',
     kind: tr?.sel.kind || (isBattleItem(item) ? 'battle' : null),
     ids: tr ? tr.sel.ids : [], photos: tr ? tr.sel.ids.filter(pid => (sched.people.get(pid) || {}).photo).map(pid => `/photo/${pid}`) : [],
   };
@@ -614,7 +674,7 @@ function publicState(person, tableId) {
     pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
     singer: pending.sel.label, name: pending.sel.names.join(' & '),
     title: pending.sel.song.title, artist: pending.sel.song.artist,
-    ids: pending.sel.ids, kind: pending.sel.kind, song: fmtSong(pending.sel.song),
+    ids: pending.sel.ids, kind: pending.sel.kind, song: fmtSong(pending.sel.song), singers: singersOf(pending.sel.ids),
     table: sched.table(sched.people.get(pending.sel.ids[0])?.tableId, false)?.name || '' });
   // La file affichée montre aussi les titres dont la présence sera demandée
   // plus tard. Seul le prochain reçoit l'alerte et bloque l'envoi réel.
@@ -623,6 +683,7 @@ function publicState(person, tableId) {
     pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
     singer: `${v.name} · ${v.table}`, name: v.name, title: v.song.title, artist: v.song.artist,
     id: v.ids[0], ids: v.ids, kind: v.kind, song: fmtSong(v.song), table: v.table, tableId: v.tableId,
+    singers: singersOf(v.ids),
     qi: v.qi, over: v.over, cap: v.cap, confirmed: v.confirmed, future: !!v.future,
     waitingPresence: presence?.source === 'helper' && presenceMissingIds.size > 0 &&
       v.entryId === presence.song?.entryId,
@@ -765,7 +826,12 @@ function staffState() {
   const repeats = queueRepeats(pub.queue, sched.playedSongs, Date.now(), repeatWindowMs());
   return {
     ...pub,
-    queue: pub.queue.map((line, index) => repeats[index] ? { ...line, repeat: repeats[index] } : line),
+    // Repères réservés au bar : titres en double, « Je suis là » manqués.
+    queue: pub.queue.map((line, index) => {
+      const skips = line.source === 'helper' ? sched.people.get(line.id)?.presenceSkips || 0 : 0;
+      return repeats[index] || skips ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
+        ...(skips ? { presenceSkips: skips } : {}) } : line;
+    }),
     battle: { ...battleVote.view(), registered: battleElectorate().length },
     blocked,
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
@@ -778,6 +844,10 @@ function staffState() {
     priorityUndo: latestManual?.kind === 'priority' && canUndoManual ?
       { available: true, name: latestManual.name } : null,
     presencePending,
+    // « Je suis là » manqué plusieurs fois : titre retiré, le bar vérifie.
+    maybeGone: [...sched.people.values()].filter(p => p.maybeGone && !p.withdrawnAt).map(p => ({
+      id: p.id, name: p.name, table: sched.table(p.tableId, false)?.name || '',
+      title: p.maybeGone.title, skips: p.maybeGone.skips, at: p.maybeGone.at })),
     persistenceError, recoveredPending, queueClearPending: !!settings.queueClearPending,
     removalPending: tracked.filter(tr => tr.cancelled).length,
     log: sched.log.slice(-120).reverse(),
@@ -787,6 +857,7 @@ function staffState() {
       battleCooldownMin: battleVote.cooldownMs / 60000,
       battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters },
     solver: sched.solverStatus(),
+    app: BUILD,
     stageHistory: stageHistoryView(),
     soloInvitations: soloInvitations.view(),
     phoneBase: phoneBase(), ips, port: PORT, staffKey: STAFF_KEY,
@@ -801,6 +872,7 @@ function staffState() {
       active: !p.withdrawnAt, songCount: sched.songsOf(p).length,
       privateNote: p.privateNote || '', verified: !!p.verifiedAt, bonus: p.bonus || 0,
       appearances: (p.sung || 0) + (p.duetGuestCount || 0),
+      presenceSkips: p.presenceSkips || 0, presenceRetry: !!p.presenceRetry,
       photoUrl: p.photo ? `/photo/${p.id}` : null })),
     pending: pending ? { label: pending.sel.label, title: pending.sel.song.title } : null,
     tracked: tracked.map(tr => ({ queueId: tr.queueId, label: tr.sel.label, title: tr.sel.song.title,
@@ -810,16 +882,24 @@ function staffState() {
   };
 }
 
+// Titre de la file actuellement chanté (null si rien de la file n'est sur scène).
+function onStageEntryId() {
+  const { current } = analyze();
+  return tracked.find(tr => tr.startedAt && isOnStage(tr, current))?.sel.song?.entryId || null;
+}
+
 // Derniers passages réellement montés sur scène, du plus récent au plus
 // ancien, avec les repères privés du bar pour reconnaître les personnes.
 function stageHistoryView() {
+  const live = onStageEntryId();
   return sched.stageHistory.slice(-20).reverse().map(item => ({
     id: item.id, at: item.at, endedAt: item.endedAt, title: item.title, artist: item.artist,
-    kind: item.kind,
+    kind: item.kind, onStage: !item.endedAt && !!live && item.entryId === live,
     people: item.ids.map((pid, index) => {
       const p = sched.people.get(pid);
+      const table = sched.table(p?.tableId || item.tableIds?.[index] || '', false);
       return { id: pid, name: p?.name || item.names[index] || '?',
-        table: sched.table(p?.tableId || item.tableIds?.[index] || '', false)?.name || '',
+        table: table?.name || '', individual: !!table?.individual,
         privateNote: p?.privateNote || '', active: !!p && !p.withdrawnAt,
         photoUrl: p?.photo ? `/photo/${pid}` : null, appearances: p ? (p.sung || 0) + (p.duetGuestCount || 0) : null };
     }),
@@ -1310,7 +1390,7 @@ const handlers = {
     const t = tableByAccess(body.table, body.access);
     if (t.individual && soloDeviceOwner(req)) throw soloDeviceError('SOLO_DEVICE_USED');
     if (t.individual) requireSoloInvitation(t, body.invitation);
-    if (t.headcount == null) {
+    if (t.headcount == null && !t.individual) {
       const e = new Error('Le bar doit d’abord indiquer le nombre de personnes à cette table.');
       e.code = 'NEED_HEADCOUNT'; throw e;
     }
@@ -1322,7 +1402,7 @@ const handlers = {
     const t = tableByAccess(body.table, body.access);
     if (t.individual && soloDeviceOwner(req)) throw soloDeviceError('SOLO_DEVICE_USED');
     if (t.individual) requireSoloInvitation(t, body.invitation);
-    if (t.headcount == null) { const e = new Error('Effectif de la table à définir au bar.'); e.code = 'NEED_HEADCOUNT'; throw e; }
+    if (t.headcount == null && !t.individual) { const e = new Error('Effectif de la table à définir au bar.'); e.code = 'NEED_HEADCOUNT'; throw e; }
     return joinPersonDurably(req, res, t, body);
   },
   'POST /api/table/person/share': async (req, res, body) => createPersonShareCode(personAtTable(body)),
@@ -1419,6 +1499,14 @@ const handlers = {
     if (!Number.isInteger(nextRepeatWarn) || nextRepeatWarn < 0 || nextRepeatWarn > 240) {
       throw new Error('L’alerte « titre déjà chanté » doit être entre 0 et 240 minutes (0 la désactive).');
     }
+    const nextPresenceGrace = 'presenceGraceSec' in body ? Number(body.presenceGraceSec) : settings.presenceGraceSec;
+    if (!Number.isInteger(nextPresenceGrace) || nextPresenceGrace < 10 || nextPresenceGrace > 300) {
+      throw new Error('Le délai pour confirmer « Je suis là » doit être entre 10 et 300 secondes.');
+    }
+    const nextPresenceSkips = 'presenceMaxSkips' in body ? Number(body.presenceMaxSkips) : settings.presenceMaxSkips;
+    if (!Number.isInteger(nextPresenceSkips) || nextPresenceSkips < 1 || nextPresenceSkips > 10) {
+      throw new Error('Le nombre de passages manqués doit être entre 1 et 10.');
+    }
     const nextMinVoters = 'battleMinVoters' in body ? Number(body.battleMinVoters) : null;
     if (nextMinVoters !== null && (!Number.isInteger(nextMinVoters) || nextMinVoters < 1 || nextMinVoters > 100)) {
       throw new Error('Le nombre minimal de votants doit être de 1 à 100.');
@@ -1449,10 +1537,15 @@ const handlers = {
     if ('baseUrl' in body) { settings.baseUrl = nextBaseUrl; saveTables(); }
     if ('gap' in body) sched.opts.gap = Math.max(1, Math.min(10, parseInt(body.gap, 10) || 4));
     if ('cap' in body) sched.opts.cap = Math.max(1, Math.min(50, parseInt(body.cap, 10) || 2));
-    if ('requirePresence' in body) sched.opts.requirePresence = !!body.requirePresence;
+    if ('requirePresence' in body) {
+      sched.opts.requirePresence = !!body.requirePresence;
+      if (!sched.opts.requirePresence) sched.clearPresenceRetries();
+    }
     settings.pushDelaySec = nextPushDelay;
     settings.playDelaySec = nextPlayDelay;
     settings.repeatWarnMin = nextRepeatWarn;
+    settings.presenceGraceSec = nextPresenceGrace;
+    settings.presenceMaxSkips = nextPresenceSkips;
     if (nextBattleCooldown !== null) battleVote.setCooldownMinutes(nextBattleCooldown);
     if (nextVoteMin !== null) battleVote.setVoteMinutes(nextVoteMin);
     if (nextMinVoters !== null) battleVote.setMinVoters(nextMinVoters);
@@ -1479,8 +1572,8 @@ const handlers = {
   'POST /api/staff/solo-invite': async (req, res, body) => {
     const t = sched.table(TableAccess.key(body.tableId || 'Comptoir'), false);
     if (!t?.individual || !access.get(t.id)) throw new Error('Groupe de personnes seules indisponible.');
-    const free = t.headcount - sched.tableSingers(t.id).filter(p => !p.withdrawnAt).length;
-    const invitation = soloInvitations.issue(t.id, free);
+    // « En solo » n'a pas de nombre de places : chaque QR individuel crée une place.
+    const invitation = soloInvitations.issue(t.id);
     const url = `${access.url(phoneBase(), t.id)}?invitation=${invitation.token}`;
     let qr;
     try { qr = await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' }); }
@@ -1673,12 +1766,22 @@ const handlers = {
     sync();
     return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled };
   },
+  'POST /api/staff/stage-history/clear': async () => {
+    const removed = sched.clearStageHistory([onStageEntryId()]);
+    return { ok: true, removed };
+  },
+  'POST /api/staff/person/present': async (req, res, body) => {
+    const p = sched.people.get(String(body.personId || ''));
+    if (!p) throw new Error('Personne introuvable.');
+    sched.dismissMaybeGone(p);
+    return { ok: true };
+  },
   'POST /api/staff/person/reactivate': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p || !p.withdrawnAt) throw new Error('Cette personne n’est pas marquée partie.');
     const t = sched.table(p.tableId, false);
     if (!t) throw new Error('La table n’est plus ouverte.');
-    if (sched.tableSingers(t.id).filter(person => !person.withdrawnAt).length >= t.headcount) {
+    if (!t.individual && sched.tableSingers(t.id).filter(person => !person.withdrawnAt).length >= t.headcount) {
       throw new Error('La table est pleine. Ajuste son effectif avant de réactiver cette personne.');
     }
     p.withdrawnAt = null;
@@ -1775,6 +1878,7 @@ const handlers = {
     }
     else if (body.action === 'next') bridge.next();
     else if (body.action === 'reconnect') connectKaraFun();
+    else if (body.action === 'dismiss-notice') bridge.dismissIdentityNotice?.();
     else if (body.action === 'absent') {
       const tr = tracked.find(x => x.queueId === body.queueId && !x.startedAt);
       if (!tr) throw new Error('Cette chanson a déjà commencé ou n\'est pas de la file');
@@ -1975,7 +2079,7 @@ async function main() {
     publicServer.listen(PUBLIC_PORT, '127.0.0.1', () => {
       const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
       appLog('');
-      appLog('=== File karaoké ===');
+      appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
       appLog(`Page du bar (sur ce PC)        : ${staffUrl}`);
       appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${staffUrl}`);
       appLog(`QR codes à imprimer            : http://localhost:${PORT}/print`);

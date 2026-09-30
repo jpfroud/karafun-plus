@@ -59,6 +59,8 @@ jobs:
           Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $nodeSource) 'LICENSE') -Destination node\LICENSE -Force
       - name: Construire le kit et vérifier son lancement
         shell: powershell
+        env:
+          KIT_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
         run: |
           .\PREPARER-KIT-BAR.ps1
           .\test\verify-portable-kit.ps1

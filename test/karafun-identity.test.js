@@ -44,7 +44,8 @@ test('nom encore occupé par l’ancienne connexion : on redemande le même nom,
     const socket = transports[0];
     socket.emit('message', { type: 'core.AuthenticatedEvent', payload: {} });
     assert.equal(socket.sent.at(-1).payload.username, name);
-    for (let attempt = 1; attempt <= 8; attempt++) {
+    // Environ deux minutes d'essais : un redémarrage rapide ne change pas le nom.
+    for (let attempt = 1; attempt <= 30; attempt++) {
       socket.emit('message', { type: 'Error', payload: { type: 4, message: 'Username is already used' } });
       assert.match(bridge.lastError, /ancienne connexion/);
       mock.timers.tick(4000);
@@ -54,9 +55,11 @@ test('nom encore occupé par l’ancienne connexion : on redemande le même nom,
     socket.emit('message', { type: 'Error', payload: { type: 4, message: 'Username is already used' } });
     mock.timers.tick(0);
     assert.notEqual(bridge.username, name, 'dernier recours : autre nom');
-    assert.match(bridge.identityNotice, /Redonne-lui les droits d’administrateur/);
+    assert.match(bridge.identityNotice, /redonne-lui les droits d’administrateur/);
     assert.equal(new KaraFunBridge({ identityFile: file }).username, bridge.username,
       'le nouveau nom devient le nom stable');
+    bridge.dismissIdentityNotice();
+    assert.equal(bridge.snapshot().identityNotice, null, 'le bar peut fermer l’avis');
   } finally { mock.timers.reset(); }
 });
 
