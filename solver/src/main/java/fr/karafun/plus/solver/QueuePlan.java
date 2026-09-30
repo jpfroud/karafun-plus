@@ -28,6 +28,7 @@ public class QueuePlan {
     private Set<String> roundPeople;
     private Map<String, Double> roundUse;
     private Map<String, Integer> roundApps;
+    private Set<String> roundOwed;
     private int roundCap;
     private int spacing;
     private Map<String, Double> personWeights;
@@ -44,13 +45,18 @@ public class QueuePlan {
                      Map<String, Double> tableWeights, List<List<String>> history,
                      Rotation rotation, boolean interleaveArrivals) {
         this(performances, line, pastAppearance, physicalCount, readyAt, lastGroups, roundPeople,
-                roundUse, Map.of(), 0, 0, personWeights, tableWeights, history, rotation, interleaveArrivals);
+                roundUse, Map.of(), Set.of(), 0, 0, personWeights, tableWeights, history, rotation, interleaveArrivals);
     }
-    /** roundApps: stage appearances in the current round; roundCap and spacing: 0 disables them. */
+    /**
+     * roundApps: stage appearances in the current round; roundOwed: people left
+     * without a passage when the cap closed the previous round, who lead this
+     * one; roundCap and spacing: 0 disables them.
+     */
     public QueuePlan(List<Performance> performances, QueueLine line,
                      Map<String, Integer> pastAppearance, Map<String, Integer> physicalCount,
                      Map<String, Integer> readyAt, List<String> lastGroups, Set<String> roundPeople,
-                     Map<String, Double> roundUse, Map<String, Integer> roundApps, int roundCap, int spacing,
+                     Map<String, Double> roundUse, Map<String, Integer> roundApps, Set<String> roundOwed,
+                     int roundCap, int spacing,
                      Map<String, Double> personWeights, Map<String, Double> tableWeights,
                      List<List<String>> history, Rotation rotation, boolean interleaveArrivals) {
         this.performances = performances;
@@ -62,6 +68,7 @@ public class QueuePlan {
         this.roundPeople = roundPeople;
         this.roundUse = roundUse;
         this.roundApps = roundApps;
+        this.roundOwed = roundOwed;
         this.roundCap = roundCap;
         this.spacing = spacing;
         this.personWeights = personWeights;
@@ -81,6 +88,7 @@ public class QueuePlan {
     public Set<String> getRoundPeople() { return roundPeople; }
     public Map<String, Double> getRoundUse() { return roundUse; }
     public Map<String, Integer> getRoundApps() { return roundApps; }
+    public Set<String> getRoundOwed() { return roundOwed; }
     public int getRoundCap() { return roundCap; }
     public int getSpacing() { return spacing; }
     public Map<String, Double> getPersonWeights() { return personWeights; }

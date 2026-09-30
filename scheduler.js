@@ -94,6 +94,7 @@ class Scheduler {
     this.recentGroups = [];   // groupes des derniers passages, pour le partage entre tables
     this.roundUse = new Map(); // crédit de tour consommé par les personnes avec bonus/malus
     this.roundApps = new Map(); // passages sur scène de chaque personne dans le tour, invitées comprises
+    this.roundOwed = new Set(); // privées de passage par le plafond au tour précédent : en tête du tour
     this.duetCooldowns = new Map(); // invité : nombre d'autres chansons à laisser passer
     this.reservedNext = null; // personne annoncée comme prochain passage, hors KaraFun
     this.stageHistory = [];   // derniers passages sur scène (bar uniquement)
@@ -230,7 +231,8 @@ class Scheduler {
     });
     const context = { people, Q: this.Q, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
-      roundUse: [...this.roundUse], roundApps: [...this.roundApps], recentGroups: this.recentGroups.slice(-40),
+      roundUse: [...this.roundUse], roundApps: [...this.roundApps], roundOwed: [...this.roundOwed],
+      recentGroups: this.recentGroups.slice(-40),
       tableServeCounts: [...this.tableServeCounts], duetCooldowns: [...this.duetCooldowns],
       opts: this.opts, appearanceSerial: this.appearanceSerial, bonus: this._bonusContext(),
       ...this.manualOverrideState() };
@@ -271,7 +273,7 @@ class Scheduler {
     });
     const context = { entries, physical, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
-      roundUse: [...this.roundUse], roundApps: [...this.roundApps],
+      roundUse: [...this.roundUse], roundApps: [...this.roundApps], roundOwed: [...this.roundOwed],
       recentGroups: this.recentGroups.slice(-HISTORY_LIMIT),
       duetCooldowns: [...this.duetCooldowns],
       rotation: [!!this.opts.tableRotation, !!this.opts.weightedTables, this.opts.interleaveArrivals !== false],
@@ -474,6 +476,7 @@ class Scheduler {
     this.byToken.delete(p.token);
     this.roundPeople.delete(p.id);
     this.roundApps.delete(p.id);
+    this.roundOwed.delete(p.id);
     this.duetCooldowns.delete(p.id);
     this.invalidateManualOrder();
     if (![...this.people.values()].some(q => q.group === p.group)) this.roundGroups.delete(p.group);
@@ -654,17 +657,27 @@ class Scheduler {
     throw new Error('Duo introuvable.');
   }
 
-  staffCountPartner(ownerId, partnerId) {
+  // `sel` : passage déjà confirmé par KaraFun auquel le bar ajoute l'invité.
+  staffCountPartner(ownerId, partnerId, sel = null) {
     const owner = this.people.get(String(ownerId)), partner = this.people.get(String(partnerId));
     if (!owner || !partner || owner.id === partner.id || owner.withdrawnAt || partner.withdrawnAt) {
       throw new Error('Choisis un autre chanteur encore présent dans la salle.');
     }
     this.invalidateManualOrder();
+    const row = this._creditRow(partner.id), serialBefore = this.appearanceSerial;
     this.duetCooldowns.set(partner.id, 2);
     partner.duetGuestCount = (partner.duetGuestCount || 0) + 1;
     partner.lastAppearanceTurn = owner.lastAppearanceTurn || ++this.appearanceSerial;
     this.roundPeople.add(partner.id);
     this.roundApps.set(partner.id, (this.roundApps.get(partner.id) || 0) + 1);
+    this.roundOwed.delete(partner.id);
+    if (sel?.turnCredit && !sel.turnCredit.rolledBack) this._addPartnerCredit(sel.turnCredit, partner.id, row, serialBefore);
+    // Le passage annoncé qui ferait dépasser le plafond du tour à ce
+    // partenaire est libéré : la file choisit à nouveau le suivant.
+    const cap = this._roundCap();
+    const reserved = this.people.get(this.reservedNext?.personId);
+    if (reserved && cap > 0 && this.roundApps.get(partner.id) >= cap &&
+        (reserved.id === partner.id || reserved.song?.duet?.partnerId === partner.id)) this.releaseNext();
     this.note(`Le bar a compté ${partner.name} en duo avec ${owner.name} : ${owner.name} dépense son tour ; ${partner.name} garde son titre mais attend deux autres chansons si possible`, 'staff');
     return partner;
   }
@@ -993,6 +1006,7 @@ class Scheduler {
       roundPeople: [...this.roundPeople].filter(pid => this.people.has(pid)),
       roundUse: Object.fromEntries([...this.roundUse].filter(([pid]) => this.people.has(pid))),
       roundApps: Object.fromEntries([...this.roundApps].filter(([pid]) => this.people.has(pid))),
+      roundOwed: [...this.roundOwed].filter(pid => this.people.has(pid)),
       roundCap: this._roundCap(), spacing: this._spacing(),
       personWeights, tableWeights,
       history: this.recentGroups.slice(-HISTORY_LIMIT),
@@ -1321,10 +1335,12 @@ class Scheduler {
     const open = cands.filter(c => !capped(c, physicalApps));
     const pool = open.length ? open : cands;
     // Un tour clos par le plafond laisse des personnes sans passage (leur duo
-    // attendait quelqu'un au plafond) : elles passent en tête du tour suivant.
-    const owed = roundResets ? new Set(cands.flatMap(c => c.ids).filter(pid => !roundPeople.has(pid))) : null;
+    // attendait quelqu'un au plafond) : elles passent en tête du tour suivant,
+    // toutes, et restent prioritaires jusqu'à leur passage dans ce tour.
+    const owed = roundResets ? new Set(cands.flatMap(c => c.ids).filter(pid => !roundPeople.has(pid))) :
+      (sim?.roundOwed || this.roundOwed);
     const preferOwed = list => {
-      const owing = owed?.size ? list.filter(c => c.ids.some(pid => owed.has(pid))) : [];
+      const owing = owed.size ? list.filter(c => c.ids.some(pid => owed.has(pid) && !physicalRound.has(pid))) : [];
       return owing.length ? owing : list;
     };
     const newPersonRound = roundResets > 0;
@@ -1334,7 +1350,7 @@ class Scheduler {
       // restantes (compteurs conservés pour l'historique).
       const newGroupRound = newPersonRound || cands.every(candidate =>
         candidate.groups.every(group => roundGroups.has(group)));
-      return { ...c, newPersonRound, roundResets, newGroupRound };
+      return { ...c, newPersonRound, roundResets, newGroupRound, ...(newPersonRound ? { owed: [...owed] } : {}) };
     };
     const reserved = reservation && cands.find(c => c.ids[0] === reservation.personId);
     if (reserved) return withRound(reserved);
@@ -1363,19 +1379,22 @@ class Scheduler {
           choices = introducing.filter(c => total(c) === least);
         }
       }
+      // Une personne privée de passage au tour précédent passe d'abord, même
+      // si son duo ramène une personne déjà montée dans ce tour.
+      choices = preferOwed(choices);
       // Une fois les premières apparitions de la soirée servies, refaire la
       // même vérification à chaque tour physique. En particulier, un duo déjà
       // entendu ne doit pas passer devant un solo ou duo qui présente encore
       // quelqu'un de ce tour. Parmi ces derniers, préférer deux personnes
       // inédites à un duo où une seule est inédite.
       const physicallyFresh = choices.filter(c => c.ids.every(pid => !physicalRound.has(pid)));
-      if (physicallyFresh.length) return preferOwed(physicallyFresh);
+      if (physicallyFresh.length) return physicallyFresh;
       const introducingNow = choices.filter(c => c.ids.some(pid => !physicalRound.has(pid)));
-      if (!introducingNow.length) return preferOwed(choices);
+      if (!introducingNow.length) return choices;
       const fewestRepeats = Math.min(...introducingNow.map(c =>
         c.ids.filter(pid => physicalRound.has(pid)).length));
-      return preferOwed(introducingNow.filter(c =>
-        c.ids.filter(pid => physicalRound.has(pid)).length === fewestRepeats));
+      return introducingNow.filter(c =>
+        c.ids.filter(pid => physicalRound.has(pid)).length === fewestRepeats);
     };
     let choices = fairest(pool);
     const lastTable = new Set(Array.isArray(lastGroup) ? lastGroup : lastGroup ? [lastGroup] : []);
@@ -1553,6 +1572,7 @@ class Scheduler {
     const roundPeople = new Set(this.roundPeople);
     const roundUse = new Map(this.roundUse);
     const roundApps = new Map(this.roundApps);
+    const roundOwed = new Set(this.roundOwed);
     const history = this.recentGroups.slice(-HISTORY_LIMIT);
     const served = new Map(this.tableServeCounts);
     const cooldowns = new Map(this.duetCooldowns);
@@ -1565,9 +1585,11 @@ class Scheduler {
     const apply = c => {
       const resets = c.roundResets ?? (c.newPersonRound ? 1 : 0);
       for (let k = 0; k < resets; k++) this._resetRound(roundPeople, roundUse, roundApps);
+      if (resets) { roundOwed.clear(); (c.owed || []).forEach(pid => roundOwed.add(pid)); }
       if (c.newGroupRound) round.clear();
       c.ids.forEach(pid => this._useRound(roundPeople, roundUse, pid));
       c.ids.forEach(pid => roundApps.set(pid, (roundApps.get(pid) || 0) + 1));
+      c.ids.forEach(pid => roundOwed.delete(pid));
       const groups = c.groups || [c.group];
       groups.forEach(g => { round.add(g); served.set(g, (served.get(g) || 0) + 1); });
       history.push(groups);
@@ -1583,7 +1605,7 @@ class Scheduler {
     while (remaining.length) {
       const c = this._pick(remaining, last, predict, round, roundPeople, served,
         cooldowns, songs, reservation, appearances, ignorePresence, recentTurns,
-        { roundUse, roundApps, history, serial: appearanceTurn, ranks });
+        { roundUse, roundApps, roundOwed, history, serial: appearanceTurn, ranks });
       if (!c) break;
       reservation = null;
       slots.push({ ...c, entryId: c.song?.entryId || null, future: positions.get(c.ids[0]) > 0 });
@@ -1646,18 +1668,41 @@ class Scheduler {
       appearanceSerial: this.appearanceSerial,
       lastGroup: Array.isArray(this.lastGroup) ? [...this.lastGroup] : this.lastGroup,
       roundPeople: [...this.roundPeople], roundGroups: [...this.roundGroups],
-      roundUse: [...this.roundUse], roundApps: [...this.roundApps],
+      roundUse: [...this.roundUse], roundApps: [...this.roundApps], roundOwed: [...this.roundOwed],
       recentGroups: this.recentGroups.map(groups => [...groups]),
       tableServeCounts: [...this.tableServeCounts], duetCooldowns: [...this.duetCooldowns],
       qIndex: this.Q.indexOf(sel.ids[0]),
-      people: sel.ids.map(pid => {
-        const p = this.people.get(pid);
-        return p ? { id: pid, sung: p.sung || 0, duetGuestCount: p.duetGuestCount || 0,
-          lastAppearanceTurn: p.lastAppearanceTurn || 0, lastSungAt: p.lastSungAt || 0,
-          waitingSince: p.waitingSince || 0, confirmedAt: p.confirmedAt || 0,
-          over: p.over || 0, held: p.held || 0 } : { id: pid };
-      }),
+      people: sel.ids.map(pid => this._creditRow(pid)),
     };
+  }
+
+  _creditRow(pid) {
+    const p = this.people.get(pid);
+    return p ? { id: pid, sung: p.sung || 0, duetGuestCount: p.duetGuestCount || 0,
+      lastAppearanceTurn: p.lastAppearanceTurn || 0, lastSungAt: p.lastSungAt || 0,
+      waitingSince: p.waitingSince || 0, confirmedAt: p.confirmedAt || 0,
+      over: p.over || 0, held: p.held || 0 } : { id: pid };
+  }
+
+  // Le bar note l'invité d'un duo après l'envoi du titre à KaraFun : son
+  // passage rejoint le reçu du titre, pour disparaître avec lui si KaraFun
+  // retire ce titre sans qu'il ait été chanté.
+  _addPartnerCredit(credit, partnerId, row, serialBefore) {
+    const { before, after } = credit;
+    if (!after || !Array.isArray(before?.people) || !Array.isArray(after.people) ||
+        before.people.some(old => old.id === partnerId)) return;
+    before.people.push(row);
+    after.people.push(this._creditRow(partnerId));
+    const put = (list, value) => {
+      const map = new Map(list);
+      if (value === undefined) map.delete(partnerId); else map.set(partnerId, value);
+      return [...map];
+    };
+    if (Array.isArray(after.roundApps)) after.roundApps = put(after.roundApps, this.roundApps.get(partnerId));
+    if (Array.isArray(after.duetCooldowns)) after.duetCooldowns = put(after.duetCooldowns, this.duetCooldowns.get(partnerId));
+    if (Array.isArray(after.roundPeople) && !after.roundPeople.includes(partnerId)) after.roundPeople.push(partnerId);
+    if (Array.isArray(after.roundOwed)) after.roundOwed = after.roundOwed.filter(pid => pid !== partnerId);
+    if (after.appearanceSerial === serialBefore) after.appearanceSerial = this.appearanceSerial;
   }
 
   rollbackUnplayed(sel, { requeue = false } = {}) {
@@ -1678,7 +1723,7 @@ class Scheduler {
         }
       }
       const globals = ['appearanceSerial', 'lastGroup', 'roundPeople', 'roundGroups',
-        'tableServeCounts', 'duetCooldowns', 'roundUse', 'roundApps', 'recentGroups']
+        'tableServeCounts', 'duetCooldowns', 'roundUse', 'roundApps', 'roundOwed', 'recentGroups']
         .filter(field => field in after);
       const current = this._turnCreditState(sel);
       const matches = globals.every(field => JSON.stringify(current[field]) === JSON.stringify(after[field]));
@@ -1691,6 +1736,7 @@ class Scheduler {
         this.duetCooldowns = new Map(before.duetCooldowns);
         if (before.roundUse) this.roundUse = new Map(before.roundUse);
         if (before.roundApps) this.roundApps = new Map(before.roundApps);
+        if (before.roundOwed) this.roundOwed = new Set(before.roundOwed);
         if (before.recentGroups) this.recentGroups = before.recentGroups.map(groups => [...groups]);
       } else {
         // Le passage n'a pas eu lieu : il ne compte plus dans le partage des tables.
@@ -1706,6 +1752,13 @@ class Scheduler {
             if (!now || now !== (counted.get(pid) || 0)) continue;
             if (now > 1) this.roundApps.set(pid, now - 1);
             else this.roundApps.delete(pid);
+          }
+        }
+        // Une personne privée de passage au tour précédent le redevient.
+        if (before.roundOwed && after.roundOwed && !sel.newPersonRound) {
+          const wasOwed = new Set(before.roundOwed), stillOwed = new Set(after.roundOwed);
+          for (const pid of sel.ids) {
+            if (wasOwed.has(pid) && !stillOwed.has(pid) && this.people.has(pid)) this.roundOwed.add(pid);
           }
         }
         if (before.roundUse && after.roundUse) {
@@ -1816,8 +1869,10 @@ class Scheduler {
     this._refreshDuetViews();
     const resets = sel.roundResets ?? (sel.newPersonRound ? 1 : 0);
     for (let k = 0; k < resets; k++) this._resetRound(this.roundPeople, this.roundUse, this.roundApps);
+    if (resets) this.roundOwed = new Set((sel.owed || []).filter(pid => this.people.has(pid)));
     if (sel.newGroupRound) this.roundGroups.clear();
     sel.ids.forEach(pid => {
+      this.roundOwed.delete(pid);
       if (!this.people.has(pid)) return;
       this._useRound(this.roundPeople, this.roundUse, pid);
       this.roundApps.set(pid, (this.roundApps.get(pid) || 0) + 1);

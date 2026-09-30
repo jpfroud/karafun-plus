@@ -38,6 +38,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         Set<String> round = new HashSet<>(plan.getRoundPeople());
         Map<String, Double> roundUse = new HashMap<>(plan.getRoundUse());
         Map<String, Integer> apps = new HashMap<>(plan.getRoundApps() == null ? Map.of() : plan.getRoundApps());
+        Set<String> owed = new HashSet<>(plan.getRoundOwed() == null ? Set.of() : plan.getRoundOwed());
         final int cap = plan.getRoundCap(), spacing = plan.getSpacing();
         List<List<String>> history = new ArrayList<>(plan.getHistory());
         List<String> previous = plan.getLastGroups();
@@ -59,9 +60,10 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // A duo whose singer is already on stage `cap` times in this round
             // waits for the next one; the round ends when nothing else can sing.
             // People left without a passage when the round closes (their duo
-            // waited for someone at the cap) lead the next round.
-            Set<String> owed = new HashSet<>();
+            // waited for someone at the cap) lead the next round, all of them,
+            // until each has sung in it.
             if (candidates.stream().allMatch(c -> capped(c, apps, cap) || allIn(c, round))) {
+                owed.clear();
                 for (Performance c : candidates) for (String singer : c.getSingers()) if (!round.contains(singer)) owed.add(singer);
                 int resets = 0;
                 do { resetRound(round, roundUse); apps.clear(); resets++; }
@@ -72,7 +74,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             if (open.isEmpty()) open.addAll(candidates);
 
             List<Performance> tier = firstAppearances(open, appeared);
-            List<Performance> choices = preferOwed(oncePerRound(tier, round), owed);
+            List<Performance> choices = oncePerRound(preferOwed(tier, owed, round), round);
             // Spacing: when every fair passage brings back someone who sang
             // in the last `spacing` songs, another passage of the round goes
             // first, never someone who already sang in this round. The table
@@ -87,7 +89,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                     for (Performance c : open) if (spaced(c, lastSeen, at, spacing) && !allIn(c, round)) others.add(c);
                     if (!others.isEmpty()) {
                         spacedTier = firstAppearances(others, appeared);
-                        wellSpaced = preferOwed(oncePerRound(spacedTier, round), owed);
+                        wellSpaced = oncePerRound(preferOwed(spacedTier, owed, round), round);
                     }
                 }
                 if (!wellSpaced.isEmpty() && (offTable(wellSpaced, prior) || !offTable(choices, prior))) {
@@ -165,6 +167,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 lastSeen.put(singer, pos);
                 appeared.merge(singer, 1, Integer::sum);
                 apps.merge(singer, 1, Integer::sum);
+                owed.remove(singer);
                 useRound(round, roundUse, singer, weight(plan, singer));
             }
             history.add(current.getGroups());
@@ -202,10 +205,14 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         return choices;
     }
 
-    private static List<Performance> preferOwed(List<Performance> list, Set<String> owed) {
+    // Owed people go first, even when their duo brings back someone who
+    // already sang in this round (same as scheduler.js).
+    private static List<Performance> preferOwed(List<Performance> list, Set<String> owed, Set<String> round) {
         if (owed.isEmpty()) return list;
         List<Performance> owing = new ArrayList<>();
-        for (Performance c : list) for (String singer : c.getSingers()) if (owed.contains(singer)) { owing.add(c); break; }
+        for (Performance c : list) for (String singer : c.getSingers()) {
+            if (owed.contains(singer) && !round.contains(singer)) { owing.add(c); break; }
+        }
         return owing.isEmpty() ? list : owing;
     }
 

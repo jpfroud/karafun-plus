@@ -1233,6 +1233,7 @@ function clearQueue() {
   sched.roundGroups.clear();
   sched.roundPeople.clear();
   sched.roundApps.clear();
+  sched.roundOwed.clear();
   sched.invalidateManualOrder();
   sched.duetCooldowns.clear();
   sched.releaseNext();
@@ -1278,6 +1279,7 @@ function clearEvening() {
   sched.roundGroups.clear();
   sched.roundPeople.clear();
   sched.roundApps.clear();
+  sched.roundOwed.clear();
   sched.invalidateManualOrder();
   sched.tableServeCounts.clear();
   sched.duetCooldowns.clear();
@@ -1687,7 +1689,7 @@ const handlers = {
     const tr = tracked.find(x => String(x.queueId) === String(body.queueId));
     if (!tr || tr.sel.ids.length !== 1) throw new Error('Choisis un passage solo encore visible dans KaraFun.');
     const partnerId = String(body.partnerId || '');
-    const partner = sched.staffCountPartner(tr.sel.ids[0], partnerId);
+    const partner = sched.staffCountPartner(tr.sel.ids[0], partnerId, tr.sel);
     tr.sel.ids.push(partner.id);
     tr.sel.names.push(partner.name);
     tr.sel.kind = 'duo';

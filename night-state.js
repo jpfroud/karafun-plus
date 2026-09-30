@@ -84,6 +84,7 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       duetCooldowns: [...scheduler.duetCooldowns],
       recentGroups: clone(scheduler.recentGroups || []), roundUse: [...(scheduler.roundUse || new Map())],
       roundApps: [...(scheduler.roundApps || new Map())],
+      roundOwed: [...(scheduler.roundOwed || new Set())],
       stageHistory: clone(scheduler.stageHistory || []),
       playedSongs: clone(scheduler.playedSongs || []),
       log: clone(scheduler.log), slotSamples: [...scheduler.slotSamples],
@@ -217,6 +218,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     Array.isArray(row) && tmp.people.has(row[0]) && Number.isFinite(row[1]) && row[1] >= 0 && row[1] <= 10));
   tmp.roundApps = new Map(list(data.roundApps ?? [], 'passages du tour').filter(row =>
     Array.isArray(row) && tmp.people.has(row[0]) && Number.isInteger(row[1]) && row[1] >= 1 && row[1] <= 20));
+  tmp.roundOwed = new Set(list(data.roundOwed ?? [], 'passages dus du tour').filter(pid => tmp.people.has(pid)));
   tmp.stageHistory = clone(list(data.stageHistory ?? [], 'historique de scène')).filter(item =>
     item && typeof item === 'object' && Array.isArray(item.ids) && Number.isFinite(item.at)).slice(-60);
   tmp.playedSongs = clone(list(data.playedSongs ?? [], 'titres chantés')).filter(item =>
@@ -274,7 +276,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
-    'slotSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
+    'slotSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
   scheduler.solverPlan = null;
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

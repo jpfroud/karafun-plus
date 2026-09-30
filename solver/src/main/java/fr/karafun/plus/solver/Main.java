@@ -152,7 +152,8 @@ public final class Main {
                 integers(input.path("pastAppearance")), integers(input.path("physicalCount")),
                 integers(input.path("readyAt")), strings(input.path("lastGroups")),
                 new HashSet<>(strings(input.path("roundPeople"))),
-                doubles(input.path("roundUse"), 0, 10), integers(input.path("roundApps")), roundCap, spacing,
+                doubles(input.path("roundUse"), 0, 10), integers(input.path("roundApps")),
+                new HashSet<>(strings(input.path("roundOwed"))), roundCap, spacing,
                 doubles(input.path("personWeights"), 0.1, 10),
                 doubles(input.path("tableWeights"), 0.1, 10), history(input.path("history")),
                 rotation(input), input.path("interleaveArrivals").asBoolean(true));
