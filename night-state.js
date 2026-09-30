@@ -82,6 +82,7 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       tableServeCounts: [...scheduler.tableServeCounts],
       duetCooldowns: [...scheduler.duetCooldowns],
       recentGroups: clone(scheduler.recentGroups || []), roundUse: [...(scheduler.roundUse || new Map())],
+      roundApps: [...(scheduler.roundApps || new Map())],
       stageHistory: clone(scheduler.stageHistory || []),
       log: clone(scheduler.log), slotSamples: [...scheduler.slotSamples],
       version: scheduler.version,
@@ -210,6 +211,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     .filter(groups => Array.isArray(groups) && groups.every(g => typeof g === 'string')).slice(-120);
   tmp.roundUse = new Map(list(data.roundUse ?? [], 'crédits de tour').filter(row =>
     Array.isArray(row) && tmp.people.has(row[0]) && Number.isFinite(row[1]) && row[1] >= 0 && row[1] <= 10));
+  tmp.roundApps = new Map(list(data.roundApps ?? [], 'passages du tour').filter(row =>
+    Array.isArray(row) && tmp.people.has(row[0]) && Number.isInteger(row[1]) && row[1] >= 1 && row[1] <= 20));
   tmp.stageHistory = clone(list(data.stageHistory ?? [], 'historique de scène')).filter(item =>
     item && typeof item === 'object' && Array.isArray(item.ids) && Number.isFinite(item.at)).slice(-60);
   for (const t of list(data.tables, 'tables')) {
@@ -254,7 +257,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
-    'slotSamples', 'version', 'recentGroups', 'roundUse', 'stageHistory']) scheduler[field] = tmp[field];
+    'slotSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'stageHistory']) scheduler[field] = tmp[field];
   scheduler.solverPlan = null;
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

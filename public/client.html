@@ -671,7 +671,7 @@
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
       const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(invite.fromName || 'Un chanteur')} propose un duo</b> sur « ${esc(invite.song?.title || 'une chanson')} »${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}.
         ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">Accepter</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">Refuser</button></div>` : '<div class="small muted">Son téléphone doit répondre.</div>'}</div>`).join('');
-      const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(person.name)} chantera aussi en duo avec ${esc(duo.fromName)} sur « ${esc(duo.song?.title || 'une chanson')} ». Son propre tour reste disponible.</div>`).join('');
+      const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(person.name)} chantera aussi en duo avec ${esc(duo.fromName)} sur « ${esc(duo.song?.title || 'une chanson')} ». Ses propres chansons restent dans sa liste pour un prochain passage.</div>`).join('');
       const presenceMarkup = person.needConfirm && canEdit ? `<div class="notice warn"><b>Confirme la présence de ${esc(person.name)} pour son prochain passage.</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">Je suis là</button></div>`
         : state.rules?.requirePresence && person.confirmed ? '<div class="notice ok small">Présence confirmée pour ce passage.</div>' : '';
       return `<li class="person-card ${state?.table?.individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}${state?.table?.individual ? '' : ` · ${canEdit ? 'géré sur ce téléphone' : 'autre téléphone'}`}</div></div>${canEdit ? `<button type="button" class="btn small ghost" data-rename-person="${esc(person.id)}" aria-label="${state?.table?.individual ? 'Corriger mon nom' : `Renommer ${esc(person.name)}`}">${state?.table?.individual ? 'Corriger mon nom' : 'Renommer'}</button>` : ''}</div>${inviteMarkup}${guestMarkup}${presenceMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${state?.table?.individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}">Ajouter une chanson</button>`}<button type="button" class="btn" data-duet-song="${esc(person.id)}">${state?.table?.individual ? 'Chanter en duo' : 'Ajouter un duo'}</button><button type="button" class="btn small ghost" data-share-person="${esc(person.id)}">${state?.table?.individual ? 'Changer de téléphone' : 'Transférer la gestion'}</button></div>` : ''}</li>`;
@@ -1266,14 +1266,20 @@
     const otherTables = partners.filter(person => String(person.tableId) !== String(state?.table?.id));
     const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table ? ' · ' + esc(person.table) : ''}</option>`;
     openSheet(`<div class="row"><h3 class="grow">Duo sur « ${esc(song.title)} »</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-      <p class="muted small">${esc(owner.name)} utilise son tour ; son partenaire garde le sien. ${state?.table?.individual ? 'Son accord est nécessaire.' : 'Une autre table devra accepter l’invitation.'}</p>
+      <p class="muted small">${esc(owner.name)} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour. <span id="duoConsent"></span></p>
       <label class="field" for="duoPartner">Avec qui ?</label>
       <select id="duoPartner">${ownTable.length ? `<optgroup label="À ma table">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres tables · invitation à accepter">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
+      <p id="duoPartnerHint" class="notice warn small" role="status" hidden></p>
       <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">Ajouter le duo</button></div>`);
     const updateDuoAction = () => {
       const partner = partners.find(p => String(p.id) === String($('duoPartner').value));
       $('sendDuo').textContent = state?.table?.individual || String(partner?.tableId) !== String(state?.table?.id)
         ? 'Envoyer l’invitation' : 'Ajouter le duo';
+      $('duoConsent').textContent = state?.table?.individual ? 'Son accord est nécessaire.'
+        : String(partner?.tableId) !== String(state?.table?.id) ? 'Son téléphone devra accepter l’invitation.' : 'Même table : le duo est ajouté directement.';
+      const planned = Number(partner?.guestDuos) || 0;
+      $('duoPartnerHint').hidden = !planned;
+      $('duoPartnerHint').textContent = planned ? `${partner.name} a déjà ${planned} duo${planned > 1 ? 's' : ''} prévu${planned > 1 ? 's' : ''}. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.` : '';
     };
     $('duoPartner').addEventListener('change', updateDuoAction);
     updateDuoAction();

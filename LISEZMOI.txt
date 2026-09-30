@@ -74,8 +74,11 @@ DÉMARRAGE AU BAR
    Une personne peut être renommée. Pour un duo, choisis son titre et invite
    un partenaire : dans la même table le duo est accepté tout de suite, entre
    deux tables le partenaire accepte sur sa page. Seul l'initiateur utilise
-   son tour, l'invité garde le sien. Deux personnes du groupe « En solo » doivent aussi
-   confirmer leur duo, car elles sont des solistes indépendants. En cas de
+   son tour, l'invité garde ses chansons pour un prochain passage ;
+   personne ne monte sur scène plus de deux fois par tour, avec au moins
+   trois autres chansons entre deux passages quand c'est possible. Deux
+   personnes du groupe « En solo » doivent aussi confirmer leur duo, car
+   elles sont des solistes indépendants. En cas de
    téléphone perdu dans « En solo », demande au bar un code de reprise : seul le
    profil muni d'un code actif peut être repris sur un nouveau téléphone.
 

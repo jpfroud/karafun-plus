@@ -1154,6 +1154,7 @@ function clearQueue() {
   sched.Q = [];
   sched.roundGroups.clear();
   sched.roundPeople.clear();
+  sched.roundApps.clear();
   sched.invalidateManualOrder();
   sched.duetCooldowns.clear();
   sched.releaseNext();
@@ -1198,6 +1199,7 @@ function clearEvening() {
   sched.lastGroup = null;
   sched.roundGroups.clear();
   sched.roundPeople.clear();
+  sched.roundApps.clear();
   sched.invalidateManualOrder();
   sched.tableServeCounts.clear();
   sched.duetCooldowns.clear();
@@ -1751,10 +1753,16 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/staff/state') { if (!isStaff(req, u)) return send(res, 403, { error: 'Réservé au bar' }); return send(res, 200, staffState()); }
       if (p === '/api/duo/partners') {
         const table = tableByAccess(u.searchParams.get('table'), u.searchParams.get('access'));
+        // Duos déjà prévus avec chaque personne comme invitée : la page prévient
+        // que le plafond de passages peut faire attendre un nouveau duo.
+        const guestDuos = new Map();
+        for (const owner of sched.people.values()) for (const item of sched.songsOf(owner)) {
+          if (item.duet?.partnerId) guestDuos.set(item.duet.partnerId, (guestDuos.get(item.duet.partnerId) || 0) + 1);
+        }
         return send(res, 200, [...sched.people.values()].filter(person => !person.withdrawnAt)
           .map(person => ({ id: person.id, name: person.name, tableId: person.tableId,
             table: sched.table(person.tableId, false)?.name || person.tableId,
-            sameTable: person.tableId === table.id })));
+            sameTable: person.tableId === table.id, guestDuos: guestDuos.get(person.id) || 0 })));
       }
       if (p === '/api/search') {
         const q = String(u.searchParams.get('q') || '').trim();

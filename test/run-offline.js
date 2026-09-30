@@ -17,7 +17,7 @@ function run(file, env = {}) {
     'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js',
     'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','staff-duo-tracked-api.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js',
-    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js',
+    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','duo-cap-spacing.test.js',
     'sim-night.js','start-evening.test.js','startup-port.test.js']) await run(`test/${f}`);
   async function demoTest(port, songSeconds, script) {
   const base = `http://127.0.0.1:${port}`;

@@ -19,13 +19,13 @@ Chaque chanteur peut préparer plusieurs titres et les réordonner tant qu'ils n
 Les mêmes règles s'appliquent dans tous les modes, dans cet ordre :
 
 1. **Personne ne rechante avant les premiers passages** : tant qu'une personne prête n'est jamais montée sur scène, personne ne revient au micro, pas même en duo.
-2. **Chacun chante une fois par tour** : quelqu'un qui a déjà chanté dans le tour (y compris comme invité d'un duo) attend que les autres aient chanté.
+2. **Chacun chante une fois par tour** : quelqu'un qui a déjà chanté dans le tour (y compris comme invité d'un duo) attend que les autres aient chanté. **Personne ne monte sur scène plus de deux fois par tour**, quel que soit son rôle : si tout le monde invite la même personne, les duos au-delà attendent le tour suivant, et celles et ceux qui n'ont pas pu chanter à cause de ce plafond passent en tête du tour suivant.
 3. **La même table ne reprend pas le micro** quand une autre table peut chanter sans enfreindre les deux règles précédentes.
 4. **Partage du tour entre les tables**, selon le mode choisi dans « Règles de la soirée » :
    - **Chacun son tour** (recommandé) : les tables sont entremêlées au prorata de leurs chanteurs. Une table de 10 chante deux fois plus souvent qu'une table de 5, mais jamais d'affilée si une autre table attend.
    - **Tables à tour de rôle** : chaque table a la même part, quel que soit son effectif. Les petites tables passent tôt dans le tour, puis la grande table enchaîne en fin de tour ses chanteurs restants (règles 1 et 2).
    - **Compromis** : les grandes tables passent plus souvent que les petites, mais moins qu'en « Chacun son tour ».
-5. Une personne qui vient de monter sur scène laisse passer les autres ; à égalité, celle qui attend depuis le plus longtemps passe d'abord.
+5. **Au moins trois autres chansons avant qu'une personne remonte sur scène**, quand un autre passage du tour le permet sans redonner le micro à la table qui vient de chanter. Un premier passage en duo avec quelqu'un qui vient de chanter attend ainsi trois chansons au plus. À égalité, la personne qui attend depuis le plus longtemps passe d'abord.
 
 **Table qui arrive en nombre.** Si une table de huit s'inscrit d'un coup en cours de soirée, l'option « Intercaler une table qui arrive en nombre » (active par défaut) laisse les habitués chanter **une fois chacun** entre ses nouveaux chanteurs, au lieu de faire attendre toute la salle huit chansons. Personne ne chante deux fois pendant l'attente d'un nouveau. Sans cette option, les nouveaux chantent tous d'abord, d'affilée.
 

@@ -27,6 +27,9 @@ public class QueuePlan {
     private List<String> lastGroups;
     private Set<String> roundPeople;
     private Map<String, Double> roundUse;
+    private Map<String, Integer> roundApps;
+    private int roundCap;
+    private int spacing;
     private Map<String, Double> personWeights;
     private Map<String, Double> tableWeights;
     private List<List<String>> history;
@@ -40,6 +43,16 @@ public class QueuePlan {
                      Map<String, Double> roundUse, Map<String, Double> personWeights,
                      Map<String, Double> tableWeights, List<List<String>> history,
                      Rotation rotation, boolean interleaveArrivals) {
+        this(performances, line, pastAppearance, physicalCount, readyAt, lastGroups, roundPeople,
+                roundUse, Map.of(), 0, 0, personWeights, tableWeights, history, rotation, interleaveArrivals);
+    }
+    /** roundApps: stage appearances in the current round; roundCap and spacing: 0 disables them. */
+    public QueuePlan(List<Performance> performances, QueueLine line,
+                     Map<String, Integer> pastAppearance, Map<String, Integer> physicalCount,
+                     Map<String, Integer> readyAt, List<String> lastGroups, Set<String> roundPeople,
+                     Map<String, Double> roundUse, Map<String, Integer> roundApps, int roundCap, int spacing,
+                     Map<String, Double> personWeights, Map<String, Double> tableWeights,
+                     List<List<String>> history, Rotation rotation, boolean interleaveArrivals) {
         this.performances = performances;
         this.lines = List.of(line);
         this.pastAppearance = pastAppearance;
@@ -48,6 +61,9 @@ public class QueuePlan {
         this.lastGroups = lastGroups;
         this.roundPeople = roundPeople;
         this.roundUse = roundUse;
+        this.roundApps = roundApps;
+        this.roundCap = roundCap;
+        this.spacing = spacing;
         this.personWeights = personWeights;
         this.tableWeights = tableWeights;
         this.history = history;
@@ -64,6 +80,9 @@ public class QueuePlan {
     public List<String> getLastGroups() { return lastGroups; }
     public Set<String> getRoundPeople() { return roundPeople; }
     public Map<String, Double> getRoundUse() { return roundUse; }
+    public Map<String, Integer> getRoundApps() { return roundApps; }
+    public int getRoundCap() { return roundCap; }
+    public int getSpacing() { return spacing; }
     public Map<String, Double> getPersonWeights() { return personWeights; }
     public Map<String, Double> getTableWeights() { return tableWeights; }
     public List<List<String>> getHistory() { return history; }
