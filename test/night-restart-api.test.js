@@ -192,7 +192,7 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.ok(pendingSoloToken);
     await stop(first, true); // Coupure abrupte après sauvegarde, sans routine d’arrêt.
 
-    const second = await launch();
+    let second = await launch();
     state = await second.staff();
     assert.equal(state.tables.find(table => table.id === 'R1').url, oldUrl,
       'Le QR reste identique après un crash.');
@@ -286,6 +286,26 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.deepEqual((await soloState(solo.token, soloJoin.cookie)).managedIds, []);
     assert.deepEqual((await soloState(claimed.data.token, claimed.cookie)).managedIds, [solo.id]);
     console.log('ok - transfert transactionnel : panne d’écriture, ancien accès gardé, code réutilisable');
+
+    // Un lien de transfert déjà envoyé survit à une coupure de l'application.
+    const link = await second.ok('/api/table/person/share', soloBody({
+      personId: solo.id, token: claimed.data.token,
+    }), claimed.cookie);
+    const reprise = new URL(link.url).searchParams.get('reprise');
+    const saved = fs.readdirSync(path.join(sandbox, 'data')).filter(name => name.startsWith('soiree'))
+      .map(name => fs.readFileSync(path.join(sandbox, 'data', name), 'utf8')).join('');
+    assert.ok(!saved.includes(reprise) && !saved.includes(`"${link.code}"`), 'ni le lien ni le code ne sont écrits en clair');
+    await stop(second, true);
+    second = await launch();
+    assert.equal((await second.ok('/api/state?' + new URLSearchParams({
+      table: 'Comptoir', access: soloAccess, reprise,
+    }))).transferOffer.personId, solo.id, 'le lien est reconnu après le redémarrage');
+    const viaLink = await second.request('/api/table/person/claim', soloBody({ link: reprise }));
+    assert.equal(viaLink.status, 200, 'le lien reçu avant la coupure fonctionne encore');
+    assert.equal((await second.request('/api/table/person/claim', soloBody({ link: reprise }))).status, 400,
+      'il reste à usage unique');
+    assert.deepEqual((await soloState(viaLink.data.token, viaLink.cookie)).managedIds, [solo.id]);
+    console.log('ok - lien de transfert conservé après un crash, sans secret en clair');
 
     await second.ok('/api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
     const renewedSolo = (await second.staff()).tables;

@@ -59,6 +59,28 @@ test('titre déjà dans la file : l’alerte dit si l’autre passage est avant 
   assert.deepEqual(marks[3].earlier, [1, 3]);
 });
 
+test('repères du bar : le regroupement donne exactement la comparaison paire par paire', () => {
+  let seed = 7;
+  const random = n => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % n; };
+  const titles = ['Hallelujah', 'hallelujah (Live)', 'Déjà vu', 'Deja Vu', 'Africa', ''];
+  const artists = ['Leonard Cohen', 'Jeff Buckley', '', 'Toto', 'céline'];
+  const queue = Array.from({ length: 300 }, (_, index) => ({ pos: index + 1,
+    song: random(4) ? { songId: 1 + random(40), title: titles[random(titles.length)], artist: artists[random(artists.length)] } : null }));
+  const played = Array.from({ length: 60 }, (_, index) => ({ at: 1000 * index, songId: 1 + random(60),
+    title: titles[random(titles.length)], artist: artists[random(artists.length)] }));
+  const now = 60000, windowMs = 30000;
+  const expected = queue.map((line, index) => {
+    if (!line.song) return null;
+    const earlier = [], later = [];
+    queue.forEach((other, otherIndex) => {
+      if (otherIndex !== index && other.song && sameSong(other.song, line.song)) (otherIndex < index ? earlier : later).push(other.pos);
+    });
+    const recent = played.filter(item => now - item.at < windowMs && sameSong(item, line.song)).sort((a, b) => b.at - a.at)[0];
+    return earlier.length || later.length || recent ? { earlier, later, playedAt: recent ? recent.at : null } : null;
+  });
+  assert.deepEqual(queueRepeats(queue, played, now, windowMs), expected);
+});
+
 test('historique des titres lancés : un queueId compte une fois, limite de taille, sauvegarde et reprise', () => {
   const s = new Scheduler({});
   s.recordPlayed({ queueId: 1, songId: 4, title: 'Un', artist: 'A' }, 1000);

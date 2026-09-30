@@ -136,7 +136,7 @@ function saveNight({ required = false, replaceBoth = false } = {}) {
   if (!nightStore) return true;
   try {
     const snapshot = snapshotNight({ scheduler: sched, access, settings, pending, tracked,
-      soloInvitations,
+      soloInvitations, transfers: transferSnapshot(),
       photoDir: PHOTO_DIR });
     nightStore.save(snapshot);
     if (replaceBoth) nightStore.save(snapshot, { force: true });
@@ -1056,6 +1056,21 @@ async function createPersonShareCode(p) {
   return { code, expiresAt, url, qr, linkExpiresAt: url ? linkExpiresAt : null, name: p.name };
 }
 
+function transferSnapshot() {
+  const now = Date.now();
+  return [...personShareCodes].filter(([, saved]) => Math.max(saved.expiresAt, saved.linkExpiresAt) > now)
+    .map(([personId, saved]) => ({ personId, hash: saved.hash.toString('hex'), expiresAt: saved.expiresAt,
+      attempts: saved.attempts, linkHash: saved.linkHash ? saved.linkHash.toString('hex') : null,
+      linkExpiresAt: saved.linkExpiresAt }));
+}
+
+function restoreTransfers(rows) {
+  personShareCodes.clear();
+  for (const row of rows) personShareCodes.set(row.personId, { hash: Buffer.from(row.hash, 'hex'),
+    expiresAt: row.expiresAt, attempts: row.attempts, linkExpiresAt: row.linkExpiresAt,
+    linkHash: row.linkHash ? Buffer.from(row.linkHash, 'hex') : null });
+}
+
 // Retrouve la personne visée par un lien de transfert encore valable.
 function transferTarget(link, table) {
   if (typeof link !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(link)) return null;
@@ -1930,6 +1945,7 @@ async function main() {
     pending = recovered.pending;
     tracked = recovered.tracked;
     soloInvitations.restore(recovered.soloInvitations);
+    restoreTransfers(recovered.transfers);
     recoveredPending = recovered.recoveredPending;
     appLog(`Soirée restaurée : ${sched.tables.size} tables, ${sched.people.size} personnes, ${sched.Q.length} tickets.`);
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');

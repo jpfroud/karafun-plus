@@ -55,7 +55,7 @@ function savePhoto(photo, directory) {
 }
 
 function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null,
-  soloInvitations = null }) {
+  soloInvitations = null, transfers = [] }) {
   if (!scheduler || !access || !settings) throw new Error('État de soirée incomplet.');
   const tables = [...scheduler.tables.values()].map(t => ({ ...clone(t), secret: access.get(t.id) }));
   if (tables.some(t => !t.secret)) throw new Error('Secret QR manquant dans une table.');
@@ -90,6 +90,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
     },
     settings: clone(settings),
     soloInvitations: soloInvitations ? soloInvitations.serialize() : [],
+    // Transferts en cours : empreintes seulement, jamais le lien ni le code.
+    transfers: clone(transfers),
     pending: pending ? { ...clone(pending), before: [...pending.before] } : null,
     tracked: clone(tracked),
   };
@@ -253,6 +255,14 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       for (const pid of selection.ids) if (tmp.people.has(pid)) tmp.roundPeople.add(pid);
     }
   }
+  // Un lien de transfert déjà envoyé (WhatsApp, SMS…) reste valable après un
+  // redémarrage. Les lignes expirées ou mal formées sont simplement ignorées.
+  const hex = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+  const restoredTransfers = clone(list(snapshot.transfers ?? [], 'transferts')).filter(row =>
+    row && typeof row === 'object' && tmp.people.has(row.personId) && hex(row.hash) &&
+    (row.linkHash === null || hex(row.linkHash)) && Number.isFinite(row.expiresAt) &&
+    Number.isFinite(row.linkExpiresAt) && Number.isInteger(row.attempts) && row.attempts >= 0 &&
+    row.attempts <= 5 && Math.max(row.expiresAt, row.linkExpiresAt) > Date.now());
   const restoredPending = pending ? { ...clone(pending), before: new Set(pending.before) } : null;
   const restoredTracked = clone(tracked);
 
@@ -269,7 +279,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // garde les titres et doit regarder la file KaraFun avant de réarmer l'envoi.
   if (restoredPending) settings.auto = false;
   return { pending: restoredPending, tracked: restoredTracked,
-    recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize() };
+    recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize(),
+    transfers: restoredTransfers };
 }
 
 // À utiliser uniquement après le premier instantané QueueEvent frais de
