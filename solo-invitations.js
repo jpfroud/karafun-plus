@@ -9,6 +9,9 @@ const LIFE_MS = 30 * 60 * 1000;
 // millisecondes. Cette marge l'accepte sans admettre une durée prolongée.
 const CLOCK_SLACK_MS = 1000;
 const TOKEN_RE = /^[A-Za-z0-9_-]{32}$/;
+// Garde-fou technique de la sauvegarde, pas un nombre de places : un QR
+// expire en 30 minutes, 2 400 invitations en attente ne se produisent pas.
+const MAX_PENDING = 2400;
 
 // Le QR commun ne donne aucun droit d'inscription. Seule une invitation émise
 // par le bar crée une place, et son secret ne figure jamais dans l'état public.
@@ -27,13 +30,15 @@ class SoloInvitations {
     for (const [hash, entry] of this.entries) if (entry.expiresAt <= now) this.entries.delete(hash);
   }
 
-  issue(tableId, limit = 40) {
+  // `limit` : nombre de places encore libres, sans limite par défaut.
+  issue(tableId, limit = Infinity) {
     this.prune();
     const table = TableAccess.key(tableId);
     const pending = [...this.entries.values()].filter(entry => entry.tableId === table).length;
-    if (!Number.isInteger(limit) || limit < 1 || pending >= limit) {
+    if (!(limit === Infinity || (Number.isInteger(limit) && limit >= 1)) || pending >= limit) {
       throw new Error('Toutes les places en solo disponibles ont déjà une invitation. Annule une invitation ou libère une place.');
     }
+    if (this.entries.size >= MAX_PENDING) throw new Error('Trop d’invitations en attente : annules-en quelques-unes.');
     const token = crypto.randomBytes(24).toString('base64url');
     const hash = SoloInvitations.digest(token);
     // Une seule lecture de l'horloge : deux lectures peuvent tomber de part et
@@ -96,7 +101,7 @@ class SoloInvitations {
         next.has(entry.hash)) throw new Error('Invitations solo invalides.');
       if (entry.expiresAt > Date.now()) next.set(entry.hash, { ...entry });
     }
-    if (next.size > 2400) throw new Error('Trop d’invitations solo en attente.');
+    if (next.size > MAX_PENDING) throw new Error('Trop d’invitations solo en attente.');
     this.entries = next;
   }
 }

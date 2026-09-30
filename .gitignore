@@ -14,6 +14,7 @@
 /solver/target/
 /solver/karafun-solver.jar
 /solver/dependency-reduced-pom.xml
+/build-info.json
 *.sha256
 /dist/
 /release/

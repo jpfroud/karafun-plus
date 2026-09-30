@@ -70,6 +70,9 @@ const IMPORTANT_PERMISSIONS = [
   ['playback', p => !!(p?.managePlayback ?? p?.managePlayer), 'lecture'],
 ];
 
+// Essais espacés de 4 s avant de renoncer au nom habituel (environ 2 min).
+const NAME_RETRIES = 30;
+
 class KaraFunBridge extends EventEmitter {
   constructor({ logDir, bases, identityFile = null } = {}) {
     super();
@@ -103,15 +106,20 @@ class KaraFunBridge extends EventEmitter {
   get base() { return this.bases[this.baseIdx % this.bases.length]; }
   get username() { return `FileKaraoke-${this.loginSuffix}`; }
 
-  // Dernier recours : KaraFun refuse durablement le nom habituel. Le bar doit
-  // alors redonner les droits d'administrateur au nouveau nom.
+  // Dernier recours : KaraFun refuse durablement le nom habituel. Après un
+  // redémarrage rapide, KaraFun garde souvent l'ancienne connexion quelques
+  // dizaines de secondes : on attend donc environ deux minutes avant de
+  // changer de nom. Le bar peut fermer l'avis ; il revient à un nouveau
+  // changement de nom.
   _changeIdentity() {
     const previous = this.username;
     this.loginSuffix = Math.floor(1000 + Math.random() * 9000);
     saveIdentity(this.identityFile, this.loginSuffix);
-    this.identityNotice = `KaraFun refusait encore le nom ${previous} : la file s’appelle maintenant ${this.username}. Redonne-lui les droits d’administrateur dans KaraFun.`;
+    this.identityNotice = `KaraFun gardait encore l’ancienne connexion ${previous} : la file s’appelle maintenant ${this.username}. Si l’envoi de titres échoue, redonne-lui les droits d’administrateur dans KaraFun.`;
     this._record('info', 'identity-changed', { previous, next: this.username });
   }
+
+  dismissIdentityNotice() { this.identityNotice = null; this.emit('change'); }
 
   _checkPermissions(permissions) {
     const now = Object.fromEntries(IMPORTANT_PERMISSIONS.map(([key, read]) => [key, read(permissions)]));
@@ -261,11 +269,11 @@ class KaraFunBridge extends EventEmitter {
       } else if (m.type === 'Error') {
         if (p.type === 4 && /username is already used/i.test(p.message || '')) {
           usernameRetries++;
-          if (usernameRetries > 8) this._changeIdentity();
+          if (usernameRetries > NAME_RETRIES) this._changeIdentity();
           else this.lastError = `KaraFun garde encore l’ancienne connexion de ${this.username} ; nouvel essai dans quelques secondes.`;
           clearTimeout(usernameTimer);
           usernameTimer = setTimeout(() => { if (active()) { try { updateUsername(); } catch (_) { /* reconnexion */ } } },
-            usernameRetries > 8 ? 0 : 4000);
+            usernameRetries > NAME_RETRIES ? 0 : 4000);
           this.emit('change');
           return;
         }
@@ -328,8 +336,8 @@ class KaraFunBridge extends EventEmitter {
     let loginRetries = 0;
     socket.on('loginAlreadyTaken', () => {
       if (!active()) return;
-      if (++loginRetries > 8) this._changeIdentity();
-      setTimeout(() => { if (active()) this._auth(); }, loginRetries > 8 ? 0 : 4000);
+      if (++loginRetries > NAME_RETRIES) this._changeIdentity();
+      setTimeout(() => { if (active()) this._auth(); }, loginRetries > NAME_RETRIES ? 0 : 4000);
     });
     const unreachable = () => {
       if (!active()) return;

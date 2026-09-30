@@ -16,6 +16,7 @@ try {
     throw 'Le kit contient des données ou tests privés du projet.'
   }
   foreach ($required in @('karaoke-bar/node/node.exe', 'karaoke-bar/node/LICENSE', 'karaoke-bar/server.js',
+      'karaoke-bar/build-info.json',
       'karaoke-bar/public/client.html', 'karaoke-bar/DEMARRER.bat',
       'karaoke-bar/KaraFun Plus.exe', 'karaoke-bar/solver/bridge.js',
       'karaoke-bar/solver/karafun-solver.jar',

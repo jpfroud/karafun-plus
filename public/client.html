@@ -459,7 +459,7 @@
     $('presenceBanner').hidden = pending.length === 0;
     if (pending.length) {
       const names = pending.map(person => person.name).join(', ');
-      $('presenceBannerText').textContent = `Présence à confirmer pour ${names}. Sans confirmation, la chanson peut être reportée.`;
+      $('presenceBannerText').textContent = `Présence à confirmer pour ${names}. Sans réponse une fois la scène libre, la chanson laisse passer la suivante et revient juste après. Pour un duo, la réponse de l’un des deux suffit.`;
       announcePresence(fresh);
     }
   }
@@ -591,7 +591,8 @@
     const owned = managedPeople();
     const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
     const count = individual ? Number(state.table?.count ?? people.length) : people.length;
-    const full = Number.isInteger(state.table?.headcount) && count >= state.table.headcount;
+    // « En solo » n'a pas de nombre de places : seule une table ordinaire est complète.
+    const full = !individual && Number.isInteger(state.table?.headcount) && count >= state.table.headcount;
     const tableName = state.table && state.table.name ? state.table.name : `Table ${tableId}`;
     $('tableName').textContent = tableName;
     $('joinTable').textContent = tableName;
@@ -616,8 +617,8 @@
     $('peopleCard').hidden = individual && owned.length === 0;
     $('waitingLabel').textContent = individual ? 'Mes chansons à choisir' : 'À notre table, sans chanson';
     $('joinBox').hidden = individual ? owned.length > 0 || full || !state.soloInvitationReady : people.length > 0;
-    $('headcountNotice').hidden = !!state.table?.headcount;
-    $('joinForm').querySelector('button[type=submit]').disabled = !state.table?.headcount || full || (individual && !state.soloInvitationReady);
+    $('headcountNotice').hidden = individual || !!state.table?.headcount;
+    $('joinForm').querySelector('button[type=submit]').disabled = (!individual && !state.table?.headcount) || full || (individual && !state.soloInvitationReady);
     $('tableBox').hidden = individual ? owned.length === 0 && !full && recoveryPeople.length === 0 && state.soloInvitationReady : people.length === 0;
     const others = individual ? [] : people.filter(person => person.active && !manages(person.id));
     $('claimBox').hidden = individual ? recoveryPeople.length === 0 : others.length === 0;
@@ -651,11 +652,9 @@
     const individual = !!state.table?.individual;
     const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
     const canRegister = !full && (!individual || (!owned.length && state.soloInvitationReady)) &&
-      Number.isInteger(state.table?.headcount) && state.table.headcount > 0;
+      (individual || (Number.isInteger(state.table?.headcount) && state.table.headcount > 0));
     if (individual) {
-      const explanation = full
-        ? 'Les places « En solo » sont toutes prises. Demande au bar de vérifier les départs.'
-        : canRegister ? 'Cette invitation personnelle permet de t’inscrire. Si tu avais déjà un profil, demande plutôt un code de reprise au bar.'
+      const explanation = canRegister ? 'Cette invitation personnelle permet de t’inscrire. Si tu avais déjà un profil, demande plutôt un code de reprise au bar.'
           : soloInvitation ? 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.'
             : 'Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.';
       const actions = `${recoveryPeople.length ? '<button type="button" class="btn" data-access-go="claim">Récupérer mes chansons</button>' : ''}${canRegister

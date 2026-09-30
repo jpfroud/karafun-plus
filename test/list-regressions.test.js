@@ -29,12 +29,17 @@ test('une liste joue un titre par tour sans perdre les suivants', () => {
   assert.deepEqual(s.songsOf(a).map(x => x.songId), [3]);
 });
 
-test('le Comptoir conserve des groupes individuels mais respecte un effectif', () => {
+test('le Comptoir garde des groupes individuels, sans nombre de places', () => {
   const s = new Scheduler();
   const a = s.join({ tableId: 'Comptoir', name: 'Alice', headcount: 2 });
   const b = s.join({ tableId: 'Comptoir', name: 'Bob' });
   assert.notEqual(a.group, b.group);
-  assert.throws(() => s.join({ tableId: 'Comptoir', name: 'Faux nom' }), e => e.code === 'TABLE_FULL');
+  const more = Array.from({ length: 60 }, (_, i) => s.join({ tableId: 'Comptoir', name: `Solo ${i}` }));
+  assert.equal(new Set([a, b, ...more].map(p => p.group)).size, 62, 'au-delà de l’effectif et de 40 personnes');
+  const t = s.join({ tableId: '1', name: 'Anne', headcount: 1 });
+  assert.ok(t);
+  assert.throws(() => s.join({ tableId: '1', name: 'Faux nom' }), e => e.code === 'TABLE_FULL',
+    'une table ordinaire garde son effectif');
 });
 
 test('les solistes du Comptoir et une table ordinaire obtiennent chacun un premier passage', () => {

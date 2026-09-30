@@ -225,7 +225,7 @@ class Scheduler {
     const people = this.Q.map(pid => {
       const p = this.people.get(pid);
       return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
-        p.lastAppearanceTurn || 0,
+        p.lastAppearanceTurn || 0, this._isPresenceRetry(p),
         p.over, p.held, p.song?.entryId || null, p.song?.duet || null,
         (p.backlog || []).map(song => [song.entryId, song.duet || null])] : [pid];
     });
@@ -269,7 +269,7 @@ class Scheduler {
     const physical = [...relevant].map(pid => {
       const p = this.people.get(pid);
       return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
-        p.lastAppearanceTurn || 0] : [pid];
+        p.lastAppearanceTurn || 0, this._isPresenceRetry(p)] : [pid];
     });
     const context = { entries, physical, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
@@ -392,15 +392,15 @@ class Scheduler {
   join({ tableId, name, photo, headcount }) {
     const t = this.table(tableId);
     name = this.validName(name, t.id);
-    if (t.headcount == null) {
+    if (t.headcount == null && !t.individual) {
       if (!headcount) { const e = new Error('Combien êtes-vous à la table ?'); e.code = 'NEED_HEADCOUNT'; throw e; }
       this.setHeadcount(t.id, headcount, 'table');
     }
-    // Le groupe des solistes accueille des personnes successives toute la
-    // soirée : un départ libère sa place. Les tables ordinaires gardent leurs
+    // Le groupe des solistes n'a pas de nombre de places : chaque inscription
+    // passe par une invitation du bar. Les tables ordinaires gardent leurs
     // fiches historiques pour éviter le retour frauduleux comme « nouveau ».
-    const count = this.tableSingers(t.id).filter(p => !t.individual || !p.withdrawnAt).length;
-    if (count >= t.headcount) {
+    const count = this.tableSingers(t.id).length;
+    if (!t.individual && count >= t.headcount) {
       const e = new Error(`${t.name} a déjà ${count} chanteur${count > 1 ? 's' : ''} inscrit${count > 1 ? 's' : ''} pour ${t.headcount} personne${t.headcount > 1 ? 's' : ''}. Si vous êtes plus nombreux, demande au bar d'ajuster.`);
       e.code = 'TABLE_FULL';
       throw e;
@@ -461,6 +461,7 @@ class Scheduler {
     // peut donc pas recréer un « nouveau » chanteur avec le même QR de table.
     this._removeDuetsForPerson(p, true);
     p.song = null; p.backlog = []; p.withdrawnAt = Date.now();
+    p.presenceRetry = false; p.presenceSkips = 0; p.maybeGone = null;
     this._removeFromQ(p.id);
     if (this.reservedNext?.personId === p.id) this.releaseNext();
     this.invalidateManualOrder();
@@ -683,13 +684,71 @@ class Scheduler {
   }
 
   // ------------------------------------------------------------------ actions du chanteur
-  confirm(p) { p.confirmedAt = Date.now(); p.held = 0; this.version++; }
+  confirm(p) {
+    p.confirmedAt = Date.now(); p.held = 0;
+    p.presenceSkips = 0; p.maybeGone = null;
+    this.version++;
+  }
 
+  // Un duo est présent dès que l'un des deux a confirmé : l'autre n'a pas à
+  // refaire la démarche sur son propre téléphone.
   confirmedForTurn(ids) {
-    return ids.every(pid => {
-      const p = this.people.get(pid);
-      return p && (!this.opts.requirePresence || this._confirmedRecently(p));
-    });
+    const people = ids.map(pid => this.people.get(pid));
+    if (people.some(p => !p)) return false;
+    return !this.opts.requirePresence || people.some(p => this._confirmedRecently(p));
+  }
+
+  // « Je suis là » manqué alors que la scène est libre : ce passage laisse
+  // passer le suivant et revient juste après lui, avec une nouvelle demande.
+  // Au bout de `maxSkips` fois, le titre est retiré et le bar est prévenu que
+  // la personne est peut-être partie ; c'est à lui de la marquer partie.
+  skipUnconfirmed(personId, maxSkips = 3) {
+    const p = this.people.get(personId);
+    if (!p || p.withdrawnAt || !p.song) return null;
+    const title = p.song.title;
+    if (this.reservedNext?.personId === p.id) this.releaseNext();
+    p.presenceSkips = this.presenceSkipsOf(p) + 1;
+    p.presenceEntryId = p.song.entryId;
+    if (p.presenceSkips >= maxSkips) {
+      const skips = p.presenceSkips;
+      p.presenceSkips = 0;
+      p.presenceRetry = false;
+      p.maybeGone = { at: Date.now(), title, skips };
+      this.removeSong(p, p.song.entryId);
+      this.note(`${p.name} n'a pas confirmé sa présence ${skips} fois : « ${title} » est retiré de sa liste. Vérifie si ${p.name} est encore là.`, 'staff');
+      return { removed: true, skips, title };
+    }
+    p.presenceRetry = true;
+    this.version++;
+    this.note(`${p.name} n'a pas confirmé sa présence : « ${title} » laisse passer le titre suivant et revient juste après (${p.presenceSkips}/${maxSkips})`, 'skip');
+    return { removed: false, skips: p.presenceSkips, title };
+  }
+
+  // Les manques comptent pour le titre qui a été passé : un titre remplacé,
+  // retiré ou nouveau repart de zéro et reprend sa place normale.
+  presenceSkipsOf(p) {
+    return p?.song && p.presenceEntryId === p.song.entryId ? p.presenceSkips || 0 : 0;
+  }
+
+  _isPresenceRetry(p) {
+    return !!(p && !p.withdrawnAt && p.presenceRetry && p.song && p.presenceEntryId === p.song.entryId);
+  }
+
+  // Titres passés faute de présence, dans l'ordre de la file.
+  _presenceRetries() {
+    return this.Q.filter(pid => this._isPresenceRetry(this.people.get(pid)));
+  }
+
+  clearPresenceRetries() {
+    let changed = false;
+    for (const p of this.people.values()) if (p.presenceRetry) { p.presenceRetry = false; changed = true; }
+    if (changed) this.version++;
+  }
+
+  dismissMaybeGone(p) {
+    if (!p.maybeGone) return;
+    p.maybeGone = null;
+    this.note(`Le bar a confirmé que ${p.name} est toujours là`, 'staff');
   }
 
   giveSpot(p, toId) {
@@ -970,6 +1029,8 @@ class Scheduler {
     });
     let pinnedUntil = 0;
     if (this.reservedNext && rows[0]?.owner === this.reservedNext.personId) pinnedUntil = 1;
+    // Titre passé faute de présence : il suit le prochain passage, sans exception.
+    if (rows[1] && this._isPresenceRetry(this.people.get(rows[1].owner))) pinnedUntil = 2;
     if (this.manualOrderActive) {
       while (pinnedUntil < rows.length && this.manualOrder.includes(rows[pinnedUntil].owner)) {
         pinnedUntil++;
@@ -1295,7 +1356,7 @@ class Scheduler {
           if (!predict) {
             if (!song) continue;
             if (!ignorePresence && this.opts.requirePresence &&
-                !(this._confirmedRecently(owner) && this._confirmedRecently(partner))) continue;
+                !(this._confirmedRecently(owner) || this._confirmedRecently(partner))) continue;
           }
           cands.push({ ids: [owner.id, partner.id], consumedIds: [owner.id],
             song, group: owner.group,
@@ -1499,7 +1560,10 @@ class Scheduler {
         return null;
       }
     }
-    const c = this._pick(this.Q, this.lastGroup, false,
+    // Un titre passé faute de présence laisse passer le suivant (voir _forecast).
+    const retries = new Set(this._presenceRetries());
+    const order = retries.size ? this.Q.filter(pid => !retries.has(pid)) : this.Q;
+    const c = this._pick(order, this.lastGroup, false,
       this.roundGroups, this.roundPeople, this.tableServeCounts, this.duetCooldowns,
       null, this.reservedNext);
     if (!c) return null;
@@ -1536,6 +1600,8 @@ class Scheduler {
     if (!first) return null;
     this._carryPlanAcross(() => {
       this.reservedNext = { personId: first.ids[0], reservedAt: Date.now() };
+      const p = this.people.get(first.ids[0]);
+      if (p) p.presenceRetry = false;
     });
     this.version++;
     return first;
@@ -1602,12 +1668,32 @@ class Scheduler {
     if (provisional) apply(provisional);
     let reservation = this.reservedNext && !pendingIds.has(this.reservedNext.personId) ?
       this.reservedNext : null;
+    // Un titre passé faute de « Je suis là » laisse passer le passage suivant,
+    // puis devient le prochain annoncé (comme _commit le fait réellement).
+    const retries = this._presenceRetries().filter(pid => remaining.includes(pid) && !pendingIds.has(pid));
+    const held = new Set(retries);
+    const releaseRetry = () => {
+      const pid = retries.shift();
+      held.delete(pid);
+      return { personId: pid };
+    };
+    if (provisional && retries.length && !reservation) reservation = releaseRetry();
     while (remaining.length) {
-      const c = this._pick(remaining, last, predict, round, roundPeople, served,
+      const order = held.size ? remaining.filter(pid => !held.has(pid)) : remaining;
+      let c = order.length ? this._pick(order, last, predict, round, roundPeople, served,
         cooldowns, songs, reservation, appearances, ignorePresence, recentTurns,
-        { roundUse, roundApps, roundOwed, history, serial: appearanceTurn, ranks });
+        { roundUse, roundApps, roundOwed, history, serial: appearanceTurn, ranks }) : null;
+      if (!c && held.size) {
+        // Plus aucun autre passage possible : le titre passé revient tout de suite.
+        reservation = releaseRetry();
+        continue;
+      }
       if (!c) break;
       reservation = null;
+      if (retries.length) {
+        c.ids.forEach(pid => { if (held.delete(pid)) retries.splice(retries.indexOf(pid), 1); });
+        if (retries.length) reservation = releaseRetry();
+      }
       slots.push({ ...c, entryId: c.song?.entryId || null, future: positions.get(c.ids[0]) > 0 });
       for (const pid of c.consumedIds) {
         const k = remaining.indexOf(pid);
@@ -1708,6 +1794,15 @@ class Scheduler {
   rollbackUnplayed(sel, { requeue = false } = {}) {
     const credit = sel?.turnCredit;
     if (credit?.rolledBack) return false;
+    // Le titre passé faute de présence était annoncé après ce passage, qui
+    // n'a finalement pas été chanté : sans confirmation entre-temps, il
+    // attend de nouveau qu'un autre passage chante devant lui.
+    const retry = sel?.presenceRetryOf && this.people.get(sel.presenceRetryOf);
+    if (retry && this.reservedNext?.personId === retry.id && !this._confirmedRecently(retry) &&
+        retry.song && retry.presenceEntryId === retry.song.entryId) {
+      this.releaseNext();
+      retry.presenceRetry = true;
+    }
     const before = credit?.before, after = credit?.after;
     if (before && after && Array.isArray(before.people) && Array.isArray(after.people)) {
       const fields = ['sung', 'duetGuestCount', 'lastAppearanceTurn', 'lastSungAt',
@@ -1835,7 +1930,7 @@ class Scheduler {
     if (this.opts.requirePresence) {
       for (let i = 0; i < sel.at && i < this.Q.length; i++) {
         const q = this.people.get(this.Q[i]);
-        if (q && q.song && !this._confirmedRecently(q) && !sel.ids.includes(q.id)) {
+        if (q && q.song && !this._isPresenceRetry(q) && !this._confirmedRecently(q) && !sel.ids.includes(q.id)) {
           q.held++;
           if (q.held >= 2) {
             const k = this.Q.indexOf(q.id);
@@ -1894,6 +1989,18 @@ class Scheduler {
     this.manualOrder = this.manualOrder.filter(pid => !sel.ids.includes(pid));
     if (!this.manualOrder.length) this.manualOrderActive = false;
     if (this.reservedNext?.personId === sel.ids[0]) this.releaseNext();
+    // Monter sur scène efface les « Je suis là » manqués. Un titre passé faute
+    // de présence devient le prochain annoncé, juste après ce passage.
+    for (const pid of sel.ids) {
+      const p = this.people.get(pid);
+      if (p) { p.presenceSkips = 0; p.presenceRetry = false; p.maybeGone = null; }
+    }
+    const [retry] = this._presenceRetries();
+    if (retry && !this.reservedNext) {
+      this.people.get(retry).presenceRetry = false;
+      this.reservedNext = { personId: retry, reservedAt: Date.now() };
+      sel.presenceRetryOf = retry; // à défaire si ce passage n'est finalement pas chanté
+    }
     sel.turnCredit = { before: creditBefore, after: this._turnCreditState(sel), rolledBack: false };
     this.note(`À suivre : ${sel.label} — « ${sel.song.title} »`, 'next');
   }
@@ -1928,6 +2035,15 @@ class Scheduler {
     this.playedSongs.push(entry);
     if (this.playedSongs.length > PLAYED_LIMIT) this.playedSongs.splice(0, this.playedSongs.length - PLAYED_LIMIT);
     return entry;
+  }
+
+  // Le bar vide l'historique ; le passage en cours reste affiché.
+  clearStageHistory(keepEntryIds = []) {
+    const keep = new Set(keepEntryIds.filter(Boolean));
+    const before = this.stageHistory.length;
+    this.stageHistory = this.stageHistory.filter(item => !item.endedAt && keep.has(item.entryId));
+    this.version++;
+    return before - this.stageHistory.length;
   }
 
   endStage(sel, at = Date.now()) {

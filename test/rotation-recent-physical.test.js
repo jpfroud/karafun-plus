@@ -64,3 +64,26 @@ for (const options of [
     assert.ok(osark > 0, 'Osark garde son titre et passe après un duo moins rapproché');
   });
 }
+
+// Le partage « Compromis » compte les personnes qui ont encore un titre, pas
+// l'effectif déclaré de la table : une personne partie ne pèse plus.
+test('compromis : une personne partie ne compte plus dans la part de sa table', () => {
+  const order = departed => {
+    let songId = 1;
+    const s = new Scheduler({ tableRotation: true, weightedTables: true });
+    s.setHeadcount('A', 4 + departed); s.setHeadcount('B', 2); s.setHeadcount('C', 1);
+    const gone = Array.from({ length: departed }, (_, i) => s.join({ tableId: 'A', name: `X${i}` }));
+    const people = [...['A0', 'A1', 'A2', 'A3'].map(name => s.join({ tableId: 'A', name })),
+      ...['B0', 'B1'].map(name => s.join({ tableId: 'B', name })), s.join({ tableId: 'C', name: 'C0' })];
+    gone.forEach(p => s.leave(p));
+    const names = [];
+    for (let k = 0; k < 40; k++) {
+      for (const p of people) while (s.songsOf(p).length < 2) s.chooseSong(p, { songId: songId++, title: `T${songId}` }, 'append');
+      const sel = s.select();
+      s.commit(sel); s.songEnded(sel.ids);
+      names.push(people.find(p => p.id === sel.ids[0]).name);
+    }
+    return names;
+  };
+  assert.deepEqual(order(5), order(0), 'table de 9 dont 5 partis = table de 4');
+});

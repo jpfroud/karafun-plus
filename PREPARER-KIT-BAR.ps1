@@ -24,8 +24,19 @@ if (-not (Test-Path -LiteralPath $javaPortable -PathType Leaf)) {
     --no-header-files --no-man-pages --output (Join-Path $racine 'solver-runtime')
   if ($LASTEXITCODE -ne 0) { throw 'Construction du runtime Java embarqué impossible.' }
 }
+# Version affichée dans la page du bar : celle de la publication (tag), sinon
+# celle de package.json, avec le commit construit.
+$paquet = Get-Content -LiteralPath (Join-Path $racine 'package.json') -Raw | ConvertFrom-Json
+$versionKit = if ($env:KIT_VERSION) { $env:KIT_VERSION } else { "v$($paquet.version)" }
+$commitKit = $env:GITHUB_SHA
+if (-not $commitKit -and (Get-Command git -ErrorAction SilentlyContinue)) {
+  try { $commitKit = (& git -C $racine rev-parse HEAD 2>$null | Select-Object -First 1) } catch { $commitKit = '' }
+}
+$infoKit = [ordered]@{ version = $versionKit; commit = "$commitKit"; builtAt = (Get-Date).ToUniversalTime().ToString('o') }
+# WriteAllText écrit l'UTF-8 sans BOM, lisible directement par JSON.parse.
+[System.IO.File]::WriteAllText((Join-Path $racine 'build-info.json'), ($infoKit | ConvertTo-Json))
 $fichiers = @(
-  'KaraFun Plus.exe',
+  'KaraFun Plus.exe', 'build-info.json',
   'DEMARRER.bat', 'ARRETER.bat', 'DEMO.bat',
   'LICENSE',
   'KIT-BAR-LISEZMOI.txt', 'GUIDE-BAR.md', 'LISEZMOI.txt',

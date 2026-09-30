@@ -243,7 +243,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     !Number.isInteger(restoredSettings.pushDelaySec) || restoredSettings.pushDelaySec < 0 || restoredSettings.pushDelaySec > 180 ||
     !Number.isInteger(restoredSettings.playDelaySec) || restoredSettings.playDelaySec < 0 || restoredSettings.playDelaySec > 30 ||
     ('repeatWarnMin' in restoredSettings && (!Number.isInteger(restoredSettings.repeatWarnMin) ||
-      restoredSettings.repeatWarnMin < 0 || restoredSettings.repeatWarnMin > 240))) fail('réglages mal formés');
+      restoredSettings.repeatWarnMin < 0 || restoredSettings.repeatWarnMin > 240)) ||
+    ('presenceGraceSec' in restoredSettings && (!Number.isInteger(restoredSettings.presenceGraceSec) ||
+      restoredSettings.presenceGraceSec < 10 || restoredSettings.presenceGraceSec > 300)) ||
+    ('presenceMaxSkips' in restoredSettings && (!Number.isInteger(restoredSettings.presenceMaxSkips) ||
+      restoredSettings.presenceMaxSkips < 1 || restoredSettings.presenceMaxSkips > 10))) fail('réglages mal formés');
 
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||

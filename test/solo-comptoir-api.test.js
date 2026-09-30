@@ -179,9 +179,7 @@ async function ok(path, body, cookie = '') {
   const capacity = await invite();
   const active = (await ok('/api/staff/state')).value.tables.find(t => t.id === 'Comptoir').activeCount;
   await ok('/api/staff/table', { id: 'Comptoir', headcount: active, individual: true });
-  const tooFull = await request('/api/join', fields({ name: 'Attente', invitation: capacity.token }));
-  assert.equal(tooFull.value.code, 'TABLE_FULL', 'une erreur de capacité refuse la création du profil');
-  await ok('/api/staff/table', { id: 'Comptoir', headcount: active + 1, individual: true });
+  // « En solo » n'a pas de nombre de places : un ancien effectif ne bloque pas l'inscription.
   await ok('/api/join', fields({ name: 'Attente', invitation: capacity.token }));
   assert.equal((await request('/api/join', fields({ name: 'Rejeu', invitation: capacity.token }))).status, 403,
     'une inscription enfin réussie consomme l’invitation une fois');

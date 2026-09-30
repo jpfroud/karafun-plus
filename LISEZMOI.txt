@@ -140,7 +140,12 @@ BON À SAVOIR
 - Bonus/malus (cartes des tables, repères chanteurs) : réservé au bar,
   invisible des clients, de -3 (un tour sur deux) à +3 (deux fois plus).
 - « Je suis là » est demandé seulement à la personne prévue juste après celle
-  sur scène (aux deux chanteurs d'un duo), pas aux suivants plus éloignés.
+  sur scène, pas aux suivants plus éloignés ; pour un duo, l'un des deux
+  suffit. Sans réponse 30 s après la fin du titre en cours (réglable), le
+  passage suivant chante d'abord et le titre revient juste après ; au bout de
+  3 manques (réglable), il est retiré et le bar est prévenu.
+- Le groupe « En solo » n'a pas de nombre de places.
+- La version installée s'affiche en haut de la page du bar.
 - Lorsqu'un nom apparaît « Prochain confirmé », les nouvelles inscriptions
   et la rotation ne le déplacent plus. Le bar ou une indisponibilité peuvent
   encore modifier ce passage ; son envoi à KaraFun peut attendre le délai
