@@ -66,18 +66,25 @@ DÉMARRAGE AU BAR
    Plusieurs téléphones peuvent scanner le même QR : chacun ajoute les personnes
    qu'il gère, par exemple deux personnes sur chaque téléphone pour une table
    de quatre. Sans téléphone ou sans batterie, une personne peut être inscrite
-   par le téléphone d'un proche. Pour changer de téléphone, elle récupère un
-   code de partage à 4 chiffres auprès du téléphone actuel ou du bar si ce
-   téléphone est perdu ou déchargé. Le code dure dix minutes, fonctionne une
-   fois et expire après cinq essais incorrects. L'ajout reste sur
+   par le téléphone d'un proche. Pour changer de téléphone, le téléphone
+   actuel touche « Transférer la gestion » : le nouveau scanne le QR code
+   affiché, ou ouvre le lien reçu par WhatsApp, SMS ou e-mail, puis touche
+   « Récupérer ». QR et lien valent 30 minutes, une seule fois. En secours,
+   un code à 4 chiffres (dix minutes, cinq essais) ; si le téléphone est
+   perdu ou déchargé, le bar fournit le même QR. L'ajout reste sur
    « Ma table » ; le formulaire disparaît quand l'effectif est atteint.
    Une personne peut être renommée. Pour un duo, choisis son titre et invite
    un partenaire : dans la même table le duo est accepté tout de suite, entre
    deux tables le partenaire accepte sur sa page. Seul l'initiateur utilise
-   son tour, l'invité garde le sien. Deux personnes du groupe « En solo » doivent aussi
-   confirmer leur duo, car elles sont des solistes indépendants. En cas de
-   téléphone perdu dans « En solo », demande au bar un code de reprise : seul le
-   profil muni d'un code actif peut être repris sur un nouveau téléphone.
+   son tour, l'invité garde ses chansons pour un prochain passage ;
+   personne ne monte sur scène plus de deux fois par tour, avec au moins
+   trois autres chansons entre deux passages quand c'est possible. Deux
+   personnes du groupe « En solo » doivent aussi confirmer leur duo, car
+   elles sont des solistes indépendants. En cas de téléphone perdu dans
+   « En solo », demande au bar un QR de transfert : seul le profil visé par
+   ce QR (ou un code actif) peut être repris.
+   Un titre déjà prévu dans la file, ou chanté depuis peu (45 min par défaut),
+   déclenche une simple alerte : on peut le garder ou en choisir un autre.
 
 5. S'il y a un souci, envoie-moi les fichiers du dossier « journal »
    (karafun-AAAA-MM-JJ.jsonl et serveur-AAAA-MM-JJ.log) : ils contiennent

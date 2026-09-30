@@ -11,8 +11,10 @@ import java.util.Set;
 
 /**
  * Same bar policy as scheduler.js#_pick, evaluated on a whole planned queue.
- * Hard: the singer's own playlist order, and first appearances of the evening
- * before anyone's return. Medium: once per round (with bonus/malus credits),
+ * Hard: the singer's own playlist order, first appearances of the evening
+ * before anyone's return, at most roundCap stage appearances per person in a
+ * round, and `spacing` other songs before a person returns when another
+ * passage of the round allows it. Medium: once per round (with bonus/malus credits),
  * no table twice in a row when another can sing, spacing of a returning
  * person, and each table's share of the round. Soft: stability versus the
  * order proposed by the Node process.
@@ -35,6 +37,9 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         Map<String, Integer> appeared = new HashMap<>(plan.getPhysicalCount());
         Set<String> round = new HashSet<>(plan.getRoundPeople());
         Map<String, Double> roundUse = new HashMap<>(plan.getRoundUse());
+        Map<String, Integer> apps = new HashMap<>(plan.getRoundApps() == null ? Map.of() : plan.getRoundApps());
+        Set<String> owed = new HashSet<>(plan.getRoundOwed() == null ? Set.of() : plan.getRoundOwed());
+        final int cap = plan.getRoundCap(), spacing = plan.getSpacing();
         List<List<String>> history = new ArrayList<>(plan.getHistory());
         List<String> previous = plan.getLastGroups();
 
@@ -52,42 +57,55 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 Performance candidate = order.get(j);
                 if (owners.add(candidate.getOwner())) candidates.add(candidate);
             }
-            if (candidates.stream().allMatch(c -> allIn(c, round))) {
+            // A duo whose singer is already on stage `cap` times in this round
+            // waits for the next one; the round ends when nothing else can sing.
+            // People left without a passage when the round closes (their duo
+            // waited for someone at the cap) lead the next round, all of them,
+            // until each has sung in it.
+            if (candidates.stream().allMatch(c -> capped(c, apps, cap) || allIn(c, round))) {
+                owed.clear();
+                for (Performance c : candidates) for (String singer : c.getSingers()) if (!round.contains(singer)) owed.add(singer);
                 int resets = 0;
-                do { resetRound(round, roundUse); resets++; }
-                while (resets < 4 && candidates.stream().allMatch(c -> allIn(c, round)));
+                do { resetRound(round, roundUse); apps.clear(); resets++; }
+                while (resets < 4 && candidates.stream().allMatch(c -> capped(c, apps, cap) || allIn(c, round)));
             }
+            List<Performance> open = new ArrayList<>();
+            for (Performance c : candidates) if (!capped(c, apps, cap)) open.add(c);
+            if (open.isEmpty()) open.addAll(candidates);
 
-            // First appearances of the evening.
-            List<Performance> tier = new ArrayList<>();
-            for (Performance c : candidates) if (freshCount(c, appeared) == c.getSingers().size()) tier.add(c);
-            if (tier.isEmpty()) {
-                int least = Integer.MAX_VALUE;
-                for (Performance c : candidates) {
-                    if (freshCount(c, appeared) > 0) least = Math.min(least, totalAppearances(c, appeared));
+            List<Performance> tier = firstAppearances(open, appeared);
+            List<Performance> choices = oncePerRound(preferOwed(tier, owed, round), round);
+            // Spacing: when every fair passage brings back someone who sang
+            // in the last `spacing` songs, another passage of the round goes
+            // first, never someone who already sang in this round. The table
+            // rule wins: spacing never hands the mic back to the last table.
+            if (spacing > 0) {
+                final int at = pos;
+                List<Performance> wellSpaced = new ArrayList<>();
+                for (Performance c : choices) if (spaced(c, lastSeen, at, spacing)) wellSpaced.add(c);
+                List<Performance> spacedTier = tier;
+                if (wellSpaced.isEmpty()) {
+                    List<Performance> others = new ArrayList<>();
+                    for (Performance c : open) if (spaced(c, lastSeen, at, spacing) && !allIn(c, round)) others.add(c);
+                    if (!others.isEmpty()) {
+                        spacedTier = firstAppearances(others, appeared);
+                        wellSpaced = oncePerRound(preferOwed(spacedTier, owed, round), round);
+                    }
                 }
-                for (Performance c : candidates) {
-                    if (freshCount(c, appeared) > 0 && totalAppearances(c, appeared) == least) tier.add(c);
+                if (!wellSpaced.isEmpty() && (offTable(wellSpaced, prior) || !offTable(choices, prior))) {
+                    choices = wellSpaced;
+                    tier = spacedTier;
                 }
-                if (tier.isEmpty()) tier.addAll(candidates);
             }
-            // Once per round.
-            List<Performance> choices = new ArrayList<>();
-            for (Performance c : tier) if (noneIn(c, round)) choices.add(c);
-            if (choices.isEmpty()) {
-                int fewest = Integer.MAX_VALUE;
-                for (Performance c : tier) if (!allIn(c, round)) fewest = Math.min(fewest, repeats(c, round));
-                for (Performance c : tier) if (!allIn(c, round) && repeats(c, round) == fewest) choices.add(c);
-                if (choices.isEmpty()) choices.addAll(tier);
-            }
+            final List<Performance> chosen = choices;
             // A table that arrives at once is interleaved with people who
             // have not sung since any waiting person started waiting.
             boolean streak = plan.isInterleaveArrivals() && !prior.isEmpty() &&
-                    choices.stream().allMatch(c -> overlaps(c.getGroups(), prior));
+                    chosen.stream().allMatch(c -> overlaps(c.getGroups(), prior));
             List<Performance> alternates = new ArrayList<>();
             if (streak) {
-                for (Performance c : candidates) {
-                    if (choices.contains(c) || overlaps(c.getGroups(), prior)) continue;
+                for (Performance c : open) {
+                    if (chosen.contains(c) || overlaps(c.getGroups(), prior)) continue;
                     boolean allowed = true;
                     for (String singer : c.getSingers()) {
                         int seen = lastSeen.getOrDefault(singer, UNKNOWN);
@@ -140,14 +158,16 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             }
             double best = Double.NEGATIVE_INFINITY;
             for (Performance c : allowedNow) best = Math.max(best, need(c, deficits));
-            double chosen = need(current, deficits);
-            if (best > chosen + EPS && best != Double.NEGATIVE_INFINITY) {
-                medium -= Math.round((best - chosen) * 150);
+            double picked = need(current, deficits);
+            if (best > picked + EPS && best != Double.NEGATIVE_INFINITY) {
+                medium -= Math.round((best - picked) * 150);
             }
 
             for (String singer : current.getSingers()) {
                 lastSeen.put(singer, pos);
                 appeared.merge(singer, 1, Integer::sum);
+                apps.merge(singer, 1, Integer::sum);
+                owed.remove(singer);
                 useRound(round, roundUse, singer, weight(plan, singer));
             }
             history.add(current.getGroups());
@@ -157,6 +177,63 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             soft -= (long) displacement * (current.getPreviousIndex() < 5 ? 10 : 3);
         }
         return HardMediumSoftScore.of(hard, medium, soft);
+    }
+
+    private static List<Performance> firstAppearances(List<Performance> candidates, Map<String, Integer> appeared) {
+        List<Performance> tier = new ArrayList<>();
+        for (Performance c : candidates) if (freshCount(c, appeared) == c.getSingers().size()) tier.add(c);
+        if (!tier.isEmpty()) return tier;
+        int least = Integer.MAX_VALUE;
+        for (Performance c : candidates) {
+            if (freshCount(c, appeared) > 0) least = Math.min(least, totalAppearances(c, appeared));
+        }
+        for (Performance c : candidates) {
+            if (freshCount(c, appeared) > 0 && totalAppearances(c, appeared) == least) tier.add(c);
+        }
+        if (tier.isEmpty()) tier.addAll(candidates);
+        return tier;
+    }
+
+    private static List<Performance> oncePerRound(List<Performance> tier, Set<String> round) {
+        List<Performance> choices = new ArrayList<>();
+        for (Performance c : tier) if (noneIn(c, round)) choices.add(c);
+        if (!choices.isEmpty()) return choices;
+        int fewest = Integer.MAX_VALUE;
+        for (Performance c : tier) if (!allIn(c, round)) fewest = Math.min(fewest, repeats(c, round));
+        for (Performance c : tier) if (!allIn(c, round) && repeats(c, round) == fewest) choices.add(c);
+        if (choices.isEmpty()) choices.addAll(tier);
+        return choices;
+    }
+
+    // Owed people go first, even when their duo brings back someone who
+    // already sang in this round (same as scheduler.js).
+    private static List<Performance> preferOwed(List<Performance> list, Set<String> owed, Set<String> round) {
+        if (owed.isEmpty()) return list;
+        List<Performance> owing = new ArrayList<>();
+        for (Performance c : list) for (String singer : c.getSingers()) {
+            if (owed.contains(singer) && !round.contains(singer)) { owing.add(c); break; }
+        }
+        return owing.isEmpty() ? list : owing;
+    }
+
+    private static boolean offTable(List<Performance> list, List<String> prior) {
+        for (Performance c : list) if (prior.isEmpty() || !overlaps(c.getGroups(), prior)) return true;
+        return false;
+    }
+
+    private static boolean capped(Performance c, Map<String, Integer> apps, int cap) {
+        if (cap <= 0) return false;
+        for (String singer : c.getSingers()) if (apps.getOrDefault(singer, 0) >= cap) return true;
+        return false;
+    }
+
+    // Same as scheduler.js: nobody who sang in the last `spacing` songs.
+    private static boolean spaced(Performance c, Map<String, Integer> lastSeen, int pos, int spacing) {
+        for (String singer : c.getSingers()) {
+            Integer last = lastSeen.get(singer);
+            if (last != null && last > UNKNOWN && pos - last <= spacing) return false;
+        }
+        return true;
     }
 
     private static double weight(QueuePlan plan, String person) {

@@ -94,6 +94,18 @@
   .client .access-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .client .access-actions .btn { flex: 1 1 180px; }
   .client .catalog-access { margin-bottom: 12px; }
+  .client .transfer-steps { margin: 4px 0 0; padding-left: 22px; font-size: 14px; }
+  .client .transfer-steps li { margin: 5px 0; }
+  .client .transfer-qr { width: min(232px, 68vw); margin: 12px auto 6px; padding: 8px; background: #fff; border-radius: 12px; }
+  .client .transfer-qr img { display: block; width: 100%; height: auto; }
+  .client .share-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-top: 8px; }
+  .client .share-links .btn { width: 100%; margin: 0; }
+  .client .share-links a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: var(--text); }
+  .client .transfer-url { width: 100%; margin-top: 8px; font-size: 12px; }
+  .client .transfer-fallback { margin-top: 12px; font-size: 14px; }
+  .client .transfer-fallback summary { cursor: pointer; color: var(--muted); }
+  .client #transferBox .sheet-actions { margin-top: 10px; }
+  .client .song-notice { margin: 0 0 10px; }
   @media (max-width: 380px) { .client .form-row { display: block; } .client .form-row .btn { width: 100%; margin-top: 8px; } }
 </style>
 </head>
@@ -144,6 +156,11 @@
   </div>
 
   <section id="tab-table" role="tabpanel" aria-labelledby="nav-table">
+    <div id="transferBox" class="card notice ok" role="region" aria-labelledby="transferHeading" hidden>
+      <h2 id="transferHeading">Récupérer un chanteur</h2>
+      <p id="transferText" class="small"></p>
+      <div class="sheet-actions" id="transferActions"></div>
+    </div>
     <div id="joinBox" class="card" hidden>
       <h2>Bienvenue à <span id="joinTable">ta table</span> !</h2>
       <p id="joinIntro" class="muted small intro">Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.</p>
@@ -252,9 +269,21 @@
   try { tableId = decodeURIComponent(segments[1] || ''); access = decodeURIComponent(segments[2] || ''); }
   catch (_) { /* Le lien est signalé ci-dessous. */ }
   let soloInvitation = new URLSearchParams(location.search || '').get('invitation') || '';
+  // Lien de transfert reçu d'un autre téléphone ou du bar (QR, WhatsApp…).
+  let transferLink = new URLSearchParams(location.search || '').get('reprise') || '';
+  function forgetQueryParam(name) {
+    const params = new URLSearchParams(location.search || '');
+    params.delete(name);
+    const query = params.toString();
+    window.history?.replaceState?.(null, '', location.pathname + (query ? `?${query}` : ''));
+  }
   function forgetSoloInvitation() {
     soloInvitation = '';
-    window.history?.replaceState?.(null, '', location.pathname);
+    forgetQueryParam('invitation');
+  }
+  function forgetTransferLink() {
+    transferLink = '';
+    forgetQueryParam('reprise');
   }
   const tokenKey = `kfTok:${tableId}:${access}`;
   const tokensKey = `kfPeople:${tableId}:${access}`;
@@ -289,6 +318,7 @@
   let searchTimer = null;
   let lastFocus = null;
   let pendingSong = null;
+  let noticeRequest = 0;
 
   const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   const list = value => Array.isArray(value) ? value : [];
@@ -308,13 +338,47 @@
     return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   }
 
-  function toast(message, bad = false) {
+  function toast(message, bad = false, { warn = false, ms = 4000 } = {}) {
     const node = $('toast');
     node.textContent = message;
-    node.className = 'toast' + (bad ? ' bad' : '');
+    node.className = 'toast' + (bad ? ' bad' : warn ? ' warn' : '');
     node.hidden = false;
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => { node.hidden = true; }, 4000);
+    toast.timer = setTimeout(() => { node.hidden = true; }, ms);
+  }
+
+  // Alerte « titre en double » : jamais bloquante, seulement informative.
+  function songNoticeText(notice, added = false) {
+    if (!notice) return '';
+    const parts = [];
+    if (notice.playedAt != null) parts.push(notice.minutesAgo < 1 ? 'Ce titre vient d’être lancé sur scène.'
+      : `Ce titre a été chanté il y a ${notice.minutesAgo} min.`);
+    const queued = list(notice.queued);
+    const where = item => `n°${item.pos}${eta(item.eta) ? ` vers ${eta(item.eta)}` : ''}${item.name ? `, ${item.name}` : ''}`;
+    const before = queued.find(item => item.before);
+    if (added && before) parts.push(`Il est déjà prévu avant le tien dans la file (${where(before)}).`);
+    else if (added && queued.length) parts.push(`Quelqu’un l’a aussi prévu plus tard dans la file (${where(queued[0])}).`);
+    else if (queued.length) parts.push(`Il est déjà prévu dans la file (${where(queued[0])}).`);
+    return parts.join(' ');
+  }
+
+  async function showSongNotice(song, nodeId) {
+    const ticket = ++noticeRequest;
+    const params = new URLSearchParams({ table: tableId, access, songId: String(song.songId || ''),
+      title: song.title || '', artist: song.artist || '' });
+    try {
+      const { notice } = await request(`/api/song/notice?${params}`);
+      const node = $(nodeId);
+      if (ticket !== noticeRequest || !node || !notice) return;
+      node.textContent = `⚠ ${songNoticeText(notice)} Tu peux l’ajouter quand même ou choisir un autre titre.`;
+      node.hidden = false;
+    } catch (_) { /* L'alerte est facultative : l'ajout reste possible. */ }
+  }
+
+  function addedToast(result, message) {
+    const warning = songNoticeText(result?.notice, true);
+    if (warning) toast(`${message} ⚠ ${warning}`, false, { warn: true, ms: 9000 });
+    else toast(message);
   }
 
   function savePersonToken(id, value) {
@@ -467,6 +531,7 @@
     const number = ++stateRequest;
     const params = new URLSearchParams({ table: tableId, access });
     if (soloInvitation) params.set('invitation', soloInvitation);
+    if (transferLink) params.set('reprise', transferLink);
     const credentials = Object.values(personTokens).filter(value => typeof value === 'string');
     if (legacyToken && !credentials.includes(legacyToken)) credentials.push(legacyToken);
     try {
@@ -482,8 +547,14 @@
       }
       const granted = new Set(list(data.managedIds).map(String));
       let changed = false;
-      for (const id of Object.keys(personTokens)) if (!granted.has(id)) { delete personTokens[id]; changed = true; }
+      const movedAway = [];
+      for (const id of Object.keys(personTokens)) if (!granted.has(id)) {
+        delete personTokens[id]; changed = true;
+        const person = list(data.tablePeople).find(item => String(item.id) === id && item.active !== false);
+        if (person) movedAway.push(person.name);
+      }
       if (changed) try { localStorage.setItem(tokensKey, JSON.stringify(personTokens)); } catch (_) {}
+      if (movedAway.length) toast(`La gestion de ${movedAway.join(', ')} est passée sur un autre téléphone.`);
       if (targetPersonId && !managedPeople().some(person => String(person.id) === targetPersonId)) {
         targetPersonId = '';
         duetMode = false;
@@ -553,7 +624,7 @@
     $('claimHeading').textContent = individual ? 'Récupérer mes chansons' : 'Déjà inscrit à cette table ?';
     $('claimIntro').textContent = individual
       ? 'Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.'
-      : 'Ton prénom est déjà inscrit ? Demande au bar ou à ton ancien téléphone un code de reprise à 4 chiffres.';
+      : 'Ton prénom est déjà inscrit ? Le plus simple : scanne le QR code « Transférer » affiché sur le téléphone qui te gère (ou ouvre le lien qu’il t’a envoyé). Sinon, touche ton nom et saisis son code à 4 chiffres.';
     $('claimPeople').innerHTML = individual
       ? recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">Je suis ${esc(person.name)} · reprendre mes chansons</button>`).join('')
       : others.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">Je suis ${esc(person.name)}</button>`).join('');
@@ -563,6 +634,7 @@
     $('addPersonForm').hidden = individual || full;
     $('capacityNotice').hidden = individual || !full;
     renderSongAccess(people, others, full);
+    renderTransfer();
     renderPeople(individual ? owned : people, queue);
     renderPresenceBanner(owned);
     renderBattle(individual ? owned : people);
@@ -600,7 +672,7 @@
     }
     const actions = `${others.length ? '<button type="button" class="btn primary" data-access-go="claim">Reprendre un chanteur inscrit</button>' : ''}${canRegister ? '<button type="button" class="btn primary" data-access-go="register">Inscrire une personne</button>' : ''}`;
     const explanation = others.length
-      ? 'Choisis une personne déjà inscrite et demande un code à 4 chiffres à son téléphone ou au bar. Même si son téléphone est éteint, le bar peut fournir un code.'
+      ? 'Pour gérer une personne déjà inscrite, scanne le QR code « Transférer » de son téléphone actuel ou ouvre le lien qu’il t’envoie. Téléphone éteint ou perdu ? Le bar peut te donner un QR code ou un code à 4 chiffres.'
       : canRegister ? 'Inscris-toi, ou inscris quelqu’un sans téléphone, puis choisis ses chansons.'
         : 'Demande au bar de vérifier les personnes inscrites et le nombre de places de cette table.';
     $('noSingerBox').hidden = true;
@@ -611,6 +683,86 @@
     $('catalogAccessActions').innerHTML = actions;
     $('quickSongBox').hidden = true;
     $('quickSongActions').innerHTML = '';
+  }
+
+  function renderTransfer() {
+    const offer = transferLink ? state?.transferOffer : null;
+    $('transferBox').hidden = !offer;
+    if (!offer) return;
+    const close = '<button type="button" class="btn" data-transfer-dismiss>Fermer</button>';
+    if (offer.invalid) {
+      $('transferHeading').textContent = 'Lien de transfert expiré';
+      $('transferText').textContent = 'Ce lien a déjà servi ou n’est plus valable. Demande un nouveau lien à l’autre téléphone, ou au bar.';
+      $('transferActions').innerHTML = close;
+    } else if (manages(offer.personId)) {
+      $('transferHeading').textContent = 'Déjà sur ce téléphone';
+      $('transferText').textContent = `Ce téléphone gère déjà les chansons de ${offer.name}. Rien à faire.`;
+      $('transferActions').innerHTML = close;
+    } else {
+      const individual = !!state?.table?.individual;
+      $('transferHeading').textContent = individual ? 'Récupérer tes chansons sur ce téléphone' : `Gérer ${offer.name} sur ce téléphone`;
+      $('transferText').textContent = `Ce téléphone pourra choisir les chansons de ${offer.name}, répondre à ses duos et confirmer sa présence. L’autre téléphone perdra cette gestion${individual ? '' : ' mais garde ses autres chanteurs'}.`;
+      $('transferActions').innerHTML = `<button type="button" class="btn primary" data-transfer-claim>${individual ? 'Récupérer mes chansons' : `Récupérer ${esc(offer.name)}`}</button><button type="button" class="btn ghost" data-transfer-dismiss>Pas maintenant</button>`;
+    }
+  }
+
+  $('transferBox').addEventListener('click', event => {
+    if (event.target.closest('[data-transfer-dismiss]')) { forgetTransferLink(); renderTransfer(); return; }
+    const claim = event.target.closest('[data-transfer-claim]');
+    const offer = state?.transferOffer;
+    if (!claim || !offer?.personId) return;
+    perform(claim, async () => {
+      const result = await post('/api/table/person/claim', { link: transferLink });
+      savePersonToken(result.id, result.token);
+      forgetTransferLink();
+      await refresh();
+      toast(`Tu gères maintenant ${offer.name} sur ce téléphone.`);
+      continuePendingSong();
+    });
+  });
+
+  function openTransferSheet(person, share) {
+    const individual = !!state?.table?.individual;
+    const name = person?.name || 'cette personne';
+    const until = eta(share.linkExpiresAt);
+    const message = individual
+      ? 'Lien pour récupérer mes chansons du karaoké sur ce téléphone :'
+      : `Pour gérer les chansons de ${name} au karaoké (${state?.table?.name || 'notre table'}), ouvre ce lien :`;
+    const text = encodeURIComponent(`${message} ${share.url}`);
+    const linkPart = share.url ? `<ol class="transfer-steps">
+        <li>${individual ? 'Sur ton nouveau téléphone' : 'Sur l’autre téléphone'}, ouvre l’appareil photo et scanne ce QR code.</li>
+        <li>La page du karaoké s’ouvre : touche « ${individual ? 'Récupérer mes chansons' : `Récupérer ${esc(name)}`} ».</li>
+        <li>C’est tout : ${individual ? 'ce téléphone-ci ne gérera plus tes chansons.' : `ce téléphone-ci ne gérera plus ${esc(name)}, mais garde ses autres chanteurs.`}</li>
+      </ol>
+      <div class="transfer-qr"><img src="${esc(share.qr)}" alt="QR code pour ${individual ? 'récupérer tes chansons' : `transférer ${esc(name)}`} sur un autre téléphone"></div>
+      <p class="small muted" style="margin:10px 0 0">Téléphone pas à côté ? Envoie-lui plutôt le lien :</p>
+      <div class="share-links">
+        ${navigator.share ? '<button type="button" class="btn primary" id="shareTransfer">Partager…</button>' : ''}
+        <a class="btn" href="https://wa.me/?text=${text}" target="_blank" rel="noopener">WhatsApp</a>
+        <a class="btn" href="sms:?&body=${text}">SMS</a>
+        <a class="btn" href="mailto:?subject=${encodeURIComponent(`Karaoké : ${individual ? 'mes chansons' : name}`)}&body=${text}">E-mail</a>
+        <button type="button" class="btn" id="copyTransfer">Copier le lien</button>
+      </div>
+      <input id="transferUrl" class="transfer-url" readonly value="${esc(share.url)}" aria-label="Lien de transfert">
+      <p class="tiny muted">QR code et lien valables une seule fois${until ? `, jusqu’à ${until}` : ''}. Ne les envoie qu’à la personne concernée.${/^http:/i.test(share.url) ? ' Ce lien ne fonctionne que sur le Wi-Fi du bar.' : ''}</p>` : '';
+    openSheet(`<div class="row"><h3 class="grow">${individual ? 'Changer de téléphone' : `Transférer ${esc(name)} vers un autre téléphone`}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+      ${linkPart}
+      <details class="transfer-fallback"${share.url ? '' : ' open'}><summary>Impossible de scanner ? Utilise un code</summary>
+        <p class="small muted">Sur l’autre téléphone, ouvre ${individual ? 'le QR « En solo » que te montre le bar' : 'le QR code de la table'}, touche « Je suis ${esc(name)} », puis saisis ce code valable 10 minutes :</p>
+        <p class="share-code">${esc(share.code)}</p>
+      </details>`);
+    $('shareTransfer')?.addEventListener('click', () => {
+      navigator.share({ title: 'Karaoké', text: message, url: share.url }).catch(() => { /* Partage annulé. */ });
+    });
+    $('copyTransfer')?.addEventListener('click', async () => {
+      let copied = false;
+      try { await navigator.clipboard.writeText(share.url); copied = true; }
+      catch (_) {
+        $('transferUrl').select();
+        try { copied = document.execCommand('copy'); } catch (__) { copied = false; }
+      }
+      toast(copied ? 'Lien copié : colle-le dans ton message.' : 'Sélectionne le lien ci-dessous pour le copier.', !copied);
+    });
   }
 
   function continuePendingSong() {
@@ -671,7 +823,7 @@
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
       const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(invite.fromName || 'Un chanteur')} propose un duo</b> sur « ${esc(invite.song?.title || 'une chanson')} »${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}.
         ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">Accepter</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">Refuser</button></div>` : '<div class="small muted">Son téléphone doit répondre.</div>'}</div>`).join('');
-      const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(person.name)} chantera aussi en duo avec ${esc(duo.fromName)} sur « ${esc(duo.song?.title || 'une chanson')} ». Son propre tour reste disponible.</div>`).join('');
+      const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(person.name)} chantera aussi en duo avec ${esc(duo.fromName)} sur « ${esc(duo.song?.title || 'une chanson')} ». Ses propres chansons restent dans sa liste pour un prochain passage.</div>`).join('');
       const presenceMarkup = person.needConfirm && canEdit ? `<div class="notice warn"><b>Confirme la présence de ${esc(person.name)} pour son prochain passage.</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">Je suis là</button></div>`
         : state.rules?.requirePresence && person.confirmed ? '<div class="notice ok small">Présence confirmée pour ce passage.</div>' : '';
       return `<li class="person-card ${state?.table?.individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}${state?.table?.individual ? '' : ` · ${canEdit ? 'géré sur ce téléphone' : 'autre téléphone'}`}</div></div>${canEdit ? `<button type="button" class="btn small ghost" data-rename-person="${esc(person.id)}" aria-label="${state?.table?.individual ? 'Corriger mon nom' : `Renommer ${esc(person.name)}`}">${state?.table?.individual ? 'Corriger mon nom' : 'Renommer'}</button>` : ''}</div>${inviteMarkup}${guestMarkup}${presenceMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${state?.table?.individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}">Ajouter une chanson</button>`}<button type="button" class="btn" data-duet-song="${esc(person.id)}">${state?.table?.individual ? 'Chanter en duo' : 'Ajouter un duo'}</button><button type="button" class="btn small ghost" data-share-person="${esc(person.id)}">${state?.table?.individual ? 'Changer de téléphone' : 'Transférer la gestion'}</button></div>` : ''}</li>`;
@@ -825,9 +977,8 @@
     if (share) {
       perform(share, async () => {
         const person = personById(share.dataset.sharePerson);
-        const { code } = await post('/api/table/person/share', { personId: share.dataset.sharePerson });
-        openSheet(`<div class="row"><h3 class="grow">Transférer ${esc(person?.name || 'cette personne')}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-          <p class="small muted">Communique ce code uniquement à la personne qui doit gérer ses chansons. Dès qu’elle l’utilise, ce téléphone perd la gestion de cette personne${state?.table?.individual ? '.' : ' mais garde ses autres chanteurs.'} Le code vaut 10 minutes et une seule utilisation.</p><p class="share-code">${esc(code)}</p>`);
+        const result = await post('/api/table/person/share', { personId: share.dataset.sharePerson });
+        openTransferSheet(person, result);
       });
       return;
     }
@@ -1219,6 +1370,7 @@
     if (duetMode) return openDuoPartner(song, selected.id);
     openSheet(`<div class="row"><h3 class="grow">${esc(song.title)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
       <p class="muted small" style="margin:4px 0 12px">${esc(song.artist || '')}</p>
+      <p id="songNotice" class="notice warn small song-notice" role="status" hidden></p>
       ${people.length === 1 ? `<p class="small muted">Pour ${esc(selected.name)}</p><input type="hidden" id="songPerson" value="${esc(selected.id)}">`
         : `<label class="field" for="songPerson">Chanteur</label><select id="songPerson">${people.map(person => `<option value="${esc(person.id)}" ${String(person.id) === String(selected.id) ? 'selected' : ''}>${esc(person.name)}</option>`).join('')}</select>`}
       <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${state?.table?.individual ? 'Ajouter à ma liste' : 'Ajouter à sa liste'}</button><button type="button" class="btn" id="replaceSong">Remplacer ma prochaine chanson</button><button type="button" class="btn" id="duetSongChoice">Chanter en duo</button></div>
@@ -1232,17 +1384,18 @@
     };
     $('songPerson').addEventListener('change', updateReplace);
     updateReplace();
+    showSongNotice(song, 'songNotice');
     $('duetSongChoice').addEventListener('click', () => openDuoPartner(song, $('songPerson').value));
     for (const [id, mode] of [['appendSong', 'append'], ['replaceSong', 'replace']]) {
       $(id).addEventListener('click', () => {
         const personId = $('songPerson').value;
         perform($(id), async () => {
-          await post('/api/table/song', { personId, song: { songId: song.songId, title: song.title, artist: song.artist, duration: song.duration }, mode });
+          const result = await post('/api/table/song', { personId, song: { songId: song.songId, title: song.title, artist: song.artist, duration: song.duration }, mode });
           closeSheet();
           targetPersonId = personId;
           await refresh();
           setTab('table');
-          toast(mode === 'append' ? 'Chanson ajoutée à la liste.' : 'Prochaine chanson remplacée.');
+          addedToast(result, mode === 'append' ? 'Chanson ajoutée à la liste.' : 'Prochaine chanson remplacée.');
         });
       });
     }
@@ -1266,27 +1419,35 @@
     const otherTables = partners.filter(person => String(person.tableId) !== String(state?.table?.id));
     const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table ? ' · ' + esc(person.table) : ''}</option>`;
     openSheet(`<div class="row"><h3 class="grow">Duo sur « ${esc(song.title)} »</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-      <p class="muted small">${esc(owner.name)} utilise son tour ; son partenaire garde le sien. ${state?.table?.individual ? 'Son accord est nécessaire.' : 'Une autre table devra accepter l’invitation.'}</p>
+      <p class="muted small">${esc(owner.name)} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour. <span id="duoConsent"></span></p>
+      <p id="duoNotice" class="notice warn small song-notice" role="status" hidden></p>
       <label class="field" for="duoPartner">Avec qui ?</label>
       <select id="duoPartner">${ownTable.length ? `<optgroup label="À ma table">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres tables · invitation à accepter">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
+      <p id="duoPartnerHint" class="notice warn small" role="status" hidden></p>
       <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">Ajouter le duo</button></div>`);
     const updateDuoAction = () => {
       const partner = partners.find(p => String(p.id) === String($('duoPartner').value));
       $('sendDuo').textContent = state?.table?.individual || String(partner?.tableId) !== String(state?.table?.id)
         ? 'Envoyer l’invitation' : 'Ajouter le duo';
+      $('duoConsent').textContent = state?.table?.individual ? 'Son accord est nécessaire.'
+        : String(partner?.tableId) !== String(state?.table?.id) ? 'Son téléphone devra accepter l’invitation.' : 'Même table : le duo est ajouté directement.';
+      const planned = Number(partner?.guestDuos) || 0;
+      $('duoPartnerHint').hidden = !planned;
+      $('duoPartnerHint').textContent = planned ? `${partner.name} a déjà ${planned} duo${planned > 1 ? 's' : ''} prévu${planned > 1 ? 's' : ''}. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.` : '';
     };
     $('duoPartner').addEventListener('change', updateDuoAction);
     updateDuoAction();
+    showSongNotice(song, 'duoNotice');
     $('sendDuo').addEventListener('click', () => {
       perform($('sendDuo'), async () => {
         const partnerId = $('duoPartner').value;
         const partner = partners.find(p => String(p.id) === String(partnerId));
-        await post('/api/table/duet', { personId, partnerId,
+        const result = await post('/api/table/duet', { personId, partnerId,
           song: { songId: song.songId, title: song.title, artist: song.artist, duration: song.duration } });
         closeSheet();
         await refresh();
         setTab('table');
-        toast(!state?.table?.individual && partner && String(partner.tableId) === String(state?.table?.id)
+        addedToast(result, !state?.table?.individual && partner && String(partner.tableId) === String(state?.table?.id)
           ? 'Duo ajouté à la liste.' : 'Invitation de duo envoyée.');
       });
     });

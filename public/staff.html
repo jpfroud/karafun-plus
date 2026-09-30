@@ -122,6 +122,7 @@
     <p class="small muted">La confirmation est demandée seulement au prochain passage après celui sur scène, aux deux personnes d’un duo. Un titre déjà chargé dans KaraFun peut nécessiter une action du bar.</p>
     <div class="rule-fields">
       <label for="playDelaySec">Pause avant lecture automatique <span class="hint">Après le chargement d’une chanson, lorsque KaraFun est arrêté.</span><span class="field-number"><input id="playDelaySec" type="number" min="0" max="30"> secondes</span></label>
+      <label for="repeatWarnMin">Alerte « titre déjà chanté » <span class="hint">Prévient la personne qui ajoute un titre chanté depuis moins longtemps (0 : pas d’alerte). Un titre déjà prévu dans la file est toujours signalé. Rien n’est bloqué.</span><span class="field-number"><input id="repeatWarnMin" type="number" min="0" max="240"> minutes</span></label>
       <label for="pushDelaySec">Envoi de la suivante <span class="hint">Temps écoulé depuis le début du titre en cours avant de préparer le prochain.</span><span class="field-number"><input id="pushDelaySec" type="number" min="0" max="180"> secondes</span></label>
     </div>
     <details class="disclosure"><summary>Équité : réglages avancés</summary>
@@ -164,7 +165,7 @@
   <section class="card journal-panel"><details class="disclosure"><summary>Journal de la soirée</summary><ul class="log" id="log"></ul></details></section>
 </main>
 <div id="toast" class="toast" hidden></div>
-<dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle">Transférer un chanteur</h2></div><p class="small" id="shareHelp">Sur l’autre téléphone, scanne le QR de la table, choisis son nom et saisis ce code. L’ancien téléphone perdra la gestion de ce chanteur.</p><div class="staff-qr solo-invite-qr" id="shareQrBox" hidden><img id="shareQr" alt="QR de reprise pour une personne seule"></div><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
+<dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle">Transférer un chanteur</h2></div><p class="small" id="shareHelp">Fais scanner ce QR code par le nouveau téléphone : il propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd alors sa gestion.</p><div class="staff-qr solo-invite-qr" id="shareQrBox" hidden><img id="shareQr" alt="QR code de transfert du chanteur"></div><input id="shareUrl" class="solo-invite-url" readonly aria-label="Lien de transfert à envoyer" hidden><div class="row wrap" id="shareLinkActions" hidden><button type="button" class="btn small" id="shareCopy">Copier le lien</button></div><p class="small muted" id="shareCodeHelp">Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.</p><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
 <dialog id="soloInviteDialog" class="staff-dialog" aria-labelledby="soloInviteTitle"><h2 id="soloInviteTitle">QR pour une personne seule</h2><p class="small">Montre ce QR à une seule personne. Dès son inscription, il ne fonctionnera plus pour créer un autre profil.</p><div class="staff-qr solo-invite-qr"><img id="soloInviteQr" alt="QR individuel pour une inscription En solo"></div><p class="small muted" id="soloInviteExpires"></p><input id="soloInviteUrl" class="solo-invite-url" readonly aria-label="Lien individuel d’inscription"><div class="row wrap"><button type="button" class="btn small" id="soloInviteCopy">Copier le lien</button><button type="button" class="btn small primary" id="soloInviteClose">Fermer</button></div></dialog>
 
 <script>
@@ -283,13 +284,20 @@
         try {
           const result = await post('/api/staff/person/share', { personId });
           $('shareTitle').textContent = `Accès à ${row.querySelector('.identity-who strong').textContent}`;
+          const solo = S.tables.find(t => t.id === S.people.find(person => String(person.id) === String(personId))?.tableId)?.individual;
           $('shareCode').textContent = result.code;
           $('shareQrBox').hidden = !result.qr;
           if (result.qr) $('shareQr').src = result.qr;
-          $('shareHelp').textContent = result.qr ?
-            'Sur le nouveau téléphone, scanne ce QR, choisis le nom de la personne puis saisis ce code. Le QR seul ne permet ni de s’inscrire ni de gérer quelqu’un.' :
-            'Sur l’autre téléphone, scanne le QR de la table, choisis son nom et saisis ce code. L’ancien téléphone perdra la gestion de ce chanteur.';
-          $('shareExpires').textContent = result.expiresAt ? `Valable jusqu’à ${hhmm(result.expiresAt)} ; utilisable une seule fois.` : 'Code à usage unique.';
+          $('shareUrl').hidden = $('shareLinkActions').hidden = !result.url;
+          $('shareUrl').value = result.url || '';
+          $('shareHelp').textContent = result.url ?
+            'Fais scanner ce QR code par le nouveau téléphone (ou envoie-lui le lien) : la page propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd alors sa gestion ; ses autres chanteurs n’y changent pas.' :
+            'Sur l’autre téléphone, ouvre la page de la table, touche « Je suis … » et saisis ce code. L’ancien téléphone perdra la gestion de ce chanteur.';
+          $('shareCodeHelp').textContent = solo ?
+            'Sans appareil photo : ouvrir le QR « En solo », toucher « Je suis … » puis saisir ce code.' :
+            'Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.';
+          $('shareExpires').textContent = [result.linkExpiresAt ? `QR et lien valables jusqu’à ${hhmm(result.linkExpiresAt)}` : '',
+            result.expiresAt ? `code jusqu’à ${hhmm(result.expiresAt)}` : ''].filter(Boolean).join(', ') + ' ; un seul usage.';
           $('shareDialog').showModal();
         } catch (e) { toast(e.message, true); }
       })();
@@ -437,6 +445,18 @@
     $('optimizeQueue').disabled = !!solver.pending && !!solver.forced;
   }
 
+  // Titre en double : déjà chanté récemment ou prévu plusieurs fois.
+  function repeatBadge(repeat) {
+    if (!repeat) return '';
+    const parts = [];
+    if (repeat.playedAt) parts.push(`chanté à ${hhmm(repeat.playedAt)}`);
+    if (repeat.earlier?.length) parts.push(`déjà prévu en n°${repeat.earlier.join(', ')}`);
+    if (repeat.later?.length) parts.push(`aussi prévu en n°${repeat.later.join(', ')}`);
+    const label = repeat.playedAt ? `Chanté ${hhmm(repeat.playedAt)}` :
+      repeat.earlier?.length ? `Doublon n°${repeat.earlier[0]}` : `Aussi n°${repeat.later[0]}`;
+    return `<span class="badge repeat" title="Titre en double : ${esc(parts.join(' ; '))}">⚠ ${esc(label)}</span>`;
+  }
+
   function renderStageHistory() {
     const container = $('stageHistory');
     if (container.contains(document.activeElement)) return;
@@ -479,6 +499,7 @@
       $('code').value = S.code || '';
       $('gap').value = S.settings.gap; $('cap').value = S.settings.cap; $('requirePresence').checked = S.settings.requirePresence;
       $('pushDelaySec').value = S.settings.pushDelaySec; $('playDelaySec').value = S.settings.playDelaySec;
+      $('repeatWarnMin').value = S.settings.repeatWarnMin ?? 45;
       formInit = true;
     }
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
@@ -555,7 +576,7 @@
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
         <div class="person-cell"><span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span><span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}</span></div>
-        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}"><span class="song-title">${esc(title)}</span>${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
+        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="queue-actions">${movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : ''}</div>
       </div>`;
@@ -754,7 +775,8 @@
     }
   };
   $('saveRules').onclick = () => act('/api/staff/settings', { gap: $('gap').value, cap: $('cap').value,
-    requirePresence: $('requirePresence').checked, playDelaySec: $('playDelaySec').value, pushDelaySec: $('pushDelaySec').value }, 'Règles enregistrées');
+    requirePresence: $('requirePresence').checked, playDelaySec: $('playDelaySec').value, pushDelaySec: $('pushDelaySec').value,
+    repeatWarnMin: Number($('repeatWarnMin').value) }, 'Règles enregistrées');
   $('createTable').onclick = () => {
     if (!S) return;
     const used = new Set(S.tables.map(t => t.id));
@@ -785,7 +807,11 @@
     renderStaffAlerts();
   };
   $('shareClose').onclick = () => $('shareDialog').close();
-  $('shareDialog').addEventListener('close', () => { $('shareCode').textContent = ''; });
+  $('shareDialog').addEventListener('close', () => { $('shareCode').textContent = ''; $('shareUrl').value = ''; $('shareQr').removeAttribute('src'); });
+  $('shareCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('shareUrl').value); toast('Lien copié'); }
+    catch (_) { $('shareUrl').select(); toast(document.execCommand('copy') ? 'Lien copié' : 'Sélectionne le lien pour le copier'); }
+  };
   $('issueSoloInvitation').onclick = async () => {
     try {
       const invite = await post('/api/staff/solo-invite', { tableId: 'Comptoir' });

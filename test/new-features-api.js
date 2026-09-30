@@ -56,6 +56,10 @@ const personTokens = new Map();
   await post('/api/table/duet/answer', body('beta', b.id, { accept: true }));
   s = await state();
   assert.ok(s.queue.some(q => q.ids?.includes(a.id) && q.ids?.includes(b.id)));
+  // La page prévient qu'une personne déjà invitée peut faire attendre un duo.
+  const partners = await request(`/api/duo/partners?table=alpha&access=${access('alpha')}`);
+  assert.equal(partners.find(p => p.id === b.id).guestDuos, 1, 'B est invitée dans un duo');
+  assert.equal(partners.find(p => p.id === mate.id).guestDuos, 0);
   await post('/api/table/duet/cancel', body('alpha', a.id));
 
   const battleSong = (await request('/api/search?q=Queen')).find(item => item.title === 'Bohemian Rhapsody');

@@ -143,10 +143,12 @@ const wait = async (predicate, label) => {
   assert.equal(launched.battle.mode, 'staff');
   assert.equal((await request('/api/staff/battle/launch', { song: queen })).status, 400, 'une seule Battle à la fois');
 
-  // Personne seule : le partage d'accès fournit le QR de reprise.
+  // Le partage d'accès fournit un QR de transfert direct, y compris pour
+  // une table ordinaire (le QR imprimé de la table ne suffit pas à reprendre).
   const solo = state.tables.find(t => t.individual);
   assert.ok(solo, 'groupe En solo présent');
   const share = await ok('/api/staff/person/share', { personId: people.G4.id });
-  assert.equal(share.qr, undefined, 'une table ordinaire utilise son QR imprimé');
+  assert.match(share.qr, /^data:image\/png;base64,/, 'QR de transfert fourni au bar');
+  assert.match(new URL(share.url).searchParams.get('reprise'), /^[A-Za-z0-9_-]{22}$/);
   console.log('API retours du bar : bonus privé, retrait groupé, priorité stable, recalcul, historique, Battle du bar OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

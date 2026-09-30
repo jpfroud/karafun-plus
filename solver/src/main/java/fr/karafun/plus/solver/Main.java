@@ -143,11 +143,18 @@ public final class Main {
         // L'ordre reçu est celui que Node applique déjà : la recherche part de là
         // et ne propose un changement que s'il améliore le score.
         QueueLine line = new QueueLine(performances, pinned);
+        // Absents chez un ancien client : plafond et espacement désactivés.
+        int roundCap = input.path("roundCap").asInt(0), spacing = input.path("spacing").asInt(0);
+        if (roundCap < 0 || roundCap > 10 || spacing < 0 || spacing > 10) {
+            throw new IllegalArgumentException("Plafond ou espacement invalide");
+        }
         QueuePlan plan = new QueuePlan(performances, line,
                 integers(input.path("pastAppearance")), integers(input.path("physicalCount")),
                 integers(input.path("readyAt")), strings(input.path("lastGroups")),
                 new HashSet<>(strings(input.path("roundPeople"))),
-                doubles(input.path("roundUse"), 0, 10), doubles(input.path("personWeights"), 0.1, 10),
+                doubles(input.path("roundUse"), 0, 10), integers(input.path("roundApps")),
+                new HashSet<>(strings(input.path("roundOwed"))), roundCap, spacing,
+                doubles(input.path("personWeights"), 0.1, 10),
                 doubles(input.path("tableWeights"), 0.1, 10), history(input.path("history")),
                 rotation(input), input.path("interleaveArrivals").asBoolean(true));
         SolverFactory<QueuePlan> factory = factoryFor(budgetMs, randomSeed);
