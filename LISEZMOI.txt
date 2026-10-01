@@ -7,7 +7,9 @@ Un téléphone peut inscrire plusieurs personnes d'une table et préparer
 plusieurs chansons pour chacune. Plusieurs téléphones peuvent se partager la
 table : chacun ne modifie que les personnes qu'il gère. Il affiche la file réelle, les positions et
 les heures estimées, ainsi que les personnes qui attendent encore de choisir
-une chanson.
+une chanson. La page des téléphones s'affiche en français si le téléphone est
+réglé en français, en anglais sinon ; le bouton FR / EN en haut de la page
+change la langue. La page du bar reste en français.
 
 Pour préparer le bar, les QR utilisables en 4G/5G et le déroulement du jour J,
 lis GUIDE-BAR.md. Les étapes ci-dessous servent aussi à un essai sur le Wi-Fi.

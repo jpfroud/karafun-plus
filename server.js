@@ -1913,6 +1913,8 @@ const server = http.createServer(async (req, res) => {
       if (p === '/staff') { if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); return sendFile(res, 'staff.html', 'text/html; charset=utf-8'); }
       if (p === '/print') { if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); return sendFile(res, 'print.html', 'text/html; charset=utf-8'); }
       if (p === '/app.css') return sendFile(res, 'app.css', 'text/css; charset=utf-8');
+      // Traductions de la page des chanteurs, publiques comme elle.
+      if (p === '/client-i18n.js') return sendFile(res, 'client-i18n.js', 'text/javascript; charset=utf-8');
       if (p === '/api/state') {
         const me = sched.person(u.searchParams.get('token') || '');
         if (me && !u.searchParams.has('table')) {
