@@ -54,8 +54,20 @@ const state = () => ({
   battle,
 });
 const response = data => ({ ok: true, json: async () => data });
+// Recherches de titres : la réponse à « Abba » peut être retenue pour
+// vérifier qu'une réponse en retard n'écrase pas la dernière.
+const searches = [];
+let releaseAbba = null;
 const fetch = async (url, options = {}) => {
   if (url.startsWith('/api/staff/state')) return response(state());
+  if (url.startsWith('/api/search?')) {
+    const q = new URLSearchParams(url.split('?')[1]).get('q');
+    searches.push(q);
+    if (q === 'Abba') await new Promise(resolve => { releaseAbba = resolve; });
+    if (q === 'Panne') return { ok: false, json: async () => ({ error: 'Catalogue KaraFun indisponible.' }) };
+    return response(q === 'Abba' ? [{ songId: 7, title: 'Dancing Queen', artist: 'ABBA' }]
+      : [{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' }]);
+  }
   if (url.startsWith('/api/staff/person/identify')) {
     posts.push(JSON.parse(options.body));
     return response({ ok: true });
@@ -68,9 +80,16 @@ const fetch = async (url, options = {}) => {
   throw new Error(`Requête inattendue : ${url}`);
 };
 let poll;
+const timers = new Map();
+let timerId = 0;
+// Fin de frappe : lance les recherches en attente (délai de 300 ms).
+const finishTyping = () => {
+  for (const [id, timer] of timers) if (timer.ms === 300) { timers.delete(id); timer.fn(); }
+};
 const context = { document, fetch, location: { search: '' }, window: {}, URL, URLSearchParams,
   localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, String(value)) },
-  setInterval: fn => { poll = fn; }, setTimeout: () => 1, clearTimeout() {},
+  setInterval: fn => { poll = fn; }, setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; },
+  clearTimeout: id => timers.delete(id),
   console, Date, Number, String, Set, Map, Array, JSON, Math, confirm: () => true };
 vm.runInNewContext(script, context, { filename: 'staff.html' });
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -162,5 +181,58 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   poll();
   await settle();
   assert.match(get('staffAlerts').innerHTML, /Zoé/, 'après un redémarrage, la même alerte réapparaît');
-  console.log('Bar : connexion et repères chanteurs OK');
+
+  // Battle lancée par le bar : la recherche part pendant la frappe, sans
+  // bouton « Chercher », comme l'ajout d'une chanson.
+  assert.doesNotMatch(html, /id="battleLaunchFind"/, 'plus de bouton Chercher pour la Battle');
+  const battleSearch = get('battleLaunchSearch');
+  const battleResults = get('battleLaunchResults');
+  battleSearch.value = 'Q';
+  battleSearch.oninput();
+  finishTyping();
+  assert.match(battleResults.innerHTML, /au moins 2 lettres/);
+  assert.deepEqual(searches, [], 'une seule lettre ne lance pas de recherche');
+  battleSearch.value = 'Abb';
+  battleSearch.oninput();
+  battleSearch.value = 'Abba';
+  battleSearch.oninput();
+  assert.deepEqual(searches, [], 'la recherche attend la fin de la frappe');
+  finishTyping();
+  assert.deepEqual(searches, ['Abba'], 'une recherche pour le dernier texte tapé');
+  battleSearch.value = 'Queen';
+  battleSearch.oninput();
+  let prevented = false;
+  battleSearch.onkeydown({ key: 'Enter', preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  await settle(); await settle();
+  finishTyping();
+  assert.deepEqual(searches, ['Abba', 'Queen'], 'Entrée cherche tout de suite, sans recherche en double');
+  assert.match(battleResults.innerHTML, /Bohemian Rhapsody[\s\S]*Lancer en Battle/);
+  releaseAbba();
+  await settle(); await settle();
+  assert.doesNotMatch(battleResults.innerHTML, /Dancing Queen/, 'une réponse en retard n’écrase pas la dernière recherche');
+  // Réponse en retard pendant l'attente de fin de frappe de la saisie suivante.
+  // Regression: revue Codex de la PR #7 — le numéro de requête ne changeait
+  // qu'au lancement différé.
+  battleSearch.value = 'Abba';
+  battleSearch.oninput();
+  finishTyping();
+  battleSearch.value = 'Queen';
+  battleSearch.oninput();
+  releaseAbba();
+  await settle(); await settle();
+  assert.doesNotMatch(battleResults.innerHTML, /Dancing Queen/, 'une réponse en retard ne s’affiche pas pendant la frappe suivante');
+  finishTyping();
+  await settle(); await settle();
+  assert.match(battleResults.innerHTML, /Bohemian Rhapsody/);
+  battleSearch.value = 'Panne';
+  battleSearch.oninput();
+  finishTyping();
+  await settle(); await settle();
+  assert.match(battleResults.innerHTML, /Catalogue KaraFun indisponible\./, 'une recherche en échec affiche la raison');
+  assert.doesNotMatch(battleResults.innerHTML, /Lancer en Battle/, 'pas de bouton de lancement après un échec');
+  battleSearch.value = '';
+  battleSearch.oninput();
+  assert.equal(battleResults.innerHTML, '', 'champ vidé : résultats effacés');
+  console.log('Bar : connexion, repères chanteurs et recherche Battle à la frappe OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

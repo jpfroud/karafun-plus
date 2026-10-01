@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Démarrage de session d'un agent (Claude Code par .claude/settings.json ;
-# tout autre agent peut le lancer lui-même, voir AGENTS.md) : vérifie que
-# gstack est installé et rappelle le parcours obligatoire du projet.
+# Hook de Claude Code (.claude/settings.json) ; tout autre agent peut le
+# lancer lui-même, voir AGENTS.md.
 #
-# Il n'installe et ne télécharge rien : installer gstack reste une décision
-# de l'utilisateur. Il ne bloque jamais le démarrage (code de sortie 0) ; le
-# hook PreToolUse check-gstack.sh refuse ensuite les compétences si gstack
-# manque.
+#   bash .claude/hooks/gstack-session-start.sh [SessionStart|UserPromptSubmit]
 #
-#   bash .claude/hooks/gstack-session-start.sh [NomDeLÉvénement]
+# SessionStart : installe gstack s'il manque (install-gstack.sh, demandé par
+# l'utilisateur) puis rappelle le parcours obligatoire du projet.
+# UserPromptSubmit : rappelle ce parcours à chaque demande, sans rien
+# installer. Ne bloque jamais l'agent (code de sortie 0) ; le hook PreToolUse
+# check-gstack.sh refuse ensuite les compétences si gstack manque toujours.
 
 EVENT="${1:-SessionStart}"
 case "$EVENT" in SessionStart|UserPromptSubmit) ;; *) EVENT=SessionStart ;; esac
 
 # Le JSON de l'événement (entrée standard) n'est pas lu : un agent qui lance
 # ce script sans fermer son entrée le bloquerait jusqu'à son délai.
+
+HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Même résolution que check-gstack.sh et que le mode équipe officiel.
 GSTACK_DIR=""
@@ -27,11 +29,43 @@ for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/
   fi
 done
 
+# Installation lancée par une autre session et pas encore finie : bin/ existe
+# déjà, mais gstack n'est prêt qu'à la fin de setup. install-gstack.sh attend
+# alors son verrou (même chemin et même délai de péremption).
+LOCK="$HOME/.gstack/installation-auto.lock"
+in_progress() { [ -d "$LOCK" ] && [ -z "$(find "$LOCK" -maxdepth 0 -mmin +15 2>/dev/null)" ]; }
+
+INSTALLED=""
+REASON=""
+if [ "$EVENT" = SessionStart ] && { [ -z "$GSTACK_DIR" ] || in_progress; }; then
+  ERRORS="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/gstack-installation-$$")"
+  GSTACK_DIR="$(bash "$HOOKS_DIR/install-gstack.sh" claude 2>"$ERRORS" </dev/null | tail -n 1)"
+  REASON="$(tail -n 1 "$ERRORS" 2>/dev/null)"
+  rm -f "$ERRORS"
+  [ -n "$GSTACK_DIR" ] && [ -d "$GSTACK_DIR/bin" ] && INSTALLED=1 || GSTACK_DIR=""
+fi
+
+# Session web : gstack se sert du Chromium déjà installé.
+CHROMIUM="${PLAYWRIGHT_BROWSERS_PATH:-/opt/pw-browsers}/chromium"
+if [ "$EVENT" = SessionStart ] && [ "${CLAUDE_CODE_REMOTE:-}" = true ] && [ -n "${CLAUDE_ENV_FILE:-}" ] &&
+   [ -z "${GSTACK_CHROMIUM_PATH:-}" ] && [ -x "$CHROMIUM" ]; then
+  printf 'export GSTACK_CHROMIUM_PATH=%q\n' "$CHROMIUM" >>"$CLAUDE_ENV_FILE"
+fi
+
 RULES="Parcours obligatoire du projet : investigate pour un défaut, qa pour les parcours navigateur, review avant livraison. Après toute modification de la file, des duos, des présences ou des tables : node test/run-offline.js, puis consigner le résultat dans RAPPORT-TEST.md."
-if [ -n "$GSTACK_DIR" ]; then
+RETRY="L'utilisateur a donné son accord : pour réessayer, lancer bash .claude/hooks/install-gstack.sh puis redémarrer l'agent. En attendant, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence."
+if [ "$EVENT" = UserPromptSubmit ]; then
+  if [ -n "$GSTACK_DIR" ]; then
+    MESSAGE="gstack : appliquer la compétence adaptée à cette demande. $RULES"
+  else
+    MESSAGE="GSTACK_MISSING : gstack est obligatoire mais pas installé. Le dire à l'utilisateur avant tout changement de code. $RETRY $RULES"
+  fi
+elif [ -n "$INSTALLED" ]; then
+  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). $RULES"
+elif [ -n "$GSTACK_DIR" ]; then
   MESSAGE="GSTACK_OK : gstack est installé ($GSTACK_DIR). $RULES"
 else
-  MESSAGE="GSTACK_MISSING : gstack est obligatoire dans ce dépôt mais n'est pas installé. Le signaler tout de suite à l'utilisateur, avant tout changement de code, avec la commande d'installation officielle : git clone --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack && cd ~/.claude/skills/gstack && ./setup --team (Codex : ./setup --host codex --prefix), puis redémarrer l'agent. Ne pas l'installer sans son accord. Sans gstack, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence. $RULES"
+  MESSAGE="GSTACK_MISSING : gstack est obligatoire dans ce dépôt et son installation automatique a échoué : ${REASON:-raison inconnue}. Le dire tout de suite à l'utilisateur, avant tout changement de code. $RETRY $RULES"
 fi
 
 json_escape() {

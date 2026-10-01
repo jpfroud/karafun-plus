@@ -57,11 +57,21 @@ const state = () => ({ table: { id: '1', name: 'Table 1', headcount: 2, activeCo
   tablePeople: [{ ...alice, invites }, bob], managedIds, people: [], queue: [], waiting: [],
   battle, catalogAvailable: true, stage: null, next: null, rules: {} });
 const response = data => ({ ok: true, json: async () => data });
+const searches = [];
+let releaseAbba = null;
 const fetch = async (url, options = {}) => {
   if (url.startsWith('/api/state?')) return response(state());
   if (url.startsWith('/api/catalog/categories?')) return response([{ name: 'Top', filter: 'top' }]);
   if (url.startsWith('/api/catalog/songs?')) return response({ songs: [{ songId: 9, title: 'La chanson', artist: 'Artiste' }], total: 1 });
-  if (url.startsWith('/api/search?')) return response([{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' }]);
+  if (url.startsWith('/api/search?')) {
+    const q = new URLSearchParams(url.split('?')[1]).get('q');
+    searches.push(q);
+    // Réponse retenue pour vérifier qu'une réponse en retard n'écrase pas la dernière.
+    if (q === 'Abba') await new Promise(resolve => { releaseAbba = resolve; });
+    if (q === 'Panne') return { ok: false, status: 503, json: async () => ({ error: 'Catalogue KaraFun indisponible.' }) };
+    return response(q === 'Abba' ? [{ songId: 7, title: 'Dancing Queen', artist: 'ABBA' }]
+      : [{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' }]);
+  }
   if (url.startsWith('/api/duo/partners?')) return response(duetPartners);
   if (url === '/api/table/battle/propose') {
     const body = JSON.parse(options.body);
@@ -81,9 +91,16 @@ const fetch = async (url, options = {}) => {
 const saved = new Map();
 const localStorage = { getItem: key => saved.get(key) || null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
 let poll;
+const timers = new Map();
+let timerId = 0;
+// Fin de frappe : lance les recherches en attente (délai de 300 ms).
+const finishTyping = () => {
+  for (const [id, timer] of timers) if (timer.ms === 300) { timers.delete(id); timer.fn(); }
+};
 const context = { document, fetch, localStorage, location: { pathname: '/t/1/secret' },
   window: { isSecureContext: false, scrollTo() {} }, navigator: {}, URLSearchParams,
-  setInterval: fn => { poll = fn; }, setTimeout: () => 1, clearTimeout() {},
+  setInterval: fn => { poll = fn; }, setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; },
+  clearTimeout: id => timers.delete(id),
   console, Date, Number, String, Set, Array, JSON, Math };
 vm.runInNewContext(script, context, { filename: 'client.html' });
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -179,10 +196,59 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     ? { dataset: { battlePropose: '' } } : null } });
   assert.match(get('sheetPanel').innerHTML, /Qui propose la Battle \?/);
   get('battleProposer').value = 'bob';
+  // Recherche pendant la frappe, sans bouton « Chercher ».
+  assert.doesNotMatch(get('sheetPanel').innerHTML, /battleFind|>Chercher</, 'plus de bouton Chercher');
+  searches.length = 0;
+  get('battleSearch').value = 'Q';
+  get('battleSearch').listeners.input();
+  finishTyping();
+  assert.match(get('battleSearchResults').textContent, /au moins 2 lettres/);
+  get('battleSearch').value = 'Abb';
+  get('battleSearch').listeners.input();
+  get('battleSearch').value = 'Abba';
+  get('battleSearch').listeners.input();
+  assert.deepEqual(searches, [], 'la recherche attend la fin de la frappe');
+  finishTyping();
+  assert.deepEqual(searches, ['Abba'], 'une recherche pour le dernier texte tapé');
   get('battleSearch').value = 'Queen';
-  get('battleSearchForm').listeners.submit({ preventDefault() {} });
+  get('battleSearch').listeners.input();
+  let prevented = false;
+  get('battleSearchForm').listeners.submit({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true, 'Entrée ne recharge pas la page');
   await settle();
+  finishTyping();
+  assert.deepEqual(searches, ['Abba', 'Queen'], 'Entrée cherche tout de suite, sans recherche en double');
   assert.match(get('battleSearchResults').innerHTML, /Bohemian Rhapsody/);
+  releaseAbba();
+  await settle(); await settle();
+  assert.doesNotMatch(get('battleSearchResults').innerHTML, /Dancing Queen/,
+    'une réponse en retard n’écrase pas la dernière recherche');
+  // Réponse en retard pendant l'attente de fin de frappe de la saisie suivante.
+  // Regression: revue Codex de la PR #7 — le numéro de requête ne changeait
+  // qu'au lancement différé.
+  get('battleSearch').value = 'Abba';
+  get('battleSearch').listeners.input();
+  finishTyping();
+  get('battleSearch').value = 'Queen';
+  get('battleSearch').listeners.input();
+  releaseAbba();
+  await settle(); await settle();
+  assert.doesNotMatch(get('battleSearchResults').innerHTML, /Dancing Queen/,
+    'une réponse en retard ne s’affiche pas pendant la frappe suivante');
+  finishTyping();
+  await settle(); await settle();
+  assert.match(get('battleSearchResults').innerHTML, /Bohemian Rhapsody/);
+  get('battleSearch').value = 'Panne';
+  get('battleSearch').listeners.input();
+  finishTyping();
+  await settle(); await settle();
+  assert.equal(get('battleSearchResults').textContent, 'Catalogue KaraFun indisponible.',
+    'une recherche en échec affiche la raison à la place des résultats');
+  get('battleSearch').value = 'Queen';
+  get('battleSearch').listeners.input();
+  finishTyping();
+  await settle(); await settle();
+  assert.match(get('battleSearchResults').innerHTML, /Bohemian Rhapsody/, 'nouvel essai après l’échec');
   get('battleSearchResults').listeners.click({ target: { closest: selector => selector === '[data-battle-result]'
     ? { dataset: { battleResult: '0' } } : null } });
   assert.match(get('battleSelected').innerHTML, /Bohemian Rhapsody/);
@@ -193,5 +259,5 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(proposedSongs[0].songId, 42, 'le titre est transmis au vote');
   assert.equal(proposerChoice, 42, 'le vote du proposant est explicite');
   assert.equal(get('sheet').hidden, true);
-  console.log('Client : chanson, duo, Battle unique et alertes OK');
+  console.log('Client : chanson, duo, Battle unique (recherche à la frappe) et alertes OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });
