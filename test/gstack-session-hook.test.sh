@@ -24,6 +24,7 @@ cat >"$FAKE/setup" <<'EOF'
 printf '%s\n' "$*" >"$HOME/setup-args"
 printf '%s\n' "${GSTACK_SKIP_PLAYWRIGHT:-}" >"$HOME/setup-skip"
 [ "${FAUX_SETUP_ECHEC:-0}" = 1 ] && { echo "setup en échec" >&2; exit 3; }
+[ "${FAUX_SETUP_LENT:-0}" = 1 ] && sleep 20
 case " $* " in *" --host codex "*)
   mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/gstack-review"
   echo ok >"${CODEX_HOME:-$HOME/.codex}/skills/gstack-review/SKILL.md" ;;
@@ -80,6 +81,14 @@ grep -q 'setup en échec' "$home/.gstack/installation-auto.log" || fail "journal
 out="$(run_auto "$home")" || fail "nouvel essai"
 printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_OK' || fail "le démarrage suivant doit réessayer"
 
+# Setup trop long : arrêté avant le délai du hook, puis repris à la session suivante.
+home="$WORK/trop-long"; mkdir -p "$home"
+started=$(date +%s)
+out="$(run_auto "$home" FAUX_SETUP_LENT=1 GSTACK_INSTALL_BUDGET_SEC=3)" || fail "setup trop long : démarrage bloqué"
+[ $(( $(date +%s) - started )) -lt 15 ] || fail "le setup trop long doit être arrêté à la fin du budget"
+printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING.*installation de gstack trop longue' || fail "dépassement du délai non signalé"
+[ ! -e "$home/.claude/skills/gstack" ] || fail "un setup arrêté ne doit pas laisser gstack pour installé"
+
 home="$WORK/echec-depot"; mkdir -p "$home"
 out="$(run_auto "$home" GSTACK_REPO_URL="$WORK/inexistant")" || fail "dépôt introuvable : démarrage bloqué"
 printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING.*téléchargement de gstack impossible' || fail "échec du clonage non signalé"
@@ -109,6 +118,31 @@ dir="$(quiet_env HOME="$home" PATH="$TOOLS:$PATH" bash "$INSTALL" codex </dev/nu
 [ "$(cat "$home/setup-args")" = "--host codex --prefix" ] || fail "commande Codex officielle attendue"
 [ -f "$home/.codex/skills/gstack-review/SKILL.md" ] || fail "compétences Codex absentes"
 [ -d "$home/.claude/skills/gstack/bin" ] || fail "une installation existante ne doit pas être déplacée"
+
+# Codex avec GSTACK_ROOT : la source est choisie, mais les compétences
+# gstack-* restent exigées (revue Codex de la PR #7).
+home="$WORK/codex-root"; mkdir -p "$home"
+git clone -q "$FAKE" "$home/source-gstack" 2>/dev/null || fail "source GSTACK_ROOT"
+dir="$(quiet_env HOME="$home" GSTACK_ROOT="$home/source-gstack" PATH="$TOOLS:$PATH" bash "$INSTALL" codex </dev/null)" ||
+  fail "installation Codex avec GSTACK_ROOT"
+[ "$dir" = "$home/source-gstack" ] || fail "GSTACK_ROOT doit rester la source (reçu : $dir)"
+[ "$(cat "$home/setup-args" 2>/dev/null)" = "--host codex --prefix" ] || fail "GSTACK_ROOT ne doit pas dispenser des compétences Codex"
+[ -f "$home/.codex/skills/gstack-review/SKILL.md" ] || fail "compétences Codex absentes avec GSTACK_ROOT"
+
+# Seconde session pendant le setup d'une première : gstack n'est pas encore
+# prêt même si bin/ existe (revue Codex de la PR #7).
+home="$WORK/concurrente"; mkdir -p "$home/.claude/skills" "$home/.gstack/installation-auto.lock"
+git clone -q "$FAKE" "$home/.claude/skills/gstack" 2>/dev/null || fail "installation en cours simulée"
+out="$(run_auto "$home" GSTACK_LOCK_WAIT_SEC=0)" || fail "seconde session bloquée"
+printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING.*autre installation de gstack est en cours' ||
+  fail "une installation en cours ne doit pas passer pour terminée"
+( sleep 2; rmdir "$home/.gstack/installation-auto.lock" ) &
+started=$(date +%s)
+out="$(run_auto "$home" GSTACK_LOCK_WAIT_SEC=20)" || fail "seconde session en attente"
+wait
+[ $(( $(date +%s) - started )) -ge 2 ] || fail "la seconde session doit attendre la fin de la première"
+printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_OK' || fail "gstack prêt après la première installation"
+[ ! -e "$home/setup-args" ] || fail "la seconde session ne doit pas relancer setup"
 
 # 5. Session web Claude Code : Chromium préinstallé, rien à télécharger.
 home="$WORK/web"; mkdir -p "$home" "$WORK/pw"

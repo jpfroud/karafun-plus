@@ -12,6 +12,7 @@
 #
 # GSTACK_AUTO_INSTALL=0 : vérification seule, rien n'est installé.
 # GSTACK_REPO_URL : autre dépôt que l'officiel (miroir, tests).
+# GSTACK_INSTALL_BUDGET_SEC : durée maximale (570 s par défaut).
 
 AGENT="${1:-claude}"
 case "$AGENT" in claude|codex) ;; *) echo "Agent inconnu : $AGENT (claude ou codex)." >&2; exit 1 ;; esac
@@ -35,24 +36,39 @@ find_gstack() {
 }
 
 # Codex ne voit gstack que si ses compétences gstack-* sont installées (même
-# test que .codex/hooks/gstack-route.ps1).
+# test que .codex/hooks/gstack-route.ps1), même quand GSTACK_ROOT désigne la
+# source.
 ready() {
   local dir
   dir="$(find_gstack)" || return 1
-  if [ "$AGENT" = codex ] && [ -z "${GSTACK_ROOT:-}" ] &&
-     [ ! -f "${CODEX_HOME:-$HOME/.codex}/skills/gstack-review/SKILL.md" ]; then
+  if [ "$AGENT" = codex ] && [ ! -f "${CODEX_HOME:-$HOME/.codex}/skills/gstack-review/SKILL.md" ]; then
     return 1
   fi
   printf '%s\n' "$dir"
 }
 
+# Une installation en cours (verrou de moins de 15 minutes) : son dossier a
+# déjà bin/ mais setup n'est pas fini, gstack n'est pas encore prêt.
+installing() { [ -d "$LOCK" ] && [ -z "$(find "$LOCK" -maxdepth 0 -mmin +15 2>/dev/null)" ]; }
+
 fail() { echo "$*" >&2; exit 1; }
+
+# Le hook de démarrage est coupé au bout de 600 s : coupé en plein setup, il
+# laisserait un gstack cloné (avec bin/) qui passerait pour installé. Le
+# téléchargement et setup s'arrêtent donc d'eux-mêmes avant, et l'échec est
+# traité normalement.
+BUDGET="${GSTACK_INSTALL_BUDGET_SEC:-570}"
+bounded() {
+  local left=$((BUDGET - SECONDS))
+  [ "$left" -gt 0 ] || return 124
+  if command -v timeout >/dev/null 2>&1; then timeout "$left" "$@"; else "$@"; fi
+}
 
 # Garde la dernière installation ratée pour diagnostic, hors du dossier des
 # compétences (sinon Claude Code la prendrait pour une compétence).
 set_aside() { rm -rf "$STATE"/gstack.incomplet-*; mv "$1" "$STATE/gstack.incomplet-$(date +%s)"; }
 
-ready && exit 0
+installing || { ready && exit 0; }
 [ "${GSTACK_AUTO_INSTALL:-1}" = 0 ] && fail "installation automatique désactivée (GSTACK_AUTO_INSTALL=0)."
 command -v git >/dev/null 2>&1 || fail "git est introuvable."
 command -v bun >/dev/null 2>&1 ||
@@ -84,8 +100,11 @@ if [ -z "$dir" ]; then
   # Téléchargé hors du dossier des compétences : Claude Code n'y voit jamais
   # de gstack à moitié cloné.
   partial="$STATE/gstack.telechargement-$$"
-  git clone --depth 1 --single-branch "$REPO_URL" "$partial" >>"$LOG" 2>&1 ||
-    { rm -rf "$partial"; fail "téléchargement de gstack impossible depuis $REPO_URL (voir $LOG)."; }
+  bounded git clone --depth 1 --single-branch "$REPO_URL" "$partial" >>"$LOG" 2>&1 || {
+    code=$?; rm -rf "$partial"
+    [ "$code" = 124 ] && fail "téléchargement de gstack trop long (plus de $BUDGET s, voir $LOG) ; il sera repris à la prochaine session."
+    fail "téléchargement de gstack impossible depuis $REPO_URL (voir $LOG)."
+  }
   mv "$partial" "$TARGET" || fail "impossible de placer gstack dans $TARGET."
   dir="$TARGET"; cloned=1
 fi
@@ -98,14 +117,13 @@ skip_browser="${GSTACK_SKIP_PLAYWRIGHT:-0}"
 if [ "${CLAUDE_CODE_REMOTE:-}" = true ] && [ -x "${PLAYWRIGHT_BROWSERS_PATH:-/opt/pw-browsers}/chromium" ]; then
   skip_browser=1
 fi
-limit=""
-command -v timeout >/dev/null 2>&1 && limit="timeout ${GSTACK_SETUP_TIMEOUT_SEC:-540}"
-( cd "$dir" && GSTACK_SKIP_PLAYWRIGHT="$skip_browser" $limit bash ./setup "$@" </dev/null ) >>"$LOG" 2>&1
+( cd "$dir" && GSTACK_SKIP_PLAYWRIGHT="$skip_browser" bounded bash ./setup "$@" </dev/null ) >>"$LOG" 2>&1
 code=$?
 if [ "$code" != 0 ]; then
   # Le dépôt contient déjà bin/ : sans ce retrait, gstack passerait pour
   # installé et la session suivante ne réessaierait pas.
   [ -n "$cloned" ] && set_aside "$dir"
+  [ "$code" = 124 ] && fail "installation de gstack trop longue (plus de $BUDGET s, voir $LOG) ; elle sera reprise à la prochaine session."
   fail "installation de gstack échouée (code $code, voir $LOG)."
 fi
 ready || fail "gstack installé mais introuvable pour $AGENT (voir $LOG)."

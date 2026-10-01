@@ -18,8 +18,8 @@ try {
     $homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
     $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $homeDir '.codex' }
     $skillsRoot = Join-Path $codexHome 'skills'
-    $gstackReady = (Test-Path -LiteralPath (Join-Path $skillsRoot 'gstack-review/SKILL.md')) -or
-        ($env:GSTACK_ROOT -and (Test-Path -LiteralPath (Join-Path $env:GSTACK_ROOT 'bin')))
+    # Codex needs its gstack-* skills, even when GSTACK_ROOT names the source.
+    $gstackReady = Test-Path -LiteralPath (Join-Path $skillsRoot 'gstack-review/SKILL.md')
     $rules = 'This project requires gstack for code changes: gstack-investigate for bugs, gstack-spec or gstack-plan-eng-review for features, gstack-qa for browser testing, and gstack-review before delivery. Run node test/run-offline.js and record results in RAPPORT-TEST.md. Explicit user instructions take precedence.'
     if ($gstackReady) {
         $message = if ($name -eq 'SessionStart') { "GSTACK_OK: gstack skills found in $skillsRoot. $rules" } else { $rules }

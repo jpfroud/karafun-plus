@@ -29,9 +29,15 @@ for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/
   fi
 done
 
+# Installation lancée par une autre session et pas encore finie : bin/ existe
+# déjà, mais gstack n'est prêt qu'à la fin de setup. install-gstack.sh attend
+# alors son verrou (même chemin et même délai de péremption).
+LOCK="$HOME/.gstack/installation-auto.lock"
+in_progress() { [ -d "$LOCK" ] && [ -z "$(find "$LOCK" -maxdepth 0 -mmin +15 2>/dev/null)" ]; }
+
 INSTALLED=""
 REASON=""
-if [ -z "$GSTACK_DIR" ] && [ "$EVENT" = SessionStart ]; then
+if [ "$EVENT" = SessionStart ] && { [ -z "$GSTACK_DIR" ] || in_progress; }; then
   ERRORS="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/gstack-installation-$$")"
   GSTACK_DIR="$(bash "$HOOKS_DIR/install-gstack.sh" claude 2>"$ERRORS" </dev/null | tail -n 1)"
   REASON="$(tail -n 1 "$ERRORS" 2>/dev/null)"
