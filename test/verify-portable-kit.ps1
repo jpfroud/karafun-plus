@@ -17,7 +17,7 @@ try {
   }
   foreach ($required in @('karaoke-bar/node/node.exe', 'karaoke-bar/node/LICENSE', 'karaoke-bar/server.js',
       'karaoke-bar/build-info.json',
-      'karaoke-bar/public/client.html', 'karaoke-bar/DEMARRER.bat',
+      'karaoke-bar/public/client.html', 'karaoke-bar/public/client-i18n.js', 'karaoke-bar/DEMARRER.bat',
       'karaoke-bar/KaraFun Plus.exe', 'karaoke-bar/solver/bridge.js',
       'karaoke-bar/solver/karafun-solver.jar',
       'karaoke-bar/solver-runtime/bin/java.exe',

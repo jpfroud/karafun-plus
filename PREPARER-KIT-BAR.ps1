@@ -52,7 +52,7 @@ foreach ($nom in $fichiers) {
   }
 }
 foreach ($nom in @('node\node.exe', 'node\LICENSE', 'node_modules\qrcode', 'node_modules\socket.io',
-    'node_modules\socket.io-client', 'public\client.html', 'public\staff.html',
+    'node_modules\socket.io-client', 'public\client.html', 'public\client-i18n.js', 'public\staff.html',
     'solver-runtime\bin\java.exe')) {
   if (-not (Test-Path -LiteralPath (Join-Path $racine $nom))) {
     throw "Dépendance indispensable absente : $nom"

@@ -106,37 +106,50 @@
   .client #transferBox .sheet-actions { margin-top: 10px; }
   .client .song-notice { margin: 0 0 10px; }
   @media (max-width: 380px) { .client .form-row { display: block; } .client .form-row .btn { width: 100%; margin-top: 8px; } }
+  .client header.top { gap: 10px; }
+  .client header.top .brand { min-width: 0; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+  .client .top-tools { display: flex; align-items: center; gap: 8px; flex: none; }
+  .client .lang-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .client .lang-switch button { appearance: none; border: 0; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; min-width: 40px; min-height: 34px; padding: 4px 8px; cursor: pointer; }
+  .client .lang-switch button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-2); border-radius: 999px; }
 </style>
 </head>
 <body class="client">
 <header class="top">
-  <div class="brand">🎤 <span id="tableName">Karaoké</span></div>
-  <span id="conn" class="pill" role="status">Connexion…</span>
+  <div class="brand">🎤 <span id="tableName" data-i18n>Karaoké</span></div>
+  <div class="top-tools">
+    <!-- Libellé bilingue : il doit rester compréhensible dans les deux langues. -->
+    <div id="langSwitch" class="lang-switch" role="group" aria-label="Langue · Language">
+      <button type="button" data-lang="fr" lang="fr" aria-label="Français" aria-pressed="true">FR</button>
+      <button type="button" data-lang="en" lang="en" aria-label="English" aria-pressed="false">EN</button>
+    </div>
+    <span id="conn" class="pill" role="status">Connexion…</span>
+  </div>
 </header>
 
 <div class="alert-stack">
   <div id="presenceBanner" class="notice warn" role="alert" hidden>
     <b id="presenceBannerText"></b>
-    <button type="button" class="btn primary small" id="presenceBannerGo">Voir les confirmations</button>
+    <button type="button" class="btn primary small" id="presenceBannerGo" data-i18n>Voir les confirmations</button>
   </div>
   <div id="activityBanner" class="notice warn" role="alert" hidden>
     <b id="activityBannerText"></b>
-    <button type="button" class="btn primary small" id="activityBannerGo">Voir la demande</button>
+    <button type="button" class="btn primary small" id="activityBannerGo" data-i18n>Voir la demande</button>
   </div>
 </div>
 
 <div class="stagebox">
   <section class="card stage" aria-labelledby="stageLabel">
-    <div id="stageLabel" class="label">Sur scène</div>
+    <div id="stageLabel" class="label" data-i18n>Sur scène</div>
     <div class="stage-row">
       <span class="avatar lg" aria-hidden="true">🎤</span>
       <div class="grow">
-        <div class="who" id="stageWho">Chargement…</div>
+        <div class="who" id="stageWho" data-i18n>Chargement…</div>
         <div class="what" id="stageWhat"></div>
       </div>
     </div>
     <div class="next" id="nextBox" hidden>
-      <span class="label">Ensuite</span>
+      <span class="label" data-i18n>Ensuite</span>
       <span class="grow" id="nextTxt"></span>
       <span class="small muted" id="nextEta"></span>
     </div>
@@ -144,76 +157,76 @@
 </div>
 
 <nav class="tabs" role="tablist" aria-label="Sections">
-  <button type="button" id="nav-table" role="tab" aria-controls="tab-table" data-tab="table" class="on" aria-selected="true">Ma table</button>
-  <button type="button" id="nav-queue" role="tab" aria-controls="tab-queue" data-tab="queue" aria-selected="false">La file <span id="qCount"></span></button>
-  <button type="button" id="nav-catalog" role="tab" aria-controls="tab-catalog" data-tab="catalog" aria-selected="false">Catalogue</button>
+  <button type="button" id="nav-table" role="tab" aria-controls="tab-table" data-tab="table" class="on" aria-selected="true" data-i18n>Ma table</button>
+  <button type="button" id="nav-queue" role="tab" aria-controls="tab-queue" data-tab="queue" aria-selected="false"><span data-i18n>La file</span> <span id="qCount"></span></button>
+  <button type="button" id="nav-catalog" role="tab" aria-controls="tab-catalog" data-tab="catalog" aria-selected="false" data-i18n>Catalogue</button>
 </nav>
 
 <main>
   <div id="fatalBox" class="card notice warn" hidden>
-    <b>Lien de table invalide.</b> Scanne le QR code affiché par le bar pour accéder à ta table.
+    <b data-i18n>Lien de table invalide.</b> <span data-i18n>Scanne le QR code affiché par le bar pour accéder à ta table.</span>
   </div>
 
   <section id="tab-table" role="tabpanel" aria-labelledby="nav-table">
     <div id="transferBox" class="card notice ok" role="region" aria-labelledby="transferHeading" hidden>
-      <h2 id="transferHeading">Récupérer un chanteur</h2>
+      <h2 id="transferHeading" data-i18n>Récupérer un chanteur</h2>
       <p id="transferText" class="small"></p>
       <div class="sheet-actions" id="transferActions"></div>
     </div>
     <div id="joinBox" class="card" hidden>
-      <h2>Bienvenue à <span id="joinTable">ta table</span> !</h2>
-      <p id="joinIntro" class="muted small intro">Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.</p>
-      <p id="headcountNotice" class="notice warn" hidden>Le bar doit d’abord indiquer combien de personnes sont à cette table.</p>
+      <h2 id="joinHeading" data-i18n>Bienvenue à ta table !</h2>
+      <p id="joinIntro" class="muted small intro" data-i18n>Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.</p>
+      <p id="headcountNotice" class="notice warn" hidden data-i18n>Le bar doit d’abord indiquer combien de personnes sont à cette table.</p>
       <form id="joinForm">
-        <label class="field" for="firstName" id="joinNameLabel">Prénom de la première personne</label>
-        <input id="firstName" type="text" maxlength="24" autocomplete="given-name" required placeholder="Ex. Marie">
-        <button class="btn primary wide" type="submit" style="margin-top:12px">Commencer</button>
+        <label class="field" for="firstName" id="joinNameLabel" data-i18n>Prénom de la première personne</label>
+        <input id="firstName" type="text" maxlength="24" autocomplete="given-name" required placeholder="Ex. Marie" data-i18n-attr="placeholder">
+        <button class="btn primary wide" type="submit" style="margin-top:12px" data-i18n>Commencer</button>
       </form>
     </div>
 
     <div id="tableBox" hidden>
       <div class="card" id="noSingerBox" hidden>
-        <h2>Pour ajouter une chanson</h2>
+        <h2 data-i18n>Pour ajouter une chanson</h2>
         <p id="noSingerText" class="small muted"></p>
         <div class="access-actions" id="noSingerActions"></div>
       </div>
       <div class="card" id="quickSongBox" hidden>
-        <h2 id="quickSongHeading">Choisir une chanson</h2>
-        <p class="small muted" id="quickSongIntro">Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.</p>
+        <h2 id="quickSongHeading" data-i18n>Choisir une chanson</h2>
+        <p class="small muted" id="quickSongIntro" data-i18n>Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.</p>
         <div id="quickSongActions" class="quick-song-actions"></div>
       </div>
       <div class="card" id="claimBox" hidden>
-        <h2 id="claimHeading">Déjà inscrit à cette table ?</h2>
-        <p id="claimIntro" class="muted small intro">Ton prénom est déjà inscrit ? Demande au bar ou à ton ancien téléphone un code de reprise à 4 chiffres.</p>
+        <h2 id="claimHeading" data-i18n>Déjà inscrit à cette table ?</h2>
+        <p id="claimIntro" class="muted small intro" data-i18n>Ton prénom est déjà inscrit ? Demande au bar ou à ton ancien téléphone un code de reprise à 4 chiffres.</p>
         <div id="claimPeople" class="claim-people"></div>
       </div>
       <div class="card" id="peopleCard">
         <div class="table-head">
           <div class="grow">
-            <h2 id="peopleHeading">Les personnes de la table</h2>
-            <p class="muted small intro" id="peopleIntro">Seul le téléphone associé à une personne peut modifier ses chansons.</p>
+            <h2 id="peopleHeading" data-i18n>Les personnes de la table</h2>
+            <p class="muted small intro" id="peopleIntro" data-i18n>Seul le téléphone associé à une personne peut modifier ses chansons.</p>
           </div>
           <span id="peopleCount" class="pill"></span>
         </div>
         <ul id="peopleList" class="person-list"></ul>
-        <button type="button" class="btn small alerts-toggle" id="alertsToggle">Activer les notifications</button>
-        <p class="tiny muted alert-help" id="alertsHelp">Les duos, votes Battle et présences à confirmer apparaissent ici. Active le son et la vibration si tu veux être prévenu tant que cette page reste ouverte.</p>
+        <button type="button" class="btn small alerts-toggle" id="alertsToggle" data-i18n>Activer les notifications</button>
+        <p class="tiny muted alert-help" id="alertsHelp" data-i18n>Les duos, votes Battle et présences à confirmer apparaissent ici. Active le son et la vibration si tu veux être prévenu tant que cette page reste ouverte.</p>
       </div>
       <div class="card" id="addPersonBox">
-        <h3>Ajouter une personne</h3>
-        <p id="capacityNotice" class="empty-copy" hidden>La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.</p>
+        <h3 data-i18n>Ajouter une personne</h3>
+        <p id="capacityNotice" class="empty-copy" hidden data-i18n>La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.</p>
         <form id="addPersonForm" class="form-row">
           <div class="field-wrap">
-            <label class="field" for="newName">Son prénom (chanteur ou votant)</label>
-            <input id="newName" type="text" maxlength="24" autocomplete="off" required placeholder="Ex. Karim">
+            <label class="field" for="newName" data-i18n>Son prénom (chanteur ou votant)</label>
+            <input id="newName" type="text" maxlength="24" autocomplete="off" required placeholder="Ex. Karim" data-i18n-attr="placeholder">
           </div>
-          <button type="submit" class="btn primary">Ajouter</button>
+          <button type="submit" class="btn primary" data-i18n>Ajouter</button>
         </form>
       </div>
     </div>
     <div id="battleBox" class="card" hidden>
-      <h2>Battle : toute la salle chante</h2>
-      <p class="small muted">Le bar lance un titre collectif. Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.</p>
+      <h2 data-i18n>Battle : toute la salle chante</h2>
+      <p class="small muted" data-i18n>Le bar lance un titre collectif. Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.</p>
       <p id="battleText" class="small"></p>
       <div id="battleVotes"></div>
     </div>
@@ -221,34 +234,34 @@
 
   <section id="tab-queue" role="tabpanel" aria-labelledby="nav-queue" hidden>
     <div class="card">
-      <div class="queue-head"><div class="grow"><h2>La file des chansons</h2><p class="muted small queue-summary">Voici l’ordre actuel. Les horaires peuvent changer ; le prochain chanteur annoncé garde sa place, sauf imprévu.</p></div></div>
+      <div class="queue-head"><div class="grow"><h2 data-i18n>La file des chansons</h2><p class="muted small queue-summary" data-i18n>Voici l’ordre actuel. Les horaires peuvent changer ; le prochain chanteur annoncé garde sa place, sauf imprévu.</p></div></div>
       <ul class="qlist" id="queueList"></ul>
-      <p id="queueEmpty" class="empty-copy" hidden>Aucune chanson en attente pour le moment.</p>
+      <p id="queueEmpty" class="empty-copy" hidden data-i18n>Aucune chanson en attente pour le moment.</p>
     </div>
     <div class="card" id="waitingCard">
-      <div class="label" id="waitingLabel">À notre table, sans chanson</div>
+      <div class="label" id="waitingLabel" data-i18n>À notre table, sans chanson</div>
       <ul class="waiting-list" id="waitingList"></ul>
-      <p id="waitingEmpty" class="empty-copy" hidden>Personne à notre table n’attend sans chanson.</p>
+      <p id="waitingEmpty" class="empty-copy" hidden data-i18n>Personne à notre table n’attend sans chanson.</p>
     </div>
   </section>
 
   <section id="tab-catalog" role="tabpanel" aria-labelledby="nav-catalog" hidden>
     <div class="card">
-      <h2>Choisir une chanson</h2>
+      <h2 data-i18n>Choisir une chanson</h2>
       <div id="catalogAccessBox" class="notice warn catalog-access" hidden>
-        <b>Tu ne peux pas encore ajouter de chanson depuis ce téléphone.</b>
+        <b data-i18n>Tu ne peux pas encore ajouter de chanson depuis ce téléphone.</b>
         <p id="catalogAccessText" class="small"></p>
         <div id="catalogAccessActions" class="access-actions"></div>
       </div>
-      <div id="catalogTarget" class="catalog-target">Choisis un titre, puis son chanteur.</div>
-      <label class="field" for="searchInput">Rechercher un titre ou un artiste</label>
-      <input id="searchInput" type="search" autocomplete="off" enterkeyhint="search" placeholder="Ex. Queen">
-      <div class="catalog-filters" aria-label="Explorer le catalogue">
-        <button type="button" class="btn small on" data-catalog="playlist">Playlists</button>
-        <button type="button" class="btn small" data-catalog="styles">Styles</button>
-        <button type="button" class="btn small" data-catalog="top">Top</button>
-        <button type="button" class="btn small" data-catalog="news">Nouveautés</button>
-        <button type="button" class="btn small" data-catalog="featured">À découvrir</button>
+      <div id="catalogTarget" class="catalog-target" data-i18n>Choisis un titre, puis son chanteur.</div>
+      <label class="field" for="searchInput" data-i18n>Rechercher un titre ou un artiste</label>
+      <input id="searchInput" type="search" autocomplete="off" enterkeyhint="search" placeholder="Ex. Queen" data-i18n-attr="placeholder">
+      <div class="catalog-filters" aria-label="Explorer le catalogue" data-i18n-attr="aria-label">
+        <button type="button" class="btn small on" data-catalog="playlist" data-i18n>Playlists</button>
+        <button type="button" class="btn small" data-catalog="styles" data-i18n>Styles</button>
+        <button type="button" class="btn small" data-catalog="top" data-i18n>Top</button>
+        <button type="button" class="btn small" data-catalog="news" data-i18n>Nouveautés</button>
+        <button type="button" class="btn small" data-catalog="featured" data-i18n>À découvrir</button>
       </div>
       <div id="catalogContent" class="catalog-content" aria-live="polite"></div>
     </div>
@@ -260,6 +273,7 @@
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
 
+<script src="/client-i18n.js"></script>
 <script>
 (() => {
   const $ = id => document.getElementById(id);
@@ -321,8 +335,61 @@
 
   const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   const list = value => Array.isArray(value) ? value : [];
-  const fullSong = song => `${song.title || 'Sans titre'}${song.artist ? ' — ' + song.artist : ''}`;
-  const position = n => n === 1 ? '1re' : `${n}e`;
+
+  // Langue de la page des chanteurs (la page du bar reste en français). Par
+  // défaut, celle du téléphone : français s'il est réglé en français, anglais
+  // sinon. Le choix fait avec le bouton FR/EN est gardé sur ce téléphone.
+  const langKey = 'kfLang';
+  const english = window.CLIENT_TRANSLATIONS?.en || {};
+  function phoneLanguage() {
+    const first = list(navigator.languages)[0] || navigator.language || '';
+    return !first || /^fr(?:-|_|$)/i.test(first) ? 'fr' : 'en';
+  }
+  let lang = phoneLanguage();
+  try {
+    const saved = localStorage.getItem(langKey);
+    if (saved === 'fr' || saved === 'en') lang = saved;
+  } catch (_) { /* Stockage désactivé : langue du téléphone. */ }
+  // Le texte français sert de clé ; une phrase sans traduction reste en
+  // français. {nom} est remplacé par le paramètre du même nom.
+  const fill = (text, params) => String(text)
+    .replace(/\{(\w+)\}/g, (all, name) => params[name] != null ? String(params[name]) : all);
+  const t = (french, params = {}) => fill(lang === 'en' && typeof english.texts?.[french] === 'string'
+    ? english.texts[french] : french, params);
+  // Pluriel : la clé est la forme française au singulier, traduite par
+  // [singulier, pluriel]. 0 est au singulier en français, au pluriel en anglais.
+  function tp(n, one, many, params = {}) {
+    const forms = lang === 'en' ? english.texts?.[one] : null;
+    return fill(Array.isArray(forms) ? forms[n === 1 ? 0 : 1] : n > 1 ? many : one, { n, ...params });
+  }
+  // Messages d'erreur du serveur (en français) : traduits s'ils sont connus.
+  function serverText(message) {
+    if (lang !== 'en' || !message) return message;
+    if (english.errors?.[message]) return english.errors[message];
+    for (const [pattern, text] of list(english.errorPatterns)) {
+      const match = pattern.exec(message);
+      if (match) return text.replace(/\{(\d)\}/g, (all, index) => match[index] ?? all);
+    }
+    return message;
+  }
+  // Textes fixes de la page : leur français d'origine sert de clé.
+  const staticTexts = [...document.querySelectorAll('[data-i18n]')].map(node => [node, node.textContent]);
+  const staticAttributes = [...document.querySelectorAll('[data-i18n-attr]')].flatMap(node =>
+    node.getAttribute('data-i18n-attr').split(/\s+/).map(name => [node, name, node.getAttribute(name)]));
+  function translateStatic() {
+    if (document.documentElement) document.documentElement.lang = lang;
+    for (const [node, text] of staticTexts) node.textContent = t(text);
+    for (const [node, name, text] of staticAttributes) node.setAttribute(name, t(text));
+    for (const button of $('langSwitch').querySelectorAll('[data-lang]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.lang === lang));
+    }
+  }
+
+  const fullSong = song => `${song.title || t('Sans titre')}${song.artist ? ' — ' + song.artist : ''}`;
+  const englishOrdinal = n => `${n}${[11, 12, 13].includes(n % 100) ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
+  const position = n => lang === 'en' ? englishOrdinal(n) : n === 1 ? '1re' : `${n}e`;
+  // Le groupe « En solo » porte son nom par défaut : il se traduit aussi.
+  const tableLabel = table => table?.individual && table.name === 'En solo' ? t('En solo') : table?.name;
   const personById = id => list(state && state.tablePeople).find(p => String(p.id) === String(id));
   const ownIds = () => state?.table?.individual
     ? managedIds()
@@ -334,7 +401,8 @@
   function eta(value) {
     if (value == null || value === '') return '';
     const d = new Date(value);
-    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    // Heure sur 24 h dans les deux langues, comme les horloges du bar.
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(lang === 'en' ? 'en-GB' : 'fr-FR', { hour: '2-digit', minute: '2-digit' });
   }
 
   function toast(message, bad = false, { warn = false, ms = 4000 } = {}) {
@@ -350,14 +418,14 @@
   function songNoticeText(notice, added = false) {
     if (!notice) return '';
     const parts = [];
-    if (notice.playedAt != null) parts.push(notice.minutesAgo < 1 ? 'Ce titre vient d’être lancé sur scène.'
-      : `Ce titre a été chanté il y a ${notice.minutesAgo} min.`);
+    if (notice.playedAt != null) parts.push(notice.minutesAgo < 1 ? t('Ce titre vient d’être lancé sur scène.')
+      : t('Ce titre a été chanté il y a {n} min.', { n: notice.minutesAgo }));
     const queued = list(notice.queued);
-    const where = item => `n°${item.pos}${eta(item.eta) ? ` vers ${eta(item.eta)}` : ''}${item.name ? `, ${item.name}` : ''}`;
+    const where = item => `${t('n°{pos}', { pos: item.pos })}${eta(item.eta) ? ` ${t('vers {time}', { time: eta(item.eta) })}` : ''}${item.name ? `, ${item.name}` : ''}`;
     const before = queued.find(item => item.before);
-    if (added && before) parts.push(`Il est déjà prévu avant le tien dans la file (${where(before)}).`);
-    else if (added && queued.length) parts.push(`Quelqu’un l’a aussi prévu plus tard dans la file (${where(queued[0])}).`);
-    else if (queued.length) parts.push(`Il est déjà prévu dans la file (${where(queued[0])}).`);
+    if (added && before) parts.push(t('Il est déjà prévu avant le tien dans la file ({where}).', { where: where(before) }));
+    else if (added && queued.length) parts.push(t('Quelqu’un l’a aussi prévu plus tard dans la file ({where}).', { where: where(queued[0]) }));
+    else if (queued.length) parts.push(t('Il est déjà prévu dans la file ({where}).', { where: where(queued[0]) }));
     return parts.join(' ');
   }
 
@@ -369,7 +437,7 @@
       const { notice } = await request(`/api/song/notice?${params}`);
       const node = $(nodeId);
       if (ticket !== noticeRequest || !node || !notice) return;
-      node.textContent = `⚠ ${songNoticeText(notice)} Tu peux l’ajouter quand même ou choisir un autre titre.`;
+      node.textContent = `⚠ ${songNoticeText(notice)} ${t('Tu peux l’ajouter quand même ou choisir un autre titre.')}`;
       node.hidden = false;
     } catch (_) { /* L'alerte est facultative : l'ajout reste possible. */ }
   }
@@ -397,11 +465,11 @@
   function renderAlertPreference() {
     const systemAvailable = !!(window.isSecureContext && window.Notification &&
       (alertsEnabled ? Notification.permission === 'granted' : Notification.permission !== 'denied'));
-    $('alertsToggle').textContent = alertsEnabled ? 'Désactiver les notifications' : 'Activer les notifications';
+    $('alertsToggle').textContent = alertsEnabled ? t('Désactiver les notifications') : t('Activer les notifications');
     $('alertsToggle').setAttribute('aria-pressed', String(alertsEnabled));
     $('alertsHelp').textContent = systemAvailable
-      ? 'Sur cette connexion sécurisée, autorise les notifications du navigateur. Elles, le son et la vibration fonctionnent tant que la page reste ouverte.'
-      : 'Les demandes restent visibles ici. Le son et la vibration peuvent alerter si la page reste ouverte ; les notifications du navigateur nécessitent HTTPS et son autorisation.';
+      ? t('Sur cette connexion sécurisée, autorise les notifications du navigateur. Elles, le son et la vibration fonctionnent tant que la page reste ouverte.')
+      : t('Les demandes restent visibles ici. Le son et la vibration peuvent alerter si la page reste ouverte ; les notifications du navigateur nécessitent HTTPS et son autorisation.');
   }
 
   function soundAlert() {
@@ -442,8 +510,8 @@
     if (document.hidden && window.Notification && Notification.permission === 'granted') {
       try {
         const names = people.map(person => person.name).join(', ');
-        const notice = new Notification('Karaoké : présence à confirmer', {
-          body: `${names} : ouvre la page pour confirmer avant le passage.`, tag: `presence-${tableId}`,
+        const notice = new Notification(t('Karaoké : présence à confirmer'), {
+          body: t('{names} : ouvre la page pour confirmer avant le passage.', { names }), tag: `presence-${tableId}`,
         });
         notice.onclick = () => { window.focus(); setTab('table'); notice.close(); };
       } catch (_) { /* La bannière dans la page reste visible. */ }
@@ -458,7 +526,7 @@
     $('presenceBanner').hidden = pending.length === 0;
     if (pending.length) {
       const names = pending.map(person => person.name).join(', ');
-      $('presenceBannerText').textContent = `Présence à confirmer pour ${names}. Sans réponse une fois la scène libre, la chanson laisse passer la suivante et revient juste après. Pour un duo, la réponse de l’un des deux suffit.`;
+      $('presenceBannerText').textContent = t('Présence à confirmer pour {names}. Sans réponse une fois la scène libre, la chanson laisse passer la suivante et revient juste après. Pour un duo, la réponse de l’un des deux suffit.', { names });
       announcePresence(fresh);
     }
   }
@@ -469,7 +537,7 @@
     try { navigator.vibrate?.([160, 80, 160]); } catch (_) { /* Vibration facultative. */ }
     if (document.hidden && window.Notification && Notification.permission === 'granted') {
       try {
-        const notice = new Notification('Karaoké : nouvelle demande', {
+        const notice = new Notification(t('Karaoké : nouvelle demande'), {
           body: activity.text, tag: `demande-${tableId}-${activity.key}`,
         });
         notice.onclick = () => { window.focus(); setTab('table'); notice.close(); };
@@ -479,10 +547,11 @@
 
   function renderActivityBanner() {
     const people = managedPeople();
+    const tab = state?.table?.individual ? t('Mes titres') : t('Ma table');
     const invitations = people.flatMap(person => {
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
       return invites.map(invite => ({ key: `duo:${person.id}:${invite.entryId || invite.song?.songId || ''}`,
-        text: `${invite.fromName || 'Quelqu’un'} propose un duo à ${person.name}. Réponds depuis « Ma table ».`,
+        text: t('{from} propose un duo à {name}. Réponds depuis « {tab} ».', { from: invite.fromName || t('Quelqu’un'), name: person.name, tab }),
         target: 'duo', personId: person.id }));
     });
     const battle = state?.battle || {};
@@ -491,15 +560,17 @@
     const voters = people.filter(person => eligible.has(String(person.id)) && !voted.has(String(person.id)));
     const activities = [...invitations];
     if (battle.phase === 'voting' && voters.length) activities.push({ key: `battle-vote:${battle.id}`,
-      text: `Un vote Battle est ouvert. ${voters.map(person => person.name).join(', ')} peut voter avant la fin du délai.`, target: 'battle' });
+      text: tp(voters.length, 'Un vote Battle est ouvert. {names} peut voter avant la fin du délai.',
+        'Un vote Battle est ouvert. {names} peuvent voter avant la fin du délai.', { names: voters.map(person => person.name).join(', ') }),
+      target: 'battle' });
     const fresh = activities.find(activity => !lastActivityKeys.has(activity.key));
     lastActivityKeys = new Set(activities.map(activity => activity.key));
     currentActivity = fresh || activities[0] || null;
     $('activityBanner').hidden = !currentActivity;
     $('activityBannerText').textContent = !currentActivity ? '' : invitations.length > 1 && currentActivity.target === 'duo'
-      ? `${invitations.length} invitations de duo attendent une réponse. ${currentActivity.text}` : currentActivity.text;
-    $('activityBannerGo').textContent = currentActivity?.target === 'duo' ? 'Répondre au duo' : 'Voir la Battle';
-    const pageTitle = state?.table?.individual ? 'Karaoké — mes chansons' : 'Karaoké — ma table';
+      ? `${t('{n} invitations de duo attendent une réponse.', { n: invitations.length })} ${currentActivity.text}` : currentActivity.text;
+    $('activityBannerGo').textContent = currentActivity?.target === 'duo' ? t('Répondre au duo') : t('Voir la Battle');
+    const pageTitle = state?.table?.individual ? t('Karaoké — mes chansons') : t('Karaoké — ma table');
     document.title = activities.length ? `(${activities.length}) ${pageTitle}` : pageTitle;
     if (fresh) announceActivity(fresh);
   }
@@ -508,7 +579,7 @@
     const response = await fetch(path, { cache: 'no-store', ...options });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(data.error || (response.status === 403 ? 'Lien de table invalide.' : 'Une erreur est survenue.'));
+      const error = new Error(serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));
       error.status = response.status;
       error.code = data.code;
       throw error;
@@ -553,20 +624,26 @@
         if (person) movedAway.push(person.name);
       }
       if (changed) try { localStorage.setItem(tokensKey, JSON.stringify(personTokens)); } catch (_) {}
-      if (movedAway.length) toast(`La gestion de ${movedAway.join(', ')} est passée sur un autre téléphone.`);
+      if (movedAway.length) toast(t('La gestion de {names} est passée sur un autre téléphone.', { names: movedAway.join(', ') }));
       if (targetPersonId && !managedPeople().some(person => String(person.id) === targetPersonId)) {
         targetPersonId = '';
         duetMode = false;
       }
       render();
-      $('conn').textContent = 'À jour';
-      $('conn').className = 'pill ok';
+      setConnection(() => t('À jour'), 'ok');
     } catch (error) {
       if (number !== stateRequest) return;
       if (error.status === 403) { invalidAccess = true; return showInvalidLink(); }
-      $('conn').textContent = 'Hors ligne';
-      $('conn').className = 'pill bad';
+      setConnection(() => t('Hors ligne'), 'bad');
     }
+  }
+
+  // L'état de connexion est gardé sous forme de fonction pour suivre la langue.
+  let connectionText = () => t('Connexion…');
+  function setConnection(text, tone = '') {
+    connectionText = text;
+    $('conn').textContent = text();
+    $('conn').className = tone ? `pill ${tone}` : 'pill';
   }
 
   function showInvalidLink() {
@@ -575,11 +652,10 @@
     $('tab-queue').hidden = true;
     $('tab-catalog').hidden = true;
     document.querySelector('.tabs').hidden = true;
-    $('stageWho').textContent = 'Lien invalide';
+    $('stageWho').textContent = t('Lien invalide');
     $('stageWhat').textContent = '';
     $('nextBox').hidden = true;
-    $('conn').textContent = 'Accès refusé';
-    $('conn').className = 'pill bad';
+    setConnection(() => t('Accès refusé'), 'bad');
   }
 
   function render() {
@@ -592,10 +668,10 @@
     const count = individual ? Number(state.table?.count ?? people.length) : people.length;
     // « En solo » n'a pas de nombre de places : seule une table ordinaire est complète.
     const full = !individual && Number.isInteger(state.table?.headcount) && count >= state.table.headcount;
-    const tableName = state.table && state.table.name ? state.table.name : `Table ${tableId}`;
+    const tableName = tableLabel(state.table) || t('Table {id}', { id: tableId });
     $('tableName').textContent = tableName;
-    $('joinTable').textContent = tableName;
-    $('nav-table').textContent = individual ? 'Mes titres' : 'Ma table';
+    $('joinHeading').textContent = t('Bienvenue à {table} !', { table: tableName });
+    $('nav-table').textContent = individual ? t('Mes titres') : t('Ma table');
     $('quickSongBox').classList.toggle('solo-song-cta', individual);
     $('quickSongHeading').hidden = individual;
     $('quickSongIntro').hidden = individual;
@@ -603,33 +679,34 @@
     $('peopleCount').hidden = individual;
     renderStage(queue);
     $('joinIntro').textContent = individual
-      ? 'Cette invitation du bar est personnelle et ne sert qu’une fois. Inscris-toi avec ton prénom pour choisir tes chansons.'
-      : 'Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.';
-    $('joinNameLabel').textContent = individual ? 'Ton prénom' : 'Prénom de la première personne';
+      ? t('Cette invitation du bar est personnelle et ne sert qu’une fois. Inscris-toi avec ton prénom pour choisir tes chansons.')
+      : t('Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.');
+    $('joinNameLabel').textContent = individual ? t('Ton prénom') : t('Prénom de la première personne');
     $('quickSongIntro').textContent = individual
-      ? 'Ajoute les chansons que tu veux chanter. Les autres personnes venues seules gèrent les leurs.'
-      : 'Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.';
-    $('peopleHeading').textContent = individual ? 'Mes chansons' : 'Les personnes de la table';
+      ? t('Ajoute les chansons que tu veux chanter. Les autres personnes venues seules gèrent les leurs.')
+      : t('Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.');
+    $('peopleHeading').textContent = individual ? t('Mes chansons') : t('Les personnes de la table');
     $('peopleIntro').textContent = individual
-      ? 'Tes chansons sont visibles ici. Les autres personnes ne peuvent pas les modifier.'
-      : 'Seul le téléphone associé à une personne peut modifier ses chansons.';
+      ? t('Tes chansons sont visibles ici. Les autres personnes ne peuvent pas les modifier.')
+      : t('Seul le téléphone associé à une personne peut modifier ses chansons.');
     $('peopleCard').hidden = individual && owned.length === 0;
-    $('waitingLabel').textContent = individual ? 'Mes chansons à choisir' : 'À notre table, sans chanson';
+    $('waitingLabel').textContent = individual ? t('Mes chansons à choisir') : t('À notre table, sans chanson');
     $('joinBox').hidden = individual ? owned.length > 0 || full || !state.soloInvitationReady : people.length > 0;
     $('headcountNotice').hidden = individual || !!state.table?.headcount;
     $('joinForm').querySelector('button[type=submit]').disabled = (!individual && !state.table?.headcount) || full || (individual && !state.soloInvitationReady);
     $('tableBox').hidden = individual ? owned.length === 0 && !full && recoveryPeople.length === 0 && state.soloInvitationReady : people.length === 0;
     const others = individual ? [] : people.filter(person => person.active && !manages(person.id));
     $('claimBox').hidden = individual ? recoveryPeople.length === 0 : others.length === 0;
-    $('claimHeading').textContent = individual ? 'Récupérer mes chansons' : 'Déjà inscrit à cette table ?';
+    $('claimHeading').textContent = individual ? t('Récupérer mes chansons') : t('Déjà inscrit à cette table ?');
     $('claimIntro').textContent = individual
-      ? 'Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.'
-      : 'Ton prénom est déjà inscrit ? Le plus simple : scanne le QR code « Transférer » affiché sur le téléphone qui te gère (ou ouvre le lien qu’il t’a envoyé). Sinon, touche ton nom et saisis son code à 4 chiffres.';
+      ? t('Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.')
+      : t('Ton prénom est déjà inscrit ? Le plus simple : scanne le QR code « Transférer » affiché sur le téléphone qui te gère (ou ouvre le lien qu’il t’a envoyé). Sinon, touche ton nom et saisis son code à 4 chiffres.');
     $('claimPeople').innerHTML = individual
-      ? recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">Je suis ${esc(person.name)} · reprendre mes chansons</button>`).join('')
-      : others.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">Je suis ${esc(person.name)}</button>`).join('');
-    $('peopleCount').textContent = individual ? 'Mon profil'
-      : `${state.table?.activeCount ?? people.length} présente${(state.table?.activeCount ?? people.length) > 1 ? 's' : ''} · ${people.length} inscrite${people.length > 1 ? 's' : ''}`;
+      ? recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: person.name }))}</button>`).join('')
+      : others.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name}', { name: person.name }))}</button>`).join('');
+    const present = state.table?.activeCount ?? people.length;
+    $('peopleCount').textContent = individual ? t('Mon profil')
+      : `${tp(present, '{n} présente', '{n} présentes')} · ${tp(people.length, '{n} inscrite', '{n} inscrites')}`;
     $('addPersonBox').hidden = individual || full;
     $('addPersonForm').hidden = individual || full;
     $('capacityNotice').hidden = individual || !full;
@@ -642,7 +719,7 @@
     renderQueue(queue, waiting);
     updateTarget();
     if (state.catalogAvailable === false && activeTab === 'catalog' && catalogMode === 'categories' && !categories.length) {
-      $('catalogContent').innerHTML = '<p class="empty-copy">Le catalogue est momentanément indisponible. Réessaie dans un instant.</p>';
+      showCatalogView(catalogMessage(() => t('Le catalogue est momentanément indisponible. Réessaie dans un instant.')));
     }
   }
 
@@ -653,11 +730,11 @@
     const canRegister = !full && (!individual || (!owned.length && state.soloInvitationReady)) &&
       (individual || (Number.isInteger(state.table?.headcount) && state.table.headcount > 0));
     if (individual) {
-      const explanation = canRegister ? 'Cette invitation personnelle permet de t’inscrire. Si tu avais déjà un profil, demande plutôt un code de reprise au bar.'
-          : soloInvitation ? 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.'
-            : 'Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.';
-      const actions = `${recoveryPeople.length ? '<button type="button" class="btn" data-access-go="claim">Récupérer mes chansons</button>' : ''}${canRegister
-        ? '<button type="button" class="btn primary" data-access-go="register">M’inscrire</button>' : ''}`;
+      const explanation = canRegister ? t('Cette invitation personnelle permet de t’inscrire. Si tu avais déjà un profil, demande plutôt un code de reprise au bar.')
+          : soloInvitation ? t('Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.')
+            : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
+      const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${canRegister
+        ? `<button type="button" class="btn primary" data-access-go="register">${esc(t('M’inscrire'))}</button>` : ''}`;
       $('noSingerBox').hidden = owned.length > 0 || canRegister;
       $('noSingerText').textContent = explanation;
       $('noSingerActions').innerHTML = actions;
@@ -665,14 +742,14 @@
       $('catalogAccessText').textContent = explanation;
       $('catalogAccessActions').innerHTML = actions;
       $('quickSongBox').hidden = owned.length === 0;
-      $('quickSongActions').innerHTML = owned.map(person => `<button type="button" class="btn primary" data-quick-song="${esc(person.id)}">Choisir une chanson</button>`).join('');
+      $('quickSongActions').innerHTML = owned.map(person => `<button type="button" class="btn primary" data-quick-song="${esc(person.id)}">${esc(t('Choisir une chanson'))}</button>`).join('');
       return;
     }
-    const actions = `${others.length ? '<button type="button" class="btn primary" data-access-go="claim">Reprendre un chanteur inscrit</button>' : ''}${canRegister ? '<button type="button" class="btn primary" data-access-go="register">Inscrire une personne</button>' : ''}`;
+    const actions = `${others.length ? `<button type="button" class="btn primary" data-access-go="claim">${esc(t('Reprendre un chanteur inscrit'))}</button>` : ''}${canRegister ? `<button type="button" class="btn primary" data-access-go="register">${esc(t('Inscrire une personne'))}</button>` : ''}`;
     const explanation = others.length
-      ? 'Pour gérer une personne déjà inscrite, scanne le QR code « Transférer » de son téléphone actuel ou ouvre le lien qu’il t’envoie. Téléphone éteint ou perdu ? Le bar peut te donner un QR code ou un code à 4 chiffres.'
-      : canRegister ? 'Inscris-toi, ou inscris quelqu’un sans téléphone, puis choisis ses chansons.'
-        : 'Demande au bar de vérifier les personnes inscrites et le nombre de places de cette table.';
+      ? t('Pour gérer une personne déjà inscrite, scanne le QR code « Transférer » de son téléphone actuel ou ouvre le lien qu’il t’envoie. Téléphone éteint ou perdu ? Le bar peut te donner un QR code ou un code à 4 chiffres.')
+      : canRegister ? t('Inscris-toi, ou inscris quelqu’un sans téléphone, puis choisis ses chansons.')
+        : t('Demande au bar de vérifier les personnes inscrites et le nombre de places de cette table.');
     $('noSingerBox').hidden = true;
     $('noSingerText').textContent = explanation;
     $('noSingerActions').innerHTML = actions;
@@ -687,20 +764,22 @@
     const offer = transferLink ? state?.transferOffer : null;
     $('transferBox').hidden = !offer;
     if (!offer) return;
-    const close = '<button type="button" class="btn" data-transfer-dismiss>Fermer</button>';
+    const close = `<button type="button" class="btn" data-transfer-dismiss>${esc(t('Fermer'))}</button>`;
     if (offer.invalid) {
-      $('transferHeading').textContent = 'Lien de transfert expiré';
-      $('transferText').textContent = 'Ce lien a déjà servi ou n’est plus valable. Demande un nouveau lien à l’autre téléphone, ou au bar.';
+      $('transferHeading').textContent = t('Lien de transfert expiré');
+      $('transferText').textContent = t('Ce lien a déjà servi ou n’est plus valable. Demande un nouveau lien à l’autre téléphone, ou au bar.');
       $('transferActions').innerHTML = close;
     } else if (manages(offer.personId)) {
-      $('transferHeading').textContent = 'Déjà sur ce téléphone';
-      $('transferText').textContent = `Ce téléphone gère déjà les chansons de ${offer.name}. Rien à faire.`;
+      $('transferHeading').textContent = t('Déjà sur ce téléphone');
+      $('transferText').textContent = t('Ce téléphone gère déjà les chansons de {name}. Rien à faire.', { name: offer.name });
       $('transferActions').innerHTML = close;
     } else {
       const individual = !!state?.table?.individual;
-      $('transferHeading').textContent = individual ? 'Récupérer tes chansons sur ce téléphone' : `Gérer ${offer.name} sur ce téléphone`;
-      $('transferText').textContent = `Ce téléphone pourra choisir les chansons de ${offer.name}, répondre à ses duos et confirmer sa présence. L’autre téléphone perdra cette gestion${individual ? '' : ' mais garde ses autres chanteurs'}.`;
-      $('transferActions').innerHTML = `<button type="button" class="btn primary" data-transfer-claim>${individual ? 'Récupérer mes chansons' : `Récupérer ${esc(offer.name)}`}</button><button type="button" class="btn ghost" data-transfer-dismiss>Pas maintenant</button>`;
+      $('transferHeading').textContent = individual ? t('Récupérer tes chansons sur ce téléphone') : t('Gérer {name} sur ce téléphone', { name: offer.name });
+      $('transferText').textContent = individual
+        ? t('Ce téléphone pourra choisir les chansons de {name}, répondre à ses duos et confirmer sa présence. L’autre téléphone perdra cette gestion.', { name: offer.name })
+        : t('Ce téléphone pourra choisir les chansons de {name}, répondre à ses duos et confirmer sa présence. L’autre téléphone perdra cette gestion mais garde ses autres chanteurs.', { name: offer.name });
+      $('transferActions').innerHTML = `<button type="button" class="btn primary" data-transfer-claim>${esc(individual ? t('Récupérer mes chansons') : t('Récupérer {name}', { name: offer.name }))}</button><button type="button" class="btn ghost" data-transfer-dismiss>${esc(t('Pas maintenant'))}</button>`;
     }
   }
 
@@ -714,43 +793,46 @@
       savePersonToken(result.id, result.token);
       forgetTransferLink();
       await refresh();
-      toast(`Tu gères maintenant ${offer.name} sur ce téléphone.`);
+      toast(t('Tu gères maintenant {name} sur ce téléphone.', { name: offer.name }));
       continuePendingSong();
     });
   });
 
   function openTransferSheet(person, share) {
     const individual = !!state?.table?.individual;
-    const name = person?.name || 'cette personne';
+    const name = person?.name || t('cette personne');
     const until = eta(share.linkExpiresAt);
     const message = individual
-      ? 'Lien pour récupérer mes chansons du karaoké sur ce téléphone :'
-      : `Pour gérer les chansons de ${name} au karaoké (${state?.table?.name || 'notre table'}), ouvre ce lien :`;
+      ? t('Lien pour récupérer mes chansons du karaoké sur ce téléphone :')
+      : t('Pour gérer les chansons de {name} au karaoké ({table}), ouvre ce lien :', { name, table: tableLabel(state?.table) || t('notre table') });
     const text = encodeURIComponent(`${message} ${share.url}`);
+    const claimLabel = individual ? t('Récupérer mes chansons') : t('Récupérer {name}', { name });
     const linkPart = share.url ? `<ol class="transfer-steps">
-        <li>${individual ? 'Sur ton nouveau téléphone' : 'Sur l’autre téléphone'}, ouvre l’appareil photo et scanne ce QR code.</li>
-        <li>La page du karaoké s’ouvre : touche « ${individual ? 'Récupérer mes chansons' : `Récupérer ${esc(name)}`} ».</li>
-        <li>C’est tout : ${individual ? 'ce téléphone-ci ne gérera plus tes chansons.' : `ce téléphone-ci ne gérera plus ${esc(name)}, mais garde ses autres chanteurs.`}</li>
+        <li>${esc(individual ? t('Sur ton nouveau téléphone, ouvre l’appareil photo et scanne ce QR code.') : t('Sur l’autre téléphone, ouvre l’appareil photo et scanne ce QR code.'))}</li>
+        <li>${esc(t('La page du karaoké s’ouvre : touche « {button} ».', { button: claimLabel }))}</li>
+        <li>${esc(individual ? t('C’est tout : ce téléphone-ci ne gérera plus tes chansons.') : t('C’est tout : ce téléphone-ci ne gérera plus {name}, mais garde ses autres chanteurs.', { name }))}</li>
       </ol>
-      <div class="transfer-qr"><img src="${esc(share.qr)}" alt="QR code pour ${individual ? 'récupérer tes chansons' : `transférer ${esc(name)}`} sur un autre téléphone"></div>
-      <p class="small muted" style="margin:10px 0 0">Téléphone pas à côté ? Envoie-lui plutôt le lien :</p>
+      <div class="transfer-qr"><img src="${esc(share.qr)}" alt="${esc(individual ? t('QR code pour récupérer tes chansons sur un autre téléphone') : t('QR code pour transférer {name} sur un autre téléphone', { name }))}"></div>
+      <p class="small muted" style="margin:10px 0 0">${esc(t('Téléphone pas à côté ? Envoie-lui plutôt le lien :'))}</p>
       <div class="share-links">
-        ${navigator.share ? '<button type="button" class="btn primary" id="shareTransfer">Partager…</button>' : ''}
+        ${navigator.share ? `<button type="button" class="btn primary" id="shareTransfer">${esc(t('Partager…'))}</button>` : ''}
         <a class="btn" href="https://wa.me/?text=${text}" target="_blank" rel="noopener">WhatsApp</a>
         <a class="btn" href="sms:?&body=${text}">SMS</a>
-        <a class="btn" href="mailto:?subject=${encodeURIComponent(`Karaoké : ${individual ? 'mes chansons' : name}`)}&body=${text}">E-mail</a>
-        <button type="button" class="btn" id="copyTransfer">Copier le lien</button>
+        <a class="btn" href="mailto:?subject=${encodeURIComponent(t('Karaoké : {subject}', { subject: individual ? t('mes chansons') : name }))}&body=${text}">${esc(t('E-mail'))}</a>
+        <button type="button" class="btn" id="copyTransfer">${esc(t('Copier le lien'))}</button>
       </div>
-      <input id="transferUrl" class="transfer-url" readonly value="${esc(share.url)}" aria-label="Lien de transfert">
-      <p class="tiny muted">QR code et lien valables une seule fois${until ? `, jusqu’à ${until}` : ''}. Ne les envoie qu’à la personne concernée.${/^http:/i.test(share.url) ? ' Ce lien ne fonctionne que sur le Wi-Fi du bar.' : ''}</p>` : '';
-    openSheet(`<div class="row"><h3 class="grow">${individual ? 'Changer de téléphone' : `Transférer ${esc(name)} vers un autre téléphone`}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+      <input id="transferUrl" class="transfer-url" readonly value="${esc(share.url)}" aria-label="${esc(t('Lien de transfert'))}">
+      <p class="tiny muted">${esc(until ? t('QR code et lien valables une seule fois, jusqu’à {time}.', { time: until }) : t('QR code et lien valables une seule fois.'))} ${esc(t('Ne les envoie qu’à la personne concernée.'))}${/^http:/i.test(share.url) ? ` ${esc(t('Ce lien ne fonctionne que sur le Wi-Fi du bar.'))}` : ''}</p>` : '';
+    openSheet(`<div class="row"><h3 class="grow">${esc(individual ? t('Changer de téléphone') : t('Transférer {name} vers un autre téléphone', { name }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       ${linkPart}
-      <details class="transfer-fallback"${share.url ? '' : ' open'}><summary>Impossible de scanner ? Utilise un code</summary>
-        <p class="small muted">Sur l’autre téléphone, ouvre ${individual ? 'le QR « En solo » que te montre le bar' : 'le QR code de la table'}, touche « Je suis ${esc(name)} », puis saisis ce code valable 10 minutes :</p>
+      <details class="transfer-fallback"${share.url ? '' : ' open'}><summary>${esc(t('Impossible de scanner ? Utilise un code'))}</summary>
+        <p class="small muted">${esc(individual
+          ? t('Sur l’autre téléphone, ouvre le QR « En solo » que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name })
+          : t('Sur l’autre téléphone, ouvre le QR code de la table, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name }))}</p>
         <p class="share-code">${esc(share.code)}</p>
       </details>`);
     $('shareTransfer')?.addEventListener('click', () => {
-      navigator.share({ title: 'Karaoké', text: message, url: share.url }).catch(() => { /* Partage annulé. */ });
+      navigator.share({ title: t('Karaoké'), text: message, url: share.url }).catch(() => { /* Partage annulé. */ });
     });
     $('copyTransfer')?.addEventListener('click', async () => {
       let copied = false;
@@ -759,7 +841,7 @@
         $('transferUrl').select();
         try { copied = document.execCommand('copy'); } catch (__) { copied = false; }
       }
-      toast(copied ? 'Lien copié : colle-le dans ton message.' : 'Sélectionne le lien ci-dessous pour le copier.', !copied);
+      toast(copied ? t('Lien copié : colle-le dans ton message.') : t('Sélectionne le lien ci-dessous pour le copier.'), !copied);
     });
   }
 
@@ -791,14 +873,27 @@
 
   function renderStage(queue) {
     const stage = state.stage;
-    $('stageWho').textContent = stage ? (stage.singer || 'Chanteur') : 'Personne sur scène';
-    $('stageWhat').textContent = stage ? fullSong(stage) : 'La prochaine chanson arrive bientôt.';
+    $('stageWho').textContent = stage ? singerLabel(stage) : t('Personne sur scène');
+    $('stageWhat').textContent = stage ? fullSong(stage) : t('La prochaine chanson arrive bientôt.');
     const next = state.next || queue[0];
     $('nextBox').hidden = !next;
     if (next) {
-      $('nextTxt').textContent = `${next.singer || 'Chanteur'} · ${next.title || 'Chanson'}`;
+      $('nextTxt').textContent = `${singerLabel(next)} · ${next.title || t('Chanson')}`;
       $('nextEta').textContent = eta(next.eta || state.nextEta);
     }
+  }
+
+  // Noms affichés d'un passage. Une Battle ajoutée hors de la file porte un
+  // nom donné par le serveur ; en anglais, le nom par défaut du groupe
+  // « En solo » est traduit comme dans l'en-tête.
+  function singerLabel(item) {
+    if (!item.ours && item.kind === 'battle' && item.singer === 'Battle collective') return t('Battle collective');
+    const singers = list(item.singers);
+    if (lang === 'en' && singers.some(singer => singer.individual && singer.table === 'En solo')) {
+      const tables = [...new Set(singers.map(singer => tableLabel({ individual: singer.individual, name: singer.table })))];
+      return `${singers.map(singer => singer.name).join(' & ')} · ${tables.join(' + ')}`;
+    }
+    return item.singer || t('Chanteur');
   }
 
   function renderPeople(people, queue) {
@@ -808,23 +903,30 @@
       const sent = list(person.inKaraFun).length ? list(person.inKaraFun)
         : (state.me && String(state.me.id) === String(person.id) ? list(state.me.inKaraFun) : []);
       const turn = queue.find(item => list(item.ids).some(id => String(id) === String(person.id)));
-      const status = person.active === false ? 'Parti · historique conservé' : (person.onStage || sent.some(song => song.stage)) ? 'Sur scène' : turn ? `${position(turn.pos)} dans la file${eta(turn.eta) ? ' · vers ' + eta(turn.eta) : ''}`
-        : sent.length ? 'Chanson prête dans la file' : ready.length ? 'Chansons choisies' : 'Pas encore de chanson';
-      const sentMarkup = sent.length ? `<div class="song-mark">DÉJÀ PRÊTE DANS LA FILE</div><ul class="song-stack">${sent.map(song =>
-        `<li><div class="grow"><div class="song-title">${esc(song.title || 'Chanson')}</div><div class="song-detail">${esc(song.artist || '')}${song.stage ? ' · sur scène' : ' · bientôt sur scène'}</div></div></li>`).join('')}</ul>` : '';
-      const readyMarkup = ready.length ? `<div class="song-mark">${state?.table?.individual ? 'MES CHANSONS' : 'SA LISTE'} · ${ready.length} CHANSON${ready.length > 1 ? 'S' : ''}</div><ul class="song-stack">${ready.map((song, index) => {
+      const individual = !!state?.table?.individual;
+      const status = person.active === false ? t('Parti · historique conservé') : (person.onStage || sent.some(song => song.stage)) ? t('Sur scène')
+        : turn ? (eta(turn.eta) ? t('{pos} dans la file · vers {time}', { pos: position(turn.pos), time: eta(turn.eta) }) : t('{pos} dans la file', { pos: position(turn.pos) }))
+        : sent.length ? t('Chanson prête dans la file') : ready.length ? t('Chansons choisies') : t('Pas encore de chanson');
+      const songName = song => song.title || t('cette chanson');
+      const sentMarkup = sent.length ? `<div class="song-mark">${esc(t('DÉJÀ PRÊTE DANS LA FILE'))}</div><ul class="song-stack">${sent.map(song =>
+        `<li><div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}</div></div></li>`).join('')}</ul>` : '';
+      const readyMarkup = ready.length ? `<div class="song-mark">${esc(individual ? tp(ready.length, 'MES CHANSONS · {n} CHANSON', 'MES CHANSONS · {n} CHANSONS') : tp(ready.length, 'SA LISTE · {n} CHANSON', 'SA LISTE · {n} CHANSONS'))}</div><ul class="song-stack">${ready.map((song, index) => {
         const duet = song.duet;
-        const duetDetail = duet ? ` · duo avec ${esc(duet.partnerName || 'un autre chanteur')}${duet.state === 'pending' ? ' (en attente de sa réponse)' : ''}` : '';
-        return `<li><div class="grow"><div class="song-title">${esc(song.title || 'Chanson')}</div><div class="song-detail">${esc(song.artist || '')}${index === 0 ? ' · prochain titre' : ' · à suivre'}${duetDetail}</div></div>${canEdit && song.entryId != null ? `<div class="song-actions">${ready.length > 1 ? `<button type="button" class="btn small ghost song-order" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="Changer l’ordre de ${esc(song.title || 'cette chanson')}">Ordre</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="Annuler le duo sur ${esc(song.title || 'cette chanson')}">Annuler duo</button>` : ''}<button type="button" class="btn small ghost danger" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="Retirer ${esc(song.title || 'cette chanson')}">Retirer</button></div>` : ''}</li>`;
+        const duetDetail = duet ? ` · ${esc(duet.state === 'pending'
+          ? t('duo avec {name} (en attente de sa réponse)', { name: duet.partnerName || t('un autre chanteur') })
+          : t('duo avec {name}', { name: duet.partnerName || t('un autre chanteur') }))}` : '';
+        return `<li><div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}</div></div>${canEdit && song.entryId != null ? `<div class="song-actions">${ready.length > 1 ? `<button type="button" class="btn small ghost song-order" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}">${esc(t('Ordre'))}</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}">${esc(t('Retirer'))}</button></div>` : ''}</li>`;
       }).join('')}</ul>`
-        : canEdit ? '<p class="empty-copy">Aucune chanson préparée.</p>' : '';
+        : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
-      const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(invite.fromName || 'Un chanteur')} propose un duo</b> sur « ${esc(invite.song?.title || 'une chanson')} »${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}.
-        ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">Accepter</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">Refuser</button></div>` : '<div class="small muted">Son téléphone doit répondre.</div>'}</div>`).join('');
-      const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(person.name)} chantera aussi en duo avec ${esc(duo.fromName)} sur « ${esc(duo.song?.title || 'une chanson')} ». Ses propres chansons restent dans sa liste pour un prochain passage.</div>`).join('');
-      const presenceMarkup = person.needConfirm && canEdit ? `<div class="notice warn"><b>Confirme la présence de ${esc(person.name)} pour son prochain passage.</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">Je suis là</button></div>`
-        : state.rules?.requirePresence && person.confirmed ? '<div class="notice ok small">Présence confirmée pour ce passage.</div>' : '';
-      return `<li class="person-card ${state?.table?.individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}${state?.table?.individual ? '' : ` · ${canEdit ? 'géré sur ce téléphone' : 'autre téléphone'}`}</div></div>${canEdit ? `<button type="button" class="btn small ghost" data-rename-person="${esc(person.id)}" aria-label="${state?.table?.individual ? 'Corriger mon nom' : `Renommer ${esc(person.name)}`}">${state?.table?.individual ? 'Corriger mon nom' : 'Renommer'}</button>` : ''}</div>${inviteMarkup}${guestMarkup}${presenceMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${state?.table?.individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}">Ajouter une chanson</button>`}<button type="button" class="btn" data-duet-song="${esc(person.id)}">${state?.table?.individual ? 'Chanter en duo' : 'Ajouter un duo'}</button><button type="button" class="btn small ghost" data-share-person="${esc(person.id)}">${state?.table?.individual ? 'Changer de téléphone' : 'Transférer la gestion'}</button></div>` : ''}</li>`;
+      const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(t('{name} propose un duo', { name: invite.fromName || t('Un chanteur') }))}</b> ${esc(t('sur « {title} »', { title: invite.song?.title || t('une chanson') }))}${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}.
+        ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : `<div class="small muted">${esc(t('Son téléphone doit répondre.'))}</div>`}</div>`).join('');
+      const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(t('{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.',
+        { name: person.name, from: duo.fromName, title: duo.song?.title || t('une chanson') }))}</div>`).join('');
+      const presenceMarkup = person.needConfirm && canEdit ? `<div class="notice warn"><b>${esc(t('Confirme la présence de {name} pour son prochain passage.', { name: person.name }))}</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">${esc(t('Je suis là'))}</button></div>`
+        : state.rules?.requirePresence && person.confirmed ? `<div class="notice ok small">${esc(t('Présence confirmée pour ce passage.'))}</div>` : '';
+      const phone = individual ? '' : ` · ${canEdit ? t('géré sur ce téléphone') : t('autre téléphone')}`;
+      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status + phone)}</div></div>${canEdit ? `<button type="button" class="btn small ghost" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}">${esc(individual ? t('Corriger mon nom') : t('Renommer'))}</button>` : ''}</div>${inviteMarkup}${guestMarkup}${presenceMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}">${esc(t('Ajouter une chanson'))}</button>`}<button type="button" class="btn" data-duet-song="${esc(person.id)}">${esc(individual ? t('Chanter en duo') : t('Ajouter un duo'))}</button><button type="button" class="btn small ghost" data-share-person="${esc(person.id)}">${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
     }).join('');
   }
 
@@ -835,17 +937,17 @@
     $('queueEmpty').hidden = queue.length > 0;
     $('queueList').innerHTML = queue.map((item, index) => {
       const mine = list(item.ids).some(id => ids.has(String(id)));
-      const name = item.singer || 'Chanteur';
+      const name = singerLabel(item);
       const when = eta(item.eta);
-      const source = item.waitingPresence ? 'Présence à confirmer' : item.source === 'karafun' ? 'Prête dans KaraFun' : item.source === 'envoi' ? 'Ajout en cours' : item.future ? 'Titre suivant, après son premier passage' : '';
-      return `<li class="${mine ? 'me' : ''}"><span class="num">${esc(item.pos || index + 1)}</span><div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${state?.table?.individual ? 'ta chanson' : 'ta table'}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${source}` : ''}</div></div><span class="eta">${when ? esc(when) : '—'}</span></li>`;
+      const source = item.waitingPresence ? t('Présence à confirmer') : item.source === 'karafun' ? t('Prête dans KaraFun') : item.source === 'envoi' ? t('Ajout en cours') : item.future ? t('Titre suivant, après son premier passage') : '';
+      return `<li class="${mine ? 'me' : ''}"><span class="num">${esc(item.pos || index + 1)}</span><div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}</div></div><span class="eta">${when ? esc(when) : '—'}</span></li>`;
     }).join('');
     const localWaiting = waiting.filter(person => ids.has(String(person.id)));
     $('waitingEmpty').hidden = localWaiting.length > 0;
     $('waitingEmpty').textContent = state?.table?.individual
-      ? 'Tu n’as pas de chanson à choisir pour le moment.'
-      : 'Personne à notre table n’attend sans chanson.';
-    $('waitingList').innerHTML = localWaiting.map(person => `<li>${esc(person.name || 'Chanteur')}</li>`).join('');
+      ? t('Tu n’as pas de chanson à choisir pour le moment.')
+      : t('Personne à notre table n’attend sans chanson.');
+    $('waitingList').innerHTML = localWaiting.map(person => `<li>${esc(person.name || t('Chanteur'))}</li>`).join('');
   }
 
   function renderBattle(people) {
@@ -863,10 +965,17 @@
     const selectedTitle = battle.selectedSong ? fullSong(battle.selectedSong) : '';
     const voters = battle.voters ?? ((battle.yesVotes || 0) + (battle.noVotes || 0));
     $('battleText').textContent = battle.phase === 'voting'
-      ? `${songVote ? 'Choisis un titre ou « Pas de Battle ».' : 'Vote ouvert : oui ou non.'} Fin du vote dans ${clock(battle.closesAt)}. ${voters} votant${voters > 1 ? 's' : ''} sur ${battle.eligible || 0} ; il en faut au moins ${battle.threshold || 0}. La Battle a lieu s’il y a plus de voix pour elle que contre ; le titre en tête gagne.`
-      : battle.phase === 'requested' ? `${battle.mode === 'staff' ? 'Le bar lance une Battle' : 'La Battle aura lieu'} ! ${selectedTitle ? `${selectedTitle}. ` : ''}Elle passera après le prochain chanteur annoncé ; le bar affichera son QR code.`
-      : battle.phase === 'cooldown' ? (battle.cooldownUntil ? `Un autre vote sera possible dans ${mins(battle.cooldownUntil)} min.` : 'Battle en préparation ou en cours. Un nouveau vote sera possible après la pause qui suit la Battle.')
-      : `Envie de chanter tous ensemble ? Propose jusqu’à trois titres. Chaque personne inscrite vote pour un titre ou contre la Battle${battle.minVoters > 1 ? ` ; il faut au moins ${battle.minVoters} votants` : ''}.`;
+      ? [songVote ? t('Choisis un titre ou « Pas de Battle ».') : t('Vote ouvert : oui ou non.'),
+        t('Fin du vote dans {clock}.', { clock: clock(battle.closesAt) }),
+        tp(voters, '{n} votant sur {eligible} ; il en faut au moins {threshold}.', '{n} votants sur {eligible} ; il en faut au moins {threshold}.',
+          { eligible: battle.eligible || 0, threshold: battle.threshold || 0 }),
+        t('La Battle a lieu s’il y a plus de voix pour elle que contre ; le titre en tête gagne.')].join(' ')
+      : battle.phase === 'requested' ? [battle.mode === 'staff' ? t('Le bar lance une Battle !') : t('La Battle aura lieu !'),
+        ...(selectedTitle ? [`${selectedTitle}.`] : []),
+        t('Elle passera après le prochain chanteur annoncé ; le bar affichera son QR code.')].join(' ')
+      : battle.phase === 'cooldown' ? (battle.cooldownUntil ? t('Un autre vote sera possible dans {n} min.', { n: mins(battle.cooldownUntil) }) : t('Battle en préparation ou en cours. Un nouveau vote sera possible après la pause qui suit la Battle.'))
+      : battle.minVoters > 1 ? t('Envie de chanter tous ensemble ? Propose jusqu’à trois titres. Chaque personne inscrite vote pour un titre ou contre la Battle ; il faut au moins {n} votants.', { n: battle.minVoters })
+        : t('Envie de chanter tous ensemble ? Propose jusqu’à trois titres. Chaque personne inscrite vote pour un titre ou contre la Battle.');
     const voted = new Set(battle.votedPersonIds || []);
     const eligible = new Set(battle.eligiblePersonIds || []);
     const owned = managedPeople();
@@ -880,25 +989,28 @@
     // Résultats en direct : chacun voit quel titre mène et évite d'éparpiller
     // les voix sur un titre sans chance (moins d'égalités).
     const rows = [...options.map(song => ({ label: fullSong(song), votes: song.votes || 0 })),
-      ...(songVote ? [{ label: 'Pas de Battle', votes: battle.noVotes || 0, against: true }] : [])];
+      ...(songVote ? [{ label: t('Pas de Battle'), votes: battle.noVotes || 0, against: true }] : [])];
     const most = Math.max(1, ...rows.map(row => row.votes));
     const leader = Math.max(0, ...options.map(song => song.votes || 0));
+    const score = row => !row.against && leader && row.votes === leader
+      ? tp(row.votes, '{n} voix · en tête', '{n} voix · en tête') : tp(row.votes, '{n} voix', '{n} voix');
     if (signature === battleVotesSignature) {
       [...$('battleVotes').querySelectorAll('.battle-options li')].forEach((item, index) => {
         const row = rows[index];
         if (!row) return;
-        item.querySelector('b').textContent = `${row.votes} voix${!row.against && leader && row.votes === leader ? ' · en tête' : ''}`;
+        item.querySelector('b').textContent = score(row);
         item.querySelector('i').style.width = `${Math.round(100 * row.votes / most)}%`;
       });
       return;
     }
     battleVotesSignature = signature;
-    const choices = songVote ? `<ul class="battle-options live">${rows.map(row => `<li class="${row.against ? 'against' : ''}"><span>${esc(row.label)}</span><b>${row.votes} voix${!row.against && leader && row.votes === leader ? ' · en tête' : ''}</b><i style="width:${Math.round(100 * row.votes / most)}%"></i></li>`).join('')}</ul>` : '';
+    const choices = songVote ? `<ul class="battle-options live">${rows.map(row => `<li class="${row.against ? 'against' : ''}"><span>${esc(row.label)}</span><b>${esc(score(row))}</b><i style="width:${Math.round(100 * row.votes / most)}%"></i></li>`).join('')}</ul>` : '';
+    const saved = eligibleOwned.length - remaining.length;
     $('battleVotes').innerHTML = battle.phase === 'idle'
-      ? owned.length ? `<button type="button" class="btn primary wide" data-battle-propose="${owned.length === 1 ? esc(owned[0].id) : ''}">Proposer une Battle</button>` : ''
+      ? owned.length ? `<button type="button" class="btn primary wide" data-battle-propose="${owned.length === 1 ? esc(owned[0].id) : ''}">${esc(t('Proposer une Battle'))}</button>` : ''
       : battle.phase === 'voting' ? `${choices}${remaining.map(person => songVote
-        ? `<div class="battle-voter"><label class="field" for="battleChoice-${esc(person.id)}">Vote de ${esc(person.name)}</label><select class="battle-choice" id="battleChoice-${esc(person.id)}"><option value="">Choisir…</option>${options.map(song => `<option value="${song.songId}">${esc(fullSong(song))}</option>`).join('')}<option value="none">Pas de Battle</option></select><button type="button" class="btn small primary" data-battle-vote="${esc(person.id)}">Valider mon vote</button></div>`
-        : `<div class="battle-voter"><b>${esc(person.name)}</b><div class="battle-vote-actions"><button type="button" class="btn small primary" data-battle-vote="${esc(person.id)}" data-choice="yes">Oui</button><button type="button" class="btn small" data-battle-vote="${esc(person.id)}" data-choice="no">Non</button></div></div>`).join('')}${eligibleOwned.length > remaining.length ? `<p class="tiny muted">${eligibleOwned.length - remaining.length} vote${eligibleOwned.length - remaining.length > 1 ? 's' : ''} déjà enregistré${eligibleOwned.length - remaining.length > 1 ? 's' : ''} sur ce téléphone.</p>` : ''}`
+        ? `<div class="battle-voter"><label class="field" for="battleChoice-${esc(person.id)}">${esc(t('Vote de {name}', { name: person.name }))}</label><select class="battle-choice" id="battleChoice-${esc(person.id)}"><option value="">${esc(t('Choisir…'))}</option>${options.map(song => `<option value="${song.songId}">${esc(fullSong(song))}</option>`).join('')}<option value="none">${esc(t('Pas de Battle'))}</option></select><button type="button" class="btn small primary" data-battle-vote="${esc(person.id)}">${esc(t('Valider mon vote'))}</button></div>`
+        : `<div class="battle-voter"><b>${esc(person.name)}</b><div class="battle-vote-actions"><button type="button" class="btn small primary" data-battle-vote="${esc(person.id)}" data-choice="yes">${esc(t('Oui'))}</button><button type="button" class="btn small" data-battle-vote="${esc(person.id)}" data-choice="no">${esc(t('Non'))}</button></div></div>`).join('')}${saved > 0 ? `<p class="tiny muted">${esc(tp(saved, '{n} vote déjà enregistré sur ce téléphone.', '{n} votes déjà enregistrés sur ce téléphone.'))}</p>` : ''}`
         : battle.phase === 'requested' ? choices : '';
   }
 
@@ -913,9 +1025,9 @@
 
   $('joinForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (state?.table?.individual && managedPeople().length) return toast('Ce téléphone gère déjà une personne dans « En solo ».', true);
+    if (state?.table?.individual && managedPeople().length) return toast(t('Ce téléphone gère déjà une personne dans « En solo ».'), true);
     const name = $('firstName').value.trim();
-    if (!name) return toast('Indique un prénom.', true);
+    if (!name) return toast(t('Indique un prénom.'), true);
     const button = $('joinForm').querySelector('button[type=submit]');
     perform(button, async () => {
       const result = await post('/api/join', { name, ...(state?.table?.individual ? { invitation: soloInvitation } : {}) });
@@ -923,23 +1035,23 @@
       if (state?.table?.individual) forgetSoloInvitation();
       $('firstName').value = '';
       await refresh();
-      toast(`${name} est inscrit.`);
+      toast(t('{name} est inscrit.', { name }));
       continuePendingSong();
     });
   });
 
   $('addPersonForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (state?.table?.individual) return toast('Dans « En solo », inscris-toi depuis ton propre téléphone.', true);
+    if (state?.table?.individual) return toast(t('Dans « En solo », inscris-toi depuis ton propre téléphone.'), true);
     const name = $('newName').value.trim();
-    if (!name) return toast('Indique un prénom.', true);
+    if (!name) return toast(t('Indique un prénom.'), true);
     const button = $('addPersonForm').querySelector('button[type=submit]');
     perform(button, async () => {
       const result = await post('/api/table/person', { name });
       if (result.token) savePersonToken(result.id, result.token);
       $('newName').value = '';
       await refresh();
-      toast(`${name} est ajouté à la table.`);
+      toast(t('{name} est ajouté à la table.', { name }));
       continuePendingSong();
     });
   });
@@ -953,10 +1065,10 @@
       ? list(state.recoveryPeople).find(candidate => String(candidate.id) === String(button.dataset.claimPerson))
       : personById(button.dataset.claimPerson);
     if (!person) return;
-    openSheet(`<div class="row"><h3 class="grow">${individual ? 'Récupérer mes chansons' : `Gérer les chansons de ${esc(person.name)}`}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-      <p class="small muted">${individual ? `Tu es ${esc(person.name)} ? Demande le code au bar ou à ton ancien téléphone.` : 'Demande le code à son téléphone actuel ou au bar, même si l’ancien téléphone est éteint.'} Le code dure 10 minutes.</p>
-      <form id="claimForm"><label class="field" for="claimCode">Code de reprise à 4 chiffres</label><input id="claimCode" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" required>
-      <div class="sheet-actions"><button type="submit" id="claimSubmit" class="btn primary">Prendre en charge</button></div></form>`);
+    openSheet(`<div class="row"><h3 class="grow">${esc(individual ? t('Récupérer mes chansons') : t('Gérer les chansons de {name}', { name: person.name }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <p class="small muted">${esc(individual ? t('Tu es {name} ? Demande le code au bar ou à ton ancien téléphone.', { name: person.name }) : t('Demande le code à son téléphone actuel ou au bar, même si l’ancien téléphone est éteint.'))} ${esc(t('Le code dure 10 minutes.'))}</p>
+      <form id="claimForm"><label class="field" for="claimCode">${esc(t('Code de reprise à 4 chiffres'))}</label><input id="claimCode" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" required>
+      <div class="sheet-actions"><button type="submit" id="claimSubmit" class="btn primary">${esc(t('Prendre en charge'))}</button></div></form>`);
     $('claimForm').addEventListener('submit', e => {
       e.preventDefault();
       perform($('claimSubmit'), async () => {
@@ -964,7 +1076,7 @@
           ...(individual && soloInvitation ? { invitation: soloInvitation } : {}) });
         savePersonToken(result.id, result.token);
         if (individual && soloInvitation) forgetSoloInvitation();
-        closeSheet({ keepPending: true }); await refresh(); toast(`${person.name} est maintenant géré sur ce téléphone.`);
+        closeSheet({ keepPending: true }); await refresh(); toast(t('{name} est maintenant géré sur ce téléphone.', { name: person.name }));
         continuePendingSong();
       });
     });
@@ -985,7 +1097,7 @@
       perform(confirmButton, async () => {
         await post('/api/table/confirm', { personId: confirmButton.dataset.confirmPerson });
         await refresh();
-        toast('Présence confirmée.');
+        toast(t('Présence confirmée.'));
       });
       return;
     }
@@ -1003,7 +1115,7 @@
         await post('/api/table/duet/answer', { personId: answer.dataset.personId,
           entryId: answer.dataset.inviteEntry, accept: answer.dataset.duetAnswer === 'yes' });
         await refresh();
-        toast(answer.dataset.duetAnswer === 'yes' ? 'Duo accepté.' : 'Invitation refusée.');
+        toast(answer.dataset.duetAnswer === 'yes' ? t('Duo accepté.') : t('Invitation refusée.'));
       });
       return;
     }
@@ -1012,7 +1124,7 @@
       perform(cancel, async () => {
         await post('/api/table/duet/cancel', { personId: cancel.dataset.personId, entryId: cancel.dataset.duetCancel });
         await refresh();
-        toast('Duo annulé.');
+        toast(t('Duo annulé.'));
       });
       return;
     }
@@ -1021,7 +1133,7 @@
     perform(remove, async () => {
       await post('/api/table/song/remove', { personId: remove.dataset.personId, entryId: remove.dataset.removeSong });
       await refresh();
-      toast('Chanson retirée de la liste.');
+      toast(t('Chanson retirée de la liste.'));
     });
   });
 
@@ -1045,7 +1157,7 @@
   });
 
   $('alertsToggle').addEventListener('click', async () => {
-    if (alertsEnabled) { saveAlertPreference(false); toast('Alertes désactivées.'); return; }
+    if (alertsEnabled) { saveAlertPreference(false); toast(t('Alertes désactivées.')); return; }
     saveAlertPreference(true);
     // Le clic débloque l'audio sur les navigateurs mobiles qui l'exigent.
     soundAlert();
@@ -1054,31 +1166,31 @@
     }
     renderAlertPreference();
     toast(window.isSecureContext && window.Notification?.permission === 'granted'
-      ? 'Notifications activées tant que la page reste ouverte.'
-      : 'Alertes dans la page activées tant qu’elle reste ouverte.');
+      ? t('Notifications activées tant que la page reste ouverte.')
+      : t('Alertes dans la page activées tant qu’elle reste ouverte.'));
   });
   function openBattleProposal() {
     const owned = managedPeople();
     if (!owned.length) return;
     const selected = [];
     let found = [];
-    openSheet(`<div class="row"><h3 class="grow">Proposer une Battle</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-      <p class="small muted">Toute la salle chante ensemble. Propose de 1 à 3 titres du catalogue ; chaque personne votera pour un titre ou « Pas de Battle ». Le bar organise ensuite la Battle dans KaraFun.</p>
-      ${owned.length === 1 ? `<input type="hidden" id="battleProposer" value="${esc(owned[0].id)}">` : `<label class="field" for="battleProposer">Qui propose la Battle ?</label><select id="battleProposer">${owned.map(person => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}</select>`}
-      <form id="battleSearchForm"><label class="field" for="battleSearch">Chercher un titre ou un artiste</label><input id="battleSearch" type="search" placeholder="Ex. Queen" autocomplete="off" enterkeyhint="search"></form>
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Proposer une Battle'))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <p class="small muted">${esc(t('Toute la salle chante ensemble. Propose de 1 à 3 titres du catalogue ; chaque personne votera pour un titre ou « Pas de Battle ». Le bar organise ensuite la Battle dans KaraFun.'))}</p>
+      ${owned.length === 1 ? `<input type="hidden" id="battleProposer" value="${esc(owned[0].id)}">` : `<label class="field" for="battleProposer">${esc(t('Qui propose la Battle ?'))}</label><select id="battleProposer">${owned.map(person => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}</select>`}
+      <form id="battleSearchForm"><label class="field" for="battleSearch">${esc(t('Chercher un titre ou un artiste'))}</label><input id="battleSearch" type="search" placeholder="${esc(t('Ex. Queen'))}" autocomplete="off" enterkeyhint="search"></form>
       <div id="battleSearchResults" class="battle-search-results small muted"></div>
-      <p class="field" id="battleSelectedTitle">Titres proposés (3 maximum)</p><ul id="battleSelected" class="battle-picked" aria-labelledby="battleSelectedTitle"><li>Aucun titre choisi.</li></ul>
-      <label class="field" for="battleMyChoice">Ton vote</label><select id="battleMyChoice" disabled><option value="">Ajoute d’abord un titre</option></select>
-      <div class="sheet-actions"><button type="button" id="startBattleVote" class="btn primary" disabled>Lancer le vote</button></div>`);
+      <p class="field" id="battleSelectedTitle">${esc(t('Titres proposés (3 maximum)'))}</p><ul id="battleSelected" class="battle-picked" aria-labelledby="battleSelectedTitle"><li>${esc(t('Aucun titre choisi.'))}</li></ul>
+      <label class="field" for="battleMyChoice">${esc(t('Ton vote'))}</label><select id="battleMyChoice" disabled><option value="">${esc(t('Ajoute d’abord un titre'))}</option></select>
+      <div class="sheet-actions"><button type="button" id="startBattleVote" class="btn primary" disabled>${esc(t('Lancer le vote'))}</button></div>`);
     const resultsNode = $('battleSearchResults');
     const renderPicked = () => {
       const current = $('battleMyChoice').value;
       $('battleSelected').innerHTML = selected.length
-        ? selected.map((song, index) => `<li><span>${esc(fullSong(song))}</span><button type="button" class="btn small" data-battle-remove="${index}" aria-label="Retirer ${esc(song.title)}">Retirer</button></li>`).join('')
-        : '<li>Aucun titre choisi.</li>';
+        ? selected.map((song, index) => `<li><span>${esc(fullSong(song))}</span><button type="button" class="btn small" data-battle-remove="${index}" aria-label="${esc(t('Retirer {title}', { title: song.title }))}">${esc(t('Retirer'))}</button></li>`).join('')
+        : `<li>${esc(t('Aucun titre choisi.'))}</li>`;
       $('battleMyChoice').innerHTML = selected.length
         ? selected.map(song => `<option value="${song.songId}">${esc(fullSong(song))}</option>`).join('')
-        : '<option value="">Ajoute d’abord un titre</option>';
+        : `<option value="">${esc(t('Ajoute d’abord un titre'))}</option>`;
       $('battleMyChoice').value = selected.some(song => String(song.songId) === current)
         ? current : String(selected[0]?.songId || '');
       $('battleMyChoice').disabled = !selected.length;
@@ -1090,18 +1202,18 @@
     let searchNumber = 0;
     let battleSearchTimer = null;
     const searchBattle = (term, number) => {
-      resultsNode.textContent = 'Recherche…';
+      resultsNode.textContent = t('Recherche…');
       request(`/api/search?q=${encodeURIComponent(term)}`).then(data => {
         if (number !== searchNumber || $('sheet').hidden || $('battleSearchResults') !== resultsNode) return;
         found = list(data).slice(0, 20).filter(song => Number.isSafeInteger(Number(song?.songId)) &&
           Number(song.songId) > 0 && String(song.title || '').trim());
         resultsNode.innerHTML = found.length
           ? `<ul class="catalog-list">${found.map((song, index) => `<li><button type="button" data-battle-result="${index}"><b>${esc(song.title)}</b><br><span class="tiny muted">${esc(song.artist || '')}</span></button></li>`).join('')}</ul>`
-          : '<p>Aucun titre trouvé.</p>';
+          : `<p>${esc(t('Aucun titre trouvé.'))}</p>`;
       }).catch(error => {
         if (number !== searchNumber) return;
         if (error.status === 403 && error.code === 'TABLE_ACCESS') { invalidAccess = true; showInvalidLink(); return; }
-        resultsNode.textContent = error.message || 'Recherche indisponible.';
+        resultsNode.textContent = error.message || t('Recherche indisponible.');
       });
     };
     const battleSearchInput = (immediate = false) => {
@@ -1110,7 +1222,7 @@
       const term = $('battleSearch').value.trim();
       if (term.length < 2) {
         found = [];
-        resultsNode.textContent = term ? 'Tape au moins 2 lettres.' : '';
+        resultsNode.textContent = term ? t('Tape au moins 2 lettres.') : '';
         return;
       }
       if (immediate) searchBattle(term, number);
@@ -1124,8 +1236,8 @@
       if (!button) return;
       const song = found[Number(button.dataset.battleResult)];
       if (!song) return;
-      if (selected.some(item => Number(item.songId) === Number(song.songId))) return toast('Titre déjà proposé.', true);
-      if (selected.length >= 3) return toast('Trois titres maximum.', true);
+      if (selected.some(item => Number(item.songId) === Number(song.songId))) return toast(t('Titre déjà proposé.'), true);
+      if (selected.length >= 3) return toast(t('Trois titres maximum.'), true);
       selected.push({ songId: Number(song.songId), title: String(song.title), artist: String(song.artist || '') });
       renderPicked();
     });
@@ -1136,13 +1248,16 @@
       renderPicked();
     });
     $('startBattleVote').addEventListener('click', () => perform($('startBattleVote'), async () => {
-      if (!selected.length) throw new Error('Choisis au moins un titre.');
+      if (!selected.length) throw new Error(t('Choisis au moins un titre.'));
       const result = await post('/api/table/battle/propose', { personId: $('battleProposer').value,
         songs: selected, proposerChoice: Number($('battleMyChoice').value) });
       closeSheet();
       await refresh();
-      toast(result.battle?.phase === 'requested'
-        ? 'Majorité obtenue : le bar est prévenu.' : 'Vote Battle ouvert pendant deux minutes.');
+      // La durée du vote se règle au bar (5 minutes par défaut).
+      const minutes = Number(result.battle?.voteMinutes);
+      toast(result.battle?.phase === 'requested' ? t('Majorité obtenue : le bar est prévenu.')
+        : minutes > 0 ? tp(minutes, 'Vote Battle ouvert pendant {n} minute.', 'Vote Battle ouvert pendant {n} minutes.')
+          : t('Vote Battle ouvert.'));
     }));
   }
 
@@ -1154,11 +1269,11 @@
     perform(button, async () => {
       const choice = state.battle?.mode === 'songs'
         ? $(`battleChoice-${button.dataset.battleVote}`).value : button.dataset.choice;
-      if (!choice) throw new Error('Choisis un titre ou « Pas de Battle ».');
+      if (!choice) throw new Error(t('Choisis un titre ou « Pas de Battle ».'));
       await post('/api/table/battle/vote', { personId: button.dataset.battleVote,
         choice });
       await refresh();
-      toast('Vote enregistré.');
+      toast(t('Vote enregistré.'));
     });
   });
 
@@ -1183,15 +1298,15 @@
 
   function updateTarget() {
     const person = managedPeople().find(candidate => String(candidate.id) === targetPersonId);
-    $('catalogTarget').textContent = duetMode && person ? `Choisis un titre pour un duo avec ${person.name}.` : person
-      ? managedPeople().length === 1 ? `Chansons pour ${person.name}.` : `Chansons pour ${person.name}. Tu pourras changer de chanteur avant de valider.`
-      : managedPeople().length ? 'Choisis un titre, puis la personne qui le chantera.'
-        : state?.table?.individual ? 'Explore le catalogue. Pour ajouter un titre, inscris-toi dans « En solo ».'
-          : 'Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.';
+    $('catalogTarget').textContent = duetMode && person ? t('Choisis un titre pour un duo avec {name}.', { name: person.name }) : person
+      ? managedPeople().length === 1 ? t('Chansons pour {name}.', { name: person.name }) : t('Chansons pour {name}. Tu pourras changer de chanteur avant de valider.', { name: person.name })
+      : managedPeople().length ? t('Choisis un titre, puis la personne qui le chantera.')
+        : state?.table?.individual ? t('Explore le catalogue. Pour ajouter un titre, inscris-toi dans « En solo ».')
+          : t('Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.');
   }
 
   function openCatalog(personId, forDuet = false) {
-    if (!manages(personId)) return toast('Ce téléphone ne gère pas ce chanteur.', true);
+    if (!manages(personId)) return toast(t('Ce téléphone ne gère pas ce chanteur.'), true);
     targetPersonId = String(personId || '');
     duetMode = forDuet;
     updateTarget();
@@ -1201,22 +1316,22 @@
 
   function openRename(personId) {
     const person = personById(personId);
-    if (!person) return toast('Chanteur introuvable.', true);
-    openSheet(`<div class="row"><h3 class="grow">Renommer ${esc(person.name)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-      <form id="renameForm"><label class="field" for="renameInput">Nouveau prénom</label><input id="renameInput" type="text" maxlength="24" required value="${esc(person.name)}" autocomplete="off">
-      <div class="sheet-actions"><button type="submit" id="renameSubmit" class="btn primary">Enregistrer</button></div></form>`);
+    if (!person) return toast(t('Chanteur introuvable.'), true);
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Renommer {name}', { name: person.name }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <form id="renameForm"><label class="field" for="renameInput">${esc(t('Nouveau prénom'))}</label><input id="renameInput" type="text" maxlength="24" required value="${esc(person.name)}" autocomplete="off">
+      <div class="sheet-actions"><button type="submit" id="renameSubmit" class="btn primary">${esc(t('Enregistrer'))}</button></div></form>`);
     $('renameInput').focus();
     $('renameInput').select();
     $('renameForm').addEventListener('submit', event => {
       event.preventDefault();
       const name = $('renameInput').value.trim();
-      if (!name) return toast('Indique un prénom.', true);
+      if (!name) return toast(t('Indique un prénom.'), true);
       if (name === person.name) return closeSheet();
       perform($('renameSubmit'), async () => {
         await post('/api/table/person/rename', { personId, name });
         closeSheet();
         await refresh();
-        toast('Prénom modifié.');
+        toast(t('Prénom modifié.'));
       });
     });
   }
@@ -1225,12 +1340,12 @@
     const person = personById(personId);
     const items = list(person?.songs);
     const current = items.findIndex(song => String(song.entryId) === String(entryId));
-    if (current < 0 || items.length < 2) return toast('Cette chanson ne peut plus être déplacée.', true);
-    openSheet(`<div class="row"><h3 class="grow">Ordre des chansons de ${esc(person.name)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-      <p class="small muted">Déplace « ${esc(items[current].title || 'cette chanson')} » sans changer la place de ${esc(person.name)} dans la file.</p>
-      <label class="field" for="newSongPosition">Nouvelle position dans sa liste</label>
-      <select id="newSongPosition">${items.map((song, index) => `<option value="${index}" ${index === current ? 'selected' : ''}>${index + 1}. ${esc(song.title || 'Chanson')}</option>`).join('')}</select>
-      <div class="sheet-actions"><button type="button" id="saveSongPosition" class="btn primary">Changer l’ordre</button></div>`);
+    if (current < 0 || items.length < 2) return toast(t('Cette chanson ne peut plus être déplacée.'), true);
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Ordre des chansons de {name}', { name: person.name }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <p class="small muted">${esc(t('Déplace « {title} » sans changer la place de {name} dans la file.', { title: items[current].title || t('cette chanson'), name: person.name }))}</p>
+      <label class="field" for="newSongPosition">${esc(t('Nouvelle position dans sa liste'))}</label>
+      <select id="newSongPosition">${items.map((song, index) => `<option value="${index}" ${index === current ? 'selected' : ''}>${index + 1}. ${esc(song.title || t('Chanson'))}</option>`).join('')}</select>
+      <div class="sheet-actions"><button type="button" id="saveSongPosition" class="btn primary">${esc(t('Changer l’ordre'))}</button></div>`);
     $('saveSongPosition').addEventListener('click', () => {
       perform($('saveSongPosition'), async () => {
         const toIndex = Number($('newSongPosition').value);
@@ -1238,7 +1353,7 @@
         await post('/api/table/song/reorder', { personId, entryId, toIndex });
         closeSheet();
         await refresh();
-        toast('Ordre des chansons mis à jour.');
+        toast(t('Ordre des chansons mis à jour.'));
       });
     });
   }
@@ -1248,10 +1363,19 @@
     document.querySelectorAll('[data-catalog]').forEach(button => button.classList.toggle('on', button.dataset.catalog === type));
   }
 
+  // Contenu affiché du catalogue, refait à l'identique lors d'un changement de
+  // langue : `catalogView` est la fonction qui l'a dessiné en dernier.
+  let catalogView = null;
+  function showCatalogView(view) {
+    catalogView = view;
+    $('catalogContent').innerHTML = view();
+  }
+  const catalogMessage = text => () => `<p class="empty-copy">${esc(text())}</p>`;
+
   function renderCategories() {
-    $('catalogContent').innerHTML = categories.length
-      ? `<p class="muted small" style="margin:12px 0 0">Choisis une sélection.</p><ul class="catalog-list">${categories.map((cat, index) => `<li><button type="button" data-category-index="${index}">${esc(cat.name)}</button></li>`).join('')}</ul>`
-      : '<p class="empty-copy">Aucune sélection disponible.</p>';
+    showCatalogView(() => categories.length
+      ? `<p class="muted small" style="margin:12px 0 0">${esc(t('Choisis une sélection.'))}</p><ul class="catalog-list">${categories.map((cat, index) => `<li><button type="button" data-category-index="${index}">${esc(cat.name)}</button></li>`).join('')}</ul>`
+      : `<p class="empty-copy">${esc(t('Aucune sélection disponible.'))}</p>`);
   }
 
   async function showCategories(type) {
@@ -1261,18 +1385,18 @@
     const number = ++catalogRequest;
     if (type === 'news' || type === 'featured') {
       catalogMode = 'highlights';
-      $('catalogContent').innerHTML = '<p class="empty-copy">Chargement des chansons…</p>';
+      showCatalogView(catalogMessage(() => t('Chargement des chansons…')));
       try {
         const data = await request(`/api/catalog/highlights?type=${encodeURIComponent(type)}`);
         if (number !== catalogRequest) return;
         songs = list(data);
         totalSongs = songs.length;
-        renderSongs(type === 'news' ? 'Nouveautés' : 'À découvrir');
+        renderSongs(() => type === 'news' ? t('Nouveautés') : t('À découvrir'));
       } catch (error) { if (number === catalogRequest) catalogError(error); }
       return;
     }
     catalogMode = 'categories';
-    $('catalogContent').innerHTML = '<p class="empty-copy">Chargement des sélections…</p>';
+    showCatalogView(catalogMessage(() => t('Chargement des sélections…')));
     try {
       const data = await request(`/api/catalog/categories?type=${encodeURIComponent(type)}`);
       if (number !== catalogRequest) return;
@@ -1282,7 +1406,7 @@
   }
 
   function catalogError(error) {
-    $('catalogContent').innerHTML = `<p class="empty-copy">${esc(error.message || 'Catalogue indisponible.')}</p><button type="button" class="btn small" data-retry style="margin-top:10px">Réessayer</button>`;
+    showCatalogView(() => `<p class="empty-copy">${esc(error.message || t('Catalogue indisponible.'))}</p><button type="button" class="btn small" data-retry style="margin-top:10px">${esc(t('Réessayer'))}</button>`);
   }
 
   async function showCategory(index, append = false) {
@@ -1290,31 +1414,33 @@
     if (!currentCategory || !currentCategory.filter) return;
     const number = ++catalogRequest;
     catalogMode = 'songs';
-    if (!append) { songs = []; totalSongs = 0; $('catalogContent').innerHTML = '<p class="empty-copy">Chargement des chansons…</p>'; }
+    if (!append) { songs = []; totalSongs = 0; showCatalogView(catalogMessage(() => t('Chargement des chansons…'))); }
     try {
       const data = await request(`/api/catalog/songs?filter=${encodeURIComponent(currentCategory.filter)}&offset=${songs.length}`);
       if (number !== catalogRequest) return;
       songs = songs.concat(list(data.songs));
       totalSongs = Number(data.total) || songs.length;
-      renderSongs(currentCategory.name, true);
+      const name = currentCategory.name;
+      renderSongs(() => name, true);
     } catch (error) { if (number === catalogRequest) catalogError(error); }
   }
 
+  // `heading` est une fonction pour que le titre suive la langue.
   function renderSongs(heading, back = false) {
-    $('catalogContent').innerHTML = `<div class="catalog-tools">${back ? '<button type="button" class="btn small" data-back>← Sélections</button>' : ''}<b class="grow">${esc(heading)}</b></div>`
-      + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => `<li><button type="button" data-song-index="${index}"><div class="song-title">${esc(song.title)}</div><div class="song-artist">${esc(song.artist || '')}</div></button></li>`).join('')}</ul>` : '<p class="empty-copy">Aucune chanson trouvée.</p>')
-      + (catalogMode === 'songs' && songs.length < totalSongs ? '<button type="button" class="btn wide" data-more style="margin-top:12px">Voir plus</button>' : '');
+    showCatalogView(() => `<div class="catalog-tools">${back ? `<button type="button" class="btn small" data-back>${esc(t('← Sélections'))}</button>` : ''}<b class="grow">${esc(heading())}</b></div>`
+      + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => `<li><button type="button" data-song-index="${index}"><div class="song-title">${esc(song.title)}</div><div class="song-artist">${esc(song.artist || '')}</div></button></li>`).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
+      + (catalogMode === 'songs' && songs.length < totalSongs ? `<button type="button" class="btn wide" data-more style="margin-top:12px">${esc(t('Voir plus'))}</button>` : ''));
   }
 
   function searchSongs(term) {
     const number = ++catalogRequest;
     catalogMode = 'search';
-    $('catalogContent').innerHTML = '<p class="empty-copy">Recherche…</p>';
+    showCatalogView(catalogMessage(() => t('Recherche…')));
     request(`/api/search?q=${encodeURIComponent(term)}`).then(data => {
       if (number !== catalogRequest) return;
       songs = list(data);
       totalSongs = songs.length;
-      renderSongs(`Résultats pour « ${term} »`);
+      renderSongs(() => t('Résultats pour « {term} »', { term }));
     }).catch(error => { if (number === catalogRequest) catalogError(error); });
   }
 
@@ -1322,7 +1448,7 @@
     clearTimeout(searchTimer);
     const term = $('searchInput').value.trim();
     if (!term) { showCategories(catalogType); return; }
-    if (term.length < 2) { ++catalogRequest; $('catalogContent').innerHTML = '<p class="empty-copy">Tape au moins 2 lettres.</p>'; return; }
+    if (term.length < 2) { ++catalogRequest; showCatalogView(catalogMessage(() => t('Tape au moins 2 lettres.'))); return; }
     searchTimer = setTimeout(() => searchSongs(term), 300);
   });
 
@@ -1348,7 +1474,7 @@
     $('sheetPanel').innerHTML = html;
     const title = $('sheetPanel').querySelector('h3');
     if (title) { title.id = 'sheetTitle'; $('sheetPanel').setAttribute('aria-labelledby', title.id); }
-    else $('sheetPanel').setAttribute('aria-label', 'Options de la chanson');
+    else $('sheetPanel').setAttribute('aria-label', t('Options de la chanson'));
     $('sheet').hidden = false;
     const first = $('sheetPanel').querySelector('input, select, button');
     if (first) first.focus();
@@ -1378,26 +1504,26 @@
     const people = managedPeople();
     if (!people.length) {
       pendingSong = song;
-      openSheet(`<div class="row"><h3 class="grow">Avant d’ajouter « ${esc(song.title)} »</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-        <p class="small muted">${esc($('catalogAccessText').textContent)} Ton titre restera sélectionné pendant l’inscription.</p>
-        <div class="sheet-actions">${$('catalogAccessActions').innerHTML || '<p class="small">Demande de l’aide au bar pour accéder à tes chansons.</p>'}</div>`);
+      openSheet(`<div class="row"><h3 class="grow">${esc(t('Avant d’ajouter « {title} »', { title: song.title }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+        <p class="small muted">${esc($('catalogAccessText').textContent)} ${esc(t('Ton titre restera sélectionné pendant l’inscription.'))}</p>
+        <div class="sheet-actions">${$('catalogAccessActions').innerHTML || `<p class="small">${esc(t('Demande de l’aide au bar pour accéder à tes chansons.'))}</p>`}</div>`);
       return;
     }
     pendingSong = null;
     const selected = people.find(person => String(person.id) === targetPersonId) || people[0];
     if (duetMode) return openDuoPartner(song, selected.id);
-    openSheet(`<div class="row"><h3 class="grow">${esc(song.title)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
+    openSheet(`<div class="row"><h3 class="grow">${esc(song.title)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <p class="muted small" style="margin:4px 0 12px">${esc(song.artist || '')}</p>
       <p id="songNotice" class="notice warn small song-notice" role="status" hidden></p>
-      ${people.length === 1 ? `<p class="small muted">Pour ${esc(selected.name)}</p><input type="hidden" id="songPerson" value="${esc(selected.id)}">`
-        : `<label class="field" for="songPerson">Chanteur</label><select id="songPerson">${people.map(person => `<option value="${esc(person.id)}" ${String(person.id) === String(selected.id) ? 'selected' : ''}>${esc(person.name)}</option>`).join('')}</select>`}
-      <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${state?.table?.individual ? 'Ajouter à ma liste' : 'Ajouter à sa liste'}</button><button type="button" class="btn" id="replaceSong">Remplacer ma prochaine chanson</button><button type="button" class="btn" id="duetSongChoice">Chanter en duo</button></div>
-      <p class="tiny muted" style="margin:10px 0 0">Une chanson déjà prête dans la file ne peut plus être remplacée ici.</p>`);
+      ${people.length === 1 ? `<p class="small muted">${esc(t('Pour {name}', { name: selected.name }))}</p><input type="hidden" id="songPerson" value="${esc(selected.id)}">`
+        : `<label class="field" for="songPerson">${esc(t('Chanteur'))}</label><select id="songPerson">${people.map(person => `<option value="${esc(person.id)}" ${String(person.id) === String(selected.id) ? 'selected' : ''}>${esc(person.name)}</option>`).join('')}</select>`}
+      <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${esc(state?.table?.individual ? t('Ajouter à ma liste') : t('Ajouter à sa liste'))}</button><button type="button" class="btn" id="replaceSong">${esc(t('Remplacer ma prochaine chanson'))}</button><button type="button" class="btn" id="duetSongChoice">${esc(t('Chanter en duo'))}</button></div>
+      <p class="tiny muted" style="margin:10px 0 0">${esc(t('Une chanson déjà prête dans la file ne peut plus être remplacée ici.'))}</p>`);
     const updateReplace = () => {
       const person = personById($('songPerson').value);
       $('replaceSong').hidden = !person || !list(person.songs).length;
-      $('replaceSong').textContent = list(person?.songs)[0]?.duet ? 'Remplacer le 1er titre (annule son duo)'
-        : state?.table?.individual ? 'Remplacer ma prochaine chanson' : 'Remplacer sa prochaine chanson';
+      $('replaceSong').textContent = list(person?.songs)[0]?.duet ? t('Remplacer le 1er titre (annule son duo)')
+        : state?.table?.individual ? t('Remplacer ma prochaine chanson') : t('Remplacer sa prochaine chanson');
       $('duetSongChoice').hidden = !person;
     };
     $('songPerson').addEventListener('change', updateReplace);
@@ -1413,7 +1539,7 @@
           targetPersonId = personId;
           await refresh();
           setTab('table');
-          addedToast(result, mode === 'append' ? 'Chanson ajoutée à la liste.' : 'Prochaine chanson remplacée.');
+          addedToast(result, mode === 'append' ? t('Chanson ajoutée à la liste.') : t('Prochaine chanson remplacée.'));
         });
       });
     }
@@ -1421,7 +1547,7 @@
 
   async function openDuoPartner(song, personId) {
     const owner = personById(personId);
-    if (!owner || !manages(personId)) return toast('Ce téléphone ne gère pas ce chanteur.', true);
+    if (!owner || !manages(personId)) return toast(t('Ce téléphone ne gère pas ce chanteur.'), true);
     let all;
     try { all = await request(`/api/duo/partners?${new URLSearchParams({ table: tableId, access })}`); }
     catch (error) { return toast(error.message, true); }
@@ -1432,26 +1558,28 @@
       seen.add(id);
       return true;
     });
-    if (!partners.length) return toast('Aucun partenaire disponible pour un duo.', true);
+    if (!partners.length) return toast(t('Aucun partenaire disponible pour un duo.'), true);
     const ownTable = partners.filter(person => String(person.tableId) === String(state?.table?.id));
     const otherTables = partners.filter(person => String(person.tableId) !== String(state?.table?.id));
-    const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table ? ' · ' + esc(person.table) : ''}</option>`;
-    openSheet(`<div class="row"><h3 class="grow">Duo sur « ${esc(song.title)} »</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
-      <p class="muted small">${esc(owner.name)} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour. <span id="duoConsent"></span></p>
+    const partnerTable = person => person.table === 'En solo' && person.tableId === 'Comptoir' ? t('En solo') : person.table;
+    const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table ? ' · ' + esc(partnerTable(person)) : ''}</option>`;
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Duo sur « {title} »', { title: song.title }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <p class="muted small">${esc(t('{name} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour.', { name: owner.name }))} <span id="duoConsent"></span></p>
       <p id="duoNotice" class="notice warn small song-notice" role="status" hidden></p>
-      <label class="field" for="duoPartner">Avec qui ?</label>
-      <select id="duoPartner">${ownTable.length ? `<optgroup label="À ma table">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres tables · invitation à accepter">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
+      <label class="field" for="duoPartner">${esc(t('Avec qui ?'))}</label>
+      <select id="duoPartner">${ownTable.length ? `<optgroup label="${esc(t('À ma table'))}">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="${esc(t('Autres tables · invitation à accepter'))}">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
       <p id="duoPartnerHint" class="notice warn small" role="status" hidden></p>
-      <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">Ajouter le duo</button></div>`);
+      <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">${esc(t('Ajouter le duo'))}</button></div>`);
     const updateDuoAction = () => {
       const partner = partners.find(p => String(p.id) === String($('duoPartner').value));
       $('sendDuo').textContent = state?.table?.individual || String(partner?.tableId) !== String(state?.table?.id)
-        ? 'Envoyer l’invitation' : 'Ajouter le duo';
-      $('duoConsent').textContent = state?.table?.individual ? 'Son accord est nécessaire.'
-        : String(partner?.tableId) !== String(state?.table?.id) ? 'Son téléphone devra accepter l’invitation.' : 'Même table : le duo est ajouté directement.';
+        ? t('Envoyer l’invitation') : t('Ajouter le duo');
+      $('duoConsent').textContent = state?.table?.individual ? t('Son accord est nécessaire.')
+        : String(partner?.tableId) !== String(state?.table?.id) ? t('Son téléphone devra accepter l’invitation.') : t('Même table : le duo est ajouté directement.');
       const planned = Number(partner?.guestDuos) || 0;
       $('duoPartnerHint').hidden = !planned;
-      $('duoPartnerHint').textContent = planned ? `${partner.name} a déjà ${planned} duo${planned > 1 ? 's' : ''} prévu${planned > 1 ? 's' : ''}. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.` : '';
+      $('duoPartnerHint').textContent = planned ? tp(planned, '{name} a déjà {n} duo prévu. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.',
+        '{name} a déjà {n} duos prévus. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.', { name: partner.name }) : '';
     };
     $('duoPartner').addEventListener('change', updateDuoAction);
     updateDuoAction();
@@ -1466,11 +1594,32 @@
         await refresh();
         setTab('table');
         addedToast(result, !state?.table?.individual && partner && String(partner.tableId) === String(state?.table?.id)
-          ? 'Duo ajouté à la liste.' : 'Invitation de duo envoyée.');
+          ? t('Duo ajouté à la liste.') : t('Invitation de duo envoyée.'));
       });
     });
   }
 
+  // Changement de langue : tout ce qui est affiché est redessiné, sauf une
+  // fenêtre ouverte (elle recouvre le bouton et se referme d'abord).
+  function setLanguage(next) {
+    if (next !== 'fr' && next !== 'en') return;
+    lang = next;
+    try { localStorage.setItem(langKey, lang); } catch (_) { /* Choix gardé pendant cette visite. */ }
+    translateStatic();
+    $('conn').textContent = connectionText();
+    renderAlertPreference();
+    document.title = state?.table?.individual ? t('Karaoké — mes chansons') : t('Karaoké — ma table');
+    if (invalidAccess) showInvalidLink();
+    else if (state) { battleVotesSignature = ''; render(); }
+    if (catalogView) $('catalogContent').innerHTML = catalogView();
+  }
+  $('langSwitch').addEventListener('click', event => {
+    const button = event.target.closest('[data-lang]');
+    if (button && button.dataset.lang !== lang) setLanguage(button.dataset.lang);
+  });
+
+  translateStatic();
+  document.title = t('Karaoké — ma table');
   if (invalidAccess) showInvalidLink(); else refresh();
   renderAlertPreference();
   setInterval(() => { if ((!document.hidden || alertsEnabled) && !invalidAccess) refresh(); }, 4000);
