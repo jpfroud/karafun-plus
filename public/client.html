@@ -82,7 +82,6 @@
   .client .battle-picked li { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding: 7px 0; }
   .client .battle-picked li span { min-width: 0; overflow-wrap: anywhere; }
   .client .battle-search-results { max-height: 180px; overflow: auto; }
-  .client #battleSearch { flex: 1; min-width: 0; width: auto; }
   .client #battleSelectedTitle { margin: 12px 0 6px; color: var(--muted); font-size: 14px; }
   .client .sheet .panel { max-height: 88dvh; }
   .client .sheet-actions { display: grid; gap: 8px; margin-top: 14px; }
@@ -1066,7 +1065,7 @@
     openSheet(`<div class="row"><h3 class="grow">Proposer une Battle</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="Fermer">✕</button></div>
       <p class="small muted">Toute la salle chante ensemble. Propose de 1 à 3 titres du catalogue ; chaque personne votera pour un titre ou « Pas de Battle ». Le bar organise ensuite la Battle dans KaraFun.</p>
       ${owned.length === 1 ? `<input type="hidden" id="battleProposer" value="${esc(owned[0].id)}">` : `<label class="field" for="battleProposer">Qui propose la Battle ?</label><select id="battleProposer">${owned.map(person => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}</select>`}
-      <form id="battleSearchForm"><label class="field" for="battleSearch">Chercher un titre ou un artiste</label><div class="form-row"><input id="battleSearch" type="search" placeholder="Ex. Queen" autocomplete="off" required><button type="submit" id="battleFind" class="btn">Chercher</button></div></form>
+      <form id="battleSearchForm"><label class="field" for="battleSearch">Chercher un titre ou un artiste</label><input id="battleSearch" type="search" placeholder="Ex. Queen" autocomplete="off" enterkeyhint="search"></form>
       <div id="battleSearchResults" class="battle-search-results small muted"></div>
       <p class="field" id="battleSelectedTitle">Titres proposés (3 maximum)</p><ul id="battleSelected" class="battle-picked" aria-labelledby="battleSelectedTitle"><li>Aucun titre choisi.</li></ul>
       <label class="field" for="battleMyChoice">Ton vote</label><select id="battleMyChoice" disabled><option value="">Ajoute d’abord un titre</option></select>
@@ -1085,21 +1084,40 @@
       $('battleMyChoice').disabled = !selected.length;
       $('startBattleVote').disabled = !selected.length;
     };
-    $('battleSearchForm').addEventListener('submit', event => {
-      event.preventDefault();
-      const term = $('battleSearch').value.trim();
-      if (term.length < 2) return toast('Tape au moins deux lettres.', true);
-      perform($('battleFind'), async () => {
-        resultsNode.textContent = 'Recherche…';
-        const data = await request(`/api/search?q=${encodeURIComponent(term)}`);
-        if ($('sheet').hidden || $('battleSearchResults') !== resultsNode) return;
+    // Recherche à la frappe, comme dans le catalogue ; seule la dernière
+    // réponse s'affiche.
+    let searchNumber = 0;
+    let battleSearchTimer = null;
+    const searchBattle = term => {
+      const number = ++searchNumber;
+      resultsNode.textContent = 'Recherche…';
+      request(`/api/search?q=${encodeURIComponent(term)}`).then(data => {
+        if (number !== searchNumber || $('sheet').hidden || $('battleSearchResults') !== resultsNode) return;
         found = list(data).slice(0, 20).filter(song => Number.isSafeInteger(Number(song?.songId)) &&
           Number(song.songId) > 0 && String(song.title || '').trim());
         resultsNode.innerHTML = found.length
           ? `<ul class="catalog-list">${found.map((song, index) => `<li><button type="button" data-battle-result="${index}"><b>${esc(song.title)}</b><br><span class="tiny muted">${esc(song.artist || '')}</span></button></li>`).join('')}</ul>`
           : '<p>Aucun titre trouvé.</p>';
+      }).catch(error => {
+        if (number !== searchNumber) return;
+        if (error.status === 403 && error.code === 'TABLE_ACCESS') { invalidAccess = true; showInvalidLink(); return; }
+        resultsNode.textContent = error.message || 'Recherche indisponible.';
       });
-    });
+    };
+    const battleSearchInput = (immediate = false) => {
+      clearTimeout(battleSearchTimer);
+      const term = $('battleSearch').value.trim();
+      if (term.length < 2) {
+        ++searchNumber; found = [];
+        resultsNode.textContent = term ? 'Tape au moins 2 lettres.' : '';
+        return;
+      }
+      if (immediate) searchBattle(term);
+      else battleSearchTimer = setTimeout(() => searchBattle(term), 300);
+    };
+    $('battleSearch').addEventListener('input', () => battleSearchInput());
+    // Entrée lance la recherche tout de suite (sans recharger la page).
+    $('battleSearchForm').addEventListener('submit', event => { event.preventDefault(); battleSearchInput(true); });
     $('battleSearchResults').addEventListener('click', event => {
       const button = event.target.closest('[data-battle-result]');
       if (!button) return;

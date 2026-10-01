@@ -145,7 +145,7 @@
     <div class="row wrap" id="battleVoteActions" hidden><button class="btn small" id="battleCloseVote">Clore le vote maintenant</button></div>
     <div class="battle-launch"><strong>Lancer une Battle sans vote</strong>
       <p class="small muted">Choisis un titre : il sera ajouté en mode Battle après le prochain passage annoncé, comme après un vote réussi. Le délai entre Battles ne s’applique pas au bar, mais il redémarre à la fin de celle-ci.</p>
-      <div class="row wrap"><input id="battleLaunchSearch" type="search" placeholder="Chercher un titre dans KaraFun…"><button class="btn small" id="battleLaunchFind">Chercher</button></div>
+      <input id="battleLaunchSearch" type="search" placeholder="Chercher un titre dans KaraFun…" autocomplete="off" enterkeyhint="search" aria-label="Chercher un titre pour la Battle">
       <ul class="results" id="battleLaunchResults"></ul>
     </div>
     <div class="battle-settings"><label for="battleCooldownMin">Délai entre deux Battles <input id="battleCooldownMin" type="number" min="1" max="120"> min</label><label for="battleVoteMin">Durée du vote <input id="battleVoteMin" type="number" min="1" max="10"> min</label><label for="battleMinVoters">Votants minimum <input id="battleMinVoters" type="number" min="1" max="100"></label><button class="btn small" id="saveBattleCooldown">Enregistrer</button><button class="btn small" id="enableStaffAlerts">Activer les notifications</button></div>
@@ -1011,11 +1011,15 @@
   $('battleCloseVote').onclick = () => {
     if (confirm('Clore le vote maintenant et décider avec les votes déjà exprimés ?')) act('/api/staff/battle/close', {}, 'Vote clos');
   };
-  $('battleLaunchFind').onclick = async () => {
-    const q = $('battleLaunchSearch').value.trim(); if (q.length < 2) return;
+  // Recherche à la frappe, comme l'ajout d'une chanson ; seule la dernière
+  // réponse s'affiche.
+  let battleLaunchNumber = 0, battleLaunchTimer = null;
+  const searchBattleLaunch = async (q) => {
+    const number = ++battleLaunchNumber;
     $('battleLaunchResults').innerHTML = '<li class="muted">Recherche…</li>';
     try {
       const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
+      if (number !== battleLaunchNumber) return;
       if (!r.ok) throw new Error(j.error);
       $('battleLaunchResults').innerHTML = j.length ? j.slice(0, 12).map((song, index) => `<li><div class="grow"><b>${esc(song.title)}</b> <span class="muted">${esc(song.artist || '')}</span></div><button class="btn small primary" data-battle-launch="${index}">Lancer en Battle</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';
       $('battleLaunchResults').querySelectorAll('[data-battle-launch]').forEach(button => button.onclick = () => {
@@ -1025,9 +1029,21 @@
           $('battleLaunchResults').innerHTML = '';
         }
       });
-    } catch (e) { $('battleLaunchResults').innerHTML = `<li class="muted">${esc(e.message)}</li>`; }
+    } catch (e) { if (number === battleLaunchNumber) $('battleLaunchResults').innerHTML = `<li class="muted">${esc(e.message)}</li>`; }
   };
-  $('battleLaunchSearch').onkeydown = (e) => { if (e.key === 'Enter') $('battleLaunchFind').click(); };
+  const battleLaunchInput = (immediate = false) => {
+    clearTimeout(battleLaunchTimer);
+    const q = $('battleLaunchSearch').value.trim();
+    if (q.length < 2) {
+      ++battleLaunchNumber;
+      $('battleLaunchResults').innerHTML = q ? '<li class="muted">Tape au moins 2 lettres.</li>' : '';
+      return;
+    }
+    if (immediate) searchBattleLaunch(q);
+    else battleLaunchTimer = setTimeout(() => searchBattleLaunch(q), 300);
+  };
+  $('battleLaunchSearch').oninput = () => battleLaunchInput();
+  $('battleLaunchSearch').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); battleLaunchInput(true); } };
 
   load(); setInterval(load, 2000);
 })();

@@ -15,8 +15,8 @@ for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/
 done
 
 if [ -z "$GSTACK_DIR" ]; then
-  echo 'gstack est requis dans ce projet. Installe-le depuis https://github.com/garrytan/gstack puis relance ton agent.' >&2
-  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"gstack est requis pour les modifications de code de ce projet."}}'
+  echo 'gstack est requis dans ce projet. Lance bash .claude/hooks/install-gstack.sh puis relance ton agent.' >&2
+  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"gstack est requis pour les modifications de code de ce projet : lancer bash .claude/hooks/install-gstack.sh (installation acceptée par l’utilisateur), puis redémarrer l’agent."}}'
   exit 2
 fi
 
