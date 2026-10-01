@@ -34,8 +34,9 @@ git -C "$FAKE" init -q && git -C "$FAKE" add -A &&
   git -C "$FAKE" -c user.name=test -c user.email=test@example.invalid commit -qm faux || fail "faux dépôt"
 TOOLS="$WORK/outils"; mkdir -p "$TOOLS"; printf '#!/usr/bin/env bash\nexit 0\n' >"$TOOLS/bun"; chmod +x "$TOOLS/bun"
 
-# Environnement maîtrisé : pas de session web ni de gstack existant.
-quiet_env() { env -u GSTACK_ROOT -u CLAUDE_CODE_REMOTE -u CLAUDE_ENV_FILE -u GSTACK_CHROMIUM_PATH -u GSTACK_SKIP_PLAYWRIGHT "$@"; }
+# Environnement maîtrisé : pas de session web ni de gstack existant, et pas
+# de CODEX_HOME réel (le faux setup y écrirait ses compétences de test).
+quiet_env() { env -u GSTACK_ROOT -u CODEX_HOME -u CLAUDE_CODE_REMOTE -u CLAUDE_ENV_FILE -u GSTACK_CHROMIUM_PATH -u GSTACK_SKIP_PLAYWRIGHT "$@"; }
 run_start() { local home="$1"; shift; printf '%s' '{"hook_event_name":"SessionStart","source":"startup"}' |
   quiet_env HOME="$home" GSTACK_AUTO_INSTALL=0 "$@" bash "$START" SessionStart; }
 run_auto() { local home="$1"; shift; printf '{}' |

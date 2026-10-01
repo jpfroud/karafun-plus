@@ -223,6 +223,21 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   await settle(); await settle();
   assert.doesNotMatch(get('battleSearchResults').innerHTML, /Dancing Queen/,
     'une réponse en retard n’écrase pas la dernière recherche');
+  // Réponse en retard pendant l'attente de fin de frappe de la saisie suivante.
+  // Regression: revue Codex de la PR #7 — le numéro de requête ne changeait
+  // qu'au lancement différé.
+  get('battleSearch').value = 'Abba';
+  get('battleSearch').listeners.input();
+  finishTyping();
+  get('battleSearch').value = 'Queen';
+  get('battleSearch').listeners.input();
+  releaseAbba();
+  await settle(); await settle();
+  assert.doesNotMatch(get('battleSearchResults').innerHTML, /Dancing Queen/,
+    'une réponse en retard ne s’affiche pas pendant la frappe suivante');
+  finishTyping();
+  await settle(); await settle();
+  assert.match(get('battleSearchResults').innerHTML, /Bohemian Rhapsody/);
   get('battleSearch').value = 'Panne';
   get('battleSearch').listeners.input();
   finishTyping();

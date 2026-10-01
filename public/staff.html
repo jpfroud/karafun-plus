@@ -1011,11 +1011,11 @@
   $('battleCloseVote').onclick = () => {
     if (confirm('Clore le vote maintenant et décider avec les votes déjà exprimés ?')) act('/api/staff/battle/close', {}, 'Vote clos');
   };
-  // Recherche à la frappe, comme l'ajout d'une chanson ; seule la dernière
-  // réponse s'affiche.
+  // Recherche à la frappe, comme l'ajout d'une chanson. Chaque frappe prend
+  // un nouveau numéro : une réponse arrivée pendant l'attente de fin de frappe
+  // est ignorée, seule celle de la dernière saisie s'affiche.
   let battleLaunchNumber = 0, battleLaunchTimer = null;
-  const searchBattleLaunch = async (q) => {
-    const number = ++battleLaunchNumber;
+  const searchBattleLaunch = async (q, number) => {
     $('battleLaunchResults').innerHTML = '<li class="muted">Recherche…</li>';
     try {
       const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
@@ -1033,14 +1033,14 @@
   };
   const battleLaunchInput = (immediate = false) => {
     clearTimeout(battleLaunchTimer);
+    const number = ++battleLaunchNumber;
     const q = $('battleLaunchSearch').value.trim();
     if (q.length < 2) {
-      ++battleLaunchNumber;
       $('battleLaunchResults').innerHTML = q ? '<li class="muted">Tape au moins 2 lettres.</li>' : '';
       return;
     }
-    if (immediate) searchBattleLaunch(q);
-    else battleLaunchTimer = setTimeout(() => searchBattleLaunch(q), 300);
+    if (immediate) searchBattleLaunch(q, number);
+    else battleLaunchTimer = setTimeout(() => searchBattleLaunch(q, number), 300);
   };
   $('battleLaunchSearch').oninput = () => battleLaunchInput();
   $('battleLaunchSearch').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); battleLaunchInput(true); } };
