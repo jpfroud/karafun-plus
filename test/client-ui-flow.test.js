@@ -68,6 +68,7 @@ const fetch = async (url, options = {}) => {
     searches.push(q);
     // Réponse retenue pour vérifier qu'une réponse en retard n'écrase pas la dernière.
     if (q === 'Abba') await new Promise(resolve => { releaseAbba = resolve; });
+    if (q === 'Panne') return { ok: false, status: 503, json: async () => ({ error: 'Catalogue KaraFun indisponible.' }) };
     return response(q === 'Abba' ? [{ songId: 7, title: 'Dancing Queen', artist: 'ABBA' }]
       : [{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' }]);
   }
@@ -222,6 +223,17 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   await settle(); await settle();
   assert.doesNotMatch(get('battleSearchResults').innerHTML, /Dancing Queen/,
     'une réponse en retard n’écrase pas la dernière recherche');
+  get('battleSearch').value = 'Panne';
+  get('battleSearch').listeners.input();
+  finishTyping();
+  await settle(); await settle();
+  assert.equal(get('battleSearchResults').textContent, 'Catalogue KaraFun indisponible.',
+    'une recherche en échec affiche la raison à la place des résultats');
+  get('battleSearch').value = 'Queen';
+  get('battleSearch').listeners.input();
+  finishTyping();
+  await settle(); await settle();
+  assert.match(get('battleSearchResults').innerHTML, /Bohemian Rhapsody/, 'nouvel essai après l’échec');
   get('battleSearchResults').listeners.click({ target: { closest: selector => selector === '[data-battle-result]'
     ? { dataset: { battleResult: '0' } } : null } });
   assert.match(get('battleSelected').innerHTML, /Bohemian Rhapsody/);

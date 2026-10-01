@@ -64,6 +64,7 @@ const fetch = async (url, options = {}) => {
     const q = new URLSearchParams(url.split('?')[1]).get('q');
     searches.push(q);
     if (q === 'Abba') await new Promise(resolve => { releaseAbba = resolve; });
+    if (q === 'Panne') return { ok: false, json: async () => ({ error: 'Catalogue KaraFun indisponible.' }) };
     return response(q === 'Abba' ? [{ songId: 7, title: 'Dancing Queen', artist: 'ABBA' }]
       : [{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' }]);
   }
@@ -210,6 +211,12 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   releaseAbba();
   await settle(); await settle();
   assert.doesNotMatch(battleResults.innerHTML, /Dancing Queen/, 'une réponse en retard n’écrase pas la dernière recherche');
+  battleSearch.value = 'Panne';
+  battleSearch.oninput();
+  finishTyping();
+  await settle(); await settle();
+  assert.match(battleResults.innerHTML, /Catalogue KaraFun indisponible\./, 'une recherche en échec affiche la raison');
+  assert.doesNotMatch(battleResults.innerHTML, /Lancer en Battle/, 'pas de bouton de lancement après un échec');
   battleSearch.value = '';
   battleSearch.oninput();
   assert.equal(battleResults.innerHTML, '', 'champ vidé : résultats effacés');
