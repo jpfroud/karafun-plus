@@ -2442,6 +2442,13 @@ const handlers = {
     sync();
     return { ok: true, battle };
   },
+  // Le bar autorise une nouvelle proposition sans attendre la fin de la pause.
+  'POST /api/staff/battle/reset-cooldown': async () => {
+    const battle = battleVote.endCooldownNow();
+    sched.note('Le bar autorise une nouvelle Battle dès maintenant.', 'battle');
+    sync();
+    return { ok: true, battle };
+  },
   'POST /api/staff/battle/resolve': async (req, res, body) => {
     const battle = body.outcome === 'finished' ? battleVote.finishManual() :
       battleVote.resolve({ outcome: body.outcome });

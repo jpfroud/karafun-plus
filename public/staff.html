@@ -151,6 +151,7 @@
     <div id="battleStatus" class="battle-status" role="status">Aucun vote en cours.</div>
     <div id="battleVotes" class="battle-votes" hidden></div>
     <div class="row wrap" id="battleVoteActions" hidden><button class="btn small" id="battleCloseVote">Clore le vote maintenant</button></div>
+    <div class="row wrap" id="battleCooldownActions" hidden><button class="btn small" id="battleResetCooldown">Autoriser une nouvelle Battle maintenant</button></div>
     <div class="battle-launch"><strong>Lancer une Battle sans vote</strong>
       <p class="small muted">Choisis un titre : il sera ajouté en mode Battle après le prochain passage annoncé, comme après un vote réussi. Le délai entre Battles ne s’applique pas au bar, mais il redémarre à la fin de celle-ci.</p>
       <div class="search-field"><input id="battleLaunchSearch" type="search" placeholder="Chercher un titre dans KaraFun…" autocomplete="off" enterkeyhint="search" aria-label="Chercher un titre pour la Battle"><button type="button" class="clear-input" data-clear-for="battleLaunchSearch" aria-label="Effacer la recherche" hidden>×</button></div>
@@ -901,6 +902,9 @@
       <div class="vote-bar against"><span>Pas de Battle</span><b>${battle.noVotes || 0}</b><i style="width:${Math.round(100 * (battle.noVotes || 0) / most)}%"></i></div>
       <p class="small muted">${esc(voteCount)}${battle.phase === 'voting' ? ` · fin dans ${countdown(battle.closesAt)}` : ''}</p>` : '';
     $('battleVoteActions').hidden = battle.phase !== 'voting';
+    // Lever la pause : seulement quand elle tourne, Battle finie et file reprise.
+    $('battleCooldownActions').hidden = !(battle.phase === 'cooldown' && battle.cooldownUntil > Date.now() &&
+      (!battleStep || battleStep === 'released'));
 
     const p = kf && kf.preferences, perm = kf && kf.permissions;
     $('diag').innerHTML = kf ? [
@@ -1046,6 +1050,7 @@
   };
   $('battleDone').onclick = () => act('/api/staff/battle/resolve', { outcome: 'done' }, 'Battle manuelle en cours ; la file reste en pause');
   $('battleFinished').onclick = () => act('/api/staff/battle/resolve', { outcome: 'finished' }, 'Battle terminée ; lance la prochaine chanson quand le bar est prêt');
+  $('battleResetCooldown').onclick = () => act('/api/staff/battle/reset-cooldown', {}, 'Pause levée : la salle peut proposer une nouvelle Battle');
   $('battleDismiss').onclick = () => act('/api/staff/battle/resolve', { outcome: 'dismissed' }, 'Demande close ; pause entre votes démarrée');
   $('saveBattleCooldown').onclick = () => act('/api/staff/settings', { battleCooldownMin: Number($('battleCooldownMin').value),
     battleRejectedCooldownMin: Number($('battleRejectedCooldownMin').value),
