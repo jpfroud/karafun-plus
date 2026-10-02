@@ -78,20 +78,36 @@ let shuttingDown = false;
 const personShareCodes = new Map();
 const SOLO_COOKIE = 'karaoke_solo_device';
 // Les titres proposés pour une Battle doivent avoir été reçus du catalogue
-// KaraFun par ce serveur, et non inventés dans une requête cliente.
+// KaraFun par ce serveur, et non inventés dans une requête cliente. Il en va
+// de même des vignettes : seule une image https reçue du catalogue est
+// montrée aux téléphones, jamais une adresse envoyée par l'un d'eux.
 const battleCatalogSongs = new Map();
+const catalogCovers = new Map(); // songId → adresse https de la vignette
+function coverUrl(value) {
+  if (typeof value !== 'string' || !value || value.length > 500) return null;
+  let url;
+  try { url = new URL(value.startsWith('//') ? `https:${value}` : value); } catch (_) { return null; }
+  return url.protocol === 'https:' && !url.username && !url.password ? url.href : null;
+}
 function rememberBattleSongs(songs) {
   for (const song of songs || []) {
     const songId = Number(song?.songId);
     const title = String(song?.title || '').trim();
     const artist = String(song?.artist || '').trim();
+    if (song && typeof song === 'object') song.img = coverUrl(song.img);
     if (!Number.isSafeInteger(songId) || songId <= 0 || !title || title.length > 100 || artist.length > 80) continue;
     battleCatalogSongs.delete(songId);
     battleCatalogSongs.set(songId, { songId, title, artist });
     if (battleCatalogSongs.size > 10000) battleCatalogSongs.delete(battleCatalogSongs.keys().next().value);
+    catalogCovers.delete(songId);
+    if (song.img) catalogCovers.set(songId, song.img);
+    if (catalogCovers.size > 10000) catalogCovers.delete(catalogCovers.keys().next().value);
   }
   return songs;
 }
+// Titre choisi par un téléphone : sa vignette vient du catalogue.
+const withCover = song => song && typeof song === 'object' ?
+  { ...song, img: catalogCovers.get(Number(song.songId)) || null } : song;
 function certifiedBattleSongs(songs) {
   if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {
     throw new Error('Propose entre un et trois titres du catalogue pour la Battle.');
@@ -835,7 +851,7 @@ function sync() {
 }
 
 // ------------------------------------------------------------------ vues
-const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: s.img || null, duration: s.duration || null,
+const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: coverUrl(s.img), duration: s.duration || null,
   duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo' } : null } : null;
 
 // Chanteurs d'un passage avec leur table (ou « En solo »), pour l'affichage.
@@ -854,6 +870,7 @@ function describe(item, byQid) {
     singer: tr ? tr.sel.label : (item.singer || (isBattleItem(item) ? 'Battle collective' : '')),
     // Pour nos titres, le catalogue KaraFun choisi par le chanteur fait foi.
     title: (tr && tr.sel.song.title) || item.title || '', artist: (tr && tr.sel.song.artist) || item.artist || '',
+    img: coverUrl(tr ? tr.sel.song.img : item.img),
     kind: tr?.sel.kind || (isBattleItem(item) ? 'battle' : null),
     ids: tr ? tr.sel.ids : [], photos: tr ? tr.sel.ids.filter(pid => (sched.people.get(pid) || {}).photo).map(pid => `/photo/${pid}`) : [],
   };
@@ -878,7 +895,7 @@ function publicState(person, tableId) {
     waitingPresence: i === 0 && presence?.source === 'karafun' && presenceMissingIds.size > 0,
     name: byQid.has(it.queueId) ? byQid.get(it.queueId).sel.names.join(' & ') :
       (it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
-    song: fmtSong(it), table: byQid.has(it.queueId) ? sched.table(sched.people.get(byQid.get(it.queueId).sel.ids[0])?.tableId, false)?.name || '' : '',
+    song: fmtSong(byQid.get(it.queueId)?.sel.song || it), table: byQid.has(it.queueId) ? sched.table(sched.people.get(byQid.get(it.queueId).sel.ids[0])?.tableId, false)?.name || '' : '',
   }));
   if (pending) queue.push({ source: 'envoi', ours: true, queueId: null,
     pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
@@ -1515,7 +1532,7 @@ function chooseFor(p, song, mode) {
     const e = new Error('Cette chanson est déjà envoyée à KaraFun pour ce chanteur.');
     e.code = 'ALREADY_IN_KARAFUN'; throw e;
   }
-  sched.chooseSong(p, song, mode);
+  sched.chooseSong(p, withCover(song), mode);
   sync();
   const added = sched.songsOf(p).find(item => item.songId === songId);
   return added ? repeatNotice(added, p.tableId, added.entryId) : null;
@@ -1840,7 +1857,7 @@ const handlers = {
   'POST /api/table/duet': async (req, res, body) => {
     const p = personAtTable(body);
     assertRoomBeforeClosing(p, 'append');
-    const duet = sched.inviteDuet(p, String(body.partnerId || ''), body.song); sync();
+    const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
@@ -1889,7 +1906,7 @@ const handlers = {
   },
   'POST /api/duet': async (req, res, body, me) => {
     assertRoomBeforeClosing(me, 'append');
-    sched.inviteDuet(me, body.partnerId, body.song); sync(); return { ok: true };
+    sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
   },
   'POST /api/duet/answer': async (req, res, body, me) => { sched.answerDuet(me, !!body.accept, body.entryId); sync(); return { ok: true }; },
   'POST /api/duet/cancel': async (req, res, body, me) => { sched.cancelDuet(me, body.entryId); sync(); return { ok: true }; },
@@ -2491,7 +2508,10 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/catalog/categories' || p === '/api/catalog/highlights' || p === '/api/catalog/songs') {
         try {
           const c = catalog();
-          if (p.endsWith('/categories')) return send(res, 200, await c.categories(u.searchParams.get('type')));
+          if (p.endsWith('/categories')) {
+            const categories = await c.categories(u.searchParams.get('type'));
+            return send(res, 200, (Array.isArray(categories) ? categories : []).map(cat => ({ ...cat, img: coverUrl(cat?.img) })));
+          }
           if (p.endsWith('/highlights')) return send(res, 200, rememberBattleSongs(await c.highlights(u.searchParams.get('type'))));
           const page = await c.songs(u.searchParams.get('filter'), Number(u.searchParams.get('offset') || 0));
           rememberBattleSongs(page.songs);

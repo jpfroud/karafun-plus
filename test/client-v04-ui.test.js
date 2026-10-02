@@ -75,8 +75,8 @@ const posts = [];
 let lyrics = { lines: ['Premier vers', '', 'Refrain'], url: 'https://www.karafun.fr/karaoke/a/b/', exact: true };
 const fetch = async (url, options = {}) => {
   if (url.startsWith('/api/state?')) return response(state());
-  if (url.startsWith('/api/catalog/categories?')) return response([{ name: 'Années 80', filter: 'pl_1' }]);
-  if (url.startsWith('/api/catalog/songs?')) return response({ songs: [{ songId: 9, title: 'Tube', artist: 'Groupe' },
+  if (url.startsWith('/api/catalog/categories?')) return response([{ name: 'Années 80', filter: 'pl_1', img: 'https://cdn.test/80s.jpg' }]);
+  if (url.startsWith('/api/catalog/songs?')) return response({ songs: [{ songId: 9, title: 'Tube', artist: 'Groupe', img: 'https://cdn.test/tube.jpg' },
     { songId: 10, title: 'Autre tube', artist: 'Groupe' }], total: 2 });
   if (url.startsWith('/api/search?')) return response([{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' }]);
   if (url.startsWith('/api/song/notice?')) return response({ notice: { queued: [{ pos: 2, name: 'Bruno', ownerId: 'bruno', entryId: 'b1', before: null }] } });
@@ -189,9 +189,14 @@ const click = (node, picks) => node.listeners.click({ target: { closest: selecto
   await settle();
   assert.equal(get('tab-catalog').hidden, false);
   assert.equal(get('battlePickBar').hidden, false, 'mode choix Battle visible');
+  assert.match(get('catalogContent').innerHTML, /category-tile[^>]*>\s*<img src="https:\/\/cdn\.test\/80s\.jpg"/, 'vignette de la sélection');
   click(get('catalogContent'), { button: { dataset: { categoryIndex: '0' }, hasAttribute: key => key === 'data-category-index' } });
   await settle();
+  assert.match(get('catalogContent').innerHTML, /class="cover "[^>]*>T<img src="https:\/\/cdn\.test\/tube\.jpg"/, 'vignette du titre, initiale en attendant l’image');
+  assert.match(get('catalogContent').innerHTML, /class="cover "[^>]*>A<\/span>/, 'sans image : pastille avec l’initiale');
   click(get('catalogContent'), { button: { dataset: { songIndex: '0' }, hasAttribute: key => key === 'data-song-index' } });
+  // Regression: ISSUE-002 (recette navigateur v0.4) — rien ne montrait les titres déjà choisis pour la Battle.
+  assert.match(get('catalogContent').innerHTML, /song-row picked" data-song-index="0" aria-pressed="true"[\s\S]*✓ Choisi/, 'titre choisi marqué');
   click(get('catalogContent'), { button: { dataset: { songIndex: '1' }, hasAttribute: key => key === 'data-song-index' } });
   assert.equal(get('sheet').hidden, true, 'en mode Battle, un titre s’ajoute sans fenêtre');
   assert.match(get('battlePickText').textContent, /2\/3/);

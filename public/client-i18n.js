@@ -29,6 +29,7 @@ window.CLIENT_TRANSLATIONS = {
       'La prochaine chanson arrive bientôt.': 'The next song is coming up soon.',
       'Chanteur': 'Singer',
       'Chanson': 'Song',
+      'Duo': 'Duet',
       'Sans titre': 'Untitled',
       'Battle collective': 'Group Battle',
       'Ma table': 'My table',
@@ -251,8 +252,7 @@ window.CLIENT_TRANSLATIONS = {
 
       // File des chansons
       'La file des chansons': 'Song queue',
-      'Voici l’ordre actuel. Les horaires peuvent changer ; le prochain chanteur annoncé garde sa place, sauf imprévu.':
-        'Here is the current order. Times may change; the announced next singer keeps their place unless something comes up.',
+      'Les horaires sont estimés ; le prochain annoncé garde sa place.': 'Times are estimates; the announced next singer keeps their place.',
       'Aucune chanson en attente pour le moment.': 'No songs waiting right now.',
       'À notre table, sans chanson': 'At our table, without a song',
       'Mes chansons à choisir': 'My songs to choose',
@@ -347,6 +347,7 @@ window.CLIENT_TRANSLATIONS = {
         'Browse the catalogue. To add a song, sign someone up or take them over with a code.',
       'Ce téléphone ne gère pas ce chanteur.': 'This phone doesn’t manage this singer.',
       'Choisis une sélection.': 'Choose a selection.',
+      'Choisi': 'Picked',
       'Aucune sélection disponible.': 'No selection available.',
       'Chargement des chansons…': 'Loading songs…',
       'Chargement des sélections…': 'Loading selections…',

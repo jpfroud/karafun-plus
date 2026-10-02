@@ -123,6 +123,56 @@
   .client .lyrics-lines p.gap { height: .9em; }
   .client .song-stack .song-actions .btn.lyrics { color: var(--text); }
   .client .lang-switch button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-2); border-radius: 999px; }
+
+  /* ---------------- refonte : onglets en bas de l'écran, vignettes des titres */
+  .client .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 15; max-width: none; margin: 0; gap: 4px;
+    padding: 6px max(8px, env(safe-area-inset-left)) calc(6px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-right));
+    background: rgba(15,13,26,.96); border-top: 1px solid var(--line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  .client .tabs button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 58px;
+    border: 0; border-radius: 14px; padding: 6px 4px; font-size: 12px; max-width: 180px; margin: 0 auto; width: 100%; }
+  .client .tabs button.on { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-2); }
+  .client .tabs .tab-icon { flex: none; }
+  .client .queue-head { padding: 0; border: 0; color: inherit; font-size: inherit; font-weight: inherit; letter-spacing: normal; text-transform: none; }
+  .client .table-head { flex-wrap: wrap; }
+  .client .table-head .grow { flex: 1 1 210px; }
+  .client #peopleIntro { font-size: 12px; margin-bottom: 0; }
+  .client .person-head .btn.icon { width: 40px; min-height: 40px; padding: 0; font-size: 17px; margin: 0; }
+  .client main { padding-bottom: calc(92px + env(safe-area-inset-bottom)); }
+  .client .toast { bottom: calc(88px + env(safe-area-inset-bottom)); }
+  .client .stage-cover { flex: none; display: inline-flex; }
+
+  .client .cover { --h: 260; position: relative; flex: none; width: 44px; height: 44px; border-radius: 10px; overflow: hidden;
+    display: inline-grid; place-items: center; font-weight: 800; font-size: 17px; color: rgba(255,255,255,.92);
+    background: linear-gradient(135deg, hsl(var(--h) 62% 46%), hsl(calc(var(--h) + 45) 62% 28%)); }
+  .client .cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .client .cover.sm { width: 38px; height: 38px; font-size: 15px; border-radius: 9px; }
+  .client .cover.lg { width: 56px; height: 56px; font-size: 22px; border-radius: 12px; }
+  .client .cover.xl { width: 84px; height: 84px; font-size: 30px; border-radius: 16px; }
+
+  .client .catalog-list .song-row { display: flex; align-items: center; gap: 12px; padding: 8px 2px; }
+  .client .catalog-list .song-row .grow { min-width: 0; }
+  .client .catalog-list .song-row .song-title, .client .catalog-list .song-row .song-artist { display: block; }
+  .client .catalog-list .song-row.picked { color: var(--ok); }
+  .client .catalog-grid { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .client .category-tile { --h: 260; position: relative; width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 14px; overflow: hidden; cursor: pointer;
+    display: flex; align-items: flex-end; padding: 10px; text-align: left; color: #fff; font-weight: 800; font-size: 15px;
+    background: linear-gradient(135deg, hsl(var(--h) 62% 42%), hsl(calc(var(--h) + 45) 62% 24%)); }
+  .client .category-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .client .category-tile::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,0) 62%); }
+  .client .category-tile span { position: relative; z-index: 1; overflow-wrap: anywhere; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+  .client .category-tile:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .client .qlist li { gap: 10px; }
+  .client .song-stack li { align-items: center; flex-wrap: wrap; }
+  .client .song-stack li .grow { flex: 1 1 130px; }
+  .client .song-stack .song-title { overflow-wrap: break-word; }
+  .client .song-stack .song-actions { max-width: none; margin-left: auto; }
+  .client .song-stack .song-actions .btn.icon { width: 40px; min-height: 40px; padding: 0; font-size: 17px; }
+  .client .person-actions .btn.primary, .client .person-actions .btn.add-duo { flex: 1 1 140px; }
+  .client .person-actions .btn.share { flex: 1 1 100%; }
+  .client .sheet-song { display: flex; align-items: center; gap: 12px; }
+  .client .sheet-song h3 { margin: 0; overflow-wrap: anywhere; }
+  .client .sheet-song p { margin: 2px 0 0; }
 </style>
 </head>
 <body class="client">
@@ -153,7 +203,7 @@
   <section class="card stage" aria-labelledby="stageLabel">
     <div id="stageLabel" class="label" data-i18n>Sur scène</div>
     <div class="stage-row">
-      <span class="avatar lg" aria-hidden="true">🎤</span>
+      <span id="stageCover" class="stage-cover" aria-hidden="true"><span class="avatar lg">🎤</span></span>
       <div class="grow">
         <div class="who" id="stageWho" data-i18n>Chargement…</div>
         <div class="what" id="stageWhat"></div>
@@ -168,9 +218,9 @@
 </div>
 
 <nav class="tabs" role="tablist" aria-label="Sections">
-  <button type="button" id="nav-table" role="tab" aria-controls="tab-table" data-tab="table" class="on" aria-selected="true" data-i18n>Ma table</button>
-  <button type="button" id="nav-queue" role="tab" aria-controls="tab-queue" data-tab="queue" aria-selected="false"><span data-i18n>La file</span> <span id="qCount"></span></button>
-  <button type="button" id="nav-catalog" role="tab" aria-controls="tab-catalog" data-tab="catalog" aria-selected="false" data-i18n>Catalogue</button>
+  <button type="button" id="nav-table" role="tab" aria-controls="tab-table" data-tab="table" class="on" aria-selected="true"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg><span id="navTableLabel" data-i18n>Ma table</span></button>
+  <button type="button" id="nav-queue" role="tab" aria-controls="tab-queue" data-tab="queue" aria-selected="false"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M4 12h10M4 18h6"/><path d="M18 18V6l3 1.5"/><circle cx="16" cy="18" r="2"/></svg><span><span data-i18n>La file</span> <span id="qCount"></span></span></button>
+  <button type="button" id="nav-catalog" role="tab" aria-controls="tab-catalog" data-tab="catalog" aria-selected="false"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><span data-i18n>Catalogue</span></button>
 </nav>
 
 <main>
@@ -247,7 +297,7 @@
 
   <section id="tab-queue" role="tabpanel" aria-labelledby="nav-queue" hidden>
     <div class="card">
-      <div class="queue-head"><div class="grow"><h2 data-i18n>La file des chansons</h2><p class="muted small queue-summary" data-i18n>Voici l’ordre actuel. Les horaires peuvent changer ; le prochain chanteur annoncé garde sa place, sauf imprévu.</p></div></div>
+      <div class="queue-head"><div class="grow"><h2 data-i18n>La file des chansons</h2><p class="tiny muted queue-summary" data-i18n>Les horaires sont estimés ; le prochain annoncé garde sa place.</p></div></div>
       <ul class="qlist" id="queueList"></ul>
       <p id="queueEmpty" class="empty-copy" hidden data-i18n>Aucune chanson en attente pour le moment.</p>
     </div>
@@ -704,7 +754,7 @@
     const tableName = tableLabel(state.table) || t('Table {id}', { id: tableId });
     $('tableName').textContent = tableName;
     $('joinHeading').textContent = t('Bienvenue à {table} !', { table: tableName });
-    $('nav-table').textContent = individual ? t('Mes titres') : t('Ma table');
+    $('navTableLabel').textContent = individual ? t('Mes titres') : t('Ma table');
     $('quickSongBox').classList.toggle('solo-song-cta', individual);
     $('quickSongHeading').hidden = individual;
     $('quickSongIntro').hidden = individual;
@@ -930,8 +980,31 @@
     if (songButton) openCatalog(songButton.dataset.quickSong);
   });
 
+  // Vignette d'un titre : l'image du catalogue KaraFun (certifiée par le
+  // serveur), sinon une pastille colorée avec l'initiale, toujours de la
+  // même couleur pour un même titre.
+  function hue(text) {
+    let h = 0;
+    for (const ch of String(text || '')) h = (h * 31 + ch.codePointAt(0)) % 360;
+    return h;
+  }
+  function coverImg(url) {
+    return typeof url === 'string' && /^https:\/\//.test(url)
+      ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : '';
+  }
+  function cover(song, size = '') {
+    const title = String(song?.title || '').trim();
+    return `<span class="cover ${size}" style="--h:${hue(title)}" aria-hidden="true">${esc((title[0] || '♪').toUpperCase())}${coverImg(song?.img)}</span>`;
+  }
+  // Image introuvable : la pastille colorée reste visible.
+  document.addEventListener?.('error', event => {
+    const img = event.target;
+    if (img?.tagName === 'IMG' && (img.parentElement?.classList?.contains('cover') || img.parentElement?.classList?.contains('category-tile'))) img.remove();
+  }, true);
+
   function renderStage(queue) {
     const stage = state.stage;
+    $('stageCover').innerHTML = stage ? cover({ title: stage.title, img: stage.img }, 'lg') : '<span class="avatar lg">🎤</span>';
     $('stageWho').textContent = stage ? singerLabel(stage) : t('Personne sur scène');
     $('stageWhat').textContent = stage ? fullSong(stage) : t('La prochaine chanson arrive bientôt.');
     const next = state.next || queue[0];
@@ -967,15 +1040,15 @@
         : turn ? (eta(turn.eta) ? t('{pos} dans la file · vers {time}', { pos: position(turn.pos), time: eta(turn.eta) }) : t('{pos} dans la file', { pos: position(turn.pos) }))
         : sent.length ? t('Chanson prête dans la file') : ready.length ? t('Chansons choisies') : t('Pas encore de chanson');
       const songName = song => song.title || t('cette chanson');
-      const lyricsButton = song => song?.title ? `<button type="button" class="btn small ghost lyrics" data-lyrics-title="${esc(song.title)}" data-lyrics-artist="${esc(song.artist || '')}" data-lyrics-id="${esc(song.songId || '')}" aria-label="${esc(t('Paroles de {title}', { title: songName(song) }))}">${esc(t('Paroles'))}</button>` : '';
+      const lyricsButton = song => song?.title ? `<button type="button" class="btn small ghost lyrics icon" data-lyrics-title="${esc(song.title)}" data-lyrics-artist="${esc(song.artist || '')}" data-lyrics-id="${esc(song.songId || '')}" aria-label="${esc(t('Paroles de {title}', { title: songName(song) }))}" title="${esc(t('Paroles'))}">♪</button>` : '';
       const sentMarkup = sent.length ? `<div class="song-mark">${esc(t('DÉJÀ PRÊTE DANS LA FILE'))}</div><ul class="song-stack">${sent.map(song =>
-        `<li><div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}</div></div><div class="song-actions">${lyricsButton(song)}</div></li>`).join('')}</ul>` : '';
+        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}</div></div><div class="song-actions">${lyricsButton(song)}</div></li>`).join('')}</ul>` : '';
       const readyMarkup = ready.length ? `<div class="song-mark">${esc(individual ? tp(ready.length, 'MES CHANSONS · {n} CHANSON', 'MES CHANSONS · {n} CHANSONS') : tp(ready.length, 'SA LISTE · {n} CHANSON', 'SA LISTE · {n} CHANSONS'))}</div><ul class="song-stack">${ready.map((song, index) => {
         const duet = song.duet;
         const duetDetail = duet ? ` · ${esc(duet.state === 'pending'
           ? t('duo avec {name} (en attente de sa réponse)', { name: duet.partnerName || t('un autre chanteur') })
           : t('duo avec {name}', { name: duet.partnerName || t('un autre chanteur') }))}` : '';
-        return `<li><div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}</div></div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}">${esc(t('Ordre'))}</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}">${esc(t('Retirer'))}</button></div>` : ''}</li>`;
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}</div></div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
@@ -1001,7 +1074,7 @@
         + list(person.sentJoinRequests).map(request => `<div class="notice small">${esc(t('Demande de duo envoyée à {name} pour « {title} ».', { name: request.ownerName || t('quelqu’un'), title: request.song?.title || t('ce titre') }))}
           ${canEdit ? `<button type="button" class="btn small ghost" data-join-cancel="${esc(request.ownerId)}" data-join-entry="${esc(request.entryId)}" data-person-id="${esc(person.id)}">${esc(t('Annuler la demande'))}</button>` : ''}</div>`).join('');
       const phone = individual ? '' : ` · ${canEdit ? t('géré sur ce téléphone') : t('autre téléphone')}`;
-      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status + phone)}</div></div>${canEdit ? `<button type="button" class="btn small ghost" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}">${esc(individual ? t('Corriger mon nom') : t('Renommer'))}</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}">${esc(t('Ajouter une chanson'))}</button>`}<button type="button" class="btn" data-duet-song="${esc(person.id)}">${esc(individual ? t('Chanter en duo') : t('Ajouter un duo'))}</button><button type="button" class="btn small ghost" data-share-person="${esc(person.id)}">${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
+      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status + phone)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson'))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo'))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}">${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
     }).join('');
   }
 
@@ -1025,7 +1098,7 @@
       const joinable = canAsk && !mine && item.source === 'helper' && item.kind !== 'duo' && item.id && entryId && list(item.ids).length === 1;
       const join = !joinable ? '' : requested.has(String(entryId)) ? `<span class="badge">${esc(t('Duo demandé'))}</span>`
         : `<button type="button" class="btn small" data-join-request="${esc(item.id)}" data-join-entry="${esc(entryId)}" data-join-name="${esc(item.name || '')}" data-join-title="${esc(item.title || item.song?.title || '')}" aria-label="${esc(t('Proposer un duo à {name} sur {title}', { name: item.name || t('cette personne'), title: item.title || t('ce titre') }))}">${esc(t('Duo ?'))}</button>`;
-      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}"><span class="num">${esc(item.pos || index + 1)}</span><div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div></li>`;
+      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}"><span class="num">${esc(item.pos || index + 1)}</span>${cover(item.song || item, 'sm')}<div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div></li>`;
     }).join('');
     const localWaiting = waiting.filter(person => ids.has(String(person.id)));
     $('waitingEmpty').hidden = localWaiting.length > 0;
@@ -1628,7 +1701,7 @@
 
   function renderCategories() {
     showCatalogView(() => categories.length
-      ? `<p class="muted small" style="margin:12px 0 0">${esc(t('Choisis une sélection.'))}</p><ul class="catalog-list">${categories.map((cat, index) => `<li><button type="button" data-category-index="${index}">${esc(cat.name)}</button></li>`).join('')}</ul>`
+      ? `<p class="tiny muted" style="margin:12px 0 0">${esc(t('Choisis une sélection.'))}</p><ul class="catalog-grid">${categories.map((cat, index) => `<li><button type="button" class="category-tile" style="--h:${hue(cat.name)}" data-category-index="${index}">${coverImg(cat.img)}<span>${esc(cat.name)}</span></button></li>`).join('')}</ul>`
       : `<p class="empty-copy">${esc(t('Aucune sélection disponible.'))}</p>`);
   }
 
@@ -1685,7 +1758,11 @@
   // `heading` est une fonction pour que le titre suive la langue.
   function renderSongs(heading, back = false) {
     showCatalogView(() => `<div class="catalog-tools">${back ? `<button type="button" class="btn small" data-back>${esc(t('← Sélections'))}</button>` : ''}<b class="grow">${esc(heading())}</b></div>`
-      + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => `<li><button type="button" data-song-index="${index}"><div class="song-title">${esc(song.title)}</div><div class="song-artist">${esc(song.artist || '')}</div></button></li>`).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
+      + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => {
+        // Choix des titres d'une Battle : ceux déjà retenus sont marqués.
+        const picked = battlePickMode && battleDraft.some(item => Number(item.songId) === Number(song.songId));
+        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${picked ? ' aria-pressed="true"' : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(song.artist || '')}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
+      }).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
       + (catalogMode === 'songs' && songs.length < totalSongs ? `<button type="button" class="btn wide" data-more style="margin-top:12px">${esc(t('Voir plus'))}</button>` : ''));
   }
 
@@ -1836,6 +1913,7 @@
         if (battleDraft.length >= 3) { openBattleProposal(); return; }
       }
       renderBattlePick();
+      if (catalogView) $('catalogContent').innerHTML = catalogView();
       return;
     }
     const people = managedPeople();
@@ -1849,8 +1927,8 @@
     pendingSong = null;
     const selected = people.find(person => String(person.id) === targetPersonId) || people[0];
     if (duetMode) return openDuoPartner(song, selected.id);
-    openSheet(`<div class="row"><h3 class="grow">${esc(song.title)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
-      <p class="muted small" style="margin:4px 0 12px">${esc(song.artist || '')}</p>
+    openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(song.artist || '')}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <div style="height:12px"></div>
       <p id="songNotice" class="notice warn small song-notice" role="status" hidden></p>
       <div id="songJoinOffer" class="sheet-actions" hidden></div>
       ${people.length === 1 ? `<p class="small muted">${esc(t('Pour {name}', { name: selected.name }))}</p><input type="hidden" id="songPerson" value="${esc(selected.id)}">`
