@@ -999,6 +999,8 @@
     const title = String(song?.title || '').trim();
     return `<span class="cover ${size}" style="--h:${hue(title)}" aria-hidden="true">${esc(([...title][0] || '♪').toUpperCase())}${coverImg(song?.img)}</span>`;
   }
+  // Connexion revenue : les images en échec sont retentées.
+  window.addEventListener?.('online', () => failedCovers.clear());
   // Image introuvable : la pastille colorée reste visible.
   document.addEventListener?.('error', event => {
     const img = event.target;
@@ -1413,8 +1415,13 @@
     if (marks !== battleMarksShown) {
       battleMarksShown = marks;
       if (catalogView) {
-        $('catalogContent').innerHTML = catalogView();
-        if (focusIndex != null) $('catalogContent').querySelector?.(`[data-song-index="${focusIndex}"]`)?.focus?.();
+        const box = $('catalogContent');
+        const focused = focusIndex ?? document.activeElement?.closest?.('#catalogContent [data-song-index]')?.dataset.songIndex;
+        // Redessin des seules marques : la zone ne relit pas toute la liste.
+        box.setAttribute?.('aria-live', 'off');
+        box.innerHTML = catalogView();
+        setTimeout(() => box.setAttribute?.('aria-live', 'polite'), 150);
+        if (focused != null) box.querySelector?.(`[data-song-index="${focused}"]`)?.focus?.({ preventScroll: true });
       }
     }
   }
@@ -1625,8 +1632,6 @@
   function setTab(name) {
     const changed = name !== activeTab;
     activeTab = name;
-    // Onglets en bas de l'écran : chaque onglet s'ouvre en haut de sa page.
-    if (changed) window.scrollTo?.(0, 0);
     if (name !== 'catalog') duetMode = false;
     document.querySelectorAll('.tabs button').forEach(button => {
       const selected = button.dataset.tab === name;
@@ -1636,6 +1641,10 @@
     for (const tab of ['table', 'queue', 'catalog']) $('tab-' + tab).hidden = tab !== name;
     if (name === 'catalog' && !categories.length && catalogMode === 'categories') showCategories(catalogType);
     if (changed) pushNav();
+    // Onglets en bas de l'écran : un onglet touché s'ouvre en haut de sa page,
+    // après l'étape d'historique (le navigateur y garde la position quittée).
+    // Avec Retour, le navigateur rend lui-même la position de l'étape.
+    if (changed && !restoringNav) window.scrollTo?.(0, 0);
   }
 
   document.querySelectorAll('.tabs button').forEach(button => {

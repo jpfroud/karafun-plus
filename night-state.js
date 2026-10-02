@@ -29,7 +29,8 @@ const songValid = song => song === null || (
 function dropCovers(snapshot) {
   const songs = [];
   for (const p of Array.isArray(snapshot.scheduler?.people) ? snapshot.scheduler.people : []) {
-    songs.push(p?.song, ...(Array.isArray(p?.backlog) ? p.backlog : []), p?.invite?.song);
+    songs.push(p?.song, p?.invite?.song);
+    if (Array.isArray(p?.backlog)) for (const song of p.backlog) songs.push(song);
   }
   for (const tr of Array.isArray(snapshot.tracked) ? snapshot.tracked : []) songs.push(tr?.sel?.song);
   songs.push(snapshot.pending?.sel?.song);

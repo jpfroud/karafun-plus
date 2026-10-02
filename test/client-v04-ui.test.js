@@ -95,11 +95,12 @@ const fetch = async (url, options = {}) => {
 const saved = new Map();
 const localStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, String(value)), removeItem: key => saved.delete(key) };
 let poll;
+let scrolls = 0;
 const timers = new Map();
 let timerId = 0;
 const finishTyping = () => { for (const [id, timer] of timers) if (timer.ms === 300) { timers.delete(id); timer.fn(); } };
 const context = { document, fetch, localStorage, location: { pathname: '/t/1/secret', search: '' },
-  window: { isSecureContext: false, scrollTo() {}, history, addEventListener: (name, fn) => { windowListeners[name] = fn; }, open() {} },
+  window: { isSecureContext: false, scrollTo() { scrolls++; }, history, addEventListener: (name, fn) => { windowListeners[name] = fn; }, open() {} },
   navigator: { languages: ['fr-FR'] }, URLSearchParams, queueMicrotask,
   setInterval: fn => { poll = fn; }, setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; },
   clearTimeout: id => timers.delete(id), console, Date, Number, String, Set, Array, JSON, Math };
@@ -116,6 +117,7 @@ const click = (node, picks) => node.listeners.click({ target: { closest: selecto
   tabs[2].listeners.click({ target: tabs[2] });
   await settle();
   assert.equal(get('tab-catalog').hidden, false);
+  assert.equal(scrolls, 1, 'onglet touché : il s’ouvre en haut de sa page');
   click(get('catalogContent'), { button: { dataset: { categoryIndex: '0' }, hasAttribute: key => key === 'data-category-index' } });
   await settle();
   assert.match(get('catalogContent').innerHTML, /Tube/);
@@ -128,8 +130,12 @@ const click = (node, picks) => node.listeners.click({ target: { closest: selecto
   assert.match(get('catalogContent').innerHTML, /Tube/, 'la liste de la sélection reste affichée');
   await pressBack();
   assert.match(get('catalogContent').innerHTML, /Années 80/, 'Retour revient aux sélections');
+  const scrollsBeforeBack = scrolls;
   await pressBack();
   assert.equal(get('tab-table').hidden, false, 'Retour revient à l’onglet précédent');
+  // Regression: seconde relecture de la refonte — Retour remettait l'onglet
+  // en haut au lieu de laisser le navigateur rendre la position quittée.
+  assert.equal(scrolls, scrollsBeforeBack, 'avec Retour, la position de l’étape est rendue par le navigateur');
   await pressBack();
   assert.equal(get('tab-table').hidden, false, 'sur l’écran de départ, la page reste ouverte');
   assert.match(get('toast').textContent, /Appuie encore sur Retour/);
