@@ -663,7 +663,7 @@
     let response;
     // Réseau coupé : le navigateur donne un message technique (« Failed to fetch »).
     try { response = await fetch(path, { cache: 'no-store', ...options }); }
-    catch (_) { const error = new Error(t('Connexion perdue : réessaie dans un instant.')); error.network = true; throw error; }
+    catch (_) { throw new Error(t('Connexion perdue : réessaie dans un instant.')); }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const error = new Error(serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));

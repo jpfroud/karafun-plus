@@ -305,6 +305,16 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(posts.filter(post => post.url === '/api/staff/spotify').length, sent, 'champ vide : rien n’est envoyé');
   assert.match(get('toast').textContent, /Indique les délais/);
   get('spotifyDelay').value = '0';
+  // Même règle pour le silence avant un titre, y compris un champ d'espaces.
+  for (const value of ['', '  ']) {
+    get('spotifyLead').value = value;
+    get('toast').textContent = '';
+    get('spotifySaveOptions').onclick();
+    await settle();
+    assert.equal(posts.filter(post => post.url === '/api/staff/spotify').length, sent, `silence « ${value} » : rien n’est envoyé`);
+    assert.match(get('toast').textContent, /Indique les délais/);
+  }
+  get('spotifyLead').value = '2';
   // Retour du bar : l'admin lève la pause entre Battles, seulement quand
   // une pause tourne vraiment.
   assert.match(html, /id="battleResetCooldown"[^>]*>Autoriser une nouvelle Battle maintenant</);

@@ -1490,13 +1490,16 @@ class Scheduler {
   }
 
   // Le bar demande un nouveau calcul complet : les déplacements manuels sont
-  // abandonnés (le prochain annoncé reste garanti) et Timefold dispose de son
-  // budget maximal, sans attendre la fenêtre de regroupement.
+  // abandonnés, « Priorité » comprise ; un prochain annoncé par le calcul
+  // reste garanti. Timefold dispose de son budget maximal, sans attendre la
+  // fenêtre de regroupement.
   forceReplan(budgetMs = 30000) {
-    const manual = this.manualOrderActive || this.solverPlan?.source === 'manual';
+    // Une priorité donnée par le bar est un déplacement manuel comme un autre,
+    // même quand une nouvelle table a déjà effacé l'ordre manuel.
+    const priority = !!this.reservedNext?.byStaff;
+    const manual = priority || this.manualOrderActive || this.solverPlan?.source === 'manual';
     this.invalidateManualOrder();
-    // Une priorité donnée par le bar est un déplacement manuel comme un autre.
-    if (this.reservedNext?.byStaff) this.releaseNext();
+    if (priority) this.releaseNext();
     this.solverPlan = null;
     this.solverRequestedFingerprint = null;
     this._cancelRefine();

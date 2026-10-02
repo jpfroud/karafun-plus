@@ -152,8 +152,11 @@ async function main() {
   try { percent = report(collect(dir)); }
   finally {
     // Les serveurs de test écrivent une mesure par seconde : centaines de fichiers.
-    if (ownDir && !argv.includes('--keep-raw')) fs.rmSync(dir, { recursive: true, force: true });
-    else if (ownDir) console.log(`Mesures brutes gardées dans ${dir}`);
+    // Un fichier encore verrouillé (Windows) ne doit pas faire échouer le rapport.
+    if (ownDir && !argv.includes('--keep-raw')) {
+      try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); }
+      catch (error) { console.warn(`Mesures brutes non supprimées (${error.code || error.message}) : ${dir}`); }
+    } else if (ownDir) console.log(`Mesures brutes gardées dans ${dir}`);
   }
   console.log(`Couverture des lignes : ${percent} %. Détail dans coverage/summary.txt et coverage/uncovered.json.`);
   if (testsFailed) { console.error('Des tests ont échoué.'); process.exitCode = 1; }

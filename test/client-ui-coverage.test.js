@@ -1431,6 +1431,8 @@ test('fermeture : place restante, file complète, heure passée, annonce retiré
   page.state.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 0 };
   await page.poll();
   assert.equal(box.querySelector('b').textContent, 'Le bar ferme : plus de nouveau titre ce soir.');
+  // Regression: essai au bar du 2 octobre — les titres d'après l'heure ne sont plus lancés.
+  assert.match(box.textContent, /Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale\.$/);
   assert.equal(box.classList.contains('warn'), true);
   page.state.closing = null;
   await page.poll();
@@ -1438,4 +1440,7 @@ test('fermeture : place restante, file complète, heure passée, annonce retiré
 
   const english = await open({ languages: ['en'], state: baseState({ closing: { at, passed: false, full: false, fitCount: 3 } }) });
   assert.equal(english.node('closingBox').querySelector('b').textContent, `The bar closes at ${timeOf(at, 'en')}`);
+  english.state.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 0 };
+  await english.poll();
+  assert.match(english.node('closingBox').textContent, /Songs planned after closing time will not be started, unless the bar moves the time\.$/);
 });

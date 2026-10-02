@@ -19,7 +19,7 @@ const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const fromServer = createRequire(path.join(root, 'server.js'));
 
-function harness() {
+function harness({ logs = null } = {}) {
   const entry = source.lastIndexOf('main().catch(');
   assert.ok(entry > 0, 'point d’entrée du serveur introuvable');
   const quietFs = { ...fs, mkdirSync() {}, appendFileSync() {}, writeFileSync() {}, renameSync() {},
@@ -27,7 +27,8 @@ function harness() {
   const fixtureProcess = Object.create(process);
   fixtureProcess.argv = [...process.argv, '--demo'];
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
-    __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
+    __dirname: root, process: fixtureProcess, Buffer,
+    console: logs ? { ...console, log: (...parts) => logs.push(parts.join(' ')) } : console, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, tracked, settings, handlers, spotify, spotifyAutomation, spotifyTick, sync, analyze,
       karaokeOutlook, playKaraFun, staffState, access, battleVote, closingBlocksStart, catalogPhoneError,
@@ -300,7 +301,8 @@ test('suspension levée dès qu’un titre démarre, même lancé dans KaraFun',
 });
 
 test('fermeture : Spotify reprend sans suspendre la lecture automatique, et le journal dit pourquoi', async () => {
-  const f = harness();
+  const logs = [];
+  const f = harness({ logs });
   const { calls } = fakeSpotify(f);
   singers(f, ['Alice']);
   f.setBridge(fakeBridge([], []));
@@ -312,6 +314,14 @@ test('fermeture : Spotify reprend sans suspendre la lecture automatique, et le j
   assert.equal(f.settings.autoPlay, true, '« +10 min » relancera la file d’elle-même');
   assert.equal(f.settings.autoPlayHeld, false);
   assert.ok(!f.sched.log.some(line => /fin de file/.test(line.msg)));
+  assert.ok(logs.some(line => /Spotify relancé : heure de fermeture\./.test(line)), logs.join('\n'));
+  // Sans fermeture, le journal donne l'autre raison.
+  const endLogs = [];
+  const g = harness({ logs: endLogs });
+  fakeSpotify(g);
+  g.setBridge(fakeBridge([], []));
+  await g.spotifyTick();
+  assert.ok(endLogs.some(line => /Spotify relancé : la file est vide\./.test(line)), endLogs.join('\n'));
 });
 
 test('« Je suis là » attendu : Spotify ne reprend pas entre deux chansons', async () => {
@@ -442,4 +452,214 @@ test('soirée sauvegardée : la suspension de la lecture automatique survit à u
   assert.equal(restored.autoPlayHeld, true);
   snapshot.settings.autoPlayHeld = 'oui';
   assert.throws(() => restoreNight(snapshot, { scheduler: new Scheduler(), access: new TableAccess(), settings: {} }), /réglages mal formés/);
+});
+
+// ---------------------------------------------------------------- seconde relecture
+// Regression: seconde relecture gstack du 2 octobre (retrait de fermeture
+// annulé pendant que KaraFun l'applique, estimation incohérente au début
+// d'un titre, lancements concurrents, titre absent, suspension pendant la
+// relance de Spotify).
+
+// Le titre d'Alice, chargé dans KaraFun, a été retiré pour la fermeture.
+function closingPulled(f, kf) {
+  singers(f, ['Alice', 'Bruno']);
+  const sel = loadedNext(f, kf);
+  f.settings.closingAt = Date.now() - 60000;
+  f.sync();
+  assert.equal(f.tracked.find(item => item.queueId === 5).pulled?.reason, 'closing');
+  return sel;
+}
+
+test('fermeture : « +10 min » pendant le retrait, KaraFun retire quand même le titre : le chanteur le garde', async () => {
+  const f = harness();
+  const kf = [];
+  const sel = closingPulled(f, kf);
+  const owner = f.sched.people.get(sel.ids[0]);
+  await f.handlers['POST /api/staff/closing'](null, null, { extendMin: 30 });
+  f.sync();
+  assert.equal(f.tracked.find(item => item.queueId === 5).pulled, null, 'le titre tient de nouveau avant l’heure');
+  // Le retrait envoyé avant le décalage arrive ensuite dans KaraFun.
+  f.setBridge(fakeBridge(kf, []));
+  f.sync();
+  assert.equal(owner.song?.songId, sel.song.songId, 'le titre revient dans la liste du chanteur');
+  assert.ok(!f.sched.log.some(line => /passée dans KaraFun avant la lecture/.test(line.msg)),
+    f.sched.log.map(line => line.msg).join('\n'));
+});
+
+test('fermeture : longtemps après « +10 min », un titre retiré dans KaraFun est un choix du bar', async () => {
+  const f = harness();
+  const kf = [];
+  const sel = closingPulled(f, kf);
+  const owner = f.sched.people.get(sel.ids[0]);
+  await f.handlers['POST /api/staff/closing'](null, null, { extendMin: 30 });
+  f.sync();
+  f.tracked.find(item => item.queueId === 5).unpulled.at -= 21000;
+  f.setBridge(fakeBridge(kf, []));
+  f.sync();
+  assert.ok(f.sched.log.some(line => /passée dans KaraFun avant la lecture/.test(line.msg)));
+  assert.notEqual(owner.song?.songId, sel.song.songId, 'le titre n’est pas renvoyé');
+});
+
+test('fermeture : au début d’un titre, un retrait en attente n’est ni annulé ni renvoyé', () => {
+  const f = harness();
+  const kf = [];
+  const [alice, bruno] = singers(f, ['Alice', 'Bruno']);
+  const stage = f.sched.select(); f.sched.commit(stage);
+  assert.equal(stage.ids[0], alice.id);
+  const next = f.sched.select(); f.sched.commit(next);
+  assert.equal(next.ids[0], bruno.id);
+  const queue = [{ queueId: 1, songId: stage.song.songId, singer: stage.label },
+    { queueId: 2, songId: next.song.songId, singer: next.label }];
+  // Le titre d'Alice vient de démarrer : startedAt n'est pas encore noté.
+  f.setBridge(fakeBridge(kf, queue, 1));
+  const pulledAt = Date.now() - 50000;
+  f.tracked.push({ queueId: 1, sel: stage, startedAt: null, addedAt: Date.now() - 60000 },
+    { queueId: 2, sel: next, startedAt: null, addedAt: Date.now() - 60000,
+      pulled: { reason: 'closing', at: pulledAt, alerted: true }, removeRequestedAt: Date.now() });
+  // Bruno commencerait entre une et une fois et demie la durée moyenne d'un titre.
+  const slot = f.sched.avgSlotSec() * 1000;
+  f.settings.closingAt = Date.now() + slot * 1.25;
+  f.sync();
+  const tr = f.tracked.find(item => item.queueId === 2);
+  assert.deepEqual({ ...tr.pulled }, { reason: 'closing', at: pulledAt, alerted: true }, 'retrait gardé tel quel');
+  assert.equal(kf.filter(c => c[0] === 'remove').length, 0, 'pas de retrait renvoyé ni de nouvelle alerte');
+});
+
+test('lancement automatique abandonné : deux « Lecture » du bar en attente, un seul lancement', async () => {
+  const f = harness();
+  fakeSpotify(f, { playing: true, pauseLeadSec: 1 });
+  const kf = [];
+  singers(f, ['Alice', 'Bruno']);
+  loadedNext(f, kf);
+  f.settings.autoPlay = true;
+  f.settings.playDelaySec = 0;
+  f.sync();
+  const auto = f.getPlayStarting();
+  assert.ok(auto, 'lancement automatique en cours');
+  const taps = [f.playKaraFun(), f.playKaraFun()];
+  // Pendant le silence, la tête de la file change : le lancement automatique renonce.
+  f.setBridge(fakeBridge(kf, [{ queueId: 6, songId: 999, singer: 'Le bar' }]));
+  assert.equal(await auto, false);
+  assert.deepEqual(await Promise.all(taps), [true, true]);
+  assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 1, 'un seul lancement pour les deux appuis');
+  assert.equal(f.getPlayStarting(), null);
+});
+
+test('lancement automatique revérifié après le silence : autre titre, titre en cours ou titre retiré', async () => {
+  const cases = {
+    'autre titre en tête': (f, kf) => f.setBridge(fakeBridge(kf, [{ queueId: 6, songId: 999, singer: 'Le bar' },
+      { queueId: 5, songId: 800, singer: 'Alice' }])),
+    'titre déjà en cours': (f, kf) => f.setBridge(fakeBridge(kf, [{ queueId: 6, songId: 999, singer: 'Le bar' },
+      { queueId: 5, songId: 800, singer: 'Alice' }], 6)),
+    'titre retiré entre-temps': f => { f.tracked.find(item => item.queueId === 5).pulled = { reason: 'defer', at: Date.now() }; },
+    'heure de fermeture passée': f => { f.settings.closingAt = Date.now() - 60000; },
+  };
+  for (const [name, change] of Object.entries(cases)) {
+    const f = harness();
+    fakeSpotify(f, { playing: true, pauseLeadSec: 1 });
+    const kf = [];
+    singers(f, ['Alice', 'Bruno']);
+    loadedNext(f, kf);
+    const starting = f.playKaraFun({ queueId: '5' });
+    change(f, kf);
+    assert.equal(await starting, false, name);
+    assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 0, name);
+  }
+});
+
+test('titre marqué absent en tête : pas de lancement automatique, Spotify n’est pas coupé', async () => {
+  const f = harness();
+  const { calls } = fakeSpotify(f, { playing: true });
+  const kf = [];
+  singers(f, ['Alice', 'Bruno']);
+  loadedNext(f, kf);
+  f.tracked.find(item => item.queueId === 5).absent = true;
+  f.settings.autoPlay = true;
+  f.settings.playDelaySec = 0;
+  f.sync(); f.sync();
+  await wait(50);
+  assert.equal(f.getPlayStarting(), null, 'aucun lancement tenté');
+  assert.deepEqual(calls, [], 'Spotify continue');
+});
+
+test('Spotify relancé pendant qu’un titre démarre : la lecture automatique n’est pas suspendue', async () => {
+  const f = harness();
+  const { calls } = fakeSpotify(f);
+  const base = f.spotify.fetchImpl;
+  let release;
+  const slow = new Promise(resolve => { release = resolve; });
+  f.spotify.fetchImpl = async (url, request) => {
+    if (url.includes('/me/player/play')) await slow;
+    return base(url, request);
+  };
+  const kf = [];
+  f.setBridge(fakeBridge(kf, []));
+  f.settings.autoPlay = true;
+  const tick = f.spotifyTick();
+  await wait(20);
+  // Pendant la relance, le bar lance un titre dans KaraFun.
+  f.setBridge(fakeBridge(kf, [{ queueId: 9, songId: 999, singer: 'Le bar' }], 9));
+  release();
+  await tick;
+  assert.deepEqual(calls.map(c => c[0]), ['spotify-play']);
+  assert.equal(f.settings.autoPlayHeld, false, 'un titre est en cours : rien à suspendre');
+  assert.equal(f.settings.autoPlay, true);
+});
+
+test('réglages Spotify : la migration du délai de 15 s ne touche que les réglages d’avant la v0.4', () => {
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'spotify-'));
+  try {
+    const file = path.join(dir, 'spotify.json');
+    fs.writeFileSync(file, JSON.stringify({ clientId: '0123456789abcdef', resumeDelaySec: 15, configVersion: 3 }));
+    assert.equal(new SpotifyLink({ file }).config.resumeDelaySec, 15, 'réglage plus récent : gardé');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('soirée sauvegardée : une « Priorité » du bar le reste après un redémarrage, puis « Recalculer » l’abandonne', () => {
+  const { Scheduler } = require('../scheduler');
+  const { TableAccess } = require('../table-access');
+  const { snapshotNight, restoreNight } = require('../night-state');
+  const s = new Scheduler();
+  const access = new TableAccess();
+  const people = ['Alice', 'Bruno', 'Chloé'].map((name, i) => {
+    access.issue(String(i + 1));
+    const p = s.join({ tableId: String(i + 1), name, headcount: 1 });
+    s.chooseSong(p, { songId: 900 + i, title: `Titre ${name}` });
+    return p;
+  });
+  s.staffMove(people[2].id, 0);
+  assert.equal(s.reservedNext?.byStaff, true);
+  const settings = { auto: true, autoPlay: true, pushDelaySec: 45, playDelaySec: 8 };
+  const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings })));
+  const restored = new Scheduler();
+  restoreNight(snapshot, { scheduler: restored, access: new TableAccess(), settings: {} });
+  assert.equal(restored.reservedNext?.personId, people[2].id);
+  assert.equal(restored.reservedNext?.byStaff, true, 'la priorité reste celle du bar');
+  restored.forceReplan();
+  assert.equal(restored.reservedNext, null);
+  assert.ok(restored.log.some(line => /déplacements manuels sont abandonnés/.test(line.msg)), 'le bar sait que la priorité est abandonnée');
+  snapshot.scheduler.reservedNext.byStaff = 'oui';
+  const loose = new Scheduler();
+  restoreNight(snapshot, { scheduler: loose, access: new TableAccess(), settings: {} });
+  assert.equal(loose.reservedNext?.byStaff, undefined, 'valeur non booléenne ignorée');
+});
+
+test('« Recalculer » quand seule une « Priorité » reste active : le bar sait qu’elle est abandonnée', () => {
+  const { Scheduler } = require('../scheduler');
+  const s = new Scheduler();
+  const people = ['Alice', 'Bruno', 'Chloé'].map((name, i) => {
+    const p = s.join({ tableId: String(i + 1), name, headcount: 1 });
+    s.chooseSong(p, { songId: 900 + i, title: `Titre ${name}` });
+    return p;
+  });
+  s.staffMove(people[2].id, 0);
+  // Une nouvelle table efface l'ordre manuel, pas la priorité.
+  s.chooseSong(s.join({ tableId: '4', name: 'Dan', headcount: 1 }), { songId: 950, title: 'Titre Dan' });
+  s.presenceView();
+  assert.equal(s.manualOrderActive, false);
+  assert.notEqual(s.solverPlan?.source, 'manual');
+  assert.equal(s.reservedNext?.byStaff, true);
+  s.forceReplan();
+  assert.equal(s.reservedNext, null);
+  assert.match(s.log.at(-1).msg, /déplacements manuels sont abandonnés/);
 });

@@ -67,9 +67,10 @@ class SpotifyLink {
       const saved = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       if (saved && typeof saved === 'object') {
         const clean = this._clean(saved);
-        // Réglages enregistrés avant la v0.4 (relance seulement file vide) : le
-        // délai resté à l'ancien défaut de 15 s passe au nouveau ; un autre choix est gardé.
-        if (saved.configVersion !== CONFIG_VERSION && clean.resumeDelaySec === 15) clean.resumeDelaySec = DEFAULTS.resumeDelaySec;
+        // Réglages enregistrés avant la v0.4 (relance seulement file vide, sans
+        // numéro de version) : le délai resté à l'ancien défaut de 15 s passe au
+        // nouveau ; un autre choix, ou un réglage plus récent, est gardé.
+        if (!(saved.configVersion >= 2) && clean.resumeDelaySec === 15) clean.resumeDelaySec = DEFAULTS.resumeDelaySec;
         this.config = { ...this.config, ...clean };
       }
     } catch (_) { /* pas encore configuré */ }
