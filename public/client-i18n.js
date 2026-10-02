@@ -529,6 +529,7 @@ window.CLIENT_TRANSLATIONS = {
       'Cette personne a déjà voté.': 'This person has already voted.',
       'Vote Battle invalide.': 'Invalid Battle vote.',
       'Catalogue KaraFun indisponible en mode démo ou sans code.': 'KaraFun catalogue unavailable in demo mode or without a code.',
+      'KaraFun refuse cette sélection (HTTP 403). Essaie une autre sélection ou la recherche.': 'KaraFun refuses this selection (HTTP 403). Try another selection or search.',
       'Catalogue KaraFun indisponible pour le moment (délai dépassé). La recherche reste possible.': 'The KaraFun catalogue is unavailable right now (timed out). Search still works.',
       'Catalogue KaraFun indisponible pour le moment (réponse illisible). La recherche reste possible.': 'The KaraFun catalogue is unavailable right now (unreadable answer). Search still works.',
       'Catalogue KaraFun indisponible pour le moment (réseau injoignable). La recherche reste possible.': 'The KaraFun catalogue is unavailable right now (network unreachable). Search still works.',

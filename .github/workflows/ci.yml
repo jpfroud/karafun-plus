@@ -49,6 +49,11 @@ jobs:
         run: bash test/gstack-session-hook.test.sh
       - name: Preparer et verifier le kit Windows
         shell: powershell
+        # Sur une PR, github.sha désigne le commit de fusion, invisible sur la
+        # branche : le kit porte le commit de la branche testée (son contenu
+        # est cette branche fusionnée avec main, comme les tests ci-dessus).
+        env:
+          KIT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           New-Item -ItemType Directory -Force -Path node | Out-Null
           $nodeSource = (Get-Command node).Source
@@ -61,7 +66,7 @@ jobs:
       - name: Garder le kit de test
         uses: actions/upload-artifact@v4
         with:
-          name: kit-bar-test-${{ github.sha }}
+          name: kit-bar-test-${{ github.event.pull_request.head.sha || github.sha }}
           path: KIT-BAR-KARAFUN.zip
           if-no-files-found: error
           retention-days: 14
