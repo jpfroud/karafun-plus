@@ -1033,9 +1033,9 @@ function publicState(person, tableId) {
         state: p.duet.state } : p.duetOf ? { partnerName: sched.people.get(p.duetOf)?.name || 'Un chanteur',
         state: 'accepted', asPartner: true } : null,
       inKaraFun: tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => ({ title: tr.sel.song.title, artist: tr.sel.song.artist,
-        songId: tr.sel.song.songId, queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId) }))
+        songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId) }))
         .concat(pending && pending.sel.ids.includes(p.id) ? [{ title: pending.sel.song.title, artist: pending.sel.song.artist,
-          songId: pending.sel.song.songId, queueId: null, stage: false, sending: true }] : []),
+          songId: pending.sel.song.songId, img: coverUrl(pending.sel.song.img), queueId: null, stage: false, sending: true }] : []),
     }));
   }
 

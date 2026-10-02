@@ -202,6 +202,8 @@ const click = (node, picks) => node.listeners.click({ target: { closest: selecto
   assert.match(get('battlePickText').textContent, /2\/3/);
   get('battlePickDone').listeners.click();
   await settle();
+  // Regression: relecture de la refonte — les marques restaient après la sortie du choix Battle.
+  assert.doesNotMatch(get('catalogContent').innerHTML, /picked|✓ Choisi|aria-pressed/, 'hors du choix Battle : plus de marque');
   assert.match(get('battleSelected').innerHTML, /Tube.*Autre tube/s, 'les titres choisis sont dans la proposition');
   assert.equal(get('startBattleVote').disabled, false);
   get('startBattleVote').listeners.click();

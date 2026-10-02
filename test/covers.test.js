@@ -8,6 +8,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
+const { Scheduler } = require('../scheduler');
+const { TableAccess } = require('../table-access');
+const { snapshotNight, restoreNight } = require('../night-state');
 
 const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
@@ -23,7 +26,8 @@ function harness() {
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, tracked, handlers, access, chooseFor, publicState, rememberBattleSongs, coverUrl };
+    globalThis.fixture = { sched, tracked, handlers, access, chooseFor, publicState, rememberBattleSongs, coverUrl,
+      setPending: p => { pending = p; } };
   `, context, { filename: 'server.js' });
   return context.fixture;
 }
@@ -60,4 +64,37 @@ test('vignettes : un titre choisi garde l’image du catalogue, jamais celle env
   const imgs = view.queue.map(item => item.song?.img).concat(view.tablePeople.flatMap(p => p.songs.map(song => song.img)));
   assert.ok(imgs.includes('https://cdn.example/501.jpg'));
   assert.ok(imgs.every(img => img === null || img.startsWith('https://')), 'aucune adresse non https envoyée');
+});
+
+test('vignettes : titre déjà parti vers KaraFun, la vignette reste dans la liste du chanteur', () => {
+  const f = harness();
+  f.rememberBattleSongs([{ songId: 601, title: 'Envoyé', artist: 'A', img: 'https://cdn.example/601.jpg' },
+    { songId: 602, title: 'En route', artist: 'B', img: 'https://cdn.example/602.jpg' }]);
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.chooseFor(alice, { songId: 601, title: 'Envoyé', artist: 'A' }, 'append');
+  f.chooseFor(alice, { songId: 602, title: 'En route', artist: 'B' }, 'append');
+  const sent = f.sched.select(); f.sched.commit(sent);
+  f.tracked.push({ queueId: 'q1', sel: sent, startedAt: null, addedAt: Date.now() });
+  f.setPending({ sel: f.sched.select(), before: new Set(), at: Date.now() });
+  const view = f.publicState(null, '1').tablePeople.find(p => p.id === alice.id);
+  assert.deepEqual(Array.from(view.inKaraFun, item => item.img), ['https://cdn.example/601.jpg', 'https://cdn.example/602.jpg']);
+});
+
+// Regression: relecture de la refonte — une sauvegarde d'avant la
+// certification pouvait garder une image https choisie par un téléphone.
+test('vignettes : une soirée sauvegardée avant la certification perd ses images, une récente les garde', () => {
+  const s = new Scheduler();
+  const p = s.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  s.chooseSong(p, { songId: 7, title: 'Titre', img: 'https://espion.example/pixel.png' });
+  const access = new TableAccess(); access.issue('1');
+  const snapshot = snapshotNight({ scheduler: s, access, settings: { auto: true, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 } });
+  assert.equal(snapshot.coversCertified, true);
+  const fresh = new Scheduler();
+  restoreNight(JSON.parse(JSON.stringify(snapshot)), { scheduler: fresh, access: new TableAccess(), settings: {} });
+  assert.equal(fresh.people.get(p.id).song.img, 'https://espion.example/pixel.png', 'sauvegarde récente : image certifiée gardée');
+  const old = JSON.parse(JSON.stringify(snapshot));
+  delete old.coversCertified;
+  const restored = new Scheduler();
+  restoreNight(old, { scheduler: restored, access: new TableAccess(), settings: {} });
+  assert.equal(restored.people.get(p.id).song.img, null, 'ancienne sauvegarde : image ignorée');
 });

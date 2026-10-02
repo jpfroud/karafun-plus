@@ -125,6 +125,7 @@
   .client .lang-switch button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-2); border-radius: 999px; }
 
   /* ---------------- refonte : onglets en bas de l'écran, vignettes des titres */
+  html { scroll-padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
   .client .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 15; max-width: none; margin: 0; gap: 4px;
     padding: 6px max(8px, env(safe-area-inset-left)) calc(6px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-right));
     background: rgba(15,13,26,.96); border-top: 1px solid var(--line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
@@ -988,23 +989,30 @@
     for (const ch of String(text || '')) h = (h * 31 + ch.codePointAt(0)) % 360;
     return h;
   }
+  // Image introuvable (404, pas d'Internet) : plus redemandée à chaque rafraîchissement.
+  const failedCovers = new Set();
   function coverImg(url) {
-    return typeof url === 'string' && /^https:\/\//.test(url)
+    return typeof url === 'string' && /^https:\/\//.test(url) && !failedCovers.has(url)
       ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : '';
   }
   function cover(song, size = '') {
     const title = String(song?.title || '').trim();
-    return `<span class="cover ${size}" style="--h:${hue(title)}" aria-hidden="true">${esc((title[0] || '♪').toUpperCase())}${coverImg(song?.img)}</span>`;
+    return `<span class="cover ${size}" style="--h:${hue(title)}" aria-hidden="true">${esc(([...title][0] || '♪').toUpperCase())}${coverImg(song?.img)}</span>`;
   }
   // Image introuvable : la pastille colorée reste visible.
   document.addEventListener?.('error', event => {
     const img = event.target;
-    if (img?.tagName === 'IMG' && (img.parentElement?.classList?.contains('cover') || img.parentElement?.classList?.contains('category-tile'))) img.remove();
+    if (img?.tagName === 'IMG' && (img.parentElement?.classList?.contains('cover') || img.parentElement?.classList?.contains('category-tile'))) {
+      failedCovers.add(img.getAttribute('src'));
+      img.remove();
+    }
   }, true);
 
+  let stageCoverShown = '';
   function renderStage(queue) {
     const stage = state.stage;
-    $('stageCover').innerHTML = stage ? cover({ title: stage.title, img: stage.img }, 'lg') : '<span class="avatar lg">🎤</span>';
+    const stageCover = stage ? cover({ title: stage.title, img: stage.img }, 'lg') : '<span class="avatar lg">🎤</span>';
+    if (stageCover !== stageCoverShown) { $('stageCover').innerHTML = stageCover; stageCoverShown = stageCover; }
     $('stageWho').textContent = stage ? singerLabel(stage) : t('Personne sur scène');
     $('stageWhat').textContent = stage ? fullSong(stage) : t('La prochaine chanson arrive bientôt.');
     const next = state.next || queue[0];
@@ -1389,13 +1397,26 @@
   }
 
   let battlePickShown = '';
-  function renderBattlePick() {
+  let battleMarksShown = '';
+  // `focusIndex` : titre qui vient d'être touché, qui garde le focus après le
+  // redessin (lecteur d'écran, clavier).
+  function renderBattlePick(focusIndex = null) {
     $('battlePickBar').hidden = !battlePickMode;
     $('catalogTarget').hidden = battlePickMode;
     const text = battlePickMode ? tp(battleDraft.length,
       'Battle : touche un titre pour l’ajouter ({n}/3 choisi).', 'Battle : touche un titre pour l’ajouter ({n}/3 choisis).') : '';
     if (text && text !== battlePickShown) $('battlePickText').textContent = text;
     battlePickShown = text;
+    // Les marques « ✓ Choisi » suivent la proposition : sortie du mode,
+    // titre retiré, proposition envoyée.
+    const marks = battlePickMode ? `+${battleDraft.map(song => song.songId).join(',')}` : '';
+    if (marks !== battleMarksShown) {
+      battleMarksShown = marks;
+      if (catalogView) {
+        $('catalogContent').innerHTML = catalogView();
+        if (focusIndex != null) $('catalogContent').querySelector?.(`[data-song-index="${focusIndex}"]`)?.focus?.();
+      }
+    }
   }
 
   function browseForBattle() {
@@ -1505,6 +1526,7 @@
       const result = await post('/api/table/battle/propose', { personId: $('battleProposer').value,
         songs: selected, proposerChoice: Number($('battleMyChoice').value) });
       battleDraft = [];
+      renderBattlePick();
       closeSheet();
       await refresh();
       // La durée du vote se règle au bar (5 minutes par défaut).
@@ -1603,6 +1625,8 @@
   function setTab(name) {
     const changed = name !== activeTab;
     activeTab = name;
+    // Onglets en bas de l'écran : chaque onglet s'ouvre en haut de sa page.
+    if (changed) window.scrollTo?.(0, 0);
     if (name !== 'catalog') duetMode = false;
     document.querySelectorAll('.tabs button').forEach(button => {
       const selected = button.dataset.tab === name;
@@ -1761,7 +1785,7 @@
       + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => {
         // Choix des titres d'une Battle : ceux déjà retenus sont marqués.
         const picked = battlePickMode && battleDraft.some(item => Number(item.songId) === Number(song.songId));
-        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${picked ? ' aria-pressed="true"' : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(song.artist || '')}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
+        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(song.artist || '')}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
       }).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
       + (catalogMode === 'songs' && songs.length < totalSongs ? `<button type="button" class="btn wide" data-more style="margin-top:12px">${esc(t('Voir plus'))}</button>` : ''));
   }
@@ -1912,8 +1936,7 @@
         toast(t('« {title} » ajouté à la Battle.', { title: song.title }));
         if (battleDraft.length >= 3) { openBattleProposal(); return; }
       }
-      renderBattlePick();
-      if (catalogView) $('catalogContent').innerHTML = catalogView();
+      renderBattlePick(songs.indexOf(song));
       return;
     }
     const people = managedPeople();

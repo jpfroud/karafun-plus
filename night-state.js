@@ -26,6 +26,16 @@ const songValid = song => song === null || (
   Number.isSafeInteger(song.songId) && song.songId > 0 &&
   typeof song.title === 'string' && song.title.length > 0
 );
+function dropCovers(snapshot) {
+  const songs = [];
+  for (const p of Array.isArray(snapshot.scheduler?.people) ? snapshot.scheduler.people : []) {
+    songs.push(p?.song, ...(Array.isArray(p?.backlog) ? p.backlog : []), p?.invite?.song);
+  }
+  for (const tr of Array.isArray(snapshot.tracked) ? snapshot.tracked : []) songs.push(tr?.sel?.song);
+  songs.push(snapshot.pending?.sel?.song);
+  for (const song of songs) if (song && typeof song === 'object' && 'img' in song) song.img = null;
+}
+
 // `remaining` peut compter un envoi déjà en route en plus du report.
 const validDeferral = d => !!(d && typeof d === 'object' && typeof d.entryId === 'string' &&
   Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= DEFER_MAX + 1 &&
@@ -75,6 +85,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
   });
   return {
     version: FORMAT,
+    // Vignettes certifiées par le catalogue (voir withCover dans server.js).
+    coversCertified: true,
     scheduler: {
       opts: clone(scheduler.opts), tables, people,
       Q: [...scheduler.Q], lastGroup: clone(scheduler.lastGroup),
@@ -109,6 +121,9 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
 function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }) {
   object(snapshot, 'racine');
   if (snapshot.version !== FORMAT) fail('version inconnue');
+  // Sauvegarde antérieure à la certification des vignettes : une image a pu
+  // être choisie par un téléphone. Elle n'est pas reprise.
+  if (snapshot.coversCertified !== true) dropCovers(snapshot);
   const data = object(snapshot.scheduler, 'ordonnanceur');
   const restoredSoloInvitations = new SoloInvitations(snapshot.soloInvitations ?? []);
   object(data.opts, 'règles');
