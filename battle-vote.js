@@ -371,6 +371,27 @@ class BattleVote {
     return this.view();
   }
 
+  // Le bar lève la pause entre Battles : la salle peut reproposer tout de
+  // suite. Jamais avant la fin de la Battle et la reprise de la file.
+  endCooldownNow() {
+    this.tick();
+    const status = this.automation?.status;
+    if (status === 'after') {
+      throw new Error('La Battle est finie mais le prochain titre attend le bar : lance-le avant d’autoriser une nouvelle Battle.');
+    }
+    if (this.automation && status !== 'released') {
+      throw new Error('Une Battle est encore en préparation ou en cours : attends sa fin pour autoriser une nouvelle Battle.');
+    }
+    if (this.ballot?.phase === 'voting') throw new Error('Un vote Battle est déjà en cours.');
+    if (this.ballot?.phase === 'requested') throw new Error('La demande de Battle attend le bar.');
+    if (this.ballot?.phase !== 'cooldown' || this.ballot.cooldownUntil == null) {
+      throw new Error('Aucune pause Battle en cours : la salle peut déjà proposer une Battle.');
+    }
+    this.ballot = null; // même état qu'à la fin naturelle de la pause
+    this._changed('cooldown-reset');
+    return this.view();
+  }
+
   setCooldownMinutes(minutes) {
     const value = Number(minutes);
     if (!Number.isInteger(value) || value < 1 || value > 120) {
