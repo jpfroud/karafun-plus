@@ -939,7 +939,8 @@ test('recherche KaraFun : requête trop courte, KaraFun absent ou en erreur', as
   assert.deepEqual(asked, ['abba']);
   f.setBridge({ ready: false, connected: false, search: async () => [{ songId: 7, title: 'Waterloo', artist: 'ABBA' }] });
   r = await get(f, '/api/search?q=abba');
-  assert.deepEqual([r.status, r.body], [200, [{ songId: 7, title: 'Waterloo', artist: 'ABBA' }]]);
+  // Vignette : seule une image https du catalogue est transmise (aucune ici).
+  assert.deepEqual([r.status, r.body], [200, [{ songId: 7, title: 'Waterloo', artist: 'ABBA', img: null }]]);
 });
 
 test('catalogue KaraFun en démo : indisponible avec un message, pas d’erreur muette', async () => {

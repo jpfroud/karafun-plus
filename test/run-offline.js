@@ -17,7 +17,7 @@ function run(file, env = {}) {
     'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','client-i18n.test.js','client-v04-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js',
     'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','staff-duo-tracked-api.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js','staff-layout.regression-1.test.js',
-    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','song-repeats.test.js','duo-cap-spacing.test.js','presence-skip.test.js','presence-timeout.test.js','defer-turn.test.js','lyrics-spotify.test.js','review-v04-fixes.test.js','covers.test.js','duo-improvise-credit.test.js','spotify-fermeture.test.js','battle-cooldown-reset-api.test.js',
+    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','song-repeats.test.js','duo-cap-spacing.test.js','presence-skip.test.js','presence-timeout.test.js','defer-turn.test.js','lyrics-spotify.test.js','review-v04-fixes.test.js','covers.test.js','duo-improvise-credit.test.js','spotify-fermeture.test.js','battle-cooldown-reset-api.test.js','kcs-protocol.test.js','server-staff-routes.test.js','server-table-routes.test.js','staff-ui-coverage.test.js','client-ui-coverage.test.js','cli-persistence.test.js',
     'sim-night.js','start-evening.test.js','startup-port.test.js']) await run(`test/${f}`);
   async function demoTest(port, songSeconds, script) {
   const base = `http://127.0.0.1:${port}`;
