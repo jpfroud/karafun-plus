@@ -55,10 +55,13 @@ function ownBuild(dir = __dirname) {
   } catch { return null; }
 }
 
-// Kit qui tourne déjà sur ce PC ; null pour une version plus ancienne sans cette route.
+// Kit qui tourne déjà sur ce PC : sa version, OLDER pour une version plus
+// ancienne sans cette route (404), null si elle n'a pas pu être lue.
+const OLDER = 'older';
 async function runningBuild() {
   try {
     const response = await fetch(`${BAR_URL}internal/version`, { signal: AbortSignal.timeout(2000) });
+    if (response.status === 404) return OLDER;
     return response.ok ? await response.json() : null;
   } catch { return null; }
 }
@@ -81,13 +84,16 @@ async function main() {
     // page ferait croire que la nouvelle version est lancée.
     const mine = ownBuild();
     const running = mine && await runningBuild();
-    if (mine && String(running?.commit || '').slice(0, 7) !== mine.commit) {
-      console.log(`Une autre version de la file karaoké tourne déjà (${running ? buildLabel(running) : 'version plus ancienne'}).`);
-      console.log(`Pour lancer celle de ce dossier (${buildLabel(mine)}) : clique « Arrêter la soirée » sur la page du bar, ou ferme la fenêtre « File karaoke » de l’autre version, puis relance.`);
+    if (mine && running && (running === OLDER || String(running.commit || '').slice(0, 7) !== mine.commit)) {
+      console.log(`Une autre version de la file karaoké tourne déjà (${running === OLDER ? 'version plus ancienne' : buildLabel(running)}).`);
+      console.log(`Pour lancer celle de ce dossier (${buildLabel(mine)}) : sur la page du bar qui s’ouvre, clique « Arrêter la soirée » (ou lance ARRETER.bat dans le dossier de l’autre version), puis relance.`);
+      // Sa page s'ouvre quand même : « Arrêter la soirée » est à un clic.
+      openBar();
       process.exitCode = ANOTHER_VERSION; // DEMARRER.bat reste ouvert, KaraFun Plus.exe l'explique
       return;
     }
-    console.log('La file karaoké tourne déjà : ouverture de la page du bar.');
+    console.log(mine && !running ? 'La file karaoké tourne déjà (version non vérifiée) : ouverture de la page du bar.' :
+      'La file karaoké tourne déjà : ouverture de la page du bar.');
     openBar();
     return;
   }

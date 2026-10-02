@@ -28,11 +28,13 @@ internal static class KaraFunPlus
             start.CreateNoWindow = true;
             start.WindowStyle = ProcessWindowStyle.Hidden;
             Process process = Process.Start(start);
-            if (process == null || (process.WaitForExit(4000) && process.ExitCode != 0))
+            // 15 s : PowerShell (KaraFun ouvert ?) puis la version qui tourne
+            // peuvent prendre plusieurs secondes sur un PC lent.
+            if (process == null || (process.WaitForExit(15000) && process.ExitCode != 0))
             {
                 // 3 : une autre version tourne deja (start-evening.js).
                 string message = process != null && process.ExitCode == 3
-                    ? "Une autre version de la file karaok\u00e9 tourne d\u00e9j\u00e0. Clique \u00ab Arr\u00eater la soir\u00e9e \u00bb sur la page du bar, ou ferme sa fen\u00eatre, puis relance KaraFun Plus."
+                    ? "Une autre version de la file karaok\u00e9 tourne d\u00e9j\u00e0. Sur la page du bar qui s'ouvre, clique \u00ab Arr\u00eater la soir\u00e9e \u00bb, puis relance KaraFun Plus."
                     : "Le d\u00e9marrage a \u00e9chou\u00e9. Lance DEMARRER.bat pour lire le d\u00e9tail de l'erreur.";
                 MessageBox.Show(message, "KaraFun Plus", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }

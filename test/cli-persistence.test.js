@@ -241,6 +241,8 @@ globalThis.fetch = async (url, init = {}) => {
   log({ type: 'fetch', url, redirect: init.redirect });
   if (scenario.helper === 'absent') throw new TypeError('fetch failed');
   if (url.endsWith('/internal/version')) {
+    if (scenario.runningBuild === 'error') throw new TypeError('fetch failed');
+    if (scenario.runningBuild === 'busy') return { ok: false, status: 503, json: async () => ({}) };
     if (!scenario.runningBuild) return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => scenario.runningBuild };
   }
@@ -325,9 +327,16 @@ test('DEMARRER : une autre version tourne déjà, le bar est prévenu au lieu de
     assert.equal(result.code, 3, 'DEMARRER.bat reste ouvert ; KaraFun Plus.exe reconnaît ce code');
     assert.match(result.stdout, runningBuild ? /Une autre version de la file karaoké tourne déjà \(v0\.4\.0 5681f16\)\./ :
       /Une autre version de la file karaoké tourne déjà \(version plus ancienne\)\./);
-    assert.match(result.stdout, /Pour lancer celle de ce dossier \(v0\.4\.0 4d575ce\) : clique « Arrêter la soirée » sur la page du bar, ou ferme la fenêtre « File karaoke » de l’autre version, puis relance\./);
-    assert.ok(!result.events.some(event => event.type === 'spawn'), 'l’ancienne page n’est pas rouverte');
+    assert.match(result.stdout, /Pour lancer celle de ce dossier \(v0\.4\.0 4d575ce\) : sur la page du bar qui s’ouvre, clique « Arrêter la soirée » \(ou lance ARRETER\.bat dans le dossier de l’autre version\), puis relance\./);
+    // La page de l'autre version s'ouvre : « Arrêter la soirée » est à un clic.
+    assert.deepEqual(result.events.filter(event => event.type === 'spawn').map(event => event.file), ['cmd.exe']);
     assert.ok(!result.events.some(event => event.type === 'server'));
+  }
+  // Version qui tourne illisible (délai, panne) : rien n'est affirmé, la page s'ouvre.
+  for (const runningBuild of ['error', 'busy']) {
+    const unknown = await runEvening({ platform: 'linux', helper: 'file', runningBuild }, {}, script);
+    assert.equal(unknown.code, 0, unknown.stderr);
+    assert.match(unknown.stdout, /La file karaoké tourne déjà \(version non vérifiée\) : ouverture de la page du bar\./, runningBuild);
   }
   // Même kit déjà lancé : seule la page du bar s'ouvre, comme avant.
   const same = await runEvening({ platform: 'linux', helper: 'file', runningBuild: { version: 'v0.4.0', commit: '4d575ce' } }, {}, script);

@@ -756,7 +756,9 @@ test('« Lecture » pendant une lecture de Spotify bloquée : coupure envoyée a
   const { calls } = fakeSpotify(f, { playing: true, pauseLeadSec: 1 });
   const base = f.spotify.fetchImpl;
   let slowReads = 1;
+  let reads = 0;
   f.spotify.fetchImpl = async (url, request) => {
+    if (url.endsWith('/me/player')) reads++;
     if (url.endsWith('/me/player') && slowReads-- > 0) await wait(5000);
     return base(url, request);
   };
@@ -773,7 +775,25 @@ test('« Lecture » pendant une lecture de Spotify bloquée : coupure envoyée a
   assert.ok(pause[1] - started >= 3900, `attente de 4 s au plus avant la coupure : ${pause[1] - started} ms`);
   assert.ok(play && play[1] - pause[1] >= 950, 'silence réglé avant le titre');
   assert.ok(logs.some(line => /Spotify encore occupé après 4 s/.test(line)), logs.join('\n'));
+  // La lecture bloquée garde la main : l'automate ne lance pas un second appel.
+  const readsBefore = reads;
+  await f.spotifyTick();
+  assert.equal(reads, readsBefore, 'Spotify toujours réservé par la lecture en cours');
   await tick;
+});
+
+test('Spotify demande de patienter (429) : « Lecture » ne coupe pas et n’attend pas', async () => {
+  const f = harness();
+  const { calls } = fakeSpotify(f, { playing: true, pauseLeadSec: 2 });
+  f.spotify.blockedUntil = Date.now() + 60000;
+  const kf = [];
+  singers(f, ['Alice']);
+  loadedNext(f, kf);
+  const started = Date.now();
+  await f.playKaraFun();
+  assert.deepEqual(calls, [], 'aucune commande envoyée à Spotify');
+  assert.ok(Date.now() - started < 500);
+  assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 1);
 });
 
 test('coupure automatique de Spotify désactivée : « Lecture » n’attend pas Spotify', async () => {

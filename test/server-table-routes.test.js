@@ -988,6 +988,10 @@ test('version du kit qui tourne : lue depuis ce PC, refusée ailleurs', async ()
   assert.equal(r.status, 200);
   assert.deepEqual(Object.keys(r.body).sort(), ['builtAt', 'commit', 'version']);
   assert.equal(typeof r.body.version, 'string');
+  // Même forme que build-info.json lu par DEMARRER : 7 caractères du commit.
+  let head = null;
+  try { head = require('node:child_process').execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.join(__dirname, '..') }).toString().trim().slice(0, 7); } catch { /* pas de git */ }
+  assert.equal(r.body.commit, head);
   r = await get(f, '/internal/version', { remote: '192.168.0.20' });
   assert.equal(r.status, 403, 'un autre appareil du réseau');
   r = await get(f, '/internal/version', { port: f.PUBLIC_PORT });
