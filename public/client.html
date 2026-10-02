@@ -660,7 +660,10 @@
   }
 
   async function request(path, options = {}) {
-    const response = await fetch(path, { cache: 'no-store', ...options });
+    let response;
+    // Réseau coupé : le navigateur donne un message technique (« Failed to fetch »).
+    try { response = await fetch(path, { cache: 'no-store', ...options }); }
+    catch (_) { const error = new Error(t('Connexion perdue : réessaie dans un instant.')); error.network = true; throw error; }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const error = new Error(serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));
@@ -819,7 +822,7 @@
     box.hidden = !closing;
     if (!closing) { closingShown = ''; return; }
     const time = eta(closing.at);
-    const detail = closing.passed ? t('Les titres déjà prévus passent encore si le bar le permet.')
+    const detail = closing.passed ? t('Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.')
       : closing.full ? t('La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.')
         : tp(closing.fitCount, '{n} titre prévu passera avant la fermeture : il reste de la place.', '{n} titres prévus passeront avant la fermeture : il reste de la place.');
     const html = `<b>${esc(closing.passed ? t('Le bar ferme : plus de nouveau titre ce soir.') : t('Fermeture du bar à {time}', { time }))}</b><span class="small">${esc(detail)}</span>`;

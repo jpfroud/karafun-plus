@@ -1040,7 +1040,9 @@ class Scheduler {
       // Le bar avance explicitement ce passage. Cette dérogation unique peut
       // dépasser l'équité des premiers passages ; l'ordre mémorisé des autres
       // lignes ne le peut pas.
-      this.reservedNext = { personId: visible[0].ids[0], reservedAt: Date.now() };
+      // `byStaff` : place réservée par le bar, abandonnée avec les autres
+      // déplacements manuels quand il relance le calcul de la file.
+      this.reservedNext = { personId: visible[0].ids[0], reservedAt: Date.now(), byStaff: true };
       this.version++;
     } else if (this.reservedNext && !excludeIds.includes(this.reservedNext.personId) &&
         visible[0]?.ids[0] !== this.reservedNext.personId) this.releaseNext();
@@ -1493,6 +1495,8 @@ class Scheduler {
   forceReplan(budgetMs = 30000) {
     const manual = this.manualOrderActive || this.solverPlan?.source === 'manual';
     this.invalidateManualOrder();
+    // Une priorité donnée par le bar est un déplacement manuel comme un autre.
+    if (this.reservedNext?.byStaff) this.releaseNext();
     this.solverPlan = null;
     this.solverRequestedFingerprint = null;
     this._cancelRefine();

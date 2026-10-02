@@ -64,8 +64,6 @@ class Catalog {
     this.lastFailure = new Map(); // domaine → dernier échec signalé (une ligne par changement)
   }
 
-  get base() { return this.endpoints[this.baseIdx].origin; }
-
   async _fetchOne(endpoint, params) {
     const url = new URL(endpoint);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));

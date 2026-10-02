@@ -30,8 +30,8 @@ function harness() {
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, tracked, settings, handlers, spotify, spotifyAutomation, spotifyTick, sync, analyze,
-      karaokeOutlook, playKaraFun, staffState,
-      setBridge: b => { bridge = b; }, getPending: () => pending };
+      karaokeOutlook, playKaraFun, staffState, access, battleVote, closingBlocksStart, catalogPhoneError,
+      setBridge: b => { bridge = b; }, getPending: () => pending, getPlayStarting: () => playStarting };
   `, context, { filename: 'server.js' });
   context.fixture.settings.auto = false;
   context.fixture.settings.autoPlay = false;
@@ -183,7 +183,9 @@ test('lecture automatique : Spotify coupé avant le titre, avec le silence régl
   f.settings.playDelaySec = 0;
   f.sync();
   f.sync();
-  await wait(1300);
+  // Le lancement attend la coupure de Spotify puis le silence : on attend sa fin.
+  assert.ok(f.getPlayStarting(), 'lancement en cours');
+  await f.getPlayStarting();
   const pause = calls.find(c => c[0] === 'spotify-pause');
   const plays = kf.filter(c => c[0] === 'karafun-play');
   assert.ok(pause, 'Spotify coupé');
@@ -245,11 +247,15 @@ test('fermeture : un titre chargé ne démarre plus après l’heure, et Spotify
   f.sync(); f.sync();
   await wait(50);
   assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 0, 'le titre chargé ne démarre pas');
+  assert.ok(kf.some(c => c[0] === 'remove' && c[1] === 5), 'le titre chargé est retiré de KaraFun');
   await f.spotifyTick();
   assert.deepEqual(calls.map(c => c[0]), ['spotify-play'], 'Spotify reprend à la fermeture');
-  // Le bar peut toujours lancer le titre lui-même.
+  // KaraFun retire le titre ; le bar ajoute lui-même un titre dans KaraFun et le lance.
+  const bridge = f.analyze && fakeBridge(kf, [{ queueId: 9, songId: 999, singer: 'Le bar' }]);
+  f.setBridge(bridge);
+  f.sync();
   await f.handlers['POST /api/staff/kf'](null, null, { action: 'play' });
-  assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 1);
+  assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 1, '« Lecture » du bar reste possible après l’heure');
 });
 
 test('fermeture encore loin : envoi et lancement normaux', async () => {
@@ -264,4 +270,176 @@ test('fermeture encore loin : envoi et lancement normaux', async () => {
   f.sync(); f.sync();
   await wait(50);
   assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 1);
+});
+
+// ---------------------------------------------------------------- relecture
+// Regression: relecture gstack du 2 octobre (suspension levée par n'importe
+// quel lancement, fermeture sans suspension, « Je suis là », état revérifié
+// avant de lancer, délai Spotify enregistré, retrait annulé, Battle après l'heure).
+
+// Lecture automatique suspendue (Spotify a repris en fin de file).
+async function heldAutoPlay(f) {
+  fakeSpotify(f);
+  f.setBridge(fakeBridge([], []));
+  f.settings.autoPlay = true;
+  await f.spotifyTick();
+  assert.equal(f.settings.autoPlayHeld, true);
+}
+
+test('suspension levée dès qu’un titre démarre, même lancé dans KaraFun', async () => {
+  const f = harness();
+  await heldAutoPlay(f);
+  const kf = [];
+  singers(f, ['Alice', 'Bruno']);
+  const sel = loadedNext(f, kf);
+  // Le bar lance le titre directement dans KaraFun.
+  f.setBridge(fakeBridge(kf, [{ queueId: 5, songId: sel.song.songId, singer: sel.label }], 5));
+  f.sync();
+  assert.equal(f.settings.autoPlayHeld, false);
+  assert.equal(f.settings.autoPlay, true, 'la lecture automatique reprend pour les titres suivants');
+});
+
+test('fermeture : Spotify reprend sans suspendre la lecture automatique, et le journal dit pourquoi', async () => {
+  const f = harness();
+  const { calls } = fakeSpotify(f);
+  singers(f, ['Alice']);
+  f.setBridge(fakeBridge([], []));
+  f.settings.auto = true;
+  f.settings.autoPlay = true;
+  f.settings.closingAt = Date.now() - 60000;
+  await f.spotifyTick();
+  assert.deepEqual(calls.map(c => c[0]), ['spotify-play']);
+  assert.equal(f.settings.autoPlay, true, '« +10 min » relancera la file d’elle-même');
+  assert.equal(f.settings.autoPlayHeld, false);
+  assert.ok(!f.sched.log.some(line => /fin de file/.test(line.msg)));
+});
+
+test('« Je suis là » attendu : Spotify ne reprend pas entre deux chansons', async () => {
+  const f = harness();
+  const { calls } = fakeSpotify(f);
+  f.sched.opts.requirePresence = true;
+  singers(f, ['Alice', 'Bruno']);
+  f.setBridge(fakeBridge([], []));
+  f.settings.auto = true;
+  assert.equal(f.karaokeOutlook(), 'between', 'un chanteur attend sa confirmation : la file n’est pas vide');
+  await f.spotifyTick();
+  assert.deepEqual(calls, []);
+});
+
+test('lancement annulé si le titre a été retiré de KaraFun pendant la coupure de Spotify', async () => {
+  const f = harness();
+  fakeSpotify(f, { playing: true, pauseLeadSec: 1 });
+  const kf = [];
+  singers(f, ['Alice', 'Bruno']);
+  loadedNext(f, kf);
+  f.settings.autoPlay = true;
+  f.settings.playDelaySec = 0;
+  f.sync();
+  const starting = f.getPlayStarting();
+  assert.ok(starting);
+  // Pendant le silence, KaraFun retire le titre (« Pas prêt », duo, fermeture…).
+  f.setBridge(fakeBridge(kf, []));
+  await starting;
+  assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 0, 'rien n’est lancé à la place');
+});
+
+test('lancement : pause Spotify en échec, KaraFun démarre quand même sans silence ; deux appels, un seul lancement', async () => {
+  const f = harness();
+  fakeSpotify(f, { playing: true, pauseLeadSec: 5 });
+  const base = f.spotify.fetchImpl;
+  f.spotify.fetchImpl = async (url, request) => url.includes('/me/player/pause') ?
+    json({ error: { message: 'panne' } }, 500) : base(url, request);
+  const kf = [];
+  singers(f, ['Alice']);
+  loadedNext(f, kf);
+  const started = Date.now();
+  await Promise.all([f.playKaraFun(), f.playKaraFun()]);
+  assert.ok(Date.now() - started < 1000, 'pas de silence quand la pause a échoué');
+  assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 1);
+  assert.ok(f.spotify.lastError);
+});
+
+test('réglages Spotify enregistrés : l’ancien délai par défaut de 15 s passe à 3 s, un choix du bar est gardé', () => {
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'spotify-'));
+  try {
+    const file = path.join(dir, 'spotify.json');
+    fs.writeFileSync(file, JSON.stringify({ clientId: '0123456789abcdef', resumeDelaySec: 15 }));
+    assert.equal(new SpotifyLink({ file }).config.resumeDelaySec, 3);
+    fs.writeFileSync(file, JSON.stringify({ clientId: '0123456789abcdef', resumeDelaySec: 5 }));
+    assert.equal(new SpotifyLink({ file }).config.resumeDelaySec, 5);
+    const link = new SpotifyLink({ file });
+    link.setOptions({ resumeDelaySec: 15 });
+    assert.equal(new SpotifyLink({ file }).config.resumeDelaySec, 15, '15 s choisi après la mise à jour : gardé');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('fermeture : « +10 min » avant le retrait, le titre reste chargé ; alerte propre à la fermeture', async () => {
+  const f = harness();
+  const kf = [];
+  singers(f, ['Alice', 'Bruno']);
+  loadedNext(f, kf);
+  f.settings.auto = true;
+  f.settings.closingAt = Date.now() - 60000;
+  f.sync();
+  const tr = f.tracked.find(item => item.queueId === 5);
+  assert.equal(tr.pulled?.reason, 'closing');
+  // KaraFun n'a pas encore retiré le titre : l'alerte parle de la fermeture.
+  tr.pulled.at -= 46000;
+  f.sync();
+  assert.ok(f.sched.log.some(line => /passerait après la fermeture : retire-le dans KaraFun/.test(line.msg)));
+  await f.handlers['POST /api/staff/closing'](null, null, { extendMin: 30 });
+  const removals = kf.filter(c => c[0] === 'remove').length;
+  f.sync();
+  assert.equal(tr.pulled, null, 'le titre n’est plus à retirer');
+  tr.removeRequestedAt = 0;
+  f.sync();
+  assert.equal(kf.filter(c => c[0] === 'remove').length, removals, 'plus de retrait demandé');
+});
+
+test('fermeture : titre ajouté par le bar sur scène, estimation à partir de maintenant', () => {
+  const f = harness();
+  const kf = [];
+  singers(f, ['Alice']);
+  f.setBridge(fakeBridge(kf, [{ queueId: 9, songId: 999, singer: 'Le bar' }], 9));
+  const slot = f.sched.avgSlotSec() * 1000;
+  const current = f.analyze().current;
+  assert.ok(current);
+  f.settings.closingAt = Date.now() + slot + 5000;
+  assert.equal(f.closingBlocksStart(current, 0), false, 'la moitié du titre suivant tient encore');
+  f.settings.closingAt = Date.now() + slot - 5000;
+  assert.equal(f.closingBlocksStart(current, 0), true);
+});
+
+test('fermeture : plus de proposition de Battle après l’heure', async () => {
+  const f = harness();
+  const [alice] = singers(f, ['Alice']);
+  const secret = f.access.issue('1');
+  f.settings.closingAt = Date.now() - 60000;
+  await assert.rejects(f.handlers['POST /api/table/battle/propose'](null, null,
+    { table: '1', access: secret, personId: alice.id, token: alice.token, songs: [{ songId: 1, title: 'X' }] }),
+  error => error.code === 'CLOSING' && /Battle/.test(error.message));
+});
+
+test('catalogue : message montré aux téléphones selon la panne', () => {
+  const f = harness();
+  const unavailable = extra => Object.assign(new Error('x'), { catalogUnavailable: true, ...extra });
+  assert.match(f.catalogPhoneError(unavailable({ status: 403 })), /refus HTTP 403/);
+  assert.match(f.catalogPhoneError(unavailable({ kind: 'timeout' })), /délai dépassé/);
+  assert.match(f.catalogPhoneError(unavailable({ kind: 'json' })), /réponse illisible/);
+  assert.match(f.catalogPhoneError(unavailable({ kind: 'network' })), /réseau injoignable/);
+  assert.equal(f.catalogPhoneError(new Error('Filtre de catalogue invalide')), 'Filtre de catalogue invalide');
+});
+
+test('soirée sauvegardée : la suspension de la lecture automatique survit à un redémarrage', () => {
+  const { Scheduler } = require('../scheduler');
+  const { TableAccess } = require('../table-access');
+  const { snapshotNight, restoreNight } = require('../night-state');
+  const s = new Scheduler();
+  const settings = { auto: true, autoPlay: false, autoPlayHeld: true, pushDelaySec: 45, playDelaySec: 8 };
+  const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access: new TableAccess(), settings })));
+  const restored = {};
+  restoreNight(snapshot, { scheduler: new Scheduler(), access: new TableAccess(), settings: restored });
+  assert.equal(restored.autoPlayHeld, true);
+  snapshot.settings.autoPlayHeld = 'oui';
+  assert.throws(() => restoreNight(snapshot, { scheduler: new Scheduler(), access: new TableAccess(), settings: {} }), /réglages mal formés/);
 });

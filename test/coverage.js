@@ -8,6 +8,7 @@
 //   node test/coverage.js                 suite complète puis rapport
 //   node test/coverage.js --min-lines 70  échoue sous 70 % de lignes couvertes
 //   node test/coverage.js --report DIR    rapport seul, à partir de mesures existantes
+//   node test/coverage.js --keep-raw      garde les mesures brutes (dossier temporaire affiché)
 //
 // Rapport dans coverage/ : summary.txt (tableau), lcov.info (éditeurs, CI) et
 // uncovered.json (lignes jamais exécutées, pour écrire les tests manquants).
@@ -137,6 +138,7 @@ function report(files) {
 async function main() {
   let dir = option('--report');
   let testsFailed = false;
+  const ownDir = !dir;
   if (!dir) {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'karaoke-couverture-'));
     const code = await new Promise(resolve => {
@@ -146,7 +148,13 @@ async function main() {
     });
     testsFailed = code !== 0;
   }
-  const percent = report(collect(dir));
+  let percent;
+  try { percent = report(collect(dir)); }
+  finally {
+    // Les serveurs de test écrivent une mesure par seconde : centaines de fichiers.
+    if (ownDir && !argv.includes('--keep-raw')) fs.rmSync(dir, { recursive: true, force: true });
+    else if (ownDir) console.log(`Mesures brutes gardées dans ${dir}`);
+  }
   console.log(`Couverture des lignes : ${percent} %. Détail dans coverage/summary.txt et coverage/uncovered.json.`);
   if (testsFailed) { console.error('Des tests ont échoué.'); process.exitCode = 1; }
   if (minLines != null && percent < minLines) {

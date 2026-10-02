@@ -463,10 +463,12 @@ window.CLIENT_TRANSLATIONS = {
       'Demande refusée.': 'Request declined.',
       'Demande de duo annulée.': 'Duet request cancelled.',
 
+      'Connexion perdue : réessaie dans un instant.': 'Connection lost: try again in a moment.',
+
       // Heure de fermeture
       'Fermeture du bar à {time}': 'The bar closes at {time}',
       'Le bar ferme : plus de nouveau titre ce soir.': 'The bar is closing: no new songs tonight.',
-      'Les titres déjà prévus passent encore si le bar le permet.': 'Songs already planned still go on if the bar allows it.',
+      'Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.': 'Songs planned after closing time will not be started, unless the bar moves the time.',
       'La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.': 'The queue is full until closing time: no more songs can be added. Planned songs stay.',
       '{n} titre prévu passera avant la fermeture : il reste de la place.': [
         '{n} planned song will play before closing time: there is still room.',
@@ -477,6 +479,7 @@ window.CLIENT_TRANSLATIONS = {
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
     errors: {
+      'Le bar ferme bientôt : plus de Battle ce soir.': 'The bar is closing soon: no more Battles tonight.',
       'Lien de table invalide ou périmé. Scanne le QR code affiché à ta table.': 'Invalid or expired table link. Scan the QR code shown at your table.',
       'Cette table n’est plus ouverte.': 'This table is no longer open.',
       'Ce téléphone gère déjà une personne dans « En solo ». Chacun utilise son propre téléphone.': 'This phone already manages someone in “Solo”. Everyone uses their own phone.',

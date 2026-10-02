@@ -17,6 +17,7 @@ const SCOPES = 'user-read-playback-state user-modify-playback-state';
 // resumeDelaySec : silence avant la relance, une fois la file vide ;
 // pauseLeadSec : silence entre la coupure de Spotify et le lancement d'un titre.
 const DEFAULTS = { autoResume: true, autoPause: true, resumeDelaySec: 3, pauseLeadSec: 2 };
+const CONFIG_VERSION = 2; // enregistrée avec les réglages, voir _load
 // Après un échec, plus d'appel automatique pendant 30 s, puis 1, 2, 4 min…
 const BACKOFF_FIRST_MS = 30000;
 const BACKOFF_MAX_MS = 5 * 60000;
@@ -64,7 +65,13 @@ class SpotifyLink {
     if (!this.file) return;
     try {
       const saved = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      if (saved && typeof saved === 'object') this.config = { ...this.config, ...this._clean(saved) };
+      if (saved && typeof saved === 'object') {
+        const clean = this._clean(saved);
+        // Réglages enregistrés avant la v0.4 (relance seulement file vide) : le
+        // délai resté à l'ancien défaut de 15 s passe au nouveau ; un autre choix est gardé.
+        if (saved.configVersion !== CONFIG_VERSION && clean.resumeDelaySec === 15) clean.resumeDelaySec = DEFAULTS.resumeDelaySec;
+        this.config = { ...this.config, ...clean };
+      }
     } catch (_) { /* pas encore configuré */ }
   }
 
@@ -85,7 +92,7 @@ class SpotifyLink {
     if (!this.file) return;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const temporary = `${this.file}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(this.config));
+    fs.writeFileSync(temporary, JSON.stringify({ ...this.config, configVersion: CONFIG_VERSION }));
     fs.renameSync(temporary, this.file);
   }
 

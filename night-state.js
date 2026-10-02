@@ -190,7 +190,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     const reserved = object(data.reservedNext, 'prochain passage garanti');
     if (typeof reserved.personId !== 'string' || !tmp.people.has(reserved.personId) ||
       !Number.isFinite(reserved.reservedAt)) fail('prochain passage garanti mal formé');
-    tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt };
+    tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt, ...(reserved.byStaff === true ? { byStaff: true } : {}) };
   }
   tmp.roundGroups = new Set(list(data.roundGroups, 'tables du tour'));
   tmp.roundPeople = new Set(list(data.roundPeople, 'personnes du tour'));

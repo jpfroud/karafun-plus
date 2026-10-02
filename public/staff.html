@@ -1008,7 +1008,12 @@
     spotifyAction({ action: 'device', deviceId: $('spotifyDevice').value,
       deviceName: $('spotifyDevice').value ? (option?.textContent || '').replace(/ \(actif\)$/, '') : '' }, 'Appareil Spotify enregistré');
   };
-  $('spotifySaveOptions').onclick = () => spotifyAction({ action: 'options', autoResume: $('spotifyAutoResume').checked,
+  $('spotifySaveOptions').onclick = () => {
+    // Un champ vidé vaudrait 0 s : on demande une valeur plutôt que d'enregistrer 0 sans le dire.
+    if (!$('spotifyDelay').value.trim() || !$('spotifyLead').value.trim()) return toast('Indique les délais en secondes (0 pour aucun).', true);
+    return spotifyOptions();
+  };
+  const spotifyOptions = () => spotifyAction({ action: 'options', autoResume: $('spotifyAutoResume').checked,
     autoPause: $('spotifyAutoPause').checked, resumeDelaySec: Number($('spotifyDelay').value),
     pauseLeadSec: Number($('spotifyLead').value) }, 'Réglages Spotify enregistrés');
   $('spotifyPlay').onclick = () => spotifyAction({ action: 'play' }, 'Spotify relancé');

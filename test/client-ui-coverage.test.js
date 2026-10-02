@@ -617,7 +617,8 @@ test('duo : refus, liste vide, erreur réseau et erreur du serveur à l’envoi'
   mode = 'network';
   await page.tap('catalogContent', '[data-song-index="0"]');
   assert.equal(page.toast().bad, true);
-  assert.equal(page.toast().text, 'Failed to fetch');
+  // Regression: relecture — le message brut du navigateur, en anglais, n'est plus montré.
+  assert.equal(page.toast().text, 'Connexion perdue : réessaie dans un instant.');
   assert.equal(page.sheetOpen(), false);
   mode = 'alone';
   await page.tap('catalogContent', '[data-song-index="0"]');
@@ -1029,6 +1030,7 @@ test('fiches : erreurs du serveur (traduites en anglais), réseau coupé, lien d
   answer = new TypeError('Failed to fetch');
   await page.tap('peopleList', '[data-remove-song="e1"]');
   assert.equal(page.toast().bad, true, 'réseau coupé : message d’erreur');
+  assert.equal(page.toast().text, 'Connexion perdue : réessaie dans un instant.');
   answer = reply(500, {});
   await page.tap('peopleList', '[data-remove-song="e1"]');
   assert.equal(page.toast().text, 'Une erreur est survenue.', 'erreur sans message : texte générique');
@@ -1313,7 +1315,7 @@ test('catalogue : Nouveautés, À découvrir, sélections vides, « Voir plus »
   assert.match(page.node('catalogContent').innerHTML, /Années 80/, '« Réessayer » recharge les sélections');
 
   await page.tap('catalogContent', '[data-category-index="0"]');
-  assert.match(page.node('catalogContent').textContent, /^Failed to fetch/);
+  assert.match(page.node('catalogContent').textContent, /^Connexion perdue : réessaie dans un instant\./);
   await page.tap('catalogContent', '[data-retry]');
   assert.equal(page.node('catalogContent').querySelectorAll('[data-song-index]').length, 2);
   assert.equal(page.find('catalogContent', '[data-more]').textContent, 'Voir plus');

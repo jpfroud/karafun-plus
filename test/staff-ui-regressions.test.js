@@ -297,6 +297,14 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(saved.resumeDelaySec, 1);
   assert.equal(saved.pauseLeadSec, 3);
   assert.match(html, /id="spotifyDelay" type="number" min="0"/, 'moins de 5 s permis');
+  // Regression: relecture — un champ vidé enregistrait 0 s sans prévenir.
+  const sent = posts.filter(post => post.url === '/api/staff/spotify').length;
+  get('spotifyDelay').value = '';
+  get('spotifySaveOptions').onclick();
+  await settle();
+  assert.equal(posts.filter(post => post.url === '/api/staff/spotify').length, sent, 'champ vide : rien n’est envoyé');
+  assert.match(get('toast').textContent, /Indique les délais/);
+  get('spotifyDelay').value = '0';
   // Retour du bar : l'admin lève la pause entre Battles, seulement quand
   // une pause tourne vraiment.
   assert.match(html, /id="battleResetCooldown"[^>]*>Autoriser une nouvelle Battle maintenant</);

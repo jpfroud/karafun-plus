@@ -202,6 +202,18 @@ test('optimisation forcée sans optimiseur : la règle locale reprend et les dé
   assert.equal(f.staffState().solver.plan, 'local');
 });
 
+// Regression: trouvé en écrivant les tests manquants (2 octobre) — une
+// priorité survivait à « Recalculer la file » sans pouvoir être annulée.
+test('optimisation forcée après une priorité : la priorité est abandonnée avec les autres déplacements', async () => {
+  const f = harness();
+  const [, , chloe] = singers(f, ['Alice', 'Bruno', 'Chloé']);
+  await f.call('POST /api/staff/move', { personId: chloe.id, toIndex: 0, priority: true });
+  assert.deepEqual(plain(order(f)), ['Chloé', 'Alice', 'Bruno']);
+  await f.call('POST /api/staff/queue-optimize');
+  assert.deepEqual(plain(order(f)), ['Alice', 'Bruno', 'Chloé'], 'la règle locale reprend tout l’ordre');
+  assert.equal(f.sched.reservedNext, null);
+});
+
 test('optimisation forcée avec optimiseur : calcul complet de 30 s demandé et annoncé au bar', async () => {
   const f = harness();
   singers(f, ['Alice', 'Bruno']);
