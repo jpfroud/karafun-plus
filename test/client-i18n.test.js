@@ -15,7 +15,7 @@ const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)][0]?.[1];
 assert.ok(script, 'script de la page client');
 assert.match(html, /<script src="\/client-i18n\.js"><\/script>\s*<script>/, 'les traductions sont chargées avant la page');
 const loaded = { window: {} };
-vm.runInNewContext(fs.readFileSync(path.join(root, 'public', 'client-i18n.js'), 'utf8'), loaded);
+vm.runInNewContext(fs.readFileSync(path.join(root, 'public', 'client-i18n.js'), 'utf8'), loaded, { filename: 'client-i18n.js' });
 const english = loaded.window.CLIENT_TRANSLATIONS?.en;
 assert.ok(english?.texts && english.errors && english.errorPatterns, 'dictionnaire anglais');
 
@@ -92,6 +92,14 @@ assert.match(serverText(fullTable), /^Table 7 is full \(3 signed up for 3 places
 assert.ok(serverSources.includes('Recherche KaraFun impossible : ${e.message}'));
 assert.equal(serverText('Recherche KaraFun impossible : délai dépassé'), 'KaraFun search failed: délai dépassé');
 assert.equal(serverText('Catalogue KaraFun : HTTP 503'), 'KaraFun catalogue: HTTP 503');
+// Catalogue refusé par les deux domaines KaraFun : texte clair, traduit, recherche encore possible.
+assert.ok(serverSources.includes('Catalogue KaraFun indisponible pour le moment (refus HTTP ${e.status}). La recherche reste possible.'));
+assert.equal(serverText('Catalogue KaraFun indisponible pour le moment (refus HTTP 403). La recherche reste possible.'),
+  'The KaraFun catalogue is unavailable right now (HTTP 403 refusal). Search still works.');
+for (const reason of ['délai dépassé', 'réponse illisible', 'réseau injoignable']) {
+  assert.match(serverText(`Catalogue KaraFun indisponible pour le moment (${reason}). La recherche reste possible.`) || '',
+    /^The KaraFun catalogue is unavailable right now \((timed out|unreadable answer|network unreachable)\)\. Search still works\.$/, reason);
+}
 console.log(`ok - ${used.size} textes de la page des chanteurs traduits en anglais, ${Object.keys(english.errors).length} messages du serveur`);
 
 // ---------------------------------------------------------------- page réelle

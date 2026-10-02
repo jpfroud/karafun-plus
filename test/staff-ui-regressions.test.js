@@ -44,13 +44,16 @@ let presencePending = [];
 let bootId = 'boot-1';
 let restarting = false;
 let closing = null;
+let autoPlayHeld = false;
+let spotifyView = null;
 const stored = new Map();
 const posts = [];
 const state = () => ({
   kf: { ready: connected, connected, base: 'demo', code: '1234', queue: [], events: [] },
   karafun: { demo: true }, code: '1234',
   settings: { gap: 4, cap: 2, requirePresence: false, pushDelaySec: 10,
-    playDelaySec: 8, auto: false, autoPlay: false, tableRotation: false, weightedTables: false },
+    playDelaySec: 8, auto: false, autoPlay: false, autoPlayHeld, tableRotation: false, weightedTables: false },
+  spotify: spotifyView,
   tables: [{ id: '1', name: 'Table 1', headcount: 2, activeCount: 1, count: 1 },
     { id: '2', name: 'Table 2', headcount: 2, activeCount: 1, count: 1 },
     { id: 'Comptoir', name: 'En solo', individual: true, headcount: 40, activeCount: 0, count: 0 }],
@@ -74,7 +77,8 @@ const fetch = async (url, options = {}) => {
     return response(q === 'Abba' ? [{ songId: 7, title: 'Dancing Queen', artist: 'ABBA' }]
       : [{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' }]);
   }
-  if (url.startsWith('/api/staff/closing')) {
+  if (url.startsWith('/api/staff/closing') || url.startsWith('/api/staff/spotify') ||
+      url.startsWith('/api/staff/battle/reset-cooldown')) {
     posts.push({ url, ...JSON.parse(options.body) });
     return response({ ok: true });
   }
@@ -275,5 +279,47 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   documentEvent('click', { closest: selector => selector === '[data-clear-for]' ? clearButton : null });
   assert.equal(field.value, '', '× vide la recherche du bar');
   assert.equal(clearButton.hidden, true);
+  // Retours de l'essai de la PR #10 : Spotify en fin de file et silence avant un titre.
+  assert.equal(get('autoPlayHeldTxt').hidden, true, 'lecture automatique non suspendue : pas d’avis');
+  autoPlayHeld = true;
+  spotifyView = { configured: true, connected: true, clientId: '0123456789abcdef', autoResume: true, autoPause: true,
+    resumeDelaySec: 0, pauseLeadSec: 2, player: null, lastAction: null, lastError: null };
+  poll(); await settle();
+  assert.equal(get('autoPlayHeldTxt').hidden, false, 'le bar voit que la lecture automatique attend « Lecture »');
+  assert.equal(get('spotifyDelay').value, 0, 'un délai de 0 s s’affiche tel quel');
+  assert.equal(get('spotifyLead').value, 2);
+  get('spotifyDelay').value = '1'; get('spotifyLead').value = '3';
+  get('spotifyAutoResume').checked = true; get('spotifyAutoPause').checked = true;
+  get('spotifySaveOptions').onclick();
+  await settle();
+  const saved = posts.filter(post => post.url === '/api/staff/spotify').at(-1);
+  assert.equal(saved.action, 'options');
+  assert.equal(saved.resumeDelaySec, 1);
+  assert.equal(saved.pauseLeadSec, 3);
+  assert.match(html, /id="spotifyDelay" type="number" min="0"/, 'moins de 5 s permis');
+  // Retour du bar : l'admin lève la pause entre Battles, seulement quand
+  // une pause tourne vraiment.
+  assert.match(html, /id="battleResetCooldown"[^>]*>Autoriser une nouvelle Battle maintenant</);
+  battle = { phase: 'idle' };
+  poll(); await settle();
+  assert.equal(get('battleCooldownActions').hidden, true, 'sans pause, pas de bouton');
+  battle = { phase: 'cooldown', cooldownUntil: Date.now() + 300000, automation: { status: 'released' } };
+  poll(); await settle();
+  assert.equal(get('battleCooldownActions').hidden, false, 'pause en cours : le bar peut la lever');
+  assert.match(get('battleStatus').textContent, /Prochain vote possible dans/, 'le temps restant reste affiché');
+  get('battleResetCooldown').onclick();
+  await settle();
+  assert.deepEqual(posts.at(-1), { url: '/api/staff/battle/reset-cooldown' });
+  for (const [view, why] of [
+    [{ phase: 'cooldown', cooldownUntil: null, automation: { status: 'manual' } }, 'Battle encore en cours'],
+    [{ phase: 'cooldown', cooldownUntil: Date.now() + 300000, automation: { status: 'after' } }, 'prochain titre à lancer d’abord'],
+    [{ phase: 'cooldown', cooldownUntil: Date.now() - 1000 }, 'pause déjà écoulée'],
+    [{ phase: 'voting', closesAt: Date.now() + 60000, songOptions: [] }, 'vote en cours']]) {
+    battle = view;
+    poll(); await settle();
+    assert.equal(get('battleCooldownActions').hidden, true, why);
+  }
+  battle = { phase: 'idle' };
+  autoPlayHeld = false;
   console.log('Bar : connexion, repères chanteurs et recherche Battle à la frappe OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

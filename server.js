@@ -180,6 +180,9 @@ const settings = { auto: true, autoPlay: false, baseUrl: null,
   // Heure de fermeture du bar (horodatage), annoncée aux clients : au-delà
   // de ce que la file peut contenir, plus d'ajout de titre.
   closingAt: null,
+  // Spotify a repris en fin de file : la lecture automatique attend que le
+  // bar lance lui-même le titre suivant (« Lecture »), puis se rétablit.
+  autoPlayHeld: false,
   queueClearPending: false };
 const queueClearRemovalRequests = new Map();
 let curKey = null, curSince = 0;
@@ -319,6 +322,9 @@ function presenceCandidate({ current, upcoming } = analyze()) {
     return first ? { ...first.sel, source: 'karafun' } : null;
   }
   if (pending && !pending.cancelled) return { ...pending.sel, source: 'envoi' };
+  // Après la fermeture, le prochain passage prévu ne sera pas envoyé : ne pas
+  // demander sa présence (ni le sauter faute de réponse).
+  if (closingBlocksStart(current)) return null;
   const onStage = tracked.find(tr => isOnStage(tr, current));
   const excluded = onStage?.sel.ids || [];
   // L'ordre local est immédiat et Timefold ne déplace jamais le prochain
@@ -383,7 +389,9 @@ function restore(tr, reason) {
 // son ticket reprend sa place. Un report « Pas prêt » s'applique ensuite.
 function restorePulled(tr) {
   sched.requeueUnplayed(tr.sel);
-  sched.note(tr.pulled.reason === 'duo' ?
+  sched.note(tr.pulled.reason === 'closing' ?
+    `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun : il passerait après la fermeture. Il repartira si le bar décale l’heure.` :
+    tr.pulled.reason === 'duo' ?
     `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun après le duo improvisé : il repassera plus tard` :
     `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun : ${tr.sel.names.join(' & ')} laisse passer la chanson suivante`, 'skip');
 }
@@ -433,7 +441,7 @@ function syncBattle({ current, upcoming, q }, now) {
     } else if (settings.auto &&
         (bridge.protocol !== 'kcs' || bridge.raw?.configuration) &&
         !upcoming.length && !pending && !recoveredPending && !settings.queueClearPending &&
-        !sched.reservedNext && bridge.permissions?.addToQueue !== false) {
+        !sched.reservedNext && bridge.permissions?.addToQueue !== false && !closingBlocksStart(current, 0, now)) {
       // Le passage suivant déjà garanti garde sa place. Une Battle approuvée
       // attend qu'il ait chanté avant d'occuper la prochaine case libre.
       battleVote.beginAutomation(q.map(item => String(item.queueId)));
@@ -743,7 +751,9 @@ function sync() {
     } else if (tr.pulled && qids.has(tr.queueId) && !tr.pulled.alerted && now - tr.pulled.at >= PULL_ALERT_MS) {
       // Retrait ignoré : rien d'autre ne part tant que ce titre attend en tête.
       tr.pulled.alerted = true;
-      sched.note(`KaraFun n’a pas retiré « ${tr.sel.song.title} » (${tr.sel.label}) : retire-le dans KaraFun, ou lance-le si ${tr.sel.names.join(' & ')} est prêt.`, 'error');
+      sched.note(tr.pulled.reason === 'closing' ?
+        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${tr.sel.label}), qui passerait après la fermeture : retire-le dans KaraFun. Il ne sera pas lancé automatiquement.` :
+        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${tr.sel.label}) : retire-le dans KaraFun, ou lance-le si ${tr.sel.names.join(' & ')} est prêt.`, 'error');
     }
     if (onStage && !tr.startedAt) {
       tr.startedAt = Date.now();
@@ -811,10 +821,21 @@ function sync() {
   }
   const awaitingPresence = presenceMissing(presence).length > 0;
   const canPush = !current || Date.now() - curSince >= settings.pushDelaySec * 1000;
+  // Heure de fermeture : nos titres déjà chargés qui commenceraient après
+  // sont retirés de KaraFun (ils reviennent si le bar décale l'heure), et
+  // rien d'autre n'est envoyé. Le titre en cours finit normalement.
+  upcoming.forEach((item, ahead) => {
+    const tr = tracked.find(x => String(x.queueId) === String(item.queueId));
+    if (!tr || tr.cancelled || tr.pulled || tr.absent || tr.startedAt || !closingBlocksStart(current, ahead, now)) return;
+    try { pullFromKaraFun(tr, 'closing'); noteClosingStop(); }
+    catch (error) { appLog(`Retrait KaraFun (fermeture) en attente : ${error.message}`); }
+  });
+  const closingHold = closingBlocksStart(current, upcoming.length, now);
+  if (closingHold && settings.auto && !pending && sched.readyView().some(turn => turn.song)) noteClosingStop();
   const staleTracked = tracked.some(tr => !qids.has(tr.queueId));
   const emptySettled = emptySince === null || now - emptySince >= 1000;
   if (settings.auto && !settings.queueClearPending && !battleHoldsQueue() && !recoveredPending && !awaitingPresence &&
-      !restartOp && bridge.ready && !staleTracked && upcoming.length === 0 && canPush && emptySettled) {
+      !restartOp && bridge.ready && !staleTracked && upcoming.length === 0 && canPush && emptySettled && !closingHold) {
     if (!pending) {
       // Après un échec, la chanson du chanteur peut avoir changé : le choix
       // actuel de l'ordonnanceur prévaut au moment de la nouvelle tentative.
@@ -844,7 +865,11 @@ function sync() {
         (!battleVote.automation || battleVote.automation.status === 'released' ||
           (battleVote.automation.status === 'waiting' && !isBattleItem(upcoming[0]))) &&
         present && Date.now() - idleSince >= settings.playDelaySec * 1000) {
-      try { bridge.play(); idleSince = Date.now() + 20000; } catch (e) { /* */ }
+      if (closingBlocksStart(null)) noteClosingStop();
+      else {
+        idleSince = Date.now() + 20000;
+        playKaraFun().catch(error => appLog(`Lancement automatique impossible : ${error.message}`));
+      }
     }
   } else { idleSince = null; idleQueueId = null; }
   saveNight();
@@ -1643,6 +1668,26 @@ function closingView(queue, firstFreeAt, slot) {
     afterCount: queue.length - fitCount };
 }
 
+// Fermeture du bar : un titre qui démarrerait dans `ahead` passages ne part
+// vers KaraFun et ne démarre que si au moins sa moitié passe avant l'heure,
+// comme le repère des téléphones. Un titre en cours qui déborde repousse
+// l'estimation : un titre écarté ne revient pas sans décalage de l'heure.
+// Le bar peut toujours lancer un titre lui-même.
+function closingBlocksStart(current, ahead = 0, now = Date.now()) {
+  const at = closingAt(now);
+  if (at == null) return false;
+  const slot = sched.avgSlotSec() * 1000;
+  const live = current ? tracked.find(tr => isOnStage(tr, current)) : null;
+  const freeAt = !current ? now : live?.startedAt ? Math.max(now, live.startedAt + slot) : now + slot / 2;
+  return freeAt + ahead * slot + slot / 2 > at;
+}
+let closingNoted = null;
+function noteClosingStop() {
+  if (closingNoted === settings.closingAt) return;
+  closingNoted = settings.closingAt;
+  sched.note(`Fermeture à ${hhmm(settings.closingAt)} : plus aucun titre n’est envoyé ni lancé dans KaraFun. Spotify reprend quand la scène est libre ; « +10 min » relance la file.`, 'staff');
+}
+
 // Le titre part vers KaraFun avec ses chanteurs déjà fixés : pas de duo ajouté.
 function assertNotSending(entryId) {
   if (pending && !pending.cancelled && pending.sel.song.entryId === String(entryId || '')) {
@@ -1677,10 +1722,68 @@ const spotifyRedirect = () => `http://127.0.0.1:${PORT}/spotify/callback`;
 const SPOTIFY_POLL_MS = 30000; // lecture de l'état affiché au bar, hors action
 let spotifyBusy = false;
 let spotifyPolledAt = 0;
+// Soirée vue par Spotify. « between » : rien ne joue, mais un titre suivant
+// arrive (chargé dans KaraFun, en cours d'envoi, ou prêt dans la file avec
+// l'envoi automatique) : Spotify ne reprend pas entre deux chansons.
+// « silent » : file vide, ou fermeture du bar (plus rien ne sera lancé).
+function karaokeOutlook() {
+  if (!bridge?.ready) return 'unknown';
+  const { current, upcoming } = analyze();
+  if (current) return 'singing';
+  if (closingBlocksStart(null)) return 'silent';
+  if (upcoming.length || (pending && !pending.cancelled)) return 'between';
+  if (settings.auto && !settings.queueClearPending && sched.readyView().some(turn => turn.song)) return 'between';
+  return 'silent';
+}
+
+// Spotify reprend en fin de file : la lecture automatique attend que le bar
+// lance le titre suivant, le temps de redonner le micro.
+function holdAutoPlay() {
+  if (!settings.autoPlay) return;
+  settings.autoPlay = false;
+  settings.autoPlayHeld = true;
+  sched.note('Spotify a repris en fin de file : lecture automatique suspendue. Touche « Lecture » quand le micro est prêt ; elle se rétablit ensuite.', 'staff');
+  saveNight();
+}
+function releaseAutoPlay() {
+  if (!settings.autoPlayHeld) return;
+  settings.autoPlayHeld = false;
+  settings.autoPlay = true;
+  sched.note('Lecture automatique rétablie.', 'staff');
+}
+
+// Lancement d'un titre : Spotify est d'abord coupé, puis KaraFun démarre
+// après un court silence (pauseLeadSec), pour que la salle entende la
+// transition au lieu d'un fondu. Rien n'est ajouté si Spotify ne jouait pas.
+let playStarting = null;
+function playKaraFun() {
+  if (playStarting) return playStarting;
+  playStarting = (async () => {
+    try {
+      if (spotify.connected && spotify.config.autoPause && !spotify.blocked && !spotifyBusy) {
+        spotifyBusy = true;
+        let paused = null;
+        try {
+          paused = await Promise.race([spotify.pause(), new Promise(resolve => setTimeout(resolve, 4000, 'timeout'))]);
+        } catch (error) { spotify.lastError = error.message; }
+        finally { spotifyBusy = false; }
+        const lead = Number(spotify.config.pauseLeadSec) || 0;
+        if (paused === 'done' && lead > 0) await new Promise(resolve => setTimeout(resolve, lead * 1000));
+      }
+      if (!bridge?.ready) throw new Error('KaraFun est déconnecté.');
+      bridge.play();
+    } finally { playStarting = null; }
+  })();
+  return playStarting;
+}
+
 async function spotifyTick() {
   if (!spotify.connected || spotifyBusy) return;
-  const karaoke = !bridge?.ready ? 'unknown' : analyze().current ? 'singing' : 'silent';
-  const action = spotifyAutomation.step(karaoke, spotify.config);
+  const karaoke = karaokeOutlook();
+  // Fermeture atteinte, scène libre : la musique du bar revient, même si la
+  // reprise automatique est coupée (une pause faite au bar reste respectée).
+  const closed = karaoke === 'silent' && closingBlocksStart(null);
+  const action = spotifyAutomation.step(karaoke, closed ? { ...spotify.config, autoResume: true } : spotify.config);
   // Après un échec, Spotify n'est pas rappelé avant le délai ; seule la pause
   // d'un titre qui démarre passe outre (sauf si Spotify demande d'attendre).
   if (spotify.blocked || (spotify.waiting && action !== 'pause') ||
@@ -1691,16 +1794,42 @@ async function spotifyTick() {
     if (!action) { await spotify.readPlayer(); return; }
     const result = action === 'resume' ? await spotify.resume() : await spotify.pause();
     spotifyAutomation.settle(true);
-    if (result === 'done') appLog(action === 'resume' ? 'Spotify relancé : plus rien ne joue dans KaraFun.' : 'Spotify en pause : un titre démarre dans KaraFun.');
+    if (result === 'done') appLog(action === 'resume' ? 'Spotify relancé : la file est vide.' : 'Spotify en pause : un titre démarre dans KaraFun.');
+    if (action === 'resume') holdAutoPlay();
   } catch (error) {
     if (action) spotifyAutomation.settle(false);
     spotify.lastError = error.message;
   } finally { spotifyBusy = false; }
 }
 
+// Le catalogue essaie les deux domaines KaraFun comme la recherche, en gardant
+// d'une requête à l'autre celui qui a répondu : refait seulement si le code ou
+// la liste des domaines change. Au bar, un des domaines refusait les sélections (HTTP 403).
+let catalogApi = null;
+let catalogKey = '';
+const CATALOG_FAILURES = { timeout: 'délai dépassé', json: 'réponse illisible', invalid: 'réponse inattendue', network: 'réseau injoignable' };
 function catalog() {
   if (DEMO || !CODE) throw new Error('Catalogue KaraFun indisponible en mode démo ou sans code.');
-  return new Catalog({ base: bridge?.base || 'https://www.karafun.fr', code: CODE });
+  const known = bridge?.bases?.length ? bridge.bases : ['https://www.karafun.fr', 'https://www.karafun.com'];
+  const first = known.includes(bridge?.base) ? bridge.base : known[0];
+  const bases = [first, ...known.filter(base => base !== first)];
+  const key = `${CODE}|${[...bases].sort().join(' ')}`;
+  if (!catalogApi || catalogKey !== key) {
+    // Journal : le domaine et le statut seulement, jamais l'URL (elle contient le code).
+    catalogApi = new Catalog({ bases, code: CODE, onFailure: ({ host, status, kind }) =>
+      appLog(`Catalogue KaraFun : échec sur ${host} (${status ? `HTTP ${status}` : CATALOG_FAILURES[kind] || kind}).`) });
+    catalogKey = key;
+  }
+  return catalogApi;
+}
+
+// Message montré aux téléphones quand aucun domaine KaraFun ne donne le catalogue.
+function catalogPhoneError(e) {
+  if (!e?.catalogUnavailable) return e.message;
+  if (e.status) return `Catalogue KaraFun indisponible pour le moment (refus HTTP ${e.status}). La recherche reste possible.`;
+  if (e.kind === 'timeout') return 'Catalogue KaraFun indisponible pour le moment (délai dépassé). La recherche reste possible.';
+  if (e.kind === 'json') return 'Catalogue KaraFun indisponible pour le moment (réponse illisible). La recherche reste possible.';
+  return 'Catalogue KaraFun indisponible pour le moment (réseau injoignable). La recherche reste possible.';
 }
 
 function clearQueue() {
@@ -1785,6 +1914,7 @@ function clearEvening() {
   battleVote.reset();
   ensureSoloGroup();
   settings.autoPlay = false;
+  settings.autoPlayHeld = false;
   settings.closingAt = null;
   restartSweep = null;
   restartAwaitingPlay = null;
@@ -1984,7 +2114,7 @@ const handlers = {
       settings.auto = !!body.auto;
       permissionPause = false;
     }
-    if ('autoPlay' in body) settings.autoPlay = !!body.autoPlay;
+    if ('autoPlay' in body) { settings.autoPlay = !!body.autoPlay; settings.autoPlayHeld = false; }
     if ('baseUrl' in body) { settings.baseUrl = nextBaseUrl; saveTables(); }
     if ('gap' in body) sched.opts.gap = Math.max(1, Math.min(10, parseInt(body.gap, 10) || 4));
     if ('cap' in body) sched.opts.cap = Math.max(1, Math.min(50, parseInt(body.cap, 10) || 2));
@@ -2272,7 +2402,8 @@ const handlers = {
     else if (action === 'options') spotify.setOptions({
       ...('autoResume' in body ? { autoResume: !!body.autoResume } : {}),
       ...('autoPause' in body ? { autoPause: !!body.autoPause } : {}),
-      ...('resumeDelaySec' in body ? { resumeDelaySec: Number(body.resumeDelaySec) } : {}) });
+      ...('resumeDelaySec' in body ? { resumeDelaySec: Number(body.resumeDelaySec) } : {}),
+      ...('pauseLeadSec' in body ? { pauseLeadSec: Number(body.pauseLeadSec) } : {}) });
     else if (action === 'play' || action === 'pause') {
       // Choix du bar : l'automate ne le défait pas pendant ce silence ou ce titre.
       const result = action === 'play' ? await spotify.resume() : await spotify.pause();
@@ -2287,7 +2418,12 @@ const handlers = {
     const tr = tracked.find(x => String(x.queueId) === String(body.queueId));
     if (!tr || tr.sel.ids.length !== 1) throw new Error('Choisis un passage solo encore visible dans KaraFun.');
     const partnerId = String(body.partnerId || '');
-    const partner = sched.staffCountPartner(tr.sel.ids[0], partnerId, tr.sel);
+    const { current } = analyze();
+    // Ses titres déjà chargés dans KaraFun gardent le duo dans leur reçu : si
+    // l'un est retiré sans être chanté, le duo compte toujours pour lui.
+    const inFlight = tracked.filter(item => item !== tr && !item.startedAt && !item.cancelled &&
+      !isOnStage(item, current) && item.sel.ids.includes(partnerId)).map(item => item.sel);
+    const partner = sched.staffCountPartner(tr.sel.ids[0], partnerId, tr.sel, inFlight);
     tr.sel.ids.push(partner.id);
     tr.sel.names.push(partner.name);
     tr.sel.kind = 'duo';
@@ -2298,7 +2434,6 @@ const handlers = {
     // titre déjà chargé dans KaraFun ne doit pas passer juste après. Il est
     // retiré de KaraFun et reprend sa place dans la file, qui le fait passer
     // plus tard selon l'espacement habituel.
-    const { current } = analyze();
     let moved = 0;
     // Seuls ses propres titres : un duo d'une autre personne où il est invité
     // garde sa place.
@@ -2321,6 +2456,13 @@ const handlers = {
   },
   'POST /api/staff/battle/close': async () => {
     const battle = battleVote.closeNow();
+    sync();
+    return { ok: true, battle };
+  },
+  // Le bar autorise une nouvelle proposition sans attendre la fin de la pause.
+  'POST /api/staff/battle/reset-cooldown': async () => {
+    const battle = battleVote.endCooldownNow();
+    sched.note('Le bar autorise une nouvelle Battle dès maintenant.', 'battle');
     sync();
     return { ok: true, battle };
   },
@@ -2380,13 +2522,16 @@ const handlers = {
         if (!upcoming[0] || !isBattleItem(upcoming[0])) {
           throw new Error('La Battle n’est pas le prochain titre dans KaraFun. Vérifie sa file.');
         }
-        bridge.play();
+        await playKaraFun();
         sched.note('Le bar lance la Battle depuis la page du bar.', 'battle');
       } else if (status === 'sending') {
         throw new Error('KaraFun n’a pas encore confirmé la Battle. Réessaie dans un instant.');
       } else if (status === 'playing') {
         throw new Error('La Battle est déjà en cours.');
-      } else bridge.play();
+      } else {
+        await playKaraFun();
+        releaseAutoPlay();
+      }
     }
     else if (body.action === 'next') bridge.next();
     else if (body.action === 'restart') startRestart();
@@ -2516,7 +2661,7 @@ const server = http.createServer(async (req, res) => {
           const page = await c.songs(u.searchParams.get('filter'), Number(u.searchParams.get('offset') || 0));
           rememberBattleSongs(page.songs);
           return send(res, 200, page);
-        } catch (e) { return send(res, 502, { error: e.message }); }
+        } catch (e) { return send(res, 502, { error: catalogPhoneError(e) }); }
       }
       m = /^\/photo\/([a-f0-9]+)$/.exec(p);
       if (m) { const pp = sched.people.get(m[1]); if (!pp || !pp.photo) return send(res, 404, ''); return send(res, 200, pp.photo.buf, pp.photo.type, { 'Cache-Control': 'max-age=60' }); }
@@ -2647,3 +2792,8 @@ async function main() {
 }
 
 main().catch(e => { appLog(`Impossible de démarrer : ${e.message}`); process.exitCode = 1; });
+
+// Mesure de couverture des tests (NODE_V8_COVERAGE, voir test/coverage.js) :
+// relevé chaque seconde, pour qu'un serveur arrêté brutalement par un test
+// garde ses mesures. Sans effet en soirée.
+if (process.env.NODE_V8_COVERAGE) setInterval(() => require('v8').takeCoverage(), 1000).unref();

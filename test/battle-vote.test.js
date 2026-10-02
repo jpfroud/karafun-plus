@@ -345,4 +345,75 @@ function fixture(extra = {}) {
   assert.equal(restored.finishManual().cooldownUntil, f.time() + 30 * 60_000);
 }
 
+{
+  // Retour du bar : l'admin lève la pause et la salle peut reproposer une
+  // Battle tout de suite, mais jamais pendant la Battle elle-même.
+  const f = fixture(), vote = new BattleVote(f.opts);
+  const electorate = ['a', 'b', 'c'];
+  assert.throws(() => vote.endCooldownNow(), /Aucune pause Battle/, 'rien à lever sans pause');
+  vote.staffLaunch({ song: { songId: 9, title: 'Titre Battle' } });
+  assert.throws(() => vote.endCooldownNow(), /en préparation ou en cours/, 'Battle pas encore jouée');
+  vote.resolve({ outcome: 'done' });
+  assert.equal(vote.view().cooldownUntil, null);
+  assert.throws(() => vote.endCooldownNow(), /en préparation ou en cours/, 'Battle manuelle en cours');
+  f.clock(60_000);
+  assert.equal(vote.finishManual().automation.status, 'after');
+  assert.throws(() => vote.endCooldownNow(), /prochain titre attend le bar/, 'file pas encore rendue');
+  vote.updateAutomation('resuming');
+  assert.throws(() => vote.endCooldownNow(), /en préparation ou en cours/, 'reprise en cours');
+  vote.updateAutomation('released');
+  f.clock(60_000);
+  let state = vote.view();
+  assert.equal(state.phase, 'cooldown');
+  assert.ok(state.cooldownUntil > f.time(), 'pause de quinze minutes en cours');
+  assert.throws(() => vote.propose({ personId: 'a', personName: 'Alice', eligiblePersonIds: electorate }), /délai/);
+  const before = f.events.length;
+  state = vote.endCooldownNow();
+  assert.equal(state.phase, 'idle', 'les téléphones voient qu’une proposition est possible');
+  assert.equal(state.cooldownUntil, null);
+  assert.equal(state.lastOutcome.outcome, 'done', 'le résultat de la dernière Battle reste visible');
+  assert.deepEqual(f.events.slice(before), ['cooldown-reset'], 'changement enregistré une seule fois');
+  assert.throws(() => vote.endCooldownNow(), /Aucune pause Battle/, 'pas de seconde levée');
+  assert.equal(vote.propose({ personId: 'a', personName: 'Alice', eligiblePersonIds: electorate }).phase, 'voting');
+  assert.throws(() => vote.endCooldownNow(), /vote Battle est déjà en cours/);
+}
+
+{
+  // Après un vote refusé ou une Battle écartée, la pause courte se lève aussi.
+  const f = fixture(), vote = new BattleVote(f.opts);
+  const electorate = ['a', 'b', 'c', 'd'];
+  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: electorate });
+  vote.vote({ personId: 'b', choice: 'no' });
+  vote.vote({ personId: 'c', choice: 'no' });
+  assert.equal(vote.vote({ personId: 'd', choice: 'no' }).outcome, 'rejected');
+  assert.throws(() => vote.propose({ personId: 'b', personName: 'B', eligiblePersonIds: electorate }), /délai/);
+  assert.equal(vote.endCooldownNow().phase, 'idle');
+  vote.propose({ personId: 'b', personName: 'B', eligiblePersonIds: electorate });
+  vote.vote({ personId: 'a', choice: 'yes' });
+  vote.vote({ personId: 'c', choice: 'yes' });
+  assert.equal(vote.vote({ personId: 'd', choice: 'yes' }).phase, 'requested');
+  assert.throws(() => vote.endCooldownNow(), /en préparation ou en cours/, 'demande en attente du bar');
+  const dismissed = vote.resolve({ outcome: 'dismissed' });
+  assert.equal(dismissed.cooldownUntil, f.time() + 240_000);
+  assert.equal(vote.endCooldownNow().phase, 'idle', 'Battle écartée : le bar peut rouvrir les propositions');
+}
+
+{
+  // La levée de la pause survit au redémarrage, y compris depuis une pause
+  // restaurée d'un fichier.
+  const f = fixture(), vote = new BattleVote(f.opts);
+  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b', 'c', 'd'] });
+  for (const id of ['b', 'c', 'd']) vote.vote({ personId: id, choice: 'no' });
+  const saved = [];
+  const restored = new BattleVote({ ...f.opts, onChange: (event, view) => saved.push([event, view.phase]),
+    saved: JSON.parse(JSON.stringify(vote.serialize())) });
+  assert.equal(restored.view().phase, 'cooldown', 'pause restaurée');
+  restored.endCooldownNow();
+  assert.deepEqual(saved, [['cooldown-reset', 'idle']], 'la sauvegarde reçoit l’état sans pause');
+  const again = new BattleVote({ ...f.opts, saved: JSON.parse(JSON.stringify(restored.serialize())) });
+  assert.equal(again.view().phase, 'idle', 'pas de pause après redémarrage');
+  assert.equal(again.view().lastOutcome.outcome, 'rejected');
+  assert.equal(again.propose({ personId: 'c', personName: 'C', eligiblePersonIds: ['a', 'b', 'c', 'd'] }).phase, 'voting');
+}
+
 console.log('Battle collective : minuteur, votants minimum, décision des votants, pause après la Battle et lancement par le bar OK');

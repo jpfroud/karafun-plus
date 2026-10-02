@@ -14,7 +14,9 @@ const crypto = require('crypto');
 const ACCOUNTS = 'https://accounts.spotify.com';
 const API = 'https://api.spotify.com/v1';
 const SCOPES = 'user-read-playback-state user-modify-playback-state';
-const DEFAULTS = { autoResume: true, autoPause: true, resumeDelaySec: 15 };
+// resumeDelaySec : silence avant la relance, une fois la file vide ;
+// pauseLeadSec : silence entre la coupure de Spotify et le lancement d'un titre.
+const DEFAULTS = { autoResume: true, autoPause: true, resumeDelaySec: 3, pauseLeadSec: 2 };
 // Après un échec, plus d'appel automatique pendant 30 s, puis 1, 2, 4 min…
 const BACKOFF_FIRST_MS = 30000;
 const BACKOFF_MAX_MS = 5 * 60000;
@@ -74,7 +76,8 @@ class SpotifyLink {
     if (typeof value.deviceName === 'string') out.deviceName = value.deviceName.slice(0, 80);
     if (typeof value.autoResume === 'boolean') out.autoResume = value.autoResume;
     if (typeof value.autoPause === 'boolean') out.autoPause = value.autoPause;
-    if (Number.isInteger(value.resumeDelaySec) && value.resumeDelaySec >= 5 && value.resumeDelaySec <= 300) out.resumeDelaySec = value.resumeDelaySec;
+    if (Number.isInteger(value.resumeDelaySec) && value.resumeDelaySec >= 0 && value.resumeDelaySec <= 300) out.resumeDelaySec = value.resumeDelaySec;
+    if (Number.isInteger(value.pauseLeadSec) && value.pauseLeadSec >= 0 && value.pauseLeadSec <= 10) out.pauseLeadSec = value.pauseLeadSec;
     return out;
   }
 
@@ -107,7 +110,10 @@ class SpotifyLink {
   setOptions(options = {}) {
     const next = this._clean({ ...this.config, ...options });
     if ('resumeDelaySec' in options && next.resumeDelaySec !== Number(options.resumeDelaySec)) {
-      throw new Error('Le délai avant de relancer Spotify doit être entre 5 et 300 secondes.');
+      throw new Error('Le délai avant de relancer Spotify doit être entre 0 et 300 secondes.');
+    }
+    if ('pauseLeadSec' in options && next.pauseLeadSec !== Number(options.pauseLeadSec)) {
+      throw new Error('Le silence entre Spotify et un titre doit être entre 0 et 10 secondes.');
     }
     this.config = { ...this.config, ...next };
     this._save();
@@ -309,13 +315,15 @@ class SpotifyLink {
       clientId: this.config.clientId || '', redirectUri,
       deviceId: this.config.deviceId || '', deviceName: this.config.deviceName || '',
       autoResume: this.config.autoResume, autoPause: this.config.autoPause,
-      resumeDelaySec: this.config.resumeDelaySec,
+      resumeDelaySec: this.config.resumeDelaySec, pauseLeadSec: this.config.pauseLeadSec,
       player: this.player, lastAction: this.lastAction, lastError: this.lastError };
   }
 }
 
 // Décide quand agir, à partir de l'état de KaraFun : « singing » (un titre
-// joue ou est en pause), « silent » (rien ne joue), « unknown » (KaraFun
+// joue ou est en pause), « between » (rien ne joue mais un titre suivant
+// arrive : Spotify n'est pas relancé entre deux chansons), « silent » (file
+// vide ou bar fermé : plus rien ne sera lancé), « unknown » (KaraFun
 // déconnecté : on ne touche à rien). Une seule action par période : si le bar
 // coupe lui-même Spotify pendant un silence, l'application ne le relance pas.
 class SpotifyAutomation {

@@ -682,7 +682,10 @@ class Scheduler {
   }
 
   // `sel` : passage déjà confirmé par KaraFun auquel le bar ajoute l'invité.
-  staffCountPartner(ownerId, partnerId, sel = null) {
+  // `inFlight` : passages déjà envoyés à KaraFun, pas encore chantés, où
+  // figure l'invité. Si l'un d'eux est retiré de KaraFun, son annulation ne
+  // doit pas effacer le passage en duo (voir _keepGuestCredit).
+  staffCountPartner(ownerId, partnerId, sel = null, inFlight = []) {
     const owner = this.people.get(String(ownerId)), partner = this.people.get(String(partnerId));
     if (!owner || !partner || owner.id === partner.id || owner.withdrawnAt || partner.withdrawnAt) {
       throw new Error('Choisis un autre chanteur encore présent dans la salle.');
@@ -696,6 +699,11 @@ class Scheduler {
     this.roundApps.set(partner.id, (this.roundApps.get(partner.id) || 0) + 1);
     this.roundOwed.delete(partner.id);
     if (sel?.turnCredit && !sel.turnCredit.rolledBack) this._addPartnerCredit(sel.turnCredit, partner.id, row, serialBefore);
+    for (const other of Array.isArray(inFlight) ? inFlight : []) {
+      if (other && other !== sel && other.ids?.includes(partner.id) && other.turnCredit && !other.turnCredit.rolledBack) {
+        this._keepGuestCredit(other.turnCredit, partner.id, this.appearanceSerial - serialBefore);
+      }
+    }
     // Le partenaire vient de monter sur scène : le passage annoncé avec lui
     // juste après est libéré, et la file choisit à nouveau le suivant (avec
     // l'espacement habituel, il chantera plus tard si d'autres attendent).
@@ -2071,6 +2079,42 @@ class Scheduler {
     if (Array.isArray(after.roundPeople) && !after.roundPeople.includes(partnerId)) after.roundPeople.push(partnerId);
     if (Array.isArray(after.roundOwed)) after.roundOwed = after.roundOwed.filter(pid => pid !== partnerId);
     if (after.appearanceSerial === serialBefore) after.appearanceSerial = this.appearanceSerial;
+  }
+
+  // Duo improvisé noté pendant qu'un autre passage de l'invité attend dans
+  // KaraFun : le reçu de ce passage intègre le duo, avant comme après son
+  // envoi. Si KaraFun retire ce titre sans qu'il soit chanté, l'annulation
+  // rend l'état d'avant son envoi, duo compris : l'invité reste compté dans
+  // le tour et attend ses deux chansons, au lieu de repasser en tête.
+  _keepGuestCredit(credit, guestId, serialBump = 0) {
+    const guest = this.people.get(guestId);
+    const { before, after } = credit;
+    if (!guest || !before || !after) return;
+    for (const state of [before, after]) {
+      if (Array.isArray(state.roundPeople) && !state.roundPeople.includes(guestId)) state.roundPeople.push(guestId);
+      if (Array.isArray(state.roundOwed)) state.roundOwed = state.roundOwed.filter(pid => pid !== guestId);
+      if (Array.isArray(state.duetCooldowns)) {
+        const cooldowns = new Map(state.duetCooldowns);
+        cooldowns.set(guestId, this.duetCooldowns.get(guestId));
+        state.duetCooldowns = [...cooldowns];
+      }
+      if (serialBump > 0 && Number.isFinite(state.appearanceSerial)) state.appearanceSerial += serialBump;
+      const row = Array.isArray(state.people) && state.people.find(item => item.id === guestId);
+      if (row) {
+        row.duetGuestCount = (row.duetGuestCount || 0) + 1;
+        row.lastAppearanceTurn = Math.max(row.lastAppearanceTurn || 0, guest.lastAppearanceTurn || 0);
+      }
+    }
+    const apps = state => {
+      if (!Array.isArray(state.roundApps)) return;
+      const counts = new Map(state.roundApps);
+      counts.set(guestId, (counts.get(guestId) || 0) + 1);
+      state.roundApps = [...counts];
+    };
+    apps(before); apps(after);
+    // Le reçu « après » suit l'état actuel de l'invité, duo compris.
+    const afterRow = Array.isArray(after.people) && after.people.find(item => item.id === guestId);
+    if (afterRow) afterRow.lastAppearanceTurn = guest.lastAppearanceTurn || afterRow.lastAppearanceTurn;
   }
 
   rollbackUnplayed(sel, { requeue = false } = {}) {

@@ -275,7 +275,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       restoredSettings.presenceGraceSec < 10 || restoredSettings.presenceGraceSec > 300)) ||
     ('presenceMaxSkips' in restoredSettings && (!Number.isInteger(restoredSettings.presenceMaxSkips) ||
       restoredSettings.presenceMaxSkips < 1 || restoredSettings.presenceMaxSkips > 10)) ||
-    (restoredSettings.closingAt != null && !Number.isFinite(restoredSettings.closingAt))) fail('réglages mal formés');
+    (restoredSettings.closingAt != null && !Number.isFinite(restoredSettings.closingAt)) ||
+    ('autoPlayHeld' in restoredSettings && typeof restoredSettings.autoPlayHeld !== 'boolean')) fail('réglages mal formés');
 
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||

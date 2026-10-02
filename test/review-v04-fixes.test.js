@@ -364,6 +364,97 @@ test('fermeture : un titre de plus refusé s’il passerait après, nouveaux cha
     error => error.code === 'CLOSING', 'ancienne route d’invitation en duo soumise à la fermeture');
 });
 
+// Regression: premier essai réel — les titres marqués « Après la fermeture »
+// partaient quand même dans KaraFun et y étaient lancés ; le bar devait
+// mettre KaraFun en pause et relancer Spotify à la main.
+test('fermeture : heure atteinte, plus aucun titre envoyé à KaraFun, envoi repris après un décalage', async () => {
+  const f = harness();
+  const a = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(a, { songId: 70001, title: 'Après l’heure' });
+  const bridge = fakeBridge([], null);
+  f.setBridge(bridge);
+  f.settings.auto = true;
+  f.settings.closingAt = Date.now() - 60000;
+  f.sync(); f.sync();
+  assert.deepEqual(bridge.calls, [], 'rien n’est envoyé à KaraFun après l’heure');
+  assert.equal(f.getPending(), null);
+  assert.equal(a.song.title, 'Après l’heure', 'le titre reste prévu si le bar décale l’heure');
+  assert.equal(f.sched.log.filter(l => /plus aucun titre n’est envoyé/.test(l.msg)).length, 1, 'le bar est prévenu une fois');
+  await f.handlers['POST /api/staff/closing'](null, null, { extendMin: 30 });
+  f.sync();
+  assert.deepEqual(bridge.calls.map(c => c[0]), ['add'], '« +30 min » : le titre part');
+});
+
+test('fermeture : un titre déjà chargé qui commencerait après l’heure est retiré de KaraFun, sans couper la scène', () => {
+  const f = harness();
+  const { next, queue, bridge, who } = loadedNext(f);
+  f.settings.auto = true;
+  const slot = f.sched.avgSlotSec() * 1000;
+  // Alice finit dans un tiers de chanson : Bruno commencerait trop tard.
+  f.settings.closingAt = Date.now() + slot / 4;
+  f.sync();
+  assert.deepEqual(bridge.calls, [['remove', 2]], 'seul le titre suivant est retiré, jamais « Suivant »');
+  assert.equal(next.pulled?.reason, 'closing');
+  f.sync();
+  assert.equal(bridge.calls.length, 1, 'un seul retrait demandé');
+  queue.splice(1, 1); // KaraFun retire le titre
+  f.sync();
+  assert.ok(!f.publicState(null, null).queue.some(item => item.queueId === 2), 'plus suivi dans la file');
+  assert.equal(who.song?.title, 'Suivant', 'Bruno garde son titre pour un éventuel décalage');
+  assert.ok(f.sched.log.some(l => /« Suivant ».*passerait après la fermeture/.test(l.msg)));
+  assert.ok(!bridge.calls.some(c => c[0] === 'add'), 'rien ne le remplace');
+});
+
+test('fermeture : un titre qui tient avant l’heure reste chargé', () => {
+  const f = harness();
+  const { next, bridge } = loadedNext(f);
+  f.settings.auto = true;
+  f.settings.closingAt = Date.now() + 3 * f.sched.avgSlotSec() * 1000;
+  f.sync();
+  assert.deepEqual(bridge.calls, []);
+  assert.equal(next.pulled ?? null, null);
+});
+
+test('fermeture : KaraFun refuse le retrait, le titre d’après l’heure n’est pas lancé automatiquement', () => {
+  const f = harness();
+  const a = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(a, { songId: 70001, title: 'Trop tard' });
+  const sel = f.sched.select(); f.sched.commit(sel);
+  f.tracked.push({ queueId: 7, sel, startedAt: null, addedAt: Date.now() - 60000 });
+  const bridge = fakeBridge([{ queueId: 7, songId: 70001, title: 'Trop tard', singer: sel.label }], null);
+  bridge.remove = id => { bridge.calls.push(['remove', id]); throw new Error('KaraFun occupé'); };
+  f.setBridge(bridge);
+  f.settings.autoPlay = true;
+  f.settings.playDelaySec = 0;
+  f.settings.closingAt = Date.now() - 60000;
+  f.sync(); f.sync();
+  assert.ok(!bridge.calls.some(c => c[0] === 'play'), 'pas de lancement après l’heure');
+});
+
+test('fermeture : Spotify reprend dans le silence d’après l’heure, même sans reprise automatique', async () => {
+  const f = harness();
+  let now = Date.now();
+  f.spotifyAutomation.now = () => now;
+  const plays = [];
+  f.spotify.fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
+    if (url.endsWith('/me/player')) return json({ is_playing: false, device: { id: 'pc', name: 'PC' } });
+    if (url.includes('/me/player/play')) { plays.push(now); return { ok: true, status: 204, text: async () => '' }; }
+    if (url.includes('/me/player/pause')) return { ok: true, status: 204, text: async () => '' };
+    throw new Error(`inattendu : ${url}`);
+  };
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r', autoResume: false, autoPause: true, resumeDelaySec: 15 };
+  f.setBridge({ ready: true, connected: true, queue: [], status: { state: 'idle' }, events: [] });
+  await f.spotifyTick();
+  now += 16000;
+  await f.spotifyTick();
+  assert.deepEqual(plays, [], 'avant l’heure, le réglage du bar est respecté');
+  f.settings.closingAt = Date.now() - 60000;
+  now += 1000;
+  await f.spotifyTick();
+  assert.equal(plays.length, 1, 'fermeture atteinte et scène libre : la musique du bar revient');
+});
+
 // ---------------------------------------------------------------- ordonnanceur
 let n = 1;
 const song = () => ({ songId: n, title: `Titre ${n++}`, artist: 'Essai' });
@@ -678,9 +769,9 @@ test('Spotify : fichier abîmé nettoyé, nouveau Client ID efface le jeton', ()
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spotify-'));
   const file = path.join(dir, 'spotify.json');
   try {
-    fs.writeFileSync(file, JSON.stringify({ clientId: '0123456789abcdef', refreshToken: 'r', resumeDelaySec: 1, autoPause: 'oui' }));
+    fs.writeFileSync(file, JSON.stringify({ clientId: '0123456789abcdef', refreshToken: 'r', resumeDelaySec: -1, autoPause: 'oui' }));
     const link = new SpotifyLink({ file, fetchImpl: async () => { throw new Error('réseau'); } });
-    assert.equal(link.config.resumeDelaySec, 15);
+    assert.equal(link.config.resumeDelaySec, 3);
     assert.equal(link.config.autoPause, true);
     link.setClientId('fedcba9876543210');
     assert.equal(link.connected, false);

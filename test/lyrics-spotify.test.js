@@ -105,7 +105,10 @@ test('Spotify : connexion PKCE sans secret, relance seulement si rien ne joue', 
   await assert.rejects(link.pause('karaoke'), /Aucun appareil Spotify actif/);
   assert.match(link.view().lastError, /Aucun appareil/);
   assert.doesNotMatch(JSON.stringify(link.view()), /renouvellement/, 'le jeton n’est jamais montré');
-  assert.throws(() => link.setOptions({ resumeDelaySec: 2 }), /entre 5 et 300/);
+  // Retour du bar : un silence de moins de 5 s avant la relance est permis.
+  assert.throws(() => link.setOptions({ resumeDelaySec: -1 }), /entre 0 et 300/);
+  link.setOptions({ resumeDelaySec: 2 });
+  assert.equal(link.view().resumeDelaySec, 2);
 });
 
 test('Spotify : une action par silence ou par titre, jamais à l’aveugle si KaraFun est absent', () => {
