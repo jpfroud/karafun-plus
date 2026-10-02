@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { Scheduler } = require('./scheduler');
+const { Scheduler, DEFER_MAX } = require('./scheduler');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
 const { PLAYED_LIMIT } = require('./song-repeats');
@@ -26,6 +26,22 @@ const songValid = song => song === null || (
   Number.isSafeInteger(song.songId) && song.songId > 0 &&
   typeof song.title === 'string' && song.title.length > 0
 );
+function dropCovers(snapshot) {
+  const songs = [];
+  for (const p of Array.isArray(snapshot.scheduler?.people) ? snapshot.scheduler.people : []) {
+    songs.push(p?.song, p?.invite?.song);
+    if (Array.isArray(p?.backlog)) for (const song of p.backlog) songs.push(song);
+  }
+  for (const tr of Array.isArray(snapshot.tracked) ? snapshot.tracked : []) songs.push(tr?.sel?.song);
+  songs.push(snapshot.pending?.sel?.song);
+  for (const song of songs) if (song && typeof song === 'object' && 'img' in song) song.img = null;
+}
+
+// `remaining` peut compter un envoi déjà en route en plus du report.
+const validDeferral = d => !!(d && typeof d === 'object' && typeof d.entryId === 'string' &&
+  Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= DEFER_MAX + 1 &&
+  Number.isInteger(d.total) && d.total >= 1 && d.total <= DEFER_MAX && Number.isFinite(d.until) &&
+  Array.isArray(d.ids) && d.ids.length >= 1 && d.ids.every(id => typeof id === 'string'));
 const selectionValid = sel => sel && typeof sel === 'object' &&
   Array.isArray(sel.ids) && sel.ids.length > 0 &&
   sel.ids.every(x => typeof x === 'string') && songValid(sel.song) &&
@@ -70,6 +86,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
   });
   return {
     version: FORMAT,
+    // Vignettes certifiées par le catalogue (voir withCover dans server.js).
+    coversCertified: true,
     scheduler: {
       opts: clone(scheduler.opts), tables, people,
       Q: [...scheduler.Q], lastGroup: clone(scheduler.lastGroup),
@@ -104,6 +122,9 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
 function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }) {
   object(snapshot, 'racine');
   if (snapshot.version !== FORMAT) fail('version inconnue');
+  // Sauvegarde antérieure à la certification des vignettes : une image a pu
+  // être choisie par un téléphone. Elle n'est pas reprise.
+  if (snapshot.coversCertified !== true) dropCovers(snapshot);
   const data = object(snapshot.scheduler, 'ordonnanceur');
   const restoredSoloInvitations = new SoloInvitations(snapshot.soloInvitations ?? []);
   object(data.opts, 'règles');
@@ -131,6 +152,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       fail('passage physique mal formé');
     }
     const person = clone(p);
+    // Report « Pas prêt » abîmé : la personne garde simplement sa place.
+    if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(photo.type)) fail('photo mal formée');
@@ -167,7 +190,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     const reserved = object(data.reservedNext, 'prochain passage garanti');
     if (typeof reserved.personId !== 'string' || !tmp.people.has(reserved.personId) ||
       !Number.isFinite(reserved.reservedAt)) fail('prochain passage garanti mal formé');
-    tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt };
+    tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt, ...(reserved.byStaff === true ? { byStaff: true } : {}) };
   }
   tmp.roundGroups = new Set(list(data.roundGroups, 'tables du tour'));
   tmp.roundPeople = new Set(list(data.roundPeople, 'personnes du tour'));
@@ -191,6 +214,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   for (const change of tmp.manualChanges) {
     object(change, 'changement manuel');
     const before = object(change.before, 'état précédent du changement manuel');
+    // Reports « Pas prêt » levés par un déplacement : abîmés, l'annulation
+    // garde l'ordre sans les rendre.
+    if ('deferrals' in before && !(Array.isArray(before.deferrals) && before.deferrals.every(row =>
+      Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && validDeferral(row[1])))) delete before.deferrals;
     if (typeof change.id !== 'string' || !/^[a-f0-9]{12}$/.test(change.id) ||
       !['priority', 'move'].includes(change.kind) ||
       typeof change.personId !== 'string' || !tmp.people.has(change.personId) ||
@@ -247,7 +274,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     ('presenceGraceSec' in restoredSettings && (!Number.isInteger(restoredSettings.presenceGraceSec) ||
       restoredSettings.presenceGraceSec < 10 || restoredSettings.presenceGraceSec > 300)) ||
     ('presenceMaxSkips' in restoredSettings && (!Number.isInteger(restoredSettings.presenceMaxSkips) ||
-      restoredSettings.presenceMaxSkips < 1 || restoredSettings.presenceMaxSkips > 10))) fail('réglages mal formés');
+      restoredSettings.presenceMaxSkips < 1 || restoredSettings.presenceMaxSkips > 10)) ||
+    (restoredSettings.closingAt != null && !Number.isFinite(restoredSettings.closingAt)) ||
+    ('autoPlayHeld' in restoredSettings && typeof restoredSettings.autoPlayHeld !== 'boolean')) fail('réglages mal formés');
 
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||

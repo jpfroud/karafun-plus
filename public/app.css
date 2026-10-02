@@ -158,7 +158,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .tables-panel { grid-column: span 8; }
 .access-panel { grid-column: span 4; }
 .rules-panel, .identity-panel { grid-column: span 12; }
-.battle-panel, .diagnostics-panel, .journal-panel { grid-column: span 12; }
+.battle-panel, .spotify-panel, .diagnostics-panel, .journal-panel { grid-column: span 12; }
 .section-heading { display: flex; justify-content: space-between; align-items: end; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
 .count { display: inline-block; min-width: 32px; padding: 1px 8px; border-radius: 99px; text-align: center; font-size: 15px; color: var(--accent); background: rgba(255,79,163,.13); vertical-align: middle; }
 .live-stage { padding: 11px 0; display: grid; grid-template-columns: 78px minmax(0,1fr); gap: 10px; border-bottom: 1px solid var(--line); }
@@ -200,9 +200,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .bonus-field { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
 .bonus-field select { min-height: 32px; padding: 3px 6px; width: auto; font-size: 12px; }
 .stage-history { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
-.stage-history h3 { margin: 0; font-size: 15px; }
+.stage-history h3, .closing-panel h3 { margin: 0; font-size: 15px; }
 .stage-history-list { display: grid; gap: 4px; max-height: 420px; overflow-y: auto; }
-.stage-history .section-heading.compact { margin-bottom: 4px; align-items: center; }
+.stage-history .section-heading.compact, .closing-panel .section-heading.compact { margin-bottom: 4px; align-items: center; }
 .stage-history .section-heading.compact .btn { min-height: 30px; padding: 3px 10px; font-size: 12px; }
 .stage-history-item { display: grid; grid-template-columns: 72px minmax(0,1fr); gap: 6px; padding: 7px 6px; border-top: 1px solid var(--line); font-size: 13px; border-radius: 8px; }
 .stage-history-item.on-stage { border: 2px solid var(--accent); background: rgba(255,79,163,.12); }
@@ -338,7 +338,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .diagnostics-panel .kv { margin-bottom: 14px; }
 
 @media (max-width: 1100px) {
-  .live-panel, .queue-panel, .tables-panel, .access-panel, .rules-panel, .identity-panel, .battle-panel, .diagnostics-panel, .journal-panel { grid-column: span 12; }
+  .live-panel, .queue-panel, .tables-panel, .access-panel, .rules-panel, .identity-panel, .battle-panel, .spotify-panel, .diagnostics-panel, .journal-panel { grid-column: span 12; }
   .table-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .identity-row { grid-template-columns: 28px minmax(90px,.8fr) minmax(140px,1.5fr); }
   .identity-actions { grid-column: 2 / -1; justify-content: flex-end; }
@@ -370,3 +370,22 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .table-card-head { flex-wrap: wrap; }
   .table-card .table-name-editor { flex-basis: 48%; }
 }
+
+/* ---------------- champ de recherche avec bouton × (client et bar) */
+.search-field { position: relative; }
+.search-field input { padding-right: 46px; }
+.search-field input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
+.clear-input { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 38px; height: 38px; border: 0; border-radius: 50%; background: var(--surface-2); color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.clear-input:hover, .clear-input:focus-visible { color: var(--text); outline: 2px solid var(--accent-2); }
+.staff .search-field input { padding-right: 42px; }
+.staff .clear-input { width: 32px; height: 32px; font-size: 18px; }
+
+/* ---------------- fermeture du bar et Spotify (page du bar) */
+.closing-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.closing-panel input[type=time] { min-height: 36px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; color: inherit; }
+.queue-closing { padding: 8px 10px; margin: 6px 0; border-radius: 10px; background: rgba(255,176,32,.12); color: var(--warn); font-size: 13px; font-weight: 700; text-align: center; }
+.spotify-panel code { font-size: 12px; overflow-wrap: anywhere; }
+.spotify-panel p, .spotify-panel ol { max-width: 75ch; }
+.spotify-panel .spotify-delay { display: block; margin: 12px 0; }
+.notice-line { margin: 8px 0 0; color: var(--warn); }
+.spotify-panel select { width: auto; min-width: 220px; }

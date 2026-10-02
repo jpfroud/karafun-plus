@@ -26,14 +26,22 @@
     <div class="live-stage"><span>Ensuite</span><div id="next" class="live-card">—</div></div>
     <div class="row wrap live-actions">
       <button class="btn small primary" id="playBtn">▶ Lecture</button>
+      <button class="btn small" id="restartBtn" title="Recommence le titre en cours depuis le début, pour le même passage">⏮ Relancer depuis le début</button>
       <button class="btn small" id="skipBtn">⏭ Passer</button>
       <button class="btn small danger" id="absentBtn" hidden>Absent : retirer la suivante</button>
     </div>
-    <div id="markDuoBox" class="mark-duo" hidden><label for="markDuoPartner">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button></div><p class="tiny muted">Si son titre est déjà dans KaraFun, cette action ne change pas sa place.</p></div>
+    <div id="markDuoBox" class="mark-duo" hidden><label for="markDuoPartner">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button></div><p class="tiny muted">Si son propre titre est déjà chargé dans KaraFun, il en est retiré et repassera plus tard : il ne rechante pas juste après le duo.</p></div>
+    <div class="closing-panel">
+      <div class="section-heading compact"><h3>Fermeture du bar</h3><span id="closingPill" class="pill">Pas d’heure</span></div>
+      <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. Réordonne les derniers titres dans la file. À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
+      <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><button class="btn small primary" id="closingSave">Annoncer</button><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
+      <p class="small" id="closingText" role="status"></p>
+    </div>
     <div class="control-stack">
       <label class="switch"><input type="checkbox" id="auto"> Envoi automatique à KaraFun</label>
       <label class="switch"><input type="checkbox" id="autoPlay"> Lancer la lecture automatiquement</label>
     </div>
+    <p class="small notice-line" id="autoPlayHeldTxt" role="status" hidden>Lecture automatique suspendue : Spotify a repris en fin de file. Touche « Lecture » quand le micro est prêt ; elle se rétablit ensuite.</p>
     <p class="small muted" id="pendingTxt" role="status"></p>
     <div class="stage-history">
       <div class="section-heading compact"><h3>Derniers passages sur scène</h3><button type="button" class="btn small" id="clearStageHistory">Vider</button></div>
@@ -100,7 +108,7 @@
   <section class="card identity-panel">
     <details class="disclosure"><summary>Repères chanteurs <span class="count" id="identityCount">0</span></summary>
       <p class="small muted">Note un signe distinctif, par exemple « t-shirt rouge », pour reconnaître le bon chanteur au micro. Ces notes ne sont visibles que par le bar. Une personne partie garde sa fiche et son ancienneté.</p>
-      <div class="identity-filters"><label>Table <select id="identityTable"></select></label><label>Rechercher <input id="identitySearch" type="search" placeholder="Prénom ou description"></label></div>
+      <div class="identity-filters"><label>Table <select id="identityTable"></select></label><label>Rechercher <span class="search-field"><input id="identitySearch" type="search" placeholder="Prénom ou description"><button type="button" class="clear-input" data-clear-for="identitySearch" aria-label="Effacer la recherche" hidden>×</button></span></label></div>
       <div id="identityBody" class="identity-list"></div>
     </details>
   </section>
@@ -143,22 +151,47 @@
     <div id="battleStatus" class="battle-status" role="status">Aucun vote en cours.</div>
     <div id="battleVotes" class="battle-votes" hidden></div>
     <div class="row wrap" id="battleVoteActions" hidden><button class="btn small" id="battleCloseVote">Clore le vote maintenant</button></div>
+    <div class="row wrap" id="battleCooldownActions" hidden><button class="btn small" id="battleResetCooldown">Autoriser une nouvelle Battle maintenant</button></div>
     <div class="battle-launch"><strong>Lancer une Battle sans vote</strong>
       <p class="small muted">Choisis un titre : il sera ajouté en mode Battle après le prochain passage annoncé, comme après un vote réussi. Le délai entre Battles ne s’applique pas au bar, mais il redémarre à la fin de celle-ci.</p>
-      <input id="battleLaunchSearch" type="search" placeholder="Chercher un titre dans KaraFun…" autocomplete="off" enterkeyhint="search" aria-label="Chercher un titre pour la Battle">
+      <div class="search-field"><input id="battleLaunchSearch" type="search" placeholder="Chercher un titre dans KaraFun…" autocomplete="off" enterkeyhint="search" aria-label="Chercher un titre pour la Battle"><button type="button" class="clear-input" data-clear-for="battleLaunchSearch" aria-label="Effacer la recherche" hidden>×</button></div>
       <ul class="results" id="battleLaunchResults"></ul>
     </div>
-    <div class="battle-settings"><label for="battleCooldownMin">Délai entre deux Battles <input id="battleCooldownMin" type="number" min="1" max="120"> min</label><label for="battleVoteMin">Durée du vote <input id="battleVoteMin" type="number" min="1" max="10"> min</label><label for="battleMinVoters">Votants minimum <input id="battleMinVoters" type="number" min="1" max="100"></label><button class="btn small" id="saveBattleCooldown">Enregistrer</button><button class="btn small" id="enableStaffAlerts">Activer les notifications</button></div>
-    <p class="tiny muted">Le vote dure le temps indiqué et se décide avec ceux qui ont voté : il faut au moins le nombre de votants indiqué (ou tous les inscrits s’ils sont moins nombreux) et plus de voix pour la Battle que contre. Le délai entre Battles part de la fin de la Battle.</p>
+    <div class="battle-settings"><label for="battleCooldownMin">Délai après une Battle <input id="battleCooldownMin" type="number" min="1" max="120"> min</label><label for="battleRejectedCooldownMin">Après un refus <input id="battleRejectedCooldownMin" type="number" min="1" max="120"> min</label><label for="battleVoteMin">Durée du vote <input id="battleVoteMin" type="number" min="1" max="10"> min</label><label for="battleMinVoters">Votants minimum <input id="battleMinVoters" type="number" min="1" max="100"></label><button class="btn small" id="saveBattleCooldown">Enregistrer</button><button class="btn small" id="enableStaffAlerts">Activer les notifications</button></div>
+    <p class="tiny muted">Le vote dure le temps indiqué et se décide avec ceux qui ont voté : il faut au moins le nombre de votants indiqué (ou tous les inscrits s’ils sont moins nombreux) et plus de voix pour la Battle que contre. Le délai après une Battle part de sa fin ; après un vote refusé ou une Battle écartée par le bar, la salle peut en reproposer une plus tôt (5 minutes par défaut).</p>
     <p class="tiny muted">Sur HTTPS avec autorisation, le navigateur peut notifier si cette page reste ouverte. Sur HTTP, les demandes restent visibles dans la page et une alerte sonore peut retentir ; aucune alerte ne fonctionne après fermeture du navigateur.</p>
     <div class="row wrap" id="battleActions" hidden><button class="btn small primary" id="battleDone">Battle organisée</button><button class="btn small" id="battleDismiss">Ne pas lancer cette fois</button></div>
     <button class="btn small primary" id="battleFinished" hidden>Battle terminée, résultats annoncés</button>
   </section>
 
+  <section class="card spotify-panel">
+    <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
+    <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (ce PC, celui de KaraFun, une enceinte) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
+    <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
+      <ol class="small">
+        <li>Sur <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a>, connecte-toi avec le compte Spotify du bar et crée une application (cocher « Web API »).</li>
+        <li>Dans ses réglages, ajoute l’adresse de retour : <code id="spotifyRedirect">http://127.0.0.1:3000/spotify/callback</code></li>
+        <li>Copie son « Client ID » ici, puis clique sur « Se connecter à Spotify » <b>depuis ce PC</b>.</li>
+      </ol>
+      <div class="row wrap"><input id="spotifyClientId" type="text" autocomplete="off" placeholder="Client ID de l’application Spotify" aria-label="Client ID Spotify"><button class="btn small" id="spotifySaveClient">Enregistrer</button><button class="btn small primary" id="spotifyLogin">Se connecter à Spotify</button></div>
+    </details>
+    <div id="spotifyConnected" hidden>
+      <div class="row wrap"><label class="small" for="spotifyDevice">Appareil qui joue la musique</label><select id="spotifyDevice"><option value="">Appareil actif de Spotify</option></select><button class="btn small" id="spotifyDevices">Actualiser la liste</button></div>
+      <div class="control-stack">
+        <label class="switch"><input type="checkbox" id="spotifyAutoResume"> Relancer Spotify quand la file est vide</label>
+        <label class="switch"><input type="checkbox" id="spotifyAutoPause"> Mettre Spotify en pause quand un titre démarre</label>
+      </div>
+      <label class="small spotify-delay" for="spotifyDelay">Relancer après <input id="spotifyDelay" type="number" min="0" max="300"> s de silence, une fois la file vide</label>
+      <label class="small spotify-delay" for="spotifyLead">Couper Spotify <input id="spotifyLead" type="number" min="0" max="10"> s avant de lancer un titre</label>
+      <div class="row wrap"><button class="btn small" id="spotifySaveOptions">Enregistrer</button><button class="btn small" id="spotifyPlay">▶ Spotify</button><button class="btn small" id="spotifyPause">⏸ Spotify</button><button class="btn small danger" id="spotifyDisconnect">Déconnecter</button></div>
+    </div>
+    <p class="small" id="spotifyText" role="status"></p>
+  </section>
+
   <section class="card diagnostics-panel">
     <details class="disclosure"><summary>Diagnostic KaraFun</summary>
       <div class="kv" id="diag"></div>
-      <div class="row wrap"><input id="testQ" type="search" placeholder="Chercher une chanson dans KaraFun…"><button class="btn small" id="testSearch">Chercher</button></div>
+      <div class="row wrap"><div class="search-field grow"><input id="testQ" type="search" placeholder="Chercher une chanson dans KaraFun…"><button type="button" class="clear-input" data-clear-for="testQ" aria-label="Effacer la recherche" hidden>×</button></div><button class="btn small" id="testSearch">Chercher</button></div>
       <ul class="results" id="testRes"></ul>
       <div class="diagnostic-grid"><div><div class="label">File vue dans KaraFun</div><pre id="kfQueue"></pre></div><div><div class="label">Derniers messages</div><pre id="kfEvents"></pre></div></div>
     </details>
@@ -555,6 +588,54 @@
         </div>`).join('')}</div></div>`).join('') : '<p class="small muted">Aucun passage pour le moment.</p>';
   }
 
+  // Heure de fermeture : annonce, décalage et titres qui passeront encore.
+  function renderClosing() {
+    const closing = S.closing;
+    $('closingPill').textContent = !closing ? 'Pas d’heure' : closing.passed ? 'Fermeture atteinte' :
+      closing.full ? `File complète · ${hhmm(closing.at)}` : `Fermeture ${hhmm(closing.at)}`;
+    $('closingPill').className = 'pill' + (!closing ? '' : closing.full ? ' bad' : ' ok');
+    $('closingText').textContent = !closing ? 'Aucune heure annoncée : les clients ajoutent des titres librement.' :
+      `${closing.fitCount} titre${closing.fitCount > 1 ? 's' : ''} passer${closing.fitCount > 1 ? 'ont' : 'a'} avant ${hhmm(closing.at)}` +
+      (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
+      (closing.full ? ' Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.' : ' Il reste de la place : les clients peuvent encore ajouter des titres.');
+    if (document.activeElement !== $('closingTime')) {
+      const d = closing ? new Date(closing.at) : null;
+      $('closingTime').value = d ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
+    }
+    $('closingClear').disabled = !closing;
+  }
+
+  // Spotify : connexion, appareil et relance automatique pendant les silences.
+  let spotifyDevicesList = null;
+  function renderSpotify() {
+    const sp = S.spotify;
+    if (!sp) return;
+    $('spotifyRedirect').textContent = sp.redirectUri || '';
+    if (document.activeElement !== $('spotifyClientId')) $('spotifyClientId').value = sp.clientId || '';
+    $('spotifyConnected').hidden = !sp.connected;
+    $('spotifySetup').open = !sp.connected && !!$('spotifySetup').open;
+    $('spotifyLogin').disabled = !sp.configured;
+    const playing = sp.player ? (sp.player.isPlaying ? 'en lecture' : 'en pause') : null;
+    $('spotifyPill').textContent = !sp.configured ? 'Non configuré' : !sp.connected ? 'Non connecté' :
+      playing ? `Spotify ${playing}` : 'Connecté';
+    $('spotifyPill').className = 'pill' + (sp.lastError ? ' bad' : sp.connected ? ' ok' : '');
+    const last = sp.lastAction;
+    const lastText = last ? `Dernière action à ${hhmm(last.at)} : ${last.kind === 'resume' ? 'relance' : 'pause'}${last.result === 'already' ? ' (rien à faire)' : last.ok ? '' : ' en échec'}.` : '';
+    $('spotifyText').textContent = [sp.lastError, sp.player?.track ? `Spotify : ${sp.player.track.title}${sp.player.track.artist ? ` — ${sp.player.track.artist}` : ''}${sp.player.device ? ` sur ${sp.player.device.name}` : ''}.` : '', lastText]
+      .filter(Boolean).join(' ');
+    if (!sp.connected) return;
+    for (const [id, field] of [['spotifyAutoResume', 'autoResume'], ['spotifyAutoPause', 'autoPause']]) {
+      if (document.activeElement !== $(id)) $(id).checked = !!sp[field];
+    }
+    if (document.activeElement !== $('spotifyDelay')) $('spotifyDelay').value = sp.resumeDelaySec ?? 3;
+    if (document.activeElement !== $('spotifyLead')) $('spotifyLead').value = sp.pauseLeadSec ?? 2;
+    if (document.activeElement !== $('spotifyDevice')) {
+      const devices = spotifyDevicesList || (sp.deviceId ? [{ id: sp.deviceId, name: sp.deviceName || 'Appareil choisi' }] : []);
+      $('spotifyDevice').innerHTML = '<option value="">Appareil actif de Spotify</option>' + devices.map(d =>
+        `<option value="${esc(d.id)}" ${d.id === sp.deviceId ? 'selected' : ''}>${esc(d.name)}${d.active ? ' (actif)' : ''}</option>`).join('');
+    }
+  }
+
   function render() {
     const kf = S.kf;
     const ok = kf && kf.ready;
@@ -568,6 +649,7 @@
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     if (document.activeElement !== $('battleCooldownMin')) $('battleCooldownMin').value = S.settings.battleCooldownMin || 15;
+    if (document.activeElement !== $('battleRejectedCooldownMin')) $('battleRejectedCooldownMin').value = S.settings.battleRejectedCooldownMin || 5;
     if (document.activeElement !== $('battleVoteMin')) $('battleVoteMin').value = S.settings.battleVoteMin || 5;
     if (document.activeElement !== $('battleMinVoters')) $('battleMinVoters').value = S.settings.battleMinVoters || 5;
     renderStaffAlerts();
@@ -581,6 +663,7 @@
       formInit = true;
     }
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
+    $('autoPlayHeldTxt').hidden = !S.settings.autoPlayHeld;
     $('rotationPeople').checked = !S.settings.tableRotation;
     $('rotationTables').checked = !!S.settings.tableRotation && !S.settings.weightedTables;
     $('rotationCompromise').checked = !!S.settings.tableRotation && !!S.settings.weightedTables;
@@ -590,6 +673,11 @@
 
     $('stage').innerHTML = liveCard(S.stage);
     $('next').innerHTML = liveCard(S.next);
+    // Après une relance ratée, une copie tardive peut encore arriver : nouvel essai une minute plus tard.
+    $('restartBtn').disabled = !S.stage || S.stage.kind === 'battle' || !!S.restarting || !!S.restartRetryAt || !S.kf?.ready;
+    $('restartBtn').textContent = S.restarting ? '⏮ Relance en cours…' : S.restartRetryAt ? '⏮ Relance possible dans une minute' : '⏮ Relancer depuis le début';
+    renderClosing();
+    renderSpotify();
     const nextTracked = S.tracked.find(t => !t.startedAt);
     $('absentBtn').hidden = !nextTracked;
     $('absentBtn').dataset.qid = nextTracked ? nextTracked.queueId : '';
@@ -643,7 +731,14 @@
     $('removeSelected').disabled = selectedLines.size === 0;
     $('removeSelected').textContent = selectedLines.size ? `Retirer la sélection (${selectedLines.size})` : 'Retirer la sélection';
     $('selectAllQueue').checked = liveKeys.size > 0 && selectedLines.size === liveKeys.size;
+    // Repère de fermeture : les titres au-dessus passeront avant l'heure annoncée.
+    const closingLine = S.closing ? `<div class="queue-closing" role="note">— Fermeture à ${esc(hhmm(S.closing.at))} : les titres ci-dessous ne passeront probablement pas —</div>` : '';
+    let closingShown = false;
     $('qBody').innerHTML = S.queue.map(q => {
+      const separator = closingLine && q.afterClosing && !closingShown ? (closingShown = true, closingLine) : '';
+      return separator + queueRow(q);
+    }).join('');
+    function queueRow(q) {
       const movable = q.source === 'helper' && q.id && !q.future;
       const index = movable ? plannedIndex++ : -1;
       const key = lineKey(q);
@@ -656,12 +751,12 @@
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}</span></div>
         <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="queue-actions">${movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : ''}</div>
       </div>`;
-    }).join('');
+    }
     $('queueHint').textContent = moveArmed ? 'Choisis maintenant la ligne où placer cette chanson, ou retouche sa poignée pour annuler.'
       : 'Glisse une ligne prévue, ou touche sa poignée puis sa destination.';
     $('qBody').querySelectorAll('[data-handle]').forEach(b => {
@@ -807,6 +902,9 @@
       <div class="vote-bar against"><span>Pas de Battle</span><b>${battle.noVotes || 0}</b><i style="width:${Math.round(100 * (battle.noVotes || 0) / most)}%"></i></div>
       <p class="small muted">${esc(voteCount)}${battle.phase === 'voting' ? ` · fin dans ${countdown(battle.closesAt)}` : ''}</p>` : '';
     $('battleVoteActions').hidden = battle.phase !== 'voting';
+    // Lever la pause : seulement quand elle tourne, Battle finie et file reprise.
+    $('battleCooldownActions').hidden = !(battle.phase === 'cooldown' && battle.cooldownUntil > Date.now() &&
+      (!battleStep || battleStep === 'released'));
 
     const p = kf && kf.preferences, perm = kf && kf.permissions;
     $('diag').innerHTML = kf ? [
@@ -861,6 +959,66 @@
   };
   $('playBtn').onclick = () => act('/api/staff/kf', { action: 'play' });
   $('skipBtn').onclick = () => { if (confirm('Passer la chanson en cours ?')) act('/api/staff/kf', { action: 'next' }); };
+  $('restartBtn').onclick = () => {
+    if (confirm('Relancer le titre en cours depuis le début ? Le passage ne compte qu’une fois.')) {
+      act('/api/staff/kf', { action: 'restart' }, 'Relance demandée à KaraFun');
+    }
+  };
+  $('closingSave').onclick = () => {
+    if (!$('closingTime').value) return toast('Choisis l’heure de fermeture.', true);
+    act('/api/staff/closing', { time: $('closingTime').value }, 'Heure de fermeture annoncée aux clients');
+  };
+  $('closingClear').onclick = () => act('/api/staff/closing', { clear: true }, 'Heure de fermeture retirée');
+  // Bouton × des recherches du bar et décalage de la fermeture.
+  document.addEventListener?.('click', event => {
+    const extend = event.target?.closest?.('[data-closing-extend]');
+    if (extend) { act('/api/staff/closing', { extendMin: Number(extend.dataset.closingExtend) }, 'Fermeture décalée'); return; }
+    const clear = event.target?.closest?.('[data-clear-for]');
+    if (!clear) return;
+    const input = $(clear.dataset.clearFor);
+    input.value = '';
+    clear.hidden = true;
+    input.dispatchEvent?.(new Event('input', { bubbles: true }));
+    input.focus?.();
+  });
+  document.addEventListener?.('input', event => {
+    const input = event.target;
+    const clear = input?.id && input.parentElement?.querySelector?.(`[data-clear-for="${input.id}"]`);
+    if (clear) clear.hidden = !input.value;
+  });
+  const spotifyAction = (body, message) => act('/api/staff/spotify', body, message);
+  $('spotifySaveClient').onclick = () => spotifyAction({ action: 'client', clientId: $('spotifyClientId').value.trim() }, 'Client ID Spotify enregistré');
+  $('spotifyLogin').onclick = async () => {
+    try {
+      const { url } = await post('/api/staff/spotify', { action: 'auth-url' });
+      // Spotify revient sur 127.0.0.1 : la connexion doit se faire sur ce PC.
+      if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) toast('Fais cette connexion depuis le PC du bar : Spotify revient sur son adresse locale.', true);
+      window.open(url, '_blank', 'noopener');
+    } catch (e) { toast(e.message, true); }
+  };
+  $('spotifyDevices').onclick = async () => {
+    try {
+      spotifyDevicesList = (await post('/api/staff/spotify', { action: 'devices' })).devices;
+      if (!spotifyDevicesList.length) toast('Aucun appareil : ouvre Spotify sur l’appareil voulu, puis actualise.', true);
+      render();
+    } catch (e) { toast(e.message, true); }
+  };
+  $('spotifyDevice').onchange = () => {
+    const option = $('spotifyDevice').selectedOptions?.[0];
+    spotifyAction({ action: 'device', deviceId: $('spotifyDevice').value,
+      deviceName: $('spotifyDevice').value ? (option?.textContent || '').replace(/ \(actif\)$/, '') : '' }, 'Appareil Spotify enregistré');
+  };
+  $('spotifySaveOptions').onclick = () => {
+    // Un champ vidé vaudrait 0 s : on demande une valeur plutôt que d'enregistrer 0 sans le dire.
+    if (!$('spotifyDelay').value.trim() || !$('spotifyLead').value.trim()) return toast('Indique les délais en secondes (0 pour aucun).', true);
+    return spotifyOptions();
+  };
+  const spotifyOptions = () => spotifyAction({ action: 'options', autoResume: $('spotifyAutoResume').checked,
+    autoPause: $('spotifyAutoPause').checked, resumeDelaySec: Number($('spotifyDelay').value),
+    pauseLeadSec: Number($('spotifyLead').value) }, 'Réglages Spotify enregistrés');
+  $('spotifyPlay').onclick = () => spotifyAction({ action: 'play' }, 'Spotify relancé');
+  $('spotifyPause').onclick = () => spotifyAction({ action: 'pause' }, 'Spotify en pause');
+  $('spotifyDisconnect').onclick = () => { if (confirm('Déconnecter Spotify de la file karaoké ?')) spotifyAction({ action: 'disconnect' }, 'Spotify déconnecté'); };
   $('absentBtn').onclick = () => {
     const next = S.tracked.find(t => String(t.queueId) === $('absentBtn').dataset.qid);
     if (next) act('/api/staff/kf', { action: 'absent', queueId: next.queueId }, 'Retirée : la personne reprend la 4e place');
@@ -897,8 +1055,10 @@
   };
   $('battleDone').onclick = () => act('/api/staff/battle/resolve', { outcome: 'done' }, 'Battle manuelle en cours ; la file reste en pause');
   $('battleFinished').onclick = () => act('/api/staff/battle/resolve', { outcome: 'finished' }, 'Battle terminée ; lance la prochaine chanson quand le bar est prêt');
+  $('battleResetCooldown').onclick = () => act('/api/staff/battle/reset-cooldown', {}, 'Pause levée : la salle peut proposer une nouvelle Battle');
   $('battleDismiss').onclick = () => act('/api/staff/battle/resolve', { outcome: 'dismissed' }, 'Demande close ; pause entre votes démarrée');
   $('saveBattleCooldown').onclick = () => act('/api/staff/settings', { battleCooldownMin: Number($('battleCooldownMin').value),
+    battleRejectedCooldownMin: Number($('battleRejectedCooldownMin').value),
     battleVoteMin: Number($('battleVoteMin').value), battleMinVoters: Number($('battleMinVoters').value) }, 'Réglages Battle enregistrés');
   $('enableStaffAlerts').onclick = async () => {
     alertsEnabled = !alertsEnabled;

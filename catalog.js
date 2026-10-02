@@ -37,49 +37,103 @@ function normalizeCategory(item, type) {
   };
 }
 
+// Mêmes en-têtes que la recherche (karafun.js), qui passe là où le catalogue était refusé.
+const HEADERS = Object.freeze({ Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' });
+const validSongPage = data => !!data && Array.isArray(data.songs) &&
+  Number.isInteger(Number(data.total)) && Number(data.total) >= 0;
+
 class Catalog {
-  constructor({ base, code, fetchImpl = globalThis.fetch, timeoutMs = 8000 }) {
-    const origin = new URL(base);
-    if (!['http:', 'https:'].includes(origin.protocol)) throw new Error('Origine catalogue invalide');
+  // `bases` : domaines KaraFun essayés dans l'ordre, en commençant par le dernier
+  // qui a répondu (comme la recherche). `base` seul reste accepté.
+  constructor({ base, bases, code, fetchImpl = globalThis.fetch, timeoutMs = 8000, onFailure = null }) {
+    const list = Array.isArray(bases) && bases.length ? bases : [base];
+    const origins = [...new Set(list.map(b => {
+      const origin = new URL(b);
+      if (!['http:', 'https:'].includes(origin.protocol)) throw new Error('Origine catalogue invalide');
+      return origin.origin;
+    }))];
     if (!/^\d{4,12}$/.test(String(code))) throw new Error('Code KaraFun invalide');
     if (typeof fetchImpl !== 'function') throw new Error('fetch manquant');
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error('Délai invalide');
-    this.endpoint = new URL(`/${code}/`, origin.origin);
+    if (onFailure != null && typeof onFailure !== 'function') throw new Error('onFailure invalide');
+    this.endpoints = origins.map(origin => new URL(`/${code}/`, origin));
+    this.baseIdx = 0;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
+    this.onFailure = onFailure;
+    this.lastFailure = new Map(); // domaine → dernier échec signalé (une ligne par changement)
   }
 
-  async _get(params) {
-    const url = new URL(this.endpoint);
+  async _fetchOne(endpoint, params) {
+    const url = new URL(endpoint);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
     const controller = new AbortController();
     let timer;
     const request = (async () => {
-      const response = await this.fetchImpl(url.href, { signal: controller.signal });
-      if (!response.ok) throw new Error(`Catalogue KaraFun : HTTP ${response.status}`);
-      return response.json();
+      const response = await this.fetchImpl(url.href, { headers: { ...HEADERS }, signal: controller.signal });
+      if (!response.ok) throw Object.assign(new Error(`Catalogue KaraFun : HTTP ${response.status}`), { status: response.status, kind: 'http' });
+      try { return await response.json(); }
+      catch { throw Object.assign(new Error('Catalogue KaraFun : réponse illisible'), { kind: 'json' }); }
     })();
+    request.catch(() => {}); // perdue après le délai : pas de rejet non géré
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => {
         controller.abort();
-        reject(new Error('Catalogue KaraFun : timeout'));
+        reject(Object.assign(new Error('Catalogue KaraFun : timeout'), { kind: 'timeout' }));
       }, this.timeoutMs);
     });
     try { return await Promise.race([request, timeout]); }
     finally { clearTimeout(timer); }
   }
 
+  _report(endpoint, error) {
+    const host = endpoint.host;
+    const key = error ? `${error.kind || 'network'}:${error.status || ''}` : '';
+    if ((this.lastFailure.get(host) || '') === key) return;
+    if (key) this.lastFailure.set(host, key); else this.lastFailure.delete(host);
+    // Seulement le domaine et le statut : l'URL contient le code de la télécommande.
+    if (error && this.onFailure) {
+      try { this.onFailure({ host, status: error.status || null, kind: error.kind || 'network' }); } catch { /* journal facultatif */ }
+    }
+  }
+
+  // Essaie chaque domaine ; une erreur HTTP, un JSON illisible, une coupure, un
+  // délai dépassé ou une réponse de forme inattendue passent au domaine suivant.
+  async _get(params, isValid = () => true, invalidMessage = 'Réponse du catalogue invalide') {
+    let last = null;
+    let lastStatus = null;
+    for (let k = 0; k < this.endpoints.length; k++) {
+      const idx = (this.baseIdx + k) % this.endpoints.length;
+      const endpoint = this.endpoints[idx];
+      try {
+        const data = await this._fetchOne(endpoint, params);
+        if (!isValid(data)) throw Object.assign(new Error(invalidMessage), { kind: 'invalid', shape: true });
+        this.baseIdx = idx;
+        this._report(endpoint, null);
+        return data;
+      } catch (error) {
+        if (!error.kind) error.kind = 'network';
+        if (error.status) lastStatus = error.status;
+        last = error;
+        this._report(endpoint, error);
+      }
+    }
+    // Tout a échoué : un refus HTTP renseigne mieux qu'un délai sur l'autre domaine.
+    if (last.shape && !lastStatus) throw new Error(invalidMessage);
+    const message = lastStatus ? `Catalogue KaraFun : HTTP ${lastStatus}`
+      : last.kind === 'timeout' || last.kind === 'json' ? last.message : 'Catalogue KaraFun : réseau injoignable';
+    throw Object.assign(new Error(message), { status: lastStatus, kind: lastStatus ? 'http' : last.kind, catalogUnavailable: true });
+  }
+
   async categories(type) {
     if (!CATEGORY_TYPES.has(type)) throw new Error('Catégorie inconnue');
-    const data = await this._get({ type });
-    if (!Array.isArray(data)) throw new Error('Réponse de catégories invalide');
+    const data = await this._get({ type }, Array.isArray, 'Réponse de catégories invalide');
     return data.map((item) => normalizeCategory(item, type)).filter(Boolean);
   }
 
   async highlights(type) {
     if (!HIGHLIGHT_TYPES.has(type)) throw new Error('Sélection inconnue');
-    const data = await this._get({ type, types: 'karaoke' });
-    if (!Array.isArray(data)) throw new Error('Réponse de sélection invalide');
+    const data = await this._get({ type, types: 'karaoke' }, Array.isArray, 'Réponse de sélection invalide');
     return data.map(normalizeSong).filter(Boolean);
   }
 
@@ -87,10 +141,7 @@ class Catalog {
     if (typeof filter !== 'string' || !/^(?:pl|st|si)_\d{1,10}$/.test(filter) ||
         !positiveId(filter.slice(3))) throw new Error('Filtre de catalogue invalide');
     if (!Number.isInteger(offset) || offset < 0 || offset > 100000) throw new Error('Offset invalide');
-    const data = await this._get({ type: 'song_list', filter, offset, filters: 'karaoke' });
-    if (!data || !Array.isArray(data.songs) || !Number.isInteger(Number(data.total)) || Number(data.total) < 0) {
-      throw new Error('Réponse de chansons invalide');
-    }
+    const data = await this._get({ type: 'song_list', filter, offset, filters: 'karaoke' }, validSongPage, 'Réponse de chansons invalide');
     return { songs: data.songs.map(normalizeSong).filter(Boolean), total: Number(data.total) };
   }
 }

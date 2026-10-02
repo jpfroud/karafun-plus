@@ -183,7 +183,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(get('joinBox').hidden, true);
   assert.equal(get('tableBox').hidden, false);
   assert.equal(get('peopleCard').hidden, false);
-  assert.equal(get('nav-table').textContent, 'Mes titres');
+  assert.equal(get('navTableLabel').textContent, 'Mes titres');
   assert.equal(get('quickSongBox').hidden, false);
   assert.match(get('quickSongActions').innerHTML, />Choisir une chanson</);
   assert.equal(get('addPersonBox').hidden, true);

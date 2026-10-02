@@ -44,6 +44,7 @@ $fichiers = @(
   'battle-vote.js', 'catalog.js', 'fake-karafun.js', 'karafun-state.js',
   'karafun.js', 'kcs-transport.js', 'night-state.js', 'scheduler.js',
   'server.js', 'start-evening.js', 'stop.js', 'table-access.js', 'solo-invitations.js', 'song-repeats.js',
+  'lyrics.js', 'spotify.js',
   'solver\bridge.js', 'solver\karafun-solver.jar'
 )
 foreach ($nom in $fichiers) {

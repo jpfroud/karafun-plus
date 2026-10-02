@@ -15,7 +15,7 @@ const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)][0]?.[1];
 assert.ok(script, 'script de la page client');
 assert.match(html, /<script src="\/client-i18n\.js"><\/script>\s*<script>/, 'les traductions sont chargées avant la page');
 const loaded = { window: {} };
-vm.runInNewContext(fs.readFileSync(path.join(root, 'public', 'client-i18n.js'), 'utf8'), loaded);
+vm.runInNewContext(fs.readFileSync(path.join(root, 'public', 'client-i18n.js'), 'utf8'), loaded, { filename: 'client-i18n.js' });
 const english = loaded.window.CLIENT_TRANSLATIONS?.en;
 assert.ok(english?.texts && english.errors && english.errorPatterns, 'dictionnaire anglais');
 
@@ -92,6 +92,14 @@ assert.match(serverText(fullTable), /^Table 7 is full \(3 signed up for 3 places
 assert.ok(serverSources.includes('Recherche KaraFun impossible : ${e.message}'));
 assert.equal(serverText('Recherche KaraFun impossible : délai dépassé'), 'KaraFun search failed: délai dépassé');
 assert.equal(serverText('Catalogue KaraFun : HTTP 503'), 'KaraFun catalogue: HTTP 503');
+// Catalogue refusé par les deux domaines KaraFun : texte clair, traduit, recherche encore possible.
+assert.ok(serverSources.includes('Catalogue KaraFun indisponible pour le moment (refus HTTP ${e.status}). La recherche reste possible.'));
+assert.equal(serverText('Catalogue KaraFun indisponible pour le moment (refus HTTP 403). La recherche reste possible.'),
+  'The KaraFun catalogue is unavailable right now (HTTP 403 refusal). Search still works.');
+for (const reason of ['délai dépassé', 'réponse illisible', 'réseau injoignable']) {
+  assert.match(serverText(`Catalogue KaraFun indisponible pour le moment (${reason}). La recherche reste possible.`) || '',
+    /^The KaraFun catalogue is unavailable right now \((timed out|unreadable answer|network unreachable)\)\. Search still works\.$/, reason);
+}
 console.log(`ok - ${used.size} textes de la page des chanteurs traduits en anglais, ${Object.keys(english.errors).length} messages du serveur`);
 
 // ---------------------------------------------------------------- page réelle
@@ -188,7 +196,7 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   await settle();
   const { get } = page;
   assert.equal(page.document.documentElement.lang, 'en');
-  assert.equal(get('nav-table').textContent, 'My table');
+  assert.equal(get('navTableLabel').textContent, 'My table');
   assert.equal(get('stageLabel').textContent, 'On stage', 'texte fixe de la page');
   assert.equal(get('firstName').attributes.placeholder, 'e.g. Mary', 'attribut traduit');
   assert.equal(get('conn').textContent, 'Live');
@@ -196,7 +204,7 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   assert.equal(get('peopleCount').textContent, '2 here · 2 signed up');
   assert.match(get('peopleList').innerHTML, /THEIR LIST · 1 SONG</);
   assert.match(get('peopleList').innerHTML, /2nd in the queue · around \d\d:\d\d/);
-  assert.match(get('peopleList').innerHTML, />Add a song</);
+  assert.match(get('peopleList').innerHTML, /aria-label="Add a song">＋ Song</, 'bouton court, intitulé complet pour les lecteurs d’écran');
   assert.match(get('queueList').innerHTML, /Zoé · Solo/, 'le groupe « En solo » est traduit');
   assert.match(get('queueList').innerHTML, /Alice · Table 1/);
   assert.match(get('battleText').textContent, /^Choose a song or “No Battle”\. Vote ends in \d:\d\d\. 1 voter out of 2; at least 2 needed\./);
@@ -228,14 +236,14 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
     page = boot(options);
     await settle();
     assert.equal(page.document.documentElement.lang, 'fr', JSON.stringify(options));
-    assert.equal(page.get('nav-table').textContent, 'Ma table');
+    assert.equal(page.get('navTableLabel').textContent, 'Ma table');
     assert.equal(page.get('peopleCount').textContent, '2 présentes · 2 inscrites');
     assert.match(page.get('battleVotes').innerHTML, /0 voix</, '0 au singulier en français');
   }
   // Sans le fichier de traductions, la page reste entièrement en français.
   page = boot({ languages: ['en-GB'], translations: false });
   await settle();
-  assert.equal(page.get('nav-table').textContent, 'Ma table');
+  assert.equal(page.get('navTableLabel').textContent, 'Ma table');
 
   // Le choix fait sur le téléphone l'emporte sur sa langue, dans les deux sens.
   page = boot({ languages: ['en-US'], saved: 'fr' });
@@ -257,7 +265,7 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   assert.equal(page.document.documentElement.lang, 'en');
   assert.equal(page.get('stageLabel').textContent, 'On stage');
   assert.equal(page.get('conn').textContent, 'Live');
-  assert.equal(page.get('nav-table').textContent, 'My table');
+  assert.equal(page.get('navTableLabel').textContent, 'My table');
   assert.match(page.get('battleText').textContent, /^Choose a song/);
   assert.match(page.get('catalogContent').innerHTML, /Choose a selection\..*Années 80/, 'le catalogue affiché est redessiné');
   assert.match(page.get('catalogTarget').textContent, /^Choose a song, then who will sing it\./);

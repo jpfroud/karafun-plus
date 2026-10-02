@@ -19,6 +19,7 @@ try {
       'karaoke-bar/build-info.json',
       'karaoke-bar/public/client.html', 'karaoke-bar/public/client-i18n.js', 'karaoke-bar/DEMARRER.bat',
       'karaoke-bar/KaraFun Plus.exe', 'karaoke-bar/solver/bridge.js',
+      'karaoke-bar/lyrics.js', 'karaoke-bar/spotify.js',
       'karaoke-bar/solver/karafun-solver.jar',
       'karaoke-bar/solver-runtime/bin/java.exe',
       'karaoke-bar/LICENCES-JAVA/THIRD-PARTY.txt',

@@ -58,6 +58,13 @@ const DEFAULTS = {
 const BONUS_WEIGHTS = Object.freeze({ '-3': 0.5, '-2': 2 / 3, '-1': 0.8, 0: 1, 1: 1.25, 2: 1.5, 3: 2 });
 const bonusWeight = level => BONUS_WEIGHTS[String(Number(level) || 0)] || 1;
 const HISTORY_LIMIT = 120;
+// « Pas prêt » : au plus cinq chansons de report pour un même passage.
+// « Pas prêt » : un titre laisse passer au plus DEFER_MAX chansons en tout.
+const DEFER_MAX = 5;
+const DEFER_MIN_SLOT_SEC = 180;   // durée minimale d'une chanson pour le délai de secours
+const DEFER_SLOTS_PER_SONG = 2;   // délai de secours : deux chansons par place laissée
+const DEFER_GRACE_MS = 120000;
+const DUET_JOIN_MAX = 5;          // demandes de duo en attente sur un même titre
 const EPS = 1e-9;
 
 const id = () => crypto.randomBytes(6).toString('hex');
@@ -208,15 +215,26 @@ class Scheduler {
     this.manualChanges = [];
   }
 
-  manualOverrideState() {
-    return { manualOrder: [...this.manualOrder], manualOrderActive: this.manualOrderActive,
+  // `deferrals` : pour une intervention du bar, les reports « Pas prêt »
+  // qu'un déplacement lève et qu'une annulation doit rendre.
+  manualOverrideState({ deferrals = false } = {}) {
+    const state = { manualOrder: [...this.manualOrder], manualOrderActive: this.manualOrderActive,
       reservedNext: this.reservedNext ? { ...this.reservedNext } : null };
+    if (deferrals) state.deferrals = this._deferredOwners().map(pid => [pid, { ...this.people.get(pid).deferral }]);
+    return state;
   }
 
-  restoreManualOverride(state) {
+  // `deferrals` : seule une annulation du bar rend les reports levés ; le
+  // recalcul des empreintes ne doit jamais les rétablir.
+  restoreManualOverride(state, { deferrals = false } = {}) {
     this.manualOrder = [...state.manualOrder];
     this.manualOrderActive = !!state.manualOrderActive && this.manualOrder.length > 0;
     this.reservedNext = state.reservedNext ? { ...state.reservedNext } : null;
+    if (!deferrals || !Array.isArray(state.deferrals)) return;
+    for (const [pid, deferral] of state.deferrals) {
+      const p = this.people.get(pid);
+      if (p && !p.withdrawnAt && p.song?.entryId === deferral.entryId && !p.deferral) p.deferral = { ...deferral };
+    }
   }
 
   // Les notes, photos et noms peuvent changer sans modifier la file. Cette
@@ -225,7 +243,7 @@ class Scheduler {
     const people = this.Q.map(pid => {
       const p = this.people.get(pid);
       return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
-        p.lastAppearanceTurn || 0, this._isPresenceRetry(p),
+        p.lastAppearanceTurn || 0, this._isPresenceRetry(p), this._deferralKey(p),
         p.over, p.held, p.song?.entryId || null, p.song?.duet || null,
         (p.backlog || []).map(song => [song.entryId, song.duet || null])] : [pid];
     });
@@ -269,7 +287,7 @@ class Scheduler {
     const physical = [...relevant].map(pid => {
       const p = this.people.get(pid);
       return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
-        p.lastAppearanceTurn || 0, this._isPresenceRetry(p)] : [pid];
+        p.lastAppearanceTurn || 0, this._isPresenceRetry(p), this._deferralKey(p)] : [pid];
     });
     const context = { entries, physical, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
@@ -320,7 +338,7 @@ class Scheduler {
       this.manualChanges = [];
       throw new Error('La file a changé depuis cette intervention ; elle ne peut plus être annulée sans déplacer d’autres titres.');
     }
-    this.restoreManualOverride(latest.before);
+    this.restoreManualOverride(latest.before, { deferrals: true });
     this._restorePlan(latest.planBefore);
     this.manualChanges.pop();
     this.note(`Le bar a annulé ${latest.kind === 'priority' ? 'la priorité' : 'le déplacement'} de ${latest.name}`, 'staff');
@@ -334,7 +352,7 @@ class Scheduler {
       throw new Error('La file a changé depuis ces interventions ; leur annulation globale n’est plus possible.');
     }
     const count = this.manualChanges.length;
-    this.restoreManualOverride(this.manualChanges[0].before);
+    this.restoreManualOverride(this.manualChanges[0].before, { deferrals: true });
     this._restorePlan(this.manualChanges[0].planBefore);
     this.manualChanges = [];
     this.note(`Le bar a annulé ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} dans la file`, 'staff');
@@ -461,7 +479,7 @@ class Scheduler {
     // peut donc pas recréer un « nouveau » chanteur avec le même QR de table.
     this._removeDuetsForPerson(p, true);
     p.song = null; p.backlog = []; p.withdrawnAt = Date.now();
-    p.presenceRetry = false; p.presenceSkips = 0; p.maybeGone = null;
+    p.presenceRetry = false; p.presenceSkips = 0; p.maybeGone = null; p.deferral = null;
     this._removeFromQ(p.id);
     if (this.reservedNext?.personId === p.id) this.releaseNext();
     this.invalidateManualOrder();
@@ -590,6 +608,11 @@ class Scheduler {
     let removed = 0;
     for (const owner of this.people.values()) {
       for (const song of this.songsOf(owner)) {
+        // Ses demandes de duo en attente partent avec elle.
+        if (Array.isArray(song.duoRequests)) {
+          song.duoRequests = song.duoRequests.filter(row => row?.fromId !== p.id);
+          if (!song.duoRequests.length) delete song.duoRequests;
+        }
         if (!song.duet || (owner.id !== p.id && song.duet.partnerId !== p.id)) continue;
         delete song.duet;
         removed++;
@@ -659,7 +682,10 @@ class Scheduler {
   }
 
   // `sel` : passage déjà confirmé par KaraFun auquel le bar ajoute l'invité.
-  staffCountPartner(ownerId, partnerId, sel = null) {
+  // `inFlight` : passages déjà envoyés à KaraFun, pas encore chantés, où
+  // figure l'invité. Si l'un d'eux est retiré de KaraFun, son annulation ne
+  // doit pas effacer le passage en duo (voir _keepGuestCredit).
+  staffCountPartner(ownerId, partnerId, sel = null, inFlight = []) {
     const owner = this.people.get(String(ownerId)), partner = this.people.get(String(partnerId));
     if (!owner || !partner || owner.id === partner.id || owner.withdrawnAt || partner.withdrawnAt) {
       throw new Error('Choisis un autre chanteur encore présent dans la salle.');
@@ -673,12 +699,16 @@ class Scheduler {
     this.roundApps.set(partner.id, (this.roundApps.get(partner.id) || 0) + 1);
     this.roundOwed.delete(partner.id);
     if (sel?.turnCredit && !sel.turnCredit.rolledBack) this._addPartnerCredit(sel.turnCredit, partner.id, row, serialBefore);
-    // Le passage annoncé qui ferait dépasser le plafond du tour à ce
-    // partenaire est libéré : la file choisit à nouveau le suivant.
-    const cap = this._roundCap();
+    for (const other of Array.isArray(inFlight) ? inFlight : []) {
+      if (other && other !== sel && other.ids?.includes(partner.id) && other.turnCredit && !other.turnCredit.rolledBack) {
+        this._keepGuestCredit(other.turnCredit, partner.id, this.appearanceSerial - serialBefore);
+      }
+    }
+    // Le partenaire vient de monter sur scène : le passage annoncé avec lui
+    // juste après est libéré, et la file choisit à nouveau le suivant (avec
+    // l'espacement habituel, il chantera plus tard si d'autres attendent).
     const reserved = this.people.get(this.reservedNext?.personId);
-    if (reserved && cap > 0 && this.roundApps.get(partner.id) >= cap &&
-        (reserved.id === partner.id || reserved.song?.duet?.partnerId === partner.id)) this.releaseNext();
+    if (reserved && (reserved.id === partner.id || reserved.song?.duet?.partnerId === partner.id)) this.releaseNext();
     this.note(`Le bar a compté ${partner.name} en duo avec ${owner.name} : ${owner.name} dépense son tour ; ${partner.name} garde son titre mais attend deux autres chansons si possible`, 'staff');
     return partner;
   }
@@ -751,6 +781,225 @@ class Scheduler {
     this.note(`Le bar a confirmé que ${p.name} est toujours là`, 'staff');
   }
 
+  // ------------------------------------------------------------------ « Pas prêt »
+  // Une personne pas encore prête (toilettes, cigarette…) laisse passer une
+  // ou plusieurs chansons sans perdre son tour : son passage attend que
+  // `remaining` autres passages soient envoyés, puis devient le prochain
+  // annoncé. Le report suit le titre concerné : retiré ou remplacé, il
+  // disparaît. Sans autre passage possible, il expire à `until`.
+  _isDeferred(p) {
+    const d = p?.deferral;
+    return !!(d && !p.withdrawnAt && p.song && d.entryId === p.song.entryId && Date.now() < d.until);
+  }
+
+  _deferralKey(p) {
+    return this._isDeferred(p) ? [p.deferral.remaining, p.deferral.ids || [p.id]] : null;
+  }
+
+  // Titres reportés, dans l'ordre de la file.
+  _deferredOwners() {
+    return this.Q.filter(pid => this._isDeferred(this.people.get(pid)));
+  }
+
+  // Personnes absentes d'un passage reporté : ni leur titre ni un duo avec
+  // elles ne part tant que le report court.
+  _deferredPeople(owners = this._deferredOwners()) {
+    return new Set(owners.flatMap(pid => this.people.get(pid)?.deferral?.ids || [pid]));
+  }
+
+  // Report qui concerne cette personne, propriétaire du titre ou invitée.
+  deferralFor(personId) {
+    const pid = String(personId);
+    const owner = this._deferredOwners().map(id => this.people.get(id))
+      .find(p => p.id === pid || (p.deferral.ids || []).includes(pid));
+    return owner ? { ownerId: owner.id, entryId: owner.deferral.entryId, remaining: owner.deferral.remaining,
+      total: owner.deferral.total, until: owner.deferral.until } : null;
+  }
+
+  // Chansons déjà laissées passer par ce titre, tous reports confondus : le
+  // compte suit la chanson, pour que DEFER_MAX vaille pour toute la soirée.
+  deferredSongsOf(song) {
+    return Math.max(0, Number(song?.deferredSongs) || 0);
+  }
+
+  // `passage` : { ids, entryId, song? } du prochain passage de cette personne
+  // (`song` pour un titre déjà chargé dans KaraFun). `extra` : passage déjà
+  // en route vers KaraFun (envoi sans accusé), qui compterait sinon comme la
+  // chanson laissée passer.
+  // Vérifie un report sans rien changer (le serveur retire ensuite le titre
+  // de KaraFun, puis l'enregistre).
+  checkDeferral(ownerId, passage, count = 1) {
+    const p = this.people.get(String(ownerId));
+    if (!p || p.withdrawnAt) throw new Error('Chanteur inconnu ou parti.');
+    const n = Number(count);
+    if (!Number.isInteger(n) || n < 1 || n > DEFER_MAX) throw new Error(`Repousse ton passage de 1 à ${DEFER_MAX} chansons.`);
+    const entryId = String(passage?.entryId || '');
+    const ids = Array.isArray(passage?.ids) && passage.ids.length ? passage.ids.map(String) : [p.id];
+    if (!entryId || ids[0] !== p.id) throw new Error('Passage introuvable.');
+    const song = this.songsOf(p).find(item => item.entryId === entryId) ||
+      (passage.song?.entryId === entryId ? passage.song : null);
+    if (!song) throw new Error('Passage introuvable.');
+    const total = this.deferredSongsOf(song) + n;
+    if (total > DEFER_MAX) throw new Error(`Un passage ne peut pas être repoussé de plus de ${DEFER_MAX} chansons.`);
+    return { p, n, entryId, ids, song, total };
+  }
+
+  deferPassage(ownerId, passage, count = 1, { extra = 0 } = {}) {
+    const { p, n, entryId, ids, song, total } = this.checkDeferral(ownerId, passage, count);
+    const now = Date.now();
+    const current = p.deferral && p.deferral.entryId === entryId && now < p.deferral.until ? p.deferral : null;
+    if (this.reservedNext?.personId === p.id) this.releaseNext();
+    const remaining = (current ? current.remaining : Math.max(0, Number(extra) || 0)) + n;
+    // Filet de sécurité si personne d'autre ne chante : le titre redevient
+    // envoyable après environ deux chansons par place laissée.
+    const slotMs = Math.max(DEFER_MIN_SLOT_SEC, this.avgSlotSec()) * 1000;
+    song.deferredSongs = total;
+    p.deferral = { entryId, ids, remaining, total,
+      until: now + remaining * DEFER_SLOTS_PER_SONG * slotMs + DEFER_GRACE_MS };
+    p.presenceRetry = false;
+    this.invalidateManualOrder();
+    this.version++;
+    const who = ids.map(pid => this.people.get(pid)?.name).filter(Boolean).join(' & ');
+    this.note(`${who} n’est pas encore prêt : son passage laisse passer ${n} chanson${n > 1 ? 's' : ''} de plus et garde son tour`, 'skip');
+    return p.deferral;
+  }
+
+  isDeferred(p) { return this._isDeferred(p); }
+
+  // Report d'un titre précis effacé sans annonce (titre lancé, ou retiré de
+  // KaraFun alors que la personne s'est dite prête).
+  dropDeferral(ownerId, entryId) {
+    const p = this.people.get(String(ownerId));
+    if (!p?.deferral || p.deferral.entryId !== entryId) return false;
+    p.deferral = null;
+    this.version++;
+    return true;
+  }
+
+  // Titre retiré de KaraFun avant d'être chanté (« Pas prêt », partenaire
+  // d'un duo improvisé) : il revient en tête de la liste de son chanteur et
+  // son ticket reprend sa place. Un report « Pas prêt » s'applique ensuite.
+  requeueUnplayed(sel) {
+    this.rollbackUnplayed(sel, { requeue: true });
+    const owner = this.people.get(sel.ids[0]);
+    if (!owner || owner.withdrawnAt) return null;
+    if (!owner.song || owner.song.entryId !== sel.song.entryId) {
+      if (owner.song) owner.backlog.unshift(owner.song);
+      owner.song = sel.song;
+    }
+    if (!this.Q.includes(owner.id)) this.Q.push(owner.id);
+    this._refreshDuetViews();
+    this.invalidateManualOrder();
+    this.version++;
+    return owner;
+  }
+
+  // « Je suis prêt » : le passage reporté redevient envoyable tout de suite.
+  cancelDeferral(personId) {
+    const found = this.deferralFor(personId);
+    const p = found && this.people.get(found.ownerId);
+    if (!p) throw new Error('Aucun passage repoussé pour cette personne.');
+    p.deferral = null;
+    this.invalidateManualOrder();
+    this.version++;
+    const who = this.people.get(String(personId))?.name || p.name;
+    this.note(`${who} est prêt : son passage reprend sa place`, 'info');
+    return p;
+  }
+
+  // ------------------------------------------------------------------ demandes de duo
+  // Une personne qui aime un titre prévu par une autre peut lui demander de
+  // le chanter ensemble. L'auteur du titre garde son passage et accepte ou
+  // refuse ; à la même table, le duo est direct, comme une invitation.
+  _joinRequests(song) {
+    const list = Array.isArray(song?.duoRequests) ? song.duoRequests : [];
+    return list.filter(row => row && this.people.has(row.fromId) && !this.people.get(row.fromId).withdrawnAt);
+  }
+
+  requestDuetJoin(requester, ownerId, entryId) {
+    const owner = this.people.get(String(ownerId || ''));
+    if (!owner || owner.withdrawnAt) throw new Error('Ce chanteur n’est plus dans la file.');
+    if (owner.id === requester.id) throw new Error('C’est déjà ton titre.');
+    const song = this.songsOf(owner).find(item => item.entryId === String(entryId || ''));
+    if (!song) throw new Error('Ce titre n’est plus en attente : il est peut-être déjà dans KaraFun.');
+    if (song.duet) throw new Error('Ce titre est déjà prévu en duo.');
+    const requests = this._joinRequests(song);
+    if (requests.some(row => row.fromId === requester.id)) throw new Error('Ta demande de duo est déjà envoyée.');
+    if (requests.length >= DUET_JOIN_MAX) throw new Error('Plusieurs personnes ont déjà demandé ce duo. Attends la réponse.');
+    this.version++;
+    if (owner.group === requester.group) {
+      song.duet = { partnerId: requester.id, state: 'accepted' };
+      delete song.duoRequests;
+      this.invalidateManualOrder();
+      this._refreshDuetViews();
+      this.note(`${requester.name} rejoint ${owner.name} en duo sur « ${song.title} »`);
+      return { direct: true, song };
+    }
+    song.duoRequests = [...requests, { fromId: requester.id, at: Date.now() }];
+    this.note(`${requester.name} propose à ${owner.name} de chanter « ${song.title} » en duo`);
+    return { direct: false, song };
+  }
+
+  answerDuetJoin(owner, entryId, fromId, accept) {
+    const song = this.songsOf(owner).find(item => item.entryId === String(entryId || ''));
+    const requests = this._joinRequests(song);
+    const request = requests.find(row => row.fromId === String(fromId || ''));
+    if (!song || !request) throw new Error('Cette demande de duo n’est plus valable.');
+    const partner = this.people.get(request.fromId);
+    if (accept) {
+      if (song.duet) throw new Error('Ce titre est déjà prévu en duo.');
+      song.duet = { partnerId: partner.id, state: 'accepted' };
+      // Un seul partenaire : les autres demandes sur ce titre sont closes.
+      delete song.duoRequests;
+      this.invalidateManualOrder();
+      this._refreshDuetViews();
+      this.note(`${owner.name} accepte de chanter « ${song.title} » avec ${partner.name} : ${owner.name} garde son tour, ${partner.name} garde ses propres titres`);
+    } else {
+      song.duoRequests = requests.filter(row => row !== request);
+      if (!song.duoRequests.length) delete song.duoRequests;
+      this.note(`${owner.name} préfère chanter « ${song.title} » sans ${partner.name}`);
+    }
+    this.version++;
+    return song;
+  }
+
+  cancelDuetJoin(requester, ownerId, entryId) {
+    const owner = this.people.get(String(ownerId || ''));
+    const song = owner && this.songsOf(owner).find(item => item.entryId === String(entryId || ''));
+    const requests = this._joinRequests(song);
+    if (!requests.some(row => row.fromId === requester.id)) throw new Error('Demande de duo introuvable.');
+    song.duoRequests = requests.filter(row => row.fromId !== requester.id);
+    if (!song.duoRequests.length) delete song.duoRequests;
+    this.version++;
+    this.note(`${requester.name} retire sa demande de duo à ${owner.name}`);
+  }
+
+  // Demandes reçues par l'auteur de titres, et envoyées par une personne.
+  duetJoinRequestsFor(owner) {
+    return this.songsOf(owner).flatMap(song => this._joinRequests(song).map(row => ({
+      entryId: song.entryId, fromId: row.fromId, fromName: this.people.get(row.fromId).name, at: row.at, song })));
+  }
+
+  // Toutes les demandes envoyées, par personne : un seul passage sur la file.
+  duetJoinRequestsByPerson() {
+    const out = new Map();
+    for (const owner of this.people.values()) {
+      if (owner.withdrawnAt) continue;
+      for (const song of this.songsOf(owner)) {
+        if (!song.duoRequests) continue;
+        for (const row of this._joinRequests(song)) {
+          if (!out.has(row.fromId)) out.set(row.fromId, []);
+          out.get(row.fromId).push({ ownerId: owner.id, ownerName: owner.name, entryId: song.entryId, song });
+        }
+      }
+    }
+    return out;
+  }
+
+  duetJoinRequestsBy(requester) {
+    return this.duetJoinRequestsByPerson().get(requester.id) || [];
+  }
+
   giveSpot(p, toId) {
     const q = this.people.get(toId);
     if (!q || q.group !== p.group) throw new Error('On ne cède sa place qu\'à quelqu\'un de son groupe.');
@@ -780,6 +1029,9 @@ class Scheduler {
     if (i < 0) { const e = new Error('Cette chanson n’est plus dans la file du helper.'); e.code = 'SONG_SENT'; throw e; }
     const target = Number(toIndex);
     if (!Number.isInteger(target) || target < 0 || target >= visible.length) throw new Error('Place de destination invalide.');
+    // Le bar place lui-même ce passage : un report « Pas prêt » est levé.
+    const moved = this.people.get(personId);
+    if (moved?.deferral) moved.deferral = null;
     const [item] = visible.splice(i, 1);
     visible.splice(target, 0, item);
     // Un titre déjà en cours d'envoi peut encore porter l'ancienne réservation.
@@ -788,7 +1040,9 @@ class Scheduler {
       // Le bar avance explicitement ce passage. Cette dérogation unique peut
       // dépasser l'équité des premiers passages ; l'ordre mémorisé des autres
       // lignes ne le peut pas.
-      this.reservedNext = { personId: visible[0].ids[0], reservedAt: Date.now() };
+      // `byStaff` : place réservée par le bar, abandonnée avec les autres
+      // déplacements manuels quand il relance le calcul de la file.
+      this.reservedNext = { personId: visible[0].ids[0], reservedAt: Date.now(), byStaff: true };
       this.version++;
     } else if (this.reservedNext && !excludeIds.includes(this.reservedNext.personId) &&
         visible[0]?.ids[0] !== this.reservedNext.personId) this.releaseNext();
@@ -821,7 +1075,8 @@ class Scheduler {
       if (hasNextSong) return state;
       const manualOrder = state.manualOrder.filter(pid => pid !== p.id);
       return { manualOrder, manualOrderActive: !!state.manualOrderActive && manualOrder.length > 0,
-        reservedNext: state.reservedNext?.personId === p.id ? null : state.reservedNext };
+        reservedNext: state.reservedNext?.personId === p.id ? null : state.reservedNext,
+        ...(state.deferrals ? { deferrals: state.deferrals } : {}) };
     };
     const priorStates = rebase ? changes.map(change => adjustState(change.before)) : [];
     if (!hasNextSong && changes.length) {
@@ -1031,6 +1286,10 @@ class Scheduler {
     if (this.reservedNext && rows[0]?.owner === this.reservedNext.personId) pinnedUntil = 1;
     // Titre passé faute de présence : il suit le prochain passage, sans exception.
     if (rows[1] && this._isPresenceRetry(this.people.get(rows[1].owner))) pinnedUntil = 2;
+    // Titre reporté (« Pas prêt ») : sa place et celles d'avant sont fixées.
+    rows.forEach((row, index) => {
+      if (this._isDeferred(this.people.get(row.owner))) pinnedUntil = Math.max(pinnedUntil, index + 1);
+    });
     if (this.manualOrderActive) {
       while (pinnedUntil < rows.length && this.manualOrder.includes(rows[pinnedUntil].owner)) {
         pinnedUntil++;
@@ -1231,11 +1490,16 @@ class Scheduler {
   }
 
   // Le bar demande un nouveau calcul complet : les déplacements manuels sont
-  // abandonnés (le prochain annoncé reste garanti) et Timefold dispose de son
-  // budget maximal, sans attendre la fenêtre de regroupement.
+  // abandonnés, « Priorité » comprise ; un prochain annoncé par le calcul
+  // reste garanti. Timefold dispose de son budget maximal, sans attendre la
+  // fenêtre de regroupement.
   forceReplan(budgetMs = 30000) {
-    const manual = this.manualOrderActive || this.solverPlan?.source === 'manual';
+    // Une priorité donnée par le bar est un déplacement manuel comme un autre,
+    // même quand une nouvelle table a déjà effacé l'ordre manuel.
+    const priority = !!this.reservedNext?.byStaff;
+    const manual = priority || this.manualOrderActive || this.solverPlan?.source === 'manual';
     this.invalidateManualOrder();
+    if (priority) this.releaseNext();
     this.solverPlan = null;
     this.solverRequestedFingerprint = null;
     this._cancelRefine();
@@ -1341,18 +1605,21 @@ class Scheduler {
   _pick(order, lastGroup, predict, roundGroups = this.roundGroups, roundPeople = this.roundPeople,
     servedCounts = this.tableServeCounts, cooldowns = this.duetCooldowns, projectedSongs = null,
     reservation = null, appearances = null, ignorePresence = false,
-    recentTurns = null, sim = null) {
+    recentTurns = null, sim = null, unready = null) {
     const idx = new Map(order.map((pid, i) => [pid, i]));
     const cands = [];
     for (const pid of order) {
       const p = this.people.get(pid);
       if (!p || p.withdrawnAt) continue;
+      // Personne d'un passage reporté (« Pas prêt ») : rien ne part avec elle.
+      if (unready?.has(pid)) continue;
       const song = projectedSongs ? projectedSongs.get(pid) : p.song;
       const duet = song?.duet;
       const owner = duet && duet.state === 'accepted' ? p : null;
       if (owner) {
         const partner = this.people.get(duet.partnerId);
         if (partner && !partner.withdrawnAt) {
+          if (unready?.has(partner.id)) continue;
           if (!predict) {
             if (!song) continue;
             if (!ignorePresence && this.opts.requirePresence &&
@@ -1550,7 +1817,7 @@ class Scheduler {
       const p = this.people.get(this.reservedNext.personId);
       const duet = p?.song?.duet;
       const guest = duet?.state === 'accepted' ? this.people.get(duet.partnerId) : null;
-      if (!p || p.withdrawnAt || !p.song || duet?.state === 'pending' ||
+      if (!p || p.withdrawnAt || !p.song || duet?.state === 'pending' || this._isDeferred(p) ||
           (duet?.state === 'accepted' && (!guest || guest.withdrawnAt))) {
         this.releaseNext();
       } else if (this.opts.requirePresence && !this.confirmedForTurn(
@@ -1560,12 +1827,15 @@ class Scheduler {
         return null;
       }
     }
-    // Un titre passé faute de présence laisse passer le suivant (voir _forecast).
-    const retries = new Set(this._presenceRetries());
-    const order = retries.size ? this.Q.filter(pid => !retries.has(pid)) : this.Q;
+    // Un titre passé faute de présence laisse passer le suivant, un titre
+    // reporté (« Pas prêt ») le nombre de chansons demandé (voir _forecast).
+    const deferred = this._deferredOwners();
+    const held = new Set([...this._presenceRetries(), ...deferred]);
+    const blocked = deferred.length ? this._deferredPeople(deferred) : null;
+    const order = held.size ? this.Q.filter(pid => !held.has(pid)) : this.Q;
     const c = this._pick(order, this.lastGroup, false,
       this.roundGroups, this.roundPeople, this.tableServeCounts, this.duetCooldowns,
-      null, this.reservedNext);
+      null, this.reservedNext, null, false, null, null, blocked);
     if (!c) return null;
     const names = c.ids.map(pid => this.people.get(pid).name);
     const tables = [...new Set(c.ids.map(pid => this.table(this.people.get(pid).tableId).name))];
@@ -1592,7 +1862,9 @@ class Scheduler {
   // Les tickets sans chanson et les duos encore en attente ne figurent pas
   // ici. Une réservation existante reste stable tant que son titre existe.
   reservePresenceNext(excludeIds = [], provisional = null) {
-    const visible = this.presenceView(excludeIds, provisional).filter(v => !v.future);
+    // Un titre reporté (« Pas prêt ») n'est pas annoncé avant la fin de son report.
+    const visible = this.presenceView(excludeIds, provisional)
+      .filter(v => !v.future && !this._isDeferred(this.people.get(v.ids[0])));
     const kept = visible.find(v => v.ids[0] === this.reservedNext?.personId);
     if (kept) return kept;
     if (this.reservedNext) this.releaseNext();
@@ -1669,30 +1941,55 @@ class Scheduler {
     let reservation = this.reservedNext && !pendingIds.has(this.reservedNext.personId) ?
       this.reservedNext : null;
     // Un titre passé faute de « Je suis là » laisse passer le passage suivant,
-    // puis devient le prochain annoncé (comme _commit le fait réellement).
-    const retries = this._presenceRetries().filter(pid => remaining.includes(pid) && !pendingIds.has(pid));
-    const held = new Set(retries);
-    const releaseRetry = () => {
-      const pid = retries.shift();
-      held.delete(pid);
-      return { personId: pid };
+    // un titre reporté (« Pas prêt ») le nombre de chansons demandé, puis il
+    // devient le prochain annoncé (comme _commit le fait réellement). Les
+    // titres passés faute de présence sont libérés d'abord, puis les reports,
+    // chacun dans l'ordre de la file.
+    const holds = new Map();
+    for (const pid of this._presenceRetries()) {
+      if (remaining.includes(pid) && !pendingIds.has(pid)) holds.set(pid, { left: 1, presence: true, ids: [pid] });
+    }
+    for (const pid of this._deferredOwners()) {
+      if (!remaining.includes(pid) || pendingIds.has(pid) || holds.has(pid)) continue;
+      const d = this.people.get(pid).deferral;
+      holds.set(pid, { left: d.remaining, presence: false, ids: d.ids || [pid] });
+    }
+    const passed = ids => { for (const [pid, hold] of holds) if (!ids.includes(pid)) hold.left--; };
+    const release = (any = false) => {
+      for (const presence of [true, false]) {
+        for (const pid of this.Q) {
+          const hold = holds.get(pid);
+          if (hold && hold.presence === presence && (any || hold.left <= 0)) { holds.delete(pid); return { personId: pid }; }
+        }
+      }
+      return null;
     };
-    if (provisional && retries.length && !reservation) reservation = releaseRetry();
+    const blockedNow = () => {
+      const out = new Set();
+      for (const hold of holds.values()) if (!hold.presence) hold.ids.forEach(pid => out.add(pid));
+      return out.size ? out : null;
+    };
+    if (provisional && holds.size) {
+      passed(provisional.ids);
+      if (!reservation) reservation = release();
+    }
     while (remaining.length) {
-      const order = held.size ? remaining.filter(pid => !held.has(pid)) : remaining;
+      const order = holds.size ? remaining.filter(pid => !holds.has(pid)) : remaining;
       let c = order.length ? this._pick(order, last, predict, round, roundPeople, served,
         cooldowns, songs, reservation, appearances, ignorePresence, recentTurns,
-        { roundUse, roundApps, roundOwed, history, serial: appearanceTurn, ranks }) : null;
-      if (!c && held.size) {
-        // Plus aucun autre passage possible : le titre passé revient tout de suite.
-        reservation = releaseRetry();
+        { roundUse, roundApps, roundOwed, history, serial: appearanceTurn, ranks }, blockedNow()) : null;
+      if (!c && holds.size) {
+        // Plus aucun autre passage possible : le titre retenu revient tout de suite.
+        reservation = release() || release(true);
         continue;
       }
       if (!c) break;
       reservation = null;
-      if (retries.length) {
-        c.ids.forEach(pid => { if (held.delete(pid)) retries.splice(retries.indexOf(pid), 1); });
-        if (retries.length) reservation = releaseRetry();
+      if (holds.size) {
+        // Monter sur scène (en invité d'un duo) efface un « Je suis là » manqué.
+        c.ids.forEach(pid => { if (holds.get(pid)?.presence) holds.delete(pid); });
+        passed(c.ids);
+        reservation = release();
       }
       slots.push({ ...c, entryId: c.song?.entryId || null, future: positions.get(c.ids[0]) > 0 });
       for (const pid of c.consumedIds) {
@@ -1791,6 +2088,42 @@ class Scheduler {
     if (after.appearanceSerial === serialBefore) after.appearanceSerial = this.appearanceSerial;
   }
 
+  // Duo improvisé noté pendant qu'un autre passage de l'invité attend dans
+  // KaraFun : le reçu de ce passage intègre le duo, avant comme après son
+  // envoi. Si KaraFun retire ce titre sans qu'il soit chanté, l'annulation
+  // rend l'état d'avant son envoi, duo compris : l'invité reste compté dans
+  // le tour et attend ses deux chansons, au lieu de repasser en tête.
+  _keepGuestCredit(credit, guestId, serialBump = 0) {
+    const guest = this.people.get(guestId);
+    const { before, after } = credit;
+    if (!guest || !before || !after) return;
+    for (const state of [before, after]) {
+      if (Array.isArray(state.roundPeople) && !state.roundPeople.includes(guestId)) state.roundPeople.push(guestId);
+      if (Array.isArray(state.roundOwed)) state.roundOwed = state.roundOwed.filter(pid => pid !== guestId);
+      if (Array.isArray(state.duetCooldowns)) {
+        const cooldowns = new Map(state.duetCooldowns);
+        cooldowns.set(guestId, this.duetCooldowns.get(guestId));
+        state.duetCooldowns = [...cooldowns];
+      }
+      if (serialBump > 0 && Number.isFinite(state.appearanceSerial)) state.appearanceSerial += serialBump;
+      const row = Array.isArray(state.people) && state.people.find(item => item.id === guestId);
+      if (row) {
+        row.duetGuestCount = (row.duetGuestCount || 0) + 1;
+        row.lastAppearanceTurn = Math.max(row.lastAppearanceTurn || 0, guest.lastAppearanceTurn || 0);
+      }
+    }
+    const apps = state => {
+      if (!Array.isArray(state.roundApps)) return;
+      const counts = new Map(state.roundApps);
+      counts.set(guestId, (counts.get(guestId) || 0) + 1);
+      state.roundApps = [...counts];
+    };
+    apps(before); apps(after);
+    // Le reçu « après » suit l'état actuel de l'invité, duo compris.
+    const afterRow = Array.isArray(after.people) && after.people.find(item => item.id === guestId);
+    if (afterRow) afterRow.lastAppearanceTurn = guest.lastAppearanceTurn || afterRow.lastAppearanceTurn;
+  }
+
   rollbackUnplayed(sel, { requeue = false } = {}) {
     const credit = sel?.turnCredit;
     if (credit?.rolledBack) return false;
@@ -1803,6 +2136,21 @@ class Scheduler {
       this.releaseNext();
       retry.presenceRetry = true;
     }
+    // Les reports (« Pas prêt ») rapprochés par ce passage reprennent leur
+    // compte, sauf si la personne a changé son report entre-temps : « Je suis
+    // prêt » (report effacé) ou « Encore une chanson » (total changé).
+    for (const row of Array.isArray(sel?.deferralUndo) ? sel.deferralUndo : []) {
+      const p = this.people.get(row?.pid);
+      const old = row?.deferral;
+      if (!p || !old || p.withdrawnAt || !p.song || p.song.entryId !== old.entryId) continue;
+      const clearedByThis = sel.deferralReleasedTo === p.id || sel.ids.includes(p.id);
+      const untouched = p.deferral ? (p.deferral.entryId === old.entryId && p.deferral.total === old.total &&
+        p.deferral.remaining === Math.max(0, old.remaining - 1)) : clearedByThis;
+      if (!untouched) continue;
+      if (sel.deferralReleasedTo === p.id && this.reservedNext?.personId === p.id) this.releaseNext();
+      p.deferral = { ...old };
+    }
+    if (sel) { delete sel.deferralUndo; delete sel.deferralReleasedTo; }
     const before = credit?.before, after = credit?.after;
     if (before && after && Array.isArray(before.people) && Array.isArray(after.people)) {
       const fields = ['sung', 'duetGuestCount', 'lastAppearanceTurn', 'lastSungAt',
@@ -1928,9 +2276,15 @@ class Scheduler {
     const [first, second] = sel.ids;
     // Ceux qui étaient devant sans être prêts faute de confirmation : on compte, et au 2e raté on recule de 3
     if (this.opts.requirePresence) {
-      for (let i = 0; i < sel.at && i < this.Q.length; i++) {
+      // `sel.at` compte dans la file sans les titres retenus : la place réelle
+      // du chanteur dans Q dit qui était devant lui. Un passage reporté
+      // (« Pas prêt ») n'est pas une absence.
+      const ownerAt = this.Q.indexOf(first);
+      const limit = ownerAt >= 0 ? ownerAt : sel.at;
+      const deferred = this._deferredPeople();
+      for (let i = 0; i < limit && i < this.Q.length; i++) {
         const q = this.people.get(this.Q[i]);
-        if (q && q.song && !this._isPresenceRetry(q) && !this._confirmedRecently(q) && !sel.ids.includes(q.id)) {
+        if (q && q.song && !deferred.has(q.id) && !this._isPresenceRetry(q) && !this._confirmedRecently(q) && !sel.ids.includes(q.id)) {
           q.held++;
           if (q.held >= 2) {
             const k = this.Q.indexOf(q.id);
@@ -1991,6 +2345,15 @@ class Scheduler {
     if (this.reservedNext?.personId === sel.ids[0]) this.releaseNext();
     // Monter sur scène efface les « Je suis là » manqués. Un titre passé faute
     // de présence devient le prochain annoncé, juste après ce passage.
+    // Chaque passage envoyé rapproche aussi les titres reportés (« Pas
+    // prêt ») ; le premier arrivé au bout de son report est annoncé ensuite.
+    const deferralUndo = [];
+    for (const pid of this._deferredOwners()) {
+      const p = this.people.get(pid);
+      deferralUndo.push({ pid, deferral: { ...p.deferral } });
+      if (sel.ids.includes(pid)) p.deferral = null;
+      else p.deferral.remaining = Math.max(0, p.deferral.remaining - 1);
+    }
     for (const pid of sel.ids) {
       const p = this.people.get(pid);
       if (p) { p.presenceSkips = 0; p.presenceRetry = false; p.maybeGone = null; }
@@ -2001,6 +2364,13 @@ class Scheduler {
       this.reservedNext = { personId: retry, reservedAt: Date.now() };
       sel.presenceRetryOf = retry; // à défaire si ce passage n'est finalement pas chanté
     }
+    const ready = this._deferredOwners().find(pid => this.people.get(pid).deferral.remaining <= 0);
+    if (ready && !this.reservedNext) {
+      this.people.get(ready).deferral = null;
+      this.reservedNext = { personId: ready, reservedAt: Date.now() };
+      sel.deferralReleasedTo = ready;
+    }
+    if (deferralUndo.length) sel.deferralUndo = deferralUndo;
     sel.turnCredit = { before: creditBefore, after: this._turnCreditState(sel), rolledBack: false };
     this.note(`À suivre : ${sel.label} — « ${sel.song.title} »`, 'next');
   }
@@ -2126,4 +2496,4 @@ class Scheduler {
   }
 }
 
-module.exports = { Scheduler, DEFAULTS };
+module.exports = { DEFER_MAX, Scheduler, DEFAULTS };

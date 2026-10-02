@@ -111,7 +111,69 @@
   .client .top-tools { display: flex; align-items: center; gap: 8px; flex: none; }
   .client .lang-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
   .client .lang-switch button { appearance: none; border: 0; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; min-width: 40px; min-height: 34px; padding: 4px 8px; cursor: pointer; }
+  .client .closing-box { margin-bottom: 12px; }
+  .client .closing-box b { display: block; }
+  .client .qlist li.after-closing { border-left: 3px dashed var(--warn); padding-left: 6px; }
+  .client .qlist .closing-tag { color: var(--warn); font-weight: 600; }
+  .client .qlist .queue-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .client .qlist .queue-actions .btn { min-height: 40px; padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+  .client .battle-pick { margin: 10px 0 0; position: sticky; top: 62px; z-index: 3; box-shadow: 0 8px 28px rgba(0,0,0,.25); }
+  .client .lyrics-lines { max-height: 58dvh; overflow: auto; margin: 10px 0 0; padding: 4px 2px; font-size: 16px; line-height: 1.55; }
+  .client .lyrics-lines p { margin: 0; }
+  .client .lyrics-lines p.gap { height: .9em; }
+  .client .song-stack .song-actions .btn.lyrics { color: var(--text); }
   .client .lang-switch button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-2); border-radius: 999px; }
+
+  /* ---------------- refonte : onglets en bas de l'écran, vignettes des titres */
+  html { scroll-padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
+  .client .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 15; max-width: none; margin: 0; gap: 4px;
+    padding: 6px max(8px, env(safe-area-inset-left)) calc(6px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-right));
+    background: rgba(15,13,26,.96); border-top: 1px solid var(--line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  .client .tabs button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 58px;
+    border: 0; border-radius: 14px; padding: 6px 4px; font-size: 12px; max-width: 180px; margin: 0 auto; width: 100%; }
+  .client .tabs button.on { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-2); }
+  .client .tabs .tab-icon { flex: none; }
+  .client .queue-head { padding: 0; border: 0; color: inherit; font-size: inherit; font-weight: inherit; letter-spacing: normal; text-transform: none; }
+  .client .table-head { flex-wrap: wrap; }
+  .client .table-head .grow { flex: 1 1 210px; }
+  .client #peopleIntro { font-size: 12px; margin-bottom: 0; }
+  .client .person-head .btn.icon { width: 40px; min-height: 40px; padding: 0; font-size: 17px; margin: 0; }
+  .client main { padding-bottom: calc(92px + env(safe-area-inset-bottom)); }
+  .client .toast { bottom: calc(88px + env(safe-area-inset-bottom)); }
+  .client .stage-cover { flex: none; display: inline-flex; }
+
+  .client .cover { --h: 260; position: relative; flex: none; width: 44px; height: 44px; border-radius: 10px; overflow: hidden;
+    display: inline-grid; place-items: center; font-weight: 800; font-size: 17px; color: rgba(255,255,255,.92);
+    background: linear-gradient(135deg, hsl(var(--h) 62% 46%), hsl(calc(var(--h) + 45) 62% 28%)); }
+  .client .cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .client .cover.sm { width: 38px; height: 38px; font-size: 15px; border-radius: 9px; }
+  .client .cover.lg { width: 56px; height: 56px; font-size: 22px; border-radius: 12px; }
+  .client .cover.xl { width: 84px; height: 84px; font-size: 30px; border-radius: 16px; }
+
+  .client .catalog-list .song-row { display: flex; align-items: center; gap: 12px; padding: 8px 2px; }
+  .client .catalog-list .song-row .grow { min-width: 0; }
+  .client .catalog-list .song-row .song-title, .client .catalog-list .song-row .song-artist { display: block; }
+  .client .catalog-list .song-row.picked { color: var(--ok); }
+  .client .catalog-grid { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .client .category-tile { --h: 260; position: relative; width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 14px; overflow: hidden; cursor: pointer;
+    display: flex; align-items: flex-end; padding: 10px; text-align: left; color: #fff; font-weight: 800; font-size: 15px;
+    background: linear-gradient(135deg, hsl(var(--h) 62% 42%), hsl(calc(var(--h) + 45) 62% 24%)); }
+  .client .category-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .client .category-tile::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,0) 62%); }
+  .client .category-tile span { position: relative; z-index: 1; overflow-wrap: anywhere; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+  .client .category-tile:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .client .qlist li { gap: 10px; }
+  .client .song-stack li { align-items: center; flex-wrap: wrap; }
+  .client .song-stack li .grow { flex: 1 1 130px; }
+  .client .song-stack .song-title { overflow-wrap: break-word; }
+  .client .song-stack .song-actions { max-width: none; margin-left: auto; }
+  .client .song-stack .song-actions .btn.icon { width: 40px; min-height: 40px; padding: 0; font-size: 17px; }
+  .client .person-actions .btn.primary, .client .person-actions .btn.add-duo { flex: 1 1 140px; }
+  .client .person-actions .btn.share { flex: 1 1 100%; }
+  .client .sheet-song { display: flex; align-items: center; gap: 12px; }
+  .client .sheet-song h3 { margin: 0; overflow-wrap: anywhere; }
+  .client .sheet-song p { margin: 2px 0 0; }
 </style>
 </head>
 <body class="client">
@@ -142,7 +204,7 @@
   <section class="card stage" aria-labelledby="stageLabel">
     <div id="stageLabel" class="label" data-i18n>Sur scène</div>
     <div class="stage-row">
-      <span class="avatar lg" aria-hidden="true">🎤</span>
+      <span id="stageCover" class="stage-cover" aria-hidden="true"><span class="avatar lg">🎤</span></span>
       <div class="grow">
         <div class="who" id="stageWho" data-i18n>Chargement…</div>
         <div class="what" id="stageWhat"></div>
@@ -157,15 +219,17 @@
 </div>
 
 <nav class="tabs" role="tablist" aria-label="Sections">
-  <button type="button" id="nav-table" role="tab" aria-controls="tab-table" data-tab="table" class="on" aria-selected="true" data-i18n>Ma table</button>
-  <button type="button" id="nav-queue" role="tab" aria-controls="tab-queue" data-tab="queue" aria-selected="false"><span data-i18n>La file</span> <span id="qCount"></span></button>
-  <button type="button" id="nav-catalog" role="tab" aria-controls="tab-catalog" data-tab="catalog" aria-selected="false" data-i18n>Catalogue</button>
+  <button type="button" id="nav-table" role="tab" aria-controls="tab-table" data-tab="table" class="on" aria-selected="true"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg><span id="navTableLabel" data-i18n>Ma table</span></button>
+  <button type="button" id="nav-queue" role="tab" aria-controls="tab-queue" data-tab="queue" aria-selected="false"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M4 12h10M4 18h6"/><path d="M18 18V6l3 1.5"/><circle cx="16" cy="18" r="2"/></svg><span><span data-i18n>La file</span> <span id="qCount"></span></span></button>
+  <button type="button" id="nav-catalog" role="tab" aria-controls="tab-catalog" data-tab="catalog" aria-selected="false"><svg class="tab-icon" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><span data-i18n>Catalogue</span></button>
 </nav>
 
 <main>
   <div id="fatalBox" class="card notice warn" hidden>
     <b data-i18n>Lien de table invalide.</b> <span data-i18n>Scanne le QR code affiché par le bar pour accéder à ta table.</span>
   </div>
+
+  <div id="closingBox" class="card notice closing-box" role="status" hidden></div>
 
   <section id="tab-table" role="tabpanel" aria-labelledby="nav-table">
     <div id="transferBox" class="card notice ok" role="region" aria-labelledby="transferHeading" hidden>
@@ -234,7 +298,7 @@
 
   <section id="tab-queue" role="tabpanel" aria-labelledby="nav-queue" hidden>
     <div class="card">
-      <div class="queue-head"><div class="grow"><h2 data-i18n>La file des chansons</h2><p class="muted small queue-summary" data-i18n>Voici l’ordre actuel. Les horaires peuvent changer ; le prochain chanteur annoncé garde sa place, sauf imprévu.</p></div></div>
+      <div class="queue-head"><div class="grow"><h2 data-i18n>La file des chansons</h2><p class="tiny muted queue-summary" data-i18n>Les horaires sont estimés ; le prochain annoncé garde sa place.</p></div></div>
       <ul class="qlist" id="queueList"></ul>
       <p id="queueEmpty" class="empty-copy" hidden data-i18n>Aucune chanson en attente pour le moment.</p>
     </div>
@@ -254,8 +318,12 @@
         <div id="catalogAccessActions" class="access-actions"></div>
       </div>
       <div id="catalogTarget" class="catalog-target" data-i18n>Choisis un titre, puis son chanteur.</div>
+      <div id="battlePickBar" class="notice ok battle-pick" role="status" hidden>
+        <span id="battlePickText"></span>
+        <div class="invite-actions"><button type="button" class="btn small primary" id="battlePickDone" data-i18n>Voir ma proposition</button><button type="button" class="btn small" id="battlePickCancel" data-i18n>Quitter le choix Battle</button></div>
+      </div>
       <label class="field" for="searchInput" data-i18n>Rechercher un titre ou un artiste</label>
-      <input id="searchInput" type="search" autocomplete="off" enterkeyhint="search" placeholder="Ex. Queen" data-i18n-attr="placeholder">
+      <div class="search-field"><input id="searchInput" type="search" autocomplete="off" enterkeyhint="search" placeholder="Ex. Queen" data-i18n-attr="placeholder"><button type="button" class="clear-input" id="searchClear" aria-label="Effacer la recherche" data-i18n-attr="aria-label" hidden>×</button></div>
       <div class="catalog-filters" aria-label="Explorer le catalogue" data-i18n-attr="aria-label">
         <button type="button" class="btn small on" data-catalog="playlist" data-i18n>Playlists</button>
         <button type="button" class="btn small" data-catalog="styles" data-i18n>Styles</button>
@@ -288,7 +356,7 @@
     const params = new URLSearchParams(location.search || '');
     params.delete(name);
     const query = params.toString();
-    window.history?.replaceState?.(null, '', location.pathname + (query ? `?${query}` : ''));
+    window.history?.replaceState?.(window.history.state ?? null, '', location.pathname + (query ? `?${query}` : ''));
   }
   function forgetSoloInvitation() {
     soloInvitation = '';
@@ -332,6 +400,10 @@
   let lastFocus = null;
   let pendingSong = null;
   let noticeRequest = 0;
+  // Titres retenus pour proposer une Battle, gardés pendant la visite du catalogue.
+  let battleDraft = [];
+  let battlePickMode = false;
+  let battleProposerId = '';
 
   const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   const list = value => Array.isArray(value) ? value : [];
@@ -429,7 +501,7 @@
     return parts.join(' ');
   }
 
-  async function showSongNotice(song, nodeId) {
+  async function showSongNotice(song, nodeId, joinNodeId = null) {
     const ticket = ++noticeRequest;
     const params = new URLSearchParams({ table: tableId, access, songId: String(song.songId || ''),
       title: song.title || '', artist: song.artist || '' });
@@ -437,8 +509,16 @@
       const { notice } = await request(`/api/song/notice?${params}`);
       const node = $(nodeId);
       if (ticket !== noticeRequest || !node || !notice) return;
-      node.textContent = `⚠ ${songNoticeText(notice)} ${t('Tu peux l’ajouter quand même ou choisir un autre titre.')}`;
+      // Titre déjà prévu par quelqu'un d'autre : lui proposer de le chanter ensemble.
+      const owner = list(notice.queued).find(item => item.ownerId && item.entryId && !manages(item.ownerId));
+      node.textContent = `⚠ ${songNoticeText(notice)} ${owner ? t('Tu peux l’ajouter quand même, choisir un autre titre ou proposer un duo.')
+        : t('Tu peux l’ajouter quand même ou choisir un autre titre.')}`;
       node.hidden = false;
+      const offer = joinNodeId && $(joinNodeId);
+      if (offer && owner) {
+        offer.innerHTML = `<button type="button" class="btn" data-join-request="${esc(owner.ownerId)}" data-join-entry="${esc(owner.entryId)}" data-join-name="${esc(owner.name || '')}" data-join-title="${esc(song.title || '')}">${esc(t('Proposer un duo à {name}', { name: owner.name || t('cette personne') }))}</button>`;
+        offer.hidden = false;
+      }
     } catch (_) { /* L'alerte est facultative : l'ajout reste possible. */ }
   }
 
@@ -552,7 +632,11 @@
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
       return invites.map(invite => ({ key: `duo:${person.id}:${invite.entryId || invite.song?.songId || ''}`,
         text: t('{from} propose un duo à {name}. Réponds depuis « {tab} ».', { from: invite.fromName || t('Quelqu’un'), name: person.name, tab }),
-        target: 'duo', personId: person.id }));
+        target: 'duo', personId: person.id })).concat(list(person.joinRequests).map(request => ({
+        key: `join:${person.id}:${request.entryId}:${request.fromId}`,
+        text: t('{from} aimerait chanter « {title} » en duo avec {name}. Réponds depuis « {tab} ».',
+          { from: request.fromName || t('Quelqu’un'), title: request.song?.title || t('ce titre'), name: person.name, tab }),
+        target: 'duo', personId: person.id })));
     });
     const battle = state?.battle || {};
     const eligible = new Set(list(battle.eligiblePersonIds).map(String));
@@ -576,7 +660,10 @@
   }
 
   async function request(path, options = {}) {
-    const response = await fetch(path, { cache: 'no-store', ...options });
+    let response;
+    // Réseau coupé : le navigateur donne un message technique (« Failed to fetch »).
+    try { response = await fetch(path, { cache: 'no-store', ...options }); }
+    catch (_) { throw new Error(t('Connexion perdue : réessaie dans un instant.')); }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const error = new Error(serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));
@@ -671,7 +758,7 @@
     const tableName = tableLabel(state.table) || t('Table {id}', { id: tableId });
     $('tableName').textContent = tableName;
     $('joinHeading').textContent = t('Bienvenue à {table} !', { table: tableName });
-    $('nav-table').textContent = individual ? t('Mes titres') : t('Ma table');
+    $('navTableLabel').textContent = individual ? t('Mes titres') : t('Ma table');
     $('quickSongBox').classList.toggle('solo-song-cta', individual);
     $('quickSongHeading').hidden = individual;
     $('quickSongIntro').hidden = individual;
@@ -717,10 +804,30 @@
     renderBattle(individual ? owned : people);
     renderActivityBanner();
     renderQueue(queue, waiting);
+    renderClosing();
+    renderBattlePick();
     updateTarget();
     if (state.catalogAvailable === false && activeTab === 'catalog' && catalogMode === 'categories' && !categories.length) {
       showCatalogView(catalogMessage(() => t('Le catalogue est momentanément indisponible. Réessaie dans un instant.')));
     }
+  }
+
+  // Heure de fermeture annoncée par le bar et titres qui passeront encore.
+  // Simple information tant qu'il reste de la place, alerte une fois la file
+  // complète. Le texte n'est réécrit que s'il change (zone lue à voix haute).
+  let closingShown = '';
+  function renderClosing() {
+    const closing = state?.closing;
+    const box = $('closingBox');
+    box.hidden = !closing;
+    if (!closing) { closingShown = ''; return; }
+    const time = eta(closing.at);
+    const detail = closing.passed ? t('Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.')
+      : closing.full ? t('La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.')
+        : tp(closing.fitCount, '{n} titre prévu passera avant la fermeture : il reste de la place.', '{n} titres prévus passeront avant la fermeture : il reste de la place.');
+    const html = `<b>${esc(closing.passed ? t('Le bar ferme : plus de nouveau titre ce soir.') : t('Fermeture du bar à {time}', { time }))}</b><span class="small">${esc(detail)}</span>`;
+    box.classList.toggle('warn', !!(closing.full || closing.passed));
+    if (html !== closingShown) { box.innerHTML = html; closingShown = html; }
   }
 
   function renderSongAccess(people, others, full) {
@@ -865,14 +972,52 @@
   }
 
   document.addEventListener('click', event => {
+    const join = event.target.closest('[data-join-request]');
+    if (join) {
+      openJoinRequest({ ownerId: join.dataset.joinRequest, entryId: join.dataset.joinEntry,
+        name: join.dataset.joinName, title: join.dataset.joinTitle });
+      return;
+    }
     const accessButton = event.target.closest('[data-access-go]');
     if (accessButton) { goToAccess(accessButton.dataset.accessGo); return; }
     const songButton = event.target.closest('[data-quick-song]');
     if (songButton) openCatalog(songButton.dataset.quickSong);
   });
 
+  // Vignette d'un titre : l'image du catalogue KaraFun (certifiée par le
+  // serveur), sinon une pastille colorée avec l'initiale, toujours de la
+  // même couleur pour un même titre.
+  function hue(text) {
+    let h = 0;
+    for (const ch of String(text || '')) h = (h * 31 + ch.codePointAt(0)) % 360;
+    return h;
+  }
+  // Image introuvable (404, pas d'Internet) : plus redemandée à chaque rafraîchissement.
+  const failedCovers = new Set();
+  function coverImg(url) {
+    return typeof url === 'string' && /^https:\/\//.test(url) && !failedCovers.has(url)
+      ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : '';
+  }
+  function cover(song, size = '') {
+    const title = String(song?.title || '').trim();
+    return `<span class="cover ${size}" style="--h:${hue(title)}" aria-hidden="true">${esc(([...title][0] || '♪').toUpperCase())}${coverImg(song?.img)}</span>`;
+  }
+  // Connexion revenue : les images en échec sont retentées.
+  window.addEventListener?.('online', () => failedCovers.clear());
+  // Image introuvable : la pastille colorée reste visible.
+  document.addEventListener?.('error', event => {
+    const img = event.target;
+    if (img?.tagName === 'IMG' && (img.parentElement?.classList?.contains('cover') || img.parentElement?.classList?.contains('category-tile'))) {
+      failedCovers.add(img.getAttribute('src'));
+      img.remove();
+    }
+  }, true);
+
+  let stageCoverShown = '';
   function renderStage(queue) {
     const stage = state.stage;
+    const stageCover = stage ? cover({ title: stage.title, img: stage.img }, 'lg') : '<span class="avatar lg">🎤</span>';
+    if (stageCover !== stageCoverShown) { $('stageCover').innerHTML = stageCover; stageCoverShown = stageCover; }
     $('stageWho').textContent = stage ? singerLabel(stage) : t('Personne sur scène');
     $('stageWhat').textContent = stage ? fullSong(stage) : t('La prochaine chanson arrive bientôt.');
     const next = state.next || queue[0];
@@ -908,14 +1053,15 @@
         : turn ? (eta(turn.eta) ? t('{pos} dans la file · vers {time}', { pos: position(turn.pos), time: eta(turn.eta) }) : t('{pos} dans la file', { pos: position(turn.pos) }))
         : sent.length ? t('Chanson prête dans la file') : ready.length ? t('Chansons choisies') : t('Pas encore de chanson');
       const songName = song => song.title || t('cette chanson');
+      const lyricsButton = song => song?.title ? `<button type="button" class="btn small ghost lyrics icon" data-lyrics-title="${esc(song.title)}" data-lyrics-artist="${esc(song.artist || '')}" data-lyrics-id="${esc(song.songId || '')}" aria-label="${esc(t('Paroles de {title}', { title: songName(song) }))}" title="${esc(t('Paroles'))}">♪</button>` : '';
       const sentMarkup = sent.length ? `<div class="song-mark">${esc(t('DÉJÀ PRÊTE DANS LA FILE'))}</div><ul class="song-stack">${sent.map(song =>
-        `<li><div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}</div></div></li>`).join('')}</ul>` : '';
+        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}</div></div><div class="song-actions">${lyricsButton(song)}</div></li>`).join('')}</ul>` : '';
       const readyMarkup = ready.length ? `<div class="song-mark">${esc(individual ? tp(ready.length, 'MES CHANSONS · {n} CHANSON', 'MES CHANSONS · {n} CHANSONS') : tp(ready.length, 'SA LISTE · {n} CHANSON', 'SA LISTE · {n} CHANSONS'))}</div><ul class="song-stack">${ready.map((song, index) => {
         const duet = song.duet;
         const duetDetail = duet ? ` · ${esc(duet.state === 'pending'
           ? t('duo avec {name} (en attente de sa réponse)', { name: duet.partnerName || t('un autre chanteur') })
           : t('duo avec {name}', { name: duet.partnerName || t('un autre chanteur') }))}` : '';
-        return `<li><div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}</div></div>${canEdit && song.entryId != null ? `<div class="song-actions">${ready.length > 1 ? `<button type="button" class="btn small ghost song-order" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}">${esc(t('Ordre'))}</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}">${esc(t('Retirer'))}</button></div>` : ''}</li>`;
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}</div></div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
@@ -923,10 +1069,25 @@
         ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : `<div class="small muted">${esc(t('Son téléphone doit répondre.'))}</div>`}</div>`).join('');
       const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(t('{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.',
         { name: person.name, from: duo.fromName, title: duo.song?.title || t('une chanson') }))}</div>`).join('');
-      const presenceMarkup = person.needConfirm && canEdit ? `<div class="notice warn"><b>${esc(t('Confirme la présence de {name} pour son prochain passage.', { name: person.name }))}</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">${esc(t('Je suis là'))}</button></div>`
+      // Présence demandée et report possible : une seule question, deux réponses.
+      const askBoth = person.needConfirm && canEdit && person.canDefer && !person.deferral;
+      const presenceMarkup = askBoth ? `<div class="notice warn"><b>${esc(t('Confirme la présence de {name} pour son prochain passage.', { name: person.name }))}</b>
+          <div class="invite-actions"><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">${esc(t('Je suis là'))}</button><button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Pas prêt : repousser d’une chanson'))}</button></div></div>`
+        : person.needConfirm && canEdit ? `<div class="notice warn"><b>${esc(t('Confirme la présence de {name} pour son prochain passage.', { name: person.name }))}</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">${esc(t('Je suis là'))}</button></div>`
         : state.rules?.requirePresence && person.confirmed ? `<div class="notice ok small">${esc(t('Présence confirmée pour ce passage.'))}</div>` : '';
+      // « Pas prêt » : repousser son prochain passage sans perdre son tour.
+      const deferral = person.deferral;
+      const deferMarkup = deferral ? `<div class="notice ok"><b>${esc(tp(deferral.remaining, 'Passage repoussé : encore {n} chanson avant {name}.', 'Passage repoussé : encore {n} chansons avant {name}.', { name: person.name }))}</b> ${esc(deferral.pendingRemoval ? t('Son titre sort de KaraFun et garde son tour.') : t('Son tour est gardé.'))}
+          ${canEdit ? `<div class="invite-actions"><button type="button" class="btn small primary" data-ready-person="${esc(person.id)}">${esc(t('Je suis prêt'))}</button>${deferral.canDeferMore ? `<button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Encore une chanson'))}</button>` : ''}</div>` : ''}</div>`
+        : person.canDefer && canEdit && !askBoth ? `<div class="notice warn"><b>${esc(t('C’est bientôt au tour de {name} !', { name: person.name }))}</b> ${esc(t('Pas prêt (toilettes, pause…) ? Laisse passer une chanson : le tour est gardé.'))}
+          <div class="invite-actions"><button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Pas prêt : repousser d’une chanson'))}</button></div></div>` : '';
+      // Demandes de duo reçues sur ses titres, et envoyées sur ceux des autres.
+      const joinMarkup = list(person.joinRequests).map(request => `<div class="notice warn"><b>${esc(t('{from} aimerait chanter « {title} » avec {name}.', { from: request.fromName || t('Quelqu’un'), title: request.song?.title || t('ce titre'), name: person.name }))}</b> ${esc(t('{name} garde son passage.', { name: person.name }))}
+          ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-join-answer="yes" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-join-answer="no" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Refuser'))}</button></div>` : `<div class="small muted">${esc(t('Son téléphone doit répondre.'))}</div>`}</div>`).join('')
+        + list(person.sentJoinRequests).map(request => `<div class="notice small">${esc(t('Demande de duo envoyée à {name} pour « {title} ».', { name: request.ownerName || t('quelqu’un'), title: request.song?.title || t('ce titre') }))}
+          ${canEdit ? `<button type="button" class="btn small ghost" data-join-cancel="${esc(request.ownerId)}" data-join-entry="${esc(request.entryId)}" data-person-id="${esc(person.id)}">${esc(t('Annuler la demande'))}</button>` : ''}</div>`).join('');
       const phone = individual ? '' : ` · ${canEdit ? t('géré sur ce téléphone') : t('autre téléphone')}`;
-      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status + phone)}</div></div>${canEdit ? `<button type="button" class="btn small ghost" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}">${esc(individual ? t('Corriger mon nom') : t('Renommer'))}</button>` : ''}</div>${inviteMarkup}${guestMarkup}${presenceMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}">${esc(t('Ajouter une chanson'))}</button>`}<button type="button" class="btn" data-duet-song="${esc(person.id)}">${esc(individual ? t('Chanter en duo') : t('Ajouter un duo'))}</button><button type="button" class="btn small ghost" data-share-person="${esc(person.id)}">${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
+      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status + phone)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson'))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo'))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}">${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
     }).join('');
   }
 
@@ -935,12 +1096,22 @@
     $('waitingCard').hidden = !!state?.table?.individual;
     $('qCount').textContent = queue.length ? `(${queue.length})` : '';
     $('queueEmpty').hidden = queue.length > 0;
+    // Titres déjà demandés en duo par ce téléphone.
+    const requested = new Set(managedPeople().flatMap(person => list(person.sentJoinRequests).map(request => String(request.entryId))));
+    const canAsk = managedPeople().length > 0;
     $('queueList').innerHTML = queue.map((item, index) => {
       const mine = list(item.ids).some(id => ids.has(String(id)));
       const name = singerLabel(item);
       const when = eta(item.eta);
-      const source = item.waitingPresence ? t('Présence à confirmer') : item.source === 'karafun' ? t('Prête dans KaraFun') : item.source === 'envoi' ? t('Ajout en cours') : item.future ? t('Titre suivant, après son premier passage') : '';
-      return `<li class="${mine ? 'me' : ''}"><span class="num">${esc(item.pos || index + 1)}</span><div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}</div></div><span class="eta">${when ? esc(when) : '—'}</span></li>`;
+      const source = item.waitingPresence ? t('Présence à confirmer') : item.deferred ? t('Pas encore prêt : passage repoussé')
+        : item.source === 'karafun' ? t('Prête dans KaraFun') : item.source === 'envoi' ? t('Ajout en cours') : item.future ? t('Titre suivant, après son premier passage') : '';
+      const closing = item.afterClosing ? ` · <span class="closing-tag">${esc(t('Après la fermeture'))}</span>` : '';
+      // Un titre qui plaît : proposer à son auteur de le chanter ensemble.
+      const entryId = item.song?.entryId;
+      const joinable = canAsk && !mine && item.source === 'helper' && item.kind !== 'duo' && item.id && entryId && list(item.ids).length === 1;
+      const join = !joinable ? '' : requested.has(String(entryId)) ? `<span class="badge">${esc(t('Duo demandé'))}</span>`
+        : `<button type="button" class="btn small" data-join-request="${esc(item.id)}" data-join-entry="${esc(entryId)}" data-join-name="${esc(item.name || '')}" data-join-title="${esc(item.title || item.song?.title || '')}" aria-label="${esc(t('Proposer un duo à {name} sur {title}', { name: item.name || t('cette personne'), title: item.title || t('ce titre') }))}">${esc(t('Duo ?'))}</button>`;
+      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}"><span class="num">${esc(item.pos || index + 1)}</span>${cover(item.song || item, 'sm')}<div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div></li>`;
     }).join('');
     const localWaiting = waiting.filter(person => ids.has(String(person.id)));
     $('waitingEmpty').hidden = localWaiting.length > 0;
@@ -1101,6 +1272,51 @@
       });
       return;
     }
+    const lyricsSong = event.target.closest('[data-lyrics-title]');
+    if (lyricsSong) {
+      openLyrics({ songId: Number(lyricsSong.dataset.lyricsId) || null, title: lyricsSong.dataset.lyricsTitle,
+        artist: lyricsSong.dataset.lyricsArtist });
+      return;
+    }
+    const defer = event.target.closest('[data-defer-person]');
+    if (defer) {
+      perform(defer, async () => {
+        const result = await post('/api/table/defer', { personId: defer.dataset.deferPerson, songs: 1 });
+        await refresh();
+        toast(tp(result.deferral?.remaining || 1, 'C’est noté : {n} chanson passe avant toi, ton tour est gardé.',
+          'C’est noté : {n} chansons passent avant toi, ton tour est gardé.'));
+      });
+      return;
+    }
+    const readyButton = event.target.closest('[data-ready-person]');
+    if (readyButton) {
+      perform(readyButton, async () => {
+        await post('/api/table/defer/cancel', { personId: readyButton.dataset.readyPerson });
+        await refresh();
+        toast(t('Ton passage reprend sa place.'));
+      });
+      return;
+    }
+    const joinAnswer = event.target.closest('[data-join-answer]');
+    if (joinAnswer) {
+      perform(joinAnswer, async () => {
+        await post('/api/table/duet/join/answer', { personId: joinAnswer.dataset.personId, entryId: joinAnswer.dataset.joinEntry,
+          fromId: joinAnswer.dataset.joinFrom, accept: joinAnswer.dataset.joinAnswer === 'yes' });
+        await refresh();
+        toast(joinAnswer.dataset.joinAnswer === 'yes' ? t('Duo accepté.') : t('Demande refusée.'));
+      });
+      return;
+    }
+    const joinCancel = event.target.closest('[data-join-cancel]');
+    if (joinCancel) {
+      perform(joinCancel, async () => {
+        await post('/api/table/duet/join/cancel', { personId: joinCancel.dataset.personId,
+          ownerId: joinCancel.dataset.joinCancel, entryId: joinCancel.dataset.joinEntry });
+        await refresh();
+        toast(t('Demande de duo annulée.'));
+      });
+      return;
+    }
     const add = event.target.closest('[data-add-song]');
     if (add) { openCatalog(add.dataset.addSong, false); return; }
     const duetSong = event.target.closest('[data-duet-song]');
@@ -1153,7 +1369,7 @@
       ? [...$('peopleList').querySelectorAll('[data-person-card]')].find(card => card.dataset.personCard === String(currentActivity.personId))
       : $('battleBox');
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    target?.querySelector('[data-duet-answer], [data-battle-vote]')?.focus({ preventScroll: true });
+    target?.querySelector('[data-duet-answer], [data-join-answer], [data-battle-vote]')?.focus({ preventScroll: true });
   });
 
   $('alertsToggle').addEventListener('click', async () => {
@@ -1169,15 +1385,77 @@
       ? t('Notifications activées tant que la page reste ouverte.')
       : t('Alertes dans la page activées tant qu’elle reste ouverte.'));
   });
+  // Une Battle se propose avec des titres trouvés par la recherche ou en
+  // parcourant le catalogue (sélections, top, nouveautés), comme pour chanter.
+  function canProposeBattle() {
+    const battle = state?.battle || {};
+    return managedPeople().length > 0 && (battle.phase || 'idle') === 'idle' &&
+      !(Number.isFinite(battle.registered) && battle.registered < (battle.minVoters || 1));
+  }
+
+  function addToBattleDraft(song) {
+    if (!song?.songId) return false;
+    if (battleDraft.some(item => Number(item.songId) === Number(song.songId))) { toast(t('Titre déjà proposé.'), true); return false; }
+    if (battleDraft.length >= 3) { toast(t('Trois titres maximum.'), true); return false; }
+    battleDraft.push({ songId: Number(song.songId), title: String(song.title), artist: String(song.artist || '') });
+    return true;
+  }
+
+  let battlePickShown = '';
+  let battleMarksShown = '';
+  // `focusIndex` : titre qui vient d'être touché, qui garde le focus après le
+  // redessin (lecteur d'écran, clavier).
+  function renderBattlePick(focusIndex = null) {
+    $('battlePickBar').hidden = !battlePickMode;
+    $('catalogTarget').hidden = battlePickMode;
+    const text = battlePickMode ? tp(battleDraft.length,
+      'Battle : touche un titre pour l’ajouter ({n}/3 choisi).', 'Battle : touche un titre pour l’ajouter ({n}/3 choisis).') : '';
+    if (text && text !== battlePickShown) $('battlePickText').textContent = text;
+    battlePickShown = text;
+    // Les marques « ✓ Choisi » suivent la proposition : sortie du mode,
+    // titre retiré, proposition envoyée.
+    const marks = battlePickMode ? `+${battleDraft.map(song => song.songId).join(',')}` : '';
+    if (marks !== battleMarksShown) {
+      battleMarksShown = marks;
+      if (catalogView) {
+        const box = $('catalogContent');
+        const focused = focusIndex ?? document.activeElement?.closest?.('#catalogContent [data-song-index]')?.dataset.songIndex;
+        // Redessin des seules marques : la zone ne relit pas toute la liste.
+        box.setAttribute?.('aria-live', 'off');
+        box.innerHTML = catalogView();
+        setTimeout(() => box.setAttribute?.('aria-live', 'polite'), 150);
+        if (focused != null) box.querySelector?.(`[data-song-index="${focused}"]`)?.focus?.({ preventScroll: true });
+      }
+    }
+  }
+
+  function browseForBattle() {
+    battleProposerId = $('battleProposer')?.value || battleProposerId;
+    battlePickMode = true;
+    closeSheet();
+    targetPersonId = '';
+    duetMode = false;
+    renderBattlePick();
+    updateTarget();
+    setTab('catalog');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  $('battlePickDone').addEventListener('click', () => { battlePickMode = false; renderBattlePick(); updateTarget(); openBattleProposal(); });
+  $('battlePickCancel').addEventListener('click', () => { battlePickMode = false; renderBattlePick(); updateTarget(); });
+
   function openBattleProposal() {
     const owned = managedPeople();
     if (!owned.length) return;
-    const selected = [];
+    battlePickMode = false;
+    renderBattlePick();
+    const selected = battleDraft;
     let found = [];
     openSheet(`<div class="row"><h3 class="grow">${esc(t('Proposer une Battle'))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <p class="small muted">${esc(t('Toute la salle chante ensemble. Propose de 1 à 3 titres du catalogue ; chaque personne votera pour un titre ou « Pas de Battle ». Le bar organise ensuite la Battle dans KaraFun.'))}</p>
-      ${owned.length === 1 ? `<input type="hidden" id="battleProposer" value="${esc(owned[0].id)}">` : `<label class="field" for="battleProposer">${esc(t('Qui propose la Battle ?'))}</label><select id="battleProposer">${owned.map(person => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}</select>`}
-      <form id="battleSearchForm"><label class="field" for="battleSearch">${esc(t('Chercher un titre ou un artiste'))}</label><input id="battleSearch" type="search" placeholder="${esc(t('Ex. Queen'))}" autocomplete="off" enterkeyhint="search"></form>
+      ${owned.length === 1 ? `<input type="hidden" id="battleProposer" value="${esc(owned[0].id)}">` : `<label class="field" for="battleProposer">${esc(t('Qui propose la Battle ?'))}</label><select id="battleProposer">${owned.map(person => `<option value="${esc(person.id)}"${String(person.id) === String(battleProposerId) ? ' selected' : ''}>${esc(person.name)}</option>`).join('')}</select>`}
+      <button type="button" class="btn wide" id="battleBrowse" style="margin-top:12px">${esc(t('Pas d’idée ? Parcourir le catalogue'))}</button>
+      <form id="battleSearchForm"><label class="field" for="battleSearch">${esc(t('Chercher un titre ou un artiste'))}</label><div class="search-field"><input id="battleSearch" type="search" placeholder="${esc(t('Ex. Queen'))}" autocomplete="off" enterkeyhint="search"><button type="button" class="clear-input" id="battleSearchClear" aria-label="${esc(t('Effacer la recherche'))}" hidden>×</button></div></form>
       <div id="battleSearchResults" class="battle-search-results small muted"></div>
       <p class="field" id="battleSelectedTitle">${esc(t('Titres proposés (3 maximum)'))}</p><ul id="battleSelected" class="battle-picked" aria-labelledby="battleSelectedTitle"><li>${esc(t('Aucun titre choisi.'))}</li></ul>
       <label class="field" for="battleMyChoice">${esc(t('Ton vote'))}</label><select id="battleMyChoice" disabled><option value="">${esc(t('Ajoute d’abord un titre'))}</option></select>
@@ -1196,6 +1474,7 @@
       $('battleMyChoice').disabled = !selected.length;
       $('startBattleVote').disabled = !selected.length;
     };
+    if (selected.length) renderPicked();
     // Recherche à la frappe, comme dans le catalogue. Chaque frappe prend un
     // nouveau numéro : une réponse arrivée pendant l'attente de fin de frappe
     // est ignorée, seule celle de la dernière saisie s'affiche.
@@ -1228,7 +1507,15 @@
       if (immediate) searchBattle(term, number);
       else battleSearchTimer = setTimeout(() => searchBattle(term, number), 300);
     };
-    $('battleSearch').addEventListener('input', () => battleSearchInput());
+    $('battleSearch').addEventListener('input', () => { $('battleSearchClear').hidden = !$('battleSearch').value; battleSearchInput(); });
+    $('battleSearchClear').addEventListener('click', () => {
+      $('battleSearch').value = '';
+      $('battleSearchClear').hidden = true;
+      battleSearchInput();
+      $('battleSearch').focus();
+    });
+    $('battleBrowse').addEventListener('click', browseForBattle);
+    $('battleProposer').addEventListener?.('change', () => { battleProposerId = $('battleProposer').value; });
     // Entrée lance la recherche tout de suite (sans recharger la page).
     $('battleSearchForm').addEventListener('submit', event => { event.preventDefault(); battleSearchInput(true); });
     $('battleSearchResults').addEventListener('click', event => {
@@ -1236,10 +1523,7 @@
       if (!button) return;
       const song = found[Number(button.dataset.battleResult)];
       if (!song) return;
-      if (selected.some(item => Number(item.songId) === Number(song.songId))) return toast(t('Titre déjà proposé.'), true);
-      if (selected.length >= 3) return toast(t('Trois titres maximum.'), true);
-      selected.push({ songId: Number(song.songId), title: String(song.title), artist: String(song.artist || '') });
-      renderPicked();
+      if (addToBattleDraft(song)) renderPicked();
     });
     $('battleSelected').addEventListener('click', event => {
       const button = event.target.closest('[data-battle-remove]');
@@ -1251,6 +1535,8 @@
       if (!selected.length) throw new Error(t('Choisis au moins un titre.'));
       const result = await post('/api/table/battle/propose', { personId: $('battleProposer').value,
         songs: selected, proposerChoice: Number($('battleMyChoice').value) });
+      battleDraft = [];
+      renderBattlePick();
       closeSheet();
       await refresh();
       // La durée du vote se règle au bar (5 minutes par défaut).
@@ -1277,7 +1563,112 @@
     });
   });
 
+  // ---------------------------------------------------------- bouton Retour
+  // Chaque onglet, sélection du catalogue ou fenêtre ouverte crée une étape
+  // dans l'historique du navigateur : le bouton Retour d'Android revient à
+  // l'écran précédent au lieu de quitter la page. Sur l'écran de départ, un
+  // premier appui prévient ; un second appui rapide quitte la page.
+  const browserHistory = window.history?.pushState && typeof window.addEventListener === 'function' ? window.history : null;
+  let restoringNav = false;
+  let awaitingBack = false;   // fenêtre fermée depuis la page : son étape est retirée
+  let queuedNav = null;       // étape à ajouter une fois ce retrait terminé
+  let exitArmedUntil = 0;
+  let backTimer = null;
+  let lateBackUntil = 0;      // « popstate » tardif d'une fenêtre fermée : ignoré
+  // Nombre d'étapes de sous-écrans du catalogue (titres d'une sélection,
+  // résultats) au-dessus d'une étape « sélections » ; null : aucune étape
+  // « sélections » connue dessous (sous-écran retrouvé par un changement d'onglet).
+  let catDepth = 0;
+  let searchTerm = '';
+  const subScreen = mode => mode === 'songs' || mode === 'search';
+  const navState = () => ({ kf: 1, tab: activeTab, catalog: catalogMode, sheet: !$('sheet').hidden, catDepth,
+    ...(catalogMode === 'search' ? { term: searchTerm } : {}),
+    ...(catalogMode === 'songs' && currentCategory ? { category: { filter: currentCategory.filter, name: currentCategory.name } } : {}) });
+  function pushNav() {
+    if (!browserHistory || restoringNav) return;
+    if (awaitingBack) { queuedNav = navState(); return; }
+    try { browserHistory.pushState(navState(), ''); } catch (_) { /* historique indisponible */ }
+  }
+  // L'étape actuelle reflète l'écran affiché, sans en ajouter une autre.
+  function replaceNav() {
+    if (!browserHistory || restoringNav || awaitingBack || !browserHistory.state?.kf || browserHistory.state.root || browserHistory.state.sheet) return;
+    try { browserHistory.replaceState(navState(), ''); } catch (_) { /* */ }
+  }
+  // Fin du retrait de l'étape d'une fenêtre : par « popstate », ou après un
+  // court délai si le navigateur n'en envoie pas (sinon tout resterait en attente).
+  function finishBack(late = false) {
+    clearTimeout(backTimer);
+    if (!awaitingBack) return;
+    awaitingBack = false;
+    // Délai écoulé sans réponse : un retour qui arriverait encore n'est pas
+    // un appui de la personne.
+    lateBackUntil = late ? Date.now() + 3000 : 0;
+    const queued = queuedNav;
+    queuedNav = null;
+    if (queued) { try { browserHistory.pushState(queued, ''); } catch (_) { /* */ } }
+  }
+  function leaveSheetStep() {
+    if (!browserHistory || restoringNav || !browserHistory.state?.sheet) return;
+    awaitingBack = true;
+    clearTimeout(backTimer);
+    backTimer = setTimeout(() => finishBack(true), 1000);
+    try { browserHistory.back(); } catch (_) { finishBack(); }
+  }
+  if (browserHistory) {
+    try {
+      browserHistory.replaceState({ kf: 1, root: true, tab: 'table', catalog: 'categories', sheet: false, catDepth: 0 }, '');
+      browserHistory.pushState(navState(), '');
+    } catch (_) { /* historique indisponible */ }
+    window.addEventListener('popstate', event => {
+      if (awaitingBack) { finishBack(); return; }
+      if (Date.now() < lateBackUntil) { lateBackUntil = 0; return; }
+      const target = event.state?.kf ? event.state : { root: true, tab: 'table', catalog: 'categories', sheet: false };
+      if (target.root) {
+        // Écran de départ : rester sur la page, sauf second appui rapide.
+        if (Date.now() < exitArmedUntil) { try { browserHistory.back(); } catch (_) { /* */ } return; }
+        exitArmedUntil = Date.now() + 2500;
+        toast(t('Appuie encore sur Retour pour quitter le karaoké.'));
+      }
+      restoringNav = true;
+      try {
+        if (!$('sheet').hidden) closeSheet();
+        const tab = target.tab || 'table';
+        if (tab !== activeTab) setTab(tab);
+        if (tab === 'catalog') restoreCatalog(target);
+      } finally { restoringNav = false; }
+      if (target.root) { try { browserHistory.pushState(navState(), ''); } catch (_) { /* */ } }
+    });
+  }
+  // Écran du catalogue d'une étape retrouvée : sélections, titres d'une
+  // sélection ou résultats d'une recherche, rechargés si besoin.
+  function restoreCatalog(target) {
+    clearTimeout(searchTimer); // une recherche en cours de frappe est abandonnée
+    const screen = target.catalog || 'categories';
+    const category = screen === 'songs' && target.category?.filter ? target.category : null;
+    const term = screen === 'search' && target.term ? String(target.term) : '';
+    if (category) {
+      if (catalogMode !== 'songs' || currentCategory?.filter !== category.filter) {
+        $('searchInput').value = '';
+        renderSearchClear();
+        currentCategory = { filter: category.filter, name: category.name };
+        showCategory(null, false);
+      }
+    } else if (term) {
+      if (catalogMode !== 'search' || searchTerm !== term || $('searchInput').value.trim() !== term) {
+        $('searchInput').value = term;
+        renderSearchClear();
+        searchSongs(term);
+      }
+    } else if (screen !== catalogMode) {
+      $('searchInput').value = '';
+      renderSearchClear();
+      showCategories(catalogType);
+    }
+    catDepth = target.catDepth !== undefined ? target.catDepth : subScreen(catalogMode) ? null : 0;
+  }
+
   function setTab(name) {
+    const changed = name !== activeTab;
     activeTab = name;
     if (name !== 'catalog') duetMode = false;
     document.querySelectorAll('.tabs button').forEach(button => {
@@ -1287,6 +1678,13 @@
     });
     for (const tab of ['table', 'queue', 'catalog']) $('tab-' + tab).hidden = tab !== name;
     if (name === 'catalog' && !categories.length && catalogMode === 'categories') showCategories(catalogType);
+    // Catalogue retrouvé sur un sous-écran : l'étape d'avant n'est pas ses sélections.
+    if (changed && name === 'catalog') catDepth = subScreen(catalogMode) ? null : 0;
+    if (changed) pushNav();
+    // Onglets en bas de l'écran : un onglet touché s'ouvre en haut de sa page,
+    // après l'étape d'historique (le navigateur y garde la position quittée).
+    // Avec Retour, le navigateur rend lui-même la position de l'étape.
+    if (changed && !restoringNav) window.scrollTo?.(0, 0);
   }
 
   document.querySelectorAll('.tabs button').forEach(button => {
@@ -1309,6 +1707,8 @@
     if (!manages(personId)) return toast(t('Ce téléphone ne gère pas ce chanteur.'), true);
     targetPersonId = String(personId || '');
     duetMode = forDuet;
+    battlePickMode = false;
+    renderBattlePick();
     updateTarget();
     setTab('catalog');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1374,13 +1774,14 @@
 
   function renderCategories() {
     showCatalogView(() => categories.length
-      ? `<p class="muted small" style="margin:12px 0 0">${esc(t('Choisis une sélection.'))}</p><ul class="catalog-list">${categories.map((cat, index) => `<li><button type="button" data-category-index="${index}">${esc(cat.name)}</button></li>`).join('')}</ul>`
+      ? `<p class="tiny muted" style="margin:12px 0 0">${esc(t('Choisis une sélection.'))}</p><ul class="catalog-grid">${categories.map((cat, index) => `<li><button type="button" class="category-tile" style="--h:${hue(cat.name)}" data-category-index="${index}">${coverImg(cat.img)}<span>${esc(cat.name)}</span></button></li>`).join('')}</ul>`
       : `<p class="empty-copy">${esc(t('Aucune sélection disponible.'))}</p>`);
   }
 
   async function showCategories(type) {
     setCatalogType(type);
     $('searchInput').value = '';
+    renderSearchClear();
     currentCategory = null;
     const number = ++catalogRequest;
     if (type === 'news' || type === 'featured') {
@@ -1413,8 +1814,10 @@
     if (!append && index != null) currentCategory = categories[index];
     if (!currentCategory || !currentCategory.filter) return;
     const number = ++catalogRequest;
+    const entering = catalogMode !== 'songs';
     catalogMode = 'songs';
     if (!append) { songs = []; totalSongs = 0; showCatalogView(catalogMessage(() => t('Chargement des chansons…'))); }
+    if (entering && !restoringNav) { catDepth = catDepth == null ? null : catDepth + 1; pushNav(); }
     try {
       const data = await request(`/api/catalog/songs?filter=${encodeURIComponent(currentCategory.filter)}&offset=${songs.length}`);
       if (number !== catalogRequest) return;
@@ -1428,13 +1831,22 @@
   // `heading` est une fonction pour que le titre suive la langue.
   function renderSongs(heading, back = false) {
     showCatalogView(() => `<div class="catalog-tools">${back ? `<button type="button" class="btn small" data-back>${esc(t('← Sélections'))}</button>` : ''}<b class="grow">${esc(heading())}</b></div>`
-      + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => `<li><button type="button" data-song-index="${index}"><div class="song-title">${esc(song.title)}</div><div class="song-artist">${esc(song.artist || '')}</div></button></li>`).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
+      + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => {
+        // Choix des titres d'une Battle : ceux déjà retenus sont marqués.
+        const picked = battlePickMode && battleDraft.some(item => Number(item.songId) === Number(song.songId));
+        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(song.artist || '')}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
+      }).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
       + (catalogMode === 'songs' && songs.length < totalSongs ? `<button type="button" class="btn wide" data-more style="margin-top:12px">${esc(t('Voir plus'))}</button>` : ''));
   }
 
   function searchSongs(term) {
     const number = ++catalogRequest;
+    const entering = catalogMode !== 'search';
     catalogMode = 'search';
+    searchTerm = term;
+    if (restoringNav) { /* étape retrouvée : rien à ajouter */ }
+    else if (entering) { catDepth = catDepth == null ? null : catDepth + 1; pushNav(); }
+    else replaceNav();
     showCatalogView(catalogMessage(() => t('Recherche…')));
     request(`/api/search?q=${encodeURIComponent(term)}`).then(data => {
       if (number !== catalogRequest) return;
@@ -1444,16 +1856,42 @@
     }).catch(error => { if (number === catalogRequest) catalogError(error); });
   }
 
-  $('searchInput').addEventListener('input', () => {
+  // Bouton × : vide la recherche d'un geste et revient aux sélections.
+  function renderSearchClear() { $('searchClear').hidden = !$('searchInput').value; }
+  function onSearchInput() {
+    renderSearchClear();
     clearTimeout(searchTimer);
     const term = $('searchInput').value.trim();
-    if (!term) { showCategories(catalogType); return; }
+    if (!term) { backToSelections(); return; }
     if (term.length < 2) { ++catalogRequest; showCatalogView(catalogMessage(() => t('Tape au moins 2 lettres.'))); return; }
     searchTimer = setTimeout(() => searchSongs(term), 300);
+  }
+  $('searchInput').addEventListener('input', onSearchInput);
+  $('searchClear').addEventListener('click', () => {
+    $('searchInput').value = '';
+    onSearchInput();
+    $('searchInput').focus();
   });
 
+  // Retour aux sélections : si l'écran actuel est un sous-écran posé sur une
+  // étape « sélections » (catDepth > 0), on recule jusqu'à elle comme le bouton
+  // Retour. Sinon (catalogue retrouvé par un onglet), reculer ramènerait à
+  // l'onglet précédent : les sélections s'affichent sur l'étape actuelle.
+  function backToSelections(type = catalogType) {
+    setCatalogType(type);
+    const top = browserHistory?.state;
+    const depth = Number(top?.catDepth);
+    if (!restoringNav && !awaitingBack && top?.kf && top.tab === 'catalog' && !top.sheet && subScreen(top.catalog) &&
+        subScreen(catalogMode) && depth > 0 && depth === catDepth) {
+      try { browserHistory.go(-depth); return; } catch (_) { /* affichage direct ci-dessous */ }
+    }
+    showCategories(type); // vide aussi la recherche et son ×
+    catDepth = 0;
+    replaceNav();
+  }
+
   document.querySelectorAll('[data-catalog]').forEach(button => {
-    button.addEventListener('click', () => { clearTimeout(searchTimer); showCategories(button.dataset.catalog); });
+    button.addEventListener('click', () => { clearTimeout(searchTimer); backToSelections(button.dataset.catalog); });
   });
 
   $('catalogContent').addEventListener('click', event => {
@@ -1463,28 +1901,33 @@
       if (catalogMode === 'songs') showCategory(null, false);
       else if (catalogMode === 'search') searchSongs($('searchInput').value.trim());
       else showCategories(catalogType);
-    } else if (button.hasAttribute('data-back')) showCategories(catalogType);
+    } else if (button.hasAttribute('data-back')) backToSelections();
     else if (button.hasAttribute('data-category-index')) showCategory(Number(button.dataset.categoryIndex));
     else if (button.hasAttribute('data-song-index')) chooseSong(songs[Number(button.dataset.songIndex)]);
     else if (button.hasAttribute('data-more')) showCategory(0, true);
   });
 
   function openSheet(html) {
-    if ($('sheet').hidden) lastFocus = document.activeElement;
+    const opening = $('sheet').hidden;
+    if (opening) lastFocus = document.activeElement;
     $('sheetPanel').innerHTML = html;
     const title = $('sheetPanel').querySelector('h3');
     if (title) { title.id = 'sheetTitle'; $('sheetPanel').setAttribute('aria-labelledby', title.id); }
     else $('sheetPanel').setAttribute('aria-label', t('Options de la chanson'));
     $('sheet').hidden = false;
+    if (opening) pushNav();
     const first = $('sheetPanel').querySelector('input, select, button');
     if (first) first.focus();
   }
 
   function closeSheet({ keepPending = false } = {}) {
+    const wasOpen = !$('sheet').hidden;
     $('sheet').hidden = true;
     $('sheetPanel').innerHTML = '';
     if (!keepPending) pendingSong = null;
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
+    // Fermée depuis la page : son étape d'historique disparaît aussi.
+    if (wasOpen) leaveSheetStep();
   }
 
   $('sheet').addEventListener('click', event => { if (event.target === $('sheet') || event.target.closest('[data-close-sheet]')) closeSheet(); });
@@ -1499,8 +1942,60 @@
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   });
 
+  // Paroles d'un titre, pour vérifier qu'on le connaît avant de le choisir.
+  let lyricsRequest = 0;
+  async function openLyrics(song, back = null) {
+    if (!song?.title) return;
+    const ticket = ++lyricsRequest;
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Paroles · {title}', { title: song.title }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      ${song.artist ? `<p class="muted small" style="margin:4px 0 0">${esc(song.artist)}</p>` : ''}
+      <div id="lyricsBody" class="lyrics-lines" aria-live="polite"><p>${esc(t('Chargement des paroles…'))}</p></div>
+      ${back ? `<div class="sheet-actions"><button type="button" class="btn" id="lyricsBack">${esc(t('← Revenir au titre'))}</button></div>` : ''}`);
+    $('lyricsBack')?.addEventListener('click', back);
+    try {
+      const params = new URLSearchParams({ table: tableId, access, songId: String(song.songId || ''),
+        title: song.title || '', artist: song.artist || '' });
+      const data = await request(`/api/lyrics?${params}`);
+      if (ticket !== lyricsRequest || !$('lyricsBody') || $('sheet').hidden) return;
+      const lines = Array.isArray(data.lines) ? data.lines : null;
+      const link = data.url ? `<p class="tiny muted"><a href="${esc(data.url)}" target="_blank" rel="noopener">${esc(lines?.length ? t('Voir sur KaraFun') : t('Chercher sur KaraFun'))}</a></p>` : '';
+      $('lyricsBody').innerHTML = !lines ? `<p>${esc(data.unavailable ? t('Paroles indisponibles pour le moment.') : t('Paroles introuvables pour ce titre.'))}</p>${link}`
+        : !lines.length ? `<p>${esc(t('KaraFun ne publie pas les paroles de ce titre.'))}</p>${link}`
+          : `${data.exact ? '' : `<p class="tiny muted">${esc(t('Version la plus proche trouvée sur KaraFun.'))}</p>`}${lines.map(line => line ? `<p>${esc(line)}</p>` : '<p class="gap"></p>').join('')}${link}`;
+    } catch (error) {
+      if (ticket === lyricsRequest && $('lyricsBody')) $('lyricsBody').innerHTML = `<p>${esc(error.message || t('Paroles indisponibles pour le moment.'))}</p>`;
+    }
+  }
+
+  // Demander à chanter en duo le titre prévu par quelqu'un d'autre.
+  function openJoinRequest({ ownerId, entryId, name, title }) {
+    const people = managedPeople().filter(person => String(person.id) !== String(ownerId));
+    if (!people.length) return toast(t('Inscris-toi d’abord pour proposer un duo.'), true);
+    const who = name || t('cette personne');
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Chanter « {title} » avec {name} ?', { title: title || t('ce titre'), name: who }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <p class="small muted">${esc(t('{name} garde son passage et accepte ou refuse ta demande (à ta table, le duo est direct). Tes propres chansons restent dans ta liste.', { name: who }))}</p>
+      ${people.length === 1 ? `<input type="hidden" id="joinPerson" value="${esc(people[0].id)}">`
+        : `<label class="field" for="joinPerson">${esc(t('Qui chante avec {name} ?', { name: who }))}</label><select id="joinPerson">${people.map(person => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}</select>`}
+      <div class="sheet-actions"><button type="button" class="btn primary" id="sendJoin">${esc(t('Demander le duo'))}</button></div>`);
+    $('sendJoin').addEventListener('click', () => perform($('sendJoin'), async () => {
+      const result = await post('/api/table/duet/join', { personId: $('joinPerson').value || people[0].id, ownerId, entryId });
+      closeSheet();
+      await refresh();
+      toast(result.direct ? t('Duo ajouté avec {name}.', { name: who }) : t('Demande de duo envoyée à {name}.', { name: who }));
+    }));
+  }
+
   function chooseSong(song) {
     if (!song || !song.songId) return;
+    // Choix des titres d'une Battle depuis le catalogue.
+    if (battlePickMode) {
+      if (addToBattleDraft(song)) {
+        toast(t('« {title} » ajouté à la Battle.', { title: song.title }));
+        if (battleDraft.length >= 3) { openBattleProposal(); return; }
+      }
+      renderBattlePick(songs.indexOf(song));
+      return;
+    }
     const people = managedPeople();
     if (!people.length) {
       pendingSong = song;
@@ -1512,13 +2007,16 @@
     pendingSong = null;
     const selected = people.find(person => String(person.id) === targetPersonId) || people[0];
     if (duetMode) return openDuoPartner(song, selected.id);
-    openSheet(`<div class="row"><h3 class="grow">${esc(song.title)}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
-      <p class="muted small" style="margin:4px 0 12px">${esc(song.artist || '')}</p>
+    openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(song.artist || '')}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <div style="height:12px"></div>
       <p id="songNotice" class="notice warn small song-notice" role="status" hidden></p>
+      <div id="songJoinOffer" class="sheet-actions" hidden></div>
       ${people.length === 1 ? `<p class="small muted">${esc(t('Pour {name}', { name: selected.name }))}</p><input type="hidden" id="songPerson" value="${esc(selected.id)}">`
         : `<label class="field" for="songPerson">${esc(t('Chanteur'))}</label><select id="songPerson">${people.map(person => `<option value="${esc(person.id)}" ${String(person.id) === String(selected.id) ? 'selected' : ''}>${esc(person.name)}</option>`).join('')}</select>`}
-      <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${esc(state?.table?.individual ? t('Ajouter à ma liste') : t('Ajouter à sa liste'))}</button><button type="button" class="btn" id="replaceSong">${esc(t('Remplacer ma prochaine chanson'))}</button><button type="button" class="btn" id="duetSongChoice">${esc(t('Chanter en duo'))}</button></div>
+      <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${esc(state?.table?.individual ? t('Ajouter à ma liste') : t('Ajouter à sa liste'))}</button><button type="button" class="btn" id="replaceSong">${esc(t('Remplacer ma prochaine chanson'))}</button><button type="button" class="btn" id="duetSongChoice">${esc(t('Chanter en duo'))}</button><button type="button" class="btn ghost" id="songLyrics">${esc(t('Voir les paroles'))}</button>${canProposeBattle() ? `<button type="button" class="btn ghost" id="songBattle">${esc(t('Proposer en Battle'))}</button>` : ''}</div>
       <p class="tiny muted" style="margin:10px 0 0">${esc(t('Une chanson déjà prête dans la file ne peut plus être remplacée ici.'))}</p>`);
+    $('songLyrics').addEventListener('click', () => openLyrics(song, () => chooseSong(song)));
+    $('songBattle')?.addEventListener('click', () => { if (addToBattleDraft(song)) openBattleProposal(); });
     const updateReplace = () => {
       const person = personById($('songPerson').value);
       $('replaceSong').hidden = !person || !list(person.songs).length;
@@ -1528,7 +2026,7 @@
     };
     $('songPerson').addEventListener('change', updateReplace);
     updateReplace();
-    showSongNotice(song, 'songNotice');
+    showSongNotice(song, 'songNotice', 'songJoinOffer');
     $('duetSongChoice').addEventListener('click', () => openDuoPartner(song, $('songPerson').value));
     for (const [id, mode] of [['appendSong', 'append'], ['replaceSong', 'replace']]) {
       $(id).addEventListener('click', () => {
