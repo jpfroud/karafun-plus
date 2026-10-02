@@ -8,6 +8,11 @@
 const BASE = 'https://www.karafun.fr';
 const SONG_PATH = /^\/karaoke\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/$/;
 const MAX_LINES = 400;
+const MAX_PAGES = 5;             // pages de titres lues au plus par recherche
+const MAX_PARALLEL = 2;          // lectures simultanées sur www.karafun.fr
+const MAX_WAITING = 20;          // au-delà, « indisponible pour le moment »
+const MISS_TTL_MS = 30 * 60000;  // titre introuvable ou version voisine
+const FAILURE_TTL_MS = 2 * 60000; // site injoignable
 
 // Même règle que les adresses du site : accents retirés, minuscules, tout
 // le reste devient un tiret.
@@ -74,42 +79,78 @@ class Lyrics {
     this.cacheSize = cacheSize;
     this.now = now;
     this.cache = new Map();
+    this.inflight = new Map(); // même recherche demandée par plusieurs téléphones
+    this.active = 0;
+    this.waiting = [];
+  }
+
+  // Au plus MAX_PARALLEL lectures à la fois : un téléphone ne peut pas faire
+  // inonder www.karafun.fr par le PC du bar.
+  async _slot() {
+    if (this.active < MAX_PARALLEL) { this.active++; return; }
+    if (this.waiting.length >= MAX_WAITING) throw new Error('trop de demandes');
+    await new Promise(resolve => this.waiting.push(resolve));
+  }
+
+  _release() {
+    const next = this.waiting.shift();
+    if (next) next(); else this.active--;
   }
 
   async _get(path) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    await this._slot();
     try {
       const response = await this.fetchImpl(new URL(path, this.base).href, {
-        signal: controller.signal, redirect: 'follow',
-        headers: { Accept: 'text/html', 'Accept-Language': 'fr' } });
+        signal: AbortSignal.timeout(this.timeoutMs), headers: { Accept: 'text/html', 'Accept-Language': 'fr' } });
+      // Une redirection hors du site ne vaut pas une page de titre.
+      if (response.url && new URL(response.url).origin !== this.base) return null;
       if (response.status === 404) return null;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await response.text();
-    } finally { clearTimeout(timer); }
+    } finally { this._release(); }
   }
 
-  _remember(key, value) {
+  _cached(key) {
+    const row = this.cache.get(key);
+    return row && (!row.expiresAt || this.now() < row.expiresAt) ? row.value : null;
+  }
+
+  _remember(key, value, ttlMs = 0) {
     this.cache.delete(key);
-    this.cache.set(key, value);
+    this.cache.set(key, { value, expiresAt: ttlMs ? this.now() + ttlMs : 0 });
     if (this.cache.size > this.cacheSize) this.cache.delete(this.cache.keys().next().value);
     return value;
   }
 
-  // { lines, url, exact } : `lines` vide si la page n'a pas de paroles,
-  // `null` si le titre est introuvable (le lien mène alors à la recherche).
+  // { lines, url, exact, unavailable? } : `lines` vide si la page n'a pas de
+  // paroles, `null` si le titre est introuvable (le lien mène alors à la
+  // recherche) ; `unavailable` si le site n'a pas répondu.
   async find({ songId = null, title, artist = '' }) {
+    if (!String(title || '').trim()) throw new Error('Titre manquant.');
     const id = Number(songId) > 0 ? Number(songId) : null;
     const titleSlug = slug(title), artistSlug = slug(artist);
-    if (!titleSlug) throw new Error('Titre manquant.');
-    const key = id ? `id:${id}` : `t:${titleSlug}|${artistSlug}`;
-    const cached = this.cache.get(key);
-    if (cached && (!cached.failedAt || this.now() - cached.failedAt < 10 * 60000)) return cached.value;
     const searchPath = `/search/?query=${encodeURIComponent(`${title} ${artist}`.trim())}`;
+    // Titre sans lettre latine (cyrillique, japonais…) : pas d'adresse à
+    // deviner, la recherche du site fait mieux.
+    if (!titleSlug) return { lines: null, url: new URL(searchPath, this.base).href, exact: false };
+    // Seule une page dont l'identifiant correspond est rangée sous cet
+    // identifiant : un titre inventé ne peut pas remplacer les paroles.
+    const exactKey = id ? `id:${id}` : null;
+    const key = `t:${id || ''}|${titleSlug}|${artistSlug}`;
+    const known = (exactKey && this._cached(exactKey)) || this._cached(key);
+    if (known) return known;
+    if (!this.inflight.has(key)) {
+      this.inflight.set(key, this._lookup({ id, title, titleSlug, artistSlug, searchPath, exactKey, key })
+        .finally(() => this.inflight.delete(key)));
+    }
+    return this.inflight.get(key);
+  }
+
+  async _lookup({ id, titleSlug, artistSlug, searchPath, exactKey, key }) {
     const tried = new Set();
     let fallback = null;
     const check = async path => {
-      if (tried.has(path) || tried.size >= 5) return null;
+      if (tried.has(path) || tried.size >= MAX_PAGES) return null;
       tried.add(path);
       const html = await this._get(path);
       if (html == null) return null;
@@ -133,13 +174,11 @@ class Lyrics {
           if (found) break;
         }
       }
-      const value = found || fallback || { lines: null, url: new URL(searchPath, this.base).href, exact: false };
-      return this._remember(key, { value }).value;
-    } catch (error) {
-      const value = { lines: null, url: new URL(searchPath, this.base).href, exact: false,
-        error: error.name === 'AbortError' ? 'délai dépassé' : error.message };
-      this._remember(key, { value, failedAt: this.now() });
-      return value;
+      if (found?.exact) return this._remember(exactKey, found);
+      if (found) return this._remember(key, found);
+      return this._remember(key, fallback || { lines: null, url: new URL(searchPath, this.base).href, exact: false }, MISS_TTL_MS);
+    } catch (_) {
+      return this._remember(key, { lines: null, url: new URL(searchPath, this.base).href, exact: false, unavailable: true }, FAILURE_TTL_MS);
     }
   }
 }

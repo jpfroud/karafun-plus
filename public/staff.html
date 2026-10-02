@@ -30,7 +30,7 @@
       <button class="btn small" id="skipBtn">⏭ Passer</button>
       <button class="btn small danger" id="absentBtn" hidden>Absent : retirer la suivante</button>
     </div>
-    <div id="markDuoBox" class="mark-duo" hidden><label for="markDuoPartner">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button></div><p class="tiny muted">Si son propre titre est déjà le suivant dans KaraFun, il en est retiré et repassera plus tard : il ne rechante pas juste après le duo.</p></div>
+    <div id="markDuoBox" class="mark-duo" hidden><label for="markDuoPartner">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button></div><p class="tiny muted">Si son propre titre est déjà chargé dans KaraFun, il en est retiré et repassera plus tard : il ne rechante pas juste après le duo.</p></div>
     <div class="closing-panel">
       <div class="section-heading compact"><h3>Fermeture du bar</h3><span id="closingPill" class="pill">Pas d’heure</span></div>
       <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. Réordonne les derniers titres dans la file.</p>
@@ -179,7 +179,7 @@
         <label class="switch"><input type="checkbox" id="spotifyAutoResume"> Relancer Spotify quand plus rien ne joue</label>
         <label class="switch"><input type="checkbox" id="spotifyAutoPause"> Mettre Spotify en pause quand un titre démarre</label>
       </div>
-      <label class="small" for="spotifyDelay">Relancer après <input id="spotifyDelay" type="number" min="5" max="300"> secondes de silence</label>
+      <label class="small spotify-delay" for="spotifyDelay">Relancer après <input id="spotifyDelay" type="number" min="5" max="300"> secondes de silence</label>
       <div class="row wrap"><button class="btn small" id="spotifySaveOptions">Enregistrer</button><button class="btn small" id="spotifyPlay">▶ Spotify</button><button class="btn small" id="spotifyPause">⏸ Spotify</button><button class="btn small danger" id="spotifyDisconnect">Déconnecter</button></div>
     </div>
     <p class="small" id="spotifyText" role="status"></p>
@@ -726,7 +726,7 @@
     $('removeSelected').textContent = selectedLines.size ? `Retirer la sélection (${selectedLines.size})` : 'Retirer la sélection';
     $('selectAllQueue').checked = liveKeys.size > 0 && selectedLines.size === liveKeys.size;
     // Repère de fermeture : les titres au-dessus passeront avant l'heure annoncée.
-    const closingLine = S.closing ? `<div class="queue-closing" role="separator">— Fermeture à ${esc(hhmm(S.closing.at))} : les titres ci-dessous ne passeront probablement pas —</div>` : '';
+    const closingLine = S.closing ? `<div class="queue-closing" role="note">— Fermeture à ${esc(hhmm(S.closing.at))} : les titres ci-dessous ne passeront probablement pas —</div>` : '';
     let closingShown = false;
     $('qBody').innerHTML = S.queue.map(q => {
       const separator = closingLine && q.afterClosing && !closingShown ? (closingShown = true, closingLine) : '';

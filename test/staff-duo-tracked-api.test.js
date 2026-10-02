@@ -1,6 +1,9 @@
 'use strict';
 // Un partenaire dont le propre titre est déjà chargé dans KaraFun peut
 // chanter en invité sur le titre en cours sans perdre son passage prévu.
+// Ici KaraFun est déconnecté : son titre ne peut pas être retiré, il reste
+// chargé et le bar est prévenu. Le retrait réel est couvert par
+// review-v04-fixes.test.js.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const fs = require('node:fs');
@@ -29,7 +32,7 @@ function harness() {
   return context.fixture;
 }
 
-test('le bar peut noter comme invité le chanteur dont le titre est déjà le prochain dans KaraFun', async () => {
+test('KaraFun déconnecté : le duo est noté, le titre déjà chargé du partenaire reste et le bar est prévenu', async () => {
   const f = harness();
   const owner = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
   const guest = f.sched.join({ tableId: '2', name: 'Bob', headcount: 1 });
@@ -58,4 +61,7 @@ test('le bar peut noter comme invité le chanteur dont le titre est déjà le pr
   assert.equal(next.sel.song.entryId, nextEntryId, 'le prochain titre reste le même');
   assert.equal(guest.sung, guestTurnBefore, 'le duo invité ne consomme pas le propre tour du partenaire');
   assert.equal(guest.duetGuestCount, 1, 'sa présence physique en duo compte pour l’équité');
+  assert.equal(response.moved, 0);
+  assert.equal(next.pulled ?? null, null, 'rien n’est retiré sans KaraFun');
+  assert.ok(f.sched.log.some(l => /Titre de Bob à retirer de KaraFun : KaraFun est déconnecté/.test(l.msg)), 'le bar est prévenu');
 });

@@ -13,8 +13,10 @@ assert.ok(script, 'script de la page client');
 
 class Element {
   constructor(id = '') {
+    const classes = new Set();
     Object.assign(this, { id, hidden: false, value: '', textContent: '', dataset: {}, listeners: {},
-      classList: { toggle() {} } });
+      classList: { toggle(name, on) { if (on ?? !classes.has(name)) classes.add(name); else classes.delete(name); },
+        contains: name => classes.has(name) } });
     this._html = '';
   }
   set innerHTML(value) { this._html = value; }
@@ -229,7 +231,8 @@ const click = (node, picks) => node.listeners.click({ target: { closest: selecto
   assert.match(rows, /after-closing.*Après la fermeture/s);
   assert.equal(get('closingBox').hidden, false);
   assert.match(get('closingBox').innerHTML, /Fermeture du bar à \d\d:\d\d.*complète/s);
-  assert.equal(get('catalogClosing').hidden, false, 'le catalogue prévient que la file est complète');
+  assert.equal(get('closingBox').classList.contains('warn'), true, 'file complète : alerte, une seule fois sur la page');
+  assert.doesNotMatch(html, /id="catalogClosing"/, 'pas de seconde alerte dans le catalogue');
   assert.match(get('peopleList').innerHTML, /Demande de duo envoyée à Bruno pour « Tube »/);
 
   // ---------------------------------------------------------- « Pas prêt »

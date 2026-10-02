@@ -200,9 +200,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .bonus-field { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
 .bonus-field select { min-height: 32px; padding: 3px 6px; width: auto; font-size: 12px; }
 .stage-history { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
-.stage-history h3 { margin: 0; font-size: 15px; }
+.stage-history h3, .closing-panel h3 { margin: 0; font-size: 15px; }
 .stage-history-list { display: grid; gap: 4px; max-height: 420px; overflow-y: auto; }
-.stage-history .section-heading.compact { margin-bottom: 4px; align-items: center; }
+.stage-history .section-heading.compact, .closing-panel .section-heading.compact { margin-bottom: 4px; align-items: center; }
 .stage-history .section-heading.compact .btn { min-height: 30px; padding: 3px 10px; font-size: 12px; }
 .stage-history-item { display: grid; grid-template-columns: 72px minmax(0,1fr); gap: 6px; padding: 7px 6px; border-top: 1px solid var(--line); font-size: 13px; border-radius: 8px; }
 .stage-history-item.on-stage { border: 2px solid var(--accent); background: rgba(255,79,163,.12); }
@@ -385,4 +385,6 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .closing-panel input[type=time] { min-height: 36px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; color: inherit; }
 .queue-closing { padding: 8px 10px; margin: 6px 0; border-radius: 10px; background: rgba(255,176,32,.12); color: var(--warn); font-size: 13px; font-weight: 700; text-align: center; }
 .spotify-panel code { font-size: 12px; overflow-wrap: anywhere; }
+.spotify-panel p, .spotify-panel ol { max-width: 75ch; }
+.spotify-panel .spotify-delay { display: block; margin: 12px 0; }
 .spotify-panel select { width: auto; min-width: 220px; }

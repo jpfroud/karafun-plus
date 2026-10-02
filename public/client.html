@@ -113,14 +113,15 @@
   .client .lang-switch button { appearance: none; border: 0; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; min-width: 40px; min-height: 34px; padding: 4px 8px; cursor: pointer; }
   .client .closing-box { margin-bottom: 12px; }
   .client .closing-box b { display: block; }
-  .client .qlist li.after-closing { opacity: .55; }
+  .client .qlist li.after-closing { border-left: 3px dashed var(--warn); padding-left: 6px; }
+  .client .qlist .closing-tag { color: var(--warn); font-weight: 600; }
   .client .qlist .queue-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-  .client .qlist .queue-actions .btn { min-height: 30px; padding: 3px 8px; font-size: 12px; white-space: nowrap; }
-  .client .battle-pick { margin: 10px 0 0; }
+  .client .qlist .queue-actions .btn { min-height: 40px; padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+  .client .battle-pick { margin: 10px 0 0; position: sticky; top: 62px; z-index: 3; box-shadow: 0 8px 28px rgba(0,0,0,.25); }
   .client .lyrics-lines { max-height: 58dvh; overflow: auto; margin: 10px 0 0; padding: 4px 2px; font-size: 16px; line-height: 1.55; }
   .client .lyrics-lines p { margin: 0; }
   .client .lyrics-lines p.gap { height: .9em; }
-  .client .song-stack .song-actions .btn.lyrics { color: var(--accent-2); }
+  .client .song-stack .song-actions .btn.lyrics { color: var(--text); }
   .client .lang-switch button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-2); border-radius: 999px; }
 </style>
 </head>
@@ -177,7 +178,7 @@
     <b data-i18n>Lien de table invalide.</b> <span data-i18n>Scanne le QR code affiché par le bar pour accéder à ta table.</span>
   </div>
 
-  <div id="closingBox" class="card notice warn closing-box" role="status" hidden></div>
+  <div id="closingBox" class="card notice closing-box" role="status" hidden></div>
 
   <section id="tab-table" role="tabpanel" aria-labelledby="nav-table">
     <div id="transferBox" class="card notice ok" role="region" aria-labelledby="transferHeading" hidden>
@@ -266,7 +267,6 @@
         <div id="catalogAccessActions" class="access-actions"></div>
       </div>
       <div id="catalogTarget" class="catalog-target" data-i18n>Choisis un titre, puis son chanteur.</div>
-      <div id="catalogClosing" class="notice warn small" role="status" hidden></div>
       <div id="battlePickBar" class="notice ok battle-pick" role="status" hidden>
         <span id="battlePickText"></span>
         <div class="invite-actions"><button type="button" class="btn small primary" id="battlePickDone" data-i18n>Voir ma proposition</button><button type="button" class="btn small" id="battlePickCancel" data-i18n>Quitter le choix Battle</button></div>
@@ -759,18 +759,21 @@
   }
 
   // Heure de fermeture annoncée par le bar et titres qui passeront encore.
+  // Simple information tant qu'il reste de la place, alerte une fois la file
+  // complète. Le texte n'est réécrit que s'il change (zone lue à voix haute).
+  let closingShown = '';
   function renderClosing() {
     const closing = state?.closing;
-    $('closingBox').hidden = !closing;
-    $('catalogClosing').hidden = !closing?.full;
-    if (!closing) return;
+    const box = $('closingBox');
+    box.hidden = !closing;
+    if (!closing) { closingShown = ''; return; }
     const time = eta(closing.at);
     const detail = closing.passed ? t('Les titres déjà prévus passent encore si le bar le permet.')
       : closing.full ? t('La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.')
         : tp(closing.fitCount, '{n} titre prévu passera avant la fermeture : il reste de la place.', '{n} titres prévus passeront avant la fermeture : il reste de la place.');
-    $('closingBox').innerHTML = `<b>${esc(closing.passed ? t('Le bar ferme : plus de nouveau titre ce soir.') : t('🕑 Fermeture du bar à {time}', { time }))}</b><span class="small">${esc(detail)}</span>`;
-    $('catalogClosing').textContent = closing.passed ? t('Le bar ferme : plus de nouveau titre ce soir.')
-      : t('Le bar ferme à {time} : la file est complète, plus de nouvel ajout.', { time });
+    const html = `<b>${esc(closing.passed ? t('Le bar ferme : plus de nouveau titre ce soir.') : t('Fermeture du bar à {time}', { time }))}</b><span class="small">${esc(detail)}</span>`;
+    box.classList.toggle('warn', !!(closing.full || closing.passed));
+    if (html !== closingShown) { box.innerHTML = html; closingShown = html; }
   }
 
   function renderSongAccess(people, others, full) {
@@ -980,13 +983,17 @@
         ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : `<div class="small muted">${esc(t('Son téléphone doit répondre.'))}</div>`}</div>`).join('');
       const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(t('{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.',
         { name: person.name, from: duo.fromName, title: duo.song?.title || t('une chanson') }))}</div>`).join('');
-      const presenceMarkup = person.needConfirm && canEdit ? `<div class="notice warn"><b>${esc(t('Confirme la présence de {name} pour son prochain passage.', { name: person.name }))}</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">${esc(t('Je suis là'))}</button></div>`
+      // Présence demandée et report possible : une seule question, deux réponses.
+      const askBoth = person.needConfirm && canEdit && person.canDefer && !person.deferral;
+      const presenceMarkup = askBoth ? `<div class="notice warn"><b>${esc(t('Confirme la présence de {name} pour son prochain passage.', { name: person.name }))}</b>
+          <div class="invite-actions"><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">${esc(t('Je suis là'))}</button><button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Pas prêt : repousser d’une chanson'))}</button></div></div>`
+        : person.needConfirm && canEdit ? `<div class="notice warn"><b>${esc(t('Confirme la présence de {name} pour son prochain passage.', { name: person.name }))}</b><button type="button" class="btn small primary" data-confirm-person="${esc(person.id)}">${esc(t('Je suis là'))}</button></div>`
         : state.rules?.requirePresence && person.confirmed ? `<div class="notice ok small">${esc(t('Présence confirmée pour ce passage.'))}</div>` : '';
       // « Pas prêt » : repousser son prochain passage sans perdre son tour.
       const deferral = person.deferral;
       const deferMarkup = deferral ? `<div class="notice ok"><b>${esc(tp(deferral.remaining, 'Passage repoussé : encore {n} chanson avant {name}.', 'Passage repoussé : encore {n} chansons avant {name}.', { name: person.name }))}</b> ${esc(deferral.pendingRemoval ? t('Son titre sort de KaraFun et garde son tour.') : t('Son tour est gardé.'))}
-          ${canEdit ? `<div class="invite-actions"><button type="button" class="btn small primary" data-ready-person="${esc(person.id)}">${esc(t('Je suis prêt'))}</button>${(deferral.total || 0) < 5 ? `<button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Encore une chanson'))}</button>` : ''}</div>` : ''}</div>`
-        : person.canDefer && canEdit ? `<div class="notice warn"><b>${esc(t('C’est bientôt au tour de {name} !', { name: person.name }))}</b> ${esc(t('Pas prêt (toilettes, pause…) ? Laisse passer une chanson : le tour est gardé.'))}
+          ${canEdit ? `<div class="invite-actions"><button type="button" class="btn small primary" data-ready-person="${esc(person.id)}">${esc(t('Je suis prêt'))}</button>${deferral.canDeferMore ? `<button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Encore une chanson'))}</button>` : ''}</div>` : ''}</div>`
+        : person.canDefer && canEdit && !askBoth ? `<div class="notice warn"><b>${esc(t('C’est bientôt au tour de {name} !', { name: person.name }))}</b> ${esc(t('Pas prêt (toilettes, pause…) ? Laisse passer une chanson : le tour est gardé.'))}
           <div class="invite-actions"><button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Pas prêt : repousser d’une chanson'))}</button></div></div>` : '';
       // Demandes de duo reçues sur ses titres, et envoyées sur ceux des autres.
       const joinMarkup = list(person.joinRequests).map(request => `<div class="notice warn"><b>${esc(t('{from} aimerait chanter « {title} » avec {name}.', { from: request.fromName || t('Quelqu’un'), title: request.song?.title || t('ce titre'), name: person.name }))}</b> ${esc(t('{name} garde son passage.', { name: person.name }))}
@@ -1012,7 +1019,7 @@
       const when = eta(item.eta);
       const source = item.waitingPresence ? t('Présence à confirmer') : item.deferred ? t('Pas encore prêt : passage repoussé')
         : item.source === 'karafun' ? t('Prête dans KaraFun') : item.source === 'envoi' ? t('Ajout en cours') : item.future ? t('Titre suivant, après son premier passage') : '';
-      const closing = item.afterClosing ? ` · ${esc(t('Après la fermeture'))}` : '';
+      const closing = item.afterClosing ? ` · <span class="closing-tag">${esc(t('Après la fermeture'))}</span>` : '';
       // Un titre qui plaît : proposer à son auteur de le chanter ensemble.
       const entryId = item.song?.entryId;
       const joinable = canAsk && !mine && item.source === 'helper' && item.kind !== 'duo' && item.id && entryId && list(item.ids).length === 1;
@@ -1308,10 +1315,14 @@
     return true;
   }
 
+  let battlePickShown = '';
   function renderBattlePick() {
     $('battlePickBar').hidden = !battlePickMode;
-    if (battlePickMode) $('battlePickText').textContent = tp(battleDraft.length,
-      'Battle : touche un titre pour l’ajouter ({n}/3 choisi).', 'Battle : touche un titre pour l’ajouter ({n}/3 choisis).');
+    $('catalogTarget').hidden = battlePickMode;
+    const text = battlePickMode ? tp(battleDraft.length,
+      'Battle : touche un titre pour l’ajouter ({n}/3 choisi).', 'Battle : touche un titre pour l’ajouter ({n}/3 choisis).') : '';
+    if (text && text !== battlePickShown) $('battlePickText').textContent = text;
+    battlePickShown = text;
   }
 
   function browseForBattle() {
@@ -1457,16 +1468,28 @@
   let awaitingBack = false;   // fenêtre fermée depuis la page : son étape est retirée
   let queuedNav = null;       // étape à ajouter une fois ce retrait terminé
   let exitArmedUntil = 0;
+  let backTimer = null;
   const navState = () => ({ kf: 1, tab: activeTab, catalog: catalogMode, sheet: !$('sheet').hidden });
   function pushNav() {
     if (!browserHistory || restoringNav) return;
     if (awaitingBack) { queuedNav = navState(); return; }
     try { browserHistory.pushState(navState(), ''); } catch (_) { /* historique indisponible */ }
   }
+  // Fin du retrait de l'étape d'une fenêtre : par « popstate », ou après un
+  // court délai si le navigateur n'en envoie pas (sinon tout resterait en attente).
+  function finishBack() {
+    clearTimeout(backTimer);
+    if (!awaitingBack) return;
+    awaitingBack = false;
+    const queued = queuedNav;
+    queuedNav = null;
+    if (queued) { try { browserHistory.pushState(queued, ''); } catch (_) { /* */ } }
+  }
   function leaveSheetStep() {
     if (!browserHistory || restoringNav || !browserHistory.state?.sheet) return;
     awaitingBack = true;
-    try { browserHistory.back(); } catch (_) { awaitingBack = false; }
+    backTimer = setTimeout(finishBack, 1000);
+    try { browserHistory.back(); } catch (_) { finishBack(); }
   }
   if (browserHistory) {
     try {
@@ -1474,13 +1497,7 @@
       browserHistory.pushState(navState(), '');
     } catch (_) { /* historique indisponible */ }
     window.addEventListener('popstate', event => {
-      if (awaitingBack) {
-        awaitingBack = false;
-        const queued = queuedNav;
-        queuedNav = null;
-        if (queued) { try { browserHistory.pushState(queued, ''); } catch (_) { /* */ } }
-        return;
-      }
+      if (awaitingBack) { finishBack(); return; }
       const target = event.state?.kf ? event.state : { root: true, tab: 'table', catalog: 'categories', sheet: false };
       if (target.root) {
         // Écran de départ : rester sur la page, sauf second appui rapide.
@@ -1527,8 +1544,7 @@
 
   function updateTarget() {
     const person = managedPeople().find(candidate => String(candidate.id) === targetPersonId);
-    $('catalogTarget').textContent = battlePickMode ? t('Choisis jusqu’à trois titres pour la Battle, puis « Voir ma proposition ».')
-      : duetMode && person ? t('Choisis un titre pour un duo avec {name}.', { name: person.name }) : person
+    $('catalogTarget').textContent = duetMode && person ? t('Choisis un titre pour un duo avec {name}.', { name: person.name }) : person
       ? managedPeople().length === 1 ? t('Chansons pour {name}.', { name: person.name }) : t('Chansons pour {name}. Tu pourras changer de chanteur avant de valider.', { name: person.name })
       : managedPeople().length ? t('Choisis un titre, puis la personne qui le chantera.')
         : state?.table?.individual ? t('Explore le catalogue. Pour ajouter un titre, inscris-toi dans « En solo ».')
@@ -1779,7 +1795,7 @@
       if (ticket !== lyricsRequest || !$('lyricsBody') || $('sheet').hidden) return;
       const lines = Array.isArray(data.lines) ? data.lines : null;
       const link = data.url ? `<p class="tiny muted"><a href="${esc(data.url)}" target="_blank" rel="noopener">${esc(lines?.length ? t('Voir sur KaraFun') : t('Chercher sur KaraFun'))}</a></p>` : '';
-      $('lyricsBody').innerHTML = !lines ? `<p>${esc(t('Paroles introuvables pour ce titre.'))}</p>${link}`
+      $('lyricsBody').innerHTML = !lines ? `<p>${esc(data.unavailable ? t('Paroles indisponibles pour le moment.') : t('Paroles introuvables pour ce titre.'))}</p>${link}`
         : !lines.length ? `<p>${esc(t('KaraFun ne publie pas les paroles de ce titre.'))}</p>${link}`
           : `${data.exact ? '' : `<p class="tiny muted">${esc(t('Version la plus proche trouvée sur KaraFun.'))}</p>`}${lines.map(line => line ? `<p>${esc(line)}</p>` : '<p class="gap"></p>').join('')}${link}`;
     } catch (error) {

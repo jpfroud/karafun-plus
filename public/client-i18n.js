@@ -397,7 +397,6 @@ window.CLIENT_TRANSLATIONS = {
       'Appuie encore sur Retour pour quitter le karaoké.': 'Press Back again to leave the karaoke.',
       'Effacer la recherche': 'Clear the search',
       'Pas d’idée ? Parcourir le catalogue': 'No idea? Browse the catalogue',
-      'Choisis jusqu’à trois titres pour la Battle, puis « Voir ma proposition ».': 'Choose up to three songs for the Battle, then “See my suggestion”.',
       'Battle : touche un titre pour l’ajouter ({n}/3 choisi).': [
         'Battle: tap a song to add it ({n}/3 chosen).',
         'Battle: tap a song to add it ({n}/3 chosen).',
@@ -464,7 +463,7 @@ window.CLIENT_TRANSLATIONS = {
       'Demande de duo annulée.': 'Duet request cancelled.',
 
       // Heure de fermeture
-      '🕑 Fermeture du bar à {time}': '🕑 The bar closes at {time}',
+      'Fermeture du bar à {time}': 'The bar closes at {time}',
       'Le bar ferme : plus de nouveau titre ce soir.': 'The bar is closing: no new songs tonight.',
       'Les titres déjà prévus passent encore si le bar le permet.': 'Songs already planned still go on if the bar allows it.',
       'La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.': 'The queue is full until closing time: no more songs can be added. Planned songs stay.',
@@ -472,7 +471,6 @@ window.CLIENT_TRANSLATIONS = {
         '{n} planned song will play before closing time: there is still room.',
         '{n} planned songs will play before closing time: there is still room.',
       ],
-      'Le bar ferme à {time} : la file est complète, plus de nouvel ajout.': 'The bar closes at {time}: the queue is full, no more songs can be added.',
       'Après la fermeture': 'After closing time',
     },
 
@@ -532,6 +530,8 @@ window.CLIENT_TRANSLATIONS = {
       'Ta chanson est en cours d’envoi à KaraFun. Réessaie dans un instant.': 'Your song is being sent to KaraFun. Try again in a moment.',
       'Ton passage est déjà en train d’être repoussé. Réessaie dans un instant.': 'Your turn is already being pushed back. Try again in a moment.',
       'KaraFun est déconnecté : réessaie dans un instant ou demande au bar.': 'KaraFun is disconnected: try again in a moment or ask the bar.',
+      'Ce titre est en cours d’envoi à KaraFun : le duo n’est plus possible.': 'This song is being sent to KaraFun: a duet is no longer possible.',
+      'Trop de demandes de paroles : réessaie dans une minute.': 'Too many lyrics requests: try again in a minute.',
       'Aucun passage repoussé pour cette personne.': 'No pushed-back turn for this person.',
       'Chanteur inconnu ou parti.': 'Unknown singer, or they left.',
       'Passage introuvable.': 'Turn not found.',
@@ -554,6 +554,7 @@ window.CLIENT_TRANSLATIONS = {
       [/^Catalogue KaraFun : (.*)$/, 'KaraFun catalogue: {1}'],
       [/^Le bar ferme à (\d\d:\d\d) : plus de nouveau titre ce soir\.$/, 'The bar closes at {1}: no new songs tonight.'],
       [/^Le bar ferme à (\d\d:\d\d) : la file est complète jusqu’à la fermeture\.$/, 'The bar closes at {1}: the queue is full until closing time.'],
+      [/^Le bar ferme à (\d\d:\d\d) : un titre de plus passerait après la fermeture\.$/, 'The bar closes at {1}: one more song would play after closing time.'],
       [/^Repousse ton passage de 1 à (\d+) chansons\.$/, 'Push back your turn by 1 to {1} songs.'],
       [/^Un passage ne peut pas être repoussé de plus de (\d+) chansons\.$/, 'A turn can’t be pushed back by more than {1} songs.'],
     ],

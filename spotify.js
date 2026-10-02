@@ -15,9 +15,16 @@ const ACCOUNTS = 'https://accounts.spotify.com';
 const API = 'https://api.spotify.com/v1';
 const SCOPES = 'user-read-playback-state user-modify-playback-state';
 const DEFAULTS = { autoResume: true, autoPause: true, resumeDelaySec: 15 };
+// Après un échec, plus d'appel automatique pendant 30 s, puis 1, 2, 4 min…
+const BACKOFF_FIRST_MS = 30000;
+const BACKOFF_MAX_MS = 5 * 60000;
 
 class SpotifyError extends Error {
-  constructor(message, status = 0) { super(message); this.status = status; }
+  constructor(message, { status = 0, retryAfterSec = 0 } = {}) {
+    super(message);
+    this.status = status;
+    this.retryAfterSec = retryAfterSec;
+  }
 }
 
 // Messages lisibles au bar pour les réponses connues de Spotify.
@@ -42,6 +49,9 @@ class SpotifyLink {
     this.lastError = null;
     this.lastAction = null;   // { kind, at, ok }
     this.player = null;       // dernier état lu : { isPlaying, device, track, at }
+    this.failures = 0;        // échecs d'affilée
+    this.waitUntil = 0;       // pas d'appel automatique avant (échecs, 429)
+    this.generation = 0;      // change à chaque déconnexion : un jeton en route est ignoré
     this._load();
   }
 
@@ -75,6 +85,9 @@ class SpotifyLink {
 
   get configured() { return !!this.config.clientId; }
   get connected() { return !!(this.config.clientId && this.config.refreshToken); }
+  // Spotify a échoué récemment ou demande de patienter : la boucle
+  // automatique attend ; les boutons du bar restent utilisables.
+  get waiting() { return this.now() < this.waitUntil; }
 
   setClientId(clientId) {
     const value = String(clientId || '').trim();
@@ -82,6 +95,7 @@ class SpotifyLink {
     if (value !== this.config.clientId) {
       this.config = { ...this.config, clientId: value, refreshToken: '', deviceId: '', deviceName: '' };
       this.access = null;
+      this.generation++;
     }
     this._save();
   }
@@ -106,6 +120,9 @@ class SpotifyLink {
     this.access = null;
     this.player = null;
     this.lastError = null;
+    this.failures = 0;
+    this.waitUntil = 0;
+    this.generation++;
     this._save();
   }
 
@@ -126,14 +143,24 @@ class SpotifyLink {
   }
 
   async _token(form) {
+    const generation = this.generation;
     const response = await this.fetchImpl(`${ACCOUNTS}/api/token`, { method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ client_id: this.config.clientId, ...form }).toString(),
       signal: AbortSignal.timeout(10000) });
     const data = await response.json().catch(() => ({}));
+    // Déconnecté ou autre application pendant la demande : ne rien garder.
+    if (generation !== this.generation) throw new SpotifyError('Connexion Spotify changée pendant la demande.');
     if (!response.ok || !data.access_token) {
+      if (data.error === 'invalid_grant' && form.grant_type === 'refresh_token') {
+        // Accès retiré dans Spotify : inutile de redemander ce jeton.
+        this.config.refreshToken = '';
+        this.access = null;
+        this._save();
+        this.log('Spotify a refusé le jeton enregistré : reconnecte Spotify depuis la page du bar.');
+      }
       throw new SpotifyError(data.error === 'invalid_grant' ? 'Connexion Spotify refusée ou expirée : reconnecte Spotify.' :
-        `Connexion Spotify impossible (${data.error_description || data.error || response.status}).`, response.status);
+        `Connexion Spotify impossible (${data.error_description || data.error || response.status}).`, { status: response.status });
     }
     this.access = { token: data.access_token, expiresAt: this.now() + (Number(data.expires_in) || 3600) * 1000 - 60000 };
     if (data.refresh_token) this.config.refreshToken = data.refresh_token;
@@ -158,16 +185,33 @@ class SpotifyLink {
     return this._token({ grant_type: 'refresh_token', refresh_token: this.config.refreshToken });
   }
 
-  async _api(method, route, retried = false) {
+  async _api(method, route) {
+    try {
+      const data = await this._request(method, route);
+      this.failures = 0;
+      this.waitUntil = 0;
+      return data;
+    } catch (error) {
+      this.failures++;
+      this.waitUntil = this.now() + (error.retryAfterSec > 0 ? Math.min(error.retryAfterSec, 3600) * 1000 :
+        Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (this.failures - 1)));
+      throw error;
+    }
+  }
+
+  async _request(method, route, retried = false) {
     const token = await this._accessToken();
     const response = await this.fetchImpl(`${API}${route}`, { method,
       headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
-    if (response.status === 401 && !retried) { this.access = null; return this._api(method, route, true); }
+    if (response.status === 401 && !retried) { this.access = null; return this._request(method, route, true); }
     if (response.status === 204 || response.status === 202) return null;
     const text = await response.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
-    if (!response.ok) throw new SpotifyError(explain(response.status, data?.error?.reason || data?.error?.message || ''), response.status);
+    if (!response.ok) {
+      throw new SpotifyError(explain(response.status, data?.error?.reason || data?.error?.message || ''), {
+        status: response.status, retryAfterSec: Number(response.headers?.get?.('retry-after')) || 0 });
+    }
     return data;
   }
 
@@ -192,8 +236,8 @@ class SpotifyLink {
   }
 
   // Ne commande que si l'état réel de Spotify l'exige.
-  async resume(reason = 'manual') {
-    return this._act('resume', reason, async () => {
+  async resume() {
+    return this._act('resume', async () => {
       const player = await this.readPlayer();
       if (player.isPlaying) return 'already';
       await this._api('PUT', `/me/player/play${this._deviceQuery()}`);
@@ -202,8 +246,8 @@ class SpotifyLink {
     });
   }
 
-  async pause(reason = 'manual') {
-    return this._act('pause', reason, async () => {
+  async pause() {
+    return this._act('pause', async () => {
       const player = await this.readPlayer();
       if (!player.isPlaying) return 'already';
       await this._api('PUT', `/me/player/pause${player.device?.id ? `?device_id=${encodeURIComponent(player.device.id)}` : ''}`);
@@ -212,14 +256,14 @@ class SpotifyLink {
     });
   }
 
-  async _act(kind, reason, work) {
+  async _act(kind, work) {
     try {
       const result = await work();
-      this.lastAction = { kind, reason, result, at: this.now(), ok: true };
+      this.lastAction = { kind, result, at: this.now(), ok: true };
       this.lastError = null;
       return result;
     } catch (error) {
-      this.lastAction = { kind, reason, result: 'error', at: this.now(), ok: false };
+      this.lastAction = { kind, result: 'error', at: this.now(), ok: false };
       this.lastError = error.message;
       throw error;
     }
@@ -249,7 +293,8 @@ class SpotifyAutomation {
     this.retryAt = 0;
   }
 
-  step(karaoke, { autoResume = true, autoPause = true, resumeDelaySec = 15 } = {}) {
+  step(karaoke, { autoResume = DEFAULTS.autoResume, autoPause = DEFAULTS.autoPause,
+    resumeDelaySec = DEFAULTS.resumeDelaySec } = {}) {
     const now = this.now();
     if (karaoke !== this.phase) {
       this.phase = karaoke;
@@ -273,4 +318,4 @@ class SpotifyAutomation {
   }
 }
 
-module.exports = { SpotifyLink, SpotifyAutomation, SpotifyError, DEFAULTS: { ...DEFAULTS } };
+module.exports = { SpotifyLink, SpotifyAutomation };

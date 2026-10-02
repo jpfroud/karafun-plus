@@ -25,7 +25,11 @@ class Element {
 }
 const elements = new Map();
 const get = id => elements.get(id) || (elements.set(id, new Element()), elements.get(id));
-const document = { activeElement: null, hidden: false, getElementById: get };
+// Gestionnaires délégués de la page (× des recherches, +10 min…).
+const documentListeners = {};
+const document = { activeElement: null, hidden: false, getElementById: get,
+  addEventListener: (name, listener) => { (documentListeners[name] ||= []).push(listener); } };
+const documentEvent = (name, target) => (documentListeners[name] || []).forEach(listener => listener({ target }));
 const singer = { id: 'alice', name: 'Alice', tableId: '1', active: true, songCount: 1,
   sung: 0, privateNote: 't-shirt rouge', verified: true };
 let connected = true;
@@ -38,6 +42,8 @@ let battle = { phase: 'idle' };
 let soloInvitations = [];
 let presencePending = [];
 let bootId = 'boot-1';
+let restarting = false;
+let closing = null;
 const stored = new Map();
 const posts = [];
 const state = () => ({
@@ -49,7 +55,7 @@ const state = () => ({
     { id: '2', name: 'Table 2', headcount: 2, activeCount: 1, count: 1 },
     { id: 'Comptoir', name: 'En solo', individual: true, headcount: 40, activeCount: 0, count: 0 }],
   people: [singer, ...extraSingers], stage, tracked, ips: [], queue, blocked: [], log: [], manualChanges,
-  soloInvitations, presencePending, bootId,
+  soloInvitations, presencePending, bootId, restarting, closing,
   phoneBase: 'http://127.0.0.1:3000', port: 3000, avgSlotMin: 4,
   battle,
 });
@@ -67,6 +73,10 @@ const fetch = async (url, options = {}) => {
     if (q === 'Panne') return { ok: false, json: async () => ({ error: 'Catalogue KaraFun indisponible.' }) };
     return response(q === 'Abba' ? [{ songId: 7, title: 'Dancing Queen', artist: 'ABBA' }]
       : [{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' }]);
+  }
+  if (url.startsWith('/api/staff/closing')) {
+    posts.push({ url, ...JSON.parse(options.body) });
+    return response({ ok: true });
   }
   if (url.startsWith('/api/staff/person/identify')) {
     posts.push(JSON.parse(options.body));
@@ -234,5 +244,36 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   battleSearch.value = '';
   battleSearch.oninput();
   assert.equal(battleResults.innerHTML, '', 'champ vidé : résultats effacés');
+
+  // ---------------------------------------------------------------- v0.4
+  connected = true;
+  stage = { ours: true, kind: 'solo', queueId: 1, ids: ['alice'], singers: [{ name: 'Alice', table: 'Table 1' }], title: 'En cours' };
+  queue = [
+    { source: 'karafun', ours: true, pos: 1, singer: 'Bob', title: 'Avant', eta: Date.now(), ids: [] },
+    { source: 'helper', ours: true, pos: 2, singer: 'Chloé', title: 'Trop tard', eta: Date.now(), ids: [], afterClosing: true, deferred: true },
+  ];
+  closing = { at: Date.now() + 600000, passed: false, full: true, fitCount: 1, afterCount: 1 };
+  poll(); await settle();
+  assert.equal(get('restartBtn').disabled, false, 'un titre joue : il peut être relancé');
+  assert.match(get('qBody').innerHTML, /queue-closing" role="note">— Fermeture à/, 'séparateur lisible par un lecteur d’écran');
+  assert.ok(get('qBody').innerHTML.indexOf('queue-closing') < get('qBody').innerHTML.indexOf('Trop tard'), 'le séparateur précède les titres après la fermeture');
+  assert.match(get('qBody').innerHTML, /Pas prêt/, 'repère « Pas prêt » dans la file du bar');
+  assert.match(get('closingPill').textContent, /File complète/);
+  restarting = true;
+  poll(); await settle();
+  assert.equal(get('restartBtn').disabled, true, 'pas de seconde relance pendant la première');
+  restarting = false;
+  stage = { ...stage, kind: 'battle' };
+  poll(); await settle();
+  assert.equal(get('restartBtn').disabled, true, 'une Battle se relance depuis KaraFun');
+  documentEvent('click', { closest: selector => selector === '[data-closing-extend]' ? { dataset: { closingExtend: '10' } } : null });
+  await settle();
+  assert.deepEqual(posts.at(-1), { url: '/api/staff/closing', extendMin: 10 }, '« +10 min » décale l’heure');
+  const field = get('testQ');
+  field.value = 'Queen';
+  const clearButton = { dataset: { clearFor: 'testQ' }, hidden: false };
+  documentEvent('click', { closest: selector => selector === '[data-clear-for]' ? clearButton : null });
+  assert.equal(field.value, '', '× vide la recherche du bar');
+  assert.equal(clearButton.hidden, true);
   console.log('Bar : connexion, repères chanteurs et recherche Battle à la frappe OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

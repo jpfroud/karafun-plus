@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { Scheduler } = require('./scheduler');
+const { Scheduler, DEFER_MAX } = require('./scheduler');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
 const { PLAYED_LIMIT } = require('./song-repeats');
@@ -134,8 +134,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.
     const d = person.deferral;
     if (d != null && !(d && typeof d === 'object' && typeof d.entryId === 'string' &&
-        Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= 10 &&
-        Number.isInteger(d.total) && d.total >= 1 && d.total <= 10 && Number.isFinite(d.until) &&
+        // `remaining` peut compter un envoi déjà en route en plus du report.
+        Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= DEFER_MAX + 1 &&
+        Number.isInteger(d.total) && d.total >= 1 && d.total <= DEFER_MAX && Number.isFinite(d.until) &&
         Array.isArray(d.ids) && d.ids.length >= 1 && d.ids.every(id => typeof id === 'string'))) person.deferral = null;
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');
