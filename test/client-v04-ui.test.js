@@ -32,7 +32,7 @@ class Element {
 const elements = new Map();
 const get = id => elements.get(id) || (elements.set(id, new Element(id)), elements.get(id));
 const tabs = ['table', 'queue', 'catalog'].map(name => Object.assign(get(`nav-${name}`), { dataset: { tab: name } }));
-const catalogButtons = ['playlist', 'top'].map(type => Object.assign(new Element(), { dataset: { catalog: type } }));
+const catalogButtons = ['playlist', 'styles', 'top'].map(type => Object.assign(new Element(), { dataset: { catalog: type } }));
 get('sheet').hidden = true;
 const document = {
   title: '', activeElement: null, hidden: false, listeners: {}, documentElement: { lang: 'fr' },
@@ -59,6 +59,12 @@ const history = {
     this.index--;
     queueMicrotask(() => windowListeners.popstate?.({ state: this.state }));
   },
+  go(delta) {
+    this.gos = (this.gos || 0) + 1;
+    if (this.index + delta < 0) { this.left = true; return; }
+    this.index += delta;
+    queueMicrotask(() => windowListeners.popstate?.({ state: this.state }));
+  },
 };
 const pressBack = async () => { history.back(); await settle(); };
 
@@ -72,8 +78,10 @@ const state = () => ({ table: { id: '1', name: 'Table 1', headcount: 2, activeCo
   battle: battleIdle, catalogAvailable: true, stage: null, next: null, rules: {} });
 const response = data => ({ ok: true, json: async () => data });
 const posts = [];
+const fetched = [];
 let lyrics = { lines: ['Premier vers', '', 'Refrain'], url: 'https://www.karafun.fr/karaoke/a/b/', exact: true };
 const fetch = async (url, options = {}) => {
+  fetched.push(url);
   if (url.startsWith('/api/state?')) return response(state());
   if (url.startsWith('/api/catalog/categories?')) return response([{ name: 'Années 80', filter: 'pl_1' }]);
   if (url.startsWith('/api/catalog/songs?')) return response({ songs: [{ songId: 9, title: 'Tube', artist: 'Groupe' },
@@ -175,6 +183,105 @@ const click = (node, picks) => node.listeners.click({ target: { closest: selecto
   assert.equal(get('searchClear').hidden, true);
   assert.equal(get('searchInput').focused, true, 'le curseur reste dans la recherche');
   assert.match(get('catalogContent').innerHTML, /Années 80/, 'retour aux sélections');
+
+  // ---------------------------------------------------------- × et puces après un ajout (essai réel au bar)
+  // Recherche, titre ajouté (retour à « Mes titres »), retour au Catalogue alors
+  // que les résultats sont encore affichés : le × et les puces restent au catalogue.
+  const moves = () => history.backs + (history.gos || 0);
+  const addFromSearch = async term => {
+    get('searchInput').value = term;
+    get('searchInput').listeners.input();
+    finishTyping();
+    await settle();
+    assert.match(get('catalogContent').innerHTML, new RegExp(`Résultats pour « ${term} »`));
+    click(get('catalogContent'), { button: { dataset: { songIndex: '0' }, hasAttribute: key => key === 'data-song-index' } });
+    await settle();
+    assert.equal(get('sheet').hidden, false);
+    get('appendSong').listeners.click();
+    await settle(); await settle();
+    assert.equal(get('tab-table').hidden, false, 'après l’ajout, retour à « Mes titres »');
+    tabs[2].listeners.click({ target: tabs[2] });
+    await settle();
+    assert.equal(get('tab-catalog').hidden, false);
+    assert.match(get('catalogContent').innerHTML, /Résultats pour/, 'les résultats sont encore là');
+  };
+  await addFromSearch('que');
+  let movesBefore = moves();
+  get('searchClear').listeners.click();
+  await settle();
+  assert.equal(get('tab-catalog').hidden, false, '× : on reste sur le catalogue');
+  assert.equal(get('tab-table').hidden, true, '× : pas de retour à « Mes titres »');
+  assert.equal(get('searchInput').value, '');
+  assert.equal(get('searchClear').hidden, true);
+  assert.match(get('catalogContent').innerHTML, /Années 80/, '× : sélections affichées');
+  assert.doesNotMatch(get('catalogContent').innerHTML, /Résultats pour/, '× : anciens résultats effacés');
+  assert.equal(moves(), movesBefore, 'l’historique ne recule pas vers « Mes titres »');
+  assert.equal(history.state.tab, 'catalog');
+  assert.equal(history.state.catalog, 'categories', 'l’étape actuelle est celle des sélections');
+  await pressBack();
+  assert.equal(get('tab-table').hidden, false, 'Retour ensuite : onglet précédent');
+  await pressBack();
+  assert.equal(get('tab-catalog').hidden, false);
+  assert.equal(get('searchInput').value, 'que', 'Retour vers des résultats : la recherche est refaite');
+  assert.match(get('catalogContent').innerHTML, /Résultats pour « que »/);
+  await pressBack();
+  assert.match(get('catalogContent').innerHTML, /Années 80/);
+  assert.equal(get('searchInput').value, '');
+
+  // Même parcours, puis puce « Styles ».
+  await addFromSearch('que');
+  movesBefore = moves();
+  catalogButtons[1].listeners.click();
+  await settle();
+  assert.equal(get('tab-catalog').hidden, false, 'puce : on reste sur le catalogue');
+  assert.equal(get('tab-table').hidden, true);
+  assert.equal(catalogButtons[1].classList.contains('on'), true, 'puce Styles active');
+  assert.match(fetched.at(-1), /^\/api\/catalog\/categories\?type=styles/, 'sélections Styles chargées');
+  assert.match(get('catalogContent').innerHTML, /Années 80/);
+  assert.equal(get('searchInput').value, '');
+  assert.equal(moves(), movesBefore);
+  assert.equal(history.state.catalog, 'categories');
+  catalogButtons[0].listeners.click();
+  await settle();
+  assert.equal(catalogButtons[0].classList.contains('on'), true);
+
+  // Parcours normal : sélections → recherche → × recule d'une seule étape.
+  const selectionsStep = history.index;
+  get('searchInput').value = 'Queen';
+  get('searchInput').listeners.input();
+  finishTyping();
+  await settle();
+  assert.equal(history.index, selectionsStep + 1, 'la recherche crée une étape');
+  movesBefore = moves();
+  get('searchClear').listeners.click();
+  await settle();
+  assert.equal(moves(), movesBefore + 1, 'une seule étape en arrière');
+  assert.equal(history.index, selectionsStep, 'pas d’étape périmée laissée en place');
+  assert.match(get('catalogContent').innerHTML, /Années 80/);
+  assert.equal(get('tab-catalog').hidden, false);
+
+  // Titres d'une sélection → recherche → Retour : les titres de la sélection reviennent.
+  click(get('catalogContent'), { button: { dataset: { categoryIndex: '0' }, hasAttribute: key => key === 'data-category-index' } });
+  await settle();
+  assert.match(get('catalogContent').innerHTML, /Tube/);
+  get('searchInput').value = 'Queen';
+  get('searchInput').listeners.input();
+  finishTyping();
+  await settle();
+  const searchStep = history.index;
+  get('searchInput').value = 'Queens';
+  get('searchInput').listeners.input();
+  finishTyping();
+  await settle();
+  assert.equal(history.index, searchStep, 'nouveau terme : même étape');
+  assert.equal(history.state.term, 'Queens', 'l’étape garde le terme cherché');
+  await pressBack();
+  assert.match(get('catalogContent').innerHTML, /Tube/, 'Retour : titres de la sélection');
+  assert.doesNotMatch(get('catalogContent').innerHTML, /Bohemian/);
+  assert.equal(get('searchInput').value, '');
+  await pressBack();
+  assert.match(get('catalogContent').innerHTML, /Années 80/, 'puis les sélections');
+  assert.equal(get('tab-catalog').hidden, false);
 
   // ---------------------------------------------------------- Battle depuis le catalogue
   click(get('battleVotes'), { '[data-battle-propose]': { dataset: { battlePropose: 'alice' } } });
