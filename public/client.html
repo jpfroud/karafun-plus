@@ -1470,11 +1470,24 @@
   let exitArmedUntil = 0;
   let backTimer = null;
   let lateBackUntil = 0;      // « popstate » tardif d'une fenêtre fermée : ignoré
-  const navState = () => ({ kf: 1, tab: activeTab, catalog: catalogMode, sheet: !$('sheet').hidden });
+  // Nombre d'étapes de sous-écrans du catalogue (titres d'une sélection,
+  // résultats) au-dessus d'une étape « sélections » ; null : aucune étape
+  // « sélections » connue dessous (sous-écran retrouvé par un changement d'onglet).
+  let catDepth = 0;
+  let searchTerm = '';
+  const subScreen = mode => mode === 'songs' || mode === 'search';
+  const navState = () => ({ kf: 1, tab: activeTab, catalog: catalogMode, sheet: !$('sheet').hidden, catDepth,
+    ...(catalogMode === 'search' ? { term: searchTerm } : {}),
+    ...(catalogMode === 'songs' && currentCategory ? { category: { filter: currentCategory.filter, name: currentCategory.name } } : {}) });
   function pushNav() {
     if (!browserHistory || restoringNav) return;
     if (awaitingBack) { queuedNav = navState(); return; }
     try { browserHistory.pushState(navState(), ''); } catch (_) { /* historique indisponible */ }
+  }
+  // L'étape actuelle reflète l'écran affiché, sans en ajouter une autre.
+  function replaceNav() {
+    if (!browserHistory || restoringNav || awaitingBack || !browserHistory.state?.kf || browserHistory.state.root || browserHistory.state.sheet) return;
+    try { browserHistory.replaceState(navState(), ''); } catch (_) { /* */ }
   }
   // Fin du retrait de l'étape d'une fenêtre : par « popstate », ou après un
   // court délai si le navigateur n'en envoie pas (sinon tout resterait en attente).
@@ -1498,7 +1511,7 @@
   }
   if (browserHistory) {
     try {
-      browserHistory.replaceState({ kf: 1, root: true, tab: 'table', catalog: 'categories', sheet: false }, '');
+      browserHistory.replaceState({ kf: 1, root: true, tab: 'table', catalog: 'categories', sheet: false, catDepth: 0 }, '');
       browserHistory.pushState(navState(), '');
     } catch (_) { /* historique indisponible */ }
     window.addEventListener('popstate', event => {
@@ -1516,15 +1529,37 @@
         if (!$('sheet').hidden) closeSheet();
         const tab = target.tab || 'table';
         if (tab !== activeTab) setTab(tab);
-        if (tab === 'catalog' && target.catalog !== catalogMode &&
-            (target.catalog === 'categories' || target.catalog === 'highlights' || !target.catalog)) {
-          $('searchInput').value = '';
-          renderSearchClear();
-          showCategories(catalogType);
-        }
+        if (tab === 'catalog') restoreCatalog(target);
       } finally { restoringNav = false; }
       if (target.root) { try { browserHistory.pushState(navState(), ''); } catch (_) { /* */ } }
     });
+  }
+  // Écran du catalogue d'une étape retrouvée : sélections, titres d'une
+  // sélection ou résultats d'une recherche, rechargés si besoin.
+  function restoreCatalog(target) {
+    clearTimeout(searchTimer); // une recherche en cours de frappe est abandonnée
+    const screen = target.catalog || 'categories';
+    const category = screen === 'songs' && target.category?.filter ? target.category : null;
+    const term = screen === 'search' && target.term ? String(target.term) : '';
+    if (category) {
+      if (catalogMode !== 'songs' || currentCategory?.filter !== category.filter) {
+        $('searchInput').value = '';
+        renderSearchClear();
+        currentCategory = { filter: category.filter, name: category.name };
+        showCategory(null, false);
+      }
+    } else if (term) {
+      if (catalogMode !== 'search' || searchTerm !== term || $('searchInput').value.trim() !== term) {
+        $('searchInput').value = term;
+        renderSearchClear();
+        searchSongs(term);
+      }
+    } else if (screen !== catalogMode) {
+      $('searchInput').value = '';
+      renderSearchClear();
+      showCategories(catalogType);
+    }
+    catDepth = target.catDepth !== undefined ? target.catDepth : subScreen(catalogMode) ? null : 0;
   }
 
   function setTab(name) {
@@ -1538,6 +1573,8 @@
     });
     for (const tab of ['table', 'queue', 'catalog']) $('tab-' + tab).hidden = tab !== name;
     if (name === 'catalog' && !categories.length && catalogMode === 'categories') showCategories(catalogType);
+    // Catalogue retrouvé sur un sous-écran : l'étape d'avant n'est pas ses sélections.
+    if (changed && name === 'catalog') catDepth = subScreen(catalogMode) ? null : 0;
     if (changed) pushNav();
   }
 
@@ -1671,7 +1708,7 @@
     const entering = catalogMode !== 'songs';
     catalogMode = 'songs';
     if (!append) { songs = []; totalSongs = 0; showCatalogView(catalogMessage(() => t('Chargement des chansons…'))); }
-    if (entering) pushNav();
+    if (entering && !restoringNav) { catDepth = catDepth == null ? null : catDepth + 1; pushNav(); }
     try {
       const data = await request(`/api/catalog/songs?filter=${encodeURIComponent(currentCategory.filter)}&offset=${songs.length}`);
       if (number !== catalogRequest) return;
@@ -1693,7 +1730,10 @@
     const number = ++catalogRequest;
     const entering = catalogMode !== 'search';
     catalogMode = 'search';
-    if (entering) pushNav();
+    searchTerm = term;
+    if (restoringNav) { /* étape retrouvée : rien à ajouter */ }
+    else if (entering) { catDepth = catDepth == null ? null : catDepth + 1; pushNav(); }
+    else replaceNav();
     showCatalogView(catalogMessage(() => t('Recherche…')));
     request(`/api/search?q=${encodeURIComponent(term)}`).then(data => {
       if (number !== catalogRequest) return;
@@ -1720,16 +1760,21 @@
     $('searchInput').focus();
   });
 
-  // Retour aux sélections : si l'écran actuel est une étape de l'historique
-  // (titres d'une sélection, résultats), on la quitte comme le bouton Retour.
+  // Retour aux sélections : si l'écran actuel est un sous-écran posé sur une
+  // étape « sélections » (catDepth > 0), on recule jusqu'à elle comme le bouton
+  // Retour. Sinon (catalogue retrouvé par un onglet), reculer ramènerait à
+  // l'onglet précédent : les sélections s'affichent sur l'étape actuelle.
   function backToSelections(type = catalogType) {
     setCatalogType(type);
     const top = browserHistory?.state;
-    if (!restoringNav && top?.kf && top.tab === 'catalog' && (top.catalog === 'songs' || top.catalog === 'search') &&
-        (catalogMode === 'songs' || catalogMode === 'search')) {
-      try { browserHistory.back(); return; } catch (_) { /* affichage direct ci-dessous */ }
+    const depth = Number(top?.catDepth);
+    if (!restoringNav && !awaitingBack && top?.kf && top.tab === 'catalog' && !top.sheet && subScreen(top.catalog) &&
+        subScreen(catalogMode) && depth > 0 && depth === catDepth) {
+      try { browserHistory.go(-depth); return; } catch (_) { /* affichage direct ci-dessous */ }
     }
-    showCategories(type);
+    showCategories(type); // vide aussi la recherche et son ×
+    catDepth = 0;
+    replaceNav();
   }
 
   document.querySelectorAll('[data-catalog]').forEach(button => {
