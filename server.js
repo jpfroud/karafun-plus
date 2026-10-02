@@ -2765,3 +2765,8 @@ async function main() {
 }
 
 main().catch(e => { appLog(`Impossible de démarrer : ${e.message}`); process.exitCode = 1; });
+
+// Mesure de couverture des tests (NODE_V8_COVERAGE, voir test/coverage.js) :
+// relevé chaque seconde, pour qu'un serveur arrêté brutalement par un test
+// garde ses mesures. Sans effet en soirée.
+if (process.env.NODE_V8_COVERAGE) setInterval(() => require('v8').takeCoverage(), 1000).unref();

@@ -15,7 +15,7 @@ const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)][0]?.[1];
 assert.ok(script, 'script de la page client');
 assert.match(html, /<script src="\/client-i18n\.js"><\/script>\s*<script>/, 'les traductions sont chargées avant la page');
 const loaded = { window: {} };
-vm.runInNewContext(fs.readFileSync(path.join(root, 'public', 'client-i18n.js'), 'utf8'), loaded);
+vm.runInNewContext(fs.readFileSync(path.join(root, 'public', 'client-i18n.js'), 'utf8'), loaded, { filename: 'client-i18n.js' });
 const english = loaded.window.CLIENT_TRANSLATIONS?.en;
 assert.ok(english?.texts && english.errors && english.errorPatterns, 'dictionnaire anglais');
 

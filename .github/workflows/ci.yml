@@ -28,8 +28,19 @@ jobs:
       - run: npm ci
       - name: Construire Timefold et les notices des dependances
         run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:2.7.1:add-third-party org.codehaus.mojo:license-maven-plugin:2.7.1:download-licenses
-      - name: Tests automatiques hors ligne
-        run: node test/run-offline.js
+      # Même suite que node test/run-offline.js, avec la mesure de couverture
+      # des lignes : la CI échoue si un test échoue ou si la couverture baisse
+      # sous le seuil.
+      - name: Tests automatiques hors ligne et couverture
+        run: node test/coverage.js --min-lines 80
+      - name: Garder le rapport de couverture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: couverture-${{ github.sha }}
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Tester le hook gstack
         shell: pwsh
         run: .\test\gstack-hook.test.ps1
