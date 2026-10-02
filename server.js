@@ -1764,9 +1764,34 @@ async function spotifyTick() {
   } finally { spotifyBusy = false; }
 }
 
+// Le catalogue essaie les deux domaines KaraFun comme la recherche, en gardant
+// d'une requête à l'autre celui qui a répondu : refait seulement si le code ou
+// la liste des domaines change. Au bar, un des domaines refusait les sélections (HTTP 403).
+let catalogApi = null;
+let catalogKey = '';
+const CATALOG_FAILURES = { timeout: 'délai dépassé', json: 'réponse illisible', invalid: 'réponse inattendue', network: 'réseau injoignable' };
 function catalog() {
   if (DEMO || !CODE) throw new Error('Catalogue KaraFun indisponible en mode démo ou sans code.');
-  return new Catalog({ base: bridge?.base || 'https://www.karafun.fr', code: CODE });
+  const known = bridge?.bases?.length ? bridge.bases : ['https://www.karafun.fr', 'https://www.karafun.com'];
+  const first = known.includes(bridge?.base) ? bridge.base : known[0];
+  const bases = [first, ...known.filter(base => base !== first)];
+  const key = `${CODE}|${[...bases].sort().join(' ')}`;
+  if (!catalogApi || catalogKey !== key) {
+    // Journal : le domaine et le statut seulement, jamais l'URL (elle contient le code).
+    catalogApi = new Catalog({ bases, code: CODE, onFailure: ({ host, status, kind }) =>
+      appLog(`Catalogue KaraFun : échec sur ${host} (${status ? `HTTP ${status}` : CATALOG_FAILURES[kind] || kind}).`) });
+    catalogKey = key;
+  }
+  return catalogApi;
+}
+
+// Message montré aux téléphones quand aucun domaine KaraFun ne donne le catalogue.
+function catalogPhoneError(e) {
+  if (!e?.catalogUnavailable) return e.message;
+  if (e.status) return `Catalogue KaraFun indisponible pour le moment (refus HTTP ${e.status}). La recherche reste possible.`;
+  if (e.kind === 'timeout') return 'Catalogue KaraFun indisponible pour le moment (délai dépassé). La recherche reste possible.';
+  if (e.kind === 'json') return 'Catalogue KaraFun indisponible pour le moment (réponse illisible). La recherche reste possible.';
+  return 'Catalogue KaraFun indisponible pour le moment (réseau injoignable). La recherche reste possible.';
 }
 
 function clearQueue() {
@@ -2588,7 +2613,7 @@ const server = http.createServer(async (req, res) => {
           const page = await c.songs(u.searchParams.get('filter'), Number(u.searchParams.get('offset') || 0));
           rememberBattleSongs(page.songs);
           return send(res, 200, page);
-        } catch (e) { return send(res, 502, { error: e.message }); }
+        } catch (e) { return send(res, 502, { error: catalogPhoneError(e) }); }
       }
       m = /^\/photo\/([a-f0-9]+)$/.exec(p);
       if (m) { const pp = sched.people.get(m[1]); if (!pp || !pp.photo) return send(res, 404, ''); return send(res, 200, pp.photo.buf, pp.photo.type, { 'Cache-Control': 'max-age=60' }); }
