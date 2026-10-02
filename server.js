@@ -306,6 +306,9 @@ function presenceCandidate({ current, upcoming } = analyze()) {
     return first ? { ...first.sel, source: 'karafun' } : null;
   }
   if (pending && !pending.cancelled) return { ...pending.sel, source: 'envoi' };
+  // Après la fermeture, le prochain passage prévu ne sera pas envoyé : ne pas
+  // demander sa présence (ni le sauter faute de réponse).
+  if (closingBlocksStart(current)) return null;
   const onStage = tracked.find(tr => isOnStage(tr, current));
   const excluded = onStage?.sel.ids || [];
   // L'ordre local est immédiat et Timefold ne déplace jamais le prochain
@@ -370,7 +373,9 @@ function restore(tr, reason) {
 // son ticket reprend sa place. Un report « Pas prêt » s'applique ensuite.
 function restorePulled(tr) {
   sched.requeueUnplayed(tr.sel);
-  sched.note(tr.pulled.reason === 'duo' ?
+  sched.note(tr.pulled.reason === 'closing' ?
+    `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun : il passerait après la fermeture. Il repartira si le bar décale l’heure.` :
+    tr.pulled.reason === 'duo' ?
     `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun après le duo improvisé : il repassera plus tard` :
     `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun : ${tr.sel.names.join(' & ')} laisse passer la chanson suivante`, 'skip');
 }
@@ -420,7 +425,7 @@ function syncBattle({ current, upcoming, q }, now) {
     } else if (settings.auto &&
         (bridge.protocol !== 'kcs' || bridge.raw?.configuration) &&
         !upcoming.length && !pending && !recoveredPending && !settings.queueClearPending &&
-        !sched.reservedNext && bridge.permissions?.addToQueue !== false) {
+        !sched.reservedNext && bridge.permissions?.addToQueue !== false && !closingBlocksStart(current, 0, now)) {
       // Le passage suivant déjà garanti garde sa place. Une Battle approuvée
       // attend qu'il ait chanté avant d'occuper la prochaine case libre.
       battleVote.beginAutomation(q.map(item => String(item.queueId)));
@@ -730,7 +735,9 @@ function sync() {
     } else if (tr.pulled && qids.has(tr.queueId) && !tr.pulled.alerted && now - tr.pulled.at >= PULL_ALERT_MS) {
       // Retrait ignoré : rien d'autre ne part tant que ce titre attend en tête.
       tr.pulled.alerted = true;
-      sched.note(`KaraFun n’a pas retiré « ${tr.sel.song.title} » (${tr.sel.label}) : retire-le dans KaraFun, ou lance-le si ${tr.sel.names.join(' & ')} est prêt.`, 'error');
+      sched.note(tr.pulled.reason === 'closing' ?
+        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${tr.sel.label}), qui passerait après la fermeture : retire-le dans KaraFun. Il ne sera pas lancé automatiquement.` :
+        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${tr.sel.label}) : retire-le dans KaraFun, ou lance-le si ${tr.sel.names.join(' & ')} est prêt.`, 'error');
     }
     if (onStage && !tr.startedAt) {
       tr.startedAt = Date.now();
@@ -798,12 +805,17 @@ function sync() {
   }
   const awaitingPresence = presenceMissing(presence).length > 0;
   const canPush = !current || Date.now() - curSince >= settings.pushDelaySec * 1000;
-  // Fermeture : le titre suivant commencerait à la fin de celui en cours.
-  const slot = sched.avgSlotSec() * 1000;
-  const live = current ? tracked.find(tr => isOnStage(tr, current)) : null;
-  const closingHold = upcoming.length === 0 && !pending &&
-    closingBlocks(current ? (live?.startedAt ? live.startedAt + slot : now + slot / 2) : now);
-  if (closingHold && settings.auto && sched.readyView().some(turn => turn.song)) noteClosingStop();
+  // Heure de fermeture : nos titres déjà chargés qui commenceraient après
+  // sont retirés de KaraFun (ils reviennent si le bar décale l'heure), et
+  // rien d'autre n'est envoyé. Le titre en cours finit normalement.
+  upcoming.forEach((item, ahead) => {
+    const tr = tracked.find(x => String(x.queueId) === String(item.queueId));
+    if (!tr || tr.cancelled || tr.pulled || tr.absent || tr.startedAt || !closingBlocksStart(current, ahead, now)) return;
+    try { pullFromKaraFun(tr, 'closing'); noteClosingStop(); }
+    catch (error) { appLog(`Retrait KaraFun (fermeture) en attente : ${error.message}`); }
+  });
+  const closingHold = closingBlocksStart(current, upcoming.length, now);
+  if (closingHold && settings.auto && !pending && sched.readyView().some(turn => turn.song)) noteClosingStop();
   const staleTracked = tracked.some(tr => !qids.has(tr.queueId));
   const emptySettled = emptySince === null || now - emptySince >= 1000;
   if (settings.auto && !settings.queueClearPending && !battleHoldsQueue() && !recoveredPending && !awaitingPresence &&
@@ -837,7 +849,7 @@ function sync() {
         (!battleVote.automation || battleVote.automation.status === 'released' ||
           (battleVote.automation.status === 'waiting' && !isBattleItem(upcoming[0]))) &&
         present && Date.now() - idleSince >= settings.playDelaySec * 1000) {
-      if (closingBlocks(Date.now())) noteClosingStop();
+      if (closingBlocksStart(null)) noteClosingStop();
       else {
         idleSince = Date.now() + 20000;
         playKaraFun().catch(error => appLog(`Lancement automatique impossible : ${error.message}`));
@@ -1639,18 +1651,24 @@ function closingView(queue, firstFreeAt, slot) {
     afterCount: queue.length - fitCount };
 }
 
-// Fermeture du bar : un titre ne part vers KaraFun et ne démarre que si au
-// moins sa moitié passe avant l'heure annoncée, comme dans la file affichée.
-// Le bar peut toujours lancer un titre lui-même, ou décaler l'heure.
-function closingBlocks(startAt) {
-  const at = closingAt();
-  return at != null && startAt + sched.avgSlotSec() * 500 > at;
+// Fermeture du bar : un titre qui démarrerait dans `ahead` passages ne part
+// vers KaraFun et ne démarre que si au moins sa moitié passe avant l'heure,
+// comme le repère des téléphones. Un titre en cours qui déborde repousse
+// l'estimation : un titre écarté ne revient pas sans décalage de l'heure.
+// Le bar peut toujours lancer un titre lui-même.
+function closingBlocksStart(current, ahead = 0, now = Date.now()) {
+  const at = closingAt(now);
+  if (at == null) return false;
+  const slot = sched.avgSlotSec() * 1000;
+  const live = current ? tracked.find(tr => isOnStage(tr, current)) : null;
+  const freeAt = !current ? now : live?.startedAt ? Math.max(now, live.startedAt + slot) : now + slot / 2;
+  return freeAt + ahead * slot + slot / 2 > at;
 }
 let closingNoted = null;
 function noteClosingStop() {
   if (closingNoted === settings.closingAt) return;
   closingNoted = settings.closingAt;
-  sched.note(`Fermeture à ${hhmm(settings.closingAt)} : plus de nouveau titre lancé dans KaraFun. Spotify reprend s’il est connecté ; décale l’heure pour un titre de plus.`, 'staff');
+  sched.note(`Fermeture à ${hhmm(settings.closingAt)} : plus aucun titre n’est envoyé ni lancé dans KaraFun. Spotify reprend quand la scène est libre ; « +10 min » relance la file.`, 'staff');
 }
 
 // Le titre part vers KaraFun avec ses chanteurs déjà fixés : pas de duo ajouté.
@@ -1695,7 +1713,7 @@ function karaokeOutlook() {
   if (!bridge?.ready) return 'unknown';
   const { current, upcoming } = analyze();
   if (current) return 'singing';
-  if (closingBlocks(Date.now())) return 'silent';
+  if (closingBlocksStart(null)) return 'silent';
   if (upcoming.length || (pending && !pending.cancelled)) return 'between';
   if (settings.auto && !settings.queueClearPending && sched.readyView().some(turn => turn.song)) return 'between';
   return 'silent';
@@ -1745,7 +1763,10 @@ function playKaraFun() {
 async function spotifyTick() {
   if (!spotify.connected || spotifyBusy) return;
   const karaoke = karaokeOutlook();
-  const action = spotifyAutomation.step(karaoke, spotify.config);
+  // Fermeture atteinte, scène libre : la musique du bar revient, même si la
+  // reprise automatique est coupée (une pause faite au bar reste respectée).
+  const closed = karaoke === 'silent' && closingBlocksStart(null);
+  const action = spotifyAutomation.step(karaoke, closed ? { ...spotify.config, autoResume: true } : spotify.config);
   // Après un échec, Spotify n'est pas rappelé avant le délai ; seule la pause
   // d'un titre qui démarre passe outre (sauf si Spotify demande d'attendre).
   if (spotify.blocked || (spotify.waiting && action !== 'pause') ||

@@ -819,6 +819,38 @@ test('une file composée de tickets sans chanson ne promet ni rang ni heure', ()
   assert.equal(state.me.eta, null);
 });
 
+// Regression: après l'heure de fermeture, la Battle et les demandes « Je suis
+// là » continuaient comme si la soirée durait encore.
+test('fermeture atteinte : la Battle approuvée n’est pas envoyée à KaraFun', () => {
+  const f = harness();
+  f.settings.auto = true;
+  f.settings.closingAt = Date.now() - 60000;
+  const choice = song(5091, 'Battle trop tard');
+  f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client'],
+    songs: [choice], proposerChoice: choice.songId });
+  assert.equal(f.battleVote.view().phase, 'requested');
+  f.sync(); f.sync();
+  assert.deepEqual(f.battleAdds, [], 'aucune Battle ajoutée après l’heure');
+  assert.equal(f.adds.length, 0);
+});
+
+test('fermeture atteinte : plus de demande « Je suis là », personne n’est sauté ni retiré', () => {
+  const f = harness();
+  f.settings.auto = true;
+  f.settings.presenceGraceSec = 0;
+  f.settings.presenceMaxSkips = 1;
+  f.sched.opts.requirePresence = true;
+  const a = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(a, song(520));
+  f.settings.closingAt = Date.now() - 60000;
+  assert.equal(f.presenceCandidate(), null);
+  assert.equal(f.publicState(a, '1').tablePeople[0].needConfirm, false);
+  for (let i = 0; i < 4; i++) f.sync();
+  assert.equal(a.song?.songId, 520, 'son titre reste prévu');
+  assert.ok(!f.sched.log.some(l => /n'a pas confirmé sa présence/.test(l.msg)));
+  assert.equal(f.adds.length, 0);
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {

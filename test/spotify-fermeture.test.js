@@ -222,9 +222,9 @@ test('fermeture : un titre qui passerait après l’heure ne part pas vers KaraF
   f.sync(); await wait(1100); f.sync();
   assert.equal(f.getPending(), null, 'rien n’est envoyé');
   assert.deepEqual(kf.filter(c => c[0] === 'add'), []);
-  assert.equal(f.sched.log.filter(line => /Fermeture/.test(line.msg) && /plus de nouveau titre/.test(line.msg)).length, 1);
+  assert.equal(f.sched.log.filter(line => /Fermeture/.test(line.msg) && /plus aucun titre n’est envoyé/.test(line.msg)).length, 1);
   f.sync();
-  assert.equal(f.sched.log.filter(line => /Fermeture/.test(line.msg) && /plus de nouveau titre/.test(line.msg)).length, 1, 'annoncé une fois');
+  assert.equal(f.sched.log.filter(line => /Fermeture/.test(line.msg) && /plus aucun titre n’est envoyé/.test(line.msg)).length, 1, 'annoncé une fois');
   // Le bar décale l'heure : l'envoi reprend.
   await f.handlers['POST /api/staff/closing'](null, null, { extendMin: 30 });
   f.sync();
