@@ -1,8 +1,10 @@
 'use strict';
 const assert = require('node:assert/strict');
-const { BattleVote, COOLDOWN_MS, MIN_VOTERS } = require('../battle-vote');
+const { BattleVote, COOLDOWN_MS, REJECTED_COOLDOWN_MS, MIN_VOTERS } = require('../battle-vote');
 
 assert.equal(COOLDOWN_MS, 15 * 60_000, 'le délai Battle par défaut est quinze minutes');
+assert.equal(REJECTED_COOLDOWN_MS, 5 * 60_000, 'après un refus, cinq minutes seulement');
+assert.equal(new BattleVote().view().rejectedCooldownMinutes, 5);
 assert.equal(MIN_VOTERS, 5, 'cinq votants au minimum par défaut');
 assert.equal(new BattleVote().view().cooldownMinutes, 15);
 assert.equal(new BattleVote().view().voteMinutes, 5, 'vote de cinq minutes par défaut');
@@ -11,7 +13,7 @@ function fixture(extra = {}) {
   let time = 1_000_000;
   const events = [];
   const opts = { now: () => time, voteDurationMs: 120_000, minVoters: 3,
-    cooldownMs: 600_000, onChange: event => events.push(event), ...extra };
+    cooldownMs: 600_000, rejectedCooldownMs: 240_000, onChange: event => events.push(event), ...extra };
   return { opts, events, clock: ms => { time += ms; }, time: () => time };
 }
 
@@ -69,7 +71,7 @@ function fixture(extra = {}) {
   const state = vote.view();
   assert.equal(state.phase, 'cooldown');
   assert.equal(state.outcome, 'quorum', 'deux votes pour, mais moins de trois votants');
-  assert.equal(state.cooldownUntil, 1_720_000, 'échec du vote : pause à partir de la clôture');
+  assert.equal(state.cooldownUntil, 1_360_000, 'échec du vote : pause courte à partir de la clôture');
   assert.ok(f.events.includes('quorum'));
 }
 
@@ -83,8 +85,8 @@ function fixture(extra = {}) {
   const state = vote.vote({ personId: 'e', choice: 'no' });
   assert.equal(state.phase, 'cooldown', 'dernier votant : le vote se clôt sans attendre le minuteur');
   assert.equal(state.outcome, 'rejected', '2 pour, 3 contre');
-  assert.equal(state.cooldownUntil, 1_600_000);
-  f.clock(599_999); assert.equal(vote.view().phase, 'cooldown');
+  assert.equal(state.cooldownUntil, 1_240_000, 'vote refusé : la salle peut retenter plus tôt');
+  f.clock(239_999); assert.equal(vote.view().phase, 'cooldown');
   f.clock(1); assert.equal(vote.view().phase, 'idle');
 }
 
@@ -149,7 +151,7 @@ function fixture(extra = {}) {
   const resumedAgain = new BattleVote({ ...f.opts, saved: resumed.serialize() });
   const dismissed = resumedAgain.resolve({ outcome: 'dismissed' });
   assert.equal(dismissed.phase, 'cooldown');
-  assert.equal(dismissed.cooldownUntil, f.time() + 600_000, 'Battle annulée : la pause part de l’annulation');
+  assert.equal(dismissed.cooldownUntil, f.time() + 240_000, 'Battle écartée : pause courte depuis l’annulation');
   assert.throws(() => resumedAgain.propose({ personId: 'c', personName: 'C', eligiblePersonIds: ['a', 'b', 'c'] }), /délai/);
 }
 
@@ -314,6 +316,33 @@ function fixture(extra = {}) {
   saved.version = 3;
   const resumed = new BattleVote({ ...f.opts, saved });
   assert.equal(resumed.view().threshold, 3);
+}
+
+{
+  // Retours du bar : une Battle refusée se repropose beaucoup plus tôt
+  // qu'après une Battle jouée ; les deux délais se règlent séparément.
+  const f = fixture(), vote = new BattleVote(f.opts);
+  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b', 'c', 'd'] });
+  vote.vote({ personId: 'b', choice: 'no' });
+  vote.vote({ personId: 'c', choice: 'no' });
+  const refused = vote.vote({ personId: 'd', choice: 'no' });
+  assert.equal(refused.outcome, 'rejected');
+  assert.equal(refused.cooldownUntil, f.time() + 240_000);
+  assert.equal(vote.setCooldownMinutes(30).cooldownUntil, f.time() + 240_000,
+    'le délai après une Battle jouée ne touche pas une pause de refus');
+  assert.equal(vote.setRejectedCooldownMinutes(2).cooldownUntil, f.time() + 120_000,
+    'changer le délai après refus recalcule la pause en cours');
+  assert.throws(() => vote.setRejectedCooldownMinutes(0), /1 à 120/);
+  const restored = new BattleVote({ ...f.opts, saved: vote.serialize() });
+  assert.equal(restored.view().rejectedCooldownMinutes, 2, 'réglage conservé après redémarrage');
+  assert.equal(restored.view().cooldownMinutes, 30);
+  f.clock(120_000);
+  assert.equal(restored.view().phase, 'idle', 'nouveau vote possible deux minutes après le refus');
+  // Une Battle jouée garde la pause longue.
+  restored.setMinVoters(1);
+  restored.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a'] });
+  restored.resolve({ outcome: 'done' });
+  assert.equal(restored.finishManual().cooldownUntil, f.time() + 30 * 60_000);
 }
 
 console.log('Battle collective : minuteur, votants minimum, décision des votants, pause après la Battle et lancement par le bar OK');

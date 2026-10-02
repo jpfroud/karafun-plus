@@ -131,6 +131,12 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       fail('passage physique mal formé');
     }
     const person = clone(p);
+    // Report « Pas prêt » abîmé : la personne garde simplement sa place.
+    const d = person.deferral;
+    if (d != null && !(d && typeof d === 'object' && typeof d.entryId === 'string' &&
+        Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= 10 &&
+        Number.isInteger(d.total) && d.total >= 1 && d.total <= 10 && Number.isFinite(d.until) &&
+        Array.isArray(d.ids) && d.ids.length >= 1 && d.ids.every(id => typeof id === 'string'))) person.deferral = null;
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(photo.type)) fail('photo mal formée');
@@ -247,7 +253,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     ('presenceGraceSec' in restoredSettings && (!Number.isInteger(restoredSettings.presenceGraceSec) ||
       restoredSettings.presenceGraceSec < 10 || restoredSettings.presenceGraceSec > 300)) ||
     ('presenceMaxSkips' in restoredSettings && (!Number.isInteger(restoredSettings.presenceMaxSkips) ||
-      restoredSettings.presenceMaxSkips < 1 || restoredSettings.presenceMaxSkips > 10))) fail('réglages mal formés');
+      restoredSettings.presenceMaxSkips < 1 || restoredSettings.presenceMaxSkips > 10)) ||
+    (restoredSettings.closingAt != null && !Number.isFinite(restoredSettings.closingAt))) fail('réglages mal formés');
 
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||

@@ -6,6 +6,9 @@ const { randomUUID } = require('node:crypto');
 
 const VOTE_DURATION_MS = 5 * 60 * 1000;
 const COOLDOWN_MS = 15 * 60 * 1000;
+// Vote refusé ou Battle écartée par le bar : la salle peut retenter plus tôt.
+const REJECTED_COOLDOWN_MS = 5 * 60 * 1000;
+const REFUSED = new Set(['quorum', 'expired', 'rejected', 'dismissed']);
 const MIN_VOTERS = 5;
 
 // Règles du vote : il dure un temps fixe (compte à rebours visible) et se
@@ -16,15 +19,19 @@ const MIN_VOTERS = 5;
 // proposé. Le vote se clôt plus tôt si tout le monde a voté.
 class BattleVote {
   constructor({ now = Date.now, voteDurationMs = VOTE_DURATION_MS,
-    cooldownMs = COOLDOWN_MS, minVoters = MIN_VOTERS, onChange = () => {}, saved = null } = {}) {
+    cooldownMs = COOLDOWN_MS, rejectedCooldownMs = REJECTED_COOLDOWN_MS,
+    minVoters = MIN_VOTERS, onChange = () => {}, saved = null } = {}) {
     if (!Number.isSafeInteger(voteDurationMs) || voteDurationMs < 1 ||
         !Number.isSafeInteger(cooldownMs) || cooldownMs < 1) throw new Error('Durées de vote invalides.');
     this.now = now;
     this.voteDurationMs = saved?.voteDurationMs ?? voteDurationMs;
     this.cooldownMs = saved?.cooldownMs ?? cooldownMs;
+    this.rejectedCooldownMs = saved?.rejectedCooldownMs ?? rejectedCooldownMs;
     this.minVoters = saved?.minVoters ?? minVoters;
     if (!Number.isSafeInteger(this.cooldownMs) || this.cooldownMs < 1 ||
         this.cooldownMs > 120 * 60 * 1000) throw new Error('Délai entre Battles invalide.');
+    if (!Number.isSafeInteger(this.rejectedCooldownMs) || this.rejectedCooldownMs < 1 ||
+        this.rejectedCooldownMs > 120 * 60 * 1000) throw new Error('Délai après un refus de Battle invalide.');
     if (!Number.isSafeInteger(this.voteDurationMs) || this.voteDurationMs < 1 ||
         this.voteDurationMs > 10 * 60 * 1000) throw new Error('Durée de vote invalide.');
     if (!Number.isSafeInteger(this.minVoters) || this.minVoters < 1 || this.minVoters > 100) {
@@ -63,10 +70,15 @@ class BattleVote {
 
   _changed(event) { this.onChange(event, this.viewWithoutTick()); }
 
+  // Pause avant le prochain vote : courte si la Battle n'a pas eu lieu.
+  _pauseAfter(outcome) {
+    return REFUSED.has(outcome) ? this.rejectedCooldownMs : this.cooldownMs;
+  }
+
   _cooldown(outcome, time) {
     this.ballot.phase = 'cooldown';
     this.ballot.outcome = outcome;
-    this.ballot.cooldownUntil = time + this.cooldownMs;
+    this.ballot.cooldownUntil = time + this._pauseAfter(outcome);
     this.lastOutcome = { id: this.ballot.id, outcome, at: time,
       proposalName: this.ballot.proposalName, selectedSong: this.ballot.selectedSong || null };
     this._changed(outcome);
@@ -265,8 +277,9 @@ class BattleVote {
     this.ballot.phase = 'cooldown';
     this.ballot.outcome = outcome;
     this.ballot.resolvedAt = time;
-    // Une Battle encore à jouer fixera la pause à sa fin (voir tick).
-    this.ballot.cooldownUntil = this._battlePending() ? null : time + this.cooldownMs;
+    // Une Battle encore à jouer fixera la pause à sa fin (voir tick). Une
+    // Battle écartée par le bar n'a pas eu lieu : pause courte.
+    this.ballot.cooldownUntil = this._battlePending() ? null : time + this._pauseAfter(outcome);
     this.lastOutcome = { id: this.ballot.id, outcome, at: time,
       proposalName: this.ballot.proposalName, selectedSong: this.ballot.selectedSong || null };
     this._changed(outcome);
@@ -365,12 +378,30 @@ class BattleVote {
     }
     if (this.cooldownMs === value * 60 * 1000) return this.view();
     this.cooldownMs = value * 60 * 1000;
-    if (this.ballot?.phase === 'cooldown' && this.ballot.cooldownUntil != null) {
-      const base = this.ballot.battleEndedAt || this.ballot.resolvedAt || this.lastOutcome?.at || this.now();
-      this.ballot.cooldownUntil = base + this.cooldownMs;
-    }
+    this._replanCooldown(false);
     this._changed('settings');
     return this.view();
+  }
+
+  // Pause après un vote refusé ou une Battle écartée (5 minutes par défaut).
+  setRejectedCooldownMinutes(minutes) {
+    const value = Number(minutes);
+    if (!Number.isInteger(value) || value < 1 || value > 120) {
+      throw new Error('Le délai après un refus de Battle doit être de 1 à 120 minutes.');
+    }
+    if (this.rejectedCooldownMs === value * 60 * 1000) return this.view();
+    this.rejectedCooldownMs = value * 60 * 1000;
+    this._replanCooldown(true);
+    this._changed('settings');
+    return this.view();
+  }
+
+  // Un réglage modifié s'applique aussi à la pause en cours du même type.
+  _replanCooldown(refused) {
+    if (this.ballot?.phase !== 'cooldown' || this.ballot.cooldownUntil == null ||
+        REFUSED.has(this.ballot.outcome) !== refused) return;
+    const base = this.ballot.battleEndedAt || this.ballot.resolvedAt || this.lastOutcome?.at || this.now();
+    this.ballot.cooldownUntil = base + this._pauseAfter(this.ballot.outcome);
   }
 
   setVoteMinutes(minutes) {
@@ -405,7 +436,7 @@ class BattleVote {
     if (!b) return { phase: 'idle', yesVotes: 0, noVotes: 0, eligible: 0,
       threshold: 0, voters: 0, minVoters: this.minVoters, voteMinutes: this.voteDurationMs / 60000,
       closesAt: null, cooldownUntil: null, requestedAt: null,
-      cooldownMinutes: this.cooldownMs / 60000,
+      cooldownMinutes: this.cooldownMs / 60000, rejectedCooldownMinutes: this.rejectedCooldownMs / 60000,
       proposalName: null, suggestedSong: null, selectedSong: null, songOptions: [],
       mode: null, eligiblePersonIds: [],
       votedPersonIds: [], lastOutcome: this.lastOutcome,
@@ -423,7 +454,7 @@ class BattleVote {
       battlePending: this._battlePending(), closedBy: b.closedBy || null,
       closesAt: b.closesAt, cooldownUntil: b.cooldownUntil,
       requestedAt: b.requestedAt, outcome: b.outcome,
-      cooldownMinutes: this.cooldownMs / 60000,
+      cooldownMinutes: this.cooldownMs / 60000, rejectedCooldownMinutes: this.rejectedCooldownMs / 60000,
       eligiblePersonIds: [...b.eligiblePersonIds],
       votedPersonIds: b.votes.map(([id]) => id), lastOutcome: this.lastOutcome,
       automation: this.automation ? { status: this.automation.status,
@@ -434,7 +465,8 @@ class BattleVote {
 
   serialize() {
     this.tick();
-    return { version: 4, cooldownMs: this.cooldownMs, voteDurationMs: this.voteDurationMs,
+    return { version: 4, cooldownMs: this.cooldownMs, rejectedCooldownMs: this.rejectedCooldownMs,
+      voteDurationMs: this.voteDurationMs,
       minVoters: this.minVoters,
       ballot: this.ballot ? structuredClone(this.ballot) : null,
       automation: this.automation ? structuredClone(this.automation) : null,
@@ -442,4 +474,4 @@ class BattleVote {
   }
 }
 
-module.exports = { BattleVote, VOTE_DURATION_MS, COOLDOWN_MS, MIN_VOTERS };
+module.exports = { BattleVote, VOTE_DURATION_MS, COOLDOWN_MS, REJECTED_COOLDOWN_MS, MIN_VOTERS };

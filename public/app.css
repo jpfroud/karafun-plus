@@ -370,3 +370,19 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .table-card-head { flex-wrap: wrap; }
   .table-card .table-name-editor { flex-basis: 48%; }
 }
+
+/* ---------------- champ de recherche avec bouton × (client et bar) */
+.search-field { position: relative; }
+.search-field input { padding-right: 46px; }
+.search-field input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
+.clear-input { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 38px; height: 38px; border: 0; border-radius: 50%; background: var(--surface-2); color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.clear-input:hover, .clear-input:focus-visible { color: var(--text); outline: 2px solid var(--accent-2); }
+.staff .search-field input { padding-right: 42px; }
+.staff .clear-input { width: 32px; height: 32px; font-size: 18px; }
+
+/* ---------------- fermeture du bar et Spotify (page du bar) */
+.closing-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.closing-panel input[type=time] { min-height: 36px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; color: inherit; }
+.queue-closing { padding: 8px 10px; margin: 6px 0; border-radius: 10px; background: rgba(255,176,32,.12); color: var(--warn); font-size: 13px; font-weight: 700; text-align: center; }
+.spotify-panel code { font-size: 12px; overflow-wrap: anywhere; }
+.spotify-panel select { width: auto; min-width: 220px; }

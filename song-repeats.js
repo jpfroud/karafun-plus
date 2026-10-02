@@ -56,9 +56,12 @@ function songNotice({ song, entryId = null, queue = [], played = [], now = Date.
   const recent = lastPlay(played, song, now, windowMs);
   const own = entryId ? queue.find(line => songOf(line)?.entryId === entryId) : null;
   const key = songKey(song);
+  // Un titre encore en attente (hors KaraFun) peut recevoir une demande de duo.
   const queued = queue.filter(line => line !== own && sameKey(songKey(songOf(line)), key)).map(line => ({
     pos: line.pos, eta: line.eta || null, name: line.name || null,
     before: own ? line.pos < own.pos : null,
+    ownerId: line.source === 'helper' && line.kind !== 'duo' ? line.id || null : null,
+    entryId: line.source === 'helper' && line.kind !== 'duo' ? songOf(line)?.entryId || null : null,
   }));
   if (!recent && !queued.length) return null;
   return {

@@ -14,10 +14,10 @@ function run(file, env = {}) {
 (async () => {
   for (const f of ['check-inline.js','scheduler.test.js','scheduler-race.test.js','first-turn-fairness.test.js',
     'rotation-recent-physical.test.js','timefold-integration.test.js','appearance-persistence.test.js','solo-capacity.test.js','solo-invitations.test.js',
-    'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','client-i18n.test.js','karafun-state.test.js',
+    'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','client-i18n.test.js','client-v04-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js',
     'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','staff-duo-tracked-api.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js',
-    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','song-repeats.test.js','duo-cap-spacing.test.js','presence-skip.test.js','presence-timeout.test.js',
+    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','song-repeats.test.js','duo-cap-spacing.test.js','presence-skip.test.js','presence-timeout.test.js','defer-turn.test.js','lyrics-spotify.test.js',
     'sim-night.js','start-evening.test.js','startup-port.test.js']) await run(`test/${f}`);
   async function demoTest(port, songSeconds, script) {
   const base = `http://127.0.0.1:${port}`;
@@ -53,6 +53,7 @@ function run(file, env = {}) {
   await demoTest(3110, 10, 'test/battle-titles-api.test.js');
   await demoTest(3111, 4, 'test/bar-feedback-api.test.js');
   await demoTest(3112, 10, 'test/transfer-link-api.test.js');
+  await demoTest(3113, 30, 'test/bar-feedback-v04-api.test.js');
   await run('test/evening-controls-api.test.js');
   await run('test/priority-undo-api.test.js');
   await run('test/night-restart-api.test.js');
