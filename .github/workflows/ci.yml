@@ -32,7 +32,7 @@ jobs:
       # des lignes : la CI échoue si un test échoue ou si la couverture baisse
       # sous le seuil.
       - name: Tests automatiques hors ligne et couverture
-        run: node test/coverage.js --min-lines 80
+        run: node test/coverage.js --min-lines 95
       - name: Garder le rapport de couverture
         if: always()
         uses: actions/upload-artifact@v4
