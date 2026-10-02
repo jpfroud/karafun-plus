@@ -1469,6 +1469,7 @@
   let queuedNav = null;       // étape à ajouter une fois ce retrait terminé
   let exitArmedUntil = 0;
   let backTimer = null;
+  let lateBackUntil = 0;      // « popstate » tardif d'une fenêtre fermée : ignoré
   const navState = () => ({ kf: 1, tab: activeTab, catalog: catalogMode, sheet: !$('sheet').hidden });
   function pushNav() {
     if (!browserHistory || restoringNav) return;
@@ -1477,10 +1478,13 @@
   }
   // Fin du retrait de l'étape d'une fenêtre : par « popstate », ou après un
   // court délai si le navigateur n'en envoie pas (sinon tout resterait en attente).
-  function finishBack() {
+  function finishBack(late = false) {
     clearTimeout(backTimer);
     if (!awaitingBack) return;
     awaitingBack = false;
+    // Délai écoulé sans réponse : un retour qui arriverait encore n'est pas
+    // un appui de la personne.
+    lateBackUntil = late ? Date.now() + 3000 : 0;
     const queued = queuedNav;
     queuedNav = null;
     if (queued) { try { browserHistory.pushState(queued, ''); } catch (_) { /* */ } }
@@ -1488,7 +1492,8 @@
   function leaveSheetStep() {
     if (!browserHistory || restoringNav || !browserHistory.state?.sheet) return;
     awaitingBack = true;
-    backTimer = setTimeout(finishBack, 1000);
+    clearTimeout(backTimer);
+    backTimer = setTimeout(() => finishBack(true), 1000);
     try { browserHistory.back(); } catch (_) { finishBack(); }
   }
   if (browserHistory) {
@@ -1498,6 +1503,7 @@
     } catch (_) { /* historique indisponible */ }
     window.addEventListener('popstate', event => {
       if (awaitingBack) { finishBack(); return; }
+      if (Date.now() < lateBackUntil) { lateBackUntil = 0; return; }
       const target = event.state?.kf ? event.state : { root: true, tab: 'table', catalog: 'categories', sheet: false };
       if (target.root) {
         // Écran de départ : rester sur la page, sauf second appui rapide.

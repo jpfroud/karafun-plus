@@ -51,6 +51,8 @@ class SpotifyLink {
     this.player = null;       // dernier état lu : { isPlaying, device, track, at }
     this.failures = 0;        // échecs d'affilée
     this.waitUntil = 0;       // pas d'appel automatique avant (échecs, 429)
+    this.blockedUntil = 0;    // Spotify demande de patienter (429) : même la pause attend
+    this.refreshing = null;   // renouvellement du jeton en cours
     this.generation = 0;      // change à chaque déconnexion : un jeton en route est ignoré
     this._load();
   }
@@ -88,6 +90,7 @@ class SpotifyLink {
   // Spotify a échoué récemment ou demande de patienter : la boucle
   // automatique attend ; les boutons du bar restent utilisables.
   get waiting() { return this.now() < this.waitUntil; }
+  get blocked() { return this.now() < this.blockedUntil; }
 
   setClientId(clientId) {
     const value = String(clientId || '').trim();
@@ -122,6 +125,7 @@ class SpotifyLink {
     this.lastError = null;
     this.failures = 0;
     this.waitUntil = 0;
+    this.blockedUntil = 0;
     this.generation++;
     this._save();
   }
@@ -152,7 +156,8 @@ class SpotifyLink {
     // Déconnecté ou autre application pendant la demande : ne rien garder.
     if (generation !== this.generation) throw new SpotifyError('Connexion Spotify changée pendant la demande.');
     if (!response.ok || !data.access_token) {
-      if (data.error === 'invalid_grant' && form.grant_type === 'refresh_token') {
+      if (data.error === 'invalid_grant' && form.grant_type === 'refresh_token' &&
+          this.config.refreshToken === form.refresh_token) {
         // Accès retiré dans Spotify : inutile de redemander ce jeton.
         this.config.refreshToken = '';
         this.access = null;
@@ -174,27 +179,43 @@ class SpotifyLink {
       throw new Error('Connexion Spotify expirée : relance-la depuis la page du bar.');
     }
     this.pendingAuth = null;
+    // Un renouvellement en route pour l'ancienne connexion ne l'écrase pas.
+    this.generation++;
+    this.access = null;
     await this._token({ grant_type: 'authorization_code', code: String(code || ''),
       redirect_uri: pending.redirectUri, code_verifier: pending.verifier });
     this.lastError = null;
   }
 
+  // Un seul renouvellement à la fois : la boucle automatique et un bouton du
+  // bar partagent la même demande (Spotify peut changer le jeton à chaque fois).
   async _accessToken() {
     if (!this.connected) throw new SpotifyError('Spotify n’est pas connecté.');
     if (this.access && this.now() < this.access.expiresAt) return this.access.token;
-    return this._token({ grant_type: 'refresh_token', refresh_token: this.config.refreshToken });
+    if (!this.refreshing) {
+      this.refreshing = this._token({ grant_type: 'refresh_token', refresh_token: this.config.refreshToken })
+        .finally(() => { this.refreshing = null; });
+    }
+    return this.refreshing;
   }
 
   async _api(method, route) {
+    const generation = this.generation;
     try {
       const data = await this._request(method, route);
       this.failures = 0;
       this.waitUntil = 0;
+      this.blockedUntil = 0;
       return data;
     } catch (error) {
+      // Échec d'une connexion déjà remplacée : sans effet sur la nouvelle.
+      if (generation !== this.generation) throw error;
       this.failures++;
-      this.waitUntil = this.now() + (error.retryAfterSec > 0 ? Math.min(error.retryAfterSec, 3600) * 1000 :
-        Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (this.failures - 1)));
+      this.waitUntil = this.now() + Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (this.failures - 1));
+      if (error.retryAfterSec > 0) {
+        this.blockedUntil = this.now() + Math.min(error.retryAfterSec, 3600) * 1000;
+        this.waitUntil = Math.max(this.waitUntil, this.blockedUntil);
+      }
       throw error;
     }
   }
@@ -307,6 +328,12 @@ class SpotifyAutomation {
     if (karaoke === 'singing') return autoPause ? 'pause' : null;
     if (karaoke === 'silent' && autoResume && now - this.since >= resumeDelaySec * 1000) return 'resume';
     return null;
+  }
+
+  // Le bar a lui-même lancé ou coupé Spotify : plus d'action automatique
+  // jusqu'au prochain changement (titre qui démarre, ou nouveau silence).
+  handled() {
+    this.done = true;
   }
 
   // Résultat de l'action demandée : réussite, ou nouvel essai dans 30 s

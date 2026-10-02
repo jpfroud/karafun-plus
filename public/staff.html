@@ -668,8 +668,9 @@
 
     $('stage').innerHTML = liveCard(S.stage);
     $('next').innerHTML = liveCard(S.next);
-    $('restartBtn').disabled = !S.stage || S.stage.kind === 'battle' || !!S.restarting || !S.kf?.ready;
-    $('restartBtn').textContent = S.restarting ? '⏮ Relance en cours…' : '⏮ Relancer depuis le début';
+    // Après une relance ratée, une copie tardive peut encore arriver : nouvel essai une minute plus tard.
+    $('restartBtn').disabled = !S.stage || S.stage.kind === 'battle' || !!S.restarting || !!S.restartRetryAt || !S.kf?.ready;
+    $('restartBtn').textContent = S.restarting ? '⏮ Relance en cours…' : S.restartRetryAt ? '⏮ Relance possible dans une minute' : '⏮ Relancer depuis le début';
     renderClosing();
     renderSpotify();
     const nextTracked = S.tracked.find(t => !t.startedAt);

@@ -215,15 +215,23 @@ class Scheduler {
     this.manualChanges = [];
   }
 
-  manualOverrideState() {
-    return { manualOrder: [...this.manualOrder], manualOrderActive: this.manualOrderActive,
+  // `deferrals` : pour une intervention du bar, les reports « Pas prêt »
+  // qu'un déplacement lève et qu'une annulation doit rendre.
+  manualOverrideState({ deferrals = false } = {}) {
+    const state = { manualOrder: [...this.manualOrder], manualOrderActive: this.manualOrderActive,
       reservedNext: this.reservedNext ? { ...this.reservedNext } : null };
+    if (deferrals) state.deferrals = this._deferredOwners().map(pid => [pid, { ...this.people.get(pid).deferral }]);
+    return state;
   }
 
   restoreManualOverride(state) {
     this.manualOrder = [...state.manualOrder];
     this.manualOrderActive = !!state.manualOrderActive && this.manualOrder.length > 0;
     this.reservedNext = state.reservedNext ? { ...state.reservedNext } : null;
+    for (const [pid, deferral] of state.deferrals || []) {
+      const p = this.people.get(pid);
+      if (p && !p.withdrawnAt && p.song?.entryId === deferral.entryId && !p.deferral) p.deferral = { ...deferral };
+    }
   }
 
   // Les notes, photos et noms peuvent changer sans modifier la file. Cette
@@ -807,7 +815,9 @@ class Scheduler {
   // (`song` pour un titre déjà chargé dans KaraFun). `extra` : passage déjà
   // en route vers KaraFun (envoi sans accusé), qui compterait sinon comme la
   // chanson laissée passer.
-  deferPassage(ownerId, passage, count = 1, { extra = 0 } = {}) {
+  // Vérifie un report sans rien changer (le serveur retire ensuite le titre
+  // de KaraFun, puis l'enregistre).
+  checkDeferral(ownerId, passage, count = 1) {
     const p = this.people.get(String(ownerId));
     if (!p || p.withdrawnAt) throw new Error('Chanteur inconnu ou parti.');
     const n = Number(count);
@@ -818,10 +828,15 @@ class Scheduler {
     const song = this.songsOf(p).find(item => item.entryId === entryId) ||
       (passage.song?.entryId === entryId ? passage.song : null);
     if (!song) throw new Error('Passage introuvable.');
-    const now = Date.now();
-    const current = p.deferral && p.deferral.entryId === entryId && now < p.deferral.until ? p.deferral : null;
     const total = this.deferredSongsOf(song) + n;
     if (total > DEFER_MAX) throw new Error(`Un passage ne peut pas être repoussé de plus de ${DEFER_MAX} chansons.`);
+    return { p, n, entryId, ids, song, total };
+  }
+
+  deferPassage(ownerId, passage, count = 1, { extra = 0 } = {}) {
+    const { p, n, entryId, ids, song, total } = this.checkDeferral(ownerId, passage, count);
+    const now = Date.now();
+    const current = p.deferral && p.deferral.entryId === entryId && now < p.deferral.until ? p.deferral : null;
     if (this.reservedNext?.personId === p.id) this.releaseNext();
     const remaining = (current ? current.remaining : Math.max(0, Number(extra) || 0)) + n;
     // Filet de sécurité si personne d'autre ne chante : le titre redevient

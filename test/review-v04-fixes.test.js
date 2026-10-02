@@ -31,8 +31,8 @@ function harness() {
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, tracked, settings, handlers, access, spotify, spotifyTick, sync, analyze,
-      startRestart, syncRestart, deferTurn, nextClosing, clearEvening, publicState, assertRoomBeforeClosing,
+    globalThis.fixture = { sched, tracked, settings, handlers, access, spotify, spotifyAutomation, spotifyTick, sync, analyze,
+      startRestart, syncRestart, deferTurn, staffState, nextClosing, clearEvening, publicState, assertRoomBeforeClosing,
       restart: () => restartOp, setBridge: b => { bridge = b; }, setPending: p => { pending = p; }, getPending: () => pending };
   `, context, { filename: 'server.js' });
   context.fixture.settings.auto = false;
@@ -42,7 +42,7 @@ function harness() {
 
 function fakeBridge(queue, playingId) {
   const calls = [];
-  return { calls, ready: true, connected: true, queue, events: [],
+  return { calls, ready: true, connected: true, queue, events: [], snapshot: () => ({ ready: true, connected: true, queue, events: [] }),
     status: playingId == null ? { state: 'idle' } : { state: 'playing', songPlaying: { queueId: playingId } },
     add: (songId, singer, pos) => calls.push(['add', pos]), remove: id => calls.push(['remove', id]),
     next: () => calls.push(['next']), play: () => calls.push(['play']) };
@@ -118,6 +118,40 @@ test('relance : KaraFun ignore « Suivant » pendant 20 s, la copie est retirée
   f.syncRestart(f.analyze(), t0 + 20001);
   assert.equal(live.queueId, 1);
   assert.deepEqual(bridge.calls, [['add', 1], ['next'], ['remove', 3]]);
+  assert.ok(f.sched.log.some(l => /La relance n’a pas démarré\. Le titre en cours continue\./.test(l.msg)));
+});
+
+// Regression: seconde passe adversariale — un nouvel essai dans la minute
+// prenait sa propre copie pour une copie tardive, la retirait puis passait
+// au titre suivant, coupant le chanteur sur scène.
+test('relance : nouvel essai refusé tant qu’une copie de l’essai raté peut arriver', () => {
+  const f = harness();
+  const { queue, bridge } = onStage(f);
+  bridge.add = (songId, singer, pos) => { bridge.calls.push(['add', pos]); queue.push({ queueId: 3, songId, singer }); };
+  f.startRestart();
+  f.syncRestart(f.analyze(), Date.now());
+  assert.equal(f.restart(), null, 'premier essai abandonné');
+  assert.throws(() => f.startRestart(), /relance précédente vient d’échouer/);
+  assert.ok(f.staffState().restartRetryAt > Date.now(), 'bouton du bar désactivé pendant ce temps');
+  assert.ok(!bridge.calls.some(c => c[0] === 'next'), 'jamais de Suivant');
+});
+
+test('relance : titre fini seul et KaraFun à l’arrêt, la copie est lancée sans « Suivant »', () => {
+  const f = harness();
+  const { live, queue, bridge } = onStage(f);
+  copyAfterCurrent(bridge, queue);
+  f.startRestart();
+  queue.shift();
+  bridge.status = { state: 'idle' };
+  const t0 = Date.now();
+  f.syncRestart(f.analyze(), t0);
+  assert.deepEqual(bridge.calls, [['add', 1], ['play']], 'lecture, pas de Suivant qui sauterait la copie');
+  queue[0].status = 'playing';
+  bridge.status = { state: 'playing', songPlaying: { queueId: 3 } };
+  f.syncRestart(f.analyze(), t0 + 1000);
+  assert.equal(live.queueId, 3);
+  assert.equal(live.startedAt, t0 + 1000, 'durée mesurée depuis la relance');
+  assert.equal(f.restart(), null);
 });
 
 test('relance : titre fini seul pendant l’ajout, la copie qui joue garde le passage', () => {
@@ -172,6 +206,20 @@ test('« Pas prêt » sur un titre chargé, KaraFun déconnecté : rien ne chang
   assert.equal(who.deferral ?? null, null);
   assert.equal(f.sched.manualOrderActive, true, 'ordre manuel du bar conservé');
   assert.ok(!f.sched.log.slice(logLen).some(l => /pas encore prêt/.test(l.msg)), 'pas de faux report au journal');
+});
+
+test('« Pas prêt » : retrait refusé par KaraFun connecté, rien ne change non plus', () => {
+  const f = harness();
+  const { bridge, who, next } = loadedNext(f);
+  bridge.remove = () => { throw new Error('socket fermée'); };
+  f.sched.manualOrder = [...f.sched.Q]; f.sched.manualOrderActive = true;
+  const logLen = f.sched.log.length;
+  assert.throws(() => f.deferTurn(who, 1), /socket fermée/);
+  assert.equal(who.deferral ?? null, null);
+  assert.equal(f.sched.deferredSongsOf(next.sel.song), 0);
+  assert.equal(f.sched.manualOrderActive, true);
+  assert.equal(next.pulled ?? null, null);
+  assert.ok(!f.sched.log.slice(logLen).some(l => /pas encore prêt/.test(l.msg)));
 });
 
 test('« Pas prêt » : KaraFun lance le titre avant son retrait, il est chanté sans report fantôme', () => {
@@ -323,6 +371,18 @@ test('« Je suis prêt » n’est pas défait quand le passage suivant n’est f
   assert.equal(s.deferralFor(p.id), null);
 });
 
+test('« Pas prêt » : annuler un déplacement du bar rend le report qu’il avait levé', () => {
+  const { s, firsts } = evening();
+  const [head] = firsts();
+  const p = s.people.get(head.ids[0]);
+  s.deferPassage(p.id, head, 2);
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(p.id, 0);
+  assert.equal(p.deferral, null, 'le bar place lui-même ce passage');
+  s.restoreManualOverride(before);
+  assert.equal(s.deferralFor(p.id).remaining, 2);
+});
+
 test('« Pas prêt » : cinq chansons au plus par titre, même après plusieurs reports', () => {
   const { s, firsts } = evening();
   const [head] = firsts();
@@ -431,6 +491,40 @@ test('Spotify : réseau coupé, nouvel essai seulement après le délai d’atte
   assert.equal(f.spotify.connected, true, 'une panne réseau ne déconnecte pas');
 });
 
+// Regression: relecture Codex de la PR #9 — une pause faite au bar pendant
+// un silence était annulée par la relance automatique à la fin du délai.
+test('Spotify : pause faite au bar pendant un silence, pas de relance automatique ensuite', async () => {
+  const f = harness();
+  let now = Date.now();
+  f.spotifyAutomation.now = () => now;
+  let playing = true;
+  const plays = [];
+  f.spotify.fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
+    if (url.endsWith('/me/player')) return json({ is_playing: playing, device: { id: 'pc', name: 'PC' } });
+    if (url.includes('/me/player/play')) { plays.push(now); playing = true; return { ok: true, status: 204, text: async () => '' }; }
+    if (url.includes('/me/player/pause')) { playing = false; return { ok: true, status: 204, text: async () => '' }; }
+    throw new Error(`inattendu : ${url}`);
+  };
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r', autoResume: true, autoPause: true, resumeDelaySec: 15 };
+  f.setBridge({ ready: true, connected: true, queue: [], status: { state: 'idle' }, events: [] });
+  await f.spotifyTick(); // le silence commence
+  now += 5000;
+  await f.handlers['POST /api/staff/spotify'](null, null, { action: 'pause' });
+  now += 20000;
+  await f.spotifyTick();
+  assert.deepEqual(plays, [], 'la musique coupée par le bar reste coupée pendant ce silence');
+  assert.equal(playing, false);
+  // Un titre puis un nouveau silence : la relance automatique reprend.
+  f.setBridge({ ready: true, connected: true, queue: [{ queueId: 1, songId: 1, title: 'T' }], status: { state: 'playing', songPlaying: { queueId: 1 } }, events: [] });
+  await f.spotifyTick();
+  f.setBridge({ ready: true, connected: true, queue: [], status: { state: 'idle' }, events: [] });
+  await f.spotifyTick();
+  now += 16000;
+  await f.spotifyTick();
+  assert.equal(plays.length, 1, 'silence suivant : relance automatique');
+});
+
 test('Spotify : 429 respecte Retry-After, 401 renouvelle le jeton une seule fois', async () => {
   let now = 1_000_000;
   let rejected = false, tokens = 0;
@@ -444,6 +538,43 @@ test('Spotify : 429 respecte Retry-After, 401 renouvelle le jeton une seule fois
   assert.equal(busy.waitUntil, now + 120000);
   now += 120001;
   assert.equal(busy.waiting, false);
+});
+
+test('Spotify : un seul renouvellement du jeton à la fois, jeton refusé effacé seulement s’il est encore le bon', async () => {
+  let tokens = 0;
+  let release;
+  const link = linked(url => url.endsWith('/api/token')
+    ? (tokens++, new Promise(resolve => { release = () => resolve(json({ access_token: 't', refresh_token: 'r2', expires_in: 3600 })); }))
+    : Promise.resolve(json({ is_playing: false })));
+  const both = Promise.all([link.readPlayer(), link.devices().catch(() => null)]);
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  await both;
+  assert.equal(tokens, 1, 'boucle et bouton du bar partagent le renouvellement');
+  assert.equal(link.config.refreshToken, 'r2');
+  const stale = linked(async () => json({ error: 'invalid_grant' }, 400));
+  stale.config.refreshToken = 'nouveau';
+  await assert.rejects(stale._token({ grant_type: 'refresh_token', refresh_token: 'ancien' }), /reconnecte/);
+  assert.equal(stale.config.refreshToken, 'nouveau', 'un ancien jeton refusé n’efface pas le nouveau');
+});
+
+test('Spotify : après des erreurs, la pause d’un titre qui démarre passe quand même', async () => {
+  const f = harness();
+  let paused = 0, down = true;
+  f.spotify.fetchImpl = async (url, options = {}) => {
+    if (down) throw new Error('réseau coupé');
+    if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
+    if (url.endsWith('/me/player')) return json({ is_playing: true, device: { id: 'pc', name: 'PC' } });
+    if (url.includes('/me/player/pause')) { paused++; return { ok: true, status: 204, text: async () => '' }; }
+    throw new Error(`inattendu : ${url}`);
+  };
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r' };
+  await f.spotifyTick();
+  assert.equal(f.spotify.waiting, true);
+  down = false;
+  f.setBridge({ ready: true, connected: true, queue: [{ queueId: 1, songId: 1, title: 'T' }], status: { state: 'playing', songPlaying: { queueId: 1 } }, events: [] });
+  await f.spotifyTick();
+  assert.equal(paused, 1, 'pas de musique par-dessus le chanteur');
 });
 
 test('Spotify : déconnexion pendant un renouvellement, le jeton reçu est ignoré', async () => {
@@ -517,4 +648,22 @@ test('paroles : demandes identiques regroupées, deux lectures au plus à la foi
   const failed = await lyrics.find({ title: 'Panne', artist: 'Réseau' });
   assert.equal(failed.unavailable, true);
   assert.equal(failed.lines, null);
+});
+
+test('paroles : une surcharge passagère n’est pas gardée en cache', async () => {
+  let open = [];
+  let calls = 0;
+  const lyrics = new Lyrics({ fetchImpl: () => { calls++; return new Promise(resolve => open.push(() => resolve(missing()))); } });
+  // Deux lectures en cours et vingt en attente : la vingt-troisième est de trop.
+  const flood = Array.from({ length: 23 }, (_, i) => lyrics.find({ title: `Titre ${i}`, artist: 'X' }));
+  const victim = await flood[22];
+  assert.equal(victim.unavailable, true, 'au-delà de la file d’attente : indisponible pour le moment');
+  while (open.length) { const batch = open; open = []; batch.forEach(resolve => resolve()); await new Promise(resolve => setImmediate(resolve)); }
+  await Promise.all(flood);
+  const before = calls;
+  const retry = lyrics.find({ title: 'Titre 22', artist: 'X' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(calls > before, 'nouvel essai sur le site après la surcharge');
+  while (open.length) { const batch = open; open = []; batch.forEach(resolve => resolve()); await new Promise(resolve => setImmediate(resolve)); }
+  assert.equal((await retry).unavailable, undefined);
 });

@@ -88,7 +88,7 @@ class Lyrics {
   // inonder www.karafun.fr par le PC du bar.
   async _slot() {
     if (this.active < MAX_PARALLEL) { this.active++; return; }
-    if (this.waiting.length >= MAX_WAITING) throw new Error('trop de demandes');
+    if (this.waiting.length >= MAX_WAITING) throw Object.assign(new Error('trop de demandes'), { busy: true });
     await new Promise(resolve => this.waiting.push(resolve));
   }
 
@@ -177,8 +177,10 @@ class Lyrics {
       if (found?.exact) return this._remember(exactKey, found);
       if (found) return this._remember(key, found);
       return this._remember(key, fallback || { lines: null, url: new URL(searchPath, this.base).href, exact: false }, MISS_TTL_MS);
-    } catch (_) {
-      return this._remember(key, { lines: null, url: new URL(searchPath, this.base).href, exact: false, unavailable: true }, FAILURE_TTL_MS);
+    } catch (error) {
+      const value = { lines: null, url: new URL(searchPath, this.base).href, exact: false, unavailable: true };
+      // Surcharge locale : la prochaine demande retentera le site.
+      return error.busy ? value : this._remember(key, value, FAILURE_TTL_MS);
     }
   }
 }

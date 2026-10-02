@@ -493,10 +493,16 @@ const RESTART_START_TIMEOUT_MS = 20000;  // délai pour voir la copie sur scène
 const RESTART_SWEEP_MS = 60000;          // copie tardive retirée pendant ce délai
 let lastRestartCopy = null;
 let restartSweep = null; // { songId, singer, before, until } : copies tardives à retirer
+let restartAwaitingPlay = null; // copie prête après une relance inachevée : { copyQueueId, title }
 
 function startRestart() {
   if (!bridge?.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de relancer le titre.');
   if (restartOp) throw new Error('La relance du titre est déjà en cours.');
+  // Une copie d'un essai raté peut encore arriver : impossible de la
+  // distinguer d'une nouvelle copie du même titre.
+  if (restartSweep && Date.now() <= restartSweep.until) {
+    throw new Error(`La relance précédente vient d’échouer : vérifie la file de KaraFun. Nouvel essai possible dans ${Math.ceil((restartSweep.until - Date.now()) / 1000)} s, ou utilise le bouton de KaraFun.`);
+  }
   if (pending) throw new Error('Un titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
   const { current, q } = analyze();
   if (!current) throw new Error('Aucun titre en cours à relancer.');
@@ -537,7 +543,9 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
   const copyId = op.copyQueueId;
   const originalLive = q.some(item => String(item.queueId) === String(op.originalQueueId));
   if (copyId && !originalLive && !current && String(upcoming[0]?.queueId) === copyId) {
-    // Suivant a bien retiré le titre : la copie prête à jouer garde le suivi.
+    // Suivant a bien retiré le titre : la copie prête à jouer garde le suivi,
+    // et sa durée repartira de son lancement.
+    restartAwaitingPlay = { copyQueueId: copyId, title: op.title };
     sched.note(`${message} La copie du titre est prête : lance la lecture dans KaraFun.`, 'error');
     return;
   }
@@ -550,11 +558,21 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
   restartSweep = { songId: op.songId, singer: op.singer, title: op.title,
     before: op.before.filter(id => id !== copyId), until: now + RESTART_SWEEP_MS };
   sweepRestartCopies({ current, q }, now);
-  sched.note(`${message} Le titre en cours continue.`, 'error');
+  sched.note(`${message} ${originalLive ? 'Le titre en cours continue.' : current ?
+    'Un autre titre joue maintenant : vérifie la file de KaraFun.' : 'Vérifie la file de KaraFun.'}`, 'error');
 }
 
 function syncRestart({ current, upcoming, q }, now) {
   sweepRestartCopies({ current, q }, now);
+  const waiting = restartAwaitingPlay;
+  if (waiting) {
+    if (String(current?.queueId) === waiting.copyQueueId) {
+      const tr = tracked.find(item => String(item.queueId) === waiting.copyQueueId);
+      if (tr) tr.startedAt = now;
+      sched.note(`« ${waiting.title} » repart du début.`, 'stage');
+      restartAwaitingPlay = null;
+    } else if (!q.some(item => String(item.queueId) === waiting.copyQueueId)) restartAwaitingPlay = null;
+  }
   const op = restartOp;
   if (!op) return;
   const state = { current, upcoming, q };
@@ -579,7 +597,11 @@ function syncRestart({ current, upcoming, q }, now) {
     lastRestartCopy = op.copyQueueId;
     op.phase = 'skipping';
     op.at = now;
-    if (!started) {
+    if (!started && !current) {
+      // Le titre a fini seul et KaraFun attend : la copie est en tête, il
+      // suffit de la lancer (« Suivant » risquerait de la passer).
+      try { bridge.play(); op.playSentAt = now; } catch (_) { /* nouvel essai plus bas */ }
+    } else if (!started) {
       try { bridge.next(); }
       catch (error) { abandonRestart(op, state, `Relance interrompue : ${error.message}.`, now); return; }
     }
@@ -1081,6 +1103,7 @@ function staffState() {
     stageHistory: stageHistoryView(),
     spotify: spotify.view(spotifyRedirect()),
     restarting: !!restartOp,
+    restartRetryAt: restartSweep && Date.now() <= restartSweep.until ? restartSweep.until : null,
     soloInvitations: soloInvitations.view(),
     phoneBase: phoneBase(), ips, port: PORT, staffKey: STAFF_KEY,
     tables: [...sched.tables.values()].map(t => ({ ...t,
@@ -1530,12 +1553,12 @@ function deferTurn(p, songs = 1) {
   if (tr) {
     const owner = sched.people.get(tr.sel.ids[0]);
     if (!owner || owner.withdrawnAt) throw new Error('Chanteur inconnu ou parti.');
-    // Rien ne change dans la file si KaraFun ne peut pas retirer le titre.
-    if (!bridge?.ready) throw pullDisconnected();
-    const before = { deferral: owner.deferral, songs: tr.sel.song.deferredSongs };
-    sched.deferPassage(owner.id, { entryId: tr.sel.song.entryId, ids: tr.sel.ids, song: tr.sel.song }, count);
-    try { pullFromKaraFun(tr, 'defer'); }
-    catch (error) { owner.deferral = before.deferral; tr.sel.song.deferredSongs = before.songs; throw error; }
+    // Rien ne change dans la file si KaraFun ne peut pas retirer le titre :
+    // le report est vérifié, le titre retiré, puis le report enregistré.
+    const passage = { entryId: tr.sel.song.entryId, ids: tr.sel.ids, song: tr.sel.song };
+    sched.checkDeferral(owner.id, passage, count);
+    pullFromKaraFun(tr, 'defer');
+    sched.deferPassage(owner.id, passage, count);
     sync();
     return { ownerId: owner.id, remaining: owner.deferral?.remaining ?? count, total: owner.deferral?.total ?? count, pendingRemoval: true };
   }
@@ -1637,8 +1660,10 @@ async function spotifyTick() {
   if (!spotify.connected || spotifyBusy) return;
   const karaoke = !bridge?.ready ? 'unknown' : analyze().current ? 'singing' : 'silent';
   const action = spotifyAutomation.step(karaoke, spotify.config);
-  // Après un échec (ou un 429), Spotify n'est pas rappelé avant le délai.
-  if (spotify.waiting || (!action && Date.now() - spotifyPolledAt < SPOTIFY_POLL_MS)) return;
+  // Après un échec, Spotify n'est pas rappelé avant le délai ; seule la pause
+  // d'un titre qui démarre passe outre (sauf si Spotify demande d'attendre).
+  if (spotify.blocked || (spotify.waiting && action !== 'pause') ||
+      (!action && Date.now() - spotifyPolledAt < SPOTIFY_POLL_MS)) return;
   spotifyBusy = true;
   spotifyPolledAt = Date.now();
   try {
@@ -1741,6 +1766,7 @@ function clearEvening() {
   settings.autoPlay = false;
   settings.closingAt = null;
   restartSweep = null;
+  restartAwaitingPlay = null;
   if (tracked.length || pending) settings.auto = false;
   sched.note('Nouvelle soirée : anciens accès effacés et nouvel accès « En solo » créé.', 'staff');
   saveNight({ required: true, replaceBoth: true });
@@ -2068,7 +2094,7 @@ const handlers = {
     }
     const nativeBefore = priorityNativeFingerprint();
     if (sched.manualChanges.length && !sched.canUndoManualChange(nativeBefore)) sched.manualChanges = [];
-    const before = sched.manualOverrideState();
+    const before = sched.manualOverrideState({ deferrals: true });
     sched.staffMove(personId, toIndex, excluded, provisional);
     sync();
     const nativeAfter = priorityNativeFingerprint();
@@ -2226,8 +2252,12 @@ const handlers = {
       ...('autoResume' in body ? { autoResume: !!body.autoResume } : {}),
       ...('autoPause' in body ? { autoPause: !!body.autoPause } : {}),
       ...('resumeDelaySec' in body ? { resumeDelaySec: Number(body.resumeDelaySec) } : {}) });
-    else if (action === 'play') return { ok: true, result: await spotify.resume() };
-    else if (action === 'pause') return { ok: true, result: await spotify.pause() };
+    else if (action === 'play' || action === 'pause') {
+      // Choix du bar : l'automate ne le défait pas pendant ce silence ou ce titre.
+      const result = action === 'play' ? await spotify.resume() : await spotify.pause();
+      spotifyAutomation.handled();
+      return { ok: true, result };
+    }
     else if (action === 'refresh') await spotify.readPlayer();
     else throw new Error('Action Spotify inconnue.');
     return { ok: true };
