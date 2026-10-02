@@ -117,48 +117,6 @@ test('un domaine qui refuse (HTTP 403) passe la main au second, retenu ensuite',
   assert.ok(!JSON.stringify(failures).includes('123456'));
 });
 
-// Regression: essai au bar du 2 octobre (après-midi) — depuis la France,
-// karafun.com sert les playlists, les styles et la liste des tops, mais
-// refuse (HTTP 403) « Nouveautés » et les tops étrangers (Top US, Top UK).
-// Depuis les États-Unis, les deux domaines servent tout : le refus dépend du
-// pays d'où part la requête. Hypothèse, à confirmer au bar : karafun.fr sert
-// ces listes en France (sinon, voir le test des deux domaines qui refusent).
-test('karafun.com refuse seulement les nouveautés et les tops étrangers : karafun.fr prend le relais', async () => {
-  const calls = [];
-  const failures = [];
-  const refusedByCom = url => url.searchParams.get('type') === 'news' ||
-    ['pl_7', 'pl_23'].includes(url.searchParams.get('filter'));
-  const answer = (url, body) => ({ ok: true, status: 200, json: async () => body(url) });
-  const bodies = url => {
-    const type = url.searchParams.get('type');
-    if (type === 'top') return url.host === 'www.karafun.com' ?
-      [{ id: 7, name: 'Top US' }, { id: 23, name: 'Top UK' }, { id: 8, name: 'Top France' }] :
-      [{ id: 8, name: 'Top France' }, { id: 7, name: 'Top États-Unis' }, { id: 23, name: 'Top Royaume-Uni' }];
-    if (type === 'news') return [{ songId: 11, title: 'Nouveau' }];
-    if (type === 'song_list') return { songs: [{ songId: 12, title: 'Hit' }], total: 1 };
-    return [{ id: 94, name: 'Best Of' }];
-  };
-  const api = new Catalog({ bases: BASES, code: '123456', onFailure: f => failures.push(f),
-    fetchImpl: async url => {
-      const u = new URL(url);
-      calls.push(u);
-      if (u.host === 'www.karafun.com' && refusedByCom(u)) return { ok: false, status: 403, json: async () => ({}) };
-      return answer(u, bodies);
-    } });
-  // Ouverture du catalogue : karafun.com répond, il reste le domaine retenu.
-  assert.equal((await api.categories('playlist')).length, 1);
-  assert.deepEqual((await api.categories('top')).map(c => c.name), ['Top US', 'Top UK', 'Top France']);
-  assert.deepEqual(calls.map(u => u.host), ['www.karafun.com', 'www.karafun.com']);
-  // « Nouveautés » : refus de karafun.com, karafun.fr répond, sans erreur pour le téléphone.
-  assert.deepEqual((await api.highlights('news')).map(s => s.title), ['Nouveau']);
-  assert.deepEqual(calls.slice(2).map(u => u.host), ['www.karafun.com', 'www.karafun.fr']);
-  // Top US (pl_7) : karafun.fr, retenu après le refus, répond directement.
-  assert.equal((await api.songs('pl_7')).total, 1);
-  assert.deepEqual(calls.slice(4).map(u => u.host), ['www.karafun.fr']);
-  // Une seule ligne au journal : le domaine et le statut.
-  assert.deepEqual(failures.map(f => [f.host, f.status]), [['www.karafun.com', 403]]);
-});
-
 test('le catalogue envoie les mêmes en-têtes que la recherche', async () => {
   const calls = [];
   const api = new Catalog({ bases: BASES, code: '123456', fetchImpl: byHost({}, calls) });
@@ -173,20 +131,12 @@ test('les deux domaines refusent : l’erreur nomme le statut HTTP', async () =>
   const api = new Catalog({ bases: BASES, code: '123456', onFailure: f => failures.push(f),
     fetchImpl: byHost({ 'www.karafun.com': { status: 403 }, 'www.karafun.fr': { status: 403 } }, calls) });
   await assert.rejects(api.categories('styles'), error => /HTTP 403/.test(error.message) && error.status === 403 &&
-    error.catalogUnavailable === true && error.refusedEverywhere === true);
+    error.catalogUnavailable === true);
   assert.equal(calls.length, 2);
   // Même refus au deuxième essai : pas de nouvelle ligne dans le journal.
   await assert.rejects(api.categories('styles'), /HTTP 403/);
   assert.equal(calls.length, 4);
   assert.equal(failures.length, 2);
-});
-
-// Regression: relecture du 2 octobre — un refus d'un domaine et une panne de
-// l'autre ne prouvent pas que la sélection est fermée : pas de « refus partout ».
-test('un domaine refuse, l’autre est injoignable : pas de refus partout', async () => {
-  const api = new Catalog({ bases: BASES, code: '123456',
-    fetchImpl: byHost({ 'www.karafun.com': { status: 403 }, 'www.karafun.fr': () => { throw new TypeError('fetch failed'); } }, []) });
-  await assert.rejects(api.highlights('news'), error => error.status === 403 && error.refusedEverywhere === false);
 });
 
 test('un domaine trop lent passe la main au second', async () => {

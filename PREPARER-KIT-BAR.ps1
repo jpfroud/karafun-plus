@@ -28,8 +28,7 @@ if (-not (Test-Path -LiteralPath $javaPortable -PathType Leaf)) {
 # celle de package.json, avec le commit construit.
 $paquet = Get-Content -LiteralPath (Join-Path $racine 'package.json') -Raw | ConvertFrom-Json
 $versionKit = if ($env:KIT_VERSION) { $env:KIT_VERSION } else { "v$($paquet.version)" }
-# KIT_COMMIT : commit de la branche testée (CI d'une PR), sinon celui construit.
-$commitKit = if ($env:KIT_COMMIT) { $env:KIT_COMMIT } else { $env:GITHUB_SHA }
+$commitKit = $env:GITHUB_SHA
 if (-not $commitKit -and (Get-Command git -ErrorAction SilentlyContinue)) {
   try { $commitKit = (& git -C $racine rev-parse HEAD 2>$null | Select-Object -First 1) } catch { $commitKit = '' }
 }

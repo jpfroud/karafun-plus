@@ -5,7 +5,6 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 
 const BAR_URL = 'http://localhost:3000/';
-const ANOTHER_VERSION = 3; // code de sortie lu par launcher/KaraFunPlus.cs
 
 function locateKaraFun(env = process.env) {
   const candidates = [
@@ -45,29 +44,6 @@ async function helperRunning() {
   }
 }
 
-// Kit de ce dossier (build-info.json écrit par PREPARER-KIT-BAR.ps1) ; absent
-// hors kit publié (copie de développement).
-function ownBuild(dir = __dirname) {
-  try {
-    const info = JSON.parse(fs.readFileSync(path.join(dir, 'build-info.json'), 'utf8').replace(/^\uFEFF/, ''));
-    const commit = String(info.commit || '').slice(0, 7);
-    return commit ? { version: String(info.version || ''), commit } : null;
-  } catch { return null; }
-}
-
-// Kit qui tourne déjà sur ce PC : sa version, OLDER pour une version plus
-// ancienne sans cette route (404), null si elle n'a pas pu être lue.
-const OLDER = 'older';
-async function runningBuild() {
-  try {
-    const response = await fetch(`${BAR_URL}internal/version`, { signal: AbortSignal.timeout(2000) });
-    if (response.status === 404) return OLDER;
-    return response.ok ? await response.json() : null;
-  } catch { return null; }
-}
-
-const buildLabel = build => [build.version, String(build.commit || '').slice(0, 7)].filter(Boolean).join(' ');
-
 async function main() {
   if (process.platform === 'win32') {
     const running = await karafunRunning();
@@ -80,20 +56,7 @@ async function main() {
     } else if (running === null) console.log('Ouvre KaraFun manuellement si sa fenêtre ne s’affiche pas.');
   }
   if (await helperRunning()) {
-    // Après une mise à jour, l'ancien kit tourne souvent encore : rouvrir sa
-    // page ferait croire que la nouvelle version est lancée.
-    const mine = ownBuild();
-    const running = mine && await runningBuild();
-    if (mine && running && (running === OLDER || String(running.commit || '').slice(0, 7) !== mine.commit)) {
-      console.log(`Une autre version de la file karaoké tourne déjà (${running === OLDER ? 'version plus ancienne' : buildLabel(running)}).`);
-      console.log(`Pour lancer celle de ce dossier (${buildLabel(mine)}) : sur la page du bar qui s’ouvre, clique « Arrêter la soirée » (ou lance ARRETER.bat dans le dossier de l’autre version), puis relance.`);
-      // Sa page s'ouvre quand même : « Arrêter la soirée » est à un clic.
-      openBar();
-      process.exitCode = ANOTHER_VERSION; // DEMARRER.bat reste ouvert, KaraFun Plus.exe l'explique
-      return;
-    }
-    console.log(mine && !running ? 'La file karaoké tourne déjà (version non vérifiée) : ouverture de la page du bar.' :
-      'La file karaoké tourne déjà : ouverture de la page du bar.');
+    console.log('La file karaoké tourne déjà : ouverture de la page du bar.');
     openBar();
     return;
   }
@@ -106,4 +69,4 @@ if (require.main === module) main().catch(error => {
   process.exitCode = 1;
 });
 
-module.exports = { karafunRunning, helperRunning, locateKaraFun, ownBuild, runningBuild };
+module.exports = { karafunRunning, helperRunning, locateKaraFun };

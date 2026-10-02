@@ -979,25 +979,6 @@ test('retour de connexion Spotify : réservé au PC du bar, message lisible et �
   assert.ok(!r.text.includes('<b>'), 'aucune balise reçue n’est interprétée');
 });
 
-// Regression: essai au bar du 2 octobre — le nouveau kit, lancé pendant que
-// l'ancien tournait, rouvrait l'ancien sans rien dire. DEMARRER compare
-// maintenant sa version à celle qui tourne, lue sur ce PC seulement.
-test('version du kit qui tourne : lue depuis ce PC, refusée ailleurs', async () => {
-  const f = harness();
-  let r = await get(f, '/internal/version');
-  assert.equal(r.status, 200);
-  assert.deepEqual(Object.keys(r.body).sort(), ['builtAt', 'commit', 'version']);
-  assert.equal(typeof r.body.version, 'string');
-  // Même forme que build-info.json lu par DEMARRER : 7 caractères du commit.
-  let head = null;
-  try { head = require('node:child_process').execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.join(__dirname, '..') }).toString().trim().slice(0, 7); } catch { /* pas de git */ }
-  assert.equal(r.body.commit, head);
-  r = await get(f, '/internal/version', { remote: '192.168.0.20' });
-  assert.equal(r.status, 403, 'un autre appareil du réseau');
-  r = await get(f, '/internal/version', { port: f.PUBLIC_PORT });
-  assert.equal(r.status, 403, 'le tunnel public');
-});
-
 test('pages et routes inconnues, table fermée, table sans effectif, photo d’inscription', async () => {
   const f = harness();
   let r = await get(f, '/inconnu');
@@ -1121,7 +1102,7 @@ test('catalogue KaraFun : titres reçus certifiés pour une Battle, pannes expli
       'Battle gardée sur le disque');
     // Pannes : le téléphone garde la recherche, le journal ne contient jamais le code.
     const failures = [
-      [403, 'KaraFun refuse cette sélection (HTTP 403). Essaie une autre sélection ou la recherche.'],
+      [403, 'Catalogue KaraFun indisponible pour le moment (refus HTTP 403). La recherche reste possible.'],
       ['json', 'Catalogue KaraFun indisponible pour le moment (réponse illisible). La recherche reste possible.'],
       ['network', 'Catalogue KaraFun indisponible pour le moment (réseau injoignable). La recherche reste possible.'],
     ];
@@ -1137,45 +1118,6 @@ test('catalogue KaraFun : titres reçus certifiés pour une Battle, pannes expli
     assert.match(journal, /Catalogue KaraFun : échec sur www\.karafun\.fr \(HTTP 403\)\./);
     assert.match(journal, /Catalogue KaraFun : échec sur www\.karafun\.com \(réseau injoignable\)\./);
     assert.ok(!journal.includes('123456'), 'le code de la télécommande n’apparaît pas dans le journal');
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-});
-
-// Regression: essai au bar du 2 octobre (après-midi) — depuis la France,
-// karafun.com (domaine de la télécommande) refusait « Nouveautés » et les
-// tops étrangers (Top US, Top UK) ; l'ancien serveur n'essayait que lui.
-test('catalogue KaraFun : refus de karafun.com sur les nouveautés et Top US, servis par karafun.fr', async () => {
-  const f = harness({ persistent: true, files: { 'data/last-karafun-code.json': { code: '123456' } } });
-  f.loadTables();
-  f.setBridge({ ready: true, connected: true, queue: [], events: [], permissions: {}, status: { state: 'idle' },
-    bases: ['https://www.karafun.com', 'https://www.karafun.fr'], base: 'https://www.karafun.com' });
-  const asked = [];
-  const answer = body => ({ ok: true, status: 200, json: async () => body });
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async url => {
-    const u = new URL(url);
-    const type = u.searchParams.get('type');
-    asked.push(`${u.host} ${type}${u.searchParams.get('filter') ? ' ' + u.searchParams.get('filter') : ''}`);
-    if (u.host === 'www.karafun.com' && (type === 'news' || ['pl_7', 'pl_23'].includes(u.searchParams.get('filter')))) {
-      return { ok: false, status: 403, json: async () => ({}) };
-    }
-    if (type === 'top') return answer([{ id: 7, name: u.host === 'www.karafun.com' ? 'Top US' : 'Top États-Unis' }]);
-    if (type === 'news') return answer([{ id: 11, title: 'Nouveauté' }]);
-    return answer({ songs: [{ id: 12, title: 'Hit US' }], total: 1 });
-  };
-  try {
-    let r = await get(f, '/api/catalog/categories?type=top');
-    assert.deepEqual([r.status, r.body.map(c => c.name)], [200, ['Top US']]);
-    r = await get(f, '/api/catalog/highlights?type=news');
-    assert.deepEqual([r.status, r.body.map(s => s.title)], [200, ['Nouveauté']], 'Nouveautés servies au téléphone');
-    r = await get(f, '/api/catalog/songs?filter=pl_7&offset=0');
-    assert.deepEqual([r.status, r.body.songs.map(s => s.title)], [200, ['Hit US']], 'Top US servi au téléphone');
-    assert.deepEqual(asked, ['www.karafun.com top', 'www.karafun.com news', 'www.karafun.fr news',
-      'www.karafun.fr song_list pl_7'], 'karafun.fr, qui a répondu, est retenu pour la suite');
-    const journal = f.memory.journal();
-    assert.match(journal, /Catalogue KaraFun : échec sur www\.karafun\.com \(HTTP 403\)\./);
-    assert.ok(!journal.includes('123456'));
   } finally {
     globalThis.fetch = realFetch;
   }

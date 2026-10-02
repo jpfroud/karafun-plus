@@ -94,11 +94,8 @@ assert.equal(serverText('Recherche KaraFun impossible : délai dépassé'), 'Kar
 assert.equal(serverText('Catalogue KaraFun : HTTP 503'), 'KaraFun catalogue: HTTP 503');
 // Catalogue refusé par les deux domaines KaraFun : texte clair, traduit, recherche encore possible.
 assert.ok(serverSources.includes('Catalogue KaraFun indisponible pour le moment (refus HTTP ${e.status}). La recherche reste possible.'));
-assert.equal(serverText('Catalogue KaraFun indisponible pour le moment (refus HTTP 503). La recherche reste possible.'),
-  'The KaraFun catalogue is unavailable right now (HTTP 503 refusal). Search still works.');
-// Refus 403 des deux domaines : la sélection est fermée, pas le catalogue.
-assert.equal(serverText('KaraFun refuse cette sélection (HTTP 403). Essaie une autre sélection ou la recherche.'),
-  'KaraFun refuses this selection (HTTP 403). Try another selection or search.');
+assert.equal(serverText('Catalogue KaraFun indisponible pour le moment (refus HTTP 403). La recherche reste possible.'),
+  'The KaraFun catalogue is unavailable right now (HTTP 403 refusal). Search still works.');
 for (const reason of ['délai dépassé', 'réponse illisible', 'réseau injoignable']) {
   assert.match(serverText(`Catalogue KaraFun indisponible pour le moment (${reason}). La recherche reste possible.`) || '',
     /^The KaraFun catalogue is unavailable right now \((timed out|unreadable answer|network unreachable)\)\. Search still works\.$/, reason);

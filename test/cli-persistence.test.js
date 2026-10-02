@@ -237,15 +237,9 @@ cp.spawn = (file, args, options) => {
   log({ type: 'spawn', file, args, detached: options.detached });
   return { unref() { log({ type: 'unref', file }); } };
 };
-globalThis.fetch = async (url, init = {}) => {
+globalThis.fetch = async (url, init) => {
   log({ type: 'fetch', url, redirect: init.redirect });
   if (scenario.helper === 'absent') throw new TypeError('fetch failed');
-  if (url.endsWith('/internal/version')) {
-    if (scenario.runningBuild === 'error') throw new TypeError('fetch failed');
-    if (scenario.runningBuild === 'busy') return { ok: false, status: 503, json: async () => ({}) };
-    if (!scenario.runningBuild) return { ok: false, status: 404, json: async () => ({}) };
-    return { ok: true, status: 200, json: async () => scenario.runningBuild };
-  }
   if (scenario.helper === 'file') return { status: 302, headers: new Headers({ location: '/staff?key=123456' }) };
   return { status: 200, headers: new Headers() };
 };
@@ -259,10 +253,10 @@ Module._load = function (request, parent) {
 };
 `);
 
-async function runEvening(scenario, env = {}, script = path.join(root, 'start-evening.js')) {
+async function runEvening(scenario, env = {}) {
   const events = path.join(freshDir('demarrer'), 'events.jsonl');
   fs.writeFileSync(events, '');
-  const result = await runNode(['--require', eveningPreload, script],
+  const result = await runNode(['--require', eveningPreload, path.join(root, 'start-evening.js')],
     { EVENING_SCENARIO: JSON.stringify(scenario), EVENING_EVENTS: events, ...env });
   result.events = fs.readFileSync(events, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
   return result;
@@ -308,40 +302,6 @@ test('DEMARRER : KaraFun et la file déjà ouverts, seule la page du bar s’ouv
   const spawns = result.events.filter(event => event.type === 'spawn');
   assert.deepEqual(spawns, [{ type: 'spawn', file: 'cmd.exe', args: ['/c', 'start', '', 'http://localhost:3000/'], detached: true }]);
   assert.ok(!result.events.some(event => event.type === 'server'), 'pas de second serveur sur le même port');
-});
-
-// Regression: essai au bar du 2 octobre — le kit du matin tournait encore ;
-// DEMARRER du nouveau kit rouvrait sa page sans prévenir : le 403, la lecture
-// automatique et le silence avant le titre semblaient non corrigés.
-function kitCopy(commit) {
-  const dir = freshDir('kit');
-  fs.copyFileSync(path.join(root, 'start-evening.js'), path.join(dir, 'start-evening.js'));
-  fs.writeFileSync(path.join(dir, 'build-info.json'), JSON.stringify({ version: 'v0.4.0', commit, builtAt: '2026-10-02T13:42:00.0000000Z' }));
-  return path.join(dir, 'start-evening.js');
-}
-
-test('DEMARRER : une autre version tourne déjà, le bar est prévenu au lieu de rouvrir l’ancienne', async () => {
-  const script = kitCopy('4d575cebfd27d6cd872ba49502d646adeb427d7a');
-  for (const runningBuild of [null, { version: 'v0.4.0', commit: '5681f16', builtAt: null }]) {
-    const result = await runEvening({ platform: 'linux', helper: 'file', runningBuild }, {}, script);
-    assert.equal(result.code, 3, 'DEMARRER.bat reste ouvert ; KaraFun Plus.exe reconnaît ce code');
-    assert.match(result.stdout, runningBuild ? /Une autre version de la file karaoké tourne déjà \(v0\.4\.0 5681f16\)\./ :
-      /Une autre version de la file karaoké tourne déjà \(version plus ancienne\)\./);
-    assert.match(result.stdout, /Pour lancer celle de ce dossier \(v0\.4\.0 4d575ce\) : sur la page du bar qui s’ouvre, clique « Arrêter la soirée » \(ou lance ARRETER\.bat dans le dossier de l’autre version\), puis relance\./);
-    // La page de l'autre version s'ouvre : « Arrêter la soirée » est à un clic.
-    assert.deepEqual(result.events.filter(event => event.type === 'spawn').map(event => event.file), ['cmd.exe']);
-    assert.ok(!result.events.some(event => event.type === 'server'));
-  }
-  // Version qui tourne illisible (délai, panne) : rien n'est affirmé, la page s'ouvre.
-  for (const runningBuild of ['error', 'busy']) {
-    const unknown = await runEvening({ platform: 'linux', helper: 'file', runningBuild }, {}, script);
-    assert.equal(unknown.code, 0, unknown.stderr);
-    assert.match(unknown.stdout, /La file karaoké tourne déjà \(version non vérifiée\) : ouverture de la page du bar\./, runningBuild);
-  }
-  // Même kit déjà lancé : seule la page du bar s'ouvre, comme avant.
-  const same = await runEvening({ platform: 'linux', helper: 'file', runningBuild: { version: 'v0.4.0', commit: '4d575ce' } }, {}, script);
-  assert.equal(same.code, 0, same.stderr);
-  assert.match(same.stdout, /La file karaoké tourne déjà : ouverture de la page du bar\./);
 });
 
 test('DEMARRER hors Windows : pas de PowerShell ; port 3000 pris par un autre programme', async () => {

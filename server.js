@@ -37,13 +37,6 @@ function readBuildInfo() {
   return { version, commit, builtAt: null };
 }
 const BUILD = readBuildInfo();
-// Ligne écrite au journal à chaque démarrage : le commit et la date du kit
-// distinguent deux kits de même version (celle de package.json change rarement).
-function buildTitle(build = BUILD) {
-  const builtAt = build.builtAt ? new Date(build.builtAt).toISOString().slice(0, 16).replace('T', ' ') : null;
-  const kit = [build.commit, builtAt && `kit du ${builtAt} UTC`].filter(Boolean).join(', ');
-  return `=== File karaoké ${build.version}${kit ? ` (${kit})` : ''} ===`;
-}
 // Identifie ce démarrage : une alerte fermée au bar revient après un redémarrage.
 const BOOT_ID = crypto.randomBytes(6).toString('hex');
 const { Scheduler, DEFER_MAX } = require('./scheduler');
@@ -1807,22 +1800,15 @@ async function playKaraFun({ queueId = null } = {}) {
     if (playStarting === running) playStarting = null;
   }
   const mine = (async () => {
-    if (spotify.connected && spotify.config.autoPause && !spotify.blocked) {
-      // Une lecture de l'état de Spotify (toutes les 30 s) ou une relance peut
-      // être en cours : l'attendre (4 s au plus). Au-delà, la coupure part
-      // quand même : le silence avant le titre compte plus qu'un Spotify lent.
-      const busySince = Date.now();
-      while (spotifyBusy && Date.now() - busySince < SPOTIFY_PAUSE_WAIT_MS) await new Promise(resolve => setTimeout(resolve, 50));
-      const owned = !spotifyBusy;
-      if (owned) spotifyBusy = true;
-      else appLog('Spotify encore occupé après 4 s : coupure envoyée quand même avant le titre.');
+    if (spotify.connected && spotify.config.autoPause && !spotify.blocked && !spotifyBusy) {
+      spotifyBusy = true;
       let paused = null;
       try {
         paused = await Promise.race([spotify.pause(), new Promise(resolve => setTimeout(resolve, SPOTIFY_PAUSE_WAIT_MS, 'timeout'))]);
       } catch (error) { spotify.lastError = error.message; }
       // Une pause encore en route après le délai peut croiser le prochain
       // passage de l'automate : sans effet, Spotify est déjà en pause.
-      finally { if (owned) spotifyBusy = false; }
+      finally { spotifyBusy = false; }
       const lead = Number(spotify.config.pauseLeadSec) || 0;
       if (paused === 'done' && lead > 0) await new Promise(resolve => setTimeout(resolve, lead * 1000));
     }
@@ -1895,9 +1881,6 @@ function catalog() {
 // Message montré aux téléphones quand aucun domaine KaraFun ne donne le catalogue.
 function catalogPhoneError(e) {
   if (!e?.catalogUnavailable) return e.message;
-  // Depuis la France, karafun.com refuse certaines listes (nouveautés, tops
-  // étrangers) ; si les deux domaines refusent, c'est cette liste qui est fermée.
-  if (e.status === 403 && e.refusedEverywhere) return 'KaraFun refuse cette sélection (HTTP 403). Essaie une autre sélection ou la recherche.';
   if (e.status) return `Catalogue KaraFun indisponible pour le moment (refus HTTP ${e.status}). La recherche reste possible.`;
   if (e.kind === 'timeout') return 'Catalogue KaraFun indisponible pour le moment (délai dépassé). La recherche reste possible.';
   if (e.kind === 'json') return 'Catalogue KaraFun indisponible pour le moment (réponse illisible). La recherche reste possible.';
@@ -2636,11 +2619,6 @@ const server = http.createServer(async (req, res) => {
         if (!isLocal(req) || req.socket.localPort === PUBLIC_PORT) return send(res, 403, 'Scanne le QR code de ta table.', 'text/plain; charset=utf-8');
         res.writeHead(302, { Location: `/staff?key=${STAFF_KEY}`, 'Referrer-Policy': 'no-referrer' }); return res.end();
       }
-      // Kit qui tourne, pour DEMARRER.bat d'un autre dossier : ce PC seulement.
-      if (p === '/internal/version') {
-        if (!isLocal(req)) return send(res, 403, { error: 'Réservé à ce PC.' });
-        return send(res, 200, { version: BUILD.version, commit: BUILD.commit, builtAt: BUILD.builtAt });
-      }
       let m = /^\/t\/([^/]+)\/([A-Za-z0-9_-]{22})\/?$/.exec(p);
       if (m) {
         tableByAccess(decodeURIComponent(m[1]), m[2]);
@@ -2845,7 +2823,7 @@ async function main() {
     publicServer.listen(PUBLIC_PORT, '127.0.0.1', () => {
       const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
       appLog('');
-      appLog(buildTitle());
+      appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
       appLog(`Page du bar (sur ce PC)        : ${staffUrl}`);
       appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${staffUrl}`);
       appLog(`QR codes à imprimer            : http://localhost:${PORT}/print`);

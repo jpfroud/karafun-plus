@@ -31,7 +31,7 @@ function harness({ logs = null } = {}) {
     console: logs ? { ...console, log: (...parts) => logs.push(parts.join(' ')) } : console, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, tracked, settings, handlers, spotify, spotifyAutomation, spotifyTick, sync, analyze,
-      karaokeOutlook, playKaraFun, staffState, access, battleVote, closingBlocksStart, catalogPhoneError, buildTitle,
+      karaokeOutlook, playKaraFun, staffState, access, battleVote, closingBlocksStart, catalogPhoneError,
       setBridge: b => { bridge = b; }, getPending: () => pending, getPlayStarting: () => playStarting };
   `, context, { filename: 'server.js' });
   context.fixture.settings.auto = false;
@@ -430,25 +430,10 @@ test('fermeture : plus de proposition de Battle après l’heure', async () => {
   error => error.code === 'CLOSING' && /Battle/.test(error.message));
 });
 
-// Regression: essai au bar du 2 octobre — deux kits « v0.4.0 » ne se
-// distinguaient que par un commit ; la date du kit figure aussi au journal.
-test('journal : la ligne de démarrage donne la version, le commit et la date du kit', () => {
-  const f = harness();
-  assert.equal(f.buildTitle({ version: 'v0.4.0', commit: '4d575ce', builtAt: '2026-10-02T12:40:31.1234567Z' }),
-    '=== File karaoké v0.4.0 (4d575ce, kit du 2026-10-02 12:40 UTC) ===');
-  assert.equal(f.buildTitle({ version: 'v0.4.0', commit: 'abc1234', builtAt: null }), '=== File karaoké v0.4.0 (abc1234) ===');
-  assert.equal(f.buildTitle({ version: 'version inconnue', commit: null, builtAt: null }), '=== File karaoké version inconnue ===');
-});
-
 test('catalogue : message montré aux téléphones selon la panne', () => {
   const f = harness();
   const unavailable = extra => Object.assign(new Error('x'), { catalogUnavailable: true, ...extra });
-  assert.equal(f.catalogPhoneError(unavailable({ status: 403, refusedEverywhere: true })),
-    'KaraFun refuse cette sélection (HTTP 403). Essaie une autre sélection ou la recherche.');
-  // Un domaine refuse, l'autre est en panne : la sélection n'est peut-être pas fermée.
-  assert.match(f.catalogPhoneError(unavailable({ status: 403, refusedEverywhere: false })),
-    /indisponible pour le moment \(refus HTTP 403\)/);
-  assert.match(f.catalogPhoneError(unavailable({ status: 503 })), /indisponible pour le moment \(refus HTTP 503\)/);
+  assert.match(f.catalogPhoneError(unavailable({ status: 403 })), /refus HTTP 403/);
   assert.match(f.catalogPhoneError(unavailable({ kind: 'timeout' })), /délai dépassé/);
   assert.match(f.catalogPhoneError(unavailable({ kind: 'json' })), /réponse illisible/);
   assert.match(f.catalogPhoneError(unavailable({ kind: 'network' })), /réseau injoignable/);
@@ -715,99 +700,4 @@ test('« Recalculer » quand seule une « Priorité » reste active : le bar sai
   s.forceReplan();
   assert.equal(s.reservedNext, null);
   assert.match(s.log.at(-1).msg, /déplacements manuels sont abandonnés/);
-});
-
-// Regression: essai au bar du 2 octobre — « il faut 2 secondes d'arrêt au
-// minimum ». Une lecture de l'état de Spotify (toutes les 30 s) en cours au
-// moment de « Lecture » faisait sauter la coupure : Spotify n'était mis en
-// pause qu'après le démarrage du titre.
-test('« Lecture » pendant une lecture de l’état de Spotify : coupure puis 2 s de silence par défaut', async () => {
-  const f = harness();
-  const { calls } = fakeSpotify(f, { playing: true });
-  delete f.spotify.config.pauseLeadSec;
-  f.spotify.config = { ...f.spotify.config, pauseLeadSec: new SpotifyLink({ file: null }).config.pauseLeadSec };
-  assert.equal(f.spotify.config.pauseLeadSec, 2, '2 s de silence par défaut');
-  const base = f.spotify.fetchImpl;
-  let slowReads = 1;
-  f.spotify.fetchImpl = async (url, request) => {
-    if (url.endsWith('/me/player') && slowReads-- > 0) await wait(300);
-    return base(url, request);
-  };
-  const kf = [];
-  singers(f, ['Alice', 'Bruno']);
-  loadedNext(f, kf);
-  const tick = f.spotifyTick(); // lecture périodique de l'état : Spotify occupé
-  await wait(20);
-  await f.playKaraFun();
-  await tick;
-  const pause = calls.find(c => c[0] === 'spotify-pause');
-  const play = kf.find(c => c[0] === 'karafun-play');
-  assert.ok(pause, 'Spotify coupé avant le titre');
-  assert.ok(play, 'titre lancé dans KaraFun');
-  assert.ok(play[1] - pause[1] >= 1950, `silence avant le titre : ${play[1] - pause[1]} ms`);
-});
-
-// Regression: relecture du 2 octobre — Spotify encore occupé après 4 s : la
-// coupure part quand même (les 2 s de silence comptent plus qu'une réponse
-// lente de Spotify), et le journal le dit.
-test('« Lecture » pendant une lecture de Spotify bloquée : coupure envoyée après 4 s, notée au journal', async () => {
-  const logs = [];
-  const f = harness({ logs });
-  const { calls } = fakeSpotify(f, { playing: true, pauseLeadSec: 1 });
-  const base = f.spotify.fetchImpl;
-  let slowReads = 1;
-  let reads = 0;
-  f.spotify.fetchImpl = async (url, request) => {
-    if (url.endsWith('/me/player')) reads++;
-    if (url.endsWith('/me/player') && slowReads-- > 0) await wait(5000);
-    return base(url, request);
-  };
-  const kf = [];
-  singers(f, ['Alice', 'Bruno']);
-  loadedNext(f, kf);
-  const tick = f.spotifyTick();
-  await wait(20);
-  const started = Date.now();
-  await f.playKaraFun();
-  const pause = calls.find(c => c[0] === 'spotify-pause');
-  const play = kf.find(c => c[0] === 'karafun-play');
-  assert.ok(pause, 'Spotify coupé malgré la lecture bloquée');
-  assert.ok(pause[1] - started >= 3900, `attente de 4 s au plus avant la coupure : ${pause[1] - started} ms`);
-  assert.ok(play && play[1] - pause[1] >= 950, 'silence réglé avant le titre');
-  assert.ok(logs.some(line => /Spotify encore occupé après 4 s/.test(line)), logs.join('\n'));
-  // La lecture bloquée garde la main : l'automate ne lance pas un second appel.
-  const readsBefore = reads;
-  await f.spotifyTick();
-  assert.equal(reads, readsBefore, 'Spotify toujours réservé par la lecture en cours');
-  await tick;
-});
-
-test('Spotify demande de patienter (429) : « Lecture » ne coupe pas et n’attend pas', async () => {
-  const f = harness();
-  const { calls } = fakeSpotify(f, { playing: true, pauseLeadSec: 2 });
-  f.spotify.blockedUntil = Date.now() + 60000;
-  const kf = [];
-  singers(f, ['Alice']);
-  loadedNext(f, kf);
-  const started = Date.now();
-  await f.playKaraFun();
-  assert.deepEqual(calls, [], 'aucune commande envoyée à Spotify');
-  assert.ok(Date.now() - started < 500);
-  assert.equal(kf.filter(c => c[0] === 'karafun-play').length, 1);
-});
-
-test('coupure automatique de Spotify désactivée : « Lecture » n’attend pas Spotify', async () => {
-  const f = harness();
-  fakeSpotify(f, { playing: true, autoPause: false });
-  const base = f.spotify.fetchImpl;
-  f.spotify.fetchImpl = async (url, request) => { if (url.endsWith('/me/player')) await wait(1500); return base(url, request); };
-  const kf = [];
-  singers(f, ['Alice']);
-  loadedNext(f, kf);
-  const tick = f.spotifyTick();
-  await wait(20);
-  const started = Date.now();
-  await f.playKaraFun();
-  assert.ok(Date.now() - started < 500, `lancement sans attendre la lecture de Spotify : ${Date.now() - started} ms`);
-  await tick;
 });

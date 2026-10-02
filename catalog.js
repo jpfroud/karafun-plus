@@ -102,7 +102,6 @@ class Catalog {
   async _get(params, isValid = () => true, invalidMessage = 'Réponse du catalogue invalide') {
     let last = null;
     let lastStatus = null;
-    let refusals = 0; // domaines qui ont répondu HTTP 403
     for (let k = 0; k < this.endpoints.length; k++) {
       const idx = (this.baseIdx + k) % this.endpoints.length;
       const endpoint = this.endpoints[idx];
@@ -115,7 +114,6 @@ class Catalog {
       } catch (error) {
         if (!error.kind) error.kind = 'network';
         if (error.status) lastStatus = error.status;
-        if (error.status === 403) refusals++;
         last = error;
         this._report(endpoint, error);
       }
@@ -124,10 +122,7 @@ class Catalog {
     if (last.shape && !lastStatus) throw new Error(invalidMessage);
     const message = lastStatus ? `Catalogue KaraFun : HTTP ${lastStatus}`
       : last.kind === 'timeout' || last.kind === 'json' ? last.message : 'Catalogue KaraFun : réseau injoignable';
-    // `refusedEverywhere` : chaque domaine a refusé cette liste (HTTP 403), ce
-    // n'est pas une panne passagère d'un des deux.
-    throw Object.assign(new Error(message), { status: lastStatus, kind: lastStatus ? 'http' : last.kind, catalogUnavailable: true,
-      refusedEverywhere: refusals === this.endpoints.length });
+    throw Object.assign(new Error(message), { status: lastStatus, kind: lastStatus ? 'http' : last.kind, catalogUnavailable: true });
   }
 
   async categories(type) {
