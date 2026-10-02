@@ -482,8 +482,24 @@ test('fermeture : « +10 min » pendant le retrait, KaraFun retire quand même l
   f.setBridge(fakeBridge(kf, []));
   f.sync();
   assert.equal(owner.song?.songId, sel.song.songId, 'le titre revient dans la liste du chanteur');
+  assert.match(f.sched.log.at(-1).msg, /retiré de KaraFun juste avant le changement de l’heure de fermeture/);
   assert.ok(!f.sched.log.some(line => /passée dans KaraFun avant la lecture/.test(line.msg)),
     f.sched.log.map(line => line.msg).join('\n'));
+});
+
+test('fermeture : « +10 min » quand le retrait doit être renvoyé et l’alerte partir : ni l’un ni l’autre', async () => {
+  const f = harness();
+  const kf = [];
+  closingPulled(f, kf);
+  const tr = f.tracked.find(item => item.queueId === 5);
+  tr.removeRequestedAt -= 21000;
+  tr.pulled.at -= 46000;
+  const removals = kf.filter(c => c[0] === 'remove').length;
+  await f.handlers['POST /api/staff/closing'](null, null, { extendMin: 30 });
+  f.sync();
+  assert.equal(tr.pulled, null, 'le titre tient de nouveau avant l’heure');
+  assert.equal(kf.filter(c => c[0] === 'remove').length, removals, 'pas de retrait renvoyé');
+  assert.ok(!f.sched.log.some(line => /n’a pas retiré/.test(line.msg)), 'pas d’alerte pour un titre qui tient');
 });
 
 test('fermeture : longtemps après « +10 min », un titre retiré dans KaraFun est un choix du bar', async () => {
@@ -604,6 +620,28 @@ test('Spotify relancé pendant qu’un titre démarre : la lecture automatique n
   assert.deepEqual(calls.map(c => c[0]), ['spotify-play']);
   assert.equal(f.settings.autoPlayHeld, false, 'un titre est en cours : rien à suspendre');
   assert.equal(f.settings.autoPlay, true);
+});
+
+test('Spotify relancé pendant qu’un titre arrive dans la file : la lecture automatique attend le bar', async () => {
+  const f = harness();
+  fakeSpotify(f);
+  const base = f.spotify.fetchImpl;
+  let release;
+  const slow = new Promise(resolve => { release = resolve; });
+  f.spotify.fetchImpl = async (url, request) => {
+    if (url.includes('/me/player/play')) await slow;
+    return base(url, request);
+  };
+  const kf = [];
+  f.setBridge(fakeBridge(kf, []));
+  f.settings.autoPlay = true;
+  const tick = f.spotifyTick();
+  await wait(20);
+  f.setBridge(fakeBridge(kf, [{ queueId: 9, songId: 999, singer: 'Le bar' }]));
+  assert.equal(f.karaokeOutlook(), 'between');
+  release();
+  await tick;
+  assert.equal(f.settings.autoPlayHeld, true, 'Spotify a repris : le bar redonne le micro');
 });
 
 test('réglages Spotify : la migration du délai de 15 s ne touche que les réglages d’avant la v0.4', () => {
