@@ -136,6 +136,37 @@ test('relance : nouvel essai refusé tant qu’une copie de l’essai raté peut
   assert.ok(!bridge.calls.some(c => c[0] === 'next'), 'jamais de Suivant');
 });
 
+// Regression: troisième passe adversariale — au moment où le bouton revient,
+// l'ancienne surveillance expirée retirait encore la nouvelle copie.
+test('relance : nouvel essai après la minute d’attente, la nouvelle copie n’est pas retirée', () => {
+  const f = harness();
+  const { queue, bridge } = onStage(f);
+  let next = 3;
+  bridge.add = (songId, singer, pos) => { bridge.calls.push(['add', pos]); queue.push({ queueId: next++, songId, singer }); };
+  f.startRestart();
+  f.syncRestart(f.analyze(), Date.now() - 61000); // essai raté il y a plus d’une minute
+  queue.splice(queue.findIndex(item => item.queueId === 3), 1); // KaraFun a retiré la copie mal placée
+  bridge.calls.length = 0;
+  bridge.add = (songId, singer, pos) => { bridge.calls.push(['add', pos]); queue.splice(pos, 0, { queueId: 7, songId, singer }); };
+  f.startRestart();
+  f.syncRestart(f.analyze(), Date.now());
+  assert.deepEqual(bridge.calls, [['add', 1], ['next']], 'la nouvelle copie est gardée et lancée');
+});
+
+test('relance : le titre quitte la file avant l’état de lecture, rien n’est décidé avant la suite', () => {
+  const f = harness();
+  const { queue, bridge } = onStage(f);
+  copyAfterCurrent(bridge, queue);
+  f.startRestart();
+  queue.shift(); // QueueEvent arrivé avant StatusEvent : KaraFun annonce encore le titre fini
+  const t0 = Date.now();
+  f.syncRestart(f.analyze(), t0);
+  assert.deepEqual(bridge.calls, [['add', 1]], 'ni Suivant ni Lecture tant que l’état est ambigu');
+  bridge.status = { state: 'idle' };
+  f.syncRestart(f.analyze(), t0 + 500);
+  assert.deepEqual(bridge.calls, [['add', 1], ['play']]);
+});
+
 test('relance : titre fini seul et KaraFun à l’arrêt, la copie est lancée sans « Suivant »', () => {
   const f = harness();
   const { live, queue, bridge } = onStage(f);
@@ -371,16 +402,41 @@ test('« Je suis prêt » n’est pas défait quand le passage suivant n’est f
   assert.equal(s.deferralFor(p.id), null);
 });
 
+// Déplacement noté comme le fait la route du bar (POST /api/staff/move).
+function staffMoveRecorded(s, person, toIndex) {
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(person.id, toIndex);
+  s.recordManualChange({ kind: toIndex === 0 ? 'priority' : 'move', personId: person.id, name: person.name,
+    from: 2, to: toIndex + 1, before, native: 'karafun' });
+}
+
 test('« Pas prêt » : annuler un déplacement du bar rend le report qu’il avait levé', () => {
   const { s, firsts } = evening();
   const [head] = firsts();
   const p = s.people.get(head.ids[0]);
   s.deferPassage(p.id, head, 2);
-  const before = s.manualOverrideState({ deferrals: true });
-  s.staffMove(p.id, 0);
+  staffMoveRecorded(s, p, 0);
   assert.equal(p.deferral, null, 'le bar place lui-même ce passage');
-  s.restoreManualOverride(before);
+  s.undoLastManualChange(null, 'karafun');
   assert.equal(s.deferralFor(p.id).remaining, 2);
+});
+
+// Regression: troisième passe adversariale — retirer un titre au bar
+// recalculait les empreintes en rétablissant un report levé par le bar.
+test('« Pas prêt » : retirer un titre au bar ne rétablit pas un report levé, l’annulation le rend encore', () => {
+  const { s, firsts } = evening();
+  const [head, , third] = firsts();
+  const d = s.people.get(head.ids[0]);
+  s.deferPassage(d.id, head, 2);
+  const other = s.people.get(third.ids[0]);
+  s.chooseSong(other, song(), 'append'); // il a un titre de rechange
+  staffMoveRecorded(s, other, 1);
+  staffMoveRecorded(s, d, 0);
+  assert.equal(d.deferral, null);
+  s.staffRemove(other.id);
+  assert.equal(d.deferral, null, 'le choix du bar reste en place');
+  s.undoLastManualChange(null, 'karafun');
+  assert.equal(s.deferralFor(d.id)?.remaining, 2, 'annuler la priorité rend le report');
 });
 
 test('« Pas prêt » : cinq chansons au plus par titre, même après plusieurs reports', () => {
@@ -554,8 +610,37 @@ test('Spotify : un seul renouvellement du jeton à la fois, jeton refusé effac�
   assert.equal(link.config.refreshToken, 'r2');
   const stale = linked(async () => json({ error: 'invalid_grant' }, 400));
   stale.config.refreshToken = 'nouveau';
-  await assert.rejects(stale._token({ grant_type: 'refresh_token', refresh_token: 'ancien' }), /reconnecte/);
+  await assert.rejects(stale._token({ grant_type: 'refresh_token', refresh_token: 'ancien' }));
   assert.equal(stale.config.refreshToken, 'nouveau', 'un ancien jeton refusé n’efface pas le nouveau');
+});
+
+// Regression: troisième passe adversariale — une reconnexion pouvait être
+// écrasée par un renouvellement parti avec l'ancien jeton.
+test('Spotify : reconnexion pendant un renouvellement, le nouveau compte garde ses jetons', async () => {
+  let releaseCode;
+  const calls = [];
+  const link = linked(async (url, options = {}) => {
+    if (url.endsWith('/api/token')) {
+      const form = new URLSearchParams(options.body);
+      calls.push(form.get('grant_type'));
+      if (form.get('grant_type') === 'authorization_code') {
+        await new Promise(resolve => { releaseCode = resolve; });
+        return json({ access_token: 'NOUVEAU', refresh_token: 'NOUVEAU_RT', expires_in: 3600 });
+      }
+      return json({ access_token: 'ANCIEN', refresh_token: 'ANCIEN_RT2', expires_in: 3600 });
+    }
+    return json({ is_playing: false });
+  });
+  link.failures = 3; link.waitUntil = Date.now() + 600000;
+  link.authUrl('http://127.0.0.1:3000/spotify/callback');
+  const connecting = link.finishAuth({ code: 'c', state: link.pendingAuth.state });
+  const reading = link.readPlayer();
+  await new Promise(resolve => setImmediate(resolve));
+  releaseCode();
+  await connecting; await reading;
+  assert.deepEqual(calls, ['authorization_code'], 'pas de renouvellement avec l’ancien jeton');
+  assert.equal(link.config.refreshToken, 'NOUVEAU_RT');
+  assert.equal(link.waiting, false, 'reconnexion : plus d’attente héritée');
 });
 
 test('Spotify : après des erreurs, la pause d’un titre qui démarre passe quand même', async () => {

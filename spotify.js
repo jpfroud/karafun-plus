@@ -53,6 +53,7 @@ class SpotifyLink {
     this.waitUntil = 0;       // pas d'appel automatique avant (échecs, 429)
     this.blockedUntil = 0;    // Spotify demande de patienter (429) : même la pause attend
     this.refreshing = null;   // renouvellement du jeton en cours
+    this.authorizing = null;  // échange du code de connexion en cours
     this.generation = 0;      // change à chaque déconnexion : un jeton en route est ignoré
     this._load();
   }
@@ -153,8 +154,12 @@ class SpotifyLink {
       body: new URLSearchParams({ client_id: this.config.clientId, ...form }).toString(),
       signal: AbortSignal.timeout(10000) });
     const data = await response.json().catch(() => ({}));
-    // Déconnecté ou autre application pendant la demande : ne rien garder.
-    if (generation !== this.generation) throw new SpotifyError('Connexion Spotify changée pendant la demande.');
+    // Déconnecté ou autre application pendant la demande, ou jeton remplacé
+    // entre-temps (nouvelle connexion) : ne rien garder.
+    if (generation !== this.generation ||
+        (form.grant_type === 'refresh_token' && this.config.refreshToken !== form.refresh_token)) {
+      throw new SpotifyError('Connexion Spotify changée pendant la demande.');
+    }
     if (!response.ok || !data.access_token) {
       if (data.error === 'invalid_grant' && form.grant_type === 'refresh_token' &&
           this.config.refreshToken === form.refresh_token) {
@@ -179,22 +184,31 @@ class SpotifyLink {
       throw new Error('Connexion Spotify expirée : relance-la depuis la page du bar.');
     }
     this.pendingAuth = null;
-    // Un renouvellement en route pour l'ancienne connexion ne l'écrase pas.
+    // Un renouvellement en route pour l'ancienne connexion ne l'écrase pas,
+    // et aucun nouveau ne part avant la fin de cet échange.
     this.generation++;
     this.access = null;
-    await this._token({ grant_type: 'authorization_code', code: String(code || ''),
+    this.refreshing = null;
+    this.authorizing = this._token({ grant_type: 'authorization_code', code: String(code || ''),
       redirect_uri: pending.redirectUri, code_verifier: pending.verifier });
+    try { await this.authorizing; } finally { this.authorizing = null; }
     this.lastError = null;
+    this.failures = 0;
+    this.waitUntil = 0;
+    this.blockedUntil = 0;
   }
 
   // Un seul renouvellement à la fois : la boucle automatique et un bouton du
   // bar partagent la même demande (Spotify peut changer le jeton à chaque fois).
   async _accessToken() {
+    if (this.authorizing) await this.authorizing.catch(() => {});
     if (!this.connected) throw new SpotifyError('Spotify n’est pas connecté.');
     if (this.access && this.now() < this.access.expiresAt) return this.access.token;
-    if (!this.refreshing) {
-      this.refreshing = this._token({ grant_type: 'refresh_token', refresh_token: this.config.refreshToken })
-        .finally(() => { this.refreshing = null; });
+    if (!this.refreshing || this.refreshing.generation !== this.generation) {
+      const refreshing = this._token({ grant_type: 'refresh_token', refresh_token: this.config.refreshToken })
+        .finally(() => { if (this.refreshing === refreshing) this.refreshing = null; });
+      refreshing.generation = this.generation;
+      this.refreshing = refreshing;
     }
     return this.refreshing;
   }

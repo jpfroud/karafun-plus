@@ -224,11 +224,14 @@ class Scheduler {
     return state;
   }
 
-  restoreManualOverride(state) {
+  // `deferrals` : seule une annulation du bar rend les reports levés ; le
+  // recalcul des empreintes ne doit jamais les rétablir.
+  restoreManualOverride(state, { deferrals = false } = {}) {
     this.manualOrder = [...state.manualOrder];
     this.manualOrderActive = !!state.manualOrderActive && this.manualOrder.length > 0;
     this.reservedNext = state.reservedNext ? { ...state.reservedNext } : null;
-    for (const [pid, deferral] of state.deferrals || []) {
+    if (!deferrals || !Array.isArray(state.deferrals)) return;
+    for (const [pid, deferral] of state.deferrals) {
       const p = this.people.get(pid);
       if (p && !p.withdrawnAt && p.song?.entryId === deferral.entryId && !p.deferral) p.deferral = { ...deferral };
     }
@@ -335,7 +338,7 @@ class Scheduler {
       this.manualChanges = [];
       throw new Error('La file a changé depuis cette intervention ; elle ne peut plus être annulée sans déplacer d’autres titres.');
     }
-    this.restoreManualOverride(latest.before);
+    this.restoreManualOverride(latest.before, { deferrals: true });
     this._restorePlan(latest.planBefore);
     this.manualChanges.pop();
     this.note(`Le bar a annulé ${latest.kind === 'priority' ? 'la priorité' : 'le déplacement'} de ${latest.name}`, 'staff');
@@ -349,7 +352,7 @@ class Scheduler {
       throw new Error('La file a changé depuis ces interventions ; leur annulation globale n’est plus possible.');
     }
     const count = this.manualChanges.length;
-    this.restoreManualOverride(this.manualChanges[0].before);
+    this.restoreManualOverride(this.manualChanges[0].before, { deferrals: true });
     this._restorePlan(this.manualChanges[0].planBefore);
     this.manualChanges = [];
     this.note(`Le bar a annulé ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} dans la file`, 'staff');
@@ -1062,7 +1065,8 @@ class Scheduler {
       if (hasNextSong) return state;
       const manualOrder = state.manualOrder.filter(pid => pid !== p.id);
       return { manualOrder, manualOrderActive: !!state.manualOrderActive && manualOrder.length > 0,
-        reservedNext: state.reservedNext?.personId === p.id ? null : state.reservedNext };
+        reservedNext: state.reservedNext?.personId === p.id ? null : state.reservedNext,
+        ...(state.deferrals ? { deferrals: state.deferrals } : {}) };
     };
     const priorStates = rebase ? changes.map(change => adjustState(change.before)) : [];
     if (!hasNextSong && changes.length) {

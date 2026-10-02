@@ -26,6 +26,11 @@ const songValid = song => song === null || (
   Number.isSafeInteger(song.songId) && song.songId > 0 &&
   typeof song.title === 'string' && song.title.length > 0
 );
+// `remaining` peut compter un envoi déjà en route en plus du report.
+const validDeferral = d => !!(d && typeof d === 'object' && typeof d.entryId === 'string' &&
+  Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= DEFER_MAX + 1 &&
+  Number.isInteger(d.total) && d.total >= 1 && d.total <= DEFER_MAX && Number.isFinite(d.until) &&
+  Array.isArray(d.ids) && d.ids.length >= 1 && d.ids.every(id => typeof id === 'string'));
 const selectionValid = sel => sel && typeof sel === 'object' &&
   Array.isArray(sel.ids) && sel.ids.length > 0 &&
   sel.ids.every(x => typeof x === 'string') && songValid(sel.song) &&
@@ -132,12 +137,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     }
     const person = clone(p);
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.
-    const d = person.deferral;
-    if (d != null && !(d && typeof d === 'object' && typeof d.entryId === 'string' &&
-        // `remaining` peut compter un envoi déjà en route en plus du report.
-        Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= DEFER_MAX + 1 &&
-        Number.isInteger(d.total) && d.total >= 1 && d.total <= DEFER_MAX && Number.isFinite(d.until) &&
-        Array.isArray(d.ids) && d.ids.length >= 1 && d.ids.every(id => typeof id === 'string'))) person.deferral = null;
+    if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(photo.type)) fail('photo mal formée');
@@ -198,6 +198,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   for (const change of tmp.manualChanges) {
     object(change, 'changement manuel');
     const before = object(change.before, 'état précédent du changement manuel');
+    // Reports « Pas prêt » levés par un déplacement : abîmés, l'annulation
+    // garde l'ordre sans les rendre.
+    if ('deferrals' in before && !(Array.isArray(before.deferrals) && before.deferrals.every(row =>
+      Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && validDeferral(row[1])))) delete before.deferrals;
     if (typeof change.id !== 'string' || !/^[a-f0-9]{12}$/.test(change.id) ||
       !['priority', 'move'].includes(change.kind) ||
       typeof change.personId !== 'string' || !tmp.people.has(change.personId) ||

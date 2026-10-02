@@ -503,6 +503,7 @@ function startRestart() {
   if (restartSweep && Date.now() <= restartSweep.until) {
     throw new Error(`La relance précédente vient d’échouer : vérifie la file de KaraFun. Nouvel essai possible dans ${Math.ceil((restartSweep.until - Date.now()) / 1000)} s, ou utilise le bouton de KaraFun.`);
   }
+  restartSweep = null; // délai écoulé : la nouvelle copie ne doit pas être prise pour une copie tardive
   if (pending) throw new Error('Un titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
   const { current, q } = analyze();
   if (!current) throw new Error('Aucun titre en cours à relancer.');
@@ -529,13 +530,13 @@ const restartCopies = (op, q) => q.filter(item => !op.before.includes(String(ite
 function sweepRestartCopies({ current, q }, now) {
   const sweep = restartSweep;
   if (!sweep) return;
+  if (now > sweep.until) { restartSweep = null; return; }
   for (const copy of restartCopies(sweep, q)) {
     if (String(current?.queueId) === String(copy.queueId)) continue; // déjà sur scène : ne pas couper
     sweep.before.push(String(copy.queueId));
     try { bridge.remove(copy.queueId); sched.note(`Copie tardive de « ${sweep.title} » retirée de KaraFun.`, 'stage'); }
     catch (error) { appLog(`Retrait KaraFun en attente : ${error.message}`); sweep.before.pop(); }
   }
-  if (now > sweep.until) restartSweep = null;
 }
 
 function abandonRestart(op, { current, upcoming, q }, message, now) {
@@ -578,6 +579,9 @@ function syncRestart({ current, upcoming, q }, now) {
   const state = { current, upcoming, q };
   const playing = copyId => String(current?.queueId) === copyId;
   if (op.phase === 'adding') {
+    // Le titre a quitté la file mais KaraFun l'annonce encore en lecture :
+    // attendre son état suivant avant de choisir entre Lecture et Suivant.
+    if (current && !q.some(item => String(item.queueId) === String(current.queueId))) return;
     const copies = restartCopies(op, q);
     if (!copies.length) {
       if (now - op.at > RESTART_ADD_TIMEOUT_MS) abandonRestart(op, state, 'KaraFun n’a pas confirmé la relance du titre : rien n’a été passé.', now);
