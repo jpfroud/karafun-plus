@@ -33,7 +33,7 @@
     <div id="markDuoBox" class="mark-duo" hidden><label for="markDuoPartner">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button></div><p class="tiny muted">Si son propre titre est déjà chargé dans KaraFun, il en est retiré et repassera plus tard : il ne rechante pas juste après le duo.</p></div>
     <div class="closing-panel">
       <div class="section-heading compact"><h3>Fermeture du bar</h3><span id="closingPill" class="pill">Pas d’heure</span></div>
-      <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. Réordonne les derniers titres dans la file.</p>
+      <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. Réordonne les derniers titres dans la file. À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
       <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><button class="btn small primary" id="closingSave">Annoncer</button><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
       <p class="small" id="closingText" role="status"></p>
     </div>
@@ -41,6 +41,7 @@
       <label class="switch"><input type="checkbox" id="auto"> Envoi automatique à KaraFun</label>
       <label class="switch"><input type="checkbox" id="autoPlay"> Lancer la lecture automatiquement</label>
     </div>
+    <p class="small notice-line" id="autoPlayHeldTxt" role="status" hidden>Lecture automatique suspendue : Spotify a repris en fin de file. Touche « Lecture » quand le micro est prêt ; elle se rétablit ensuite.</p>
     <p class="small muted" id="pendingTxt" role="status"></p>
     <div class="stage-history">
       <div class="section-heading compact"><h3>Derniers passages sur scène</h3><button type="button" class="btn small" id="clearStageHistory">Vider</button></div>
@@ -176,10 +177,11 @@
     <div id="spotifyConnected" hidden>
       <div class="row wrap"><label class="small" for="spotifyDevice">Appareil qui joue la musique</label><select id="spotifyDevice"><option value="">Appareil actif de Spotify</option></select><button class="btn small" id="spotifyDevices">Actualiser la liste</button></div>
       <div class="control-stack">
-        <label class="switch"><input type="checkbox" id="spotifyAutoResume"> Relancer Spotify quand plus rien ne joue</label>
+        <label class="switch"><input type="checkbox" id="spotifyAutoResume"> Relancer Spotify quand la file est vide</label>
         <label class="switch"><input type="checkbox" id="spotifyAutoPause"> Mettre Spotify en pause quand un titre démarre</label>
       </div>
-      <label class="small spotify-delay" for="spotifyDelay">Relancer après <input id="spotifyDelay" type="number" min="5" max="300"> secondes de silence</label>
+      <label class="small spotify-delay" for="spotifyDelay">Relancer après <input id="spotifyDelay" type="number" min="0" max="300"> s de silence, une fois la file vide</label>
+      <label class="small spotify-delay" for="spotifyLead">Couper Spotify <input id="spotifyLead" type="number" min="0" max="10"> s avant de lancer un titre</label>
       <div class="row wrap"><button class="btn small" id="spotifySaveOptions">Enregistrer</button><button class="btn small" id="spotifyPlay">▶ Spotify</button><button class="btn small" id="spotifyPause">⏸ Spotify</button><button class="btn small danger" id="spotifyDisconnect">Déconnecter</button></div>
     </div>
     <p class="small" id="spotifyText" role="status"></p>
@@ -593,7 +595,7 @@
     $('closingPill').className = 'pill' + (!closing ? '' : closing.full ? ' bad' : ' ok');
     $('closingText').textContent = !closing ? 'Aucune heure annoncée : les clients ajoutent des titres librement.' :
       `${closing.fitCount} titre${closing.fitCount > 1 ? 's' : ''} passer${closing.fitCount > 1 ? 'ont' : 'a'} avant ${hhmm(closing.at)}` +
-      (closing.afterCount ? `, ${closing.afterCount} après (à retirer ou réordonner).` : '.') +
+      (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
       (closing.full ? ' Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.' : ' Il reste de la place : les clients peuvent encore ajouter des titres.');
     if (document.activeElement !== $('closingTime')) {
       const d = closing ? new Date(closing.at) : null;
@@ -624,7 +626,8 @@
     for (const [id, field] of [['spotifyAutoResume', 'autoResume'], ['spotifyAutoPause', 'autoPause']]) {
       if (document.activeElement !== $(id)) $(id).checked = !!sp[field];
     }
-    if (document.activeElement !== $('spotifyDelay')) $('spotifyDelay').value = sp.resumeDelaySec || 15;
+    if (document.activeElement !== $('spotifyDelay')) $('spotifyDelay').value = sp.resumeDelaySec ?? 3;
+    if (document.activeElement !== $('spotifyLead')) $('spotifyLead').value = sp.pauseLeadSec ?? 2;
     if (document.activeElement !== $('spotifyDevice')) {
       const devices = spotifyDevicesList || (sp.deviceId ? [{ id: sp.deviceId, name: sp.deviceName || 'Appareil choisi' }] : []);
       $('spotifyDevice').innerHTML = '<option value="">Appareil actif de Spotify</option>' + devices.map(d =>
@@ -659,6 +662,7 @@
       formInit = true;
     }
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
+    $('autoPlayHeldTxt').hidden = !S.settings.autoPlayHeld;
     $('rotationPeople').checked = !S.settings.tableRotation;
     $('rotationTables').checked = !!S.settings.tableRotation && !S.settings.weightedTables;
     $('rotationCompromise').checked = !!S.settings.tableRotation && !!S.settings.weightedTables;
@@ -1001,7 +1005,8 @@
       deviceName: $('spotifyDevice').value ? (option?.textContent || '').replace(/ \(actif\)$/, '') : '' }, 'Appareil Spotify enregistré');
   };
   $('spotifySaveOptions').onclick = () => spotifyAction({ action: 'options', autoResume: $('spotifyAutoResume').checked,
-    autoPause: $('spotifyAutoPause').checked, resumeDelaySec: Number($('spotifyDelay').value) }, 'Réglages Spotify enregistrés');
+    autoPause: $('spotifyAutoPause').checked, resumeDelaySec: Number($('spotifyDelay').value),
+    pauseLeadSec: Number($('spotifyLead').value) }, 'Réglages Spotify enregistrés');
   $('spotifyPlay').onclick = () => spotifyAction({ action: 'play' }, 'Spotify relancé');
   $('spotifyPause').onclick = () => spotifyAction({ action: 'pause' }, 'Spotify en pause');
   $('spotifyDisconnect').onclick = () => { if (confirm('Déconnecter Spotify de la file karaoké ?')) spotifyAction({ action: 'disconnect' }, 'Spotify déconnecté'); };

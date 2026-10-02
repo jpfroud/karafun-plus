@@ -678,9 +678,9 @@ test('Spotify : fichier abîmé nettoyé, nouveau Client ID efface le jeton', ()
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spotify-'));
   const file = path.join(dir, 'spotify.json');
   try {
-    fs.writeFileSync(file, JSON.stringify({ clientId: '0123456789abcdef', refreshToken: 'r', resumeDelaySec: 1, autoPause: 'oui' }));
+    fs.writeFileSync(file, JSON.stringify({ clientId: '0123456789abcdef', refreshToken: 'r', resumeDelaySec: -1, autoPause: 'oui' }));
     const link = new SpotifyLink({ file, fetchImpl: async () => { throw new Error('réseau'); } });
-    assert.equal(link.config.resumeDelaySec, 15);
+    assert.equal(link.config.resumeDelaySec, 3);
     assert.equal(link.config.autoPause, true);
     link.setClientId('fedcba9876543210');
     assert.equal(link.connected, false);
