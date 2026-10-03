@@ -43,7 +43,10 @@ function fakes(t, respond = () => ok(page())) {
   t.after(() => { globalThis.WebSocket = saved.WebSocket; globalThis.fetch = saved.fetch; });
   return { calls, sockets: FakeWebSocket.instances };
 }
-const mockTime = t => t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 0 });
+const mockTime = (t, now = 0) => t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now });
+// Milieu d'heure : les relances rapides de la page tiennent dans le budget
+// (à l'heure pile, une seule est prise, voir test/kcs-ratelimit.test.js).
+const HALF_HOUR = 1800000;
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
 const nameRequests = ws => ws.sent.filter(m => m.type === 'remote.UpdateUsernameRequest');
 
@@ -189,7 +192,8 @@ test('demande de nom restée sans réponse : simple avertissement, la connexion 
   t.mock.timers.tick(16000);
   t.mock.timers.tick(3000);
   await flush();
-  assert.equal(env.calls.length, 2, 'un vrai silence de KaraFun relance toujours la connexion');
+  assert.equal(env.sockets.length, 2, 'un vrai silence de KaraFun relance toujours la connexion');
+  assert.equal(env.calls.length, 1, 'par l’URL KCS gardée, sans relire la page');
 });
 
 test('demande de nom sans réponse avant les données : la file attend toujours son nom', async t => {
@@ -274,6 +278,7 @@ test('socket ouvert : « injoignable » disparaît aussitôt, sans attendre la f
   await flush();
   env.sockets[0].serverClose(1006);
   assert.equal(bridge.unreachable, true);
+  // Coupure (1006) avant d'être acceptée : URL réessayée 3 s plus tard.
   t.mock.timers.tick(3000);
   await flush();
   env.sockets[1].open();
@@ -401,15 +406,18 @@ test('Reconnecter pendant une attente de relance : nouvel essai immédiat', asyn
   bridge.connect(CODE);
   await flush();
   assert.equal(bridge.connectionState().phase, 'retry');
-  assert.equal(bridge.connectionState().label, 'Réseau coupé : nouvel essai dans 3 s');
+  assert.equal(bridge.connectionState().label, 'Réseau coupé : nouvel essai dans 5 s');
   assert.equal(bridge.connect(CODE), 'started');
   await flush();
   assert.equal(env.calls.length, 2);
-  assert.equal(bridge.connectionState().label, 'Réseau coupé : nouvel essai dans 6 s (essai 3)', 'les échecs comptent toujours');
+  assert.equal(bridge.connectionState().label, 'Réseau coupé : nouvel essai dans 15 s (essai 3)', 'les échecs comptent toujours');
 });
 
-test('relances espacées : 3, 6, 12, 24 puis 30 s au plus, remises à zéro une fois prêt', async t => {
-  mockTime(t);
+// La page de découverte est limitée par KaraFun (quota par heure pleine) :
+// ses relances suivent la cadence lente de test/kcs-ratelimit.test.js ; les
+// reconnexions par l'URL KCS gardée gardent 3, 6, 12, 24 puis 30 s.
+test('relances de la page : 5 s, 15 s, 30 s, 1 min, 2 min puis réparties ; 3 s après « prêt »', async t => {
+  mockTime(t, HALF_HOUR);
   let failing = true;
   const env = fakes(t, () => { if (failing) throw new TypeError('fetch failed'); return ok(page()); });
   const { bridge, lines } = bridgeFor(t);
@@ -422,7 +430,9 @@ test('relances espacées : 3, 6, 12, 24 puis 30 s au plus, remises à zéro une 
     if (i === 5) failing = false;
     t.mock.timers.tick(wait);
   }
-  assert.deepEqual(delays, [3000, 6000, 12000, 24000, 30000, 30000]);
+  // 5 relances rapides en 230 s : les 4 essais automatiques restants et
+  // l'heure pleine suivante (plus la gigue de 32,5 s) se partagent le reste.
+  assert.deepEqual(delays, [5000, 15000, 30000, 60000, 120000, Math.round((HALF_HOUR + 32500 - 230000) / 5)]);
   assert.equal(lines.filter(l => l.startsWith('KaraFun : Réseau coupé')).length, 1, 'une même panne : une seule ligne');
   await flush();
   const ws = env.sockets.at(-1);
@@ -437,6 +447,7 @@ test('relances espacées : 3, 6, 12, 24 puis 30 s au plus, remises à zéro une 
   assert.ok(lines.at(-1).endsWith('Nouvel essai dans 3 s (essai 1).'));
   t.mock.timers.tick(3000);
   assert.equal(bridge.connectionState().attempt, 1);
+  assert.equal(env.calls.length, 7, 'reconnexion par l’URL KCS gardée');
 });
 
 test('une même panne réécrit une ligne toutes les 10 relances', async t => {
@@ -452,21 +463,34 @@ test('une même panne réécrit une ligne toutes les 10 relances', async t => {
   assert.equal(lines.length, 2);
 });
 
-test('relances dispersées : le hasard décale chaque délai de ±15 % au plus', async t => {
-  mockTime(t);
-  fakes(t, () => { throw new TypeError('fetch failed'); });
+test('relances dispersées : le hasard décale chaque délai de ±15 % au plus (20 s au plus pour la page)', async t => {
+  mockTime(t, HALF_HOUR);
+  let failing = true;
+  const env = fakes(t, () => { if (failing) throw new TypeError('fetch failed'); return ok(page()); });
   const { bridge } = bridgeFor(t);
   bridge.random = () => 0;
   bridge.connect(CODE);
   await flush();
-  assert.equal(bridge.retryAt - Date.now(), 3000, 'premier essai exact');
-  t.mock.timers.tick(3000);
+  assert.equal(bridge.retryAt - Date.now(), 5000, 'premier essai exact');
+  t.mock.timers.tick(5000);
   await flush();
-  assert.equal(bridge.retryAt - Date.now(), 5100);
+  assert.equal(bridge.retryAt - Date.now(), 12750);
   bridge.random = () => 1;
-  t.mock.timers.tick(5100);
+  t.mock.timers.tick(12750);
   await flush();
-  assert.equal(bridge.retryAt - Date.now(), 13800);
+  assert.equal(bridge.retryAt - Date.now(), 34500);
+  // URL KCS gardée : 3 s exactes, puis 6 s ± 15 %.
+  failing = false;
+  t.mock.timers.tick(34500);
+  await flush();
+  const accepted = ws => { ws.open(); ws.receive({ type: 'core.AuthenticatedEvent', payload: {} }); ws.serverClose(1006); };
+  accepted(env.sockets.at(-1));
+  assert.equal(bridge.retryAt - Date.now(), 3000);
+  bridge.random = () => 0;
+  t.mock.timers.tick(3000);
+  accepted(env.sockets.at(-1));
+  assert.equal(bridge.retryAt - Date.now(), 5100);
+  assert.equal(env.calls.length, 4);
 });
 
 test('nouveau code : conflit de nom et compteur d’essais oubliés', async t => {
@@ -483,14 +507,16 @@ test('nouveau code : conflit de nom et compteur d’essais oubliés', async t =>
 // Diagnostic de la découverte
 // ---------------------------------------------------------------------------
 
+// Refus (401/403/429, défi) : KaraFun limite les essais jusqu'à l'heure
+// pleine suivante (horloge à 0 : 01:00 + 32,5 s de gigue).
 for (const [name, respond, kind, pattern, minDelay] of [
   ['HTTP 403', () => ({ ok: false, status: 403, text: async () => 'Forbidden' }), 'refused',
-    /^Le site KaraFun refuse ce PC \(HTTP 403\)/, 15000],
-  ['HTTP 429', () => ({ ok: false, status: 429, text: async () => '' }), 'refused', /HTTP 429/, 15000],
-  ['page de vérification anti-robot', () => ok('<title>Just a moment...</title><div id="cf-chl"></div>'), 'refused', /HTTP 200/, 15000],
-  ['HTTP 502', () => ({ ok: false, status: 502, text: async () => '' }), 'http', /^Le site KaraFun répond mal \(HTTP 502\)/, 3000],
-  ['délai dépassé', () => { throw Object.assign(new Error('timeout'), { name: 'TimeoutError' }); }, 'timeout', /ne répond pas à temps/, 3000],
-  ['adresse KCS illisible', () => ok(page({ kcs_url: 'pas une adresse' })), 'bad-page', /inattendue/, 3000],
+    /^Le site KaraFun refuse ce PC \(HTTP 403\)/, 3632500],
+  ['HTTP 429', () => ({ ok: false, status: 429, text: async () => '' }), 'refused', /HTTP 429/, 3632500],
+  ['page de vérification anti-robot', () => ok('<title>Just a moment...</title><div id="cf-chl"></div>'), 'refused', /HTTP 200/, 3632500],
+  ['HTTP 502', () => ({ ok: false, status: 502, text: async () => '' }), 'http', /^Le site KaraFun répond mal \(HTTP 502\)/, 5000],
+  ['délai dépassé', () => { throw Object.assign(new Error('timeout'), { name: 'TimeoutError' }); }, 'timeout', /ne répond pas à temps/, 5000],
+  ['adresse KCS illisible', () => ok(page({ kcs_url: 'pas une adresse' })), 'bad-page', /inattendue/, 5000],
 ]) {
   test(`découverte : ${name} → message distinct`, async t => {
     mockTime(t);
@@ -531,7 +557,7 @@ test('découverte : WebSocket indisponible sur ce PC', async t => {
   bridge.connect(CODE);
   await flush();
   assert.equal(bridge.lastError, 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 22.');
-  assert.equal(bridge.connectionState().label, 'WebSocket indisponible : nouvel essai dans 3 s');
+  assert.equal(bridge.connectionState().label, 'WebSocket indisponible : nouvel essai dans 5 s');
   assert.equal(bridge.protocol, null);
 });
 

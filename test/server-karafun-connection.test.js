@@ -98,3 +98,34 @@ test('« Prendre un autre nom maintenant » passe par le pont KaraFun', async ()
   assert.deepEqual(plain(await f.call('POST /api/staff/kf', { action: 'new-name' })), { ok: true });
   assert.deepEqual(bridge.calls, [['new-name']]);
 });
+
+// KaraFun limite les essais (page de découverte refusée) ou budget de l'heure
+// épuisé : le pont ne relit pas la page et le bar reçoit une phrase claire.
+test('Connecter / Reconnecter pendant une limite de KaraFun : { ok: false, message } sans code en clair', async () => {
+  const f = harness();
+  const message = 'KaraFun limite les essais depuis cette connexion jusqu’à 20:00 : inutile de cliquer, la file réessaiera seule. Un téléphone sur un autre réseau (4G/5G) n’est pas concerné.';
+  const bridge = fakeBridge({ ok: false, reason: 'limited', message });
+  f.setBridge(bridge);
+  f.setCode('123456');
+  assert.deepEqual(plain(await f.call('POST /api/staff/kf', { action: 'reconnect' })), { ok: false, kept: false, message });
+  assert.deepEqual(plain(await f.call('POST /api/staff/connect', { code: '123456' })), { ok: false, kept: false, message });
+  assert.deepEqual(bridge.calls, [['connect', '123456'], ['connect', '123456']]);
+  assert.ok(f.lines.includes(`KaraFun (code ••••56) : clic sans nouvel essai. ${message}`));
+  assert.equal(f.lines.some(line => line.includes('123456')), false, 'jamais le code complet');
+});
+
+// Budget de l'heure épuisé et connexion prête : le pont garde son code (une
+// faute de frappe ne coupe pas ce qui marche). Le serveur ne retient alors
+// pas le code tapé, pour que « Reconnecter » et un redémarrage gardent le bon.
+test('Connecter un autre code refusé par le pont : le code retenu reste celui qui marche', async () => {
+  const f = harness();
+  const message = 'Trop d’essais auprès de KaraFun cette heure-ci : la connexion actuelle est gardée ; un autre code pourra être essayé à 20:00.';
+  const bridge = { ...fakeBridge({ ok: false, reason: 'budget', message }), code: '123456' };
+  f.setBridge(bridge);
+  f.setCode('123456');
+  assert.deepEqual(plain(await f.call('POST /api/staff/connect', { code: '123465' })), { ok: false, kept: false, message });
+  assert.deepEqual(bridge.calls, [['connect', '123465']]);
+  assert.equal(f.getCode(), '123456', 'le code qui marche reste retenu');
+  assert.ok(f.lines.includes(`KaraFun (code ••••65) : clic sans nouvel essai. ${message}`), 'le journal parle du code tapé, masqué');
+  assert.equal(f.lines.some(line => line.includes('123465')), false);
+});
