@@ -284,7 +284,7 @@ test('événements des autres écrans : départ d’un duo, demande expirée, av
     { t: T(17), seq: 34, ev: 'mystery.event' },
     { t: T(18), seq: 35, ev: 'battle.staffLaunch', ballotId: 'b9', title: 'Battle' },
     { t: T(18), seq: 36, ev: 'stage.started', queueId: 12, source: 'battle', title: 'Battle' },
-    { t: T(19), seq: 37, ev: 'settings.changed', key: 'auto', from: true, to: false },
+    { t: T(19), seq: 37, ev: 'settings.changed', setting: 'auto', from: true, to: false },
     { t: T(19), seq: 38, ev: 'autoplay.held' },
     { t: T(19), seq: 39, ev: 'staff.absent', entryId: 'x4' },
     { t: T(19), seq: 40, ev: 'song.requested', personId: 'p1', entryId: 'y1', title: 'Retiré par le bar' },

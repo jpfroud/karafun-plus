@@ -453,7 +453,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       }
       case 'staff.play': staff.play++; break;
       case 'staff.next': staff.next++; break;
-      case 'settings.changed': staff.settings++; settingsChanges.push({ t, key: e.key, from: e.from ?? null, to: e.to ?? null }); break;
+      case 'settings.changed': staff.settings++; settingsChanges.push({ t, setting: e.setting, from: e.from ?? null, to: e.to ?? null }); break;
       case 'closing.set': closing.sets++; closing.closingAt = e.closingAt ?? closing.closingAt; break;
       case 'closing.cleared': closing.cleared++; closing.closingAt = null; break;
       case 'closing.reached': closing.reachedAt ??= t; break;

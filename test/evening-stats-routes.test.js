@@ -410,3 +410,34 @@ test('heure de fermeture atteinte avec des titres prêts : notée une seule fois
   assert.equal(events.filter(e => e.ev === 'closing.reached').length, 1);
   assert.equal(events.filter(e => e.ev === 'karaoke.phase').at(-1).blocker, 'closing');
 });
+
+test('signes de vie des téléphones, lecture automatique rétablie et absent à l’appel', async () => {
+  const f = harness();
+  f.journal.open({ rules: {} });
+  const alice = await joinWithSong(f, '1', 'Alice', 701);
+  const bruno = await joinWithSong(f, '1', 'Bruno', 702);
+  const evs = () => f.journal.read(f.journal.id).events;
+  // Un téléphone qui gère deux personnes : chacune donne signe de vie.
+  const url = `/api/state?table=1&access=${alice.access}&token=${alice.token}&token=${bruno.token}`;
+  assert.equal((await call(f, 'GET', url)).status, 200);
+  assert.deepEqual(evs().filter(e => e.ev === 'person.seen').map(e => e.personId).sort(), [alice.personId, bruno.personId].sort());
+  const other = await joinWithSong(f, '2', 'Chloé', 703);
+  assert.equal((await call(f, 'GET', `/api/state?token=${other.token}`)).status, 200);
+  assert.ok(evs().some(e => e.ev === 'person.seen' && e.personId === other.personId));
+  // Un titre démarre pendant que la lecture automatique est suspendue.
+  const queue = [{ queueId: 81, songId: 9, title: 'Natif' }];
+  const bridge = { ready: true, connected: true, queue, permissions: {}, status: { state: 'playing', songPlaying: { queueId: 81 } },
+    snapshot: () => ({}), add() {}, remove() {}, next() {}, play() {} };
+  f.setBridge(bridge);
+  f.settings.autoPlayHeld = true;
+  f.sync();
+  assert.ok(evs().some(e => e.ev === 'autoplay.released'));
+  // Absent à l'appel : le bar retire le titre suivant.
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  f.getTracked().push({ queueId: 82, sel, addedAt: Date.now(), startedAt: null });
+  queue.push({ queueId: 82, songId: sel.song.songId, singer: sel.label });
+  const absent = await call(f, 'POST', staff(f, '/api/staff/kf'), { body: { action: 'absent', queueId: 82 } });
+  assert.equal(absent.status, 200, absent.text);
+  assert.ok(evs().some(e => e.ev === 'staff.absent' && e.entryId === sel.song.entryId));
+});
