@@ -456,7 +456,18 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'staff.queueCleared': {
         staff.queueCleared++;
         queueClearedAt = t;
-        for (const p of people.values()) { p.active.clear(); stopDemand(p, t); }
+        // Le serveur ne note pas un song.removed par titre : chaque titre
+        // encore en attente est retiré par le bar à cet instant (le compteur
+        // staff.removedSongs reste réservé aux retraits titre par titre).
+        for (const p of people.values()) {
+          for (const entryId of p.active) {
+            const s = songs.get(entryId);
+            if (!s || s.stageAt || s.removedAt) continue;
+            s.removedAt = t; s.removedBy = 'staff';
+            p.removed++; p.removedBy.staff = (p.removedBy.staff || 0) + 1;
+          }
+          p.active.clear(); stopDemand(p, t);
+        }
         break;
       }
       case 'staff.play': staff.play++; break;

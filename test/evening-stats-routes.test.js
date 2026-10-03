@@ -306,6 +306,10 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   assert.ok(has('person.reactivated'));
   await ok('/api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
   assert.ok(has('staff.queueCleared', e => e.songs === 1));
+  // Le titre vidé n'est plus « en attente » dans les statistiques.
+  const cleared = (await call(f, 'GET', staff(f, '/api/staff/stats'))).body.stats.singers.find(s => s.id === alice.personId);
+  assert.equal(cleared.waiting, 0);
+  assert.deepEqual(cleared.songs.map(s => [s.status, s.removedBy]), [['removed', 'staff']]);
   // Transfert vers un autre téléphone.
   const share = await call(f, 'POST', '/api/table/person/share', { body: alice });
   const claim = await call(f, 'POST', '/api/table/person/claim', { body: { table: alice.table, access: alice.access, personId: alice.personId, code: share.body.code } });
