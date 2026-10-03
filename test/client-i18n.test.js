@@ -204,7 +204,7 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   assert.equal(get('peopleCount').textContent, '2 here · 2 signed up');
   assert.match(get('peopleList').innerHTML, /THEIR LIST · 1 SONG</);
   assert.match(get('peopleList').innerHTML, /2nd in the queue · around \d\d:\d\d/);
-  assert.match(get('peopleList').innerHTML, /aria-label="Add a song">＋ Song</, 'bouton court, intitulé complet pour les lecteurs d’écran');
+  assert.match(get('peopleList').innerHTML, /aria-label="Add a song for Alice">＋ Song</, 'bouton court, intitulé complet (avec le prénom) pour les lecteurs d’écran');
   assert.match(get('queueList').innerHTML, /Zoé · Solo/, 'le groupe « En solo » est traduit');
   assert.match(get('queueList').innerHTML, /Alice · Table 1/);
   assert.match(get('battleText').textContent, /^Choose a song or “No Battle”\. Vote ends in \d:\d\d\. 1 voter out of 2; at least 2 needed\./);

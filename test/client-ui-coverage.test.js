@@ -2288,3 +2288,40 @@ test('reprise : le champ du code à 4 chiffres a le type texte (style des champs
   assert.equal(input.getAttribute('type'), 'text', 'input[type=text] reçoit le style commun (48 px, coins arrondis)');
   assert.equal(input.getAttribute('inputmode'), 'numeric');
 });
+
+// Regression: ISSUE-020 — « (à ta table, le duo est direct) » s'affichait pour une personne d'une autre table
+test('demande de duo : le duo direct n’est annoncé que pour une personne de sa table', async () => {
+  const state = baseState();
+  state.tablePeople.push(person('marc', 'Marc', { songs: [{ entryId: 'm1', songId: 3, title: 'Hit' }] }));
+  state.queue = [{ pos: 1, source: 'helper', id: 'dan', ids: ['dan'], name: 'Dan', title: 'Waterloo', song: { entryId: 'w1', title: 'Waterloo' }, eta: Date.now() + 60000 },
+    { pos: 2, source: 'helper', id: 'marc', ids: ['marc'], name: 'Marc', title: 'Hit', song: { entryId: 'm1', title: 'Hit' }, eta: Date.now() + 120000 }];
+  const page = await open({ state });
+  await page.click(page.node('nav-queue'));
+  await page.tap('queueList', '[data-join-request="dan"]');
+  const text = () => page.find('sheetPanel', 'p.small').textContent;
+  assert.equal(text(), 'Dan garde son passage et accepte ou refuse ta demande. Tes propres chansons restent dans ta liste.');
+  assert.ok(!/direct/.test(page.sheetHtml()), 'autre table : pas de mention du duo direct');
+  await page.tap('sheetPanel', '[data-close-sheet]');
+  // Même table : la proposition vient du catalogue (titre déjà prévu par Marc).
+  const same = await open({ state, respond: url => url.startsWith('/api/song/notice?')
+    ? { notice: { playedAt: null, queued: [{ pos: 2, name: 'Marc', ownerId: 'marc', entryId: 'm1' }] } } : undefined });
+  await same.click(same.node('nav-catalog'));
+  await pickCatalogSong(same);
+  await same.tap('songJoinOffer', '[data-join-request="marc"]');
+  assert.equal(same.find('sheetPanel', 'p.small').textContent,
+    'Marc est à ta table : le duo est ajouté tout de suite et Marc garde son passage. Tes propres chansons restent dans ta liste.');
+});
+
+// Regression: ISSUE-022 — les boutons d'Alice et de Bruno avaient les mêmes noms accessibles
+test('fiches : le prénom figure dans le nom accessible de « Chanson », « Duo » et « Transférer la gestion »', async () => {
+  const state = baseState();
+  state.tablePeople.push(person('bruno', 'Bruno'));
+  state.managedIds = ['alice', 'bruno'];
+  const page = await open({ state });
+  const label = (selector) => page.find('peopleList', selector).getAttribute('aria-label');
+  assert.equal(label('[data-add-song="alice"]'), 'Ajouter une chanson pour Alice');
+  assert.equal(label('[data-add-song="bruno"]'), 'Ajouter une chanson pour Bruno');
+  assert.equal(label('[data-duet-song="bruno"]'), 'Ajouter un duo pour Bruno');
+  assert.equal(label('[data-share-person="alice"]'), 'Transférer la gestion d’Alice');
+  assert.equal(label('[data-share-person="bruno"]'), 'Transférer la gestion de Bruno');
+});
