@@ -493,7 +493,7 @@ test('gestion passée sur un autre téléphone : prévenu, jeton oublié, catalo
   assert.equal(page.node('catalogTarget').textContent, 'Chansons pour Alice.');
   page.state.managedIds = [];
   await page.poll();
-  assert.equal(page.toast().text, 'La gestion de Alice est passée sur un autre téléphone.');
+  assert.equal(page.toast().text, 'La gestion d’Alice est passée sur un autre téléphone.');
   assert.equal(page.node('catalogTarget').textContent,
     'Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.', 'plus de chanteur visé');
 });
@@ -709,7 +709,7 @@ test('transfert reçu : lien expiré, déjà géré, « En solo », « Pas maint
 
   const already = await transferPage({ personId: 'alice', name: 'Alice' });
   assert.equal(already.node('transferHeading').textContent, 'Déjà sur ce téléphone');
-  assert.equal(already.node('transferText').textContent, 'Ce téléphone gère déjà les chansons de Alice. Rien à faire.');
+  assert.equal(already.node('transferText').textContent, 'Ce téléphone gère déjà les chansons d’Alice. Rien à faire.');
   assert.equal(already.node('transferActions').querySelector('[data-transfer-claim]'), null);
 
   const solo = await transferPage({ personId: 'bob', name: 'Bob' }, { path: '/t/Comptoir/secret',
@@ -752,7 +752,7 @@ test('transférer un chanteur : QR code, liens de partage, code, partage et copi
   assert.equal(page.find('sheetPanel', 'img').attrs.src, 'data:image/png;base64,QRFAUX');
   assert.equal(page.find('sheetPanel', 'img').attrs.alt, 'QR code pour transférer Alice sur un autre téléphone');
   assert.match(sheet, /touche « Récupérer Alice »/);
-  const message = `Pour gérer les chansons de Alice au karaoké (Table 1), ouvre ce lien : ${shared.url}`;
+  const message = `Pour gérer les chansons d’Alice au karaoké (Table 1), ouvre ce lien : ${shared.url}`;
   assert.ok(sheet.includes(`https://wa.me/?text=${encodeURIComponent(message)}`), 'WhatsApp préremplit le lien');
   assert.ok(sheet.includes(`sms:?&body=${encodeURIComponent(message)}`), 'SMS');
   assert.ok(sheet.includes(`mailto:?subject=${encodeURIComponent('Karaoké : Alice')}`), 'e-mail');
@@ -763,7 +763,7 @@ test('transférer un chanteur : QR code, liens de partage, code, partage et copi
   assert.equal('open' in page.find('sheetPanel', 'details').attrs, false, 'le code reste replié sous le QR');
 
   await page.click(page.node('shareTransfer'));
-  assert.deepEqual(page.shares, [{ title: 'Karaoké', text: 'Pour gérer les chansons de Alice au karaoké (Table 1), ouvre ce lien :', url: shared.url }]);
+  assert.deepEqual(page.shares, [{ title: 'Karaoké', text: 'Pour gérer les chansons d’Alice au karaoké (Table 1), ouvre ce lien :', url: shared.url }]);
   await page.click(page.node('copyTransfer'));
   assert.deepEqual(page.copies, [shared.url]);
   assert.deepEqual(page.toast(), { text: 'Lien copié : colle-le dans ton message.', bad: false, warn: false, hidden: false });
@@ -929,7 +929,7 @@ test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour
   assert.equal(page.node('attentionPanel').getAttribute('role'), 'alertdialog');
   assert.equal(page.node('attentionPanel').getAttribute('aria-modal'), 'true');
   assert.equal(page.node('attentionWho').textContent, 'Pour Alice', 'le nom de la personne d’abord');
-  assert.equal(page.node('attentionTitle').textContent, 'C’est bientôt au tour de Alice !');
+  assert.equal(page.node('attentionTitle').textContent, 'C’est bientôt au tour d’Alice\u00a0!');
   assert.equal(page.node('attentionCount').textContent, '1 / 5');
   assert.deepEqual(choices(), ['Je suis là', 'Pas prêt : repousser d’une chanson'], 'présence : jamais « Plus tard »');
   for (const id of ['topBar', 'tabsNav', 'mainContent', 'sheet', 'infoBar']) assert.equal(page.node(id).inert, true, `${id} inerte`);
@@ -979,7 +979,7 @@ test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour
   await page.tap('attentionChoices', '[data-attn="no"]');
   assert.deepEqual(lastAction()[1], { table: '1', access: 'secret', personId: 'alice', entryId: 'e1', fromId: 'marc', accept: false });
   assert.equal(page.toast().text, 'Demande refusée.');
-  assert.equal(page.node('attentionTitle').textContent, 'Vote Battle : toute la salle chante !');
+  assert.equal(page.node('attentionTitle').textContent, 'Vote Battle : toute la salle chante !');
   assert.deepEqual(choices(), ['Oui', 'Non', 'Plus tard (1 min)']);
   await page.tap('attentionChoices', '[data-choice="yes"]');
   assert.deepEqual(lastAction(), ['/api/table/battle/vote', { table: '1', access: 'secret', personId: 'alice', choice: 'yes' }]);
@@ -1069,16 +1069,16 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
   const page = await open({ state, session });
   const items = () => page.node('infoBar').querySelectorAll('.info-item').map(item => item.querySelector('p').textContent);
   assert.equal(page.node('infoBar').hidden, false);
-  assert.deepEqual(items(), ['Le bar lance une Battle ! Tube — Groupe. Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.',
+  assert.deepEqual(items(), ['Le bar lance une Battle\u00a0! Tube — Groupe. Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.',
     'Pas de Battle cette fois : la salle a voté contre.']);
   assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+4 autres messages');
   assert.deepEqual(page.vibrations, [[120]], 'courte vibration pour les infos');
   assert.deepEqual(page.posts.filter(([url]) => url === '/api/table/notice/ack').map(([, body]) => [body.personId, body.ids]), [['carla', ['n4']]],
     'duo ajouté depuis ce même téléphone : effacé sans être montré');
   await page.tap('infoBar', '[data-info-more]');
-  assert.deepEqual(items().slice(2), ['Alice passe juste après la chanson en cours : prépare-toi !',
+  assert.deepEqual(items().slice(2), ['Alice passe juste après la chanson en cours : prépare-toi\u00a0!',
     'Fermeture du bar à ' + timeOf(now + 3600000) + ' : La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.',
-    'La demande de duo de Alice à Zoé a expiré : « Hit » est parti dans KaraFun.', 'Bob chantera « Slow » en duo avec Alice.']);
+    'La demande de duo d’Alice à Zoé a expiré : « Hit » est parti dans KaraFun.', 'Bob chantera « Slow » en duo avec Alice.']);
   // « Pas prêt » depuis l'info du passage imminent.
   await page.tap('infoBar', '[data-info-defer="alice"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/defer', { table: '1', access: 'secret', personId: 'alice', songs: 1 }]);
@@ -1089,20 +1089,20 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
   await page.tap('infoBar', '[data-info-dismiss="battle-req:b3"]');
   // « Je ne chante pas ce duo » : confirmation dans la fenêtre.
   await page.tap('infoBar', '[data-info-leave="notice:n2"]');
-  assert.equal(page.node('attentionTitle').textContent, 'Alice ne chante plus ce duo ?');
+  assert.equal(page.node('attentionTitle').textContent, 'Alice ne chante plus ce duo\u00a0?');
   await page.tap('attentionChoices', '[data-attn="yes"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/duet/leave', { table: '1', access: 'secret', personId: 'alice', ownerId: 'bob', entryId: 'g1' }]);
 
   // Rechargement : les infos fermées ne reviennent pas, rien ne vibre de nouveau.
   const reloaded = await open({ state: page.state, session });
-  assert.ok(!reloaded.node('infoBar').querySelectorAll('.info-item').some(item => /Battle !/.test(item.textContent)));
+  assert.ok(!reloaded.node('infoBar').querySelectorAll('.info-item').some(item => /Battle\u00a0!/.test(item.textContent)));
   assert.deepEqual(reloaded.vibrations, []);
   // Sur scène : une nouvelle info.
   reloaded.state.stage = { ours: true, ids: ['alice'], queueId: 5, title: 'Mon titre' };
   reloaded.state.next = null;
   await reloaded.poll();
   reloaded.node('infoBar').querySelector('[data-info-more]') && await reloaded.tap('infoBar', '[data-info-more]');
-  assert.ok(reloaded.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === 'Alice : c’est à toi, sur scène maintenant !'));
+  assert.ok(reloaded.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === 'Alice : c’est à toi, sur scène maintenant\u00a0!'));
   assert.deepEqual(reloaded.vibrations, [[120]]);
   // Plus rien à montrer : la barre disparaît.
   reloaded.state.stage = null;
@@ -1121,9 +1121,9 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
     ['duoLeft', { name: 'Bob', title: 'T', sent: false }, 'Bob ne chante plus « T » avec Alice : Alice le chantera en solo.'],
     ['joinAccepted', { name: 'Bob', title: 'T' }, 'Bob accepte de chanter « T » avec Alice.'],
     ['joinRefused', { title: 'T' }, 'Quelqu’un préfère chanter « T » sans Alice.'],
-    ['joinExpired', { name: 'Bob', reason: 'removed' }, 'La demande de duo de Alice à Bob est close : « ce titre » n’est plus dans sa liste.'],
-    ['presenceRemoved', { title: 'T', skips: 3 }, '« T » est retiré de la liste de Alice : présence non confirmée 3 fois. Vois avec le bar si besoin.'],
-    ['closingPulled', { title: 'T' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de Alice.']];
+    ['joinExpired', { name: 'Bob', reason: 'removed' }, 'La demande de duo d’Alice à Bob est close : « ce titre » n’est plus dans sa liste.'],
+    ['presenceRemoved', { title: 'T', skips: 3 }, '« T » est retiré de la liste d’Alice : présence non confirmée 3 fois. Vois avec le bar si besoin.'],
+    ['closingPulled', { title: 'T' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste d’Alice.']];
   const state = baseState({ closing: { at: at + 600000, passed: true } });
   state.tablePeople[0].inbox = notices.map(([kind, params], index) => ({ id: `m${index}`, kind, params, at }));
   const page = await open({ state });
@@ -1143,7 +1143,7 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
   state.closing = null;
   const open3 = await open({ state });
   assert.deepEqual(open3.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent),
-    ['La Battle aura lieu ! Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.', 'Le bar a écarté la Battle proposée.']);
+    ['La Battle aura lieu\u00a0! Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.', 'Le bar a écarté la Battle proposée.']);
 });
 
 test('duos : se retirer, chanter seul, avec confirmation dans la fenêtre ; repères « ⇅ » et « réponse avant l’envoi »', async () => {
@@ -1170,7 +1170,7 @@ test('duos : se retirer, chanter seul, avec confirmation dans la fenêtre ; rep�
 
   await page.tap('peopleList', '[data-duet-leave="g1"]');
   assert.equal(page.node('attentionWho').textContent, 'Pour Alice');
-  assert.equal(page.node('attentionTitle').textContent, 'Alice ne chante plus ce duo ?');
+  assert.equal(page.node('attentionTitle').textContent, 'Alice ne chante plus ce duo\u00a0?');
   assert.equal(page.node('attentionText').textContent, 'Bruno chantera « Hit » en solo. Alice garde ses propres chansons.');
   assert.equal(page.vibrations.length, 0, 'une confirmation ne sonne pas');
   await page.tap('attentionChoices', '[data-attn="cancel"]');
@@ -1189,7 +1189,7 @@ test('duos : se retirer, chanter seul, avec confirmation dans la fenêtre ; rep�
   await page.tap('attentionChoices', '[data-attn="yes"]');
   assert.deepEqual(page.posts.at(-1)[1], { table: '1', access: 'secret', personId: 'alice', ownerId: 'zoe', entryId: 'k1' });
   await page.tap('peopleList', '[data-duet-solo="k2"]');
-  assert.equal(page.node('attentionTitle').textContent, 'Alice chante « Mien » en solo ?');
+  assert.equal(page.node('attentionTitle').textContent, 'Alice chante « Mien » en solo\u00a0?');
   assert.equal(page.node('attentionText').textContent, 'Marc ne chantera plus ce duo. Le titre garde sa place ; KaraFun affichera encore les deux noms.');
   await page.tap('attentionChoices', '[data-attn="yes"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/duet/solo', { table: '1', access: 'secret', personId: 'alice', entryId: 'k2' }]);
@@ -1248,7 +1248,7 @@ test('fiches : sur scène, duos, présence, report, parti, autre téléphone', a
   assert.equal(card('alice').querySelectorAll('[data-reorder-song]').length, 2, 'ordre modifiable');
   assert.equal(card('alice').querySelectorAll('[data-duet-cancel]').length, 2, 'duos annulables');
   assert.match(card('alice').textContent, /Alice chantera aussi en duo avec Marc sur « Hit »\. Ses propres chansons restent dans sa liste/);
-  assert.match(card('alice').textContent, /Confirme la présence de Alice pour son prochain passage\./);
+  assert.match(card('alice').textContent, /Confirme la présence d’Alice pour son prochain passage\./);
   assert.ok(card('alice').querySelector('[data-confirm-person="alice"]') && card('alice').querySelector('[data-defer-person="alice"]'),
     'présence et report : une seule question, deux réponses');
   assert.doesNotMatch(card('alice').textContent, /C’est bientôt au tour/, 'pas de seconde question');
@@ -1366,8 +1366,8 @@ test('renommer et changer l’ordre : fenêtres, contrôles et envois', async ()
   assert.equal(page.sheetOpen(), false);
 
   await page.tap('peopleList', '[data-reorder-song="e2"]');
-  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Ordre des chansons de Alice');
-  assert.match(page.sheetHtml(), /Déplace « Deuxième » sans changer la place de Alice dans la file\./);
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Ordre des chansons d’Alice');
+  assert.match(page.sheetHtml(), /Déplace « Deuxième » sans changer la place d’Alice dans la file\./);
   assert.equal(page.node('newSongPosition').value, '1', 'position actuelle présélectionnée');
   await page.click(page.node('saveSongPosition'));
   assert.equal(page.sheetOpen(), false, 'même position : rien à envoyer');
@@ -1693,7 +1693,7 @@ test('demande de duo depuis la file : choisir qui chante quand le téléphone g�
   const page = await open({ state, respond: url => url === '/api/table/duet/join' ? { ok: true, direct } : undefined });
   await page.click(page.node('nav-queue'));
   await page.tap('queueList', '[data-join-request="bruno"]');
-  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Chanter « Tube » avec Bruno ?');
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Chanter « Tube » avec Bruno\u00a0?');
   // Regression: soirée du 2 octobre — le premier nom était choisi d'office.
   assert.equal(page.$('joinPerson'), null, 'plus de liste avec un choix par défaut');
   assert.equal(page.$('sendJoin'), null);
@@ -1704,7 +1704,7 @@ test('demande de duo depuis la file : choisir qui chante quand le téléphone g�
   direct = false;
   await page.tap('queueList', '[data-join-request="bruno"]');
   await page.tap('sheetPanel', '[data-join-as="alice"]');
-  assert.equal(page.toast().text, 'Demande de duo de Alice envoyée à Bruno.');
+  assert.equal(page.toast().text, 'Demande de duo d’Alice envoyée à Bruno.');
 });
 
 // Soirée du 2 octobre : JP ne pouvait pas savoir que Mel n'avait jamais vu sa demande.
@@ -1732,7 +1732,7 @@ test('demande et invitation de duo : « vue » signalée à l’affichage, statu
     'la demande affichée ensuite');
   await page.tap('attentionChoices', '[data-attn="later"]');
   const card = page.find('peopleList', '[data-person-card="alice"]').textContent;
-  assert.match(card, /Demande de duo envoyée à Mel pour « Barbie Girl »\. Mel ne l’a pas encore vue : va lui en parler !/);
+  assert.match(card, /Demande de duo envoyée à Mel pour « Barbie Girl »\. Mel ne l’a pas encore vue : va lui en parler\u00a0!/);
   assert.match(card, /duo avec Zoé \(invitation pas encore vue\)/);
   page.state.tablePeople[0].sentJoinRequests[0].seen = true;
   page.state.tablePeople[0].songs[0].duet.seen = true;
@@ -2154,4 +2154,37 @@ test('réglages de titre : la fiche dit pourquoi le titre ne se règle plus (sor
   page.state.tablePeople[0].active = false;
   await page.poll();
   assert.equal(lock(), 'Alice a quitté la soirée : ses titres ne se règlent plus.');
+});
+
+// ================================================================ QA navigateur du 2026-10-03
+// Found by /qa on 2026-10-03
+// Report: .gstack/qa-reports/run-20261003T140104Z/qa-report-127.0.0.1-2026-10-03.md
+
+// Regression: ISSUE-019 — élision manquante (« de Alice »)
+// Regression: ISSUE-021 — le « ? » final passait seul à la ligne
+// Fiche d'une personne gérée par un autre téléphone, avec une demande qui l'attend.
+const otherPhoneState = name => {
+  const state = baseState();
+  state.tablePeople.push(person('other', name, { invites: [{ entryId: 'x1', fromName: 'Léa', song: { title: 'Slow' } }] }));
+  return state;
+};
+test('français : « d’Alice », « de Bruno », espace insécable avant « ? » et « ! », rien de tel en anglais', async () => {
+  const state = baseState();
+  state.tablePeople = [person('alice', 'Alice', { needConfirm: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }] })];
+  const page = await open({ state });
+  assert.equal(page.node('attentionTitle').textContent, 'C’est bientôt au tour d’Alice\u00a0!');
+  const bruno = baseState();
+  bruno.tablePeople = [person('bruno', 'Bruno', { needConfirm: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }] })];
+  bruno.managedIds = ['bruno'];
+  assert.equal((await open({ state: bruno })).node('attentionTitle').textContent, 'C’est bientôt au tour de Bruno\u00a0!');
+  const hugo = baseState();
+  hugo.tablePeople = [person('hugo', 'Hugo', { needConfirm: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }] })];
+  hugo.managedIds = ['hugo'];
+  assert.equal((await open({ state: hugo })).node('attentionTitle').textContent, 'C’est bientôt au tour d’Hugo\u00a0!', 'h muet');
+  const en = await open({ state, languages: ['en-GB'] });
+  assert.ok(!/\u00a0/.test(en.node('attentionTitle').textContent), 'pas d’espace insécable en anglais');
+  // Feuille de reprise.
+  const claim = await open({ state: otherPhoneState('Émilie') });
+  await claim.tap('peopleList', '[data-claim-here="other"]');
+  assert.equal(claim.find('sheetPanel', 'h3').textContent, 'Gérer les chansons d’Émilie');
 });

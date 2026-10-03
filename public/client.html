@@ -471,16 +471,26 @@
     if (saved === 'fr' || saved === 'en') lang = saved;
   } catch (_) { /* Stockage désactivé : langue du téléphone. */ }
   // Le texte français sert de clé ; une phrase sans traduction reste en
-  // français. {nom} est remplacé par le paramètre du même nom.
-  const fill = (text, params) => String(text)
-    .replace(/\{(\w+)\}/g, (all, name) => params[name] != null ? String(params[name]) : all);
-  const t = (french, params = {}) => fill(lang === 'en' && typeof english.texts?.[french] === 'string'
-    ? english.texts[french] : french, params);
+  // français. {nom} est remplacé par le paramètre du même nom. En français,
+  // « de » s'élide devant une voyelle ou un h (« d’Alice »), et « ? » ou
+  // « ! » restent sur la ligne du mot qui les précède (espace insécable).
+  const fill = (text, params, french = true) => {
+    const out = String(text).replace(/(\bde )?\{(\w+)\}/g, (all, de, name) => {
+      if (params[name] == null) return all;
+      const value = String(params[name]);
+      return de ? (french && /^[aeiouyàâäéèêëîïôöûùüh]/i.test(value) ? `d’${value}` : `de ${value}`) : value;
+    });
+    return french ? out.replace(/ ([?!])(?=\s|$)/g, '\u00a0$1') : out;
+  };
+  const t = (french, params = {}) => {
+    const english_ = lang === 'en' && typeof english.texts?.[french] === 'string' ? english.texts[french] : null;
+    return fill(english_ ?? french, params, english_ === null);
+  };
   // Pluriel : la clé est la forme française au singulier, traduite par
   // [singulier, pluriel]. 0 est au singulier en français, au pluriel en anglais.
   function tp(n, one, many, params = {}) {
     const forms = lang === 'en' ? english.texts?.[one] : null;
-    return fill(Array.isArray(forms) ? forms[n === 1 ? 0 : 1] : n > 1 ? many : one, { n, ...params });
+    return fill(Array.isArray(forms) ? forms[n === 1 ? 0 : 1] : n > 1 ? many : one, { n, ...params }, !Array.isArray(forms));
   }
   // Messages d'erreur du serveur (en français) : traduits s'ils sont connus.
   function serverText(message) {

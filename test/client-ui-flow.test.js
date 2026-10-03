@@ -137,7 +137,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   get('songPerson').value = 'alice';
   get('duetSongChoice').listeners.click();
   await settle();
-  assert.match(get('sheetPanel').innerHTML, /Avec qui \?/);
+  assert.match(get('sheetPanel').innerHTML, /Avec qui\u00a0\?/);
   assert.ok(get('sheetPanel').innerHTML.indexOf('À ma table') < get('sheetPanel').innerHTML.indexOf('Autres tables · invitation à accepter'),
     'les partenaires de la table précèdent les autres même si l’API les renvoie après');
   assert.ok(get('sheetPanel').innerHTML.indexOf('Bob · Table 1') < get('sheetPanel').innerHTML.indexOf('Marine · Table 2'));
@@ -172,7 +172,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     'un rafraîchissement des votes ne recrée pas le choix en cours');
   battle = { id: 'vote-1', phase: 'voting', eligiblePersonIds: ['alice'], votedPersonIds: [] };
   poll(); await settle();
-  assert.equal(get('attentionTitle').textContent, 'Vote Battle : toute la salle chante !');
+  assert.equal(get('attentionTitle').textContent, 'Vote Battle : toute la salle chante\u00a0!');
   assert.match(get('attentionChoices').innerHTML, /data-choice="yes">Oui<.*data-choice="no">Non</);
   battle = { ...battle, votedPersonIds: ['alice'] };
   poll(); await settle();
@@ -180,7 +180,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   battle = { ...battle, phase: 'requested' };
   poll(); await settle();
   assert.equal(get('attention').hidden, true, 'rien à répondre une fois la Battle décidée');
-  assert.match(get('infoBar').innerHTML, /La Battle aura lieu ! Scanne le QR code/, 'la Battle décidée est annoncée en haut');
+  assert.match(get('infoBar').innerHTML, /La Battle aura lieu\u00a0! Scanne le QR code/, 'la Battle décidée est annoncée en haut');
   assert.match(get('battleText').textContent, /La Battle aura lieu/);
   managedIds = ['alice', 'bob'];
   battle = { phase: 'idle', eligiblePersonIds: [], votedPersonIds: [], minVoters: 5, registered: 4 };
@@ -195,7 +195,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     'un seul bouton Battle pour plusieurs chanteurs sur un téléphone');
   get('battleVotes').listeners.click({ target: { closest: selector => selector === '[data-battle-propose]'
     ? { dataset: { battlePropose: '' } } : null } });
-  assert.match(get('sheetPanel').innerHTML, /Qui propose la Battle \?/);
+  assert.match(get('sheetPanel').innerHTML, /Qui propose la Battle\u00a0\?/);
   get('battleProposer').value = 'bob';
   // Recherche pendant la frappe, sans bouton « Chercher ».
   assert.doesNotMatch(get('sheetPanel').innerHTML, /battleFind|>Chercher</, 'plus de bouton Chercher');

@@ -160,7 +160,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   poll(); await settle();
   // Page en arrière-plan : une notification par demande, présence puis duo.
   assert.deepEqual(notices.map(notice => [notice.title, notice.body]), [
-    ['Karaoké : réponse attendue', 'C’est bientôt au tour de Alice !'],
+    ['Karaoké : réponse attendue', 'C’est bientôt au tour d’Alice\u00a0!'],
     ['Karaoké : réponse attendue', 'Bob propose un duo à Alice']]);
   assert.match(document.title, /^🔴 Réponse attendue$|^\(2\) /, 'le titre de l’onglet signale les demandes');
   alice.needConfirm = false;
