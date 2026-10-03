@@ -466,3 +466,63 @@ test('équité : un bonus temporaire ou tardif ne compte que pendant sa durée',
   const before = evening([[-10, 'table.bonus', { tableId: '2', level: 2 }]]);
   assert.equal(byId(before, 'pB').weight, 1.5);
 });
+
+// ---------------------------------------------------------------- QA navigateur du 2026-10-03
+// Found by /qa on 2026-10-03
+// Report: .gstack/qa-reports/run-20261003T140104Z/qa-report-127.0.0.1-2026-10-03.md
+
+// Journal minimal : titres de 45 s enchaînés sans pause, puis éventuellement un titre en cours.
+function backToBack({ count = 8, ongoingSec = null, extra = [] } = {}) {
+  const events = [];
+  let seq = 0;
+  const e = (sec, ev, fields = {}) => events.push({ v: 1, seq: ++seq, t: T0 + sec * 1000, ev, boot: 'b1', ...fields });
+  e(0, 'evening.started', { rules: {} });
+  e(0, 'person.joined', { personId: 'pA', tableId: '1' });
+  for (let i = 0; i < count; i++) {
+    e(i * 45, 'stage.started', { queueId: i + 1, source: 'native', title: `T${i}` });
+    e(i * 45 + 45, 'stage.ended', { queueId: i + 1, playedSec: 45 });
+  }
+  if (ongoingSec != null) e(count * 45, 'stage.started', { queueId: 99, source: 'native', title: 'En cours' });
+  for (const [sec, ev, fields] of extra) e(sec, ev, fields);
+  const now = T0 + (count * 45 + (ongoingSec || 0)) * 1000;
+  return computeStats({ meta: { eveningId: 'e', startedAt: T0 }, events: events.sort((a, b) => a.t - b.t), now, live: true });
+}
+
+// Regression: ISSUE-027 — « Chansons par heure » dépassait le maximum possible pendant qu'un titre jouait
+test('chansons par heure : le titre en cours ne compte pas, jamais plus de 80 titres de 45 s par heure', () => {
+  const done = backToBack({ count: 8 });
+  assert.equal(done.global.songsPerHour, 80, '8 titres de 45 s en 6 min : 80 par heure');
+  for (const ongoingSec of [1, 5, 27, 44]) {
+    const playing = backToBack({ count: 8, ongoingSec });
+    assert.ok(playing.global.songsPerHour <= 80, `titre en cours depuis ${ongoingSec} s : ${playing.global.songsPerHour}`);
+    assert.equal(playing.global.songsPerHour, 80);
+    assert.equal(playing.global.songs, 9, 'le titre en cours reste compté parmi les chansons');
+  }
+  const first = backToBack({ count: 0, ongoingSec: 10 });
+  assert.equal(first.global.songsPerHour, null, 'aucun titre terminé : pas de rythme');
+});
+
+// Regression: ISSUE-029 — temps mort après une Battle terminée attribué à « Battle en préparation »
+// Regression: ISSUE-033 — une cause à 0 s apparaissait dans les causes des temps morts
+test('temps morts : après une Battle terminée, cause « Après la Battle » ; aucune cause à 0 s', () => {
+  const events = [];
+  let seq = 0;
+  const e = (minutes, ev, fields = {}) => events.push({ v: 1, seq: ++seq, t: at(minutes), ev, boot: 'b1', ...fields });
+  e(0, 'evening.started', { rules: {} });
+  e(0, 'person.joined', { personId: 'pA', tableId: '1' });
+  e(0, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Take On Me' });
+  e(0, 'karaoke.phase', { phase: 'between', blocker: 'battle-hold' });
+  e(2, 'stage.started', { queueId: 1, source: 'battle', title: 'Dancing Queen' });
+  e(2, 'karaoke.phase', { phase: 'singing', blocker: null });
+  e(2.75, 'stage.ended', { queueId: 1, playedSec: 45 });
+  e(2.75, 'karaoke.phase', { phase: 'between', blocker: 'battle-hold' });
+  e(7, 'karaoke.phase', { phase: 'between', blocker: 'sending' });
+  e(7.0001, 'stage.started', { queueId: 2, entryId: 'a1', ids: ['pA'], source: 'queue', title: 'Take On Me' });
+  e(7.0001, 'karaoke.phase', { phase: 'singing', blocker: null });
+  const stats = computeStats({ meta: { eveningId: 'e', startedAt: at(0) }, events, now: at(8), live: true });
+  assert.deepEqual(stats.global.deadCauses.map(c => [c.cause, c.label, c.sec]), [['battle-after', 'Après la Battle : relance par le bar', 255]]);
+  assert.equal(CAUSES['battle-after'], 'Après la Battle : relance par le bar');
+  assert.equal(stats.timeline.gaps.find(g => g.dead).label, 'Après la Battle : relance par le bar');
+  assert.ok(stats.global.deadCauses.every(c => c.sec > 0), 'aucune cause à 0 s');
+  assert.ok(!insights(stats, { nameOf: () => 'A', tableName: () => 'T' }).some(i => /Battle en préparation/.test(i.text)));
+});

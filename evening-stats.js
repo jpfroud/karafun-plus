@@ -37,6 +37,7 @@ const CAUSES = {
   'autoplay-off': 'Lecture manuelle par le bar',
   'autoplay-held': 'Lecture suspendue après Spotify',
   'battle-hold': 'Battle en préparation',
+  'battle-after': 'Après la Battle : relance par le bar',
   'auto-off': 'Envoi automatique coupé',
   'recovered-pending': 'Envoi KaraFun à vérifier',
   permission: 'Droits KaraFun manquants',
@@ -61,7 +62,7 @@ const DEFINITIONS = {
   jainAdjusted: 'Même indice après division du rythme de chacun par son bonus ou malus moyen, pondéré par le temps où il était actif pendant sa présence (les écarts voulus par le bar ne comptent pas).',
   demandJain: 'Indice de Jain sur les passages par heure avec au moins un titre en attente (au moins 15 min).',
   deadTime: 'Temps entre deux chansons alors qu’un titre attendait, rapporté au temps de spectacle (chansons + temps morts). File vide et fermeture exclues.',
-  songsPerHour: 'Chansons lancées par heure, de la première à la fin de la dernière (arrêts de l’application retirés).',
+  songsPerHour: 'Chansons terminées par heure, du début de la première à la fin de la dernière (titre en cours et arrêts de l’application exclus).',
   firstTurn: 'De la première demande de titre au premier passage de la personne.',
 };
 
@@ -673,9 +674,13 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     const weights = {};
     const off = overlapMs(a, b, offline);
     if (off) weights.offline = off;
+    // Une Battle vient de finir : la file attend que le bar la relance
+    // (résultats annoncés), ce n'est plus une Battle « en préparation ».
+    const afterBattle = stages[i].source === 'battle';
     for (const [s, e, cause] of phaseSpans) {
       const w = Math.max(0, Math.min(b, e) - Math.max(a, s));
-      if (w && cause) weights[cause] = (weights[cause] || 0) + w;
+      const why = afterBattle && cause === 'battle-hold' ? 'battle-after' : cause;
+      if (w && why) weights[why] = (weights[why] || 0) + w;
     }
     const known = sum(Object.values(weights));
     if (known < b - a) weights.unknown = (weights.unknown || 0) + (b - a - known);
@@ -688,7 +693,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const deadSum = sum(deadGaps.map(g => g.sec));
   const causes = {};
   for (const g of deadGaps) for (const [cause, s] of Object.entries(g.byCause)) if (!NOT_DEAD.has(cause)) causes[cause] = (causes[cause] || 0) + s;
-  const causeRows = Object.entries(causes).map(([cause, s]) => ({ cause, label: CAUSES[cause] || cause, sec: s }))
+  const causeRows = Object.entries(causes).filter(([, s]) => s > 0).map(([cause, s]) => ({ cause, label: CAUSES[cause] || cause, sec: s }))
     .sort((a, b) => b.sec - a.sec);
 
   // ------------------------------------------------ par table
@@ -712,7 +717,12 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const waitSecs = waits.map(w => w.sec);
   const firstStart = stages[0]?.start ?? null;
   const lastEnd = stages.length ? Math.max(...stages.map(st => st.endAt)) : null;
-  const singingWindowMs = firstStart != null ? Math.max(0, lastEnd - firstStart - overlapMs(firstStart, lastEnd, offline)) : 0;
+  // Chansons par heure : titres terminés seulement, jusqu'à la fin du dernier
+  // d'entre eux. Un titre en cours compterait pour une chanson entière avec
+  // seulement son temps écoulé (plus de 80 titres de 45 s par heure).
+  const done = stages.filter(st => !st.ongoing);
+  const doneEnd = done.length ? Math.max(...done.map(st => st.endAt)) : null;
+  const doneWindowMs = done.length ? Math.max(0, doneEnd - done[0].start - overlapMs(done[0].start, doneEnd, offline)) : 0;
   const longest = waits.reduce((best, w) => !best || w.sec > best.sec ? w : best, null);
   const histogram = WAIT_BUCKETS.map(([lo, hi]) => ({ fromMin: lo, toMin: hi,
     count: waitSecs.filter(s => s >= lo * 60 && (hi == null || s < hi * 60)).length }));
@@ -745,7 +755,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     waitHistogram: histogram,
     longestWait: longest ? { sec: longest.sec, personId: longest.personId, title: longest.title, at: longest.at } : null,
     firstTurnAvgSec: round(mean(firstTurns)), firstTurnMedianSec: round(median(firstTurns)),
-    songsPerHour: singingWindowMs > 0 ? round(stages.length / (singingWindowMs / 3600000), 1) : null,
+    songsPerHour: doneWindowMs > 0 ? round(done.length / (doneWindowMs / 3600000), 1) : null,
     avgSongSec: round(mean(stages.filter(st => st.endKnown).map(st => st.playedSec))),
     playedSec: playedSum,
     deadSec: deadSum, deadAvgSec: round(mean(deadGaps.map(g => g.sec))), deadMedianSec: round(median(deadGaps.map(g => g.sec))),
