@@ -374,3 +374,22 @@ test('module : rien d’autre n’est exporté par inadvertance', () => {
     'clampSettings', 'liveFromStatus', 'normalizeSettings', 'queueItemOptions', 'rangesFrom', 'sanitizeSettings', 'settingsFromLive',
     'songTracksOf', 'validateField'].sort());
 });
+
+// Regression: relecture PR #11 — la piste B posée pour un duo est notée, suit
+// la piste A après le passage en solo, et survit à une reprise de sauvegarde.
+test('voix guide B d’un duo devenu solo : notée à l’envoi, suit la voix A, gardée dans la sauvegarde', () => {
+  assert.deepEqual(addOptions({ singer: 'A & B', settings: { guide: 50 }, ranges: RANGES, duo: true }).sent, { guide: 50, guideB: 50 });
+  const sent = { guide: 50, guideB: 50 };
+  const current = { tracks: [{ track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 50 }] };
+  assert.deepEqual(queueItemOptions({ singer: 'A · T1', settings: { guide: 0 }, sent, current, ranges: RANGES, tracksAvailable: [5, 6] }),
+    { options: { singer: 'A · T1', pitch: 0, tempo: 0, tracks: [{ track: { type: 5 }, volume: 0 }, { track: { type: 6 }, volume: 0 }] },
+      sent: { pitch: 0, tempo: 0, guide: 0, guideB: 0 } });
+  assert.deepEqual(queueItemOptions({ singer: 'A · T1', settings: { guide: 0 }, sent, current, ranges: RANGES }).options.tracks,
+    [{ track: { type: 5 }, volume: 0 }, { track: { type: 6 }, volume: 0 }], 'pistes inconnues');
+  const duoLive = { queueId: 'q', pitch: 0, tempo: 0, guide: 0, guideB: 50, backing: 100, tracks: [4, 5, 6] };
+  assert.deepEqual(catchUpCommands({ settings: { guide: 0 }, sent, live: duoLive, ranges: RANGES }),
+    [{ kind: 'track', type: 6, value: 0 }]);
+  assert.deepEqual(sanitizeSettings({ guide: 0, guideB: 50 }, { keepDefaults: true }), { guide: 0, guideB: 50 });
+  assert.deepEqual(sanitizeSettings({ guide: 30, guideB: 50 }), { guide: 30 }, 'réglages d’un titre : pas de piste B');
+  assert.deepEqual(sanitizeSettings({ guideB: 150 }, { keepDefaults: true }), null);
+});

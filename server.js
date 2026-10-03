@@ -944,8 +944,10 @@ function liveSongSetting(body) {
   else if (field === 'backing') bridge.setTrackVolume(TRACK.BACKING, value);
   else {
     bridge.setTrackVolume(TRACK.LEAD_A, value);
-    // Duo : la voix guide B suit la voix guide A.
-    if (tr?.sel.ids.length > 1 && (!tracks || tracks.includes(TRACK.LEAD_B))) bridge.setTrackVolume(TRACK.LEAD_B, value);
+    // Duo : la voix guide B suit la voix guide A, aussi pour un duo devenu
+    // solo dans KaraFun dont la file avait posé la piste B.
+    const followA = tr && (tr.sel.ids.length > 1 || tr.sentSettings?.guideB != null);
+    if (followA && (!tracks || tracks.includes(TRACK.LEAD_B))) bridge.setTrackVolume(TRACK.LEAD_B, value);
   }
   if (tr) {
     const next = { ...(tr.sel.song.settings || {}), [field]: value };

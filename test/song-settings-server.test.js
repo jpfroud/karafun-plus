@@ -965,3 +965,56 @@ test('titre parti vers KaraFun vu par le téléphone : raison quand il ne se rè
   g.pending().cancelled = true;
   assert.deepEqual([sending().canAdjust, sending().lock], [false, 'leaving']);
 });
+
+// Regression: relecture PR #11 — duo devenu solo dans KaraFun : la voix
+// guide B restait au réglage du duo, et plus rien ne pouvait la couper.
+test('duo devenu solo dans KaraFun : la voix guide B posée par la file suit la voix guide A', async () => {
+  const f = harness();
+  let link = kcsBridge(f);
+  const tb = openTable(f, '1');
+  const ana = singer(f, tb, 'Ana');
+  const ben = singer(f, tb, 'Ben');
+  const duo = f.sched.inviteDuet(ana.person, ben.person.id, { songId: 300, title: 'Duo', artist: 'Artiste' });
+  await f.call('POST /api/table/song/settings', { ...ana.body, entryId: duo.entryId, settings: { guide: 50 } });
+  f.settings.auto = true;
+  f.sync();
+  f.settings.auto = false;
+  const label = f.pending().sel.label;
+  assert.deepEqual(link.sent[0].payload.options.tracks, [{ track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 50 }]);
+  const options = { tracks: [{ track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 50 }] };
+  const songTracks = [{ type: 4 }, { type: 5 }, { type: 6 }];
+  link = kcsBridge(f);
+  link.bridge.queue = [kfItem('q-1', 300, label, { songTracks, options })];
+  f.sync();
+  const tr = f.tracked()[0];
+  assert.equal(tr.queueId, 'q-1');
+  assert.deepEqual(plain(tr.sentSettings), { guide: 50, guideB: 50 }, 'la piste B posée pour le duo est notée');
+  assert.deepEqual(plain(await f.call('POST /api/table/duet/leave', { ...ben.body, ownerId: ana.person.id, entryId: duo.entryId })),
+    { ok: true, stage: 'sent' });
+  assert.deepEqual(plain(tr.sel.ids), [ana.person.id]);
+  const b = message => message.payload.options.tracks.find(row => row.track.type === 6)?.volume;
+  // Ana (téléphone) puis le bar coupent la voix guide : les deux pistes.
+  await f.call('POST /api/table/song/settings', { ...ana.body, entryId: duo.entryId, settings: { guide: 0 } });
+  assert.equal(link.sent.at(-1).type, 'remote.SetQueueItemOptionsRequest');
+  assert.deepEqual(link.sent.at(-1).payload.options.tracks, [{ track: { type: 5 }, volume: 0 }, { track: { type: 6 }, volume: 0 }]);
+  await f.call('POST /api/staff/song/settings', { personId: ana.person.id, entryId: duo.entryId, settings: { guide: 25 } });
+  assert.equal(b(link.sent.at(-1)), 25);
+  // Réglage remis par défaut : la piste B revient aussi à la valeur par défaut.
+  await f.call('POST /api/staff/song/settings', { personId: ana.person.id, entryId: duo.entryId, settings: null });
+  assert.equal(b(link.sent.at(-1)), 0);
+  // Au début du titre, KaraFun a laissé la piste B à 50 : rattrapée.
+  f.sched.setSongSettings(tr.sel.song, { guide: 0 });
+  delete tr.statusAtOptions;
+  delete tr.liveChecked;
+  const item = kfItem('q-1', 300, label, { songTracks, options });
+  link.bridge.queue = [item];
+  link.bridge.status = playing(item, { tracks: [{ volume: 100, track: { type: 4 } }, { volume: 0, track: { type: 5 } }, { volume: 50, track: { type: 6 } }] });
+  const before = link.sent.length;
+  f.sync();
+  assert.deepEqual(link.sent.slice(before), [{ type: 'remote.TrackVolumeRequest', payload: { type: 6, volume: 0 } }]);
+  // En direct, « Coupé » règle aussi la piste B.
+  const live = link.sent.length;
+  await f.call('POST /api/staff/kf', { action: 'track', track: 'guide', value: 0 });
+  assert.deepEqual(link.sent.slice(live), [{ type: 'remote.TrackVolumeRequest', payload: { type: 5, volume: 0 } },
+    { type: 'remote.TrackVolumeRequest', payload: { type: 6, volume: 0 } }]);
+});

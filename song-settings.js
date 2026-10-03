@@ -88,7 +88,8 @@ function normalizeSettings(input, ranges) {
 }
 
 // Réglages lus dans une sauvegarde : chaque valeur impossible est retirée.
-// `keepDefaults` : ce qui a été envoyé à KaraFun garde ses valeurs par défaut.
+// `keepDefaults` : ce qui a été envoyé à KaraFun garde ses valeurs par défaut,
+// et la voix guide B que la file a posée pour un duo (`guideB`).
 function sanitizeSettings(value, { keepDefaults = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const out = {};
@@ -97,6 +98,8 @@ function sanitizeSettings(value, { keepDefaults = false } = {}) {
     const [min, max] = PLAUSIBLE[field];
     if (Number.isInteger(n) && n >= min && n <= max && (keepDefaults || !unchanged(field, n))) out[field] = n;
   }
+  const b = value.guideB;
+  if (keepDefaults && Number.isInteger(b) && b >= PLAUSIBLE.guide[0] && b <= PLAUSIBLE.guide[1]) out.guideB = b;
   return Object.keys(out).length ? out : null;
 }
 
@@ -121,7 +124,8 @@ const trackVolume = (type, volume) => ({ track: { type }, volume });
 // Options d'ajout (remote.AddToQueueRequest) : seulement ce qui est réglé.
 // Pistes du titre inconnues (premier envoi) : KaraFun ignore celles qui
 // manquent. Connues (`tracksAvailable`, relance ⏮ du titre en cours) :
-// seulement celles que le titre possède. Duo : la voix guide B suit la A.
+// seulement celles que le titre possède. Duo : la voix guide B suit la A,
+// notée `guideB` dans ce qui est envoyé.
 function addOptions({ singer, settings, ranges, duo = false, tracksAvailable = null }) {
   const s = clampSettings(settings, ranges);
   const options = { singer: String(singer || '') };
@@ -133,7 +137,7 @@ function addOptions({ singer, settings, ranges, duo = false, tracksAvailable = n
   if (s.backing != null && has(TRACK.BACKING)) { tracks.push(trackVolume(TRACK.BACKING, s.backing)); sent.backing = s.backing; }
   if (s.guide != null && has(TRACK.LEAD_A)) {
     tracks.push(trackVolume(TRACK.LEAD_A, s.guide));
-    if (duo && has(TRACK.LEAD_B)) tracks.push(trackVolume(TRACK.LEAD_B, s.guide));
+    if (duo && has(TRACK.LEAD_B)) { tracks.push(trackVolume(TRACK.LEAD_B, s.guide)); sent.guideB = s.guide; }
     sent.guide = s.guide;
   }
   if (tracks.length) options.tracks = tracks;
@@ -151,6 +155,8 @@ const volumeIn = (tracks, type) => {
 // valeurs inchangées sont renvoyés. Un réglage remis par défaut après un
 // envoi (`sent`) renvoie la valeur par défaut ; un réglage jamais touché par
 // la file garde la valeur actuelle de KaraFun (`current`, options du titre).
+// Voix guide B : elle suit la A pour un duo, et aussi pour un duo devenu solo
+// dans KaraFun (`sent.guideB`, posée par la file) ; sinon elle est gardée.
 function queueItemOptions({ singer, mod = null, settings, sent = null, current = null, tracksAvailable = null, duo = false, ranges,
   defaults = DEFAULTS }) {
   const s = clampSettings(settings, ranges) || {};
@@ -167,9 +173,13 @@ function queueItemOptions({ singer, mod = null, settings, sent = null, current =
   if (backing != null) { tracks.push(trackVolume(TRACK.BACKING, backing)); out.backing = backing; }
   const guide = has(TRACK.LEAD_A) ? pick('guide', volumeIn(now.tracks, TRACK.LEAD_A)) : null;
   if (guide != null) { tracks.push(trackVolume(TRACK.LEAD_A, guide)); out.guide = guide; }
-  if (tracksAvailable ? tracksAvailable.includes(TRACK.LEAD_B) : duo) {
-    const second = duo ? pick('guide', volumeIn(now.tracks, TRACK.LEAD_B)) : volumeIn(now.tracks, TRACK.LEAD_B);
-    if (second != null) tracks.push(trackVolume(TRACK.LEAD_B, second));
+  const followA = duo || previous.guideB != null;
+  if (tracksAvailable ? tracksAvailable.includes(TRACK.LEAD_B) : followA) {
+    const second = followA ? pick('guide', volumeIn(now.tracks, TRACK.LEAD_B)) : volumeIn(now.tracks, TRACK.LEAD_B);
+    if (second != null) {
+      tracks.push(trackVolume(TRACK.LEAD_B, second));
+      if (followA) out.guideB = second;
+    }
   }
   if (tracks.length) options.tracks = tracks;
   if (mod) options.mod = mod;
@@ -221,7 +231,9 @@ function catchUpCommands({ settings, sent = null, live, tracksAvailable = null, 
   if (tempo != null && live.tempo !== tempo) out.push({ kind: 'tempo', value: tempo });
   if (backing != null && has(TRACK.BACKING) && live.backing !== backing) out.push({ kind: 'track', type: TRACK.BACKING, value: backing });
   if (guide != null && has(TRACK.LEAD_A) && live.guide !== guide) out.push({ kind: 'track', type: TRACK.LEAD_A, value: guide });
-  if (guide != null && duo && has(TRACK.LEAD_B) && live.guideB !== guide) out.push({ kind: 'track', type: TRACK.LEAD_B, value: guide });
+  // Voix guide B : duo, ou duo devenu solo dont la file avait posé la piste B.
+  const followA = duo || previous.guideB != null;
+  if (guide != null && followA && has(TRACK.LEAD_B) && live.guideB !== guide) out.push({ kind: 'track', type: TRACK.LEAD_B, value: guide });
   return out;
 }
 
