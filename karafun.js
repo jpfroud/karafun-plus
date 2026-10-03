@@ -6,6 +6,8 @@ const fs = require('fs');
 const path = require('path');
 const io = require('socket.io-client');
 const { KcsTransport } = require('./kcs-transport');
+const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, liveFromStatus, TRACK,
+  DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
 
 function readSettings(html) {
   const match = /\b(?:const|var|let)\s+Settings\s*=\s*\{/.exec(html);
@@ -25,12 +27,16 @@ function readSettings(html) {
   throw new Error('Paramètres de télécommande incomplets.');
 }
 
+// `songTracks` : pistes vocales du titre (4 chœurs, 5 et 6 voix guides),
+// seulement si KaraFun les donne. `options` : réglages du titre dans KaraFun.
 function normalizeKcsItem(item) {
   const song = item.song || {}, quiz = item.quiz || {};
+  const tracks = songTracksOf(song);
   return {
     queueId: String(item.id), id: String(item.id), songId: song.id && song.id.id,
     title: song.title || quiz.title || '', artist: song.artist || '',
     singer: song.options && song.options.singer || '', options: song.options || {},
+    ...(tracks ? { songTracks: tracks } : {}),
     ...(quiz.id ? { quizId: quiz.id.id } : {}),
   };
 }
@@ -128,9 +134,23 @@ const RETRY_BASE_MS = 3000;
 const RETRY_MAX_MS = 30000;
 // « Reconnecter » ne coupe pas une connexion qui vient de démarrer.
 const RECONNECT_PATIENCE_MS = 15000;
+// Réglages de titre (tonalité, tempo, voix) : décrits par le SDK de KaraFun
+// Web, pas encore vérifiés sur le KaraFun du bar. Une Error avec le même
+// identifiant, ou aucune réponse, marque la fonction comme non prise en
+// charge ('refused') ; une réponse la confirme ('ok').
+const SETTING_REQUESTS = Object.freeze({ 'remote.PitchRequest': 'pitch', 'remote.TempoRequest': 'tempo',
+  'remote.TrackVolumeRequest': 'trackVolume', 'remote.SetQueueItemOptionsRequest': 'queueItemOptions' });
+// `addOptions` : réglages dans les options de remote.AddToQueueRequest. Une
+// Error à un ajout qui en portait : le titre n'est pas dans KaraFun, le
+// serveur le renvoie sans réglages ('add-options-refused').
+const SETTING_LABELS = { pitch: ['la tonalité', 'de tonalité'], tempo: ['le tempo', 'de tempo'],
+  trackVolume: ['le volume des voix', 'des voix'], queueItemOptions: ['un titre de la file', 'des titres de la file'],
+  addOptions: ['un titre à son ajout', 'des titres à leur ajout'] };
+const freshSupport = () => ({ pitch: 'unknown', tempo: 'unknown', trackVolume: 'unknown', queueItemOptions: 'unknown',
+  addOptions: 'unknown' });
 // Demandes dont l'absence de réponse n'est qu'un avertissement : la file
 // garde la connexion tant que KaraFun parle (chien de garde du transport).
-const SOFT_REQUESTS = new Set(['remote.UpdateUsernameRequest']);
+const SOFT_REQUESTS = new Set(['remote.UpdateUsernameRequest', ...Object.keys(SETTING_REQUESTS)]);
 // Battements de KaraFun : gardés dans le fichier, comptés à l'écran.
 const NOISE = new Set(['core.PingRequest', 'core.PingResponse', 'core.TimestampRequest', 'core.TimestampResponse']);
 // En-têtes de navigateur ordinaires, comme pour le catalogue.
@@ -193,6 +213,11 @@ class KaraFunBridge extends EventEmitter {
     saveIdentity(identityFile, this.loginSuffix);
     this.permissionWarning = null;
     this.bestPermissions = null;
+    this.settingsSupport = freshSupport();
+    this.settingsNotice = null;
+    this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
+    this.observedDefaults = {}; // volumes des voix d'un titre chargé sans réglage
+    this._observedFor = null;
     this.nameConflictSince = null;
     this.nameConflictTries = 0;
     this._generation = 0;
@@ -309,6 +334,20 @@ class KaraFunBridge extends EventEmitter {
       [key, !!(now[key] || this.bestPermissions?.[key])]));
   }
 
+  // Réponse (ou silence, `message` null) de KaraFun à un réglage de titre.
+  _settingsAnswer(kind, message) {
+    const [what, of] = SETTING_LABELS[kind];
+    if (message && message.type !== 'Error') this.settingsSupport[kind] = 'ok';
+    else {
+      this.settingsSupport[kind] = 'refused';
+      this.settingsNotice = message ? `KaraFun refuse de régler ${what} : ${message.payload?.message || 'erreur inconnue'}` :
+        `KaraFun ne répond pas aux réglages ${of} : cette version de KaraFun ne le permet peut-être pas.`;
+      this._record('info', 'reglage-refuse', { request: kind, message: this.settingsNotice });
+    }
+    if (!Object.values(this.settingsSupport).includes('refused')) this.settingsNotice = null;
+    this.emit('change');
+  }
+
   _record(dir, name, data, id) {
     const entry = { t: new Date().toISOString(), dir, name, ...(id === undefined ? {} : { id }), data };
     if (NOISE.has(name)) this.noiseCount++;
@@ -333,6 +372,8 @@ class KaraFunBridge extends EventEmitter {
     this.disconnect();
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
+      this.settingsSupport = freshSupport(); this.settingsNotice = null;
+      this.observedDefaults = {}; this._observedFor = null;
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
     }
@@ -469,6 +510,7 @@ class KaraFunBridge extends EventEmitter {
 
   _openKcs(url, active) {
     const socket = new KcsTransport(url);
+    this._optionAdds.clear(); // identifiants propres à chaque connexion
     this.protocol = 'kcs';
     this.socket = socket;
     this._setPhase('opening');
@@ -518,6 +560,7 @@ class KaraFunBridge extends EventEmitter {
         if (!p.status || typeof p.status.state !== 'number') return;
         const status = p.status || {};
         this.raw.status = status;
+        this._observeDefaults(status);
         this._accept('status', {
           ...status,
           state: ({ 1: 'idle', 2: 'loading', 3: 'idle', 4: 'playing', 5: 'paused' })[status.state] || 'idle',
@@ -545,8 +588,20 @@ class KaraFunBridge extends EventEmitter {
           this._nameUsed(askName);
           return;
         }
+        // Réglage de titre refusé : traité avec sa demande (événement 'reply').
+        if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id))) return;
         this.lastError = `Commande KaraFun refusée : ${p.message || p.type || 'erreur inconnue'}`;
         this.emit('change');
+      }
+    });
+    socket.on('reply', (type, message) => {
+      if (!active()) return;
+      if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], message);
+      else if (this._optionAdds.has(message.id)) {
+        const add = this._optionAdds.get(message.id);
+        this._optionAdds.delete(message.id);
+        this._settingsAnswer('addOptions', message);
+        if (message.type === 'Error') this.emit('add-options-refused', add);
       }
     });
     const lost = (message, reason) => {
@@ -564,6 +619,7 @@ class KaraFunBridge extends EventEmitter {
         return;
       }
       this._record('info', 'sans-reponse', type);
+      if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], null);
       if (this.ready && this.nameConflictSince == null) this._setPhase('ready');
       if (!softWarned) {
         softWarned = true;
@@ -707,21 +763,41 @@ class KaraFunBridge extends EventEmitter {
     if (this.protocol === 'kcs') {
       const messages = {
         queueAdd: ['remote.AddToQueueRequest', payload && { song: { type: 1, id: payload.songId },
-          options: payload.mod ? { mod: payload.mod } : { singer: payload.singer }, position: payload.pos }],
+          options: payload.mod ? { mod: payload.mod } : payload.options || { singer: payload.singer }, position: payload.pos }],
         queueRemove: ['remote.RemoveFromQueueRequest', { queueItemId: String(payload) }],
         queueMove: ['remote.MoveInQueueRequest', payload && { queueItemId: String(payload.queueId), to: payload.to }],
         play: ['remote.PlayRequest', {}], next: ['remote.NextRequest', {}],
+        // Réglages de titre (SDK de KaraFun Web) : valeurs absolues.
+        queueItemOptions: ['remote.SetQueueItemOptionsRequest', payload && { queueItemId: String(payload.queueId), options: payload.options }],
+        pitch: ['remote.PitchRequest', { pitch: payload }],
+        tempo: ['remote.TempoRequest', { tempo: payload }],
+        trackVolume: ['remote.TrackVolumeRequest', payload && { type: payload.type, volume: payload.volume }],
       };
       const mapped = messages[name];
       if (!mapped) throw new Error('Commande KaraFun inconnue');
-      this.socket.send(...mapped);
+      return this.socket.send(...mapped);
     } else {
       this._record('out', name, payload);
       this.socket.emit(name, payload);
     }
   }
 
-  add(songId, singer, pos = 99999) { this._emit('queueAdd', { songId: Number(songId), pos, singer: String(singer || '') }); }
+  // `settings` : réglages du titre (song-settings.js), ajoutés aux options
+  // d'ajout ; `duo` : la voix guide B suit la voix guide A. Rend les réglages
+  // effectivement envoyés (bornés), ou null.
+  add(songId, singer, pos = 99999, settings = null, { duo = false } = {}) {
+    const payload = { songId: Number(songId), pos, singer: String(singer || '') };
+    const allowed = settings && this.settingsSupport.addOptions !== 'refused' && this._settingsChannel();
+    const built = allowed ? addOptions({ singer: payload.singer, settings, ranges: this.songSettingsRanges(), duo }) : { sent: null };
+    if (built.sent) {
+      // Ancien protocole (faux KaraFun) : le chanteur reste à part.
+      const { singer: _, ...rest } = built.options;
+      payload.options = this.protocol === 'kcs' ? built.options : rest;
+    }
+    const id = this._emit('queueAdd', payload);
+    if (built.sent && id !== undefined) this._optionAdds.set(id, { songId: payload.songId, singer: payload.singer });
+    return built.sent;
+  }
   addBattle(songId, pos = 0) {
     const id = Number(songId);
     if (!Number.isSafeInteger(id) || id < 1) throw new Error('Titre Battle invalide.');
@@ -736,12 +812,89 @@ class KaraFunBridge extends EventEmitter {
       if (this.raw.permissions?.shownTypes?.battle === false) {
         throw new Error('Permission Battle refusée par KaraFun pour cette télécommande. Prépare la Battle dans KaraFun.');
       }
-    } else if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(this.base).hostname)) {
+    } else if (!this._localFake()) {
       throw new Error('Le mode Battle automatique nécessite la télécommande KaraFun récente.');
     }
     this._emit('queueAdd', { songId: id, pos,
       singer: 'Battle collective', mod: BATTLE_MOD });
   }
+  _localFake() { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(this.base).hostname); }
+
+  // ---------------------------------------------------------------- réglages de titre
+  songSettingsRanges() { return rangesFrom(this.raw.configuration); }
+
+  // KCS, ou faux KaraFun local de la démo. Une ancienne télécommande d'un vrai
+  // KaraFun ne connaît pas ces réglages.
+  _settingsChannel() { return this.protocol === 'kcs' || this._localFake(); }
+
+  _settingsAllowed(permission) {
+    if (!this._settingsChannel()) throw new Error('Réglages de titre indisponibles avec cette ancienne télécommande KaraFun.');
+    if (this.permissions?.[permission] !== false) return;
+    throw new Error(permission === 'manageVolumes' ?
+      `KaraFun ne laisse pas ${this.username} personnaliser la chanson en cours : active « Personnaliser la chanson en cours » pour ce participant dans la télécommande KaraFun.` :
+      `KaraFun ne laisse pas ${this.username} modifier les titres de sa file : active « Éditer la file d’attente » pour ce participant dans la télécommande KaraFun.`);
+  }
+
+  // Titre déjà dans la file de KaraFun : options complètes (voir
+  // queueItemOptions). Rend les réglages envoyés.
+  setQueueItemOptions(queueId, { singer, mod = null, settings = null, sent = null, current = null, tracksAvailable = null, duo = false } = {}) {
+    if (queueId === null || queueId === undefined || queueId === '') throw new Error('Titre de la file KaraFun inconnu.');
+    this._settingsAllowed('manageQueue');
+    const built = queueItemOptions({ singer, mod, settings, sent, current, tracksAvailable, duo, ranges: this.songSettingsRanges(),
+      defaults: this.songSettingsDefaults() });
+    this._emit('queueItemOptions', { queueId, options: built.options });
+    return built.sent;
+  }
+
+  // Titre en cours : valeurs absolues, bornées par la configuration de KaraFun.
+  setPitch(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('Tonalité invalide.');
+    this._settingsAllowed('manageVolumes');
+    const { pitch } = clampSettings({ pitch: value }, this.songSettingsRanges());
+    this._emit('pitch', pitch);
+    return pitch;
+  }
+
+  setTempo(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('Tempo invalide.');
+    this._settingsAllowed('manageVolumes');
+    const { tempo } = clampSettings({ tempo: value }, this.songSettingsRanges());
+    this._emit('tempo', tempo);
+    return tempo;
+  }
+
+  setTrackVolume(type, volume) {
+    if (![TRACK.BACKING, TRACK.LEAD_A, TRACK.LEAD_B].includes(type)) throw new Error('Piste vocale inconnue.');
+    if (typeof volume !== 'number' || !Number.isFinite(volume)) throw new Error('Volume invalide.');
+    this._settingsAllowed('manageVolumes');
+    const value = Math.min(100, Math.max(0, Math.round(volume)));
+    this._emit('trackVolume', { type, volume: value });
+    return value;
+  }
+
+  // Valeurs par défaut des voix sur ce KaraFun : relevées à la première trame
+  // d'un titre chargé sans volumes dans ses options (ensuite, le bar a pu les
+  // changer pendant le titre). Celui du bar met les chœurs à 53.
+  _observeDefaults(status) {
+    const current = status.current;
+    if (!current || current.id == null || String(current.id) === this._observedFor) return;
+    this._observedFor = String(current.id);
+    if (Array.isArray(current.song?.options?.tracks)) return;
+    const live = liveFromStatus({ tracks: status.tracks });
+    for (const field of ['guide', 'backing']) if (live[field] != null) this.observedDefaults[field] = live[field];
+  }
+
+  songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }
+
+  // Pour les pages : plages, droits de KaraFun (null : non précisés),
+  // fonctions confirmées ou refusées, dernier avis et état en direct.
+  songSettingsState() {
+    const flag = key => typeof this.permissions?.[key] === 'boolean' ? this.permissions[key] : null;
+    return { ranges: this.songSettingsRanges(), defaults: this.songSettingsDefaults(),
+      permissions: { manageVolumes: flag('manageVolumes'), manageQueue: flag('manageQueue') },
+      support: { ...this.settingsSupport }, notice: this.settingsNotice, live: liveFromStatus(this.status) };
+  }
+
   remove(queueId) { this._emit('queueRemove', queueId); }
   move(queueId, from, to) { this._emit('queueMove', { queueId, from, to }); }
   play() { this._emit('play', null); }
@@ -772,7 +925,7 @@ class KaraFunBridge extends EventEmitter {
       unreachable: this.unreachable, lastError: this.lastError, lastEventAt: this.lastEventAt,
       queue: this.queue, status: this.status, permissions: this.permissions, preferences: this.preferences,
       raw: this.raw, events: this.events.slice(-40), pings: this.noiseCount,
-      connection: this.connectionState(),
+      connection: this.connectionState(), songSettings: this.songSettingsState(),
     };
   }
 }
@@ -790,4 +943,4 @@ function normalizeResults(data) {
 }
 
 module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, isBattleItem,
-  maskCode, lockIdentity };
+  maskCode, lockIdentity, unknownSettingsSupport: freshSupport };

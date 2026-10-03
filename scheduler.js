@@ -569,6 +569,7 @@ class Scheduler {
   chooseSong(p, song, mode = 'replace') {
     if (!song || !song.songId) throw new Error('Chanson invalide.');
     if (!['append', 'replace'].includes(mode)) throw new Error('Action sur la liste inconnue.');
+    // Entrée du titre. Champ facultatif ajouté ensuite : `settings` (voir setSongSettings).
     const next = { entryId: id(), songId: Number(song.songId), title: String(song.title || '').slice(0, 80), artist: String(song.artist || '').slice(0, 60), img: song.img || null, duration: song.duration || null };
     if (!Number.isSafeInteger(next.songId) || next.songId <= 0 || !next.title) throw new Error('Chanson invalide.');
     if (mode === 'append' && this.songsOf(p).some(s => s.songId === next.songId)) {
@@ -640,6 +641,16 @@ class Scheduler {
     this._refreshDuetViews();
     this._event('song.reordered', { personId: p.id, entryId: moved.entryId, fromIndex: from, toIndex: to });
     this.note(`${p.name} a réordonné sa liste de chansons`);
+  }
+
+  // Réglages du titre (tonalité, tempo, voix guide, chœurs) : champ facultatif
+  // `settings` de l'entrée créée par chooseSong, déjà validé par
+  // song-settings.js. Absent : réglages de KaraFun par défaut. L'entrée est
+  // le même objet partout où le titre voyage (envoi, retour, sauvegarde).
+  setSongSettings(song, settings) {
+    if (settings) song.settings = { ...settings };
+    else delete song.settings;
+    this.version++;
   }
 
   // ------------------------------------------------------------------ duos

@@ -851,3 +851,304 @@ test('identité et journal impossibles à écrire : la file fonctionne quand mê
     assert.equal(bridge.events.at(-1).name, 'essai', 'journal en mémoire gardé');
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
+
+// ---------------------------------------------------------------------------
+// Réglages de titre : tonalité, tempo, voix guide et chœurs
+// ---------------------------------------------------------------------------
+// Trames relevées sur le vrai KaraFun du bar (journal du 2 octobre).
+const BAR_CONFIGURATION = { pitchStep: 1, tempoStep: 5, pitchMin: -6, tempoMin: -50, pitchMax: 6, tempoMax: 50,
+  compatibleMods: { battle: [1] } };
+const ADMIN_PERMISSIONS = { manageQueue: true, viewQueue: true, addToQueue: true, managePlayback: true, manageVolumes: true,
+  sendPhotos: true, shownTypes: { karaoke: true, community: false, quiz: false, battle: true } };
+const payloads = (ws, from = 0) => ws.sent.slice(from).map(({ type, payload }) => ({ type, payload }));
+
+async function adminBridge(t) {
+  const link = await connected(t);
+  link.ws.receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: BAR_CONFIGURATION } });
+  link.ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: ADMIN_PERMISSIONS } });
+  return link;
+}
+
+test('KcsTransport : réponse rattachée à sa demande, identifiant rendu et donné à l’expiration', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  const replies = [], timeouts = [];
+  transport.on('reply', (type, message) => replies.push([type, message.type]));
+  transport.on('request-timeout', (type, id) => timeouts.push([type, id]));
+  ws.open();
+  const id = transport.send('remote.PitchRequest', { pitch: 1 });
+  assert.equal(id, ws.sent.at(-1).id, 'send rend l’identifiant de la demande');
+  assert.equal(transport.requestType(id), 'remote.PitchRequest');
+  ws.receive({ id, type: 'remote.PitchResponse', payload: {} });
+  assert.deepEqual(replies, [['remote.PitchRequest', 'remote.PitchResponse']]);
+  assert.equal(transport.requestType(id), null, 'demande close');
+  const late = transport.send('remote.TempoRequest', { tempo: 5 });
+  ws.receive({ id: late, type: 'Error', payload: { type: 3, message: 'Refusé' } });
+  assert.deepEqual(replies.at(-1), ['remote.TempoRequest', 'Error'], 'une Error avec le même identifiant répond à la demande');
+  const silent = transport.send('remote.TrackVolumeRequest', { type: 5, volume: 0 });
+  t.mock.timers.tick(8000);
+  assert.deepEqual(timeouts, [['remote.TrackVolumeRequest', silent]]);
+  ws.receive({ id: silent, type: 'remote.TrackVolumeResponse', payload: {} });
+  assert.equal(replies.length, 2, 'réponse après l’expiration : ignorée');
+  assert.equal(transport.requestType(undefined), null);
+});
+
+test('réglages de titre : requêtes KCS exactes pour l’ajout, la file et le titre en cours', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const sent = [];
+  sent.push(bridge.add(5091, 'Léa · T1', 99999, { pitch: -2, tempo: -10, guide: 30, backing: 0 }));
+  sent.push(bridge.add(77, 'Léa & Tom · T1', 99999, { guide: 50 }, { duo: true }));
+  sent.push(bridge.add(78, 'Zoé · T3', 99999, null));
+  sent.push(bridge.setQueueItemOptions('11', { singer: 'Léa · T1', settings: { pitch: -2, tempo: -10, guide: 30 }, tracksAvailable: [4, 5] }));
+  sent.push(bridge.setQueueItemOptions(12, { singer: 'Battle collective', mod: BATTLE_MOD, settings: null }));
+  sent.push(bridge.setPitch(2), bridge.setTempo(5), bridge.setTrackVolume(5, 0), bridge.setTrackVolume(4, 100));
+  assert.deepEqual(payloads(ws), [
+    { type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 5091 }, options: { singer: 'Léa · T1', pitch: -2, tempo: -10,
+      tracks: [{ track: { type: 4 }, volume: 0 }, { track: { type: 5 }, volume: 30 }] }, position: 99999 } },
+    { type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 77 }, options: { singer: 'Léa & Tom · T1',
+      tracks: [{ track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 50 }] }, position: 99999 } },
+    { type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 78 }, options: { singer: 'Zoé · T3' }, position: 99999 } },
+    { type: 'remote.SetQueueItemOptionsRequest', payload: { queueItemId: '11', options: { singer: 'Léa · T1', pitch: -2, tempo: -10,
+      tracks: [{ track: { type: 5 }, volume: 30 }] } } },
+    { type: 'remote.SetQueueItemOptionsRequest', payload: { queueItemId: '12', options: { singer: 'Battle collective', pitch: 0, tempo: 0,
+      mod: BATTLE_MOD } } },
+    { type: 'remote.PitchRequest', payload: { pitch: 2 } },
+    { type: 'remote.TempoRequest', payload: { tempo: 5 } },
+    { type: 'remote.TrackVolumeRequest', payload: { type: 5, volume: 0 } },
+    { type: 'remote.TrackVolumeRequest', payload: { type: 4, volume: 100 } },
+  ]);
+  assert.deepEqual(sent, [{ pitch: -2, tempo: -10, backing: 0, guide: 30 }, { guide: 50 }, null,
+    { pitch: -2, tempo: -10, guide: 30 }, { pitch: 0, tempo: 0 }, 2, 5, 0, 100], 'chaque méthode rend ce qui a été envoyé');
+  assert.throws(() => bridge._emit('pause', null), /Commande KaraFun inconnue/, 'toujours aucune commande inconnue');
+});
+
+test('réglages de titre : bornés par la configuration de KaraFun avant l’envoi', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  assert.deepEqual(bridge.snapshot().songSettings.ranges, { pitch: { min: -6, max: 6, step: 1 },
+    tempo: { min: -50, max: 50, step: 5 }, volume: { min: 0, max: 100, step: 25 } });
+  assert.equal(bridge.setPitch(9), 6);
+  assert.equal(bridge.setPitch(-8), -6);
+  assert.equal(bridge.setTempo(12), 10, 'ramené sur le pas de 5');
+  assert.equal(bridge.setTempo(-73), -50);
+  assert.equal(bridge.setTrackVolume(6, 150), 100);
+  assert.equal(bridge.setTrackVolume(4, -3), 0);
+  assert.deepEqual(payloads(ws).map(m => m.payload), [{ pitch: 6 }, { pitch: -6 }, { tempo: 10 }, { tempo: -50 },
+    { type: 6, volume: 100 }, { type: 4, volume: 0 }]);
+  const before = ws.sent.length;
+  assert.throws(() => bridge.setPitch('fort'), /Tonalité invalide/);
+  assert.throws(() => bridge.setTempo(null), /Tempo invalide/);
+  assert.throws(() => bridge.setTrackVolume(7, 10), /Piste vocale inconnue/);
+  assert.throws(() => bridge.setTrackVolume(5, 'x'), /Volume invalide/);
+  assert.throws(() => bridge.setQueueItemOptions('', { singer: 'Léa' }), /Titre de la file KaraFun inconnu/);
+  assert.equal(ws.sent.length, before, 'rien d’invalide n’est envoyé');
+  // Autre configuration annoncée plus tard par KaraFun.
+  ws.receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: { pitchMin: -3, pitchMax: 3, pitchStep: 1 } } });
+  assert.equal(bridge.setPitch(5), 3);
+  assert.equal(bridge.snapshot().songSettings.ranges.tempo.step, 5, 'tempo non annoncé : repli');
+});
+
+test('réglages de titre sans réponse en 8 s : simple avertissement, la connexion reste', async t => {
+  mockTime(t);
+  const { bridge, ws, env } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  assert.deepEqual(bridge.snapshot().songSettings.support,
+    { pitch: 'unknown', tempo: 'unknown', trackVolume: 'unknown', queueItemOptions: 'unknown', addOptions: 'unknown' });
+  bridge.setPitch(1);
+  bridge.setQueueItemOptions('11', { singer: 'Léa · T1', settings: { tempo: 5 } });
+  t.mock.timers.tick(7000);
+  ws.receive({ id: 90, type: 'core.PingRequest' });
+  t.mock.timers.tick(1000);
+  assert.equal(bridge.connected, true, 'aucune reconnexion');
+  assert.equal(bridge.ready, true);
+  assert.equal(ws.closeCalls, 0);
+  assert.equal(bridge.lastError, null, 'l’état de la connexion reste propre');
+  const state = bridge.snapshot().songSettings;
+  assert.equal(state.support.pitch, 'refused', 'pas de réponse : fonction non prise en charge');
+  assert.equal(state.support.queueItemOptions, 'refused');
+  assert.equal(state.support.tempo, 'unknown');
+  assert.equal(state.notice, 'KaraFun ne répond pas aux réglages des titres de la file : cette version de KaraFun ne le permet peut-être pas.');
+  assert.ok(bridge.events.some(e => e.name === 'sans-reponse' && e.data === 'remote.PitchRequest'));
+  t.mock.timers.tick(5000);
+  ws.receive({ id: 91, type: 'core.PingRequest' });
+  t.mock.timers.tick(5000);
+  assert.equal(env.calls.length, 1, 'pas de nouvelle découverte de la télécommande');
+  // Une réponse plus tard rétablit la fonction.
+  bridge.setPitch(2);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.PitchResponse', payload: {} });
+  assert.equal(bridge.snapshot().songSettings.support.pitch, 'ok');
+  assert.equal(bridge.connected, true);
+});
+
+test('réglages de titre refusés par une Error du même identifiant : fonction notée refusée, rien d’autre', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  bridge.setTempo(5);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 3, message: 'Not allowed' } });
+  let state = bridge.snapshot().songSettings;
+  assert.equal(state.support.tempo, 'refused');
+  assert.equal(state.notice, 'KaraFun refuse de régler le tempo : Not allowed');
+  assert.equal(bridge.lastError, null, 'pas présenté comme une panne de la connexion');
+  bridge.setTrackVolume(5, 25);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: {} });
+  assert.equal(bridge.snapshot().songSettings.notice, 'KaraFun refuse de régler le volume des voix : erreur inconnue');
+  bridge.setTempo(10);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.TempoResponse', payload: {} });
+  state = bridge.snapshot().songSettings;
+  assert.equal(state.support.tempo, 'ok');
+  assert.equal(state.support.trackVolume, 'refused');
+  bridge.setTrackVolume(5, 50);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.TrackVolumeResponse', payload: {} });
+  assert.equal(bridge.snapshot().songSettings.notice, null, 'tout fonctionne de nouveau : plus d’avis');
+  // Une Error sans identifiant reste une erreur de commande ordinaire.
+  ws.receive({ type: 'Error', payload: { type: 3, message: 'Permission denied' } });
+  assert.equal(bridge.lastError, 'Commande KaraFun refusée : Permission denied');
+  // Nouveau code : nouvelle télécommande, capacités inconnues.
+  bridge.connect('654321');
+  assert.deepEqual(bridge.snapshot().songSettings.support,
+    { pitch: 'unknown', tempo: 'unknown', trackVolume: 'unknown', queueItemOptions: 'unknown', addOptions: 'unknown' });
+});
+
+test('réglages de titre : droits de KaraFun exposés, vérifiés, jamais ajoutés à l’alerte de droits perdus', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  assert.deepEqual(bridge.snapshot().songSettings.permissions, { manageVolumes: true, manageQueue: true });
+  ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: { ...ADMIN_PERMISSIONS, manageVolumes: false, manageQueue: false } } });
+  assert.equal(bridge.permissionWarning, null, 'perte de ces droits : pas d’alerte de connexion');
+  assert.deepEqual(bridge.snapshot().songSettings.permissions, { manageVolumes: false, manageQueue: false });
+  const before = ws.sent.length;
+  assert.throws(() => bridge.setPitch(1), /Personnaliser la chanson en cours/);
+  assert.throws(() => bridge.setTempo(5), /Personnaliser la chanson en cours/);
+  assert.throws(() => bridge.setTrackVolume(5, 25), /Personnaliser la chanson en cours/);
+  assert.throws(() => bridge.setQueueItemOptions('11', { singer: 'Léa · T1' }), /Éditer la file d’attente/);
+  assert.equal(ws.sent.length, before);
+  ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: {} });
+  assert.deepEqual(bridge.snapshot().songSettings.permissions, { manageVolumes: null, manageQueue: null }, 'droits non précisés');
+});
+
+test('réglages de titre : pistes vocales des titres de la file et état en direct du titre en cours', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [
+    { id: '4f0c2a1e-02', song: { id: { type: 1, id: 37024 }, artist: 'Les Inconnus', songTracks: [{ type: 5 }], title: 'Isabelle a les yeux bleus',
+      options: { singer: 'Hugo · Table 5' } } },
+    { id: 'b2', song: { id: { type: 1, id: 5 }, title: 'Duo', songTracks: [{ type: 4 }, { type: 5 }, { type: 6 }],
+      options: { singer: 'A & B · T1', pitch: -2, tempo: 5, tracks: [{ track: { type: 5 }, volume: 30 }] } } },
+  ] } } });
+  assert.deepEqual(bridge.queue.map(item => item.songTracks), [[5], [4, 5, 6]]);
+  assert.deepEqual(bridge.queue[1].options, { singer: 'A & B · T1', pitch: -2, tempo: 5, tracks: [{ track: { type: 5 }, volume: 30 }] },
+    'options du titre gardées telles que KaraFun les donne');
+  assert.equal(bridge.snapshot().songSettings.live.pitch, null, 'rien en cours');
+  ws.receive({ type: 'remote.StatusEvent', payload: { status: { current: { id: '4f0c2a1e-0000-4000-8000-000000000001',
+    song: { id: { type: 1, id: 12293 }, artist: 'Daniel Balavoine', songTracks: [{ type: 5 }], title: 'Le chanteur',
+      options: { singer: 'Lina · Table 4' } } }, state: 4, pitch: 0, tempo: 0, tracks: [{ volume: 0, track: { type: 5 } }] } } });
+  assert.deepEqual(bridge.status.current.songTracks, [5]);
+  assert.deepEqual(bridge.snapshot().songSettings.live, { queueId: '4f0c2a1e-0000-4000-8000-000000000001', pitch: 0, tempo: 0,
+    guide: 0, guideB: null, backing: null, tracks: [5] });
+});
+
+test('réglages de titre, ancien protocole : faux KaraFun local de la démo', t => {
+  const bridge = legacy(t);
+  const socket = ioSockets[0];
+  socket.fire('connect');
+  socket.receive('queue', []);
+  socket.receive('status', { state: 'idle' });
+  assert.deepEqual(bridge.add(70002, 'Léa · T1', 99999, { pitch: -2, guide: 30 }), { pitch: -2, guide: 30 });
+  bridge.setQueueItemOptions(4, { singer: 'Léa · T1', settings: { tempo: 5 }, tracksAvailable: [4, 5] });
+  bridge.setPitch(1);
+  bridge.setTempo(-5);
+  bridge.setTrackVolume(5, 75);
+  assert.deepEqual(socket.outgoing.slice(1).map(m => [m.name, ...m.args]), [
+    ['queueAdd', { songId: 70002, pos: 99999, singer: 'Léa · T1', options: { pitch: -2, tracks: [{ track: { type: 5 }, volume: 30 }] } }],
+    ['queueItemOptions', { queueId: 4, options: { singer: 'Léa · T1', pitch: 0, tempo: 5 } }],
+    ['pitch', 1], ['tempo', -5], ['trackVolume', { type: 5, volume: 75 }],
+  ]);
+  bridge.add(70003, 'Tom', 99999);
+  assert.deepEqual(socket.outgoing.at(-1), { name: 'queueAdd', args: [{ songId: 70003, pos: 99999, singer: 'Tom' }] },
+    'sans réglage : trame inchangée');
+});
+
+test('réglages de titre, ancien protocole d’un vrai KaraFun : refusés, ajout sans réglage', async t => {
+  mockTime(t);
+  ioSockets.length = 0;
+  fakes(t, () => ok(page({ version: 2 })));
+  const bridge = new KaraFunBridge({ bases: ['https://kf.exemple.invalid'] });
+  t.after(() => bridge.disconnect());
+  bridge.connect(CODE);
+  await flush();
+  const socket = ioSockets[0];
+  socket.fire('connect');
+  socket.receive('queue', []);
+  socket.receive('status', { state: 'idle' });
+  assert.equal(bridge.add(70002, 'Léa · T1', 99999, { pitch: -2 }), null);
+  assert.deepEqual(socket.outgoing.at(-1), { name: 'queueAdd', args: [{ songId: 70002, pos: 99999, singer: 'Léa · T1' }] });
+  assert.throws(() => bridge.setPitch(1), /ancienne télécommande KaraFun/);
+  assert.throws(() => bridge.setQueueItemOptions(4, { singer: 'Léa' }), /ancienne télécommande KaraFun/);
+});
+
+test('réglages refusés à l’ajout par une Error du même identifiant : signalé, plus de réglages à l’ajout', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const refused = [];
+  bridge.on('add-options-refused', add => refused.push(add));
+  assert.deepEqual(bridge.add(5091, 'Léa · T1', 99999, { pitch: -2 }), { pitch: -2 });
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 3, message: 'Invalid options' } });
+  assert.deepEqual(refused, [{ songId: 5091, singer: 'Léa · T1' }], 'le serveur peut renvoyer ce titre sans réglages');
+  const state = bridge.snapshot().songSettings;
+  assert.equal(state.support.addOptions, 'refused');
+  assert.equal(state.notice, 'KaraFun refuse de régler un titre à son ajout : Invalid options');
+  assert.equal(bridge.lastError, null, 'pas présenté comme une panne de la connexion');
+  assert.equal(bridge.add(5091, 'Léa · T1', 99999, { pitch: -2 }), null, 'réglages plus envoyés à l’ajout');
+  assert.deepEqual(ws.sent.at(-1).payload.options, { singer: 'Léa · T1' });
+  // Un ajout sans réglage refusé reste une erreur ordinaire.
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 3, message: 'Queue is full' } });
+  assert.equal(bridge.lastError, 'Commande KaraFun refusée : Queue is full');
+  assert.equal(refused.length, 1);
+});
+
+test('réglages acceptés à l’ajout : fonction confirmée, un ajout sans réglage ne compte pas', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  bridge.add(78, 'Zoé · T3', 99999);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.AddToQueueResponse', payload: {} });
+  assert.equal(bridge.snapshot().songSettings.support.addOptions, 'unknown');
+  bridge.add(5091, 'Léa · T1', 99999, { tempo: 10 });
+  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.AddToQueueResponse', payload: {} });
+  assert.equal(bridge.snapshot().songSettings.support.addOptions, 'ok');
+});
+
+test('réglages de titre : valeurs par défaut des voix relevées sur le KaraFun du bar (chœurs à 53)', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 100 }, 'rien relevé : repli');
+  const status = (id, state, tracks, options = { singer: 'Lina · Table 4' }) => ws.receive({ type: 'remote.StatusEvent', payload: {
+    status: { current: { id, song: { id: { type: 1, id: 12458 }, title: 'T', songTracks: tracks.map(row => ({ type: row.track.type })),
+      options } }, state, pitch: 0, tempo: 0, tracks } } });
+  // Trames du 2 octobre : titre chargé sans options de voix.
+  status('a', 2, [{ volume: 53, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
+  assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 53 });
+  // Le bar change les chœurs pendant ce titre : ce n'est pas une valeur par défaut.
+  status('a', 4, [{ volume: 80, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
+  // Titre envoyé avec ses propres volumes : pas relevé non plus.
+  status('b', 2, [{ volume: 25, track: { type: 4 } }, { volume: 50, track: { type: 5 } }],
+    { singer: 'Léa', tracks: [{ track: { type: 4 }, volume: 25 }, { track: { type: 5 }, volume: 50 }] });
+  assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 53 });
+  // Remise par défaut d'un titre de la file : la valeur du KaraFun du bar.
+  bridge.setQueueItemOptions('11', { singer: 'Léa · T1', settings: null, sent: { backing: 0 }, tracksAvailable: [4, 5] });
+  assert.deepEqual(ws.sent.at(-1).payload.options.tracks, [{ track: { type: 4 }, volume: 53 }]);
+  // Nouveau code : nouvelle installation, valeurs à relever.
+  bridge.connect('654321');
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 100);
+});

@@ -3,6 +3,10 @@
  * Faux KaraFun pour essayer le programme sans KaraFun (mode démo) et pour les tests.
  * Imite la télécommande : socket.io v2, 'authenticate', événements queue/status,
  * commandes queueAdd/queueRemove/queueMove/play/next, et la recherche HTTP.
+ * Réglages de titre comme la télécommande KCS : options à l'ajout,
+ * queueItemOptions (options d'un titre de la file, remplacées en entier),
+ * pitch, tempo et trackVolume pour le titre en cours ; chaque titre annonce
+ * ses pistes vocales (4 chœurs, 5 et 6 voix guides).
  * Les chansons « durent » SONG_SECONDS secondes.
  */
 const http = require('http');
@@ -26,6 +30,22 @@ const CATALOG = [
   ['Sympathique', 'Pink Martini'], ['Nuit de folie', 'Début de Soirée'],
 ].map(([title, artist], i) => ({ songId: 70000 + i, title, artist, img: null, duration: 200 }));
 
+// Pistes vocales d'un titre, dans les proportions vues sur la file du bar :
+// chœurs et guide, guide seul, duo avec chœurs, duo sans chœurs.
+function songTracksFor(songId) {
+  const n = Math.abs(Number(songId) || 0) % 8;
+  return n < 4 ? [4, 5] : n < 6 ? [5] : n === 6 ? [4, 5, 6] : [5, 6];
+}
+const DEFAULT_VOLUMES = Object.freeze({ 4: 100, 5: 0, 6: 0 });
+// État en direct d'un titre qui démarre : ses options, sinon les valeurs de KaraFun.
+function liveFrom(options = {}) {
+  const volumes = { ...DEFAULT_VOLUMES };
+  for (const row of Array.isArray(options.tracks) ? options.tracks : []) {
+    if (Number.isInteger(row?.track?.type)) volumes[row.track.type] = Number(row.volume);
+  }
+  return { pitch: Number.isInteger(options.pitch) ? options.pitch : 0, tempo: Number.isInteger(options.tempo) ? options.tempo : 0, volumes };
+}
+
 function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, log = () => {} } = {}) {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://localhost');
@@ -45,12 +65,17 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
   let timer = null;
   let startedAt = 0;
   let qid = 1;
+  let live = liveFrom();
 
   const withIds = () => queue.map((it, i) => ({ ...it, id: i }));
   const statusPayload = () => {
     const cur = state === 'playing' && queue[0] ? queue[0] : null;
-    return { state, songPlaying: cur ? { title: cur.title, artist: cur.artist, singer: cur.singer, songId: cur.songId, queueId: cur.queueId } : null, position: cur ? Math.round((Date.now() - startedAt) / 1000) : 0 };
+    return { state, songPlaying: cur ? { title: cur.title, artist: cur.artist, singer: cur.singer, songId: cur.songId, queueId: cur.queueId,
+      songTracks: cur.songTracks } : null, position: cur ? Math.round((Date.now() - startedAt) / 1000) : 0,
+    pitch: cur ? live.pitch : 0, tempo: cur ? live.tempo : 0,
+    tracks: cur ? cur.songTracks.map(type => ({ volume: live.volumes[type], track: { type } })) : [] };
   };
+  const playingItem = () => state === 'playing' && queue[0] ? queue[0] : null;
   const broadcast = () => { io.emit('queue', withIds()); io.emit('status', statusPayload()); };
 
   function playFirst(manual = false) {
@@ -64,6 +89,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     state = 'playing';
     startedAt = Date.now();
     queue[0].status = 'playing';
+    live = liveFrom(queue[0].options);
     log(`[faux KaraFun] lecture : ${queue[0].title} (${queue[0].singer})`);
     broadcast();
     timer = setTimeout(() => {
@@ -84,9 +110,10 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     });
     socket.on('queueAdd', (p) => {
       const song = CATALOG.find(s => s.songId === Number(p && p.songId)) || { songId: Number(p && p.songId), title: `Chanson ${p && p.songId}`, artist: '?' };
+      const singer = String((p && p.singer) || '');
+      const options = p?.mod ? { mod: p.mod } : p?.options ? { singer, ...p.options } : null;
       const item = { queueId: qid++, songId: song.songId, title: song.title, artist: song.artist,
-        singer: String((p && p.singer) || ''), status: 'ready',
-        ...(p?.mod ? { options: { mod: p.mod } } : {}) };
+        singer, status: 'ready', songTracks: songTracksFor(song.songId), ...(options ? { options } : {}) };
       const pos = Math.max(0, Math.min(queue.length, Number(p && p.pos) || queue.length));
       queue.splice(Math.max(pos, state === 'playing' ? 1 : 0), 0, item);
       if (state !== 'playing' && autoplay) playFirst(); else broadcast();
@@ -101,6 +128,22 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
       if (i > 0) { const [it] = queue.splice(i, 1); queue.splice(Math.max(1, p.to), 0, it); }
       broadcast();
     });
+    // Options d'un titre de la file : remplacées en entier, comme KaraFun.
+    socket.on('queueItemOptions', (p) => {
+      const item = queue.find(it => it.queueId === p?.queueId);
+      if (!item) return;
+      item.options = { ...(p.options || {}) };
+      if (item === playingItem()) live = liveFrom(item.options);
+      broadcast();
+    });
+    socket.on('pitch', (n) => { if (playingItem() && Number.isInteger(n)) { live.pitch = n; broadcast(); } });
+    socket.on('tempo', (n) => { if (playingItem() && Number.isInteger(n)) { live.tempo = n; broadcast(); } });
+    socket.on('trackVolume', (p) => {
+      const cur = playingItem();
+      if (!cur || !cur.songTracks.includes(p?.type)) return;
+      live.volumes[p.type] = Number(p.volume);
+      broadcast();
+    });
     socket.on('next', () => { if (state === 'playing') { queue.shift(); state = 'infoscreen'; clearTimeout(timer); broadcast(); } });
     socket.on('play', () => { if (state !== 'playing') playFirst(true); });
   });
@@ -108,7 +151,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
   return new Promise((resolve) => server.listen(port, () => resolve({
     base: `http://localhost:${port}`, code, close: () => { clearTimeout(timer); io.close(); server.close(); },
     // pour les tests : ajouter une chanson « à la main » comme le ferait le bar dans KaraFun
-    manualAdd: (songId, singer) => { const s = CATALOG.find(x => x.songId === songId) || CATALOG[0]; queue.push({ queueId: qid++, songId: s.songId, title: s.title, artist: s.artist, singer, status: 'ready' }); broadcast(); },
+    manualAdd: (songId, singer) => { const s = CATALOG.find(x => x.songId === songId) || CATALOG[0]; queue.push({ queueId: qid++, songId: s.songId, title: s.title, artist: s.artist, singer, status: 'ready', songTracks: songTracksFor(s.songId) }); broadcast(); },
     skip: () => { if (state === 'playing') {
       const wasBattle = !!queue.shift()?.options?.mod?.data?.battle;
       clearTimeout(timer);
