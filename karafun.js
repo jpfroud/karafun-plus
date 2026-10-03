@@ -64,21 +64,107 @@ function saveIdentity(file, suffix) {
   } catch { /* nom stable pour cette exécution seulement */ }
 }
 
+// Un seul programme par dossier data/ : deux files lancées depuis le même
+// dossier demanderaient le même nom FileKaraoke à KaraFun et se le
+// disputeraient. Le verrou garde le numéro du processus et une heure
+// rafraîchie toutes les 30 s. Fenêtre fermée ou plantage : le verrou n'est
+// plus rafraîchi et il est repris au bout de 90 s, même si Windows a déjà
+// redonné ce numéro de processus à un autre programme.
+const LOCK_REFRESH_MS = 30000;
+const LOCK_STALE_MS = 90000;
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
+}
+
+function lockIdentity(file, { pid = process.pid, port = null, alive = processAlive } = {}) {
+  const lock = `${file}.lock`;
+  const free = { ok: true, release() {} };
+  const content = () => JSON.stringify({ pid, port, at: new Date().toISOString() });
+  const mine = () => { try { return JSON.parse(fs.readFileSync(lock, 'utf8')).pid === pid; } catch { return false; } };
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      fs.mkdirSync(path.dirname(lock), { recursive: true });
+      fs.writeFileSync(lock, content(), { flag: 'wx' });
+      const timer = setInterval(() => { try { if (mine()) fs.writeFileSync(lock, content()); } catch { /* disque plein */ } }, LOCK_REFRESH_MS);
+      timer.unref();
+      return { ok: true, release() {
+        clearInterval(timer);
+        try { if (mine()) fs.unlinkSync(lock); } catch { /* déjà libre */ }
+      } };
+    } catch (error) {
+      if (error.code !== 'EEXIST') return free; // dossier en lecture seule : pas de garde
+      let holder = null;
+      try { holder = JSON.parse(fs.readFileSync(lock, 'utf8')); } catch { /* verrou illisible : abandonné */ }
+      const fresh = holder && Date.now() - Date.parse(holder.at) < LOCK_STALE_MS;
+      if (fresh && Number.isInteger(holder.pid) && holder.pid !== pid && alive(holder.pid)) {
+        return { ok: false, holder: { pid: holder.pid, port: holder.port ?? null }, release() {} };
+      }
+      try { fs.unlinkSync(lock); } catch { /* repris par un autre */ }
+    }
+  }
+  return free;
+}
+
+// Le code de télécommande ne doit pas circuler en clair dans les journaux
+// partagés : seuls les deux derniers chiffres restent, pour les comparer.
+function maskCode(code) {
+  const digits = String(code || '').replace(/\D/g, '');
+  return digits.length > 2 ? `••••${digits.slice(-2)}` : '••••';
+}
+
 const IMPORTANT_PERMISSIONS = [
   ['addToQueue', p => p?.addToQueue !== false, 'ajout de titres'],
   ['battle', p => p?.shownTypes?.battle !== false, 'mode Battle'],
   ['playback', p => !!(p?.managePlayback ?? p?.managePlayer), 'lecture'],
 ];
 
-// Essais espacés de 4 s avant de renoncer au nom habituel (environ 2 min).
-const NAME_RETRIES = 30;
+// Nom encore tenu par une ancienne connexion : le même nom est redemandé
+// toutes les 4 s, puis la file en prend un autre après environ 2 min. Le
+// délai court sur toute la durée du conflit, pas par WebSocket.
+const NAME_RETRY_MS = 4000;
+const NAME_SWITCH_MS = 120000;
+// Relances après échec : 3 s, 6 s, 12 s, 24 s puis 30 s, un peu dispersées.
+const RETRY_BASE_MS = 3000;
+const RETRY_MAX_MS = 30000;
+// « Reconnecter » ne coupe pas une connexion qui vient de démarrer.
+const RECONNECT_PATIENCE_MS = 15000;
+// Demandes dont l'absence de réponse n'est qu'un avertissement : la file
+// garde la connexion tant que KaraFun parle (chien de garde du transport).
+const SOFT_REQUESTS = new Set(['remote.UpdateUsernameRequest']);
+// Battements de KaraFun : gardés dans le fichier, comptés à l'écran.
+const NOISE = new Set(['core.PingRequest', 'core.PingResponse', 'core.TimestampRequest', 'core.TimestampResponse']);
+// En-têtes de navigateur ordinaires, comme pour le catalogue.
+const DISCOVERY_HEADERS = Object.freeze({
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+});
+const CHALLENGE = /cf-chl|challenge-platform|captcha|just a moment/i;
+// Échecs de découverte : [motif court pour l'état, message pour le diagnostic].
+const DISCOVERY_ERRORS = {
+  'unknown-code': ['Code inconnu ou télécommande KaraFun fermée',
+    () => 'Code KaraFun inconnu ou télécommande fermée : vérifie le code affiché dans KaraFun et que sa télécommande est activée.'],
+  refused: ['Le site KaraFun refuse ce PC',
+    status => `Le site KaraFun refuse ce PC (HTTP ${status || '?'}) : attends quelques minutes ou essaie un autre réseau.`],
+  http: ['Site KaraFun en panne', status => `Le site KaraFun répond mal (HTTP ${status}) : nouvel essai automatique.`],
+  'bad-page': ['Page KaraFun inattendue', () => 'Page de télécommande KaraFun inattendue : nouvel essai automatique.'],
+  network: ['Réseau coupé', () => 'Réseau coupé ou site KaraFun injoignable depuis ce PC : vérifie la connexion Internet.'],
+  timeout: ['KaraFun trop lent', () => 'Le site KaraFun ne répond pas à temps (10 s) : réseau lent ou coupé.'],
+  'no-websocket': ['WebSocket indisponible', () => 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 22.'],
+};
+
+function duration(ms) {
+  const seconds = Math.max(0, Math.ceil(ms / 1000)), minutes = Math.floor(seconds / 60), rest = seconds % 60;
+  if (!minutes) return `${rest} s`;
+  return rest ? `${minutes} min ${String(rest).padStart(2, '0')}` : `${minutes} min`;
+}
 
 class KaraFunBridge extends EventEmitter {
-  constructor({ logDir, bases, identityFile = null } = {}) {
+  constructor({ logDir, bases, identityFile = null, log = null, lockOwner = null } = {}) {
     super();
     this.bases = bases || ['https://www.karafun.com', 'https://www.karafun.fr'];
     this.baseIdx = 0;
     this.logDir = logDir;
+    this.log = log;
     this.code = null;
     this.socket = null;
     this.connected = false;
@@ -91,35 +177,128 @@ class KaraFunBridge extends EventEmitter {
     this.lastEventAt = 0;
     this.lastError = null;
     this.events = [];
+    this.noiseCount = 0;
     this.retryTimer = null;
+    this.retryAt = null;
+    this.random = Math.random;
+    this.identityNotice = null;
+    this.identityLock = identityFile && lockOwner ? lockIdentity(identityFile, lockOwner) : null;
+    if (this.identityLock && !this.identityLock.ok) {
+      const { port } = this.identityLock.holder;
+      this.identityNotice = `Une autre File karaoké tourne déjà depuis ce dossier${port ? ` (port ${port})` : ''} : celle-ci prend un nom KaraFun provisoire pour ne pas lui voler le sien. Ferme l’une des deux.`;
+      identityFile = null;
+    }
     this.identityFile = identityFile;
     this.loginSuffix = loadIdentity(identityFile) || Math.floor(1000 + Math.random() * 9000);
     saveIdentity(identityFile, this.loginSuffix);
-    this.identityNotice = null;
     this.permissionWarning = null;
     this.bestPermissions = null;
+    this.nameConflictSince = null;
+    this.nameConflictTries = 0;
     this._generation = 0;
     this._attempt = 0;
+    this._tries = 0;
+    this._failures = 0;
+    this._phase = 'idle';
+    this._phaseSince = Date.now();
+    this._retryReason = null;
+    this._lastLoggedRetry = null;
+    this._startedAt = null;
+    this._link = {};
     this._fresh = { queue: false, status: false };
+    if (this.identityNotice) this._log(`KaraFun : ${this.identityNotice}`);
   }
 
   get base() { return this.bases[this.baseIdx % this.bases.length]; }
   get username() { return `FileKaraoke-${this.loginSuffix}`; }
 
+  _log(message) {
+    try { this.log?.(message); } catch { /* journal best-effort */ }
+  }
+
+  _setPhase(phase) {
+    if (phase === this._phase) return;
+    const previous = this._phase;
+    this._phase = phase;
+    this._phaseSince = Date.now();
+    if (phase === 'ready') {
+      this._resetTries = true;
+      const took = this._startedAt == null ? '' : ` en ${duration(Date.now() - this._startedAt)}`;
+      this._log(`KaraFun : prêt, file et lecture reçues${took} (essai ${this._tries}, ${this.username}).`);
+      this._record('info', 'pret', { essai: this._tries, from: previous });
+      this._failures = 0;
+      this._lastLoggedRetry = null;
+      this._startedAt = null;
+    }
+  }
+
   // Dernier recours : KaraFun refuse durablement le nom habituel. Après un
   // redémarrage rapide, KaraFun garde souvent l'ancienne connexion quelques
   // dizaines de secondes : on attend donc environ deux minutes avant de
-  // changer de nom. Le bar peut fermer l'avis ; il revient à un nouveau
-  // changement de nom.
-  _changeIdentity() {
+  // changer de nom, sauf si le bar le demande. Le bar peut fermer l'avis ;
+  // il revient à un nouveau changement de nom.
+  _changeIdentity(byBar = false) {
     const previous = this.username;
     this.loginSuffix = Math.floor(1000 + Math.random() * 9000);
     saveIdentity(this.identityFile, this.loginSuffix);
-    this.identityNotice = `KaraFun gardait encore l’ancienne connexion ${previous} : la file s’appelle maintenant ${this.username}. Si l’envoi de titres échoue, redonne-lui les droits d’administrateur dans KaraFun.`;
-    this._record('info', 'identity-changed', { previous, next: this.username });
+    this.identityNotice = byBar ?
+      `À ta demande, la file s’appelle maintenant ${this.username} (au lieu de ${previous}). Donne-lui les droits d’administrateur dans les participants de la télécommande KaraFun.` :
+      `KaraFun gardait encore l’ancienne connexion ${previous} : la file s’appelle maintenant ${this.username}. Si l’envoi de titres échoue, redonne-lui les droits d’administrateur dans KaraFun.`;
+    this._record('info', 'identity-changed', { previous, next: this.username, byBar });
+    this._log(`KaraFun : nom changé ${previous} → ${this.username} (${byBar ? 'demande du bar' : `nom encore pris après ${duration(Date.now() - (this.nameConflictSince ?? Date.now()))}`}).`);
+    this.nameConflictSince = null;
+    this.nameConflictTries = 0;
   }
 
   dismissIdentityNotice() { this.identityNotice = null; this.emit('change'); }
+
+  // Bouton du bar « Prendre un autre nom maintenant » : sans attendre la fin
+  // des deux minutes. Refusé si le nom actuel fonctionne.
+  forceNewName() {
+    if (this.ready && this.nameConflictSince == null) throw new Error(`Le nom ${this.username} fonctionne : rien à changer.`);
+    this._changeIdentity(true);
+    if (this.connected && this._link.authenticated) this._link.askName();
+    this.emit('change');
+  }
+
+  releaseIdentity() { this.identityLock?.release(); }
+
+  // Nom refusé car encore pris : même nom redemandé, puis autre nom.
+  _nameUsed(ask) {
+    const now = Date.now();
+    if (this.nameConflictSince == null) {
+      this.nameConflictSince = now;
+      this.nameConflictTries = 0;
+      this._record('info', 'name-conflict', { username: this.username });
+      this._log(`KaraFun : le nom ${this.username} est encore pris par une ancienne connexion ; même nom redemandé toutes les 4 s, autre nom dans ${duration(NAME_SWITCH_MS)} si besoin.`);
+    }
+    this.nameConflictTries++;
+    this._setPhase('waiting-name');
+    if (now - this.nameConflictSince >= NAME_SWITCH_MS) {
+      this._changeIdentity();
+      ask(0);
+    } else {
+      this.lastError = `KaraFun garde encore l’ancienne connexion de ${this.username} ; nouvel essai dans quelques secondes.`;
+      ask(NAME_RETRY_MS);
+    }
+    this.emit('change');
+  }
+
+  _nameAccepted() {
+    this.lastError = null;
+    if (!this._link.nameAccepted) {
+      this._link.nameAccepted = true;
+      this._log(`KaraFun : nom ${this.username} accepté.`);
+    }
+    if (this.nameConflictSince != null) {
+      this._log(`KaraFun : conflit de nom terminé après ${duration(Date.now() - this.nameConflictSince)} (${this.nameConflictTries} refus).`);
+      this._record('info', 'name-conflict-end', { username: this.username, tries: this.nameConflictTries });
+      this.nameConflictSince = null;
+      this.nameConflictTries = 0;
+    }
+    this._setPhase(this.ready ? 'ready' : 'waiting-data');
+    this.emit('change');
+  }
 
   _checkPermissions(permissions) {
     const now = Object.fromEntries(IMPORTANT_PERMISSIONS.map(([key, read]) => [key, read(permissions)]));
@@ -130,68 +309,144 @@ class KaraFunBridge extends EventEmitter {
       [key, !!(now[key] || this.bestPermissions?.[key])]));
   }
 
-  _record(dir, name, data) {
-    const entry = { t: new Date().toISOString(), dir, name, data };
-    this.events.push(entry);
-    if (this.events.length > 200) this.events.shift();
+  _record(dir, name, data, id) {
+    const entry = { t: new Date().toISOString(), dir, name, ...(id === undefined ? {} : { id }), data };
+    if (NOISE.has(name)) this.noiseCount++;
+    else {
+      this.events.push(entry);
+      if (this.events.length > 200) this.events.shift();
+    }
     if (this.logDir) {
       try { fs.appendFileSync(path.join(this.logDir, `karafun-${entry.t.slice(0, 10)}.jsonl`), JSON.stringify(entry) + '\n'); }
       catch { /* journal best-effort */ }
     }
   }
 
+  // « Connecter » ou « Reconnecter ». Avec le même code, une connexion prête
+  // ou en cours n'est pas coupée : la couper recréerait un conflit de nom avec
+  // la connexion qu'on vient de fermer. Rend 'kept' ou 'started'.
   connect(code) {
     code = String(code || '').replace(/\D/g, '');
     if (!code) throw new Error('Code KaraFun manquant');
+    if (this.code === code && this._keepCurrent()) return 'kept';
+    const sameCode = this.code === code;
     this.disconnect();
-    if (this.code !== code) { this.bestPermissions = null; this.permissionWarning = null; }
+    if (!sameCode) {
+      this.bestPermissions = null; this.permissionWarning = null;
+      this.nameConflictSince = null; this.nameConflictTries = 0;
+      this._tries = 0; this._failures = 0;
+    }
     this.code = code;
     this.queue = [];
     this.status = this.permissions = this.preferences = null;
     this.raw = {};
     this._open();
+    return 'started';
+  }
+
+  _keepCurrent() {
+    if (this._phase === 'ready' && this.ready) return true;
+    if (this._phase === 'waiting-name' && this.nameConflictSince != null) return true;
+    return ['discovering', 'opening', 'waiting-auth', 'waiting-name', 'waiting-data'].includes(this._phase) &&
+      Date.now() - this._phaseSince < RECONNECT_PATIENCE_MS;
   }
 
   async _open() {
     clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retryAt = null;
     const generation = this._generation, attempt = ++this._attempt;
     const active = () => generation === this._generation && attempt === this._attempt;
     const base = this.base;
     this._fresh = { queue: false, status: false };
+    this._link = {};
     this.ready = false;
     this.connected = false;
-    this._record('info', 'connexion', { base, code: this.code });
+    if (this._resetTries) { this._tries = 0; this._resetTries = false; }
+    this._tries++;
+    this._startedAt ??= Date.now();
+    this._record('info', 'connexion', { base, code: maskCode(this.code), essai: this._tries });
     // Le faux KaraFun local n'a pas de page de découverte.
     if (['localhost', '127.0.0.1', '[::1]'].includes(new URL(base).hostname)) {
+      this._setPhase('opening');
       this._openLegacy(base, active);
       return;
     }
-    try {
-      const response = await fetch(`${base}/${this.code}/`, { signal: AbortSignal.timeout(10000) });
-      if (!response.ok) throw new Error('Réponse HTTP inattendue');
-      const settings = readSettings(await response.text());
-      if (!active()) return;
-      if (!settings) throw new Error('Session fermée ou code modifié');
-      if (settings.kcs_url) {
-        if (new URL(settings.kcs_url).protocol !== 'wss:') throw new Error('Adresse inattendue');
-        this._openKcs(settings.kcs_url, active);
-      } else this._openLegacy(base, active);
-    } catch {
-      if (!active()) return;
-      // Ne jamais journaliser le HTML ou l'URL KCS : ils contiennent un jeton.
-      this.lastError = 'Télécommande KaraFun injoignable : vérifie le code affiché et la connexion Internet.';
-      this.unreachable = true;
-      this._record('info', 'discovery-error', this.lastError);
-      if (this.bases.length > 1) this.baseIdx++;
-      this._retry(5000);
-    }
+    this._setPhase('discovering');
+    this.emit('change');
+    const found = await this._discover(base);
+    if (!active()) return;
+    if (!found.settings) { this._discoveryFailed(found); return; }
+    this._record('info', 'discovery', { host: found.host, status: found.status, keys: found.keys });
+    if (!found.settings.kcs_url) { this._openLegacy(base, active); return; }
+    try { this._openKcs(found.settings.kcs_url, active); }
+    catch { this._discoveryFailed({ ...found, settings: null, kind: 'no-websocket' }); }
   }
 
-  _retry(delay = 3000) {
+  // Lit la page publique de la télécommande. Ne garde que l'état HTTP, les
+  // hôtes et la présence des clés attendues : jamais le HTML ni l'URL KCS,
+  // qui contiennent un jeton.
+  async _discover(base) {
+    const info = { host: new URL(base).hostname };
+    let response, html;
+    try {
+      response = await fetch(`${base}/${this.code}/`, { headers: { ...DISCOVERY_HEADERS }, signal: AbortSignal.timeout(10000) });
+      html = String(await response.text());
+    } catch (error) {
+      return { ...info, kind: ['TimeoutError', 'AbortError'].includes(error?.name) ? 'timeout' : 'network' };
+    }
+    info.status = response.status;
+    try {
+      const finalHost = response.url ? new URL(response.url).hostname : null;
+      if (finalHost && finalHost !== info.host) info.finalHost = finalHost;
+    } catch { /* adresse finale illisible */ }
+    const hasSettings = /\bSettings\s*=/.test(html);
+    info.keys = { Settings: hasSettings, kcs_url: /["']?kcs_url["']?\s*:/.test(html) };
+    if ([401, 403, 429].includes(response.status) || (!hasSettings && CHALLENGE.test(html))) return { ...info, kind: 'refused' };
+    if ([404, 410].includes(response.status)) return { ...info, kind: 'unknown-code' };
+    if (!response.ok) return { ...info, kind: 'http' };
+    let settings;
+    try { settings = readSettings(html); } catch { return { ...info, kind: 'bad-page' }; }
+    if (!settings) return { ...info, kind: 'unknown-code' };
+    if (settings.kcs_url) {
+      let protocol = null;
+      try { protocol = new URL(settings.kcs_url).protocol; } catch { /* adresse illisible */ }
+      if (protocol !== 'wss:') return { ...info, kind: 'bad-page' };
+    }
+    return { ...info, settings };
+  }
+
+  _discoveryFailed(found) {
+    const [reason, message] = DISCOVERY_ERRORS[found.kind];
+    this.lastError = message(found.status);
+    this.unreachable = true;
+    const { kind, status, host, finalHost, keys } = found;
+    this._record('info', 'discovery-error', { kind, status, host, finalHost, keys, message: this.lastError });
+    if (this.bases.length > 1) this.baseIdx++;
+    const where = [kind, status && `HTTP ${status}`, host, finalHost && `→ ${finalHost}`,
+      keys && `Settings ${keys.Settings ? 'présent' : 'absent'}, kcs_url ${keys.kcs_url ? 'présent' : 'absent'}`].filter(Boolean).join(', ');
+    this._retry(reason, { detail: `${this.lastError} [${where}]`, minDelay: kind === 'refused' ? 15000 : 0 });
+  }
+
+  _retry(reason = 'Connexion KaraFun perdue', { detail = this.lastError, minDelay = 0 } = {}) {
     this._attempt++;
     this._closeSocket();
     this.connected = this.ready = false;
     clearTimeout(this.retryTimer);
+    // Connexion perdue après « prêt » : les essais se recomptent depuis 1.
+    if (this._resetTries) { this._tries = 0; this._resetTries = false; }
+    const step = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(this._failures, 4));
+    const jittered = this._failures ? Math.min(RETRY_MAX_MS, Math.round(step * (0.85 + 0.3 * this.random()))) : step;
+    const delay = Math.max(minDelay, jittered);
+    this._failures++;
+    this.retryAt = Date.now() + delay;
+    this._retryReason = reason;
+    this._setPhase('retry');
+    // Une même panne n'écrit qu'une ligne, puis une toutes les 10 relances.
+    if (detail !== this._lastLoggedRetry || this._failures % 10 === 0) {
+      this._lastLoggedRetry = detail;
+      this._log(`KaraFun : ${detail || reason} Nouvel essai dans ${duration(delay)} (essai ${this._tries + 1}).`);
+    }
     const generation = this._generation;
     this.retryTimer = setTimeout(() => { if (generation === this._generation) this._open(); }, delay);
     this.emit('change');
@@ -203,42 +458,58 @@ class KaraFunBridge extends EventEmitter {
     if (name === 'queue' || name === 'status') {
       this._fresh[name] = true;
       this.ready = this._fresh.queue && this._fresh.status;
-      if (this.ready) { this.unreachable = false; this.lastError = null; }
+      if (this.ready) {
+        this.unreachable = false; this.lastError = null;
+        if (this.nameConflictSince == null) this._setPhase('ready');
+      }
       this.emit(name, data);
     }
     this.emit('change');
   }
 
   _openKcs(url, active) {
-    this.protocol = 'kcs';
     const socket = new KcsTransport(url);
+    this.protocol = 'kcs';
     this.socket = socket;
+    this._setPhase('opening');
     // KaraFun garde parfois l'ancien nom quelques secondes après une coupure.
     // On redemande alors le MÊME nom un moment, pour conserver les droits
     // d'administrateur donnés à ce participant, avant d'en changer.
-    let usernameRetries = 0;
     let usernameTimer = null;
+    let softWarned = false;
     socket.once('close', () => clearTimeout(usernameTimer));
     const updateUsername = () => socket.send('remote.UpdateUsernameRequest', { username: this.username });
+    const askName = (delay = 0) => {
+      clearTimeout(usernameTimer);
+      const send = () => { if (active()) { try { updateUsername(); } catch (_) { /* reconnexion */ } } };
+      if (delay) usernameTimer = setTimeout(send, delay); else send();
+    };
+    this._link.askName = askName;
     socket.on('open', () => {
       if (!active()) return;
       this.connected = true;
+      this.unreachable = false;
       this.lastError = null;
+      this._setPhase('waiting-auth');
+      this._log(`KaraFun : connexion ouverte (essai ${this._tries}), attente de KaraFun.`);
       this.emit('change');
       // Les snapshots arrivent par événements. KaraFun 3.12 refuse les requêtes
       // QueueRequest/StatusRequest pourtant décrites dans le SDK de la page.
     });
-    socket.on('out', m => { if (active()) this._record('out', m.type, m.payload); });
+    socket.on('out', m => { if (active()) this._record('out', m.type, m.payload, m.id); });
     socket.on('message', m => {
       if (!active()) return;
       this.lastEventAt = Date.now();
-      this._record('in', m.type, m.payload);
+      this._record('in', m.type, m.payload, m.id);
       const p = m.payload || {};
       if (m.type === 'core.AuthenticatedEvent') {
+        this._link.authenticated = true;
+        if (!this.ready) this._setPhase('waiting-name');
+        this._log(`KaraFun : code accepté, demande du nom ${this.username}.`);
         updateUsername();
       } else if (m.type === 'remote.UsernameUpdateEvent' || m.type === 'remote.UpdateUsernameResponse') {
-        this.lastError = null;
-        this.emit('change');
+        if (p.username && p.username !== this.username) return;
+        this._nameAccepted();
       } else if (m.type === 'remote.QueueEvent' || m.type === 'remote.QueueResponse') {
         if (!p.queue || !Array.isArray(p.queue.items)) return;
         this.raw.queue = p.queue;
@@ -265,42 +536,53 @@ class KaraFunBridge extends EventEmitter {
       } else if (m.type === 'remote.AppLeftEvent') {
         this.unreachable = true;
         this.lastError = 'KaraFun est fermé ou sa télécommande a été désactivée.';
-        this._retry(3000);
+        this._record('info', 'connexion-perdue', this.lastError);
+        this._retry('KaraFun fermé ou télécommande désactivée');
       } else if (m.type === 'Error') {
         if (p.type === 4 && /username is already used/i.test(p.message || '')) {
-          usernameRetries++;
-          if (usernameRetries > NAME_RETRIES) this._changeIdentity();
-          else this.lastError = `KaraFun garde encore l’ancienne connexion de ${this.username} ; nouvel essai dans quelques secondes.`;
-          clearTimeout(usernameTimer);
-          usernameTimer = setTimeout(() => { if (active()) { try { updateUsername(); } catch (_) { /* reconnexion */ } } },
-            usernameRetries > NAME_RETRIES ? 0 : 4000);
-          this.emit('change');
+          // L'Error répond à la demande de nom, même sans son identifiant.
+          if (m.id === undefined) socket.settle('remote.UpdateUsernameRequest');
+          this._nameUsed(askName);
           return;
         }
         this.lastError = `Commande KaraFun refusée : ${p.message || p.type || 'erreur inconnue'}`;
         this.emit('change');
       }
     });
-    const lost = message => {
+    const lost = (message, reason) => {
       if (!active()) return;
       this.unreachable = true;
       this.lastError = message;
       this._record('info', 'connexion-perdue', message);
-      this._retry(3000);
+      this._retry(reason);
     };
-    socket.on('stale', lost);
-    socket.on('request-timeout', type => lost(`KaraFun ne confirme plus les commandes (${type}) ; reconnexion en cours.`));
+    socket.on('stale', message => lost(message, 'KaraFun ne répond plus'));
+    socket.on('request-timeout', type => {
+      if (!active()) return;
+      if (!SOFT_REQUESTS.has(type)) {
+        lost(`KaraFun ne confirme plus les commandes (${type}) ; reconnexion en cours.`, 'Commande KaraFun non confirmée');
+        return;
+      }
+      this._record('info', 'sans-reponse', type);
+      if (this.ready && this.nameConflictSince == null) this._setPhase('ready');
+      if (!softWarned) {
+        softWarned = true;
+        this._log(`KaraFun : pas de réponse à ${type} en 8 s ; connexion gardée.`);
+      }
+    });
     socket.on('transport-error', message => {
       if (!active()) return;
       this.lastError = message;
       this._record('info', 'connect_error', message);
       this.emit('change');
     });
-    socket.on('close', ({ code }) => lost(`Télécommande KaraFun déconnectée (code ${code}). Vérifie le code affiché dans KaraFun.`));
+    socket.on('close', ({ code }) => lost(`Télécommande KaraFun déconnectée (code ${code}). Vérifie le code affiché dans KaraFun.`,
+      `KaraFun a fermé la connexion (code ${code})`));
   }
 
   _openLegacy(base, active) {
     this.protocol = 'socket.io';
+    this._setPhase('opening');
     const socket = io(base, {
       query: { remote: `kf${this.code}` }, transports: ['polling', 'websocket'],
       forceNew: true, reconnection: false, timeout: 15000,
@@ -317,7 +599,12 @@ class KaraFunBridge extends EventEmitter {
     socket.on('connect', () => {
       if (!active()) return;
       this.connected = true;
+      this.unreachable = false;
       this.lastError = null;
+      this._setPhase('waiting-data');
+      this._link.authenticated = true;
+      this._link.askName = () => this._auth();
+      this._log(`KaraFun : connexion ouverte (ancien protocole, essai ${this._tries}).`);
       this._auth();
       this.emit('change');
     });
@@ -326,25 +613,27 @@ class KaraFunBridge extends EventEmitter {
       this.lastError = `Connexion impossible à ${base} : ${err && err.message}`;
       this._record('info', 'connect_error', this.lastError);
       if (this.bases.length > 1) this.baseIdx++;
-      this._retry(3000);
+      this._retry('Connexion KaraFun impossible');
     });
     socket.on('disconnect', reason => {
       if (!active()) return;
       this._record('info', 'disconnect', reason);
-      this._retry(3000);
+      this._retry('Connexion KaraFun perdue', { detail: `Connexion KaraFun perdue (${reason}).` });
     });
-    let loginRetries = 0;
+    let loginTimer = null;
     socket.on('loginAlreadyTaken', () => {
       if (!active()) return;
-      if (++loginRetries > NAME_RETRIES) this._changeIdentity();
-      setTimeout(() => { if (active()) this._auth(); }, loginRetries > NAME_RETRIES ? 0 : 4000);
+      this._nameUsed(delay => {
+        clearTimeout(loginTimer);
+        loginTimer = setTimeout(() => { if (active()) this._auth(); }, delay);
+      });
     });
     const unreachable = () => {
       if (!active()) return;
       this.unreachable = true;
       this.lastError = 'KaraFun ne répond pas pour ce code : vérifie que KaraFun est ouvert et que le code est le bon.';
       if (this.bases.length > 1) this.baseIdx++;
-      this._retry(5000);
+      this._retry('Code inconnu ou KaraFun fermé');
     };
     socket.on('serverUnreacheable', unreachable);
     socket.on('serverUnreachable', unreachable);
@@ -358,9 +647,9 @@ class KaraFunBridge extends EventEmitter {
   }
 
   _auth() {
-    const payload = { login: this.username, channel: this.code, role: 'participant', app: 'karafun', socket_id: null };
+    const payload = { login: this.username, channel: maskCode(this.code), role: 'participant', app: 'karafun', socket_id: null };
     this._record('out', 'authenticate', payload);
-    this.socket.emit('authenticate', payload, null);
+    this.socket.emit('authenticate', { ...payload, channel: this.code }, null);
   }
 
   _closeSocket() {
@@ -374,8 +663,43 @@ class KaraFunBridge extends EventEmitter {
   disconnect() {
     this._generation++;
     clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retryAt = null;
     this._closeSocket();
     this.connected = this.ready = false;
+    this._setPhase('idle');
+  }
+
+  // État de la connexion pour le bar (contrat C2) : une phrase courte, un
+  // niveau pour la couleur, depuis quand et à quel essai.
+  connectionState(now = Date.now()) {
+    const phase = this._phase;
+    const conflict = this.nameConflictSince == null ? null : {
+      holder: this.username, since: this.nameConflictSince, tries: this.nameConflictTries,
+      switchAt: this.nameConflictSince + NAME_SWITCH_MS,
+    };
+    const later = conflict && conflict.switchAt - now > 0 ? `dans ${duration(conflict.switchAt - now)}` : 'imminent';
+    const labels = {
+      idle: ['wait', 'KaraFun déconnecté'],
+      discovering: ['wait', `Recherche de la télécommande KaraFun${this._tries > 1 ? ` (essai ${this._tries})` : ''}…`],
+      opening: ['wait', 'Ouverture de la connexion à KaraFun…'],
+      'waiting-auth': ['wait', 'Connexion ouverte : KaraFun vérifie le code…'],
+      'waiting-name': ['wait', conflict ?
+        `KaraFun garde encore l’ancienne connexion de ${conflict.holder} : nouvel essai, changement de nom ${later}` :
+        `KaraFun reçoit le nom ${this.username}…`],
+      'waiting-data': ['wait', 'Connecté : réception de la file KaraFun…'],
+      ready: ['ok', `KaraFun connecté (${this.username})`],
+      retry: ['error', `${this._retryReason} : nouvel essai dans ${duration((this.retryAt ?? now) - now)}${this._tries > 1 ? ` (essai ${this._tries + 1})` : ''}`],
+    };
+    const [level, label] = labels[phase];
+    return {
+      phase, level, label, since: this._phaseSince, attempt: this._tries, protocol: this.protocol,
+      retryAt: phase === 'retry' ? this.retryAt : null,
+      nameConflict: conflict,
+      // Bouton « Prendre un autre nom maintenant » : POST /api/staff/kf { action: 'new-name' }.
+      canRename: !!conflict,
+      alert: conflict ? `KaraFun garde encore l’ancienne connexion de ${conflict.holder} (KaraFun relancé trop vite, ou une autre File karaoké ouverte avec le même nom). La file redemande ce nom toutes les 4 s pour garder ses droits d’administrateur et en prendra un autre ${later}. Tu peux aussi prendre un autre nom maintenant, puis lui redonner les droits dans KaraFun.` : null,
+    };
   }
 
   _emit(name, payload) {
@@ -447,7 +771,8 @@ class KaraFunBridge extends EventEmitter {
       base: this.base, protocol: this.protocol, connected: this.connected, ready: this.ready,
       unreachable: this.unreachable, lastError: this.lastError, lastEventAt: this.lastEventAt,
       queue: this.queue, status: this.status, permissions: this.permissions, preferences: this.preferences,
-      raw: this.raw, events: this.events.slice(-40),
+      raw: this.raw, events: this.events.slice(-40), pings: this.noiseCount,
+      connection: this.connectionState(),
     };
   }
 }
@@ -464,4 +789,5 @@ function normalizeResults(data) {
   })).filter(s => s.songId && s.title).slice(0, 40);
 }
 
-module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, isBattleItem };
+module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, isBattleItem,
+  maskCode, lockIdentity };

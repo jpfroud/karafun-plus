@@ -351,14 +351,19 @@ test('connect : code vide refusé', t => {
   assert.throws(() => bridge.connect(), /Code KaraFun manquant/);
 });
 
-for (const [name, respond] of [
-  ['réponse HTTP en erreur', () => ({ ok: false, status: 404, text: async () => '' })],
-  ['session fermée (page sans paramètres)', () => ok('<html>Cette session est terminée</html>')],
-  ['paramètres tronqués', () => ok('<script>var Settings = {"kcs_url": "wss://x"')],
-  ['adresse KCS non chiffrée', () => ok(page({ kcs_url: 'ws://kcs.exemple.invalid/remote' }))],
-  ['réseau coupé', () => { throw new TypeError('fetch failed'); }],
+// Chaque échec de découverte a son message : un code faux et un site qui
+// refuse ce PC ne se ressemblent plus dans le diagnostic.
+const UNKNOWN = 'Code KaraFun inconnu ou télécommande fermée : vérifie le code affiché dans KaraFun et que sa télécommande est activée.';
+const BAD_PAGE = 'Page de télécommande KaraFun inattendue : nouvel essai automatique.';
+for (const [name, respond, message, kind, status] of [
+  ['réponse HTTP 404', () => ({ ok: false, status: 404, text: async () => '' }), UNKNOWN, 'unknown-code', 404],
+  ['session fermée (page sans paramètres)', () => ok('<html>Cette session est terminée</html>'), UNKNOWN, 'unknown-code', 200],
+  ['paramètres tronqués', () => ok('<script>var Settings = {"kcs_url": "wss://x"'), BAD_PAGE, 'bad-page', 200],
+  ['adresse KCS non chiffrée', () => ok(page({ kcs_url: 'ws://kcs.exemple.invalid/remote' })), BAD_PAGE, 'bad-page', 200],
+  ['réseau coupé', () => { throw new TypeError('fetch failed'); },
+    'Réseau coupé ou site KaraFun injoignable depuis ce PC : vérifie la connexion Internet.', 'network', undefined],
 ]) {
-  test(`découverte impossible (${name}) : message au bar, autre adresse KaraFun, nouvel essai 5 s plus tard`, async t => {
+  test(`découverte impossible (${name}) : message au bar, autre adresse KaraFun, nouvel essai 3 s plus tard`, async t => {
     mockTime(t);
     const env = fakes(t, respond);
     const bridge = new KaraFunBridge({ bases: ['https://kf-a.exemple.invalid', 'https://kf-b.exemple.invalid'] });
@@ -371,12 +376,17 @@ for (const [name, respond] of [
     const snap = bridge.snapshot();
     assert.equal(snap.unreachable, true);
     assert.equal(snap.connected, false);
-    assert.equal(snap.lastError, 'Télécommande KaraFun injoignable : vérifie le code affiché et la connexion Internet.');
+    assert.equal(snap.lastError, message);
     assert.equal(snap.base, 'https://kf-b.exemple.invalid', 'on essaie l’autre site KaraFun');
+    assert.equal(snap.connection.phase, 'retry');
+    assert.equal(snap.connection.level, 'error');
     assert.ok(changes >= 1, 'le bar est prévenu');
-    assert.ok(bridge.events.some(e => e.name === 'discovery-error'));
+    const failure = bridge.events.find(e => e.name === 'discovery-error');
+    assert.equal(failure.data.kind, kind);
+    assert.equal(failure.data.status, status, 'état HTTP noté');
+    assert.equal(failure.data.host, 'kf-a.exemple.invalid');
     assert.equal(JSON.stringify(bridge.events).includes('kcs.exemple'), false, 'jamais l’URL KCS dans le journal');
-    t.mock.timers.tick(4999);
+    t.mock.timers.tick(2999);
     assert.equal(env.calls.length, 1);
     t.mock.timers.tick(1);
     assert.equal(env.calls.length, 2);
