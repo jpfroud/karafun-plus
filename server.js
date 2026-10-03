@@ -1181,7 +1181,9 @@ function staffDuoView(record) {
 
 // ------------------------------------------------------------------ vues
 const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: coverUrl(s.img), duration: s.duration || null,
-  duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo' } : null } : null;
+  duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo',
+    // Invitation en attente : vue ou non sur le téléphone de l'invité.
+    ...(s.duet.state === 'pending' ? { seen: !!s.duet.seenAt } : {}) } : null } : null;
 
 // Chanteurs d'un passage avec leur table (ou « En solo »), pour l'affichage.
 function singersOf(ids = []) {
@@ -1370,7 +1372,7 @@ function publicState(person, tableId, managed = null) {
       joinRequests: sched.duetJoinRequestsFor(p).filter(r => !(pending && !pending.cancelled && pending.sel.song.entryId === r.entryId))
         .map(r => ({ entryId: r.entryId, fromId: r.fromId, fromName: r.fromName, song: fmtSong(r.song) })),
       sentJoinRequests: (sentJoinRequests.get(p.id) || []).map(r => ({ ownerId: r.ownerId, ownerName: r.ownerName,
-        entryId: r.entryId, song: fmtSong(r.song) })),
+        entryId: r.entryId, song: fmtSong(r.song), seen: !!r.seenAt })),
       ...(deferral => ({ deferral, canDefer: !p.withdrawnAt && deferrable.has(p.id) && !deferral }))(deferralOf(p.id)),
       duet: p.duet ? { partnerName: sched.people.get(p.duet.partnerId)?.name || 'Un chanteur',
         state: p.duet.state } : p.duetOf ? { partnerName: sched.people.get(p.duetOf)?.name || 'Un chanteur',
@@ -1450,7 +1452,7 @@ function staffState() {
     joinRequests: [...sched.duetJoinRequestsByPerson()].flatMap(([requesterId, rows]) => rows.map(row => ({
       ownerId: row.ownerId, ownerName: row.ownerName, requesterId,
       requesterName: sched.people.get(requesterId)?.name || '', entryId: row.entryId, title: row.song.title,
-      at: sched._joinRequests(row.song).find(item => item.fromId === requesterId)?.at || null }))),
+      at: sched._joinRequests(row.song).find(item => item.fromId === requesterId)?.at || null, seenAt: row.seenAt }))),
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
       from: change.from, to: change.to, at: change.at,
@@ -2450,6 +2452,14 @@ const handlers = {
   'POST /api/table/duet/join/cancel': async (req, res, body) => {
     const p = personAtTable(body);
     sched.cancelDuetJoin(p, body.ownerId, body.entryId); sync(); return { ok: true };
+  },
+  // La fenêtre d'une demande (avec `fromId`) ou d'une invitation de duo vient
+  // de s'afficher sur le téléphone qui doit répondre.
+  'POST /api/table/duet/seen': async (req, res, body) => {
+    const p = personAtTable(body);
+    const seen = sched.markDuetSeen(p, body.entryId, body.fromId || null);
+    if (seen) sync();
+    return { ok: true, seen };
   },
   // « Pas prêt » : repousser son passage d'une chanson, ou revenir.
   'POST /api/table/defer': async (req, res, body) => {

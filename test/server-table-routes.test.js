@@ -845,6 +845,47 @@ test('demande de duo sur un titre de la file : retrait, refus, et accord impossi
   assert.equal(r.body.error, 'Cette demande de duo n’est plus valable.');
 });
 
+// Soirée du 2 octobre : la demande de JP à Mel n'avait jamais été vue, sans
+// que JP puisse le savoir. La fenêtre affichée sur le téléphone qui répond la
+// marque « vue » ; le demandeur et le bar le voient.
+test('demande et invitation de duo vues : le demandeur et le bar savent si le téléphone l’a affichée', async () => {
+  const f = harness();
+  const alice = await joinTable(f, openTable(f, '1'), 'Alice');
+  const bruno = await joinTable(f, openTable(f, '2'), 'Bruno');
+  await addSongs(f, alice, [[101, 'Un']]);
+  const entryId = entryOf(f, alice, 'Un');
+  await post(f, '/api/table/duet/join', { ...bruno, ownerId: alice.personId, entryId });
+  const sentBy = async who => (await get(f, `/api/state?table=${who.table}&access=${who.access}`)).body
+    .tablePeople.find(p => p.id === who.personId).sentJoinRequests;
+  assert.equal((await sentBy(bruno))[0].seen, false, 'pas encore vue');
+  assert.equal(f.staffState().joinRequests[0].seenAt, null);
+  // Seul le téléphone qui gère Alice peut marquer sa demande vue.
+  let r = await post(f, '/api/table/duet/seen', { ...bruno, personId: alice.personId, entryId, fromId: bruno.personId });
+  assert.equal(r.body.error, 'Chanteur inconnu à cette table.', 'le lien de la table de Bruno ne vaut pas pour Alice');
+  assert.equal(f.staffState().joinRequests[0].seenAt, null);
+  r = await post(f, '/api/table/duet/seen', { ...bruno, entryId, fromId: bruno.personId });
+  assert.deepEqual(r.body, { ok: true, seen: false }, 'Bruno n’a reçu aucune demande sur ce titre');
+  r = await post(f, '/api/table/duet/seen', { ...alice, entryId, fromId: bruno.personId });
+  assert.deepEqual(r.body, { ok: true, seen: true });
+  const seenAt = f.staffState().joinRequests[0].seenAt;
+  assert.ok(seenAt > 0, 'le bar voit l’heure');
+  assert.equal((await sentBy(bruno))[0].seen, true);
+  await post(f, '/api/table/duet/seen', { ...alice, entryId, fromId: bruno.personId });
+  assert.equal(f.staffState().joinRequests[0].seenAt, seenAt, 'la première fois compte');
+
+  // Invitation d'Alice à Bruno : Alice voit si Bruno l'a vue.
+  await post(f, '/api/table/duet', { ...alice, partnerId: bruno.personId, song: song(102, 'Deux') });
+  const invite = entryOf(f, alice, 'Deux');
+  const duetOf = async () => (await get(f, `/api/state?table=${alice.table}&access=${alice.access}`)).body
+    .tablePeople.find(p => p.id === alice.personId).songs.find(s => s.entryId === invite).duet;
+  assert.equal((await duetOf()).seen, false);
+  r = await post(f, '/api/table/duet/seen', { ...alice, entryId: invite });
+  assert.equal(r.body.seen, false, 'Alice n’est pas l’invitée');
+  r = await post(f, '/api/table/duet/seen', { ...bruno, entryId: invite });
+  assert.deepEqual(r.body, { ok: true, seen: true });
+  assert.equal((await duetOf()).seen, true);
+});
+
 // ---------------------------------------------------------------- « Pas prêt »
 test('« Pas prêt » depuis la page de table : seulement pour le prochain, cumul limité, retour possible', async () => {
   const f = harness();

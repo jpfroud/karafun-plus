@@ -1365,7 +1365,7 @@ class Scheduler {
         if (!song.duoRequests) continue;
         for (const row of this._joinRequests(song)) {
           if (!out.has(row.fromId)) out.set(row.fromId, []);
-          out.get(row.fromId).push({ ownerId: owner.id, ownerName: owner.name, entryId: song.entryId, song });
+          out.get(row.fromId).push({ ownerId: owner.id, ownerName: owner.name, entryId: song.entryId, song, seenAt: row.seenAt || null });
         }
       }
     }
@@ -1374,6 +1374,26 @@ class Scheduler {
 
   duetJoinRequestsBy(requester) {
     return this.duetJoinRequestsByPerson().get(requester.id) || [];
+  }
+
+  // Fenêtre d'une demande ou d'une invitation de duo affichée sur le téléphone
+  // de la personne qui doit répondre : le demandeur et le bar savent qu'elle
+  // est arrivée. Sans `fromId`, c'est une invitation reçue par `recipient`.
+  markDuetSeen(recipient, entryId, fromId = null) {
+    const key = String(entryId || '');
+    let target = null;
+    if (fromId) {
+      const song = this.songsOf(recipient).find(item => item.entryId === key);
+      target = this._joinRequests(song).find(row => row.fromId === String(fromId)) || null;
+    } else {
+      target = this.duetInvites(recipient).find(item => item.entryId === key)?.song.duet || null;
+    }
+    if (!target) return false;
+    if (!target.seenAt) {
+      target.seenAt = Date.now();
+      this.version++;
+    }
+    return true;
   }
 
   giveSpot(p, toId) {

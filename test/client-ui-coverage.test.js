@@ -922,6 +922,8 @@ test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour
     return undefined;
   } });
   const choices = () => page.node('attentionChoices').querySelectorAll('button').map(button => button.textContent);
+  // Les signaux « vue » partent à l'affichage d'un duo ; ils ne sont pas une réponse.
+  const lastAction = () => page.posts.filter(([url]) => url !== '/api/table/duet/seen').at(-1);
   assert.equal(page.node('attention').hidden, false);
   assert.equal(page.node('attentionPanel').getAttribute('role'), 'alertdialog');
   assert.equal(page.node('attentionPanel').getAttribute('aria-modal'), 'true');
@@ -951,9 +953,11 @@ test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour
   assert.equal(page.document.activeElement, last);
 
   await page.click(first);
-  assert.deepEqual(page.posts.at(-1), ['/api/table/confirm', { table: '1', access: 'secret', personId: 'alice' }]);
+  assert.deepEqual(lastAction(), ['/api/table/confirm', { table: '1', access: 'secret', personId: 'alice' }]);
   assert.equal(page.toast().text, 'Présence confirmée.');
   assert.equal(page.node('attentionTitle').textContent, 'Zoé propose un duo à Alice');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/seen', { table: '1', access: 'secret', personId: 'alice', entryId: 'x1' }],
+    'invitation affichée : vue');
   assert.equal(page.node('attentionText').textContent, 'Sur « Hit ». Seul Zoé dépense son tour ; Alice garde ses propres chansons.');
   assert.equal(page.node('attentionCount').textContent, '1 / 4');
   assert.deepEqual(choices(), ['Accepter', 'Refuser', 'Plus tard (1 min)']);
@@ -971,12 +975,12 @@ test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour
   assert.equal(page.node('attentionTitle').textContent, 'Marc aimerait chanter « Mon titre » avec Alice.');
   assert.equal(page.node('attentionError').hidden, true, 'l’erreur ne suit pas la demande suivante');
   await page.tap('attentionChoices', '[data-attn="no"]');
-  assert.deepEqual(page.posts.at(-1)[1], { table: '1', access: 'secret', personId: 'alice', entryId: 'e1', fromId: 'marc', accept: false });
+  assert.deepEqual(lastAction()[1], { table: '1', access: 'secret', personId: 'alice', entryId: 'e1', fromId: 'marc', accept: false });
   assert.equal(page.toast().text, 'Demande refusée.');
   assert.equal(page.node('attentionTitle').textContent, 'Vote Battle : toute la salle chante !');
   assert.deepEqual(choices(), ['Oui', 'Non', 'Plus tard (1 min)']);
   await page.tap('attentionChoices', '[data-choice="yes"]');
-  assert.deepEqual(page.posts.at(-1), ['/api/table/battle/vote', { table: '1', access: 'secret', personId: 'alice', choice: 'yes' }]);
+  assert.deepEqual(lastAction(), ['/api/table/battle/vote', { table: '1', access: 'secret', personId: 'alice', choice: 'yes' }]);
   assert.equal(page.node('attentionWho').textContent, 'Pour Bob', 'le téléphone répond ensuite pour Bob');
   assert.equal(page.node('attentionCount').textContent, '', 'dernière demande');
   await page.tap('attentionChoices', '[data-choice="no"]');
@@ -1248,8 +1252,14 @@ test('fiches : sur scène, duos, présence, report, parti, autre téléphone', a
   assert.doesNotMatch(card('alice').textContent, /C’est bientôt au tour/, 'pas de seconde question');
 
   assert.equal(status('bob'), `2e dans la file · vers ${timeOf(at)} · autre téléphone`);
-  assert.match(card('bob').textContent, /Léa propose un duo sur « Slow » — Lui\..*Son téléphone doit répondre\./s);
+  assert.match(card('bob').textContent, /Léa propose un duo sur « Slow » — Lui\..*Seul le téléphone qui gère Bob peut répondre\./s);
   assert.equal(card('bob').querySelector('[data-duet-answer]'), null, 'pas de réponse depuis ce téléphone');
+  // Regression: soirée du 2 octobre — Mel voyait la demande de JP sans aucun
+  // bouton. Si c'est bien Bob, il reprend sa fiche ici avec le code du bar.
+  await page.tap('peopleList', '[data-claim-here="bob"]');
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Gérer les chansons de Bob');
+  assert.ok(page.node('claimCode'), 'code de reprise demandé');
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
   assert.equal(card('bob').querySelector('[data-rename-person]'), null);
   assert.equal(card('bob').querySelector('[data-remove-song]'), null);
   assert.ok(card('bob').querySelector('[data-lyrics-title="Rock"]'), 'les paroles restent consultables');
@@ -1677,15 +1687,57 @@ test('demande de duo depuis la file : choisir qui chante quand le téléphone g�
   state.tablePeople.push(person('bob', 'Bob'));
   state.managedIds = ['alice', 'bob'];
   state.queue = [{ pos: 1, source: 'helper', id: 'bruno', ids: ['bruno'], name: 'Bruno', title: 'Tube', song: { entryId: 'b1', title: 'Tube' }, eta: Date.now() + 60000 }];
-  const page = await open({ state, respond: url => url === '/api/table/duet/join' ? { ok: true, direct: true } : undefined });
+  let direct = true;
+  const page = await open({ state, respond: url => url === '/api/table/duet/join' ? { ok: true, direct } : undefined });
   await page.click(page.node('nav-queue'));
   await page.tap('queueList', '[data-join-request="bruno"]');
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Chanter « Tube » avec Bruno ?');
-  assert.deepEqual(page.node('joinPerson').querySelectorAll('option').map(option => option.textContent), ['Alice', 'Bob']);
-  await page.change('joinPerson', 'bob');
-  await page.click(page.node('sendJoin'));
+  // Regression: soirée du 2 octobre — le premier nom était choisi d'office.
+  assert.equal(page.$('joinPerson'), null, 'plus de liste avec un choix par défaut');
+  assert.equal(page.$('sendJoin'), null);
+  assert.deepEqual(page.node('sheetPanel').querySelectorAll('[data-join-as]').map(button => button.textContent), ['Alice', 'Bob']);
+  await page.tap('sheetPanel', '[data-join-as="bob"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/duet/join', { table: '1', access: 'secret', personId: 'bob', ownerId: 'bruno', entryId: 'b1' }]);
-  assert.equal(page.toast().text, 'Duo ajouté avec Bruno.', 'même table : duo direct');
+  assert.equal(page.toast().text, 'Duo ajouté : Bob chante avec Bruno.', 'même table : duo direct, le nom de celui qui chante');
+  direct = false;
+  await page.tap('queueList', '[data-join-request="bruno"]');
+  await page.tap('sheetPanel', '[data-join-as="alice"]');
+  assert.equal(page.toast().text, 'Demande de duo de Alice envoyée à Bruno.');
+});
+
+// Soirée du 2 octobre : JP ne pouvait pas savoir que Mel n'avait jamais vu sa demande.
+test('demande et invitation de duo : « vue » signalée à l’affichage, statut chez le demandeur', async () => {
+  const state = baseState();
+  state.tablePeople = [person('alice', 'Alice', {
+    songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre', duet: { state: 'pending', partnerName: 'Zoé', seen: false } }],
+    joinRequests: [{ entryId: 'e1', fromId: 'marc', fromName: 'Marc', song: { title: 'Mon titre' } }],
+    sentJoinRequests: [{ ownerId: 'mel', ownerName: 'Mel', entryId: 'm1', song: { title: 'Barbie Girl' }, seen: false }],
+  }), person('bob', 'Bob', { invites: [{ entryId: 'x1', fromName: 'Léa', song: { title: 'Slow' } }] })];
+  state.managedIds = ['alice', 'bob'];
+  const page = await open({ state, hidden: true });
+  const seenPosts = () => page.posts.filter(([url]) => url === '/api/table/duet/seen').map(([, body]) => body);
+  assert.equal(page.node('attention').hidden, false);
+  assert.deepEqual(seenPosts(), [], 'page cachée : rien n’est encore vu');
+  page.document.hidden = false;
+  page.document.listeners.visibilitychange.forEach(entry => entry.listener());
+  await page.settle();
+  assert.deepEqual(seenPosts(), [{ table: '1', access: 'secret', personId: 'bob', entryId: 'x1' }],
+    'seule l’invitation affichée (la première) est vue');
+  await page.poll();
+  assert.equal(seenPosts().length, 1, 'une seule fois');
+  await page.tap('attentionChoices', '[data-attn="later"]');
+  assert.deepEqual(seenPosts().at(-1), { table: '1', access: 'secret', personId: 'alice', entryId: 'e1', fromId: 'marc' },
+    'la demande affichée ensuite');
+  await page.tap('attentionChoices', '[data-attn="later"]');
+  const card = page.find('peopleList', '[data-person-card="alice"]').textContent;
+  assert.match(card, /Demande de duo envoyée à Mel pour « Barbie Girl »\. Mel ne l’a pas encore vue : va lui en parler !/);
+  assert.match(card, /duo avec Zoé \(invitation pas encore vue\)/);
+  page.state.tablePeople[0].sentJoinRequests[0].seen = true;
+  page.state.tablePeople[0].songs[0].duet.seen = true;
+  await page.poll();
+  const after = page.find('peopleList', '[data-person-card="alice"]').textContent;
+  assert.match(after, /Mel l’a vue\. Sans réponse/);
+  assert.match(after, /duo avec Zoé \(en attente de sa réponse\)/);
 });
 
 // ================================================================ fermeture du bar

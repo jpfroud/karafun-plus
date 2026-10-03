@@ -1234,7 +1234,9 @@
     // Demandes de duo sur un titre de la file (page des chanteurs) : le bar les voit.
     const requests = S.joinRequests || [];
     $('joinRequestsBox').hidden = !requests.length;
-    $('joinRequestsList').innerHTML = requests.map(r => `<div class="join-request small"><b>${esc(r.requesterName)}</b> demande à chanter « ${esc(r.title)} » avec <b>${esc(r.ownerName)}</b>${r.at ? ` · ${hhmm(r.at)}` : ''}</div>`).join('');
+    // « Pas encore vue » : le téléphone qui doit répondre ne l'a pas affichée ;
+    // le bar peut aller prévenir la personne.
+    $('joinRequestsList').innerHTML = requests.map(r => `<div class="join-request small"><b>${esc(r.requesterName)}</b> demande à chanter « ${esc(r.title)} » avec <b>${esc(r.ownerName)}</b>${r.at ? ` · ${hhmm(r.at)}` : ''}${r.seenAt ? ' · vue' : r.seenAt === null ? ` · <span class="unseen">pas encore vue par ${esc(r.ownerName)}</span>` : ''}</div>`).join('');
 
     const publicHttps = isPublicHttps(S.phoneBase || '');
     const readyQrCount = S.tables.filter(t => t.url && t.qrUrl && !t.individual).length;

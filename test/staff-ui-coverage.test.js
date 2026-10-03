@@ -2371,12 +2371,13 @@ test('accueil : donner un chanteur à un autre téléphone depuis une recherche 
 test('scène : demandes de duo en attente et Battle à décider sans quitter l’écran', async () => {
   const world = baseWorld();
   const at = Date.now() - 30000;
-  world.joinRequests = [{ ownerId: 'alice', ownerName: 'Alice', requesterId: 'bruno', requesterName: 'Bruno', entryId: 'e1', title: 'Africa', at },
-    { ownerId: 'dora', ownerName: 'Dora', requesterId: 'alice', requesterName: 'Alice', entryId: 'e2', title: 'Hello' }];
+  world.joinRequests = [{ ownerId: 'alice', ownerName: 'Alice', requesterId: 'bruno', requesterName: 'Bruno', entryId: 'e1', title: 'Africa', at, seenAt: null },
+    { ownerId: 'dora', ownerName: 'Dora', requesterId: 'alice', requesterName: 'Alice', entryId: 'e2', title: 'Hello', seenAt: at }];
   const page = await openPage({ world });
   assert.equal(page.$('joinRequestsBox').hidden, false);
+  // Le bar sait qui n'a pas encore vu sa demande, pour aller le lui dire.
   assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')),
-    [`Bruno demande à chanter « Africa » avec Alice · ${hhmm(at)}`, 'Alice demande à chanter « Hello » avec Dora']);
+    [`Bruno demande à chanter « Africa » avec Alice · ${hhmm(at)} · pas encore vue par Alice`, 'Alice demande à chanter « Hello » avec Dora · vue']);
   await page.update({ joinRequests: [] });
   assert.equal(page.$('joinRequestsBox').hidden, true);
   assert.equal(page.$('battleStrip').hidden, true, 'rien à décider : pas de Battle sur Scène');

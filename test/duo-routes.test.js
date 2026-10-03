@@ -190,7 +190,7 @@ test('bar : marquer partie l’invitée d’un duo envoyé garde le titre de son
   f.sched.requestDuetJoin(dan.p, alice.p.id, alice.p.song.entryId);
   const [row] = plain(f.staffState().joinRequests);
   assert.deepEqual({ ...row, at: typeof row.at }, { ownerId: alice.p.id, ownerName: 'Alice', requesterId: dan.p.id, requesterName: 'Dan',
-    entryId: alice.p.song.entryId, title: 'Six', at: 'number' });
+    entryId: alice.p.song.entryId, title: 'Six', at: 'number', seenAt: null });
 });
 
 test('demande de duo : masquée à l’auteur pendant l’envoi, expirée à l’accusé de KaraFun', async () => {
