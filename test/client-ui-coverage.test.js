@@ -1841,3 +1841,317 @@ test('fermeture : place restante, file complète, heure passée, annonce retiré
   await english.poll();
   assert.match(english.node('closingBox').textContent, /Songs planned after closing time will not be started, unless the bar moves the time\.$/);
 });
+
+// ================================================================ réglages de titre
+// Tonalité, tempo, voix guide et chœurs : le chanteur règle ses titres à
+// venir depuis son téléphone (duo : l'auteur seul), tant qu'ils n'ont pas
+// commencé et que le bar n'a pas coupé la fonction.
+const SONG_SETTINGS = { enabled: true, ranges: { pitch: { min: -6, max: 6, step: 1 }, tempo: { min: -50, max: 50, step: 5 },
+  volume: { min: 0, max: 100, step: 25 } }, defaults: { pitch: 0, tempo: 0, guide: 0, backing: 53 } };
+function tuneState(extra = {}) {
+  const state = baseState({ songSettings: JSON.parse(JSON.stringify(SONG_SETTINGS)), ...extra });
+  state.tablePeople = [
+    person('alice', 'Alice', {
+      songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre', artist: 'Moi', settings: null }],
+      inKaraFun: [{ entryId: 'k1', songId: 2, title: 'Déjà prête', artist: 'Elle', queueId: 11, canAdjust: true, tracks: [5],
+        settings: { pitch: 2, tempo: -10 } }],
+    }),
+    person('bob', 'Bob', { songs: [{ entryId: 'b1', songId: 3, title: 'Rock', artist: 'R', settings: { pitch: -1, guide: 50 } }] }),
+  ];
+  state.managedIds = ['alice'];
+  return state;
+}
+// Le serveur garde les réglages reçus (tonalité et tempo d'origine retirés).
+function keepSettings(self, body) {
+  const out = {};
+  for (const [field, value] of Object.entries(body.settings || {})) {
+    if (Number.isInteger(value) && !((field === 'pitch' || field === 'tempo') && value === 0)) out[field] = value;
+  }
+  for (const p of self.state.tablePeople) for (const song of [...p.songs, ...p.inKaraFun]) {
+    if (song.entryId === body.entryId) song.settings = Object.keys(out).length ? out : null;
+  }
+  return { ok: true, settings: Object.keys(out).length ? out : null, applied: body.entryId === 'k1' ? 'karafun' : 'list' };
+}
+const tunePosts = page => page.posts.filter(([url]) => url === '/api/table/song/settings').map(([, body]) => body);
+const pressed = (page, field) => page.node('songSettingsBody').querySelectorAll(`[data-tune="${field}"][aria-pressed="true"]`)
+  .map(node => node.dataset.value);
+
+test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistrement automatique et badge', async () => {
+  const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings' ? keepSettings(self, body) : undefined });
+  const card = id => page.find('peopleList', `[data-person-card="${id}"]`);
+  const button = card('alice').querySelector('[data-song-settings="e1"]');
+  assert.ok(button, 'titre de sa liste : bouton « Réglages »');
+  assert.equal(button.getAttribute('aria-label'), 'Réglages de Mon titre', 'texte lu par le lecteur d’écran');
+  assert.ok(card('alice').querySelector('[data-song-settings="k1"]'), 'titre déjà dans KaraFun, pas commencé : réglable');
+  assert.equal(card('alice').querySelector('.tune-badge').textContent, '♯ +2 · tempo −10 %', 'badge des réglages');
+  assert.equal(card('bob').querySelector('[data-song-settings]') === null, true, 'autre téléphone : aucun bouton');
+  assert.equal(card('bob').querySelector('.tune-badge').textContent, '♭ −1 · guide 50', 'réglages visibles');
+
+  await page.click(button);
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Réglages · Mon titre');
+  assert.equal(page.node('tunePitch').textContent, '0');
+  assert.match(page.node('songSettingsBody').textContent, /0 = originale/);
+  assert.equal(page.node('tuneTempo').textContent, '0 %');
+  assert.deepEqual(pressed(page, 'guide'), ['0'], 'voix guide par défaut : coupée');
+  assert.deepEqual(pressed(page, 'backing'), [], 'chœurs à 53 par défaut : aucun choix marqué');
+  assert.match(page.node('songSettingsBody').textContent, /Réglage de KaraFun : 53/);
+  assert.match(page.node('songSettingsBody').textContent, /Si le titre en a\./, 'pistes encore inconnues avant l’envoi');
+  assert.equal(page.node('tuneReset').disabled, true, 'rien à réinitialiser');
+
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  assert.equal(page.node('tunePitch').textContent, '+2');
+  assert.equal(page.node('tuneStatus').textContent, 'Modifié…');
+  assert.deepEqual(tunePosts(page), [], 'enregistré après un court instant');
+  assert.equal(card('alice').querySelector('[data-song-settings="e1"]').closest('li').querySelector('.tune-badge').textContent, '♯ +2',
+    'le badge suit le réglage tout de suite');
+  await page.runTimers(600);
+  assert.deepEqual(tunePosts(page), [{ table: '1', access: 'secret', personId: 'alice', entryId: 'e1', settings: { pitch: 2 } }]);
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
+  await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="-5"]');
+  await page.tap('songSettingsBody', '[data-tune="guide"][data-value="50"]');
+  await page.tap('songSettingsBody', '[data-tune="backing"][data-value="0"]');
+  assert.equal(page.node('tuneTempo').textContent, '−5 %');
+  assert.deepEqual(pressed(page, 'guide'), ['50']);
+  assert.deepEqual(pressed(page, 'backing'), ['0']);
+  await page.runTimers(600);
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, tempo: -5, guide: 50, backing: 0 }, 'un seul envoi pour trois changements');
+  await page.poll();
+  assert.equal(page.node('tunePitch').textContent, '+2', 'valeur relue sur le serveur');
+  // Bornes de KaraFun : + désactivé à +6.
+  for (let i = 0; i < 6; i++) {
+    const plus = page.find('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+    if (!plus.disabled) await page.click(plus);
+  }
+  assert.equal(page.node('tunePitch').textContent, '+6');
+  assert.equal(page.find('songSettingsBody', '[data-tune="pitch"][data-step="1"]').disabled, true, 'plus haut que +6 : impossible');
+  await page.click(page.node('tuneReset'));
+  assert.equal(page.node('tunePitch').textContent, '0');
+  await page.runTimers(600);
+  assert.deepEqual(tunePosts(page).at(-1).settings, null, 'réinitialiser : réglages de KaraFun');
+  await page.poll();
+  assert.equal(card('alice').querySelector('[data-song-settings="e1"]').closest('li').querySelector('.tune-badge') === null, true, 'plus de badge');
+
+  // Titre déjà dans KaraFun : ses pistes sont connues, sans chœurs.
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  assert.equal(page.node('tunePitch').textContent, '+2');
+  assert.equal(page.node('songSettingsBody').querySelector('[data-tune="backing"]') === null, true, 'titre sans chœurs : pas de réglage des chœurs');
+  assert.doesNotMatch(page.node('songSettingsBody').textContent, /Si le titre en a/);
+  await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
+  await page.runTimers(600);
+  assert.deepEqual(tunePosts(page).at(-1), { table: '1', access: 'secret', personId: 'alice', entryId: 'k1', settings: { pitch: 2, tempo: -5 } });
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
+});
+
+test('réglages de titre : le rafraîchissement n’écrase pas un réglage en cours d’envoi ; fermer la fiche l’envoie', async () => {
+  const waiting = [];
+  const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings'
+    ? new Promise(resolve => waiting.push(() => resolve(keepSettings(self, body)))) : undefined });
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  await page.runTimers(600);
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistrement…');
+  await page.poll();
+  assert.equal(page.node('tunePitch').textContent, '+1', 'l’état du serveur (sans réglage) ne remplace pas la valeur envoyée');
+  // Nouveau changement pendant l'envoi : il repart après la réponse, dans l'ordre.
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  assert.equal(page.node('tunePitch').textContent, '+2');
+  await page.runTimers(600);
+  assert.equal(tunePosts(page).length, 1, 'un seul envoi à la fois');
+  waiting.shift()();
+  await page.settle();
+  assert.deepEqual(tunePosts(page).map(body => body.settings), [{ pitch: 1 }, { pitch: 2 }]);
+  await page.poll();
+  assert.equal(page.node('tunePitch').textContent, '+2', 'réponse du premier envoi sans effet sur la valeur suivante');
+  waiting.shift()();
+  await page.settle();
+  await page.poll();
+  assert.equal(page.node('tunePitch').textContent, '+2');
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
+  await page.runTimers(2600);
+  assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.');
+
+  // Fiche fermée avant le court instant : le réglage part tout de suite.
+  await page.tap('songSettingsBody', '[data-tune="guide"][data-value="25"]');
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+  assert.equal(page.sheetOpen(), false);
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, guide: 25 });
+  waiting.shift()();
+  await page.settle();
+});
+
+test('réglages de titre : duo, titre commencé, envoi en cours, fonction coupée par le bar et refus du serveur', async () => {
+  const state = tuneState();
+  state.tablePeople[0].songs[0].duet = { state: 'accepted', partnerName: 'Bob' };
+  state.tablePeople[0].inKaraFun = [
+    { entryId: 'k1', title: 'Sur scène', stage: true, canAdjust: false, settings: { tempo: 5 } },
+    { entryId: 's1', title: 'En route', sending: true, canAdjust: true, settings: null },
+  ];
+  state.tablePeople[1].songs = [];
+  state.tablePeople[1].guestDuos = [{ entryId: 'e1', ownerId: 'alice', fromName: 'Alice', song: { title: 'Mon titre', settings: { pitch: 3 } } }];
+  state.managedIds = ['alice', 'bob'];
+  let answer = null;
+  const page = await open({ state, respond: (url, body, self) => url === '/api/table/song/settings' ? answer || keepSettings(self, body) : undefined });
+  const card = id => page.find('peopleList', `[data-person-card="${id}"]`);
+  assert.equal(card('alice').querySelector('[data-song-settings="k1"]') === null, true, 'titre commencé : plus réglable du téléphone');
+  assert.equal(card('alice').querySelector('.tune-badge').textContent, 'tempo +5 %');
+  assert.ok(card('alice').querySelector('[data-song-settings="s1"]'), 'titre en cours d’envoi : encore réglable');
+  assert.equal(card('bob').querySelector('[data-song-settings]') === null, true, 'partenaire du duo : pas de bouton');
+  assert.equal(card('bob').querySelector('.tune-badge').textContent, '♯ +3', 'partenaire : réglages de l’auteur visibles');
+
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  assert.match(page.node('songSettingsBody').textContent, /Duo : les deux voix guides suivent ce réglage\./);
+  // Refus du serveur : message dans la fiche, « Réessayer ».
+  answer = reply(409, { error: 'Ce titre a déjà commencé : seul le bar peut encore le régler.', code: 'SONG_STARTED' });
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="-1"]');
+  await page.runTimers(600);
+  assert.equal(page.node('tuneStatus').textContent, 'Non enregistré : Ce titre a déjà commencé : seul le bar peut encore le régler. · Réessayer');
+  const refusedLine = card('alice').querySelector('[data-song-settings="e1"]').closest('li');
+  assert.deepEqual(refusedLine.querySelectorAll('.tune-badge').map(node => node.textContent), ['Réglages non enregistrés'],
+    'réglage refusé : le badge montre ce que le serveur a gardé (rien), pas le choix non enregistré, et signale le refus');
+  answer = null;
+  await page.tap('tuneStatus', '[data-tune-retry]');
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: -1 }, 'réessayé avec la même valeur');
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
+
+  // Le titre part sur scène pendant que la fiche est ouverte.
+  page.state.tablePeople[0].songs = [];
+  await page.poll();
+  assert.match(page.node('songSettingsBody').textContent, /Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré\./);
+  assert.equal(page.find('songSettingsBody', '[data-tune="pitch"][data-step="1"]').disabled, true, 'plus rien à régler');
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+
+  // Le bar coupe la fonction : plus de bouton ni de badge ; une fiche ouverte se fige.
+  await page.tap('peopleList', '[data-song-settings="s1"]');
+  page.state.songSettings.enabled = false;
+  await page.poll();
+  assert.match(page.node('songSettingsBody').textContent, /Le bar a désactivé les réglages de titre depuis les téléphones\./);
+  assert.equal(page.find('songSettingsBody', '[data-tune="guide"][data-value="50"]').disabled, true);
+  assert.equal(page.node('tuneReset').disabled, true);
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+  assert.equal(page.node('peopleList').querySelector('[data-song-settings]') === null, true, 'fonction coupée : aucun bouton');
+  assert.equal(page.node('peopleList').querySelector('.tune-badge') === null, true, 'ni badge');
+  assert.equal(tunePosts(page).length, 2, 'rien d’envoyé fonction coupée (le refus, puis « Réessayer »)');
+});
+
+test('réglages de titre : en anglais, textes de la fiche et refus traduits', async () => {
+  const page = await open({ languages: ['en'], state: tuneState(), respond: url => url === '/api/table/song/settings'
+    ? reply(403, { error: 'Le bar a désactivé les réglages de titre depuis les téléphones.', code: 'SONG_SETTINGS_OFF' }) : undefined });
+  const button = page.find('peopleList', '[data-song-settings="e1"]');
+  assert.equal(button.getAttribute('aria-label'), 'Settings for Mon titre');
+  assert.equal(page.find('peopleList', '.tune-badge').textContent, '♯ +2 · tempo −10%', 'typographie anglaise');
+  await page.click(button);
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Settings · Mon titre');
+  const body = page.node('songSettingsBody').textContent;
+  for (const text of ['Key', '0 = original', 'Tempo', 'Guide vocals', 'Backing vocals', 'Off', 'If the song has them.', 'KaraFun setting: 53']) {
+    assert.ok(body.includes(text), `texte anglais : ${text}`);
+  }
+  assert.equal(page.node('tuneReset').textContent, 'Reset');
+  await page.tap('songSettingsBody', '[data-tune="guide"][data-value="75"]');
+  assert.equal(page.node('tuneStatus').textContent, 'Changed…');
+  await page.runTimers(600);
+  assert.equal(page.node('tuneStatus').textContent, 'Not saved: The bar has turned off song settings from phones. · Try again');
+  const duo = await open({ languages: ['en'], state: tuneState(), respond: url => url === '/api/table/song/settings'
+    ? reply(403, { error: 'Alice a choisi ce duo : les réglages se font sur son téléphone.', code: 'DUO_GUEST' }) : undefined });
+  await duo.tap('peopleList', '[data-song-settings="e1"]');
+  await duo.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
+  await duo.runTimers(600);
+  assert.equal(duo.node('tuneStatus').textContent, 'Not saved: Alice picked this duet: settings are made on their phone. · Try again');
+});
+
+test('réglages de titre : un refus oublié quand le titre n’est plus réglable ; titre sans voix guide', async () => {
+  const state = tuneState();
+  state.tablePeople[0].inKaraFun[0].tracks = [4];
+  let answer = reply(409, { error: 'Ce titre a déjà commencé : seul le bar peut encore le régler.', code: 'SONG_STARTED' });
+  const page = await open({ state, respond: (url, body, self) => url === '/api/table/song/settings' ? answer || keepSettings(self, body) : undefined });
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  assert.match(page.node('songSettingsBody').textContent, /Ce titre n’a pas de voix guide\./);
+  assert.equal(page.node('songSettingsBody').querySelector('[data-tune="guide"]') === null, true);
+  assert.ok(page.node('songSettingsBody').querySelector('[data-tune="backing"]'), 'chœurs présents');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  await page.runTimers(600);
+  assert.match(page.node('tuneStatus').textContent, /^Non enregistré/);
+  // Le titre commence : le choix refusé est oublié.
+  page.state.tablePeople[0].inKaraFun[0].canAdjust = false;
+  await page.poll();
+  assert.match(page.node('songSettingsBody').textContent, /Ce titre a commencé : seul le bar peut encore le régler\./);
+  assert.equal(page.node('tunePitch').textContent, '+2', 'valeur gardée par le serveur');
+  // Puis redevient réglable (relance refusée, par exemple) : plus d'ancien refus ni d'ancien choix.
+  page.state.tablePeople[0].inKaraFun[0].canAdjust = true;
+  await page.poll();
+  assert.equal(page.node('tunePitch').textContent, '+2');
+  assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.');
+  answer = null;
+});
+
+test('réglages de titre : refus arrivé fiche fermée, signalé par un message et sur la ligne du titre', async () => {
+  let answer = reply(409, { error: 'Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.' });
+  const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings' ? answer || keepSettings(self, body) : undefined });
+  const line = entryId => page.find('peopleList', `[data-song-settings="${entryId}"]`).closest('li');
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  // « Terminé » tout de suite : le réglage part, la fiche est déjà fermée quand le refus arrive.
+  await page.click(page.find('sheetPanel', '.sheet-actions [data-close-sheet]'));
+  assert.equal(page.sheetOpen(), false);
+  assert.deepEqual(page.toast(), { text: 'Réglages de « Mon titre » non enregistrés : Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.',
+    bad: true, warn: false, hidden: false });
+  assert.equal(line('e1').querySelector('.tune-badge.bad').textContent, 'Réglages non enregistrés', 'le refus reste visible sur la ligne');
+  await page.poll();
+  assert.equal(line('e1').querySelector('.tune-badge.bad').textContent, 'Réglages non enregistrés', 'et au rafraîchissement suivant');
+  // La fiche rouverte le dit aussi, avec « Réessayer ».
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  assert.match(page.node('tuneStatus').textContent, /^Non enregistré : Ce titre est en train de sortir de KaraFun/);
+  answer = null;
+  await page.tap('tuneStatus', '[data-tune-retry]');
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
+  await page.click(page.find('sheetPanel', '.sheet-actions [data-close-sheet]'));
+  await page.poll();
+  assert.equal(line('e1').querySelector('.tune-badge.bad') === null, true);
+  assert.equal(line('e1').querySelector('.tune-badge').textContent, '♯ +1');
+  // Le titre commence pendant l'envoi : plus réglable, mais le message reste affiché.
+  answer = reply(409, { error: 'Ce titre a déjà commencé : seul le bar peut encore le régler.', code: 'SONG_STARTED' });
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  Object.assign(page.state.tablePeople[0].inKaraFun[0], { canAdjust: false, stage: true, lock: 'started' });
+  await page.click(page.find('sheetPanel', '.sheet-actions [data-close-sheet]'));
+  assert.equal(page.toast().text, 'Réglages de « Déjà prête » non enregistrés : Ce titre a déjà commencé : seul le bar peut encore le régler.');
+  assert.equal(page.toast().bad, true);
+  // Fiche ouverte sur ce titre : le refus s'affiche dans la fiche, pas en message.
+  answer = reply(409, { error: 'Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.' });
+  await page.runTimers(4000);
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  await page.runTimers(600);
+  assert.match(page.node('tuneStatus').textContent, /^Non enregistré/);
+  assert.equal(page.toast().hidden, true, 'pas de message en double');
+});
+
+test('réglages de titre : la fiche dit pourquoi le titre ne se règle plus (sortie de KaraFun, sur scène, autre téléphone, parti)', async () => {
+  const state = tuneState();
+  state.tablePeople[0].inKaraFun[0].lock = null;
+  const page = await open({ state });
+  const lock = () => page.find('songSettingsBody', '.tune-lock').textContent;
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  // « Pas prêt » ou retrait du bar : le titre sort de KaraFun et reviendra dans la liste.
+  Object.assign(page.state.tablePeople[0].inKaraFun[0], { canAdjust: false, lock: 'leaving' });
+  await page.poll();
+  assert.equal(lock(), 'Ce titre est en train de sortir de KaraFun : il se réglera de nouveau une fois revenu dans la liste.');
+  Object.assign(page.state.tablePeople[0].inKaraFun[0], { canAdjust: false, stage: true, lock: 'started' });
+  await page.poll();
+  assert.equal(lock(), 'Ce titre a commencé : seul le bar peut encore le régler.');
+  Object.assign(page.state.tablePeople[0].inKaraFun[0], { canAdjust: false, stage: false, lock: 'duo' });
+  await page.poll();
+  assert.equal(lock(), 'Seul l’auteur de ce duo peut régler ce titre.');
+  await page.click(page.find('sheetPanel', '.sheet-actions [data-close-sheet]'));
+  // Titre de sa liste, gestion passée sur un autre téléphone.
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  page.state.managedIds = [];
+  await page.poll();
+  assert.equal(lock(), 'Ce téléphone ne gère plus Alice : ses titres se règlent depuis l’autre téléphone.');
+  // Partie de la soirée.
+  page.state.managedIds = ['alice'];
+  page.state.tablePeople[0].active = false;
+  await page.poll();
+  assert.equal(lock(), 'Alice a quitté la soirée : ses titres ne se règlent plus.');
+});

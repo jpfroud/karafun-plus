@@ -9,6 +9,7 @@ const { Scheduler, DEFER_MAX } = require('./scheduler');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
 const { PLAYED_LIMIT } = require('./song-repeats');
+const { sanitizeSettings } = require('./song-settings');
 
 const FORMAT = 1;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -26,6 +27,22 @@ const songValid = song => song === null || (
   Number.isSafeInteger(song.songId) && song.songId > 0 &&
   typeof song.title === 'string' && song.title.length > 0
 );
+// Réglages de titre abîmés (tonalité, tempo, voix) : seule la valeur fautive
+// disparaît, jamais le titre ni la soirée.
+function cleanSongSettings(song) {
+  if (!song || typeof song !== 'object' || !('settings' in song)) return;
+  const settings = sanitizeSettings(song.settings);
+  if (settings) song.settings = settings;
+  else delete song.settings;
+}
+// Titre envoyé à KaraFun : réglages transmis et rattrapage déjà fait.
+function cleanSentSettings(holder) {
+  cleanSongSettings(holder.sel?.song);
+  if ('sentSettings' in holder) holder.sentSettings = sanitizeSettings(holder.sentSettings, { keepDefaults: true });
+  if (holder.liveChecked != null && typeof holder.liveChecked !== 'string') delete holder.liveChecked;
+  delete holder.statusAtOptions; // numéro d'état de KaraFun propre à l'exécution précédente
+  for (const flag of ['settingsDirty', 'settingsChanged']) if (flag in holder && typeof holder[flag] !== 'boolean') delete holder[flag];
+}
 function dropCovers(snapshot) {
   const songs = [];
   for (const p of Array.isArray(snapshot.scheduler?.people) ? snapshot.scheduler.people : []) {
@@ -154,6 +171,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       fail('passage physique mal formé');
     }
     const person = clone(p);
+    cleanSongSettings(person.song);
+    person.backlog.forEach(cleanSongSettings);
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.
     if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
     if (p.photo != null) {
@@ -280,6 +299,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     (restoredSettings.closingAt != null && !Number.isFinite(restoredSettings.closingAt)) ||
     ('autoPlayHeld' in restoredSettings && typeof restoredSettings.autoPlayHeld !== 'boolean')) fail('réglages mal formés');
 
+  // Interrupteur des réglages de titre (v1.4) abîmé : la valeur actuelle reste.
+  if ('singerSongSettings' in restoredSettings && typeof restoredSettings.singerSongSettings !== 'boolean') {
+    delete restoredSettings.singerSongSettings;
+  }
+
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||
     !Number.isFinite(pending.at) || !Number.isInteger(pending.attempts) || pending.attempts < 1)) fail('envoi en cours mal formé');
@@ -309,6 +333,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     /^\d{4}-\d{2}-\d{2}_\d{4}_[0-9a-f]{4}$/.test(String(snapshot.evening.id)) ?
     { id: snapshot.evening.id, startedAt: Number.isFinite(snapshot.evening.startedAt) ? snapshot.evening.startedAt : null } : null;
   const restoredTracked = clone(tracked);
+  for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder);
 
   // Aucun effet sur les objets fournis avant ce point.
   for (const id of scheduler.tables.keys()) access.revoke(id);

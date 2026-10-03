@@ -32,8 +32,12 @@ class KcsTransport extends EventEmitter {
       } else if (message.type === 'core.TimestampRequest') {
         this._send('core.TimestampResponse', { timestamp: { _type: 'timestamp', value: new Date().toISOString() } }, message.id);
       } else if (this.pending.has(message.id)) {
-        clearTimeout(this.pending.get(message.id).timer);
+        // Réponse (ou Error) portant l'identifiant d'une demande : elle est
+        // rattachée à cette demande, pour que le pont sache laquelle a réussi.
+        const request = this.pending.get(message.id);
+        clearTimeout(request.timer);
         this.pending.delete(message.id);
+        this.emit('reply', request.type, message);
       }
     });
     this.ws.addEventListener('error', () => {
@@ -60,15 +64,23 @@ class KcsTransport extends EventEmitter {
     this.ws.send(JSON.stringify(message));
   }
 
+  // Demande numérotée. Sans réponse au bout de 8 s : 'request-timeout' avec
+  // son type et son identifiant ; le pont décide si c'est grave.
   send(type, payload = {}) {
     const id = ++this.nextId;
     this._send(type, payload, id);
     const timer = setTimeout(() => {
       this.pending.delete(id);
-      if (!this.closed) this.emit('request-timeout', type);
+      if (!this.closed) this.emit('request-timeout', type, id);
     }, 8000);
     timer.unref();
     this.pending.set(id, { type, timer });
+    return id;
+  }
+
+  // Type de la demande encore en attente sous cet identifiant, sinon null.
+  requestType(id) {
+    return this.pending.get(id)?.type ?? null;
   }
 
   // Réponse de KaraFun sans identifiant (une Error, par exemple) : elle

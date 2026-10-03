@@ -200,6 +200,8 @@
   .client .sheet-song { display: flex; align-items: center; gap: 12px; }
   .client .sheet-song h3 { margin: 0; overflow-wrap: anywhere; }
   .client .sheet-song p { margin: 2px 0 0; }
+
+  .client .song-stack .song-actions .btn.tune svg { display: block; margin: 0 auto; }
 </style>
 </head>
 <body class="client">
@@ -1076,6 +1078,12 @@
       state = data;
       // Réponses données avant cette lecture : l'état les montre déjà.
       for (const [key, at] of answered) if (at <= startedAt) answered.delete(key);
+      // Réglages de titre enregistrés avant cette lecture : le serveur les montre.
+      // Un choix refusé est oublié dès que le titre n'est plus réglable.
+      for (const [key, draft] of tuneDrafts) {
+        if ((draft.state === 'saved' && number > draft.afterLoad) ||
+          (draft.state === 'error' && !(tuneEnabled() && tuneEntry(draft.personId, key)?.canAdjust))) tuneDrafts.delete(key);
+      }
       if (legacyToken) {
         if (data.me && !personTokens[String(data.me.id)]) savePersonToken(data.me.id, legacyToken);
         legacyToken = '';
@@ -1181,6 +1189,7 @@
     renderTransfer();
     $('signalsBox').hidden = owned.length === 0;
     renderPeople(individual ? owned : people, queue);
+    renderTune();
     renderBattle(individual ? owned : people);
     renderQueue(queue, waiting);
     renderClosing();
@@ -1447,8 +1456,10 @@
       const sentLeave = song => !(canEdit && song.duo && song.canLeave && song.entryId) ? '' : song.duo.role === 'guest'
         ? `<button type="button" class="btn small ghost" data-duet-leave="${esc(song.entryId)}" data-owner-id="${esc(song.duo.ownerId)}" data-owner-name="${esc(song.duo.ownerName)}" data-title="${esc(song.title || '')}" data-person-id="${esc(person.id)}">${esc(t('Je ne chante plus ce duo'))}</button>`
         : `<button type="button" class="btn small ghost" data-duet-solo="${esc(song.entryId)}" data-guest-name="${esc(song.duo.guestName)}" data-title="${esc(song.title || '')}" data-person-id="${esc(person.id)}">${esc(t('Chanter seul'))}</button>`;
+      // Réglages de titre : l'auteur, titre pas commencé (le serveur le dit), fonction ouverte par le bar.
+      const sentTune = song => canEdit && song.canAdjust && song.entryId != null && tuneEnabled() ? tuneButton(song, person.id) : '';
       const sentMarkup = sent.length ? `<div class="song-mark">${esc(t('DÉJÀ PRÊTE DANS LA FILE'))}</div><ul class="song-stack">${sent.map(song =>
-        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}${sentDuo(song)}</div></div><div class="song-actions">${lyricsButton(song)}${sentLeave(song)}</div></li>`).join('')}</ul>` : '';
+        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}${sentDuo(song)}${tuneBadge(song)}</div></div><div class="song-actions">${lyricsButton(song)}${sentTune(song)}${sentLeave(song)}</div></li>`).join('')}</ul>` : '';
       const readyMarkup = ready.length ? `<div class="song-mark">${esc(individual ? tp(ready.length, 'MES CHANSONS · {n} CHANSON', 'MES CHANSONS · {n} CHANSONS') : tp(ready.length, 'SA LISTE · {n} CHANSON', 'SA LISTE · {n} CHANSONS'))}</div><ul class="song-stack">${ready.map((song, index) => {
         const duet = song.duet;
         const duetDetail = duet ? ` · ${esc(duet.state === 'pending'
@@ -1458,7 +1469,7 @@
         // Invitation sans réponse : le titre ne l'attend pas, il partira en solo.
         const soloHint = duet?.state === 'pending' ? `<div class="tiny muted invite-solo">${esc(individual ? t('Sans réponse avant ton tour, tu chanteras seul.')
           : t('Sans réponse avant son tour, {name} chantera seul.', { name: person.name }))}</div>` : '';
-        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>${canEdit && ready.length > 1 ? `<p class="tiny muted order-hint">${esc(individual
         ? t('⇅ change l’ordre de tes titres sans perdre ta place dans la file.') : t('⇅ change l’ordre de ses titres sans perdre sa place dans la file.'))}</p>` : ''}`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
@@ -1466,7 +1477,7 @@
       const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(t('{name} propose un duo', { name: invite.fromName || t('Un chanteur') }))}</b> ${esc(t('sur « {title} »', { title: invite.song?.title || t('une chanson') }))}${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}. ${esc(t('Réponds avant son tour, sinon l’invitation expire.'))}
         ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : notMine(person)}</div>`).join('');
       const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(t('{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.',
-        { name: person.name, from: duo.fromName, title: duo.song?.title || t('une chanson') }))}${canEdit && duo.ownerId ? `<div class="invite-actions"><button type="button" class="btn small ghost" data-duet-leave="${esc(duo.entryId)}" data-owner-id="${esc(duo.ownerId)}" data-owner-name="${esc(duo.fromName || '')}" data-title="${esc(duo.song?.title || '')}" data-person-id="${esc(person.id)}">${esc(t('Je ne chante plus ce duo'))}</button></div>` : ''}</div>`).join('');
+        { name: person.name, from: duo.fromName, title: duo.song?.title || t('une chanson') }))}${tuneBadge(duo.song)}${canEdit && duo.ownerId ? `<div class="invite-actions"><button type="button" class="btn small ghost" data-duet-leave="${esc(duo.entryId)}" data-owner-id="${esc(duo.ownerId)}" data-owner-name="${esc(duo.fromName || '')}" data-title="${esc(duo.song?.title || '')}" data-person-id="${esc(person.id)}">${esc(t('Je ne chante plus ce duo'))}</button></div>` : ''}</div>`).join('');
       // Présence demandée et report possible : une seule question, deux réponses.
       const askBoth = person.needConfirm && canEdit && person.canDefer && !person.deferral;
       const presenceMarkup = askBoth ? `<div class="notice warn"><b>${esc(t('Confirme la présence de {name} pour son prochain passage.', { name: person.name }))}</b>
@@ -1488,6 +1499,229 @@
       return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status + phone)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson'))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo'))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}">${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
     }).join('');
   }
+
+  // ---------------------------------------------------------- réglages de titre
+  // Tonalité, tempo, voix guide et chœurs d'un titre à venir. Seul le
+  // téléphone qui gère l'auteur du titre le règle (duo : l'auteur), tant que
+  // le titre n'a pas commencé et que le bar n'a pas coupé la fonction. Chaque
+  // changement s'enregistre seul après un court instant, ou à la fermeture de
+  // la fiche. Comme les champs de la page du bar : tant qu'un réglage est
+  // modifié, en cours d'envoi ou refusé, le rafraîchissement (toutes les 4 s)
+  // ne l'écrase pas, et un seul envoi part à la fois pour un titre.
+  const TUNE_SAVE_MS = 600;
+  const TUNE_SAVED_MS = 2600;
+  const VOLUME_CHOICES = [0, 25, 50, 75, 100];
+  const TUNE_FIELDS = ['pitch', 'tempo', 'guide', 'backing'];
+  const TRACK_BACKING = 4, TRACK_GUIDE = 5;
+  const tuneDrafts = new Map(); // entryId → { personId, entryId, value, state, error, seq, timer, busy, again, afterLoad }
+  const tuneSaved = new Map();  // entryId → repère « Enregistré ✓ » : { applied }
+  let tuneSeq = 0;
+  let tuneSheet = null;         // fiche ouverte : { personId, entryId }
+  let tuneShown = '', tuneStatusShown = '';
+  const tuneEnabled = () => state?.songSettings?.enabled !== false;
+  // Plages annoncées par KaraFun (repli : -6..6 demi-tons, -50..50 % par 5).
+  const tuneRanges = () => ({ pitch: { min: -6, max: 6, step: 1, ...state?.songSettings?.ranges?.pitch },
+    tempo: { min: -50, max: 50, step: 5, ...state?.songSettings?.ranges?.tempo } });
+  const tuneDefaults = () => ({ pitch: 0, tempo: 0, guide: 0, backing: 100, ...state?.songSettings?.defaults });
+  // Comme le serveur : tonalité et tempo d'origine (0) ne sont pas gardés.
+  function cleanTune(value) {
+    const out = {};
+    for (const field of TUNE_FIELDS) {
+      const n = value?.[field];
+      if (Number.isInteger(n) && !(n === 0 && (field === 'pitch' || field === 'tempo'))) out[field] = n;
+    }
+    return Object.keys(out).length ? out : null;
+  }
+  const signed = n => n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
+  // Réglages d'un titre, brouillon compris : ce que la personne vient de
+  // choisir, sauf un choix refusé (le serveur garde alors l'ancien réglage).
+  function tuneOf(song) {
+    const draft = song?.entryId != null ? tuneDrafts.get(String(song.entryId)) : null;
+    return draft && draft.state !== 'error' ? draft.value : cleanTune(song?.settings);
+  }
+  // Résumé court : « ♯ +2 · tempo −10 % · guide 50 ». Un volume laissé à sa
+  // valeur par défaut n'est pas rappelé.
+  function tuneSummary(value) {
+    const defaults = tuneDefaults();
+    const parts = [];
+    if (value?.pitch) parts.push(`${value.pitch > 0 ? '♯' : '♭'} ${signed(value.pitch)}`);
+    if (value?.tempo) parts.push(t('tempo {n} %', { n: signed(value.tempo) }));
+    if (value?.guide != null && value.guide !== defaults.guide) parts.push(value.guide ? t('guide {n}', { n: value.guide }) : t('guide coupé'));
+    if (value?.backing != null && value.backing !== defaults.backing) parts.push(value.backing ? t('chœurs {n}', { n: value.backing }) : t('chœurs coupés'));
+    return parts.join(' · ');
+  }
+  // Petit badge sur un titre réglé ; rien si le bar a coupé la fonction. Un
+  // réglage refusé reste signalé sur la ligne tant que le titre se règle.
+  function tuneBadge(song) {
+    if (!tuneEnabled()) return '';
+    const summary = tuneSummary(tuneOf(song));
+    const failed = song?.entryId != null && tuneDrafts.get(String(song.entryId))?.state === 'error';
+    return `${summary ? ` <span class="tune-badge" aria-label="${esc(t('Réglages : {summary}', { summary }))}">${esc(summary)}</span>` : ''}${failed
+      ? ` <span class="tune-badge bad">${esc(t('Réglages non enregistrés'))}</span>` : ''}`;
+  }
+  const TUNE_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>';
+  const tuneButton = (song, personId) => `<button type="button" class="btn small ghost icon tune" data-song-settings="${esc(song.entryId)}" data-person-id="${esc(personId)}" aria-label="${esc(t('Réglages de {title}', { title: song.title || t('cette chanson') }))}" title="${esc(t('Réglages'))}">${TUNE_ICON}</button>`;
+
+  // Titre à régler et où il en est : dans la liste de son auteur, ou déjà
+  // parti vers KaraFun (en cours d'envoi, ou chargé avec ses pistes vocales).
+  function tuneEntry(personId, entryId) {
+    const person = personById(personId);
+    const key = String(entryId);
+    const listed = list(person?.songs).find(song => String(song.entryId) === key);
+    if (listed) return { person, song: listed, canAdjust: manages(person.id) && person.active !== false, tracks: null, duo: !!listed.duet };
+    const sent = list(person?.inKaraFun).find(song => String(song.entryId) === key);
+    return sent ? { person, song: sent, canAdjust: manages(person.id) && !!sent.canAdjust,
+      tracks: Array.isArray(sent.tracks) ? sent.tracks : null, duo: !!sent.duo } : null;
+  }
+
+  // Pourquoi ce titre ne se règle plus depuis ce téléphone.
+  function tuneLockText(entry) {
+    const name = entry.person.name;
+    if (!manages(entry.person.id)) return t('Ce téléphone ne gère plus {name} : ses titres se règlent depuis l’autre téléphone.', { name });
+    if (entry.person.active === false) return t('{name} a quitté la soirée : ses titres ne se règlent plus.', { name });
+    if (entry.song.lock === 'leaving') return t('Ce titre est en train de sortir de KaraFun : il se réglera de nouveau une fois revenu dans la liste.');
+    if (entry.song.lock === 'duo') return t('Seul l’auteur de ce duo peut régler ce titre.');
+    return t('Ce titre a commencé : seul le bar peut encore le régler.');
+  }
+
+  function openTune(personId, entryId) {
+    const entry = tuneEntry(personId, entryId);
+    if (!entry) return toast(t('Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.'), true);
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Réglages · {title}', { title: entry.song.title || t('Chanson') }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <p class="small muted">${esc(t('Pour {name}, tant que le titre n’a pas commencé. KaraFun applique ce que le titre permet.', { name: entry.person.name }))}</p>
+      <div id="songSettingsBody" data-tune-body></div>
+      <p id="tuneStatus" class="tune-status" aria-live="polite"></p>
+      <div class="sheet-actions"><button type="button" class="btn" id="tuneReset" data-tune-reset>${esc(t('Réinitialiser'))}</button><button type="button" class="btn primary" data-close-sheet>${esc(t('Terminé'))}</button></div>`);
+    tuneSheet = { personId: String(personId), entryId: String(entryId) };
+    tuneShown = tuneStatusShown = '';
+    renderTune();
+  }
+
+  // Contenu de la fiche, redessiné à chaque état reçu sans perdre le bouton
+  // qui a le focus ; les valeurs viennent du brouillon tant qu'il existe.
+  function renderTune() {
+    const body = tuneSheet && !$('sheet').hidden ? $('songSettingsBody') : null;
+    if (!body) return;
+    const entry = tuneEntry(tuneSheet.personId, tuneSheet.entryId);
+    const enabled = tuneEnabled();
+    const lock = !enabled ? t('Le bar a désactivé les réglages de titre depuis les téléphones.')
+      : !entry ? t('Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.')
+        : !entry.canAdjust ? tuneLockText(entry) : '';
+    const draft = tuneDrafts.get(tuneSheet.entryId);
+    const value = (!lock && draft ? draft.value : cleanTune(entry?.song.settings)) || {};
+    const ranges = tuneRanges(), defaults = tuneDefaults();
+    const off = lock ? ' disabled' : '';
+    const stepper = (field, label, hint, shown, [down, up]) => {
+      const range = ranges[field], n = value[field] ?? 0;
+      return `<div class="tune-row"><span class="tune-label" id="tuneLabel-${field}">${esc(label)}</span><span class="tune-hint">${esc(hint)}</span>
+        <div class="tune-stepper" role="group" aria-labelledby="tuneLabel-${field}"><button type="button" class="btn" data-tune="${field}" data-step="${-range.step}" data-focus="${field}-down" aria-label="${esc(down)}"${lock || n - range.step < range.min ? ' disabled' : ''}>−</button><output class="tune-value" id="tune${field === 'pitch' ? 'Pitch' : 'Tempo'}">${esc(shown(n))}</output><button type="button" class="btn" data-tune="${field}" data-step="${range.step}" data-focus="${field}-up" aria-label="${esc(up)}"${lock || n + range.step > range.max ? ' disabled' : ''}>+</button></div></div>`;
+    };
+    const volume = (field, label, hint) => {
+      const n = value[field] ?? defaults[field];
+      const kept = value[field] == null && !VOLUME_CHOICES.includes(defaults[field])
+        ? `<span class="tune-hint">${esc(t('Réglage de KaraFun : {n}', { n: defaults[field] }))}</span>` : '';
+      return `<div class="tune-row"><span class="tune-label" id="tuneLabel-${field}">${esc(label)}</span>${hint ? `<span class="tune-hint">${esc(hint)}</span>` : ''}
+        <div class="tune-seg" role="group" aria-labelledby="tuneLabel-${field}">${VOLUME_CHOICES.map(level => `<button type="button" class="btn" data-tune="${field}" data-value="${level}" data-focus="${field}-${level}" aria-pressed="${n === level}"${off}>${esc(level ? String(level) : t('Coupé'))}</button>`).join('')}</div>${kept}</div>`;
+    };
+    // Pistes vocales : connues une fois le titre chargé dans KaraFun.
+    const tracks = entry?.tracks || null;
+    const pitchStep = ranges.pitch.step, tempoStep = ranges.tempo.step;
+    const html = `${lock ? `<p class="notice warn small tune-lock">${esc(lock)}</p>` : ''}
+      ${stepper('pitch', t('Tonalité'), t('0 = originale'), signed,
+        [tp(pitchStep, 'Baisser de {n} demi-ton', 'Baisser de {n} demi-tons'), tp(pitchStep, 'Monter de {n} demi-ton', 'Monter de {n} demi-tons')])}
+      ${stepper('tempo', t('Tempo'), t('0 = tempo original'), n => `${signed(n)} %`,
+        [t('Ralentir de {n} %', { n: tempoStep }), t('Accélérer de {n} %', { n: tempoStep })])}
+      ${!tracks || tracks.includes(TRACK_GUIDE) ? volume('guide', t('Voix guide'), entry?.duo ? t('Duo : les deux voix guides suivent ce réglage.')
+        : t('La voix du chanteur original, pour se repérer.')) : `<p class="tune-hint">${esc(t('Ce titre n’a pas de voix guide.'))}</p>`}
+      ${!tracks || tracks.includes(TRACK_BACKING) ? volume('backing', t('Chœurs'), tracks ? '' : t('Si le titre en a.'))
+        : `<p class="tune-hint">${esc(t('Ce titre n’a pas de chœurs.'))}</p>`}`;
+    if (html !== tuneShown) {
+      const focused = document.activeElement?.closest?.('[data-tune-body]') ? document.activeElement.dataset?.focus : null;
+      body.innerHTML = html;
+      tuneShown = html;
+      if (focused) body.querySelector(`[data-focus="${focused}"]`)?.focus();
+    }
+    $('tuneReset').disabled = !!lock || !Object.keys(value).length;
+    const saved = tuneSaved.get(tuneSheet.entryId);
+    let text = '', tone = '';
+    if (draft?.state === 'error') { text = t('Non enregistré : {error}', { error: draft.error }); tone = 'bad'; }
+    else if (draft?.state === 'saving') text = t('Enregistrement…');
+    else if (draft?.state === 'editing') text = t('Modifié…');
+    else if (saved) {
+      tone = 'ok';
+      text = saved.applied === 'karafun' ? t('Enregistré ✓ · envoyé à KaraFun') : saved.applied === 'start' ? t('Enregistré ✓ · appliqué au début du titre')
+        : saved.applied === 'sending' ? t('Enregistré ✓ · appliqué dès que KaraFun reçoit le titre') : t('Enregistré ✓');
+    } else if (!lock) text = t('Chaque changement s’enregistre tout seul.');
+    const status = `${esc(text)}${tone === 'bad' && !lock ? ` · <button type="button" class="link-btn" data-tune-retry>${esc(t('Réessayer'))}</button>` : ''}`;
+    $('tuneStatus').className = `tune-status${tone ? ` ${tone}` : ''}`;
+    if (status !== tuneStatusShown) { $('tuneStatus').innerHTML = status; tuneStatusShown = status; }
+  }
+
+  // Un changement : brouillon à jour tout de suite (fiche et badge), envoi
+  // après un court instant.
+  function editTune(entry, value) {
+    const key = String(entry.song.entryId);
+    const draft = tuneDrafts.get(key) || { personId: String(entry.person.id), entryId: key };
+    clearTimeout(draft.timer);
+    Object.assign(draft, { value, state: 'editing', error: null, title: entry.song.title || '' });
+    tuneDrafts.set(key, draft);
+    tuneSaved.delete(key);
+    draft.timer = setTimeout(() => flushTune(key), TUNE_SAVE_MS);
+    render();
+  }
+
+  async function flushTune(key, retry = false) {
+    const draft = tuneDrafts.get(key);
+    if (!draft || !(draft.state === 'editing' || (retry && draft.state === 'error'))) return;
+    clearTimeout(draft.timer);
+    // Un envoi à la fois : le suivant part dès la réponse, dans l'ordre.
+    if (draft.busy) { draft.again = true; return; }
+    const seq = draft.seq = ++tuneSeq;
+    draft.state = 'saving';
+    draft.busy = true;
+    renderTune();
+    try {
+      const result = await post('/api/table/song/settings', { personId: draft.personId, entryId: draft.entryId, settings: draft.value });
+      if (tuneDrafts.get(key) === draft && draft.seq === seq && draft.state === 'saving') {
+        // Le brouillon s'efface au premier état demandé après cet envoi.
+        draft.state = 'saved';
+        draft.afterLoad = stateRequest;
+        const mark = { applied: result?.applied || null };
+        tuneSaved.set(key, mark);
+        setTimeout(() => { if (tuneSaved.get(key) === mark) tuneSaved.delete(key); renderTune(); }, TUNE_SAVED_MS);
+      }
+    } catch (error) {
+      if (error.status === 403 && error.code === 'TABLE_ACCESS') { invalidAccess = true; showInvalidLink(); return; }
+      if (tuneDrafts.get(key) === draft && draft.seq === seq && draft.state === 'saving') {
+        Object.assign(draft, { state: 'error', error: error.message });
+        // Fiche fermée (ou ouverte sur un autre titre) : le refus ne passe pas inaperçu.
+        if (!(tuneSheet?.entryId === key && !$('sheet').hidden)) {
+          toast(t('Réglages de « {title} » non enregistrés : {error}', { title: draft.title || t('cette chanson'), error: error.message }), true);
+        }
+      }
+    } finally { draft.busy = false; }
+    if (draft.again) { draft.again = false; flushTune(key); }
+    renderTune();
+    refresh();
+  }
+  const flushTunes = () => { for (const [key, draft] of tuneDrafts) if (draft.state === 'editing') flushTune(key); };
+
+  $('sheetPanel').addEventListener('click', event => {
+    if (!tuneSheet) return;
+    if (event.target.closest('[data-tune-retry]')) { flushTune(tuneSheet.entryId, true); return; }
+    const reset = event.target.closest('[data-tune-reset]');
+    const control = event.target.closest('[data-tune]');
+    if (!reset && !control) return;
+    const entry = tuneEntry(tuneSheet.personId, tuneSheet.entryId);
+    if (!entry?.canAdjust || !tuneEnabled()) { renderTune(); return; }
+    const draft = tuneDrafts.get(tuneSheet.entryId);
+    const next = reset ? {} : { ...((draft ? draft.value : cleanTune(entry.song.settings)) || {}) };
+    if (control?.dataset.step) {
+      const field = control.dataset.tune, range = tuneRanges()[field];
+      next[field] = Math.min(range.max, Math.max(range.min, (next[field] ?? 0) + Number(control.dataset.step)));
+    } else if (control) next[control.dataset.tune] = Number(control.dataset.value);
+    editTune(entry, cleanTune(next));
+  });
 
   function renderQueue(queue, waiting) {
     const ids = ownIds();
@@ -1661,6 +1895,8 @@
   }
 
   $('peopleList').addEventListener('click', event => {
+    const tune = event.target.closest('[data-song-settings]');
+    if (tune) { openTune(tune.dataset.personId, tune.dataset.songSettings); return; }
     const claimHere = event.target.closest('[data-claim-here]');
     if (claimHere) { openClaim(claimHere.dataset.claimHere); return; }
     const share = event.target.closest('[data-share-person]');
@@ -2316,6 +2552,8 @@
   });
 
   function openSheet(html) {
+    // Une autre fiche remplace celle des réglages : ce qui attend part tout de suite.
+    if (tuneSheet) { flushTune(tuneSheet.entryId); tuneSheet = null; }
     const opening = $('sheet').hidden;
     if (opening) lastFocus = document.activeElement;
     $('sheetPanel').innerHTML = html;
@@ -2333,6 +2571,12 @@
     $('sheet').hidden = true;
     $('sheetPanel').innerHTML = '';
     if (!keepPending) pendingSong = null;
+    // Réglages : un changement encore en attente part à la fermeture.
+    const tuned = tuneSheet;
+    tuneSheet = null;
+    if (tuned) flushTune(tuned.entryId);
+    // Liste redessinée depuis l'ouverture : le focus revient au même bouton « Réglages ».
+    if (tuned && lastFocus && !document.contains(lastFocus)) lastFocus = document.querySelector(`[data-song-settings="${tuned.entryId}"]`);
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
     // Fermée depuis la page : son étape d'historique disparaît aussi.
     if (wasOpen) leaveSheetStep();
@@ -2555,7 +2799,8 @@
     if (document.hidden && attentionItems.length) updateTitle();
     setTimeout(tickBattleClock, 1000);
   })();
-  document.addEventListener('visibilitychange', () => { updateTitle(); if (!document.hidden && !invalidAccess) refresh(); });
+  // Page cachée : un réglage de titre en attente part tout de suite.
+  document.addEventListener('visibilitychange', () => { updateTitle(); if (document.hidden) flushTunes(); else if (!invalidAccess) refresh(); });
 })();
 </script>
 </body>

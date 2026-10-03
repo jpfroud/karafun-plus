@@ -24,6 +24,12 @@
       <button class="btn" id="skipBtn">⏭ Passer</button>
       <button class="btn" id="restartBtn" title="Recommence le titre en cours depuis le début, pour le même passage">⏮ Relancer depuis le début</button>
     </div>
+    <details id="liveTuneBox" class="live-tune" hidden><summary id="liveTuneSummary">Réglages en direct</summary>
+      <p class="tiny muted">Tonalité, tempo, voix guide et chœurs du titre en cours, envoyés tout de suite à KaraFun ; les valeurs affichées sont celles de KaraFun.</p>
+      <p id="liveTuneReason" class="small notice-line" role="status" hidden></p>
+      <div id="liveTune"></div>
+      <span id="liveTuneStatus" class="save-status" role="status" aria-live="polite"></span>
+    </details>
     <button class="btn small danger" id="absentBtn" hidden>Absent : retirer la suivante</button>
     <p class="small notice-line" id="autoPlayHeldTxt" role="status" hidden>Lecture automatique suspendue : Spotify a repris en fin de file. Touche « Lecture » quand le micro est prêt ; elle se rétablit ensuite.</p>
     <p class="small muted" id="pendingTxt" role="status"></p>
@@ -119,6 +125,9 @@
       <label class="switch"><input id="interleaveArrivals" type="checkbox"> Intercaler une table qui arrive en nombre</label>
       <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>
+    <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
+    <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
+    <p class="small" id="songSettingsInfo" role="status"></p>
     <div class="row wrap"><label class="switch presence-switch"><input id="requirePresence" type="checkbox"> Exiger « Je suis là » avant l’envoi du titre</label><span class="save-status" data-save-status="requirePresence" aria-live="polite"></span></div>
     <p class="small muted">La confirmation est demandée au prochain passage pendant le titre en cours ; pour un duo, la réponse de l’un des deux suffit. Sans réponse une fois la scène libre, la soirée continue avec le passage suivant et le titre revient juste après lui, avec une nouvelle demande. Au bout du nombre de fois indiqué, le titre est retiré et le bar est prévenu que la personne est peut-être partie.</p>
     <div class="rule-fields">
@@ -246,6 +255,13 @@
 <dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle">Donner un chanteur à un autre téléphone</h2></div><p class="small" id="shareHelp">Fais scanner ce QR code par le nouveau téléphone : il propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd seulement ce chanteur.</p><div class="staff-qr solo-invite-qr" id="shareQrBox" hidden><img id="shareQr" alt="QR code de transfert du chanteur"></div><input id="shareUrl" class="solo-invite-url" readonly aria-label="Lien de transfert à envoyer" hidden><div class="row wrap" id="shareLinkActions" hidden><button type="button" class="btn small" id="shareCopy">Copier le lien</button></div><p class="small muted" id="shareCodeHelp">Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.</p><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
 <dialog id="soloInviteDialog" class="staff-dialog" aria-labelledby="soloInviteTitle"><h2 id="soloInviteTitle">QR pour une personne seule</h2><p class="small">Montre ce QR à une seule personne. Dès son inscription, il ne fonctionnera plus pour créer un autre profil.</p><div class="staff-qr solo-invite-qr"><img id="soloInviteQr" alt="QR individuel pour une inscription En solo"></div><p class="small muted" id="soloInviteExpires"></p><input id="soloInviteUrl" class="solo-invite-url" readonly aria-label="Lien individuel d’inscription"><div class="row wrap"><button type="button" class="btn small" id="soloInviteCopy">Copier le lien</button><button type="button" class="btn small primary" id="soloInviteClose">Fermer</button></div></dialog>
 <dialog id="tableQrDialog" class="staff-dialog qr-dialog" aria-labelledby="tableQrName"><h2 id="tableQrName">Table</h2><div class="staff-qr big-qr"><img id="tableQrImg" alt="QR code de la table"></div><p class="qr-help">Scannez ce QR avec l’appareil photo du téléphone pour inscrire les chanteurs de la table.</p><p class="small muted">Un chanteur est déjà inscrit sur le téléphone d’un ami ? Le bar peut le donner à ce téléphone : Accueil › « Donner un chanteur à un autre téléphone ».</p><input id="tableQrUrl" class="solo-invite-url" readonly aria-label="Lien de la table"><div class="row wrap"><button type="button" class="btn small" id="tableQrCopy">Copier le lien</button><a class="btn small" id="tableQrPage" href="#" target="_blank" rel="noopener">Page</a><button type="button" class="btn small primary" id="tableQrClose">Fermer</button></div></dialog>
+<dialog id="songSheet" class="staff-dialog song-sheet" aria-labelledby="songSheetTitle"><h2 id="songSheetTitle">Réglages du titre</h2><p class="small muted" id="songSheetInfo"></p>
+  <input type="hidden" id="songSheetValue" data-autosave="songSettings">
+  <p class="small notice-line" id="songSheetNote" role="status" hidden></p>
+  <div id="songSheetBody" data-tune-body></div>
+  <div class="row wrap sheet-actions"><button type="button" class="btn small" id="songSheetReset" data-tune-reset>Réinitialiser</button><span class="save-status" id="songSheetStatus" aria-live="polite"></span></div>
+  <p class="tiny muted">Chaque changement s’enregistre seul. Titre pas encore dans KaraFun : réglages envoyés avec lui ; déjà chargé : remplacés dans KaraFun, ou appliqués au début du titre si KaraFun ne le permet pas.</p>
+  <button type="button" class="btn small primary" id="songSheetClose">Fermer</button></dialog>
 <dialog id="tableSheet" class="staff-dialog" aria-labelledby="tableSheetTitle"><h2 id="tableSheetTitle">Table</h2><p class="small muted" id="tableSheetInfo"></p>
   <label class="field" for="tableSheetName">Nom affiché (1 à 40 caractères)</label><div class="row wrap"><input id="tableSheetName" type="text" maxlength="40" data-autosave="tableName"><span class="save-status" id="tableSheetNameStatus" aria-live="polite"></span></div>
   <div id="tableSheetHcRow"><label class="field" for="tableSheetHc">Places (1 à 40)</label><div class="row wrap"><input id="tableSheetHc" type="number" inputmode="numeric" min="1" max="40" data-autosave="tableHc"><span class="save-status" id="tableSheetHcStatus" aria-live="polite"></span></div></div>
@@ -371,7 +387,7 @@
   try { window.history?.replaceState?.({ barTab: activeTab }, '', `${location.pathname || ''}${location.search || ''}#${activeTab}`); } catch (_) { /* */ }
   // Une fenêtre ouverte (QR, détails d'une table, transfert) a sa propre étape :
   // Retour la ferme sans changer d'onglet. Fermée d'un bouton, son étape est retirée.
-  const DIALOGS = ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog'];
+  const DIALOGS = ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog', 'songSheet'];
   let poppingDialog = false, keepStep = false;
   const tabUrl = () => `${location.pathname || ''}${location.search || ''}#${activeTab}`;
   function openDialog(id) {
@@ -454,6 +470,23 @@
       send: (value, id) => post('/api/staff/table/rename', { tableId: id, name: value }), server: id => tableOf(id)?.name || '' },
     tableHc: { min: 1, max: 40, unit: 'personnes', delay: 800,
       send: (value, id) => post('/api/staff/table', { id, headcount: value }), server: id => tableOf(id)?.headcount ?? '' },
+    // Les chanteurs peuvent-ils régler leurs titres depuis leur téléphone ?
+    singerSongSettings: { check: true, send: value => post('/api/staff/settings', { singerSongSettings: value }),
+      server: () => S.settings?.singerSongSettings !== false },
+    // Réglages d'un titre à venir (fiche ouverte depuis la file) : un champ
+    // caché porte { pitch?, tempo?, guide?, backing? } en JSON ; les boutons
+    // de la fiche le changent, puis il suit le même enregistrement que les autres.
+    songSettings: { text: true, delay: 700, validate: () => null,
+      send: async (value, id) => {
+        const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id, settings: JSON.parse(value || '{}') });
+        return SAVED_TUNE[result?.applied] || 'Enregistré ✓';
+      },
+      server: id => tuneKey(songTarget(id)?.q.song?.settings),
+      // Refus arrivé fiche fermée (ou ouverte sur un autre titre) : message, et repère sur la ligne de la file.
+      failed: d => {
+        if (!$('songSheet').open || songSheetEntry !== d.id) toast(`Réglages de « ${songTitles.get(d.id) || 'ce titre'} » non enregistrés : ${d.error}`, true);
+        render();
+      } },
   };
   const keyOf = (kind, id) => id ? `${kind}:${id}` : kind;
   const fieldKind = el => el?.dataset?.autosave || (FIELDS[el?.id] ? el.id : null);
@@ -544,6 +577,7 @@
       d.state = 'error';
       d.error = e.message;
       renderStatus(key);
+      def.failed?.(d);
     }
   }
   const flushAll = () => { for (const [key, d] of drafts) if (d.state === 'editing') flushField(key); };
@@ -1211,6 +1245,242 @@
     }
   };
 
+  // ------------------------------------------------------------ réglages de titre
+  // Tonalité, tempo, voix guide et chœurs. Le bar règle le titre en cours en
+  // direct (Scène : envoi immédiat, valeurs lues dans KaraFun) et chaque titre
+  // à venir (File, menu ⋯ → Réglages : fiche enregistrée toute seule).
+  const VOLUME_CHOICES = [0, 25, 50, 75, 100];
+  const TUNE_FIELDS = ['pitch', 'tempo', 'guide', 'backing'];
+  const TRACK_BACKING = 4, TRACK_GUIDE = 5;
+  const LIVE_CONFIRM_MS = 8000; // sans écho de KaraFun passé ce délai, sa valeur revient
+  const SAVED_TUNE = { karafun: 'Enregistré ✓ · envoyé à KaraFun', start: 'Enregistré ✓ · appliqué au début du titre',
+    sending: 'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre' };
+  const tuneRanges = () => ({ pitch: { min: -6, max: 6, step: 1, ...S?.songSettings?.ranges?.pitch },
+    tempo: { min: -50, max: 50, step: 5, ...S?.songSettings?.ranges?.tempo } });
+  const tuneDefaults = () => ({ pitch: 0, tempo: 0, guide: 0, backing: 100, ...S?.songSettings?.defaults });
+  // Comme le serveur : tonalité et tempo d'origine (0) ne sont pas gardés.
+  function cleanTune(value) {
+    const out = {};
+    for (const field of TUNE_FIELDS) {
+      const n = value?.[field];
+      if (Number.isInteger(n) && !(n === 0 && (field === 'pitch' || field === 'tempo'))) out[field] = n;
+    }
+    return out;
+  }
+  const tuneKey = value => JSON.stringify(cleanTune(value));
+  const signed = n => n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
+  // « ♯ +2 · tempo −10 % · guide 50 » ; un volume à sa valeur par défaut n'est pas rappelé.
+  function tuneSummary(value) {
+    const defaults = tuneDefaults();
+    const parts = [];
+    if (value?.pitch) parts.push(`${value.pitch > 0 ? '♯' : '♭'} ${signed(value.pitch)}`);
+    if (value?.tempo) parts.push(`tempo ${signed(value.tempo)} %`);
+    if (value?.guide != null && value.guide !== defaults.guide) parts.push(value.guide ? `guide ${value.guide}` : 'guide coupé');
+    if (value?.backing != null && value.backing !== defaults.backing) parts.push(value.backing ? `chœurs ${value.backing}` : 'chœurs coupés');
+    return parts.join(' · ');
+  }
+  const tuneBadge = settings => { const text = tuneSummary(settings); return text ? `<span class="badge tune" title="Réglages du titre">${esc(text)}</span>` : ''; };
+  // Contenu d'une liste de boutons redessinée sans perdre celui qui a le focus.
+  function patchFocus(container, html) {
+    if (rendered.get(container) === html) return;
+    const focused = container.contains(document.activeElement) ? document.activeElement.dataset?.focus : null;
+    container.innerHTML = html;
+    rendered.set(container, html);
+    if (focused) container.querySelector(`[data-focus="${focused}"]`)?.focus();
+  }
+  // Boutons des réglages : `attr` les distingue (fiche ou direct), `prefix`
+  // nomme les valeurs affichées. Pistes connues : seulement celles du titre.
+  function tuneControls(prefix, attr, { value, tracks = null, duo = false, lock = false, refused = {} }) {
+    const ranges = tuneRanges(), defaults = tuneDefaults();
+    const stepper = (field, label, hint, shown, [down, up]) => {
+      const range = ranges[field], n = value[field] ?? 0, off = lock || refused[field];
+      const id = `${prefix}${field === 'pitch' ? 'Pitch' : 'Tempo'}`;
+      return `<div class="tune-row"><span class="tune-label" id="${id}Label">${label}</span><span class="tune-hint">${hint}</span>
+        <div class="tune-stepper" role="group" aria-labelledby="${id}Label"><button type="button" class="btn" ${attr}="${field}" data-step="${-range.step}" data-focus="${field}-down" aria-label="${esc(down)}"${off || n - range.step < range.min ? ' disabled' : ''}>−</button><output class="tune-value" id="${id}">${esc(shown(n))}</output><button type="button" class="btn" ${attr}="${field}" data-step="${range.step}" data-focus="${field}-up" aria-label="${esc(up)}"${off || n + range.step > range.max ? ' disabled' : ''}>+</button></div></div>`;
+    };
+    const volume = (field, label, hint) => {
+      const n = value[field] ?? defaults[field], off = lock || refused[field];
+      const id = `${prefix}${field === 'guide' ? 'Guide' : 'Backing'}`;
+      const other = VOLUME_CHOICES.includes(n) ? '' : `<span class="tune-hint">${value[field] == null ? 'Réglage de KaraFun' : 'Actuellement'} : ${esc(n)}</span>`;
+      return `<div class="tune-row"><span class="tune-label" id="${id}Label">${label}</span>${hint ? `<span class="tune-hint">${hint}</span>` : ''}
+        <div class="tune-seg" role="group" id="${id}" aria-labelledby="${id}Label">${VOLUME_CHOICES.map(level => `<button type="button" class="btn" ${attr}="${field}" data-value="${level}" data-focus="${field}-${level}" aria-pressed="${n === level}"${off ? ' disabled' : ''}>${level || 'Coupé'}</button>`).join('')}</div>${other}</div>`;
+    };
+    const pitchStep = ranges.pitch.step, tempoStep = ranges.tempo.step;
+    return stepper('pitch', 'Tonalité', '0 = originale, en demi-tons', signed,
+      pitchStep === 1 ? ['Baisser d’un demi-ton', 'Monter d’un demi-ton'] : [`Baisser de ${pitchStep} demi-tons`, `Monter de ${pitchStep} demi-tons`]) +
+      stepper('tempo', 'Tempo', '0 = tempo original', n => `${signed(n)} %`, [`Ralentir de ${tempoStep} %`, `Accélérer de ${tempoStep} %`]) +
+      (!tracks || tracks.includes(TRACK_GUIDE) ? volume('guide', 'Voix guide', duo ? 'Duo : les deux voix guides suivent ce réglage.' : '')
+        : '<p class="tune-hint">Ce titre n’a pas de voix guide.</p>') +
+      (!tracks || tracks.includes(TRACK_BACKING) ? volume('backing', 'Chœurs', tracks ? '' : 'Si le titre en a.')
+        : '<p class="tune-hint">Ce titre n’a pas de chœurs.</p>');
+  }
+
+  // Titre en cours, en direct : la valeur envoyée s'affiche jusqu'à ce que
+  // KaraFun la renvoie (« Appliqué ») ; sans écho, la valeur de KaraFun revient.
+  const liveDrafts = new Map(); // champ → { value, queueId, sent, timer }
+  let liveStatus = { text: '', tone: '' }, liveQueueId = null;
+  function renderLiveTune() {
+    const live = S.songSettings?.live;
+    const box = $('liveTuneBox');
+    box.hidden = !live || !S.stage || S.stage.kind === 'battle';
+    // Autre titre (ou plus rien) : ni valeur en attente ni avis du précédent.
+    const queueId = box.hidden ? null : live.queueId;
+    if (queueId !== liveQueueId) { liveQueueId = queueId; liveStatus = { text: '', tone: '' }; }
+    if (box.hidden) { liveDrafts.clear(); return; }
+    const value = {};
+    for (const field of TUNE_FIELDS) {
+      const draft = liveDrafts.get(field);
+      if (draft && draft.queueId !== live.queueId) { clearTimeout(draft.timer); liveDrafts.delete(field); }
+      else if (draft?.sent && live[field] === draft.value) {
+        clearTimeout(draft.timer);
+        liveDrafts.delete(field);
+        liveStatus = { text: 'Appliqué par KaraFun ✓', tone: 'ok' };
+      }
+      value[field] = liveDrafts.has(field) ? liveDrafts.get(field).value : live[field];
+    }
+    const perms = S.songSettings.permissions || {}, support = S.songSettings.support || {}, notices = S.songSettings.notices || {};
+    const unavailable = S.songSettings.available === false;
+    const lock = !S.kf?.ready || perms.manageVolumes === false || unavailable;
+    const refused = { pitch: support.pitch === 'refused', tempo: support.tempo === 'refused',
+      guide: support.trackVolume === 'refused', backing: support.trackVolume === 'refused' };
+    // Avis de KaraFun sur les seules fonctions du direct : refusées (boutons
+    // désactivés) ou restées sans réponse (boutons actifs, nouvel essai possible).
+    const told = ['pitch', 'tempo', 'trackVolume'].filter(kind => support[kind] === 'refused' || support[kind] === 'silent')
+      .map(kind => notices[kind]).filter(Boolean);
+    const reason = !S.kf?.ready ? 'KaraFun est déconnecté : reconnecte-le pour régler le titre en cours.'
+      : unavailable ? 'Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : règle le titre en cours dans KaraFun.'
+        : perms.manageVolumes === false ? `KaraFun ne laisse pas ${S.kf.username || 'FileKaraoke'} personnaliser la chanson en cours : active « Personnaliser la chanson en cours » pour ce participant dans la télécommande KaraFun.`
+          : told.length ? told.join(' ') : Object.values(refused).some(Boolean) ? 'KaraFun ne prend pas en charge certains de ces réglages.' : '';
+    $('liveTuneReason').hidden = !reason;
+    $('liveTuneReason').textContent = reason;
+    const summary = tuneSummary(cleanTune(value));
+    $('liveTuneSummary').textContent = `Réglages en direct · ${summary || 'réglages d’origine'}`;
+    patchFocus($('liveTune'), tuneControls('live', 'data-live', { value, tracks: Array.isArray(live.tracks) ? live.tracks : null,
+      duo: (S.stage.ids || []).length > 1, lock, refused }));
+    $('liveTuneStatus').textContent = liveStatus.text;
+    $('liveTuneStatus').className = `save-status${liveStatus.tone ? ` ${liveStatus.tone}` : ''}`;
+  }
+  async function sendLive(field, value) {
+    const live = S?.songSettings?.live;
+    if (!live) return;
+    clearTimeout(liveDrafts.get(field)?.timer);
+    const draft = { value, queueId: live.queueId, sent: false };
+    liveDrafts.set(field, draft);
+    liveStatus = { text: 'Envoyé à KaraFun…', tone: '' };
+    renderLiveTune();
+    try {
+      await post('/api/staff/kf', field === 'guide' || field === 'backing' ? { action: 'track', track: field, value } : { action: field, value });
+      if (liveDrafts.get(field) !== draft) return;
+      draft.sent = true;
+      draft.timer = setTimeout(() => {
+        if (liveDrafts.get(field) !== draft) return;
+        liveDrafts.delete(field);
+        liveStatus = { text: 'KaraFun n’a pas confirmé ce réglage : vérifie dans KaraFun.', tone: 'bad' };
+        renderLiveTune();
+      }, LIVE_CONFIRM_MS);
+      load();
+    } catch (e) {
+      if (liveDrafts.get(field) === draft) liveDrafts.delete(field);
+      liveStatus = { text: `Non appliqué : ${e.message}`, tone: 'bad' };
+      renderLiveTune();
+    }
+  }
+  $('liveTune').addEventListener('click', event => {
+    const control = event.target?.closest?.('[data-live]');
+    const live = S?.songSettings?.live;
+    if (!control || !live) return;
+    const field = control.dataset.live;
+    if (control.dataset.step) {
+      const range = tuneRanges()[field];
+      const now = liveDrafts.get(field)?.value ?? live[field] ?? 0;
+      sendLive(field, Math.min(range.max, Math.max(range.min, now + Number(control.dataset.step))));
+    } else sendLive(field, Number(control.dataset.value));
+  });
+
+  // Fiche d'un titre à venir (File, menu ⋯ → Réglages).
+  const songOwners = new Map(); // titre → auteur, gardé pour l'envoi même si le titre quitte la file
+  const songTitles = new Map(); // titre → nom affiché, pour un refus arrivé fiche fermée
+  const tuneFailed = entryId => entryId != null && drafts.get(keyOf('songSettings', String(entryId)))?.state === 'error';
+  let songSheetEntry = null;
+  // Titre dans la file (chargé dans KaraFun, en cours d'envoi ou prévu), ou sur scène.
+  function songTarget(entryId) {
+    if (entryId == null || entryId === '') return null;
+    if (S?.songSettings?.live?.entryId === entryId) return { onStage: true, q: { song: S.songSettings.live } };
+    const q = (S?.queue || []).find(item => item.song?.entryId === entryId);
+    return q ? { q, tracks: Array.isArray(q.tracks) ? q.tracks : null, duo: q.kind === 'duo' || (q.ids || []).length > 1 } : null;
+  }
+  function openSongSheet(entryId, personId) {
+    songSheetEntry = String(entryId);
+    songOwners.set(songSheetEntry, String(personId || ''));
+    songTitles.set(songSheetEntry, songTarget(songSheetEntry)?.q?.song?.title || '');
+    $('songSheetValue').dataset.autosaveId = songSheetEntry;
+    $('songSheetStatus').dataset.saveStatus = keyOf('songSettings', songSheetEntry);
+    rendered.delete($('songSheetBody'));
+    openDialog('songSheet');
+    renderSongSheet();
+  }
+  function renderSongSheet() {
+    if (!$('songSheet').open || !songSheetEntry) return;
+    const target = songTarget(songSheetEntry);
+    const input = $('songSheetValue');
+    syncField(input);
+    const q = target?.q;
+    if (q && !target.onStage) {
+      $('songSheetTitle').textContent = `Réglages · ${q.song.title || q.title || 'titre'}`;
+      $('songSheetInfo').textContent = [q.name || q.singer, q.song.artist ? `${q.song.title} — ${q.song.artist}` : q.song.title].filter(Boolean).join(' · ');
+    }
+    const perms = S.songSettings?.permissions || {}, support = S.songSettings?.support || {};
+    const lock = target?.onStage ? 'Ce titre est sur scène : règle-le en direct sur l’écran Scène.' : !target ? 'Ce titre n’est plus dans la file.'
+      : S.songSettings?.available === false ? 'Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.' : '';
+    const note = lock || (q.source === 'karafun' && (perms.manageQueue === false || support.queueItemOptions === 'refused')
+      ? 'KaraFun ne laisse pas modifier ce titre déjà chargé : ses réglages seront appliqués au début du titre.' : '');
+    $('songSheetNote').hidden = !note;
+    $('songSheetNote').textContent = note;
+    let value = {};
+    try { value = cleanTune(JSON.parse(input.value || '{}')); } catch (_) { /* valeur abîmée : réglages de KaraFun */ }
+    patchFocus($('songSheetBody'), tuneControls('sheet', 'data-tune', { value, tracks: target?.tracks || null, duo: !!target?.duo, lock: !!lock }));
+    $('songSheetReset').disabled = !!lock || !Object.keys(value).length;
+  }
+  $('songSheet').addEventListener('click', event => {
+    const control = event.target?.closest?.('[data-tune]');
+    const reset = event.target?.closest?.('[data-tune-reset]');
+    const target = songSheetEntry ? songTarget(songSheetEntry) : null;
+    if ((!control && !reset) || !target || target.onStage || S?.songSettings?.available === false) return;
+    const input = $('songSheetValue');
+    const next = reset ? {} : cleanTune(JSON.parse(input.value || '{}'));
+    if (control?.dataset.step) {
+      const field = control.dataset.tune, range = tuneRanges()[field];
+      next[field] = Math.min(range.max, Math.max(range.min, (next[field] ?? 0) + Number(control.dataset.step)));
+    } else if (control) next[control.dataset.tune] = Number(control.dataset.value);
+    input.value = tuneKey(next);
+    fieldEvent({ type: 'input' }, input);
+    renderSongSheet();
+  });
+  $('songSheetClose').onclick = () => $('songSheet').close();
+  // Fermée (bouton, Retour) : un changement en attente part tout de suite.
+  $('songSheet').addEventListener('close', () => { flushAll(); songSheetEntry = null; });
+
+  // Interrupteur des chanteurs : ce que KaraFun a accepté, refusé ou laissé
+  // sans réponse depuis la connexion (un avis par fonction).
+  function renderSongSupport() {
+    const tune = S.songSettings;
+    const parts = [];
+    if (tune && S.kf?.ready && tune.available === false) {
+      parts.push('Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : les téléphones n’affichent pas le bouton « Réglages » et rien n’est appliqué. Règle les titres dans KaraFun.');
+    } else if (tune && S.kf?.ready) {
+      const support = tune.support || {}, perms = tune.permissions || {}, notices = tune.notices || {}, who = S.kf.username || 'FileKaraoke';
+      const LABELS = { pitch: 'tonalité', tempo: 'tempo', trackVolume: 'voix', queueItemOptions: 'titres déjà chargés', addOptions: 'réglages à l’ajout' };
+      const accepted = Object.keys(LABELS).filter(key => support[key] === 'ok');
+      const doubtful = Object.keys(LABELS).filter(key => support[key] === 'refused' || support[key] === 'silent');
+      for (const key of doubtful) if (notices[key]) parts.push(notices[key]);
+      if (accepted.length) parts.push(`KaraFun a accepté : ${accepted.map(key => LABELS[key]).join(', ')}.`);
+      if (!accepted.length && !doubtful.length) parts.push('Pas encore essayé avec ce KaraFun : fais un essai hors service (guide du bar, « Réglages de titre »).');
+      if (perms.manageVolumes === false) parts.push(`Titre en cours : « Personnaliser la chanson en cours » refusé à ${who} dans KaraFun.`);
+      if (perms.manageQueue === false) parts.push(`Titres déjà chargés : « Éditer la file d’attente » refusé à ${who} dans KaraFun ; leurs réglages sont appliqués au début du titre.`);
+    }
+    $('songSettingsInfo').textContent = parts.join(' ');
+  }
+
   function render() {
     const kf = S.kf;
     const status = kfStatus();
@@ -1224,7 +1494,8 @@
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     for (const id of ['battleCooldownMin', 'battleRejectedCooldownMin', 'battleVoteMin', 'battleMinVoters', 'requirePresence',
-      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap']) syncField($(id));
+      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings']) syncField($(id));
+    renderSongSupport();
     renderStaffAlerts();
     if (!renderedOnce && !$('code').value) $('code').value = S.code || '';
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
@@ -1240,6 +1511,7 @@
     renderStageHistory();
 
     patch($('stage'), liveCard(S.stage));
+    renderLiveTune();
     patch($('next'), liveCard(S.next));
     // Après une relance ratée, une copie tardive peut encore arriver : nouvel essai une minute plus tard.
     $('restartBtn').disabled = !S.stage || S.stage.kind === 'battle' || !!S.restarting || !!S.restartRetryAt || !S.kf?.ready;
@@ -1319,12 +1591,15 @@
       const notes = (q.ids || []).map(pid => S.people.find(p => p.id === pid)).filter(p => p?.privateNote)
         .map(p => (q.ids.length > 1 ? `${p.name} : ` : '') + p.privateNote);
       const inviteBadge = pendingInviteBadge(q);
-      const actions = movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : '';
+      // Réglages de titre : tout titre à venir de la file, même déjà chargé dans KaraFun.
+      const tunable = q.song?.entryId && (q.source === 'helper' || (q.ours && (q.source === 'karafun' || q.source === 'envoi')));
+      const tune = tunable ? `<button class="btn small" data-song-settings="${esc(q.song.entryId)}" data-person-id="${esc(q.ids?.[0] ?? q.id ?? '')}" aria-label="Réglages de « ${esc(title)} » : tonalité, tempo, voix">Réglages</button>` : '';
+      const actions = movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}${tune}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `${tune}<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : tune;
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}</span></div>
-        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
       </div>`;
@@ -1381,6 +1656,8 @@
     $('qBody').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson ? Le chanteur reste inscrit à sa table.')) act('/api/staff/remove', { personId: b.dataset.rm }, 'Chanson retirée'); });
     $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => act('/api/staff/move', { personId: b.dataset.urgent, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun'));
     $('qBody').querySelectorAll('[data-kfrm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson de KaraFun ?')) act('/api/staff/kf', { action: 'remove', queueId: b.dataset.kfrm }, 'Chanson retirée de KaraFun'); });
+    $('qBody').querySelectorAll('[data-song-settings]').forEach(b => b.onclick = () => { openRowMenu = null; openSongSheet(b.dataset.songSettings, b.dataset.personId); render(); });
+    renderSongSheet();
     renderTables();
     const soloTable = S.tables.find(t => t.id === 'Comptoir' && t.individual);
     const soloPending = (S.soloInvitations || []).filter(invitation => invitation.tableId === soloTable?.id);

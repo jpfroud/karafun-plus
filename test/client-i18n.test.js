@@ -62,7 +62,7 @@ for (const french of Object.keys(english.texts)) {
 }
 
 // Les messages du serveur traduits existent toujours à l'identique.
-const serverSources = ['server.js', 'scheduler.js', 'battle-vote.js']
+const serverSources = ['server.js', 'scheduler.js', 'battle-vote.js', 'song-settings.js']
   .map(file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\\'/g, '\'')).join('\n');
 for (const [french, translation] of Object.entries(english.errors)) {
   assert.ok(serverSources.includes(french), `message serveur introuvable : « ${french} »`);
