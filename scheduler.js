@@ -844,6 +844,9 @@ class Scheduler {
     const guest = this.people.get(gid);
     const oldRow = (before.people || []).find(row => row.id === gid);
     const newRow = (after.people || []).find(row => row.id === gid);
+    // Remontée sur scène depuis (son propre titre envoyé après le duo) :
+    // ce passage-là reste compté, seuls les compteurs propres au duo bougent.
+    const sangSince = !newRow || (guest?.lastAppearanceTurn || 0) !== (newRow.lastAppearanceTurn || 0);
     if (guest && oldRow && newRow) {
       for (const field of ['duetGuestCount', 'lastAppearanceTurn']) {
         if ((guest[field] || 0) === (newRow[field] || 0)) guest[field] = oldRow[field] || 0;
@@ -856,8 +859,9 @@ class Scheduler {
       return [...map];
     };
     const resets = sel.roundResets ?? (sel.newPersonRound ? 1 : 0);
-    // Un passage de moins dans le tour.
-    if (Array.isArray(after.roundApps) && (this.roundApps.get(gid) || 0) === (valueIn(after.roundApps) || 0)) {
+    // Un passage de moins dans le tour, si elle n'est pas remontée sur scène depuis.
+    const untouched = !sangSince && Array.isArray(after.roundApps) && (this.roundApps.get(gid) || 0) === (valueIn(after.roundApps) || 0);
+    if (untouched) {
       const left = (this.roundApps.get(gid) || 0) - 1;
       if (left > 0) this.roundApps.set(gid, left); else this.roundApps.delete(gid);
       after.roundApps = put(after.roundApps, this.roundApps.get(gid));
@@ -874,13 +878,13 @@ class Scheduler {
       after.roundUse = put(after.roundUse, this.roundUse.get(gid));
     }
     const wasCounted = !resets && Array.isArray(before.roundPeople) && before.roundPeople.includes(gid);
-    if (Array.isArray(after.roundPeople) && after.roundPeople.includes(gid) && !wasCounted &&
+    if (untouched && Array.isArray(after.roundPeople) && after.roundPeople.includes(gid) && !wasCounted &&
         !((this.roundUse.get(gid) || 0) >= 1 - EPS)) {
       this.roundPeople.delete(gid);
       after.roundPeople = after.roundPeople.filter(pid => pid !== gid);
     }
     const wasOwed = resets ? (sel.owed || []).includes(gid) : Array.isArray(before.roundOwed) && before.roundOwed.includes(gid);
-    if (wasOwed && Array.isArray(after.roundOwed) && !after.roundOwed.includes(gid) && this.people.has(gid)) {
+    if (untouched && wasOwed && Array.isArray(after.roundOwed) && !after.roundOwed.includes(gid) && this.people.has(gid)) {
       this.roundOwed.add(gid);
       after.roundOwed = [...after.roundOwed, gid];
     }

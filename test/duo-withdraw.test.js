@@ -227,3 +227,22 @@ test('messages : gardés 30 minutes, dix au plus, effacés par le téléphone', 
   } finally { Date.now = realNow; }
   assert.deepEqual(s.inboxOf(null), []);
 });
+
+test('duo déjà dans KaraFun : un passage de l’invitée envoyé depuis n’est pas effacé par son retrait', () => {
+  const { s, alice, bruno } = trio({ roundAppearanceCap: 0, spacingSongs: 0 });
+  s.chooseSong(bruno, song(10, 'Titre de Bruno'));
+  const duo = s.inviteDuet(alice, bruno.id, song(1, 'Un'));
+  s.answerDuet(bruno, true, duo.entryId);
+  s.Q = [alice.id, bruno.id];
+  const duoSel = s.select();
+  assert.deepEqual(duoSel.ids, [alice.id, bruno.id]);
+  s.commit(duoSel);
+  // Le titre de Bruno part aussi dans KaraFun, derrière le duo.
+  const own = s.select();
+  assert.deepEqual(own.ids, [bruno.id]);
+  s.commit(own);
+  const apps = s.roundApps.get(bruno.id);
+  s.leaveSentDuet(duoSel, bruno.id);
+  assert.equal(s.roundApps.get(bruno.id), apps, 'son propre passage reste compté');
+  assert.ok(s.roundPeople.has(bruno.id), 'et Bruno reste servi dans ce tour');
+});
