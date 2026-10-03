@@ -107,7 +107,7 @@ Sur l'écran « Scène », « **Derniers passages** » (repliés) liste les dix 
 
 ### Page du bar sur téléphone (v1.4)
 
-Sur un téléphone, la page du bar a **cinq écrans** en bas, à portée de pouce : **Scène** (qui chante, son repère, Lecture / Passer / Relancer, duo improvisé, Battle à décider, demandes de duo en attente, puis « Ensuite »), **File** (badge : nombre de titres ; « ⋯ » sur une ligne pour Priorité ou Retirer, « Sélectionner » pour en retirer plusieurs), **Accueil** (QR individuel, tuiles des tables, nouvelle table, « Donner un chanteur à un autre téléphone » ; badge : invitations individuelles en attente), **Repères** et **Plus** (fermeture, envoi et lecture automatiques, règles, Battle, Spotify, KaraFun, accès et QR, statistiques, journal, puis « Fin de soirée » ; un point orange signale une Battle demandée ou un problème KaraFun ou Spotify). L'écran ouvert est gardé dans l'adresse ; le bouton Retour d'Android revient à l'écran précédent et le rafraîchissement ne change jamais d'écran. Sur un grand écran (PC), toutes les cartes restent visibles côte à côte.
+Sur un téléphone, la page du bar a **cinq écrans** en bas, à portée de pouce : **Scène** (qui chante, son repère, Lecture / Passer / Relancer, duo improvisé, Battle à décider, demandes de duo en attente, puis « Ensuite »), **File** (badge : nombre de titres ; « ⋯ » sur une ligne pour Priorité, Réglages ou Retirer, « Sélectionner » pour en retirer plusieurs), **Accueil** (QR individuel, tuiles des tables, nouvelle table, « Donner un chanteur à un autre téléphone » ; badge : invitations individuelles en attente), **Repères** et **Plus** (fermeture, envoi et lecture automatiques, règles, Battle, Spotify, KaraFun, accès et QR, statistiques, journal, puis « Fin de soirée » ; un point orange signale une Battle demandée ou un problème KaraFun ou Spotify). L'écran ouvert est gardé dans l'adresse ; le bouton Retour d'Android revient à l'écran précédent et le rafraîchissement ne change jamais d'écran. Sur un grand écran (PC), toutes les cartes restent visibles côte à côte.
 
 Le haut de la page reste visible sur chaque écran : l'état de KaraFun (le toucher ouvre ses réglages) et les alertes urgentes (« Je suis là » attendu, Battle demandée, KaraFun déconnecté avec un bouton « Reconnecter », envoi à vérifier).
 
@@ -117,12 +117,39 @@ Le haut de la page reste visible sur chaque écran : l'état de KaraFun (le touc
 
 Pour arrêter l'application, double-clique sur `ARRETER.bat` **sur le PC du bar** (ou ferme la fenêtre du programme). La page du bar n'a plus de bouton « Arrêter la soirée » : un appui par erreur depuis un téléphone coupait la soirée sans pouvoir revenir. La soirée est enregistrée en continu. L'arrêt sauvegarde la soirée ; il ne ferme pas KaraFun et ne vide pas sa file native. La clé privée de la page du bar change au prochain démarrage : retrouve le nouvel accès sur `http://localhost:3000/` depuis ce PC.
 
+### Réglages de titre (v1.4)
+
+**Ce qui se règle.** La **tonalité** (en demi-tons, de −6 à +6 sur le KaraFun du bar ; 0 = originale), le **tempo** (par pas de 5 %, de −50 % à +50 %), la **voix guide** (la voix du chanteur original) et les **chœurs** : Coupé, 25, 50, 75 ou 100. Un titre réglé porte un petit badge, par exemple « ♯ +2 · tempo −10 % ».
+
+**Qui peut quoi.**
+- **Les chanteurs**, depuis le téléphone qui les gère : bouton « Réglages » (icône à curseurs) sur chacun de leurs titres à venir, tant que le titre n'a pas commencé. Pour un duo, **seul l'auteur du titre** règle ; le partenaire voit le badge sans pouvoir le changer. Chaque changement s'enregistre seul (« Enregistré ✓ ») et le rafraîchissement de la page ne l'efface pas. Avant l'envoi à KaraFun, les chœurs portent la mention « si le titre en a » ; une fois le titre chargé, seules les pistes qu'il possède sont proposées.
+- **Le bar** : « File » → « ⋯ » → « Réglages » sur tout titre à venir, même déjà chargé dans KaraFun (même fiche, enregistrée toute seule). Sur « Scène », « Réglages en direct » règle le **titre en cours** : chaque appui part tout de suite, les valeurs affichées sont celles de KaraFun. « Appliqué par KaraFun ✓ » confirme ; sans retour de KaraFun en 8 secondes, la page reprend sa valeur et affiche « KaraFun n'a pas confirmé ce réglage ». Les boutons sont désactivés, avec la raison, si KaraFun refuse le droit « Personnaliser la chanson en cours » ou ne prend pas un réglage en charge.
+
+**Interrupteur.** « Plus » → « Règles de la soirée » → « Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs) ». Il est activé par défaut, s'enregistre seul et reste d'une soirée à l'autre. Coupé, le bouton disparaît des téléphones en quelques secondes et leurs demandes sont refusées ; les réglages déjà faits restent appliqués, et le bar garde ses propres réglages. La ligne sous l'interrupteur dit ce que KaraFun a accepté ou refusé depuis le démarrage, et les droits qui lui manquent.
+
+**Comment c'est appliqué.** Les réglages partent avec le titre lors de son ajout à KaraFun. Pour un titre déjà chargé, ils remplacent ceux du titre dans KaraFun (droit « Éditer la file d'attente »), avec le même nom affiché et le même mode Battle. Si KaraFun les a ignorés, ils sont envoyés une seule fois quand KaraFun charge le titre (droit « Personnaliser la chanson en cours »). Pour un duo, la seconde voix guide suit la première. La relance ⏮ garde les réglages du titre.
+
+**Vérifié hors service, et pas encore au bar.** Les tests hors ligne et le faux KaraFun de la démo vérifient les commandes envoyées, les bornes, les droits, les deux pages et les délais : une commande sans réponse ne coupe plus la connexion, elle marque seulement la fonction « non prise en charge ». **Rien n'a été essayé sur le vrai KaraFun du bar** : ces commandes viennent de KaraFun Web. Avant une soirée, fais l'essai décrit dans « À vérifier au bar, hors service », sans clients.
+
 ## Test sur place au bar
 
 1. Prévois un PC Windows sur lequel KaraFun et cette application tourneront toute la soirée. Utilise une connexion Internet stable et empêche la mise en veille automatique du PC pendant le service.
 2. Vérifie que le téléphone d'un gérant, sur le Wi-Fi de gestion, peut ouvrir `http://<adresse-locale-du-PC>:3000/`. Depuis « Accès du bar depuis un téléphone », scanne le **QR privé des gérants** pour accéder directement à la page du bar. Ne l'affiche pas aux clients. Si le réseau invité isole les appareils, garde les gérants sur un réseau qui peut joindre le PC.
 3. Crée une table d'essai et scanne son QR depuis un téléphone en Wi-Fi local. Inscris deux chanteurs avec un téléphone, ajoute un titre, puis reprends un chanteur sur un autre téléphone en scannant le QR « Transférer la gestion » du premier téléphone (essaie aussi le lien envoyé par message et le code à 4 chiffres du bar). Vérifie que ce deuxième téléphone ne peut pas modifier le chanteur qu'il ne gère pas. Essaie aussi « En solo » : le QR individuel créé par le bar doit créer exactement un profil, puis refuser un second téléphone. Vérifie dans les participants de la télécommande KaraFun que le nom `FileKaraoke-…` reste le même après « Reconnecter ».
 4. Fais aussi un essai avec le téléphone en données mobiles, Wi-Fi coupé, **après** avoir configuré l'adresse HTTPS publique ci-dessous. Teste catalogue, vote, présence, file et rafraîchissement en direct. Imprime les QR définitifs seulement après cette vérification.
+
+### À vérifier au bar, hors service
+
+À faire une fois, sans clients, avec le vrai KaraFun du bar et sa file vide (la démo ne remplace pas cet essai) :
+
+1. **Relance ⏮** : lance un titre d'essai, puis « ⏮ Relancer depuis le début » ; le titre doit recommencer une seule fois, sans copie restée dans la file de KaraFun.
+2. **Droits rattachés au nom** : après « Reconnecter », le participant `FileKaraoke-…` doit garder ses droits d'administrateur dans la télécommande KaraFun.
+3. **Réglages de titre** (droits « Personnaliser la chanson en cours » et « Éditer la file d'attente » cochés pour `FileKaraoke-…`) :
+   - sur un téléphone d'essai, règle un titre avec chœurs : tonalité +2 et voix guide 50, attends « Enregistré ✓ » ; une fois le titre envoyé, vérifie dans la file de KaraFun la tonalité et la voix guide du titre ;
+   - titre déjà chargé : change son tempo depuis « File » → « ⋯ » → « Réglages » ; dans KaraFun, le tempo change et **le nom du chanteur affiché reste le même** ;
+   - lance le titre : « Réglages en direct » (écran « Scène ») doit montrer les mêmes valeurs ; touche « + » sur la tonalité, KaraFun doit changer de tonalité et la page afficher « Appliqué par KaraFun ✓ » ;
+   - lis la ligne sous l'interrupteur (« Plus ») : « KaraFun a accepté : … », ou un refus. Un refus ne coupe pas la file : note la version de KaraFun et coupe l'interrupteur si les téléphones ne doivent plus proposer les réglages ;
+   - coupe l'interrupteur : le bouton « Réglages » doit disparaître du téléphone d'essai en quelques secondes. Remets-le ensuite si tout fonctionne.
 
 ## Publier les pages clients sur Internet
 
