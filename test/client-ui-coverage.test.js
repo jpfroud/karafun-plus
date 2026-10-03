@@ -2232,3 +2232,59 @@ test('demandes : une demande de duo sur le titre attendu passe avant « Je suis 
   assert.ok(page.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent ===
     'Dan demandait à chanter « Waterloo » avec Alice : le titre est parti dans KaraFun avant la réponse, la demande a expiré.'));
 });
+
+// Regression: ISSUE-016 — les messages dépliés s'empilaient sans limite et couvraient les fiches
+test('infos : messages dépliés repliables, hauteur bornée et sous les fiches', async () => {
+  const now = Date.now();
+  const state = baseState();
+  state.tablePeople = [person('alice', 'Alice', { inbox: Array.from({ length: 6 }, (_, i) =>
+    ({ id: `n${i}`, kind: 'joinRefused', params: { name: `Ami ${i}`, title: `Titre ${i}` }, at: now })) })];
+  const page = await open({ state });
+  const shown = () => page.node('infoBar').querySelectorAll('.info-item').length;
+  assert.equal(shown(), 2);
+  await page.tap('infoBar', '[data-info-more]');
+  assert.equal(shown(), 6);
+  assert.equal(page.node('infoBar').classList.contains('expanded'), true, 'dépliés : hauteur bornée, défilement');
+  assert.equal(page.find('infoBar', '[data-info-less]').textContent, 'Replier les messages');
+  await page.tap('infoBar', '[data-info-less]');
+  assert.equal(shown(), 2);
+  assert.equal(page.node('infoBar').classList.contains('expanded'), false);
+  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+4 autres messages');
+  const css = html.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rule = selector => (new RegExp(`${selector.replace(/[.]/g, '\\.')}\\s*\\{([^}]*)\\}`).exec(css) || [])[1] || '';
+  const z = selector => Number(/z-index:\s*(\d+)/.exec(rule(selector))?.[1]);
+  assert.ok(z('.client .info-bar') < 20, 'les messages passent sous une fiche ouverte (z-index 20)');
+  assert.match(rule('.client .info-bar.expanded'), /max-height:\s*45vh/);
+  assert.match(rule('.client .info-bar.expanded'), /overflow-y:\s*auto/);
+});
+
+// Regression: ISSUE-017 — la fiche « Transférer … » restait ouverte sur l'ancien téléphone après la reprise
+test('transfert : la fiche se ferme quand l’autre téléphone a repris la personne', async () => {
+  const state = baseState();
+  state.tablePeople.push(person('bruno', 'Bruno'));
+  state.managedIds = ['alice', 'bruno'];
+  const page = await open({ state, respond: url => url === '/api/table/person/share' ? share() : undefined });
+  await page.tap('peopleList', '[data-share-person="bruno"]');
+  assert.equal(page.sheetOpen(), true);
+  await page.poll();
+  assert.equal(page.sheetOpen(), true, 'tant que le transfert attend, la fiche reste');
+  page.state.managedIds = ['alice'];
+  await page.poll();
+  assert.equal(page.sheetOpen(), false, 'repris ailleurs : la fiche se ferme');
+  // Une autre fiche ouverte n'est pas fermée par la reprise d'une autre personne.
+  page.state.managedIds = ['alice', 'bruno'];
+  await page.poll();
+  await page.tap('peopleList', '[data-share-person="alice"]');
+  page.state.managedIds = ['alice'];
+  await page.poll();
+  assert.equal(page.sheetOpen(), true, 'la fiche d’Alice reste ouverte');
+});
+
+// Regression: ISSUE-018 — le champ du code de reprise n'avait pas le style des autres champs
+test('reprise : le champ du code à 4 chiffres a le type texte (style des champs), clavier numérique', async () => {
+  const page = await open({ state: otherPhoneState('Bob') });
+  await page.tap('peopleList', '[data-claim-here="other"]');
+  const input = page.node('claimCode');
+  assert.equal(input.getAttribute('type'), 'text', 'input[type=text] reçoit le style commun (48 px, coins arrondis)');
+  assert.equal(input.getAttribute('inputmode'), 'numeric');
+});

@@ -39,7 +39,10 @@
   .client .signals .btn { flex: 1 1 200px; margin: 0; }
   .client .alert-help { margin: 0; flex: 1 1 100%; }
   /* Infos à ne pas rater : sous l'en-tête, au-dessus des fenêtres ouvertes. */
-  .client .info-bar { position: sticky; top: 62px; z-index: 22; max-width: 528px; margin: 8px 16px 0; display: grid; gap: 6px; }
+  /* Sous les fiches (z-index 20) et la fenêtre des demandes ; dépliés, les messages défilent dans une hauteur bornée. */
+  .client .info-bar { position: sticky; top: 62px; z-index: 6; max-width: 528px; margin: 8px 16px 0; display: grid; gap: 6px; }
+  .client .info-bar.expanded { max-height: 45vh; overflow-y: auto; overscroll-behavior: contain; }
+  .client .info-bar.expanded [data-info-less] { position: sticky; bottom: 0; background: var(--surface-2); }
   @media (min-width: 592px) { .client .info-bar { margin-left: auto; margin-right: auto; } }
   .client .info-item { display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 14px; border-radius: 12px;
     background: #ffd166; color: #1b1300; font-weight: 700; box-shadow: 0 8px 28px rgba(0,0,0,.4); }
@@ -989,9 +992,11 @@
     const html = shown.map(info => `<div class="info-item ${info.tone || ''}"><p>${esc(info.text)}</p><div class="info-actions">${info.defer
       ? `<button type="button" class="btn small" data-info-defer="${esc(info.defer)}">${esc(t('Pas prêt'))}</button>` : ''}${info.leave
       ? `<button type="button" class="btn small" data-info-leave="${esc(info.key)}">${esc(t('Je ne chante pas ce duo'))}</button>` : ''}<button type="button" class="info-close" data-info-dismiss="${esc(info.key)}" aria-label="${esc(t('Masquer ce message'))}">×</button></div></div>`).join('')
-      + (more > 0 ? `<button type="button" class="btn small ghost info-more" data-info-more>${esc(tp(more, '+{n} autre message', '+{n} autres messages'))}</button>` : '');
+      + (more > 0 ? `<button type="button" class="btn small ghost info-more" data-info-more>${esc(tp(more, '+{n} autre message', '+{n} autres messages'))}</button>`
+        : infoExpanded && infos.length > 2 ? `<button type="button" class="btn small ghost info-more" data-info-less>${esc(t('Replier les messages'))}</button>` : '');
     if (html !== infoShown) { $('infoBar').innerHTML = html; infoShown = html; }
     $('infoBar').hidden = !infos.length;
+    $('infoBar').classList.toggle('expanded', infoExpanded && infos.length > 2);
     infoItems = infos;
     const fresh = infos.filter(info => !memory.seen.includes(info.key));
     if (!fresh.length) return false;
@@ -1012,6 +1017,7 @@
     }
     if (info?.leave) { confirmLeave(info.leave); return; }
     if (event.target.closest('[data-info-more]')) { infoExpanded = true; renderInfos(); return; }
+    if (event.target.closest('[data-info-less]')) { infoExpanded = false; renderInfos(); return; }
     const defer = event.target.closest('[data-info-defer]');
     if (defer) deferPerson(defer, defer.dataset.infoDefer);
   });
@@ -1118,6 +1124,8 @@
       }
       if (changed) try { localStorage.setItem(tokensKey, JSON.stringify(personTokens)); } catch (_) {}
       if (movedAway.length) toast(t('La gestion de {names} est passée sur un autre téléphone.', { names: movedAway.join(', ') }));
+      // Transfert terminé : sa fiche (QR, liens, code) n'a plus d'objet ici.
+      if (transferSheetFor && !granted.has(transferSheetFor) && !$('sheet').hidden) closeSheet();
       if (targetPersonId && !managedPeople().some(person => String(person.id) === targetPersonId)) {
         targetPersonId = '';
         duetMode = false;
@@ -1314,6 +1322,7 @@
     });
   });
 
+  let transferSheetFor = null; // personne dont la fiche de transfert est ouverte
   function openTransferSheet(person, share) {
     const individual = !!state?.table?.individual;
     const name = person?.name || t('cette personne');
@@ -1347,6 +1356,7 @@
           : t('Sur l’autre téléphone, ouvre le QR code de la table, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name }))}</p>
         <p class="share-code">${esc(share.code)}</p>
       </details>`);
+    transferSheetFor = person?.id == null ? null : String(person.id);
     $('shareTransfer')?.addEventListener('click', () => {
       navigator.share({ title: t('Karaoké'), text: message, url: share.url }).catch(() => { /* Partage annulé. */ });
     });
@@ -1898,7 +1908,7 @@
     if (!person) return;
     openSheet(`<div class="row"><h3 class="grow">${esc(individual ? t('Récupérer mes chansons') : t('Gérer les chansons de {name}', { name: person.name }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <p class="small muted">${esc(individual ? t('Tu es {name} ? Demande le code au bar ou à ton ancien téléphone.', { name: person.name }) : t('Demande le code à son téléphone actuel ou au bar, même si l’ancien téléphone est éteint.'))} ${esc(t('Le code dure 10 minutes.'))}</p>
-      <form id="claimForm"><label class="field" for="claimCode">${esc(t('Code de reprise à 4 chiffres'))}</label><input id="claimCode" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" required>
+      <form id="claimForm"><label class="field" for="claimCode">${esc(t('Code de reprise à 4 chiffres'))}</label><input id="claimCode" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" required>
       <div class="sheet-actions"><button type="submit" id="claimSubmit" class="btn primary">${esc(t('Prendre en charge'))}</button></div></form>`);
     $('claimForm').addEventListener('submit', e => {
       e.preventDefault();
@@ -2571,6 +2581,7 @@
   });
 
   function openSheet(html) {
+    transferSheetFor = null;
     // Une autre fiche remplace celle des réglages : ce qui attend part tout de suite.
     if (tuneSheet) { flushTune(tuneSheet.entryId); tuneSheet = null; }
     const opening = $('sheet').hidden;
@@ -2587,6 +2598,7 @@
 
   function closeSheet({ keepPending = false } = {}) {
     const wasOpen = !$('sheet').hidden;
+    transferSheetFor = null;
     $('sheet').hidden = true;
     $('sheetPanel').innerHTML = '';
     if (!keepPending) pendingSong = null;

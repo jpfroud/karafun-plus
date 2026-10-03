@@ -41,6 +41,7 @@ window.CLIENT_TRANSLATIONS = {
       'La demande de duo de {person} à {name} a expiré : « {title} » est parti dans KaraFun.': '{person}’s duet request to {name} expired: “{title}” went to KaraFun.',
       '{name} demandait à chanter « {title} » avec {person} : le titre est parti dans KaraFun avant la réponse, la demande a expiré.': '{name} asked to sing “{title}” with {person}: the song went to KaraFun before the answer, so the request expired.',
       'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.': 'Nobody else is waiting to sing: your turn can’t be pushed back.',
+      'Replier les messages': 'Collapse messages',
       'La demande de duo de {person} à {name} est close : « {title} » n’est plus dans sa liste.': '{person}’s duet request to {name} is closed: “{title}” is no longer on their list.',
       '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.': ['“{title}” was removed from {person}’s list: presence not confirmed {n} time. Check with the bar if needed.', '“{title}” was removed from {person}’s list: presence not confirmed {n} times. Check with the bar if needed.'],
       '« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.': '“{title}” would play after closing time: it was taken out of KaraFun and stays on {person}’s list.',
