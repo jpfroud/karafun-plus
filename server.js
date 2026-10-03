@@ -198,21 +198,35 @@ const battleVote = new BattleVote({
     if (!DEMO) setImmediate(() => saveNight());
   },
 });
-// Votes Battle dans le journal : chaque vote une fois, chaque décision une fois.
-const journaledBallots = new Map(); // ballotId → votes déjà notés
-function journalBattle(event) {
-  const b = battleVote.ballot;
-  if (b && !['staff', 'external'].includes(b.mode) && !journaledBallots.has(b.id)) {
-    journaledBallots.set(b.id, 0);
-    if (journaledBallots.size > 50) journaledBallots.delete(journaledBallots.keys().next().value);
+// Votes Battle dans le journal : chaque proposition une fois, chaque votant
+// une fois, chaque décision une fois.
+const journaledBallots = new Map(); // ballotId → votants déjà notés
+// Votants déjà notés pour ce scrutin. Après un redémarrage, le scrutin est
+// rechargé depuis data/battle-vote.json et la soirée reprise contient déjà
+// sa proposition et ses votes : ils sont relus dans son journal, jamais
+// réécrits.
+function journaledVoters(b) {
+  if (journaledBallots.has(b.id)) return journaledBallots.get(b.id);
+  const known = (journal.id ? journal.read(journal.id)?.events || [] : []).filter(e => e.ballotId === b.id);
+  const voters = new Set(known.filter(e => e.ev === 'battle.vote').map(e => e.voterId));
+  journaledBallots.set(b.id, voters);
+  if (journaledBallots.size > 50) journaledBallots.delete(journaledBallots.keys().next().value);
+  if (!known.some(e => e.ev === 'battle.proposed')) {
     journalEvent('battle.proposed', { ballotId: b.id, proposerId: b.proposerId || null,
       songs: (b.songs || [b.suggestedSong]).filter(Boolean).map(song => ({ songId: song.songId, title: song.title })),
       eligible: b.eligiblePersonIds.length, threshold: b.threshold, closesAt: b.closesAt });
   }
-  if (b && journaledBallots.has(b.id)) {
-    const votes = Array.isArray(b.votes) ? b.votes : [];
-    for (const [voterId, choice] of votes.slice(journaledBallots.get(b.id))) journalEvent('battle.vote', { ballotId: b.id, voterId, choice });
-    journaledBallots.set(b.id, votes.length);
+  return voters;
+}
+function journalBattle(event) {
+  const b = battleVote.ballot;
+  if (b && !['staff', 'external'].includes(b.mode)) {
+    const voters = journaledVoters(b);
+    for (const [voterId, choice] of Array.isArray(b.votes) ? b.votes : []) {
+      if (voters.has(voterId)) continue;
+      voters.add(voterId);
+      journalEvent('battle.vote', { ballotId: b.id, voterId, choice });
+    }
   }
   if (['requested', 'quorum', 'expired', 'rejected'].includes(event) && b) {
     const votes = b.votes || [];
