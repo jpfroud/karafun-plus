@@ -385,3 +385,84 @@ test('duo noté puis changé par le bar : un seul duo improvisé compté', () =>
   assert.equal(stats.global.duos.improvisedStages, 1);
   assert.deepEqual(stats.timeline.stages[0].ids, ['p1', 'p3']);
 });
+
+test('vidage de la file : les titres restants passent à « retiré (bar) », plus en attente', () => {
+  const T = m => T0 + m * 60000;
+  const events = [
+    { t: T(0), seq: 1, ev: 'person.joined', personId: 'pA', tableId: '1' },
+    { t: T(0), seq: 2, ev: 'person.joined', personId: 'pB', tableId: '2' },
+    { t: T(1), seq: 3, ev: 'song.requested', personId: 'pA', entryId: 'a1', title: 'Chanté' },
+    { t: T(1), seq: 4, ev: 'song.requested', personId: 'pA', entryId: 'a2', title: 'Restant A' },
+    { t: T(2), seq: 5, ev: 'song.requested', personId: 'pB', entryId: 'b1', title: 'Restant B' },
+    { t: T(3), seq: 6, ev: 'stage.started', queueId: 1, entryId: 'a1', ids: ['pA'], source: 'queue' },
+    { t: T(6), seq: 7, ev: 'stage.ended', queueId: 1, playedSec: 180 },
+    { t: T(10), seq: 8, ev: 'staff.queueCleared', songs: 2, pendingCancelled: false },
+    { t: T(20), seq: 9, ev: 'song.requested', personId: 'pB', entryId: 'b2', title: 'Après le vidage' },
+  ];
+  const stats = computeStats({ meta: {}, events, now: T(30) });
+  const status = id => Object.fromEntries(byId(stats, id).songs.map(s => [s.entryId, [s.status, s.removedBy]]));
+  assert.deepEqual(status('pA'), { a1: ['sung', null], a2: ['removed', 'staff'] });
+  assert.deepEqual(status('pB'), { b1: ['removed', 'staff'], b2: ['waiting', null] });
+  assert.equal(byId(stats, 'pA').songs.find(s => s.entryId === 'a2').removedAt, T(10));
+  assert.equal(byId(stats, 'pA').waiting, 0);
+  assert.equal(byId(stats, 'pB').waiting, 1, 'seul le titre demandé après le vidage attend');
+  assert.equal(byId(stats, 'pA').removed, 1);
+  assert.equal(byId(stats, 'pB').removed, 1);
+  assert.deepEqual(byId(stats, 'pB').removedBy, { staff: 1 });
+  assert.equal(stats.global.staff.queueCleared, 1);
+  assert.equal(stats.global.staff.removedSongs, 0, 'le vidage a son propre compteur');
+  const exported = exportEvening({ meta: {}, events, now: T(30) });
+  assert.deepEqual(exported.stats.singers.map(s => s.waiting), [0, 1]);
+  assert.deepEqual(exported.stats.singers.flatMap(s => s.songs.map(song => song.status)), ['sung', 'removed', 'removed', 'waiting']);
+});
+
+test('équité : un bonus temporaire ou tardif ne compte que pendant sa durée', () => {
+  // A (table 1) et B (table 2) présents de 0 à 120 min ; A chante 3 fois, B une fois.
+  const T = m => T0 + m * 60000;
+  const evening = bonusEvents => {
+    const events = [
+      { t: T(0), ev: 'person.joined', personId: 'pA', tableId: '1' },
+      { t: T(0), ev: 'person.joined', personId: 'pB', tableId: '2' },
+      ...['a1', 'a2', 'a3'].map(entryId => ({ t: T(0), ev: 'song.requested', personId: 'pA', entryId })),
+      { t: T(0), ev: 'song.requested', personId: 'pB', entryId: 'b1' },
+      ...[['a1', 'pA', 10], ['a2', 'pA', 30], ['a3', 'pA', 50], ['b1', 'pB', 70]].flatMap(([entryId, pid, m], i) => [
+        { t: T(m), ev: 'stage.started', queueId: i + 1, entryId, ids: [pid], source: 'queue' },
+        { t: T(m + 4), ev: 'stage.ended', queueId: i + 1, playedSec: 240 }]),
+      { t: T(120), ev: 'person.left', personId: 'pA', by: 'self' },
+      { t: T(120), ev: 'person.left', personId: 'pB', by: 'self' },
+      ...bonusEvents.map(([m, ev, fields]) => ({ t: T(m), ev, ...fields })),
+    ].map((e, i) => ({ seq: i + 1, ...e }));
+    return computeStats({ meta: {}, events, now: T(130) });
+  };
+  // Rythmes bruts : A 1,5 par heure, B 0,5 ; indice brut 0,8.
+  const temporary = evening([[0, 'person.bonus', { personId: 'pA', level: 3 }], [60, 'person.bonus', { personId: 'pA', level: 0 }]]);
+  assert.equal(temporary.fairness.jain, 0.8);
+  assert.equal(byId(temporary, 'pA').weight, 1.5, '× 2 pendant la moitié de la présence');
+  assert.equal(byId(temporary, 'pA').bonus, 0, 'dernier niveau affiché');
+  assert.equal(temporary.fairness.bonusPeople, 1);
+  close(temporary.fairness.jainAdjusted, jain([1.5 / 1.5, 0.5]), 0.001);
+  const fairRate = 4 / (1.5 * 2 + 1 * 2);
+  close(temporary.fairness.fairRate, fairRate);
+  close(byId(temporary, 'pA').expectedTurns, fairRate * 1.5 * 2);
+  close(byId(temporary, 'pB').expectedTurns, fairRate * 2);
+  assert.equal(byId(temporary, 'pA').bonusSec, 3600);
+  assert.equal(byId(temporary, 'pB').bonusSec, 0);
+  // Bonus posé une minute avant la fin : presque sans effet.
+  const late = evening([[119, 'person.bonus', { personId: 'pA', level: 3 }]]);
+  assert.equal(byId(late, 'pA').weight, 1.008);
+  assert.equal(byId(late, 'pA').bonus, 3);
+  close(late.fairness.jainAdjusted, jain([1.5 / 1.008, 0.5]), 0.001);
+  // Bonus de table temporaire : même effet.
+  const table = evening([[0, 'table.bonus', { tableId: '1', level: 3 }], [60, 'table.bonus', { tableId: '1', level: 0 }]]);
+  assert.equal(byId(table, 'pA').weight, 1.5);
+  assert.equal(table.fairness.bonusPeople, 1);
+  close(table.fairness.jainAdjusted, 0.9, 0.001);
+  // +1 puis −1 dont la moyenne vaut exactement 1 : la personne a bien eu un bonus.
+  const balanced = evening([[0, 'person.bonus', { personId: 'pA', level: 1 }], [3200 / 60, 'person.bonus', { personId: 'pA', level: -1 }]]);
+  assert.equal(byId(balanced, 'pA').weight, 1);
+  assert.equal(balanced.fairness.bonusPeople, 1);
+  assert.equal(byId(balanced, 'pA').bonusSec, 7200);
+  // Bonus posé avant l'arrivée : actif dès l'arrivée, comme dans l'ordonnanceur.
+  const before = evening([[-10, 'table.bonus', { tableId: '2', level: 2 }]]);
+  assert.equal(byId(before, 'pB').weight, 1.5);
+});

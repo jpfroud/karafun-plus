@@ -56,9 +56,9 @@ const DEFINITIONS = {
   turnsPerHour: 'Passages de ses titres par heure de présence.',
   wait: 'Du moment où le titre pouvait passer (sa demande, ou la fin du passage précédent de la personne) au début de son passage.',
   requestDelay: 'De la demande du titre à son passage sur scène, même s’il était loin dans la liste de la personne.',
-  fairShare: 'Rythme attendu si chaque chanteur passait au même rythme par heure de présence, multiplié par son bonus ou malus.',
+  fairShare: 'Rythme attendu si chaque chanteur passait au même rythme par heure de présence, multiplié par son bonus ou malus moyen (pondéré par le temps où il était actif pendant sa présence).',
   jain: 'Indice de Jain sur les passages par heure de présence : 1 = tout le monde au même rythme, 1/n = une seule personne chante. Calculé sur les chanteurs présents au moins 30 min qui ont demandé un titre.',
-  jainAdjusted: 'Même indice après division du rythme de chacun par son bonus ou malus (les écarts voulus par le bar ne comptent pas).',
+  jainAdjusted: 'Même indice après division du rythme de chacun par son bonus ou malus moyen, pondéré par le temps où il était actif pendant sa présence (les écarts voulus par le bar ne comptent pas).',
   demandJain: 'Indice de Jain sur les passages par heure avec au moins un titre en attente (au moins 15 min).',
   deadTime: 'Temps entre deux chansons alors qu’un titre attendait, rapporté au temps de spectacle (chansons + temps morts). File vide et fermeture exclues.',
   songsPerHour: 'Chansons lancées par heure, de la première à la fin de la dernière (arrêts de l’application retirés).',
@@ -94,6 +94,35 @@ function overlapMs(start, end, spans) {
   let total = 0;
   for (const [a, b] of spans) total += Math.max(0, Math.min(end, b) - Math.max(start, a));
   return total;
+}
+
+// Niveau de bonus en vigueur à l'instant t ([heure, niveau] dans l'ordre du
+// journal ; 0 avant le premier changement).
+function levelAt(log, t) {
+  let level = 0;
+  for (const [at, value] of log) { if (at > t) break; level = value; }
+  return level;
+}
+
+// Présence pondérée par le bonus de la personne et celui de sa table : chaque
+// niveau ne compte que pendant le temps où il était actif, comme dans
+// l'ordonnanceur qui l'applique à chaque décision de tour. Rend aussi le
+// temps de présence passé avec un poids différent de 1.
+function weightedPresence(intervals, personLog, tableLog, offline) {
+  const cuts = [...personLog, ...tableLog].map(([at]) => at);
+  let weightedMs = 0, bonusMs = 0;
+  for (const [a, b] of intervals) {
+    if (!(b > a)) continue;
+    const points = [...new Set([a, ...cuts.filter(at => at > a && at < b), b])].sort((x, y) => x - y);
+    for (let i = 0; i + 1 < points.length; i++) {
+      const ms = points[i + 1] - points[i] - overlapMs(points[i], points[i + 1], offline);
+      if (ms <= 0) continue;
+      const weight = bonusWeight(levelAt(personLog, points[i])) * bonusWeight(levelAt(tableLog, points[i]));
+      weightedMs += ms * weight;
+      if (Math.abs(weight - 1) > 1e-9) bonusMs += ms;
+    }
+  }
+  return { weightedMs, bonusMs };
 }
 
 // --------------------------------------------------------------- texte
@@ -138,14 +167,14 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const tables = new Map();
   const tableOf = id => {
     const key = String(id);
-    if (!tables.has(key)) tables.set(key, { id: key, individual: !!tableNames[key]?.individual, openedAt: null, leftAt: null, bonus: 0 });
+    if (!tables.has(key)) tables.set(key, { id: key, individual: !!tableNames[key]?.individual, openedAt: null, leftAt: null, bonus: 0, bonusLog: [] });
     return tables.get(key);
   };
   const personOf = (id, t) => {
     if (!id) return null;
     if (!people.has(id)) {
       people.set(id, { id, tableId: roster[id]?.tableId ?? null, joinedAt: t, intervals: [], openSince: t,
-        lastActivity: t, explicitLeft: null, bonus: 0, active: new Set(), demandSince: null, demandMs: 0,
+        lastActivity: t, explicitLeft: null, bonus: 0, bonusLog: [], active: new Set(), demandSince: null, demandMs: 0,
         requests: 0, removed: 0, removedBy: {}, deferrals: 0, deferSongs: 0, deferMs: 0,
         presenceAsks: 0, presenceLatencies: [], presenceSkips: 0, presenceRemoved: 0, absences: 0,
         battleProposals: 0, battleVotes: 0, invitesSent: 0, invitesReceived: 0, joinRequests: 0,
@@ -215,8 +244,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         for (const pid of Array.isArray(e.personIds) ? e.personIds : []) leave(people.get(pid), t);
         break;
       }
-      case 'table.bonus': tableOf(e.tableId).bonus = Number(e.level) || 0; staff.bonus++; break;
-      case 'person.bonus': { const p = personOf(e.personId, t); p.bonus = Number(e.level) || 0; staff.bonus++; break; }
+      // Dernier niveau (affiché) et historique (pondération par le temps).
+      case 'table.bonus': { const tb = tableOf(e.tableId); tb.bonus = Number(e.level) || 0; tb.bonusLog.push([t, tb.bonus]); staff.bonus++; break; }
+      case 'person.bonus': { const p = personOf(e.personId, t); p.bonus = Number(e.level) || 0; p.bonusLog.push([t, p.bonus]); staff.bonus++; break; }
       case 'person.joined': {
         const p = personOf(e.personId, t);
         p.joinedAt = Math.min(p.joinedAt, t);
@@ -456,7 +486,18 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'staff.queueCleared': {
         staff.queueCleared++;
         queueClearedAt = t;
-        for (const p of people.values()) { p.active.clear(); stopDemand(p, t); }
+        // Le serveur ne note pas un song.removed par titre : chaque titre
+        // encore en attente est retiré par le bar à cet instant (le compteur
+        // staff.removedSongs reste réservé aux retraits titre par titre).
+        for (const p of people.values()) {
+          for (const entryId of p.active) {
+            const s = songs.get(entryId);
+            if (!s || s.stageAt || s.removedAt) continue;
+            s.removedAt = t; s.removedBy = 'staff';
+            p.removed++; p.removedBy.staff = (p.removedBy.staff || 0) + 1;
+          }
+          p.active.clear(); stopDemand(p, t);
+        }
         break;
       }
       case 'staff.play': staff.play++; break;
@@ -518,7 +559,11 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     p.presenceMs = Math.max(0, sum(p.intervals.map(([a, b]) => Math.max(0, b - a) - overlapMs(a, b, offline))));
     p.leftAt = p.intervals.length ? p.intervals.at(-1)[1] : null;
     p.leftEstimated = p.intervals.length ? p.intervals.at(-1)[2] : false;
-    p.weight = bonusWeight(p.bonus) * bonusWeight(p.tableId != null ? tables.get(String(p.tableId))?.bonus : 0);
+    const table = p.tableId != null ? tables.get(String(p.tableId)) : null;
+    const { weightedMs, bonusMs } = weightedPresence(p.intervals, p.bonusLog, table?.bonusLog || [], offline);
+    p.bonusMs = bonusMs;
+    // Bonus moyen sur la présence ; sans présence, le dernier niveau connu.
+    p.weight = p.presenceMs > 0 ? weightedMs / p.presenceMs : bonusWeight(p.bonus) * bonusWeight(table?.bonus || 0);
   }
 
   // ------------------------------------------------ attentes par passage
@@ -560,7 +605,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       turnsPerHour: hours > 0 ? round(own.length / hours, 2) : null,
       appearancesPerHour: hours > 0 ? round((own.length + guest.length) / hours, 2) : null,
       turnsPerDemandHour: p.demandMs > 0 ? round(own.length / (p.demandMs / 3600000), 2) : null,
-      bonus: p.bonus, weight: round(p.weight, 3),
+      bonus: p.bonus, weight: round(p.weight, 3), bonusSec: sec(p.bonusMs),
       waits: { n: myWaits.length, avgSec: round(mean(myWaits)), medianSec: round(median(myWaits)),
         maxSec: myWaits.length ? Math.max(...myWaits) : null, minSec: myWaits.length ? Math.min(...myWaits) : null },
       requestDelayAvgSec: round(mean(waits.filter(w => w.personId === p.id).map(w => w.requestDelaySec))),
@@ -601,7 +646,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     n: fairPool.length,
     jain: round(jain(rates), 3),
     jainAdjusted: round(jain(fairPool.map((s, i) => rates[i] / s.weight)), 3),
-    bonusPeople: fairPool.filter(s => Math.abs(s.weight - 1) > 1e-9).length,
+    bonusPeople: fairPool.filter(s => people.get(s.id).bonusMs > 0).length,
     demandN: demandPool.length,
     demandJain: round(jain(demandRates), 3),
     demandJainAdjusted: round(jain(demandPool.map((s, i) => demandRates[i] / s.weight)), 3),

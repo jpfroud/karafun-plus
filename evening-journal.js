@@ -109,12 +109,16 @@ class EveningJournal {
   }
 
   // Ouvre la soirée enregistrée dans l'instantané (redémarrage), sinon une
-  // nouvelle. Rend true si la soirée précédente a été reprise.
+  // nouvelle. Rend true si la soirée précédente a été reprise. Une soirée
+  // déjà close n'est jamais rouverte : la clôture et l'instantané qui cite la
+  // soirée suivante sont deux écritures distinctes, et un arrêt entre les deux
+  // laisse un instantané qui pointe encore vers l'archive.
   open({ resume = null, rules = null } = {}) {
     const now = this.now();
     if (resume && validId(resume.id)) {
       const saved = this.read(resume.id);
-      if (saved) {
+      const closed = saved && (Number.isFinite(saved.meta?.endedAt) || saved.events.some(e => e.ev === 'evening.closed'));
+      if (saved && !closed) {
         const last = saved.events.at(-1);
         this.current = { id: resume.id, meta: saved.meta, events: saved.events,
           seq: saved.events.reduce((max, e) => Math.max(max, Number(e.seq) || 0), 0) };

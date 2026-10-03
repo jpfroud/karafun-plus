@@ -73,6 +73,45 @@ test('journal : reprise de la même soirée après un redémarrage, durée d’a
   assert.equal(new EveningJournal({ dir: null, now }).open({ resume: saved }), false, 'en mémoire, rien à reprendre');
 });
 
+test('journal : une soirée close n’est jamais reprise (arrêt entre la clôture et l’instantané suivant)', () => {
+  const dir = tmp(), now = clock();
+  const first = new EveningJournal({ dir, now, boot: 'b1' });
+  first.open();
+  first.append('person.joined', { personId: 'p1', tableId: '1' });
+  // Dernier instantané de soirée réussi : il cite encore cette soirée.
+  const saved = first.snapshot();
+  now.add(120000);
+  first.close({ by: 'staff-reset', summarize: () => ({ ok: 1 }) });
+  // Arrêt ici : ni nouvelle soirée, ni nouvel instantané.
+  const metaFile = path.join(dir, saved.id, 'meta.json');
+  const summaryFile = path.join(dir, saved.id, 'summary.json');
+  const journalFile = path.join(dir, saved.id, 'journal.jsonl');
+  const before = { meta: fs.readFileSync(metaFile, 'utf8'), summary: fs.readFileSync(summaryFile, 'utf8'),
+    journal: fs.readFileSync(journalFile, 'utf8') };
+  const endedAt = JSON.parse(before.meta).endedAt;
+  assert.ok(Number.isFinite(endedAt));
+  now.add(60000);
+  const second = new EveningJournal({ dir, now, boot: 'b2' });
+  assert.equal(second.open({ resume: saved }), false, 'la soirée close reste archivée');
+  assert.notEqual(second.id, saved.id);
+  second.person('p2', { name: 'Bruno', tableId: '2' });
+  second.append('person.joined', { personId: 'p2', tableId: '2' });
+  assert.equal(fs.readFileSync(journalFile, 'utf8'), before.journal, 'archive inchangée');
+  assert.equal(lines(dir, saved.id).at(-1).ev, 'evening.closed');
+  assert.equal(fs.readFileSync(metaFile, 'utf8'), before.meta, 'heure de fin gardée');
+  assert.equal(fs.readFileSync(summaryFile, 'utf8'), before.summary);
+  const archived = second.list().find(row => row.id === saved.id);
+  assert.equal(archived.endedAt, endedAt);
+  assert.equal(archived.current, false);
+  // Arrêt au milieu de la clôture : evening.closed écrit, heure de fin pas encore.
+  const meta = JSON.parse(before.meta);
+  fs.writeFileSync(metaFile, JSON.stringify({ ...meta, endedAt: null }));
+  const third = new EveningJournal({ dir, now, boot: 'b3' });
+  assert.equal(third.open({ resume: saved }), false, 'evening.closed suffit');
+  assert.notEqual(third.id, saved.id);
+  assert.equal(fs.readFileSync(journalFile, 'utf8'), before.journal);
+});
+
 test('journal : une dernière ligne coupée est ignorée, une ligne abîmée au milieu est comptée', () => {
   const ok = JSON.stringify({ ev: 'a', t: 1, seq: 1 });
   assert.deepEqual(parseLines(`${ok}\n{"ev":"b","t":2`), { events: [{ ev: 'a', t: 1, seq: 1 }], truncated: true, corrupt: 0 });

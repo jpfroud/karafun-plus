@@ -198,21 +198,35 @@ const battleVote = new BattleVote({
     if (!DEMO) setImmediate(() => saveNight());
   },
 });
-// Votes Battle dans le journal : chaque vote une fois, chaque décision une fois.
-const journaledBallots = new Map(); // ballotId → votes déjà notés
-function journalBattle(event) {
-  const b = battleVote.ballot;
-  if (b && !['staff', 'external'].includes(b.mode) && !journaledBallots.has(b.id)) {
-    journaledBallots.set(b.id, 0);
-    if (journaledBallots.size > 50) journaledBallots.delete(journaledBallots.keys().next().value);
+// Votes Battle dans le journal : chaque proposition une fois, chaque votant
+// une fois, chaque décision une fois.
+const journaledBallots = new Map(); // ballotId → votants déjà notés
+// Votants déjà notés pour ce scrutin. Après un redémarrage, le scrutin est
+// rechargé depuis data/battle-vote.json et la soirée reprise contient déjà
+// sa proposition et ses votes : ils sont relus dans son journal, jamais
+// réécrits.
+function journaledVoters(b) {
+  if (journaledBallots.has(b.id)) return journaledBallots.get(b.id);
+  const known = (journal.id ? journal.read(journal.id)?.events || [] : []).filter(e => e.ballotId === b.id);
+  const voters = new Set(known.filter(e => e.ev === 'battle.vote').map(e => e.voterId));
+  journaledBallots.set(b.id, voters);
+  if (journaledBallots.size > 50) journaledBallots.delete(journaledBallots.keys().next().value);
+  if (!known.some(e => e.ev === 'battle.proposed')) {
     journalEvent('battle.proposed', { ballotId: b.id, proposerId: b.proposerId || null,
       songs: (b.songs || [b.suggestedSong]).filter(Boolean).map(song => ({ songId: song.songId, title: song.title })),
       eligible: b.eligiblePersonIds.length, threshold: b.threshold, closesAt: b.closesAt });
   }
-  if (b && journaledBallots.has(b.id)) {
-    const votes = Array.isArray(b.votes) ? b.votes : [];
-    for (const [voterId, choice] of votes.slice(journaledBallots.get(b.id))) journalEvent('battle.vote', { ballotId: b.id, voterId, choice });
-    journaledBallots.set(b.id, votes.length);
+  return voters;
+}
+function journalBattle(event) {
+  const b = battleVote.ballot;
+  if (b && !['staff', 'external'].includes(b.mode)) {
+    const voters = journaledVoters(b);
+    for (const [voterId, choice] of Array.isArray(b.votes) ? b.votes : []) {
+      if (voters.has(voterId)) continue;
+      voters.add(voterId);
+      journalEvent('battle.vote', { ballotId: b.id, voterId, choice });
+    }
   }
   if (['requested', 'quorum', 'expired', 'rejected'].includes(event) && b) {
     const votes = b.votes || [];
@@ -2047,6 +2061,30 @@ function leaveSentDuo(tr, guestId, by) {
   return sched.leaveSentDuet(tr.sel, guestId, { by });
 }
 
+// Le bar marque partis une personne ou toute une table (`ids`). Un duo déjà
+// chargé dont seuls des invités partent reste dans KaraFun, au nom de son
+// auteur seul (un titre en train de sortir revient à son auteur) ; un envoi
+// sans accusé garde son nom d'origine pour que KaraFun le reconnaisse. À
+// appeler avant le départ, pour que les invités récupèrent leur part de
+// tour. Rend les titres suivis à retirer de KaraFun (ceux dont l'auteur part).
+function keepSentDuosOfLeavers(ids) {
+  const { current } = analyze();
+  const upcoming = tracked.filter(tr => !isOnStage(tr, current) && tr.sel.ids.some(id => ids.has(id)));
+  const asGuest = upcoming.filter(tr => !ids.has(tr.sel.ids[0]));
+  let keptAsSolo = 0;
+  for (const tr of asGuest) {
+    if (tr.cancelled || tr.pulled || tr.absent || tr.startedAt) continue;
+    for (const gid of tr.sel.ids.slice(1).filter(id => ids.has(id))) sched.leaveSentDuet(tr.sel, gid, { by: 'staff' });
+    keptAsSolo++;
+  }
+  if (pending && !pending.cancelled && !ids.has(pending.sel.ids[0])) {
+    const guests = pending.sel.ids.slice(1).filter(id => ids.has(id));
+    for (const gid of guests) sched.leaveSentDuet(pending.sel, gid, { by: 'staff', keepLabel: true });
+    if (guests.length) keptAsSolo++;
+  }
+  return { upcomingTracks: upcoming.filter(tr => !asGuest.includes(tr)), keptAsSolo };
+}
+
 function assertRoomBeforeClosing(p, mode) {
   if (closingAt() == null) return;
   // Remplacer son prochain titre n'ajoute pas de passage.
@@ -2662,8 +2700,8 @@ const handlers = {
     }
     const people = sched.tableSingers(tableId);
     const ids = new Set(people.map(person => person.id));
-    const { current } = analyze();
-    const upcomingTracks = tracked.filter(tr => !isOnStage(tr, current) && tr.sel.ids.some(id => ids.has(id)));
+    // Invités de duos d'autres tables : le titre de l'auteur reste en solo.
+    const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(ids);
     if (pending?.sel.ids.some(id => ids.has(id))) pending.cancelled = true;
     sched.tableLeft(tableId);
     soloInvitations.revokeTable(tableId);
@@ -2676,7 +2714,8 @@ const handlers = {
       catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
     }
     sync();
-    return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled };
+    return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled,
+      ...(keptAsSolo ? { keptAsSolo } : {}) };
   },
   'POST /api/staff/tables-clear': async (req, res, body) => {
     if (body.confirmation !== 'SUPPRIMER TOUTES LES TABLES') {
@@ -2807,23 +2846,9 @@ const handlers = {
   'POST /api/staff/person/leave': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p) throw new Error('Chanteur inconnu.');
-    const { current } = analyze();
-    const upcoming = tracked.filter(tr => tr.sel.ids.includes(p.id) && !isOnStage(tr, current));
     // Invitée d'un duo déjà chargé : le titre reste dans KaraFun, au nom de
-    // son auteur seul (un titre en train de sortir revient à son auteur).
-    const asGuest = upcoming.filter(tr => tr.sel.ids[0] !== p.id);
-    let keptAsSolo = 0;
-    for (const tr of asGuest) {
-      if (tr.cancelled || tr.pulled || tr.absent || tr.startedAt) continue;
-      sched.leaveSentDuet(tr.sel, p.id, { by: 'staff' });
-      keptAsSolo++;
-    }
-    const upcomingTracks = upcoming.filter(tr => !asGuest.includes(tr));
-    // Envoi sans accusé : KaraFun le reconnaîtra sous son nom d'origine.
-    if (pending && !pending.cancelled && pending.sel.ids.indexOf(p.id) > 0) {
-      sched.leaveSentDuet(pending.sel, p.id, { by: 'staff', keepLabel: true });
-      keptAsSolo++;
-    }
+    // son auteur seul.
+    const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(new Set([p.id]));
     sched.leave(p, 'staff');
     if (pending?.sel.ids.includes(p.id)) pending.cancelled = true;
     for (const tr of upcomingTracks) {

@@ -43,9 +43,9 @@ function memoryDisk() {
   return { disk, memFs, read: rel => disk.get(path.join(root, rel)), files: () => [...disk.keys()].map(file => path.relative(root, file)) };
 }
 
-function harness({ persistent = false } = {}) {
+// `memory` : disque d'un serveur précédent, pour simuler un redémarrage.
+function harness({ persistent = false, memory = memoryDisk() } = {}) {
   const entry = source.lastIndexOf('main().catch(');
-  const memory = memoryDisk();
   const saves = [];
   const overrides = persistent ? {
     './night-state': { ...fromServer('./night-state'), NightStateStore: class { load() { return null; } save(snapshot) { saves.push(JSON.parse(JSON.stringify(snapshot))); return true; } } },
@@ -306,6 +306,10 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   assert.ok(has('person.reactivated'));
   await ok('/api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
   assert.ok(has('staff.queueCleared', e => e.songs === 1));
+  // Le titre vidé n'est plus « en attente » dans les statistiques.
+  const cleared = (await call(f, 'GET', staff(f, '/api/staff/stats'))).body.stats.singers.find(s => s.id === alice.personId);
+  assert.equal(cleared.waiting, 0);
+  assert.deepEqual(cleared.songs.map(s => [s.status, s.removedBy]), [['removed', 'staff']]);
   // Transfert vers un autre téléphone.
   const share = await call(f, 'POST', '/api/table/person/share', { body: alice });
   const claim = await call(f, 'POST', '/api/table/person/claim', { body: { table: alice.table, access: alice.access, personId: alice.personId, code: share.body.code } });
@@ -349,6 +353,55 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   assert.ok(has('spotify', e => e.result === 'error'));
   const text = JSON.stringify(evs());
   for (const name of ['Alice', 'Bruno']) assert.ok(!text.includes(name), name);
+});
+
+test('Battle : après un redémarrage, ni la proposition ni les votes ne sont notés deux fois', async () => {
+  const voters = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
+  const battleFile = path.join(root, 'data', 'battle-vote.json');
+  // Premier serveur : vote ouvert puis arrêt brutal ; second serveur sur le
+  // même disque, soirée reprise et scrutin rechargé depuis data/battle-vote.json.
+  const restart = (before, after) => {
+    const f = harness({ persistent: true });
+    f.journal.open({ rules: {} });
+    f.battleVote.propose({ personId: 'p1', personName: 'Alice', eligiblePersonIds: voters,
+      songs: [{ songId: 9001, title: 'Battle Un' }, { songId: 9002, title: 'Battle Deux' }] });
+    before(f);
+    const ballotId = f.battleVote.ballot.id;
+    const saved = f.journal.snapshot();
+    const g = harness({ persistent: true, memory: f.memory });
+    assert.equal(g.journal.open({ resume: saved }), true, 'même soirée');
+    assert.equal(g.battleVote.ballot.id, ballotId, 'scrutin rechargé');
+    after(g);
+    const rows = lines(g.memory.read(`data/soirees/${saved.id}/journal.jsonl`)).filter(e => e.ballotId === ballotId);
+    const count = ev => rows.filter(e => e.ev === ev).length;
+    return { g, rows, count, votes: rows.filter(e => e.ev === 'battle.vote').map(e => e.voterId) };
+  };
+  // Vote après le redémarrage.
+  let r = restart(f => f.battleVote.vote({ personId: 'p2', choice: 9001 }), g => g.battleVote.vote({ personId: 'p3', choice: 'none' }));
+  assert.equal(r.count('battle.proposed'), 1);
+  assert.deepEqual(r.votes, ['p1', 'p2', 'p3'], 'chaque votant une seule fois');
+  const stats = (await call(r.g, 'GET', staff(r.g, '/api/staff/stats'))).body.stats;
+  assert.equal(stats.global.battle.proposals, 1);
+  assert.equal(stats.global.battle.votes, 3);
+  assert.deepEqual(stats.singers.map(s => [s.id, s.battleProposals, s.battleVotes]),
+    [['p1', 1, 1], ['p2', 0, 1], ['p3', 0, 1]]);
+  // Vote arrivé à échéance pendant l'arrêt : décision au redémarrage.
+  r = restart(f => {
+    f.battleVote.vote({ personId: 'p2', choice: 9001 });
+    const file = JSON.parse(f.memory.disk.get(battleFile));
+    file.ballot.closesAt = Date.now() - 1000;
+    f.memory.disk.set(battleFile, JSON.stringify(file));
+  }, g => g.battleVote.tick());
+  assert.equal(r.count('battle.proposed'), 1);
+  assert.deepEqual(r.votes, ['p1', 'p2']);
+  assert.deepEqual(r.rows.filter(e => e.ev === 'battle.decided').map(e => e.outcome), ['quorum']);
+  // Battle déjà demandée avant l'arrêt, écartée par le bar après.
+  r = restart(f => { for (const id of voters.slice(1)) f.battleVote.vote({ personId: id, choice: 9002 }); },
+    g => g.battleVote.resolve({ outcome: 'dismissed' }));
+  assert.equal(r.count('battle.proposed'), 1);
+  assert.deepEqual(r.votes, voters);
+  assert.equal(r.count('battle.decided'), 1);
+  assert.equal(r.count('battle.resolved'), 1);
 });
 
 test('titre passé dans KaraFun avant d’être chanté, commandes du bar et fermeture atteinte', async () => {
