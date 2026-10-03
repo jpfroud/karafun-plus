@@ -261,6 +261,19 @@ test('annulation après un redémarrage : le reçu sauvegardé suffit ; un autre
   assert.equal(s.setStagePeople(null, []), null);
 });
 
+test('changer de partenaire après le départ du chanteur : refusé sans rien défaire', async () => {
+  const { f, s, marine, dam, jp } = evening();
+  await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: dam.id });
+  const marked = fairness(s, dam);
+  marine.withdrawnAt = Date.now();
+  await assert.rejects(f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: jp.id, replace: true }),
+    { message: 'Choisis un autre chanteur encore présent dans la salle.' });
+  assert.deepEqual(fairness(s, dam), marked, 'le duo noté reste compté');
+  // L'annulation seule reste possible.
+  await f.call('POST /api/staff/duo-unmark', { queueId: 1 });
+  assert.equal(dam.duetGuestCount || 0, 0);
+});
+
 test('duo prévu par les chanteurs : le bar ne peut pas l’annuler comme un duo improvisé', async () => {
   const { f, stage, jp } = evening();
   stage.ids.push(jp.id); stage.names.push('JP'); stage.kind = 'duo';

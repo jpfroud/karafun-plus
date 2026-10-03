@@ -294,6 +294,7 @@ async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash =
     state: null,
     pushState(state, _title, url) { page.history.push({ state, url }); this.state = state; location.hash = url.slice(url.indexOf('#')); },
     replaceState(state, _title, url) { page.history[Math.max(0, page.history.length - 1)] = { state, url }; this.state = state; location.hash = url.slice(url.indexOf('#')); },
+    back() { page.back(); },
   };
   page.back = async () => {
     page.history.pop();
@@ -1893,8 +1894,11 @@ test('règles de la soirée, envoi et lecture automatiques, rotation et version'
   assert.equal(page.$('interleaveArrivals').checked, false);
   assert.equal(page.$('rotationPeople').checked, true);
   assert.equal(page.doc.getElementById('saveRules'), null, 'plus de bouton « Enregistrer les règles »');
-  await page.change(page.$('requirePresence'), true);
+  page.$('requirePresence').checked = true;
+  dispatch(page.$('requirePresence'), 'input');
+  await page.change(page.$('requirePresence'));
   assert.deepEqual(page.lastPost('/api/staff/settings').body, { requirePresence: true });
+  assert.equal(page.postsTo('/api/staff/settings').length, 1, 'une case cochée part une seule fois');
   for (const [id, value, body] of [['gap', '3', { gap: 3 }], ['cap', '5', { cap: 5 }], ['playDelaySec', '6', { playDelaySec: 6 }],
     ['pushDelaySec', '20', { pushDelaySec: 20 }], ['repeatWarnMin', '0', { repeatWarnMin: 0 }],
     ['presenceGraceSec', '60', { presenceGraceSec: 60 }], ['presenceMaxSkips', '4', { presenceMaxSkips: 4 }]]) {
@@ -2060,9 +2064,24 @@ test('téléphone : cinq onglets, onglet gardé dans l’adresse, Retour d’And
   await page.click(tab('plus'));
   await page.back();
   assert.equal(body.dataset.tab, 'accueil', 'Retour revient à l’onglet précédent');
-  page.$('tableQrDialog').showModal();
+  // Une fenêtre ouverte a sa propre étape : Retour la ferme sans changer d'onglet.
+  await page.click(tab('accueil'));
+  const before = page.history.length;
+  await page.click(page.in('tBody', '[data-table-more="1"]'));
+  assert.equal(page.history.length, before + 1);
+  await page.click(page.$('tableSheetQr'));
+  assert.equal(page.history.length, before + 1, 'le QR reprend l’étape de la fiche');
+  assert.equal(page.history.at(-1).state.dialog, 'tableQrDialog');
   await page.back();
   assert.equal(page.$('tableQrDialog').open, false, 'Retour ferme d’abord une fenêtre ouverte');
+  assert.equal(body.dataset.tab, 'accueil', 'sans changer d’onglet');
+  await page.click(page.in('tBody', '[data-table-qr="1"]'));
+  await page.click(page.$('tableQrClose'));
+  assert.equal(page.history.length, before, 'fermée d’un bouton : son étape est retirée');
+  // Fenêtre ouverte autrement (ancienne étape) : Retour la ferme aussi.
+  page.$('shareDialog').showModal();
+  await page.back();
+  assert.equal(page.$('shareDialog').open, false);
   assert.equal(body.dataset.tab, 'file');
   await page.click(page.$('staffTabs'));
   assert.equal(body.dataset.tab, 'file', 'un appui hors des boutons ne change rien');

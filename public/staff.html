@@ -362,9 +362,30 @@
   }
   setTab(activeTab, false);
   try { window.history?.replaceState?.({ barTab: activeTab }, '', `${location.pathname || ''}${location.search || ''}#${activeTab}`); } catch (_) { /* */ }
+  // Une fenêtre ouverte (QR, détails d'une table, transfert) a sa propre étape :
+  // Retour la ferme sans changer d'onglet. Fermée d'un bouton, son étape est retirée.
+  const DIALOGS = ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog'];
+  let poppingDialog = false, keepStep = false;
+  const tabUrl = () => `${location.pathname || ''}${location.search || ''}#${activeTab}`;
+  function openDialog(id) {
+    const dialog = $(id);
+    if (dialog.open) return;
+    dialog.showModal();
+    const state = { barTab: activeTab, dialog: id };
+    try {
+      if (window.history?.state?.dialog) window.history.replaceState(state, '', tabUrl());
+      else window.history?.pushState?.(state, '', tabUrl());
+    } catch (_) { /* historique indisponible */ }
+  }
+  for (const id of DIALOGS) {
+    $(id).addEventListener('close', () => {
+      if (keepStep || poppingDialog || window.history?.state?.dialog !== id) return;
+      try { window.history.back(); } catch (_) { /* */ }
+    });
+  }
   window.addEventListener?.('popstate', event => {
-    // Une fenêtre ouverte se ferme d'abord ; sinon l'onglet précédent revient.
-    for (const id of ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog']) if ($(id)?.open) $(id).close();
+    poppingDialog = true;
+    try { for (const id of DIALOGS) if ($(id)?.open) $(id).close(); } finally { poppingDialog = false; }
     setTab(event.state?.barTab || fromHash() || 'scene', false);
   });
   $('staffTabs').addEventListener('click', event => {
@@ -475,6 +496,8 @@
       return flushField(key);
     }
     if (event.type === 'blur' || event.type === 'focusout') return flushField(key);
+    // Une case cochée émet « input » puis « change » : un seul envoi.
+    if (def.check && event.type !== 'change') return;
     const value = readField(el, def);
     if (!def.check && !drafts.has(key) && sameValue(value, def.server(id))) return;
     const d = drafts.get(key) || { kind, id };
@@ -577,7 +600,7 @@
         'Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.';
       $('shareExpires').textContent = [result.linkExpiresAt ? `QR et lien valables jusqu’à ${hhmm(result.linkExpiresAt)}` : '',
         result.expiresAt ? `code jusqu’à ${hhmm(result.expiresAt)}` : ''].filter(Boolean).join(', ') + ' ; un seul usage.';
-      $('shareDialog').showModal();
+      openDialog('shareDialog');
     } catch (e) { toast(e.message, true); }
   }
   function renderTransfer() {
@@ -1096,7 +1119,7 @@
     if (!t?.url || !t.qrUrl) return toast('Cette table n’a pas encore de QR.', true);
     $('tableQrDialog').dataset.tableId = t.id;
     renderTableQr();
-    if (!$('tableQrDialog').open) $('tableQrDialog').showModal();
+    openDialog('tableQrDialog');
   }
   function renderTableQr() {
     const dialog = $('tableQrDialog');
@@ -1114,7 +1137,7 @@
     const sheet = $('tableSheet');
     sheet.dataset.tableId = tableId;
     for (const id of ['tableSheetName', 'tableSheetHc']) $(id).dataset.autosaveId = tableId;
-    sheet.showModal();
+    openDialog('tableSheet');
     renderTableSheet();
   }
   function renderTableSheet() {
@@ -1148,7 +1171,12 @@
   $('tableQrClose').onclick = () => $('tableQrDialog').close();
   $('tableQrDialog').addEventListener('close', () => { delete $('tableQrDialog').dataset.tableId; });
   $('tableSheetClose').onclick = () => { flushAll(); $('tableSheet').close(); };
-  $('tableSheetQr').onclick = () => { const id = $('tableSheet').dataset.tableId; $('tableSheet').close(); showTableQr(id); };
+  $('tableSheetQr').onclick = () => {
+    const id = $('tableSheet').dataset.tableId;
+    keepStep = true; // le QR reprend l'étape de la fiche
+    try { $('tableSheet').close(); } finally { keepStep = false; }
+    showTableQr(id);
+  };
   $('tableSheetBonus').onchange = () => act('/api/staff/bonus', { tableId: $('tableSheet').dataset.tableId, level: Number($('tableSheetBonus').value) },
     Number($('tableSheetBonus').value) ? 'Bonus de table enregistré (invisible des clients)' : 'Bonus de table retiré');
   $('tableSheetLeft').onclick = () => {
@@ -1554,7 +1582,7 @@
       $('soloInviteQr').src = invite.qr;
       $('soloInviteUrl').value = invite.url;
       $('soloInviteExpires').textContent = `Valable jusqu’à ${hhmm(invite.expiresAt)} ; une seule inscription.`;
-      $('soloInviteDialog').showModal();
+      openDialog('soloInviteDialog');
       load();
     } catch (error) { toast(error.message, true); }
   };

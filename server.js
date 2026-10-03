@@ -2585,9 +2585,10 @@ const handlers = {
     if (body.replace && record) {
       const late = staffDuoTooLate(record);
       if (late) throw new Error(late);
-      const candidate = sched.people.get(partnerId);
+      const candidate = sched.people.get(partnerId), owner = sched.people.get(record.ownerId);
       if (candidate && partnerId === record.partnerId) throw new Error(`${candidate.name} est déjà noté sur ce duo.`);
-      if (!candidate || candidate.withdrawnAt || partnerId === record.ownerId) {
+      // Tout est vérifié avant d'annuler l'ancien duo : rien ne doit échouer à moitié.
+      if (!candidate || candidate.withdrawnAt || partnerId === record.ownerId || !owner || owner.withdrawnAt) {
         throw new Error('Choisis un autre chanteur encore présent dans la salle.');
       }
       previous = sched.people.get(record.partnerId);
