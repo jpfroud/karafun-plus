@@ -462,13 +462,18 @@ class Scheduler {
     return p;
   }
 
+  // `note` absent : repère inchangé. `verified` absent : la vérification
+  // reste tant que le texte ne change pas ; un autre texte est à revérifier,
+  // sauf s'il est vérifié dans le même appui.
   staffIdentify(personId, note, verified) {
     const p = this.people.get(String(personId));
     if (!p) throw new Error('Chanteur inconnu.');
-    const clean = String(note || '').replace(/\s+/g, ' ').trim();
+    const clean = note === undefined ? (p.privateNote || '') : String(note || '').replace(/\s+/g, ' ').trim();
     if (clean.length > 140) throw new Error('Description limitée à 140 caractères.');
+    const changed = clean !== (p.privateNote || '');
     p.privateNote = clean;
-    p.verifiedAt = verified ? (p.verifiedAt || Date.now()) : 0;
+    if (verified === true) p.verifiedAt = !changed && p.verifiedAt ? p.verifiedAt : Date.now();
+    else if (verified === false || changed) p.verifiedAt = 0;
     // Les notes privées ne vont jamais dans le journal public.
     this.version++;
     return p;
@@ -692,6 +697,16 @@ class Scheduler {
     }
     this.invalidateManualOrder();
     const row = this._creditRow(partner.id), serialBefore = this.appearanceSerial;
+    // Reçu d'annulation (duo noté par erreur) : valeurs d'avant le duo, reçus
+    // des titres concernés, puis valeurs posées par le duo (voir
+    // staffUncountPartner). Sérialisable, il survit à un redémarrage.
+    const clone = value => value == null ? null : JSON.parse(JSON.stringify(value));
+    const record = { ownerId: owner.id, partnerId: partner.id, at: Date.now(), entryId: sel?.song?.entryId || null,
+      serialBefore, before: this._duoFields(partner.id),
+      creditBefore: sel?.turnCredit && !sel.turnCredit.rolledBack ? clone(sel.turnCredit) : null,
+      inFlight: (Array.isArray(inFlight) ? inFlight : []).filter(other => other && other !== sel &&
+        other.ids?.includes(partner.id) && other.turnCredit && !other.turnCredit.rolledBack)
+        .map(other => ({ entryId: other.song?.entryId || null, creditBefore: clone(other.turnCredit) })) };
     this.duetCooldowns.set(partner.id, 2);
     partner.duetGuestCount = (partner.duetGuestCount || 0) + 1;
     partner.lastAppearanceTurn = owner.lastAppearanceTurn || ++this.appearanceSerial;
@@ -709,8 +724,82 @@ class Scheduler {
     // l'espacement habituel, il chantera plus tard si d'autres attendent).
     const reserved = this.people.get(this.reservedNext?.personId);
     if (reserved && (reserved.id === partner.id || reserved.song?.duet?.partnerId === partner.id)) this.releaseNext();
+    record.after = this._duoFields(partner.id);
+    record.serialAfter = this.appearanceSerial;
+    if (sel) sel.staffDuo = record;
     this.note(`Le bar a compté ${partner.name} en duo avec ${owner.name} : ${owner.name} dépense son tour ; ${partner.name} garde son titre mais attend deux autres chansons si possible`, 'staff');
     return partner;
+  }
+
+  // Ce que le duo improvisé change pour l'invité.
+  _duoFields(pid) {
+    const p = this.people.get(pid);
+    return { duetGuestCount: p?.duetGuestCount || 0, lastAppearanceTurn: p?.lastAppearanceTurn || 0,
+      cooldown: this.duetCooldowns.has(pid) ? this.duetCooldowns.get(pid) : null,
+      inRound: this.roundPeople.has(pid), roundApps: this.roundApps.get(pid) || 0, owed: this.roundOwed.has(pid) };
+  }
+
+  // Duo noté par erreur : défait staffCountPartner. Comme rollbackUnplayed,
+  // on ne revient que sur une valeur encore égale à celle posée par le duo ;
+  // une correction faite depuis prévaut. `sel` : passage du chanteur s'il est
+  // encore suivi ; `liveSels` : passages encore suivis dans KaraFun. Un titre
+  // de l'invité retiré de KaraFun sans être chanté a déjà défait son envoi :
+  // son reçu d'avant envoi sert alors de référence.
+  staffUncountPartner(record, sel = null, liveSels = []) {
+    const owner = this.people.get(record?.ownerId), partner = this.people.get(record?.partnerId);
+    if (!record?.before || !record.after || !partner) throw new Error('Aucun duo noté par le bar sur ce passage.');
+    const pid = partner.id;
+    const clone = value => value == null ? null : JSON.parse(JSON.stringify(value));
+    let base = record.before, expectedTurn = record.after.lastAppearanceTurn;
+    let rolledBack = false;
+    for (const row of record.inFlight || []) {
+      const live = (Array.isArray(liveSels) ? liveSels : []).find(item => row.entryId && item?.song?.entryId === row.entryId);
+      if (live?.turnCredit && !live.turnCredit.rolledBack) { live.turnCredit = clone(row.creditBefore); continue; }
+      const old = row.creditBefore?.before;
+      const oldRow = Array.isArray(old?.people) && old.people.find(item => item.id === pid);
+      if (rolledBack || !oldRow) continue;
+      rolledBack = true;
+      base = { duetGuestCount: oldRow.duetGuestCount || 0, lastAppearanceTurn: oldRow.lastAppearanceTurn || 0,
+        cooldown: new Map(old.duetCooldowns || []).get(pid) ?? null,
+        inRound: (old.roundPeople || []).includes(pid), roundApps: new Map(old.roundApps || []).get(pid) || 0,
+        owed: (old.roundOwed || []).includes(pid) };
+      // L'annulation de l'envoi a remis le reçu « avant », duo compris.
+      expectedTurn = Math.max(oldRow.lastAppearanceTurn || 0, record.after.lastAppearanceTurn || 0);
+    }
+    this.invalidateManualOrder();
+    partner.duetGuestCount = Math.max(0, (partner.duetGuestCount || 0) - 1);
+    if ((partner.lastAppearanceTurn || 0) === expectedTurn) partner.lastAppearanceTurn = base.lastAppearanceTurn;
+    if (record.serialAfter === record.serialBefore + 1 && this.appearanceSerial === record.serialAfter) this.appearanceSerial = record.serialBefore;
+    // Chaque passage envoyé depuis le duo a rapproché les deux répits d'un cran.
+    const cooldown = this.duetCooldowns.get(pid);
+    if (cooldown !== undefined) {
+      const left = base.cooldown == null ? 0 : base.cooldown - (2 - cooldown);
+      if (left > 0) this.duetCooldowns.set(pid, left); else this.duetCooldowns.delete(pid);
+    }
+    // Sans passage compté au tour, un nouveau tour a commencé depuis : rien à rendre.
+    const apps = this.roundApps.get(pid) || 0;
+    if (apps > 0) {
+      if (apps > 1) this.roundApps.set(pid, apps - 1); else this.roundApps.delete(pid);
+      if (!base.inRound && (this.roundUse.get(pid) || 0) < 1 - EPS) this.roundPeople.delete(pid);
+      if (base.owed) this.roundOwed.add(pid);
+    }
+    if (sel?.turnCredit && !sel.turnCredit.rolledBack && record.creditBefore) sel.turnCredit = clone(record.creditBefore);
+    if (sel) delete sel.staffDuo;
+    this._refreshDuetViews();
+    this.note(`Le bar a annulé le duo noté de ${owner?.name || 'ce chanteur'} avec ${partner.name}`, 'staff');
+    this.version++;
+    return partner;
+  }
+
+  // Les derniers passages suivent le duo improvisé noté, annulé ou corrigé.
+  setStagePeople(entry, ids, kind) {
+    if (!entry) return null;
+    entry.ids = [...ids];
+    entry.names = ids.map(pid => this.people.get(pid)?.name || '?');
+    entry.tableIds = ids.map(pid => this.people.get(pid)?.tableId || null);
+    entry.kind = kind || (ids.length > 1 ? 'duo' : 'solo');
+    this.version++;
+    return entry;
   }
 
   // ------------------------------------------------------------------ actions du chanteur
@@ -2384,6 +2473,8 @@ class Scheduler {
       tableIds: sel.ids.map(pid => this.people.get(pid)?.tableId || null),
       title: sel.song.title, artist: sel.song.artist || '', entryId: sel.song.entryId || null,
       kind: sel.kind || (sel.ids.length > 1 ? 'duo' : 'solo') };
+    // Duo noté au bar avant le début du titre : annulable depuis l'historique.
+    if (sel.staffDuo) entry.staffDuo = sel.staffDuo;
     this.stageHistory.push(entry);
     if (this.stageHistory.length > 60) this.stageHistory.splice(0, this.stageHistory.length - 60);
     this.version++;

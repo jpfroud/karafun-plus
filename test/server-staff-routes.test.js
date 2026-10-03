@@ -546,7 +546,7 @@ test('réglages : valeurs enregistrées et visibles dans l’état du bar', asyn
   const f = harness();
   await f.call('POST /api/staff/settings', { pushDelaySec: 0, playDelaySec: 30, repeatWarnMin: 0,
     presenceGraceSec: 300, presenceMaxSkips: 1, battleCooldownMin: 45, battleRejectedCooldownMin: 5,
-    battleVoteMin: 3, battleMinVoters: 4, gap: 99, cap: 'beaucoup', autoPlay: true,
+    battleVoteMin: 3, battleMinVoters: 4, gap: 9, cap: '12', autoPlay: true,
     baseUrl: 'https://chant.exemple.fr' });
   const s = plain(f.staffState().settings);
   assert.equal(s.pushDelaySec, 0);
@@ -558,8 +558,8 @@ test('réglages : valeurs enregistrées et visibles dans l’état du bar', asyn
   assert.equal(s.battleRejectedCooldownMin, 5);
   assert.equal(s.battleVoteMin, 3);
   assert.equal(s.battleMinVoters, 4);
-  assert.equal(s.gap, 10, 'écart ramené à 10 au plus');
-  assert.equal(s.cap, 2, 'plafond illisible : valeur par défaut');
+  assert.equal(s.gap, 9);
+  assert.equal(s.cap, 12, 'nombre écrit en texte accepté');
   assert.equal(s.autoPlay, true);
   assert.equal(s.autoPlayHeld, false);
   assert.equal(s.baseUrl, 'https://chant.exemple.fr');
@@ -567,9 +567,6 @@ test('réglages : valeurs enregistrées et visibles dans l’état du bar', asyn
   // Adresse vide : retour à l'adresse du réseau local.
   await f.call('POST /api/staff/settings', { baseUrl: '' });
   assert.equal(f.settings.baseUrl, null);
-  await f.call('POST /api/staff/settings', { gap: 0, cap: 51 });
-  assert.equal(f.sched.opts.gap, 4, 'zéro illisible : écart par défaut');
-  assert.equal(f.sched.opts.cap, 50);
 });
 
 test('réglages de rotation : chaque mode est annoncé et les déplacements manuels tombent', async () => {
@@ -857,4 +854,50 @@ test('Spotify : lecture et pause du bar, l’automate ne les défait pas', async
     { message: 'Aucun appareil Spotify actif : ouvre Spotify sur l’appareil choisi, puis réessaie.' });
   assert.equal(f.spotifyAutomation.done, false);
   assert.equal(f.staffState().spotify.lastError, 'Aucun appareil Spotify actif : ouvre Spotify sur l’appareil choisi, puis réessaie.');
+});
+
+// ---------------------------------------------------------------- v1.4 : retours du bar
+test('« Arrêter la soirée » n’existe plus sur la page du bar ; l’arrêt local reste', () => {
+  const f = harness();
+  assert.equal(f.handlers['POST /api/staff/shutdown'], undefined, 'route du bouton supprimée');
+  assert.match(source, /p === '\/internal\/shutdown'/, 'ARRETER.bat garde son arrêt local');
+});
+
+test('réglages : écart et recul invalides refusés comme les autres champs', async () => {
+  const f = harness();
+  const before = plain(f.staffState().settings);
+  for (const [body, message] of [[{ gap: 0 }, 'L’écart entre chanteurs d’une table doit être de 1 à 10 places.'],
+    [{ gap: '' }, 'L’écart entre chanteurs d’une table doit être de 1 à 10 places.'],
+    [{ gap: 11 }, 'L’écart entre chanteurs d’une table doit être de 1 à 10 places.'],
+    [{ cap: 'beaucoup' }, 'Le recul maximal doit être de 1 à 50 places.'],
+    [{ cap: 51 }, 'Le recul maximal doit être de 1 à 50 places.'], [{ cap: 2.5 }, 'Le recul maximal doit être de 1 à 50 places.']]) {
+    await assert.rejects(f.call('POST /api/staff/settings', { autoPlay: true, ...body }), { message }, JSON.stringify(body));
+  }
+  assert.deepEqual(plain(f.staffState().settings), before, 'rien n’a changé');
+  await f.call('POST /api/staff/settings', { gap: '7', cap: 12 });
+  assert.equal(f.sched.opts.gap, 7);
+  assert.equal(f.sched.opts.cap, 12);
+});
+
+test('repère privé : vérifié à l’heure dite, la vérification tombe si le texte change', async () => {
+  const f = harness();
+  const [alice] = singers(f, ['Alice']);
+  const view = () => plain(f.staffState().people.find(p => p.id === alice.id));
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: 'veste rouge' });
+  assert.equal(view().verified, false);
+  assert.equal(view().verifiedAt, 0);
+  const t0 = Date.now();
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, verified: true });
+  assert.equal(view().privateNote, 'veste rouge', 'sans texte, le repère est gardé');
+  assert.ok(view().verifiedAt >= t0, 'heure de vérification exposée au bar');
+  const at = view().verifiedAt;
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: ' veste  rouge ' });
+  assert.equal(view().verifiedAt, at, 'même texte : la vérification reste');
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: 'veste bleue' });
+  assert.equal(view().verified, false, 'autre texte : à vérifier de nouveau');
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: 'veste verte', verified: true });
+  assert.equal(view().verified, true, 'texte et vérification dans le même appui');
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, verified: false });
+  assert.equal(view().verified, false);
+  assert.equal(view().privateNote, 'veste verte');
 });

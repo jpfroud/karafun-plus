@@ -392,7 +392,9 @@ function restore(tr, reason) {
 function restorePulled(tr) {
   sched.requeueUnplayed(tr.sel);
   if (!tr.pulled) {
-    sched.note(`« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun juste avant le changement de l’heure de fermeture : il revient dans la liste de son chanteur.`, 'skip');
+    sched.note(tr.unpulled?.reason === 'duo' ?
+      `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun malgré l’annulation du duo : il revient en tête de la liste de son chanteur.` :
+      `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun juste avant le changement de l’heure de fermeture : il revient dans la liste de son chanteur.`, 'skip');
     return;
   }
   const { reason } = tr.pulled;
@@ -900,6 +902,81 @@ function sync() {
   saveNight();
 }
 
+// ------------------------------------------------------------------ duo improvisé noté au bar
+// Passage visé par le bar : titre suivi dans KaraFun (`queueId`), ou entrée
+// des derniers passages (`stageEntryId`), qui garde le reçu après la chanson.
+function staffDuoTarget(body, missing = 'Passage introuvable : il a peut-être déjà été effacé des derniers passages.') {
+  if (body.stageEntryId != null && body.stageEntryId !== '') {
+    const entry = sched.stageHistory.find(item => String(item.id) === String(body.stageEntryId));
+    if (!entry) throw new Error(missing);
+    const tr = entry.endedAt || !entry.entryId ? null : tracked.find(item => item.sel.song?.entryId === entry.entryId) || null;
+    return { tr, entry };
+  }
+  const tr = tracked.find(item => String(item.queueId) === String(body.queueId));
+  if (!tr) throw new Error(missing);
+  const entryId = tr.sel.song?.entryId;
+  const entry = entryId ? [...sched.stageHistory].reverse().find(item => !item.endedAt && item.entryId === entryId) || null : null;
+  return { tr, entry };
+}
+const staffDuoRecord = target => target.tr?.sel.staffDuo || target.entry?.staffDuo || null;
+
+// L'invité a rechanté (ou un autre de ses titres est parti dans KaraFun)
+// depuis le duo : son tour a déjà été recompté, l'annulation n'est plus juste.
+function staffDuoTooLate(record) {
+  const pid = record.partnerId;
+  const pulled = new Set((record.pulled || []).map(item => item.entryId).filter(Boolean));
+  const sangAgain = sched.stageHistory.some(item => item.at >= record.at && item.entryId !== record.entryId &&
+    item.ids.includes(pid));
+  const sentAgain = tracked.some(item => !item.cancelled && item.sel.ids.includes(pid) && (item.addedAt || 0) >= record.at &&
+    item.sel.song?.entryId !== record.entryId && !pulled.has(item.sel.song?.entryId));
+  return sangAgain || sentAgain ? `Trop tard : ${sched.people.get(pid)?.name || 'ce chanteur'} a déjà rechanté` : null;
+}
+
+// Défait le duo noté : crédits, passage, derniers passages et titres de
+// l'invité retirés de KaraFun (gardés s'ils y sont encore). Renvoie la
+// phrase à ajouter au message du bar.
+function undoStaffDuo(target, record) {
+  const partner = sched.people.get(record.partnerId);
+  sched.staffUncountPartner(record, target.tr?.sel || null, tracked.map(item => item.sel));
+  if (target.tr) {
+    const sel = target.tr.sel;
+    const index = sel.ids.indexOf(record.partnerId);
+    if (index > 0) { sel.ids.splice(index, 1); sel.names.splice(index, 1); }
+    sel.kind = record.kindBefore || 'solo';
+    if (record.labelBefore) sel.label = record.labelBefore;
+  }
+  if (target.entry) {
+    sched.setStagePeople(target.entry, target.entry.ids.filter(pid => pid !== record.partnerId), record.kindBefore || 'solo');
+    delete target.entry.staffDuo;
+  }
+  const inKaraFun = new Set(analyze().upcoming.map(item => String(item.queueId)));
+  const kept = [], back = [];
+  for (const item of record.pulled || []) {
+    const tr = item.entryId ? tracked.find(x => x.sel.song?.entryId === item.entryId) : null;
+    if (tr?.pulled?.reason === 'duo' && inKaraFun.has(String(tr.queueId))) {
+      tr.unpulled = { reason: 'duo', at: Date.now() };
+      tr.pulled = null;
+      tr.removeRequestedAt = 0;
+      kept.push(item.title);
+    } else if (!tr && pending?.pullOnAck === 'duo' && pending.sel.song?.entryId === item.entryId) {
+      delete pending.pullOnAck;
+      kept.push(item.title);
+    } else if (!tr || tr.pulled) back.push(item.title);
+  }
+  const name = partner?.name || 'ce chanteur';
+  const list = titles => titles.map(title => `« ${title} »`).join(', ');
+  return (kept.length ? ` ${list(kept)} de ${name} reste dans KaraFun.` : '') +
+    (back.length ? ` ${list(back)} est de nouveau en tête de la liste de ${name}.` : '');
+}
+
+// Pour la page du bar : partenaire noté et annulation encore possible.
+function staffDuoView(record) {
+  if (!record) return null;
+  const late = staffDuoTooLate(record);
+  return { partnerId: record.partnerId, partnerName: sched.people.get(record.partnerId)?.name || '?',
+    at: record.at, canUndo: !late, reason: late };
+}
+
 // ------------------------------------------------------------------ vues
 const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: coverUrl(s.img), duration: s.duration || null,
   duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo' } : null } : null;
@@ -1135,8 +1212,12 @@ function staffState() {
   const canUndoManual = sched.canUndoManualChange(priorityNativeFingerprint());
   const latestManual = sched.manualChanges.at(-1);
   const repeats = queueRepeats(pub.queue, sched.playedSongs, Date.now(), repeatWindowMs());
+  const { current } = analyze();
+  const stageTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
   return {
     ...pub,
+    // Duo noté au bar sur le titre en cours : la page propose de le corriger.
+    stage: pub.stage && stageTr?.sel.staffDuo ? { ...pub.stage, staffDuo: staffDuoView(stageTr.sel.staffDuo) } : pub.stage,
     // Repères réservés au bar : titres en double, « Je suis là » manqués.
     queue: pub.queue.map((line, index) => {
       const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
@@ -1186,7 +1267,7 @@ function staffState() {
     people: [...sched.people.values()].map(p => ({ id: p.id, name: p.name, tableId: p.tableId,
       sung: p.sung, inQueue: sched.Q.includes(p.id), lastSeen: p.lastSeen,
       active: !p.withdrawnAt, songCount: sched.songsOf(p).length,
-      privateNote: p.privateNote || '', verified: !!p.verifiedAt, bonus: p.bonus || 0,
+      privateNote: p.privateNote || '', verified: !!p.verifiedAt, verifiedAt: p.verifiedAt || 0, bonus: p.bonus || 0,
       appearances: (p.sung || 0) + (p.duetGuestCount || 0),
       presenceSkips: sched.presenceSkipsOf(p), presenceRetry: sched._isPresenceRetry(p),
       photoUrl: p.photo ? `/photo/${p.id}` : null })),
@@ -1210,7 +1291,7 @@ function stageHistoryView() {
   const live = onStageEntryId();
   return sched.stageHistory.slice(-20).reverse().map(item => ({
     id: item.id, at: item.at, endedAt: item.endedAt, title: item.title, artist: item.artist,
-    kind: item.kind, onStage: !item.endedAt && !!live && item.entryId === live,
+    kind: item.kind, onStage: !item.endedAt && !!live && item.entryId === live, staffDuo: staffDuoView(item.staffDuo),
     people: item.ids.map((pid, index) => {
       const p = sched.people.get(pid);
       const table = sched.table(p?.tableId || item.tableIds?.[index] || '', false);
@@ -2148,6 +2229,17 @@ const handlers = {
     if (!Number.isInteger(nextPresenceSkips) || nextPresenceSkips < 1 || nextPresenceSkips > 10) {
       throw new Error('Le nombre de passages manqués doit être entre 1 et 10.');
     }
+    // Écart et recul : une valeur vide ou hors bornes est refusée, comme les
+    // autres réglages, au lieu d'être ramenée en silence à une autre valeur.
+    const strictInt = value => typeof value === 'string' && !value.trim() ? NaN : Number(value);
+    const nextGap = 'gap' in body ? strictInt(body.gap) : null;
+    if (nextGap !== null && (!Number.isInteger(nextGap) || nextGap < 1 || nextGap > 10)) {
+      throw new Error('L’écart entre chanteurs d’une table doit être de 1 à 10 places.');
+    }
+    const nextCap = 'cap' in body ? strictInt(body.cap) : null;
+    if (nextCap !== null && (!Number.isInteger(nextCap) || nextCap < 1 || nextCap > 50)) {
+      throw new Error('Le recul maximal doit être de 1 à 50 places.');
+    }
     const nextMinVoters = 'battleMinVoters' in body ? Number(body.battleMinVoters) : null;
     if (nextMinVoters !== null && (!Number.isInteger(nextMinVoters) || nextMinVoters < 1 || nextMinVoters > 100)) {
       throw new Error('Le nombre minimal de votants doit être de 1 à 100.');
@@ -2176,8 +2268,8 @@ const handlers = {
     }
     if ('autoPlay' in body) { settings.autoPlay = !!body.autoPlay; settings.autoPlayHeld = false; }
     if ('baseUrl' in body) { settings.baseUrl = nextBaseUrl; saveTables(); }
-    if ('gap' in body) sched.opts.gap = Math.max(1, Math.min(10, parseInt(body.gap, 10) || 4));
-    if ('cap' in body) sched.opts.cap = Math.max(1, Math.min(50, parseInt(body.cap, 10) || 2));
+    if (nextGap !== null) sched.opts.gap = nextGap;
+    if (nextCap !== null) sched.opts.cap = nextCap;
     if ('requirePresence' in body) {
       sched.opts.requirePresence = !!body.requirePresence;
       if (!sched.opts.requirePresence) sched.clearPresenceRetries();
@@ -2382,7 +2474,8 @@ const handlers = {
     return { ok: true };
   },
   'POST /api/staff/person/identify': async (req, res, body) => {
-    const p = sched.staffIdentify(body.personId, body.note, !!body.verified);
+    const p = sched.staffIdentify(body.personId, 'note' in body ? body.note : undefined,
+      'verified' in body ? !!body.verified : undefined);
     return { ok: true, personId: p.id };
   },
   'POST /api/staff/person/share': async (req, res, body) => {
@@ -2474,39 +2567,97 @@ const handlers = {
     else throw new Error('Action Spotify inconnue.');
     return { ok: true };
   },
+  // Duo improvisé : noter le second chanteur, ou, avec `replace`, corriger
+  // un duo déjà noté au bar (le précédent est d'abord annulé). Après la
+  // chanson, `stageEntryId` désigne le passage dans les derniers passages.
   'POST /api/staff/duo-mark': async (req, res, body) => {
-    const tr = tracked.find(x => String(x.queueId) === String(body.queueId));
-    if (!tr || tr.sel.ids.length !== 1) throw new Error('Choisis un passage solo encore visible dans KaraFun.');
     const partnerId = String(body.partnerId || '');
+    const byEntry = body.stageEntryId != null && body.stageEntryId !== '';
+    const target = byEntry ? staffDuoTarget(body) :
+      staffDuoTarget({ queueId: body.queueId }, 'Choisis un passage solo encore visible dans KaraFun.');
+    const record = staffDuoRecord(target);
+    const holder = target.tr ? target.tr.sel : target.entry;
+    if (body.replace && !record && holder.ids.length !== 1) throw new Error('Aucun duo noté par le bar sur ce passage.');
+    if (!(body.replace && record) && (holder.ids.length !== 1 || (byEntry && !body.replace))) {
+      throw new Error('Choisis un passage solo encore visible dans KaraFun.');
+    }
+    let previous = null, undoText = '';
+    if (body.replace && record) {
+      const late = staffDuoTooLate(record);
+      if (late) throw new Error(late);
+      const candidate = sched.people.get(partnerId);
+      if (candidate && partnerId === record.partnerId) throw new Error(`${candidate.name} est déjà noté sur ce duo.`);
+      if (!candidate || candidate.withdrawnAt || partnerId === record.ownerId) {
+        throw new Error('Choisis un autre chanteur encore présent dans la salle.');
+      }
+      previous = sched.people.get(record.partnerId);
+      undoText = undoStaffDuo(target, record);
+    }
     const { current } = analyze();
+    const ownerId = holder.ids[0];
     // Ses titres déjà chargés dans KaraFun gardent le duo dans leur reçu : si
     // l'un est retiré sans être chanté, le duo compte toujours pour lui.
-    const inFlight = tracked.filter(item => item !== tr && !item.startedAt && !item.cancelled &&
+    const inFlight = tracked.filter(item => item !== target.tr && !item.startedAt && !item.cancelled &&
       !isOnStage(item, current) && item.sel.ids.includes(partnerId)).map(item => item.sel);
-    const partner = sched.staffCountPartner(tr.sel.ids[0], partnerId, tr.sel, inFlight);
-    tr.sel.ids.push(partner.id);
-    tr.sel.names.push(partner.name);
-    tr.sel.kind = 'duo';
-    const ownerTable = sched.table(sched.people.get(tr.sel.ids[0]).tableId);
-    const partnerTable = sched.table(partner.tableId);
-    tr.sel.label = `${tr.sel.names.join(' & ')} · ${ownerTable.name}${ownerTable.id === partnerTable.id ? '' : ` + ${partnerTable.name}`}`;
+    const sel = target.tr ? target.tr.sel : {};
+    const partner = sched.staffCountPartner(ownerId, partnerId, sel, inFlight);
+    const mark = sel.staffDuo;
+    mark.kindBefore = holder.kind || 'solo';
+    if (target.tr) {
+      mark.labelBefore = target.tr.sel.label;
+      target.tr.sel.ids.push(partner.id);
+      target.tr.sel.names.push(partner.name);
+      target.tr.sel.kind = 'duo';
+      const ownerTable = sched.table(sched.people.get(ownerId).tableId);
+      const partnerTable = sched.table(partner.tableId);
+      target.tr.sel.label = `${target.tr.sel.names.join(' & ')} · ${ownerTable.name}${ownerTable.id === partnerTable.id ? '' : ` + ${partnerTable.name}`}`;
+    }
+    if (target.entry) {
+      sched.setStagePeople(target.entry, [...target.entry.ids, partner.id], 'duo');
+      target.entry.staffDuo = mark;
+    }
     // Le partenaire du duo improvisé vient de monter sur scène : son propre
     // titre déjà chargé dans KaraFun ne doit pas passer juste après. Il est
     // retiré de KaraFun et reprend sa place dans la file, qui le fait passer
     // plus tard selon l'espacement habituel.
     let moved = 0;
+    mark.pulled = [];
     // Seuls ses propres titres : un duo d'une autre personne où il est invité
     // garde sa place.
     for (const item of tracked) {
-      if (item === tr || item.cancelled || item.pulled || item.absent || item.startedAt ||
+      if (item === target.tr || item.cancelled || item.pulled || item.absent || item.startedAt ||
           isOnStage(item, current) || item.sel.ids[0] !== partner.id) continue;
-      try { pullFromKaraFun(item, 'duo'); moved++; }
-      catch (error) { sched.note(`Titre de ${partner.name} à retirer de KaraFun : ${error.message}`, 'error'); }
+      try {
+        pullFromKaraFun(item, 'duo'); moved++;
+        mark.pulled.push({ entryId: item.sel.song?.entryId || null, title: item.sel.song?.title || '' });
+      } catch (error) { sched.note(`Titre de ${partner.name} à retirer de KaraFun : ${error.message}`, 'error'); }
     }
-    if (pending && !pending.cancelled && pending.sel.ids[0] === partner.id) { pending.pullOnAck = 'duo'; moved++; }
+    if (pending && !pending.cancelled && pending.sel.ids[0] === partner.id) {
+      pending.pullOnAck = 'duo'; moved++;
+      mark.pulled.push({ entryId: pending.sel.song?.entryId || null, title: pending.sel.song?.title || '' });
+    }
+    if (previous) {
+      sched._event?.('duo.improvisedReplaced', { ownerId, partnerId: partner.id, previousPartnerId: previous.id, entryId: mark.entryId });
+    }
     sync();
-    return { ok: true, moved, message: moved ?
-      `Duo noté. Le titre suivant de ${partner.name} est retiré de KaraFun : ${partner.name} chantera plus tard.` : 'Duo comptabilisé' };
+    const movedText = moved ? ` Le titre suivant de ${partner.name} est retiré de KaraFun : ${partner.name} chantera plus tard.` : '';
+    return { ok: true, moved, message: previous ?
+      `Duo corrigé : ${partner.name} chante avec ${sched.people.get(ownerId)?.name || 'le chanteur'} à la place de ${previous.name}.${undoText}${movedText}` :
+      moved ? `Duo noté.${movedText}` : 'Duo comptabilisé' };
+  },
+  // Duo improvisé noté par erreur : le chanteur reprend son solo, l'invité
+  // retrouve son tour et, si possible, son titre retiré de KaraFun.
+  'POST /api/staff/duo-unmark': async (req, res, body) => {
+    const target = staffDuoTarget(body);
+    const record = staffDuoRecord(target);
+    if (!record) throw new Error('Aucun duo noté par le bar sur ce passage.');
+    const late = staffDuoTooLate(record);
+    if (late) throw new Error(late);
+    const owner = sched.people.get(record.ownerId), partner = sched.people.get(record.partnerId);
+    const text = undoStaffDuo(target, record);
+    sched._event?.('duo.improvisedCancelled', { ownerId: record.ownerId, partnerId: record.partnerId, entryId: record.entryId });
+    sync();
+    return { ok: true, message: `Duo avec ${partner?.name || 'ce chanteur'} annulé : ${owner?.name || 'le chanteur'} chante seul ce titre.${text}` };
   },
   'POST /api/staff/battle/launch': async (req, res, body) => {
     const [song] = certifiedBattleSongs([body.song]);
@@ -2549,7 +2700,6 @@ const handlers = {
     sync();
     return { ok: true };
   },
-  'POST /api/staff/shutdown': async () => { setTimeout(stopHelper, 150); return { ok: true }; },
   'POST /api/staff/kf': async (req, res, body) => {
     if (!bridge) throw new Error('KaraFun non connecté');
     if (body.action === 'play') {
