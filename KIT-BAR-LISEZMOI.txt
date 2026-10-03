@@ -22,8 +22,8 @@ La licence du Node.js embarqué est dans node/LICENSE.
    son QR sur un téléphone.
    Sans domaine HTTPS préparé, utilise le Wi-Fi du bar pour cet essai : les
    données mobiles ne peuvent pas joindre une adresse 192.168.x.x.
-5. Pour arrêter proprement, utilise « Arrêter la soirée » sur la page du
-   bar ou double-clique sur ARRETER.bat. Pour reprendre, KaraFun Plus.exe.
+5. Pour arrêter proprement, double-clique sur ARRETER.bat sur ce PC (la
+   page du bar n'a plus de bouton d'arrêt). Pour reprendre, KaraFun Plus.exe.
 
 Si Windows demande l'accès réseau pour node.exe, autorise les réseaux
 privés. N'ouvre pas le port du bar (3000) vers Internet. Pour que les clients
