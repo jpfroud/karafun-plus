@@ -262,7 +262,7 @@ test('vue tableau, repère sur une personne ou une table, tri des chanteurs', as
   focus.dispatch('change', { target: focus });
   const card = page.$('focusCard');
   assert.equal(card.hidden, false);
-  assert.match(text(card), /Soirée de Alice.*Table 1.*Soulmate.*chanté/s);
+  assert.match(text(card), /Soirée d’Alice.*Table 1.*Soulmate.*chanté/s);
   const muted = marks(page.doc.getElementById('chartTimeline'), n => n.getAttribute('fill') === 'var(--mark-muted)');
   assert.ok(muted.length > 0, 'les autres passent en gris');
   assert.equal(page.doc.getElementById('cardSingers').find(n => n.className === 'focus').length, 1);
@@ -345,7 +345,7 @@ test('export, thème, autre soirée, erreurs et soirée vide', async () => {
   await settle();
   assert.match(text(empty.$('insights')), /Les repères apparaîtront/);
   assert.match(text(empty.doc.getElementById('chartTimeline')), /Pas encore de données/);
-  assert.match(text(empty.$('kpis')), /pas assez de chanteurs.*aucun entre deux chansons/s);
+  assert.match(text(empty.$('kpis')), /pas encore de chanteurs.*aucun entre deux chansons/s);
 });
 
 // ------------------------------------------------------------------ QA navigateur du 2026-10-03
@@ -433,4 +433,112 @@ test('rafraîchissement : l’info-bulle d’un graphique redessiné disparaît 
   page.timers.at(-1).fn();
   await settle();
   assert.equal(page.$('tooltip').hidden, true);
+});
+
+// Regression: ISSUE-025 — au téléphone, les libellés de la répartition des attentes se chevauchaient
+test('répartition des attentes : libellés courts et unité sous l’axe au téléphone, complets sur PC', async () => {
+  const phone = loadPage({ width: 390 });
+  await settle();
+  const labels = plotTexts(phone, 'chartHistogram');
+  for (const short of ['0–10', '10–20', '20–30', '30–45', '45–60', '60–90', '90+']) assert.ok(labels.includes(short), `${short} : ${labels.join(' | ')}`);
+  assert.ok(labels.includes('attente en minutes'));
+  assert.ok(!labels.some(label => /^\d+–\d+ min$/.test(label)), 'pas de libellé long qui déborderait de sa colonne');
+  const pc = loadPage({ width: 900 });
+  await settle();
+  assert.ok(plotTexts(pc, 'chartHistogram').includes('10–20 min'));
+  assert.ok(!plotTexts(pc, 'chartHistogram').includes('attente en minutes'));
+});
+
+// Regression: ISSUE-026 — graduations arrondies en double ou fausses (« 0 min, 1 min, 1 min, 2 min »)
+test('graduations : attentes courtes en secondes et minutes exactes, comptes entiers sans doublon', async () => {
+  const events = [{ seq: 1, t: at(0), ev: 'evening.started' }];
+  let seq = 1;
+  const e = (sec, ev, f = {}) => events.push({ seq: ++seq, t: at(0) + sec * 1000, ev, ...f });
+  e(0, 'person.joined', { personId: 'pA', tableId: '1' });
+  e(0, 'person.joined', { personId: 'pB', tableId: '1' });
+  e(0, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Un' });
+  e(0, 'song.requested', { personId: 'pB', entryId: 'b1', title: 'Deux' });
+  e(52, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], source: 'queue' });
+  e(74, 'stage.ended', { queueId: 1, playedSec: 22 });
+  e(74, 'stage.started', { queueId: 2, entryId: 'b1', ids: ['pB'], source: 'queue' });
+  e(96, 'stage.ended', { queueId: 2, playedSec: 22 });
+  e(100, 'queue.sample', { ready: 0, songsListed: 0, present: 0 });
+  e(160, 'queue.sample', { ready: 0, songsListed: 0, present: 0 });
+  const page = loadPage({ responses: { '/api/staff/stats': () => ({ ok: true, body: apiView({ events }) }) } });
+  await settle();
+  const waits = plotTexts(page, 'chartWaits').filter(label => /^\d+ (s|min)( \d\d)?$/.test(label));
+  assert.deepEqual(waits, ['0 s', '15 s', '30 s', '45 s', '1 min', '1 min 15'], 'pas de 15 s jusqu’à 74 s : libellés distincts et justes');
+  const queue = plotTexts(page, 'chartQueue').filter(label => /^\d+$/.test(label));
+  assert.deepEqual(queue, ['0', '1', '2'], 'file vide : graduations entières, sans « 2, 2, 1, 1, 0 »');
+  // Graduations de l'axe (alignées à droite), sans les totaux écrits au-dessus des colonnes.
+  const columns = page.doc.getElementById('chartHistogramPlot').byTag('svg')[0].children
+    .filter(n => n.tagName === 'TEXT' && n.getAttribute('text-anchor') === 'end').map(text);
+  assert.equal(new Set(columns).size, columns.length, `colonnes : ${columns.join(', ')}`);
+});
+
+// Regression: ISSUE-030 — tri par prénom : « Émilie » classée après « Farid »
+// Regression: ISSUE-031 — « Soirée de Émilie » au lieu de « Soirée d’Émilie »
+test('chanteurs : ordre alphabétique français et « Soirée d’Émilie »', async () => {
+  const page = loadPage({ responses: withView(view => { view.names.people.pD = 'Farid'; view.names.people.pE = 'Émilie'; }) });
+  await settle();
+  const singers = () => page.doc.getElementById('cardSingers');
+  const names = () => singers().byTag('tbody')[0].children.map(row => text(row.children[0]));
+  singers().byTag('button').find(b => text(b).startsWith('Chanteur')).dispatch('click');
+  assert.deepEqual(names(), ['Alice', 'Bruno', 'Chloé', 'Émilie', 'Farid']);
+  singers().byTag('button').find(b => text(b).startsWith('Chanteur')).dispatch('click');
+  assert.deepEqual(names(), ['Farid', 'Émilie', 'Chloé', 'Bruno', 'Alice']);
+  const focus = page.$('focusSelect');
+  assert.deepEqual(focus.options().filter(o => /^p:/.test(o.getAttribute('value'))).map(o => text(o).split(' · ')[0]), ['Alice', 'Bruno', 'Chloé', 'Émilie', 'Farid']);
+  focus.value = 'p:pE';
+  focus.dispatch('change', { target: focus });
+  assert.equal(text(page.$('focusCard').byTag('h2')[0]), 'Soirée d’Émilie');
+  focus.value = 'p:pB';
+  focus.dispatch('change', { target: focus });
+  assert.equal(text(page.$('focusCard').byTag('h2')[0]), 'Soirée de Bruno');
+});
+
+// Regression: ISSUE-032 — équité : « pas assez de chanteurs » alors que 6 personnes avaient chanté
+// Regression: ISSUE-033 — « (1 intervalles) »
+test('équité et temps morts : la vraie raison, et les accords au singulier', async () => {
+  const kpi = async patch => {
+    const page = loadPage({ responses: withView(patch) });
+    await settle();
+    return page;
+  };
+  const fairness = page => text(page.$('kpis').children[2]);
+  let page = await kpi(view => { view.stats.fairness = { ...view.stats.fairness, jain: null, n: 0 }; });
+  assert.match(fairness(page), /personne n’est encore là depuis 30 min/, 'le seuil de durée, pas le nombre');
+  assert.ok(!/pas assez de chanteurs/.test(fairness(page)));
+  page = await kpi(view => { view.stats.fairness = { ...view.stats.fairness, jain: null, n: 2 }; });
+  assert.match(fairness(page), /aucun passage pour le moment/);
+  page = await kpi(view => { view.stats.fairness = { ...view.stats.fairness, jain: 1, n: 1, bonusPeople: 0 }; });
+  assert.match(fairness(page), /sur 1 chanteur ·/);
+  page = await kpi(view => { view.stats.global = { ...view.stats.global, deadGapCount: 1 }; });
+  assert.match(text(page.doc.getElementById('chartDead').byTag('p')[0]), /\(1 intervalle\)$/);
+});
+
+// Regression: ISSUE-035 — « Rythme de passage » : le trait de la part attendue barrait les valeurs
+test('rythme de passage : la valeur s’écrit après le trait de la part attendue quand il touche la barre', async () => {
+  const page = loadPage({ responses: withView(view => {
+    // Part attendue juste après le bout de chaque barre : le trait touche la valeur.
+    for (const singer of view.stats.singers) if (singer.fairRate != null) singer.fairRate = (singer.turnsPerHour || 0) * 1.05 + 0.01;
+  }) });
+  await settle();
+  const groups = page.doc.getElementById('chartRatesPlot').byTag('g');
+  let checked = 0;
+  for (const g of groups) {
+    const tick = g.children.find(n => n.tagName === 'RECT' && n.getAttribute('fill') === 'var(--ref)');
+    const value = g.children.filter(n => n.tagName === 'TEXT').at(-1);
+    if (!tick) continue;
+    checked++;
+    assert.ok(Number(value.getAttribute('x')) >= Number(tick.getAttribute('x')) + 2 + 6, `${text(value)} après le trait`);
+  }
+  assert.ok(checked >= 2);
+});
+
+// Regression: ISSUE-036 — « Tous les chanteurs » : la dernière colonne coupée à 1366 px
+test('tous les chanteurs : en-têtes sur deux lignes au besoin pour tenir dans la carte', () => {
+  const css = html.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rule = /#cardSingers \.st-table th\s*\{([^}]*)\}/.exec(css)?.[1] || '';
+  assert.match(rule, /white-space:\s*normal/);
 });

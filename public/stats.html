@@ -78,6 +78,8 @@ table.st-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .st-table th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--chart-surface); }
 .st-table th button { all: unset; cursor: pointer; }
 .st-table tr.focus td { background: var(--surface-2); font-weight: 600; }
+/* Tous les chanteurs : en-têtes sur deux lignes au besoin, le tableau tient à 1366 px. */
+#cardSingers .st-table th { white-space: normal; vertical-align: bottom; min-width: 4.5em; }
 .st-empty { color: var(--muted); padding: 16px 0; text-align: center; }
 .st-tip { position: fixed; z-index: 20; pointer-events: none; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.25); max-width: 300px; }
 .st-tip .st-tip-title { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
@@ -212,12 +214,27 @@ function niceStep(max, count = 5) {
   const raw = max / count, mag = 10 ** Math.floor(Math.log10(raw));
   return [1, 2, 5, 10].map(f => f * mag).find(step => step >= raw);
 }
-function niceTicks(max, count = 5) {
-  const step = niceStep(max, count);
+function niceTicks(max, count = 5, { integer = false } = {}) {
+  // Comptes (titres, personnes) : pas de demi-graduation qui s'arrondirait en double.
+  const step = integer ? Math.max(1, niceStep(max, count)) : niceStep(max, count);
   const top = Math.max(step, Math.ceil(max / step) * step);
   const out = [];
   for (let v = 0; v <= top + step / 2; v += step) out.push(Math.round(v * 1000) / 1000);
   return out;
+}
+// Durées (en secondes) : pas ronds de 15 s à 1 h, libellés exacts (« 30 s », « 1 min 30 »).
+const DURATION_STEPS = [15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+function durationTicks(maxSec, count = 5) {
+  const step = DURATION_STEPS.find(v => v >= maxSec / count) || 3600;
+  const out = [];
+  for (let v = 0; v < maxSec + step; v += step) out.push(v);
+  return out.length > 1 ? out : [0, step];
+}
+function tickDur(sec, step = 60) {
+  if (!sec) return step >= 60 ? '0 min' : '0 s';
+  if (sec < 60) return `${sec} s`;
+  const m = Math.floor(sec / 60), rest = sec % 60;
+  return rest ? `${m} min ${String(rest).padStart(2, '0')}` : `${m} min`;
 }
 const linear = (d0, d1, r0, r1) => v => d1 === d0 ? r0 : r0 + (v - d0) * (r1 - r0) / (d1 - d0);
 function timeTicks(t0, t1) {
@@ -360,11 +377,11 @@ function drawTimeline(plot) {
 function drawWaits(plot, rows) {
   const W = plotWidth(plot), left = Math.min(140, W * 0.3), right = 40, top = 8, rowH = 26;
   const H = top + rows.length * rowH + 26;
-  const max = Math.max(...rows.map(r => r.waits.maxSec), 60) / 60;
-  const ticks = niceTicks(max, 5);
+  // Échelle en secondes : graduations distinctes même sous deux minutes.
+  const ticks = durationTicks(Math.max(...rows.map(r => r.waits.maxSec), 60), 5).map(v => v / 60);
   const x = linear(0, ticks.at(-1), left, W - right);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Attente avant de chanter, par chanteur' }, plot);
-  axisX(svg, ticks, x, top, H - 22, v => `${fmtNum(v, 0)} min`);
+  axisX(svg, ticks, x, top, H - 22, v => tickDur(Math.round(v * 60), Math.round(ticks[1] * 60)));
   const avg = state.data.stats.global.waitAvgSec;
   if (avg != null) {
     s('line', { x1: x(avg / 60), x2: x(avg / 60), y1: top, y2: H - 22, stroke: 'var(--ref)', 'stroke-width': 1 }, svg);
@@ -399,7 +416,10 @@ function drawRates(plot, rows) {
     const w = x(r.turnsPerHour || 0) - left;
     if (w > 0) s('path', { d: hbarPath(left, y, w, barH), fill: inFocus([r.id]) ? 'var(--s1)' : 'var(--mark-muted)' }, g);
     if (r.fairRate != null) s('rect', { x: x(r.fairRate) - 1, y: y - 3, width: 2, height: barH + 6, fill: 'var(--ref)' }, g);
-    s('text', { x: left + Math.max(0, w) + 6, y: y + barH - 3 }, g).textContent = fmtNum(r.turnsPerHour, 1);
+    // La valeur suit la barre, ou le trait de la part attendue s'il la dépasse ou la touche.
+    const end = left + Math.max(0, w);
+    const tick = r.fairRate != null ? x(r.fairRate) + 1 : -Infinity;
+    s('text', { x: (tick >= end - 2 && tick <= end + 40 ? Math.max(end, tick) : end) + 6, y: y + barH - 3 }, g).textContent = fmtNum(r.turnsPerHour, 1);
     bindTip(hit, () => [`${nameOf(r.id)} · ${tableName(r.tableId)}`, [[fmtNum(r.turnsPerHour, 2), 'passages par heure de présence', 'var(--s1)', ''],
       [fmtNum(r.fairRate, 2), 'part attendue', 'var(--ref)', 'tick'],
       [`${r.turns} / ${fmtNum(r.expectedTurns, 1)}`, `passages réels / attendus · présence ${dur(r.presenceSec)}${r.bonus ? ` · bonus ${r.bonus > 0 ? '+' : ''}${r.bonus}` : ''}`]]]);
@@ -411,7 +431,7 @@ function drawQueue(plot) {
   const W = plotWidth(plot), left = 34, right = 12, top = 10, H = 220, bottom = 24;
   const t0 = samples[0].t, t1 = Math.max(samples.at(-1).t, t0 + 60000);
   const max = Math.max(...samples.map(q => Math.max(q.ready || 0, q.present || 0)), 2);
-  const ticks = niceTicks(max, 4);
+  const ticks = niceTicks(max, 4, { integer: true });
   const x = linear(t0, t1, left, W - right), y = linear(0, ticks.at(-1), H - bottom, top);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Titres prêts et personnes présentes au fil de la soirée' }, plot);
   for (const v of ticks) {
@@ -465,10 +485,15 @@ function drawQueue(plot) {
 }
 
 // Colonnes simples (une série) ou empilées (plusieurs séries, légende).
-function drawColumns(plot, rows, { series, label, valueLabel, aria }) {
-  const W = plotWidth(plot), left = 34, right = 10, top = 14, H = 210, bottom = 26;
+function drawColumns(plot, rows, { series, label, valueLabel, aria, shortLabel = null, unit = '' }) {
+  const W = plotWidth(plot), left = 34, right = 10, top = 14;
+  // Libellés trop larges pour leur colonne (téléphone) : forme courte et unité sous l'axe.
+  const textWidth = value => String(value).length * 6.4;
+  const short = !!shortLabel && Math.max(...rows.map(r => textWidth(label(r)))) > (W - left - right) / rows.length - 4;
+  const tickLabel = short ? shortLabel : label;
+  const H = short && unit ? 224 : 210, bottom = short && unit ? 40 : 26;
   const totals = rows.map(r => series.reduce((n, [key]) => n + (r[key] || 0), 0));
-  const ticks = niceTicks(Math.max(...totals, 1), 4);
+  const ticks = niceTicks(Math.max(...totals, 1), 4, { integer: true });
   const y = linear(0, ticks.at(-1), H - bottom, top);
   const band = (W - left - right) / rows.length;
   const barW = Math.min(24, band * 0.7);
@@ -490,11 +515,12 @@ function drawColumns(plot, rows, { series, label, valueLabel, aria }) {
       base -= hgt;
     });
     if (totals[i] > 0) s('text', { x: cx, y: base - 4, 'text-anchor': 'middle' }, svg).textContent = fmtNum(totals[i], 0);
-    s('text', { x: cx, y: H - 8, 'text-anchor': 'middle' }, svg).textContent = label(r);
+    s('text', { x: cx, y: H - bottom + 18, 'text-anchor': 'middle' }, svg).textContent = tickLabel(r);
     const hit = s('rect', { x: cx - Math.max(12, band / 2), y: top, width: Math.max(24, band), height: H - top - bottom, class: 'st-hit' }, svg);
     bindTip(hit, () => [label(r), series.length > 1 ? series.map(([key, name, color]) => [fmtNum(r[key] || 0, 0), name, color, '']) :
       [[fmtNum(totals[i], 0), valueLabel]]]);
   });
+  if (short && unit) s('text', { x: left + (W - left - right) / 2, y: H - 6, 'text-anchor': 'middle' }, svg).textContent = unit;
 }
 
 // Barres horizontales d'une seule série.
@@ -548,7 +574,9 @@ function renderKpis() {
   const tiles = [
     ['Attente moyenne pour chanter', dur(g.waitAvgSec), `médiane ${dur(g.waitMedianSec)} · 9 sur 10 sous ${dur(g.waitP90Sec)}`],
     ['Chansons par heure', fmtNum(g.songsPerHour, 1), `durée moyenne ${dur(g.avgSongSec)}`],
-    ['Équité de la rotation', fmtNum(f.jain, 2), f.jain == null ? 'pas assez de chanteurs' : `sur ${f.n} chanteurs${f.bonusPeople ? ` · corrigé des bonus ${fmtNum(f.jainAdjusted, 2)}` : ' · 1 = même rythme'}`],
+    ['Équité de la rotation', fmtNum(f.jain, 2), f.jain != null ? `sur ${f.n} chanteur${f.n > 1 ? 's' : ''}${f.bonusPeople ? ` · corrigé des bonus ${fmtNum(f.jainAdjusted, 2)}` : ' · 1 = même rythme'}`
+      // Pas encore calculable : personne n'a 30 min de présence, ou personne n'a encore chanté.
+      : f.n ? 'aucun passage pour le moment' : g.singers ? 'personne n’est encore là depuis 30 min' : 'pas encore de chanteurs'],
     ['Temps mort', pct(g.deadShare), g.deadGapCount ? `${dur(g.deadAvgSec)} en moyenne entre deux chansons` : 'aucun entre deux chansons'],
     ['Chanteurs', `${g.sang} / ${g.singers}`, `ont chanté / ont demandé un titre`],
     ['Chansons', fmtNum(g.songs, 0), `${g.ours} de la file · ${g.battles} Battle${g.battles > 1 ? 's' : ''} · ${g.native} hors file`],
@@ -567,7 +595,8 @@ function renderFocus() {
   if (f.startsWith('p:')) {
     const singer = singerById(f.slice(2));
     if (!singer) { box.hidden = true; return; }
-    box.appendChild(h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: `Soirée de ${nameOf(singer.id)}` }),
+    const who = nameOf(singer.id);
+    box.appendChild(h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: `Soirée ${/^[aeiouyàâäéèêëîïôöûùüh]/i.test(who) ? 'd’' : 'de '}${who}` }),
       h('p', { text: `${tableName(singer.tableId)} · arrivée ${hhmm(singer.joinedAt)} · ${singer.explicitLeft ? 'départ' : 'dernier signe + 30 min'} ${hhmm(singer.leftAt)} · présence ${dur(singer.presenceSec)}` }))));
     box.appendChild(h('div', { class: 'st-mini' },
       ...[[singer.turns, 'passages'], [singer.guestTurns, 'comme invité'], [fmtNum(singer.turnsPerHour, 2), 'par heure'],
@@ -621,9 +650,10 @@ function renderCharts() {
   const histo = g.waitHistogram.some(b => b.count) ? g.waitHistogram : [];
   card({ id: 'chartHistogram', title: 'Répartition des attentes', subtitle: `${fmtNum(st.timeline.stages.filter(x => x.waitSec != null).length, 0)} passages de la file`,
     table: () => [[['Attente'], ['Passages', true]], histo.map(b => ({ cells: [bucketLabel(b), b.count] }))],
-    draw: plot => drawColumns(plot, histo, { series: [['count', 'Passages', 'var(--s1)']], label: bucketLabel, valueLabel: 'passages', aria: 'Nombre de passages par durée d’attente' }) });
+    draw: plot => drawColumns(plot, histo, { series: [['count', 'Passages', 'var(--s1)']], label: bucketLabel, valueLabel: 'passages', aria: 'Nombre de passages par durée d’attente',
+      shortLabel: b => b.toMin == null ? `${b.fromMin}+` : `${b.fromMin}–${b.toMin}`, unit: 'attente en minutes' }) });
   card({ id: 'chartDead', title: 'Causes des temps morts',
-    subtitle: g.deadGapCount ? `${dur(g.deadSec)} au total, ${dur(g.deadAvgSec)} en moyenne entre deux chansons (${g.deadGapCount} intervalles)` : 'Aucun temps mort entre deux chansons.',
+    subtitle: g.deadGapCount ? `${dur(g.deadSec)} au total, ${dur(g.deadAvgSec)} en moyenne entre deux chansons (${g.deadGapCount} intervalle${g.deadGapCount > 1 ? 's' : ''})` : 'Aucun temps mort entre deux chansons.',
     table: () => [[['Cause'], ['Durée', true], ['Part', true]], g.deadCauses.map(c => ({ cells: [c.label, dur(c.sec), pct(g.deadSec ? c.sec / g.deadSec : null)] }))],
     draw: plot => drawBars(plot, g.deadCauses, { value: c => c.sec / 60, format: c => dur(c.sec), label: c => c.label, aria: 'Temps morts par cause', suffix: ' min' }) });
   const hourly = st.timeline.hourly;
@@ -674,10 +704,14 @@ function renderSingerTable() {
     ['Titres retirés', true, 'removed'], ['Voix Battle', true, 'battleVotes']];
   const value = (row, key) => key === 'name' ? nameOf(row.id).toLocaleLowerCase('fr') : key === 'table' ? tableName(row.tableId) :
     key === 'wait' ? row.waits.avgSec : key === 'waitMax' ? row.waits.maxSec : row[key];
+  // Ordre alphabétique français (« Émilie » avant « Farid ») ; à égalité, le prénom départage.
+  const byName = (a, b) => nameOf(a.id).localeCompare(nameOf(b.id), 'fr', { sensitivity: 'base' });
   const rows = [...st.singers].sort((a, b) => {
     const va = value(a, state.sort.key), vb = value(b, state.sort.key);
+    if (va == null && vb == null) return byName(a, b);
     if (va == null) return 1; if (vb == null) return -1;
-    return (va > vb ? 1 : va < vb ? -1 : 0) * state.sort.dir;
+    const order = typeof va === 'string' ? va.localeCompare(vb, 'fr', { sensitivity: 'base' }) : va > vb ? 1 : va < vb ? -1 : 0;
+    return order * state.sort.dir || byName(a, b);
   });
   const focus = focusIds();
   const el = h('figure', { class: 'st-card wide', id: 'cardSingers' }, h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: 'Tous les chanteurs' }),
