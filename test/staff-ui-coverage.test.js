@@ -1564,7 +1564,9 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.match(status(), /^Battle terminée\. Félicite les gagnants.*Prochaine Battle possible dans 2 min 0[45] s\.$/);
   assert.equal(page.$('playBtn').textContent, '▶ Lancer le prochain titre');
   await page.update({ battle: { id: 3, phase: 'cooldown', automation: { status: 'after' } } });
-  assert.match(status(), /« ▶ Lancer le prochain titre » dans le panneau En direct\.$/);
+  // Regression: ISSUE-012 — le texte renvoyait au « panneau En direct », qui n'existe pas (QA du 2026-10-03)
+  assert.match(status(), /« ▶ Lancer le prochain titre » dans « Sur scène »\.$/);
+  assert.ok(!/En direct/.test(status()));
   await page.update({ battle: { id: 3, phase: 'cooldown', automation: { status: 'resuming' } } });
   assert.equal(pill().textContent, 'Reprise demandée');
   assert.match(status(), /^Reprise demandée par le bar\./);

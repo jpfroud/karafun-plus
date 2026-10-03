@@ -1735,7 +1735,7 @@
       : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'
       : battleStep === 'manual' ? 'Battle organisée manuellement : laisse les téléphones rejoindre, lance-la dans KaraFun, annonce les résultats, puis indique ici qu’elle est terminée. La file reste en pause.'
-      : battleStep === 'after' ? `Battle terminée. Félicite les gagnants, puis clique sur « ▶ Lancer le prochain titre » dans le panneau En direct.${battle.cooldownUntil ? ` Prochaine Battle possible dans ${countdown(battle.cooldownUntil)}.` : ''}`
+      : battleStep === 'after' ? `Battle terminée. Félicite les gagnants, puis clique sur « ▶ Lancer le prochain titre » dans « Sur scène ».${battle.cooldownUntil ? ` Prochaine Battle possible dans ${countdown(battle.cooldownUntil)}.` : ''}`
       : battleStep === 'resuming' ? 'Reprise demandée par le bar. Le prochain titre est envoyé puis lancé dès sa confirmation dans KaraFun.'
       : battle.phase === 'requested' ? `Battle demandée : ${selectedSong}. ${voteCount}. Prépare-la dans KaraFun et laisse les téléphones rejoindre.`
       : battle.phase === 'voting' ? `La salle vote pour une Battle${battle.proposalName ? ` (proposition de ${battle.proposalName})` : ''}. Résultats en direct ci-dessous ; tu peux clore le vote avant la fin.`
