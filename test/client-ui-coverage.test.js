@@ -2334,3 +2334,25 @@ test('fiches : le prénom figure dans le nom accessible de « Chanson », « Duo
   assert.equal(label('[data-share-person="alice"]'), 'Transférer la gestion d’Alice');
   assert.equal(label('[data-share-person="bruno"]'), 'Transférer la gestion de Bruno');
 });
+
+// Regression: relecture PR #11 — pendant une demande bloquante, le message de
+// confirmation était rendu inerte : un lecteur d'écran ne l'annonçait pas.
+test('demandes : la confirmation d’une réponse reste annoncée quand une autre demande suit', async () => {
+  const state = baseState();
+  state.tablePeople = [person('alice', 'Alice', { invites: [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } },
+    { entryId: 'x2', fromName: 'Marc', song: { title: 'Autre' } }] })];
+  const page = await open({ state, respond: (url, body, self) => {
+    if (url === '/api/table/duet/answer') self.state.tablePeople[0].invites = self.state.tablePeople[0].invites.filter(i => i.entryId !== body.entryId);
+    return undefined;
+  } });
+  assert.equal(page.node('attention').hidden, false);
+  assert.equal(page.node('mainContent').inert, true);
+  await page.tap('attentionChoices', '[data-attn="no"]');
+  assert.equal(page.node('attention').hidden, false, 'la seconde invitation reste ouverte');
+  assert.match(page.node('attentionTitle').textContent, /Marc/);
+  assert.equal(page.node('toast').textContent, 'Invitation refusée.');
+  assert.equal(page.node('toast').hidden, false);
+  assert.equal(page.node('toast').getAttribute('role'), 'status');
+  assert.notEqual(page.node('toast').inert, true, 'zone d’état annoncée, jamais inerte');
+  assert.equal(page.node('mainContent').inert, true, 'le reste de la page reste bloqué');
+});

@@ -764,8 +764,11 @@
       item.kind === 'battle' ? [item.battle.mode, list(item.battle.songOptions).map(song => song.songId)] : null]);
   }
 
+  // Le message de confirmation (#toast, role=status, sans bouton) reste hors
+  // de cette liste : rendu inerte, il ne serait pas annoncé par un lecteur
+  // d'écran pendant qu'une autre demande reste ouverte.
   function setBackground(blocked) {
-    for (const id of ['topBar', 'infoBar', 'tabsNav', 'mainContent', 'sheet', 'toast']) {
+    for (const id of ['topBar', 'infoBar', 'tabsNav', 'mainContent', 'sheet']) {
       const node = $(id);
       if (node) node.inert = blocked;
     }

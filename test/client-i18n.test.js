@@ -76,6 +76,14 @@ const serverText = message => {
   }
   return null;
 };
+// Regression: relecture PR #11 — l'inverse aussi : chaque message levé
+// directement par une route des téléphones (/api/table/…) a sa traduction.
+const serverJs = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const tableRoutes = serverJs.match(/\n  '(?:POST|GET) \/api\/table\/[^']*': async[\s\S]*?(?=\n  '(?:POST|GET) |\n  \/\/ -{3})/g) || [];
+assert.ok(tableRoutes.length > 20, `routes des téléphones repérées : ${tableRoutes.length}`);
+const routeMessages = tableRoutes.flatMap(block => [...block.matchAll(/(?:new Error|songSettingsError)\(\s*'((?:[^'\\]|\\.)*)'/g)].map(m => m[1]));
+assert.ok(routeMessages.includes('Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.'));
+for (const message of routeMessages) assert.ok(serverText(message), `message d’une route des téléphones sans traduction : « ${message} »`);
 const thrown = work => { try { work(); } catch (error) { return error.message; } assert.fail('erreur attendue'); };
 const ballot = new BattleVote({ minVoters: 5 });
 assert.equal(serverText(thrown(() => ballot.propose({ personId: 'a', personName: 'Ana', eligiblePersonIds: ['a', 'b'],

@@ -655,6 +655,7 @@ window.CLIENT_TRANSLATIONS = {
       'Titre manquant.': 'Missing song title.',
       // Réglages de titre (v1.4)
       'Le bar a désactivé les réglages de titre depuis les téléphones.': 'The bar has turned off song settings from phones.',
+      'Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.': 'This older KaraFun remote doesn’t know song settings: they would not be applied.',
       'Ce titre a déjà commencé : seul le bar peut encore le régler.': 'This song has already started: only the bar can still adjust it.',
       'Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.': 'This song is no longer planned: it may already have been sung or removed.',
       'Ce titre n’est pas dans ta liste.': 'This song isn’t on your list.',
