@@ -71,7 +71,7 @@ function savePhoto(photo, directory) {
 }
 
 function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null,
-  soloInvitations = null, transfers = [] }) {
+  soloInvitations = null, transfers = [], evening = null }) {
   if (!scheduler || !access || !settings) throw new Error('État de soirée incomplet.');
   const tables = [...scheduler.tables.values()].map(t => ({ ...clone(t), secret: access.get(t.id) }));
   if (tables.some(t => !t.secret)) throw new Error('Secret QR manquant dans une table.');
@@ -114,6 +114,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
     transfers: clone(transfers),
     pending: pending ? { ...clone(pending), before: [...pending.before] } : null,
     tracked: clone(tracked),
+    // Soirée du journal (data/soirees/<id>) : reprise après un redémarrage.
+    evening: evening ? { id: String(evening.id), startedAt: Number(evening.startedAt) || null } : null,
   };
 }
 
@@ -302,6 +304,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     Number.isFinite(row.linkExpiresAt) && Number.isInteger(row.attempts) && row.attempts >= 0 &&
     row.attempts <= 5 && Math.max(row.expiresAt, row.linkExpiresAt) > Date.now());
   const restoredPending = pending ? { ...clone(pending), before: new Set(pending.before) } : null;
+  // Champ ajouté en v1.4 : une soirée sans identifiant valable repart d'un nouveau journal.
+  const evening = snapshot.evening && typeof snapshot.evening === 'object' &&
+    /^\d{4}-\d{2}-\d{2}_\d{4}_[0-9a-f]{4}$/.test(String(snapshot.evening.id)) ?
+    { id: snapshot.evening.id, startedAt: Number.isFinite(snapshot.evening.startedAt) ? snapshot.evening.startedAt : null } : null;
   const restoredTracked = clone(tracked);
 
   // Aucun effet sur les objets fournis avant ce point.
@@ -318,7 +324,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if (restoredPending) settings.auto = false;
   return { pending: restoredPending, tracked: restoredTracked,
     recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize(),
-    transfers: restoredTransfers };
+    transfers: restoredTransfers, evening };
 }
 
 // À utiliser uniquement après le premier instantané QueueEvent frais de
