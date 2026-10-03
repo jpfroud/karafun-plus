@@ -363,7 +363,7 @@ for (const [name, respond, message, kind, status] of [
   ['réseau coupé', () => { throw new TypeError('fetch failed'); },
     'Réseau coupé ou site KaraFun injoignable depuis ce PC : vérifie la connexion Internet.', 'network', undefined],
 ]) {
-  test(`découverte impossible (${name}) : message au bar, autre adresse KaraFun, nouvel essai 3 s plus tard`, async t => {
+  test(`découverte impossible (${name}) : message au bar, autre adresse KaraFun, nouvel essai 5 s plus tard`, async t => {
     mockTime(t);
     const env = fakes(t, respond);
     const bridge = new KaraFunBridge({ bases: ['https://kf-a.exemple.invalid', 'https://kf-b.exemple.invalid'] });
@@ -386,7 +386,7 @@ for (const [name, respond, message, kind, status] of [
     assert.equal(failure.data.status, status, 'état HTTP noté');
     assert.equal(failure.data.host, 'kf-a.exemple.invalid');
     assert.equal(JSON.stringify(bridge.events).includes('kcs.exemple'), false, 'jamais l’URL KCS dans le journal');
-    t.mock.timers.tick(2999);
+    t.mock.timers.tick(4999);
     assert.equal(env.calls.length, 1);
     t.mock.timers.tick(1);
     assert.equal(env.calls.length, 2);
@@ -590,7 +590,7 @@ test('erreurs de commande KaraFun : message lisible pour le bar', async t => {
   assert.equal(bridge.events.at(-1).name, 'remote.SomethingNewEvent', 'événement inconnu journalisé sans effet');
 });
 
-test('KaraFun fermé (AppLeftEvent) : message au bar, fermeture puis reconnexion 3 s plus tard', async t => {
+test('KaraFun fermé (AppLeftEvent) : message au bar, fermeture puis reconnexion 3 s plus tard par l’URL gardée', async t => {
   mockTime(t);
   const { bridge, ws, env } = await connected(t);
   t.after(() => bridge.disconnect());
@@ -606,12 +606,13 @@ test('KaraFun fermé (AppLeftEvent) : message au bar, fermeture puis reconnexion
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [{ id: 1, song: { title: 'Fantôme' } }] } } });
   assert.deepEqual(bridge.queue, []);
   t.mock.timers.tick(2999);
-  assert.equal(env.calls.length, 1);
+  assert.equal(env.sockets.length, 1);
   t.mock.timers.tick(1);
-  assert.equal(env.calls.length, 2, 'nouvelle découverte');
-  await flush();
+  assert.equal(env.sockets.length, 2, 'nouvelle connexion');
+  assert.equal(env.calls.length, 1, 'URL KCS gardée : la page n’est pas relue');
   const ws2 = env.sockets.at(-1);
   assert.notEqual(ws2, ws);
+  assert.equal(ws2.url, KCS_URL);
   ws2.open();
   ws2.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
   ws2.receive({ type: 'remote.StatusEvent', payload: { status: { state: 1 } } });
@@ -636,7 +637,8 @@ test('coupure du WebSocket par KaraFun : message avec le code, reconnexion', asy
   assert.equal(bridge.connected, false);
   assert.ok(bridge.events.some(e => e.name === 'connexion-perdue'));
   t.mock.timers.tick(3000);
-  assert.equal(env.calls.length, 2);
+  assert.equal(env.sockets.length, 2, 'reconnexion par l’URL KCS gardée');
+  assert.equal(env.calls.length, 1);
 });
 
 test('KaraFun muet : le chien de garde relance la connexion', async t => {
@@ -650,7 +652,8 @@ test('KaraFun muet : le chien de garde relance la connexion', async t => {
   assert.equal(bridge.unreachable, true);
   assert.equal(ws.closeCalls, 1);
   t.mock.timers.tick(3000);
-  assert.equal(env.calls.length, 2);
+  assert.equal(env.sockets.length, 2, 'reconnexion par l’URL KCS gardée');
+  assert.equal(env.calls.length, 1);
 });
 
 test('commande non confirmée en 8 s : reconnexion avec le nom de la commande', async t => {
@@ -665,7 +668,8 @@ test('commande non confirmée en 8 s : reconnexion avec le nom de la commande', 
   assert.equal(bridge.connected, false);
   assert.equal(ws.closeCalls, 1);
   t.mock.timers.tick(3000);
-  assert.equal(env.calls.length, 2);
+  assert.equal(env.sockets.length, 2, 'reconnexion par l’URL KCS gardée');
+  assert.equal(env.calls.length, 1);
 });
 
 // ---------------------------------------------------------------------------
