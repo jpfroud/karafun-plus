@@ -32,7 +32,7 @@ class KcsTransport extends EventEmitter {
       } else if (message.type === 'core.TimestampRequest') {
         this._send('core.TimestampResponse', { timestamp: { _type: 'timestamp', value: new Date().toISOString() } }, message.id);
       } else if (this.pending.has(message.id)) {
-        clearTimeout(this.pending.get(message.id));
+        clearTimeout(this.pending.get(message.id).timer);
         this.pending.delete(message.id);
       }
     });
@@ -68,13 +68,25 @@ class KcsTransport extends EventEmitter {
       if (!this.closed) this.emit('request-timeout', type);
     }, 8000);
     timer.unref();
-    this.pending.set(id, timer);
+    this.pending.set(id, { type, timer });
+  }
+
+  // Réponse de KaraFun sans identifiant (une Error, par exemple) : elle
+  // répond à la plus ancienne demande de ce type encore en attente.
+  settle(type) {
+    for (const [id, request] of this.pending) {
+      if (request.type !== type) continue;
+      clearTimeout(request.timer);
+      this.pending.delete(id);
+      return true;
+    }
+    return false;
   }
 
   _stop() {
     this.closed = true;
     clearInterval(this.watchdog);
-    for (const timer of this.pending.values()) clearTimeout(timer);
+    for (const request of this.pending.values()) clearTimeout(request.timer);
     this.pending.clear();
   }
 
