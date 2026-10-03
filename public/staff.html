@@ -573,16 +573,31 @@
     if (def.delay) d.timer = setTimeout(() => flushField(key), def.delay);
     renderStatus(key);
   }
+  // Un envoi à la fois par champ, comme sur la page des chanteurs : deux
+  // envois du même champ pourraient arriver au serveur dans le désordre, et
+  // la dernière valeur choisie serait remplacée par la précédente. Le
+  // suivant part dès la réponse, avec la dernière valeur.
+  function lockField(d) {
+    d.busy = true;
+    d.sending = new Promise(resolve => { d.unlock = resolve; });
+  }
+  function unlockField(key, d) {
+    d.busy = false;
+    d.unlock?.();
+    if (d.again) { d.again = false; flushField(key); }
+  }
   async function flushField(key, retry = false) {
     const d = drafts.get(key);
     if (!d || (!retry && d.state !== 'editing')) return;
     clearTimeout(d.timer);
+    if (d.busy) { d.again = true; return; }
     const def = FIELDS[d.kind];
     if (!def.check && sameValue(d.value, def.server(d.id)) && !retry) { drafts.delete(key); syncFields(d.kind, d.id); return; }
     if (def.confirm && !def.confirm(d.value)) { drafts.delete(key); syncFields(d.kind, d.id); return; }
     const seq = d.seq = ++saveSeq;
     d.state = 'saving';
     renderStatus(key);
+    lockField(d);
     try {
       const message = await def.send(def.min !== undefined ? Number(d.value) : d.value, d.id);
       if (drafts.get(key) !== d || d.seq !== seq || d.state !== 'saving') return; // modifié entre-temps : la nouvelle valeur repartira
@@ -599,7 +614,7 @@
       d.error = e.message;
       renderStatus(key);
       def.failed?.(d);
-    }
+    } finally { unlockField(key, d); }
   }
   const flushAll = () => { for (const [key, d] of drafts) if (d.state === 'editing') flushField(key); };
   document.addEventListener?.('visibilitychange', () => { if (document.hidden) flushAll(); });
@@ -697,13 +712,21 @@
     const key = keyOf('note', personId), d = drafts.get(key);
     const person = personOf(personId);
     const body = { personId, verified: true };
-    if (d) { clearTimeout(d.timer); body.note = d.value; d.seq = ++saveSeq; }
+    // Le repère en cours d'envoi part d'abord : la vérification porte ensuite
+    // la dernière valeur, sans qu'un envoi plus ancien la remplace.
+    if (d) {
+      clearTimeout(d.timer);
+      while (d.busy) await d.sending;
+      body.note = d.value; d.seq = ++saveSeq;
+      lockField(d);
+    }
     try {
       await post('/api/staff/person/identify', body);
-      if (d && drafts.get(key) === d) { d.state = 'saved'; d.afterLoad = loadsStarted; }
+      if (d && drafts.get(key) === d && sameValue(d.value, body.note)) { d.state = 'saved'; d.afterLoad = loadsStarted; }
       toast(`${person?.name || 'Chanteur'} reconnu : repère vérifié`);
       load();
     } catch (e) { toast(e.message, true); }
+    finally { if (d) unlockField(key, d); }
   }
   document.addEventListener?.('click', event => {
     const verify = event.target?.closest?.('[data-marker-verify]');

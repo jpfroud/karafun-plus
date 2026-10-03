@@ -2925,3 +2925,78 @@ test('scène : les invitations de duo en attente sont listées avec leur état v
   await page.update({ duoInvites: [] });
   assert.equal(page.$('joinRequestsBox').hidden, true);
 });
+
+// Regression: relecture PR #11 — deux envois du même champ pouvaient être en
+// route ensemble : arrivés dans le désordre, la dernière valeur était perdue.
+test('enregistrement automatique : un envoi à la fois par champ, le suivant part après la réponse avec la dernière valeur', async () => {
+  const page = await openPage({ world: tuneWorld() });
+  const held = [];
+  page.replies['/api/staff/song/settings'] = body => new Promise(resolve => held.push(() => {
+    page.world.queue.find(q => q.song.entryId === body.entryId).song.settings = body.settings;
+    resolve({ ok: true, applied: 'list' });
+  }));
+  const sent = () => page.posts.filter(post => post.path === '/api/staff/song/settings').map(post => post.body.settings);
+  await page.click(page.in('qBody', '[data-song-settings="b1"]'));
+  await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.deepEqual(sent(), [{ pitch: 1 }]);
+  // Le premier envoi traîne (Wi-Fi) : un second « + » attend sa réponse.
+  await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.deepEqual(sent(), [{ pitch: 1 }], 'pas de second envoi en parallèle');
+  assert.equal(page.$('songSheetStatus').textContent, 'Modifié…');
+  held.shift()();
+  await page.flush();
+  assert.deepEqual(sent(), [{ pitch: 1 }, { pitch: 2 }], 'la dernière valeur part après la réponse');
+  held.shift()();
+  await page.flush();
+  await page.poll();
+  assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓');
+  assert.deepEqual(page.world.queue.find(q => q.song.entryId === 'b1').song.settings, { pitch: 2 });
+
+  // Case à cocher : deux appuis rapides, un seul envoi à la fois, la dernière valeur gagne.
+  let release;
+  page.replies['/api/staff/settings'] = body => new Promise(resolve => { release = () => {
+    page.world.settings.singerSongSettings = body.singerSongSettings; resolve({ ok: true }); }; });
+  const toggles = () => page.posts.filter(post => post.path === '/api/staff/settings').map(post => post.body.singerSongSettings);
+  await page.change(page.$('singerSongSettings'), false);
+  await page.change(page.$('singerSongSettings'), true);
+  assert.deepEqual(toggles(), [false]);
+  release();
+  await page.flush();
+  assert.deepEqual(toggles(), [false, true]);
+  release();
+  await page.flush();
+  await page.poll();
+  assert.equal(page.world.settings.singerSongSettings, true, 'le serveur garde le dernier choix');
+  assert.equal(page.$('singerSongSettings').checked, true);
+});
+
+test('repère vérifié pendant l’envoi du repère : la vérification part après, avec la dernière valeur', async () => {
+  const world = baseWorld();
+  world.people[0] = { ...world.people[0], verified: false, verifiedAt: 0 };
+  world.stage = { ours: true, ids: ['alice'], queueId: 'q1', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }], title: 'Titre' };
+  const page = await openPage({ world });
+  const held = [];
+  page.replies['/api/staff/person/identify'] = body => new Promise(resolve => held.push(() => {
+    page.world.people[0] = { ...page.world.people[0], privateNote: body.note ?? page.world.people[0].privateNote };
+    resolve({ ok: true });
+  }));
+  const identify = () => page.posts.filter(post => post.path === '/api/staff/person/identify').map(post => post.body);
+  const input = page.in('stage', '[data-stage-person="alice"] [data-autosave="note"]');
+  input.focus();
+  await page.type(input, 'veste verte');
+  page.runTimers(1000);
+  await page.flush();
+  assert.deepEqual(identify(), [{ personId: 'alice', note: 'veste verte' }]);
+  await page.click(page.in('stage', '[data-marker-verify="alice"]'));
+  assert.equal(identify().length, 1, 'la vérification attend la réponse du repère');
+  held.shift()();
+  await page.flush();
+  assert.deepEqual(identify().at(-1), { personId: 'alice', verified: true, note: 'veste verte' });
+  held.shift()();
+  await page.flush();
+  assert.equal(page.toast().text, 'Alice reconnu : repère vérifié');
+});
