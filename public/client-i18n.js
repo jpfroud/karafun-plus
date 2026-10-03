@@ -39,6 +39,7 @@ window.CLIENT_TRANSLATIONS = {
       '{name} accepte de chanter « {title} » avec {person}.': '{name} agrees to sing “{title}” with {person}.',
       '{name} préfère chanter « {title} » sans {person}.': '{name} prefers to sing “{title}” without {person}.',
       'La demande de duo de {person} à {name} a expiré : « {title} » est parti dans KaraFun.': '{person}’s duet request to {name} expired: “{title}” went to KaraFun.',
+      '{name} demandait à chanter « {title} » avec {person} : le titre est parti dans KaraFun avant la réponse, la demande a expiré.': '{name} asked to sing “{title}” with {person}: the song went to KaraFun before the answer, so the request expired.',
       'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.': 'Nobody else is waiting to sing: your turn can’t be pushed back.',
       'La demande de duo de {person} à {name} est close : « {title} » n’est plus dans sa liste.': '{person}’s duet request to {name} is closed: “{title}” is no longer on their list.',
       '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.': ['“{title}” was removed from {person}’s list: presence not confirmed {n} time. Check with the bar if needed.', '“{title}” was removed from {person}’s list: presence not confirmed {n} times. Check with the bar if needed.'],

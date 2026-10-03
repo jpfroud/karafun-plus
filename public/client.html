@@ -681,13 +681,19 @@
   function pendingActions() {
     const people = managedPeople();
     const out = confirmItem ? [confirmItem] : [];
-    for (const person of people) if (person.needConfirm) out.push({ key: `presence:${person.id}`, kind: 'presence', person });
+    // Une demande de duo sur le titre dont la présence est demandée passe
+    // avant « Je suis là », sans « Plus tard » : la confirmation peut faire
+    // partir le titre tout de suite, et la demande expirerait sans être vue.
+    const join = (person, request) => ({ key: `join:${person.id}:${request.entryId}:${request.fromId}`, kind: 'join', person, request, snooze: true });
+    const urgent = (person, request) => person.needConfirm && String(request.entryId) === String(list(person.songs)[0]?.entryId ?? '');
+    for (const person of people) if (person.needConfirm) {
+      for (const request of list(person.joinRequests)) if (urgent(person, request)) out.push({ ...join(person, request), snooze: false });
+      out.push({ key: `presence:${person.id}`, kind: 'presence', person });
+    }
     for (const person of people) for (const invite of invitesOf(person)) {
       out.push({ key: `invite:${person.id}:${invite.entryId || ''}`, kind: 'invite', person, invite, snooze: true });
     }
-    for (const person of people) for (const request of list(person.joinRequests)) {
-      out.push({ key: `join:${person.id}:${request.entryId}:${request.fromId}`, kind: 'join', person, request, snooze: true });
-    }
+    for (const person of people) for (const request of list(person.joinRequests)) if (!urgent(person, request)) out.push(join(person, request));
     const battle = state?.battle || {};
     if (battle.phase === 'voting') {
       const eligible = new Set(list(battle.eligiblePersonIds).map(String));
@@ -908,6 +914,7 @@
       case 'duoAdded': return t('{name} chantera « {title} » en duo avec {person}.', values);
       case 'joinAccepted': return t('{name} accepte de chanter « {title} » avec {person}.', values);
       case 'joinRefused': return t('{name} préfère chanter « {title} » sans {person}.', values);
+      case 'joinMissed': return t('{name} demandait à chanter « {title} » avec {person} : le titre est parti dans KaraFun avant la réponse, la demande a expiré.', values);
       case 'joinExpired': return p.reason === 'sent'
         ? t('La demande de duo de {person} à {name} a expiré : « {title} » est parti dans KaraFun.', values)
         : t('La demande de duo de {person} à {name} est close : « {title} » n’est plus dans sa liste.', values);

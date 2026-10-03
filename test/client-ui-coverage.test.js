@@ -909,9 +909,11 @@ test('alertes : son débloqué au premier toucher, choix coupé gardé, échecs 
 test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour chaque personne du téléphone', async () => {
   const state = baseState({ battle: { id: 'b1', phase: 'voting', mode: 'yesno', eligiblePersonIds: ['alice', 'bob'], votedPersonIds: [],
     closesAt: Date.now() + 120000, eligible: 4, threshold: 2, minVoters: 2, registered: 4 } });
-  state.tablePeople = [person('alice', 'Alice', { needConfirm: true, canDefer: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }],
+  // La demande de Marc vise le deuxième titre d'Alice : la présence (premier titre) passe avant.
+  state.tablePeople = [person('alice', 'Alice', { needConfirm: true, canDefer: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' },
+    { entryId: 'e2', songId: 2, title: 'Deuxième' }],
     invites: [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } }],
-    joinRequests: [{ entryId: 'e1', fromId: 'marc', fromName: 'Marc', song: { title: 'Mon titre' } }] }), person('bob', 'Bob')];
+    joinRequests: [{ entryId: 'e2', fromId: 'marc', fromName: 'Marc', song: { title: 'Deuxième' } }] }), person('bob', 'Bob')];
   state.managedIds = ['alice', 'bob'];
   let answer = null;
   const page = await open({ state, respond: (url, body, self) => {
@@ -974,12 +976,12 @@ test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour
 
   // Plus tard : l'invitation revient dans une minute, la demande suivante passe.
   await page.tap('attentionChoices', '[data-attn="later"]');
-  assert.equal(page.node('attentionTitle').textContent, 'Marc aimerait chanter « Mon titre » avec Alice.');
+  assert.equal(page.node('attentionTitle').textContent, 'Marc aimerait chanter « Deuxième » avec Alice.');
   assert.equal(page.node('attentionError').hidden, true, 'l’erreur ne suit pas la demande suivante');
   await page.tap('attentionChoices', '[data-attn="no"]');
-  assert.deepEqual(lastAction()[1], { table: '1', access: 'secret', personId: 'alice', entryId: 'e1', fromId: 'marc', accept: false });
+  assert.deepEqual(lastAction()[1], { table: '1', access: 'secret', personId: 'alice', entryId: 'e2', fromId: 'marc', accept: false });
   assert.equal(page.toast().text, 'Demande refusée.');
-  assert.equal(page.node('attentionTitle').textContent, 'Vote Battle : toute la salle chante !');
+  assert.equal(page.node('attentionTitle').textContent, 'Vote Battle : toute la salle chante\u00a0!');
   assert.deepEqual(choices(), ['Oui', 'Non', 'Plus tard (1 min)']);
   await page.tap('attentionChoices', '[data-choice="yes"]');
   assert.deepEqual(lastAction(), ['/api/table/battle/vote', { table: '1', access: 'secret', personId: 'alice', choice: 'yes' }]);
@@ -2206,4 +2208,27 @@ test('demandes : « Je suis là » sans « Pas prêt » quand personne d’autre
     ? reply(400, { error: 'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.', code: 'DEFER_ALONE' }) : undefined });
   await late.tap('attentionChoices', '[data-attn="defer"]');
   assert.equal(late.node('attentionError').textContent, 'Nobody else is waiting to sing: your turn can’t be pushed back.');
+});
+
+// Regression: ISSUE-014 — « Je suis là » faisait partir le titre avant que la demande de duo sur ce titre soit vue
+test('demandes : une demande de duo sur le titre attendu passe avant « Je suis là », sans « Plus tard » ; avis à l’auteur', async () => {
+  const state = baseState();
+  state.tablePeople = [person('alice', 'Alice', { needConfirm: true, songs: [{ entryId: 'w1', songId: 1, title: 'Waterloo' }],
+    joinRequests: [{ entryId: 'w1', fromId: 'dan', fromName: 'Dan', song: { title: 'Waterloo' } }] })];
+  const page = await open({ state, respond: (url, body, self) => {
+    if (url === '/api/table/duet/join/answer') self.state.tablePeople[0].joinRequests = [];
+    return undefined;
+  } });
+  assert.equal(page.node('attentionCount').textContent, '1 / 2');
+  assert.equal(page.node('attentionTitle').textContent, 'Dan aimerait chanter « Waterloo » avec Alice.', 'la demande d’abord');
+  const choices = () => page.node('attentionChoices').querySelectorAll('button').map(button => button.textContent);
+  assert.deepEqual(choices(), ['Accepter', 'Refuser'], 'pas de « Plus tard » : la confirmation ferait expirer la demande');
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.equal(page.node('attentionTitle').textContent, 'C’est bientôt au tour d’Alice\u00a0!', 'puis la présence');
+  // Demande expirée quand même (titre parti) : l'auteur est prévenu.
+  page.state.tablePeople[0].needConfirm = false;
+  page.state.tablePeople[0].inbox = [{ id: 'm1', kind: 'joinMissed', params: { name: 'Dan', title: 'Waterloo' }, at: Date.now() }];
+  await page.poll();
+  assert.ok(page.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent ===
+    'Dan demandait à chanter « Waterloo » avec Alice : le titre est parti dans KaraFun avant la réponse, la demande a expiré.'));
 });

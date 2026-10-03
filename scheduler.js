@@ -731,6 +731,8 @@ class Scheduler {
     for (const row of requests) {
       const requester = this.people.get(row.fromId);
       this.notify(requester.id, 'joinExpired', { name: owner.name, title: song.title, reason });
+      // Parti avant la réponse : l'auteur du titre apprend aussi qu'une demande attendait.
+      if (reason === 'sent') this.notify(owner.id, 'joinMissed', { name: requester.name, title: song.title });
       this.note(reason === 'sent' ?
         `La demande de duo de ${requester.name} à ${owner.name} a expiré : « ${song.title} » est parti dans KaraFun` :
         `La demande de duo de ${requester.name} à ${owner.name} est close : « ${song.title} » n’est plus dans sa liste`, 'staff');

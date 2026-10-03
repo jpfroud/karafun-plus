@@ -209,3 +209,23 @@ test('« Pas prêt » seul : le passage repoussé part dès que la scène est li
   assert.equal(sel.ids[0], people.Emma.id);
   assert.equal(s.log.at(-1).msg, 'Personne d’autre ne peut chanter : le passage repoussé d’Emma part maintenant');
 });
+
+// Regression: ISSUE-014 — « Je suis là » faisait partir le titre et la demande de duo expirait sans que l'auteur le sache
+test('demande de duo expirée à l’envoi : l’auteur du titre est prévenu, comme le demandeur', () => {
+  const s = new Scheduler();
+  const alice = s.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const dan = s.join({ tableId: '2', name: 'Dan', headcount: 1 });
+  s.chooseSong(alice, { songId: 900, title: 'Waterloo', artist: 'ABBA' });
+  s.requestDuetJoin(dan, alice.id, alice.song.entryId);
+  const sel = s.select();
+  s.commit(sel);
+  assert.deepEqual(s.inboxOf(dan).map(n => [n.kind, n.params.name, n.params.title, n.params.reason]), [['joinExpired', 'Alice', 'Waterloo', 'sent']]);
+  assert.deepEqual(s.inboxOf(alice).map(n => [n.kind, n.params.name, n.params.title]), [['joinMissed', 'Dan', 'Waterloo']],
+    'Alice apprend qu’une demande attendait sur ce titre');
+  // Titre retiré (pas envoyé) : seul le demandeur est prévenu.
+  s.chooseSong(alice, { songId: 901, title: 'Fernando' }, 'append');
+  const next = alice.song || alice.backlog.at(-1);
+  s.requestDuetJoin(dan, alice.id, next.entryId);
+  s.staffRemoveEntry(alice.id, next.entryId);
+  assert.equal(s.inboxOf(alice).filter(n => n.kind === 'joinMissed').length, 1, 'retrait : pas d’avis à l’auteur');
+});
