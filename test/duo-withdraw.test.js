@@ -188,7 +188,7 @@ test('messages : invitation refusée ou annulée, duo direct, demande acceptée 
   s.cancelDuet(alice, duo.entryId);
   assert.equal(bruno.inbox.at(-1).kind, 'duoCancelled');
   s.inviteDuet(alice, mate.id, song(3, 'Trois'));
-  assert.deepEqual(mate.inbox.at(-1).params, { name: 'Alice', fromId: alice.id, title: 'Trois' });
+  assert.deepEqual(mate.inbox.at(-1).params, { name: 'Alice', fromId: alice.id, title: 'Trois', entryId: s.songsOf(alice).at(-1).entryId });
   s.chooseSong(bruno, song(4, 'Quatre'));
   s.requestDuetJoin(chloe, bruno.id, bruno.song.entryId);
   s.requestDuetJoin(alice, bruno.id, bruno.song.entryId);

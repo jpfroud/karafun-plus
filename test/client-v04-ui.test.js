@@ -360,7 +360,9 @@ const click = (node, picks) => node.listeners.click({ target: { closest: selecto
   poll(); await settle();
   assert.match(get('peopleList').innerHTML, /C’est bientôt au tour d’Alice|C’est bientôt au tour de Alice/);
   assert.match(get('peopleList').innerHTML, /Zoé aimerait chanter « Mon titre » avec Alice/);
-  assert.match(get('activityBannerText').textContent, /Zoé aimerait chanter « Mon titre » en duo avec Alice/);
+  assert.equal(get('attention').hidden, false, 'la demande de duo s’affiche en grand');
+  assert.equal(get('attentionTitle').textContent, 'Zoé aimerait chanter « Mon titre » avec Alice.');
+  assert.match(get('attentionText').textContent, /Réponds avant l’envoi du titre à KaraFun, sinon la demande expire\./);
   click(get('peopleList'), { '[data-join-answer]': { dataset: { joinAnswer: 'yes', personId: 'alice', joinEntry: 'e1', joinFrom: 'zoe' } } });
   await settle();
   assert.deepEqual(posts.at(-1)[1], { table: '1', access: 'secret', personId: 'alice', entryId: 'e1', fromId: 'zoe', accept: true });

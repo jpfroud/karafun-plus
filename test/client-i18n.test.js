@@ -210,7 +210,12 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   assert.match(get('battleText').textContent, /^Choose a song or “No Battle”\. Vote ends in \d:\d\d\. 1 voter out of 2; at least 2 needed\./);
   assert.match(get('battleVotes').innerHTML, /1 vote · leading/);
   assert.match(get('battleVotes').innerHTML, /0 votes</, '0 au pluriel en anglais');
-  assert.match(get('activityBannerText').textContent, /^A Battle vote is open\. Alice can vote/);
+  // Vote ouvert : la demande s'affiche en grand, en anglais.
+  assert.equal(get('attention').hidden, false);
+  assert.equal(get('attentionWho').textContent, 'For Alice');
+  assert.equal(get('attentionTitle').textContent, 'Battle vote: the whole room sings!');
+  assert.match(get('attentionText').innerHTML, /^Choose a song or “No Battle”\. <span id="attentionClock">Vote ends in \d:\d\d\.<\/span>$/);
+  assert.match(get('attentionChoices').innerHTML, /Bohemian Rhapsody — Queen.*No Battle.*Later \(1 min\)/);
   assert.equal(page.document.title, '(1) Karaoke — my table');
 
   // Les erreurs du serveur sont traduites ; une erreur inconnue reste lisible.

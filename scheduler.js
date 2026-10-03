@@ -705,7 +705,7 @@ class Scheduler {
       `${p.name} invite ${q.name} en duo sur « ${duetSong.title} »`);
     // Même table : duo direct, sans réponse demandée. Le téléphone de
     // l'invitée le signale (sauf s'il gère aussi l'auteur du titre).
-    if (sameGroup) this.notify(q.id, 'duoAdded', { name: p.name, fromId: p.id, title: duetSong.title });
+    if (sameGroup) this.notify(q.id, 'duoAdded', { name: p.name, fromId: p.id, title: duetSong.title, entryId: duetSong.entryId });
     return duetSong;
   }
 

@@ -156,8 +156,8 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
   invites = [{ entryId: 'duo-1', fromName: 'Marine', song: { songId: 5, title: 'Duo' } }];
   poll(); await settle();
-  assert.equal(get('activityBanner').hidden, false);
-  assert.match(get('activityBannerText').textContent, /Marine propose un duo à Alice/);
+  assert.equal(get('attention').hidden, false, 'l’invitation s’affiche en grand');
+  assert.match(get('attentionTitle').textContent, /Marine propose un duo à Alice/);
   assert.match(document.title, /^\(1\)/);
 
   invites = [];
@@ -172,14 +172,15 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     'un rafraîchissement des votes ne recrée pas le choix en cours');
   battle = { id: 'vote-1', phase: 'voting', eligiblePersonIds: ['alice'], votedPersonIds: [] };
   poll(); await settle();
-  assert.match(get('activityBannerText').textContent, /vote Battle est ouvert/);
+  assert.equal(get('attentionTitle').textContent, 'Vote Battle : toute la salle chante !');
+  assert.match(get('attentionChoices').innerHTML, /data-choice="yes">Oui<.*data-choice="no">Non</);
   battle = { ...battle, votedPersonIds: ['alice'] };
   poll(); await settle();
-  assert.equal(get('activityBanner').hidden, true, 'la bannière se retire après le vote');
+  assert.equal(get('attention').hidden, true, 'la demande se retire après le vote');
   battle = { ...battle, phase: 'requested' };
   poll(); await settle();
-  assert.equal(get('activityBanner').hidden, true,
-    'après le vote, la Battle reste dans son panneau sans laisser Voir la Battle en haut');
+  assert.equal(get('attention').hidden, true, 'rien à répondre une fois la Battle décidée');
+  assert.match(get('infoBar').innerHTML, /La Battle aura lieu ! Scanne le QR code/, 'la Battle décidée est annoncée en haut');
   assert.match(get('battleText').textContent, /La Battle aura lieu/);
   managedIds = ['alice', 'bob'];
   battle = { phase: 'idle', eligiblePersonIds: [], votedPersonIds: [], minVoters: 5, registered: 4 };
