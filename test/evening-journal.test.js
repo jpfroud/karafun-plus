@@ -342,3 +342,35 @@ test('instantané de soirée : l’identifiant du journal est gardé et rendu à
   assert.equal(restore(old), null, 'ancienne sauvegarde sans journal');
   assert.equal(snapshotNight({ scheduler: sched, access, settings }).evening, null);
 });
+
+// Regression: relecture PR #11 — la reprise après un arrêt brutal se collait
+// à la ligne coupée : relue du disque, la soirée perdait son redémarrage.
+test('journal : après une ligne coupée, la reprise commence sur une nouvelle ligne et survit à la relecture', () => {
+  const { computeStats } = require('../evening-stats');
+  const dir = tmp(), now = clock();
+  const journal = new EveningJournal({ dir, now });
+  journal.open();
+  journal.append('person.joined', { personId: 'p1', tableId: '1' });
+  journal.append('person.seen', { personId: 'p1' });
+  const saved = journal.snapshot();
+  fs.appendFileSync(path.join(dir, saved.id, 'journal.jsonl'), '{"personId":"p1","v":1,"seq":9');
+  now.add(20 * 60000);
+  const again = new EveningJournal({ dir, now });
+  assert.equal(again.open({ resume: saved }), true);
+  again.append('person.left', { personId: 'p1' });
+  const fromDisk = new EveningJournal({ dir, now }).read(saved.id);
+  const restart = fromDisk.events.find(e => e.ev === 'app.started' && e.restored);
+  assert.ok(restart, 'l’événement de reprise est relu du disque');
+  assert.equal(restart.offlineMs, 20 * 60000);
+  assert.ok(fromDisk.events.some(e => e.ev === 'person.left'));
+  assert.equal(fromDisk.corrupt, 1, 'seule la ligne coupée est perdue');
+  const stats = computeStats({ meta: fromDisk.meta, events: fromDisk.events, now: now() });
+  assert.equal(stats.evening.restarts, 1);
+  assert.equal(stats.evening.offlineSec, 20 * 60);
+  // Fichier déjà terminé par un saut de ligne : rien n'est ajouté.
+  const before = fs.readFileSync(path.join(dir, saved.id, 'journal.jsonl'), 'utf8');
+  const third = new EveningJournal({ dir, now });
+  third._endCutLine(saved.id);
+  assert.equal(fs.readFileSync(path.join(dir, saved.id, 'journal.jsonl'), 'utf8'), before);
+  third._endCutLine('2026-10-03_0000_none');
+});

@@ -2678,16 +2678,18 @@ function clearEvening() {
   journaledBallots.clear();
   seenJournal.clear();
   battleVote.reset();
+  // Réglages de la nouvelle soirée avant son premier événement : les règles
+  // notées dans evening.started sont celles qui s'appliquent.
+  settings.autoPlay = false;
+  settings.autoPlayHeld = false;
+  settings.closingAt = null;
+  if (stopAuto) settings.auto = false;
   journal.start({ rules: journalRules() });
   phaseKey = null; presenceAskKey = null; lastSampleAt = 0;
   ensureSoloGroup();
   journalRoster();
-  settings.autoPlay = false;
-  settings.autoPlayHeld = false;
-  settings.closingAt = null;
   restartSweep = null;
   restartAwaitingPlay = null;
-  if (stopAuto) settings.auto = false;
   sched.note('Nouvelle soirée : anciens accès effacés et nouvel accès « En solo » créé.', 'staff');
   saveNight({ required: true, replaceBoth: true });
   saveTables();
@@ -3332,7 +3334,9 @@ const handlers = {
     // l'un est retiré sans être chanté, le duo compte toujours pour lui.
     const inFlight = tracked.filter(item => item !== target.tr && !item.startedAt && !item.cancelled &&
       !isOnStage(item, current) && item.sel.ids.includes(partnerId)).map(item => item.sel);
-    const sel = target.tr ? target.tr.sel : {};
+    // Chanson finie (plus suivie) : le duo est noté sur le titre du passage,
+    // pour que le journal et les statistiques le rattachent au bon passage.
+    const sel = target.tr ? target.tr.sel : { song: { entryId: target.entry?.entryId || null } };
     const partner = sched.staffCountPartner(ownerId, partnerId, sel, inFlight);
     const mark = sel.staffDuo;
     mark.kindBefore = holder.kind || 'solo';

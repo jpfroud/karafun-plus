@@ -302,8 +302,10 @@ test('événements des autres écrans : départ d’un duo, demande expirée, av
   const g = stats.global;
   assert.equal(g.duos.left, 1);
   assert.equal(g.duos.joinExpired, 1);
-  assert.equal(g.notices.sent, 1);
-  assert.equal(g.notices.snoozed, 1);
+  // Regression: relecture PR #11 — « Plus tard » reste sur le téléphone :
+  // aucun compteur qui resterait toujours à 0 dans l'export.
+  assert.deepEqual(g.notices, { sent: 1 });
+  assert.equal(stats.quality.other['attention.snoozed'], 1, 'événement inconnu : compté à part');
   assert.deepEqual(stats.timeline.stages[0].ids, ['p1'], 'l’invitée retirée ne compte pas sur scène');
   assert.deepEqual(stats.timeline.stages[1].ids, ['p2'], 'duo noté puis changé puis annulé');
   assert.equal(stats.timeline.stages[1].kind, 'solo');
@@ -525,4 +527,178 @@ test('temps morts : après une Battle terminée, cause « Après la Battle » ; 
   assert.equal(stats.timeline.gaps.find(g => g.dead).label, 'Après la Battle : relance par le bar');
   assert.ok(stats.global.deadCauses.every(c => c.sec > 0), 'aucune cause à 0 s');
   assert.ok(!insights(stats, { nameOf: () => 'A', tableName: () => 'T' }).some(i => /Battle en préparation/.test(i.text)));
+});
+
+// Regression: relecture PR #11 — un événement de duo sans titre (anciens
+// journaux) ne se rapproche plus d'une Battle ou d'un titre hors file.
+test('duo noté sans titre : aucun passage sans titre n’est changé en duo', () => {
+  const T = m => T0 + m * 60000;
+  const events = [
+    { t: T(0), seq: 1, ev: 'person.joined', personId: 'p1', tableId: '1' },
+    { t: T(0), seq: 2, ev: 'person.joined', personId: 'p2', tableId: '2' },
+    { t: T(1), seq: 3, ev: 'stage.started', queueId: 7, source: 'battle', title: 'Battle collective' },
+    { t: T(4), seq: 4, ev: 'stage.ended', queueId: 7, playedSec: 180 },
+    { t: T(5), seq: 5, ev: 'song.requested', personId: 'p1', entryId: 'x1', title: 'Solo' },
+    { t: T(6), seq: 6, ev: 'stage.started', queueId: 8, entryId: 'x1', ids: ['p1'], source: 'queue' },
+    { t: T(9), seq: 7, ev: 'stage.ended', queueId: 8, playedSec: 180 },
+    { t: T(10), seq: 8, ev: 'duo.improvised', entryId: null, ownerId: 'p1', partnerId: 'p2' },
+    { t: T(10), seq: 9, ev: 'duo.improvisedReplaced', entryId: null, ownerId: 'p1', partnerId: 'p2', previousPartnerId: 'p3' },
+    { t: T(11), seq: 10, ev: 'duo.improvisedCancelled', entryId: null, ownerId: 'p1', partnerId: 'p2' },
+  ];
+  const stats = computeStats({ meta: {}, events, now: T(12) });
+  assert.deepEqual(stats.timeline.stages.map(st => [st.kind, st.ids]), [['battle', []], ['solo', ['p1']]]);
+});
+
+// ---------------------------------------------------------------- relecture PR #11
+const singerOf = (stats, id) => stats.singers.find(s => s.id === id);
+
+// Regression: relecture PR #11 — redémarrage pendant une chanson : la fin du
+// passage était placée trop tôt et un faux temps mort apparaissait.
+test('redémarrage pendant une chanson : durée jouée et fin justes, pas de faux temps mort', () => {
+  const T = m => T0 + m * 60000;
+  const events = [
+    { t: T(0), seq: 1, ev: 'person.joined', personId: 'p1', tableId: '1' },
+    { t: T(0), seq: 2, ev: 'person.joined', personId: 'p2', tableId: '2' },
+    { t: T(1), seq: 3, ev: 'song.requested', personId: 'p1', entryId: 'a1', title: 'Un' },
+    { t: T(1), seq: 4, ev: 'song.requested', personId: 'p2', entryId: 'b1', title: 'Deux' },
+    { t: T(2), seq: 5, ev: 'stage.started', queueId: 1, entryId: 'a1', ids: ['p1'], source: 'queue', boot: 'b1' },
+    { t: T(2), seq: 6, ev: 'karaoke.phase', phase: 'singing' },
+    { t: T(3.5), seq: 7, ev: 'app.started', restored: true, offlineMs: 30000, boot: 'b2' },
+    // Après la reprise, le serveur renote le même titre (son suivi repart de zéro).
+    { t: T(3.5), seq: 8, ev: 'stage.started', queueId: 1, entryId: 'a1', ids: ['p1'], source: 'queue', boot: 'b2' },
+    { t: T(3.5), seq: 9, ev: 'karaoke.phase', phase: 'singing' },
+    { t: T(6), seq: 10, ev: 'stage.ended', queueId: 1, playedSec: 150 },
+    { t: T(6), seq: 11, ev: 'karaoke.phase', phase: 'between', blocker: 'loading' },
+    { t: T(6.25), seq: 12, ev: 'stage.started', queueId: 2, entryId: 'b1', ids: ['p2'], source: 'queue' },
+    { t: T(9), seq: 13, ev: 'stage.ended', queueId: 2, playedSec: 165 },
+  ];
+  const stats = computeStats({ meta: {}, events, now: T(10) });
+  const [first] = stats.timeline.stages;
+  assert.equal(stats.timeline.stages.length, 2, 'un seul passage pour le titre repris');
+  assert.equal(first.end, T(6), 'fin du titre à 19:06, pas à 19:04:30');
+  assert.equal(first.playedSec, 240);
+  assert.deepEqual(stats.global.deadCauses.map(c => [c.cause, c.sec]), [['loading', 15]]);
+  assert.equal(stats.global.deadSec, 15);
+});
+
+// Regression: relecture PR #11 — invité retiré d'un duo prévu puis revenu :
+// le duo chanté était compté comme un solo.
+test('invité retiré d’un duo prévu puis revenu : le duo chanté compte pour lui', () => {
+  const { Scheduler } = require('../scheduler');
+  for (const sameTable of [true, false]) {
+    const s = new Scheduler();
+    const events = [];
+    let clock = T0;
+    s.onEvent = (ev, fields) => events.push({ t: clock += 1000, seq: events.length + 1, ev, ...JSON.parse(JSON.stringify(fields)) });
+    const alice = s.join({ tableId: '1', name: 'Alice', headcount: 2 });
+    const bob = s.join({ tableId: sameTable ? '1' : '2', name: 'Bob', headcount: 2 });
+    s.chooseSong(alice, { songId: 1, title: 'Un' });
+    const entryId = alice.song.entryId;
+    const join = () => { s.requestDuetJoin(bob, alice.id, entryId); if (!sameTable) s.answerDuetJoin(alice, entryId, bob.id, true); };
+    join();
+    s.leaveDuet(bob, alice.id, entryId);
+    join();
+    const sel = s.select();
+    assert.deepEqual([...sel.ids], [alice.id, bob.id], 'KaraFun reçoit le duo');
+    s.commit(sel);
+    s.chooseSong(bob, { songId: 2, title: 'Deux' }); // Bob a aussi son propre titre
+    events.push({ t: clock += 1000, seq: events.length + 1, ev: 'stage.started', queueId: 1, entryId, ids: [...sel.ids], source: 'queue' });
+    events.push({ t: clock += 180000, seq: events.length + 1, ev: 'stage.ended', queueId: 1, playedSec: 180 });
+    const stats = computeStats({ meta: {}, events, now: clock });
+    assert.equal(stats.global.duoStages, 1, `même table : ${sameTable}`);
+    assert.equal(singerOf(stats, bob.id).guestTurns, 1);
+    assert.equal(stats.fairness.neverSang, 0);
+  }
+});
+
+// Regression: relecture PR #11 — un bonus ou un réglage fait par le bar
+// comptait comme un signe d'activité de la personne.
+test('présence : un geste du bar (bonus, réglage d’un titre) n’est pas un signe d’activité', () => {
+  const T = m => T0 + m * 60000;
+  const base = [
+    { t: T(0), seq: 1, ev: 'person.joined', personId: 'p1', tableId: '1' },
+    { t: T(240), seq: 9, ev: 'evening.closed' },
+  ];
+  const presence = extra => singerOf(computeStats({ meta: {}, events: [...base.slice(0, 1), ...extra, base[1]].map((e, i) => ({ ...e, seq: i + 1 })) }), 'p1').presenceSec;
+  assert.equal(presence([]), 30 * 60);
+  assert.equal(presence([{ t: T(180), ev: 'person.bonus', personId: 'p1', level: -2 }]), 30 * 60);
+  assert.equal(presence([{ t: T(180), ev: 'song.settings', by: 'staff', where: 'list', personId: 'p1', entryId: 'e1', settings: { pitch: 1 } }]), 30 * 60);
+  // Témoin : un réglage fait par la personne compte.
+  assert.equal(presence([{ t: T(180), ev: 'song.settings', by: 'self', where: 'list', personId: 'p1', entryId: 'e1', settings: { pitch: 1 } }]), 210 * 60);
+});
+
+// Regression: relecture PR #11 — temps morts : arrêt compté deux fois, et
+// intervalle entier rangé selon sa cause la plus longue.
+test('temps morts : chaque portion compte pour sa cause, un arrêt une seule fois', () => {
+  const T = m => T0 + m * 60000;
+  const head = [
+    { t: T(0), ev: 'person.joined', personId: 'p1', tableId: '1' },
+    { t: T(0), ev: 'person.joined', personId: 'p2', tableId: '2' },
+    { t: T(0.5), ev: 'stage.started', queueId: 1, ids: ['p1'], source: 'queue' },
+    { t: T(4), ev: 'stage.ended', queueId: 1, playedSec: 210 },
+  ];
+  const run = rest => computeStats({ meta: {}, events: [...head, ...rest].map((e, i) => ({ ...e, seq: i + 1 })), now: T(30) }).global;
+  // Arrêt de 4 min pendant qu'un titre attendait l'envoi.
+  const off = run([{ t: T(4), ev: 'karaoke.phase', phase: 'waiting', blocker: 'push-delay' },
+    { t: T(5), ev: 'person.seen', personId: 'p2' },
+    { t: T(9), ev: 'app.started', restored: true, offlineMs: 4 * 60000 },
+    { t: T(10), ev: 'stage.started', queueId: 2, ids: ['p2'], source: 'queue' }]);
+  assert.equal(off.deadSec, 360);
+  assert.deepEqual(off.deadCauses.map(c => [c.cause, c.sec]), [['offline', 240], ['push-delay', 120]]);
+  assert.equal(off.deadCauses.reduce((n, c) => n + c.sec, 0), off.deadSec, 'les parts font 100 %');
+  // File vide puis titre en attente de la lecture par le bar, dans les deux proportions.
+  for (const [empty, waiting] of [[2, 3], [3, 2]]) {
+    const g = run([{ t: T(4), ev: 'karaoke.phase', phase: 'silent', blocker: 'empty' },
+      { t: T(4 + empty), ev: 'song.requested', personId: 'p2', entryId: 'b1', title: 'Deux' },
+      { t: T(4 + empty), ev: 'karaoke.phase', phase: 'between', blocker: 'autoplay-off' },
+      { t: T(4 + empty + waiting), ev: 'stage.started', queueId: 2, entryId: 'b1', ids: ['p2'], source: 'queue' }]);
+    assert.equal(g.deadSec, waiting * 60, `file vide ${empty} min exclue`);
+    assert.equal(g.deadGapCount, 1);
+    assert.deepEqual(g.deadCauses.map(c => [c.cause, c.sec]), [['autoplay-off', waiting * 60]]);
+    assert.equal(g.idleSec, empty * 60);
+  }
+  // Arrêt pendant que la file était vide : ni temps mort ni cause.
+  const idle = run([{ t: T(4), ev: 'karaoke.phase', phase: 'silent', blocker: 'empty' },
+    { t: T(5), ev: 'person.seen', personId: 'p2' },
+    { t: T(9), ev: 'app.started', restored: true, offlineMs: 4 * 60000 },
+    { t: T(10), ev: 'stage.started', queueId: 2, ids: ['p2'], source: 'queue' }]);
+  assert.equal(idle.deadSec, 0);
+  assert.deepEqual(idle.deadCauses, []);
+});
+
+// Regression: relecture PR #11 — titres remplacés, abandonnés au départ ou
+// dont l'envoi est annulé : « en attente » pour toujours.
+test('titres remplacés, abandonnés au départ ou annulés : retirés, plus « en attente »', () => {
+  const T = m => T0 + m * 60000;
+  const events = [
+    { t: T(0), ev: 'person.joined', personId: 'pA', tableId: '1' },
+    { t: T(0), ev: 'person.joined', personId: 'pB', tableId: '2' },
+    { t: T(0), ev: 'person.joined', personId: 'pC', tableId: '3' },
+    { t: T(0), ev: 'person.joined', personId: 'pD', tableId: '4' },
+    { t: T(1), ev: 'song.requested', personId: 'pA', entryId: 'a1', title: 'Premier choix' },
+    { t: T(2), ev: 'song.requested', personId: 'pA', entryId: 'a2', title: 'Remplaçant', replacedEntryIds: ['a1'] },
+    { t: T(1), ev: 'song.requested', personId: 'pB', entryId: 'b1', title: 'Parti avec' },
+    { t: T(1), ev: 'song.requested', personId: 'pC', entryId: 'c1', title: 'Table partie' },
+    { t: T(1), ev: 'song.requested', personId: 'pD', entryId: 'd1', title: 'Envoyé puis remplacé' },
+    { t: T(1), ev: 'song.requested', personId: 'pD', entryId: 'd2', title: 'Envoi annulé' },
+    { t: T(3), ev: 'person.left', personId: 'pB', by: 'self' },
+    { t: T(3), ev: 'table.left', tableId: '3', personIds: ['pC'] },
+    // Remplacé pendant son envoi : il part quand même et il est chanté.
+    { t: T(4), ev: 'song.requested', personId: 'pD', entryId: 'd3', title: 'Nouveau', replacedEntryIds: ['d1', 'd2'] },
+    { t: T(5), ev: 'turn.sent', entryId: 'd1', ids: ['pD'], queueId: 5 },
+    { t: T(6), ev: 'stage.started', queueId: 5, entryId: 'd1', ids: ['pD'], source: 'queue' },
+    { t: T(9), ev: 'stage.ended', queueId: 5, playedSec: 180 },
+    { t: T(10), ev: 'turn.sent', entryId: 'd3', ids: ['pD'], queueId: 6 },
+    { t: T(11), ev: 'turn.unsent', entryId: 'd3', ids: ['pD'], queueId: 6, reason: 'cancelled' },
+    { t: T(12), ev: 'evening.closed' },
+  ].map((e, i) => ({ ...e, seq: i + 1 }));
+  const stats = computeStats({ meta: {}, events });
+  const songs = id => singerOf(stats, id).songs.map(s => [s.title, s.status, s.removedBy]);
+  assert.deepEqual(songs('pA'), [['Premier choix', 'removed', 'self'], ['Remplaçant', 'waiting', null]]);
+  assert.deepEqual(songs('pB'), [['Parti avec', 'removed', 'self']]);
+  assert.deepEqual(songs('pC'), [['Table partie', 'removed', 'staff']]);
+  assert.deepEqual(songs('pD'), [['Envoyé puis remplacé', 'sung', null], ['Envoi annulé', 'removed', 'self'], ['Nouveau', 'removed', 'staff']]);
+  assert.deepEqual(['pA', 'pB', 'pC', 'pD'].map(id => [singerOf(stats, id).waiting, singerOf(stats, id).removed]),
+    [[1, 1], [0, 1], [0, 1], [0, 2]]);
+  assert.deepEqual(singerOf(stats, 'pD').removedBy, { self: 1, staff: 1 });
 });

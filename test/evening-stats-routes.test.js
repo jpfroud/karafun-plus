@@ -494,3 +494,21 @@ test('signes de vie des téléphones, lecture automatique rétablie et absent à
   assert.equal(absent.status, 200, absent.text);
   assert.ok(evs().some(e => e.ev === 'staff.absent' && e.entryId === sel.song.entryId));
 });
+
+// Regression: relecture PR #11 — evening.started de la nouvelle soirée notait
+// la lecture et l'envoi automatiques de la soirée précédente.
+test('« Nouvelle soirée » : les règles notées au début sont celles qui s’appliquent', async () => {
+  for (const [auto, sending] of [[true, true], [false, false]]) {
+    const f = harness({ persistent: true });
+    f.journal.open({ rules: {} });
+    f.settings.auto = auto;
+    f.settings.autoPlay = true;
+    if (sending) f.setPending({ sel: { ids: [], song: { songId: 1, title: 'x', entryId: 'e' }, label: 'x' }, before: new Set(), at: Date.now(), attempts: 1 });
+    const reset = await call(f, 'POST', staff(f, '/api/staff/tables-clear'), { body: { confirmation: 'SUPPRIMER TOUTES LES TABLES' } });
+    assert.equal(reset.status, 200, reset.text);
+    assert.equal(reset.body.autoStopped, sending);
+    const started = f.journal.current.events.find(e => e.ev === 'evening.started');
+    assert.deepEqual({ auto: started.rules.auto, autoPlay: started.rules.autoPlay }, { auto: f.settings.auto, autoPlay: false });
+    assert.equal(f.settings.auto, auto && !sending);
+  }
+});

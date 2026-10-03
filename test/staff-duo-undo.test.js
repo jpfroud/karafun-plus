@@ -285,3 +285,37 @@ test('duo prévu par les chanteurs : le bar ne peut pas l’annuler comme un duo
   await assert.rejects(f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: jp.id, replace: true }),
     { message: 'Aucun duo noté par le bar sur ce passage.' });
 });
+
+// Regression: relecture PR #11 — un duo noté ou corrigé après la chanson
+// partait au journal sans titre (entryId null) : les statistiques gardaient
+// l'ancien partenaire, ou changeaient une Battle en « duo ».
+test('après la chanson : duo noté ou corrigé rattaché au titre du passage (journal et statistiques)', async () => {
+  const { computeStats } = require('../evening-stats');
+  const { f, s, marine, dam, zoe, stage, bridge, queue, events } = evening();
+  await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: dam.id });
+  queue.splice(0, 1);
+  bridge.status = { state: 'idle' };
+  f.sync();
+  const entry = s.stageHistory.at(-1);
+  assert.ok(entry.endedAt);
+  await f.call('POST /api/staff/duo-mark', { stageEntryId: entry.id, partnerId: zoe.id, replace: true });
+  const duoEvents = () => events.filter(([type]) => type.startsWith('duo.improvised')).map(([type, e]) => [type, e.entryId, e.partnerId]);
+  assert.deepEqual(duoEvents(), [['duo.improvised', stage.song.entryId, dam.id], ['duo.improvised', stage.song.entryId, zoe.id],
+    ['duo.improvisedReplaced', stage.song.entryId, zoe.id]], 'chaque événement porte le titre du passage');
+  // Statistiques : une Battle jouée avant, puis le passage de Marine.
+  const T = Date.now() - 600000;
+  const journal = [{ t: T, seq: 1, ev: 'stage.started', queueId: 9, source: 'battle', title: 'Battle collective' },
+    { t: T + 60000, seq: 2, ev: 'stage.ended', queueId: 9, playedSec: 60 },
+    { t: T + 120000, seq: 3, ev: 'stage.started', queueId: 1, entryId: stage.song.entryId, ids: [marine.id], source: 'queue' },
+    { t: T + 300000, seq: 4, ev: 'stage.ended', queueId: 1, playedSec: 180 },
+    ...events.filter(([type]) => type.startsWith('duo.improvised')).map(([ev, fields], i) => ({ t: T + 400000 + i, seq: 5 + i, ev, ...fields }))];
+  const stats = computeStats({ meta: {}, events: journal, now: T + 600000 });
+  assert.deepEqual(stats.timeline.stages.map(st => [st.kind, st.ids]), [['battle', []], ['duo', [marine.id, zoe.id]]]);
+  // Annulé puis noté pour la première fois après la chanson.
+  await f.call('POST /api/staff/duo-unmark', { stageEntryId: entry.id });
+  events.length = 0;
+  await f.call('POST /api/staff/duo-mark', { stageEntryId: entry.id, partnerId: dam.id, replace: true });
+  assert.deepEqual(duoEvents(), [['duo.improvised', stage.song.entryId, dam.id]]);
+  await f.call('POST /api/staff/duo-unmark', { stageEntryId: entry.id });
+  assert.equal(events.find(([type]) => type === 'duo.improvisedCancelled')?.[1].entryId, stage.song.entryId);
+});

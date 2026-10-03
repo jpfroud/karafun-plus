@@ -193,10 +193,26 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     if (!p || !p.active.delete(entryId)) return;
     stopDemand(p, t);
   };
-  const leave = (p, t) => {
+  // Titre sorti de la liste sans « song.removed » (remplacé, personne partie,
+  // envoi annulé par le bar) : retiré, plus « en attente ». Chanté quand même
+  // ensuite (envoi déjà en route), il redevient un titre chanté.
+  const retire = (s, t, by) => {
+    if (!s || s.stageAt || s.removedAt) return;
+    const p = people.get(s.personId);
+    s.removedAt = t; s.removedBy = by; s.implicitRemoval = true;
+    if (p) { p.removed++; p.removedBy[by] = (p.removedBy[by] || 0) + 1; }
+  };
+  const unretire = s => {
+    if (!s?.implicitRemoval) return;
+    const p = people.get(s.personId);
+    if (p) { p.removed--; if (!--p.removedBy[s.removedBy]) delete p.removedBy[s.removedBy]; }
+    s.removedAt = null; s.removedBy = null; s.implicitRemoval = false;
+  };
+  const leave = (p, t, by = 'self') => {
     if (!p) return;
     if (p.openSince != null) { p.intervals.push([p.openSince, t, false]); p.openSince = null; }
     p.explicitLeft = t;
+    for (const entryId of p.active) retire(songs.get(entryId), t, by);
     p.active.clear();
     stopDemand(p, t);
   };
@@ -208,6 +224,13 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const improvisedLater = new Map(); // entryId → invité noté avant le lancement
   let lastImprovised = null; // dernier duo noté par le bar (changement de partenaire)
   const leftDuo = new Map();   // entryId → invités retirés du duo
+  // Invité de nouveau partenaire de ce titre : il n'est plus « retiré ».
+  const rejoin = (entryId, guest) => {
+    const gone = leftDuo.get(entryId);
+    if (!gone) return;
+    const rest = gone.filter(id => id !== guest);
+    if (rest.length) leftDuo.set(entryId, rest); else leftDuo.delete(entryId);
+  };
   const phases = [];
   const presenceAsked = new Map(); // personId → heure de la demande en cours
   const battles = { proposals: 0, votes: 0, outcomes: {}, staffLaunches: 0, external: 0, voters: [], list: [], cooldownLifted: 0 };
@@ -220,7 +243,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const autoplay = { held: 0, released: 0 };
   const unsent = {};
   const samples = [];
-  const notices = { sent: 0, snoozed: 0 };
+  // Avis envoyés aux téléphones. « Plus tard » reste sur le téléphone (rien
+  // n'est envoyé au serveur) : il n'est pas compté.
+  const notices = { sent: 0 };
   const other = {};
   const settingsChanges = [];
   let queueClearedAt = null;
@@ -233,16 +258,18 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     openStages.set(stage.queueId ?? `#${stages.length}`, stage);
   };
   const activityKeys = ['personId', 'requesterId', 'voterId', 'proposerId'];
-  const passive = /^(presence\.(asked|skipped)|staff\.|table\.|turn\.|person\.(left|joined)|song\.removed|duo\.(joinExpired|inviteExpired|improvised)|notice\.)/;
+  // Gestes du bar sur une personne (bonus, réglages de ses titres…) : pas un
+  // signe d'activité de cette personne.
+  const passive = /^(presence\.(asked|skipped)|staff\.|table\.|turn\.|person\.(left|joined|bonus)|song\.removed|duo\.(joinExpired|inviteExpired|improvised)|notice\.)/;
 
   for (const e of list) {
     const t = e.t;
-    if (!passive.test(e.ev)) for (const key of activityKeys) if (typeof e[key] === 'string') touch(e[key], t);
+    if (!passive.test(e.ev) && e.by !== 'staff') for (const key of activityKeys) if (typeof e[key] === 'string') touch(e[key], t);
     switch (e.ev) {
       case 'table.opened': { const tb = tableOf(e.tableId); tb.openedAt ??= t; tb.individual = !!e.individual || tb.individual; break; }
       case 'table.left': {
         const tb = tableOf(e.tableId); tb.leftAt = t;
-        for (const pid of Array.isArray(e.personIds) ? e.personIds : []) leave(people.get(pid), t);
+        for (const pid of Array.isArray(e.personIds) ? e.personIds : []) leave(people.get(pid), t, 'staff');
         break;
       }
       // Dernier niveau (affiché) et historique (pondération par le temps).
@@ -255,7 +282,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         if (p.tableId != null) tableOf(p.tableId);
         break;
       }
-      case 'person.left': leave(personOf(e.personId, t), t); break;
+      case 'person.left': leave(personOf(e.personId, t), t, e.by === 'staff' ? 'staff' : 'self'); break;
       case 'person.reactivated': {
         const p = personOf(e.personId, t);
         if (p.openSince == null) p.openSince = t;
@@ -267,7 +294,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         const p = personOf(e.personId, t);
         p.requests++;
         p.firstRequestAt ??= t;
-        for (const old of Array.isArray(e.replacedEntryIds) ? e.replacedEntryIds : []) dropEntry(p.id, old, t);
+        for (const old of Array.isArray(e.replacedEntryIds) ? e.replacedEntryIds : []) { dropEntry(p.id, old, t); retire(songs.get(old), t, 'self'); }
         songs.set(e.entryId, { entryId: e.entryId, personId: p.id, requestedAt: t, songId: e.songId ?? null,
           title: e.title || '', artist: e.artist || '', durationSec: Number(e.durationSec) || null,
           mode: e.mode || null, partnerId: null, removedAt: null, removedBy: null, sentAt: null, stageAt: null,
@@ -302,11 +329,11 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'duo.joinRequested': {
         duos.joinRequests++;
         const r = personOf(e.requesterId, t); if (r) r.joinRequests++;
-        if (e.direct) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) s.partnerId = e.requesterId; }
+        if (e.direct) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) s.partnerId = e.requesterId; rejoin(e.entryId, e.requesterId); }
         break;
       }
       case 'duo.joinAnswered': {
-        if (e.accepted) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) s.partnerId = e.requesterId; }
+        if (e.accepted) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) s.partnerId = e.requesterId; rejoin(e.entryId, e.requesterId); }
         else duos.joinDeclined++;
         break;
       }
@@ -329,7 +356,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'duo.improvised': {
         duos.improvised++;
         lastImprovised = { entryId: e.entryId, partnerId: e.partnerId };
-        const stage = [...stages].reverse().find(st => e.entryId ? st.entryId === e.entryId : st.queueId === e.queueId);
+        // Sans titre ni titre de KaraFun, aucun passage n'est rapproché (une
+        // Battle ou un titre hors file n'ont pas de titre de la file).
+        const stage = [...stages].reverse().find(st => e.entryId ? st.entryId === e.entryId : e.queueId != null && st.queueId === e.queueId);
         if (stage) {
           if (!stage.ids.includes(e.partnerId)) stage.ids.push(e.partnerId);
           stage.kind = 'duo'; stage.improvised = true;
@@ -339,7 +368,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       }
       case 'duo.improvisedCancelled': {
         duos.improvisedCancelled++;
-        const stage = [...stages].reverse().find(st => st.entryId === e.entryId);
+        const stage = e.entryId ? [...stages].reverse().find(st => st.entryId === e.entryId) : null;
         const gone = e.partnerId || e.previousPartnerId || null;
         if (stage) {
           stage.ids = [stage.ids[0], ...stage.ids.slice(1).filter(id => gone && id !== gone)];
@@ -356,7 +385,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
           duos.improvised = Math.max(0, duos.improvised - 1);
         }
         lastImprovised = null;
-        const stage = [...stages].reverse().find(st => st.entryId === e.entryId);
+        const stage = e.entryId ? [...stages].reverse().find(st => st.entryId === e.entryId) : null;
         const fresh = e.partnerId || e.newPartnerId;
         if (stage && fresh) { stage.ids = [stage.ids[0], fresh]; stage.kind = 'duo'; stage.improvised = true; }
         break;
@@ -414,11 +443,15 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         if (reason === 'pulled-closing') closing.pulled++;
         const s = songs.get(e.entryId);
         if (s && (reason === 'cancelled' || reason === 'skipped-in-karafun')) dropEntry(s.personId, s.entryId, t);
+        // Envoi annulé (départ, vidage, remise à zéro : toujours le bar).
+        if (reason === 'cancelled') retire(s, t, 'staff');
         break;
       }
       case 'stage.started': {
         const queueId = e.queueId == null ? null : String(e.queueId);
-        if (queueId != null && openStages.has(queueId)) break; // même titre (reprise de lecture)
+        // Même titre noté de nouveau sans fin : l'application a redémarré
+        // pendant la chanson. La durée jouée notée à sa fin part de la reprise.
+        if (queueId != null && openStages.has(queueId)) { openStages.get(queueId).segmentStart = t; break; }
         // Même titre revenu juste après (pause, reconnexion) : un seul passage.
         const previous = stages.at(-1);
         if (queueId != null && previous?.queueId === queueId) { reopen(previous, queueId, t); break; }
@@ -439,6 +472,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         else openStages.set(`#${stages.length}`, stage);
         for (const pid of ids) touch(pid, t);
         if (s) {
+          unretire(s);
           s.stageAt = t;
           if (s.deferSince != null) { s.deferMs += t - s.deferSince; s.deferSince = null; }
           dropEntry(s.personId, s.entryId, t);
@@ -529,7 +563,6 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
           demanding: e.demanding ?? null, deferred: e.deferred ?? null });
         break;
       case 'notice.sent': notices.sent++; break;
-      case 'attention.snoozed': notices.snoozed++; break;
       case 'evening.closed': closing.unsungAtClose = Number.isFinite(e.unsungSongs) ? e.unsungSongs : null; break;
       default: other[e.ev] = (other[e.ev] || 0) + 1;
     }
@@ -671,28 +704,46 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   for (let i = 0; i + 1 < stages.length; i++) {
     const a = stages[i].endAt, b = stages[i + 1].start;
     if (b - a < GAP_MIN_MS) continue;
-    const weights = {};
-    const off = overlapMs(a, b, offline);
-    if (off) weights.offline = off;
+    // Chaque portion de l'intervalle compte pour sa cause : seules celles où
+    // un titre attendait sont du temps mort (pas la file vide ni la
+    // fermeture). Un arrêt de l'application compte une seule fois, en
+    // « offline », et n'est un temps mort que si un titre attendait alors.
+    const weights = {}, dead = {};
+    const add = (cause, w, isDead) => {
+      if (!(w > 0)) return;
+      weights[cause] = (weights[cause] || 0) + w;
+      if (isDead) dead[cause] = (dead[cause] || 0) + w;
+    };
     // Une Battle vient de finir : la file attend que le bar la relance
     // (résultats annoncés), ce n'est plus une Battle « en préparation ».
     const afterBattle = stages[i].source === 'battle';
+    let offIdle = 0;
     for (const [s, e, cause] of phaseSpans) {
-      const w = Math.max(0, Math.min(b, e) - Math.max(a, s));
+      const lo = Math.max(a, s), hi = Math.min(b, e);
+      if (hi <= lo || !cause) continue;
       const why = afterBattle && cause === 'battle-hold' ? 'battle-after' : cause;
-      if (w && why) weights[why] = (weights[why] || 0) + w;
+      const off = overlapMs(lo, hi, offline);
+      if (NOT_DEAD.has(why)) offIdle += off;
+      add(why, hi - lo - off, !NOT_DEAD.has(why));
     }
+    const off = overlapMs(a, b, offline);
+    add('offline', off - offIdle, true);
+    add('offline', offIdle, false);
     const known = sum(Object.values(weights));
-    if (known < b - a) weights.unknown = (weights.unknown || 0) + (b - a - known);
-    const cause = Object.entries(weights).sort((x, y) => y[1] - x[1])[0][0];
-    gaps.push({ start: a, end: b, sec: sec(b - a), cause, label: CAUSES[cause] || cause, dead: !NOT_DEAD.has(cause),
-      byCause: Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, sec(v)])) });
+    add('unknown', b - a - known, true);
+    const deadMs = sum(Object.values(dead));
+    const isDead = deadMs >= GAP_MIN_MS;
+    // Cause affichée : la plus longue des portions mortes, sinon de l'intervalle.
+    const cause = Object.entries(isDead ? dead : weights).sort((x, y) => y[1] - x[1])[0][0];
+    gaps.push({ start: a, end: b, sec: sec(b - a), deadSec: isDead ? sec(deadMs) : 0, cause, label: CAUSES[cause] || cause, dead: isDead,
+      byCause: Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, sec(v)])),
+      deadByCause: isDead ? Object.fromEntries(Object.entries(dead).map(([k, v]) => [k, sec(v)])) : {} });
   }
   const deadGaps = gaps.filter(g => g.dead);
   const playedSum = sum(stages.map(st => st.playedSec));
-  const deadSum = sum(deadGaps.map(g => g.sec));
+  const deadSum = sum(deadGaps.map(g => g.deadSec));
   const causes = {};
-  for (const g of deadGaps) for (const [cause, s] of Object.entries(g.byCause)) if (!NOT_DEAD.has(cause)) causes[cause] = (causes[cause] || 0) + s;
+  for (const g of deadGaps) for (const [cause, s] of Object.entries(g.deadByCause)) causes[cause] = (causes[cause] || 0) + s;
   const causeRows = Object.entries(causes).filter(([, s]) => s > 0).map(([cause, s]) => ({ cause, label: CAUSES[cause] || cause, sec: s }))
     .sort((a, b) => b.sec - a.sec);
 
@@ -758,11 +809,11 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     songsPerHour: doneWindowMs > 0 ? round(done.length / (doneWindowMs / 3600000), 1) : null,
     avgSongSec: round(mean(stages.filter(st => st.endKnown).map(st => st.playedSec))),
     playedSec: playedSum,
-    deadSec: deadSum, deadAvgSec: round(mean(deadGaps.map(g => g.sec))), deadMedianSec: round(median(deadGaps.map(g => g.sec))),
+    deadSec: deadSum, deadAvgSec: round(mean(deadGaps.map(g => g.deadSec))), deadMedianSec: round(median(deadGaps.map(g => g.deadSec))),
     deadShare: playedSum + deadSum > 0 ? round(deadSum / (playedSum + deadSum), 3) : null,
     deadCauses: causeRows,
     gapCount: gaps.length, deadGapCount: deadGaps.length,
-    idleSec: sum(gaps.filter(g => !g.dead).map(g => g.sec)),
+    idleSec: sum(gaps.map(g => g.sec - g.deadSec)),
     duoStages: ourDuos.length, duoRate: ours.length ? round(ourDuos.length / ours.length, 3) : null,
     duoPairs: pairs.size,
     crossTableDuos: ourDuos.filter(st => new Set(st.ids.map(tableIdOf)).size > 1).length,

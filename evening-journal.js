@@ -123,6 +123,7 @@ class EveningJournal {
         this.current = { id: resume.id, meta: saved.meta, events: saved.events,
           seq: saved.events.reduce((max, e) => Math.max(max, Number(e.seq) || 0), 0) };
         delete this.current.meta.endedAt;
+        this._endCutLine(resume.id);
         this._flushEarly();
         this.append('app.started', { restored: true, offlineMs: last ? Math.max(0, now - last.t) : 0,
           version: this.app?.version || null, truncated: saved.truncated || undefined });
@@ -147,6 +148,19 @@ class EveningJournal {
     this._flushEarly();
     this.append('app.started', { restored: false, offlineMs: 0, version: this.app?.version || null });
     return id;
+  }
+
+  // Arrêt brutal pendant une écriture : la ligne coupée est terminée, pour
+  // que la reprise commence sur une nouvelle ligne. Collée à la ligne coupée,
+  // elle serait illisible à la relecture (redémarrage et arrêt perdus).
+  _endCutLine(id) {
+    if (!this.dir) return;
+    try {
+      const file = path.join(this._folder(id), 'journal.jsonl');
+      if (!this.fs.existsSync(file)) return;
+      const text = this.fs.readFileSync(file, 'utf8');
+      if (text && !text.endsWith('\n')) this.fs.appendFileSync(file, '\n');
+    } catch (error) { this._fail(error); }
   }
 
   _exists(id) {

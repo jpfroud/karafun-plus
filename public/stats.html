@@ -334,7 +334,7 @@ function drawTimeline(plot) {
   // Temps morts (un titre attendait) sous la ligne « Scène ».
   for (const gap of tl.gaps.filter(g => g.dead)) {
     const band = s('rect', { x: x(gap.start), y: top, width: Math.max(1, x(gap.end) - x(gap.start)), height: laneH, fill: 'var(--gap-band)' }, svg);
-    bindTip(band, () => [`${hhmm(gap.start)} – ${hhmm(gap.end)}`, [[dur(gap.sec), `temps mort : ${gap.label}`]]]);
+    bindTip(band, () => [`${hhmm(gap.start)} – ${hhmm(gap.end)}`, [[dur(gap.deadSec ?? gap.sec), `temps mort : ${gap.label}`]]]);
   }
   s('text', { x: left - 8, y: top + laneH / 2 + 4, 'text-anchor': 'end', class: 'st-strong' }, svg).textContent = 'Scène';
   singers.forEach((id, i) => {
