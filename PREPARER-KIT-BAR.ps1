@@ -43,8 +43,8 @@ $fichiers = @(
   'package.json', 'package-lock.json',
   'battle-vote.js', 'catalog.js', 'fake-karafun.js', 'karafun-state.js',
   'karafun.js', 'kcs-transport.js', 'night-state.js', 'scheduler.js',
-  'server.js', 'start-evening.js', 'stop.js', 'table-access.js', 'solo-invitations.js', 'song-repeats.js',
-  'lyrics.js', 'spotify.js',
+  'server.js', 'start-evening.js', 'stop.js', 'table-access.js', 'solo-invitations.js', 'song-repeats.js', 'song-settings.js',
+  'lyrics.js', 'spotify.js', 'evening-journal.js', 'evening-stats.js',
   'solver\bridge.js', 'solver\karafun-solver.jar'
 )
 foreach ($nom in $fichiers) {
@@ -53,7 +53,7 @@ foreach ($nom in $fichiers) {
   }
 }
 foreach ($nom in @('node\node.exe', 'node\LICENSE', 'node_modules\qrcode', 'node_modules\socket.io',
-    'node_modules\socket.io-client', 'public\client.html', 'public\client-i18n.js', 'public\staff.html',
+    'node_modules\socket.io-client', 'public\client.html', 'public\client-i18n.js', 'public\staff.html', 'public\stats.html',
     'solver-runtime\bin\java.exe')) {
   if (-not (Test-Path -LiteralPath (Join-Path $racine $nom))) {
     throw "Dépendance indispensable absente : $nom"

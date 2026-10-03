@@ -62,7 +62,7 @@ for (const french of Object.keys(english.texts)) {
 }
 
 // Les messages du serveur traduits existent toujours à l'identique.
-const serverSources = ['server.js', 'scheduler.js', 'battle-vote.js']
+const serverSources = ['server.js', 'scheduler.js', 'battle-vote.js', 'song-settings.js']
   .map(file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\\'/g, '\'')).join('\n');
 for (const [french, translation] of Object.entries(english.errors)) {
   assert.ok(serverSources.includes(french), `message serveur introuvable : « ${french} »`);
@@ -76,6 +76,14 @@ const serverText = message => {
   }
   return null;
 };
+// Regression: relecture PR #11 — l'inverse aussi : chaque message levé
+// directement par une route des téléphones (/api/table/…) a sa traduction.
+const serverJs = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const tableRoutes = serverJs.match(/\n  '(?:POST|GET) \/api\/table\/[^']*': async[\s\S]*?(?=\n  '(?:POST|GET) |\n  \/\/ -{3})/g) || [];
+assert.ok(tableRoutes.length > 20, `routes des téléphones repérées : ${tableRoutes.length}`);
+const routeMessages = tableRoutes.flatMap(block => [...block.matchAll(/(?:new Error|songSettingsError)\(\s*'((?:[^'\\]|\\.)*)'/g)].map(m => m[1]));
+assert.ok(routeMessages.includes('Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.'));
+for (const message of routeMessages) assert.ok(serverText(message), `message d’une route des téléphones sans traduction : « ${message} »`);
 const thrown = work => { try { work(); } catch (error) { return error.message; } assert.fail('erreur attendue'); };
 const ballot = new BattleVote({ minVoters: 5 });
 assert.equal(serverText(thrown(() => ballot.propose({ personId: 'a', personName: 'Ana', eligiblePersonIds: ['a', 'b'],
@@ -204,13 +212,18 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   assert.equal(get('peopleCount').textContent, '2 here · 2 signed up');
   assert.match(get('peopleList').innerHTML, /THEIR LIST · 1 SONG</);
   assert.match(get('peopleList').innerHTML, /2nd in the queue · around \d\d:\d\d/);
-  assert.match(get('peopleList').innerHTML, /aria-label="Add a song">＋ Song</, 'bouton court, intitulé complet pour les lecteurs d’écran');
+  assert.match(get('peopleList').innerHTML, /aria-label="Add a song for Alice">＋ Song</, 'bouton court, intitulé complet (avec le prénom) pour les lecteurs d’écran');
   assert.match(get('queueList').innerHTML, /Zoé · Solo/, 'le groupe « En solo » est traduit');
   assert.match(get('queueList').innerHTML, /Alice · Table 1/);
   assert.match(get('battleText').textContent, /^Choose a song or “No Battle”\. Vote ends in \d:\d\d\. 1 voter out of 2; at least 2 needed\./);
   assert.match(get('battleVotes').innerHTML, /1 vote · leading/);
   assert.match(get('battleVotes').innerHTML, /0 votes</, '0 au pluriel en anglais');
-  assert.match(get('activityBannerText').textContent, /^A Battle vote is open\. Alice can vote/);
+  // Vote ouvert : la demande s'affiche en grand, en anglais.
+  assert.equal(get('attention').hidden, false);
+  assert.equal(get('attentionWho').textContent, 'For Alice');
+  assert.equal(get('attentionTitle').textContent, 'Battle vote: the whole room sings!');
+  assert.match(get('attentionText').innerHTML, /^Choose a song or “No Battle”\. <span id="attentionClock">Vote ends in \d:\d\d\.<\/span>$/);
+  assert.match(get('attentionChoices').innerHTML, /Bohemian Rhapsody — Queen.*No Battle.*Later \(1 min\)/);
   assert.equal(page.document.title, '(1) Karaoke — my table');
 
   // Les erreurs du serveur sont traduites ; une erreur inconnue reste lisible.

@@ -2,92 +2,216 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>File karaoké — page du bar</title>
 <link rel="stylesheet" href="/app.css">
 </head>
-<body class="staff">
+<body class="staff" data-tab="scene">
 <header class="topbar staff-topbar">
-  <div><div class="eyebrow">Pilotage de la soirée</div><div class="row wrap"><h1>File karaoké</h1><span id="kfPill" class="pill">…</span><span id="appVersion" class="version-tag" title="Version installée sur ce PC"></span></div></div>
-  <div class="connect-controls">
-    <label class="small" for="code">Code KaraFun</label>
-    <input id="code" type="text" inputmode="numeric" autocomplete="off" placeholder="Code actuel">
-    <button class="btn small primary" id="connectBtn">Connecter</button>
-    <button class="btn small" id="reconnectBtn">Reconnecter</button>
-    <button class="btn small danger" id="shutdownBtn">Arrêter la soirée</button>
-  </div>
+  <div class="staff-brand"><h1>File karaoké</h1><span id="appVersion" class="version-tag" title="Version installée sur ce PC"></span></div>
+  <button type="button" id="kfPill" class="pill" title="Connexion à KaraFun : toucher pour les réglages">…</button>
 </header>
 <div id="staffAlerts" class="staff-alerts" role="alert"></div>
 
 <main class="staff-layout">
-  <section class="card live-panel">
-    <div class="section-heading"><div><div class="eyebrow">KaraFun</div><h2>En direct</h2></div></div>
-    <div class="live-stage on-stage"><span>Sur scène</span><div id="stage" class="live-card">—</div></div>
-    <div class="live-stage"><span>Ensuite</span><div id="next" class="live-card">—</div></div>
-    <div class="row wrap live-actions">
-      <button class="btn small primary" id="playBtn">▶ Lecture</button>
-      <button class="btn small" id="restartBtn" title="Recommence le titre en cours depuis le début, pour le même passage">⏮ Relancer depuis le début</button>
-      <button class="btn small" id="skipBtn">⏭ Passer</button>
-      <button class="btn small danger" id="absentBtn" hidden>Absent : retirer la suivante</button>
+  <!-- ======================================================== Scène -->
+  <section class="card live-panel" data-tab="scene">
+    <div class="section-heading compact"><div><div class="eyebrow">KaraFun</div><h2>Sur scène</h2></div>
+      <div class="scene-chips"><button type="button" id="autoWarn" class="pill warn" hidden></button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
+    <div id="stage" class="live-card stage-card">—</div>
+    <div class="live-actions">
+      <button class="btn primary" id="playBtn">▶ Lecture</button>
+      <button class="btn" id="skipBtn">⏭ Passer</button>
+      <button class="btn" id="restartBtn" title="Recommence le titre en cours depuis le début, pour le même passage">⏮ Relancer depuis le début</button>
     </div>
-    <div id="markDuoBox" class="mark-duo" hidden><label for="markDuoPartner">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button></div><p class="tiny muted">Si son propre titre est déjà chargé dans KaraFun, il en est retiré et repassera plus tard : il ne rechante pas juste après le duo.</p></div>
-    <div class="closing-panel">
-      <div class="section-heading compact"><h3>Fermeture du bar</h3><span id="closingPill" class="pill">Pas d’heure</span></div>
-      <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. Réordonne les derniers titres dans la file. À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
-      <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><button class="btn small primary" id="closingSave">Annoncer</button><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
-      <p class="small" id="closingText" role="status"></p>
-    </div>
-    <div class="control-stack">
-      <label class="switch"><input type="checkbox" id="auto"> Envoi automatique à KaraFun</label>
-      <label class="switch"><input type="checkbox" id="autoPlay"> Lancer la lecture automatiquement</label>
-    </div>
+    <details id="liveTuneBox" class="live-tune" hidden><summary id="liveTuneSummary">Réglages en direct</summary>
+      <p class="tiny muted">Tonalité, tempo, voix guide et chœurs du titre en cours, envoyés tout de suite à KaraFun ; les valeurs affichées sont celles de KaraFun.</p>
+      <p id="liveTuneReason" class="small notice-line" role="status" hidden></p>
+      <div id="liveTune"></div>
+      <span id="liveTuneStatus" class="save-status" role="status" aria-live="polite"></span>
+    </details>
+    <button class="btn small danger" id="absentBtn" hidden>Absent : retirer la suivante</button>
     <p class="small notice-line" id="autoPlayHeldTxt" role="status" hidden>Lecture automatique suspendue : Spotify a repris en fin de file. Touche « Lecture » quand le micro est prêt ; elle se rétablit ensuite.</p>
     <p class="small muted" id="pendingTxt" role="status"></p>
-    <div class="stage-history">
-      <div class="section-heading compact"><h3>Derniers passages sur scène</h3><button type="button" class="btn small" id="clearStageHistory">Vider</button></div>
-      <p class="tiny muted">Pour reconnaître qui chante ou vient de chanter, noter un repère ou marquer parti quelqu’un qui n’était pas là.</p>
-      <div id="stageHistory" class="stage-history-list"><p class="small muted">Aucun passage pour le moment.</p></div>
+    <div id="markDuoBox" class="mark-duo" hidden>
+      <p id="markDuoState" class="small" role="status" hidden></p>
+      <div class="row wrap" id="markDuoDoneActions" hidden><button type="button" class="btn small" id="markDuoChange">Changer de partenaire</button><button type="button" class="btn small danger" id="markDuoCancel">Annuler ce duo</button></div>
+      <div id="markDuoForm"><label for="markDuoPartner" id="markDuoLabel">Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.</label><div class="row wrap"><select id="markDuoPartner"></select><button class="btn small" id="markDuoBtn">Noter le duo</button><button type="button" class="btn small" id="markDuoKeep" hidden>Garder ce duo</button></div><p class="tiny muted">Si son propre titre est déjà chargé dans KaraFun, il en est retiré et repassera plus tard : il ne rechante pas juste après le duo. Un duo noté par erreur s’annule ici tant que le partenaire n’a pas rechanté.</p></div>
     </div>
+    <div id="battleStrip" class="battle-strip" hidden><strong>Battle</strong><p id="battleStripText" class="small" role="status"></p><div class="row wrap" id="battleActions" hidden><button class="btn small primary" id="battleDone">Battle organisée</button><button class="btn small" id="battleDismiss">Ne pas lancer cette fois</button></div><button class="btn small primary" id="battleFinished" hidden>Battle terminée, résultats annoncés</button></div>
+    <div id="joinRequestsBox" class="join-requests" hidden><strong>Demandes de duo en attente</strong><div id="joinRequestsList"></div></div>
+    <div class="next-block"><h3>Ensuite</h3><div id="next" class="live-card next-card">—</div></div>
     <div id="recoveryBox" class="recovery-box" hidden><strong>Envoi à vérifier</strong><p>KaraFun n’a pas confirmé un titre, ou l’application a redémarré pendant son envoi. Vérifie la file dans KaraFun avant de reprendre. Le titre n’a pas été envoyé une seconde fois.</p><button class="btn small primary" id="reconcilePending">J’ai vérifié la file KaraFun : reprendre</button></div>
+    <details class="stage-history" id="stageHistoryBox"><summary>Derniers passages <span class="count" id="stageHistoryCount">0</span></summary>
+      <div class="stage-history-head"><p class="tiny muted">Pour reconnaître qui vient de chanter, annuler un duo noté par erreur ou marquer parti quelqu’un qui n’était pas là.</p><button type="button" class="btn small" id="clearStageHistory">Vider</button></div>
+      <div id="stageHistory" class="stage-history-list"><p class="small muted">Aucun passage pour le moment.</p></div>
+    </details>
   </section>
 
-  <section class="card queue-panel">
+  <!-- ======================================================== File -->
+  <section class="card queue-panel" data-tab="file">
     <div class="section-heading"><div><div class="eyebrow">Ordre réel et prévu</div><h2>File <span class="count" id="qn">0</span></h2></div><span class="small muted" id="queueHint">Glisse une ligne prévue, ou touche sa poignée puis sa destination.</span></div>
     <div class="solver-bar"><span id="solverPill" class="pill" role="status">Ordre local</span><span id="solverText" class="small muted"></span><button class="btn small" id="optimizeQueue" title="Recalcule tout l’ordre avec les règles de la soirée ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas">Recalculer la file</button></div>
-    <div class="bulk-bar"><label class="small"><input type="checkbox" id="selectAllQueue"> Tout sélectionner</label><button class="btn small danger" id="removeSelected" disabled>Retirer la sélection</button><span class="tiny muted">Coche les titres à retirer ; les chanteurs restent inscrits.</span></div>
+    <div class="bulk-bar"><button type="button" class="btn small" id="selectMode" aria-pressed="false">Sélectionner</button><label class="small bulk-only"><input type="checkbox" id="selectAllQueue"> Tout sélectionner</label><button class="btn small danger bulk-only" id="removeSelected" disabled>Retirer la sélection</button><span class="tiny muted bulk-only">Coche les titres à retirer ; les chanteurs restent inscrits.</span></div>
     <div class="queue-head"><span></span><span>#</span><span>Chanteur</span><span>Chanson</span><span>Vers</span><span></span></div>
     <div id="qBody" class="queue-rows"></div>
+    <p id="queueEmpty" class="empty-state" hidden>Aucune chanson en attente pour le moment.</p>
     <details id="manualHistory" class="manual-history" hidden><summary>Changements manuels de la file <span class="count" id="manualCount">0</span></summary>
       <p class="small muted">Annule les changements du plus récent au plus ancien. Les titres déjà chargés dans KaraFun ne changent pas de place.</p>
       <div id="manualHistoryList" class="manual-history-list"></div>
       <button class="btn small" id="recalculateQueue">Annuler tous les changements manuels</button>
     </details>
-    <p id="queueEmpty" class="empty-state" hidden>Aucune chanson en attente pour le moment.</p>
-    <div id="blockedBox" class="blocked-box" hidden><strong>Duos en attente d’accord</strong><div id="blockedBody"></div></div>
-    <div class="table-reset"><button class="btn small danger" id="clearQueue">Vider toutes les chansons</button><span class="small muted">Conserve les tables, les chanteurs, leurs accès et l’historique. La chanson sur scène continue ; les autres retraits doivent être confirmés par KaraFun.</span></div>
   </section>
 
-  <section class="card tables-panel">
-    <div class="section-heading"><div><div class="eyebrow">Accueil des clients</div><h2>Tables</h2></div></div>
-    <div class="new-table">
-      <label for="tableName">Nouvelle table <input id="tableName" type="text" maxlength="20" placeholder="Numéro ou nom"></label>
-      <label for="tableHeadcount">Nombre de personnes <input id="tableHeadcount" type="number" value="4" min="1" max="40" required></label>
-      <button class="btn primary" id="createTable">Ajouter la table</button>
-    </div>
-    <p class="small muted">Laisse le nom vide pour ajouter le prochain numéro. L'effectif proposé est 4 pour une table. Le groupe « En solo » est toujours disponible ; chacun garde son propre tour.</p>
+  <!-- ======================================================== Accueil -->
+  <section class="card tables-panel" data-tab="accueil">
+    <div class="section-heading"><div><div class="eyebrow">Accueil des clients</div><h2>Accueil</h2></div></div>
     <div class="solo-invite-panel">
-      <div><strong>Accueillir une personne seule</strong><p class="small muted">Crée un QR individuel et montre-le à cette personne. Il permet une seule inscription pendant 30 minutes. Il n’y a pas de QR commun à afficher : pour un changement de téléphone, utilise « Donner accès à un autre téléphone » dans les repères chanteurs.</p></div>
-      <button type="button" class="btn primary" id="issueSoloInvitation">Créer un QR individuel</button>
+      <button type="button" class="btn primary welcome-main" id="issueSoloInvitation">Personne seule : QR individuel</button>
+      <p class="small muted">Un QR pour une seule inscription « En solo », valable 30 minutes. Montre-le à la personne qui arrive seule.</p>
       <div id="soloInvitationStatus" class="small muted" role="status"></div>
       <div id="soloInvitationList" class="solo-invite-list"></div>
     </div>
+    <h3 class="welcome-title">Tables</h3>
+    <p class="small muted">Touche une table pour montrer son QR en grand : chaque téléphone de la table peut le scanner. « Détails » : nom, places, bonus, départ.</p>
     <div id="tBody" class="table-cards"></div>
-    <div class="table-reset"><button class="btn small danger" id="clearTables">Supprimer toutes les tables</button><span class="small muted">À la fin de la soirée : efface les chanteurs, leurs titres et les anciens QR. Le titre déjà sur scène continue.</span></div>
+    <div class="new-table">
+      <label for="tableName">Nouvelle table <input id="tableName" type="text" maxlength="20" placeholder="Numéro ou nom"></label>
+      <label for="tableHeadcount">Personnes <input id="tableHeadcount" type="number" value="4" min="1" max="40" required></label>
+      <button class="btn primary" id="createTable">Ajouter la table</button>
+    </div>
+    <p class="tiny muted">Laisse le nom vide pour ajouter le prochain numéro. Le groupe « En solo » est toujours disponible ; chacun garde son propre tour.</p>
+    <div class="transfer-panel">
+      <strong>Donner un chanteur à un autre téléphone</strong>
+      <p class="small muted">Un client change de téléphone, ou un ami de la table veut gérer ce chanteur ? Cherche son prénom, puis fais scanner le QR par le nouveau téléphone. Le nouveau téléphone récupère ce chanteur ; l’ancien perd seulement ce chanteur et garde les autres.</p>
+      <span class="search-field"><input id="transferSearch" type="search" placeholder="Prénom du chanteur" autocomplete="off" aria-label="Chercher le chanteur à donner à un autre téléphone"><button type="button" class="clear-input" data-clear-for="transferSearch" aria-label="Effacer la recherche" hidden>×</button></span>
+      <div id="transferResults" class="transfer-results"></div>
+    </div>
   </section>
 
-  <section class="card access-panel">
-    <div class="section-heading"><div><div class="eyebrow">QR codes</div><h2>Accès des clients</h2></div></div>
-    <p class="small">Chaque table dispose de son propre QR code, accessible dans sa carte. Tu peux aussi les vérifier et les imprimer tous ensemble.</p>
+  <!-- ======================================================== Repères -->
+  <section class="card identity-panel" data-tab="reperes">
+    <div class="section-heading"><div><div class="eyebrow">Reconnaître les chanteurs</div><h2>Repères <span class="count" id="identityCount">0</span></h2></div></div>
+    <div id="identityStageBox" class="identity-stage" hidden><h3>Sur scène maintenant</h3><div id="identityStage"></div></div>
+    <p class="small muted">Note un signe distinctif, par exemple « t-shirt rouge », pour reconnaître le bon chanteur au micro. Le repère s’enregistre tout seul ; seul le bar le voit. Une personne partie garde sa fiche et son ancienneté.</p>
+    <div class="identity-filters"><label>Table <select id="identityTable"></select></label><label>Rechercher <span class="search-field"><input id="identitySearch" type="search" placeholder="Prénom ou description"><button type="button" class="clear-input" data-clear-for="identitySearch" aria-label="Effacer la recherche" hidden>×</button></span></label></div>
+    <div id="identityBody" class="identity-list"></div>
+  </section>
+
+  <!-- ======================================================== Plus -->
+  <section class="card evening-panel" data-tab="plus">
+    <div class="section-heading"><div><div class="eyebrow">Fin de soirée</div><h2>Fermeture du bar</h2></div><span id="closingPill" class="pill">Pas d’heure</span></div>
+    <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
+    <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><span class="save-status" data-save-status="closingTime" aria-live="polite"></span></div>
+    <div class="row wrap closing-actions"><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
+    <p class="small" id="closingText" role="status"></p>
+    <h3>Envoi et lecture automatiques</h3>
+    <div class="control-stack">
+      <label class="switch"><input type="checkbox" id="auto"> Envoi automatique à KaraFun</label>
+      <label class="switch"><input type="checkbox" id="autoPlay"> Lancer la lecture automatiquement</label>
+    </div>
+  </section>
+
+  <section class="card rules-panel" data-tab="plus">
+    <div class="section-heading"><div><div class="eyebrow">Comportement</div><h2>Règles de la soirée</h2></div><span class="small muted">Chaque réglage s’enregistre dès qu’il change.</span></div>
+    <div class="rotation-options" role="radiogroup" aria-label="Partage des passages entre les tables">
+      <p class="small">Dans tous les modes, chacun chante une fois par tour, personne ne rechante avant les premiers passages, et la même table ne reprend pas le micro quand une autre peut chanter. Le mode change seulement la part de chaque table dans un tour.</p>
+      <label class="switch"><input type="radio" name="rotationMode" id="rotationPeople" value="people"> Chacun son tour (recommandé)</label>
+      <p class="small muted">Les tables sont entremêlées au prorata de leurs chanteurs : une table de 10 chante deux fois plus souvent qu’une table de 5, mais jamais d’affilée si une autre table attend.</p>
+      <label class="switch"><input type="radio" name="rotationMode" id="rotationTables" value="tables"> Tables à tour de rôle</label>
+      <p class="small muted">Chaque table obtient la même part, quel que soit son effectif. Les petites tables chantent tôt dans le tour ; en fin de tour, la grande table enchaîne ses chanteurs restants.</p>
+      <label class="switch"><input type="radio" name="rotationMode" id="rotationCompromise" value="compromise"> Compromis</label>
+      <p class="small muted">Les grandes tables passent plus souvent que les petites, mais moins qu’en « Chacun son tour ».</p>
+      <label class="switch"><input id="interleaveArrivals" type="checkbox"> Intercaler une table qui arrive en nombre</label>
+      <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
+    </div>
+    <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
+    <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
+    <p class="small" id="songSettingsInfo" role="status"></p>
+    <div class="row wrap"><label class="switch presence-switch"><input id="requirePresence" type="checkbox"> Exiger « Je suis là » avant l’envoi du titre</label><span class="save-status" data-save-status="requirePresence" aria-live="polite"></span></div>
+    <p class="small muted">La confirmation est demandée au prochain passage pendant le titre en cours ; pour un duo, la réponse de l’un des deux suffit. Sans réponse une fois la scène libre, la soirée continue avec le passage suivant et le titre revient juste après lui, avec une nouvelle demande. Au bout du nombre de fois indiqué, le titre est retiré et le bar est prévenu que la personne est peut-être partie.</p>
+    <div class="rule-fields">
+      <label for="presenceGraceSec">Délai pour répondre « Je suis là » (10 à 300 s) <span class="hint">Compté à partir de la fin du titre en cours, ou de la demande si rien ne joue.</span><span class="field-number"><input id="presenceGraceSec" type="number" inputmode="numeric" min="10" max="300"> secondes</span><span class="save-status" data-save-status="presenceGraceSec" aria-live="polite"></span></label>
+      <label for="presenceMaxSkips">« Je suis là » manqués avant de retirer le titre (1 à 10) <span class="hint">Le bar vérifie ensuite si la personne est toujours là.</span><span class="field-number"><input id="presenceMaxSkips" type="number" inputmode="numeric" min="1" max="10"> fois</span><span class="save-status" data-save-status="presenceMaxSkips" aria-live="polite"></span></label>
+      <label for="playDelaySec">Pause avant lecture automatique (0 à 30 s) <span class="hint">Après le chargement d’une chanson, lorsque KaraFun est arrêté.</span><span class="field-number"><input id="playDelaySec" type="number" inputmode="numeric" min="0" max="30"> secondes</span><span class="save-status" data-save-status="playDelaySec" aria-live="polite"></span></label>
+      <label for="repeatWarnMin">Titre déjà chanté : alerter pendant (0 à 240 min) <span class="hint">Exemple : avec 45, une personne qui ajoute un titre chanté il y a moins de 45 minutes voit une alerte. Elle peut quand même l’ajouter. 0 : aucune alerte pour les titres déjà chantés. Un titre déjà prévu dans la file est toujours signalé.</span><span class="field-number"><input id="repeatWarnMin" type="number" inputmode="numeric" min="0" max="240"> minutes après son passage</span><span class="save-status" data-save-status="repeatWarnMin" aria-live="polite"></span></label>
+      <label for="pushDelaySec">Envoi de la suivante (0 à 180 s) <span class="hint">Temps écoulé depuis le début du titre en cours avant de préparer le prochain.</span><span class="field-number"><input id="pushDelaySec" type="number" inputmode="numeric" min="0" max="180"> secondes</span><span class="save-status" data-save-status="pushDelaySec" aria-live="polite"></span></label>
+    </div>
+    <details class="disclosure"><summary>Équité : réglages avancés</summary>
+      <div class="rule-fields">
+        <label for="gap">Écart à l’inscription entre deux chanteurs d’une même table (1 à 10) <span class="hint">Quand un nouveau chanteur ajoute son premier titre, on essaie de l’éloigner des chanteurs déjà inscrits à sa table. La rotation peut ensuite recalculer l’ordre.</span><span class="field-number"><input id="gap" type="number" inputmode="numeric" min="1" max="10"> places</span><span class="save-status" data-save-status="gap" aria-live="polite"></span></label>
+        <label for="cap">Recul maximal d’un chanteur pendant une attente (1 à 50) <span class="hint">Les nouveaux arrivants ne peuvent pas repousser indéfiniment quelqu’un.</span><span class="field-number"><input id="cap" type="number" inputmode="numeric" min="1" max="50"> places</span><span class="save-status" data-save-status="cap" aria-live="polite"></span></label>
+      </div>
+    </details>
+  </section>
+
+  <section class="card battle-panel" data-tab="plus">
+    <div class="section-heading"><div><div class="eyebrow">Animation de la salle</div><h2>Battle KaraFun</h2></div><span class="pill" id="battlePill">Aucune demande</span></div>
+    <p class="small muted">Tout le monde chante avec son téléphone comme micro. Après un vote favorable (ou sur décision du bar), l’application ajoute le titre en mode Battle si KaraFun l’autorise. Le bar laisse les joueurs rejoindre, puis lance la Battle avec « ▶ Lancer la Battle » sur l’écran Scène ou dans KaraFun.</p>
+    <p class="battle-safety">Avant de montrer le QR KaraFun, vérifie sur l’abonnement Pro que les invités ne peuvent ni ajouter de titre ni modifier la file ou la lecture, et que le compte <b id="helperLogin">FileKaraoke</b> garde ces droits. Teste avec un téléphone client. Si ce réglage est impossible, ne montre pas le QR Battle et ferme la demande.</p>
+    <div id="battleStatus" class="battle-status" role="status">Aucun vote en cours.</div>
+    <div id="battleVotes" class="battle-votes" hidden></div>
+    <div class="row wrap" id="battleVoteActions" hidden><button class="btn small" id="battleCloseVote">Clore le vote maintenant</button></div>
+    <div class="row wrap" id="battleCooldownActions" hidden><button class="btn small" id="battleResetCooldown">Autoriser une nouvelle Battle maintenant</button></div>
+    <div class="battle-launch"><strong>Lancer une Battle sans vote</strong>
+      <p class="small muted">Choisis un titre : il sera ajouté en mode Battle après le prochain passage annoncé, comme après un vote réussi. Le délai entre Battles ne s’applique pas au bar, mais il redémarre à la fin de celle-ci.</p>
+      <div class="search-field"><input id="battleLaunchSearch" type="search" placeholder="Chercher un titre dans KaraFun…" autocomplete="off" enterkeyhint="search" aria-label="Chercher un titre pour la Battle"><button type="button" class="clear-input" data-clear-for="battleLaunchSearch" aria-label="Effacer la recherche" hidden>×</button></div>
+      <ul class="results" id="battleLaunchResults"></ul>
+    </div>
+    <div class="battle-settings">
+      <label for="battleCooldownMin">Délai après une Battle (1 à 120 min) <span class="field-number"><input id="battleCooldownMin" type="number" inputmode="numeric" min="1" max="120"> min</span><span class="save-status" data-save-status="battleCooldownMin" aria-live="polite"></span></label>
+      <label for="battleRejectedCooldownMin">Après un refus (1 à 120 min) <span class="field-number"><input id="battleRejectedCooldownMin" type="number" inputmode="numeric" min="1" max="120"> min</span><span class="save-status" data-save-status="battleRejectedCooldownMin" aria-live="polite"></span></label>
+      <label for="battleVoteMin">Durée du vote (1 à 10 min) <span class="field-number"><input id="battleVoteMin" type="number" inputmode="numeric" min="1" max="10"> min</span><span class="save-status" data-save-status="battleVoteMin" aria-live="polite"></span></label>
+      <label for="battleMinVoters">Votants minimum (1 à 100) <span class="field-number"><input id="battleMinVoters" type="number" inputmode="numeric" min="1" max="100"></span><span class="save-status" data-save-status="battleMinVoters" aria-live="polite"></span></label>
+    </div>
+    <button class="btn small" id="enableStaffAlerts">Activer les notifications</button>
+    <p class="tiny muted">Le vote dure le temps indiqué et se décide avec ceux qui ont voté : il faut au moins le nombre de votants indiqué (ou tous les inscrits s’ils sont moins nombreux) et plus de voix pour la Battle que contre. Le délai après une Battle part de sa fin ; après un vote refusé ou une Battle écartée par le bar, la salle peut en reproposer une plus tôt (5 minutes par défaut).</p>
+    <p class="tiny muted">Sur HTTPS avec autorisation, le navigateur peut notifier si cette page reste ouverte. Sur HTTP, les demandes restent visibles dans la page et une alerte sonore peut retentir ; aucune alerte ne fonctionne après fermeture du navigateur.</p>
+  </section>
+
+  <section class="card spotify-panel" data-tab="plus">
+    <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
+    <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (ce PC, celui de KaraFun, une enceinte) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
+    <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
+      <ol class="small">
+        <li>Sur <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a>, connecte-toi avec le compte Spotify du bar et crée une application (cocher « Web API »).</li>
+        <li>Dans ses réglages, ajoute l’adresse de retour : <code id="spotifyRedirect">http://127.0.0.1:3000/spotify/callback</code></li>
+        <li>Colle son « Client ID » ici (il s’enregistre en quittant le champ), puis clique sur « Se connecter à Spotify » <b>depuis ce PC</b>.</li>
+      </ol>
+      <div class="row wrap"><input id="spotifyClientId" type="text" autocomplete="off" placeholder="Client ID de l’application Spotify" aria-label="Client ID Spotify"><span class="save-status" data-save-status="spotifyClientId" aria-live="polite"></span><button class="btn small primary" id="spotifyLogin">Se connecter à Spotify</button></div>
+    </details>
+    <div id="spotifyConnected" hidden>
+      <div class="row wrap"><label class="small" for="spotifyDevice">Appareil qui joue la musique</label><select id="spotifyDevice"><option value="">Appareil actif de Spotify</option></select><button class="btn small" id="spotifyDevices">Actualiser la liste</button></div>
+      <div class="control-stack">
+        <div class="row wrap"><label class="switch"><input type="checkbox" id="spotifyAutoResume"> Relancer Spotify quand la file est vide</label><span class="save-status" data-save-status="spotifyAutoResume" aria-live="polite"></span></div>
+        <div class="row wrap"><label class="switch"><input type="checkbox" id="spotifyAutoPause"> Mettre Spotify en pause quand un titre démarre</label><span class="save-status" data-save-status="spotifyAutoPause" aria-live="polite"></span></div>
+      </div>
+      <label class="small spotify-delay" for="spotifyDelay">Relancer après <input id="spotifyDelay" type="number" inputmode="numeric" min="0" max="300"> s de silence, une fois la file vide (0 à 300 s) <span class="save-status" data-save-status="spotifyDelay" aria-live="polite"></span></label>
+      <label class="small spotify-delay" for="spotifyLead">Couper Spotify <input id="spotifyLead" type="number" inputmode="numeric" min="0" max="10"> s avant de lancer un titre (0 à 10 s) <span class="save-status" data-save-status="spotifyLead" aria-live="polite"></span></label>
+      <div class="row wrap"><button class="btn small" id="spotifyPlay">▶ Spotify</button><button class="btn small" id="spotifyPause">⏸ Spotify</button><button class="btn small danger" id="spotifyDisconnect">Déconnecter</button></div>
+    </div>
+    <p class="small" id="spotifyText" role="status"></p>
+  </section>
+
+  <section class="card diagnostics-panel" data-tab="plus" id="kfPanel">
+    <div class="section-heading"><div><div class="eyebrow">Télécommande</div><h2>KaraFun</h2></div></div>
+    <div class="connect-controls">
+      <label class="small" for="code">Code KaraFun</label>
+      <input id="code" type="text" inputmode="numeric" autocomplete="off" placeholder="Code actuel">
+      <button class="btn small primary" id="connectBtn">Connecter</button>
+      <button class="btn small" id="reconnectBtn">Reconnecter</button>
+    </div>
+    <details class="disclosure"><summary>Diagnostic KaraFun</summary>
+      <div class="kv" id="diag"></div>
+      <div class="row wrap"><div class="search-field grow"><input id="testQ" type="search" placeholder="Chercher une chanson dans KaraFun…"><button type="button" class="clear-input" data-clear-for="testQ" aria-label="Effacer la recherche" hidden>×</button></div><button class="btn small" id="testSearch">Chercher</button></div>
+      <ul class="results" id="testRes"></ul>
+      <div class="diagnostic-grid"><div><div class="label">File vue dans KaraFun</div><pre id="kfQueue"></pre></div><div><div class="label">Derniers messages</div><pre id="kfEvents"></pre></div></div>
+    </details>
+  </section>
+
+  <section class="card access-panel" data-tab="plus">
+    <div class="section-heading"><div><div class="eyebrow">QR codes</div><h2>Accès et QR</h2></div></div>
+    <p class="small">Chaque table dispose de son propre QR code, affiché en grand depuis l’écran Accueil. Tu peux aussi les vérifier et les imprimer tous ensemble.</p>
     <div class="access-address"><div class="small muted" id="phoneLabel">Adresse utilisée pour les QR codes</div><div id="phoneBase" class="address"></div><p class="small" id="accessMode" role="status"></p></div>
     <p class="small muted">Aux tables ordinaires, un téléphone peut inscrire plusieurs personnes. Dans « En solo », chaque personne utilise son propre téléphone et gère seulement ses chansons.</p>
     <a class="btn small print-link" href="/print" target="_blank" id="printLink">Vérifier et imprimer les QR</a>
@@ -105,117 +229,62 @@
     </details>
   </section>
 
-  <section class="card identity-panel">
-    <details class="disclosure"><summary>Repères chanteurs <span class="count" id="identityCount">0</span></summary>
-      <p class="small muted">Note un signe distinctif, par exemple « t-shirt rouge », pour reconnaître le bon chanteur au micro. Ces notes ne sont visibles que par le bar. Une personne partie garde sa fiche et son ancienneté.</p>
-      <div class="identity-filters"><label>Table <select id="identityTable"></select></label><label>Rechercher <span class="search-field"><input id="identitySearch" type="search" placeholder="Prénom ou description"><button type="button" class="clear-input" data-clear-for="identitySearch" aria-label="Effacer la recherche" hidden>×</button></span></label></div>
-      <div id="identityBody" class="identity-list"></div>
-    </details>
+  <section class="card journal-panel" data-tab="plus">
+    <div class="section-heading"><div><div class="eyebrow">Suivi</div><h2>Statistiques et journal</h2></div></div>
+    <p class="small muted">Les statistiques des soirées sont réservées au bar ; l’export masque les prénoms sauf demande.</p>
+    <a class="btn small" id="statsLink" href="/stats" target="_blank" rel="noopener">Statistiques des soirées</a>
+    <details class="disclosure"><summary>Journal de la soirée</summary><ul class="log" id="log"></ul></details>
   </section>
 
-  <section class="card rules-panel">
-    <div class="section-heading"><div><div class="eyebrow">Comportement</div><h2>Règles de la soirée</h2></div></div>
-    <div class="rotation-options" role="radiogroup" aria-label="Partage des passages entre les tables">
-      <p class="small">Dans tous les modes, chacun chante une fois par tour, personne ne rechante avant les premiers passages, et la même table ne reprend pas le micro quand une autre peut chanter. Le mode change seulement la part de chaque table dans un tour.</p>
-      <label class="switch"><input type="radio" name="rotationMode" id="rotationPeople" value="people"> Chacun son tour (recommandé)</label>
-      <p class="small muted">Les tables sont entremêlées au prorata de leurs chanteurs : une table de 10 chante deux fois plus souvent qu’une table de 5, mais jamais d’affilée si une autre table attend.</p>
-      <label class="switch"><input type="radio" name="rotationMode" id="rotationTables" value="tables"> Tables à tour de rôle</label>
-      <p class="small muted">Chaque table obtient la même part, quel que soit son effectif. Les petites tables chantent tôt dans le tour ; en fin de tour, la grande table enchaîne ses chanteurs restants.</p>
-      <label class="switch"><input type="radio" name="rotationMode" id="rotationCompromise" value="compromise"> Compromis</label>
-      <p class="small muted">Les grandes tables passent plus souvent que les petites, mais moins qu’en « Chacun son tour ».</p>
-      <label class="switch"><input id="interleaveArrivals" type="checkbox"> Intercaler une table qui arrive en nombre</label>
-      <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
-    </div>
-    <label class="switch presence-switch"><input id="requirePresence" type="checkbox"> Exiger « Je suis là » avant l’envoi du titre</label>
-    <p class="small muted">La confirmation est demandée au prochain passage pendant le titre en cours ; pour un duo, la réponse de l’un des deux suffit. Sans réponse une fois la scène libre, la soirée continue avec le passage suivant et le titre revient juste après lui, avec une nouvelle demande. Au bout du nombre de fois indiqué, le titre est retiré et le bar est prévenu que la personne est peut-être partie.</p>
-    <div class="rule-fields">
-      <label for="presenceGraceSec">Délai pour répondre « Je suis là » <span class="hint">Compté à partir de la fin du titre en cours, ou de la demande si rien ne joue.</span><span class="field-number"><input id="presenceGraceSec" type="number" min="10" max="300"> secondes</span></label>
-      <label for="presenceMaxSkips">« Je suis là » manqués avant de retirer le titre <span class="hint">Le bar vérifie ensuite si la personne est toujours là.</span><span class="field-number"><input id="presenceMaxSkips" type="number" min="1" max="10"> fois</span></label>
-      <label for="playDelaySec">Pause avant lecture automatique <span class="hint">Après le chargement d’une chanson, lorsque KaraFun est arrêté.</span><span class="field-number"><input id="playDelaySec" type="number" min="0" max="30"> secondes</span></label>
-      <label for="repeatWarnMin">Titre déjà chanté : alerter pendant <span class="hint">Exemple : avec 45, une personne qui ajoute un titre chanté il y a moins de 45 minutes voit une alerte. Elle peut quand même l’ajouter. 0 : aucune alerte pour les titres déjà chantés. Un titre déjà prévu dans la file est toujours signalé.</span><span class="field-number"><input id="repeatWarnMin" type="number" min="0" max="240"> minutes après son passage</span></label>
-      <label for="pushDelaySec">Envoi de la suivante <span class="hint">Temps écoulé depuis le début du titre en cours avant de préparer le prochain.</span><span class="field-number"><input id="pushDelaySec" type="number" min="0" max="180"> secondes</span></label>
-    </div>
-    <details class="disclosure"><summary>Équité : réglages avancés</summary>
-      <div class="rule-fields">
-        <label for="gap">Écart à l’inscription entre deux chanteurs d’une même table <span class="hint">Quand un nouveau chanteur ajoute son premier titre, on essaie de l’éloigner des chanteurs déjà inscrits à sa table. La rotation peut ensuite recalculer l’ordre.</span><span class="field-number"><input id="gap" type="number" min="1" max="10"> places</span></label>
-        <label for="cap">Recul maximal d’un chanteur pendant une attente <span class="hint">Les nouveaux arrivants ne peuvent pas repousser indéfiniment quelqu’un.</span><span class="field-number"><input id="cap" type="number" min="1" max="50"> places</span></label>
-      </div>
-    </details>
-    <button class="btn small primary" id="saveRules">Enregistrer les règles</button>
+  <section class="card end-panel" data-tab="plus">
+    <div class="section-heading"><div><div class="eyebrow">Attention</div><h2>Fin de soirée</h2></div></div>
+    <p class="small muted">Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.</p>
+    <div class="table-reset"><button class="btn small danger" id="clearQueue">Vider toutes les chansons</button><span class="small muted">Conserve les tables, les chanteurs, leurs accès et l’historique. La chanson sur scène continue ; les autres retraits doivent être confirmés par KaraFun.</span></div>
+    <div class="table-reset"><button class="btn small danger" id="clearTables">Supprimer toutes les tables</button><span class="small muted">Nouvelle soirée : efface les chanteurs, leurs titres et les anciens QR. Le titre déjà sur scène continue.</span></div>
   </section>
-
-  <section class="card battle-panel">
-    <div class="section-heading"><div><div class="eyebrow">Animation de la salle</div><h2>Battle KaraFun</h2></div><span class="pill" id="battlePill">Aucune demande</span></div>
-    <p class="small muted">Tout le monde chante avec son téléphone comme micro. Après un vote favorable (ou sur décision du bar), l’application ajoute le titre en mode Battle si KaraFun l’autorise. Le bar laisse les joueurs rejoindre, puis lance la Battle avec « ▶ Lancer la Battle » ici ou dans KaraFun.</p>
-    <p class="battle-safety">Avant de montrer le QR KaraFun, vérifie sur l’abonnement Pro que les invités ne peuvent ni ajouter de titre ni modifier la file ou la lecture, et que le compte <b id="helperLogin">FileKaraoke</b> garde ces droits. Teste avec un téléphone client. Si ce réglage est impossible, ne montre pas le QR Battle et ferme la demande.</p>
-    <div id="battleStatus" class="battle-status" role="status">Aucun vote en cours.</div>
-    <div id="battleVotes" class="battle-votes" hidden></div>
-    <div class="row wrap" id="battleVoteActions" hidden><button class="btn small" id="battleCloseVote">Clore le vote maintenant</button></div>
-    <div class="row wrap" id="battleCooldownActions" hidden><button class="btn small" id="battleResetCooldown">Autoriser une nouvelle Battle maintenant</button></div>
-    <div class="battle-launch"><strong>Lancer une Battle sans vote</strong>
-      <p class="small muted">Choisis un titre : il sera ajouté en mode Battle après le prochain passage annoncé, comme après un vote réussi. Le délai entre Battles ne s’applique pas au bar, mais il redémarre à la fin de celle-ci.</p>
-      <div class="search-field"><input id="battleLaunchSearch" type="search" placeholder="Chercher un titre dans KaraFun…" autocomplete="off" enterkeyhint="search" aria-label="Chercher un titre pour la Battle"><button type="button" class="clear-input" data-clear-for="battleLaunchSearch" aria-label="Effacer la recherche" hidden>×</button></div>
-      <ul class="results" id="battleLaunchResults"></ul>
-    </div>
-    <div class="battle-settings"><label for="battleCooldownMin">Délai après une Battle <input id="battleCooldownMin" type="number" min="1" max="120"> min</label><label for="battleRejectedCooldownMin">Après un refus <input id="battleRejectedCooldownMin" type="number" min="1" max="120"> min</label><label for="battleVoteMin">Durée du vote <input id="battleVoteMin" type="number" min="1" max="10"> min</label><label for="battleMinVoters">Votants minimum <input id="battleMinVoters" type="number" min="1" max="100"></label><button class="btn small" id="saveBattleCooldown">Enregistrer</button><button class="btn small" id="enableStaffAlerts">Activer les notifications</button></div>
-    <p class="tiny muted">Le vote dure le temps indiqué et se décide avec ceux qui ont voté : il faut au moins le nombre de votants indiqué (ou tous les inscrits s’ils sont moins nombreux) et plus de voix pour la Battle que contre. Le délai après une Battle part de sa fin ; après un vote refusé ou une Battle écartée par le bar, la salle peut en reproposer une plus tôt (5 minutes par défaut).</p>
-    <p class="tiny muted">Sur HTTPS avec autorisation, le navigateur peut notifier si cette page reste ouverte. Sur HTTP, les demandes restent visibles dans la page et une alerte sonore peut retentir ; aucune alerte ne fonctionne après fermeture du navigateur.</p>
-    <div class="row wrap" id="battleActions" hidden><button class="btn small primary" id="battleDone">Battle organisée</button><button class="btn small" id="battleDismiss">Ne pas lancer cette fois</button></div>
-    <button class="btn small primary" id="battleFinished" hidden>Battle terminée, résultats annoncés</button>
-  </section>
-
-  <section class="card spotify-panel">
-    <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
-    <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (ce PC, celui de KaraFun, une enceinte) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
-    <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
-      <ol class="small">
-        <li>Sur <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a>, connecte-toi avec le compte Spotify du bar et crée une application (cocher « Web API »).</li>
-        <li>Dans ses réglages, ajoute l’adresse de retour : <code id="spotifyRedirect">http://127.0.0.1:3000/spotify/callback</code></li>
-        <li>Copie son « Client ID » ici, puis clique sur « Se connecter à Spotify » <b>depuis ce PC</b>.</li>
-      </ol>
-      <div class="row wrap"><input id="spotifyClientId" type="text" autocomplete="off" placeholder="Client ID de l’application Spotify" aria-label="Client ID Spotify"><button class="btn small" id="spotifySaveClient">Enregistrer</button><button class="btn small primary" id="spotifyLogin">Se connecter à Spotify</button></div>
-    </details>
-    <div id="spotifyConnected" hidden>
-      <div class="row wrap"><label class="small" for="spotifyDevice">Appareil qui joue la musique</label><select id="spotifyDevice"><option value="">Appareil actif de Spotify</option></select><button class="btn small" id="spotifyDevices">Actualiser la liste</button></div>
-      <div class="control-stack">
-        <label class="switch"><input type="checkbox" id="spotifyAutoResume"> Relancer Spotify quand la file est vide</label>
-        <label class="switch"><input type="checkbox" id="spotifyAutoPause"> Mettre Spotify en pause quand un titre démarre</label>
-      </div>
-      <label class="small spotify-delay" for="spotifyDelay">Relancer après <input id="spotifyDelay" type="number" min="0" max="300"> s de silence, une fois la file vide</label>
-      <label class="small spotify-delay" for="spotifyLead">Couper Spotify <input id="spotifyLead" type="number" min="0" max="10"> s avant de lancer un titre</label>
-      <div class="row wrap"><button class="btn small" id="spotifySaveOptions">Enregistrer</button><button class="btn small" id="spotifyPlay">▶ Spotify</button><button class="btn small" id="spotifyPause">⏸ Spotify</button><button class="btn small danger" id="spotifyDisconnect">Déconnecter</button></div>
-    </div>
-    <p class="small" id="spotifyText" role="status"></p>
-  </section>
-
-  <section class="card diagnostics-panel">
-    <details class="disclosure"><summary>Diagnostic KaraFun</summary>
-      <div class="kv" id="diag"></div>
-      <div class="row wrap"><div class="search-field grow"><input id="testQ" type="search" placeholder="Chercher une chanson dans KaraFun…"><button type="button" class="clear-input" data-clear-for="testQ" aria-label="Effacer la recherche" hidden>×</button></div><button class="btn small" id="testSearch">Chercher</button></div>
-      <ul class="results" id="testRes"></ul>
-      <div class="diagnostic-grid"><div><div class="label">File vue dans KaraFun</div><pre id="kfQueue"></pre></div><div><div class="label">Derniers messages</div><pre id="kfEvents"></pre></div></div>
-    </details>
-  </section>
-
-  <section class="card journal-panel"><details class="disclosure"><summary>Journal de la soirée</summary><ul class="log" id="log"></ul></details></section>
 </main>
+
+<nav class="staff-tabs" id="staffTabs" aria-label="Écrans de la page du bar">
+  <button type="button" data-tab-btn="scene"><span class="tab-icon" aria-hidden="true">🎤</span><span>Scène</span></button>
+  <button type="button" data-tab-btn="file"><span class="tab-icon" aria-hidden="true">📋</span><span>File</span><span class="tab-badge" id="tabBadgeFile" hidden></span></button>
+  <button type="button" data-tab-btn="accueil"><span class="tab-icon" aria-hidden="true">👋</span><span>Accueil</span><span class="tab-badge" id="tabBadgeAccueil" hidden></span></button>
+  <button type="button" data-tab-btn="reperes"><span class="tab-icon" aria-hidden="true">👀</span><span>Repères</span></button>
+  <button type="button" data-tab-btn="plus"><span class="tab-icon" aria-hidden="true">⚙️</span><span>Plus</span><span class="tab-dot" id="tabDotPlus" hidden></span></button>
+</nav>
 <div id="toast" class="toast" hidden></div>
-<dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle">Transférer un chanteur</h2></div><p class="small" id="shareHelp">Fais scanner ce QR code par le nouveau téléphone : il propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd alors sa gestion.</p><div class="staff-qr solo-invite-qr" id="shareQrBox" hidden><img id="shareQr" alt="QR code de transfert du chanteur"></div><input id="shareUrl" class="solo-invite-url" readonly aria-label="Lien de transfert à envoyer" hidden><div class="row wrap" id="shareLinkActions" hidden><button type="button" class="btn small" id="shareCopy">Copier le lien</button></div><p class="small muted" id="shareCodeHelp">Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.</p><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
+<dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle">Donner un chanteur à un autre téléphone</h2></div><p class="small" id="shareHelp">Fais scanner ce QR code par le nouveau téléphone : il propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd seulement ce chanteur.</p><div class="staff-qr solo-invite-qr" id="shareQrBox" hidden><img id="shareQr" alt="QR code de transfert du chanteur"></div><input id="shareUrl" class="solo-invite-url" readonly aria-label="Lien de transfert à envoyer" hidden><div class="row wrap" id="shareLinkActions" hidden><button type="button" class="btn small" id="shareCopy">Copier le lien</button></div><p class="small muted" id="shareCodeHelp">Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.</p><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
 <dialog id="soloInviteDialog" class="staff-dialog" aria-labelledby="soloInviteTitle"><h2 id="soloInviteTitle">QR pour une personne seule</h2><p class="small">Montre ce QR à une seule personne. Dès son inscription, il ne fonctionnera plus pour créer un autre profil.</p><div class="staff-qr solo-invite-qr"><img id="soloInviteQr" alt="QR individuel pour une inscription En solo"></div><p class="small muted" id="soloInviteExpires"></p><input id="soloInviteUrl" class="solo-invite-url" readonly aria-label="Lien individuel d’inscription"><div class="row wrap"><button type="button" class="btn small" id="soloInviteCopy">Copier le lien</button><button type="button" class="btn small primary" id="soloInviteClose">Fermer</button></div></dialog>
+<dialog id="tableQrDialog" class="staff-dialog qr-dialog" aria-labelledby="tableQrName"><h2 id="tableQrName">Table</h2><div class="staff-qr big-qr"><img id="tableQrImg" alt="QR code de la table"></div><p class="qr-help">Scannez ce QR avec l’appareil photo du téléphone pour inscrire les chanteurs de la table.</p><p class="small muted">Un chanteur est déjà inscrit sur le téléphone d’un ami ? Le bar peut le donner à ce téléphone : Accueil › « Donner un chanteur à un autre téléphone ».</p><input id="tableQrUrl" class="solo-invite-url" readonly aria-label="Lien de la table"><div class="row wrap"><button type="button" class="btn small" id="tableQrCopy">Copier le lien</button><a class="btn small" id="tableQrPage" href="#" target="_blank" rel="noopener">Page</a><button type="button" class="btn small primary" id="tableQrClose">Fermer</button></div></dialog>
+<dialog id="songSheet" class="staff-dialog song-sheet" aria-labelledby="songSheetTitle"><h2 id="songSheetTitle">Réglages du titre</h2><p class="small muted" id="songSheetInfo"></p>
+  <input type="hidden" id="songSheetValue" data-autosave="songSettings">
+  <p class="small notice-line" id="songSheetNote" role="status" hidden></p>
+  <div id="songSheetBody" data-tune-body></div>
+  <div class="row wrap sheet-actions"><button type="button" class="btn small" id="songSheetReset" data-tune-reset>Réinitialiser</button><span class="save-status" id="songSheetStatus" aria-live="polite"></span></div>
+  <p class="tiny muted">Chaque changement s’enregistre seul. Titre pas encore dans KaraFun : réglages envoyés avec lui ; déjà chargé : remplacés dans KaraFun, ou appliqués au début du titre si KaraFun ne le permet pas.</p>
+  <button type="button" class="btn small primary" id="songSheetClose">Fermer</button></dialog>
+<dialog id="tableSheet" class="staff-dialog" aria-labelledby="tableSheetTitle"><h2 id="tableSheetTitle">Table</h2><p class="small muted" id="tableSheetInfo"></p>
+  <label class="field" for="tableSheetName">Nom affiché (1 à 40 caractères)</label><div class="row wrap"><input id="tableSheetName" type="text" maxlength="40" data-autosave="tableRename"><span class="save-status" id="tableSheetNameStatus" aria-live="polite"></span></div>
+  <div id="tableSheetHcRow"><label class="field" for="tableSheetHc">Places (1 à 40)</label><div class="row wrap"><input id="tableSheetHc" type="number" inputmode="numeric" min="1" max="40" data-autosave="tableHc"><span class="save-status" id="tableSheetHcStatus" aria-live="polite"></span></div></div>
+  <label class="field" for="tableSheetBonus">Bonus table (réservé au bar, jamais montré aux clients)</label><select id="tableSheetBonus"></select>
+  <div class="row wrap sheet-actions"><button type="button" class="btn small" id="tableSheetQr">Montrer le QR</button><a class="btn small" id="tableSheetPage" href="#" target="_blank" rel="noopener">Page</a><button type="button" class="btn small danger" id="tableSheetLeft">Table partie</button></div>
+  <button type="button" class="btn small primary" id="tableSheetClose">Fermer</button></dialog>
 
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const key = new URLSearchParams(location.search).get('key') || '';
   const kq = key ? `?key=${encodeURIComponent(key)}` : '';
-  let S = null; let formInit = false; let dragging = null; let moveArmed = null; let renderedOnce = false;
+  let S = null; let dragging = null; let moveArmed = null; let renderedOnce = false;
   let openNote = null; // repère ouvert d'un appui, conservé entre deux rafraîchissements
+  let openRowMenu = null; // menu ⋯ d'une ligne de la file, gardé ouvert au rafraîchissement
   const selectedLines = new Set();
   const BONUS_LABELS = { '-3': '−3 : un tour sur deux', '-2': '−2 : deux tours sur trois', '-1': '−1 : un peu moins souvent',
     0: 'Aucun', 1: '+1 : un peu plus souvent', 2: '+2 : une fois et demie plus', 3: '+3 : deux fois plus' };
   const bonusOptions = level => [-3, -2, -1, 0, 1, 2, 3].map(value =>
     `<option value="${value}" ${Number(level || 0) === value ? 'selected' : ''}>${BONUS_LABELS[value]}</option>`).join('');
-  let alertsEnabled = localStorage.getItem('bar-alerts') === 'yes';
+  const store = { get(name) { try { return localStorage.getItem(name); } catch (_) { return null; } },
+    set(name, value) { try { localStorage.setItem(name, value); } catch (_) { /* mémoire du navigateur indisponible */ } } };
+  let alertsEnabled = store.get('bar-alerts') === 'yes';
   function renderStaffAlerts() {
     $('enableStaffAlerts').textContent = alertsEnabled ? 'Désactiver les notifications' : 'Activer les notifications';
   }
@@ -238,6 +307,23 @@
   }
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const hhmm = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const personOf = id => id == null ? null : S?.people.find(p => String(p.id) === String(id)) || null;
+  const tableOf = id => S?.tables.find(t => String(t.id) === String(id)) || null;
+  const initial = name => esc(String(name || '?').charAt(0).toUpperCase());
+  // « d’Emma », « de Bruno » : élision devant une voyelle ou un h.
+  const ofName = name => /^[aeiouyàâäéèêëîïôöûùüh]/i.test(String(name || '')) ? `d’${name}` : `de ${name}`;
+  // Une liste redessinée au rafraîchissement : rien ne change sous les doigts
+  // pendant une saisie, et rien n'est réécrit si le contenu est le même.
+  const rendered = new Map();
+  const typing = () => /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
+  function patch(container, html, force = false) {
+    if (!force && rendered.get(container) === html) return false;
+    if (!force && typing() && container.contains(document.activeElement)) return false;
+    container.innerHTML = html;
+    rendered.set(container, html);
+    restoreFields(container);
+    return true;
+  }
   function isPublicHttps(value) {
     let url;
     try { url = new URL(value); } catch (_) { return false; }
@@ -262,7 +348,390 @@
     if (!r.ok) throw new Error(j.error || 'Erreur');
     return j;
   }
-  async function act(path, body, ok) { try { const result = await post(path, body); if (result?.message || ok) toast(result?.message || ok); load(); } catch (e) { toast(e.message, true); } }
+  // Réponse { ok: false, message } (KaraFun limite les essais…) : toast d'erreur.
+  async function act(path, body, ok) {
+    try {
+      const result = await post(path, body);
+      if (result?.ok === false) toast(result.message || 'Action refusée', true);
+      else if (result?.message || ok) toast(result?.message || ok);
+      load();
+    } catch (e) { toast(e.message, true); }
+  }
+  async function copyText(input, done, failed, bad) {
+    try { await navigator.clipboard.writeText(input.value); toast(done); }
+    catch (_) { input.select(); const copied = !!document.execCommand?.('copy'); toast(copied ? done : failed, bad && !copied); }
+  }
+
+  // ------------------------------------------------------------ onglets (téléphone)
+  // Sous 900 px, un seul écran à la fois avec la barre du bas. L'onglet est
+  // gardé dans l'adresse (#file…) ; le bouton Retour d'Android revient à
+  // l'onglet précédent. Le rafraîchissement ne change jamais d'onglet.
+  const TABS = ['scene', 'file', 'accueil', 'reperes', 'plus'];
+  const fromHash = () => { const tab = String(location.hash || '').replace(/^#/, ''); return TABS.includes(tab) ? tab : null; };
+  let activeTab = fromHash() || (TABS.includes(store.get('bar-tab')) ? store.get('bar-tab') : 'scene');
+  function setTab(tab, push = true) {
+    if (!TABS.includes(tab)) return;
+    const changed = tab !== activeTab;
+    activeTab = tab;
+    if (document.body) document.body.dataset.tab = tab;
+    for (const button of document.body?.querySelectorAll?.('[data-tab-btn]') || []) {
+      const on = button.dataset.tabBtn === tab;
+      button.classList.toggle('on', on);
+      if (on) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
+    }
+    store.set('bar-tab', tab);
+    if (push && changed) {
+      try { window.history?.pushState?.({ barTab: tab }, '', `${location.pathname || ''}${location.search || ''}#${tab}`); } catch (_) { /* historique indisponible */ }
+      window.scrollTo?.(0, 0);
+    }
+  }
+  setTab(activeTab, false);
+  try { window.history?.replaceState?.({ barTab: activeTab }, '', `${location.pathname || ''}${location.search || ''}#${activeTab}`); } catch (_) { /* */ }
+  // Une fenêtre ouverte (QR, détails d'une table, transfert) a sa propre étape :
+  // Retour la ferme sans changer d'onglet. Fermée d'un bouton, son étape est retirée.
+  const DIALOGS = ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog', 'songSheet'];
+  let poppingDialog = false, keepStep = false;
+  const tabUrl = () => `${location.pathname || ''}${location.search || ''}#${activeTab}`;
+  function openDialog(id) {
+    const dialog = $(id);
+    if (dialog.open) return;
+    dialog.showModal();
+    const state = { barTab: activeTab, dialog: id };
+    try {
+      if (window.history?.state?.dialog) window.history.replaceState(state, '', tabUrl());
+      else window.history?.pushState?.(state, '', tabUrl());
+    } catch (_) { /* historique indisponible */ }
+  }
+  for (const id of DIALOGS) {
+    $(id).addEventListener('close', () => {
+      if (keepStep || poppingDialog || window.history?.state?.dialog !== id) return;
+      try { window.history.back(); } catch (_) { /* */ }
+    });
+  }
+  // Menu ⋯ d'une ligne de la file : comme une fenêtre, il a sa propre étape
+  // dans l'historique. Retour ou Échap le ferment sans changer d'onglet.
+  function setRowMenu(menuKey, fromHistory = false) {
+    const wasOpen = !!openRowMenu;
+    openRowMenu = menuKey;
+    if (!fromHistory) {
+      try {
+        if (menuKey && !wasOpen) window.history?.pushState?.({ barTab: activeTab, rowMenu: true }, '', tabUrl());
+        else if (!menuKey && window.history?.state?.rowMenu) { keepMenuStep = true; window.history.back(); }
+      } catch (_) { /* historique indisponible */ }
+    }
+    if (S) render();
+  }
+  let keepMenuStep = false;
+  document.addEventListener?.('keydown', event => { if (event.key === 'Escape' && openRowMenu) setRowMenu(null); });
+  window.addEventListener?.('popstate', event => {
+    if (keepMenuStep) { keepMenuStep = false; return; }
+    if (openRowMenu && !event.state?.rowMenu) setRowMenu(null, true);
+    poppingDialog = true;
+    try { for (const id of DIALOGS) if ($(id)?.open) $(id).close(); } finally { poppingDialog = false; }
+    setTab(event.state?.barTab || fromHash() || 'scene', false);
+  });
+  $('staffTabs').addEventListener('click', event => {
+    const button = event.target?.closest?.('[data-tab-btn]');
+    if (button) setTab(button.dataset.tabBtn);
+  });
+  const goTo = (tab, id) => { setTab(tab); $(id)?.scrollIntoView?.({ block: 'start' }); };
+  $('kfPill').onclick = () => goTo('plus', 'kfPanel');
+  $('autoWarn').onclick = () => goTo('plus', 'auto');
+
+  // ------------------------------------------------------------ enregistrement automatique
+  // Chaque réglage s'enregistre seul : après une courte pause de frappe, en
+  // quittant le champ, sur Entrée, ou quand la page passe en arrière-plan ;
+  // une case ou une liste tout de suite. Seule la valeur changée part. Tant
+  // qu'un champ est modifié, en cours d'envoi ou refusé, le rafraîchissement
+  // ne le réécrit pas ; son état s'affiche à côté.
+  const drafts = new Map(); // clé → { kind, id, value, state, error, seq, timer }
+  const savedAt = new Map(); // clé → fin de l'affichage « Enregistré ✓ »
+  const savedText = new Map(); // clé → message du serveur à afficher
+  let saveSeq = 0;
+  // Rafraîchissements : numéro de la demande affichée. Une réponse partie
+  // avant la fin d'un enregistrement ne compte pas pour ce champ.
+  let loadsStarted = 0, shownLoad = 0;
+  const settingsField = (name, min, max, unit, fallback) => ({ min, max, unit, delay: 800,
+    send: value => post('/api/staff/settings', { [name]: value }), server: () => S.settings?.[name] ?? fallback });
+  const spotifyField = (name, min, max, fallback) => ({ min, max, unit: 'secondes', delay: 800,
+    send: value => post('/api/staff/spotify', { action: 'options', [name]: value }), server: () => S.spotify?.[name] ?? fallback });
+  const FIELDS = {
+    presenceGraceSec: settingsField('presenceGraceSec', 10, 300, 'secondes', 30),
+    presenceMaxSkips: settingsField('presenceMaxSkips', 1, 10, 'fois', 3),
+    playDelaySec: settingsField('playDelaySec', 0, 30, 'secondes', 8),
+    repeatWarnMin: settingsField('repeatWarnMin', 0, 240, 'minutes', 45),
+    pushDelaySec: settingsField('pushDelaySec', 0, 180, 'secondes', 10),
+    gap: settingsField('gap', 1, 10, 'places', 4),
+    cap: settingsField('cap', 1, 50, 'places', 2),
+    battleCooldownMin: settingsField('battleCooldownMin', 1, 120, 'minutes', 15),
+    battleRejectedCooldownMin: settingsField('battleRejectedCooldownMin', 1, 120, 'minutes', 5),
+    battleVoteMin: settingsField('battleVoteMin', 1, 10, 'minutes', 5),
+    battleMinVoters: settingsField('battleMinVoters', 1, 100, 'votants', 5),
+    requirePresence: { check: true, send: value => post('/api/staff/settings', { requirePresence: value }), server: () => !!S.settings?.requirePresence },
+    spotifyDelay: spotifyField('resumeDelaySec', 0, 300, 3),
+    spotifyLead: spotifyField('pauseLeadSec', 0, 10, 2),
+    spotifyAutoResume: { check: true, send: value => post('/api/staff/spotify', { action: 'options', autoResume: value }), server: () => !!S.spotify?.autoResume },
+    spotifyAutoPause: { check: true, send: value => post('/api/staff/spotify', { action: 'options', autoPause: value }), server: () => !!S.spotify?.autoPause },
+    // Changer de Client ID déconnecte Spotify : enregistré en quittant le champ seulement.
+    spotifyClientId: { text: true, delay: null,
+      validate: value => /^[A-Za-z0-9]{16,64}$/.test(value) ? null : 'colle le « Client ID » de ton application Spotify (16 à 64 lettres et chiffres)',
+      confirm: value => !S.spotify?.connected || value === S.spotify.clientId ||
+        confirm('Changer le Client ID déconnecte Spotify : il faudra se reconnecter depuis ce PC. Continuer ?'),
+      send: value => post('/api/staff/spotify', { action: 'client', clientId: value }), server: () => S.spotify?.clientId || '' },
+    // L'heure est annoncée aux clients : on attend que le sélecteur soit stable.
+    closingTime: { text: true, delay: 1500, slowChange: true,
+      validate: value => /^\d\d:\d\d$/.test(value) ? null : 'choisis une heure ; « Retirer » enlève l’heure annoncée',
+      send: async value => { const result = await post('/api/staff/closing', { time: value }); return result?.message || `Annoncée aux clients : ${value} ✓`; },
+      server: () => { const at = S.closing ? new Date(S.closing.at) : null; return at ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : ''; } },
+    note: { text: true, delay: 1000, validate: value => value.length > 140 ? 'au plus 140 caractères' : null,
+      send: (value, id) => post('/api/staff/person/identify', { personId: id, note: value }), server: id => personOf(id)?.privateNote || '' },
+    // Nom affiché d'une table (fiche « Détails »). La clé ne doit pas être l'id
+    // d'un champ fixe : « tableName » est celui de « Nouvelle table ».
+    tableRename: { text: true, delay: 1000, validate: value => !value || value.length > 40 ? 'entre 1 et 40 caractères' : null,
+      send: (value, id) => post('/api/staff/table/rename', { tableId: id, name: value }), server: id => tableOf(id)?.name || '' },
+    tableHc: { min: 1, max: 40, unit: 'personnes', delay: 800,
+      send: (value, id) => post('/api/staff/table', { id, headcount: value }), server: id => tableOf(id)?.headcount ?? '' },
+    // Les chanteurs peuvent-ils régler leurs titres depuis leur téléphone ?
+    singerSongSettings: { check: true, send: value => post('/api/staff/settings', { singerSongSettings: value }),
+      server: () => S.settings?.singerSongSettings !== false },
+    // Réglages d'un titre à venir (fiche ouverte depuis la file) : un champ
+    // caché porte { pitch?, tempo?, guide?, backing? } en JSON ; les boutons
+    // de la fiche le changent, puis il suit le même enregistrement que les autres.
+    songSettings: { text: true, delay: 700, validate: () => null,
+      send: async (value, id) => {
+        const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id, settings: JSON.parse(value || '{}') });
+        return SAVED_TUNE[result?.applied] || 'Enregistré ✓';
+      },
+      server: id => tuneKey(songTarget(id)?.q.song?.settings),
+      // Refus arrivé fiche fermée (ou ouverte sur un autre titre) : message, et repère sur la ligne de la file.
+      failed: d => {
+        if (!$('songSheet').open || songSheetEntry !== d.id) toast(`Réglages de « ${songTitles.get(d.id) || 'ce titre'} » non enregistrés : ${d.error}`, true);
+        render();
+      } },
+  };
+  const keyOf = (kind, id) => id ? `${kind}:${id}` : kind;
+  const fieldKind = el => el?.dataset?.autosave || (FIELDS[el?.id] ? el.id : null);
+  const fieldId = el => el?.dataset?.autosaveId ?? '';
+  const readField = (el, def) => def.check ? !!el.checked : String(el.value ?? '').trim();
+  const sameValue = (a, b) => String(a ?? '') === String(b ?? '');
+  function checkField(def, value) {
+    if (def.check) return null;
+    if (def.validate) return def.validate(value);
+    const n = Number(value);
+    return value === '' || !Number.isInteger(n) || n < def.min || n > def.max ? `entre ${def.min} et ${def.max} ${def.unit}` : null;
+  }
+  // Champs d'une clé (le même repère peut figurer sur Scène et dans Repères).
+  const fieldsOf = (kind, id) => [...(document.body?.querySelectorAll?.('[data-autosave], input[id]') || [])]
+    .filter(el => fieldKind(el) === kind && String(fieldId(el)) === String(id || ''));
+  function statusNodes(key) {
+    const nodes = [...(document.body?.querySelectorAll?.(`[data-save-status="${key}"]`) || [])];
+    const sheetId = $('tableSheet').dataset.tableId;
+    if (key === `tableRename:${sheetId}`) nodes.push($('tableSheetNameStatus'));
+    if (key === `tableHc:${sheetId}`) nodes.push($('tableSheetHcStatus'));
+    return nodes;
+  }
+  function renderStatus(key) {
+    const d = drafts.get(key);
+    let html = '', cls = 'save-status';
+    if (d?.state === 'invalid') { html = `Non enregistré : ${esc(d.error)}`; cls += ' bad'; }
+    else if (d?.state === 'error') { html = `Non enregistré : ${esc(d.error)} · <button type="button" class="link-btn" data-retry="${esc(key)}">Réessayer</button>`; cls += ' bad'; }
+    else if (d?.state === 'saving') html = 'Enregistrement…';
+    else if (d?.state === 'editing') html = 'Modifié…';
+    else if ((savedAt.get(key) || 0) > Date.now()) { html = esc(savedText.get(key) || 'Enregistré ✓'); cls += ' ok'; }
+    for (const node of statusNodes(key)) { node.innerHTML = html; node.className = cls; }
+    const [kind, ...rest] = key.split(':');
+    for (const el of fieldsOf(kind, rest.join(':'))) {
+      if (d?.state === 'invalid' || d?.state === 'error') el.setAttribute('aria-invalid', 'true');
+      else el.removeAttribute('aria-invalid');
+    }
+  }
+  function fieldEvent(event, el) {
+    const kind = fieldKind(el);
+    const def = FIELDS[kind];
+    if (!def) return;
+    const id = fieldId(el);
+    const key = keyOf(kind, id);
+    if (event.type === 'keydown') {
+      if (event.key !== 'Enter') return;
+      event.preventDefault?.();
+      return flushField(key);
+    }
+    if (event.type === 'blur' || event.type === 'focusout') return flushField(key);
+    // Une case cochée émet « input » puis « change » : un seul envoi.
+    if (def.check && event.type !== 'change') return;
+    const value = readField(el, def);
+    if (!def.check && !drafts.has(key) && sameValue(value, def.server(id))) return;
+    const d = drafts.get(key) || { kind, id };
+    clearTimeout(d.timer);
+    Object.assign(d, { value, state: 'editing', error: null });
+    drafts.set(key, d);
+    // Même valeur ailleurs (le repère sur Scène et dans Repères).
+    for (const other of fieldsOf(kind, id)) if (other !== el && document.activeElement !== other) other.value = value;
+    const error = checkField(def, value);
+    if (error) { d.state = 'invalid'; d.error = error; renderStatus(key); return; }
+    if (def.check || (event.type === 'change' && def.text && !def.slowChange)) return flushField(key);
+    if (def.delay) d.timer = setTimeout(() => flushField(key), def.delay);
+    renderStatus(key);
+  }
+  // Un envoi à la fois par champ, comme sur la page des chanteurs : deux
+  // envois du même champ pourraient arriver au serveur dans le désordre, et
+  // la dernière valeur choisie serait remplacée par la précédente. Le
+  // suivant part dès la réponse, avec la dernière valeur.
+  function lockField(d) {
+    d.busy = true;
+    d.sending = new Promise(resolve => { d.unlock = resolve; });
+  }
+  function unlockField(key, d) {
+    d.busy = false;
+    d.unlock?.();
+    if (d.again) { d.again = false; flushField(key); }
+  }
+  async function flushField(key, retry = false) {
+    const d = drafts.get(key);
+    if (!d || (!retry && d.state !== 'editing')) return;
+    clearTimeout(d.timer);
+    if (d.busy) { d.again = true; return; }
+    const def = FIELDS[d.kind];
+    if (!def.check && sameValue(d.value, def.server(d.id)) && !retry) { drafts.delete(key); syncFields(d.kind, d.id); return; }
+    if (def.confirm && !def.confirm(d.value)) { drafts.delete(key); syncFields(d.kind, d.id); return; }
+    const seq = d.seq = ++saveSeq;
+    d.state = 'saving';
+    renderStatus(key);
+    lockField(d);
+    try {
+      const message = await def.send(def.min !== undefined ? Number(d.value) : d.value, d.id);
+      if (drafts.get(key) !== d || d.seq !== seq || d.state !== 'saving') return; // modifié entre-temps : la nouvelle valeur repartira
+      d.state = 'saved';
+      d.afterLoad = loadsStarted;
+      savedText.set(key, typeof message === 'string' ? message : 'Enregistré ✓');
+      savedAt.set(key, Date.now() + 2500);
+      setTimeout(() => renderStatus(key), 2600);
+      renderStatus(key);
+      load();
+    } catch (e) {
+      if (drafts.get(key) !== d || d.seq !== seq || d.state !== 'saving') return;
+      d.state = 'error';
+      d.error = e.message;
+      renderStatus(key);
+      def.failed?.(d);
+    } finally { unlockField(key, d); }
+  }
+  const flushAll = () => { for (const [key, d] of drafts) if (d.state === 'editing') flushField(key); };
+  document.addEventListener?.('visibilitychange', () => { if (document.hidden) flushAll(); });
+  // Écrit la valeur du serveur, sauf dans un champ en cours de saisie ou modifié.
+  function syncField(el) {
+    const kind = fieldKind(el);
+    const def = FIELDS[kind];
+    if (!def) return;
+    const id = fieldId(el);
+    const key = keyOf(kind, id);
+    const server = def.server(id);
+    const d = drafts.get(key);
+    // Enregistré, puis relu sur le serveur : le champ suit de nouveau le serveur
+    // (même si un autre téléphone l'a changé entre-temps).
+    if (d?.state === 'saved' && (sameValue(d.value, server) || shownLoad > (d.afterLoad ?? Infinity))) drafts.delete(key);
+    const draft = drafts.get(key);
+    if (document.activeElement !== el) {
+      const value = draft ? draft.value : server;
+      if (def.check) el.checked = !!value; else if (!sameValue(el.value, value)) el.value = value;
+    }
+    renderStatus(key);
+  }
+  function syncFields(kind, id) { for (const el of fieldsOf(kind, id)) syncField(el); }
+  function restoreFields(container) {
+    for (const el of container.querySelectorAll?.('[data-autosave]') || []) syncField(el);
+  }
+  // Champs fixes de la page : écoute directe. Listes redessinées : délégation.
+  for (const id of Object.keys(FIELDS)) {
+    const el = $(id);
+    if (!el) continue;
+    for (const type of ['input', 'change', 'keydown', 'blur']) el.addEventListener(type, event => fieldEvent(event, el));
+  }
+  for (const id of ['stage', 'next', 'identityBody', 'identityStage', 'tableSheet']) {
+    for (const type of ['input', 'change', 'keydown', 'focusout']) {
+      $(id).addEventListener(type, event => { if (event.target?.dataset?.autosave) fieldEvent(event, event.target); });
+    }
+  }
+  document.addEventListener?.('click', event => {
+    const retry = event.target?.closest?.('[data-retry]');
+    if (retry) flushField(retry.dataset.retry, true);
+  });
+
+  // ------------------------------------------------------------ transfert d'un chanteur
+  async function openShare(personId) {
+    try {
+      const person = personOf(personId);
+      const result = await post('/api/staff/person/share', { personId });
+      $('shareTitle').textContent = `Accès à ${person?.name || 'ce chanteur'}`;
+      const solo = tableOf(person?.tableId)?.individual;
+      $('shareCode').textContent = result.code;
+      $('shareQrBox').hidden = !result.qr;
+      if (result.qr) $('shareQr').src = result.qr;
+      $('shareUrl').hidden = $('shareLinkActions').hidden = !result.url;
+      $('shareUrl').value = result.url || '';
+      $('shareHelp').textContent = result.url ?
+        'Fais scanner ce QR code par le nouveau téléphone (ou envoie-lui le lien) : la page propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd seulement ce chanteur ; ses autres chanteurs n’y changent pas.' :
+        'Sur l’autre téléphone, ouvre la page de la table, touche « Je suis … » et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.';
+      $('shareCodeHelp').textContent = solo ?
+        'Sans appareil photo : ouvrir le QR « En solo », toucher « Je suis … » puis saisir ce code.' :
+        'Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.';
+      $('shareExpires').textContent = [result.linkExpiresAt ? `QR et lien valables jusqu’à ${hhmm(result.linkExpiresAt)}` : '',
+        result.expiresAt ? `code jusqu’à ${hhmm(result.expiresAt)}` : ''].filter(Boolean).join(', ') + ' ; un seul usage.';
+      openDialog('shareDialog');
+    } catch (e) { toast(e.message, true); }
+  }
+  function renderTransfer() {
+    const q = $('transferSearch').value.trim().toLocaleLowerCase('fr');
+    if (!S || !q) { $('transferResults').innerHTML = ''; return; }
+    const found = S.people.filter(p => p.active !== false &&
+      `${p.name} ${tableOf(p.tableId)?.name || ''}`.toLocaleLowerCase('fr').includes(q)).slice(0, 8);
+    $('transferResults').innerHTML = found.length ? found.map(p => `<button type="button" class="btn small transfer-person" data-transfer-person="${esc(p.id)}"><b>${esc(p.name)}</b> <span class="muted">${esc(tableOf(p.tableId)?.name || '')}</span></button>`).join('') :
+      '<p class="small muted">Aucun chanteur présent à ce nom.</p>';
+  }
+  $('transferSearch').addEventListener('input', renderTransfer);
+  $('transferResults').addEventListener('click', event => {
+    const button = event.target?.closest?.('[data-transfer-person]');
+    if (button) openShare(button.dataset.transferPerson);
+  });
+
+  // ------------------------------------------------------------ repères
+  // Repère d'un chanteur : texte enregistré seul, état de vérification, et
+  // « C'est bien lui/elle » quand le bar l'a reconnu au micro.
+  function markerHtml(p) {
+    const note = p.privateNote || '';
+    const [cls, label] = !note ? ['', 'Pas de repère'] : p.verified ?
+      ['ok', `Repère vérifié ✓${p.verifiedAt ? ` ${hhmm(p.verifiedAt)}` : ''}`] : ['warn', 'À vérifier'];
+    return `<div class="marker"><span class="pill marker-pill${cls ? ` ${cls}` : ''}">${esc(label)}</span>
+      <input type="text" maxlength="140" data-autosave="note" data-autosave-id="${esc(p.id)}" value="${esc(note)}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}">
+      <span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span>
+      ${note && !p.verified ? `<button type="button" class="btn small" data-marker-verify="${esc(p.id)}">✓ C’est bien lui/elle</button>` : ''}</div>`;
+  }
+  const photoHtml = (p, name, cls = 'identity-photo') => p?.photoUrl ?
+    `<img class="${cls}" src="${esc(p.photoUrl)}" alt="Photo de ${esc(name)}">` : `<span class="${cls} identity-avatar" aria-hidden="true">${initial(name)}</span>`;
+  async function verifyMarker(personId) {
+    const key = keyOf('note', personId), d = drafts.get(key);
+    const person = personOf(personId);
+    const body = { personId, verified: true };
+    // Le repère en cours d'envoi part d'abord : la vérification porte ensuite
+    // la dernière valeur, sans qu'un envoi plus ancien la remplace.
+    if (d) {
+      clearTimeout(d.timer);
+      while (d.busy) await d.sending;
+      body.note = d.value; d.seq = ++saveSeq;
+      lockField(d);
+    }
+    try {
+      await post('/api/staff/person/identify', body);
+      if (d && drafts.get(key) === d && sameValue(d.value, body.note)) { d.state = 'saved'; d.afterLoad = loadsStarted; }
+      toast(`${person?.name || 'Chanteur'} reconnu : repère vérifié`);
+      load();
+    } catch (e) { toast(e.message, true); }
+    finally { if (d) unlockField(key, d); }
+  }
+  document.addEventListener?.('click', event => {
+    const verify = event.target?.closest?.('[data-marker-verify]');
+    if (verify) verifyMarker(verify.dataset.markerVerify);
+  });
 
   function renderIdentities(force = false) {
     if (!S) return;
@@ -275,8 +744,10 @@
       select.value = tables.has(selected) ? selected : 'all';
     }
     $('identityCount').textContent = S.people.length;
-    const container = $('identityBody');
-    if (!force && container.contains(document.activeElement)) return;
+    // Sur scène maintenant : en tête de l'écran Repères.
+    const onStage = S.stage?.ours ? (S.stage.ids || []).map(personOf).filter(Boolean) : [];
+    $('identityStageBox').hidden = !onStage.length;
+    patch($('identityStage'), onStage.map(p => `<div class="identity-stage-row" data-identity-stage="${esc(p.id)}">${photoHtml(p, p.name)}<div class="identity-who"><strong>${esc(p.name)}</strong><span class="tiny muted">${esc(tables.get(p.tableId)?.name || '')}</span></div>${markerHtml(p)}</div>`).join(''));
     const filter = $('identitySearch').value.trim().toLocaleLowerCase('fr');
     const people = S.people.filter(p => {
       const table = tables.get(p.tableId);
@@ -285,19 +756,21 @@
     }).sort((a, b) => S.tables.findIndex(t => t.id === a.tableId) - S.tables.findIndex(t => t.id === b.tableId) || a.name.localeCompare(b.name, 'fr'));
     // Une ligne compacte par personne, regroupée par table.
     const row = p => `<div class="identity-row${p.active ? '' : ' gone'}" data-identity-person="${esc(p.id)}">
-      ${p.photoUrl ? `<img class="identity-photo" src="${esc(p.photoUrl)}" alt="Photo de ${esc(p.name)}">` : `<span class="identity-photo identity-avatar" aria-hidden="true">${esc(p.name.charAt(0).toUpperCase())}</span>`}
-      <div class="identity-who"><strong>${esc(p.name)}</strong><span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span></div>
-      <input data-identity-note type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}">
-      <div class="identity-actions"><button type="button" class="btn small" data-identity-save title="Enregistrer le repère" aria-label="Enregistrer le repère de ${esc(p.name)}">✓</button><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner accès à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
+      ${photoHtml(p, p.name)}
+      <div class="identity-who"><strong>${esc(p.name)}</strong><span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${p.verified ? '<span class="badge ok-badge">vérifié ✓</span>' : ''}</div>
+      <span class="identity-note"><input data-identity-note data-autosave="note" data-autosave-id="${esc(p.id)}" type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}"><span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span></span>
+      <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
     </div>`;
     const groups = [];
     for (const p of people) {
       if (groups.at(-1)?.tableId !== p.tableId) groups.push({ tableId: p.tableId, people: [] });
       groups.at(-1).people.push(p);
     }
-    container.innerHTML = people.length ? groups.map(group => `<section class="identity-group">
+    const container = $('identityBody');
+    if (!force && container.contains(document.activeElement)) return;
+    patch(container, people.length ? groups.map(group => `<section class="identity-group">
       <h4>${esc(tables.get(group.tableId)?.name || group.tableId)} <span class="tiny muted">${group.people.length} personne${group.people.length > 1 ? 's' : ''}</span></h4>
-      ${group.people.map(row).join('')}</section>`).join('') : '<p class="small muted">Aucun chanteur pour ce filtre.</p>';
+      ${group.people.map(row).join('')}</section>`).join('') : '<p class="small muted">Aucun chanteur pour ce filtre.</p>', force);
   }
 
   $('identityBody').addEventListener('change', event => {
@@ -313,44 +786,13 @@
     const row = event.target.closest('[data-identity-person]');
     if (!row) return;
     const personId = row.dataset.identityPerson;
-    if (event.target.closest('[data-identity-save]')) {
-      act('/api/staff/person/identify', { personId, note: row.querySelector('[data-identity-note]').value,
-        verified: !!S.people.find(person => String(person.id) === String(personId))?.verified }, 'Repère privé enregistré');
-    }
     if (event.target.closest('[data-identity-leave]') && confirm('Marquer ce chanteur comme parti ? Ses titres en attente seront retirés, mais sa fiche restera inscrite.')) {
       act('/api/staff/person/leave', { personId }, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
     }
     if (event.target.closest('[data-identity-reactivate]')) {
       act('/api/staff/person/reactivate', { personId }, 'Personne réactivée, historique conservé');
     }
-    if (event.target.closest('[data-identity-share]')) {
-      (async () => {
-        try {
-          const result = await post('/api/staff/person/share', { personId });
-          $('shareTitle').textContent = `Accès à ${row.querySelector('.identity-who strong').textContent}`;
-          const solo = S.tables.find(t => t.id === S.people.find(person => String(person.id) === String(personId))?.tableId)?.individual;
-          $('shareCode').textContent = result.code;
-          $('shareQrBox').hidden = !result.qr;
-          if (result.qr) $('shareQr').src = result.qr;
-          $('shareUrl').hidden = $('shareLinkActions').hidden = !result.url;
-          $('shareUrl').value = result.url || '';
-          $('shareHelp').textContent = result.url ?
-            'Fais scanner ce QR code par le nouveau téléphone (ou envoie-lui le lien) : la page propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd alors sa gestion ; ses autres chanteurs n’y changent pas.' :
-            'Sur l’autre téléphone, ouvre la page de la table, touche « Je suis … » et saisis ce code. L’ancien téléphone perdra la gestion de ce chanteur.';
-          $('shareCodeHelp').textContent = solo ?
-            'Sans appareil photo : ouvrir le QR « En solo », toucher « Je suis … » puis saisir ce code.' :
-            'Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.';
-          $('shareExpires').textContent = [result.linkExpiresAt ? `QR et lien valables jusqu’à ${hhmm(result.linkExpiresAt)}` : '',
-            result.expiresAt ? `code jusqu’à ${hhmm(result.expiresAt)}` : ''].filter(Boolean).join(', ') + ' ; un seul usage.';
-          $('shareDialog').showModal();
-        } catch (e) { toast(e.message, true); }
-      })();
-    }
-  });
-  $('identityBody').addEventListener('keydown', event => {
-    if (event.key === 'Enter' && event.target.matches('[data-identity-note]')) {
-      event.preventDefault(); event.target.closest('[data-identity-person]').querySelector('[data-identity-save]').click();
-    }
+    if (event.target.closest('[data-identity-share]')) openShare(personId);
   });
 
   function beginDrag(event) {
@@ -433,11 +875,14 @@
   }
 
   async function load() {
+    const number = ++loadsStarted;
     try {
       const r = await fetch('/api/staff/state' + kq, { cache: 'no-store', headers: { 'x-staff-key': key } });
       if (!r.ok) throw new Error(r.status === 403 ? 'Accès réservé aux gérants.' : 'Serveur indisponible');
       const previousBattle = S?.battle?.id === undefined ? null : `${S.battle.id}:${S.battle.phase}`;
-      S = await r.json(); if (!dragging) render();
+      S = await r.json();
+      shownLoad = Math.max(shownLoad, number);
+      if (!dragging) render();
       const currentBattle = S.battle?.id === undefined ? null : `${S.battle.id}:${S.battle.phase}`;
       document.title = S.battle?.phase === 'requested' ? '🎤 Battle demandée — File karaoké' : 'File karaoké — page du bar';
       if (S.battle?.phase === 'requested' && previousBattle !== currentBattle) {
@@ -501,19 +946,29 @@
     return `<span class="badge repeat" title="Titre en double : ${esc(parts.join(' ; '))}">⚠ ${esc(label)}</span>`;
   }
 
+  // État de KaraFun : phrase du pont KaraFun si elle existe, sinon déduite.
+  function kfStatus() {
+    const kf = S.kf;
+    const connection = kf?.connection;
+    if (connection?.label) {
+      const level = connection.level === 'ok' ? 'ok' : connection.level === 'wait' ? 'warn' : 'bad';
+      return { text: connection.label, cls: level, down: connection.level === 'error' };
+    }
+    const ok = kf && kf.ready;
+    return { text: !kf ? 'KaraFun : pas de code' : ok ? `KaraFun connecté${S.karafun?.demo ? ' (démo)' : ''}` : kf.unreachable ? 'KaraFun injoignable' : kf.connected ? 'Connexion…' : 'KaraFun déconnecté',
+      cls: ok ? 'ok' : 'bad', down: !!kf && !ok && (!!kf.unreachable || !kf.connected) };
+  }
+
   // Alertes du bar. Chacune se ferme ; elle revient si la situation change
   // (autre texte), si l'erreur disparaît puis se reproduit, ou après un
   // redémarrage de l'application (autre bootId).
   let dismissedAlerts = {}, dismissedBoot = null;
   try {
-    const saved = JSON.parse(localStorage.getItem('bar-dismissed-alerts') || '{}') || {};
+    const saved = JSON.parse(store.get('bar-dismissed-alerts') || '{}') || {};
     dismissedBoot = typeof saved.boot === 'string' ? saved.boot : null;
     dismissedAlerts = saved.alerts && typeof saved.alerts === 'object' ? saved.alerts : {};
   } catch (_) { dismissedAlerts = {}; }
-  const saveDismissed = () => {
-    try { localStorage.setItem('bar-dismissed-alerts', JSON.stringify({ boot: dismissedBoot, alerts: dismissedAlerts })); }
-    catch (_) { /* mémoire du navigateur indisponible */ }
-  };
+  const saveDismissed = () => store.set('bar-dismissed-alerts', JSON.stringify({ boot: dismissedBoot, alerts: dismissedAlerts }));
   function renderAlerts() {
     if (S.bootId && S.bootId !== dismissedBoot) { dismissedBoot = S.bootId; dismissedAlerts = {}; saveDismissed(); }
     const grace = S.settings?.presenceGraceSec || 30;
@@ -533,10 +988,22 @@
       if (!alerts.some(([active, text]) => active === key && text === dismissedAlerts[key])) { delete dismissedAlerts[key]; changed = true; }
     }
     if (changed) saveDismissed();
+    // KaraFun perdu : impossible à fermer, avec la reconnexion à portée de doigt.
+    const kf = kfStatus();
+    // KaraFun qui limite les essais d'abord : inutile de cliquer, pas de
+    // bouton Reconnecter. Puis KaraFun perdu (Reconnecter), même pendant un
+    // conflit de nom : KaraFun absent, le nom n'est pas redemandé. Enfin le
+    // nom encore tenu par l'ancienne connexion (la file réessaie seule, ou
+    // prend un autre nom tout de suite).
+    const connection = S.kf?.connection;
+    const kfAlert = !S.kf ? '<div class="staff-alert kf-alert"><span>KaraFun n’a pas de code : aucun titre ne part.</span><span class="alert-actions"><button type="button" class="btn small" data-alert-goto="kfPanel">Saisir le code</button></span></div>' :
+      connection?.alert && !connection.nameConflict && !connection.canRename ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span></div>` :
+      kf.down ? `<div class="staff-alert kf-alert"><span>${esc(kf.text)} : les titres ne partent plus.</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span></div>` :
+      connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';
     const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
     const shown = alerts.filter(([key, text]) => dismissedAlerts[key] !== text).map(([key, text]) =>
       `<div class="staff-alert"><span>${esc(text)}</span><button type="button" class="alert-close" data-dismiss-alert="${esc(key)}" aria-label="Fermer ce message" title="Fermer ce message">×</button></div>`);
-    $('staffAlerts').innerHTML = gone.join('') + shown.join('');
+    $('staffAlerts').innerHTML = kfAlert + gone.join('') + shown.join('');
   }
   $('staffAlerts').addEventListener('click', event => {
     const close = event.target.closest?.('[data-dismiss-alert]');
@@ -550,6 +1017,10 @@
       renderAlerts();
       return;
     }
+    if (event.target.closest?.('[data-alert-reconnect]')) { act('/api/staff/kf', { action: 'reconnect' }, 'Reconnexion…'); return; }
+    if (event.target.closest?.('[data-alert-rename]')) { act('/api/staff/kf', { action: 'new-name' }, 'Nouveau nom demandé : redonne-lui les droits d’administrateur dans KaraFun'); return; }
+    const goto = event.target.closest?.('[data-alert-goto]');
+    if (goto) { goTo('plus', goto.dataset.alertGoto); $('code').focus?.(); return; }
     const gone = event.target.closest?.('[data-gone]');
     if (!gone) return;
     const personId = gone.dataset.gone;
@@ -559,33 +1030,128 @@
     }
   });
 
-  // Carte « Sur scène » / « Ensuite » : chanteurs et table en évidence,
-  // puis le titre et son interprète original.
-  function liveCard(item) {
-    if (!item) return '<span class="muted">rien</span>';
-    const singers = item.singers?.length ? item.singers.map(s =>
-      `<span class="live-person"><span class="live-singer">${esc(s.name)}</span><span class="live-table${s.individual ? ' solo' : ''}">${esc(s.table || (s.individual ? 'En solo' : ''))}</span></span>`)
-      .join('<span class="live-and">&amp;</span>')
-      : `<span class="live-person"><span class="live-singer">${esc(item.singer || item.name || 'Hors file')}</span>${item.ours ? '' : '<span class="live-table native">Ajouté dans KaraFun</span>'}</span>`;
-    const title = item.song?.title || item.title || '—';
-    const artist = item.song?.artist || item.artist || '';
-    return `<div class="live-who">${singers}${item.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}</div>
-      <div class="live-song"><span class="live-title">${esc(title)}</span>${artist ? `<span class="live-artist">${esc(artist)}</span>` : '<span class="live-artist muted">Interprète inconnu</span>'}</div>`;
+  // Invitation de duo sans réponse sur un titre encore prévu : il garde sa
+  // place et part en solo si personne n'a répondu à son tour (à l'envoi,
+  // l'invitation expire).
+  function pendingInviteBadge(item) {
+    const invite = item.source === 'helper' && item.song?.duet?.state === 'pending' ? item.song.duet : null;
+    return invite ? `<span class="badge wait invite" title="Duo proposé à ${esc(invite.partnerName || 'un chanteur')}${invite.seen === false ? ' (pas encore vue)' : ''} : sans réponse à son tour, le titre part en solo dans KaraFun.">Invitation en attente</span>` : '';
   }
 
+  // Carte « Sur scène » / « Ensuite » : photo, chanteurs, table, repère à
+  // vérifier, puis le titre et son interprète original.
+  function liveCard(item) {
+    if (!item) return '<span class="muted">rien</span>';
+    const title = item.song?.title || item.title || '—';
+    const artist = item.song?.artist || item.artist || '';
+    const song = `${item.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${pendingInviteBadge(item)}<div class="live-song"><span class="live-title">${esc(title)}</span>${artist ? `<span class="live-artist">${esc(artist)}</span>` : '<span class="live-artist muted">Interprète inconnu</span>'}</div>`;
+    const singers = item.singers?.length ? item.singers : item.ours ? (item.ids || []).map(personOf).filter(Boolean)
+      .map(p => ({ id: p.id, name: p.name, table: tableOf(p.tableId)?.name || '', individual: !!tableOf(p.tableId)?.individual })) : [];
+    if (!singers.length) {
+      return `<div class="live-who"><span class="live-person"><span class="live-singer">${esc(item.singer || item.name || 'Hors file')}</span>${item.ours ? '' : '<span class="live-table native">Ajouté dans KaraFun : pas de fiche</span>'}</span></div>${song}`;
+    }
+    const people = singers.map((s, index) => {
+      const p = personOf(s.id ?? item.ids?.[index]);
+      return `<div class="stage-person"${p ? ` data-stage-person="${esc(p.id)}"` : ''}>${photoHtml(p, s.name, 'stage-photo')}<div class="stage-person-main"><span class="live-person"><span class="live-singer">${esc(s.name)}</span><span class="live-table${s.individual ? ' solo' : ''}">${esc(s.table || (s.individual ? 'En solo' : ''))}</span></span>${p ? markerHtml(p) : ''}</div></div>`;
+    }).join('<span class="live-and">&amp;</span>');
+    return `<div class="live-who">${people}</div>${song}`;
+  }
+
+  // Duo improvisé : noter le second chanteur, puis le changer ou l'annuler.
+  let duoStage = null, duoChanging = false;
+  function partnerOptions(owner, exclude) {
+    const candidates = S.people.filter(p => p.active !== false && !exclude.has(String(p.id)));
+    const sameTable = candidates.filter(p => p.tableId === owner.tableId);
+    const otherTables = candidates.filter(p => p.tableId !== owner.tableId);
+    const option = p => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(tableOf(p.tableId)?.name || p.tableId)}</option>`;
+    return { count: candidates.length, html: `${sameTable.length ? `<optgroup label="Même table">${sameTable.map(option).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres tables et personnes en solo">${otherTables.map(option).join('')}</optgroup>` : ''}` };
+  }
+  // La liste n'est redessinée que si son contenu change ; le choix fait reste
+  // choisi tant que le même titre est sur scène, et repart à « Choisir… »
+  // quand la chanson change.
+  function fillPartners(select, html, stageKey) {
+    const full = `<option value="">Choisir…</option>${html}`;
+    if (document.activeElement === select || (select.dataset.stageKey === stageKey && rendered.get(select) === full)) return;
+    const previous = select.value;
+    const sameStage = select.dataset.stageKey === stageKey;
+    select.innerHTML = full;
+    rendered.set(select, full);
+    select.dataset.stageKey = stageKey;
+    select.value = sameStage && previous && full.includes(`value="${esc(previous)}"`) ? previous : '';
+  }
+  function renderDuoBox() {
+    const stage = S.stage?.ours ? S.stage : null;
+    const record = stage?.staffDuo || null;
+    const owner = stage ? personOf(stage.ids?.[0]) : null;
+    const stageKey = `${stage?.queueId ?? ''}|${record?.partnerId ?? ''}`;
+    if (stageKey !== duoStage) { duoStage = stageKey; duoChanging = false; }
+    const canMark = !!owner && stage.ids.length === 1;
+    const exclude = new Set([owner?.id, record?.partnerId].filter(id => id != null).map(String));
+    const options = owner ? partnerOptions(owner, exclude) : { count: 0, html: '' };
+    const box = $('markDuoBox');
+    box.hidden = !(record || (canMark && options.count));
+    box.dataset.queueId = stage?.queueId ?? '';
+    $('markDuoState').hidden = !record;
+    $('markDuoState').textContent = record ? `Duo noté avec ${record.partnerName}${record.at ? ` à ${hhmm(record.at)}` : ''}.${record.canUndo ? '' : ` ${record.reason}.`}` : '';
+    $('markDuoDoneActions').hidden = !record || !record.canUndo || duoChanging;
+    $('markDuoForm').hidden = !options.count || !(canMark || (record?.canUndo && duoChanging));
+    $('markDuoLabel').textContent = record ? `Qui chante vraiment avec ${owner?.name || 'le chanteur'} ? ${record.partnerName} retrouvera son tour.` :
+      'Ils chantent ensemble ? Note le second chanteur sans lui retirer son tour.';
+    $('markDuoBtn').textContent = record ? 'Remplacer' : 'Noter le duo';
+    $('markDuoKeep').hidden = !record;
+    fillPartners($('markDuoPartner'), options.html, stageKey);
+  }
+  $('markDuoBtn').onclick = () => {
+    const queueId = $('markDuoBox').dataset.queueId, partnerId = $('markDuoPartner').value;
+    if (!queueId) return;
+    if (!partnerId) return toast('Choisis d’abord le second chanteur dans la liste.', true);
+    const partner = personOf(partnerId)?.name || 'ce chanteur', owner = personOf(S?.stage?.ids?.[0])?.name || 'le chanteur';
+    const record = S?.stage?.staffDuo;
+    if (record) {
+      if (confirm(`Remplacer ${record.partnerName} par ${partner} dans le duo avec ${owner} ? ${record.partnerName} retrouve son tour ; ${partner} garde le sien.`)) {
+        act('/api/staff/duo-mark', { queueId, partnerId, replace: true });
+      }
+    } else if (confirm(`Noter ${partner} en duo avec ${owner} sur la chanson en cours ? ${partner} garde son tour.`)) {
+      act('/api/staff/duo-mark', { queueId, partnerId }, 'Duo comptabilisé');
+    }
+  };
+  $('markDuoChange').onclick = () => { duoChanging = true; renderDuoBox(); };
+  $('markDuoKeep').onclick = () => { duoChanging = false; renderDuoBox(); };
+  $('markDuoCancel').onclick = () => {
+    const record = S?.stage?.staffDuo;
+    if (!record) return;
+    const owner = personOf(S.stage.ids?.[0])?.name || 'le chanteur';
+    if (confirm(`Annuler le duo noté avec ${record.partnerName} ? ${owner} chante seul ce titre ; ${record.partnerName} retrouve son tour.`)) {
+      act('/api/staff/duo-unmark', { queueId: $('markDuoBox').dataset.queueId });
+    }
+  };
+
+  // Derniers passages : qui vient de chanter, duo noté (annulable tant que
+  // le partenaire n'a pas rechanté), repère et départ.
+  let historyChanging = null;
   function renderStageHistory() {
     const container = $('stageHistory');
-    if (container.contains(document.activeElement)) return;
     const history = S.stageHistory || [];
     $('clearStageHistory').disabled = !history.some(item => !item.onStage);
-    container.innerHTML = history.length ? history.slice(0, 10).map(item => `<div class="stage-history-item${item.onStage ? ' on-stage' : ' done'}">
+    $('stageHistoryCount').textContent = history.length;
+    if (historyChanging && !history.some(item => String(item.id) === historyChanging && item.staffDuo?.canUndo)) historyChanging = null;
+    const duoLine = item => {
+      const duo = item.staffDuo;
+      if (!duo || item.onStage) return '';
+      const owner = personOf(item.people[0]?.id);
+      const changing = historyChanging === String(item.id) && owner;
+      return `<div class="history-duo small">Duo noté au bar avec <b>${esc(duo.partnerName)}</b>${duo.canUndo ?
+        ` <button type="button" class="btn small" data-history-change="${esc(item.id)}">Changer</button><button type="button" class="btn small danger" data-history-unmark="${esc(item.id)}">Annuler ce duo</button>` :
+        ` · <span class="muted">${esc(duo.reason)}</span>`}${changing ? `<div class="row wrap"><select data-history-partner aria-label="Nouveau partenaire"><option value="">Choisir…</option>${partnerOptions(owner, new Set([String(owner.id), String(duo.partnerId)])).html}</select><button type="button" class="btn small" data-history-replace="${esc(item.id)}">Remplacer</button></div>` : ''}</div>`;
+    };
+    patch(container, history.length ? history.slice(0, 10).map(item => `<div class="stage-history-item${item.onStage ? ' on-stage' : ' done'}">
       <div class="stage-history-time">${item.onStage ? '<span class="badge live" title="Sur scène en ce moment">🎤 En cours</span>' : `<span title="Monté sur scène à ${hhmm(item.at)}">${hhmm(item.at)}</span><span class="tiny muted">passé</span>`}</div>
       <div class="stage-history-body"><b>${esc(item.title)}</b>${item.artist ? ` <span class="muted small">· ${esc(item.artist)}</span>` : ''}
         ${item.people.map(person => `<div class="stage-history-person" data-history-person="${esc(person.id)}">
-          ${person.photoUrl ? `<img class="identity-photo" src="${esc(person.photoUrl)}" alt="Photo de ${esc(person.name)}">` : `<span class="identity-photo identity-avatar" aria-hidden="true">${esc(person.name.charAt(0).toUpperCase())}</span>`}
+          ${photoHtml(person, person.name)}
           <span><b>${esc(person.name)}</b> <span class="small muted">${esc(person.table)}${person.active ? '' : ' · parti'}</span>${person.privateNote ? `<br><span class="small">${esc(person.privateNote)}</span>` : ''}</span>
           <span class="stage-history-actions"><button class="btn small" data-history-note>Repère</button>${person.active ? '<button class="btn small danger" data-history-leave>Marquer parti</button>' : ''}</span>
-        </div>`).join('')}</div></div>`).join('') : '<p class="small muted">Aucun passage pour le moment.</p>';
+        </div>`).join('')}${duoLine(item)}</div></div>`).join('') : '<p class="small muted">Aucun passage pour le moment.</p>');
   }
 
   // Heure de fermeture : annonce, décalage et titres qui passeront encore.
@@ -598,11 +1164,11 @@
       `${closing.fitCount} titre${closing.fitCount > 1 ? 's' : ''} passer${closing.fitCount > 1 ? 'ont' : 'a'} avant ${hhmm(closing.at)}` +
       (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
       (closing.full ? ' Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.' : ' Il reste de la place : les clients peuvent encore ajouter des titres.');
-    if (document.activeElement !== $('closingTime')) {
-      const d = closing ? new Date(closing.at) : null;
-      $('closingTime').value = d ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
-    }
+    syncField($('closingTime'));
     $('closingClear').disabled = !closing;
+    // Sur l'écran Scène : rappel discret, avec le décalage le plus courant.
+    $('closingChip').hidden = !closing;
+    $('closingChipText').textContent = closing ? (closing.passed ? 'Fermeture atteinte' : `Fermeture ${hhmm(closing.at)}`) : '';
   }
 
   // Spotify : connexion, appareil et relance automatique pendant les silences.
@@ -611,7 +1177,7 @@
     const sp = S.spotify;
     if (!sp) return;
     $('spotifyRedirect').textContent = sp.redirectUri || '';
-    if (document.activeElement !== $('spotifyClientId')) $('spotifyClientId').value = sp.clientId || '';
+    syncField($('spotifyClientId'));
     $('spotifyConnected').hidden = !sp.connected;
     $('spotifySetup').open = !sp.connected && !!$('spotifySetup').open;
     $('spotifyLogin').disabled = !sp.configured;
@@ -624,11 +1190,7 @@
     $('spotifyText').textContent = [sp.lastError, sp.player?.track ? `Spotify : ${sp.player.track.title}${sp.player.track.artist ? ` — ${sp.player.track.artist}` : ''}${sp.player.device ? ` sur ${sp.player.device.name}` : ''}.` : '', lastText]
       .filter(Boolean).join(' ');
     if (!sp.connected) return;
-    for (const [id, field] of [['spotifyAutoResume', 'autoResume'], ['spotifyAutoPause', 'autoPause']]) {
-      if (document.activeElement !== $(id)) $(id).checked = !!sp[field];
-    }
-    if (document.activeElement !== $('spotifyDelay')) $('spotifyDelay').value = sp.resumeDelaySec ?? 3;
-    if (document.activeElement !== $('spotifyLead')) $('spotifyLead').value = sp.pauseLeadSec ?? 2;
+    for (const id of ['spotifyAutoResume', 'spotifyAutoPause', 'spotifyDelay', 'spotifyLead']) syncField($(id));
     if (document.activeElement !== $('spotifyDevice')) {
       const devices = spotifyDevicesList || (sp.deviceId ? [{ id: sp.deviceId, name: sp.deviceName || 'Appareil choisi' }] : []);
       $('spotifyDevice').innerHTML = '<option value="">Appareil actif de Spotify</option>' + devices.map(d =>
@@ -636,34 +1198,357 @@
     }
   }
 
+  // Tables : une tuile par table ; la toucher montre son QR en grand.
+  function renderTables() {
+    patch($('tBody'), S.tables.map(t => {
+      const occupancy = t.individual ? `${t.activeCount} soliste${t.activeCount === 1 ? '' : 's'}` :
+        `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'} / ${t.count} inscrit${t.count === 1 ? '' : 's'} / ${t.headcount || '—'} places`;
+      const tile = t.individual ?
+        `<button type="button" class="table-tile solo" data-solo-invite><strong>${esc(t.name)}</strong><span class="occupancy">${occupancy}</span><span class="table-tile-cta">QR individuel</span></button>` :
+        `<button type="button" class="table-tile" data-table-qr="${esc(t.id)}" ${t.url && t.qrUrl ? '' : 'disabled'}><strong>${esc(t.name)}</strong><span class="occupancy">${occupancy}</span><span class="table-tile-cta">${t.url && t.qrUrl ? 'Montrer le QR' : 'QR indisponible'}</span></button>`;
+      return `<div class="table-card" data-table-card="${esc(t.id)}">${tile}<button type="button" class="btn small table-more" data-table-more="${esc(t.id)}" aria-label="Détails de ${esc(t.name)}">Détails</button></div>`;
+    }).join(''));
+    if (document.activeElement !== $('tableName')) {
+      const used = new Set(S.tables.map(t => t.id));
+      let n = 1; while (used.has(String(n))) n++;
+      $('tableName').placeholder = `Table ${n}`;
+    }
+    renderTableSheet();
+    renderTableQr();
+  }
+  function showTableQr(tableId) {
+    const t = tableOf(tableId);
+    if (!t?.url || !t.qrUrl) return toast('Cette table n’a pas encore de QR.', true);
+    $('tableQrDialog').dataset.tableId = t.id;
+    renderTableQr();
+    openDialog('tableQrDialog');
+  }
+  function renderTableQr() {
+    const dialog = $('tableQrDialog');
+    if (!dialog.dataset.tableId) return;
+    const t = tableOf(dialog.dataset.tableId);
+    if (!t) { dialog.close(); return; }
+    $('tableQrName').textContent = t.name;
+    const src = qrSrc(t);
+    if ($('tableQrImg').getAttribute('src') !== src) $('tableQrImg').src = src;
+    $('tableQrImg').alt = `QR code de ${t.name}`;
+    $('tableQrUrl').value = t.url || '';
+    $('tableQrPage').href = t.url || '#';
+  }
+  function openTableSheet(tableId) {
+    const sheet = $('tableSheet');
+    sheet.dataset.tableId = tableId;
+    // Valeurs de la table ouverte écrites avant l'ouverture : la fenêtre donne
+    // ensuite le focus au nom, que le rafraîchissement ne réécrit plus.
+    for (const id of ['tableSheetName', 'tableSheetHc']) { $(id).dataset.autosaveId = tableId; syncField($(id)); }
+    openDialog('tableSheet');
+    renderTableSheet();
+  }
+  function renderTableSheet() {
+    const sheet = $('tableSheet');
+    if (!sheet.open) return;
+    const t = tableOf(sheet.dataset.tableId);
+    if (!t) { sheet.close(); return; }
+    $('tableSheetTitle').textContent = t.name;
+    $('tableSheetInfo').textContent = t.individual ? 'Groupe « En solo » : chacun garde son propre tour ; chaque personne reçoit son QR individuel.' :
+      `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'}, ${t.count} inscrit${t.count === 1 ? '' : 's'}, ${t.headcount || '—'} places.`;
+    syncField($('tableSheetName'));
+    $('tableSheetHcRow').hidden = !!t.individual;
+    if (!t.individual) syncField($('tableSheetHc'));
+    const bonus = bonusOptions(t.bonus);
+    if (document.activeElement !== $('tableSheetBonus') && rendered.get($('tableSheetBonus')) !== bonus) {
+      $('tableSheetBonus').innerHTML = bonus;
+      rendered.set($('tableSheetBonus'), bonus);
+    }
+    $('tableSheetQr').hidden = $('tableSheetPage').hidden = !!t.individual || !t.url;
+    $('tableSheetPage').href = t.url || '#';
+    $('tableSheetLeft').hidden = t.id === 'Comptoir' && !!t.individual;
+  }
+  $('tBody').addEventListener('click', event => {
+    if (event.target?.closest?.('[data-solo-invite]')) return $('issueSoloInvitation').onclick();
+    const qr = event.target?.closest?.('[data-table-qr]');
+    if (qr) return showTableQr(qr.dataset.tableQr);
+    const more = event.target?.closest?.('[data-table-more]');
+    if (more) openTableSheet(more.dataset.tableMore);
+  });
+  $('tableQrCopy').onclick = () => copyText($('tableQrUrl'), 'Lien de la table copié', 'Sélectionne le lien pour le copier.', true);
+  $('tableQrClose').onclick = () => $('tableQrDialog').close();
+  $('tableQrDialog').addEventListener('close', () => { delete $('tableQrDialog').dataset.tableId; });
+  $('tableSheetClose').onclick = () => { flushAll(); $('tableSheet').close(); };
+  $('tableSheetQr').onclick = () => {
+    const id = $('tableSheet').dataset.tableId;
+    keepStep = true; // le QR reprend l'étape de la fiche
+    try { $('tableSheet').close(); } finally { keepStep = false; }
+    showTableQr(id);
+  };
+  $('tableSheetBonus').onchange = () => act('/api/staff/bonus', { tableId: $('tableSheet').dataset.tableId, level: Number($('tableSheetBonus').value) },
+    Number($('tableSheetBonus').value) ? 'Bonus de table enregistré (invisible des clients)' : 'Bonus de table retiré');
+  $('tableSheetLeft').onclick = () => {
+    const t = tableOf($('tableSheet').dataset.tableId);
+    if (t && confirm(`${t.name} est partie ? Ses tickets seront retirés.`)) {
+      $('tableSheet').close();
+      act('/api/staff/table-left', { id: t.id }, 'Table retirée');
+    }
+  };
+
+  // ------------------------------------------------------------ réglages de titre
+  // Tonalité, tempo, voix guide et chœurs. Le bar règle le titre en cours en
+  // direct (Scène : envoi immédiat, valeurs lues dans KaraFun) et chaque titre
+  // à venir (File, menu ⋯ → Réglages : fiche enregistrée toute seule).
+  const VOLUME_CHOICES = [0, 25, 50, 75, 100];
+  const TUNE_FIELDS = ['pitch', 'tempo', 'guide', 'backing'];
+  const TRACK_BACKING = 4, TRACK_GUIDE = 5;
+  const LIVE_CONFIRM_MS = 8000; // sans écho de KaraFun passé ce délai, sa valeur revient
+  const SAVED_TUNE = { karafun: 'Enregistré ✓ · envoyé à KaraFun', start: 'Enregistré ✓ · appliqué au début du titre',
+    sending: 'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre' };
+  const tuneRanges = () => ({ pitch: { min: -6, max: 6, step: 1, ...S?.songSettings?.ranges?.pitch },
+    tempo: { min: -50, max: 50, step: 5, ...S?.songSettings?.ranges?.tempo } });
+  const tuneDefaults = () => ({ pitch: 0, tempo: 0, guide: 0, backing: 100, ...S?.songSettings?.defaults });
+  // Comme le serveur : tonalité et tempo d'origine (0) ne sont pas gardés.
+  function cleanTune(value) {
+    const out = {};
+    for (const field of TUNE_FIELDS) {
+      const n = value?.[field];
+      if (Number.isInteger(n) && !(n === 0 && (field === 'pitch' || field === 'tempo'))) out[field] = n;
+    }
+    return out;
+  }
+  const tuneKey = value => JSON.stringify(cleanTune(value));
+  const signed = n => n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
+  // « ♯ +2 · tempo −10 % · guide 50 » ; un volume à sa valeur par défaut n'est pas rappelé.
+  function tuneSummary(value) {
+    const defaults = tuneDefaults();
+    const parts = [];
+    if (value?.pitch) parts.push(`${value.pitch > 0 ? '♯' : '♭'} ${signed(value.pitch)}`);
+    if (value?.tempo) parts.push(`tempo ${signed(value.tempo)} %`);
+    if (value?.guide != null && value.guide !== defaults.guide) parts.push(value.guide ? `guide ${value.guide}` : 'guide coupé');
+    if (value?.backing != null && value.backing !== defaults.backing) parts.push(value.backing ? `chœurs ${value.backing}` : 'chœurs coupés');
+    return parts.join(' · ');
+  }
+  const tuneBadge = settings => { const text = tuneSummary(settings); return text ? `<span class="badge tune" title="Réglages du titre">${esc(text)}</span>` : ''; };
+  // Contenu d'une liste de boutons redessinée sans perdre celui qui a le focus.
+  function patchFocus(container, html) {
+    if (rendered.get(container) === html) return;
+    const focused = container.contains(document.activeElement) ? document.activeElement.dataset?.focus : null;
+    container.innerHTML = html;
+    rendered.set(container, html);
+    if (focused) container.querySelector(`[data-focus="${focused}"]`)?.focus();
+  }
+  // Boutons des réglages : `attr` les distingue (fiche ou direct), `prefix`
+  // nomme les valeurs affichées. Pistes connues : seulement celles du titre.
+  function tuneControls(prefix, attr, { value, tracks = null, duo = false, lock = false, refused = {} }) {
+    const ranges = tuneRanges(), defaults = tuneDefaults();
+    const stepper = (field, label, hint, shown, [down, up]) => {
+      const range = ranges[field], n = value[field] ?? 0, off = lock || refused[field];
+      const id = `${prefix}${field === 'pitch' ? 'Pitch' : 'Tempo'}`;
+      return `<div class="tune-row"><span class="tune-label" id="${id}Label">${label}</span><span class="tune-hint">${hint}</span>
+        <div class="tune-stepper" role="group" aria-labelledby="${id}Label"><button type="button" class="btn" ${attr}="${field}" data-step="${-range.step}" data-focus="${field}-down" aria-label="${esc(down)}"${off || n - range.step < range.min ? ' disabled' : ''}>−</button><output class="tune-value" id="${id}">${esc(shown(n))}</output><button type="button" class="btn" ${attr}="${field}" data-step="${range.step}" data-focus="${field}-up" aria-label="${esc(up)}"${off || n + range.step > range.max ? ' disabled' : ''}>+</button></div></div>`;
+    };
+    const volume = (field, label, hint) => {
+      const n = value[field] ?? defaults[field], off = lock || refused[field];
+      const id = `${prefix}${field === 'guide' ? 'Guide' : 'Backing'}`;
+      const other = VOLUME_CHOICES.includes(n) ? '' : `<span class="tune-hint">${value[field] == null ? 'Réglage de KaraFun' : 'Actuellement'} : ${esc(n)}</span>`;
+      return `<div class="tune-row"><span class="tune-label" id="${id}Label">${label}</span>${hint ? `<span class="tune-hint">${hint}</span>` : ''}
+        <div class="tune-seg" role="group" id="${id}" aria-labelledby="${id}Label">${VOLUME_CHOICES.map(level => `<button type="button" class="btn" ${attr}="${field}" data-value="${level}" data-focus="${field}-${level}" aria-pressed="${n === level}"${off ? ' disabled' : ''}>${level || 'Coupé'}</button>`).join('')}</div>${other}</div>`;
+    };
+    const pitchStep = ranges.pitch.step, tempoStep = ranges.tempo.step;
+    return stepper('pitch', 'Tonalité', '0 = originale, en demi-tons', signed,
+      pitchStep === 1 ? ['Baisser d’un demi-ton', 'Monter d’un demi-ton'] : [`Baisser de ${pitchStep} demi-tons`, `Monter de ${pitchStep} demi-tons`]) +
+      stepper('tempo', 'Tempo', '0 = tempo original', n => `${signed(n)} %`, [`Ralentir de ${tempoStep} %`, `Accélérer de ${tempoStep} %`]) +
+      (!tracks || tracks.includes(TRACK_GUIDE) ? volume('guide', 'Voix guide', duo ? 'Duo : les deux voix guides suivent ce réglage.' : '')
+        : '<p class="tune-hint">Ce titre n’a pas de voix guide.</p>') +
+      (!tracks || tracks.includes(TRACK_BACKING) ? volume('backing', 'Chœurs', tracks ? '' : 'Si le titre en a.')
+        : '<p class="tune-hint">Ce titre n’a pas de chœurs.</p>');
+  }
+
+  // Titre en cours, en direct : la valeur envoyée s'affiche jusqu'à ce que
+  // KaraFun la renvoie (« Appliqué ») ; sans écho, la valeur de KaraFun revient.
+  const liveDrafts = new Map(); // champ → { value, queueId, sent, timer }
+  let liveStatus = { text: '', tone: '' }, liveQueueId = null;
+  function renderLiveTune() {
+    const live = S.songSettings?.live;
+    const box = $('liveTuneBox');
+    box.hidden = !live || !S.stage || S.stage.kind === 'battle';
+    // Autre titre (ou plus rien) : ni valeur en attente ni avis du précédent.
+    const queueId = box.hidden ? null : live.queueId;
+    if (queueId !== liveQueueId) { liveQueueId = queueId; liveStatus = { text: '', tone: '' }; }
+    if (box.hidden) { liveDrafts.clear(); return; }
+    const value = {};
+    for (const field of TUNE_FIELDS) {
+      const draft = liveDrafts.get(field);
+      if (draft && draft.queueId !== live.queueId) { clearTimeout(draft.timer); liveDrafts.delete(field); }
+      else if (draft?.sent && live[field] === draft.value) {
+        clearTimeout(draft.timer);
+        liveDrafts.delete(field);
+        liveStatus = { text: 'Appliqué par KaraFun ✓', tone: 'ok' };
+      }
+      value[field] = liveDrafts.has(field) ? liveDrafts.get(field).value : live[field];
+    }
+    const perms = S.songSettings.permissions || {}, support = S.songSettings.support || {}, notices = S.songSettings.notices || {};
+    const unavailable = S.songSettings.available === false;
+    const lock = !S.kf?.ready || perms.manageVolumes === false || unavailable;
+    const refused = { pitch: support.pitch === 'refused', tempo: support.tempo === 'refused',
+      guide: support.trackVolume === 'refused', backing: support.trackVolume === 'refused' };
+    // Avis de KaraFun sur les seules fonctions du direct : refusées (boutons
+    // désactivés) ou restées sans réponse (boutons actifs, nouvel essai possible).
+    const told = ['pitch', 'tempo', 'trackVolume'].filter(kind => support[kind] === 'refused' || support[kind] === 'silent')
+      .map(kind => notices[kind]).filter(Boolean);
+    const reason = !S.kf?.ready ? 'KaraFun est déconnecté : reconnecte-le pour régler le titre en cours.'
+      : unavailable ? 'Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : règle le titre en cours dans KaraFun.'
+        : perms.manageVolumes === false ? `KaraFun ne laisse pas ${S.kf.username || 'FileKaraoke'} personnaliser la chanson en cours : active « Personnaliser la chanson en cours » pour ce participant dans la télécommande KaraFun.`
+          : told.length ? told.join(' ') : Object.values(refused).some(Boolean) ? 'KaraFun ne prend pas en charge certains de ces réglages.' : '';
+    $('liveTuneReason').hidden = !reason;
+    $('liveTuneReason').textContent = reason;
+    const summary = tuneSummary(cleanTune(value));
+    $('liveTuneSummary').textContent = `Réglages en direct · ${summary || 'réglages d’origine'}`;
+    patchFocus($('liveTune'), tuneControls('live', 'data-live', { value, tracks: Array.isArray(live.tracks) ? live.tracks : null,
+      duo: (S.stage.ids || []).length > 1, lock, refused }));
+    $('liveTuneStatus').textContent = liveStatus.text;
+    $('liveTuneStatus').className = `save-status${liveStatus.tone ? ` ${liveStatus.tone}` : ''}`;
+  }
+  async function sendLive(field, value) {
+    const live = S?.songSettings?.live;
+    if (!live) return;
+    clearTimeout(liveDrafts.get(field)?.timer);
+    const draft = { value, queueId: live.queueId, sent: false };
+    liveDrafts.set(field, draft);
+    liveStatus = { text: 'Envoyé à KaraFun…', tone: '' };
+    renderLiveTune();
+    try {
+      await post('/api/staff/kf', field === 'guide' || field === 'backing' ? { action: 'track', track: field, value } : { action: field, value });
+      if (liveDrafts.get(field) !== draft) return;
+      draft.sent = true;
+      draft.timer = setTimeout(() => {
+        if (liveDrafts.get(field) !== draft) return;
+        liveDrafts.delete(field);
+        liveStatus = { text: 'KaraFun n’a pas confirmé ce réglage : vérifie dans KaraFun.', tone: 'bad' };
+        renderLiveTune();
+      }, LIVE_CONFIRM_MS);
+      load();
+    } catch (e) {
+      if (liveDrafts.get(field) === draft) liveDrafts.delete(field);
+      liveStatus = { text: `Non appliqué : ${e.message}`, tone: 'bad' };
+      renderLiveTune();
+    }
+  }
+  $('liveTune').addEventListener('click', event => {
+    const control = event.target?.closest?.('[data-live]');
+    const live = S?.songSettings?.live;
+    if (!control || !live) return;
+    const field = control.dataset.live;
+    if (control.dataset.step) {
+      const range = tuneRanges()[field];
+      const now = liveDrafts.get(field)?.value ?? live[field] ?? 0;
+      sendLive(field, Math.min(range.max, Math.max(range.min, now + Number(control.dataset.step))));
+    } else sendLive(field, Number(control.dataset.value));
+  });
+
+  // Fiche d'un titre à venir (File, menu ⋯ → Réglages).
+  const songOwners = new Map(); // titre → auteur, gardé pour l'envoi même si le titre quitte la file
+  const songTitles = new Map(); // titre → nom affiché, pour un refus arrivé fiche fermée
+  const tuneFailed = entryId => entryId != null && drafts.get(keyOf('songSettings', String(entryId)))?.state === 'error';
+  let songSheetEntry = null;
+  // Titre dans la file (chargé dans KaraFun, en cours d'envoi ou prévu), ou sur scène.
+  function songTarget(entryId) {
+    if (entryId == null || entryId === '') return null;
+    if (S?.songSettings?.live?.entryId === entryId) return { onStage: true, q: { song: S.songSettings.live } };
+    const q = (S?.queue || []).find(item => item.song?.entryId === entryId);
+    return q ? { q, tracks: Array.isArray(q.tracks) ? q.tracks : null, duo: q.kind === 'duo' || (q.ids || []).length > 1 } : null;
+  }
+  function openSongSheet(entryId, personId) {
+    songSheetEntry = String(entryId);
+    songOwners.set(songSheetEntry, String(personId || ''));
+    songTitles.set(songSheetEntry, songTarget(songSheetEntry)?.q?.song?.title || '');
+    $('songSheetValue').dataset.autosaveId = songSheetEntry;
+    $('songSheetStatus').dataset.saveStatus = keyOf('songSettings', songSheetEntry);
+    rendered.delete($('songSheetBody'));
+    openDialog('songSheet');
+    renderSongSheet();
+  }
+  function renderSongSheet() {
+    if (!$('songSheet').open || !songSheetEntry) return;
+    const target = songTarget(songSheetEntry);
+    const input = $('songSheetValue');
+    syncField(input);
+    const q = target?.q;
+    if (q && !target.onStage) {
+      $('songSheetTitle').textContent = `Réglages · ${q.song.title || q.title || 'titre'}`;
+      $('songSheetInfo').textContent = [q.name || q.singer, q.song.artist ? `${q.song.title} — ${q.song.artist}` : q.song.title].filter(Boolean).join(' · ');
+    }
+    const perms = S.songSettings?.permissions || {}, support = S.songSettings?.support || {};
+    const lock = target?.onStage ? 'Ce titre est sur scène : règle-le en direct sur l’écran Scène.' : !target ? 'Ce titre n’est plus dans la file.'
+      : S.songSettings?.available === false ? 'Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.' : '';
+    const note = lock || (q.source === 'karafun' && (perms.manageQueue === false || support.queueItemOptions === 'refused')
+      ? 'KaraFun ne laisse pas modifier ce titre déjà chargé : ses réglages seront appliqués au début du titre.' : '');
+    $('songSheetNote').hidden = !note;
+    $('songSheetNote').textContent = note;
+    let value = {};
+    try { value = cleanTune(JSON.parse(input.value || '{}')); } catch (_) { /* valeur abîmée : réglages de KaraFun */ }
+    patchFocus($('songSheetBody'), tuneControls('sheet', 'data-tune', { value, tracks: target?.tracks || null, duo: !!target?.duo, lock: !!lock }));
+    $('songSheetReset').disabled = !!lock || !Object.keys(value).length;
+  }
+  $('songSheet').addEventListener('click', event => {
+    const control = event.target?.closest?.('[data-tune]');
+    const reset = event.target?.closest?.('[data-tune-reset]');
+    const target = songSheetEntry ? songTarget(songSheetEntry) : null;
+    if ((!control && !reset) || !target || target.onStage || S?.songSettings?.available === false) return;
+    const input = $('songSheetValue');
+    const next = reset ? {} : cleanTune(JSON.parse(input.value || '{}'));
+    if (control?.dataset.step) {
+      const field = control.dataset.tune, range = tuneRanges()[field];
+      next[field] = Math.min(range.max, Math.max(range.min, (next[field] ?? 0) + Number(control.dataset.step)));
+    } else if (control) next[control.dataset.tune] = Number(control.dataset.value);
+    input.value = tuneKey(next);
+    fieldEvent({ type: 'input' }, input);
+    renderSongSheet();
+  });
+  $('songSheetClose').onclick = () => $('songSheet').close();
+  // Fermée (bouton, Retour) : un changement en attente part tout de suite.
+  $('songSheet').addEventListener('close', () => { flushAll(); songSheetEntry = null; });
+
+  // Interrupteur des chanteurs : ce que KaraFun a accepté, refusé ou laissé
+  // sans réponse depuis la connexion (un avis par fonction).
+  function renderSongSupport() {
+    const tune = S.songSettings;
+    const parts = [];
+    if (tune && S.kf?.ready && tune.available === false) {
+      parts.push('Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : les téléphones n’affichent pas le bouton « Réglages » et rien n’est appliqué. Règle les titres dans KaraFun.');
+    } else if (tune && S.kf?.ready) {
+      const support = tune.support || {}, perms = tune.permissions || {}, notices = tune.notices || {}, who = S.kf.username || 'FileKaraoke';
+      const LABELS = { pitch: 'tonalité', tempo: 'tempo', trackVolume: 'voix', queueItemOptions: 'titres déjà chargés', addOptions: 'réglages à l’ajout' };
+      const accepted = Object.keys(LABELS).filter(key => support[key] === 'ok');
+      const doubtful = Object.keys(LABELS).filter(key => support[key] === 'refused' || support[key] === 'silent');
+      for (const key of doubtful) if (notices[key]) parts.push(notices[key]);
+      if (accepted.length) parts.push(`KaraFun a accepté : ${accepted.map(key => LABELS[key]).join(', ')}.`);
+      if (!accepted.length && !doubtful.length) parts.push('Pas encore essayé avec ce KaraFun : fais un essai hors service (guide du bar, « Réglages de titre »).');
+      if (perms.manageVolumes === false) parts.push(`Titre en cours : « Personnaliser la chanson en cours » refusé à ${who} dans KaraFun.`);
+      if (perms.manageQueue === false) parts.push(`Titres déjà chargés : « Éditer la file d’attente » refusé à ${who} dans KaraFun ; leurs réglages sont appliqués au début du titre.`);
+    }
+    $('songSettingsInfo').textContent = parts.join(' ');
+  }
+
   function render() {
     const kf = S.kf;
-    const ok = kf && kf.ready;
-    $('kfPill').textContent = !kf ? 'KaraFun : pas de code' : ok ? `KaraFun connecté${S.karafun.demo ? ' (démo)' : ''}` : kf.unreachable ? 'KaraFun injoignable' : kf.connected ? 'Connexion…' : 'KaraFun déconnecté';
-    $('kfPill').className = 'pill ' + (ok ? 'ok' : 'bad');
-    $('connectBtn').textContent = ok ? 'Changer le code' : 'Connecter';
+    const status = kfStatus();
+    $('kfPill').textContent = status.text;
+    $('kfPill').className = 'pill ' + status.cls;
+    $('connectBtn').textContent = kf && kf.ready ? 'Changer le code' : 'Connecter';
     renderAlerts();
     const app = S.app || {};
     $('appVersion').textContent = app.version ? `${app.version}${app.commit ? ` · ${app.commit}` : ''}` : '';
     $('appVersion').title = app.builtAt ? `Version installée, construite le ${new Date(app.builtAt).toLocaleString('fr-FR')}` : 'Version installée sur ce PC';
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
-    if (document.activeElement !== $('battleCooldownMin')) $('battleCooldownMin').value = S.settings.battleCooldownMin || 15;
-    if (document.activeElement !== $('battleRejectedCooldownMin')) $('battleRejectedCooldownMin').value = S.settings.battleRejectedCooldownMin || 5;
-    if (document.activeElement !== $('battleVoteMin')) $('battleVoteMin').value = S.settings.battleVoteMin || 5;
-    if (document.activeElement !== $('battleMinVoters')) $('battleMinVoters').value = S.settings.battleMinVoters || 5;
+    for (const id of ['battleCooldownMin', 'battleRejectedCooldownMin', 'battleVoteMin', 'battleMinVoters', 'requirePresence',
+      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings']) syncField($(id));
+    renderSongSupport();
     renderStaffAlerts();
-    if (!formInit) {
-      $('code').value = S.code || '';
-      $('gap').value = S.settings.gap; $('cap').value = S.settings.cap; $('requirePresence').checked = S.settings.requirePresence;
-      $('pushDelaySec').value = S.settings.pushDelaySec; $('playDelaySec').value = S.settings.playDelaySec;
-      $('repeatWarnMin').value = S.settings.repeatWarnMin ?? 45;
-      $('presenceGraceSec').value = S.settings.presenceGraceSec ?? 30;
-      $('presenceMaxSkips').value = S.settings.presenceMaxSkips ?? 3;
-      formInit = true;
-    }
+    if (!renderedOnce && !$('code').value) $('code').value = S.code || '';
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
     $('autoPlayHeldTxt').hidden = !S.settings.autoPlayHeld;
+    $('autoWarn').hidden = !!(S.settings.auto && S.settings.autoPlay);
+    $('autoWarn').textContent = !S.settings.auto && !S.settings.autoPlay ? 'Envoi et lecture automatiques coupés' :
+      !S.settings.auto ? 'Envoi automatique coupé' : 'Lecture automatique coupée';
     $('rotationPeople').checked = !S.settings.tableRotation;
     $('rotationTables').checked = !!S.settings.tableRotation && !S.settings.weightedTables;
     $('rotationCompromise').checked = !!S.settings.tableRotation && !!S.settings.weightedTables;
@@ -671,8 +1556,9 @@
     renderSolver();
     renderStageHistory();
 
-    $('stage').innerHTML = liveCard(S.stage);
-    $('next').innerHTML = liveCard(S.next);
+    patch($('stage'), liveCard(S.stage));
+    renderLiveTune();
+    patch($('next'), liveCard(S.next));
     // Après une relance ratée, une copie tardive peut encore arriver : nouvel essai une minute plus tard.
     $('restartBtn').disabled = !S.stage || S.stage.kind === 'battle' || !!S.restarting || !!S.restartRetryAt || !S.kf?.ready;
     $('restartBtn').textContent = S.restarting ? '⏮ Relance en cours…' : S.restartRetryAt ? '⏮ Relance possible dans une minute' : '⏮ Relancer depuis le début';
@@ -682,14 +1568,16 @@
     $('absentBtn').hidden = !nextTracked;
     $('absentBtn').dataset.qid = nextTracked ? nextTracked.queueId : '';
     $('pendingTxt').textContent = S.pending ? `Envoi en cours à KaraFun : ${S.pending.label} — ${S.pending.title}` : '';
-    const stageOwner = S.stage?.ours && S.stage.ids?.length === 1 ? S.people.find(p => p.id === S.stage.ids[0]) : null;
-    const candidates = stageOwner ? S.people.filter(p => p.active !== false && p.id !== stageOwner.id) : [];
-    const sameTable = candidates.filter(p => p.tableId === stageOwner.tableId);
-    const otherTables = candidates.filter(p => p.tableId !== stageOwner.tableId);
-    const partnerOption = p => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(S.tables.find(t => t.id === p.tableId)?.name || p.tableId)}</option>`;
-    $('markDuoBox').hidden = !candidates.length;
-    $('markDuoBox').dataset.queueId = S.stage?.queueId || '';
-    $('markDuoPartner').innerHTML = `${sameTable.length ? `<optgroup label="Même table">${sameTable.map(partnerOption).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres tables et personnes en solo">${otherTables.map(partnerOption).join('')}</optgroup>` : ''}`;
+    renderDuoBox();
+    // Demandes de duo sur un titre de la file (page des chanteurs) : le bar les voit.
+    // Invitations envoyées par l'auteur du titre : même encadré, même état.
+    const requests = S.joinRequests || [], invites = S.duoInvites || [];
+    $('joinRequestsBox').hidden = !requests.length && !invites.length;
+    // « Pas encore vue » : le téléphone qui doit répondre ne l'a pas affichée ;
+    // le bar peut aller prévenir la personne.
+    const seenText = (seenAt, who) => seenAt ? ' · vue' : seenAt === null ? ` · <span class="unseen">pas encore vue par ${esc(who)}</span>` : '';
+    $('joinRequestsList').innerHTML = requests.map(r => `<div class="join-request small"><b>${esc(r.requesterName)}</b> demande à chanter « ${esc(r.title)} » avec <b>${esc(r.ownerName)}</b>${r.at ? ` · ${hhmm(r.at)}` : ''}${seenText(r.seenAt, r.ownerName)}</div>`).join('') +
+      invites.map(r => `<div class="join-request small"><b>${esc(r.ownerName)}</b> invite <b>${esc(r.partnerName)}</b> à chanter « ${esc(r.title)} » en duo${seenText(r.seenAt, r.partnerName)}</div>`).join('');
 
     const publicHttps = isPublicHttps(S.phoneBase || '');
     const readyQrCount = S.tables.filter(t => t.url && t.qrUrl && !t.individual).length;
@@ -702,11 +1590,15 @@
     const staffQrSource = '/qr/staff.svg' + kq;
     if ($('staffQr').getAttribute('src') !== staffQrSource) $('staffQr').src = staffQrSource;
     $('printLink').href = '/print' + kq;
+    $('statsLink').href = '/stats' + kq;
     const opts = S.ips.map(ip => `http://${ip.address}:${S.port}`);
     if (document.activeElement !== $('ipSel')) {
+      const previous = $('ipSel').value;
       $('ipSel').innerHTML = opts.map(o => `<option value="${esc(o)}" ${o === S.phoneBase ? 'selected' : ''}>${esc(o)}</option>`).join('') || '<option value="">aucune adresse réseau détectée</option>';
+      // Adresse choisie mais pas encore utilisée : gardée malgré le rafraîchissement.
+      if ($('ipSel').dataset.touched && opts.includes(previous)) $('ipSel').value = previous;
     }
-    if (document.activeElement !== $('customBase')) $('customBase').value = publicHttps ? S.phoneBase : '';
+    if (document.activeElement !== $('customBase') && !$('customBase').dataset.touched) $('customBase').value = publicHttps ? S.phoneBase : '';
 
     $('qn').textContent = S.queue.length;
     $('queueEmpty').hidden = S.queue.length > 0;
@@ -721,24 +1613,25 @@
     $('recalculateQueue').disabled = !manualChanges[0]?.canUndo;
     $('manualHistoryList').querySelectorAll('[data-manual-undo]').forEach(button => button.onclick = () =>
       act('/api/staff/manual-change-undo', { id: button.dataset.manualUndo }, 'Dernier changement annulé ; ordre précédent retrouvé'));
-    $('blockedBox').hidden = !S.blocked?.length;
-    $('blockedBody').innerHTML = (S.blocked || []).map(p => `<div class="blocked-item"><span><b>${esc(p.name)}</b> · ${esc(p.table)} — ${esc(p.title)}${p.artist ? ` · ${esc(p.artist)}` : ''}</span><span class="badge">${esc(p.reason)}</span></div>`).join('');
     let plannedIndex = 0;
     const lineKey = q => q.source === 'helper' && q.id ? `p:${q.id}|${q.song?.entryId || ''}` :
       q.source === 'karafun' && q.ours && q.queueId ? `k:${q.queueId}` : null;
     const liveKeys = new Set(S.queue.map(lineKey).filter(Boolean));
     for (const key of [...selectedLines]) if (!liveKeys.has(key)) selectedLines.delete(key);
+    if (openRowMenu && !liveKeys.has(openRowMenu)) openRowMenu = null;
     $('removeSelected').disabled = selectedLines.size === 0;
     $('removeSelected').textContent = selectedLines.size ? `Retirer la sélection (${selectedLines.size})` : 'Retirer la sélection';
     $('selectAllQueue').checked = liveKeys.size > 0 && selectedLines.size === liveKeys.size;
     // Repère de fermeture : les titres au-dessus passeront avant l'heure annoncée.
     const closingLine = S.closing ? `<div class="queue-closing" role="note">— Fermeture à ${esc(hhmm(S.closing.at))} : les titres ci-dessous ne passeront probablement pas —</div>` : '';
     let closingShown = false;
-    $('qBody').innerHTML = S.queue.map(q => {
+    $('qBody').innerHTML = S.queue.map((q, i) => {
       const separator = closingLine && q.afterClosing && !closingShown ? (closingShown = true, closingLine) : '';
-      return separator + queueRow(q);
+      return separator + queueRow(q, i >= S.queue.length - 2);
     }).join('');
-    function queueRow(q) {
+    // `up` : au téléphone, le menu ⋯ des deux dernières lignes s'ouvre au-dessus
+    // de la ligne, sinon il finirait sous la barre d'onglets.
+    function queueRow(q, up) {
       const movable = q.source === 'helper' && q.id && !q.future;
       const index = movable ? plannedIndex++ : -1;
       const key = lineKey(q);
@@ -748,13 +1641,21 @@
       // Repères privés du bar, visibles au survol ou en touchant le nom.
       const notes = (q.ids || []).map(pid => S.people.find(p => p.id === pid)).filter(p => p?.privateNote)
         .map(p => (q.ids.length > 1 ? `${p.name} : ` : '') + p.privateNote);
+      const inviteBadge = pendingInviteBadge(q);
+      // Réglages de titre : tout titre à venir de la file, même déjà chargé dans KaraFun.
+      const tunable = q.song?.entryId && (q.source === 'helper' || (q.ours && (q.source === 'karafun' || q.source === 'envoi')));
+      const tune = tunable ? `<button class="btn small" data-song-settings="${esc(q.song.entryId)}" data-person-id="${esc(q.ids?.[0] ?? q.id ?? '')}" aria-label="Réglages de « ${esc(title)} » : tonalité, tempo, voix">Réglages</button>` : '';
+      // Titre suivant d'un chanteur : retiré seul, sans toucher à son titre en cours.
+      const removeEntry = q.source === 'helper' && q.future && q.id && q.song?.entryId ?
+        `<button class="btn small danger" data-rm-entry="${esc(q.song.entryId)}" data-person-id="${esc(q.id)}" data-title="${esc(title)}" data-name="${esc(q.name || q.singer || 'ce chanteur')}" aria-label="Retirer « ${esc(title)} » de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : '';
+      const actions = movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}${tune}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `${tune}<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : tune + removeEntry;
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}</span></div>
-        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
-        <div class="queue-actions">${movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : ''}</div>
+        <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
       </div>`;
     }
     $('queueHint').textContent = moveArmed ? 'Choisis maintenant la ligne où placer cette chanson, ou retouche sa poignée pour annuler.'
@@ -798,45 +1699,22 @@
       cell.classList.toggle('show-note', open);
       button.setAttribute('aria-expanded', String(open));
     });
+    $('qBody').querySelectorAll('[data-row-menu]').forEach(button => button.onclick = () => setRowMenu(openRowMenu === button.dataset.rowMenu ? null : button.dataset.rowMenu));
     $('qBody').querySelectorAll('[data-pick]').forEach(box => box.onchange = () => {
       if (box.checked) selectedLines.add(box.dataset.pick); else selectedLines.delete(box.dataset.pick);
       render();
     });
     $('qBody').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson ? Le chanteur reste inscrit à sa table.')) act('/api/staff/remove', { personId: b.dataset.rm }, 'Chanson retirée'); });
+    $('qBody').querySelectorAll('[data-rm-entry]').forEach(b => b.onclick = () => {
+      if (confirm(`Retirer « ${b.dataset.title} » de la liste ${ofName(b.dataset.name)} ? Ses autres titres et sa place restent.`)) {
+        act('/api/staff/remove-many', { items: [{ personId: b.dataset.personId, entryId: b.dataset.rmEntry }] }, 'Chanson retirée');
+      }
+    });
     $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => act('/api/staff/move', { personId: b.dataset.urgent, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun'));
     $('qBody').querySelectorAll('[data-kfrm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson de KaraFun ?')) act('/api/staff/kf', { action: 'remove', queueId: b.dataset.kfrm }, 'Chanson retirée de KaraFun'); });
-    const focused = document.activeElement && document.activeElement.dataset && (document.activeElement.dataset.hc || document.activeElement.dataset.tableName || document.activeElement.dataset.tableBonus);
-    if (!focused) {
-      $('tBody').innerHTML = S.tables.map(t => `<div class="table-card"><div class="table-card-head"><label class="table-name-editor"><span class="sr-only">Nom affiché de ${esc(t.name)}</span><input type="text" maxlength="40" value="${esc(t.name)}" aria-label="Nom affiché de ${esc(t.name)}" data-table-name="${esc(t.id)}"></label><button class="btn small" data-rename="${esc(t.id)}">Renommer</button>${t.individual ? '<span class="badge">Solos · tours individuels</span>' : ''}<span class="occupancy" title="${t.individual ? `${t.activeCount} solistes présents` : `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'}, ${t.count} inscrit${t.count === 1 ? '' : 's'}, ${t.headcount || '—'} places`}">${t.individual ? `${t.activeCount} soliste${t.activeCount === 1 ? '' : 's'}` : `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'} / ${t.count} inscrit${t.count === 1 ? '' : 's'} / ${t.headcount || '—'} places`}</span></div>
-        <div class="table-actions">${t.individual ? '' : `<label class="small" for="hc-${esc(t.id)}">Effectif</label><input id="hc-${esc(t.id)}" type="number" min="1" max="40" value="${t.headcount || ''}" data-hc="${esc(t.id)}"><button class="btn small" data-hcok="${esc(t.id)}">Enregistrer</button>`}
-        ${t.individual ? '<button class="btn small primary" data-solo-invite>Créer un QR individuel</button><span class="tiny muted">Chaque personne seule reçoit son propre QR : le QR commun ne permet pas de s’inscrire.</span>' :
-          `${t.url ? `<a class="btn small" href="${esc(t.url)}" target="_blank" rel="noopener" title="Ouvrir la page de ${esc(t.name)}">Page</a>` : ''}${t.url && t.qrUrl ? `<a class="btn small" href="${esc(qrSrc(t))}" target="_blank" rel="noopener" title="Afficher le QR code de ${esc(t.name)}">Voir le QR</a>` : ''}`}${t.id === 'Comptoir' && t.individual ? '' : `<button class="btn small danger" data-left="${esc(t.id)}" data-table-label="${esc(t.name)}">Table partie</button>`}
-        <label class="bonus-field small" title="Réglage réservé au bar, jamais montré aux clients">Bonus table <select data-table-bonus="${esc(t.id)}">${bonusOptions(t.bonus)}</select></label></div></div>`).join('');
-      $('tBody').querySelectorAll('[data-solo-invite]').forEach(b => b.onclick = () => $('issueSoloInvitation').onclick());
-      $('tBody').querySelectorAll('[data-table-bonus]').forEach(select => select.onchange = () =>
-        act('/api/staff/bonus', { tableId: select.dataset.tableBonus, level: Number(select.value) },
-          Number(select.value) ? 'Bonus de table enregistré (invisible des clients)' : 'Bonus de table retiré'));
-      $('tBody').querySelectorAll('[data-rename]').forEach(b => b.onclick = () => {
-        const input = b.closest('.table-card').querySelector('[data-table-name]');
-        const name = input.value.trim();
-        if (!name || name.length > 40) return toast('Indique un nom de table entre 1 et 40 caractères.', true);
-        act('/api/staff/table/rename', { tableId: b.dataset.rename, name }, 'Table renommée');
-      });
-      $('tBody').querySelectorAll('[data-table-name]').forEach(input => input.onkeydown = event => {
-        if (event.key === 'Enter') { event.preventDefault(); input.closest('.table-card').querySelector('[data-rename]').click(); }
-      });
-      $('tBody').querySelectorAll('[data-hcok]').forEach(b => b.onclick = () => {
-        const v = Number($('tBody').querySelector(`[data-hc="${CSS.escape(b.dataset.hcok)}"]`).value);
-        if (!Number.isInteger(v) || v < 1 || v > 40) return toast('Indique entre 1 et 40 personnes.', true);
-        act('/api/staff/table', { id: b.dataset.hcok, headcount: v }, 'Enregistré');
-      });
-      $('tBody').querySelectorAll('[data-left]').forEach(b => b.onclick = () => { if (confirm(`${b.dataset.tableLabel} est partie ? Ses tickets seront retirés.`)) act('/api/staff/table-left', { id: b.dataset.left }, 'Table retirée'); });
-    }
-    if (document.activeElement !== $('tableName')) {
-      const used = new Set(S.tables.map(t => t.id));
-      let n = 1; while (used.has(String(n))) n++;
-      $('tableName').placeholder = `Table ${n}`;
-    }
+    $('qBody').querySelectorAll('[data-song-settings]').forEach(b => b.onclick = () => { if (window.history?.state?.rowMenu) { try { window.history.replaceState({ barTab: activeTab }, '', tabUrl()); } catch (_) { /* */ } } openRowMenu = null; openSongSheet(b.dataset.songSettings, b.dataset.personId); render(); });
+    renderSongSheet();
+    renderTables();
     const soloTable = S.tables.find(t => t.id === 'Comptoir' && t.individual);
     const soloPending = (S.soloInvitations || []).filter(invitation => invitation.tableId === soloTable?.id);
     // « En solo » n'a pas de nombre de places : chaque QR individuel en crée une.
@@ -880,7 +1758,7 @@
       : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'
       : battleStep === 'manual' ? 'Battle organisée manuellement : laisse les téléphones rejoindre, lance-la dans KaraFun, annonce les résultats, puis indique ici qu’elle est terminée. La file reste en pause.'
-      : battleStep === 'after' ? `Battle terminée. Félicite les gagnants, puis clique sur « ▶ Lancer le prochain titre » dans le panneau En direct.${battle.cooldownUntil ? ` Prochaine Battle possible dans ${countdown(battle.cooldownUntil)}.` : ''}`
+      : battleStep === 'after' ? `Battle terminée. Félicite les gagnants, puis clique sur « ▶ Lancer le prochain titre » dans « Sur scène ».${battle.cooldownUntil ? ` Prochaine Battle possible dans ${countdown(battle.cooldownUntil)}.` : ''}`
       : battleStep === 'resuming' ? 'Reprise demandée par le bar. Le prochain titre est envoyé puis lancé dès sa confirmation dans KaraFun.'
       : battle.phase === 'requested' ? `Battle demandée : ${selectedSong}. ${voteCount}. Prépare-la dans KaraFun et laisse les téléphones rejoindre.`
       : battle.phase === 'voting' ? `La salle vote pour une Battle${battle.proposalName ? ` (proposition de ${battle.proposalName})` : ''}. Résultats en direct ci-dessous ; tu peux clore le vote avant la fin.`
@@ -891,6 +1769,9 @@
     $('battleActions').hidden = battle.phase !== 'requested' || battleStep === 'sending';
     $('battleDone').hidden = battleStep !== 'failed';
     $('battleFinished').hidden = battleStep !== 'manual';
+    // Sur l'écran Scène, seulement quand le bar doit agir.
+    $('battleStrip').hidden = !(battle.phase === 'requested' || ['failed', 'manual', 'after', 'queued'].includes(battleStep));
+    $('battleStripText').textContent = $('battleStrip').hidden ? '' : $('battleStatus').textContent;
     const battleNext = S.queue?.[0]?.kind === 'battle' && !S.stage;
     $('playBtn').textContent = battleStep === 'after' ? '▶ Lancer le prochain titre' :
       ['queued', 'manual', 'failed'].includes(battleStep) && battleNext ? '▶ Lancer la Battle' : '▶ Lecture';
@@ -906,6 +1787,12 @@
     $('battleCooldownActions').hidden = !(battle.phase === 'cooldown' && battle.cooldownUntil > Date.now() &&
       (!battleStep || battleStep === 'released'));
 
+    // Barre du bas : badges de la file, de l'accueil et des réglages à voir.
+    const badge = (id, count) => { $(id).hidden = !count; $(id).textContent = count ? String(count) : ''; };
+    badge('tabBadgeFile', S.queue.length);
+    badge('tabBadgeAccueil', soloPending.length);
+    $('tabDotPlus').hidden = !(battle.phase === 'requested' || status.cls === 'bad' || !!S.spotify?.lastError);
+
     const p = kf && kf.preferences, perm = kf && kf.permissions;
     $('diag').innerHTML = kf ? [
       ['Serveur', esc(kf.base)], ['Code', esc(kf.code)], ['Connecté', kf.connected ? 'oui' : 'non'], ['Données reçues', kf.ready ? 'oui' : 'non'],
@@ -915,7 +1802,7 @@
       ['Ordonnancement', !S.solver?.configured ? 'Simulation locale' : S.solver.available ?
         (S.solver.pending ? 'Optimisation : calcul en cours' : S.solver.refining ? 'Optimisation continue en cours' : 'Optimisation prête') :
         `Rotation locale de secours : ${esc(S.solver.fallbackLastError || 'solveur indisponible')}`],
-    ].map(([a, b]) => `<div>${a}</div><div>${b}</div>`).join('') : '<div>État</div><div>Saisis le code KaraFun en haut à droite.</div>';
+    ].map(([a, b]) => `<div>${a}</div><div>${b}</div>`).join('') : '<div>État</div><div>Saisis le code KaraFun ci-dessus.</div>';
     $('kfQueue').textContent = kf ? JSON.stringify(kf.queue, null, 1) : '';
     $('kfEvents').textContent = kf ? kf.events.slice().reverse().map(e => `${e.t.slice(11, 19)} ${e.dir === 'in' ? '←' : e.dir === 'out' ? '→' : '·'} ${e.name} ${e.data === undefined ? '' : JSON.stringify(e.data).slice(0, 400)}`).join('\n') : '';
 
@@ -924,21 +1811,25 @@
 
   $('connectBtn').onclick = () => act('/api/staff/connect', { code: $('code').value }, 'Connexion…');
   $('reconnectBtn').onclick = () => act('/api/staff/kf', { action: 'reconnect' }, 'Reconnexion…');
-  $('shutdownBtn').onclick = async () => {
-    if (!confirm('Arrêter la soirée ? Les clients ne pourront plus ouvrir les QR jusqu’au prochain démarrage.')) return;
-    try { await post('/api/staff/shutdown'); toast('La soirée est arrêtée. Tu peux fermer cette page.'); }
-    catch (e) { toast(e.message, true); }
-  };
   $('reconcilePending').onclick = () => act('/api/staff/reconcile-pending', {}, 'File KaraFun vérifiée ; envoi repris');
   $('clearTables').onclick = async () => {
     if (!S?.tables.length) return toast('Aucune table à supprimer.');
-    if (!confirm(`Supprimer les ${S.tables.length} tables, tous les chanteurs et leurs chansons ? Les anciens QR ne fonctionneront plus. Cette action ne peut pas être annulée.`)) return;
+    // Ce que la nouvelle soirée coupe aussi, annoncé avant la confirmation :
+    // l'envoi automatique tant qu'un titre envoyé attend son retrait de
+    // KaraFun (comme le serveur), la lecture automatique et l'heure de fermeture.
+    const sentLeft = !!S.pending || (S.tracked || []).some(tr => !tr.startedAt && String(tr.queueId) !== String(S.stage?.queueId ?? ''));
+    const stops = [S.settings?.auto && sentLeft ? 'L’envoi automatique sera coupé : titres encore dans KaraFun à vérifier. Réactive-le dans « Plus » ensuite.' : '',
+      S.settings?.autoPlay && S.closing ? 'La lecture automatique sera coupée et l’heure de fermeture retirée.' :
+        S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : S.closing ? 'L’heure de fermeture sera retirée.' : ''].filter(Boolean);
+    if (!confirm([`Supprimer les ${S.tables.length} tables, tous les chanteurs et leurs chansons ? Les anciens QR ne fonctionneront plus.`,
+      ...stops, 'Cette action ne peut pas être annulée.'].join(' '))) return;
     try {
       const result = await post('/api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
       await load();
-      toast(result.currentStillPlaying || result.otherKaraFunSongs || result.removalErrors || result.removalPending
-        ? 'Tables effacées. Vérifie et vide les titres restants dans KaraFun.'
-        : 'Toutes les tables sont effacées.');
+      toast(result.autoStopped ? 'Tables effacées. Vérifie et vide les titres restants dans KaraFun, puis réactive l’envoi automatique dans « Plus ».'
+        : result.currentStillPlaying || result.otherKaraFunSongs || result.removalErrors || result.removalPending
+          ? 'Tables effacées. Vérifie et vide les titres restants dans KaraFun.'
+          : 'Toutes les tables sont effacées.');
     } catch (error) { toast(error.message, true); }
   };
   $('clearQueue').onclick = async () => {
@@ -964,11 +1855,11 @@
       act('/api/staff/kf', { action: 'restart' }, 'Relance demandée à KaraFun');
     }
   };
-  $('closingSave').onclick = () => {
-    if (!$('closingTime').value) return toast('Choisis l’heure de fermeture.', true);
-    act('/api/staff/closing', { time: $('closingTime').value }, 'Heure de fermeture annoncée aux clients');
+  $('closingClear').onclick = () => {
+    clearTimeout(drafts.get('closingTime')?.timer);
+    drafts.delete('closingTime');
+    act('/api/staff/closing', { clear: true }, 'Heure de fermeture retirée');
   };
-  $('closingClear').onclick = () => act('/api/staff/closing', { clear: true }, 'Heure de fermeture retirée');
   // Bouton × des recherches du bar et décalage de la fermeture.
   document.addEventListener?.('click', event => {
     const extend = event.target?.closest?.('[data-closing-extend]');
@@ -987,7 +1878,6 @@
     if (clear) clear.hidden = !input.value;
   });
   const spotifyAction = (body, message) => act('/api/staff/spotify', body, message);
-  $('spotifySaveClient').onclick = () => spotifyAction({ action: 'client', clientId: $('spotifyClientId').value.trim() }, 'Client ID Spotify enregistré');
   $('spotifyLogin').onclick = async () => {
     try {
       const { url } = await post('/api/staff/spotify', { action: 'auth-url' });
@@ -1008,14 +1898,6 @@
     spotifyAction({ action: 'device', deviceId: $('spotifyDevice').value,
       deviceName: $('spotifyDevice').value ? (option?.textContent || '').replace(/ \(actif\)$/, '') : '' }, 'Appareil Spotify enregistré');
   };
-  $('spotifySaveOptions').onclick = () => {
-    // Un champ vidé vaudrait 0 s : on demande une valeur plutôt que d'enregistrer 0 sans le dire.
-    if (!$('spotifyDelay').value.trim() || !$('spotifyLead').value.trim()) return toast('Indique les délais en secondes (0 pour aucun).', true);
-    return spotifyOptions();
-  };
-  const spotifyOptions = () => spotifyAction({ action: 'options', autoResume: $('spotifyAutoResume').checked,
-    autoPause: $('spotifyAutoPause').checked, resumeDelaySec: Number($('spotifyDelay').value),
-    pauseLeadSec: Number($('spotifyLead').value) }, 'Réglages Spotify enregistrés');
   $('spotifyPlay').onclick = () => spotifyAction({ action: 'play' }, 'Spotify relancé');
   $('spotifyPause').onclick = () => spotifyAction({ action: 'pause' }, 'Spotify en pause');
   $('spotifyDisconnect').onclick = () => { if (confirm('Déconnecter Spotify de la file karaoké ?')) spotifyAction({ action: 'disconnect' }, 'Spotify déconnecté'); };
@@ -1025,16 +1907,6 @@
   };
   $('auto').onchange = () => act('/api/staff/settings', { auto: $('auto').checked });
   $('autoPlay').onchange = () => act('/api/staff/settings', { autoPlay: $('autoPlay').checked });
-  $('markDuoBtn').onclick = () => {
-    const queueId = $('markDuoBox').dataset.queueId, partnerId = $('markDuoPartner').value;
-    if (queueId && partnerId && confirm('Noter ce duo sur la chanson en cours ? Le partenaire conserve son tour.')) {
-      act('/api/staff/duo-mark', { queueId, partnerId }, 'Duo comptabilisé');
-    }
-  };
-  $('saveRules').onclick = () => act('/api/staff/settings', { gap: $('gap').value, cap: $('cap').value,
-    requirePresence: $('requirePresence').checked, playDelaySec: $('playDelaySec').value, pushDelaySec: $('pushDelaySec').value,
-    repeatWarnMin: Number($('repeatWarnMin').value), presenceGraceSec: Number($('presenceGraceSec').value),
-    presenceMaxSkips: Number($('presenceMaxSkips').value) }, 'Règles enregistrées');
   $('clearStageHistory').onclick = () => {
     if (confirm('Vider la liste des derniers passages sur scène ? Le passage en cours reste affiché ; les fiches des chanteurs ne changent pas.')) {
       act('/api/staff/stage-history/clear', {}, 'Derniers passages effacés');
@@ -1047,7 +1919,12 @@
     const id = $('tableName').value.trim() || String(n);
     const headcount = Number($('tableHeadcount').value);
     if (id.length > 20) return toast('Le nom de table est trop long.', true);
+    // « Comptoir… » désigne le groupe « En solo » (identifiant interne) : un
+    // tel nom rejoindrait ce groupe au lieu de créer une table.
+    if (/^comptoir/i.test(id)) return toast('« Comptoir » est réservé au groupe « En solo » : choisis un autre nom de table.', true);
     if (used.has(id)) return toast('Cette table existe déjà.', true);
+    const sameName = S.tables.find(t => String(t.name || '').toLocaleLowerCase('fr') === id.toLocaleLowerCase('fr'));
+    if (sameName) return toast(`Une table s’appelle déjà « ${sameName.name} ».`, true);
     if (S.tables.length >= 60) return toast('La limite de 60 tables est atteinte.', true);
     if (!Number.isInteger(headcount) || headcount < 1 || headcount > 40) return toast('Indique entre 1 et 40 personnes.', true);
     act('/api/staff/table', { id, headcount }, 'Table ajoutée');
@@ -1057,12 +1934,9 @@
   $('battleFinished').onclick = () => act('/api/staff/battle/resolve', { outcome: 'finished' }, 'Battle terminée ; lance la prochaine chanson quand le bar est prêt');
   $('battleResetCooldown').onclick = () => act('/api/staff/battle/reset-cooldown', {}, 'Pause levée : la salle peut proposer une nouvelle Battle');
   $('battleDismiss').onclick = () => act('/api/staff/battle/resolve', { outcome: 'dismissed' }, 'Demande close ; pause entre votes démarrée');
-  $('saveBattleCooldown').onclick = () => act('/api/staff/settings', { battleCooldownMin: Number($('battleCooldownMin').value),
-    battleRejectedCooldownMin: Number($('battleRejectedCooldownMin').value),
-    battleVoteMin: Number($('battleVoteMin').value), battleMinVoters: Number($('battleMinVoters').value) }, 'Réglages Battle enregistrés');
   $('enableStaffAlerts').onclick = async () => {
     alertsEnabled = !alertsEnabled;
-    localStorage.setItem('bar-alerts', alertsEnabled ? 'yes' : 'no');
+    store.set('bar-alerts', alertsEnabled ? 'yes' : 'no');
     if (alertsEnabled) {
       ring();
       if (window.isSecureContext && window.Notification?.permission === 'default') {
@@ -1073,17 +1947,14 @@
   };
   $('shareClose').onclick = () => $('shareDialog').close();
   $('shareDialog').addEventListener('close', () => { $('shareCode').textContent = ''; $('shareUrl').value = ''; $('shareQr').removeAttribute('src'); });
-  $('shareCopy').onclick = async () => {
-    try { await navigator.clipboard.writeText($('shareUrl').value); toast('Lien copié'); }
-    catch (_) { $('shareUrl').select(); toast(document.execCommand('copy') ? 'Lien copié' : 'Sélectionne le lien pour le copier'); }
-  };
+  $('shareCopy').onclick = () => copyText($('shareUrl'), 'Lien copié', 'Sélectionne le lien pour le copier', false);
   $('issueSoloInvitation').onclick = async () => {
     try {
       const invite = await post('/api/staff/solo-invite', { tableId: 'Comptoir' });
       $('soloInviteQr').src = invite.qr;
       $('soloInviteUrl').value = invite.url;
       $('soloInviteExpires').textContent = `Valable jusqu’à ${hhmm(invite.expiresAt)} ; une seule inscription.`;
-      $('soloInviteDialog').showModal();
+      openDialog('soloInviteDialog');
       load();
     } catch (error) { toast(error.message, true); }
   };
@@ -1097,8 +1968,12 @@
     }
   };
   $('soloInviteClose').onclick = () => $('soloInviteDialog').close();
+  // Adresse des QR : choix gardé jusqu'à « Utiliser », malgré le rafraîchissement.
+  $('ipSel').addEventListener('change', () => { $('ipSel').dataset.touched = '1'; });
+  $('customBase').addEventListener('input', () => { $('customBase').dataset.touched = '1'; });
   $('useLocal').onclick = () => {
     if (!$('ipSel').value) return;
+    delete $('ipSel').dataset.touched;
     act('/api/staff/settings', { baseUrl: $('ipSel').value }, 'QR configurés pour le Wi-Fi local');
   };
   $('saveBase').onclick = () => {
@@ -1108,6 +1983,7 @@
     if (!isPublicHttps(value) || !url.hostname || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
       return toast('Saisis une adresse HTTPS publique, sans chemin, identifiants ni paramètres.', true);
     }
+    delete $('customBase').dataset.touched;
     act('/api/staff/settings', { baseUrl: value }, 'QR configurés pour l’adresse HTTPS');
   };
   $('testSearch').onclick = async () => {
@@ -1123,19 +1999,54 @@
   $('testQ').onkeydown = (e) => { if (e.key === 'Enter') $('testSearch').click(); };
 
   $('stageHistory').addEventListener('click', event => {
+    const entryOf = id => (S?.stageHistory || []).find(entry => String(entry.id) === String(id));
+    const unmark = event.target?.closest?.('[data-history-unmark]');
+    if (unmark) {
+      const entry = entryOf(unmark.dataset.historyUnmark);
+      if (entry?.staffDuo && confirm(`Annuler le duo noté avec ${entry.staffDuo.partnerName} sur « ${entry.title} » ? ${entry.staffDuo.partnerName} retrouve son tour.`)) {
+        act('/api/staff/duo-unmark', { stageEntryId: entry.id });
+      }
+      return;
+    }
+    const change = event.target?.closest?.('[data-history-change]');
+    if (change) { historyChanging = historyChanging === change.dataset.historyChange ? null : change.dataset.historyChange; renderStageHistory(); return; }
+    const replace = event.target?.closest?.('[data-history-replace]');
+    if (replace) {
+      const entry = entryOf(replace.dataset.historyReplace);
+      const partnerId = replace.parentElement?.querySelector?.('[data-history-partner]')?.value || '';
+      if (!partnerId) return toast('Choisis d’abord le second chanteur dans la liste.', true);
+      const partner = personOf(partnerId)?.name || 'ce chanteur';
+      if (entry?.staffDuo && confirm(`Remplacer ${entry.staffDuo.partnerName} par ${partner} sur « ${entry.title} » ? ${entry.staffDuo.partnerName} retrouve son tour.`)) {
+        historyChanging = null;
+        act('/api/staff/duo-mark', { stageEntryId: entry.id, partnerId, replace: true });
+      }
+      return;
+    }
     const row = event.target?.closest?.('[data-history-person]');
     if (!row) return;
     const personId = row.dataset.historyPerson;
-    const person = S.people.find(p => String(p.id) === String(personId));
+    const person = personOf(personId);
     if (event.target.closest('[data-history-leave]') &&
         confirm(`Marquer ${person?.name || 'cette personne'} comme partie ? Ses titres en attente seront retirés, sa fiche reste inscrite.`)) {
       act('/api/staff/person/leave', { personId }, 'Personne marquée partie ; ses titres en attente ont été retirés');
     }
+    // Repère : ouvre l'écran Repères sur cette personne.
     if (event.target.closest('[data-history-note]')) {
-      const note = prompt(`Repère privé pour ${person?.name || 'cette personne'} (ex. t-shirt rouge)`, person?.privateNote || '');
-      if (note !== null) act('/api/staff/person/identify', { personId, note, verified: !!person?.verified }, 'Repère privé enregistré');
+      if (!person) return toast('Cette personne n’est plus inscrite.', true);
+      setTab('reperes');
+      $('identityTable').value = 'all';
+      $('identitySearch').value = person.name;
+      renderIdentities(true);
+      $('identityBody').querySelector(`[data-identity-person="${person.id}"] [data-identity-note]`)?.focus();
     }
   });
+  $('selectMode').onclick = () => {
+    const on = $('selectMode').getAttribute('aria-pressed') !== 'true';
+    $('selectMode').setAttribute('aria-pressed', String(on));
+    $('selectMode').textContent = on ? 'Terminer la sélection' : 'Sélectionner';
+    $('selectMode').closest('.queue-panel').classList.toggle('selecting', on);
+    if (!on && selectedLines.size) { selectedLines.clear(); render(); }
+  };
   $('selectAllQueue').onchange = () => {
     if ($('selectAllQueue').checked) {
       for (const q of S?.queue || []) {

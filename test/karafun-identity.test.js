@@ -13,6 +13,7 @@ class FakeTransport extends EventEmitter {
   constructor(url) { super(); this.url = url; this.sent = []; transports.push(this); }
   send(type, payload) { this.sent.push({ type, payload }); }
   close() { this.closed = true; }
+  settle() { return false; }
 }
 require('../kcs-transport').KcsTransport = FakeTransport;
 delete require.cache[require.resolve('../karafun')];
@@ -34,7 +35,8 @@ test('le nom de la file reste le même après reconnexion et redémarrage', () =
 });
 
 test('nom encore occupé par l’ancienne connexion : on redemande le même nom, puis on prévient le bar', () => {
-  mock.timers.enable({ apis: ['setTimeout'] });
+  // Le délai de deux minutes se mesure à l'horloge, plus au nombre de refus.
+  mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   try {
     const bridge = new KaraFunBridge({ identityFile: file });
     const name = bridge.username;
