@@ -381,6 +381,12 @@ test('bar : l’auteur d’un duo déjà dans KaraFun part, l’invitée apprend
     assert.equal(result.removedFromKaraFun, 1);
     assert.equal(tr.cancelled, true);
     assert.deepEqual(plain(bruno.p.inbox.map(n => [n.kind, n.params])), [['duoCancelled', { name: 'Alice', title: 'Un' }]], route);
+    // Relecture : la table d'Alice part ensuite, avant que KaraFun ait retiré
+    // le titre déjà annulé. Bruno n'est pas prévenu une seconde fois.
+    if (route === 'person') {
+      await f.call('POST /api/staff/table-left', { id: '1' });
+      assert.equal(bruno.p.inbox.filter(n => n.kind === 'duoCancelled').length, 1, 'un seul avis');
+    }
   }
 });
 

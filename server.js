@@ -2398,13 +2398,16 @@ function keepSentDuosOfLeavers(ids) {
 }
 
 // Titres déjà chargés dont l'auteur part : retirés de KaraFun. Les invités
-// qui restent apprennent l'annulation du duo, comme avant l'envoi.
+// qui restent apprennent l'annulation du duo, comme avant l'envoi (une seule
+// fois : un titre déjà annulé attend seulement son retrait de KaraFun).
 function removeLeaversTracks(upcomingTracks, ids) {
   for (const tr of upcomingTracks) {
+    const already = tr.cancelled;
     tr.cancelled = true;
     tr.removeRequestedAt = Date.now();
     try { bridge?.remove(tr.queueId); }
     catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
+    if (already) continue;
     const ownerName = sched.people.get(tr.sel.ids[0])?.name || tr.sel.names?.[0] || '';
     for (const gid of tr.sel.ids.slice(1)) {
       if (!ids.has(gid)) sched.notify(gid, 'duoCancelled', { name: ownerName, title: tr.sel.song.title });
