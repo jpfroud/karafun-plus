@@ -851,7 +851,10 @@ function sync() {
   upcoming.forEach((item, ahead) => {
     const tr = tracked.find(x => String(x.queueId) === String(item.queueId));
     if (!tr || tr.cancelled || tr.pulled || tr.absent || tr.startedAt || !closingBlocksStart(current, ahead, now)) return;
-    try { pullFromKaraFun(tr, 'closing'); noteClosingStop(); }
+    try {
+      pullFromKaraFun(tr, 'closing'); noteClosingStop();
+      for (const pid of tr.sel.ids) sched.notify(pid, 'closingPulled', { title: tr.sel.song.title });
+    }
     catch (error) { appLog(`Retrait KaraFun (fermeture) en attente : ${error.message}`); }
   });
   const closingHold = closingBlocksStart(current, upcoming.length, now);
@@ -931,7 +934,20 @@ function battleElectorate() {
   return [...sched.people.values()].filter(person => !person.withdrawnAt).map(person => person.id);
 }
 
-function publicState(person, tableId) {
+// Duo déjà chargé dans KaraFun, vu par l'une de ses deux personnes : rôle et
+// retrait encore possible (pas commencé, pas en train de sortir de KaraFun).
+function sentDuo(tr, p, current) {
+  if (tr.sel.ids.length < 2) return {};
+  const owner = sched.people.get(tr.sel.ids[0]);
+  const guest = sched.people.get(tr.sel.ids[1]);
+  return { duo: { role: tr.sel.ids[0] === p.id ? 'owner' : 'guest', ownerId: tr.sel.ids[0],
+    ownerName: owner?.name || tr.sel.names?.[0] || '', guestName: guest?.name || tr.sel.names?.[1] || '' },
+  canLeave: !tr.cancelled && !tr.pulled && !tr.absent && !tr.startedAt && !isOnStage(tr, current) };
+}
+
+// `managed` : personnes gérées par le téléphone qui demande, seules à
+// recevoir leurs messages (voir Scheduler#notify).
+function publicState(person, tableId, managed = null) {
   const { current, upcoming } = analyze();
   const presence = presenceCandidate({ current, upcoming });
   const presenceMissingIds = new Set(presenceMissing(presence));
@@ -1025,7 +1041,7 @@ function publicState(person, tableId) {
     const duos = [];
     for (const owner of sched.people.values()) for (const song of sched.songsOf(owner)) {
       if (song.duet?.partnerId === person.id && song.duet.state === 'accepted') {
-        duos.push({ entryId: song.entryId, fromName: owner.name, song: fmtSong(song) });
+        duos.push({ entryId: song.entryId, ownerId: owner.id, fromName: owner.name, song: fmtSong(song) });
       }
     }
     return duos;
@@ -1074,16 +1090,19 @@ function publicState(person, tableId) {
         fromName: sched.people.get(inv.fromId)?.name || 'Un chanteur', song: fmtSong(inv.song) })),
       guestDuos: guestDuosOf(p),
       // Demandes de duo reçues sur ses titres, et envoyées à d'autres.
-      joinRequests: sched.duetJoinRequestsFor(p).map(r => ({ entryId: r.entryId, fromId: r.fromId,
-        fromName: r.fromName, song: fmtSong(r.song) })),
+      // Titre en cours d'envoi : la demande expirera à son accusé.
+      joinRequests: sched.duetJoinRequestsFor(p).filter(r => !(pending && !pending.cancelled && pending.sel.song.entryId === r.entryId))
+        .map(r => ({ entryId: r.entryId, fromId: r.fromId, fromName: r.fromName, song: fmtSong(r.song) })),
       sentJoinRequests: (sentJoinRequests.get(p.id) || []).map(r => ({ ownerId: r.ownerId, ownerName: r.ownerName,
         entryId: r.entryId, song: fmtSong(r.song) })),
       ...(deferral => ({ deferral, canDefer: !p.withdrawnAt && deferrable.has(p.id) && !deferral }))(deferralOf(p.id)),
       duet: p.duet ? { partnerName: sched.people.get(p.duet.partnerId)?.name || 'Un chanteur',
         state: p.duet.state } : p.duetOf ? { partnerName: sched.people.get(p.duetOf)?.name || 'Un chanteur',
         state: 'accepted', asPartner: true } : null,
+      ...(managed?.has(p.id) ? { inbox: sched.inboxOf(p).map(n => ({ id: n.id, kind: n.kind, params: n.params, at: n.at })) } : {}),
       inKaraFun: tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => ({ title: tr.sel.song.title, artist: tr.sel.song.artist,
-        songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId) }))
+        songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId),
+        entryId: tr.sel.song.entryId || null, ...sentDuo(tr, p, current) }))
         .concat(pending && pending.sel.ids.includes(p.id) ? [{ title: pending.sel.song.title, artist: pending.sel.song.artist,
           songId: pending.sel.song.songId, img: coverUrl(pending.sel.song.img), queueId: null, stage: false, sending: true }] : []),
     }));
@@ -1146,6 +1165,11 @@ function staffState() {
     }),
     battle: { ...battleVote.view(), registered: battleElectorate().length },
     blocked,
+    // Demandes de duo encore sans réponse de l'auteur du titre.
+    joinRequests: [...sched.duetJoinRequestsByPerson()].flatMap(([requesterId, rows]) => rows.map(row => ({
+      ownerId: row.ownerId, ownerName: row.ownerName, requesterId,
+      requesterName: sched.people.get(requesterId)?.name || '', entryId: row.entryId, title: row.song.title,
+      at: sched._joinRequests(row.song).find(item => item.fromId === requesterId)?.at || null }))),
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
       from: change.from, to: change.to, at: change.at,
@@ -1722,6 +1746,22 @@ function assertNotSending(entryId) {
   }
 }
 
+// Duo en route vers KaraFun : ses chanteurs sont fixés jusqu'à l'accusé.
+function assertDuoNotSending(entryId, personId) {
+  if (pending && !pending.cancelled && pending.sel.song.entryId === entryId && pending.sel.ids.includes(personId)) {
+    throw new Error('Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
+  }
+}
+
+// Duo déjà chargé dans KaraFun : le titre reste à sa place au nom de son
+// auteur, aucune commande KaraFun (voir Scheduler#leaveSentDuet).
+function leaveSentDuo(tr, guestId, by) {
+  const { current } = analyze();
+  if (tr.startedAt || isOnStage(tr, current)) throw new Error('Trop tard : ce duo est déjà sur scène.');
+  if (tr.cancelled || tr.pulled || tr.absent) throw new Error('Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.');
+  return sched.leaveSentDuet(tr.sel, guestId, { by });
+}
+
 function assertRoomBeforeClosing(p, mode) {
   if (closingAt() == null) return;
   // Remplacer son prochain titre n'ajoute pas de passage.
@@ -2052,6 +2092,29 @@ const handlers = {
   'POST /api/table/duet/cancel': async (req, res, body) => {
     const p = personAtTable(body);
     sched.cancelDuet(p, body.entryId); sync(); return { ok: true };
+  },
+  // Invitée qui ne chante plus un duo accepté, avant ou après son envoi.
+  'POST /api/table/duet/leave': async (req, res, body) => {
+    const p = personAtTable(body);
+    const entryId = String(body.entryId || '');
+    assertDuoNotSending(entryId, p.id);
+    const tr = tracked.find(item => item.sel.song?.entryId === entryId && item.sel.ids.indexOf(p.id) > 0);
+    if (tr) { leaveSentDuo(tr, p.id, 'guest'); sync(); return { ok: true, stage: 'sent' }; }
+    sched.leaveDuet(p, body.ownerId, entryId); sync(); return { ok: true, stage: 'planned' };
+  },
+  // « Chanter seul » : l'auteur d'un duo déjà chargé dans KaraFun le garde en solo.
+  'POST /api/table/duet/solo': async (req, res, body) => {
+    const p = personAtTable(body);
+    const entryId = String(body.entryId || '');
+    assertDuoNotSending(entryId, p.id);
+    const tr = tracked.find(item => item.sel.song?.entryId === entryId && item.sel.ids[0] === p.id && item.sel.ids.length > 1);
+    if (tr) { leaveSentDuo(tr, tr.sel.ids[1], 'owner'); sync(); return { ok: true, stage: 'sent' }; }
+    sched.cancelDuet(p, entryId); sync(); return { ok: true, stage: 'planned' };
+  },
+  // Messages lus sur le téléphone qui gère la personne.
+  'POST /api/table/notice/ack': async (req, res, body) => {
+    const p = personAtTable(body);
+    return { ok: true, removed: sched.ackNotices(p, body.ids) };
   },
   // Demander à chanter en duo le titre prévu par une autre personne.
   'POST /api/table/duet/join': async (req, res, body) => {
@@ -2396,7 +2459,22 @@ const handlers = {
     const p = sched.people.get(String(body.personId || ''));
     if (!p) throw new Error('Chanteur inconnu.');
     const { current } = analyze();
-    const upcomingTracks = tracked.filter(tr => tr.sel.ids.includes(p.id) && !isOnStage(tr, current));
+    const upcoming = tracked.filter(tr => tr.sel.ids.includes(p.id) && !isOnStage(tr, current));
+    // Invitée d'un duo déjà chargé : le titre reste dans KaraFun, au nom de
+    // son auteur seul (un titre en train de sortir revient à son auteur).
+    const asGuest = upcoming.filter(tr => tr.sel.ids[0] !== p.id);
+    let keptAsSolo = 0;
+    for (const tr of asGuest) {
+      if (tr.cancelled || tr.pulled || tr.absent || tr.startedAt) continue;
+      sched.leaveSentDuet(tr.sel, p.id, { by: 'staff' });
+      keptAsSolo++;
+    }
+    const upcomingTracks = upcoming.filter(tr => !asGuest.includes(tr));
+    // Envoi sans accusé : KaraFun le reconnaîtra sous son nom d'origine.
+    if (pending && !pending.cancelled && pending.sel.ids.indexOf(p.id) > 0) {
+      sched.leaveSentDuet(pending.sel, p.id, { by: 'staff', keepLabel: true });
+      keptAsSolo++;
+    }
     sched.leave(p);
     if (pending?.sel.ids.includes(p.id)) pending.cancelled = true;
     for (const tr of upcomingTracks) {
@@ -2406,7 +2484,8 @@ const handlers = {
       catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
     }
     sync();
-    return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled };
+    return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled,
+      ...(keptAsSolo ? { keptAsSolo } : {}) };
   },
   'POST /api/staff/stage-history/clear': async () => {
     const removed = sched.clearStageHistory([onStageEntryId()]);
@@ -2634,7 +2713,7 @@ const server = http.createServer(async (req, res) => {
         const me = sched.person(u.searchParams.get('token') || '');
         if (me && !u.searchParams.has('table')) {
           requireSoloControl(req, me);
-          const view = publicState(me, me.tableId);
+          const view = publicState(me, me.tableId, new Set([me.id]));
           view.managedIds = [me.id];
           return send(res, 200, view);
         }
@@ -2647,7 +2726,7 @@ const server = http.createServer(async (req, res) => {
         const soloOwner = t.individual ? soloDeviceOwner(req) : null;
         const owned = [...u.searchParams.getAll('token'), ...headerTokens].slice(0, 40).map(token => sched.person(token))
           .filter(person => person && person.tableId === t.id && (!t.individual || person.id === soloOwner?.id));
-        const view = publicState(owned[0] || null, t.id);
+        const view = publicState(owned[0] || null, t.id, new Set(owned.map(person => person.id)));
         if (t.individual) view.soloInvitationReady = !!soloInvitations.verify(u.searchParams.get('invitation'), t.id);
         if (u.searchParams.has('reprise')) {
           const target = transferTarget(u.searchParams.get('reprise'), t);
