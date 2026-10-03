@@ -3296,13 +3296,17 @@ function connectKaraFun() {
   }
   const result = bridge.connect(CODE);
   appLog(result === 'kept' ? `KaraFun (code ${maskCode(CODE)}) : connexion en cours ou prête, gardée.` :
+    result?.ok === false ? `KaraFun (code ${maskCode(CODE)}) : clic sans nouvel essai. ${result.message}` :
     `Connexion à KaraFun (code ${maskCode(CODE)})...`);
   return result;
 }
 
-// Réponse de « Connecter » et « Reconnecter » pour la page du bar.
+// Réponse de « Connecter » et « Reconnecter » pour la page du bar. KaraFun
+// limite les essais ou budget de l'heure épuisé : { ok: false, message },
+// affiché en erreur par la page du bar, sans relire la page de KaraFun.
 function connectionAnswer(result) {
   setTimeout(sync, 300);
+  if (result?.ok === false) return { ok: false, kept: false, message: result.message };
   return result === 'kept' ?
     { ok: true, kept: true, message: 'KaraFun est déjà connecté ou en train de se connecter : connexion gardée.' } :
     { ok: true, kept: false };
