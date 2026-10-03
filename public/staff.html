@@ -1547,11 +1547,14 @@
     $('pendingTxt').textContent = S.pending ? `Envoi en cours à KaraFun : ${S.pending.label} — ${S.pending.title}` : '';
     renderDuoBox();
     // Demandes de duo sur un titre de la file (page des chanteurs) : le bar les voit.
-    const requests = S.joinRequests || [];
-    $('joinRequestsBox').hidden = !requests.length;
+    // Invitations envoyées par l'auteur du titre : même encadré, même état.
+    const requests = S.joinRequests || [], invites = S.duoInvites || [];
+    $('joinRequestsBox').hidden = !requests.length && !invites.length;
     // « Pas encore vue » : le téléphone qui doit répondre ne l'a pas affichée ;
     // le bar peut aller prévenir la personne.
-    $('joinRequestsList').innerHTML = requests.map(r => `<div class="join-request small"><b>${esc(r.requesterName)}</b> demande à chanter « ${esc(r.title)} » avec <b>${esc(r.ownerName)}</b>${r.at ? ` · ${hhmm(r.at)}` : ''}${r.seenAt ? ' · vue' : r.seenAt === null ? ` · <span class="unseen">pas encore vue par ${esc(r.ownerName)}</span>` : ''}</div>`).join('');
+    const seenText = (seenAt, who) => seenAt ? ' · vue' : seenAt === null ? ` · <span class="unseen">pas encore vue par ${esc(who)}</span>` : '';
+    $('joinRequestsList').innerHTML = requests.map(r => `<div class="join-request small"><b>${esc(r.requesterName)}</b> demande à chanter « ${esc(r.title)} » avec <b>${esc(r.ownerName)}</b>${r.at ? ` · ${hhmm(r.at)}` : ''}${seenText(r.seenAt, r.ownerName)}</div>`).join('') +
+      invites.map(r => `<div class="join-request small"><b>${esc(r.ownerName)}</b> invite <b>${esc(r.partnerName)}</b> à chanter « ${esc(r.title)} » en duo${seenText(r.seenAt, r.partnerName)}</div>`).join('');
 
     const publicHttps = isPublicHttps(S.phoneBase || '');
     const readyQrCount = S.tables.filter(t => t.url && t.qrUrl && !t.individual).length;

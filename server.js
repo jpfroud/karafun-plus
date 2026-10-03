@@ -1717,6 +1717,12 @@ function staffState() {
       ownerId: row.ownerId, ownerName: row.ownerName, requesterId,
       requesterName: sched.people.get(requesterId)?.name || '', entryId: row.entryId, title: row.song.title,
       at: sched._joinRequests(row.song).find(item => item.fromId === requesterId)?.at || null, seenAt: row.seenAt }))),
+    // Invitations de duo envoyées par l'auteur d'un titre, encore sans réponse
+    // de l'invitée (vue ou pas encore vue sur son téléphone).
+    duoInvites: [...sched.people.values()].filter(owner => !owner.withdrawnAt).flatMap(owner => sched.songsOf(owner)
+      .filter(song => song.duet?.state === 'pending').map(song => ({ ownerId: owner.id, ownerName: owner.name,
+        partnerId: song.duet.partnerId, partnerName: sched.people.get(song.duet.partnerId)?.name || '',
+        entryId: song.entryId, title: song.title, seenAt: song.duet.seenAt || null }))),
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
       from: change.from, to: change.to, at: change.at,

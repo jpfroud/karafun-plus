@@ -2910,3 +2910,16 @@ test('file du bar : « Retirer » sur une ligne « Titre suivant » retire ce ti
   assert.deepEqual(page.lastPost('/api/staff/remove-many').body, { items: [{ personId: 'bruno', entryId: 'e3' }] });
   assert.equal(page.toast().text, '1 titre retiré.');
 });
+
+// Regression: ISSUE-008 — une invitation de duo en attente n'apparaissait nulle part sur la page du bar
+test('scène : les invitations de duo en attente sont listées avec leur état vu / pas encore vue', async () => {
+  const world = baseWorld();
+  world.duoInvites = [{ ownerId: 'chloe', ownerName: 'Chloé', partnerId: 'dora', partnerName: 'Dora', entryId: 'h1', title: 'Hotel California', seenAt: null },
+    { ownerId: 'alice', ownerName: 'Alice', partnerId: 'bruno', partnerName: 'Bruno', entryId: 'h2', title: 'Mamma Mia', seenAt: Date.now() }];
+  const page = await openPage({ world });
+  assert.equal(page.$('joinRequestsBox').hidden, false, 'une invitation suffit à montrer l’encadré');
+  assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')),
+    ['Chloé invite Dora à chanter « Hotel California » en duo · pas encore vue par Dora', 'Alice invite Bruno à chanter « Mamma Mia » en duo · vue']);
+  await page.update({ duoInvites: [] });
+  assert.equal(page.$('joinRequestsBox').hidden, true);
+});

@@ -940,3 +940,22 @@ test('nouvelle soirée : le titre sur scène seul ne coupe pas l’envoi automat
   h.setBridge(fakeBridge([{ queueId: 31, status: 'ready' }], null));
   assert.equal(plain(await h.call('POST /api/staff/tables-clear', confirm)).autoStopped, false);
 });
+
+// Regression: ISSUE-008 — une invitation de duo en attente n'apparaissait nulle part sur la page du bar
+test('état du bar : invitations de duo en attente, avec l’état vu / pas encore vue', async () => {
+  const f = harness();
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  const zoe = f.sched.join({ tableId: '2', name: 'Zoé', headcount: 2 });
+  const mate = f.sched.join({ tableId: '1', name: 'Marc', headcount: 2 });
+  f.sched.chooseSong(alice, { songId: 900, title: 'Premier' });
+  const song = f.sched.inviteDuet(alice, zoe.id, { songId: 901, title: 'Hotel California', artist: 'Eagles' });
+  f.sched.inviteDuet(alice, mate.id, { songId: 902, title: 'Même table' });
+  let invites = plain(f.staffState().duoInvites);
+  assert.deepEqual(invites, [{ ownerId: alice.id, ownerName: 'Alice', partnerId: zoe.id, partnerName: 'Zoé',
+    entryId: song.entryId, title: 'Hotel California', seenAt: null }], 'seule l’invitation vers une autre table attend une réponse');
+  f.sched.markDuetSeen(zoe, song.entryId);
+  invites = plain(f.staffState().duoInvites);
+  assert.ok(invites[0].seenAt > 0, 'vue sur le téléphone de l’invitée');
+  f.sched.answerDuet(zoe, true, song.entryId);
+  assert.deepEqual(plain(f.staffState().duoInvites), [], 'acceptée : plus en attente');
+});
