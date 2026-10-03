@@ -176,6 +176,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const stages = [];
   const openStages = new Map(); // queueId → passage en cours
   const improvisedLater = new Map(); // entryId → invité noté avant le lancement
+  let lastImprovised = null; // dernier duo noté par le bar (changement de partenaire)
   const leftDuo = new Map();   // entryId → invités retirés du duo
   const phases = [];
   const presenceAsked = new Map(); // personId → heure de la demande en cours
@@ -293,6 +294,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       }
       case 'duo.improvised': {
         duos.improvised++;
+        lastImprovised = { entryId: e.entryId, partnerId: e.partnerId };
         const stage = [...stages].reverse().find(st => e.entryId ? st.entryId === e.entryId : st.queueId === e.queueId);
         if (stage) {
           if (!stage.ids.includes(e.partnerId)) stage.ids.push(e.partnerId);
@@ -314,6 +316,12 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       }
       case 'duo.improvisedReplaced': {
         duos.improvisedReplaced++;
+        // Le nouveau partenaire vient d'être noté par « duo.improvised » : un
+        // changement de partenaire n'est pas un duo de plus.
+        if (lastImprovised && lastImprovised.entryId === e.entryId && lastImprovised.partnerId === (e.partnerId || e.newPartnerId)) {
+          duos.improvised = Math.max(0, duos.improvised - 1);
+        }
+        lastImprovised = null;
         const stage = [...stages].reverse().find(st => st.entryId === e.entryId);
         const fresh = e.partnerId || e.newPartnerId;
         if (stage && fresh) { stage.ids = [stage.ids[0], fresh]; stage.kind = 'duo'; stage.improvised = true; }

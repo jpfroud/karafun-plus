@@ -232,7 +232,7 @@ const json = (data, status = 200) => ({ ok: status < 400, status, json: async ()
 
 // Ouvre la page du bar avec un faux serveur. `replies` donne la réponse d'un
 // POST par chemin (objet, ou fonction du corps) ; { status, error } = refus.
-async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', world = baseWorld(), storage = {},
+async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash = '', world = baseWorld(), storage = {},
   storageThrows = false, secure = true, permission = 'granted', audioThrows = false, notifyThrows = false } = {}) {
   const doc = makeDocument();
   const page = { doc, world, posts: [], fetches: [], replies: {}, confirmAnswer: true, confirms: [], prompts: [],
@@ -286,8 +286,27 @@ async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', world 
     getItem: key => page.stored.get(key) ?? null,
     setItem: (key, value) => { if (storageThrows) throw new Error('stockage plein'); page.stored.set(key, String(value)); },
   };
-  const context = { document: doc, fetch, location: { search, hostname }, URL, URLSearchParams, localStorage,
-    window: { open: (...args) => page.opened.push(args), AudioContext, Notification, isSecureContext: secure },
+  // Historique du navigateur : chaque onglet ajoute une étape ; page.back() la retire.
+  const location = { search, hostname, hash, pathname: '/staff' };
+  page.history = [];
+  page.windowListeners = {};
+  const history = {
+    state: null,
+    pushState(state, _title, url) { page.history.push({ state, url }); this.state = state; location.hash = url.slice(url.indexOf('#')); },
+    replaceState(state, _title, url) { page.history[Math.max(0, page.history.length - 1)] = { state, url }; this.state = state; location.hash = url.slice(url.indexOf('#')); },
+    back() { page.back(); },
+  };
+  page.back = async () => {
+    page.history.pop();
+    const previous = page.history.at(-1) || { state: null, url: '#' };
+    history.state = previous.state;
+    location.hash = previous.url.slice(previous.url.indexOf('#'));
+    for (const listener of page.windowListeners.popstate || []) listener({ state: previous.state });
+    await page.flush();
+  };
+  const context = { document: doc, fetch, location, URL, URLSearchParams, localStorage,
+    window: { open: (...args) => page.opened.push(args), AudioContext, Notification, isSecureContext: secure, history,
+      addEventListener: (type, listener) => (page.windowListeners[type] ||= []).push(listener), scrollTo() {} },
     Notification, navigator: { clipboard: { writeText: async text => {
       if (!page.clipboardWorks) throw new Error('presse-papiers refusé');
       page.clipboard.push(text);
@@ -351,21 +370,28 @@ test('accès du bar : la clé suit chaque requête, QR privé du bar et QR des t
   assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'reconnect' });
   assert.equal(page.toast().text, 'Reconnexion…');
 
-  // QR d'une table : lien versionné par son adresse (le cache ne garde pas l'ancien).
-  const qrLink = () => page.all('tBody', 'a').find(a => a.textContent === 'Voir le QR').href;
-  assert.match(qrLink(), new RegExp(`^/qr/1\\.png\\?v=[0-9a-f]+&key=${KEY}$`));
-  const before = qrLink();
+  // QR d'une table : affiché en grand dans la page, versionné par son adresse
+  // (le cache ne garde pas l'ancien).
+  const qrOf = async (target = page) => {
+    await target.click(target.in('tBody', '[data-table-qr="1"]'));
+    const src = target.$('tableQrImg').src;
+    await target.click(target.$('tableQrClose'));
+    return src;
+  };
+  assert.match(await qrOf(), new RegExp(`^/qr/1\\.png\\?v=[0-9a-f]+&key=${KEY}$`));
+  const before = await qrOf();
   page.world.tables[0].url = 'http://192.168.1.20:3000/t/1/nouveau';
   await page.poll();
-  assert.notEqual(qrLink(), before, 'nouvelle adresse de table : nouveau QR');
-  assert.equal(page.all('tBody', 'a').filter(a => a.textContent === 'Voir le QR').length, 1, 'seule la table avec adresse a un QR');
+  assert.notEqual(await qrOf(), before, 'nouvelle adresse de table : nouveau QR');
+  assert.equal(page.in('tBody', '[data-table-qr="2"]').disabled, true, 'seule la table avec adresse a un QR');
   assert.equal(page.$('phoneLabel').textContent, '1 QR code disponible · adresse utilisée');
   assert.equal(page.$('phoneBase').textContent, 'http://192.168.1.20:3000');
+  assert.equal(page.$('statsLink').href, `/stats?key=${KEY}`, 'statistiques des soirées réservées au bar');
   // Sans clé : ni paramètre ni clé vide dans l'adresse.
   const anonymous = await openPage({ search: '' });
   assert.equal(anonymous.fetches[0].url, '/api/staff/state');
   assert.equal(anonymous.$('staffQr').src, '/qr/staff.svg');
-  assert.match(anonymous.all('tBody', 'a').find(a => a.textContent === 'Voir le QR').href, /^\/qr\/1\.png\?v=[0-9a-f]+$/);
+  assert.match(await qrOf(anonymous), /^\/qr\/1\.png\?v=[0-9a-f]+$/);
 });
 
 test('adresse des QR : seule une adresse HTTPS publique sans chemin est acceptée', async () => {
@@ -408,6 +434,26 @@ test('adresse des QR : seule une adresse HTTPS publique sans chemin est accepté
   assert.equal(page.$('ipSel').textContent, 'aucune adresse réseau détectée');
   await page.click(page.$('useLocal'));
   assert.equal(page.posts.length, count, 'sans adresse locale, rien n’est envoyé');
+});
+
+test('adresse des QR : le choix fait reste affiché jusqu’à « Utiliser », malgré le rafraîchissement', async () => {
+  const world = baseWorld();
+  world.ips = [{ address: '192.168.1.20' }, { address: '10.0.0.5' }];
+  const page = await openPage({ world });
+  await page.change(page.$('ipSel'), 'http://10.0.0.5:3000');
+  await page.poll();
+  assert.equal(page.$('ipSel').value, 'http://10.0.0.5:3000', 'liste refermée : le choix reste');
+  await page.click(page.$('useLocal'));
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { baseUrl: 'http://10.0.0.5:3000' });
+  await page.poll();
+  assert.equal(page.$('ipSel').value, 'http://192.168.1.20:3000', 'ensuite, la liste suit le serveur');
+  await page.type(page.$('customBase'), 'https://chant.exemple.fr');
+  await page.poll();
+  assert.equal(page.$('customBase').value, 'https://chant.exemple.fr', 'adresse tapée gardée après la fermeture du clavier');
+  await page.click(page.$('saveBase'));
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { baseUrl: 'https://chant.exemple.fr' });
+  await page.poll();
+  assert.equal(page.$('customBase').value, '', 'le serveur garde l’adresse locale : le champ la suit');
 });
 
 test('repères chanteurs : recherche, filtre de table, bonus, départ et retour', async () => {
@@ -477,24 +523,47 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   page.world.people[1].bonus = -2;
   await page.poll();
   assert.equal(row('bruno').querySelector('[data-person-bonus]').value, '-2', 'le bonus enregistré est présélectionné');
-  // Un changement hors de la liste des bonus n'envoie rien.
-  const before = page.posts.length;
-  await page.change(row('alice').querySelector('[data-identity-note]'), 'x');
-  assert.equal(page.posts.length, before);
-
-  // Repère validé par Entrée : même envoi que le bouton ✓, vérification conservée.
-  row('alice').querySelector('[data-identity-note]').value = 'veste bleue';
-  const enter = await page.key(row('alice').querySelector('[data-identity-note]'), 'Enter');
+  // Repère enregistré tout seul : après la pause de frappe, sur Entrée ou en
+  // quittant le champ. Seul le texte part : le serveur garde la vérification
+  // si le texte ne change pas.
+  const note = id => row(id).querySelector('[data-identity-note]');
+  const status = id => page.in('identityBody', `[data-save-status="note:${id}"]`).textContent;
+  assert.equal(row('alice').querySelector('[data-identity-save]'), null, 'plus de bouton ✓ à ne pas oublier');
+  assert.match(row('alice').textContent, /vérifié ✓/, 'repère vérifié signalé');
+  await page.type(note('alice'), 'veste bleue');
+  assert.equal(page.postsTo('/api/staff/person/identify').length, 0, 'pendant la frappe, rien ne part');
+  assert.equal(status('alice'), 'Modifié…');
+  page.runTimers(1000);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'alice', note: 'veste bleue' });
+  assert.equal(status('alice'), 'Enregistré ✓', 'confirmation visible à côté du champ');
+  await page.type(note('bruno'), 'casquette');
+  const enter = await page.key(note('bruno'), 'Enter');
   assert.equal(enter.defaultPrevented, true, 'Entrée ne soumet rien d’autre');
-  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'alice', note: 'veste bleue', verified: true });
-  assert.equal(page.toast().text, 'Repère privé enregistré');
-  const count = page.posts.length;
-  await page.key(row('alice').querySelector('[data-identity-note]'), 'a');
-  await page.key(row('alice').querySelector('[data-identity-save]'), 'Enter');
-  assert.equal(page.posts.length, count, 'seule Entrée dans le repère enregistre');
-  await page.click(row('bruno').querySelector('[data-identity-save]'));
-  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'bruno', note: 'nouveau repère', verified: false },
-    'sans vérification enregistrée, le repère part non vérifié');
+  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'bruno', note: 'casquette' });
+  await page.key(note('bruno'), 'a');
+  await page.change(note('chloe'), 'lunettes');
+  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'chloe', note: 'lunettes' }, 'en quittant le champ');
+  const sent = page.posts.length;
+  await page.change(note('dora'), '');
+  assert.equal(page.posts.length, sent, 'valeur inchangée : rien ne part');
+  await page.type(note('dora'), 'x'.repeat(141));
+  assert.equal(status('dora'), 'Non enregistré : au plus 140 caractères');
+  assert.equal(note('dora').getAttribute('aria-invalid'), 'true');
+  await page.poll();
+  assert.equal(note('dora').value, 'x'.repeat(141), 'une valeur refusée n’est pas effacée par le rafraîchissement');
+  page.replies['/api/staff/person/identify'] = { status: 500, error: 'Sauvegarde impossible.' };
+  await page.change(note('dora'), 'chapeau');
+  assert.equal(status('dora'), 'Non enregistré : Sauvegarde impossible. · Réessayer');
+  page.replies['/api/staff/person/identify'] = { ok: true };
+  await page.click(page.in('identityBody', '[data-retry="note:dora"]'));
+  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'dora', note: 'chapeau' });
+  assert.equal(status('dora'), 'Enregistré ✓');
+  // Le serveur a pris le nouveau repère : la confirmation disparaît, le champ suit le serveur.
+  page.world.people[3].privateNote = 'chapeau';
+  await page.poll();
+  assert.equal(note('dora').value, 'chapeau');
+  assert.equal(note('dora').getAttribute('aria-invalid'), null);
 
   // Départ confirmé seulement, puis retour.
   page.confirmAnswer = false;
@@ -864,14 +933,14 @@ test('sur scène : derniers passages, repère, départ et vidage de l’historiq
   assert.equal(person('dora').querySelector('img').src, '/photo/dora.jpg');
   assert.equal(page.$('clearStageHistory').disabled, false);
 
-  page.promptAnswer = 'casquette';
+  // « Repère » ouvre l'écran Repères sur cette personne, prêt à écrire.
   await page.click(person('alice').querySelector('[data-history-note]'));
-  assert.deepEqual(page.prompts.at(-1), { message: 'Repère privé pour Alice (ex. t-shirt rouge)', value: 't-shirt rouge' });
-  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'alice', note: 'casquette', verified: true });
-  page.promptAnswer = null;
+  assert.equal(page.doc.body.dataset.tab, 'reperes');
+  assert.equal(page.$('identitySearch').value, 'Alice');
+  assert.deepEqual(texts(page.all('identityBody', '.identity-who strong')), ['Alice']);
+  assert.equal(page.doc.activeElement, page.in('identityBody', '[data-identity-person="alice"] [data-identity-note]'));
+  page.doc.activeElement = null;
   const count = page.posts.length;
-  await page.click(person('alice').querySelector('[data-history-note]'));
-  assert.equal(page.posts.length, count, 'repère annulé : rien n’est envoyé');
   page.confirmAnswer = false;
   await page.click(person('dora').querySelector('[data-history-leave]'));
   assert.equal(page.posts.length, count);
@@ -879,25 +948,20 @@ test('sur scène : derniers passages, repère, départ et vidage de l’historiq
   page.confirmAnswer = true;
   await page.click(person('dora').querySelector('[data-history-leave]'));
   assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 'dora' });
-  // Personne inconnue de la liste des chanteurs : message générique.
+  // Personne qui n'est plus inscrite : pas de fiche à ouvrir.
   page.world.stageHistory[1].people.push({ id: 'ancien', name: 'Ancien', table: 'Table 9', active: true });
   await page.poll();
-  page.promptAnswer = 'barbe';
   await page.click(person('ancien').querySelector('[data-history-note]'));
-  assert.deepEqual(page.prompts.at(-1), { message: 'Repère privé pour cette personne (ex. t-shirt rouge)', value: '' });
-  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'ancien', note: 'barbe', verified: false });
+  assert.deepEqual(page.toast(), { text: 'Cette personne n’est plus inscrite.', bad: true });
   const total = page.posts.length;
   await page.click(page.$('stageHistory'));
   assert.equal(page.posts.length, total, 'un clic hors d’une personne ne fait rien');
 
-  // Un bouton du panneau a le focus : pas de rafraîchissement sous le doigt.
+  // Un bouton touché ne retient pas le rafraîchissement : seule une saisie le fait.
   person('alice').querySelector('[data-history-note]').focus();
-  const html = page.$('stageHistory').innerHTML;
   await page.update({ stageHistory: [] });
-  assert.equal(page.$('stageHistory').innerHTML, html);
-  page.doc.activeElement = null;
-  await page.poll();
   assert.equal(page.$('stageHistory').textContent, 'Aucun passage pour le moment.');
+  page.doc.activeElement = null;
   assert.equal(page.$('clearStageHistory').disabled, true, 'rien à vider');
   await page.update({ stageHistory: [history[0]] });
   assert.equal(page.$('clearStageHistory').disabled, true, 'le passage en cours ne se vide pas');
@@ -928,12 +992,17 @@ test('en direct : duo noté, absent, relance, passer, lecture et envoi en cours'
   assert.equal(page.$('markDuoBox').dataset.queueId, 'q-live');
   assert.deepEqual(page.all('markDuoPartner', 'optgroup').map(g => g.getAttribute('label')),
     ['Même table', 'Autres tables et personnes en solo']);
-  assert.deepEqual(texts(page.$('markDuoPartner').options), ['Bruno — Table 1', 'Dora — En solo']);
+  assert.deepEqual(texts(page.$('markDuoPartner').options), ['Choisir…', 'Bruno — Table 1', 'Dora — En solo']);
+  assert.equal(page.$('markDuoPartner').value, '', 'personne n’est choisi d’avance');
+  await page.click(page.$('markDuoBtn'));
+  assert.equal(page.postsTo('/api/staff/duo-mark').length, 0, 'sans partenaire choisi, rien ne part');
+  assert.deepEqual(page.toast(), { text: 'Choisis d’abord le second chanteur dans la liste.', bad: true });
+  page.$('markDuoPartner').value = 'dora';
   page.confirmAnswer = false;
   await page.click(page.$('markDuoBtn'));
   assert.equal(page.postsTo('/api/staff/duo-mark').length, 0);
+  assert.equal(page.confirms.at(-1), 'Noter Dora en duo avec Alice sur la chanson en cours ? Dora garde son tour.');
   page.confirmAnswer = true;
-  page.$('markDuoPartner').value = 'dora';
   await page.click(page.$('markDuoBtn'));
   assert.deepEqual(page.lastPost('/api/staff/duo-mark').body, { queueId: 'q-live', partnerId: 'dora' });
   assert.equal(page.toast().text, 'Duo comptabilisé');
@@ -987,49 +1056,57 @@ test('en direct : duo noté, absent, relance, passer, lecture et envoi en cours'
   assert.equal(page.$('pendingTxt').textContent, '');
 });
 
-test('fermeture du bar : annoncer, décaler et retirer l’heure', async () => {
+test('fermeture du bar : heure enregistrée seule, rappel sur Scène, décaler et retirer l’heure', async () => {
   const page = await openPage();
-  page.$('closingTime').value = '';
-  await page.click(page.$('closingSave'));
-  assert.deepEqual(page.toast(), { text: 'Choisis l’heure de fermeture.', bad: true });
-  assert.equal(page.postsTo('/api/staff/closing').length, 0, 'sans heure, rien n’est envoyé');
-  page.$('closingTime').value = '23:30';
-  await page.click(page.$('closingSave'));
+  const field = page.$('closingTime');
+  const status = () => page.doc.body.querySelector('[data-save-status="closingTime"]').textContent;
+  assert.equal(page.doc.getElementById('closingSave'), null, 'plus de bouton « Annoncer »');
+  assert.equal(page.$('closingChip').hidden, true, 'sans heure, pas de rappel sur Scène');
+  await page.type(field, '23:30');
+  assert.equal(page.postsTo('/api/staff/closing').length, 0, 'le sélecteur d’heure a le temps de se stabiliser');
+  page.runTimers(1500);
+  await page.flush();
   assert.deepEqual(page.lastPost('/api/staff/closing').body, { time: '23:30' });
-  assert.equal(page.toast().text, 'Heure de fermeture annoncée aux clients');
+  assert.equal(status(), 'Annoncée aux clients : 23:30 ✓');
+  const at = new Date(); at.setHours(23, 30, 0, 0);
+  await page.update({ closing: { at: at.getTime(), passed: false, full: false, fitCount: 3, afterCount: 0 } });
+  assert.equal(field.value, '23:30');
+  assert.equal(page.$('closingChip').hidden, false);
+  assert.equal(page.$('closingChipText').textContent, 'Fermeture 23:30');
+  // Champ vidé : rien n'est envoyé ; « Retirer » sert à enlever l'heure.
+  await page.type(field, '');
+  page.runTimers(1500);
+  await page.flush();
+  assert.equal(page.postsTo('/api/staff/closing').length, 1);
+  assert.equal(status(), 'Non enregistré : choisis une heure ; « Retirer » enlève l’heure annoncée');
   const extend = page.doc.body.querySelector('[data-closing-extend="15"]');
   await page.click(extend);
   assert.deepEqual(page.lastPost('/api/staff/closing').body, { extendMin: 15 });
   assert.equal(page.toast().text, 'Fermeture décalée');
-  assert.equal(page.$('closingClear').disabled, true, 'sans heure annoncée, rien à retirer');
-  await page.update({ closing: { at: Date.now() + 3600000, passed: false, full: false, fitCount: 3, afterCount: 0 } });
   await page.click(page.$('closingClear'));
   assert.deepEqual(page.lastPost('/api/staff/closing').body, { clear: true });
   assert.equal(page.toast().text, 'Heure de fermeture retirée');
+  await page.update({ closing: null });
+  assert.equal(field.value, '', 'heure retirée : le champ suit le serveur');
+  assert.equal(page.$('closingClear').disabled, true, 'sans heure annoncée, rien à retirer');
+  // Refus du serveur : raison affichée et nouvel essai possible.
   page.replies['/api/staff/closing'] = { status: 400, error: 'Heure de fermeture invalide.' };
-  page.$('closingTime').value = '23:30';
-  await page.click(page.$('closingSave'));
-  assert.deepEqual(page.toast(), { text: 'Heure de fermeture invalide.', bad: true }, 'le refus du serveur est affiché');
-  page.replies['/api/staff/closing'] = { ok: true, message: 'Fermeture à 23:30 ; 4 titres passeront.' };
-  page.$('closingTime').value = '23:30';
-  await page.click(page.$('closingSave'));
-  assert.equal(page.toast().text, 'Fermeture à 23:30 ; 4 titres passeront.', 'le message du serveur prime');
+  await page.type(field, '23:45');
+  page.runTimers(1500);
+  await page.flush();
+  assert.equal(status(), 'Non enregistré : Heure de fermeture invalide. · Réessayer');
+  page.replies['/api/staff/closing'] = { ok: true, message: 'Fermeture à 23:45 ; 4 titres passeront.' };
+  await page.click(page.doc.body.querySelector('[data-retry="closingTime"]'));
+  assert.equal(status(), 'Fermeture à 23:45 ; 4 titres passeront.', 'le message du serveur prime');
+  // Fin de l'affichage de la confirmation.
+  page.runTimers(2600);
 });
 
-test('arrêt de la soirée, suppression des tables et vidage de la file', async () => {
+test('fin de soirée : plus de bouton d’arrêt, suppression des tables et vidage de la file', async () => {
   const page = await openPage();
-  page.confirmAnswer = false;
-  await page.click(page.$('shutdownBtn'));
-  assert.equal(page.postsTo('/api/staff/shutdown').length, 0, 'arrêt annulé : rien n’est envoyé');
-  assert.match(page.confirms.at(-1), /^Arrêter la soirée \?/);
-  page.confirmAnswer = true;
-  await page.click(page.$('shutdownBtn'));
-  assert.deepEqual(page.lastPost('/api/staff/shutdown').body, {});
-  assert.equal(page.lastPost('/api/staff/shutdown').url, `/api/staff/shutdown?key=${KEY}`);
-  assert.deepEqual(page.toast(), { text: 'La soirée est arrêtée. Tu peux fermer cette page.', bad: false });
-  page.replies['/api/staff/shutdown'] = { status: 403, error: 'Accès réservé aux gérants.' };
-  await page.click(page.$('shutdownBtn'));
-  assert.deepEqual(page.toast(), { text: 'Accès réservé aux gérants.', bad: true });
+  // L'arrêt se fait depuis le PC (ARRETER.bat) : un téléphone ne peut plus couper la soirée.
+  assert.equal(page.doc.getElementById('shutdownBtn'), null, 'plus de bouton « Arrêter la soirée »');
+  assert.ok(!/Arrêter la soirée/.test(page.doc.body.textContent));
 
   // Suppression des tables.
   page.confirmAnswer = false;
@@ -1118,15 +1195,45 @@ test('changements manuels : annuler le dernier ou tous', async () => {
   assert.equal(recalcs(), 1);
 });
 
-test('tables : création, renommage, effectif, bonus, départ et QR individuel', async () => {
+test('tables : tuiles, QR en grand, création, détails enregistrés seuls, bonus et départ', async () => {
   const page = await openPage();
-  const card = id => page.in('tBody', `[data-table-name="${id}"]`).closest('.table-card');
+  const card = id => page.in('tBody', `[data-table-card="${id}"]`);
   assert.equal(page.$('tableName').placeholder, 'Table 3', 'prochain numéro libre proposé');
   assert.equal(card('1').querySelector('.occupancy').textContent, '2 actifs / 2 inscrits / 4 places');
   assert.equal(card('2').querySelector('.occupancy').textContent, '1 actif / 1 inscrit / 2 places');
   assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '1 soliste');
-  assert.equal(card('Comptoir').querySelector('[data-left]'), null, '« En solo » ne part jamais');
-  assert.equal(card('Comptoir').querySelector('[data-hc]'), null, '« En solo » n’a pas d’effectif');
+  assert.ok(card('Comptoir').querySelector('[data-solo-invite]'), '« En solo » : QR individuel');
+  assert.equal(card('2').querySelector('[data-table-qr]').disabled, true, 'table sans QR');
+  assert.equal(card('2').querySelector('.table-tile-cta').textContent, 'QR indisponible');
+
+  // QR en grand dans la page, pour le montrer aux clients.
+  await page.click(card('1').querySelector('[data-table-qr]'));
+  assert.equal(page.$('tableQrDialog').open, true);
+  assert.equal(page.$('tableQrName').textContent, 'Table 1');
+  assert.equal(page.$('tableQrImg').alt, 'QR code de Table 1');
+  assert.equal(page.$('tableQrUrl').value, 'http://192.168.1.20:3000/t/1/abc');
+  assert.equal(page.$('tableQrPage').href, 'http://192.168.1.20:3000/t/1/abc');
+  await page.click(page.$('tableQrCopy'));
+  assert.deepEqual(page.clipboard, ['http://192.168.1.20:3000/t/1/abc']);
+  assert.equal(page.toast().text, 'Lien de la table copié');
+  page.clipboardWorks = false;
+  await page.click(page.$('tableQrCopy'));
+  assert.equal(page.$('tableQrUrl').selectedAll, true);
+  assert.deepEqual(page.toast(), { text: 'Sélectionne le lien pour le copier.', bad: true });
+  page.clipboardWorks = true;
+  page.world.tables[0].name = 'Terrasse';
+  await page.poll();
+  assert.equal(page.$('tableQrDialog').open, true, 'le rafraîchissement ne ferme pas le QR');
+  assert.equal(page.$('tableQrName').textContent, 'Terrasse');
+  page.world.tables[0].name = 'Table 1';
+  await page.click(page.$('tableQrClose'));
+  assert.equal(page.$('tableQrDialog').open, false);
+  await page.click(card('1').querySelector('[data-table-qr]'));
+  page.world.tables = baseWorld().tables.filter(t => t.id !== '1');
+  await page.poll();
+  assert.equal(page.$('tableQrDialog').open, false, 'table partie : son QR se ferme');
+  page.world.tables = baseWorld().tables;
+  await page.poll();
 
   // Création : numéro libre par défaut, validations locales.
   page.$('tableHeadcount').value = '4';
@@ -1161,55 +1268,81 @@ test('tables : création, renommage, effectif, bonus, départ et QR individuel',
   page.world.tables = baseWorld().tables;
   await page.poll();
 
-  // Renommer : bouton ou Entrée, nom vide refusé.
-  card('1').querySelector('[data-table-name]').value = '  Terrasse  ';
-  await page.click(card('1').querySelector('[data-rename]'));
-  assert.deepEqual(page.lastPost('/api/staff/table/rename').body, { tableId: '1', name: 'Terrasse' });
-  assert.equal(page.toast().text, 'Table renommée');
-  card('2').querySelector('[data-table-name]').value = 'Bar';
-  const keyResult = await page.key(card('2').querySelector('[data-table-name]'), 'Enter');
-  assert.equal(keyResult.defaultPrevented, true);
+  // Détails : nom et places enregistrés seuls, avec confirmation à côté.
+  await page.click(card('2').querySelector('[data-table-more]'));
+  assert.equal(page.$('tableSheet').open, true);
+  assert.equal(page.$('tableSheetTitle').textContent, 'Table 2');
+  assert.equal(page.$('tableSheetInfo').textContent, '1 actif, 1 inscrit, 2 places.');
+  const name = page.$('tableSheetName'), places = page.$('tableSheetHc');
+  assert.equal(name.value, 'Table 2');
+  assert.equal(String(places.value), '2');
+  await page.type(name, '  Bar  ');
+  page.runTimers(1000);
+  await page.flush();
   assert.deepEqual(page.lastPost('/api/staff/table/rename').body, { tableId: '2', name: 'Bar' });
-  const renames = page.postsTo('/api/staff/table/rename').length;
-  await page.key(card('2').querySelector('[data-table-name]'), 'a');
-  card('2').querySelector('[data-table-name]').value = '   ';
-  await page.click(card('2').querySelector('[data-rename]'));
-  assert.deepEqual(page.toast(), { text: 'Indique un nom de table entre 1 et 40 caractères.', bad: true });
-  assert.equal(page.postsTo('/api/staff/table/rename').length, renames);
-
-  // Effectif.
-  card('2').querySelector('[data-hc]').value = '6';
-  await page.click(card('2').querySelector('[data-hcok]'));
-  assert.deepEqual(page.lastPost('/api/staff/table').body, { id: '2', headcount: 6 });
-  assert.equal(page.toast().text, 'Enregistré');
-  card('2').querySelector('[data-hc]').value = '41';
-  await page.click(card('2').querySelector('[data-hcok]'));
-  assert.deepEqual(page.toast(), { text: 'Indique entre 1 et 40 personnes.', bad: true });
-
+  assert.equal(page.$('tableSheetNameStatus').textContent, 'Enregistré ✓');
+  // Places tapées puis clavier refermé : le rafraîchissement ne les remet pas à 2.
+  places.focus();
+  await page.type(places, '9');
+  page.doc.activeElement = null;
+  await page.poll();
+  assert.equal(places.value, '9');
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/table').body, { id: '2', headcount: 9 });
+  const tablePosts = page.postsTo('/api/staff/table').length;
+  for (const value of ['41', '0', '', '2.5']) {
+    await page.type(places, value);
+    page.runTimers(800);
+    await page.flush();
+    assert.equal(page.$('tableSheetHcStatus').textContent, 'Non enregistré : entre 1 et 40 personnes', value);
+  }
+  assert.equal(page.postsTo('/api/staff/table').length, tablePosts, 'aucune valeur hors bornes envoyée');
+  await page.type(name, '');
+  assert.equal(page.$('tableSheetNameStatus').textContent, 'Non enregistré : entre 1 et 40 caractères');
+  await page.type(name, 'Table 2');
+  page.runTimers(1000);
+  await page.flush();
+  assert.equal(page.$('tableSheetNameStatus').textContent, 'Enregistré ✓', 'nom revenu à celui du serveur : rien à envoyer');
   // Bonus de table.
-  await page.change(card('2').querySelector('[data-table-bonus]'), '-1');
+  await page.change(page.$('tableSheetBonus'), '-1');
   assert.deepEqual(page.lastPost('/api/staff/bonus').body, { tableId: '2', level: -1 });
   assert.equal(page.toast().text, 'Bonus de table enregistré (invisible des clients)');
-  await page.change(card('2').querySelector('[data-table-bonus]'), '0');
+  await page.change(page.$('tableSheetBonus'), '0');
   assert.equal(page.toast().text, 'Bonus de table retiré');
-
   // Table partie.
   page.confirmAnswer = false;
-  await page.click(card('2').querySelector('[data-left]'));
+  await page.click(page.$('tableSheetLeft'));
   assert.equal(page.confirms.at(-1), 'Table 2 est partie ? Ses tickets seront retirés.');
   assert.equal(page.postsTo('/api/staff/table-left').length, 0);
   page.confirmAnswer = true;
-  await page.click(card('2').querySelector('[data-left]'));
+  await page.click(page.$('tableSheetLeft'));
   assert.deepEqual(page.lastPost('/api/staff/table-left').body, { id: '2' });
   assert.equal(page.toast().text, 'Table retirée');
-
-  // Champ d'une carte en cours de saisie : les cartes ne sont pas redessinées.
-  const input = card('1').querySelector('[data-hc]');
-  input.focus();
-  input.value = '9';
+  assert.equal(page.$('tableSheet').open, false);
+  // « En solo » : ni places ni départ ; une table avec QR peut le montrer d'ici.
+  await page.click(card('Comptoir').querySelector('[data-table-more]'));
+  assert.equal(page.$('tableSheetHcRow').hidden, true);
+  assert.equal(page.$('tableSheetLeft').hidden, true, '« En solo » ne part jamais');
+  assert.equal(page.$('tableSheetQr').hidden, true);
+  await page.click(page.$('tableSheetClose'));
+  await page.click(card('1').querySelector('[data-table-more]'));
+  assert.equal(page.$('tableSheetQr').hidden, false);
+  await page.click(page.$('tableSheetQr'));
+  assert.equal(page.$('tableSheet').open, false);
+  assert.equal(page.$('tableQrDialog').open, true);
+  assert.equal(page.$('tableQrName').textContent, 'Table 1');
+  await page.click(page.$('tableQrClose'));
+  // Table sans QR : rien à montrer.
+  await page.click(card('2').querySelector('[data-table-more]'));
+  await page.click(page.$('tableSheetQr'));
+  assert.deepEqual(page.toast(), { text: 'Cette table n’a pas encore de QR.', bad: true });
+  assert.equal(page.$('tableQrDialog').open, false);
+  // Table supprimée pendant que ses détails sont ouverts : la fiche se ferme.
+  await page.click(card('1').querySelector('[data-table-more]'));
+  page.world.tables = baseWorld().tables.filter(t => t.id !== '1');
   await page.poll();
-  assert.equal(card('1').querySelector('[data-hc]'), input, 'la saisie de l’effectif n’est pas perdue');
-  page.doc.activeElement = null;
+  assert.equal(page.$('tableSheet').open, false);
 });
 
 test('accueil en solo : QR individuel, copie, invitations en attente et erreurs', async () => {
@@ -1419,13 +1552,35 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(status(), 'Aucun vote en cours. Les clients peuvent proposer une Battle depuis leur table.');
   assert.equal(page.doc.title, 'File karaoké — page du bar');
 
-  // Réglages Battle.
-  page.$('battleCooldownMin').value = '20'; page.$('battleRejectedCooldownMin').value = '3';
-  page.$('battleVoteMin').value = '2'; page.$('battleMinVoters').value = '4';
-  await page.click(page.$('saveBattleCooldown'));
-  assert.deepEqual(page.lastPost('/api/staff/settings').body,
-    { battleCooldownMin: 20, battleRejectedCooldownMin: 3, battleVoteMin: 2, battleMinVoters: 4 });
-  assert.equal(page.toast().text, 'Réglages Battle enregistrés');
+  // Réglages Battle : chaque champ s'enregistre seul ; seule sa valeur part.
+  assert.match(page.$('battleVoteMin').closest('label').textContent, /^Durée du vote \(1 à 10 min\)/, 'plage visible');
+  const saved = id => page.doc.body.querySelector(`[data-save-status="${id}"]`).textContent;
+  await page.type(page.$('battleCooldownMin'), '20');
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { battleCooldownMin: 20 });
+  assert.equal(saved('battleCooldownMin'), 'Enregistré ✓');
+  // Durée du vote hors bornes : rien ne part, la plage est rappelée et la saisie reste.
+  const sent = page.postsTo('/api/staff/settings').length;
+  await page.type(page.$('battleVoteMin'), '20');
+  page.runTimers(800);
+  await page.flush();
+  assert.equal(page.postsTo('/api/staff/settings').length, sent);
+  assert.equal(saved('battleVoteMin'), 'Non enregistré : entre 1 et 10 minutes');
+  assert.equal(page.$('battleVoteMin').getAttribute('aria-invalid'), 'true');
+  await page.poll();
+  assert.equal(page.$('battleVoteMin').value, '20');
+  // Refus du serveur : raison, puis nouvel essai.
+  page.replies['/api/staff/settings'] = { status: 400, error: 'Le nombre minimal de votants doit être de 1 à 100.' };
+  await page.type(page.$('battleMinVoters'), '8');
+  await page.key(page.$('battleMinVoters'), 'Enter');
+  assert.equal(saved('battleMinVoters'), 'Non enregistré : Le nombre minimal de votants doit être de 1 à 100. · Réessayer');
+  page.replies['/api/staff/settings'] = { ok: true };
+  await page.click(page.doc.body.querySelector('[data-retry="battleMinVoters"]'));
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { battleMinVoters: 8 });
+  // Relu sur le serveur après l'enregistrement : le champ suit de nouveau le serveur.
+  await page.update({ settings: { ...page.world.settings, battleMinVoters: 9 } });
+  assert.equal(page.$('battleMinVoters').value, 9);
 });
 
 test('Battle : lancement par le bar depuis la recherche de titres', async () => {
@@ -1553,10 +1708,18 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.equal(page.$('spotifyLogin').disabled, true, 'sans Client ID, pas de connexion possible');
   assert.equal(page.$('spotifyConnected').hidden, true);
   assert.equal(page.$('spotifyRedirect').textContent, 'http://127.0.0.1:3000/spotify/callback');
-  page.$('spotifyClientId').value = '  0123456789abcdef  ';
-  await page.click(page.$('spotifySaveClient'));
+  // Client ID : enregistré en quittant le champ, jamais pendant la frappe ou le collage.
+  const clientId = page.$('spotifyClientId');
+  const status = id => page.doc.body.querySelector(`[data-save-status="${id}"]`).textContent;
+  await page.type(clientId, 'court');
+  await page.change(clientId);
+  assert.equal(page.postsTo('/api/staff/spotify').length, 0, 'identifiant invalide : rien ne part');
+  assert.match(status('spotifyClientId'), /^Non enregistré : colle le « Client ID »/);
+  await page.type(clientId, '  0123456789abcdef  ');
+  assert.equal(page.postsTo('/api/staff/spotify').length, 0, 'pas d’envoi pendant la frappe');
+  await page.change(clientId);
   assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'client', clientId: '0123456789abcdef' });
-  assert.equal(page.toast().text, 'Client ID Spotify enregistré');
+  assert.equal(status('spotifyClientId'), 'Enregistré ✓');
   await page.update({ spotify: { ...world.spotify, configured: true, clientId: '0123456789abcdef' } });
   assert.equal(page.$('spotifyPill').textContent, 'Non connecté');
   assert.equal(page.$('spotifyLogin').disabled, false);
@@ -1628,13 +1791,38 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.deepEqual(page.toast(), { text: 'Connexion Spotify expirée.', bad: true });
   page.replies['/api/staff/spotify'] = { ok: true };
 
-  // Réglages de relance et de coupure.
-  page.$('spotifyAutoResume').checked = false; page.$('spotifyAutoPause').checked = true;
-  page.$('spotifyDelay').value = '0'; page.$('spotifyLead').value = '4';
-  await page.click(page.$('spotifySaveOptions'));
-  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'options', autoResume: false, autoPause: true,
-    resumeDelaySec: 0, pauseLeadSec: 4 });
-  assert.equal(page.toast().text, 'Réglages Spotify enregistrés');
+  // Réglages de relance et de coupure : chacun s'enregistre seul.
+  page.replies['/api/staff/spotify'] = body => { if (body.action === 'options') Object.assign(page.world.spotify, body); return { ok: true }; };
+  await page.change(page.$('spotifyAutoResume'), false);
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'options', autoResume: false });
+  assert.equal(status('spotifyAutoResume'), 'Enregistré ✓');
+  await page.poll();
+  assert.equal(page.$('spotifyAutoResume').checked, false, 'relu sur le serveur, la case suit le serveur');
+  await page.change(page.$('spotifyAutoPause'), true);
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'options', autoPause: true });
+  await page.type(page.$('spotifyDelay'), '0');
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'options', resumeDelaySec: 0 }, '0 s permis');
+  const sent = page.postsTo('/api/staff/spotify').length;
+  for (const value of ['', '  ', '11']) {
+    await page.type(page.$('spotifyLead'), value);
+    page.runTimers(800);
+    await page.flush();
+    assert.equal(status('spotifyLead'), 'Non enregistré : entre 0 et 10 secondes', `silence « ${value} »`);
+  }
+  assert.equal(page.postsTo('/api/staff/spotify').length, sent, 'un champ vidé n’enregistre pas 0 s en silence');
+  await page.type(page.$('spotifyLead'), '4');
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'options', pauseLeadSec: 4 });
+  // Spotify connecté : changer de Client ID le déconnecte, le bar confirme.
+  page.confirmAnswer = false;
+  await page.type(clientId, 'fedcba98765432100');
+  await page.change(clientId);
+  assert.match(page.confirms.at(-1), /^Changer le Client ID déconnecte Spotify/);
+  assert.equal(clientId.value, '0123456789abcdef', 'changement refusé : l’ancien identifiant revient');
+  page.confirmAnswer = true;
 
   // Commandes manuelles.
   await page.click(page.$('spotifyPlay'));
@@ -1687,7 +1875,11 @@ test('diagnostic KaraFun : recherche de test et ajout d’essai', async () => {
   // Sans connexion KaraFun : invitation à saisir le code.
   await page.update({ kf: null });
   assert.equal(page.$('kfPill').textContent, 'KaraFun : pas de code');
-  assert.equal(page.$('diag').textContent, 'ÉtatSaisis le code KaraFun en haut à droite.');
+  assert.equal(page.$('diag').textContent, 'ÉtatSaisis le code KaraFun ci-dessus.');
+  assert.match(page.$('staffAlerts').textContent, /KaraFun n’a pas de code/, 'alerte visible sur tous les écrans');
+  await page.click(page.in('staffAlerts', '[data-alert-goto]'));
+  assert.equal(page.doc.body.dataset.tab, 'plus');
+  assert.equal(page.doc.activeElement, page.$('code'));
   assert.equal(page.$('kfQueue').textContent, '');
 });
 
@@ -1701,13 +1893,47 @@ test('règles de la soirée, envoi et lecture automatiques, rotation et version'
   assert.equal(page.$('repeatWarnMin').value, 30);
   assert.equal(page.$('interleaveArrivals').checked, false);
   assert.equal(page.$('rotationPeople').checked, true);
-  page.$('gap').value = '3'; page.$('cap').value = '5'; page.$('requirePresence').checked = true;
-  page.$('playDelaySec').value = '6'; page.$('pushDelaySec').value = '20'; page.$('repeatWarnMin').value = '0';
-  page.$('presenceGraceSec').value = '60'; page.$('presenceMaxSkips').value = '4';
-  await page.click(page.$('saveRules'));
-  assert.deepEqual(page.lastPost('/api/staff/settings').body, { gap: '3', cap: '5', requirePresence: true, playDelaySec: '6',
-    pushDelaySec: '20', repeatWarnMin: 0, presenceGraceSec: 60, presenceMaxSkips: 4 });
-  assert.equal(page.toast().text, 'Règles enregistrées');
+  assert.equal(page.doc.getElementById('saveRules'), null, 'plus de bouton « Enregistrer les règles »');
+  page.$('requirePresence').checked = true;
+  dispatch(page.$('requirePresence'), 'input');
+  await page.change(page.$('requirePresence'));
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { requirePresence: true });
+  assert.equal(page.postsTo('/api/staff/settings').length, 1, 'une case cochée part une seule fois');
+  for (const [id, value, body] of [['gap', '3', { gap: 3 }], ['cap', '5', { cap: 5 }], ['playDelaySec', '6', { playDelaySec: 6 }],
+    ['pushDelaySec', '20', { pushDelaySec: 20 }], ['repeatWarnMin', '0', { repeatWarnMin: 0 }],
+    ['presenceGraceSec', '60', { presenceGraceSec: 60 }], ['presenceMaxSkips', '4', { presenceMaxSkips: 4 }]]) {
+    await page.type(page.$(id), value);
+    page.runTimers(800);
+    await page.flush();
+    assert.deepEqual(page.lastPost('/api/staff/settings').body, body, id);
+  }
+  // Champ vidé : rien n'est envoyé (0 serait une vraie valeur), et la saisie reste.
+  const sent = page.postsTo('/api/staff/settings').length;
+  await page.type(page.$('pushDelaySec'), '');
+  page.runTimers(800);
+  await page.flush();
+  assert.equal(page.postsTo('/api/staff/settings').length, sent);
+  assert.equal(page.doc.body.querySelector('[data-save-status="pushDelaySec"]').textContent, 'Non enregistré : entre 0 et 180 secondes');
+  // Une règle changée ailleurs s'affiche dès que le champ n'est plus modifié.
+  await page.update({ settings: { ...world.settings, presenceGraceSec: 90, gap: 3 } });
+  assert.equal(page.$('presenceGraceSec').value, 90);
+  assert.equal(page.$('pushDelaySec').value, '', 'la saisie refusée reste à corriger');
+  // Pendant la frappe, un rafraîchissement ne remet pas l'ancienne valeur.
+  page.$('cap').focus();
+  await page.type(page.$('cap'), '7');
+  page.doc.activeElement = null;
+  await page.poll();
+  assert.equal(page.$('cap').value, '7');
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { cap: 7 });
+  // Page passée en arrière-plan : la saisie en attente part tout de suite.
+  await page.type(page.$('gap'), '5');
+  page.doc.hidden = true;
+  for (const listener of page.doc.listeners.visibilitychange) listener({});
+  await page.flush();
+  page.doc.hidden = false;
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { gap: 5 });
   await page.change(page.$('auto'), true);
   assert.deepEqual(page.lastPost('/api/staff/settings').body, { auto: true });
   await page.change(page.$('autoPlay'), true);
@@ -1729,4 +1955,414 @@ test('règles de la soirée, envoi et lecture automatiques, rotation et version'
   assert.equal(page.$('rotationTables').checked, false);
   assert.equal(page.$('appVersion').textContent, '');
   assert.equal(page.$('appVersion').title, 'Version installée sur ce PC');
+});
+
+// ------------------------------------------------------------------ v1.4 : retours du bar
+test('duo improvisé : le partenaire choisi reste choisi pendant les rafraîchissements', async () => {
+  const world = baseWorld();
+  world.stage = { ours: true, ids: ['alice'], queueId: 'q-live', title: 'Seul', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }] };
+  const page = await openPage({ world });
+  const select = page.$('markDuoPartner');
+  select.focus();
+  select.value = 'dora';
+  await page.poll();
+  assert.equal(select.value, 'dora', 'choix gardé pendant que la liste a le focus');
+  page.doc.activeElement = null; // liste native refermée sur le téléphone
+  await page.poll();
+  assert.equal(page.$('markDuoPartner').value, 'dora', 'choix gardé après la fermeture de la liste');
+  await page.click(page.$('markDuoBtn'));
+  assert.match(page.confirms.at(-1), /Dora/, 'la confirmation nomme le partenaire');
+  assert.deepEqual(page.lastPost('/api/staff/duo-mark').body, { queueId: 'q-live', partnerId: 'dora' });
+});
+
+test('réglage Battle tapé puis champ quitté : le rafraîchissement ne remet pas l’ancienne valeur', async () => {
+  const world = baseWorld();
+  world.settings = { ...world.settings, battleCooldownMin: 10, battleRejectedCooldownMin: 5, battleVoteMin: 5, battleMinVoters: 5 };
+  const page = await openPage({ world });
+  const field = page.$('battleCooldownMin');
+  assert.equal(String(field.value), '10');
+  field.focus();
+  await page.type(field, '20');
+  page.doc.activeElement = null; // clavier du téléphone refermé
+  await page.poll();
+  assert.equal(page.$('battleCooldownMin').value, '20');
+});
+
+test('repère tapé puis champ quitté : le rafraîchissement ne l’efface pas', async () => {
+  const page = await openPage();
+  const note = () => page.in('identityBody', '[data-identity-person="alice"] [data-identity-note]');
+  note().focus();
+  await page.type(note(), 'casquette');
+  page.doc.activeElement = null;
+  await page.poll();
+  assert.equal(note().value, 'casquette');
+});
+
+test('enregistrement automatique : une réponse en retard n’écrase pas la saisie suivante', async () => {
+  const page = await openPage();
+  const field = page.$('gap');
+  const status = () => page.doc.body.querySelector('[data-save-status="gap"]').textContent;
+  let release;
+  page.replies['/api/staff/settings'] = () => new Promise(resolve => { release = resolve; });
+  await page.type(field, '6');
+  page.runTimers(800);
+  await page.flush();
+  assert.equal(status(), 'Enregistrement…');
+  await page.type(field, '7');
+  release({ ok: true });
+  await page.flush();
+  assert.equal(status(), 'Modifié…', 'la réponse pour 6 ne marque pas 7 comme enregistré');
+  assert.equal(field.value, '7');
+  page.replies['/api/staff/settings'] = { ok: true };
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.postsTo('/api/staff/settings').map(post => post.body), [{ gap: 6 }, { gap: 7 }]);
+  assert.equal(status(), 'Enregistré ✓');
+  // Refus pendant qu'une nouvelle saisie attend : la nouvelle saisie prime.
+  page.replies['/api/staff/settings'] = () => new Promise(resolve => { release = resolve; });
+  await page.type(field, '8');
+  page.runTimers(800);
+  await page.flush();
+  await page.type(field, '9');
+  release({ status: 400, error: 'Refusé.' });
+  await page.flush();
+  assert.equal(status(), 'Modifié…');
+  // Valeur remise à celle du serveur avant l'envoi : rien ne part.
+  const sent = page.postsTo('/api/staff/settings').length;
+  await page.type(field, '4');
+  page.runTimers(800);
+  await page.flush();
+  assert.equal(page.postsTo('/api/staff/settings').length, sent);
+  // La confirmation s'efface après quelques secondes.
+  page.runTimers(2600);
+});
+
+test('téléphone : cinq onglets, onglet gardé dans l’adresse, Retour d’Android et badges', async () => {
+  const world = queueWorld();
+  world.soloInvitations = [{ id: 'one', tableId: 'Comptoir', expiresAt: Date.now() + 60000 }];
+  const page = await openPage({ world, hash: '#file' });
+  const body = page.doc.body;
+  const tab = name => body.querySelector(`[data-tab-btn="${name}"]`);
+  assert.equal(body.dataset.tab, 'file', 'onglet repris de l’adresse');
+  assert.equal(tab('file').getAttribute('aria-current'), 'page');
+  assert.ok(tab('file').classList.contains('on'));
+  assert.deepEqual([...new Set(body.querySelectorAll('section.card').map(section => section.dataset.tab))],
+    ['scene', 'file', 'accueil', 'reperes', 'plus'], 'chaque carte appartient à un onglet, dans l’ordre');
+  assert.equal(page.$('tabBadgeFile').textContent, '8');
+  assert.equal(page.$('tabBadgeFile').hidden, false);
+  assert.equal(page.$('tabBadgeAccueil').textContent, '1', 'invitations individuelles en attente');
+  assert.equal(page.$('tabDotPlus').hidden, true);
+  await page.click(tab('accueil'));
+  assert.equal(body.dataset.tab, 'accueil');
+  assert.equal(page.history.at(-1).url, `/staff?key=${KEY}#accueil`);
+  assert.equal(page.stored.get('bar-tab'), 'accueil');
+  await page.poll();
+  assert.equal(body.dataset.tab, 'accueil', 'le rafraîchissement ne change jamais d’onglet');
+  const steps = page.history.length;
+  await page.click(tab('accueil'));
+  assert.equal(page.history.length, steps, 'retoucher l’onglet ouvert n’ajoute pas d’étape');
+  await page.click(tab('plus'));
+  await page.back();
+  assert.equal(body.dataset.tab, 'accueil', 'Retour revient à l’onglet précédent');
+  // Une fenêtre ouverte a sa propre étape : Retour la ferme sans changer d'onglet.
+  await page.click(tab('accueil'));
+  const before = page.history.length;
+  await page.click(page.in('tBody', '[data-table-more="1"]'));
+  assert.equal(page.history.length, before + 1);
+  await page.click(page.$('tableSheetQr'));
+  assert.equal(page.history.length, before + 1, 'le QR reprend l’étape de la fiche');
+  assert.equal(page.history.at(-1).state.dialog, 'tableQrDialog');
+  await page.back();
+  assert.equal(page.$('tableQrDialog').open, false, 'Retour ferme d’abord une fenêtre ouverte');
+  assert.equal(body.dataset.tab, 'accueil', 'sans changer d’onglet');
+  await page.click(page.in('tBody', '[data-table-qr="1"]'));
+  await page.click(page.$('tableQrClose'));
+  assert.equal(page.history.length, before, 'fermée d’un bouton : son étape est retirée');
+  // Fenêtre ouverte autrement (ancienne étape) : Retour la ferme aussi.
+  page.$('shareDialog').showModal();
+  await page.back();
+  assert.equal(page.$('shareDialog').open, false);
+  assert.equal(body.dataset.tab, 'file');
+  await page.click(page.$('staffTabs'));
+  assert.equal(body.dataset.tab, 'file', 'un appui hors des boutons ne change rien');
+  // Point sur « Plus » : Battle demandée, KaraFun perdu ou Spotify en erreur.
+  await page.update({ battle: { id: 5, phase: 'requested', selectedSong: { title: 'Africa' } } });
+  assert.equal(page.$('tabDotPlus').hidden, false);
+  await page.update({ battle: { phase: 'idle' }, spotify: { configured: true, connected: false, lastError: 'Spotify : erreur.' } });
+  assert.equal(page.$('tabDotPlus').hidden, false);
+  await page.update({ spotify: null, kf: { ...baseWorld().kf, ready: false, connected: false } });
+  assert.equal(page.$('tabDotPlus').hidden, false);
+  await page.update({ kf: baseWorld().kf, queue: [], soloInvitations: [] });
+  assert.equal(page.$('tabDotPlus').hidden, true);
+  assert.equal(page.$('tabBadgeFile').hidden, true, 'file vide : pas de badge');
+  assert.equal(page.$('tabBadgeAccueil').hidden, true);
+  // Sans onglet dans l'adresse : le dernier ouvert ; mémoire indisponible : Scène.
+  const again = await openPage({ storage: { 'bar-tab': 'reperes' } });
+  assert.equal(again.doc.body.dataset.tab, 'reperes');
+  const strict = await openPage({ storageThrows: true, storage: { 'bar-tab': 'inconnu' } });
+  assert.equal(strict.doc.body.dataset.tab, 'scene');
+  await strict.click(strict.doc.body.querySelector('[data-tab-btn="plus"]'));
+  assert.equal(strict.doc.body.dataset.tab, 'plus', 'fonctionne sans mémoire du navigateur');
+  await strict.back();
+  assert.equal(strict.doc.body.dataset.tab, 'scene');
+});
+
+test('barre du haut : état KaraFun du pont, alerte impossible à manquer, reconnexion et avertissements', async () => {
+  const world = baseWorld();
+  world.kf = { ...world.kf, connection: { phase: 'ready', level: 'ok', label: 'KaraFun connecté au bar', since: Date.now(), attempt: 0 } };
+  const page = await openPage({ world });
+  const pill = page.$('kfPill');
+  assert.equal(pill.textContent, 'KaraFun connecté au bar');
+  assert.equal(pill.className, 'pill ok');
+  await page.update({ kf: { ...world.kf, ready: false, connection: { phase: 'retry', level: 'wait', label: 'Reconnexion à KaraFun…', since: Date.now(), attempt: 2 } } });
+  assert.equal(pill.className, 'pill warn');
+  assert.equal(page.in('staffAlerts', '.kf-alert'), null, 'une reconnexion en cours n’alarme pas');
+  await page.update({ kf: { ...world.kf, ready: false, connection: { phase: 'failed', level: 'error', label: 'KaraFun injoignable', since: Date.now(), attempt: 5 } } });
+  assert.equal(pill.className, 'pill bad');
+  assert.equal(page.in('staffAlerts', '.kf-alert span').textContent, 'KaraFun injoignable : les titres ne partent plus.');
+  await page.click(page.in('staffAlerts', '[data-alert-reconnect]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'reconnect' });
+  assert.equal(page.toast().text, 'Reconnexion…');
+  // Sans phrase du pont : état déduit comme avant.
+  await page.update({ kf: { ...baseWorld().kf, ready: false, connected: false } });
+  assert.equal(pill.textContent, 'KaraFun déconnecté');
+  assert.match(page.$('staffAlerts').textContent, /KaraFun déconnecté : les titres ne partent plus\./);
+  await page.update({ kf: { ...baseWorld().kf, ready: false, connected: true } });
+  assert.equal(pill.textContent, 'Connexion…');
+  assert.equal(page.in('staffAlerts', '.kf-alert'), null);
+  await page.update({ kf: { ...baseWorld().kf, ready: false, connected: true, unreachable: true } });
+  assert.equal(pill.textContent, 'KaraFun injoignable');
+  await page.click(pill);
+  assert.equal(page.doc.body.dataset.tab, 'plus', 'toucher l’état ouvre les réglages KaraFun');
+  // Envoi ou lecture automatique coupés : avertissement sur Scène.
+  const warn = page.$('autoWarn');
+  assert.equal(warn.textContent, 'Envoi et lecture automatiques coupés');
+  await page.update({ settings: { ...world.settings, auto: true } });
+  assert.equal(warn.textContent, 'Lecture automatique coupée');
+  await page.update({ settings: { ...world.settings, auto: false, autoPlay: true } });
+  assert.equal(warn.textContent, 'Envoi automatique coupé');
+  await page.click(page.doc.body.querySelector('[data-tab-btn="scene"]'));
+  await page.click(warn);
+  assert.equal(page.doc.body.dataset.tab, 'plus');
+  await page.update({ settings: { ...world.settings, auto: true, autoPlay: true } });
+  assert.equal(warn.hidden, true);
+});
+
+test('sur scène : photo, repère à vérifier, « C’est bien lui/elle » et titre KaraFun sans fiche', async () => {
+  const world = baseWorld();
+  world.people[0] = { ...world.people[0], verified: false, verifiedAt: 0 };
+  world.stage = { ours: true, ids: ['alice'], queueId: 'q1', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }], title: 'Titre' };
+  world.next = { ours: true, ids: ['dora'], singers: [{ id: 'dora', name: 'Dora', table: 'En solo', individual: true }], title: 'Suivant' };
+  const page = await openPage({ world });
+  const card = () => page.in('stage', '[data-stage-person="alice"]');
+  assert.equal(card().querySelector('.marker-pill').textContent, 'À vérifier');
+  assert.equal(card().querySelector('[data-autosave="note"]').value, 't-shirt rouge');
+  assert.equal(card().querySelector('.identity-avatar').textContent, 'A', 'initiale sans photo');
+  const next = page.in('next', '[data-stage-person="dora"]');
+  assert.equal(next.querySelector('img').src, '/photo/dora.jpg');
+  assert.equal(next.querySelector('.marker-pill').textContent, 'Pas de repère');
+  assert.equal(next.querySelector('[data-marker-verify]'), null, 'sans repère, rien à vérifier');
+  assert.equal(page.$('identityStageBox').hidden, false, 'Repères : la personne sur scène en tête');
+  assert.ok(page.in('identityStage', '[data-identity-stage="alice"]'));
+  await page.click(card().querySelector('[data-marker-verify="alice"]'));
+  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'alice', verified: true });
+  assert.equal(page.toast().text, 'Alice reconnu : repère vérifié');
+  const at = Date.now() - 60000;
+  page.world.people[0] = { ...page.world.people[0], verified: true, verifiedAt: at };
+  await page.poll();
+  assert.equal(card().querySelector('.marker-pill').textContent, `Repère vérifié ✓ ${hhmm(at)}`);
+  assert.equal(card().querySelector('[data-marker-verify]'), null);
+  // Repère modifié sur la carte : enregistré seul, recopié dans l'écran Repères.
+  const input = card().querySelector('[data-autosave="note"]');
+  input.focus();
+  await page.type(input, 'veste verte');
+  assert.equal(page.in('identityBody', '[data-identity-person="alice"] [data-identity-note]').value, 'veste verte');
+  assert.equal(page.in('stage', '[data-save-status="note:alice"]').textContent, 'Modifié…');
+  page.world.people[0] = { ...page.world.people[0], verified: false, verifiedAt: 0 };
+  await page.poll();
+  assert.equal(card().querySelector('[data-autosave="note"]'), input, 'carte non redessinée pendant la saisie');
+  page.doc.activeElement = null;
+  await page.poll();
+  assert.equal(card().querySelector('[data-autosave="note"]').value, 'veste verte', 'saisie gardée après la mise à jour');
+  // « C'est bien lui/elle » avec un repère en cours : le texte part avec la vérification.
+  await page.click(card().querySelector('[data-marker-verify="alice"]'));
+  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'alice', verified: true, note: 'veste verte' });
+  page.replies['/api/staff/person/identify'] = { status: 500, error: 'Panne.' };
+  await page.poll();
+  await page.click(card().querySelector('[data-marker-verify="alice"]'));
+  assert.deepEqual(page.toast(), { text: 'Panne.', bad: true });
+  // Titre ajouté directement dans KaraFun : pas de fiche à montrer.
+  await page.update({ stage: { ours: false, singer: 'Client', title: 'Manuel' } });
+  assert.match(page.$('stage').textContent, /Client.*Ajouté dans KaraFun : pas de fiche.*Manuel/s);
+  assert.equal(page.$('identityStageBox').hidden, true);
+  // Titre de la file sans liste de chanteurs : retrouvée par les fiches.
+  await page.update({ stage: { ours: true, ids: ['bruno'], title: 'Seul' } });
+  assert.match(page.$('stage').textContent, /Bruno.*Table 1.*Pas de repère/s);
+  await page.update({ stage: { ours: true, ids: ['inconnu'], singer: 'Quelqu’un', title: 'Seul' } });
+  assert.match(page.$('stage').textContent, /Quelqu’un.*Seul/s);
+});
+
+test('duo improvisé noté : changer de partenaire ou annuler, sur scène puis dans les derniers passages', async () => {
+  const world = baseWorld();
+  const markedAt = Date.now() - 120000;
+  const alice = { id: 'alice', name: 'Alice', table: 'Table 1' }, dora = { id: 'dora', name: 'Dora', table: 'En solo', individual: true };
+  world.stage = { ours: true, ids: ['alice', 'dora'], queueId: 'q-live', kind: 'duo', title: 'Ensemble', singers: [alice, dora],
+    staffDuo: { partnerId: 'dora', partnerName: 'Dora', at: markedAt, canUndo: true, reason: null } };
+  const page = await openPage({ world });
+  assert.equal(page.$('markDuoBox').hidden, false);
+  assert.equal(page.$('markDuoState').textContent, `Duo noté avec Dora à ${hhmm(markedAt)}.`);
+  assert.equal(page.$('markDuoDoneActions').hidden, false);
+  assert.equal(page.$('markDuoForm').hidden, true);
+  page.confirmAnswer = false;
+  await page.click(page.$('markDuoCancel'));
+  assert.equal(page.confirms.at(-1), 'Annuler le duo noté avec Dora ? Alice chante seul ce titre ; Dora retrouve son tour.');
+  assert.equal(page.postsTo('/api/staff/duo-unmark').length, 0);
+  page.confirmAnswer = true;
+  page.replies['/api/staff/duo-unmark'] = { ok: true, message: 'Duo avec Dora annulé : Alice chante seul ce titre.' };
+  await page.click(page.$('markDuoCancel'));
+  assert.deepEqual(page.lastPost('/api/staff/duo-unmark').body, { queueId: 'q-live' });
+  assert.equal(page.toast().text, 'Duo avec Dora annulé : Alice chante seul ce titre.');
+  // Changer de partenaire : la liste exclut le chanteur et l'ancien partenaire.
+  await page.click(page.$('markDuoChange'));
+  assert.equal(page.$('markDuoForm').hidden, false);
+  assert.equal(page.$('markDuoDoneActions').hidden, true);
+  assert.equal(page.$('markDuoBtn').textContent, 'Remplacer');
+  assert.equal(page.$('markDuoLabel').textContent, 'Qui chante vraiment avec Alice ? Dora retrouvera son tour.');
+  assert.deepEqual(texts(page.$('markDuoPartner').options), ['Choisir…', 'Bruno — Table 1']);
+  await page.poll();
+  assert.equal(page.$('markDuoForm').hidden, false, 'le rafraîchissement garde le changement ouvert');
+  await page.click(page.$('markDuoKeep'));
+  assert.equal(page.$('markDuoForm').hidden, true);
+  await page.click(page.$('markDuoChange'));
+  page.$('markDuoPartner').value = 'bruno';
+  await page.click(page.$('markDuoBtn'));
+  assert.equal(page.confirms.at(-1), 'Remplacer Dora par Bruno dans le duo avec Alice ? Dora retrouve son tour ; Bruno garde le sien.');
+  assert.deepEqual(page.lastPost('/api/staff/duo-mark').body, { queueId: 'q-live', partnerId: 'bruno', replace: true });
+  page.confirmAnswer = false;
+  await page.click(page.$('markDuoBtn'));
+  assert.equal(page.postsTo('/api/staff/duo-mark').length, 1, 'remplacement refusé : rien ne part');
+  page.confirmAnswer = true;
+  // Trop tard : plus d'annulation possible.
+  await page.update({ stage: { ...world.stage, staffDuo: { ...world.stage.staffDuo, canUndo: false, reason: 'Trop tard : Dora a déjà rechanté' } } });
+  assert.equal(page.$('markDuoState').textContent, `Duo noté avec Dora à ${hhmm(markedAt)}. Trop tard : Dora a déjà rechanté.`);
+  assert.equal(page.$('markDuoDoneActions').hidden, true);
+  assert.equal(page.$('markDuoForm').hidden, true);
+  // Nouvelle chanson : la liste repart sur « Choisir… ».
+  await page.update({ stage: { ours: true, ids: ['alice'], queueId: 'q-2', title: 'Seul', singers: [alice] } });
+  page.$('markDuoPartner').value = 'bruno';
+  await page.poll();
+  assert.equal(page.$('markDuoPartner').value, 'bruno');
+  await page.update({ stage: { ours: true, ids: ['alice'], queueId: 'q-3', title: 'Autre', singers: [alice] } });
+  assert.equal(page.$('markDuoPartner').value, '', 'autre chanteur sur scène : choix remis à zéro');
+  page.$('markDuoCancel').onclick();
+  assert.equal(page.postsTo('/api/staff/duo-unmark').length, 1, 'sans duo noté, rien à annuler');
+
+  // Derniers passages : annuler ou changer un duo noté après la chanson.
+  const at = Date.now() - 600000;
+  await page.update({ stageHistory: [
+    { id: 'h1', at, endedAt: at + 1000, onStage: false, title: 'Fini', people: [{ ...alice, active: true }, { ...dora, active: true }],
+      staffDuo: { partnerId: 'dora', partnerName: 'Dora', at, canUndo: true, reason: null } },
+    { id: 'h2', at, endedAt: at + 1000, onStage: false, title: 'Plus ancien', people: [{ ...alice, active: true }],
+      staffDuo: { partnerId: 'bruno', partnerName: 'Bruno', at, canUndo: false, reason: 'Trop tard : Bruno a déjà rechanté' } }] });
+  assert.match(page.$('stageHistoryCount').textContent, /^2$/);
+  assert.match(page.$('stageHistory').textContent, /Duo noté au bar avec Dora/);
+  assert.match(page.$('stageHistory').textContent, /Trop tard : Bruno a déjà rechanté/);
+  assert.equal(page.in('stageHistory', '[data-history-unmark="h2"]'), null);
+  page.confirmAnswer = false;
+  await page.click(page.in('stageHistory', '[data-history-unmark="h1"]'));
+  assert.equal(page.confirms.at(-1), 'Annuler le duo noté avec Dora sur « Fini » ? Dora retrouve son tour.');
+  page.confirmAnswer = true;
+  await page.click(page.in('stageHistory', '[data-history-unmark="h1"]'));
+  assert.deepEqual(page.lastPost('/api/staff/duo-unmark').body, { stageEntryId: 'h1' });
+  await page.click(page.in('stageHistory', '[data-history-change="h1"]'));
+  const select = page.in('stageHistory', '[data-history-partner]');
+  assert.deepEqual(texts(select.options), ['Choisir…', 'Bruno — Table 1']);
+  await page.click(page.in('stageHistory', '[data-history-replace="h1"]'));
+  assert.deepEqual(page.toast(), { text: 'Choisis d’abord le second chanteur dans la liste.', bad: true });
+  page.in('stageHistory', '[data-history-partner]').value = 'bruno';
+  page.confirmAnswer = false;
+  await page.click(page.in('stageHistory', '[data-history-replace="h1"]'));
+  assert.equal(page.postsTo('/api/staff/duo-mark').length, 1);
+  page.confirmAnswer = true;
+  await page.click(page.in('stageHistory', '[data-history-replace="h1"]'));
+  assert.deepEqual(page.lastPost('/api/staff/duo-mark').body, { stageEntryId: 'h1', partnerId: 'bruno', replace: true });
+  assert.equal(page.in('stageHistory', '[data-history-partner]'), null, 'liste refermée après le remplacement');
+  await page.click(page.in('stageHistory', '[data-history-change="h1"]'));
+  await page.click(page.in('stageHistory', '[data-history-change="h1"]'));
+  assert.equal(page.in('stageHistory', '[data-history-partner]'), null, 'second appui : liste refermée');
+  await page.click(page.in('stageHistory', '[data-history-change="h1"]'));
+  await page.update({ stageHistory: [] });
+  assert.equal(page.$('stageHistory').textContent, 'Aucun passage pour le moment.');
+});
+
+test('file au téléphone : menu ⋯ par ligne et mode sélection', async () => {
+  const page = await openPage({ world: queueWorld() });
+  const line = index => rows(page)[index];
+  assert.equal(line(2).querySelector('[data-row-menu]'), null, 'sans action, pas de menu');
+  await page.click(line(4).querySelector('[data-row-menu]'));
+  assert.ok(line(4).querySelector('.row-actions').classList.contains('open'));
+  assert.equal(line(4).querySelector('[data-row-menu]').getAttribute('aria-expanded'), 'true');
+  await page.poll();
+  assert.ok(line(4).querySelector('.row-actions').classList.contains('open'), 'menu gardé ouvert au rafraîchissement');
+  await page.click(line(4).querySelector('[data-row-menu]'));
+  assert.ok(!line(4).querySelector('.row-actions').classList.contains('open'));
+  await page.click(line(4).querySelector('[data-row-menu]'));
+  page.world.queue = page.world.queue.filter(q => q.id !== 'duo1');
+  await page.poll();
+  assert.equal(page.all('qBody', '.row-actions.open').length, 0, 'ligne disparue : menu refermé');
+  // Mode sélection : les cases n'apparaissent qu'à la demande.
+  await page.click(page.$('selectMode'));
+  assert.equal(page.$('selectMode').getAttribute('aria-pressed'), 'true');
+  assert.ok(page.$('selectMode').closest('.queue-panel').classList.contains('selecting'));
+  assert.equal(page.$('selectMode').textContent, 'Terminer la sélection');
+  await page.change(line(3).querySelector('[data-pick]'), true);
+  assert.equal(page.$('removeSelected').disabled, false);
+  await page.click(page.$('selectMode'));
+  assert.equal(page.$('removeSelected').disabled, true, 'quitter le mode vide la sélection');
+  assert.equal(page.$('selectMode').textContent, 'Sélectionner');
+  await page.click(page.$('selectMode'));
+  await page.click(page.$('selectMode'));
+  assert.equal(page.$('selectMode').getAttribute('aria-pressed'), 'false');
+});
+
+test('accueil : donner un chanteur à un autre téléphone depuis une recherche par prénom', async () => {
+  const page = await openPage();
+  const results = () => texts(page.all('transferResults', '[data-transfer-person]'));
+  await page.type(page.$('transferSearch'), 'table 1');
+  assert.deepEqual(results(), ['Alice Table 1', 'Bruno Table 1'], 'personnes présentes seulement');
+  await page.type(page.$('transferSearch'), 'zzz');
+  assert.equal(page.$('transferResults').textContent, 'Aucun chanteur présent à ce nom.');
+  await page.type(page.$('transferSearch'), '');
+  assert.equal(page.$('transferResults').innerHTML, '');
+  await page.type(page.$('transferSearch'), 'DOR');
+  assert.deepEqual(results(), ['Dora En solo']);
+  page.replies['/api/staff/person/share'] = { code: '1234', expiresAt: Date.now() + 600000 };
+  await page.click(page.in('transferResults', '[data-transfer-person="dora"]'));
+  assert.deepEqual(page.lastPost('/api/staff/person/share').body, { personId: 'dora' });
+  assert.equal(page.$('shareDialog').open, true);
+  assert.equal(page.$('shareTitle').textContent, 'Accès à Dora');
+  assert.match(page.$('shareHelp').textContent, /perdra seulement ce chanteur/);
+  await page.click(page.$('transferResults'));
+  assert.equal(page.postsTo('/api/staff/person/share').length, 1, 'un appui hors d’un prénom ne fait rien');
+});
+
+test('scène : demandes de duo en attente et Battle à décider sans quitter l’écran', async () => {
+  const world = baseWorld();
+  const at = Date.now() - 30000;
+  world.joinRequests = [{ ownerId: 'alice', ownerName: 'Alice', requesterId: 'bruno', requesterName: 'Bruno', entryId: 'e1', title: 'Africa', at },
+    { ownerId: 'dora', ownerName: 'Dora', requesterId: 'alice', requesterName: 'Alice', entryId: 'e2', title: 'Hello' }];
+  const page = await openPage({ world });
+  assert.equal(page.$('joinRequestsBox').hidden, false);
+  assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')),
+    [`Bruno demande à chanter « Africa » avec Alice · ${hhmm(at)}`, 'Alice demande à chanter « Hello » avec Dora']);
+  await page.update({ joinRequests: [] });
+  assert.equal(page.$('joinRequestsBox').hidden, true);
+  assert.equal(page.$('battleStrip').hidden, true, 'rien à décider : pas de Battle sur Scène');
+  await page.update({ battle: { id: 4, phase: 'requested', selectedSong: { title: 'Africa' }, voters: 3, eligible: 5, threshold: 3, yesVotes: 3 } });
+  assert.equal(page.$('battleStrip').hidden, false);
+  assert.equal(page.$('battleStripText').textContent, page.$('battleStatus').textContent);
+  assert.equal(page.$('battleActions').hidden, false);
+  await page.update({ battle: { phase: 'idle' } });
+  assert.equal(page.$('battleStrip').hidden, true);
+  assert.equal(page.$('battleStripText').textContent, '');
 });

@@ -363,3 +363,25 @@ test('export : prénoms remplacés par S01…, tables par T1…, prénoms seulem
   assert.match(named.insights.map(i => i.text).join(' '), /Terrasse de Julie a attendu/);
   assert.equal(exportEvening({ meta: { ...meta, app: { version: 'v0' } }, events }).app.version, 'v0');
 });
+
+test('duo noté puis changé par le bar : un seul duo improvisé compté', () => {
+  // Ordre réel du journal quand le bar change de partenaire : le nouveau duo
+  // est noté par la file, puis la correction est signalée.
+  const T = m => T0 + m * 60000;
+  const events = [
+    { t: T(0), seq: 1, ev: 'person.joined', personId: 'p1', name: 'Alice', tableId: '1' },
+    { t: T(0), seq: 2, ev: 'person.joined', personId: 'p2', name: 'Bob', tableId: '1' },
+    { t: T(0), seq: 3, ev: 'person.joined', personId: 'p3', name: 'Chloé', tableId: '2' },
+    { t: T(1), seq: 4, ev: 'song.requested', personId: 'p1', entryId: 'x1', title: 'Solo' },
+    { t: T(2), seq: 5, ev: 'stage.started', queueId: 1, entryId: 'x1', ids: ['p1'], source: 'queue' },
+    { t: T(2.5), seq: 6, ev: 'duo.improvised', entryId: 'x1', ownerId: 'p1', partnerId: 'p2' },
+    { t: T(3), seq: 7, ev: 'duo.improvised', entryId: 'x1', ownerId: 'p1', partnerId: 'p3' },
+    { t: T(3), seq: 8, ev: 'duo.improvisedReplaced', entryId: 'x1', ownerId: 'p1', partnerId: 'p3', previousPartnerId: 'p2' },
+    { t: T(5), seq: 9, ev: 'stage.ended', queueId: 1, playedSec: 180 },
+  ];
+  const stats = computeStats({ meta: {}, events, now: T(6) });
+  assert.equal(stats.global.duos.improvised, 1, 'le changement de partenaire n’est pas un deuxième duo');
+  assert.equal(stats.global.duos.improvisedReplaced, 1);
+  assert.equal(stats.global.duos.improvisedStages, 1);
+  assert.deepEqual(stats.timeline.stages[0].ids, ['p1', 'p3']);
+});
