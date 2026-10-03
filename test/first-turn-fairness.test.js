@@ -390,7 +390,8 @@ test('deux solistes du Comptoir confirment leur duo et ne cèdent pas leurs plac
   const duo = s.inviteDuet(alice, bruno.id, song(74));
   assert.equal(duo.duet.state, 'pending', 'le second soliste doit consentir');
   assert.equal(s.duetInvites(bruno)[0]?.entryId, duo.entryId);
-  assert.equal(s.select(), null, 'le duo ne part pas avant sa réponse');
+  // Sans réponse, le titre ne l'attend pas : à son tour, il partirait en solo.
+  assert.deepEqual(s.select().ids, [alice.id], 'le duo ne part pas avant sa réponse');
   assert.throws(() => s.giveSpot(alice, bruno.id), /groupe/,
     'le Comptoir ne permet pas de céder son rang à un autre soliste');
   s.answerDuet(bruno, true, duo.entryId);
@@ -552,7 +553,7 @@ test('présence : B garde le prochain passage devant C confirmé, sans être env
   s.chooseSong(a, song(100));
   s.chooseSong(b, song(101));
   s.chooseSong(c, song(102));
-  s.inviteDuet(d, e.id, song(103)); // en attente, n'entre pas dans la file prête
+  s.inviteDuet(d, e.id, song(103)); // en attente : le titre de David garde sa place, en solo
   s.Q = [a.id, b.id, c.id, d.id, e.id, f.id]; // Farid sans chanson
   s.confirm(a);
   s.confirm(c);
@@ -560,8 +561,8 @@ test('présence : B garde le prochain passage devant C confirmé, sans être env
   assert.equal(onStage.ids[0], a.id);
   s.commit(onStage);
   assert.equal(s.readyView()[0].ids[0], c.id, 'la vue strictement envoyable omet Bruno');
-  assert.deepEqual(s.presenceView().map(v => v.ids[0]), [b.id, c.id],
-    'la prévision de présence ne montre ni duo en attente ni ticket sans titre');
+  assert.deepEqual(s.presenceView().map(v => v.ids), [[b.id], [c.id], [d.id]],
+    'la prévision de présence montre le titre de David (invitation en attente, Emma non comprise), pas le ticket sans titre');
   assert.equal(s.reservePresenceNext().ids[0], b.id);
   assert.equal(s.select(), null, 'Carla ne part pas tant que Bruno n’a pas répondu');
   assert.equal(s.reservedNext?.personId, b.id);
@@ -572,7 +573,7 @@ test('présence : B garde le prochain passage devant C confirmé, sans être env
   assert.equal(s.select().ids[0], c.id);
 });
 
-test('présence : la réservation est libérée si le titre est retiré ou si un duo attend encore', () => {
+test('présence : la réservation est libérée si le titre est retiré ; une invitation en attente garde sa place', () => {
   const s = new Scheduler({ requirePresence: true });
   const b = person(s, '1', 'Bruno');
   const c = person(s, '2', 'Carla');
@@ -586,7 +587,17 @@ test('présence : la réservation est libérée si le titre est retiré ou si un
   assert.equal(s.reservePresenceNext().ids[0], c.id);
   const duet = s.inviteDuet(d, b.id, song(106));
   assert.equal(duet.duet.state, 'pending');
-  assert.deepEqual(s.presenceView().map(v => v.ids[0]), [c.id]);
+  assert.deepEqual(s.presenceView().map(v => v.ids), [[c.id], [d.id]], 'David seul, après Carla annoncée');
+  assert.equal(s.reservePresenceNext().ids[0], c.id);
+  // Annoncé alors que son invitation attend : la réservation tient, pour lui seul.
+  s.commit(s.select());
+  assert.equal(s.reservePresenceNext().ids.join(), d.id);
+  assert.equal(s.select(), null, 'David doit confirmer lui-même');
+  s.confirm(b);
+  assert.equal(s.select(), null, 'la réponse de Bruno ne vaut pas pour David');
+  s.confirm(d);
+  assert.deepEqual(s.select().ids, [d.id]);
+  assert.equal(s.reservedNext?.personId, d.id);
 });
 
 test('déplacer au bar le passage réservé vers le bas remplace aussi la garantie', () => {

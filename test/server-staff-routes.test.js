@@ -652,24 +652,24 @@ test('bonus, fiche privée et « toujours là » depuis la page du bar', async (
 });
 
 // ---------------------------------------------------------------- état du bar
-test('état du bar : duo en attente bloqué, envoi en cours, titres suivis et réglages Battle', async () => {
+test('état du bar : invitation en attente dans la file, envoi en cours, titres suivis et réglages Battle', async () => {
   const f = harness();
   const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
   const bruno = f.sched.join({ tableId: '2', name: 'Bruno', headcount: 2 });
   f.sched.inviteDuet(alice, bruno.id, { songId: 700, title: 'Duo en attente', artist: 'Les Deux' });
-  const blocked = plain(f.staffState().blocked);
-  assert.deepEqual(blocked, [{ id: alice.id, name: 'Alice', table: 'Table 1', title: 'Duo en attente',
-    artist: 'Les Deux', reason: 'Duo à accepter' }]);
-  // Déjà parti vers KaraFun : plus bloqué.
+  // Une invitation sans réponse ne retient pas le titre : il est à sa place
+  // dans la file, marqué, et personne n'est « sauté ».
+  const waiting = f.staffState();
+  assert.equal(waiting.blocked, undefined);
+  assert.deepEqual(plain(waiting.queue.map(q => [q.source, q.ids, q.song.duet?.state])), [['helper', [alice.id], 'pending']]);
   f.setPending({ sel: { ids: [alice.id], song: alice.song, label: 'Alice · Table 1', names: ['Alice'] }, cancelled: false,
     before: new Set(), at: Date.now() });
   const state = f.staffState();
-  assert.deepEqual(plain(state.blocked), []);
   assert.deepEqual(plain(state.pending), { label: 'Alice · Table 1', title: 'Duo en attente' });
   f.setPending(null);
-  // Accepté : le duo rejoint la file.
+  // Accepté : le même titre, en duo.
   f.sched.answerDuet(bruno, true);
-  assert.deepEqual(plain(f.staffState().blocked), []);
+  assert.deepEqual(plain(f.staffState().queue.map(q => [q.ids, q.kind])), [[[alice.id, bruno.id], 'duo']]);
 
   const chloe = f.sched.join({ tableId: '3', name: 'Chloé', headcount: 1 });
   f.sched.chooseSong(chloe, { songId: 701, title: 'Solo' });

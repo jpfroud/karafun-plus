@@ -254,9 +254,6 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .drag-handle:active { cursor: grabbing; }
 .drag-handle[disabled] { opacity: .2; cursor: default; }
 .empty-state { padding: 22px 8px; text-align: center; color: var(--muted); }
-.blocked-box { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 10px; background: var(--surface-2); font-size: 12px; }
-.blocked-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--line); }
-.blocked-item:first-child { margin-top: 6px; }
 .new-table { display: grid; grid-template-columns: minmax(120px, 1fr) 165px auto; gap: 10px; align-items: end; }
 .new-table label { display: grid; gap: 5px; font-size: 12px; font-weight: 700; color: var(--muted); }
 .new-table input { min-height: 42px; padding: 8px 10px; }

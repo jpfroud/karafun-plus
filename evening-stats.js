@@ -182,7 +182,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const presenceAsked = new Map(); // personId → heure de la demande en cours
   const battles = { proposals: 0, votes: 0, outcomes: {}, staffLaunches: 0, external: 0, voters: [], list: [], cooldownLifted: 0 };
   const duos = { invites: 0, accepted: 0, declined: 0, cancelled: 0, joinRequests: 0, joinAccepted: 0, joinDeclined: 0,
-    joinCancelled: 0, joinExpired: 0, improvised: 0, improvisedCancelled: 0, improvisedReplaced: 0, left: 0 };
+    joinCancelled: 0, joinExpired: 0, inviteExpired: 0, improvised: 0, improvisedCancelled: 0, improvisedReplaced: 0, left: 0 };
   const staff = { moves: 0, priorities: 0, undo: 0, recalculate: 0, removedSongs: 0, queueCleared: 0, absent: 0,
     play: 0, next: 0, restarts: 0, bonus: 0, settings: 0 };
   const closing = { sets: 0, closingAt: null, reachedAt: null, pulled: 0, refused: 0, unsungAtClose: null, cleared: 0 };
@@ -203,7 +203,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     openStages.set(stage.queueId ?? `#${stages.length}`, stage);
   };
   const activityKeys = ['personId', 'requesterId', 'voterId', 'proposerId'];
-  const passive = /^(presence\.(asked|skipped)|staff\.|table\.|turn\.|person\.(left|joined)|song\.removed|duo\.(joinExpired|improvised)|notice\.)/;
+  const passive = /^(presence\.(asked|skipped)|staff\.|table\.|turn\.|person\.(left|joined)|song\.removed|duo\.(joinExpired|inviteExpired|improvised)|notice\.)/;
 
   for (const e of list) {
     const t = e.t;
@@ -281,6 +281,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       }
       case 'duo.joinCancelled': duos.joinCancelled++; break;
       case 'duo.joinExpired': duos.joinExpired++; break;
+      // Invitation sans réponse au départ du titre : il est parti en solo. Ni
+      // refusée ni annulée, elle n'est comptée qu'ici.
+      case 'duo.inviteExpired': { const s = songs.get(e.entryId); if (s) s.partnerId = null; duos.inviteExpired++; break; }
       case 'duo.left': {
         duos.left++;
         const guest = e.personId || e.partnerId || e.guestId;

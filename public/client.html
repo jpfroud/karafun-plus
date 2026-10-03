@@ -140,6 +140,7 @@
   .client .closing-box b { display: block; }
   .client .qlist li.after-closing { border-left: 3px dashed var(--warn); padding-left: 6px; }
   .client .qlist .closing-tag { color: var(--warn); font-weight: 600; }
+  .client .qlist .invite-tag { color: var(--warn); }
   .client .qlist .queue-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
   .client .qlist .queue-actions .btn { min-height: 40px; padding: 6px 12px; font-size: 13px; white-space: nowrap; }
   .client .battle-pick { margin: 10px 0 0; position: sticky; top: 62px; z-index: 3; box-shadow: 0 8px 28px rgba(0,0,0,.25); }
@@ -706,8 +707,9 @@
     };
     if (item.kind === 'invite') return {
       title: t('{from} propose un duo à {name}', { from: item.invite.fromName || t('Un chanteur'), name }),
-      text: t('Sur « {title} ». Seul {from} dépense son tour ; {name} garde ses propres chansons.',
-        { title: item.invite.song?.title || t('une chanson'), from: item.invite.fromName || t('Un chanteur'), name }),
+      // Sans réponse au tour de l'auteur, le titre part en solo et l'invitation expire.
+      text: `${t('Sur « {title} ». Seul {from} dépense son tour ; {name} garde ses propres chansons.',
+        { title: item.invite.song?.title || t('une chanson'), from: item.invite.fromName || t('Un chanteur'), name })} ${t('Réponds avant son tour, sinon l’invitation expire.')}`,
       choices: button('yes', t('Accepter'), true) + button('no', t('Refuser')) + later,
     };
     if (item.kind === 'join') return {
@@ -895,6 +897,8 @@
       case 'joinExpired': return p.reason === 'sent'
         ? t('La demande de duo de {person} à {name} a expiré : « {title} » est parti dans KaraFun.', values)
         : t('La demande de duo de {person} à {name} est close : « {title} » n’est plus dans sa liste.', values);
+      case 'inviteExpired': return t('L’invitation de duo de {name} sur « {title} » a expiré : son tour est arrivé avant la réponse de {person}. {name} le chante en solo.', values);
+      case 'inviteUnanswered': return t('{name} n’a pas répondu à temps : {person} chante « {title} » en solo.', values);
       case 'presenceRemoved': return tp(Number(p.skips) || 1, '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.',
         '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.', values);
       case 'closingPulled': return t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.', values);
@@ -1451,12 +1455,15 @@
           ? (duet.seen === false ? t('duo avec {name} (invitation pas encore vue)', { name: duet.partnerName || t('un autre chanteur') })
             : t('duo avec {name} (en attente de sa réponse)', { name: duet.partnerName || t('un autre chanteur') }))
           : t('duo avec {name}', { name: duet.partnerName || t('un autre chanteur') }))}` : '';
-        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}</div></div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
+        // Invitation sans réponse : le titre ne l'attend pas, il partira en solo.
+        const soloHint = duet?.state === 'pending' ? `<div class="tiny muted invite-solo">${esc(individual ? t('Sans réponse avant ton tour, tu chanteras seul.')
+          : t('Sans réponse avant son tour, {name} chantera seul.', { name: person.name }))}</div>` : '';
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>${canEdit && ready.length > 1 ? `<p class="tiny muted order-hint">${esc(individual
         ? t('⇅ change l’ordre de tes titres sans perdre ta place dans la file.') : t('⇅ change l’ordre de ses titres sans perdre sa place dans la file.'))}</p>` : ''}`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
-      const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(t('{name} propose un duo', { name: invite.fromName || t('Un chanteur') }))}</b> ${esc(t('sur « {title} »', { title: invite.song?.title || t('une chanson') }))}${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}.
+      const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(t('{name} propose un duo', { name: invite.fromName || t('Un chanteur') }))}</b> ${esc(t('sur « {title} »', { title: invite.song?.title || t('une chanson') }))}${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}. ${esc(t('Réponds avant son tour, sinon l’invitation expire.'))}
         ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : notMine(person)}</div>`).join('');
       const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(t('{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.',
         { name: person.name, from: duo.fromName, title: duo.song?.title || t('une chanson') }))}${canEdit && duo.ownerId ? `<div class="invite-actions"><button type="button" class="btn small ghost" data-duet-leave="${esc(duo.entryId)}" data-owner-id="${esc(duo.ownerId)}" data-owner-name="${esc(duo.fromName || '')}" data-title="${esc(duo.song?.title || '')}" data-person-id="${esc(person.id)}">${esc(t('Je ne chante plus ce duo'))}</button></div>` : ''}</div>`).join('');
@@ -1499,12 +1506,16 @@
       const source = item.waitingPresence ? t('Présence à confirmer') : item.deferred ? t('Pas encore prêt : passage repoussé')
         : item.source === 'karafun' ? t('Prête dans KaraFun') : item.source === 'envoi' ? t('Ajout en cours') : item.future ? t('Titre suivant, après son premier passage') : '';
       const closing = item.afterClosing ? ` · <span class="closing-tag">${esc(t('Après la fermeture'))}</span>` : '';
+      // Invitation de duo sans réponse : le titre garde sa place et partira
+      // en solo si personne ne répond avant son tour.
+      const invitePending = item.source === 'helper' && item.song?.duet?.state === 'pending';
+      const inviteTag = invitePending ? ` · <span class="invite-tag">${esc(t('invitation de duo en attente'))}</span>` : '';
       // Un titre qui plaît : proposer à son auteur de le chanter ensemble.
       const entryId = item.song?.entryId;
-      const joinable = canAsk && !mine && item.source === 'helper' && item.kind !== 'duo' && item.id && entryId && list(item.ids).length === 1;
+      const joinable = canAsk && !mine && item.source === 'helper' && item.kind !== 'duo' && !invitePending && item.id && entryId && list(item.ids).length === 1;
       const join = !joinable ? '' : requested.has(String(entryId)) ? `<span class="badge">${esc(t('Duo demandé'))}</span>`
         : `<button type="button" class="btn small" data-join-request="${esc(item.id)}" data-join-entry="${esc(entryId)}" data-join-name="${esc(item.name || '')}" data-join-title="${esc(item.title || item.song?.title || '')}" aria-label="${esc(t('Proposer un duo à {name} sur {title}', { name: item.name || t('cette personne'), title: item.title || t('ce titre') }))}">${esc(t('Duo ?'))}</button>${item === nextHelper ? `<span class="tiny muted">${esc(t('réponse avant l’envoi'))}</span>` : ''}`;
-      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}"><span class="num">${esc(item.pos || index + 1)}</span>${cover(item.song || item, 'sm')}<div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div></li>`;
+      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}"><span class="num">${esc(item.pos || index + 1)}</span>${cover(item.song || item, 'sm')}<div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}${inviteTag}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div></li>`;
     }).join('');
     const localWaiting = waiting.filter(person => ids.has(String(person.id)));
     $('waitingEmpty').hidden = localWaiting.length > 0;
@@ -2480,8 +2491,10 @@
       const partner = partners.find(p => String(p.id) === String($('duoPartner').value));
       $('sendDuo').textContent = state?.table?.individual || String(partner?.tableId) !== String(state?.table?.id)
         ? t('Envoyer l’invitation') : t('Ajouter le duo');
-      $('duoConsent').textContent = state?.table?.individual ? t('Son accord est nécessaire.')
-        : String(partner?.tableId) !== String(state?.table?.id) ? t('Son téléphone devra accepter l’invitation.') : t('Même table : le duo est ajouté directement.');
+      // Sans réponse avant son tour, l'auteur chantera seul : dit dès l'invitation.
+      $('duoConsent').textContent = state?.table?.individual ? `${t('Son accord est nécessaire.')} ${t('Sans réponse avant ton tour, tu chanteras seul.')}`
+        : String(partner?.tableId) !== String(state?.table?.id) ? `${t('Son téléphone devra accepter l’invitation.')} ${t('Sans réponse avant son tour, {name} chantera seul.', { name: owner.name })}`
+          : t('Même table : le duo est ajouté directement.');
       const planned = Number(partner?.guestDuos) || 0;
       $('duoPartnerHint').hidden = !planned;
       $('duoPartnerHint').textContent = planned ? tp(planned, '{name} a déjà {n} duo prévu. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.',

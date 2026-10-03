@@ -1289,6 +1289,11 @@ function publicState(person, tableId, managed = null) {
       pendingRemoval: true, canDeferMore: false } : null;
   };
   const sentJoinRequests = sched.duetJoinRequestsByPerson();
+  // Invitations reçues, sauf celle dont le titre part déjà dans KaraFun : elle
+  // expirera à son accusé (on ne peut plus l'accepter).
+  const sending = sendingEntryId();
+  const invitesFor = p => sched.duetInvites(p).filter(inv => inv.entryId !== sending).map(inv => ({ entryId: inv.entryId,
+    fromName: sched.people.get(inv.fromId)?.name || 'Un chanteur', song: fmtSong(inv.song) }));
   const next = queue[0] || null;
   const nextEta = next?.eta || null;
   const confirmedForPage = p => !!sched._confirmedRecently(p) ||
@@ -1362,10 +1367,7 @@ function publicState(person, tableId, managed = null) {
       songs: sched.songsOf(p).map(fmtSong),
       confirmed: confirmedForPage(p),
       needConfirm: needsPresence(p),
-      invite: p.invite ? { fromName: sched.people.get(p.invite.fromId)?.name || 'Un chanteur',
-        song: fmtSong(p.invite.song) } : null,
-      invites: sched.duetInvites(p).map(inv => ({ entryId: inv.entryId,
-        fromName: sched.people.get(inv.fromId)?.name || 'Un chanteur', song: fmtSong(inv.song) })),
+      ...(invites => ({ invite: invites[0] ? { fromName: invites[0].fromName, song: invites[0].song } : null, invites }))(invitesFor(p)),
       guestDuos: guestDuosOf(p),
       // Demandes de duo reçues sur ses titres, et envoyées à d'autres.
       // Titre en cours d'envoi : la demande expirera à son accusé.
@@ -1394,7 +1396,6 @@ function publicState(person, tableId, managed = null) {
     const onStageNow = !!(stage && stage.ours && stage.ids.includes(person.id));
     const upNext = !!(next && next.ours && next.ids.includes(person.id));
     const owner = person.duetOf ? sched.people.get(person.duetOf) : null;
-    const inviter = person.invite ? sched.people.get(person.invite.fromId) : null;
     const partner = person.duet ? sched.people.get(person.duet.partnerId) : null;
     out.me = {
       id: person.id, name: person.name, tableId: person.tableId, photo: person.photo ? `/photo/${person.id}` : null,
@@ -1403,9 +1404,7 @@ function publicState(person, tableId, managed = null) {
       sung: person.sung, inQueue: i >= 0,
       pos: mine ? mine.pos : null, eta: mine ? mine.eta : null, guaranteed: mine ? mine.guaranteed : false,
       over: person.over, onStage: onStageNow, upNext,
-      invite: inviter ? { fromName: inviter.name, song: fmtSong(person.invite.song) } : null,
-      invites: sched.duetInvites(person).map(inv => ({ entryId: inv.entryId,
-        fromName: sched.people.get(inv.fromId)?.name || 'Un chanteur', song: fmtSong(inv.song) })),
+      ...(invites => ({ invite: invites[0] ? { fromName: invites[0].fromName, song: invites[0].song } : null, invites }))(invitesFor(person)),
       guestDuos: guestDuosOf(person),
       duet: partner ? { partnerName: partner.name, state: person.duet.state } : (owner ? { partnerName: owner.name, state: 'accepted', asPartner: true, song: fmtSong(owner.song) } : null),
       confirmed: confirmedForPage(person),
@@ -1423,13 +1422,6 @@ function staffState() {
   const presenceIds = new Set(presenceMissing(presence));
   const presencePending = [...presenceIds].map(pid => sched.people.get(pid)?.name).filter(Boolean);
   const ips = lanAddresses();
-  const alreadySent = new Set(tracked.map(tr => tr.sel.song?.entryId).filter(Boolean));
-  if (pending?.sel.song?.entryId) alreadySent.add(pending.sel.song.entryId);
-  const blocked = sched.Q.map(id => sched.people.get(id)).filter(p =>
-    p && p.song?.duet?.state === 'pending' && !alreadySent.has(p.song.entryId) &&
-    !pub.queue.some(q => q.source === 'helper' && q.song?.entryId === p.song.entryId))
-    .map(p => ({ id: p.id, name: p.name, table: sched.table(p.tableId, false)?.name || '',
-      title: p.song.title, artist: p.song.artist || '', reason: 'Duo à accepter' }));
   const canUndoManual = sched.canUndoManualChange(priorityNativeFingerprint());
   const latestManual = sched.manualChanges.at(-1);
   const repeats = queueRepeats(pub.queue, sched.playedSongs, Date.now(), repeatWindowMs());
@@ -1447,7 +1439,6 @@ function staffState() {
         ...(skips ? { presenceSkips: skips } : {}) } : line;
     }),
     battle: { ...battleVote.view(), registered: battleElectorate().length },
-    blocked,
     // Demandes de duo encore sans réponse de l'auteur du titre.
     joinRequests: [...sched.duetJoinRequestsByPerson()].flatMap(([requesterId, rows]) => rows.map(row => ({
       ownerId: row.ownerId, ownerName: row.ownerName, requesterId,
@@ -2031,6 +2022,21 @@ function assertNotSending(entryId) {
   }
 }
 
+// Titre d'une invitation de duo en route vers KaraFun : il part en solo et
+// l'invitation expire à l'accusé (Scheduler#_expireInvite). L'accepter n'est
+// plus possible ; la refuser ne change rien au titre. Sans titre précis, la
+// seule invitation reçue est visée (comme Scheduler#answerDuet).
+function sendingEntryId() {
+  return pending && !pending.cancelled ? pending.sel.song.entryId : null;
+}
+function assertInviteNotSending(guest, entryId) {
+  const sending = sendingEntryId();
+  if (!sending) return;
+  const invites = sched.duetInvites(guest);
+  const target = entryId ? String(entryId) : invites.length === 1 ? invites[0].entryId : null;
+  if (target === sending) throw new Error('Trop tard : ce titre part déjà dans KaraFun en solo, l’invitation a expiré.');
+}
+
 // Duo en route vers KaraFun : ses chanteurs sont fixés jusqu'à l'accusé.
 function assertDuoNotSending(entryId, personId) {
   if (pending && !pending.cancelled && pending.sel.song.entryId === entryId && pending.sel.ids.includes(personId)) {
@@ -2408,6 +2414,7 @@ const handlers = {
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
     const p = personAtTable(body);
+    if (body.accept) assertInviteNotSending(p, body.entryId);
     sched.answerDuet(p, !!body.accept, body.entryId); sync(); return { ok: true };
   },
   'POST /api/table/duet/cancel': async (req, res, body) => {
@@ -2490,7 +2497,10 @@ const handlers = {
     assertRoomBeforeClosing(me, 'append');
     sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
   },
-  'POST /api/duet/answer': async (req, res, body, me) => { sched.answerDuet(me, !!body.accept, body.entryId); sync(); return { ok: true }; },
+  'POST /api/duet/answer': async (req, res, body, me) => {
+    if (body.accept) assertInviteNotSending(me, body.entryId);
+    sched.answerDuet(me, !!body.accept, body.entryId); sync(); return { ok: true };
+  },
   'POST /api/duet/cancel': async (req, res, body, me) => { sched.cancelDuet(me, body.entryId); sync(); return { ok: true }; },
   'POST /api/confirm': async (req, res, body, me) => { confirmPresence(me); return { ok: true }; },
   'POST /api/give': async (req, res, body, me) => { sched.giveSpot(me, body.to); sync(); return { ok: true }; },

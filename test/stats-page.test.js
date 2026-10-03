@@ -181,6 +181,8 @@ test('page des statistiques : chiffres clés, repères, graphiques et tableaux d
   assert.equal(singers.byTag('tbody')[0].children.length, 5);
   assert.match(text(singers), /Alice.*Table 1/s);
   assert.match(text(page.doc.getElementById('cardSocial')), /Vote terminé : acceptée \(4 voix\).*Battle lancée par le bar : « Bar ».*pas assez de votants/s);
+  assert.match(text(page.doc.getElementById('cardSocial')), /invitations.*refusées.*sans réponse.*demandes « Duo \? »/s,
+    'invitations restées sans réponse au départ du titre');
   // Soirée en cours : rafraîchie toutes les 15 s.
   assert.equal(page.timers.at(-1).ms, 15000);
   const before = page.fetches.length;

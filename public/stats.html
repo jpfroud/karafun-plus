@@ -623,7 +623,7 @@ function renderSocial() {
   const el = h('figure', { class: 'st-card', id: 'cardSocial' }, h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: 'Duos et Battles' }),
     h('p', { text: 'Invitations, demandes et votes de la soirée.' }))));
   el.appendChild(h('div', { class: 'st-mini' }, ...[
-    [g.duoStages, 'duos chantés'], [d.invites, 'invitations'], [d.accepted, 'acceptées'], [d.declined, 'refusées'],
+    [g.duoStages, 'duos chantés'], [d.invites, 'invitations'], [d.accepted, 'acceptées'], [d.declined, 'refusées'], [d.inviteExpired, 'sans réponse'],
     [d.joinRequests, 'demandes « Duo ? »'], [d.joinAccepted, 'acceptées'], [d.joinExpired, 'expirées'], [d.improvisedStages, 'notés par le bar'],
     [g.crossTableDuos, 'entre tables'], [b.proposals, 'votes Battle'], [b.votes, 'voix'], [b.launched, 'Battles lancées']]
     .map(([value, label]) => h('div', {}, h('b', { text: String(value ?? 0) }), h('small', { text: label })))));
