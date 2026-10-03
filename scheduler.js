@@ -782,6 +782,13 @@ class Scheduler {
       // repasse par les règles de la file (premiers passages, espacement,
       // plafond du tour). Une priorité du bar tient.
       if (this.reservedNext?.personId === p.id && !this.reservedNext.byStaff && p.song === song) this.releaseNext();
+      // Passage repoussé (« Pas prêt ») pendant que l'invitation attendait :
+      // il attend désormais aussi l'invitée, comme un duo reporté (inverse de
+      // leaveDuet). Sinon son solo partirait avant, et le duo juste après.
+      if (p.deferral?.entryId === song.entryId) {
+        const ids = Array.isArray(p.deferral.ids) && p.deferral.ids.length ? p.deferral.ids : [p.id];
+        p.deferral.ids = ids.includes(q.id) ? ids : [...ids, q.id];
+      }
       this.note(`${q.name} accepte le duo avec ${p.name} : seul ${p.name} dépense son tour`);
     } else {
       delete song.duet;
@@ -1013,8 +1020,12 @@ class Scheduler {
     // Le partenaire vient de monter sur scène : le passage annoncé avec lui
     // juste après est libéré, et la file choisit à nouveau le suivant (avec
     // l'espacement habituel, il chantera plus tard si d'autres attendent).
+    // Une invitation encore sans réponse ne compte pas : ce passage annoncé
+    // part en solo, sans le partenaire.
     const reserved = this.people.get(this.reservedNext?.personId);
-    if (reserved && (reserved.id === partner.id || reserved.song?.duet?.partnerId === partner.id)) this.releaseNext();
+    const reservedDuet = reserved?.song?.duet;
+    if (reserved && (reserved.id === partner.id ||
+        (reservedDuet?.state === 'accepted' && reservedDuet.partnerId === partner.id))) this.releaseNext();
     record.after = this._duoFields(partner.id);
     record.serialAfter = this.appearanceSerial;
     if (sel) sel.staffDuo = record;
@@ -2576,7 +2587,9 @@ class Scheduler {
         p.deferral.remaining === Math.max(0, old.remaining - 1)) : clearedByThis;
       if (!untouched) continue;
       if (sel.deferralReleasedTo === p.id && this.reservedNext?.personId === p.id) this.releaseNext();
-      p.deferral = { ...old };
+      // Seul le compte revient : les chanteurs du passage reporté ont pu
+      // changer depuis (invitation acceptée, invitée retirée du duo).
+      p.deferral = { ...old, ...(Array.isArray(p.deferral?.ids) ? { ids: [...p.deferral.ids] } : {}) };
     }
     if (sel) { delete sel.deferralUndo; delete sel.deferralReleasedTo; }
     const before = credit?.before, after = credit?.after;
@@ -2747,8 +2760,10 @@ class Scheduler {
       // Demandes de duo sans réponse : le titre part sans les attendre.
       this._closeJoinRequests(owner, sel.song, 'sent');
       // Invitation sans réponse : le titre est parti en solo, elle expire.
+      // Titre remplacé ou retiré pendant l'envoi : l'invitée a déjà appris
+      // l'annulation du duo (_songsGone), rien n'expire ni n'est prévenu.
       if (!second) {
-        this._expireInvite(owner, sent || sel.song);
+        if (sent) this._expireInvite(owner, sent);
         if (sel.song.duet?.state === 'pending') delete sel.song.duet;
       }
     }
