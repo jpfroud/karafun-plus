@@ -2139,6 +2139,15 @@ test('barre du haut : état KaraFun du pont, alerte impossible à manquer, recon
   assert.match(page.toast().text, /redonne-lui les droits/);
   await page.update({ kf: { ...world.kf, ready: false, connection: { phase: 'waiting-name', level: 'wait', label: 'Nom en cours', since: Date.now(), attempt: 1, canRename: false, alert } } });
   assert.equal(page.in('staffAlerts', '[data-alert-rename]'), null, 'pas de bouton quand le changement de nom n’est plus possible');
+  // Conflit de nom pendant une attente de relance (KaraFun relancé puis
+  // reparti) : KaraFun est absent, le nom n'est pas redemandé. L'alerte
+  // « Reconnecter » passe avant celle du conflit, comme avant la limite.
+  await page.update({ kf: { ...world.kf, ready: false, connection: { phase: 'retry', level: 'error',
+    label: 'KaraFun fermé ou télécommande désactivée : nouvel essai dans 6 s', since: Date.now(), attempt: 2, canRename: true, alert,
+    nameConflict: { holder: 'FileKaraoke', since: Date.now(), tries: 1, switchAt: Date.now() + 80000 } } } });
+  assert.equal(page.in('staffAlerts', '.kf-alert span').textContent, 'KaraFun fermé ou télécommande désactivée : nouvel essai dans 6 s : les titres ne partent plus.');
+  assert.ok(page.in('staffAlerts', '[data-alert-reconnect]'), 'Reconnecter à portée de doigt');
+  assert.equal(page.in('staffAlerts', '[data-alert-rename]'), null, 'pas de changement de nom pendant que KaraFun est absent');
   // KaraFun limite les essais depuis ce PC : alerte impossible à fermer, sans
   // bouton « Reconnecter » (inutile de cliquer) ; un clic reçoit une erreur.
   const limit = 'KaraFun limite les essais depuis cette connexion jusqu’à 20:00 : inutile de cliquer, la file réessaiera seule. Un téléphone sur un autre réseau (4G/5G) n’est pas concerné.';

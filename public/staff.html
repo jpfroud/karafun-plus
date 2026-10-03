@@ -913,12 +913,16 @@
     if (changed) saveDismissed();
     // KaraFun perdu : impossible à fermer, avec la reconnexion à portée de doigt.
     const kf = kfStatus();
-    // Alerte du pont KaraFun d'abord : nom encore tenu par l'ancienne connexion
-    // (la file réessaie seule, ou prend un autre nom tout de suite), ou KaraFun
-    // qui limite les essais (inutile de cliquer : pas de bouton Reconnecter).
+    // KaraFun qui limite les essais d'abord : inutile de cliquer, pas de
+    // bouton Reconnecter. Puis KaraFun perdu (Reconnecter), même pendant un
+    // conflit de nom : KaraFun absent, le nom n'est pas redemandé. Enfin le
+    // nom encore tenu par l'ancienne connexion (la file réessaie seule, ou
+    // prend un autre nom tout de suite).
+    const connection = S.kf?.connection;
     const kfAlert = !S.kf ? '<div class="staff-alert kf-alert"><span>KaraFun n’a pas de code : aucun titre ne part.</span><span class="alert-actions"><button type="button" class="btn small" data-alert-goto="kfPanel">Saisir le code</button></span></div>' :
-      S.kf.connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(S.kf.connection.alert)}</span>${S.kf.connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` :
-      kf.down ? `<div class="staff-alert kf-alert"><span>${esc(kf.text)} : les titres ne partent plus.</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span></div>` : '';
+      connection?.alert && !connection.nameConflict && !connection.canRename ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span></div>` :
+      kf.down ? `<div class="staff-alert kf-alert"><span>${esc(kf.text)} : les titres ne partent plus.</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span></div>` :
+      connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';
     const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
     const shown = alerts.filter(([key, text]) => dismissedAlerts[key] !== text).map(([key, text]) =>
       `<div class="staff-alert"><span>${esc(text)}</span><button type="button" class="alert-close" data-dismiss-alert="${esc(key)}" aria-label="Fermer ce message" title="Fermer ce message">×</button></div>`);
