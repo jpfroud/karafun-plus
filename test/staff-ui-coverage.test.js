@@ -760,6 +760,31 @@ test('file du bar : statuts, badges, doublons, repères et séparateur de fermet
   assert.equal(page.$('qn').textContent, '0');
 });
 
+// Une invitation de duo sans réponse ne retient plus le titre : il reste à
+// sa place dans la file, marqué, et part en solo si personne n'a répondu.
+test('file du bar : invitation de duo en attente marquée, plus de liste des duos sautés', async () => {
+  const world = baseWorld();
+  world.queue = [{ source: 'helper', id: 'alice', pos: 1, name: 'Alice', table: 'Table 1', ids: ['alice'],
+    song: { title: 'Valse', artist: 'Strauss', entryId: 'e1', duet: { partnerName: 'Zoé', state: 'pending', kind: 'duo', seen: false } } },
+  { source: 'helper', id: 'bruno', pos: 2, name: 'Bruno', table: 'Table 2', ids: ['bruno'], song: { title: 'Rock', entryId: 'e2' } }];
+  world.next = world.queue[0];
+  const page = await openPage({ world });
+  assert.match(page.$('next').textContent, /Invitation en attente.*Valse/s, 'Scène : « Ensuite » porte le repère');
+  const lines = rows(page);
+  assert.deepEqual(badges(lines[0]), ['À venir', 'Invitation en attente']);
+  assert.equal(lines[0].querySelector('.badge.invite').title,
+    'Duo proposé à Zoé (pas encore vue) : sans réponse à son tour, le titre part en solo dans KaraFun.');
+  assert.deepEqual(badges(lines[1]), ['À venir']);
+  world.queue[0].song.duet.seen = true;
+  await page.update({ queue: world.queue });
+  assert.equal(rows(page)[0].querySelector('.badge.invite').title,
+    'Duo proposé à Zoé : sans réponse à son tour, le titre part en solo dans KaraFun.');
+  // En cours d'envoi : le titre part en solo, l'invitation expire à l'accusé.
+  await page.update({ queue: [{ ...world.queue[0], source: 'envoi', id: undefined }] });
+  assert.deepEqual(badges(rows(page)[0]), ['Envoi']);
+  assert.ok(!/blockedBox|Duos en attente d’accord/.test(html), 'plus de liste « Duos en attente d’accord »');
+});
+
 test('file du bar : retirer, priorité, sélection multiple et retrait groupé', async () => {
   const page = await openPage({ world: queueWorld() });
   const line = index => rows(page)[index];

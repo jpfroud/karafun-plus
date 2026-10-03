@@ -40,8 +40,6 @@ const personTokens = new Map();
   assert.equal(awaitingPresence.presencePending.length, 1,
     'un seul chanteur est sollicité à la fois');
   assert.equal(awaitingPresence.queue.length, 6, 'les autres titres restent prévus dans la file');
-  assert.equal(awaitingPresence.blocked.length, 0,
-    'personne de rang éloigné n’est affichée comme bloquée avant sa demande');
   await post('/api/staff/settings', { requirePresence: false });
 
   await post('/api/staff/person/identify', { personId: singers[0].id, note: '  t-shirt   rouge ', verified: true });

@@ -575,7 +575,8 @@ test('duo : partenaires de la table et des autres tables, invitation ou ajout di
 
   await page.change('duoPartner', 'zoe');
   assert.equal(page.node('sendDuo').textContent, 'Envoyer l’invitation');
-  assert.equal(page.node('duoConsent').textContent, 'Son téléphone devra accepter l’invitation.');
+  assert.equal(page.node('duoConsent').textContent, 'Son téléphone devra accepter l’invitation. Sans réponse avant son tour, Alice chantera seul.',
+    'repère : sans réponse, le titre part en solo');
   assert.equal(page.node('duoPartnerHint').hidden, false);
   assert.match(page.node('duoPartnerHint').textContent, /^Zoé a déjà 2 duos prévus\. Personne ne monte sur scène plus de deux fois par tour/);
   await page.change('duoPartner', 'sam');
@@ -958,7 +959,8 @@ test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour
   assert.equal(page.node('attentionTitle').textContent, 'Zoé propose un duo à Alice');
   assert.deepEqual(page.posts.at(-1), ['/api/table/duet/seen', { table: '1', access: 'secret', personId: 'alice', entryId: 'x1' }],
     'invitation affichée : vue');
-  assert.equal(page.node('attentionText').textContent, 'Sur « Hit ». Seul Zoé dépense son tour ; Alice garde ses propres chansons.');
+  assert.equal(page.node('attentionText').textContent,
+    'Sur « Hit ». Seul Zoé dépense son tour ; Alice garde ses propres chansons. Réponds avant son tour, sinon l’invitation expire.');
   assert.equal(page.node('attentionCount').textContent, '1 / 4');
   assert.deepEqual(choices(), ['Accepter', 'Refuser', 'Plus tard (1 min)']);
 
@@ -1738,6 +1740,71 @@ test('demande et invitation de duo : « vue » signalée à l’affichage, statu
   const after = page.find('peopleList', '[data-person-card="alice"]').textContent;
   assert.match(after, /Mel l’a vue\. Sans réponse/);
   assert.match(after, /duo avec Zoé \(en attente de sa réponse\)/);
+});
+
+// Soirée du 2 octobre : une invitée ne voyait pas la demande et son auteur
+// était sauté sans limite. L'invitation ne retient plus le titre : à son
+// tour, il part en solo. Chacun le sait à l'avance, et après coup.
+test('invitation de duo sans réponse : avertie chez l’auteur et l’invité, marquée dans la file, avis d’expiration', async () => {
+  const at = Date.now();
+  const pending = { state: 'pending', partnerName: 'Zoé', seen: false };
+  const state = baseState({ queue: [
+    { pos: 1, source: 'helper', id: 'carla', ids: ['carla'], name: 'Carla', title: 'Valse', song: { entryId: 'c1', title: 'Valse', duet: { ...pending, partnerName: 'Dan' } } },
+    { pos: 2, source: 'helper', id: 'marc', ids: ['marc'], name: 'Marc', title: 'Tube', song: { entryId: 'm1', title: 'Tube' } }] });
+  state.tablePeople = [person('alice', 'Alice', {
+    songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre', duet: pending }, { entryId: 'e2', songId: 2, title: 'Seul' }],
+    inbox: [{ id: 'n1', kind: 'inviteUnanswered', params: { name: 'Zoé', title: 'Avant' }, at }] }),
+  person('bob', 'Bob', { invites: [{ entryId: 'x1', fromName: 'Léa', song: { title: 'Slow' } }],
+    inbox: [{ id: 'n2', kind: 'inviteExpired', params: { name: 'Léa', title: 'Tango' }, at }] })];
+  state.managedIds = ['alice', 'bob'];
+  const page = await open({ state });
+  // Fenêtre de l'invité : répondre avant le tour de l'auteur.
+  assert.equal(page.node('attentionTitle').textContent, 'Léa propose un duo à Bob');
+  assert.equal(page.node('attentionText').textContent,
+    'Sur « Slow ». Seul Léa dépense son tour ; Bob garde ses propres chansons. Réponds avant son tour, sinon l’invitation expire.');
+  await page.tap('attentionChoices', '[data-attn="later"]');
+  const card = id => page.find('peopleList', `[data-person-card="${id}"]`).textContent;
+  assert.match(card('bob'), /Léa propose un duo sur « Slow »\.\s*Réponds avant son tour, sinon l’invitation expire\./);
+  // Chez l'auteur : sous le titre en attente seulement.
+  assert.match(card('alice'), /duo avec Zoé \(invitation pas encore vue\)\s*Sans réponse avant son tour, Alice chantera seul\./);
+  assert.equal((card('alice').match(/Sans réponse avant son tour/g) || []).length, 1, 'pas sous le titre solo');
+  // File : le titre est à sa place, marqué, sans « Duo ? » (il a déjà son invitée).
+  const queue = page.node('queueList').innerHTML;
+  assert.match(queue, /Valse[^]*?invitation de duo en attente/);
+  assert.equal(page.node('queueList').querySelector('[data-join-request="carla"]'), null);
+  assert.ok(page.find('queueList', '[data-join-request="marc"]'), 'un titre solo reste proposable');
+  // En cours d'envoi : plus de repère, l'invitation expire à l'accusé.
+  page.state.queue[0] = { ...page.state.queue[0], source: 'envoi' };
+  await page.poll();
+  assert.doesNotMatch(page.node('queueList').innerHTML, /invitation de duo en attente/);
+  page.state.queue[0] = { ...page.state.queue[0], source: 'helper' };
+  await page.poll();
+  // Avis d'expiration, des deux côtés.
+  const infos = () => page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent);
+  assert.deepEqual(infos(), ['Zoé n’a pas répondu à temps : Alice chante « Avant » en solo.',
+    'L’invitation de duo de Léa sur « Tango » a expiré : son tour est arrivé avant la réponse de Bob. Léa le chante en solo.']);
+
+  const english = await open({ state, languages: ['en'] });
+  await english.tap('attentionChoices', '[data-attn="later"]');
+  assert.deepEqual(english.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent),
+    ['Zoé didn’t answer in time: Alice sings “Avant” solo.',
+      'Léa’s duet invitation for “Tango” has expired: their turn came before Bob answered. Léa sings it solo.']);
+  assert.match(english.find('peopleList', '[data-person-card="alice"]').textContent, /Without an answer before their turn, Alice will sing solo\./);
+  assert.match(english.find('peopleList', '[data-person-card="bob"]').textContent, /Answer before their turn, or the invitation expires\./);
+  assert.match(english.node('queueList').innerHTML, /duet invitation pending/);
+
+  // Une personne seule sur son téléphone : à la deuxième personne.
+  const solo = await open({ state: baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true },
+    tablePeople: [person('alice', 'Alice', { songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre', duet: { ...pending, seen: true } }] })] }),
+  path: '/t/Comptoir/secret' });
+  assert.match(solo.node('peopleList').textContent, /duo avec Zoé \(en attente de sa réponse\)\s*Sans réponse avant ton tour, tu chanteras seul\./);
+  // Repère dès l'invitation, à côté de « Envoyer l'invitation ».
+  const soloDuo = await open({ state: baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true } }), path: '/t/Comptoir/secret',
+    respond: url => url.startsWith('/api/duo/partners?') ? partners : undefined });
+  await soloDuo.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(soloDuo);
+  assert.equal(soloDuo.node('sendDuo').textContent, 'Envoyer l’invitation');
+  assert.equal(soloDuo.node('duoConsent').textContent, 'Son accord est nécessaire. Sans réponse avant ton tour, tu chanteras seul.');
 });
 
 // ================================================================ fermeture du bar

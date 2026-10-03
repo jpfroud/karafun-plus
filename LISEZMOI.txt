@@ -77,7 +77,9 @@ DÉMARRAGE AU BAR
    « Ma table » ; le formulaire disparaît quand l'effectif est atteint.
    Une personne peut être renommée. Pour un duo, choisis son titre et invite
    un partenaire : dans la même table le duo est accepté tout de suite, entre
-   deux tables le partenaire accepte sur sa page. Seul l'initiateur utilise
+   deux tables le partenaire accepte sur sa page. Sans réponse avant le tour
+   de l'initiateur, le titre part en solo et l'invitation expire (les deux
+   sont prévenus) : il garde sa place dans la file. Seul l'initiateur utilise
    son tour, l'invité garde ses chansons pour un prochain passage ;
    personne ne monte sur scène plus de deux fois par tour, avec au moins
    trois autres chansons entre deux passages quand c'est possible. Deux

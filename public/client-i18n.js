@@ -510,6 +510,14 @@ window.CLIENT_TRANSLATIONS = {
         '{n} planned songs will play before closing time: there is still room.',
       ],
       'Après la fermeture': 'After closing time',
+      // Invitation de duo sans réponse au tour de son auteur : solo
+      'Réponds avant son tour, sinon l’invitation expire.': 'Answer before their turn, or the invitation expires.',
+      'Sans réponse avant ton tour, tu chanteras seul.': 'Without an answer before your turn, you’ll sing solo.',
+      'Sans réponse avant son tour, {name} chantera seul.': 'Without an answer before their turn, {name} will sing solo.',
+      'invitation de duo en attente': 'duet invitation pending',
+      'L’invitation de duo de {name} sur « {title} » a expiré : son tour est arrivé avant la réponse de {person}. {name} le chante en solo.':
+        '{name}’s duet invitation for “{title}” has expired: their turn came before {person} answered. {name} sings it solo.',
+      '{name} n’a pas répondu à temps : {person} chante « {title} » en solo.': '{name} didn’t answer in time: {person} sings “{title}” solo.',
     },
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
@@ -576,6 +584,7 @@ window.CLIENT_TRANSLATIONS = {
       'Ton passage est déjà en train d’être repoussé. Réessaie dans un instant.': 'Your turn is already being pushed back. Try again in a moment.',
       'KaraFun est déconnecté : réessaie dans un instant ou demande au bar.': 'KaraFun is disconnected: try again in a moment or ask the bar.',
       'Ce titre est en cours d’envoi à KaraFun : le duo n’est plus possible.': 'This song is being sent to KaraFun: a duet is no longer possible.',
+      'Trop tard : ce titre part déjà dans KaraFun en solo, l’invitation a expiré.': 'Too late: this song is already going to KaraFun as a solo, the invitation has expired.',
       'Trop de demandes de paroles : réessaie dans une minute.': 'Too many lyrics requests: try again in a minute.',
       'Aucun passage repoussé pour cette personne.': 'No pushed-back turn for this person.',
       'Chanteur inconnu ou parti.': 'Unknown singer, or they left.',

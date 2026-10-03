@@ -27,7 +27,8 @@ const song = n => ({ songId: n, title: `Titre ${n}`, artist: 'Artiste' });
   const a = s.join({ tableId: '1', name: 'Alice' });
   const b = s.join({ tableId: '2', name: 'Bob' });
   s.inviteDuet(a, b.id, song(201));
-  assert.equal(s.select(), null, 'invitation non acceptée');
+  // Une invitation sans réponse ne retient pas le titre : à son tour, il part en solo.
+  assert.deepEqual(s.select().ids, [a.id], 'invitation non acceptée : solo à son tour');
   s.answerDuet(b, true);
   const picked = s.select();
   assert.deepEqual(new Set(picked.ids), new Set([a.id, b.id]));

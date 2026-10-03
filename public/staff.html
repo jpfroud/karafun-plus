@@ -50,7 +50,6 @@
     <div class="queue-head"><span></span><span>#</span><span>Chanteur</span><span>Chanson</span><span>Vers</span><span></span></div>
     <div id="qBody" class="queue-rows"></div>
     <p id="queueEmpty" class="empty-state" hidden>Aucune chanson en attente pour le moment.</p>
-    <div id="blockedBox" class="blocked-box" hidden><strong>Duos en attente d’accord</strong><div id="blockedBody"></div></div>
     <details id="manualHistory" class="manual-history" hidden><summary>Changements manuels de la file <span class="count" id="manualCount">0</span></summary>
       <p class="small muted">Annule les changements du plus récent au plus ancien. Les titres déjà chargés dans KaraFun ne changent pas de place.</p>
       <div id="manualHistoryList" class="manual-history-list"></div>
@@ -953,13 +952,21 @@
     }
   });
 
+  // Invitation de duo sans réponse sur un titre encore prévu : il garde sa
+  // place et part en solo si personne n'a répondu à son tour (à l'envoi,
+  // l'invitation expire).
+  function pendingInviteBadge(item) {
+    const invite = item.source === 'helper' && item.song?.duet?.state === 'pending' ? item.song.duet : null;
+    return invite ? `<span class="badge wait invite" title="Duo proposé à ${esc(invite.partnerName || 'un chanteur')}${invite.seen === false ? ' (pas encore vue)' : ''} : sans réponse à son tour, le titre part en solo dans KaraFun.">Invitation en attente</span>` : '';
+  }
+
   // Carte « Sur scène » / « Ensuite » : photo, chanteurs, table, repère à
   // vérifier, puis le titre et son interprète original.
   function liveCard(item) {
     if (!item) return '<span class="muted">rien</span>';
     const title = item.song?.title || item.title || '—';
     const artist = item.song?.artist || item.artist || '';
-    const song = `${item.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}<div class="live-song"><span class="live-title">${esc(title)}</span>${artist ? `<span class="live-artist">${esc(artist)}</span>` : '<span class="live-artist muted">Interprète inconnu</span>'}</div>`;
+    const song = `${item.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${pendingInviteBadge(item)}<div class="live-song"><span class="live-title">${esc(title)}</span>${artist ? `<span class="live-artist">${esc(artist)}</span>` : '<span class="live-artist muted">Interprète inconnu</span>'}</div>`;
     const singers = item.singers?.length ? item.singers : item.ours ? (item.ids || []).map(personOf).filter(Boolean)
       .map(p => ({ id: p.id, name: p.name, table: tableOf(p.tableId)?.name || '', individual: !!tableOf(p.tableId)?.individual })) : [];
     if (!singers.length) {
@@ -1285,8 +1292,6 @@
     $('recalculateQueue').disabled = !manualChanges[0]?.canUndo;
     $('manualHistoryList').querySelectorAll('[data-manual-undo]').forEach(button => button.onclick = () =>
       act('/api/staff/manual-change-undo', { id: button.dataset.manualUndo }, 'Dernier changement annulé ; ordre précédent retrouvé'));
-    $('blockedBox').hidden = !S.blocked?.length;
-    $('blockedBody').innerHTML = (S.blocked || []).map(p => `<div class="blocked-item"><span><b>${esc(p.name)}</b> · ${esc(p.table)} — ${esc(p.title)}${p.artist ? ` · ${esc(p.artist)}` : ''}</span><span class="badge">${esc(p.reason)}</span></div>`).join('');
     let plannedIndex = 0;
     const lineKey = q => q.source === 'helper' && q.id ? `p:${q.id}|${q.song?.entryId || ''}` :
       q.source === 'karafun' && q.ours && q.queueId ? `k:${q.queueId}` : null;
@@ -1313,11 +1318,12 @@
       // Repères privés du bar, visibles au survol ou en touchant le nom.
       const notes = (q.ids || []).map(pid => S.people.find(p => p.id === pid)).filter(p => p?.privateNote)
         .map(p => (q.ids.length > 1 ? `${p.name} : ` : '') + p.privateNote);
+      const inviteBadge = pendingInviteBadge(q);
       const actions = movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : '';
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}</span></div>
         <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>

@@ -19,6 +19,8 @@
  *   choisit, on passe au prochain tour. Jamais de cumul (un seul ticket).
  * - Duo : le partenaire accepte l'invitation ; seul l'initiateur dépense son
  *   ticket. Le partenaire garde son titre, avec deux passages de répit si possible.
+ *   Une invitation sans réponse ne retient jamais le titre : il garde sa place
+ *   et, à son tour, part en solo ; l'invitation expire alors.
  * - Présence sur scène : au plus deux passages par personne et par tour, quel
  *   que soit son rôle (son titre ou invitée d'un duo) ; au-delà, le duo attend
  *   le tour suivant. Au moins trois autres chansons entre deux passages d'une
@@ -726,6 +728,22 @@ class Scheduler {
     return requests.length;
   }
 
+  // Une invitation de duo ne retient jamais un titre, comme une demande : à
+  // son tour, il part en solo dans KaraFun et l'invitation expire. L'invitée
+  // et l'auteur sont prévenus.
+  _expireInvite(owner, song) {
+    const d = song?.duet;
+    if (!d || d.state !== 'pending') return false;
+    const partner = this.people.get(d.partnerId);
+    delete song.duet;
+    const guest = partner?.name || 'son invité';
+    if (partner) this.notify(partner.id, 'inviteExpired', { name: owner.name, title: song.title });
+    this.notify(owner.id, 'inviteUnanswered', { name: guest, title: song.title });
+    this.note(`L’invitation de duo ${/^[aeiouyàâéèêëîïôûùh]/i.test(owner.name) ? 'd’' : 'de '}${owner.name} à ${guest} a expiré : « ${song.title} » est parti dans KaraFun, ${owner.name} le chante en solo`, 'staff');
+    this._event?.('duo.inviteExpired', { ownerId: owner.id, partnerId: d.partnerId, entryId: song.entryId || null });
+    return true;
+  }
+
   inviteDuet(p, partnerId, song) {
     const q = this.people.get(partnerId);
     if (!q || q.id === p.id) throw new Error('Partenaire introuvable.');
@@ -760,6 +778,17 @@ class Scheduler {
     this._event('duo.answered', { personId: q.id, entryId: song.entryId, ownerId: p.id, partnerId: q.id, accepted: !!accept });
     if (accept) {
       song.duet.state = 'accepted';
+      // Titre annoncé comme prochain alors qu'il partait en solo : le duo
+      // repasse par les règles de la file (premiers passages, espacement,
+      // plafond du tour). Une priorité du bar tient.
+      if (this.reservedNext?.personId === p.id && !this.reservedNext.byStaff && p.song === song) this.releaseNext();
+      // Passage repoussé (« Pas prêt ») pendant que l'invitation attendait :
+      // il attend désormais aussi l'invitée, comme un duo reporté (inverse de
+      // leaveDuet). Sinon son solo partirait avant, et le duo juste après.
+      if (p.deferral?.entryId === song.entryId) {
+        const ids = Array.isArray(p.deferral.ids) && p.deferral.ids.length ? p.deferral.ids : [p.id];
+        p.deferral.ids = ids.includes(q.id) ? ids : [...ids, q.id];
+      }
       this.note(`${q.name} accepte le duo avec ${p.name} : seul ${p.name} dépense son tour`);
     } else {
       delete song.duet;
@@ -991,8 +1020,12 @@ class Scheduler {
     // Le partenaire vient de monter sur scène : le passage annoncé avec lui
     // juste après est libéré, et la file choisit à nouveau le suivant (avec
     // l'espacement habituel, il chantera plus tard si d'autres attendent).
+    // Une invitation encore sans réponse ne compte pas : ce passage annoncé
+    // part en solo, sans le partenaire.
     const reserved = this.people.get(this.reservedNext?.personId);
-    if (reserved && (reserved.id === partner.id || reserved.song?.duet?.partnerId === partner.id)) this.releaseNext();
+    const reservedDuet = reserved?.song?.duet;
+    if (reserved && (reserved.id === partner.id ||
+        (reservedDuet?.state === 'accepted' && reservedDuet.partnerId === partner.id))) this.releaseNext();
     record.after = this._duoFields(partner.id);
     record.serialAfter = this.appearanceSerial;
     if (sel) sel.staffDuo = record;
@@ -1596,9 +1629,9 @@ class Scheduler {
   }
 
   // ------------------------------------------------------------------ sélection
+  // Une invitation de duo sans réponse ne retient pas le titre (voir _expireInvite).
   isReady(p) {
     if (!p || !p.song) return false;
-    if (p.duet && p.duet.state === 'pending') return false;
     if (this.opts.requirePresence && !this._confirmedRecently(p)) return false;
     return true;
   }
@@ -2036,7 +2069,9 @@ class Scheduler {
           continue;
         }
       }
-      if (!predict && (!song || duet?.state === 'pending' ||
+      // Invitation de duo encore sans réponse : le titre garde sa place et
+      // part en solo à son tour ; présence et report ne concernent que lui.
+      if (!predict && (!song ||
           (!ignorePresence && this.opts.requirePresence && !this._confirmedRecently(p)))) continue;
       cands.push({ ids: [p.id], consumedIds: [p.id], song, group: p.group, groups: [p.group], at: idx.get(p.id) });
     }
@@ -2051,9 +2086,8 @@ class Scheduler {
     // prêt ne peut présenter une personne qui n'a pas chanté dans ce tour.
     // Un malus peut prolonger l'attente d'une personne sur plusieurs tours.
     // Au plus deux passages par personne dans le tour : un duo dont un
-    // chanteur a atteint ce plafond attend le tour suivant, comme un duo
-    // encore sans réponse. Le tour se termine quand plus rien d'autre n'est
-    // possible.
+    // chanteur a atteint ce plafond attend le tour suivant. Le tour se
+    // termine quand plus rien d'autre n'est possible.
     const cap = this._roundCap();
     const capped = (c, apps) => cap > 0 && c.ids.some(pid => (apps.get(pid) || 0) >= cap);
     let physicalRound = roundPeople, physicalApps = roundApps, roundResets = 0;
@@ -2221,7 +2255,7 @@ class Scheduler {
       const p = this.people.get(this.reservedNext.personId);
       const duet = p?.song?.duet;
       const guest = duet?.state === 'accepted' ? this.people.get(duet.partnerId) : null;
-      if (!p || p.withdrawnAt || !p.song || duet?.state === 'pending' || this._isDeferred(p) ||
+      if (!p || p.withdrawnAt || !p.song || this._isDeferred(p) ||
           (duet?.state === 'accepted' && (!guest || guest.withdrawnAt))) {
         this.releaseNext();
       } else if (this.opts.requirePresence && !this.confirmedForTurn(
@@ -2263,8 +2297,9 @@ class Scheduler {
   }
 
   // Réserve le premier titre réellement prêt hors confirmation de présence.
-  // Les tickets sans chanson et les duos encore en attente ne figurent pas
-  // ici. Une réservation existante reste stable tant que son titre existe.
+  // Les tickets sans chanson ne figurent pas ici ; un titre dont l'invitation
+  // de duo attend encore sa réponse, si. Une réservation existante reste
+  // stable tant que son titre existe.
   reservePresenceNext(excludeIds = [], provisional = null) {
     // Un titre reporté (« Pas prêt ») n'est pas annoncé avant la fin de son report.
     const visible = this.presenceView(excludeIds, provisional)
@@ -2552,7 +2587,9 @@ class Scheduler {
         p.deferral.remaining === Math.max(0, old.remaining - 1)) : clearedByThis;
       if (!untouched) continue;
       if (sel.deferralReleasedTo === p.id && this.reservedNext?.personId === p.id) this.releaseNext();
-      p.deferral = { ...old };
+      // Seul le compte revient : les chanteurs du passage reporté ont pu
+      // changer depuis (invitation acceptée, invitée retirée du duo).
+      p.deferral = { ...old, ...(Array.isArray(p.deferral?.ids) ? { ids: [...p.deferral.ids] } : {}) };
     }
     if (sel) { delete sel.deferralUndo; delete sel.deferralReleasedTo; }
     const before = credit?.before, after = credit?.after;
@@ -2715,11 +2752,20 @@ class Scheduler {
     // Le choix peut avoir changé pendant l'aller-retour réseau. On ne consomme
     // que l'entrée effectivement confirmée par KaraFun.
     if (owner) {
-      if (owner.song && (owner.song.entryId ? owner.song.entryId === sel.song.entryId : owner.song === sel.song)) {
-        owner.song = (owner.backlog || []).shift() || null;
-      }
+      // Titre de la liste effectivement parti (la sélection peut être une
+      // copie relue après un redémarrage).
+      const sent = owner.song && (owner.song.entryId ? owner.song.entryId === sel.song.entryId : owner.song === sel.song) ?
+        owner.song : null;
+      if (sent) owner.song = (owner.backlog || []).shift() || null;
       // Demandes de duo sans réponse : le titre part sans les attendre.
       this._closeJoinRequests(owner, sel.song, 'sent');
+      // Invitation sans réponse : le titre est parti en solo, elle expire.
+      // Titre remplacé ou retiré pendant l'envoi : l'invitée a déjà appris
+      // l'annulation du duo (_songsGone), rien n'expire ni n'est prévenu.
+      if (!second) {
+        if (sent) this._expireInvite(owner, sent);
+        if (sel.song.duet?.state === 'pending') delete sel.song.duet;
+      }
     }
     this._refreshDuetViews();
     const resets = sel.roundResets ?? (sel.newPersonRound ? 1 : 0);
