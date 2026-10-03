@@ -1548,8 +1548,10 @@ function publicState(person, tableId, managed = null) {
     // « registered » : personnes qui pourraient voter. En dessous du minimum
     // de votants, les téléphones ne proposent pas de Battle.
     battle: { ...battleVote.view(), registered: battleElectorate().length },
-    // Réglages de titre : interrupteur du bar, plages de KaraFun, valeurs par défaut.
-    songSettings: { enabled: settings.singerSongSettings !== false, ranges: songRanges(), defaults: songDefaults() },
+    // Réglages de titre : interrupteur du bar (et télécommande qui les
+    // connaît), plages de KaraFun, valeurs par défaut.
+    songSettings: { enabled: settings.singerSongSettings !== false && bridge?.songSettingsAvailable?.() !== false,
+      ranges: songRanges(), defaults: songDefaults() },
   };
 
   const guestDuosOf = person => {
@@ -1685,7 +1687,9 @@ function staffState() {
     songSettings: { ...pub.songSettings,
       permissions: kfSettings?.permissions || { manageVolumes: null, manageQueue: null },
       support: kfSettings?.support || unknownSettingsSupport(),
+      notices: kfSettings?.notices || {},
       notice: kfSettings?.notice || null,
+      available: kfSettings?.available ?? null,
       live: current && kfSettings?.live ? { ...kfSettings.live, entryId: stageTr?.sel.song.entryId || null,
         title: stageTr?.sel.song.title || current.title || '', settings: stageTr?.sel.song.settings || null } : null },
     // Duo noté au bar sur le titre en cours : la page propose de le corriger.
@@ -2648,6 +2652,10 @@ const handlers = {
     const p = personAtTable(body);
     if (settings.singerSongSettings === false) {
       throw songSettingsError('Le bar a désactivé les réglages de titre depuis les téléphones.', 'SONG_SETTINGS_OFF');
+    }
+    if (bridge?.songSettingsAvailable?.() === false) {
+      throw songSettingsError('Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.',
+        'SONG_SETTINGS_UNAVAILABLE');
     }
     const target = songSettingsTarget(body.entryId, 'Ce titre a déjà commencé : seul le bar peut encore le régler.');
     if (target.ids[0] !== p.id) {

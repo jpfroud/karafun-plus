@@ -136,8 +136,10 @@ const RETRY_MAX_MS = 30000;
 const RECONNECT_PATIENCE_MS = 15000;
 // Réglages de titre (tonalité, tempo, voix) : décrits par le SDK de KaraFun
 // Web, pas encore vérifiés sur le KaraFun du bar. Une Error avec le même
-// identifiant, ou aucune réponse, marque la fonction comme non prise en
-// charge ('refused') ; une réponse la confirme ('ok').
+// identifiant marque la fonction comme non prise en charge ('refused') ; une
+// réponse, ou un état de KaraFun qui montre la valeur envoyée, la confirme
+// ('ok'). Un silence de 8 s ne prouve rien (client lent, confirmation par
+// l'état seulement) : 'silent', avec un avis, et la fonction reste essayable.
 const SETTING_REQUESTS = Object.freeze({ 'remote.PitchRequest': 'pitch', 'remote.TempoRequest': 'tempo',
   'remote.TrackVolumeRequest': 'trackVolume', 'remote.SetQueueItemOptionsRequest': 'queueItemOptions' });
 // `addOptions` : réglages dans les options de remote.AddToQueueRequest. Une
@@ -214,7 +216,8 @@ class KaraFunBridge extends EventEmitter {
     this.permissionWarning = null;
     this.bestPermissions = null;
     this.settingsSupport = freshSupport();
-    this.settingsNotice = null;
+    this.settingsNotices = {}; // un avis par fonction, le plus récent en dernier
+    this._settingsProbe = {};  // dernière valeur envoyée en direct, à confirmer par l'état de KaraFun
     this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
     this.observedDefaults = {}; // volumes des voix d'un titre chargé sans réglage
     this._observedFor = null;
@@ -337,15 +340,35 @@ class KaraFunBridge extends EventEmitter {
   // Réponse (ou silence, `message` null) de KaraFun à un réglage de titre.
   _settingsAnswer(kind, message) {
     const [what, of] = SETTING_LABELS[kind];
+    delete this.settingsNotices[kind];
     if (message && message.type !== 'Error') this.settingsSupport[kind] = 'ok';
-    else {
+    else if (message) {
       this.settingsSupport[kind] = 'refused';
-      this.settingsNotice = message ? `KaraFun refuse de régler ${what} : ${message.payload?.message || 'erreur inconnue'}` :
-        `KaraFun ne répond pas aux réglages ${of} : cette version de KaraFun ne le permet peut-être pas.`;
-      this._record('info', 'reglage-refuse', { request: kind, message: this.settingsNotice });
+      this.settingsNotices[kind] = `KaraFun refuse de régler ${what} : ${message.payload?.message || 'erreur inconnue'}`;
+      this._record('info', 'reglage-refuse', { request: kind, message: this.settingsNotices[kind] });
+    } else {
+      if (this.settingsSupport[kind] !== 'ok') this.settingsSupport[kind] = 'silent';
+      this.settingsNotices[kind] = `KaraFun n’a pas répondu aux réglages ${of} en 8 s : vérifie dans KaraFun ; un nouvel essai reste possible.`;
     }
-    if (!Object.values(this.settingsSupport).includes('refused')) this.settingsNotice = null;
     this.emit('change');
+  }
+
+  // KaraFun peut appliquer un réglage du titre en cours sans répondre à la
+  // demande : un nouvel état qui montre la valeur envoyée le confirme (sauf
+  // si le titre l'avait déjà).
+  _confirmFromStatus(status) {
+    const live = liveFromStatus(status);
+    for (const [kind, probe] of Object.entries(this._settingsProbe)) {
+      if (live?.[probe.field] !== probe.value) continue;
+      delete this._settingsProbe[kind];
+      if (probe.before === probe.value || this.settingsSupport[kind] === 'refused') continue;
+      this.settingsSupport[kind] = 'ok';
+      delete this.settingsNotices[kind];
+    }
+  }
+
+  _probeSetting(kind, field, value) {
+    this._settingsProbe[kind] = { field, value, before: liveFromStatus(this.status)?.[field] ?? null };
   }
 
   _record(dir, name, data, id) {
@@ -372,7 +395,6 @@ class KaraFunBridge extends EventEmitter {
     this.disconnect();
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
-      this.settingsSupport = freshSupport(); this.settingsNotice = null;
       this.observedDefaults = {}; this._observedFor = null;
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
@@ -403,6 +425,11 @@ class KaraFunBridge extends EventEmitter {
     this._link = {};
     this.ready = false;
     this.connected = false;
+    // Chaque connexion repart de capacités inconnues : KaraFun a pu être mis
+    // à jour, et un refus ou un silence d'avant ne bloque rien pour la soirée.
+    this.settingsSupport = freshSupport();
+    this.settingsNotices = {};
+    this._settingsProbe = {};
     if (this._resetTries) { this._tries = 0; this._resetTries = false; }
     this._tries++;
     this._startedAt ??= Date.now();
@@ -561,6 +588,7 @@ class KaraFunBridge extends EventEmitter {
         const status = p.status || {};
         this.raw.status = status;
         this._observeDefaults(status);
+        this._confirmFromStatus(status);
         // `kcsState` garde le numéro de KaraFun : 'idle' confond l'état 1
         // (titre annoncé, pas chargé) et l'état 3 (titre chargé, prêt).
         this._accept('status', {
@@ -700,6 +728,7 @@ class KaraFunBridge extends EventEmitter {
       socket.on(name, data => {
         if (!active()) return;
         this.raw[name] = data;
+        if (name === 'status') this._confirmFromStatus(data);
         this._accept(name, name === 'queue' ? (Array.isArray(data) ? data : []) : data);
       });
     }
@@ -857,6 +886,7 @@ class KaraFunBridge extends EventEmitter {
     this._settingsAllowed('manageVolumes');
     const { pitch } = clampSettings({ pitch: value }, this.songSettingsRanges());
     this._emit('pitch', pitch);
+    this._probeSetting('pitch', 'pitch', pitch);
     return pitch;
   }
 
@@ -865,6 +895,7 @@ class KaraFunBridge extends EventEmitter {
     this._settingsAllowed('manageVolumes');
     const { tempo } = clampSettings({ tempo: value }, this.songSettingsRanges());
     this._emit('tempo', tempo);
+    this._probeSetting('tempo', 'tempo', tempo);
     return tempo;
   }
 
@@ -874,15 +905,19 @@ class KaraFunBridge extends EventEmitter {
     this._settingsAllowed('manageVolumes');
     const value = Math.min(100, Math.max(0, Math.round(volume)));
     this._emit('trackVolume', { type, volume: value });
+    this._probeSetting('trackVolume', { [TRACK.BACKING]: 'backing', [TRACK.LEAD_A]: 'guide', [TRACK.LEAD_B]: 'guideB' }[type], value);
     return value;
   }
 
   // Valeurs par défaut des voix sur ce KaraFun : relevées à la première trame
-  // d'un titre chargé sans volumes dans ses options (ensuite, le bar a pu les
-  // changer pendant le titre). Celui du bar met les chœurs à 53.
+  // d'un titre chargé (état 2 ou plus, pistes reçues) sans volumes dans ses
+  // options ; ensuite, le bar a pu les changer pendant le titre. L'état 1
+  // annonce le titre sans l'avoir chargé : pistes vides, ou celles d'avant.
+  // Celui du bar met les chœurs à 53.
   _observeDefaults(status) {
     const current = status.current;
     if (!current || current.id == null || String(current.id) === this._observedFor) return;
+    if (!(status.state >= 2) || !Array.isArray(status.tracks) || !status.tracks.length) return;
     this._observedFor = String(current.id);
     if (Array.isArray(current.song?.options?.tracks)) return;
     const live = liveFromStatus({ tracks: status.tracks });
@@ -891,13 +926,20 @@ class KaraFunBridge extends EventEmitter {
 
   songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }
 
+  // Réglages de titre possibles avec cette connexion : true, false (ancienne
+  // télécommande d'un vrai KaraFun) ou null (pas encore connecté).
+  songSettingsAvailable() { return this.protocol ? this._settingsChannel() : null; }
+
   // Pour les pages : plages, droits de KaraFun (null : non précisés),
-  // fonctions confirmées ou refusées, dernier avis et état en direct.
+  // fonctions confirmées, refusées ou sans réponse, un avis par fonction (et
+  // le dernier), capacité du canal et état en direct.
   songSettingsState() {
     const flag = key => typeof this.permissions?.[key] === 'boolean' ? this.permissions[key] : null;
     return { ranges: this.songSettingsRanges(), defaults: this.songSettingsDefaults(),
       permissions: { manageVolumes: flag('manageVolumes'), manageQueue: flag('manageQueue') },
-      support: { ...this.settingsSupport }, notice: this.settingsNotice, live: liveFromStatus(this.status) };
+      support: { ...this.settingsSupport }, notices: { ...this.settingsNotices },
+      notice: Object.values(this.settingsNotices).at(-1) || null, available: this.songSettingsAvailable(),
+      live: liveFromStatus(this.status) };
   }
 
   remove(queueId) { this._emit('queueRemove', queueId); }

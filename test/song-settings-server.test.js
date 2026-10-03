@@ -518,7 +518,8 @@ test('états exposés aux pages : plages, droits, capacité, état en direct, r�
   assert.deepEqual(plain(state.songSettings), { enabled: true, ranges: { pitch: { min: -6, max: 6, step: 1 },
     tempo: { min: -50, max: 50, step: 5 }, volume: { min: 0, max: 100, step: 25 } }, defaults: { pitch: 0, tempo: 0, guide: 0, backing: 100 },
   permissions: { manageVolumes: null, manageQueue: null },
-  support: { pitch: 'unknown', tempo: 'unknown', trackVolume: 'unknown', queueItemOptions: 'unknown', addOptions: 'unknown' }, notice: null, live: null },
+  support: { pitch: 'unknown', tempo: 'unknown', trackVolume: 'unknown', queueItemOptions: 'unknown', addOptions: 'unknown' },
+  notices: {}, notice: null, available: null, live: null },
   'KaraFun pas connecté : plages de repli');
   const link = kcsBridge(f);
   link.bridge.raw.configuration = { ...BAR_CONFIGURATION, pitchMin: -5, pitchMax: 5 };
@@ -539,6 +540,14 @@ test('états exposés aux pages : plages, droits, capacité, état en direct, r�
   state = f.staffState();
   assert.deepEqual(plain(state.songSettings.ranges.pitch), { min: -5, max: 5, step: 1 });
   assert.deepEqual(plain(state.songSettings.permissions), { manageVolumes: true, manageQueue: true });
+  assert.equal(state.songSettings.available, true);
+  // Un avis par fonction de KaraFun, et le dernier.
+  link.bridge.settingsSupport = { ...link.bridge.settingsSupport, pitch: 'refused', queueItemOptions: 'silent' };
+  link.bridge.settingsNotices = { pitch: 'Avis tonalité', queueItemOptions: 'Avis file' };
+  assert.deepEqual(plain(f.staffState().songSettings.notices), { pitch: 'Avis tonalité', queueItemOptions: 'Avis file' });
+  assert.equal(f.staffState().songSettings.notice, 'Avis file');
+  link.bridge.settingsSupport = { ...link.bridge.settingsSupport, pitch: 'unknown', queueItemOptions: 'unknown' };
+  link.bridge.settingsNotices = {};
   assert.deepEqual(plain(state.songSettings.live), { queueId: 'q-1', pitch: -2, tempo: 0, guide: 0, guideB: null, backing: null,
     tracks: [5], entryId: tr.sel.song.entryId, title: 'Titre 101', settings: { pitch: -2 } });
   assert.deepEqual(plain(state.queue.map(line => [line.queueId, line.song?.settings ?? null, line.tracks])),
@@ -897,4 +906,27 @@ test('relance ⏮ d’un duo : volumes seulement pour les pistes que le titre po
   assert.deepEqual(link.sent.at(-1), { type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 12293 },
     options: { singer: tr.sel.label, tracks: [{ track: { type: 5 }, volume: 50 }] }, position: 1 } },
   'ni chœurs ni voix guide B : le titre n’a que la voix guide A');
+});
+
+test('ancienne télécommande d’un vrai KaraFun : réglages indisponibles, les téléphones n’affichent rien, la route le dit', async () => {
+  const f = harness();
+  const link = kcsBridge(f);
+  link.bridge.protocol = 'socket.io';
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa', 101);
+  const entryId = lea.person.song.entryId;
+  assert.equal(f.publicState(lea.person, '1', new Set([lea.person.id])).songSettings.enabled, false, 'pas de bouton « Réglages »');
+  assert.equal(f.settings.singerSongSettings, true, 'l’interrupteur du bar ne change pas');
+  const state = f.staffState();
+  assert.equal(state.songSettings.available, false);
+  assert.equal(state.settings.singerSongSettings, true);
+  await rejects(f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: { pitch: 1 } }), 'SONG_SETTINGS_UNAVAILABLE',
+    /^Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués\.$/);
+  assert.equal(Object.hasOwn(lea.person.song, 'settings'), false);
+  // Télécommande récente : de nouveau proposés.
+  link.bridge.protocol = 'kcs';
+  assert.equal(f.publicState(lea.person, '1', new Set([lea.person.id])).songSettings.enabled, true);
+  // KaraFun pas encore connecté : rien ne permet de dire que c'est impossible.
+  link.bridge.protocol = null;
+  assert.equal(f.publicState(lea.person, '1').songSettings.enabled, true);
 });

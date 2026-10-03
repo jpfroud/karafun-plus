@@ -2441,11 +2441,12 @@ test('réglages de titre : interrupteur des chanteurs dans « Plus », enregistr
   await page.poll();
   assert.match(page.$('songSettingsInfo').textContent, /KaraFun a accepté : tonalité, réglages à l’ajout\./);
   page.world.songSettings.support.tempo = 'refused';
-  page.world.songSettings.notice = 'KaraFun ne répond pas aux réglages de tempo : cette version de KaraFun ne le permet peut-être pas.';
+  page.world.songSettings.notices = { tempo: 'KaraFun refuse de régler le tempo : Not allowed' };
+  page.world.songSettings.notice = 'KaraFun refuse de régler le tempo : Not allowed';
   page.world.songSettings.permissions = { manageVolumes: false, manageQueue: false };
   await page.poll();
   const info = page.$('songSettingsInfo').textContent;
-  assert.match(info, /KaraFun ne répond pas aux réglages de tempo/);
+  assert.match(info, /KaraFun refuse de régler le tempo : Not allowed/);
   assert.match(info, /« Personnaliser la chanson en cours » refusé à FileKaraoke/);
   assert.match(info, /« Éditer la file d’attente » refusé à FileKaraoke/);
   page.world.kf.ready = false;
@@ -2509,6 +2510,7 @@ test('réglages de titre : la carte « Sur scène » règle le titre en cours en
   page.world.songSettings.permissions.manageVolumes = true;
   // Tonalité refusée par KaraFun : seule la tonalité est désactivée.
   page.world.songSettings.support = { ...unknownSupport(), pitch: 'refused' };
+  page.world.songSettings.notices = { pitch: 'KaraFun refuse de régler la tonalité : non pris en charge' };
   page.world.songSettings.notice = 'KaraFun refuse de régler la tonalité : non pris en charge';
   await page.poll();
   assert.equal(page.in('liveTune', '[data-live="pitch"][data-step="1"]').disabled, true);
@@ -2606,4 +2608,48 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   // Bouton Retour d'Android : la fiche se ferme sans changer d'onglet.
   await page.back();
   assert.equal(page.$('songSheet').open, false);
+});
+
+test('réglages de titre : silence de KaraFun, avis par fonction et ancienne télécommande expliqués au bar', async () => {
+  const page = await openPage({ world: tuneWorld() });
+  const tune = page.world.songSettings;
+  const pitchUp = () => page.in('liveTune', '[data-live="pitch"][data-step="1"]');
+  // KaraFun n'a pas répondu en 8 s : avis affiché, le bar peut réessayer.
+  const silent = 'KaraFun n’a pas répondu aux réglages de tonalité en 8 s : vérifie dans KaraFun ; un nouvel essai reste possible.';
+  tune.support = { ...unknownSupport(), pitch: 'silent' };
+  tune.notices = { pitch: silent };
+  tune.notice = silent;
+  await page.poll();
+  assert.equal(pitchUp().disabled, false, 'boutons actifs malgré le silence');
+  assert.equal(page.$('liveTuneReason').hidden, false);
+  assert.equal(page.$('liveTuneReason').textContent, silent);
+  assert.match(page.$('songSettingsInfo').textContent, /n’a pas répondu aux réglages de tonalité/);
+  assert.doesNotMatch(page.$('songSettingsInfo').textContent, /Pas encore essayé/);
+  // Tonalité refusée, puis un titre de la file : sous les boutons, seul l'avis de la tonalité.
+  tune.support = { ...unknownSupport(), pitch: 'refused', queueItemOptions: 'refused' };
+  tune.notices = { pitch: 'KaraFun refuse de régler la tonalité : Not allowed',
+    queueItemOptions: 'KaraFun refuse de régler un titre de la file : Not supported' };
+  tune.notice = tune.notices.queueItemOptions;
+  await page.poll();
+  assert.equal(pitchUp().disabled, true);
+  assert.equal(page.$('liveTuneReason').textContent, 'KaraFun refuse de régler la tonalité : Not allowed');
+  const info = page.$('songSettingsInfo').textContent;
+  assert.match(info, /refuse de régler la tonalité : Not allowed/);
+  assert.match(info, /refuse de régler un titre de la file : Not supported/);
+  // Ancienne télécommande d'un vrai KaraFun : rien n'est possible, c'est dit avant l'appui.
+  tune.support = unknownSupport();
+  tune.notices = {};
+  tune.notice = null;
+  tune.available = false;
+  await page.poll();
+  assert.equal(pitchUp().disabled, true);
+  assert.equal(page.in('liveTune', '[data-live="guide"][data-value="50"]').disabled, true);
+  assert.match(page.$('liveTuneReason').textContent, /^Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre/);
+  assert.match(page.$('songSettingsInfo').textContent, /ancienne télécommande KaraFun/);
+  assert.match(page.$('songSettingsInfo').textContent, /les téléphones n’affichent pas le bouton « Réglages »/);
+  assert.doesNotMatch(page.$('songSettingsInfo').textContent, /Pas encore essayé/);
+  await page.click(page.in('qBody', '[data-song-settings="b1"]'));
+  assert.match(page.$('songSheetNote').textContent, /ancienne télécommande KaraFun/);
+  assert.equal(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]').disabled, true);
+  assert.equal(page.$('songSheetReset').disabled, true);
 });

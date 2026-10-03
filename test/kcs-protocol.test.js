@@ -959,7 +959,7 @@ test('réglages de titre : bornés par la configuration de KaraFun avant l’env
   assert.equal(bridge.snapshot().songSettings.ranges.tempo.step, 5, 'tempo non annoncé : repli');
 });
 
-test('réglages de titre sans réponse en 8 s : simple avertissement, la connexion reste', async t => {
+test('réglages de titre sans réponse en 8 s : avertissement, fonction gardée, la connexion reste', async t => {
   mockTime(t);
   const { bridge, ws, env } = await adminBridge(t);
   t.after(() => bridge.disconnect());
@@ -974,21 +974,98 @@ test('réglages de titre sans réponse en 8 s : simple avertissement, la connexi
   assert.equal(bridge.ready, true);
   assert.equal(ws.closeCalls, 0);
   assert.equal(bridge.lastError, null, 'l’état de la connexion reste propre');
-  const state = bridge.snapshot().songSettings;
-  assert.equal(state.support.pitch, 'refused', 'pas de réponse : fonction non prise en charge');
-  assert.equal(state.support.queueItemOptions, 'refused');
+  let state = bridge.snapshot().songSettings;
+  // Un silence ne prouve pas un refus (client lent, confirmation par l'état seulement) : le bar peut réessayer.
+  assert.equal(state.support.pitch, 'silent');
+  assert.equal(state.support.queueItemOptions, 'silent');
   assert.equal(state.support.tempo, 'unknown');
-  assert.equal(state.notice, 'KaraFun ne répond pas aux réglages des titres de la file : cette version de KaraFun ne le permet peut-être pas.');
+  assert.deepEqual(state.notices, {
+    pitch: 'KaraFun n’a pas répondu aux réglages de tonalité en 8 s : vérifie dans KaraFun ; un nouvel essai reste possible.',
+    queueItemOptions: 'KaraFun n’a pas répondu aux réglages des titres de la file en 8 s : vérifie dans KaraFun ; un nouvel essai reste possible.' });
+  assert.equal(state.notice, state.notices.queueItemOptions, 'dernier avis');
   assert.ok(bridge.events.some(e => e.name === 'sans-reponse' && e.data === 'remote.PitchRequest'));
   t.mock.timers.tick(5000);
   ws.receive({ id: 91, type: 'core.PingRequest' });
   t.mock.timers.tick(5000);
   assert.equal(env.calls.length, 1, 'pas de nouvelle découverte de la télécommande');
-  // Une réponse plus tard rétablit la fonction.
+  // KaraFun applique sans répondre : son état montre la valeur envoyée, la fonction est confirmée.
+  ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 4, pitch: 0, tempo: 0, tracks: [] } } });
   bridge.setPitch(2);
-  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.PitchResponse', payload: {} });
-  assert.equal(bridge.snapshot().songSettings.support.pitch, 'ok');
+  ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 4, pitch: 2, tempo: 0, tracks: [] } } });
+  state = bridge.snapshot().songSettings;
+  assert.equal(state.support.pitch, 'ok');
+  assert.equal(state.notices.pitch, undefined);
+  bridge.setTrackVolume(5, 50);
+  ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 4, pitch: 2, tempo: 0, tracks: [{ volume: 50, track: { type: 5 } }] } } });
+  assert.equal(bridge.snapshot().songSettings.support.trackVolume, 'ok');
+  // Une réponse plus tard confirme aussi.
+  bridge.setTempo(5);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.TempoResponse', payload: {} });
+  assert.equal(bridge.snapshot().songSettings.support.tempo, 'ok');
+  // Silence après une confirmation : la fonction reste confirmée, avec l'avis.
+  bridge.setPitch(3);
+  t.mock.timers.tick(8000);
+  state = bridge.snapshot().songSettings;
+  assert.equal(state.support.pitch, 'ok');
+  assert.match(state.notices.pitch, /n’a pas répondu aux réglages de tonalité/);
   assert.equal(bridge.connected, true);
+});
+
+test('réglages de titre : chaque nouvelle connexion repart de capacités inconnues', async t => {
+  mockTime(t);
+  const { bridge, ws, env } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  bridge.setPitch(1);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 3, message: 'Not allowed' } });
+  bridge.setTempo(5);
+  t.mock.timers.tick(8000);
+  assert.deepEqual(bridge.snapshot().songSettings.support,
+    { pitch: 'refused', tempo: 'silent', trackVolume: 'unknown', queueItemOptions: 'unknown', addOptions: 'unknown' });
+  // Coupure puis reconnexion automatique avec le même code (KaraFun a pu être mis à jour entre-temps).
+  ws.serverClose(1006);
+  t.mock.timers.tick(3000);
+  await flush();
+  assert.equal(env.calls.length, 2);
+  const next = env.sockets.at(-1);
+  assert.notEqual(next, ws);
+  next.open();
+  next.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+  next.receive({ type: 'remote.StatusEvent', payload: { status: { state: 1 } } });
+  assert.equal(bridge.ready, true);
+  const state = bridge.snapshot().songSettings;
+  assert.deepEqual(state.support,
+    { pitch: 'unknown', tempo: 'unknown', trackVolume: 'unknown', queueItemOptions: 'unknown', addOptions: 'unknown' });
+  assert.deepEqual(state.notices, {});
+  assert.equal(state.notice, null);
+});
+
+test('réglages de titre : un avis par fonction, le dernier refus n’efface pas les autres', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  bridge.setPitch(1);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 3, message: 'Not allowed' } });
+  bridge.setQueueItemOptions('11', { singer: 'Léa · T1', settings: { tempo: 5 } });
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 3, message: 'Not supported' } });
+  let state = bridge.snapshot().songSettings;
+  assert.deepEqual(state.notices, { pitch: 'KaraFun refuse de régler la tonalité : Not allowed',
+    queueItemOptions: 'KaraFun refuse de régler un titre de la file : Not supported' });
+  assert.equal(state.notice, 'KaraFun refuse de régler un titre de la file : Not supported');
+  // La file accepte de nouveau : seul son avis disparaît.
+  bridge.setQueueItemOptions('11', { singer: 'Léa · T1', settings: { tempo: 10 } });
+  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.SetQueueItemOptionsResponse', payload: {} });
+  state = bridge.snapshot().songSettings;
+  assert.deepEqual(state.notices, { pitch: 'KaraFun refuse de régler la tonalité : Not allowed' });
+  assert.equal(state.notice, 'KaraFun refuse de régler la tonalité : Not allowed');
+});
+
+test('réglages de titre : capacité du canal exposée (télécommande KCS, faux KaraFun, ancienne télécommande)', async t => {
+  mockTime(t);
+  const idle = new KaraFunBridge({ bases: ['https://kf.exemple.invalid'] });
+  assert.equal(idle.songSettingsState().available, null, 'pas encore connecté : inconnu');
+  const { bridge } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  assert.equal(bridge.songSettingsState().available, true);
 });
 
 test('réglages de titre refusés par une Error du même identifiant : fonction notée refusée, rien d’autre', async t => {
@@ -1080,6 +1157,7 @@ test('réglages de titre, ancien protocole : faux KaraFun local de la démo', t 
   bridge.add(70003, 'Tom', 99999);
   assert.deepEqual(socket.outgoing.at(-1), { name: 'queueAdd', args: [{ songId: 70003, pos: 99999, singer: 'Tom' }] },
     'sans réglage : trame inchangée');
+  assert.equal(bridge.songSettingsState().available, true, 'faux KaraFun de la démo : réglages pris en charge');
 });
 
 test('réglages de titre, ancien protocole d’un vrai KaraFun : refusés, ajout sans réglage', async t => {
@@ -1098,6 +1176,7 @@ test('réglages de titre, ancien protocole d’un vrai KaraFun : refusés, ajout
   assert.deepEqual(socket.outgoing.at(-1), { name: 'queueAdd', args: [{ songId: 70002, pos: 99999, singer: 'Léa · T1' }] });
   assert.throws(() => bridge.setPitch(1), /ancienne télécommande KaraFun/);
   assert.throws(() => bridge.setQueueItemOptions(4, { singer: 'Léa' }), /ancienne télécommande KaraFun/);
+  assert.equal(bridge.songSettingsState().available, false, 'les pages le disent au lieu d’échouer à l’appui');
 });
 
 test('réglages refusés à l’ajout par une Error du même identifiant : signalé, plus de réglages à l’ajout', async t => {
@@ -1156,4 +1235,23 @@ test('réglages de titre : valeurs par défaut des voix relevées sur le KaraFun
   // Nouveau code : nouvelle installation, valeurs à relever.
   bridge.connect('654321');
   assert.equal(bridge.snapshot().songSettings.defaults.backing, 100);
+});
+
+test('réglages de titre : défauts relevés quand KaraFun a chargé le titre, pas sur l’état 1 qui l’annonce', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const status = (id, state, tracks) => ws.receive({ type: 'remote.StatusEvent', payload: {
+    status: { current: { id, song: { id: { type: 1, id: 12458 }, title: 'DJ', songTracks: [{ type: 4 }, { type: 5 }],
+      options: { singer: 'Soraya · Table princess' } } }, state, pitch: 0, tempo: 0, tracks } } });
+  // Séquence réelle du 2 octobre (« DJ ») : état 1 sans pistes, puis état 2 avec les chœurs à 53.
+  status('dj', 1, []);
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 100, 'rien à relever sur l’état 1');
+  status('dj', 2, [{ volume: 53, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
+  assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 53 });
+  // Fin d'un titre : l'état 1 du suivant porte déjà des pistes, pas forcément les siennes.
+  status('next', 1, [{ volume: 80, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 53, 'état 1 : pas encore chargé');
+  status('next', 3, [{ volume: 60, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 60, 'relevé sur le titre chargé');
 });

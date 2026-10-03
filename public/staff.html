@@ -1312,13 +1312,19 @@
       }
       value[field] = liveDrafts.has(field) ? liveDrafts.get(field).value : live[field];
     }
-    const perms = S.songSettings.permissions || {}, support = S.songSettings.support || {};
-    const lock = !S.kf?.ready || perms.manageVolumes === false;
+    const perms = S.songSettings.permissions || {}, support = S.songSettings.support || {}, notices = S.songSettings.notices || {};
+    const unavailable = S.songSettings.available === false;
+    const lock = !S.kf?.ready || perms.manageVolumes === false || unavailable;
     const refused = { pitch: support.pitch === 'refused', tempo: support.tempo === 'refused',
       guide: support.trackVolume === 'refused', backing: support.trackVolume === 'refused' };
+    // Avis de KaraFun sur les seules fonctions du direct : refusées (boutons
+    // désactivés) ou restées sans réponse (boutons actifs, nouvel essai possible).
+    const told = ['pitch', 'tempo', 'trackVolume'].filter(kind => support[kind] === 'refused' || support[kind] === 'silent')
+      .map(kind => notices[kind]).filter(Boolean);
     const reason = !S.kf?.ready ? 'KaraFun est déconnecté : reconnecte-le pour régler le titre en cours.'
-      : perms.manageVolumes === false ? `KaraFun ne laisse pas ${S.kf.username || 'FileKaraoke'} personnaliser la chanson en cours : active « Personnaliser la chanson en cours » pour ce participant dans la télécommande KaraFun.`
-        : Object.values(refused).some(Boolean) ? S.songSettings.notice || 'KaraFun ne prend pas en charge certains de ces réglages.' : '';
+      : unavailable ? 'Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : règle le titre en cours dans KaraFun.'
+        : perms.manageVolumes === false ? `KaraFun ne laisse pas ${S.kf.username || 'FileKaraoke'} personnaliser la chanson en cours : active « Personnaliser la chanson en cours » pour ce participant dans la télécommande KaraFun.`
+          : told.length ? told.join(' ') : Object.values(refused).some(Boolean) ? 'KaraFun ne prend pas en charge certains de ces réglages.' : '';
     $('liveTuneReason').hidden = !reason;
     $('liveTuneReason').textContent = reason;
     const summary = tuneSummary(cleanTune(value));
@@ -1395,7 +1401,8 @@
       $('songSheetInfo').textContent = [q.name || q.singer, q.song.artist ? `${q.song.title} — ${q.song.artist}` : q.song.title].filter(Boolean).join(' · ');
     }
     const perms = S.songSettings?.permissions || {}, support = S.songSettings?.support || {};
-    const lock = target?.onStage ? 'Ce titre est sur scène : règle-le en direct sur l’écran Scène.' : !target ? 'Ce titre n’est plus dans la file.' : '';
+    const lock = target?.onStage ? 'Ce titre est sur scène : règle-le en direct sur l’écran Scène.' : !target ? 'Ce titre n’est plus dans la file.'
+      : S.songSettings?.available === false ? 'Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.' : '';
     const note = lock || (q.source === 'karafun' && (perms.manageQueue === false || support.queueItemOptions === 'refused')
       ? 'KaraFun ne laisse pas modifier ce titre déjà chargé : ses réglages seront appliqués au début du titre.' : '');
     $('songSheetNote').hidden = !note;
@@ -1409,7 +1416,7 @@
     const control = event.target?.closest?.('[data-tune]');
     const reset = event.target?.closest?.('[data-tune-reset]');
     const target = songSheetEntry ? songTarget(songSheetEntry) : null;
-    if ((!control && !reset) || !target || target.onStage) return;
+    if ((!control && !reset) || !target || target.onStage || S?.songSettings?.available === false) return;
     const input = $('songSheetValue');
     const next = reset ? {} : cleanTune(JSON.parse(input.value || '{}'));
     if (control?.dataset.step) {
@@ -1424,18 +1431,21 @@
   // Fermée (bouton, Retour) : un changement en attente part tout de suite.
   $('songSheet').addEventListener('close', () => { flushAll(); songSheetEntry = null; });
 
-  // Interrupteur des chanteurs : ce que KaraFun a accepté ou refusé ce soir.
+  // Interrupteur des chanteurs : ce que KaraFun a accepté, refusé ou laissé
+  // sans réponse depuis la connexion (un avis par fonction).
   function renderSongSupport() {
     const tune = S.songSettings;
     const parts = [];
-    if (tune && S.kf?.ready) {
-      const support = tune.support || {}, perms = tune.permissions || {}, who = S.kf.username || 'FileKaraoke';
+    if (tune && S.kf?.ready && tune.available === false) {
+      parts.push('Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : les téléphones n’affichent pas le bouton « Réglages » et rien n’est appliqué. Règle les titres dans KaraFun.');
+    } else if (tune && S.kf?.ready) {
+      const support = tune.support || {}, perms = tune.permissions || {}, notices = tune.notices || {}, who = S.kf.username || 'FileKaraoke';
       const LABELS = { pitch: 'tonalité', tempo: 'tempo', trackVolume: 'voix', queueItemOptions: 'titres déjà chargés', addOptions: 'réglages à l’ajout' };
       const accepted = Object.keys(LABELS).filter(key => support[key] === 'ok');
-      const refused = Object.keys(LABELS).some(key => support[key] === 'refused');
-      if (refused && tune.notice) parts.push(tune.notice);
+      const doubtful = Object.keys(LABELS).filter(key => support[key] === 'refused' || support[key] === 'silent');
+      for (const key of doubtful) if (notices[key]) parts.push(notices[key]);
       if (accepted.length) parts.push(`KaraFun a accepté : ${accepted.map(key => LABELS[key]).join(', ')}.`);
-      if (!accepted.length && !refused) parts.push('Pas encore essayé avec ce KaraFun : fais un essai hors service (guide du bar, « Réglages de titre »).');
+      if (!accepted.length && !doubtful.length) parts.push('Pas encore essayé avec ce KaraFun : fais un essai hors service (guide du bar, « Réglages de titre »).');
       if (perms.manageVolumes === false) parts.push(`Titre en cours : « Personnaliser la chanson en cours » refusé à ${who} dans KaraFun.`);
       if (perms.manageQueue === false) parts.push(`Titres déjà chargés : « Éditer la file d’attente » refusé à ${who} dans KaraFun ; leurs réglages sont appliqués au début du titre.`);
     }
