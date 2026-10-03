@@ -2123,6 +2123,28 @@ test('barre du haut : état KaraFun du pont, alerte impossible à manquer, recon
   await page.click(page.in('staffAlerts', '[data-alert-reconnect]'));
   assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'reconnect' });
   assert.equal(page.toast().text, 'Reconnexion…');
+  // Reconnecter garde une connexion qui marche : la réponse du serveur le dit.
+  page.replies['/api/staff/kf'] = { ok: true, kept: true, message: 'KaraFun est déjà connecté : connexion gardée.' };
+  await page.click(page.in('staffAlerts', '[data-alert-reconnect]'));
+  assert.equal(page.toast().text, 'KaraFun est déjà connecté : connexion gardée.');
+  delete page.replies['/api/staff/kf'];
+  // Nom encore tenu par l'ancienne connexion : alerte impossible à fermer,
+  // avec le changement de nom immédiat.
+  const alert = 'KaraFun garde encore l’ancienne connexion de FileKaraoke : un autre nom sera pris dans 1 min 20.';
+  await page.update({ kf: { ...world.kf, ready: false, connection: { phase: 'waiting-name', level: 'wait', label: 'KaraFun garde encore l’ancienne connexion de FileKaraoke', since: Date.now(), attempt: 1, canRename: true, alert } } });
+  assert.equal(page.in('staffAlerts', '.kf-alert span').textContent, alert);
+  assert.equal(page.in('staffAlerts', '.kf-alert [data-dismiss-alert]'), null, 'cette alerte ne se ferme pas');
+  await page.click(page.in('staffAlerts', '[data-alert-rename]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'new-name' });
+  assert.match(page.toast().text, /redonne-lui les droits/);
+  await page.update({ kf: { ...world.kf, ready: false, connection: { phase: 'waiting-name', level: 'wait', label: 'Nom en cours', since: Date.now(), attempt: 1, canRename: false, alert } } });
+  assert.equal(page.in('staffAlerts', '[data-alert-rename]'), null, 'pas de bouton quand le changement de nom n’est plus possible');
+  // Code vide : le refus du serveur s'affiche en erreur.
+  page.replies['/api/staff/connect'] = { status: 400, error: 'Saisis le code affiché par KaraFun.' };
+  page.$('code').value = '';
+  await page.click(page.$('connectBtn'));
+  assert.deepEqual(page.toast(), { text: 'Saisis le code affiché par KaraFun.', bad: true });
+  delete page.replies['/api/staff/connect'];
   // Sans phrase du pont : état déduit comme avant.
   await page.update({ kf: { ...baseWorld().kf, ready: false, connected: false } });
   assert.equal(pill.textContent, 'KaraFun déconnecté');
