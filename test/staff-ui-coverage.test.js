@@ -2765,3 +2765,70 @@ test('file au téléphone : le menu ⋯ des deux dernières lignes s’ouvre ver
   await page.click(line(3).querySelector('[data-row-menu]'));
   assert.ok(!line(3).querySelector('.row-actions').classList.contains('up'), 'plus haut : menu en dessous');
 });
+
+// Regression: ISSUE-002 — la fiche « Détails » affichait dans « Nom affiché » le nom d'une autre table
+test('tables : la fiche « Détails » montre le nom de la table ouverte même si le champ a le focus', async () => {
+  const page = await openPage();
+  // Comme un navigateur, la fenêtre donne le focus à son premier champ en s'ouvrant.
+  page.$('tableSheet').showModal = function () { this.open = true; page.$('tableSheetName').focus(); };
+  const card = id => page.in('tBody', `[data-table-card="${id}"]`);
+  await page.click(card('1').querySelector('[data-table-more]'));
+  assert.equal(page.$('tableSheetName').value, 'Table 1');
+  await page.click(page.$('tableSheetClose'));
+  page.doc.activeElement = null;
+  await page.click(card('2').querySelector('[data-table-more]'));
+  assert.equal(page.$('tableSheetTitle').textContent, 'Table 2');
+  assert.equal(page.$('tableSheetName').value, 'Table 2', 'le champ suit la table ouverte, pas la précédente');
+  assert.equal(page.$('tableSheetHc').value, 2, 'places de la table ouverte');
+  await page.poll();
+  assert.equal(page.$('tableSheetName').value, 'Table 2', 'et le reste aux rafraîchissements');
+  await page.click(page.$('tableSheetClose'));
+  page.doc.activeElement = null; // le navigateur rend le focus au bouton « Détails »
+  page.world.tables[1].name = 'Grande';
+  await page.poll();
+  await page.click(card('Comptoir').querySelector('[data-table-more]'));
+  assert.equal(page.$('tableSheetName').value, 'En solo');
+  assert.equal(page.postsTo('/api/staff/table/rename').length, 0, 'ouvrir une fiche n’enregistre rien');
+});
+
+// Regression: ISSUE-006 — « Nouvelle table » envoyait un renommage refusé et restait en rouge
+test('tables : quitter le champ « Nouvelle table » n’envoie aucun renommage', async () => {
+  const page = await openPage();
+  const field = page.$('tableName');
+  field.focus();
+  await page.type(field, 'Zinc2');
+  dispatch(field, 'blur', { bubbles: false });
+  await page.flush();
+  page.runTimers(1000);
+  await page.flush();
+  assert.equal(page.postsTo('/api/staff/table/rename').length, 0, 'aucun renommage pour une table qui n’existe pas');
+  assert.equal(field.getAttribute('aria-invalid'), null, 'pas de bordure d’erreur');
+  page.$('tableHeadcount').value = '4';
+  page.doc.activeElement = null;
+  await page.click(page.$('createTable'));
+  assert.deepEqual(page.lastPost('/api/staff/table').body, { id: 'Zinc2', headcount: 4 });
+  assert.equal(field.getAttribute('aria-invalid'), null);
+  // Le nom affiché d'une table s'enregistre toujours depuis sa fiche.
+  await page.click(page.in('tBody', '[data-table-more="2"]'));
+  await page.type(page.$('tableSheetName'), 'Grande');
+  page.runTimers(1000);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/table/rename').body, { tableId: '2', name: 'Grande' });
+});
+
+// Regression: ISSUE-007 — « Comptoir » refusé avec « Cette table existe déjà » alors qu'aucune table visible ne porte ce nom
+test('tables : « Comptoir » est réservé au groupe En solo, et un nom affiché déjà pris est refusé', async () => {
+  const page = await openPage();
+  page.world.tables[1].name = 'Grande';
+  await page.poll();
+  for (const [name, message] of [['Comptoir', '« Comptoir » est réservé au groupe « En solo » : choisis un autre nom de table.'],
+    ['comptoir 2', '« Comptoir » est réservé au groupe « En solo » : choisis un autre nom de table.'],
+    ['grande', 'Une table s’appelle déjà « Grande ».'], ['En solo', 'Une table s’appelle déjà « En solo ».'],
+    ['Table 1', 'Une table s’appelle déjà « Table 1 ».'], ['2', 'Cette table existe déjà.']]) {
+    const count = page.posts.length;
+    page.$('tableName').value = name; page.$('tableHeadcount').value = '4';
+    await page.click(page.$('createTable'));
+    assert.deepEqual(page.toast(), { text: message, bad: true }, name);
+    assert.equal(page.posts.length, count, name);
+  }
+});

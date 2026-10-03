@@ -263,7 +263,7 @@
   <p class="tiny muted">Chaque changement s’enregistre seul. Titre pas encore dans KaraFun : réglages envoyés avec lui ; déjà chargé : remplacés dans KaraFun, ou appliqués au début du titre si KaraFun ne le permet pas.</p>
   <button type="button" class="btn small primary" id="songSheetClose">Fermer</button></dialog>
 <dialog id="tableSheet" class="staff-dialog" aria-labelledby="tableSheetTitle"><h2 id="tableSheetTitle">Table</h2><p class="small muted" id="tableSheetInfo"></p>
-  <label class="field" for="tableSheetName">Nom affiché (1 à 40 caractères)</label><div class="row wrap"><input id="tableSheetName" type="text" maxlength="40" data-autosave="tableName"><span class="save-status" id="tableSheetNameStatus" aria-live="polite"></span></div>
+  <label class="field" for="tableSheetName">Nom affiché (1 à 40 caractères)</label><div class="row wrap"><input id="tableSheetName" type="text" maxlength="40" data-autosave="tableRename"><span class="save-status" id="tableSheetNameStatus" aria-live="polite"></span></div>
   <div id="tableSheetHcRow"><label class="field" for="tableSheetHc">Places (1 à 40)</label><div class="row wrap"><input id="tableSheetHc" type="number" inputmode="numeric" min="1" max="40" data-autosave="tableHc"><span class="save-status" id="tableSheetHcStatus" aria-live="polite"></span></div></div>
   <label class="field" for="tableSheetBonus">Bonus table (réservé au bar, jamais montré aux clients)</label><select id="tableSheetBonus"></select>
   <div class="row wrap sheet-actions"><button type="button" class="btn small" id="tableSheetQr">Montrer le QR</button><a class="btn small" id="tableSheetPage" href="#" target="_blank" rel="noopener">Page</a><button type="button" class="btn small danger" id="tableSheetLeft">Table partie</button></div>
@@ -466,7 +466,9 @@
       server: () => { const at = S.closing ? new Date(S.closing.at) : null; return at ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : ''; } },
     note: { text: true, delay: 1000, validate: value => value.length > 140 ? 'au plus 140 caractères' : null,
       send: (value, id) => post('/api/staff/person/identify', { personId: id, note: value }), server: id => personOf(id)?.privateNote || '' },
-    tableName: { text: true, delay: 1000, validate: value => !value || value.length > 40 ? 'entre 1 et 40 caractères' : null,
+    // Nom affiché d'une table (fiche « Détails »). La clé ne doit pas être l'id
+    // d'un champ fixe : « tableName » est celui de « Nouvelle table ».
+    tableRename: { text: true, delay: 1000, validate: value => !value || value.length > 40 ? 'entre 1 et 40 caractères' : null,
       send: (value, id) => post('/api/staff/table/rename', { tableId: id, name: value }), server: id => tableOf(id)?.name || '' },
     tableHc: { min: 1, max: 40, unit: 'personnes', delay: 800,
       send: (value, id) => post('/api/staff/table', { id, headcount: value }), server: id => tableOf(id)?.headcount ?? '' },
@@ -505,7 +507,7 @@
   function statusNodes(key) {
     const nodes = [...(document.body?.querySelectorAll?.(`[data-save-status="${key}"]`) || [])];
     const sheetId = $('tableSheet').dataset.tableId;
-    if (key === `tableName:${sheetId}`) nodes.push($('tableSheetNameStatus'));
+    if (key === `tableRename:${sheetId}`) nodes.push($('tableSheetNameStatus'));
     if (key === `tableHc:${sheetId}`) nodes.push($('tableSheetHcStatus'));
     return nodes;
   }
@@ -1194,7 +1196,9 @@
   function openTableSheet(tableId) {
     const sheet = $('tableSheet');
     sheet.dataset.tableId = tableId;
-    for (const id of ['tableSheetName', 'tableSheetHc']) $(id).dataset.autosaveId = tableId;
+    // Valeurs de la table ouverte écrites avant l'ouverture : la fenêtre donne
+    // ensuite le focus au nom, que le rafraîchissement ne réécrit plus.
+    for (const id of ['tableSheetName', 'tableSheetHc']) { $(id).dataset.autosaveId = tableId; syncField($(id)); }
     openDialog('tableSheet');
     renderTableSheet();
   }
@@ -1856,7 +1860,12 @@
     const id = $('tableName').value.trim() || String(n);
     const headcount = Number($('tableHeadcount').value);
     if (id.length > 20) return toast('Le nom de table est trop long.', true);
+    // « Comptoir… » désigne le groupe « En solo » (identifiant interne) : un
+    // tel nom rejoindrait ce groupe au lieu de créer une table.
+    if (/^comptoir/i.test(id)) return toast('« Comptoir » est réservé au groupe « En solo » : choisis un autre nom de table.', true);
     if (used.has(id)) return toast('Cette table existe déjà.', true);
+    const sameName = S.tables.find(t => String(t.name || '').toLocaleLowerCase('fr') === id.toLocaleLowerCase('fr'));
+    if (sameName) return toast(`Une table s’appelle déjà « ${sameName.name} ».`, true);
     if (S.tables.length >= 60) return toast('La limite de 60 tables est atteinte.', true);
     if (!Number.isInteger(headcount) || headcount < 1 || headcount > 40) return toast('Indique entre 1 et 40 personnes.', true);
     act('/api/staff/table', { id, headcount }, 'Table ajoutée');
