@@ -3750,11 +3750,15 @@ async function main() {
   }
   server.listen(PORT, '0.0.0.0', () => {
     publicServer.listen(PUBLIC_PORT, '127.0.0.1', () => {
+      // Ouverte dans le navigateur de ce PC, jamais écrite au journal : la clé
+      // n'y figure que sur la ligne « Clé du bar » (GUIDE-BAR.md). Depuis ce
+      // PC, l'adresse sans clé mène à la page du bar (GET /).
       const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
+      const localUrl = `http://localhost:${PORT}/`;
       appLog('');
       appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
-      appLog(`Page du bar (sur ce PC)        : ${staffUrl}`);
-      appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${staffUrl}`);
+      appLog(`Page du bar (sur ce PC)        : ${localUrl}`);
+      appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${localUrl}`);
       appLog(`QR codes à imprimer            : http://localhost:${PORT}/print`);
       appLog(`Tunnel HTTPS (clients seulement) : http://127.0.0.1:${PUBLIC_PORT}`);
       appLog(`Clé du bar (autre appareil)    : ${STAFF_KEY}  (ex. ${phoneBase()}/staff?key=${STAFF_KEY})`);
