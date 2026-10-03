@@ -3,7 +3,7 @@
 // Langue du téléphone, lien invalide, perte de connexion, ancien jeton,
 // catalogue ouvert pour un chanteur (ou refusé), choix d'un partenaire de duo,
 // lien de transfert reçu ou envoyé, alertes (son, vibration, notifications),
-// bannières, fiches des personnes, actions de la liste, Battle, catalogue en
+// demandes en grand et infos en haut de page, fiches des personnes, actions de la liste, Battle, catalogue en
 // erreur, paroles, fermeture du bar.
 //
 // Chaque test charge le premier <script> en ligne de la page dans un bac à
@@ -301,6 +301,7 @@ function boot(options = {}) {
     ...(options.translations === false ? {} : { CLIENT_TRANSLATIONS: TRANSLATIONS }),
     ...(Notification ? { Notification } : {}),
     ...(AudioContext ? { AudioContext } : {}),
+    ...(options.session ? { sessionStorage: options.session } : {}),
   };
   let poll = null;
   const context = {
@@ -802,138 +803,415 @@ test('transférer : copie refusée, lien https sans heure, code seul et « En so
 });
 
 // ================================================================ alertes
-test('alertes : notifications autorisées, son à deux notes, vibration et notification de présence', async () => {
+// Stockage de l'onglet (sessionStorage) partagé entre deux chargements.
+function sessionMap(entries = {}) {
+  const map = new Map(Object.entries(entries));
+  return { map, getItem: key => map.has(key) ? map.get(key) : null, setItem: (key, value) => map.set(key, String(value)) };
+}
+// L'horloge de la page avance de `ms` pendant `work`.
+async function later(ms, work) {
+  const realNow = Date.now;
+  Date.now = () => realNow() + ms;
+  try { return await work(); } finally { Date.now = realNow; }
+}
+const ACTION_BUZZ = [200, 100, 200, 100, 400];
+
+test('alertes : son et vibration actifs par défaut, notifications du navigateur au choix', async () => {
   const page = await open({ secure: true, hidden: true, notification: { permission: 'default', grant: 'granted' }, audio: { state: 'suspended' } });
+  assert.equal(page.node('signalsBox').hidden, false, 'réglage en haut de « Ma table »');
+  assert.equal(page.node('signalsToggle').textContent, '🔔 Son et vibration : activés');
+  assert.equal(page.node('signalsToggle').getAttribute('aria-pressed'), 'true');
   assert.equal(page.node('alertsToggle').textContent, 'Activer les notifications');
-  assert.match(page.node('alertsHelp').textContent, /^Sur cette connexion sécurisée/);
-  await page.click(page.node('alertsToggle'));
-  assert.equal(page.permissionRequests, 1, 'autorisation du navigateur demandée');
-  assert.equal(page.storage.get('kfAlerts:1:secret'), '1', 'choix gardé sur ce téléphone');
-  assert.equal(page.node('alertsToggle').textContent, 'Désactiver les notifications');
-  assert.equal(page.node('alertsToggle').getAttribute('aria-pressed'), 'true');
-  assert.equal(page.toast().text, 'Notifications activées tant que la page reste ouverte.');
-  assert.equal(page.audio.resumes, 1, 'son débloqué par le geste');
-  assert.deepEqual(page.audio.oscillators.map(note => [note.frequency.value, note.startAt]), [[660, 10], [880, 10.18]], 'deux notes');
-  assert.equal(page.audio.toSpeaker, 2);
+  assert.match(page.node('alertsHelp').textContent, /^Les demandes s’affichent en grand sur cet écran\. Les notifications du navigateur/);
 
   page.state.tablePeople[0].needConfirm = true;
   await page.poll();
-  assert.equal(page.node('presenceBanner').hidden, false);
-  assert.match(page.node('presenceBannerText').textContent, /^Présence à confirmer pour Alice\./);
-  assert.deepEqual(page.vibrations, [[160, 80, 160]]);
-  assert.equal(page.audio.oscillators.length, 4, 'nouveau son');
-  const [notice] = page.notifications;
-  assert.equal(notice.title, 'Karaoké : présence à confirmer');
-  assert.equal(notice.body, 'Alice : ouvre la page pour confirmer avant le passage.');
-  assert.equal(notice.tag, 'presence-1');
-  await page.click(page.node('nav-catalog'));
-  notice.onclick();
-  await page.settle();
-  assert.equal(page.focusWindow, 1);
-  assert.equal(page.tabShown(), 'table', 'la notification ramène à « Ma table »');
-  assert.equal(notice.closed, true);
-  await page.poll();
-  assert.equal(page.vibrations.length, 1, 'pas de nouvelle alerte pour la même demande');
-
-  // Nouvelle invitation de duo : notification « nouvelle demande ».
-  page.state.tablePeople[0].invites = [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } }];
-  await page.poll();
-  const request = page.notifications.at(-1);
-  assert.equal(request.title, 'Karaoké : nouvelle demande');
-  assert.equal(request.body, 'Zoé propose un duo à Alice. Réponds depuis « Ma table ».');
-  assert.equal(request.tag, 'demande-1-duo:alice:x1');
-  assert.equal(page.vibrations.length, 2);
-  request.onclick();
-  assert.equal(request.closed, true);
+  assert.deepEqual(page.vibrations, [ACTION_BUZZ], 'longue vibration sans rien activer');
+  assert.deepEqual(page.audio.oscillators.map(note => [note.frequency.value, note.startAt]), [[660, 10], [880, 10.18]], 'deux notes');
+  assert.equal(page.audio.toSpeaker, 2);
+  assert.equal(page.notifications.length, 0, 'notifications du navigateur : seulement sur demande');
 
   await page.click(page.node('alertsToggle'));
-  assert.equal(page.toast().text, 'Alertes désactivées.');
-  assert.equal(page.storage.get('kfAlerts:1:secret'), '0');
-  assert.equal(page.node('alertsToggle').textContent, 'Activer les notifications');
+  assert.equal(page.permissionRequests, 1, 'autorisation du navigateur demandée');
+  assert.equal(page.storage.get('kfAlerts:1:secret'), '1');
+  assert.equal(page.node('alertsToggle').textContent, 'Désactiver les notifications');
+  assert.equal(page.toast().text, 'Notifications activées tant que la page reste ouverte.');
+
+  page.state.tablePeople[0].invites = [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } }];
+  await page.poll();
+  const [notice] = page.notifications;
+  assert.deepEqual([notice.title, notice.body, notice.tag], ['Karaoké : réponse attendue', 'Zoé propose un duo à Alice', 'invite:alice:x1-1']);
+  assert.equal(page.vibrations.length, 2);
+  notice.onclick();
+  assert.equal(page.focusWindow, 1);
+  assert.equal(notice.closed, true);
+  await page.poll();
+  assert.equal(page.vibrations.length, 2, 'la même demande ne vibre pas deux fois');
+
+  // Page visible, demande sans réponse : le son revient toutes les 20 s.
+  page.document.hidden = false;
+  await page.poll();
+  assert.equal(page.audio.oscillators.length, 4, 'pas avant 20 s');
+  await later(21000, () => page.poll());
+  assert.equal(page.audio.oscillators.length, 6, 'rappel sonore');
+  assert.equal(page.vibrations.length, 2, 'le rappel ne vibre pas');
+
+  await page.click(page.node('signalsToggle'));
+  assert.equal(page.storage.get('kfSignals:1:secret'), '0');
+  assert.equal(page.node('signalsToggle').textContent, '🔕 Son et vibration : coupés');
+  assert.equal(page.toast().text, 'Son et vibration coupés.');
   page.state.tablePeople[0].invites.push({ entryId: 'x2', fromName: 'Marc', song: { title: 'Autre' } });
   await page.poll();
-  assert.equal(page.vibrations.length, 2, 'alertes coupées : plus de vibration');
+  assert.equal(page.vibrations.length, 2, 'son et vibration coupés');
+  await later(60000, () => page.poll());
+  assert.equal(page.audio.oscillators.length, 6, 'ni rappel sonore');
+  await page.click(page.node('signalsToggle'));
+  assert.equal(page.toast().text, 'Son et vibration activés.');
+  assert.deepEqual(page.vibrations.at(-1), [120], 'courte vibration pour essayer');
+  await page.click(page.node('alertsToggle'));
+  assert.equal(page.toast().text, 'Notifications du navigateur désactivées.');
+  assert.equal(page.storage.get('kfAlerts:1:secret'), '0');
 });
 
-test('alertes : sans HTTPS, déblocage du son au premier toucher, échecs silencieux', async () => {
+test('alertes : son débloqué au premier toucher, choix coupé gardé, échecs silencieux', async () => {
   const plain = await open({ audio: {} });
-  assert.match(plain.node('alertsHelp').textContent, /^Les demandes restent visibles ici\./);
-  await plain.click(plain.node('alertsToggle'));
-  assert.equal(plain.toast().text, 'Alertes dans la page activées tant qu’elle reste ouverte.');
-  assert.equal(plain.permissionRequests, undefined, 'pas de demande d’autorisation sans HTTPS');
+  assert.equal(plain.node('alertsToggle').hidden, true, 'sans HTTPS : pas de bouton de notification');
+  assert.match(plain.node('alertsHelp').textContent, /^Les demandes s’affichent en grand sur cet écran, avec un son/);
+  plain.dispatch(plain.document, 'pointerdown');
+  plain.dispatch(plain.document, 'pointerdown');
+  assert.equal(plain.audio.contexts, 1, 'le premier toucher prépare le son, sans réglage');
+  const refused = await open({ audio: { refuse: true } });
+  assert.doesNotThrow(() => refused.dispatch(refused.document, 'pointerdown'), 'son interdit : aucune erreur');
 
-  // Alertes déjà choisies : le premier toucher prépare le son (une seule fois).
-  const touched = await open({ audio: { state: 'suspended' }, storage: { 'kfAlerts:1:secret': '1' } });
-  assert.equal(touched.node('alertsToggle').textContent, 'Désactiver les notifications');
-  touched.dispatch(touched.document, 'pointerdown');
-  touched.dispatch(touched.document, 'pointerdown');
-  await touched.settle();
-  assert.equal(touched.audio.contexts, 1);
-  assert.equal(touched.audio.resumes, 1);
-  const off = await open({ audio: {} });
-  off.dispatch(off.document, 'pointerdown');
-  assert.equal(off.audio.contexts, 0, 'alertes coupées : aucun son préparé');
-  const refused = await open({ audio: { refuse: true }, storage: { 'kfAlerts:1:secret': '1' } });
-  assert.doesNotThrow(() => refused.dispatch(refused.document, 'pointerdown'), 'son interdit par le navigateur : aucune erreur');
-  await refused.click(refused.node('alertsToggle'));
-  await refused.click(refused.node('alertsToggle'));
-  assert.equal(refused.toast().text, 'Alertes dans la page activées tant qu’elle reste ouverte.', 'les alertes visuelles restent');
+  const quiet = await open({ audio: {}, storage: { 'kfSignals:1:secret': '0' } });
+  assert.equal(quiet.node('signalsToggle').getAttribute('aria-pressed'), 'false');
+  quiet.state.tablePeople[0].needConfirm = true;
+  await quiet.poll();
+  assert.equal(quiet.node('attention').hidden, false, 'la demande s’affiche quand même');
+  assert.deepEqual([quiet.vibrations.length, quiet.audio.oscillators.length], [0, 0]);
 
-  // Son bloqué et notifications refusées par le navigateur : la page continue.
+  // Son bloqué, notifications refusées par le navigateur : la page continue.
   const broken = await open({ secure: true, hidden: true, audio: { fail: true }, notification: { permission: 'granted', throws: true },
     storage: { 'kfAlerts:1:secret': '1' } });
-  assert.match(broken.node('alertsHelp').textContent, /^Sur cette connexion sécurisée/);
   broken.state.tablePeople[0].needConfirm = true;
   broken.state.tablePeople[0].invites = [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } }];
   await broken.poll();
-  assert.equal(broken.node('presenceBanner').hidden, false, 'la bannière de présence reste visible');
-  assert.equal(broken.node('activityBanner').hidden, false, 'la bannière de demande aussi');
+  assert.equal(broken.node('attention').hidden, false);
   assert.equal(broken.notifications.length, 0);
-  assert.equal(broken.vibrations.length, 2, 'la vibration fonctionne encore');
-  await broken.click(broken.node('alertsToggle'));
-  await broken.click(broken.node('alertsToggle'));
-  assert.equal(broken.toast().text, 'Notifications activées tant que la page reste ouverte.');
+  assert.deepEqual(broken.vibrations, [ACTION_BUZZ], 'une seule alerte pour deux demandes arrivées ensemble');
+
+  const denied = await open({ secure: true, notification: { permission: 'default', grant: 'denied' } });
+  await denied.click(denied.node('alertsToggle'));
+  assert.deepEqual(denied.toast(), { text: 'Le navigateur refuse ses notifications : le son et la vibration restent actifs.', bad: true, warn: false, hidden: false });
 });
 
-// ================================================================ bannières
-test('bannières : plusieurs invitations, « Voir les confirmations », « Répondre au duo », « Voir la Battle »', async () => {
-  const state = baseState();
-  state.tablePeople[0].needConfirm = true;
-  state.tablePeople[0].invites = [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } }, { entryId: 'x2', fromName: 'Marc', song: { title: 'Slow' } }];
-  const page = await open({ state });
-  assert.match(page.node('activityBannerText').textContent, /^2 invitations de duo attendent une réponse\. /);
-  assert.equal(page.node('activityBannerGo').textContent, 'Répondre au duo');
-  assert.equal(page.document.title, '(2) Karaoké — ma table');
+test('demandes : fenêtre bloquante, une demande à la fois dans l’ordre, pour chaque personne du téléphone', async () => {
+  const state = baseState({ battle: { id: 'b1', phase: 'voting', mode: 'yesno', eligiblePersonIds: ['alice', 'bob'], votedPersonIds: [],
+    closesAt: Date.now() + 120000, eligible: 4, threshold: 2, minVoters: 2, registered: 4 } });
+  state.tablePeople = [person('alice', 'Alice', { needConfirm: true, canDefer: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }],
+    invites: [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } }],
+    joinRequests: [{ entryId: 'e1', fromId: 'marc', fromName: 'Marc', song: { title: 'Mon titre' } }] }), person('bob', 'Bob')];
+  state.managedIds = ['alice', 'bob'];
+  let answer = null;
+  const page = await open({ state, respond: (url, body, self) => {
+    const alice = self.state.tablePeople[0];
+    if (url === '/api/table/confirm') alice.needConfirm = false;
+    if (url === '/api/table/duet/answer') return answer || ((alice.invites = []), { ok: true });
+    if (url === '/api/table/duet/join/answer') alice.joinRequests = [];
+    if (url === '/api/table/battle/vote') self.state.battle.votedPersonIds.push(body.personId);
+    return undefined;
+  } });
+  const choices = () => page.node('attentionChoices').querySelectorAll('button').map(button => button.textContent);
+  assert.equal(page.node('attention').hidden, false);
+  assert.equal(page.node('attentionPanel').getAttribute('role'), 'alertdialog');
+  assert.equal(page.node('attentionPanel').getAttribute('aria-modal'), 'true');
+  assert.equal(page.node('attentionWho').textContent, 'Pour Alice', 'le nom de la personne d’abord');
+  assert.equal(page.node('attentionTitle').textContent, 'C’est bientôt au tour de Alice !');
+  assert.equal(page.node('attentionCount').textContent, '1 / 5');
+  assert.deepEqual(choices(), ['Je suis là', 'Pas prêt : repousser d’une chanson'], 'présence : jamais « Plus tard »');
+  for (const id of ['topBar', 'tabsNav', 'mainContent', 'sheet', 'infoBar']) assert.equal(page.node(id).inert, true, `${id} inerte`);
+  const first = page.node('attentionChoices').querySelector('button');
+  assert.equal(page.document.activeElement, first, 'le bouton principal reçoit le focus');
+  assert.equal(page.document.title, '(5) Karaoké — ma table');
 
-  await page.click(page.node('nav-queue'));
-  await page.click(page.node('presenceBannerGo'));
-  assert.equal(page.tabShown(), 'table');
-  const card = page.find('peopleList', '[data-person-card="alice"]');
-  assert.ok(card.scrolled, 'la fiche d’Alice est amenée à l’écran');
-  assert.equal(page.document.activeElement, card.querySelector('[data-confirm-person]'), '« Je suis là » reçoit le focus');
-
-  await page.click(page.node('nav-queue'));
-  await page.click(page.node('activityBannerGo'));
-  assert.equal(page.tabShown(), 'table');
-  assert.equal(page.document.activeElement, page.find('peopleList', '[data-person-card="alice"]').querySelector('[data-duet-answer="yes"]'),
-    '« Accepter » de l’invitation reçoit le focus');
-
-  page.state.tablePeople[0].invites = [];
-  page.state.tablePeople[0].needConfirm = false;
-  page.state.battle = { id: 'b7', phase: 'voting', mode: 'yesno', eligiblePersonIds: ['alice'], votedPersonIds: [], closesAt: Date.now() + 120000, eligible: 4, threshold: 2 };
+  // Clavier : Échap ne ferme pas, Tab reste dans la fenêtre.
+  const escape = page.dispatch(first, 'keydown', { key: 'Escape' });
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(page.node('attention').hidden, false);
+  const last = page.node('attentionChoices').querySelectorAll('button').at(-1);
+  last.focus();
+  assert.equal(page.dispatch(last, 'keydown', { key: 'Tab', shiftKey: false }).defaultPrevented, true);
+  assert.equal(page.document.activeElement, first);
+  assert.equal(page.dispatch(first, 'keydown', { key: 'Tab', shiftKey: true }).defaultPrevented, true);
+  assert.equal(page.document.activeElement, last);
+  page.dispatch(last, 'keydown', { key: 'a' });
+  // La mise à jour régulière ne recrée pas la fenêtre et ne déplace pas le focus.
   await page.poll();
-  assert.equal(page.node('presenceBanner').hidden, true);
-  assert.equal(page.node('activityBannerGo').textContent, 'Voir la Battle');
-  assert.equal(page.node('activityBannerText').textContent, 'Un vote Battle est ouvert. Alice peut voter avant la fin du délai.');
-  await page.click(page.node('activityBannerGo'));
-  assert.ok(page.node('battleBox').scrolled);
-  assert.equal(page.document.activeElement, page.find('battleVotes', '[data-battle-vote="alice"]'));
+  assert.equal(page.node('attentionChoices').querySelectorAll('button').at(-1), last, 'mêmes boutons');
+  assert.equal(page.document.activeElement, last);
 
-  // Plus aucune demande : la bannière disparaît et son bouton ne fait rien.
-  page.state.battle = baseState().battle;
-  await page.poll();
-  assert.equal(page.node('activityBanner').hidden, true);
+  await page.click(first);
+  assert.deepEqual(page.posts.at(-1), ['/api/table/confirm', { table: '1', access: 'secret', personId: 'alice' }]);
+  assert.equal(page.toast().text, 'Présence confirmée.');
+  assert.equal(page.node('attentionTitle').textContent, 'Zoé propose un duo à Alice');
+  assert.equal(page.node('attentionText').textContent, 'Sur « Hit ». Seul Zoé dépense son tour ; Alice garde ses propres chansons.');
+  assert.equal(page.node('attentionCount').textContent, '1 / 4');
+  assert.deepEqual(choices(), ['Accepter', 'Refuser', 'Plus tard (1 min)']);
+
+  // Erreur du serveur : affichée dans la fenêtre, boutons de nouveau actifs.
+  answer = reply(400, { error: 'Invitation expirée.' });
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.equal(page.node('attentionError').hidden, false);
+  assert.equal(page.node('attentionError').textContent, 'Invitation expirée.');
+  assert.equal(page.find('attentionChoices', '[data-attn="yes"]').disabled, false);
+  answer = null;
+
+  // Plus tard : l'invitation revient dans une minute, la demande suivante passe.
+  await page.tap('attentionChoices', '[data-attn="later"]');
+  assert.equal(page.node('attentionTitle').textContent, 'Marc aimerait chanter « Mon titre » avec Alice.');
+  assert.equal(page.node('attentionError').hidden, true, 'l’erreur ne suit pas la demande suivante');
+  await page.tap('attentionChoices', '[data-attn="no"]');
+  assert.deepEqual(page.posts.at(-1)[1], { table: '1', access: 'secret', personId: 'alice', entryId: 'e1', fromId: 'marc', accept: false });
+  assert.equal(page.toast().text, 'Demande refusée.');
+  assert.equal(page.node('attentionTitle').textContent, 'Vote Battle : toute la salle chante !');
+  assert.deepEqual(choices(), ['Oui', 'Non', 'Plus tard (1 min)']);
+  await page.tap('attentionChoices', '[data-choice="yes"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/battle/vote', { table: '1', access: 'secret', personId: 'alice', choice: 'yes' }]);
+  assert.equal(page.node('attentionWho').textContent, 'Pour Bob', 'le téléphone répond ensuite pour Bob');
+  assert.equal(page.node('attentionCount').textContent, '', 'dernière demande');
+  await page.tap('attentionChoices', '[data-choice="no"]');
+  assert.equal(page.toast().text, 'Vote enregistré.');
+  assert.equal(page.node('attention').hidden, true, 'plus rien à répondre');
+  assert.equal(page.node('mainContent').inert, false);
   assert.equal(page.document.title, 'Karaoké — ma table');
+
+  // Une minute plus tard, l'invitation remise revient.
+  await later(61000, () => page.poll());
+  assert.equal(page.node('attentionTitle').textContent, 'Zoé propose un duo à Alice');
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.equal(page.toast().text, 'Duo accepté.');
+  assert.equal(page.node('attention').hidden, true);
+});
+
+test('demandes : vote par titre, refus d’invitation, lien refusé et changement de langue', async () => {
+  const state = baseState({ battle: { id: 'b2', phase: 'voting', mode: 'songs', eligiblePersonIds: ['alice'], votedPersonIds: [],
+    closesAt: Date.now() + 65000, songOptions: [{ songId: 9, title: 'Tube', artist: 'Groupe', votes: 0 }], minVoters: 2, registered: 4 } });
+  const page = await open({ state, respond: url => url === '/api/table/battle/vote'
+    ? reply(403, { error: 'Lien de table invalide ou périmé. Scanne le QR code affiché à ta table.', code: 'TABLE_ACCESS' }) : undefined });
+  assert.match(page.node('attentionText').textContent, /^Choisis un titre ou « Pas de Battle »\. Fin du vote dans 1:0\d\.$/);
+  assert.deepEqual(page.node('attentionChoices').querySelectorAll('button').map(button => button.textContent), ['Tube — Groupe', 'Pas de Battle', 'Plus tard (1 min)']);
+  await later(10000, () => page.runTimers(1000));
+  assert.match(page.node('attentionClock').textContent, /^Fin du vote dans 0:5\d\.$/, 'compte à rebours à la seconde');
+  await page.click(page.find('langSwitch', '[data-lang="en"]'));
+  assert.equal(page.node('attentionTitle').textContent, 'Battle vote: the whole room sings!', 'la fenêtre suit la langue');
+  assert.equal(page.document.title, '(1) Karaoke — my table');
+  await page.tap('attentionChoices', '[data-choice="none"]');
+  assert.equal(page.node('attention').hidden, true, 'lien refusé : la fenêtre se ferme');
+  assertInvalidLink(page, { who: 'Invalid link', conn: 'Access denied' });
+
+  // Invitation refusée.
+  const invited = baseState();
+  invited.tablePeople[0].invites = [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } }];
+  const second = await open({ state: invited, respond: (url, body, self) => { if (url === '/api/table/duet/answer') self.state.tablePeople[0].invites = []; } });
+  await second.tap('attentionChoices', '[data-attn="no"]');
+  assert.deepEqual(second.posts.at(-1)[1], { table: '1', access: 'secret', personId: 'alice', entryId: 'x1', accept: false });
+  assert.equal(second.toast().text, 'Invitation refusée.');
+});
+
+test('demandes : la fenêtre ouverte dessous reste intacte, Retour ne ferme pas la demande, le focus revient', async () => {
+  const page = await open({ respond: (url, body, self) => { if (url === '/api/table/duet/answer') self.state.tablePeople[0].invites = []; } });
+  await page.click(page.node('nav-catalog'));
+  await pickCatalogSong(page);
+  assert.equal(page.sheetOpen(), true);
+  const append = page.node('appendSong');
+  append.focus();
+  page.state.tablePeople[0].invites = [{ entryId: 'x1', fromName: 'Zoé', song: { title: 'Hit' } }];
+  await page.poll();
+  assert.equal(page.node('attention').hidden, false, 'la demande passe devant la fenêtre du titre');
+  assert.equal(page.node('sheet').inert, true);
+  const depth = page.history.index;
+  page.history.back();
+  await page.settle();
+  assert.equal(page.node('attention').hidden, false, 'Retour ne ferme pas la demande');
+  assert.equal(page.sheetOpen(), true, 'ni la fenêtre du titre');
+  assert.equal(page.history.index, depth, 'l’étape d’historique est remise');
+  await page.tap('attentionChoices', '[data-attn="no"]');
+  assert.equal(page.node('attention').hidden, true);
+  assert.equal(page.sheetOpen(), true, 'la fenêtre du titre est toujours là');
+  assert.equal(page.node('appendSong'), append, 'avec le même titre choisi');
+  assert.equal(page.tabShown(), 'catalog', 'sur le catalogue');
+  assert.equal(page.document.activeElement, append, 'le focus revient où il était');
+  assert.equal(page.node('sheet').inert, false);
+});
+
+test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux au plus, × gardé pour l’onglet', async () => {
+  const now = Date.now();
+  const state = baseState({
+    battle: { id: 'b3', phase: 'requested', mode: 'staff', selectedSong: { title: 'Tube', artist: 'Groupe' }, eligiblePersonIds: [], votedPersonIds: [],
+      lastOutcome: { id: 'b2', outcome: 'rejected', at: now - 60000 } },
+    next: { ours: true, ids: ['alice'], song: { entryId: 'e1' }, title: 'Mon titre' },
+    closing: { at: now + 3600000, full: true, passed: false, fitCount: 2 },
+  });
+  state.tablePeople = [person('alice', 'Alice', { canDefer: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }],
+    guestDuos: [{ entryId: 'g1', ownerId: 'bob', fromName: 'Bob', song: { title: 'Slow' } }],
+    inbox: [{ id: 'n1', kind: 'joinExpired', params: { name: 'Zoé', title: 'Hit', reason: 'sent' }, at: now },
+      { id: 'n2', kind: 'duoAdded', params: { name: 'Bob', fromId: 'bob', title: 'Slow', entryId: 'g1' }, at: now },
+      { id: 'n3', kind: 'inconnu', params: {}, at: now }] }),
+  person('carla', 'Carla', { inbox: [{ id: 'n4', kind: 'duoAdded', params: { name: 'Alice', fromId: 'alice', title: 'Duo' }, at: now }] })];
+  state.managedIds = ['alice', 'carla'];
+  const session = sessionMap();
+  const page = await open({ state, session });
+  const items = () => page.node('infoBar').querySelectorAll('.info-item').map(item => item.querySelector('p').textContent);
+  assert.equal(page.node('infoBar').hidden, false);
+  assert.deepEqual(items(), ['Le bar lance une Battle ! Tube — Groupe. Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.',
+    'Pas de Battle cette fois : la salle a voté contre.']);
+  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+4 autres messages');
+  assert.deepEqual(page.vibrations, [[120]], 'courte vibration pour les infos');
+  assert.deepEqual(page.posts.filter(([url]) => url === '/api/table/notice/ack').map(([, body]) => [body.personId, body.ids]), [['carla', ['n4']]],
+    'duo ajouté depuis ce même téléphone : effacé sans être montré');
+  await page.tap('infoBar', '[data-info-more]');
+  assert.deepEqual(items().slice(2), ['Alice passe juste après la chanson en cours : prépare-toi !',
+    'Fermeture du bar à ' + timeOf(now + 3600000) + ' : La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.',
+    'La demande de duo de Alice à Zoé a expiré : « Hit » est parti dans KaraFun.', 'Bob chantera « Slow » en duo avec Alice.']);
+  // « Pas prêt » depuis l'info du passage imminent.
+  await page.tap('infoBar', '[data-info-defer="alice"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/defer', { table: '1', access: 'secret', personId: 'alice', songs: 1 }]);
+  // × : l'info disparaît, le message est effacé sur le serveur.
+  await page.tap('infoBar', '[data-info-dismiss="notice:n1"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/notice/ack', { table: '1', access: 'secret', personId: 'alice', ids: ['n1'] }]);
+  assert.ok(!items().some(text => /a expiré/.test(text)));
+  await page.tap('infoBar', '[data-info-dismiss="battle-req:b3"]');
+  // « Je ne chante pas ce duo » : confirmation dans la fenêtre.
+  await page.tap('infoBar', '[data-info-leave="notice:n2"]');
+  assert.equal(page.node('attentionTitle').textContent, 'Alice ne chante plus ce duo ?');
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/leave', { table: '1', access: 'secret', personId: 'alice', ownerId: 'bob', entryId: 'g1' }]);
+
+  // Rechargement : les infos fermées ne reviennent pas, rien ne vibre de nouveau.
+  const reloaded = await open({ state: page.state, session });
+  assert.ok(!reloaded.node('infoBar').querySelectorAll('.info-item').some(item => /Battle !/.test(item.textContent)));
+  assert.deepEqual(reloaded.vibrations, []);
+  // Sur scène : une nouvelle info.
+  reloaded.state.stage = { ours: true, ids: ['alice'], queueId: 5, title: 'Mon titre' };
+  reloaded.state.next = null;
+  await reloaded.poll();
+  reloaded.node('infoBar').querySelector('[data-info-more]') && await reloaded.tap('infoBar', '[data-info-more]');
+  assert.ok(reloaded.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === 'Alice : c’est à toi, sur scène maintenant !'));
+  assert.deepEqual(reloaded.vibrations, [[120]]);
+  // Plus rien à montrer : la barre disparaît.
+  reloaded.state.stage = null;
+  reloaded.state.battle = baseState().battle;
+  reloaded.state.closing = null;
+  reloaded.state.tablePeople.forEach(row => { row.inbox = []; });
+  await reloaded.poll();
+  assert.equal(reloaded.node('infoBar').hidden, true);
+});
+
+test('infos : chaque message du serveur a son texte, et la fermeture annoncée ou passée', async () => {
+  const at = Date.now();
+  const notices = [['duoCancelled', { name: 'Bob', title: 'T' }, 'Bob a annulé le duo avec Alice sur « T ».'],
+    ['duoRefused', { name: 'Bob', title: 'T' }, 'Bob ne chantera pas « T » avec Alice : Alice le chantera en solo.'],
+    ['duoLeft', { name: 'Bob', title: 'T', sent: true }, 'Bob ne chante plus « T » avec Alice : Alice le chantera en solo. KaraFun affiche encore les deux noms.'],
+    ['duoLeft', { name: 'Bob', title: 'T', sent: false }, 'Bob ne chante plus « T » avec Alice : Alice le chantera en solo.'],
+    ['joinAccepted', { name: 'Bob', title: 'T' }, 'Bob accepte de chanter « T » avec Alice.'],
+    ['joinRefused', { title: 'T' }, 'Quelqu’un préfère chanter « T » sans Alice.'],
+    ['joinExpired', { name: 'Bob', reason: 'removed' }, 'La demande de duo de Alice à Bob est close : « ce titre » n’est plus dans sa liste.'],
+    ['presenceRemoved', { title: 'T', skips: 3 }, '« T » est retiré de la liste de Alice : présence non confirmée 3 fois. Vois avec le bar si besoin.'],
+    ['closingPulled', { title: 'T' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de Alice.']];
+  const state = baseState({ closing: { at: at + 600000, passed: true } });
+  state.tablePeople[0].inbox = notices.map(([kind, params], index) => ({ id: `m${index}`, kind, params, at }));
+  const page = await open({ state });
+  await page.tap('infoBar', '[data-info-more]');
+  assert.deepEqual(page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent),
+    ['Le bar ferme : plus de nouveau titre ce soir.', ...notices.map(row => row[2])]);
+  const english = await open({ state, languages: ['en'] });
+  await english.tap('infoBar', '[data-info-more]');
+  assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” was removed from Alice’s list: presence not confirmed 3 times. Check with the bar if needed.'));
+  state.closing = { at: at + 600000, passed: false, full: false };
+  state.tablePeople[0].inbox = [];
+  state.battle = { ...state.battle, lastOutcome: { id: 'old', outcome: 'quorum', at } };
+  const open2 = await open({ state });
+  assert.deepEqual(open2.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent),
+    ['Pas de Battle cette fois : pas assez de votants.', `Fermeture du bar à ${timeOf(at + 600000)}`]);
+  state.battle = { ...state.battle, phase: 'requested', id: 'v', mode: 'songs', lastOutcome: { id: 'v0', outcome: 'dismissed', at } };
+  state.closing = null;
+  const open3 = await open({ state });
+  assert.deepEqual(open3.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent),
+    ['La Battle aura lieu ! Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.', 'Le bar a écarté la Battle proposée.']);
+});
+
+test('duos : se retirer, chanter seul, avec confirmation dans la fenêtre ; repères « ⇅ » et « réponse avant l’envoi »', async () => {
+  const state = baseState({ queue: [
+    { pos: 1, source: 'helper', id: 'bruno', ids: ['bruno'], name: 'Bruno', title: 'Tube', song: { entryId: 'b1', title: 'Tube' } },
+    { pos: 2, source: 'helper', id: 'chloe', ids: ['chloe'], name: 'Chloé', title: 'Slow', song: { entryId: 'c1', title: 'Slow' } }] });
+  state.tablePeople[0] = person('alice', 'Alice', {
+    songs: [{ entryId: 'e1', songId: 1, title: 'Un' }, { entryId: 'e2', songId: 2, title: 'Deux' }],
+    guestDuos: [{ entryId: 'g1', ownerId: 'bruno', fromName: 'Bruno', song: { title: 'Hit' } }],
+    sentJoinRequests: [{ ownerId: 'chloe', ownerName: 'Chloé', entryId: 'c1', song: { title: 'Slow' } }],
+    inKaraFun: [{ title: 'Envoyé', entryId: 'k1', duo: { role: 'guest', ownerId: 'zoe', ownerName: 'Zoé', guestName: 'Alice' }, canLeave: true },
+      { title: 'Mien', entryId: 'k2', duo: { role: 'owner', ownerId: 'alice', ownerName: 'Alice', guestName: 'Marc' }, canLeave: true },
+      { title: 'Trop tard', entryId: 'k3', duo: { role: 'owner', ownerId: 'alice', ownerName: 'Alice', guestName: 'Léa' }, canLeave: false }] });
+  let leaveAnswer;
+  const page = await open({ state, respond: url => url === '/api/table/duet/leave' ? leaveAnswer : undefined });
+  const card = () => page.find('peopleList', '[data-person-card="alice"]');
+  assert.match(card().textContent, /Envoyé.*duo avec Zoé/s);
+  assert.match(card().textContent, /Mien.*duo avec Marc/s);
+  assert.equal(card().querySelector('[data-duet-solo="k3"]'), null, 'duo déjà sur scène : plus de retrait');
+  assert.match(card().textContent, /⇅ change l’ordre de ses titres sans perdre sa place dans la file\./);
+  assert.match(card().textContent, /Demande de duo envoyée à Chloé pour « Slow »\. Sans réponse avant l’envoi de son titre, elle expire\./);
+  assert.match(page.node('queueList').innerHTML, /data-join-request="bruno"[^]*?réponse avant l’envoi/);
+  assert.equal((page.node('queueList').innerHTML.match(/réponse avant l’envoi/g) || []).length, 1, 'seulement le prochain titre');
+
+  await page.tap('peopleList', '[data-duet-leave="g1"]');
+  assert.equal(page.node('attentionWho').textContent, 'Pour Alice');
+  assert.equal(page.node('attentionTitle').textContent, 'Alice ne chante plus ce duo ?');
+  assert.equal(page.node('attentionText').textContent, 'Bruno chantera « Hit » en solo. Alice garde ses propres chansons.');
+  assert.equal(page.vibrations.length, 0, 'une confirmation ne sonne pas');
+  await page.tap('attentionChoices', '[data-attn="cancel"]');
+  assert.equal(page.node('attention').hidden, true);
+  assert.ok(!page.posts.some(([url]) => url === '/api/table/duet/leave'), 'annulé : rien d’envoyé');
+  await page.tap('peopleList', '[data-duet-leave="g1"]');
+  leaveAnswer = reply(400, { error: 'Duo introuvable.' });
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.equal(page.node('attentionError').textContent, 'Duo introuvable.', 'erreur dans la fenêtre');
+  leaveAnswer = undefined;
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/leave', { table: '1', access: 'secret', personId: 'alice', ownerId: 'bruno', entryId: 'g1' }]);
+  assert.equal(page.toast().text, 'Alice ne chante plus ce duo.');
+  assert.equal(page.node('attention').hidden, true);
+  await page.tap('peopleList', '[data-duet-leave="k1"]');
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.deepEqual(page.posts.at(-1)[1], { table: '1', access: 'secret', personId: 'alice', ownerId: 'zoe', entryId: 'k1' });
+  await page.tap('peopleList', '[data-duet-solo="k2"]');
+  assert.equal(page.node('attentionTitle').textContent, 'Alice chante « Mien » en solo ?');
+  assert.equal(page.node('attentionText').textContent, 'Marc ne chantera plus ce duo. Le titre garde sa place ; KaraFun affichera encore les deux noms.');
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/solo', { table: '1', access: 'secret', personId: 'alice', entryId: 'k2' }]);
+  assert.equal(page.toast().text, 'Alice chantera en solo.');
+
+  const solo = await open({ state: baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true },
+    tablePeople: [person('alice', 'Alice', { songs: [{ entryId: 'e1', songId: 1, title: 'Un' }, { entryId: 'e2', songId: 2, title: 'Deux' }] })] }),
+  path: '/t/Comptoir/secret' });
+  assert.match(solo.node('peopleList').textContent, /⇅ change l’ordre de tes titres sans perdre ta place dans la file\./);
+});
+
+test('mise à jour : la page cachée continue de se mettre à jour et son titre clignote tant qu’une demande attend', async () => {
+  const page = await open({ hidden: true });
+  const before = page.stateRequests().length;
+  await page.poll();
+  assert.equal(page.stateRequests().length, before + 1, 'page cachée : mise à jour quand même');
+  page.state.tablePeople[0].needConfirm = true;
+  await page.poll();
+  assert.equal(page.document.title, '🔴 Réponse attendue');
+  await page.runTimers(1000);
+  assert.equal(page.document.title, '(1) Karaoké — ma table');
+  await page.runTimers(1000);
+  assert.equal(page.document.title, '🔴 Réponse attendue');
+  page.document.hidden = false;
+  page.document.listeners.visibilitychange.forEach(entry => entry.listener());
+  await page.settle();
+  assert.equal(page.document.title, '(1) Karaoké — ma table', 'page revenue : plus de clignotement');
+  assert.equal(page.stateRequests().length, before + 3, 'et mise à jour immédiate');
 });
 
 // ================================================================ fiches des personnes

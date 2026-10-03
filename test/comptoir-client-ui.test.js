@@ -158,9 +158,11 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   alice.needConfirm = true;
   alice.invites = [{ entryId: 'duo-1', fromName: 'Bob', song: { title: 'En duo' } }];
   poll(); await settle();
-  assert.ok(notices.some(notice => notice.title === 'Karaoké : présence à confirmer'));
-  assert.ok(notices.some(notice => notice.title === 'Karaoké : nouvelle demande' && /duo/.test(notice.body)),
-    'une invitation de duo déclenche une notification si la page est ouverte en arrière-plan');
+  // Page en arrière-plan : une notification par demande, présence puis duo.
+  assert.deepEqual(notices.map(notice => [notice.title, notice.body]), [
+    ['Karaoké : réponse attendue', 'C’est bientôt au tour de Alice !'],
+    ['Karaoké : réponse attendue', 'Bob propose un duo à Alice']]);
+  assert.match(document.title, /^🔴 Réponse attendue$|^\(2\) /, 'le titre de l’onglet signale les demandes');
   alice.needConfirm = false;
   alice.invites = [];
   poll(); await settle();
