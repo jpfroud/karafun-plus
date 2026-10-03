@@ -135,6 +135,12 @@ test('annuler un duo noté par erreur : crédits exacts, titre du partenaire lai
   assert.deepEqual(events.map(([type]) => type), ['duo.improvisedCancelled']);
   assert.deepEqual(events[0][1], { ownerId: marine.id, partnerId: dam.id, entryId: stage.song.entryId });
   assert.ok(s.log.some(line => line.msg === 'Le bar a annulé le duo noté de Marine avec Dam'));
+  await assert.rejects(f.call('POST /api/staff/duo-unmark', { stageEntryId: 'inconnu' }),
+    { message: 'Passage introuvable : il a peut-être déjà été effacé des derniers passages.' });
+  await assert.rejects(f.call('POST /api/staff/duo-mark', { stageEntryId: openEntry(s).id, partnerId: dam.id }),
+    { message: 'Choisis un passage solo encore visible dans KaraFun.' }, 'après la chanson, seulement une correction');
+  await assert.rejects(f.call('POST /api/staff/duo-mark', { queueId: 99, partnerId: dam.id }),
+    { message: 'Choisis un passage solo encore visible dans KaraFun.' });
   // Plus rien à annuler.
   await assert.rejects(f.call('POST /api/staff/duo-unmark', { queueId: 1 }), { message: 'Aucun duo noté par le bar sur ce passage.' });
   await assert.rejects(f.call('POST /api/staff/duo-unmark', { queueId: 99 }), { message: 'Passage introuvable : il a peut-être déjà été effacé des derniers passages.' });
