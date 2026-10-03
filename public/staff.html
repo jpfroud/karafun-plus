@@ -1576,11 +1576,13 @@
     // Repère de fermeture : les titres au-dessus passeront avant l'heure annoncée.
     const closingLine = S.closing ? `<div class="queue-closing" role="note">— Fermeture à ${esc(hhmm(S.closing.at))} : les titres ci-dessous ne passeront probablement pas —</div>` : '';
     let closingShown = false;
-    $('qBody').innerHTML = S.queue.map(q => {
+    $('qBody').innerHTML = S.queue.map((q, i) => {
       const separator = closingLine && q.afterClosing && !closingShown ? (closingShown = true, closingLine) : '';
-      return separator + queueRow(q);
+      return separator + queueRow(q, i >= S.queue.length - 2);
     }).join('');
-    function queueRow(q) {
+    // `up` : au téléphone, le menu ⋯ des deux dernières lignes s'ouvre au-dessus
+    // de la ligne, sinon il finirait sous la barre d'onglets.
+    function queueRow(q, up) {
       const movable = q.source === 'helper' && q.id && !q.future;
       const index = movable ? plannedIndex++ : -1;
       const key = lineKey(q);
@@ -1601,7 +1603,7 @@
         <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
         <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
-        <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
+        <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
       </div>`;
     }
     $('queueHint').textContent = moveArmed ? 'Choisis maintenant la ligne où placer cette chanson, ou retouche sa poignée pour annuler.'

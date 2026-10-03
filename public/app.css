@@ -126,7 +126,9 @@ body.staff { padding: 16px; }
 .staff th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
 .staff input[type=number] { width: 70px; min-height: 36px; padding: 6px 8px; }
 .staff pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px; max-height: 280px; overflow: auto; margin: 0; }
-.kv { display: grid; grid-template-columns: 170px 1fr; gap: 4px 10px; font-size: 14px; }
+.kv { display: grid; grid-template-columns: minmax(80px, 170px) minmax(0, 1fr); gap: 4px 10px; font-size: 14px; }
+/* Valeurs longues (adresse, droits reçus) : à la ligne plutôt que coupées au bord de la carte (360 px). */
+.kv > div { min-width: 0; overflow-wrap: anywhere; }
 .kv div:nth-child(odd) { color: var(--muted); }
 .switch { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; user-select: none; }
 .switch input { width: 20px; height: 20px; accent-color: var(--accent); }
@@ -245,7 +247,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .queue-item .queue-tags .badge { font-size: 10px; padding: 1px 5px; }
 .queue-item .song-cell .badge.repeat { font-size: 10px; padding: 1px 5px; margin-right: 5px; vertical-align: 1px; }
 .queue-item .eta { font-size: 12px; font-weight: 700; white-space: nowrap; }
-.queue-item .queue-actions { display: flex; justify-content: flex-end; gap: 5px; }
+.queue-item .queue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .queue-item .queue-actions button { white-space: nowrap; min-height: 30px; padding: 3px 7px; font-size: 11px; }
 .queue-item.drag-target { outline: 2px solid var(--accent-2); background: rgba(124,92,255,.17); }
 .queue-item.move-selected { outline: 2px solid var(--accent-2); }
@@ -421,6 +423,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 }
 @media (max-width: 899px) {
   body.staff { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  /* Barre du haut collante et barre d'onglets fixe : une section atteinte par un
+     lien (pastille KaraFun) ou un champ qui prend le focus reste visible entre les deux. */
+  html:has(body.staff) { scroll-padding-top: 104px; scroll-padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
   .staff-layout > [data-tab] { display: none; }
   body[data-tab="scene"] .staff-layout > [data-tab="scene"], body[data-tab="file"] .staff-layout > [data-tab="file"],
   body[data-tab="accueil"] .staff-layout > [data-tab="accueil"], body[data-tab="reperes"] .staff-layout > [data-tab="reperes"],
@@ -441,6 +446,8 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .row-menu-toggle { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); color: var(--text); font-size: 20px; }
   .row-actions .queue-actions { display: none; position: absolute; right: 0; top: 48px; z-index: 6; flex-direction: column; gap: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 10px 30px rgba(0,0,0,.45); }
   .row-actions.open .queue-actions { display: flex; }
+  /* Deux dernières lignes : le menu s'ouvre au-dessus, jamais sous la barre d'onglets. */
+  .row-actions.up .queue-actions { top: auto; bottom: 48px; }
   .queue-item .queue-actions button { min-height: 44px; padding: 6px 14px; font-size: 14px; }
   .drag-handle { width: 30px; height: 44px; font-size: 20px; }
   .identity-row .btn, .identity-bonus { min-height: 40px; }
@@ -458,7 +465,8 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .identity-actions { grid-column: 2 / -1; justify-content: flex-end; }
 }
 @media (max-width: 650px) {
-  body.staff { padding: 10px; }
+  /* Garder la place de la barre d'onglets sous la dernière commande. */
+  body.staff { padding: 10px 10px calc(88px + env(safe-area-inset-bottom)); }
   .staff-layout { gap: 11px; margin-top: 12px; }
   .staff .card { padding: 14px; }
   .connect-controls { width: 100%; }
@@ -530,6 +538,6 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .live-tune .save-status { display: block; margin-top: 8px; }
 .song-sheet .sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 /* File du bar sur grand écran : place pour « Priorité », « Réglages » et « Retirer ». */
-@media (min-width: 900px) { .queue-head, .queue-item { grid-template-columns: 46px 24px minmax(0,1.05fr) minmax(0,1.15fr) 44px 186px; } }
+@media (min-width: 900px) { .queue-head, .queue-item { grid-template-columns: 46px 24px minmax(0,1.05fr) minmax(0,1.15fr) 44px 220px; } }
 /* Après le nom du titre, qui garde la priorité dans la cellule coupée à droite. */
 .queue-item .song-cell .badge.tune { font-size: 10px; padding: 1px 5px; margin-left: 2px; vertical-align: 1px; }

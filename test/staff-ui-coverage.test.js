@@ -2746,3 +2746,22 @@ test('réglages de titre : refus arrivé fiche fermée, signalé au bar par un m
   assert.match(page.$('songSheetStatus').textContent, /^Non enregistré/);
   assert.equal(page.toast().text, '', 'pas de message en double');
 });
+
+// ------------------------------------------------------------------ QA navigateur du 2026-10-03
+// Found by /qa on 2026-10-03
+// Report: .gstack/qa-reports/run-20261003T140104Z/qa-report-127.0.0.1-2026-10-03.md
+
+// Regression: ISSUE-001 — le menu ⋯ des dernières lignes de la File ne doit pas finir sous la barre d'onglets
+test('file au téléphone : le menu ⋯ des deux dernières lignes s’ouvre vers le haut', async () => {
+  const world = queueWorld();
+  world.queue.pop(); // dernière ligne : un titre de la salle, sans menu
+  const page = await openPage({ world });
+  const line = index => rows(page)[index];
+  const last = rows(page).length - 1;
+  await page.click(line(last).querySelector('[data-row-menu]'));
+  assert.ok(line(last).querySelector('.row-actions').classList.contains('up'), 'dernière ligne : menu au-dessus');
+  await page.click(line(last - 1).querySelector('[data-row-menu]'));
+  assert.ok(line(last - 1).querySelector('.row-actions').classList.contains('up'), 'avant-dernière ligne : menu au-dessus');
+  await page.click(line(3).querySelector('[data-row-menu]'));
+  assert.ok(!line(3).querySelector('.row-actions').classList.contains('up'), 'plus haut : menu en dessous');
+});
