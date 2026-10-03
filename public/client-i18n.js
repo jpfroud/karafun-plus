@@ -552,6 +552,12 @@ window.CLIENT_TRANSLATIONS = {
       'Le bar a désactivé les réglages de titre depuis les téléphones.': 'The bar has turned off song settings from phones.',
       'Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.': 'This song is no longer planned: it may already have been sung or removed.',
       'Ce titre a commencé : seul le bar peut encore le régler.': 'This song has started: only the bar can still adjust it.',
+      'Ce téléphone ne gère plus {name} : ses titres se règlent depuis l’autre téléphone.': 'This phone no longer manages {name}: their songs are adjusted from the other phone.',
+      '{name} a quitté la soirée : ses titres ne se règlent plus.': '{name} has left the evening: their songs can no longer be adjusted.',
+      'Ce titre est en train de sortir de KaraFun : il se réglera de nouveau une fois revenu dans la liste.': 'This song is being taken out of KaraFun: it can be adjusted again once it is back in the list.',
+      'Seul l’auteur de ce duo peut régler ce titre.': 'Only the person who picked this duet can adjust it.',
+      'Réglages non enregistrés': 'Settings not saved',
+      'Réglages de « {title} » non enregistrés : {error}': 'Settings for “{title}” not saved: {error}',
     },
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.

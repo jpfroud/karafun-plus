@@ -1940,8 +1940,9 @@ test('réglages de titre : duo, titre commencé, envoi en cours, fonction coupé
   await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="-1"]');
   await page.runTimers(600);
   assert.equal(page.node('tuneStatus').textContent, 'Non enregistré : Ce titre a déjà commencé : seul le bar peut encore le régler. · Réessayer');
-  assert.equal(card('alice').querySelector('[data-song-settings="e1"]').closest('li').querySelector('.tune-badge') === null, true,
-    'réglage refusé : le badge montre ce que le serveur a gardé, pas le choix non enregistré');
+  const refusedLine = card('alice').querySelector('[data-song-settings="e1"]').closest('li');
+  assert.deepEqual(refusedLine.querySelectorAll('.tune-badge').map(node => node.textContent), ['Réglages non enregistrés'],
+    'réglage refusé : le badge montre ce que le serveur a gardé (rien), pas le choix non enregistré, et signale le refus');
   answer = null;
   await page.tap('tuneStatus', '[data-tune-retry]');
   assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: -1 }, 'réessayé avec la même valeur');
@@ -2015,4 +2016,75 @@ test('réglages de titre : un refus oublié quand le titre n’est plus réglabl
   assert.equal(page.node('tunePitch').textContent, '+2');
   assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.');
   answer = null;
+});
+
+test('réglages de titre : refus arrivé fiche fermée, signalé par un message et sur la ligne du titre', async () => {
+  let answer = reply(409, { error: 'Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.' });
+  const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings' ? answer || keepSettings(self, body) : undefined });
+  const line = entryId => page.find('peopleList', `[data-song-settings="${entryId}"]`).closest('li');
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  // « Terminé » tout de suite : le réglage part, la fiche est déjà fermée quand le refus arrive.
+  await page.click(page.find('sheetPanel', '.sheet-actions [data-close-sheet]'));
+  assert.equal(page.sheetOpen(), false);
+  assert.deepEqual(page.toast(), { text: 'Réglages de « Mon titre » non enregistrés : Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.',
+    bad: true, warn: false, hidden: false });
+  assert.equal(line('e1').querySelector('.tune-badge.bad').textContent, 'Réglages non enregistrés', 'le refus reste visible sur la ligne');
+  await page.poll();
+  assert.equal(line('e1').querySelector('.tune-badge.bad').textContent, 'Réglages non enregistrés', 'et au rafraîchissement suivant');
+  // La fiche rouverte le dit aussi, avec « Réessayer ».
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  assert.match(page.node('tuneStatus').textContent, /^Non enregistré : Ce titre est en train de sortir de KaraFun/);
+  answer = null;
+  await page.tap('tuneStatus', '[data-tune-retry]');
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
+  await page.click(page.find('sheetPanel', '.sheet-actions [data-close-sheet]'));
+  await page.poll();
+  assert.equal(line('e1').querySelector('.tune-badge.bad') === null, true);
+  assert.equal(line('e1').querySelector('.tune-badge').textContent, '♯ +1');
+  // Le titre commence pendant l'envoi : plus réglable, mais le message reste affiché.
+  answer = reply(409, { error: 'Ce titre a déjà commencé : seul le bar peut encore le régler.', code: 'SONG_STARTED' });
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  Object.assign(page.state.tablePeople[0].inKaraFun[0], { canAdjust: false, stage: true, lock: 'started' });
+  await page.click(page.find('sheetPanel', '.sheet-actions [data-close-sheet]'));
+  assert.equal(page.toast().text, 'Réglages de « Déjà prête » non enregistrés : Ce titre a déjà commencé : seul le bar peut encore le régler.');
+  assert.equal(page.toast().bad, true);
+  // Fiche ouverte sur ce titre : le refus s'affiche dans la fiche, pas en message.
+  answer = reply(409, { error: 'Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.' });
+  await page.runTimers(4000);
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="1"]');
+  await page.runTimers(600);
+  assert.match(page.node('tuneStatus').textContent, /^Non enregistré/);
+  assert.equal(page.toast().hidden, true, 'pas de message en double');
+});
+
+test('réglages de titre : la fiche dit pourquoi le titre ne se règle plus (sortie de KaraFun, sur scène, autre téléphone, parti)', async () => {
+  const state = tuneState();
+  state.tablePeople[0].inKaraFun[0].lock = null;
+  const page = await open({ state });
+  const lock = () => page.find('songSettingsBody', '.tune-lock').textContent;
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  // « Pas prêt » ou retrait du bar : le titre sort de KaraFun et reviendra dans la liste.
+  Object.assign(page.state.tablePeople[0].inKaraFun[0], { canAdjust: false, lock: 'leaving' });
+  await page.poll();
+  assert.equal(lock(), 'Ce titre est en train de sortir de KaraFun : il se réglera de nouveau une fois revenu dans la liste.');
+  Object.assign(page.state.tablePeople[0].inKaraFun[0], { canAdjust: false, stage: true, lock: 'started' });
+  await page.poll();
+  assert.equal(lock(), 'Ce titre a commencé : seul le bar peut encore le régler.');
+  Object.assign(page.state.tablePeople[0].inKaraFun[0], { canAdjust: false, stage: false, lock: 'duo' });
+  await page.poll();
+  assert.equal(lock(), 'Seul l’auteur de ce duo peut régler ce titre.');
+  await page.click(page.find('sheetPanel', '.sheet-actions [data-close-sheet]'));
+  // Titre de sa liste, gestion passée sur un autre téléphone.
+  await page.tap('peopleList', '[data-song-settings="e1"]');
+  page.state.managedIds = [];
+  await page.poll();
+  assert.equal(lock(), 'Ce téléphone ne gère plus Alice : ses titres se règlent depuis l’autre téléphone.');
+  // Partie de la soirée.
+  page.state.managedIds = ['alice'];
+  page.state.tablePeople[0].active = false;
+  await page.poll();
+  assert.equal(lock(), 'Alice a quitté la soirée : ses titres ne se règlent plus.');
 });

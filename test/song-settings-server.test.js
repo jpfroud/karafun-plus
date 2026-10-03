@@ -930,3 +930,37 @@ test('ancienne télécommande d’un vrai KaraFun : réglages indisponibles, les
   link.bridge.protocol = null;
   assert.equal(f.publicState(lea.person, '1').songSettings.enabled, true);
 });
+
+test('titre parti vers KaraFun vu par le téléphone : raison quand il ne se règle plus', async () => {
+  const f = harness();
+  const link = kcsBridge(f);
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  const tom = singer(f, tb, 'Tom', 201);
+  const duo = f.sched.inviteDuet(lea.person, tom.person.id, { songId: 102, title: 'Duo', artist: 'Artiste' });
+  assert.equal(lea.person.song.entryId, duo.entryId);
+  const tr = sendNext(f, 'q-1');
+  assert.deepEqual(tr.sel.ids, [lea.person.id, tom.person.id]);
+  link.bridge.queue = [kfItem('q-1', 102, tr.sel.label)];
+  const row = who => f.publicState(who.person, '1', new Set([who.person.id])).me.inKaraFun.find(item => item.queueId === 'q-1');
+  const view = who => { const { canAdjust, lock } = row(who); return { canAdjust, lock }; };
+  assert.deepEqual(view(lea), { canAdjust: true, lock: null });
+  assert.deepEqual(view(tom), { canAdjust: false, lock: 'duo' }, 'partenaire : seul l’auteur règle');
+  tr.pulled = { reason: 'defer', at: Date.now() };
+  assert.deepEqual(view(lea), { canAdjust: false, lock: 'leaving' }, '« Pas prêt » : le titre sort de KaraFun');
+  tr.pulled = null;
+  tr.startedAt = Date.now();
+  assert.deepEqual(view(lea), { canAdjust: false, lock: 'started' });
+  // Envoi en cours annulé (départ du chanteur) : le titre ne partira pas.
+  const g = harness();
+  kcsBridge(g);
+  const ana = singer(g, openTable(g, '1'), 'Ana', 301);
+  g.settings.auto = true;
+  g.sync();
+  g.settings.auto = false;
+  assert.equal(g.pending().sel.ids[0], ana.person.id);
+  const sending = () => g.publicState(ana.person, '1', new Set([ana.person.id])).me.inKaraFun.find(item => item.sending);
+  assert.equal(sending().lock, null);
+  g.pending().cancelled = true;
+  assert.deepEqual([sending().canAdjust, sending().lock], [false, 'leaving']);
+});

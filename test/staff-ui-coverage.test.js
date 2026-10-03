@@ -2653,3 +2653,44 @@ test('réglages de titre : silence de KaraFun, avis par fonction et ancienne té
   assert.equal(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]').disabled, true);
   assert.equal(page.$('songSheetReset').disabled, true);
 });
+
+test('réglages de titre : file au téléphone, nom du titre avant le badge des réglages', async () => {
+  const page = await openPage({ world: tuneWorld() });
+  const cell = page.in('qBody', '[data-song-settings="k1"]').closest('.queue-item').querySelector('.song-cell');
+  // Cellule sur une ligne coupée à droite : le titre doit passer en premier, le badge ensuite.
+  assert.deepEqual(cell.children.filter(child => typeof child !== 'string').map(child => child.className),
+    ['song-title', 'badge tune', 'song-artist']);
+});
+
+test('réglages de titre : refus arrivé fiche fermée, signalé au bar par un message et sur la ligne de la file', async () => {
+  const page = await openPage({ world: tuneWorld() });
+  const row = entryId => page.in('qBody', `[data-song-settings="${entryId}"]`).closest('.queue-item');
+  page.replies['/api/staff/song/settings'] = { status: 409, error: 'Ce titre est sur scène : règle-le en direct.' };
+  await page.click(page.in('qBody', '[data-song-settings="b1"]'));
+  await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
+  await page.click(page.$('songSheetClose'));
+  await page.flush();
+  assert.equal(page.$('songSheet').open, false);
+  assert.deepEqual(page.toast(), { text: 'Réglages de « Rock » non enregistrés : Ce titre est sur scène : règle-le en direct.', bad: true });
+  assert.equal(row('b1').querySelector('.badge.bad').textContent, 'réglages non enregistrés', 'le refus reste visible dans la file');
+  await page.poll();
+  assert.equal(row('b1').querySelector('.badge.bad').textContent, 'réglages non enregistrés');
+  // La fiche rouverte : l'erreur et « Réessayer », qui enregistre.
+  await page.click(page.in('qBody', '[data-song-settings="b1"]'));
+  assert.match(page.$('songSheetStatus').textContent, /^Non enregistré : Ce titre est sur scène/);
+  page.replies['/api/staff/song/settings'] = body => { page.world.queue.find(q => q.song.entryId === body.entryId).song.settings = body.settings; return { ok: true, applied: 'list' }; };
+  await page.click(page.in('songSheetStatus', '[data-retry]'));
+  await page.flush();
+  assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓');
+  await page.poll();
+  assert.equal(row('b1').querySelector('.badge.bad'), null);
+  // Fiche ouverte sur ce titre : le refus reste dans la fiche, sans message en plus.
+  page.replies['/api/staff/song/settings'] = { status: 409, error: 'Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.' };
+  page.$('toast').hidden = true;
+  page.$('toast').textContent = '';
+  await page.click(page.in('songSheetBody', '[data-tune="tempo"][data-step="5"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.match(page.$('songSheetStatus').textContent, /^Non enregistré/);
+  assert.equal(page.toast().text, '', 'pas de message en double');
+});

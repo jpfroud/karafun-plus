@@ -1543,10 +1543,14 @@
     if (value?.backing != null && value.backing !== defaults.backing) parts.push(value.backing ? t('chœurs {n}', { n: value.backing }) : t('chœurs coupés'));
     return parts.join(' · ');
   }
-  // Petit badge sur un titre réglé ; rien si le bar a coupé la fonction.
+  // Petit badge sur un titre réglé ; rien si le bar a coupé la fonction. Un
+  // réglage refusé reste signalé sur la ligne tant que le titre se règle.
   function tuneBadge(song) {
-    const summary = tuneEnabled() ? tuneSummary(tuneOf(song)) : '';
-    return summary ? ` <span class="tune-badge" aria-label="${esc(t('Réglages : {summary}', { summary }))}">${esc(summary)}</span>` : '';
+    if (!tuneEnabled()) return '';
+    const summary = tuneSummary(tuneOf(song));
+    const failed = song?.entryId != null && tuneDrafts.get(String(song.entryId))?.state === 'error';
+    return `${summary ? ` <span class="tune-badge" aria-label="${esc(t('Réglages : {summary}', { summary }))}">${esc(summary)}</span>` : ''}${failed
+      ? ` <span class="tune-badge bad">${esc(t('Réglages non enregistrés'))}</span>` : ''}`;
   }
   const TUNE_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>';
   const tuneButton = (song, personId) => `<button type="button" class="btn small ghost icon tune" data-song-settings="${esc(song.entryId)}" data-person-id="${esc(personId)}" aria-label="${esc(t('Réglages de {title}', { title: song.title || t('cette chanson') }))}" title="${esc(t('Réglages'))}">${TUNE_ICON}</button>`;
@@ -1561,6 +1565,16 @@
     const sent = list(person?.inKaraFun).find(song => String(song.entryId) === key);
     return sent ? { person, song: sent, canAdjust: manages(person.id) && !!sent.canAdjust,
       tracks: Array.isArray(sent.tracks) ? sent.tracks : null, duo: !!sent.duo } : null;
+  }
+
+  // Pourquoi ce titre ne se règle plus depuis ce téléphone.
+  function tuneLockText(entry) {
+    const name = entry.person.name;
+    if (!manages(entry.person.id)) return t('Ce téléphone ne gère plus {name} : ses titres se règlent depuis l’autre téléphone.', { name });
+    if (entry.person.active === false) return t('{name} a quitté la soirée : ses titres ne se règlent plus.', { name });
+    if (entry.song.lock === 'leaving') return t('Ce titre est en train de sortir de KaraFun : il se réglera de nouveau une fois revenu dans la liste.');
+    if (entry.song.lock === 'duo') return t('Seul l’auteur de ce duo peut régler ce titre.');
+    return t('Ce titre a commencé : seul le bar peut encore le régler.');
   }
 
   function openTune(personId, entryId) {
@@ -1585,7 +1599,7 @@
     const enabled = tuneEnabled();
     const lock = !enabled ? t('Le bar a désactivé les réglages de titre depuis les téléphones.')
       : !entry ? t('Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.')
-        : !entry.canAdjust ? t('Ce titre a commencé : seul le bar peut encore le régler.') : '';
+        : !entry.canAdjust ? tuneLockText(entry) : '';
     const draft = tuneDrafts.get(tuneSheet.entryId);
     const value = (!lock && draft ? draft.value : cleanTune(entry?.song.settings)) || {};
     const ranges = tuneRanges(), defaults = tuneDefaults();
@@ -1642,7 +1656,7 @@
     const key = String(entry.song.entryId);
     const draft = tuneDrafts.get(key) || { personId: String(entry.person.id), entryId: key };
     clearTimeout(draft.timer);
-    Object.assign(draft, { value, state: 'editing', error: null });
+    Object.assign(draft, { value, state: 'editing', error: null, title: entry.song.title || '' });
     tuneDrafts.set(key, draft);
     tuneSaved.delete(key);
     draft.timer = setTimeout(() => flushTune(key), TUNE_SAVE_MS);
@@ -1671,7 +1685,13 @@
       }
     } catch (error) {
       if (error.status === 403 && error.code === 'TABLE_ACCESS') { invalidAccess = true; showInvalidLink(); return; }
-      if (tuneDrafts.get(key) === draft && draft.seq === seq && draft.state === 'saving') Object.assign(draft, { state: 'error', error: error.message });
+      if (tuneDrafts.get(key) === draft && draft.seq === seq && draft.state === 'saving') {
+        Object.assign(draft, { state: 'error', error: error.message });
+        // Fiche fermée (ou ouverte sur un autre titre) : le refus ne passe pas inaperçu.
+        if (!(tuneSheet?.entryId === key && !$('sheet').hidden)) {
+          toast(t('Réglages de « {title} » non enregistrés : {error}', { title: draft.title || t('cette chanson'), error: error.message }), true);
+        }
+      }
     } finally { draft.busy = false; }
     if (draft.again) { draft.again = false; flushTune(key); }
     renderTune();

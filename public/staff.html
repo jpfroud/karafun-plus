@@ -474,7 +474,12 @@
         const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id, settings: JSON.parse(value || '{}') });
         return SAVED_TUNE[result?.applied] || 'Enregistré ✓';
       },
-      server: id => tuneKey(songTarget(id)?.q.song?.settings) },
+      server: id => tuneKey(songTarget(id)?.q.song?.settings),
+      // Refus arrivé fiche fermée (ou ouverte sur un autre titre) : message, et repère sur la ligne de la file.
+      failed: d => {
+        if (!$('songSheet').open || songSheetEntry !== d.id) toast(`Réglages de « ${songTitles.get(d.id) || 'ce titre'} » non enregistrés : ${d.error}`, true);
+        render();
+      } },
   };
   const keyOf = (kind, id) => id ? `${kind}:${id}` : kind;
   const fieldKind = el => el?.dataset?.autosave || (FIELDS[el?.id] ? el.id : null);
@@ -565,6 +570,7 @@
       d.state = 'error';
       d.error = e.message;
       renderStatus(key);
+      def.failed?.(d);
     }
   }
   const flushAll = () => { for (const [key, d] of drafts) if (d.state === 'editing') flushField(key); };
@@ -1373,6 +1379,8 @@
 
   // Fiche d'un titre à venir (File, menu ⋯ → Réglages).
   const songOwners = new Map(); // titre → auteur, gardé pour l'envoi même si le titre quitte la file
+  const songTitles = new Map(); // titre → nom affiché, pour un refus arrivé fiche fermée
+  const tuneFailed = entryId => entryId != null && drafts.get(keyOf('songSettings', String(entryId)))?.state === 'error';
   let songSheetEntry = null;
   // Titre dans la file (chargé dans KaraFun, en cours d'envoi ou prévu), ou sur scène.
   function songTarget(entryId) {
@@ -1384,6 +1392,7 @@
   function openSongSheet(entryId, personId) {
     songSheetEntry = String(entryId);
     songOwners.set(songSheetEntry, String(personId || ''));
+    songTitles.set(songSheetEntry, songTarget(songSheetEntry)?.q?.song?.title || '');
     $('songSheetValue').dataset.autosaveId = songSheetEntry;
     $('songSheetStatus').dataset.saveStatus = keyOf('songSettings', songSheetEntry);
     rendered.delete($('songSheetBody'));
@@ -1570,8 +1579,8 @@
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}</span></div>
-        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}${q.song?.settings ? `${tuneBadge(q.song.settings)} ` : ''}<span class="song-title">${esc(title)}</span>${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
       </div>`;

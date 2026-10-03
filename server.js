@@ -1618,15 +1618,19 @@ function publicState(person, tableId, managed = null) {
         state: 'accepted', asPartner: true } : null,
       ...(managed?.has(p.id) ? { inbox: sched.inboxOf(p).map(n => ({ id: n.id, kind: n.kind, params: n.params, at: n.at })) } : {}),
       // Réglages de titre : seul l'auteur du titre les change, avant son début.
-      inKaraFun: tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => ({ title: tr.sel.song.title, artist: tr.sel.song.artist,
-        songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId),
-        entryId: tr.sel.song.entryId || null, settings: tr.sel.song.settings || null, tracks: songTracksOf(kfItemOf(tr)),
-        canAdjust: tr.sel.ids[0] === p.id && !tr.cancelled && !tr.pulled && !tr.absent && !tr.startedAt && !isOnStage(tr, current),
-        ...sentDuo(tr, p, current) }))
-        .concat(pending && pending.sel.ids.includes(p.id) ? [{ title: pending.sel.song.title, artist: pending.sel.song.artist,
-          songId: pending.sel.song.songId, img: coverUrl(pending.sel.song.img), queueId: null, stage: false, sending: true,
-          entryId: pending.sel.song.entryId || null, settings: pending.sel.song.settings || null,
-          canAdjust: pending.sel.ids[0] === p.id && !pending.cancelled }] : []),
+      // `lock` dit pourquoi le téléphone ne peut plus : 'duo' (partenaire),
+      // 'started' (commencé ou sur scène), 'leaving' (sort de KaraFun).
+      inKaraFun: tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => {
+        const lock = tr.sel.ids[0] !== p.id ? 'duo' : tr.startedAt || isOnStage(tr, current) ? 'started'
+          : tr.cancelled || tr.pulled || tr.absent ? 'leaving' : null;
+        return { title: tr.sel.song.title, artist: tr.sel.song.artist,
+          songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId),
+          entryId: tr.sel.song.entryId || null, settings: tr.sel.song.settings || null, tracks: songTracksOf(kfItemOf(tr)),
+          canAdjust: !lock, lock, ...sentDuo(tr, p, current) };
+      }).concat(pending && pending.sel.ids.includes(p.id) ? [(lock => ({ title: pending.sel.song.title, artist: pending.sel.song.artist,
+        songId: pending.sel.song.songId, img: coverUrl(pending.sel.song.img), queueId: null, stage: false, sending: true,
+        entryId: pending.sel.song.entryId || null, settings: pending.sel.song.settings || null, canAdjust: !lock, lock }))(
+        pending.sel.ids[0] !== p.id ? 'duo' : pending.cancelled ? 'leaving' : null)] : []),
     }));
   }
 
