@@ -493,6 +493,8 @@ test('le réglage suit le titre : « Pas prêt », absent rendu au chanteur, duo
   const tr = sendNext(f, 'q-1');
   assert.equal(tr.sel.ids[0], lea.person.id);
   link.bridge.queue = [kfItem('q-1', 101, tr.sel.label)];
+  // « Pas prêt » n'est possible que si quelqu'un d'autre peut chanter avant : Tom.
+  f.sched.chooseSong(tom.person, { songId: 201, title: 'Titre 201', artist: 'Artiste' });
   // « Pas prêt » : KaraFun retire le titre, il revient dans la liste de Léa avec ses réglages.
   await f.call('POST /api/table/defer', { ...lea.body });
   assert.ok(link.sent.some(m => m.type === 'remote.RemoveFromQueueRequest'));
@@ -501,7 +503,6 @@ test('le réglage suit le titre : « Pas prêt », absent rendu au chanteur, duo
   assert.equal(lea.person.song.entryId, tr.sel.song.entryId);
   assert.deepEqual(plain(lea.person.song.settings), { pitch: -2 });
   // Absent à l'appel : le titre lui revient avec ses réglages.
-  f.sched.chooseSong(tom.person, { songId: 201, title: 'Titre 201', artist: 'Artiste' });
   f.sched.setSongSettings(tom.person.song, { tempo: 5 });
   const trTom = sendNext(f, 'q-2');
   assert.equal(trTom.sel.ids[0], tom.person.id);

@@ -2260,7 +2260,11 @@ class Scheduler {
   }
 
   // Renvoie la prochaine chanson à envoyer (sans rien modifier), ou null.
-  select() {
+  // `stageFree` : rien ne joue ni n'est chargé dans KaraFun. Si plus aucun
+  // autre passage ne peut partir, le premier passage repoussé (« Pas prêt »)
+  // part quand même, comme le montre déjà la prévision de la file : la
+  // scène ne reste pas vide alors que la file contient des titres.
+  select({ stageFree = false } = {}) {
     this._maybeRequestSolver();
     if (this.reservedNext) {
       const p = this.people.get(this.reservedNext.personId);
@@ -2285,6 +2289,16 @@ class Scheduler {
     const c = this._pick(order, this.lastGroup, false,
       this.roundGroups, this.roundPeople, this.tableServeCounts, this.duetCooldowns,
       null, this.reservedNext, null, false, null, null, blocked);
+    if (!c && stageFree && deferred.length) {
+      const owner = this.people.get(deferred[0]);
+      const who = (owner.deferral.ids || [owner.id]).map(pid => this.people.get(pid)?.name).filter(Boolean).join(' & ');
+      this._event('defer.ended', { ownerId: owner.id, entryId: owner.deferral.entryId, how: 'alone' });
+      owner.deferral = null;
+      this.invalidateManualOrder();
+      this.version++;
+      this.note(`Personne d’autre ne peut chanter : le passage repoussé ${/^[aeiouyàâéèêëîïôûùh]/i.test(who) ? 'd’' : 'de '}${who} part maintenant`, 'skip');
+      return this.select({ stageFree });
+    }
     if (!c) return null;
     const names = c.ids.map(pid => this.people.get(pid).name);
     const tables = [...new Set(c.ids.map(pid => this.table(this.people.get(pid).tableId).name))];

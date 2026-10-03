@@ -39,6 +39,7 @@ window.CLIENT_TRANSLATIONS = {
       '{name} accepte de chanter « {title} » avec {person}.': '{name} agrees to sing “{title}” with {person}.',
       '{name} préfère chanter « {title} » sans {person}.': '{name} prefers to sing “{title}” without {person}.',
       'La demande de duo de {person} à {name} a expiré : « {title} » est parti dans KaraFun.': '{person}’s duet request to {name} expired: “{title}” went to KaraFun.',
+      'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.': 'Nobody else is waiting to sing: your turn can’t be pushed back.',
       'La demande de duo de {person} à {name} est close : « {title} » n’est plus dans sa liste.': '{person}’s duet request to {name} is closed: “{title}” is no longer on their list.',
       '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.': ['“{title}” was removed from {person}’s list: presence not confirmed {n} time. Check with the bar if needed.', '“{title}” was removed from {person}’s list: presence not confirmed {n} times. Check with the bar if needed.'],
       '« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.': '“{title}” would play after closing time: it was taken out of KaraFun and stays on {person}’s list.',
@@ -570,6 +571,7 @@ window.CLIENT_TRANSLATIONS = {
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
     errors: {
+      'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.': 'Nobody else is waiting to sing: your turn can’t be pushed back.',
       'Choisis le duo à annuler.': 'Choose the duet to cancel.',
       'Trop tard : ce duo est déjà sur scène.': 'Too late: this duet is already on stage.',
       'Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.': 'This song is being taken out of KaraFun. Try again in a moment.',

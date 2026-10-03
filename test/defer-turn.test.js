@@ -176,3 +176,36 @@ test('demande de duo : l’auteur du titre accepte, refuse ou reçoit un duo dir
   assert.deepEqual(s.duetJoinRequestsFor(bruno), [], 'une personne partie retire ses demandes');
   assert.throws(() => s.requestDuetJoin(alice, alice.id, entryId), /déjà ton titre/);
 });
+
+// ---------------------------------------------------------------- QA navigateur du 2026-10-03
+// Found by /qa on 2026-10-03
+// Report: .gstack/qa-reports/run-20261003T140104Z/qa-report-127.0.0.1-2026-10-03.md
+
+// Regression: ISSUE-013 — deux « Pas prêt » croisés bloquaient la file : scène vide, rien n'était envoyé
+test('deux « Pas prêt » croisés : scène libre, le premier passage repoussé part quand même', () => {
+  const { s, people, names, sing, defer } = evening([['1', 'Chloé'], ['2', 'Bruno']]);
+  const [head, second] = names(s.presenceView());
+  defer(people[head], 1);
+  defer(people[second], 1);
+  assert.equal(s.select(), null, 'pendant un titre, rien ne part encore : chacun attend une autre chanson');
+  const forecast = names(s.presenceView())[0];
+  const logLen = s.log.length;
+  const sel = s.select({ stageFree: true });
+  assert.ok(sel, 'scène libre : un titre part, la scène ne reste pas vide');
+  assert.equal(names([sel])[0], forecast, 'celui que la file annonçait en premier');
+  assert.equal(s.deferralFor(sel.ids[0]), null, 'son report est levé');
+  assert.ok(s.deferralFor(people[forecast === head ? second : head].id), 'l’autre report reste');
+  assert.ok(s.log.slice(logLen).some(l => l.msg === `Personne d’autre ne peut chanter : le passage repoussé de ${forecast} part maintenant`),
+    'le journal du bar l’explique');
+  sing(sel);
+  assert.equal(names([s.select({ stageFree: true })])[0], forecast === head ? second : head, 'l’autre passe ensuite');
+});
+
+test('« Pas prêt » seul : le passage repoussé part dès que la scène est libre, élision du journal', () => {
+  const { s, people, defer } = evening([['1', 'Emma']]);
+  defer(people.Emma, 1);
+  assert.equal(s.select(), null);
+  const sel = s.select({ stageFree: true });
+  assert.equal(sel.ids[0], people.Emma.id);
+  assert.equal(s.log.at(-1).msg, 'Personne d’autre ne peut chanter : le passage repoussé d’Emma part maintenant');
+});

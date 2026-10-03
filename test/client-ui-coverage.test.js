@@ -2188,3 +2188,22 @@ test('français : « d’Alice », « de Bruno », espace insécable avant « ? 
   await claim.tap('peopleList', '[data-claim-here="other"]');
   assert.equal(claim.find('sheetPanel', 'h3').textContent, 'Gérer les chansons d’Émilie');
 });
+
+// Regression: ISSUE-015 — « Pas prêt » seul : la fenêtre revenait aussitôt avec « Je suis là » seul, sans explication
+test('demandes : « Je suis là » sans « Pas prêt » quand personne d’autre n’attend, avec la raison ; refus traduit', async () => {
+  const state = baseState();
+  state.tablePeople = [person('alice', 'Alice', { needConfirm: true, canDefer: false, deferAlone: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }] })];
+  const page = await open({ state });
+  assert.deepEqual(page.node('attentionChoices').querySelectorAll('button').map(button => button.textContent), ['Je suis là']);
+  assert.equal(page.find('attentionChoices', '.attention-note').textContent,
+    'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.');
+  const en = await open({ state, languages: ['en-GB'] });
+  assert.equal(en.find('attentionChoices', '.attention-note').textContent, 'Nobody else is waiting to sing: your turn can’t be pushed back.');
+  // Refus du serveur (course entre deux téléphones) : message traduit dans la fenêtre.
+  const raced = baseState();
+  raced.tablePeople = [person('alice', 'Alice', { needConfirm: true, canDefer: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }] })];
+  const late = await open({ state: raced, languages: ['en-GB'], respond: url => url === '/api/table/defer'
+    ? reply(400, { error: 'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.', code: 'DEFER_ALONE' }) : undefined });
+  await late.tap('attentionChoices', '[data-attn="defer"]');
+  assert.equal(late.node('attentionError').textContent, 'Nobody else is waiting to sing: your turn can’t be pushed back.');
+});

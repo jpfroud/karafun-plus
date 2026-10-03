@@ -715,7 +715,8 @@
       title: t('C’est bientôt au tour de {name} !', { name }),
       text: t('Confirme sa présence. Sans réponse une fois la scène libre, la chanson laisse passer la suivante et revient juste après. Pour un duo, la réponse de l’un des deux suffit.'),
       choices: button('confirm', t('Je suis là'), true) +
-        (item.person.canDefer && !item.person.deferral ? button('defer', t('Pas prêt : repousser d’une chanson')) : ''),
+        (item.person.canDefer && !item.person.deferral ? button('defer', t('Pas prêt : repousser d’une chanson')) : '') +
+        (item.person.deferAlone ? `<p class="small muted attention-note">${esc(t('Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.'))}</p>` : ''),
     };
     if (item.kind === 'invite') return {
       title: t('{from} propose un duo à {name}', { from: item.invite.fromName || t('Un chanteur'), name }),
@@ -749,6 +750,7 @@
   // focus déplacé) que si la demande en tête change, jamais à chaque mise à jour.
   function attentionSignature(item) {
     return JSON.stringify([item.key, lang, item.person?.name, item.kind === 'presence' && !!item.person.canDefer && !item.person.deferral,
+      item.kind === 'presence' && !!item.person.deferAlone,
       item.kind === 'battle' ? [item.battle.mode, list(item.battle.songOptions).map(song => song.songId)] : null]);
   }
 

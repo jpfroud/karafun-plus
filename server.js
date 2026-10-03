@@ -1201,7 +1201,7 @@ function sync() {
     if (!pending) {
       // Après un échec, la chanson du chanteur peut avoir changé : le choix
       // actuel de l'ordonnanceur prévaut au moment de la nouvelle tentative.
-      const sel = sched.select();
+      const sel = sched.select({ stageFree: !current });
       if (sel) {
         pending = { sel, before: qids, at: now, attempts: 1, retryAt: null };
         try {
@@ -1518,9 +1518,13 @@ function publicState(person, tableId, managed = null) {
   // encore à envoyer, peut être repoussé par ses chanteurs.
   // Personne → titre concerné, tant que ce titre peut encore laisser passer
   // une chanson (DEFER_MAX par titre pour toute la soirée).
-  const deferrable = new Map();
+  // Sans autre passage prêt à chanter avant lui, un report laisserait la
+  // scène vide : « Pas prêt » n'est pas proposé (deferAlone l'explique).
+  const deferrable = new Map(), deferAlone = new Set();
   const allowDefer = (ids, song) => {
-    if (sched.deferredSongsOf(song) < DEFER_MAX) ids.forEach(id => deferrable.set(id, song));
+    if (sched.deferredSongsOf(song) >= DEFER_MAX) return;
+    if (othersCanPass(ids, ready)) ids.forEach(id => deferrable.set(id, song));
+    else ids.forEach(id => deferAlone.add(id));
   };
   for (const tr of tracked) {
     if (!tr.cancelled && !tr.pulled && !tr.absent && !tr.startedAt && !isOnStage(tr, current)) allowDefer(tr.sel.ids, tr.sel.song);
@@ -1530,7 +1534,8 @@ function publicState(person, tableId, managed = null) {
   if (pending) pending.sel.ids.forEach(id => deferrable.delete(id));
   const deferralOf = pid => {
     const active = sched.deferralFor(pid);
-    if (active) return { remaining: active.remaining, total: active.total, canDeferMore: active.total < DEFER_MAX };
+    if (active) return { remaining: active.remaining, total: active.total,
+      canDeferMore: active.total < DEFER_MAX && othersCanPass(sched.people.get(active.ownerId)?.deferral?.ids || [pid], ready) };
     // Titre en train de sortir de KaraFun : pas d'autre report avant son retour.
     const pulling = tracked.find(tr => tr.pulled?.reason === 'defer' && tr.sel.ids.includes(pid));
     const owner = pulling && sched.people.get(pulling.sel.ids[0]);
@@ -1628,7 +1633,8 @@ function publicState(person, tableId, managed = null) {
         .map(r => ({ entryId: r.entryId, fromId: r.fromId, fromName: r.fromName, song: fmtSong(r.song) })),
       sentJoinRequests: (sentJoinRequests.get(p.id) || []).map(r => ({ ownerId: r.ownerId, ownerName: r.ownerName,
         entryId: r.entryId, song: fmtSong(r.song), seen: !!r.seenAt })),
-      ...(deferral => ({ deferral, canDefer: !p.withdrawnAt && deferrable.has(p.id) && !deferral }))(deferralOf(p.id)),
+      ...(deferral => ({ deferral, canDefer: !p.withdrawnAt && deferrable.has(p.id) && !deferral,
+        deferAlone: !p.withdrawnAt && !deferral && deferAlone.has(p.id) }))(deferralOf(p.id)),
       duet: p.duet ? { partnerName: sched.people.get(p.duet.partnerId)?.name || 'Un chanteur',
         state: p.duet.state } : p.duetOf ? { partnerName: sched.people.get(p.duetOf)?.name || 'Un chanteur',
         state: 'accepted', asPartner: true } : null,
@@ -2182,11 +2188,25 @@ function confirmPresence(p) {
 // « Pas prêt » : le prochain passage de cette personne laisse passer une ou
 // plusieurs chansons sans perdre son tour. Un titre déjà chargé dans KaraFun
 // en est retiré, puis reprend sa place dans la file.
+// « Pas prêt » : un autre passage prêt (pas lui-même repoussé) pourra-t-il
+// chanter avant celui de `ids` ? `view` : prévision déjà calculée.
+function othersCanPass(ids, view = null) {
+  const mine = new Set(ids.map(String));
+  const ahead = view || sched.presenceView(pending ? (pending.sel.consumedIds || pending.sel.ids) : [], pending ? pending.sel : null);
+  return ahead.some(v => !v.future && !v.ids.some(pid => mine.has(String(pid))) && !sched.isDeferred(sched.people.get(v.ids[0])));
+}
+function deferAloneError() {
+  const error = new Error('Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.');
+  error.code = 'DEFER_ALONE';
+  return error;
+}
+
 function deferTurn(p, songs = 1) {
   const count = songs == null ? 1 : Number(songs);
   const active = sched.deferralFor(p.id);
   if (active) {
     const owner = sched.people.get(active.ownerId);
+    if (!othersCanPass(owner.deferral.ids || [owner.id])) throw deferAloneError();
     sched.deferPassage(owner.id, { entryId: active.entryId, ids: owner.deferral.ids }, count);
     sync();
     return sched.deferralFor(p.id);
@@ -2206,6 +2226,7 @@ function deferTurn(p, songs = 1) {
     // le report est vérifié, le titre retiré, puis le report enregistré.
     const passage = { entryId: tr.sel.song.entryId, ids: tr.sel.ids, song: tr.sel.song };
     sched.checkDeferral(owner.id, passage, count);
+    if (!othersCanPass(tr.sel.ids)) throw deferAloneError();
     pullFromKaraFun(tr, 'defer');
     sched.deferPassage(owner.id, passage, count);
     sync();
@@ -2217,6 +2238,7 @@ function deferTurn(p, songs = 1) {
   if (!first || !first.ids.includes(p.id)) {
     throw new Error('Tu pourras repousser ton passage quand ta chanson sera la prochaine.');
   }
+  if (!othersCanPass(first.ids)) throw deferAloneError();
   // Un envoi déjà parti chantera de toute façon avant : il ne compte pas.
   sched.deferPassage(first.ids[0], first, count, { extra: pending && !pending.cancelled ? 1 : 0 });
   sync();
