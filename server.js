@@ -2502,8 +2502,7 @@ const handlers = {
   'POST /api/staff/connect': async (req, res, body) => {
     const code = String(body.code || '').replace(/\D/g, '');
     if (!code) throw new Error('Code KaraFun manquant : recopie les chiffres affichés dans la télécommande de KaraFun.');
-    CODE = code;
-    return connectionAnswer(connectKaraFun());
+    return connectionAnswer(connectKaraFun(code));
   },
   'POST /api/staff/settings': async (req, res, body) => {
     const settingsBefore = journalSettingsState();
@@ -3284,20 +3283,26 @@ const publicServer = http.createServer(server.listeners('request')[0]);
 
 // ------------------------------------------------------------------ démarrage
 // Les transitions de la connexion vont au journal du serveur ; le code de
-// télécommande n'y paraît que masqué (deux derniers chiffres).
-function connectKaraFun() {
-  if (!CODE) { appLog('Pas de code KaraFun : saisis-le sur la page du bar.'); return 'no-code'; }
-  rememberCode();
+// télécommande n'y paraît que masqué (deux derniers chiffres). Les pages de
+// KaraFun lues dans l'heure (sans code ni URL) sont gardées dans data/ pour
+// qu'un redémarrage de la file ne remette pas leur compteur à zéro.
+function connectKaraFun(code = CODE) {
+  if (!code) { appLog('Pas de code KaraFun : saisis-le sur la page du bar.'); return 'no-code'; }
   if (!bridge) {
     bridge = new KaraFunBridge({ logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined, log: appLog,
       identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json'),
+      budgetFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-pages.json'),
       lockOwner: DEMO ? null : { port: PORT } });
     bridge.on('change', () => setImmediate(sync));
   }
-  const result = bridge.connect(CODE);
-  appLog(result === 'kept' ? `KaraFun (code ${maskCode(CODE)}) : connexion en cours ou prête, gardée.` :
-    result?.ok === false ? `KaraFun (code ${maskCode(CODE)}) : clic sans nouvel essai. ${result.message}` :
-    `Connexion à KaraFun (code ${maskCode(CODE)})...`);
+  const result = bridge.connect(code);
+  // Budget de l'heure épuisé et connexion prête : le pont garde son code
+  // (faute de frappe probable). Le code retenu suit toujours le pont.
+  CODE = bridge.code || code;
+  rememberCode();
+  appLog(result === 'kept' ? `KaraFun (code ${maskCode(code)}) : connexion en cours ou prête, gardée.` :
+    result?.ok === false ? `KaraFun (code ${maskCode(code)}) : clic sans nouvel essai. ${result.message}` :
+    `Connexion à KaraFun (code ${maskCode(code)})...`);
   return result;
 }
 

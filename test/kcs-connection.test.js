@@ -43,7 +43,10 @@ function fakes(t, respond = () => ok(page())) {
   t.after(() => { globalThis.WebSocket = saved.WebSocket; globalThis.fetch = saved.fetch; });
   return { calls, sockets: FakeWebSocket.instances };
 }
-const mockTime = t => t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 0 });
+const mockTime = (t, now = 0) => t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now });
+// Milieu d'heure : les relances rapides de la page tiennent dans le budget
+// (à l'heure pile, une seule est prise, voir test/kcs-ratelimit.test.js).
+const HALF_HOUR = 1800000;
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
 const nameRequests = ws => ws.sent.filter(m => m.type === 'remote.UpdateUsernameRequest');
 
@@ -275,8 +278,8 @@ test('socket ouvert : « injoignable » disparaît aussitôt, sans attendre la f
   await flush();
   env.sockets[0].serverClose(1006);
   assert.equal(bridge.unreachable, true);
-  // URL toute neuve refusée avant d'être acceptée : page relue 5 s plus tard.
-  t.mock.timers.tick(5000);
+  // Coupure (1006) avant d'être acceptée : URL réessayée 3 s plus tard.
+  t.mock.timers.tick(3000);
   await flush();
   env.sockets[1].open();
   assert.equal(bridge.unreachable, false);
@@ -414,7 +417,7 @@ test('Reconnecter pendant une attente de relance : nouvel essai immédiat', asyn
 // ses relances suivent la cadence lente de test/kcs-ratelimit.test.js ; les
 // reconnexions par l'URL KCS gardée gardent 3, 6, 12, 24 puis 30 s.
 test('relances de la page : 5 s, 15 s, 30 s, 1 min, 2 min puis réparties ; 3 s après « prêt »', async t => {
-  mockTime(t);
+  mockTime(t, HALF_HOUR);
   let failing = true;
   const env = fakes(t, () => { if (failing) throw new TypeError('fetch failed'); return ok(page()); });
   const { bridge, lines } = bridgeFor(t);
@@ -427,9 +430,9 @@ test('relances de la page : 5 s, 15 s, 30 s, 1 min, 2 min puis réparties ; 3 s 
     if (i === 5) failing = false;
     t.mock.timers.tick(wait);
   }
-  // 6 pages en 230 s : les 3 essais automatiques restants sont répartis
-  // jusqu'à l'heure pleine suivante (plus la gigue de 32,5 s).
-  assert.deepEqual(delays, [5000, 15000, 30000, 60000, 120000, Math.round((3600000 + 32500 - 230000) / 4)]);
+  // 5 relances rapides en 230 s : les 4 essais automatiques restants et
+  // l'heure pleine suivante (plus la gigue de 32,5 s) se partagent le reste.
+  assert.deepEqual(delays, [5000, 15000, 30000, 60000, 120000, Math.round((HALF_HOUR + 32500 - 230000) / 5)]);
   assert.equal(lines.filter(l => l.startsWith('KaraFun : Réseau coupé')).length, 1, 'une même panne : une seule ligne');
   await flush();
   const ws = env.sockets.at(-1);
@@ -461,7 +464,7 @@ test('une même panne réécrit une ligne toutes les 10 relances', async t => {
 });
 
 test('relances dispersées : le hasard décale chaque délai de ±15 % au plus (20 s au plus pour la page)', async t => {
-  mockTime(t);
+  mockTime(t, HALF_HOUR);
   let failing = true;
   const env = fakes(t, () => { if (failing) throw new TypeError('fetch failed'); return ok(page()); });
   const { bridge } = bridgeFor(t);

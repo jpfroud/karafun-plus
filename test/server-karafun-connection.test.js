@@ -113,3 +113,19 @@ test('Connecter / Reconnecter pendant une limite de KaraFun : { ok: false, messa
   assert.ok(f.lines.includes(`KaraFun (code ••••56) : clic sans nouvel essai. ${message}`));
   assert.equal(f.lines.some(line => line.includes('123456')), false, 'jamais le code complet');
 });
+
+// Budget de l'heure épuisé et connexion prête : le pont garde son code (une
+// faute de frappe ne coupe pas ce qui marche). Le serveur ne retient alors
+// pas le code tapé, pour que « Reconnecter » et un redémarrage gardent le bon.
+test('Connecter un autre code refusé par le pont : le code retenu reste celui qui marche', async () => {
+  const f = harness();
+  const message = 'Trop d’essais auprès de KaraFun cette heure-ci : la connexion actuelle est gardée ; un autre code pourra être essayé à 20:00.';
+  const bridge = { ...fakeBridge({ ok: false, reason: 'budget', message }), code: '123456' };
+  f.setBridge(bridge);
+  f.setCode('123456');
+  assert.deepEqual(plain(await f.call('POST /api/staff/connect', { code: '123465' })), { ok: false, kept: false, message });
+  assert.deepEqual(bridge.calls, [['connect', '123465']]);
+  assert.equal(f.getCode(), '123456', 'le code qui marche reste retenu');
+  assert.ok(f.lines.includes(`KaraFun (code ••••65) : clic sans nouvel essai. ${message}`), 'le journal parle du code tapé, masqué');
+  assert.equal(f.lines.some(line => line.includes('123465')), false);
+});
