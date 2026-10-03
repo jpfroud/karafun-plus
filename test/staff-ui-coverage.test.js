@@ -695,7 +695,7 @@ test('file du bar : statuts, badges, doublons, repères et séparateur de fermet
   assert.deepEqual(actions(lines[2]), []);
   assert.deepEqual(actions(lines[3]), ['Réglages', 'Retirer'], 'le premier prévu n’a pas besoin de priorité');
   assert.deepEqual(actions(lines[4]), ['Priorité', 'Réglages', 'Retirer']);
-  assert.deepEqual(actions(lines[6]), ['Réglages'], 'un titre supplémentaire n’est pas encore déplaçable, mais se règle déjà');
+  assert.deepEqual(actions(lines[6]), ['Réglages', 'Retirer'], 'un titre supplémentaire n’est pas encore déplaçable, mais se règle et se retire déjà');
   assert.equal(lines[6].querySelector('.drag-handle').disabled, true);
   assert.equal(lines[7].querySelector('[data-pick]'), null, 'un titre ajouté à la main dans KaraFun ne se sélectionne pas');
   assert.equal(lines[2].querySelector('.eta').textContent, '—', 'heure inconnue');
@@ -2860,4 +2860,53 @@ test('fin de soirée : la confirmation annonce ce qui sera coupé et le message 
   await quiet.click(quiet.$('clearTables'));
   assert.ok(!/envoi automatique sera coupé/.test(quiet.confirms.at(-1)), quiet.confirms.at(-1));
   assert.ok(!/lecture automatique/.test(quiet.confirms.at(-1)), 'lecture automatique déjà coupée : rien à annoncer');
+});
+
+// Regression: ISSUE-005 — Retour d'Android avec le menu ⋯ ouvert quittait l'onglet File
+test('file au téléphone : Retour et Échap ferment d’abord le menu ⋯ ouvert', async () => {
+  const page = await openPage({ world: queueWorld(), hash: '#plus' });
+  await page.click(page.doc.body.querySelector('[data-tab-btn="file"]'));
+  const line = index => rows(page)[index];
+  const steps = page.history.length;
+  await page.click(line(3).querySelector('[data-row-menu]'));
+  assert.equal(page.history.length, steps + 1, 'le menu ouvert a sa propre étape');
+  await page.back();
+  assert.equal(page.doc.body.dataset.tab, 'file', 'Retour ne quitte pas l’onglet');
+  assert.ok(!line(3).querySelector('.row-actions').classList.contains('open'), 'Retour ferme le menu');
+  assert.equal(line(3).querySelector('[data-row-menu]').getAttribute('aria-expanded'), 'false');
+  // Fermé d'un appui sur ⋯ : son étape est retirée, l'onglet précédent reste à un Retour.
+  await page.click(line(3).querySelector('[data-row-menu]'));
+  await page.click(line(3).querySelector('[data-row-menu]'));
+  assert.equal(page.history.length, steps);
+  // Un menu ouvert puis un autre : une seule étape.
+  await page.click(line(3).querySelector('[data-row-menu]'));
+  await page.click(line(4).querySelector('[data-row-menu]'));
+  assert.equal(page.history.length, steps + 1);
+  // Échap ferme le menu.
+  dispatch(page.doc.body, 'keydown', { key: 'Escape' });
+  await page.flush();
+  assert.equal(page.all('qBody', '.row-actions.open').length, 0, 'Échap ferme le menu');
+  assert.equal(page.history.length, steps, 'et retire son étape');
+  await page.back();
+  assert.equal(page.doc.body.dataset.tab, 'plus', 'Retour suivant : onglet précédent');
+});
+
+// Regression: ISSUE-009 — les lignes « Titre suivant » n'avaient pas « Retirer » dans le menu ⋯
+test('file du bar : « Retirer » sur une ligne « Titre suivant » retire ce titre-là seulement', async () => {
+  const page = await openPage({ world: queueWorld() });
+  const future = rows(page)[6];
+  assert.deepEqual(badges(future), ['Titre suivant']);
+  const remove = future.querySelector('[data-rm-entry]');
+  assert.ok(remove, 'le menu ⋯ propose « Retirer »');
+  assert.equal(remove.textContent, 'Retirer');
+  assert.equal(remove.getAttribute('aria-label'), 'Retirer « Plus tard » de Bruno');
+  page.confirmAnswer = false;
+  await page.click(remove);
+  assert.equal(page.postsTo('/api/staff/remove-many').length, 0);
+  page.confirmAnswer = true;
+  page.replies['/api/staff/remove-many'] = { ok: true, removed: 1, message: '1 titre retiré.' };
+  await page.click(rows(page)[6].querySelector('[data-rm-entry]'));
+  assert.match(page.confirms.at(-1), /^Retirer « Plus tard » de la liste de Bruno \?/);
+  assert.deepEqual(page.lastPost('/api/staff/remove-many').body, { items: [{ personId: 'bruno', entryId: 'e3' }] });
+  assert.equal(page.toast().text, '1 titre retiré.');
 });

@@ -310,6 +310,8 @@
   const personOf = id => id == null ? null : S?.people.find(p => String(p.id) === String(id)) || null;
   const tableOf = id => S?.tables.find(t => String(t.id) === String(id)) || null;
   const initial = name => esc(String(name || '?').charAt(0).toUpperCase());
+  // « d’Emma », « de Bruno » : élision devant une voyelle ou un h.
+  const ofName = name => /^[aeiouyàâäéèêëîïôöûùüh]/i.test(String(name || '')) ? `d’${name}` : `de ${name}`;
   // Une liste redessinée au rafraîchissement : rien ne change sous les doigts
   // pendant une saisie, et rien n'est réécrit si le contenu est le même.
   const rendered = new Map();
@@ -406,7 +408,24 @@
       try { window.history.back(); } catch (_) { /* */ }
     });
   }
+  // Menu ⋯ d'une ligne de la file : comme une fenêtre, il a sa propre étape
+  // dans l'historique. Retour ou Échap le ferment sans changer d'onglet.
+  function setRowMenu(menuKey, fromHistory = false) {
+    const wasOpen = !!openRowMenu;
+    openRowMenu = menuKey;
+    if (!fromHistory) {
+      try {
+        if (menuKey && !wasOpen) window.history?.pushState?.({ barTab: activeTab, rowMenu: true }, '', tabUrl());
+        else if (!menuKey && window.history?.state?.rowMenu) { keepMenuStep = true; window.history.back(); }
+      } catch (_) { /* historique indisponible */ }
+    }
+    if (S) render();
+  }
+  let keepMenuStep = false;
+  document.addEventListener?.('keydown', event => { if (event.key === 'Escape' && openRowMenu) setRowMenu(null); });
   window.addEventListener?.('popstate', event => {
+    if (keepMenuStep) { keepMenuStep = false; return; }
+    if (openRowMenu && !event.state?.rowMenu) setRowMenu(null, true);
     poppingDialog = true;
     try { for (const id of DIALOGS) if ($(id)?.open) $(id).close(); } finally { poppingDialog = false; }
     setTab(event.state?.barTab || fromHash() || 'scene', false);
@@ -1600,7 +1619,10 @@
       // Réglages de titre : tout titre à venir de la file, même déjà chargé dans KaraFun.
       const tunable = q.song?.entryId && (q.source === 'helper' || (q.ours && (q.source === 'karafun' || q.source === 'envoi')));
       const tune = tunable ? `<button class="btn small" data-song-settings="${esc(q.song.entryId)}" data-person-id="${esc(q.ids?.[0] ?? q.id ?? '')}" aria-label="Réglages de « ${esc(title)} » : tonalité, tempo, voix">Réglages</button>` : '';
-      const actions = movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}${tune}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `${tune}<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : tune;
+      // Titre suivant d'un chanteur : retiré seul, sans toucher à son titre en cours.
+      const removeEntry = q.source === 'helper' && q.future && q.id && q.song?.entryId ?
+        `<button class="btn small danger" data-rm-entry="${esc(q.song.entryId)}" data-person-id="${esc(q.id)}" data-title="${esc(title)}" data-name="${esc(q.name || q.singer || 'ce chanteur')}" aria-label="Retirer « ${esc(title)} » de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : '';
+      const actions = movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}${tune}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `${tune}<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : tune + removeEntry;
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
@@ -1651,18 +1673,20 @@
       cell.classList.toggle('show-note', open);
       button.setAttribute('aria-expanded', String(open));
     });
-    $('qBody').querySelectorAll('[data-row-menu]').forEach(button => button.onclick = () => {
-      openRowMenu = openRowMenu === button.dataset.rowMenu ? null : button.dataset.rowMenu;
-      render();
-    });
+    $('qBody').querySelectorAll('[data-row-menu]').forEach(button => button.onclick = () => setRowMenu(openRowMenu === button.dataset.rowMenu ? null : button.dataset.rowMenu));
     $('qBody').querySelectorAll('[data-pick]').forEach(box => box.onchange = () => {
       if (box.checked) selectedLines.add(box.dataset.pick); else selectedLines.delete(box.dataset.pick);
       render();
     });
     $('qBody').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson ? Le chanteur reste inscrit à sa table.')) act('/api/staff/remove', { personId: b.dataset.rm }, 'Chanson retirée'); });
+    $('qBody').querySelectorAll('[data-rm-entry]').forEach(b => b.onclick = () => {
+      if (confirm(`Retirer « ${b.dataset.title} » de la liste ${ofName(b.dataset.name)} ? Ses autres titres et sa place restent.`)) {
+        act('/api/staff/remove-many', { items: [{ personId: b.dataset.personId, entryId: b.dataset.rmEntry }] }, 'Chanson retirée');
+      }
+    });
     $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => act('/api/staff/move', { personId: b.dataset.urgent, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun'));
     $('qBody').querySelectorAll('[data-kfrm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson de KaraFun ?')) act('/api/staff/kf', { action: 'remove', queueId: b.dataset.kfrm }, 'Chanson retirée de KaraFun'); });
-    $('qBody').querySelectorAll('[data-song-settings]').forEach(b => b.onclick = () => { openRowMenu = null; openSongSheet(b.dataset.songSettings, b.dataset.personId); render(); });
+    $('qBody').querySelectorAll('[data-song-settings]').forEach(b => b.onclick = () => { if (window.history?.state?.rowMenu) { try { window.history.replaceState({ barTab: activeTab }, '', tabUrl()); } catch (_) { /* */ } } openRowMenu = null; openSongSheet(b.dataset.songSettings, b.dataset.personId); render(); });
     renderSongSheet();
     renderTables();
     const soloTable = S.tables.find(t => t.id === 'Comptoir' && t.individual);
