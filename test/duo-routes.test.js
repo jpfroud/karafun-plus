@@ -193,6 +193,49 @@ test('bar : marquer partie l’invitée d’un duo envoyé garde le titre de son
     entryId: alice.p.song.entryId, title: 'Six', at: 'number', seenAt: null });
 });
 
+test('bar : départ de la table de l’invitée d’un duo envoyé garde le titre de son auteur', async () => {
+  const f = harness();
+  const { alice, bruno, tr } = await sentDuo(f);
+  // Béa, à la table de Bruno, a son propre titre dans KaraFun : il part avec elle.
+  const bea = person(f, '2', 'Béa');
+  f.sched.chooseSong(bea.p, song(7, 'Sept'));
+  const solo = { queueId: 42, sel: { ids: [bea.p.id], consumedIds: [bea.p.id], song: bea.p.song, label: 'Béa · Table 2', names: ['Béa'] },
+    addedAt: Date.now(), startedAt: null };
+  f.tracked().push(solo);
+  const bridge = fakeBridge([{ queueId: 41, songId: 1, singer: tr.sel.label }, { queueId: 42, songId: 7, singer: solo.sel.label }]);
+  f.setBridge(bridge);
+  // Un autre duo de Bruno est en route vers KaraFun, sans accusé.
+  const chloe = person(f, '3', 'Chloé');
+  const other = f.sched.inviteDuet(chloe.p, bruno.p.id, song(5, 'Cinq'));
+  other.duet.state = 'accepted';
+  const pendingSel = { ids: [chloe.p.id, bruno.p.id], consumedIds: [chloe.p.id], song: other, label: 'Chloé & Bruno · Table 3 + Table 2',
+    names: ['Chloé', 'Bruno'], kind: 'duo', group: chloe.p.group, groups: [chloe.p.group, bruno.p.group] };
+  f.setPending({ sel: pendingSel, cancelled: false, before: new Set([41, 42]), at: Date.now() });
+  const result = plain(await f.call('POST /api/staff/table-left', { id: '2' }));
+  assert.deepEqual(result, { ok: true, removedFromKaraFun: 1, pendingCancelled: false, keptAsSolo: 2 });
+  assert.deepEqual(bridge.calls, [['remove', 42]], 'seul le titre de Béa sort de KaraFun');
+  assert.equal(solo.cancelled, true);
+  assert.equal(tr.cancelled, undefined);
+  assert.deepEqual(plain(tr.sel.ids), [alice.p.id]);
+  assert.deepEqual(plain(pendingSel.ids), [chloe.p.id]);
+  assert.equal(f.getPending().cancelled, false);
+  assert.equal(pendingSel.label, 'Chloé & Bruno · Table 3 + Table 2', 'l’accusé KaraFun est reconnu sous son nom');
+  assert.ok(f.sched.log.some(l => l.msg.startsWith('Bruno est parti : Alice chantera « Un » en solo')));
+  assert.equal(alice.p.inbox.at(-1).params.sent, true);
+  assert.ok(!f.sched.people.has(bruno.p.id) && !f.sched.people.has(bea.p.id), 'la table est partie');
+  assert.ok(f.sched.people.has(alice.p.id));
+
+  // Témoin : quand la table de l'auteure part, son duo sort de KaraFun.
+  const g = harness();
+  const sent = await sentDuo(g);
+  const ownerBridge = fakeBridge([{ queueId: 41, songId: 1, singer: sent.tr.sel.label }]);
+  g.setBridge(ownerBridge);
+  const own = plain(await g.call('POST /api/staff/table-left', { id: '1' }));
+  assert.deepEqual(own, { ok: true, removedFromKaraFun: 1, pendingCancelled: false });
+  assert.deepEqual(ownerBridge.calls, [['remove', 41]]);
+  assert.equal(sent.tr.cancelled, true);
+});
+
 test('demande de duo : masquée à l’auteur pendant l’envoi, expirée à l’accusé de KaraFun', async () => {
   const f = harness();
   const alice = person(f, '1', 'Alice'), zoe = person(f, '2', 'Zoé');
