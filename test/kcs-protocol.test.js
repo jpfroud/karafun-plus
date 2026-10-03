@@ -931,7 +931,8 @@ test('réglages de titre : requêtes KCS exactes pour l’ajout, la file et le t
     { type: 'remote.TrackVolumeRequest', payload: { type: 5, volume: 0 } },
     { type: 'remote.TrackVolumeRequest', payload: { type: 4, volume: 100 } },
   ]);
-  assert.deepEqual(sent, [{ pitch: -2, tempo: -10, backing: 0, guide: 30 }, { guide: 50 }, null,
+  // Duo : la voix guide B posée par la file est notée (relecture PR #11).
+  assert.deepEqual(sent, [{ pitch: -2, tempo: -10, backing: 0, guide: 30 }, { guide: 50, guideB: 50 }, null,
     { pitch: -2, tempo: -10, guide: 30 }, { pitch: 0, tempo: 0 }, 2, 5, 0, 100], 'chaque méthode rend ce qui a été envoyé');
   assert.throws(() => bridge._emit('pause', null), /Commande KaraFun inconnue/, 'toujours aucune commande inconnue');
 });
