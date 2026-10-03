@@ -2570,6 +2570,10 @@ function clearEvening() {
   // Même pendant une reconnexion, chaque titre envoyé reste sous suivi. On ne
   // connaît alors pas la file distante : le retrait sera tenté dès son retour.
   const toRemove = tracked.filter(tr => !tr.startedAt && !isOnStage(tr, current));
+  // L'envoi automatique attend la vérification du bar seulement si un titre
+  // envoyé doit encore quitter KaraFun (ou arriver) : le titre sur scène seul
+  // ne le coupe pas. La page l'annonce avant la confirmation.
+  const stopAuto = !!settings.auto && (!!pending || toRemove.length > 0);
   let removalErrors = 0;
   let removalRequests = 0;
   for (const tr of toRemove) {
@@ -2621,14 +2625,14 @@ function clearEvening() {
   settings.closingAt = null;
   restartSweep = null;
   restartAwaitingPlay = null;
-  if (tracked.length || pending) settings.auto = false;
+  if (stopAuto) settings.auto = false;
   sched.note('Nouvelle soirée : anciens accès effacés et nouvel accès « En solo » créé.', 'staff');
   saveNight({ required: true, replaceBoth: true });
   saveTables();
   // Les photos ne sont plus nécessaires après deux instantanés sans personnes.
   try { for (const filename of fs.readdirSync(PHOTO_DIR)) fs.unlinkSync(path.join(PHOTO_DIR, filename)); }
   catch (_) { /* nettoyage différé : aucune photo n'est encore visible */ }
-  return { ok: true, removalRequests,
+  return { ok: true, removalRequests, autoStopped: stopAuto,
     removalErrors, currentStillPlaying: !!current,
     otherKaraFunSongs: upcoming.filter(item => !tracked.some(tr => String(tr.queueId) === String(item.queueId))).length,
     removalPending: toRemove.length };

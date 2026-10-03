@@ -2832,3 +2832,32 @@ test('tables : « Comptoir » est réservé au groupe En solo, et un nom affich�
     assert.equal(page.posts.length, count, name);
   }
 });
+
+// Regression: ISSUE-003 — « Supprimer toutes les tables » coupait l'envoi automatique sans l'annoncer
+test('fin de soirée : la confirmation annonce ce qui sera coupé et le message le rappelle', async () => {
+  const world = baseWorld();
+  world.settings.auto = true;
+  world.settings.autoPlay = true;
+  world.closing = { at: Date.now() + 3600000, passed: false, full: false, fitCount: 3, afterCount: 0 };
+  world.stage = { ours: true, queueId: 3, ids: ['alice'], song: { title: 'Tube' } };
+  world.tracked = [{ queueId: 3, startedAt: Date.now() }, { queueId: 4 }];
+  const page = await openPage({ world });
+  page.confirmAnswer = false;
+  await page.click(page.$('clearTables'));
+  const message = page.confirms.at(-1);
+  assert.match(message, /^Supprimer les 3 tables/);
+  assert.match(message, /L’envoi automatique sera coupé : titres encore dans KaraFun à vérifier\. Réactive-le dans « Plus » ensuite\./);
+  assert.match(message, /La lecture automatique sera coupée et l’heure de fermeture retirée\. Cette action ne peut pas être annulée\.$/);
+  page.confirmAnswer = true;
+  page.replies['/api/staff/tables-clear'] = { ok: true, autoStopped: true, removalPending: 1 };
+  await page.click(page.$('clearTables'));
+  assert.equal(page.toast().text, 'Tables effacées. Vérifie et vide les titres restants dans KaraFun, puis réactive l’envoi automatique dans « Plus ».');
+  // Rien dans KaraFun ni en envoi : l'envoi automatique reste actif, la confirmation ne l'annonce pas.
+  const calm = baseWorld();
+  calm.settings.auto = true;
+  const quiet = await openPage({ world: calm });
+  quiet.confirmAnswer = false;
+  await quiet.click(quiet.$('clearTables'));
+  assert.ok(!/envoi automatique sera coupé/.test(quiet.confirms.at(-1)), quiet.confirms.at(-1));
+  assert.ok(!/lecture automatique/.test(quiet.confirms.at(-1)), 'lecture automatique déjà coupée : rien à annoncer');
+});

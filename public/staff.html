@@ -1764,13 +1764,22 @@
   $('reconcilePending').onclick = () => act('/api/staff/reconcile-pending', {}, 'File KaraFun vérifiée ; envoi repris');
   $('clearTables').onclick = async () => {
     if (!S?.tables.length) return toast('Aucune table à supprimer.');
-    if (!confirm(`Supprimer les ${S.tables.length} tables, tous les chanteurs et leurs chansons ? Les anciens QR ne fonctionneront plus. Cette action ne peut pas être annulée.`)) return;
+    // Ce que la nouvelle soirée coupe aussi, annoncé avant la confirmation :
+    // l'envoi automatique tant qu'un titre envoyé attend son retrait de
+    // KaraFun (comme le serveur), la lecture automatique et l'heure de fermeture.
+    const sentLeft = !!S.pending || (S.tracked || []).some(tr => !tr.startedAt && String(tr.queueId) !== String(S.stage?.queueId ?? ''));
+    const stops = [S.settings?.auto && sentLeft ? 'L’envoi automatique sera coupé : titres encore dans KaraFun à vérifier. Réactive-le dans « Plus » ensuite.' : '',
+      S.settings?.autoPlay && S.closing ? 'La lecture automatique sera coupée et l’heure de fermeture retirée.' :
+        S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : S.closing ? 'L’heure de fermeture sera retirée.' : ''].filter(Boolean);
+    if (!confirm([`Supprimer les ${S.tables.length} tables, tous les chanteurs et leurs chansons ? Les anciens QR ne fonctionneront plus.`,
+      ...stops, 'Cette action ne peut pas être annulée.'].join(' '))) return;
     try {
       const result = await post('/api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
       await load();
-      toast(result.currentStillPlaying || result.otherKaraFunSongs || result.removalErrors || result.removalPending
-        ? 'Tables effacées. Vérifie et vide les titres restants dans KaraFun.'
-        : 'Toutes les tables sont effacées.');
+      toast(result.autoStopped ? 'Tables effacées. Vérifie et vide les titres restants dans KaraFun, puis réactive l’envoi automatique dans « Plus ».'
+        : result.currentStillPlaying || result.otherKaraFunSongs || result.removalErrors || result.removalPending
+          ? 'Tables effacées. Vérifie et vide les titres restants dans KaraFun.'
+          : 'Toutes les tables sont effacées.');
     } catch (error) { toast(error.message, true); }
   };
   $('clearQueue').onclick = async () => {

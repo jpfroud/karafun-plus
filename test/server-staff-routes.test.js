@@ -901,3 +901,42 @@ test('repère privé : vérifié à l’heure dite, la vérification tombe si le
   assert.equal(view().verified, false);
   assert.equal(view().privateNote, 'veste verte');
 });
+
+// ---------------------------------------------------------------- QA navigateur du 2026-10-03
+// Found by /qa on 2026-10-03
+// Report: .gstack/qa-reports/run-20261003T140104Z/qa-report-127.0.0.1-2026-10-03.md
+
+// Regression: ISSUE-003 — « Supprimer toutes les tables » coupait l'envoi automatique sans l'annoncer
+test('nouvelle soirée : le titre sur scène seul ne coupe pas l’envoi automatique, un titre à retirer de KaraFun le coupe et le dit', async () => {
+  const confirm = { confirmation: 'SUPPRIMER TOUTES LES TABLES' };
+  // Seulement le titre en cours : il continue, l'envoi automatique reste actif.
+  const f = harness();
+  singers(f, ['Alice', 'Bruno']);
+  const live = sendNext(f, 11, { startedAt: Date.now() - 20000 });
+  f.setBridge(fakeBridge([{ queueId: 11, songId: live.sel.song.songId, title: live.sel.song.title, status: 'playing' }], 11));
+  f.settings.auto = true;
+  const calm = plain(await f.call('POST /api/staff/tables-clear', confirm));
+  assert.equal(calm.autoStopped, false);
+  assert.equal(calm.currentStillPlaying, true);
+  assert.equal(f.settings.auto, true, 'l’envoi automatique reste coché après la fin du titre en cours');
+  // Un titre suivant déjà chargé dans KaraFun doit en être retiré : envoi coupé, réponse explicite.
+  const g = harness();
+  singers(g, ['Alice', 'Bruno']);
+  const onStage = sendNext(g, 21, { startedAt: Date.now() - 20000 });
+  const upcoming = sendNext(g, 22);
+  const bridge = fakeBridge([{ queueId: 21, songId: onStage.sel.song.songId, status: 'playing' },
+    { queueId: 22, songId: upcoming.sel.song.songId, status: 'ready' }], 21);
+  g.setBridge(bridge);
+  g.settings.auto = true;
+  const busy = plain(await g.call('POST /api/staff/tables-clear', confirm));
+  assert.equal(busy.autoStopped, true);
+  assert.equal(busy.removalPending, 1);
+  assert.equal(g.settings.auto, false);
+  assert.deepEqual(plain(bridge.calls).filter(call => call[0] === 'remove'), [['remove', 22]]);
+  // Envoi automatique déjà coupé : rien n'est « coupé » par la remise à zéro.
+  const h = harness();
+  singers(h, ['Alice']);
+  sendNext(h, 31);
+  h.setBridge(fakeBridge([{ queueId: 31, status: 'ready' }], null));
+  assert.equal(plain(await h.call('POST /api/staff/tables-clear', confirm)).autoStopped, false);
+});
