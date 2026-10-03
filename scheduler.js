@@ -129,6 +129,15 @@ class Scheduler {
     this.solverRefineTimer = null;
     this.solverRefineAt = null;     // heure de la prochaine passe
     this.solverRefineStats = { fingerprint: null, runs: 0, improvements: 0, fruitless: 0 };
+    // Journal de soirée : branché par le serveur (voir evening-journal.js).
+    this.onEvent = null;
+  }
+
+  // Événement du journal de soirée : identifiants seulement, jamais de prénom.
+  // Une erreur du journal ne doit jamais empêcher une action de la file.
+  _event(type, fields = {}) {
+    if (typeof this.onEvent !== 'function') return;
+    try { this.onEvent(type, fields); } catch (_) { /* journal au mieux */ }
   }
 
   // ------------------------------------------------------------------ bonus
@@ -144,6 +153,7 @@ class Scheduler {
     if (!t) throw new Error('Table inconnue.');
     t.bonus = this.bonusLevel(level);
     this.version++;
+    this._event('table.bonus', { tableId: t.id, level: t.bonus });
     return t;
   }
 
@@ -152,6 +162,7 @@ class Scheduler {
     if (!p) throw new Error('Chanteur inconnu.');
     p.bonus = this.bonusLevel(level);
     this.version++;
+    this._event('person.bonus', { personId: p.id, level: p.bonus });
     return p;
   }
 
@@ -341,6 +352,7 @@ class Scheduler {
     this.restoreManualOverride(latest.before, { deferrals: true });
     this._restorePlan(latest.planBefore);
     this.manualChanges.pop();
+    this._event('staff.undo', { changeId: latest.id || null, kind: latest.kind, personId: latest.personId || null });
     this.note(`Le bar a annulé ${latest.kind === 'priority' ? 'la priorité' : 'le déplacement'} de ${latest.name}`, 'staff');
     return latest;
   }
@@ -355,6 +367,7 @@ class Scheduler {
     this.restoreManualOverride(this.manualChanges[0].before, { deferrals: true });
     this._restorePlan(this.manualChanges[0].planBefore);
     this.manualChanges = [];
+    this._event('staff.recalculate', { count });
     this.note(`Le bar a annulé ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} dans la file`, 'staff');
     return count;
   }
@@ -364,6 +377,7 @@ class Scheduler {
     const key = String(tableId).trim().slice(0, 20);
     if (!this.tables.has(key) && create) {
       this.tables.set(key, { id: key, name: /^\d+$/.test(key) ? `Table ${key}` : key, headcount: null, individual: /^comptoir/i.test(key), createdAt: Date.now() });
+      this._event('table.opened', { tableId: key, individual: this.tables.get(key).individual });
     }
     return this.tables.get(key);
   }
@@ -372,6 +386,7 @@ class Scheduler {
     const t = this.table(tableId);
     const v = Math.max(1, Math.min(40, parseInt(n, 10) || 1));
     t.headcount = v;
+    this._event('table.headcount', { tableId: t.id, n: v, by });
     this.note(`${t.name} : ${v} personne${v > 1 ? 's' : ''} (${by === 'staff' ? 'réglé par le bar' : 'déclaré par la table'})`);
     return t;
   }
@@ -388,6 +403,7 @@ class Scheduler {
     if (t.name !== clean) {
       const before = t.name;
       t.name = clean;
+      this._event('table.renamed', { tableId: t.id });
       this.note(`${before} s'appelle maintenant ${clean}`, 'staff');
     }
     return t;
@@ -401,7 +417,9 @@ class Scheduler {
     const t = this.table(tableId, false);
     if (!t) return;
     const gone = this.tableSingers(tableId);
+    const songsDropped = gone.reduce((n, p) => n + this.songsOf(p).length, 0);
     gone.forEach(p => this._drop(p, false));
+    this._event('table.left', { tableId: t.id, personIds: gone.map(p => p.id), songsDropped });
     this.tables.delete(tableId);
     this.note(`${t.name} est partie : ${gone.length} ticket${gone.length > 1 ? 's' : ''} retiré${gone.length > 1 ? 's' : ''}`);
   }
@@ -432,6 +450,7 @@ class Scheduler {
     p.group = t.individual ? `${t.id}#${p.id}` : t.id;
     this.people.set(p.id, p);
     this.byToken.set(p.token, p.id);
+    this._event('person.joined', { personId: p.id, tableId: t.id });
     this.note(`${p.name} (${t.name}) s'est inscrit`);
     return p;
   }
@@ -458,6 +477,7 @@ class Scheduler {
     if (next === p.name) return p;
     const before = p.name;
     p.name = next;
+    this._event('person.renamed', { personId: p.id });
     this.note(`${before} (${this.table(p.tableId).name}) s'appelle maintenant ${next}`);
     return p;
   }
@@ -474,15 +494,18 @@ class Scheduler {
     return p;
   }
 
-  leave(p) {
+  // `by` : « self » (la personne), « staff » (marquée partie par le bar).
+  leave(p, by = 'self') {
     // L'identité et l'historique des passages survivent au retrait. On ne
     // peut donc pas recréer un « nouveau » chanteur avec le même QR de table.
+    const songsDropped = this.songsOf(p).length;
     this._removeDuetsForPerson(p, true);
     p.song = null; p.backlog = []; p.withdrawnAt = Date.now();
     p.presenceRetry = false; p.presenceSkips = 0; p.maybeGone = null; p.deferral = null;
     this._removeFromQ(p.id);
     if (this.reservedNext?.personId === p.id) this.releaseNext();
     this.invalidateManualOrder();
+    this._event('person.left', { personId: p.id, by, songsDropped });
     this.note(`${p.name} a retiré ses chansons ; son identité reste inscrite à la table`);
   }
 
@@ -519,6 +542,7 @@ class Scheduler {
       const e = new Error('La liste est limitée à 20 chansons par chanteur.'); e.code = 'LIST_FULL'; throw e;
     }
     this.invalidateManualOrder();
+    const replaced = mode === 'replace' ? this.songsOf(p).map(s => s.entryId) : [];
     // Début de l'attente pour ce titre : ceux qui ont chanté avant ne sont pas
     // passés « devant » cette personne (voir la règle anti-série de _pick).
     if (!this.songsOf(p).length) p.readySerial = this.appearanceSerial;
@@ -531,8 +555,14 @@ class Scheduler {
     }
     p.withdrawnAt = null;
     this._refreshDuetViews();
+    const listed = this.songsOf(p);
+    this._event('song.requested', { personId: p.id, entryId: next.entryId, songId: next.songId, title: next.title,
+      artist: next.artist, durationSec: Number(next.duration) > 0 ? Number(next.duration) : null,
+      mode, listIndex: listed.indexOf(next), listLength: listed.length, replacedEntryIds: replaced,
+      startsWait: !this.Q.includes(p.id) });
     if (!this.Q.includes(p.id)) {
       const pos = this._placeNewcomer(p);
+      this._event('queue.entered', { personId: p.id, position: pos, queueLength: this.Q.length });
       this.note(`${p.name} (${this.table(p.tableId).name}) entre dans la file en ${pos === 0 ? '1re' : (pos + 1) + 'e'} position`);
     } else {
       this.note(`${p.name} a ${mode === 'append' ? 'ajouté à sa liste' : 'choisi'} « ${next.title} »`);
@@ -540,7 +570,8 @@ class Scheduler {
     this.version++;
   }
 
-  removeSong(p, entryId) {
+  // `by` : « self », ou « presence-max » (« Je suis là » manqué trop souvent).
+  removeSong(p, entryId, by = 'self') {
     const key = String(entryId || '');
     if (p.song && p.song.entryId === key) {
       p.song = (p.backlog || []).shift() || null;
@@ -552,6 +583,7 @@ class Scheduler {
     this.invalidateManualOrder();
     this._refreshDuetViews();
     if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
+    this._event('song.removed', { personId: p.id, entryId: key, by });
     this.note(`${p.name} a retiré une chanson de sa liste`);
   }
 
@@ -568,6 +600,7 @@ class Scheduler {
     p.song = songs.shift() || null;
     p.backlog = songs;
     this._refreshDuetViews();
+    this._event('song.reordered', { personId: p.id, entryId: moved.entryId, fromIndex: from, toIndex: to });
     this.note(`${p.name} a réordonné sa liste de chansons`);
   }
 
@@ -635,6 +668,7 @@ class Scheduler {
     const sameGroup = p.group === q.group;
     duetSong.duet = { partnerId: q.id, state: sameGroup ? 'accepted' : 'pending' };
     this._refreshDuetViews();
+    this._event('duo.invited', { personId: p.id, entryId: duetSong.entryId, ownerId: p.id, partnerId: q.id, sameGroup });
     this.note(sameGroup ?
       `${p.name} a prévu un duo avec ${q.name} sur « ${duetSong.title} »` :
       `${p.name} invite ${q.name} en duo sur « ${duetSong.title} »`);
@@ -650,6 +684,7 @@ class Scheduler {
     const song = inv.song;
     if (!p || song.duet?.partnerId !== q.id || song.duet.state !== 'pending') throw new Error('Invitation expirée.');
     this.invalidateManualOrder();
+    this._event('duo.answered', { personId: q.id, entryId: song.entryId, ownerId: p.id, partnerId: q.id, accepted: !!accept });
     if (accept) {
       song.duet.state = 'accepted';
       this.note(`${q.name} accepte le duo avec ${p.name} : seul ${p.name} dépense son tour`);
@@ -661,7 +696,7 @@ class Scheduler {
     this.version++;
   }
 
-  _cancelDuet(owner, notify, entryId) {
+  _cancelDuet(owner, notify, entryId, by = null) {
     const song = entryId ? this.songsOf(owner).find(s => s.entryId === String(entryId)) : this.songsOf(owner).find(s => s.duet);
     const d = song?.duet;
     if (!d) return;
@@ -669,15 +704,16 @@ class Scheduler {
     const q = this.people.get(d.partnerId);
     delete song.duet;
     this._refreshDuetViews();
+    this._event('duo.cancelled', { personId: by, entryId: song.entryId, ownerId: owner.id, partnerId: d.partnerId });
     if (notify) this.note(`Duo annulé (${owner.name}${q ? ' & ' + q.name : ''})`);
     this.version++;
   }
 
   cancelDuet(p, entryId) {
     const own = entryId ? this.songsOf(p).find(s => s.entryId === String(entryId) && s.duet) : this.songsOf(p).find(s => s.duet);
-    if (own) return this._cancelDuet(p, true, own.entryId);
+    if (own) return this._cancelDuet(p, true, own.entryId, p.id);
     const inv = this.duetInvites(p).find(x => !entryId || x.entryId === String(entryId));
-    if (inv) return this._cancelDuet(this.people.get(inv.fromId), true, inv.entryId);
+    if (inv) return this._cancelDuet(this.people.get(inv.fromId), true, inv.entryId, p.id);
     throw new Error('Duo introuvable.');
   }
 
@@ -709,6 +745,7 @@ class Scheduler {
     // l'espacement habituel, il chantera plus tard si d'autres attendent).
     const reserved = this.people.get(this.reservedNext?.personId);
     if (reserved && (reserved.id === partner.id || reserved.song?.duet?.partnerId === partner.id)) this.releaseNext();
+    this._event('duo.improvised', { entryId: sel?.song?.entryId || null, ownerId: owner.id, partnerId: partner.id });
     this.note(`Le bar a compté ${partner.name} en duo avec ${owner.name} : ${owner.name} dépense son tour ; ${partner.name} garde son titre mais attend deux autres chansons si possible`, 'staff');
     return partner;
   }
@@ -718,6 +755,7 @@ class Scheduler {
     p.confirmedAt = Date.now(); p.held = 0;
     p.presenceSkips = 0; p.maybeGone = null;
     this.version++;
+    this._event('presence.confirmed', { personId: p.id, entryId: p.song?.entryId || null });
   }
 
   // Un duo est présent dès que l'un des deux a confirmé : l'autre n'a pas à
@@ -744,12 +782,14 @@ class Scheduler {
       p.presenceSkips = 0;
       p.presenceRetry = false;
       p.maybeGone = { at: Date.now(), title, skips };
-      this.removeSong(p, p.song.entryId);
+      this._event('presence.skipped', { personId: p.id, entryId: p.song.entryId, skips, removed: true });
+      this.removeSong(p, p.song.entryId, 'presence-max');
       this.note(`${p.name} n'a pas confirmé sa présence ${skips} fois : « ${title} » est retiré de sa liste. Vérifie si ${p.name} est encore là.`, 'staff');
       return { removed: true, skips, title };
     }
     p.presenceRetry = true;
     this.version++;
+    this._event('presence.skipped', { personId: p.id, entryId: p.song.entryId, skips: p.presenceSkips, removed: false });
     this.note(`${p.name} n'a pas confirmé sa présence : « ${title} » laisse passer le titre suivant et revient juste après (${p.presenceSkips}/${maxSkips})`, 'skip');
     return { removed: false, skips: p.presenceSkips, title };
   }
@@ -778,6 +818,7 @@ class Scheduler {
   dismissMaybeGone(p) {
     if (!p.maybeGone) return;
     p.maybeGone = null;
+    this._event('presence.stillHere', { personId: p.id });
     this.note(`Le bar a confirmé que ${p.name} est toujours là`, 'staff');
   }
 
@@ -859,6 +900,7 @@ class Scheduler {
     p.presenceRetry = false;
     this.invalidateManualOrder();
     this.version++;
+    this._event('defer.requested', { ownerId: p.id, personIds: ids, entryId, songs: n, total, remaining });
     const who = ids.map(pid => this.people.get(pid)?.name).filter(Boolean).join(' & ');
     this.note(`${who} n’est pas encore prêt : son passage laisse passer ${n} chanson${n > 1 ? 's' : ''} de plus et garde son tour`, 'skip');
     return p.deferral;
@@ -873,6 +915,7 @@ class Scheduler {
     if (!p?.deferral || p.deferral.entryId !== entryId) return false;
     p.deferral = null;
     this.version++;
+    this._event('defer.ended', { ownerId: p.id, entryId, how: 'dropped' });
     return true;
   }
 
@@ -899,6 +942,7 @@ class Scheduler {
     const found = this.deferralFor(personId);
     const p = found && this.people.get(found.ownerId);
     if (!p) throw new Error('Aucun passage repoussé pour cette personne.');
+    this._event('defer.ended', { personId: String(personId), ownerId: p.id, entryId: p.deferral.entryId, how: 'ready' });
     p.deferral = null;
     this.invalidateManualOrder();
     this.version++;
@@ -932,10 +976,12 @@ class Scheduler {
       delete song.duoRequests;
       this.invalidateManualOrder();
       this._refreshDuetViews();
+      this._event('duo.joinRequested', { requesterId: requester.id, ownerId: owner.id, entryId: song.entryId, direct: true });
       this.note(`${requester.name} rejoint ${owner.name} en duo sur « ${song.title} »`);
       return { direct: true, song };
     }
     song.duoRequests = [...requests, { fromId: requester.id, at: Date.now() }];
+    this._event('duo.joinRequested', { requesterId: requester.id, ownerId: owner.id, entryId: song.entryId, direct: false });
     this.note(`${requester.name} propose à ${owner.name} de chanter « ${song.title} » en duo`);
     return { direct: false, song };
   }
@@ -946,8 +992,9 @@ class Scheduler {
     const request = requests.find(row => row.fromId === String(fromId || ''));
     if (!song || !request) throw new Error('Cette demande de duo n’est plus valable.');
     const partner = this.people.get(request.fromId);
+    if (accept && song.duet) throw new Error('Ce titre est déjà prévu en duo.');
+    this._event('duo.joinAnswered', { personId: owner.id, ownerId: owner.id, requesterId: partner.id, entryId: song.entryId, accepted: !!accept });
     if (accept) {
-      if (song.duet) throw new Error('Ce titre est déjà prévu en duo.');
       song.duet = { partnerId: partner.id, state: 'accepted' };
       // Un seul partenaire : les autres demandes sur ce titre sont closes.
       delete song.duoRequests;
@@ -971,6 +1018,7 @@ class Scheduler {
     song.duoRequests = requests.filter(row => row.fromId !== requester.id);
     if (!song.duoRequests.length) delete song.duoRequests;
     this.version++;
+    this._event('duo.joinCancelled', { requesterId: requester.id, ownerId: owner.id, entryId: song.entryId });
     this.note(`${requester.name} retire sa demande de duo à ${owner.name}`);
   }
 
@@ -1013,6 +1061,7 @@ class Scheduler {
       this.Q[i] = q.id; this.Q[j] = p.id;
     }
     this.invalidateManualOrder();
+    this._event('person.gaveSpot', { personId: p.id, toId: q.id });
     this.note(`${p.name} cède sa place à ${q.name}`);
   }
 
@@ -1031,7 +1080,10 @@ class Scheduler {
     if (!Number.isInteger(target) || target < 0 || target >= visible.length) throw new Error('Place de destination invalide.');
     // Le bar place lui-même ce passage : un report « Pas prêt » est levé.
     const moved = this.people.get(personId);
-    if (moved?.deferral) moved.deferral = null;
+    if (moved?.deferral) {
+      this._event('defer.ended', { ownerId: moved.id, entryId: moved.deferral.entryId, how: 'staff-move' });
+      moved.deferral = null;
+    }
     const [item] = visible.splice(i, 1);
     visible.splice(target, 0, item);
     // Un titre déjà en cours d'envoi peut encore porter l'ancienne réservation.
@@ -1103,6 +1155,7 @@ class Scheduler {
     }
     // Garder le ticket au même endroit : retirer un titre ne remet pas le
     // chanteur en fin de file, même si le prochain titre devient actif.
+    if (removed) this._event('song.removed', { personId: p.id, entryId: removed.entryId, by: 'staff' });
     this.note(`Le bar a retiré ${removed ? `« ${removed.title} »` : 'le titre'} de ${p.name}${p.song ? ` ; « ${p.song.title} » prend sa place` : ''}`, 'staff');
   }
 
@@ -1117,6 +1170,7 @@ class Scheduler {
     const [removed] = p.backlog.splice(index, 1);
     this.invalidateManualOrder();
     this._refreshDuetViews();
+    this._event('song.removed', { personId: p.id, entryId: removed.entryId, by: 'staff' });
     this.note(`Le bar a retiré « ${removed.title} » de la liste de ${p.name}`, 'staff');
   }
 
@@ -2351,7 +2405,10 @@ class Scheduler {
     for (const pid of this._deferredOwners()) {
       const p = this.people.get(pid);
       deferralUndo.push({ pid, deferral: { ...p.deferral } });
-      if (sel.ids.includes(pid)) p.deferral = null;
+      if (sel.ids.includes(pid)) {
+        this._event('defer.ended', { ownerId: pid, entryId: p.deferral.entryId, how: 'sent' });
+        p.deferral = null;
+      }
       else p.deferral.remaining = Math.max(0, p.deferral.remaining - 1);
     }
     for (const pid of sel.ids) {
@@ -2366,6 +2423,7 @@ class Scheduler {
     }
     const ready = this._deferredOwners().find(pid => this.people.get(pid).deferral.remaining <= 0);
     if (ready && !this.reservedNext) {
+      this._event('defer.ended', { ownerId: ready, entryId: this.people.get(ready).deferral.entryId, how: 'released' });
       this.people.get(ready).deferral = null;
       this.reservedNext = { personId: ready, reservedAt: Date.now() };
       sel.deferralReleasedTo = ready;
