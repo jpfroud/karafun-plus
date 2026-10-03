@@ -40,7 +40,7 @@ const BUILD = readBuildInfo();
 // Identifie ce démarrage : une alerte fermée au bar revient après un redémarrage.
 const BOOT_ID = crypto.randomBytes(6).toString('hex');
 const { Scheduler, DEFER_MAX } = require('./scheduler');
-const { KaraFunBridge, isBattleItem } = require('./karafun');
+const { KaraFunBridge, isBattleItem, maskCode } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
@@ -241,7 +241,7 @@ function stopHelper() {
   saveNight();
   appLog('Arrêt de la file karaoké demandé par le bar.');
   sched.closeSolver();
-  try { bridge?.disconnect(); } catch (_) { /* arrêt en cours */ }
+  try { bridge?.disconnect(); bridge?.releaseIdentity(); } catch (_) { /* arrêt en cours */ }
   try { fake?.close(); } catch (_) { /* arrêt en cours */ }
   try {
     const runtime = JSON.parse(fs.readFileSync(RUNTIME_FILE, 'utf8'));
@@ -2106,7 +2106,13 @@ const handlers = {
   'POST /api/photo': async (req, res, body, me) => { me.photo = decodePhoto(body.photo); sched.version++; return { ok: true }; },
 
   // ---------------- bar
-  'POST /api/staff/connect': async (req, res, body) => { CODE = String(body.code || '').replace(/\D/g, ''); connectKaraFun(); return { ok: true }; },
+  // Un code vide est refusé : il effaçait le code retenu sans rien connecter.
+  'POST /api/staff/connect': async (req, res, body) => {
+    const code = String(body.code || '').replace(/\D/g, '');
+    if (!code) throw new Error('Code KaraFun manquant : recopie les chiffres affichés dans la télécommande de KaraFun.');
+    CODE = code;
+    return connectionAnswer(connectKaraFun());
+  },
   'POST /api/staff/settings': async (req, res, body) => {
     const nextTableRotation = 'tableRotation' in body ? !!body.tableRotation : sched.opts.tableRotation;
     const nextWeighted = 'weightedTables' in body ? !!body.weightedTables : sched.opts.weightedTables;
@@ -2595,7 +2601,11 @@ const handlers = {
     }
     else if (body.action === 'next') bridge.next();
     else if (body.action === 'restart') startRestart();
-    else if (body.action === 'reconnect') connectKaraFun();
+    else if (body.action === 'reconnect') {
+      if (!CODE) throw new Error('Pas de code KaraFun : saisis d’abord le code affiché dans KaraFun.');
+      return connectionAnswer(connectKaraFun());
+    }
+    else if (body.action === 'new-name') { bridge.forceNewName(); sched._event?.('karafun.renamed', {}); }
     else if (body.action === 'dismiss-notice') bridge.dismissIdentityNotice?.();
     else if (body.action === 'absent') {
       const tr = tracked.find(x => x.queueId === body.queueId && !x.startedAt);
@@ -2780,16 +2790,29 @@ const server = http.createServer(async (req, res) => {
 const publicServer = http.createServer(server.listeners('request')[0]);
 
 // ------------------------------------------------------------------ démarrage
-async function connectKaraFun() {
-  if (!CODE) { appLog('Pas de code KaraFun : saisis-le sur la page du bar.'); return; }
+// Les transitions de la connexion vont au journal du serveur ; le code de
+// télécommande n'y paraît que masqué (deux derniers chiffres).
+function connectKaraFun() {
+  if (!CODE) { appLog('Pas de code KaraFun : saisis-le sur la page du bar.'); return 'no-code'; }
   rememberCode();
   if (!bridge) {
-    bridge = new KaraFunBridge({ logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined,
-      identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json') });
+    bridge = new KaraFunBridge({ logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined, log: appLog,
+      identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json'),
+      lockOwner: DEMO ? null : { port: PORT } });
     bridge.on('change', () => setImmediate(sync));
   }
-  appLog(`Connexion à KaraFun (code ${CODE})...`);
-  bridge.connect(CODE);
+  const result = bridge.connect(CODE);
+  appLog(result === 'kept' ? `KaraFun (code ${maskCode(CODE)}) : connexion en cours ou prête, gardée.` :
+    `Connexion à KaraFun (code ${maskCode(CODE)})...`);
+  return result;
+}
+
+// Réponse de « Connecter » et « Reconnecter » pour la page du bar.
+function connectionAnswer(result) {
+  setTimeout(sync, 300);
+  return result === 'kept' ?
+    { ok: true, kept: true, message: 'KaraFun est déjà connecté ou en train de se connecter : connexion gardée.' } :
+    { ok: true, kept: false };
 }
 
 async function main() {
