@@ -3051,7 +3051,7 @@ async function main() {
   }
   const previousNight = nightStore?.load();
   // Même soirée après un redémarrage : son journal continue.
-  journal.open({ resume: previousNight?.evening || null, rules: journalRules() });
+  const resumed = journal.open({ resume: previousNight?.evening || null, rules: journalRules() });
   if (previousNight) {
     const recovered = restoreNight(previousNight, { scheduler: sched, access, settings,
       photoDir: PHOTO_DIR });
@@ -3064,6 +3064,14 @@ async function main() {
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');
   } else loadTables();
   ensureSoloGroup();
+  // Soirée reprise d'une version sans journal : ses inscriptions y sont
+  // reportées à leur heure, pour que les présences restent justes.
+  if (previousNight && !resumed) {
+    for (const p of sched.people.values()) {
+      journal.append('person.joined', { personId: p.id, tableId: p.tableId, restored: true }, p.joinedAt);
+      if (p.withdrawnAt) journal.append('person.left', { personId: p.id, by: 'restored' }, p.withdrawnAt);
+    }
+  }
   journalRoster();
   if (!DEMO && !sched.solverStatus().available) {
     appLog(`Optimiseur de file indisponible au démarrage : ${sched.solverStatus().fallbackLastError || 'cause inconnue'}. Rotation locale de secours.`);
