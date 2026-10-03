@@ -1188,7 +1188,12 @@ function sync() {
     if (!tr || tr.cancelled || tr.pulled || tr.absent || tr.startedAt || !closingBlocksStart(current, ahead, now)) return;
     try {
       pullFromKaraFun(tr, 'closing'); noteClosingStop();
-      for (const pid of tr.sel.ids) sched.notify(pid, 'closingPulled', { title: tr.sel.song.title });
+      // Le titre revient dans la liste de son auteur : l'invitée d'un duo
+      // l'apprend avec le nom de l'auteur.
+      const [ownerId, ...guests] = tr.sel.ids;
+      sched.notify(ownerId, 'closingPulled', { title: tr.sel.song.title });
+      const ownerName = sched.people.get(ownerId)?.name || tr.sel.names?.[0] || '';
+      for (const pid of guests) sched.notify(pid, 'closingPulled', { title: tr.sel.song.title, name: ownerName });
     }
     catch (error) { appLog(`Retrait KaraFun (fermeture) en attente : ${error.message}`); }
   });
@@ -2166,6 +2171,11 @@ function chooseFor(p, song, mode) {
     const e = new Error('Cette chanson est déjà envoyée à KaraFun pour ce chanteur.');
     e.code = 'ALREADY_IN_KARAFUN'; throw e;
   }
+  // Duo en route vers KaraFun : remplacer la liste de son auteur annoncerait
+  // l'annulation du duo, qui partirait pourtant à deux (voir /song/remove).
+  if (mode === 'replace' && pending && !pending.cancelled && pending.sel.ids.length > 1 && pending.sel.ids[0] === p.id) {
+    throw new Error('Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
+  }
   sched.chooseSong(p, withCover(song), mode);
   sync();
   const added = sched.songsOf(p).find(item => item.songId === songId);
@@ -2344,6 +2354,13 @@ function assertDuoNotSending(entryId, personId) {
     throw new Error('Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
   }
 }
+// « Annuler duo » : sans titre précis, le seul duo de la personne est celui
+// en cours d'envoi s'il la compte parmi ses chanteurs.
+function assertDuoCancelNotSending(p, entryId) {
+  if (pending && !pending.cancelled && pending.sel.ids.length > 1) {
+    assertDuoNotSending(entryId ? String(entryId) : pending.sel.song.entryId, p.id);
+  }
+}
 
 // Duo déjà chargé dans KaraFun : le titre reste à sa place au nom de son
 // auteur, aucune commande KaraFun (voir Scheduler#leaveSentDuet).
@@ -2376,6 +2393,21 @@ function keepSentDuosOfLeavers(ids) {
     if (guests.length) keptAsSolo++;
   }
   return { upcomingTracks: upcoming.filter(tr => !asGuest.includes(tr)), keptAsSolo };
+}
+
+// Titres déjà chargés dont l'auteur part : retirés de KaraFun. Les invités
+// qui restent apprennent l'annulation du duo, comme avant l'envoi.
+function removeLeaversTracks(upcomingTracks, ids) {
+  for (const tr of upcomingTracks) {
+    tr.cancelled = true;
+    tr.removeRequestedAt = Date.now();
+    try { bridge?.remove(tr.queueId); }
+    catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
+    const ownerName = sched.people.get(tr.sel.ids[0])?.name || tr.sel.names?.[0] || '';
+    for (const gid of tr.sel.ids.slice(1)) {
+      if (!ids.has(gid)) sched.notify(gid, 'duoCancelled', { name: ownerName, title: tr.sel.song.title });
+    }
+  }
 }
 
 function assertRoomBeforeClosing(p, mode) {
@@ -2769,6 +2801,7 @@ const handlers = {
   },
   'POST /api/table/duet/cancel': async (req, res, body) => {
     const p = personAtTable(body);
+    assertDuoCancelNotSending(p, body.entryId);
     sched.cancelDuet(p, body.entryId); sync(); return { ok: true };
   },
   // Invitée qui ne chante plus un duo accepté, avant ou après son envoi.
@@ -2851,7 +2884,10 @@ const handlers = {
     if (body.accept) assertInviteNotSending(me, body.entryId);
     sched.answerDuet(me, !!body.accept, body.entryId); sync(); return { ok: true };
   },
-  'POST /api/duet/cancel': async (req, res, body, me) => { sched.cancelDuet(me, body.entryId); sync(); return { ok: true }; },
+  'POST /api/duet/cancel': async (req, res, body, me) => {
+    assertDuoCancelNotSending(me, body.entryId);
+    sched.cancelDuet(me, body.entryId); sync(); return { ok: true };
+  },
   'POST /api/confirm': async (req, res, body, me) => { confirmPresence(me); return { ok: true }; },
   'POST /api/give': async (req, res, body, me) => { sched.giveSpot(me, body.to); sync(); return { ok: true }; },
   'POST /api/leave': async (req, res, body, me) => { sched.leave(me); sync(); return { ok: true }; },
@@ -3034,12 +3070,7 @@ const handlers = {
     soloInvitations.revokeTable(tableId);
     access.revoke(tableId);
     saveTables();
-    for (const tr of upcomingTracks) {
-      tr.cancelled = true;
-      tr.removeRequestedAt = Date.now();
-      try { bridge?.remove(tr.queueId); }
-      catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
-    }
+    removeLeaversTracks(upcomingTracks, ids);
     sync();
     return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled,
       ...(keptAsSolo ? { keptAsSolo } : {}) };
@@ -3189,12 +3220,7 @@ const handlers = {
     const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(new Set([p.id]));
     sched.leave(p, 'staff');
     if (pending?.sel.ids.includes(p.id)) pending.cancelled = true;
-    for (const tr of upcomingTracks) {
-      tr.cancelled = true;
-      tr.removeRequestedAt = Date.now();
-      try { bridge?.remove(tr.queueId); }
-      catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
-    }
+    removeLeaversTracks(upcomingTracks, new Set([p.id]));
     sync();
     return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled,
       ...(keptAsSolo ? { keptAsSolo } : {}) };

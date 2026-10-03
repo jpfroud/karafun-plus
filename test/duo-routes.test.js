@@ -254,3 +254,146 @@ test('demande de duo : masquée à l’auteur pendant l’envoi, expirée à l�
   assert.deepEqual(plain(zoe.p.inbox.map(n => [n.kind, n.params])), [['joinExpired', { name: 'Alice', title: 'Sept', reason: 'sent' }]]);
   assert.ok(f.sched.log.some(l => l.msg === 'La demande de duo de Zoé à Alice a expiré : « Sept » est parti dans KaraFun'));
 });
+
+// ---------------------------------------------------------------- relecture PR #11
+// Regression: relecture PR #11 — une invitée retirée d'un duo déjà dans
+// KaraFun y revenait quand le titre réintégrait la liste de son auteur.
+for (const [how, leave] of [
+  ['l’invitée se retire', (f, s) => f.call('POST /api/table/duet/leave', { ...s.bruno.body, ownerId: s.alice.p.id, entryId: s.duo.entryId })],
+  ['l’auteur chante seul', (f, s) => f.call('POST /api/table/duet/solo', { ...s.alice.body, entryId: s.duo.entryId })],
+]) {
+  test(`duo envoyé devenu solo (${how}) : revenu dans la liste de son auteur, il repart en solo`, async () => {
+    const f = harness();
+    const s = await sentDuo(f);
+    assert.deepEqual(plain(await leave(f, s)), { ok: true, stage: 'sent' });
+    assert.equal(s.tr.sel.song.duet, undefined, 'le titre envoyé n’est plus un duo');
+    // « Pas prêt » ou fermeture : le titre sort de KaraFun sans être chanté.
+    f.sched.requeueUnplayed(s.tr.sel);
+    assert.equal(s.alice.p.song.entryId, s.duo.entryId);
+    assert.equal(s.alice.p.song.duet, undefined);
+    assert.equal(s.bruno.p.duetOf, null);
+    const next = f.sched.select();
+    assert.deepEqual(plain(next.ids), [s.alice.p.id], 'Bruno n’est plus remis dans le duo');
+    assert.notEqual(next.kind, 'duo');
+  });
+}
+
+// Regression: relecture PR #11 — le bar marque partie l'invitée d'un duo en
+// cours d'envoi : l'auteur recevait deux avis « duoLeft » contradictoires.
+test('bar : invitée marquée partie pendant l’envoi de son duo, un seul avis pour l’auteur', async () => {
+  for (const restored of [false, true]) {
+    const f = harness();
+    const alice = person(f, '1', 'Alice'), bruno = person(f, '2', 'Bruno');
+    const duo = f.sched.inviteDuet(alice.p, bruno.p.id, song(1, 'Un'));
+    await f.call('POST /api/table/duet/answer', { ...bruno.body, accept: true, entryId: duo.entryId });
+    const sel = f.sched.select();
+    // Après un redémarrage, l'envoi en cours porte une copie du titre de la liste.
+    if (restored) sel.song = JSON.parse(JSON.stringify(sel.song));
+    assert.equal(sel.song === alice.p.song, !restored);
+    f.setBridge(fakeBridge([]));
+    f.setPending({ sel, cancelled: false, before: new Set(), at: Date.now(), attempts: 1, retryAt: null });
+    const result = plain(await f.call('POST /api/staff/person/leave', { personId: bruno.p.id }));
+    assert.deepEqual(result, { ok: true, removedFromKaraFun: 0, pendingCancelled: false, keptAsSolo: 1 });
+    assert.deepEqual(plain(alice.p.inbox.map(n => [n.kind, n.params.sent])), [['duoLeft', true]], `copie relue : ${restored}`);
+    assert.equal(alice.p.song.duet, undefined, 'le titre de la liste est aussi un solo');
+    assert.equal(sel.song.duet, undefined);
+    assert.ok(!f.sched.log.some(l => /duo annulé pour Bruno/.test(l.msg)));
+  }
+});
+
+// Regression: relecture PR #11 — « Annuler duo » et « Remplacer » étaient
+// acceptés pendant l'envoi d'un duo, qui partait quand même dans KaraFun.
+test('pendant l’envoi d’un duo : annuler (auteur, invitée, ancienne route) et remplacer sont refusés', async () => {
+  const f = harness();
+  const alice = person(f, '1', 'Alice'), bruno = person(f, '2', 'Bruno');
+  const duo = f.sched.inviteDuet(alice.p, bruno.p.id, song(1, 'Un'));
+  await f.call('POST /api/table/duet/answer', { ...bruno.body, accept: true, entryId: duo.entryId });
+  const sel = f.sched.select();
+  const queue = [];
+  f.setBridge(fakeBridge(queue));
+  f.setPending({ sel, cancelled: false, before: new Set(), at: Date.now(), attempts: 1, retryAt: null });
+  const sending = { message: 'Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.' };
+  await assert.rejects(f.call('POST /api/table/duet/cancel', { ...alice.body, entryId: duo.entryId }), sending);
+  await assert.rejects(f.call('POST /api/table/duet/cancel', alice.body), sending, 'sans titre précis');
+  await assert.rejects(f.call('POST /api/table/duet/cancel', { ...bruno.body, entryId: duo.entryId }), sending);
+  await assert.rejects(f.handlers['POST /api/duet/cancel']({}, {}, { entryId: duo.entryId }, alice.p), sending);
+  await assert.rejects(f.handlers['POST /api/duet/cancel']({}, {}, {}, bruno.p), sending);
+  await assert.rejects(f.call('POST /api/table/song', { ...alice.body, song: song(2, 'Deux'), mode: 'replace' }), sending);
+  assert.equal(duo.duet?.state, 'accepted', 'le duo reste entier');
+  assert.deepEqual(plain(f.sched.songsOf(alice.p).map(s => s.title)), ['Un']);
+  assert.deepEqual([...alice.p.inbox || [], ...bruno.p.inbox || []].map(n => n.kind), [], 'aucun avis d’annulation');
+  // Ajouter un titre reste possible, et l'invitée garde sa propre liste.
+  assert.equal(plain(await f.call('POST /api/table/song', { ...alice.body, song: song(3, 'Trois'), mode: 'append' })).ok, true);
+  assert.equal(plain(await f.call('POST /api/table/song', { ...bruno.body, song: song(4, 'Quatre'), mode: 'replace' })).ok, true);
+  // Accusé : le duo part entier, puis il peut de nouveau être annulé.
+  queue.push({ queueId: 77, songId: 1, singer: sel.label });
+  f.sync();
+  assert.equal(f.getPending(), null);
+  assert.deepEqual(plain(f.tracked().at(-1).sel.ids), [alice.p.id, bruno.p.id]);
+  // Témoin : un envoi solo n'empêche pas d'annuler un autre duo.
+  const other = f.sched.inviteDuet(bruno.p, alice.p.id, song(5, 'Cinq'));
+  f.setPending({ sel: { ids: [bruno.p.id], song: f.sched.songsOf(bruno.p)[0], label: 'Bruno · Table 2', names: ['Bruno'] },
+    cancelled: false, before: new Set(), at: Date.now(), attempts: 1, retryAt: null });
+  assert.deepEqual(plain(await f.call('POST /api/table/duet/cancel', { ...bruno.body, entryId: other.entryId })), { ok: true });
+});
+
+// Regression: relecture PR #11 — départ d'une table marqué par le bar : les
+// personnes des autres tables n'étaient pas prévenues de la fin de leurs duos.
+test('bar : départ d’une table, les autres tables sont prévenues comme pour un départ personne par personne', async () => {
+  const setup = async () => {
+    const f = harness();
+    const alice = person(f, '1', 'Alice'), bruno = person(f, '2', 'Bruno'), chloe = person(f, '3', 'Chloé'), dan = person(f, '4', 'Dan');
+    const marie = person(f, '1', 'Marie');
+    const duo = f.sched.inviteDuet(alice.p, bruno.p.id, song(1, 'Un'));
+    await f.call('POST /api/table/duet/answer', { ...bruno.body, accept: true, entryId: duo.entryId });
+    f.sched.inviteDuet(alice.p, dan.p.id, song(2, 'Deux'));
+    const three = f.sched.inviteDuet(alice.p, marie.p.id, song(3, 'Trois'));
+    assert.equal(three.duet.state, 'accepted', 'même table : duo direct');
+    f.sched.chooseSong(alice.p, song(4, 'Quatre'), 'append');
+    await f.call('POST /api/table/duet/join', { ...chloe.body, ownerId: alice.p.id, entryId: f.sched.songsOf(alice.p).at(-1).entryId });
+    [alice, bruno, chloe, dan, marie].forEach(x => { x.p.inbox = []; });
+    return { f, alice, bruno, chloe, dan, marie };
+  };
+  const kinds = x => (x.p.inbox || []).map(n => n.kind);
+  const byTable = await setup();
+  await byTable.f.call('POST /api/staff/table-left', { id: '1' });
+  const byPerson = await setup();
+  await byPerson.f.call('POST /api/staff/person/leave', { personId: byPerson.alice.p.id });
+  for (const run of [byTable, byPerson]) {
+    assert.deepEqual(kinds(run.bruno), ['duoCancelled']);
+    assert.deepEqual(kinds(run.dan), ['duoCancelled']);
+    assert.deepEqual(kinds(run.chloe), ['joinExpired']);
+  }
+  assert.deepEqual(kinds(byTable.marie), [], 'les personnes qui partent avec la table ne reçoivent rien');
+  // Table de l'invitée partie : l'auteur est prévenu.
+  const guestTable = await setup();
+  await guestTable.f.call('POST /api/staff/table-left', { id: '2' });
+  assert.deepEqual(kinds(guestTable.alice), ['duoLeft']);
+});
+
+test('bar : l’auteur d’un duo déjà dans KaraFun part, l’invitée apprend l’annulation', async () => {
+  for (const route of ['person', 'table']) {
+    const f = harness();
+    const { alice, bruno, tr } = await sentDuo(f);
+    bruno.p.inbox = [];
+    const result = route === 'person' ? await f.call('POST /api/staff/person/leave', { personId: alice.p.id }) :
+      await f.call('POST /api/staff/table-left', { id: '1' });
+    assert.equal(result.removedFromKaraFun, 1);
+    assert.equal(tr.cancelled, true);
+    assert.deepEqual(plain(bruno.p.inbox.map(n => [n.kind, n.params])), [['duoCancelled', { name: 'Alice', title: 'Un' }]], route);
+  }
+});
+
+// Regression: relecture PR #11 — duo direct à la même table : les demandes
+// d'autres tables sur ce titre disparaissaient sans avis.
+test('duo direct à la même table : les autres personnes qui demandaient ce titre sont prévenues', async () => {
+  const f = harness();
+  const alice = person(f, '1', 'Alice'), chloe = person(f, '3', 'Chloé'), marie = person(f, '1', 'Marie');
+  f.sched.chooseSong(alice.p, song(1, 'Un'));
+  const entryId = alice.p.song.entryId;
+  await f.call('POST /api/table/duet/join', { ...chloe.body, ownerId: alice.p.id, entryId });
+  assert.equal(f.sched.duetJoinRequestsBy(chloe.p).length, 1);
+  assert.deepEqual(plain(await f.call('POST /api/table/duet/join', { ...marie.body, ownerId: alice.p.id, entryId })), { ok: true, direct: true });
+  assert.deepEqual(f.sched.duetJoinRequestsBy(chloe.p), []);
+  assert.deepEqual(plain(chloe.p.inbox.map(n => [n.kind, n.params])), [['joinRefused', { name: 'Alice', title: 'Un' }]]);
+});

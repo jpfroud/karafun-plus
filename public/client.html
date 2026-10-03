@@ -685,12 +685,13 @@
     const people = managedPeople();
     const out = confirmItem ? [confirmItem] : [];
     // Une demande de duo sur le titre dont la présence est demandée passe
-    // avant « Je suis là », sans « Plus tard » : la confirmation peut faire
-    // partir le titre tout de suite, et la demande expirerait sans être vue.
+    // avant « Je suis là » : la confirmation peut faire partir le titre tout
+    // de suite. « Plus tard (1 min) » reste possible, comme pour tout duo ;
+    // si la demande expire alors, l'auteur du titre en est prévenu (joinMissed).
     const join = (person, request) => ({ key: `join:${person.id}:${request.entryId}:${request.fromId}`, kind: 'join', person, request, snooze: true });
     const urgent = (person, request) => person.needConfirm && String(request.entryId) === String(list(person.songs)[0]?.entryId ?? '');
     for (const person of people) if (person.needConfirm) {
-      for (const request of list(person.joinRequests)) if (urgent(person, request)) out.push({ ...join(person, request), snooze: false });
+      for (const request of list(person.joinRequests)) if (urgent(person, request)) out.push(join(person, request));
       out.push({ key: `presence:${person.id}`, kind: 'presence', person });
     }
     for (const person of people) for (const invite of invitesOf(person)) {
@@ -925,7 +926,9 @@
       case 'inviteUnanswered': return t('{name} n’a pas répondu à temps : {person} chante « {title} » en solo.', values);
       case 'presenceRemoved': return tp(Number(p.skips) || 1, '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.',
         '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.', values);
-      case 'closingPulled': return t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.', values);
+      case 'closingPulled': return p.name
+        ? t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {name}.', values)
+        : t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.', values);
       default: return '';
     }
   }

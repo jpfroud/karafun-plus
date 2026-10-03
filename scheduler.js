@@ -450,6 +450,14 @@ class Scheduler {
     if (!t) return;
     const gone = this.tableSingers(tableId);
     const songsDropped = gone.reduce((n, p) => n + this.songsOf(p).length, 0);
+    // Les personnes des autres tables apprennent, comme pour un départ
+    // marqué personne par personne, la fin de leurs duos et demandes.
+    const goneIds = new Set(gone.map(p => p.id));
+    const staying = pid => !goneIds.has(pid);
+    for (const p of gone) {
+      this._removeDuetsForPerson(p, staying);
+      this._songsGone(p, this.songsOf(p), staying);
+    }
     gone.forEach(p => this._drop(p, false));
     this._event('table.left', { tableId: t.id, personIds: gone.map(p => p.id), songsDropped });
     this.tables.delete(tableId);
@@ -688,7 +696,11 @@ class Scheduler {
     }
   }
 
+  // `notify` : true, false, ou fonction qui dit qui prévenir (départ d'une
+  // table : seulement les personnes qui restent). Le journal du bar n'est
+  // complété que pour true.
   _removeDuetsForPerson(p, notify) {
+    const tell = typeof notify === 'function' ? notify : () => !!notify;
     let removed = 0;
     for (const owner of this.people.values()) {
       for (const song of this.songsOf(owner)) {
@@ -699,9 +711,10 @@ class Scheduler {
         }
         if (!song.duet || (owner.id !== p.id && song.duet.partnerId !== p.id)) continue;
         // L'autre personne du duo apprend pourquoi il a disparu.
-        if (notify) {
-          if (owner.id === p.id) this.notify(song.duet.partnerId, 'duoCancelled', { name: p.name, title: song.title });
-          else this.notify(owner.id, 'duoLeft', { name: p.name, title: song.title, sent: false });
+        const other = owner.id === p.id ? song.duet.partnerId : owner.id;
+        if (tell(other)) {
+          if (owner.id === p.id) this.notify(other, 'duoCancelled', { name: p.name, title: song.title });
+          else this.notify(other, 'duoLeft', { name: p.name, title: song.title, sent: false });
         }
         delete song.duet;
         removed++;
@@ -709,27 +722,29 @@ class Scheduler {
     }
     this._refreshDuetViews();
     if (removed) this.invalidateManualOrder();
-    if (removed && notify) this.note(`${removed} duo${removed > 1 ? 's' : ''} annulé${removed > 1 ? 's' : ''} pour ${p.name}`);
+    if (removed && notify === true) this.note(`${removed} duo${removed > 1 ? 's' : ''} annulé${removed > 1 ? 's' : ''} pour ${p.name}`);
   }
 
   // Titres qui quittent la liste de leur auteur sans passer par KaraFun
   // (retirés, remplacés, personne partie) : l'invitée du duo et les
   // personnes qui demandaient à le chanter sont prévenues.
-  _songsGone(owner, songs) {
+  // `tell` : qui prévenir (par défaut, tout le monde).
+  _songsGone(owner, songs, tell = () => true) {
     for (const song of songs.filter(Boolean)) {
       const partner = song.duet && this.people.get(song.duet.partnerId);
-      if (partner) this.notify(partner.id, 'duoCancelled', { name: owner.name, title: song.title });
-      this._closeJoinRequests(owner, song, 'removed');
+      if (partner && tell(partner.id)) this.notify(partner.id, 'duoCancelled', { name: owner.name, title: song.title });
+      this._closeJoinRequests(owner, song, 'removed', tell);
     }
   }
 
   // Une demande de duo ne retient jamais un titre : il part à son heure
   // (`sent`) ou disparaît de la liste (`removed`), et la demande expire.
-  _closeJoinRequests(owner, song, reason) {
+  _closeJoinRequests(owner, song, reason, tell = () => true) {
     const requests = this._joinRequests(song);
     if (song) delete song.duoRequests;
     for (const row of requests) {
       const requester = this.people.get(row.fromId);
+      if (!tell(requester.id)) continue;
       this.notify(requester.id, 'joinExpired', { name: owner.name, title: song.title, reason });
       // Parti avant la réponse : l'auteur du titre apprend aussi qu'une demande attendait.
       if (reason === 'sent') this.notify(owner.id, 'joinMissed', { name: requester.name, title: song.title });
@@ -894,6 +909,14 @@ class Scheduler {
     const guestName = guest?.name || sel.names?.[index] || '?';
     if (sel.turnCredit && !sel.turnCredit.rolledBack) this._dropPartnerCredit(sel, gid, owner);
     sel.ids = sel.ids.filter(pid => pid !== gid);
+    // Le titre n'est plus un duo : revenu dans la liste de son auteur (« Pas
+    // prêt », fermeture), il repart en solo. Envoi sans accusé : le titre de
+    // la liste (le même, ou sa copie relue après un redémarrage) aussi.
+    const entryId = sel.song?.entryId;
+    for (const song of [sel.song, ...this.songsOf(owner).filter(s => entryId && s.entryId === entryId)]) {
+      if (song?.duet?.partnerId === gid) delete song.duet;
+    }
+    this._refreshDuetViews();
     sel.consumedIds = (sel.consumedIds || [owner.id]).filter(pid => pid !== gid);
     if (Array.isArray(sel.names)) sel.names = sel.names.filter((name, i) => i !== index);
     if (sel.ids.length < 2) delete sel.kind;
@@ -1342,6 +1365,9 @@ class Scheduler {
     this.version++;
     if (owner.group === requester.group) {
       song.duet = { partnerId: requester.id, state: 'accepted' };
+      // Comme une demande acceptée : les autres personnes qui demandaient ce
+      // titre sont prévenues.
+      for (const row of requests) this.notify(row.fromId, 'joinRefused', { name: owner.name, title: song.title });
       delete song.duoRequests;
       this.invalidateManualOrder();
       this._refreshDuetViews();

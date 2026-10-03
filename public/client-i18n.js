@@ -45,6 +45,7 @@ window.CLIENT_TRANSLATIONS = {
       'La demande de duo de {person} à {name} est close : « {title} » n’est plus dans sa liste.': '{person}’s duet request to {name} is closed: “{title}” is no longer on their list.',
       '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.': ['“{title}” was removed from {person}’s list: presence not confirmed {n} time. Check with the bar if needed.', '“{title}” was removed from {person}’s list: presence not confirmed {n} times. Check with the bar if needed.'],
       '« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.': '“{title}” would play after closing time: it was taken out of KaraFun and stays on {person}’s list.',
+      '« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {name}.': '“{title}” would play after closing time: it was taken out of KaraFun and stays on {name}’s list.',
       'Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.': 'Scan the QR code shown by KaraFun: your phone becomes a microphone.',
       'Pas de Battle cette fois : la salle a voté contre.': 'No Battle this time: the room voted against it.',
       'Pas de Battle cette fois : pas assez de votants.': 'No Battle this time: not enough voters.',

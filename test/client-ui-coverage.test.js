@@ -1125,7 +1125,9 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
     ['joinRefused', { title: 'T' }, 'Quelqu’un préfère chanter « T » sans Alice.'],
     ['joinExpired', { name: 'Bob', reason: 'removed' }, 'La demande de duo d’Alice à Bob est close : « ce titre » n’est plus dans sa liste.'],
     ['presenceRemoved', { title: 'T', skips: 3 }, '« T » est retiré de la liste d’Alice : présence non confirmée 3 fois. Vois avec le bar si besoin.'],
-    ['closingPulled', { title: 'T' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste d’Alice.']];
+    ['closingPulled', { title: 'T' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste d’Alice.'],
+    // Invitée d'un duo : le titre revient dans la liste de son auteur.
+    ['closingPulled', { title: 'T', name: 'Bob' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de Bob.']];
   const state = baseState({ closing: { at: at + 600000, passed: true } });
   state.tablePeople[0].inbox = notices.map(([kind, params], index) => ({ id: `m${index}`, kind, params, at }));
   const page = await open({ state });
@@ -1135,6 +1137,7 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
   const english = await open({ state, languages: ['en'] });
   await english.tap('infoBar', '[data-info-more]');
   assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” was removed from Alice’s list: presence not confirmed 3 times. Check with the bar if needed.'));
+  assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” would play after closing time: it was taken out of KaraFun and stays on Bob’s list.'));
   state.closing = { at: at + 600000, passed: false, full: false };
   state.tablePeople[0].inbox = [];
   state.battle = { ...state.battle, lastOutcome: { id: 'old', outcome: 'quorum', at } };
@@ -2211,7 +2214,8 @@ test('demandes : « Je suis là » sans « Pas prêt » quand personne d’autre
 });
 
 // Regression: ISSUE-014 — « Je suis là » faisait partir le titre avant que la demande de duo sur ce titre soit vue
-test('demandes : une demande de duo sur le titre attendu passe avant « Je suis là », sans « Plus tard » ; avis à l’auteur', async () => {
+// Regression: relecture PR #11 — la règle du propriétaire prévoit « Plus tard (1 min) » pour toute demande de duo
+test('demandes : une demande de duo sur le titre attendu passe avant « Je suis là », avec « Plus tard » ; avis à l’auteur', async () => {
   const state = baseState();
   state.tablePeople = [person('alice', 'Alice', { needConfirm: true, songs: [{ entryId: 'w1', songId: 1, title: 'Waterloo' }],
     joinRequests: [{ entryId: 'w1', fromId: 'dan', fromName: 'Dan', song: { title: 'Waterloo' } }] })];
@@ -2222,7 +2226,12 @@ test('demandes : une demande de duo sur le titre attendu passe avant « Je suis 
   assert.equal(page.node('attentionCount').textContent, '1 / 2');
   assert.equal(page.node('attentionTitle').textContent, 'Dan aimerait chanter « Waterloo » avec Alice.', 'la demande d’abord');
   const choices = () => page.node('attentionChoices').querySelectorAll('button').map(button => button.textContent);
-  assert.deepEqual(choices(), ['Accepter', 'Refuser'], 'pas de « Plus tard » : la confirmation ferait expirer la demande');
+  assert.deepEqual(choices(), ['Accepter', 'Refuser', 'Plus tard (1 min)'], '« Plus tard » existe pour les duos');
+  // « Plus tard » : « Je suis là » passe en tête pendant une minute.
+  const later = await open({ state: JSON.parse(JSON.stringify(state)) });
+  await later.tap('attentionChoices', '[data-attn="later"]');
+  assert.equal(later.node('attentionTitle').textContent, 'C’est bientôt au tour d’Alice\u00a0!');
+  assert.deepEqual(later.posts.filter(([url]) => url === '/api/table/duet/join/answer'), [], 'aucune réponse envoyée');
   await page.tap('attentionChoices', '[data-attn="yes"]');
   assert.equal(page.node('attentionTitle').textContent, 'C’est bientôt au tour d’Alice\u00a0!', 'puis la présence');
   // Demande expirée quand même (titre parti) : l'auteur est prévenu.
