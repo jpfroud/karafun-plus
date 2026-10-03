@@ -347,3 +347,90 @@ test('export, thème, autre soirée, erreurs et soirée vide', async () => {
   assert.match(text(empty.doc.getElementById('chartTimeline')), /Pas encore de données/);
   assert.match(text(empty.$('kpis')), /pas assez de chanteurs.*aucun entre deux chansons/s);
 });
+
+// ------------------------------------------------------------------ QA navigateur du 2026-10-03
+// Found by /qa on 2026-10-03
+// Report: .gstack/qa-reports/run-20261003T140104Z/qa-report-127.0.0.1-2026-10-03.md
+const withView = patch => ({ '/api/staff/stats': () => { const view = apiView(); patch(view); return { ok: true, body: view }; } });
+const plotTexts = (page, id) => page.doc.getElementById(`${id}Plot`).byTag('svg')[0].children.filter(n => n.tagName === 'TEXT').map(text);
+
+// Regression: ISSUE-023 — à la souris, le repère vertical passait sous le curseur et cachait l'info-bulle du Déroulé
+test('déroulé et file : le repère vertical ne capte jamais le pointeur', async () => {
+  const page = loadPage();
+  await settle();
+  for (const id of ['chartTimeline', 'chartQueue']) {
+    const svg = page.doc.getElementById(id).byTag('svg')[0];
+    const cross = svg.children.filter(n => n.tagName === 'LINE' && n.getAttribute('visibility') === 'hidden').at(-1);
+    assert.equal(cross.getAttribute('pointer-events'), 'none', `${id} : la barre survolée garde son info-bulle`);
+  }
+});
+
+// Regression: ISSUE-024 — la vue « Tableau » revenait au graphique à chaque rafraîchissement et changement de Repère
+test('vue tableau : gardée au rafraîchissement de 15 s et au changement de Repère, jusqu’au retour au graphique', async () => {
+  const page = loadPage();
+  await settle();
+  const button = id => page.doc.getElementById(id).byTag('button')[0];
+  const tableShown = id => !page.doc.getElementById(id).children.find(n => n.className === 'st-table-wrap').hidden;
+  button('chartWaits').dispatch('click');
+  button('chartQueue').dispatch('click');
+  page.timers.at(-1).fn();
+  await settle();
+  for (const id of ['chartWaits', 'chartQueue']) {
+    assert.equal(button(id).getAttribute('aria-pressed'), 'true', `${id} après rafraîchissement`);
+    assert.equal(tableShown(id), true);
+    assert.equal(text(button(id)), 'Graphique');
+  }
+  assert.equal(button('chartTimeline').getAttribute('aria-pressed'), 'false', 'les autres cartes restent en graphique');
+  const focus = page.$('focusSelect');
+  focus.value = 'p:pA';
+  focus.dispatch('change', { target: focus });
+  assert.equal(tableShown('chartWaits'), true, 'changement de Repère : vue gardée');
+  button('chartWaits').dispatch('click');
+  page.timers.at(-1).fn();
+  await settle();
+  assert.equal(tableShown('chartWaits'), false, 'retour au graphique gardé aussi');
+  assert.equal(tableShown('chartQueue'), true);
+});
+
+// Regression: ISSUE-028 — « File d'attente au fil de la soirée » : rien au toucher ni au clavier
+test('file d’attente : info-bulle au toucher (gardée doigt levé) et parcours au clavier', async () => {
+  const page = loadPage();
+  await settle();
+  const tip = page.$('tooltip');
+  const svg = page.doc.getElementById('chartQueue').byTag('svg')[0];
+  const overlay = svg.children.at(-1);
+  const cross = svg.children.filter(n => n.tagName === 'LINE').at(-1);
+  overlay.dispatch('pointerdown', { clientX: 300, pointerType: 'touch' });
+  assert.equal(tip.hidden, false, 'un toucher montre le relevé');
+  assert.equal(cross.getAttribute('visibility'), 'visible');
+  overlay.dispatch('pointerleave', { pointerType: 'touch' });
+  assert.equal(tip.hidden, false, 'doigt levé : l’info-bulle reste lisible');
+  overlay.dispatch('pointerleave', { pointerType: 'mouse' });
+  assert.equal(tip.hidden, true, 'la souris qui sort la cache');
+  assert.equal(overlay.getAttribute('tabindex'), '0', 'atteint au clavier');
+  overlay.dispatch('focus');
+  assert.equal(tip.hidden, false);
+  const last = text(tip);
+  assert.match(last, /19:00|18:45|titres prêts/);
+  overlay.dispatch('keydown', { key: 'Home' });
+  const first = text(tip);
+  assert.notEqual(first, last, 'Début : premier relevé');
+  assert.match(overlay.getAttribute('aria-valuetext'), /titres prêts.*personnes présentes/);
+  overlay.dispatch('keydown', { key: 'ArrowRight' });
+  assert.notEqual(text(tip), first, '→ : relevé suivant');
+  overlay.dispatch('keydown', { key: 'Enter' });
+  overlay.dispatch('blur');
+  assert.equal(tip.hidden, true);
+});
+
+// Regression: ISSUE-034 — après un rafraîchissement, l'info-bulle restait seule avec l'ancien contenu
+test('rafraîchissement : l’info-bulle d’un graphique redessiné disparaît avec son repère', async () => {
+  const page = loadPage();
+  await settle();
+  const overlay = page.doc.getElementById('chartQueue').byTag('svg')[0].children.at(-1);
+  overlay.dispatch('pointermove', { clientX: 400 });
+  assert.equal(page.$('tooltip').hidden, false);
+  page.timers.at(-1).fn();
+  await settle();
+  assert.equal(page.$('tooltip').hidden, true);
+});
