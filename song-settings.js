@@ -119,19 +119,21 @@ function clampSettings(settings, ranges) {
 const trackVolume = (type, volume) => ({ track: { type }, volume });
 
 // Options d'ajout (remote.AddToQueueRequest) : seulement ce qui est réglé.
-// Les pistes du titre ne sont pas encore connues : KaraFun ignore celles qui
-// manquent. Duo : la voix guide B suit la voix guide A.
-function addOptions({ singer, settings, ranges, duo = false }) {
+// Pistes du titre inconnues (premier envoi) : KaraFun ignore celles qui
+// manquent. Connues (`tracksAvailable`, relance ⏮ du titre en cours) :
+// seulement celles que le titre possède. Duo : la voix guide B suit la A.
+function addOptions({ singer, settings, ranges, duo = false, tracksAvailable = null }) {
   const s = clampSettings(settings, ranges);
   const options = { singer: String(singer || '') };
   if (!s) return { options, sent: null };
+  const has = type => !tracksAvailable || tracksAvailable.includes(type);
   const sent = {}, tracks = [];
   if (s.pitch != null) options.pitch = sent.pitch = s.pitch;
   if (s.tempo != null) options.tempo = sent.tempo = s.tempo;
-  if (s.backing != null) { tracks.push(trackVolume(TRACK.BACKING, s.backing)); sent.backing = s.backing; }
-  if (s.guide != null) {
+  if (s.backing != null && has(TRACK.BACKING)) { tracks.push(trackVolume(TRACK.BACKING, s.backing)); sent.backing = s.backing; }
+  if (s.guide != null && has(TRACK.LEAD_A)) {
     tracks.push(trackVolume(TRACK.LEAD_A, s.guide));
-    if (duo) tracks.push(trackVolume(TRACK.LEAD_B, s.guide));
+    if (duo && has(TRACK.LEAD_B)) tracks.push(trackVolume(TRACK.LEAD_B, s.guide));
     sent.guide = s.guide;
   }
   if (tracks.length) options.tracks = tracks;

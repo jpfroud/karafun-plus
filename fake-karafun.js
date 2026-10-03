@@ -6,7 +6,8 @@
  * Réglages de titre comme la télécommande KCS : options à l'ajout,
  * queueItemOptions (options d'un titre de la file, remplacées en entier),
  * pitch, tempo et trackVolume pour le titre en cours ; chaque titre annonce
- * ses pistes vocales (4 chœurs, 5 et 6 voix guides).
+ * ses pistes vocales (4 chœurs, 5 et 6 voix guides). Avant la lecture, le
+ * titre est annoncé sans être chargé, comme l'état 1 de KaraFun.
  * Les chansons « durent » SONG_SECONDS secondes.
  */
 const http = require('http');
@@ -86,6 +87,11 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     if (queue[0].options?.mod?.data?.battle && !manual) {
       state = 'infoscreen'; broadcast(); return;
     }
+    // Comme KaraFun (état 1 de la télécommande KCS) : le titre est d'abord
+    // annoncé sans être chargé, pistes vides et réglages d'origine.
+    const next = queue[0];
+    io.emit('status', { state: 'idle', songPlaying: { title: next.title, artist: next.artist, singer: next.singer, songId: next.songId,
+      queueId: next.queueId, songTracks: next.songTracks }, position: 0, pitch: 0, tempo: 0, tracks: [] });
     state = 'playing';
     startedAt = Date.now();
     queue[0].status = 'playing';

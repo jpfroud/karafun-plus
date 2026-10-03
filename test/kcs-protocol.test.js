@@ -479,6 +479,11 @@ test('StatusEvent : états KaraFun traduits, trames incomplètes ignorées', asy
   };
   assert.deepEqual([1, 2, 3, 4, 5, 99].map(state), ['idle', 'loading', 'idle', 'playing', 'paused', 'idle']);
   assert.equal(bridge.status.current, null);
+  // Le numéro de KaraFun reste : 'idle' confond l'état 1 (titre annoncé) et l'état 3 (titre chargé).
+  state(3);
+  assert.equal(bridge.status.kcsState, 3);
+  state(1);
+  assert.equal(bridge.status.kcsState, 1);
   state(4);
   ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 'playing' } } });
   ws.receive({ type: 'remote.StatusEvent', payload: {} });

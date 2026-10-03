@@ -642,14 +642,259 @@ test('titre chargé dans KaraFun puis réglé de nouveau : rattrapage refait ave
   const tr = sendNext(f, 'q-1', { sentSettings: { pitch: -2 } });
   const item = kfItem('q-1', 101, tr.sel.label, { songTracks: [{ type: 5 }] });
   link.bridge.queue = [item];
-  link.bridge.status = { ...playing(item), state: 'idle', pitch: -2 };
+  // État 3 du KCS (titre chargé, prêt) : normalisé 'idle', comme l'état 1.
+  link.bridge.status = { ...playing(item), state: 'idle', kcsState: 3, pitch: -2 };
   f.sync();
   assert.deepEqual(link.sent, [], 'KaraFun a déjà appliqué');
-  // Le chanteur change d'avis avant la lecture ; KaraFun ignore les options du titre.
+  // Le chanteur change d'avis avant la lecture : options du titre, puis attente d'un état de KaraFun.
   await f.call('POST /api/table/song/settings', { ...lea.body, entryId: tr.sel.song.entryId, settings: { pitch: 1 } });
   assert.equal(link.sent.at(-1).type, 'remote.SetQueueItemOptionsRequest');
+  f.sync();
+  assert.equal(link.sent.length, 1, 'rien en direct sur l’état d’avant la demande');
+  // Nouvel état, toujours à -2 : KaraFun ignore les options du titre chargé.
+  link.bridge.status = { ...playing(item), state: 'idle', kcsState: 3, pitch: -2 };
   f.sync();
   assert.deepEqual(link.sent.at(-1), { type: 'remote.PitchRequest', payload: { pitch: 1 } });
   f.sync();
   assert.equal(link.sent.length, 2, 'une seule fois');
+  // État 1 (titre suivant annoncé, pas chargé) : jamais comparé.
+  const g = harness();
+  const other = kcsBridge(g);
+  const ana = singer(g, openTable(g, '1'), 'Ana', 301);
+  g.sched.setSongSettings(ana.person.song, { tempo: 5 });
+  const trAna = sendNext(g, 'q-5');
+  const anaItem = kfItem('q-5', 301, trAna.sel.label);
+  other.bridge.queue = [anaItem];
+  other.bridge.status = { state: 'idle', kcsState: 1, pitch: 0, tempo: 0, tracks: [], current: anaItem };
+  g.sync();
+  other.bridge.status = { ...playing(anaItem), state: 'idle', kcsState: 1 };
+  g.sync();
+  assert.deepEqual(other.sent, []);
+  assert.equal(trAna.liveChecked, undefined);
+  // Titre chargé mais pistes encore vides : pas encore comparé non plus.
+  other.bridge.status = { state: 'idle', kcsState: 3, pitch: 0, tempo: 0, tracks: [], current: anaItem };
+  g.sync();
+  assert.deepEqual(other.sent, []);
+  other.bridge.status = { ...playing(anaItem), state: 'loading', kcsState: 2 };
+  g.sync();
+  assert.deepEqual(other.sent, [], 'état 2 : KaraFun charge encore le titre');
+  other.bridge.status = { ...playing(anaItem), state: 'idle', kcsState: 3 };
+  g.sync();
+  assert.deepEqual(other.sent, [{ type: 'remote.TempoRequest', payload: { tempo: 5 } }]);
+});
+
+// ---------------------------------------------------------------- séquence réelle du KaraFun du bar
+// Le vrai pont KaraFun, sur un faux WebSocket, reçoit les trames du KaraFun
+// du bar (journal du 2 octobre, titre « DJ ») : accusé d'ajout, état 1 (le
+// titre est annoncé mais pas chargé : pistes vides), file, état 2
+// (chargement), état 3 (prêt, attente de « Lecture », 20 s à 3 min au bar)
+// puis état 4 (lecture). Le serveur synchronise après les trames reçues,
+// comme avec bridge.on('change').
+class FakeWS {
+  static OPEN = 1;
+  constructor() { this.readyState = 1; this.listeners = {}; this.out = []; FakeWS.last = this; }
+  addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+  send(text) { this.out.push(JSON.parse(text)); }
+  close() { this.readyState = 3; }
+  emit(type, data = {}) { for (const fn of this.listeners[type] || []) fn(data); }
+}
+function replayBridge(t, f, { permissions = ADMIN } = {}) {
+  const saved = globalThis.WebSocket;
+  globalThis.WebSocket = FakeWS;
+  const bridge = new KaraFunBridge();
+  t.after(() => { bridge.disconnect(); globalThis.WebSocket = saved; });
+  f.setBridge(bridge);
+  bridge._openKcs('wss://kcs.exemple.invalid/remote', () => true);
+  const ws = FakeWS.last;
+  const receive = message => ws.emit('message', { data: JSON.stringify(message) });
+  ws.emit('open');
+  receive({ type: 'core.AuthenticatedEvent', payload: {} });
+  receive({ type: 'remote.UsernameUpdateEvent', payload: { username: bridge.username } });
+  receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: BAR_CONFIGURATION } });
+  receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions } });
+  receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+  receive({ type: 'remote.StatusEvent', payload: { status: { state: 1, pitch: 0, tempo: 0, tracks: [], current: null } } });
+  ws.out.length = 0;
+  // Trames reçues, puis une synchronisation : rend les demandes parties ensuite.
+  const frames = (...messages) => {
+    for (const message of messages) receive(message);
+    f.sync();
+    return ws.out.splice(0).filter(m => !m.type.startsWith('core.'));
+  };
+  return { bridge, ws, frames };
+}
+const bare = messages => messages.map(({ type, payload }) => ({ type, payload }));
+const DJ_ID = 'a0c6bc1b-7a57-4537-846b-d4ded79e830c';
+const djItem = options => ({ id: DJ_ID, song: { id: { type: 1, id: 12458 }, artist: 'Diam’s',
+  songTracks: [{ type: 4 }, { type: 5 }], title: 'DJ', options } });
+// Valeurs par défaut du KaraFun du bar : chœurs à 53, voix guide coupée.
+const statusEvent = (state, current, { pitch = 0, tempo = 0, backing = 53, guide = 0 } = {}) => ({ type: 'remote.StatusEvent',
+  payload: { status: { state, pitch, tempo, current,
+    tracks: state === 1 ? [] : [{ volume: backing, track: { type: 4 } }, { volume: guide, track: { type: 5 } }] } } });
+const queueEvent = (...items) => ({ type: 'remote.QueueEvent', payload: { queue: { items } } });
+const caughtUpNotes = f => notes(f).filter(line => line.startsWith('KaraFun n’a pas appliqué'));
+
+test('séquence réelle du bar : réglages comparés au titre chargé (état 3), jamais à l’état 1 qui l’annonce', async t => {
+  for (const applied of [true, false]) {
+    const f = harness();
+    const { frames } = replayBridge(t, f);
+    const so = singer(f, openTable(f, '1'), 'Soraya', 12458);
+    await f.call('POST /api/table/song/settings', { ...so.body, entryId: so.person.song.entryId,
+      settings: { pitch: -2, guide: 40, backing: 0 } });
+    f.settings.auto = true;
+    const [add] = frames();
+    f.settings.auto = false;
+    const label = f.pending().sel.label;
+    assert.deepEqual(add.payload.options, { singer: label, pitch: -2,
+      tracks: [{ track: { type: 4 }, volume: 0 }, { track: { type: 5 }, volume: 40 }] });
+    // KaraFun garde les options d'ajout sur son titre ; il les applique (ou non) au chargement.
+    const item = djItem(add.payload.options);
+    const live = applied ? { pitch: -2, backing: 0, guide: 40 } : {};
+    const steps = [
+      ['accusé', frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} })],
+      ['état 1', frames(statusEvent(1, item))],
+      ['file', frames(queueEvent(item))],
+      ['état 2', frames(statusEvent(2, item, live))],
+      ['état 3', frames(statusEvent(3, item, live))],
+      ['état 4', frames(statusEvent(4, item, live))],
+    ].map(([step, out]) => [step, bare(out)]);
+    const expected = applied ? [] : [
+      { type: 'remote.PitchRequest', payload: { pitch: -2 } },
+      { type: 'remote.TrackVolumeRequest', payload: { type: 4, volume: 0 } },
+      { type: 'remote.TrackVolumeRequest', payload: { type: 5, volume: 40 } },
+    ];
+    assert.deepEqual(steps, [['accusé', []], ['état 1', []], ['file', []], ['état 2', []], ['état 3', expected], ['état 4', []]],
+      applied ? 'KaraFun a appliqué les options d’ajout : rien d’autre' : 'options ignorées : rattrapées une fois, titre chargé');
+    assert.equal(f.tracked()[0].queueId, DJ_ID);
+    assert.deepEqual(f.events('song.settingsCaughtUp').map(e => e.fields), applied ? [] : [['pitch', 'backing', 'guide']]);
+  }
+});
+
+test('séquence réelle du bar : réglage changé pendant l’envoi, envoyé au titre de KaraFun dès l’accusé', async t => {
+  for (const manageVolumes of [true, false]) {
+    const f = harness();
+    const { frames } = replayBridge(t, f, { permissions: { ...ADMIN, manageVolumes } });
+    const so = singer(f, openTable(f, '1'), 'Soraya', 12458);
+    const entryId = so.person.song.entryId;
+    await f.call('POST /api/table/song/settings', { ...so.body, entryId, settings: { pitch: -2 } });
+    f.settings.auto = true;
+    const [add] = frames();
+    f.settings.auto = false;
+    const label = f.pending().sel.label;
+    const answer = await f.call('POST /api/table/song/settings', { ...so.body, entryId, settings: { pitch: 3 } });
+    assert.equal(answer.applied, 'sending');
+    const item = djItem(add.payload.options);
+    frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} });
+    assert.deepEqual(bare(frames(statusEvent(1, item))), []);
+    const [options, ...others] = frames(queueEvent(item));
+    assert.deepEqual(bare([options]), [{ type: 'remote.SetQueueItemOptionsRequest', payload: { queueItemId: DJ_ID,
+      options: { singer: label, pitch: 3, tempo: 0 } } }], 'même nom affiché, nouvelle tonalité');
+    assert.deepEqual(bare(others), [], 'rien en direct : le titre n’est pas chargé');
+    assert.equal(f.tracked()[0].settingsDirty, false);
+    // KaraFun applique les options de son titre avant de le charger.
+    const updated = djItem({ ...add.payload.options, pitch: 3 });
+    assert.deepEqual(bare(frames({ id: options.id, type: 'remote.SetQueueItemOptionsResponse', payload: {} }, queueEvent(updated))), []);
+    assert.deepEqual(bare(frames(statusEvent(2, updated, { pitch: 3 }))), []);
+    assert.deepEqual(bare(frames(statusEvent(3, updated, { pitch: 3 }))), []);
+    assert.deepEqual(bare(frames(statusEvent(4, updated, { pitch: 3 }))), []);
+    assert.deepEqual(caughtUpNotes(f), [], 'aucune fausse alerte au bar');
+    assert.deepEqual(f.events('song.settingsCaughtUp'), []);
+  }
+});
+
+test('séquence réelle du bar : accusé reçu avec le titre déjà chargé, options d’abord, direct seulement sur un état frais', async t => {
+  for (const manageVolumes of [true, false]) {
+    const f = harness();
+    const { frames } = replayBridge(t, f, { permissions: { ...ADMIN, manageVolumes } });
+    const so = singer(f, openTable(f, '1'), 'Soraya', 12458);
+    const entryId = so.person.song.entryId;
+    await f.call('POST /api/table/song/settings', { ...so.body, entryId, settings: { pitch: -2 } });
+    f.settings.auto = true;
+    const [add] = frames();
+    f.settings.auto = false;
+    const label = f.pending().sel.label;
+    await f.call('POST /api/table/song/settings', { ...so.body, entryId, settings: { pitch: 3 } });
+    const item = djItem(add.payload.options);
+    // Les trames arrivent ensemble : la synchronisation voit déjà l'état 3 (options d'ajout appliquées).
+    const sent = frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, statusEvent(1, item), queueEvent(item),
+      statusEvent(2, item, { pitch: -2 }), statusEvent(3, item, { pitch: -2 }));
+    assert.deepEqual(bare(sent), [{ type: 'remote.SetQueueItemOptionsRequest', payload: { queueItemId: DJ_ID,
+      options: { singer: label, pitch: 3, tempo: 0 } } }], 'pas de rattrapage sur un état d’avant la demande');
+    assert.deepEqual(caughtUpNotes(f), []);
+    // Réponse de KaraFun, puis rien de neuf : on attend.
+    assert.deepEqual(bare(frames({ id: sent[0].id, type: 'remote.SetQueueItemOptionsResponse', payload: {} })), []);
+    assert.deepEqual(bare(frames()), []);
+    // La lecture démarre sans la nouvelle tonalité : rattrapée une fois (ou avis au bar sans le droit).
+    assert.deepEqual(bare(frames(statusEvent(4, item, { pitch: -2 })).concat(frames(), frames(statusEvent(4, item, { pitch: -2 })))),
+      manageVolumes ? [{ type: 'remote.PitchRequest', payload: { pitch: 3 } }] : []);
+    assert.equal(caughtUpNotes(f).length, manageVolumes ? 0 : 1);
+  }
+});
+
+test('titre chargé mais pas lancé, réglé de nouveau : options du titre seulement, direct comparé à un état reçu après', async t => {
+  for (const manageVolumes of [true, false]) {
+    const f = harness();
+    const { frames } = replayBridge(t, f, { permissions: { ...ADMIN, manageVolumes } });
+    const so = singer(f, openTable(f, '1'), 'Soraya', 12458);
+    const entryId = so.person.song.entryId;
+    await f.call('POST /api/table/song/settings', { ...so.body, entryId, settings: { pitch: -2 } });
+    f.settings.auto = true;
+    const [add] = frames();
+    f.settings.auto = false;
+    const label = f.pending().sel.label;
+    const item = djItem(add.payload.options);
+    frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, statusEvent(1, item), queueEvent(item));
+    assert.deepEqual(bare(frames(statusEvent(2, item, { pitch: -2 }), statusEvent(3, item, { pitch: -2 }))), [], 'déjà appliqué');
+    // En état 3, la chanteuse change d'avis.
+    const answer = await f.call('POST /api/table/song/settings', { ...so.body, entryId, settings: { pitch: 1 } });
+    assert.equal(answer.applied, 'karafun');
+    const [options, ...more] = frames();
+    assert.deepEqual(bare([options]), [{ type: 'remote.SetQueueItemOptionsRequest', payload: { queueItemId: DJ_ID,
+      options: { singer: label, pitch: 1, tempo: 0 } } }]);
+    assert.deepEqual(bare(more), [], 'pas de tonalité en direct calculée sur l’état d’avant');
+    assert.deepEqual(bare(frames({ id: options.id, type: 'remote.SetQueueItemOptionsResponse', payload: {} })), []);
+    assert.deepEqual(caughtUpNotes(f), [], 'pas de fausse alerte : KaraFun n’a pas encore pu répondre');
+    assert.deepEqual(f.events('song.settingsCaughtUp'), []);
+    // KaraFun renvoie son état avec la nouvelle tonalité : rien à rattraper.
+    assert.deepEqual(bare(frames(statusEvent(3, item, { pitch: 1 }), statusEvent(4, item, { pitch: 1 }))), []);
+    assert.deepEqual(caughtUpNotes(f), []);
+  }
+});
+
+test('réglage en direct d’un titre sans réglage : pas de rattrapage ensuite, une seule commande', async () => {
+  const f = harness();
+  const link = kcsBridge(f);
+  const tb = openTable(f, '1');
+  singer(f, tb, 'Léa', 101);
+  const tr = sendNext(f, 'q-1', { startedAt: Date.now() });
+  const item = kfItem('q-1', 101, tr.sel.label);
+  link.bridge.queue = [item];
+  link.bridge.status = playing(item);
+  f.sync();
+  await f.call('POST /api/staff/kf', { action: 'pitch', value: 2 });
+  // Réponse de KaraFun avant son nouvel état : synchronisation sur l'ancien état (tonalité 0).
+  f.sync();
+  f.sync();
+  assert.deepEqual(link.sent, [{ type: 'remote.PitchRequest', payload: { pitch: 2 } }]);
+  assert.deepEqual(f.events('song.settingsCaughtUp'), [], 'pas présenté comme un réglage ignoré par KaraFun');
+});
+
+test('relance ⏮ d’un duo : volumes seulement pour les pistes que le titre possède', async () => {
+  const f = harness();
+  const link = kcsBridge(f);
+  const tb = openTable(f, '1');
+  const ana = singer(f, tb, 'Ana');
+  const ben = singer(f, tb, 'Ben');
+  const duo = f.sched.inviteDuet(ana.person, ben.person.id, { songId: 12293, title: 'Le chanteur', artist: 'Daniel Balavoine' });
+  f.sched.setSongSettings(duo, { guide: 50, backing: 0 });
+  const tr = sendNext(f, 'q-1', { startedAt: Date.now(), liveChecked: 'q-1' });
+  assert.equal(tr.sel.ids.length, 2);
+  const item = kfItem('q-1', 12293, tr.sel.label, { songTracks: [{ type: 5 }] });
+  link.bridge.queue = [item];
+  link.bridge.status = playing(item, { tracks: [{ volume: 50, track: { type: 5 } }] });
+  f.sync();
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  assert.deepEqual(link.sent.at(-1), { type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 12293 },
+    options: { singer: tr.sel.label, tracks: [{ track: { type: 5 }, volume: 50 }] }, position: 1 } },
+  'ni chœurs ni voix guide B : le titre n’a que la voix guide A');
 });

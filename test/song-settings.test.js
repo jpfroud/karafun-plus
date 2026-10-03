@@ -116,6 +116,14 @@ test('options d’ajout : chanteur seul sans réglage, sinon tonalité, tempo et
     { singer: 'Léa & Tom · T1', tracks: [{ track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 50 }] });
   assert.deepEqual(addOptions({ singer: 'X', settings: { pitch: 9 }, ranges: RANGES }).options, { singer: 'X', pitch: 6 },
     'borné à la plage de KaraFun');
+  // Pistes du titre connues (relance du titre en cours) : seulement celles-là.
+  assert.deepEqual(addOptions({ singer: 'A & B', settings: { pitch: 1, guide: 50, backing: 0 }, ranges: RANGES, duo: true,
+    tracksAvailable: [5] }), { options: { singer: 'A & B', pitch: 1, tracks: [{ track: { type: 5 }, volume: 50 }] },
+    sent: { pitch: 1, guide: 50 } });
+  assert.deepEqual(addOptions({ singer: 'A & B', settings: { guide: 25 }, ranges: RANGES, duo: true, tracksAvailable: [4, 5, 6] }).options.tracks,
+    [{ track: { type: 5 }, volume: 25 }, { track: { type: 6 }, volume: 25 }]);
+  assert.deepEqual(addOptions({ singer: 'C', settings: { backing: 0, guide: 25 }, ranges: RANGES, tracksAvailable: [6] }),
+    { options: { singer: 'C' }, sent: null }, 'aucune piste réglable : rien d’autre que le chanteur');
 });
 
 test('options d’un titre de la file : tout est renvoyé (chanteur, Battle, valeurs inchangées)', () => {
@@ -227,7 +235,7 @@ test('sauvegarde et reprise : les réglages suivent le titre, une valeur invalid
   const sel = sched.select();
   const tomSel = { ids: [tom.id], names: ['Tom'], label: 'Tom · Table 1', song: { ...tom.song, settings: { backing: 0 } } };
   const tracked = [{ queueId: 'q-1', sel: tomSel, addedAt: 1, startedAt: null,
-    sentSettings: { pitch: 0, tempo: 0, backing: 0 }, liveChecked: null }];
+    sentSettings: { pitch: 0, tempo: 0, backing: 0 }, liveChecked: null, statusAtOptions: 41 }];
   const settings = { auto: true, autoPlay: false, pushDelaySec: 45, playDelaySec: 8, singerSongSettings: false };
   const snapshot = snapshotNight({ scheduler: sched, access, settings, tracked });
   // Valeurs abîmées à la main dans le fichier de sauvegarde.
@@ -244,6 +252,7 @@ test('sauvegarde et reprise : les réglages suivent le titre, une valeur invalid
   assert.deepEqual(restored.people.get(tom.id).song.settings, { guide: 25 }, 'seules les valeurs invalides sont retirées');
   assert.deepEqual(out.tracked[0].sel.song.settings, { backing: 0 });
   assert.deepEqual(out.tracked[0].sentSettings, { pitch: 0, backing: 0 }, 'envoi noté : valeurs par défaut gardées');
+  assert.equal(Object.hasOwn(out.tracked[0], 'statusAtOptions'), false, 'numéro d’état de KaraFun propre à l’exécution précédente');
   assert.equal(restoredSettings.singerSongSettings, false, 'interrupteur du bar repris');
   // Interrupteur abîmé : retiré, la valeur actuelle (activée) reste.
   snapshot.settings.singerSongSettings = 'oui';
@@ -320,9 +329,14 @@ test('faux KaraFun : options d’ajout, options d’un titre de la file et régl
     tracks: [{ track: { type: 5 }, volume: 50 }] } });
   queue = await queued;
   assert.deepEqual(queue[0].options, { singer: 'Léa · T1', pitch: 1, tempo: 10, tracks: [{ track: { type: 5 }, volume: 50 }] });
-  // Lecture : les options du titre deviennent l'état en direct.
+  // Lecture : comme KaraFun (état 1 du KCS), le titre est d'abord annoncé sans
+  // être chargé (pistes vides, réglages d'origine), puis ses options
+  // deviennent l'état en direct.
+  const announced = nextEvent(socket, 'status', s => s.state === 'idle' && s.songPlaying);
   let status = nextEvent(socket, 'status', s => s.state === 'playing');
   socket.emit('play');
+  const early = await announced;
+  assert.deepEqual([early.songPlaying.queueId, early.pitch, early.tempo, early.tracks], [item.queueId, 0, 0, []]);
   let live = await status;
   assert.equal(live.pitch, 1);
   assert.equal(live.tempo, 10);

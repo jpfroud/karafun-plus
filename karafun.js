@@ -561,9 +561,12 @@ class KaraFunBridge extends EventEmitter {
         const status = p.status || {};
         this.raw.status = status;
         this._observeDefaults(status);
+        // `kcsState` garde le numéro de KaraFun : 'idle' confond l'état 1
+        // (titre annoncé, pas chargé) et l'état 3 (titre chargé, prêt).
         this._accept('status', {
           ...status,
           state: ({ 1: 'idle', 2: 'loading', 3: 'idle', 4: 'playing', 5: 'paused' })[status.state] || 'idle',
+          kcsState: status.state,
           current: status.current ? normalizeKcsItem(status.current) : null,
         });
       } else if (m.type === 'remote.PermissionsUpdateEvent') {
@@ -783,12 +786,14 @@ class KaraFunBridge extends EventEmitter {
   }
 
   // `settings` : réglages du titre (song-settings.js), ajoutés aux options
-  // d'ajout ; `duo` : la voix guide B suit la voix guide A. Rend les réglages
+  // d'ajout ; `duo` : la voix guide B suit la voix guide A ; `tracksAvailable` :
+  // pistes vocales du titre quand on les connaît. Rend les réglages
   // effectivement envoyés (bornés), ou null.
-  add(songId, singer, pos = 99999, settings = null, { duo = false } = {}) {
+  add(songId, singer, pos = 99999, settings = null, { duo = false, tracksAvailable = null } = {}) {
     const payload = { songId: Number(songId), pos, singer: String(singer || '') };
     const allowed = settings && this.settingsSupport.addOptions !== 'refused' && this._settingsChannel();
-    const built = allowed ? addOptions({ singer: payload.singer, settings, ranges: this.songSettingsRanges(), duo }) : { sent: null };
+    const built = allowed ? addOptions({ singer: payload.singer, settings, ranges: this.songSettingsRanges(), duo, tracksAvailable })
+      : { sent: null };
     if (built.sent) {
       // Ancien protocole (faux KaraFun) : le chanteur reste à part.
       const { singer: _, ...rest } = built.options;

@@ -629,8 +629,10 @@ function startRestart() {
     originalQueueId: current.queueId, trackedQueueId: tr ? tr.queueId : null };
   // La copie garde les réglages du titre (ceux de la file, sinon l'état en
   // direct d'un titre ajouté dans KaraFun).
+  // Pistes vocales du titre connues : volumes seulement pour celles-là.
   const songSettings = tr ? tr.sel.song.settings || null : settingsFromLive(liveFromStatus(bridge.status), songDefaults());
-  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { duo: !!tr && tr.sel.ids.length > 1 }) || null; }
+  const tracksAvailable = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
+  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { duo: !!tr && tr.sel.ids.length > 1, tracksAvailable }) || null; }
   catch (error) { restartOp = null; throw error; }
   sched.note(`Le bar relance « ${restartOp.title} » depuis le début.`, 'stage');
 }
@@ -751,6 +753,30 @@ const songRanges = () => rangesFrom(bridge?.raw?.configuration);
 // Valeurs par défaut de ce KaraFun (chœurs à 53 au bar), relevées par le pont.
 const songDefaults = () => bridge?.songSettingsDefaults?.() || { ...SONG_DEFAULTS };
 const kfItemOf = tr => bridge?.queue?.find(item => String(item.queueId) === String(tr.queueId)) || null;
+// Numéro de l'état de KaraFun : il change à chaque nouvel état reçu
+// (StatusEvent), pour savoir si KaraFun a parlé depuis une demande.
+let statusSeen = null, statusNumber = 0;
+function statusSeq() {
+  const status = bridge?.status || null;
+  if (status !== statusSeen) { statusSeen = status; statusNumber++; }
+  return statusNumber;
+}
+// Titre que KaraFun a vraiment chargé : état 3 (prêt, avant « Lecture »),
+// 4 (lecture) ou 5 (pause) de la télécommande KCS. À l'état 1, KaraFun
+// annonce déjà le titre suivant sans l'avoir chargé (pistes vides, ou celles
+// d'un autre titre) ; à l'état 2, il le charge encore : leurs valeurs ne
+// disent rien des réglages appliqués. Sans numéro d'état (faux KaraFun de la
+// démo), seule la lecture compte.
+function loadedQueueId() {
+  const status = bridge?.status;
+  const item = status?.current || status?.songPlaying;
+  if (item?.queueId == null) return null;
+  const loaded = Number.isInteger(status.kcsState) ? [3, 4, 5].includes(status.kcsState)
+    : /^(playing|paused)$/.test(String(status.state || ''));
+  const voices = songTracksOf(item);
+  if (!loaded || (voices?.length && !(Array.isArray(status.tracks) && status.tracks.length))) return null;
+  return String(item.queueId);
+}
 function songSettingsError(message, code) {
   const error = new Error(message);
   error.code = code;
@@ -806,6 +832,8 @@ function applySongSettings(target, values, fields) {
 // que KaraFun affiche (la file reconnaît ses titres par lui) et son mode.
 // false : envoi en attente du retour de KaraFun, ou droit « Éditer la file
 // d'attente » refusé (le rattrapage au début du titre prendra le relais).
+// Envoyées : le rattrapage attend un état de KaraFun reçu depuis
+// (`statusAtOptions`), car KaraFun a pu les appliquer au titre chargé.
 function pushQueueItemSettings(tr) {
   const item = bridge?.ready ? kfItemOf(tr) : null;
   if (!item) return false;
@@ -816,6 +844,7 @@ function pushQueueItemSettings(tr) {
       settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, current: item.options || null,
       tracksAvailable: songTracksOf(item), duo: tr.sel.ids.length > 1 });
     if (sent) tr.sentSettings = sent;
+    tr.statusAtOptions = statusSeq();
     return true;
   } catch (error) {
     appLog(`Réglages de « ${tr.sel.song.title} » non envoyés à KaraFun : ${error.message}`);
@@ -823,15 +852,23 @@ function pushQueueItemSettings(tr) {
   }
 }
 
-// Début d'un titre suivi : ce que KaraFun n'a pas appliqué (options d'ajout
-// ou du titre ignorées) est envoyé une seule fois, pour ce titre de KaraFun.
+// Titre chargé ou sur scène : ce que KaraFun n'a pas appliqué (options
+// d'ajout ou du titre ignorées) est envoyé une seule fois, pour ce titre de
+// KaraFun. Un titre examiné sans réglage l'est aussi : un réglage en direct
+// fait ensuite n'est pas « rattrapé » une seconde fois.
 function catchUpSongSettings(tr) {
-  if (!tr.sel.song.settings && !tr.sentSettings) return;
   const mark = String(tr.queueId);
   if (tr.liveChecked === mark) return;
+  // Options du titre tout juste envoyées : comparer à un état reçu depuis,
+  // au plus tard celui de la lecture. Refusées par KaraFun : sans attendre.
+  if (tr.statusAtOptions != null) {
+    if (tr.statusAtOptions === statusSeq() && bridge.settingsSupport?.queueItemOptions !== 'refused') return;
+    delete tr.statusAtOptions;
+  }
   const live = liveFromStatus(bridge.status);
   if (live?.queueId != null && String(live.queueId) !== mark) return; // état de KaraFun pas encore à jour
   tr.liveChecked = mark;
+  if (!tr.sel.song.settings && !tr.sentSettings) return;
   const commands = catchUpCommands({ settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, live,
     tracksAvailable: live?.tracks || songTracksOf(kfItemOf(tr)), duo: tr.sel.ids.length > 1, ranges: songRanges(),
     defaults: songDefaults() });
@@ -900,6 +937,8 @@ function liveSongSetting(body) {
     const next = { ...(tr.sel.song.settings || {}), [field]: value };
     if ((field === 'pitch' || field === 'tempo') && value === 0) delete next[field]; // tonalité ou tempo d'origine
     sched.setSongSettings(tr.sel.song, Object.keys(next).length ? next : null);
+    // Réglé en direct : rien à rattraper, même avant l'écho de KaraFun.
+    tr.liveChecked = String(tr.queueId);
   }
   journalEvent('song.settings', { by: 'staff', where: 'live', personId: tr?.sel.ids[0] || null, entryId: tr?.sel.song.entryId || null,
     queueId: current.queueId ?? null, field, value });
@@ -1013,9 +1052,9 @@ function sync() {
     tr.pulled = null;
     tr.removeRequestedAt = 0;
   });
-  // Titre chargé par KaraFun (états 2 et 3, avant la musique) : ses réglages
+  // Titre chargé par KaraFun (état 3, avant la musique) : ses réglages
   // peuvent déjà être rattrapés.
-  const loadedId = (bridge.status?.current || bridge.status?.songPlaying)?.queueId;
+  const loadedId = loadedQueueId();
   for (const tr of tracked.slice()) {
     const onStage = isOnStage(tr, current);
     // Si KaraFun était déconnecté lors du vidage, ce titre pouvait déjà être
@@ -1044,9 +1083,11 @@ function sync() {
       sched.recordStage(tr.sel, tr.startedAt);
       sched.note(`Sur scène : ${tr.sel.label} — « ${tr.sel.song.title} »`, 'stage');
     }
-    const loaded = loadedId != null && String(loadedId) === String(tr.queueId);
-    if ((onStage || loaded) && !tr.cancelled && !tr.pulled && !tr.absent) catchUpSongSettings(tr);
-    else if (tr.settingsDirty && !tr.startedAt && !tr.cancelled && !tr.pulled && !tr.absent) pushQueueItemSettings(tr);
+    const usable = !tr.cancelled && !tr.pulled && !tr.absent;
+    // Réglé pendant l'envoi, ou KaraFun revenu : les options du titre de
+    // KaraFun d'abord, tant qu'il n'a pas commencé (même déjà chargé).
+    if (usable && tr.settingsDirty && !tr.startedAt) pushQueueItemSettings(tr);
+    if (usable && (onStage || loadedId === String(tr.queueId))) catchUpSongSettings(tr);
     // QueueEvent et StatusEvent ne sont pas atomiques. Quand l'ancienne chanson
     // est encore dans status.current, attendre le second message avant de
     // conclure qu'elle a disparu (notamment après le bouton Suivant natif).

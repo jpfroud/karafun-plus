@@ -40,6 +40,7 @@ function cleanSentSettings(holder) {
   cleanSongSettings(holder.sel?.song);
   if ('sentSettings' in holder) holder.sentSettings = sanitizeSettings(holder.sentSettings, { keepDefaults: true });
   if (holder.liveChecked != null && typeof holder.liveChecked !== 'string') delete holder.liveChecked;
+  delete holder.statusAtOptions; // numéro d'état de KaraFun propre à l'exécution précédente
   for (const flag of ['settingsDirty', 'settingsChanged']) if (flag in holder && typeof holder[flag] !== 'boolean') delete holder[flag];
 }
 function dropCovers(snapshot) {
