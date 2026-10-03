@@ -432,6 +432,9 @@ test('relances espacées : 3, 6, 12, 24 puis 30 s au plus, remises à zéro une 
   assert.equal(bridge.connectionState().attempt, 7);
   ws.serverClose(1006);
   assert.equal(bridge.retryAt - Date.now(), 3000, 'après « prêt » : de nouveau 3 s');
+  assert.equal(bridge.connectionState().label, 'KaraFun a fermé la connexion (code 1006) : nouvel essai dans 3 s',
+    'les essais se recomptent depuis le dernier « prêt »');
+  assert.ok(lines.at(-1).endsWith('Nouvel essai dans 3 s (essai 1).'));
   t.mock.timers.tick(3000);
   assert.equal(bridge.connectionState().attempt, 1);
 });

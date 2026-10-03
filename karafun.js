@@ -433,6 +433,8 @@ class KaraFunBridge extends EventEmitter {
     this._closeSocket();
     this.connected = this.ready = false;
     clearTimeout(this.retryTimer);
+    // Connexion perdue après « prêt » : les essais se recomptent depuis 1.
+    if (this._resetTries) { this._tries = 0; this._resetTries = false; }
     const step = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(this._failures, 4));
     const jittered = this._failures ? Math.min(RETRY_MAX_MS, Math.round(step * (0.85 + 0.3 * this.random()))) : step;
     const delay = Math.max(minDelay, jittered);
