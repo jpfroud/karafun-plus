@@ -24,6 +24,8 @@ class Node_ {
     this.hidden = false; this.checked = false; this._text = ''; this.className = '';
   }
   get firstChild() { return this.children[0] || null; }
+  get parentNode() { return this.parent; }
+  focus() { this.ownerDocument.activeElement = this; this.dispatch('focus'); }
   appendChild(child) { if (child.parent) child.parent.removeChild(child); child.parent = this; this.children.push(child); return child; }
   removeChild(child) { this.children = this.children.filter(c => c !== child); child.parent = null; return child; }
   setAttribute(name, value) {
@@ -140,7 +142,7 @@ function loadPage({ search = '?key=cle-bar', width = 900, responses = {}, storag
       const parsed = new URL(url, 'http://bar.local');
       fetches.push(parsed);
       const route = routes[parsed.pathname];
-      const answer = route ? route(parsed) : { ok: false, status: 404, body: { error: 'Introuvable' } };
+      const answer = route ? await route(parsed) : { ok: false, status: 404, body: { error: 'Introuvable' } };
       return { ok: answer.ok, status: answer.status || 200, json: async () => answer.body };
     },
   };
@@ -541,4 +543,75 @@ test('tous les chanteurs : en-têtes sur deux lignes au besoin pour tenir dans l
   const css = html.replace(/\/\*[\s\S]*?\*\//g, '');
   const rule = /#cardSingers \.st-table th\s*\{([^}]*)\}/.exec(css)?.[1] || '';
   assert.match(rule, /white-space:\s*normal/);
+});
+
+// Regression: relecture PR #11 — chaque rafraîchissement (15 s) et chaque tri
+// reconstruisaient la page et le focus clavier repartait au début.
+test('focus clavier gardé au tri et au rafraîchissement : en-tête, bouton « Tableau », curseur de la file', async () => {
+  const page = loadPage();
+  await settle();
+  const card = id => page.doc.getElementById(id);
+  const active = () => page.doc.activeElement;
+  const header = card('cardSingers').byTag('button').find(b => /^Chanteur/.test(text(b)));
+  header.focus();
+  header.dispatch('click');
+  await settle();
+  assert.notEqual(active(), header, 'tableau redessiné');
+  assert.equal(active().tagName, 'BUTTON');
+  assert.equal(text(active()), 'Chanteur ↑', 'le focus reste sur l’en-tête trié');
+  assert.equal(card('cardSingers').byTag('button').includes(active()), true);
+  // Rafraîchissement de la soirée en cours : bouton « Tableau » de la file.
+  const toggle = () => card('chartQueue').byTag('button')[0];
+  const before = toggle();
+  before.focus();
+  page.timers.at(-1).fn();
+  await settle();
+  assert.notEqual(toggle(), before, 'carte redessinée');
+  assert.equal(active(), toggle());
+  // Curseur de la file : relevé choisi au clavier, gardé avec son info-bulle.
+  const slider = () => card('chartQueue').find(n => n.getAttribute('role') === 'slider')[0];
+  slider().focus();
+  slider().dispatch('keydown', { key: 'Home' });
+  const shown = slider().getAttribute('aria-valuetext');
+  page.timers.at(-1).fn();
+  await settle();
+  assert.equal(active(), slider());
+  assert.equal(slider().getAttribute('aria-valuetext'), shown);
+  assert.equal(page.$('tooltip').hidden, false);
+  // Focus hors des graphiques : rien n'est déplacé.
+  page.doc.activeElement = page.$('eveningSelect');
+  page.timers.at(-1).fn();
+  await settle();
+  assert.equal(active(), page.$('eveningSelect'));
+});
+
+// Regression: relecture PR #11 — une réponse lente d'une autre soirée
+// écrasait celle choisie entre-temps.
+test('changer de soirée pendant un chargement : la page montre toujours la soirée choisie', async () => {
+  for (const slow of ['current', 'past']) {
+    const held = [];
+    const past = '2026-10-02_2000_beef';
+    const page = loadPage({ responses: { '/api/staff/stats': url => {
+      const evening = url.searchParams.get('evening');
+      const answer = { ok: true, body: evening === 'current' ? apiView() : apiView({ live: false, id: evening }) };
+      return (evening === 'current') === (slow === 'current') ? new Promise(resolve => held.push(() => resolve(answer))) : answer;
+    } } });
+    await settle();
+    const select = page.$('eveningSelect');
+    const choose = async value => { select.value = value; select.dispatch('change', { target: select }); await settle(); };
+    if (slow === 'past') {
+      held.shift()?.();
+      await settle();
+      await choose(past);
+      await choose('current');
+    } else await choose(past);
+    const expected = slow === 'past' ? 'current' : past;
+    held.shift()();
+    await settle();
+    assert.equal(page.$('main').className, 'st-main');
+    assert.equal(/en cours/.test(text(page.$('eveningLine'))), expected === 'current', `réponse lente de ${slow} ignorée`);
+    assert.equal(page.$('livePill').hidden, expected !== 'current');
+    const timers = page.timers.filter(t => t.ms === 15000).length;
+    assert.ok(expected === 'current' ? timers >= 1 : true);
+  }
 });

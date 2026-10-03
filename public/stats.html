@@ -137,7 +137,9 @@ const $ = id => document.getElementById(id);
 const REFRESH_MS = 15000;
 const KIND = { solo: ['Solo', 'var(--s1)'], duo: ['Duo', 'var(--s2)'], battle: ['Battle', 'var(--s3)'], native: ['Hors file', 'var(--s4)'] };
 const state = { data: null, listError: null, loadError: null, evening: new URLSearchParams(location.search).get('evening') || 'current', focus: '', tables: {}, sort: { key: 'turns', dir: -1 }, timer: null,
-  tableViews: new Set() }; // cartes affichées en tableau, gardées aux rafraîchissements
+  tableViews: new Set(), // cartes affichées en tableau, gardées aux rafraîchissements
+  loadSeq: 0, // seule la réponse du dernier chargement demandé s'affiche
+  queueSampleAt: null }; // relevé de la file montré au clavier, gardé quand le graphique est redessiné
 
 // ------------------------------------------------------------------ formats
 const fmtNum = (v, d = 1) => v == null || !Number.isFinite(v) ? '—' : Number(v).toLocaleString('fr-FR', { maximumFractionDigits: d });
@@ -450,10 +452,12 @@ function drawQueue(plot) {
   const overlay = s('rect', { x: left, y: top, width: W - left - right, height: H - top - bottom, fill: 'transparent',
     tabindex: 0, role: 'slider', 'aria-label': 'Relevés de la file : flèches gauche et droite pour parcourir' }, svg);
   // Relevé montré : au survol, au toucher (sans glisser) et au clavier (← →).
-  let index = samples.length - 1;
+  const kept = samples.findIndex(q => String(q.t) === state.queueSampleAt);
+  let index = kept >= 0 ? kept : samples.length - 1;
   const showSample = (i, event) => {
     index = Math.max(0, Math.min(samples.length - 1, i));
     const near = samples[index];
+    overlay.setAttribute('data-t', near.t);
     cross.setAttribute('x1', x(near.t)); cross.setAttribute('x2', x(near.t)); cross.setAttribute('visibility', 'visible');
     overlay.setAttribute('aria-valuetext', `${hhmm(near.t)} : ${fmtNum(near.ready, 0)} titres prêts, ${fmtNum(near.present, 0)} personnes présentes`);
     showTip(event, hhmm(near.t), series.map(([key, label, color]) => [fmtNum(near[key], 0), label.toLowerCase(), color]).reverse());
@@ -750,8 +754,30 @@ function renderFilters() {
   select.value = state.focus;
 }
 
+// Élément des graphiques qui a le focus clavier (bouton « Tableau », en-tête
+// de tri, marque, curseur de la file) : retrouvé à la même place de sa carte
+// après un nouveau rendu (rafraîchissement de 15 s, tri), au lieu de
+// retomber au début de la page.
+const focusables = root => [...(root.children || [])].flatMap(el =>
+  [...(el.tagName === 'BUTTON' || el.getAttribute?.('tabindex') != null ? [el] : []), ...focusables(el)]);
+function focusSpot() {
+  const el = document.activeElement;
+  let holder = el;
+  while (holder && !(holder.parentNode === $('charts') && holder.getAttribute?.('id'))) holder = holder.parentNode;
+  if (!holder) return null;
+  const index = focusables(holder).indexOf(el);
+  return index < 0 ? null : { card: holder.getAttribute('id'), index, sampleAt: el.getAttribute('data-t') };
+}
+function restoreFocus(spot) {
+  const holder = spot && document.getElementById(spot.card);
+  const el = holder && focusables(holder)[spot.index];
+  if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+}
+
 function renderAll() {
   if (!state.data) return;
+  const spot = focusSpot();
+  state.queueSampleAt = spot?.sampleAt ?? null;
   // Les graphiques sont redessinés : une info-bulle de l'ancien rendu ne reste pas seule.
   hideTip();
   renderHeader();
@@ -760,6 +786,8 @@ function renderAll() {
   renderFocus();
   renderCharts();
   renderDefinitions();
+  restoreFocus(spot);
+  state.queueSampleAt = null;
 }
 
 // ------------------------------------------------------------------ données
@@ -780,23 +808,31 @@ async function loadEvenings() {
   renderErrors();
 }
 
+// Une réponse arrivée après un autre choix de soirée (ou après un chargement
+// plus récent) est ignorée : la page montre toujours la soirée choisie.
 async function load() {
+  const seq = ++state.loadSeq;
+  clearTimeout(state.timer);
   $('main').className = 'st-main loading';
   try {
     const r = await fetch(api('/api/staff/stats', { evening: state.evening }));
     const body = await r.json();
+    if (seq !== state.loadSeq) return;
     if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
     state.data = body;
     state.loadError = null;
     renderFilters();
     renderAll();
   } catch (error) {
+    if (seq !== state.loadSeq) return;
     state.loadError = `Statistiques indisponibles : ${error.message}`;
     renderErrors();
   } finally {
-    $('main').className = 'st-main';
+    if (seq === state.loadSeq) {
+      $('main').className = 'st-main';
+      schedule();
+    }
   }
-  schedule();
 }
 
 // Soirée en cours : rafraîchie toutes les 15 s, sans clignotement.
