@@ -2210,6 +2210,38 @@ test('barre du haut : état KaraFun du pont, alerte impossible à manquer, recon
   assert.equal(warn.hidden, true);
 });
 
+// KaraFun fermé ou code changé après les relances rapides : la file n'essaie
+// plus seule. Le bar clique « Reconnecter » à l'ouverture, ou saisit le
+// nouveau code ; pendant les relances rapides, l'alerte reste celle d'avant.
+test('barre du haut : essais KaraFun arrêtés, alerte avec Reconnecter et Saisir le code', async () => {
+  const world = baseWorld();
+  const page = await openPage({ world });
+  const pill = page.$('kfPill');
+  const retrying = 'KaraFun fermé ou code changé : prochain essai à 17:40';
+  await page.update({ kf: { ...world.kf, ready: false, connected: false, unreachable: true,
+    connection: { phase: 'retry', level: 'error', label: retrying, since: Date.now(), attempt: 2, retryAt: Date.now() + 5000, alert: null } } });
+  assert.equal(pill.textContent, retrying);
+  assert.equal(page.in('staffAlerts', '.kf-alert span').textContent, `${retrying} : les titres ne partent plus.`, 'relances rapides : alerte inchangée');
+  assert.deepEqual(texts(page.all('staffAlerts', '.kf-alert button')), ['Reconnecter']);
+  await page.update({ kf: { ...world.kf, ready: false, connected: false, unreachable: true,
+    connection: { phase: 'stopped', level: 'error', label: 'KaraFun fermé ou code changé : essais arrêtés', since: Date.now(), attempt: 0,
+      retryAt: null, alert: null, canRename: false, nameConflict: null } } });
+  assert.equal(pill.textContent, 'KaraFun fermé ou code changé : essais arrêtés');
+  assert.equal(pill.className, 'pill bad');
+  assert.equal(page.all('staffAlerts', '.kf-alert').length, 1);
+  assert.equal(page.in('staffAlerts', '.kf-alert span').textContent,
+    'KaraFun fermé ou code changé : la file n’essaie plus seule, les titres ne partent plus. Une fois KaraFun ouvert (télécommande activée), clique sur Reconnecter ; si le code a changé, saisis le nouveau.');
+  assert.deepEqual(texts(page.all('staffAlerts', '.kf-alert button')), ['Reconnecter', 'Saisir le code']);
+  assert.equal(page.in('staffAlerts', '.kf-alert [data-dismiss-alert]'), null, 'cette alerte ne se ferme pas');
+  assert.ok(page.in('staffAlerts', '[data-alert-reconnect]').className.includes('primary'));
+  await page.click(page.in('staffAlerts', '[data-alert-reconnect]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'reconnect' });
+  assert.equal(page.toast().text, 'Reconnexion…');
+  await page.click(page.in('staffAlerts', '[data-alert-goto]'));
+  assert.equal(page.doc.body.dataset.tab, 'plus', 'Saisir le code ouvre les réglages KaraFun');
+  assert.equal(page.doc.activeElement, page.$('code'));
+});
+
 test('sur scène : photo, repère de la personne et titre KaraFun sans fiche', async () => {
   const world = baseWorld();
   world.stage = { ours: true, ids: ['alice'], queueId: 'q1', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }], title: 'Titre' };

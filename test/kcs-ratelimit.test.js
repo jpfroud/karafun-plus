@@ -2,10 +2,12 @@
 // Limite horaire de la page de découverte KaraFun (soirée du 2 octobre) :
 // KaraFun ne répond qu'aux 20 à 40 premières requêtes de chaque heure pleine
 // depuis une même adresse, puis refuse tout jusqu'à l'heure pleine suivante.
-// La file ne doit plus épuiser ce quota : budget horaire, cadence lente quand
-// KaraFun est fermé, URL KCS gardée en mémoire pour les reconnexions, refus
-// compris comme une limite, état clair pour le bar. Tout est simulé (faux
-// WebSocket, faux fetch, horloge factice) : aucun réseau, aucun vrai code.
+// La file ne doit plus épuiser ce quota : budget horaire, relances rapides
+// puis essais arrêtés quand KaraFun est fermé (le bar clique « Reconnecter »
+// à l'ouverture), cadence lente pour une panne du réseau ou du site, URL KCS
+// gardée en mémoire pour les reconnexions, refus compris comme une limite,
+// état clair pour le bar. Tout est simulé (faux WebSocket, faux fetch,
+// horloge factice) : aucun réseau, aucun vrai code.
 process.env.TZ = 'Europe/Paris';
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
@@ -45,6 +47,9 @@ const page = code => `<script>var Settings = ${JSON.stringify({ kcs_url: kcsUrl(
 const ok = html => ({ ok: true, status: 200, text: async () => html });
 // KaraFun fermé : la page répond, sans paramètres de télécommande.
 const CLOSED = ok('<html>Cette session est terminée</html>');
+// Panne qui n'est pas KaraFun fermé : réseau coupé, site KaraFun en panne.
+const OFFLINE = () => { throw new TypeError('fetch failed'); };
+const SITE_DOWN = () => ({ ok: false, status: 502, text: async () => '' });
 const refused = (headers = {}) => ({ ok: false, status: 429, headers: new Headers(headers), text: async () => '' });
 const codeOf = url => /\/(\d+)\/$/.exec(url)[1];
 const openPage = url => ok(page(codeOf(url)));
@@ -90,7 +95,17 @@ async function untilNextTry(t, bridge) {
   t.mock.timers.tick(wait);
   await flush();
 }
+// Avance d'essai en essai jusqu'à l'arrêt des essais (KaraFun fermé).
+async function untilStopped(t, bridge, max = 12) {
+  for (let i = 0; i < max; i++) {
+    await flush();
+    if (bridge.connectionState().phase === 'stopped') return;
+    await untilNextTry(t, bridge);
+  }
+  assert.fail(`essais toujours en cours (${bridge.connectionState().phase})`);
+}
 const hourOf = at => Math.floor(at / HOUR);
+const STOPPED = 'KaraFun fermé ou code changé : essais arrêtés';
 
 // Avance l'horloge jusqu'au prochain essai ou jusqu'à `end`, en confiant
 // chaque nouveau WebSocket à `onSocket`, et s'arrête dès que `done()` est vrai.
@@ -113,13 +128,223 @@ async function drive(t, bridge, env, { end = Infinity, onSocket = () => {}, done
 const rejectBeforeAuth = ws => { ws.open(); ws.serverClose(4403); };
 
 // ---------------------------------------------------------------------------
-// KaraFun fermé toute la journée
+// KaraFun fermé (bar fermé, PC de KaraFun éteint) : relances rapides, puis
+// plus aucun essai jusqu'au clic du bar
 // ---------------------------------------------------------------------------
 
-test('KaraFun fermé 24 h : au plus 12 pages par heure pleine dont 9 automatiques, 5 min d’écart en régime établi', async t => {
+test('KaraFun fermé toute la nuit depuis le démarrage : 1 + 5 pages en 4 min, puis essais arrêtés, plus aucune page', async t => {
   const start = Date.parse('2026-10-02T00:17:00Z');
   mockTime(t, start);
   const env = fakes(t, () => CLOSED);
+  const { bridge, lines } = bridgeFor(t);
+  bridge.random = seeded();
+  let changes = 0;
+  bridge.on('change', () => changes++);
+  assert.equal(bridge.connect(CODE), 'started');
+  await untilStopped(t, bridge);
+  assert.equal(env.calls.length, 6, 'le démarrage et 5 relances rapides');
+  assert.ok(env.calls.at(-1).at - start <= 5 * MIN, `relances rapides finies en ${(env.calls.at(-1).at - start) / 1000} s`);
+  const state = bridge.connectionState();
+  assert.equal(state.phase, 'stopped');
+  assert.equal(state.level, 'error');
+  assert.equal(state.label, STOPPED);
+  assert.equal(state.retryAt, null);
+  assert.equal(state.alert, null);
+  assert.equal(state.attempt, 0, 'essais recomptés depuis le prochain clic');
+  assert.deepEqual(state.discovery, { used: 6, limit: 12, hourEndsAt: (hourOf(start) + 1) * HOUR, limitedUntil: null });
+  assert.equal(bridge.retryTimer, null);
+  assert.equal(bridge.retryAt, null);
+  assert.ok(changes > 0, 'le bar est prévenu');
+  // Toute la nuit et la journée : plus aucune page.
+  for (let i = 0; i < 24; i++) { t.mock.timers.tick(HOUR); await flush(); }
+  assert.equal(env.calls.length, 6, 'plus aucune page lue');
+  assert.equal(bridge.connectionState().phase, 'stopped');
+  // Journal : une ligne pour la panne, une pour l'arrêt.
+  assert.equal(lines.length, 2, lines.join('\n'));
+  assert.match(lines[0], /\[unknown-code, HTTP 200, .*\] Page KaraFun : 1\/12 cette heure\. Nouvel essai dans 5 s \(essai 2\)\.$/);
+  assert.equal(lines[1], 'KaraFun : KaraFun fermé ou code changé. Plus d’essai automatique : clique sur « Reconnecter » une fois KaraFun ouvert. Page KaraFun : 6/12 cette heure.');
+  const stops = bridge.events.filter(e => e.name === 'essais-arretes');
+  assert.deepEqual(stops.map(e => e.data), [{ reason: 'KaraFun fermé ou code changé', pages: { used: 6, limit: 12 } }]);
+  assert.equal(bridge.events.filter(e => e.name === 'discovery-error').at(-1).data.nextAt, null, 'aucun essai prévu');
+});
+
+test('essais arrêtés : un clic relit la page ; toujours fermé, relances rapides puis arrêt ; KaraFun ouvert, connexion', async t => {
+  const start = Date.parse('2026-10-02T00:17:00Z');
+  mockTime(t, start);
+  let open = false;
+  const env = fakes(t, url => (open ? openPage(url) : CLOSED));
+  const { bridge, lines } = bridgeFor(t);
+  bridge.connect(CODE);
+  await untilStopped(t, bridge);
+  assert.equal(env.calls.length, 6);
+  // Le matin, KaraFun toujours fermé : un clic.
+  t.mock.timers.tick(10 * HOUR);
+  assert.equal(bridge.connect(CODE), 'started', 'un clic relit la page tout de suite');
+  await flush();
+  assert.equal(env.calls.length, 7);
+  assert.equal(bridge.connectionState().phase, 'retry');
+  assert.equal(bridge.retryAt - Date.now(), 5000, 'relances rapides de nouveau, depuis 5 s');
+  assert.match(bridge.connectionState().label, /^KaraFun fermé ou code changé : prochain essai à \d\d:\d\d$/);
+  await untilStopped(t, bridge);
+  assert.equal(env.calls.length, 12, 'le clic et 5 relances rapides');
+  t.mock.timers.tick(5 * HOUR);
+  await flush();
+  assert.equal(env.calls.length, 12, 'puis plus rien');
+  // Ouverture du bar : KaraFun ouvert, un clic connecte.
+  open = true;
+  assert.equal(bridge.connect(CODE), 'started');
+  await flush();
+  assert.equal(env.calls.length, 13);
+  t.mock.timers.tick(1000);
+  accept(env.sockets[0]);
+  const state = bridge.connectionState();
+  assert.equal(state.phase, 'ready');
+  assert.equal(state.attempt, 1, 'essais comptés depuis le clic');
+  assert.match(lines.at(-1), /^KaraFun : prêt, file et lecture reçues en 1 s \(essai 1, /, '« prêt en … » compté depuis le clic');
+});
+
+// DEMARRER.bat à 19:00, télécommande KaraFun activée seulement à 19:09:55 :
+// des clics trop tôt ne doivent pas vider les pages de l'heure.
+test('clics trop tôt : une seule série de relances rapides dans l’heure, le clic une fois KaraFun prêt connecte', async t => {
+  const start = Date.parse('2026-10-02T17:00:00Z');
+  mockTime(t, start);
+  const remoteAt = start + 9 * MIN + 55000;
+  const env = fakes(t, url => (Date.now() >= remoteAt ? openPage(url) : CLOSED));
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await drive(t, bridge, env, { end: start + MIN });
+  // Clic pendant la série (alerte rouge « prochain essai à … ») : il prend
+  // la place de la relance prévue (1 min), la série n'avance pas.
+  assert.equal(bridge.connect(CODE), 'started');
+  await flush();
+  assert.equal(bridge.connectionState().phase, 'retry');
+  assert.equal(bridge.retryAt - Date.now(), 60000);
+  await drive(t, bridge, env, { end: start + 6 * MIN });
+  assert.equal(bridge.connectionState().phase, 'stopped');
+  assert.equal(env.calls.length, 7, 'le démarrage, le clic et 5 relances rapides');
+  // Clic après l'arrêt, KaraFun toujours fermé : sa page seulement.
+  assert.equal(bridge.connect(CODE), 'started');
+  await flush();
+  assert.equal(bridge.connectionState().phase, 'stopped', 'pas de seconde série dans l’heure');
+  assert.equal(bridge.retryAt, null);
+  assert.equal(env.calls.length, 8);
+  t.mock.timers.tick(start + 10 * MIN - Date.now());
+  await flush();
+  assert.equal(env.calls.length, 8);
+  // Télécommande activée : le clic lit la page et connecte.
+  assert.equal(bridge.connect(CODE), 'started');
+  await flush();
+  accept(env.sockets[0]);
+  assert.equal(bridge.connectionState().phase, 'ready');
+  assert.equal(bridge.connectionState().discovery.used, 9, 'des pages restent aux clics du bar');
+});
+
+test('clic pendant la dernière attente des relances rapides, KaraFun prêt 20 s après : connexion sans second clic', async t => {
+  const start = Date.parse('2026-10-02T16:10:00Z');
+  mockTime(t, start);
+  let openAt = Infinity;
+  const env = fakes(t, url => (Date.now() >= openAt ? openPage(url) : CLOSED));
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  for (let i = 0; i < 4; i++) await untilNextTry(t, bridge);
+  assert.equal(bridge.retryAt - Date.now(), 120000, 'dernière attente : 2 min');
+  t.mock.timers.tick(30000);
+  openAt = Date.now() + 20000;
+  assert.equal(bridge.connect(CODE), 'started');
+  await flush();
+  assert.equal(env.calls.length, 6);
+  const state = bridge.connectionState();
+  assert.equal(state.phase, 'retry', 'le clic n’arrête pas les essais');
+  assert.match(state.label, /^KaraFun fermé ou code changé : prochain essai à \d\d:\d\d$/);
+  assert.equal(bridge.retryAt - Date.now(), 120000, 'la relance prévue est reprise');
+  await untilNextTry(t, bridge);
+  accept(env.sockets[0]);
+  assert.equal(bridge.connectionState().phase, 'ready');
+  assert.equal(env.calls.length, 7);
+});
+
+test('KaraFun relancé dans l’heure d’un arrêt des essais : KaraFun joint entre-temps, relances rapides de nouveau', async t => {
+  const start = Date.parse('2026-10-02T17:00:00Z');
+  mockTime(t, start);
+  let open = false;
+  const env = fakes(t, url => (open ? openPage(url) : CLOSED));
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await untilStopped(t, bridge);
+  open = true;
+  t.mock.timers.tick(start + 5 * MIN - Date.now());
+  assert.equal(bridge.connect(CODE), 'started');
+  await flush();
+  accept(env.sockets[0]);
+  assert.equal(bridge.connectionState().phase, 'ready');
+  // 19:20 : KaraFun redémarre ; l'URL gardée est refusée, la page dit
+  // « fermé » le temps que KaraFun se relance, puis donne une URL neuve.
+  t.mock.timers.tick(start + 20 * MIN - Date.now());
+  open = false;
+  setTimeout(() => { open = true; }, 40000);
+  env.sockets[0].serverClose(1006);
+  await drive(t, bridge, env, { end: start + 30 * MIN, onSocket: ws => (ws === env.sockets[1] ? rejectBeforeAuth(ws) : accept(ws)),
+    done: () => ['ready', 'stopped'].includes(bridge.connectionState().phase) });
+  assert.equal(bridge.connectionState().phase, 'ready', 'reconnectée sans clic');
+  assert.ok(Date.now() - (start + 20 * MIN) <= 2 * MIN);
+});
+
+test('KaraFun fermé en milieu d’heure : 5 s, 15 s, 30 s, 1 min, 2 min, puis essais arrêtés', async t => {
+  const start = Date.parse('2026-10-02T15:30:00Z');
+  mockTime(t, start);
+  const env = fakes(t, () => CLOSED);
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  const delays = [];
+  for (let i = 0; i < 10; i++) {
+    await flush();
+    if (bridge.retryAt == null) break;
+    delays.push(bridge.retryAt - Date.now());
+    t.mock.timers.tick(bridge.retryAt - Date.now());
+  }
+  assert.deepEqual(delays, [5000, 15000, 30000, 60000, 120000]);
+  assert.equal(bridge.connectionState().phase, 'stopped');
+  assert.equal(env.calls.length, 6);
+});
+
+test('KaraFun fermé à l’heure pile : les 5 relances rapides aussi, puis essais arrêtés', async t => {
+  const start = Date.parse('2026-10-02T15:00:00Z');
+  mockTime(t, start);
+  const env = fakes(t, () => CLOSED);
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await untilStopped(t, bridge);
+  assert.deepEqual(env.calls.slice(1).map((call, i) => call.at - env.calls[i].at), [5000, 15000, 30000, 60000, 120000]);
+  t.mock.timers.tick(HOUR);
+  await flush();
+  assert.equal(env.calls.length, 6, 'aucune page à l’heure pleine suivante');
+});
+
+test('KaraFun fermé, essais automatiques de l’heure presque épuisés : relances rapides tant qu’il en reste, puis arrêt', async t => {
+  const start = Date.parse('2026-10-02T15:30:00Z');
+  mockTime(t, start);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcs-arret-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const budgetFile = path.join(dir, 'karafun-pages.json');
+  // Programme relancé : 7 essais automatiques déjà faits cette heure.
+  fs.writeFileSync(budgetFile, JSON.stringify({ hour: hourOf(start), used: 8, auto: 7 }));
+  const env = fakes(t, () => CLOSED);
+  const { bridge } = bridgeFor(t, { budgetFile });
+  bridge.connect(CODE);
+  await untilStopped(t, bridge);
+  assert.equal(env.calls.length, 3, 'le démarrage et les 2 essais automatiques restants');
+  assert.equal(bridge.connectionState().discovery.used, 11);
+  t.mock.timers.tick(2 * HOUR);
+  await flush();
+  assert.equal(env.calls.length, 3, 'pas d’essai à l’heure pleine suivante');
+});
+
+// Les autres pannes (réseau coupé, site KaraFun en panne) ne sont pas
+// KaraFun fermé : la file réessaie seule, sans fin, selon le budget.
+test('réseau coupé 24 h : jamais arrêté, au plus 12 pages par heure pleine dont 9 automatiques, 5 min d’écart en régime établi', async t => {
+  const start = Date.parse('2026-10-02T00:17:00Z');
+  mockTime(t, start);
+  const env = fakes(t, OFFLINE);
   const { bridge, lines } = bridgeFor(t);
   bridge.random = seeded();
   assert.equal(bridge.connect(CODE), 'started');
@@ -135,23 +360,38 @@ test('KaraFun fermé 24 h : au plus 12 pages par heure pleine dont 9 automatique
   const steady = env.calls.filter(call => call.at >= (hourOf(start) + 2) * HOUR).map(call => call.at);
   const gaps = steady.slice(1).map((at, i) => at - steady[i]);
   assert.ok(Math.min(...gaps) >= 5 * MIN, `écart minimal ${Math.min(...gaps) / 1000} s`);
-  assert.ok(Math.max(...gaps) <= 7.5 * MIN, `ouverture repérée en ${Math.max(...gaps) / 1000} s au plus`);
+  assert.ok(Math.max(...gaps) <= 7.5 * MIN, `retour du réseau repéré en ${Math.max(...gaps) / 1000} s au plus`);
   assert.ok(env.calls.length >= 24 * 8, 'la file continue d’essayer toute la nuit');
   const state = bridge.connectionState();
   assert.equal(state.phase, 'retry');
   assert.equal(state.level, 'error');
-  assert.match(state.label, /^KaraFun fermé ou code changé : prochain essai à \d\d:\d\d$/);
+  assert.match(state.label, /^Réseau coupé : prochain essai à \d\d:\d\d$/);
   assert.equal(state.discovery.limit, 12);
   assert.ok(state.discovery.used <= 12);
   assert.equal(state.discovery.hourEndsAt, (hourOf(Date.now()) + 1) * HOUR);
   assert.equal(state.discovery.limitedUntil, null);
+  assert.equal(bridge.events.some(e => e.name === 'essais-arretes'), false);
   assert.ok(lines.length <= 30, `journal du serveur sobre : ${lines.length} lignes en 24 h`);
 });
 
-test('après un échec de découverte en milieu d’heure : 5 s, 15 s, 30 s, 1 min, 2 min, puis le budget réparti sur l’heure', async t => {
+for (const [name, respond] of [['délai dépassé', () => { throw Object.assign(new Error('timeout'), { name: 'TimeoutError' }); }],
+  ['site KaraFun en panne (HTTP 502)', SITE_DOWN], ['page inattendue', () => ok('<script>var Settings = {"kcs_url": "wss://x"')]]) {
+  test(`${name} pendant 3 h : la file réessaie seule, sans s’arrêter`, async t => {
+    const start = Date.parse('2026-10-02T15:30:00Z');
+    mockTime(t, start);
+    const env = fakes(t, respond);
+    const { bridge } = bridgeFor(t);
+    bridge.connect(CODE);
+    while (Date.now() < start + 3 * HOUR) await untilNextTry(t, bridge);
+    assert.equal(bridge.connectionState().phase, 'retry');
+    assert.ok(env.calls.filter(call => hourOf(call.at) === hourOf(start) + 2).length >= 8, 'des pages toutes les heures');
+  });
+}
+
+test('après un échec de découverte en milieu d’heure (site en panne) : 5 s, 15 s, 30 s, 1 min, 2 min, puis le budget réparti sur l’heure', async t => {
   const start = Date.parse('2026-10-02T15:30:00Z');
   mockTime(t, start);
-  fakes(t, () => CLOSED);
+  fakes(t, SITE_DOWN);
   const { bridge } = bridgeFor(t);
   bridge.connect(CODE);
   const delays = [];
@@ -168,13 +408,13 @@ test('après un échec de découverte en milieu d’heure : 5 s, 15 s, 30 s, 1 m
   assert.equal(bridge.connectionState().discovery.used, 1, 'nouvelle heure pleine : budget neuf');
 });
 
-test('après un échec de découverte à l’heure pile : une seule relance rapide, puis 7 min d’écart au plus', async t => {
+test('après un échec de découverte à l’heure pile (réseau coupé) : une seule relance rapide, puis 7 min d’écart au plus', async t => {
   // 5 s, 15 s, 30 s, 1 min et 2 min videraient 5 des 9 essais de l'heure en
   // 4 min : il n'en resterait que 4 pour 56 min (14 min d'écart). Seules les
   // relances qui laissent assez d'essais pour la fin de l'heure sont prises.
   const start = Date.parse('2026-10-02T15:00:00Z');
   mockTime(t, start);
-  const env = fakes(t, () => CLOSED);
+  const env = fakes(t, OFFLINE);
   const { bridge } = bridgeFor(t);
   bridge.connect(CODE);
   const delays = [];
@@ -193,6 +433,8 @@ test('après un échec de découverte à l’heure pile : une seule relance rapi
 // ---------------------------------------------------------------------------
 
 const LIMIT_ALERT = until => `KaraFun limite les essais depuis cette connexion jusqu’à ${until} : inutile de cliquer, la file réessaiera seule. Un téléphone sur un autre réseau (4G/5G) n’est pas concerné.`;
+// Heure du bar (HH:MM) à la minute suivante, comme l'annonce le pont.
+const clockOf = at => new Date(Math.ceil(at / MIN) * MIN).toTimeString().slice(0, 5);
 
 test('page refusée (429) : plus aucune page avant l’heure pleine, clic refusé sans requête, alerte du bar', async t => {
   // 19:46:10 au bar (UTC+2).
@@ -237,6 +479,45 @@ test('page refusée (429) : plus aucune page avant l’heure pleine, clic refus�
   assert.equal(failure.nextAt, new Date(hour + 32500).toISOString());
   assert.equal(failure.limitedUntil, new Date(hour).toISOString());
   assert.ok(lines.some(line => line.includes('[refused, HTTP 429')), 'limite au journal du serveur');
+});
+
+test('KaraFun limite les essais toute la nuit (429) : un essai à chaque heure pleine, jamais arrêté', async t => {
+  const start = Date.parse('2026-10-01T22:10:00Z');
+  mockTime(t, start);
+  const env = fakes(t, () => refused());
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  while (Date.now() < start + 6 * HOUR) await untilNextTry(t, bridge);
+  assert.deepEqual(env.calls.slice(1).map(call => new Date(call.at).toISOString().slice(11, 19)),
+    ['23:00:32', '00:00:32', '01:00:32', '02:00:32', '03:00:32', '04:00:32', '05:00:32'], 'une page juste après chaque heure pleine');
+  assert.equal(bridge.connectionState().phase, 'retry');
+  assert.match(bridge.connectionState().label, /^KaraFun limite les essais jusqu’à \d\d:00$/);
+  assert.equal(bridge.events.some(e => e.name === 'essais-arretes'), false);
+});
+
+test('essais arrêtés puis limite de KaraFun : le clic ne relit pas la page, l’essai d’après la limite est prévu', async t => {
+  const start = Date.parse('2026-10-02T17:20:00Z');
+  mockTime(t, start);
+  let answer = () => CLOSED;
+  const env = fakes(t, url => answer(url));
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await untilStopped(t, bridge);
+  // Défense : limite de KaraFun en cours pendant que les essais sont arrêtés.
+  bridge._setLimit('600', Date.now());
+  const until = Date.now() + 10 * MIN;
+  assert.deepEqual(bridge.connect(CODE), { ok: false, reason: 'limited', message: LIMIT_ALERT(clockOf(until)) });
+  assert.equal(env.calls.length, 6, 'pas de page en pleine limite');
+  const state = bridge.connectionState();
+  assert.equal(state.phase, 'retry');
+  assert.equal(state.retryAt, until, 'essai automatique à la fin de la limite');
+  assert.equal(state.label, `KaraFun limite les essais jusqu’à ${clockOf(until)}`);
+  answer = openPage;
+  t.mock.timers.tick(until - Date.now());
+  await flush();
+  assert.equal(env.calls.length, 7);
+  accept(env.sockets[0]);
+  assert.equal(bridge.connectionState().phase, 'ready');
 });
 
 test('limite : un clic après l’heure pleine réessaie tout de suite ; un nouveau code aussi, avant', async t => {
@@ -313,7 +594,7 @@ for (const [name, respond] of [
 // ---------------------------------------------------------------------------
 
 for (const opensAt of ['2026-10-02T17:45:00Z', '2026-10-02T17:59:30Z', '2026-10-02T18:23:41Z', '2026-10-02T19:08:12Z']) {
-  test(`KaraFun ouvert à ${opensAt.slice(11, 19)} UTC après une nuit fermé : connexion automatique en moins de 7 min 30`, async t => {
+  test(`KaraFun ouvert à ${opensAt.slice(11, 19)} UTC après une nuit fermé : aucune page de la nuit, un clic connecte tout de suite`, async t => {
     const start = Date.parse('2026-10-01T22:03:00Z');
     mockTime(t, start);
     const open = Date.parse(opensAt);
@@ -321,9 +602,15 @@ for (const opensAt of ['2026-10-02T17:45:00Z', '2026-10-02T17:59:30Z', '2026-10-
     const { bridge } = bridgeFor(t);
     bridge.random = seeded(open / 1000 % 97 + 1);
     bridge.connect(CODE);
-    while (!env.sockets.length) await untilNextTry(t, bridge);
-    const took = Date.now() - open;
-    assert.ok(took >= 0 && took <= 7.5 * MIN, `connexion ${took / 1000} s après l’ouverture`);
+    await untilStopped(t, bridge);
+    t.mock.timers.tick(open - Date.now());
+    await flush();
+    assert.equal(env.calls.length, 6, 'rien entre la fin des relances rapides et l’ouverture');
+    assert.equal(env.sockets.length, 0);
+    t.mock.timers.tick(2 * MIN);
+    assert.equal(bridge.connect(CODE), 'started', 'le bar clique « Reconnecter »');
+    await flush();
+    assert.equal(env.calls.length, 7);
     accept(env.sockets[0]);
     assert.equal(bridge.connectionState().phase, 'ready');
   });
@@ -333,7 +620,7 @@ test('KaraFun ouvert : un clic connecte tout de suite tant qu’il reste du budg
   const start = Date.parse('2026-10-02T16:10:00Z');
   mockTime(t, start);
   let open = false;
-  const env = fakes(t, url => (open ? openPage(url) : CLOSED));
+  const env = fakes(t, url => (open ? openPage(url) : SITE_DOWN()));
   const { bridge } = bridgeFor(t);
   bridge.connect(CODE);
   // Essais automatiques jusqu'à épuiser les 9 de l'heure.
@@ -349,7 +636,7 @@ test('KaraFun ouvert : un clic connecte tout de suite tant qu’il reste du budg
   assert.equal(bridge.connectionState().phase, 'ready');
 });
 
-test('budget total épuisé : le clic répond sans refaire la page et donne l’heure du prochain essai', async t => {
+test('budget total épuisé, essais arrêtés : le clic répond sans refaire la page et donne l’heure du prochain essai', async t => {
   const start = Date.parse('2026-10-02T17:20:00Z');
   mockTime(t, start);
   const env = fakes(t, () => CLOSED);
@@ -361,13 +648,17 @@ test('budget total épuisé : le clic répond sans refaire la page et donne l’
     await flush();
   }
   assert.equal(env.calls.length, 12);
+  assert.equal(bridge.connectionState().phase, 'stopped', 'KaraFun fermé et plus d’essai permis cette heure');
+  assert.equal(bridge.retryAt, null);
   const next = Date.parse('2026-10-02T18:00:32.500Z');
-  assert.equal(bridge.retryAt, next);
   const answer = bridge.connect(CODE);
   assert.deepEqual(answer, { ok: false, reason: 'budget',
     message: 'Trop d’essais auprès de KaraFun cette heure-ci : prochain essai automatique à 20:00.' });
   assert.equal(env.calls.length, 12);
-  assert.equal(bridge.connectionState().label, 'KaraFun fermé ou code changé : prochain essai à 20:00');
+  assert.equal(bridge.retryAt, next, 'le clic du bar demande l’essai de l’heure pleine');
+  assert.equal(bridge.connectionState().label, 'Trop d’essais auprès de KaraFun cette heure-ci : prochain essai à 20:00');
+  assert.equal(bridge.connect(CODE).reason, 'budget', 'un autre clic ne change rien');
+  assert.equal(bridge.retryAt, next);
   // Nouveau code sans budget : il est pris, l'essai attend l'heure pleine.
   assert.equal(bridge.connect(NEW_CODE).reason, 'budget');
   assert.equal(bridge.code, NEW_CODE);
@@ -436,6 +727,31 @@ test('AppLeftEvent sans fin (URL peut-être périmée) : page relue une fois au 
   assert.equal(bridge.connectionState().phase, 'ready');
 });
 
+test('AppLeftEvent sans fin puis page « KaraFun fermé » : relances rapides, puis essais arrêtés', async t => {
+  mockTime(t, Date.parse('2026-10-02T18:00:00Z'));
+  let open = true;
+  const env = fakes(t, url => (open ? openPage(url) : CLOSED));
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await flush();
+  // Fin de soirée : KaraFun quitté, le serveur KCS répond encore puis AppLeftEvent.
+  open = false;
+  accept(env.sockets[0], { appLeft: true });
+  for (let i = 1; i < 20; i++) {
+    t.mock.timers.tick(bridge.retryAt - Date.now());
+    await flush();
+    accept(env.sockets.at(-1), { appLeft: true });
+  }
+  assert.equal(env.calls.length, 1, '20 reconnexions par l’URL gardée, sans page');
+  await untilStopped(t, bridge);
+  assert.equal(env.calls.length, 7, 'une page relue, puis 5 relances rapides');
+  assert.equal(bridge.connectionState().label, STOPPED);
+  t.mock.timers.tick(12 * HOUR);
+  await flush();
+  assert.equal(env.calls.length, 7, 'plus aucune page de la nuit');
+  assert.equal(env.sockets.length, 20, 'ni WebSocket');
+});
+
 test('URL gardée refusée avant authentification (4403) : une seule nouvelle découverte', async t => {
   mockTime(t, Date.parse('2026-10-02T18:00:00Z'));
   const env = fakes(t);
@@ -460,6 +776,33 @@ test('URL gardée refusée avant authentification (4403) : une seule nouvelle d�
   assert.equal(env.calls.length, 2, 'pas d’autre page');
   assert.ok(bridge.events.some(e => e.name === 'url-kcs-oubliee' && e.data.code === 4403));
   assert.equal(lines.join('\n').includes('jeton-factice'), false);
+});
+
+test('URL gardée refusée (4403) en pleine soirée, KaraFun toujours fermé : une page, relances rapides, puis essais arrêtés', async t => {
+  mockTime(t, Date.parse('2026-10-02T18:10:00Z'));
+  let open = true;
+  const env = fakes(t, url => (open ? openPage(url) : CLOSED));
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await flush();
+  accept(env.sockets[0]);
+  // KaraFun quitté : coupure, puis l'URL gardée est refusée avant authentification.
+  open = false;
+  env.sockets[0].serverClose(1006);
+  t.mock.timers.tick(3000);
+  await flush();
+  rejectBeforeAuth(env.sockets[1]);
+  assert.match(bridge.connectionState().label, /^KaraFun fermé ou code changé : prochain essai à \d\d:\d\d$/);
+  t.mock.timers.tick(0);
+  await flush();
+  assert.equal(env.calls.length, 2, 'URL oubliée : la page est relue une fois, tout de suite');
+  await untilStopped(t, bridge);
+  assert.equal(env.calls.length, 7, 'puis les 5 relances rapides seulement');
+  assert.equal(bridge.connectionState().label, STOPPED);
+  t.mock.timers.tick(6 * HOUR);
+  await flush();
+  assert.equal(env.calls.length, 7);
+  assert.equal(env.sockets.length, 2);
 });
 
 // Erreur, coupure 1006 ou délai dépassé avant l'authentification : le réseau
@@ -499,23 +842,48 @@ test('URL gardée injoignable (erreur puis 1006) ou délai dépassé : gardée, 
   assert.equal(bridge.events.some(e => e.name === 'url-kcs-oubliee'), false);
 });
 
-test('URL toute neuve refusée avant authentification : nouvelles pages espacées, jamais en boucle', async t => {
+test('essais arrêtés pendant un conflit de nom : pas d’alerte de conflit, KaraFun est absent', async t => {
+  mockTime(t, Date.parse('2026-10-02T18:10:00Z'));
+  let open = true;
+  const env = fakes(t, url => (open ? openPage(url) : CLOSED));
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await flush();
+  env.sockets[0].open();
+  env.sockets[0].receive({ type: 'core.AuthenticatedEvent', payload: {} });
+  env.sockets[0].receive({ type: 'Error', payload: { type: 4, message: 'Username is already used' } });
+  assert.match(bridge.connectionState().alert, /garde encore l’ancienne connexion/);
+  open = false;
+  env.sockets[0].serverClose(1006);
+  t.mock.timers.tick(3000);
+  await flush();
+  rejectBeforeAuth(env.sockets[1]);
+  await untilStopped(t, bridge);
+  const state = bridge.connectionState();
+  assert.equal(state.label, STOPPED);
+  assert.notEqual(state.nameConflict, null);
+  assert.equal(state.alert, null);
+});
+
+test('URL toute neuve refusée avant authentification : relances rapides de la page, puis essais arrêtés, jamais en boucle', async t => {
   const start = Date.parse('2026-10-02T18:30:00Z');
   mockTime(t, start);
   const env = fakes(t);
   const { bridge } = bridgeFor(t);
   bridge.connect(CODE);
   const at = [];
-  while (Date.now() < start + 29 * MIN) {
-    await flush();
-    const ws = env.sockets.at(-1);
-    if (ws && ws.readyState === FakeWebSocket.CONNECTING) { ws.open(); ws.serverClose(4403); at.push(Date.now()); }
-    await untilNextTry(t, bridge);
-  }
-  assert.deepEqual(at.slice(1, 6).map((time, i) => time - at[i]), [5000, 15000, 30000, 60000, 120000]);
-  assert.ok(env.calls.filter(call => hourOf(call.at) === hourOf(start)).length <= 10, '1 clic et 9 essais automatiques au plus');
-  await drive(t, bridge, env, { onSocket: rejectBeforeAuth, done: () => bridge.connectionState().phase === 'retry' });
-  assert.match(bridge.connectionState().label, /^KaraFun fermé ou code changé : prochain essai à \d\d:\d\d$/);
+  await drive(t, bridge, env, { end: start + HOUR, onSocket: ws => { at.push(Date.now()); rejectBeforeAuth(ws); },
+    done: () => bridge.connectionState().phase === 'stopped' });
+  assert.deepEqual(at.slice(1).map((time, i) => time - at[i]), [5000, 15000, 30000, 60000, 120000]);
+  assert.equal(env.calls.length, 6, 'le clic et 5 relances rapides');
+  const state = bridge.connectionState();
+  assert.equal(state.phase, 'stopped');
+  assert.equal(state.label, STOPPED);
+  assert.equal(bridge.retryAt, null);
+  t.mock.timers.tick(12 * HOUR);
+  await flush();
+  assert.equal(env.calls.length, 6, 'plus aucune page');
+  assert.equal(env.sockets.length, 6, 'ni WebSocket');
 });
 
 test('URL gardée mais WebSocket indisponible : URL oubliée, panne signalée, page relue 5 s plus tard', async t => {
@@ -586,12 +954,14 @@ test('journal et état : jamais le code ni l’URL KCS, une ligne par panne iden
   const env = fakes(t, url => answer(url));
   const { bridge, lines } = bridgeFor(t, { logDir });
   bridge.connect(CODE);
-  for (let i = 0; i < 8; i++) await untilNextTry(t, bridge);
+  await untilStopped(t, bridge);
   const closedLines = lines.filter(line => line.includes('[unknown-code'));
   assert.equal(closedLines.length, 1, 'KaraFun fermé : une seule ligne, quel que soit le site essayé');
   assert.match(closedLines[0], /Page KaraFun : 1\/12 cette heure\. Nouvel essai dans 5 s/);
+  assert.equal(lines.filter(line => line.includes('Plus d’essai automatique')).length, 1, 'une ligne pour l’arrêt des essais');
   answer = () => refused();
-  await untilNextTry(t, bridge);
+  assert.equal(bridge.connect(CODE), 'started');
+  await flush();
   answer = openPage;
   await untilNextTry(t, bridge);
   accept(env.sockets.at(-1));
@@ -607,7 +977,8 @@ test('journal et état : jamais le code ni l’URL KCS, une ligne par panne iden
   await flush();
   accept(env.sockets.at(-1));
   const errors = bridge.events.filter(e => e.name === 'discovery-error');
-  assert.ok(errors.length >= 9);
+  assert.ok(errors.length >= 7);
+  assert.ok(bridge.events.some(e => e.name === 'essais-arretes'));
   for (const { data } of errors) {
     for (const key of ['kind', 'status', 'host', 'pages', 'nextAt']) assert.ok(key in data, `discovery-error.${key}`);
   }
@@ -627,40 +998,65 @@ test('journal et état : jamais le code ni l’URL KCS, une ligne par panne iden
 // bascule d'heure, Retry-After aberrant, WebSocket impossible, faute de frappe
 // ---------------------------------------------------------------------------
 
-for (const [startMin, afterMin] of [[0, 0.5], [0, 4], [0, 13], [2, 4], [2, 18], [10, 4], [10, 30], [45, 13], [55, 3]]) {
-  test(`démarrage à H+${startMin} min, KaraFun ouvert ${afterMin} min après : connexion en moins de 7 min 30`, async t => {
+// DEMARRER.bat lance KaraFun et la file ensemble : la première page est lue
+// avant que KaraFun soit prêt. Les relances rapides (environ 4 min) suffisent,
+// sans clic, à toute heure.
+for (const [startMin, afterSec] of [[0, 3], [0, 40], [2, 100], [10, 180], [45, 40], [55, 180], [59.5, 60]]) {
+  test(`démarrage à H+${startMin} min, KaraFun prêt ${afterSec} s après : connexion automatique pendant les relances rapides`, async t => {
     const start = Date.parse('2026-10-02T16:00:00Z') + startMin * MIN;
     mockTime(t, start);
-    const open = start + afterMin * MIN;
+    const open = start + afterSec * 1000;
     const env = fakes(t, url => (Date.now() >= open ? openPage(url) : CLOSED));
     const { bridge } = bridgeFor(t);
-    bridge.random = seeded(startMin * 31 + afterMin * 7 + 3);
+    bridge.random = seeded(startMin * 31 + afterSec * 7 + 3);
     bridge.connect(CODE);
-    await drive(t, bridge, env, { done: () => env.sockets.length > 0 });
-    const took = Date.now() - open;
-    assert.ok(took >= 0 && took <= 7.5 * MIN, `connexion ${took / 1000} s après l’ouverture`);
-    for (const hour of new Set(env.calls.map(call => hourOf(call.at)))) {
-      assert.ok(env.calls.filter(call => hourOf(call.at) === hour).length <= 12);
-    }
+    await drive(t, bridge, env, { end: start + HOUR, onSocket: accept,
+      done: () => ['ready', 'stopped'].includes(bridge.connectionState().phase) });
+    assert.equal(bridge.connectionState().phase, 'ready', 'connectée sans clic');
+    const took = env.calls.at(-1).at - open;
+    assert.ok(took >= 0 && took <= 2.5 * MIN, `connexion ${took / 1000} s après l’ouverture`);
+    assert.ok(env.calls.length <= 6);
   });
 }
 
-test('nouveau code saisi pendant que KaraFun est fermé, ouverture 5 min plus tard : connexion en moins de 7 min 30', async t => {
-  // 19:00 au bar : la file tourne avec l'ancien code, KaraFun fermé.
-  const start = Date.parse('2026-10-02T17:00:00Z');
+test('démarrage sans Internet pendant 2 min 30 (box qui redémarre), puis KaraFun prêt 40 s après : la série repart de 5 s, connexion sans clic', async t => {
+  const start = Date.parse('2026-10-02T17:20:00Z');
   mockTime(t, start);
-  const open = Date.parse('2026-10-02T17:25:00Z');
+  const online = start + 150000;
+  let closedAt = null;
+  const env = fakes(t, url => {
+    if (Date.now() < online) return OFFLINE();
+    closedAt ??= Date.now();
+    return Date.now() >= closedAt + 40000 ? openPage(url) : CLOSED;
+  });
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await drive(t, bridge, env, { end: start + HOUR, onSocket: accept,
+    done: () => ['ready', 'stopped'].includes(bridge.connectionState().phase) });
+  assert.equal(bridge.connectionState().phase, 'ready', 'connectée sans clic');
+  assert.equal(env.calls.filter(call => call.at >= closedAt).length, 4, '« fermé », puis 5 s, 15 s, 30 s');
+});
+
+test('nouveau code saisi pendant que KaraFun est fermé : relances rapides pour ce code, connexion sans clic à l’ouverture', async t => {
+  // 18:40 au bar : la file tourne avec l'ancien code, KaraFun fermé.
+  const start = Date.parse('2026-10-02T16:40:00Z');
+  mockTime(t, start);
+  const open = Date.parse('2026-10-02T17:22:00Z');
   const env = fakes(t, url => (Date.now() >= open && codeOf(url) === NEW_CODE ? openPage(url) : CLOSED));
   const { bridge } = bridgeFor(t);
   bridge.connect(CODE);
   await drive(t, bridge, env, { end: Date.parse('2026-10-02T17:20:00Z') });
-  assert.equal(bridge.connect(NEW_CODE), 'started');
-  await drive(t, bridge, env, { done: () => env.sockets.length > 0 });
+  assert.equal(bridge.connectionState().phase, 'stopped', 'ancien code : essais arrêtés');
+  assert.equal(env.calls.length, 6);
+  assert.equal(bridge.connect(NEW_CODE), 'started', 'un nouveau code relit la page tout de suite');
+  await drive(t, bridge, env, { end: Date.parse('2026-10-02T17:40:00Z'), done: () => env.sockets.length > 0 });
+  assert.equal(env.sockets.length, 1, 'KaraFun ouvert 2 min après : connexion pendant les relances rapides');
   const took = Date.now() - open;
-  assert.ok(took >= 0 && took <= 7.5 * MIN, `connexion ${took / 1000} s après l’ouverture`);
+  assert.ok(took >= 0 && took <= 2.5 * MIN, `connexion ${took / 1000} s après l’ouverture`);
+  assert.ok(env.calls.slice(6).every(call => codeOf(call.url) === NEW_CODE));
 });
 
-test('KaraFun fermé comme le 2 octobre (URL KCS puis fermeture 4403) : « KaraFun fermé ou code changé », 9 pages automatiques par heure', async t => {
+test('KaraFun fermé comme le 2 octobre (URL KCS puis fermeture 4403) : essais arrêtés pour la nuit, un clic à l’ouverture connecte', async t => {
   const start = Date.parse('2026-10-01T22:00:01Z');
   mockTime(t, start);
   const open = Date.parse('2026-10-02T17:47:13Z');
@@ -668,20 +1064,23 @@ test('KaraFun fermé comme le 2 octobre (URL KCS puis fermeture 4403) : « KaraF
   const { bridge, lines } = bridgeFor(t);
   bridge.random = seeded(11);
   bridge.connect(CODE);
-  await drive(t, bridge, env, { end: start + 4 * HOUR, onSocket: rejectBeforeAuth });
+  await drive(t, bridge, env, { end: start + HOUR, onSocket: rejectBeforeAuth,
+    done: () => bridge.connectionState().phase === 'stopped' });
   const state = bridge.connectionState();
-  assert.equal(state.phase, 'retry');
+  assert.equal(state.phase, 'stopped');
   assert.equal(state.level, 'error');
-  assert.match(state.label, /^KaraFun fermé ou code changé : prochain essai à \d\d:\d\d$/);
+  assert.equal(state.label, STOPPED);
   assert.equal(state.alert, null);
-  await drive(t, bridge, env, { onSocket: ws => (Date.now() >= open ? accept(ws) : rejectBeforeAuth(ws)),
-    done: () => bridge.connectionState().phase === 'ready' });
-  assert.ok(Date.now() - open <= 7.5 * MIN, `prête ${(Date.now() - open) / 1000} s après l’ouverture`);
-  const perHour = new Map();
-  for (const call of env.calls) perHour.set(hourOf(call.at), (perHour.get(hourOf(call.at)) || 0) + 1);
-  for (const [hour, count] of perHour) assert.ok(count - (hour === hourOf(start) ? 1 : 0) <= 9, `heure ${hour} : ${count} pages`);
-  // Une ligne d'ouverture et une ligne de panne toutes les 10 relances.
-  assert.ok(lines.length <= 45, `journal du serveur sobre : ${lines.length} lignes en ${Math.round((Date.now() - start) / HOUR)} h`);
+  assert.equal(env.calls.length, 6);
+  t.mock.timers.tick(open + 3 * MIN - Date.now());
+  await flush();
+  assert.equal(env.calls.length, 6, 'plus aucune page de la nuit');
+  assert.equal(bridge.connect(CODE), 'started', 'le bar clique « Reconnecter » à l’ouverture');
+  await drive(t, bridge, env, { end: Date.now() + MIN, onSocket: accept, done: () => bridge.connectionState().phase === 'ready' });
+  assert.equal(bridge.connectionState().phase, 'ready');
+  assert.equal(env.calls.length, 7);
+  // La panne, l'arrêt des essais, puis la connexion du clic.
+  assert.ok(lines.length <= 8, `journal du serveur sobre : ${lines.length} lignes en ${Math.round((Date.now() - start) / HOUR)} h`);
 });
 
 test('coupure du Wi-Fi de 90 s, 5 min puis 25 min : URL gardée, prête moins de 30 s après le retour du réseau', async t => {

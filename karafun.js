@@ -155,13 +155,24 @@ const APP_LEFT_REDISCOVER = 20;
 const HOUR_MS = 3600000;
 const PAGE_LIMIT = 12;
 const PAGE_AUTO_LIMIT = 9;
-// Après un échec de découverte : 5 s, 15 s, 30 s, 1 min, 2 min, puis le reste
-// du budget automatique réparti jusqu'à la fin de l'heure, 5 min au moins.
-// KaraFun fermé toute la nuit : 9 pages par heure, une toutes les 6 à 7 min.
-// Une relance rapide n'est prise que si les essais automatiques restants
-// couvrent encore la fin de l'heure avec 7 min d'écart au plus : KaraFun qui
-// s'ouvre est repéré en 7 min 30 au plus, même juste après un démarrage, un
-// nouveau code ou une coupure (sinon les relances rapides vident le budget).
+// Après un échec de découverte (réseau coupé, site en panne, page inattendue) :
+// 5 s, 15 s, 30 s, 1 min, 2 min, puis le reste du budget automatique réparti
+// jusqu'à la fin de l'heure, 5 min au moins : une page toutes les 6 à 7 min
+// si la panne dure. Une relance rapide n'est prise que si les essais
+// automatiques restants couvrent encore la fin de l'heure avec 7 min d'écart
+// au plus : le retour est repéré en 7 min 30 au plus, même juste après un
+// démarrage, un nouveau code ou une coupure (sinon les relances rapides
+// vident le budget).
+// KaraFun fermé ou code changé (page sans télécommande, URL toute neuve
+// refusée) : les seules relances rapides, environ 4 min en tout, tant qu'un
+// essai automatique est permis tout de suite dans l'heure. Elles couvrent
+// KaraFun lancé avec la file (DEMARRER.bat) et prêt un peu après, même après
+// une autre panne (la série repart alors de 5 s). Ensuite, plus aucun essai :
+// bar fermé, PC de KaraFun éteint, la page n'est plus lue de la nuit ; à
+// l'ouverture, « Reconnecter » la relit tout de suite. Une seule série par
+// heure pleine tant que KaraFun n'a pas été joint : les clics suivants ne
+// lisent que leur page et gardent ainsi le budget de l'heure. Un clic
+// pendant la série prend la place de la relance prévue sans l'avancer.
 const DISCOVERY_STEPS_MS = [5000, 15000, 30000, 60000, 120000];
 const DISCOVERY_SPREAD_MIN_MS = 300000;
 const DISCOVERY_COVER_MS = 420000;
@@ -334,6 +345,9 @@ class KaraFunBridge extends EventEmitter {
     this._urlFailures = 0;
     this._appLeftStreak = 0;
     this._retryKind = null;
+    // Heure pleine du dernier arrêt des essais (KaraFun fermé), oubliée dès
+    // que KaraFun est joint : pas de nouvelle série de relances rapides avant.
+    this._stoppedHour = null;
     if (this.identityNotice) this._log(`KaraFun : ${this.identityNotice}`);
     this._restorePages();
   }
@@ -428,13 +442,18 @@ class KaraFunBridge extends EventEmitter {
   // Prochain essai automatique après un échec de découverte. Relance rapide
   // seulement si, après elle, les essais restants couvrent encore la fin de
   // l'heure avec 7 min d'écart au plus ; sinon le budget restant est réparti
-  // jusqu'à l'heure pleine suivante, 5 min d'écart au moins.
-  _discoveryAt(now) {
+  // jusqu'à l'heure pleine suivante, 5 min d'écart au moins. `closed`
+  // (KaraFun fermé ou code changé) : relance rapide seulement, si un essai
+  // automatique est permis tout de suite et si aucune série ne s'est déjà
+  // arrêtée cette heure ; sinon null, plus aucun essai.
+  _discoveryAt(now, closed = false) {
     const step = this._discoveryFailures;
     const left = this._autoLeft(now);
+    if (closed && (step >= DISCOVERY_STEPS_MS.length || left <= 0 || this._limitActive(now) ||
+      (!step && this._stoppedHour === Math.floor(now / HOUR_MS)))) return null;
     if (left <= 0) return this._pageGate(now, now);
     const rest = this._nextWindow(now) - now;
-    const fast = step < DISCOVERY_STEPS_MS.length && left * DISCOVERY_COVER_MS >= rest - DISCOVERY_STEPS_MS[step];
+    const fast = closed || (step < DISCOVERY_STEPS_MS.length && left * DISCOVERY_COVER_MS >= rest - DISCOVERY_STEPS_MS[step]);
     const delay = fast ? DISCOVERY_STEPS_MS[step] : Math.max(DISCOVERY_SPREAD_MIN_MS, rest / (left + 1));
     const spread = step ? Math.min(DISCOVERY_JITTER_MAX_MS, 0.15 * delay) : 0;
     let at = now + Math.round(delay - spread + 2 * spread * this.random());
@@ -467,6 +486,7 @@ class KaraFunBridge extends EventEmitter {
       this._failures = 0;
       this._lastLoggedRetry = null;
       this._startedAt = null;
+      this._stoppedHour = null;
     }
   }
 
@@ -599,6 +619,7 @@ class KaraFunBridge extends EventEmitter {
   // la connexion qu'on vient de fermer. L'URL KCS gardée pour ce code est
   // essayée d'abord, sans relire la page. Sinon, la page n'est relue que si
   // KaraFun ne limite pas les essais et s'il reste du budget dans l'heure.
+  // Essais arrêtés (KaraFun fermé ou code changé) : comme au démarrage.
   // Rend 'kept', 'started' ou { ok: false, reason, message } pour le bar ;
   // `this.code` dit ensuite quel code le pont garde.
   connect(code) {
@@ -609,9 +630,11 @@ class KaraFunBridge extends EventEmitter {
     if (!this._isLocal() && !(sameCode && this._kcs?.code === code)) {
       const now = Date.now(), limit = this._limitActive(now);
       // Même code, ou code retenu au démarrage pendant une limite reprise du
-      // fichier : KaraFun refuserait, rien n'est relu.
+      // fichier : KaraFun refuserait, rien n'est relu. Sans essai prévu
+      // (démarrage, essais arrêtés), l'essai automatique d'après la limite
+      // est pris.
       if (limit && (sameCode || this.code == null)) {
-        if (this._phase === 'idle') {
+        if (this._phase === 'idle' || this._phase === 'stopped') {
           if (!sameCode) this._restart(code, false);
           this._retry(DISCOVERY_ERRORS.refused[0], { mode: 'page', kind: 'limited' });
         }
@@ -634,6 +657,10 @@ class KaraFunBridge extends EventEmitter {
         return { ok: false, reason: 'budget', message: `${BUSY_REASON} : prochain essai automatique à ${clock(this.retryAt)}.` };
       }
     }
+    // Clic pendant les relances rapides de « KaraFun fermé » : il prend la
+    // place de la relance prévue sans avancer la série (sinon un clic pendant
+    // la dernière attente arrêterait les essais).
+    if (sameCode && this._phase === 'retry' && this._retryKind === 'closed' && this._discoveryFailures > 0) this._discoveryFailures--;
     this._restart(code, sameCode);
     this._open({ byBar: true });
     return 'started';
@@ -782,17 +809,20 @@ class KaraFunBridge extends EventEmitter {
     const where = [kind, status && `HTTP ${status}`, host, finalHost && `→ ${finalHost}`,
       keys && `Settings ${keys.Settings ? 'présent' : 'absent'}, kcs_url ${keys.kcs_url ? 'présent' : 'absent'}`].filter(Boolean).join(', ');
     this._retry(reason, { detail: `${this.lastError} [${where}]`, same: `${kind}|${status}|${this.lastError}`,
-      mode, kind: kind === 'refused' ? 'limited' : kind === 'unknown-code' ? 'closed' : null });
+      mode: kind === 'unknown-code' ? 'closed' : mode, kind: kind === 'refused' ? 'limited' : kind === 'unknown-code' ? 'closed' : null });
     // Jamais le code ni l'URL KCS : l'hôte, l'état HTTP, le budget de l'heure.
+    // `nextAt` null : essais arrêtés.
     const limit = this._limitActive();
     this._record('info', 'discovery-error', { kind, status, host, finalHost, keys, message: this.lastError,
-      pages: { used: this._pageBudget().used, limit: PAGE_LIMIT }, nextAt: new Date(this.retryAt).toISOString(),
+      pages: { used: this._pageBudget().used, limit: PAGE_LIMIT }, nextAt: this.retryAt == null ? null : new Date(this.retryAt).toISOString(),
       ...(limit ? { limitedUntil: new Date(limit.until).toISOString() } : {}) });
   }
 
   // Relance après un échec. `mode` : 'socket' (URL KCS gardée ou faux KaraFun
   // local, 3 à 30 s), 'discovery' (page après un échec de découverte,
-  // budgétée) ou 'page' (page dès que le budget et la limite le permettent).
+  // budgétée), 'closed' (KaraFun fermé ou code changé : relances rapides de
+  // la page, puis essais arrêtés) ou 'page' (page dès que le budget et la
+  // limite le permettent).
   _retry(reason = 'Connexion KaraFun perdue', { detail = this.lastError, same = detail, mode = 'socket', kind = null } = {}) {
     this._attempt++;
     const now = Date.now(), link = this._link;
@@ -809,8 +839,12 @@ class KaraFunBridge extends EventEmitter {
       const failures = this._socketFailures++;
       const step = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(failures, 4));
       at = now + (failures ? Math.min(RETRY_MAX_MS, Math.round(step * (0.85 + 0.3 * this.random()))) : step);
-    } else if (mode === 'discovery') {
-      at = this._discoveryAt(now);
+    } else if (mode === 'discovery' || mode === 'closed') {
+      // Premier « KaraFun fermé » après une autre panne (réseau coupé au
+      // démarrage…) : la série de relances rapides repart de 5 s.
+      if (mode === 'closed' && this._retryKind !== 'closed') this._discoveryFailures = 0;
+      at = this._discoveryAt(now, mode === 'closed');
+      if (at == null) { this._stop(reason, kind); return; }
       this._discoveryFailures++;
     } else at = this._pageGate(now, now);
     const delay = at - now;
@@ -828,6 +862,28 @@ class KaraFunBridge extends EventEmitter {
     }
     const generation = this._generation;
     this.retryTimer = setTimeout(() => { if (generation === this._generation) this._open(); }, delay);
+    this.emit('change');
+  }
+
+  // KaraFun fermé ou code changé, relances rapides finies (depuis _retry,
+  // connexion déjà coupée) : plus aucun essai automatique. « Reconnecter »
+  // repart comme un démarrage : page lue tout de suite, relances rapides de
+  // nouveau permises à partir de l'heure pleine suivante, essais et « prêt
+  // en … » comptés depuis le clic.
+  _stop(reason, kind) {
+    this.retryTimer = this.retryAt = null;
+    this._retryReason = reason;
+    this._retryKind = kind;
+    this._discoveryFailures = 0;
+    this._stoppedHour = Math.floor(Date.now() / HOUR_MS);
+    this._failures = 0;
+    this._tries = 0;
+    this._lastLoggedRetry = null;
+    this._startedAt = null;
+    this._setPhase('stopped');
+    const pages = { used: this._pageBudget().used, limit: PAGE_LIMIT };
+    this._log(`KaraFun : ${reason}. Plus d’essai automatique : clique sur « Reconnecter » une fois KaraFun ouvert. Page KaraFun : ${pages.used}/${PAGE_LIMIT} cette heure.`);
+    this._record('info', 'essais-arretes', { reason, pages });
     this.emit('change');
   }
 
@@ -968,8 +1024,10 @@ class KaraFunBridge extends EventEmitter {
     });
     // Échec avant que KaraFun accepte l'URL. Fermeture 4403/4401/4404/4210
     // ou autre 44xx : KaraFun refuse l'URL (KaraFun fermé, session finie,
-    // code changé), elle est oubliée et la page sera relue : URL gardée, dès
-    // que le budget le permet ; URL toute neuve, selon la cadence des échecs.
+    // code changé), elle est oubliée et la page sera relue : URL gardée, une
+    // fois dès que le budget le permet (KaraFun relancé donne une URL
+    // neuve) ; URL toute neuve, par les seules relances rapides, puis essais
+    // arrêtés.
     // Erreur, coupure 1006 ou délai dépassé : le réseau plutôt que l'URL
     // (Wi-Fi qui saute). Elle est gardée et réessayée toutes les 3 à 30 s,
     // sans page ; après 20 échecs de suite, la page est relue une fois.
@@ -981,7 +1039,7 @@ class KaraFunBridge extends EventEmitter {
       if (this._link.provenAt != null) { this._retry(reason); return; }
       if (urlRejected(code)) {
         this._forgetKcs(code);
-        this._retry(CLOSED_REASON, { mode: kept ? 'page' : 'discovery', kind: 'closed' });
+        this._retry(CLOSED_REASON, { mode: kept ? 'page' : 'closed', kind: 'closed' });
         return;
       }
       if (++this._urlFailures < URL_FAIL_REDISCOVER || !this._kcs || !this._canReadPage(false)) { this._retry(reason); return; }
@@ -1135,6 +1193,8 @@ class KaraFunBridge extends EventEmitter {
       'waiting-data': ['wait', 'Connecté : réception de la file KaraFun…'],
       ready: ['ok', `KaraFun connecté (${this.username})`],
       retry: ['error', retry],
+      // Plus d'essai automatique : le bar clique « Reconnecter » à l'ouverture.
+      stopped: ['error', `${CLOSED_REASON} : essais arrêtés`],
     };
     const [level, label] = labels[phase];
     return {
@@ -1143,8 +1203,9 @@ class KaraFunBridge extends EventEmitter {
       nameConflict: conflict,
       // Bouton « Prendre un autre nom maintenant » : POST /api/staff/kf { action: 'new-name' }.
       canRename: !!conflict,
-      // Alerte que le bar ne peut pas fermer : conflit de nom ou limite de KaraFun.
-      alert: conflict ? `KaraFun garde encore l’ancienne connexion de ${conflict.holder} (KaraFun relancé trop vite, ou une autre File karaoké ouverte avec le même nom). La file redemande ce nom toutes les 4 s pour garder ses droits d’administrateur et en prendra un autre ${later}. Tu peux aussi prendre un autre nom maintenant, puis lui redonner les droits dans KaraFun.` :
+      // Alerte que le bar ne peut pas fermer : conflit de nom ou limite de
+      // KaraFun. Essais arrêtés : KaraFun absent, rien d'autre à signaler.
+      alert: phase !== 'stopped' && conflict ? `KaraFun garde encore l’ancienne connexion de ${conflict.holder} (KaraFun relancé trop vite, ou une autre File karaoké ouverte avec le même nom). La file redemande ce nom toutes les 4 s pour garder ses droits d’administrateur et en prendra un autre ${later}. Tu peux aussi prendre un autre nom maintenant, puis lui redonner les droits dans KaraFun.` :
         limited ? limitMessage(limit.until) : null,
       // Pages de découverte de l'heure pleine en cours (sans secret).
       discovery: { used: pages.used, limit: PAGE_LIMIT, hourEndsAt: (pages.hour + 1) * HOUR_MS, limitedUntil: limit ? limit.until : null },
