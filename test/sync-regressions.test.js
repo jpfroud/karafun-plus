@@ -843,6 +843,63 @@ test('vidage arrêté pendant un envoi : l’accusé retiré mais lancé quand m
   assert.equal(p.sung, 1, 'compté une seule fois');
 });
 
+test('vidage arrêté : l’accusé retiré puis lancé ne retire pas le ticket d’un nouveau choix', async () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const p = f.sched.join({ tableId: '1', name: 'Marine', headcount: 1 });
+  const s = song(499);
+  f.sched.chooseSong(p, s);
+  f.sync();
+  f.bridge.ready = false;
+  f.clearQueue();
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  const ack = item('accuse-nouveau', s, f.adds[0].singer);
+  f.bridge.ready = true;
+  f.bridge.queue = [ack];
+  f.bridge.status = { state: 'idle' };
+  f.sync();
+  f.sched.chooseSong(p, song(500)); // nouveau choix pendant que l'accusé attend son retrait
+  f.bridge.status = { state: 'playing', current: ack };
+  f.sync();
+  assert.equal(p.sung, 1);
+  assert.ok(f.sched.Q.includes(p.id), 'le nouveau choix garde son ticket');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.setEmptySince(Date.now() - 5000);
+  f.sync();
+  f.sync();
+  assert.equal(f.adds.at(-1).songId, 500, 'le nouveau choix part une fois la scène libre');
+});
+
+for (const [name, onStage] of [['retiré puis lancé', false], ['arrivé sur scène', true]]) {
+  test(`nouvelle soirée : l’accusé tardif d’un envoi de la soirée close (${name}) ne compte pas dans la nouvelle`, () => {
+    const f = harness();
+    const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+    const s = song(onStage ? 502 : 501);
+    f.sched.chooseSong(p, s);
+    f.sync();
+    assert.equal(f.adds.length, 1);
+    f.bridge.ready = false; // KaraFun perdu avant l'accusé
+    f.clearQueue();
+    f.clearEvening();
+    const fresh = { serial: f.sched.appearanceSerial, last: f.sched.lastGroup, served: f.sched.tableServeCounts.size };
+    const ack = item('accuse-ancienne-soiree', s, f.adds[0].singer);
+    f.bridge.ready = true;
+    f.bridge.queue = [ack];
+    f.bridge.status = onStage ? { state: 'playing', current: ack } : { state: 'idle' };
+    f.sync();
+    if (!onStage) {
+      assert.deepEqual(f.removes, ['accuse-ancienne-soiree']);
+      f.bridge.status = { state: 'playing', current: ack }; // KaraFun le lance quand même
+      f.sync();
+    }
+    assert.deepEqual(f.removes, onStage ? [] : ['accuse-ancienne-soiree'], 'la chanson en lecture continue');
+    assert.equal(f.sched.appearanceSerial, fresh.serial, 'pas de passage compté pour la soirée close');
+    assert.equal(f.sched.lastGroup, fresh.last);
+    assert.equal(f.sched.tableServeCounts.size, fresh.served);
+  });
+}
+
 test('Supprimer toutes les tables après un vidage hors connexion : la chanson sur scène au retour finit son passage', () => {
   const f = harness();
   f.settings.auto = false;

@@ -992,10 +992,13 @@ function sync() {
       if (pending.cancelled) {
         if (isOnStage({ queueId: hit.queueId, sel: pending.sel }, current)) {
           // L'accusé et le début de lecture peuvent arriver dans le même
-          // événement. Ne pas arrêter un morceau déjà sur scène.
-          sched.commit(pending.sel);
-          journalTurnSent(pending, hit.queueId, now);
-          if (settings.queueClearPending || pending.cancelledByClear) dropClearedTickets(pending.sel);
+          // événement. Ne pas arrêter un morceau déjà sur scène. Envoi de la
+          // soirée close : il ne compte pas dans la nouvelle.
+          if (!pending.previousEvening) {
+            sched.commit(pending.sel);
+            journalTurnSent(pending, hit.queueId, now);
+            if (settings.queueClearPending || pending.cancelledByClear) dropClearedTickets(pending.sel);
+          }
           tracked.push({ queueId: hit.queueId, sel: pending.sel, addedAt: now, startedAt: now,
             ...(pending.sentSettings ? { sentSettings: pending.sentSettings } : {}) });
           sched.recordStage(pending.sel, now);
@@ -1004,7 +1007,8 @@ function sync() {
           // Suivi sans commit() : s'il passe malgré tout sur scène, le
           // passage sera compté à ce moment-là (plus bas).
           tracked.push({ queueId: hit.queueId, sel: pending.sel,
-            addedAt: now, startedAt: null, cancelled: true, removeRequestedAt: now, uncommitted: true,
+            addedAt: now, startedAt: null, cancelled: true, removeRequestedAt: now,
+            ...(pending.previousEvening ? {} : { uncommitted: true }),
             ...(pending.cancelledByClear ? { cancelledByClear: true } : {}) });
           try { bridge.remove(hit.queueId); }
           catch (error) { appLog(`Retrait KaraFun en attente : ${error.message}`); }
@@ -2714,9 +2718,11 @@ function clearEvening() {
     }
   }
   // Un envoi encore sans accusé reste suivi uniquement pour pouvoir le retirer
-  // s'il apparaît après la remise à zéro.
-  if (pending) pending.cancelled = true;
+  // s'il apparaît après la remise à zéro. S'il passe quand même sur scène, ce
+  // passage de la soirée close ne compte pas dans la nouvelle.
+  if (pending) { pending.cancelled = true; pending.previousEvening = true; }
   tracked = tracked.filter(tr => tr.cancelled || tr.startedAt || isOnStage(tr, current));
+  for (const tr of tracked) delete tr.uncommitted;
   for (const tableId of sched.tables.keys()) access.revoke(tableId);
   soloInvitations.clear();
   sched.tables.clear();
