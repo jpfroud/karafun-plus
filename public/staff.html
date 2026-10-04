@@ -24,6 +24,7 @@
       <button class="btn" id="skipBtn">⏭ Passer</button>
       <button class="btn" id="restartBtn" title="Recommence le titre en cours depuis le début, pour le même passage">⏮ Relancer depuis le début</button>
     </div>
+    <label class="switch live-autoplay"><input type="checkbox" id="autoPlay"> Lecture automatique</label>
     <details id="liveTuneBox" class="live-tune" hidden><summary id="liveTuneSummary">Réglages en direct</summary>
       <p class="tiny muted">Tonalité, tempo, voix guide et chœurs du titre en cours, envoyés tout de suite à KaraFun ; les valeurs affichées sont celles de KaraFun.</p>
       <p id="liveTuneReason" class="small notice-line" role="status" hidden></p>
@@ -73,14 +74,14 @@
       <div id="soloInvitationList" class="solo-invite-list"></div>
     </div>
     <h3 class="welcome-title">Tables</h3>
-    <p class="small muted">Touche une table pour montrer son QR en grand : chaque téléphone de la table peut le scanner. « Détails » : nom, places, bonus, départ.</p>
-    <div id="tBody" class="table-cards"></div>
     <div class="new-table">
       <label for="tableName">Nouvelle table <input id="tableName" type="text" maxlength="20" placeholder="Numéro ou nom"></label>
       <label for="tableHeadcount">Personnes <input id="tableHeadcount" type="number" value="4" min="1" max="40" required></label>
       <button class="btn primary" id="createTable">Ajouter la table</button>
     </div>
     <p class="tiny muted">Laisse le nom vide pour ajouter le prochain numéro. Le groupe « En solo » est toujours disponible ; chacun garde son propre tour.</p>
+    <p class="small muted">Touche une table pour montrer son QR en grand : chaque téléphone de la table peut le scanner. « Détails » : nom, places, bonus, départ.</p>
+    <div id="tBody" class="table-cards"></div>
     <div class="transfer-panel">
       <strong>Donner un chanteur à un autre téléphone</strong>
       <p class="small muted">Un client change de téléphone, ou un ami de la table veut gérer ce chanteur ? Cherche son prénom, puis fais scanner le QR par le nouveau téléphone. Le nouveau téléphone récupère ce chanteur ; l’ancien perd seulement ce chanteur et garde les autres.</p>
@@ -105,11 +106,11 @@
     <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><span class="save-status" data-save-status="closingTime" aria-live="polite"></span></div>
     <div class="row wrap closing-actions"><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
     <p class="small" id="closingText" role="status"></p>
-    <h3>Envoi et lecture automatiques</h3>
+    <h3>Envoi automatique</h3>
     <div class="control-stack">
       <label class="switch"><input type="checkbox" id="auto"> Envoi automatique à KaraFun</label>
-      <label class="switch"><input type="checkbox" id="autoPlay"> Lancer la lecture automatiquement</label>
     </div>
+    <p class="tiny muted">La lecture automatique se règle sur l’écran Scène, sous « Lecture ».</p>
   </section>
 
   <section class="card rules-panel" data-tab="plus">
@@ -436,7 +437,8 @@
   });
   const goTo = (tab, id) => { setTab(tab); $(id)?.scrollIntoView?.({ block: 'start' }); };
   $('kfPill').onclick = () => goTo('plus', 'kfPanel');
-  $('autoWarn').onclick = () => goTo('plus', 'auto');
+  // Envoi coupé : direction « Plus ». Lecture seule coupée : son interrupteur, sur Scène.
+  $('autoWarn').onclick = () => S?.settings?.auto ? goTo('scene', 'autoPlay') : goTo('plus', 'auto');
 
   // ------------------------------------------------------------ enregistrement automatique
   // Chaque réglage s'enregistre seul : après une courte pause de frappe, en

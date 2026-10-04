@@ -42,8 +42,9 @@ DÉMARRAGE AU BAR
    - « Connecté : oui » et « Données reçues : oui » → la connexion marche.
    - Tu peux chercher un titre dans le catalogue. N'utilise pas « Ajouter à
      KaraFun (test) » sur une soirée réelle : cela modifie sa file.
-   - Pour une soirée autonome, coche « Lancer la lecture automatiquement ».
-     La pause avant ce lancement se règle dans « Règles de la soirée ».
+   - Pour une soirée autonome, coche « Lecture automatique » sur l'écran
+     Scène, sous le bouton Lecture. La pause avant ce lancement se règle
+     dans « Règles de la soirée ».
      Sinon, utilise le bouton Lecture pour démarrer les chansons.
 
    Dans le bloc « Tables », ajoute les tables une par une. L'effectif proposé

@@ -3000,3 +3000,38 @@ test('repère vérifié pendant l’envoi du repère : la vérification part apr
   await page.flush();
   assert.equal(page.toast().text, 'Alice reconnu : repère vérifié');
 });
+
+// ------------------------------------------------------------------ retours du test du 4 octobre
+// Position d'un élément dans la page, pour comparer l'ordre d'affichage.
+const order = (page, el) => [...page.doc.body.descendants()].indexOf(el);
+
+test('Scène : l’interrupteur « Lecture automatique » est sur l’écran Scène, une seule fois, enregistré tout seul', async () => {
+  const page = await openPage();
+  const toggle = page.$('autoPlay');
+  assert.equal(toggle.closest('section[data-tab]').dataset.tab, 'scene', 'lecture automatique sur l’écran Scène');
+  assert.ok(order(page, toggle) > order(page, page.$('skipBtn')), 'sous Lecture / Passer');
+  assert.ok(order(page, toggle) < order(page, page.$('next')), 'avant « Ensuite »');
+  assert.equal(page.doc.body.querySelectorAll('input[type="checkbox"]').filter(el => /lecture/i.test(el.parent?.textContent || '')).length, 1,
+    'un seul interrupteur de lecture automatique');
+  assert.equal(page.$('auto').closest('section[data-tab]').dataset.tab, 'plus', 'l’envoi automatique reste dans « Plus »');
+  await page.change(toggle, true);
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { autoPlay: true });
+  // Avertissement « Lecture automatique coupée » : il mène à l'interrupteur de Scène.
+  await page.update({ settings: { ...page.world.settings, auto: true, autoPlay: false } });
+  assert.equal(page.$('autoWarn').textContent, 'Lecture automatique coupée');
+  await page.click(page.in('staffTabs', '[data-tab-btn="file"]'));
+  assert.equal(page.doc.body.dataset.tab, 'file');
+  await page.click(page.$('autoWarn'));
+  assert.equal(page.doc.body.dataset.tab, 'scene', 'lecture automatique seule coupée : direction Scène');
+  await page.update({ settings: { ...page.world.settings, auto: false, autoPlay: true } });
+  await page.click(page.$('autoWarn'));
+  assert.equal(page.history.at(-1).state.barTab, 'plus', 'envoi automatique coupé : direction « Plus »');
+});
+
+test('Accueil : le formulaire « Nouvelle table » vient avant la liste des tables existantes', async () => {
+  const page = await openPage();
+  const form = page.$('createTable').closest('.new-table');
+  assert.equal(form.closest('section[data-tab]').dataset.tab, 'accueil');
+  assert.ok(order(page, form) < order(page, page.$('tBody')), 'ajouter une table avant de voir les tables');
+  assert.ok(order(page, page.$('tableName')) < order(page, page.in('tBody', '[data-table-card="1"]')));
+});
