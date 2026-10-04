@@ -103,7 +103,8 @@
   <section class="card evening-panel" data-tab="plus">
     <div class="section-heading"><div><div class="eyebrow">Fin de soirée</div><h2>Fermeture du bar</h2></div><span id="closingPill" class="pill">Pas d’heure</span></div>
     <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
-    <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><span class="save-status" data-save-status="closingTime" aria-live="polite"></span></div>
+    <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><span class="save-status" id="closingStatus" data-save-status="closingTime" aria-live="polite"></span></div>
+    <div class="row wrap closing-draft" id="closingDraftActions" hidden><button type="button" class="btn small primary" id="closingConfirm">Valider l’heure</button><button type="button" class="btn small" id="closingCancel">Annuler</button></div>
     <div class="row wrap closing-actions"><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
     <p class="small" id="closingText" role="status"></p>
     <h3>Envoi automatique</h3>
@@ -482,11 +483,6 @@
       confirm: value => !S.spotify?.connected || value === S.spotify.clientId ||
         confirm('Changer le Client ID déconnecte Spotify : il faudra se reconnecter depuis ce PC. Continuer ?'),
       send: value => post('/api/staff/spotify', { action: 'client', clientId: value }), server: () => S.spotify?.clientId || '' },
-    // L'heure est annoncée aux clients : on attend que le sélecteur soit stable.
-    closingTime: { text: true, delay: 1500, slowChange: true,
-      validate: value => /^\d\d:\d\d$/.test(value) ? null : 'choisis une heure ; « Retirer » enlève l’heure annoncée',
-      send: async value => { const result = await post('/api/staff/closing', { time: value }); return result?.message || `Annoncée aux clients : ${value} ✓`; },
-      server: () => { const at = S.closing ? new Date(S.closing.at) : null; return at ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : ''; } },
     note: { text: true, delay: 1000, validate: value => value.length > 140 ? 'au plus 140 caractères' : null,
       send: (value, id) => post('/api/staff/person/identify', { personId: id, note: value }), server: id => personOf(id)?.privateNote || '' },
     // Nom affiché d'une table (fiche « Détails »). La clé ne doit pas être l'id
@@ -573,7 +569,7 @@
     for (const other of fieldsOf(kind, id)) if (other !== el && document.activeElement !== other) other.value = value;
     const error = checkField(def, value);
     if (error) { d.state = 'invalid'; d.error = error; renderStatus(key); return; }
-    if (def.check || (event.type === 'change' && def.text && !def.slowChange)) return flushField(key);
+    if (def.check || (event.type === 'change' && def.text)) return flushField(key);
     if (def.delay) d.timer = setTimeout(() => flushField(key), def.delay);
     renderStatus(key);
   }
@@ -1136,7 +1132,7 @@
       `${closing.fitCount} titre${closing.fitCount > 1 ? 's' : ''} passer${closing.fitCount > 1 ? 'ont' : 'a'} avant ${hhmm(closing.at)}` +
       (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
       (closing.full ? ' Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.' : ' Il reste de la place : les clients peuvent encore ajouter des titres.');
-    syncField($('closingTime'));
+    renderClosingField();
     $('closingClear').disabled = !closing;
     // Sur l'écran Scène : rappel discret, avec le décalage le plus courant.
     $('closingChip').hidden = !closing;
@@ -1827,15 +1823,74 @@
       act('/api/staff/kf', { action: 'restart' }, 'Relance demandée à KaraFun');
     }
   };
+  // Heure de fermeture : annoncée aux clients, elle n'est jamais enregistrée en
+  // route. La changer (roue de l'iPhone, clavier) ne fait qu'un brouillon,
+  // « Heure pas encore validée » ; seule « Valider l'heure » l'enregistre.
+  // Fermer le sélecteur, quitter le champ ou Entrée n'enregistrent rien : le
+  // brouillon attend « Valider l'heure » ou « Annuler », qui remet l'heure
+  // enregistrée (un sélecteur vidé puis refermé aussi). Le rafraîchissement
+  // ne l'écrase pas. +10 / +15 / +30 min et « Retirer » restent immédiats.
+  const NO_TIME = 'choisis une heure ; « Retirer » enlève l’heure annoncée';
+  let closingDraft = null; // { value, state: 'draft' | 'saving' | 'error' | 'saved', error, afterLoad }
+  let closingSaved = { text: '', until: 0 };
+  const closingServer = () => { const at = S?.closing ? new Date(S.closing.at) : null; return at ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : ''; };
+  function renderClosingField() {
+    const field = $('closingTime');
+    // Heure validée : affichée jusqu'à ce que le serveur la renvoie.
+    if (closingDraft?.state === 'saved' && (closingDraft.value === closingServer() || shownLoad > closingDraft.afterLoad)) closingDraft = null;
+    const value = closingDraft ? closingDraft.value : closingServer();
+    if (document.activeElement !== field && field.value !== value) field.value = value;
+    const editing = !!closingDraft && closingDraft.state !== 'saved';
+    $('closingDraftActions').hidden = !editing;
+    $('closingConfirm').disabled = field.disabled = closingDraft?.state === 'saving';
+    const status = $('closingStatus');
+    const text = closingDraft?.state === 'error' ? `Non enregistré : ${closingDraft.error}` : closingDraft?.state === 'saving' ? 'Enregistrement…'
+      : editing ? 'Heure pas encore validée' : closingSaved.until > Date.now() ? closingSaved.text : '';
+    status.textContent = text;
+    status.className = 'save-status' + (closingDraft?.state === 'error' ? ' bad' : editing ? ' warn' : text ? ' ok' : '');
+    if (closingDraft?.state === 'error') field.setAttribute('aria-invalid', 'true'); else field.removeAttribute('aria-invalid');
+  }
+  function closingEdited() {
+    if (closingDraft?.state === 'saving') return;
+    const value = String($('closingTime').value || '').trim();
+    closingDraft = value === closingServer() ? null : { value, state: 'draft' };
+    renderClosingField();
+  }
+  function dropClosingDraft() { closingDraft = null; renderClosingField(); }
+  $('closingTime').addEventListener('input', closingEdited);
+  $('closingTime').addEventListener('change', closingEdited);
+  $('closingTime').addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault?.(); });
+  $('closingTime').addEventListener('blur', () => {
+    // Sélecteur refermé sans heure complète : l'heure enregistrée revient.
+    if (closingDraft && closingDraft.state !== 'saving' && !/^\d\d:\d\d$/.test(closingDraft.value)) dropClosingDraft();
+  });
+  $('closingCancel').onclick = dropClosingDraft;
+  $('closingConfirm').onclick = async () => {
+    const d = closingDraft;
+    if (!d || d.state === 'saving' || d.state === 'saved') return;
+    if (!/^\d\d:\d\d$/.test(d.value)) { Object.assign(d, { state: 'error', error: NO_TIME }); return renderClosingField(); }
+    d.state = 'saving';
+    renderClosingField();
+    try {
+      const result = await post('/api/staff/closing', { time: d.value });
+      if (closingDraft !== d) return; // remplacé entre-temps (+15 min, Retirer)
+      Object.assign(d, { state: 'saved', afterLoad: loadsStarted });
+      closingSaved = { text: result?.message || `Annoncée aux clients : ${d.value} ✓`, until: Date.now() + 2500 };
+      setTimeout(renderClosingField, 2600);
+      load();
+    } catch (e) {
+      if (closingDraft === d) Object.assign(d, { state: 'error', error: e.message });
+    }
+    renderClosingField();
+  };
   $('closingClear').onclick = () => {
-    clearTimeout(drafts.get('closingTime')?.timer);
-    drafts.delete('closingTime');
+    dropClosingDraft();
     act('/api/staff/closing', { clear: true }, 'Heure de fermeture retirée');
   };
   // Bouton × des recherches du bar et décalage de la fermeture.
   document.addEventListener?.('click', event => {
     const extend = event.target?.closest?.('[data-closing-extend]');
-    if (extend) { act('/api/staff/closing', { extendMin: Number(extend.dataset.closingExtend) }, 'Fermeture décalée'); return; }
+    if (extend) { dropClosingDraft(); act('/api/staff/closing', { extendMin: Number(extend.dataset.closingExtend) }, 'Fermeture décalée'); return; }
     const clear = event.target?.closest?.('[data-clear-for]');
     if (!clear) return;
     const input = $(clear.dataset.clearFor);

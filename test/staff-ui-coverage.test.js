@@ -1090,29 +1090,16 @@ test('en direct : duo noté, absent, relance, passer, lecture et envoi en cours'
   assert.equal(page.$('pendingTxt').textContent, '');
 });
 
-test('fermeture du bar : heure enregistrée seule, rappel sur Scène, décaler et retirer l’heure', async () => {
+test('fermeture du bar : rappel sur Scène, décaler et retirer l’heure', async () => {
   const page = await openPage();
   const field = page.$('closingTime');
-  const status = () => page.doc.body.querySelector('[data-save-status="closingTime"]').textContent;
   assert.equal(page.doc.getElementById('closingSave'), null, 'plus de bouton « Annoncer »');
   assert.equal(page.$('closingChip').hidden, true, 'sans heure, pas de rappel sur Scène');
-  await page.type(field, '23:30');
-  assert.equal(page.postsTo('/api/staff/closing').length, 0, 'le sélecteur d’heure a le temps de se stabiliser');
-  page.runTimers(1500);
-  await page.flush();
-  assert.deepEqual(page.lastPost('/api/staff/closing').body, { time: '23:30' });
-  assert.equal(status(), 'Annoncée aux clients : 23:30 ✓');
   const at = new Date(); at.setHours(23, 30, 0, 0);
   await page.update({ closing: { at: at.getTime(), passed: false, full: false, fitCount: 3, afterCount: 0 } });
   assert.equal(field.value, '23:30');
   assert.equal(page.$('closingChip').hidden, false);
   assert.equal(page.$('closingChipText').textContent, 'Fermeture 23:30');
-  // Champ vidé : rien n'est envoyé ; « Retirer » sert à enlever l'heure.
-  await page.type(field, '');
-  page.runTimers(1500);
-  await page.flush();
-  assert.equal(page.postsTo('/api/staff/closing').length, 1);
-  assert.equal(status(), 'Non enregistré : choisis une heure ; « Retirer » enlève l’heure annoncée');
   const extend = page.doc.body.querySelector('[data-closing-extend="15"]');
   await page.click(extend);
   assert.deepEqual(page.lastPost('/api/staff/closing').body, { extendMin: 15 });
@@ -1123,17 +1110,6 @@ test('fermeture du bar : heure enregistrée seule, rappel sur Scène, décaler e
   await page.update({ closing: null });
   assert.equal(field.value, '', 'heure retirée : le champ suit le serveur');
   assert.equal(page.$('closingClear').disabled, true, 'sans heure annoncée, rien à retirer');
-  // Refus du serveur : raison affichée et nouvel essai possible.
-  page.replies['/api/staff/closing'] = { status: 400, error: 'Heure de fermeture invalide.' };
-  await page.type(field, '23:45');
-  page.runTimers(1500);
-  await page.flush();
-  assert.equal(status(), 'Non enregistré : Heure de fermeture invalide. · Réessayer');
-  page.replies['/api/staff/closing'] = { ok: true, message: 'Fermeture à 23:45 ; 4 titres passeront.' };
-  await page.click(page.doc.body.querySelector('[data-retry="closingTime"]'));
-  assert.equal(status(), 'Fermeture à 23:45 ; 4 titres passeront.', 'le message du serveur prime');
-  // Fin de l'affichage de la confirmation.
-  page.runTimers(2600);
 });
 
 test('fin de soirée : plus de bouton d’arrêt, suppression des tables et vidage de la file', async () => {
@@ -3087,4 +3063,102 @@ test('repère : un simple indice noté sur la personne, consultable sur Scène, 
   await page.flush();
   assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'bruno', note: 'casquette bleue' }, 'seul le texte part');
   assert.ok(text.includes('Repère'), 'le mot « Repère » reste');
+});
+
+test('fermeture du bar : changer l’heure fait un brouillon, seule « Valider l’heure » l’enregistre', async () => {
+  const page = await openPage();
+  const field = page.$('closingTime');
+  const status = () => page.doc.body.querySelector('[data-save-status="closingTime"]').textContent;
+  const sent = () => page.postsTo('/api/staff/closing').map(post => post.body);
+  const at = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.getTime(); };
+  assert.equal(page.$('closingDraftActions').hidden, true, 'sans changement, rien à valider');
+  assert.equal(page.$('closingConfirm').textContent, 'Valider l’heure');
+  assert.equal(page.$('closingCancel').textContent, 'Annuler');
+  // La roue de l'iPhone tourne : chaque cran émet « input » ; rien ne part.
+  for (const value of ['22:00', '23:00', '23:30']) await page.type(field, value);
+  for (const ms of [800, 1000, 1500, 2600]) page.runTimers(ms);
+  await page.flush();
+  assert.deepEqual(sent(), [], 'pas d’enregistrement pendant que l’heure change');
+  assert.equal(status(), 'Heure pas encore validée');
+  assert.equal(page.$('closingDraftActions').hidden, false, '« Valider l’heure » et « Annuler » proposés');
+  // Fermeture du sélecteur (change, puis perte du focus) et Entrée : rien ne part.
+  dispatch(field, 'change');
+  dispatch(field, 'blur');
+  dispatch(field, 'focusout');
+  await page.key(field, 'Enter');
+  for (const ms of [800, 1000, 1500, 2600]) page.runTimers(ms);
+  await page.flush();
+  assert.deepEqual(sent(), [], 'fermer le sélecteur n’enregistre rien');
+  // Le rafraîchissement de 2 s n'écrase pas le brouillon.
+  await page.update({ closing: { at: at(1, 0), passed: false, full: false, fitCount: 9, afterCount: 0 } });
+  assert.equal(field.value, '23:30', 'brouillon gardé au rafraîchissement');
+  assert.equal(status(), 'Heure pas encore validée');
+  // « Annuler » : l'heure enregistrée revient, sans rien envoyer.
+  await page.click(page.$('closingCancel'));
+  assert.equal(field.value, '01:00');
+  assert.equal(page.$('closingDraftActions').hidden, true);
+  assert.deepEqual(sent(), []);
+  // Revenir à l'heure enregistrée : plus rien à valider.
+  await page.type(field, '01:15');
+  await page.type(field, '01:00');
+  assert.equal(page.$('closingDraftActions').hidden, true, 'même heure que celle annoncée : pas de brouillon');
+  // Sélecteur vidé puis refermé : l'heure enregistrée revient.
+  await page.type(field, '');
+  dispatch(field, 'blur');
+  await page.flush();
+  assert.equal(field.value, '01:00');
+  assert.equal(page.$('closingDraftActions').hidden, true);
+  // « Valider l'heure » : seul enregistrement. Le serveur annonce l'heure.
+  page.replies['/api/staff/closing'] = body => {
+    if (body.time) page.world.closing = { at: at(...body.time.split(':').map(Number)), passed: false, full: false, fitCount: 9, afterCount: 0 };
+    return { ok: true };
+  };
+  await page.type(field, '01:30');
+  await page.click(page.$('closingConfirm'));
+  assert.deepEqual(sent(), [{ time: '01:30' }]);
+  assert.equal(status(), 'Annoncée aux clients : 01:30 ✓');
+  assert.equal(page.$('closingDraftActions').hidden, true);
+  assert.equal(field.value, '01:30');
+  assert.equal(page.$('closingChipText').textContent, 'Fermeture 01:30');
+  // Refus du serveur : raison affichée, brouillon gardé, nouvel essai possible.
+  page.replies['/api/staff/closing'] = { status: 400, error: 'Heure de fermeture invalide.' };
+  await page.type(field, '01:45');
+  await page.click(page.$('closingConfirm'));
+  assert.equal(status(), 'Non enregistré : Heure de fermeture invalide.');
+  assert.equal(page.$('closingDraftActions').hidden, false);
+  assert.equal(field.value, '01:45');
+  // Pendant l'envoi : « Enregistrement… », un seul envoi, l'heure reste affichée.
+  let release;
+  page.replies['/api/staff/closing'] = () => new Promise(resolve => { release = () => resolve({ ok: true, message: 'Fermeture à 01:45 ; 4 titres passeront.' }); });
+  await page.click(page.$('closingConfirm'));
+  assert.equal(status(), 'Enregistrement…');
+  assert.equal(page.$('closingConfirm').disabled, true, 'un seul envoi à la fois');
+  assert.equal(field.disabled, true, 'heure figée pendant l’envoi');
+  await page.poll();
+  assert.equal(field.value, '01:45', 'le rafraîchissement ne remet pas l’ancienne heure');
+  page.world.closing = { at: at(1, 45), passed: false, full: false, fitCount: 4, afterCount: 0 };
+  release();
+  await page.flush();
+  assert.deepEqual(sent().at(-1), { time: '01:45' });
+  assert.equal(status(), 'Fermeture à 01:45 ; 4 titres passeront.', 'le message du serveur prime');
+  assert.equal(field.disabled, false);
+  // Heure incomplète validée : refusée sur place.
+  await page.type(field, '');
+  await page.click(page.$('closingConfirm'));
+  assert.equal(status(), 'Non enregistré : choisis une heure ; « Retirer » enlève l’heure annoncée');
+  assert.deepEqual(sent().at(-1), { time: '01:45' }, 'rien d’envoyé');
+  // +10 / +15 / +30 min et « Retirer » restent immédiats, et remplacent le brouillon.
+  await page.type(field, '02:00');
+  await page.click(page.doc.body.querySelector('.closing-actions [data-closing-extend="30"]'));
+  assert.deepEqual(sent().at(-1), { extendMin: 30 });
+  assert.equal(page.$('closingDraftActions').hidden, true);
+  await page.update({ closing: { at: at(2, 15), passed: false, full: false, fitCount: 9, afterCount: 0 } });
+  assert.equal(field.value, '02:15', 'le champ suit l’heure décalée');
+  await page.type(field, '03:00');
+  await page.click(page.$('closingClear'));
+  assert.deepEqual(sent().at(-1), { clear: true });
+  assert.equal(page.$('closingDraftActions').hidden, true);
+  await page.update({ closing: null });
+  assert.equal(field.value, '');
+  page.runTimers(2600);
 });
