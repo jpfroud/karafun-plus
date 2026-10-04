@@ -2389,6 +2389,12 @@
     battlePickMode = false;
     renderBattlePick();
     updateTarget();
+    // Choisir un titre pour quelqu'un : le catalogue repart de ses sélections,
+    // sans la recherche ni les résultats précédents (on ne remet pas le même
+    // titre pour une autre personne). Une recherche en cours de frappe est
+    // abandonnée. L'onglet Catalogue, lui, retrouve l'écran quitté.
+    clearTimeout(searchTimer);
+    if ($('searchInput').value || subScreen(catalogMode)) showCategories(catalogType);
     setTab('catalog');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }

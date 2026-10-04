@@ -593,8 +593,9 @@ test('duo : partenaires de la table et des autres tables, invitation ou ajout di
   assert.equal(sent.warn, true, 'titre déjà prévu : avertissement');
 
   await page.tap('peopleList', '[data-duet-song="alice"]');
-  // Le catalogue est resté sur les titres de la sélection.
-  await page.tap('catalogContent', '[data-song-index="0"]');
+  // Le catalogue repart de ses sélections (retour du bar, 4 octobre).
+  assert.equal(page.node('catalogContent').querySelector('[data-song-index]'), null, 'plus les titres de la sélection précédente');
+  await pickCatalogSong(page);
   await page.click(page.node('sendDuo'));
   assert.equal(page.posts.at(-1)[1].partnerId, 'marc');
   assert.deepEqual(page.toast(), { text: 'Duo ajouté à la liste.', bad: false, warn: false, hidden: false });
@@ -2373,4 +2374,70 @@ test('infos : plus d’avis « c’est à toi, sur scène maintenant », l’avi
   assert.equal(page.node('infoBar').hidden, true, 'plus rien à annoncer');
   assert.equal(page.vibrations.length, 1, 'pas de vibration pour le passage sur scène');
   assert.ok(!/sur scène maintenant/.test(html), 'le texte a disparu de la page');
+});
+
+test('catalogue : « ＋ Chanson », « ＋ Duo » et « Choisir une chanson » vident la recherche précédente et ses résultats', async () => {
+  const state = baseState();
+  state.tablePeople = [person('alice', 'Alice'), person('bruno', 'Bruno')];
+  state.managedIds = ['alice', 'bruno'];
+  const page = await open({ state });
+  const fresh = label => {
+    assert.equal(page.tabShown(), 'catalog', label);
+    assert.equal(page.node('searchInput').value, '', `${label} : recherche vidée`);
+    assert.equal(page.node('searchClear').hidden, true, `${label} : plus de ×`);
+    assert.doesNotMatch(page.node('catalogContent').textContent, /Résultats pour|Queen|Recherche…/, `${label} : anciens résultats retirés`);
+    assert.ok(page.node('catalogContent').querySelector('[data-category-index]'), `${label} : le catalogue repart des sélections`);
+  };
+  const searchQueen = async () => {
+    await page.type('searchInput', 'Queen');
+    await page.runTimers(300);
+    assert.match(page.node('catalogContent').textContent, /Résultats pour « Queen »/);
+  };
+  // « ＋ Chanson » pour Alice, recherche, titre ajouté…
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  await searchQueen();
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  await page.click(page.node('appendSong'));
+  assert.equal(page.tabShown(), 'table');
+  // … puis « ＋ Chanson » pour Bruno : on ne lui remet pas le même titre.
+  await page.tap('peopleList', '[data-add-song="bruno"]');
+  fresh('« ＋ Chanson » pour une autre personne');
+  assert.match(page.node('catalogTarget').textContent, /Bruno/);
+  // « ＋ Duo » aussi, même sans rien avoir ajouté entre-temps.
+  await searchQueen();
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-duet-song="alice"]');
+  fresh('« ＋ Duo »');
+  // Une recherche encore en cours de frappe ne revient pas après coup.
+  await page.type('searchInput', 'Que');
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="bruno"]');
+  await page.runTimers(300);
+  fresh('frappe interrompue');
+  // Titres d'une sélection ouverte : le catalogue repart aussi des sélections.
+  await page.tap('catalogContent', '[data-category-index="0"]');
+  assert.match(page.node('catalogContent').textContent, /Tube/);
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  assert.equal(page.node('catalogContent').querySelector('[data-song-index]'), null, 'plus les titres de la sélection précédente');
+
+  // « Choisir une chanson » (En solo) : même chose.
+  const solo = baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true, headcount: 40, activeCount: 1 } });
+  solo.tablePeople = [person('zoe', 'Zoé')];
+  solo.managedIds = ['zoe'];
+  const single = await open({ state: solo, path: '/t/Comptoir/secret' });
+  await single.tap('quickSongActions', '[data-quick-song="zoe"]');
+  await single.type('searchInput', 'Queen');
+  await single.runTimers(300);
+  assert.match(single.node('catalogContent').textContent, /Résultats pour « Queen »/);
+  await single.click(single.node('nav-table'));
+  await single.tap('quickSongActions', '[data-quick-song="zoe"]');
+  assert.equal(single.node('searchInput').value, '', '« Choisir une chanson » : recherche vidée');
+  assert.doesNotMatch(single.node('catalogContent').textContent, /Résultats pour/);
+  // L'onglet Catalogue (simple visite, pour personne) garde l'écran où on était.
+  await single.type('searchInput', 'Queen');
+  await single.runTimers(300);
+  await single.click(single.node('nav-table'));
+  await single.click(single.node('nav-catalog'));
+  assert.equal(single.node('searchInput').value, 'Queen', 'l’onglet Catalogue retrouve la recherche en cours');
 });
