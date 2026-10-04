@@ -116,13 +116,14 @@ class El {
   focus() { this.ownerDocument.activeElement = this; }
   select() { this.selectedAll = true; }
   // Avec `doc.dialogFocus`, comme un navigateur : la fenêtre ouverte donne le
-  // focus à son élément `autofocus`, sinon à son premier élément focalisable.
+  // focus à son élément `autofocus`, sinon à son premier élément focalisable
+  // (un élément quelconque l'est avec un attribut tabindex, comme un titre).
   showModal() {
     this.open = true;
     if (!this.ownerDocument.dialogFocus) return;
     const visible = el => { for (let up = el; up && up !== this; up = up.parent) if (up.hidden) return false; return true; };
     const focusable = el => !el.disabled && visible(el) && (/^(SELECT|TEXTAREA|BUTTON)$/.test(el.tagName) ||
-      (el.tagName === 'INPUT' && el.type !== 'hidden') || (el.tagName === 'A' && el.getAttribute('href') !== null));
+      (el.tagName === 'INPUT' && el.type !== 'hidden') || (el.tagName === 'A' && el.getAttribute('href') !== null) || 'tabindex' in el.attrs);
     const all = [...this.descendants()];
     (all.find(el => 'autofocus' in el.attrs && focusable(el)) || all.find(focusable))?.focus();
   }
@@ -2984,13 +2985,21 @@ test('Accueil : le formulaire « Nouvelle table » vient avant la liste des tabl
 
 test('QR d’une table au téléphone : aucun champ de saisie ne prend le focus à l’ouverture (zoom de l’iPhone)', async () => {
   // iOS zoome sur un champ de saisie focalisé de moins de 16 px quand le focus
-  // vient d'un toucher : la fenêtre du QR doit donner le focus à un bouton.
+  // vient d'un toucher : la fenêtre du QR ne donne le focus à aucun champ.
+  // Elle le donne à son titre, en haut : un élément focalisé plus bas (« Fermer »,
+  // le lien) fait défiler la fenêtre à l'ouverture et sort le titre et le haut du
+  // QR de l'écran d'un téléphone (test/staff-qr-layout.test.js le mesure).
   const page = await openPage({ dialogFocus: true });
   const field = () => /^(INPUT|SELECT|TEXTAREA)$/.test(page.doc.activeElement?.tagName || '');
+  const atTop = (dialog, title, qr) => {
+    assert.equal(field(), false, `${dialog} : focus à l’ouverture sur #${page.doc.activeElement?.id}`);
+    assert.equal(page.doc.activeElement?.id, page.$(title).id, `${dialog} : le focus va au titre, en haut de la fenêtre`);
+    assert.ok(order(page, page.doc.activeElement) < order(page, page.$(qr)), `${dialog} : rien sous le QR ne prend le focus`);
+  };
   await page.click(page.in('tBody', '[data-table-qr="1"]'));
   assert.equal(page.$('tableQrDialog').open, true);
-  assert.equal(field(), false, `focus à l’ouverture du QR : #${page.doc.activeElement?.id}`);
-  assert.equal(page.doc.activeElement, page.$('tableQrClose'), 'le focus va à « Fermer »');
+  atTop('QR de la table', 'tableQrName', 'tableQrImg');
+  assert.equal(page.$('tableQrName').textContent, 'Table 1', 'le titre dit de quelle table il s’agit');
   await page.click(page.$('tableQrClose'));
   page.doc.activeElement = null;
   // Même QR ouvert depuis « Détails » › « Montrer le QR ».
@@ -2998,19 +3007,26 @@ test('QR d’une table au téléphone : aucun champ de saisie ne prend le focus 
   page.doc.activeElement = null;
   await page.click(page.$('tableSheetQr'));
   assert.equal(page.$('tableQrDialog').open, true);
-  assert.equal(field(), false, 'QR ouvert depuis Détails : pas de champ focalisé');
+  atTop('QR ouvert depuis Détails', 'tableQrName', 'tableQrImg');
   await page.click(page.$('tableQrClose'));
   // Les autres fenêtres de QR (personne seule, transfert) suivent la même règle.
   page.replies['/api/staff/solo-invite'] = { qr: 'data:image/png;base64,QR', url: 'http://192.168.1.20:3000/i/abc', expiresAt: Date.now() + 1800000 };
   await page.click(page.$('issueSoloInvitation'));
   assert.equal(page.$('soloInviteDialog').open, true);
-  assert.equal(field(), false, 'QR individuel : pas de champ focalisé');
+  atTop('QR individuel', 'soloInviteTitle', 'soloInviteQr');
   await page.click(page.$('soloInviteClose'));
   page.replies['/api/staff/person/share'] = { code: '123456', qr: 'data:image/png;base64,QR', url: 'http://192.168.1.20:3000/t/1/abc#transfert', expiresAt: Date.now() + 600000 };
   await page.type(page.$('transferSearch'), 'Ali');
   await page.click(page.in('transferResults', '[data-transfer-person="alice"]'));
   assert.equal(page.$('shareDialog').open, true);
-  assert.equal(field(), false, 'QR de transfert : pas de champ focalisé');
+  atTop('QR de transfert', 'shareTitle', 'shareQr');
+  assert.equal(page.$('shareTitle').textContent, 'Accès à Alice');
+  // Un titre focalisé n'a pas de cadre de focus : ce n'est pas une commande.
+  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css'), 'utf8');
+  assert.match(css, /\.staff-dialog \[tabindex="-1"\]:focus\s*\{\s*outline:\s*none;?\s*\}/);
+  for (const id of ['tableQrName', 'soloInviteTitle', 'shareTitle']) {
+    assert.equal(page.$(id).getAttribute('tabindex'), '-1', `#${id} focalisable sans entrer dans l’ordre de tabulation`);
+  }
 });
 
 test('page du bar au téléphone : champs de saisie d’au moins 16 px, QR entier dans la largeur, zoom laissé libre', () => {

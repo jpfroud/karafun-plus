@@ -411,9 +411,13 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .end-panel h2 { color: var(--bad); }
 .battle-settings label .save-status { flex-basis: 100%; }
 .staff-dialog { max-height: calc(100vh - 24px); overflow: auto; }
+/* Titre qui reçoit le focus à l'ouverture d'une fenêtre de QR : pas une commande, pas de cadre. */
+.staff-dialog [tabindex="-1"]:focus { outline: none; }
 .qr-dialog { width: min(520px, calc(100vw - 16px)); text-align: center; }
 .qr-dialog #tableQrName { font-size: 30px; margin: 0; }
-.staff-qr.big-qr { width: min(80vw, 380px, 100%); height: auto; aspect-ratio: 1; margin: 12px auto; }
+/* Grand QR d'une table : jamais plus large que sa fenêtre, ni plus haut que l'écran sous le titre
+   (téléphone tenu en largeur). dvh suit les barres de Safari ; vh pour les navigateurs plus anciens. */
+.staff-qr.big-qr { width: min(80vw, 380px, 100%, calc(100vh - 110px)); width: min(80vw, 380px, 100%, calc(100dvh - 110px)); height: auto; aspect-ratio: 1; margin: 12px auto; }
 .qr-help { font-size: 18px; font-weight: 750; margin: 8px 0; }
 .sheet-actions { margin: 14px 0; }
 .staff-tabs { display: none; }

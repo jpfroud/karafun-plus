@@ -54,6 +54,7 @@ function run(file, env = {}) {
   await demoTest(3111, 4, 'test/bar-feedback-api.test.js');
   await demoTest(3112, 10, 'test/transfer-link-api.test.js');
   await demoTest(3113, 30, 'test/bar-feedback-v04-api.test.js');
+  await demoTest(3114, 10, 'test/staff-qr-layout.test.js');
   await run('test/evening-controls-api.test.js');
   await run('test/priority-undo-api.test.js');
   await run('test/night-restart-api.test.js');
