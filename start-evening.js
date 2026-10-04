@@ -56,7 +56,7 @@ async function main() {
     } else if (running === null) console.log('Ouvre KaraFun manuellement si sa fenêtre ne s’affiche pas.');
   }
   if (await helperRunning()) {
-    console.log('La file karaoké tourne déjà : ouverture de la page du bar.');
+    console.log('La file karaoké tourne déjà : ouverture de la page du bar. Si elle affiche « essais arrêtés », clique sur « Reconnecter » une fois la Télécommande de KaraFun activée.');
     openBar();
     return;
   }
