@@ -163,11 +163,11 @@
     <div class="battle-settings">
       <label for="battleCooldownMin">Délai après une Battle (1 à 120 min) <span class="field-number"><input id="battleCooldownMin" type="number" inputmode="numeric" min="1" max="120"> min</span><span class="save-status" data-save-status="battleCooldownMin" aria-live="polite"></span></label>
       <label for="battleRejectedCooldownMin">Après un refus (1 à 120 min) <span class="field-number"><input id="battleRejectedCooldownMin" type="number" inputmode="numeric" min="1" max="120"> min</span><span class="save-status" data-save-status="battleRejectedCooldownMin" aria-live="polite"></span></label>
-      <label for="battleVoteMin">Durée du vote (1 à 10 min) <span class="field-number"><input id="battleVoteMin" type="number" inputmode="numeric" min="1" max="10"> min</span><span class="save-status" data-save-status="battleVoteMin" aria-live="polite"></span></label>
+      <label for="battleVoteMin">Durée du vote (1 à 120 min) <span class="field-number"><input id="battleVoteMin" type="number" inputmode="numeric" min="1" max="120"> min</span><span class="save-status" data-save-status="battleVoteMin" aria-live="polite"></span></label>
       <label for="battleMinVoters">Votants minimum (1 à 100) <span class="field-number"><input id="battleMinVoters" type="number" inputmode="numeric" min="1" max="100"></span><span class="save-status" data-save-status="battleMinVoters" aria-live="polite"></span></label>
     </div>
     <button class="btn small" id="enableStaffAlerts">Activer les notifications</button>
-    <p class="tiny muted">Le vote dure le temps indiqué et se décide avec ceux qui ont voté : il faut au moins le nombre de votants indiqué (ou tous les inscrits s’ils sont moins nombreux) et plus de voix pour la Battle que contre. Le délai après une Battle part de sa fin ; après un vote refusé ou une Battle écartée par le bar, la salle peut en reproposer une plus tôt (5 minutes par défaut).</p>
+    <p class="tiny muted">Le vote dure le temps indiqué (15 minutes par défaut) et se décide avec ceux qui ont voté : il faut au moins le nombre de votants indiqué (ou tous les inscrits s’ils sont moins nombreux) et plus de voix pour la Battle que contre. Le délai après une Battle part de sa fin (30 minutes par défaut) ; après un vote refusé ou une Battle écartée par le bar, la salle peut en reproposer une plus tôt (5 minutes par défaut).</p>
     <p class="tiny muted">Sur HTTPS avec autorisation, le navigateur peut notifier si cette page reste ouverte. Sur HTTP, les demandes restent visibles dans la page et une alerte sonore peut retentir ; aucune alerte ne fonctionne après fermeture du navigateur.</p>
   </section>
 
@@ -468,9 +468,9 @@
     pushDelaySec: settingsField('pushDelaySec', 0, 180, 'secondes', 10),
     gap: settingsField('gap', 1, 10, 'places', 4),
     cap: settingsField('cap', 1, 50, 'places', 2),
-    battleCooldownMin: settingsField('battleCooldownMin', 1, 120, 'minutes', 15),
+    battleCooldownMin: settingsField('battleCooldownMin', 1, 120, 'minutes', 30),
     battleRejectedCooldownMin: settingsField('battleRejectedCooldownMin', 1, 120, 'minutes', 5),
-    battleVoteMin: settingsField('battleVoteMin', 1, 10, 'minutes', 5),
+    battleVoteMin: settingsField('battleVoteMin', 1, 120, 'minutes', 15),
     battleMinVoters: settingsField('battleMinVoters', 1, 100, 'votants', 5),
     requirePresence: { check: true, send: value => post('/api/staff/settings', { requirePresence: value }), server: () => !!S.settings?.requirePresence },
     spotifyDelay: spotifyField('resumeDelaySec', 0, 300, 3),

@@ -4,8 +4,14 @@
 // Aucun code de télécommande n'est exposé aux participants.
 const { randomUUID } = require('node:crypto');
 
-const VOTE_DURATION_MS = 5 * 60 * 1000;
-const COOLDOWN_MS = 15 * 60 * 1000;
+// Retours du bar (4 octobre) : vote de 15 minutes, 30 minutes entre deux Battles.
+const VOTE_DURATION_MS = 15 * 60 * 1000;
+const COOLDOWN_MS = 30 * 60 * 1000;
+// Anciens défauts, remplacés une seule fois dans une sauvegarde d'avant la version 5.
+const OLD_VOTE_DURATION_MS = 5 * 60 * 1000;
+const OLD_COOLDOWN_MS = 15 * 60 * 1000;
+// Garde-fou contre les fautes de frappe, le même pour la durée du vote et les délais.
+const MAX_MINUTES = 120;
 // Vote refusé ou Battle écartée par le bar : la salle peut retenter plus tôt.
 const REJECTED_COOLDOWN_MS = 5 * 60 * 1000;
 const REFUSED = new Set(['quorum', 'expired', 'rejected', 'dismissed']);
@@ -26,19 +32,26 @@ class BattleVote {
     this.now = now;
     this.voteDurationMs = saved?.voteDurationMs ?? voteDurationMs;
     this.cooldownMs = saved?.cooldownMs ?? cooldownMs;
+    // Sauvegarde d'avant la version 5 restée aux anciens défauts : nouveaux
+    // défauts, comme la migration du délai Spotify. Une valeur choisie par le
+    // bar est gardée ; la version 5 enregistrée ensuite ne migre plus rien.
+    if (saved && !(saved.version >= 5)) {
+      if (this.voteDurationMs === OLD_VOTE_DURATION_MS) this.voteDurationMs = VOTE_DURATION_MS;
+      if (this.cooldownMs === OLD_COOLDOWN_MS) this.cooldownMs = COOLDOWN_MS;
+    }
     this.rejectedCooldownMs = saved?.rejectedCooldownMs ?? rejectedCooldownMs;
     this.minVoters = saved?.minVoters ?? minVoters;
     if (!Number.isSafeInteger(this.cooldownMs) || this.cooldownMs < 1 ||
-        this.cooldownMs > 120 * 60 * 1000) throw new Error('Délai entre Battles invalide.');
+        this.cooldownMs > MAX_MINUTES * 60 * 1000) throw new Error('Délai entre Battles invalide.');
     if (!Number.isSafeInteger(this.rejectedCooldownMs) || this.rejectedCooldownMs < 1 ||
-        this.rejectedCooldownMs > 120 * 60 * 1000) throw new Error('Délai après un refus de Battle invalide.');
+        this.rejectedCooldownMs > MAX_MINUTES * 60 * 1000) throw new Error('Délai après un refus de Battle invalide.');
     if (!Number.isSafeInteger(this.voteDurationMs) || this.voteDurationMs < 1 ||
-        this.voteDurationMs > 10 * 60 * 1000) throw new Error('Durée de vote invalide.');
+        this.voteDurationMs > MAX_MINUTES * 60 * 1000) throw new Error('Durée de vote invalide.');
     if (!Number.isSafeInteger(this.minVoters) || this.minVoters < 1 || this.minVoters > 100) {
       throw new Error('Nombre minimal de votants invalide.');
     }
     this.onChange = onChange;
-    if (saved && (![1, 2, 3, 4].includes(saved.version) || (saved.ballot &&
+    if (saved && (![1, 2, 3, 4, 5].includes(saved.version) || (saved.ballot &&
       (!Array.isArray(saved.ballot.eligiblePersonIds) || !Array.isArray(saved.ballot.votes) ||
        saved.ballot.votes.some(vote => !Array.isArray(vote) || vote.length !== 2 || typeof vote[1] !== 'string') ||
        !['voting', 'requested', 'cooldown'].includes(saved.ballot.phase) ||
@@ -427,8 +440,8 @@ class BattleVote {
 
   setVoteMinutes(minutes) {
     const value = Number(minutes);
-    if (!Number.isInteger(value) || value < 1 || value > 10) {
-      throw new Error('La durée du vote doit être de 1 à 10 minutes.');
+    if (!Number.isInteger(value) || value < 1 || value > MAX_MINUTES) {
+      throw new Error(`La durée du vote doit être de 1 à ${MAX_MINUTES} minutes.`);
     }
     this.voteDurationMs = value * 60 * 1000;
     this._changed('settings');
@@ -486,7 +499,7 @@ class BattleVote {
 
   serialize() {
     this.tick();
-    return { version: 4, cooldownMs: this.cooldownMs, rejectedCooldownMs: this.rejectedCooldownMs,
+    return { version: 5, cooldownMs: this.cooldownMs, rejectedCooldownMs: this.rejectedCooldownMs,
       voteDurationMs: this.voteDurationMs,
       minVoters: this.minVoters,
       ballot: this.ballot ? structuredClone(this.ballot) : null,

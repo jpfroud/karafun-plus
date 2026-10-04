@@ -2216,7 +2216,7 @@
       renderBattlePick();
       closeSheet();
       await refresh();
-      // La durée du vote se règle au bar (5 minutes par défaut).
+      // La durée du vote se règle au bar (15 minutes par défaut).
       const minutes = Number(result.battle?.voteMinutes);
       toast(result.battle?.phase === 'requested' ? t('Majorité obtenue : le bar est prévenu.')
         : minutes > 0 ? tp(minutes, 'Vote Battle ouvert pendant {n} minute.', 'Vote Battle ouvert pendant {n} minutes.')

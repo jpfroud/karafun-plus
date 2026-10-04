@@ -117,7 +117,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
   await settle();
   assert.equal(get('connectBtn').textContent, 'Changer le code', 'la connexion déjà active est explicite');
-  assert.equal(String(get('battleCooldownMin').value), '15', 'valeur de repli Battle');
+  assert.equal(String(get('battleCooldownMin').value), '30', 'valeur de repli Battle');
   assert.doesNotMatch(get('identityBody').innerHTML, /data-identity-verified|vérifi/i,
     'un repère n’a rien à vérifier');
   assert.match(get('identityBody').innerHTML, /t-shirt rouge/, 'le repère reste affiché');
@@ -140,11 +140,11 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(posts[0], { personId: 'alice', note: 'veste bleue' });
   // Réglage Battle tapé puis clavier refermé : le rafraîchissement ne remet pas l'ancienne valeur.
   const cooldown = get('battleCooldownMin');
-  cooldown.value = '30';
+  cooldown.value = '40';
   cooldown.listeners.input({ type: 'input', target: cooldown });
   poll();
   await settle();
-  assert.equal(String(cooldown.value), '30', 'saisie gardée tant qu’elle n’est pas enregistrée');
+  assert.equal(String(cooldown.value), '40', 'saisie gardée tant qu’elle n’est pas enregistrée');
 
   connected = false;
   poll();

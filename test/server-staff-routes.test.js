@@ -514,6 +514,19 @@ test('renommer une table et renouveler son QR : l’ancien lien ne fonctionne pl
 });
 
 // ---------------------------------------------------------------- réglages
+test('réglages Battle : vote de 15 min et 30 min entre Battles par défaut, vote jusqu’à 120 min', async () => {
+  const f = harness();
+  const s = () => plain(f.staffState().settings);
+  assert.deepEqual([s().battleVoteMin, s().battleCooldownMin, s().battleRejectedCooldownMin], [15, 30, 5]);
+  await f.call('POST /api/staff/settings', { battleVoteMin: 45 });
+  assert.equal(s().battleVoteMin, 45, 'plus de limite de 10 minutes');
+  await f.call('POST /api/staff/settings', { battleVoteMin: 120 });
+  assert.equal(s().battleVoteMin, 120);
+  await assert.rejects(f.call('POST /api/staff/settings', { battleVoteMin: 121 }),
+    { message: 'La durée du vote Battle doit être de 1 à 120 minutes.' });
+  assert.equal(s().battleVoteMin, 120);
+});
+
 test('réglages : chaque valeur hors bornes est refusée sans rien modifier', async () => {
   const f = harness();
   const before = plain(f.staffState().settings);
@@ -525,7 +538,7 @@ test('réglages : chaque valeur hors bornes est refusée sans rien modifier', as
     [{ playDelaySec: -1 }, 'La pause avant lecture doit être entre 0 et 30 secondes.'],
     [{ battleCooldownMin: 0 }, 'Le délai entre Battles doit être de 1 à 120 minutes.'],
     [{ battleRejectedCooldownMin: 121 }, 'Le délai après un refus de Battle doit être de 1 à 120 minutes.'],
-    [{ battleVoteMin: 11 }, 'La durée du vote Battle doit être de 1 à 10 minutes.'],
+    [{ battleVoteMin: 121 }, 'La durée du vote Battle doit être de 1 à 120 minutes.'],
     [{ repeatWarnMin: 241 }, 'L’alerte « titre déjà chanté » doit être entre 0 et 240 minutes (0 la désactive).'],
     [{ presenceGraceSec: 9 }, 'Le délai pour confirmer « Je suis là » doit être entre 10 et 300 secondes.'],
     [{ presenceMaxSkips: 11 }, 'Le nombre de passages manqués doit être entre 1 et 10.'],

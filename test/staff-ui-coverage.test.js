@@ -1565,7 +1565,7 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(page.doc.title, 'File karaoké — page du bar');
 
   // Réglages Battle : chaque champ s'enregistre seul ; seule sa valeur part.
-  assert.match(page.$('battleVoteMin').closest('label').textContent, /^Durée du vote \(1 à 10 min\)/, 'plage visible');
+  assert.match(page.$('battleVoteMin').closest('label').textContent, /^Durée du vote \(1 à 120 min\)/, 'plage visible');
   const saved = id => page.doc.body.querySelector(`[data-save-status="${id}"]`).textContent;
   await page.type(page.$('battleCooldownMin'), '20');
   page.runTimers(800);
@@ -1574,14 +1574,14 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(saved('battleCooldownMin'), 'Enregistré ✓');
   // Durée du vote hors bornes : rien ne part, la plage est rappelée et la saisie reste.
   const sent = page.postsTo('/api/staff/settings').length;
-  await page.type(page.$('battleVoteMin'), '20');
+  await page.type(page.$('battleVoteMin'), '200');
   page.runTimers(800);
   await page.flush();
   assert.equal(page.postsTo('/api/staff/settings').length, sent);
-  assert.equal(saved('battleVoteMin'), 'Non enregistré : entre 1 et 10 minutes');
+  assert.equal(saved('battleVoteMin'), 'Non enregistré : entre 1 et 120 minutes');
   assert.equal(page.$('battleVoteMin').getAttribute('aria-invalid'), 'true');
   await page.poll();
-  assert.equal(page.$('battleVoteMin').value, '20');
+  assert.equal(page.$('battleVoteMin').value, '200');
   // Refus du serveur : raison, puis nouvel essai.
   page.replies['/api/staff/settings'] = { status: 400, error: 'Le nombre minimal de votants doit être de 1 à 100.' };
   await page.type(page.$('battleMinVoters'), '8');
@@ -3161,4 +3161,24 @@ test('fermeture du bar : changer l’heure fait un brouillon, seule « Valider l
   await page.update({ closing: null });
   assert.equal(field.value, '');
   page.runTimers(2600);
+});
+
+test('Battle : durée du vote de 1 à 120 min (plus de limite de 10), repli à 15 min de vote et 30 min entre Battles', async () => {
+  const world = baseWorld();
+  delete world.settings.battleVoteMin; delete world.settings.battleCooldownMin;
+  const page = await openPage({ world });
+  assert.equal(String(page.$('battleVoteMin').value), '15', 'durée du vote par défaut');
+  assert.equal(String(page.$('battleCooldownMin').value), '30', 'délai entre Battles par défaut');
+  assert.equal(String(page.$('battleRejectedCooldownMin').value), '5', 'délai après un refus inchangé');
+  assert.match(page.$('battleVoteMin').closest('label').textContent, /^Durée du vote \(1 à 120 min\)/);
+  assert.equal(page.$('battleVoteMin').getAttribute('max'), '120');
+  await page.type(page.$('battleVoteMin'), '45');
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { battleVoteMin: 45 }, '45 minutes acceptées');
+  await page.type(page.$('battleVoteMin'), '121');
+  page.runTimers(800);
+  await page.flush();
+  assert.equal(page.doc.body.querySelector('[data-save-status="battleVoteMin"]').textContent, 'Non enregistré : entre 1 et 120 minutes');
+  assert.ok(!/1 à 10 min/.test(html), 'plus de mention « 1 à 10 min »');
 });

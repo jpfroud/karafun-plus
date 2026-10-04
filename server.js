@@ -2934,8 +2934,8 @@ const handlers = {
       throw new Error('Le délai après un refus de Battle doit être de 1 à 120 minutes.');
     }
     const nextVoteMin = 'battleVoteMin' in body ? Number(body.battleVoteMin) : null;
-    if (nextVoteMin !== null && (!Number.isInteger(nextVoteMin) || nextVoteMin < 1 || nextVoteMin > 10)) {
-      throw new Error('La durée du vote Battle doit être de 1 à 10 minutes.');
+    if (nextVoteMin !== null && (!Number.isInteger(nextVoteMin) || nextVoteMin < 1 || nextVoteMin > 120)) {
+      throw new Error('La durée du vote Battle doit être de 1 à 120 minutes.');
     }
     const nextRepeatWarn = 'repeatWarnMin' in body ? Number(body.repeatWarnMin) : settings.repeatWarnMin;
     if (!Number.isInteger(nextRepeatWarn) || nextRepeatWarn < 0 || nextRepeatWarn > 240) {
