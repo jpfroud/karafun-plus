@@ -55,8 +55,12 @@ function assertWhole(label, m) {
   await request('/api/staff/table', { id: '7', headcount: 4 });
   const tables = (await request('/api/staff/state')).tables;
   const access = new URL(tables.find(t => t.id === '7').url).pathname.split('/').pop();
-  await fetch(BASE + '/api/table/person', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ table: '7', access, name: 'Alice' }) });
+  // Prénom propre à ce passage : le test peut être relancé sur une démo déjà utilisée.
+  const name = `Alice ${String(Date.now()).slice(-4)}`;
+  const joined = await fetch(BASE + '/api/table/person', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ table: '7', access, name }) });
+  assert.equal(joined.ok, true, `inscription de ${name} à la table 7 : HTTP ${joined.status}`);
+  const person = (await joined.json()).id;
   const staff = BASE + await staffRoute(BASE, '/staff');
   const browser = await chromium.launch();
   try {
@@ -80,10 +84,10 @@ function assertWhole(label, m) {
       assertWhole(`QR individuel, ${size}`, await measure(page, 'soloInviteDialog', 'soloInviteTitle', 'soloInviteQr'));
       await page.locator('#soloInviteClose').tap();
       await page.locator('[data-tab-btn="reperes"]').tap();
-      await page.locator('#identityBody [data-identity-share]:not([disabled])').first().tap();
+      await page.locator(`#identityBody [data-identity-person="${person}"] [data-identity-share]`).tap();
       await page.waitForFunction(() => document.getElementById('shareDialog').open);
       assertWhole(`QR de transfert, ${size}`, await measure(page, 'shareDialog', 'shareTitle', 'shareQrBox'));
-      assert.equal(await page.textContent('#shareTitle'), 'Accès à Alice');
+      assert.equal(await page.textContent('#shareTitle'), `Accès à ${name}`);
       await context.close();
     }
   } finally {
