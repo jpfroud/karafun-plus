@@ -2333,7 +2333,10 @@
         showCategory(null, false);
       }
     } else if (term) {
-      if (catalogMode !== 'search' || searchTerm !== term || $('searchInput').value.trim() !== term) {
+      // Résultats de ce terme déjà affichés, champ vidé en choisissant un titre
+      // pour quelqu'un : l'écran reste tel quel, sans nouvelle recherche.
+      const typed = $('searchInput').value.trim();
+      if (catalogMode !== 'search' || searchTerm !== term || (typed && typed !== term)) {
         $('searchInput').value = term;
         renderSearchClear();
         searchSongs(term);
@@ -2389,13 +2392,17 @@
     battlePickMode = false;
     renderBattlePick();
     updateTarget();
-    // Choisir un titre pour quelqu'un : le catalogue repart de ses sélections,
-    // sans la recherche ni les résultats précédents (on ne remet pas le même
-    // titre pour une autre personne). Une recherche en cours de frappe est
-    // abandonnée. L'onglet Catalogue, lui, retrouve l'écran quitté.
+    // Choisir un titre pour quelqu'un : le catalogue garde l'écran quitté
+    // (résultats de la dernière recherche, titres d'une sélection…), seul le
+    // champ est vidé pour taper tout de suite une autre recherche. Une frappe
+    // encore en attente est abandonnée ; si une seule lettre avait remplacé
+    // l'écran par « Tape au moins 2 lettres. », l'écran d'avant revient.
+    // L'onglet Catalogue, lui, retrouve aussi le texte du champ.
     clearTimeout(searchTimer);
-    if ($('searchInput').value || subScreen(catalogMode)) showCategories(catalogType);
+    $('searchInput').value = '';
+    renderSearchClear();
     setTab('catalog');
+    if (catalogView === shortTermView) reloadCatalog();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -2541,6 +2548,8 @@
     }).catch(error => { if (number === catalogRequest) catalogError(error); });
   }
 
+  // Une seule lettre tapée : l'écran du catalogue est remplacé par ce rappel.
+  const shortTermView = catalogMessage(() => t('Tape au moins 2 lettres.'));
   // Bouton × : vide la recherche d'un geste et revient aux sélections.
   function renderSearchClear() { $('searchClear').hidden = !$('searchInput').value; }
   function onSearchInput() {
@@ -2548,7 +2557,7 @@
     clearTimeout(searchTimer);
     const term = $('searchInput').value.trim();
     if (!term) { backToSelections(); return; }
-    if (term.length < 2) { ++catalogRequest; showCatalogView(catalogMessage(() => t('Tape au moins 2 lettres.'))); return; }
+    if (term.length < 2) { ++catalogRequest; showCatalogView(shortTermView); return; }
     searchTimer = setTimeout(() => searchSongs(term), 300);
   }
   $('searchInput').addEventListener('input', onSearchInput);
@@ -2579,14 +2588,20 @@
     button.addEventListener('click', () => { clearTimeout(searchTimer); backToSelections(button.dataset.catalog); });
   });
 
+  // Écran actuel du catalogue rechargé (« Réessayer », frappe abandonnée) :
+  // résultats de la dernière recherche, même si le champ a été vidé depuis,
+  // titres de la sélection ouverte, Nouveautés / À découvrir ou sélections.
+  function reloadCatalog() {
+    if (catalogMode === 'songs') showCategory(null, false);
+    else if (catalogMode === 'search') searchSongs(searchTerm);
+    else showCategories(catalogType);
+  }
+
   $('catalogContent').addEventListener('click', event => {
     const button = event.target.closest('button');
     if (!button) return;
-    if (button.hasAttribute('data-retry')) {
-      if (catalogMode === 'songs') showCategory(null, false);
-      else if (catalogMode === 'search') searchSongs($('searchInput').value.trim());
-      else showCategories(catalogType);
-    } else if (button.hasAttribute('data-back')) backToSelections();
+    if (button.hasAttribute('data-retry')) reloadCatalog();
+    else if (button.hasAttribute('data-back')) backToSelections();
     else if (button.hasAttribute('data-category-index')) showCategory(Number(button.dataset.categoryIndex));
     else if (button.hasAttribute('data-song-index')) chooseSong(songs[Number(button.dataset.songIndex)]);
     else if (button.hasAttribute('data-more')) showCategory(0, true);

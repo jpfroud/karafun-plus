@@ -593,9 +593,8 @@ test('duo : partenaires de la table et des autres tables, invitation ou ajout di
   assert.equal(sent.warn, true, 'titre déjà prévu : avertissement');
 
   await page.tap('peopleList', '[data-duet-song="alice"]');
-  // Le catalogue repart de ses sélections (retour du bar, 4 octobre).
-  assert.equal(page.node('catalogContent').querySelector('[data-song-index]'), null, 'plus les titres de la sélection précédente');
-  await pickCatalogSong(page);
+  // Le catalogue est resté sur les titres de la sélection.
+  await page.tap('catalogContent', '[data-song-index="0"]');
   await page.click(page.node('sendDuo'));
   assert.equal(page.posts.at(-1)[1].partnerId, 'marc');
   assert.deepEqual(page.toast(), { text: 'Duo ajouté à la liste.', bad: false, warn: false, hidden: false });
@@ -2376,52 +2375,131 @@ test('infos : plus d’avis « c’est à toi, sur scène maintenant », l’avi
   assert.ok(!/sur scène maintenant/.test(html), 'le texte a disparu de la page');
 });
 
-test('catalogue : « ＋ Chanson », « ＋ Duo » et « Choisir une chanson » vident la recherche précédente et ses résultats', async () => {
+// Recherche du catalogue : nombre de demandes envoyées et résultats « Queen »
+// encore affichés, champ vidé et sans × (la recherche suivante se tape tout de suite).
+const searchUrls = page => page.requests.filter(request => request.url.startsWith('/api/search?')).map(request => request.url);
+function assertQueenKept(page, label) {
+  assert.equal(page.tabShown(), 'catalog', label);
+  assert.equal(page.node('searchInput').value, '', `${label} : champ vidé`);
+  assert.equal(page.node('searchClear').hidden, true, `${label} : plus de ×`);
+  assert.match(page.node('catalogContent').textContent, /^Résultats pour « Queen »/, `${label} : recherche précédente affichée`);
+  assert.deepEqual(page.node('catalogContent').querySelectorAll('.song-title').map(node => node.textContent),
+    ['Bohemian Rhapsody', 'Under Pressure'], `${label} : avec ses titres`);
+}
+
+test('catalogue : « ＋ Chanson », « ＋ Duo » et « Choisir une chanson » gardent les résultats précédents, champ de recherche vidé', async () => {
   const state = baseState();
   state.tablePeople = [person('alice', 'Alice'), person('bruno', 'Bruno')];
   state.managedIds = ['alice', 'bruno'];
   const page = await open({ state });
-  const fresh = label => {
-    assert.equal(page.tabShown(), 'catalog', label);
-    assert.equal(page.node('searchInput').value, '', `${label} : recherche vidée`);
-    assert.equal(page.node('searchClear').hidden, true, `${label} : plus de ×`);
-    assert.doesNotMatch(page.node('catalogContent').textContent, /Résultats pour|Queen|Recherche…/, `${label} : anciens résultats retirés`);
-    assert.ok(page.node('catalogContent').querySelector('[data-category-index]'), `${label} : le catalogue repart des sélections`);
-  };
   const searchQueen = async () => {
     await page.type('searchInput', 'Queen');
     await page.runTimers(300);
-    assert.match(page.node('catalogContent').textContent, /Résultats pour « Queen »/);
+    assert.match(page.node('catalogContent').textContent, /^Résultats pour « Queen »/);
   };
-  // « ＋ Chanson » pour Alice, recherche, titre ajouté…
+  // « ＋ Chanson » pour Alice, recherche, titre ajouté à sa liste…
   await page.tap('peopleList', '[data-add-song="alice"]');
   await searchQueen();
   await page.tap('catalogContent', '[data-song-index="0"]');
   await page.click(page.node('appendSong'));
   assert.equal(page.tabShown(), 'table');
-  // … puis « ＋ Chanson » pour Bruno : on ne lui remet pas le même titre.
+  // … puis « ＋ Chanson » de nouveau, pour elle ou pour Bruno, et « ＋ Duo » :
+  // la recherche « Queen » est encore ouverte, sans nouvelle demande.
+  const sent = searchUrls(page).length;
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  assertQueenKept(page, '« ＋ Chanson » pour la même personne');
+  await page.click(page.node('nav-table'));
   await page.tap('peopleList', '[data-add-song="bruno"]');
-  fresh('« ＋ Chanson » pour une autre personne');
+  assertQueenKept(page, '« ＋ Chanson » pour une autre personne');
   assert.match(page.node('catalogTarget').textContent, /Bruno/);
-  // « ＋ Duo » aussi, même sans rien avoir ajouté entre-temps.
-  await searchQueen();
   await page.click(page.node('nav-table'));
   await page.tap('peopleList', '[data-duet-song="alice"]');
-  fresh('« ＋ Duo »');
-  // Une recherche encore en cours de frappe ne revient pas après coup.
+  assertQueenKept(page, '« ＋ Duo »');
+  assert.equal(searchUrls(page).length, sent, 'résultats gardés : aucune nouvelle recherche');
+  // Une autre recherche se tape normalement.
+  await page.type('searchInput', 'A');
+  assert.equal(page.node('searchClear').hidden, false, 'le × revient avec le texte');
+  assert.equal(page.node('catalogContent').textContent, 'Tape au moins 2 lettres.');
+  await page.type('searchInput', 'Abba');
+  await page.runTimers(300);
+  assert.equal(searchUrls(page).at(-1), '/api/search?q=Abba');
+  assert.match(page.node('catalogContent').textContent, /^Résultats pour « Abba »/);
+
+  // Recherche encore en attente (« Que », quitté avant 300 ms) : abandonnée,
+  // les résultats « Queen » restent affichés, sans nouvelle demande, et
+  // « Que » ne part pas après coup.
+  await searchQueen();
+  const queenSent = searchUrls(page).length;
   await page.type('searchInput', 'Que');
   await page.click(page.node('nav-table'));
+  const tableStep = page.history.index;
   await page.tap('peopleList', '[data-add-song="bruno"]');
+  assertQueenKept(page, 'frappe interrompue');
+  assert.equal(page.history.index, tableStep + 1, 'une seule étape ajoutée, celle du catalogue');
+  assert.equal(page.history.state.term, 'Queen', 'l’étape garde le terme affiché');
   await page.runTimers(300);
-  fresh('frappe interrompue');
-  // Titres d'une sélection ouverte : le catalogue repart aussi des sélections.
-  await page.tap('catalogContent', '[data-category-index="0"]');
-  assert.match(page.node('catalogContent').textContent, /Tube/);
+  assertQueenKept(page, 'frappe interrompue, 300 ms plus tard');
+  assert.ok(!searchUrls(page).includes('/api/search?q=Que'), 'la recherche « Que » n’est jamais envoyée');
+  assert.equal(searchUrls(page).length, queenSent, 'résultats « Queen » encore affichés : pas redemandés');
+  // Une seule lettre tapée : les résultats d'avant, pas « Tape au moins 2 lettres. ».
+  await page.type('searchInput', 'Q');
+  assert.equal(page.node('catalogContent').textContent, 'Tape au moins 2 lettres.');
   await page.click(page.node('nav-table'));
   await page.tap('peopleList', '[data-add-song="alice"]');
-  assert.equal(page.node('catalogContent').querySelector('[data-song-index]'), null, 'plus les titres de la sélection précédente');
+  assertQueenKept(page, 'une lettre tapée');
+  // Champ vide, donc sans × : les boutons « Playlists », « Styles »… ramènent aux sélections.
+  await page.tap(page.body, '[data-catalog="playlist"]');
+  assert.match(page.node('catalogContent').textContent, /^Choisis une sélection\./, '« Playlists » ramène aux sélections');
 
-  // « Choisir une chanson » (En solo) : même chose.
+  // Titres d'une sélection ouverte : ils restent affichés, une lettre tapée comprise.
+  await page.tap('catalogContent', '[data-category-index="0"]');
+  const selectionKept = label => {
+    assert.equal(page.node('searchInput').value, '', `${label} : champ vidé`);
+    assert.match(page.node('catalogContent').textContent, /^← SélectionsAnnées 80/, `${label} : sélection ouverte`);
+    assert.deepEqual(page.node('catalogContent').querySelectorAll('.song-title').map(node => node.textContent), ['Tube'], `${label} : avec ses titres`);
+  };
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  selectionKept('sélection ouverte');
+  await page.type('searchInput', 'Z');
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="bruno"]');
+  selectionKept('sélection ouverte, une lettre tapée');
+  // Deux lettres en attente : la liste est encore là, elle n'est pas rechargée
+  // (les pages « Voir plus » déjà lues restent).
+  const songsAsked = () => page.requests.filter(request => request.url.startsWith('/api/catalog/songs?')).length;
+  const asked = songsAsked();
+  await page.type('searchInput', 'Zo');
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  await page.runTimers(300);
+  selectionKept('sélection ouverte, deux lettres en attente');
+  assert.equal(songsAsked(), asked, 'sélection gardée telle quelle, sans nouvelle demande');
+  assert.ok(!searchUrls(page).includes('/api/search?q=Zo'), 'la recherche « Zo » n’est jamais envoyée');
+  // Sélections, une lettre tapée : les sélections reviennent.
+  await page.tap(page.body, '[data-catalog="playlist"]');
+  await page.type('searchInput', 'Z');
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  assert.equal(page.node('searchInput').value, '', 'sélections, une lettre tapée : champ vidé');
+  assert.match(page.node('catalogContent').textContent, /^Choisis une sélection\.Années 80$/, 'sélections, une lettre tapée : les sélections');
+  // Nouveautés : la liste reste aussi, une lettre tapée comprise.
+  await page.tap(page.body, '[data-catalog="news"]');
+  const newsKept = label => {
+    assert.equal(page.node('searchInput').value, '', `${label} : champ vidé`);
+    assert.match(page.node('catalogContent').textContent, /^Nouveautés/, `${label} : Nouveautés affichées`);
+    assert.deepEqual(page.node('catalogContent').querySelectorAll('.song-title').map(node => node.textContent), ['Nouveau tube'], `${label} : avec leurs titres`);
+  };
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  newsKept('Nouveautés');
+  await page.type('searchInput', 'Z');
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="bruno"]');
+  newsKept('Nouveautés, une lettre tapée');
+
+  // « Choisir une chanson » (En solo) : titre ajouté à ma liste, puis
+  // « Choisir une chanson » de nouveau : la recherche précédente est ouverte.
   const solo = baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true, headcount: 40, activeCount: 1 } });
   solo.tablePeople = [person('zoe', 'Zoé')];
   solo.managedIds = ['zoe'];
@@ -2429,15 +2507,51 @@ test('catalogue : « ＋ Chanson », « ＋ Duo » et « Choisir une chanson » 
   await single.tap('quickSongActions', '[data-quick-song="zoe"]');
   await single.type('searchInput', 'Queen');
   await single.runTimers(300);
-  assert.match(single.node('catalogContent').textContent, /Résultats pour « Queen »/);
-  await single.click(single.node('nav-table'));
+  await single.tap('catalogContent', '[data-song-index="0"]');
+  assert.equal(single.node('appendSong').textContent, 'Ajouter à ma liste');
+  await single.click(single.node('appendSong'));
+  assert.equal(single.tabShown(), 'table');
   await single.tap('quickSongActions', '[data-quick-song="zoe"]');
-  assert.equal(single.node('searchInput').value, '', '« Choisir une chanson » : recherche vidée');
-  assert.doesNotMatch(single.node('catalogContent').textContent, /Résultats pour/);
-  // L'onglet Catalogue (simple visite, pour personne) garde l'écran où on était.
+  assertQueenKept(single, '« Choisir une chanson »');
+  // L'onglet Catalogue (simple visite, pour personne) garde aussi le texte du champ.
   await single.type('searchInput', 'Queen');
   await single.runTimers(300);
   await single.click(single.node('nav-table'));
   await single.click(single.node('nav-catalog'));
   assert.equal(single.node('searchInput').value, 'Queen', 'l’onglet Catalogue retrouve la recherche en cours');
+});
+
+test('catalogue : « Réessayer » relance le dernier terme cherché, même champ vidé par « ＋ Chanson »', async () => {
+  let failures = 1;
+  const page = await open({ respond: url => (url.startsWith('/api/search?') && failures-- > 0 ? reply(502, {}) : undefined) });
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  await page.type('searchInput', 'Queen');
+  await page.runTimers(300);
+  assert.equal(page.node('catalogContent').textContent, 'Une erreur est survenue.Réessayer');
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  assert.equal(page.node('searchInput').value, '', 'champ vidé');
+  assert.equal(page.node('catalogContent').textContent, 'Une erreur est survenue.Réessayer', 'l’échec reste affiché');
+  await page.tap('catalogContent', '[data-retry]');
+  assert.deepEqual(searchUrls(page), ['/api/search?q=Queen', '/api/search?q=Queen'], 'le dernier terme cherché, pas le champ vide');
+  assertQueenKept(page, '« Réessayer »');
+});
+
+test('catalogue : Retour vers les résultats gardés par « ＋ Chanson » ne remplit pas le champ et ne relance pas la recherche', async () => {
+  const page = await open();
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  await page.type('searchInput', 'Queen');
+  await page.runTimers(300);
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  assertQueenKept(page, '« ＋ Chanson »');
+  assert.equal(page.history.state.catalog, 'search', 'l’étape du catalogue est celle des résultats');
+  assert.equal(page.history.state.term, 'Queen');
+  const sent = searchUrls(page).length;
+  // « Ma table », puis le bouton Retour d'Android : retour sur ces résultats.
+  await page.click(page.node('nav-table'));
+  page.history.back();
+  await page.settle();
+  assertQueenKept(page, 'Retour');
+  assert.equal(searchUrls(page).length, sent, 'pas de nouvelle recherche');
 });
