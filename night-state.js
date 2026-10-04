@@ -171,6 +171,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       fail('passage physique mal formé');
     }
     const person = clone(p);
+    delete person.verifiedAt; // ancienne vérification des repères, retirée : le repère seul reste
     cleanSongSettings(person.song);
     person.backlog.forEach(cleanSongSettings);
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.

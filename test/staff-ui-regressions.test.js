@@ -37,7 +37,7 @@ const document = { activeElement: null, hidden: false, getElementById: get,
   addEventListener: (name, listener) => { (documentListeners[name] ||= []).push(listener); } };
 const documentEvent = (name, target) => (documentListeners[name] || []).forEach(listener => listener({ target }));
 const singer = { id: 'alice', name: 'Alice', tableId: '1', active: true, songCount: 1,
-  sung: 0, privateNote: 't-shirt rouge', verified: true };
+  sung: 0, privateNote: 't-shirt rouge' };
 let connected = true;
 let manualChanges = [];
 let queue = [];
@@ -118,8 +118,8 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   await settle();
   assert.equal(get('connectBtn').textContent, 'Changer le code', 'la connexion déjà active est explicite');
   assert.equal(String(get('battleCooldownMin').value), '15', 'valeur de repli Battle');
-  assert.doesNotMatch(get('identityBody').innerHTML, /data-identity-verified|> Vérifié</,
-    'le contrôle sans effet a disparu');
+  assert.doesNotMatch(get('identityBody').innerHTML, /data-identity-verified|vérifi/i,
+    'un repère n’a rien à vérifier');
   assert.match(get('identityBody').innerHTML, /t-shirt rouge/, 'le repère reste affiché');
   assert.equal(get('issueSoloInvitation').disabled, false);
   await get('issueSoloInvitation').onclick();

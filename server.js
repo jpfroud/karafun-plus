@@ -1776,7 +1776,7 @@ function staffState() {
     people: [...sched.people.values()].map(p => ({ id: p.id, name: p.name, tableId: p.tableId,
       sung: p.sung, inQueue: sched.Q.includes(p.id), lastSeen: p.lastSeen,
       active: !p.withdrawnAt, songCount: sched.songsOf(p).length,
-      privateNote: p.privateNote || '', verified: !!p.verifiedAt, verifiedAt: p.verifiedAt || 0, bonus: p.bonus || 0,
+      privateNote: p.privateNote || '', bonus: p.bonus || 0,
       appearances: (p.sung || 0) + (p.duetGuestCount || 0),
       presenceSkips: sched.presenceSkipsOf(p), presenceRetry: sched._isPresenceRetry(p),
       photoUrl: p.photo ? `/photo/${p.id}` : null })),
@@ -3208,8 +3208,7 @@ const handlers = {
     return { ok: true };
   },
   'POST /api/staff/person/identify': async (req, res, body) => {
-    const p = sched.staffIdentify(body.personId, 'note' in body ? body.note : undefined,
-      'verified' in body ? !!body.verified : undefined);
+    const p = sched.setPrivateNote(body.personId, 'note' in body ? body.note : undefined);
     return { ok: true, personId: p.id };
   },
   'POST /api/staff/person/share': async (req, res, body) => {

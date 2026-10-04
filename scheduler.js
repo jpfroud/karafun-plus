@@ -485,7 +485,7 @@ class Scheduler {
       id: id(), token: token(), name, tableId: t.id, photo: photo || null,
       joinedAt: Date.now(), song: null, backlog: [], sung: 0, over: 0, held: 0,
       confirmedAt: 0, duet: null, duetOf: null, invite: null, lastSeen: Date.now(),
-      privateNote: '', verifiedAt: 0, withdrawnAt: null, lastAppearanceTurn: 0,
+      privateNote: '', withdrawnAt: null, lastAppearanceTurn: 0,
     };
     p.group = t.individual ? `${t.id}#${p.id}` : t.id;
     this.people.set(p.id, p);
@@ -522,18 +522,14 @@ class Scheduler {
     return p;
   }
 
-  // `note` absent : repère inchangé. `verified` absent : la vérification
-  // reste tant que le texte ne change pas ; un autre texte est à revérifier,
-  // sauf s'il est vérifié dans le même appui.
-  staffIdentify(personId, note, verified) {
+  // Repère privé noté par le bar : un indice pour reconnaître la personne plus
+  // tard (« t-shirt rouge »), rien de plus. `note` absent : repère inchangé.
+  setPrivateNote(personId, note) {
     const p = this.people.get(String(personId));
     if (!p) throw new Error('Chanteur inconnu.');
     const clean = note === undefined ? (p.privateNote || '') : String(note || '').replace(/\s+/g, ' ').trim();
     if (clean.length > 140) throw new Error('Description limitée à 140 caractères.');
-    const changed = clean !== (p.privateNote || '');
     p.privateNote = clean;
-    if (verified === true) p.verifiedAt = !changed && p.verifiedAt ? p.verifiedAt : Date.now();
-    else if (verified === false || changed) p.verifiedAt = 0;
     // Les notes privées ne vont jamais dans le journal public.
     this.version++;
     return p;

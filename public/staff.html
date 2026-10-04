@@ -581,13 +581,8 @@
   // envois du même champ pourraient arriver au serveur dans le désordre, et
   // la dernière valeur choisie serait remplacée par la précédente. Le
   // suivant part dès la réponse, avec la dernière valeur.
-  function lockField(d) {
-    d.busy = true;
-    d.sending = new Promise(resolve => { d.unlock = resolve; });
-  }
   function unlockField(key, d) {
     d.busy = false;
-    d.unlock?.();
     if (d.again) { d.again = false; flushField(key); }
   }
   async function flushField(key, retry = false) {
@@ -601,7 +596,7 @@
     const seq = d.seq = ++saveSeq;
     d.state = 'saving';
     renderStatus(key);
-    lockField(d);
+    d.busy = true;
     try {
       const message = await def.send(def.min !== undefined ? Number(d.value) : d.value, d.id);
       if (drafts.get(key) !== d || d.seq !== seq || d.state !== 'saving') return; // modifié entre-temps : la nouvelle valeur repartira
@@ -699,43 +694,16 @@
   });
 
   // ------------------------------------------------------------ repères
-  // Repère d'un chanteur : texte enregistré seul, état de vérification, et
-  // « C'est bien lui/elle » quand le bar l'a reconnu au micro.
+  // Repère d'un chanteur : un indice noté par le bar (« t-shirt rouge ») pour
+  // le reconnaître plus tard, enregistré seul. Rien à vérifier ensuite.
   function markerHtml(p) {
     const note = p.privateNote || '';
-    const [cls, label] = !note ? ['', 'Pas de repère'] : p.verified ?
-      ['ok', `Repère vérifié ✓${p.verifiedAt ? ` ${hhmm(p.verifiedAt)}` : ''}`] : ['warn', 'À vérifier'];
-    return `<div class="marker"><span class="pill marker-pill${cls ? ` ${cls}` : ''}">${esc(label)}</span>
-      <input type="text" maxlength="140" data-autosave="note" data-autosave-id="${esc(p.id)}" value="${esc(note)}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}">
-      <span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span>
-      ${note && !p.verified ? `<button type="button" class="btn small" data-marker-verify="${esc(p.id)}">✓ C’est bien lui/elle</button>` : ''}</div>`;
+    return `<div class="marker"><span class="tiny muted marker-label">Repère</span>
+      <input type="text" maxlength="140" data-autosave="note" data-autosave-id="${esc(p.id)}" value="${esc(note)}" placeholder="ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}">
+      <span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span></div>`;
   }
   const photoHtml = (p, name, cls = 'identity-photo') => p?.photoUrl ?
     `<img class="${cls}" src="${esc(p.photoUrl)}" alt="Photo de ${esc(name)}">` : `<span class="${cls} identity-avatar" aria-hidden="true">${initial(name)}</span>`;
-  async function verifyMarker(personId) {
-    const key = keyOf('note', personId), d = drafts.get(key);
-    const person = personOf(personId);
-    const body = { personId, verified: true };
-    // Le repère en cours d'envoi part d'abord : la vérification porte ensuite
-    // la dernière valeur, sans qu'un envoi plus ancien la remplace.
-    if (d) {
-      clearTimeout(d.timer);
-      while (d.busy) await d.sending;
-      body.note = d.value; d.seq = ++saveSeq;
-      lockField(d);
-    }
-    try {
-      await post('/api/staff/person/identify', body);
-      if (d && drafts.get(key) === d && sameValue(d.value, body.note)) { d.state = 'saved'; d.afterLoad = loadsStarted; }
-      toast(`${person?.name || 'Chanteur'} reconnu : repère vérifié`);
-      load();
-    } catch (e) { toast(e.message, true); }
-    finally { if (d) unlockField(key, d); }
-  }
-  document.addEventListener?.('click', event => {
-    const verify = event.target?.closest?.('[data-marker-verify]');
-    if (verify) verifyMarker(verify.dataset.markerVerify);
-  });
 
   function renderIdentities(force = false) {
     if (!S) return;
@@ -761,7 +729,7 @@
     // Une ligne compacte par personne, regroupée par table.
     const row = p => `<div class="identity-row${p.active ? '' : ' gone'}" data-identity-person="${esc(p.id)}">
       ${photoHtml(p, p.name)}
-      <div class="identity-who"><strong>${esc(p.name)}</strong><span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${p.verified ? '<span class="badge ok-badge">vérifié ✓</span>' : ''}</div>
+      <div class="identity-who"><strong>${esc(p.name)}</strong><span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span></div>
       <span class="identity-note"><input data-identity-note data-autosave="note" data-autosave-id="${esc(p.id)}" type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}"><span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span></span>
       <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
     </div>`;

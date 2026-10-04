@@ -362,9 +362,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .next-card .live-singer { font-size: 18px; }
 .marker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; }
 .marker input { flex: 1 1 170px; min-width: 0; min-height: 42px; padding: 8px 10px; }
-.marker-pill.ok { border-color: rgba(61,220,151,.5); }
-.marker-pill.warn { border-color: rgba(255,176,32,.55); }
-.marker .btn { min-height: 42px; }
+.marker-label { font-weight: 700; }
 .live-actions { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; margin-top: 14px; }
 .live-actions .btn { min-height: 52px; padding: 8px 6px; font-size: 15px; }
 .live-autoplay { display: flex; min-height: 44px; margin-top: 8px; font-weight: 700; }
@@ -406,7 +404,6 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .identity-note { display: grid; gap: 2px; min-width: 0; }
 .identity-panel .identity-row { grid-template-columns: 28px minmax(80px,.8fr) minmax(140px,1.5fr); }
 .identity-panel .identity-actions { grid-column: 2 / -1; justify-content: flex-end; flex-wrap: wrap; }
-.ok-badge { color: var(--ok); border-color: rgba(61,220,151,.45); justify-self: start; }
 .evening-panel h3 { margin: 18px 0 8px; font-size: 15px; }
 .closing-actions { margin-top: 8px; }
 .end-panel { border-color: rgba(255,93,108,.45); }

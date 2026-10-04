@@ -227,7 +227,7 @@ function baseWorld() {
       { id: 'Comptoir', name: 'En solo', individual: true, headcount: 40, activeCount: 1, count: 1 },
     ],
     people: [
-      { id: 'alice', name: 'Alice', tableId: '1', active: true, songCount: 1, sung: 0, privateNote: 't-shirt rouge', verified: true },
+      { id: 'alice', name: 'Alice', tableId: '1', active: true, songCount: 1, sung: 0, privateNote: 't-shirt rouge' },
       { id: 'bruno', name: 'Bruno', tableId: '1', active: true, songCount: 2, sung: 3 },
       { id: 'chloe', name: 'Chloé', tableId: '2', active: false, songCount: 0, sung: 1 },
       { id: 'dora', name: 'Dora', tableId: 'Comptoir', active: true, songCount: 1, sung: 0, photoUrl: '/photo/dora.jpg' },
@@ -535,12 +535,10 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   await page.poll();
   assert.equal(row('bruno').querySelector('[data-person-bonus]').value, '-2', 'le bonus enregistré est présélectionné');
   // Repère enregistré tout seul : après la pause de frappe, sur Entrée ou en
-  // quittant le champ. Seul le texte part : le serveur garde la vérification
-  // si le texte ne change pas.
+  // quittant le champ. Seul le texte part.
   const note = id => row(id).querySelector('[data-identity-note]');
   const status = id => page.in('identityBody', `[data-save-status="note:${id}"]`).textContent;
   assert.equal(row('alice').querySelector('[data-identity-save]'), null, 'plus de bouton ✓ à ne pas oublier');
-  assert.match(row('alice').textContent, /vérifié ✓/, 'repère vérifié signalé');
   await page.type(note('alice'), 'veste bleue');
   assert.equal(page.postsTo('/api/staff/person/identify').length, 0, 'pendant la frappe, rien ne part');
   assert.equal(status('alice'), 'Modifié…');
@@ -2235,56 +2233,44 @@ test('barre du haut : état KaraFun du pont, alerte impossible à manquer, recon
   assert.equal(warn.hidden, true);
 });
 
-test('sur scène : photo, repère à vérifier, « C’est bien lui/elle » et titre KaraFun sans fiche', async () => {
+test('sur scène : photo, repère de la personne et titre KaraFun sans fiche', async () => {
   const world = baseWorld();
-  world.people[0] = { ...world.people[0], verified: false, verifiedAt: 0 };
   world.stage = { ours: true, ids: ['alice'], queueId: 'q1', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }], title: 'Titre' };
   world.next = { ours: true, ids: ['dora'], singers: [{ id: 'dora', name: 'Dora', table: 'En solo', individual: true }], title: 'Suivant' };
   const page = await openPage({ world });
   const card = () => page.in('stage', '[data-stage-person="alice"]');
-  assert.equal(card().querySelector('.marker-pill').textContent, 'À vérifier');
+  assert.equal(card().querySelector('.marker-label').textContent, 'Repère');
   assert.equal(card().querySelector('[data-autosave="note"]').value, 't-shirt rouge');
   assert.equal(card().querySelector('.identity-avatar').textContent, 'A', 'initiale sans photo');
   const next = page.in('next', '[data-stage-person="dora"]');
   assert.equal(next.querySelector('img').src, '/photo/dora.jpg');
-  assert.equal(next.querySelector('.marker-pill').textContent, 'Pas de repère');
-  assert.equal(next.querySelector('[data-marker-verify]'), null, 'sans repère, rien à vérifier');
+  assert.equal(next.querySelector('[data-autosave="note"]').value, '', 'sans repère, champ vide à remplir');
+  assert.equal(next.querySelector('[data-autosave="note"]').placeholder, 'ex. t-shirt rouge');
   assert.equal(page.$('identityStageBox').hidden, false, 'Repères : la personne sur scène en tête');
   assert.ok(page.in('identityStage', '[data-identity-stage="alice"]'));
-  await page.click(card().querySelector('[data-marker-verify="alice"]'));
-  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'alice', verified: true });
-  assert.equal(page.toast().text, 'Alice reconnu : repère vérifié');
-  const at = Date.now() - 60000;
-  page.world.people[0] = { ...page.world.people[0], verified: true, verifiedAt: at };
-  await page.poll();
-  assert.equal(card().querySelector('.marker-pill').textContent, `Repère vérifié ✓ ${hhmm(at)}`);
-  assert.equal(card().querySelector('[data-marker-verify]'), null);
   // Repère modifié sur la carte : enregistré seul, recopié dans l'écran Repères.
   const input = card().querySelector('[data-autosave="note"]');
   input.focus();
   await page.type(input, 'veste verte');
   assert.equal(page.in('identityBody', '[data-identity-person="alice"] [data-identity-note]').value, 'veste verte');
   assert.equal(page.in('stage', '[data-save-status="note:alice"]').textContent, 'Modifié…');
-  page.world.people[0] = { ...page.world.people[0], verified: false, verifiedAt: 0 };
+  page.world.people[0] = { ...page.world.people[0], photoUrl: '/photo/alice.jpg' };
   await page.poll();
   assert.equal(card().querySelector('[data-autosave="note"]'), input, 'carte non redessinée pendant la saisie');
   page.doc.activeElement = null;
   await page.poll();
   assert.equal(card().querySelector('[data-autosave="note"]').value, 'veste verte', 'saisie gardée après la mise à jour');
-  // « C'est bien lui/elle » avec un repère en cours : le texte part avec la vérification.
-  await page.click(card().querySelector('[data-marker-verify="alice"]'));
-  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'alice', verified: true, note: 'veste verte' });
-  page.replies['/api/staff/person/identify'] = { status: 500, error: 'Panne.' };
-  await page.poll();
-  await page.click(card().querySelector('[data-marker-verify="alice"]'));
-  assert.deepEqual(page.toast(), { text: 'Panne.', bad: true });
+  assert.equal(card().querySelector('img').src, '/photo/alice.jpg', 'photo affichée une fois la saisie finie');
+  page.runTimers(1000);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'alice', note: 'veste verte' });
   // Titre ajouté directement dans KaraFun : pas de fiche à montrer.
   await page.update({ stage: { ours: false, singer: 'Client', title: 'Manuel' } });
   assert.match(page.$('stage').textContent, /Client.*Ajouté dans KaraFun : pas de fiche.*Manuel/s);
   assert.equal(page.$('identityStageBox').hidden, true);
   // Titre de la file sans liste de chanteurs : retrouvée par les fiches.
   await page.update({ stage: { ours: true, ids: ['bruno'], title: 'Seul' } });
-  assert.match(page.$('stage').textContent, /Bruno.*Table 1.*Pas de repère/s);
+  assert.match(page.$('stage').textContent, /Bruno.*Table 1.*Repère/s);
   await page.update({ stage: { ours: true, ids: ['inconnu'], singer: 'Quelqu’un', title: 'Seul' } });
   assert.match(page.$('stage').textContent, /Quelqu’un.*Seul/s);
 });
@@ -2985,33 +2971,6 @@ test('enregistrement automatique : un envoi à la fois par champ, le suivant par
   assert.equal(page.$('singerSongSettings').checked, true);
 });
 
-test('repère vérifié pendant l’envoi du repère : la vérification part après, avec la dernière valeur', async () => {
-  const world = baseWorld();
-  world.people[0] = { ...world.people[0], verified: false, verifiedAt: 0 };
-  world.stage = { ours: true, ids: ['alice'], queueId: 'q1', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }], title: 'Titre' };
-  const page = await openPage({ world });
-  const held = [];
-  page.replies['/api/staff/person/identify'] = body => new Promise(resolve => held.push(() => {
-    page.world.people[0] = { ...page.world.people[0], privateNote: body.note ?? page.world.people[0].privateNote };
-    resolve({ ok: true });
-  }));
-  const identify = () => page.posts.filter(post => post.path === '/api/staff/person/identify').map(post => post.body);
-  const input = page.in('stage', '[data-stage-person="alice"] [data-autosave="note"]');
-  input.focus();
-  await page.type(input, 'veste verte');
-  page.runTimers(1000);
-  await page.flush();
-  assert.deepEqual(identify(), [{ personId: 'alice', note: 'veste verte' }]);
-  await page.click(page.in('stage', '[data-marker-verify="alice"]'));
-  assert.equal(identify().length, 1, 'la vérification attend la réponse du repère');
-  held.shift()();
-  await page.flush();
-  assert.deepEqual(identify().at(-1), { personId: 'alice', verified: true, note: 'veste verte' });
-  held.shift()();
-  await page.flush();
-  assert.equal(page.toast().text, 'Alice reconnu : repère vérifié');
-});
-
 // ------------------------------------------------------------------ retours du test du 4 octobre
 // Position d'un élément dans la page, pour comparer l'ordre d'affichage.
 const order = (page, el) => [...page.doc.body.descendants()].indexOf(el);
@@ -3101,4 +3060,31 @@ test('page du bar au téléphone : champs de saisie d’au moins 16 px, QR entie
   assert.ok(qr && /width:\s*min\([^)]*100%[^)]*\)/.test(qr[1]), 'le grand QR ne dépasse jamais la largeur de sa fenêtre');
   const viewport = /<meta name="viewport" content="([^"]*)"/.exec(html)?.[1] || '';
   assert.ok(viewport && !/maximum-scale|user-scalable/.test(viewport), `zoom de l’utilisateur laissé libre : ${viewport}`);
+});
+
+test('repère : un simple indice noté sur la personne, consultable sur Scène, dans Repères et la file, sans vérification', async () => {
+  const world = baseWorld();
+  world.stage = { ours: true, ids: ['alice'], queueId: 'q1', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }], title: 'Titre' };
+  world.queue = [{ ids: ['bruno'], name: 'Bruno', table: 'Table 1', source: 'helper', song: { entryId: 'e2', title: 'Suivant' } }];
+  world.people[1] = { ...world.people[1], privateNote: 'casquette' };
+  const page = await openPage({ world });
+  const text = page.doc.body.textContent;
+  for (const word of ['À vérifier', 'C’est bien', 'vérifié', 'Vérifié', 'reconnu']) {
+    assert.ok(!page.$('stage').textContent.includes(word) && !page.$('identityBody').textContent.includes(word) && !page.$('identityStage').textContent.includes(word),
+      `aucune notion de vérification : « ${word} »`);
+  }
+  assert.equal(page.doc.body.querySelector('[data-marker-verify]'), null, 'plus de bouton « C’est bien lui/elle »');
+  assert.ok(!/marker-verify|verifyMarker|verified/.test(script), 'plus de code de vérification dans la page');
+  // Le repère lui-même reste visible et modifiable : Scène, Repères et file.
+  assert.equal(page.in('stage', '[data-stage-person="alice"] [data-autosave="note"]').value, 't-shirt rouge');
+  assert.equal(page.in('identityStage', '[data-autosave="note"]').value, 't-shirt rouge');
+  assert.equal(page.in('identityBody', '[data-identity-person="alice"] [data-identity-note]').value, 't-shirt rouge');
+  assert.match(page.in('qBody', '.note-pop').textContent, /casquette/, 'repère consultable depuis la file');
+  const input = page.in('identityBody', '[data-identity-person="bruno"] [data-identity-note]');
+  input.focus();
+  await page.type(input, 'casquette bleue');
+  page.runTimers(1000);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/person/identify').body, { personId: 'bruno', note: 'casquette bleue' }, 'seul le texte part');
+  assert.ok(text.includes('Repère'), 'le mot « Repère » reste');
 });

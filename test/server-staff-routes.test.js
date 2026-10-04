@@ -636,11 +636,10 @@ test('bonus, fiche privée et « toujours là » depuis la page du bar', async (
   await assert.rejects(f.call('POST /api/staff/bonus', {}), { message: 'Choisis une table ou une personne.' });
 
   const identified = plain(await f.call('POST /api/staff/person/identify',
-    { personId: alice.id, note: '  veste   rouge ', verified: true }));
+    { personId: alice.id, note: '  veste   rouge ' }));
   assert.deepEqual(identified, { ok: true, personId: alice.id });
   const view = f.staffState().people.find(p => p.id === alice.id);
   assert.equal(view.privateNote, 'veste rouge');
-  assert.equal(view.verified, true);
   assert.ok(!f.sched.log.some(l => l.msg.includes('veste rouge')), 'la note privée ne va pas au journal');
 
   alice.maybeGone = { title: 'Titre Alice', skips: 3, at: Date.now() };
@@ -879,27 +878,22 @@ test('réglages : écart et recul invalides refusés comme les autres champs', a
   assert.equal(f.sched.opts.cap, 12);
 });
 
-test('repère privé : vérifié à l’heure dite, la vérification tombe si le texte change', async () => {
+test('repère privé : un simple indice sur la personne, sans aucune vérification', async () => {
   const f = harness();
   const [alice] = singers(f, ['Alice']);
   const view = () => plain(f.staffState().people.find(p => p.id === alice.id));
-  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: 'veste rouge' });
-  assert.equal(view().verified, false);
-  assert.equal(view().verifiedAt, 0);
-  const t0 = Date.now();
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: '  veste   rouge ' });
+  assert.equal(view().privateNote, 'veste rouge');
+  assert.ok(!('verified' in view()) && !('verifiedAt' in view()), 'aucun état de vérification envoyé au bar');
+  // Un ancien champ « verified » envoyé par une page restée ouverte est ignoré.
   await f.call('POST /api/staff/person/identify', { personId: alice.id, verified: true });
   assert.equal(view().privateNote, 'veste rouge', 'sans texte, le repère est gardé');
-  assert.ok(view().verifiedAt >= t0, 'heure de vérification exposée au bar');
-  const at = view().verifiedAt;
-  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: ' veste  rouge ' });
-  assert.equal(view().verifiedAt, at, 'même texte : la vérification reste');
-  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: 'veste bleue' });
-  assert.equal(view().verified, false, 'autre texte : à vérifier de nouveau');
-  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: 'veste verte', verified: true });
-  assert.equal(view().verified, true, 'texte et vérification dans le même appui');
-  await f.call('POST /api/staff/person/identify', { personId: alice.id, verified: false });
-  assert.equal(view().verified, false);
+  assert.ok(!('verifiedAt' in f.sched.people.get(alice.id)), 'rien de tel n’est gardé sur la personne');
+  assert.equal(typeof f.sched.staffIdentify, 'undefined', 'plus de « staffIdentify » : le repère s’enregistre avec setPrivateNote');
+  f.sched.setPrivateNote(alice.id, 'veste verte');
   assert.equal(view().privateNote, 'veste verte');
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: '' });
+  assert.equal(view().privateNote, '', 'un repère vidé est retiré');
 });
 
 // ---------------------------------------------------------------- QA navigateur du 2026-10-03
