@@ -14,12 +14,16 @@ async function state() {
   try { const r = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(1000) }); return r.status === 302 ? true : null; }
   catch { return null; }
 }
-function start() {
+function start({ capture = false } = {}) {
   // Le dossier peut mémoriser un vrai code de télécommande. Ce test de ports
   // ne doit jamais se connecter à la soirée KaraFun ouverte sur le PC.
-  return spawn(process.execPath, ['server.js', '--demo', '--song-seconds', '4',
+  const child = spawn(process.execPath, ['server.js', '--demo', '--song-seconds', '4',
     '--port', String(PORT), '--no-open'],
-    { cwd: root, windowsHide: true, stdio: 'ignore' });
+    { cwd: root, windowsHide: true, stdio: ['ignore', capture ? 'pipe' : 'ignore', 'ignore'] });
+  // Ce que le serveur affiche est aussi écrit dans journal\serveur-<date>.log.
+  child.output = '';
+  if (capture) child.stdout.on('data', chunk => { child.output += chunk; });
+  return child;
 }
 async function stopped(child, timeout = 5000) {
   if (child.exitCode !== null) return child.exitCode;
@@ -33,9 +37,21 @@ async function stopped(child, timeout = 5000) {
   assert.equal(await state(), null, `Port ${PORT} occupé avant le test`);
   let first;
   try {
-    first = start();
+    first = start({ capture: true });
     for (let i = 0; i < 50 && !(await state()); i++) await sleep(100);
     assert.ok(await state(), 'Premier serveur non démarré');
+    // Regression: relecture PR #11 — le guide permet d'envoyer le journal sans
+    // la ligne « Clé du bar » : la clé ne doit apparaître sur aucune autre.
+    for (let i = 0; i < 50 && !first.output.includes('Laisse cette fenêtre ouverte'); i++) await sleep(100);
+    const lines = first.output.split(/\r?\n/);
+    const key = /Clé du bar \(autre appareil\)\s*: (\S+)/.exec(first.output)?.[1];
+    assert.ok(key && key.length >= 16, 'clé du bar affichée au démarrage');
+    assert.deepEqual(lines.filter(line => line.includes(key)).map(line => line.split(':')[0].trim()), ['Clé du bar (autre appareil)'],
+      'la clé du bar n’apparaît que sur sa ligne');
+    assert.ok(lines.some(line => line.startsWith('Page du bar (sur ce PC)') && line.endsWith(`http://localhost:${PORT}/`)));
+    const home = await fetch(url, { redirect: 'manual' });
+    assert.equal(home.headers.get('location'), `/staff?key=${key}`, 'l’adresse sans clé ouvre la page du bar sur ce PC');
+    console.log('ok - clé du bar sur sa seule ligne du journal');
     const second = start();
     assert.equal(await stopped(second), 1, 'Deuxième instance devrait quitter avec erreur');
     assert.ok(await state(), 'La deuxième instance a perturbé la première');

@@ -514,6 +514,19 @@ test('renommer une table et renouveler son QR : l’ancien lien ne fonctionne pl
 });
 
 // ---------------------------------------------------------------- réglages
+test('réglages Battle : vote de 15 min et 30 min entre Battles par défaut, vote jusqu’à 120 min', async () => {
+  const f = harness();
+  const s = () => plain(f.staffState().settings);
+  assert.deepEqual([s().battleVoteMin, s().battleCooldownMin, s().battleRejectedCooldownMin], [15, 30, 5]);
+  await f.call('POST /api/staff/settings', { battleVoteMin: 45 });
+  assert.equal(s().battleVoteMin, 45, 'plus de limite de 10 minutes');
+  await f.call('POST /api/staff/settings', { battleVoteMin: 120 });
+  assert.equal(s().battleVoteMin, 120);
+  await assert.rejects(f.call('POST /api/staff/settings', { battleVoteMin: 121 }),
+    { message: 'La durée du vote Battle doit être de 1 à 120 minutes.' });
+  assert.equal(s().battleVoteMin, 120);
+});
+
 test('réglages : chaque valeur hors bornes est refusée sans rien modifier', async () => {
   const f = harness();
   const before = plain(f.staffState().settings);
@@ -525,7 +538,7 @@ test('réglages : chaque valeur hors bornes est refusée sans rien modifier', as
     [{ playDelaySec: -1 }, 'La pause avant lecture doit être entre 0 et 30 secondes.'],
     [{ battleCooldownMin: 0 }, 'Le délai entre Battles doit être de 1 à 120 minutes.'],
     [{ battleRejectedCooldownMin: 121 }, 'Le délai après un refus de Battle doit être de 1 à 120 minutes.'],
-    [{ battleVoteMin: 11 }, 'La durée du vote Battle doit être de 1 à 10 minutes.'],
+    [{ battleVoteMin: 121 }, 'La durée du vote Battle doit être de 1 à 120 minutes.'],
     [{ repeatWarnMin: 241 }, 'L’alerte « titre déjà chanté » doit être entre 0 et 240 minutes (0 la désactive).'],
     [{ presenceGraceSec: 9 }, 'Le délai pour confirmer « Je suis là » doit être entre 10 et 300 secondes.'],
     [{ presenceMaxSkips: 11 }, 'Le nombre de passages manqués doit être entre 1 et 10.'],
@@ -546,7 +559,7 @@ test('réglages : valeurs enregistrées et visibles dans l’état du bar', asyn
   const f = harness();
   await f.call('POST /api/staff/settings', { pushDelaySec: 0, playDelaySec: 30, repeatWarnMin: 0,
     presenceGraceSec: 300, presenceMaxSkips: 1, battleCooldownMin: 45, battleRejectedCooldownMin: 5,
-    battleVoteMin: 3, battleMinVoters: 4, gap: 99, cap: 'beaucoup', autoPlay: true,
+    battleVoteMin: 3, battleMinVoters: 4, gap: 9, cap: '12', autoPlay: true,
     baseUrl: 'https://chant.exemple.fr' });
   const s = plain(f.staffState().settings);
   assert.equal(s.pushDelaySec, 0);
@@ -558,8 +571,8 @@ test('réglages : valeurs enregistrées et visibles dans l’état du bar', asyn
   assert.equal(s.battleRejectedCooldownMin, 5);
   assert.equal(s.battleVoteMin, 3);
   assert.equal(s.battleMinVoters, 4);
-  assert.equal(s.gap, 10, 'écart ramené à 10 au plus');
-  assert.equal(s.cap, 2, 'plafond illisible : valeur par défaut');
+  assert.equal(s.gap, 9);
+  assert.equal(s.cap, 12, 'nombre écrit en texte accepté');
   assert.equal(s.autoPlay, true);
   assert.equal(s.autoPlayHeld, false);
   assert.equal(s.baseUrl, 'https://chant.exemple.fr');
@@ -567,9 +580,6 @@ test('réglages : valeurs enregistrées et visibles dans l’état du bar', asyn
   // Adresse vide : retour à l'adresse du réseau local.
   await f.call('POST /api/staff/settings', { baseUrl: '' });
   assert.equal(f.settings.baseUrl, null);
-  await f.call('POST /api/staff/settings', { gap: 0, cap: 51 });
-  assert.equal(f.sched.opts.gap, 4, 'zéro illisible : écart par défaut');
-  assert.equal(f.sched.opts.cap, 50);
 });
 
 test('réglages de rotation : chaque mode est annoncé et les déplacements manuels tombent', async () => {
@@ -639,11 +649,10 @@ test('bonus, fiche privée et « toujours là » depuis la page du bar', async (
   await assert.rejects(f.call('POST /api/staff/bonus', {}), { message: 'Choisis une table ou une personne.' });
 
   const identified = plain(await f.call('POST /api/staff/person/identify',
-    { personId: alice.id, note: '  veste   rouge ', verified: true }));
+    { personId: alice.id, note: '  veste   rouge ' }));
   assert.deepEqual(identified, { ok: true, personId: alice.id });
   const view = f.staffState().people.find(p => p.id === alice.id);
   assert.equal(view.privateNote, 'veste rouge');
-  assert.equal(view.verified, true);
   assert.ok(!f.sched.log.some(l => l.msg.includes('veste rouge')), 'la note privée ne va pas au journal');
 
   alice.maybeGone = { title: 'Titre Alice', skips: 3, at: Date.now() };
@@ -655,24 +664,24 @@ test('bonus, fiche privée et « toujours là » depuis la page du bar', async (
 });
 
 // ---------------------------------------------------------------- état du bar
-test('état du bar : duo en attente bloqué, envoi en cours, titres suivis et réglages Battle', async () => {
+test('état du bar : invitation en attente dans la file, envoi en cours, titres suivis et réglages Battle', async () => {
   const f = harness();
   const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
   const bruno = f.sched.join({ tableId: '2', name: 'Bruno', headcount: 2 });
   f.sched.inviteDuet(alice, bruno.id, { songId: 700, title: 'Duo en attente', artist: 'Les Deux' });
-  const blocked = plain(f.staffState().blocked);
-  assert.deepEqual(blocked, [{ id: alice.id, name: 'Alice', table: 'Table 1', title: 'Duo en attente',
-    artist: 'Les Deux', reason: 'Duo à accepter' }]);
-  // Déjà parti vers KaraFun : plus bloqué.
+  // Une invitation sans réponse ne retient pas le titre : il est à sa place
+  // dans la file, marqué, et personne n'est « sauté ».
+  const waiting = f.staffState();
+  assert.equal(waiting.blocked, undefined);
+  assert.deepEqual(plain(waiting.queue.map(q => [q.source, q.ids, q.song.duet?.state])), [['helper', [alice.id], 'pending']]);
   f.setPending({ sel: { ids: [alice.id], song: alice.song, label: 'Alice · Table 1', names: ['Alice'] }, cancelled: false,
     before: new Set(), at: Date.now() });
   const state = f.staffState();
-  assert.deepEqual(plain(state.blocked), []);
   assert.deepEqual(plain(state.pending), { label: 'Alice · Table 1', title: 'Duo en attente' });
   f.setPending(null);
-  // Accepté : le duo rejoint la file.
+  // Accepté : le même titre, en duo.
   f.sched.answerDuet(bruno, true);
-  assert.deepEqual(plain(f.staffState().blocked), []);
+  assert.deepEqual(plain(f.staffState().queue.map(q => [q.ids, q.kind])), [[[alice.id, bruno.id], 'duo']]);
 
   const chloe = f.sched.join({ tableId: '3', name: 'Chloé', headcount: 1 });
   f.sched.chooseSong(chloe, { songId: 701, title: 'Solo' });
@@ -857,4 +866,103 @@ test('Spotify : lecture et pause du bar, l’automate ne les défait pas', async
     { message: 'Aucun appareil Spotify actif : ouvre Spotify sur l’appareil choisi, puis réessaie.' });
   assert.equal(f.spotifyAutomation.done, false);
   assert.equal(f.staffState().spotify.lastError, 'Aucun appareil Spotify actif : ouvre Spotify sur l’appareil choisi, puis réessaie.');
+});
+
+// ---------------------------------------------------------------- v1.4 : retours du bar
+test('« Arrêter la soirée » n’existe plus sur la page du bar ; l’arrêt local reste', () => {
+  const f = harness();
+  assert.equal(f.handlers['POST /api/staff/shutdown'], undefined, 'route du bouton supprimée');
+  assert.match(source, /p === '\/internal\/shutdown'/, 'ARRETER.bat garde son arrêt local');
+});
+
+test('réglages : écart et recul invalides refusés comme les autres champs', async () => {
+  const f = harness();
+  const before = plain(f.staffState().settings);
+  for (const [body, message] of [[{ gap: 0 }, 'L’écart entre chanteurs d’une table doit être de 1 à 10 places.'],
+    [{ gap: '' }, 'L’écart entre chanteurs d’une table doit être de 1 à 10 places.'],
+    [{ gap: 11 }, 'L’écart entre chanteurs d’une table doit être de 1 à 10 places.'],
+    [{ cap: 'beaucoup' }, 'Le recul maximal doit être de 1 à 50 places.'],
+    [{ cap: 51 }, 'Le recul maximal doit être de 1 à 50 places.'], [{ cap: 2.5 }, 'Le recul maximal doit être de 1 à 50 places.']]) {
+    await assert.rejects(f.call('POST /api/staff/settings', { autoPlay: true, ...body }), { message }, JSON.stringify(body));
+  }
+  assert.deepEqual(plain(f.staffState().settings), before, 'rien n’a changé');
+  await f.call('POST /api/staff/settings', { gap: '7', cap: 12 });
+  assert.equal(f.sched.opts.gap, 7);
+  assert.equal(f.sched.opts.cap, 12);
+});
+
+test('repère privé : un simple indice sur la personne, sans aucune vérification', async () => {
+  const f = harness();
+  const [alice] = singers(f, ['Alice']);
+  const view = () => plain(f.staffState().people.find(p => p.id === alice.id));
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: '  veste   rouge ' });
+  assert.equal(view().privateNote, 'veste rouge');
+  assert.ok(!('verified' in view()) && !('verifiedAt' in view()), 'aucun état de vérification envoyé au bar');
+  // Un ancien champ « verified » envoyé par une page restée ouverte est ignoré.
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, verified: true });
+  assert.equal(view().privateNote, 'veste rouge', 'sans texte, le repère est gardé');
+  assert.ok(!('verifiedAt' in f.sched.people.get(alice.id)), 'rien de tel n’est gardé sur la personne');
+  assert.equal(typeof f.sched.staffIdentify, 'undefined', 'plus de « staffIdentify » : le repère s’enregistre avec setPrivateNote');
+  f.sched.setPrivateNote(alice.id, 'veste verte');
+  assert.equal(view().privateNote, 'veste verte');
+  await f.call('POST /api/staff/person/identify', { personId: alice.id, note: '' });
+  assert.equal(view().privateNote, '', 'un repère vidé est retiré');
+});
+
+// ---------------------------------------------------------------- QA navigateur du 2026-10-03
+// Found by /qa on 2026-10-03
+// Report: .gstack/qa-reports/run-20261003T140104Z/qa-report-127.0.0.1-2026-10-03.md
+
+// Regression: ISSUE-003 — « Supprimer toutes les tables » coupait l'envoi automatique sans l'annoncer
+test('nouvelle soirée : le titre sur scène seul ne coupe pas l’envoi automatique, un titre à retirer de KaraFun le coupe et le dit', async () => {
+  const confirm = { confirmation: 'SUPPRIMER TOUTES LES TABLES' };
+  // Seulement le titre en cours : il continue, l'envoi automatique reste actif.
+  const f = harness();
+  singers(f, ['Alice', 'Bruno']);
+  const live = sendNext(f, 11, { startedAt: Date.now() - 20000 });
+  f.setBridge(fakeBridge([{ queueId: 11, songId: live.sel.song.songId, title: live.sel.song.title, status: 'playing' }], 11));
+  f.settings.auto = true;
+  const calm = plain(await f.call('POST /api/staff/tables-clear', confirm));
+  assert.equal(calm.autoStopped, false);
+  assert.equal(calm.currentStillPlaying, true);
+  assert.equal(f.settings.auto, true, 'l’envoi automatique reste coché après la fin du titre en cours');
+  // Un titre suivant déjà chargé dans KaraFun doit en être retiré : envoi coupé, réponse explicite.
+  const g = harness();
+  singers(g, ['Alice', 'Bruno']);
+  const onStage = sendNext(g, 21, { startedAt: Date.now() - 20000 });
+  const upcoming = sendNext(g, 22);
+  const bridge = fakeBridge([{ queueId: 21, songId: onStage.sel.song.songId, status: 'playing' },
+    { queueId: 22, songId: upcoming.sel.song.songId, status: 'ready' }], 21);
+  g.setBridge(bridge);
+  g.settings.auto = true;
+  const busy = plain(await g.call('POST /api/staff/tables-clear', confirm));
+  assert.equal(busy.autoStopped, true);
+  assert.equal(busy.removalPending, 1);
+  assert.equal(g.settings.auto, false);
+  assert.deepEqual(plain(bridge.calls).filter(call => call[0] === 'remove'), [['remove', 22]]);
+  // Envoi automatique déjà coupé : rien n'est « coupé » par la remise à zéro.
+  const h = harness();
+  singers(h, ['Alice']);
+  sendNext(h, 31);
+  h.setBridge(fakeBridge([{ queueId: 31, status: 'ready' }], null));
+  assert.equal(plain(await h.call('POST /api/staff/tables-clear', confirm)).autoStopped, false);
+});
+
+// Regression: ISSUE-008 — une invitation de duo en attente n'apparaissait nulle part sur la page du bar
+test('état du bar : invitations de duo en attente, avec l’état vu / pas encore vue', async () => {
+  const f = harness();
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  const zoe = f.sched.join({ tableId: '2', name: 'Zoé', headcount: 2 });
+  const mate = f.sched.join({ tableId: '1', name: 'Marc', headcount: 2 });
+  f.sched.chooseSong(alice, { songId: 900, title: 'Premier' });
+  const song = f.sched.inviteDuet(alice, zoe.id, { songId: 901, title: 'Hotel California', artist: 'Eagles' });
+  f.sched.inviteDuet(alice, mate.id, { songId: 902, title: 'Même table' });
+  let invites = plain(f.staffState().duoInvites);
+  assert.deepEqual(invites, [{ ownerId: alice.id, ownerName: 'Alice', partnerId: zoe.id, partnerName: 'Zoé',
+    entryId: song.entryId, title: 'Hotel California', seenAt: null }], 'seule l’invitation vers une autre table attend une réponse');
+  f.sched.markDuetSeen(zoe, song.entryId);
+  invites = plain(f.staffState().duoInvites);
+  assert.ok(invites[0].seenAt > 0, 'vue sur le téléphone de l’invitée');
+  f.sched.answerDuet(zoe, true, song.entryId);
+  assert.deepEqual(plain(f.staffState().duoInvites), [], 'acceptée : plus en attente');
 });

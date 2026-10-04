@@ -40,19 +40,17 @@ const personTokens = new Map();
   assert.equal(awaitingPresence.presencePending.length, 1,
     'un seul chanteur est sollicité à la fois');
   assert.equal(awaitingPresence.queue.length, 6, 'les autres titres restent prévus dans la file');
-  assert.equal(awaitingPresence.blocked.length, 0,
-    'personne de rang éloigné n’est affichée comme bloquée avant sa demande');
   await post('/api/staff/settings', { requirePresence: false });
 
-  await post('/api/staff/person/identify', { personId: singers[0].id, note: '  t-shirt   rouge ', verified: true });
+  await post('/api/staff/person/identify', { personId: singers[0].id, note: '  t-shirt   rouge ' });
   const privateState = await request('/api/staff/state');
   const marked = privateState.people.find(p => p.id === singers[0].id);
   assert.equal(marked.privateNote, 't-shirt rouge');
-  assert.equal(marked.verified, true);
+  assert.ok(!('verified' in marked), 'un repère n’a rien à vérifier');
   const publicState = await request(`/api/state?table=8&access=${access('8')}`);
   assert.ok(!JSON.stringify(publicState).includes('t-shirt rouge'), 'description absente de toutes les données clients');
   assert.ok(!JSON.stringify(publicState).includes('privateNote'), 'clé privée absente des données clients');
-  await assert.rejects(post('/api/staff/person/identify', { personId: singers[0].id, note: 'x'.repeat(141), verified: true }), /140/);
+  await assert.rejects(post('/api/staff/person/identify', { personId: singers[0].id, note: 'x'.repeat(141) }), /140/);
   const denied = await fetch(BASE + '/api/staff/person/identify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(denied.status, 403, 'un client ne peut pas modifier les notes');
 

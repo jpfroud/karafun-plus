@@ -2,12 +2,12 @@
 const assert = require('node:assert/strict');
 const { BattleVote, COOLDOWN_MS, REJECTED_COOLDOWN_MS, MIN_VOTERS } = require('../battle-vote');
 
-assert.equal(COOLDOWN_MS, 15 * 60_000, 'le délai Battle par défaut est quinze minutes');
+assert.equal(COOLDOWN_MS, 30 * 60_000, 'le délai Battle par défaut est trente minutes');
 assert.equal(REJECTED_COOLDOWN_MS, 5 * 60_000, 'après un refus, cinq minutes seulement');
 assert.equal(new BattleVote().view().rejectedCooldownMinutes, 5);
 assert.equal(MIN_VOTERS, 5, 'cinq votants au minimum par défaut');
-assert.equal(new BattleVote().view().cooldownMinutes, 15);
-assert.equal(new BattleVote().view().voteMinutes, 5, 'vote de cinq minutes par défaut');
+assert.equal(new BattleVote().view().cooldownMinutes, 30);
+assert.equal(new BattleVote().view().voteMinutes, 15, 'vote de quinze minutes par défaut');
 
 function fixture(extra = {}) {
   let time = 1_000_000;
@@ -234,8 +234,8 @@ function fixture(extra = {}) {
   const f = fixture(), vote = new BattleVote(f.opts);
   assert.throws(() => vote.setCooldownMinutes(0), /1 à 120/);
   assert.throws(() => vote.setCooldownMinutes(121), /1 à 120/);
-  assert.throws(() => vote.setVoteMinutes(0), /1 à 10/);
-  assert.throws(() => vote.setVoteMinutes(11), /1 à 10/);
+  assert.throws(() => vote.setVoteMinutes(0), /1 à 120/);
+  assert.throws(() => vote.setVoteMinutes(121), /1 à 120/);
   assert.throws(() => vote.setMinVoters(0), /1 à 100/);
   vote.setVoteMinutes(3);
   vote.setMinVoters(1);
@@ -414,6 +414,37 @@ function fixture(extra = {}) {
   assert.equal(again.view().phase, 'idle', 'pas de pause après redémarrage');
   assert.equal(again.view().lastOutcome.outcome, 'rejected');
   assert.equal(again.propose({ personId: 'c', personName: 'C', eligiblePersonIds: ['a', 'b', 'c', 'd'] }).phase, 'voting');
+}
+
+{
+  // Retours du 4 octobre : vote de 15 minutes et 30 minutes entre deux Battles
+  // par défaut (5 minutes après un refus) ; plus de limite de 10 minutes au
+  // vote, seulement le garde-fou de 1 à 120 minutes des délais.
+  const fresh = new BattleVote().view();
+  assert.deepEqual([fresh.voteMinutes, fresh.cooldownMinutes, fresh.rejectedCooldownMinutes], [15, 30, 5]);
+  const vote = new BattleVote({ voteDurationMs: 45 * 60_000 });
+  assert.equal(vote.view().voteMinutes, 45, 'plus de 10 minutes accepté au démarrage');
+  assert.equal(vote.setVoteMinutes(60).voteMinutes, 60);
+  assert.equal(vote.setVoteMinutes(120).voteMinutes, 120);
+  assert.throws(() => vote.setVoteMinutes(121), /1 à 120 minutes/);
+  assert.throws(() => vote.setVoteMinutes(0), /1 à 120 minutes/);
+  assert.throws(() => new BattleVote({ voteDurationMs: 121 * 60_000 }), /Durée de vote invalide/);
+  // Migration d'une sauvegarde restée aux anciens défauts (5 et 15 minutes).
+  const old = { version: 4, voteDurationMs: 5 * 60_000, cooldownMs: 15 * 60_000, rejectedCooldownMs: 5 * 60_000, minVoters: 5,
+    ballot: null, automation: null, lastOutcome: null };
+  const migrated = new BattleVote({ saved: structuredClone(old) });
+  assert.deepEqual([migrated.view().voteMinutes, migrated.view().cooldownMinutes, migrated.view().rejectedCooldownMinutes], [15, 30, 5],
+    'anciens défauts : nouveaux défauts');
+  assert.equal(migrated.serialize().version, 5, 'la migration ne se fait qu’une fois');
+  const chosen = new BattleVote({ saved: { ...structuredClone(old), voteDurationMs: 7 * 60_000, cooldownMs: 20 * 60_000 } });
+  assert.deepEqual([chosen.view().voteMinutes, chosen.view().cooldownMinutes], [7, 20], 'une valeur choisie par le bar est gardée');
+  const legacy = new BattleVote({ saved: { version: 1, cooldownMs: 15 * 60_000, ballot: null } });
+  assert.deepEqual([legacy.view().voteMinutes, legacy.view().cooldownMinutes], [15, 30], 'très ancienne sauvegarde sans durée de vote');
+  // Après la migration, le bar peut revenir à 5 et 15 minutes : rien ne les écrase.
+  migrated.setVoteMinutes(5);
+  migrated.setCooldownMinutes(15);
+  const again = new BattleVote({ saved: JSON.parse(JSON.stringify(migrated.serialize())) });
+  assert.deepEqual([again.view().voteMinutes, again.view().cooldownMinutes], [5, 15], 'choix du bar après migration gardé');
 }
 
 console.log('Battle collective : minuteur, votants minimum, décision des votants, pause après la Battle et lancement par le bar OK');

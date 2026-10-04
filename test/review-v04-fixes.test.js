@@ -221,6 +221,8 @@ test('relance : Suivant fait mais lecture arrêtée, la copie prête reste et le
 function loadedNext(f) {
   const ctx = onStage(f);
   const loaded = f.sched.select(); f.sched.commit(loaded);
+  // Chloé attend aussi : « Pas prêt » n'est possible que si quelqu'un d'autre peut chanter avant.
+  f.sched.chooseSong(f.sched.join({ tableId: '3', name: 'Chloé', headcount: 1 }), { songId: 70003, title: 'Après' });
   const next = { queueId: 2, sel: loaded, startedAt: null, addedAt: Date.now() };
   f.tracked.push(next);
   ctx.queue[1].singer = loaded.label;
@@ -842,4 +844,60 @@ test('paroles : une surcharge passagère n’est pas gardée en cache', async ()
   assert.ok(calls > before, 'nouvel essai sur le site après la surcharge');
   while (open.length) { const batch = open; open = []; batch.forEach(resolve => resolve()); await new Promise(resolve => setImmediate(resolve)); }
   assert.equal((await retry).unavailable, undefined);
+});
+
+// ---------------------------------------------------------------- QA navigateur du 2026-10-03
+// Found by /qa on 2026-10-03
+// Report: .gstack/qa-reports/run-20261003T140104Z/qa-report-127.0.0.1-2026-10-03.md
+
+// Regression: ISSUE-013 — deux « Pas prêt » croisés : scène vide, envoi automatique actif, rien n'était envoyé
+test('« Pas prêt » croisés : la scène libre reçoit quand même le premier passage repoussé', () => {
+  const f = harness();
+  const chloe = f.sched.join({ tableId: '2', name: 'Chloé', headcount: 1 });
+  const bruno = f.sched.join({ tableId: '1', name: 'Bruno', headcount: 1 });
+  f.sched.chooseSong(chloe, { songId: 70011, title: 'Wannabe' });
+  f.sched.chooseSong(bruno, { songId: 70012, title: 'Alexandrie' });
+  const bridge = fakeBridge([], null);
+  f.setBridge(bridge);
+  // Chloé peut repousser (Bruno attend) ; Bruno, plus personne : refusé.
+  f.deferTurn(chloe, 1);
+  assert.throws(() => f.deferTurn(bruno, 1), error => error.code === 'DEFER_ALONE');
+  // Reports croisés quand même (une troisième personne est partie entre-temps).
+  const view = f.sched.presenceView().find(v => v.ids[0] === bruno.id);
+  f.sched.deferPassage(bruno.id, view, 1);
+  const first = f.sched.presenceView().find(v => !v.future).ids[0];
+  f.settings.auto = true;
+  f.sync();
+  assert.ok(f.getPending(), 'un titre part vers KaraFun');
+  assert.equal(f.getPending().sel.ids[0], first, 'celui que la file annonçait');
+  assert.ok(bridge.calls.some(call => call[0] === 'add'));
+  assert.ok(f.sched.log.some(l => /^Personne d’autre ne peut chanter : le passage repoussé/.test(l.msg)));
+});
+
+// Regression: ISSUE-015 — « Pas prêt » sans autre titre en attente : message faux et fenêtre revenue aussitôt
+test('« Pas prêt » seul : refusé avec une explication, et ni proposé ni « Encore une chanson » sans autre passage', () => {
+  const f = harness();
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  f.sched.chooseSong(alice, { songId: 70021, title: 'Seul titre' });
+  const view = () => f.publicState(null, '1').tablePeople.find(p => p.id === alice.id);
+  assert.equal(view().canDefer, false, 'personne d’autre n’attend : pas de « Pas prêt »');
+  assert.equal(view().deferAlone, true, 'la page peut dire pourquoi');
+  assert.throws(() => f.deferTurn(alice, 1), error => error.code === 'DEFER_ALONE' &&
+    error.message === 'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.');
+  assert.equal(f.sched.deferralFor(alice.id), null, 'aucun report enregistré');
+  const marc = f.sched.join({ tableId: '1', name: 'Marc' });
+  f.sched.chooseSong(marc, { songId: 70022, title: 'Autre' });
+  assert.equal(view().canDefer || f.publicState(null, '1').tablePeople.find(p => p.id === marc.id).canDefer, true);
+  const next = f.sched.presenceView().find(v => !v.future);
+  const nextPerson = f.sched.people.get(next.ids[0]);
+  f.deferTurn(nextPerson, 1);
+  const deferred = f.publicState(null, '1').tablePeople.find(p => p.id === nextPerson.id);
+  assert.equal(deferred.deferral.remaining, 1);
+  assert.equal(deferred.deferral.canDeferMore, true, 'quelqu’un peut encore passer avant');
+  assert.equal(deferred.deferAlone, false);
+  // L'autre titre disparaît : plus d'« Encore une chanson », et une demande directe est refusée.
+  const other = nextPerson.id === alice.id ? marc : alice;
+  f.sched.staffRemove(other.id);
+  assert.equal(f.publicState(null, '1').tablePeople.find(p => p.id === nextPerson.id).deferral.canDeferMore, false);
+  assert.throws(() => f.deferTurn(nextPerson, 1), error => error.code === 'DEFER_ALONE');
 });

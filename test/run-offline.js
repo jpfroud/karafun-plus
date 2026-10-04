@@ -16,8 +16,8 @@ function run(file, env = {}) {
     'rotation-recent-physical.test.js','timefold-integration.test.js','appearance-persistence.test.js','solo-capacity.test.js','solo-invitations.test.js',
     'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','client-i18n.test.js','client-v04-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js',
-    'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','staff-duo-tracked-api.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js','staff-layout.regression-1.test.js',
-    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','song-repeats.test.js','duo-cap-spacing.test.js','presence-skip.test.js','presence-timeout.test.js','defer-turn.test.js','lyrics-spotify.test.js','review-v04-fixes.test.js','covers.test.js','duo-improvise-credit.test.js','spotify-fermeture.test.js','battle-cooldown-reset-api.test.js','kcs-protocol.test.js','server-staff-routes.test.js','server-table-routes.test.js','staff-ui-coverage.test.js','client-ui-coverage.test.js','cli-persistence.test.js',
+    'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','staff-duo-tracked-api.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js','staff-layout.regression-1.test.js','staff-layout.regression-2.test.js',
+    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','song-repeats.test.js','duo-cap-spacing.test.js','presence-skip.test.js','presence-timeout.test.js','defer-turn.test.js','lyrics-spotify.test.js','review-v04-fixes.test.js','covers.test.js','duo-improvise-credit.test.js','staff-duo-undo.test.js','spotify-fermeture.test.js','battle-cooldown-reset-api.test.js','kcs-protocol.test.js','kcs-connection.test.js','song-settings.test.js','song-settings-server.test.js','song-settings-layout.test.js','kcs-ratelimit.test.js','server-karafun-connection.test.js','server-staff-routes.test.js','server-table-routes.test.js','evening-journal.test.js','evening-stats.test.js','evening-stats-routes.test.js','stats-page.test.js','staff-ui-coverage.test.js','client-ui-coverage.test.js','cli-persistence.test.js','duo-withdraw.test.js','duo-routes.test.js','duo-invite-expiry.test.js',
     'sim-night.js','start-evening.test.js','startup-port.test.js']) await run(`test/${f}`);
   async function demoTest(port, songSeconds, script) {
   const base = `http://127.0.0.1:${port}`;
@@ -54,6 +54,7 @@ function run(file, env = {}) {
   await demoTest(3111, 4, 'test/bar-feedback-api.test.js');
   await demoTest(3112, 10, 'test/transfer-link-api.test.js');
   await demoTest(3113, 30, 'test/bar-feedback-v04-api.test.js');
+  await demoTest(3114, 10, 'test/staff-qr-layout.test.js');
   await run('test/evening-controls-api.test.js');
   await run('test/priority-undo-api.test.js');
   await run('test/night-restart-api.test.js');

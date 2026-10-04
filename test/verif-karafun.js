@@ -17,6 +17,7 @@ const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? (argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true) : d; };
 const B = opt('base', process.env.BASE || 'http://localhost:3000');
 const { staffRoute } = require('./staff-auth');
+const { maskCode } = require('../karafun');
 const SKIP_PLAY = !!opt('skip-play', false);
 const KEEP = !!opt('keep', false);
 
@@ -78,7 +79,7 @@ function currentQueueId(s) {
   try { S = await staff(); } catch (e) { step('Serveur joignable', false, `${B} : ${e.message} (le serveur est-il lancé ?)`); return; }
   step('Serveur joignable', true, B);
   S = await waitFor(async () => { const s = await staff(); return s.kf && s.kf.ready ? s : null; }, 25000);
-  if (!step('KaraFun connecté et données reçues', !!S, S ? `serveur ${S.kf.base}, code ${S.kf.code}` : 'voir « Diagnostic KaraFun » et journal/karafun-*.jsonl')) return;
+  if (!step('KaraFun connecté et données reçues', !!S, S ? `serveur ${S.kf.base}, code ${maskCode(S.kf.code)}` : 'voir « Diagnostic KaraFun » et journal/karafun-*.jsonl')) return;
   initialQueueIds = new Set(kfQueue(S).map(it => it.queueId));
   const initialCurrentId = currentQueueId(S);
   if (initialCurrentId != null) initialQueueIds.add(initialCurrentId);

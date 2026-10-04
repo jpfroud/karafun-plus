@@ -701,3 +701,22 @@ test('« Recalculer » quand seule une « Priorité » reste active : le bar sai
   assert.equal(s.reservedNext, null);
   assert.match(s.log.at(-1).msg, /déplacements manuels sont abandonnés/);
 });
+
+// Regression: relecture PR #11 — l'invitée d'un duo retiré pour la fermeture
+// lisait que le titre restait « dans sa liste » : il revient chez l'auteur.
+test('fermeture : duo retiré de KaraFun, l’avis de l’invitée nomme l’auteur du titre', () => {
+  const f = harness();
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const bruno = f.sched.join({ tableId: '2', name: 'Bruno', headcount: 1 });
+  const duo = f.sched.inviteDuet(alice, bruno.id, { songId: 900, title: 'Duo T' });
+  f.sched.answerDuet(bruno, true, duo.entryId);
+  const kf = [];
+  const sel = loadedNext(f, kf);
+  assert.deepEqual([...sel.ids], [alice.id, bruno.id]);
+  f.settings.closingAt = Date.now() - 60000;
+  f.sync();
+  assert.equal(f.tracked.find(item => item.queueId === 5).pulled?.reason, 'closing');
+  const notice = p => (p.inbox || []).filter(n => n.kind === 'closingPulled').map(n => ({ ...n.params }));
+  assert.deepEqual(notice(alice), [{ title: 'Duo T' }]);
+  assert.deepEqual(notice(bruno), [{ title: 'Duo T', name: 'Alice' }]);
+});

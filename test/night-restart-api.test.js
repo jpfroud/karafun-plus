@@ -292,8 +292,12 @@ NightStateStore.prototype.save = function(snapshot, options) {
       personId: solo.id, token: claimed.data.token,
     }), claimed.cookie);
     const reprise = new URL(link.url).searchParams.get('reprise');
+    // Sauvegarde de soirée et journal des soirées (dossier data/soirees).
+    const readAll = file => fs.statSync(file).isDirectory() ?
+      fs.readdirSync(file).map(name => readAll(path.join(file, name))).join('') : fs.readFileSync(file, 'utf8');
     const saved = fs.readdirSync(path.join(sandbox, 'data')).filter(name => name.startsWith('soiree'))
-      .map(name => fs.readFileSync(path.join(sandbox, 'data', name), 'utf8')).join('');
+      .map(name => readAll(path.join(sandbox, 'data', name))).join('');
+    assert.ok(fs.existsSync(path.join(sandbox, 'data', 'soirees')), 'le journal de la soirée est bien relu');
     assert.ok(!saved.includes(reprise) && !saved.includes(`"${link.code}"`), 'ni le lien ni le code ne sont écrits en clair');
     await stop(second, true);
     second = await launch();

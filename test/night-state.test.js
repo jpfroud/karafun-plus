@@ -30,7 +30,7 @@ try {
   sched.chooseSong(clara, song(104, 'Clara'), 'append');
   sched.inviteDuet(alice, clara.id, song(105, 'Duo'));
   sched.answerDuet(clara, true);
-  sched.staffIdentify(bob.id, 'T-shirt rouge', true);
+  sched.setPrivateNote(bob.id, 'T-shirt rouge');
   const revokedToken = bob.token;
   sched.byToken.delete(revokedToken);
   bob.token = crypto.randomBytes(16).toString('hex');
@@ -111,8 +111,12 @@ try {
   legacy.scheduler.roundGroups = ['1'];
   legacy.tracked = [{ queueId: 99, sel: { ids: [alice.id, clara.id],
     song: sched.songsOf(alice).at(-1), label: 'Alice & Clara' } }];
+  // Ancienne sauvegarde : la vérification des repères, retirée, ne revient pas.
+  legacy.scheduler.people.find(p => p.id === bob.id).verifiedAt = Date.now();
   const migrated = new Scheduler();
   restoreNight(legacy, { scheduler: migrated, access: new TableAccess(), settings: settings() });
+  assert.equal(migrated.people.get(bob.id).privateNote, 'T-shirt rouge', 'le repère lui-même est gardé');
+  assert.ok(!('verifiedAt' in migrated.people.get(bob.id)), 'l’ancienne vérification est oubliée');
   assert.deepEqual(migrated.roundPeople, new Set([alice.id, clara.id]),
     'la reprise conserve les propriétaires du tour et ajoute l’invitée connue dans KaraFun');
   assert.deepEqual(migrated.roundGroups, new Set(['1']));

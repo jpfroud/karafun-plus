@@ -42,8 +42,9 @@ DÉMARRAGE AU BAR
    - « Connecté : oui » et « Données reçues : oui » → la connexion marche.
    - Tu peux chercher un titre dans le catalogue. N'utilise pas « Ajouter à
      KaraFun (test) » sur une soirée réelle : cela modifie sa file.
-   - Pour une soirée autonome, coche « Lancer la lecture automatiquement ».
-     La pause avant ce lancement se règle dans « Règles de la soirée ».
+   - Pour une soirée autonome, coche « Lecture automatique » sur l'écran
+     Scène, sous le bouton Lecture. La pause avant ce lancement se règle
+     dans « Règles de la soirée ».
      Sinon, utilise le bouton Lecture pour démarrer les chansons.
 
    Dans le bloc « Tables », ajoute les tables une par une. L'effectif proposé
@@ -77,7 +78,9 @@ DÉMARRAGE AU BAR
    « Ma table » ; le formulaire disparaît quand l'effectif est atteint.
    Une personne peut être renommée. Pour un duo, choisis son titre et invite
    un partenaire : dans la même table le duo est accepté tout de suite, entre
-   deux tables le partenaire accepte sur sa page. Seul l'initiateur utilise
+   deux tables le partenaire accepte sur sa page. Sans réponse avant le tour
+   de l'initiateur, le titre part en solo et l'invitation expire (les deux
+   sont prévenus) : il garde sa place dans la file. Seul l'initiateur utilise
    son tour, l'invité garde ses chansons pour un prochain passage ;
    personne ne monte sur scène plus de deux fois par tour, avec au moins
    trois autres chansons entre deux passages quand c'est possible. Deux
@@ -157,8 +160,8 @@ BON À SAVOIR
   gérer la file et la lecture ; compte FileKaraoke indiqué au bar conservant
   les droits d'administrateur. Teste avec un téléphone invité. Un essai avec
   Premium à la maison ne vérifie pas cette protection. Lis GUIDE-BAR.md.
-- Pour arrêter : clique « Arrêter la soirée » sur la page du bar ou
-  double-clique sur ARRETER.bat. Tu peux aussi fermer la fenêtre noire.
+- Pour arrêter : double-clique sur ARRETER.bat sur ce PC (la page du bar
+  n'a plus de bouton d'arrêt). Tu peux aussi fermer la fenêtre noire.
   La soirée est sauvegardée et la clé du bar change à chaque démarrage ;
   retrouve-la sur ce PC via
   http://localhost:3000/. Depuis un téléphone de gérant sur le Wi-Fi local,

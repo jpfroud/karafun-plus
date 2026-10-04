@@ -51,8 +51,6 @@ const song = (id, title) => ({ songId: id, title, artist: 'Démo' });
   assert.equal(s.queue[0]?.waitingPresence, true);
   assert.ok(s.queue.some(turn => turn.ids?.includes(singers.C.id)),
     'Le titre de Chloé reste visible dans la file sans demande prématurée.');
-  assert.equal(s.blocked.some(turn => turn.id === singers.C.id), false,
-    'Une présence future non encore demandée ne figure pas parmi les blocages.');
   assert.deepEqual(s.presencePending, ['Sebastiano']);
   assert.equal((await tableState('B')).tablePeople[0].needConfirm, true,
     'Le bouton Je suis là doit apparaître chez Sebastiano.');

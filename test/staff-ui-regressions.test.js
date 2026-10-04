@@ -16,7 +16,13 @@ class Element {
     this.listeners = {};
     this.hidden = false;
   }
-  addEventListener(name, listener) { this.listeners[name] = listener; }
+  // Plusieurs écouteurs par événement, comme dans un navigateur.
+  addEventListener(name, listener) {
+    const previous = this.listeners[name];
+    this.listeners[name] = previous ? event => { previous(event); listener(event); } : listener;
+  }
+  setAttribute(name, value) { this[`attr:${name}`] = String(value); }
+  removeAttribute(name) { delete this[`attr:${name}`]; }
   querySelectorAll() { return []; }
   contains() { return false; }
   getAttribute() { return null; }
@@ -24,14 +30,14 @@ class Element {
   close() { this.open = false; }
 }
 const elements = new Map();
-const get = id => elements.get(id) || (elements.set(id, new Element()), elements.get(id));
+const get = id => elements.get(id) || (elements.set(id, Object.assign(new Element(), { id })), elements.get(id));
 // Gestionnaires délégués de la page (× des recherches, +10 min…).
 const documentListeners = {};
 const document = { activeElement: null, hidden: false, getElementById: get,
   addEventListener: (name, listener) => { (documentListeners[name] ||= []).push(listener); } };
 const documentEvent = (name, target) => (documentListeners[name] || []).forEach(listener => listener({ target }));
 const singer = { id: 'alice', name: 'Alice', tableId: '1', active: true, songCount: 1,
-  sung: 0, privateNote: 't-shirt rouge', verified: true };
+  sung: 0, privateNote: 't-shirt rouge' };
 let connected = true;
 let manualChanges = [];
 let queue = [];
@@ -111,9 +117,9 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
   await settle();
   assert.equal(get('connectBtn').textContent, 'Changer le code', 'la connexion déjà active est explicite');
-  assert.equal(String(get('battleCooldownMin').value), '15', 'valeur de repli Battle');
-  assert.doesNotMatch(get('identityBody').innerHTML, /data-identity-verified|> Vérifié</,
-    'le contrôle sans effet a disparu');
+  assert.equal(String(get('battleCooldownMin').value), '30', 'valeur de repli Battle');
+  assert.doesNotMatch(get('identityBody').innerHTML, /data-identity-verified|vérifi/i,
+    'un repère n’a rien à vérifier');
   assert.match(get('identityBody').innerHTML, /t-shirt rouge/, 'le repère reste affiché');
   assert.equal(get('issueSoloInvitation').disabled, false);
   await get('issueSoloInvitation').onclick();
@@ -124,13 +130,21 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.match(get('soloInvitationList').innerHTML, /data-solo-revoke="one"/,
     'le bar peut retrouver et annuler une invitation en attente');
 
-  const row = { dataset: { identityPerson: 'alice' }, querySelector: () => ({ value: 'veste bleue' }) };
-  get('identityBody').listeners.click({ target: { closest: selector =>
-    selector === '[data-identity-person]' ? row : selector === '[data-identity-save]' ? {} : null } });
+  // Repère enregistré seul : seul le texte part, le serveur garde la vérification.
+  assert.doesNotMatch(get('identityBody').innerHTML, /data-identity-save/, 'plus de bouton ✓ à oublier');
+  const noteInput = { dataset: { autosave: 'note', autosaveId: 'alice' }, value: 'veste bleue', tagName: 'INPUT',
+    setAttribute() {}, removeAttribute() {} };
+  get('identityBody').listeners.change({ type: 'change', target: noteInput });
   await settle();
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].note, 'veste bleue');
-  assert.equal(posts[0].verified, true, 'enregistrer le repère ne modifie pas un ancien état de vérification');
+  assert.deepEqual(posts[0], { personId: 'alice', note: 'veste bleue' });
+  // Réglage Battle tapé puis clavier refermé : le rafraîchissement ne remet pas l'ancienne valeur.
+  const cooldown = get('battleCooldownMin');
+  cooldown.value = '40';
+  cooldown.listeners.input({ type: 'input', target: cooldown });
+  poll();
+  await settle();
+  assert.equal(String(cooldown.value), '40', 'saisie gardée tant qu’elle n’est pas enregistrée');
 
   connected = false;
   poll();
@@ -288,33 +302,26 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(get('autoPlayHeldTxt').hidden, false, 'le bar voit que la lecture automatique attend « Lecture »');
   assert.equal(get('spotifyDelay').value, 0, 'un délai de 0 s s’affiche tel quel');
   assert.equal(get('spotifyLead').value, 2);
-  get('spotifyDelay').value = '1'; get('spotifyLead').value = '3';
-  get('spotifyAutoResume').checked = true; get('spotifyAutoPause').checked = true;
-  get('spotifySaveOptions').onclick();
+  const delay = get('spotifyDelay');
+  delay.value = '1';
+  delay.listeners.input({ type: 'input', target: delay });
+  delay.listeners.keydown({ type: 'keydown', key: 'Enter', target: delay, preventDefault() {} });
   await settle();
   const saved = posts.filter(post => post.url === '/api/staff/spotify').at(-1);
-  assert.equal(saved.action, 'options');
-  assert.equal(saved.resumeDelaySec, 1);
-  assert.equal(saved.pauseLeadSec, 3);
-  assert.match(html, /id="spotifyDelay" type="number" min="0"/, 'moins de 5 s permis');
+  assert.deepEqual(saved, { url: '/api/staff/spotify', action: 'options', resumeDelaySec: 1 }, 'seule la valeur changée part');
+  assert.match(html, /id="spotifyDelay" type="number" inputmode="numeric" min="0"/, 'moins de 5 s permis');
   // Regression: relecture — un champ vidé enregistrait 0 s sans prévenir.
   const sent = posts.filter(post => post.url === '/api/staff/spotify').length;
-  get('spotifyDelay').value = '';
-  get('spotifySaveOptions').onclick();
-  await settle();
-  assert.equal(posts.filter(post => post.url === '/api/staff/spotify').length, sent, 'champ vide : rien n’est envoyé');
-  assert.match(get('toast').textContent, /Indique les délais/);
-  get('spotifyDelay').value = '0';
-  // Même règle pour le silence avant un titre, y compris un champ d'espaces.
+  const lead = get('spotifyLead');
   for (const value of ['', '  ']) {
-    get('spotifyLead').value = value;
-    get('toast').textContent = '';
-    get('spotifySaveOptions').onclick();
+    lead.value = value;
+    lead.listeners.input({ type: 'input', target: lead });
+    lead.listeners.blur({ type: 'blur', target: lead });
     await settle();
     assert.equal(posts.filter(post => post.url === '/api/staff/spotify').length, sent, `silence « ${value} » : rien n’est envoyé`);
-    assert.match(get('toast').textContent, /Indique les délais/);
   }
-  get('spotifyLead').value = '2';
+  lead.value = '2';
+  lead.listeners.input({ type: 'input', target: lead });
   // Retour du bar : l'admin lève la pause entre Battles, seulement quand
   // une pause tourne vraiment.
   assert.match(html, /id="battleResetCooldown"[^>]*>Autoriser une nouvelle Battle maintenant</);

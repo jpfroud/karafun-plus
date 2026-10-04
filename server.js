@@ -40,7 +40,7 @@ const BUILD = readBuildInfo();
 // Identifie ce démarrage : une alerte fermée au bar revient après un redémarrage.
 const BOOT_ID = crypto.randomBytes(6).toString('hex');
 const { Scheduler, DEFER_MAX } = require('./scheduler');
-const { KaraFunBridge, isBattleItem } = require('./karafun');
+const { KaraFunBridge, isBattleItem, maskCode, unknownSettingsSupport } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
@@ -50,6 +50,10 @@ const { NightStateStore, snapshotNight, restoreNight } = require('./night-state'
 const { DEFAULT_REPEAT_MIN, songNotice, queueRepeats } = require('./song-repeats');
 const { Lyrics } = require('./lyrics');
 const { SpotifyLink, SpotifyAutomation } = require('./spotify');
+const { EveningJournal, validEveningId } = require('./evening-journal');
+const { computeStats, insights, exportEvening } = require('./evening-stats');
+const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, liveFromStatus,
+  settingsFromLive, catchUpCommands } = require('./song-settings');
 
 // ------------------------------------------------------------------ paramètres
 const argv = process.argv.slice(2);
@@ -120,6 +124,37 @@ function certifiedBattleSongs(songs) {
 }
 
 const sched = new Scheduler({ solverEnabled: !DEMO || argv.includes('--solver') });
+// Journal de soirée (data/soirees/<id>/), en mémoire en démo. Écriture au
+// mieux : un disque plein est signalé mais n'arrête jamais la file.
+const journal = new EveningJournal({ dir: DEMO ? null : path.join(__dirname, 'data', 'soirees'), fs, app: BUILD, boot: BOOT_ID,
+  onError: error => appLog(`Journal de soirée indisponible : ${error.message}. La file continue.`) });
+// Prénoms et noms de tables : seulement dans meta.json, jamais dans les lignes.
+function journalNames(fields = {}) {
+  const ids = [fields.personId, ...(Array.isArray(fields.ids) ? fields.ids : []), ...(Array.isArray(fields.personIds) ? fields.personIds : [])];
+  for (const pid of ids) {
+    const person = typeof pid === 'string' && sched.people.get(pid);
+    if (person) journal.person(person.id, { name: person.name, tableId: person.tableId });
+  }
+  const table = fields.tableId != null && sched.table(fields.tableId, false);
+  if (table) journal.table(table.id, { name: table.name, individual: table.individual });
+}
+function journalRoster() {
+  for (const t of sched.tables.values()) journal.table(t.id, { name: t.name, individual: t.individual });
+  for (const person of sched.people.values()) journal.person(person.id, { name: person.name, tableId: person.tableId });
+}
+function journalEvent(type, fields = {}) {
+  try { journalNames(fields); } catch (_) { /* noms au mieux */ }
+  return journal.append(type, fields);
+}
+sched.onEvent = journalEvent;
+// Règles en vigueur, notées au début de chaque soirée.
+function journalRules() {
+  return { tableRotation: !!sched.opts.tableRotation, weightedTables: !!sched.opts.weightedTables,
+    interleaveArrivals: sched.opts.interleaveArrivals !== false, requirePresence: !!sched.opts.requirePresence,
+    roundAppearanceCap: sched.opts.roundAppearanceCap, spacingSongs: sched.opts.spacingSongs,
+    auto: !!settings.auto, autoPlay: !!settings.autoPlay, pushDelaySec: settings.pushDelaySec,
+    presenceGraceSec: settings.presenceGraceSec, presenceMaxSkips: settings.presenceMaxSkips };
+}
 const lyrics = new Lyrics();
 // Paroles : au plus LYRICS_PER_MINUTE demandes par table (ou pour le bar).
 const LYRICS_PER_MINUTE = 20;
@@ -140,6 +175,7 @@ const soloInvitations = new SoloInvitations();
 const battleVote = new BattleVote({
   saved: !DEMO && fs.existsSync(BATTLE_FILE) ? JSON.parse(fs.readFileSync(BATTLE_FILE, 'utf8')) : null,
   onChange(event) {
+    journalBattle(event);
     if (!DEMO) {
       fs.mkdirSync(path.dirname(BATTLE_FILE), { recursive: true });
       const temporary = `${BATTLE_FILE}.tmp`;
@@ -164,6 +200,50 @@ const battleVote = new BattleVote({
     if (!DEMO) setImmediate(() => saveNight());
   },
 });
+// Votes Battle dans le journal : chaque proposition une fois, chaque votant
+// une fois, chaque décision une fois.
+const journaledBallots = new Map(); // ballotId → votants déjà notés
+// Votants déjà notés pour ce scrutin. Après un redémarrage, le scrutin est
+// rechargé depuis data/battle-vote.json et la soirée reprise contient déjà
+// sa proposition et ses votes : ils sont relus dans son journal, jamais
+// réécrits.
+function journaledVoters(b) {
+  if (journaledBallots.has(b.id)) return journaledBallots.get(b.id);
+  const known = (journal.id ? journal.read(journal.id)?.events || [] : []).filter(e => e.ballotId === b.id);
+  const voters = new Set(known.filter(e => e.ev === 'battle.vote').map(e => e.voterId));
+  journaledBallots.set(b.id, voters);
+  if (journaledBallots.size > 50) journaledBallots.delete(journaledBallots.keys().next().value);
+  if (!known.some(e => e.ev === 'battle.proposed')) {
+    journalEvent('battle.proposed', { ballotId: b.id, proposerId: b.proposerId || null,
+      songs: (b.songs || [b.suggestedSong]).filter(Boolean).map(song => ({ songId: song.songId, title: song.title })),
+      eligible: b.eligiblePersonIds.length, threshold: b.threshold, closesAt: b.closesAt });
+  }
+  return voters;
+}
+function journalBattle(event) {
+  const b = battleVote.ballot;
+  if (b && !['staff', 'external'].includes(b.mode)) {
+    const voters = journaledVoters(b);
+    for (const [voterId, choice] of Array.isArray(b.votes) ? b.votes : []) {
+      if (voters.has(voterId)) continue;
+      voters.add(voterId);
+      journalEvent('battle.vote', { ballotId: b.id, voterId, choice });
+    }
+  }
+  if (['requested', 'quorum', 'expired', 'rejected'].includes(event) && b) {
+    const votes = b.votes || [];
+    journalEvent('battle.decided', { ballotId: b.id, outcome: event === 'requested' ? 'approved' : event, closedBy: b.closedBy || null,
+      voters: votes.length, yes: votes.filter(([, answer]) => answer === 'yes' || String(answer).startsWith('song:')).length,
+      eligible: b.eligiblePersonIds.length, songId: b.selectedSong?.songId || null });
+  } else if (event === 'staff-launch' && b) {
+    journalEvent('battle.staffLaunch', { ballotId: b.id, songId: b.selectedSong?.songId || null, title: b.selectedSong?.title || '' });
+  } else if (event === 'external' && b) journalEvent('battle.external', { ballotId: b.id, songId: battleVote.automation?.songId || null });
+  else if (event === 'done' || event === 'dismissed') journalEvent('battle.resolved', { ballotId: b?.id || null, outcome: event });
+  else if (event === 'cooldown-reset') journalEvent('battle.cooldownLifted', {});
+  else if (/^automation-(sending|queued|playing|after|resuming|released|failed|manual)$/.test(event)) {
+    journalEvent('battle.automation', { ballotId: battleVote.automation?.ballotId || null, status: event.slice(11) });
+  }
+}
 if (DEMO) sched.opts.defaultSlotSec = parseInt(arg('song-seconds', 45), 10) + 1;
 let bridge = null;
 let fake = null;
@@ -185,6 +265,10 @@ const settings = { auto: true, autoPlay: false, baseUrl: null,
   // Spotify a repris en fin de file : la lecture automatique attend que le
   // bar lance lui-même le titre suivant (« Lecture »), puis se rétablit.
   autoPlayHeld: false,
+  // Réglages de titre (tonalité, tempo, voix) depuis les téléphones des
+  // chanteurs : le bar peut les couper, comme « Personnaliser la chanson en
+  // cours » dans KaraFun. Gardé d'une soirée à l'autre.
+  singerSongSettings: true,
   queueClearPending: false };
 const queueClearRemovalRequests = new Map();
 let curKey = null, curSince = 0;
@@ -201,13 +285,18 @@ let persistenceError = null;
 // Envoi coupé par KaraFun (droits perdus, souvent après une reconnexion) :
 // il reprend seul dès que les droits reviennent, sauf décision du bar.
 let permissionPause = false;
+let curQueueId = null;      // titre en cours noté dans le journal (stage.started)
+let phaseKey = null;        // dernier état karaoke.phase noté
+let presenceAskKey = null;  // dernière demande « Je suis là » notée
+let lastSampleAt = 0;       // dernier relevé queue.sample
+const seenJournal = new Map(); // personne → dernier person.seen noté
 
 function saveNight({ required = false, replaceBoth = false } = {}) {
   if (!nightStore) return true;
   try {
     const snapshot = snapshotNight({ scheduler: sched, access, settings, pending, tracked,
       soloInvitations, transfers: transferSnapshot(),
-      photoDir: PHOTO_DIR });
+      photoDir: PHOTO_DIR, evening: journal.snapshot() });
     nightStore.save(snapshot);
     if (replaceBoth) nightStore.save(snapshot, { force: true });
     persistenceError = null;
@@ -238,10 +327,11 @@ function appLog(msg) {
 function stopHelper() {
   if (shuttingDown) return;
   shuttingDown = true;
+  journalEvent('app.stopped', { reason: 'stop' });
   saveNight();
   appLog('Arrêt de la file karaoké demandé par le bar.');
   sched.closeSolver();
-  try { bridge?.disconnect(); } catch (_) { /* arrêt en cours */ }
+  try { bridge?.disconnect(); bridge?.releaseIdentity(); } catch (_) { /* arrêt en cours */ }
   try { fake?.close(); } catch (_) { /* arrêt en cours */ }
   try {
     const runtime = JSON.parse(fs.readFileSync(RUNTIME_FILE, 'utf8'));
@@ -392,7 +482,9 @@ function restore(tr, reason) {
 function restorePulled(tr) {
   sched.requeueUnplayed(tr.sel);
   if (!tr.pulled) {
-    sched.note(`« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun juste avant le changement de l’heure de fermeture : il revient dans la liste de son chanteur.`, 'skip');
+    sched.note(tr.unpulled?.reason === 'duo' ?
+      `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun malgré l’annulation du duo : il revient en tête de la liste de son chanteur.` :
+      `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun juste avant le changement de l’heure de fermeture : il revient dans la liste de son chanteur.`, 'skip');
     return;
   }
   const { reason } = tr.pulled;
@@ -549,7 +641,12 @@ function startRestart() {
   restartOp = { songId, singer, title: tr?.sel.song.title || current.title || 'le titre',
     before: q.map(item => String(item.queueId)), at: Date.now(), phase: 'adding',
     originalQueueId: current.queueId, trackedQueueId: tr ? tr.queueId : null };
-  try { bridge.add(songId, singer, 1); }
+  // La copie garde les réglages du titre (ceux de la file, sinon l'état en
+  // direct d'un titre ajouté dans KaraFun).
+  // Pistes vocales du titre connues : volumes seulement pour celles-là.
+  const songSettings = tr ? tr.sel.song.settings || null : settingsFromLive(liveFromStatus(bridge.status), songDefaults());
+  const tracksAvailable = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
+  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { duo: !!tr && tr.sel.ids.length > 1, tracksAvailable }) || null; }
   catch (error) { restartOp = null; throw error; }
   sched.note(`Le bar relance « ${restartOp.title} » depuis le début.`, 'stage');
 }
@@ -628,7 +725,12 @@ function syncRestart({ current, upcoming, q }, now) {
       return;
     }
     const tr = op.trackedQueueId != null && tracked.find(item => String(item.queueId) === String(op.trackedQueueId));
-    if (tr) tr.queueId = copy.queueId;
+    if (tr) {
+      tr.queueId = copy.queueId;
+      // Nouvel élément de KaraFun : ses réglages sont ceux envoyés avec la copie.
+      if (op.sentSettings) tr.sentSettings = op.sentSettings;
+      else delete tr.sentSettings;
+    }
     op.copyQueueId = String(copy.queueId);
     lastRestartCopy = op.copyQueueId;
     op.phase = 'skipping';
@@ -655,9 +757,213 @@ function syncRestart({ current, upcoming, q }, now) {
   if (now - op.at > RESTART_START_TIMEOUT_MS) abandonRestart(op, state, 'La relance n’a pas démarré.', now);
 }
 
+// ------------------------------------------------------------------ réglages de titre
+// Tonalité, tempo, voix guide et chœurs (song-settings.js). Le réglage est un
+// champ de l'entrée du titre : il part avec elle dans les options d'ajout,
+// remplace les options du titre déjà chargé dans KaraFun
+// (SetQueueItemOptionsRequest), puis il est rattrapé une seule fois au début
+// du titre si KaraFun ne l'a pas appliqué (Pitch, Tempo, TrackVolume).
+const songRanges = () => rangesFrom(bridge?.raw?.configuration);
+// Valeurs par défaut de ce KaraFun (chœurs à 53 au bar), relevées par le pont.
+const songDefaults = () => bridge?.songSettingsDefaults?.() || { ...SONG_DEFAULTS };
+const kfItemOf = tr => bridge?.queue?.find(item => String(item.queueId) === String(tr.queueId)) || null;
+// Numéro de l'état de KaraFun : il change à chaque nouvel état reçu
+// (StatusEvent), pour savoir si KaraFun a parlé depuis une demande.
+let statusSeen = null, statusNumber = 0;
+function statusSeq() {
+  const status = bridge?.status || null;
+  if (status !== statusSeen) { statusSeen = status; statusNumber++; }
+  return statusNumber;
+}
+// Titre que KaraFun a vraiment chargé : état 3 (prêt, avant « Lecture »),
+// 4 (lecture) ou 5 (pause) de la télécommande KCS. À l'état 1, KaraFun
+// annonce déjà le titre suivant sans l'avoir chargé (pistes vides, ou celles
+// d'un autre titre) ; à l'état 2, il le charge encore : leurs valeurs ne
+// disent rien des réglages appliqués. Sans numéro d'état (faux KaraFun de la
+// démo), seule la lecture compte.
+function loadedQueueId() {
+  const status = bridge?.status;
+  const item = status?.current || status?.songPlaying;
+  if (item?.queueId == null) return null;
+  const loaded = Number.isInteger(status.kcsState) ? [3, 4, 5].includes(status.kcsState)
+    : /^(playing|paused)$/.test(String(status.state || ''));
+  const voices = songTracksOf(item);
+  if (!loaded || (voices?.length && !(Array.isArray(status.tracks) && status.tracks.length))) return null;
+  return String(item.queueId);
+}
+function songSettingsError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+// Titre `entryId` encore à venir : chargé dans KaraFun sans avoir commencé,
+// en cours d'envoi, ou dans la liste de son chanteur. `started` : refus si
+// le titre a déjà commencé. `ids` : auteur du titre puis partenaire de duo.
+function songSettingsTarget(entryId, started) {
+  const key = String(entryId || '');
+  const missing = () => songSettingsError('Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.', 'NO_SONG');
+  if (!key) throw missing();
+  const { current } = analyze();
+  const tr = tracked.find(item => item.sel.song?.entryId === key && !item.cancelled);
+  if (tr) {
+    if (tr.startedAt || isOnStage(tr, current)) throw songSettingsError(started, 'SONG_STARTED');
+    if (tr.pulled || tr.absent) throw new Error('Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.');
+    return { where: 'karafun', ids: tr.sel.ids, song: tr.sel.song, tr };
+  }
+  if (pending && !pending.cancelled && pending.sel.song.entryId === key) {
+    // Après une reprise sur disque, l'envoi garde sa propre copie du titre.
+    const owner = sched.people.get(pending.sel.ids[0]);
+    const listed = owner && sched.songsOf(owner).find(song => song.entryId === key);
+    return { where: 'sending', ids: pending.sel.ids, song: pending.sel.song,
+      copies: listed && listed !== pending.sel.song ? [listed] : [] };
+  }
+  for (const owner of sched.people.values()) {
+    const song = sched.songsOf(owner).find(item => item.entryId === key);
+    if (song) return { where: 'list', ids: [owner.id, ...(song.duet?.partnerId ? [song.duet.partnerId] : [])], song };
+  }
+  throw missing();
+}
+
+// Enregistre les réglages sur le titre, puis les applique selon où il en est.
+// Rend 'list' (au prochain envoi), 'sending' (dès l'accusé de KaraFun),
+// 'karafun' (envoyés) ou 'start' (au début du titre, ou au retour de KaraFun).
+function applySongSettings(target, values, fields) {
+  sched.setSongSettings(target.song, values);
+  for (const copy of target.copies || []) sched.setSongSettings(copy, values);
+  let applied = 'list';
+  if (target.where === 'sending') { pending.settingsChanged = true; applied = 'sending'; }
+  else if (target.where === 'karafun') {
+    target.tr.settingsDirty = true;
+    delete target.tr.liveChecked; // déjà chargé par KaraFun : rattrapage refait si besoin
+    applied = pushQueueItemSettings(target.tr) ? 'karafun' : 'start';
+  }
+  journalEvent('song.settings', { ...fields, personId: target.ids[0], entryId: target.song.entryId, where: target.where, settings: values });
+  return applied;
+}
+
+// Titre déjà chargé dans KaraFun : ses options y sont remplacées, avec le nom
+// que KaraFun affiche (la file reconnaît ses titres par lui) et son mode.
+// false : envoi en attente du retour de KaraFun, ou droit « Éditer la file
+// d'attente » refusé (le rattrapage au début du titre prendra le relais).
+// Envoyées : le rattrapage attend un état de KaraFun reçu depuis
+// (`statusAtOptions`), car KaraFun a pu les appliquer au titre chargé.
+function pushQueueItemSettings(tr) {
+  const item = bridge?.ready ? kfItemOf(tr) : null;
+  if (!item) return false;
+  tr.settingsDirty = false;
+  if (bridge.permissions?.manageQueue === false) return false;
+  try {
+    const sent = bridge.setQueueItemOptions(tr.queueId, { singer: item.singer || tr.sel.label, mod: item.options?.mod || null,
+      settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, current: item.options || null,
+      tracksAvailable: songTracksOf(item), duo: tr.sel.ids.length > 1 });
+    if (sent) tr.sentSettings = sent;
+    tr.statusAtOptions = statusSeq();
+    return true;
+  } catch (error) {
+    appLog(`Réglages de « ${tr.sel.song.title} » non envoyés à KaraFun : ${error.message}`);
+    return false;
+  }
+}
+
+// Titre chargé ou sur scène : ce que KaraFun n'a pas appliqué (options
+// d'ajout ou du titre ignorées) est envoyé une seule fois, pour ce titre de
+// KaraFun. Un titre examiné sans réglage l'est aussi : un réglage en direct
+// fait ensuite n'est pas « rattrapé » une seconde fois.
+function catchUpSongSettings(tr) {
+  const mark = String(tr.queueId);
+  if (tr.liveChecked === mark) return;
+  // Options du titre tout juste envoyées : comparer à un état reçu depuis,
+  // au plus tard celui de la lecture. Refusées par KaraFun : sans attendre.
+  if (tr.statusAtOptions != null) {
+    if (tr.statusAtOptions === statusSeq() && bridge.settingsSupport?.queueItemOptions !== 'refused') return;
+    delete tr.statusAtOptions;
+  }
+  const live = liveFromStatus(bridge.status);
+  if (live?.queueId != null && String(live.queueId) !== mark) return; // état de KaraFun pas encore à jour
+  tr.liveChecked = mark;
+  if (!tr.sel.song.settings && !tr.sentSettings) return;
+  const commands = catchUpCommands({ settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, live,
+    tracksAvailable: live?.tracks || songTracksOf(kfItemOf(tr)), duo: tr.sel.ids.length > 1, ranges: songRanges(),
+    defaults: songDefaults() });
+  if (!commands.length) return;
+  if (bridge.permissions?.manageVolumes === false) {
+    sched.note(`KaraFun n’a pas appliqué les réglages de « ${tr.sel.song.title} » et ne laisse pas ${bridge.username} personnaliser la chanson en cours : règle-la dans KaraFun.`, 'error');
+    return;
+  }
+  const fields = new Set();
+  for (const command of commands) {
+    try {
+      if (command.kind === 'pitch') bridge.setPitch(command.value);
+      else if (command.kind === 'tempo') bridge.setTempo(command.value);
+      else bridge.setTrackVolume(command.type, command.value);
+      fields.add(command.kind !== 'track' ? command.kind : command.type === TRACK.BACKING ? 'backing' : 'guide');
+    } catch (error) { appLog(`Réglage de « ${tr.sel.song.title} » non rattrapé : ${error.message}`); }
+  }
+  if (fields.size) journalEvent('song.settingsCaughtUp', { entryId: tr.sel.song.entryId || null, queueId: tr.queueId, fields: [...fields] });
+}
+
+// KaraFun a répondu Error à un ajout qui portait des réglages : le titre
+// n'est pas dans sa file. Il repart aussitôt sans eux (le pont ne les met
+// plus à l'ajout) ; ils seront rattrapés au début du titre. Une seule fois.
+function resendWithoutOptions(add) {
+  if (!bridge?.ready) return;
+  const same = (songId, singer) => Number(songId) === Number(add?.songId) && singer === add?.singer;
+  try {
+    if (pending && !pending.cancelled && !recoveredPending && pending.sentSettings && same(pending.sel.song.songId, pending.sel.label)) {
+      delete pending.sentSettings;
+      pending.at = Date.now();
+      pending.attempts++;
+      bridge.add(pending.sel.song.songId, pending.sel.label);
+      sched.note(`KaraFun refuse les réglages de titre à l’ajout : « ${pending.sel.song.title} » repart sans eux ; ils seront appliqués au début du titre.`, 'error');
+    } else if (restartOp?.phase === 'adding' && restartOp.sentSettings && same(restartOp.songId, restartOp.singer)) {
+      restartOp.sentSettings = null;
+      restartOp.at = Date.now();
+      bridge.add(restartOp.songId, restartOp.singer, 1);
+    } else return;
+    saveNight();
+  } catch (error) { appLog(`Nouvel envoi sans réglages impossible : ${error.message}`); }
+}
+
+// Titre en cours, réglé en direct par le bar (POST /api/staff/kf). Pour un
+// titre de la file, la valeur est aussi gardée sur le titre : une relance ⏮
+// la reprend.
+function liveSongSetting(body) {
+  if (!bridge?.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de régler le titre en cours.');
+  const { current } = analyze();
+  if (!current) throw new Error('Aucun titre en cours à régler.');
+  const field = body.action === 'track' ? ({ guide: 'guide', backing: 'backing' })[body.track] : body.action;
+  if (!field) throw new Error('Piste vocale inconnue.');
+  const value = validateField(field, body.value, songRanges());
+  const tr = tracked.find(item => isOnStage(item, current));
+  const tracks = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
+  if (field === 'guide' && tracks && !tracks.includes(TRACK.LEAD_A)) throw new Error('Ce titre n’a pas de voix guide.');
+  if (field === 'backing' && tracks && !tracks.includes(TRACK.BACKING)) throw new Error('Ce titre n’a pas de chœurs.');
+  if (field === 'pitch') bridge.setPitch(value);
+  else if (field === 'tempo') bridge.setTempo(value);
+  else if (field === 'backing') bridge.setTrackVolume(TRACK.BACKING, value);
+  else {
+    bridge.setTrackVolume(TRACK.LEAD_A, value);
+    // Duo : la voix guide B suit la voix guide A, aussi pour un duo devenu
+    // solo dans KaraFun dont la file avait posé la piste B.
+    const followA = tr && (tr.sel.ids.length > 1 || tr.sentSettings?.guideB != null);
+    if (followA && (!tracks || tracks.includes(TRACK.LEAD_B))) bridge.setTrackVolume(TRACK.LEAD_B, value);
+  }
+  if (tr) {
+    const next = { ...(tr.sel.song.settings || {}), [field]: value };
+    if ((field === 'pitch' || field === 'tempo') && value === 0) delete next[field]; // tonalité ou tempo d'origine
+    sched.setSongSettings(tr.sel.song, Object.keys(next).length ? next : null);
+    // Réglé en direct : rien à rattraper, même avant l'écho de KaraFun.
+    tr.liveChecked = String(tr.queueId);
+  }
+  journalEvent('song.settings', { by: 'staff', where: 'live', personId: tr?.sel.ids[0] || null, entryId: tr?.sel.song.entryId || null,
+    queueId: current.queueId ?? null, field, value });
+  return { ok: true, field, value };
+}
+
 // ------------------------------------------------------------------ synchronisation avec KaraFun
 function sync() {
-  if (!bridge || !bridge.ready) return;
+  if (!bridge || !bridge.ready) { notePhase('unknown', 'offline'); return; }
   if (settings.auto && bridge.permissions?.addToQueue === false) {
     settings.auto = false;
     permissionPause = true;
@@ -688,11 +994,13 @@ function sync() {
           // L'accusé et le début de lecture peuvent arriver dans le même
           // événement. Ne pas arrêter un morceau déjà sur scène.
           sched.commit(pending.sel);
+          journalTurnSent(pending, hit.queueId, now);
           if (settings.queueClearPending) {
             const consumed = new Set(pending.sel.consumedIds || pending.sel.ids);
             sched.Q = sched.Q.filter(pid => !consumed.has(pid));
           }
-          tracked.push({ queueId: hit.queueId, sel: pending.sel, addedAt: now, startedAt: now });
+          tracked.push({ queueId: hit.queueId, sel: pending.sel, addedAt: now, startedAt: now,
+            ...(pending.sentSettings ? { sentSettings: pending.sentSettings } : {}) });
           sched.recordStage(pending.sel, now);
           sched.note(`« ${pending.sel.song.title} » a commencé sur scène pendant le retrait ; elle continue.`, 'stage');
         } else {
@@ -704,7 +1012,11 @@ function sync() {
         }
       } else {
         sched.commit(pending.sel);
-        const sent = { queueId: hit.queueId, sel: pending.sel, addedAt: Date.now(), startedAt: null };
+        journalTurnSent(pending, hit.queueId, now);
+        const sent = { queueId: hit.queueId, sel: pending.sel, addedAt: Date.now(), startedAt: null,
+          ...(pending.sentSettings ? { sentSettings: pending.sentSettings } : {}),
+          // Réglé pendant l'envoi : appliqué dès maintenant (boucle plus bas).
+          ...(pending.settingsChanged ? { settingsDirty: true } : {}) };
         tracked.push(sent);
         appLog(`Envoyé à KaraFun : ${pending.sel.label} — ${pending.sel.song.title} (queueId ${hit.queueId})`);
         // Duo improvisé noté pendant l'envoi : ce titre repassera plus tard.
@@ -719,6 +1031,7 @@ function sync() {
       // Une réponse manquante ne prouve pas que KaraFun a refusé l'ajout.
       // Le renvoyer créerait un doublon si la première commande arrive tard.
       recoveredPending = true;
+      journalEvent('send.unconfirmed', { entryId: pending.sel.song.entryId || null, ids: pending.sel.ids });
       sched.note(`KaraFun n'a pas confirmé « ${pending.sel.song.title} » (${pending.sel.label}). Vérifie sa file avant de reprendre l'envoi automatique.`, 'error');
       appLog('Ajout KaraFun sans confirmation : envoi automatique suspendu, aucune seconde commande envoyée.');
     }
@@ -755,6 +1068,9 @@ function sync() {
     tr.pulled = null;
     tr.removeRequestedAt = 0;
   });
+  // Titre chargé par KaraFun (état 3, avant la musique) : ses réglages
+  // peuvent déjà être rattrapés.
+  const loadedId = loadedQueueId();
   for (const tr of tracked.slice()) {
     const onStage = isOnStage(tr, current);
     // Si KaraFun était déconnecté lors du vidage, ce titre pouvait déjà être
@@ -783,11 +1099,21 @@ function sync() {
       sched.recordStage(tr.sel, tr.startedAt);
       sched.note(`Sur scène : ${tr.sel.label} — « ${tr.sel.song.title} »`, 'stage');
     }
+    const usable = !tr.cancelled && !tr.pulled && !tr.absent;
+    // Réglé pendant l'envoi, ou KaraFun revenu : les options du titre de
+    // KaraFun d'abord, tant qu'il n'a pas commencé (même déjà chargé).
+    if (usable && tr.settingsDirty && !tr.startedAt) pushQueueItemSettings(tr);
+    if (usable && (onStage || loadedId === String(tr.queueId))) catchUpSongSettings(tr);
     // QueueEvent et StatusEvent ne sont pas atomiques. Quand l'ancienne chanson
     // est encore dans status.current, attendre le second message avant de
     // conclure qu'elle a disparu (notamment après le bouton Suivant natif).
     const statusId = bridge.status && (bridge.status.current || bridge.status.songPlaying || {}).queueId;
     if (!qids.has(tr.queueId) && !onStage && statusId !== tr.queueId) {
+      if (!tr.startedAt) {
+        journalEvent('turn.unsent', { entryId: tr.sel.song.entryId || null, ids: tr.sel.ids, queueId: tr.queueId,
+          reason: tr.cancelled ? 'cancelled' : tr.absent ? 'absent' : tr.pulled ? `pulled-${tr.pulled.reason}` :
+            tr.unpulled && now - tr.unpulled.at < PULL_LATE_MS ? `pulled-${tr.unpulled.reason}` : 'skipped-in-karafun' });
+      }
       if (tr.cancelled) {
         // Un accusé tardif d'un envoi annulé peut avoir été suivi sans
         // `commit()` : il n'a alors aucun crédit à rendre.
@@ -825,9 +1151,14 @@ function sync() {
 
   const key = current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
   if (key !== curKey) {
+    if (curKey !== null) journalEvent('stage.ended', { queueId: curQueueId, playedSec: Math.round((now - curSince) / 1000) });
     curKey = key; curSince = Date.now();
+    curQueueId = current?.queueId ?? null;
     // Une relance n'est pas un nouveau passage du titre.
-    if (current && String(current.queueId) !== lastRestartCopy) sched.recordPlayed(current, curSince);
+    if (current && String(current.queueId) !== lastRestartCopy) {
+      sched.recordPlayed(current, curSince);
+      journalStageStarted(current);
+    } else if (current) journalEvent('stage.restarted', { queueId: current.queueId ?? null });
   }
   // Dès qu'un titre est sur scène, le nom annoncé pour le passage suivant
   // reste fixe. L'envoi physique à KaraFun peut attendre le délai configuré.
@@ -843,7 +1174,13 @@ function sync() {
     sched.reservePresenceNext(onStage?.sel.ids || []);
     presence = presenceCandidate({ current, upcoming });
   }
-  const awaitingPresence = presenceMissing(presence).length > 0;
+  const missingNow = presenceMissing(presence);
+  const awaitingPresence = missingNow.length > 0;
+  const askKey = awaitingPresence ? `${presence.ids.join('+')}|${presence.song?.entryId || ''}` : null;
+  if (askKey !== presenceAskKey) {
+    presenceAskKey = askKey;
+    if (askKey) journalEvent('presence.asked', { personIds: missingNow, entryId: presence.song?.entryId || null, source: presence.source });
+  }
   const canPush = !current || Date.now() - curSince >= settings.pushDelaySec * 1000;
   // Heure de fermeture : nos titres déjà chargés qui commenceraient après
   // sont retirés de KaraFun (ils reviennent s'ils tiennent de nouveau avant
@@ -851,7 +1188,15 @@ function sync() {
   upcoming.forEach((item, ahead) => {
     const tr = tracked.find(x => String(x.queueId) === String(item.queueId));
     if (!tr || tr.cancelled || tr.pulled || tr.absent || tr.startedAt || !closingBlocksStart(current, ahead, now)) return;
-    try { pullFromKaraFun(tr, 'closing'); noteClosingStop(); }
+    try {
+      pullFromKaraFun(tr, 'closing'); noteClosingStop();
+      // Le titre revient dans la liste de son auteur : l'invitée d'un duo
+      // l'apprend avec le nom de l'auteur.
+      const [ownerId, ...guests] = tr.sel.ids;
+      sched.notify(ownerId, 'closingPulled', { title: tr.sel.song.title });
+      const ownerName = sched.people.get(ownerId)?.name || tr.sel.names?.[0] || '';
+      for (const pid of guests) sched.notify(pid, 'closingPulled', { title: tr.sel.song.title, name: ownerName });
+    }
     catch (error) { appLog(`Retrait KaraFun (fermeture) en attente : ${error.message}`); }
   });
   const closingHold = closingBlocksStart(current, upcoming.length, now);
@@ -863,14 +1208,16 @@ function sync() {
     if (!pending) {
       // Après un échec, la chanson du chanteur peut avoir changé : le choix
       // actuel de l'ordonnanceur prévaut au moment de la nouvelle tentative.
-      const sel = sched.select();
+      const sel = sched.select({ stageFree: !current });
       if (sel) {
         pending = { sel, before: qids, at: now, attempts: 1, retryAt: null };
         try {
           // La commande distante n'a pas d'accusé immédiat : conserver la
           // tentative sur disque avant de l'envoyer pour éviter un doublon.
           saveNight({ required: true });
-          bridge.add(sel.song.songId, sel.label);
+          // Réglages du titre dans les options d'ajout ; duo : voix guide B.
+          const sentSettings = bridge.add(sel.song.songId, sel.label, undefined, sel.song.settings || null, { duo: sel.ids.length > 1 });
+          if (sentSettings) pending.sentSettings = sentSettings;
         } catch (e) { pending = null; settings.auto = false; appLog(`ERREUR envoi : ${e.message}`); }
       } else pending = null;
     }
@@ -897,12 +1244,200 @@ function sync() {
       }
     }
   } else { idleSince = null; idleQueueId = null; }
+  journalOutlook({ current, upcoming, awaitingPresence }, now);
   saveNight();
+}
+
+// ------------------------------------------------------------------ journal de soirée
+function journalTurnSent(sent, queueId, now) {
+  const sel = sent.sel;
+  journalEvent('turn.sent', { entryId: sel.song.entryId || null, ids: sel.ids, ownerId: sel.ids[0], kind: sel.kind || null,
+    queueId, sentAt: sent.at, ackMs: Math.max(0, now - sent.at), newRound: !!(sel.roundResets || sel.newPersonRound),
+    presenceConfirmed: !!sel.presenceConfirmed, deferralReleased: !!sel.deferralReleasedTo });
+  journalSample(now);
+}
+
+function journalStageStarted(current) {
+  const tr = tracked.find(item => isOnStage(item, current));
+  const duration = Number(tr?.sel.song.duration ?? current.duration);
+  journalEvent('stage.started', { queueId: current.queueId ?? null, songId: Number(current.songId) || null,
+    title: tr?.sel.song.title || current.title || '', artist: tr?.sel.song.artist || current.artist || '',
+    durationSec: duration > 0 ? duration : null,
+    source: tr ? 'queue' : isBattleItem(current) ? 'battle' : 'native',
+    ...(tr ? { entryId: tr.sel.song.entryId || null, ids: tr.sel.ids, ownerId: tr.sel.ids[0], kind: tr.sel.kind || null } : {}) });
+}
+
+// Ce qui retient la soirée quand rien ne joue (cause des temps morts).
+function notePhase(phase, blocker = null) {
+  const key = `${phase}|${blocker || ''}`;
+  if (key === phaseKey) return;
+  phaseKey = key;
+  journalEvent('karaoke.phase', { phase, blocker });
+}
+
+function readyTurns() {
+  return sched.presenceView().filter(turn => !turn.future && turn.song);
+}
+
+function journalOutlook({ current, upcoming, awaitingPresence }, now) {
+  let blocker = null;
+  if (!current) {
+    const head = upcoming[0] && tracked.find(tr => String(tr.queueId) === String(upcoming[0].queueId));
+    if (settings.queueClearPending) blocker = 'queue-clear';
+    else if (restartOp) blocker = 'restart';
+    else if (closingBlocksStart(null, 0, now)) blocker = 'closing';
+    else if (recoveredPending) blocker = 'recovered-pending';
+    else if (permissionPause) blocker = 'permission';
+    else if (battleHoldsQueue()) blocker = 'battle-hold';
+    else if (upcoming.length) {
+      blocker = settings.autoPlayHeld ? 'autoplay-held' : !settings.autoPlay ? 'autoplay-off' :
+        head && sched.opts.requirePresence && !head.sel.presenceConfirmed && !sched.confirmedForTurn(head.sel.ids) ? 'awaiting-presence' : 'loading';
+    } else if (pending) blocker = 'sending';
+    else if (awaitingPresence) blocker = 'awaiting-presence';
+    else if (readyTurns().length) blocker = settings.auto ? 'push-delay' : 'auto-off';
+    else blocker = 'empty';
+  }
+  notePhase(current ? 'singing' : blocker === 'empty' ? 'silent' : 'between', blocker);
+  if (now - lastSampleAt >= 5 * 60000) journalSample(now);
+}
+
+// Relevé de la file : titres prêts, demandes et personnes présentes.
+function journalSample(now = Date.now()) {
+  lastSampleAt = now;
+  const active = [...sched.people.values()].filter(p => !p.withdrawnAt);
+  journalEvent('queue.sample', { ready: readyTurns().length,
+    songsListed: active.reduce((n, p) => n + sched.songsOf(p).length, 0),
+    demanding: active.filter(p => sched.songsOf(p).length).length,
+    deferred: sched._deferredOwners().length, present: active.length, inKaraFun: tracked.filter(tr => !tr.startedAt).length });
+}
+
+// Dernier signe de vie d'un téléphone : au plus un par personne toutes les 5 min.
+function noteSeen(person, now = Date.now()) {
+  if (!person || now - (seenJournal.get(person.id) || 0) < 5 * 60000) return;
+  seenJournal.set(person.id, now);
+  journalEvent('person.seen', { personId: person.id });
+}
+
+// Clôture de la soirée : résumé écrit avant la remise à zéro.
+function closeEvening(by, fields = {}) {
+  return journal.close({ by, fields, summarize: ({ meta, events }) => computeStats({ meta, events, now: Date.now() }) });
+}
+
+// Données affichées par la page des statistiques : prénoms résolus au bar.
+function eveningData(param) {
+  const id = !param || param === 'current' ? journal.id : String(param);
+  if (!id || (id !== journal.id && !validEveningId(id))) return null;
+  return journal.read(id);
+}
+
+function statsView(saved) {
+  const live = !!saved.current;
+  const stats = computeStats({ meta: saved.meta, events: saved.events, now: Date.now(), live });
+  const people = {}, tables = {};
+  for (const [id, row] of Object.entries(saved.meta.roster || {})) people[id] = row.name || '?';
+  for (const [id, row] of Object.entries(saved.meta.tables || {})) tables[id] = row.name || id;
+  const nameOf = id => people[id] || 'Inconnu';
+  const tableName = id => tables[id] || (/^\d+$/.test(String(id)) ? `Table ${id}` : String(id));
+  return { evening: { id: saved.meta.eveningId, startedAt: stats.evening.startedAt, endedAt: stats.evening.endedAt, current: live,
+    truncated: !!saved.truncated }, names: { people, tables }, stats, insights: insights(stats, { nameOf, tableName }),
+    generatedAt: Date.now(), journalError: live ? journal.lastError : null };
+}
+
+function statsRoute(p, u, req, res) {
+  if (!isStaff(req, u)) return send(res, 403, p === '/stats' ? 'Réservé au bar' : { error: 'Réservé au bar' },
+    p === '/stats' ? 'text/plain; charset=utf-8' : undefined);
+  if (p === '/stats') return sendFile(res, 'stats.html', 'text/html; charset=utf-8');
+  if (p === '/api/staff/stats/evenings') return send(res, 200, { current: journal.id, evenings: journal.list() });
+  const saved = eveningData(u.searchParams.get('evening'));
+  if (!saved) return send(res, 404, { error: 'Soirée introuvable.' });
+  if (p === '/api/staff/stats') return send(res, 200, statsView(saved));
+  const names = u.searchParams.get('names') === '1';
+  const data = exportEvening({ meta: saved.meta, events: saved.events, now: Date.now(), live: !!saved.current, names, app: BUILD });
+  return send(res, 200, JSON.stringify(data, null, 1), 'application/json; charset=utf-8',
+    { 'Content-Disposition': `attachment; filename="soiree-${saved.meta.eveningId}${names ? '-prenoms' : ''}.json"` });
+}
+
+// ------------------------------------------------------------------ duo improvisé noté au bar
+// Passage visé par le bar : titre suivi dans KaraFun (`queueId`), ou entrée
+// des derniers passages (`stageEntryId`), qui garde le reçu après la chanson.
+function staffDuoTarget(body, missing = 'Passage introuvable : il a peut-être déjà été effacé des derniers passages.') {
+  if (body.stageEntryId != null && body.stageEntryId !== '') {
+    const entry = sched.stageHistory.find(item => String(item.id) === String(body.stageEntryId));
+    if (!entry) throw new Error(missing);
+    const tr = entry.endedAt || !entry.entryId ? null : tracked.find(item => item.sel.song?.entryId === entry.entryId) || null;
+    return { tr, entry };
+  }
+  const tr = tracked.find(item => String(item.queueId) === String(body.queueId));
+  if (!tr) throw new Error(missing);
+  const entryId = tr.sel.song?.entryId;
+  const entry = entryId ? [...sched.stageHistory].reverse().find(item => !item.endedAt && item.entryId === entryId) || null : null;
+  return { tr, entry };
+}
+const staffDuoRecord = target => target.tr?.sel.staffDuo || target.entry?.staffDuo || null;
+
+// L'invité a rechanté (ou un autre de ses titres est parti dans KaraFun)
+// depuis le duo : son tour a déjà été recompté, l'annulation n'est plus juste.
+function staffDuoTooLate(record) {
+  const pid = record.partnerId;
+  const pulled = new Set((record.pulled || []).map(item => item.entryId).filter(Boolean));
+  const sangAgain = sched.stageHistory.some(item => item.at >= record.at && item.entryId !== record.entryId &&
+    item.ids.includes(pid));
+  const sentAgain = tracked.some(item => !item.cancelled && item.sel.ids.includes(pid) && (item.addedAt || 0) >= record.at &&
+    item.sel.song?.entryId !== record.entryId && !pulled.has(item.sel.song?.entryId));
+  return sangAgain || sentAgain ? `Trop tard : ${sched.people.get(pid)?.name || 'ce chanteur'} a déjà rechanté` : null;
+}
+
+// Défait le duo noté : crédits, passage, derniers passages et titres de
+// l'invité retirés de KaraFun (gardés s'ils y sont encore). Renvoie la
+// phrase à ajouter au message du bar.
+function undoStaffDuo(target, record) {
+  const partner = sched.people.get(record.partnerId);
+  sched.staffUncountPartner(record, target.tr?.sel || null, tracked.map(item => item.sel));
+  if (target.tr) {
+    const sel = target.tr.sel;
+    const index = sel.ids.indexOf(record.partnerId);
+    if (index > 0) { sel.ids.splice(index, 1); sel.names.splice(index, 1); }
+    sel.kind = record.kindBefore || 'solo';
+    if (record.labelBefore) sel.label = record.labelBefore;
+  }
+  if (target.entry) {
+    sched.setStagePeople(target.entry, target.entry.ids.filter(pid => pid !== record.partnerId), record.kindBefore || 'solo');
+    delete target.entry.staffDuo;
+  }
+  const inKaraFun = new Set(analyze().upcoming.map(item => String(item.queueId)));
+  const kept = [], back = [];
+  for (const item of record.pulled || []) {
+    const tr = item.entryId ? tracked.find(x => x.sel.song?.entryId === item.entryId) : null;
+    if (tr?.pulled?.reason === 'duo' && inKaraFun.has(String(tr.queueId))) {
+      tr.unpulled = { reason: 'duo', at: Date.now() };
+      tr.pulled = null;
+      tr.removeRequestedAt = 0;
+      kept.push(item.title);
+    } else if (!tr && pending?.pullOnAck === 'duo' && pending.sel.song?.entryId === item.entryId) {
+      delete pending.pullOnAck;
+      kept.push(item.title);
+    } else if (!tr || tr.pulled) back.push(item.title);
+  }
+  const name = partner?.name || 'ce chanteur';
+  const list = titles => titles.map(title => `« ${title} »`).join(', ');
+  return (kept.length ? ` ${list(kept)} de ${name} reste dans KaraFun.` : '') +
+    (back.length ? ` ${list(back)} est de nouveau en tête de la liste de ${name}.` : '');
+}
+
+// Pour la page du bar : partenaire noté et annulation encore possible.
+function staffDuoView(record) {
+  if (!record) return null;
+  const late = staffDuoTooLate(record);
+  return { partnerId: record.partnerId, partnerName: sched.people.get(record.partnerId)?.name || '?',
+    at: record.at, canUndo: !late, reason: late };
 }
 
 // ------------------------------------------------------------------ vues
 const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: coverUrl(s.img), duration: s.duration || null,
-  duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo' } : null } : null;
+  settings: s.settings || null,
+  duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo',
+    // Invitation en attente : vue ou non sur le téléphone de l'invité.
+    ...(s.duet.state === 'pending' ? { seen: !!s.duet.seenAt } : {}) } : null } : null;
 
 // Chanteurs d'un passage avec leur table (ou « En solo »), pour l'affichage.
 function singersOf(ids = []) {
@@ -931,7 +1466,20 @@ function battleElectorate() {
   return [...sched.people.values()].filter(person => !person.withdrawnAt).map(person => person.id);
 }
 
-function publicState(person, tableId) {
+// Duo déjà chargé dans KaraFun, vu par l'une de ses deux personnes : rôle et
+// retrait encore possible (pas commencé, pas en train de sortir de KaraFun).
+function sentDuo(tr, p, current) {
+  if (tr.sel.ids.length < 2) return {};
+  const owner = sched.people.get(tr.sel.ids[0]);
+  const guest = sched.people.get(tr.sel.ids[1]);
+  return { duo: { role: tr.sel.ids[0] === p.id ? 'owner' : 'guest', ownerId: tr.sel.ids[0],
+    ownerName: owner?.name || tr.sel.names?.[0] || '', guestName: guest?.name || tr.sel.names?.[1] || '' },
+  canLeave: !tr.cancelled && !tr.pulled && !tr.absent && !tr.startedAt && !isOnStage(tr, current) };
+}
+
+// `managed` : personnes gérées par le téléphone qui demande, seules à
+// recevoir leurs messages (voir Scheduler#notify).
+function publicState(person, tableId, managed = null) {
   const { current, upcoming } = analyze();
   const presence = presenceCandidate({ current, upcoming });
   const presenceMissingIds = new Set(presenceMissing(presence));
@@ -946,6 +1494,8 @@ function publicState(person, tableId) {
     name: byQid.has(it.queueId) ? byQid.get(it.queueId).sel.names.join(' & ') :
       (it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
     song: fmtSong(byQid.get(it.queueId)?.sel.song || it), table: byQid.has(it.queueId) ? sched.table(sched.people.get(byQid.get(it.queueId).sel.ids[0])?.tableId, false)?.name || '' : '',
+    // Pistes vocales du titre annoncées par KaraFun (4 chœurs, 5 et 6 voix guides).
+    tracks: songTracksOf(it),
   }));
   if (pending) queue.push({ source: 'envoi', ours: true, queueId: null,
     pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
@@ -975,9 +1525,13 @@ function publicState(person, tableId) {
   // encore à envoyer, peut être repoussé par ses chanteurs.
   // Personne → titre concerné, tant que ce titre peut encore laisser passer
   // une chanson (DEFER_MAX par titre pour toute la soirée).
-  const deferrable = new Map();
+  // Sans autre passage prêt à chanter avant lui, un report laisserait la
+  // scène vide : « Pas prêt » n'est pas proposé (deferAlone l'explique).
+  const deferrable = new Map(), deferAlone = new Set();
   const allowDefer = (ids, song) => {
-    if (sched.deferredSongsOf(song) < DEFER_MAX) ids.forEach(id => deferrable.set(id, song));
+    if (sched.deferredSongsOf(song) >= DEFER_MAX) return;
+    if (othersCanPass(ids, ready)) ids.forEach(id => deferrable.set(id, song));
+    else ids.forEach(id => deferAlone.add(id));
   };
   for (const tr of tracked) {
     if (!tr.cancelled && !tr.pulled && !tr.absent && !tr.startedAt && !isOnStage(tr, current)) allowDefer(tr.sel.ids, tr.sel.song);
@@ -987,7 +1541,8 @@ function publicState(person, tableId) {
   if (pending) pending.sel.ids.forEach(id => deferrable.delete(id));
   const deferralOf = pid => {
     const active = sched.deferralFor(pid);
-    if (active) return { remaining: active.remaining, total: active.total, canDeferMore: active.total < DEFER_MAX };
+    if (active) return { remaining: active.remaining, total: active.total,
+      canDeferMore: active.total < DEFER_MAX && othersCanPass(sched.people.get(active.ownerId)?.deferral?.ids || [pid], ready) };
     // Titre en train de sortir de KaraFun : pas d'autre report avant son retour.
     const pulling = tracked.find(tr => tr.pulled?.reason === 'defer' && tr.sel.ids.includes(pid));
     const owner = pulling && sched.people.get(pulling.sel.ids[0]);
@@ -995,6 +1550,11 @@ function publicState(person, tableId) {
       pendingRemoval: true, canDeferMore: false } : null;
   };
   const sentJoinRequests = sched.duetJoinRequestsByPerson();
+  // Invitations reçues, sauf celle dont le titre part déjà dans KaraFun : elle
+  // expirera à son accusé (on ne peut plus l'accepter).
+  const sending = sendingEntryId();
+  const invitesFor = p => sched.duetInvites(p).filter(inv => inv.entryId !== sending).map(inv => ({ entryId: inv.entryId,
+    fromName: sched.people.get(inv.fromId)?.name || 'Un chanteur', song: fmtSong(inv.song) }));
   const next = queue[0] || null;
   const nextEta = next?.eta || null;
   const confirmedForPage = p => !!sched._confirmedRecently(p) ||
@@ -1019,13 +1579,17 @@ function publicState(person, tableId) {
     // « registered » : personnes qui pourraient voter. En dessous du minimum
     // de votants, les téléphones ne proposent pas de Battle.
     battle: { ...battleVote.view(), registered: battleElectorate().length },
+    // Réglages de titre : interrupteur du bar (et télécommande qui les
+    // connaît), plages de KaraFun, valeurs par défaut.
+    songSettings: { enabled: settings.singerSongSettings !== false && bridge?.songSettingsAvailable?.() !== false,
+      ranges: songRanges(), defaults: songDefaults() },
   };
 
   const guestDuosOf = person => {
     const duos = [];
     for (const owner of sched.people.values()) for (const song of sched.songsOf(owner)) {
       if (song.duet?.partnerId === person.id && song.duet.state === 'accepted') {
-        duos.push({ entryId: song.entryId, fromName: owner.name, song: fmtSong(song) });
+        duos.push({ entryId: song.entryId, ownerId: owner.id, fromName: owner.name, song: fmtSong(song) });
       }
     }
     return duos;
@@ -1068,35 +1632,45 @@ function publicState(person, tableId) {
       songs: sched.songsOf(p).map(fmtSong),
       confirmed: confirmedForPage(p),
       needConfirm: needsPresence(p),
-      invite: p.invite ? { fromName: sched.people.get(p.invite.fromId)?.name || 'Un chanteur',
-        song: fmtSong(p.invite.song) } : null,
-      invites: sched.duetInvites(p).map(inv => ({ entryId: inv.entryId,
-        fromName: sched.people.get(inv.fromId)?.name || 'Un chanteur', song: fmtSong(inv.song) })),
+      ...(invites => ({ invite: invites[0] ? { fromName: invites[0].fromName, song: invites[0].song } : null, invites }))(invitesFor(p)),
       guestDuos: guestDuosOf(p),
       // Demandes de duo reçues sur ses titres, et envoyées à d'autres.
-      joinRequests: sched.duetJoinRequestsFor(p).map(r => ({ entryId: r.entryId, fromId: r.fromId,
-        fromName: r.fromName, song: fmtSong(r.song) })),
+      // Titre en cours d'envoi : la demande expirera à son accusé.
+      joinRequests: sched.duetJoinRequestsFor(p).filter(r => !(pending && !pending.cancelled && pending.sel.song.entryId === r.entryId))
+        .map(r => ({ entryId: r.entryId, fromId: r.fromId, fromName: r.fromName, song: fmtSong(r.song) })),
       sentJoinRequests: (sentJoinRequests.get(p.id) || []).map(r => ({ ownerId: r.ownerId, ownerName: r.ownerName,
-        entryId: r.entryId, song: fmtSong(r.song) })),
-      ...(deferral => ({ deferral, canDefer: !p.withdrawnAt && deferrable.has(p.id) && !deferral }))(deferralOf(p.id)),
+        entryId: r.entryId, song: fmtSong(r.song), seen: !!r.seenAt })),
+      ...(deferral => ({ deferral, canDefer: !p.withdrawnAt && deferrable.has(p.id) && !deferral,
+        deferAlone: !p.withdrawnAt && !deferral && deferAlone.has(p.id) }))(deferralOf(p.id)),
       duet: p.duet ? { partnerName: sched.people.get(p.duet.partnerId)?.name || 'Un chanteur',
         state: p.duet.state } : p.duetOf ? { partnerName: sched.people.get(p.duetOf)?.name || 'Un chanteur',
         state: 'accepted', asPartner: true } : null,
-      inKaraFun: tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => ({ title: tr.sel.song.title, artist: tr.sel.song.artist,
-        songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId) }))
-        .concat(pending && pending.sel.ids.includes(p.id) ? [{ title: pending.sel.song.title, artist: pending.sel.song.artist,
-          songId: pending.sel.song.songId, img: coverUrl(pending.sel.song.img), queueId: null, stage: false, sending: true }] : []),
+      ...(managed?.has(p.id) ? { inbox: sched.inboxOf(p).map(n => ({ id: n.id, kind: n.kind, params: n.params, at: n.at })) } : {}),
+      // Réglages de titre : seul l'auteur du titre les change, avant son début.
+      // `lock` dit pourquoi le téléphone ne peut plus : 'duo' (partenaire),
+      // 'started' (commencé ou sur scène), 'leaving' (sort de KaraFun).
+      inKaraFun: tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => {
+        const lock = tr.sel.ids[0] !== p.id ? 'duo' : tr.startedAt || isOnStage(tr, current) ? 'started'
+          : tr.cancelled || tr.pulled || tr.absent ? 'leaving' : null;
+        return { title: tr.sel.song.title, artist: tr.sel.song.artist,
+          songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId),
+          entryId: tr.sel.song.entryId || null, settings: tr.sel.song.settings || null, tracks: songTracksOf(kfItemOf(tr)),
+          canAdjust: !lock, lock, ...sentDuo(tr, p, current) };
+      }).concat(pending && pending.sel.ids.includes(p.id) ? [(lock => ({ title: pending.sel.song.title, artist: pending.sel.song.artist,
+        songId: pending.sel.song.songId, img: coverUrl(pending.sel.song.img), queueId: null, stage: false, sending: true,
+        entryId: pending.sel.song.entryId || null, settings: pending.sel.song.settings || null, canAdjust: !lock, lock }))(
+        pending.sel.ids[0] !== p.id ? 'duo' : pending.cancelled ? 'leaving' : null)] : []),
     }));
   }
 
   if (person) {
     if (Date.now() - (person.lastSeen || 0) >= 60000) person.lastSeen = Date.now();
+    noteSeen(person);
     const i = sched.Q.indexOf(person.id);
     const mine = queue.find(v => v.ids?.includes(person.id)) || null;
     const onStageNow = !!(stage && stage.ours && stage.ids.includes(person.id));
     const upNext = !!(next && next.ours && next.ids.includes(person.id));
     const owner = person.duetOf ? sched.people.get(person.duetOf) : null;
-    const inviter = person.invite ? sched.people.get(person.invite.fromId) : null;
     const partner = person.duet ? sched.people.get(person.duet.partnerId) : null;
     out.me = {
       id: person.id, name: person.name, tableId: person.tableId, photo: person.photo ? `/photo/${person.id}` : null,
@@ -1105,9 +1679,7 @@ function publicState(person, tableId) {
       sung: person.sung, inQueue: i >= 0,
       pos: mine ? mine.pos : null, eta: mine ? mine.eta : null, guaranteed: mine ? mine.guaranteed : false,
       over: person.over, onStage: onStageNow, upNext,
-      invite: inviter ? { fromName: inviter.name, song: fmtSong(person.invite.song) } : null,
-      invites: sched.duetInvites(person).map(inv => ({ entryId: inv.entryId,
-        fromName: sched.people.get(inv.fromId)?.name || 'Un chanteur', song: fmtSong(inv.song) })),
+      ...(invites => ({ invite: invites[0] ? { fromName: invites[0].fromName, song: invites[0].song } : null, invites }))(invitesFor(person)),
       guestDuos: guestDuosOf(person),
       duet: partner ? { partnerName: partner.name, state: person.duet.state } : (owner ? { partnerName: owner.name, state: 'accepted', asPartner: true, song: fmtSong(owner.song) } : null),
       confirmed: confirmedForPage(person),
@@ -1125,18 +1697,26 @@ function staffState() {
   const presenceIds = new Set(presenceMissing(presence));
   const presencePending = [...presenceIds].map(pid => sched.people.get(pid)?.name).filter(Boolean);
   const ips = lanAddresses();
-  const alreadySent = new Set(tracked.map(tr => tr.sel.song?.entryId).filter(Boolean));
-  if (pending?.sel.song?.entryId) alreadySent.add(pending.sel.song.entryId);
-  const blocked = sched.Q.map(id => sched.people.get(id)).filter(p =>
-    p && p.song?.duet?.state === 'pending' && !alreadySent.has(p.song.entryId) &&
-    !pub.queue.some(q => q.source === 'helper' && q.song?.entryId === p.song.entryId))
-    .map(p => ({ id: p.id, name: p.name, table: sched.table(p.tableId, false)?.name || '',
-      title: p.song.title, artist: p.song.artist || '', reason: 'Duo à accepter' }));
   const canUndoManual = sched.canUndoManualChange(priorityNativeFingerprint());
   const latestManual = sched.manualChanges.at(-1);
   const repeats = queueRepeats(pub.queue, sched.playedSongs, Date.now(), repeatWindowMs());
+  const { current } = analyze();
+  const stageTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
+  const kfSettings = bridge?.songSettingsState?.() || null;
   return {
     ...pub,
+    // Réglages de titre pour le bar : droits et fonctions confirmées par
+    // KaraFun, dernier avis, et titre en cours en direct (pistes comprises).
+    songSettings: { ...pub.songSettings,
+      permissions: kfSettings?.permissions || { manageVolumes: null, manageQueue: null },
+      support: kfSettings?.support || unknownSettingsSupport(),
+      notices: kfSettings?.notices || {},
+      notice: kfSettings?.notice || null,
+      available: kfSettings?.available ?? null,
+      live: current && kfSettings?.live ? { ...kfSettings.live, entryId: stageTr?.sel.song.entryId || null,
+        title: stageTr?.sel.song.title || current.title || '', settings: stageTr?.sel.song.settings || null } : null },
+    // Duo noté au bar sur le titre en cours : la page propose de le corriger.
+    stage: pub.stage && stageTr?.sel.staffDuo ? { ...pub.stage, staffDuo: staffDuoView(stageTr.sel.staffDuo) } : pub.stage,
     // Repères réservés au bar : titres en double, « Je suis là » manqués.
     queue: pub.queue.map((line, index) => {
       const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
@@ -1145,7 +1725,17 @@ function staffState() {
         ...(skips ? { presenceSkips: skips } : {}) } : line;
     }),
     battle: { ...battleVote.view(), registered: battleElectorate().length },
-    blocked,
+    // Demandes de duo encore sans réponse de l'auteur du titre.
+    joinRequests: [...sched.duetJoinRequestsByPerson()].flatMap(([requesterId, rows]) => rows.map(row => ({
+      ownerId: row.ownerId, ownerName: row.ownerName, requesterId,
+      requesterName: sched.people.get(requesterId)?.name || '', entryId: row.entryId, title: row.song.title,
+      at: sched._joinRequests(row.song).find(item => item.fromId === requesterId)?.at || null, seenAt: row.seenAt }))),
+    // Invitations de duo envoyées par l'auteur d'un titre, encore sans réponse
+    // de l'invitée (vue ou pas encore vue sur son téléphone).
+    duoInvites: [...sched.people.values()].filter(owner => !owner.withdrawnAt).flatMap(owner => sched.songsOf(owner)
+      .filter(song => song.duet?.state === 'pending').map(song => ({ ownerId: owner.id, ownerName: owner.name,
+        partnerId: song.duet.partnerId, partnerName: sched.people.get(song.duet.partnerId)?.name || '',
+        entryId: song.entryId, title: song.title, seenAt: song.duet.seenAt || null }))),
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
       from: change.from, to: change.to, at: change.at,
@@ -1186,7 +1776,7 @@ function staffState() {
     people: [...sched.people.values()].map(p => ({ id: p.id, name: p.name, tableId: p.tableId,
       sung: p.sung, inQueue: sched.Q.includes(p.id), lastSeen: p.lastSeen,
       active: !p.withdrawnAt, songCount: sched.songsOf(p).length,
-      privateNote: p.privateNote || '', verified: !!p.verifiedAt, bonus: p.bonus || 0,
+      privateNote: p.privateNote || '', bonus: p.bonus || 0,
       appearances: (p.sung || 0) + (p.duetGuestCount || 0),
       presenceSkips: sched.presenceSkipsOf(p), presenceRetry: sched._isPresenceRetry(p),
       photoUrl: p.photo ? `/photo/${p.id}` : null })),
@@ -1210,7 +1800,7 @@ function stageHistoryView() {
   const live = onStageEntryId();
   return sched.stageHistory.slice(-20).reverse().map(item => ({
     id: item.id, at: item.at, endedAt: item.endedAt, title: item.title, artist: item.artist,
-    kind: item.kind, onStage: !item.endedAt && !!live && item.entryId === live,
+    kind: item.kind, onStage: !item.endedAt && !!live && item.entryId === live, staffDuo: staffDuoView(item.staffDuo),
     people: item.ids.map((pid, index) => {
       const p = sched.people.get(pid);
       const table = sched.table(p?.tableId || item.tableIds?.[index] || '', false);
@@ -1514,6 +2104,7 @@ function claimPerson(body, req, res) {
   p.token = crypto.randomBytes(16).toString('hex');
   sched.byToken.set(p.token, p.id);
   if (t.individual) bindSoloDevice(req, res, p);
+  journalEvent('person.transferred', { personId: p.id });
   sched.note(`${p.name} est désormais géré depuis un autre téléphone`, 'info');
   return { id: p.id, token: p.token };
 }
@@ -1582,6 +2173,11 @@ function chooseFor(p, song, mode) {
     const e = new Error('Cette chanson est déjà envoyée à KaraFun pour ce chanteur.');
     e.code = 'ALREADY_IN_KARAFUN'; throw e;
   }
+  // Duo en route vers KaraFun : remplacer la liste de son auteur annoncerait
+  // l'annulation du duo, qui partirait pourtant à deux (voir /song/remove).
+  if (mode === 'replace' && pending && !pending.cancelled && pending.sel.ids.length > 1 && pending.sel.ids[0] === p.id) {
+    throw new Error('Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
+  }
   sched.chooseSong(p, withCover(song), mode);
   sync();
   const added = sched.songsOf(p).find(item => item.songId === songId);
@@ -1604,11 +2200,25 @@ function confirmPresence(p) {
 // « Pas prêt » : le prochain passage de cette personne laisse passer une ou
 // plusieurs chansons sans perdre son tour. Un titre déjà chargé dans KaraFun
 // en est retiré, puis reprend sa place dans la file.
+// « Pas prêt » : un autre passage prêt (pas lui-même repoussé) pourra-t-il
+// chanter avant celui de `ids` ? `view` : prévision déjà calculée.
+function othersCanPass(ids, view = null) {
+  const mine = new Set(ids.map(String));
+  const ahead = view || sched.presenceView(pending ? (pending.sel.consumedIds || pending.sel.ids) : [], pending ? pending.sel : null);
+  return ahead.some(v => !v.future && !v.ids.some(pid => mine.has(String(pid))) && !sched.isDeferred(sched.people.get(v.ids[0])));
+}
+function deferAloneError() {
+  const error = new Error('Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.');
+  error.code = 'DEFER_ALONE';
+  return error;
+}
+
 function deferTurn(p, songs = 1) {
   const count = songs == null ? 1 : Number(songs);
   const active = sched.deferralFor(p.id);
   if (active) {
     const owner = sched.people.get(active.ownerId);
+    if (!othersCanPass(owner.deferral.ids || [owner.id])) throw deferAloneError();
     sched.deferPassage(owner.id, { entryId: active.entryId, ids: owner.deferral.ids }, count);
     sync();
     return sched.deferralFor(p.id);
@@ -1628,6 +2238,7 @@ function deferTurn(p, songs = 1) {
     // le report est vérifié, le titre retiré, puis le report enregistré.
     const passage = { entryId: tr.sel.song.entryId, ids: tr.sel.ids, song: tr.sel.song };
     sched.checkDeferral(owner.id, passage, count);
+    if (!othersCanPass(tr.sel.ids)) throw deferAloneError();
     pullFromKaraFun(tr, 'defer');
     sched.deferPassage(owner.id, passage, count);
     sync();
@@ -1639,6 +2250,7 @@ function deferTurn(p, songs = 1) {
   if (!first || !first.ids.includes(p.id)) {
     throw new Error('Tu pourras repousser ton passage quand ta chanson sera la prochaine.');
   }
+  if (!othersCanPass(first.ids)) throw deferAloneError();
   // Un envoi déjà parti chantera de toute façon avant : il ne compte pas.
   sched.deferPassage(first.ids[0], first, count, { extra: pending && !pending.cancelled ? 1 : 0 });
   sync();
@@ -1712,6 +2324,7 @@ let closingNoted = null;
 function noteClosingStop() {
   if (closingNoted === settings.closingAt) return;
   closingNoted = settings.closingAt;
+  journalEvent('closing.reached', { closingAt: settings.closingAt });
   sched.note(`Fermeture à ${hhmm(settings.closingAt)} : plus aucun titre n’est envoyé ni lancé dans KaraFun. Spotify reprend quand la scène est libre ; « +10 min » relance la file.`, 'staff');
 }
 
@@ -1719,6 +2332,86 @@ function noteClosingStop() {
 function assertNotSending(entryId) {
   if (pending && !pending.cancelled && pending.sel.song.entryId === String(entryId || '')) {
     throw new Error('Ce titre est en cours d’envoi à KaraFun : le duo n’est plus possible.');
+  }
+}
+
+// Titre d'une invitation de duo en route vers KaraFun : il part en solo et
+// l'invitation expire à l'accusé (Scheduler#_expireInvite). L'accepter n'est
+// plus possible ; la refuser ne change rien au titre. Sans titre précis, la
+// seule invitation reçue est visée (comme Scheduler#answerDuet).
+function sendingEntryId() {
+  return pending && !pending.cancelled ? pending.sel.song.entryId : null;
+}
+function assertInviteNotSending(guest, entryId) {
+  const sending = sendingEntryId();
+  if (!sending) return;
+  const invites = sched.duetInvites(guest);
+  const target = entryId ? String(entryId) : invites.length === 1 ? invites[0].entryId : null;
+  if (target === sending) throw new Error('Trop tard : ce titre part déjà dans KaraFun en solo, l’invitation a expiré.');
+}
+
+// Duo en route vers KaraFun : ses chanteurs sont fixés jusqu'à l'accusé.
+function assertDuoNotSending(entryId, personId) {
+  if (pending && !pending.cancelled && pending.sel.song.entryId === entryId && pending.sel.ids.includes(personId)) {
+    throw new Error('Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
+  }
+}
+// « Annuler duo » : sans titre précis, le seul duo de la personne est celui
+// en cours d'envoi s'il la compte parmi ses chanteurs.
+function assertDuoCancelNotSending(p, entryId) {
+  if (pending && !pending.cancelled && pending.sel.ids.length > 1) {
+    assertDuoNotSending(entryId ? String(entryId) : pending.sel.song.entryId, p.id);
+  }
+}
+
+// Duo déjà chargé dans KaraFun : le titre reste à sa place au nom de son
+// auteur, aucune commande KaraFun (voir Scheduler#leaveSentDuet).
+function leaveSentDuo(tr, guestId, by) {
+  const { current } = analyze();
+  if (tr.startedAt || isOnStage(tr, current)) throw new Error('Trop tard : ce duo est déjà sur scène.');
+  if (tr.cancelled || tr.pulled || tr.absent) throw new Error('Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.');
+  return sched.leaveSentDuet(tr.sel, guestId, { by });
+}
+
+// Le bar marque partis une personne ou toute une table (`ids`). Un duo déjà
+// chargé dont seuls des invités partent reste dans KaraFun, au nom de son
+// auteur seul (un titre en train de sortir revient à son auteur) ; un envoi
+// sans accusé garde son nom d'origine pour que KaraFun le reconnaisse. À
+// appeler avant le départ, pour que les invités récupèrent leur part de
+// tour. Rend les titres suivis à retirer de KaraFun (ceux dont l'auteur part).
+function keepSentDuosOfLeavers(ids) {
+  const { current } = analyze();
+  const upcoming = tracked.filter(tr => !isOnStage(tr, current) && tr.sel.ids.some(id => ids.has(id)));
+  const asGuest = upcoming.filter(tr => !ids.has(tr.sel.ids[0]));
+  let keptAsSolo = 0;
+  for (const tr of asGuest) {
+    if (tr.cancelled || tr.pulled || tr.absent || tr.startedAt) continue;
+    for (const gid of tr.sel.ids.slice(1).filter(id => ids.has(id))) sched.leaveSentDuet(tr.sel, gid, { by: 'staff' });
+    keptAsSolo++;
+  }
+  if (pending && !pending.cancelled && !ids.has(pending.sel.ids[0])) {
+    const guests = pending.sel.ids.slice(1).filter(id => ids.has(id));
+    for (const gid of guests) sched.leaveSentDuet(pending.sel, gid, { by: 'staff', keepLabel: true });
+    if (guests.length) keptAsSolo++;
+  }
+  return { upcomingTracks: upcoming.filter(tr => !asGuest.includes(tr)), keptAsSolo };
+}
+
+// Titres déjà chargés dont l'auteur part : retirés de KaraFun. Les invités
+// qui restent apprennent l'annulation du duo, comme avant l'envoi (une seule
+// fois : un titre déjà annulé attend seulement son retrait de KaraFun).
+function removeLeaversTracks(upcomingTracks, ids) {
+  for (const tr of upcomingTracks) {
+    const already = tr.cancelled;
+    tr.cancelled = true;
+    tr.removeRequestedAt = Date.now();
+    try { bridge?.remove(tr.queueId); }
+    catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
+    if (already) continue;
+    const ownerName = sched.people.get(tr.sel.ids[0])?.name || tr.sel.names?.[0] || '';
+    for (const gid of tr.sel.ids.slice(1)) {
+      if (!ids.has(gid)) sched.notify(gid, 'duoCancelled', { name: ownerName, title: tr.sel.song.title });
+    }
   }
 }
 
@@ -1739,6 +2432,7 @@ function assertRoomBeforeClosing(p, mode) {
     if (mine.eta + (round + 0.5) * slot > closing.at) message = `Le bar ferme à ${hhmm(closing.at)} : un titre de plus passerait après la fermeture.`;
   }
   if (!message) return;
+  journalEvent('closing.refused', { personId: p.id, mode });
   const error = new Error(message);
   error.code = 'CLOSING';
   throw error;
@@ -1771,6 +2465,7 @@ function holdAutoPlay() {
   if (!settings.autoPlay) return;
   settings.autoPlay = false;
   settings.autoPlayHeld = true;
+  journalEvent('autoplay.held', {});
   sched.note('Spotify a repris en fin de file : lecture automatique suspendue. Touche « Lecture » quand le micro est prêt ; elle se rétablit ensuite.', 'staff');
   saveNight();
 }
@@ -1778,6 +2473,7 @@ function releaseAutoPlay() {
   if (!settings.autoPlayHeld) return;
   settings.autoPlayHeld = false;
   settings.autoPlay = true;
+  journalEvent('autoplay.released', {});
   sched.note('Lecture automatique rétablie.', 'staff');
 }
 
@@ -1845,6 +2541,7 @@ async function spotifyTick() {
     if (!action) { await spotify.readPlayer(); return; }
     const result = action === 'resume' ? await spotify.resume() : await spotify.pause();
     spotifyAutomation.settle(true);
+    journalEvent('spotify', { action, result: String(result || ''), trigger: closed ? 'closing' : 'auto' });
     if (result === 'done') appLog(action === 'pause' ? 'Spotify en pause : un titre démarre dans KaraFun.' :
       closed ? 'Spotify relancé : heure de fermeture.' : 'Spotify relancé : la file est vide.');
     // Fin de file (Spotify relancé, ou déjà en lecture) : le bar redonne le
@@ -1852,7 +2549,7 @@ async function spotifyTick() {
     // Un titre lancé pendant la relance : rien à suspendre.
     if (action === 'resume' && !closed && karaokeOutlook() !== 'singing') holdAutoPlay();
   } catch (error) {
-    if (action) spotifyAutomation.settle(false);
+    if (action) { spotifyAutomation.settle(false); journalEvent('spotify', { action, result: 'error', trigger: closed ? 'closing' : 'auto' }); }
     spotify.lastError = error.message;
   } finally { spotifyBusy = false; }
 }
@@ -1917,6 +2614,7 @@ function clearQueue() {
   sched.releaseNext();
   settings.queueClearPending = true;
   battleVote.reset();
+  journalEvent('staff.queueCleared', { songs: removedLocalSongs, pendingCancelled });
   sched.note('Le bar a vidé toutes les chansons en attente ; les tables, accès et passages précédents sont conservés.', 'staff');
   // Écrire les deux générations avant toute commande distante : un crash ne
   // doit jamais recréer une file que le bar a décidé d'effacer.
@@ -1930,9 +2628,17 @@ function clearQueue() {
 
 function clearEvening() {
   const { current, upcoming } = analyze();
+  // Clôture et résumé de la soirée qui se termine, avant tout effacement.
+  const listed = [...sched.people.values()].map(p => sched.songsOf(p).length);
+  closeEvening('staff-reset', { unsungSongs: listed.reduce((a, b) => a + b, 0), peopleWithSongs: listed.filter(Boolean).length,
+    people: sched.people.size, tables: sched.tables.size });
   // Même pendant une reconnexion, chaque titre envoyé reste sous suivi. On ne
   // connaît alors pas la file distante : le retrait sera tenté dès son retour.
   const toRemove = tracked.filter(tr => !tr.startedAt && !isOnStage(tr, current));
+  // L'envoi automatique attend la vérification du bar seulement si un titre
+  // envoyé doit encore quitter KaraFun (ou arriver) : le titre sur scène seul
+  // ne le coupe pas. La page l'annonce avant la confirmation.
+  const stopAuto = !!settings.auto && (!!pending || toRemove.length > 0);
   let removalErrors = 0;
   let removalRequests = 0;
   for (const tr of toRemove) {
@@ -1965,25 +2671,55 @@ function clearEvening() {
   sched.slotSamples = [];
   sched.log = [];
   sched.playedSongs = [];
+  // Rien de la soirée précédente ne reste : historique de scène (prénoms),
+  // partage entre tables, crédits de tour et compteur de passages.
+  sched.clearStageHistory([onStageEntryId()]);
+  sched.recentGroups = [];
+  sched.roundUse.clear();
+  sched.appearanceSerial = 0;
   personShareCodes.clear();
+  journaledBallots.clear();
+  seenJournal.clear();
   battleVote.reset();
-  ensureSoloGroup();
+  // Réglages de la nouvelle soirée avant son premier événement : les règles
+  // notées dans evening.started sont celles qui s'appliquent.
   settings.autoPlay = false;
   settings.autoPlayHeld = false;
   settings.closingAt = null;
+  if (stopAuto) settings.auto = false;
+  journal.start({ rules: journalRules() });
+  phaseKey = null; presenceAskKey = null; lastSampleAt = 0;
+  ensureSoloGroup();
+  journalRoster();
   restartSweep = null;
   restartAwaitingPlay = null;
-  if (tracked.length || pending) settings.auto = false;
   sched.note('Nouvelle soirée : anciens accès effacés et nouvel accès « En solo » créé.', 'staff');
   saveNight({ required: true, replaceBoth: true });
   saveTables();
   // Les photos ne sont plus nécessaires après deux instantanés sans personnes.
   try { for (const filename of fs.readdirSync(PHOTO_DIR)) fs.unlinkSync(path.join(PHOTO_DIR, filename)); }
   catch (_) { /* nettoyage différé : aucune photo n'est encore visible */ }
-  return { ok: true, removalRequests,
+  return { ok: true, removalRequests, autoStopped: stopAuto,
     removalErrors, currentStillPlaying: !!current,
     otherKaraFunSongs: upcoming.filter(item => !tracked.some(tr => String(tr.queueId) === String(item.queueId))).length,
     removalPending: toRemove.length };
+}
+
+// Réglages notés dans le journal quand ils changent (jamais l'adresse publique).
+function journalSettingsState() {
+  return { auto: !!settings.auto, autoPlay: !!settings.autoPlay, pushDelaySec: settings.pushDelaySec, playDelaySec: settings.playDelaySec,
+    repeatWarnMin: settings.repeatWarnMin, presenceGraceSec: settings.presenceGraceSec, presenceMaxSkips: settings.presenceMaxSkips,
+    gap: sched.opts.gap, cap: sched.opts.cap, requirePresence: !!sched.opts.requirePresence, tableRotation: !!sched.opts.tableRotation,
+    weightedTables: !!sched.opts.weightedTables, interleaveArrivals: sched.opts.interleaveArrivals !== false,
+    battleCooldownMin: battleVote.cooldownMs / 60000, battleRejectedCooldownMin: battleVote.rejectedCooldownMs / 60000,
+    battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters, baseUrl: !!settings.baseUrl,
+    singerSongSettings: settings.singerSongSettings !== false };
+}
+function journalSettings(before) {
+  const after = journalSettingsState();
+  for (const [key, value] of Object.entries(after)) {
+    if (before[key] !== value) journalEvent('settings.changed', { setting: key, from: before[key], to: value });
+  }
 }
 
 const handlers = {
@@ -2029,6 +2765,26 @@ const handlers = {
     }
     sched.removeSong(p, body.entryId); sync(); return { ok: true };
   },
+  // Réglages de son titre (tonalité, tempo, voix guide, chœurs), tant qu'il
+  // n'a pas commencé. Duo : seul l'auteur du titre règle.
+  'POST /api/table/song/settings': async (req, res, body) => {
+    const p = personAtTable(body);
+    if (settings.singerSongSettings === false) {
+      throw songSettingsError('Le bar a désactivé les réglages de titre depuis les téléphones.', 'SONG_SETTINGS_OFF');
+    }
+    if (bridge?.songSettingsAvailable?.() === false) {
+      throw songSettingsError('Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.',
+        'SONG_SETTINGS_UNAVAILABLE');
+    }
+    const target = songSettingsTarget(body.entryId, 'Ce titre a déjà commencé : seul le bar peut encore le régler.');
+    if (target.ids[0] !== p.id) {
+      throw target.ids.includes(p.id) ?
+        songSettingsError(`${sched.people.get(target.ids[0])?.name || 'L’auteur du titre'} a choisi ce duo : les réglages se font sur son téléphone.`, 'DUO_GUEST') :
+        songSettingsError('Ce titre n’est pas dans ta liste.', 'NOT_OWNER');
+    }
+    const values = normalizeSettings(body.settings, songRanges());
+    return { ok: true, settings: values, applied: applySongSettings(target, values, { by: 'self' }) };
+  },
   'POST /api/table/song/reorder': async (req, res, body) => {
     const p = personAtTable(body);
     const songs = sched.songsOf(p);
@@ -2047,11 +2803,36 @@ const handlers = {
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
     const p = personAtTable(body);
+    if (body.accept) assertInviteNotSending(p, body.entryId);
     sched.answerDuet(p, !!body.accept, body.entryId); sync(); return { ok: true };
   },
   'POST /api/table/duet/cancel': async (req, res, body) => {
     const p = personAtTable(body);
+    assertDuoCancelNotSending(p, body.entryId);
     sched.cancelDuet(p, body.entryId); sync(); return { ok: true };
+  },
+  // Invitée qui ne chante plus un duo accepté, avant ou après son envoi.
+  'POST /api/table/duet/leave': async (req, res, body) => {
+    const p = personAtTable(body);
+    const entryId = String(body.entryId || '');
+    assertDuoNotSending(entryId, p.id);
+    const tr = tracked.find(item => item.sel.song?.entryId === entryId && item.sel.ids.indexOf(p.id) > 0);
+    if (tr) { leaveSentDuo(tr, p.id, 'guest'); sync(); return { ok: true, stage: 'sent' }; }
+    sched.leaveDuet(p, body.ownerId, entryId); sync(); return { ok: true, stage: 'planned' };
+  },
+  // « Chanter seul » : l'auteur d'un duo déjà chargé dans KaraFun le garde en solo.
+  'POST /api/table/duet/solo': async (req, res, body) => {
+    const p = personAtTable(body);
+    const entryId = String(body.entryId || '');
+    assertDuoNotSending(entryId, p.id);
+    const tr = tracked.find(item => item.sel.song?.entryId === entryId && item.sel.ids[0] === p.id && item.sel.ids.length > 1);
+    if (tr) { leaveSentDuo(tr, tr.sel.ids[1], 'owner'); sync(); return { ok: true, stage: 'sent' }; }
+    sched.cancelDuet(p, entryId); sync(); return { ok: true, stage: 'planned' };
+  },
+  // Messages lus sur le téléphone qui gère la personne.
+  'POST /api/table/notice/ack': async (req, res, body) => {
+    const p = personAtTable(body);
+    return { ok: true, removed: sched.ackNotices(p, body.ids) };
   },
   // Demander à chanter en duo le titre prévu par une autre personne.
   'POST /api/table/duet/join': async (req, res, body) => {
@@ -2068,6 +2849,14 @@ const handlers = {
   'POST /api/table/duet/join/cancel': async (req, res, body) => {
     const p = personAtTable(body);
     sched.cancelDuetJoin(p, body.ownerId, body.entryId); sync(); return { ok: true };
+  },
+  // La fenêtre d'une demande (avec `fromId`) ou d'une invitation de duo vient
+  // de s'afficher sur le téléphone qui doit répondre.
+  'POST /api/table/duet/seen': async (req, res, body) => {
+    const p = personAtTable(body);
+    const seen = sched.markDuetSeen(p, body.entryId, body.fromId || null);
+    if (seen) sync();
+    return { ok: true, seen };
   },
   // « Pas prêt » : repousser son passage d'une chanson, ou revenir.
   'POST /api/table/defer': async (req, res, body) => {
@@ -2098,16 +2887,28 @@ const handlers = {
     assertRoomBeforeClosing(me, 'append');
     sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
   },
-  'POST /api/duet/answer': async (req, res, body, me) => { sched.answerDuet(me, !!body.accept, body.entryId); sync(); return { ok: true }; },
-  'POST /api/duet/cancel': async (req, res, body, me) => { sched.cancelDuet(me, body.entryId); sync(); return { ok: true }; },
+  'POST /api/duet/answer': async (req, res, body, me) => {
+    if (body.accept) assertInviteNotSending(me, body.entryId);
+    sched.answerDuet(me, !!body.accept, body.entryId); sync(); return { ok: true };
+  },
+  'POST /api/duet/cancel': async (req, res, body, me) => {
+    assertDuoCancelNotSending(me, body.entryId);
+    sched.cancelDuet(me, body.entryId); sync(); return { ok: true };
+  },
   'POST /api/confirm': async (req, res, body, me) => { confirmPresence(me); return { ok: true }; },
   'POST /api/give': async (req, res, body, me) => { sched.giveSpot(me, body.to); sync(); return { ok: true }; },
   'POST /api/leave': async (req, res, body, me) => { sched.leave(me); sync(); return { ok: true }; },
   'POST /api/photo': async (req, res, body, me) => { me.photo = decodePhoto(body.photo); sched.version++; return { ok: true }; },
 
   // ---------------- bar
-  'POST /api/staff/connect': async (req, res, body) => { CODE = String(body.code || '').replace(/\D/g, ''); connectKaraFun(); return { ok: true }; },
+  // Un code vide est refusé : il effaçait le code retenu sans rien connecter.
+  'POST /api/staff/connect': async (req, res, body) => {
+    const code = String(body.code || '').replace(/\D/g, '');
+    if (!code) throw new Error('Code KaraFun manquant : recopie les chiffres affichés dans la télécommande de KaraFun.');
+    return connectionAnswer(connectKaraFun(code));
+  },
   'POST /api/staff/settings': async (req, res, body) => {
+    const settingsBefore = journalSettingsState();
     const nextTableRotation = 'tableRotation' in body ? !!body.tableRotation : sched.opts.tableRotation;
     const nextWeighted = 'weightedTables' in body ? !!body.weightedTables : sched.opts.weightedTables;
     if (nextWeighted && !nextTableRotation) throw new Error('Active d’abord la rotation des tables.');
@@ -2133,8 +2934,8 @@ const handlers = {
       throw new Error('Le délai après un refus de Battle doit être de 1 à 120 minutes.');
     }
     const nextVoteMin = 'battleVoteMin' in body ? Number(body.battleVoteMin) : null;
-    if (nextVoteMin !== null && (!Number.isInteger(nextVoteMin) || nextVoteMin < 1 || nextVoteMin > 10)) {
-      throw new Error('La durée du vote Battle doit être de 1 à 10 minutes.');
+    if (nextVoteMin !== null && (!Number.isInteger(nextVoteMin) || nextVoteMin < 1 || nextVoteMin > 120)) {
+      throw new Error('La durée du vote Battle doit être de 1 à 120 minutes.');
     }
     const nextRepeatWarn = 'repeatWarnMin' in body ? Number(body.repeatWarnMin) : settings.repeatWarnMin;
     if (!Number.isInteger(nextRepeatWarn) || nextRepeatWarn < 0 || nextRepeatWarn > 240) {
@@ -2148,9 +2949,24 @@ const handlers = {
     if (!Number.isInteger(nextPresenceSkips) || nextPresenceSkips < 1 || nextPresenceSkips > 10) {
       throw new Error('Le nombre de passages manqués doit être entre 1 et 10.');
     }
+    // Écart et recul : une valeur vide ou hors bornes est refusée, comme les
+    // autres réglages, au lieu d'être ramenée en silence à une autre valeur.
+    const strictInt = value => typeof value === 'string' && !value.trim() ? NaN : Number(value);
+    const nextGap = 'gap' in body ? strictInt(body.gap) : null;
+    if (nextGap !== null && (!Number.isInteger(nextGap) || nextGap < 1 || nextGap > 10)) {
+      throw new Error('L’écart entre chanteurs d’une table doit être de 1 à 10 places.');
+    }
+    const nextCap = 'cap' in body ? strictInt(body.cap) : null;
+    if (nextCap !== null && (!Number.isInteger(nextCap) || nextCap < 1 || nextCap > 50)) {
+      throw new Error('Le recul maximal doit être de 1 à 50 places.');
+    }
     const nextMinVoters = 'battleMinVoters' in body ? Number(body.battleMinVoters) : null;
     if (nextMinVoters !== null && (!Number.isInteger(nextMinVoters) || nextMinVoters < 1 || nextMinVoters > 100)) {
       throw new Error('Le nombre minimal de votants doit être de 1 à 100.');
+    }
+    const nextSingerSettings = 'singerSongSettings' in body ? body.singerSongSettings : settings.singerSongSettings;
+    if (typeof nextSingerSettings !== 'boolean') {
+      throw new Error('Le réglage des titres depuis les téléphones est activé ou désactivé (oui ou non).');
     }
     if (body.auto && recoveredPending) throw new Error('Vérifie d’abord l’envoi interrompu dans KaraFun.');
     if (body.auto && persistenceError) throw new Error('Sauvegarde indisponible : l’envoi automatique reste suspendu.');
@@ -2176,8 +2992,8 @@ const handlers = {
     }
     if ('autoPlay' in body) { settings.autoPlay = !!body.autoPlay; settings.autoPlayHeld = false; }
     if ('baseUrl' in body) { settings.baseUrl = nextBaseUrl; saveTables(); }
-    if ('gap' in body) sched.opts.gap = Math.max(1, Math.min(10, parseInt(body.gap, 10) || 4));
-    if ('cap' in body) sched.opts.cap = Math.max(1, Math.min(50, parseInt(body.cap, 10) || 2));
+    if (nextGap !== null) sched.opts.gap = nextGap;
+    if (nextCap !== null) sched.opts.cap = nextCap;
     if ('requirePresence' in body) {
       sched.opts.requirePresence = !!body.requirePresence;
       if (!sched.opts.requirePresence) sched.clearPresenceRetries();
@@ -2187,10 +3003,12 @@ const handlers = {
     settings.repeatWarnMin = nextRepeatWarn;
     settings.presenceGraceSec = nextPresenceGrace;
     settings.presenceMaxSkips = nextPresenceSkips;
+    settings.singerSongSettings = nextSingerSettings;
     if (nextBattleCooldown !== null) battleVote.setCooldownMinutes(nextBattleCooldown);
     if (nextRejectedCooldown !== null) battleVote.setRejectedCooldownMinutes(nextRejectedCooldown);
     if (nextVoteMin !== null) battleVote.setVoteMinutes(nextVoteMin);
     if (nextMinVoters !== null) battleVote.setMinVoters(nextMinVoters);
+    journalSettings(settingsBefore);
     sched.version++; sync();
     return { ok: true };
   },
@@ -2252,21 +3070,17 @@ const handlers = {
     }
     const people = sched.tableSingers(tableId);
     const ids = new Set(people.map(person => person.id));
-    const { current } = analyze();
-    const upcomingTracks = tracked.filter(tr => !isOnStage(tr, current) && tr.sel.ids.some(id => ids.has(id)));
+    // Invités de duos d'autres tables : le titre de l'auteur reste en solo.
+    const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(ids);
     if (pending?.sel.ids.some(id => ids.has(id))) pending.cancelled = true;
     sched.tableLeft(tableId);
     soloInvitations.revokeTable(tableId);
     access.revoke(tableId);
     saveTables();
-    for (const tr of upcomingTracks) {
-      tr.cancelled = true;
-      tr.removeRequestedAt = Date.now();
-      try { bridge?.remove(tr.queueId); }
-      catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
-    }
+    removeLeaversTracks(upcomingTracks, ids);
     sync();
-    return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled };
+    return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled,
+      ...(keptAsSolo ? { keptAsSolo } : {}) };
   },
   'POST /api/staff/tables-clear': async (req, res, body) => {
     if (body.confirmation !== 'SUPPRIMER TOUTES LES TABLES') {
@@ -2309,6 +3123,7 @@ const handlers = {
     sched.staffMove(personId, toIndex, excluded, provisional);
     sync();
     const nativeAfter = priorityNativeFingerprint();
+    journalEvent('staff.move', { personId, kind: priority ? 'priority' : 'move', from: from + 1, to: toIndex + 1 });
     if (nativeBefore === nativeAfter) sched.recordManualChange({
       kind: priority ? 'priority' : 'move', personId,
       name: visible[from]?.name || sched.people.get(personId)?.name || 'ce chanteur',
@@ -2374,6 +3189,17 @@ const handlers = {
       'Calcul complet lancé : 30 secondes au plus, puis la recherche continue tant que la file ne change pas. La file affichée reste utilisable pendant ce temps.' :
       'Optimisation indisponible : la file a été recalculée par la règle locale.' };
   },
+  // Réglages d'un titre à venir (même déjà chargé dans KaraFun). Le titre en
+  // cours se règle en direct : POST /api/staff/kf { action: 'pitch' | 'tempo' | 'track' }.
+  'POST /api/staff/song/settings': async (req, res, body) => {
+    const target = songSettingsTarget(body.entryId, 'Ce titre est sur scène : règle-le en direct.');
+    const personId = body.personId == null ? '' : String(body.personId);
+    if (personId && !target.ids.includes(personId)) {
+      throw songSettingsError(`Ce titre n’est pas celui de ${sched.people.get(personId)?.name || 'cette personne'}.`, 'NOT_OWNER');
+    }
+    const values = normalizeSettings(body.settings, songRanges());
+    return { ok: true, settings: values, applied: applySongSettings(target, values, { by: 'staff' }) };
+  },
   'POST /api/staff/bonus': async (req, res, body) => {
     if (body.tableId != null && body.tableId !== '') sched.setTableBonus(TableAccess.key(body.tableId), body.level);
     else if (body.personId) sched.setPersonBonus(String(body.personId), body.level);
@@ -2382,7 +3208,7 @@ const handlers = {
     return { ok: true };
   },
   'POST /api/staff/person/identify': async (req, res, body) => {
-    const p = sched.staffIdentify(body.personId, body.note, !!body.verified);
+    const p = sched.setPrivateNote(body.personId, 'note' in body ? body.note : undefined);
     return { ok: true, personId: p.id };
   },
   'POST /api/staff/person/share': async (req, res, body) => {
@@ -2395,18 +3221,15 @@ const handlers = {
   'POST /api/staff/person/leave': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p) throw new Error('Chanteur inconnu.');
-    const { current } = analyze();
-    const upcomingTracks = tracked.filter(tr => tr.sel.ids.includes(p.id) && !isOnStage(tr, current));
-    sched.leave(p);
+    // Invitée d'un duo déjà chargé : le titre reste dans KaraFun, au nom de
+    // son auteur seul.
+    const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(new Set([p.id]));
+    sched.leave(p, 'staff');
     if (pending?.sel.ids.includes(p.id)) pending.cancelled = true;
-    for (const tr of upcomingTracks) {
-      tr.cancelled = true;
-      tr.removeRequestedAt = Date.now();
-      try { bridge?.remove(tr.queueId); }
-      catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
-    }
+    removeLeaversTracks(upcomingTracks, new Set([p.id]));
     sync();
-    return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled };
+    return { ok: true, removedFromKaraFun: upcomingTracks.length, pendingCancelled: !!pending?.cancelled,
+      ...(keptAsSolo ? { keptAsSolo } : {}) };
   },
   'POST /api/staff/stage-history/clear': async () => {
     const removed = sched.clearStageHistory([onStageEntryId()]);
@@ -2427,13 +3250,16 @@ const handlers = {
       throw new Error('La table est pleine. Ajuste son effectif avant de réactiver cette personne.');
     }
     p.withdrawnAt = null;
+    journalEvent('person.reactivated', { personId: p.id });
     sched.note(`${p.name} revient à ${t.name} ; son historique de passages est conservé`, 'staff');
     return { ok: true };
   },
   // Heure de fermeture : à régler, décaler (« encore une chanson ! ») ou retirer.
   'POST /api/staff/closing': async (req, res, body) => {
+    const closingBefore = settings.closingAt;
     if (body.clear) {
       settings.closingAt = null;
+      journalEvent('closing.cleared', {});
       sched.note('Heure de fermeture retirée : les ajouts de titres sont de nouveau libres.', 'staff');
     } else if (body.extendMin !== undefined) {
       const minutes = Number(body.extendMin);
@@ -2449,6 +3275,8 @@ const handlers = {
       settings.closingAt = nextClosing(body.time);
       sched.note(`Le bar ferme à ${hhmm(settings.closingAt)}.`, 'staff');
     }
+    if (settings.closingAt != null) journalEvent('closing.set', { closingAt: settings.closingAt,
+      deltaMin: Number.isFinite(closingBefore) ? Math.round((settings.closingAt - closingBefore) / 60000) : null });
     sched.version++;
     return { ok: true, closingAt: settings.closingAt };
   },
@@ -2468,45 +3296,107 @@ const handlers = {
       // Choix du bar : l'automate ne le défait pas pendant ce silence ou ce titre.
       const result = action === 'play' ? await spotify.resume() : await spotify.pause();
       spotifyAutomation.handled();
+      journalEvent('spotify', { action: action === 'play' ? 'resume' : 'pause', result: String(result || ''), trigger: 'staff' });
       return { ok: true, result };
     }
     else if (action === 'refresh') await spotify.readPlayer();
     else throw new Error('Action Spotify inconnue.');
     return { ok: true };
   },
+  // Duo improvisé : noter le second chanteur, ou, avec `replace`, corriger
+  // un duo déjà noté au bar (le précédent est d'abord annulé). Après la
+  // chanson, `stageEntryId` désigne le passage dans les derniers passages.
   'POST /api/staff/duo-mark': async (req, res, body) => {
-    const tr = tracked.find(x => String(x.queueId) === String(body.queueId));
-    if (!tr || tr.sel.ids.length !== 1) throw new Error('Choisis un passage solo encore visible dans KaraFun.');
     const partnerId = String(body.partnerId || '');
+    const byEntry = body.stageEntryId != null && body.stageEntryId !== '';
+    const target = byEntry ? staffDuoTarget(body) :
+      staffDuoTarget({ queueId: body.queueId }, 'Choisis un passage solo encore visible dans KaraFun.');
+    const record = staffDuoRecord(target);
+    const holder = target.tr ? target.tr.sel : target.entry;
+    if (body.replace && !record && holder.ids.length !== 1) throw new Error('Aucun duo noté par le bar sur ce passage.');
+    if (!(body.replace && record) && (holder.ids.length !== 1 || (byEntry && !body.replace))) {
+      throw new Error('Choisis un passage solo encore visible dans KaraFun.');
+    }
+    let previous = null, undoText = '';
+    if (body.replace && record) {
+      const late = staffDuoTooLate(record);
+      if (late) throw new Error(late);
+      const candidate = sched.people.get(partnerId), owner = sched.people.get(record.ownerId);
+      if (candidate && partnerId === record.partnerId) throw new Error(`${candidate.name} est déjà noté sur ce duo.`);
+      // Tout est vérifié avant d'annuler l'ancien duo : rien ne doit échouer à moitié.
+      if (!candidate || candidate.withdrawnAt || partnerId === record.ownerId || !owner || owner.withdrawnAt) {
+        throw new Error('Choisis un autre chanteur encore présent dans la salle.');
+      }
+      previous = sched.people.get(record.partnerId);
+      undoText = undoStaffDuo(target, record);
+    }
     const { current } = analyze();
+    const ownerId = holder.ids[0];
     // Ses titres déjà chargés dans KaraFun gardent le duo dans leur reçu : si
     // l'un est retiré sans être chanté, le duo compte toujours pour lui.
-    const inFlight = tracked.filter(item => item !== tr && !item.startedAt && !item.cancelled &&
+    const inFlight = tracked.filter(item => item !== target.tr && !item.startedAt && !item.cancelled &&
       !isOnStage(item, current) && item.sel.ids.includes(partnerId)).map(item => item.sel);
-    const partner = sched.staffCountPartner(tr.sel.ids[0], partnerId, tr.sel, inFlight);
-    tr.sel.ids.push(partner.id);
-    tr.sel.names.push(partner.name);
-    tr.sel.kind = 'duo';
-    const ownerTable = sched.table(sched.people.get(tr.sel.ids[0]).tableId);
-    const partnerTable = sched.table(partner.tableId);
-    tr.sel.label = `${tr.sel.names.join(' & ')} · ${ownerTable.name}${ownerTable.id === partnerTable.id ? '' : ` + ${partnerTable.name}`}`;
+    // Chanson finie (plus suivie) : le duo est noté sur le titre du passage,
+    // pour que le journal et les statistiques le rattachent au bon passage.
+    const sel = target.tr ? target.tr.sel : { song: { entryId: target.entry?.entryId || null } };
+    const partner = sched.staffCountPartner(ownerId, partnerId, sel, inFlight);
+    const mark = sel.staffDuo;
+    mark.kindBefore = holder.kind || 'solo';
+    if (target.tr) {
+      mark.labelBefore = target.tr.sel.label;
+      target.tr.sel.ids.push(partner.id);
+      target.tr.sel.names.push(partner.name);
+      target.tr.sel.kind = 'duo';
+      const ownerTable = sched.table(sched.people.get(ownerId).tableId);
+      const partnerTable = sched.table(partner.tableId);
+      target.tr.sel.label = `${target.tr.sel.names.join(' & ')} · ${ownerTable.name}${ownerTable.id === partnerTable.id ? '' : ` + ${partnerTable.name}`}`;
+    }
+    if (target.entry) {
+      sched.setStagePeople(target.entry, [...target.entry.ids, partner.id], 'duo');
+      target.entry.staffDuo = mark;
+    }
     // Le partenaire du duo improvisé vient de monter sur scène : son propre
     // titre déjà chargé dans KaraFun ne doit pas passer juste après. Il est
     // retiré de KaraFun et reprend sa place dans la file, qui le fait passer
     // plus tard selon l'espacement habituel.
     let moved = 0;
+    mark.pulled = [];
     // Seuls ses propres titres : un duo d'une autre personne où il est invité
     // garde sa place.
     for (const item of tracked) {
-      if (item === tr || item.cancelled || item.pulled || item.absent || item.startedAt ||
+      if (item === target.tr || item.cancelled || item.pulled || item.absent || item.startedAt ||
           isOnStage(item, current) || item.sel.ids[0] !== partner.id) continue;
-      try { pullFromKaraFun(item, 'duo'); moved++; }
-      catch (error) { sched.note(`Titre de ${partner.name} à retirer de KaraFun : ${error.message}`, 'error'); }
+      try {
+        pullFromKaraFun(item, 'duo'); moved++;
+        mark.pulled.push({ entryId: item.sel.song?.entryId || null, title: item.sel.song?.title || '' });
+      } catch (error) { sched.note(`Titre de ${partner.name} à retirer de KaraFun : ${error.message}`, 'error'); }
     }
-    if (pending && !pending.cancelled && pending.sel.ids[0] === partner.id) { pending.pullOnAck = 'duo'; moved++; }
+    if (pending && !pending.cancelled && pending.sel.ids[0] === partner.id) {
+      pending.pullOnAck = 'duo'; moved++;
+      mark.pulled.push({ entryId: pending.sel.song?.entryId || null, title: pending.sel.song?.title || '' });
+    }
+    if (previous) {
+      sched._event?.('duo.improvisedReplaced', { ownerId, partnerId: partner.id, previousPartnerId: previous.id, entryId: mark.entryId });
+    }
     sync();
-    return { ok: true, moved, message: moved ?
-      `Duo noté. Le titre suivant de ${partner.name} est retiré de KaraFun : ${partner.name} chantera plus tard.` : 'Duo comptabilisé' };
+    const movedText = moved ? ` Le titre suivant de ${partner.name} est retiré de KaraFun : ${partner.name} chantera plus tard.` : '';
+    return { ok: true, moved, message: previous ?
+      `Duo corrigé : ${partner.name} chante avec ${sched.people.get(ownerId)?.name || 'le chanteur'} à la place de ${previous.name}.${undoText}${movedText}` :
+      moved ? `Duo noté.${movedText}` : 'Duo comptabilisé' };
+  },
+  // Duo improvisé noté par erreur : le chanteur reprend son solo, l'invité
+  // retrouve son tour et, si possible, son titre retiré de KaraFun.
+  'POST /api/staff/duo-unmark': async (req, res, body) => {
+    const target = staffDuoTarget(body);
+    const record = staffDuoRecord(target);
+    if (!record) throw new Error('Aucun duo noté par le bar sur ce passage.');
+    const late = staffDuoTooLate(record);
+    if (late) throw new Error(late);
+    const owner = sched.people.get(record.ownerId), partner = sched.people.get(record.partnerId);
+    const text = undoStaffDuo(target, record);
+    sched._event?.('duo.improvisedCancelled', { ownerId: record.ownerId, partnerId: record.partnerId, entryId: record.entryId });
+    sync();
+    return { ok: true, message: `Duo avec ${partner?.name || 'ce chanteur'} annulé : ${owner?.name || 'le chanteur'} chante seul ce titre.${text}` };
   },
   'POST /api/staff/battle/launch': async (req, res, body) => {
     const [song] = certifiedBattleSongs([body.song]);
@@ -2549,7 +3439,6 @@ const handlers = {
     sync();
     return { ok: true };
   },
-  'POST /api/staff/shutdown': async () => { setTimeout(stopHelper, 150); return { ok: true }; },
   'POST /api/staff/kf': async (req, res, body) => {
     if (!bridge) throw new Error('KaraFun non connecté');
     if (body.action === 'play') {
@@ -2590,20 +3479,27 @@ const handlers = {
         throw new Error('La Battle est déjà en cours.');
       } else {
         await playKaraFun();
+        journalEvent('staff.play', {});
         releaseAutoPlay();
       }
     }
-    else if (body.action === 'next') bridge.next();
+    else if (body.action === 'next') { bridge.next(); journalEvent('staff.next', {}); }
     else if (body.action === 'restart') startRestart();
-    else if (body.action === 'reconnect') connectKaraFun();
+    else if (body.action === 'reconnect') {
+      if (!CODE) throw new Error('Pas de code KaraFun : saisis d’abord le code affiché dans KaraFun.');
+      return connectionAnswer(connectKaraFun());
+    }
+    else if (body.action === 'new-name') { bridge.forceNewName(); sched._event?.('karafun.renamed', {}); }
     else if (body.action === 'dismiss-notice') bridge.dismissIdentityNotice?.();
     else if (body.action === 'absent') {
       const tr = tracked.find(x => x.queueId === body.queueId && !x.startedAt);
       if (!tr) throw new Error('Cette chanson a déjà commencé ou n\'est pas de la file');
       tr.absent = true;
       bridge.remove(tr.queueId);
+      journalEvent('staff.absent', { queueId: tr.queueId, entryId: tr.sel.song.entryId || null, ids: tr.sel.ids });
     } else if (body.action === 'remove') bridge.remove(body.queueId);
     else if (body.action === 'test-add') bridge.add(body.songId, 'Test file karaoké');
+    else if (['pitch', 'tempo', 'track'].includes(body.action)) return liveSongSetting(body);
     else throw new Error('Action inconnue');
     setTimeout(sync, 300);
     return { ok: true };
@@ -2634,7 +3530,7 @@ const server = http.createServer(async (req, res) => {
         const me = sched.person(u.searchParams.get('token') || '');
         if (me && !u.searchParams.has('table')) {
           requireSoloControl(req, me);
-          const view = publicState(me, me.tableId);
+          const view = publicState(me, me.tableId, new Set([me.id]));
           view.managedIds = [me.id];
           return send(res, 200, view);
         }
@@ -2647,7 +3543,7 @@ const server = http.createServer(async (req, res) => {
         const soloOwner = t.individual ? soloDeviceOwner(req) : null;
         const owned = [...u.searchParams.getAll('token'), ...headerTokens].slice(0, 40).map(token => sched.person(token))
           .filter(person => person && person.tableId === t.id && (!t.individual || person.id === soloOwner?.id));
-        const view = publicState(owned[0] || null, t.id);
+        const view = publicState(owned[0] || null, t.id, new Set(owned.map(person => person.id)));
         if (t.individual) view.soloInvitationReady = !!soloInvitations.verify(u.searchParams.get('invitation'), t.id);
         if (u.searchParams.has('reprise')) {
           const target = transferTarget(u.searchParams.get('reprise'), t);
@@ -2658,7 +3554,11 @@ const server = http.createServer(async (req, res) => {
           view.recoveryPeople = (view.recoveryPeople || []).filter(person => person.id === soloOwner.id);
         }
         view.managedIds = [...new Set(owned.map(person => person.id))];
+        for (const person of owned) noteSeen(person);
         return send(res, 200, view);
+      }
+      if (['/stats', '/api/staff/stats', '/api/staff/stats/evenings', '/api/staff/stats/export'].includes(p)) {
+        return statsRoute(p, u, req, res);
       }
       if (p === '/api/staff/state') { if (!isStaff(req, u)) return send(res, 403, { error: 'Réservé au bar' }); return send(res, 200, staffState()); }
       if (p === '/api/song/notice') {
@@ -2780,16 +3680,40 @@ const server = http.createServer(async (req, res) => {
 const publicServer = http.createServer(server.listeners('request')[0]);
 
 // ------------------------------------------------------------------ démarrage
-async function connectKaraFun() {
-  if (!CODE) { appLog('Pas de code KaraFun : saisis-le sur la page du bar.'); return; }
-  rememberCode();
+// Les transitions de la connexion vont au journal du serveur ; le code de
+// télécommande n'y paraît que masqué (deux derniers chiffres). Les pages de
+// KaraFun lues dans l'heure (sans code ni URL) sont gardées dans data/ pour
+// qu'un redémarrage de la file ne remette pas leur compteur à zéro.
+function connectKaraFun(code = CODE) {
+  if (!code) { appLog('Pas de code KaraFun : saisis-le sur la page du bar.'); return 'no-code'; }
   if (!bridge) {
-    bridge = new KaraFunBridge({ logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined,
-      identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json') });
+    bridge = new KaraFunBridge({ logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined, log: appLog,
+      identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json'),
+      budgetFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-pages.json'),
+      lockOwner: DEMO ? null : { port: PORT } });
     bridge.on('change', () => setImmediate(sync));
+    bridge.on('add-options-refused', add => setImmediate(() => resendWithoutOptions(add)));
   }
-  appLog(`Connexion à KaraFun (code ${CODE})...`);
-  bridge.connect(CODE);
+  const result = bridge.connect(code);
+  // Budget de l'heure épuisé et connexion prête : le pont garde son code
+  // (faute de frappe probable). Le code retenu suit toujours le pont.
+  CODE = bridge.code || code;
+  rememberCode();
+  appLog(result === 'kept' ? `KaraFun (code ${maskCode(code)}) : connexion en cours ou prête, gardée.` :
+    result?.ok === false ? `KaraFun (code ${maskCode(code)}) : clic sans nouvel essai. ${result.message}` :
+    `Connexion à KaraFun (code ${maskCode(code)})...`);
+  return result;
+}
+
+// Réponse de « Connecter » et « Reconnecter » pour la page du bar. KaraFun
+// limite les essais ou budget de l'heure épuisé : { ok: false, message },
+// affiché en erreur par la page du bar, sans relire la page de KaraFun.
+function connectionAnswer(result) {
+  setTimeout(sync, 300);
+  if (result?.ok === false) return { ok: false, kept: false, message: result.message };
+  return result === 'kept' ?
+    { ok: true, kept: true, message: 'KaraFun est déjà connecté ou en train de se connecter : connexion gardée.' } :
+    { ok: true, kept: false };
 }
 
 async function main() {
@@ -2797,6 +3721,8 @@ async function main() {
     throw new Error('Le port public doit être valide et différent de celui du bar.');
   }
   const previousNight = nightStore?.load();
+  // Même soirée après un redémarrage : son journal continue.
+  const resumed = journal.open({ resume: previousNight?.evening || null, rules: journalRules() });
   if (previousNight) {
     const recovered = restoreNight(previousNight, { scheduler: sched, access, settings,
       photoDir: PHOTO_DIR });
@@ -2809,6 +3735,15 @@ async function main() {
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');
   } else loadTables();
   ensureSoloGroup();
+  // Soirée reprise d'une version sans journal : ses inscriptions y sont
+  // reportées à leur heure, pour que les présences restent justes.
+  if (previousNight && !resumed) {
+    for (const p of sched.people.values()) {
+      journal.append('person.joined', { personId: p.id, tableId: p.tableId, restored: true }, p.joinedAt);
+      if (p.withdrawnAt) journal.append('person.left', { personId: p.id, by: 'restored' }, p.withdrawnAt);
+    }
+  }
+  journalRoster();
   if (!DEMO && !sched.solverStatus().available) {
     appLog(`Optimiseur de file indisponible au démarrage : ${sched.solverStatus().fallbackLastError || 'cause inconnue'}. Rotation locale de secours.`);
   }
@@ -2821,11 +3756,15 @@ async function main() {
   }
   server.listen(PORT, '0.0.0.0', () => {
     publicServer.listen(PUBLIC_PORT, '127.0.0.1', () => {
+      // Ouverte dans le navigateur de ce PC, jamais écrite au journal : la clé
+      // n'y figure que sur la ligne « Clé du bar » (GUIDE-BAR.md). Depuis ce
+      // PC, l'adresse sans clé mène à la page du bar (GET /).
       const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
+      const localUrl = `http://localhost:${PORT}/`;
       appLog('');
       appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
-      appLog(`Page du bar (sur ce PC)        : ${staffUrl}`);
-      appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${staffUrl}`);
+      appLog(`Page du bar (sur ce PC)        : ${localUrl}`);
+      appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${localUrl}`);
       appLog(`QR codes à imprimer            : http://localhost:${PORT}/print`);
       appLog(`Tunnel HTTPS (clients seulement) : http://127.0.0.1:${PUBLIC_PORT}`);
       appLog(`Clé du bar (autre appareil)    : ${STAFF_KEY}  (ex. ${phoneBase()}/staff?key=${STAFF_KEY})`);
