@@ -51,12 +51,13 @@ function memoryDisk(files = {}) {
 
 // Faux magasin de la soirée : garde chaque instantané, ou échoue avec `fail`.
 function fakeNightStore() {
-  const control = { saves: [], fail: null };
+  // `failForced` : seule l'écriture forcée (seconde génération) échoue.
+  const control = { saves: [], fail: null, failForced: null };
   class Store {
     constructor(prefix) { control.prefix = prefix; }
     load() { return null; }
     save(snapshot, { force = false } = {}) {
-      if (control.fail) throw new Error(control.fail);
+      if (control.fail || (force && control.failForced)) throw new Error(control.fail || control.failForced);
       control.saves.push({ snapshot: JSON.parse(JSON.stringify(snapshot)), force });
       return true;
     }
@@ -357,6 +358,42 @@ test('sauvegarde : échec toléré hors inscription, double écriture pour une n
   assert.equal(f.settings.auto, false);
   assert.throws(() => f.saveNight({ required: true }), /^Error: disque débranché$/);
   assert.equal(f.staffState().persistenceError, 'disque débranché');
+});
+
+test('« Arrêter le vidage » : sauvegarde en échec, le vidage reste en cours en mémoire comme sur le disque', async () => {
+  const f = harness({ persistent: true });
+  f.loadTables();
+  f.setBridge(null); // KaraFun pas connecté
+  let r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.karafunOffline, true);
+  assert.equal(f.settings.queueClearPending, true);
+  const notes = f.sched.log.length;
+  f.night.fail = 'disque plein';
+  r = await post(f, `/api/staff/queue-clear-stop?key=${f.STAFF_KEY}`, {});
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, 'disque plein');
+  assert.equal(f.settings.queueClearPending, true, 'le vidage reste en cours');
+  assert.equal(f.sched.log.length, notes, 'rien n’est annoncé au bar');
+  // Seule la seconde génération échoue : la plus récente est réécrite « vidage en cours ».
+  f.night.fail = null;
+  f.night.failForced = 'disque plein';
+  f.night.saves.length = 0;
+  r = await post(f, `/api/staff/queue-clear-stop?key=${f.STAFF_KEY}`, {});
+  assert.equal(r.status, 400);
+  assert.equal(f.settings.queueClearPending, true);
+  assert.equal(f.night.saves.at(-1).snapshot.settings.queueClearPending, true,
+    'un redémarrage reprend le vidage, comme la page l’a annoncé');
+  // Disque revenu : l'arrêt est écrit sur les deux générations.
+  f.night.failForced = null;
+  f.night.saves.length = 0;
+  r = await post(f, `/api/staff/queue-clear-stop?key=${f.STAFF_KEY}`, {});
+  assert.equal(r.status, 200);
+  assert.deepEqual(plain(r.body), { ok: true, wasPending: true });
+  assert.equal(f.settings.queueClearPending, false);
+  assert.deepEqual(f.night.saves.slice(0, 2).map(save => [save.force, save.snapshot.settings.queueClearPending]),
+    [[false, false], [true, false]]);
+  assert.ok(f.sched.log.length > notes);
 });
 
 test('sauvegarde en échec pendant un transfert : rien ne change, le code reste utilisable', async () => {

@@ -812,6 +812,64 @@ test('vidage enregistré par l’ancienne version puis arrêté : la chanson sur
   assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)));
 });
 
+test('vidage arrêté pendant un envoi : l’accusé retiré mais lancé quand même dans KaraFun compte comme un passage', async () => {
+  const f = harness();
+  const p = f.sched.join({ tableId: '1', name: 'Marine', headcount: 1 });
+  const s = song(497);
+  f.sched.chooseSong(p, s);
+  f.sync();
+  assert.equal(f.adds.length, 1);
+  f.bridge.ready = false; // KaraFun perdu avant l'accusé
+  f.clearQueue();
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  const ack = item('accuse-attente', s, f.adds[0].singer);
+  f.bridge.ready = true;
+  f.bridge.queue = [ack];
+  f.bridge.status = { state: 'idle' };
+  f.sync();
+  assert.deepEqual(f.removes, ['accuse-attente'], 'l’accusé tardif est retiré');
+  assert.equal(p.sung, 0);
+  f.bridge.status = { state: 'playing', current: ack }; // KaraFun le lance quand même
+  f.sync();
+  assert.equal(f.tracked()[0].cancelled, false, 'la chanson en lecture n’est plus un retrait');
+  assert.equal(p.sung, 1, 'le passage chanté compte');
+  assert.ok(!f.sched.Q.includes(p.id), 'pas de ticket vide recréé');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt, 'le passage se termine dans l’historique');
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+  assert.equal(p.sung, 1, 'compté une seule fois');
+});
+
+test('Supprimer toutes les tables après un vidage hors connexion : la chanson sur scène au retour finit son passage', () => {
+  const f = harness();
+  f.settings.auto = false;
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const s = song(498);
+  f.sched.chooseSong(p, s);
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  f.tracked().push({ queueId: 'scene-soiree', sel, addedAt: Date.now(), startedAt: null });
+  f.bridge.ready = false; // le vidage ne voit pas la scène
+  f.clearQueue();
+  f.clearEvening();
+  assert.equal(f.settings.queueClearPending, false);
+  const stage = item('scene-soiree', s, sel.label);
+  f.bridge.ready = true;
+  f.bridge.queue = [stage];
+  f.bridge.status = { state: 'playing', current: stage };
+  f.sync();
+  assert.deepEqual(f.removes, [], 'la chanson en lecture n’est pas interrompue');
+  assert.equal(f.tracked()[0].cancelled, false);
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+});
+
 test('Supprimer toutes les tables termine un vidage resté en attente de KaraFun', () => {
   const f = harness();
   f.settings.auto = false;

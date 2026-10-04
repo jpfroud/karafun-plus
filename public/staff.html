@@ -1005,7 +1005,7 @@
     if (event.target.closest?.('[data-alert-stop-clear]')) {
       if (!confirm('Arrêter le vidage ? La file ne retirera plus les titres ajoutés directement dans KaraFun : lance-les ou retire-les toi-même dans KaraFun. Les titres envoyés par la file en seront quand même retirés.')) return;
       post('/api/staff/queue-clear-stop', {}).then(result => {
-        toast(result?.wasPending === false ? 'Le vidage était déjà terminé.' : 'Vidage arrêté : la file ne retire plus les titres ajoutés directement dans KaraFun.');
+        toast(result?.wasPending === false ? 'Le vidage n’était plus en cours. Vérifie la file de KaraFun.' : 'Vidage arrêté : la file ne retire plus les titres ajoutés directement dans KaraFun.');
         load();
       }).catch(error => toast(error.message, true));
       return;

@@ -1713,10 +1713,11 @@ test('alertes et notifications du bar : sonnerie, personnes parties, avis KaraFu
   await page.click(page.in('staffAlerts', '[data-alert-stop-clear]'));
   assert.deepEqual(page.lastPost('/api/staff/queue-clear-stop').body, {});
   assert.equal(page.toast().text, 'Vidage arrêté : la file ne retire plus les titres ajoutés directement dans KaraFun.');
-  // Page en retard : le vidage avait déjà fini, ses titres ont bien été retirés.
+  // Page en retard : le vidage avait déjà pris fin (terminé, arrêté ailleurs ou
+  // nouvelle soirée). Rien ne dit que KaraFun a été vidé : le bar vérifie.
   page.replies['/api/staff/queue-clear-stop'] = { ok: true, wasPending: false };
   await page.click(page.in('staffAlerts', '[data-alert-stop-clear]'));
-  assert.equal(page.toast().text, 'Le vidage était déjà terminé.');
+  assert.equal(page.toast().text, 'Le vidage n’était plus en cours. Vérifie la file de KaraFun.');
   page.replies['/api/staff/queue-clear-stop'] = { status: 500, error: 'Sauvegarde impossible.' };
   await page.click(page.in('staffAlerts', '[data-alert-stop-clear]'));
   assert.deepEqual(page.toast(), { text: 'Sauvegarde impossible.', bad: true });

@@ -226,7 +226,7 @@ async function main() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     })).status, 403, 'Un client ne peut pas arrêter le vidage.');
     assert.deepEqual(await ok('/api/staff/queue-clear-stop', {}), { ok: true, wasPending: false },
-      'Vidage déjà fini : « Ne plus vider KaraFun » ne change rien.');
+      'Vidage déjà fini : « Arrêter le vidage » ne change rien.');
     assert.equal(state.tables.length, 3);
     assert.equal(state.people.length, 2);
     assert.ok(state.people.some(person => person.id === alice.id));

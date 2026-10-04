@@ -429,6 +429,8 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 }
 @media (max-width: 899px) {
   body.staff { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  /* Boutons des alertes du bar : cible au doigt de 44 px, téléphone et tablette. */
+  .staff-alert .alert-actions .btn { min-height: 44px; }
   /* Safari sur iPhone zoome sur un champ focalisé de moins de 16 px : aucun champ du bar n'est plus petit. */
   body.staff input:not([type=checkbox]):not([type=radio]), body.staff select, body.staff textarea { font-size: 16px; }
   /* Barre du haut collante et barre d'onglets fixe : une section atteinte par un
@@ -479,8 +481,6 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .staff .card { padding: 14px; }
   .connect-controls { width: 100%; }
   .connect-controls label { width: 100%; }
-  /* Boutons des alertes du bar : cible au doigt de 44 px. */
-  .staff-alert .alert-actions .btn { min-height: 44px; }
   .connect-controls input { flex: 1; }
   .queue-head { display: none; }
   .queue-item { grid-template-columns: 44px 22px minmax(0,1fr) 43px 48px; row-gap: 2px; padding: 5px 3px; min-height: 58px; }

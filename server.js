@@ -995,22 +995,16 @@ function sync() {
           // événement. Ne pas arrêter un morceau déjà sur scène.
           sched.commit(pending.sel);
           journalTurnSent(pending, hit.queueId, now);
-          if (settings.queueClearPending || pending.cancelledByClear) {
-            // Seul le ticket vide recréé par commit() part : un chanteur qui a
-            // choisi un nouveau titre depuis le vidage garde sa place.
-            const consumed = new Set(pending.sel.consumedIds || pending.sel.ids);
-            sched.Q = sched.Q.filter(pid => {
-              const person = sched.people.get(pid);
-              return !consumed.has(pid) || (!!person && sched.songsOf(person).length > 0);
-            });
-          }
+          if (settings.queueClearPending || pending.cancelledByClear) dropClearedTickets(pending.sel);
           tracked.push({ queueId: hit.queueId, sel: pending.sel, addedAt: now, startedAt: now,
             ...(pending.sentSettings ? { sentSettings: pending.sentSettings } : {}) });
           sched.recordStage(pending.sel, now);
           sched.note(`« ${pending.sel.song.title} » a commencé sur scène pendant le retrait ; elle continue.`, 'stage');
         } else {
+          // Suivi sans commit() : s'il passe malgré tout sur scène, le
+          // passage sera compté à ce moment-là (plus bas).
           tracked.push({ queueId: hit.queueId, sel: pending.sel,
-            addedAt: now, startedAt: null, cancelled: true, removeRequestedAt: now,
+            addedAt: now, startedAt: null, cancelled: true, removeRequestedAt: now, uncommitted: true,
             ...(pending.cancelledByClear ? { cancelledByClear: true } : {}) });
           try { bridge.remove(hit.queueId); }
           catch (error) { appLog(`Retrait KaraFun en attente : ${error.message}`); }
@@ -1086,6 +1080,14 @@ function sync() {
     if (tr.cancelled && onStage && (settings.queueClearPending || tr.cancelledByClear)) {
       tr.cancelled = false;
       delete tr.cancelledByClear;
+      // Accusé tardif d'un envoi annulé, lancé quand même : il compte comme
+      // passage, comme l'accusé arrivé directement sur scène.
+      if (tr.uncommitted) {
+        delete tr.uncommitted;
+        sched.commit(tr.sel);
+        journalTurnSent({ sel: tr.sel, at: tr.addedAt }, tr.queueId, now);
+        dropClearedTickets(tr.sel);
+      }
     }
     if ((tr.cancelled || tr.pulled) && qids.has(tr.queueId) && !onStage &&
         now - (tr.removeRequestedAt || 0) >= 20000) {
@@ -2638,7 +2640,7 @@ function clearQueue() {
     otherKaraFunSongs, awaitingKaraFun: !!settings.queueClearPending, karafunOffline: !bridge?.ready };
 }
 
-// « Ne plus vider KaraFun » : sans KaraFun (pas de code, fermé, essais
+// « Arrêter le vidage » : sans KaraFun (pas de code, fermé, essais
 // arrêtés), le vidage n'aurait pas de fin, et KaraFun peut garder un titre
 // qu'il refuse de retirer. Le bar arrête alors d'attendre : les titres
 // ajoutés directement dans KaraFun y restent. Nos titres annulés restent
@@ -2653,14 +2655,31 @@ function keepClearStageProtection() {
   if (pending?.cancelled) pending.cancelledByClear = true;
 }
 
+// Titre annulé par un vidage mais chanté : commit() remet ses chanteurs au
+// bout de la file. Seul ce ticket vide part ; un chanteur qui a choisi un
+// nouveau titre depuis le vidage garde sa place.
+function dropClearedTickets(sel) {
+  const consumed = new Set(sel.consumedIds || sel.ids);
+  sched.Q = sched.Q.filter(pid => {
+    const person = sched.people.get(pid);
+    return !consumed.has(pid) || (!!person && sched.songsOf(person).length > 0);
+  });
+}
+
 function stopQueueClear() {
   if (!settings.queueClearPending) return { ok: true, wasPending: false };
-  // Écrit sur les deux générations avant tout effet : une sauvegarde
-  // impossible laisse le vidage en cours, ici comme après un redémarrage.
+  // Écrit sur les deux générations avant tout effet. Une sauvegarde
+  // impossible laisse le vidage en cours ; si une seule génération a pu être
+  // écrite, elle est réécrite vidage en cours, pour qu'un redémarrage dise
+  // la même chose que la page.
   keepClearStageProtection();
   settings.queueClearPending = false;
   try { saveNight({ required: true, replaceBoth: true }); }
-  catch (error) { settings.queueClearPending = true; throw error; }
+  catch (error) {
+    settings.queueClearPending = true;
+    saveNight({ replaceBoth: true });
+    throw error;
+  }
   queueClearRemovalRequests.clear();
   journalEvent('staff.queueClearStopped', { karafunReady: !!bridge?.ready });
   sched.note('Le bar a arrêté le vidage de KaraFun : la file ne retire plus les titres ajoutés directement dans KaraFun.', 'staff');
