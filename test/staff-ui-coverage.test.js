@@ -1131,7 +1131,8 @@ test('fin de soirée : plus de bouton d’arrêt, suppression des tables et vida
   assert.deepEqual(page.lastPost('/api/staff/tables-clear').body, { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
   assert.equal(page.toast().text, 'Toutes les tables sont effacées.');
   assert.ok(loads() > before, 'la page est rechargée après la suppression');
-  for (const leftover of [{ currentStillPlaying: true }, { otherKaraFunSongs: 2 }, { removalErrors: 1 }, { removalPending: 1 }]) {
+  // KaraFun absent : sa file n'a pas pu être vue, le bar la vérifie.
+  for (const leftover of [{ karafunOffline: true }, { currentStillPlaying: true }, { otherKaraFunSongs: 2 }, { removalErrors: 1 }, { removalPending: 1 }]) {
     page.replies['/api/staff/tables-clear'] = leftover;
     await page.click(page.$('clearTables'));
     assert.equal(page.toast().text, 'Tables effacées. Vérifie et vide les titres restants dans KaraFun.', JSON.stringify(leftover));
@@ -1159,6 +1160,14 @@ test('fin de soirée : plus de bouton d’arrêt, suppression des tables et vida
   page.replies['/api/staff/queue-clear'] = { awaitingKaraFun: true };
   await page.click(page.$('clearQueue'));
   assert.equal(page.toast().text, 'Retraits demandés. Vérifie que la file de KaraFun se vide avant de reprendre.');
+  assert.doesNotMatch(page.confirms.at(-1), /n’est pas connecté/);
+  // KaraFun déconnecté : la question et la réponse disent que rien n'y est encore retiré.
+  await page.update({ kf: { ...page.world.kf, ready: false, connected: false } });
+  page.replies['/api/staff/queue-clear'] = { awaitingKaraFun: true, karafunOffline: true };
+  await page.click(page.$('clearQueue'));
+  assert.match(page.confirms.at(-1), /KaraFun n’est pas connecté : sa file sera vidée dès sa connexion\.$/);
+  assert.equal(page.toast().text, 'File vidée ici. KaraFun n’est pas connecté : sa file sera vidée dès sa connexion.');
+  await page.update({ kf: baseWorld().kf });
   page.replies['/api/staff/queue-clear'] = { status: 500, error: 'KaraFun ne répond pas.' };
   await page.click(page.$('clearQueue'));
   assert.deepEqual(page.toast(), { text: 'KaraFun ne répond pas.', bad: true });
@@ -1684,11 +1693,49 @@ test('alertes et notifications du bar : sonnerie, personnes parties, avis KaraFu
     'Sauvegarde impossible : disque plein. Envoi automatique suspendu.',
     'Envoi interrompu à vérifier dans KaraFun avant de reprendre la file.',
     'Vidage de la file en cours : vérifie KaraFun. Les nouveaux titres attendent la confirmation des retraits.',
+    'Arrêter le vidage',
     'En attente de « Je suis là » pour Zoé et Yann. Sans réponse 30 s après la fin du titre en cours, le passage suivant chante d’abord.',
     '2 retraits en attente de confirmation dans KaraFun. Vérifie sa file.',
     'KaraFun affiche maintenant « FileKaraoke ».',
     'Droits KaraFun incomplets.',
     'KaraFun refuse l’ajout de titres pour FileKaraoke. Donne-lui les droits dans KaraFun Pro.']);
+  // Le vidage a toujours une sortie, même quand KaraFun ne retire rien, et
+  // elle ne se cache pas : pas de croix sur la bannière qui la porte.
+  const clearAlert = () => page.in('staffAlerts', '[data-alert-stop-clear]')?.closest('.staff-alert');
+  assert.equal(clearAlert().querySelector('[data-dismiss-alert]'), null, 'la seule sortie ne peut pas être masquée');
+  const stops = () => page.postsTo('/api/staff/queue-clear-stop').length;
+  page.confirmAnswer = false;
+  await page.click(page.in('staffAlerts', '[data-alert-stop-clear]'));
+  assert.match(page.confirms.at(-1), /^Arrêter le vidage \? La file ne retirera plus les titres ajoutés directement dans KaraFun/);
+  assert.equal(stops(), 0, 'rien ne part sans confirmation');
+  page.confirmAnswer = true;
+  page.replies['/api/staff/queue-clear-stop'] = { ok: true, wasPending: true };
+  await page.click(page.in('staffAlerts', '[data-alert-stop-clear]'));
+  assert.deepEqual(page.lastPost('/api/staff/queue-clear-stop').body, {});
+  assert.equal(page.toast().text, 'Vidage arrêté : la file ne retire plus les titres ajoutés directement dans KaraFun.');
+  // Page en retard : le vidage avait déjà fini, ses titres ont bien été retirés.
+  page.replies['/api/staff/queue-clear-stop'] = { ok: true, wasPending: false };
+  await page.click(page.in('staffAlerts', '[data-alert-stop-clear]'));
+  assert.equal(page.toast().text, 'Le vidage était déjà terminé.');
+  page.replies['/api/staff/queue-clear-stop'] = { status: 500, error: 'Sauvegarde impossible.' };
+  await page.click(page.in('staffAlerts', '[data-alert-stop-clear]'));
+  assert.deepEqual(page.toast(), { text: 'Sauvegarde impossible.', bad: true });
+  // KaraFun déconnecté : rien n'a pu être retiré ni vérifié, la bannière le dit,
+  // une seule fois (pas de seconde alerte pour les mêmes retraits).
+  await page.update({ kf: { ...world.kf, ready: false, connected: false } });
+  const offline = texts(page.all('staffAlerts', '.staff-alert span'));
+  assert.ok(offline.includes('File vidée ici, mais KaraFun n’est pas connecté : ses titres en attente seront retirés dès sa connexion, avant tout nouvel envoi.'));
+  assert.ok(!offline.some(text => /retrait|titres? envoyés? à KaraFun/.test(text) && !/^File vidée ici/.test(text)), 'pas de seconde alerte de retraits');
+  assert.ok(!offline.some(text => /vérifie KaraFun|Vérifie sa file/.test(text)), 'pas de « vérifie KaraFun » quand KaraFun est absent');
+  assert.ok(page.in('staffAlerts', '[data-alert-stop-clear]'), 'la sortie reste proposée sans KaraFun');
+  assert.equal(clearAlert().querySelector('[data-dismiss-alert]'), null);
+  // Vidage arrêté, KaraFun toujours absent : nos titres envoyés partiront à sa connexion.
+  await page.update({ queueClearPending: false });
+  assert.equal(page.in('staffAlerts', '[data-alert-stop-clear]'), null, 'plus de bouton une fois le vidage fini');
+  assert.ok(texts(page.all('staffAlerts', '.staff-alert span')).includes('2 titres envoyés à KaraFun seront retirés dès sa connexion.'));
+  await page.update({ removalPending: 1 });
+  assert.ok(texts(page.all('staffAlerts', '.staff-alert span')).includes('1 titre envoyé à KaraFun sera retiré dès sa connexion.'));
+  await page.update({ queueClearPending: true, removalPending: 2, kf: world.kf });
   // Fermer l'avis de nom KaraFun l'efface aussi côté serveur, et s'en souvient.
   await page.click(page.in('staffAlerts', '[data-dismiss-alert="identity"]'));
   assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'dismiss-notice' });

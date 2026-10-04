@@ -152,9 +152,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .staff-alert .alert-close:hover { border-color: var(--accent); }
 .staff-alert.gone-alert { border-color: var(--warn); background: rgba(255,176,32,.12); flex-wrap: wrap; }
 .staff-alert .alert-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-/* Essais KaraFun arrêtés : texte long et deux boutons, passés dessous sur téléphone. */
-.staff-alert.kf-stopped { flex-wrap: wrap; }
-.staff-alert.kf-stopped > span:first-child { flex: 1 1 16em; }
+/* Essais KaraFun arrêtés, vidage de la file : texte long et boutons, passés dessous sur téléphone. */
+.staff-alert.kf-stopped, .staff-alert.with-actions { flex-wrap: wrap; }
+.staff-alert.kf-stopped > span:first-child, .staff-alert.with-actions > span:first-child { flex: 1 1 16em; }
 .version-tag { font-size: 12px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
 .connect-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .connect-controls input { width: 126px; min-height: 38px; padding: 7px 10px; }
@@ -479,6 +479,8 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .staff .card { padding: 14px; }
   .connect-controls { width: 100%; }
   .connect-controls label { width: 100%; }
+  /* Boutons des alertes du bar : cible au doigt de 44 px. */
+  .staff-alert .alert-actions .btn { min-height: 44px; }
   .connect-controls input { flex: 1; }
   .queue-head { display: none; }
   .queue-item { grid-template-columns: 44px 22px minmax(0,1fr) 43px 48px; row-gap: 2px; padding: 5px 3px; min-height: 58px; }
