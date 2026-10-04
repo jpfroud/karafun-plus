@@ -50,7 +50,6 @@ window.CLIENT_TRANSLATIONS = {
       'Pas de Battle cette fois : la salle a voté contre.': 'No Battle this time: the room voted against it.',
       'Pas de Battle cette fois : pas assez de votants.': 'No Battle this time: not enough voters.',
       'Le bar a écarté la Battle proposée.': 'The bar set the suggested Battle aside.',
-      '{name} : c’est à toi, sur scène maintenant !': '{name}: it’s your turn, on stage now!',
       '{name} passe juste après la chanson en cours : prépare-toi !': '{name} is up right after the current song: get ready!',
       'Pas prêt': 'Not ready',
       'Je ne chante pas ce duo': 'I’m not singing this duet',

@@ -1099,13 +1099,13 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
   const reloaded = await open({ state: page.state, session });
   assert.ok(!reloaded.node('infoBar').querySelectorAll('.info-item').some(item => /Battle\u00a0!/.test(item.textContent)));
   assert.deepEqual(reloaded.vibrations, []);
-  // Sur scène : une nouvelle info.
+  // Sur scène : plus d'avis de passage (retour du bar, 4 octobre), rien ne vibre.
   reloaded.state.stage = { ours: true, ids: ['alice'], queueId: 5, title: 'Mon titre' };
   reloaded.state.next = null;
   await reloaded.poll();
   reloaded.node('infoBar').querySelector('[data-info-more]') && await reloaded.tap('infoBar', '[data-info-more]');
-  assert.ok(reloaded.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === 'Alice : c’est à toi, sur scène maintenant\u00a0!'));
-  assert.deepEqual(reloaded.vibrations, [[120]]);
+  assert.ok(!reloaded.node('infoBar').querySelectorAll('.info-item p').some(p => /sur scène/.test(p.textContent)));
+  assert.deepEqual(reloaded.vibrations, []);
   // Plus rien à montrer : la barre disparaît.
   reloaded.state.stage = null;
   reloaded.state.battle = baseState().battle;
@@ -2355,4 +2355,22 @@ test('demandes : la confirmation d’une réponse reste annoncée quand une autr
   assert.equal(page.node('toast').getAttribute('role'), 'status');
   assert.notEqual(page.node('toast').inert, true, 'zone d’état annoncée, jamais inerte');
   assert.equal(page.node('mainContent').inert, true, 'le reste de la page reste bloqué');
+});
+
+// ================================================================ retours du test du 4 octobre
+test('infos : plus d’avis « c’est à toi, sur scène maintenant », l’avis « passe juste après » reste', async () => {
+  const state = baseState({ next: { ours: true, ids: ['alice'], song: { entryId: 'e1' }, title: 'Mon titre' } });
+  state.tablePeople = [person('alice', 'Alice', { canDefer: true, songs: [{ entryId: 'e1', songId: 1, title: 'Mon titre' }] })];
+  const page = await open({ state });
+  const items = () => page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent);
+  assert.deepEqual(items(), ['Alice passe juste après la chanson en cours : prépare-toi !'], 'prévenue juste avant son passage');
+  assert.equal(page.vibrations.length, 1);
+  // Sur scène : aucun nouvel avis, rien ne vibre.
+  page.state.stage = { ours: true, ids: ['alice'], queueId: 5, title: 'Mon titre' };
+  page.state.next = null;
+  await page.poll();
+  assert.ok(!items().some(text => /sur scène/.test(text)), `aucun avis de passage sur scène : ${items().join(' | ')}`);
+  assert.equal(page.node('infoBar').hidden, true, 'plus rien à annoncer');
+  assert.equal(page.vibrations.length, 1, 'pas de vibration pour le passage sur scène');
+  assert.ok(!/sur scène maintenant/.test(html), 'le texte a disparu de la page');
 });

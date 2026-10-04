@@ -960,10 +960,10 @@
     const stage = state?.stage;
     const next = state?.next || list(state?.queue)[0];
     const has = (item, person) => list(item?.ids).some(id => String(id) === String(person.id));
+    // Une personne déjà sur scène n'est plus prévenue : elle le sait (retour du bar).
     for (const person of people) {
-      if (stage?.ours && has(stage, person)) {
-        infos.push({ key: `stage:${person.id}:${stage.queueId ?? stage.title}`, tone: 'hot', text: t('{name} : c’est à toi, sur scène maintenant !', { name: person.name }) });
-      } else if (next?.ours && has(next, person)) {
+      if (stage?.ours && has(stage, person)) continue;
+      if (next?.ours && has(next, person)) {
         infos.push({ key: `next:${person.id}:${next.song?.entryId || next.queueId || next.title}`, tone: 'hot',
           text: t('{name} passe juste après la chanson en cours : prépare-toi !', { name: person.name }),
           defer: person.canDefer && !person.needConfirm && !person.deferral ? person.id : null });
