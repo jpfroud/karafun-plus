@@ -2426,8 +2426,10 @@ test('catalogue : « ＋ Chanson », « ＋ Duo » et « Choisir une chanson » 
   assert.match(page.node('catalogContent').textContent, /^Résultats pour « Abba »/);
 
   // Recherche encore en attente (« Que », quitté avant 300 ms) : abandonnée,
-  // les résultats « Queen » reviennent et « Que » ne part pas après coup.
+  // les résultats « Queen » restent affichés, sans nouvelle demande, et
+  // « Que » ne part pas après coup.
   await searchQueen();
+  const queenSent = searchUrls(page).length;
   await page.type('searchInput', 'Que');
   await page.click(page.node('nav-table'));
   const tableStep = page.history.index;
@@ -2438,6 +2440,7 @@ test('catalogue : « ＋ Chanson », « ＋ Duo » et « Choisir une chanson » 
   await page.runTimers(300);
   assertQueenKept(page, 'frappe interrompue, 300 ms plus tard');
   assert.ok(!searchUrls(page).includes('/api/search?q=Que'), 'la recherche « Que » n’est jamais envoyée');
+  assert.equal(searchUrls(page).length, queenSent, 'résultats « Queen » encore affichés : pas redemandés');
   // Une seule lettre tapée : les résultats d'avant, pas « Tape au moins 2 lettres. ».
   await page.type('searchInput', 'Q');
   assert.equal(page.node('catalogContent').textContent, 'Tape au moins 2 lettres.');
@@ -2462,6 +2465,17 @@ test('catalogue : « ＋ Chanson », « ＋ Duo » et « Choisir une chanson » 
   await page.click(page.node('nav-table'));
   await page.tap('peopleList', '[data-add-song="bruno"]');
   selectionKept('sélection ouverte, une lettre tapée');
+  // Deux lettres en attente : la liste est encore là, elle n'est pas rechargée
+  // (les pages « Voir plus » déjà lues restent).
+  const songsAsked = () => page.requests.filter(request => request.url.startsWith('/api/catalog/songs?')).length;
+  const asked = songsAsked();
+  await page.type('searchInput', 'Zo');
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-add-song="alice"]');
+  await page.runTimers(300);
+  selectionKept('sélection ouverte, deux lettres en attente');
+  assert.equal(songsAsked(), asked, 'sélection gardée telle quelle, sans nouvelle demande');
+  assert.ok(!searchUrls(page).includes('/api/search?q=Zo'), 'la recherche « Zo » n’est jamais envoyée');
   // Sélections, une lettre tapée : les sélections reviennent.
   await page.tap(page.body, '[data-catalog="playlist"]');
   await page.type('searchInput', 'Z');

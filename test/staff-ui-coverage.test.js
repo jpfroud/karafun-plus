@@ -2230,7 +2230,7 @@ test('barre du haut : essais KaraFun arrêtés, alerte avec Reconnecter et Saisi
   assert.equal(pill.className, 'pill bad');
   assert.equal(page.all('staffAlerts', '.kf-alert').length, 1);
   assert.equal(page.in('staffAlerts', '.kf-alert span').textContent,
-    'KaraFun fermé ou code changé : la file n’essaie plus seule, les titres ne partent plus. Une fois KaraFun ouvert (télécommande activée), clique sur Reconnecter ; si le code a changé, saisis le nouveau.');
+    'KaraFun fermé ou code changé : la file n’essaie plus seule, les titres ne partent plus. Une fois KaraFun ouvert (télécommande activée), clique sur « Reconnecter » ; si le code a changé, utilise « Saisir le code ».');
   assert.deepEqual(texts(page.all('staffAlerts', '.kf-alert button')), ['Reconnecter', 'Saisir le code']);
   assert.equal(page.in('staffAlerts', '.kf-alert [data-dismiss-alert]'), null, 'cette alerte ne se ferme pas');
   assert.ok(page.in('staffAlerts', '[data-alert-reconnect]').className.includes('primary'));

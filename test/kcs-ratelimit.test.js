@@ -752,6 +752,29 @@ test('AppLeftEvent sans fin puis page « KaraFun fermé » : relances rapides, p
   assert.equal(env.sockets.length, 20, 'ni WebSocket');
 });
 
+test('AppLeftEvent sans fin, la page relue redonne une URL refermée aussitôt : essais arrêtés, plus rien de la nuit', async t => {
+  mockTime(t, Date.parse('2026-10-02T18:00:00Z'));
+  const env = fakes(t);
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  // KaraFun quitté, sa session encore ouverte : chaque URL rend l'état puis AppLeftEvent.
+  await drive(t, bridge, env, { end: Date.parse('2026-10-02T21:00:00Z'), onSocket: ws => accept(ws, { appLeft: true }),
+    done: () => bridge.connectionState().phase === 'stopped' });
+  assert.equal(bridge.connectionState().label, STOPPED);
+  assert.equal(env.calls.length, 2, 'démarrage et une seule page relue');
+  assert.equal(env.sockets.length, 21, '20 reconnexions par l’URL gardée, puis l’URL de la page relue');
+  t.mock.timers.tick(12 * HOUR);
+  await flush();
+  assert.equal(env.calls.length, 2, 'plus aucune page de la nuit');
+  assert.equal(env.sockets.length, 21, 'ni WebSocket');
+  // Le clic du bar relance le cycle complet.
+  bridge.connect(CODE);
+  await flush();
+  assert.equal(env.calls.length, 3);
+  accept(env.sockets.at(-1));
+  assert.equal(bridge.connectionState().phase, 'ready');
+});
+
 test('URL gardée refusée avant authentification (4403) : une seule nouvelle découverte', async t => {
   mockTime(t, Date.parse('2026-10-02T18:00:00Z'));
   const env = fakes(t);
@@ -1056,6 +1079,43 @@ test('nouveau code saisi pendant que KaraFun est fermé : relances rapides pour 
   assert.ok(env.calls.slice(6).every(call => codeOf(call.url) === NEW_CODE));
 });
 
+test('nouveau code saisi dans l’heure d’un arrêt des essais : relances rapides pour ce code', async t => {
+  const start = Date.parse('2026-10-02T17:00:00Z');
+  mockTime(t, start);
+  let readyAt = Infinity;
+  const env = fakes(t, url => (Date.now() >= readyAt && codeOf(url) === NEW_CODE ? openPage(url) : CLOSED));
+  const { bridge } = bridgeFor(t);
+  bridge.connect(CODE);
+  await untilStopped(t, bridge);
+  t.mock.timers.tick(start + 10 * MIN - Date.now());
+  // Le bar suit l'alerte : « Saisir le code », KaraFun prêt 20 s après.
+  readyAt = Date.now() + 20000;
+  assert.equal(bridge.connect(NEW_CODE), 'started');
+  await flush();
+  assert.equal(bridge.connectionState().phase, 'retry', 'nouveau code : relances rapides, pas d’arrêt aussitôt');
+  await drive(t, bridge, env, { end: start + 20 * MIN, onSocket: accept,
+    done: () => ['ready', 'stopped'].includes(bridge.connectionState().phase) });
+  assert.equal(bridge.connectionState().phase, 'ready');
+});
+
+test('démarrage sans réseau, puis URL refusée (4403) après une coupure : la série « KaraFun fermé » repart de 5 s', async t => {
+  const start = Date.parse('2026-10-02T17:00:00Z');
+  mockTime(t, start);
+  // Box qui redémarre : 5 pages sans réseau, puis une URL, puis KaraFun fermé.
+  let reads = 0;
+  const env = fakes(t, url => (++reads <= 5 ? OFFLINE() : reads === 6 ? openPage(url) : CLOSED));
+  const { bridge } = bridgeFor(t);
+  let sockets = 0;
+  bridge.connect(CODE);
+  // URL toute neuve coupée (1006), réessayée telle quelle, puis refusée (4403).
+  await drive(t, bridge, env, { end: start + HOUR,
+    onSocket: ws => { if (++sockets === 1) { ws.open(); ws.serverClose(1006); } else rejectBeforeAuth(ws); },
+    done: () => env.calls.length >= 7 && bridge.connectionState().phase !== 'discovering' });
+  assert.equal(sockets, 2);
+  assert.equal(bridge.connectionState().phase, 'retry', 'page « KaraFun fermé » : relances rapides, pas d’arrêt aussitôt');
+  assert.equal(bridge.retryAt - Date.now(), 5000);
+});
+
 test('KaraFun fermé comme le 2 octobre (URL KCS puis fermeture 4403) : essais arrêtés pour la nuit, un clic à l’ouverture connecte', async t => {
   const start = Date.parse('2026-10-01T22:00:01Z');
   mockTime(t, start);
@@ -1159,6 +1219,56 @@ test('relancer la file dans la même heure ne remet pas le budget à zéro : 12 
   const inHour = env.calls.filter(call => hourOf(call.at) === hourOf(hour)).length;
   assert.ok(inHour <= 12, `${inHour} pages entre 19:00 et 20:00 depuis ce PC`);
   assert.equal(bridge.connectionState().discovery.used, inHour, 'compteur repris du fichier');
+  const saved = fs.readFileSync(budgetFile, 'utf8');
+  assert.equal(saved.includes(CODE) || saved.includes('jeton'), false, 'ni code ni URL dans le fichier');
+});
+
+test('redémarrages dans l’heure d’un arrêt des essais : une page chacun, pas de nouvelle série, le clic du bar reste possible', async t => {
+  const hour = Date.parse('2026-10-02T17:00:00Z');
+  mockTime(t, hour + 10 * MIN);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcs-arret-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const budgetFile = path.join(dir, 'karafun-pages.json');
+  let answer = () => CLOSED;
+  const env = fakes(t, url => answer(url));
+  const first = bridgeFor(t, { budgetFile }).bridge;
+  first.connect(CODE);
+  await untilStopped(t, first);
+  assert.equal(env.calls.length, 6, 'démarrage et 5 relances rapides');
+  first.disconnect();
+  // La file relancée trois fois dans la même heure, KaraFun toujours fermé.
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(5 * MIN);
+    const { bridge } = bridgeFor(t, { budgetFile });
+    bridge.connect(CODE);
+    await flush();
+    assert.equal(bridge.connectionState().phase, 'stopped', `redémarrage ${i + 1} : essais arrêtés aussitôt`);
+    assert.equal(bridge.retryAt, null);
+    bridge.disconnect();
+  }
+  assert.equal(env.calls.length, 9, 'une seule page par redémarrage');
+  // KaraFun ouvert : le clic du bar a encore des pages et connecte.
+  answer = openPage;
+  t.mock.timers.tick(5 * MIN);
+  const { bridge } = bridgeFor(t, { budgetFile });
+  bridge.connect(CODE);
+  await flush();
+  accept(env.sockets.at(-1));
+  assert.equal(bridge.connectionState().phase, 'ready');
+  assert.equal(JSON.parse(fs.readFileSync(budgetFile, 'utf8')).stoppedHour, null, 'KaraFun joint : arrêt oublié dans le fichier');
+  bridge.disconnect();
+  // Arrêt à l'heure d'avant : l'heure suivante, la série complète revient.
+  answer = () => CLOSED;
+  const stopped = bridgeFor(t, { budgetFile }).bridge;
+  stopped.connect(CODE);
+  await untilStopped(t, stopped);
+  stopped.disconnect();
+  t.mock.timers.tick(HOUR);
+  const before = env.calls.length;
+  const later = bridgeFor(t, { budgetFile }).bridge;
+  later.connect(CODE);
+  await untilStopped(t, later);
+  assert.equal(env.calls.length - before, 6, 'heure suivante : démarrage et 5 relances rapides de nouveau');
   const saved = fs.readFileSync(budgetFile, 'utf8');
   assert.equal(saved.includes(CODE) || saved.includes('jeton'), false, 'ni code ni URL dans le fichier');
 });
@@ -1290,8 +1400,8 @@ test('fichier du budget illisible, d’une autre heure ou à la limite démesur�
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const budgetFile = path.join(dir, 'karafun-pages.json');
   const env = fakes(t, () => CLOSED);
-  for (const content of ['pas du JSON', JSON.stringify({ hour: hourOf(start) - 1, used: 12, auto: 9 }),
-    JSON.stringify({ hour: hourOf(start), used: -3, auto: 'beaucoup', limitUntil: start + 5 * HOUR, limitRetryAt: start + 5 * HOUR })]) {
+  for (const content of ['pas du JSON', JSON.stringify({ hour: hourOf(start) - 1, used: 12, auto: 9, stoppedHour: hourOf(start) - 1 }),
+    JSON.stringify({ hour: hourOf(start), used: -3, auto: 'beaucoup', limitUntil: start + 5 * HOUR, limitRetryAt: start + 5 * HOUR, stoppedHour: 'tout à l’heure' })]) {
     fs.writeFileSync(budgetFile, content);
     const { bridge, lines } = bridgeFor(t, { budgetFile });
     assert.equal(bridge.connectionState().discovery.used, 0);
@@ -1301,7 +1411,7 @@ test('fichier du budget illisible, d’une autre heure ou à la limite démesur�
     await flush();
     assert.equal(bridge.connectionState().discovery.used, 1);
     assert.deepEqual(JSON.parse(fs.readFileSync(budgetFile, 'utf8')),
-      { hour: hourOf(start), used: 1, auto: 0, limitUntil: null, limitRetryAt: null });
+      { hour: hourOf(start), used: 1, auto: 0, limitUntil: null, limitRetryAt: null, stoppedHour: null });
     bridge.disconnect();
   }
   // Programme relancé : le compte repris est annoncé au journal du serveur.

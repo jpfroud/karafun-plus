@@ -2395,15 +2395,14 @@
     // Choisir un titre pour quelqu'un : le catalogue garde l'écran quitté
     // (résultats de la dernière recherche, titres d'une sélection…), seul le
     // champ est vidé pour taper tout de suite une autre recherche. Une frappe
-    // dont les résultats ne sont pas affichés (une lettre, recherche encore en
-    // attente) est abandonnée : l'écran d'avant revient. L'onglet Catalogue,
-    // lui, retrouve aussi le texte du champ.
+    // encore en attente est abandonnée ; si une seule lettre avait remplacé
+    // l'écran par « Tape au moins 2 lettres. », l'écran d'avant revient.
+    // L'onglet Catalogue, lui, retrouve aussi le texte du champ.
     clearTimeout(searchTimer);
-    const typed = $('searchInput').value.trim();
     $('searchInput').value = '';
     renderSearchClear();
     setTab('catalog');
-    if (typed && !(catalogMode === 'search' && typed === searchTerm)) reloadCatalog();
+    if (catalogView === shortTermView) reloadCatalog();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -2549,6 +2548,8 @@
     }).catch(error => { if (number === catalogRequest) catalogError(error); });
   }
 
+  // Une seule lettre tapée : l'écran du catalogue est remplacé par ce rappel.
+  const shortTermView = catalogMessage(() => t('Tape au moins 2 lettres.'));
   // Bouton × : vide la recherche d'un geste et revient aux sélections.
   function renderSearchClear() { $('searchClear').hidden = !$('searchInput').value; }
   function onSearchInput() {
@@ -2556,7 +2557,7 @@
     clearTimeout(searchTimer);
     const term = $('searchInput').value.trim();
     if (!term) { backToSelections(); return; }
-    if (term.length < 2) { ++catalogRequest; showCatalogView(catalogMessage(() => t('Tape au moins 2 lettres.'))); return; }
+    if (term.length < 2) { ++catalogRequest; showCatalogView(shortTermView); return; }
     searchTimer = setTimeout(() => searchSongs(term), 300);
   }
   $('searchInput').addEventListener('input', onSearchInput);

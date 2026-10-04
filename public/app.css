@@ -152,6 +152,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .staff-alert .alert-close:hover { border-color: var(--accent); }
 .staff-alert.gone-alert { border-color: var(--warn); background: rgba(255,176,32,.12); flex-wrap: wrap; }
 .staff-alert .alert-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Essais KaraFun arrêtés : texte long et deux boutons, passés dessous sur téléphone. */
+.staff-alert.kf-stopped { flex-wrap: wrap; }
+.staff-alert.kf-stopped > span:first-child { flex: 1 1 16em; }
 .version-tag { font-size: 12px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
 .connect-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .connect-controls input { width: 126px; min-height: 38px; padding: 7px 10px; }
