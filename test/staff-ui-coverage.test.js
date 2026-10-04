@@ -3150,14 +3150,24 @@ test('fermeture du bar : changer l’heure fait un brouillon, seule « Valider l
   assert.equal(status(), 'Enregistrement…');
   assert.equal(page.$('closingConfirm').disabled, true, 'un seul envoi à la fois');
   assert.equal(field.disabled, true, 'heure figée pendant l’envoi');
+  // L'heure est déjà partie : « Annuler » ne peut plus la reprendre, et rien
+  // d'autre ne change la fermeture avant la réponse (+10 / +15 / +30, Retirer).
+  const others = () => [page.$('closingCancel'), page.$('closingClear'), ...page.doc.body.querySelectorAll('[data-closing-extend]')];
+  page.world.closing = { at: at(1, 0), passed: false, full: false, fitCount: 9, afterCount: 0 };
   await page.poll();
-  assert.equal(field.value, '01:45', 'le rafraîchissement ne remet pas l’ancienne heure');
+  for (const button of others()) assert.equal(button.disabled, true, `« ${button.textContent} » indisponible pendant l’envoi`);
+  page.$('closingCancel').onclick();
+  await page.click(page.doc.body.querySelector('.closing-actions [data-closing-extend="10"]'));
+  assert.equal(field.value, '01:45', 'le rafraîchissement ne remet pas l’ancienne heure, « Annuler » non plus');
+  assert.equal(status(), 'Enregistrement…', 'l’envoi en cours reste annoncé');
+  assert.equal(sent().length, 3, 'aucun autre envoi pendant celui de l’heure');
   page.world.closing = { at: at(1, 45), passed: false, full: false, fitCount: 4, afterCount: 0 };
   release();
   await page.flush();
   assert.deepEqual(sent().at(-1), { time: '01:45' });
   assert.equal(status(), 'Fermeture à 01:45 ; 4 titres passeront.', 'le message du serveur prime');
   assert.equal(field.disabled, false);
+  for (const button of others()) assert.equal(button.disabled, false, `« ${button.textContent} » de nouveau disponible`);
   // Heure incomplète validée : refusée sur place.
   await page.type(field, '');
   await page.click(page.$('closingConfirm'));

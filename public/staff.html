@@ -1135,7 +1135,6 @@
       (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
       (closing.full ? ' Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.' : ' Il reste de la place : les clients peuvent encore ajouter des titres.');
     renderClosingField();
-    $('closingClear').disabled = !closing;
     // Sur l'écran Scène : rappel discret, avec le décalage le plus courant.
     $('closingChip').hidden = !closing;
     $('closingChipText').textContent = closing ? (closing.passed ? 'Fermeture atteinte' : `Fermeture ${hhmm(closing.at)}`) : '';
@@ -1832,6 +1831,9 @@
   // brouillon attend « Valider l'heure » ou « Annuler », qui remet l'heure
   // enregistrée (un sélecteur vidé puis refermé aussi). Le rafraîchissement
   // ne l'écrase pas. +10 / +15 / +30 min et « Retirer » restent immédiats.
+  // Pendant l'envoi de l'heure validée, rien d'autre ne touche à la fermeture :
+  // « Annuler » ne peut plus reprendre une heure déjà partie, et un décalage ou
+  // un retrait attend la réponse (sinon il partirait d'une heure incertaine).
   const NO_TIME = 'choisis une heure ; « Retirer » enlève l’heure annoncée';
   let closingDraft = null; // { value, state: 'draft' | 'saving' | 'error' | 'saved', error, afterLoad }
   let closingSaved = { text: '', until: 0 };
@@ -1843,8 +1845,11 @@
     const value = closingDraft ? closingDraft.value : closingServer();
     if (document.activeElement !== field && field.value !== value) field.value = value;
     const editing = !!closingDraft && closingDraft.state !== 'saved';
+    const saving = closingDraft?.state === 'saving';
     $('closingDraftActions').hidden = !editing;
-    $('closingConfirm').disabled = field.disabled = closingDraft?.state === 'saving';
+    $('closingConfirm').disabled = $('closingCancel').disabled = field.disabled = saving;
+    $('closingClear').disabled = saving || !S?.closing;
+    for (const button of document.body?.querySelectorAll?.('[data-closing-extend]') || []) button.disabled = saving;
     const status = $('closingStatus');
     const text = closingDraft?.state === 'error' ? `Non enregistré : ${closingDraft.error}` : closingDraft?.state === 'saving' ? 'Enregistrement…'
       : editing ? 'Heure pas encore validée' : closingSaved.until > Date.now() ? closingSaved.text : '';
@@ -1858,7 +1863,12 @@
     closingDraft = value === closingServer() ? null : { value, state: 'draft' };
     renderClosingField();
   }
-  function dropClosingDraft() { closingDraft = null; renderClosingField(); }
+  function dropClosingDraft() {
+    if (closingDraft?.state === 'saving') return false;
+    closingDraft = null;
+    renderClosingField();
+    return true;
+  }
   $('closingTime').addEventListener('input', closingEdited);
   $('closingTime').addEventListener('change', closingEdited);
   $('closingTime').addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault?.(); });
@@ -1886,13 +1896,15 @@
     renderClosingField();
   };
   $('closingClear').onclick = () => {
-    dropClosingDraft();
-    act('/api/staff/closing', { clear: true }, 'Heure de fermeture retirée');
+    if (dropClosingDraft()) act('/api/staff/closing', { clear: true }, 'Heure de fermeture retirée');
   };
   // Bouton × des recherches du bar et décalage de la fermeture.
   document.addEventListener?.('click', event => {
     const extend = event.target?.closest?.('[data-closing-extend]');
-    if (extend) { dropClosingDraft(); act('/api/staff/closing', { extendMin: Number(extend.dataset.closingExtend) }, 'Fermeture décalée'); return; }
+    if (extend) {
+      if (dropClosingDraft()) act('/api/staff/closing', { extendMin: Number(extend.dataset.closingExtend) }, 'Fermeture décalée');
+      return;
+    }
     const clear = event.target?.closest?.('[data-clear-for]');
     if (!clear) return;
     const input = $(clear.dataset.clearFor);
