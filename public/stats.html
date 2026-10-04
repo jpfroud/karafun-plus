@@ -760,8 +760,14 @@ function renderFilters() {
 // retomber au début de la page.
 const focusables = root => [...(root.children || [])].flatMap(el =>
   [...(el.tagName === 'BUTTON' || el.getAttribute?.('tabindex') != null ? [el] : []), ...focusables(el)]);
+// Focus au clavier seulement : une ligne touchée du doigt ne reprend pas le
+// focus (ni son info-bulle) à chaque rafraîchissement.
+function keyboardFocus(el) {
+  try { return el.matches(':focus-visible'); } catch (_) { return true; /* navigateur ancien */ }
+}
 function focusSpot() {
   const el = document.activeElement;
+  if (!el || !keyboardFocus(el)) return null;
   let holder = el;
   while (holder && !(holder.parentNode === $('charts') && holder.getAttribute?.('id'))) holder = holder.parentNode;
   if (!holder) return null;
@@ -774,8 +780,29 @@ function restoreFocus(spot) {
   if (el && el !== document.activeElement) el.focus({ preventScroll: true });
 }
 
+// Les cartes sont effacées puis redessinées : la page raccourcie un instant
+// faisait remonter la vue vers le haut des graphiques, et Safari (iPhone) n'a
+// pas d'ancrage du défilement pour la remettre. La hauteur est gardée pendant
+// le rendu, puis le bloc en haut de l'écran revient à la même place.
+function viewAnchor() {
+  const ids = ['insights', 'kpis', 'focusCard', ...[...$('charts').children].map(el => el.getAttribute('id')), 'definitions'];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    const box = el && !el.hidden ? el.getBoundingClientRect() : null;
+    if (box && box.bottom > 0) return { id, top: box.top };
+  }
+  return null;
+}
+function keepView(anchor) {
+  const el = anchor && document.getElementById(anchor.id);
+  const shift = el ? el.getBoundingClientRect().top - anchor.top : 0;
+  if (Math.abs(shift) >= 1) window.scrollBy(0, shift);
+}
+
 function renderAll() {
   if (!state.data) return;
+  const main = $('main'), anchor = viewAnchor(), height = main.offsetHeight;
+  if (height) main.style.minHeight = `${height}px`;
   const spot = focusSpot();
   state.queueSampleAt = spot?.sampleAt ?? null;
   // Les graphiques sont redessinés : une info-bulle de l'ancien rendu ne reste pas seule.
@@ -788,6 +815,8 @@ function renderAll() {
   renderDefinitions();
   restoreFocus(spot);
   state.queueSampleAt = null;
+  main.style.minHeight = '';
+  keepView(anchor);
 }
 
 // ------------------------------------------------------------------ données

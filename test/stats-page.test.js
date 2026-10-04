@@ -26,6 +26,8 @@ class Node_ {
   get firstChild() { return this.children[0] || null; }
   get parentNode() { return this.parent; }
   focus() { this.ownerDocument.activeElement = this; this.dispatch('focus'); }
+  // Focus clavier par défaut ; un test met focusVisible à false pour un toucher.
+  matches(selector) { return selector === ':focus-visible' ? this.ownerDocument.focusVisible !== false : false; }
   appendChild(child) { if (child.parent) child.parent.removeChild(child); child.parent = this; this.children.push(child); return child; }
   removeChild(child) { this.children = this.children.filter(c => c !== child); child.parent = null; return child; }
   setAttribute(name, value) {
@@ -44,8 +46,10 @@ class Node_ {
   }
   get textContent() { return this.tagName === '#TEXT' ? this._text : this.children.map(c => c.textContent).join(''); }
   set textContent(value) { this.children = []; if (this.tagName === '#TEXT') this._text = String(value); else if (value !== '') this.appendChild(this.ownerDocument.createTextNode(value)); }
-  get clientWidth() { return this.ownerDocument.width; }
-  getBoundingClientRect() { return { left: 10, top: 20, width: this.ownerDocument.width, height: 40 }; }
+  // Mise en page facultative (doc.layout) : chaque lecture peut déplacer le défilement.
+  get clientWidth() { this.ownerDocument.layout?.(); return this.ownerDocument.width; }
+  get offsetHeight() { return this.ownerDocument.layout?.(this)?.height; }
+  getBoundingClientRect() { return this.ownerDocument.layout?.(this) || { left: 10, top: 20, width: this.ownerDocument.width, height: 40 }; }
   descendants() { return this.children.flatMap(c => [c, ...c.descendants()]); }
   find(predicate) { return this.descendants().filter(predicate); }
   byTag(tag) { return this.find(n => n.tagName === tag.toUpperCase()); }
@@ -148,7 +152,7 @@ function loadPage({ search = '?key=cle-bar', width = 900, responses = {}, storag
   };
   vm.createContext(context);
   vm.runInContext(script, context, { filename: 'stats.html' });
-  return { doc, $: id => doc.getElementById(id), fetches, assigned, timers, store, windowListeners };
+  return { doc, $: id => doc.getElementById(id), fetches, assigned, timers, store, windowListeners, window: context.window };
 }
 const text = el => el.textContent;
 const marks = (el, pred = () => true) => el.find(n => (n.listeners.pointerenter || []).length && pred(n));
@@ -614,4 +618,80 @@ test('changer de soirée pendant un chargement : la page montre toujours la soir
     const timers = page.timers.filter(t => t.ms === 15000).length;
     assert.ok(expected === 'current' ? timers >= 1 : true);
   }
+});
+
+// Regression: test au bar du 4 octobre — sur iPhone, en lisant la page sous
+// « Attente avant de chanter », la vue remontait vers ce graphique toutes les
+// 2-3 s : chaque rendu (rafraîchissement de 15 s, redimensionnement quand la
+// barre d'adresse se replie) effaçait les cartes avant de les redessiner, la
+// page raccourcie un instant ramenait le défilement plus haut, et Safari n'a
+// pas d'ancrage pour le remettre.
+test('défilement gardé au rafraîchissement et au redimensionnement, sans ancrage du navigateur (iPhone)', async () => {
+  let calls = 0;
+  // Second chargement : Eve chante, une ligne de plus dans les attentes.
+  const withEve = () => {
+    const events = eveningEvents();
+    events.push({ t: at(50), ev: 'stage.started', queueId: 7, entryId: 'e1', ids: ['pE'], source: 'queue' }, { t: at(54), ev: 'stage.ended', queueId: 7, playedSec: 240 });
+    return events.sort((a, b) => a.t - b.t).map((e, i) => ({ ...e, seq: i + 1 }));
+  };
+  const page = loadPage({ width: 390, responses: { '/api/staff/stats': () => ({ ok: true, body: calls++ < 2 ? apiView() : apiView({ events: withEve() }) }) } });
+  await settle();
+  const { doc, window: win } = page;
+  const charts = page.$('charts'), main = page.$('main');
+  // Mise en page de Safari, simplifiée : en-tête de 900 px, cartes de 300 px
+  // plus 26 px par ligne de chanteur, défilement ramené dans la page à chaque
+  // lecture de la mise en page.
+  const HEAD = 900, VIEW = 664;
+  const cardHeight = card => 300 + 26 * card.find(n => n.getAttribute('class') === 'st-row').length;
+  const natural = () => HEAD + charts.children.reduce((sum, card) => sum + cardHeight(card), 0);
+  const mainHeight = () => Math.max(parseFloat(main.style.minHeight) || 0, natural());
+  win.innerHeight = VIEW;
+  win.scrollY = 0;
+  const clamp = () => { win.scrollY = Math.max(0, Math.min(win.scrollY, mainHeight() - VIEW)); };
+  win.scrollBy = (x, y) => { win.scrollY += y; clamp(); };
+  const rect = (top, height) => ({ left: 0, top: top - win.scrollY, bottom: top + height - win.scrollY, width: 390, height });
+  doc.layout = node => {
+    clamp();
+    if (!node) return null;
+    if (node === main) return rect(0, mainHeight());
+    if (node === page.$('insights')) return rect(150, 300);
+    if (node === page.$('kpis')) return rect(450, 450);
+    if (node.parentNode === charts) {
+      const index = charts.children.indexOf(node);
+      return rect(HEAD + charts.children.slice(0, index).reduce((sum, card) => sum + cardHeight(card), 0), cardHeight(node));
+    }
+    return null;
+  };
+  const top = id => doc.getElementById(id).getBoundingClientRect().top;
+  // Lecture plus bas : haut de l'écran dans la carte de la file (sous les attentes).
+  win.scrollY = HEAD + cardHeight(page.$('chartTimeline')) + cardHeight(page.$('chartWaits')) + cardHeight(page.$('chartRates')) + 50;
+  const reading = win.scrollY;
+  // Barre d'adresse qui se replie : redimensionnement, rendu 200 ms plus tard.
+  page.windowListeners.resize[0]();
+  page.timers.at(-1).fn();
+  assert.equal(win.scrollY, reading, 'redimensionnement : la vue ne remonte pas');
+  assert.equal(main.style.minHeight, '', 'hauteur libérée après le rendu');
+  // Rafraîchissement de 15 s, mêmes données.
+  page.timers.filter(t => t.ms === 15000).at(-1).fn();
+  await settle();
+  assert.equal(win.scrollY, reading, 'rafraîchissement : la vue ne remonte pas');
+  // Rafraîchissement avec une ligne de plus au-dessus : la carte lue reste à la même place.
+  const queueTop = top('chartQueue');
+  page.timers.filter(t => t.ms === 15000).at(-1).fn();
+  await settle();
+  assert.equal(calls, 3);
+  assert.equal(page.$('chartWaits').find(n => n.getAttribute('class') === 'st-row').length, 5, 'Eve ajoutée aux attentes');
+  assert.equal(top('chartQueue'), queueTop, 'la carte lue ne bouge pas');
+  assert.equal(win.scrollY, reading + 26);
+  // Ligne des attentes touchée du doigt (focus sans clavier) : pas de focus
+  // remis ni d'info-bulle réaffichée à chaque rafraîchissement.
+  const row = marks(page.$('chartWaits'))[0];
+  doc.focusVisible = false;
+  row.focus();
+  assert.equal(page.$('tooltip').hidden, false);
+  page.timers.filter(t => t.ms === 15000).at(-1).fn();
+  await settle();
+  assert.equal(page.$('charts').descendants().includes(doc.activeElement), false, 'focus du toucher non remis');
+  assert.equal(page.$('tooltip').hidden, true, 'pas d’info-bulle réaffichée');
+  assert.equal(win.scrollY, reading + 26);
 });
