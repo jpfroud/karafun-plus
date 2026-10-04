@@ -258,7 +258,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .empty-state { padding: 22px 8px; text-align: center; color: var(--muted); }
 .new-table { display: grid; grid-template-columns: minmax(120px, 1fr) 165px auto; gap: 10px; align-items: end; }
 .new-table label { display: grid; gap: 5px; font-size: 12px; font-weight: 700; color: var(--muted); }
-.new-table input { min-height: 42px; padding: 8px 10px; }
+.new-table input, .staff .new-table input[type=number] { min-height: 42px; padding: 8px 10px; }
 .new-table button { white-space: nowrap; }
 .table-cards { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin-top: 18px; }
 .table-reset { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -415,7 +415,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .staff-dialog { max-height: calc(100vh - 24px); overflow: auto; }
 .qr-dialog { width: min(520px, calc(100vw - 16px)); text-align: center; }
 .qr-dialog #tableQrName { font-size: 30px; margin: 0; }
-.staff-qr.big-qr { width: min(80vw, 380px); height: auto; aspect-ratio: 1; margin: 12px auto; }
+.staff-qr.big-qr { width: min(80vw, 380px, 100%); height: auto; aspect-ratio: 1; margin: 12px auto; }
 .qr-help { font-size: 18px; font-weight: 750; margin: 8px 0; }
 .sheet-actions { margin: 14px 0; }
 .staff-tabs { display: none; }
@@ -424,6 +424,8 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 }
 @media (max-width: 899px) {
   body.staff { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  /* Safari sur iPhone zoome sur un champ focalisé de moins de 16 px : aucun champ du bar n'est plus petit. */
+  body.staff input:not([type=checkbox]):not([type=radio]), body.staff select, body.staff textarea { font-size: 16px; }
   /* Barre du haut collante et barre d'onglets fixe : une section atteinte par un
      lien (pastille KaraFun) ou un champ qui prend le focus reste visible entre les deux. */
   html:has(body.staff) { scroll-padding-top: 104px; scroll-padding-bottom: calc(88px + env(safe-area-inset-bottom)); }

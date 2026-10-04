@@ -115,7 +115,17 @@ class El {
   click() { return this.disabled ? null : dispatch(this, 'click'); }
   focus() { this.ownerDocument.activeElement = this; }
   select() { this.selectedAll = true; }
-  showModal() { this.open = true; }
+  // Avec `doc.dialogFocus`, comme un navigateur : la fenêtre ouverte donne le
+  // focus à son élément `autofocus`, sinon à son premier élément focalisable.
+  showModal() {
+    this.open = true;
+    if (!this.ownerDocument.dialogFocus) return;
+    const visible = el => { for (let up = el; up && up !== this; up = up.parent) if (up.hidden) return false; return true; };
+    const focusable = el => !el.disabled && visible(el) && (/^(SELECT|TEXTAREA|BUTTON)$/.test(el.tagName) ||
+      (el.tagName === 'INPUT' && el.type !== 'hidden') || (el.tagName === 'A' && el.getAttribute('href') !== null));
+    const all = [...this.descendants()];
+    (all.find(el => 'autofocus' in el.attrs && focusable(el)) || all.find(focusable))?.focus();
+  }
   close() { if (this.open) { this.open = false; dispatch(this, 'close', { bubbles: false }); } }
   setPointerCapture(id) { this.capture = id; }
   getBoundingClientRect() { return this.rect || { top: 0, height: 0 }; }
@@ -233,8 +243,9 @@ const json = (data, status = 200) => ({ ok: status < 400, status, json: async ()
 // Ouvre la page du bar avec un faux serveur. `replies` donne la réponse d'un
 // POST par chemin (objet, ou fonction du corps) ; { status, error } = refus.
 async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash = '', world = baseWorld(), storage = {},
-  storageThrows = false, secure = true, permission = 'granted', audioThrows = false, notifyThrows = false } = {}) {
+  storageThrows = false, secure = true, permission = 'granted', audioThrows = false, notifyThrows = false, dialogFocus = false } = {}) {
   const doc = makeDocument();
+  doc.dialogFocus = dialogFocus;
   const page = { doc, world, posts: [], fetches: [], replies: {}, confirmAnswer: true, confirms: [], prompts: [],
     promptAnswer: null, opened: [], notifications: [], permissionRequests: 0, rings: 0, clipboard: [], clipboardWorks: true,
     stateStatus: 200, searches: [], stored: new Map(Object.entries(storage)) };
@@ -3034,4 +3045,60 @@ test('Accueil : le formulaire « Nouvelle table » vient avant la liste des tabl
   assert.equal(form.closest('section[data-tab]').dataset.tab, 'accueil');
   assert.ok(order(page, form) < order(page, page.$('tBody')), 'ajouter une table avant de voir les tables');
   assert.ok(order(page, page.$('tableName')) < order(page, page.in('tBody', '[data-table-card="1"]')));
+});
+
+test('QR d’une table au téléphone : aucun champ de saisie ne prend le focus à l’ouverture (zoom de l’iPhone)', async () => {
+  // iOS zoome sur un champ de saisie focalisé de moins de 16 px quand le focus
+  // vient d'un toucher : la fenêtre du QR doit donner le focus à un bouton.
+  const page = await openPage({ dialogFocus: true });
+  const field = () => /^(INPUT|SELECT|TEXTAREA)$/.test(page.doc.activeElement?.tagName || '');
+  await page.click(page.in('tBody', '[data-table-qr="1"]'));
+  assert.equal(page.$('tableQrDialog').open, true);
+  assert.equal(field(), false, `focus à l’ouverture du QR : #${page.doc.activeElement?.id}`);
+  assert.equal(page.doc.activeElement, page.$('tableQrClose'), 'le focus va à « Fermer »');
+  await page.click(page.$('tableQrClose'));
+  page.doc.activeElement = null;
+  // Même QR ouvert depuis « Détails » › « Montrer le QR ».
+  await page.click(page.in('tBody', '[data-table-more="1"]'));
+  page.doc.activeElement = null;
+  await page.click(page.$('tableSheetQr'));
+  assert.equal(page.$('tableQrDialog').open, true);
+  assert.equal(field(), false, 'QR ouvert depuis Détails : pas de champ focalisé');
+  await page.click(page.$('tableQrClose'));
+  // Les autres fenêtres de QR (personne seule, transfert) suivent la même règle.
+  page.replies['/api/staff/solo-invite'] = { qr: 'data:image/png;base64,QR', url: 'http://192.168.1.20:3000/i/abc', expiresAt: Date.now() + 1800000 };
+  await page.click(page.$('issueSoloInvitation'));
+  assert.equal(page.$('soloInviteDialog').open, true);
+  assert.equal(field(), false, 'QR individuel : pas de champ focalisé');
+  await page.click(page.$('soloInviteClose'));
+  page.replies['/api/staff/person/share'] = { code: '123456', qr: 'data:image/png;base64,QR', url: 'http://192.168.1.20:3000/t/1/abc#transfert', expiresAt: Date.now() + 600000 };
+  await page.type(page.$('transferSearch'), 'Ali');
+  await page.click(page.in('transferResults', '[data-transfer-person="alice"]'));
+  assert.equal(page.$('shareDialog').open, true);
+  assert.equal(field(), false, 'QR de transfert : pas de champ focalisé');
+});
+
+test('page du bar au téléphone : champs de saisie d’au moins 16 px, QR entier dans la largeur, zoom laissé libre', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  // Règles de chaque bloc @media (un seul niveau d'imbrication dans app.css).
+  const media = [];
+  for (const m of css.matchAll(/@media([^{]+)\{/g)) {
+    let depth = 1, i = m.index + m[0].length;
+    for (; depth && i < css.length; i++) depth += css[i] === '{' ? 1 : css[i] === '}' ? -1 : 0;
+    const inner = css.slice(m.index + m[0].length, i - 1);
+    media.push({ condition: m[1].trim(), rules: [...inner.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(r => ({ selectors: r[1].split(',').map(x => x.trim()), body: r[2] })) });
+  }
+  const phone = media.filter(block => /max-width:\s*899px/.test(block.condition));
+  const sized = phone.flatMap(block => block.rules).filter(rule => {
+    const size = /font-size:\s*(\d+)px/.exec(rule.body);
+    return size && Number(size[1]) >= 16;
+  });
+  for (const tag of ['input', 'select', 'textarea']) {
+    assert.ok(sized.some(rule => rule.selectors.some(sel => new RegExp(`^body\\.staff ${tag}\\b`).test(sel))),
+      `au téléphone, les ${tag} de la page du bar ont au moins 16 px`);
+  }
+  const qr = /\.staff-qr\.big-qr\s*\{([^}]*)\}/.exec(css);
+  assert.ok(qr && /width:\s*min\([^)]*100%[^)]*\)/.test(qr[1]), 'le grand QR ne dépasse jamais la largeur de sa fenêtre');
+  const viewport = /<meta name="viewport" content="([^"]*)"/.exec(html)?.[1] || '';
+  assert.ok(viewport && !/maximum-scale|user-scalable/.test(viewport), `zoom de l’utilisateur laissé libre : ${viewport}`);
 });
