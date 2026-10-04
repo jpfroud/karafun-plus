@@ -627,23 +627,28 @@ test('changer de soirée pendant un chargement : la page montre toujours la soir
 // page raccourcie un instant ramenait le défilement plus haut, et Safari n'a
 // pas d'ancrage pour le remettre.
 test('défilement gardé au rafraîchissement et au redimensionnement, sans ancrage du navigateur (iPhone)', async () => {
-  let calls = 0;
+  let calls = 0, respond = null;
   // Second chargement : Eve chante, une ligne de plus dans les attentes.
   const withEve = () => {
     const events = eveningEvents();
     events.push({ t: at(50), ev: 'stage.started', queueId: 7, entryId: 'e1', ids: ['pE'], source: 'queue' }, { t: at(54), ev: 'stage.ended', queueId: 7, playedSec: 240 });
     return events.sort((a, b) => a.t - b.t).map((e, i) => ({ ...e, seq: i + 1 }));
   };
-  const page = loadPage({ width: 390, responses: { '/api/staff/stats': () => ({ ok: true, body: calls++ < 2 ? apiView() : apiView({ events: withEve() }) }) } });
+  const page = loadPage({ width: 390, responses: { '/api/staff/stats': () => {
+    calls++;
+    return { ok: true, body: respond ? respond() : calls <= 2 ? apiView() : apiView({ events: withEve() }) };
+  } } });
   await settle();
   const { doc, window: win } = page;
   const charts = page.$('charts'), main = page.$('main');
-  // Mise en page de Safari, simplifiée : en-tête de 900 px, cartes de 300 px
-  // plus 26 px par ligne de chanteur, défilement ramené dans la page à chaque
-  // lecture de la mise en page.
+  // Mise en page de Safari, simplifiée : en-tête de 900 px (40 de plus avec
+  // le bandeau d'erreur), cartes de 300 px plus 26 px par ligne de chanteur,
+  // défilement ramené dans la page à chaque lecture de la mise en page.
   const HEAD = 900, VIEW = 664;
+  const headerExtra = () => page.$('errorBox').hidden ? 0 : 40;
+  const head = () => HEAD + headerExtra();
   const cardHeight = card => 300 + 26 * card.find(n => n.getAttribute('class') === 'st-row').length;
-  const natural = () => HEAD + charts.children.reduce((sum, card) => sum + cardHeight(card), 0);
+  const natural = () => head() + charts.children.reduce((sum, card) => sum + cardHeight(card), 0);
   const mainHeight = () => Math.max(parseFloat(main.style.minHeight) || 0, natural());
   win.innerHeight = VIEW;
   win.scrollY = 0;
@@ -654,11 +659,11 @@ test('défilement gardé au rafraîchissement et au redimensionnement, sans ancr
     clamp();
     if (!node) return null;
     if (node === main) return rect(0, mainHeight());
-    if (node === page.$('insights')) return rect(150, 300);
-    if (node === page.$('kpis')) return rect(450, 450);
+    if (node === page.$('insights')) return rect(150 + headerExtra(), 300);
+    if (node === page.$('kpis')) return rect(450 + headerExtra(), 450);
     if (node.parentNode === charts) {
       const index = charts.children.indexOf(node);
-      return rect(HEAD + charts.children.slice(0, index).reduce((sum, card) => sum + cardHeight(card), 0), cardHeight(node));
+      return rect(head() + charts.children.slice(0, index).reduce((sum, card) => sum + cardHeight(card), 0), cardHeight(node));
     }
     return null;
   };
@@ -694,4 +699,26 @@ test('défilement gardé au rafraîchissement et au redimensionnement, sans ancr
   assert.equal(page.$('charts').descendants().includes(doc.activeElement), false, 'focus du toucher non remis');
   assert.equal(page.$('tooltip').hidden, true, 'pas d’info-bulle réaffichée');
   assert.equal(win.scrollY, reading + 26);
+  // Bandeau d'erreur du journal retiré au-dessus : la carte lue ne bouge pas.
+  assert.equal(page.$('errorBox').hidden, false);
+  respond = () => ({ ...apiView({ events: withEve() }), journalError: null });
+  page.timers.filter(t => t.ms === 15000).at(-1).fn();
+  await settle();
+  assert.equal(page.$('errorBox').hidden, true);
+  assert.equal(win.scrollY, reading + 26 - 40, 'en-tête raccourci au-dessus : la vue suit la carte lue');
+  // Haut de page : rien à garder. Le bandeau qui revient pousse la page
+  // normalement, la vue reste en haut.
+  win.scrollY = 0;
+  respond = () => apiView({ events: withEve() });
+  page.timers.filter(t => t.ms === 15000).at(-1).fn();
+  await settle();
+  assert.equal(page.$('errorBox').hidden, false);
+  assert.equal(win.scrollY, 0, 'en haut de page, la vue reste en haut');
+  // Rendu qui échoue (données abîmées) : la hauteur gardée est libérée quand même.
+  win.scrollY = reading;
+  respond = () => { const body = apiView(); body.stats.timeline.queue = null; return body; };
+  page.timers.filter(t => t.ms === 15000).at(-1).fn();
+  await settle();
+  assert.match(page.$('errorBox').textContent, /Statistiques indisponibles/);
+  assert.equal(main.style.minHeight, '', 'hauteur libérée malgré l’erreur');
 });

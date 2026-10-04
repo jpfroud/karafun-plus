@@ -33,8 +33,9 @@ class BattleVote {
     this.voteDurationMs = saved?.voteDurationMs ?? voteDurationMs;
     this.cooldownMs = saved?.cooldownMs ?? cooldownMs;
     // Sauvegarde d'avant la version 5 restée aux anciens défauts : nouveaux
-    // défauts, comme la migration du délai Spotify. Une valeur choisie par le
-    // bar est gardée ; la version 5 enregistrée ensuite ne migre plus rien.
+    // défauts, comme la migration du délai Spotify. Une autre valeur choisie par
+    // le bar est gardée (une sauvegarde d'avant ne distingue pas un 5 ou un 15
+    // choisi exprès d'un défaut) ; la version 5 enregistrée ensuite ne migre plus rien.
     if (saved && !(saved.version >= 5)) {
       if (this.voteDurationMs === OLD_VOTE_DURATION_MS) this.voteDurationMs = VOTE_DURATION_MS;
       if (this.cooldownMs === OLD_COOLDOWN_MS) this.cooldownMs = COOLDOWN_MS;

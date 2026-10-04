@@ -1840,8 +1840,11 @@
   const closingServer = () => { const at = S?.closing ? new Date(S.closing.at) : null; return at ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : ''; };
   function renderClosingField() {
     const field = $('closingTime');
-    // Heure validée : affichée jusqu'à ce que le serveur la renvoie.
+    // Heure validée : affichée jusqu'à ce que le serveur la renvoie. Un
+    // brouillon (ou un refus) devenu l'heure du serveur n'a plus rien à valider :
+    // un autre téléphone l'a annoncée, ou la réponse s'est perdue en route.
     if (closingDraft?.state === 'saved' && (closingDraft.value === closingServer() || shownLoad > closingDraft.afterLoad)) closingDraft = null;
+    if (closingDraft && closingDraft.state !== 'saving' && closingDraft.state !== 'saved' && closingDraft.value === closingServer()) closingDraft = null;
     const value = closingDraft ? closingDraft.value : closingServer();
     if (document.activeElement !== field && field.value !== value) field.value = value;
     const editing = !!closingDraft && closingDraft.state !== 'saved';
@@ -1849,7 +1852,8 @@
     $('closingDraftActions').hidden = !editing;
     $('closingConfirm').disabled = $('closingCancel').disabled = field.disabled = saving;
     $('closingClear').disabled = saving || !S?.closing;
-    for (const button of document.body?.querySelectorAll?.('[data-closing-extend]') || []) button.disabled = saving;
+    // Sans heure annoncée, rien à décaler (et l'heure choisie reste en brouillon).
+    for (const button of document.body?.querySelectorAll?.('[data-closing-extend]') || []) button.disabled = saving || !S?.closing;
     const status = $('closingStatus');
     const text = closingDraft?.state === 'error' ? `Non enregistré : ${closingDraft.error}` : closingDraft?.state === 'saving' ? 'Enregistrement…'
       : editing ? 'Heure pas encore validée' : closingSaved.until > Date.now() ? closingSaved.text : '';
@@ -1866,6 +1870,7 @@
   function dropClosingDraft() {
     if (closingDraft?.state === 'saving') return false;
     closingDraft = null;
+    closingSaved = { text: '', until: 0 }; // décalage ou retrait : l'ancienne heure n'est plus annoncée
     renderClosingField();
     return true;
   }

@@ -785,6 +785,7 @@ function restoreFocus(spot) {
 // pas d'ancrage du défilement pour la remettre. La hauteur est gardée pendant
 // le rendu, puis le bloc en haut de l'écran revient à la même place.
 function viewAnchor() {
+  if (!(window.scrollY > 0)) return null; // haut de page : la page s'allonge normalement
   const ids = ['insights', 'kpis', 'focusCard', ...[...$('charts').children].map(el => el.getAttribute('id')), 'definitions'];
   for (const id of ids) {
     const el = document.getElementById(id);
@@ -805,18 +806,22 @@ function renderAll() {
   if (height) main.style.minHeight = `${height}px`;
   const spot = focusSpot();
   state.queueSampleAt = spot?.sampleAt ?? null;
-  // Les graphiques sont redessinés : une info-bulle de l'ancien rendu ne reste pas seule.
-  hideTip();
-  renderHeader();
-  renderInsights();
-  renderKpis();
-  renderFocus();
-  renderCharts();
-  renderDefinitions();
-  restoreFocus(spot);
-  state.queueSampleAt = null;
-  main.style.minHeight = '';
-  keepView(anchor);
+  try {
+    // Les graphiques sont redessinés : une info-bulle de l'ancien rendu ne reste pas seule.
+    hideTip();
+    renderHeader();
+    renderInsights();
+    renderKpis();
+    renderFocus();
+    renderCharts();
+    renderDefinitions();
+    restoreFocus(spot);
+  } finally {
+    // Même si un rendu échoue : pas de vide gardé en bas de page.
+    state.queueSampleAt = null;
+    main.style.minHeight = '';
+    keepView(anchor);
+  }
 }
 
 // ------------------------------------------------------------------ données

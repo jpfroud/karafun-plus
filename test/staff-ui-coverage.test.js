@@ -3189,6 +3189,57 @@ test('fermeture du bar : changer l’heure fait un brouillon, seule « Valider l
   page.runTimers(2600);
 });
 
+// Regression: relecture des retours du 4 octobre — sans heure annoncée,
+// « +30 min » jetait l'heure choisie (brouillon) puis échouait ; le message
+// « Annoncée aux clients » restait après un décalage ; un brouillon devenu
+// l'heure du serveur (autre téléphone, réponse perdue) restait « à valider ».
+test('fermeture du bar (relecture) : décalages sans heure annoncée, message effacé, brouillon rejoint par le serveur', async () => {
+  const page = await openPage();
+  const field = page.$('closingTime');
+  const status = () => page.$('closingStatus').textContent;
+  const extends_ = () => page.doc.body.querySelectorAll('.closing-actions [data-closing-extend]');
+  const at = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.getTime(); };
+  const closing = (h, m) => ({ at: at(h, m), passed: false, full: false, fitCount: 3, afterCount: 0 });
+  // Aucune heure annoncée : rien à décaler, l'heure choisie reste en brouillon.
+  for (const button of extends_()) assert.equal(button.disabled, true, `« ${button.textContent} » sans heure annoncée`);
+  await page.type(field, '01:00');
+  await page.click(extends_()[2]);
+  assert.equal(field.value, '01:00', 'heure choisie gardée');
+  assert.equal(status(), 'Heure pas encore validée');
+  assert.deepEqual(page.postsTo('/api/staff/closing'), [], 'rien d’envoyé');
+  // Validée puis décalée tout de suite : l'ancien message disparaît.
+  page.replies['/api/staff/closing'] = body => {
+    page.world.closing = body.time ? closing(...body.time.split(':').map(Number)) : body.extendMin ? closing(1, 30) : null;
+    return { ok: true };
+  };
+  await page.click(page.$('closingConfirm'));
+  assert.equal(status(), 'Annoncée aux clients : 01:00 ✓');
+  for (const button of extends_()) assert.equal(button.disabled, false, 'heure annoncée : décalage possible');
+  await page.click(extends_()[2]);
+  assert.deepEqual(page.lastPost('/api/staff/closing').body, { extendMin: 30 });
+  await page.poll();
+  assert.equal(field.value, '01:30');
+  assert.equal(status(), '', 'plus d’« Annoncée aux clients : 01:00 »');
+  // Brouillon rejoint par le serveur (un autre téléphone valide la même heure) : plus rien à valider.
+  await page.type(field, '02:00');
+  dispatch(field, 'blur');
+  page.doc.activeElement = null;
+  await page.update({ closing: closing(2, 0) });
+  assert.equal(page.$('closingDraftActions').hidden, true, 'brouillon devenu l’heure annoncée');
+  assert.equal(status(), '');
+  // Réponse perdue alors que le serveur a bien pris l'heure : l'erreur s'efface au rafraîchissement.
+  page.replies['/api/staff/closing'] = { status: 500, error: 'Failed to fetch' };
+  await page.type(field, '02:15');
+  await page.click(page.$('closingConfirm'));
+  assert.equal(status(), 'Non enregistré : Failed to fetch');
+  page.doc.activeElement = null;
+  await page.update({ closing: closing(2, 15) });
+  assert.equal(status(), '', 'l’heure est annoncée : plus d’erreur');
+  assert.equal(page.$('closingDraftActions').hidden, true);
+  assert.equal(field.value, '02:15');
+  page.runTimers(2600);
+});
+
 test('Battle : durée du vote de 1 à 120 min (plus de limite de 10), repli à 15 min de vote et 30 min entre Battles', async () => {
   const world = baseWorld();
   delete world.settings.battleVoteMin; delete world.settings.battleCooldownMin;
