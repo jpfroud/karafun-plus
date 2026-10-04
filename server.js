@@ -996,8 +996,13 @@ function sync() {
           sched.commit(pending.sel);
           journalTurnSent(pending, hit.queueId, now);
           if (settings.queueClearPending || pending.cancelledByClear) {
+            // Seul le ticket vide recréé par commit() part : un chanteur qui a
+            // choisi un nouveau titre depuis le vidage garde sa place.
             const consumed = new Set(pending.sel.consumedIds || pending.sel.ids);
-            sched.Q = sched.Q.filter(pid => !consumed.has(pid));
+            sched.Q = sched.Q.filter(pid => {
+              const person = sched.people.get(pid);
+              return !consumed.has(pid) || (!!person && sched.songsOf(person).length > 0);
+            });
           }
           tracked.push({ queueId: hit.queueId, sel: pending.sel, addedAt: now, startedAt: now,
             ...(pending.sentSettings ? { sentSettings: pending.sentSettings } : {}) });
@@ -2594,11 +2599,10 @@ function clearQueue() {
   const { current, upcoming } = analyze();
   const removedLocalSongs = [...sched.people.values()].reduce((sum, p) => sum + sched.songsOf(p).length, 0);
   const pendingCancelled = !!pending;
-  if (pending) { pending.cancelled = true; pending.cancelledByClear = true; }
+  if (pending) pending.cancelled = true;
   for (const tr of tracked) {
     if (!isOnStage(tr, current)) {
       tr.cancelled = true;
-      tr.cancelledByClear = true;
       tr.removeRequestedAt = 0;
     }
   }
@@ -2640,10 +2644,20 @@ function clearQueue() {
 // ajoutés directement dans KaraFun y restent. Nos titres annulés restent
 // suivis et quittent KaraFun dès qu'il les montre ; l'envoi automatique
 // garde son réglage.
+// Tant que le vidage attend KaraFun, il protège tout titre annulé qui se
+// révèle sur scène (sync()). Quand il s'arrête avant la fin, chaque titre
+// encore annulé garde cette protection, y compris ceux d'une soirée
+// enregistrée par une version précédente.
+function keepClearStageProtection() {
+  for (const tr of tracked) if (tr.cancelled) tr.cancelledByClear = true;
+  if (pending?.cancelled) pending.cancelledByClear = true;
+}
+
 function stopQueueClear() {
   if (!settings.queueClearPending) return { ok: true, wasPending: false };
   // Écrit sur les deux générations avant tout effet : une sauvegarde
   // impossible laisse le vidage en cours, ici comme après un redémarrage.
+  keepClearStageProtection();
   settings.queueClearPending = false;
   try { saveNight({ required: true, replaceBoth: true }); }
   catch (error) { settings.queueClearPending = true; throw error; }
@@ -2656,6 +2670,9 @@ function stopQueueClear() {
 
 function clearEvening() {
   const { current, upcoming } = analyze();
+  // Vidage resté en attente : ses titres annulés restent protégés s'ils
+  // passent sur scène (pas ceux que la remise à zéro annule ci-dessous).
+  if (settings.queueClearPending) keepClearStageProtection();
   // Clôture et résumé de la soirée qui se termine, avant tout effacement.
   const listed = [...sched.people.values()].map(p => sched.songsOf(p).length);
   closeEvening('staff-reset', { unsungSongs: listed.reduce((a, b) => a + b, 0), peopleWithSongs: listed.filter(Boolean).length,

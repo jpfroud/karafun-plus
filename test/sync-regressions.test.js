@@ -756,6 +756,62 @@ test('vidage arrêté pendant un envoi : l’accusé déjà sur scène compte sa
   assert.equal(f.sched.Q.length, 0, 'le vidage ne recrée pas son ticket');
 });
 
+test('vidage arrêté pendant un envoi : un nouveau choix fait avant l’accusé garde sa place dans la file', async () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const p = f.sched.join({ tableId: '1', name: 'Marine', headcount: 1 });
+  const s = song(491);
+  f.sched.chooseSong(p, s);
+  f.sync();
+  assert.equal(f.adds.length, 1);
+  f.bridge.ready = false; // KaraFun perdu avant l'accusé
+  f.clearQueue();
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  f.sched.chooseSong(p, song(492)); // nouveau choix avant le retour de KaraFun
+  const stage = item('accuse-scene', s, f.adds[0].singer);
+  f.bridge.ready = true;
+  f.bridge.queue = [stage];
+  f.bridge.status = { state: 'playing', current: stage };
+  f.sync();
+  assert.deepEqual(f.removes, []);
+  assert.equal(p.song?.songId, 492);
+  assert.ok(f.sched.Q.includes(p.id), 'le nouveau choix garde son ticket');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.setEmptySince(Date.now() - 5000);
+  f.sync();
+  f.sync();
+  assert.equal(f.adds.at(-1).songId, 492, 'le nouveau choix part une fois la scène libre');
+});
+
+test('vidage enregistré par l’ancienne version puis arrêté : la chanson sur scène reste protégée', async () => {
+  const f = harness();
+  f.settings.auto = false;
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const s = song(495);
+  f.sched.chooseSong(p, s);
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  // Soirée restaurée d'avant ce correctif : drapeau levé, titre annulé sans repère.
+  f.settings.queueClearPending = true;
+  f.tracked().push({ queueId: 'ancien', sel, addedAt: Date.now(), startedAt: null, cancelled: true, removeRequestedAt: 0 });
+  const bridge = f.bridge;
+  f.setBridge(null);
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  const stage = item('ancien', s, sel.label);
+  f.setBridge(bridge);
+  bridge.queue = [stage];
+  bridge.status = { state: 'playing', current: stage };
+  f.sync();
+  assert.deepEqual(f.removes, []);
+  assert.equal(f.tracked()[0].cancelled, false, 'la chanson en lecture compte comme un passage');
+  bridge.queue = [];
+  bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt);
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)));
+});
+
 test('Supprimer toutes les tables termine un vidage resté en attente de KaraFun', () => {
   const f = harness();
   f.settings.auto = false;
