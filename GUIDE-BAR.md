@@ -133,6 +133,20 @@ Pour arrêter l'application, double-clique sur `ARRETER.bat` **sur le PC du bar*
 
 **Vérifié hors service, et pas encore au bar.** Les tests hors ligne et le faux KaraFun de la démo vérifient les commandes envoyées, les bornes, les droits, les deux pages et les délais : une commande sans réponse ne coupe plus la connexion et ne bloque rien : seule une réponse d'erreur de KaraFun désactive la fonction, jusqu'à la connexion suivante. **Rien n'a été essayé sur le vrai KaraFun du bar** : ces commandes viennent de KaraFun Web. Avant une soirée, fais l'essai décrit dans « À vérifier au bar, hors service », sans clients.
 
+### Titres de la communauté KaraFun
+
+**Ce que c'est.** Des titres partagés par les membres de KaraFun, hors catalogue officiel (qualité variable). La télécommande de KaraFun ne les montre pas à ses participants ; la file karaoké les propose quand même aux téléphones.
+
+**Ce que voient les chanteurs.** Dans la recherche, les titres du catalogue viennent d'abord, puis un intertitre « Titres de la communauté » et ces titres, chacun avec le repère bleu « Communauté ». Le bouton « Communauté », à côté de Playlists, Styles, Top, Nouveautés et À découvrir, montre les derniers titres partagés (si KaraFun en donne). La fiche d'un tel titre le signale ; il ne peut pas servir de Battle. Le repère suit le titre dans « Ma table », la file des téléphones et la file du bar.
+
+**Interrupteur.** « Plus » → « Règles de la soirée » → « Les chanteurs peuvent choisir des titres de la communauté KaraFun ». Activé par défaut, il s'enregistre seul et reste d'une soirée à l'autre. Coupé : plus de nouveau choix ; les titres déjà choisis restent et partent à leur tour. La ligne sous l'interrupteur dit si KaraFun a déjà accepté ou refusé un tel titre.
+
+**Si KaraFun refuse.** La file envoie ces titres avec le type « communauté » de la télécommande. Si KaraFun répond par un refus, rien n'entre dans sa file : tous les titres de la communauté quittent les listes, chaque chanteur concerné (et l'invitée d'un duo) est prévenu sur son téléphone, le passage suivant part aussitôt et les téléphones ne les proposent plus. Le bar peut toujours ajouter un titre de la communauté lui-même depuis l'application KaraFun. Pour réessayer (par exemple après une mise à jour de KaraFun), coupe puis réactive l'interrupteur.
+
+**Vérifié hors service, et pas encore au bar.** L'envoi suit le SDK officiel de la télécommande KaraFun (type de titre 2 = communauté) et la recherche reprend le paramètre `types` de la télécommande (`types=community`). Les tests hors ligne et la démo le vérifient ; **rien n'a été essayé sur le vrai KaraFun**. Sur le KaraFun du bar, la télécommande annonçait le 2 octobre « communauté : non affichée » même pour l'administrateur : un refus est possible. Fais l'essai décrit dans « À vérifier au bar, hors service » avant d'en parler aux clients.
+
+**Bannière défilante.** Elle se règle seulement dans KaraFun (« Réglages » → « Bannière défilante », Pro) : la télécommande, et donc la file karaoké, ne peut ni écrire son message ni choisir le nombre de chanteurs affichés.
+
 ## Test sur place au bar
 
 1. Prévois un PC Windows sur lequel KaraFun et cette application tourneront toute la soirée. Utilise une connexion Internet stable et empêche la mise en veille automatique du PC pendant le service.
@@ -152,6 +166,7 @@ Pour arrêter l'application, double-clique sur `ARRETER.bat` **sur le PC du bar*
    - lance le titre : « Réglages en direct » (écran « Scène ») doit montrer les mêmes valeurs ; touche « + » sur la tonalité, KaraFun doit changer de tonalité et la page afficher « Appliqué par KaraFun ✓ » ;
    - lis la ligne sous l'interrupteur (« Plus ») : « KaraFun a accepté : … », ou un refus. Un refus ne coupe pas la file : note la version de KaraFun et coupe l'interrupteur si les téléphones ne doivent plus proposer les réglages ;
    - coupe l'interrupteur : le bouton « Réglages » doit disparaître du téléphone d'essai en quelques secondes. Remets-le ensuite si tout fonctionne.
+4. **Titres de la communauté** : dans « Plus » → « KaraFun » → « Diagnostic KaraFun », cherche un titre connu de la communauté, puis « Ajouter à KaraFun (test) » sur une ligne « Communauté ». Dans la file de KaraFun, le titre doit être **la version de la communauté** (et non le titre du catalogue de même numéro) ; retire-le ensuite de KaraFun. La ligne sous l'interrupteur « titres de la communauté » dit « KaraFun a accepté… » ou affiche le refus : en cas de refus, laisse l'interrupteur coupé et note la version de KaraFun.
 
 ## Publier les pages clients sur Internet
 

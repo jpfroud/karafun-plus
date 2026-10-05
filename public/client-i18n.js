@@ -571,6 +571,16 @@ window.CLIENT_TRANSLATIONS = {
       'Seul l’auteur de ce duo peut régler ce titre.': 'Only the person who picked this duet can adjust it.',
       'Réglages non enregistrés': 'Settings not saved',
       'Réglages de « {title} » non enregistrés : {error}': 'Settings for “{title}” not saved: {error}',
+      // Titres de la communauté KaraFun
+      'Communauté': 'Community',
+      'Titres de la communauté': 'Community songs',
+      'Partagés par des membres de KaraFun, hors catalogue officiel.': 'Shared by KaraFun members, outside the official catalogue.',
+      'Titres partagés par des membres de KaraFun, hors catalogue officiel. Cherche un titre pour en trouver d’autres : ils portent le repère « Communauté ».': 'Songs shared by KaraFun members, outside the official catalogue. Search for a song to find more: they carry the “Community” tag.',
+      'Aucun titre de la communauté à montrer ici. Cherche un titre : ceux de la communauté apparaissent après le catalogue, avec le repère « Communauté ».': 'No community songs to show here. Search for a song: community songs appear after the catalogue, with the “Community” tag.',
+      'Titre de la communauté KaraFun : partagé par un membre, hors catalogue officiel. Sa qualité peut varier.': 'KaraFun community song: shared by a member, outside the official catalogue. Quality may vary.',
+      'Un titre de la communauté ne peut pas servir de Battle : choisis un titre du catalogue.': 'A community song can’t be used for a Battle: pick a song from the catalogue.',
+      '« {title} » (duo avec {name}) est retiré : KaraFun refuse les titres de la communauté envoyés par la file. Choisis un titre du catalogue.': '“{title}” (duet with {name}) was removed: KaraFun refuses community songs sent by the queue. Pick a song from the catalogue.',
+      '« {title} » est retiré de la liste de {person} : KaraFun refuse les titres de la communauté envoyés par la file. Choisis un titre du catalogue.': '“{title}” was removed from {person}’s list: KaraFun refuses community songs sent by the queue. Pick a song from the catalogue.',
     },
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
@@ -662,6 +672,10 @@ window.CLIENT_TRANSLATIONS = {
       'Réglage de titre inconnu.': 'Unknown song setting.',
       'La voix guide va de 0 (coupée) à 100.': 'Guide vocals go from 0 (off) to 100.',
       'Les chœurs vont de 0 (coupés) à 100.': 'Backing vocals go from 0 (off) to 100.',
+      'Le bar n’accepte pas les titres de la communauté ce soir.': 'The bar isn’t taking community songs tonight.',
+      'KaraFun refuse les titres de la communauté envoyés par la file : choisis un titre du catalogue.': 'KaraFun refuses community songs sent by the queue: pick a song from the catalogue.',
+      'Retrouve ce titre de la communauté dans la recherche avant de l’ajouter.': 'Find this community song in the search before adding it.',
+      'Un titre de la communauté ne peut pas servir de Battle : choisis un titre du catalogue.': 'A community song can’t be used for a Battle: pick a song from the catalogue.',
     },
     errorPatterns: [
       [/^(.+) a déjà (\d+) chanteurs? inscrits? pour (\d+) personnes?\. Si vous êtes plus nombreux, demande au bar d'ajuster\.$/,

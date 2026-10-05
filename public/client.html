@@ -183,6 +183,10 @@
   .client .catalog-list .song-row .grow { min-width: 0; }
   .client .catalog-list .song-row .song-title, .client .catalog-list .song-row .song-artist { display: block; }
   .client .catalog-list .song-row.picked { color: var(--ok); }
+  .client .catalog-list .catalog-subhead { border: 0; padding: 16px 2px 4px; }
+  .client .catalog-list .catalog-subhead b { display: block; }
+  .client .catalog-intro { margin: 10px 0 0; }
+  .client .community-note { margin: 0 0 10px; }
   .client .catalog-grid { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .client .category-tile { --h: 260; position: relative; width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 14px; overflow: hidden; cursor: pointer;
     display: flex; align-items: flex-end; padding: 10px; text-align: left; color: #fff; font-weight: 800; font-size: 15px;
@@ -355,6 +359,7 @@
         <button type="button" class="btn small" data-catalog="top" data-i18n>Top</button>
         <button type="button" class="btn small" data-catalog="news" data-i18n>Nouveautés</button>
         <button type="button" class="btn small" data-catalog="featured" data-i18n>À découvrir</button>
+        <button type="button" class="btn small" data-catalog="community" id="catalogCommunity" data-i18n>Communauté</button>
       </div>
       <div id="catalogContent" class="catalog-content" aria-live="polite"></div>
     </div>
@@ -519,6 +524,9 @@
   }
 
   const fullSong = song => `${song.title || t('Sans titre')}${song.artist ? ' — ' + song.artist : ''}`;
+  // Titre de la communauté KaraFun : partagé par un membre, hors catalogue officiel.
+  const communityBadge = song => song?.community ? ` <span class="badge community">${esc(t('Communauté'))}</span>` : '';
+  const communityOn = () => state?.community?.enabled !== false;
   const englishOrdinal = n => `${n}${[11, 12, 13].includes(n % 100) ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
   const position = n => lang === 'en' ? englishOrdinal(n) : n === 1 ? '1re' : `${n}e`;
   // Le groupe « En solo » porte son nom par défaut : il se traduit aussi.
@@ -565,7 +573,7 @@
   async function showSongNotice(song, nodeId, joinNodeId = null) {
     const ticket = ++noticeRequest;
     const params = new URLSearchParams({ table: tableId, access, songId: String(song.songId || ''),
-      title: song.title || '', artist: song.artist || '' });
+      title: song.title || '', artist: song.artist || '', ...(song.community ? { community: '1' } : {}) });
     try {
       const { notice } = await request(`/api/song/notice?${params}`);
       const node = $(nodeId);
@@ -929,6 +937,9 @@
       case 'inviteUnanswered': return t('{name} n’a pas répondu à temps : {person} chante « {title} » en solo.', values);
       case 'presenceRemoved': return tp(Number(p.skips) || 1, '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.',
         '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.', values);
+      case 'communityRefused': return p.name
+        ? t('« {title} » (duo avec {name}) est retiré : KaraFun refuse les titres de la communauté envoyés par la file. Choisis un titre du catalogue.', values)
+        : t('« {title} » est retiré de la liste de {person} : KaraFun refuse les titres de la communauté envoyés par la file. Choisis un titre du catalogue.', values);
       case 'closingPulled': return p.name
         ? t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {name}.', values)
         : t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.', values);
@@ -1228,6 +1239,9 @@
     renderClosing();
     renderBattlePick();
     updateTarget();
+    // Titres de la communauté coupés par le bar ou refusés par KaraFun : leur sélection disparaît.
+    $('catalogCommunity').hidden = !communityOn();
+    if (!communityOn() && catalogType === 'community' && catalogMode === 'highlights') showCategories('playlist');
     if (state.catalogAvailable === false && activeTab === 'catalog' && catalogMode === 'categories' && !categories.length) {
       showCatalogView(catalogMessage(() => t('Le catalogue est momentanément indisponible. Réessaie dans un instant.')));
     }
@@ -1485,7 +1499,7 @@
         : turn ? (eta(turn.eta) ? t('{pos} dans la file · vers {time}', { pos: position(turn.pos), time: eta(turn.eta) }) : t('{pos} dans la file', { pos: position(turn.pos) }))
         : sent.length ? t('Chanson prête dans la file') : ready.length ? t('Chansons choisies') : t('Pas encore de chanson');
       const songName = song => song.title || t('cette chanson');
-      const lyricsButton = song => song?.title ? `<button type="button" class="btn small ghost lyrics icon" data-lyrics-title="${esc(song.title)}" data-lyrics-artist="${esc(song.artist || '')}" data-lyrics-id="${esc(song.songId || '')}" aria-label="${esc(t('Paroles de {title}', { title: songName(song) }))}" title="${esc(t('Paroles'))}">♪</button>` : '';
+      const lyricsButton = song => song?.title ? `<button type="button" class="btn small ghost lyrics icon" data-lyrics-title="${esc(song.title)}" data-lyrics-artist="${esc(song.artist || '')}" data-lyrics-id="${esc(song.songId || '')}"${song.community ? ' data-lyrics-community="1"' : ''} aria-label="${esc(t('Paroles de {title}', { title: songName(song) }))}" title="${esc(t('Paroles'))}">♪</button>` : '';
       // Duo déjà dans KaraFun : l'invitée peut s'en retirer, l'auteur le chanter seul.
       const sentDuo = song => !song.duo ? '' : ` · ${esc(t('duo avec {name}', { name: song.duo.role === 'owner' ? song.duo.guestName : song.duo.ownerName }))}`;
       const sentLeave = song => !(canEdit && song.duo && song.canLeave && song.entryId) ? '' : song.duo.role === 'guest'
@@ -1494,7 +1508,7 @@
       // Réglages de titre : l'auteur, titre pas commencé (le serveur le dit), fonction ouverte par le bar.
       const sentTune = song => canEdit && song.canAdjust && song.entryId != null && tuneEnabled() ? tuneButton(song, person.id) : '';
       const sentMarkup = sent.length ? `<div class="song-mark">${esc(t('DÉJÀ PRÊTE DANS LA FILE'))}</div><ul class="song-stack">${sent.map(song =>
-        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}${sentDuo(song)}${tuneBadge(song)}</div></div><div class="song-actions">${lyricsButton(song)}${sentTune(song)}${sentLeave(song)}</div></li>`).join('')}</ul>` : '';
+        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}${sentDuo(song)}${communityBadge(song)}${tuneBadge(song)}</div></div><div class="song-actions">${lyricsButton(song)}${sentTune(song)}${sentLeave(song)}</div></li>`).join('')}</ul>` : '';
       const readyMarkup = ready.length ? `<div class="song-mark">${esc(individual ? tp(ready.length, 'MES CHANSONS · {n} CHANSON', 'MES CHANSONS · {n} CHANSONS') : tp(ready.length, 'SA LISTE · {n} CHANSON', 'SA LISTE · {n} CHANSONS'))}</div><ul class="song-stack">${ready.map((song, index) => {
         const duet = song.duet;
         const duetDetail = duet ? ` · ${esc(duet.state === 'pending'
@@ -1504,7 +1518,7 @@
         // Invitation sans réponse : le titre ne l'attend pas, il partira en solo.
         const soloHint = duet?.state === 'pending' ? `<div class="tiny muted invite-solo">${esc(individual ? t('Sans réponse avant ton tour, tu chanteras seul.')
           : t('Sans réponse avant son tour, {name} chantera seul.', { name: person.name }))}</div>` : '';
-        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${communityBadge(song)}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>${canEdit && ready.length > 1 ? `<p class="tiny muted order-hint">${esc(individual
         ? t('⇅ change l’ordre de tes titres sans perdre ta place dans la file.') : t('⇅ change l’ordre de ses titres sans perdre sa place dans la file.'))}</p>` : ''}`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
@@ -1784,7 +1798,7 @@
       const joinable = canAsk && !mine && item.source === 'helper' && item.kind !== 'duo' && !invitePending && item.id && entryId && list(item.ids).length === 1;
       const join = !joinable ? '' : requested.has(String(entryId)) ? `<span class="badge">${esc(t('Duo demandé'))}</span>`
         : `<button type="button" class="btn small" data-join-request="${esc(item.id)}" data-join-entry="${esc(entryId)}" data-join-name="${esc(item.name || '')}" data-join-title="${esc(item.title || item.song?.title || '')}" aria-label="${esc(t('Proposer un duo à {name} sur {title}', { name: item.name || t('cette personne'), title: item.title || t('ce titre') }))}">${esc(t('Duo ?'))}</button>${item === nextHelper ? `<span class="tiny muted">${esc(t('réponse avant l’envoi'))}</span>` : ''}`;
-      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}"><span class="num">${esc(item.pos || index + 1)}</span>${cover(item.song || item, 'sm')}<div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}${inviteTag}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div></li>`;
+      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}"><span class="num">${esc(item.pos || index + 1)}</span>${cover(item.song || item, 'sm')}<div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${communityBadge(item.song || item)}${source ? ` · ${esc(source)}` : ''}${inviteTag}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div></li>`;
     }).join('');
     const localWaiting = waiting.filter(person => ids.has(String(person.id)));
     $('waitingEmpty').hidden = localWaiting.length > 0;
@@ -1955,7 +1969,7 @@
     const lyricsSong = event.target.closest('[data-lyrics-title]');
     if (lyricsSong) {
       openLyrics({ songId: Number(lyricsSong.dataset.lyricsId) || null, title: lyricsSong.dataset.lyricsTitle,
-        artist: lyricsSong.dataset.lyricsArtist });
+        artist: lyricsSong.dataset.lyricsArtist, community: lyricsSong.dataset.lyricsCommunity === '1' });
       return;
     }
     const defer = event.target.closest('[data-defer-person]');
@@ -2159,9 +2173,9 @@
     let battleSearchTimer = null;
     const searchBattle = (term, number) => {
       resultsNode.textContent = t('Recherche…');
-      request(`/api/search?q=${encodeURIComponent(term)}`).then(data => {
+      request(`/api/search?q=${encodeURIComponent(term)}&kinds=catalog`).then(data => {
         if (number !== searchNumber || $('sheet').hidden || $('battleSearchResults') !== resultsNode) return;
-        found = list(data).slice(0, 20).filter(song => Number.isSafeInteger(Number(song?.songId)) &&
+        found = list(data).filter(song => !song?.community).slice(0, 20).filter(song => Number.isSafeInteger(Number(song?.songId)) &&
           Number(song.songId) > 0 && String(song.title || '').trim());
         resultsNode.innerHTML = found.length
           ? `<ul class="catalog-list">${found.map((song, index) => `<li><button type="button" data-battle-result="${index}"><b>${esc(song.title)}</b><br><span class="tiny muted">${esc(song.artist || '')}</span></button></li>`).join('')}</ul>`
@@ -2476,6 +2490,22 @@
     renderSearchClear();
     currentCategory = null;
     const number = ++catalogRequest;
+    if (type === 'community') {
+      catalogMode = 'highlights';
+      showCatalogView(catalogMessage(() => t('Chargement des chansons…')));
+      try {
+        // Derniers titres partagés, sinon ceux que KaraFun met en avant.
+        let data = list(await request('/api/catalog/highlights?type=news&kind=community'));
+        if (!data.length && number === catalogRequest) data = list(await request('/api/catalog/highlights?type=featured&kind=community'));
+        if (number !== catalogRequest) return;
+        songs = data;
+        totalSongs = songs.length;
+        renderSongs(() => t('Communauté'), false, () => songs.length
+          ? t('Titres partagés par des membres de KaraFun, hors catalogue officiel. Cherche un titre pour en trouver d’autres : ils portent le repère « Communauté ».')
+          : t('Aucun titre de la communauté à montrer ici. Cherche un titre : ceux de la communauté apparaissent après le catalogue, avec le repère « Communauté ».'));
+      } catch (error) { if (number === catalogRequest) catalogError(error); }
+      return;
+    }
     if (type === 'news' || type === 'featured') {
       catalogMode = 'highlights';
       showCatalogView(catalogMessage(() => t('Chargement des chansons…')));
@@ -2520,14 +2550,20 @@
     } catch (error) { if (number === catalogRequest) catalogError(error); }
   }
 
-  // `heading` est une fonction pour que le titre suive la langue.
-  function renderSongs(heading, back = false) {
+  // `heading` et `intro` sont des fonctions pour que le texte suive la langue.
+  // Les titres de la communauté (après ceux du catalogue) portent un repère ;
+  // dans une liste mêlée, un intertitre les annonce.
+  function renderSongs(heading, back = false, intro = null) {
+    const mixed = songs.some(song => !song.community) && songs.some(song => song.community);
+    const firstCommunity = songs.findIndex(song => song.community);
     showCatalogView(() => `<div class="catalog-tools">${back ? `<button type="button" class="btn small" data-back>${esc(t('← Sélections'))}</button>` : ''}<b class="grow">${esc(heading())}</b></div>`
+      + (intro ? `<p class="small muted catalog-intro">${esc(intro())}</p>` : '')
       + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => {
         // Choix des titres d'une Battle : ceux déjà retenus sont marqués.
-        const picked = battlePickMode && battleDraft.some(item => Number(item.songId) === Number(song.songId));
-        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(song.artist || '')}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
-      }).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
+        const picked = battlePickMode && battleDraft.some(item => Number(item.songId) === Number(song.songId) && !item.community && !song.community);
+        const subhead = mixed && index === firstCommunity ? `<li class="catalog-subhead"><b>${esc(t('Titres de la communauté'))}</b><span class="tiny muted">${esc(t('Partagés par des membres de KaraFun, hors catalogue officiel.'))}</span></li>` : '';
+        return `${subhead}<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(song.artist || '')}${communityBadge(song)}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
+      }).join('')}</ul>` : intro ? '' : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
       + (catalogMode === 'songs' && songs.length < totalSongs ? `<button type="button" class="btn wide" data-more style="margin-top:12px">${esc(t('Voir plus'))}</button>` : ''));
   }
 
@@ -2666,7 +2702,7 @@
     $('lyricsBack')?.addEventListener('click', back);
     try {
       const params = new URLSearchParams({ table: tableId, access, songId: String(song.songId || ''),
-        title: song.title || '', artist: song.artist || '' });
+        title: song.title || '', artist: song.artist || '', ...(song.community ? { community: '1' } : {}) });
       const data = await request(`/api/lyrics?${params}`);
       if (ticket !== lyricsRequest || !$('lyricsBody') || $('sheet').hidden) return;
       const lines = Array.isArray(data.lines) ? data.lines : null;
@@ -2709,9 +2745,14 @@
     }
   }
 
+  // Titre envoyé au serveur ; un titre de la communauté garde son repère.
+  const songPayload = song => ({ songId: song.songId, title: song.title, artist: song.artist, duration: song.duration,
+    ...(song.community ? { community: true } : {}) });
+
   function chooseSong(song) {
     if (!song || !song.songId) return;
     // Choix des titres d'une Battle depuis le catalogue.
+    if (battlePickMode && song.community) return toast(t('Un titre de la communauté ne peut pas servir de Battle : choisis un titre du catalogue.'), true);
     if (battlePickMode) {
       if (addToBattleDraft(song)) {
         toast(t('« {title} » ajouté à la Battle.', { title: song.title }));
@@ -2731,13 +2772,14 @@
     pendingSong = null;
     const selected = people.find(person => String(person.id) === targetPersonId) || people[0];
     if (duetMode) return openDuoPartner(song, selected.id);
-    openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(song.artist || '')}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+    openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(song.artist || '')}${communityBadge(song)}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <div style="height:12px"></div>
+      ${song.community ? `<p class="tiny muted community-note">${esc(t('Titre de la communauté KaraFun : partagé par un membre, hors catalogue officiel. Sa qualité peut varier.'))}</p>` : ''}
       <p id="songNotice" class="notice warn small song-notice" role="status" hidden></p>
       <div id="songJoinOffer" class="sheet-actions" hidden></div>
       ${people.length === 1 ? `<p class="small muted">${esc(t('Pour {name}', { name: selected.name }))}</p><input type="hidden" id="songPerson" value="${esc(selected.id)}">`
         : `<label class="field" for="songPerson">${esc(t('Chanteur'))}</label><select id="songPerson">${people.map(person => `<option value="${esc(person.id)}" ${String(person.id) === String(selected.id) ? 'selected' : ''}>${esc(person.name)}</option>`).join('')}</select>`}
-      <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${esc(state?.table?.individual ? t('Ajouter à ma liste') : t('Ajouter à sa liste'))}</button><button type="button" class="btn" id="replaceSong">${esc(t('Remplacer ma prochaine chanson'))}</button><button type="button" class="btn" id="duetSongChoice">${esc(t('Chanter en duo'))}</button><button type="button" class="btn ghost" id="songLyrics">${esc(t('Voir les paroles'))}</button>${canProposeBattle() ? `<button type="button" class="btn ghost" id="songBattle">${esc(t('Proposer en Battle'))}</button>` : ''}</div>
+      <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${esc(state?.table?.individual ? t('Ajouter à ma liste') : t('Ajouter à sa liste'))}</button><button type="button" class="btn" id="replaceSong">${esc(t('Remplacer ma prochaine chanson'))}</button><button type="button" class="btn" id="duetSongChoice">${esc(t('Chanter en duo'))}</button><button type="button" class="btn ghost" id="songLyrics">${esc(t('Voir les paroles'))}</button>${canProposeBattle() && !song.community ? `<button type="button" class="btn ghost" id="songBattle">${esc(t('Proposer en Battle'))}</button>` : ''}</div>
       <p class="tiny muted" style="margin:10px 0 0">${esc(t('Une chanson déjà prête dans la file ne peut plus être remplacée ici.'))}</p>`);
     $('songLyrics').addEventListener('click', () => openLyrics(song, () => chooseSong(song)));
     $('songBattle')?.addEventListener('click', () => { if (addToBattleDraft(song)) openBattleProposal(); });
@@ -2756,7 +2798,7 @@
       $(id).addEventListener('click', () => {
         const personId = $('songPerson').value;
         perform($(id), async () => {
-          const result = await post('/api/table/song', { personId, song: { songId: song.songId, title: song.title, artist: song.artist, duration: song.duration }, mode });
+          const result = await post('/api/table/song', { personId, song: songPayload(song), mode });
           closeSheet();
           targetPersonId = personId;
           await refresh();
@@ -2812,8 +2854,7 @@
       perform($('sendDuo'), async () => {
         const partnerId = $('duoPartner').value;
         const partner = partners.find(p => String(p.id) === String(partnerId));
-        const result = await post('/api/table/duet', { personId, partnerId,
-          song: { songId: song.songId, title: song.title, artist: song.artist, duration: song.duration } });
+        const result = await post('/api/table/duet', { personId, partnerId, song: songPayload(song) });
         closeSheet();
         await refresh();
         setTab('table');

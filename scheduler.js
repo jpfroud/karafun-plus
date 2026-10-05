@@ -576,9 +576,11 @@ class Scheduler {
     if (!song || !song.songId) throw new Error('Chanson invalide.');
     if (!['append', 'replace'].includes(mode)) throw new Error('Action sur la liste inconnue.');
     // Entrée du titre. Champ facultatif ajouté ensuite : `settings` (voir setSongSettings).
-    const next = { entryId: id(), songId: Number(song.songId), title: String(song.title || '').slice(0, 80), artist: String(song.artist || '').slice(0, 60), img: song.img || null, duration: song.duration || null };
+    // `community` : titre de la communauté KaraFun, dont le numéro n'est pas celui du catalogue.
+    const next = { entryId: id(), songId: Number(song.songId), title: String(song.title || '').slice(0, 80), artist: String(song.artist || '').slice(0, 60), img: song.img || null, duration: song.duration || null,
+      ...(song.community === true ? { community: true } : {}) };
     if (!Number.isSafeInteger(next.songId) || next.songId <= 0 || !next.title) throw new Error('Chanson invalide.');
-    if (mode === 'append' && this.songsOf(p).some(s => s.songId === next.songId)) {
+    if (mode === 'append' && this.songsOf(p).some(s => s.songId === next.songId && !!s.community === !!next.community)) {
       const e = new Error('Cette chanson est déjà dans la liste de ce chanteur.'); e.code = 'ALREADY_LISTED'; throw e;
     }
     if (mode === 'append' && this.songsOf(p).length >= 20) {
@@ -615,6 +617,34 @@ class Scheduler {
   }
 
   // `by` : « self », ou « presence-max » (« Je suis là » manqué trop souvent).
+  // KaraFun refuse les titres de la communauté : chacun quitte la liste de
+  // son auteur, qui est prévenu, comme l'invitée d'un duo (sans le message
+  // « a annulé le duo », faux ici). Rend les titres retirés.
+  dropCommunitySongs() {
+    const dropped = [];
+    for (const p of this.people.values()) {
+      const gone = this.songsOf(p).filter(song => song.community);
+      if (!gone.length) continue;
+      const kept = this.songsOf(p).filter(song => !song.community);
+      p.song = kept.shift() || null;
+      p.backlog = kept;
+      this._songsGone(p, gone, pid => !gone.some(song => song.duet?.partnerId === pid));
+      for (const song of gone) {
+        this.notify(p.id, 'communityRefused', { title: song.title });
+        if (song.duet?.partnerId) this.notify(song.duet.partnerId, 'communityRefused', { title: song.title, name: p.name });
+        this._event('song.removed', { personId: p.id, entryId: song.entryId, by: 'community-refused' });
+        dropped.push({ personId: p.id, name: p.name, title: song.title });
+      }
+      if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
+    }
+    if (dropped.length) {
+      this.invalidateManualOrder();
+      this._refreshDuetViews();
+      this.version++;
+    }
+    return dropped;
+  }
+
   removeSong(p, entryId, by = 'self') {
     const key = String(entryId || '');
     if (p.song && p.song.entryId === key) {
@@ -2908,7 +2938,7 @@ class Scheduler {
     if (last && queueId !== null && last.queueId === queueId) return null;
     const songId = Number(item.songId);
     const entry = { at, queueId, songId: Number.isSafeInteger(songId) && songId > 0 ? songId : null,
-      title, artist: String(item.artist || '').slice(0, 80) };
+      title, artist: String(item.artist || '').slice(0, 80), ...(item.community ? { community: true } : {}) };
     this.playedSongs.push(entry);
     if (this.playedSongs.length > PLAYED_LIMIT) this.playedSongs.splice(0, this.playedSongs.length - PLAYED_LIMIT);
     return entry;

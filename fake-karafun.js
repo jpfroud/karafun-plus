@@ -9,6 +9,9 @@
  * ses pistes vocales (4 chœurs, 5 et 6 voix guides). Avant la lecture, le
  * titre est annoncé sans être chargé, comme l'état 1 de KaraFun.
  * Les chansons « durent » SONG_SECONDS secondes.
+ * Titres de la communauté : recherche avec types=community et ajout marqué
+ * `community`. Leurs numéros recoupent exprès ceux du catalogue, comme chez
+ * KaraFun où les deux numérotations sont distinctes.
  */
 const http = require('http');
 
@@ -30,6 +33,11 @@ const CATALOG = [
   ['Voyage, voyage', 'Desireless'], ['Ella, elle l\'a', 'France Gall'], ['Résiste', 'France Gall'],
   ['Sympathique', 'Pink Martini'], ['Nuit de folie', 'Début de Soirée'],
 ].map(([title, artist], i) => ({ songId: 70000 + i, title, artist, img: null, duration: 200 }));
+
+const COMMUNITY = [
+  ['Bohemian Rhapsody (version acoustique)', 'Queen'], ['Le Petit Bonhomme en mousse', 'Patrick Sébastien'],
+  ['Chanson du bar (version maison)', 'Les Habitués'], ['Toxic (piano-voix)', 'Britney Spears'],
+].map(([title, artist], i) => ({ songId: 70000 + i, title, artist, img: null, duration: 180, community: true }));
 
 // Pistes vocales d'un titre, dans les proportions vues sur la file du bar :
 // chœurs et guide, guide seul, duo avec chœurs, duo sans chœurs.
@@ -53,7 +61,9 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     const m = u.pathname.match(/^\/(\d+)\/?$/);
     if (m && u.searchParams.get('type') === 'search') {
       const q = String(u.searchParams.get('q') || '').toLowerCase();
-      const out = CATALOG.filter(s => (s.title + ' ' + s.artist).toLowerCase().includes(q)).slice(0, 20);
+      const list = String(u.searchParams.get('types') || '').split(',').includes('community') ? COMMUNITY : CATALOG;
+      const out = list.filter(s => (s.title + ' ' + s.artist).toLowerCase().includes(q)).slice(0, 20)
+        .map(({ community, ...song }) => song); // sans repère : seul `types` le dit, comme pour la vraie recherche
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(out));
     }
@@ -72,7 +82,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
   const statusPayload = () => {
     const cur = state === 'playing' && queue[0] ? queue[0] : null;
     return { state, songPlaying: cur ? { title: cur.title, artist: cur.artist, singer: cur.singer, songId: cur.songId, queueId: cur.queueId,
-      songTracks: cur.songTracks } : null, position: cur ? Math.round((Date.now() - startedAt) / 1000) : 0,
+      songTracks: cur.songTracks, ...(cur.community ? { community: true } : {}) } : null, position: cur ? Math.round((Date.now() - startedAt) / 1000) : 0,
     pitch: cur ? live.pitch : 0, tempo: cur ? live.tempo : 0,
     tracks: cur ? cur.songTracks.map(type => ({ volume: live.volumes[type], track: { type } })) : [] };
   };
@@ -91,7 +101,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     // annoncé sans être chargé, pistes vides et réglages d'origine.
     const next = queue[0];
     io.emit('status', { state: 'idle', songPlaying: { title: next.title, artist: next.artist, singer: next.singer, songId: next.songId,
-      queueId: next.queueId, songTracks: next.songTracks }, position: 0, pitch: 0, tempo: 0, tracks: [] });
+      queueId: next.queueId, songTracks: next.songTracks, ...(next.community ? { community: true } : {}) }, position: 0, pitch: 0, tempo: 0, tracks: [] });
     state = 'playing';
     startedAt = Date.now();
     queue[0].status = 'playing';
@@ -115,11 +125,13 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
       socket.emit('queue', withIds());
     });
     socket.on('queueAdd', (p) => {
-      const song = CATALOG.find(s => s.songId === Number(p && p.songId)) || { songId: Number(p && p.songId), title: `Chanson ${p && p.songId}`, artist: '?' };
+      const list = p?.community ? COMMUNITY : CATALOG;
+      const song = list.find(s => s.songId === Number(p && p.songId)) || { songId: Number(p && p.songId), title: `Chanson ${p && p.songId}`, artist: '?' };
       const singer = String((p && p.singer) || '');
       const options = p?.mod ? { mod: p.mod } : p?.options ? { singer, ...p.options } : null;
       const item = { queueId: qid++, songId: song.songId, title: song.title, artist: song.artist,
-        singer, status: 'ready', songTracks: songTracksFor(song.songId), ...(options ? { options } : {}) };
+        singer, status: 'ready', songTracks: songTracksFor(song.songId), ...(options ? { options } : {}),
+        ...(p?.community ? { community: true } : {}) };
       const pos = Math.max(0, Math.min(queue.length, Number(p && p.pos) || queue.length));
       queue.splice(Math.max(pos, state === 'playing' ? 1 : 0), 0, item);
       if (state !== 'playing' && autoplay) playFirst(); else broadcast();
@@ -168,7 +180,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
   })));
 }
 
-module.exports = { startFakeKaraFun, CATALOG };
+module.exports = { startFakeKaraFun, CATALOG, COMMUNITY };
 
 if (require.main === module) {
   startFakeKaraFun({ log: console.log }).then(f => console.log(`Faux KaraFun sur ${f.base}, code ${f.code}`));

@@ -2,17 +2,40 @@
 const CATEGORY_TYPES = new Set(['playlist', 'styles', 'top']);
 const HIGHLIGHT_TYPES = new Set(['news', 'featured']);
 
+// Titres de la communauté KaraFun : partagés par ses membres, hors du
+// catalogue officiel. La télécommande de KaraFun choisit les types de titres
+// listés par le paramètre `types` (« karaoke,battle » relevé le 19 septembre),
+// d'après les types permis (`shownTypes` : karaoke, community, quiz, battle).
+// Un résultat peut porter son type, qui prime alors sur la demande : un
+// identifiant { type, id } comme le SongIdentifier du SDK de la télécommande
+// (1 catalogue, 2 communauté), ou un nom (« community », « karaoke »). Un
+// nombre seul dans `type` ne dit rien de sûr : il est ignoré.
+function songKind(item) {
+  if (item?.id && typeof item.id === 'object') {
+    const type = Number(item.id.type);
+    return type === 2 ? 'community' : type === 1 ? 'catalog' : null;
+  }
+  for (const raw of [item?.songType, item?.type, item?.kind]) {
+    const text = typeof raw === 'string' ? raw.toLowerCase() : '';
+    if (text.startsWith('communit')) return 'community';
+    if (text === 'karaoke' || text === 'catalog') return 'catalog';
+  }
+  return null;
+}
+
 function positiveId(value) {
   if (!/^\d{1,10}$/.test(String(value ?? ''))) return null;
   const n = Number(value);
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
-function normalizeSong(item) {
+// `community` : liste demandée avec les seuls titres de la communauté.
+function normalizeSong(item, { community = false } = {}) {
   if (!item || typeof item !== 'object') return null;
-  const songId = positiveId(item.songId ?? item.id);
+  const songId = positiveId(item.songId ?? (item.id && typeof item.id === 'object' ? item.id.id : item.id));
   const title = String(item.title || '').trim();
   if (!songId || !title) return null;
+  const kind = songKind(item) || (community ? 'community' : 'catalog');
   return {
     songId,
     title,
@@ -21,6 +44,7 @@ function normalizeSong(item) {
     img: typeof item.img === 'string' ? item.img : null,
     year: item.year != null && Number.isInteger(Number(item.year)) ? Number(item.year) : null,
     isExplicit: item.isExplicit === true,
+    ...(kind === 'community' ? { community: true } : {}),
   };
 }
 
@@ -131,10 +155,10 @@ class Catalog {
     return data.map((item) => normalizeCategory(item, type)).filter(Boolean);
   }
 
-  async highlights(type) {
+  async highlights(type, { community = false } = {}) {
     if (!HIGHLIGHT_TYPES.has(type)) throw new Error('Sélection inconnue');
-    const data = await this._get({ type, types: 'karaoke' }, Array.isArray, 'Réponse de sélection invalide');
-    return data.map(normalizeSong).filter(Boolean);
+    const data = await this._get({ type, types: community ? 'community' : 'karaoke' }, Array.isArray, 'Réponse de sélection invalide');
+    return data.map(item => normalizeSong(item, { community })).filter(Boolean);
   }
 
   async songs(filter, offset = 0) {
@@ -142,8 +166,8 @@ class Catalog {
         !positiveId(filter.slice(3))) throw new Error('Filtre de catalogue invalide');
     if (!Number.isInteger(offset) || offset < 0 || offset > 100000) throw new Error('Offset invalide');
     const data = await this._get({ type: 'song_list', filter, offset, filters: 'karaoke' }, validSongPage, 'Réponse de chansons invalide');
-    return { songs: data.songs.map(normalizeSong).filter(Boolean), total: Number(data.total) };
+    return { songs: data.songs.map(item => normalizeSong(item)).filter(Boolean), total: Number(data.total) };
   }
 }
 
-module.exports = { Catalog, normalizeSong, normalizeCategory };
+module.exports = { Catalog, normalizeSong, normalizeCategory, songKind };

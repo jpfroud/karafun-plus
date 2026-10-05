@@ -26,7 +26,7 @@ function harness() {
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, tracked, handlers, access, chooseFor, publicState, rememberBattleSongs, coverUrl,
+    globalThis.fixture = { sched, tracked, handlers, access, chooseFor, publicState, rememberCatalogSongs, coverUrl,
       setPending: p => { pending = p; } };
   `, context, { filename: 'server.js' });
   return context.fixture;
@@ -42,7 +42,7 @@ test('vignettes : adresses https du catalogue seulement', () => {
 
 test('vignettes : un titre choisi garde l’image du catalogue, jamais celle envoyée par le téléphone', async () => {
   const f = harness();
-  const results = f.rememberBattleSongs([
+  const results = f.rememberCatalogSongs([
     { songId: 501, title: 'Avec image', artist: 'A', img: 'https://cdn.example/501.jpg' },
     { songId: 502, title: 'Image locale', artist: 'B', img: 'http://192.168.1.10/espion.png' },
   ]);
@@ -68,7 +68,7 @@ test('vignettes : un titre choisi garde l’image du catalogue, jamais celle env
 
 test('vignettes : titre déjà parti vers KaraFun, la vignette reste dans la liste du chanteur', () => {
   const f = harness();
-  f.rememberBattleSongs([{ songId: 601, title: 'Envoyé', artist: 'A', img: 'https://cdn.example/601.jpg' },
+  f.rememberCatalogSongs([{ songId: 601, title: 'Envoyé', artist: 'A', img: 'https://cdn.example/601.jpg' },
     { songId: 602, title: 'En route', artist: 'B', img: 'https://cdn.example/602.jpg' }]);
   const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
   f.chooseFor(alice, { songId: 601, title: 'Envoyé', artist: 'A' }, 'append');

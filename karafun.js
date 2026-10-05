@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const io = require('socket.io-client');
 const { KcsTransport } = require('./kcs-transport');
+const { songKind } = require('./catalog');
 const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, liveFromStatus, TRACK,
   DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
 
@@ -27,13 +28,21 @@ function readSettings(html) {
   throw new Error('Paramètres de télécommande incomplets.');
 }
 
+// Type d'un titre (SongIdentifier du SDK de la télécommande, webkcs) :
+// 1 catalogue KaraFun, 2 communauté (titres partagés par ses membres). Les
+// deux numérotations sont distinctes : un même numéro peut désigner deux
+// chansons différentes.
+const SONG_TYPE = Object.freeze({ CATALOG: 1, COMMUNITY: 2 });
+
 // `songTracks` : pistes vocales du titre (4 chœurs, 5 et 6 voix guides),
 // seulement si KaraFun les donne. `options` : réglages du titre dans KaraFun.
+// `community` : titre de la communauté.
 function normalizeKcsItem(item) {
   const song = item.song || {}, quiz = item.quiz || {};
   const tracks = songTracksOf(song);
   return {
     queueId: String(item.id), id: String(item.id), songId: song.id && song.id.id,
+    ...(song.id && Number(song.id.type) === SONG_TYPE.COMMUNITY ? { community: true } : {}),
     title: song.title || quiz.title || '', artist: song.artist || '',
     singer: song.options && song.options.singer || '', options: song.options || {},
     ...(tracks ? { songTracks: tracks } : {}),
@@ -123,6 +132,8 @@ function maskCode(code) {
   const digits = String(code || '').replace(/\D/g, '');
   return digits.length > 2 ? `••••${digits.slice(-2)}` : '••••';
 }
+
+const COMMUNITY_OLD_REMOTE = 'Cette ancienne télécommande KaraFun ne connaît pas les titres de la communauté.';
 
 const IMPORTANT_PERMISSIONS = [
   ['addToQueue', p => p?.addToQueue !== false, 'ajout de titres'],
@@ -318,6 +329,14 @@ class KaraFunBridge extends EventEmitter {
     this.settingsNotices = {}; // un avis par fonction, le plus récent en dernier
     this._settingsProbe = {};  // dernière valeur envoyée en direct, à confirmer par l'état de KaraFun
     this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
+    // Titres de la communauté : 'unknown' tant que KaraFun n'a ni accepté ni
+    // refusé d'ajout, puis 'ok' ou 'refused'. Gardé d'une reconnexion à
+    // l'autre (un refus retire des titres aux chanteurs) ; repart de
+    // 'unknown' si KaraFun change la permission « community » ou si le bar
+    // réessaie (resetCommunitySupport).
+    this.communitySupport = 'unknown';
+    this.communityNotice = null;
+    this._communityAdds = new Map(); // identifiant KCS → ajout d'un titre de la communauté sans réponse
     this.observedDefaults = {}; // volumes des voix d'un titre chargé sans réglage
     this._observedFor = null;
     this.nameConflictSince = null;
@@ -927,6 +946,7 @@ class KaraFunBridge extends EventEmitter {
   _openKcs(url, active, { kept = false } = {}) {
     const socket = new KcsTransport(url);
     this._optionAdds.clear(); // identifiants propres à chaque connexion
+    this._communityAdds.clear();
     this.protocol = 'kcs';
     this.socket = socket;
     this._setPhase('opening');
@@ -999,7 +1019,10 @@ class KaraFunBridge extends EventEmitter {
           current: status.current ? normalizeKcsItem(status.current) : null,
         });
       } else if (m.type === 'remote.PermissionsUpdateEvent') {
+        const before = this.raw.permissions?.shownTypes?.community;
         this.raw.permissions = p.permissions;
+        // Le bar a changé dans KaraFun la permission des titres de la communauté : nouvel essai.
+        if (before !== undefined && before !== p.permissions?.shownTypes?.community) this.resetCommunitySupport();
         const v = p.permissions || {};
         this._accept('permissions', { ...v, managePlayer: !!v.managePlayback, manageKaraoke: !!v.manageVolumes, uploadPicture: !!v.sendPhotos });
       } else if (m.type === 'remote.PreferencesUpdateEvent') {
@@ -1038,20 +1061,24 @@ class KaraFunBridge extends EventEmitter {
           return;
         }
         // Réglage de titre refusé : traité avec sa demande (événement 'reply').
-        if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id))) return;
+        if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id) ||
+          this._communityAdds.has(m.id))) return;
         this.lastError = `Commande KaraFun refusée : ${p.message || p.type || 'erreur inconnue'}`;
         this.emit('change');
       }
     });
     socket.on('reply', (type, message) => {
       if (!active()) return;
-      if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], message);
-      else if (this._optionAdds.has(message.id)) {
+      if (SETTING_REQUESTS[type]) { this._settingsAnswer(SETTING_REQUESTS[type], message); return; }
+      const community = this._communityAdds.get(message.id);
+      this._communityAdds.delete(message.id);
+      if (this._optionAdds.has(message.id)) {
         const add = this._optionAdds.get(message.id);
         this._optionAdds.delete(message.id);
         this._settingsAnswer('addOptions', message);
         if (message.type === 'Error') this.emit('add-options-refused', add);
       }
+      if (community) this._communityAnswer(community, message);
     });
     // Échec avant que KaraFun accepte l'URL. Fermeture 4403/4401/4404/4210
     // ou autre 44xx : KaraFun refuse l'URL (KaraFun fermé, session finie,
@@ -1079,8 +1106,10 @@ class KaraFunBridge extends EventEmitter {
       this._retry(reason, { mode: 'page' });
     };
     socket.on('stale', message => lost(message, 'KaraFun ne répond plus'));
-    socket.on('request-timeout', type => {
+    socket.on('request-timeout', (type, id) => {
       if (!active()) return;
+      this._communityAdds.delete(id); // sans réponse : ni accord ni refus
+
       if (!SOFT_REQUESTS.has(type)) {
         lost(`KaraFun ne confirme plus les commandes (${type}) ; reconnexion en cours.`, 'Commande KaraFun non confirmée');
         return;
@@ -1247,7 +1276,7 @@ class KaraFunBridge extends EventEmitter {
     if (!this.socket || !this.connected || !this.ready) throw new Error('Pas connecté à KaraFun');
     if (this.protocol === 'kcs') {
       const messages = {
-        queueAdd: ['remote.AddToQueueRequest', payload && { song: { type: 1, id: payload.songId },
+        queueAdd: ['remote.AddToQueueRequest', payload && { song: { type: payload.community ? SONG_TYPE.COMMUNITY : SONG_TYPE.CATALOG, id: payload.songId },
           options: payload.mod ? { mod: payload.mod } : payload.options || { singer: payload.singer }, position: payload.pos }],
         queueRemove: ['remote.RemoveFromQueueRequest', { queueItemId: String(payload) }],
         queueMove: ['remote.MoveInQueueRequest', payload && { queueItemId: String(payload.queueId), to: payload.to }],
@@ -1269,10 +1298,12 @@ class KaraFunBridge extends EventEmitter {
 
   // `settings` : réglages du titre (song-settings.js), ajoutés aux options
   // d'ajout ; `duo` : la voix guide B suit la voix guide A ; `tracksAvailable` :
-  // pistes vocales du titre quand on les connaît. Rend les réglages
-  // effectivement envoyés (bornés), ou null.
-  add(songId, singer, pos = 99999, settings = null, { duo = false, tracksAvailable = null } = {}) {
-    const payload = { songId: Number(songId), pos, singer: String(singer || '') };
+  // pistes vocales du titre quand on les connaît ; `community` : titre de la
+  // communauté (type 2). Rend les réglages effectivement envoyés (bornés), ou null.
+  add(songId, singer, pos = 99999, settings = null, { duo = false, tracksAvailable = null, community = false } = {}) {
+    // Une ancienne télécommande ajouterait le titre du catalogue de même numéro.
+    if (community && this.communityChannel() === false) throw new Error(COMMUNITY_OLD_REMOTE);
+    const payload = { songId: Number(songId), pos, singer: String(singer || ''), ...(community ? { community: true } : {}) };
     const allowed = settings && this.settingsSupport.addOptions !== 'refused' && this._settingsChannel();
     const built = allowed ? addOptions({ singer: payload.singer, settings, ranges: this.songSettingsRanges(), duo, tracksAvailable })
       : { sent: null };
@@ -1282,8 +1313,54 @@ class KaraFunBridge extends EventEmitter {
       payload.options = this.protocol === 'kcs' ? built.options : rest;
     }
     const id = this._emit('queueAdd', payload);
-    if (built.sent && id !== undefined) this._optionAdds.set(id, { songId: payload.songId, singer: payload.singer });
+    if (built.sent && id !== undefined) this._optionAdds.set(id, { songId: payload.songId, singer: payload.singer, ...(community ? { community } : {}) });
+    if (community && id !== undefined) this._communityAdds.set(id, { songId: payload.songId, singer: payload.singer, withOptions: !!built.sent });
     return built.sent;
+  }
+
+  // ---------------------------------------------------------------- titres de la communauté
+  // KCS, ou faux KaraFun local : true ; ancienne télécommande d'un vrai
+  // KaraFun : false ; pas encore connecté : null.
+  communityChannel() { return this.protocol ? this.protocol === 'kcs' || this._localFake() : null; }
+
+  // Recherche des titres de la communauté utile : canal possible et KaraFun
+  // ne les a pas refusés.
+  communityUsable() { return this.communityChannel() !== false && this.communitySupport !== 'refused'; }
+
+  resetCommunitySupport() {
+    this.communitySupport = 'unknown';
+    this.communityNotice = null;
+    this.emit('change');
+  }
+
+  // Réponse de KaraFun à l'ajout d'un titre de la communauté. Une Error à un
+  // ajout qui portait des réglages est d'abord un refus des réglages : le
+  // titre repart sans eux, et c'est ce second envoi qui décide. « Queue is
+  // full » ou des droits d'ajout retirés ne disent rien de la communauté.
+  _communityAnswer(add, message) {
+    if (message?.type !== 'Error') {
+      if (this.communitySupport !== 'ok') { this.communitySupport = 'ok'; this.communityNotice = null; this.emit('change'); }
+      return;
+    }
+    const text = String(message.payload?.message || message.payload?.type || 'erreur inconnue');
+    if (add.withOptions || /full|plein/i.test(text) || this.permissions?.addToQueue === false) {
+      this.lastError = `Commande KaraFun refusée : ${text}`;
+      this.emit('change');
+      return;
+    }
+    this.communitySupport = 'refused';
+    this.communityNotice = `KaraFun refuse les titres de la communauté envoyés par ${this.username} (${text}).`;
+    this._record('info', 'communaute-refusee', { songId: add.songId, message: text });
+    this.emit('community-add-refused', { songId: add.songId, singer: add.singer, message: text });
+    this.emit('change');
+  }
+
+  // Pour la page du bar : canal, permission « community » annoncée par
+  // KaraFun (null : non précisée) et réponse de KaraFun aux ajouts.
+  communityState() {
+    const shown = this.raw.permissions?.shownTypes?.community;
+    return { channel: this.communityChannel(), permitted: typeof shown === 'boolean' ? shown : null,
+      support: this.communitySupport, notice: this.communityNotice };
   }
   addBattle(songId, pos = 0) {
     const id = Number(songId);
@@ -1400,18 +1477,22 @@ class KaraFunBridge extends EventEmitter {
   play() { this._emit('play', null); }
   next() { this._emit('next', null); }
 
-  async search(q) {
+  // `community` : seulement les titres de la communauté (types=community,
+  // comme la télécommande de KaraFun quand elle les montre).
+  async search(q, { community = false } = {}) {
     if (!this.code) throw new Error('Pas de code KaraFun');
     let lastErr;
     for (let k = 0; k < this.bases.length; k++) {
       const base = this.bases[(this.baseIdx + k) % this.bases.length];
-      const u = `${base}/${this.code}/?type=search&q=${encodeURIComponent(q)}&types=karaoke`;
+      const u = `${base}/${this.code}/?type=search&q=${encodeURIComponent(q)}&types=${community ? 'community' : 'karaoke'}`;
       try {
         const res = await fetch(u, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, signal: AbortSignal.timeout(8000) });
         let data;
         try { data = JSON.parse(await res.text()); } catch { throw new Error(`Réponse inattendue (${res.status})`); }
-        if (!this._searchLogged) { this._searchLogged = true; this._record('info', 'search-sample', Array.isArray(data) ? data.slice(0, 2) : data); }
-        return normalizeResults(data);
+        // Une réponse de chaque sorte au journal : la forme des titres de la communauté reste à vérifier au bar.
+        const logged = community ? '_communitySearchLogged' : '_searchLogged';
+        if (!this[logged]) { this[logged] = true; this._record('info', community ? 'community-search-sample' : 'search-sample', Array.isArray(data) ? data.slice(0, 2) : data); }
+        return normalizeResults(data, { community });
       } catch (e) { lastErr = e; }
     }
     throw lastErr || new Error('Recherche impossible');
@@ -1430,17 +1511,24 @@ class KaraFunBridge extends EventEmitter {
   }
 }
 
-function normalizeResults(data) {
+// `community` : résultats demandés avec types=community. Un résultat qui
+// porte son type le garde (songKind).
+function normalizeResults(data, { community = false } = {}) {
   const arr = Array.isArray(data) ? data : (data && (data.songs || data.results || data.items || data.data)) || [];
   const str = v => (typeof v === 'string' ? v : (v && (v.name || v.title)) || '');
-  return arr.map(s => ({
-    songId: Number(s.songId || s.id || s.song_id || (s.song && s.song.id)),
-    title: str(s.title) || str(s.name) || str(s.song && s.song.title),
-    artist: str(s.artist) || str(s.artist_name) || str(s.song && s.song.artist) || str(s.artists && s.artists[0]),
-    img: typeof (s.img || s.image || s.cover) === 'string' ? (s.img || s.image || s.cover) : null,
-    duration: s.duration || null, duo: !!(s.duo || s.duet),
-  })).filter(s => s.songId && s.title).slice(0, 40);
+  const idOf = v => (v && typeof v === 'object' ? v.id : v);
+  return arr.filter(s => s && typeof s === 'object').map(s => {
+    const kind = songKind(s) || songKind(s.song) || (community ? 'community' : 'catalog');
+    return {
+      songId: Number(s.songId || idOf(s.id) || s.song_id || (s.song && idOf(s.song.id))),
+      title: str(s.title) || str(s.name) || str(s.song && s.song.title),
+      artist: str(s.artist) || str(s.artist_name) || str(s.song && s.song.artist) || str(s.artists && s.artists[0]),
+      img: typeof (s.img || s.image || s.cover) === 'string' ? (s.img || s.image || s.cover) : null,
+      duration: s.duration || null, duo: !!(s.duo || s.duet),
+      ...(kind === 'community' ? { community: true } : {}),
+    };
+  }).filter(s => Number.isSafeInteger(s.songId) && s.songId > 0 && s.title).slice(0, 40);
 }
 
-module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, isBattleItem,
+module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, isBattleItem, SONG_TYPE,
   maskCode, lockIdentity, unknownSettingsSupport: freshSupport };

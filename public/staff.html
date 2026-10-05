@@ -130,6 +130,9 @@
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
+    <div class="row wrap"><label class="switch community-switch"><input id="communitySongs" type="checkbox"> Les chanteurs peuvent choisir des titres de la communauté KaraFun</label><span class="save-status" data-save-status="communitySongs" aria-live="polite"></span></div>
+    <p class="small muted">Titres partagés par les membres de KaraFun, hors catalogue officiel : ils apparaissent après le catalogue dans la recherche des téléphones, avec le repère « Communauté », et dans la sélection « Communauté ». KaraFun ne les montre pas à sa propre télécommande ; s’il refuse leur ajout par la file, ils sont retirés des listes (chanteurs prévenus) et les téléphones ne les proposent plus. Coupé : plus de nouveau choix, les titres déjà choisis restent.</p>
+    <p class="small" id="communityInfo" role="status"></p>
     <div class="row wrap"><label class="switch presence-switch"><input id="requirePresence" type="checkbox"> Exiger « Je suis là » avant l’envoi du titre</label><span class="save-status" data-save-status="requirePresence" aria-live="polite"></span></div>
     <p class="small muted">La confirmation est demandée au prochain passage pendant le titre en cours ; pour un duo, la réponse de l’un des deux suffit. Sans réponse une fois la scène libre, la soirée continue avec le passage suivant et le titre revient juste après lui, avec une nouvelle demande. Au bout du nombre de fois indiqué, le titre est retiré et le bar est prévenu que la personne est peut-être partie.</p>
     <div class="rule-fields">
@@ -496,6 +499,9 @@
     // Les chanteurs peuvent-ils régler leurs titres depuis leur téléphone ?
     singerSongSettings: { check: true, send: value => post('/api/staff/settings', { singerSongSettings: value }),
       server: () => S.settings?.singerSongSettings !== false },
+    // Titres de la communauté KaraFun proposés aux téléphones.
+    communitySongs: { check: true, send: value => post('/api/staff/settings', { communitySongs: value }),
+      server: () => S.settings?.communitySongs !== false },
     // Réglages d'un titre à venir (fiche ouverte depuis la file) : un champ
     // caché porte { pitch?, tempo?, guide?, backing? } en JSON ; les boutons
     // de la fiche le changent, puis il suit le même enregistrement que les autres.
@@ -1518,6 +1524,19 @@
     $('songSettingsInfo').textContent = parts.join(' ');
   }
 
+  // Titres de la communauté : ce que KaraFun en dit (permission de la
+  // télécommande, réponse aux ajouts de la file).
+  function renderCommunityInfo() {
+    const c = S.community || {};
+    const parts = [];
+    if (c.off) parts.push('Coupé : les téléphones ne proposent pas les titres de la communauté.');
+    else if (c.channel === false) parts.push('Cette ancienne télécommande KaraFun ne connaît pas les titres de la communauté : les téléphones ne les proposent pas.');
+    else if (c.support === 'refused') parts.push(`${c.notice || 'KaraFun refuse les titres de la communauté envoyés par la file.'} Les téléphones ne les proposent plus. Pour réessayer, coupe puis réactive cet interrupteur, ou fais un essai dans « KaraFun » → « Diagnostic KaraFun » ci-dessous.`);
+    else if (c.support === 'ok') parts.push('KaraFun a accepté un titre de la communauté envoyé par la file.');
+    else if (S.kf?.ready) parts.push(`Pas encore essayé avec ce KaraFun${c.permitted === false ? ' (sa télécommande annonce les titres de la communauté comme non affichés)' : ''} : fais un essai hors service avec « Ajouter à KaraFun (test) » sur un titre « Communauté », dans « KaraFun » → « Diagnostic KaraFun » ci-dessous.`);
+    $('communityInfo').textContent = parts.join(' ');
+  }
+
   function render() {
     const kf = S.kf;
     const status = kfStatus();
@@ -1531,8 +1550,10 @@
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     for (const id of ['battleCooldownMin', 'battleRejectedCooldownMin', 'battleVoteMin', 'battleMinVoters', 'requirePresence',
-      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings']) syncField($(id));
+      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings',
+      'communitySongs']) syncField($(id));
     renderSongSupport();
+    renderCommunityInfo();
     renderStaffAlerts();
     if (!renderedOnce && !$('code').value) $('code').value = S.code || '';
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
@@ -1643,7 +1664,7 @@
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${q.song?.community ? '<span class="badge community" title="Titre de la communauté KaraFun, hors catalogue officiel">Communauté</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
         <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
@@ -2063,8 +2084,8 @@
     try {
       const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
       if (!r.ok) throw new Error(j.error);
-      $('testRes').innerHTML = j.length ? j.map(s => `<li><div class="grow"><b>${esc(s.title)}</b> <span class="muted">${esc(s.artist)} · id ${s.songId}</span></div><button class="btn small" data-add="${s.songId}">Ajouter à KaraFun (test)</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';
-      $('testRes').querySelectorAll('[data-add]').forEach(b => b.onclick = () => act('/api/staff/kf', { action: 'test-add', songId: +b.dataset.add }, 'Envoyé à KaraFun : regarde sa file'));
+      $('testRes').innerHTML = j.length ? j.map(s => `<li><div class="grow"><b>${esc(s.title)}</b> <span class="muted">${esc(s.artist)} · id ${s.songId}</span>${s.community ? ' <span class="badge community">Communauté</span>' : ''}</div><button class="btn small" data-add="${s.songId}"${s.community ? ' data-community="1"' : ''}>Ajouter à KaraFun (test)</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';
+      $('testRes').querySelectorAll('[data-add]').forEach(b => b.onclick = () => act('/api/staff/kf', { action: 'test-add', songId: +b.dataset.add, community: b.dataset.community === '1' }, 'Envoyé à KaraFun : regarde sa file'));
     } catch (e) { $('testRes').innerHTML = `<li class="muted">${esc(e.message)}</li>`; }
   };
   $('testQ').onkeydown = (e) => { if (e.key === 'Enter') $('testSearch').click(); };
@@ -2160,9 +2181,10 @@
   const searchBattleLaunch = async (q, number) => {
     $('battleLaunchResults').innerHTML = '<li class="muted">Recherche…</li>';
     try {
-      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
+      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&kinds=catalog`); const raw = await r.json();
       if (number !== battleLaunchNumber) return;
-      if (!r.ok) throw new Error(j.error);
+      if (!r.ok) throw new Error(raw.error);
+      const j = raw.filter(song => !song.community); // une Battle se joue sur un titre du catalogue
       $('battleLaunchResults').innerHTML = j.length ? j.slice(0, 12).map((song, index) => `<li><div class="grow"><b>${esc(song.title)}</b> <span class="muted">${esc(song.artist || '')}</span></div><button class="btn small primary" data-battle-launch="${index}">Lancer en Battle</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';
       $('battleLaunchResults').querySelectorAll('[data-battle-launch]').forEach(button => button.onclick = () => {
         const song = j[Number(button.dataset.battleLaunch)];

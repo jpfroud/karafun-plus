@@ -17,15 +17,17 @@ function normalize(text) {
 
 // Clé calculée une fois par titre : la normalisation coûte cher et la page
 // du bar compare toute la file toutes les deux secondes.
+// Le numéro d'un titre de la communauté (`community`) n'est pas celui du
+// catalogue : seul le même numéro dans la même numérotation suffit.
 function songKey(song) {
   if (!song) return null;
   const id = Number(song.songId);
-  return { id: id > 0 ? id : null, title: normalize(song.title), artist: normalize(song.artist) };
+  return { id: id > 0 ? id : null, community: !!song.community, title: normalize(song.title), artist: normalize(song.artist) };
 }
 
 function sameKey(a, b) {
   if (!a || !b) return false;
-  if (a.id && a.id === b.id) return true;
+  if (a.id && a.id === b.id && a.community === b.community) return true;
   if (!a.title || a.title !== b.title) return false;
   // Même titre chez deux artistes (reprises) : deux chansons distinctes,
   // sauf si l'une des deux entrées ne précise pas l'artiste.

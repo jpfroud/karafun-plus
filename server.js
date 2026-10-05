@@ -86,37 +86,69 @@ const SOLO_COOKIE = 'karaoke_solo_device';
 // de même des vignettes : seule une image https reçue du catalogue est
 // montrée aux téléphones, jamais une adresse envoyée par l'un d'eux.
 const battleCatalogSongs = new Map();
-const catalogCovers = new Map(); // songId → adresse https de la vignette
+// Titres de la communauté KaraFun reçus de sa recherche : seuls ceux-là
+// peuvent être choisis (numéro → titre), jamais une Battle.
+const communityCatalogSongs = new Map();
+const catalogCovers = new Map(); // songKey → adresse https de la vignette
+// Un titre de la communauté et un titre du catalogue peuvent porter le même
+// numéro : la clé et la comparaison tiennent compte des deux numérotations.
+const songKey = song => `${song?.community ? 'c' : 'k'}:${Number(song?.songId)}`;
+const sameKaraFunSong = (item, song) => !!item && !!song && Number(item.songId) === Number(song.songId) &&
+  !!item.community === !!song.community;
+function remember(map, key, value) {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > 10000) map.delete(map.keys().next().value);
+}
 function coverUrl(value) {
   if (typeof value !== 'string' || !value || value.length > 500) return null;
   let url;
   try { url = new URL(value.startsWith('//') ? `https:${value}` : value); } catch (_) { return null; }
   return url.protocol === 'https:' && !url.username && !url.password ? url.href : null;
 }
-function rememberBattleSongs(songs) {
+function rememberCatalogSongs(songs) {
   for (const song of songs || []) {
     const songId = Number(song?.songId);
     const title = String(song?.title || '').trim();
     const artist = String(song?.artist || '').trim();
     if (song && typeof song === 'object') song.img = coverUrl(song.img);
     if (!Number.isSafeInteger(songId) || songId <= 0 || !title || title.length > 100 || artist.length > 80) continue;
-    battleCatalogSongs.delete(songId);
-    battleCatalogSongs.set(songId, { songId, title, artist });
-    if (battleCatalogSongs.size > 10000) battleCatalogSongs.delete(battleCatalogSongs.keys().next().value);
-    catalogCovers.delete(songId);
-    if (song.img) catalogCovers.set(songId, song.img);
-    if (catalogCovers.size > 10000) catalogCovers.delete(catalogCovers.keys().next().value);
+    if (song.community) {
+      remember(communityCatalogSongs, songId, { songId, title, artist, community: true,
+        duration: Number(song.duration) > 0 ? Number(song.duration) : null });
+    } else remember(battleCatalogSongs, songId, { songId, title, artist });
+    if (song.img) remember(catalogCovers, songKey(song), song.img);
+    else catalogCovers.delete(songKey(song));
   }
   return songs;
 }
 // Titre choisi par un téléphone : sa vignette vient du catalogue.
 const withCover = song => song && typeof song === 'object' ?
-  { ...song, img: catalogCovers.get(Number(song.songId)) || null } : song;
+  { ...song, img: catalogCovers.get(songKey(song)) || null } : song;
+
+// Titre ajouté à une liste depuis un téléphone. Un titre de la communauté
+// doit avoir été trouvé par la recherche de ce serveur : il est repris tel
+// que KaraFun l'a donné. Les autres sont des titres du catalogue.
+function songToList(song) {
+  if (!song || typeof song !== 'object' || song.community !== true) {
+    return withCover(song && typeof song === 'object' ? { ...song, community: false } : song);
+  }
+  const refused = (message, code) => Object.assign(new Error(message), { code });
+  if (settings.communitySongs === false) throw refused('Le bar n’accepte pas les titres de la communauté ce soir.', 'COMMUNITY_OFF');
+  if (bridge?.communityUsable?.() === false) {
+    throw refused('KaraFun refuse les titres de la communauté envoyés par la file : choisis un titre du catalogue.', 'COMMUNITY_REFUSED');
+  }
+  const seen = communityCatalogSongs.get(Number(song.songId));
+  if (!seen) throw refused('Retrouve ce titre de la communauté dans la recherche avant de l’ajouter.', 'COMMUNITY_UNKNOWN');
+  return withCover({ ...seen });
+}
+
 function certifiedBattleSongs(songs) {
   if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {
     throw new Error('Propose entre un et trois titres du catalogue pour la Battle.');
   }
   return songs.map(song => {
+    if (song?.community) throw new Error('Un titre de la communauté ne peut pas servir de Battle : choisis un titre du catalogue.');
     const seen = battleCatalogSongs.get(Number(song?.songId));
     if (!seen) throw new Error('Retrouve ce titre dans le catalogue avant de proposer la Battle.');
     return { ...seen };
@@ -269,6 +301,9 @@ const settings = { auto: true, autoPlay: false, baseUrl: null,
   // chanteurs : le bar peut les couper, comme « Personnaliser la chanson en
   // cours » dans KaraFun. Gardé d'une soirée à l'autre.
   singerSongSettings: true,
+  // Titres de la communauté KaraFun proposés aux téléphones (recherche,
+  // sélection « Communauté ») et envoyés avec leur type. Gardé d'une soirée à l'autre.
+  communitySongs: true,
   queueClearPending: false };
 const queueClearRemovalRequests = new Map();
 let curKey = null, curSince = 0;
@@ -399,7 +434,7 @@ function analyze() {
 function isOnStage(tr, current) {
   if (!current) return false;
   if (current.queueId != null && tr.queueId != null) return current.queueId === tr.queueId;
-  return Number(current.songId) === tr.sel.song.songId;
+  return sameKaraFunSong(current, tr.sel.song);
 }
 
 // La demande « Je suis là » suit le prochain titre réel. Le simple numéro
@@ -517,19 +552,19 @@ function syncBattle({ current, upcoming, q }, now) {
   const native = [current, ...q].filter(Boolean).find(item => isBattleItem(item) &&
     item.queueId != null && String(item.queueId) !== String(state?.queueId || ''));
   if (!settings.queueClearPending && native && state?.status === 'manual' &&
-      Number(native.songId) === state.songId) {
+      Number(native.songId) === state.songId && !native.community) {
     battleVote.confirmManualAutomation(native.queueId);
     sched.note('KaraFun confirme la Battle manuelle : la fin sera détectée automatiquement.', 'battle');
     state = battleVote.automation;
   } else if (!settings.queueClearPending && native &&
       (!state || state.status === 'released' || state.status === 'manual' ||
-        (state.status === 'waiting' && Number(native.songId) !== state.songId))) {
+        (state.status === 'waiting' && (Number(native.songId) !== state.songId || native.community)))) {
     battleVote.observeExternalBattle(native);
     sched.note('Battle ajoutée dans KaraFun : lancement et reprise du titre suivant réservés au bar.', 'battle');
     state = battleVote.automation;
   }
   if (!state || state.status === 'released') return;
-  const matches = q.filter(item => Number(item.songId) === state.songId && isBattleItem(item));
+  const matches = q.filter(item => Number(item.songId) === state.songId && !item.community && isBattleItem(item));
   if (state.status === 'waiting') {
     if (matches.length === 1) {
       battleVote.confirmAutomation(matches[0].queueId);
@@ -555,7 +590,7 @@ function syncBattle({ current, upcoming, q }, now) {
     }
   } else if (state.status === 'sending' || state.status === 'failed') {
     const fresh = q.filter(item => !state.before.includes(String(item.queueId)) &&
-      Number(item.songId) === state.songId);
+      Number(item.songId) === state.songId && !item.community);
     const battles = fresh.filter(isBattleItem);
     if (battles.length === 1) {
       battleVote.confirmAutomation(battles[0].queueId);
@@ -638,7 +673,8 @@ function startRestart() {
   }
   const tr = tracked.find(item => isOnStage(item, current));
   const singer = tr ? tr.sel.label : String(current.singer || '');
-  restartOp = { songId, singer, title: tr?.sel.song.title || current.title || 'le titre',
+  const community = !!current.community;
+  restartOp = { songId, singer, ...(community ? { community } : {}), title: tr?.sel.song.title || current.title || 'le titre',
     before: q.map(item => String(item.queueId)), at: Date.now(), phase: 'adding',
     originalQueueId: current.queueId, trackedQueueId: tr ? tr.queueId : null };
   // La copie garde les réglages du titre (ceux de la file, sinon l'état en
@@ -646,13 +682,13 @@ function startRestart() {
   // Pistes vocales du titre connues : volumes seulement pour celles-là.
   const songSettings = tr ? tr.sel.song.settings || null : settingsFromLive(liveFromStatus(bridge.status), songDefaults());
   const tracksAvailable = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
-  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { duo: !!tr && tr.sel.ids.length > 1, tracksAvailable }) || null; }
+  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { duo: !!tr && tr.sel.ids.length > 1, tracksAvailable, community }) || null; }
   catch (error) { restartOp = null; throw error; }
   sched.note(`Le bar relance « ${restartOp.title} » depuis le début.`, 'stage');
 }
 
 const restartCopies = (op, q) => q.filter(item => !op.before.includes(String(item.queueId)) &&
-  Number(item.songId) === op.songId && String(item.singer || '') === op.singer &&
+  sameKaraFunSong(item, op) && String(item.singer || '') === op.singer &&
   !tracked.some(tr => String(tr.queueId) === String(item.queueId)));
 
 // Copie arrivée après l'abandon de la relance : elle rejouerait le titre.
@@ -908,21 +944,49 @@ function catchUpSongSettings(tr) {
 // plus à l'ajout) ; ils seront rattrapés au début du titre. Une seule fois.
 function resendWithoutOptions(add) {
   if (!bridge?.ready) return;
-  const same = (songId, singer) => Number(songId) === Number(add?.songId) && singer === add?.singer;
+  const same = (song, singer) => sameKaraFunSong(song, add) && singer === add?.singer;
   try {
-    if (pending && !pending.cancelled && !recoveredPending && pending.sentSettings && same(pending.sel.song.songId, pending.sel.label)) {
+    if (pending && !pending.cancelled && !recoveredPending && pending.sentSettings && same(pending.sel.song, pending.sel.label)) {
       delete pending.sentSettings;
       pending.at = Date.now();
       pending.attempts++;
-      bridge.add(pending.sel.song.songId, pending.sel.label);
+      bridge.add(pending.sel.song.songId, pending.sel.label, undefined, null, { community: !!pending.sel.song.community });
       sched.note(`KaraFun refuse les réglages de titre à l’ajout : « ${pending.sel.song.title} » repart sans eux ; ils seront appliqués au début du titre.`, 'error');
-    } else if (restartOp?.phase === 'adding' && restartOp.sentSettings && same(restartOp.songId, restartOp.singer)) {
+    } else if (restartOp?.phase === 'adding' && restartOp.sentSettings && same(restartOp, restartOp.singer)) {
       restartOp.sentSettings = null;
       restartOp.at = Date.now();
-      bridge.add(restartOp.songId, restartOp.singer, 1);
+      bridge.add(restartOp.songId, restartOp.singer, 1, null, { community: !!restartOp.community });
     } else return;
     saveNight();
   } catch (error) { appLog(`Nouvel envoi sans réglages impossible : ${error.message}`); }
+}
+
+// KaraFun ne prend pas les titres de la communauté envoyés par la file :
+// ils quittent les listes (leurs auteurs sont prévenus), les téléphones ne
+// les proposent plus et le bar en est averti. Le bar peut encore les
+// ajouter lui-même depuis l'application KaraFun.
+function refuseCommunitySongs(reason) {
+  const dropped = sched.dropCommunitySongs();
+  const why = reason ? ` (${reason})` : '';
+  sched.note(`KaraFun refuse les titres de la communauté envoyés par la file${why}. ${dropped.length
+    ? `${dropped.length === 1 ? '1 titre retiré' : `${dropped.length} titres retirés`} des listes, chanteurs prévenus : ${dropped.map(item => `« ${item.title} » (${item.name})`).join(', ')}. `
+    : ''}Les téléphones ne les proposent plus ; ajoute-les depuis l’application KaraFun si besoin.`, 'error');
+  journalEvent('community.refused', { dropped: dropped.length });
+  return dropped;
+}
+
+// Réponse Error de KaraFun à l'ajout d'un titre de la communauté : rien
+// n'est entré dans sa file, l'envoi en attente est abandonné sans doublon
+// possible, et le passage suivant part.
+function communityAddRefused(add) {
+  if (pending && pending.sel.song.community && sameKaraFunSong(pending.sel.song, { ...add, community: true }) &&
+      pending.sel.label === add.singer) {
+    pending = null;
+    recoveredPending = false;
+  }
+  refuseCommunitySongs(add.message);
+  sync();
+  saveNight();
 }
 
 // Titre en cours, réglé en direct par le bar (POST /api/staff/kf). Pour un
@@ -986,7 +1050,7 @@ function sync() {
   else if (hadNativeQueue && emptySince === null) emptySince = now;
 
   if (pending) {
-    const matches = q.filter(it => !pending.before.has(it.queueId) && Number(it.songId) === pending.sel.song.songId && it.singer === pending.sel.label);
+    const matches = q.filter(it => !pending.before.has(it.queueId) && sameKaraFunSong(it, pending.sel.song) && it.singer === pending.sel.label);
     const hit = recoveredPending && matches.length !== 1 ? null : matches[0];
     if (hit) {
       if (pending.cancelled) {
@@ -1225,7 +1289,14 @@ function sync() {
     if (!pending) {
       // Après un échec, la chanson du chanteur peut avoir changé : le choix
       // actuel de l'ordonnanceur prévaut au moment de la nouvelle tentative.
-      const sel = sched.select({ stageFree: !current });
+      let sel = sched.select({ stageFree: !current });
+      // Titre de la communauté que ce KaraFun ne prendra pas (refus déjà
+      // reçu, ancienne télécommande) : ces titres quittent les listes et le
+      // passage suivant part à sa place.
+      if (sel?.song.community && !bridge.communityUsable()) {
+        refuseCommunitySongs(bridge.communityChannel() === false ? 'ancienne télécommande KaraFun' : 'refus déjà reçu');
+        sel = sched.select({ stageFree: !current });
+      }
       if (sel) {
         pending = { sel, before: qids, at: now, attempts: 1, retryAt: null };
         try {
@@ -1233,7 +1304,8 @@ function sync() {
           // tentative sur disque avant de l'envoyer pour éviter un doublon.
           saveNight({ required: true });
           // Réglages du titre dans les options d'ajout ; duo : voix guide B.
-          const sentSettings = bridge.add(sel.song.songId, sel.label, undefined, sel.song.settings || null, { duo: sel.ids.length > 1 });
+          const sentSettings = bridge.add(sel.song.songId, sel.label, undefined, sel.song.settings || null,
+            { duo: sel.ids.length > 1, community: !!sel.song.community });
           if (sentSettings) pending.sentSettings = sentSettings;
         } catch (e) { pending = null; settings.auto = false; appLog(`ERREUR envoi : ${e.message}`); }
       } else pending = null;
@@ -1278,6 +1350,7 @@ function journalStageStarted(current) {
   const tr = tracked.find(item => isOnStage(item, current));
   const duration = Number(tr?.sel.song.duration ?? current.duration);
   journalEvent('stage.started', { queueId: current.queueId ?? null, songId: Number(current.songId) || null,
+    ...(current.community ? { community: true } : {}),
     title: tr?.sel.song.title || current.title || '', artist: tr?.sel.song.artist || current.artist || '',
     durationSec: duration > 0 ? duration : null,
     source: tr ? 'queue' : isBattleItem(current) ? 'battle' : 'native',
@@ -1451,6 +1524,7 @@ function staffDuoView(record) {
 
 // ------------------------------------------------------------------ vues
 const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: coverUrl(s.img), duration: s.duration || null,
+  ...(s.community ? { community: true } : {}),
   settings: s.settings || null,
   duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo',
     // Invitation en attente : vue ou non sur le téléphone de l'invité.
@@ -1473,6 +1547,7 @@ function describe(item, byQid) {
     // Pour nos titres, le catalogue KaraFun choisi par le chanteur fait foi.
     title: (tr && tr.sel.song.title) || item.title || '', artist: (tr && tr.sel.song.artist) || item.artist || '',
     img: coverUrl(tr ? tr.sel.song.img : item.img),
+    ...((tr ? tr.sel.song.community : item.community) ? { community: true } : {}),
     kind: tr?.sel.kind || (isBattleItem(item) ? 'battle' : null),
     ids: tr ? tr.sel.ids : [], photos: tr ? tr.sel.ids.filter(pid => (sched.people.get(pid) || {}).photo).map(pid => `/photo/${pid}`) : [],
   };
@@ -1600,6 +1675,10 @@ function publicState(person, tableId, managed = null) {
     // connaît), plages de KaraFun, valeurs par défaut.
     songSettings: { enabled: settings.singerSongSettings !== false && bridge?.songSettingsAvailable?.() !== false,
       ranges: songRanges(), defaults: songDefaults() },
+    // Titres de la communauté KaraFun : proposés aux téléphones ou non, et
+    // pourquoi (le bar ne les accepte pas, KaraFun les refuse).
+    community: { enabled: communityOffered(), off: settings.communitySongs === false,
+      refused: !!bridge && bridge.communityUsable?.() === false },
   };
 
   const guestDuosOf = person => {
@@ -1722,6 +1801,9 @@ function staffState() {
   const kfSettings = bridge?.songSettingsState?.() || null;
   return {
     ...pub,
+    // Titres de la communauté vus par le bar : interrupteur, canal,
+    // permission « community » de KaraFun et réponse à ses ajouts.
+    community: { ...pub.community, ...(bridge?.communityState?.() || { channel: null, permitted: null, support: 'unknown', notice: null }) },
     // Réglages de titre pour le bar : droits et fonctions confirmées par
     // KaraFun, dernier avis, et titre en cours en direct (pistes comprises).
     songSettings: { ...pub.songSettings,
@@ -2181,12 +2263,12 @@ function repeatNotice(song, tableId, entryId = null) {
     played: sched.playedSongs, now: Date.now(), windowMs: repeatWindowMs() });
 }
 
-function chooseFor(p, song, mode) {
+function chooseFor(p, chosen, mode) {
   assertRoomBeforeClosing(p, mode);
-  const songId = Number(song?.songId);
+  const song = songToList(chosen);
   if ([...(pending && pending.sel.ids.includes(p.id) ? [pending.sel.song] : []),
     ...tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => tr.sel.song)]
-    .some(s => s.songId === songId)) {
+    .some(s => sameKaraFunSong(s, song))) {
     const e = new Error('Cette chanson est déjà envoyée à KaraFun pour ce chanteur.');
     e.code = 'ALREADY_IN_KARAFUN'; throw e;
   }
@@ -2195,9 +2277,9 @@ function chooseFor(p, song, mode) {
   if (mode === 'replace' && pending && !pending.cancelled && pending.sel.ids.length > 1 && pending.sel.ids[0] === p.id) {
     throw new Error('Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
   }
-  sched.chooseSong(p, withCover(song), mode);
+  sched.chooseSong(p, song, mode);
   sync();
-  const added = sched.songsOf(p).find(item => item.songId === songId);
+  const added = sched.songsOf(p).find(item => sameKaraFunSong(item, song));
   return added ? repeatNotice(added, p.tableId, added.entryId) : null;
 }
 
@@ -2592,6 +2674,45 @@ function catalog() {
   return catalogApi;
 }
 
+// Titres de la communauté proposés aux téléphones : le bar les accepte et
+// le pont KaraFun les connaît sans que KaraFun les ait refusés à la file.
+function communityOffered() {
+  return settings.communitySongs !== false && bridge?.communityUsable?.() === true;
+}
+
+// Résultats du catalogue puis ceux de la communauté. Un titre de la
+// communauté identique à un résultat du catalogue (même numéro, même titre)
+// vient d'une réponse qui a ignoré `types=community` : il est écarté, pour ne
+// jamais envoyer un titre du catalogue sous le type de la communauté.
+let communityEchoNoted = false;
+function mergeCommunity(found = [], community = []) {
+  const catalogKeys = new Set(found.filter(song => !song.community)
+    .map(song => `${song.songId}|${String(song.title).trim().toLowerCase()}`));
+  const seen = new Set();
+  const out = [];
+  let echoes = 0;
+  for (const song of [...found, ...community]) {
+    if (song.community && catalogKeys.has(`${song.songId}|${String(song.title).trim().toLowerCase()}`)) { echoes++; continue; }
+    if (seen.has(songKey(song))) continue;
+    seen.add(songKey(song));
+    out.push(song);
+  }
+  if (echoes && !communityEchoNoted) {
+    communityEchoNoted = true;
+    appLog(`Recherche communauté KaraFun : ${echoes} résultat(s) identiques au catalogue écartés (types=community ignoré ?).`);
+  }
+  // Catalogue d'abord, puis communauté : la page ajoute un intertitre.
+  return [...out.filter(song => !song.community), ...out.filter(song => song.community)];
+}
+
+let communityFailureNoted = '';
+function noteCommunityFailure(error) {
+  const message = String(error?.message || error || 'erreur inconnue');
+  if (message === communityFailureNoted) return;
+  communityFailureNoted = message;
+  appLog(`Recherche des titres de la communauté KaraFun impossible : ${message}`);
+}
+
 // Message montré aux téléphones quand aucun domaine KaraFun ne donne le catalogue.
 function catalogPhoneError(e) {
   if (!e?.catalogUnavailable) return e.message;
@@ -2787,7 +2908,7 @@ function journalSettingsState() {
     weightedTables: !!sched.opts.weightedTables, interleaveArrivals: sched.opts.interleaveArrivals !== false,
     battleCooldownMin: battleVote.cooldownMs / 60000, battleRejectedCooldownMin: battleVote.rejectedCooldownMs / 60000,
     battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters, baseUrl: !!settings.baseUrl,
-    singerSongSettings: settings.singerSongSettings !== false };
+    singerSongSettings: settings.singerSongSettings !== false, communitySongs: settings.communitySongs !== false };
 }
 function journalSettings(before) {
   const after = journalSettingsState();
@@ -2872,7 +2993,7 @@ const handlers = {
   'POST /api/table/duet': async (req, res, body) => {
     const p = personAtTable(body);
     assertRoomBeforeClosing(p, 'append');
-    const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
+    const duet = sched.inviteDuet(p, String(body.partnerId || ''), songToList(body.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
@@ -2959,7 +3080,7 @@ const handlers = {
   },
   'POST /api/duet': async (req, res, body, me) => {
     assertRoomBeforeClosing(me, 'append');
-    sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
+    sched.inviteDuet(me, body.partnerId, songToList(body.song)); sync(); return { ok: true };
   },
   'POST /api/duet/answer': async (req, res, body, me) => {
     if (body.accept) assertInviteNotSending(me, body.entryId);
@@ -3042,6 +3163,10 @@ const handlers = {
     if (typeof nextSingerSettings !== 'boolean') {
       throw new Error('Le réglage des titres depuis les téléphones est activé ou désactivé (oui ou non).');
     }
+    const nextCommunity = 'communitySongs' in body ? body.communitySongs : settings.communitySongs !== false;
+    if (typeof nextCommunity !== 'boolean') {
+      throw new Error('Les titres de la communauté sont acceptés ou non (oui ou non).');
+    }
     if (body.auto && recoveredPending) throw new Error('Vérifie d’abord l’envoi interrompu dans KaraFun.');
     if (body.auto && persistenceError) throw new Error('Sauvegarde indisponible : l’envoi automatique reste suspendu.');
     if (body.auto && bridge?.permissions?.addToQueue === false) {
@@ -3078,6 +3203,9 @@ const handlers = {
     settings.presenceGraceSec = nextPresenceGrace;
     settings.presenceMaxSkips = nextPresenceSkips;
     settings.singerSongSettings = nextSingerSettings;
+    // Réactivés par le bar : un refus de KaraFun reçu plus tôt est réessayé.
+    if (nextCommunity && settings.communitySongs === false) bridge?.resetCommunitySupport?.();
+    settings.communitySongs = nextCommunity;
     if (nextBattleCooldown !== null) battleVote.setCooldownMinutes(nextBattleCooldown);
     if (nextRejectedCooldown !== null) battleVote.setRejectedCooldownMinutes(nextRejectedCooldown);
     if (nextVoteMin !== null) battleVote.setVoteMinutes(nextVoteMin);
@@ -3573,7 +3701,14 @@ const handlers = {
       bridge.remove(tr.queueId);
       journalEvent('staff.absent', { queueId: tr.queueId, entryId: tr.sel.song.entryId || null, ids: tr.sel.ids });
     } else if (body.action === 'remove') bridge.remove(body.queueId);
-    else if (body.action === 'test-add') bridge.add(body.songId, 'Test file karaoké');
+    else if (body.action === 'test-add') {
+      // Essai du bar, aussi pour savoir si KaraFun prend les titres de la communauté.
+      if (body.community === true && !communityCatalogSongs.has(Number(body.songId))) {
+        throw new Error('Retrouve ce titre de la communauté dans la recherche avant de l’essayer.');
+      }
+      if (body.community === true && bridge.communitySupport === 'refused') bridge.resetCommunitySupport();
+      bridge.add(body.songId, 'Test file karaoké', undefined, null, { community: body.community === true });
+    }
     else if (['pitch', 'tempo', 'track'].includes(body.action)) return liveSongSetting(body);
     else throw new Error('Action inconnue');
     setTimeout(sync, 300);
@@ -3640,7 +3775,8 @@ const server = http.createServer(async (req, res) => {
         const table = tableByAccess(u.searchParams.get('table'), u.searchParams.get('access'));
         const song = { songId: Number(u.searchParams.get('songId')) || null,
           title: String(u.searchParams.get('title') || '').slice(0, 100),
-          artist: String(u.searchParams.get('artist') || '').slice(0, 80) };
+          artist: String(u.searchParams.get('artist') || '').slice(0, 80),
+          ...(u.searchParams.get('community') === '1' ? { community: true } : {}) };
         if (!song.songId && !song.title) return send(res, 400, { error: 'Titre manquant.' });
         return send(res, 200, { notice: repeatNotice(song, table.id) });
       }
@@ -3649,7 +3785,9 @@ const server = http.createServer(async (req, res) => {
         if (!lyricsAllowed(who)) return send(res, 429, { error: 'Trop de demandes de paroles : réessaie dans une minute.' });
         const title = String(u.searchParams.get('title') || '').trim().slice(0, 100);
         if (!title) return send(res, 400, { error: 'Titre manquant.' });
-        const found = await lyrics.find({ songId: Number(u.searchParams.get('songId')) || null, title,
+        // Titre de la communauté : son numéro n'est pas celui d'une page du catalogue.
+        const songId = u.searchParams.get('community') === '1' ? null : Number(u.searchParams.get('songId')) || null;
+        const found = await lyrics.find({ songId, title,
           artist: String(u.searchParams.get('artist') || '').trim().slice(0, 80) });
         return send(res, 200, { lines: found.lines, url: found.url, exact: found.exact, unavailable: !!found.unavailable });
       }
@@ -3682,8 +3820,17 @@ const server = http.createServer(async (req, res) => {
         const q = String(u.searchParams.get('q') || '').trim();
         if (q.length < 2) return send(res, 200, []);
         if (!bridge) return send(res, 503, { error: 'KaraFun non connecté' });
-        try { return send(res, 200, rememberBattleSongs(await bridge.search(q))); }
-        catch (e) { return send(res, 502, { error: `Recherche KaraFun impossible : ${e.message}` }); }
+        // `kinds=catalog` : titres du catalogue seuls (choix d'une Battle).
+        const withCommunity = u.searchParams.get('kinds') !== 'catalog' && communityOffered();
+        const [found, community] = await Promise.allSettled([bridge.search(q),
+          withCommunity ? bridge.search(q, { community: true }) : Promise.resolve([])]);
+        if (found.status === 'rejected') {
+          const e = found.reason || {};
+          return send(res, 502, { error: `Recherche KaraFun impossible : ${e.message}` });
+        }
+        if (community.status === 'rejected') noteCommunityFailure(community.reason);
+        return send(res, 200, rememberCatalogSongs(mergeCommunity(found.value,
+          community.status === 'fulfilled' ? community.value : [])));
       }
       if (p === '/api/catalog/categories' || p === '/api/catalog/highlights' || p === '/api/catalog/songs') {
         try {
@@ -3692,9 +3839,17 @@ const server = http.createServer(async (req, res) => {
             const categories = await c.categories(u.searchParams.get('type'));
             return send(res, 200, (Array.isArray(categories) ? categories : []).map(cat => ({ ...cat, img: coverUrl(cat?.img) })));
           }
-          if (p.endsWith('/highlights')) return send(res, 200, rememberBattleSongs(await c.highlights(u.searchParams.get('type'))));
+          if (p.endsWith('/highlights')) {
+            const type = u.searchParams.get('type');
+            if (u.searchParams.get('kind') !== 'community') return send(res, 200, rememberCatalogSongs(await c.highlights(type)));
+            // Sélection « Communauté » : seulement ses titres, ceux qui
+            // reprennent la même sélection du catalogue écartés.
+            if (!communityOffered()) return send(res, 200, []);
+            const [own, catalogSide] = await Promise.all([c.highlights(type, { community: true }), c.highlights(type).catch(() => [])]);
+            return send(res, 200, rememberCatalogSongs(mergeCommunity(catalogSide, own).filter(song => song.community)));
+          }
           const page = await c.songs(u.searchParams.get('filter'), Number(u.searchParams.get('offset') || 0));
-          rememberBattleSongs(page.songs);
+          rememberCatalogSongs(page.songs);
           return send(res, 200, page);
         } catch (e) { return send(res, 502, { error: catalogPhoneError(e) }); }
       }
@@ -3768,6 +3923,7 @@ function connectKaraFun(code = CODE) {
       lockOwner: DEMO ? null : { port: PORT } });
     bridge.on('change', () => setImmediate(sync));
     bridge.on('add-options-refused', add => setImmediate(() => resendWithoutOptions(add)));
+    bridge.on('community-add-refused', add => setImmediate(() => communityAddRefused(add)));
   }
   const result = bridge.connect(code);
   // Budget de l'heure épuisé et connexion prête : le pont garde son code

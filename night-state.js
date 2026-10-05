@@ -300,7 +300,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     (restoredSettings.closingAt != null && !Number.isFinite(restoredSettings.closingAt)) ||
     ('autoPlayHeld' in restoredSettings && typeof restoredSettings.autoPlayHeld !== 'boolean')) fail('réglages mal formés');
 
-  // Interrupteur des réglages de titre (v1.4) abîmé : la valeur actuelle reste.
+  // Interrupteurs des réglages de titre (v1.4) et des titres de la
+  // communauté abîmés : la valeur actuelle reste.
+  if ('communitySongs' in restoredSettings && typeof restoredSettings.communitySongs !== 'boolean') {
+    delete restoredSettings.communitySongs;
+  }
   if ('singerSongSettings' in restoredSettings && typeof restoredSettings.singerSongSettings !== 'boolean') {
     delete restoredSettings.singerSongSettings;
   }
@@ -361,7 +365,7 @@ function inspectRecoveredPending(pending, queue) {
   if (!Array.isArray(queue)) throw new Error('File KaraFun indisponible.');
   const before = pending.before instanceof Set ? pending.before : new Set(pending.before || []);
   const matches = queue.filter(item => !before.has(item.queueId) &&
-    Number(item.songId) === Number(pending.sel.song.songId) &&
+    Number(item.songId) === Number(pending.sel.song.songId) && !!item.community === !!pending.sel.song.community &&
     item.singer === pending.sel.label);
   return { state: matches.length === 1 ? 'found' : matches.length ? 'ambiguous' : 'unconfirmed', matches };
 }

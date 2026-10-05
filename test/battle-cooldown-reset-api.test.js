@@ -24,7 +24,7 @@ function harness() {
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, settings, handlers, access, battleVote, rememberBattleSongs, staffState, publicState };
+    globalThis.fixture = { sched, settings, handlers, access, battleVote, rememberCatalogSongs, staffState, publicState };
   `, context, { filename: 'server.js' });
   context.fixture.settings.auto = false;
   context.fixture.settings.autoPlay = false;
@@ -34,7 +34,7 @@ function harness() {
 // Cinq téléphones inscrits (le minimum pour proposer une Battle).
 function room(f) {
   const songs = [{ songId: 81001, title: 'Titre Battle', artist: 'Groupe' }];
-  f.rememberBattleSongs(songs); // reçu du catalogue par le serveur
+  f.rememberCatalogSongs(songs); // reçu du catalogue par le serveur
   const people = ['Alice', 'Bruno', 'Chloé', 'David', 'Emma'].map((name, index) => {
     const tableId = String(index + 1);
     const p = f.sched.join({ tableId, name, headcount: 1 });

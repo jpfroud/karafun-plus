@@ -53,6 +53,8 @@ label.field { display: block; margin: 12px 0 6px; color: var(--muted); font-size
 .badge.duo { color: var(--accent); border-color: rgba(255,79,163,.4); }
 .badge.wait { color: var(--warn); border-color: rgba(255,176,32,.4); }
 .badge.repeat { color: var(--warn); border-color: rgba(255,176,32,.55); background: rgba(255,176,32,.1); }
+/* Titre de la communauté KaraFun (hors catalogue officiel). */
+.badge.community { color: #5ec8f2; border-color: rgba(94,200,242,.45); background: rgba(94,200,242,.08); }
 .avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex: none; background: var(--surface-2); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; color: var(--muted); border: 1px solid var(--line); }
 .avatar.lg { width: 56px; height: 56px; font-size: 20px; }
 
@@ -331,7 +333,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .battle-settings label { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; font-size: 13px; }
 .battle-settings input { width: 68px; min-height: 36px; padding: 5px 8px; }
 #battleActions { margin-top: 12px; }
-.rules-panel .presence-switch, .rules-panel .tune-switch { font-weight: 700; }
+.rules-panel .presence-switch, .rules-panel .tune-switch, .rules-panel .community-switch { font-weight: 700; }
 .rotation-options { display: grid; gap: 3px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 12px; padding: 14px; margin-bottom: 18px; }
 .rotation-options .switch { font-weight: 750; }
 .rotation-options p { margin: 0 0 9px 28px; }

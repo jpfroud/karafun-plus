@@ -11,7 +11,8 @@ function analyzeState(q = [], st = {}) {
   if (active && cur) {
     if (cur.queueId != null) curIdx = q.findIndex(it => it.queueId === cur.queueId);
     else {
-      curIdx = q.findIndex(it => Number(it.songId) === Number(cur.songId || (cur.song && cur.song.id)) && (!cur.singer || it.singer === cur.singer));
+      curIdx = q.findIndex(it => Number(it.songId) === Number(cur.songId || (cur.song && cur.song.id)) &&
+        !!it.community === !!cur.community && (!cur.singer || it.singer === cur.singer));
       if (curIdx < 0) curIdx = q.findIndex(it => it.title && it.title === (cur.title || (cur.song && cur.song.title)));
     }
   }
