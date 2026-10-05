@@ -3705,14 +3705,15 @@ const handlers = {
       if (result.state === 'found') throw new Error('Un titre correspondant est encore en cours de rapprochement. Réessaie dans un instant.');
       const lost = pending.sel;
       pending = null;
-      // Titre de la communauté resté sans trace : le renvoyer bouclerait.
-      // Il quitte la liste de son auteur (ou tous, si KaraFun ne les prend pas).
-      if (lost.song.community) {
-        if (bridge.communityUnconfirmed?.(lost.song.songId)) refuseCommunitySongs('ajout sans trace dans sa file');
-        else {
-          const dropped = sched.dropCommunitySongs({ entryIds: [lost.song.entryId] });
-          if (dropped.length) sched.note(`« ${dropped[0].title} » (titre de la communauté) n’est pas arrivé dans KaraFun : retiré de la liste de ${dropped[0].name}, qui est prévenu.`, 'error');
-        }
+      // Titre de la communauté accepté par KaraFun mais absent de sa file : le
+      // renvoyer bouclerait. Il quitte la liste de son auteur (ou tous, si
+      // KaraFun ne les prend pas). Sans réponse de KaraFun, il repart comme
+      // un titre du catalogue.
+      const verdict = lost.song.community ? bridge.communityUnconfirmed?.(lost.song.songId) : null;
+      if (verdict === 'refused') refuseCommunitySongs('ajout sans trace dans sa file');
+      else if (verdict === 'dropped') {
+        const dropped = sched.dropCommunitySongs({ entryIds: [lost.song.entryId] });
+        if (dropped.length) sched.note(`« ${dropped[0].title} » (titre de la communauté) n’est pas arrivé dans KaraFun : retiré de la liste de ${dropped[0].name}, qui est prévenu.`, 'error');
       }
     }
     recoveredPending = false;

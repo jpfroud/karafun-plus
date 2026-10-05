@@ -341,6 +341,7 @@ class KaraFunBridge extends EventEmitter {
     this.communityNotice = null;
     this._communityAdds = new Map(); // identifiant KCS → ajout d'un titre de la communauté sans réponse
     this._communityFailed = new Set(); // titres de la communauté refusés avant tout accord
+    this._communityAccepted = new Set(); // titres de la communauté dont KaraFun a accepté le dernier envoi
     this.observedDefaults = {}; // volumes des voix d'un titre chargé sans réglage
     this._observedFor = null;
     this.nameConflictSince = null;
@@ -1320,6 +1321,7 @@ class KaraFunBridge extends EventEmitter {
       const { singer: _, ...rest } = built.options;
       payload.options = this.protocol === 'kcs' ? built.options : rest;
     }
+    if (community) this._communityAccepted.delete(payload.songId);
     const id = this._emit('queueAdd', payload);
     if (built.sent && id !== undefined) this._optionAdds.set(id, { songId: payload.songId, singer: payload.singer, ...(community ? { community } : {}) });
     if (community && id !== undefined) this._communityAdds.set(id, { songId: payload.songId, singer: payload.singer, withOptions: !!built.sent });
@@ -1351,6 +1353,7 @@ class KaraFunBridge extends EventEmitter {
   // tout accord ; sinon seulement ce titre (retiré par son auteur, introuvable…).
   _communityAnswer(add, message) {
     if (message?.type !== 'Error') {
+      this._communityAccepted.add(add.songId);
       this._communityFailed.clear();
       if (this.communitySupport !== 'ok') { this.communitySupport = 'ok'; this.communityNotice = null; this.emit('change'); }
       return;
@@ -1376,18 +1379,22 @@ class KaraFunBridge extends EventEmitter {
   }
 
   // Ajout d'un titre de la communauté resté sans trace dans la file de
-  // KaraFun (vérifié par le bar après 15 s sans accusé). Compte comme un
-  // refus de ce titre ; deux titres différents avant tout accord : refus
-  // global. Rend true si le refus est global.
+  // KaraFun (vérifié par le bar après 15 s sans accusé). Sans réponse de
+  // KaraFun (réseau coupé, file pleine, redémarrage), rien n'est prouvé :
+  // 'lost', le titre repart comme un titre du catalogue. Accepté mais absent
+  // de la file : 'dropped', ce titre seul est retiré (le renvoyer
+  // bouclerait) ; deux titres différents avant tout accord : 'refused'.
   communityUnconfirmed(songId) {
-    if (this.communitySupport === 'refused') return true;
-    if (this.communitySupport !== 'unknown') return false;
-    this._communityFailed.add(Number(songId));
-    if (this._communityFailed.size < 2) return false;
+    const id = Number(songId);
+    if (this.communitySupport === 'refused') return 'refused';
+    if (!this._communityAccepted.delete(id)) return 'lost';
+    if (this.communitySupport !== 'unknown') return 'dropped';
+    this._communityFailed.add(id);
+    if (this._communityFailed.size < 2) return 'dropped';
     this.communitySupport = 'refused';
     this.communityNotice = `KaraFun n’a ajouté aucun des titres de la communauté envoyés par ${this.username}.`;
     this.emit('change');
-    return true;
+    return 'refused';
   }
 
   // Pour la page du bar : canal, permission « community » annoncée par
