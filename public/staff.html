@@ -2085,7 +2085,7 @@
       const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
       if (!r.ok) throw new Error(j.error);
       $('testRes').innerHTML = j.length ? j.map(s => `<li><div class="grow"><b>${esc(s.title)}</b> <span class="muted">${esc(s.artist)} · id ${s.songId}</span>${s.community ? ' <span class="badge community">Communauté</span>' : ''}</div><button class="btn small" data-add="${s.songId}"${s.community ? ' data-community="1"' : ''}>Ajouter à KaraFun (test)</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';
-      $('testRes').querySelectorAll('[data-add]').forEach(b => b.onclick = () => act('/api/staff/kf', { action: 'test-add', songId: +b.dataset.add, community: b.dataset.community === '1' }, 'Envoyé à KaraFun : regarde sa file'));
+      $('testRes').querySelectorAll('[data-add]').forEach(b => b.onclick = () => act('/api/staff/kf', { action: 'test-add', songId: +b.dataset.add, ...(b.dataset.community === '1' ? { community: true } : {}) }, 'Envoyé à KaraFun : regarde sa file'));
     } catch (e) { $('testRes').innerHTML = `<li class="muted">${esc(e.message)}</li>`; }
   };
   $('testQ').onkeydown = (e) => { if (e.key === 'Enter') $('testSearch').click(); };
