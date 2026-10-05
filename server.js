@@ -1749,11 +1749,13 @@ function publicState(person, tableId, managed = null) {
         const lock = tr.sel.ids[0] !== p.id ? 'duo' : tr.startedAt || isOnStage(tr, current) ? 'started'
           : tr.cancelled || tr.pulled || tr.absent ? 'leaving' : null;
         return { title: tr.sel.song.title, artist: tr.sel.song.artist,
-          songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId),
+          songId: tr.sel.song.songId, ...(tr.sel.song.community ? { community: true } : {}),
+          img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId),
           entryId: tr.sel.song.entryId || null, settings: tr.sel.song.settings || null, tracks: songTracksOf(kfItemOf(tr)),
           canAdjust: !lock, lock, ...sentDuo(tr, p, current) };
       }).concat(pending && pending.sel.ids.includes(p.id) ? [(lock => ({ title: pending.sel.song.title, artist: pending.sel.song.artist,
-        songId: pending.sel.song.songId, img: coverUrl(pending.sel.song.img), queueId: null, stage: false, sending: true,
+        songId: pending.sel.song.songId, ...(pending.sel.song.community ? { community: true } : {}),
+        img: coverUrl(pending.sel.song.img), queueId: null, stage: false, sending: true,
         entryId: pending.sel.song.entryId || null, settings: pending.sel.song.settings || null, canAdjust: !lock, lock }))(
         pending.sel.ids[0] !== p.id ? 'duo' : pending.cancelled ? 'leaving' : null)] : []),
     }));

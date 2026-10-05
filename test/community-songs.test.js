@@ -333,6 +333,11 @@ test('serveur : choisir un titre de la communauté, envoi avec le type 2, accus�
   const line = staff.queue.find(item => item.queueId === 'c1');
   assert.equal(line.community, true);
   assert.equal(line.song.community, true);
+  // Regression: ISSUE-001 — « Déjà prête dans la file » perdait le repère (et les paroles cherchaient le catalogue)
+  // Found by /qa on 2026-10-05
+  // Report: .gstack/qa-reports/run-20261005T203849Z/qa-report-127.0.0.1-2026-10-05.md
+  const ready = f.publicState(lea.person, '1', new Set([lea.person.id])).tablePeople.find(p => p.id === lea.person.id).inKaraFun;
+  assert.deepEqual(plain(ready.map(song => [song.title, !!song.community])), [['Bohemian Rhapsody (version acoustique)', true]]);
 });
 
 test('serveur : KaraFun refuse → titres de la communauté retirés, chanteurs prévenus, la soirée continue', async () => {
