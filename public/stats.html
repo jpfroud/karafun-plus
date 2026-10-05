@@ -609,7 +609,8 @@ function renderFocus() {
         .map(([value, label]) => h('div', {}, h('b', { text: String(value ?? '—') }), h('small', { text: label })))));
     box.appendChild(dataTable([['Titre'], ['Demandé'], ['Sur scène'], ['Attente', true], ['État']],
       singer.songs.map(song => ({ cells: [song.title, hhmm(song.requestedAt), song.stageAt ? hhmm(song.stageAt) : '—', dur(song.waitSec),
-        song.status === 'sung' ? 'chanté' : song.status === 'removed' ? `retiré (${song.removedBy === 'staff' ? 'bar' : song.removedBy === 'presence-max' ? '« Je suis là »' : 'chanteur'})` : 'en attente'] }))));
+        song.status === 'sung' ? 'chanté' : song.status === 'removed' ? `retiré (${song.removedBy === 'staff' ? 'bar' : song.removedBy === 'presence-max' ? '« Je suis là »'
+          : String(song.removedBy || '').startsWith('community-') ? 'refusé par KaraFun' : 'chanteur'})` : 'en attente'] }))));
   } else {
     const table = state.data.stats.tables.find(tb => tb.id === f.slice(2));
     if (!table) { box.hidden = true; return; }

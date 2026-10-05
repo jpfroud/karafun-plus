@@ -302,8 +302,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
 
   // Interrupteurs des réglages de titre (v1.4) et des titres de la
   // communauté abîmés : la valeur actuelle reste.
-  if ('communitySongs' in restoredSettings && typeof restoredSettings.communitySongs !== 'boolean') {
-    delete restoredSettings.communitySongs;
+  for (const key of ['communitySongs', 'communityConfirmed']) {
+    if (key in restoredSettings && typeof restoredSettings[key] !== 'boolean') delete restoredSettings[key];
   }
   if ('singerSongSettings' in restoredSettings && typeof restoredSettings.singerSongSettings !== 'boolean') {
     delete restoredSettings.singerSongSettings;

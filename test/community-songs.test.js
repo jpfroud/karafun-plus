@@ -62,6 +62,11 @@ test('doublons et titre en cours : même numéro dans deux numérotations, deux 
   const queue = [{ queueId: 1, songId: 7, singer: 'Léa', title: 'Catalogue' }, { queueId: 2, songId: 7, singer: 'Léa', title: 'Maison', community: true }];
   const { current } = analyzeState(queue, { state: 'playing', songPlaying: { songId: 7, singer: 'Léa', community: true } });
   assert.equal(current.queueId, 2, 'sans identifiant de file, le titre en cours se reconnaît avec son type');
+  // Repli par le titre : jamais un titre de l'autre numérotation.
+  const fallback = analyzeState([{ queueId: 1, songId: 9, singer: 'Tom', title: 'Même titre' }],
+    { state: 'playing', songPlaying: { songId: 7, title: 'Même titre', community: true } });
+  assert.equal(fallback.current.queueId, undefined, 'le titre du catalogue de même nom n’est pas pris pour celui sur scène');
+  assert.equal(fallback.upcoming.length, 1);
 });
 
 test('catalogue : sélection de la communauté demandée avec types=community, titres repérés', async () => {
@@ -139,7 +144,7 @@ test('KCS : refus d’un titre de la communauté → signalé une fois, sans pas
   bridge.on('community-add-refused', add => refused.push(add));
   bridge.add(70002, 'Léa · T1', 99999, null, { community: true });
   ws.receive({ id: lastAdd(ws).id, type: 'Error', payload: { type: 3, message: 'Permission denied' } });
-  assert.deepEqual(refused, [{ songId: 70002, singer: 'Léa · T1', message: 'Permission denied' }]);
+  assert.deepEqual(refused, [{ songId: 70002, singer: 'Léa · T1', message: 'Permission denied', global: true, repeat: false }]);
   assert.equal(bridge.communitySupport, 'refused');
   assert.equal(bridge.communityUsable(), false);
   assert.equal(bridge.lastError, null);
@@ -150,7 +155,7 @@ test('KCS : refus d’un titre de la communauté → signalé une fois, sans pas
   assert.equal(bridge.communityState().permitted, true);
 });
 
-test('KCS : file pleine ou réglages refusés ne disent rien de la communauté', async t => {
+test('KCS : file pleine ne dit rien de la communauté ; pas de réglages à l’ajout avant son accord', async t => {
   const { bridge, ws } = await kcs(t);
   ws.receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: { pitchMin: -6, pitchMax: 6, pitchStep: 1, tempoMin: -50, tempoMax: 50, tempoStep: 5 } } });
   const refused = [], options = [];
@@ -160,14 +165,46 @@ test('KCS : file pleine ou réglages refusés ne disent rien de la communauté',
   ws.receive({ id: lastAdd(ws).id, type: 'Error', payload: { type: 3, message: 'Queue is full' } });
   assert.equal(bridge.communitySupport, 'unknown');
   assert.equal(bridge.lastError, 'Commande KaraFun refusée : Queue is full');
-  // Avec des réglages : c'est d'abord un refus des réglages, le titre repart sans eux.
-  assert.deepEqual(bridge.add(70003, 'Zoé · T3', 99999, { pitch: -2 }, { community: true }), { pitch: -2 });
+  // Avant tout accord, un titre de la communauté part sans réglages : un refus ne vise qu'une chose.
+  assert.equal(bridge.add(70003, 'Zoé · T3', 99999, { pitch: -2 }, { community: true }), null);
+  assert.deepEqual(lastAdd(ws).payload, { song: { type: 2, id: 70003 }, options: { singer: 'Zoé · T3' }, position: 99999 });
+  ws.receive({ id: lastAdd(ws).id, type: 'remote.AddToQueueResponse', payload: {} });
+  assert.equal(bridge.communitySupport, 'ok');
+  // Accepté : les réglages partent avec le titre ; une Error est alors d'abord celle des réglages.
+  assert.deepEqual(bridge.add(70004, 'Zoé · T3', 99999, { pitch: -2 }, { community: true }), { pitch: -2 });
   ws.receive({ id: lastAdd(ws).id, type: 'Error', payload: { type: 3, message: 'Invalid options' } });
-  assert.deepEqual(options, [{ songId: 70003, singer: 'Zoé · T3', community: true }]);
+  assert.deepEqual(options, [{ songId: 70004, singer: 'Zoé · T3', community: true }]);
   assert.deepEqual(refused, []);
-  bridge.add(70003, 'Zoé · T3', 99999, null, { community: true });
-  ws.receive({ id: lastAdd(ws).id, type: 'Error', payload: { type: 3, message: 'Not allowed' } });
-  assert.equal(refused.length, 1, 'le second envoi, sans réglages, décide');
+  assert.equal(bridge.communitySupport, 'ok');
+});
+
+test('KCS : refus d’un titre précis, ou de tous les titres de la communauté sur un signal net', async t => {
+  const { bridge, ws } = await kcs(t);
+  const refused = [];
+  bridge.on('community-add-refused', add => refused.push([add.songId, add.global, add.repeat]));
+  const refuse = (songId, message) => {
+    bridge.add(songId, 'X', 99999, null, { community: true });
+    ws.receive({ id: lastAdd(ws).id, type: 'Error', payload: { type: 3, message } });
+  };
+  refuse(70002, 'Song not found');
+  assert.deepEqual(refused.at(-1), [70002, false, false], 'un titre introuvable : ce titre seulement');
+  assert.equal(bridge.communityUsable(), true);
+  refuse(70002, 'Song not found');
+  assert.deepEqual(refused.at(-1), [70002, false, false], 'le même titre ne compte qu’une fois');
+  refuse(70005, 'Song not found');
+  assert.deepEqual(refused.at(-1), [70005, true, false], 'deux titres différents refusés avant tout accord : refus global');
+  assert.equal(bridge.communityUsable(), false);
+  refuse(70006, 'Song not found');
+  assert.deepEqual(refused.at(-1), [70006, true, true], 'déjà refusé : signalé sans nouvel avis');
+  bridge.resetCommunitySupport();
+  refuse(70007, 'Remote type not supported');
+  assert.deepEqual(refused.at(-1), [70007, true, false], 'message de type ou de droits : refus global');
+  bridge.resetCommunitySupport();
+  bridge.add(70008, 'X', 99999, null, { community: true });
+  ws.receive({ id: lastAdd(ws).id, type: 'remote.AddToQueueResponse', payload: {} });
+  refuse(70009, 'Permission denied');
+  assert.deepEqual(refused.at(-1), [70009, false, false], 'après un accord, un refus ne vise que ce titre');
+  assert.equal(bridge.communitySupport, 'ok');
 });
 
 test('recherche KaraFun : types=community, titres repérés et réponse gardée au journal', async t => {
@@ -193,7 +230,7 @@ const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const fromServer = createRequire(path.join(root, 'server.js'));
 
-function harness() {
+function harness({ timers = false } = {}) {
   const entry = source.lastIndexOf('main().catch(');
   const quietFs = { ...fs, mkdirSync() {}, appendFileSync() {}, writeFileSync() {}, renameSync() {},
     readdirSync() { return []; }, unlinkSync() {} };
@@ -201,10 +238,12 @@ function harness() {
   fixtureProcess.argv = [process.argv[0], path.join(root, 'server.js'), '--demo'];
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console: { ...console, log() {} }, Buffer, URL,
-    setTimeout: () => ({ unref() {} }), clearTimeout() {}, setImmediate, AbortSignal };
+    ...(timers ? { setTimeout, clearTimeout } : { setTimeout: () => ({ unref() {} }), clearTimeout() {} }), setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, handlers, access, journal, sync, staffState, publicState,
-      communityAddRefused, tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
+      communityAddRefused, wireBridge, resendWithoutOptions, abandonRestart, communityHighlights, rememberCatalogSongs,
+      restart: () => restartOp, setRestart: op => { restartOp = op; }, sweep: () => restartSweep,
+      tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
       handle: server.listeners('request')[0], STAFF_KEY, PORT };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
@@ -221,7 +260,10 @@ const COMMUNITY = [{ songId: 70002, title: 'Bohemian Rhapsody (version acoustiqu
   { songId: 71000, title: 'Chanson du bar', artist: 'Les Habitués' }];
 
 // Vrai pont KaraFun, prêt, sur un faux canal KCS ; recherche simulée.
-function kcsBridge(f, { echo = false } = {}) {
+// `confirmed` : KaraFun a déjà accepté un titre de la communauté (sa
+// télécommande les annonce « non affichés », comme au bar le 2 octobre).
+function kcsBridge(f, { echo = false, confirmed = true } = {}) {
+  f.settings.communityConfirmed = confirmed;
   const bridge = new KaraFunBridge();
   const sent = [];
   Object.assign(bridge, { protocol: 'kcs', ready: true, connected: true, queue: [], status: { state: 'idle', current: null } });
@@ -284,6 +326,43 @@ test('serveur : recherche du catalogue puis de la communauté, repérée ; une B
   assert.ok((await get(f, '/api/search?q=queen')).body.every(song => !song.community));
   assert.deepEqual(bridge.searches, [['queen', false]]);
   assert.equal(f.publicState(null, null).community.enabled, false);
+});
+
+test('serveur : KaraFun annonce la communauté « non affichée » → proposée aux téléphones seulement après un essai réussi du bar', async () => {
+  const f = harness();
+  const { bridge, sent } = kcsBridge(f, { confirmed: false });
+  assert.ok((await get(f, '/api/search?q=queen')).body.every(song => !song.community), 'pas proposée avant l’essai');
+  assert.deepEqual(plain(f.publicState(null, null).community), { enabled: false, off: false, refused: false, unconfirmed: true });
+  // Le bar cherche dans « Diagnostic KaraFun » (sa clé) : la communauté y figure pour l'essayer.
+  const staffSearch = await get(f, `/api/search?q=queen&kinds=all&key=${encodeURIComponent(f.STAFF_KEY)}`);
+  assert.ok(staffSearch.body.some(song => song.community));
+  assert.ok((await get(f, '/api/search?q=queen&kinds=all')).body.every(song => !song.community), 'kinds=all réservé au bar');
+  await f.call('POST /api/staff/kf', { action: 'test-add', songId: 71000, community: true });
+  assert.deepEqual(sent.at(-1).payload.song, { type: 2, id: 71000 });
+  bridge.communitySupport = 'ok'; // KaraFun a répondu AddToQueueResponse
+  f.sync();
+  assert.equal(f.settings.communityConfirmed, true, 'accord gardé pour les soirées suivantes');
+  assert.equal(f.publicState(null, null).community.enabled, true);
+  bridge.communitySupport = 'unknown'; // nouvelle soirée, KaraFun relancé
+  assert.ok((await get(f, '/api/search?q=queen')).body.some(song => song.community), 'toujours proposée');
+  bridge.communitySupport = 'refused';
+  f.sync();
+  assert.equal(f.settings.communityConfirmed, false, 'un refus efface l’accord');
+});
+
+test('serveur : page restée ouverte d’avant la mise à jour — un titre de la communauté sans repère le retrouve', async () => {
+  const f = harness();
+  const { sent } = kcsBridge(f);
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  await get(f, '/api/search?q=queen');
+  await f.call('POST /api/table/song', { ...lea.body, song: { songId: 70002, title: 'Bohemian Rhapsody (version acoustique)', artist: 'Queen' }, mode: 'append' });
+  await f.call('POST /api/table/song', { ...lea.body, song: { songId: 70002, title: 'Bohemian Rhapsody', artist: 'Queen' }, mode: 'append' });
+  assert.deepEqual(plain(f.sched.songsOf(lea.person).map(song => [song.title, !!song.community])),
+    [['Bohemian Rhapsody (version acoustique)', true], ['Bohemian Rhapsody', false]]);
+  f.settings.auto = true;
+  f.sync();
+  assert.deepEqual(sent.find(m => m.type === 'remote.AddToQueueRequest').payload.song, { type: 2, id: 70002 });
 });
 
 test('serveur : une réponse qui ignore types=community n’est jamais présentée comme la communauté', async () => {
@@ -375,17 +454,196 @@ test('serveur : KaraFun refuse → titres de la communauté retirés, chanteurs 
   assert.deepEqual(next.payload.song, { type: 1, id: 101 });
   assert.ok(f.pending() && !f.pending().sel.song.community);
   // Les téléphones ne proposent plus la communauté et un nouveau choix est refusé clairement.
-  assert.deepEqual(plain(f.publicState(null, null).community), { enabled: false, off: false, refused: true });
+  assert.deepEqual(plain(f.publicState(null, null).community), { enabled: false, off: false, refused: true, unconfirmed: false });
   await rejects(f.call('POST /api/table/song', { ...tom.body, song: { songId: 71000, community: true }, mode: 'append' }),
     'COMMUNITY_REFUSED', /choisis un titre du catalogue/);
   assert.equal(f.staffState().community.support, 'refused');
-  // Le bar coupe puis réactive l'interrupteur : nouvel essai.
+  assert.equal(f.settings.communityConfirmed, false, 'l’accord est effacé');
+  // Le bar coupe puis réactive l'interrupteur : KaraFun redevient « pas encore essayé ».
   await f.call('POST /api/staff/settings', { communitySongs: false });
   await rejects(f.call('POST /api/table/song', { ...tom.body, song: { songId: 71000, community: true }, mode: 'append' }), 'COMMUNITY_OFF');
   await f.call('POST /api/staff/settings', { communitySongs: true });
   assert.equal(bridge.communitySupport, 'unknown');
+  // Sa télécommande les annonce « non affichés » : rien pour les téléphones avant un essai réussi.
+  await rejects(f.call('POST /api/table/song', { ...tom.body, song: { songId: 71000, community: true }, mode: 'append' }), 'COMMUNITY_REFUSED');
+  bridge.communitySupport = 'ok'; // essai « Ajouter à KaraFun (test) » accepté
+  f.sync();
   await f.call('POST /api/table/song', { ...tom.body, song: { songId: 71000, community: true }, mode: 'append' });
   await rejects(f.call('POST /api/staff/settings', { communitySongs: 'oui' }), null, /oui ou non/);
+});
+
+// Regression: relecture gstack /review et Codex (PR #14) — refus ciblé, envoi en attente, relance, renvois
+test('serveur : refus d’un seul titre → seul ce titre quitte la liste, la communauté reste proposée', async () => {
+  const f = harness();
+  const { sent } = kcsBridge(f);
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  const tom = singer(f, tb, 'Tom');
+  await get(f, '/api/search?q=queen');
+  await f.call('POST /api/table/song', { ...lea.body, song: { songId: 71000, community: true }, mode: 'append' });
+  await f.call('POST /api/table/song', { ...tom.body, song: { songId: 70002, community: true }, mode: 'append' });
+  f.settings.auto = true;
+  f.sync();
+  const first = sent.filter(m => m.type === 'remote.AddToQueueRequest').at(-1);
+  const owner = [lea, tom].find(x => first.payload.options.singer.startsWith(x.person.name));
+  const other = owner === lea ? tom : lea;
+  f.communityAddRefused({ songId: first.payload.song.id, singer: first.payload.options.singer, message: 'Song not found', global: false });
+  assert.deepEqual(f.sched.songsOf(owner.person), [], 'le titre refusé est retiré');
+  assert.equal(f.sched.songsOf(other.person)[0].community, true, 'l’autre titre de la communauté reste');
+  assert.deepEqual(plain(owner.person.inbox.map(n => n.kind)), ['communityFailed']);
+  assert.equal(f.publicState(null, null).community.enabled, true, 'la communauté reste proposée');
+  assert.ok(f.sched.log.some(line => /KaraFun refuse « .* » \(Song not found\) : titre de la communauté retiré de la liste/.test(line.msg)));
+  const next = sent.filter(m => m.type === 'remote.AddToQueueRequest').at(-1);
+  assert.notEqual(next, first, 'le passage suivant part');
+});
+
+test('serveur : un refus global, même venu d’un autre envoi (essai du bar), abandonne l’envoi de la communauté en attente', async () => {
+  const f = harness();
+  const { sent } = kcsBridge(f);
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  const tom = singer(f, tb, 'Tom');
+  await get(f, '/api/search?q=queen');
+  await f.call('POST /api/table/song', { ...lea.body, song: { songId: 71000, community: true }, mode: 'append' });
+  f.settings.auto = true;
+  f.sync();
+  assert.equal(f.pending()?.sel.song.community, true);
+  f.sched.chooseSong(tom.person, { songId: 101, title: 'Titre 101', artist: 'A' }, 'append');
+  f.communityAddRefused({ songId: 70002, singer: 'Test file karaoké', message: 'Permission denied', global: true, repeat: false });
+  assert.ok(!f.pending() || !f.pending().sel.song.community, 'l’envoi de la communauté en attente est abandonné');
+  assert.deepEqual(f.sched.songsOf(lea.person), []);
+  assert.deepEqual(sent.filter(m => m.type === 'remote.AddToQueueRequest').at(-1).payload.song, { type: 1, id: 101 });
+});
+
+test('serveur : relance ⏮ d’un titre de la communauté — copie refusée arrêtée, copie tardive retirée, renvois avec leur type', async () => {
+  const f = harness();
+  const { bridge, sent } = kcsBridge(f);
+  // Copie refusée par KaraFun : aucune copie n'existe, la relance s'arrête.
+  f.setRestart({ songId: 70002, singer: 'Léa · T1', community: true, title: 'Maison', before: [], at: Date.now(), phase: 'adding',
+    originalQueueId: 'o1', trackedQueueId: null });
+  f.communityAddRefused({ songId: 70002, singer: 'Léa · T1', message: 'Song not found', global: false });
+  assert.equal(f.restart(), null);
+  assert.ok(f.sched.log.some(line => /KaraFun refuse la copie de « Maison »/.test(line.msg)));
+  // Relance abandonnée : la copie tardive (type 2) est retirée, pas le titre du catalogue de même numéro.
+  const copy = normalizeKcsItem({ id: 'late', song: { id: { type: 2, id: 70002 }, title: 'Maison', songTracks: [], options: { singer: 'Léa · T1' } } });
+  const twin = normalizeKcsItem({ id: 'twin', song: { id: { type: 1, id: 70002 }, title: 'Cat', songTracks: [], options: { singer: 'Léa · T1' } } });
+  f.abandonRestart({ songId: 70002, singer: 'Léa · T1', community: true, title: 'Maison', before: [], originalQueueId: 'o1',
+    copyQueueId: null, trackedQueueId: null }, { current: null, upcoming: [copy, twin], q: [copy, twin] }, 'Relance abandonnée.', Date.now());
+  assert.equal(f.sweep().community, true);
+  assert.deepEqual(sent.filter(m => m.type === 'remote.RemoveFromQueueRequest').map(m => m.payload.queueItemId), ['late']);
+  // Renvoi sans réglages d'un titre de la communauté : toujours le type 2.
+  bridge.communitySupport = 'ok';
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  await get(f, '/api/search?q=queen');
+  await f.call('POST /api/table/song', { ...lea.body, song: { songId: 71000, community: true }, mode: 'append' });
+  lea.person.song.settings = { pitch: -2 };
+  f.settings.auto = true;
+  f.sync();
+  const withOptions = sent.filter(m => m.type === 'remote.AddToQueueRequest').at(-1);
+  assert.deepEqual(withOptions.payload.song, { type: 2, id: 71000 });
+  assert.equal(withOptions.payload.options.pitch, -2);
+  f.resendWithoutOptions({ songId: 71000, singer: withOptions.payload.options.singer, community: true });
+  assert.deepEqual(sent.filter(m => m.type === 'remote.AddToQueueRequest').at(-1).payload,
+    { song: { type: 2, id: 71000 }, options: { singer: withOptions.payload.options.singer }, position: 99999 });
+});
+
+test('serveur : essai du bar avec un titre de la communauté, titre long gardé', async () => {
+  const f = harness();
+  const { sent } = kcsBridge(f);
+  await rejects(f.call('POST /api/staff/kf', { action: 'test-add', songId: 71000, community: true }), null, /Retrouve ce titre de la communauté/);
+  await get(f, '/api/search?q=queen');
+  await f.call('POST /api/staff/kf', { action: 'test-add', songId: 71000, community: true });
+  assert.deepEqual(sent.at(-1).payload.song, { type: 2, id: 71000 });
+  await f.call('POST /api/staff/kf', { action: 'test-add', songId: 101 });
+  assert.deepEqual(sent.at(-1).payload.song, { type: 1, id: 101 });
+  // Titre de la communauté très long : affiché, donc choisissable (raccourci).
+  f.rememberCatalogSongs([{ songId: 72000, title: 'T'.repeat(150), artist: 'A'.repeat(90), community: true }]);
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  await f.call('POST /api/table/song', { ...lea.body, song: { songId: 72000, community: true }, mode: 'append' });
+  assert.equal(f.sched.songsOf(lea.person)[0].title.length, 80);
+});
+
+test('serveur : sélection « Communauté » sans comparaison possible avec le catalogue → rien n’est proposé', async () => {
+  const f = harness();
+  kcsBridge(f);
+  const c = { highlights: async (type, { community = false } = {}) => community
+    ? [{ songId: 9, title: 'Écho', community: true }, { songId: 31, title: 'Maison', community: true }]
+    : [{ songId: 9, title: 'Écho' }] };
+  assert.deepEqual(plain((await f.communityHighlights(c, 'news')).map(song => song.title)), ['Maison'], 'écho du catalogue écarté');
+  const broken = { highlights: async (type, { community = false } = {}) => {
+    if (!community) throw new Error('Catalogue KaraFun : HTTP 503');
+    return [{ songId: 9, title: 'Écho', community: true }];
+  } };
+  await assert.rejects(f.communityHighlights(broken, 'news'), /HTTP 503/, 'échec du catalogue : erreur, pas de liste non vérifiée');
+  f.settings.communitySongs = false;
+  assert.deepEqual(plain(await f.communityHighlights(c, 'news')), []);
+});
+
+test('serveur : une recherche de la communauté qui traîne ne retarde pas le catalogue', async () => {
+  const f = harness({ timers: true });
+  const { bridge } = kcsBridge(f);
+  bridge.search = async (q, { community = false } = {}) => community ? new Promise(() => {}) : normalizeResults(CATALOG);
+  const started = Date.now();
+  const alive = setInterval(() => {}, 100); // le serveur HTTP garde le processus en vie ; ici, ce minuteur
+  let out;
+  try { out = await get(f, '/api/search?q=queen'); } finally { clearInterval(alive); }
+  assert.ok(Date.now() - started < 4000, `réponse en ${Date.now() - started} ms`);
+  assert.deepEqual(out.body.map(song => !!song.community), [false, false], 'résultats du catalogue seuls');
+});
+
+test('serveur + vrai pont KCS : un refus de KaraFun retire les titres et le passage suivant part', async t => {
+  const { bridge, ws } = await kcs(t, url => url.includes('type=search')
+    ? { ok: true, status: 200, text: async () => JSON.stringify(url.includes('types=community')
+      ? [{ id: 71000, title: 'Chanson du bar', artist: 'Les Habitués' }] : [{ id: 101, title: 'Titre 101', artist: 'A' }]) }
+    : { ok: true, status: 200, text: async () => `<script>var Settings = ${JSON.stringify({ kcs_url: 'wss://kcs.exemple.invalid/x' })};</script>` });
+  const f = harness();
+  f.settings.communityConfirmed = true;
+  f.setBridge(bridge);
+  f.wireBridge(bridge);
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  const tom = singer(f, tb, 'Tom');
+  await get(f, '/api/search?q=bar');
+  await f.call('POST /api/table/song', { ...lea.body, song: { songId: 71000, community: true }, mode: 'append' });
+  f.settings.auto = true;
+  f.sync();
+  const adds = () => ws.sent.filter(m => m.type === 'remote.AddToQueueRequest');
+  const first = adds().at(-1);
+  assert.deepEqual(first.payload.song, { type: 2, id: 71000 });
+  f.sched.chooseSong(tom.person, { songId: 101, title: 'Titre 101', artist: 'A' }, 'append');
+  ws.receive({ id: first.id, type: 'Error', payload: { type: 3, message: 'Permission denied' } });
+  await flush();
+  assert.deepEqual(f.sched.songsOf(lea.person), []);
+  assert.equal(bridge.communitySupport, 'refused');
+  assert.deepEqual(adds().at(-1).payload.song, { type: 1, id: 101 }, 'le passage suivant part, sans attendre 15 s');
+  assert.equal(f.publicState(null, null).community.enabled, false);
+});
+
+// Regression: relecture adversariale gstack (PR #14) — sans accusé, la reprise renvoyait le même titre en boucle
+test('serveur : ajout d’un titre de la communauté resté sans trace → retiré à la reprise du bar, jamais renvoyé en boucle', async () => {
+  const f = harness();
+  const { bridge, sent } = kcsBridge(f);
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  const tom = singer(f, tb, 'Tom');
+  await get(f, '/api/search?q=queen');
+  await f.call('POST /api/table/song', { ...lea.body, song: { songId: 71000, community: true }, mode: 'append' });
+  f.settings.auto = true;
+  f.sync();
+  assert.equal(f.pending()?.sel.song.community, true);
+  f.sched.chooseSong(tom.person, { songId: 101, title: 'Titre 101', artist: 'A' }, 'append');
+  f.pending().at = 0; // 15 s sans accusé ni trace dans la file de KaraFun
+  f.sync();
+  assert.equal(f.staffState().recoveredPending, true, 'le bar doit vérifier la file');
+  await f.call('POST /api/staff/reconcile-pending');
+  assert.deepEqual(f.sched.songsOf(lea.person), [], 'le titre resté sans trace quitte la liste');
+  assert.deepEqual(plain(lea.person.inbox.map(n => n.kind)), ['communityFailed']);
+  const adds = sent.filter(m => m.type === 'remote.AddToQueueRequest');
+  assert.equal(adds.filter(m => m.payload.song.type === 2).length, 1, 'jamais renvoyé');
+  assert.deepEqual(adds.at(-1).payload.song, { type: 1, id: 101 }, 'le passage suivant part');
+  assert.equal(bridge.communitySupport, 'unknown', 'un seul titre sans trace : pas encore un refus global');
 });
 
 test('serveur : un titre de la communauté ne sert jamais de Battle', async () => {
@@ -424,7 +682,9 @@ test('sauvegarde : le repère « communauté » et l’interrupteur du bar survi
 // ---------------------------------------------------------------- faux KaraFun (démo)
 test('faux KaraFun : recherche types=community et ajout marqué par l’ancien protocole local', async t => {
   const { startFakeKaraFun, COMMUNITY: FAKE_COMMUNITY, CATALOG: FAKE_CATALOG } = require('../fake-karafun');
-  const port = 4300 + Math.floor(Math.random() * 500);
+  const port = await new Promise(resolve => {
+    const probe = require('node:net').createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+  });
   const fake = await startFakeKaraFun({ port, autoplay: false });
   const bridge = new KaraFunBridge({ bases: [fake.base] });
   t.after(() => { bridge.disconnect(); fake.close(); });

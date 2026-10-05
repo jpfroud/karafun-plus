@@ -1531,9 +1531,10 @@
     const parts = [];
     if (c.off) parts.push('Coupé : les téléphones ne proposent pas les titres de la communauté.');
     else if (c.channel === false) parts.push('Cette ancienne télécommande KaraFun ne connaît pas les titres de la communauté : les téléphones ne les proposent pas.');
-    else if (c.support === 'refused') parts.push(`${c.notice || 'KaraFun refuse les titres de la communauté envoyés par la file.'} Les téléphones ne les proposent plus. Pour réessayer, coupe puis réactive cet interrupteur, ou fais un essai dans « KaraFun » → « Diagnostic KaraFun » ci-dessous.`);
-    else if (c.support === 'ok') parts.push('KaraFun a accepté un titre de la communauté envoyé par la file.');
-    else if (S.kf?.ready) parts.push(`Pas encore essayé avec ce KaraFun${c.permitted === false ? ' (sa télécommande annonce les titres de la communauté comme non affichés)' : ''} : fais un essai hors service avec « Ajouter à KaraFun (test) » sur un titre « Communauté », dans « KaraFun » → « Diagnostic KaraFun » ci-dessous.`);
+    else if (c.support === 'refused') parts.push(`${c.notice || 'KaraFun refuse les titres de la communauté envoyés par la file.'} Les téléphones ne les proposent plus. Pour réessayer (KaraFun mis à jour…), fais un essai dans « KaraFun » → « Diagnostic KaraFun » ci-dessous.`);
+    else if (c.support === 'ok' || c.confirmed) parts.push('KaraFun a accepté un titre de la communauté envoyé par la file : les téléphones les proposent.');
+    else if (c.unconfirmed) parts.push('La télécommande de KaraFun annonce les titres de la communauté comme non affichés : les téléphones ne les proposeront qu’après un essai réussi. Fais-le hors service avec « Ajouter à KaraFun (test) » sur un titre « Communauté », dans « KaraFun » → « Diagnostic KaraFun » ci-dessous.');
+    else if (S.kf?.ready) parts.push('Pas encore essayé avec ce KaraFun : fais un essai hors service avec « Ajouter à KaraFun (test) » sur un titre « Communauté », dans « KaraFun » → « Diagnostic KaraFun » ci-dessous.');
     $('communityInfo').textContent = parts.join(' ');
   }
 
@@ -2082,7 +2083,8 @@
     const q = $('testQ').value.trim(); if (q.length < 2) return;
     $('testRes').innerHTML = '<li class="muted">Recherche…</li>';
     try {
-      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
+      // `kinds=all` : titres de la communauté même avant tout accord de KaraFun, pour l'essayer.
+      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&kinds=all`, { headers: { 'x-staff-key': key } }); const j = await r.json();
       if (!r.ok) throw new Error(j.error);
       $('testRes').innerHTML = j.length ? j.map(s => `<li><div class="grow"><b>${esc(s.title)}</b> <span class="muted">${esc(s.artist)} · id ${s.songId}</span>${s.community ? ' <span class="badge community">Communauté</span>' : ''}</div><button class="btn small" data-add="${s.songId}"${s.community ? ' data-community="1"' : ''}>Ajouter à KaraFun (test)</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';
       $('testRes').querySelectorAll('[data-add]').forEach(b => b.onclick = () => act('/api/staff/kf', { action: 'test-add', songId: +b.dataset.add, ...(b.dataset.community === '1' ? { community: true } : {}) }, 'Envoyé à KaraFun : regarde sa file'));

@@ -82,7 +82,7 @@
   .client .waiting-list li { padding: 7px 0; border-bottom: 1px solid var(--line); }
   .client .waiting-list li:last-child { border: 0; }
   .client .catalog-target { margin: 8px 0 12px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); color: var(--muted); font-size: 14px; }
-  .client .catalog-filters { display: flex; gap: 7px; overflow-x: auto; padding: 12px 0 4px; scrollbar-width: thin; }
+  .client .catalog-filters { display: flex; flex-wrap: wrap; gap: 7px; padding: 12px 0 4px; }
   .client .catalog-filters button { white-space: nowrap; min-height: 36px; padding: 6px 10px; font-size: 13px; }
   .client .catalog-filters button.on { border-color: var(--accent); color: var(--text); }
   .client .catalog-content { min-height: 120px; }
@@ -937,9 +937,12 @@
       case 'inviteUnanswered': return t('{name} n’a pas répondu à temps : {person} chante « {title} » en solo.', values);
       case 'presenceRemoved': return tp(Number(p.skips) || 1, '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.',
         '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.', values);
+      case 'communityFailed': return p.name
+        ? t('KaraFun refuse « {title} » (duo avec {name}), titre de la communauté : il est retiré.', values)
+        : t('KaraFun refuse « {title} », titre de la communauté : il est retiré de la liste de {person}. Choisis un autre titre.', values);
       case 'communityRefused': return p.name
-        ? t('« {title} » (duo avec {name}) est retiré : KaraFun refuse les titres de la communauté envoyés par la file. Choisis un titre du catalogue.', values)
-        : t('« {title} » est retiré de la liste de {person} : KaraFun refuse les titres de la communauté envoyés par la file. Choisis un titre du catalogue.', values);
+        ? t('« {title} » (duo avec {name}) est retiré : KaraFun n’accepte pas les titres de la communauté ce soir.', values)
+        : t('« {title} » est retiré de la liste de {person} : KaraFun n’accepte pas les titres de la communauté ce soir. Choisis un titre du catalogue.', values);
       case 'closingPulled': return p.name
         ? t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {name}.', values)
         : t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.', values);

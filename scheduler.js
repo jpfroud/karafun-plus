@@ -616,23 +616,25 @@ class Scheduler {
     this.version++;
   }
 
-  // `by` : « self », ou « presence-max » (« Je suis là » manqué trop souvent).
   // KaraFun refuse les titres de la communauté : chacun quitte la liste de
   // son auteur, qui est prévenu, comme l'invitée d'un duo (sans le message
-  // « a annulé le duo », faux ici). Rend les titres retirés.
-  dropCommunitySongs() {
+  // « a annulé le duo », faux ici). `entryIds` : seulement ces titres (refus
+  // d'un titre précis, avis `communityFailed`). Rend les titres retirés.
+  dropCommunitySongs({ entryIds = null } = {}) {
     const dropped = [];
+    const kind = entryIds ? 'communityFailed' : 'communityRefused';
+    const targeted = song => song.community && (!entryIds || entryIds.includes(song.entryId));
     for (const p of this.people.values()) {
-      const gone = this.songsOf(p).filter(song => song.community);
+      const gone = this.songsOf(p).filter(targeted);
       if (!gone.length) continue;
-      const kept = this.songsOf(p).filter(song => !song.community);
+      const kept = this.songsOf(p).filter(song => !targeted(song));
       p.song = kept.shift() || null;
       p.backlog = kept;
       this._songsGone(p, gone, pid => !gone.some(song => song.duet?.partnerId === pid));
       for (const song of gone) {
-        this.notify(p.id, 'communityRefused', { title: song.title });
-        if (song.duet?.partnerId) this.notify(song.duet.partnerId, 'communityRefused', { title: song.title, name: p.name });
-        this._event('song.removed', { personId: p.id, entryId: song.entryId, by: 'community-refused' });
+        this.notify(p.id, kind, { title: song.title });
+        if (song.duet?.partnerId) this.notify(song.duet.partnerId, kind, { title: song.title, name: p.name });
+        this._event('song.removed', { personId: p.id, entryId: song.entryId, by: entryIds ? 'community-failed' : 'community-refused' });
         dropped.push({ personId: p.id, name: p.name, title: song.title });
       }
       if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
@@ -645,6 +647,7 @@ class Scheduler {
     return dropped;
   }
 
+  // `by` : « self », ou « presence-max » (« Je suis là » manqué trop souvent).
   removeSong(p, entryId, by = 'self') {
     const key = String(entryId || '');
     if (p.song && p.song.entryId === key) {

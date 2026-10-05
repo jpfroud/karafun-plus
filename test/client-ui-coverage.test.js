@@ -2555,3 +2555,38 @@ test('catalogue : Retour vers les résultats gardés par « ＋ Chanson » ne re
   assertQueenKept(page, 'Retour');
   assert.equal(searchUrls(page).length, sent, 'pas de nouvelle recherche');
 });
+
+// ================================================================ titres de la communauté
+// Regression: relecture gstack /review (PR #14) — sans le repère envoyé au
+// serveur, le titre de la communauté serait pris pour celui du catalogue de même numéro.
+test('communauté : intertitre et repère dans la recherche, fiche signalée, repère envoyé, sélection masquée si coupée', async () => {
+  const page = await open({ respond: url => {
+    if (url.startsWith('/api/search?')) return [{ songId: 42, title: 'Bohemian Rhapsody', artist: 'Queen' },
+      { songId: 42, title: 'Bohemian Rhapsody (acoustique)', artist: 'Queen', community: true }];
+    if (url.startsWith('/api/catalog/highlights?') && url.includes('kind=community')) return [{ songId: 7, title: 'Chanson maison', artist: 'Bar', community: true }];
+    return undefined;
+  } });
+  await page.click(page.node('nav-catalog'));
+  await page.type('searchInput', 'Queen');
+  await page.runTimers(300);
+  const content = page.node('catalogContent');
+  assert.equal(content.querySelectorAll('.catalog-subhead').length, 1, 'intertitre avant les titres de la communauté');
+  assert.match(content.textContent, /Bohemian Rhapsody.*Titres de la communauté.*Bohemian Rhapsody \(acoustique\)/s);
+  assert.equal(content.querySelectorAll('.community').length, 1, 'repère sur le seul titre de la communauté');
+  await page.tap('catalogContent', '[data-song-index="1"]');
+  assert.match(page.sheetHtml(), /hors catalogue officiel/);
+  assert.equal(page.$('songBattle'), null, 'jamais en Battle');
+  await page.click(page.node('appendSong'));
+  assert.deepEqual(page.posts.at(-1), ['/api/table/song', { table: '1', access: 'secret', personId: 'alice',
+    song: { songId: 42, title: 'Bohemian Rhapsody (acoustique)', artist: 'Queen', community: true }, mode: 'append' }]);
+  // Sélection « Communauté » : ses titres, avec une explication.
+  await page.click(page.node('nav-catalog'));
+  await page.tap(page.body, '[data-catalog="community"]');
+  assert.ok(page.requests.some(request => request.url === '/api/catalog/highlights?type=news&kind=community'));
+  assert.match(page.node('catalogContent').textContent, /^Communauté.*hors catalogue officiel.*Chanson maison/s);
+  // Coupée par le bar : la sélection disparaît et l'écran revient aux playlists.
+  page.state.community = { enabled: false, off: true, refused: false };
+  await page.poll();
+  assert.equal(page.node('catalogCommunity').hidden, true);
+  assert.equal(page.find(page.body, '[data-catalog="playlist"]').classList.contains('on'), true);
+});

@@ -13,7 +13,8 @@ function analyzeState(q = [], st = {}) {
     else {
       curIdx = q.findIndex(it => Number(it.songId) === Number(cur.songId || (cur.song && cur.song.id)) &&
         !!it.community === !!cur.community && (!cur.singer || it.singer === cur.singer));
-      if (curIdx < 0) curIdx = q.findIndex(it => it.title && it.title === (cur.title || (cur.song && cur.song.title)));
+      if (curIdx < 0) curIdx = q.findIndex(it => it.title && it.title === (cur.title || (cur.song && cur.song.title)) &&
+        !!it.community === !!cur.community);
     }
   }
   if (active && !cur && q.length) curIdx = 0;

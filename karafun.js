@@ -134,6 +134,9 @@ function maskCode(code) {
 }
 
 const COMMUNITY_OLD_REMOTE = 'Cette ancienne télécommande KaraFun ne connaît pas les titres de la communauté.';
+// Refus de KaraFun qui vise le type de titre ou les droits, et non un titre
+// précis : KaraFun ne prendra aucun titre de la communauté de la file.
+const COMMUNITY_GLOBAL_ERROR = /permission|denied|not allowed|forbidden|unauthori[sz]ed|not supported|unsupported|communit|type/i;
 
 const IMPORTANT_PERMISSIONS = [
   ['addToQueue', p => p?.addToQueue !== false, 'ajout de titres'],
@@ -337,6 +340,7 @@ class KaraFunBridge extends EventEmitter {
     this.communitySupport = 'unknown';
     this.communityNotice = null;
     this._communityAdds = new Map(); // identifiant KCS → ajout d'un titre de la communauté sans réponse
+    this._communityFailed = new Set(); // titres de la communauté refusés avant tout accord
     this.observedDefaults = {}; // volumes des voix d'un titre chargé sans réglage
     this._observedFor = null;
     this.nameConflictSince = null;
@@ -1304,7 +1308,11 @@ class KaraFunBridge extends EventEmitter {
     // Une ancienne télécommande ajouterait le titre du catalogue de même numéro.
     if (community && this.communityChannel() === false) throw new Error(COMMUNITY_OLD_REMOTE);
     const payload = { songId: Number(songId), pos, singer: String(singer || ''), ...(community ? { community: true } : {}) };
-    const allowed = settings && this.settingsSupport.addOptions !== 'refused' && this._settingsChannel();
+    // Titre de la communauté : pas de réglages à l'ajout tant que KaraFun n'a
+    // pas accepté ce type de titre, pour qu'un refus ne puisse viser qu'une
+    // chose. Les réglages sont alors rattrapés au début du titre.
+    const allowed = settings && this.settingsSupport.addOptions !== 'refused' && this._settingsChannel() &&
+      (!community || this.communitySupport === 'ok');
     const built = allowed ? addOptions({ singer: payload.singer, settings, ranges: this.songSettingsRanges(), duo, tracksAvailable })
       : { sent: null };
     if (built.sent) {
@@ -1330,6 +1338,7 @@ class KaraFunBridge extends EventEmitter {
   resetCommunitySupport() {
     this.communitySupport = 'unknown';
     this.communityNotice = null;
+    this._communityFailed.clear();
     this.emit('change');
   }
 
@@ -1337,22 +1346,48 @@ class KaraFunBridge extends EventEmitter {
   // ajout qui portait des réglages est d'abord un refus des réglages : le
   // titre repart sans eux, et c'est ce second envoi qui décide. « Queue is
   // full » ou des droits d'ajout retirés ne disent rien de la communauté.
+  // Le refus vise tous les titres de la communauté (`global`) sur un message
+  // de droits ou de type, ou quand deux titres différents sont refusés avant
+  // tout accord ; sinon seulement ce titre (retiré par son auteur, introuvable…).
   _communityAnswer(add, message) {
     if (message?.type !== 'Error') {
+      this._communityFailed.clear();
       if (this.communitySupport !== 'ok') { this.communitySupport = 'ok'; this.communityNotice = null; this.emit('change'); }
       return;
     }
     const text = String(message.payload?.message || message.payload?.type || 'erreur inconnue');
-    if (add.withOptions || /full|plein/i.test(text) || this.permissions?.addToQueue === false) {
+    if (add.withOptions) return; // refus des réglages : le nouvel envoi sans réglages décide
+    if (/full|plein/i.test(text) || this.permissions?.addToQueue === false) {
       this.lastError = `Commande KaraFun refusée : ${text}`;
       this.emit('change');
       return;
     }
-    this.communitySupport = 'refused';
-    this.communityNotice = `KaraFun refuse les titres de la communauté envoyés par ${this.username} (${text}).`;
-    this._record('info', 'communaute-refusee', { songId: add.songId, message: text });
-    this.emit('community-add-refused', { songId: add.songId, singer: add.singer, message: text });
+    const already = this.communitySupport === 'refused';
+    if (this.communitySupport === 'unknown') this._communityFailed.add(add.songId);
+    const global = already || (this.communitySupport === 'unknown' &&
+      (COMMUNITY_GLOBAL_ERROR.test(text) || this._communityFailed.size >= 2));
+    if (global && !already) {
+      this.communitySupport = 'refused';
+      this.communityNotice = `KaraFun refuse les titres de la communauté envoyés par ${this.username} (${text}).`;
+    }
+    this._record('info', global ? 'communaute-refusee' : 'titre-communaute-refuse', { songId: add.songId, message: text });
+    this.emit('community-add-refused', { songId: add.songId, singer: add.singer, message: text, global, repeat: already });
     this.emit('change');
+  }
+
+  // Ajout d'un titre de la communauté resté sans trace dans la file de
+  // KaraFun (vérifié par le bar après 15 s sans accusé). Compte comme un
+  // refus de ce titre ; deux titres différents avant tout accord : refus
+  // global. Rend true si le refus est global.
+  communityUnconfirmed(songId) {
+    if (this.communitySupport === 'refused') return true;
+    if (this.communitySupport !== 'unknown') return false;
+    this._communityFailed.add(Number(songId));
+    if (this._communityFailed.size < 2) return false;
+    this.communitySupport = 'refused';
+    this.communityNotice = `KaraFun n’a ajouté aucun des titres de la communauté envoyés par ${this.username}.`;
+    this.emit('change');
+    return true;
   }
 
   // Pour la page du bar : canal, permission « community » annoncée par
