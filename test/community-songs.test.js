@@ -67,6 +67,9 @@ test('doublons et titre en cours : même numéro dans deux numérotations, deux 
     { state: 'playing', songPlaying: { songId: 7, title: 'Même titre', community: true } });
   assert.equal(fallback.current.queueId, undefined, 'le titre du catalogue de même nom n’est pas pris pour celui sur scène');
   assert.equal(fallback.upcoming.length, 1);
+  const otherSinger = analyzeState([{ queueId: 1, songId: 9, singer: 'Tom', title: 'Même titre' }],
+    { state: 'playing', songPlaying: { songId: 7, title: 'Même titre', singer: 'Léa' } });
+  assert.equal(otherSinger.current.queueId, undefined, 'ni le même titre chanté par quelqu’un d’autre');
 });
 
 test('catalogue : sélection de la communauté demandée avec types=community, titres repérés', async () => {
