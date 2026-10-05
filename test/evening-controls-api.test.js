@@ -222,6 +222,11 @@ async function main() {
     }
     assert.equal(state.queueClearPending, false, 'Le vidage reste bloqué malgré les confirmations KaraFun.');
     assert.equal(state.queue.length, 0, 'Des chansons restent visibles dans la file.');
+    assert.equal((await fetch(base + '/api/staff/queue-clear-stop', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    })).status, 403, 'Un client ne peut pas arrêter le vidage.');
+    assert.deepEqual(await ok('/api/staff/queue-clear-stop', {}), { ok: true, wasPending: false },
+      'Vidage déjà fini : « Arrêter le vidage » ne change rien.');
     assert.equal(state.tables.length, 3);
     assert.equal(state.people.length, 2);
     assert.ok(state.people.some(person => person.id === alice.id));

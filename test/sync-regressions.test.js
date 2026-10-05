@@ -639,6 +639,311 @@ test('vider hors connexion garde les retraits à faire dans la sauvegarde', () =
   assert.equal(f.settings.queueClearPending, false);
 });
 
+test('vider sans KaraFun : le bar arrête l’attente, seuls nos titres annulés quittent KaraFun au retour', async () => {
+  const f = harness();
+  f.settings.auto = false;
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const s = song(441);
+  f.sched.chooseSong(p, s);
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  f.tracked().push({ queueId: 'deja-envoye', sel, addedAt: Date.now(), startedAt: null });
+  const bridge = f.bridge;
+  f.setBridge(null); // pas de code KaraFun, ou KaraFun fermé : sync() ne peut rien conclure
+  const result = f.clearQueue();
+  assert.equal(result.awaitingKaraFun, true);
+  assert.equal(result.karafunOffline, true, 'la page du bar doit savoir que rien n’a été retiré de KaraFun');
+  for (let i = 0; i < 50; i++) f.sync();
+  assert.equal(f.settings.queueClearPending, true, 'sans KaraFun, le vidage attend sa reconnexion');
+  const stopped = await f.handle('POST /api/staff/queue-clear-stop', {});
+  assert.deepEqual({ ...stopped }, { ok: true, wasPending: true });
+  assert.equal(f.settings.queueClearPending, false, 'le bar peut toujours sortir de l’attente, même sans KaraFun');
+  assert.equal(f.settings.auto, false, 'arrêter le vidage ne réactive pas l’envoi automatique');
+  assert.ok(f.sched.log.some(line => /arrêté le vidage de KaraFun/.test(line.msg)));
+  assert.deepEqual({ ...await f.handle('POST /api/staff/queue-clear-stop', {}) }, { ok: true, wasPending: false },
+    'un second clic (ou une page en retard) ne change rien');
+  // KaraFun revient : notre titre annulé part toujours, le titre ajouté à la main reste.
+  f.setBridge(bridge);
+  bridge.queue = [item('deja-envoye', s, sel.label), item('manuel', song(442), 'Invité manuel')];
+  bridge.status = { state: 'idle' };
+  f.sync();
+  assert.deepEqual(f.removes, ['deja-envoye']);
+  bridge.queue = [item('manuel', song(442), 'Invité manuel')];
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.deepEqual(f.removes, ['deja-envoye'], 'le titre ajouté directement dans KaraFun n’est jamais retiré');
+  assert.equal(f.settings.queueClearPending, false);
+});
+
+test('KaraFun garde un titre après le vidage : arrêter le vidage cesse les retraits et l’envoi reprend file vide', async () => {
+  const f = harness();
+  f.settings.auto = true;
+  f.settings.pushDelaySec = 0;
+  const manual = item('manuel-tenace', song(451), 'Invité manuel');
+  f.bridge.queue = [manual];
+  f.bridge.status = { state: 'idle' };
+  f.sync();
+  const result = f.clearQueue();
+  assert.equal(result.karafunOffline, false);
+  assert.deepEqual(f.removes, ['manuel-tenace']);
+  f.sync(); // KaraFun ignore le retrait (droits, titre chargé…)
+  assert.equal(f.settings.queueClearPending, true);
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(p, song(452));
+  f.sync();
+  assert.equal(f.adds.length, 0, 'rien ne part pendant le vidage');
+  assert.deepEqual({ ...await f.handle('POST /api/staff/queue-clear-stop', {}) }, { ok: true, wasPending: true });
+  assert.equal(f.settings.queueClearPending, false);
+  assert.equal(f.settings.auto, true);
+  f.sync();
+  assert.deepEqual(f.removes, ['manuel-tenace'], 'le titre gardé par KaraFun n’est plus retiré');
+  assert.equal(f.adds.length, 0, 'il reste devant : rien ne part tant que KaraFun le garde');
+  f.bridge.queue = [];
+  f.setEmptySince(Date.now() - 5000);
+  f.sync();
+  assert.equal(f.adds.length, 1, 'file KaraFun vide : le nouveau choix part');
+  assert.equal(f.adds[0].songId, 452);
+});
+
+test('vidage arrêté sans KaraFun : la chanson déjà sur scène au retour finit normalement son passage', async () => {
+  const f = harness();
+  f.settings.auto = false;
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const s = song(471);
+  f.sched.chooseSong(p, s);
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  f.tracked().push({ queueId: 'scene', sel, addedAt: Date.now(), startedAt: null });
+  const bridge = f.bridge;
+  f.setBridge(null); // KaraFun perdu : le vidage ne voit pas la scène et annule ce titre
+  f.clearQueue();
+  assert.equal(f.tracked()[0].cancelled, true);
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  const stage = item('scene', s, sel.label);
+  f.setBridge(bridge);
+  bridge.queue = [stage];
+  bridge.status = { state: 'playing', current: stage };
+  f.sync();
+  assert.deepEqual(f.removes, [], 'la chanson en lecture n’est pas interrompue');
+  assert.equal(f.tracked()[0].cancelled, false, 'elle ne compte plus comme un retrait en attente');
+  bridge.queue = [];
+  bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt, 'le passage chanté se termine dans l’historique');
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+  assert.equal(p.sung, 1);
+});
+
+test('vidage arrêté pendant un envoi : l’accusé déjà sur scène compte sans remettre le chanteur dans la file', async () => {
+  const f = harness();
+  const p = f.sched.join({ tableId: '1', name: 'Marine', headcount: 1 });
+  const s = song(481);
+  f.sched.chooseSong(p, s);
+  f.sync();
+  assert.equal(f.adds.length, 1);
+  f.bridge.ready = false; // KaraFun perdu avant l'accusé
+  f.clearQueue();
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  const stage = item('accuse-scene', s, f.adds[0].singer);
+  f.bridge.ready = true;
+  f.bridge.queue = [stage];
+  f.bridge.status = { state: 'playing', current: stage };
+  f.sync();
+  assert.deepEqual(f.removes, [], 'la chanson en lecture n’est pas interrompue');
+  assert.equal(f.tracked()[0].startedAt > 0, true);
+  assert.equal(p.sung, 1);
+  assert.equal(f.sched.Q.length, 0, 'le vidage ne recrée pas son ticket');
+});
+
+test('vidage arrêté pendant un envoi : un nouveau choix fait avant l’accusé garde sa place dans la file', async () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const p = f.sched.join({ tableId: '1', name: 'Marine', headcount: 1 });
+  const s = song(491);
+  f.sched.chooseSong(p, s);
+  f.sync();
+  assert.equal(f.adds.length, 1);
+  f.bridge.ready = false; // KaraFun perdu avant l'accusé
+  f.clearQueue();
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  f.sched.chooseSong(p, song(492)); // nouveau choix avant le retour de KaraFun
+  const stage = item('accuse-scene', s, f.adds[0].singer);
+  f.bridge.ready = true;
+  f.bridge.queue = [stage];
+  f.bridge.status = { state: 'playing', current: stage };
+  f.sync();
+  assert.deepEqual(f.removes, []);
+  assert.equal(p.song?.songId, 492);
+  assert.ok(f.sched.Q.includes(p.id), 'le nouveau choix garde son ticket');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.setEmptySince(Date.now() - 5000);
+  f.sync();
+  f.sync();
+  assert.equal(f.adds.at(-1).songId, 492, 'le nouveau choix part une fois la scène libre');
+});
+
+test('vidage enregistré par l’ancienne version puis arrêté : la chanson sur scène reste protégée', async () => {
+  const f = harness();
+  f.settings.auto = false;
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const s = song(495);
+  f.sched.chooseSong(p, s);
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  // Soirée restaurée d'avant ce correctif : drapeau levé, titre annulé sans repère.
+  f.settings.queueClearPending = true;
+  f.tracked().push({ queueId: 'ancien', sel, addedAt: Date.now(), startedAt: null, cancelled: true, removeRequestedAt: 0 });
+  const bridge = f.bridge;
+  f.setBridge(null);
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  const stage = item('ancien', s, sel.label);
+  f.setBridge(bridge);
+  bridge.queue = [stage];
+  bridge.status = { state: 'playing', current: stage };
+  f.sync();
+  assert.deepEqual(f.removes, []);
+  assert.equal(f.tracked()[0].cancelled, false, 'la chanson en lecture compte comme un passage');
+  bridge.queue = [];
+  bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt);
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)));
+});
+
+test('vidage arrêté pendant un envoi : l’accusé retiré mais lancé quand même dans KaraFun compte comme un passage', async () => {
+  const f = harness();
+  const p = f.sched.join({ tableId: '1', name: 'Marine', headcount: 1 });
+  const s = song(497);
+  f.sched.chooseSong(p, s);
+  f.sync();
+  assert.equal(f.adds.length, 1);
+  f.bridge.ready = false; // KaraFun perdu avant l'accusé
+  f.clearQueue();
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  const ack = item('accuse-attente', s, f.adds[0].singer);
+  f.bridge.ready = true;
+  f.bridge.queue = [ack];
+  f.bridge.status = { state: 'idle' };
+  f.sync();
+  assert.deepEqual(f.removes, ['accuse-attente'], 'l’accusé tardif est retiré');
+  assert.equal(p.sung, 0);
+  f.bridge.status = { state: 'playing', current: ack }; // KaraFun le lance quand même
+  f.sync();
+  assert.equal(f.tracked()[0].cancelled, false, 'la chanson en lecture n’est plus un retrait');
+  assert.equal(p.sung, 1, 'le passage chanté compte');
+  assert.ok(!f.sched.Q.includes(p.id), 'pas de ticket vide recréé');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt, 'le passage se termine dans l’historique');
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+  assert.equal(p.sung, 1, 'compté une seule fois');
+});
+
+test('vidage arrêté : l’accusé retiré puis lancé ne retire pas le ticket d’un nouveau choix', async () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const p = f.sched.join({ tableId: '1', name: 'Marine', headcount: 1 });
+  const s = song(499);
+  f.sched.chooseSong(p, s);
+  f.sync();
+  f.bridge.ready = false;
+  f.clearQueue();
+  await f.handle('POST /api/staff/queue-clear-stop', {});
+  const ack = item('accuse-nouveau', s, f.adds[0].singer);
+  f.bridge.ready = true;
+  f.bridge.queue = [ack];
+  f.bridge.status = { state: 'idle' };
+  f.sync();
+  f.sched.chooseSong(p, song(500)); // nouveau choix pendant que l'accusé attend son retrait
+  f.bridge.status = { state: 'playing', current: ack };
+  f.sync();
+  assert.equal(p.sung, 1);
+  assert.ok(f.sched.Q.includes(p.id), 'le nouveau choix garde son ticket');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.setEmptySince(Date.now() - 5000);
+  f.sync();
+  f.sync();
+  assert.equal(f.adds.at(-1).songId, 500, 'le nouveau choix part une fois la scène libre');
+});
+
+for (const [name, onStage] of [['retiré puis lancé', false], ['arrivé sur scène', true]]) {
+  test(`nouvelle soirée : l’accusé tardif d’un envoi de la soirée close (${name}) ne compte pas dans la nouvelle`, () => {
+    const f = harness();
+    const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+    const s = song(onStage ? 502 : 501);
+    f.sched.chooseSong(p, s);
+    f.sync();
+    assert.equal(f.adds.length, 1);
+    f.bridge.ready = false; // KaraFun perdu avant l'accusé
+    f.clearQueue();
+    f.clearEvening();
+    const fresh = { serial: f.sched.appearanceSerial, last: f.sched.lastGroup, served: f.sched.tableServeCounts.size };
+    const ack = item('accuse-ancienne-soiree', s, f.adds[0].singer);
+    f.bridge.ready = true;
+    f.bridge.queue = [ack];
+    f.bridge.status = onStage ? { state: 'playing', current: ack } : { state: 'idle' };
+    f.sync();
+    if (!onStage) {
+      assert.deepEqual(f.removes, ['accuse-ancienne-soiree']);
+      f.bridge.status = { state: 'playing', current: ack }; // KaraFun le lance quand même
+      f.sync();
+    }
+    assert.deepEqual(f.removes, onStage ? [] : ['accuse-ancienne-soiree'], 'la chanson en lecture continue');
+    assert.equal(f.sched.appearanceSerial, fresh.serial, 'pas de passage compté pour la soirée close');
+    assert.equal(f.sched.lastGroup, fresh.last);
+    assert.equal(f.sched.tableServeCounts.size, fresh.served);
+  });
+}
+
+test('Supprimer toutes les tables après un vidage hors connexion : la chanson sur scène au retour finit son passage', () => {
+  const f = harness();
+  f.settings.auto = false;
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  const s = song(498);
+  f.sched.chooseSong(p, s);
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  f.tracked().push({ queueId: 'scene-soiree', sel, addedAt: Date.now(), startedAt: null });
+  f.bridge.ready = false; // le vidage ne voit pas la scène
+  f.clearQueue();
+  f.clearEvening();
+  assert.equal(f.settings.queueClearPending, false);
+  const stage = item('scene-soiree', s, sel.label);
+  f.bridge.ready = true;
+  f.bridge.queue = [stage];
+  f.bridge.status = { state: 'playing', current: stage };
+  f.sync();
+  assert.deepEqual(f.removes, [], 'la chanson en lecture n’est pas interrompue');
+  assert.equal(f.tracked()[0].cancelled, false);
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+});
+
+test('Supprimer toutes les tables termine un vidage resté en attente de KaraFun', () => {
+  const f = harness();
+  f.settings.auto = false;
+  f.bridge.ready = false;
+  f.clearQueue();
+  assert.equal(f.settings.queueClearPending, true);
+  const reset = f.clearEvening();
+  assert.equal(reset.karafunOffline, true, 'la page du bar doit dire de vérifier la file KaraFun');
+  assert.equal(f.settings.queueClearPending, false, 'une nouvelle soirée ne garde pas le vidage de la précédente');
+  // Le lendemain, le bar met des titres directement dans KaraFun puis connecte la file.
+  f.bridge.ready = true;
+  f.bridge.queue = [item('dj-1', song(461), 'DJ'), item('dj-2', song(462), 'DJ')];
+  f.bridge.status = { state: 'idle' };
+  f.sync();
+  assert.deepEqual(f.removes, [], 'les titres de la nouvelle soirée restent dans KaraFun');
+});
+
 test('une seule personne reçoit Je suis là : la prochaine après la scène, jamais celle qui chante', () => {
   const f = harness();
   f.settings.auto = false;

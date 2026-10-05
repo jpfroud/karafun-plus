@@ -942,12 +942,20 @@
   function renderAlerts() {
     if (S.bootId && S.bootId !== dismissedBoot) { dismissedBoot = S.bootId; dismissedAlerts = {}; saveDismissed(); }
     const grace = S.settings?.presenceGraceSec || 30;
+    // KaraFun absent : rien n'a pu y être retiré ni vérifié. Les retraits
+    // attendent sa connexion ; « Arrêter le vidage » arrête d'attendre. Le
+    // vidage annonce déjà les retraits à faire : pas de seconde alerte.
+    const kfReady = !!S.kf?.ready;
+    const many = S.removalPending > 1;
     const alerts = [
       ['persistence', S.persistenceError ? `Sauvegarde impossible : ${S.persistenceError}. Envoi automatique suspendu.` : ''],
       ['recovered', S.recoveredPending ? 'Envoi interrompu à vérifier dans KaraFun avant de reprendre la file.' : ''],
-      ['clear', S.queueClearPending ? 'Vidage de la file en cours : vérifie KaraFun. Les nouveaux titres attendent la confirmation des retraits.' : ''],
+      ['clear', !S.queueClearPending ? '' : kfReady ? 'Vidage de la file en cours : vérifie KaraFun. Les nouveaux titres attendent la confirmation des retraits.' :
+        'File vidée ici, mais KaraFun n’est pas connecté : ses titres en attente seront retirés dès sa connexion, avant tout nouvel envoi.',
+        '<button type="button" class="btn small" data-alert-stop-clear>Arrêter le vidage</button>'],
       ['presence', S.presencePending?.length ? `En attente de « Je suis là » pour ${S.presencePending.join(' et ')}. Sans réponse ${grace} s après la fin du titre en cours, le passage suivant chante d’abord.` : ''],
-      ['removal', S.removalPending ? `${S.removalPending} retrait${S.removalPending > 1 ? 's' : ''} en attente de confirmation dans KaraFun. Vérifie sa file.` : ''],
+      ['removal', !S.removalPending ? '' : kfReady ? `${S.removalPending} retrait${many ? 's' : ''} en attente de confirmation dans KaraFun. Vérifie sa file.` :
+        S.queueClearPending ? '' : `${S.removalPending} titre${many ? 's envoyés' : ' envoyé'} à KaraFun ${many ? 'seront retirés' : 'sera retiré'} dès sa connexion.`],
       ['identity', S.kf?.identityNotice || ''],
       ['permission', S.kf?.permissionWarning || ''],
       ['addQueue', S.kf?.permissions?.addToQueue === false ? `KaraFun refuse l’ajout de titres pour ${S.kf.username || 'FileKaraoke'}. Donne-lui les droits dans KaraFun Pro.` : ''],
@@ -974,7 +982,10 @@
       kf.down ? `<div class="staff-alert kf-alert"><span>${esc(kf.text)} : les titres ne partent plus.</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span></div>` :
       connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';
     const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
-    const shown = alerts.filter(([key, text]) => dismissedAlerts[key] !== text).map(([key, text]) =>
+    // Une alerte qui porte sa propre sortie (« Arrêter le vidage ») ne se
+    // ferme pas : la croix masquerait le seul moyen d'en sortir.
+    const shown = alerts.filter(([key, text, actions]) => actions || dismissedAlerts[key] !== text).map(([key, text, actions]) => actions ?
+      `<div class="staff-alert with-actions"><span>${esc(text)}</span><span class="alert-actions">${actions}</span></div>` :
       `<div class="staff-alert"><span>${esc(text)}</span><button type="button" class="alert-close" data-dismiss-alert="${esc(key)}" aria-label="Fermer ce message" title="Fermer ce message">×</button></div>`);
     $('staffAlerts').innerHTML = kfAlert + gone.join('') + shown.join('');
   }
@@ -991,6 +1002,14 @@
       return;
     }
     if (event.target.closest?.('[data-alert-reconnect]')) { act('/api/staff/kf', { action: 'reconnect' }, 'Reconnexion…'); return; }
+    if (event.target.closest?.('[data-alert-stop-clear]')) {
+      if (!confirm('Arrêter le vidage ? La file ne retirera plus les titres ajoutés directement dans KaraFun : lance-les ou retire-les toi-même dans KaraFun. Les titres envoyés par la file en seront quand même retirés.')) return;
+      post('/api/staff/queue-clear-stop', {}).then(result => {
+        toast(result?.wasPending === false ? 'Le vidage n’était plus en cours. Vérifie la file de KaraFun.' : 'Vidage arrêté : la file ne retire plus les titres ajoutés directement dans KaraFun.');
+        load();
+      }).catch(error => toast(error.message, true));
+      return;
+    }
     if (event.target.closest?.('[data-alert-rename]')) { act('/api/staff/kf', { action: 'new-name' }, 'Nouveau nom demandé : redonne-lui les droits d’administrateur dans KaraFun'); return; }
     const goto = event.target.closest?.('[data-alert-goto]');
     if (goto) { goTo('plus', goto.dataset.alertGoto); $('code').focus?.(); return; }
@@ -1799,20 +1818,23 @@
       const result = await post('/api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
       await load();
       toast(result.autoStopped ? 'Tables effacées. Vérifie et vide les titres restants dans KaraFun, puis réactive l’envoi automatique dans « Plus ».'
-        : result.currentStillPlaying || result.otherKaraFunSongs || result.removalErrors || result.removalPending
+        : result.karafunOffline || result.currentStillPlaying || result.otherKaraFunSongs || result.removalErrors || result.removalPending
           ? 'Tables effacées. Vérifie et vide les titres restants dans KaraFun.'
           : 'Toutes les tables sont effacées.');
     } catch (error) { toast(error.message, true); }
   };
   $('clearQueue').onclick = async () => {
     if (!S) return;
-    if (!confirm('Retirer toutes les chansons en attente, y compris celles ajoutées directement dans KaraFun ? Les tables, chanteurs, QR et passages précédents seront conservés. La chanson en cours continuera.')) return;
+    if (!confirm('Retirer toutes les chansons en attente, y compris celles ajoutées directement dans KaraFun ? Les tables, chanteurs, QR et passages précédents seront conservés. La chanson en cours continuera.' +
+      (S.kf?.ready ? '' : ' KaraFun n’est pas connecté : sa file sera vidée dès sa connexion.'))) return;
     try {
       const result = await post('/api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
       await load();
-      toast(result.awaitingKaraFun
-        ? 'Retraits demandés. Vérifie que la file de KaraFun se vide avant de reprendre.'
-        : 'File vidée ; tables et chanteurs conservés.');
+      toast(result.karafunOffline
+        ? 'File vidée ici. KaraFun n’est pas connecté : sa file sera vidée dès sa connexion.'
+        : result.awaitingKaraFun
+          ? 'Retraits demandés. Vérifie que la file de KaraFun se vide avant de reprendre.'
+          : 'File vidée ; tables et chanteurs conservés.');
     } catch (error) { toast(error.message, true); }
   };
   $('recalculateQueue').onclick = () => {

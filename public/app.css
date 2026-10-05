@@ -152,9 +152,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .staff-alert .alert-close:hover { border-color: var(--accent); }
 .staff-alert.gone-alert { border-color: var(--warn); background: rgba(255,176,32,.12); flex-wrap: wrap; }
 .staff-alert .alert-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-/* Essais KaraFun arrêtés : texte long et deux boutons, passés dessous sur téléphone. */
-.staff-alert.kf-stopped { flex-wrap: wrap; }
-.staff-alert.kf-stopped > span:first-child { flex: 1 1 16em; }
+/* Essais KaraFun arrêtés, vidage de la file : texte long et boutons, passés dessous sur téléphone. */
+.staff-alert.kf-stopped, .staff-alert.with-actions { flex-wrap: wrap; }
+.staff-alert.kf-stopped > span:first-child, .staff-alert.with-actions > span:first-child { flex: 1 1 16em; }
 .version-tag { font-size: 12px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
 .connect-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .connect-controls input { width: 126px; min-height: 38px; padding: 7px 10px; }
@@ -429,6 +429,8 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 }
 @media (max-width: 899px) {
   body.staff { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  /* Boutons des alertes du bar : cible au doigt de 44 px, téléphone et tablette. */
+  .staff-alert .alert-actions .btn { min-height: 44px; }
   /* Safari sur iPhone zoome sur un champ focalisé de moins de 16 px : aucun champ du bar n'est plus petit. */
   body.staff input:not([type=checkbox]):not([type=radio]), body.staff select, body.staff textarea { font-size: 16px; }
   /* Barre du haut collante et barre d'onglets fixe : une section atteinte par un
