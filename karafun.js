@@ -37,6 +37,9 @@ const SONG_TYPE = Object.freeze({ CATALOG: 1, COMMUNITY: 2 });
 // `songTracks` : pistes vocales du titre (4 chœurs, 5 et 6 voix guides),
 // seulement si KaraFun les donne. `options` : réglages du titre dans KaraFun.
 // `community` : titre de la communauté.
+// Un envoi d'un titre de la communauté : son numéro et le chanteur annoncé.
+function communityAddKey(songId, singer) { return `${Number(songId)}|${String(singer || '')}`; }
+
 function normalizeKcsItem(item) {
   const song = item.song || {}, quiz = item.quiz || {};
   const tracks = songTracksOf(song);
@@ -341,7 +344,7 @@ class KaraFunBridge extends EventEmitter {
     this.communityNotice = null;
     this._communityAdds = new Map(); // identifiant KCS → ajout d'un titre de la communauté sans réponse
     this._communityFailed = new Set(); // titres de la communauté refusés avant tout accord
-    this._communityAccepted = new Set(); // titres de la communauté dont KaraFun a accepté le dernier envoi
+    this._communityAccepted = new Set(); // envois de la communauté (titre et chanteur) acceptés par KaraFun, dernier envoi
     this.observedDefaults = {}; // volumes des voix d'un titre chargé sans réglage
     this._observedFor = null;
     this.nameConflictSince = null;
@@ -1321,7 +1324,7 @@ class KaraFunBridge extends EventEmitter {
       const { singer: _, ...rest } = built.options;
       payload.options = this.protocol === 'kcs' ? built.options : rest;
     }
-    if (community) this._communityAccepted.delete(payload.songId);
+    if (community) this._communityAccepted.delete(communityAddKey(payload.songId, payload.singer));
     const id = this._emit('queueAdd', payload);
     if (built.sent && id !== undefined) this._optionAdds.set(id, { songId: payload.songId, singer: payload.singer, ...(community ? { community } : {}) });
     if (community && id !== undefined) this._communityAdds.set(id, { songId: payload.songId, singer: payload.singer, withOptions: !!built.sent });
@@ -1353,7 +1356,7 @@ class KaraFunBridge extends EventEmitter {
   // tout accord ; sinon seulement ce titre (retiré par son auteur, introuvable…).
   _communityAnswer(add, message) {
     if (message?.type !== 'Error') {
-      this._communityAccepted.add(add.songId);
+      this._communityAccepted.add(communityAddKey(add.songId, add.singer));
       this._communityFailed.clear();
       if (this.communitySupport !== 'ok') { this.communitySupport = 'ok'; this.communityNotice = null; this.emit('change'); }
       return;
@@ -1379,15 +1382,17 @@ class KaraFunBridge extends EventEmitter {
   }
 
   // Ajout d'un titre de la communauté resté sans trace dans la file de
-  // KaraFun (vérifié par le bar après 15 s sans accusé). Sans réponse de
-  // KaraFun (réseau coupé, file pleine, redémarrage), rien n'est prouvé :
-  // 'lost', le titre repart comme un titre du catalogue. Accepté mais absent
-  // de la file : 'dropped', ce titre seul est retiré (le renvoyer
-  // bouclerait) ; deux titres différents avant tout accord : 'refused'.
-  communityUnconfirmed(songId) {
+  // KaraFun (vérifié par le bar après 15 s sans accusé). Le verdict porte sur
+  // le dernier envoi de ce titre pour ce chanteur : un essai du bar du même
+  // titre n'y change rien. Sans réponse de KaraFun (réseau coupé, file pleine,
+  // redémarrage), rien n'est prouvé : 'lost', le titre repart comme un titre
+  // du catalogue. Accepté mais absent de la file : 'dropped', ce titre seul
+  // est retiré (le renvoyer bouclerait) ; deux titres différents avant tout
+  // accord : 'refused'.
+  communityUnconfirmed(songId, singer) {
     const id = Number(songId);
     if (this.communitySupport === 'refused') return 'refused';
-    if (!this._communityAccepted.delete(id)) return 'lost';
+    if (!this._communityAccepted.delete(communityAddKey(id, singer))) return 'lost';
     if (this.communitySupport !== 'unknown') return 'dropped';
     this._communityFailed.add(id);
     if (this._communityFailed.size < 2) return 'dropped';

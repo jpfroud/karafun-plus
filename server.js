@@ -3709,7 +3709,7 @@ const handlers = {
       // renvoyer bouclerait. Il quitte la liste de son auteur (ou tous, si
       // KaraFun ne les prend pas). Sans réponse de KaraFun, il repart comme
       // un titre du catalogue.
-      const verdict = lost.song.community ? bridge.communityUnconfirmed?.(lost.song.songId) : null;
+      const verdict = lost.song.community ? bridge.communityUnconfirmed?.(lost.song.songId, lost.label) : null;
       if (verdict === 'refused') refuseCommunitySongs('ajout sans trace dans sa file');
       else if (verdict === 'dropped') {
         const dropped = sched.dropCommunitySongs({ entryIds: [lost.song.entryId] });
