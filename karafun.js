@@ -34,12 +34,12 @@ function readSettings(html) {
 // chansons différentes.
 const SONG_TYPE = Object.freeze({ CATALOG: 1, COMMUNITY: 2 });
 
-// `songTracks` : pistes vocales du titre (4 chœurs, 5 et 6 voix guides),
-// seulement si KaraFun les donne. `options` : réglages du titre dans KaraFun.
-// `community` : titre de la communauté.
 // Un envoi d'un titre de la communauté : son numéro et le chanteur annoncé.
 function communityAddKey(songId, singer) { return `${Number(songId)}|${String(singer || '')}`; }
 
+// `songTracks` : pistes vocales du titre (4 chœurs, 5 et 6 voix guides),
+// seulement si KaraFun les donne. `options` : réglages du titre dans KaraFun.
+// `community` : titre de la communauté.
 function normalizeKcsItem(item) {
   const song = item.song || {}, quiz = item.quiz || {};
   const tracks = songTracksOf(song);
