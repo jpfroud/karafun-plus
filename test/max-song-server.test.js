@@ -276,8 +276,13 @@ test('titres déjà dans la file à l’activation : gardés, signalés au bar, 
   assert.equal(r.body.message, '0 titre trop long retiré ; 1 ignoré (Titre introuvable dans la liste de ce chanteur.).');
   r = await staff(f, '/api/staff/songs-too-long/remove');
   assert.equal(r.body.message, '1 titre trop long retiré.');
-  // Le duo de Chloé : son invité Bob est prévenu du retrait du duo.
-  assert.ok(notices(bob).some(([kind]) => kind === 'duoCancelled'));
+  // Le duo de Chloé : son invité Bob apprend que le bar l'a retiré pour sa
+  // durée, et non que Chloé aurait annulé le duo (relecture gstack).
+  assert.equal(notices(bob).some(([kind]) => kind === 'duoCancelled'), false, 'pas de « Chloé a annulé le duo »');
+  assert.deepEqual(notices(bob).filter(([kind]) => kind === 'tooLongRemoved').at(-1),
+    ['tooLongRemoved', { title: 'Épopée', length: '6:12', limit: '5:00', name: 'Chloé' }]);
+  assert.deepEqual(notices(chloe).filter(([kind]) => kind === 'tooLongRemoved'),
+    [['tooLongRemoved', { title: 'Épopée', length: '6:12', limit: '5:00' }]]);
   assert.equal((await call(f, '/api/staff/songs-too-long/remove', {})).status, 403, 'réservé au bar');
 });
 

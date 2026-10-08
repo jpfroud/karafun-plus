@@ -3685,17 +3685,21 @@ const handlers = {
   },
   // Durée maximale (décision D9) : les titres trop longs déjà dans la file
   // restent jusqu'à ce geste du bar ; chaque personne est prévenue sur son
-  // téléphone. Les titres déjà dans KaraFun ou en cours d'envoi restent.
+  // téléphone, l'invitée d'un duo aussi (au lieu de « … a annulé le duo »).
+  // Les titres déjà dans KaraFun ou en cours d'envoi restent.
   'POST /api/staff/songs-too-long/remove': async () => {
     const limit = maxSongLimit();
     if (limit == null) throw new Error('Active d’abord « Limiter la durée des chansons ».');
     let removed = 0;
     const skipped = [];
     for (const { p, song, sec } of tooLongEntries()) {
-      try { sched.staffRemoveEntry(p.id, song.entryId); }
+      const partnerId = song.duet?.partnerId || null;
+      try { sched.staffRemoveEntry(p.id, song.entryId, pid => pid !== partnerId); }
       catch (error) { skipped.push(error.message); continue; }
       removed++;
-      sched.notify(p.id, 'tooLongRemoved', { title: song.title, length: minSec(sec), limit: minSec(limit) });
+      const params = { title: song.title, length: minSec(sec), limit: minSec(limit) };
+      sched.notify(p.id, 'tooLongRemoved', params);
+      if (partnerId) sched.notify(partnerId, 'tooLongRemoved', { ...params, name: p.name });
     }
     journalEvent('songLength.removed', { count: removed, limitSec: limit });
     if (removed) sched.note(`Le bar a retiré ${removed} titre${removed > 1 ? 's' : ''} plus long${removed > 1 ? 's' : ''} que ${minSec(limit)} ; les personnes concernées sont prévenues.`, 'staff');

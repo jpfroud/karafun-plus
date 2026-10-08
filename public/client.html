@@ -982,8 +982,10 @@
       case 'inviteUnanswered': return t('{name} n’a pas répondu à temps : {person} chante « {title} » en solo.', values);
       case 'presenceRemoved': return tp(Number(p.skips) || 1, '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.',
         '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.', values);
-      case 'tooLongRemoved': return t('« {title} » est retiré de la liste de {person} : le bar limite maintenant les chansons à {limit}.',
-        { ...values, limit: p.limit || '' });
+      // Invitée d'un duo : le titre était dans la liste de {name}.
+      case 'tooLongRemoved': return p.name
+        ? t('Le duo « {title} » avec {name} est retiré de la file : le bar limite maintenant les chansons à {limit}.', { ...values, limit: p.limit || '' })
+        : t('« {title} » est retiré de la liste de {person} : le bar limite maintenant les chansons à {limit}.', { ...values, limit: p.limit || '' });
       case 'closingPulled': return p.name
         ? t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {name}.', values)
         : t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.', values);

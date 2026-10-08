@@ -1208,6 +1208,7 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
     ['closingPulled', { title: 'T' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste d’Alice.'],
     // Durée maximale : retrait groupé des titres trop longs par le bar.
     ['tooLongRemoved', { title: 'T', limit: '5:00' }, '« T » est retiré de la liste d’Alice : le bar limite maintenant les chansons à 5:00.'],
+    ['tooLongRemoved', { title: 'T', limit: '5:00', name: 'Bob' }, 'Le duo « T » avec Bob est retiré de la file : le bar limite maintenant les chansons à 5:00.'],
     // Invitée d'un duo : le titre revient dans la liste de son auteur.
     ['closingPulled', { title: 'T', name: 'Bob' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de Bob.']];
   const state = baseState({ closing: { at: at + 600000, passed: true } });

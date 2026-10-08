@@ -606,6 +606,8 @@ window.CLIENT_TRANSLATIONS = {
       'Ce titre dure {length} : le bar limite les chansons à {limit}.': 'This song lasts {length}: the bar limits songs to {limit}.',
       '« {title} » est retiré de la liste de {person} : le bar limite maintenant les chansons à {limit}.':
         '“{title}” was removed from {person}’s list: the bar now limits songs to {limit}.',
+      'Le duo « {title} » avec {name} est retiré de la file : le bar limite maintenant les chansons à {limit}.':
+        'The duet “{title}” with {name} was removed from the queue: the bar now limits songs to {limit}.',
     },
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
