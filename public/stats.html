@@ -557,14 +557,16 @@ function drawColumns(plot, rows, { series, label, valueLabel, aria, shortLabel =
   if (short && unit) s('text', { x: left + (W - left - right) / 2, y: H - 6, 'text-anchor': 'middle' }, svg).textContent = unit;
 }
 
-// Barres horizontales d'une seule série.
-function drawBars(plot, rows, { value, format, label, aria, suffix = '' }) {
+// Barres horizontales d'une seule série. `seconds` : valeur en secondes,
+// graduée comme les attentes (pas rond selon la largeur, « 1 min 30 ») ;
+// sinon au plus une graduation toutes les 60 unités.
+function drawBars(plot, rows, { value, format, label, aria, seconds = false }) {
   const W = plotWidth(plot), left = Math.min(190, W * 0.4), right = 56, top = 6, rowH = 26, barH = 14;
-  const H = top + rows.length * rowH + 22;
-  const ticks = niceTicks(Math.max(...rows.map(value), 1), 4);
+  const H = top + rows.length * rowH + 22, room = W - right - left;
+  const ticks = seconds ? durationTicks(Math.max(...rows.map(value), 60), room) : niceTicks(Math.max(...rows.map(value), 1), Math.max(1, Math.min(4, Math.floor(room / 60))));
   const x = linear(0, ticks.at(-1), left, W - right);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': aria }, plot);
-  axisX(svg, ticks, x, top, H - 20, v => `${fmtNum(v, 1)}${suffix}`);
+  axisX(svg, ticks, x, top, H - 20, seconds ? v => tickDur(v, ticks[1]) : v => fmtNum(v, 1));
   rows.forEach((r, i) => {
     const y = top + i * rowH + (rowH - barH) / 2;
     const g = s('g', { class: 'st-row' }, svg);
@@ -689,7 +691,7 @@ function renderCharts() {
   card({ id: 'chartDead', title: 'Causes des temps morts',
     subtitle: g.deadGapCount ? `${dur(g.deadSec)} au total, ${dur(g.deadAvgSec)} en moyenne entre deux chansons (${g.deadGapCount} intervalle${g.deadGapCount > 1 ? 's' : ''})` : 'Aucun temps mort entre deux chansons.',
     table: () => [[['Cause'], ['Durée', true], ['Part', true]], g.deadCauses.map(c => ({ cells: [c.label, dur(c.sec), pct(g.deadSec ? c.sec / g.deadSec : null)] }))],
-    draw: plot => drawBars(plot, g.deadCauses, { value: c => c.sec / 60, format: c => dur(c.sec), label: c => c.label, aria: 'Temps morts par cause', suffix: ' min' }) });
+    draw: plot => drawBars(plot, g.deadCauses, { value: c => c.sec, format: c => dur(c.sec), label: c => c.label, aria: 'Temps morts par cause', seconds: true }) });
   const hourly = st.timeline.hourly;
   card({ id: 'chartHourly', title: 'Chansons par heure', subtitle: 'Selon l’heure de lancement.', legend: kinds,
     table: () => [[['Heure'], ['Solo', true], ['Duo', true], ['Battle', true], ['Hors file', true]], hourly.map(r => ({ cells: [hhmm(r.start), r.solo, r.duo, r.battle, r.native] }))],
@@ -703,7 +705,7 @@ function renderCharts() {
       const rows = tables.map(tb => ({ ...tb, muted: !!focus && !st.singers.some(x => focus.has(x.id) && String(x.tableId) === tb.id) }));
       drawBars(plot, rows, { value: tb => tb.turnsPerSingerHour || 0, format: tb => fmtNum(tb.turnsPerSingerHour, 2), label: tb => tableName(tb.id), aria: 'Passages par chanteur et par heure' });
       plot.appendChild(h('p', { class: 'small muted', text: 'Attente moyenne par table' }));
-      drawBars(plot, rows.filter(tb => tb.waits.n), { value: tb => tb.waits.avgSec / 60, format: tb => dur(tb.waits.avgSec), label: tb => tableName(tb.id), aria: 'Attente moyenne par table', suffix: ' min' });
+      drawBars(plot, rows.filter(tb => tb.waits.n), { value: tb => tb.waits.avgSec, format: tb => dur(tb.waits.avgSec), label: tb => tableName(tb.id), aria: 'Attente moyenne par table', seconds: true });
     } });
   renderSocial();
   renderSingerTable();

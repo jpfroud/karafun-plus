@@ -346,7 +346,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .staff-dialog { width: min(430px, calc(100vw - 28px)); max-width: none; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; box-shadow: 0 20px 60px #0009; }
 .staff-dialog::backdrop { background: #000b; }
 .solo-invite-qr { margin: 14px auto; }
-.solo-invite-url { width: 100%; margin-bottom: 12px; font-size: 12px; }
+.solo-invite-url { width: 100%; margin-bottom: 12px; font-size: 16px; }
 .share-code { font-size: clamp(27px, 6vw, 38px); font-weight: 800; text-align: center; letter-spacing: .18em; padding: 13px 7px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); font-variant-numeric: tabular-nums; }
 .battle-status { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); padding: 12px 14px; line-height: 1.5; }
 .battle-status.battle-requested { border-color: var(--accent); background: rgba(255,79,163,.12); font-weight: 700; }

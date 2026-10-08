@@ -131,12 +131,16 @@ class Element {
   appendChild(child) { child.parent = this; child.detached = false; this.children.push(child); return child; }
   remove() {
     if (!this.parent) return;
+    // Comme un navigateur : retirer l'élément qui a le focus le rend à la page.
+    for (let node = this.page.document.activeElement; node; node = node.parent) if (node === this) { this.page.document.activeElement = this.page.body; break; }
     this.parent.children = this.parent.children.filter(child => child !== this);
     this.parent = null;
     this.detached = true;
   }
+  blur() { if (this.page.document.activeElement === this) this.page.document.activeElement = this.page.body; }
   setSelectionRange(start, end) { this.selection = [start, end]; }
-  select() { this.selected = true; }
+  // Comme un navigateur : select() donne aussi le focus au champ.
+  select() { this.selected = true; this.page.document.activeElement = this; }
   scrollIntoView(options) { this.scrolled = options || true; }
 }
 function selectValue(select) {
@@ -3218,10 +3222,12 @@ test('partager le lien de la table en http : copie de secours, sinon le lien dan
   const respond = url => url.startsWith('/api/table/invite?') ? invite : undefined;
   const page = await open({ noClipboard: true, execCopy: true, respond });
   await page.click(page.node('inviteToggle'));
+  page.node('inviteShare').focus();
   await page.click(page.node('inviteShare'));
   assert.equal(page.execCommands, 1, 'copie de secours du navigateur');
   assert.deepEqual(page.execCopied, [invite.url], 'le lien de la table était sélectionné');
   assert.equal(page.document.body.children.some(node => node.tag === 'textarea'), false, 'champ temporaire retiré');
+  assert.ok(page.document.activeElement === page.node('inviteShare'), `le focus revient au bouton, pas en haut de la page (${page.document.activeElement.tag})`);
   assert.deepEqual(page.toast(), { text: 'Lien copié : colle-le dans ton message.', bad: false, warn: false, hidden: false });
 
   const failed = await open({ noClipboard: true, respond, languages: ['en-US'] });
@@ -3233,9 +3239,14 @@ test('partager le lien de la table en http : copie de secours, sinon le lien dan
   const shareReply = { code: '4321', url: 'http://192.0.2.2:3520/t/1/secret?reprise=abc', qr: 'data:image/png;base64,T' };
   const transfer = await open({ noClipboard: true, execCopy: true, respond: url => url === '/api/table/person/share' ? shareReply : undefined });
   await transfer.tap('peopleList', '[data-share-person="alice"]');
+  transfer.node('transferUrl').readOnly = true; // attribut readonly du balisage
+  transfer.node('copyTransfer').focus();
   await transfer.click(transfer.node('copyTransfer'));
   assert.deepEqual(transfer.execCopied, [shareReply.url]);
   assert.equal(transfer.toast().text, 'Lien copié : colle-le dans ton message.');
+  // Copié : le champ ne garde pas le focus (clavier et zoom d'iOS) et reste en lecture seule.
+  assert.ok(transfer.document.activeElement === transfer.node('copyTransfer'), `focus rendu au bouton « Copier le lien » (${transfer.document.activeElement.id || transfer.document.activeElement.tag})`);
+  assert.equal(transfer.node('transferUrl').readOnly, true);
 });
 
 // Regression: constat QA Q5 — le téléphone demandait les sélections alors que

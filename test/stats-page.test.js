@@ -895,13 +895,25 @@ test('graduations des durées : pas selon la largeur, au moins 60 unités entre 
     assert.ok([15, 30, 60, 120, 300, 600, 900, 1800].includes(step) || step % 3600 === 0, `${maxSec} s sur ${width} : pas rond ${step}`);
     if (width >= 120) for (const gap of gaps(ticks, width)) assert.ok(gap >= 60, `${maxSec} s sur ${width} : ${Math.round(gap)} unités entre deux étiquettes`);
   }
-  // Sur la page, à 360, 390 et 900 px : étiquettes de l'axe jamais serrées.
+  // Sur la page, à 360, 390 et 900 px : étiquettes d'axe jamais serrées, sur
+  // chaque graphique à axe horizontal gradué (attentes, temps morts, tables).
+  // Les axes de durée ont des libellés exacts (« 30 s », « 1 min 30 »), pas
+  // « 0,5 min ».
+  const durationAxes = ['Attente avant de chanter, par chanteur', 'Temps morts par cause', 'Attente moyenne par table'];
   for (const width of [360, 390, 900]) {
     const shown = loadPage({ width });
     await settle();
-    const svg = shown.doc.getElementById('chartWaitsPlot').byTag('svg')[0];
-    const labels = svg.children.filter(n => n.tagName === 'TEXT' && n.getAttribute('text-anchor') === 'middle').map(n => Number(n.getAttribute('x')));
-    assert.ok(labels.length >= 2, `${width} px : graduations`);
-    for (let i = 1; i < labels.length; i++) assert.ok(labels[i] - labels[i - 1] >= 60, `${width} px : ${Math.round(labels[i] - labels[i - 1])} unités`);
+    const svgs = ['chartWaitsPlot', 'chartRatesPlot', 'chartDeadPlot', 'chartTablesPlot'].flatMap(id => shown.doc.getElementById(id).byTag('svg'));
+    assert.equal(svgs.length, 5, `${width} px : cinq axes horizontaux`);
+    for (const svg of svgs) {
+      const name = `${width} px, ${svg.getAttribute('aria-label')}`;
+      const ticks = svg.children.filter(n => n.tagName === 'TEXT' && n.getAttribute('text-anchor') === 'middle');
+      const labels = ticks.map(n => Number(n.getAttribute('x')));
+      assert.ok(labels.length >= 2, `${name} : graduations`);
+      for (let i = 1; i < labels.length; i++) assert.ok(labels[i] - labels[i - 1] >= 60, `${name} : ${Math.round(labels[i] - labels[i - 1])} unités`);
+      if (durationAxes.some(label => svg.getAttribute('aria-label').startsWith(label))) {
+        for (const tick of ticks) assert.match(tick.textContent, /^(0 s|0 min|\d+ s|\d+ min( \d\d)?)$/, `${name} : libellé de durée exact`);
+      }
+    }
   }
 });

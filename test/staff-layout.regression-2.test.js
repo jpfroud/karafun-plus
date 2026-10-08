@@ -141,4 +141,10 @@ for (const page of ['client.html', 'staff.html']) {
     assert.doesNotMatch(match[2], /white-space|overflow-wrap|word-break/, `${page} : ${match[1].trim()} ne bloque pas le retour à la ligne`);
   }
 }
+// Regression: Q3 (relecture) — la copie de secours donne le focus au champ du
+// lien : sous 16 px, Safari iOS zoome la page et ne la rend pas ensuite.
+for (const width of [390, 1366]) assert.ok(parseFloat(computed('.solo-invite-url', width)['font-size']) >= 16, `${width} px : champ du lien du bar en 16 px`);
+const clientCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'client.html'), 'utf8');
+const transferField = /\.client \.transfer-url \{([^}]*)\}/.exec(clientCss);
+assert.ok(transferField && parseFloat(/font-size:\s*([\d.]+)px/.exec(transferField[1])?.[1]) >= 16, 'téléphone : champ du lien de transfert en 16 px');
 console.log('Bar : barre d’onglets, barre du haut, colonne d’actions et diagnostic à 360 px OK');

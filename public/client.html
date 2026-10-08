@@ -128,7 +128,7 @@
   .client .share-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-top: 8px; }
   .client .share-links .btn { width: 100%; margin: 0; }
   .client .share-links a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: var(--text); }
-  .client .transfer-url { width: 100%; margin-top: 8px; font-size: 12px; }
+  .client .transfer-url { width: 100%; margin-top: 8px; font-size: 16px; }
   .client .transfer-fallback { margin-top: 12px; font-size: 14px; }
   .client .transfer-fallback summary { cursor: pointer; color: var(--muted); }
   .client #transferBox .sheet-actions { margin-top: 10px; }
@@ -605,12 +605,15 @@
   // sinon copie de secours du navigateur sur `field` (champ du lien déjà
   // affiché, laissé sélectionné pour une copie à la main) ou sur un champ
   // temporaire. iOS ne sélectionne pas un champ en lecture seule : il devient
-  // modifiable le temps de la copie.
+  // modifiable le temps de la copie. select() donne le focus au champ : une
+  // fois copié, il revient au bouton touché (ni retour en haut de la page, ni
+  // clavier ou zoom d'iOS) ; copie refusée, le champ affiché reste sélectionné.
   async function copyLink(url, field = null) {
     try { await navigator.clipboard.writeText(url); return true; } catch (_) { /* Copie de secours. */ }
     const temporary = !field;
     const input = field || document.createElement('textarea');
     const readOnly = input.readOnly;
+    const back = document.activeElement;
     let copied = false;
     try {
       if (temporary) {
@@ -627,6 +630,10 @@
     finally {
       input.readOnly = readOnly;
       if (temporary) input.remove();
+      if (copied || temporary) {
+        input.blur?.();
+        if (back && back !== input && back !== document.body && document.contains?.(back)) back.focus?.({ preventScroll: true });
+      }
     }
     return copied;
   }
