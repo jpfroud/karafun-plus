@@ -174,6 +174,19 @@ La durée (secondes) arrive déjà sur les téléphones avec le catalogue (`cata
 
 ---
 
+## J. Durée maximale des titres (demande du 8 octobre)
+
+**Aujourd'hui** : aucune limite. La durée fiable d'un titre est connue du serveur dès qu'il l'a vu passer dans le catalogue ou la recherche (`catalogDurations`, `server.js:92`, rempli par les réponses de KaraFun qu'il relaie) ; celle envoyée par le téléphone (`song.duration`) n'est pas fiable. Les ajouts des clients passent par `POST /api/table/song`, `/api/table/duet` et `/api/table/battle/propose` ; l'heure de fermeture refuse déjà des ajouts de la même manière.
+
+**Changement**
+1. Réglage du bar (« Plus » › règles) : interrupteur « Limiter la durée des chansons » (**coupé par défaut**) et « Durée maximale » en minutes et secondes (5:00 proposé à l'activation, de 2:00 à 15:00). Gardé dans `settings` (sauvegarde de la soirée, validation tolérante : valeur invalide = option coupée) ; journal `settings.changed` avec la valeur.
+2. Contrôle serveur, option active : durée = celle du cache fiable, sinon celle du téléphone (bornée comme pour la barre de lecture) ; durée inconnue = accepté. Au-delà : refus « Ce titre dure 6:12 : le bar limite les chansons à 5:00. » (traduit) pour un titre, un duo ou une proposition de Battle d'un client. Le bar (ajout pour quelqu'un, Battle lancée par le bar), les titres déjà dans KaraFun et « Relancer » ne sont jamais concernés.
+3. Téléphones : dans le catalogue et la recherche, un titre trop long s'affiche « 6:12 · trop long » en grisé et ne s'ajoute pas (fiche avec le message ci-dessus) ; la limite est envoyée dans l'état public (`rules.maxSongSec`).
+4. Titres déjà dans la file au moment de l'activation (décision D9) : ils restent. Dans la file du bar, chacun porte « plus long que 5:00 » ; sous l'interrupteur apparaît « Retirer les N titres trop longs » (confirmation, titres pas encore dans KaraFun seulement) ; chaque personne concernée est prévenue sur son téléphone par l'avis de retrait existant. Seuls les nouveaux ajouts sont refusés.
+5. Tests : serveur (option coupée = aucun refus ; titre, duo et Battle refusés au-delà ; cache fiable prioritaire sur une durée falsifiée par le téléphone ; durée inconnue acceptée ; bar jamais limité ; titres déjà en file gardés et signalés ; retrait groupé avec avis ; sauvegarde et valeurs invalides), page du bar (interrupteur, durée, badge, retrait groupé), téléphones (titre trop long grisé, message traduit).
+
+---
+
 ## H. Graphique « Déroulé de la soirée » (défaut)
 
 **Cause confirmée** (capture reproduite dans Chromium) : la soirée du samedi est restée ouverte (« – en cours », « En direct ») car elle ne se clôt qu'avec « Supprimer toutes les tables » ; l'axe va donc du samedi 22:42 à maintenant, plusieurs jours plus tard ; toutes les barres tombent à 2 px dans les premiers pour cent du graphique et `timeTicks` (`stats.html:242-250`, pas maximal d'une heure, sans tenir compte de la largeur) produit des dizaines d'heures superposées.
@@ -234,4 +247,5 @@ Annuler la PR. Les nouveaux champs (personne : `nameRequired`, `soloKeyHash`, `l
 - **D2, solo qui perd sa page** : le QR individuel devient la clé personnelle de la soirée (récupération de la même personne sur n'importe quel téléphone, jamais une deuxième place), l'adresse garde la clé, et le bar a une liste des solistes triée par activité avec « QR de reprise » en un toucher.
 - **D3, tables** : la page principale ne montre que les personnes gérées par ce téléphone ; « Voir toute la table (N) » ouvre la liste complète.
 - **D6, voix guide** : un curseur par voix guide (voix 1, voix 2…), pas de curseur commun ; chaque titre revient à 0 au suivant.
+- **D9, durée maximale** : à l'activation, les titres déjà dans la file restent, signalés au bar avec un retrait groupé en un geste ; seuls les nouveaux ajouts sont refusés.
 - Autres choix par défaut de cette spécification (sans objection) : dernière activité affichée pour les solos seulement, seuils 20 et 45 minutes ; barre de lecture au bar et sur les téléphones ; pastille Spotify aussi sur l'écran Scène ; graphique corrigé dans la page seulement (pas de clôture automatique des soirées).
