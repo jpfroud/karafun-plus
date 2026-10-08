@@ -517,12 +517,29 @@ class Scheduler {
       const e = new Error('Ce prénom est réservé à la Battle. Choisis un autre prénom.');
       e.code = 'NAME_RESERVED'; throw e;
     }
-    if ([...this.people.values()].some(p => p.tableId === tableId && p.id !== exceptId &&
-        p.name.toLocaleLowerCase('fr') === clean.toLocaleLowerCase('fr'))) {
-      const e = new Error('Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.');
+    // « · » sépare le prénom de la table dans le nom d'un passage : un
+    // soliste « Max · Table 4 » passerait pour Max de la Table 4. Les points
+    // médians qui lui ressemblent (•, ∙, ⋅, ・) sont refusés aussi.
+    if (/[\u00B7\u0387\u2022\u2219\u22C5\u30FB\uFF65]/.test(clean)) {
+      const e = new Error('Le prénom ne peut pas contenir « · ».');
+      e.code = 'NAME_INVALID'; throw e;
+    }
+    const individual = !!this.table(tableId, false)?.individual;
+    if (this.nameRivals(tableId, exceptId).some(p => p.name.toLocaleLowerCase('fr') === clean.toLocaleLowerCase('fr'))) {
+      const e = new Error(individual ? 'Ce prénom est déjà inscrit ce soir. Ajoute l’initiale de ton nom (ex. Marie L.).' :
+        'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.');
       e.code = 'NAME_TAKEN'; throw e;
     }
     return clean;
+  }
+
+  // Personnes dont le prénom doit différer : la même table, ou, pour un
+  // soliste, tous les solistes de tous les groupes individuels (nommés par
+  // leur seul prénom, deux « Léa » seraient indiscernables).
+  nameRivals(tableId, exceptId = null) {
+    const individual = !!this.table(tableId, false)?.individual;
+    return [...this.people.values()].filter(p => p.id !== exceptId &&
+      (individual ? !!this.table(p.tableId, false)?.individual : p.tableId === tableId));
   }
 
   // Tables nommées d'un passage : celles de ses personnes, sans les groupes
@@ -2931,7 +2948,11 @@ class Scheduler {
     }
     if (deferralUndo.length) sel.deferralUndo = deferralUndo;
     sel.turnCredit = { before: creditBefore, after: this._turnCreditState(sel), rolledBack: false };
-    this.note(`À suivre : ${sel.label} — « ${sel.song.title} »`, 'next');
+    // Le journal montre le nom recalculé ; `sel.label` (nom reçu par KaraFun,
+    // peut-être à l'ancien format) ne sert qu'à y reconnaître le titre.
+    const ids = sel.ids || [];
+    const shown = ids.length && ids.every(pid => this.people.has(String(pid))) ? this.passageLabel(ids) : sel.label;
+    this.note(`À suivre : ${shown} — « ${sel.song.title} »`, 'next');
   }
 
   // Historique réservé au bar : qui est réellement monté sur scène, pour

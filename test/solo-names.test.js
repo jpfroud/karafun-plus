@@ -117,6 +117,45 @@ test('prénom « Battle collective » refusé (inscription et changement de pré
   assert.equal(s.join({ tableId: '4', name: 'Battle' }).name, 'Battle', 'un autre prénom proche reste possible');
 });
 
+// Regression: relecture du lot K — un soliste nommé par son seul prénom ne
+// doit pas pouvoir prendre le nom d'une personne de table ni d'un autre soliste.
+test('prénoms : « · » refusé, deux solistes de groupes individuels différents jamais homonymes', () => {
+  const { s, lea, max } = world();
+  for (const name of ['Max · Table 4', 'Max·4', 'Max ∙ Table 4', 'Max • Table 4', 'Max ⋅ Table 4', 'Max ・ Table 4']) {
+    assert.throws(() => s.join({ tableId: 'Comptoir', name }), error => error.code === 'NAME_INVALID' &&
+      error.message === 'Le prénom ne peut pas contenir « · ».');
+  }
+  assert.throws(() => s.join({ tableId: '2', name: 'Zoé · Table 2' }), /ne peut pas contenir « · »/);
+  assert.throws(() => s.rename(max, 'Max · Table 2'), /ne peut pas contenir « · »/);
+  const other = s.table('Comptoir-2');
+  assert.equal(other.individual, true);
+  assert.throws(() => s.join({ tableId: 'Comptoir-2', name: ' léa ' }), error => error.code === 'NAME_TAKEN' &&
+    error.message === 'Ce prénom est déjà inscrit ce soir. Ajoute l’initiale de ton nom (ex. Marie L.).');
+  assert.throws(() => s.join({ tableId: 'Comptoir', name: 'Léa' }), /déjà inscrit ce soir/, 'même groupe aussi');
+  const lou = s.join({ tableId: 'Comptoir-2', name: 'Lou' });
+  assert.throws(() => s.rename(lou, 'LÉA'), error => error.code === 'NAME_TAKEN');
+  assert.equal(s.rename(lea, 'Léa').name, 'Léa', 'son propre prénom reste possible');
+  assert.equal(s.join({ tableId: '2', name: 'Léa' }).name, 'Léa', 'une personne de table « Léa · Table 2 » se distingue');
+  assert.throws(() => s.join({ tableId: '4', name: 'Max' }), /déjà inscrit à cette table/);
+  assert.deepEqual(s.nameRivals('Comptoir-2').map(p => p.name).sort(), ['Lou', 'Léa', 'Sam']);
+});
+
+test('« À suivre » dans le journal : nom recalculé, jamais le texte reçu par KaraFun à l’ancien format', () => {
+  const { s, lea, max } = world();
+  s.chooseSong(lea, song(18));
+  const sel = s.select();
+  sel.label = 'Léa · En solo';
+  s.commit(sel);
+  assert.equal(s.log.at(-1).msg, 'À suivre : Léa — « Titre 18 »');
+  assert.equal(sel.label, 'Léa · En solo', 'le nom reconnu dans KaraFun ne change pas');
+  s.chooseSong(max, song(19));
+  const gone = s.select();
+  gone.label = 'Max · Table 4';
+  gone.ids = [max.id, 'parti'];
+  s.commit(gone);
+  assert.equal(s.log.at(-1).msg, 'À suivre : Max · Table 4 — « Titre 19 »', 'personne sortie de la soirée : texte enregistré');
+});
+
 test('duo noté par le bar : une personne sans prénom (« Solo N ») est refusée', () => {
   const { s, lea } = world();
   const solo = s.join({ tableId: 'Comptoir', name: 'Solo 4', nameRequired: true });
@@ -267,6 +306,10 @@ test('serveur : soirée enregistrée à l’ancien format, affichée au nouveau 
   const line = plain(f.publicState()).queue.find(row => row.queueId === 'q-2');
   assert.equal(line.singer, 'Léa & Max · Table 4', 'file des téléphones : nouveau format');
   assert.equal(line.table, 'Table 4');
+  // Regression: relecture du lot K — l'accusé écrit « À suivre » au nouveau format.
+  const notes = f.sched.log.map(entry => entry.msg);
+  assert.ok(notes.includes('À suivre : Léa & Max · Table 4 — « Titre 32 »'), notes.join('\n'));
+  assert.ok(!notes.some(msg => /En solo/.test(msg)), 'journal du bar sans « En solo »');
 });
 
 test('serveur : ligne KaraFun non suivie, le groupe des solistes retiré à l’affichage', () => {
@@ -309,6 +352,27 @@ test('serveur : « Relancer » renvoie le nom recalculé et reconnaît la copie 
   assert.equal(tr.queueId, 'q-1');
   f.play(item, [{ ...item, queueId: 'q-2', singer: 'Léa' }]);
   assert.equal(tr.queueId, 'q-2', 'la copie reprend le suivi du titre');
+});
+
+// Regression: relecture du lot K — une ligne de KaraFun non suivie, encore au
+// nom de l'ancienne version, est relancée sous le nom que la carte Scène montre.
+test('serveur : « Relancer » une ligne KaraFun non suivie retire le groupe des solistes du nom renvoyé', async () => {
+  const f = harness();
+  const line = { queueId: 'k0', songId: 80, title: 'Scène', singer: 'Léa & Bob · En solo + Table 9' };
+  f.play(line);
+  assert.equal(plain(f.staffState()).stage.singer, 'Léa & Bob · Table 9');
+  await f.handlers['POST /api/staff/kf']({}, {}, { action: 'restart' });
+  assert.deepEqual(f.bridge.adds.map(add => add.singer), ['Léa & Bob · Table 9'], 'même nom que la carte Scène');
+  assert.equal(f.restart().singer, 'Léa & Bob · Table 9');
+  // La copie arrive sous ce nom : reconnue (l'ancien nom ne l'est pas).
+  f.play(line, [{ ...line, queueId: 'k-old', singer: 'Léa & Bob · En solo + Table 9' }]);
+  assert.equal(f.restart().copyQueueId, undefined, 'l’ancien nom n’est pas la copie');
+  f.play(line, [{ ...line, queueId: 'k1', singer: 'Léa & Bob · Table 9' }]);
+  assert.equal(f.restart().copyQueueId, 'k1', 'copie reconnue sous le nom renvoyé');
+  const other = harness();
+  other.play({ queueId: 'm0', songId: 81, title: 'Scène', singer: 'Bob · Table 9' });
+  await other.handlers['POST /api/staff/kf']({}, {}, { action: 'restart' });
+  assert.equal(other.bridge.adds[0].singer, 'Bob · Table 9', 'nom sans groupe individuel : inchangé');
 });
 
 test('serveur : duo noté par le bar sur un soliste, partenaire sans prénom refusé', async () => {

@@ -96,6 +96,20 @@ sched.setHeadcount('7', 3);
 sched.join({ tableId: '7', name: 'Bruno' });
 sched.join({ tableId: '7', name: 'Chloé' });
 const fullTable = thrown(() => sched.join({ tableId: '7', name: 'Dan' }));
+// Regression: relecture du lot K — les refus de prénom levés par le
+// planificateur (et non par une route) arrivent aussi traduits.
+const schedulerJs = fs.readFileSync(path.join(root, 'scheduler.js'), 'utf8').replace(/\\'/g, '\'');
+const validNameBody = schedulerJs.slice(schedulerJs.indexOf('  validName('), schedulerJs.indexOf('\n  }\n', schedulerJs.indexOf('  validName(')));
+const nameMessages = [...validNameBody.matchAll(/'([A-ZÉ][^'\n]*[.»])'/g)].map(m => m[1]);
+assert.ok(nameMessages.length >= 5, `refus de prénom repérés : ${nameMessages.length}`);
+for (const message of nameMessages) assert.ok(serverText(message), `refus de prénom sans traduction : « ${message} »`);
+sched.table('Comptoir');
+sched.join({ tableId: 'Comptoir', name: 'Léa' });
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir', name: 'Battle collective' }))),
+  'This name is reserved for the Battle. Please choose another first name.');
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir-2', name: 'léa' }))),
+  'This first name is already signed up tonight. Add the initial of your last name (e.g. Mary L.).');
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir', name: 'Max · Table 4' }))), 'First names can’t contain “·”.');
 assert.match(serverText(fullTable), /^Table 7 is full \(3 signed up for 3 places\)/);
 assert.ok(serverSources.includes('Recherche KaraFun impossible : ${e.message}'));
 assert.equal(serverText('Recherche KaraFun impossible : délai dépassé'), 'KaraFun search failed: délai dépassé');

@@ -657,8 +657,9 @@ function startRestart() {
   }
   const tr = tracked.find(item => isOnStage(item, current));
   // Titre suivi : le nom recalculé (prénom seul pour un soliste), sous lequel
-  // la copie est aussi reconnue. Ligne non suivie : le nom vu dans KaraFun.
-  const singer = tr ? shownLabel(tr.sel) : String(current.singer || '');
+  // la copie est aussi reconnue. Ligne non suivie : le nom vu dans KaraFun,
+  // sans le groupe individuel, comme la carte Scène l'affiche.
+  const singer = tr ? shownLabel(tr.sel) : withoutSoloGroup(String(current.singer || ''));
   restartOp = { songId, singer, title: tr?.sel.song.title || current.title || 'le titre',
     before: q.map(item => String(item.queueId)), at: Date.now(), phase: 'adding',
     originalQueueId: current.queueId, trackedQueueId: tr ? tr.queueId : null };
@@ -2194,7 +2195,7 @@ function touchSeen(person, now = Date.now()) {
 
 // Prénom provisoire unique : « Solo 1 », « Solo 2 »… le plus petit libre.
 function placeholderName(tableId) {
-  const taken = new Set(sched.tableSingers(tableId).map(person => person.name.toLocaleLowerCase('fr')));
+  const taken = new Set(sched.nameRivals(tableId).map(person => person.name.toLocaleLowerCase('fr')));
   let n = 1;
   while (taken.has(`solo ${n}`)) n++;
   return `Solo ${n}`;
