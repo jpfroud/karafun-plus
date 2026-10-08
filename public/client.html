@@ -1290,8 +1290,10 @@
   let entry = { status: '', recover: null, error: '' };
   async function openPersonalEntry() {
     if (!state.table?.individual || entry.status) return;
-    if (list(state.managedIds).length) {
-      // Son chanteur est déjà sur ce téléphone : le QR d'événement n'a plus d'objet.
+    // Son chanteur est déjà sur ce téléphone : le QR d'événement n'a plus
+    // d'objet. Un chanteur marqué parti (doublon) n'empêche pas le QR
+    // personnel de proposer la reprise de son profil.
+    if (soloInvitation ? managedPeople().length : list(state.managedIds).length) {
       if (eventToken) forgetEventToken();
       return;
     }
@@ -1377,6 +1379,12 @@
     $('addPersonForm').hidden = individual || full;
     $('capacityNotice').hidden = individual || !full;
     $('inAppHint').hidden = !individual || !inAppBrowser;
+    // Venu par le QR de l'événement : l'adresse ne garde pas ce QR, et un autre
+    // navigateur crée un nouveau chanteur ; seul un nouveau scan dans la même
+    // application le retrouve. Le QR individuel, lui, reste dans l'adresse.
+    $('inAppHint').textContent = owned.some(person => person.viaEvent)
+      ? t('Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.')
+      : t('Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
     $('tableAllButton').hidden = individual;
     $('tableAllButton').textContent = t('Voir toute la table ({n})', { n: people.length });
     renderSongAccess(people, others, full);
