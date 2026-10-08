@@ -11,7 +11,7 @@ const io = require('socket.io-client');
 const settingsModule = require('../song-settings');
 const { TRACK, DEFAULTS, VOLUME_STEP, rangesFrom, normalizeSettings, validateField, sanitizeSettings,
   clampSettings, addOptions, queueItemOptions, liveFromStatus, songTracksOf, catchUpCommands,
-  settingsFromLive } = settingsModule;
+  settingsFromLive, neutralTarget } = settingsModule;
 const { Scheduler } = require('../scheduler');
 const { TableAccess } = require('../table-access');
 const { snapshotNight, restoreNight } = require('../night-state');
@@ -214,6 +214,57 @@ test('rattrapage au début du titre : seulement ce qui diffère, seulement les p
     defaults: { ...DEFAULTS, backing: 53 } }), [{ kind: 'track', type: 4, value: 53 }]);
 });
 
+// Chaque titre isolé (lot G) : un KaraFun peut garder les valeurs du titre
+// précédent ; au chargement, la cible d'un champ que le titre ne règle pas
+// est sa valeur neutre.
+test('valeurs neutres d’un titre qui se charge : 0 partout, chœurs seulement si le titre précédent les avait changés', () => {
+  assert.deepEqual(neutralTarget(), { pitch: 0, tempo: 0, guide: 0, guideB: 0 });
+  assert.deepEqual(neutralTarget({ backingDefault: 53, previousBacking: 53 }), { pitch: 0, tempo: 0, guide: 0, guideB: 0 },
+    'chœurs inchangés au titre précédent : pas touchés');
+  assert.deepEqual(neutralTarget({ backingDefault: 53, previousBacking: 0 }), { pitch: 0, tempo: 0, guide: 0, guideB: 0, backing: 53 });
+  assert.deepEqual(neutralTarget({ backingDefault: null, previousBacking: 0 }), { pitch: 0, tempo: 0, guide: 0, guideB: 0 },
+    'valeur par défaut du KaraFun inconnue : jamais devinée');
+  assert.deepEqual(neutralTarget({ backingDefault: 53, previousBacking: null }), { pitch: 0, tempo: 0, guide: 0, guideB: 0 });
+  // Titre ajouté directement dans KaraFun : ses propres options d'abord.
+  assert.deepEqual(neutralTarget({ backingDefault: 53, previousBacking: 0, options: { singer: 'X', pitch: -1, tempo: 10,
+    tracks: [{ track: { type: 4 }, volume: 20 }, { track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 25 }] } }),
+  { pitch: -1, tempo: 10, guide: 50, guideB: 25, backing: 20 });
+  assert.deepEqual(neutralTarget({ options: { pitch: 'x', tracks: 'abîmé' } }), { pitch: 0, tempo: 0, guide: 0, guideB: 0 });
+});
+
+test('début d’un titre : les champs non réglés reviennent à leur valeur neutre, seulement ce qui diffère', () => {
+  const neutral = neutralTarget();
+  const sticky = { queueId: 'q', pitch: 2, tempo: 0, guide: 25, guideB: 25, backing: 53, tracks: [4, 5, 6] };
+  assert.deepEqual(catchUpCommands({ settings: null, live: sticky, ranges: RANGES, neutral }), [
+    { kind: 'pitch', value: 0, neutral: true }, { kind: 'track', type: 5, value: 0, neutral: true },
+    { kind: 'track', type: 6, value: 0, neutral: true }]);
+  assert.deepEqual(catchUpCommands({ settings: null, live: { ...sticky, pitch: 0, guide: 0, guideB: 0 }, ranges: RANGES, neutral }), [],
+    'KaraFun a déjà remis à zéro : rien');
+  // Réglage du titre : il prime sur la valeur neutre, et n'est pas marqué neutre.
+  assert.deepEqual(catchUpCommands({ settings: { guide: 50 }, live: sticky, ranges: RANGES, neutral }), [
+    { kind: 'pitch', value: 0, neutral: true }, { kind: 'track', type: 5, value: 50 }, { kind: 'track', type: 6, value: 0, neutral: true }]);
+  // Duo : la voix guide B suit la voix A, réglée ou neutre.
+  assert.deepEqual(catchUpCommands({ settings: { guide: 50 }, live: sticky, duo: true, ranges: RANGES, neutral }), [
+    { kind: 'pitch', value: 0, neutral: true }, { kind: 'track', type: 5, value: 50 }, { kind: 'track', type: 6, value: 50 }]);
+  assert.deepEqual(catchUpCommands({ settings: null, live: { ...sticky, pitch: 0 }, duo: true, ranges: RANGES, neutral }), [
+    { kind: 'track', type: 5, value: 0, neutral: true }, { kind: 'track', type: 6, value: 0, neutral: true }]);
+  // Valeur actuelle inconnue (pas annoncée par KaraFun) : rien d'envoyé à l'aveugle.
+  assert.deepEqual(catchUpCommands({ settings: null, live: { queueId: 'q', pitch: null, tempo: null, guide: null, guideB: null,
+    backing: null, tracks: null }, duo: true, ranges: RANGES, neutral: { ...neutral, backing: 53 } }), []);
+  assert.deepEqual(catchUpCommands({ settings: null, live: { ...sticky, pitch: 0, guide: 0, guideB: null }, duo: true, ranges: RANGES,
+    neutral }), [], 'voix B neutre inconnue : rien');
+  // Titre sans voix guide B : la piste B n'est pas touchée.
+  assert.deepEqual(catchUpCommands({ settings: null, live: { ...sticky, pitch: 0, guide: 0, tracks: [4, 5] }, ranges: RANGES, neutral }), []);
+  // Chœurs : seulement si la cible neutre les porte (titre précédent changé).
+  assert.deepEqual(catchUpCommands({ settings: null, live: { ...sticky, pitch: 0, guide: 0, guideB: 0, backing: 0 }, ranges: RANGES,
+    neutral: { ...neutral, backing: 53 } }), [{ kind: 'track', type: 4, value: 53, neutral: true }]);
+  assert.deepEqual(catchUpCommands({ settings: null, live: { ...sticky, pitch: 0, guide: 0, guideB: 0, backing: 0 }, ranges: RANGES,
+    neutral }), []);
+  // Tempo d'un titre ajouté dans KaraFun (ses options) : visé tel quel.
+  assert.deepEqual(catchUpCommands({ settings: null, live: { ...sticky, pitch: 0, guide: 0, guideB: 0 }, ranges: RANGES,
+    neutral: neutralTarget({ options: { tempo: 10 } }) }), [{ kind: 'tempo', value: 10, neutral: true }]);
+});
+
 // ---------------------------------------------------------------- sauvegarde et reprise
 function night() {
   const sched = new Scheduler({ solverEnabled: false });
@@ -369,10 +420,49 @@ test('faux KaraFun : options d’ajout, options d’un titre de la file et régl
   assert.deepEqual(fake.state().queue[0].options, { singer: 'Léa · T1', pitch: 2 });
 });
 
+test('faux KaraFun collant (stickyLive) : le titre suivant garde les réglages du précédent, sauf ses options', async t => {
+  for (const stickyLive of [true, false]) {
+    const port = await freePort();
+    const fake = await startFakeKaraFun({ port, code: '123456', songSeconds: 60, autoplay: false, stickyLive });
+    t.after(() => fake.close());
+    const socket = io(fake.base, { query: { remote: 'kf123456' }, transports: ['websocket'], forceNew: true, reconnection: false });
+    t.after(() => socket.close());
+    await new Promise(resolve => socket.on('connect', resolve));
+    const firstQueue = nextEvent(socket, 'queue');
+    socket.emit('authenticate', { channel: '123456' });
+    await firstQueue;
+    const queued = nextEvent(socket, 'queue', q => q.length === 3);
+    socket.emit('queueAdd', { songId: 70000, singer: 'A', pos: 99999 });
+    socket.emit('queueAdd', { songId: 70001, singer: 'B', pos: 99999 });
+    socket.emit('queueAdd', { songId: 70002, singer: 'C', pos: 99999, options: { pitch: 1 } });
+    await queued;
+    let status = nextEvent(socket, 'status', s => s.state === 'playing' && s.songPlaying?.singer === 'A');
+    socket.emit('play');
+    await status;
+    status = nextEvent(socket, 'status', s => s.pitch === -3 && s.tracks.some(row => row.track.type === 5 && row.volume === 75));
+    socket.emit('pitch', -3);
+    socket.emit('trackVolume', { type: 5, volume: 75 });
+    await status;
+    const guide = live => live.tracks.find(row => row.track.type === 5).volume;
+    const playNext = async singer => {
+      const idle = nextEvent(socket, 'status', s => s.state === 'infoscreen');
+      socket.emit('next');
+      await idle;
+      const started = nextEvent(socket, 'status', s => s.state === 'playing' && s.songPlaying?.singer === singer);
+      socket.emit('play');
+      return started;
+    };
+    const b = await playNext('B');
+    assert.deepEqual([b.pitch, guide(b)], stickyLive ? [-3, 75] : [0, 0], 'titre sans options');
+    const c = await playNext('C');
+    assert.deepEqual([c.pitch, guide(c)], stickyLive ? [1, 75] : [1, 0], 'ses options priment');
+  }
+});
+
 test('module : rien d’autre n’est exporté par inadvertance', () => {
   assert.deepEqual(Object.keys(settingsModule).sort(), ['DEFAULTS', 'FIELDS', 'TRACK', 'VOLUME_STEP', 'addOptions', 'catchUpCommands',
-    'clampSettings', 'liveFromStatus', 'normalizeSettings', 'queueItemOptions', 'rangesFrom', 'sanitizeSettings', 'settingsFromLive',
-    'songTracksOf', 'validateField'].sort());
+    'clampSettings', 'liveFromStatus', 'neutralTarget', 'normalizeSettings', 'queueItemOptions', 'rangesFrom', 'sanitizeSettings',
+    'settingsFromLive', 'songTracksOf', 'validateField'].sort());
 });
 
 // Regression: relecture PR #11 — la piste B posée pour un duo est notée, suit

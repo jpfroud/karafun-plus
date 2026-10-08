@@ -46,8 +46,19 @@ function liveFrom(options = {}) {
   }
   return { pitch: Number.isInteger(options.pitch) ? options.pitch : 0, tempo: Number.isInteger(options.tempo) ? options.tempo : 0, volumes };
 }
+// KaraFun « collant » (`stickyLive`) : le titre qui démarre garde la
+// tonalité, le tempo et les volumes du précédent, sauf ce que ses options
+// règlent. Sert à vérifier que la file isole chaque titre.
+function stickyFrom(previous, options = {}) {
+  const volumes = { ...previous.volumes };
+  for (const row of Array.isArray(options.tracks) ? options.tracks : []) {
+    if (Number.isInteger(row?.track?.type)) volumes[row.track.type] = Number(row.volume);
+  }
+  return { pitch: Number.isInteger(options.pitch) ? options.pitch : previous.pitch,
+    tempo: Number.isInteger(options.tempo) ? options.tempo : previous.tempo, volumes };
+}
 
-function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, log = () => {} } = {}) {
+function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, stickyLive = false, log = () => {} } = {}) {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://localhost');
     const m = u.pathname.match(/^\/(\d+)\/?$/);
@@ -95,7 +106,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     state = 'playing';
     startedAt = Date.now();
     queue[0].status = 'playing';
-    live = liveFrom(queue[0].options);
+    live = stickyLive ? stickyFrom(live, queue[0].options) : liveFrom(queue[0].options);
     log(`[faux KaraFun] lecture : ${queue[0].title} (${queue[0].singer})`);
     broadcast();
     timer = setTimeout(() => {

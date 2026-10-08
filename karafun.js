@@ -318,7 +318,8 @@ class KaraFunBridge extends EventEmitter {
     this.settingsNotices = {}; // un avis par fonction, le plus récent en dernier
     this._settingsProbe = {};  // dernière valeur envoyée en direct, à confirmer par l'état de KaraFun
     this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
-    this.observedDefaults = {}; // volumes des voix d'un titre chargé sans réglage
+    this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
+    this._backingChanged = false;
     this._observedFor = null;
     this.nameConflictSince = null;
     this.nameConflictTries = 0;
@@ -682,7 +683,7 @@ class KaraFunBridge extends EventEmitter {
     this._appLeftChecked = false;
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
-      this.observedDefaults = {}; this._observedFor = null;
+      this.observedDefaults = {}; this._observedFor = null; this._backingChanged = false;
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -1357,24 +1358,37 @@ class KaraFunBridge extends EventEmitter {
     if (typeof volume !== 'number' || !Number.isFinite(volume)) throw new Error('Volume invalide.');
     this._settingsAllowed('manageVolumes');
     const value = Math.min(100, Math.max(0, Math.round(volume)));
+    if (type === TRACK.BACKING) this._backingChanged = true;
     this._emit('trackVolume', { type, volume: value });
     this._probeSetting('trackVolume', { [TRACK.BACKING]: 'backing', [TRACK.LEAD_A]: 'guide', [TRACK.LEAD_B]: 'guideB' }[type], value);
     return value;
   }
 
-  // Valeurs par défaut des voix sur ce KaraFun : relevées à la première trame
-  // d'un titre chargé (état 2 ou plus, pistes reçues) sans volumes dans ses
-  // options ; ensuite, le bar a pu les changer pendant le titre. L'état 1
-  // annonce le titre sans l'avoir chargé : pistes vides, ou celles d'avant.
-  // Celui du bar met les chœurs à 53.
+  // Valeur par défaut des chœurs sur ce KaraFun (celui du bar les met à 53) :
+  // relevée à la première trame d'un titre chargé (état 2 ou plus, pistes
+  // reçues) sans volumes dans ses options. L'état 1 annonce le titre sans
+  // l'avoir chargé : pistes vides, ou celles d'avant. Un KaraFun peut garder
+  // les volumes d'un titre au suivant : dès que les chœurs ont été changés
+  // (par la file, par des options de titre ou pendant un titre), la valeur
+  // n'est plus relevée, pour ne jamais prendre un réglage pour la valeur par
+  // défaut. La voix guide n'est jamais relevée : coupée par défaut (0).
   _observeDefaults(status) {
     const current = status.current;
-    if (!current || current.id == null || String(current.id) === this._observedFor) return;
+    if (!current || current.id == null) return;
     if (!(status.state >= 2) || !Array.isArray(status.tracks) || !status.tracks.length) return;
+    const backing = liveFromStatus({ tracks: status.tracks }).backing;
+    if (String(current.id) === this._observedFor) {
+      if (backing !== this._observedBacking) this._backingChanged = true;
+      return;
+    }
     this._observedFor = String(current.id);
-    if (Array.isArray(current.song?.options?.tracks)) return;
-    const live = liveFromStatus({ tracks: status.tracks });
-    for (const field of ['guide', 'backing']) if (live[field] != null) this.observedDefaults[field] = live[field];
+    this._observedBacking = backing;
+    const optionTracks = current.song?.options?.tracks;
+    if (Array.isArray(optionTracks)) {
+      if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
+      return;
+    }
+    if (!this._backingChanged && backing != null) this.observedDefaults.backing = backing;
   }
 
   songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }

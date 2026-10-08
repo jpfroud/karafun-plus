@@ -1236,6 +1236,9 @@ test('réglages de titre : valeurs par défaut des voix relevées sur le KaraFun
   status('b', 2, [{ volume: 25, track: { type: 4 } }, { volume: 50, track: { type: 5 } }],
     { singer: 'Léa', tracks: [{ track: { type: 4 }, volume: 25 }, { track: { type: 5 }, volume: 50 }] });
   assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 53 });
+  // KaraFun « collant » : le titre suivant, sans options, garde les voix d'avant. Ni relevées, ni la voix guide.
+  status('c', 3, [{ volume: 80, track: { type: 4 } }, { volume: 25, track: { type: 5 } }]);
+  assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 53 });
   // Remise par défaut d'un titre de la file : la valeur du KaraFun du bar.
   bridge.setQueueItemOptions('11', { singer: 'Léa · T1', settings: null, sent: { backing: 0 }, tracksAvailable: [4, 5] });
   assert.deepEqual(ws.sent.at(-1).payload.options.tracks, [{ track: { type: 4 }, volume: 53 }]);
@@ -1261,4 +1264,11 @@ test('réglages de titre : défauts relevés quand KaraFun a chargé le titre, p
   assert.equal(bridge.snapshot().songSettings.defaults.backing, 53, 'état 1 : pas encore chargé');
   status('next', 3, [{ volume: 60, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
   assert.equal(bridge.snapshot().songSettings.defaults.backing, 60, 'relevé sur le titre chargé');
+  // Voix guide jamais relevée : coupée par défaut, même si un titre démarre avec.
+  status('guide', 3, [{ volume: 60, track: { type: 4 } }, { volume: 25, track: { type: 5 } }]);
+  assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 60 });
+  // Chœurs changés par la file en direct : plus relevés ensuite (un KaraFun peut les garder).
+  bridge.setTrackVolume(4, 0);
+  status('after', 3, [{ volume: 0, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 60);
 });

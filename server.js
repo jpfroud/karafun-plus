@@ -53,7 +53,7 @@ const { SpotifyLink, SpotifyAutomation } = require('./spotify');
 const { EveningJournal, validEveningId } = require('./evening-journal');
 const { computeStats, insights, exportEvening } = require('./evening-stats');
 const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, liveFromStatus,
-  settingsFromLive, catchUpCommands } = require('./song-settings');
+  settingsFromLive, neutralTarget, catchUpCommands } = require('./song-settings');
 
 // ------------------------------------------------------------------ paramètres
 const argv = process.argv.slice(2);
@@ -762,11 +762,19 @@ function syncRestart({ current, upcoming, q }, now) {
 // champ de l'entrée du titre : il part avec elle dans les options d'ajout,
 // remplace les options du titre déjà chargé dans KaraFun
 // (SetQueueItemOptionsRequest), puis il est rattrapé une seule fois au début
-// du titre si KaraFun ne l'a pas appliqué (Pitch, Tempo, TrackVolume).
+// du titre si KaraFun ne l'a pas appliqué (Pitch, Tempo, TrackVolume). Ce que
+// le titre ne règle pas revient alors à sa valeur neutre : rien ne passe
+// d'un titre au suivant.
 const songRanges = () => rangesFrom(bridge?.raw?.configuration);
 // Valeurs par défaut de ce KaraFun (chœurs à 53 au bar), relevées par le pont.
 const songDefaults = () => bridge?.songSettingsDefaults?.() || { ...SONG_DEFAULTS };
 const kfItemOf = tr => bridge?.queue?.find(item => String(item.queueId) === String(tr.queueId)) || null;
+// Chaque titre est isolé du précédent : à son chargement, la file vise les
+// valeurs neutres (song-settings.js, neutralTarget), complétées par ses
+// réglages. `loadedLive` : dernier état vu du titre chargé ; `previousLoaded` :
+// celui du titre d'avant (ses chœurs décident s'ils sont remis par défaut).
+// `untrackedChecked` : dernier titre ajouté directement dans KaraFun examiné.
+let loadedLive = null, previousLoaded = null, untrackedChecked = null;
 // Numéro de l'état de KaraFun : il change à chaque nouvel état reçu
 // (StatusEvent), pour savoir si KaraFun a parlé depuis une demande.
 let statusSeen = null, statusNumber = 0;
@@ -868,7 +876,8 @@ function pushQueueItemSettings(tr) {
 
 // Titre chargé ou sur scène : ce que KaraFun n'a pas appliqué (options
 // d'ajout ou du titre ignorées) est envoyé une seule fois, pour ce titre de
-// KaraFun. Un titre examiné sans réglage l'est aussi : un réglage en direct
+// KaraFun, ainsi que les valeurs neutres de ce que le titre ne règle pas
+// (un KaraFun peut garder celles du titre précédent). Un réglage en direct
 // fait ensuite n'est pas « rattrapé » une seconde fois.
 function catchUpSongSettings(tr) {
   const mark = String(tr.queueId);
@@ -882,25 +891,74 @@ function catchUpSongSettings(tr) {
   const live = liveFromStatus(bridge.status);
   if (live?.queueId != null && String(live.queueId) !== mark) return; // état de KaraFun pas encore à jour
   tr.liveChecked = mark;
-  if (!tr.sel.song.settings && !tr.sentSettings) return;
   const commands = catchUpCommands({ settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, live,
     tracksAvailable: live?.tracks || songTracksOf(kfItemOf(tr)), duo: tr.sel.ids.length > 1, ranges: songRanges(),
-    defaults: songDefaults() });
+    defaults: songDefaults(), neutral: startNeutral(mark) });
+  applyStartCommands(commands, live, { title: tr.sel.song.title, entryId: tr.sel.song.entryId || null, queueId: tr.queueId });
+}
+
+// Dernier état vu du titre chargé ; le précédent est gardé au changement.
+function noteLoadedLive(loadedId) {
+  const live = loadedId ? liveFromStatus(bridge.status) : null;
+  if (!live || String(live.queueId) !== loadedId) return;
+  if (loadedLive && loadedLive.queueId !== loadedId) previousLoaded = loadedLive;
+  loadedLive = { queueId: loadedId, backing: live.backing };
+}
+
+// Valeurs neutres du titre `queueId` qui se charge, avec ses options KaraFun
+// pour un titre ajouté directement dans KaraFun.
+function startNeutral(queueId, options = null) {
+  const previous = loadedLive?.queueId === queueId ? previousLoaded : null;
+  return neutralTarget({ backingDefault: bridge?.observedDefaults?.backing ?? null, previousBacking: previous?.backing ?? null, options });
+}
+
+const RESET_LABELS = { pitch: live => `tonalité ${signedValue(live.pitch)}`, tempo: live => `tempo ${signedValue(live.tempo)} %`,
+  backing: live => `chœurs ${live.backing}`, guide: live => `voix guide ${live.guide}`, guideB: live => `voix guide B ${live.guideB}` };
+const signedValue = n => (n > 0 ? `+${n}` : String(n));
+const commandField = command => command.kind !== 'track' ? command.kind
+  : ({ [TRACK.BACKING]: 'backing', [TRACK.LEAD_A]: 'guide', [TRACK.LEAD_B]: 'guideB' })[command.type];
+
+// Commandes du début d'un titre : réglages du titre rattrapés
+// (song.settingsCaughtUp) et valeurs neutres rétablies (song.settingsReset).
+// Sans le droit « Personnaliser la chanson en cours », un seul avis au bar.
+function applyStartCommands(commands, live, { title, entryId, queueId }) {
   if (!commands.length) return;
+  const own = commands.filter(command => !command.neutral);
   if (bridge.permissions?.manageVolumes === false) {
-    sched.note(`KaraFun n’a pas appliqué les réglages de « ${tr.sel.song.title} » et ne laisse pas ${bridge.username} personnaliser la chanson en cours : règle-la dans KaraFun.`, 'error');
+    if (own.length) sched.note(`KaraFun n’a pas appliqué les réglages de « ${title} » et ne laisse pas ${bridge.username} personnaliser la chanson en cours : règle-la dans KaraFun.`, 'error');
+    else {
+      const left = commands.map(command => RESET_LABELS[commandField(command)](live)).join(', ');
+      sched.note(`Le réglage du titre précédent est peut-être resté sur « ${left} » : KaraFun ne laisse pas l’application personnaliser la chanson en cours.`, 'error');
+    }
     return;
   }
-  const fields = new Set();
+  const caught = new Set(), reset = new Set();
   for (const command of commands) {
     try {
       if (command.kind === 'pitch') bridge.setPitch(command.value);
       else if (command.kind === 'tempo') bridge.setTempo(command.value);
       else bridge.setTrackVolume(command.type, command.value);
-      fields.add(command.kind !== 'track' ? command.kind : command.type === TRACK.BACKING ? 'backing' : 'guide');
-    } catch (error) { appLog(`Réglage de « ${tr.sel.song.title} » non rattrapé : ${error.message}`); }
+      if (command.neutral) reset.add(commandField(command));
+      else caught.add(command.kind !== 'track' ? command.kind : command.type === TRACK.BACKING ? 'backing' : 'guide');
+    } catch (error) { appLog(`Réglage de « ${title} » non rattrapé : ${error.message}`); }
   }
-  if (fields.size) journalEvent('song.settingsCaughtUp', { entryId: tr.sel.song.entryId || null, queueId: tr.queueId, fields: [...fields] });
+  if (caught.size) journalEvent('song.settingsCaughtUp', { entryId, queueId, fields: [...caught] });
+  if (reset.size) journalEvent('song.settingsReset', { entryId, queueId, fields: [...reset] });
+}
+
+// Titre ajouté directement dans KaraFun, chargé : mêmes valeurs neutres,
+// complétées par ses propres options KaraFun, une seule fois. Une Battle
+// garde le réglage de KaraFun (le bar ne la règle pas en direct non plus).
+function checkUntrackedSettings(loadedId) {
+  if (!loadedId || untrackedChecked === loadedId || tracked.some(tr => String(tr.queueId) === loadedId)) return;
+  const live = liveFromStatus(bridge.status);
+  const item = bridge.status?.current || bridge.status?.songPlaying;
+  untrackedChecked = loadedId;
+  if (isBattleItem(item)) return;
+  const options = bridge.queue?.find(row => String(row.queueId) === loadedId)?.options || item.options || null;
+  const commands = catchUpCommands({ settings: null, live, tracksAvailable: live.tracks || songTracksOf(item), ranges: songRanges(),
+    defaults: songDefaults(), neutral: startNeutral(loadedId, options) });
+  applyStartCommands(commands, live, { title: item.title || 'le titre', entryId: null, queueId: item.queueId });
 }
 
 // KaraFun a répondu Error à un ajout qui portait des réglages : le titre
@@ -925,15 +983,18 @@ function resendWithoutOptions(add) {
   } catch (error) { appLog(`Nouvel envoi sans réglages impossible : ${error.message}`); }
 }
 
-// Titre en cours, réglé en direct par le bar (POST /api/staff/kf). Pour un
-// titre de la file, la valeur est aussi gardée sur le titre : une relance ⏮
-// la reprend.
+// Titre en cours, réglé en direct par le bar (POST /api/staff/kf), visé par
+// son `queueId`. Pour un titre de la file, la valeur est aussi gardée sur le
+// titre : une relance ⏮ la reprend.
 function liveSongSetting(body) {
   if (!bridge?.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de régler le titre en cours.');
   const { current } = analyze();
   if (!current) throw new Error('Aucun titre en cours à régler.');
   const field = body.action === 'track' ? ({ guide: 'guide', backing: 'backing' })[body.track] : body.action;
   if (!field) throw new Error('Piste vocale inconnue.');
+  // La page du bar vise le titre qu'elle affiche : s'il a changé entre-temps,
+  // le réglage n'est ni envoyé ni gardé sur le nouveau titre.
+  if (body.queueId != null && String(current.queueId) !== String(body.queueId)) throw new Error('Le titre a changé : réglage non envoyé.');
   const value = validateField(field, body.value, songRanges());
   const tr = tracked.find(item => isOnStage(item, current));
   const tracks = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
@@ -955,7 +1016,7 @@ function liveSongSetting(body) {
     sched.setSongSettings(tr.sel.song, Object.keys(next).length ? next : null);
     // Réglé en direct : rien à rattraper, même avant l'écho de KaraFun.
     tr.liveChecked = String(tr.queueId);
-  }
+  } else if (current.queueId != null) untrackedChecked = String(current.queueId); // titre ajouté dans KaraFun : idem
   journalEvent('song.settings', { by: 'staff', where: 'live', personId: tr?.sel.ids[0] || null, entryId: tr?.sel.song.entryId || null,
     queueId: current.queueId ?? null, field, value });
   return { ok: true, field, value };
@@ -1075,6 +1136,7 @@ function sync() {
   // Titre chargé par KaraFun (état 3, avant la musique) : ses réglages
   // peuvent déjà être rattrapés.
   const loadedId = loadedQueueId();
+  noteLoadedLive(loadedId);
   for (const tr of tracked.slice()) {
     const onStage = isOnStage(tr, current);
     // Si KaraFun était déconnecté lors du vidage, ce titre pouvait déjà être
@@ -1153,6 +1215,7 @@ function sync() {
       sched.version++;
     }
   }
+  checkUntrackedSettings(loadedId);
 
   // Le même événement QueueEvent peut confirmer un solo promis puis libérer
   // immédiatement la place pour la Battle, ou confirmer le premier titre

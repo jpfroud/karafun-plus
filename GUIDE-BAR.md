@@ -131,6 +131,8 @@ Pour arrêter l'application, double-clique sur `ARRETER.bat` **sur le PC du bar*
 
 **Comment c'est appliqué.** Les réglages partent avec le titre lors de son ajout à KaraFun. Pour un titre déjà chargé, ils remplacent ceux du titre dans KaraFun (droit « Éditer la file d'attente »), avec le même nom affiché et le même mode Battle. Si KaraFun les a ignorés, ils sont envoyés une seule fois quand KaraFun a chargé le titre (prêt à lancer) ou au début de la lecture (droit « Personnaliser la chanson en cours ») ; jamais sur l'annonce du titre, avant son chargement. Pour un duo, la seconde voix guide suit la première. La relance ⏮ garde les réglages du titre.
 
+**Chaque titre repart de zéro.** Un réglage ne suit jamais le titre suivant : quand KaraFun charge un titre, la file vérifie une fois que la tonalité et le tempo sont à 0 et la voix guide coupée (la seconde aussi si le titre en a une), sauf ce que ce titre règle lui-même ; les chœurs reviennent à la valeur habituelle du KaraFun seulement si le titre précédent les avait changés. Seul ce qui diffère est envoyé : un KaraFun qui remet déjà tout à zéro ne reçoit rien de plus. Un titre ajouté directement dans KaraFun garde ses propres réglages de KaraFun. Sans le droit « Personnaliser la chanson en cours », le journal le signale (« Le réglage du titre précédent est peut-être resté sur … ») : règle le titre dans KaraFun. Un appui sur « Réglages en direct » au moment où le titre change est refusé (« Le titre a changé : réglage non envoyé. ») au lieu de régler le nouveau titre.
+
 **Vérifié hors service, et pas encore au bar.** Les tests hors ligne et le faux KaraFun de la démo vérifient les commandes envoyées, les bornes, les droits, les deux pages et les délais : une commande sans réponse ne coupe plus la connexion et ne bloque rien : seule une réponse d'erreur de KaraFun désactive la fonction, jusqu'à la connexion suivante. **Rien n'a été essayé sur le vrai KaraFun du bar** : ces commandes viennent de KaraFun Web. Avant une soirée, fais l'essai décrit dans « À vérifier au bar, hors service », sans clients.
 
 ## Test sur place au bar
@@ -152,6 +154,7 @@ Pour arrêter l'application, double-clique sur `ARRETER.bat` **sur le PC du bar*
    - lance le titre : « Réglages en direct » (écran « Scène ») doit montrer les mêmes valeurs ; touche « + » sur la tonalité, KaraFun doit changer de tonalité et la page afficher « Appliqué par KaraFun ✓ » ;
    - lis la ligne sous l'interrupteur (« Plus ») : « KaraFun a accepté : … », ou un refus. Un refus ne coupe pas la file : note la version de KaraFun et coupe l'interrupteur si les téléphones ne doivent plus proposer les réglages ;
    - coupe l'interrupteur : le bouton « Réglages » doit disparaître du téléphone d'essai en quelques secondes. Remets-le ensuite si tout fonctionne.
+   - mets la voix guide à 25 en direct, puis vérifie que le titre suivant démarre en tonalité 0 et voix guide coupée.
 
 ## Publier les pages clients sur Internet
 

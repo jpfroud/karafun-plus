@@ -1406,7 +1406,9 @@
     liveStatus = { text: 'Envoyé à KaraFun…', tone: '' };
     renderLiveTune();
     try {
-      await post('/api/staff/kf', field === 'guide' || field === 'backing' ? { action: 'track', track: field, value } : { action: field, value });
+      // Le titre affiché est visé : s'il a changé entre-temps, le serveur refuse.
+      await post('/api/staff/kf', field === 'guide' || field === 'backing' ? { action: 'track', track: field, value, queueId: live.queueId }
+        : { action: field, value, queueId: live.queueId });
       if (liveDrafts.get(field) !== draft) return;
       draft.sent = true;
       draft.timer = setTimeout(() => {

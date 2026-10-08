@@ -2570,7 +2570,7 @@ test('réglages de titre : la carte « Sur scène » règle le titre en cours en
   assert.equal(page.in('liveTune', '[id="liveTempo"]').textContent, '0 %');
   assert.equal(page.$('liveTuneSummary').textContent, 'Réglages en direct · réglages d’origine');
   await page.click(page.in('liveTune', '[data-live="pitch"][data-step="1"]'));
-  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'pitch', value: 1 });
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'pitch', value: 1, queueId: 7 }, 'le titre affiché est visé');
   assert.equal(page.in('liveTune', '[id="livePitch"]').textContent, '+1', 'valeur envoyée affichée en attendant KaraFun');
   assert.equal(page.$('liveTuneStatus').textContent, 'Envoyé à KaraFun…');
   await page.poll();
@@ -2589,16 +2589,26 @@ test('réglages de titre : la carte « Sur scène » règle le titre en cours en
   assert.equal(page.in('liveTune', '[data-live="guide"]'), null);
   live.tracks = [4, 5];
   await page.click(page.in('liveTune', '[data-live="tempo"][data-step="-5"]'));
-  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'tempo', value: -5 });
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'tempo', value: -5, queueId: 8 });
   await page.click(page.in('liveTune', '[data-live="guide"][data-value="50"]'));
-  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 'guide', value: 50 });
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 'guide', value: 50, queueId: 8 });
   await page.click(page.in('liveTune', '[data-live="backing"][data-value="0"]'));
-  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 'backing', value: 0 });
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 'backing', value: 0, queueId: 8 });
   // KaraFun n'applique pas : au bout de quelques secondes, la valeur de KaraFun revient.
   page.runTimers(8000);
   await page.poll();
   assert.equal(page.in('liveTune', '[id="liveTempo"]').textContent, '0 %');
   assert.equal(page.$('liveTuneStatus').textContent, 'KaraFun n’a pas confirmé ce réglage : vérifie dans KaraFun.');
+  // Voix guide restée à 25 d'un titre à l'autre : le résumé la montre (coupée par défaut).
+  live.guide = 25;
+  await page.poll();
+  assert.match(page.$('liveTuneSummary').textContent, /guide 25/);
+  live.guide = 0;
+  // Titre changé entre-temps : le refus du serveur est affiché.
+  page.replies['/api/staff/kf'] = { status: 400, error: 'Le titre a changé : réglage non envoyé.' };
+  await page.click(page.in('liveTune', '[data-live="pitch"][data-step="1"]'));
+  assert.equal(page.$('liveTuneStatus').textContent, 'Non appliqué : Le titre a changé : réglage non envoyé.');
+  page.replies['/api/staff/kf'] = { ok: true };
   // Refus du serveur.
   page.replies['/api/staff/kf'] = { status: 400, error: 'Ce titre n’a pas de chœurs.' };
   await page.click(page.in('liveTune', '[data-live="backing"][data-value="100"]'));
