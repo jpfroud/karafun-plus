@@ -155,6 +155,17 @@ A avant B et C : B et C reposent sur la personne créée à l'ouverture, sur le 
 5. Faux KaraFun : option `stickyLive` pour reproduire un KaraFun qui garde les réglages ; tests dans les deux comportements.
 6. `GUIDE-BAR.md` (vérifications hors service) : « Mettre la voix guide à 25 en direct, puis vérifier que le titre suivant démarre en tonalité 0 et voix guide coupée. ».
 
+### G2. Voix guide réglable voix par voix (demande du 8 octobre)
+
+**Aujourd'hui** (vérifié, `song-settings.js:6-9, 18, 138-140, 176-181, 235-236`) : KaraFun annonce les pistes vocales de chaque titre (`songTracks` : 4 = chœurs, 5 = voix guide 1, 6 = voix guide 2) et accepte un volume par piste (`TrackVolumeRequest {type, volume}`). L'application n'a qu'un réglage « guide » : il vise la voix 1 ; la voix 2 ne le suit que pour un titre inscrit en duo. Un titre à deux voix chanté seul ne reçoit donc le guide que sur une voix. Aucune trame réelle ne montre de troisième voix.
+
+**Changement** (décision du gérant, D6 : un curseur par voix, pas de curseur commun)
+1. Réglages d'un titre : chaque voix guide a son propre volume. `guide` reste la voix 1 (piste 5, compatibilité des sauvegardes) ; `guideVoices` = `{ "<type de piste>": volume }` règle les autres voix (`{ "6": 50 }`). Une voix sans réglage vaut 0 (guide coupé). Pistes de voix guide : 5, 6 et toute autre piste de voix que KaraFun annonce pour ce titre (hors chœurs 4), sans supposer leur nombre. Validation : types entiers annoncés ou plausibles (5 à 15), volumes 0 à 100 par pas de 25 ; sauvegarde et reprise avec le reste des réglages.
+2. La règle actuelle « en duo, la voix 2 suit la voix 1 » disparaît : chaque voix est indépendante, en solo comme en duo. Une ancienne sauvegarde (duo avec `guide` et la valeur interne `guideB`) est reprise en `guideVoices["6"]`, sans perte.
+3. Interfaces (bar : réglages en direct et fiche du titre ; téléphones : réglages d'un titre à venir) : un titre à une voix montre « Voix guide » ; un titre à plusieurs voix montre « Voix 1 », « Voix 2 » (et « Voix 3 »… si KaraFun en annonce), sans curseur commun. Un titre dont les pistes ne sont pas encore connues (pas encore dans KaraFun) montre « Voix 1 » et « Voix 2 (si le titre en a deux) », la seconde appliquée seulement si le titre l'a. Phrases des téléphones traduites.
+4. Isolation (lot G) : au chargement de chaque titre, toutes ses voix guide reviennent à 0 sauf réglage explicite de ce titre ; un réglage en direct d'une voix ne s'enregistre que sur le titre en cours (identifiant de file vérifié).
+5. Tests : pistes 5 et 6 en solo et en duo réglées séparément, voix 2 seule, piste supplémentaire annoncée, titre sans voix 2 (réglage ignoré), retour à 0 sur le titre suivant avec un KaraFun « collant », anciennes sauvegardes reprises sans perte.
+
 ---
 
 ## H. Graphique « Déroulé de la soirée » (défaut)
@@ -216,4 +227,5 @@ Annuler la PR. Les nouveaux champs (personne : `nameRequired`, `soloKeyHash`, `l
 - **D1, événement privé** : un scan depuis un autre navigateur crée toujours un nouveau chanteur ; pas de reprise par prénom. Le même navigateur retrouve son chanteur.
 - **D2, solo qui perd sa page** : le QR individuel devient la clé personnelle de la soirée (récupération de la même personne sur n'importe quel téléphone, jamais une deuxième place), l'adresse garde la clé, et le bar a une liste des solistes triée par activité avec « QR de reprise » en un toucher.
 - **D3, tables** : la page principale ne montre que les personnes gérées par ce téléphone ; « Voir toute la table (N) » ouvre la liste complète.
+- **D6, voix guide** : un curseur par voix guide (voix 1, voix 2…), pas de curseur commun ; chaque titre revient à 0 au suivant.
 - Autres choix par défaut de cette spécification (sans objection) : dernière activité affichée pour les solos seulement, seuils 20 et 45 minutes ; barre de lecture au bar et sur les téléphones ; pastille Spotify aussi sur l'écran Scène ; graphique corrigé dans la page seulement (pas de clôture automatique des soirées).
