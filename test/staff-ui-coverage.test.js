@@ -3566,3 +3566,210 @@ test('Battle : durée du vote de 1 à 120 min (plus de limite de 10), repli à 1
   assert.equal(page.doc.body.querySelector('[data-save-status="battleVoteMin"]').textContent, 'Non enregistré : entre 1 et 120 minutes');
   assert.ok(!/1 à 10 min/.test(html), 'plus de mention « 1 à 10 min »');
 });
+
+// ------------------------------------------------------------------ retours du 4 octobre : accès solo, événement privé, activité
+// Solos à des moments différents de leur dernière activité, comptée à l'heure
+// du serveur (`now`), jamais à celle de l'appareil du bar.
+const MIN = 60000;
+function soloWorld() {
+  const world = baseWorld();
+  const now = Date.parse('2026-10-04T21:00:00');
+  world.now = now;
+  world.tables[2].activeCount = 6; world.tables[2].count = 7;
+  world.people[0].lastActiveAt = now - 80 * MIN; // table ordinaire : jamais d'indication
+  world.people.push(
+    { id: 'eva', name: 'Eva', tableId: 'Comptoir', active: true, songCount: 1, sung: 0, joinedAt: now - 90 * MIN, lastActiveAt: now - 30000 },
+    { id: 'farid', name: 'Farid', tableId: 'Comptoir', active: true, songCount: 0, sung: 1, joinedAt: now - 90 * MIN, lastActiveAt: now - 12 * MIN - 20000, privateNote: 'casquette' },
+    { id: 'gael', name: 'Gaël', tableId: 'Comptoir', active: true, songCount: 1, sung: 0, joinedAt: now - 90 * MIN, lastActiveAt: now - 25 * MIN },
+    { id: 'hana', name: 'Hana', tableId: 'Comptoir', active: true, songCount: 1, sung: 2, joinedAt: now - 120 * MIN, lastActiveAt: now - 65 * MIN - 5000 },
+    { id: 'solo3', name: 'Solo 3', tableId: 'Comptoir', active: true, songCount: 0, sung: 0, nameRequired: true, joinedAt: now - 50 * MIN, lastActiveAt: now - 50 * MIN },
+    { id: 'ines', name: 'Inès', tableId: 'Comptoir', active: false, songCount: 0, sung: 1, joinedAt: now - 150 * MIN, lastActiveAt: now - 100 * MIN });
+  return world;
+}
+
+test('activité des solos : libellés, seuils 20 et 45 min, info-bulle, rien pour les tables ni les partis (Repères)', async () => {
+  const world = soloWorld();
+  const page = await openPage({ world });
+  const row = id => page.in('identityBody', `[data-identity-person="${id}"]`);
+  const activity = id => row(id).querySelector('.activity');
+  assert.equal(activity('eva').textContent, 'Actif à l’instant');
+  assert.equal(activity('eva').className, 'activity');
+  assert.equal(activity('farid').textContent, 'Actif il y a 12 min');
+  assert.equal(activity('gael').textContent, 'Sans nouvelles depuis 25 min');
+  assert.equal(activity('gael').className, 'activity warn', 'orange dès 20 min');
+  assert.equal(activity('hana').textContent, 'Sans nouvelles depuis 1 h 05', 'au-delà d’une heure');
+  assert.equal(activity('hana').className, 'activity late', 'rouge dès 45 min');
+  assert.equal(activity('hana').title, `Dernière activité sur son téléphone à ${hhmm(world.now - 65 * MIN - 5000)}`);
+  assert.equal(activity('solo3').textContent, `Pas revenu depuis l’ouverture du QR (${hhmm(world.now - 50 * MIN)})`);
+  assert.equal(activity('solo3').className, 'activity late');
+  assert.equal(activity('alice'), null, 'table ordinaire : un téléphone gère aussi des amis sans téléphone');
+  assert.equal(activity('ines'), null, 'personne partie : rien');
+  assert.equal(activity('dora'), null, 'activité inconnue (ancienne sauvegarde) : rien');
+  // La ligne « N titres · N passages » reste un élément à part.
+  assert.equal(row('hana').querySelector('.tiny').textContent, '1 titre · 2 passages');
+  assert.equal(row('solo3').querySelector('.badge.name-missing').textContent, 'prénom à saisir', 'prénom provisoire signalé');
+  assert.equal(row('solo3').querySelector('strong').textContent, 'Solo 3');
+  assert.equal(row('eva').querySelector('.badge.name-missing'), null);
+
+  // Le libellé ne change qu'à la minute : pas de redessin toutes les 2 s.
+  const before = row('eva');
+  await page.update({ now: world.now + 20000 });
+  assert.equal(row('eva'), before, 'même minute : la liste n’est pas réécrite');
+  await page.update({ now: world.now + 100000 });
+  assert.notEqual(row('eva'), before);
+  assert.equal(activity('eva').textContent, 'Actif il y a 2 min');
+  // La page redevenue visible : l'activité repart à « Actif à l'instant ».
+  page.world.people.find(p => p.id === 'gael').lastActiveAt = page.world.now - 10000;
+  await page.poll();
+  assert.equal(activity('gael').textContent, 'Actif à l’instant');
+});
+
+test('activité des solos : sans heure du serveur, l’heure de l’appareil sert de repli', async () => {
+  const world = baseWorld();
+  world.people[3].lastActiveAt = Date.now() - 3 * MIN - 1000;
+  const page = await openPage({ world });
+  assert.equal(page.in('identityBody', '[data-identity-person="dora"] .activity').textContent, 'Actif il y a 3 min');
+});
+
+test('Accueil : liste « Solistes » triée par activité, prénom à saisir, QR de reprise en un toucher, recherche au-delà de 8', async () => {
+  const world = soloWorld();
+  const page = await openPage({ world });
+  const names = () => texts(page.all('soloistList', '.soloist-row strong'));
+  assert.deepEqual(names(), ['Eva', 'Farid', 'Gaël', 'Solo 3', 'Hana', 'Dora'], 'activité la plus récente d’abord, partis exclus');
+  assert.equal(page.$('soloistCount').textContent, '6');
+  assert.equal(page.$('soloistSearchBox').hidden, true, 'pas de recherche jusqu’à 8 solistes');
+  const row = id => page.in('soloistList', `[data-soloist="${id}"]`);
+  assert.equal(row('solo3').querySelector('.badge.name-missing').textContent, 'prénom à saisir');
+  assert.equal(row('gael').querySelector('.activity').textContent, 'Sans nouvelles depuis 25 min');
+  assert.equal(row('farid').querySelector('.soloist-note').textContent, 'casquette', 'repère du bar pour la reconnaître');
+  assert.equal(row('dora').querySelector('.activity'), null);
+  // « QR de reprise » : la fenêtre de transfert habituelle, sans recherche.
+  page.replies['/api/staff/person/share'] = { code: '1234', qr: 'data:image/png;base64,QR', url: 'http://192.168.1.20:3000/r/x', expiresAt: world.now + 10 * MIN };
+  await page.click(row('gael').querySelector('[data-soloist-share]'));
+  assert.deepEqual(page.lastPost('/api/staff/person/share').body, { personId: 'gael' });
+  assert.equal(page.$('shareDialog').open, true);
+  assert.equal(page.$('shareTitle').textContent, 'Accès à Gaël');
+  await page.click(page.$('shareClose'));
+  const shares = page.postsTo('/api/staff/person/share').length;
+  await page.click(row('gael').querySelector('.activity'));
+  assert.equal(page.postsTo('/api/staff/person/share').length, shares, 'toucher la ligne ailleurs ne fait rien');
+
+  // Plus de 8 solistes : recherche par prénom (ou repère).
+  for (let i = 1; i <= 3; i++) {
+    page.world.people.push({ id: `x${i}`, name: `Xavier ${i}`, tableId: 'Comptoir', active: true, songCount: 0, sung: 0, joinedAt: world.now - 200 * MIN });
+  }
+  await page.poll();
+  assert.equal(page.$('soloistSearchBox').hidden, false);
+  await page.type(page.$('soloistSearch'), 'ga');
+  assert.deepEqual(names(), ['Gaël']);
+  await page.type(page.$('soloistSearch'), 'CASQ');
+  assert.deepEqual(names(), ['Farid'], 'recherche aussi sur le repère');
+  await page.type(page.$('soloistSearch'), 'zz');
+  assert.equal(page.$('soloistList').textContent.trim(), 'Aucun soliste à ce nom.');
+  await page.type(page.$('soloistSearch'), '');
+  assert.equal(names().length, 9);
+  // Retour sous 9 solistes : la recherche disparaît et ne filtre plus.
+  await page.type(page.$('soloistSearch'), 'ga');
+  page.world.people = page.world.people.filter(p => !p.id.startsWith('x'));
+  page.doc.activeElement = null;
+  await page.poll();
+  assert.equal(page.$('soloistSearchBox').hidden, true);
+  assert.equal(names().length, 6);
+
+  // Personne en solo.
+  page.world.people = page.world.people.filter(p => p.tableId !== 'Comptoir');
+  await page.poll();
+  assert.equal(page.$('soloistList').textContent.trim(), 'Personne en solo pour le moment.');
+  // Pas de groupe « En solo » : pas de liste.
+  page.world.tables = page.world.tables.filter(t => t.id !== 'Comptoir');
+  await page.poll();
+  assert.equal(page.$('soloistsBox').hidden, true);
+});
+
+test('activité des solos : tuile « En solo », ligne de la file au-delà de 45 min et alerte « Je suis là »', async () => {
+  const world = soloWorld();
+  world.queue = [
+    { source: 'helper', id: 'hana', pos: 1, name: 'Hana', table: 'En solo', ids: ['hana'], song: { title: 'A', entryId: 'h1' } },
+    { source: 'helper', id: 'gael', pos: 2, name: 'Gaël', table: 'En solo', ids: ['gael'], song: { title: 'B', entryId: 'g1' } },
+    { source: 'helper', id: 'alice', pos: 3, name: 'Alice', table: 'Table 1', ids: ['alice'], song: { title: 'C', entryId: 'a1' } },
+    { source: 'helper', id: 'duo9', pos: 4, name: 'Eva & Solo 3', table: 'En solo', ids: ['eva', 'solo3'], kind: 'duo', song: { title: 'D', entryId: 'd1' } },
+    { source: 'karafun', ours: false, pos: 5, singer: 'Invité', title: 'E' },
+  ];
+  world.maybeGone = [{ id: 'hana', name: 'Hana', table: 'En solo', skips: 2, title: 'A' }, { id: 'alice', name: 'Alice', table: 'Table 1', skips: 2, title: 'C' }];
+  const page = await openPage({ world });
+  const card = id => page.in('tBody', `[data-table-card="${id}"]`);
+  assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '6 solistes · 3 sans nouvelles');
+  assert.equal(card('1').querySelector('.occupancy').textContent, '2 actifs / 2 inscrits / 4 places', 'tables : inchangé');
+  const lines = page.all('qBody', '.queue-item');
+  assert.equal(lines[0].querySelector('.idle-tag').textContent, 'sans nouvelles depuis 1 h 05');
+  assert.equal(lines[0].querySelector('.idle-tag').title, `Dernière activité sur son téléphone à ${hhmm(world.now - 65 * MIN - 5000)}`);
+  assert.equal(lines[1].querySelector('.idle-tag'), null, '25 min : pas encore sur la file');
+  assert.equal(lines[2].querySelector('.idle-tag'), null, 'table ordinaire : rien');
+  assert.equal(lines[3].querySelector('.idle-tag').textContent, `Solo 3 : pas revenu depuis l’ouverture du QR (${hhmm(world.now - 50 * MIN)})`, 'duo : la personne concernée est nommée');
+  assert.equal(lines[4].querySelector('.idle-tag'), null);
+  const gone = page.all('staffAlerts', '.gone-alert');
+  assert.equal(gone[0].querySelector('.activity').textContent, 'Sans nouvelles depuis 1 h 05');
+  assert.equal(gone[1].querySelector('.activity'), null, 'table ordinaire : pas d’activité');
+  // Plus personne sans nouvelles : la tuile ne compte que les solistes.
+  for (const p of page.world.people) if (p.lastActiveAt) p.lastActiveAt = page.world.now;
+  await page.poll();
+  assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '6 solistes');
+});
+
+test('événement privé : interrupteur, QR en grand, copier, imprimer, renouveler avec confirmation', async () => {
+  const world = soloWorld();
+  world.privateEvent = { enabled: false, url: null, qrUrl: null };
+  const page = await openPage({ world });
+  const toggle = page.$('privateEventToggle');
+  assert.match(toggle.closest('label').textContent, /Événement privé : un seul QR pour tout le monde/);
+  assert.match(page.$('privateEventBox').textContent, /Bar privatisé : chaque personne scanne le même QR avec son téléphone et gère ses propres chansons\./);
+  assert.equal(toggle.checked, false);
+  assert.equal(toggle.disabled, false);
+  assert.equal(page.$('privateEventPanel').hidden, true, 'mode coupé : pas de QR');
+  await page.change(toggle, true);
+  assert.deepEqual(page.lastPost('/api/staff/private-event').body, { enabled: true });
+  assert.equal(page.toast().text, 'Événement privé activé : montre ou imprime son QR');
+  const url = 'http://192.168.1.20:3000/t/Comptoir/abc?evenement=secret';
+  await page.update({ privateEvent: { enabled: true, url, qrUrl: '/qr-evenement.svg' } });
+  assert.equal(toggle.checked, true);
+  assert.equal(page.$('privateEventPanel').hidden, false);
+  const src = page.$('privateEventQr').src;
+  assert.match(src, new RegExp(`^/qr-evenement\\.svg\\?v=[0-9a-f]+&key=${KEY}$`), 'QR réservé au bar, versionné par son adresse');
+  assert.equal(page.$('privateEventUrl').value, url);
+  assert.equal(page.$('privateEventPrint').getAttribute('href'), `/print?key=${KEY}`);
+  await page.poll();
+  assert.equal(page.$('privateEventQr').src, src, 'pas de rechargement du QR à chaque rafraîchissement');
+  await page.click(page.$('privateEventCopy'));
+  assert.deepEqual(page.clipboard, [url]);
+  assert.equal(page.toast().text, 'Lien de l’événement copié');
+  // Renouveler : confirmation obligatoire.
+  page.confirmAnswer = false;
+  await page.click(page.$('privateEventRotate'));
+  assert.match(page.confirms.at(-1), /^Renouveler le QR de l’événement privé \?/);
+  assert.match(page.confirms.at(-1), /les personnes déjà inscrites gardent leur accès/);
+  assert.equal(page.postsTo('/api/staff/private-event').length, 1, 'refusé : rien n’est envoyé');
+  page.confirmAnswer = true;
+  await page.click(page.$('privateEventRotate'));
+  assert.deepEqual(page.lastPost('/api/staff/private-event').body, { rotate: true });
+  assert.equal(page.toast().text, 'Nouveau QR d’événement privé : l’ancien est refusé');
+  await page.update({ privateEvent: { enabled: true, url: url.replace('secret', 'neuf'), qrUrl: '/qr-evenement.svg' } });
+  assert.notEqual(page.$('privateEventQr').src, src, 'nouveau QR affiché');
+  // Couper.
+  await page.change(toggle, false);
+  assert.deepEqual(page.lastPost('/api/staff/private-event').body, { enabled: false });
+  assert.equal(page.toast().text, 'Événement privé coupé : son QR ne permet plus de s’inscrire');
+  // Refus du serveur : le message s'affiche, l'interrupteur suit ensuite le serveur.
+  page.replies['/api/staff/private-event'] = { status: 400, error: 'Refusé.' };
+  await page.change(toggle, false);
+  assert.deepEqual(page.toast(), { text: 'Refusé.', bad: true });
+  await page.poll();
+  assert.equal(toggle.checked, true, 'l’état affiché est celui du serveur');
+  // Ancien serveur (pas de privateEvent) ou pas de groupe « En solo ».
+  delete page.world.privateEvent;
+  await page.poll();
+  assert.equal(toggle.checked, false);
+  assert.equal(page.$('privateEventPanel').hidden, true);
+  page.world.tables = page.world.tables.filter(t => t.id !== 'Comptoir');
+  await page.poll();
+  assert.equal(toggle.disabled, true);
+});

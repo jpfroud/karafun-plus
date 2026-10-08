@@ -205,6 +205,22 @@
   .client .sheet-song p { margin: 2px 0 0; }
 
   .client .song-stack .song-actions .btn.tune svg { display: block; margin: 0 auto; }
+
+  /* Prénom obligatoire (QR individuel ou d'événement ouvert) : écran plein, sans fermeture. */
+  .client .name-gate { position: fixed; inset: 0; z-index: 28; background: var(--bg); overflow: auto; display: flex; align-items: center; justify-content: center;
+    padding: max(20px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)); }
+  .client .name-gate-panel { width: 100%; max-width: 440px; }
+  .client .name-gate-panel .lang-switch { justify-content: flex-end; margin-bottom: 18px; }
+  .client .name-gate-panel h2 { font-size: 24px; margin: 0 0 8px; }
+  .client .name-gate-panel .notice { margin: 10px 0 0; }
+  .client .name-gate-panel .btn { margin-top: 14px; }
+  /* Page d'une table : QR à faire scanner, toute la table dans une fiche. */
+  .client .invite-card .row h2 { margin: 0; }
+  .client .table-all { margin-top: 12px; }
+  .client .join-others { display: block; margin: 12px auto 0; font-size: 14px; }
+  .client .table-sheet li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .client .table-sheet li:last-child { border-bottom: 0; }
+  .client .table-sheet .btn { width: auto; margin: 0; }
 </style>
 </head>
 <body class="client">
@@ -260,6 +276,7 @@
       <button type="button" class="btn small ghost" id="alertsToggle" data-i18n>Activer les notifications</button>
       <p class="tiny muted alert-help" id="alertsHelp"></p>
     </div>
+    <p id="inAppHint" class="card notice warn small" role="note" hidden data-i18n>Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).</p>
     <div id="transferBox" class="card notice ok" role="region" aria-labelledby="transferHeading" hidden>
       <h2 id="transferHeading" data-i18n>Récupérer un chanteur</h2>
       <p id="transferText" class="small"></p>
@@ -272,11 +289,21 @@
       <form id="joinForm">
         <label class="field" for="firstName" id="joinNameLabel" data-i18n>Prénom de la première personne</label>
         <input id="firstName" type="text" maxlength="24" autocomplete="given-name" required placeholder="Ex. Marie" data-i18n-attr="placeholder">
-        <button class="btn primary wide" type="submit" style="margin-top:12px" data-i18n>Commencer</button>
+        <button class="btn primary wide" type="submit" id="joinSubmit" style="margin-top:12px" data-i18n>Commencer</button>
       </form>
+      <button type="button" class="link-btn join-others" id="joinOthers" hidden data-i18n>Déjà inscrit par un autre téléphone ?</button>
     </div>
 
     <div id="tableBox" hidden>
+      <div class="card invite-card" id="inviteBox" hidden>
+        <button type="button" class="btn wide" id="inviteToggle" data-i18n>Faire scanner ma table</button>
+        <div id="invitePanel" hidden>
+          <div class="row"><h2 class="grow" data-i18n>Fais scanner ta table</h2><button type="button" class="btn small ghost" id="inviteClose" aria-label="Replier" data-i18n-attr="aria-label">✕</button></div>
+          <p class="small muted" data-i18n>Les autres personnes de la table scannent ce QR avec leur téléphone pour s’inscrire et choisir leurs chansons.</p>
+          <div class="transfer-qr" id="inviteQr"></div>
+          <button type="button" class="btn primary wide" id="inviteShare" data-i18n>Partager le lien</button>
+        </div>
+      </div>
       <div class="card" id="noSingerBox" hidden>
         <h2 data-i18n>Pour ajouter une chanson</h2>
         <p id="noSingerText" class="small muted"></p>
@@ -301,9 +328,10 @@
           <span id="peopleCount" class="pill"></span>
         </div>
         <ul id="peopleList" class="person-list"></ul>
+        <button type="button" class="btn table-all" id="tableAllButton" hidden></button>
       </div>
       <div class="card" id="addPersonBox">
-        <h3 data-i18n>Ajouter une personne</h3>
+        <h3 data-i18n>Ajouter une personne sans téléphone</h3>
         <p id="capacityNotice" class="empty-copy" hidden data-i18n>La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.</p>
         <form id="addPersonForm" class="form-row">
           <div class="field-wrap">
@@ -374,6 +402,22 @@
     <p id="attentionError" class="attention-error" role="alert" hidden></p>
   </div>
 </div>
+<div id="nameGate" class="name-gate" role="dialog" aria-modal="true" aria-labelledby="nameGateTitle" hidden>
+  <div class="name-gate-panel">
+    <div id="nameGateLang" class="lang-switch" role="group" aria-label="Langue · Language">
+      <button type="button" data-lang="fr" lang="fr" aria-label="Français" aria-pressed="true">FR</button>
+      <button type="button" data-lang="en" lang="en" aria-label="English" aria-pressed="false">EN</button>
+    </div>
+    <h2 id="nameGateTitle" data-i18n>Bienvenue ! Quel est ton prénom ?</h2>
+    <p class="small muted" data-i18n>Il s’affiche dans la file et sur l’écran du bar quand c’est ton tour.</p>
+    <form id="nameGateForm">
+      <label class="field" for="nameGateInput" data-i18n>Ton prénom</label>
+      <input id="nameGateInput" type="text" maxlength="24" autocomplete="given-name" required placeholder="Ex. Marie" data-i18n-attr="placeholder">
+      <p id="nameGateError" class="notice warn small" role="alert" hidden></p>
+      <button class="btn primary wide" type="submit" data-i18n>Valider</button>
+    </form>
+  </div>
+</div>
 <div id="toast" class="toast" role="status" hidden></div>
 
 <script src="/client-i18n.js"></script>
@@ -387,6 +431,8 @@
   let soloInvitation = new URLSearchParams(location.search || '').get('invitation') || '';
   // Lien de transfert reçu d'un autre téléphone ou du bar (QR, WhatsApp…).
   let transferLink = new URLSearchParams(location.search || '').get('reprise') || '';
+  // QR de l'événement privé (bar privatisé) : un seul QR pour tout le monde.
+  let eventToken = new URLSearchParams(location.search || '').get('evenement') || '';
   function forgetQueryParam(name) {
     const params = new URLSearchParams(location.search || '');
     params.delete(name);
@@ -400,6 +446,10 @@
   function forgetTransferLink() {
     transferLink = '';
     forgetQueryParam('reprise');
+  }
+  function forgetEventToken() {
+    eventToken = '';
+    forgetQueryParam('evenement');
   }
   const tokenKey = `kfTok:${tableId}:${access}`;
   const tokensKey = `kfPeople:${tableId}:${access}`;
@@ -514,7 +564,7 @@
     if (document.documentElement) document.documentElement.lang = lang;
     for (const [node, text] of staticTexts) node.textContent = t(text);
     for (const [node, name, text] of staticAttributes) node.setAttribute(name, t(text));
-    for (const button of $('langSwitch').querySelectorAll('[data-lang]')) {
+    for (const button of [...$('langSwitch').querySelectorAll('[data-lang]'), ...$('nameGateLang').querySelectorAll('[data-lang]')]) {
       button.setAttribute('aria-pressed', String(button.dataset.lang === lang));
     }
   }
@@ -1100,11 +1150,14 @@
     const params = new URLSearchParams({ table: tableId, access });
     if (soloInvitation) params.set('invitation', soloInvitation);
     if (transferLink) params.set('reprise', transferLink);
+    if (eventToken) params.set('evenement', eventToken);
     const credentials = Object.values(personTokens).filter(value => typeof value === 'string');
     if (legacyToken && !credentials.includes(legacyToken)) credentials.push(legacyToken);
     try {
+      // Dernière activité vue par le bar : seulement une page visible. La page
+      // cachée continue d'interroger (notifications), sans compter comme activité.
       const data = await request(`/api/state?${params}`, {
-        headers: { 'x-person-tokens': JSON.stringify(credentials) },
+        headers: { 'x-person-tokens': JSON.stringify(credentials), ...(document.hidden ? {} : { 'x-page-visible': '1' }) },
       });
       if (number !== stateRequest) return;
       state = data;
@@ -1141,6 +1194,7 @@
       }
       render();
       setConnection(() => t('À jour'), 'ok');
+      openPersonalEntry();
     } catch (error) {
       if (number !== stateRequest) return;
       if (error.status === 403) { invalidAccess = true; return showInvalidLink(); }
@@ -1169,6 +1223,44 @@
     setConnection(() => t('Accès refusé'), 'bad');
   }
 
+  // QR individuel (invitation du bar) ou QR de l'événement privé : la page
+  // inscrit ou retrouve son chanteur par un POST, jamais par une simple
+  // lecture (un aperçu de lien ne crée personne). Une seule demande par page ;
+  // un réseau coupé laisse réessayer au rafraîchissement suivant.
+  let entry = { status: '', recover: null, error: '' };
+  async function openPersonalEntry() {
+    if (!state.table?.individual || entry.status) return;
+    if (list(state.managedIds).length) {
+      // Son chanteur est déjà sur ce téléphone : le QR d'événement n'a plus d'objet.
+      if (eventToken) forgetEventToken();
+      return;
+    }
+    const path = soloInvitation ? '/api/table/solo/open' : eventToken && state.privateEventReady ? '/api/table/enter' : '';
+    if (!path) return;
+    entry = { status: 'pending', recover: null, error: '' };
+    try {
+      const result = await post(path, soloInvitation ? { invitation: soloInvitation } : { event: eventToken });
+      if (!result.recover) {
+        entry.status = 'done';
+        savePersonToken(result.id, result.token);
+        // L'adresse garde ?invitation= : ce QR reste la clé de la soirée
+        // (historique, favori, « Ouvrir dans le navigateur »).
+        if (!soloInvitation) forgetEventToken();
+        await refresh();
+        return;
+      }
+      // Même QR ouvert sur un autre navigateur : « C'est bien toi ? »
+      entry = { status: 'recover', recover: result.recover, error: '' };
+    } catch (error) {
+      entry = error.status ? { status: 'failed', recover: null, error: error.message } : { status: '', recover: null, error: '' };
+    }
+    render();
+  }
+
+  // Navigateur intégré à une application (scanner d'Instagram, de Snapchat…) :
+  // la page s'y perd facilement, mieux vaut l'ouvrir dans son navigateur.
+  const inAppBrowser = /\b(?:Instagram|FBAN|FBAV|FB_IAB|Snapchat|TikTok|musical_ly)\b|; wv\)/i.test(String(navigator.userAgent || ''));
+
   function render() {
     const people = list(state.tablePeople);
     const queue = list(state.queue);
@@ -1189,42 +1281,47 @@
     $('peopleIntro').hidden = individual;
     $('peopleCount').hidden = individual;
     renderStage(queue);
-    $('joinIntro').textContent = individual
-      ? t('Cette invitation du bar est personnelle et ne sert qu’une fois. Inscris-toi avec ton prénom pour choisir tes chansons.')
-      : t('Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.');
-    $('joinNameLabel').textContent = individual ? t('Ton prénom') : t('Prénom de la première personne');
+    // Table déjà commencée : un nouveau téléphone la rejoint avec son prénom.
+    $('joinNameLabel').textContent = people.length ? t('Ton prénom') : t('Prénom de la première personne');
+    $('joinSubmit').textContent = people.length ? t('Rejoindre la table') : t('Commencer');
+    $('joinOthers').hidden = !people.length;
     $('quickSongIntro').textContent = individual
       ? t('Ajoute les chansons que tu veux chanter. Les autres personnes venues seules gèrent les leurs.')
       : t('Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.');
-    $('peopleHeading').textContent = individual ? t('Mes chansons') : t('Les personnes de la table');
+    $('peopleHeading').textContent = individual ? t('Mes chansons') : t('Mes chanteurs');
     $('peopleIntro').textContent = individual
       ? t('Tes chansons sont visibles ici. Les autres personnes ne peuvent pas les modifier.')
       : t('Seul le téléphone associé à une personne peut modifier ses chansons.');
     $('peopleCard').hidden = individual && owned.length === 0;
     $('waitingLabel').textContent = individual ? t('Mes chansons à choisir') : t('À notre table, sans chanson');
-    $('joinBox').hidden = individual ? owned.length > 0 || full || !state.soloInvitationReady : people.length > 0;
-    $('headcountNotice').hidden = individual || !!state.table?.headcount;
-    $('joinForm').querySelector('button[type=submit]').disabled = (!individual && !state.table?.headcount) || full || (individual && !state.soloInvitationReady);
-    $('tableBox').hidden = individual ? owned.length === 0 && !full && recoveryPeople.length === 0 && state.soloInvitationReady : people.length === 0;
+    // « En solo » s'inscrit par son QR (fenêtre de prénom) : jamais ce formulaire.
+    $('joinBox').hidden = individual || owned.length > 0;
+    $('headcountNotice').hidden = individual || (!!state.table?.headcount && !full);
+    $('headcountNotice').textContent = full ? t('La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.')
+      : t('Le bar doit d’abord indiquer combien de personnes sont à cette table.');
+    $('joinSubmit').disabled = !state.table?.headcount || full;
+    $('tableBox').hidden = !individual && owned.length === 0;
     const others = individual ? [] : people.filter(person => person.active && !manages(person.id));
-    $('claimBox').hidden = individual ? recoveryPeople.length === 0 : others.length === 0;
-    $('claimHeading').textContent = individual ? t('Récupérer mes chansons') : t('Déjà inscrit à cette table ?');
-    $('claimIntro').textContent = individual
-      ? t('Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.')
-      : t('Ton prénom est déjà inscrit ? Le plus simple : scanne le QR code « Transférer » affiché sur le téléphone qui te gère (ou ouvre le lien qu’il t’a envoyé). Sinon, touche ton nom et saisis son code à 4 chiffres.');
-    $('claimPeople').innerHTML = individual
-      ? recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: person.name }))}</button>`).join('')
-      : others.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name}', { name: person.name }))}</button>`).join('');
+    // Reprise par code : sur une table, depuis « Voir toute la table » seulement.
+    $('claimBox').hidden = recoveryPeople.length === 0;
+    $('claimHeading').textContent = t('Récupérer mes chansons');
+    $('claimIntro').textContent = t('Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.');
+    $('claimPeople').innerHTML = recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: person.name }))}</button>`).join('');
     const present = state.table?.activeCount ?? people.length;
     $('peopleCount').textContent = individual ? t('Mon profil')
       : `${tp(present, '{n} présente', '{n} présentes')} · ${tp(people.length, '{n} inscrite', '{n} inscrites')}`;
     $('addPersonBox').hidden = individual || full;
     $('addPersonForm').hidden = individual || full;
     $('capacityNotice').hidden = individual || !full;
+    $('inAppHint').hidden = !individual || !inAppBrowser;
+    $('tableAllButton').hidden = individual;
+    $('tableAllButton').textContent = t('Voir toute la table ({n})', { n: people.length });
     renderSongAccess(people, others, full);
     renderTransfer();
+    renderInvite(!individual && owned.length > 0);
     $('signalsBox').hidden = owned.length === 0;
-    renderPeople(individual ? owned : people, queue);
+    // Page d'une table : seulement les personnes gérées par ce téléphone.
+    renderPeople(individual ? owned : people.filter(person => manages(person.id)), queue);
     renderTune();
     renderBattle(individual ? owned : people);
     renderQueue(queue, waiting);
@@ -1236,6 +1333,7 @@
     }
     const freshInfo = renderInfos();
     signalAttention(renderAttention(), freshInfo);
+    renderNameGate();
   }
 
   // Heure de fermeture annoncée par le bar et titres qui passeront encore.
@@ -1260,15 +1358,18 @@
     const owned = managedPeople();
     const individual = !!state.table?.individual;
     const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
-    const canRegister = !full && (!individual || (!owned.length && state.soloInvitationReady)) &&
-      (individual || (Number.isInteger(state.table?.headcount) && state.table.headcount > 0));
+    const canRegister = !full && Number.isInteger(state.table?.headcount) && state.table.headcount > 0;
     if (individual) {
-      const explanation = canRegister ? t('Cette invitation personnelle permet de t’inscrire. Si tu avais déjà un profil, demande plutôt un code de reprise au bar.')
-          : soloInvitation ? t('Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.')
-            : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
-      const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${canRegister
-        ? `<button type="button" class="btn primary" data-access-go="register">${esc(t('M’inscrire'))}</button>` : ''}`;
-      $('noSingerBox').hidden = owned.length > 0 || canRegister;
+      // QR ouvert (individuel ou d'événement) : la page s'en charge seule.
+      const opening = entry.status === 'pending' || (!entry.status && (soloInvitation || (eventToken && state.privateEventReady)));
+      const explanation = entry.status === 'failed' ? entry.error
+        : entry.status === 'recover' ? t('Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.', { name: entry.recover.name })
+          : opening ? t('Un instant : ouverture de ton QR…')
+            : eventToken ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
+              : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
+      const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'recover'
+        ? `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>` : ''}`;
+      $('noSingerBox').hidden = owned.length > 0 || entry.status === 'recover';
       $('noSingerText').textContent = explanation;
       $('noSingerActions').innerHTML = actions;
       $('catalogAccessBox').hidden = owned.length > 0;
@@ -1294,6 +1395,14 @@
   }
 
   function renderTransfer() {
+    if (entry.status === 'recover') {
+      // Le QR individuel rouvert sur un autre navigateur : la même personne, jamais une deuxième place.
+      $('transferBox').hidden = false;
+      $('transferHeading').textContent = t('C’est bien toi, {name} ?', { name: entry.recover.name });
+      $('transferText').textContent = t('Ce QR personnel garde tes chansons pour la soirée. Récupère-les sur ce téléphone : l’autre téléphone perdra leur gestion.');
+      $('transferActions').innerHTML = `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>`;
+      return;
+    }
     const offer = transferLink ? state?.transferOffer : null;
     $('transferBox').hidden = !offer;
     if (!offer) return;
@@ -1390,11 +1499,11 @@
   function goToAccess(kind) {
     if (state?.table?.individual && kind === 'claim' &&
       (managedPeople().length || !list(state.recoveryPeople).length)) return;
+    // Table : on retrouve sa fiche dans la liste de toute la table (« C'est moi »).
+    if (kind === 'claim' && !state?.table?.individual) return openTableSheet();
     closeSheet({ keepPending: true });
     setTab('table');
-    const target = kind === 'claim' ? $('claimBox')
-      : state?.table?.individual ? $('joinBox')
-        : list(state?.tablePeople).length ? $('addPersonBox') : $('joinBox');
+    const target = kind === 'claim' ? $('claimBox') : managedPeople().length ? $('addPersonBox') : $('joinBox');
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     target.querySelector(kind === 'claim' ? '[data-claim-person]' : 'input')?.focus({ preventScroll: true });
   }
@@ -1408,6 +1517,10 @@
     }
     const accessButton = event.target.closest('[data-access-go]');
     if (accessButton) { goToAccess(accessButton.dataset.accessGo); return; }
+    const keyClaim = event.target.closest('[data-key-claim]');
+    if (keyClaim) { claimWithKey(keyClaim); return; }
+    const sheetClaim = event.target.closest('[data-sheet-claim]');
+    if (sheetClaim) { openClaim(sheetClaim.dataset.sheetClaim); return; }
     const songButton = event.target.closest('[data-quick-song]');
     if (songButton) openCatalog(songButton.dataset.quickSong);
   });
@@ -1497,12 +1610,10 @@
     return item.singer || t('Chanteur');
   }
 
-  // Demande ou invitation affichée sur un téléphone qui ne gère pas la
-  // personne : seul son téléphone peut répondre. Si c'est bien elle, elle
-  // reprend sa fiche ici avec le code du bar (soirée du 2 octobre : Mel
-  // voyait la demande de JP sans bouton pour l'accepter).
-  const notMine = person => `<div class="small muted">${esc(t('Seul le téléphone qui gère {name} peut répondre.', { name: person.name }))}</div>${state?.table?.individual ? ''
-    : `<div class="invite-actions"><button type="button" class="btn small" data-claim-here="${esc(person.id)}">${esc(t('C’est moi, {name} : répondre ici', { name: person.name }))}</button></div>`}`;
+  // Demande ou invitation d'une personne partie : plus de réponse depuis ce
+  // téléphone. (Une table ne montre plus que ses propres personnes : une
+  // personne gérée ailleurs se reprend depuis « Voir toute la table ».)
+  const notMine = person => `<div class="small muted">${esc(t('Seul le téléphone qui gère {name} peut répondre.', { name: person.name }))}</div>`;
 
   function renderPeople(people, queue) {
     $('peopleList').innerHTML = people.map(person => {
@@ -1561,8 +1672,7 @@
           ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-join-answer="yes" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-join-answer="no" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Refuser'))}</button></div>` : notMine(person)}</div>`).join('')
         + list(person.sentJoinRequests).map(request => `<div class="notice small">${esc(t('Demande de duo envoyée à {name} pour « {title} ».', { name: request.ownerName || t('quelqu’un'), title: request.song?.title || t('ce titre') }))} ${request.seen === false ? `<b>${esc(t('{name} ne l’a pas encore vue : va lui en parler !', { name: request.ownerName || t('quelqu’un') }))}</b> ` : request.seen ? `${esc(t('{name} l’a vue.', { name: request.ownerName || t('quelqu’un') }))} ` : ''}${esc(t('Sans réponse avant l’envoi de son titre, elle expire.'))}
           ${canEdit ? `<button type="button" class="btn small ghost" data-join-cancel="${esc(request.ownerId)}" data-join-entry="${esc(request.entryId)}" data-person-id="${esc(person.id)}">${esc(t('Annuler la demande'))}</button>` : ''}</div>`).join('');
-      const phone = individual ? '' : ` · ${canEdit ? t('géré sur ce téléphone') : t('autre téléphone')}`;
-      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status + phone)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson pour {name}', { name: person.name }))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo pour {name}', { name: person.name }))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Transférer la gestion de {name}', { name: person.name }))}"`}>${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
+      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson pour {name}', { name: person.name }))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo pour {name}', { name: person.name }))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Transférer la gestion de {name}', { name: person.name }))}"`}>${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
     }).join('');
   }
 
@@ -1930,15 +2040,14 @@
 
   $('joinForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (state?.table?.individual && managedPeople().length) return toast(t('Ce téléphone gère déjà une personne dans « En solo ».'), true);
     const name = $('firstName').value.trim();
     if (!name) return toast(t('Indique un prénom.'), true);
-    const button = $('joinForm').querySelector('button[type=submit]');
-    perform(button, async () => {
-      const result = await post('/api/join', { name, ...(state?.table?.individual ? { invitation: soloInvitation } : {}) });
+    perform($('joinSubmit'), async () => {
+      const result = await post('/api/join', { name });
       if (result.token) savePersonToken(result.id, result.token);
-      if (state?.table?.individual) forgetSoloInvitation();
       $('firstName').value = '';
+      // Première inscription de ce téléphone : le QR de la table, à faire scanner aux autres.
+      inviteOpen = true;
       await refresh();
       toast(t('{name} est inscrit.', { name }));
       continuePendingSong();
@@ -1990,11 +2099,129 @@
     });
   }
 
+  // « Récupérer mes chansons » avec le QR individuel rouvert ailleurs : même
+  // effet qu'une reprise (l'ancien téléphone perd la gestion).
+  function claimWithKey(button) {
+    const name = entry.recover?.name;
+    perform(button, async () => {
+      const result = await post('/api/table/person/claim', { key: soloInvitation });
+      savePersonToken(result.id, result.token);
+      entry = { status: 'done', recover: null, error: '' };
+      await refresh();
+      toast(t('Tu gères maintenant {name} sur ce téléphone.', { name }));
+      continuePendingSong();
+    });
+  }
+
+  // Fenêtre de prénom : tant que la personne du téléphone n'a qu'un prénom
+  // provisoire (« Solo 3 »), rien d'autre n'est visible ni possible. Aucune
+  // fermeture : ni croix, ni Échap, ni Retour.
+  let namePersonId = '';
+  function renderNameGate() {
+    const person = managedPeople().find(candidate => candidate.nameRequired);
+    namePersonId = person ? String(person.id) : '';
+    if (person && $('nameGate').hidden && !$('sheet').hidden) closeSheet();
+    $('nameGate').hidden = !person;
+    $('tabsNav').hidden = !!person;
+    $('mainContent').hidden = !!person;
+  }
+  $('nameGateLang').addEventListener('click', event => {
+    const button = event.target.closest('[data-lang]');
+    if (button) setLanguage(button.dataset.lang);
+  });
+  $('nameGateForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const name = $('nameGateInput').value.trim();
+    const error = $('nameGateError');
+    const show = message => { error.textContent = message; error.hidden = false; };
+    if (!name) return show(t('Indique un prénom.'));
+    const button = $('nameGateForm').querySelector('button[type=submit]');
+    button.disabled = true;
+    try {
+      await post('/api/table/person/rename', { personId: namePersonId, name });
+      error.hidden = true;
+      $('nameGateInput').value = '';
+      await refresh();
+      toast(t('{name} est inscrit.', { name }));
+    } catch (failure) {
+      show(failure.code === 'NAME_TAKEN' ? t('Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).') : failure.message);
+    } finally { button.disabled = false; }
+  });
+
+  // Toute la table, dans une fiche : chacun avec ses titres prêts, et
+  // « C'est moi » (reprise par code) pour une personne gérée ailleurs.
+  let tableSheetQuery = '';
+  const plain = text => String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLocaleLowerCase();
+  function tableSheetRows() {
+    const query = plain(tableSheetQuery.trim());
+    const rows = list(state?.tablePeople).filter(person => plain(person.name).includes(query));
+    return rows.length ? rows.map(person => {
+      const ready = list(person.songs).length + list(person.inKaraFun).length;
+      const action = manages(person.id) ? `<span class="badge">${esc(t('géré par ce téléphone'))}</span>`
+        : person.active === false ? '' : `<button type="button" class="btn small" data-sheet-claim="${esc(person.id)}">${esc(t('C’est moi'))}</button>`;
+      return `<li data-sheet-person="${esc(person.id)}"><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(person.active === false
+        ? t('Parti · historique conservé') : tp(ready, '{n} titre prêt', '{n} titres prêts'))}</div></div>${action}</li>`;
+    }).join('') : `<li class="empty-copy">${esc(t('Aucune personne trouvée.'))}</li>`;
+  }
+  function openTableSheet() {
+    tableSheetQuery = '';
+    const search = list(state?.tablePeople).length > 8
+      ? `<label class="field" for="tableSearch">${esc(t('Chercher un prénom'))}</label><input id="tableSearch" type="search" autocomplete="off">` : '';
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Toute la table'))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <p class="small muted">${esc(t('Déjà inscrit par un autre téléphone ? Le plus simple : scanne le QR code « Transférer » affiché sur ce téléphone-là. Sinon, touche « C’est moi » et saisis le code à 4 chiffres qu’il te donne (ou celui du bar).'))}</p>
+      ${search}<ul class="table-sheet person-list" id="tableSheetList">${tableSheetRows()}</ul>`);
+    $('tableSearch')?.addEventListener('input', () => {
+      tableSheetQuery = $('tableSearch').value;
+      $('tableSheetList').innerHTML = tableSheetRows();
+    });
+  }
+  $('tableAllButton').addEventListener('click', openTableSheet);
+  $('joinOthers').addEventListener('click', openTableSheet);
+
+  // « Fais scanner ta table » : le QR de la table, déployé juste après la
+  // première inscription du téléphone, replié ensuite en un bouton.
+  let inviteOpen = false;
+  let invite = null;
+  let inviteShown = '';
+  async function loadInvite() {
+    try {
+      invite = await request(`/api/table/invite?${new URLSearchParams({ table: tableId, access })}`);
+    } catch (error) {
+      inviteOpen = false;
+      toast(error.message, true);
+    }
+    render();
+  }
+  function renderInvite(show) {
+    $('inviteBox').hidden = !show;
+    $('inviteToggle').hidden = inviteOpen;
+    $('invitePanel').hidden = !inviteOpen;
+    const html = invite ? `<img src="${esc(invite.qr)}" alt="${esc(t('QR code de la table'))}">` : '';
+    if (html !== inviteShown) { $('inviteQr').innerHTML = html; inviteShown = html; }
+    if (show && inviteOpen && !invite && !loadInvite.pending) {
+      loadInvite.pending = true;
+      loadInvite().finally(() => { loadInvite.pending = false; });
+    }
+  }
+  $('inviteToggle').addEventListener('click', () => { inviteOpen = true; render(); });
+  $('inviteClose').addEventListener('click', () => { inviteOpen = false; render(); });
+  $('inviteShare').addEventListener('click', async () => {
+    if (!invite?.url) return;
+    if (navigator.share) {
+      navigator.share({ title: t('Karaoké'), text: t('Rejoins notre table au karaoké :'), url: invite.url }).catch(() => { /* Partage annulé. */ });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(invite.url);
+      toast(t('Lien copié : colle-le dans ton message.'));
+    } catch (_) {
+      toast(t('Copie impossible. Lien de la table : {url}', { url: invite.url }), true);
+    }
+  });
+
   $('peopleList').addEventListener('click', event => {
     const tune = event.target.closest('[data-song-settings]');
     if (tune) { openTune(tune.dataset.personId, tune.dataset.songSettings); return; }
-    const claimHere = event.target.closest('[data-claim-here]');
-    if (claimHere) { openClaim(claimHere.dataset.claimHere); return; }
     const share = event.target.closest('[data-share-person]');
     if (share) {
       perform(share, async () => {

@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { Scheduler, DEFER_MAX } = require('./scheduler');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
+const { PrivateEvent } = require('./private-event');
 const { PLAYED_LIMIT } = require('./song-repeats');
 const { sanitizeSettings } = require('./song-settings');
 const { sanitizeClock } = require('./stage-progress');
@@ -100,7 +101,7 @@ function savePhoto(photo, directory) {
 }
 
 function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null,
-  soloInvitations = null, transfers = [], evening = null, stageClock = null }) {
+  soloInvitations = null, privateEvent = null, transfers = [], evening = null, stageClock = null }) {
   if (!scheduler || !access || !settings) throw new Error('État de soirée incomplet.');
   const tables = [...scheduler.tables.values()].map(t => ({ ...clone(t), secret: access.get(t.id) }));
   if (tables.some(t => !t.secret)) throw new Error('Secret QR manquant dans une table.');
@@ -141,6 +142,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
     },
     settings: clone(settings),
     soloInvitations: soloInvitations ? soloInvitations.serialize() : [],
+    // Événement privé (QR unique) : secret en clair comme ceux des tables.
+    privateEvent: privateEvent ? privateEvent.serialize() : null,
     // Transferts en cours : empreintes seulement, jamais le lien ni le code.
     transfers: clone(transfers),
     pending: pending ? { ...clone(pending), before: [...pending.before] } : null,
@@ -194,6 +197,13 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     if (legacyVoices) for (const song of [person.song, ...person.backlog]) legacyDuoVoice(song, !!song?.duet);
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.
     if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
+    // Champs facultatifs de l'accès solo et de l'activité : abîmés, ils sont
+    // ignorés (prénom libre, pas de clé personnelle, activité inconnue).
+    if (person.nameRequired !== undefined && person.nameRequired !== true) delete person.nameRequired;
+    if (person.viaEvent !== undefined && person.viaEvent !== true) delete person.viaEvent;
+    if (person.soloKeyHash !== undefined &&
+        (typeof person.soloKeyHash !== 'string' || !/^[a-f0-9]{64}$/.test(person.soloKeyHash))) delete person.soloKeyHash;
+    if (person.lastActionAt !== undefined && !Number.isFinite(person.lastActionAt)) delete person.lastActionAt;
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(photo.type)) fail('photo mal formée');
@@ -368,7 +378,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if (restoredPending) settings.auto = false;
   return { pending: restoredPending, tracked: restoredTracked,
     recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize(),
-    transfers: restoredTransfers, evening, stageClock: sanitizeClock(snapshot.stageClock) };
+    transfers: restoredTransfers, evening, stageClock: sanitizeClock(snapshot.stageClock),
+    // Champ ajouté avec l'événement privé : absent ou abîmé = mode coupé.
+    privateEvent: PrivateEvent.normalize(snapshot.privateEvent) };
 }
 
 // À utiliser uniquement après le premier instantané QueueEvent frais de

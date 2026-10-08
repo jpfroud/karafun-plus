@@ -69,10 +69,26 @@
   <section class="card tables-panel" data-tab="accueil">
     <div class="section-heading"><div><div class="eyebrow">Accueil des clients</div><h2>Accueil</h2></div></div>
     <div class="solo-invite-panel">
+      <div id="privateEventBox" class="private-event">
+        <label class="switch"><input type="checkbox" id="privateEventToggle"> Événement privé : un seul QR pour tout le monde</label>
+        <p class="small muted">Bar privatisé : chaque personne scanne le même QR avec son téléphone et gère ses propres chansons.</p>
+        <div id="privateEventPanel" class="private-event-panel" hidden>
+          <div class="staff-qr big-qr"><img id="privateEventQr" alt="QR de l’événement privé"></div>
+          <input id="privateEventUrl" class="solo-invite-url" readonly aria-label="Lien de l’événement privé">
+          <div class="row wrap"><button type="button" class="btn small" id="privateEventCopy">Copier le lien</button><a class="btn small" id="privateEventPrint" href="/print" target="_blank" rel="noopener">Imprimer</a><button type="button" class="btn small danger" id="privateEventRotate">Renouveler le QR</button></div>
+          <p class="tiny muted">Page perdue : la personne rescanne ce QR (même navigateur, elle retrouve sa page). Renouveler refuse l’ancien QR, affiché ou imprimé ; les inscrits gardent leur accès.</p>
+        </div>
+      </div>
       <button type="button" class="btn primary welcome-main" id="issueSoloInvitation">Personne seule : QR individuel</button>
       <p class="small muted">Un QR pour une seule inscription « En solo », valable 30 minutes. Montre-le à la personne qui arrive seule.</p>
       <div id="soloInvitationStatus" class="small muted" role="status"></div>
       <div id="soloInvitationList" class="solo-invite-list"></div>
+      <div id="soloistsBox" class="soloists">
+        <h3 class="welcome-title">Solistes <span class="count" id="soloistCount">0</span></h3>
+        <p class="tiny muted">Dernière activité sur son téléphone d’abord. Une personne a perdu sa page : « QR de reprise », puis fais-le scanner par son téléphone.</p>
+        <span class="search-field" id="soloistSearchBox" hidden><input id="soloistSearch" type="search" placeholder="Prénom ou repère" autocomplete="off" aria-label="Chercher une personne en solo"><button type="button" class="clear-input" data-clear-for="soloistSearch" aria-label="Effacer la recherche" hidden>×</button></span>
+        <div id="soloistList" class="soloist-list"></div>
+      </div>
     </div>
     <h3 class="welcome-title">Tables</h3>
     <div class="new-table">
@@ -720,6 +736,53 @@
   }
   const photoHtml = (p, name, cls = 'identity-photo') => p?.photoUrl ?
     `<img class="${cls}" src="${esc(p.photoUrl)}" alt="Photo de ${esc(name)}">` : `<span class="${cls} identity-avatar" aria-hidden="true">${initial(name)}</span>`;
+  // QR ouvert, prénom pas encore donné : le prénom affiché est provisoire (« Solo 3 »).
+  const nameBadge = p => p?.nameRequired ? '<span class="badge name-missing" title="QR ouvert, prénom pas encore saisi sur son téléphone">prénom à saisir</span>' : '';
+
+  // ------------------------------------------------------------ dernière activité des solos
+  // Page visible ou action sur son téléphone (lastActiveAt du serveur), comptée
+  // à l'heure du serveur (S.now) : l'appareil du bar peut avoir une autre heure.
+  // Solos seulement : à une table, un téléphone gère aussi des amis sans
+  // téléphone, l'indication tromperait. Libellé à la minute : la liste n'est
+  // redessinée qu'une fois par minute.
+  const IDLE_WARN_MIN = 20, IDLE_LATE_MIN = 45;
+  const isSolo = p => !!tableOf(p?.tableId)?.individual;
+  const sinceText = minutes => minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')}`;
+  function activityOf(p) {
+    if (!p || p.active === false || !isSolo(p)) return null;
+    const joined = Number(p.joinedAt) || 0, last = Number(p.lastActiveAt) || 0;
+    const at = Math.max(joined, last);
+    if (!at) return null;
+    const minutes = Math.max(0, Math.floor(((Number(S?.now) || Date.now()) - at) / 60000));
+    const level = minutes >= IDLE_LATE_MIN ? 'late' : minutes >= IDLE_WARN_MIN ? 'warn' : '';
+    // Rien depuis l'ouverture du QR : la création note la même heure (à la seconde près).
+    const never = !!joined && last < joined + 1000;
+    const text = minutes < 2 ? 'Actif à l’instant' : never ? `Pas revenu depuis l’ouverture du QR (${hhmm(joined)})` :
+      level ? `Sans nouvelles depuis ${sinceText(minutes)}` : `Actif il y a ${minutes} min`;
+    return { minutes, level, text, title: `Dernière activité sur son téléphone à ${hhmm(at)}` };
+  }
+  const activityHtml = a => a ? `<span class="activity${a.level ? ` ${a.level}` : ''}" title="${esc(a.title)}">${esc(a.text)}</span>` : '';
+  const recentActivity = p => Math.max(Number(p.lastActiveAt) || 0, Number(p.joinedAt) || 0);
+
+  // Accueil : liste « Solistes », la plus récente activité d'abord, recherche
+  // au-delà de 8 et « QR de reprise » (fenêtre de transfert) en un toucher.
+  function renderSoloists() {
+    $('soloistsBox').hidden = !S.tables.some(t => t.id === 'Comptoir' && t.individual);
+    const solos = S.people.filter(p => p.active !== false && isSolo(p))
+      .sort((a, b) => recentActivity(b) - recentActivity(a) || a.name.localeCompare(b.name, 'fr'));
+    const searchable = solos.length > 8;
+    $('soloistSearchBox').hidden = !searchable;
+    $('soloistCount').textContent = solos.length;
+    const query = searchable ? $('soloistSearch').value.trim().toLocaleLowerCase('fr') : '';
+    const shown = query ? solos.filter(p => `${p.name} ${p.privateNote || ''}`.toLocaleLowerCase('fr').includes(query)) : solos;
+    patch($('soloistList'), shown.map(p => `<div class="soloist-row" data-soloist="${esc(p.id)}">${photoHtml(p, p.name)}<span class="soloist-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}${p.privateNote ? `<span class="soloist-note tiny muted">${esc(p.privateNote)}</span>` : ''}${activityHtml(activityOf(p))}</span><button type="button" class="btn small" data-soloist-share>QR de reprise</button></div>`).join('') ||
+      `<p class="small muted">${solos.length ? 'Aucun soliste à ce nom.' : 'Personne en solo pour le moment.'}</p>`);
+  }
+  $('soloistSearch').addEventListener('input', () => { if (S) renderSoloists(); });
+  $('soloistList').addEventListener('click', event => {
+    const row = event.target?.closest?.('[data-soloist]');
+    if (row && event.target.closest('[data-soloist-share]')) openShare(row.dataset.soloist);
+  });
 
   function renderIdentities(force = false) {
     if (!S) return;
@@ -745,7 +808,7 @@
     // Une ligne compacte par personne, regroupée par table.
     const row = p => `<div class="identity-row${p.active ? '' : ' gone'}" data-identity-person="${esc(p.id)}">
       ${photoHtml(p, p.name)}
-      <div class="identity-who"><strong>${esc(p.name)}</strong><span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span></div>
+      <div class="identity-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}<span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${activityHtml(activityOf(p))}</div>
       <span class="identity-note"><input data-identity-note data-autosave="note" data-autosave-id="${esc(p.id)}" type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}"><span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span></span>
       <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
     </div>`;
@@ -1001,7 +1064,9 @@
       connection?.phase === 'stopped' ? '<div class="staff-alert kf-alert kf-stopped"><span>KaraFun fermé ou code changé : la file n’essaie plus seule, les titres ne partent plus. Une fois KaraFun ouvert (télécommande activée), clique sur « Reconnecter » ; si le code a changé, utilise « Saisir le code ».</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button><button type="button" class="btn small" data-alert-goto="kfPanel">Saisir le code</button></span></div>' :
       kf.down ? `<div class="staff-alert kf-alert"><span>${esc(kf.text)} : les titres ne partent plus.</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span></div>` :
       connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';
-    const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
+    // Solo : sa dernière activité aide à décider s'il est encore là.
+    const goneActivity = p => { const activity = activityHtml(activityOf(personOf(p.id))); return activity ? ` ${activity}` : ''; };
+    const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?${goneActivity(p)}</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
     // Une alerte qui porte sa propre sortie (« Arrêter le vidage ») ne se
     // ferme pas : la croix masquerait le seul moyen d'en sortir.
     const shown = alerts.filter(([key, text, actions]) => actions || dismissedAlerts[key] !== text).map(([key, text, actions]) => actions ?
@@ -1247,7 +1312,9 @@
   // Tables : une tuile par table ; la toucher montre son QR en grand.
   function renderTables() {
     patch($('tBody'), S.tables.map(t => {
-      const occupancy = t.individual ? `${t.activeCount} soliste${t.activeCount === 1 ? '' : 's'}` :
+      // « En solo » : combien n'ont plus donné de nouvelles depuis 20 min.
+      const idle = t.individual ? S.people.filter(p => p.tableId === t.id && activityOf(p)?.level).length : 0;
+      const occupancy = t.individual ? `${t.activeCount} soliste${t.activeCount === 1 ? '' : 's'}${idle ? ` · ${idle} sans nouvelles` : ''}` :
         `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'} / ${t.count} inscrit${t.count === 1 ? '' : 's'} / ${t.headcount || '—'} places`;
       const tile = t.individual ?
         `<button type="button" class="table-tile solo" data-solo-invite><strong>${esc(t.name)}</strong><span class="occupancy">${occupancy}</span><span class="table-tile-cta">QR individuel</span></button>` :
@@ -1728,6 +1795,10 @@
       const notes = (q.ids || []).map(pid => S.people.find(p => p.id === pid)).filter(p => p?.privateNote)
         .map(p => (q.ids.length > 1 ? `${p.name} : ` : '') + p.privateNote);
       const inviteBadge = pendingInviteBadge(q);
+      // Solo sans nouvelles depuis 45 min, sur le point d'être appelé.
+      const lineIds = q.ids?.length ? q.ids : q.source === 'helper' && q.id != null ? [q.id] : [];
+      const idleTags = lineIds.map(personOf).map(p => [p, activityOf(p)]).filter(([, a]) => a?.level === 'late')
+        .map(([p, a]) => `<span class="idle-tag" title="${esc(a.title)}">${esc((lineIds.length > 1 ? `${p.name} : ` : '') + a.text.charAt(0).toLowerCase() + a.text.slice(1))}</span>`).join('');
       // Réglages de titre : tout titre à venir de la file, même déjà chargé dans KaraFun.
       const tunable = q.song?.entryId && (q.source === 'helper' || (q.ours && (q.source === 'karafun' || q.source === 'envoi')));
       const tune = tunable ? `<button class="btn small" data-song-settings="${esc(q.song.entryId)}" data-person-id="${esc(q.ids?.[0] ?? q.id ?? '')}" aria-label="Réglages de « ${esc(title)} » : tonalité, tempo, voix">Réglages</button>` : '';
@@ -1738,7 +1809,7 @@
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
         <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings, q.tracks)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
@@ -1815,6 +1886,8 @@
         act('/api/staff/solo-invite/revoke', { id: button.dataset.soloRevoke }, 'Invitation annulée');
       }
     });
+    renderPrivateEvent(soloTable);
+    renderSoloists();
     renderIdentities();
     const battle = S.battle || { phase: 'idle' };
     const remaining = (at) => Math.max(0, Math.ceil((Number(at) - Date.now()) / 1000));
@@ -2119,6 +2192,32 @@
   $('shareClose').onclick = () => $('shareDialog').close();
   $('shareDialog').addEventListener('close', () => { $('shareCode').textContent = ''; $('shareUrl').value = ''; $('shareQr').removeAttribute('src'); });
   $('shareCopy').onclick = () => copyText($('shareUrl'), 'Lien copié', 'Sélectionne le lien pour le copier', false);
+  // ------------------------------------------------------------ événement privé
+  // Bar privatisé : un seul QR, chacun scanne avec son téléphone. Couper puis
+  // rallumer garde le même QR ; « Renouveler » refuse l'ancien.
+  function renderPrivateEvent(soloTable) {
+    const event = S.privateEvent || {};
+    const on = !!event.enabled && !!event.url && !!event.qrUrl;
+    $('privateEventToggle').disabled = !soloTable;
+    $('privateEventToggle').checked = on;
+    $('privateEventPanel').hidden = !on;
+    if (!on) return;
+    const src = qrSrc(event);
+    if ($('privateEventQr').getAttribute('src') !== src) $('privateEventQr').src = src;
+    $('privateEventUrl').value = event.url;
+    $('privateEventPrint').href = '/print' + kq;
+  }
+  $('privateEventToggle').onchange = () => {
+    const enabled = !!$('privateEventToggle').checked;
+    act('/api/staff/private-event', { enabled }, enabled ? 'Événement privé activé : montre ou imprime son QR' :
+      'Événement privé coupé : son QR ne permet plus de s’inscrire');
+  };
+  $('privateEventCopy').onclick = () => copyText($('privateEventUrl'), 'Lien de l’événement copié', 'Sélectionne le lien pour le copier.', true);
+  $('privateEventRotate').onclick = () => {
+    if (confirm('Renouveler le QR de l’événement privé ? L’ancien QR, affiché ou imprimé, ne permettra plus de s’inscrire ; les personnes déjà inscrites gardent leur accès. Pense à réimprimer le nouveau.')) {
+      act('/api/staff/private-event', { rotate: true }, 'Nouveau QR d’événement privé : l’ancien est refusé');
+    }
+  };
   $('issueSoloInvitation').onclick = async () => {
     try {
       const invite = await post('/api/staff/solo-invite', { tableId: 'Comptoir' });
