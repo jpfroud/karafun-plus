@@ -1810,13 +1810,17 @@ function publicState(person, tableId, managed = null) {
       out.battle.votedPersonIds = out.battle.votedPersonIds.filter(id => id === person?.id);
       // Seules les personnes qui ont demandé un code de reprise au bar (ou
       // sur leur ancien téléphone) apparaissent dans ce parcours temporaire.
-      out.recoveryPeople = person ? [] : sched.tableSingers(tid).filter(p => !p.withdrawnAt &&
+      // Personne partie sur ce téléphone (un doublon) : la reprise reste ouverte.
+      out.recoveryPeople = person && !person.withdrawnAt ? [] : sched.tableSingers(tid).filter(p => !p.withdrawnAt &&
         personShareCodes.get(p.id)?.expiresAt > Date.now() && personShareCodes.get(p.id).attempts < 5)
         .map(p => ({ id: p.id, name: p.name }));
     }
     out.tablePeople = sched.tableSingers(tid).filter(p => !t?.individual || p.id === person?.id)
       .map(p => ({ id: p.id, name: p.name,
       ...(p.nameRequired ? { nameRequired: true } : {}),
+      // Venu par le QR de l'événement privé : son adresse ne garde pas ce QR,
+      // le téléphone conseille de le rescanner depuis la même application.
+      ...(t?.individual && p.viaEvent ? { viaEvent: true } : {}),
       active: !p.withdrawnAt,
       songs: sched.songsOf(p).map(fmtSong),
       confirmed: confirmedForPage(p),
@@ -2138,6 +2142,29 @@ function soloDeviceOwner(req) {
     Array.isArray(person.soloDeviceHashes) && person.soloDeviceHashes.includes(hash)) || null;
 }
 
+// Place solo qui empêche ce navigateur d'en reprendre une autre : une personne
+// marquée partie ne la retient plus (son doublon, par exemple), une personne
+// présente oui. Créer une place reste refusé même après un départ
+// (soloDeviceOwner) : la personne partie peut être réactivée par le bar.
+function activeSoloDeviceOwner(req) {
+  const owner = soloDeviceOwner(req);
+  return owner && !owner.withdrawnAt ? owner : null;
+}
+
+// Reprise d'un profil par ce navigateur : il quitte sa place partie, qui
+// revient sans téléphone si le bar la réactive (jamais deux places actives
+// pour un navigateur). Le téléphone actuel est le dernier de la liste : à sa
+// place, une empreinte qu'aucun navigateur n'envoie, pour qu'un ancien
+// téléphone écarté par un transfert ne redevienne pas le téléphone actuel.
+function releaseGoneSoloDevice(req, owner) {
+  const hash = soloCookieHash(req);
+  if (!owner?.withdrawnAt || !hash || !Array.isArray(owner.soloDeviceHashes)) return;
+  const current = owner.soloDeviceHashes.at(-1) === hash;
+  owner.soloDeviceHashes = owner.soloDeviceHashes.filter(saved => saved !== hash);
+  if (current && owner.soloDeviceHashes.length) owner.soloDeviceHashes.push(crypto.randomBytes(32).toString('hex'));
+  if (!owner.soloDeviceHashes.length) delete owner.soloDeviceHashes;
+}
+
 function soloDeviceError(code) {
   const error = new Error(code === 'SOLO_DEVICE_USED' ?
     'Ce téléphone a déjà un prénom inscrit. Chacun utilise son propre téléphone.' :
@@ -2257,7 +2284,9 @@ function openSoloInvitation(req, res, body) {
   const owner = soloDeviceOwner(req);
   const known = keyTarget(body.invitation, t);
   if (known) {
-    if (owner && owner.id !== known.id) throw soloDeviceError('SOLO_DEVICE_USED');
+    // Reprise par la clé personnelle : seule une place active la bloque.
+    const active = activeSoloDeviceOwner(req);
+    if (active && active.id !== known.id) throw soloDeviceError('SOLO_DEVICE_USED');
     // Le téléphone qui la gère rouvre son QR : la même personne.
     if (currentSoloDevice(req, known)) {
       known.lastActionAt = Date.now();
@@ -2268,6 +2297,13 @@ function openSoloInvitation(req, res, body) {
     if (!known.nameRequired) return { recover: { id: known.id, name: known.name } };
     const claimed = claimPersonDurably({ table: body.table, access: body.access, key: body.invitation }, req, res);
     return { ...claimed, nameRequired: true, recovered: true };
+  }
+  // Son propre QR rouvert par ce navigateur alors qu'il a été marqué parti :
+  // le dire (comme le QR de l'événement), pas « invitation utilisée ».
+  if (owner?.withdrawnAt && owner.soloKeyHash && owner.soloKeyHash === SoloInvitations.digest(body.invitation)) {
+    const error = new Error('Cette personne a été marquée partie. Demande au bar de la réactiver.');
+    error.code = 'PERSON_LEFT';
+    throw error;
   }
   if (!soloInvitations.verify(body.invitation, t.id)) {
     const error = new Error('Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.');
@@ -2434,8 +2470,11 @@ function claimPerson(body, req, res) {
   const t = tableByAccess(body.table, body.access);
   const p = sched.people.get(String(body.personId || ''));
   if (!p || p.tableId !== t.id || p.withdrawnAt) throw new Error('Chanteur indisponible à cette table.');
+  // Reprise (QR de reprise, QR personnel, code) : une place partie de ce
+  // navigateur ne la bloque pas, une place active si.
+  const goneOwner = t.individual ? soloDeviceOwner(req) : null;
   if (t.individual) {
-    const owner = soloDeviceOwner(req);
+    const owner = activeSoloDeviceOwner(req);
     if (owner && owner.id !== p.id) throw soloDeviceError('SOLO_DEVICE_USED');
   }
   const saved = personShareCodes.get(p.id);
@@ -2465,7 +2504,10 @@ function claimPerson(body, req, res) {
   sched.byToken.delete(p.token);
   p.token = crypto.randomBytes(16).toString('hex');
   sched.byToken.set(p.token, p.id);
-  if (t.individual) bindSoloDevice(req, res, p);
+  if (t.individual) {
+    if (goneOwner && goneOwner.id !== p.id) releaseGoneSoloDevice(req, goneOwner);
+    bindSoloDevice(req, res, p);
+  }
   p.lastActionAt = Date.now();
   journalEvent('person.transferred', { personId: p.id });
   sched.note(`${p.name} est désormais géré depuis un autre téléphone`, 'info');
@@ -2488,6 +2530,9 @@ function claimPersonDurably(body, req, res) {
   const attempts = code?.attempts;
   const oldToken = person?.token;
   const oldDeviceHashes = person?.soloDeviceHashes?.slice();
+  // Place partie que ce navigateur quitte en reprenant ce profil.
+  const goneOwner = person && sched.table(person.tableId, false)?.individual ? soloDeviceOwner(req) : null;
+  const goneOwnerHashes = goneOwner?.soloDeviceHashes?.slice();
   const oldSoloInvitations = soloInvitations.serialize();
   const oldLog = sched.log.slice();
   const oldVersion = sched.version;
@@ -2508,6 +2553,7 @@ function claimPersonDurably(body, req, res) {
     sched.byToken.set(oldToken, person.id);
     if (oldDeviceHashes) person.soloDeviceHashes = oldDeviceHashes;
     else delete person.soloDeviceHashes;
+    if (goneOwner && goneOwner !== person) goneOwner.soloDeviceHashes = goneOwnerHashes;
     soloInvitations.restore(oldSoloInvitations);
     if (code) { code.attempts = attempts; personShareCodes.set(id, code); }
     sched.log = oldLog;
@@ -4134,7 +4180,7 @@ const server = http.createServer(async (req, res) => {
           view.transferOffer = target ? { personId: target.id, name: target.name,
             expiresAt: personShareCodes.get(target.id)?.linkExpiresAt || null } : { invalid: true };
         }
-        if (t.individual && soloOwner) {
+        if (t.individual && soloOwner && !soloOwner.withdrawnAt) {
           view.recoveryPeople = (view.recoveryPeople || []).filter(person => person.id === soloOwner.id);
         }
         view.managedIds = [...new Set(owned.map(person => person.id))];

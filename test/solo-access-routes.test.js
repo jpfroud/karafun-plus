@@ -372,6 +372,11 @@ test('QR personnel rouvert ailleurs : même personne proposée, récupération p
   await post(f, staff(f, '/api/staff/person/leave'), { personId: first.personId });
   const gone = await post(f, '/api/table/solo/open', { ...tb, invitation: token });
   assert.equal(gone.body.code, 'SOLO_INVITATION');
+  // Son propre navigateur rouvre la clé : « marquée partie », pas « invitation utilisée ».
+  const mine = await post(f, '/api/table/solo/open', { ...tb, invitation: token }, { cookie: next.cookie });
+  assert.equal(mine.status, 400, 'même statut que le QR de l’événement');
+  assert.equal(mine.body.code, 'PERSON_LEFT');
+  assert.equal(mine.body.error, 'Cette personne a été marquée partie. Demande au bar de la réactiver.');
   assert.equal((await post(f, '/api/table/person/claim', { ...tb, key: token })).status, 400);
 });
 
@@ -403,6 +408,186 @@ test('inscription par l’ancien formulaire : le QR devient aussi la clé person
   assert.ok(person.soloKeyHash);
   const elsewhere = await post(f, '/api/table/solo/open', { ...tb, invitation: token });
   assert.deepEqual(elsewhere.body, { recover: { id: joined.body.id, name: 'Nina' } });
+});
+
+// ---------------------------------------------------------------- doublon marqué parti
+// Regression: un navigateur qui a créé un doublon (QR de l'événement rescanné
+// depuis une autre application) ne pouvait plus reprendre son ancien profil,
+// même après que le bar avait marqué le doublon « Parti » : la reprise
+// répondait « Ce téléphone a déjà un prénom inscrit. ».
+async function eventEntry(f, tb, secret, name, cookie) {
+  const r = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie });
+  assert.equal(r.status, 200, r.text);
+  const me = { ...tb, personId: r.body.id, token: r.body.token, cookie: cookieOf(r) || cookie };
+  if (name) {
+    const named = await post(f, '/api/table/person/rename', { ...tb, personId: me.personId, token: me.token, name }, { cookie: me.cookie });
+    assert.equal(named.status, 200, named.text);
+  }
+  return me;
+}
+const linkOf = share => new URL(share.body.url).searchParams.get('reprise');
+
+test('doublon parti : le QR de reprise rend l’ancien profil à ce navigateur ; un doublon encore actif bloque toujours', async () => {
+  const f = harness();
+  const { tb } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  // Léa s'inscrit depuis le scanner d'Instagram, puis perd sa page et
+  // rescanne depuis Snapchat : un deuxième chanteur (D1).
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  assert.equal((await post(f, '/api/table/song', { ...lea, song: song(7, 'Ma chanson') }, { cookie: lea.cookie })).status, 200);
+  const dup = await eventEntry(f, tb, secret, 'Léa B.');
+
+  // Doublon encore actif : toujours une seule place active par navigateur.
+  const share = await post(f, staff(f, '/api/staff/person/share'), { personId: lea.personId });
+  const blocked = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie: dup.cookie });
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.body.code, 'SOLO_DEVICE_USED');
+
+  // Le bar marque le doublon parti : la reprise passe.
+  assert.equal((await post(f, staff(f, '/api/staff/person/leave'), { personId: dup.personId })).status, 200);
+  const offer = (await get(f, `/api/state?table=Comptoir&access=${tb.access}&reprise=${linkOf(share)}`,
+    { cookie: dup.cookie, headers: { 'x-person-tokens': JSON.stringify([dup.token]) } })).body.transferOffer;
+  assert.deepEqual(plain(offer).personId, lea.personId);
+  const claimed = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie: dup.cookie });
+  assert.equal(claimed.status, 200, claimed.text);
+  assert.equal(claimed.body.id, lea.personId);
+  const back = { ...tb, personId: lea.personId, token: claimed.body.token, cookie: cookieOf(claimed) };
+  assert.ok(back.cookie && back.cookie !== dup.cookie);
+  const view = (await get(f, `/api/state?table=Comptoir&access=${tb.access}`,
+    { cookie: back.cookie, headers: { 'x-person-tokens': JSON.stringify([back.token, dup.token]) } })).body;
+  assert.deepEqual(view.managedIds, [lea.personId], 'ses chansons reviennent, le doublon parti n’est pas géré');
+  assert.deepEqual(view.tablePeople[0].songs.map(s => s.title), ['Ma chanson']);
+  assert.deepEqual((await stateOf(f, tb, lea)).body.managedIds, [], 'l’ancien navigateur perd l’accès');
+  // Le même navigateur rescanne le QR de l'événement : Léa, rien de créé.
+  const rescan = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: back.cookie });
+  assert.deepEqual([rescan.body.id, rescan.body.resumed], [lea.personId, true]);
+  assert.equal(f.sched.people.size, 2);
+
+  // Ce navigateur gère Léa (active) : il ne prend pas un troisième profil.
+  const max = await eventEntry(f, tb, secret, 'Max');
+  const maxShare = await post(f, staff(f, '/api/staff/person/share'), { personId: max.personId });
+  const twice = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(maxShare) }, { cookie: back.cookie });
+  assert.equal(twice.body.code, 'SOLO_DEVICE_USED');
+
+  // Le bar réactive le doublon : il revient sans téléphone, jamais une
+  // deuxième place active pour le navigateur de Léa.
+  assert.equal((await post(f, staff(f, '/api/staff/person/reactivate'), { personId: dup.personId })).status, 200);
+  assert.equal(f.sched.people.get(dup.personId).withdrawnAt, null);
+  const after = (await get(f, `/api/state?table=Comptoir&access=${tb.access}`,
+    { cookie: back.cookie, headers: { 'x-person-tokens': JSON.stringify([back.token, dup.token]) } })).body;
+  assert.deepEqual(after.managedIds, [lea.personId]);
+  const dupSong = await post(f, '/api/table/song', { ...dup, song: song(8, 'Autre') }, { cookie: back.cookie });
+  assert.equal(dupSong.body.code, 'SOLO_DEVICE_ACCESS');
+  // Même avec son ancien cookie (navigateur qui n'aurait pas gardé le nouveau).
+  assert.deepEqual((await stateOf(f, tb, dup)).body.managedIds, [], 'le doublon réactivé n’a plus de téléphone');
+  assert.equal((await post(f, '/api/table/song', { ...dup, song: song(8, 'Autre') }, { cookie: dup.cookie })).body.code, 'SOLO_DEVICE_ACCESS');
+  // Le bar peut le confier à un téléphone par son propre QR de reprise.
+  const dupShare = await post(f, staff(f, '/api/staff/person/share'), { personId: dup.personId });
+  const handed = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(dupShare) });
+  assert.equal(handed.status, 200, handed.text);
+});
+
+test('doublon parti : le QR personnel et le code à 4 chiffres reprennent l’ancien profil ; créer une place reste refusé', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const key = invite();
+  const clara = await opened(f, tb, key);
+  await post(f, '/api/table/person/rename', { ...tb, personId: clara.personId, token: clara.token, name: 'Clara' }, { cookie: clara.cookie });
+  // Clara rescanne par erreur le QR de l'événement dans un autre navigateur.
+  const dup = await eventEntry(f, tb, secret, 'Clara B.');
+  assert.equal((await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { cookie: dup.cookie })).body.code, 'SOLO_DEVICE_USED');
+  assert.equal((await post(f, '/api/table/person/claim', { ...tb, key }, { cookie: dup.cookie })).body.code, 'SOLO_DEVICE_USED');
+
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: dup.personId });
+  // Créer une NOUVELLE place depuis ce navigateur reste refusé (inchangé).
+  assert.equal((await post(f, '/api/table/solo/open', { ...tb, invitation: invite() }, { cookie: dup.cookie })).body.code, 'SOLO_DEVICE_USED');
+  assert.equal((await post(f, '/api/join', { ...tb, name: 'Zoé', invitation: invite() }, { cookie: dup.cookie })).body.code, 'SOLO_DEVICE_USED');
+  // Même navigateur qui rescanne l'événement : son doublon parti, pas un troisième chanteur.
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: dup.cookie })).body.code, 'PERSON_LEFT');
+  assert.equal(f.sched.people.size, 2);
+
+  // Son QR personnel : « C'est bien toi, Clara ? », puis la reprise.
+  const offer = await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { cookie: dup.cookie });
+  assert.deepEqual(offer.body, { recover: { id: clara.personId, name: 'Clara' } });
+  const claimed = await post(f, '/api/table/person/claim', { ...tb, key }, { cookie: dup.cookie });
+  assert.equal(claimed.status, 200, claimed.text);
+  assert.equal(claimed.body.id, clara.personId);
+  const back = { ...tb, personId: clara.personId, token: claimed.body.token, cookie: cookieOf(claimed) };
+  assert.deepEqual((await stateOf(f, tb, back)).body.managedIds, [clara.personId]);
+  assert.deepEqual((await stateOf(f, tb, clara)).body.managedIds, []);
+
+  // Code à 4 chiffres, en secours : un autre doublon parti ne le cache ni ne le bloque.
+  const second = await eventEntry(f, tb, secret, 'Clara C.');
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: second.personId });
+  const share = await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  const listed = (await stateOf(f, tb, second)).body.recoveryPeople;
+  assert.deepEqual(plain(listed), [{ id: clara.personId, name: 'Clara' }]);
+  const byCode = await post(f, '/api/table/person/claim', { ...tb, personId: clara.personId, code: share.body.code }, { cookie: second.cookie });
+  assert.equal(byCode.status, 200, byCode.text);
+  assert.deepEqual((await stateOf(f, tb, back)).body.managedIds, [], 'le navigateur précédent perd l’accès');
+});
+
+// Regression: en quittant sa place partie, un navigateur rendait la main au
+// téléphone précédent de cette place (celui qu'un transfert avait écarté) :
+// réactivée, la personne revenait sur ce vieux navigateur.
+test('doublon parti : la place quittée ne revient pas au navigateur qu’un transfert avait écarté', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const takeOver = async (personId, cookie) => {
+    const share = await post(f, staff(f, '/api/staff/person/share'), { personId });
+    const r = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie });
+    assert.equal(r.status, 200, r.text);
+    return { ...tb, personId, token: r.body.token, cookie: cookieOf(r) || cookie };
+  };
+  for (const viaKey of [false, true]) {
+    const key = viaKey ? invite() : null;
+    // Bea s'inscrit sur le navigateur Z ; le bar la confie au navigateur Y.
+    const z = viaKey ? await opened(f, tb, key) : await eventEntry(f, tb, secret);
+    await post(f, '/api/table/person/rename', { ...tb, personId: z.personId, token: z.token, name: viaKey ? 'Bea K' : 'Bea' }, { cookie: z.cookie });
+    const y = await takeOver(z.personId, undefined);
+    const other = await eventEntry(f, tb, secret, viaKey ? 'Abel K' : 'Abel');
+    // Bea est marquée partie ; Y reprend un autre profil (A).
+    await post(f, staff(f, '/api/staff/person/leave'), { personId: z.personId });
+    await takeOver(other.personId, y.cookie);
+    // Le bar réactive Bea : elle revient sans téléphone, Z reste écarté.
+    assert.equal((await post(f, staff(f, '/api/staff/person/reactivate'), { personId: z.personId })).status, 200);
+    if (viaKey) {
+      const reopened = await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { cookie: z.cookie });
+      assert.equal(reopened.body.token, undefined, 'clé personnelle rouverte par Z : pas de jeton direct');
+      assert.deepEqual(reopened.body, { recover: { id: z.personId, name: 'Bea K' } });
+    } else {
+      const rescan = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: z.cookie });
+      assert.notEqual(rescan.body.id, z.personId, 'QR de l’événement rescanné par Z : pas Bea');
+      assert.equal(rescan.body.resumed, undefined);
+    }
+    assert.ok(!(await stateOf(f, tb, z)).body.managedIds.includes(z.personId), 'Z ne gère plus Bea');
+    // Le bar peut toujours la confier à un téléphone.
+    await takeOver(z.personId, undefined);
+  }
+});
+
+test('doublon parti : sauvegarde impossible pendant la reprise = doublon et ancien profil intacts', async () => {
+  const f = harness({ persistent: true });
+  const { tb } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  const dup = await eventEntry(f, tb, secret, 'Léa B.');
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: dup.personId });
+  const share = await post(f, staff(f, '/api/staff/person/share'), { personId: lea.personId });
+  const before = plain([f.sched.people.get(lea.personId).soloDeviceHashes, f.sched.people.get(dup.personId).soloDeviceHashes]);
+  f.night.fail = 'disque plein';
+  const r = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie: dup.cookie });
+  assert.equal(r.status, 400);
+  assert.deepEqual(plain([f.sched.people.get(lea.personId).soloDeviceHashes, f.sched.people.get(dup.personId).soloDeviceHashes]), before);
+  assert.deepEqual((await stateOf(f, tb, lea)).body.managedIds, [lea.personId], 'Léa reste sur son navigateur');
+  f.night.fail = null;
+  assert.equal((await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie: dup.cookie })).status, 200);
 });
 
 // ---------------------------------------------------------------- B : événement privé
@@ -471,6 +656,7 @@ test('événement privé : interrupteur du bar, QR unique, même navigateur = m�
   // Chaque participant ne voit que lui-même.
   const view = (await stateOf(f, tb, { token: a.body.token, cookie: aCookie })).body;
   assert.deepEqual(view.tablePeople.map(p => p.id), [a.body.id]);
+  assert.equal(view.tablePeople[0].viaEvent, true, 'la page sait que son chanteur vient du QR de l’événement');
   assert.notEqual(f.sched.people.get(a.body.id).group, f.sched.people.get(b.body.id).group, 'chacun son tour');
   // Prénom déjà pris : consigne d'ajouter une initiale côté page.
   await post(f, '/api/table/person/rename', { ...tb, personId: a.body.id, token: a.body.token, name: 'Marie' }, { cookie: aCookie });
@@ -480,6 +666,7 @@ test('événement privé : interrupteur du bar, QR unique, même navigateur = m�
   // Les invitations individuelles fonctionnent toujours pendant l'événement.
   const solo = await opened(f, tb, f.soloInvitations.issue('Comptoir').token);
   assert.ok(solo.personId);
+  assert.equal((await stateOf(f, tb, solo)).body.tablePeople[0].viaEvent, undefined, 'QR individuel : pas venu par l’événement');
 
   // Renouveler : l'ancien QR est refusé, les inscrits gardent leur accès.
   const rotated = await post(f, staff(f, '/api/staff/private-event'), { rotate: true });
