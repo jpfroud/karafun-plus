@@ -22,6 +22,10 @@ F  Barre de lecture du titre sur scène                                (indépen
 G  Réglages isolés par titre (défaut)                                 (indépendant)
 H  Graphique « Déroulé de la soirée » (défaut)                        (indépendant)
 P  Porte gstack (hooks) : correctifs de la relecture                  (indépendant)
+I  Durée des titres avant l'ajout                                     (indépendant)
+J  Durée maximale des titres                                          (après I : même affichage de la durée)
+K  Prénom seul pour les solistes                                      (après A et J : mêmes fichiers)
+L  Battle : les retardataires votent (défaut)                         (indépendant ; touche l'électorat défini en A)
 ```
 
 A avant B et C : B et C reposent sur la personne créée à l'ouverture, sur le drapeau `nameRequired` et sur la fenêtre de prénom. D touche les mêmes zones de `client.html` que A : il passe après A ou dans la même série de modifications.
@@ -187,6 +191,30 @@ La durée (secondes) arrive déjà sur les téléphones avec le catalogue (`cata
 
 ---
 
+## K. Prénom seul pour les solistes (demande du 8 octobre)
+
+**Aujourd'hui** (inventaire vérifié, 118 emplacements) : le nom de chanteur envoyé à KaraFun accole le nom du groupe solo, « Léa · En solo » (`scheduler.js:2344-2345`, repris à `scheduler.js:937`, `server.js:3779` et `server.js:1657`). Il s'affiche sur l'écran de la salle, dans la file et la scène de tous les téléphones (`client.html:1570`, `1575`, `1944`), et le bar le voit aussi. En anglais, le téléphone recompose « Léa · Solo » (`client.html:1606`). Le choix du partenaire de duo montre « ↗ Sam · En solo » (`client.html:3074-3080`, `staff.html:1159-1162`). Sur la page du bar, on retrouve l'étiquette dans la pastille verte « En solo » de la carte Scène (`staff.html:1132`), la file (`1812`), les derniers passages (`1247`), l'alerte « n'a pas répondu » (`1069`), les Repères (`801`), la recherche de transfert (`719`), le journal (« Léa (En solo) s'est inscrit », `scheduler.js:501/530/537/626`, `server.js:3680`) et les statistiques (`stats.html:426/451/631/667/750/778`). Le téléphone d'un soliste affiche « 🎤 En solo » en en-tête et plusieurs phrases qui nomment le groupe. Les prénoms sont uniques dans un même groupe (`scheduler.js:510-519`), donc deux solistes n'ont jamais le même prénom.
+
+**Règle** (décisions D10 et D11) : partout où une personne est nommée, un soliste n'a que son prénom ; une personne de table a son prénom suivi du nom de la table.
+1. Une seule fonction `passageLabel(ids)` du planificateur fabrique le nom d'un passage. Elle joint les prénoms par « & » puis ajoute « · » et les tables non individuelles, sans doublon, dans l'ordre des personnes. Exemples : « Léa », « Léa & Sam » (deux solistes), « Léa & Max · Table 4 » (soliste et table), « Max & Zoé · Table 4 + Table 2 ». Elle remplace les quatre constructions ci-dessus ; « Relancer » renvoie à KaraFun le nom recalculé et le reconnaît sous ce nom.
+2. Affichage : la scène, la file, l'envoi en cours, la page du bar et les avis de doublon recalculent le nom à partir des personnes du passage. Ils ne réutilisent pas le texte enregistré, si bien qu'une soirée commencée avant la mise à jour s'affiche tout de suite au nouveau format. Le texte enregistré (`sel.label`) ne sert plus qu'à reconnaître le titre dans KaraFun ; un envoi déjà parti garde son texte d'origine. Pour une ligne de KaraFun que l'application ne suit pas, le suffixe du groupe solo (« · En solo », « En solo + ») est retiré à l'affichage.
+3. Téléphones : l'en-tête d'un soliste montre son prénom (« Bienvenue » tant qu'aucune personne n'est gérée) ; la recomposition anglaise disparaît. Le choix du partenaire de duo montre « Sam » pour un soliste et « Max · Table 4 » à une table ; sur le téléphone d'un soliste, les autres solistes ne sont plus présentés comme « À ma table ».
+4. Phrases reformulées sans l'étiquette, en français et en anglais : récupération (`client.html:1308`), code de changement de téléphone (`1473`), catalogue sans inscription (`2672`), inscription refusée (`2059`), erreurs du serveur (`server.js:2096`, `2104`, `2209`, `3130`), fenêtres du bar montrées au client (« QR de reprise » `staff.html:707`, texte de remplacement du QR `280`).
+5. Page du bar : plus de pastille ni d'étiquette « En solo » à côté d'un prénom (Scène, File, Derniers passages, Repères, alerte, recherche de transfert, choix du partenaire, journal) ; dans un duo soliste + table, seule la table apparaît ; le groupe d'options s'appelle « Autres personnes ». Le bar retrouve les solistes dans la liste « Solistes » de l'Accueil. Les écrans de gestion qui nomment le groupe lui-même (tuile de l'Accueil, fiche du groupe, regroupement et filtre des Repères, carte « Tables » des statistiques) gardent leur nom.
+6. Statistiques : un soliste s'affiche « Léa » (filtre, info-bulles, panneau personnel), et la colonne « Table » reste vide pour lui.
+7. Garde-fous : le prénom « Battle collective » est refusé, car il se confondrait avec le nom de la Battle dans KaraFun. Une personne qui n'a pas encore donné son prénom (« Solo N ») n'est proposée dans aucun choix de partenaire du bar, et le serveur refuse ce duo.
+8. Tests : `passageLabel` (solo, deux solos, mixte, tables, départ d'un invité de duo, duo noté par le bar), affichage recalculé pour une soirée enregistrée à l'ancien format, ligne KaraFun non suivie, « Relancer », prénom réservé, en-tête et choix du partenaire du téléphone (FR et EN), pages du bar et des statistiques ; les tests qui figeaient « · En solo » sont mis à jour.
+
+**Hors périmètre** : renommer le groupe lui-même dans les écrans de gestion du bar ; les journaux techniques sur disque et le diagnostic brut de KaraFun.
+
+## L. Battle : les retardataires votent (défaut signalé le 8 octobre)
+
+**Cause confirmée** : la liste des votants est figée à l'ouverture du vote (`server.js:3278`, `eligiblePersonIds: battleElectorate()`). Ensuite, `battle-vote.js:258` refuse toute autre personne (« Cette personne ne peut pas voter. »), et `client.html:1995` n'affiche la carte de vote qu'aux personnes de cette liste. Sont exclus : une personne arrivée après l'ouverture, et un soliste qui n'avait pas encore donné son prénom (`nameRequired`, lot A).
+
+**Changement** : tant que le vote est ouvert, toute personne inscrite, nommée et présente peut voter, y compris si elle est arrivée ou a donné son prénom après l'ouverture. La règle de majorité et le nombre minimal de votants ne changent pas ; le vote se clôt plus tôt quand toute la liste à jour a voté ; une personne partie garde son droit, comme aujourd'hui. Une seule fonction serveur ajoute les nouveaux inscrits pendant le vote. Elle est appelée après chaque changement d'état et avant chaque vote.
+
+---
+
 ## H. Graphique « Déroulé de la soirée » (défaut)
 
 **Cause confirmée** (capture reproduite dans Chromium) : la soirée du samedi est restée ouverte (« – en cours », « En direct ») car elle ne se clôt qu'avec « Supprimer toutes les tables » ; l'axe va donc du samedi 22:42 à maintenant, plusieurs jours plus tard ; toutes les barres tombent à 2 px dans les premiers pour cent du graphique et `timeTicks` (`stats.html:242-250`, pas maximal d'une heure, sans tenir compte de la largeur) produit des dizaines d'heures superposées.
@@ -221,7 +249,9 @@ Constats de la relecture gstack (`review`, spécialistes tests, maintenabilité,
 9. G : avec un KaraFun « collant », voix guide 25 en direct sur A, B sans réglage démarre à 0 ; avec un KaraFun qui remet à zéro, aucune trame en plus ; un réglage en direct envoyé pendant le changement de titre est refusé.
 10. H : une soirée ouverte 4 jours montre des barres lisibles sur au moins la moitié de la largeur et des étiquettes espacées d'au moins 40 unités, sur ordinateur et à 360 px.
 11. P : `git push` depuis Claude Code (quelle que soit son écriture, worktree lié compris) échoue sans relecture terminée et convergée sur l'arbre exact, passe après ; `git commit -m "… git push …"` n'est plus bloqué ; un `git push` tapé par l'utilisateur hors de Claude Code n'est jamais concerné.
-12. `node test/run-offline.js` vert, couverture ≥ 95 % (`node test/coverage.js --min-lines 95`), toutes les nouvelles phrases des téléphones traduites, `RAPPORT-TEST.md` à jour.
+12. K : un soliste apparaît « Léa » sur l'écran KaraFun, dans la file et la scène des téléphones (FR et EN) et sur la page du bar ; un duo soliste + table apparaît « Léa & Max · Table 4 » ; aucune phrase vue par un client ne contient « En solo » ; une soirée enregistrée avant la mise à jour s'affiche au nouveau format.
+13. L : une personne qui rejoint une table, entre par le QR d'événement ou donne son prénom après l'ouverture d'un vote Battle voit la carte de vote sans recharger, et son vote compte.
+14. `node test/run-offline.js` vert, couverture ≥ 95 % (`node test/coverage.js --min-lines 95`), toutes les nouvelles phrases des téléphones traduites, `RAPPORT-TEST.md` à jour.
 
 ## Plan de tests
 
@@ -248,4 +278,6 @@ Annuler la PR. Les nouveaux champs (personne : `nameRequired`, `soloKeyHash`, `l
 - **D3, tables** : la page principale ne montre que les personnes gérées par ce téléphone ; « Voir toute la table (N) » ouvre la liste complète.
 - **D6, voix guide** : un curseur par voix guide (voix 1, voix 2…), pas de curseur commun ; chaque titre revient à 0 au suivant.
 - **D9, durée maximale** : à l'activation, les titres déjà dans la file restent, signalés au bar avec un retrait groupé en un geste ; seuls les nouveaux ajouts sont refusés.
+- **D10, prénom seul** : la règle vaut partout (écran KaraFun, téléphones et page du bar) ; le bar retrouve les solistes dans la liste « Solistes ».
+- **D11, téléphone du soliste** : l'en-tête montre son prénom et les phrases qui nommaient « En solo » sont reformulées (FR et EN).
 - Autres choix par défaut de cette spécification (sans objection) : dernière activité affichée pour les solos seulement, seuils 20 et 45 minutes ; barre de lecture au bar et sur les téléphones ; pastille Spotify aussi sur l'écran Scène ; graphique corrigé dans la page seulement (pas de clôture automatique des soirées).
