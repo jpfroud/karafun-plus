@@ -332,6 +332,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if ('singerSongSettings' in restoredSettings && typeof restoredSettings.singerSongSettings !== 'boolean') {
     delete restoredSettings.singerSongSettings;
   }
+  // Durée maximale des titres (lot J) : une valeur invalide coupe la limite.
+  if ('maxSongSec' in restoredSettings && !(Number.isInteger(restoredSettings.maxSongSec) &&
+    restoredSettings.maxSongSec >= 120 && restoredSettings.maxSongSec <= 900)) restoredSettings.maxSongSec = null;
 
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||

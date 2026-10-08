@@ -147,6 +147,12 @@
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
+    <div class="row wrap"><label class="switch"><input id="maxSongOn" type="checkbox"> Limiter la durée des chansons</label><span class="save-status" data-save-status="maxSongOn" aria-live="polite"></span></div>
+    <div class="rule-fields" id="maxSongFields" hidden>
+      <label for="maxSongMin">Durée maximale (2:00 à 15:00) <span class="hint">Au-delà, un client ne peut plus ajouter le titre, ni le proposer en duo ou en Battle.</span><span class="field-number"><input id="maxSongMin" type="number" inputmode="numeric" min="2" max="15"> min <input id="maxSongSecPart" type="number" inputmode="numeric" min="0" max="59" aria-label="Durée maximale : secondes"> s</span><span class="save-status" data-save-status="maxSongMin" aria-live="polite"></span><span class="save-status" data-save-status="maxSongSecPart" aria-live="polite"></span></label>
+    </div>
+    <p class="small muted">Coupé par défaut ; 5:00 proposé à l’activation. Le bar n’est jamais limité (ajout pour quelqu’un, Battle lancée par le bar, « Relancer ») ; les titres déjà dans KaraFun non plus. Les titres déjà dans la file restent, marqués « plus long que … » dans la File.</p>
+    <div class="row wrap" id="tooLongActions" hidden><button type="button" class="btn small danger" id="removeTooLong">Retirer les titres trop longs</button><span class="small muted">Seulement les titres pas encore dans KaraFun ; chaque personne est prévenue sur son téléphone.</span></div>
     <div class="row wrap"><label class="switch presence-switch"><input id="requirePresence" type="checkbox"> Exiger « Je suis là » avant l’envoi du titre</label><span class="save-status" data-save-status="requirePresence" aria-live="polite"></span></div>
     <p class="small muted">La confirmation est demandée au prochain passage pendant le titre en cours ; pour un duo, la réponse de l’un des deux suffit. Sans réponse une fois la scène libre, la soirée continue avec le passage suivant et le titre revient juste après lui, avec une nouvelle demande. Au bout du nombre de fois indiqué, le titre est retiré et le bar est prévenu que la personne est peut-être partie.</p>
     <div class="rule-fields">
@@ -496,7 +502,27 @@
     send: value => post('/api/staff/settings', { [name]: value }), server: () => S.settings?.[name] ?? fallback });
   const spotifyField = (name, min, max, fallback) => ({ min, max, unit: 'secondes', delay: 800,
     send: value => post('/api/staff/spotify', { action: 'options', [name]: value }), server: () => S.spotify?.[name] ?? fallback });
+  // Durée maximale des titres : minutes et secondes, enregistrées ensemble.
+  const minSec = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  function maxSongCheck(min, sec) {
+    const m = Number(min), s = Number(sec);
+    if (String(min).trim() === '' || String(sec).trim() === '' || !Number.isInteger(m) || !Number.isInteger(s) || s < 0 || s > 59) {
+      return 'minutes et secondes entières (0 à 59 s)';
+    }
+    return m * 60 + s < 120 || m * 60 + s > 900 ? 'entre 2:00 et 15:00' : null;
+  }
+  const maxSongShown = () => S.settings?.maxSongSec ?? 300;
+  const maxSongField = part => ({ text: true, delay: 800,
+    validate: value => part === 'min' ? maxSongCheck(value, $('maxSongSecPart').value) : maxSongCheck($('maxSongMin').value, value),
+    send: value => post('/api/staff/settings', { maxSongSec: part === 'min' ? Number(value) * 60 + Number($('maxSongSecPart').value)
+      : Number($('maxSongMin').value) * 60 + Number(value) }),
+    server: () => part === 'min' ? Math.floor(maxSongShown() / 60) : maxSongShown() % 60 });
   const FIELDS = {
+    // 5:00 proposé à l'activation ; coupé : plus de limite.
+    maxSongOn: { check: true, send: value => post('/api/staff/settings', { maxSongSec: value ? 300 : null }),
+      server: () => S.settings?.maxSongSec != null },
+    maxSongMin: maxSongField('min'),
+    maxSongSecPart: maxSongField('sec'),
     presenceGraceSec: settingsField('presenceGraceSec', 10, 300, 'secondes', 30),
     presenceMaxSkips: settingsField('presenceMaxSkips', 1, 10, 'fois', 3),
     playDelaySec: settingsField('playDelaySec', 0, 30, 'secondes', 8),
@@ -1658,6 +1684,22 @@
   // Fermée (bouton, Retour) : un changement en attente part tout de suite.
   $('songSheet').addEventListener('close', () => { flushAll(); songSheetEntry = null; });
 
+  // Durée maximale des titres : champs visibles une fois l'option active, et
+  // retrait groupé des titres de la file déjà trop longs (décision D9).
+  function renderMaxSong() {
+    const on = S.settings?.maxSongSec != null;
+    const count = on ? S.tooLong?.count || 0 : 0;
+    $('maxSongFields').hidden = !on;
+    $('tooLongActions').hidden = !count;
+    $('removeTooLong').textContent = count > 1 ? `Retirer les ${count} titres trop longs` : 'Retirer le titre trop long';
+  }
+  $('removeTooLong').onclick = () => {
+    const count = S?.tooLong?.count || 0;
+    if (!count || !confirm(`Retirer de la file ${count > 1 ? `les ${count} titres` : 'le titre'} plus long${count > 1 ? 's' : ''} que ${minSec(S.tooLong.limitSec)} ? ` +
+      'Chaque personne est prévenue sur son téléphone. Les titres déjà dans KaraFun restent.')) return;
+    act('/api/staff/songs-too-long/remove', {});
+  };
+
   // Interrupteur des chanteurs : ce que KaraFun a accepté, refusé ou laissé
   // sans réponse depuis la connexion (un avis par fonction).
   function renderSongSupport() {
@@ -1692,7 +1734,9 @@
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     for (const id of ['battleCooldownMin', 'battleRejectedCooldownMin', 'battleVoteMin', 'battleMinVoters', 'requirePresence',
-      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings']) syncField($(id));
+      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings',
+      'maxSongOn', 'maxSongMin', 'maxSongSecPart']) syncField($(id));
+    renderMaxSong();
     renderSongSupport();
     renderStaffAlerts();
     if (!renderedOnce && !$('code').value) $('code').value = S.code || '';
@@ -1809,7 +1853,7 @@
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${q.tooLongSec && S.tooLong?.limitSec ? `<span class="badge wait" title="Ce titre dure ${esc(minSec(q.tooLongSec))}, au-delà de la durée maximale (« Plus » › règles) : ajouté avant la limite, il reste dans la file sauf retrait.">plus long que ${esc(minSec(S.tooLong.limitSec))}</span>` : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
         <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings, q.tracks)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>

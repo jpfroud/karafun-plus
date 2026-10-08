@@ -3773,3 +3773,88 @@ test('événement privé : interrupteur, QR en grand, copier, imprimer, renouvel
   await page.poll();
   assert.equal(toggle.disabled, true);
 });
+
+// Lot J (8 octobre) : durée maximale des titres, dans « Plus » › règles ;
+// titres déjà dans la file gardés, signalés, retirés d'un geste (décision D9).
+test('durée maximale : interrupteur coupé par défaut, 5:00 à l’activation, minutes et secondes, badge et retrait groupé', async () => {
+  const world = baseWorld();
+  world.settings.maxSongSec = null;
+  world.tooLong = { limitSec: null, count: 0 };
+  world.queue = [
+    { source: 'karafun', ours: true, queueId: 9, pos: 1, name: 'Alice', ids: ['alice'], song: { entryId: 'k1', title: 'Déjà chargé' } },
+    { source: 'helper', id: 'bruno', pos: 2, name: 'Bruno', ids: ['bruno'], song: { entryId: 'b1', title: 'Épopée', duration: 372 } },
+    { source: 'helper', id: 'dora', pos: 3, name: 'Dora', ids: ['dora'], song: { entryId: 'd1', title: 'Court', duration: 200 } },
+  ];
+  const page = await openPage({ world });
+  assert.equal(page.$('maxSongOn').closest('section').dataset.tab, 'plus', 'avec les autres règles, dans « Plus »');
+  assert.equal(page.$('maxSongOn').checked, false, 'coupé par défaut');
+  assert.equal(page.$('maxSongFields').hidden, true, 'durée cachée tant que l’option est coupée');
+  assert.equal(page.$('tooLongActions').hidden, true);
+  assert.doesNotMatch(page.$('qBody').innerHTML, /plus long que/);
+
+  page.replies['/api/staff/settings'] = body => {
+    page.world.settings.maxSongSec = body.maxSongSec;
+    page.world.tooLong = { limitSec: body.maxSongSec, count: body.maxSongSec != null && body.maxSongSec < 372 ? 1 : 0 };
+    page.world.queue[1].tooLongSec = page.world.tooLong.count ? 372 : undefined;
+    return { ok: true };
+  };
+  await page.change(page.$('maxSongOn'), true);
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { maxSongSec: 300 }, '5:00 proposé à l’activation');
+  await page.poll();
+  assert.equal(page.$('maxSongOn').checked, true);
+  assert.equal(page.$('maxSongFields').hidden, false);
+  assert.equal(page.$('maxSongMin').value, 5);
+  assert.equal(page.$('maxSongSecPart').value, 0);
+  // File : seul le titre pas encore envoyé et trop long porte le repère.
+  const badges = page.all('qBody', '.badge').map(node => node.textContent).filter(text => text.startsWith('plus long'));
+  assert.deepEqual(badges, ['plus long que 5:00']);
+  assert.match(page.$('qBody').innerHTML, /Ce titre dure 6:12/);
+  assert.equal(page.$('tooLongActions').hidden, false);
+  assert.equal(page.$('removeTooLong').textContent, 'Retirer le titre trop long');
+
+  // Minutes et secondes : valeur vérifiée avant l'envoi, puis enregistrée ensemble.
+  const status = key => page.doc.body.querySelector(`[data-save-status="${key}"]`).textContent;
+  await page.type(page.$('maxSongMin'), '1');
+  assert.equal(status('maxSongMin'), 'Non enregistré : entre 2:00 et 15:00');
+  await page.type(page.$('maxSongMin'), '6');
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { maxSongSec: 360 });
+  await page.poll();
+  await page.type(page.$('maxSongSecPart'), '75');
+  assert.equal(status('maxSongSecPart'), 'Non enregistré : minutes et secondes entières (0 à 59 s)');
+  await page.type(page.$('maxSongSecPart'), '');
+  assert.equal(status('maxSongSecPart'), 'Non enregistré : minutes et secondes entières (0 à 59 s)');
+  await page.type(page.$('maxSongSecPart'), '30');
+  dispatch(page.$('maxSongSecPart'), 'blur');
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { maxSongSec: 390 });
+  await page.poll();
+  assert.equal(page.$('tooLongActions').hidden, true, 'plus aucun titre au-delà de 6:30');
+
+  // Plusieurs titres trop longs : confirmation, puis retrait groupé.
+  Object.assign(page.world, { tooLong: { limitSec: 300, count: 2 } });
+  page.world.settings.maxSongSec = 300;
+  await page.poll();
+  assert.equal(page.$('removeTooLong').textContent, 'Retirer les 2 titres trop longs');
+  page.confirmAnswer = false;
+  await page.click(page.$('removeTooLong'));
+  assert.match(page.confirms.at(-1), /^Retirer de la file les 2 titres plus longs que 5:00 \? Chaque personne est prévenue sur son téléphone\./);
+  assert.equal(page.postsTo('/api/staff/songs-too-long/remove').length, 0, 'annulé : rien n’est retiré');
+  page.confirmAnswer = true;
+  page.replies['/api/staff/songs-too-long/remove'] = { ok: true, removed: 2, message: '2 titres trop longs retirés.' };
+  await page.click(page.$('removeTooLong'));
+  assert.deepEqual(page.lastPost('/api/staff/songs-too-long/remove').body, {});
+  assert.equal(page.toast().text, '2 titres trop longs retirés.');
+  page.world.tooLong = { limitSec: 300, count: 1 };
+  await page.poll();
+  await page.click(page.$('removeTooLong'));
+  assert.match(page.confirms.at(-1), /^Retirer de la file le titre plus long que 5:00 \?/);
+
+  // Coupé : plus de champs ni de bouton.
+  await page.change(page.$('maxSongOn'), false);
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { maxSongSec: null });
+  await page.poll();
+  assert.equal(page.$('maxSongFields').hidden, true);
+  assert.equal(page.$('tooLongActions').hidden, true);
+});
