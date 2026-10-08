@@ -773,8 +773,7 @@ const kfItemOf = tr => bridge?.queue?.find(item => String(item.queueId) === Stri
 // valeurs neutres (song-settings.js, neutralTarget), complétées par ses
 // réglages. `loadedLive` : dernier état vu du titre chargé ; `previousLoaded` :
 // celui du titre d'avant (ses chœurs décident s'ils sont remis par défaut).
-// `untrackedChecked` : dernier titre ajouté directement dans KaraFun examiné.
-let loadedLive = null, previousLoaded = null, untrackedChecked = null;
+let loadedLive = null, previousLoaded = null;
 // Numéro de l'état de KaraFun : il change à chaque nouvel état reçu
 // (StatusEvent), pour savoir si KaraFun a parlé depuis une demande.
 let statusSeen = null, statusNumber = 0;
@@ -898,11 +897,14 @@ function catchUpSongSettings(tr) {
 }
 
 // Dernier état vu du titre chargé ; le précédent est gardé au changement.
+// true : ce titre vient d'être chargé (premier état vu pour lui).
 function noteLoadedLive(loadedId) {
   const live = loadedId ? liveFromStatus(bridge.status) : null;
-  if (!live || String(live.queueId) !== loadedId) return;
-  if (loadedLive && loadedLive.queueId !== loadedId) previousLoaded = loadedLive;
+  if (!live || String(live.queueId) !== loadedId) return false;
+  const fresh = loadedLive?.queueId !== loadedId;
+  if (loadedLive && fresh) previousLoaded = loadedLive;
   loadedLive = { queueId: loadedId, backing: live.backing };
+  return fresh;
 }
 
 // Valeurs neutres du titre `queueId` qui se charge, avec ses options KaraFun
@@ -946,14 +948,15 @@ function applyStartCommands(commands, live, { title, entryId, queueId }) {
   if (reset.size) journalEvent('song.settingsReset', { entryId, queueId, fields: [...reset] });
 }
 
-// Titre ajouté directement dans KaraFun, chargé : mêmes valeurs neutres,
-// complétées par ses propres options KaraFun, une seule fois. Une Battle
-// garde le réglage de KaraFun (le bar ne la règle pas en direct non plus).
+// Titre ajouté directement dans KaraFun, tout juste chargé : mêmes valeurs
+// neutres, complétées par ses propres options KaraFun, une seule fois. Un
+// titre suivi qui cesse de l'être en cours de route (relance ⏮ : le suivi
+// passe sur la copie) n'est pas concerné. Une Battle garde le réglage de
+// KaraFun (le bar ne la règle pas en direct non plus).
 function checkUntrackedSettings(loadedId) {
-  if (!loadedId || untrackedChecked === loadedId || tracked.some(tr => String(tr.queueId) === loadedId)) return;
+  if (tracked.some(tr => String(tr.queueId) === loadedId)) return;
   const live = liveFromStatus(bridge.status);
   const item = bridge.status?.current || bridge.status?.songPlaying;
-  untrackedChecked = loadedId;
   if (isBattleItem(item)) return;
   const options = bridge.queue?.find(row => String(row.queueId) === loadedId)?.options || item.options || null;
   const commands = catchUpCommands({ settings: null, live, tracksAvailable: live.tracks || songTracksOf(item), ranges: songRanges(),
@@ -1016,7 +1019,7 @@ function liveSongSetting(body) {
     sched.setSongSettings(tr.sel.song, Object.keys(next).length ? next : null);
     // Réglé en direct : rien à rattraper, même avant l'écho de KaraFun.
     tr.liveChecked = String(tr.queueId);
-  } else if (current.queueId != null) untrackedChecked = String(current.queueId); // titre ajouté dans KaraFun : idem
+  }
   journalEvent('song.settings', { by: 'staff', where: 'live', personId: tr?.sel.ids[0] || null, entryId: tr?.sel.song.entryId || null,
     queueId: current.queueId ?? null, field, value });
   return { ok: true, field, value };
@@ -1136,7 +1139,7 @@ function sync() {
   // Titre chargé par KaraFun (état 3, avant la musique) : ses réglages
   // peuvent déjà être rattrapés.
   const loadedId = loadedQueueId();
-  noteLoadedLive(loadedId);
+  const freshLoad = noteLoadedLive(loadedId);
   for (const tr of tracked.slice()) {
     const onStage = isOnStage(tr, current);
     // Si KaraFun était déconnecté lors du vidage, ce titre pouvait déjà être
@@ -1215,7 +1218,7 @@ function sync() {
       sched.version++;
     }
   }
-  checkUntrackedSettings(loadedId);
+  if (freshLoad) checkUntrackedSettings(loadedId);
 
   // Le même événement QueueEvent peut confirmer un solo promis puis libérer
   // immédiatement la place pour la Battle, ou confirmer le premier titre

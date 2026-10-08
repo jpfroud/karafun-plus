@@ -1213,3 +1213,30 @@ test('titre isolé : titre ajouté directement dans KaraFun, ses propres options
   assert.deepEqual(bare(h.frames(isoStatus(1, battle), queueEvent(battle), isoStatus(3, battle, { pitch: 2 }))), []);
   assert.deepEqual(h.f.events('song.settingsReset'), []);
 });
+
+test('titre isolé : pendant une relance ⏮, le titre en cours n’est pas pris pour un titre ajouté dans KaraFun', async () => {
+  for (const abandon of [false, true]) {
+    const f = harness();
+    const link = kcsBridge(f);
+    const tb = openTable(f, '1');
+    singer(f, tb, 'Léa', 101);
+    const tr = sendNext(f, 'q-1', { startedAt: Date.now() });
+    const item = kfItem('q-1', 101, tr.sel.label);
+    link.bridge.queue = [item];
+    link.bridge.status = playing(item);
+    f.sync();
+    await f.call('POST /api/staff/kf', { action: 'track', track: 'guide', value: 25, queueId: 'q-1' });
+    link.bridge.status = playing(item, { tracks: [{ volume: 100, track: { type: 4 } }, { volume: 25, track: { type: 5 } }] });
+    f.sync();
+    await f.call('POST /api/staff/kf', { action: 'restart' });
+    const before = link.sent.length;
+    // La copie arrive : le suivi passe sur elle, le titre d'origine joue encore.
+    const copy = kfItem(abandon ? 'q-3' : 'q-2', 101, tr.sel.label);
+    link.bridge.queue = abandon ? [item, kfItem('n-9', 555, 'Autre'), copy] : [item, copy];
+    f.sync();
+    f.sync();
+    assert.deepEqual(link.sent.slice(before).filter(m => m.type === 'remote.TrackVolumeRequest'), [],
+      abandon ? 'relance abandonnée : le titre continue avec sa voix guide' : 'aucune remise à zéro du titre qui se termine');
+    assert.deepEqual(f.events('song.settingsReset'), []);
+  }
+});
