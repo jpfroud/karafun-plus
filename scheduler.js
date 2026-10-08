@@ -465,7 +465,9 @@ class Scheduler {
   }
 
   // ------------------------------------------------------------------ personnes
-  join({ tableId, name, photo, headcount }) {
+  // `nameRequired` : personne créée à l'ouverture d'un QR (prénom provisoire
+  // « Solo 3 »). Son inscription n'est notée qu'à son premier vrai prénom.
+  join({ tableId, name, photo, headcount, nameRequired = false }) {
     const t = this.table(tableId);
     name = this.validName(name, t.id);
     if (t.headcount == null && !t.individual) {
@@ -488,8 +490,13 @@ class Scheduler {
       privateNote: '', withdrawnAt: null, lastAppearanceTurn: 0,
     };
     p.group = t.individual ? `${t.id}#${p.id}` : t.id;
+    if (nameRequired) p.nameRequired = true;
     this.people.set(p.id, p);
     this.byToken.set(p.token, p.id);
+    if (nameRequired) {
+      this.note(`${t.name} : QR ouvert, prénom à saisir (${p.name})`);
+      return p;
+    }
     this._event('person.joined', { personId: p.id, tableId: t.id });
     this.note(`${p.name} (${t.name}) s'est inscrit`);
     return p;
@@ -514,6 +521,15 @@ class Scheduler {
 
   rename(p, name) {
     const next = this.validName(name, p.tableId, p.id);
+    if (p.nameRequired) {
+      // Premier vrai prénom : c'est maintenant que la personne s'inscrit.
+      p.name = next;
+      delete p.nameRequired;
+      this.version++;
+      this._event('person.joined', { personId: p.id, tableId: p.tableId });
+      this.note(`${next} (${this.table(p.tableId).name}) s'est inscrit`);
+      return p;
+    }
     if (next === p.name) return p;
     const before = p.name;
     p.name = next;

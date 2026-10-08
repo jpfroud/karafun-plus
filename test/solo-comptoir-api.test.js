@@ -60,6 +60,16 @@ async function ok(path, body, cookie = '') {
   const alice = await ok('/api/join', fields({ name: 'Alice', invitation: aliceInvite.token }));
   const replay = await request('/api/join', fields({ name: 'Faux', invitation: aliceInvite.token }));
   assert.equal(replay.status, 403, 'un lien individuel déjà utilisé ne crée aucun autre profil sur un nouveau navigateur');
+  // Retours du 4 octobre (décision D2) : le QR individuel devient la clé
+  // personnelle de la soirée. Rouvert sur un nouveau navigateur, il propose
+  // de récupérer la même personne, sans créer de profil ni de cookie.
+  const peopleBefore = (await ok('/api/staff/state')).value.people.length;
+  const reopened = await request('/api/table/solo/open', fields({ invitation: aliceInvite.token }));
+  assert.equal(reopened.status, 200);
+  assert.deepEqual(reopened.value, { recover: { id: alice.value.id, name: 'Alice' } },
+    'invitation consommée = récupération de la même personne');
+  assert.equal(reopened.cookie, '', 'rien n’est associé avant la confirmation');
+  assert.equal((await ok('/api/staff/state')).value.people.length, peopleBefore, 'aucune deuxième place');
   const bob = await ok('/api/join', fields({ name: 'Bob', invitation: bobInvite.token }));
   assert.ok(alice.cookie && bob.cookie && alice.cookie !== bob.cookie,
     'chaque téléphone solo reçoit une identité distincte');

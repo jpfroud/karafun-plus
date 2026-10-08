@@ -44,6 +44,7 @@ const { KaraFunBridge, isBattleItem, maskCode, unknownSettingsSupport } = requir
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
+const { PrivateEvent } = require('./private-event');
 const { Catalog } = require('./catalog');
 const { BattleVote } = require('./battle-vote');
 const { NightStateStore, snapshotNight, restoreNight } = require('./night-state');
@@ -143,6 +144,9 @@ function journalRoster() {
   for (const person of sched.people.values()) journal.person(person.id, { name: person.name, tableId: person.tableId });
 }
 function journalEvent(type, fields = {}) {
+  // QR ouvert sans prénom (peut-être abandonné) : rien au journal tant que la
+  // personne ne s'est pas vraiment inscrite. Les statistiques l'ignorent.
+  if (typeof fields?.personId === 'string' && sched.people.get(fields.personId)?.nameRequired) return null;
   try { journalNames(fields); } catch (_) { /* noms au mieux */ }
   return journal.append(type, fields);
 }
@@ -172,6 +176,8 @@ const spotify = new SpotifyLink({ file: DEMO ? null : path.join(__dirname, 'data
 const spotifyAutomation = new SpotifyAutomation();
 const access = new TableAccess();
 const soloInvitations = new SoloInvitations();
+// Événement privé (bar privatisé) : un seul QR qui inscrit chaque navigateur.
+const privateEvent = new PrivateEvent();
 const battleVote = new BattleVote({
   saved: !DEMO && fs.existsSync(BATTLE_FILE) ? JSON.parse(fs.readFileSync(BATTLE_FILE, 'utf8')) : null,
   onChange(event) {
@@ -295,7 +301,7 @@ function saveNight({ required = false, replaceBoth = false } = {}) {
   if (!nightStore) return true;
   try {
     const snapshot = snapshotNight({ scheduler: sched, access, settings, pending, tracked,
-      soloInvitations, transfers: transferSnapshot(),
+      soloInvitations, privateEvent, transfers: transferSnapshot(),
       photoDir: PHOTO_DIR, evening: journal.snapshot() });
     nightStore.save(snapshot);
     if (replaceBoth) nightStore.save(snapshot, { force: true });
@@ -1330,7 +1336,7 @@ function journalSample(now = Date.now()) {
 
 // Dernier signe de vie d'un téléphone : au plus un par personne toutes les 5 min.
 function noteSeen(person, now = Date.now()) {
-  if (!person || now - (seenJournal.get(person.id) || 0) < 5 * 60000) return;
+  if (!person || person.nameRequired || now - (seenJournal.get(person.id) || 0) < 5 * 60000) return;
   seenJournal.set(person.id, now);
   journalEvent('person.seen', { personId: person.id });
 }
@@ -1478,9 +1484,10 @@ function describe(item, byQid) {
   };
 }
 
-// Chaque personne inscrite (même sans chanson) a une voix pour la Battle.
+// Chaque personne inscrite (même sans chanson) a une voix pour la Battle. Un
+// QR ouvert sans prénom ne compte pas : il empêcherait le vote de se clore.
 function battleElectorate() {
-  return [...sched.people.values()].filter(person => !person.withdrawnAt).map(person => person.id);
+  return [...sched.people.values()].filter(person => !person.withdrawnAt && !person.nameRequired).map(person => person.id);
 }
 
 // Duo déjà chargé dans KaraFun, vu par l'une de ses deux personnes : rôle et
@@ -1645,6 +1652,7 @@ function publicState(person, tableId, managed = null) {
     }
     out.tablePeople = sched.tableSingers(tid).filter(p => !t?.individual || p.id === person?.id)
       .map(p => ({ id: p.id, name: p.name,
+      ...(p.nameRequired ? { nameRequired: true } : {}),
       active: !p.withdrawnAt,
       songs: sched.songsOf(p).map(fmtSong),
       confirmed: confirmedForPage(p),
@@ -1681,7 +1689,7 @@ function publicState(person, tableId, managed = null) {
   }
 
   if (person) {
-    if (Date.now() - (person.lastSeen || 0) >= 60000) person.lastSeen = Date.now();
+    // La dernière activité ne bouge que sur une page visible (voir /api/state).
     noteSeen(person);
     const i = sched.Q.indexOf(person.id);
     const mine = queue.find(v => v.ids?.includes(person.id)) || null;
@@ -1691,6 +1699,8 @@ function publicState(person, tableId, managed = null) {
     const partner = person.duet ? sched.people.get(person.duet.partnerId) : null;
     out.me = {
       id: person.id, name: person.name, tableId: person.tableId, photo: person.photo ? `/photo/${person.id}` : null,
+      // Prénom provisoire (« Solo 3 ») : la page demande d'abord le vrai prénom.
+      nameRequired: !!person.nameRequired,
       song: fmtSong(person.song), songs: sched.songsOf(person).map(fmtSong),
       inKaraFun: out.tablePeople?.find(p => p.id === person.id)?.inKaraFun || [],
       sung: person.sung, inQueue: i >= 0,
@@ -1783,6 +1793,7 @@ function staffState() {
     restarting: !!restartOp,
     restartRetryAt: restartSweep && Date.now() <= restartSweep.until ? restartSweep.until : null,
     soloInvitations: soloInvitations.view(),
+    privateEvent: privateEventView(),
     phoneBase: phoneBase(), ips, port: PORT, staffKey: STAFF_KEY,
     tables: [...sched.tables.values()].map(t => ({ ...t,
       url: access.get(t.id) ? access.url(phoneBase(), t.id) : null,
@@ -1792,6 +1803,10 @@ function staffState() {
       inQueue: sched.tableSingers(t.id).filter(p => sched.Q.includes(p.id)).length })),
     people: [...sched.people.values()].map(p => ({ id: p.id, name: p.name, tableId: p.tableId,
       sung: p.sung, inQueue: sched.Q.includes(p.id), lastSeen: p.lastSeen,
+      // Dernière activité sur son téléphone (page visible ou action), à
+      // comparer à `now` (heure du serveur). Réservé au bar.
+      lastActiveAt: Math.max(Number(p.lastSeen) || 0, Number(p.lastActionAt) || 0) || null,
+      joinedAt: p.joinedAt, nameRequired: !!p.nameRequired, viaEvent: !!p.viaEvent,
       active: !p.withdrawnAt, songCount: sched.songsOf(p).length,
       privateNote: p.privateNote || '', bonus: p.bonus || 0,
       appearances: (p.sung || 0) + (p.duetGuestCount || 0),
@@ -1983,6 +1998,147 @@ function bindSoloDevice(req, res, person) {
   res.setHeader('Set-Cookie', `${SOLO_COOKIE}=${value}; Path=/; Max-Age=7776000; HttpOnly; SameSite=Lax${req.socket.localPort === PUBLIC_PORT ? '; Secure' : ''}`);
 }
 
+// Téléphone actuel d'un solo : le dernier associé (une reprise en ajoute un).
+// Les anciens restent « propriétaires » pour SOLO_DEVICE_USED, sans plus gérer.
+function currentSoloDevice(req, person) {
+  const hash = soloCookieHash(req);
+  return !!hash && Array.isArray(person.soloDeviceHashes) && person.soloDeviceHashes.at(-1) === hash;
+}
+
+// Le QR individuel reste la clé personnelle de son chanteur pour la soirée :
+// rouvert ailleurs, il retrouve cette personne, jamais une deuxième place.
+// Personne marquée partie : la clé ne sert plus.
+function keyTarget(key, table) {
+  const hash = SoloInvitations.digest(key);
+  if (!hash) return null;
+  const digest = Buffer.from(hash, 'hex');
+  return sched.tableSingers(table.id).find(person => !person.withdrawnAt &&
+    typeof person.soloKeyHash === 'string' && /^[a-f0-9]{64}$/.test(person.soloKeyHash) &&
+    crypto.timingSafeEqual(Buffer.from(person.soloKeyHash, 'hex'), digest)) || null;
+}
+
+function requireNamed(person) {
+  if (person.nameRequired) {
+    const error = new Error('Indique d’abord ton prénom.');
+    error.code = 'NAME_REQUIRED';
+    throw error;
+  }
+}
+
+// Page visible : au plus un relevé par minute (chaque relevé change la sauvegarde).
+function touchSeen(person, now = Date.now()) {
+  if (now - (Number(person.lastSeen) || 0) >= 60000) person.lastSeen = now;
+}
+
+// Prénom provisoire unique : « Solo 1 », « Solo 2 »… le plus petit libre.
+function placeholderName(tableId) {
+  const taken = new Set(sched.tableSingers(tableId).map(person => person.name.toLocaleLowerCase('fr')));
+  let n = 1;
+  while (taken.has(`solo ${n}`)) n++;
+  return `Solo ${n}`;
+}
+
+// Chanteur créé à l'ouverture d'un QR (individuel ou d'événement), avant son
+// prénom. Même règle que joinPersonDurably : rien n'est annoncé tant que la
+// soirée n'est pas sauvegardée, et tout est défait sinon.
+function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent = false } = {}) {
+  const before = { log: sched.log.slice(), version: sched.version, invitations: soloInvitations.serialize(),
+    cookie: res.getHeader('Set-Cookie') };
+  let person = null, admittedAt = null;
+  try {
+    if (viaEvent) {
+      const now = Date.now();
+      if (!privateEvent.admit([...sched.people.values()].filter(p => p.viaEvent).length, now)) {
+        const busy = new Error('Trop d’inscriptions d’un coup : réessaie dans une minute.');
+        busy.code = 'PRIVATE_EVENT_BUSY';
+        throw busy;
+      }
+      admittedAt = now;
+    }
+    person = sched.join({ tableId: table.id, name: placeholderName(table.id), nameRequired: true });
+    if (invitation) {
+      soloInvitations.consume(invitation, table.id);
+      person.soloKeyHash = SoloInvitations.digest(invitation);
+    }
+    if (viaEvent) person.viaEvent = true;
+    bindSoloDevice(req, res, person);
+    saveNight({ required: true });
+  } catch (error) {
+    if (person) {
+      sched.people.delete(person.id);
+      sched.byToken.delete(person.token);
+    }
+    if (admittedAt !== null) privateEvent.release(admittedAt);
+    soloInvitations.restore(before.invitations);
+    sched.log = before.log;
+    sched.version = before.version;
+    if (before.cookie === undefined) res.removeHeader('Set-Cookie');
+    else res.setHeader('Set-Cookie', before.cookie);
+    throw error;
+  }
+  res.nightAlreadySaved = true;
+  return { id: person.id, token: person.token, nameRequired: true };
+}
+
+// POST /api/table/solo/open : la page ouverte par un QR individuel (jamais une
+// lecture GET : un aperçu de lien ne crée personne).
+function openSoloInvitation(req, res, body) {
+  const t = tableByAccess(body.table, body.access);
+  if (!t.individual) throw new Error('Ce QR individuel ne sert que pour « En solo ».');
+  const owner = soloDeviceOwner(req);
+  const known = keyTarget(body.invitation, t);
+  if (known) {
+    if (owner && owner.id !== known.id) throw soloDeviceError('SOLO_DEVICE_USED');
+    // Le téléphone qui la gère rouvre son QR : la même personne.
+    if (currentSoloDevice(req, known)) {
+      known.lastActionAt = Date.now();
+      return { id: known.id, token: known.token, nameRequired: !!known.nameRequired };
+    }
+    // Autre navigateur : proposer « C'est bien toi ? » ; sans prénom encore,
+    // rien à confirmer, la page est reprise tout de suite.
+    if (!known.nameRequired) return { recover: { id: known.id, name: known.name } };
+    const claimed = claimPersonDurably({ table: body.table, access: body.access, key: body.invitation }, req, res);
+    return { ...claimed, nameRequired: true, recovered: true };
+  }
+  if (!soloInvitations.verify(body.invitation, t.id)) {
+    const error = new Error('Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.');
+    error.code = 'SOLO_INVITATION';
+    throw error;
+  }
+  if (owner) throw soloDeviceError('SOLO_DEVICE_USED');
+  return createPlaceholderDurably(req, res, t, { invitation: body.invitation });
+}
+
+// POST /api/table/enter : QR de l'événement privé. Même navigateur : son
+// chanteur revient. Autre navigateur : toujours un nouveau chanteur (pas de
+// reprise par prénom, décision du gérant).
+function enterPrivateEvent(req, res, body) {
+  const t = tableByAccess(body.table, body.access);
+  if (!t.individual || !privateEvent.verify(body.event)) {
+    const error = new Error('Ce QR d’événement n’est plus actif. Demande au bar.');
+    error.code = 'PRIVATE_EVENT';
+    throw error;
+  }
+  const owner = soloDeviceOwner(req);
+  if (owner && currentSoloDevice(req, owner)) {
+    if (owner.withdrawnAt) {
+      const error = new Error('Cette personne a été marquée partie. Demande au bar de la réactiver.');
+      error.code = 'PERSON_LEFT';
+      throw error;
+    }
+    owner.lastActionAt = Date.now();
+    return { id: owner.id, token: owner.token, nameRequired: !!owner.nameRequired, resumed: true };
+  }
+  return createPlaceholderDurably(req, res, t, { viaEvent: true });
+}
+
+// Vue du bar : adresse et QR seulement quand le mode est allumé.
+function privateEventView() {
+  const url = privateEvent.enabled && privateEvent.secret && access.get('Comptoir') ?
+    `${access.url(phoneBase(), 'Comptoir')}?evenement=${privateEvent.secret}` : null;
+  return { enabled: !!url, url, qrUrl: url ? '/qr-evenement.svg' : null };
+}
+
 function joinPersonDurably(req, res, table, body, photo = null) {
   const before = {
     headcount: table.headcount, log: sched.log.slice(), version: sched.version,
@@ -1995,6 +2151,7 @@ function joinPersonDurably(req, res, table, body, photo = null) {
       headcount: body.headcount });
     if (table.individual) {
       soloInvitations.consume(body.invitation, table.id);
+      person.soloKeyHash = SoloInvitations.digest(body.invitation);
       bindSoloDevice(req, res, person);
     }
     // Ne jamais annoncer une inscription que le disque n'a pas conservée :
@@ -2020,7 +2177,9 @@ function joinPersonDurably(req, res, table, body, photo = null) {
   return { id: person.id, token: person.token };
 }
 
-function personAtTable(body) {
+// `passive` : geste automatique de la page (accusé des messages), qui ne
+// compte pas comme activité de la personne.
+function personAtTable(body, { passive = false } = {}) {
   const t = tableByAccess(body.table, body.access);
   const p = sched.people.get(String(body.personId || ''));
   if (!p || p.tableId !== t.id) {
@@ -2034,6 +2193,7 @@ function personAtTable(body) {
     const e = new Error('Ce téléphone ne gère pas ce chanteur. Demande-lui son code de partage, ou vois avec le bar.');
     e.code = 'PERSON_ACCESS'; throw e;
   }
+  if (!passive) p.lastActionAt = Date.now();
   return p;
 }
 
@@ -2096,7 +2256,9 @@ function claimPerson(body, req, res) {
     if (owner && owner.id !== p.id) throw soloDeviceError('SOLO_DEVICE_USED');
   }
   const saved = personShareCodes.get(p.id);
-  if (body.link !== undefined) {
+  if (body.key !== undefined) {
+    if (keyTarget(body.key, t)?.id !== p.id) throw new Error('Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+  } else if (body.link !== undefined) {
     // Le lien contient un secret de 128 bits : pas de limite de tentatives.
     if (transferTarget(body.link, t)?.id !== p.id) {
       throw new Error('Ce lien de transfert a expiré ou a déjà servi. Demande un nouveau lien ou un code au bar.');
@@ -2121,13 +2283,18 @@ function claimPerson(body, req, res) {
   p.token = crypto.randomBytes(16).toString('hex');
   sched.byToken.set(p.token, p.id);
   if (t.individual) bindSoloDevice(req, res, p);
+  p.lastActionAt = Date.now();
   journalEvent('person.transferred', { personId: p.id });
   sched.note(`${p.name} est désormais géré depuis un autre téléphone`, 'info');
   return { id: p.id, token: p.token };
 }
 
 function claimPersonDurably(body, req, res) {
-  if (body.link !== undefined) {
+  if (body.key !== undefined) {
+    const target = keyTarget(body.key, tableByAccess(body.table, body.access));
+    if (!target) throw new Error('Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+    body = { ...body, personId: target.id };
+  } else if (body.link !== undefined) {
     const target = transferTarget(body.link, tableByAccess(body.table, body.access));
     if (!target) throw new Error('Ce lien de transfert a expiré ou a déjà servi. Demande un nouveau lien ou un code au bar.');
     body = { ...body, personId: target.id };
@@ -2725,6 +2892,7 @@ function clearEvening() {
   for (const tr of tracked) delete tr.uncommitted;
   for (const tableId of sched.tables.keys()) access.revoke(tableId);
   soloInvitations.clear();
+  privateEvent.clear();
   sched.tables.clear();
   sched.people.clear();
   sched.byToken.clear();
@@ -2787,7 +2955,7 @@ function journalSettingsState() {
     weightedTables: !!sched.opts.weightedTables, interleaveArrivals: sched.opts.interleaveArrivals !== false,
     battleCooldownMin: battleVote.cooldownMs / 60000, battleRejectedCooldownMin: battleVote.rejectedCooldownMs / 60000,
     battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters, baseUrl: !!settings.baseUrl,
-    singerSongSettings: settings.singerSongSettings !== false };
+    singerSongSettings: settings.singerSongSettings !== false, privateEvent: privateEvent.enabled };
 }
 function journalSettings(before) {
   const after = journalSettingsState();
@@ -2809,7 +2977,19 @@ const handlers = {
     const photo = decodePhoto(body.photo);
     return joinPersonDurably(req, res, t, body, photo);
   },
-  'POST /api/song': async (req, res, body, me) => { chooseFor(me, body.song, body.mode || 'replace'); return { ok: true }; },
+  'POST /api/song': async (req, res, body, me) => { requireNamed(me); chooseFor(me, body.song, body.mode || 'replace'); return { ok: true }; },
+  // QR individuel ouvert : la personne existe dès maintenant (prénom à saisir),
+  // ou le même QR rouvert ailleurs propose de récupérer ses chansons.
+  'POST /api/table/solo/open': async (req, res, body) => openSoloInvitation(req, res, body),
+  // QR de l'événement privé.
+  'POST /api/table/enter': async (req, res, body) => enterPrivateEvent(req, res, body),
+  // QR de sa table à faire scanner aux amis, depuis un téléphone de la table.
+  'GET /api/table/invite': async (req, res, u) => {
+    const t = tableByAccess(u.searchParams.get('table'), u.searchParams.get('access'));
+    if (t.individual) throw new Error('Pas de QR à partager pour « En solo » : chacun demande son QR individuel au bar.');
+    const url = access.url(phoneBase(), t.id);
+    return { url, qr: await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' }) };
+  },
   'POST /api/table/person': async (req, res, body) => {
     const t = tableByAccess(body.table, body.access);
     if (t.individual && soloDeviceOwner(req)) throw soloDeviceError('SOLO_DEVICE_USED');
@@ -2829,6 +3009,7 @@ const handlers = {
   },
   'POST /api/table/song': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     const notice = chooseFor(p, body.song, body.mode || 'append');
     return { ok: true, notice };
   },
@@ -2871,12 +3052,14 @@ const handlers = {
   },
   'POST /api/table/duet': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     assertRoomBeforeClosing(p, 'append');
     const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
     const p = personAtTable(body);
+    if (body.accept) requireNamed(p);
     if (body.accept) assertInviteNotSending(p, body.entryId);
     sched.answerDuet(p, !!body.accept, body.entryId); sync(); return { ok: true };
   },
@@ -2905,18 +3088,20 @@ const handlers = {
   },
   // Messages lus sur le téléphone qui gère la personne.
   'POST /api/table/notice/ack': async (req, res, body) => {
-    const p = personAtTable(body);
+    const p = personAtTable(body, { passive: true });
     return { ok: true, removed: sched.ackNotices(p, body.ids) };
   },
   // Demander à chanter en duo le titre prévu par une autre personne.
   'POST /api/table/duet/join': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     assertNotSending(body.entryId);
     const result = sched.requestDuetJoin(p, body.ownerId, body.entryId); sync();
     return { ok: true, direct: result.direct };
   },
   'POST /api/table/duet/join/answer': async (req, res, body) => {
     const p = personAtTable(body);
+    if (body.accept) requireNamed(p);
     if (body.accept) assertNotSending(body.entryId);
     sched.answerDuetJoin(p, body.entryId, body.fromId, !!body.accept); sync(); return { ok: true };
   },
@@ -2943,6 +3128,7 @@ const handlers = {
   },
   'POST /api/table/battle/propose': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     if (closingBlocksStart(analyze().current)) {
       const error = new Error('Le bar ferme bientôt : plus de Battle ce soir.');
       error.code = 'CLOSING';
@@ -2954,14 +3140,17 @@ const handlers = {
   },
   'POST /api/table/battle/vote': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     const battle = battleVote.vote({ personId: p.id, choice: body.choice });
     return { ok: true, battle };
   },
   'POST /api/duet': async (req, res, body, me) => {
+    requireNamed(me);
     assertRoomBeforeClosing(me, 'append');
     sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
   },
   'POST /api/duet/answer': async (req, res, body, me) => {
+    if (body.accept) requireNamed(me);
     if (body.accept) assertInviteNotSending(me, body.entryId);
     sched.answerDuet(me, !!body.accept, body.entryId); sync(); return { ok: true };
   },
@@ -3114,6 +3303,27 @@ const handlers = {
     catch (error) { soloInvitations.revoke(invitation.id); throw error; }
     sched.note(`Le bar a préparé une invitation individuelle pour ${t.name}.`, 'staff');
     return { id: invitation.id, url, qr, expiresAt: invitation.expiresAt };
+  },
+  // Événement privé : allumer, couper (le QR imprimé reste pour le rallumer)
+  // ou renouveler le QR. Le journal ne note que l'état, jamais le secret.
+  'POST /api/staff/private-event': async (req, res, body) => {
+    if ('enabled' in body && typeof body.enabled !== 'boolean') {
+      throw new Error('L’événement privé est activé ou désactivé (oui ou non).');
+    }
+    const before = journalSettingsState();
+    if (body.enabled === true && !privateEvent.enabled) {
+      privateEvent.enable();
+      sched.note('Événement privé activé : un seul QR pour tout le monde.', 'staff');
+    } else if (body.enabled === false && privateEvent.enabled) {
+      privateEvent.disable();
+      sched.note('Événement privé coupé : son QR ne permet plus de s’inscrire.', 'staff');
+    }
+    if (body.rotate) {
+      privateEvent.rotate();
+      sched.note('Nouveau QR d’événement privé : l’ancien est refusé, les inscrits gardent leur accès.', 'staff');
+    }
+    journalSettings(before);
+    return privateEventView();
   },
   'POST /api/staff/solo-invite/revoke': async (req, res, body) => {
     if (!soloInvitations.revoke(String(body.id || ''))) throw new Error('Invitation inconnue ou déjà utilisée.');
@@ -3605,6 +3815,7 @@ const server = http.createServer(async (req, res) => {
         const me = sched.person(u.searchParams.get('token') || '');
         if (me && !u.searchParams.has('table')) {
           requireSoloControl(req, me);
+          if (req.headers['x-page-visible'] === '1') touchSeen(me);
           const view = publicState(me, me.tableId, new Set([me.id]));
           view.managedIds = [me.id];
           return send(res, 200, view);
@@ -3619,7 +3830,11 @@ const server = http.createServer(async (req, res) => {
         const owned = [...u.searchParams.getAll('token'), ...headerTokens].slice(0, 40).map(token => sched.person(token))
           .filter(person => person && person.tableId === t.id && (!t.individual || person.id === soloOwner?.id));
         const view = publicState(owned[0] || null, t.id, new Set(owned.map(person => person.id)));
-        if (t.individual) view.soloInvitationReady = !!soloInvitations.verify(u.searchParams.get('invitation'), t.id);
+        if (t.individual) {
+          view.soloInvitationReady = !!soloInvitations.verify(u.searchParams.get('invitation'), t.id);
+          // QR de l'événement privé encore valable : la page inscrit par POST.
+          view.privateEventReady = privateEvent.verify(u.searchParams.get('evenement'));
+        }
         if (u.searchParams.has('reprise')) {
           const target = transferTarget(u.searchParams.get('reprise'), t);
           view.transferOffer = target ? { personId: target.id, name: target.name,
@@ -3629,6 +3844,9 @@ const server = http.createServer(async (req, res) => {
           view.recoveryPeople = (view.recoveryPeople || []).filter(person => person.id === soloOwner.id);
         }
         view.managedIds = [...new Set(owned.map(person => person.id))];
+        // Activité : seulement une page visible (la page continue d'interroger
+        // en arrière-plan), pour toutes les personnes gérées par ce téléphone.
+        if (req.headers['x-page-visible'] === '1') for (const person of owned) touchSeen(person);
         for (const person of owned) noteSeen(person);
         return send(res, 200, view);
       }
@@ -3673,7 +3891,7 @@ const server = http.createServer(async (req, res) => {
         for (const owner of sched.people.values()) for (const item of sched.songsOf(owner)) {
           if (item.duet?.partnerId) guestDuos.set(item.duet.partnerId, (guestDuos.get(item.duet.partnerId) || 0) + 1);
         }
-        return send(res, 200, [...sched.people.values()].filter(person => !person.withdrawnAt)
+        return send(res, 200, [...sched.people.values()].filter(person => !person.withdrawnAt && !person.nameRequired)
           .map(person => ({ id: person.id, name: person.name, tableId: person.tableId,
             table: sched.table(person.tableId, false)?.name || person.tableId,
             sameTable: person.tableId === table.id, guestDuos: guestDuos.get(person.id) || 0 })));
@@ -3706,6 +3924,15 @@ const server = http.createServer(async (req, res) => {
         const svg = await QRCode.toString(target, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
         return send(res, 200, svg, 'image/svg+xml');
       }
+      // QR de l'événement privé, hors de /qr/<table>.svg (une table peut
+      // s'appeler « evenement »). Réservé au bar, seulement mode allumé.
+      if (p === '/qr-evenement.svg') {
+        if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8');
+        const { url } = privateEventView();
+        if (!url) return send(res, 404, 'QR inconnu', 'text/plain; charset=utf-8');
+        const svg = await QRCode.toString(url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+        return send(res, 200, svg, 'image/svg+xml');
+      }
       m = /^\/qr\/([^/]+)\.svg$/.exec(p);
       if (m) {
         if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8');
@@ -3715,6 +3942,9 @@ const server = http.createServer(async (req, res) => {
         const svg = await QRCode.toString(target, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
         return send(res, 200, svg, 'image/svg+xml');
       }
+      // Routes GET des téléphones déclarées avec les autres (traductions vérifiées).
+      const tableGet = p.startsWith('/api/table/') && handlers[`GET ${p}`];
+      if (tableGet) return send(res, 200, await tableGet(req, res, u));
       return send(res, 404, 'Introuvable', 'text/plain; charset=utf-8');
     }
     if (req.method === 'POST') {
@@ -3733,8 +3963,11 @@ const server = http.createServer(async (req, res) => {
         if (!me) return send(res, 401, { error: 'Session inconnue : inscris-toi à nouveau.', code: 'NO_SESSION' });
         if (me.withdrawnAt) return send(res, 403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
         requireSoloControl(req, me);
+        me.lastActionAt = Date.now();
       }
-      if (p.startsWith('/api/table/') && p !== '/api/table/person' && p !== '/api/table/person/claim') {
+      // Routes qui créent ou rattachent une personne : pas encore de téléphone associé.
+      if (p.startsWith('/api/table/') && !['/api/table/person', '/api/table/person/claim',
+        '/api/table/solo/open', '/api/table/enter'].includes(p)) {
         const table = tableByAccess(body.table, body.access);
         if (table.individual) {
           const owner = soloDeviceOwner(req);
@@ -3747,7 +3980,7 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 405, 'Méthode non gérée', 'text/plain');
   } catch (e) {
-    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null });
+    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION', 'PRIVATE_EVENT'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null });
   }
 });
 // Point d'entrée réservé au tunnel HTTPS. Lié uniquement à la boucle locale et
@@ -3804,6 +4037,7 @@ async function main() {
     pending = recovered.pending;
     tracked = recovered.tracked;
     soloInvitations.restore(recovered.soloInvitations);
+    privateEvent.restore(recovered.privateEvent);
     restoreTransfers(recovered.transfers);
     recoveredPending = recovered.recoveredPending;
     appLog(`Soirée restaurée : ${sched.tables.size} tables, ${sched.people.size} personnes, ${sched.Q.length} tickets.`);
@@ -3814,6 +4048,7 @@ async function main() {
   // reportées à leur heure, pour que les présences restent justes.
   if (previousNight && !resumed) {
     for (const p of sched.people.values()) {
+      if (p.nameRequired) continue; // QR ouvert, pas encore inscrite
       journal.append('person.joined', { personId: p.id, tableId: p.tableId, restored: true }, p.joinedAt);
       if (p.withdrawnAt) journal.append('person.left', { personId: p.id, by: 'restored' }, p.withdrawnAt);
     }
