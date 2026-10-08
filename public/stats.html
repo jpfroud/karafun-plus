@@ -157,6 +157,12 @@ const pct = v => v == null ? '—' : `${fmtNum(100 * v, 0)} %`;
 const nameOf = id => state.data?.names.people[id] || 'Inconnu';
 const tableName = id => id == null ? '—' : state.data?.names.tables[id] || (/^\d+$/.test(String(id)) ? `Table ${id}` : String(id));
 const singerById = id => state.data?.stats.singers.find(s => s.id === id);
+// Un soliste n'est nommé que par son prénom : le groupe individuel (« En
+// solo ») ne s'affiche jamais à côté d'une personne, et sa colonne « Table »
+// reste vide. La carte « Tables » garde le nom du groupe.
+const isIndividual = id => !!state.data?.stats.tables.find(tb => String(tb.id) === String(id))?.individual;
+const personTable = id => isIndividual(id) ? '' : tableName(id);
+const who = (personId, tableId) => isIndividual(tableId) ? nameOf(personId) : `${nameOf(personId)} · ${tableName(tableId)}`;
 
 // ------------------------------------------------------------------ DOM
 function h(tag, attrs = {}, ...children) {
@@ -423,7 +429,7 @@ function drawWaits(plot, rows) {
     const tint = inFocus([r.id]) ? 'var(--s1)' : 'var(--mark-muted)';
     s('line', { x1: x(r.waits.minSec / 60), x2: x(r.waits.maxSec / 60), y1: y, y2: y, stroke: inFocus([r.id]) ? 'var(--muted)' : 'var(--mark-muted)', 'stroke-width': 2, 'stroke-linecap': 'round' }, g);
     s('circle', { cx: x(r.waits.avgSec / 60), cy: y, r: 5, fill: tint, stroke: 'var(--chart-surface)', 'stroke-width': 2 }, g);
-    bindTip(hit, () => [`${nameOf(r.id)} · ${tableName(r.tableId)}`, [[dur(r.waits.avgSec), `en moyenne (${r.waits.n} passage${r.waits.n > 1 ? 's' : ''})`, 'var(--s1)', 'dot'],
+    bindTip(hit, () => [who(r.id, r.tableId), [[dur(r.waits.avgSec), `en moyenne (${r.waits.n} passage${r.waits.n > 1 ? 's' : ''})`, 'var(--s1)', 'dot'],
       [`${dur(r.waits.minSec)} – ${dur(r.waits.maxSec)}`, 'de la plus courte à la plus longue']]]);
   });
 }
@@ -448,7 +454,7 @@ function drawRates(plot, rows) {
     const end = left + Math.max(0, w);
     const tick = r.fairRate != null ? x(r.fairRate) + 1 : -Infinity;
     s('text', { x: (tick >= end - 2 && tick <= end + 40 ? Math.max(end, tick) : end) + 6, y: y + barH - 3 }, g).textContent = fmtNum(r.turnsPerHour, 1);
-    bindTip(hit, () => [`${nameOf(r.id)} · ${tableName(r.tableId)}`, [[fmtNum(r.turnsPerHour, 2), 'passages par heure de présence', 'var(--s1)', ''],
+    bindTip(hit, () => [who(r.id, r.tableId), [[fmtNum(r.turnsPerHour, 2), 'passages par heure de présence', 'var(--s1)', ''],
       [fmtNum(r.fairRate, 2), 'part attendue', 'var(--ref)', 'tick'],
       [`${r.turns} / ${fmtNum(r.expectedTurns, 1)}`, `passages réels / attendus · présence ${dur(r.presenceSec)}${r.bonus ? ` · bonus ${r.bonus > 0 ? '+' : ''}${r.bonus}` : ''}`]]]);
   });
@@ -628,7 +634,7 @@ function renderFocus() {
     if (!singer) { box.hidden = true; return; }
     const who = nameOf(singer.id);
     box.appendChild(h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: `Soirée ${/^[aeiouyàâäéèêëîïôöûùüh]/i.test(who) ? 'd’' : 'de '}${who}` }),
-      h('p', { text: `${tableName(singer.tableId)} · arrivée ${hhmm(singer.joinedAt)} · ${singer.explicitLeft ? 'départ' : 'dernier signe + 30 min'} ${hhmm(singer.leftAt)} · présence ${dur(singer.presenceSec)}` }))));
+      h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)} · ${singer.explicitLeft ? 'départ' : 'dernier signe + 30 min'} ${hhmm(singer.leftAt)} · présence ${dur(singer.presenceSec)}` }))));
     box.appendChild(h('div', { class: 'st-mini' },
       ...[[singer.turns, 'passages'], [singer.guestTurns, 'comme invité'], [fmtNum(singer.turnsPerHour, 2), 'par heure'],
         [fmtNum(singer.expectedTurns, 1), 'passages attendus'], [dur(singer.waits.avgSec), 'attente moyenne'], [dur(singer.firstTurnSec), 'avant le 1er passage'],
@@ -664,7 +670,7 @@ function renderCharts() {
     subtitle: 'Par chanteur : de la plus courte à la plus longue, point = moyenne. Trait vertical : moyenne de la salle.',
     legend: [['Moyenne', 'var(--s1)', 'dot'], ['Plus courte – plus longue', 'var(--muted)', 'line'], ['Moyenne de la salle', 'var(--ref)', 'tick']],
     table: () => [[['Chanteur'], ['Table'], ['Passages', true], ['Moyenne', true], ['Médiane', true], ['Plus longue', true]],
-      waitRows.map(r => ({ cells: [nameOf(r.id), tableName(r.tableId), r.waits.n, dur(r.waits.avgSec), dur(r.waits.medianSec), dur(r.waits.maxSec)] }))],
+      waitRows.map(r => ({ cells: [nameOf(r.id), personTable(r.tableId), r.waits.n, dur(r.waits.avgSec), dur(r.waits.medianSec), dur(r.waits.maxSec)] }))],
     draw: plot => drawWaits(plot, waitRows) });
   const rateRows = st.singers.filter(x => x.requests > 0 && x.presenceSec > 0).sort((a, b) => (b.turnsPerHour || 0) - (a.turnsPerHour || 0));
   card({ id: 'chartRates', title: 'Rythme de passage',
@@ -734,7 +740,7 @@ function renderSingerTable() {
     ['Invité', true, 'guestTurns'], ['Par heure', true, 'turnsPerHour'], ['Attendus', true, 'expectedTurns'], ['Attente moy.', true, 'wait'],
     ['Plus longue', true, 'waitMax'], ['1er passage', true, 'firstTurnSec'], ['Pas prêt', true, 'deferrals'], ['Je suis là manqués', true, 'presenceSkips'],
     ['Titres retirés', true, 'removed'], ['Voix Battle', true, 'battleVotes']];
-  const value = (row, key) => key === 'name' ? nameOf(row.id).toLocaleLowerCase('fr') : key === 'table' ? tableName(row.tableId) :
+  const value = (row, key) => key === 'name' ? nameOf(row.id).toLocaleLowerCase('fr') : key === 'table' ? personTable(row.tableId) :
     key === 'wait' ? row.waits.avgSec : key === 'waitMax' ? row.waits.maxSec : row[key];
   // Ordre alphabétique français (« Émilie » avant « Farid ») ; à égalité, le prénom départage.
   const byName = (a, b) => nameOf(a.id).localeCompare(nameOf(b.id), 'fr', { sensitivity: 'base' });
@@ -748,7 +754,7 @@ function renderSingerTable() {
   const focus = focusIds();
   const el = h('figure', { class: 'st-card wide', id: 'cardSingers' }, h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: 'Tous les chanteurs' }),
     h('p', { text: 'Touchez un en-tête pour trier. « Présence » : départ signalé, sinon dernier signe d’activité + 30 min.' }))));
-  el.appendChild(h('div', { class: 'st-table-wrap' }, dataTable(cols, rows.map(r => ({ id: r.id, cells: [nameOf(r.id), tableName(r.tableId),
+  el.appendChild(h('div', { class: 'st-table-wrap' }, dataTable(cols, rows.map(r => ({ id: r.id, cells: [nameOf(r.id), personTable(r.tableId),
     dur(r.presenceSec), r.turns, r.guestTurns, fmtNum(r.turnsPerHour, 2), fmtNum(r.expectedTurns, 1), dur(r.waits.avgSec), dur(r.waits.maxSec),
     dur(r.firstTurnSec), r.deferrals, r.presenceSkips, r.removed, r.battleVotes] })),
   { focusOf: row => focus?.has(row.id), sortable: key => {
@@ -776,7 +782,7 @@ function renderFilters() {
   const tables = st.tables.filter(tb => tb.people);
   if (tables.length) select.appendChild(h('optgroup', { label: 'Tables' }, tables.map(tb => h('option', { value: `t:${tb.id}`, text: tableName(tb.id) }))));
   const people = [...st.singers].sort((a, b) => nameOf(a.id).localeCompare(nameOf(b.id), 'fr'));
-  if (people.length) select.appendChild(h('optgroup', { label: 'Chanteurs' }, people.map(x => h('option', { value: `p:${x.id}`, text: `${nameOf(x.id)} · ${tableName(x.tableId)}` }))));
+  if (people.length) select.appendChild(h('optgroup', { label: 'Chanteurs' }, people.map(x => h('option', { value: `p:${x.id}`, text: who(x.id, x.tableId) }))));
   const values = ['', ...tables.map(tb => `t:${tb.id}`), ...people.map(x => `p:${x.id}`)];
   if (!values.includes(state.focus)) state.focus = '';
   select.value = state.focus;

@@ -96,6 +96,20 @@ sched.setHeadcount('7', 3);
 sched.join({ tableId: '7', name: 'Bruno' });
 sched.join({ tableId: '7', name: 'Chloé' });
 const fullTable = thrown(() => sched.join({ tableId: '7', name: 'Dan' }));
+// Regression: relecture du lot K — les refus de prénom levés par le
+// planificateur (et non par une route) arrivent aussi traduits.
+const schedulerJs = fs.readFileSync(path.join(root, 'scheduler.js'), 'utf8').replace(/\\'/g, '\'');
+const validNameBody = schedulerJs.slice(schedulerJs.indexOf('  validName('), schedulerJs.indexOf('\n  }\n', schedulerJs.indexOf('  validName(')));
+const nameMessages = [...validNameBody.matchAll(/'([A-ZÉ][^'\n]*[.»])'/g)].map(m => m[1]);
+assert.ok(nameMessages.length >= 5, `refus de prénom repérés : ${nameMessages.length}`);
+for (const message of nameMessages) assert.ok(serverText(message), `refus de prénom sans traduction : « ${message} »`);
+sched.table('Comptoir');
+sched.join({ tableId: 'Comptoir', name: 'Léa' });
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir', name: 'Battle collective' }))),
+  'This name is reserved for the Battle. Please choose another first name.');
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir-2', name: 'léa' }))),
+  'This first name is already signed up tonight. Add the initial of your last name (e.g. Mary L.).');
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir', name: 'Max · Table 4' }))), 'First names can’t contain “·”.');
 assert.match(serverText(fullTable), /^Table 7 is full \(3 signed up for 3 places\)/);
 assert.ok(serverSources.includes('Recherche KaraFun impossible : ${e.message}'));
 assert.equal(serverText('Recherche KaraFun impossible : délai dépassé'), 'KaraFun search failed: délai dépassé');
@@ -176,7 +190,9 @@ function boot({ languages, language, saved = null, translations = true, respond 
       { id: 'bob', name: 'Bob', active: true, songs: [], invites: [], inKaraFun: [] }],
     managedIds: ['alice'], people: [], waiting: [], catalogAvailable: true, rules: {},
     queue: [{ pos: 2, ids: ['alice'], singer: 'Alice · Table 1', title: 'Song 2', eta: Date.UTC(2026, 9, 1, 20, 5) },
-      { pos: 3, ids: ['zoe'], singer: 'Zoé · En solo', singers: [{ id: 'zoe', name: 'Zoé', table: 'En solo', individual: true }], title: 'Solo song' }],
+      { pos: 3, ids: ['zoe'], singer: 'Zoé', singers: [{ id: 'zoe', name: 'Zoé', table: 'En solo', individual: true }], title: 'Solo song' },
+      { pos: 4, ids: ['zoe', 'max'], singer: 'Zoé & Max · Table 2', singers: [{ id: 'zoe', name: 'Zoé', table: 'En solo', individual: true },
+        { id: 'max', name: 'Max', table: 'Table 2', individual: false }], title: 'Duet song' }],
     stage: { ours: false, kind: 'battle', singer: 'Battle collective', title: 'We Are The Champions', artist: 'Queen' },
     next: null,
     battle: { id: 'b1', phase: 'voting', mode: 'songs', closesAt: Date.now() + 90000, voters: 1, eligible: 2, threshold: 2,
@@ -217,7 +233,10 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   assert.match(get('peopleList').innerHTML, /THEIR LIST · 1 SONG</);
   assert.match(get('peopleList').innerHTML, /2nd in the queue · around \d\d:\d\d/);
   assert.match(get('peopleList').innerHTML, /aria-label="Add a song for Alice">＋ Song</, 'bouton court, intitulé complet (avec le prénom) pour les lecteurs d’écran');
-  assert.match(get('queueList').innerHTML, /Zoé · Solo/, 'le groupe « En solo » est traduit');
+  // Un soliste n'a que son prénom, en anglais aussi : le nom du serveur est gardé.
+  assert.match(get('queueList').innerHTML, /class="name">Zoé</, 'soliste : prénom seul');
+  assert.match(get('queueList').innerHTML, /Zoé &amp; Max · Table 2/, 'duo soliste + table : seule la table');
+  assert.doesNotMatch(get('queueList').innerHTML, /Zoé · |En solo/);
   assert.match(get('queueList').innerHTML, /Alice · Table 1/);
   assert.match(get('battleText').textContent, /^Choose a song or “No Battle”\. Vote ends in \d:\d\d\. 1 voter out of 2; at least 2 needed\./);
   assert.match(get('battleVotes').innerHTML, /1 vote · leading/);

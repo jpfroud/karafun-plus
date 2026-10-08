@@ -876,3 +876,37 @@ test('graduations du temps : pas selon la largeur, alignés sur l’horloge loca
   assert.ok(weeks.length >= 2 && weeks.length <= 5, String(weeks.length));
   assert.ok(weeks.every(t => new Date(t).getHours() === 0));
 });
+
+// Lot K : un soliste n'est nommé que par son prénom ; la carte « Tables »
+// garde le nom du groupe.
+test('soliste : prénom seul dans le filtre, les info-bulles, le panneau et le tableau ; colonne Table vide', async () => {
+  const page = loadPage({ responses: withView(view => {
+    view.stats.tables.find(tb => tb.id === '3').individual = true;
+    view.names.tables['3'] = 'En solo';
+  }) });
+  await settle();
+  const focus = page.$('focusSelect');
+  const option = value => text(focus.options().find(o => o.getAttribute('value') === value));
+  assert.equal(option('p:pE'), 'Eve', 'filtre : prénom seul');
+  assert.equal(option('p:pA'), 'Alice · Table 1', 'une personne de table garde sa table');
+  const rows = page.doc.getElementById('cardSingers').byTag('tbody')[0].children;
+  const eve = rows.find(row => text(row.children[0]) === 'Eve');
+  assert.equal(text(eve.children[1]), '', 'colonne Table vide pour un soliste');
+  assert.equal(text(rows.find(row => text(row.children[0]) === 'Alice').children[1]), 'Table 1');
+  const tip = page.$('tooltip');
+  let seen = 0;
+  for (const id of ['chartWaits', 'chartRates']) {
+    for (const mark of marks(page.doc.getElementById(id))) {
+      mark.dispatch('pointerenter', { clientX: 100, clientY: 100 });
+      if (/^Eve/.test(text(tip))) { seen++; assert.doesNotMatch(text(tip), /En solo/, `${id} : info-bulle sans groupe`); }
+      mark.dispatch('pointerleave');
+    }
+  }
+  assert.ok(seen > 0, 'au moins une info-bulle de la soliste vérifiée');
+  focus.value = 'p:pE';
+  focus.dispatch('change', { target: focus });
+  assert.match(text(page.$('focusCard')), /Soirée d’Eve\s*Arrivée /);
+  assert.doesNotMatch(text(page.$('focusCard')), /En solo/);
+  // Écran de gestion : le groupe garde son nom dans le filtre des tables.
+  assert.ok(focus.options().some(o => o.getAttribute('value') === 't:3'));
+});

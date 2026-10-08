@@ -498,7 +498,7 @@ class Scheduler {
       return p;
     }
     this._event('person.joined', { personId: p.id, tableId: t.id });
-    this.note(`${p.name} (${t.name}) s'est inscrit`);
+    this.note(`${this.personRef(p)} s'est inscrit`);
     return p;
   }
 
@@ -511,12 +511,63 @@ class Scheduler {
     const clean = String(name || '').replace(/\s+/g, ' ').trim();
     if (!clean) throw new Error('Indique ton prénom.');
     if (clean.length > 24) throw new Error('Prénom limité à 24 caractères.');
-    if ([...this.people.values()].some(p => p.tableId === tableId && p.id !== exceptId &&
-        p.name.toLocaleLowerCase('fr') === clean.toLocaleLowerCase('fr'))) {
-      const e = new Error('Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.');
+    // Un soliste est nommé par son seul prénom dans KaraFun : celui-ci se
+    // confondrait avec la Battle (voir server.js, détection de la Battle).
+    if (clean.toLocaleLowerCase('fr') === 'battle collective') {
+      const e = new Error('Ce prénom est réservé à la Battle. Choisis un autre prénom.');
+      e.code = 'NAME_RESERVED'; throw e;
+    }
+    // « · » sépare le prénom de la table dans le nom d'un passage : un
+    // soliste « Max · Table 4 » passerait pour Max de la Table 4. Les points
+    // médians qui lui ressemblent (•, ∙, ⋅, ・) sont refusés aussi.
+    if (/[\u00B7\u0387\u2022\u2219\u22C5\u30FB\uFF65]/.test(clean)) {
+      const e = new Error('Le prénom ne peut pas contenir « · ».');
+      e.code = 'NAME_INVALID'; throw e;
+    }
+    const individual = !!this.table(tableId, false)?.individual;
+    if (this.nameRivals(tableId, exceptId).some(p => p.name.toLocaleLowerCase('fr') === clean.toLocaleLowerCase('fr'))) {
+      const e = new Error(individual ? 'Ce prénom est déjà inscrit ce soir. Ajoute l’initiale de ton nom (ex. Marie L.).' :
+        'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.');
       e.code = 'NAME_TAKEN'; throw e;
     }
     return clean;
+  }
+
+  // Personnes dont le prénom doit différer : la même table, ou, pour un
+  // soliste, tous les solistes de tous les groupes individuels (nommés par
+  // leur seul prénom, deux « Léa » seraient indiscernables).
+  nameRivals(tableId, exceptId = null) {
+    const individual = !!this.table(tableId, false)?.individual;
+    return [...this.people.values()].filter(p => p.id !== exceptId &&
+      (individual ? !!this.table(p.tableId, false)?.individual : p.tableId === tableId));
+  }
+
+  // Tables nommées d'un passage : celles de ses personnes, sans les groupes
+  // individuels (« En solo »), sans doublon, dans l'ordre des personnes.
+  passageTables(ids = []) {
+    const names = [];
+    for (const pid of ids || []) {
+      const p = this.people.get(String(pid));
+      const t = p && this.table(p.tableId, false);
+      if (t && !t.individual && !names.includes(t.name)) names.push(t.name);
+    }
+    return names;
+  }
+
+  // Nom d'un passage, sur l'écran de KaraFun comme sur les téléphones et la
+  // page du bar : prénoms joints par « & », puis les tables non individuelles.
+  // « Léa », « Léa & Sam », « Léa & Max · Table 4 », « Max & Zoé · Table 4 + Table 2 ».
+  passageLabel(ids = []) {
+    const names = (ids || []).map(pid => this.people.get(String(pid))?.name).filter(Boolean).join(' & ');
+    const tables = this.passageTables(ids);
+    return tables.length ? `${names} · ${tables.join(' + ')}` : names;
+  }
+
+  // Une personne dans le journal du bar : « Léa » pour un soliste, « Max
+  // (Table 4) » à une table.
+  personRef(p) {
+    const t = p && this.table(p.tableId, false);
+    return t && !t.individual ? `${p.name} (${t.name})` : (p?.name || '');
   }
 
   rename(p, name) {
@@ -527,14 +578,14 @@ class Scheduler {
       delete p.nameRequired;
       this.version++;
       this._event('person.joined', { personId: p.id, tableId: p.tableId });
-      this.note(`${next} (${this.table(p.tableId).name}) s'est inscrit`);
+      this.note(`${this.personRef(p)} s'est inscrit`);
       return p;
     }
     if (next === p.name) return p;
-    const before = p.name;
+    const before = this.personRef(p);
     p.name = next;
     this._event('person.renamed', { personId: p.id });
-    this.note(`${before} (${this.table(p.tableId).name}) s'appelle maintenant ${next}`);
+    this.note(`${before} s'appelle maintenant ${next}`);
     return p;
   }
 
@@ -623,7 +674,7 @@ class Scheduler {
     if (!this.Q.includes(p.id)) {
       const pos = this._placeNewcomer(p);
       this._event('queue.entered', { personId: p.id, position: pos, queueLength: this.Q.length });
-      this.note(`${p.name} (${this.table(p.tableId).name}) entre dans la file en ${pos === 0 ? '1re' : (pos + 1) + 'e'} position`);
+      this.note(`${this.personRef(p)} entre dans la file en ${pos === 0 ? '1re' : (pos + 1) + 'e'} position`);
     } else {
       this.note(`${p.name} a ${mode === 'append' ? 'ajouté à sa liste' : 'choisi'} « ${next.title} »`);
     }
@@ -934,7 +985,7 @@ class Scheduler {
     if (sel.ids.length < 2) delete sel.kind;
     sel.group = owner.group;
     sel.groups = [owner.group];
-    if (!keepLabel) sel.label = `${owner.name} · ${this.table(owner.tableId).name}`;
+    if (!keepLabel) sel.label = this.passageLabel([owner.id]);
     // La présence confirmée par l'invitée seule ne vaut plus pour l'auteur.
     if (sel.presenceConfirmed && this.opts.requirePresence && !this._confirmedRecently(owner)) sel.presenceConfirmed = false;
     const title = sel.song?.title || '';
@@ -1041,6 +1092,8 @@ class Scheduler {
     if (!owner || !partner || owner.id === partner.id || owner.withdrawnAt || partner.withdrawnAt) {
       throw new Error('Choisis un autre chanteur encore présent dans la salle.');
     }
+    // QR ouvert sans prénom : « Solo 3 » ne doit jamais devenir un nom de duo.
+    if (partner.nameRequired) throw new Error('Cette personne n’a pas encore saisi son prénom.');
     this.invalidateManualOrder();
     const row = this._creditRow(partner.id), serialBefore = this.appearanceSerial;
     // Reçu d'annulation (duo noté par erreur) : valeurs d'avant le duo, reçus
@@ -2343,8 +2396,7 @@ class Scheduler {
     }
     if (!c) return null;
     const names = c.ids.map(pid => this.people.get(pid).name);
-    const tables = [...new Set(c.ids.map(pid => this.table(this.people.get(pid).tableId).name))];
-    return { ...c, label: `${names.join(' & ')} · ${tables.join(' + ')}`, names,
+    return { ...c, label: this.passageLabel(c.ids), names,
       presenceConfirmed: this.opts.requirePresence && this.confirmedForTurn(c.ids) };
   }
 
@@ -2527,11 +2579,12 @@ class Scheduler {
     for (const c of this._forecast(false, excludeIds, provisional, ignorePresence)) {
       const owner = this.people.get(c.ids[0]);
       if (!owner) continue;
-      const table = this.table(owner.tableId);
-      const tables = [...new Set(c.ids.map(pid => this.table(this.people.get(pid).tableId).name))];
       out.push({ ids: c.ids, song: c.song, entryId: c.entryId, future: c.future, kind: c.kind,
         groups: c.groups, name: c.ids.map(pid => this.people.get(pid)?.name).filter(Boolean).join(' & '),
-        table: tables.join(' + ') || table?.name || '', tableId: owner.tableId, qi: qIndex.get(owner.id),
+        // Nom du passage (écran KaraFun, téléphones) et tables seules (page du
+        // bar) : jamais le nom d'un groupe individuel comme « En solo ».
+        label: this.passageLabel(c.ids), table: this.passageTables(c.ids).join(' + '),
+        tableId: owner.tableId, qi: qIndex.get(owner.id),
         over: owner.over, cap: this.opts.cap, confirmed: !!this._confirmedRecently(owner) });
     }
     return out;
@@ -2895,7 +2948,11 @@ class Scheduler {
     }
     if (deferralUndo.length) sel.deferralUndo = deferralUndo;
     sel.turnCredit = { before: creditBefore, after: this._turnCreditState(sel), rolledBack: false };
-    this.note(`À suivre : ${sel.label} — « ${sel.song.title} »`, 'next');
+    // Le journal montre le nom recalculé ; `sel.label` (nom reçu par KaraFun,
+    // peut-être à l'ancien format) ne sert qu'à y reconnaître le titre.
+    const ids = sel.ids || [];
+    const shown = ids.length && ids.every(pid => this.people.has(String(pid))) ? this.passageLabel(ids) : sel.label;
+    this.note(`À suivre : ${shown} — « ${sel.song.title} »`, 'next');
   }
 
   // Historique réservé au bar : qui est réellement monté sur scène, pour

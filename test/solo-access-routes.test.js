@@ -290,7 +290,7 @@ test('QR individuel : refus inchangés (téléphone déjà solo, invitation expi
   const table = openTable(f, '2');
   const wrong = await post(f, '/api/table/solo/open', { ...table, invitation: invite() });
   assert.equal(wrong.status, 400);
-  assert.equal(wrong.body.error, 'Ce QR individuel ne sert que pour « En solo ».');
+  assert.equal(wrong.body.error, 'Ce QR individuel n’est pas valable pour cette table.');
   assert.equal(f.sched.people.size, 1);
 
   // Ouverte avant l'expiration, la personne garde sa fenêtre de prénom ensuite.
@@ -659,6 +659,6 @@ test('QR de table pour le téléphone : même lien que le QR imprimé, pas pour 
   const { tb: solo } = openSolo(f);
   const soloInvite = await get(f, `/api/table/invite?table=Comptoir&access=${solo.access}`);
   assert.equal(soloInvite.status, 400);
-  assert.equal(soloInvite.body.error, 'Pas de QR à partager pour « En solo » : chacun demande son QR individuel au bar.');
+  assert.equal(soloInvite.body.error, 'Pas de QR à partager : chacun demande son QR individuel au bar.');
   assert.equal((await get(f, '/api/table/inconnue')).status, 404);
 });

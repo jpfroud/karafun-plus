@@ -639,7 +639,8 @@ test('repères chanteurs : transfert vers un autre téléphone (lien, code, erre
   assert.equal(page.$('shareUrl').hidden, true);
   assert.equal(page.$('shareLinkActions').hidden, true);
   assert.match(page.$('shareHelp').textContent, /saisis ce code/);
-  assert.match(page.$('shareCodeHelp').textContent, /ouvrir le QR « En solo »/);
+  assert.match(page.$('shareCodeHelp').textContent, /ouvrir la page karaoké du bar, toucher « Je suis … »/);
+  assert.doesNotMatch(page.$('shareCodeHelp').textContent, /En solo/, 'fenêtre montrée au client : le groupe n’est pas nommé');
   assert.equal(page.$('shareExpires').textContent, `code jusqu’à ${hhmm(expiresAt)} ; un seul usage.`);
   page.$('shareDialog').close();
 
@@ -954,7 +955,8 @@ test('sur scène : derniers passages, repère, départ et vidage de l’historiq
       { id: 'alice', name: 'Alice', table: 'Table 1', active: true, privateNote: 't-shirt rouge' }] },
     { onStage: false, at, title: 'Fini', people: [
       { id: 'chloe', name: 'Chloé', table: 'Table 2', active: false },
-      { id: 'dora', name: 'Dora', table: 'En solo', active: true, photoUrl: '/photo/dora.jpg' }] },
+      { id: 'dora', name: 'Dora', table: 'En solo', individual: true, active: true, photoUrl: '/photo/dora.jpg' },
+      { id: 'eve', name: 'Eve', table: 'En solo', individual: true, active: false }] },
   ];
   const history = world.stageHistory;
   const page = await openPage({ world });
@@ -968,6 +970,9 @@ test('sur scène : derniers passages, repère, départ et vidage de l’historiq
   assert.match(person('chloe').textContent, /Table 2 · parti/);
   assert.equal(person('chloe').querySelector('[data-history-leave]'), null, 'une personne déjà partie ne se marque pas partie');
   assert.equal(person('dora').querySelector('img').src, '/photo/dora.jpg');
+  assert.doesNotMatch(person('dora').textContent, /En solo/, 'un soliste : son prénom seul');
+  assert.match(person('eve').textContent, /Eve\s*parti/, 'soliste parti : « parti » sans nom de groupe');
+  assert.doesNotMatch(person('eve').textContent, /En solo|· parti/);
   assert.equal(page.$('clearStageHistory').disabled, false);
 
   // « Repère » ouvre l'écran Repères sur cette personne, prêt à écrire.
@@ -1019,8 +1024,12 @@ test('en direct : duo noté, absent, relance, passer, lecture et envoi en cours'
   world.next = { ours: false, singer: 'Client', title: 'Manuel' };
   world.tracked = [{ queueId: 77, startedAt: Date.now() }, { queueId: 78, ids: ['bruno'], startedAt: null }];
   world.pending = { label: 'Bruno', title: 'Chanson A' };
+  // QR ouvert sans prénom : jamais proposé comme partenaire (lot K).
+  world.people.push({ id: 's9', name: 'Solo 9', tableId: 'Comptoir', active: true, nameRequired: true, songCount: 0, sung: 0 });
   const page = await openPage({ world });
-  assert.match(page.$('stage').textContent, /Alice.*Table 1.*Dora.*En solo.*Duo.*Ensemble.*Interprète inconnu/s);
+  assert.match(page.$('stage').textContent, /Alice.*Table 1.*Dora.*Duo.*Ensemble.*Interprète inconnu/s);
+  assert.doesNotMatch(page.$('stage').textContent, /En solo/, 'un soliste : son prénom, sans pastille');
+  assert.equal(page.all('stage', '.live-table').length, 1, 'seule la table d’Alice a sa pastille');
   assert.match(page.$('next').textContent, /Client.*Ajouté dans KaraFun.*Manuel/s);
   assert.equal(page.$('pendingTxt').textContent, 'Envoi en cours à KaraFun : Bruno — Chanson A');
 
@@ -1028,8 +1037,8 @@ test('en direct : duo noté, absent, relance, passer, lecture et envoi en cours'
   assert.equal(page.$('markDuoBox').hidden, false);
   assert.equal(page.$('markDuoBox').dataset.queueId, 'q-live');
   assert.deepEqual(page.all('markDuoPartner', 'optgroup').map(g => g.getAttribute('label')),
-    ['Même table', 'Autres tables et personnes en solo']);
-  assert.deepEqual(texts(page.$('markDuoPartner').options), ['Choisir…', 'Bruno — Table 1', 'Dora — En solo']);
+    ['Même table', 'Autres personnes']);
+  assert.deepEqual(texts(page.$('markDuoPartner').options), ['Choisir…', 'Bruno — Table 1', 'Dora'], 'soliste : prénom seul ; « Solo 9 » exclu');
   assert.equal(page.$('markDuoPartner').value, '', 'personne n’est choisi d’avance');
   await page.click(page.$('markDuoBtn'));
   assert.equal(page.postsTo('/api/staff/duo-mark').length, 0, 'sans partenaire choisi, rien ne part');
@@ -2380,6 +2389,22 @@ test('barre du haut : essais KaraFun arrêtés, alerte avec Reconnecter et Saisi
   assert.equal(page.doc.activeElement, page.$('code'));
 });
 
+test('soliste sur scène : prénom seul (carte, Repères, partenaires), autres solistes hors « Même table » (lot K)', async () => {
+  const world = baseWorld();
+  world.stage = { ours: true, ids: ['dora'], queueId: 'q-solo', singers: [{ id: 'dora', name: 'Dora', table: 'En solo', individual: true }], title: 'Solo' };
+  world.people.push({ id: 'sam', name: 'Sam', tableId: 'Comptoir', active: true, songCount: 0, sung: 0 },
+    { id: 's9', name: 'Solo 9', tableId: 'Comptoir', active: true, nameRequired: true, songCount: 0, sung: 0 });
+  const page = await openPage({ world });
+  assert.equal(page.in('stage', '[data-stage-person="dora"]').querySelector('.live-table'), null, 'pas de pastille « En solo »');
+  assert.doesNotMatch(page.$('stage').textContent, /En solo/);
+  assert.doesNotMatch(page.$('identityStage').textContent, /En solo/, 'Repères : prénom seul');
+  assert.deepEqual(page.all('markDuoPartner', 'optgroup').map(g => g.getAttribute('label')), ['Autres personnes'],
+    'les autres solistes ne sont pas « Même table »');
+  const options = texts(page.$('markDuoPartner').options);
+  assert.ok(options.includes('Sam') && options.includes('Alice — Table 1'), options.join(' | '));
+  assert.ok(!options.some(text => /Solo 9|En solo/.test(text)), 'ni prénom provisoire ni nom de groupe');
+});
+
 test('sur scène : photo, repère de la personne et titre KaraFun sans fiche', async () => {
   const world = baseWorld();
   world.stage = { ours: true, ids: ['alice'], queueId: 'q1', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }], title: 'Titre' };
@@ -2393,6 +2418,7 @@ test('sur scène : photo, repère de la personne et titre KaraFun sans fiche', a
   assert.equal(next.querySelector('img').src, '/photo/dora.jpg');
   assert.equal(next.querySelector('[data-autosave="note"]').value, '', 'sans repère, champ vide à remplir');
   assert.equal(next.querySelector('[data-autosave="note"]').placeholder, 'ex. t-shirt rouge');
+  assert.equal(next.querySelector('.live-table'), null, 'Ensuite : soliste sans pastille de groupe');
   assert.equal(page.$('identityStageBox').hidden, false, 'Repères : la personne sur scène en tête');
   assert.ok(page.in('identityStage', '[data-identity-stage="alice"]'));
   // Repère modifié sur la carte : enregistré seul, recopié dans l'écran Repères.
@@ -2613,7 +2639,7 @@ test('accueil : donner un chanteur à un autre téléphone depuis une recherche 
   await page.type(page.$('transferSearch'), '');
   assert.equal(page.$('transferResults').innerHTML, '');
   await page.type(page.$('transferSearch'), 'DOR');
-  assert.deepEqual(results(), ['Dora En solo']);
+  assert.deepEqual(results(), ['Dora'], 'un soliste : son prénom seul');
   page.replies['/api/staff/person/share'] = { code: '1234', expiresAt: Date.now() + 600000 };
   await page.click(page.in('transferResults', '[data-transfer-person="dora"]'));
   assert.deepEqual(page.lastPost('/api/staff/person/share').body, { personId: 'dora' });

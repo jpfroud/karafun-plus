@@ -496,7 +496,7 @@ test('« En solo » : invitation obligatoire, téléphone attaché par cookie, u
   let r = await post(f, '/api/table/person', { ...tb, name: 'Zoé' });
   assert.equal(r.status, 403);
   assert.equal(r.body.code, 'SOLO_INVITATION');
-  assert.equal(r.body.error, 'Demande au bar une invitation personnelle pour t’inscrire en solo. Ce lien sert à consulter la file.');
+  assert.equal(r.body.error, 'Demande au bar ton QR individuel pour t’inscrire. Ce lien sert à consulter la file.');
   const invitation = invite();
   r = await post(f, '/api/table/person', { ...tb, name: 'Zoé', invitation });
   assert.equal(r.status, 200);
@@ -510,7 +510,7 @@ test('« En solo » : invitation obligatoire, téléphone attaché par cookie, u
   r = await post(f, '/api/table/person', { ...tb, name: 'Yann', invitation: invite() }, { cookie: zoe.cookie });
   assert.equal(r.status, 403);
   assert.equal(r.body.code, 'SOLO_DEVICE_USED');
-  assert.equal(r.body.error, 'Ce téléphone gère déjà une personne dans « En solo ». Chacun utilise son propre téléphone.');
+  assert.equal(r.body.error, 'Ce téléphone a déjà un prénom inscrit. Chacun utilise son propre téléphone.');
   r = await post(f, '/api/join', { ...tb, name: 'Yann', invitation: invite() }, { cookie: zoe.cookie });
   assert.equal(r.body.code, 'SOLO_DEVICE_USED', 'ancienne route d’inscription aussi');
   // Par le tunnel HTTPS, le cookie n'est envoyé qu'en HTTPS.

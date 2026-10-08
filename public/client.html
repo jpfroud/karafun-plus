@@ -574,8 +574,9 @@
   const fullSong = song => `${song.title || t('Sans titre')}${song.artist ? ' — ' + song.artist : ''}`;
   const englishOrdinal = n => `${n}${[11, 12, 13].includes(n % 100) ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
   const position = n => lang === 'en' ? englishOrdinal(n) : n === 1 ? '1re' : `${n}e`;
-  // Le groupe « En solo » porte son nom par défaut : il se traduit aussi.
-  const tableLabel = table => table?.individual && table.name === 'En solo' ? t('En solo') : table?.name;
+  // Nom de table affiché. Le groupe des solistes n'en a pas : un soliste
+  // n'est nommé que par son prénom.
+  const tableLabel = table => table?.individual ? '' : table?.name;
   const personById = id => list(state && state.tablePeople).find(p => String(p.id) === String(id));
   const ownIds = () => state?.table?.individual
     ? managedIds()
@@ -1277,9 +1278,12 @@
     const count = individual ? Number(state.table?.count ?? people.length) : people.length;
     // « En solo » n'a pas de nombre de places : seule une table ordinaire est complète.
     const full = !individual && Number.isInteger(state.table?.headcount) && count >= state.table.headcount;
-    const tableName = tableLabel(state.table) || t('Table {id}', { id: tableId });
+    // Téléphone d'un soliste : son prénom en en-tête (« Bienvenue » avant
+    // qu'il l'ait donné), jamais le nom du groupe.
+    const soloName = individual ? owned.find(person => !person.nameRequired)?.name : '';
+    const tableName = individual ? soloName || t('Bienvenue') : tableLabel(state.table) || t('Table {id}', { id: tableId });
     $('tableName').textContent = tableName;
-    $('joinHeading').textContent = t('Bienvenue à {table} !', { table: tableName });
+    $('joinHeading').textContent = individual ? t('Bienvenue') : t('Bienvenue à {table} !', { table: tableName });
     $('navTableLabel').textContent = individual ? t('Mes titres') : t('Ma table');
     $('quickSongBox').classList.toggle('solo-song-cta', individual);
     $('quickSongHeading').hidden = individual;
@@ -1311,7 +1315,7 @@
     // Reprise par code : sur une table, depuis « Voir toute la table » seulement.
     $('claimBox').hidden = recoveryPeople.length === 0;
     $('claimHeading').textContent = t('Récupérer mes chansons');
-    $('claimIntro').textContent = t('Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.');
+    $('claimIntro').textContent = t('Si tu étais déjà inscrit, choisis ton prénom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.');
     $('claimPeople').innerHTML = recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: person.name }))}</button>`).join('');
     const present = state.table?.activeCount ?? people.length;
     $('peopleCount').textContent = individual ? t('Mon profil')
@@ -1476,7 +1480,7 @@
       ${linkPart}
       <details class="transfer-fallback"${share.url ? '' : ' open'}><summary>${esc(t('Impossible de scanner ? Utilise un code'))}</summary>
         <p class="small muted">${esc(individual
-          ? t('Sur l’autre téléphone, ouvre le QR « En solo » que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name })
+          ? t('Sur l’autre téléphone, ouvre le QR que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name })
           : t('Sur l’autre téléphone, ouvre le QR code de la table, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name }))}</p>
         <p class="share-code">${esc(share.code)}</p>
       </details>`);
@@ -1615,16 +1619,11 @@
     if (!p.paused && !progressTimer) progressTimer = setTimeout(() => { progressTimer = null; renderStageProgress(); }, 1100);
   }
 
-  // Noms affichés d'un passage. Une Battle ajoutée hors de la file porte un
-  // nom donné par le serveur ; en anglais, le nom par défaut du groupe
-  // « En solo » est traduit comme dans l'en-tête.
+  // Noms affichés d'un passage, tels que le serveur les compose (prénom seul
+  // pour un soliste, « Max · Table 4 » à une table). Une Battle ajoutée hors
+  // de la file porte un nom donné par le serveur, traduit ici.
   function singerLabel(item) {
     if (!item.ours && item.kind === 'battle' && item.singer === 'Battle collective') return t('Battle collective');
-    const singers = list(item.singers);
-    if (lang === 'en' && singers.some(singer => singer.individual && singer.table === 'En solo')) {
-      const tables = [...new Set(singers.map(singer => tableLabel({ individual: singer.individual, name: singer.table })))];
-      return `${singers.map(singer => singer.name).join(' & ')} · ${tables.join(' + ')}`;
-    }
     return item.singer || t('Chanteur');
   }
 
@@ -2074,7 +2073,7 @@
 
   $('addPersonForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (state?.table?.individual) return toast(t('Dans « En solo », inscris-toi depuis ton propre téléphone.'), true);
+    if (state?.table?.individual) return toast(t('Chacun s’inscrit depuis son propre téléphone.'), true);
     const name = $('newName').value.trim();
     if (!name) return toast(t('Indique un prénom.'), true);
     const button = $('addPersonForm').querySelector('button[type=submit]');
@@ -2688,7 +2687,7 @@
     $('catalogTarget').textContent = duetMode && person ? t('Choisis un titre pour un duo avec {name}.', { name: person.name }) : person
       ? managedPeople().length === 1 ? t('Chansons pour {name}.', { name: person.name }) : t('Chansons pour {name}. Tu pourras changer de chanteur avant de valider.', { name: person.name })
       : managedPeople().length ? t('Choisis un titre, puis la personne qui le chantera.')
-        : state?.table?.individual ? t('Explore le catalogue. Pour ajouter un titre, inscris-toi dans « En solo ».')
+        : state?.table?.individual ? t('Explore le catalogue. Pour ajouter un titre, demande au bar ton QR individuel.')
           : t('Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.');
   }
 
@@ -3094,15 +3093,18 @@
       return true;
     });
     if (!partners.length) return toast(t('Aucun partenaire disponible pour un duo.'), true);
-    const ownTable = partners.filter(person => String(person.tableId) === String(state?.table?.id));
-    const otherTables = partners.filter(person => String(person.tableId) !== String(state?.table?.id));
-    const partnerTable = person => person.table === 'En solo' && person.tableId === 'Comptoir' ? t('En solo') : person.table;
-    const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table ? ' · ' + esc(partnerTable(person)) : ''}</option>`;
+    // Téléphone d'un soliste : les autres solistes ne sont pas « à sa table »,
+    // chaque duo est une invitation. Un soliste est proposé sous son prénom.
+    const soloPhone = !!state?.table?.individual;
+    const ownTable = soloPhone ? [] : partners.filter(person => String(person.tableId) === String(state?.table?.id));
+    const otherTables = soloPhone ? partners : partners.filter(person => String(person.tableId) !== String(state?.table?.id));
+    const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table && !person.individual ? ' · ' + esc(person.table) : ''}</option>`;
+    const otherLabel = soloPhone ? t('Autres personnes · invitation à accepter') : t('Autres tables · invitation à accepter');
     openSheet(`<div class="row"><h3 class="grow">${esc(t('Duo sur « {title} »', { title: song.title }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <p class="muted small">${esc(t('{name} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour.', { name: owner.name }))} <span id="duoConsent"></span></p>
       <p id="duoNotice" class="notice warn small song-notice" role="status" hidden></p>
       <label class="field" for="duoPartner">${esc(t('Avec qui ?'))}</label>
-      <select id="duoPartner">${ownTable.length ? `<optgroup label="${esc(t('À ma table'))}">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="${esc(t('Autres tables · invitation à accepter'))}">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
+      <select id="duoPartner">${ownTable.length ? `<optgroup label="${esc(t('À ma table'))}">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="${esc(otherLabel)}">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
       <p id="duoPartnerHint" class="notice warn small" role="status" hidden></p>
       <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">${esc(t('Ajouter le duo'))}</button></div>`);
     const updateDuoAction = () => {
