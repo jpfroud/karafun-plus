@@ -911,16 +911,16 @@ test('réglages de titre : requêtes KCS exactes pour l’ajout, la file et le t
   t.after(() => bridge.disconnect());
   const sent = [];
   sent.push(bridge.add(5091, 'Léa · T1', 99999, { pitch: -2, tempo: -10, guide: 30, backing: 0 }));
-  sent.push(bridge.add(77, 'Léa & Tom · T1', 99999, { guide: 50 }, { duo: true }));
+  sent.push(bridge.add(77, 'Léa & Tom · T1', 99999, { guide: 50, guideVoices: { 6: 25, 7: 75 } }));
   sent.push(bridge.add(78, 'Zoé · T3', 99999, null));
   sent.push(bridge.setQueueItemOptions('11', { singer: 'Léa · T1', settings: { pitch: -2, tempo: -10, guide: 30 }, tracksAvailable: [4, 5] }));
   sent.push(bridge.setQueueItemOptions(12, { singer: 'Battle collective', mod: BATTLE_MOD, settings: null }));
-  sent.push(bridge.setPitch(2), bridge.setTempo(5), bridge.setTrackVolume(5, 0), bridge.setTrackVolume(4, 100));
+  sent.push(bridge.setPitch(2), bridge.setTempo(5), bridge.setTrackVolume(5, 0), bridge.setTrackVolume(4, 100), bridge.setTrackVolume(7, 50));
   assert.deepEqual(payloads(ws), [
     { type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 5091 }, options: { singer: 'Léa · T1', pitch: -2, tempo: -10,
       tracks: [{ track: { type: 4 }, volume: 0 }, { track: { type: 5 }, volume: 30 }] }, position: 99999 } },
     { type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 77 }, options: { singer: 'Léa & Tom · T1',
-      tracks: [{ track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 50 }] }, position: 99999 } },
+      tracks: [{ track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 25 }, { track: { type: 7 }, volume: 75 }] }, position: 99999 } },
     { type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 78 }, options: { singer: 'Zoé · T3' }, position: 99999 } },
     { type: 'remote.SetQueueItemOptionsRequest', payload: { queueItemId: '11', options: { singer: 'Léa · T1', pitch: -2, tempo: -10,
       tracks: [{ track: { type: 5 }, volume: 30 }] } } },
@@ -930,10 +930,11 @@ test('réglages de titre : requêtes KCS exactes pour l’ajout, la file et le t
     { type: 'remote.TempoRequest', payload: { tempo: 5 } },
     { type: 'remote.TrackVolumeRequest', payload: { type: 5, volume: 0 } },
     { type: 'remote.TrackVolumeRequest', payload: { type: 4, volume: 100 } },
+    { type: 'remote.TrackVolumeRequest', payload: { type: 7, volume: 50 } },
   ]);
-  // Duo : la voix guide B posée par la file est notée (relecture PR #11).
-  assert.deepEqual(sent, [{ pitch: -2, tempo: -10, backing: 0, guide: 30 }, { guide: 50, guideB: 50 }, null,
-    { pitch: -2, tempo: -10, guide: 30 }, { pitch: 0, tempo: 0 }, 2, 5, 0, 100], 'chaque méthode rend ce qui a été envoyé');
+  // Chaque voix guide posée par la file est notée (relecture PR #11, lot G2).
+  assert.deepEqual(sent, [{ pitch: -2, tempo: -10, backing: 0, guide: 30 }, { guide: 50, guideVoices: { 6: 25, 7: 75 } }, null,
+    { pitch: -2, tempo: -10, guide: 30 }, { pitch: 0, tempo: 0 }, 2, 5, 0, 100, 50], 'chaque méthode rend ce qui a été envoyé');
   assert.throws(() => bridge._emit('pause', null), /Commande KaraFun inconnue/, 'toujours aucune commande inconnue');
 });
 
@@ -954,7 +955,8 @@ test('réglages de titre : bornés par la configuration de KaraFun avant l’env
   const before = ws.sent.length;
   assert.throws(() => bridge.setPitch('fort'), /Tonalité invalide/);
   assert.throws(() => bridge.setTempo(null), /Tempo invalide/);
-  assert.throws(() => bridge.setTrackVolume(7, 10), /Piste vocale inconnue/);
+  assert.throws(() => bridge.setTrackVolume(3, 10), /Piste vocale inconnue/);
+  assert.throws(() => bridge.setTrackVolume(16, 10), /Piste vocale inconnue/, 'voix guides : types 5 à 15');
   assert.throws(() => bridge.setTrackVolume(5, 'x'), /Volume invalide/);
   assert.throws(() => bridge.setQueueItemOptions('', { singer: 'Léa' }), /Titre de la file KaraFun inconnu/);
   assert.equal(ws.sent.length, before, 'rien d’invalide n’est envoyé');
@@ -1142,7 +1144,7 @@ test('réglages de titre : pistes vocales des titres de la file et état en dire
       options: { singer: 'Lina · Table 4' } } }, state: 4, pitch: 0, tempo: 0, tracks: [{ volume: 0, track: { type: 5 } }] } } });
   assert.deepEqual(bridge.status.current.songTracks, [5]);
   assert.deepEqual(bridge.snapshot().songSettings.live, { queueId: '4f0c2a1e-0000-4000-8000-000000000001', pitch: 0, tempo: 0,
-    guide: 0, guideB: null, backing: null, tracks: [5] });
+    guide: 0, backing: null, voices: { 5: 0 }, tracks: [5] });
 });
 
 test('réglages de titre, ancien protocole : faux KaraFun local de la démo', t => {
@@ -1236,6 +1238,9 @@ test('réglages de titre : valeurs par défaut des voix relevées sur le KaraFun
   status('b', 2, [{ volume: 25, track: { type: 4 } }, { volume: 50, track: { type: 5 } }],
     { singer: 'Léa', tracks: [{ track: { type: 4 }, volume: 25 }, { track: { type: 5 }, volume: 50 }] });
   assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 53 });
+  // KaraFun « collant » : le titre suivant, sans options, garde les voix d'avant. Ni relevées, ni la voix guide.
+  status('c', 3, [{ volume: 80, track: { type: 4 } }, { volume: 25, track: { type: 5 } }]);
+  assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 53 });
   // Remise par défaut d'un titre de la file : la valeur du KaraFun du bar.
   bridge.setQueueItemOptions('11', { singer: 'Léa · T1', settings: null, sent: { backing: 0 }, tracksAvailable: [4, 5] });
   assert.deepEqual(ws.sent.at(-1).payload.options.tracks, [{ track: { type: 4 }, volume: 53 }]);
@@ -1261,4 +1266,11 @@ test('réglages de titre : défauts relevés quand KaraFun a chargé le titre, p
   assert.equal(bridge.snapshot().songSettings.defaults.backing, 53, 'état 1 : pas encore chargé');
   status('next', 3, [{ volume: 60, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
   assert.equal(bridge.snapshot().songSettings.defaults.backing, 60, 'relevé sur le titre chargé');
+  // Voix guide jamais relevée : coupée par défaut, même si un titre démarre avec.
+  status('guide', 3, [{ volume: 60, track: { type: 4 } }, { volume: 25, track: { type: 5 } }]);
+  assert.deepEqual(bridge.snapshot().songSettings.defaults, { pitch: 0, tempo: 0, guide: 0, backing: 60 });
+  // Chœurs changés par la file en direct : plus relevés ensuite (un KaraFun peut les garder).
+  bridge.setTrackVolume(4, 0);
+  status('after', 3, [{ volume: 0, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 60);
 });

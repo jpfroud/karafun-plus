@@ -515,7 +515,7 @@
     singerSongSettings: { check: true, send: value => post('/api/staff/settings', { singerSongSettings: value }),
       server: () => S.settings?.singerSongSettings !== false },
     // Réglages d'un titre à venir (fiche ouverte depuis la file) : un champ
-    // caché porte { pitch?, tempo?, guide?, backing? } en JSON ; les boutons
+    // caché porte { pitch?, tempo?, guide?, backing?, guideVoices? } en JSON ; les boutons
     // de la fiche le changent, puis il suit le même enregistrement que les autres.
     songSettings: { text: true, delay: 700, validate: () => null,
       send: async (value, id) => {
@@ -1341,9 +1341,23 @@
   // Tonalité, tempo, voix guide et chœurs. Le bar règle le titre en cours en
   // direct (Scène : envoi immédiat, valeurs lues dans KaraFun) et chaque titre
   // à venir (File, menu ⋯ → Réglages : fiche enregistrée toute seule).
+  // Chaque voix guide a son réglage : `guide` pour la voix 1 (piste 5),
+  // `guideVoices` { "6": 50 } pour les autres ; champ 'voice:6' sur la page.
   const VOLUME_CHOICES = [0, 25, 50, 75, 100];
   const TUNE_FIELDS = ['pitch', 'tempo', 'guide', 'backing'];
-  const TRACK_BACKING = 4, TRACK_GUIDE = 5;
+  const TRACK_BACKING = 4, TRACK_GUIDE = 5, TRACK_VOICE_2 = 6;
+  const isVoice = type => Number.isInteger(type) && type >= TRACK_GUIDE && type <= 15;
+  // Voix guides d'un titre dans l'ordre des pistes ; null : pistes inconnues.
+  const voicesOf = tracks => Array.isArray(tracks) ? [...new Set(tracks.filter(isVoice))].sort((a, b) => a - b) : null;
+  const voiceField = type => type === TRACK_GUIDE ? 'guide' : `voice:${type}`;
+  const fieldType = field => field === 'guide' ? TRACK_GUIDE : /^voice:\d+$/.test(field) ? Number(field.slice(6)) : null;
+  // Valeur d'un champ ('pitch', 'guide', 'voice:6'…) dans des réglages.
+  const tuneValue = (value, field) => fieldType(field) > TRACK_GUIDE ? value?.guideVoices?.[fieldType(field)] : value?.[field];
+  function setTune(value, field, n) {
+    if (fieldType(field) > TRACK_GUIDE) value.guideVoices = { ...value.guideVoices, [fieldType(field)]: n };
+    else value[field] = n;
+    return value;
+  }
   const LIVE_CONFIRM_MS = 8000; // sans écho de KaraFun passé ce délai, sa valeur revient
   const SAVED_TUNE = { karafun: 'Enregistré ✓ · envoyé à KaraFun', start: 'Enregistré ✓ · appliqué au début du titre',
     sending: 'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre' };
@@ -1357,21 +1371,31 @@
       const n = value?.[field];
       if (Number.isInteger(n) && !(n === 0 && (field === 'pitch' || field === 'tempo'))) out[field] = n;
     }
+    for (const [key, n] of Object.entries(value?.guideVoices || {})) {
+      if (isVoice(Number(key)) && Number(key) > TRACK_GUIDE && Number.isInteger(n)) setTune(out, voiceField(Number(key)), n);
+    }
     return out;
   }
   const tuneKey = value => JSON.stringify(cleanTune(value));
   const signed = n => n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
-  // « ♯ +2 · tempo −10 % · guide 50 » ; un volume à sa valeur par défaut n'est pas rappelé.
-  function tuneSummary(value) {
+  // « ♯ +2 · tempo −10 % · guide 50 » ; un titre à plusieurs voix guides :
+  // « voix 1 50 · voix 2 25 ». Un volume à sa valeur par défaut n'est pas rappelé.
+  function tuneSummary(value, tracks = null) {
     const defaults = tuneDefaults();
     const parts = [];
     if (value?.pitch) parts.push(`${value.pitch > 0 ? '♯' : '♭'} ${signed(value.pitch)}`);
     if (value?.tempo) parts.push(`tempo ${signed(value.tempo)} %`);
-    if (value?.guide != null && value.guide !== defaults.guide) parts.push(value.guide ? `guide ${value.guide}` : 'guide coupé');
+    const set = [TRACK_GUIDE, ...Object.keys(value?.guideVoices || {}).map(Number)].filter(type => tuneValue(value, voiceField(type)) != null);
+    const voices = voicesOf([...(voicesOf(tracks) || []), TRACK_GUIDE, ...set]);
+    for (const type of set) {
+      const n = tuneValue(value, voiceField(type));
+      const name = voices.length > 1 ? `voix ${voices.indexOf(type) + 1}` : 'guide';
+      if (n !== defaults.guide) parts.push(n ? `${name} ${n}` : `${name} coupée`);
+    }
     if (value?.backing != null && value.backing !== defaults.backing) parts.push(value.backing ? `chœurs ${value.backing}` : 'chœurs coupés');
     return parts.join(' · ');
   }
-  const tuneBadge = settings => { const text = tuneSummary(settings); return text ? `<span class="badge tune" title="Réglages du titre">${esc(text)}</span>` : ''; };
+  const tuneBadge = (settings, tracks) => { const text = tuneSummary(settings, tracks); return text ? `<span class="badge tune" title="Réglages du titre">${esc(text)}</span>` : ''; };
   // Contenu d'une liste de boutons redessinée sans perdre celui qui a le focus.
   function patchFocus(container, html) {
     if (rendered.get(container) === html) return;
@@ -1382,7 +1406,10 @@
   }
   // Boutons des réglages : `attr` les distingue (fiche ou direct), `prefix`
   // nomme les valeurs affichées. Pistes connues : seulement celles du titre.
-  function tuneControls(prefix, attr, { value, tracks = null, duo = false, lock = false, refused = {} }) {
+  // Un curseur par voix guide, sans curseur commun : « Voix guide » pour un
+  // titre à une voix, « Voix 1 », « Voix 2 »… sinon ; pistes inconnues :
+  // « Voix 1 » et « Voix 2 », appliquée seulement si le titre en a deux.
+  function tuneControls(prefix, attr, { value, tracks = null, lock = false, refused = {} }) {
     const ranges = tuneRanges(), defaults = tuneDefaults();
     const stepper = (field, label, hint, shown, [down, up]) => {
       const range = ranges[field], n = value[field] ?? 0, off = lock || refused[field];
@@ -1391,25 +1418,29 @@
         <div class="tune-stepper" role="group" aria-labelledby="${id}Label"><button type="button" class="btn" ${attr}="${field}" data-step="${-range.step}" data-focus="${field}-down" aria-label="${esc(down)}"${off || n - range.step < range.min ? ' disabled' : ''}>−</button><output class="tune-value" id="${id}">${esc(shown(n))}</output><button type="button" class="btn" ${attr}="${field}" data-step="${range.step}" data-focus="${field}-up" aria-label="${esc(up)}"${off || n + range.step > range.max ? ' disabled' : ''}>+</button></div></div>`;
     };
     const volume = (field, label, hint) => {
-      const n = value[field] ?? defaults[field], off = lock || refused[field];
-      const id = `${prefix}${field === 'guide' ? 'Guide' : 'Backing'}`;
-      const other = VOLUME_CHOICES.includes(n) ? '' : `<span class="tune-hint">${value[field] == null ? 'Réglage de KaraFun' : 'Actuellement'} : ${esc(n)}</span>`;
+      const type = fieldType(field), own = tuneValue(value, field);
+      const n = own ?? defaults[type ? 'guide' : field], off = lock || refused[type ? 'guide' : field];
+      const id = `${prefix}${type > TRACK_GUIDE ? `Voice${type}` : type ? 'Guide' : 'Backing'}`;
+      const other = VOLUME_CHOICES.includes(n) ? '' : `<span class="tune-hint">${own == null ? 'Réglage de KaraFun' : 'Actuellement'} : ${esc(n)}</span>`;
       return `<div class="tune-row"><span class="tune-label" id="${id}Label">${label}</span>${hint ? `<span class="tune-hint">${hint}</span>` : ''}
         <div class="tune-seg" role="group" id="${id}" aria-labelledby="${id}Label">${VOLUME_CHOICES.map(level => `<button type="button" class="btn" ${attr}="${field}" data-value="${level}" data-focus="${field}-${level}" aria-pressed="${n === level}"${off ? ' disabled' : ''}>${level || 'Coupé'}</button>`).join('')}</div>${other}</div>`;
     };
     const pitchStep = ranges.pitch.step, tempoStep = ranges.tempo.step;
+    const voices = voicesOf(tracks);
+    const guides = !voices ? volume('guide', 'Voix 1', '') + volume(voiceField(TRACK_VOICE_2), 'Voix 2', 'Si le titre en a deux.')
+      : !voices.length ? '<p class="tune-hint">Ce titre n’a pas de voix guide.</p>'
+        : voices.map((type, index) => volume(voiceField(type), voices.length > 1 ? `Voix ${index + 1}` : 'Voix guide', '')).join('');
     return stepper('pitch', 'Tonalité', '0 = originale, en demi-tons', signed,
       pitchStep === 1 ? ['Baisser d’un demi-ton', 'Monter d’un demi-ton'] : [`Baisser de ${pitchStep} demi-tons`, `Monter de ${pitchStep} demi-tons`]) +
       stepper('tempo', 'Tempo', '0 = tempo original', n => `${signed(n)} %`, [`Ralentir de ${tempoStep} %`, `Accélérer de ${tempoStep} %`]) +
-      (!tracks || tracks.includes(TRACK_GUIDE) ? volume('guide', 'Voix guide', duo ? 'Duo : les deux voix guides suivent ce réglage.' : '')
-        : '<p class="tune-hint">Ce titre n’a pas de voix guide.</p>') +
+      guides +
       (!tracks || tracks.includes(TRACK_BACKING) ? volume('backing', 'Chœurs', tracks ? '' : 'Si le titre en a.')
         : '<p class="tune-hint">Ce titre n’a pas de chœurs.</p>');
   }
 
   // Titre en cours, en direct : la valeur envoyée s'affiche jusqu'à ce que
   // KaraFun la renvoie (« Appliqué ») ; sans écho, la valeur de KaraFun revient.
-  const liveDrafts = new Map(); // champ → { value, queueId, sent, timer }
+  const liveDrafts = new Map(); // champ ('guide', 'voice:6'…) → { value, queueId, sent, timer }
   let liveStatus = { text: '', tone: '' }, liveQueueId = null;
   function renderLiveTune() {
     const live = S.songSettings?.live;
@@ -1419,16 +1450,21 @@
     const queueId = box.hidden ? null : live.queueId;
     if (queueId !== liveQueueId) { liveQueueId = queueId; liveStatus = { text: '', tone: '' }; }
     if (box.hidden) { liveDrafts.clear(); return; }
+    const tracks = Array.isArray(live.tracks) ? live.tracks : null;
+    // Voix du titre (pistes inconnues : voix 1 et 2), et celles en attente.
+    const voiceFields = (voicesOf(tracks) || [TRACK_GUIDE, TRACK_VOICE_2]).filter(type => type > TRACK_GUIDE).map(voiceField);
+    const liveValue = field => fieldType(field) > TRACK_GUIDE ? live.voices?.[fieldType(field)] ?? null : live[field];
     const value = {};
-    for (const field of TUNE_FIELDS) {
+    for (const field of [...new Set([...TUNE_FIELDS, ...voiceFields, ...liveDrafts.keys()])]) {
       const draft = liveDrafts.get(field);
       if (draft && draft.queueId !== live.queueId) { clearTimeout(draft.timer); liveDrafts.delete(field); }
-      else if (draft?.sent && live[field] === draft.value) {
+      else if (draft?.sent && liveValue(field) === draft.value) {
         clearTimeout(draft.timer);
         liveDrafts.delete(field);
         liveStatus = { text: 'Appliqué par KaraFun ✓', tone: 'ok' };
       }
-      value[field] = liveDrafts.has(field) ? liveDrafts.get(field).value : live[field];
+      const n = liveDrafts.has(field) ? liveDrafts.get(field).value : liveValue(field);
+      if (n != null || !fieldType(field) || fieldType(field) === TRACK_GUIDE) setTune(value, field, n);
     }
     const perms = S.songSettings.permissions || {}, support = S.songSettings.support || {}, notices = S.songSettings.notices || {};
     const unavailable = S.songSettings.available === false;
@@ -1445,10 +1481,9 @@
           : told.length ? told.join(' ') : Object.values(refused).some(Boolean) ? 'KaraFun ne prend pas en charge certains de ces réglages.' : '';
     $('liveTuneReason').hidden = !reason;
     $('liveTuneReason').textContent = reason;
-    const summary = tuneSummary(cleanTune(value));
+    const summary = tuneSummary(cleanTune(value), tracks);
     $('liveTuneSummary').textContent = `Réglages en direct · ${summary || 'réglages d’origine'}`;
-    patchFocus($('liveTune'), tuneControls('live', 'data-live', { value, tracks: Array.isArray(live.tracks) ? live.tracks : null,
-      duo: (S.stage.ids || []).length > 1, lock, refused }));
+    patchFocus($('liveTune'), tuneControls('live', 'data-live', { value, tracks, lock, refused }));
     $('liveTuneStatus').textContent = liveStatus.text;
     $('liveTuneStatus').className = `save-status${liveStatus.tone ? ` ${liveStatus.tone}` : ''}`;
   }
@@ -1461,7 +1496,11 @@
     liveStatus = { text: 'Envoyé à KaraFun…', tone: '' };
     renderLiveTune();
     try {
-      await post('/api/staff/kf', field === 'guide' || field === 'backing' ? { action: 'track', track: field, value } : { action: field, value });
+      // Le titre affiché est visé : s'il a changé entre-temps, le serveur refuse.
+      // Une voix guide autre que la première est nommée par sa piste (6, 7…).
+      const track = field === 'guide' || field === 'backing' ? field : fieldType(field);
+      await post('/api/staff/kf', track ? { action: 'track', track, value, queueId: live.queueId }
+        : { action: field, value, queueId: live.queueId });
       if (liveDrafts.get(field) !== draft) return;
       draft.sent = true;
       draft.timer = setTimeout(() => {
@@ -1484,7 +1523,7 @@
     const field = control.dataset.live;
     if (control.dataset.step) {
       const range = tuneRanges()[field];
-      const now = liveDrafts.get(field)?.value ?? live[field] ?? 0;
+      const now = liveDrafts.get(field)?.value ?? live[field] ?? 0; // tonalité ou tempo
       sendLive(field, Math.min(range.max, Math.max(range.min, now + Number(control.dataset.step))));
     } else sendLive(field, Number(control.dataset.value));
   });
@@ -1499,7 +1538,7 @@
     if (entryId == null || entryId === '') return null;
     if (S?.songSettings?.live?.entryId === entryId) return { onStage: true, q: { song: S.songSettings.live } };
     const q = (S?.queue || []).find(item => item.song?.entryId === entryId);
-    return q ? { q, tracks: Array.isArray(q.tracks) ? q.tracks : null, duo: q.kind === 'duo' || (q.ids || []).length > 1 } : null;
+    return q ? { q, tracks: Array.isArray(q.tracks) ? q.tracks : null } : null;
   }
   function openSongSheet(entryId, personId) {
     songSheetEntry = String(entryId);
@@ -1530,7 +1569,7 @@
     $('songSheetNote').textContent = note;
     let value = {};
     try { value = cleanTune(JSON.parse(input.value || '{}')); } catch (_) { /* valeur abîmée : réglages de KaraFun */ }
-    patchFocus($('songSheetBody'), tuneControls('sheet', 'data-tune', { value, tracks: target?.tracks || null, duo: !!target?.duo, lock: !!lock }));
+    patchFocus($('songSheetBody'), tuneControls('sheet', 'data-tune', { value, tracks: target?.tracks || null, lock: !!lock }));
     $('songSheetReset').disabled = !!lock || !Object.keys(value).length;
   }
   $('songSheet').addEventListener('click', event => {
@@ -1543,7 +1582,7 @@
     if (control?.dataset.step) {
       const field = control.dataset.tune, range = tuneRanges()[field];
       next[field] = Math.min(range.max, Math.max(range.min, (next[field] ?? 0) + Number(control.dataset.step)));
-    } else if (control) next[control.dataset.tune] = Number(control.dataset.value);
+    } else if (control) setTune(next, control.dataset.tune, Number(control.dataset.value));
     input.value = tuneKey(next);
     fieldEvent({ type: 'input' }, input);
     renderSongSheet();
@@ -1700,7 +1739,7 @@
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
         <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
-        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
+        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings, q.tracks)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
       </div>`;

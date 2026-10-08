@@ -6,8 +6,11 @@ const fs = require('fs');
 const path = require('path');
 const io = require('socket.io-client');
 const { KcsTransport } = require('./kcs-transport');
-const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, liveFromStatus, TRACK,
+const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, guideVoicesOf, liveFromStatus, TRACK,
   DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
+// Valeur en direct d'un réglage essayé : 'pitch', 'tempo', 'backing' ou
+// 'voice:<type>' (volume d'une voix guide).
+const probedValue = (live, field) => (/^voice:/.test(field) ? live?.voices?.[field.slice(6)] : live?.[field]) ?? null;
 
 function readSettings(html) {
   const match = /\b(?:const|var|let)\s+Settings\s*=\s*\{/.exec(html);
@@ -27,7 +30,7 @@ function readSettings(html) {
   throw new Error('Paramètres de télécommande incomplets.');
 }
 
-// `songTracks` : pistes vocales du titre (4 chœurs, 5 et 6 voix guides),
+// `songTracks` : pistes vocales du titre (4 chœurs, 5, 6… voix guides),
 // seulement si KaraFun les donne. `options` : réglages du titre dans KaraFun.
 function normalizeKcsItem(item) {
   const song = item.song || {}, quiz = item.quiz || {};
@@ -318,7 +321,8 @@ class KaraFunBridge extends EventEmitter {
     this.settingsNotices = {}; // un avis par fonction, le plus récent en dernier
     this._settingsProbe = {};  // dernière valeur envoyée en direct, à confirmer par l'état de KaraFun
     this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
-    this.observedDefaults = {}; // volumes des voix d'un titre chargé sans réglage
+    this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
+    this._backingChanged = false;
     this._observedFor = null;
     this.nameConflictSince = null;
     this.nameConflictTries = 0;
@@ -597,7 +601,7 @@ class KaraFunBridge extends EventEmitter {
   _confirmFromStatus(status) {
     const live = liveFromStatus(status);
     for (const [kind, probe] of Object.entries(this._settingsProbe)) {
-      if (live?.[probe.field] !== probe.value) continue;
+      if (probedValue(live, probe.field) !== probe.value) continue;
       delete this._settingsProbe[kind];
       if (probe.before === probe.value || this.settingsSupport[kind] === 'refused') continue;
       this.settingsSupport[kind] = 'ok';
@@ -606,7 +610,7 @@ class KaraFunBridge extends EventEmitter {
   }
 
   _probeSetting(kind, field, value) {
-    this._settingsProbe[kind] = { field, value, before: liveFromStatus(this.status)?.[field] ?? null };
+    this._settingsProbe[kind] = { field, value, before: probedValue(liveFromStatus(this.status), field) };
   }
 
   _record(dir, name, data, id) {
@@ -682,7 +686,7 @@ class KaraFunBridge extends EventEmitter {
     this._appLeftChecked = false;
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
-      this.observedDefaults = {}; this._observedFor = null;
+      this.observedDefaults = {}; this._observedFor = null; this._backingChanged = false;
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -1268,13 +1272,13 @@ class KaraFunBridge extends EventEmitter {
   }
 
   // `settings` : réglages du titre (song-settings.js), ajoutés aux options
-  // d'ajout ; `duo` : la voix guide B suit la voix guide A ; `tracksAvailable` :
-  // pistes vocales du titre quand on les connaît. Rend les réglages
+  // d'ajout (chaque voix guide la sienne) ; `tracksAvailable` : pistes
+  // vocales du titre quand on les connaît. Rend les réglages
   // effectivement envoyés (bornés), ou null.
-  add(songId, singer, pos = 99999, settings = null, { duo = false, tracksAvailable = null } = {}) {
+  add(songId, singer, pos = 99999, settings = null, { tracksAvailable = null } = {}) {
     const payload = { songId: Number(songId), pos, singer: String(singer || '') };
     const allowed = settings && this.settingsSupport.addOptions !== 'refused' && this._settingsChannel();
-    const built = allowed ? addOptions({ singer: payload.singer, settings, ranges: this.songSettingsRanges(), duo, tracksAvailable })
+    const built = allowed ? addOptions({ singer: payload.singer, settings, ranges: this.songSettingsRanges(), tracksAvailable })
       : { sent: null };
     if (built.sent) {
       // Ancien protocole (faux KaraFun) : le chanteur reste à part.
@@ -1324,10 +1328,10 @@ class KaraFunBridge extends EventEmitter {
 
   // Titre déjà dans la file de KaraFun : options complètes (voir
   // queueItemOptions). Rend les réglages envoyés.
-  setQueueItemOptions(queueId, { singer, mod = null, settings = null, sent = null, current = null, tracksAvailable = null, duo = false } = {}) {
+  setQueueItemOptions(queueId, { singer, mod = null, settings = null, sent = null, current = null, tracksAvailable = null } = {}) {
     if (queueId === null || queueId === undefined || queueId === '') throw new Error('Titre de la file KaraFun inconnu.');
     this._settingsAllowed('manageQueue');
-    const built = queueItemOptions({ singer, mod, settings, sent, current, tracksAvailable, duo, ranges: this.songSettingsRanges(),
+    const built = queueItemOptions({ singer, mod, settings, sent, current, tracksAvailable, ranges: this.songSettingsRanges(),
       defaults: this.songSettingsDefaults() });
     this._emit('queueItemOptions', { queueId, options: built.options });
     return built.sent;
@@ -1352,29 +1356,43 @@ class KaraFunBridge extends EventEmitter {
     return tempo;
   }
 
+  // Chœurs (4) ou une voix guide (5, 6… : toutes celles que KaraFun annonce).
   setTrackVolume(type, volume) {
-    if (![TRACK.BACKING, TRACK.LEAD_A, TRACK.LEAD_B].includes(type)) throw new Error('Piste vocale inconnue.');
+    if (type !== TRACK.BACKING && !guideVoicesOf([type])?.length) throw new Error('Piste vocale inconnue.');
     if (typeof volume !== 'number' || !Number.isFinite(volume)) throw new Error('Volume invalide.');
     this._settingsAllowed('manageVolumes');
     const value = Math.min(100, Math.max(0, Math.round(volume)));
+    if (type === TRACK.BACKING) this._backingChanged = true;
     this._emit('trackVolume', { type, volume: value });
-    this._probeSetting('trackVolume', { [TRACK.BACKING]: 'backing', [TRACK.LEAD_A]: 'guide', [TRACK.LEAD_B]: 'guideB' }[type], value);
+    this._probeSetting('trackVolume', type === TRACK.BACKING ? 'backing' : `voice:${type}`, value);
     return value;
   }
 
-  // Valeurs par défaut des voix sur ce KaraFun : relevées à la première trame
-  // d'un titre chargé (état 2 ou plus, pistes reçues) sans volumes dans ses
-  // options ; ensuite, le bar a pu les changer pendant le titre. L'état 1
-  // annonce le titre sans l'avoir chargé : pistes vides, ou celles d'avant.
-  // Celui du bar met les chœurs à 53.
+  // Valeur par défaut des chœurs sur ce KaraFun (celui du bar les met à 53) :
+  // relevée à la première trame d'un titre chargé (état 2 ou plus, pistes
+  // reçues) sans volumes dans ses options. L'état 1 annonce le titre sans
+  // l'avoir chargé : pistes vides, ou celles d'avant. Un KaraFun peut garder
+  // les volumes d'un titre au suivant : dès que les chœurs ont été changés
+  // (par la file, par des options de titre ou pendant un titre), la valeur
+  // n'est plus relevée, pour ne jamais prendre un réglage pour la valeur par
+  // défaut. La voix guide n'est jamais relevée : coupée par défaut (0).
   _observeDefaults(status) {
     const current = status.current;
-    if (!current || current.id == null || String(current.id) === this._observedFor) return;
+    if (!current || current.id == null) return;
     if (!(status.state >= 2) || !Array.isArray(status.tracks) || !status.tracks.length) return;
+    const backing = liveFromStatus({ tracks: status.tracks }).backing;
+    if (String(current.id) === this._observedFor) {
+      if (backing !== this._observedBacking) this._backingChanged = true;
+      return;
+    }
     this._observedFor = String(current.id);
-    if (Array.isArray(current.song?.options?.tracks)) return;
-    const live = liveFromStatus({ tracks: status.tracks });
-    for (const field of ['guide', 'backing']) if (live[field] != null) this.observedDefaults[field] = live[field];
+    this._observedBacking = backing;
+    const optionTracks = current.song?.options?.tracks;
+    if (Array.isArray(optionTracks)) {
+      if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
+      return;
+    }
+    if (!this._backingChanged && backing != null) this.observedDefaults.backing = backing;
   }
 
   songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }

@@ -36,9 +36,20 @@ function cleanSongSettings(song) {
   if (settings) song.settings = settings;
   else delete song.settings;
 }
-// Titre envoyé à KaraFun : réglages transmis et rattrapage déjà fait.
-function cleanSentSettings(holder) {
+// Sauvegarde d'avant les voix guides réglées une à une (`guideVoicesSaved`
+// absent) : dans un duo, la voix 2 suivait la voix 1. Elle reçoit donc le
+// même réglage (`guideVoices["6"]`), pour rien perdre.
+function legacyDuoVoice(song, duo) {
+  const settings = song?.settings;
+  if (!duo || !settings || settings.guide == null || settings.guideVoices?.['6'] != null) return;
+  song.settings = { ...settings, guideVoices: { ...settings.guideVoices, 6: settings.guide } };
+}
+// Titre envoyé à KaraFun : réglages transmis et rattrapage déjà fait. Duo
+// d'une ancienne sauvegarde : un duo, ou un duo devenu solo dont la file
+// avait posé la voix guide B (`sentSettings.guideB`).
+function cleanSentSettings(holder, legacy) {
   cleanSongSettings(holder.sel?.song);
+  if (legacy) legacyDuoVoice(holder.sel?.song, holder.sel?.ids?.length > 1 || holder.sentSettings?.guideB != null);
   if ('sentSettings' in holder) holder.sentSettings = sanitizeSettings(holder.sentSettings, { keepDefaults: true });
   if (holder.liveChecked != null && typeof holder.liveChecked !== 'string') delete holder.liveChecked;
   delete holder.statusAtOptions; // numéro d'état de KaraFun propre à l'exécution précédente
@@ -106,6 +117,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
     version: FORMAT,
     // Vignettes certifiées par le catalogue (voir withCover dans server.js).
     coversCertified: true,
+    // Voix guides réglées une à une (song-settings.js, `guideVoices`).
+    guideVoicesSaved: true,
     scheduler: {
       opts: clone(scheduler.opts), tables, people,
       Q: [...scheduler.Q], lastGroup: clone(scheduler.lastGroup),
@@ -147,6 +160,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // Sauvegarde antérieure à la certification des vignettes : une image a pu
   // être choisie par un téléphone. Elle n'est pas reprise.
   if (snapshot.coversCertified !== true) dropCovers(snapshot);
+  const legacyVoices = snapshot.guideVoicesSaved !== true;
   const data = object(snapshot.scheduler, 'ordonnanceur');
   const restoredSoloInvitations = new SoloInvitations(snapshot.soloInvitations ?? []);
   object(data.opts, 'règles');
@@ -177,6 +191,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     delete person.verifiedAt; // ancienne vérification des repères, retirée : le repère seul reste
     cleanSongSettings(person.song);
     person.backlog.forEach(cleanSongSettings);
+    if (legacyVoices) for (const song of [person.song, ...person.backlog]) legacyDuoVoice(song, !!song?.duet);
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.
     if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
     if (p.photo != null) {
@@ -337,7 +352,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     /^\d{4}-\d{2}-\d{2}_\d{4}_[0-9a-f]{4}$/.test(String(snapshot.evening.id)) ?
     { id: snapshot.evening.id, startedAt: Number.isFinite(snapshot.evening.startedAt) ? snapshot.evening.startedAt : null } : null;
   const restoredTracked = clone(tracked);
-  for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder);
+  for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder, legacyVoices);
 
   // Aucun effet sur les objets fournis avant ce point.
   for (const id of scheduler.tables.keys()) access.revoke(id);

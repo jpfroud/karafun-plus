@@ -654,7 +654,7 @@ class Scheduler {
   // song-settings.js. Absent : réglages de KaraFun par défaut. L'entrée est
   // le même objet partout où le titre voyage (envoi, retour, sauvegarde).
   setSongSettings(song, settings) {
-    if (settings) song.settings = { ...settings };
+    if (settings) song.settings = { ...settings, ...(settings.guideVoices ? { guideVoices: { ...settings.guideVoices } } : {}) };
     else delete song.settings;
     this.version++;
   }

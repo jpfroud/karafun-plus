@@ -6,7 +6,8 @@
  * Réglages de titre comme la télécommande KCS : options à l'ajout,
  * queueItemOptions (options d'un titre de la file, remplacées en entier),
  * pitch, tempo et trackVolume pour le titre en cours ; chaque titre annonce
- * ses pistes vocales (4 chœurs, 5 et 6 voix guides). Avant la lecture, le
+ * ses pistes vocales (4 chœurs, 5, 6… voix guides ; `songTracks` impose
+ * celles d'un titre, par exemple trois voix pour un test). Avant la lecture, le
  * titre est annoncé sans être chargé, comme l'état 1 de KaraFun.
  * Les chansons « durent » SONG_SECONDS secondes.
  */
@@ -46,8 +47,21 @@ function liveFrom(options = {}) {
   }
   return { pitch: Number.isInteger(options.pitch) ? options.pitch : 0, tempo: Number.isInteger(options.tempo) ? options.tempo : 0, volumes };
 }
+// KaraFun « collant » (`stickyLive`) : le titre qui démarre garde la
+// tonalité, le tempo et les volumes du précédent, sauf ce que ses options
+// règlent. Sert à vérifier que la file isole chaque titre.
+function stickyFrom(previous, options = {}) {
+  const volumes = { ...previous.volumes };
+  for (const row of Array.isArray(options.tracks) ? options.tracks : []) {
+    if (Number.isInteger(row?.track?.type)) volumes[row.track.type] = Number(row.volume);
+  }
+  return { pitch: Number.isInteger(options.pitch) ? options.pitch : previous.pitch,
+    tempo: Number.isInteger(options.tempo) ? options.tempo : previous.tempo, volumes };
+}
 
-function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, log = () => {} } = {}) {
+function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, stickyLive = false, songTracks = {},
+  log = () => {} } = {}) {
+  const tracksOf = songId => Array.isArray(songTracks[songId]) ? [...songTracks[songId]] : songTracksFor(songId);
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://localhost');
     const m = u.pathname.match(/^\/(\d+)\/?$/);
@@ -74,7 +88,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     return { state, songPlaying: cur ? { title: cur.title, artist: cur.artist, singer: cur.singer, songId: cur.songId, queueId: cur.queueId,
       songTracks: cur.songTracks } : null, position: cur ? Math.round((Date.now() - startedAt) / 1000) : 0,
     pitch: cur ? live.pitch : 0, tempo: cur ? live.tempo : 0,
-    tracks: cur ? cur.songTracks.map(type => ({ volume: live.volumes[type], track: { type } })) : [] };
+    tracks: cur ? cur.songTracks.map(type => ({ volume: live.volumes[type] ?? 0, track: { type } })) : [] };
   };
   const playingItem = () => state === 'playing' && queue[0] ? queue[0] : null;
   const broadcast = () => { io.emit('queue', withIds()); io.emit('status', statusPayload()); };
@@ -95,7 +109,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     state = 'playing';
     startedAt = Date.now();
     queue[0].status = 'playing';
-    live = liveFrom(queue[0].options);
+    live = stickyLive ? stickyFrom(live, queue[0].options) : liveFrom(queue[0].options);
     log(`[faux KaraFun] lecture : ${queue[0].title} (${queue[0].singer})`);
     broadcast();
     timer = setTimeout(() => {
@@ -119,7 +133,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
       const singer = String((p && p.singer) || '');
       const options = p?.mod ? { mod: p.mod } : p?.options ? { singer, ...p.options } : null;
       const item = { queueId: qid++, songId: song.songId, title: song.title, artist: song.artist,
-        singer, status: 'ready', songTracks: songTracksFor(song.songId), ...(options ? { options } : {}) };
+        singer, status: 'ready', songTracks: tracksOf(song.songId), ...(options ? { options } : {}) };
       const pos = Math.max(0, Math.min(queue.length, Number(p && p.pos) || queue.length));
       queue.splice(Math.max(pos, state === 'playing' ? 1 : 0), 0, item);
       if (state !== 'playing' && autoplay) playFirst(); else broadcast();
@@ -157,7 +171,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
   return new Promise((resolve) => server.listen(port, () => resolve({
     base: `http://localhost:${port}`, code, close: () => { clearTimeout(timer); io.close(); server.close(); },
     // pour les tests : ajouter une chanson « à la main » comme le ferait le bar dans KaraFun
-    manualAdd: (songId, singer) => { const s = CATALOG.find(x => x.songId === songId) || CATALOG[0]; queue.push({ queueId: qid++, songId: s.songId, title: s.title, artist: s.artist, singer, status: 'ready', songTracks: songTracksFor(s.songId) }); broadcast(); },
+    manualAdd: (songId, singer) => { const s = CATALOG.find(x => x.songId === songId) || CATALOG[0]; queue.push({ queueId: qid++, songId: s.songId, title: s.title, artist: s.artist, singer, status: 'ready', songTracks: tracksOf(s.songId) }); broadcast(); },
     skip: () => { if (state === 'playing') {
       const wasBattle = !!queue.shift()?.options?.mod?.data?.battle;
       clearTimeout(timer);
