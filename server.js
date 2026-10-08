@@ -1613,6 +1613,12 @@ function describe(item, byQid) {
 function battleElectorate() {
   return [...sched.people.values()].filter(person => !person.withdrawnAt && !person.nameRequired).map(person => person.id);
 }
+// Vote Battle ouvert : les personnes arrivées depuis (table, bar, QR solo,
+// événement privé) ou qui viennent de saisir leur prénom votent aussi.
+// Appelé après chaque action (routes POST) et avant chaque vote.
+function syncBattleElectorate() {
+  if (battleVote.ballot?.phase === 'voting') battleVote.admit(battleElectorate());
+}
 
 // Duo déjà chargé dans KaraFun, vu par l'une de ses deux personnes : rôle et
 // retrait encore possible (pas commencé, pas en train de sortir de KaraFun).
@@ -3343,6 +3349,7 @@ const handlers = {
   'POST /api/table/battle/vote': async (req, res, body) => {
     const p = personAtTable(body);
     requireNamed(p);
+    syncBattleElectorate();
     const battle = battleVote.vote({ personId: p.id, choice: body.choice });
     return { ok: true, battle };
   },
@@ -4215,7 +4222,16 @@ const server = http.createServer(async (req, res) => {
           if (!owner || owner.id !== String(body.personId || '')) throw soloDeviceError('SOLO_DEVICE_ACCESS');
         }
       }
-      const out = await h(req, res, body, me);
+      let out;
+      // Toute action peut ajouter ou nommer une personne : un vote Battle
+      // ouvert l'accueille aussitôt, même si l'action échoue ensuite.
+      try { out = await h(req, res, body, me); }
+      finally {
+        // Une écriture impossible ne doit ni masquer l'erreur de l'action, ni
+        // faire échouer une action réussie : le vote réessaiera.
+        try { syncBattleElectorate(); }
+        catch (error) { appLog(`Électorat Battle non mis à jour : ${error.message}`); }
+      }
       if (p !== '/api/table/person/claim' && !res.nightAlreadySaved) saveNight({ required: true });
       return send(res, 200, out || { ok: true });
     }

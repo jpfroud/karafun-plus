@@ -107,7 +107,8 @@ function eveningEvents() {
   e(30, 'battle.proposed', { ballotId: 'x', proposerId: 'pA', eligible: 5 });
   e(31, 'battle.decided', { ballotId: 'x', outcome: 'approved', voters: 4 });
   e(31, 'battle.staffLaunch', { ballotId: 'y', title: 'Bar' });
-  e(32, 'battle.decided', { ballotId: 'z', outcome: 'quorum', voters: 1 });
+  // Électorat agrandi pendant le vote : la décision donne le nombre final.
+  e(32, 'battle.decided', { ballotId: 'z', outcome: 'quorum', voters: 1, eligible: 7 });
   e(40, 'stage.started', { queueId: 5, entryId: 'd1', ids: ['pD'], source: 'queue' });
   e(44, 'stage.ended', { queueId: 5, playedSec: 240 });
   e(45, 'queue.sample', { ready: 1, songsListed: 1, present: 4 });
@@ -187,6 +188,10 @@ test('page des statistiques : chiffres clés, repères, graphiques et tableaux d
   assert.equal(singers.byTag('tbody')[0].children.length, 5);
   assert.match(text(singers), /Alice.*Table 1/s);
   assert.match(text(page.doc.getElementById('cardSocial')), /Vote terminé : acceptée \(4 voix\).*Battle lancée par le bar : « Bar ».*pas assez de votants/s);
+  // Ouverture et clôture : chaque ligne dit de quel électorat elle parle
+  // (ancien journal sans électorat final : seulement les voix).
+  assert.match(text(page.doc.getElementById('cardSocial')),
+    /Vote proposé \(5 votants possibles à l’ouverture\).*Vote terminé : acceptée \(4 voix\).*pas assez de votants \(1 voix sur 7 votants possibles\)/s);
   assert.match(text(page.doc.getElementById('cardSocial')), /invitations.*refusées.*sans réponse.*demandes « Duo \? »/s,
     'invitations restées sans réponse au départ du titre');
   // Soirée en cours : rafraîchie toutes les 15 s.

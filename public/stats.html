@@ -721,8 +721,9 @@ function renderSocial() {
   const items = state.data.stats.timeline.battles;
   if (items.length) {
     el.appendChild(h('ul', { class: 'st-list' }, items.map(item => h('li', {}, h('time', { text: hhmm(item.t) }),
-      h('span', { text: item.kind === 'proposed' ? `Vote proposé (${item.eligible ?? '?'} votants possibles)` :
-        item.kind === 'decided' ? `Vote terminé : ${outcomes[item.outcome] || item.outcome} (${item.voters ?? 0} voix)` : `Battle lancée par le bar${item.title ? ` : « ${item.title} »` : ''}` })))));
+      h('span', { text: item.kind === 'proposed' ? `Vote proposé (${item.eligible ?? '?'} votants possibles à l’ouverture)` :
+        item.kind === 'decided' ? `Vote terminé : ${outcomes[item.outcome] || item.outcome} (${item.voters ?? 0} voix${item.eligible == null ? '' : ` sur ${item.eligible} votants possibles`})` :
+        `Battle lancée par le bar${item.title ? ` : « ${item.title} »` : ''}` })))));
   }
   $('charts').appendChild(el);
 }

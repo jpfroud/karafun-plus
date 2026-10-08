@@ -404,6 +404,46 @@ test('Battle : après un redémarrage, ni la proposition ni les votes ne sont no
   assert.equal(r.count('battle.resolved'), 1);
 });
 
+// Regression: retours du bar — une personne arrivée après l'ouverture du
+// vote Battle vote aussi. Son admission n'ajoute rien au journal ; son vote
+// y est noté une fois et la décision donne l'électorat final, même après
+// un redémarrage.
+test('Battle : électorat agrandi pendant le vote, au journal et après un redémarrage', async () => {
+  const battleFile = path.join(root, 'data', 'battle-vote.json');
+  const f = harness({ persistent: true });
+  f.journal.open({ rules: {} });
+  f.battleVote.propose({ personId: 'p1', personName: 'Alice', eligiblePersonIds: ['p1', 'p2', 'p3', 'p4', 'p5'],
+    songs: [{ songId: 9101, title: 'Battle Un' }, { songId: 9102, title: 'Battle Deux' }] });
+  const ballotId = f.battleVote.ballot.id;
+  const count = () => f.journal.read(f.journal.id).events.filter(e => e.ballotId === ballotId).length;
+  const before = count();
+  assert.equal(f.battleVote.admit(['p1', 'p6']), true);
+  assert.equal(count(), before, 'l’admission seule n’ajoute rien au journal');
+  assert.deepEqual(JSON.parse(f.memory.disk.get(battleFile)).ballot.eligiblePersonIds, ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'],
+    'électorat agrandi enregistré sur le disque');
+  f.battleVote.vote({ personId: 'p6', choice: 9102 });
+  const saved = f.journal.snapshot();
+  const g = harness({ persistent: true, memory: f.memory });
+  assert.equal(g.journal.open({ resume: saved }), true);
+  assert.equal(g.battleVote.view().eligible, 6, 'électorat agrandi rechargé');
+  for (const id of ['p2', 'p3', 'p4', 'p5']) g.battleVote.vote({ personId: id, choice: 9102 });
+  assert.equal(g.battleVote.view().phase, 'requested', 'tout l’électorat agrandi a voté : clôture');
+  const rows = lines(g.memory.read(`data/soirees/${saved.id}/journal.jsonl`)).filter(e => e.ballotId === ballotId);
+  assert.equal(rows.filter(e => e.ev === 'battle.proposed').length, 1);
+  assert.deepEqual(rows.filter(e => e.ev === 'battle.proposed').map(e => e.eligible), [5], 'électorat à l’ouverture');
+  assert.deepEqual(rows.filter(e => e.ev === 'battle.vote').map(e => e.voterId), ['p1', 'p6', 'p2', 'p3', 'p4', 'p5'],
+    'chaque votant une fois, arrivée comprise');
+  assert.deepEqual(rows.filter(e => e.ev === 'battle.decided').map(e => [e.outcome, e.voters, e.eligible, e.closedBy]),
+    [['approved', 6, 6, 'all-voted']], 'la décision donne l’électorat final');
+  const stats = (await call(g, 'GET', staff(g, '/api/staff/stats'))).body.stats;
+  assert.equal(stats.global.battle.votes, 6);
+  // Le déroulé de la page des statistiques garde les deux nombres : à
+  // l'ouverture (5) et à la clôture (6), pour ne jamais montrer plus de voix
+  // que de votants possibles.
+  assert.deepEqual(stats.timeline.battles.filter(x => x.ballotId === ballotId).map(x => [x.kind, x.eligible, x.voters ?? null]),
+    [['proposed', 5, null], ['decided', 6, 6]], 'électorat final dans le déroulé');
+});
+
 test('titre passé dans KaraFun avant d’être chanté, commandes du bar et fermeture atteinte', async () => {
   const f = harness();
   f.journal.open({ rules: {} });
