@@ -780,6 +780,30 @@ test('séquence réelle du bar : réglages comparés au titre chargé (état 3),
   }
 });
 
+// Lot F : la barre de lecture part de l'état 4 (lecture), pas de l'annonce
+// (1), du chargement (2) ni de l'attente de « Lecture » (3, jusqu'à 3 min au bar).
+test('séquence réelle du bar : la barre de lecture ne part qu’à l’état 4, se fige à l’état 5', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const item = djItem({ singer: 'Soraya' });
+  const progress = () => plain(f.publicState().stage?.progress);
+  frames(queueEvent(item));
+  for (const state of [1, 2, 3]) {
+    frames(statusEvent(state, item));
+    assert.equal(progress(), undefined, `état ${state} : rien sur scène, pas de barre`);
+    assert.equal(f.staffState().stage, null);
+  }
+  frames(statusEvent(4, item, { tempo: 10 }));
+  const started = progress();
+  assert.ok(started.elapsedSec < 1, `état 4 : départ à zéro (${started.elapsedSec})`);
+  assert.deepEqual({ ...started, elapsedSec: 0 }, { elapsedSec: 0, durationSec: null, paused: false, rate: 1.1 },
+    'titre ajouté dans KaraFun, jamais cherché : durée inconnue ; tempo +10 pris en compte');
+  frames(statusEvent(5, item, { tempo: 10 }));
+  assert.equal(progress().paused, true, 'état 5 (pause de KaraFun) : barre figée');
+  frames(statusEvent(4, item, { tempo: 10 }));
+  assert.equal(progress().paused, false);
+});
+
 test('séquence réelle du bar : réglage changé pendant l’envoi, envoyé au titre de KaraFun dès l’accusé', async t => {
   for (const manageVolumes of [true, false]) {
     const f = harness();

@@ -54,6 +54,7 @@ const { EveningJournal, validEveningId } = require('./evening-journal');
 const { computeStats, insights, exportEvening } = require('./evening-stats');
 const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, liveFromStatus,
   settingsFromLive, catchUpCommands } = require('./song-settings');
+const stageProgress = require('./stage-progress');
 
 // ------------------------------------------------------------------ paramètres
 const argv = process.argv.slice(2);
@@ -87,6 +88,8 @@ const SOLO_COOKIE = 'karaoke_solo_device';
 // montrée aux téléphones, jamais une adresse envoyée par l'un d'eux.
 const battleCatalogSongs = new Map();
 const catalogCovers = new Map(); // songId → adresse https de la vignette
+// Durées données par le catalogue ou la recherche de KaraFun (barre de lecture).
+const catalogDurations = new Map(); // songId → secondes
 function coverUrl(value) {
   if (typeof value !== 'string' || !value || value.length > 500) return null;
   let url;
@@ -106,6 +109,10 @@ function rememberBattleSongs(songs) {
     catalogCovers.delete(songId);
     if (song.img) catalogCovers.set(songId, song.img);
     if (catalogCovers.size > 10000) catalogCovers.delete(catalogCovers.keys().next().value);
+    const duration = stageProgress.trustedDuration(song.duration);
+    catalogDurations.delete(songId);
+    if (duration) catalogDurations.set(songId, duration);
+    if (catalogDurations.size > 10000) catalogDurations.delete(catalogDurations.keys().next().value);
   }
   return songs;
 }
@@ -272,6 +279,9 @@ const settings = { auto: true, autoPlay: false, baseUrl: null,
   queueClearPending: false };
 const queueClearRemovalRequests = new Map();
 let curKey = null, curSince = 0;
+// Barre de lecture : horloge du titre sur scène (stage-progress.js), gardée
+// dans la sauvegarde pour qu'un redémarrage ne remette pas le titre à zéro.
+let stageClock = null;
 let presenceWait = null; // { key, askedAt, freeSince } : demande « Je suis là » en cours
 let pending = null;     // chanson envoyée à KaraFun, en attente de confirmation
 let restartOp = null;   // « Relancer depuis le début » en cours (copie du titre puis Suivant)
@@ -295,7 +305,7 @@ function saveNight({ required = false, replaceBoth = false } = {}) {
   if (!nightStore) return true;
   try {
     const snapshot = snapshotNight({ scheduler: sched, access, settings, pending, tracked,
-      soloInvitations, transfers: transferSnapshot(),
+      soloInvitations, transfers: transferSnapshot(), stageClock,
       photoDir: PHOTO_DIR, evening: journal.snapshot() });
     nightStore.save(snapshot);
     if (replaceBoth) nightStore.save(snapshot, { force: true });
@@ -1166,7 +1176,7 @@ function sync() {
     sched.note('File vidée dans KaraFun : les nouveaux choix peuvent être envoyés.', 'staff');
   }
 
-  const key = current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
+  const key = stageKey(current);
   if (key !== curKey) {
     if (curKey !== null) journalEvent('stage.ended', { queueId: curQueueId, playedSec: Math.round((now - curSince) / 1000) });
     curKey = key; curSince = Date.now();
@@ -1177,6 +1187,7 @@ function sync() {
       journalStageStarted(current);
     } else if (current) journalEvent('stage.restarted', { queueId: current.queueId ?? null });
   }
+  syncStageClock(current, key, now);
   // Dès qu'un titre est sur scène, le nom annoncé pour le passage suivant
   // reste fixe. L'envoi physique à KaraFun peut attendre le délai configuré.
   if (!upcoming.length && !pending && !settings.queueClearPending && !battleHoldsQueue()) {
@@ -1263,6 +1274,39 @@ function sync() {
   } else { idleSince = null; idleQueueId = null; }
   journalOutlook({ current, upcoming, awaitingPresence }, now);
   saveNight();
+}
+
+// ------------------------------------------------------------------ barre de lecture
+const stageKey = current => current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
+
+// Départ : début de notre titre sur scène (sauvegardé, remis à l'heure par
+// une relance), sinon son apparition sur scène. Pauses et tempo de KaraFun
+// pris à chaque balayage. KaraFun déconnecté (sync() s'arrête avant) :
+// l'horloge attend son retour.
+function syncStageClock(current, key, now) {
+  if (!current) {
+    // KaraFun annonce un autre état (titre fini, suivant en chargement).
+    if (bridge.status?.state) stageClock = null;
+    return;
+  }
+  if (stageClock?.key !== key) {
+    const tr = tracked.find(item => isOnStage(item, current));
+    stageClock = stageProgress.startClock(key, tr?.startedAt || curSince || now);
+  }
+  stageProgress.observeClock(stageClock, now, { paused: stageProgress.pausedOf(bridge.status),
+    rate: stageProgress.rateOf(liveFromStatus(bridge.status)?.tempo), position: stageProgress.protocolPosition(bridge.status) });
+}
+
+// Durée du titre sur scène : démo, protocole, catalogue, puis téléphone (bornée).
+// Une Battle n'a pas de durée sûre (phase d'inscription, chanteurs alternés).
+function stageProgressView(current, kind, now) {
+  if (!stageClock || stageClock.key !== stageKey(current)) return null;
+  const tr = tracked.find(item => isOnStage(item, current));
+  const durationSec = kind === 'battle' ? null : stageProgress.stageDuration({ demoSec: fake ? SONG_SECONDS : null,
+    protocolSec: stageProgress.protocolDuration(bridge?.status, bridge?.raw?.status),
+    catalogSec: catalogDurations.get(Number(tr?.sel.song.songId ?? current.songId)),
+    clientSec: tr?.sel.song.duration });
+  return stageProgress.clockView(stageClock, now, durationSec);
 }
 
 // ------------------------------------------------------------------ journal de soirée
@@ -1505,6 +1549,7 @@ function publicState(person, tableId, managed = null) {
   const curTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
   const firstFreeAt = current ? ((curTr && curTr.startedAt) ? curTr.startedAt + slot : Date.now() + slot / 2) : Date.now();
   const stage = current ? describe(current, byQid) : null;
+  if (stage) stage.progress = stageProgressView(current, stage.kind, Date.now());
   const queue = upcoming.map((it, i) => ({ ...describe(it, byQid),
     source: 'karafun', pos: i + 1, eta: firstFreeAt + i * slot,
     waitingPresence: i === 0 && presence?.source === 'karafun' && presenceMissingIds.size > 0,
@@ -3805,6 +3850,7 @@ async function main() {
     tracked = recovered.tracked;
     soloInvitations.restore(recovered.soloInvitations);
     restoreTransfers(recovered.transfers);
+    stageClock = recovered.stageClock;
     recoveredPending = recovered.recoveredPending;
     appLog(`Soirée restaurée : ${sched.tables.size} tables, ${sched.people.size} personnes, ${sched.Q.length} tickets.`);
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');
