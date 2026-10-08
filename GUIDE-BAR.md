@@ -119,6 +119,10 @@ Le haut de la page reste visible sur chaque écran : l'état de KaraFun (le touc
 
 Pour arrêter l'application, double-clique sur `ARRETER.bat` **sur le PC du bar** (ou ferme la fenêtre du programme). La page du bar n'a plus de bouton « Arrêter la soirée » : un appui par erreur depuis un téléphone coupait la soirée sans pouvoir revenir. La soirée est enregistrée en continu. L'arrêt sauvegarde la soirée ; il ne ferme pas KaraFun et ne vide pas sa file native. La clé privée de la page du bar change au prochain démarrage : retrouve le nouvel accès sur `http://localhost:3000/` depuis ce PC.
 
+### Barre de lecture du titre sur scène
+
+Sur l'écran « Scène », sous le titre en cours : une barre fine et « 1:42 / 3:57 · reste 2:15 ». KaraFun ne donne ni la position ni la durée du titre à sa télécommande : l'application compte le temps depuis le début du titre (pauses de KaraFun non comptées, tempo réglé en direct pris en compte) et prend la durée dans le catalogue de KaraFun. Sans durée connue (titre ajouté directement dans KaraFun et jamais cherché depuis l'application) ou pendant une Battle : « 1:42 écoulées », sans barre. « Relancer depuis le début » repart de zéro ; un retour en arrière fait dans KaraFun lui-même n'est pas vu. Les téléphones voient la même barre sous « Sur scène » avec « reste 2 min ». Ce reste ne change pas les heures estimées de la file ni l'heure de fermeture.
+
 ### Réglages de titre (v1.4)
 
 **Ce qui se règle.** La **tonalité** (en demi-tons, de −6 à +6 sur le KaraFun du bar ; 0 = originale), le **tempo** (par pas de 5 %, de −50 % à +50 %), la **voix guide** (la voix du chanteur original) et les **chœurs** : Coupé, 25, 50, 75 ou 100. Un titre réglé porte un petit badge, par exemple « ♯ +2 · tempo −10 % ».
@@ -152,6 +156,7 @@ Pour arrêter l'application, double-clique sur `ARRETER.bat` **sur le PC du bar*
    - lance le titre : « Réglages en direct » (écran « Scène ») doit montrer les mêmes valeurs ; touche « + » sur la tonalité, KaraFun doit changer de tonalité et la page afficher « Appliqué par KaraFun ✓ » ;
    - lis la ligne sous l'interrupteur (« Plus ») : « KaraFun a accepté : … », ou un refus. Un refus ne coupe pas la file : note la version de KaraFun et coupe l'interrupteur si les téléphones ne doivent plus proposer les réglages ;
    - coupe l'interrupteur : le bouton « Réglages » doit disparaître du téléphone d'essai en quelques secondes. Remets-le ensuite si tout fonctionne.
+4. **Barre de lecture** : pendant le titre d'essai, la barre de l'écran « Scène » avance ; mets KaraFun en pause : « En pause », la barre s'arrête ; à la fin du titre, la barre est pleine à quelques secondes près (sinon, note l'écart).
 
 ## Publier les pages clients sur Internet
 
