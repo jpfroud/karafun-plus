@@ -1426,6 +1426,14 @@
     return typeof url === 'string' && /^https:\/\//.test(url) && !failedCovers.has(url)
       ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : '';
   }
+  // Durée d'un titre (secondes du catalogue KaraFun) en « 3:57 », ou '' si
+  // elle est inconnue ou aberrante ; ajoutée après l'artiste.
+  function songLength(song) {
+    const sec = Math.round(Number(song?.duration));
+    if (!Number.isFinite(sec) || sec < 20 || sec > 3600) return '';
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  }
+  const withLength = (artist, song) => [artist, songLength(song)].filter(Boolean).join(' · ');
   function cover(song, size = '') {
     const title = String(song?.title || '').trim();
     return `<span class="cover ${size}" style="--h:${hue(title)}" aria-hidden="true">${esc(([...title][0] || '♪').toUpperCase())}${coverImg(song?.img)}</span>`;
@@ -1517,7 +1525,7 @@
       // Réglages de titre : l'auteur, titre pas commencé (le serveur le dit), fonction ouverte par le bar.
       const sentTune = song => canEdit && song.canAdjust && song.entryId != null && tuneEnabled() ? tuneButton(song, person.id) : '';
       const sentMarkup = sent.length ? `<div class="song-mark">${esc(t('DÉJÀ PRÊTE DANS LA FILE'))}</div><ul class="song-stack">${sent.map(song =>
-        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}${sentDuo(song)}${tuneBadge(song)}</div></div><div class="song-actions">${lyricsButton(song)}${sentTune(song)}${sentLeave(song)}</div></li>`).join('')}</ul>` : '';
+        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(withLength(song.artist || '', song))} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}${sentDuo(song)}${tuneBadge(song)}</div></div><div class="song-actions">${lyricsButton(song)}${sentTune(song)}${sentLeave(song)}</div></li>`).join('')}</ul>` : '';
       const readyMarkup = ready.length ? `<div class="song-mark">${esc(individual ? tp(ready.length, 'MES CHANSONS · {n} CHANSON', 'MES CHANSONS · {n} CHANSONS') : tp(ready.length, 'SA LISTE · {n} CHANSON', 'SA LISTE · {n} CHANSONS'))}</div><ul class="song-stack">${ready.map((song, index) => {
         const duet = song.duet;
         const duetDetail = duet ? ` · ${esc(duet.state === 'pending'
@@ -1527,7 +1535,7 @@
         // Invitation sans réponse : le titre ne l'attend pas, il partira en solo.
         const soloHint = duet?.state === 'pending' ? `<div class="tiny muted invite-solo">${esc(individual ? t('Sans réponse avant ton tour, tu chanteras seul.')
           : t('Sans réponse avant son tour, {name} chantera seul.', { name: person.name }))}</div>` : '';
-        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(withLength(song.artist || '', song))} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>${canEdit && ready.length > 1 ? `<p class="tiny muted order-hint">${esc(individual
         ? t('⇅ change l’ordre de tes titres sans perdre ta place dans la file.') : t('⇅ change l’ordre de ses titres sans perdre sa place dans la file.'))}</p>` : ''}`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
@@ -2549,7 +2557,7 @@
       + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => {
         // Choix des titres d'une Battle : ceux déjà retenus sont marqués.
         const picked = battlePickMode && battleDraft.some(item => Number(item.songId) === Number(song.songId));
-        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(song.artist || '')}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
+        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(withLength(song.artist || '', song))}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
       }).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
       + (catalogMode === 'songs' && songs.length < totalSongs ? `<button type="button" class="btn wide" data-more style="margin-top:12px">${esc(t('Voir plus'))}</button>` : ''));
   }
@@ -2754,7 +2762,7 @@
     pendingSong = null;
     const selected = people.find(person => String(person.id) === targetPersonId) || people[0];
     if (duetMode) return openDuoPartner(song, selected.id);
-    openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(song.artist || '')}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+    openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(withLength(song.artist || '', song))}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <div style="height:12px"></div>
       <p id="songNotice" class="notice warn small song-notice" role="status" hidden></p>
       <div id="songJoinOffer" class="sheet-actions" hidden></div>

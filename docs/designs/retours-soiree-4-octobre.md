@@ -168,6 +168,12 @@ A avant B et C : B et C reposent sur la personne créée à l'ouverture, sur le 
 
 ---
 
+## I. Durée des titres avant l'ajout (demande du 8 octobre)
+
+La durée (secondes) arrive déjà sur les téléphones avec le catalogue (`catalog.js:20`) et la recherche (`karafun.js:1441`), sans être affichée. Elle s'affiche désormais en « 3:57 » après l'artiste dans les listes du catalogue et de la recherche, dans la fiche du titre avant l'ajout et dans « Mes titres » ; une durée inconnue ou aberrante (hors 20 s à 1 h) n'affiche rien. Aucune phrase nouvelle à traduire. Test : `test/client-ui-coverage.test.js` (« durée des titres »).
+
+---
+
 ## H. Graphique « Déroulé de la soirée » (défaut)
 
 **Cause confirmée** (capture reproduite dans Chromium) : la soirée du samedi est restée ouverte (« – en cours », « En direct ») car elle ne se clôt qu'avec « Supprimer toutes les tables » ; l'axe va donc du samedi 22:42 à maintenant, plusieurs jours plus tard ; toutes les barres tombent à 2 px dans les premiers pour cent du graphique et `timeTicks` (`stats.html:242-250`, pas maximal d'une heure, sans tenir compte de la largeur) produit des dizaines d'heures superposées.

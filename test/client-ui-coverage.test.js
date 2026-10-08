@@ -498,6 +498,32 @@ test('gestion passée sur un autre téléphone : prévenu, jeton oublié, catalo
     'Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.', 'plus de chanteur visé');
 });
 
+// Demande du gérant (8 octobre) : voir la durée d'un titre avant de l'ajouter.
+test('durée des titres : catalogue, fiche avant l’ajout et « Mes titres »', async () => {
+  const page = await open({
+    state: baseState({ tablePeople: [person('alice', 'Alice', { songs: [
+      { entryId: 'e1', songId: 1, title: 'Mon titre', artist: 'Moi', duration: 245 },
+      { entryId: 'e2', songId: 2, title: 'Sans durée', artist: 'Lui' }] })] }),
+    respond: url => url.startsWith('/api/catalog/songs?') ? { songs: [
+      { songId: 9, title: 'Tube', artist: 'Groupe', duration: 237 },
+      { songId: 10, title: 'Inconnu', artist: 'Personne', duration: null },
+      { songId: 11, title: 'Aberrant', artist: 'Erreur', duration: 99999 },
+      { songId: 12, title: 'Court', artist: '', duration: 59.6 }], total: 4 } : undefined,
+  });
+  assert.match(page.node('peopleList').innerHTML, /Moi · 4:05 · prochain titre/, 'durée dans « Mes titres »');
+  assert.match(page.node('peopleList').innerHTML, /Lui · à suivre/, 'sans durée connue, rien de plus');
+  await page.click(page.node('nav-catalog'));
+  await page.tap('catalogContent', '[data-category-index="0"]');
+  const list = page.node('catalogContent').innerHTML;
+  assert.match(list, /Groupe · 3:57/, 'durée à côté de l’artiste');
+  assert.match(list, />Personne</, 'durée inconnue : artiste seul');
+  assert.doesNotMatch(list, /Erreur ·/, 'durée aberrante ignorée');
+  assert.match(list, />1:00</, 'sans artiste : la durée seule, arrondie');
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.equal(page.sheetOpen(), true);
+  assert.match(page.sheetHtml(), /Groupe · 3:57/, 'durée dans la fiche, avant l’ajout');
+});
+
 // ================================================================ catalogue ouvert pour un chanteur
 test('catalogue pour un chanteur : cible, duo, et refus pour un chanteur non géré', async () => {
   const state = baseState();
