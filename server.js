@@ -275,6 +275,9 @@ const settings = { auto: true, autoPlay: false, baseUrl: null,
   // d'envoi ni de lancement, titres chargés retirés, Spotify relancé (voir
   // closingBlocksStart).
   closingAt: null,
+  // Durée maximale d'un titre ajouté par un client, en secondes (null : pas
+  // de limite, réglage par défaut). Voir maxSongLimit et assertSongLength.
+  maxSongSec: null,
   // Spotify a repris en fin de file : la lecture automatique attend que le
   // bar lance lui-même le titre suivant (« Lecture »), puis se rétablit.
   autoPlayHeld: false,
@@ -1719,7 +1722,9 @@ function publicState(person, tableId, managed = null) {
     avgSlotMin: Math.round(sched.avgSlotSec() / 6) / 10,
     rules: { gap: sched.opts.gap, cap: sched.opts.cap, protectTop: sched.opts.protectTop,
       requirePresence: sched.opts.requirePresence, tableRotation: sched.opts.tableRotation,
-      weightedTables: sched.opts.weightedTables },
+      weightedTables: sched.opts.weightedTables,
+      // Durée maximale des titres (secondes, null : pas de limite).
+      maxSongSec: maxSongLimit() },
     log: sched.log.slice(-30).reverse(),
     v: sched.version,
     // « registered » : personnes qui pourraient voter. En dessous du minimum
@@ -1867,12 +1872,16 @@ function staffState() {
     // Duo noté au bar sur le titre en cours : la page propose de le corriger.
     stage: pub.stage && stageTr?.sel.staffDuo ? { ...pub.stage, staffDuo: staffDuoView(stageTr.sel.staffDuo) } : pub.stage,
     // Repères réservés au bar : titres en double, « Je suis là » manqués.
+    // « plus long que 5:00 » : titre pas encore envoyé, au-delà de la durée maximale.
     queue: pub.queue.map((line, index) => {
       const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
       const skips = owner && owner.song?.entryId === line.song?.entryId ? sched.presenceSkipsOf(owner) : 0;
-      return repeats[index] || skips ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
-        ...(skips ? { presenceSkips: skips } : {}) } : line;
+      const tooLong = owner ? tooLongSec(line.song) : null;
+      return repeats[index] || skips || tooLong ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
+        ...(skips ? { presenceSkips: skips } : {}), ...(tooLong ? { tooLongSec: tooLong } : {}) } : line;
     }),
+    // Durée maximale : titres de la file qu'un retrait groupé enlèverait.
+    tooLong: { limitSec: maxSongLimit(), count: tooLongEntries().length },
     battle: { ...battleVote.view(), registered: battleElectorate().length },
     // Demandes de duo encore sans réponse de l'auteur du titre.
     joinRequests: [...sched.duetJoinRequestsByPerson()].flatMap(([requesterId, rows]) => rows.map(row => ({
@@ -2472,6 +2481,7 @@ function repeatNotice(song, tableId, entryId = null) {
 
 function chooseFor(p, song, mode) {
   assertRoomBeforeClosing(p, mode);
+  assertSongLength(p, [song], 'song');
   const songId = Number(song?.songId);
   if ([...(pending && pending.sel.ids.includes(p.id) ? [pending.sel.song] : []),
     ...tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => tr.sel.song)]
@@ -2742,6 +2752,53 @@ function assertRoomBeforeClosing(p, mode) {
   const error = new Error(message);
   error.code = 'CLOSING';
   throw error;
+}
+
+// ------------------------------------------------- durée maximale des titres
+// Réglage du bar (coupé par défaut) : un client ne peut plus ajouter un titre,
+// un duo ni une proposition de Battle plus long que la limite. Le bar, les
+// titres déjà dans KaraFun et « Relancer » ne sont jamais concernés ; les
+// titres déjà dans la file restent (signalés au bar, retrait groupé possible).
+const MAX_SONG_MIN_SEC = 120, MAX_SONG_MAX_SEC = 900;
+const validMaxSong = value => Number.isInteger(value) && value >= MAX_SONG_MIN_SEC && value <= MAX_SONG_MAX_SEC;
+function maxSongLimit() {
+  return validMaxSong(settings.maxSongSec) ? settings.maxSongSec : null;
+}
+// « 6:12 »
+const minSec = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+// Durée retenue : celle du catalogue relayé par ce serveur, sinon celle du
+// téléphone, bornée comme pour la barre de lecture ; null si inconnue.
+function songLengthSec(song) {
+  return catalogDurations.get(Number(song?.songId)) ?? stageProgress.clientDuration(Number(song?.duration));
+}
+// Durée d'un titre au-delà de la limite active, sinon null (durée inconnue : accepté).
+function tooLongSec(song) {
+  const limit = maxSongLimit();
+  const sec = limit == null ? null : songLengthSec(song);
+  return sec != null && sec > limit ? sec : null;
+}
+function assertSongLength(p, songs, route) {
+  for (const song of songs) {
+    const sec = tooLongSec(song);
+    if (sec == null) continue;
+    const limit = maxSongLimit();
+    journalEvent('songLength.refused', { personId: p.id, songId: Number(song?.songId) || null, durationSec: sec, limitSec: limit, route });
+    const error = new Error(`Ce titre dure ${minSec(sec)} : le bar limite les chansons à ${minSec(limit)}.`);
+    error.code = 'SONG_TOO_LONG';
+    throw error;
+  }
+}
+// Titres de la file plus longs que la limite et pas encore partis vers
+// KaraFun (le titre en cours d'envoi reste).
+function tooLongEntries() {
+  if (maxSongLimit() == null) return [];
+  const sending = sendingEntryId();
+  const rows = [];
+  for (const p of sched.people.values()) for (const song of sched.songsOf(p)) {
+    const sec = song.entryId === sending ? null : tooLongSec(song);
+    if (sec != null) rows.push({ p, song, sec });
+  }
+  return rows;
 }
 
 // ------------------------------------------------------------------ Spotify
@@ -3096,7 +3153,8 @@ function journalSettingsState() {
     weightedTables: !!sched.opts.weightedTables, interleaveArrivals: sched.opts.interleaveArrivals !== false,
     battleCooldownMin: battleVote.cooldownMs / 60000, battleRejectedCooldownMin: battleVote.rejectedCooldownMs / 60000,
     battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters, baseUrl: !!settings.baseUrl,
-    singerSongSettings: settings.singerSongSettings !== false, privateEvent: privateEvent.enabled };
+    singerSongSettings: settings.singerSongSettings !== false, privateEvent: privateEvent.enabled,
+    maxSongSec: maxSongLimit() };
 }
 function journalSettings(before) {
   const after = journalSettingsState();
@@ -3195,6 +3253,7 @@ const handlers = {
     const p = personAtTable(body);
     requireNamed(p);
     assertRoomBeforeClosing(p, 'append');
+    assertSongLength(p, [body.song], 'duet');
     const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
   },
@@ -3275,8 +3334,10 @@ const handlers = {
       error.code = 'CLOSING';
       throw error;
     }
+    const songs = certifiedBattleSongs(body.songs);
+    assertSongLength(p, songs, 'battle');
     const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds: battleElectorate(),
-      songs: certifiedBattleSongs(body.songs), proposerChoice: body.proposerChoice });
+      songs, proposerChoice: body.proposerChoice });
     return { ok: true, battle };
   },
   'POST /api/table/battle/vote': async (req, res, body) => {
@@ -3288,6 +3349,7 @@ const handlers = {
   'POST /api/duet': async (req, res, body, me) => {
     requireNamed(me);
     assertRoomBeforeClosing(me, 'append');
+    assertSongLength(me, [body.song], 'duet');
     sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
   },
   'POST /api/duet/answer': async (req, res, body, me) => {
@@ -3372,6 +3434,12 @@ const handlers = {
     if (typeof nextSingerSettings !== 'boolean') {
       throw new Error('Le réglage des titres depuis les téléphones est activé ou désactivé (oui ou non).');
     }
+    // Durée maximale des titres : null (ou false) coupe la limite.
+    const nextMaxSong = 'maxSongSec' in body ? (body.maxSongSec === null || body.maxSongSec === false ? null : Number(body.maxSongSec))
+      : maxSongLimit();
+    if (nextMaxSong !== null && !validMaxSong(nextMaxSong)) {
+      throw new Error('La durée maximale des chansons doit être entre 2:00 et 15:00.');
+    }
     if (body.auto && recoveredPending) throw new Error('Vérifie d’abord l’envoi interrompu dans KaraFun.');
     if (body.auto && persistenceError) throw new Error('Sauvegarde indisponible : l’envoi automatique reste suspendu.');
     if (body.auto && bridge?.permissions?.addToQueue === false) {
@@ -3408,6 +3476,13 @@ const handlers = {
     settings.presenceGraceSec = nextPresenceGrace;
     settings.presenceMaxSkips = nextPresenceSkips;
     settings.singerSongSettings = nextSingerSettings;
+    if (nextMaxSong !== maxSongLimit()) {
+      settings.maxSongSec = nextMaxSong;
+      const count = tooLongEntries().length;
+      sched.note(nextMaxSong === null ? 'Durée des chansons : plus de limite.' :
+        `Durée des chansons limitée à ${minSec(nextMaxSong)} pour les nouveaux ajouts des clients` +
+        (count ? ` ; ${count} titre${count > 1 ? 's' : ''} de la file ${count > 1 ? 'dépassent' : 'dépasse'} (« Plus » › règles pour ${count > 1 ? 'les' : 'le'} retirer).` : '.'), 'staff');
+    }
     if (nextBattleCooldown !== null) battleVote.setCooldownMinutes(nextBattleCooldown);
     if (nextRejectedCooldown !== null) battleVote.setRejectedCooldownMinutes(nextRejectedCooldown);
     if (nextVoteMin !== null) battleVote.setVoteMinutes(nextVoteMin);
@@ -3607,6 +3682,30 @@ const handlers = {
     sync();
     return { ok: true, removed, skipped: skipped.length,
       message: `${removed} titre${removed > 1 ? 's' : ''} retiré${removed > 1 ? 's' : ''}${skipped.length ? ` ; ${skipped.length} ignoré${skipped.length > 1 ? 's' : ''} (${[...new Set(skipped)].join(', ')})` : ''}.` };
+  },
+  // Durée maximale (décision D9) : les titres trop longs déjà dans la file
+  // restent jusqu'à ce geste du bar ; chaque personne est prévenue sur son
+  // téléphone, l'invitée d'un duo aussi (au lieu de « … a annulé le duo »).
+  // Les titres déjà dans KaraFun ou en cours d'envoi restent.
+  'POST /api/staff/songs-too-long/remove': async () => {
+    const limit = maxSongLimit();
+    if (limit == null) throw new Error('Active d’abord « Limiter la durée des chansons ».');
+    let removed = 0;
+    const skipped = [];
+    for (const { p, song, sec } of tooLongEntries()) {
+      const partnerId = song.duet?.partnerId || null;
+      try { sched.staffRemoveEntry(p.id, song.entryId, pid => pid !== partnerId); }
+      catch (error) { skipped.push(error.message); continue; }
+      removed++;
+      const params = { title: song.title, length: minSec(sec), limit: minSec(limit) };
+      sched.notify(p.id, 'tooLongRemoved', params);
+      if (partnerId) sched.notify(partnerId, 'tooLongRemoved', { ...params, name: p.name });
+    }
+    journalEvent('songLength.removed', { count: removed, limitSec: limit });
+    if (removed) sched.note(`Le bar a retiré ${removed} titre${removed > 1 ? 's' : ''} plus long${removed > 1 ? 's' : ''} que ${minSec(limit)} ; les personnes concernées sont prévenues.`, 'staff');
+    sync();
+    return { ok: true, removed, skipped: skipped.length,
+      message: `${removed} titre${removed > 1 ? 's' : ''} trop long${removed > 1 ? 's' : ''} retiré${removed > 1 ? 's' : ''}${skipped.length ? ` ; ${skipped.length} ignoré${skipped.length > 1 ? 's' : ''} (${[...new Set(skipped)].join(', ')})` : ''}.` };
   },
   'POST /api/staff/queue-optimize': async () => {
     const started = sched.forceReplan(30000);

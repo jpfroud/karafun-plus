@@ -525,6 +525,59 @@ test('durée des titres : catalogue, fiche avant l’ajout et « Mes titres »',
   assert.match(page.sheetHtml(), /Groupe · 3:57/, 'durée dans la fiche, avant l’ajout');
 });
 
+// Lot J (8 octobre) : durée maximale réglée au bar, envoyée dans rules.maxSongSec.
+test('durée maximale : titre trop long grisé « trop long », fiche avec le message, Battle refusée, traduit', async () => {
+  const catalog = [{ songId: 9, title: 'Tube', artist: 'Groupe', duration: 237 },
+    { songId: 13, title: 'Épopée', artist: 'Rock', duration: 372 },
+    { songId: 10, title: 'Inconnu', artist: 'Personne', duration: null }];
+  const respond = url => url.startsWith('/api/catalog/songs?') ? { songs: catalog, total: 3 }
+    : url.startsWith('/api/search?') ? catalog : undefined;
+  const page = await open({ state: baseState({ rules: { maxSongSec: 300 } }), respond });
+  await page.click(page.node('nav-catalog'));
+  await page.tap('catalogContent', '[data-category-index="0"]');
+  const rows = page.node('catalogContent').querySelectorAll('[data-song-index]');
+  assert.deepEqual(rows.map(row => row.className), ['song-row', 'song-row too-long', 'song-row'], 'seul le titre trop long est grisé');
+  assert.match(page.node('catalogContent').innerHTML, /Rock · 6:12 · trop long/);
+  assert.match(page.node('catalogContent').innerHTML, /Groupe · 3:57</, 'un titre normal reste inchangé');
+  assert.match(page.node('catalogContent').innerHTML, />Personne</, 'durée inconnue : rien ne change');
+  await page.tap('catalogContent', '[data-song-index="1"]');
+  assert.equal(page.sheetOpen(), true);
+  assert.match(page.sheetHtml(), /Ce titre dure 6:12 : le bar limite les chansons à 5:00\./);
+  assert.equal(page.$('appendSong'), null, 'pas de bouton d’ajout pour un titre trop long');
+  assert.equal(page.posts.filter(([url]) => url === '/api/table/song').length, 0);
+  await page.tap('sheetPanel', '[data-close-sheet]');
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.ok(page.$('appendSong'), 'titre normal : la fiche d’ajout habituelle');
+  await page.tap('sheetPanel', '[data-close-sheet]');
+
+  // Proposition de Battle : le titre trop long est grisé et refusé.
+  await page.click(page.node('nav-queue'));
+  await page.tap('battleVotes', '[data-battle-propose]');
+  page.node('battleSearch').value = 'Rock';
+  await page.submit('battleSearchForm');
+  const result = page.find('battleSearchResults', '[data-battle-result="1"]');
+  assert.equal(result.className, 'too-long');
+  assert.match(page.node('battleSearchResults').innerHTML, /Rock · 6:12 · trop long/);
+  assert.match(page.node('battleSearchResults').innerHTML, />Groupe</, 'les autres titres gardent leur artiste seul');
+  await page.click(result);
+  assert.deepEqual(page.toast(), { text: 'Ce titre dure 6:12 : le bar limite les chansons à 5:00.', bad: true, warn: false, hidden: false });
+  assert.equal(page.node('battleSelected').querySelectorAll('[data-battle-remove]').length, 0, 'titre trop long non retenu');
+
+  // En anglais, et sans limite : rien de grisé.
+  const english = await open({ state: baseState({ rules: { maxSongSec: 300 } }), respond, languages: ['en'] });
+  await english.click(english.node('nav-catalog'));
+  await english.tap('catalogContent', '[data-category-index="0"]');
+  assert.match(english.node('catalogContent').innerHTML, /Rock · 6:12 · too long/);
+  await english.tap('catalogContent', '[data-song-index="1"]');
+  assert.match(english.sheetHtml(), /This song lasts 6:12: the bar limits songs to 5:00\./);
+  const free = await open({ state: baseState(), respond });
+  await free.click(free.node('nav-catalog'));
+  await free.tap('catalogContent', '[data-category-index="0"]');
+  assert.doesNotMatch(free.node('catalogContent').innerHTML, /trop long/);
+  await free.tap('catalogContent', '[data-song-index="1"]');
+  assert.ok(free.$('appendSong'), 'option coupée : le titre long s’ajoute comme avant');
+});
+
 // ================================================================ catalogue ouvert pour un chanteur
 test('catalogue pour un chanteur : cible, duo, et refus pour un chanteur non géré', async () => {
   const state = baseState();
@@ -1153,6 +1206,9 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
     ['joinExpired', { name: 'Bob', reason: 'removed' }, 'La demande de duo d’Alice à Bob est close : « ce titre » n’est plus dans sa liste.'],
     ['presenceRemoved', { title: 'T', skips: 3 }, '« T » est retiré de la liste d’Alice : présence non confirmée 3 fois. Vois avec le bar si besoin.'],
     ['closingPulled', { title: 'T' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste d’Alice.'],
+    // Durée maximale : retrait groupé des titres trop longs par le bar.
+    ['tooLongRemoved', { title: 'T', limit: '5:00' }, '« T » est retiré de la liste d’Alice : le bar limite maintenant les chansons à 5:00.'],
+    ['tooLongRemoved', { title: 'T', limit: '5:00', name: 'Bob' }, 'Le duo « T » avec Bob est retiré de la file : le bar limite maintenant les chansons à 5:00.'],
     // Invitée d'un duo : le titre revient dans la liste de son auteur.
     ['closingPulled', { title: 'T', name: 'Bob' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de Bob.']];
   const state = baseState({ closing: { at: at + 600000, passed: true } });
@@ -1165,6 +1221,7 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
   await english.tap('infoBar', '[data-info-more]');
   assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” was removed from Alice’s list: presence not confirmed 3 times. Check with the bar if needed.'));
   assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” would play after closing time: it was taken out of KaraFun and stays on Bob’s list.'));
+  assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” was removed from Alice’s list: the bar now limits songs to 5:00.'));
   state.closing = { at: at + 600000, passed: false, full: false };
   state.tablePeople[0].inbox = [];
   state.battle = { ...state.battle, lastOutcome: { id: 'old', outcome: 'quorum', at } };

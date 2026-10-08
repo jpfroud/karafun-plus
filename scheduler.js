@@ -1546,7 +1546,9 @@ class Scheduler {
       ranks: new Map(order.filter(Boolean).map((entry, index) => [entry, index])), source: 'manual' };
   }
 
-  staffRemove(personId) {
+  // `tell(personId)` : faux pour une personne que l'appelant prévient
+  // lui-même (retrait des titres trop longs) au lieu de l'avis habituel.
+  staffRemove(personId, tell = () => true) {
     const p = this.people.get(personId);
     if (!p) return;
     const removed = p.song;
@@ -1571,7 +1573,7 @@ class Scheduler {
       this.manualOrderActive = this.manualOrderActive && this.manualOrder.length > 0;
       if (this.reservedNext?.personId === p.id) this.releaseNext();
     }
-    if (removed) this._songsGone(p, [removed]);
+    if (removed) this._songsGone(p, [removed], tell);
     p.song = (p.backlog || []).shift() || null;
     if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
     this._refreshDuetViews();
@@ -1594,14 +1596,14 @@ class Scheduler {
 
   // Retrait d'un titre précis, y compris un titre suivant de la liste d'une
   // personne (sélection multiple dans la page du bar).
-  staffRemoveEntry(personId, entryId) {
+  staffRemoveEntry(personId, entryId, tell = () => true) {
     const p = this.people.get(String(personId || ''));
     if (!p) throw new Error('Chanteur inconnu.');
-    if (!entryId || p.song?.entryId === String(entryId)) return this.staffRemove(p.id);
+    if (!entryId || p.song?.entryId === String(entryId)) return this.staffRemove(p.id, tell);
     const index = (p.backlog || []).findIndex(song => song.entryId === String(entryId));
     if (index < 0) throw new Error('Titre introuvable dans la liste de ce chanteur.');
     const [removed] = p.backlog.splice(index, 1);
-    this._songsGone(p, [removed]);
+    this._songsGone(p, [removed], tell);
     this.invalidateManualOrder();
     this._refreshDuetViews();
     this._event('song.removed', { personId: p.id, entryId: removed.entryId, by: 'staff' });

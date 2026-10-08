@@ -601,6 +601,13 @@ window.CLIENT_TRANSLATIONS = {
       'Seul l’auteur de ce duo peut régler ce titre.': 'Only the person who picked this duet can adjust it.',
       'Réglages non enregistrés': 'Settings not saved',
       'Réglages de « {title} » non enregistrés : {error}': 'Settings for “{title}” not saved: {error}',
+      // Durée maximale des titres (lot J)
+      'trop long': 'too long',
+      'Ce titre dure {length} : le bar limite les chansons à {limit}.': 'This song lasts {length}: the bar limits songs to {limit}.',
+      '« {title} » est retiré de la liste de {person} : le bar limite maintenant les chansons à {limit}.':
+        '“{title}” was removed from {person}’s list: the bar now limits songs to {limit}.',
+      'Le duo « {title} » avec {name} est retiré de la file : le bar limite maintenant les chansons à {limit}.':
+        'The duet “{title}” with {name} was removed from the queue: the bar now limits songs to {limit}.',
     },
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
@@ -713,6 +720,7 @@ window.CLIENT_TRANSLATIONS = {
       [/^Le bar ferme à (\d\d:\d\d) : plus de nouveau titre ce soir\.$/, 'The bar closes at {1}: no new songs tonight.'],
       [/^Le bar ferme à (\d\d:\d\d) : la file est complète jusqu’à la fermeture\.$/, 'The bar closes at {1}: the queue is full until closing time.'],
       [/^Le bar ferme à (\d\d:\d\d) : un titre de plus passerait après la fermeture\.$/, 'The bar closes at {1}: one more song would play after closing time.'],
+      [/^Ce titre dure (\d+:\d\d) : le bar limite les chansons à (\d+:\d\d)\.$/, 'This song lasts {1}: the bar limits songs to {2}.'],
       [/^Repousse ton passage de 1 à (\d+) chansons\.$/, 'Push back your turn by 1 to {1} songs.'],
       [/^Un passage ne peut pas être repoussé de plus de (\d+) chansons\.$/, 'A turn can’t be pushed back by more than {1} songs.'],
       // Réglages de titre (v1.4)

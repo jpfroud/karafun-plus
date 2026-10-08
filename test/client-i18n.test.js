@@ -99,6 +99,10 @@ const fullTable = thrown(() => sched.join({ tableId: '7', name: 'Dan' }));
 assert.match(serverText(fullTable), /^Table 7 is full \(3 signed up for 3 places\)/);
 assert.ok(serverSources.includes('Recherche KaraFun impossible : ${e.message}'));
 assert.equal(serverText('Recherche KaraFun impossible : délai dépassé'), 'KaraFun search failed: délai dépassé');
+// Durée maximale des titres (lot J) : refus avec la durée du titre et la limite.
+assert.ok(serverSources.includes('Ce titre dure ${minSec(sec)} : le bar limite les chansons à ${minSec(limit)}.'));
+assert.equal(serverText('Ce titre dure 6:12 : le bar limite les chansons à 5:00.'), 'This song lasts 6:12: the bar limits songs to 5:00.');
+assert.equal(serverText('Ce titre dure 20:00 : le bar limite les chansons à 15:00.'), 'This song lasts 20:00: the bar limits songs to 15:00.');
 assert.equal(serverText('Catalogue KaraFun : HTTP 503'), 'KaraFun catalogue: HTTP 503');
 // Catalogue refusé par les deux domaines KaraFun : texte clair, traduit, recherche encore possible.
 assert.ok(serverSources.includes('Catalogue KaraFun indisponible pour le moment (refus HTTP ${e.status}). La recherche reste possible.'));

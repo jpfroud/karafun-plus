@@ -183,6 +183,8 @@
   .client .catalog-list .song-row .grow { min-width: 0; }
   .client .catalog-list .song-row .song-title, .client .catalog-list .song-row .song-artist { display: block; }
   .client .catalog-list .song-row.picked { color: var(--ok); }
+  /* Durée maximale du bar dépassée : titre grisé, « trop long ». */
+  .client .catalog-list .too-long { opacity: .55; }
   .client .catalog-grid { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .client .category-tile { --h: 260; position: relative; width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 14px; overflow: hidden; cursor: pointer;
     display: flex; align-items: flex-end; padding: 10px; text-align: left; color: #fff; font-weight: 800; font-size: 15px;
@@ -980,6 +982,10 @@
       case 'inviteUnanswered': return t('{name} n’a pas répondu à temps : {person} chante « {title} » en solo.', values);
       case 'presenceRemoved': return tp(Number(p.skips) || 1, '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.',
         '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.', values);
+      // Invitée d'un duo : le titre était dans la liste de {name}.
+      case 'tooLongRemoved': return p.name
+        ? t('Le duo « {title} » avec {name} est retiré de la file : le bar limite maintenant les chansons à {limit}.', { ...values, limit: p.limit || '' })
+        : t('« {title} » est retiré de la liste de {person} : le bar limite maintenant les chansons à {limit}.', { ...values, limit: p.limit || '' });
       case 'closingPulled': return p.name
         ? t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {name}.', values)
         : t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.', values);
@@ -1547,6 +1553,18 @@
     return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
   }
   const withLength = (artist, song) => [artist, songLength(song)].filter(Boolean).join(' · ');
+  // Durée maximale réglée au bar (rules.maxSongSec) : un titre plus long ne
+  // s'ajoute pas depuis le téléphone ; le serveur le refuse de toute façon.
+  function songTooLong(song) {
+    const limit = Number(state?.rules?.maxSongSec);
+    return limit > 0 && songLength(song) !== '' && Math.round(Number(song.duration)) > limit;
+  }
+  const lengthLabel = (artist, song) => withLength(artist, song) + (songTooLong(song) ? ` · ${t('trop long')}` : '');
+  function tooLongText(song) {
+    const limit = Number(state.rules.maxSongSec);
+    return t('Ce titre dure {length} : le bar limite les chansons à {limit}.',
+      { length: songLength(song), limit: `${Math.floor(limit / 60)}:${String(limit % 60).padStart(2, '0')}` });
+  }
   function cover(song, size = '') {
     const title = String(song?.title || '').trim();
     return `<span class="cover ${size}" style="--h:${hue(title)}" aria-hidden="true">${esc(([...title][0] || '♪').toUpperCase())}${coverImg(song?.img)}</span>`;
@@ -2360,6 +2378,7 @@
 
   function addToBattleDraft(song) {
     if (!song?.songId) return false;
+    if (songTooLong(song)) { toast(tooLongText(song), true); return false; }
     if (battleDraft.some(item => Number(item.songId) === Number(song.songId))) { toast(t('Titre déjà proposé.'), true); return false; }
     if (battleDraft.length >= 3) { toast(t('Trois titres maximum.'), true); return false; }
     battleDraft.push({ songId: Number(song.songId), title: String(song.title), artist: String(song.artist || '') });
@@ -2452,7 +2471,7 @@
         found = list(data).slice(0, 20).filter(song => Number.isSafeInteger(Number(song?.songId)) &&
           Number(song.songId) > 0 && String(song.title || '').trim());
         resultsNode.innerHTML = found.length
-          ? `<ul class="catalog-list">${found.map((song, index) => `<li><button type="button" data-battle-result="${index}"><b>${esc(song.title)}</b><br><span class="tiny muted">${esc(song.artist || '')}</span></button></li>`).join('')}</ul>`
+          ? `<ul class="catalog-list">${found.map((song, index) => `<li><button type="button" data-battle-result="${index}"${songTooLong(song) ? ' class="too-long"' : ''}><b>${esc(song.title)}</b><br><span class="tiny muted">${esc(songTooLong(song) ? lengthLabel(song.artist || '', song) : song.artist || '')}</span></button></li>`).join('')}</ul>`
           : `<p>${esc(t('Aucun titre trouvé.'))}</p>`;
       }).catch(error => {
         if (number !== searchNumber) return;
@@ -2814,7 +2833,7 @@
       + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => {
         // Choix des titres d'une Battle : ceux déjà retenus sont marqués.
         const picked = battlePickMode && battleDraft.some(item => Number(item.songId) === Number(song.songId));
-        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(withLength(song.artist || '', song))}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
+        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}${songTooLong(song) ? ' too-long' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(lengthLabel(song.artist || '', song))}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
       }).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
       + (catalogMode === 'songs' && songs.length < totalSongs ? `<button type="button" class="btn wide" data-more style="margin-top:12px">${esc(t('Voir plus'))}</button>` : ''));
   }
@@ -2999,6 +3018,12 @@
 
   function chooseSong(song) {
     if (!song || !song.songId) return;
+    // Plus long que la limite du bar : la fiche explique au lieu d'ajouter.
+    if (songTooLong(song)) {
+      openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(lengthLabel(song.artist || '', song))}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+        <p class="notice warn small" role="status">${esc(tooLongText(song))}</p>`);
+      return;
+    }
     // Choix des titres d'une Battle depuis le catalogue.
     if (battlePickMode) {
       if (addToBattleDraft(song)) {
