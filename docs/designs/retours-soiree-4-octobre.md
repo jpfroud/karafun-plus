@@ -1,0 +1,219 @@
+# Retours de la soirée du 4 octobre — spécification
+
+Branche : `feat/retours-soiree-4-octobre` · une seule PR pour l'ensemble.
+État du code relevé le 8 octobre 2026 (8 analyses du code, reproductions dans le bloc-notes de la session).
+Rédigée avec gstack `spec` ; défauts traités avec `investigate`, parcours vérifiés avec `qa`, `review` avant livraison.
+
+## Contexte
+
+Le gérant a relevé onze points après la soirée du samedi 4 octobre (15 inscrits, 18 titres). Trois freinent l'accueil (QR solo qui expire avant la saisie du prénom, clients solo qui perdent leur page — neuf transferts pour une même cliente —, pas de QR commun pour une soirée privatisée), deux encombrent les téléphones des tables, deux inquiètent pendant le service (contrôle Spotify qui lâche, réglages de tonalité ou de guide qui pourraient rester sur les titres suivants), un graphique des statistiques est illisible, et deux informations manquent au bar (où en est la chanson sur scène, quels solos sont partis).
+
+Règle à préserver partout : **hors événement privé, une personne n'a jamais deux places dans la rotation.**
+
+## Lots, dépendances et ordre
+
+```
+A  Accès solo (QR compté à l'ouverture, prénom obligatoire, récupération)
+   └─> B  Événement privé (réutilise l'ouverture et la fenêtre de prénom de A)
+   └─> C  Dernière activité (même suivi que A ; liste des solos de l'Accueil)
+D  Tables : faire scanner sa table, page centrée sur ses personnes   (indépendant, mêmes fichiers client que A)
+E  Spotify connecté                                                   (indépendant)
+F  Barre de lecture du titre sur scène                                (indépendant)
+G  Réglages isolés par titre (défaut)                                 (indépendant)
+H  Graphique « Déroulé de la soirée » (défaut)                        (indépendant)
+P  Porte gstack (hooks) : correctifs de la relecture                  (indépendant)
+```
+
+A avant B et C : B et C reposent sur la personne créée à l'ouverture, sur le drapeau `nameRequired` et sur la fenêtre de prénom. D touche les mêmes zones de `client.html` que A : il passe après A ou dans la même série de modifications.
+
+---
+
+## A. Accès solo
+
+### A1. Le QR individuel compte dès son ouverture, prénom obligatoire
+
+**Aujourd'hui** (vérifié) : ouvrir `/t/Comptoir/<accès>?invitation=<jeton>` n'enregistre rien (`server.js:3594-3597`, `/api/state` ne fait que `verify`, `server.js:3622`) ; la personne n'est créée qu'à l'envoi du prénom (`joinPersonDurably`, `server.js:1986-2020`) ; l'invitation expire 30 min après son émission (`solo-invitations.js:6, 48`) ; rien n'oblige à saisir le prénom (onglets et catalogue restent accessibles, `client.html:1202-1205`).
+
+**Changement**
+1. Nouvelle route `POST /api/table/solo/open` `{table, access, invitation}` (sous `/api/table/` pour la vérification automatique des traductions ; ajoutée aux exceptions du contrôle de propriétaire solo, `server.js:3736-3742`). Jamais en GET : un aperçu de lien ne crée personne.
+   - Invitation valide et inutilisée, téléphone sans profil solo : crée la personne avec un prénom provisoire unique `Solo <n>` (n = plus petit entier libre dans la table), `nameRequired: true`, consomme l'invitation, associe le téléphone (`bindSoloDevice`), enregistre la soirée (`saveNight({required:true})`, retour arrière complet en cas d'échec, sur le modèle de `joinPersonDurably`). Réponse `{id, token, nameRequired:true}`.
+   - Même invitation rouverte par le téléphone qui la possède : renvoie la même personne (idempotent).
+   - Invitation déjà utilisée par une autre personne : voir A2 (récupération), pas de création.
+   - Téléphone qui possède déjà un autre solo : refus `SOLO_DEVICE_USED`, inchangé.
+   - Invitation expirée ou révoquée avant ouverture : message actuel inchangé.
+2. `person.soloKeyHash = sha256(jeton d'invitation)` est conservé sur la personne (sauvegardé avec elle, `night-state.js:95-104`). La restauration de la soirée exige un `name` non vide : le prénom provisoire le satisfait.
+3. **Fenêtre de prénom obligatoire** (`client.html`) : tant que la personne gérée a `nameRequired`, un écran plein (`div` masquée, pas de `<dialog>` : les tests n'ont pas `showModal`) recouvre tout, onglets et navigation masqués. Contenu : titre « Bienvenue ! Quel est ton prénom ? », champ prénom, bouton « Valider », bouton de langue FR/EN. Aucune fermeture (ni croix, ni Échap, ni Retour). Envoi : `POST /api/table/person/rename` (existe, `server.js:2822`), qui efface `nameRequired`. Prénom déjà pris : message dans la fenêtre « Ce prénom est déjà inscrit. Ajoute l'initiale de ton nom (ex. Marie L.). ».
+4. Tant que `nameRequired` : le serveur refuse ajout de titre, duo, Battle (vote ou proposition) avec « Indique d'abord ton prénom. » (traduit) ; la personne est exclue de l'électorat Battle (`server.js:1482`) et de `/api/duo/partners` (`server.js:3667-3680`).
+5. Journal : `person.joined` n'est écrit qu'au premier vrai prénom (renommage qui efface `nameRequired`), pour que les statistiques ignorent les ouvertures abandonnées.
+6. Bar : la personne apparaît dès l'ouverture, avec la mention « prénom à saisir ». Une ouverture abandonnée se marque « Parti » comme aujourd'hui ; aucune suppression automatique.
+
+### A2. Un solo qui perd sa page la retrouve sans le bar, sans deuxième place
+
+**Cause vérifiée** : l'accès solo exige deux éléments du navigateur (jeton en `localStorage` et cookie de l'appareil, `server.js:3618-3620`) ; l'adresse restante après inscription est le lien commun « En solo », qui n'identifie personne (`client.html:1879`, `395-398`) ; un scanner de QR avec son propre navigateur intégré, un onglet privé ou un autre navigateur n'a ni l'un ni l'autre ; seul le transfert par le bar ramène l'accès.
+
+**Changement**
+1. **Le QR individuel devient la clé personnelle du chanteur pour la soirée.** Ouvert sur un autre téléphone, il ne crée rien : `/api/table/solo/open` répond `{recover:{id, name}}` et la page affiche « C'est bien toi, {name} ? » avec « Récupérer mes chansons » (un toucher). La confirmation passe par `POST /api/table/person/claim {key}` : même effet que `claimPerson` (nouveau jeton, nouveau téléphone associé, l'ancien perd l'accès). Une personne encore `nameRequired` est récupérée sans confirmation. La clé meurt quand la personne est marquée partie ou à la nouvelle soirée.
+2. **L'adresse garde la clé** : après ouverture ou récupération, la page ne retire plus `?invitation=` de l'adresse (au lieu de `forgetSoloInvitation`). Historique, favori, onglet restauré, « Ouvrir dans le navigateur » depuis un scanner : tout ramène au même chanteur.
+3. Dans un navigateur intégré à une application (Instagram, Snapchat, Facebook, WebView Android : détection par `navigator.userAgent`), bandeau discret « Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome). ».
+4. **Bar : un toucher au lieu d'une recherche.** Accueil, panneau solo : liste « Solistes » triée par activité la plus récente (lot C), recherche par prénom quand il y en a plus de 8. Chaque ligne : prénom, « prénom à saisir » éventuel, activité, bouton « QR de reprise » (ouvre la fenêtre de transfert actuelle, `openShare`). Le panneau « Donner un chanteur à un autre téléphone » reste pour les tables.
+
+**Pourquoi une seule place reste garantie** : seule la première utilisation d'une invitation émise par le bar appelle `sched.join` ; toute autre voie rattache une personne existante. Des tests figent déjà cette règle (`test/solo-comptoir-api.test.js`) : ils restent verts, et l'un d'eux (« invitation consommée refusée dans un nouveau navigateur ») évolue délibérément vers « invitation consommée = récupération de la même personne ».
+
+**Hors périmètre** : retrouver l'accès par le seul cookie quand le `localStorage` a été effacé (cas rare, impose de séparer appareil actuel et anciens appareils).
+
+---
+
+## B. Événement privé
+
+**Aujourd'hui** : seule une invitation à usage unique émise par le bar inscrit un solo (`server.js:1965-1971`) ; une seule grande table afficherait tout le monde sur chaque téléphone.
+
+**Changement** (option A de l'analyse)
+1. Module `private-event.js` (modèle : `solo-invitations.js`) : `{enabled, secret (128 bits, base64url), since}` ; `enable()` (crée le secret s'il n'existe pas : couper puis rallumer garde le QR imprimé), `disable()`, `rotate()`, `clear()`, `verify(token)` (comparaison à temps constant, vrai seulement si activé), `serialize()/restore()` (forme invalide = mode coupé, jamais d'échec de la soirée). Sauvegardé comme champ `privateEvent` de la soirée (`night-state.js`), pas dans `settings`. Ajouté à `test/coverage.js` (SOURCES) et à `PREPARER-KIT-BAR.ps1`.
+2. Bar, Accueil, en tête du panneau solo : interrupteur « Événement privé : un seul QR pour tout le monde » et aide « Bar privatisé : chaque personne scanne le même QR avec son téléphone et gère ses propres chansons. ». Activé : QR en grand, « Copier le lien », « Imprimer », « Renouveler le QR » (avec confirmation ; les personnes déjà inscrites gardent leur accès). Route `POST /api/staff/private-event {enabled?, rotate?}` ; `staffState.privateEvent = {enabled, url, qrUrl}` (adresse seulement si activé). QR SVG réservé au bar : `/qr-evenement.svg` (pas sous `/qr/<id>.svg`, une table peut s'appeler « evenement »). `print.html` : une grande carte « Événement privé » quand le mode est actif. Journal : seulement `settings.changed privateEvent true/false`, jamais le secret.
+3. Le QR encode `/t/Comptoir/<accès>?evenement=<secret>`. `/api/state` renvoie `privateEventReady` (comme `soloInvitationReady`). La page appelle alors `POST /api/table/enter {table, access, event}` :
+   - téléphone qui a déjà son chanteur : le renvoie, rien n'est créé ;
+   - sinon : crée un chanteur provisoire `nameRequired` (A1.3 à A1.6 s'appliquent), sans invitation ni contrôle `SOLO_DEVICE_USED` ;
+   - plafonds : 30 créations par minute, 400 personnes au plus par l'événement ; au-delà « Trop d'inscriptions d'un coup : réessaie dans une minute. » ;
+   - mode coupé ou QR renouvelé : 403, « Ce QR d'événement n'est plus actif. Demande au bar. ».
+4. **Page perdue en événement privé** (décision du gérant, D1) : re-scanner le QR. Même navigateur : son chanteur revient. Autre navigateur : **toujours un nouveau chanteur**, sans reprise par prénom ; un prénom déjà pris est refusé avec la consigne d'ajouter une initiale (A1.3). L'ancien profil garde ses chansons : la liste « Solistes » (A2.4) et la dernière activité (C) aident le bar à le marquer parti.
+5. Chaque participant reste son propre groupe de rotation (aucun changement d'équité ; vérifié avec 60 solos dans les trois modes). Les duos entre participants gardent l'accord de l'invité.
+6. « Supprimer toutes les tables » coupe le mode et efface le secret. Un redémarrage de l'application le conserve.
+
+---
+
+## C. Dernière activité des solos
+
+**Aujourd'hui** : `lastSeen` existe (`scheduler.js:487`), bougé au plus une fois par minute à chaque lecture d'état (`server.js:1684`), y compris page cachée (le téléphone interroge toutes les 4 s même en arrière-plan, `client.html:2849-2851`) ; seule la première personne d'un téléphone de table est mise à jour (`server.js:3621`) ; la page du bar ne l'affiche nulle part.
+
+**Changement**
+1. Activité = page **visible** ou action volontaire. La page envoie l'en-tête `x-page-visible: 1` sur `/api/state` seulement si `!document.hidden` ; alors `lastSeen` bouge (au plus une fois par minute) pour **toutes** les personnes gérées. Les lectures en arrière-plan ne comptent plus. Toute action personnelle acceptée (`personAtTable`, résolution de `me`, confirmation de présence, récupération) met `lastActionAt` ; l'accusé automatique `/api/table/notice/ack` ne compte pas.
+2. `staffState.people[].lastActiveAt = max(lastSeen, lastActionAt)` ; l'heure du serveur `now` sert au calcul (le téléphone du bar peut avoir une autre heure).
+3. Page du bar, pour les solos seulement (sur une table, un téléphone gère aussi des amis sans téléphone : l'indication tromperait) :
+   - libellés : « Actif à l'instant » (< 2 min), « Actif il y a 12 min », puis « Sans nouvelles depuis 25 min » en orange dès 20 min et en rouge dès 45 min (« depuis 1 h 05 » au-delà d'une heure) ; info-bulle « Dernière activité sur son téléphone à 21:42 » ;
+   - jamais revenu depuis l'ouverture du QR : « Pas revenu depuis l'ouverture du QR (21:10) » ;
+   - affichés dans la liste « Solistes » de l'Accueil (A2.4), dans l'onglet Repères (élément séparé de la ligne « N titres · N passages » figée par les tests), sur une ligne de la file d'un solo au-delà de 45 min (« sans nouvelles depuis 52 min »), dans l'alerte « … n'a pas répondu à « Je suis là » » ;
+   - tuile « En solo » de l'Accueil : « 12 solistes · 2 sans nouvelles ».
+4. Le libellé ne change qu'à la minute (pas de redessin toutes les 2 s). Personnes parties : rien.
+
+---
+
+## D. Tables
+
+**Aujourd'hui** (vérifié, `client.html:1170-1218`) : le QR d'une table s'affiche sur l'écran du bar (« Touche une table pour montrer son QR en grand », `staff.html:82`) ; un téléphone de table affiche toutes les personnes de la table (`renderPeople(people)`) et un bouton « Je suis X » par personne gérée ailleurs (`claimBox`) ; un nouveau téléphone qui scanne une table déjà commencée n'a pas de formulaire d'arrivée en tête (`joinBox` masqué dès qu'une personne existe).
+
+**Changement**
+1. **Faire scanner sa table depuis son téléphone.** Dès que le téléphone gère une personne d'une table ordinaire : carte « Fais scanner ta table » avec le QR de la table en grand, « Partager le lien » (`navigator.share`, sinon copie) et l'aide « Les autres personnes de la table scannent ce QR avec leur téléphone pour s'inscrire et choisir leurs chansons. ». Déployée juste après la première inscription, repliée ensuite en un bouton « Faire scanner ma table » en haut de « Ma table ». Route `GET /api/table/invite?table&access` → `{url, qr}` (même lien que le QR imprimé, `phoneBase()`, QR en `data:` comme `server.js:2055`). Pas pour « En solo ».
+2. **Arrivée d'un nouveau téléphone** sur une table déjà commencée : la carte d'accueil reste en tête (« Bienvenue à {table} ! », « Ton prénom », bouton « Rejoindre la table »), puis un lien discret « Déjà inscrit par un autre téléphone ? » qui ouvre la feuille de la table (point 3).
+3. **La page principale ne montre que les personnes gérées par ce téléphone** (« Mes chanteurs »). Bouton « Voir toute la table (N) » : feuille (`openSheet`, `client.html:2610`) avec toutes les personnes, une recherche au-delà de 8, pour chacune le nombre de titres prêts et « géré par ce téléphone » le cas échéant, et l'action « C'est moi » (reprise par code, flux actuel) pour les autres. La carte `claimBox` disparaît de la page principale des tables (elle reste pour « En solo »). L'ajout d'une personne sans téléphone reste, renommé « Ajouter une personne sans téléphone ».
+4. Onglet « La file » inchangé (« À notre table, sans chanson »).
+
+---
+
+## E. Spotify connecté
+
+**Cause vérifiée** (`spotify.js:283-285`, `staff.html:1186-1188`) : l'identifiant d'appareil enregistré devient périmé (Spotify le dit lui-même) ; la lecture vise l'ancien identifiant et échoue (404) ; « Actualiser la liste » n'affiche plus l'appareil choisi et la liste retombe sur « Appareil actif de Spotify » sans le dire au serveur, d'où la resélection manuelle ; un 204 (aucun appareil actif) s'affiche en vert « Spotify en pause » ; une erreur ancienne reste affichée après rétablissement ; l'automatisme abandonne après trois essais par silence.
+
+**Changement**
+1. `SpotifyLink.checkHealth()` (liste des appareils + état du lecteur) et `view().health = {state, device, checkedAt, okAt, message}` ; états et pastille :
+   - `ready` : « Spotify connecté · {appareil} » (vert) ;
+   - `no-device` : « Spotify connecté, aucun appareil : ouvre Spotify sur {appareil} » (orange) ;
+   - `error` : « Spotify injoignable, nouvel essai à HH:MM » (rouge) ;
+   - `disconnected` : « Spotify non connecté » (rouge) et bouton « Reconnecter Spotify » (la reconnexion OAuth ne peut se faire que sur le PC du bar, `server.js:3658`).
+   Une vérification réussie efface `lastError`.
+2. Vérification toutes les 60 s dans `spotifyTick` quand aucune action n'est en cours (respecte `waiting`/`blocked` ; les tests qui comptent un seul appel après `invalid_grant` ou coupure réseau restent verts), et aussi après connexion, après choix d'appareil, après un 404 de lecture et sur le bouton « Vérifier Spotify » (ancien « Actualiser la liste », action serveur `refresh` déjà présente).
+3. **Resélection automatique** : appareil enregistré absent de la liste → appareil du même nom (même type, actif de préférence) adopté et enregistré (`data/spotify.json`), journal « Appareil Spotify retrouvé : {nom} » ; 404 sur lecture → resélection puis un seul nouvel essai par transfert `PUT /me/player {device_ids:[id], play:true}`. Le nom de l'appareil n'est jamais effacé lors d'un changement d'identifiant.
+4. La liste des appareils est gardée côté serveur (`view().devices`) : elle survit au rechargement de la page. L'appareil enregistré reste affiché et sélectionné même absent (« {nom} (introuvable) ») : plus de bascule silencieuse.
+5. Après une resélection réussie, l'automatisme repart pour le silence en cours (compteur d'essais remis à zéro), sans passer outre une pause décidée par le bar.
+6. Pastille aussi sur l'écran Scène, à côté de celle de KaraFun, quand Spotify est configuré.
+7. Petit correctif : la pause avant un titre n'est plus sautée quand une lecture d'état Spotify est en cours (`server.js:2516`).
+
+---
+
+## F. Barre de lecture du titre sur scène
+
+**Ce que donne KaraFun** (vérifié dans les trames réelles enregistrées, `test/song-settings.test.js:164-167`, `test/kcs-protocol.test.js:1140-1142`) : ni position ni durée dans `StatusEvent` ; seul le faux KaraFun de démo envoie `position`. Le catalogue et la recherche donnent `duration` en secondes (`catalog.js:11-25`, `karafun.js:1433-1442`).
+
+**Changement**
+1. Durée : cache serveur `songId → duration` rempli par toutes les réponses de recherche et de catalogue relayées (à côté de `rememberBattleSongs`, `server.js:96-111`) ; sinon `song.duration` envoyé par la page, borné à 30–1200 s ; en démo `--song-seconds`. Si un jour KaraFun envoie une position ou une durée numérique, elles sont prises en priorité.
+2. Temps écoulé : départ `tr.startedAt` (nos titres, déjà sauvegardé) ou `curSince` (titres ajoutés dans KaraFun) ; pauses décomptées (état `paused` ou `kcsState` 5) ; tempo intégré (`rate = 1 + tempo/100`, le tempo en direct raccourcit le reste). Remis à zéro par « Relancer depuis le début » (nouvel identifiant de file).
+3. `publicState().stage.progress = {elapsedSec, durationSec|null, paused, rate}` calculé à `now` ; les pages corrigent l'écart d'horloge avec `state.now` et avancent seules chaque seconde par un `setTimeout` qui se reprogramme (pas de second `setInterval` : les tests n'en gardent qu'un ; délai distinct de ceux des tests).
+4. Bar, carte « Sur scène » : barre fine et « 1:42 / 3:57 · reste 2:15 » ; durée inconnue ou Battle : « 1:42 écoulées » sans barre ni fin ; pause : « En pause ».
+5. Téléphones, encadré « Sur scène » : barre fine et « reste 2 min » (traduit) ; rien pour une Battle ou une durée inconnue.
+6. Hors périmètre : utiliser ce reste pour les heures estimées ou l'heure de fermeture.
+
+---
+
+## G. Réglages isolés par titre (défaut)
+
+**Cause confirmée** (reproduction avec le vrai `server.js` et un faux KaraFun « collant ») : au début d'un titre sans réglage, l'application n'envoie rien (`server.js:885`, `song-settings.js:225`) et compte sur KaraFun pour revenir à zéro — comportement jamais vérifié sur le KaraFun du bar ; le faux KaraFun remet toujours à zéro, donc aucun test ne pouvait voir la fuite ; si KaraFun garde la voix guide à 25, chaque titre suivant la garde, et `_observeDefaults` (`karafun.js:1370-1378`) apprend alors 25 comme « valeur par défaut », ce qui fausse les remises à zéro suivantes et masque l'anomalie au bar. Les réglages enregistrés dans la file, eux, ne fuient pas (chaque titre a les siens).
+
+**Changement**
+1. Au chargement de chaque titre (états 3/4/5, une seule fois par identifiant de file), cible = valeurs neutres (tonalité 0, tempo 0, voix guide 0, voix guide B 0 si le titre l'a, chœurs à la vraie valeur par défaut du bar seulement si le titre précédent les avait changés) complétées par les réglages du titre. Seules les différences avec l'état réel sont envoyées : aucun envoi quand KaraFun remet déjà à zéro. S'applique aussi aux titres ajoutés directement dans KaraFun (avec leurs propres options KaraFun).
+2. Les valeurs par défaut apprises ne prennent plus la voix guide (toujours 0) ; les chœurs ne sont appris que sur un titre que l'application n'a pas modifié.
+3. Réglage en direct ciblé : la page du bar envoie l'identifiant de file du titre affiché ; si le titre a changé entre-temps, refus « Le titre a changé : réglage non envoyé. » et rien n'est enregistré sur le nouveau titre.
+4. Journal `song.settingsReset` ; sans le droit « Personnaliser la chanson en cours » : note au bar « Le réglage du titre précédent est peut-être resté sur « … » : KaraFun ne laisse pas l'application personnaliser la chanson en cours. ».
+5. Faux KaraFun : option `stickyLive` pour reproduire un KaraFun qui garde les réglages ; tests dans les deux comportements.
+6. `GUIDE-BAR.md` (vérifications hors service) : « Mettre la voix guide à 25 en direct, puis vérifier que le titre suivant démarre en tonalité 0 et voix guide coupée. ».
+
+---
+
+## H. Graphique « Déroulé de la soirée » (défaut)
+
+**Cause confirmée** (capture reproduite dans Chromium) : la soirée du samedi est restée ouverte (« – en cours », « En direct ») car elle ne se clôt qu'avec « Supprimer toutes les tables » ; l'axe va donc du samedi 22:42 à maintenant, plusieurs jours plus tard ; toutes les barres tombent à 2 px dans les premiers pour cent du graphique et `timeTicks` (`stats.html:242-250`, pas maximal d'une heure, sans tenir compte de la largeur) produit des dizaines d'heures superposées.
+
+**Changement** (`public/stats.html` seulement)
+1. Graduations selon la largeur : pas pris dans 5, 10, 15, 30 min, 1, 2, 3, 6, 12 h, 1 jour, au moins 60 px entre deux étiquettes ; même fonction pour le graphique de la file.
+2. Étiquettes avec le jour quand la durée dépasse 20 h (« dim. 14:00 »).
+3. Domaine du Déroulé limité à l'activité : si la fin dépasse de plus de 3 h le dernier passage, l'axe s'arrête 15 min après ce passage, avec la note « Dernier passage à 00:20 · soirée encore ouverte » (ou « · soirée close à … »). Une soirée normale en direct garde « maintenant » visible (un temps mort de 40 min reste affiché).
+4. Hors périmètre (à proposer au gérant) : clôturer seule une soirée inactive depuis plus de 8 h.
+
+---
+
+## P. Porte gstack : correctifs de la relecture
+
+Constats de la relecture gstack (`review`, spécialistes tests, maintenabilité, sécurité, et relecture adverse) et sondes :
+1. L'envoi est contrôlé par un hook git `pre-push` installé par le hook de démarrage (`.git/hooks/pre-push`, seulement s'il n'en existe pas d'autre), actif seulement quand `CLAUDECODE=1` : chaque commit envoyé doit avoir l'arbre exact d'une relecture `review` terminée et convergée. Plus d'analyse du texte des commandes pour `git push` : fini les faux positifs (`git commit -m "… git push …"`) et les contournements (`cd … && git push`, alias, `bash -c`, worktree lié).
+2. `gh pr create` et les outils GitHub d'envoi ne sont contrôlés que pour le dépôt d'`origin` ; envoi de fichiers par l'API GitHub refusé dans ce dépôt (passer par `git push`).
+3. Relecture acceptée seulement si `completed` et `converged` ; `.gstack/porte/` n'est plus modifiable par les outils d'édition ; nom `..x` à la racine bien considéré dans le dépôt ; `GSTACK_ROOT` relatif résolu comme dans les scripts shell ; liste des emplacements alignée sur gstack (`.copilot`) ; compétences d'administration reconnues sous leurs deux noms ; documentation et tests alignés.
+
+---
+
+## Critères d'acceptation
+
+1. A : ouvrir un QR individuel crée la personne (bar : « prénom à saisir ») avant toute saisie ; 30 min plus tard elle peut encore donner son prénom ; tant qu'elle ne l'a pas fait, rien d'autre n'est visible ni possible sur son téléphone.
+2. A : le même QR ouvert sur un autre navigateur propose « Récupérer mes chansons » pour la même personne ; le nombre de personnes ne change pas ; l'ancien téléphone perd l'accès.
+3. A : un QR individuel ne crée jamais deux personnes ; un téléphone ne crée jamais deux solos ; les tests figés de `solo-comptoir-api` restent verts (un seul évolue, voir A2).
+4. B : mode coupé, le QR d'événement est refusé ; mode actif, deux téléphones différents donnent deux chanteurs, le même navigateur retrouve son chanteur ; « Renouveler » refuse l'ancien QR sans couper les inscrits ; « Supprimer toutes les tables » coupe le mode ; un redémarrage le garde.
+5. C : une page restée cachée 30 min fait passer la personne en « Sans nouvelles depuis 30 min » ; la rendre visible la remet à « Actif à l'instant » ; rien ne s'affiche pour les tables ni pour les personnes parties.
+6. D : un téléphone de table affiche le QR de sa table ; un nouveau téléphone qui le scanne voit « Rejoindre la table » en tête ; la page principale ne liste que les personnes gérées par ce téléphone ; « Voir toute la table (N) » liste tout le monde.
+7. E : identifiant d'appareil périmé → l'appareil du même nom est repris seul, la lecture repart, la liste montre toujours l'appareil choisi ; 204 sans appareil → pastille orange, plus verte ; une vérification réussie efface l'ancienne erreur.
+8. F : la barre atteint 100 % à la durée du titre en démo ; pause figée ; titre relancé repart de zéro ; durée inconnue → temps écoulé seul.
+9. G : avec un KaraFun « collant », voix guide 25 en direct sur A, B sans réglage démarre à 0 ; avec un KaraFun qui remet à zéro, aucune trame en plus ; un réglage en direct envoyé pendant le changement de titre est refusé.
+10. H : une soirée ouverte 4 jours montre des barres lisibles sur au moins la moitié de la largeur et des étiquettes espacées d'au moins 40 unités, sur ordinateur et à 360 px.
+11. P : `git push` depuis Claude Code échoue sans relecture terminée sur l'arbre exact, passe après ; `git commit -m "… git push …"` n'est plus bloqué ; un `git push` tapé par l'utilisateur hors de Claude Code n'est jamais concerné.
+12. `node test/run-offline.js` vert, couverture ≥ 95 % (`node test/coverage.js --min-lines 95`), toutes les nouvelles phrases des téléphones traduites, `RAPPORT-TEST.md` à jour.
+
+## Plan de tests
+
+| Couche | Quoi | Nombre |
+|---|---|---|
+| Unitaire | `private-event.js` ; valeurs neutres de `catchUpCommands` ; durée et temps écoulé ; graduations du graphique ; `resolveDevice` Spotify ; porte gstack (pre-push, relecture convergée) | +25 |
+| Serveur (vm) | `/api/table/solo/open`, récupération par clé, `/api/table/enter`, activité visible/cachée, `/api/table/invite`, réglage en direct ciblé, santé Spotify | +30 |
+| API démo | parcours solo complet et événement privé sur un port libre (3103, 3115+) | +2 fichiers |
+| Interface (vm) | fenêtre de prénom, récupération, page de table centrée, QR de table, liste Solistes, libellés d'activité, pastille Spotify, barre de lecture, graphique | +30 |
+| Navigateur (gstack `qa`) | solo à 390 px (ouverture, prénom, récupération dans un autre contexte), événement privé, table à 3 téléphones, Scène avec barre, statistiques | 5 parcours |
+
+## Retour arrière
+
+Annuler la PR. Les nouveaux champs (personne : `nameRequired`, `soloKeyHash`, `lastActionAt` ; soirée : `privateEvent` ; Spotify : `deviceType`) sont facultatifs à la lecture : une ancienne version ignore ces champs.
+
+## Documentation
+
+`GUIDE-BAR.md` (accueil, En solo, événement privé, Spotify, réglages, statistiques, vérifications hors service), `CONTEXTE-REPRISE.md` (règles d'accès solo et exception de l'événement privé), `README.md:9`, `LISEZMOI.txt`, `AGENTS.md` (porte gstack).
+
+## Décisions prises avec le gérant (8 octobre)
+
+- **D1, événement privé** : un scan depuis un autre navigateur crée toujours un nouveau chanteur ; pas de reprise par prénom. Le même navigateur retrouve son chanteur.
+- **D2, solo qui perd sa page** : le QR individuel devient la clé personnelle de la soirée (récupération de la même personne sur n'importe quel téléphone, jamais une deuxième place), l'adresse garde la clé, et le bar a une liste des solistes triée par activité avec « QR de reprise » en un toucher.
+- **D3, tables** : la page principale ne montre que les personnes gérées par ce téléphone ; « Voir toute la table (N) » ouvre la liste complète.
+- Autres choix par défaut de cette spécification (sans objection) : dernière activité affichée pour les solos seulement, seuils 20 et 45 minutes ; barre de lecture au bar et sur les téléphones ; pastille Spotify aussi sur l'écran Scène ; graphique corrigé dans la page seulement (pas de clôture automatique des soirées).
