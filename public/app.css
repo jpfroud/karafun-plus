@@ -358,6 +358,11 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .closing-chip .btn { min-height: 30px; padding: 2px 9px; font-size: 12px; }
 .stage-card .live-who, .next-card .live-who { display: grid; gap: 10px; }
 .live-card > .badge { justify-self: start; }
+/* Barre de lecture du titre sur scène (page du bar et téléphones). */
+.stage-progress { display: grid; gap: 4px; margin-top: 8px; }
+.stage-progress-track { height: 4px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.stage-progress-fill { display: block; height: 100%; background: var(--accent); }
+.stage-progress-text { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .stage-person { display: grid; grid-template-columns: 64px minmax(0,1fr); gap: 12px; align-items: start; }
 .stage-person-main { min-width: 0; }
 .stage-photo { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; object-fit: cover; background: var(--surface-2); color: var(--accent); font-size: 26px; font-weight: 850; border: 2px solid var(--accent); }

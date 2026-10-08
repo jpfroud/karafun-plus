@@ -279,7 +279,9 @@ async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash =
   };
   const timers = new Map();
   let timerId = 0;
-  page.runTimers = ms => { for (const [id, timer] of timers) if (timer.ms === ms) { timers.delete(id); timer.fn(); } };
+  // Minuteurs dus à cet instant seulement : un minuteur qui se reprogramme
+  // (barre de lecture) attend l'appel suivant.
+  page.runTimers = ms => { for (const [id, timer] of [...timers]) if (timer.ms === ms) { timers.delete(id); timer.fn(); } };
   class AudioContext {
     constructor() { if (audioThrows) throw new Error('audio bloqué'); this.currentTime = 0; this.destination = {}; }
     resume() {}
@@ -2330,6 +2332,64 @@ test('sur scène : photo, repère de la personne et titre KaraFun sans fiche', a
   assert.match(page.$('stage').textContent, /Bruno.*Table 1.*Repère/s);
   await page.update({ stage: { ours: true, ids: ['inconnu'], singer: 'Quelqu’un', title: 'Seul' } });
   assert.match(page.$('stage').textContent, /Quelqu’un.*Seul/s);
+});
+
+// Lot F : barre de lecture du titre sur scène, avancée seule chaque seconde
+// (minuteur de 1100 ms), horloge du serveur corrigée par S.now.
+test('barre de lecture sur scène : temps, reste, tempo, pause, durée inconnue, Battle, jamais sur « Ensuite »', async () => {
+  const realNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const world = baseWorld();
+    const progress = (fields = {}) => ({ elapsedSec: 102, durationSec: 237, paused: false, rate: 1, ...fields });
+    world.now = now - 2000; // horloge du serveur 2 s en retard sur ce PC
+    const stage = { ours: false, singer: 'Client', title: 'Manuel' };
+    world.stage = { ...stage, progress: progress() };
+    world.next = { ours: false, singer: 'Suivant', title: 'Après', progress: progress() };
+    const page = await openPage({ world });
+    const text = () => page.in('stageProgress', '.stage-progress-text')?.textContent;
+    const width = () => page.in('stageProgress', '.stage-progress-fill')?.getAttribute('style');
+    assert.equal(page.$('stageProgress').hidden, false);
+    assert.equal(text(), '1:42 / 3:57 · reste 2:15');
+    assert.equal(width(), 'width:43.0%');
+    assert.equal(page.$('next').querySelector('.stage-progress-fill'), null, 'pas de barre sur le titre suivant');
+    now += 1000;
+    page.runTimers(1100);
+    assert.equal(text(), '1:43 / 3:57 · reste 2:14', 'avance seule entre deux lectures');
+    // Tempo +20 en direct : le titre avance plus vite, le reste raccourcit.
+    await page.update({ now, stage: { ...stage, progress: progress({ elapsedSec: 120, durationSec: 240, rate: 1.2 }) } });
+    assert.equal(text(), '2:00 / 4:00 · reste 1:40');
+    now += 5000;
+    page.runTimers(1100);
+    assert.equal(text(), '2:06 / 4:00 · reste 1:35');
+    // Pause : figée, plus de minuteur.
+    await page.update({ now, stage: { ...stage, progress: progress({ elapsedSec: 60, durationSec: 200, paused: true }) } });
+    assert.equal(text(), 'En pause · 1:00 / 3:20 · reste 2:20');
+    now += 10000;
+    page.runTimers(1100);
+    page.runTimers(1100);
+    assert.equal(text(), 'En pause · 1:00 / 3:20 · reste 2:20');
+    // Titre plus long que prévu : barre pleine, jamais au-delà.
+    await page.update({ now, stage: { ...stage, progress: progress({ elapsedSec: 250 }) } });
+    assert.equal(text(), '3:57 / 3:57 · reste 0:00');
+    assert.equal(width(), 'width:100.0%');
+    // Durée inconnue, puis Battle (même avec une durée) : temps écoulé seul.
+    await page.update({ now, stage: { ...stage, progress: progress({ elapsedSec: 75, durationSec: null }) } });
+    assert.equal(text(), '1:15 écoulées');
+    assert.equal(width(), undefined, 'pas de barre sans durée');
+    await page.update({ now, stage: { ...stage, kind: 'battle', progress: progress({ elapsedSec: 75 }) } });
+    assert.equal(text(), '1:15 écoulées');
+    // État sans heure du serveur : valeur reçue montrée telle quelle.
+    await page.update({ now: undefined, stage: { ...stage, progress: progress() } });
+    now += 30000;
+    page.runTimers(1100);
+    assert.equal(text(), '1:42 / 3:57 · reste 2:15');
+    await page.update({ stage: { ...stage, progress: null } });
+    assert.equal(page.$('stageProgress').hidden, true);
+    await page.update({ stage: null });
+    assert.equal(page.$('stageProgress').hidden, true);
+  } finally { Date.now = realNow; }
 });
 
 test('duo improvisé noté : changer de partenaire ou annuler, sur scène puis dans les derniers passages', async () => {
