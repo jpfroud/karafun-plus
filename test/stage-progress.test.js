@@ -105,6 +105,7 @@ test('protocole : position et durée numériques prises si KaraFun les envoie un
   assert.equal(protocolPosition({ position: 12 }), 12);
   assert.equal(protocolPosition({ position: -1 }), null);
   assert.equal(protocolPosition({ position: '12' }), null);
+  assert.equal(protocolPosition({ position: 102000 }), null, 'millisecondes : pas une position en secondes');
   assert.equal(protocolPosition(null), null);
 });
 

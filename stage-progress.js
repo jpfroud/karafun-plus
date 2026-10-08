@@ -39,9 +39,10 @@ function protocolDuration(status, rawStatus = null) {
 }
 
 // Position en secondes (faux KaraFun de la démo : instantané à l'envoi).
+// Au-delà d'une heure, l'unité n'est pas la seconde : ignorée.
 function protocolPosition(status) {
   const position = status?.position;
-  return finite(position) && position >= 0 ? position : null;
+  return finite(position) && position >= 0 && position <= MAX_TRUSTED_SEC ? position : null;
 }
 
 function pausedOf(status) {
