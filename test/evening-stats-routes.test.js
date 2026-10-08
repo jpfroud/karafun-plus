@@ -437,6 +437,11 @@ test('Battle : électorat agrandi pendant le vote, au journal et après un redé
     [['approved', 6, 6, 'all-voted']], 'la décision donne l’électorat final');
   const stats = (await call(g, 'GET', staff(g, '/api/staff/stats'))).body.stats;
   assert.equal(stats.global.battle.votes, 6);
+  // Le déroulé de la page des statistiques garde les deux nombres : à
+  // l'ouverture (5) et à la clôture (6), pour ne jamais montrer plus de voix
+  // que de votants possibles.
+  assert.deepEqual(stats.timeline.battles.filter(x => x.ballotId === ballotId).map(x => [x.kind, x.eligible, x.voters ?? null]),
+    [['proposed', 5, null], ['decided', 6, 6]], 'électorat final dans le déroulé');
 });
 
 test('titre passé dans KaraFun avant d’être chanté, commandes du bar et fermeture atteinte', async () => {
