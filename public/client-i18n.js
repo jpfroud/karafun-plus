@@ -83,6 +83,10 @@ window.CLIENT_TRANSLATIONS = {
       'Ensuite': 'Next',
       'Personne sur scène': 'Nobody on stage',
       'La prochaine chanson arrive bientôt.': 'The next song is coming up soon.',
+      // Barre de lecture du titre sur scène.
+      'reste {n} min': ['{n} min left', '{n} min left'],
+      'Bientôt fini': 'Almost over',
+      'En pause': 'Paused',
       'Chanteur': 'Singer',
       'Chanson': 'Song',
       'Duo': 'Duet',

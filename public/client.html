@@ -230,6 +230,7 @@
       <div class="grow">
         <div class="who" id="stageWho" data-i18n>Chargement…</div>
         <div class="what" id="stageWhat"></div>
+        <div id="stageProgress" class="stage-progress" hidden></div>
       </div>
     </div>
     <div class="next" id="nextBox" hidden>
@@ -1107,6 +1108,8 @@
       });
       if (number !== stateRequest) return;
       state = data;
+      // Écart entre l'horloge du serveur et celle du téléphone (barre de lecture).
+      clockSkew = Number.isFinite(data.now) ? data.now - Date.now() : 0;
       // Réponses données avant cette lecture : l'état les montre déjà.
       for (const [key, at] of answered) if (at <= startedAt) answered.delete(key);
       // Réglages de titre enregistrés avant cette lecture : le serveur les montre.
@@ -1451,6 +1454,26 @@
       $('nextTxt').textContent = `${singerLabel(next)} · ${next.title || t('Chanson')}`;
       $('nextEta').textContent = eta(next.eta || state.nextEta);
     }
+    renderStageProgress();
+  }
+
+  // Barre de lecture du titre sur scène : temps calculé par le serveur à
+  // state.now, avancé ici chaque seconde (minuteur de 1100 ms qui se
+  // reprogramme tant que le titre joue). Rien pour une Battle ni sans durée.
+  let clockSkew = 0, progressTimer = null;
+  function renderStageProgress() {
+    const box = $('stageProgress'), p = state?.stage?.progress;
+    const known = !!p && p.durationSec > 0 && state.stage.kind !== 'battle';
+    if (!box) return;
+    box.hidden = !known;
+    if (!known) return;
+    const since = Number.isFinite(state.now) && !p.paused ? Math.max(0, Date.now() + clockSkew - state.now) / 1000 : 0;
+    const elapsed = Math.min(p.durationSec, p.elapsedSec + since * p.rate);
+    const left = (p.durationSec - elapsed) / p.rate;
+    const label = p.paused ? t('En pause') : left < 30 ? t('Bientôt fini') : tp(Math.round(left / 60), 'reste {n} min', 'reste {n} min');
+    const html = `<div class="stage-progress-track"><span class="stage-progress-fill" style="width:${(elapsed / p.durationSec * 100).toFixed(1)}%"></span></div><span class="stage-progress-text">${esc(label)}</span>`;
+    if (box.innerHTML !== html) box.innerHTML = html;
+    if (!p.paused && !progressTimer) progressTimer = setTimeout(() => { progressTimer = null; renderStageProgress(); }, 1100);
   }
 
   // Noms affichés d'un passage. Une Battle ajoutée hors de la file porte un
