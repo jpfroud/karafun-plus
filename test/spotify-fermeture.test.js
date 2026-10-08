@@ -45,10 +45,12 @@ const json = (body, status = 200) => ({ ok: status < 300, status, headers: { get
 // Faux Spotify : journal des appels, lecture en cours ou non.
 function fakeSpotify(f, { playing = false, ...options } = {}) {
   const calls = [];
-  const state = { playing };
+  // Vérification de la minute : liste des appareils (comptée à part).
+  const state = { playing, checks: 0, devices: [{ id: 'pc', name: 'PC', is_active: true }] };
   f.spotify.fetchImpl = async (url, request = {}) => {
     if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
     if (url.endsWith('/me/player')) return json({ is_playing: state.playing, device: { id: 'pc', name: 'PC' } });
+    if (url.endsWith('/me/player/devices')) { state.checks++; return json({ devices: state.devices }); }
     if (url.includes('/me/player/play')) { calls.push(['spotify-play', Date.now()]); state.playing = true; return { ok: true, status: 204, text: async () => '' }; }
     if (url.includes('/me/player/pause')) { calls.push(['spotify-pause', Date.now()]); state.playing = false; return { ok: true, status: 204, text: async () => '' }; }
     throw new Error(`inattendu : ${url} ${request.method || ''}`);
@@ -719,4 +721,122 @@ test('fermeture : duo retiré de KaraFun, l’avis de l’invitée nomme l’aut
   const notice = p => (p.inbox || []).filter(n => n.kind === 'closingPulled').map(n => ({ ...n.params }));
   assert.deepEqual(notice(alice), [{ title: 'Duo T' }]);
   assert.deepEqual(notice(bruno), [{ title: 'Duo T', name: 'Alice' }]);
+});
+
+// Regression: retours de la soirée du 4 octobre — après trois relances en
+// échec (appareil fermé ou identifiant périmé), plus rien ne repartait avant
+// le silence suivant ; et la pause d'avant-titre sautait si une lecture
+// d'état Spotify était en cours.
+function closedDeviceSpotify(f, now) {
+  const state = { devices: [], active: null, playing: false, plays: [], resumes: 0, devicesCalls: 0 };
+  const empty = { ok: true, status: 204, headers: { get: () => null }, text: async () => '' };
+  const notFound = () => json({ error: { status: 404, message: 'Device not found', reason: 'NO_ACTIVE_DEVICE' } }, 404);
+  f.spotify.fetchImpl = async (url, request = {}) => {
+    if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
+    const method = request.method || 'GET';
+    if (url.endsWith('/me/player/devices')) { state.devicesCalls++; return json({ devices: state.devices.map(d => ({ ...d, is_active: d.id === state.active })) }); }
+    if (url.endsWith('/me/player') && method === 'GET') {
+      const device = state.devices.find(d => d.id === state.active);
+      return device ? json({ is_playing: state.playing, device }) : empty;
+    }
+    if (url.includes('/me/player/play')) {
+      state.resumes++;
+      const id = new URL(url).searchParams.get('device_id') || state.active;
+      if (!state.devices.some(d => d.id === id)) return notFound();
+      state.active = id; state.playing = true; state.plays.push(now());
+      return empty;
+    }
+    if (url.includes('/me/player/pause')) { state.playing = false; return empty; }
+    throw new Error(`inattendu : ${url} ${method}`);
+  };
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r',
+    deviceId: 'pc-OLD', deviceName: 'PC du bar', deviceType: 'Computer', autoResume: true, autoPause: true, resumeDelaySec: 0, pauseLeadSec: 0 };
+  return state;
+}
+
+test('Spotify rétabli : la relance abandonnée après trois essais repart seule, avec l’appareil repris', async () => {
+  const logs = [];
+  const f = harness({ logs });
+  let now = Date.now();
+  f.spotifyAutomation.now = () => now;
+  f.spotify.now = () => now;
+  const state = closedDeviceSpotify(f, () => now);
+  f.setBridge(fakeBridge([], []));
+  for (let i = 0; i < 3; i++) { await f.spotifyTick(); now += 30000; }
+  assert.equal(state.resumes, 3, 'trois essais');
+  assert.equal(f.spotifyAutomation.done, true, 'abandon pour ce silence');
+  assert.equal(f.staffState().spotify.health.state, 'no-device', 'le bar voit qu’aucun appareil ne répond');
+  assert.match(f.spotify.lastError, /Aucun appareil Spotify actif/);
+  await f.spotifyTick();
+  assert.equal(state.resumes, 3, 'plus de relance : seulement la vérification');
+  // Le gérant rouvre Spotify sur le PC : nouvel identifiant, même nom.
+  state.devices = [{ id: 'pc-NEW', name: 'PC du bar', type: 'Computer' }];
+  now += 60000;
+  await f.spotifyTick();
+  assert.equal(f.spotify.config.deviceId, 'pc-NEW', 'appareil repris et enregistré');
+  assert.equal(f.staffState().spotify.health.state, 'ready');
+  assert.equal(f.spotify.lastError, null, 'l’erreur ancienne disparaît');
+  assert.ok(logs.some(line => /Appareil Spotify retrouvé : PC du bar/.test(line)), logs.join('\n'));
+  assert.ok(logs.some(line => /Spotify rétabli : la relance automatique reprend\./.test(line)), logs.join('\n'));
+  now += 3000;
+  await f.spotifyTick();
+  assert.equal(state.plays.length, 1, 'la musique repart sans toucher au bar');
+  assert.equal(state.active, 'pc-NEW');
+  assert.equal(f.spotifyAutomation.done, true);
+  // Une vérification « prête » de plus ne relance rien (pas de relances répétées).
+  state.playing = false;
+  now += 60000;
+  await f.spotifyTick();
+  now += 3000;
+  await f.spotifyTick();
+  assert.equal(state.plays.length, 1, 'une seule action par silence');
+});
+
+test('Spotify rétabli après une pause du bar : la musique coupée par le bar reste coupée', async () => {
+  const f = harness();
+  let now = Date.now();
+  f.spotifyAutomation.now = () => now;
+  f.spotify.now = () => now;
+  const state = closedDeviceSpotify(f, () => now);
+  f.setBridge(fakeBridge([], []));
+  await f.spotifyTick();
+  assert.equal(state.resumes, 1, 'première relance en échec');
+  await f.handlers['POST /api/staff/spotify'](null, null, { action: 'pause' });
+  state.devices = [{ id: 'pc-OLD', name: 'PC du bar', type: 'Computer' }];
+  const checked = await f.handlers['POST /api/staff/spotify'](null, null, { action: 'refresh' });
+  assert.equal(checked.health.state, 'ready');
+  for (let i = 0; i < 3; i++) { now += 30000; await f.spotifyTick(); }
+  assert.deepEqual(state.plays, [], 'choix du bar respecté');
+});
+
+test('lancement : la pause d’avant-titre attend une vérification Spotify en cours au lieu de sauter', async () => {
+  const f = harness();
+  const { calls, state } = fakeSpotify(f, { playing: true, pauseLeadSec: 0 });
+  const base = f.spotify.fetchImpl;
+  let release;
+  const slow = new Promise(resolve => { release = resolve; });
+  f.spotify.fetchImpl = async (url, request) => {
+    if (url.endsWith('/me/player/devices')) await slow;
+    return base(url, request);
+  };
+  const kf = [];
+  singers(f, ['Alice']);
+  loadedNext(f, kf);
+  const tick = f.spotifyTick();
+  await wait(10);
+  assert.equal(state.checks, 0, 'vérification en route');
+  const starting = f.playKaraFun();
+  await wait(10);
+  assert.deepEqual(kf, [], 'KaraFun attend la pause');
+  await f.spotifyTick();
+  assert.equal(state.checks, 0, 'pas de second passage de l’automate pendant ce temps');
+  release();
+  await tick;
+  assert.equal(await starting, true);
+  const pause = calls.find(c => c[0] === 'spotify-pause');
+  const play = kf.find(c => c[0] === 'karafun-play');
+  assert.ok(pause && play, 'Spotify coupé avant le titre');
+  assert.ok(pause[1] <= play[1]);
+  assert.equal(state.playing, false);
+  assert.equal(state.checks, 1);
 });

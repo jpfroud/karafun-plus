@@ -2457,9 +2457,10 @@ function assertRoomBeforeClosing(p, mode) {
 
 // ------------------------------------------------------------------ Spotify
 const spotifyRedirect = () => `http://127.0.0.1:${PORT}/spotify/callback`;
-const SPOTIFY_POLL_MS = 30000; // lecture de l'état affiché au bar, hors action
-let spotifyBusy = false;
-let spotifyPolledAt = 0;
+// spotifyBusy : passages de l'automate et pauses d'avant-titre en cours ;
+// spotifyWork : passage de l'automate en cours, qu'une pause d'avant-titre attend.
+let spotifyBusy = 0;
+let spotifyWork = null;
 // Soirée vue par Spotify. « between » : rien ne joue, mais un titre suivant
 // arrive (chargé dans KaraFun, en cours d'envoi, ou prêt dans la file avec
 // l'envoi automatique) : Spotify ne reprend pas entre deux chansons.
@@ -2513,15 +2514,19 @@ async function playKaraFun({ queueId = null } = {}) {
     if (playStarting === running) playStarting = null;
   }
   const mine = (async () => {
-    if (spotify.connected && spotify.config.autoPause && !spotify.blocked && !spotifyBusy) {
-      spotifyBusy = true;
+    if (spotify.connected && spotify.config.autoPause && !spotify.blocked) {
+      // Une vérification ou une relance de l'automate en cours ne fait plus
+      // sauter la pause : elle part juste après, dans le même délai.
+      const running = spotifyWork;
+      spotifyBusy++;
       let paused = null;
       try {
-        paused = await Promise.race([spotify.pause(), new Promise(resolve => setTimeout(resolve, SPOTIFY_PAUSE_WAIT_MS, 'timeout'))]);
+        paused = await Promise.race([running ? running.then(() => spotify.pause()) : spotify.pause(),
+          new Promise(resolve => setTimeout(resolve, SPOTIFY_PAUSE_WAIT_MS, 'timeout'))]);
       } catch (error) { spotify.lastError = error.message; }
       // Une pause encore en route après le délai peut croiser le prochain
       // passage de l'automate : sans effet, Spotify est déjà en pause.
-      finally { spotifyBusy = false; }
+      finally { spotifyBusy--; }
       const lead = Number(spotify.config.pauseLeadSec) || 0;
       if (paused === 'done' && lead > 0) await new Promise(resolve => setTimeout(resolve, lead * 1000));
     }
@@ -2541,6 +2546,18 @@ async function playKaraFun({ queueId = null } = {}) {
   finally { if (playStarting === mine) playStarting = null; }
 }
 
+// Vérification de Spotify (appareils et lecteur). Rétabli (appareil retrouvé,
+// réseau revenu, reconnexion) : la relance abandonnée du silence en cours
+// repart, sauf si le bar a lui-même coupé ou lancé la musique.
+async function spotifyCheck() {
+  const before = spotify.health.state;
+  const health = await spotify.checkHealth();
+  if (health.state === 'ready' && (before !== 'ready' || health.adopted) && spotifyAutomation.recover()) {
+    appLog('Spotify rétabli : la relance automatique reprend.');
+  }
+  return health;
+}
+
 async function spotifyTick() {
   if (!spotify.connected || spotifyBusy) return;
   const karaoke = karaokeOutlook();
@@ -2550,12 +2567,13 @@ async function spotifyTick() {
   const action = spotifyAutomation.step(karaoke, closed ? { ...spotify.config, autoResume: true } : spotify.config);
   // Après un échec, Spotify n'est pas rappelé avant le délai ; seule la pause
   // d'un titre qui démarre passe outre (sauf si Spotify demande d'attendre).
-  if (spotify.blocked || (spotify.waiting && action !== 'pause') ||
-      (!action && Date.now() - spotifyPolledAt < SPOTIFY_POLL_MS)) return;
-  spotifyBusy = true;
-  spotifyPolledAt = Date.now();
+  // Sans action : vérification toutes les minutes (ou après un échec).
+  if (spotify.blocked || (spotify.waiting && action !== 'pause') || (!action && !spotify.checkDue)) return;
+  spotifyBusy++;
+  let release;
+  spotifyWork = new Promise(resolve => { release = resolve; });
   try {
-    if (!action) { await spotify.readPlayer(); return; }
+    if (!action) { await spotifyCheck(); return; }
     const result = action === 'resume' ? await spotify.resume() : await spotify.pause();
     spotifyAutomation.settle(true);
     journalEvent('spotify', { action, result: String(result || ''), trigger: closed ? 'closing' : 'auto' });
@@ -2566,9 +2584,10 @@ async function spotifyTick() {
     // Un titre lancé pendant la relance : rien à suspendre.
     if (action === 'resume' && !closed && karaokeOutlook() !== 'singing') holdAutoPlay();
   } catch (error) {
-    if (action) { spotifyAutomation.settle(false); journalEvent('spotify', { action, result: 'error', trigger: closed ? 'closing' : 'auto' }); }
+    spotifyAutomation.settle(false);
+    journalEvent('spotify', { action, result: 'error', trigger: closed ? 'closing' : 'auto' });
     spotify.lastError = error.message;
-  } finally { spotifyBusy = false; }
+  } finally { spotifyBusy--; spotifyWork = null; release(); }
 }
 
 // Le catalogue essaie les deux domaines KaraFun comme la recherche, en gardant
@@ -3361,7 +3380,7 @@ const handlers = {
     else if (action === 'auth-url') return { ok: true, url: spotify.authUrl(spotifyRedirect()) };
     else if (action === 'disconnect') spotify.disconnect();
     else if (action === 'devices') return { ok: true, devices: await spotify.devices() };
-    else if (action === 'device') spotify.setDevice(body.deviceId, body.deviceName);
+    else if (action === 'device') { spotify.setDevice(body.deviceId, body.deviceName); await spotifyCheck(); }
     else if (action === 'options') spotify.setOptions({
       ...('autoResume' in body ? { autoResume: !!body.autoResume } : {}),
       ...('autoPause' in body ? { autoPause: !!body.autoPause } : {}),
@@ -3374,7 +3393,8 @@ const handlers = {
       journalEvent('spotify', { action: action === 'play' ? 'resume' : 'pause', result: String(result || ''), trigger: 'staff' });
       return { ok: true, result };
     }
-    else if (action === 'refresh') await spotify.readPlayer();
+    // « Vérifier Spotify » : liste des appareils, appareil repris, état du lecteur.
+    else if (action === 'refresh') return { ok: true, health: await spotifyCheck() };
     else throw new Error('Action Spotify inconnue.');
     return { ok: true };
   },

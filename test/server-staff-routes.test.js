@@ -799,7 +799,13 @@ test('Spotify : identifiant, adresse de connexion, appareils et options depuis l
     { id: 'enceinte', name: 'Appareil', type: 'Speaker', active: false }]);
   assert.deepEqual(calls.map(c => c[1]), ['https://accounts.spotify.com/api/token', '/me/player/devices']);
 
+  // Choix d'un appareil : vérifié tout de suite, type repris de la liste.
+  calls.length = 0;
   await f.call('POST /api/staff/spotify', { action: 'device', deviceId: 'pc-bar', deviceName: 'PC du bar' });
+  assert.deepEqual(calls.map(c => c[1]), ['/me/player/devices', '/me/player'], 'vérification après le choix');
+  assert.equal(f.staffState().spotify.deviceType, 'Computer');
+  assert.equal(f.staffState().spotify.health.state, 'ready');
+  assert.equal(f.staffState().spotify.devices.length, 2, 'liste gardée sur le serveur');
   await f.call('POST /api/staff/spotify', { action: 'options', autoResume: false, autoPause: 0,
     resumeDelaySec: '12', pauseLeadSec: 4 });
   view = plain(f.staffState().spotify);
@@ -852,7 +858,14 @@ test('Spotify : lecture et pause du bar, l’automate ne les défait pas', async
   assert.equal(f.spotifyAutomation.done, true);
   assert.equal(state.player.is_playing, false);
 
-  assert.deepEqual(plain(await f.call('POST /api/staff/spotify', { action: 'refresh' })), { ok: true });
+  // « Vérifier Spotify » : appareils et lecteur, l'état revient à la page.
+  calls.length = 0;
+  const checked = plain(await f.call('POST /api/staff/spotify', { action: 'refresh' }));
+  assert.equal(checked.ok, true);
+  assert.equal(checked.health.state, 'ready');
+  assert.deepEqual(checked.health.device, { id: 'pc-bar', name: 'PC du bar', active: true });
+  assert.equal(checked.health.adopted, false);
+  assert.deepEqual(calls, [['GET', '/me/player/devices'], ['GET', '/me/player']]);
   const view = plain(f.staffState().spotify);
   assert.equal(view.player.isPlaying, false);
   assert.deepEqual(view.player.track, { title: 'Ambiance', artist: 'Groupe' });
