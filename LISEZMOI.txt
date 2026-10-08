@@ -50,9 +50,14 @@ DÉMARRAGE AU BAR
    Dans le bloc « Tables », ajoute les tables une par une. L'effectif proposé
    est 4 et peut être changé par table : c'est le plafond d'inscriptions.
    Pour les personnes venues seules, le groupe « En solo » est prêt dès le
-   démarrage : le bar crée un QR individuel par personne (« Créer un QR
-   individuel »). Chaque personne y garde son propre tour et son téléphone
-   ne peut gérer qu'un seul chanteur de ce groupe.
+   démarrage : le bar crée un QR individuel par personne (« Personne
+   seule : QR individuel », écran Accueil). Ce QR crée la personne dès son
+   ouverture ; son téléphone demande alors son prénom. Chaque personne y
+   garde son propre tour et son téléphone ne peut gérer qu'un seul chanteur
+   de ce groupe. Pour un bar privatisé, « Événement privé : un seul QR pour
+   tout le monde » (écran Accueil) affiche un QR unique : chaque nouveau
+   téléphone qui le scanne devient un nouveau chanteur. Décoche-le pour
+   l'arrêter.
 
 4. Avec ton téléphone, sur le même Wi-Fi que le PC, scanne le QR code de la
    table créée par le bar (ou son QR imprimé depuis « Imprimer les QR codes des
@@ -86,8 +91,13 @@ DÉMARRAGE AU BAR
    trois autres chansons entre deux passages quand c'est possible. Deux
    personnes du groupe « En solo » doivent aussi confirmer leur duo, car
    elles sont des solistes indépendants. En cas de téléphone perdu dans
-   « En solo », demande au bar un QR de transfert : seul le profil visé par
-   ce QR (ou un code actif) peut être repris.
+   « En solo », rescanne ton QR individuel sur le nouveau téléphone et
+   touche « Récupérer mes chansons », ou demande au bar son « QR de
+   reprise » (liste « Solistes ») : seul ce profil peut être repris, jamais
+   une deuxième place.
+   Sur une table, le premier téléphone inscrit affiche « Fais scanner ta
+   table » : les autres scannent ce QR avec leur téléphone. « Voir toute la
+   table » montre toutes les personnes de la table.
    Un titre déjà prévu dans la file, ou chanté depuis peu (45 min par défaut),
    déclenche une simple alerte : on peut le garder ou en choisir un autre.
 
@@ -123,7 +133,8 @@ BON À SAVOIR
   reste suspendu jusqu'au bouton « J'ai vérifié la file KaraFun : reprendre »
   sur la page du bar.
 - « Supprimer toutes les tables » prépare une nouvelle soirée : chanteurs,
-  titres prévus et anciens QR sont effacés. Le titre sur scène continue ;
+  titres prévus et anciens QR sont effacés, et l'événement privé est
+  coupé. Le titre sur scène continue ;
   vérifie et vide les titres restants directement dans KaraFun. Quand le bar
   marque une seule table « Partie », son ancien lien cesse de fonctionner ;
   recrée-la pour révoquer aussi les accès personnels déjà remis.
