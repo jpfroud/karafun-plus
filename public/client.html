@@ -1539,7 +1539,7 @@
       <details class="transfer-fallback"${share.url ? '' : ' open'}><summary>${esc(t('Impossible de scanner ? Utilise un code'))}</summary>
         <p class="small muted">${esc(individual
           ? t('Sur l’autre téléphone, ouvre le QR que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name })
-          : t('Sur l’autre téléphone, ouvre le QR code de la table, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name }))}</p>
+          : t('Sur l’autre téléphone, ouvre le QR code de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom {name}, et saisis ce code valable 10 minutes :', { name }))}</p>
         <p class="share-code">${esc(share.code)}</p>
       </details>`);
     transferSheetFor = person?.id == null ? null : String(person.id);

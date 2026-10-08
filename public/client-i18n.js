@@ -308,8 +308,8 @@ window.CLIENT_TRANSLATIONS = {
       'Impossible de scanner ? Utilise un code': 'Can’t scan? Use a code',
       'Sur l’autre téléphone, ouvre le QR que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :':
         'On the other phone, open the QR code the bar shows you, tap “I am {name}”, then enter this code (valid for 10 minutes):',
-      'Sur l’autre téléphone, ouvre le QR code de la table, touche « Je suis {name} », puis saisis ce code valable 10 minutes :':
-        'On the other phone, open the table’s QR code, tap “I am {name}”, then enter this code (valid for 10 minutes):',
+      'Sur l’autre téléphone, ouvre le QR code de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom {name}, et saisis ce code valable 10 minutes :':
+        'On the other phone, open the table’s QR code, tap “See the whole table”, then “That’s me” next to {name}, and enter this code (valid for 10 minutes):',
       'Lien copié : colle-le dans ton message.': 'Link copied: paste it into your message.',
       'Sélectionne le lien ci-dessous pour le copier.': 'Select the link below to copy it.',
 

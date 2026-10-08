@@ -614,7 +614,7 @@ test('repères chanteurs : transfert vers un autre téléphone (lien, code, erre
   assert.equal(page.$('shareLinkActions').hidden, false);
   assert.equal(page.$('shareUrl').value, 'https://bar.example/t/1/x?transfer=abc');
   assert.match(page.$('shareHelp').textContent, /ou envoie-lui le lien/);
-  assert.match(page.$('shareCodeHelp').textContent, /sur la page de la table/);
+  assert.match(page.$('shareCodeHelp').textContent, /sur la page de la table, toucher « Voir toute la table », puis « C’est moi »/);
   assert.equal(page.$('shareExpires').textContent,
     `QR et lien valables jusqu’à ${hhmm(linkExpiresAt)}, code jusqu’à ${hhmm(expiresAt)} ; un seul usage.`);
   await page.click(page.$('shareCopy'));

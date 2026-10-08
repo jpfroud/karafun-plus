@@ -50,9 +50,17 @@ DÉMARRAGE AU BAR
    Dans le bloc « Tables », ajoute les tables une par une. L'effectif proposé
    est 4 et peut être changé par table : c'est le plafond d'inscriptions.
    Pour les personnes venues seules, le groupe « En solo » est prêt dès le
-   démarrage : le bar crée un QR individuel par personne (« Créer un QR
-   individuel »). Chaque personne y garde son propre tour et son téléphone
-   ne peut gérer qu'un seul chanteur de ce groupe.
+   démarrage : le bar crée un QR individuel par personne (« Personne
+   seule : QR individuel », écran Accueil). Ce QR crée la personne dès son
+   ouverture ; son téléphone demande alors son prénom. Chaque personne y
+   garde son propre tour et son téléphone ne peut gérer qu'un seul chanteur
+   de ce groupe. Pour un bar privatisé, « Événement privé : un seul QR pour
+   tout le monde » (écran Accueil) affiche un QR unique : chaque nouveau
+   navigateur qui le scanne devient un nouveau chanteur (un autre
+   téléphone, ou une autre application sur le même téléphone : Safari,
+   Chrome, Instagram…). Fais-le scanner avec l'appareil photo du
+   téléphone. Décoche-le pour l'arrêter : les inscrits gardent leurs
+   chansons.
 
 4. Avec ton téléphone, sur le même Wi-Fi que le PC, scanne le QR code de la
    table créée par le bar (ou son QR imprimé depuis « Imprimer les QR codes des
@@ -61,10 +69,10 @@ DÉMARRAGE AU BAR
    ajoute les autres depuis le même téléphone, puis prépare et gère leurs
    listes de chansons. Si l'envoi automatique est actif, la première chanson
    prête part dans KaraFun au moment prévu par les réglages du bar.
-   « La file des chansons » montre d'abord les titres confirmés par KaraFun,
+   L'onglet « La file » montre d'abord les titres confirmés par KaraFun,
    puis les passages encore prévus, avec leur rang et une heure estimée ;
-   « En attente de chanson » affiche uniquement les personnes de ta table
-   sans titre, pour ne pas brouiller la file commune.
+   « À notre table, sans chanson » affiche uniquement les personnes de ta
+   table sans titre, pour ne pas brouiller la file commune.
 
    Plusieurs téléphones peuvent scanner le même QR : chacun ajoute les personnes
    qu'il gère, par exemple deux personnes sur chaque téléphone pour une table
@@ -86,8 +94,14 @@ DÉMARRAGE AU BAR
    trois autres chansons entre deux passages quand c'est possible. Deux
    personnes du groupe « En solo » doivent aussi confirmer leur duo, car
    elles sont des solistes indépendants. En cas de téléphone perdu dans
-   « En solo », demande au bar un QR de transfert : seul le profil visé par
-   ce QR (ou un code actif) peut être repris.
+   « En solo », rescanne ton QR individuel sur le nouveau téléphone et
+   touche « Récupérer mes chansons », ou demande au bar son « QR de
+   reprise » (liste « Solistes ») : seul ce profil peut être repris, jamais
+   une deuxième place.
+   Sur une table, chaque téléphone affiche « Fais scanner ta table » juste
+   après sa première inscription : les autres scannent ce QR avec leur
+   téléphone. Le bouton « Faire scanner ma table » le rouvre ensuite.
+   « Voir toute la table » montre toutes les personnes de la table.
    Un titre déjà prévu dans la file, ou chanté depuis peu (45 min par défaut),
    déclenche une simple alerte : on peut le garder ou en choisir un autre.
 
@@ -123,7 +137,8 @@ BON À SAVOIR
   reste suspendu jusqu'au bouton « J'ai vérifié la file KaraFun : reprendre »
   sur la page du bar.
 - « Supprimer toutes les tables » prépare une nouvelle soirée : chanteurs,
-  titres prévus et anciens QR sont effacés. Le titre sur scène continue ;
+  titres prévus et anciens QR sont effacés, et l'événement privé est
+  coupé. Le titre sur scène continue ;
   vérifie et vide les titres restants directement dans KaraFun. Quand le bar
   marque une seule table « Partie », son ancien lien cesse de fonctionner ;
   recrée-la pour révoquer aussi les accès personnels déjà remis.
@@ -173,6 +188,6 @@ Utilise DEMO.bat et la suite hors ligne node test/run-offline.js. Ne lance pas
 test\verif-karafun.js sur une session KaraFun réelle : ce parcours crée des
 tables et modifie la file. Vérifie ensuite les pages du bar et des clients
 dans la simulation locale. Pour une recette sur place, suis GUIDE-BAR.md.
-Contexte complet pour un agent qui reprend le projet : A-LIRE-AGENT.md
+Contexte complet pour un agent qui reprend le projet : CONTEXTE-REPRISE.md
 Résultats des essais sur ce PC et consignes réseau : RAPPORT-TEST.md
 Mode d'emploi du jour J et accès Internet : GUIDE-BAR.md
