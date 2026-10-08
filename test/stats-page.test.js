@@ -118,8 +118,8 @@ function eveningEvents() {
 const meta = { eveningId: '2026-10-03_2000_abcd', startedAt: at(0), endedAt: null,
   roster: { pA: { name: 'Alice' }, pB: { name: 'Bruno' }, pC: { name: 'Chloé' }, pD: { name: 'Dina' }, pE: { name: 'Eve' } },
   tables: { 1: { name: 'Table 1' }, 2: { name: 'Terrasse' }, 3: { name: 'Table 3' } } };
-function apiView({ live = true, events = eveningEvents(), id = meta.eveningId } = {}) {
-  const stats = computeStats({ meta: { ...meta, eveningId: id, endedAt: live ? null : at(90) }, events, now: at(72), live });
+function apiView({ live = true, events = eveningEvents(), id = meta.eveningId, now = at(72), endedAt = live ? null : at(90) } = {}) {
+  const stats = computeStats({ meta: { ...meta, eveningId: id, endedAt }, events, now, live });
   const names = { people: Object.fromEntries(Object.entries(meta.roster).map(([k, v]) => [k, v.name])), tables: { 1: 'Table 1', 2: 'Terrasse' } };
   return { evening: { id, startedAt: stats.evening.startedAt, endedAt: stats.evening.endedAt, current: live, truncated: !live },
     names, stats, insights: insights(stats, { nameOf: pid => names.people[pid], tableName: tid => names.tables[tid] || `Table ${tid}` }),
@@ -152,7 +152,7 @@ function loadPage({ search = '?key=cle-bar', width = 900, responses = {}, storag
   };
   vm.createContext(context);
   vm.runInContext(script, context, { filename: 'stats.html' });
-  return { doc, $: id => doc.getElementById(id), fetches, assigned, timers, store, windowListeners, window: context.window };
+  return { doc, $: id => doc.getElementById(id), fetches, assigned, timers, store, windowListeners, window: context.window, context };
 }
 const text = el => el.textContent;
 const marks = (el, pred = () => true) => el.find(n => (n.listeners.pointerenter || []).length && pred(n));
@@ -721,4 +721,154 @@ test('défilement gardé au rafraîchissement et au redimensionnement, sans ancr
   await settle();
   assert.match(page.$('errorBox').textContent, /Statistiques indisponibles/);
   assert.equal(main.style.minHeight, '', 'hauteur libérée malgré l’erreur');
+});
+
+// ------------------------------------------------------------------ axe du temps
+// Étiquettes d'heure (centrées sous l'axe) et marques des passages d'un graphique.
+function timeAxis(page, id, { left, right = 12 }) {
+  const svg = page.doc.getElementById(`${id}Plot`).byTag('svg')[0];
+  const W = Number(svg.getAttribute('viewBox').split(' ')[2]);
+  const labels = svg.children.filter(n => n.tagName === 'TEXT' && n.getAttribute('text-anchor') === 'middle' && /\d\d:\d\d$/.test(text(n)))
+    .map(n => ({ label: text(n), x: Number(n.getAttribute('x')) }));
+  const plotLeft = left(W);
+  return { svg, W, labels, plotLeft, usable: W - right - plotLeft };
+}
+const timelineAxis = page => timeAxis(page, 'chartTimeline', { left: W => Math.min(150, W * 0.28) });
+const queueAxis = page => timeAxis(page, 'chartQueue', { left: () => 34 });
+function assertReadableAxis({ labels, usable }, what) {
+  assert.ok(labels.length >= 2, `${what} : au moins deux heures (${labels.length})`);
+  assert.ok(labels.length <= Math.floor(usable / 60) + 1, `${what} : ${labels.length} étiquettes pour ${Math.round(usable)} unités`);
+  for (let i = 1; i < labels.length; i++) {
+    assert.ok(labels[i].x - labels[i - 1].x >= 40, `${what} : « ${labels[i - 1].label} » et « ${labels[i].label} » à ${Math.round(labels[i].x - labels[i - 1].x)} unités`);
+  }
+  assert.equal(new Set(labels.map(l => l.label)).size, labels.length, `${what} : pas deux fois la même étiquette`);
+}
+function assertMarksSpread(page, axis, what) {
+  const rects = axis.svg.children.filter(n => n.tagName === 'RECT' && n.getAttribute('class') === 'st-mark');
+  const x0 = Math.min(...rects.map(r => Number(r.getAttribute('x'))));
+  const x1 = Math.max(...rects.map(r => Number(r.getAttribute('x')) + Number(r.getAttribute('width'))));
+  assert.ok(x1 - x0 >= 0.5 * axis.usable, `${what} : passages sur ${Math.round(x1 - x0)} unités sur ${Math.round(axis.usable)}`);
+}
+const timelineCaption = page => page.doc.getElementById('chartTimelinePlot').find(n => n.tagName === 'P' && /Dernier passage/.test(text(n)))[0];
+const localHHMM = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+const viewResponse = view => ({ '/api/staff/stats': () => ({ ok: true, body: view }) });
+const lastStageEnd = view => Math.max(...view.stats.timeline.stages.map(x => x.end));
+
+// Regression: ISSUE-037 — « Déroulé de la soirée » illisible : soirée restée ouverte 4 jours, barres de 2 px et heures superposées
+test('déroulé : une soirée restée ouverte 4 jours garde des barres lisibles et des heures espacées, sur PC et à 360 px', async () => {
+  const view = apiView({ now: at(72 + 4 * 24 * 60) });
+  const lastEnd = lastStageEnd(view);
+  for (const width of [900, 360]) {
+    const page = loadPage({ width, responses: viewResponse(view) });
+    await settle();
+    const axis = timelineAxis(page);
+    assertReadableAxis(axis, `déroulé ${width} px`);
+    assertMarksSpread(page, axis, `déroulé ${width} px`);
+    assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastEnd)} · soirée encore ouverte`);
+    // Le repère vertical suit le même axe : au bord droit, 15 min après le dernier passage.
+    const tip = page.$('tooltip');
+    axis.svg.dispatch('pointermove', { clientX: 10 + axis.W - 12, target: axis.svg });
+    assert.match(text(tip), new RegExp(`^${localHHMM(lastEnd + 15 * 60000)}Rien`));
+  }
+});
+
+// Regression: ISSUE-037 — la soirée close 6 jours plus tard gardait le même graphique illisible pour de bon
+test('déroulé : une soirée close 6 jours plus tard est dessinée sur ses passages, avec l’heure de clôture', async () => {
+  const endedAt = at(6 * 24 * 60);
+  const view = apiView({ live: false, endedAt, now: endedAt + 3600000 });
+  const page = loadPage({ responses: viewResponse(view) });
+  await settle();
+  const axis = timelineAxis(page);
+  assertReadableAxis(axis, 'déroulé clos');
+  assertMarksSpread(page, axis, 'déroulé clos');
+  const day = new Date(endedAt).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close le ${day} à ${localHHMM(endedAt)}`);
+  // Clôture moins de 3 h après le dernier passage : axe jusqu'à la clôture, sans note.
+  const soon = loadPage({ responses: viewResponse(apiView({ live: false, endedAt: at(90 + 170) })) });
+  await settle();
+  assert.equal(timelineCaption(soon), undefined);
+  assert.equal(soon.doc.getElementById('chartTimelinePlot').find(n => n.tagName === 'P').length, 0);
+});
+
+// Regression: ISSUE-037 — clôture plus de 3 h après, le même jour : l'heure seule
+test('déroulé : soirée close le jour même plus de 3 h après le dernier passage, l’heure de clôture sans le jour', async () => {
+  // Dernier passage vers midi heure locale, clôture vers 16 h : même jour quel que soit le fuseau.
+  const noon = new Date(at(0)); noon.setHours(12, 0, 0, 0);
+  const shift = noon.getTime() - at(70);
+  const events = eveningEvents().map(ev => ({ ...ev, t: ev.t + shift }));
+  const endedAt = noon.getTime() + 4 * 3600000;
+  const stats = computeStats({ meta: { ...meta, startedAt: at(0) + shift, endedAt }, events, now: endedAt, live: false });
+  const view = { ...apiView({ live: false }), stats };
+  const page = loadPage({ responses: viewResponse(view) });
+  await settle();
+  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close à ${localHHMM(endedAt)}`);
+});
+
+// Regression: ISSUE-037 — la soirée normale en direct ne change pas : « maintenant » reste visible, un temps mort aussi
+test('déroulé : soirée en direct, l’axe va jusqu’à maintenant tant que le dernier passage a moins de 3 h', async () => {
+  const page = loadPage();
+  await settle();
+  const axis = timelineAxis(page);
+  assertReadableAxis(axis, 'déroulé du soir');
+  assertMarksSpread(page, axis, 'déroulé du soir');
+  assert.equal(timelineCaption(page), undefined, 'pas de note pendant une soirée normale');
+  // Sans le titre « Hors file » en cours : dernier passage à 44 min.
+  const events = eveningEvents().filter(ev => !(ev.queueId === 6 || (ev.ev === 'stage.started' && ev.title === 'Hors file')));
+  const idle = minutes => apiView({ events, now: at(44 + minutes) });
+  const pause = loadPage({ responses: viewResponse(idle(170)) });
+  await settle();
+  assert.equal(timelineCaption(pause), undefined, 'pause de 2 h 50 : encore la soirée en cours');
+  const right = timelineAxis(pause);
+  pause.$('tooltip');
+  right.svg.dispatch('pointermove', { clientX: 10 + right.W - 12, target: right.svg });
+  assert.match(text(pause.$('tooltip')), new RegExp(`^${localHHMM(at(44 + 170))}`), 'le bord droit est maintenant');
+  const stale = loadPage({ responses: viewResponse(idle(190)) });
+  await settle();
+  assert.equal(text(timelineCaption(stale)), `Dernier passage à ${localHHMM(at(44))} · soirée encore ouverte`);
+});
+
+// Regression: ISSUE-037 — la file d'attente sur deux jours (relevés toutes les 5 min) : heures superposées
+test('file d’attente sur deux jours : graduations espacées, avec le jour', async () => {
+  const events = eveningEvents();
+  let seq = events.length;
+  for (let m = 50; m <= 48 * 60; m += 30) events.push({ seq: ++seq, t: at(m), ev: 'queue.sample', ready: m % 7, songsListed: m % 7, present: 4 });
+  for (const width of [900, 360]) {
+    const page = loadPage({ width, responses: viewResponse(apiView({ events, now: at(48 * 60) })) });
+    await settle();
+    const axis = queueAxis(page);
+    assertReadableAxis(axis, `file ${width} px`);
+    for (const { label } of axis.labels) assert.match(label, /^[a-zéû]+\. \d\d:\d\d$/, `jour dans « ${label} »`);
+  }
+  // Une soirée courte garde les heures seules.
+  const page = loadPage();
+  await settle();
+  const short = queueAxis(page);
+  assertReadableAxis(short, 'file du soir');
+  for (const { label } of short.labels) assert.match(label, /^\d\d:\d\d$/);
+});
+
+// Regression: ISSUE-037 — pas de graduations : alignées sur l'horloge locale, du quart d'heure au jour
+test('graduations du temps : pas selon la largeur, alignés sur l’horloge locale', async () => {
+  const page = loadPage();
+  await settle();
+  const { timeTicks } = page.context;
+  const local = (d, h, m = 0) => { const x = new Date(at(0)); x.setDate(x.getDate() + d); x.setHours(h, m, 0, 0); return x.getTime(); };
+  const minutes = ticks => ticks.slice(1).map((t, i) => (t - ticks[i]) / 60000);
+  // 1 h 30 sur 600 unités : 10 étiquettes au plus, pas de 10 min, aux dizaines.
+  const short = timeTicks(local(0, 20, 3), local(0, 21, 33), 600);
+  assert.deepEqual(new Set(minutes(short)), new Set([10]));
+  assert.equal(new Date(short[0]).getMinutes(), 10);
+  // 5 min sur une heure et beaucoup de place.
+  assert.deepEqual(new Set(minutes(timeTicks(local(0, 20), local(0, 21), 1400))), new Set([5]));
+  // 15 h sur 247 unités (téléphone) : pas de 6 h, aux heures multiples de 6.
+  const day = timeTicks(local(0, 22, 42), local(1, 13, 40), 247);
+  assert.ok(day.every(t => new Date(t).getMinutes() === 0 && new Date(t).getHours() % 6 === 0), day.map(t => new Date(t).getHours()).join(','));
+  // 4 jours sur 738 unités : pas de 12 h ; sur 247 : un jour, à minuit.
+  assert.ok(timeTicks(local(0, 22, 42), local(4, 21), 738).every(t => new Date(t).getHours() % 12 === 0));
+  const days = timeTicks(local(0, 22, 42), local(4, 21), 247);
+  assert.ok(days.length >= 2 && days.length <= 4 && days.every(t => new Date(t).getHours() === 0), days.map(t => new Date(t).toString()).join(' | '));
+  // Au-delà d'un jour par étiquette : plusieurs jours, toujours à minuit.
+  const weeks = timeTicks(local(0, 22, 42), local(30, 21), 247);
+  assert.ok(weeks.length >= 2 && weeks.length <= 5, String(weeks.length));
+  assert.ok(weeks.every(t => new Date(t).getHours() === 0));
 });

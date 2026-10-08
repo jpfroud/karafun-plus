@@ -81,6 +81,7 @@ table.st-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 /* Tous les chanteurs : en-têtes sur deux lignes au besoin, le tableau tient à 1366 px. */
 #cardSingers .st-table th { white-space: normal; vertical-align: bottom; min-width: 4.5em; }
 .st-empty { color: var(--muted); padding: 16px 0; text-align: center; }
+.st-caption { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
 .st-tip { position: fixed; z-index: 20; pointer-events: none; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.25); max-width: 300px; }
 .st-tip .st-tip-title { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 .st-tip .st-tip-row { display: flex; gap: 8px; align-items: baseline; }
@@ -239,15 +240,31 @@ function tickDur(sec, step = 60) {
   return rest ? `${m} min ${String(rest).padStart(2, '0')}` : `${m} min`;
 }
 const linear = (d0, d1, r0, r1) => v => d1 === d0 ? r0 : r0 + (v - d0) * (r1 - r0) / (d1 - d0);
-function timeTicks(t0, t1) {
-  const span = t1 - t0;
-  const step = span <= 3600000 ? 900000 : span <= 3 * 3600000 ? 1800000 : 3600000;
+// Graduations du temps : le plus petit pas rond (5 min à 1 jour) qui laisse
+// au moins minGap unités entre deux étiquettes, aligné sur l'horloge locale
+// (heures et jours comptés sur l'horloge : justes au changement d'heure).
+const TIME_STEPS_MIN = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
+function timeTicks(t0, t1, width, minGap = 60) {
+  const room = Math.max(2, Math.floor(width / minGap));
+  const span = Math.max(60000, t1 - t0);
+  const stepMin = TIME_STEPS_MIN.find(m => span / (m * 60000) <= room) || Math.ceil(span / room / 86400000) * 1440;
   const first = new Date(t0); first.setSeconds(0, 0);
-  first.setMinutes(Math.ceil(first.getMinutes() / (step / 60000)) * (step / 60000));
   const out = [];
-  for (let t = first.getTime(); t <= t1; t += step) out.push(t);
+  if (stepMin < 60) {
+    first.setMinutes(Math.ceil(first.getMinutes() / stepMin) * stepMin);
+    for (let t = first.getTime(); t <= t1; t += stepMin * 60000) out.push(t);
+    return out;
+  }
+  const hours = Math.min(24, stepMin / 60), days = stepMin / 1440;
+  if (first.getMinutes()) first.setHours(first.getHours() + 1, 0);
+  first.setHours(Math.ceil(first.getHours() / hours) * hours);
+  for (const d = first; d.getTime() <= t1; days >= 1 ? d.setDate(d.getDate() + days) : d.setHours(d.getHours() + hours)) out.push(d.getTime());
   return out;
 }
+// Au-delà de 20 h, l'heure seule se répète : le jour la précède (« dim. 14:00 »).
+const LONG_SPAN = 20 * 3600000;
+const timeLabel = (t0, t1) => t1 - t0 > LONG_SPAN ? t => `${new Date(t).toLocaleDateString('fr-FR', { weekday: 'short' })} ${hhmm(t)}` : hhmm;
+const timeGap = (t0, t1) => t1 - t0 > LONG_SPAN ? 84 : 60;
 // Barre arrondie du côté de la valeur, carrée sur la ligne de base.
 function hbarPath(x0, y, w, hgt, r = 4) {
   const rr = Math.max(0, Math.min(r, w / 2, hgt / 2));
@@ -327,10 +344,19 @@ function drawTimeline(plot) {
   const singers = [];
   for (const stage of stages) for (const id of stage.ids) if (!singers.includes(id)) singers.push(id);
   const H = top + laneH + 8 + singers.length * rowH + 28;
-  const t0 = tl.start, t1 = Math.max(tl.end, ...stages.map(x => x.end), t0 + 60000);
+  // Soirée restée ouverte (ou close) bien après le dernier passage : l'axe
+  // s'arrête 15 min après lui ; sinon il va jusqu'à maintenant (temps mort visible).
+  const lastEnd = Math.max(...stages.map(x => x.end));
+  const idleTail = tl.end - lastEnd > 3 * 3600000;
+  const t0 = tl.start, t1 = Math.max(idleTail ? lastEnd + 15 * 60000 : tl.end, lastEnd, t0 + 60000);
   const x = linear(t0, t1, left, W - right);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Déroulé de la soirée : qui a chanté quand' }, plot);
-  axisX(svg, timeTicks(t0, t1), x, top - 6, H - 22, hhmm);
+  axisX(svg, timeTicks(t0, t1, W - right - left, timeGap(t0, t1)), x, top - 6, H - 22, timeLabel(t0, t1));
+  if (idleTail) {
+    const closed = state.data.evening.current ? 'soirée encore ouverte'
+      : `soirée close ${new Date(tl.end).toDateString() === new Date(lastEnd).toDateString() ? '' : `le ${dayLabel(tl.end)} `}à ${hhmm(tl.end)}`;
+    plot.appendChild(h('p', { class: 'st-caption', text: `Dernier passage à ${hhmm(lastEnd)} · ${closed}` }));
+  }
   // Temps morts (un titre attendait) sous la ligne « Scène ».
   for (const gap of tl.gaps.filter(g => g.dead)) {
     const band = s('rect', { x: x(gap.start), y: top, width: Math.max(1, x(gap.end) - x(gap.start)), height: laneH, fill: 'var(--gap-band)' }, svg);
@@ -440,7 +466,8 @@ function drawQueue(plot) {
     s('line', { x1: left, x2: W - right, y1: y(v), y2: y(v), stroke: 'var(--grid)', 'stroke-width': 1 }, svg);
     s('text', { x: left - 6, y: y(v) + 4, 'text-anchor': 'end' }, svg).textContent = fmtNum(v, 0);
   }
-  for (const t of timeTicks(t0, t1)) s('text', { x: x(t), y: H - 6, 'text-anchor': 'middle' }, svg).textContent = hhmm(t);
+  const label = timeLabel(t0, t1);
+  for (const t of timeTicks(t0, t1, W - right - left, timeGap(t0, t1))) s('text', { x: x(t), y: H - 6, 'text-anchor': 'middle' }, svg).textContent = label(t);
   const series = [['present', 'Personnes présentes', 'var(--s2)'], ['ready', 'Titres prêts', 'var(--s1)']];
   for (const [key, , color] of series) {
     const d = samples.map((q, i) => `${i ? 'L' : 'M'}${x(q.t).toFixed(1)},${y(q[key] || 0).toFixed(1)}`).join('');
