@@ -2510,7 +2510,7 @@ function tuneWorld() {
   world.songSettings = { enabled: true, ranges: { pitch: { min: -6, max: 6, step: 1 }, tempo: { min: -50, max: 50, step: 5 },
     volume: { min: 0, max: 100, step: 25 } }, defaults: { pitch: 0, tempo: 0, guide: 0, backing: 53 },
   permissions: { manageVolumes: true, manageQueue: true }, support: unknownSupport(), notice: null,
-  live: { queueId: 7, pitch: 0, tempo: 0, guide: 0, guideB: null, backing: 53, tracks: [4, 5], entryId: 'st1', title: 'Tube', settings: null } };
+  live: { queueId: 7, pitch: 0, tempo: 0, guide: 0, backing: 53, voices: { 5: 0 }, tracks: [4, 5], entryId: 'st1', title: 'Tube', settings: null } };
   world.queue = [
     { source: 'karafun', ours: true, queueId: 9, pos: 1, name: 'Alice', singer: 'Alice', ids: ['alice'], tracks: [5],
       song: { entryId: 'k1', title: 'Déjà chargé', artist: 'A', settings: { pitch: 2, tempo: -10 } } },
@@ -2709,15 +2709,20 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   await page.poll();
   assert.match(page.$('songSheetNote').textContent, /Ce titre est sur scène : règle-le en direct sur l’écran Scène\./);
   assert.equal(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]').disabled, true);
-  // Duo : la voix guide des deux chanteurs suit le réglage ; refus du serveur.
+  // Duo, pistes pas encore connues : « Voix 1 » et « Voix 2 », chacune la sienne ; refus du serveur.
   await page.click(page.$('songSheetClose'));
   page.replies['/api/staff/song/settings'] = { status: 409, error: 'Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.' };
   await page.click(page.in('qBody', '[data-song-settings="d1"]'));
-  assert.match(page.$('songSheetBody').textContent, /Duo : les deux voix guides suivent ce réglage\./);
+  assert.equal(page.$('songSheetBody').textContent.includes('Duo : les deux voix guides'), false, 'plus de voix 2 qui suit la voix 1');
+  assert.match(page.$('songSheetBody').textContent, /Voix 1[\s\S]*Voix 2Si le titre en a deux\./);
   assert.deepEqual(sheetPressed(page, 'guide'), ['50']);
+  assert.deepEqual(sheetPressed(page, 'voice:6'), ['0'], 'voix 2 sans réglage : coupée');
   await page.click(page.in('songSheetBody', '[data-tune="guide"][data-value="0"]'));
+  await page.click(page.in('songSheetBody', '[data-tune="voice:6"][data-value="25"]'));
+  assert.deepEqual(sheetPressed(page, 'voice:6'), ['25']);
   page.runTimers(700);
   await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guide: 0, guideVoices: { 6: 25 } });
   assert.equal(page.$('songSheetStatus').textContent, 'Non enregistré : Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré. · Réessayer');
   // Retirée de la file : la fiche le dit.
   page.world.queue = page.world.queue.filter(q => q.song.entryId !== 'd1');
@@ -2770,6 +2775,70 @@ test('réglages de titre : silence de KaraFun, avis par fonction et ancienne té
   assert.match(page.$('songSheetNote').textContent, /ancienne télécommande KaraFun/);
   assert.equal(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]').disabled, true);
   assert.equal(page.$('songSheetReset').disabled, true);
+});
+
+// Lot G2 (décision D6) : un réglage par voix guide, sans curseur commun.
+test('réglages de titre : une voix guide par curseur en direct et dans la fiche, résumé voix par voix', async () => {
+  const world = tuneWorld();
+  Object.assign(world.songSettings.live, { guide: 50, voices: { 5: 50, 6: 25 }, tracks: [4, 5, 6] });
+  world.queue[0].tracks = [4, 5, 6];
+  world.queue[0].song.settings = { guide: 50, guideVoices: { 6: 25 } };
+  const page = await openPage({ world });
+  const pressed = field => page.all('liveTune', `[data-live="${field}"]`).filter(node => node.getAttribute('aria-pressed') === 'true')
+    .map(node => node.dataset.value);
+  const labels = container => page.all(container, '.tune-label').map(node => node.textContent);
+  assert.deepEqual(labels('liveTune'), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Chœurs'], 'pas de curseur commun');
+  assert.equal(page.$('liveTuneSummary').textContent, 'Réglages en direct · voix 1 50 · voix 2 25');
+  assert.deepEqual([pressed('guide'), pressed('voice:6')], [['50'], ['25']]);
+  assert.ok(page.in('liveTune', '[id="liveVoice6"]'));
+  // La voix 2 seule : envoyée par sa piste, affichée en attendant KaraFun.
+  await page.click(page.in('liveTune', '[data-live="voice:6"][data-value="75"]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 6, value: 75, queueId: 7 });
+  assert.deepEqual([pressed('guide'), pressed('voice:6')], [['50'], ['75']]);
+  page.world.songSettings.live.voices = { 5: 50, 6: 75 };
+  await page.poll();
+  assert.equal(page.$('liveTuneStatus').textContent, 'Appliqué par KaraFun ✓');
+  assert.equal(page.$('liveTuneSummary').textContent, 'Réglages en direct · voix 1 50 · voix 2 75');
+  // Troisième voix annoncée par KaraFun : « Voix 3 », sans valeur connue encore.
+  page.world.songSettings.live.tracks = [4, 5, 6, 7];
+  await page.poll();
+  assert.deepEqual(labels('liveTune'), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Voix 3', 'Chœurs']);
+  assert.deepEqual(pressed('voice:7'), ['0']);
+  await page.click(page.in('liveTune', '[data-live="voice:7"][data-value="100"]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 7, value: 100, queueId: 7 });
+  // Une seule voix : « Voix guide ». Pistes inconnues : voix 1, et voix 2 si le titre en a deux.
+  page.world.songSettings.live.tracks = [4, 5];
+  await page.poll();
+  assert.deepEqual(labels('liveTune'), ['Tonalité', 'Tempo', 'Voix guide', 'Chœurs']);
+  page.world.songSettings.live.tracks = null;
+  await page.poll();
+  assert.deepEqual(labels('liveTune'), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Chœurs']);
+  assert.match(page.$('liveTune').textContent, /Si le titre en a deux\./);
+  // File : badge voix par voix, d'après les pistes du titre.
+  const row = entryId => page.in('qBody', `[data-song-settings="${entryId}"]`).closest('.queue-item');
+  assert.equal(row('k1').querySelector('.badge.tune').textContent, 'voix 1 50 · voix 2 25');
+  page.world.queue[0].tracks = [5];
+  page.world.queue[0].song.settings = { guide: 50 };
+  await page.poll();
+  assert.equal(row('k1').querySelector('.badge.tune').textContent, 'guide 50', 'une seule voix : « guide »');
+  page.world.queue[0].song.settings = { guideVoices: { 6: 0 } };
+  page.world.songSettings.defaults.guide = 25;
+  await page.poll();
+  assert.equal(row('k1').querySelector('.badge.tune').textContent, 'voix 2 coupée', 'voix 2 réglée : nommée même si le titre n’en annonce qu’une');
+  page.world.songSettings.defaults.guide = 0;
+  // Fiche d'un titre chargé à deux voix : chaque voix enregistrée pour elle-même.
+  page.world.queue[0].tracks = [4, 5, 6];
+  page.world.queue[0].song.settings = { guide: 50, guideVoices: { 6: 25 } };
+  page.replies['/api/staff/song/settings'] = { ok: true, applied: 'karafun' };
+  await page.poll();
+  await page.click(page.in('qBody', '[data-song-settings="k1"]'));
+  assert.deepEqual(labels('songSheetBody'), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Chœurs']);
+  assert.deepEqual(sheetPressed(page, 'voice:6'), ['25']);
+  await page.click(page.in('songSheetBody', '[data-tune="voice:6"][data-value="100"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guide: 50, guideVoices: { 6: 100 } });
+  assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
 });
 
 test('réglages de titre : file au téléphone, nom du titre avant le badge des réglages', async () => {

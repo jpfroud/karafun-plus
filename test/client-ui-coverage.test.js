@@ -1872,6 +1872,7 @@ function keepSettings(self, body) {
   for (const [field, value] of Object.entries(body.settings || {})) {
     if (Number.isInteger(value) && !((field === 'pitch' || field === 'tempo') && value === 0)) out[field] = value;
   }
+  if (body.settings?.guideVoices) out.guideVoices = { ...body.settings.guideVoices };
   for (const p of self.state.tablePeople) for (const song of [...p.songs, ...p.inKaraFun]) {
     if (song.entryId === body.entryId) song.settings = Object.keys(out).length ? out : null;
   }
@@ -2006,7 +2007,9 @@ test('réglages de titre : duo, titre commencé, envoi en cours, fonction coupé
   assert.equal(card('bob').querySelector('.tune-badge').textContent, '♯ +3', 'partenaire : réglages de l’auteur visibles');
 
   await page.tap('peopleList', '[data-song-settings="e1"]');
-  assert.match(page.node('songSettingsBody').textContent, /Duo : les deux voix guides suivent ce réglage\./);
+  // Duo : plus de voix 2 qui suit la voix 1 ; chaque voix a son réglage (D6).
+  assert.doesNotMatch(page.node('songSettingsBody').textContent, /Duo : les deux voix guides/);
+  assert.match(page.node('songSettingsBody').textContent, /Voix 2Si le titre en a deux\./);
   // Refus du serveur : message dans la fiche, « Réessayer ».
   answer = reply(409, { error: 'Ce titre a déjà commencé : seul le bar peut encore le régler.', code: 'SONG_STARTED' });
   await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="-1"]');
@@ -2049,7 +2052,7 @@ test('réglages de titre : en anglais, textes de la fiche et refus traduits', as
   await page.click(button);
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Settings · Mon titre');
   const body = page.node('songSettingsBody').textContent;
-  for (const text of ['Key', '0 = original', 'Tempo', 'Guide vocals', 'Backing vocals', 'Off', 'If the song has them.', 'KaraFun setting: 53']) {
+  for (const text of ['Key', '0 = original', 'Tempo', 'Voice 1', 'Voice 2', 'If the song has two.', 'Backing vocals', 'Off', 'If the song has them.', 'KaraFun setting: 53']) {
     assert.ok(body.includes(text), `texte anglais : ${text}`);
   }
   assert.equal(page.node('tuneReset').textContent, 'Reset');
@@ -2063,6 +2066,57 @@ test('réglages de titre : en anglais, textes de la fiche et refus traduits', as
   await duo.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
   await duo.runTimers(600);
   assert.equal(duo.node('tuneStatus').textContent, 'Not saved: Alice picked this duet: settings are made on their phone. · Try again');
+});
+
+// Lot G2 (décision D6) : un réglage par voix guide, sans réglage commun ;
+// pistes inconnues avant l'envoi : voix 1, et voix 2 si le titre en a deux.
+test('réglages de titre : une voix guide par réglage, voix 1 et voix 2, résumé voix par voix, en français et en anglais', async () => {
+  const state = tuneState();
+  state.tablePeople[0].inKaraFun[0].tracks = [4, 5, 6];
+  state.tablePeople[0].inKaraFun[0].settings = { guide: 50, guideVoices: { 6: 25 } };
+  const page = await open({ state, respond: (url, body, self) => url === '/api/table/song/settings' ? keepSettings(self, body) : undefined });
+  const labels = () => page.node('songSettingsBody').querySelectorAll('.tune-label').map(node => node.textContent);
+  const badge = entryId => page.find('peopleList', `[data-song-settings="${entryId}"]`).closest('li').querySelector('.tune-badge');
+  assert.equal(badge('k1').textContent, 'voix 1 50 · voix 2 25');
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  assert.deepEqual(labels(), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Chœurs']);
+  assert.deepEqual([pressed(page, 'guide'), pressed(page, 'voice:6')], [['50'], ['25']]);
+  assert.ok(page.node('tuneLabel-voice6'));
+  await page.tap('songSettingsBody', '[data-tune="voice:6"][data-value="75"]');
+  assert.equal(badge('k1').textContent, 'voix 1 50 · voix 2 75', 'le badge suit tout de suite');
+  await page.runTimers(600);
+  assert.deepEqual(tunePosts(page).at(-1).settings, { guide: 50, guideVoices: { 6: 75 } }, 'la voix 1 garde son réglage');
+  await page.poll();
+  assert.deepEqual(pressed(page, 'voice:6'), ['75'], 'valeur relue sur le serveur');
+  // Troisième voix annoncée : « Voix 3 ». Une seule voix : « Voix guide ».
+  page.state.tablePeople[0].inKaraFun[0].tracks = [4, 5, 6, 7];
+  await page.poll();
+  assert.deepEqual(labels(), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Voix 3', 'Chœurs']);
+  page.state.tablePeople[0].inKaraFun[0].tracks = [4, 5];
+  page.state.tablePeople[0].inKaraFun[0].settings = { guide: 50 };
+  await page.poll();
+  assert.deepEqual(labels(), ['Tonalité', 'Tempo', 'Voix guide', 'Chœurs']);
+  assert.equal(badge('k1').textContent, 'guide 50');
+  // Voix 2 coupée alors que KaraFun la mettrait ailleurs par défaut : rappelée.
+  page.state.tablePeople[0].inKaraFun[0].settings = { guideVoices: { 6: 0 } };
+  page.state.songSettings.defaults.guide = 25;
+  await page.poll();
+  assert.equal(badge('k1').textContent, 'voix 2 coupée');
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+  // En anglais.
+  const english = tuneState();
+  english.tablePeople[0].inKaraFun[0].tracks = [4, 5, 6];
+  english.tablePeople[0].inKaraFun[0].settings = { guide: 50, guideVoices: { 6: 25 } };
+  const en = await open({ languages: ['en'], state: english });
+  assert.equal(en.find('peopleList', '[data-song-settings="k1"]').closest('li').querySelector('.tune-badge').textContent, 'voice 1 50 · voice 2 25');
+  en.state.tablePeople[0].inKaraFun[0].settings = { guideVoices: { 6: 0 } };
+  en.state.songSettings.defaults.guide = 25;
+  await en.poll();
+  assert.equal(en.find('peopleList', '[data-song-settings="k1"]').closest('li').querySelector('.tune-badge').textContent, 'voice 2 off');
+  en.state.tablePeople[0].inKaraFun[0].tracks = [5];
+  await en.poll();
+  await en.tap('peopleList', '[data-song-settings="k1"]');
+  assert.match(en.node('songSettingsBody').textContent, /Guide vocals/);
 });
 
 test('réglages de titre : un refus oublié quand le titre n’est plus réglable ; titre sans voix guide', async () => {

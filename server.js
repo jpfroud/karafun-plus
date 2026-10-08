@@ -52,7 +52,7 @@ const { Lyrics } = require('./lyrics');
 const { SpotifyLink, SpotifyAutomation } = require('./spotify');
 const { EveningJournal, validEveningId } = require('./evening-journal');
 const { computeStats, insights, exportEvening } = require('./evening-stats');
-const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, liveFromStatus,
+const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, guideVoicesOf, liveFromStatus,
   settingsFromLive, neutralTarget, catchUpCommands } = require('./song-settings');
 
 // ------------------------------------------------------------------ paramètres
@@ -646,7 +646,7 @@ function startRestart() {
   // Pistes vocales du titre connues : volumes seulement pour celles-là.
   const songSettings = tr ? tr.sel.song.settings || null : settingsFromLive(liveFromStatus(bridge.status), songDefaults());
   const tracksAvailable = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
-  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { duo: !!tr && tr.sel.ids.length > 1, tracksAvailable }) || null; }
+  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { tracksAvailable }) || null; }
   catch (error) { restartOp = null; throw error; }
   sched.note(`Le bar relance « ${restartOp.title} » depuis le début.`, 'stage');
 }
@@ -863,7 +863,7 @@ function pushQueueItemSettings(tr) {
   try {
     const sent = bridge.setQueueItemOptions(tr.queueId, { singer: item.singer || tr.sel.label, mod: item.options?.mod || null,
       settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, current: item.options || null,
-      tracksAvailable: songTracksOf(item), duo: tr.sel.ids.length > 1 });
+      tracksAvailable: songTracksOf(item) });
     if (sent) tr.sentSettings = sent;
     tr.statusAtOptions = statusSeq();
     return true;
@@ -891,7 +891,7 @@ function catchUpSongSettings(tr) {
   if (live?.queueId != null && String(live.queueId) !== mark) return; // état de KaraFun pas encore à jour
   tr.liveChecked = mark;
   const commands = catchUpCommands({ settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, live,
-    tracksAvailable: live?.tracks || songTracksOf(kfItemOf(tr)), duo: tr.sel.ids.length > 1, ranges: songRanges(),
+    tracksAvailable: live?.tracks || songTracksOf(kfItemOf(tr)), ranges: songRanges(),
     defaults: songDefaults(), neutral: isBattleItem(kfItemOf(tr)) ? null : startNeutral(mark) }); // Battle : voir checkUntrackedSettings
   applyStartCommands(commands, live, { title: tr.sel.song.title, entryId: tr.sel.song.entryId || null, queueId: tr.queueId });
 }
@@ -914,11 +914,19 @@ function startNeutral(queueId, options = null) {
   return neutralTarget({ backingDefault: bridge?.observedDefaults?.backing ?? null, previousBacking: previous?.backing ?? null, options });
 }
 
-const RESET_LABELS = { pitch: live => `tonalité ${signedValue(live.pitch)}`, tempo: live => `tempo ${signedValue(live.tempo)} %`,
-  backing: live => `chœurs ${live.backing}`, guide: live => `voix guide ${live.guide}`, guideB: live => `voix guide B ${live.guideB}` };
 const signedValue = n => (n > 0 ? `+${n}` : String(n));
-const commandField = command => command.kind !== 'track' ? command.kind
-  : ({ [TRACK.BACKING]: 'backing', [TRACK.LEAD_A]: 'guide', [TRACK.LEAD_B]: 'guideB' })[command.type];
+// Voix guide nommée comme sur les pages : « voix guide » pour un titre qui
+// n'en a qu'une, sinon « voix 1 », « voix 2 »… dans l'ordre des pistes.
+function voiceLabel(type, tracks) {
+  const voices = guideVoicesOf([...(guideVoicesOf(tracks) || [TRACK.LEAD_A]), type]);
+  return voices.length > 1 ? `voix ${voices.indexOf(type) + 1}` : 'voix guide';
+}
+const resetLabel = (command, live) => command.kind === 'pitch' ? `tonalité ${signedValue(live.pitch)}`
+  : command.kind === 'tempo' ? `tempo ${signedValue(live.tempo)} %`
+    : command.type === TRACK.BACKING ? `chœurs ${live.backing}` : `${voiceLabel(command.type, live.tracks)} ${live.voices?.[command.type]}`;
+// Champ d'une commande pour le journal : 'guide' (voix 1) ou 'guideVoices.6'…
+const trackField = type => type === TRACK.BACKING ? 'backing' : type === TRACK.LEAD_A ? 'guide' : `guideVoices.${type}`;
+const commandField = command => command.kind !== 'track' ? command.kind : trackField(command.type);
 
 // Commandes du début d'un titre : réglages du titre rattrapés
 // (song.settingsCaughtUp) et valeurs neutres rétablies (song.settingsReset).
@@ -929,7 +937,7 @@ function applyStartCommands(commands, live, { title, entryId, queueId }) {
   if (bridge.permissions?.manageVolumes === false) {
     if (own.length) sched.note(`KaraFun n’a pas appliqué les réglages de « ${title} » et ne laisse pas ${bridge.username} personnaliser la chanson en cours : règle-la dans KaraFun.`, 'error');
     else {
-      const left = commands.map(command => RESET_LABELS[commandField(command)](live)).join(', ');
+      const left = commands.map(command => resetLabel(command, live)).join(', ');
       sched.note(`Le réglage du titre précédent est peut-être resté sur « ${left} » : KaraFun ne laisse pas l’application personnaliser la chanson en cours.`, 'error');
     }
     return;
@@ -940,8 +948,7 @@ function applyStartCommands(commands, live, { title, entryId, queueId }) {
       if (command.kind === 'pitch') bridge.setPitch(command.value);
       else if (command.kind === 'tempo') bridge.setTempo(command.value);
       else bridge.setTrackVolume(command.type, command.value);
-      if (command.neutral) reset.add(commandField(command));
-      else caught.add(command.kind !== 'track' ? command.kind : command.type === TRACK.BACKING ? 'backing' : 'guide');
+      (command.neutral ? reset : caught).add(commandField(command));
     } catch (error) { appLog(`Réglage de « ${title} » non rattrapé : ${error.message}`); }
   }
   if (caught.size) journalEvent('song.settingsCaughtUp', { entryId, queueId, fields: [...caught] });
@@ -986,14 +993,21 @@ function resendWithoutOptions(add) {
   } catch (error) { appLog(`Nouvel envoi sans réglages impossible : ${error.message}`); }
 }
 
+// Piste réglée en direct : 'guide' (voix 1), 'backing', ou le type d'une
+// autre voix guide (6, 7…) ; null si inconnue.
+const liveTrackType = track => track === 'guide' ? TRACK.LEAD_A : track === 'backing' ? TRACK.BACKING
+  : guideVoicesOf([typeof track === 'string' || typeof track === 'number' ? Number(track) : NaN])[0] ?? null;
+
 // Titre en cours, réglé en direct par le bar (POST /api/staff/kf), visé par
 // son `queueId`. Pour un titre de la file, la valeur est aussi gardée sur le
-// titre : une relance ⏮ la reprend.
+// titre : une relance ⏮ la reprend. Chaque voix guide se règle seule, en solo
+// comme en duo.
 function liveSongSetting(body) {
   if (!bridge?.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de régler le titre en cours.');
   const { current } = analyze();
   if (!current) throw new Error('Aucun titre en cours à régler.');
-  const field = body.action === 'track' ? ({ guide: 'guide', backing: 'backing' })[body.track] : body.action;
+  const type = body.action === 'track' ? liveTrackType(body.track) : null;
+  const field = body.action !== 'track' ? body.action : type === TRACK.BACKING ? 'backing' : type != null ? 'guide' : null;
   if (!field) throw new Error('Piste vocale inconnue.');
   // La page du bar vise le titre qu'elle affiche : s'il a changé entre-temps,
   // le réglage n'est ni envoyé ni gardé sur le nouveau titre.
@@ -1001,28 +1015,25 @@ function liveSongSetting(body) {
   const value = validateField(field, body.value, songRanges());
   const tr = tracked.find(item => isOnStage(item, current));
   const tracks = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
-  if (field === 'guide' && tracks && !tracks.includes(TRACK.LEAD_A)) throw new Error('Ce titre n’a pas de voix guide.');
+  if (field === 'guide' && tracks && !tracks.includes(type)) {
+    throw new Error(type === TRACK.LEAD_A ? 'Ce titre n’a pas de voix guide.' : 'Ce titre n’a pas cette voix guide.');
+  }
   if (field === 'backing' && tracks && !tracks.includes(TRACK.BACKING)) throw new Error('Ce titre n’a pas de chœurs.');
   if (field === 'pitch') bridge.setPitch(value);
   else if (field === 'tempo') bridge.setTempo(value);
-  else if (field === 'backing') bridge.setTrackVolume(TRACK.BACKING, value);
-  else {
-    bridge.setTrackVolume(TRACK.LEAD_A, value);
-    // Duo : la voix guide B suit la voix guide A, aussi pour un duo devenu
-    // solo dans KaraFun dont la file avait posé la piste B.
-    const followA = tr && (tr.sel.ids.length > 1 || tr.sentSettings?.guideB != null);
-    if (followA && (!tracks || tracks.includes(TRACK.LEAD_B))) bridge.setTrackVolume(TRACK.LEAD_B, value);
-  }
+  else bridge.setTrackVolume(type, value);
   if (tr) {
-    const next = { ...(tr.sel.song.settings || {}), [field]: value };
+    const next = { ...(tr.sel.song.settings || {}) };
+    if (type != null && type !== TRACK.BACKING && type !== TRACK.LEAD_A) next.guideVoices = { ...next.guideVoices, [type]: value };
+    else next[field] = value;
     if ((field === 'pitch' || field === 'tempo') && value === 0) delete next[field]; // tonalité ou tempo d'origine
     sched.setSongSettings(tr.sel.song, Object.keys(next).length ? next : null);
     // Réglé en direct : rien à rattraper, même avant l'écho de KaraFun.
     tr.liveChecked = String(tr.queueId);
   }
   journalEvent('song.settings', { by: 'staff', where: 'live', personId: tr?.sel.ids[0] || null, entryId: tr?.sel.song.entryId || null,
-    queueId: current.queueId ?? null, field, value });
-  return { ok: true, field, value };
+    queueId: current.queueId ?? null, field: type == null ? field : trackField(type), value });
+  return { ok: true, field: type == null ? field : trackField(type), value };
 }
 
 // ------------------------------------------------------------------ synchronisation avec KaraFun
@@ -1298,8 +1309,8 @@ function sync() {
           // La commande distante n'a pas d'accusé immédiat : conserver la
           // tentative sur disque avant de l'envoyer pour éviter un doublon.
           saveNight({ required: true });
-          // Réglages du titre dans les options d'ajout ; duo : voix guide B.
-          const sentSettings = bridge.add(sel.song.songId, sel.label, undefined, sel.song.settings || null, { duo: sel.ids.length > 1 });
+          // Réglages du titre dans les options d'ajout (chaque voix guide la sienne).
+          const sentSettings = bridge.add(sel.song.songId, sel.label, undefined, sel.song.settings || null);
           if (sentSettings) pending.sentSettings = sentSettings;
         } catch (e) { pending = null; settings.auto = false; appLog(`ERREUR envoi : ${e.message}`); }
       } else pending = null;
@@ -1577,7 +1588,7 @@ function publicState(person, tableId, managed = null) {
     name: byQid.has(it.queueId) ? byQid.get(it.queueId).sel.names.join(' & ') :
       (it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
     song: fmtSong(byQid.get(it.queueId)?.sel.song || it), table: byQid.has(it.queueId) ? sched.table(sched.people.get(byQid.get(it.queueId).sel.ids[0])?.tableId, false)?.name || '' : '',
-    // Pistes vocales du titre annoncées par KaraFun (4 chœurs, 5 et 6 voix guides).
+    // Pistes vocales du titre annoncées par KaraFun (4 chœurs, 5, 6… voix guides).
     tracks: songTracksOf(it),
   }));
   if (pending) queue.push({ source: 'envoi', ours: true, queueId: null,
