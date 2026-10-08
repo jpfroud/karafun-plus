@@ -20,7 +20,8 @@ try {
     $skillsRoot = Join-Path $codexHome 'skills'
     # Codex needs its gstack-* skills, even when GSTACK_ROOT names the source.
     $gstackReady = Test-Path -LiteralPath (Join-Path $skillsRoot 'gstack-review/SKILL.md')
-    $rules = 'This project requires gstack for code changes: gstack-investigate for bugs, gstack-spec or gstack-plan-eng-review for features, gstack-qa for browser testing, and gstack-review before delivery. Run node test/run-offline.js and record results in RAPPORT-TEST.md. Explicit user instructions take precedence.'
+    # Routing table (same as the Claude Code hook): short, it is added to every prompt.
+    $rules = 'This project requires gstack. Before acting, pick the gstack skill that fits this prompt, state it in one line and run it: reported bug or "why does X happen" -> gstack-investigate; feature to pin down -> gstack-spec (plan to challenge -> gstack-plan-eng-review); exercising the app -> gstack-qa (gstack-qa-only to report only); change written, before commit, push or PR -> gstack-review; security -> gstack-cso; code health -> gstack-health; docs after a change -> gstack-document-release. If none fits (a pure question), say "no gstack command fits: <reason>"; never skip this choice silently. Run node test/run-offline.js and record results in RAPPORT-TEST.md. Explicit user instructions take precedence.'
     if ($gstackReady) {
         $message = if ($name -eq 'SessionStart') { "GSTACK_OK: gstack skills found in $skillsRoot. $rules" } else { $rules }
     } else {

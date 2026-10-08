@@ -6,9 +6,11 @@
 #
 # SessionStart : installe gstack s'il manque (install-gstack.sh, demandé par
 # l'utilisateur) puis rappelle le parcours obligatoire du projet.
-# UserPromptSubmit : rappelle ce parcours à chaque demande, sans rien
-# installer. Ne bloque jamais l'agent (code de sortie 0) ; le hook PreToolUse
-# check-gstack.sh refuse ensuite les compétences si gstack manque toujours.
+# UserPromptSubmit : à chaque demande, sans rien installer, donne la table de
+# routage des commandes gstack et exige d'annoncer celle qui est choisie (sur
+# le modèle de RetroGemini). Ne bloque jamais l'agent (code de sortie 0) : les
+# blocages viennent de check-gstack.sh (compétences refusées sans gstack) et de
+# gstack-gate.js (modification sans compétence gstack, envoi sans relecture).
 
 EVENT="${1:-SessionStart}"
 case "$EVENT" in SessionStart|UserPromptSubmit) ;; *) EVENT=SessionStart ;; esac
@@ -52,18 +54,20 @@ if [ "$EVENT" = SessionStart ] && [ "${CLAUDE_CODE_REMOTE:-}" = true ] && [ -n "
   printf 'export GSTACK_CHROMIUM_PATH=%q\n' "$CHROMIUM" >>"$CLAUDE_ENV_FILE"
 fi
 
+# Table de routage : courte, elle est ajoutée à chaque demande.
+ROUTING="Avant d'agir, choisir la commande gstack adaptée à cette demande, l'annoncer en une ligne et la lancer avec l'outil Skill : défaut signalé ou « pourquoi X » → investigate ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; parcours dans l'application → qa (qa-only pour un simple constat) ; modification écrite, avant commit, push ou PR → review ; sécurité → cso ; état du code → health ; documentation après un changement → document-release. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. Les hooks refusent toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session, puis git push et la PR sans relecture review terminée sur le contenu exact."
 RULES="Parcours obligatoire du projet : investigate pour un défaut, qa pour les parcours navigateur, review avant livraison. Après toute modification de la file, des duos, des présences ou des tables : node test/run-offline.js, puis consigner le résultat dans RAPPORT-TEST.md."
 RETRY="L'utilisateur a donné son accord : pour réessayer, lancer bash .claude/hooks/install-gstack.sh puis redémarrer l'agent. En attendant, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence."
 if [ "$EVENT" = UserPromptSubmit ]; then
   if [ -n "$GSTACK_DIR" ]; then
-    MESSAGE="gstack : appliquer la compétence adaptée à cette demande. $RULES"
+    MESSAGE="gstack : $ROUTING $RULES"
   else
     MESSAGE="GSTACK_MISSING : gstack est obligatoire mais pas installé. Le dire à l'utilisateur avant tout changement de code. $RETRY $RULES"
   fi
 elif [ -n "$INSTALLED" ]; then
-  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). $RULES"
+  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). $ROUTING $RULES"
 elif [ -n "$GSTACK_DIR" ]; then
-  MESSAGE="GSTACK_OK : gstack est installé ($GSTACK_DIR). $RULES"
+  MESSAGE="GSTACK_OK : gstack est installé ($GSTACK_DIR). $ROUTING $RULES"
 else
   MESSAGE="GSTACK_MISSING : gstack est obligatoire dans ce dépôt et son installation automatique a échoué : ${REASON:-raison inconnue}. Le dire tout de suite à l'utilisateur, avant tout changement de code. $RETRY $RULES"
 fi

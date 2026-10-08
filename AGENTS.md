@@ -1,6 +1,31 @@
 # Développement de la file karaoké
 
-Ce projet utilise [gstack](https://github.com/garrytan/gstack) pour les changements de code. Avant de modifier le comportement, choisir et appliquer le parcours adapté : `gstack-investigate` pour un bug, `gstack-spec` ou `gstack-plan-eng-review` pour une fonctionnalité à préciser, `gstack-qa` pour essayer l'application dans un navigateur, et `gstack-review` avant de livrer. Une modification simple peut commencer directement, mais elle passe aussi par `gstack-review` avant livraison. En cas d'indisponibilité d'une compétence, le signaler et faire la vérification équivalente ; ne jamais prétendre l'avoir exécutée.
+Ce projet utilise [gstack](https://github.com/garrytan/gstack) pour les changements de code. **Chaque demande commence par le choix d'une commande gstack**, annoncé en une ligne avant de la lancer ; personne ne devrait avoir à écrire « utilise gstack » :
+
+| La demande porte sur… | Commande |
+|---|---|
+| un défaut signalé, « pourquoi X » | `investigate` |
+| une fonctionnalité à préciser | `spec` (un plan à challenger : `plan-eng-review`) |
+| un parcours à essayer dans l'application | `qa` (`qa-only` pour un simple constat) |
+| une modification écrite, avant commit, push ou PR | `review` |
+| la sécurité | `cso` |
+| l'état du code | `health` |
+| la documentation après un changement | `document-release` |
+
+Dans Codex, ces compétences s'appellent `gstack-investigate`, `gstack-review`, etc. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. En cas d'indisponibilité d'une compétence, le signaler et faire la vérification équivalente ; ne jamais prétendre l'avoir exécutée.
+
+**Application par les hooks de Claude Code** (`.claude/settings.json`, sur le modèle de [RetroGemini](https://github.com/republique-et-canton-de-geneve/RetroGemini)) :
+
+| Hook | Événement | Rôle |
+|---|---|---|
+| `gstack-session-start.sh` | `SessionStart` | installe gstack s'il manque (ci-dessous) |
+| `gstack-session-start.sh` | `UserPromptSubmit` | ajoute la table de routage ci-dessus à chaque demande |
+| `check-gstack.sh` | `PreToolUse` sur `Skill` | garde-fou officiel du mode équipe : refuse les compétences sans gstack |
+| `gstack-gate.js` | `PostToolUse` sur `Skill`, `UserPromptSubmit` | note les compétences gstack lancées (outil `Skill` ou commande `/investigate` tapée) |
+| `gstack-gate.js` | `PreToolUse` sur `Edit`, `Write`, `MultiEdit`, `NotebookEdit` | refuse toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session (sous-agents compris) ; `RAPPORT-TEST.md`, `.gstack/`, `data/` et `journal/` restent libres |
+| `gstack-gate.js` | `PreToolUse` sur `Bash` (`git push`, `gh pr create`) et les envois GitHub | refuse l'envoi tant qu'une relecture `review` n'a pas été menée à son terme sur le contenu exact du dépôt (journal de relecture de gstack, `gstack-review-read`) ; une relecture terminée avec des remarques laisse passer, à signaler à l'utilisateur |
+
+Les modifications faites par une commande `Bash` (redirection, `sed`) échappent à la porte des modifications, pas à celle de l'envoi. `GSTACK_GATE=off` dans l'environnement de Claude Code coupe la porte : décision réservée à l'utilisateur. Un changement de ces hooks s'applique à la session suivante (Claude Code les lit au démarrage). Relancer `gstack-team-init required` réécrit `check-gstack.sh` et `.claude/settings.json` : rajouter ensuite les autres hooks. Tests : `bash test/gstack-session-hook.test.sh` et `node test/gstack-gate.test.js` (aussi lancés par la CI).
 
 **Au début de chaque session, quel que soit l'agent**, s'assurer que gstack est installé avant tout changement de code. L'utilisateur a donné son accord pour l'installer automatiquement :
 

@@ -162,6 +162,10 @@ printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING.*install
 mkdir -p "$home/.claude/skills/gstack/bin"
 out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel avec gstack"
 printf '%s' "$out" | field additionalContext | grep -q '^gstack : .*review avant livraison' || fail "parcours non rappelé"
+# Table de routage (modèle RetroGemini) : choix annoncé, aucune omission silencieuse.
+for route in "l'annoncer en une ligne" "→ investigate" "→ spec" "→ qa" "→ review" "aucune commande gstack" "ne jamais passer ce choix sous silence"; do
+  printf '%s' "$out" | field additionalContext | grep -qF "$route" || fail "table de routage incomplète : $route"
+done
 
 # 7. Installations existantes (Claude Code, Codex, dépôt migré) : acceptées sans rien relancer.
 for dir in .claude/skills/gstack .codex/skills/gstack .gstack/repos/gstack; do
