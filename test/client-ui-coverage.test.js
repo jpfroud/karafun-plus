@@ -873,7 +873,7 @@ test('transférer : copie refusée, lien https sans heure, code seul et « En so
   assert.equal(codeOnly.node('sheetPanel').querySelector('img'), null, 'pas de QR sans lien');
   assert.equal('open' in codeOnly.find('sheetPanel', 'details').attrs, true, 'le code est déplié');
   assert.equal(codeOnly.find('sheetPanel', '.share-code').textContent, '9876');
-  assert.match(codeOnly.sheetHtml(), /ouvre le QR code de la table, touche « Je suis Alice »/);
+  assert.match(codeOnly.sheetHtml(), /ouvre le QR code de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom Alice/);
 
   const state = baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true, count: 2 } });
   const solo = await open({ state, path: '/t/Comptoir/secret', respond: url => url === '/api/table/person/share' ? share() : undefined });
