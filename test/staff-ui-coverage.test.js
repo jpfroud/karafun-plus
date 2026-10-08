@@ -319,7 +319,7 @@ async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash =
   const context = { document: doc, fetch, location, URL, URLSearchParams, localStorage,
     window: { open: (...args) => page.opened.push(args), AudioContext, Notification, isSecureContext: secure, history,
       addEventListener: (type, listener) => (page.windowListeners[type] ||= []).push(listener), scrollTo() {} },
-    Notification, navigator: { clipboard: { writeText: async text => {
+    Notification, navigator: page.navigator = { clipboard: { writeText: async text => {
       if (!page.clipboardWorks) throw new Error('presse-papiers refusé');
       page.clipboard.push(text);
     } } },
@@ -1399,6 +1399,23 @@ test('accueil en solo : QR individuel, copie, invitations en attente et erreurs'
   await page.click(page.$('soloInviteCopy'));
   assert.equal(page.$('soloInviteUrl').selectedAll, true);
   assert.deepEqual(page.toast(), { text: 'Sélectionne le lien pour le copier.', bad: true });
+  // Regression: page du bar ouverte en http depuis un téléphone (contexte non
+  // sécurisé, pas d'API presse-papiers) : « Copier le lien » ne copiait rien.
+  // Signalé par le gérant le 8 octobre 2026 ; reproduit dans Chromium.
+  page.doc.copyWorks = true;
+  await page.click(page.$('soloInviteCopy'));
+  assert.equal(page.toast().text, 'Lien individuel copié', 'copie de secours du navigateur');
+  const clipboardApi = page.navigator.clipboard;
+  delete page.navigator.clipboard;
+  page.$('soloInviteUrl').selectedAll = false;
+  page.$('soloInviteUrl').readOnly = true;
+  await page.click(page.$('soloInviteCopy'));
+  assert.equal(page.$('soloInviteUrl').selectedAll, true, 'le champ lui-même est sélectionné, dans la fenêtre ouverte');
+  assert.equal(page.toast().text, 'Lien individuel copié', 'sans API presse-papiers, la copie de secours copie le lien');
+  assert.equal(page.$('soloInviteUrl').readOnly, true, 'le champ redevient en lecture seule après la copie');
+  page.navigator.clipboard = clipboardApi;
+  page.doc.copyWorks = false;
+  page.clipboardWorks = true;
   await page.click(page.$('soloInviteClose'));
   assert.equal(page.$('soloInviteDialog').open, false);
   page.replies['/api/staff/solo-invite'] = { status: 409, error: 'Trop d’invitations en attente.' };

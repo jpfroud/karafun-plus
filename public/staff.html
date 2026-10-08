@@ -363,9 +363,25 @@
       load();
     } catch (e) { toast(e.message, true); }
   }
+  // Copie d'un lien affiché. Sans API presse-papiers (page du bar ouverte en
+  // http depuis un téléphone : contexte non sécurisé), copie de secours du
+  // navigateur sur le champ lui-même, qui est dans la fenêtre ouverte (le
+  // reste de la page est alors inerte). iOS ne sélectionne pas un champ en
+  // lecture seule : il devient modifiable le temps de la copie.
   async function copyText(input, done, failed, bad) {
-    try { await navigator.clipboard.writeText(input.value); toast(done); }
-    catch (_) { input.select(); const copied = !!document.execCommand?.('copy'); toast(copied ? done : failed, bad && !copied); }
+    try { await navigator.clipboard.writeText(input.value); toast(done); return; } catch (_) {}
+    const readOnly = input.readOnly;
+    let copied = false;
+    try {
+      input.readOnly = false;
+      input.focus?.();
+      input.select();
+      input.setSelectionRange?.(0, input.value.length);
+      copied = !!document.execCommand?.('copy');
+    } catch (_) { copied = false; }
+    finally { input.readOnly = readOnly; }
+    if (copied) input.blur?.();
+    toast(copied ? done : failed, bad && !copied);
   }
 
   // ------------------------------------------------------------ onglets (téléphone)
@@ -2029,15 +2045,7 @@
       load();
     } catch (error) { toast(error.message, true); }
   };
-  $('soloInviteCopy').onclick = async () => {
-    try {
-      await navigator.clipboard.writeText($('soloInviteUrl').value);
-      toast('Lien individuel copié');
-    } catch (_) {
-      $('soloInviteUrl').select();
-      toast('Sélectionne le lien pour le copier.', true);
-    }
-  };
+  $('soloInviteCopy').onclick = () => copyText($('soloInviteUrl'), 'Lien individuel copié', 'Sélectionne le lien pour le copier.', true);
   $('soloInviteClose').onclick = () => $('soloInviteDialog').close();
   // Adresse des QR : choix gardé jusqu'à « Utiliser », malgré le rafraîchissement.
   $('ipSel').addEventListener('change', () => { $('ipSel').dataset.touched = '1'; });
