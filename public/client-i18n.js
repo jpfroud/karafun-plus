@@ -142,6 +142,8 @@ window.CLIENT_TRANSLATIONS = {
         'To find this page again later, open it in your browser (Safari or Chrome).',
       'Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.':
         'To get back to this page, scan the event QR code again from the same app.',
+      'Pour retrouver cette page, rescanne le même QR depuis la même application, ou demande au bar un QR de reprise.':
+        'To get back to this page, scan the same QR code again from the same app, or ask the bar for a recovery QR code.',
       // Table : ses chanteurs, toute la table, QR à faire scanner
       'Mes chanteurs': 'My singers',
       'Voir toute la table ({n})': 'See the whole table ({n})',

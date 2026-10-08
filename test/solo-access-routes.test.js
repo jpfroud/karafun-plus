@@ -530,6 +530,47 @@ test('doublon parti : le QR personnel et le code à 4 chiffres reprennent l’an
   assert.deepEqual((await stateOf(f, tb, back)).body.managedIds, [], 'le navigateur précédent perd l’accès');
 });
 
+// Regression: en quittant sa place partie, un navigateur rendait la main au
+// téléphone précédent de cette place (celui qu'un transfert avait écarté) :
+// réactivée, la personne revenait sur ce vieux navigateur.
+test('doublon parti : la place quittée ne revient pas au navigateur qu’un transfert avait écarté', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const takeOver = async (personId, cookie) => {
+    const share = await post(f, staff(f, '/api/staff/person/share'), { personId });
+    const r = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie });
+    assert.equal(r.status, 200, r.text);
+    return { ...tb, personId, token: r.body.token, cookie: cookieOf(r) || cookie };
+  };
+  for (const viaKey of [false, true]) {
+    const key = viaKey ? invite() : null;
+    // Bea s'inscrit sur le navigateur Z ; le bar la confie au navigateur Y.
+    const z = viaKey ? await opened(f, tb, key) : await eventEntry(f, tb, secret);
+    await post(f, '/api/table/person/rename', { ...tb, personId: z.personId, token: z.token, name: viaKey ? 'Bea K' : 'Bea' }, { cookie: z.cookie });
+    const y = await takeOver(z.personId, undefined);
+    const other = await eventEntry(f, tb, secret, viaKey ? 'Abel K' : 'Abel');
+    // Bea est marquée partie ; Y reprend un autre profil (A).
+    await post(f, staff(f, '/api/staff/person/leave'), { personId: z.personId });
+    await takeOver(other.personId, y.cookie);
+    // Le bar réactive Bea : elle revient sans téléphone, Z reste écarté.
+    assert.equal((await post(f, staff(f, '/api/staff/person/reactivate'), { personId: z.personId })).status, 200);
+    if (viaKey) {
+      const reopened = await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { cookie: z.cookie });
+      assert.equal(reopened.body.token, undefined, 'clé personnelle rouverte par Z : pas de jeton direct');
+      assert.deepEqual(reopened.body, { recover: { id: z.personId, name: 'Bea K' } });
+    } else {
+      const rescan = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: z.cookie });
+      assert.notEqual(rescan.body.id, z.personId, 'QR de l’événement rescanné par Z : pas Bea');
+      assert.equal(rescan.body.resumed, undefined);
+    }
+    assert.ok(!(await stateOf(f, tb, z)).body.managedIds.includes(z.personId), 'Z ne gère plus Bea');
+    // Le bar peut toujours la confier à un téléphone.
+    await takeOver(z.personId, undefined);
+  }
+});
+
 test('doublon parti : sauvegarde impossible pendant la reprise = doublon et ancien profil intacts', async () => {
   const f = harness({ persistent: true });
   const { tb } = openSolo(f);

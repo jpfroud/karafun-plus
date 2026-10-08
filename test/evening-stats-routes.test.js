@@ -290,7 +290,10 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   await ok('/api/staff/settings', { tableRotation: true, presenceGraceSec: 40 });
   assert.ok(has('settings.changed', e => e.setting === 'tableRotation' && e.from === false && e.to === true));
   assert.ok(has('settings.changed', e => e.setting === 'presenceGraceSec' && e.to === 40));
-  await ok('/api/staff/closing', { time: '23:30' });
+  // Heure à venir quelle que soit l'heure du lancement : passée (« 23:30 »
+  // lancé à 23:36), la fermeture décalée repartirait de maintenant.
+  const soon = new Date(Date.now() + 2 * 3600000);
+  await ok('/api/staff/closing', { time: `${String(soon.getHours()).padStart(2, '0')}:${String(soon.getMinutes()).padStart(2, '0')}` });
   await ok('/api/staff/closing', { extendMin: 10 });
   assert.ok(has('closing.set', e => e.deltaMin === 10));
   await ok('/api/staff/closing', { clear: true });

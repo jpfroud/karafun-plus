@@ -850,7 +850,8 @@
       groups.at(-1).people.push(p);
     }
     const container = $('identityBody');
-    if (!force && container.contains(document.activeElement)) return;
+    // Saisie en cours (repère, bonus) : patch() attend. Un bouton cliqué qui
+    // garde le focus (« Parti », « Réactiver ») n'empêche pas la ligne de suivre.
     patch(container, people.length ? groups.map(group => `<section class="identity-group">
       <h4>${esc(tables.get(group.tableId)?.name || group.tableId)} <span class="tiny muted">${group.people.length} personne${group.people.length > 1 ? 's' : ''}</span></h4>
       ${group.people.map(row).join('')}</section>`).join('') : '<p class="small muted">Aucun chanteur pour ce filtre.</p>', force);

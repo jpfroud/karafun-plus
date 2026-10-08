@@ -585,12 +585,24 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   assert.equal(page.postsTo('/api/staff/person/leave').length, 0, 'départ annulé : rien n’est envoyé');
   assert.match(page.confirms.at(-1), /Marquer ce chanteur comme parti/);
   page.confirmAnswer = true;
-  await page.click(row('bruno').querySelector('[data-identity-leave]'));
+  // Regression: le bouton cliqué garde le focus (Chrome sur PC) ; la ligne ne
+  // changeait pas et un deuxième clic renvoyait le départ.
+  const leave = row('bruno').querySelector('[data-identity-leave]');
+  leave.focus();
+  page.world.people[1].active = false;
+  await page.click(leave);
   assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 'bruno' });
   assert.equal(page.toast().text, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
-  await page.click(row('chloe').querySelector('[data-identity-reactivate]'));
+  assert.match(row('bruno').textContent, /parti, fiche conservée/, 'la ligne suit le départ malgré le focus');
+  assert.equal(row('bruno').querySelector('[data-identity-leave]'), null, 'plus de bouton « Parti » à recliquer');
+  const reactivate = row('chloe').querySelector('[data-identity-reactivate]');
+  reactivate.focus();
+  page.world.people[2].active = true;
+  await page.click(reactivate);
   assert.deepEqual(page.lastPost('/api/staff/person/reactivate').body, { personId: 'chloe' });
   assert.equal(page.toast().text, 'Personne réactivée, historique conservé');
+  assert.doesNotMatch(row('chloe').textContent, /parti, fiche conservée/, 'la ligne suit la réactivation malgré le focus');
+  page.doc.activeElement = null;
   // Un clic hors d'une ligne ne fait rien.
   const total = page.posts.length;
   await page.click(page.$('identityBody'));

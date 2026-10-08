@@ -3076,7 +3076,8 @@ test('doublon marqué parti sur ce navigateur : son QR personnel propose encore 
 
 test('navigateur intégré (Instagram, WebView…) : conseil d’ouvrir la page dans son navigateur, en solo seulement', async () => {
   const solo = soloState({ tablePeople: [person('m1', 'Marie')], managedIds: ['m1'] });
-  const insta = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile Instagram 300.0' });
+  // Son adresse garde sa clé personnelle : Safari ou Chrome la retrouvent.
+  const insta = await soloPage('?invitation=CLE', solo, undefined, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile Instagram 300.0' });
   assert.equal(insta.node('inAppHint').hidden, false);
   assert.equal(insta.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
   const webview = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A; wv) AppleWebKit/537.36' });
@@ -3122,6 +3123,44 @@ test('navigateur intégré, événement privé : le bandeau dit de rescanner le 
   const table = await open({ state: baseState({ tablePeople: [person('alice', 'Alice', { viaEvent: true })], managedIds: ['alice'] }),
     userAgent: insta });
   assert.equal(table.node('inAppHint').hidden, true, 'téléphone de table : rien');
+});
+
+test('navigateur intégré : le bandeau suit ce qui ramène vraiment la page (personne partie, profil repris)', async () => {
+  const insta = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile Instagram 300.0';
+  // Regression: une personne venue par l'événement puis marquée partie
+  // retrouvait le conseil Safari/Chrome, qui mène au lien commun.
+  const gone = soloState({ tablePeople: [person('e1', 'Léa', { viaEvent: true, active: false })], managedIds: ['e1'] });
+  for (const [languages, text] of [[undefined, 'Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.'],
+    [['en'], 'To get back to this page, scan the event QR code again from the same app.']]) {
+    const page = await soloPage('', gone, undefined, { userAgent: insta, languages });
+    assert.equal(page.node('inAppHint').hidden, false);
+    assert.equal(page.node('inAppHint').textContent, text);
+  }
+  // Regression: un soliste repris par code ou QR de reprise n'a plus sa clé
+  // dans l'adresse ; Safari ou Chrome mènerait au lien commun.
+  const recovered = soloState({ tablePeople: [person('p1', 'Marie')], managedIds: ['p1'] });
+  const fr = await soloPage('', recovered, undefined, { userAgent: insta });
+  assert.equal(fr.node('inAppHint').textContent, 'Pour retrouver cette page, rescanne le même QR depuis la même application, ou demande au bar un QR de reprise.');
+  const en = await soloPage('', recovered, undefined, { userAgent: insta, languages: ['en'] });
+  assert.equal(en.node('inAppHint').textContent, 'To get back to this page, scan the same QR code again from the same app, or ask the bar for a recovery QR code.');
+  // Personne sur ce téléphone (lien commun) : conseil inchangé.
+  const nobody = await soloPage('', soloState(), undefined, { userAgent: insta });
+  assert.equal(nobody.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
+});
+
+test('QR refusé : le message du serveur suit le changement de langue', async () => {
+  // Regression: la page gardait le message dans la langue de l'ouverture
+  // (« To add a song Cette personne a été marquée partie… »).
+  const gone = soloState({ soloInvitationReady: false, tablePeople: [person('d1', 'Clara', { active: false })], managedIds: ['d1'] });
+  const left = () => reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
+  const fr = await soloPage('?invitation=CLE-SOLO', gone, url => url === '/api/table/solo/open' ? left() : undefined);
+  assert.equal(fr.node('noSingerText').textContent, 'Cette personne a été marquée partie. Demande au bar de la réactiver.');
+  await fr.tap('langSwitch', '[data-lang="en"]');
+  assert.equal(fr.node('noSingerText').textContent, 'This person was marked as gone. Ask the bar to bring them back.');
+  const en = await soloPage('?invitation=CLE-SOLO', gone, url => url === '/api/table/solo/open' ? left() : undefined, { languages: ['en'] });
+  assert.equal(en.node('noSingerText').textContent, 'This person was marked as gone. Ask the bar to bring them back.');
+  await en.tap('langSwitch', '[data-lang="fr"]');
+  assert.equal(en.node('noSingerText').textContent, 'Cette personne a été marquée partie. Demande au bar de la réactiver.');
 });
 
 test('table : la page ne montre que les personnes du téléphone, « Voir toute la table (N) » liste tout le monde', async () => {

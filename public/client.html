@@ -1314,7 +1314,8 @@
       // Même QR ouvert sur un autre navigateur : « C'est bien toi ? »
       entry = { status: 'recover', recover: result.recover, error: '' };
     } catch (error) {
-      entry = error.status ? { status: 'failed', recover: null, error: error.message } : { status: '', recover: null, error: '' };
+      // Message gardé dans sa forme traduisible : il suit le changement de langue.
+      entry = error.status ? { status: 'failed', recover: null, error: error.localized || (() => error.message) } : { status: '', recover: null, error: '' };
     }
     render();
   }
@@ -1379,12 +1380,17 @@
     $('addPersonForm').hidden = individual || full;
     $('capacityNotice').hidden = individual || !full;
     $('inAppHint').hidden = !individual || !inAppBrowser;
-    // Venu par le QR de l'événement : l'adresse ne garde pas ce QR, et un autre
-    // navigateur crée un nouveau chanteur ; seul un nouveau scan dans la même
-    // application le retrouve. Le QR individuel, lui, reste dans l'adresse.
-    $('inAppHint').textContent = owned.some(person => person.viaEvent)
+    // Le conseil dépend de ce qui ramène vraiment la page. Venu par le QR de
+    // l'événement (même marqué parti) : l'adresse ne garde pas ce QR, et un
+    // autre navigateur crée un nouveau chanteur ; seul un nouveau scan dans la
+    // même application le retrouve. Repris par code ou QR de reprise : la clé
+    // n'est plus dans l'adresse. Le QR individuel, lui, y reste.
+    const held = people.filter(person => manages(person.id));
+    $('inAppHint').textContent = held.some(person => person.viaEvent)
       ? t('Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.')
-      : t('Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
+      : held.length && !soloInvitation
+        ? t('Pour retrouver cette page, rescanne le même QR depuis la même application, ou demande au bar un QR de reprise.')
+        : t('Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
     $('tableAllButton').hidden = individual;
     $('tableAllButton').textContent = t('Voir toute la table ({n})', { n: people.length });
     renderSongAccess(people, others, full);
@@ -1438,7 +1444,7 @@
     if (individual) {
       // QR ouvert (individuel ou d'événement) : la page s'en charge seule.
       const opening = entry.status === 'pending' || (!entry.status && (soloInvitation || (eventToken && state.privateEventReady)));
-      const explanation = entry.status === 'failed' ? entry.error
+      const explanation = entry.status === 'failed' ? entry.error()
         : entry.status === 'recover' ? t('Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.', { name: entry.recover.name })
           : opening ? t('Un instant : ouverture de ton QR…')
             : eventToken ? t('Ce QR d’événement n’est plus actif. Demande au bar.')

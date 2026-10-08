@@ -2153,11 +2153,15 @@ function activeSoloDeviceOwner(req) {
 
 // Reprise d'un profil par ce navigateur : il quitte sa place partie, qui
 // revient sans téléphone si le bar la réactive (jamais deux places actives
-// pour un navigateur).
+// pour un navigateur). Le téléphone actuel est le dernier de la liste : à sa
+// place, une empreinte qu'aucun navigateur n'envoie, pour qu'un ancien
+// téléphone écarté par un transfert ne redevienne pas le téléphone actuel.
 function releaseGoneSoloDevice(req, owner) {
   const hash = soloCookieHash(req);
   if (!owner?.withdrawnAt || !hash || !Array.isArray(owner.soloDeviceHashes)) return;
+  const current = owner.soloDeviceHashes.at(-1) === hash;
   owner.soloDeviceHashes = owner.soloDeviceHashes.filter(saved => saved !== hash);
+  if (current && owner.soloDeviceHashes.length) owner.soloDeviceHashes.push(crypto.randomBytes(32).toString('hex'));
   if (!owner.soloDeviceHashes.length) delete owner.soloDeviceHashes;
 }
 
