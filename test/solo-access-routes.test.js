@@ -631,6 +631,42 @@ test('activité : seule une page visible compte, pour toutes les personnes du t�
   assert.ok(!/lastActiveAt|lastActionAt|lastSeen/.test(phone));
 });
 
+// Regression: constat QA Q1 (8 octobre) — un prénom refusé (déjà pris, vide)
+// comptait comme activité : le bar affichait « Actif il y a N min » au lieu de
+// « Pas revenu depuis l'ouverture du QR ». Seule une action acceptée compte (C1).
+test('activité : une action personnelle refusée (prénom pris, vide, 4xx) ne compte pas', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const marie = await opened(f, tb, invite());
+  assert.equal((await post(f, '/api/table/person/rename', { ...tb, personId: marie.personId, token: marie.token, name: 'Marie' },
+    { cookie: marie.cookie })).status, 200);
+  const sam = await opened(f, tb, invite());
+  const p = f.sched.people.get(sam.personId);
+  delete p.lastActionAt;
+  const body = extra => ({ ...tb, personId: sam.personId, token: sam.token, ...extra });
+  const refused = async (route, extra) => {
+    const r = await post(f, route, body(extra), { cookie: sam.cookie });
+    assert.ok(r.status >= 400 && r.status < 500, `${route} : ${r.status} ${r.text}`);
+    assert.equal(p.lastActionAt, undefined, `${route} refusé : pas une activité`);
+    return r;
+  };
+  assert.equal((await refused('/api/table/person/rename', { name: 'marie' })).body.code, 'NAME_TAKEN');
+  await refused('/api/table/person/rename', { name: '   ' });
+  await refused('/api/table/song', { song: song('1', 'Titre') });
+  await refused('/api/table/battle/vote', { choice: 'a' });
+  await refused('/api/table/song/remove', { entryId: 'inconnu' });
+  assert.equal(plain(f.staffState()).people.find(row => row.id === sam.personId).lastActiveAt, p.lastSeen,
+    'le bar garde l’heure d’ouverture du QR');
+  // Une action acceptée compte toujours.
+  assert.equal((await post(f, '/api/table/person/rename', body({ name: 'Sam' }), { cookie: sam.cookie })).status, 200);
+  assert.ok(p.lastActionAt > 0, 'prénom accepté = action');
+  // Ancienne API par jeton : un refus ne compte pas non plus.
+  delete p.lastActionAt;
+  const legacy = await post(f, '/api/duet/answer', { token: sam.token, accept: true, entryId: 'inconnu' }, { cookie: sam.cookie });
+  assert.equal(legacy.status, 400, legacy.text);
+  assert.equal(p.lastActionAt, undefined, 'ancienne API refusée : pas une activité');
+});
+
 test('activité solo : page visible avec le cookie du téléphone', async () => {
   const f = harness();
   const { tb, invite } = openSolo(f);

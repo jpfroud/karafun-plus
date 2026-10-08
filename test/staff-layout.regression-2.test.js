@@ -105,4 +105,40 @@ for (const width of [360, 390, 1366]) {
 }
 assert.equal(computed('.kv > div', 360)['overflow-wrap'], 'anywhere', 'les adresses et droits longs passent à la ligne');
 assert.equal(computed('.kv > div', 360)['min-width'], '0');
+
+// ---------------------------------------------------------- constats QA du 8 octobre
+// Regression: constat QA Q7 — Repères : « N titres · N passages » et « Pas
+// revenu depuis l'ouverture du QR (21:38) » coupés par « … » à 390 et à
+// 1366 px, l'heure perdue. Les lignes secondaires passent à la ligne ; le
+// prénom garde ses points de suspension.
+for (const width of [390, 1366]) {
+  const secondary = computed('.identity-who > span', width);
+  assert.notEqual(secondary['white-space'], 'nowrap', `${width} px : lignes secondaires sur plusieurs lignes`);
+  assert.notEqual(secondary['text-overflow'], 'ellipsis', `${width} px : jamais de « … » sur l’activité`);
+  assert.notEqual(secondary.overflow, 'hidden', `${width} px : rien de caché`);
+  assert.equal(secondary['overflow-wrap'], 'break-word', `${width} px : un mot trop long passe à la ligne`);
+  const name = computed('.identity-who > strong', width);
+  assert.equal(name['white-space'], 'nowrap', `${width} px : prénom sur une ligne`);
+  assert.equal(name['text-overflow'], 'ellipsis', `${width} px : prénom long abrégé`);
+}
+assert.ok(!ALL.some(rule => rule.selectors.some(sel => /identity-who > span|\.activity\b/.test(sel)) && /nowrap|ellipsis/.test(rule.body)),
+  'aucune autre règle ne recoupe l’activité');
+
+// Regression: constat QA Q4 — à 390 px, le message avec un long lien (copie
+// impossible) dépassait du bord de l'écran. Il passe à la ligne dans le cadre.
+for (const width of [390, 1366]) {
+  const toast = computed('.toast', width);
+  assert.equal(toast['overflow-wrap'], 'anywhere', `${width} px : un lien long passe à la ligne`);
+  assert.equal(toast['max-width'], '90vw');
+  // Centré par left: 50 %, le cadre ne prendrait que la moitié de l'écran
+  // (195 px à 390 px, mesuré dans Chromium) : sa largeur suit le texte, bornée à 90vw.
+  assert.equal(toast.width, 'max-content', `${width} px : le cadre utilise toute la largeur permise`);
+  assert.notEqual(toast['white-space'], 'nowrap');
+}
+for (const page of ['client.html', 'staff.html']) {
+  const inline = fs.readFileSync(path.join(__dirname, '..', 'public', page), 'utf8');
+  for (const match of inline.matchAll(/([^{}]*\.toast[^{}]*)\{([^{}]*)\}/g)) {
+    assert.doesNotMatch(match[2], /white-space|overflow-wrap|word-break/, `${page} : ${match[1].trim()} ne bloque pas le retour à la ligne`);
+  }
+}
 console.log('Bar : barre d’onglets, barre du haut, colonne d’actions et diagnostic à 360 px OK');

@@ -225,10 +225,13 @@ function niceTicks(max, count = 5, { integer = false } = {}) {
   for (let v = 0; v <= top + step / 2; v += step) out.push(Math.round(v * 1000) / 1000);
   return out;
 }
-// Durées (en secondes) : pas ronds de 15 s à 1 h, libellés exacts (« 30 s », « 1 min 30 »).
+// Durées (en secondes) : le plus petit pas rond (15 s à 1 h, puis des heures
+// entières) qui laisse au moins minGap unités entre deux étiquettes sur
+// `width` unités, comme timeTicks ; libellés exacts (« 30 s », « 1 min 30 »).
 const DURATION_STEPS = [15, 30, 60, 120, 300, 600, 900, 1800, 3600];
-function durationTicks(maxSec, count = 5) {
-  const step = DURATION_STEPS.find(v => v >= maxSec / count) || 3600;
+function durationTicks(maxSec, width, minGap = 60) {
+  const room = Math.max(1, Math.floor(width / minGap));
+  const step = DURATION_STEPS.find(v => Math.ceil(maxSec / v) <= room) || Math.ceil(maxSec / room / 3600) * 3600;
   const out = [];
   for (let v = 0; v < maxSec + step; v += step) out.push(v);
   return out.length > 1 ? out : [0, step];
@@ -406,7 +409,7 @@ function drawWaits(plot, rows) {
   const W = plotWidth(plot), left = Math.min(140, W * 0.3), right = 40, top = 8, rowH = 26;
   const H = top + rows.length * rowH + 26;
   // Échelle en secondes : graduations distinctes même sous deux minutes.
-  const ticks = durationTicks(Math.max(...rows.map(r => r.waits.maxSec), 60), 5).map(v => v / 60);
+  const ticks = durationTicks(Math.max(...rows.map(r => r.waits.maxSec), 60), W - right - left).map(v => v / 60);
   const x = linear(0, ticks.at(-1), left, W - right);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Attente avant de chanter, par chanteur' }, plot);
   axisX(svg, ticks, x, top, H - 22, v => tickDur(Math.round(v * 60), Math.round(ticks[1] * 60)));

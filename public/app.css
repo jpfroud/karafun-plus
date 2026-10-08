@@ -108,7 +108,7 @@ body.client { padding: 0 0 calc(24px + env(safe-area-inset-bottom)); }
 .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
 .sheet .panel { width: 100%; max-width: 560px; background: var(--surface); border-radius: 20px 20px 0 0; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); max-height: 92vh; overflow: auto; border: 1px solid var(--line); }
 .sheet h3 { margin: 4px 0 10px; }
-.toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--line); padding: 12px 16px; border-radius: 12px; z-index: 30; max-width: 90vw; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+.toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--line); padding: 12px 16px; border-radius: 12px; z-index: 30; width: max-content; max-width: 90vw; word-break: break-word; overflow-wrap: anywhere; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
 .toast.bad { border-color: var(--bad); }
 .toast.warn { border-color: var(--warn); }
 .photo-pick { display: flex; gap: 12px; align-items: center; margin-top: 6px; }
@@ -324,7 +324,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .identity-photo { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; object-fit: cover; background: var(--surface-2); color: var(--accent); font-weight: 800; }
 .identity-row .identity-photo { width: 26px; height: 26px; font-size: 12px; }
 .identity-who { display: grid; gap: 1px; min-width: 0; }
-.identity-who > strong, .identity-who > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.identity-who > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Titres et passages, dernière activité : ils passent à la ligne pour que l'heure reste lisible. */
+.identity-who > span { overflow-wrap: break-word; }
 .identity-row [data-identity-note] { min-width: 0; }
 .identity-actions { display: flex; gap: 5px; }
 .identity-actions button { white-space: nowrap; }

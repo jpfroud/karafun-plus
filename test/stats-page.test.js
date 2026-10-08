@@ -871,3 +871,37 @@ test('graduations du temps : pas selon la largeur, alignés sur l’horloge loca
   assert.ok(weeks.length >= 2 && weeks.length <= 5, String(weeks.length));
   assert.ok(weeks.every(t => new Date(t).getHours() === 0));
 });
+
+// Regression: constat QA Q8 (8 octobre) — « Attente avant de chanter » à
+// 390 px : pas fixe de 15 s, « 1 min » et « 1 min 15 » collés (39 unités
+// entre leurs centres). Le pas dépend de la largeur, comme l'axe du temps.
+test('graduations des durées : pas selon la largeur, au moins 60 unités entre deux étiquettes', async () => {
+  const page = loadPage();
+  await settle();
+  const { durationTicks } = page.context;
+  const gaps = (ticks, width) => ticks.slice(1).map((v, i) => (v - ticks[i]) * width / ticks.at(-1));
+  const steps = ticks => new Set(ticks.slice(1).map((v, i) => v - ticks[i]));
+  // Cas du constat : 1 min 15 au plus sur 198 unités (390 px).
+  assert.deepEqual(steps(durationTicks(75, 198)), new Set([30]), '30 s au lieu de 15 s');
+  // Beaucoup de place : le pas fin reste.
+  assert.deepEqual(steps(durationTicks(75, 1200)), new Set([15]));
+  // Pas candidats : 15 s, 30 s, 1, 2, 5, 10, 15, 30 min, puis l'heure.
+  for (const [maxSec, width] of [[75, 198], [75, 120], [600, 198], [3000, 198], [40 * 60, 700], [5 * 3600, 198], [30, 60], [0, 198]]) {
+    const ticks = durationTicks(maxSec, width);
+    assert.equal(ticks[0], 0);
+    assert.ok(ticks.length >= 2, `${maxSec} s sur ${width} : au moins deux graduations`);
+    assert.ok(ticks.at(-1) >= maxSec, `${maxSec} s sur ${width} : l’axe couvre la plus longue attente`);
+    const [step] = steps(ticks);
+    assert.ok([15, 30, 60, 120, 300, 600, 900, 1800].includes(step) || step % 3600 === 0, `${maxSec} s sur ${width} : pas rond ${step}`);
+    if (width >= 120) for (const gap of gaps(ticks, width)) assert.ok(gap >= 60, `${maxSec} s sur ${width} : ${Math.round(gap)} unités entre deux étiquettes`);
+  }
+  // Sur la page, à 360, 390 et 900 px : étiquettes de l'axe jamais serrées.
+  for (const width of [360, 390, 900]) {
+    const shown = loadPage({ width });
+    await settle();
+    const svg = shown.doc.getElementById('chartWaitsPlot').byTag('svg')[0];
+    const labels = svg.children.filter(n => n.tagName === 'TEXT' && n.getAttribute('text-anchor') === 'middle').map(n => Number(n.getAttribute('x')));
+    assert.ok(labels.length >= 2, `${width} px : graduations`);
+    for (let i = 1; i < labels.length; i++) assert.ok(labels[i] - labels[i - 1] >= 60, `${width} px : ${Math.round(labels[i] - labels[i - 1])} unités`);
+  }
+});

@@ -34,6 +34,7 @@ const tabs = ['table', 'queue', 'catalog'].map(name => Object.assign(get(`nav-${
 const document = {
   title: '', activeElement: null, hidden: true, listeners: {},
   getElementById: get,
+  body: { children: [] }, // fenêtres modales : fond rendu inerte
   querySelectorAll(selector) { return selector === '.tabs button' ? tabs : []; },
   addEventListener(name, listener) { this.listeners[name] = listener; },
   contains() { return true; },

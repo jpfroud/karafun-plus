@@ -128,6 +128,14 @@ class Element {
     return null;
   }
   focus() { this.focusCount++; this.page.document.activeElement = this; }
+  appendChild(child) { child.parent = this; child.detached = false; this.children.push(child); return child; }
+  remove() {
+    if (!this.parent) return;
+    this.parent.children = this.parent.children.filter(child => child !== this);
+    this.parent = null;
+    this.detached = true;
+  }
+  setSelectionRange(start, end) { this.selection = [start, end]; }
   select() { this.selected = true; }
   scrollIntoView(options) { this.scrolled = options || true; }
 }
@@ -222,7 +230,14 @@ function boot(options = {}) {
     querySelector: selector => body.querySelector(selector),
     addEventListener(type, listener, opts = {}) { (this.listeners[type] ||= []).push({ listener, once: !!opts?.once }); },
     contains: node => connected(node),
-    execCommand: command => { page.execCommands = (page.execCommands || 0) + 1; return command === 'copy' && !!options.execCopy; },
+    createElement: tag => new Element(page, tag),
+    // Copie de secours : le champ sélectionné au moment de la copie est noté.
+    execCommand: command => {
+      page.execCommands = (page.execCommands || 0) + 1;
+      const field = [...page.body.descendants()].reverse().find(node => node.selected);
+      page.execCopied = (page.execCopied || []).concat(field ? [field.value] : []);
+      return command === 'copy' && !!options.execCopy;
+    },
   };
   const connected = node => {
     for (let current = node; current; current = current.parent) {
@@ -234,6 +249,8 @@ function boot(options = {}) {
   page.document = document;
   page.body = body;
   body.innerHTML = bodyMarkup;
+  // Le balisage commence à <body> : c'est lui, document.body.
+  document.body = body.children.find(node => node.tag === 'body') || body;
 
   // Historique du navigateur : URL réécrites par la page (lien de transfert oublié).
   const windowListeners = {};
@@ -291,7 +308,8 @@ function boot(options = {}) {
     ...(options.userAgent !== undefined ? { userAgent: options.userAgent } : {}),
     vibrate: pattern => { page.vibrations.push([...pattern]); return true; },
     ...(options.share ? { share: async data => { page.shares.push({ ...data }); } } : {}),
-    clipboard: { writeText: async text => { if (options.clipboardFails) throw new Error('refusé'); page.copies.push(text); } },
+    // Page en http sur le Wi-Fi du bar : ni partage ni presse-papiers.
+    ...(options.noClipboard ? {} : { clipboard: { writeText: async text => { if (options.clipboardFails) throw new Error('refusé'); page.copies.push(text); } } }),
   };
   const window = {
     isSecureContext: !!options.secure, history,
@@ -3115,4 +3133,153 @@ test('table déjà commencée : « Rejoindre la table » en tête, puis la carte
   assert.equal(full.node('joinSubmit').disabled, true);
   assert.equal(full.node('headcountNotice').hidden, false);
   assert.equal(full.node('headcountNotice').textContent, 'La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.');
+});
+
+// ================================================================ constats QA du 8 octobre
+// Regression: constat QA Q2 — le message de la fenêtre de prénom gardait
+// l'ancienne langue après FR/EN, et « prénom déjà pris » restait affiché
+// après un nouvel essai.
+// Regression: constat QA Q9 — fenêtre de prénom ouverte, Tab atteignait les
+// boutons FR/EN de l'en-tête et le contenu derrière.
+test('fenêtre de prénom : message retraduit, effacé à chaque essai, reste de la page inerte', async () => {
+  const page = await soloPage('?invitation=CLE-SOLO', soloState(), (url, body, self) => {
+    if (url === '/api/table/solo/open') {
+      self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+      self.state.managedIds = ['s1'];
+      return { id: 's1', token: 'jeton-s1', nameRequired: true };
+    }
+    if (url === '/api/table/person/rename') {
+      if (body.name === 'Marie') return reply(400, { error: 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.', code: 'NAME_TAKEN' });
+      if (body.name === 'Erreur') return reply(400, { error: 'Prénom limité à 24 caractères.' });
+      self.state.tablePeople = [person('s1', body.name)];
+      return { ok: true };
+    }
+    return undefined;
+  });
+  const error = () => page.node('nameGateError');
+  assert.equal(page.node('nameGate').hidden, false);
+  // Q9 : tout sauf la fenêtre (et la zone d'état) est inerte, en-tête compris.
+  const background = () => page.document.body.children.filter(node => node.tag !== '#text' && !['nameGate', 'toast'].includes(node.id));
+  assert.ok(background().some(node => node.classList.contains('stagebox')), 'la scène fait partie du fond');
+  for (const node of background()) assert.equal(node.inert, true, `${node.id || node.className} inerte`);
+  assert.notEqual(page.node('nameGate').inert, true, 'la fenêtre reste utilisable');
+  assert.notEqual(page.node('toast').inert, true, 'zone d’état annoncée');
+
+  page.node('nameGateInput').value = 'Marie';
+  await page.submit('nameGateForm');
+  assert.equal(error().textContent, 'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).');
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error().textContent, 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.).', 'le message suit la langue');
+  assert.equal(error().hidden, false);
+  for (const node of background()) assert.equal(node.inert, true, 'toujours inerte après le changement de langue');
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+  assert.equal(error().textContent, 'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).');
+
+  // Message du serveur : retraduit lui aussi.
+  page.node('nameGateInput').value = 'Erreur';
+  await page.submit('nameGateForm');
+  assert.equal(error().textContent, 'Prénom limité à 24 caractères.');
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error().textContent, 'First names are limited to 24 characters.');
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+
+  // Saisie : l'ancien message disparaît.
+  await page.type('nameGateInput', 'Mar');
+  assert.equal(error().hidden, true, 'effacé dès la saisie');
+  assert.equal(error().textContent, '');
+  // Champ vide bloqué par le navigateur (required) : l'ancien message ne reste pas.
+  page.node('nameGateInput').value = 'Marie';
+  await page.submit('nameGateForm');
+  assert.equal(error().hidden, false);
+  page.node('nameGateInput').value = '';
+  page.dispatch(page.node('nameGateInput'), 'invalid');
+  assert.equal(error().hidden, true, 'essai vide refusé par le navigateur : message effacé');
+  // Nouvel essai : le message est remplacé, jamais empilé.
+  page.node('nameGateInput').value = 'Marie';
+  await page.submit('nameGateForm');
+  page.node('nameGateInput').value = '   ';
+  await page.submit('nameGateForm');
+  assert.equal(error().textContent, 'Indique un prénom.');
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error().textContent, 'Please enter a first name.');
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+
+  page.node('nameGateInput').value = 'Julie';
+  await page.submit('nameGateForm');
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(error().hidden, true);
+  for (const node of background()) assert.notEqual(node.inert, true, `${node.id || node.className} rendu à la page`);
+});
+
+// Regression: constat QA Q3 — « Partager le lien » ne copiait jamais sur un
+// téléphone en http (ni navigator.share ni navigator.clipboard).
+test('partager le lien de la table en http : copie de secours, sinon le lien dans le message', async () => {
+  const invite = { url: 'http://192.0.2.2:3520/t/Les%20Pirates/secret', qr: 'data:image/png;base64,QR' };
+  const respond = url => url.startsWith('/api/table/invite?') ? invite : undefined;
+  const page = await open({ noClipboard: true, execCopy: true, respond });
+  await page.click(page.node('inviteToggle'));
+  await page.click(page.node('inviteShare'));
+  assert.equal(page.execCommands, 1, 'copie de secours du navigateur');
+  assert.deepEqual(page.execCopied, [invite.url], 'le lien de la table était sélectionné');
+  assert.equal(page.document.body.children.some(node => node.tag === 'textarea'), false, 'champ temporaire retiré');
+  assert.deepEqual(page.toast(), { text: 'Lien copié : colle-le dans ton message.', bad: false, warn: false, hidden: false });
+
+  const failed = await open({ noClipboard: true, respond, languages: ['en-US'] });
+  await failed.click(failed.node('inviteToggle'));
+  await failed.click(failed.node('inviteShare'));
+  assert.deepEqual(failed.toast(), { text: `Could not copy. Table link: ${invite.url}`, bad: true, warn: false, hidden: false });
+
+  // Fiche « Transférer » : même chemin, sur le champ du lien affiché.
+  const shareReply = { code: '4321', url: 'http://192.0.2.2:3520/t/1/secret?reprise=abc', qr: 'data:image/png;base64,T' };
+  const transfer = await open({ noClipboard: true, execCopy: true, respond: url => url === '/api/table/person/share' ? shareReply : undefined });
+  await transfer.tap('peopleList', '[data-share-person="alice"]');
+  await transfer.click(transfer.node('copyTransfer'));
+  assert.deepEqual(transfer.execCopied, [shareReply.url]);
+  assert.equal(transfer.toast().text, 'Lien copié : colle-le dans ton message.');
+});
+
+// Regression: constat QA Q5 — le téléphone demandait les sélections alors que
+// le serveur annonçait déjà le catalogue indisponible (502 dans la console).
+test('catalogue annoncé indisponible : aucune demande de sélections, chargement à son retour', async () => {
+  const state = baseState({ catalogAvailable: false });
+  const page = await open({ state });
+  const catalogCalls = () => page.requests.filter(request => request.url.startsWith('/api/catalog/'));
+  await page.click(page.node('nav-catalog'));
+  assert.equal(catalogCalls().length, 0, 'pas de requête vouée à l’échec');
+  assert.equal(page.node('catalogContent').textContent, 'Le catalogue est momentanément indisponible. Réessaie dans un instant.');
+  await page.tap(page.body, '[data-catalog="news"]');
+  assert.equal(catalogCalls().length, 0, 'Nouveautés non plus');
+  await page.poll();
+  assert.equal(catalogCalls().length, 0);
+  await page.tap(page.body, '[data-catalog="styles"]');
+  page.state.catalogAvailable = true;
+  // Recherche en cours de saisie quand le catalogue revient : elle n'est pas effacée.
+  page.node('searchInput').value = 'que';
+  await page.poll();
+  assert.equal(page.node('searchInput').value, 'que');
+  assert.equal(catalogCalls().length, 0);
+  page.node('searchInput').value = '';
+  await page.poll();
+  assert.equal(catalogCalls().length, 1, 'catalogue revenu : une seule demande');
+  assert.match(catalogCalls()[0].url, /^\/api\/catalog\/categories\?type=styles/);
+  assert.match(page.node('catalogContent').textContent, /Années 80/);
+  await page.poll();
+  assert.equal(catalogCalls().length, 1, 'pas de nouvelle demande ensuite');
+});
+
+// Regression: constat QA Q10 — « Faire scanner ma table » restait proposé
+// alors que la table était complète.
+test('table complète : plus d’invitation à scanner la table, elle revient si une place se libère', async () => {
+  const state = baseState({ tablePeople: [person('alice', 'Alice'), person('bob', 'Bob')], managedIds: ['alice'] });
+  state.table.headcount = 2;
+  const page = await open({ state, respond: url => url.startsWith('/api/table/invite?') ? { url: 'http://x/t/1/s', qr: 'data:image/png;base64,Q' } : undefined });
+  assert.equal(page.node('inviteBox').hidden, true, 'table complète : ni bouton ni carte');
+  page.state.table.headcount = 3;
+  await page.poll();
+  assert.equal(page.node('inviteBox').hidden, false, 'une place libre : le bouton revient');
+  await page.click(page.node('inviteToggle'));
+  assert.equal(page.node('invitePanel').hidden, false);
+  page.state.tablePeople.push(person('chloe', 'Chloé'));
+  await page.poll();
+  assert.equal(page.node('inviteBox').hidden, true, 'carte ouverte puis table complète : masquée aussi');
 });
