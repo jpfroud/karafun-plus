@@ -17,7 +17,7 @@
   <!-- ======================================================== Scène -->
   <section class="card live-panel" data-tab="scene">
     <div class="section-heading compact"><div><div class="eyebrow">KaraFun</div><h2>Sur scène</h2></div>
-      <div class="scene-chips"><button type="button" id="autoWarn" class="pill warn" hidden></button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
+      <div class="scene-chips"><button type="button" id="spotifyChip" class="pill" hidden title="Spotify : toucher pour les réglages"></button><button type="button" id="autoWarn" class="pill warn" hidden></button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
     <div id="stage" class="live-card stage-card">—</div>
     <div class="live-actions">
       <button class="btn primary" id="playBtn">▶ Lecture</button>
@@ -171,9 +171,10 @@
     <p class="tiny muted">Sur HTTPS avec autorisation, le navigateur peut notifier si cette page reste ouverte. Sur HTTP, les demandes restent visibles dans la page et une alerte sonore peut retentir ; aucune alerte ne fonctionne après fermeture du navigateur.</p>
   </section>
 
-  <section class="card spotify-panel" data-tab="plus">
+  <section class="card spotify-panel" data-tab="plus" id="spotifyPanel">
     <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
     <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (ce PC, celui de KaraFun, une enceinte) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
+    <div class="row wrap" id="spotifyReconnectRow" hidden><button class="btn small primary" id="spotifyReconnect">Reconnecter Spotify</button><span class="small muted">depuis ce PC : Spotify revient sur son adresse locale.</span></div>
     <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
       <ol class="small">
         <li>Sur <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a>, connecte-toi avec le compte Spotify du bar et crée une application (cocher « Web API »).</li>
@@ -183,7 +184,7 @@
       <div class="row wrap"><input id="spotifyClientId" type="text" autocomplete="off" placeholder="Client ID de l’application Spotify" aria-label="Client ID Spotify"><span class="save-status" data-save-status="spotifyClientId" aria-live="polite"></span><button class="btn small primary" id="spotifyLogin">Se connecter à Spotify</button></div>
     </details>
     <div id="spotifyConnected" hidden>
-      <div class="row wrap"><label class="small" for="spotifyDevice">Appareil qui joue la musique</label><select id="spotifyDevice"><option value="">Appareil actif de Spotify</option></select><button class="btn small" id="spotifyDevices">Actualiser la liste</button></div>
+      <div class="row wrap"><label class="small" for="spotifyDevice">Appareil qui joue la musique</label><select id="spotifyDevice"><option value="">Appareil actif de Spotify</option></select><button class="btn small" id="spotifyCheck">Vérifier Spotify</button></div>
       <div class="control-stack">
         <div class="row wrap"><label class="switch"><input type="checkbox" id="spotifyAutoResume"> Relancer Spotify quand la file est vide</label><span class="save-status" data-save-status="spotifyAutoResume" aria-live="polite"></span></div>
         <div class="row wrap"><label class="switch"><input type="checkbox" id="spotifyAutoPause"> Mettre Spotify en pause quand un titre démarre</label><span class="save-status" data-save-status="spotifyAutoPause" aria-live="polite"></span></div>
@@ -1163,29 +1164,46 @@
   }
 
   // Spotify : connexion, appareil et relance automatique pendant les silences.
-  let spotifyDevicesList = null;
+  // État de la dernière vérification faite par le serveur (toutes les minutes) :
+  // texte du panneau, version courte pour l'écran Scène, couleur.
+  function spotifyHealth(sp) {
+    const health = sp.health || { state: 'unknown' };
+    const name = health.device?.name || sp.deviceName || 'l’appareil voulu';
+    if (!sp.connected) return { state: 'disconnected', text: 'Spotify non connecté', chip: 'Spotify non connecté', cls: 'bad' };
+    if (health.state === 'ready') return { state: 'ready', text: `Spotify connecté · ${name}`, chip: `Spotify · ${name}`, cls: 'ok' };
+    if (health.state === 'no-device') return { state: 'no-device', text: `Spotify connecté, aucun appareil : ouvre Spotify sur ${name}`, chip: 'Spotify : aucun appareil', cls: 'warn' };
+    if (health.state === 'error') return { state: 'error', text: `Spotify injoignable, nouvel essai à ${hhmm(health.retryAt)}`, chip: 'Spotify injoignable', cls: 'bad' };
+    return { state: 'unknown', text: 'Vérification de Spotify…', chip: 'Spotify : vérification…', cls: '' };
+  }
   function renderSpotify() {
     const sp = S.spotify;
+    $('spotifyChip').hidden = !sp?.configured;
     if (!sp) return;
     $('spotifyRedirect').textContent = sp.redirectUri || '';
     syncField($('spotifyClientId'));
     $('spotifyConnected').hidden = !sp.connected;
     $('spotifySetup').open = !sp.connected && !!$('spotifySetup').open;
     $('spotifyLogin').disabled = !sp.configured;
-    const playing = sp.player ? (sp.player.isPlaying ? 'en lecture' : 'en pause') : null;
-    $('spotifyPill').textContent = !sp.configured ? 'Non configuré' : !sp.connected ? 'Non connecté' :
-      playing ? `Spotify ${playing}` : 'Connecté';
-    $('spotifyPill').className = 'pill' + (sp.lastError ? ' bad' : sp.connected ? ' ok' : '');
+    const health = spotifyHealth(sp);
+    $('spotifyPill').textContent = sp.configured ? health.text : 'Non configuré';
+    $('spotifyPill').className = 'pill' + (sp.configured && health.cls ? ` ${health.cls}` : '');
+    $('spotifyChip').textContent = health.chip;
+    $('spotifyChip').className = 'pill' + (health.cls ? ` ${health.cls}` : '');
+    $('spotifyReconnectRow').hidden = !sp.configured || sp.connected;
     const last = sp.lastAction;
     const lastText = last ? `Dernière action à ${hhmm(last.at)} : ${last.kind === 'resume' ? 'relance' : 'pause'}${last.result === 'already' ? ' (rien à faire)' : last.ok ? '' : ' en échec'}.` : '';
-    $('spotifyText').textContent = [sp.lastError, sp.player?.track ? `Spotify : ${sp.player.track.title}${sp.player.track.artist ? ` — ${sp.player.track.artist}` : ''}${sp.player.device ? ` sur ${sp.player.device.name}` : ''}.` : '', lastText]
+    const checked = sp.connected && sp.health?.checkedAt ? `Vérifié à ${hhmm(sp.health.checkedAt)}.` : '';
+    $('spotifyText').textContent = [sp.lastError, sp.player?.track ? `Spotify : ${sp.player.track.title}${sp.player.track.artist ? ` — ${sp.player.track.artist}` : ''}${sp.player.device ? ` sur ${sp.player.device.name}` : ''}.` : '', lastText, checked]
       .filter(Boolean).join(' ');
     if (!sp.connected) return;
     for (const id of ['spotifyAutoResume', 'spotifyAutoPause', 'spotifyDelay', 'spotifyLead']) syncField($(id));
+    // Liste gardée par le serveur ; l'appareil choisi reste affiché et
+    // sélectionné même absent de la liste : jamais de bascule silencieuse.
     if (document.activeElement !== $('spotifyDevice')) {
-      const devices = spotifyDevicesList || (sp.deviceId ? [{ id: sp.deviceId, name: sp.deviceName || 'Appareil choisi' }] : []);
+      const devices = (sp.devices || []).slice();
+      if (sp.deviceId && !devices.some(d => d.id === sp.deviceId)) devices.push({ id: sp.deviceId, name: sp.deviceName || 'Appareil choisi', missing: true });
       $('spotifyDevice').innerHTML = '<option value="">Appareil actif de Spotify</option>' + devices.map(d =>
-        `<option value="${esc(d.id)}" ${d.id === sp.deviceId ? 'selected' : ''}>${esc(d.name)}${d.active ? ' (actif)' : ''}</option>`).join('');
+        `<option value="${esc(d.id)}" ${d.id === sp.deviceId ? 'selected' : ''}>${esc(d.name)}${d.missing ? ' (introuvable)' : d.active ? ' (actif)' : ''}</option>`).join('');
     }
   }
 
@@ -1782,7 +1800,8 @@
     const badge = (id, count) => { $(id).hidden = !count; $(id).textContent = count ? String(count) : ''; };
     badge('tabBadgeFile', S.queue.length);
     badge('tabBadgeAccueil', soloPending.length);
-    $('tabDotPlus').hidden = !(battle.phase === 'requested' || status.cls === 'bad' || !!S.spotify?.lastError);
+    $('tabDotPlus').hidden = !(battle.phase === 'requested' || status.cls === 'bad' || !!S.spotify?.lastError ||
+      (!!S.spotify?.connected && ['no-device', 'error'].includes(spotifyHealth(S.spotify).state)));
 
     const p = kf && kf.preferences, perm = kf && kf.permissions;
     $('diag').innerHTML = kf ? [
@@ -1949,7 +1968,7 @@
     if (clear) clear.hidden = !input.value;
   });
   const spotifyAction = (body, message) => act('/api/staff/spotify', body, message);
-  $('spotifyLogin').onclick = async () => {
+  $('spotifyLogin').onclick = $('spotifyReconnect').onclick = async () => {
     try {
       const { url } = await post('/api/staff/spotify', { action: 'auth-url' });
       // Spotify revient sur 127.0.0.1 : la connexion doit se faire sur ce PC.
@@ -1957,18 +1976,22 @@
       window.open(url, '_blank', 'noopener');
     } catch (e) { toast(e.message, true); }
   };
-  $('spotifyDevices').onclick = async () => {
+  // « Vérifier Spotify » : le serveur relit les appareils, reprend l'appareil
+  // choisi s'il a changé d'identifiant et dit où on en est.
+  $('spotifyCheck').onclick = async () => {
     try {
-      spotifyDevicesList = (await post('/api/staff/spotify', { action: 'devices' })).devices;
-      if (!spotifyDevicesList.length) toast('Aucun appareil : ouvre Spotify sur l’appareil voulu, puis actualise.', true);
-      render();
+      const { health } = await post('/api/staff/spotify', { action: 'refresh' });
+      const seen = spotifyHealth({ ...S.spotify, connected: health.state !== 'disconnected', health });
+      toast(seen.text, seen.cls !== 'ok');
+      load();
     } catch (e) { toast(e.message, true); }
   };
   $('spotifyDevice').onchange = () => {
     const option = $('spotifyDevice').selectedOptions?.[0];
     spotifyAction({ action: 'device', deviceId: $('spotifyDevice').value,
-      deviceName: $('spotifyDevice').value ? (option?.textContent || '').replace(/ \(actif\)$/, '') : '' }, 'Appareil Spotify enregistré');
+      deviceName: $('spotifyDevice').value ? (option?.textContent || '').replace(/ \((actif|introuvable)\)$/, '') : '' }, 'Appareil Spotify enregistré');
   };
+  $('spotifyChip').onclick = () => goTo('plus', 'spotifyPanel');
   $('spotifyPlay').onclick = () => spotifyAction({ action: 'play' }, 'Spotify relancé');
   $('spotifyPause').onclick = () => spotifyAction({ action: 'pause' }, 'Spotify en pause');
   $('spotifyDisconnect').onclick = () => { if (confirm('Déconnecter Spotify de la file karaoké ?')) spotifyAction({ action: 'disconnect' }, 'Spotify déconnecté'); };

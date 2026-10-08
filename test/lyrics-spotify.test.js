@@ -348,3 +348,23 @@ test('Spotify : reprise de l’automate après un rétablissement, jamais contre
   assert.equal(auto.recover(), false);
   assert.equal(auto.step('silent', opts), null, 'pause décidée par le bar respectée');
 });
+
+test('Spotify : déconnexion pendant une vérification, rien n’est gardé', async () => {
+  for (const slowRoute of ['/v1/me/player', '/api/token']) {
+    const fake = deviceSpotify({ devices: [{ id: 'pc', name: 'PC', type: 'Computer' }], active: 'pc' });
+    let release;
+    const base = fake.fetchImpl;
+    const link = linkedTo({ fetchImpl: async (url, options = {}) => {
+      if (url.replace(/^https:\/\/[^/]+/, '') === slowRoute) await new Promise(resolve => { release = resolve; });
+      return base(url, options);
+    } });
+    const checking = link.checkHealth();
+    await new Promise(resolve => setImmediate(resolve));
+    link.disconnect();
+    release();
+    const seen = await checking;
+    assert.equal(seen.state, 'disconnected', slowRoute);
+    assert.equal(link.lastError, null, 'pas d’erreur pour une connexion déjà remplacée');
+    assert.equal(link.health.state, 'unknown');
+  }
+});
