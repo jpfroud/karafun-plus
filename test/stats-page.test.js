@@ -743,7 +743,7 @@ function assertReadableAxis({ labels, usable }, what) {
   }
   assert.equal(new Set(labels.map(l => l.label)).size, labels.length, `${what} : pas deux fois la même étiquette`);
 }
-function assertMarksSpread(page, axis, what) {
+function assertMarksSpread(axis, what) {
   const rects = axis.svg.children.filter(n => n.tagName === 'RECT' && n.getAttribute('class') === 'st-mark');
   const x0 = Math.min(...rects.map(r => Number(r.getAttribute('x'))));
   const x1 = Math.max(...rects.map(r => Number(r.getAttribute('x')) + Number(r.getAttribute('width'))));
@@ -763,7 +763,7 @@ test('déroulé : une soirée restée ouverte 4 jours garde des barres lisibles 
     await settle();
     const axis = timelineAxis(page);
     assertReadableAxis(axis, `déroulé ${width} px`);
-    assertMarksSpread(page, axis, `déroulé ${width} px`);
+    assertMarksSpread(axis, `déroulé ${width} px`);
     assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastEnd)} · soirée encore ouverte`);
     // Le repère vertical suit le même axe : au bord droit, 15 min après le dernier passage.
     const tip = page.$('tooltip');
@@ -780,7 +780,7 @@ test('déroulé : une soirée close 6 jours plus tard est dessinée sur ses pass
   await settle();
   const axis = timelineAxis(page);
   assertReadableAxis(axis, 'déroulé clos');
-  assertMarksSpread(page, axis, 'déroulé clos');
+  assertMarksSpread(axis, 'déroulé clos');
   const day = new Date(endedAt).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close le ${day} à ${localHHMM(endedAt)}`);
   // Clôture moins de 3 h après le dernier passage : axe jusqu'à la clôture, sans note.
@@ -810,7 +810,7 @@ test('déroulé : soirée en direct, l’axe va jusqu’à maintenant tant que l
   await settle();
   const axis = timelineAxis(page);
   assertReadableAxis(axis, 'déroulé du soir');
-  assertMarksSpread(page, axis, 'déroulé du soir');
+  assertMarksSpread(axis, 'déroulé du soir');
   assert.equal(timelineCaption(page), undefined, 'pas de note pendant une soirée normale');
   // Sans le titre « Hors file » en cours : dernier passage à 44 min.
   const events = eveningEvents().filter(ev => !(ev.queueId === 6 || (ev.ev === 'stage.started' && ev.title === 'Hors file')));
@@ -819,7 +819,6 @@ test('déroulé : soirée en direct, l’axe va jusqu’à maintenant tant que l
   await settle();
   assert.equal(timelineCaption(pause), undefined, 'pause de 2 h 50 : encore la soirée en cours');
   const right = timelineAxis(pause);
-  pause.$('tooltip');
   right.svg.dispatch('pointermove', { clientX: 10 + right.W - 12, target: right.svg });
   assert.match(text(pause.$('tooltip')), new RegExp(`^${localHHMM(at(44 + 170))}`), 'le bord droit est maintenant');
   const stale = loadPage({ responses: viewResponse(idle(190)) });
