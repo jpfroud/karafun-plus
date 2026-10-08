@@ -1783,6 +1783,9 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   world.spotify = { configured: false, connected: false, redirectUri: 'http://127.0.0.1:3000/spotify/callback', clientId: '' };
   const page = await openPage({ world });
   assert.equal(page.$('spotifyPill').textContent, 'Non configuré');
+  assert.equal(page.$('spotifyPill').className, 'pill');
+  assert.equal(page.$('spotifyChip').hidden, true, 'pas de pastille Spotify sur Scène sans Spotify');
+  assert.equal(page.$('spotifyReconnectRow').hidden, true);
   assert.equal(page.$('spotifyLogin').disabled, true, 'sans Client ID, pas de connexion possible');
   assert.equal(page.$('spotifyConnected').hidden, true);
   assert.equal(page.$('spotifyRedirect').textContent, 'http://127.0.0.1:3000/spotify/callback');
@@ -1798,8 +1801,16 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   await page.change(clientId);
   assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'client', clientId: '0123456789abcdef' });
   assert.equal(status('spotifyClientId'), 'Enregistré ✓');
-  await page.update({ spotify: { ...world.spotify, configured: true, clientId: '0123456789abcdef' } });
-  assert.equal(page.$('spotifyPill').textContent, 'Non connecté');
+  await page.update({ spotify: { ...world.spotify, configured: true, clientId: '0123456789abcdef',
+    health: { state: 'disconnected', device: null, checkedAt: 0, retryAt: 0 } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify non connecté');
+  assert.equal(page.$('spotifyPill').className, 'pill bad');
+  assert.equal(page.$('spotifyChip').hidden, false, 'Spotify configuré : pastille sur Scène');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify non connecté');
+  assert.equal(page.$('spotifyChip').className, 'pill bad');
+  assert.equal(page.$('spotifyReconnectRow').hidden, false, 'bouton « Reconnecter Spotify »');
+  assert.equal(page.$('spotifyReconnect').textContent, 'Reconnecter Spotify');
+  assert.equal(page.$('spotifyText').textContent, '', 'pas d’heure de vérification sans connexion');
   assert.equal(page.$('spotifyLogin').disabled, false);
   assert.equal(page.$('spotifyClientId').value, '0123456789abcdef');
 
@@ -1809,6 +1820,10 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'auth-url' });
   assert.deepEqual(page.opened, [['https://accounts.spotify.com/authorize?client_id=fake', '_blank', 'noopener']]);
   assert.notEqual(page.toast().text, 'Fais cette connexion depuis le PC du bar : Spotify revient sur son adresse locale.');
+  // « Reconnecter Spotify » : même parcours que la première connexion.
+  await page.click(page.$('spotifyReconnect'));
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'auth-url' });
+  assert.equal(page.opened.length, 2);
   // Depuis un téléphone : la page s'ouvre aussi, avec l'avertissement.
   const phone = await openPage({ world, hostname: '192.168.1.20' });
   phone.replies['/api/staff/spotify'] = { url: 'https://accounts.spotify.com/authorize?client_id=fake' };
@@ -1820,52 +1835,108 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.deepEqual(phone.toast(), { text: 'Client ID Spotify manquant.', bad: true });
   assert.equal(phone.opened.length, 1, 'pas de page Spotify après un refus');
 
-  // Connecté : lecture en cours, appareil choisi, dernière action.
+  // Connecté, pas encore vérifié : pastille neutre.
   const at = Date.now() - 60000;
+  const ready = { state: 'ready', device: { id: 'dev-2', name: 'Enceinte', active: true }, checkedAt: at, okAt: at, retryAt: 0, message: null };
   const connected = { configured: true, connected: true, clientId: '0123456789abcdef', autoResume: true, autoPause: false,
     deviceId: 'dev-2', deviceName: 'Enceinte', player: { isPlaying: true, track: { title: 'Get Lucky', artist: 'Daft Punk' },
-      device: { name: 'Enceinte' } }, lastAction: { at, kind: 'resume', ok: true }, lastError: null };
-  await page.update({ spotify: connected });
+      device: { name: 'Enceinte' } }, lastAction: { at, kind: 'resume', ok: true }, lastError: null,
+    devices: [{ id: 'dev-1', name: 'PC du bar', type: 'Computer', active: false }, { id: 'dev-2', name: 'Enceinte', type: 'Speaker', active: true }] };
+  await page.update({ spotify: { ...connected, health: { state: 'unknown', device: null, checkedAt: 0 } } });
   assert.equal(page.$('spotifyConnected').hidden, false);
-  assert.equal(page.$('spotifyPill').textContent, 'Spotify en lecture');
+  assert.equal(page.$('spotifyReconnectRow').hidden, true);
+  assert.equal(page.$('spotifyPill').textContent, 'Vérification de Spotify…');
+  assert.equal(page.$('spotifyPill').className, 'pill');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify : vérification…');
+  assert.equal(page.$('spotifyChip').className, 'pill');
+  // Prêt : lecture en cours, appareil choisi, dernière action, heure de vérification.
+  await page.update({ spotify: { ...connected, health: ready } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify connecté · Enceinte');
   assert.equal(page.$('spotifyPill').className, 'pill ok');
-  assert.equal(page.$('spotifyText').textContent, `Spotify : Get Lucky — Daft Punk sur Enceinte. Dernière action à ${hhmm(at)} : relance.`);
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify · Enceinte');
+  assert.equal(page.$('spotifyChip').className, 'pill ok');
+  assert.equal(page.$('tabDotPlus').hidden, true, 'tout va bien : pas de point sur « Plus »');
+  assert.equal(page.$('spotifyText').textContent, `Spotify : Get Lucky — Daft Punk sur Enceinte. Dernière action à ${hhmm(at)} : relance. Vérifié à ${hhmm(at)}.`);
   assert.equal(page.$('spotifyAutoResume').checked, true);
   assert.equal(page.$('spotifyAutoPause').checked, false);
   assert.equal(page.$('spotifyDelay').value, 3, 'délai par défaut');
-  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'Enceinte']);
+  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'PC du bar', 'Enceinte (actif)'],
+    'liste gardée par le serveur : elle survit au rechargement de la page');
   assert.equal(page.$('spotifyDevice').value, 'dev-2');
+  // Aucun appareil (204) : orange, plus vert ; le nom de l'appareil choisi est donné.
   await page.update({ spotify: { ...connected, player: { isPlaying: false, track: { title: 'Get Lucky' } }, deviceId: 'dev-3', deviceName: '',
-    lastAction: { at, kind: 'pause', ok: true, result: 'already' }, lastError: 'Spotify : appareil introuvable.' } });
-  assert.equal(page.$('spotifyPill').textContent, 'Spotify en pause');
-  assert.equal(page.$('spotifyPill').className, 'pill bad', 'une erreur Spotify est signalée');
-  assert.equal(page.$('spotifyText').textContent, `Spotify : appareil introuvable. Spotify : Get Lucky. Dernière action à ${hhmm(at)} : pause (rien à faire).`);
-  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'Appareil choisi']);
-  await page.update({ spotify: { ...connected, player: null, deviceId: '', lastAction: { at, kind: 'resume', ok: false } } });
-  assert.equal(page.$('spotifyPill').textContent, 'Connecté');
-  assert.equal(page.$('spotifyText').textContent, `Dernière action à ${hhmm(at)} : relance en échec.`);
+    lastAction: { at, kind: 'pause', ok: true, result: 'already' }, lastError: 'Spotify : appareil introuvable.',
+    health: { state: 'no-device', device: { id: 'dev-3', name: 'Tablette', active: false }, checkedAt: at } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify connecté, aucun appareil : ouvre Spotify sur Tablette');
+  assert.equal(page.$('spotifyPill').className, 'pill warn');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify : aucun appareil');
+  assert.equal(page.$('spotifyChip').className, 'pill warn');
+  assert.equal(page.$('tabDotPlus').hidden, false);
+  assert.equal(page.$('spotifyText').textContent, `Spotify : appareil introuvable. Spotify : Get Lucky. Dernière action à ${hhmm(at)} : pause (rien à faire). Vérifié à ${hhmm(at)}.`);
+  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'PC du bar', 'Enceinte (actif)', 'Appareil choisi (introuvable)'],
+    'l’appareil choisi reste affiché, même absent');
+  assert.equal(page.$('spotifyDevice').value, 'dev-3', 'et sélectionné : pas de bascule silencieuse');
+  await page.update({ spotify: { ...connected, deviceId: '', deviceName: '', health: { state: 'no-device', device: null, checkedAt: at } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify connecté, aucun appareil : ouvre Spotify sur l’appareil voulu');
+  // Injoignable : rouge, heure du nouvel essai.
+  const retryAt = Date.now() + 120000;
+  await page.update({ spotify: { ...connected, player: null, deviceId: '', devices: [], lastAction: { at, kind: 'resume', ok: false },
+    lastError: 'Spotify ne répond pas correctement (réseau).', health: { state: 'error', device: null, checkedAt: at, retryAt, message: 'réseau' } } });
+  assert.equal(page.$('spotifyPill').textContent, `Spotify injoignable, nouvel essai à ${hhmm(retryAt)}`);
+  assert.equal(page.$('spotifyPill').className, 'pill bad');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify injoignable');
+  assert.equal(page.$('spotifyText').textContent, `Spotify ne répond pas correctement (réseau). Dernière action à ${hhmm(at)} : relance en échec. Vérifié à ${hhmm(at)}.`);
   assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify']);
+  await page.update({ spotify: { ...connected, lastError: null, health: { state: 'error', device: null, checkedAt: at, retryAt } } });
+  assert.equal(page.$('tabDotPlus').hidden, false, 'injoignable : point sur « Plus » même sans erreur d’action');
 
-  // Liste des appareils.
-  page.replies['/api/staff/spotify'] = body => body.action === 'devices'
-    ? { devices: [{ id: 'dev-1', name: 'PC du bar', active: true }, { id: 'dev-2', name: 'Enceinte' }] } : { ok: true };
-  await page.update({ spotify: { ...connected } });
-  await page.click(page.$('spotifyDevices'));
-  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'devices' });
-  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'PC du bar (actif)', 'Enceinte']);
-  assert.equal(page.$('spotifyDevice').value, 'dev-2', 'l’appareil enregistré reste sélectionné');
+  // Pastille de la Scène : mène au panneau Spotify.
+  await page.click(page.$('spotifyChip'));
+  assert.equal(page.doc.body.dataset.tab, 'plus');
+
+  // Appareil enregistré absent : affiché « (introuvable) », sélectionné, rien n'est envoyé.
+  await page.update({ spotify: { ...connected, deviceId: 'pc-OLD', deviceName: 'PC du bar', health: { state: 'no-device', device: { id: 'pc-OLD', name: 'PC du bar' }, checkedAt: at },
+    devices: [{ id: 'dev-2', name: 'Enceinte', active: false }] } });
+  const before = page.postsTo('/api/staff/spotify').length;
+  await page.poll();
+  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'Enceinte', 'PC du bar (introuvable)']);
+  assert.equal(page.$('spotifyDevice').value, 'pc-OLD');
+  assert.equal(page.postsTo('/api/staff/spotify').length, before, 'aucun choix d’appareil envoyé sans geste du bar');
+  // Liste ouverte (focus) : pas reconstruite sous le doigt.
+  page.$('spotifyDevice').focus();
+  await page.update({ spotify: { ...page.world.spotify, devices: [{ id: 'autre', name: 'Autre' }] } });
+  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'Enceinte', 'PC du bar (introuvable)']);
+  page.doc.activeElement = null;
+  // Rechoisir l'appareil introuvable : le nom part sans « (introuvable) ».
+  await page.update({ spotify: { ...page.world.spotify, devices: [{ id: 'dev-2', name: 'Enceinte' }] } });
+  page.replies['/api/staff/spotify'] = { ok: true };
+  await page.change(page.$('spotifyDevice'), 'pc-OLD');
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: 'pc-OLD', deviceName: 'PC du bar' });
+
+  // « Vérifier Spotify » (ancien « Actualiser la liste ») : vérification sur le serveur.
+  assert.equal(page.$('spotifyCheck').textContent, 'Vérifier Spotify');
+  page.replies['/api/staff/spotify'] = body => body.action === 'refresh'
+    ? { ok: true, health: { state: 'ready', device: { id: 'pc-NEW', name: 'PC du bar', active: true }, checkedAt: Date.now(), adopted: true } } : { ok: true };
+  await page.update({ spotify: { ...connected, health: ready } });
+  await page.click(page.$('spotifyCheck'));
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'refresh' });
+  assert.deepEqual(page.toast(), { text: 'Spotify connecté · PC du bar', bad: false });
   await page.change(page.$('spotifyDevice'), 'dev-1');
-  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: 'dev-1', deviceName: 'PC du bar' },
-    'le nom enregistré ne garde pas « (actif) »');
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: 'dev-1', deviceName: 'PC du bar' });
   assert.equal(page.toast().text, 'Appareil Spotify enregistré');
+  await page.change(page.$('spotifyDevice'), 'dev-2');
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: 'dev-2', deviceName: 'Enceinte' },
+    'le nom enregistré ne garde pas « (actif) »');
   await page.change(page.$('spotifyDevice'), '');
   assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: '', deviceName: '' });
-  page.replies['/api/staff/spotify'] = { devices: [] };
-  await page.click(page.$('spotifyDevices'));
-  assert.deepEqual(page.toast(), { text: 'Aucun appareil : ouvre Spotify sur l’appareil voulu, puis actualise.', bad: true });
-  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify']);
+  page.replies['/api/staff/spotify'] = { ok: true, health: { state: 'no-device', device: { id: 'dev-2', name: 'Enceinte' } } };
+  await page.click(page.$('spotifyCheck'));
+  assert.deepEqual(page.toast(), { text: 'Spotify connecté, aucun appareil : ouvre Spotify sur Enceinte', bad: true });
+  page.replies['/api/staff/spotify'] = { ok: true, health: { state: 'disconnected', device: null } };
+  await page.click(page.$('spotifyCheck'));
+  assert.deepEqual(page.toast(), { text: 'Spotify non connecté', bad: true });
   page.replies['/api/staff/spotify'] = { status: 401, error: 'Connexion Spotify expirée.' };
-  await page.click(page.$('spotifyDevices'));
+  await page.click(page.$('spotifyCheck'));
   assert.deepEqual(page.toast(), { text: 'Connexion Spotify expirée.', bad: true });
   page.replies['/api/staff/spotify'] = { ok: true };
 

@@ -21,6 +21,9 @@ const CONFIG_VERSION = 2; // enregistrée avec les réglages, voir _load
 // Après un échec, plus d'appel automatique pendant 30 s, puis 1, 2, 4 min…
 const BACKOFF_FIRST_MS = 30000;
 const BACKOFF_MAX_MS = 5 * 60000;
+// Vérification de la connexion et de l'appareil (liste des appareils et état
+// du lecteur) : toutes les minutes quand rien d'autre ne se passe.
+const HEALTH_EVERY_MS = 60000;
 
 class SpotifyError extends Error {
   constructor(message, { status = 0, retryAfterSec = 0 } = {}) {
@@ -46,12 +49,17 @@ class SpotifyLink {
     this.fetchImpl = fetchImpl;
     this.now = now;
     this.log = log;
-    this.config = { clientId: '', refreshToken: '', deviceId: '', deviceName: '', ...DEFAULTS };
+    this.config = { clientId: '', refreshToken: '', deviceId: '', deviceName: '', deviceType: '', ...DEFAULTS };
     this.access = null;       // { token, expiresAt } en mémoire seulement
     this.pendingAuth = null;  // { state, verifier, redirectUri, at }
     this.lastError = null;
     this.lastAction = null;   // { kind, at, ok }
     this.player = null;       // dernier état lu : { isPlaying, device, track, at }
+    this.deviceList = [];     // dernière liste des appareils, gardée pour la page du bar
+    // Dernière vérification : « ready » (appareil prêt), « no-device » (aucun
+    // appareil à commander), « error » (Spotify injoignable), « unknown »
+    // (pas encore vérifié). « disconnected » se déduit de la connexion.
+    this.health = { state: 'unknown', device: null, checkedAt: 0, okAt: 0, message: null };
     this.failures = 0;        // échecs d'affilée
     this.waitUntil = 0;       // pas d'appel automatique avant (échecs, 429)
     this.blockedUntil = 0;    // Spotify demande de patienter (429) : même la pause attend
@@ -82,6 +90,7 @@ class SpotifyLink {
     if (typeof value.refreshToken === 'string' && value.refreshToken.length < 2000) out.refreshToken = value.refreshToken;
     if (typeof value.deviceId === 'string' && value.deviceId.length < 200) out.deviceId = value.deviceId;
     if (typeof value.deviceName === 'string') out.deviceName = value.deviceName.slice(0, 80);
+    if (typeof value.deviceType === 'string') out.deviceType = value.deviceType.slice(0, 40);
     if (typeof value.autoResume === 'boolean') out.autoResume = value.autoResume;
     if (typeof value.autoPause === 'boolean') out.autoPause = value.autoPause;
     if (Number.isInteger(value.resumeDelaySec) && value.resumeDelaySec >= 0 && value.resumeDelaySec <= 300) out.resumeDelaySec = value.resumeDelaySec;
@@ -103,13 +112,19 @@ class SpotifyLink {
   // automatique attend ; les boutons du bar restent utilisables.
   get waiting() { return this.now() < this.waitUntil; }
   get blocked() { return this.now() < this.blockedUntil; }
+  // Vérification à faire : jamais faite, en échec, ou plus vieille d'une minute
+  // (la boucle automatique respecte en plus `waiting` et `blocked`).
+  get checkDue() {
+    return this.health.state === 'unknown' || this.health.state === 'error' || this.now() - this.health.checkedAt >= HEALTH_EVERY_MS;
+  }
 
   setClientId(clientId) {
     const value = String(clientId || '').trim();
     if (!/^[A-Za-z0-9]{16,64}$/.test(value)) throw new Error('Identifiant Spotify invalide : copie le « Client ID » de ton application Spotify.');
     if (value !== this.config.clientId) {
-      this.config = { ...this.config, clientId: value, refreshToken: '', deviceId: '', deviceName: '' };
+      this.config = { ...this.config, clientId: value, refreshToken: '', deviceId: '', deviceName: '', deviceType: '' };
       this.access = null;
+      this._forget();
       this.generation++;
     }
     this._save();
@@ -127,15 +142,27 @@ class SpotifyLink {
     this._save();
   }
 
+  // Choix du bar. Le type vient de la dernière liste : il départage deux
+  // appareils du même nom quand l'identifiant change.
   setDevice(deviceId, deviceName) {
-    this.config.deviceId = String(deviceId || '').slice(0, 200);
-    this.config.deviceName = String(deviceName || '').slice(0, 80);
+    const id = String(deviceId || '').slice(0, 200);
+    const listed = id ? this.deviceList.find(d => d.id === id) : null;
+    this.config.deviceId = id;
+    this.config.deviceName = (String(deviceName || '') || listed?.name || '').slice(0, 80);
+    this.config.deviceType = listed?.type || '';
     this._save();
   }
 
+  // Liste et vérification oubliées (déconnexion, autre application).
+  _forget() {
+    this.deviceList = [];
+    this.health = { state: 'unknown', device: null, checkedAt: 0, okAt: 0, message: null };
+  }
+
   disconnect() {
-    this.config = { ...this.config, refreshToken: '', deviceId: '', deviceName: '' };
+    this.config = { ...this.config, refreshToken: '', deviceId: '', deviceName: '', deviceType: '' };
     this.access = null;
+    this._forget();
     this.player = null;
     this.lastError = null;
     this.failures = 0;
@@ -207,6 +234,8 @@ class SpotifyLink {
       redirect_uri: pending.redirectUri, code_verifier: pending.verifier });
     try { await this.authorizing; } finally { this.authorizing = null; }
     this.lastError = null;
+    // Nouvelle connexion : vérifiée au prochain passage de la boucle.
+    this.health = { ...this.health, state: 'unknown' };
     this.failures = 0;
     this.waitUntil = 0;
     this.blockedUntil = 0;
@@ -227,13 +256,15 @@ class SpotifyLink {
     return this.refreshing;
   }
 
-  async _api(method, route) {
+  async _api(method, route, body) {
     const generation = this.generation;
     try {
-      const data = await this._request(method, route);
+      const data = await this._request(method, route, body);
       this.failures = 0;
       this.waitUntil = 0;
       this.blockedUntil = 0;
+      // Spotify répond de nouveau : la vérification suivante dira où on en est.
+      if (this.health.state === 'error') this.health = { ...this.health, state: 'unknown' };
       return data;
     } catch (error) {
       // Échec d'une connexion déjà remplacée : sans effet sur la nouvelle.
@@ -244,15 +275,18 @@ class SpotifyLink {
         this.blockedUntil = this.now() + Math.min(error.retryAfterSec, 3600) * 1000;
         this.waitUntil = Math.max(this.waitUntil, this.blockedUntil);
       }
+      // Réseau, panne de Spotify ou demande de patienter : injoignable.
+      if (!error.status || error.status >= 500 || error.status === 429) this._setHealth('error', { message: error.message });
       throw error;
     }
   }
 
-  async _request(method, route, retried = false) {
+  async _request(method, route, body = undefined, retried = false) {
     const token = await this._accessToken();
     const response = await this.fetchImpl(`${API}${route}`, { method,
-      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
-    if (response.status === 401 && !retried) { this.access = null; return this._request(method, route, true); }
+      headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10000) });
+    if (response.status === 401 && !retried) { this.access = null; return this._request(method, route, body, true); }
     if (response.status === 204 || response.status === 202) return null;
     const text = await response.text();
     let data = null;
@@ -275,9 +309,68 @@ class SpotifyLink {
 
   async devices() {
     const data = await this._api('GET', '/me/player/devices');
-    return (Array.isArray(data?.devices) ? data.devices : []).filter(d => d && d.id).map(d => ({
-      id: String(d.id), name: String(d.name || 'Appareil').slice(0, 80), type: String(d.type || ''),
+    this.deviceList = (Array.isArray(data?.devices) ? data.devices : []).filter(d => d && d.id).map(d => ({
+      id: String(d.id), name: String(d.name || 'Appareil').slice(0, 80), type: String(d.type || '').slice(0, 40),
       active: !!d.is_active }));
+    return this.deviceList;
+  }
+
+  // Appareil à commander d'après la liste. L'identifiant enregistré n'y est
+  // plus (Spotify le change parfois) : l'appareil du même nom est repris
+  // (même type, puis actif de préférence) et enregistré, sans effacer le nom.
+  // Sans choix du bar : l'appareil actif, ou le seul de la liste.
+  resolveDevice(list = this.deviceList) {
+    const { deviceId, deviceName, deviceType } = this.config;
+    if (!deviceId) return list.find(d => d.active) || (list.length === 1 ? list[0] : null);
+    const same = list.find(d => d.id === deviceId);
+    if (same) return same;
+    const name = String(deviceName || '').trim().toLowerCase();
+    const score = d => (deviceType && d.type === deviceType ? 2 : 0) + (d.active ? 1 : 0);
+    const found = name ? list.filter(d => d.name.trim().toLowerCase() === name).sort((a, b) => score(b) - score(a))[0] : null;
+    if (!found) return null;
+    this.config.deviceId = found.id;
+    if (found.type) this.config.deviceType = found.type;
+    this._save();
+    this.log(`Appareil Spotify retrouvé : ${found.name}`);
+    return found;
+  }
+
+  _setHealth(state, { device = null, message = null, checked = false } = {}) {
+    const at = this.now();
+    this.health = { state, device: device ? { id: device.id, name: device.name, active: !!device.active } : null,
+      checkedAt: checked ? at : this.health.checkedAt, okAt: state === 'ready' || state === 'no-device' ? at : this.health.okAt, message };
+  }
+
+  // Liste des appareils et état du lecteur : le jeton marche-t-il, l'appareil
+  // choisi est-il là ? Une vérification réussie efface l'erreur précédente.
+  // Rend l'état vu par la page, et `adopted` si l'appareil a été repris.
+  async checkHealth() {
+    if (!this.connected) return this.healthView();
+    const generation = this.generation;
+    const before = this.config.deviceId;
+    try {
+      const list = await this.devices();
+      await this.readPlayer();
+      if (generation !== this.generation) return this.healthView();
+      const target = this.resolveDevice(list);
+      this.lastError = null;
+      this._setHealth(target ? 'ready' : 'no-device', { device: target || this._wanted(), checked: true });
+    } catch (error) {
+      if (generation !== this.generation) return this.healthView();
+      this.lastError = error.message;
+      this._setHealth('error', { message: error.message, checked: true });
+    }
+    return { ...this.healthView(), adopted: before !== this.config.deviceId };
+  }
+
+  // Appareil choisi par le bar, tel qu'enregistré (même absent de la liste).
+  _wanted() {
+    return this.config.deviceId ? { id: this.config.deviceId, name: this.config.deviceName, active: false } : null;
+  }
+
+  healthView() {
+    if (!this.connected) return { state: 'disconnected', device: null, checkedAt: this.health.checkedAt, okAt: this.health.okAt, retryAt: 0, message: null };
+    return { ...this.health, retryAt: this.health.state === 'error' ? Math.max(this.waitUntil, this.now()) : 0 };
   }
 
   _deviceQuery() {
@@ -289,7 +382,17 @@ class SpotifyLink {
     return this._act('resume', async () => {
       const player = await this.readPlayer();
       if (player.isPlaying) return 'already';
-      await this._api('PUT', `/me/player/play${this._deviceQuery()}`);
+      try {
+        await this._api('PUT', `/me/player/play${this._deviceQuery()}`);
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        // Identifiant périmé ou plus d'appareil actif : la liste dit où jouer,
+        // puis un seul nouvel essai, par transfert (marche même sans appareil actif).
+        const target = this.resolveDevice(await this.devices());
+        if (!target) { this._setHealth('no-device', { device: this._wanted() }); throw error; }
+        await this._api('PUT', '/me/player', { device_ids: [target.id], play: true });
+        this._setHealth('ready', { device: target });
+      }
       this.player = { ...player, isPlaying: true, at: this.now() };
       return 'done';
     });
@@ -321,7 +424,8 @@ class SpotifyLink {
   view(redirectUri = null) {
     return { configured: this.configured, connected: this.connected,
       clientId: this.config.clientId || '', redirectUri,
-      deviceId: this.config.deviceId || '', deviceName: this.config.deviceName || '',
+      deviceId: this.config.deviceId || '', deviceName: this.config.deviceName || '', deviceType: this.config.deviceType || '',
+      devices: this.deviceList, health: this.healthView(),
       autoResume: this.config.autoResume, autoPause: this.config.autoPause,
       resumeDelaySec: this.config.resumeDelaySec, pauseLeadSec: this.config.pauseLeadSec,
       player: this.player, lastAction: this.lastAction, lastError: this.lastError };
@@ -342,6 +446,7 @@ class SpotifyAutomation {
     this.done = false;
     this.attempts = 0;
     this.retryAt = 0;
+    this.failed = false;      // dernière action de la période en échec
   }
 
   step(karaoke, { autoResume = DEFAULTS.autoResume, autoPause = DEFAULTS.autoPause,
@@ -353,6 +458,7 @@ class SpotifyAutomation {
       this.done = false;
       this.attempts = 0;
       this.retryAt = 0;
+      this.failed = false;
     }
     if (this.done || karaoke === 'unknown' || now < this.retryAt) return null;
     if (karaoke === 'singing') return autoPause ? 'pause' : null;
@@ -364,14 +470,28 @@ class SpotifyAutomation {
   // jusqu'au prochain changement (titre qui démarre, ou nouveau silence).
   handled() {
     this.done = true;
+    this.failed = false;
   }
 
   // Résultat de l'action demandée : réussite, ou nouvel essai dans 30 s
   // (trois essais au plus par période).
   settle(ok) {
     this.attempts++;
+    this.failed = !ok;
     if (ok || this.attempts >= 3) this.done = true;
     else this.retryAt = this.now() + 30000;
+  }
+
+  // Spotify rétabli (appareil retrouvé, réseau revenu, reconnexion) : l'action
+  // de la période, abandonnée ou en attente après un échec, repart tout de
+  // suite avec trois nouveaux essais. Un choix du bar (handled) reste respecté.
+  recover() {
+    if (!this.failed) return false;
+    this.done = false;
+    this.attempts = 0;
+    this.retryAt = 0;
+    this.failed = false;
+    return true;
   }
 }
 
