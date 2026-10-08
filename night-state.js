@@ -10,6 +10,7 @@ const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
 const { PLAYED_LIMIT } = require('./song-repeats');
 const { sanitizeSettings } = require('./song-settings');
+const { sanitizeClock } = require('./stage-progress');
 
 const FORMAT = 1;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -88,7 +89,7 @@ function savePhoto(photo, directory) {
 }
 
 function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null,
-  soloInvitations = null, transfers = [], evening = null }) {
+  soloInvitations = null, transfers = [], evening = null, stageClock = null }) {
   if (!scheduler || !access || !settings) throw new Error('État de soirée incomplet.');
   const tables = [...scheduler.tables.values()].map(t => ({ ...clone(t), secret: access.get(t.id) }));
   if (tables.some(t => !t.secret)) throw new Error('Secret QR manquant dans une table.');
@@ -133,6 +134,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
     tracked: clone(tracked),
     // Soirée du journal (data/soirees/<id>) : reprise après un redémarrage.
     evening: evening ? { id: String(evening.id), startedAt: Number(evening.startedAt) || null } : null,
+    // Barre de lecture du titre sur scène (stage-progress.js), facultative.
+    stageClock: stageClock ? clone(stageClock) : null,
   };
 }
 
@@ -350,7 +353,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if (restoredPending) settings.auto = false;
   return { pending: restoredPending, tracked: restoredTracked,
     recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize(),
-    transfers: restoredTransfers, evening };
+    transfers: restoredTransfers, evening, stageClock: sanitizeClock(snapshot.stageClock) };
 }
 
 // À utiliser uniquement après le premier instantané QueueEvent frais de

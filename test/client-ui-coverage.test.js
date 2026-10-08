@@ -2555,3 +2555,54 @@ test('catalogue : Retour vers les résultats gardés par « ＋ Chanson » ne re
   assertQueenKept(page, 'Retour');
   assert.equal(searchUrls(page).length, sent, 'pas de nouvelle recherche');
 });
+
+// Lot F : barre de lecture sous le titre sur scène, avancée seule chaque
+// seconde (minuteur de 1100 ms) ; rien pour une Battle ou sans durée.
+test('barre de lecture sur scène : reste en minutes traduit, pause, Battle et durée inconnue sans barre', async () => {
+  const realNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const progress = (fields = {}) => ({ elapsedSec: 102, durationSec: 237, paused: false, rate: 1, ...fields });
+    const stage = { ours: false, singer: 'Client', title: 'Manuel', artist: 'X' };
+    const page = await open({ state: baseState({ now: now + 3000, stage: { ...stage, progress: progress() } }) });
+    const box = page.node('stageProgress');
+    const text = () => box.querySelector('.stage-progress-text')?.textContent;
+    const width = () => box.querySelector('.stage-progress-fill')?.getAttribute('style');
+    assert.equal(box.hidden, false);
+    assert.equal(text(), 'reste 2 min');
+    assert.equal(width(), 'width:43.0%');
+    now += 60_000;
+    await page.runTimers(1100);
+    assert.equal(text(), 'reste 1 min', 'avance seule entre deux lectures (horloge du serveur 3 s en avance)');
+    now += 60_000;
+    await page.runTimers(1100);
+    assert.equal(text(), 'Bientôt fini', '15 s avant la fin');
+    assert.equal(width(), 'width:93.7%');
+    now += 60_000;
+    await page.runTimers(1100);
+    assert.equal(width(), 'width:100.0%', 'jamais au-delà de la durée');
+    // Tempo +50 : le reste raccourcit.
+    Object.assign(page.state, { now, stage: { ...stage, progress: progress({ elapsedSec: 0, durationSec: 300, rate: 1.5 }) } });
+    await page.poll();
+    assert.equal(text(), 'reste 3 min');
+    Object.assign(page.state, { now, stage: { ...stage, progress: progress({ paused: true }) } });
+    await page.poll();
+    assert.equal(text(), 'En pause');
+    now += 60_000;
+    await page.runTimers(1100);
+    await page.runTimers(1100);
+    assert.equal(text(), 'En pause', 'figée pendant la pause');
+    for (const shown of [{ ...stage, progress: progress({ durationSec: null }) }, { ...stage, kind: 'battle', progress: progress() },
+      { ...stage, progress: null }, null]) {
+      Object.assign(page.state, { now, stage: shown });
+      await page.poll();
+      assert.equal(box.hidden, true, JSON.stringify(shown));
+    }
+    // Sans heure du serveur : valeur reçue montrée telle quelle. En anglais.
+    const english = await open({ languages: ['en-US'], state: baseState({ stage: { ...stage, progress: progress() } }) });
+    now += 600_000;
+    await english.runTimers(1100);
+    assert.equal(english.node('stageProgress').querySelector('.stage-progress-text').textContent, '2 min left');
+  } finally { Date.now = realNow; }
+});
