@@ -395,6 +395,7 @@
   async function copyText(input, done, failed, bad) {
     try { await navigator.clipboard.writeText(input.value); toast(done); return; } catch (_) {}
     const readOnly = input.readOnly;
+    const back = document.activeElement;
     let copied = false;
     try {
       input.readOnly = false;
@@ -404,7 +405,11 @@
       copied = !!document.execCommand?.('copy');
     } catch (_) { copied = false; }
     finally { input.readOnly = readOnly; }
-    if (copied) input.blur?.();
+    // Copié : le focus revient au bouton touché ; refusé, le champ reste sélectionné.
+    if (copied) {
+      input.blur?.();
+      if (back && back !== input && back !== document.body && document.contains?.(back)) back.focus?.({ preventScroll: true });
+    }
     toast(copied ? done : failed, bad && !copied);
   }
 

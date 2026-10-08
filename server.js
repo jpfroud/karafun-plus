@@ -2346,6 +2346,20 @@ function joinPersonDurably(req, res, table, body, photo = null) {
   return { id: person.id, token: person.token };
 }
 
+// Activité d'une personne (spec C1) : seule une action ACCEPTÉE compte. Les
+// routes réclament l'activité sur le corps de la requête (un objet propre à
+// chaque requête) ; le répartiteur des POST ne la note qu'après le succès du
+// traitement. Un refus (prénom déjà pris ou vide, toute erreur 4xx) ne la
+// touche donc jamais, quelle que soit la route.
+const PENDING_ACTIVITY = Symbol('activité en attente');
+function claimActivity(body, person) {
+  if (body && typeof body === 'object') body[PENDING_ACTIVITY] = person;
+}
+function creditActivity(body) {
+  const person = body && typeof body === 'object' ? body[PENDING_ACTIVITY] : null;
+  if (person) person.lastActionAt = Date.now();
+}
+
 // `passive` : geste automatique de la page (accusé des messages), qui ne
 // compte pas comme activité de la personne.
 function personAtTable(body, { passive = false } = {}) {
@@ -2362,7 +2376,7 @@ function personAtTable(body, { passive = false } = {}) {
     const e = new Error('Ce téléphone ne gère pas ce chanteur. Demande-lui son code de partage, ou vois avec le bar.');
     e.code = 'PERSON_ACCESS'; throw e;
   }
-  if (!passive) p.lastActionAt = Date.now();
+  if (!passive) claimActivity(body, p);
   return p;
 }
 
@@ -4245,7 +4259,7 @@ const server = http.createServer(async (req, res) => {
         if (!me) return send(res, 401, { error: 'Session inconnue : inscris-toi à nouveau.', code: 'NO_SESSION' });
         if (me.withdrawnAt) return send(res, 403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
         requireSoloControl(req, me);
-        me.lastActionAt = Date.now();
+        claimActivity(body, me);
       }
       // Routes qui créent ou rattachent une personne : pas encore de téléphone associé.
       if (p.startsWith('/api/table/') && !['/api/table/person', '/api/table/person/claim',
@@ -4266,6 +4280,9 @@ const server = http.createServer(async (req, res) => {
         try { syncBattleElectorate(); }
         catch (error) { appLog(`Électorat Battle non mis à jour : ${error.message}`); }
       }
+      // Seule une action acceptée compte comme activité (une action refusée
+      // a levé son erreur avant d'arriver ici).
+      creditActivity(body);
       if (p !== '/api/table/person/claim' && !res.nightAlreadySaved) saveNight({ required: true });
       return send(res, 200, out || { ok: true });
     }

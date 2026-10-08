@@ -114,6 +114,7 @@ class El {
   // Comme dans un navigateur, un bouton désactivé ne réagit pas.
   click() { return this.disabled ? null : dispatch(this, 'click'); }
   focus() { this.ownerDocument.activeElement = this; }
+  blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = null; }
   select() { this.selectedAll = true; }
   // Avec `doc.dialogFocus`, comme un navigateur : la fenêtre ouverte donne le
   // focus à son élément `autofocus`, sinon à son premier élément focalisable
@@ -210,6 +211,7 @@ function makeDocument() {
     return found;
   };
   doc.body = body;
+  doc.contains = node => body.contains(node);
   return doc;
 }
 
@@ -623,8 +625,12 @@ test('repères chanteurs : transfert vers un autre téléphone (lien, code, erre
   assert.equal(page.$('shareUrl').selectedAll, true, 'sans presse-papiers, le lien est sélectionné');
   assert.equal(page.toast().text, 'Sélectionne le lien pour le copier');
   page.doc.copyWorks = true;
+  page.$('shareCopy').focus();
   await page.click(page.$('shareCopy'));
   assert.equal(page.toast().text, 'Lien copié', 'copie de secours du navigateur');
+  // Regression: copié par le champ, le focus revient au bouton « Copier »
+  // (pas perdu en haut de la page).
+  assert.ok(page.doc.activeElement === page.$('shareCopy'), `focus rendu au bouton (${page.doc.activeElement?.id})`);
   await page.click(page.$('shareClose'));
   assert.equal(page.$('shareDialog').open, false);
   assert.equal(page.$('shareCode').textContent, '', 'le code ne reste pas affiché après fermeture');

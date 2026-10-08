@@ -910,3 +910,49 @@ test('soliste : prénom seul dans le filtre, les info-bulles, le panneau et le t
   // Écran de gestion : le groupe garde son nom dans le filtre des tables.
   assert.ok(focus.options().some(o => o.getAttribute('value') === 't:3'));
 });
+
+// Regression: constat QA Q8 (8 octobre) — « Attente avant de chanter » à
+// 390 px : pas fixe de 15 s, « 1 min » et « 1 min 15 » collés (39 unités
+// entre leurs centres). Le pas dépend de la largeur, comme l'axe du temps.
+test('graduations des durées : pas selon la largeur, au moins 60 unités entre deux étiquettes', async () => {
+  const page = loadPage();
+  await settle();
+  const { durationTicks } = page.context;
+  const gaps = (ticks, width) => ticks.slice(1).map((v, i) => (v - ticks[i]) * width / ticks.at(-1));
+  const steps = ticks => new Set(ticks.slice(1).map((v, i) => v - ticks[i]));
+  // Cas du constat : 1 min 15 au plus sur 198 unités (390 px).
+  assert.deepEqual(steps(durationTicks(75, 198)), new Set([30]), '30 s au lieu de 15 s');
+  // Beaucoup de place : le pas fin reste.
+  assert.deepEqual(steps(durationTicks(75, 1200)), new Set([15]));
+  // Pas candidats : 15 s, 30 s, 1, 2, 5, 10, 15, 30 min, puis l'heure.
+  for (const [maxSec, width] of [[75, 198], [75, 120], [600, 198], [3000, 198], [40 * 60, 700], [5 * 3600, 198], [30, 60], [0, 198]]) {
+    const ticks = durationTicks(maxSec, width);
+    assert.equal(ticks[0], 0);
+    assert.ok(ticks.length >= 2, `${maxSec} s sur ${width} : au moins deux graduations`);
+    assert.ok(ticks.at(-1) >= maxSec, `${maxSec} s sur ${width} : l’axe couvre la plus longue attente`);
+    const [step] = steps(ticks);
+    assert.ok([15, 30, 60, 120, 300, 600, 900, 1800].includes(step) || step % 3600 === 0, `${maxSec} s sur ${width} : pas rond ${step}`);
+    if (width >= 120) for (const gap of gaps(ticks, width)) assert.ok(gap >= 60, `${maxSec} s sur ${width} : ${Math.round(gap)} unités entre deux étiquettes`);
+  }
+  // Sur la page, à 360, 390 et 900 px : étiquettes d'axe jamais serrées, sur
+  // chaque graphique à axe horizontal gradué (attentes, temps morts, tables).
+  // Les axes de durée ont des libellés exacts (« 30 s », « 1 min 30 »), pas
+  // « 0,5 min ».
+  const durationAxes = ['Attente avant de chanter, par chanteur', 'Temps morts par cause', 'Attente moyenne par table'];
+  for (const width of [360, 390, 900]) {
+    const shown = loadPage({ width });
+    await settle();
+    const svgs = ['chartWaitsPlot', 'chartRatesPlot', 'chartDeadPlot', 'chartTablesPlot'].flatMap(id => shown.doc.getElementById(id).byTag('svg'));
+    assert.equal(svgs.length, 5, `${width} px : cinq axes horizontaux`);
+    for (const svg of svgs) {
+      const name = `${width} px, ${svg.getAttribute('aria-label')}`;
+      const ticks = svg.children.filter(n => n.tagName === 'TEXT' && n.getAttribute('text-anchor') === 'middle');
+      const labels = ticks.map(n => Number(n.getAttribute('x')));
+      assert.ok(labels.length >= 2, `${name} : graduations`);
+      for (let i = 1; i < labels.length; i++) assert.ok(labels[i] - labels[i - 1] >= 60, `${name} : ${Math.round(labels[i] - labels[i - 1])} unités`);
+      if (durationAxes.some(label => svg.getAttribute('aria-label').startsWith(label))) {
+        for (const tick of ticks) assert.match(tick.textContent, /^(0 s|0 min|\d+ s|\d+ min( \d\d)?)$/, `${name} : libellé de durée exact`);
+      }
+    }
+  }
+});

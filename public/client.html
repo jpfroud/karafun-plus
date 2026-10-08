@@ -128,7 +128,7 @@
   .client .share-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-top: 8px; }
   .client .share-links .btn { width: 100%; margin: 0; }
   .client .share-links a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: var(--text); }
-  .client .transfer-url { width: 100%; margin-top: 8px; font-size: 12px; }
+  .client .transfer-url { width: 100%; margin-top: 8px; font-size: 16px; }
   .client .transfer-fallback { margin-top: 12px; font-size: 14px; }
   .client .transfer-fallback summary { cursor: pointer; color: var(--muted); }
   .client #transferBox .sheet-actions { margin-top: 10px; }
@@ -601,6 +601,53 @@
     toast.timer = setTimeout(() => { node.hidden = true; }, ms);
   }
 
+  // Copie d'un lien, même sur le Wi-Fi du bar en http : hors contexte sécurisé,
+  // ni navigator.share ni navigator.clipboard n'existent. Presse-papiers,
+  // sinon copie de secours du navigateur sur `field` (champ du lien déjà
+  // affiché, laissé sélectionné pour une copie à la main) ou sur un champ
+  // temporaire. iOS ne sélectionne pas un champ en lecture seule : il devient
+  // modifiable le temps de la copie. select() donne le focus au champ : une
+  // fois copié, il revient au bouton touché (ni retour en haut de la page, ni
+  // clavier ou zoom d'iOS) ; copie refusée, le champ affiché reste sélectionné.
+  async function copyLink(url, field = null) {
+    try { await navigator.clipboard.writeText(url); return true; } catch (_) { /* Copie de secours. */ }
+    const temporary = !field;
+    const input = field || document.createElement('textarea');
+    const readOnly = input.readOnly;
+    const back = document.activeElement;
+    let copied = false;
+    try {
+      if (temporary) {
+        input.value = url;
+        input.setAttribute('aria-hidden', 'true');
+        Object.assign(input.style, { position: 'fixed', top: '0', left: '0', opacity: '0', fontSize: '16px' });
+        document.body.appendChild(input);
+      }
+      input.readOnly = false;
+      input.select();
+      input.setSelectionRange?.(0, String(input.value).length);
+      copied = !!document.execCommand?.('copy');
+    } catch (_) { copied = false; }
+    finally {
+      input.readOnly = readOnly;
+      if (temporary) input.remove();
+      if (copied || temporary) {
+        input.blur?.();
+        if (back && back !== input && back !== document.body && document.contains?.(back)) back.focus?.({ preventScroll: true });
+      }
+    }
+    return copied;
+  }
+  // Partage du téléphone s'il existe, sinon copie du lien.
+  async function shareOrCopy(url, { text, copied, failed }) {
+    if (navigator.share) {
+      navigator.share({ title: t('Karaoké'), text, url }).catch(() => { /* Partage annulé. */ });
+      return;
+    }
+    if (await copyLink(url)) toast(copied);
+    else toast(failed, true);
+  }
+
   // Alerte « titre en double » : jamais bloquante, seulement informative.
   function songNoticeText(notice, added = false) {
     if (!notice) return '';
@@ -818,20 +865,23 @@
       item.kind === 'battle' ? [item.battle.mode, list(item.battle.songOptions).map(song => song.songId)] : null]);
   }
 
-  // Le message de confirmation (#toast, role=status, sans bouton) reste hors
-  // de cette liste : rendu inerte, il ne serait pas annoncé par un lecteur
-  // d'écran pendant qu'une autre demande reste ouverte.
-  function setBackground(blocked) {
-    for (const id of ['topBar', 'infoBar', 'tabsNav', 'mainContent', 'sheet']) {
-      const node = $(id);
-      if (node) node.inert = blocked;
+  // Fenêtre modale ouverte (fenêtre de prénom, sinon demande en grand) : tout
+  // le reste de la page est inerte, en-tête FR/EN compris (la fenêtre de
+  // prénom a ses propres boutons de langue). Le message de confirmation
+  // (#toast, role=status, sans bouton) reste hors de cette liste : rendu
+  // inerte, il ne serait pas annoncé par un lecteur d'écran.
+  function syncBackground() {
+    const modal = !$('nameGate').hidden ? 'nameGate' : !$('attention').hidden ? 'attention' : '';
+    for (const node of document.body.children) {
+      if (node.tagName === 'SCRIPT' || node.id === 'toast') continue;
+      node.inert = !!modal && node.id !== modal;
     }
   }
 
   function closeAttention() {
     $('attention').hidden = true;
     attentionShown = '';
-    setBackground(false);
+    syncBackground();
     const back = attentionReturn;
     attentionReturn = null;
     if (back && document.contains(back)) back.focus?.();
@@ -853,8 +903,8 @@
     if (signature !== attentionShown || $('attention').hidden) {
       if ($('attention').hidden) {
         attentionReturn = document.activeElement;
-        setBackground(true);
         $('attention').hidden = false;
+        syncBackground();
       }
       attentionShown = signature;
       const content = attentionContent(head);
@@ -1129,11 +1179,14 @@
   async function request(path, options = {}) {
     let response;
     // Réseau coupé : le navigateur donne un message technique (« Failed to fetch »).
+    // Chaque erreur sait se redire dans la langue courante (`localized`) :
+    // un message resté affiché suit le changement de langue.
+    const failure = localized => Object.assign(new Error(localized()), { localized });
     try { response = await fetch(path, { cache: 'no-store', ...options }); }
-    catch (_) { throw new Error(t('Connexion perdue : réessaie dans un instant.')); }
+    catch (_) { throw failure(() => t('Connexion perdue : réessaie dans un instant.')); }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));
+      const error = failure(() => serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));
       error.status = response.status;
       error.code = data.code;
       throw error;
@@ -1328,7 +1381,8 @@
     $('tableAllButton').textContent = t('Voir toute la table ({n})', { n: people.length });
     renderSongAccess(people, others, full);
     renderTransfer();
-    renderInvite(!individual && owned.length > 0);
+    // Table complète : personne n'est invité à scanner ; revient si une place se libère.
+    renderInvite(!individual && owned.length > 0 && !full);
     $('signalsBox').hidden = owned.length === 0;
     // Page d'une table : seulement les personnes gérées par ce téléphone.
     renderPeople(individual ? owned : people.filter(person => manages(person.id)), queue);
@@ -1338,7 +1392,11 @@
     renderClosing();
     renderBattlePick();
     updateTarget();
-    if (state.catalogAvailable === false && activeTab === 'catalog' && catalogMode === 'categories' && !categories.length) {
+    // Catalogue revenu : la sélection reportée part, sauf recherche en cours de saisie.
+    if (catalogDeferred && state.catalogAvailable !== false && activeTab === 'catalog' && ['categories', 'highlights'].includes(catalogMode)
+      && !$('searchInput').value.trim()) {
+      showCategories(catalogDeferred);
+    } else if (state.catalogAvailable === false && activeTab === 'catalog' && catalogMode === 'categories' && !categories.length) {
       showCatalogView(catalogMessage(() => t('Le catalogue est momentanément indisponible. Réessaie dans un instant.')));
     }
     const freshInfo = renderInfos();
@@ -1489,12 +1547,7 @@
       navigator.share({ title: t('Karaoké'), text: message, url: share.url }).catch(() => { /* Partage annulé. */ });
     });
     $('copyTransfer')?.addEventListener('click', async () => {
-      let copied = false;
-      try { await navigator.clipboard.writeText(share.url); copied = true; }
-      catch (_) {
-        $('transferUrl').select();
-        try { copied = document.execCommand('copy'); } catch (__) { copied = false; }
-      }
+      const copied = await copyLink(share.url, $('transferUrl'));
       toast(copied ? t('Lien copié : colle-le dans ton message.') : t('Sélectionne le lien ci-dessous pour le copier.'), !copied);
     });
   }
@@ -2141,7 +2194,25 @@
     $('nameGate').hidden = !person;
     $('tabsNav').hidden = !!person;
     $('mainContent').hidden = !!person;
+    syncBackground();
   }
+  // Message de la fenêtre : gardé comme fonction qui le traduit (clé
+  // française et valeurs, ou message d'origine du serveur), redessiné dans
+  // la langue courante par setLanguage.
+  let nameGateMessage = null;
+  function renderNameGateMessage() {
+    const node = $('nameGateError');
+    node.textContent = nameGateMessage ? nameGateMessage() : '';
+    node.hidden = !nameGateMessage;
+  }
+  function setNameGateMessage(message) {
+    nameGateMessage = message;
+    renderNameGateMessage();
+  }
+  // Nouvelle saisie, ou essai vide bloqué par le navigateur (champ requis) :
+  // l'ancien message ne reste pas.
+  $('nameGateInput').addEventListener('input', () => setNameGateMessage(null));
+  $('nameGateInput').addEventListener('invalid', () => setNameGateMessage(null));
   $('nameGateLang').addEventListener('click', event => {
     const button = event.target.closest('[data-lang]');
     if (button) setLanguage(button.dataset.lang);
@@ -2149,19 +2220,18 @@
   $('nameGateForm').addEventListener('submit', async event => {
     event.preventDefault();
     const name = $('nameGateInput').value.trim();
-    const error = $('nameGateError');
-    const show = message => { error.textContent = message; error.hidden = false; };
-    if (!name) return show(t('Indique un prénom.'));
+    setNameGateMessage(null);
+    if (!name) return setNameGateMessage(() => t('Indique un prénom.'));
     const button = $('nameGateForm').querySelector('button[type=submit]');
     button.disabled = true;
     try {
       await post('/api/table/person/rename', { personId: namePersonId, name });
-      error.hidden = true;
       $('nameGateInput').value = '';
       await refresh();
       toast(t('{name} est inscrit.', { name }));
     } catch (failure) {
-      show(failure.code === 'NAME_TAKEN' ? t('Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).') : failure.message);
+      setNameGateMessage(failure.code === 'NAME_TAKEN' ? () => t('Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).')
+        : failure.localized || (() => failure.message));
     } finally { button.disabled = false; }
   });
 
@@ -2222,18 +2292,10 @@
   }
   $('inviteToggle').addEventListener('click', () => { inviteOpen = true; render(); });
   $('inviteClose').addEventListener('click', () => { inviteOpen = false; render(); });
-  $('inviteShare').addEventListener('click', async () => {
+  $('inviteShare').addEventListener('click', () => {
     if (!invite?.url) return;
-    if (navigator.share) {
-      navigator.share({ title: t('Karaoké'), text: t('Rejoins notre table au karaoké :'), url: invite.url }).catch(() => { /* Partage annulé. */ });
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(invite.url);
-      toast(t('Lien copié : colle-le dans ton message.'));
-    } catch (_) {
-      toast(t('Copie impossible. Lien de la table : {url}', { url: invite.url }), true);
-    }
+    shareOrCopy(invite.url, { text: t('Rejoins notre table au karaoké :'), copied: t('Lien copié : colle-le dans ton message.'),
+      failed: t('Copie impossible. Lien de la table : {url}', { url: invite.url }) });
   });
 
   $('peopleList').addEventListener('click', event => {
@@ -2776,13 +2838,24 @@
       : `<p class="empty-copy">${esc(t('Aucune sélection disponible.'))}</p>`);
   }
 
+  // Sélection reportée : le serveur annonce déjà le catalogue indisponible,
+  // la demande échouerait (502). Elle part dès son retour (render).
+  let catalogDeferred = null;
   async function showCategories(type) {
     setCatalogType(type);
     $('searchInput').value = '';
     renderSearchClear();
     currentCategory = null;
     const number = ++catalogRequest;
-    if (type === 'news' || type === 'featured') {
+    const highlights = type === 'news' || type === 'featured';
+    if (state?.catalogAvailable === false) {
+      catalogMode = highlights ? 'highlights' : 'categories';
+      catalogDeferred = type;
+      showCatalogView(catalogMessage(() => t('Le catalogue est momentanément indisponible. Réessaie dans un instant.')));
+      return;
+    }
+    catalogDeferred = null;
+    if (highlights) {
       catalogMode = 'highlights';
       showCatalogView(catalogMessage(() => t('Chargement des chansons…')));
       try {
@@ -3145,6 +3218,7 @@
     lang = next;
     try { localStorage.setItem(langKey, lang); } catch (_) { /* Choix gardé pendant cette visite. */ }
     translateStatic();
+    renderNameGateMessage();
     $('conn').textContent = connectionText();
     renderAlertPreference();
     if (invalidAccess) showInvalidLink();

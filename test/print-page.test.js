@@ -60,3 +60,28 @@ test('événement privé sans table ordinaire : sa carte seule ; mode coupé ou 
   assert.doesNotMatch(tablesOnly.el('grid').innerHTML, /Événement privé/, 'mode coupé : pas de carte');
   assert.equal(tablesOnly.fetches[0].url, '/api/staff/state');
 });
+
+// Regression: constat QA Q6 (8 octobre) — à 390 px, le QR de l'événement
+// privé (340 px fixes) dépassait de sa carte et couvrait sa bordure.
+// Pas de navigateur dans les tests : les règles CSS sont vérifiées.
+test('QR imprimés : jamais plus larges que leur carte sur téléphone, 340 px gardés sur ordinateur et à l’impression', () => {
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>')).replace(/\/\*[\s\S]*?\*\//g, '');
+  const rule = selector => {
+    // Première règle du sélecteur : celle de l'écran, avant les @media.
+    const found = [...style.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(match => match[1].trim() === selector);
+    assert.ok(found.length, `une règle ${selector}`);
+    return Object.fromEntries(found[0][2].split(';').map(part => part.split(':').map(text => text.trim())).filter(([name]) => name));
+  };
+  for (const selector of ['.card img', '.card.event-card img']) {
+    const decl = rule(selector);
+    assert.equal(decl['max-width'], '100%', `${selector} : borné par sa carte`);
+    assert.equal(decl.height, 'auto', `${selector} : reste carré en rétrécissant`);
+    assert.equal(decl['aspect-ratio'] || rule('.card img')['aspect-ratio'], '1');
+  }
+  assert.equal(rule('.card img').width, '190px');
+  assert.equal(rule('.card.event-card img').width, '340px', 'grand QR sur ordinateur');
+  assert.match(rule('.grid')['grid-template-columns'], /minmax\(0, 1fr\)/, 'une colonne ne s’élargit pas au-delà de la page');
+  const print = /@media print \{([\s\S]*?)\}\s*$/m.exec(style)?.[1] || '';
+  assert.doesNotMatch(print, /img/, 'à l’impression, les tailles d’origine restent');
+  assert.match(style, /@media screen and \(max-width: 600px\) \{[^@]*\.grid \{ grid-template-columns: 1fr; \}/, 'téléphone : une carte par ligne');
+});

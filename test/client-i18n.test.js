@@ -172,6 +172,7 @@ function boot({ languages, language, saved = null, translations = true, respond 
   const document = {
     title: '', activeElement: null, hidden: false, listeners: {}, documentElement: { lang: 'fr' },
     getElementById: get,
+    body: { children: [] }, // fenêtres modales : fond rendu inerte
     querySelector: () => new Element(),
     querySelectorAll(selector) {
       if (selector === '.tabs button') return tabs;
