@@ -37,7 +37,7 @@ TOOLS="$WORK/outils"; mkdir -p "$TOOLS"; printf '#!/usr/bin/env bash\nexit 0\n' 
 
 # Environnement maîtrisé : pas de session web ni de gstack existant, et pas
 # de CODEX_HOME réel (le faux setup y écrirait ses compétences de test).
-quiet_env() { env -u GSTACK_ROOT -u CODEX_HOME -u CLAUDE_CODE_REMOTE -u CLAUDE_ENV_FILE -u GSTACK_CHROMIUM_PATH -u GSTACK_SKIP_PLAYWRIGHT "$@"; }
+quiet_env() { env -u GSTACK_ROOT -u CODEX_HOME -u CLAUDE_CODE_REMOTE -u CLAUDE_ENV_FILE -u GSTACK_CHROMIUM_PATH -u GSTACK_SKIP_PLAYWRIGHT -u CLAUDE_PROJECT_DIR "$@"; }
 run_start() { local home="$1"; shift; printf '%s' '{"hook_event_name":"SessionStart","source":"startup"}' |
   quiet_env HOME="$home" GSTACK_AUTO_INSTALL=0 "$@" bash "$START" SessionStart; }
 run_auto() { local home="$1"; shift; printf '{}' |
@@ -69,6 +69,10 @@ printf '%s' "$out" | field additionalContext |
 rm -f "$home/setup-args"
 out="$(run_auto "$home")" || fail "second démarrage"
 printf '%s' "$out" | field additionalContext | grep -q "^GSTACK_OK : gstack est installé" || fail "second démarrage"
+# Au démarrage aussi, la table de routage accompagne GSTACK_OK.
+for route in "l'annoncer en une ligne" "→ investigate" "→ review" "ne jamais passer ce choix sous silence"; do
+  printf '%s' "$out" | field additionalContext | grep -qF "$route" || fail "table de routage absente au démarrage : $route"
+done
 [ ! -e "$home/setup-args" ] || fail "gstack ne doit pas être réinstallé"
 
 # 3. Échecs : jamais bloquants, raison donnée, rien de faussement « installé ».
@@ -200,6 +204,29 @@ out="$(quiet_env HOME="$empty" GSTACK_AUTO_INSTALL=0 bash "$START" < <(sleep 20)
 [ $(( $(date +%s) - started )) -lt 10 ] || fail "le hook attend une entrée standard qui ne se ferme pas"
 printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail "sortie invalide avec entrée ouverte"
 
+# 11b. Hook git pre-push de la porte : installé dans le dépôt du projet,
+#      une seule fois, jamais par-dessus un hook étranger ni avec core.hooksPath.
+git_q() { git -c init.defaultBranch=main "$@" >/dev/null 2>&1; }
+installed="$WORK/home-.claude_skills_gstack"
+repo="$WORK/projet"; git_q init "$repo" || fail "dépôt de test"
+out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null)" || fail "démarrage avec projet"
+cmp -s "$ROOT/.claude/hooks/pre-push" "$repo/.git/hooks/pre-push" || fail "hook pre-push non installé"
+[ -x "$repo/.git/hooks/pre-push" ] || fail "hook pre-push non exécutable"
+before="$(stat -c %Y "$repo/.git/hooks/pre-push" 2>/dev/null || echo 0)"
+quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null >/dev/null || fail "second démarrage avec projet"
+[ "$(stat -c %Y "$repo/.git/hooks/pre-push" 2>/dev/null || echo 0)" = "$before" ] || fail "hook pre-push réécrit sans raison"
+out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" UserPromptSubmit </dev/null)" || fail "rappel avec projet"
+other="$WORK/projet-etranger"; git_q init "$other"; printf '#!/bin/sh\nexit 0\n' >"$other/.git/hooks/pre-push"
+out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$other" bash "$START" SessionStart </dev/null)" || fail "hook étranger"
+grep -q 'exit 0' "$other/.git/hooks/pre-push" && ! grep -q 'Porte gstack' "$other/.git/hooks/pre-push" || fail "hook pre-push étranger écrasé"
+printf '%s' "$out" | field additionalContext | grep -q 'un autre hook pre-push existe' || fail "hook étranger non signalé"
+paths="$WORK/projet-hookspath"; git_q init "$paths"; git -C "$paths" config core.hooksPath .githooks
+out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$paths" bash "$START" SessionStart </dev/null)" || fail "core.hooksPath"
+[ ! -e "$paths/.git/hooks/pre-push" ] && [ ! -e "$paths/.githooks/pre-push" ] || fail "core.hooksPath ignoré"
+printf '%s' "$out" | field additionalContext | grep -q 'core.hooksPath est réglé' || fail "core.hooksPath non signalé"
+quiet_env HOME="$installed" bash "$START" SessionStart </dev/null >/dev/null || fail "démarrage sans projet"
+[ ! -e "$ROOT/.git/hooks/pre-push.tmp.$$" ] || fail "fichier temporaire laissé"
+
 # 11. Les réglages du projet enregistrent les trois hooks, avec un délai qui
 #     laisse le temps d'installer gstack.
 SETTINGS="$ROOT/.claude/settings.json"
@@ -213,4 +240,4 @@ if (!/gstack-session-start\.sh"? SessionStart$/.test(start.command || "") || !(s
 if (!/gstack-session-start\.sh"? UserPromptSubmit$/.test(prompt) || !pre.includes("check-gstack.sh")) process.exit(1);
 ' "$SETTINGS" || fail "hooks absents ou délai trop court dans .claude/settings.json"
 
-echo "Hooks gstack Claude Code : installation automatique au démarrage, rappel à chaque demande, refus des compétences sans gstack OK"
+echo "Hooks gstack Claude Code : installation automatique au démarrage, table de routage, hook pre-push installé sans écraser l'existant, refus des compétences sans gstack OK"

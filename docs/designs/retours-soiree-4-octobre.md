@@ -171,10 +171,10 @@ A avant B et C : B et C reposent sur la personne créée à l'ouverture, sur le 
 
 ## P. Porte gstack : correctifs de la relecture
 
-Constats de la relecture gstack (`review`, spécialistes tests, maintenabilité, sécurité, et relecture adverse) et sondes :
-1. L'envoi est contrôlé par un hook git `pre-push` installé par le hook de démarrage (`.git/hooks/pre-push`, seulement s'il n'en existe pas d'autre), actif seulement quand `CLAUDECODE=1` : chaque commit envoyé doit avoir l'arbre exact d'une relecture `review` terminée et convergée. Plus d'analyse du texte des commandes pour `git push` : fini les faux positifs (`git commit -m "… git push …"`) et les contournements (`cd … && git push`, alias, `bash -c`, worktree lié).
-2. `gh pr create` et les outils GitHub d'envoi ne sont contrôlés que pour le dépôt d'`origin` ; envoi de fichiers par l'API GitHub refusé dans ce dépôt (passer par `git push`).
-3. Relecture acceptée seulement si `completed` et `converged` ; `.gstack/porte/` n'est plus modifiable par les outils d'édition ; nom `..x` à la racine bien considéré dans le dépôt ; `GSTACK_ROOT` relatif résolu comme dans les scripts shell ; liste des emplacements alignée sur gstack (`.copilot`) ; compétences d'administration reconnues sous leurs deux noms ; documentation et tests alignés.
+Constats de la relecture gstack (`review`, spécialistes tests, maintenabilité, sécurité, et relecture adverse) et sondes : l'analyse du texte des commandes `Bash` laissait passer `git -C …`, `bash -c "git push"`, un alias ou un worktree lié, et bloquait à tort un `git commit -m "… git push …"` ; une relecture non convergée était acceptée ; l'état de la porte se déverrouillait en l'écrivant.
+1. L'envoi est contrôlé par un hook git `pre-push` (`.claude/hooks/pre-push`) que le hook de démarrage copie dans le dossier des hooks du dépôt, sauf hook étranger ou `core.hooksPath` réglé. Il n'agit que pour Claude Code (`CLAUDECODE=1`) : chaque commit envoyé doit avoir l'arbre exact d'une relecture `/review` terminée, convergée et liée par gstack ; commit déjà sur le serveur, étiquette déjà publiée et suppression passent. Plus aucune analyse du texte des commandes Bash.
+2. L'écriture de fichiers par l'API GitHub (`push_files`, `create_or_update_file`, `delete_file`) est refusée vers ce dépôt ; une PR reprend une branche déjà envoyée, donc déjà contrôlée.
+3. `.gstack/porte/` n'est plus modifiable par les outils d'édition et les entrées forgées sont ignorées ; nom `..x` à la racine bien considéré dans le dépôt ; `GSTACK_ROOT` relatif résolu comme dans les scripts shell ; emplacements alignés sur gstack (`.copilot`) ; compétences d'administration reconnues sous leurs deux noms ; un échec d'écriture de la trace est signalé à l'agent ; tests du hook Codex et de la table de routage au démarrage.
 
 ---
 
@@ -190,7 +190,7 @@ Constats de la relecture gstack (`review`, spécialistes tests, maintenabilité,
 8. F : la barre atteint 100 % à la durée du titre en démo ; pause figée ; titre relancé repart de zéro ; durée inconnue → temps écoulé seul.
 9. G : avec un KaraFun « collant », voix guide 25 en direct sur A, B sans réglage démarre à 0 ; avec un KaraFun qui remet à zéro, aucune trame en plus ; un réglage en direct envoyé pendant le changement de titre est refusé.
 10. H : une soirée ouverte 4 jours montre des barres lisibles sur au moins la moitié de la largeur et des étiquettes espacées d'au moins 40 unités, sur ordinateur et à 360 px.
-11. P : `git push` depuis Claude Code échoue sans relecture terminée sur l'arbre exact, passe après ; `git commit -m "… git push …"` n'est plus bloqué ; un `git push` tapé par l'utilisateur hors de Claude Code n'est jamais concerné.
+11. P : `git push` depuis Claude Code (quelle que soit son écriture, worktree lié compris) échoue sans relecture terminée et convergée sur l'arbre exact, passe après ; `git commit -m "… git push …"` n'est plus bloqué ; un `git push` tapé par l'utilisateur hors de Claude Code n'est jamais concerné.
 12. `node test/run-offline.js` vert, couverture ≥ 95 % (`node test/coverage.js --min-lines 95`), toutes les nouvelles phrases des téléphones traduites, `RAPPORT-TEST.md` à jour.
 
 ## Plan de tests
