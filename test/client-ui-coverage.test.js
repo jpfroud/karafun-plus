@@ -288,6 +288,7 @@ function boot(options = {}) {
   const navigator = {
     ...(options.languages !== undefined ? { languages: options.languages } : { languages: ['fr-FR'] }),
     ...(options.language !== undefined ? { language: options.language } : {}),
+    ...(options.userAgent !== undefined ? { userAgent: options.userAgent } : {}),
     vibrate: pattern => { page.vibrations.push([...pattern]); return true; },
     ...(options.share ? { share: async data => { page.shares.push({ ...data }); } } : {}),
     clipboard: { writeText: async text => { if (options.clipboardFails) throw new Error('refusé'); page.copies.push(text); } },
@@ -515,7 +516,7 @@ test('catalogue pour un chanteur : cible, duo, et refus pour un chanteur non gé
 
   // Garde-fou : un bouton visant une personne gérée par un autre téléphone.
   await page.click(page.node('nav-table'));
-  assert.equal(page.find('peopleList', '[data-person-card="chloe"]').querySelector('[data-add-song]'), null, 'pas de bouton pour Chloé');
+  assert.equal(page.node('peopleList').querySelector('[data-person-card="chloe"]'), null, 'Chloé, gérée ailleurs, n’est pas sur la page');
   const stray = new Element(page, 'button', { 'data-add-song': 'chloe' });
   stray.parent = page.node('peopleList');
   page.dispatch(stray, 'click');
@@ -693,7 +694,7 @@ test('transfert reçu : récupérer un chanteur, lien oublié ensuite', async ()
   assert.ok(JSON.parse(last.headers['x-person-tokens']).includes('jeton-bob'));
   assert.equal(page.node('transferBox').hidden, true);
   assert.equal(page.toast().text, 'Tu gères maintenant Bob sur ce téléphone.');
-  assert.match(page.find('peopleList', '[data-person-card="bob"]').textContent, /géré sur ce téléphone/);
+  assert.ok(page.find('peopleList', '[data-person-card="bob"]'), 'Bob apparaît parmi les chanteurs du téléphone');
 });
 
 test('transfert reçu : lien expiré, déjà géré, « En solo », « Pas maintenant » et refus du serveur', async () => {
@@ -1226,7 +1227,10 @@ test('mise à jour : la page cachée continue de se mettre à jour et son titre 
 });
 
 // ================================================================ fiches des personnes
-test('fiches : sur scène, duos, présence, report, parti, autre téléphone', async () => {
+// Retours du 4 octobre (D3) : la page d'une table ne montre plus que les
+// personnes gérées par ce téléphone ; une personne gérée ailleurs se retrouve
+// dans « Voir toute la table », avec « C'est moi ».
+test('fiches : sur scène, duos, présence, report, parti, personne gérée ailleurs', async () => {
   const at = Date.now() + 15 * 60000;
   const state = baseState({ rules: { requirePresence: true }, me: { id: 'eve', inKaraFun: [{ title: 'Prête', artist: '' }] } });
   state.tablePeople = [
@@ -1236,16 +1240,17 @@ test('fiches : sur scène, duos, présence, report, parti, autre téléphone', a
     person('bob', 'Bob', { invites: [{ entryId: 'x9', fromName: 'Léa', song: { title: 'Slow', artist: 'Lui' } }],
       songs: [{ entryId: 'b1', title: 'Rock', artist: 'R' }] }),
     person('carla', 'Carla', { confirmed: true, deferral: { remaining: 2, pendingRemoval: true, canDeferMore: true } }),
-    person('dan', 'Dan', { active: false }),
+    person('dan', 'Dan', { active: false, invites: [{ entryId: 'x8', fromName: 'Léa', song: { title: 'Slow', artist: 'Lui' } }],
+      songs: [{ entryId: 'd1', title: 'Rock', artist: 'R' }] }),
     person('eve', 'Eve'),
   ];
-  state.managedIds = ['alice', 'carla', 'eve'];
-  state.queue = [{ pos: 2, ids: ['bob'], id: 'bob', name: 'Bob', title: 'Rock', source: 'helper', eta: at, song: { entryId: 'b1' } }];
+  state.managedIds = ['alice', 'carla', 'dan', 'eve'];
+  state.queue = [{ pos: 2, ids: ['carla'], id: 'carla', name: 'Carla', title: 'Rock', source: 'helper', eta: at, song: { entryId: 'c1' } }];
   const page = await open({ state });
   const card = id => page.find('peopleList', `[data-person-card="${id}"]`);
   const status = id => card(id).querySelector('.person-state').textContent;
 
-  assert.equal(status('alice'), 'Sur scène · géré sur ce téléphone');
+  assert.equal(status('alice'), 'Sur scène');
   assert.match(card('alice').textContent, /DÉJÀ PRÊTE DANS LA FILE.*Chanson KF.*Artiste · sur scène/s);
   assert.match(card('alice').textContent, /SA LISTE · 2 CHANSONS/);
   assert.match(card('alice').textContent, /A · prochain titre · duo avec Zoé \(en attente de sa réponse\)/);
@@ -1258,18 +1263,22 @@ test('fiches : sur scène, duos, présence, report, parti, autre téléphone', a
     'présence et report : une seule question, deux réponses');
   assert.doesNotMatch(card('alice').textContent, /C’est bientôt au tour/, 'pas de seconde question');
 
-  assert.equal(status('bob'), `2e dans la file · vers ${timeOf(at)} · autre téléphone`);
-  assert.match(card('bob').textContent, /Léa propose un duo sur « Slow » — Lui\..*Seul le téléphone qui gère Bob peut répondre\./s);
-  assert.equal(card('bob').querySelector('[data-duet-answer]'), null, 'pas de réponse depuis ce téléphone');
+  assert.equal(page.node('peopleList').querySelector('[data-person-card="bob"]'), null, 'Bob, géré ailleurs, n’est pas sur la page');
+  assert.equal(status('carla'), `2e dans la file · vers ${timeOf(at)}`);
   // Regression: soirée du 2 octobre — Mel voyait la demande de JP sans aucun
-  // bouton. Si c'est bien Bob, il reprend sa fiche ici avec le code du bar.
-  await page.tap('peopleList', '[data-claim-here="bob"]');
+  // bouton. Si c'est bien Bob, il reprend sa fiche avec le code du bar, depuis
+  // « Voir toute la table ».
+  await page.click(page.node('tableAllButton'));
+  await page.tap('tableSheetList', '[data-sheet-claim="bob"]');
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Gérer les chansons de Bob');
   assert.ok(page.node('claimCode'), 'code de reprise demandé');
   await page.click(page.find('sheetPanel', '[data-close-sheet]'));
-  assert.equal(card('bob').querySelector('[data-rename-person]'), null);
-  assert.equal(card('bob').querySelector('[data-remove-song]'), null);
-  assert.ok(card('bob').querySelector('[data-lyrics-title="Rock"]'), 'les paroles restent consultables');
+  // Personne partie : sa fiche reste, sans réponse ni modification possibles.
+  assert.match(card('dan').textContent, /Léa propose un duo sur « Slow » — Lui\..*Seul le téléphone qui gère Dan peut répondre\./s);
+  assert.equal(card('dan').querySelector('[data-duet-answer]'), null, 'pas de réponse pour une personne partie');
+  assert.equal(card('dan').querySelector('[data-rename-person]'), null);
+  assert.equal(card('dan').querySelector('[data-remove-song]'), null);
+  assert.ok(card('dan').querySelector('[data-lyrics-title="Rock"]'), 'les paroles restent consultables');
 
   assert.match(card('carla').textContent, /Passage repoussé : encore 2 chansons avant Carla\. Son titre sort de KaraFun et garde son tour\./);
   assert.ok(card('carla').querySelector('[data-ready-person="carla"]'));
@@ -1277,12 +1286,12 @@ test('fiches : sur scène, duos, présence, report, parti, autre téléphone', a
   assert.match(card('carla').textContent, /Présence confirmée pour ce passage\./);
   assert.match(card('carla').textContent, /Aucune chanson préparée\./);
 
-  assert.equal(status('dan'), 'Parti · historique conservé · autre téléphone');
-  assert.equal(status('eve'), 'Chanson prête dans la file · géré sur ce téléphone', 'titre envoyé connu par « me »');
+  assert.equal(status('dan'), 'Parti · historique conservé');
+  assert.equal(status('eve'), 'Chanson prête dans la file', 'titre envoyé connu par « me »');
   assert.match(card('eve').textContent, /Prête · bientôt sur scène/);
 
   const english = await open({ state, languages: ['en'] });
-  assert.match(english.find('peopleList', '[data-person-card="bob"]').querySelector('.person-state').textContent,
+  assert.match(english.find('peopleList', '[data-person-card="carla"]').querySelector('.person-state').textContent,
     new RegExp(`^2nd in the queue · around ${timeOf(at, 'en')}`));
 });
 
@@ -1422,10 +1431,11 @@ test('fenêtre : Tab reste dans la fenêtre, Échap la ferme et rend le focus', 
 test('accès : « Inscrire une personne » et « Reprendre » mènent au bon formulaire, le titre choisi est gardé', async () => {
   const state = baseState({ managedIds: [] });
   const page = await open({ state, respond: (url, body, self) => {
-    if (url === '/api/table/person') {
-      self.state.tablePeople.push(person('zoe', 'Zoé'));
-      self.state.managedIds = ['zoe'];
-      return { id: 'zoe', token: 'jeton-zoe' };
+    if (url === '/api/join' || url === '/api/table/person') {
+      const id = body.name === 'Zoé' ? 'zoe' : 'karim';
+      self.state.tablePeople.push(person(id, body.name));
+      self.state.managedIds = [...self.state.managedIds, id];
+      return { id, token: `jeton-${id}` };
     }
     return undefined;
   } });
@@ -1435,29 +1445,51 @@ test('accès : « Inscrire une personne » et « Reprendre » mènent au bon for
   await pickCatalogSong(page);
   assert.match(page.find('sheetPanel', 'h3').textContent, /^Avant d’ajouter « Tube »$/);
   assert.match(page.sheetHtml(), /Ton titre restera sélectionné pendant l’inscription\./);
+  // Retours du 4 octobre (D3) : reprendre se fait depuis la liste de toute la table.
   await page.tap('sheetPanel', '[data-access-go="claim"]');
-  assert.equal(page.sheetOpen(), false);
-  assert.equal(page.tabShown(), 'table');
-  assert.ok(page.node('claimBox').scrolled);
-  assert.equal(page.document.activeElement, page.find('claimPeople', '[data-claim-person="alice"]'), '« Je suis Alice » prêt à toucher');
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Toute la table');
+  assert.ok(page.find('tableSheetList', '[data-sheet-claim="alice"]'), '« C’est moi » prêt à toucher');
 
   await page.click(page.node('nav-catalog'));
   await page.tap('catalogContent', '[data-song-index="0"]');
   await page.tap('sheetPanel', '[data-access-go="register"]');
-  assert.ok(page.node('addPersonBox').scrolled, 'table déjà occupée : ajouter une personne');
-  assert.equal(page.document.activeElement, page.node('newName'));
-  page.node('newName').value = 'Zoé';
-  await page.submit('addPersonForm');
-  assert.deepEqual(page.posts.at(-1), ['/api/table/person', { table: '1', access: 'secret', name: 'Zoé' }]);
+  assert.equal(page.sheetOpen(), false);
+  assert.equal(page.tabShown(), 'table');
+  assert.ok(page.node('joinBox').scrolled, 'téléphone sans personne : il rejoint la table');
+  assert.equal(page.document.activeElement, page.node('firstName'));
+  page.node('firstName').value = 'Zoé';
+  await page.submit('joinForm');
+  assert.deepEqual(page.posts.at(-1), ['/api/join', { table: '1', access: 'secret', name: 'Zoé' }]);
   assert.deepEqual(JSON.parse(page.storage.get('kfPeople:1:secret')), { zoe: 'jeton-zoe' });
-  assert.equal(page.node('newName').value, '');
-  assert.equal(page.toast().text, 'Zoé est ajouté à la table.');
+  assert.equal(page.node('firstName').value, '');
+  assert.equal(page.toast().text, 'Zoé est inscrit.');
   assert.equal(page.sheetOpen(), true, 'le titre choisi revient tout de suite');
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Tube');
   assert.match(page.sheetHtml(), /Pour Zoé/);
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+
+  // Téléphone qui gère déjà quelqu'un : ajouter une personne sans téléphone.
+  await page.click(page.node('nav-catalog'));
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Tube');
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+  page.state.managedIds = ['zoe'];
+  const register = Object.assign(new Element(page, 'button', { 'data-access-go': 'register' }), { parent: page.node('catalogAccessActions') });
+  page.dispatch(register, 'click');
+  await page.settle();
+  assert.ok(page.node('addPersonBox').scrolled, 'table déjà occupée : ajouter une personne');
+  assert.equal(page.document.activeElement, page.node('newName'));
+  page.node('newName').value = 'Karim';
+  await page.submit('addPersonForm');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person', { table: '1', access: 'secret', name: 'Karim' }]);
+  assert.equal(page.node('newName').value, '');
+  assert.equal(page.toast().text, 'Karim est ajouté à la table.');
 
   page.node('newName').value = '';
   await page.submit('addPersonForm');
+  assert.deepEqual(page.toast(), { text: 'Indique un prénom.', bad: true, warn: false, hidden: false });
+  page.node('firstName').value = '';
+  await page.submit('joinForm');
   assert.deepEqual(page.toast(), { text: 'Indique un prénom.', bad: true, warn: false, hidden: false });
 });
 
@@ -1889,8 +1921,13 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.equal(button.getAttribute('aria-label'), 'Réglages de Mon titre', 'texte lu par le lecteur d’écran');
   assert.ok(card('alice').querySelector('[data-song-settings="k1"]'), 'titre déjà dans KaraFun, pas commencé : réglable');
   assert.equal(card('alice').querySelector('.tune-badge').textContent, '♯ +2 · tempo −10 %', 'badge des réglages');
-  assert.equal(card('bob').querySelector('[data-song-settings]') === null, true, 'autre téléphone : aucun bouton');
-  assert.equal(card('bob').querySelector('.tune-badge').textContent, '♭ −1 · guide 50', 'réglages visibles');
+  assert.equal(page.node('peopleList').querySelector('[data-person-card="bob"]'), null, 'autre téléphone : pas sur la page');
+  const gone = tuneState({ managedIds: ['alice', 'bob'] });
+  gone.tablePeople[1].active = false;
+  gone.managedIds = ['alice', 'bob'];
+  const bobCard = (await open({ state: gone })).find('peopleList', '[data-person-card="bob"]');
+  assert.equal(bobCard.querySelector('[data-song-settings]'), null, 'personne partie : aucun bouton');
+  assert.equal(bobCard.querySelector('.tune-badge').textContent, '♭ −1 · guide 50', 'réglages visibles');
 
   await page.click(button);
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Réglages · Mon titre');
@@ -2190,7 +2227,8 @@ test('français : « d’Alice », « de Bruno », espace insécable avant « ? 
   assert.ok(!/\u00a0/.test(en.node('attentionTitle').textContent), 'pas d’espace insécable en anglais');
   // Feuille de reprise.
   const claim = await open({ state: otherPhoneState('Émilie') });
-  await claim.tap('peopleList', '[data-claim-here="other"]');
+  await claim.click(claim.node('tableAllButton'));
+  await claim.tap('tableSheetList', '[data-sheet-claim="other"]');
   assert.equal(claim.find('sheetPanel', 'h3').textContent, 'Gérer les chansons d’Émilie');
 });
 
@@ -2292,7 +2330,8 @@ test('transfert : la fiche se ferme quand l’autre téléphone a repris la pers
 // Regression: ISSUE-018 — le champ du code de reprise n'avait pas le style des autres champs
 test('reprise : le champ du code à 4 chiffres a le type texte (style des champs), clavier numérique', async () => {
   const page = await open({ state: otherPhoneState('Bob') });
-  await page.tap('peopleList', '[data-claim-here="other"]');
+  await page.click(page.node('tableAllButton'));
+  await page.tap('tableSheetList', '[data-sheet-claim="other"]');
   const input = page.node('claimCode');
   assert.equal(input.getAttribute('type'), 'text', 'input[type=text] reçoit le style commun (48 px, coins arrondis)');
   assert.equal(input.getAttribute('inputmode'), 'numeric');
@@ -2554,4 +2593,338 @@ test('catalogue : Retour vers les résultats gardés par « ＋ Chanson » ne re
   await page.settle();
   assertQueenKept(page, 'Retour');
   assert.equal(searchUrls(page).length, sent, 'pas de nouvelle recherche');
+});
+
+// ================================================================ retours du 4 octobre (accès solo, événement privé, tables)
+// Regression: retours de la soirée du 4 octobre (docs/designs/retours-soiree-4-octobre.md,
+// lots A, B, C et D). Ouvrir un QR individuel n'enregistrait rien (inscription
+// au prénom seulement, 30 min après l'émission), la page retirait ensuite la
+// clé de l'adresse, et un téléphone de table affichait toute la table.
+const soloState = (extra = {}) => baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true, count: 3 },
+  tablePeople: [], managedIds: [], soloInvitationReady: true, ...extra });
+const soloPage = (search, state, respond, extra = {}) => open({ path: '/t/Comptoir/secret', search, state, respond, ...extra });
+const postsTo = (page, route) => page.posts.filter(([url]) => url === route);
+
+test('QR individuel : ouverture comptée par un seul POST, fenêtre de prénom bloquante, adresse gardée', async () => {
+  const page = await soloPage('?invitation=CLE-SOLO', soloState(), (url, body, self) => {
+    if (url === '/api/table/solo/open') {
+      self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+      self.state.managedIds = ['s1'];
+      return { id: 's1', token: 'jeton-s1', nameRequired: true };
+    }
+    if (url === '/api/table/person/rename') {
+      if (body.name === 'Marie') return reply(400, { error: 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.', code: 'NAME_TAKEN' });
+      if (body.name === 'Erreur') return reply(400, { error: 'Prénom limité à 24 caractères.' });
+      self.state.tablePeople = [person('s1', body.name)];
+      return { ok: true };
+    }
+    return undefined;
+  });
+  assert.match(page.stateRequests()[0].url, /invitation=CLE-SOLO/, 'la lecture d’état transmet seulement le QR, sans rien créer');
+  assert.deepEqual(postsTo(page, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-SOLO' }]]);
+  assert.deepEqual(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')), { s1: 'jeton-s1' });
+  assert.equal(page.node('nameGate').hidden, false, 'fenêtre de prénom affichée');
+  assert.equal(page.node('tabsNav').hidden, true, 'onglets masqués');
+  assert.equal(page.node('mainContent').hidden, true, 'reste de la page masqué');
+  assert.equal(page.find('nameGate', 'h2').textContent, 'Bienvenue ! Quel est ton prénom ?');
+  assert.equal(page.node('nameGate').querySelector('[data-close-sheet]'), null, 'aucune croix');
+  assert.equal(page.history.urls.length, 0, 'l’adresse garde ?invitation= : c’est la clé de la soirée');
+  await page.poll();
+  await page.poll();
+  assert.equal(postsTo(page, '/api/table/solo/open').length, 1, 'jamais une deuxième ouverture');
+
+  page.node('nameGateInput').value = '  ';
+  await page.submit('nameGateForm');
+  assert.equal(page.node('nameGateError').textContent, 'Indique un prénom.');
+  assert.equal(page.node('nameGateError').hidden, false);
+  page.dispatch(page.body, 'keydown', { key: 'Escape' });
+  assert.equal(page.node('nameGate').hidden, false, 'Échap ne ferme pas la fenêtre');
+
+  page.node('nameGateInput').value = 'Marie';
+  await page.submit('nameGateForm');
+  assert.equal(page.node('nameGateError').textContent, 'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).');
+  assert.equal(page.node('nameGate').hidden, false);
+  page.node('nameGateInput').value = 'Erreur';
+  await page.submit('nameGateForm');
+  assert.equal(page.node('nameGateError').textContent, 'Prénom limité à 24 caractères.');
+
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(page.find('nameGate', 'h2').textContent, 'Welcome! What’s your first name?');
+  assert.equal(page.find('nameGateLang', '[data-lang="en"]').attrs['aria-pressed'], 'true');
+  assert.equal(page.node('nameGate').hidden, false, 'la langue change sans fermer la fenêtre');
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+
+  page.node('nameGateInput').value = 'Marie L.';
+  await page.submit('nameGateForm');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person/rename',
+    { table: 'Comptoir', access: 'secret', personId: 's1', name: 'Marie L.', token: 'jeton-s1' }]);
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(page.node('nameGateError').hidden, true);
+  assert.equal(page.node('tabsNav').hidden, false);
+  assert.equal(page.node('mainContent').hidden, false);
+  assert.equal(page.toast().text, 'Marie L. est inscrit.');
+  assert.equal(page.history.urls.length, 0, 'la clé reste dans l’adresse après le prénom');
+
+  // Fenêtre ouverte au moment où la personne doit donner son prénom : elle se referme.
+  const sheet = await soloPage('', soloState({ tablePeople: [person('s1', 'Léa')], managedIds: ['s1'] }));
+  await sheet.tap('peopleList', '[data-rename-person="s1"]');
+  assert.equal(sheet.sheetOpen(), true);
+  sheet.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+  await sheet.poll();
+  assert.equal(sheet.sheetOpen(), false);
+  assert.equal(sheet.node('nameGate').hidden, false);
+  assert.equal(sheet.posts.length, 0, 'téléphone qui gère déjà sa personne : aucune ouverture');
+});
+
+test('QR individuel rouvert ailleurs : « C’est bien toi ? », récupération par la clé ; erreurs sans nouvel essai', async () => {
+  let refuse = true;
+  const page = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }), (url, body, self) => {
+    if (url === '/api/table/solo/open') return { recover: { id: 'm1', name: 'Marie' } };
+    if (url === '/api/table/person/claim') {
+      if (refuse) { refuse = false; return reply(400, { error: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.' }); }
+      self.state.tablePeople = [person('m1', 'Marie')];
+      self.state.managedIds = ['m1'];
+      return { id: 'm1', token: 'jeton-m1' };
+    }
+    return undefined;
+  });
+  assert.equal(page.node('transferBox').hidden, false);
+  assert.equal(page.node('transferHeading').textContent, 'C’est bien toi, Marie ?');
+  assert.match(page.node('transferText').textContent, /ce téléphone/);
+  assert.equal(page.node('noSingerBox').hidden, true, 'pas de message « invitation utilisée »');
+  assert.match(page.node('catalogAccessText').textContent, /Marie/);
+  assert.ok(page.find('catalogAccessActions', '[data-key-claim]'), 'la récupération aussi depuis le catalogue');
+  await page.tap('transferActions', '[data-key-claim]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', key: 'CLE-SOLO' }]);
+  assert.deepEqual(page.toast(), { text: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.', bad: true, warn: false, hidden: false });
+  assert.equal(page.node('transferBox').hidden, false, 'la carte reste après un refus');
+  await page.tap('transferActions', '[data-key-claim]');
+  assert.deepEqual(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')), { m1: 'jeton-m1' });
+  assert.equal(page.node('transferBox').hidden, true);
+  assert.equal(page.toast().text, 'Tu gères maintenant Marie sur ce téléphone.');
+  assert.equal(page.history.urls.length, 0, 'la clé reste dans l’adresse après la récupération');
+  assert.equal(postsTo(page, '/api/table/solo/open').length, 1);
+  const english = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }),
+    url => url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } } : undefined, { languages: ['en'] });
+  assert.equal(english.node('transferHeading').textContent, 'Is that you, Marie?');
+  assert.equal(english.find('transferActions', '[data-key-claim]').textContent, 'Recover my songs');
+
+  const used = await soloPage('?invitation=VIEUX', soloState({ soloInvitationReady: false }), url => url === '/api/table/solo/open'
+    ? reply(403, { error: 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.', code: 'SOLO_INVITATION' }) : undefined);
+  assert.equal(used.node('noSingerBox').hidden, false);
+  assert.equal(used.node('noSingerText').textContent, 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.');
+  assert.equal(used.node('fatalBox').hidden, true, 'un refus de l’invitation n’est pas un lien de table invalide');
+  await used.poll();
+  assert.equal(postsTo(used, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
+
+  let offline = true;
+  const network = await soloPage('?invitation=CLE-SOLO', soloState(), (url, body, self) => {
+    if (url !== '/api/table/solo/open') return undefined;
+    if (offline) { offline = false; return new Error('réseau coupé'); }
+    self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+    self.state.managedIds = ['s1'];
+    return { id: 's1', token: 'jeton-s1', nameRequired: true };
+  });
+  assert.equal(network.node('noSingerText').textContent, 'Un instant : ouverture de ton QR…');
+  await network.poll();
+  assert.equal(postsTo(network, '/api/table/solo/open').length, 2, 'réseau coupé : nouvel essai au rafraîchissement suivant');
+  assert.equal(network.node('nameGate').hidden, false);
+
+  const bare = await soloPage('', soloState({ soloInvitationReady: false }));
+  assert.equal(bare.posts.length, 0, 'lien commun : rien à ouvrir');
+  assert.match(bare.node('noSingerText').textContent, /^Pour t’inscrire, demande au bar un QR individuel\./);
+});
+
+test('événement privé : un seul POST d’entrée, paramètre retiré de l’adresse, QR inactif ou complet signalé', async () => {
+  const page = await soloPage('?evenement=SECRET-EV&utm=x', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+    if (url === '/api/table/enter') {
+      self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
+      self.state.managedIds = ['s2'];
+      return { id: 's2', token: 'jeton-s2', nameRequired: true };
+    }
+    return undefined;
+  });
+  assert.match(page.stateRequests()[0].url, /evenement=SECRET-EV/);
+  assert.deepEqual(postsTo(page, '/api/table/enter'), [['/api/table/enter', { table: 'Comptoir', access: 'secret', event: 'SECRET-EV' }]]);
+  assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret?utm=x');
+  assert.doesNotMatch(page.stateRequests().at(-1).url, /evenement/);
+  assert.equal(page.node('nameGate').hidden, false, 'le prénom est demandé tout de suite');
+  await page.poll();
+  assert.equal(postsTo(page, '/api/table/enter').length, 1);
+
+  const inactive = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false, privateEventReady: false }));
+  assert.equal(inactive.posts.length, 0, 'QR coupé ou renouvelé : rien n’est demandé');
+  assert.equal(inactive.node('noSingerText').textContent, 'Ce QR d’événement n’est plus actif. Demande au bar.');
+
+  const mine = await soloPage('?evenement=SECRET-EV', soloState({ privateEventReady: true, tablePeople: [person('s2', 'Léa')], managedIds: ['s2'] }));
+  assert.equal(mine.posts.length, 0, 'son chanteur est déjà sur ce téléphone');
+  assert.equal(mine.history.urls.at(-1), '/t/Comptoir/secret');
+
+  const busy = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), url => url === '/api/table/enter'
+    ? reply(400, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' }) : undefined, { languages: ['en'] });
+  assert.equal(busy.node('noSingerText').textContent, 'Too many sign-ups at once: try again in a minute.');
+});
+
+test('activité : en-tête x-page-visible seulement page visible ; la page cachée continue d’interroger', async () => {
+  const page = await open({ hidden: true });
+  assert.equal(page.stateRequests()[0].headers['x-page-visible'], undefined);
+  await page.poll();
+  assert.equal(page.stateRequests().length, 2, 'la lecture continue en arrière-plan');
+  assert.equal(page.stateRequests().at(-1).headers['x-page-visible'], undefined, 'page cachée : pas une activité');
+  page.document.hidden = false;
+  page.document.listeners.visibilitychange.forEach(entry => entry.listener());
+  await page.settle();
+  assert.equal(page.stateRequests().at(-1).headers['x-page-visible'], '1', 'page revenue : activité notée tout de suite');
+  const visible = await open();
+  assert.equal(visible.stateRequests()[0].headers['x-page-visible'], '1');
+});
+
+test('navigateur intégré (Instagram, WebView…) : conseil d’ouvrir la page dans son navigateur, en solo seulement', async () => {
+  const solo = soloState({ tablePeople: [person('m1', 'Marie')], managedIds: ['m1'] });
+  const insta = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile Instagram 300.0' });
+  assert.equal(insta.node('inAppHint').hidden, false);
+  assert.equal(insta.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
+  const webview = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A; wv) AppleWebKit/537.36' });
+  assert.equal(webview.node('inAppHint').hidden, false);
+  const safari = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Version/17.0 Mobile/15E148 Safari/604.1' });
+  assert.equal(safari.node('inAppHint').hidden, true);
+  const table = await open({ userAgent: 'Mozilla/5.0 (iPhone) Instagram 300.0' });
+  assert.equal(table.node('inAppHint').hidden, true, 'téléphone de table : rien');
+  const unknown = await soloPage('', solo);
+  assert.equal(unknown.node('inAppHint').hidden, true, 'navigateur sans identification');
+});
+
+test('table : la page ne montre que les personnes du téléphone, « Voir toute la table (N) » liste tout le monde', async () => {
+  const state = baseState();
+  state.tablePeople.push(person('bob', 'Bob', { songs: [{ entryId: 'b1', title: 'Rock' }], inKaraFun: [{ title: 'Pop' }] }),
+    person('dan', 'Dan', { active: false }));
+  const page = await open({ state });
+  assert.ok(page.find('peopleList', '[data-person-card="alice"]'));
+  assert.equal(page.node('peopleList').querySelector('[data-person-card="bob"]'), null, 'Bob est géré par un autre téléphone');
+  assert.equal(page.node('peopleHeading').textContent, 'Mes chanteurs');
+  assert.equal(page.find('peopleList', '[data-person-card="alice"]').querySelector('.person-state').textContent, 'Chansons choisies');
+  assert.equal(page.node('claimBox').hidden, true, 'plus de « Je suis… » sur la page principale');
+  assert.equal(page.node('tableAllButton').hidden, false);
+  assert.equal(page.node('tableAllButton').textContent, 'Voir toute la table (3)');
+  assert.equal(page.find('addPersonBox', 'h3').textContent, 'Ajouter une personne sans téléphone');
+  await page.click(page.node('tableAllButton'));
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Toute la table');
+  assert.equal(page.$('tableSearch'), null, 'pas de recherche jusqu’à 8 personnes');
+  const row = id => page.find('tableSheetList', `[data-sheet-person="${id}"]`);
+  assert.match(row('alice').textContent, /^Alice1 titre prêtgéré par ce téléphone$/);
+  assert.match(row('bob').textContent, /^Bob2 titres prêtsC’est moi$/);
+  assert.match(row('dan').textContent, /^DanParti · historique conservé$/);
+  assert.equal(row('dan').querySelector('[data-sheet-claim]'), null, 'personne partie : rien à reprendre');
+  await page.tap('tableSheetList', '[data-sheet-claim="bob"]');
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Gérer les chansons de Bob');
+  assert.ok(page.node('claimCode'), 'reprise par code, flux habituel');
+
+  const crowd = baseState();
+  crowd.table.headcount = 20;
+  for (let i = 1; i <= 8; i++) crowd.tablePeople.push(person(`p${i}`, `Invité ${i}`));
+  crowd.tablePeople.push(person('zoe', 'Zoé'));
+  const big = await open({ state: crowd });
+  assert.equal(big.node('tableAllButton').textContent, 'Voir toute la table (10)');
+  await big.click(big.node('tableAllButton'));
+  await big.type('tableSearch', 'zoe');
+  assert.deepEqual(big.node('tableSheetList').querySelectorAll('[data-sheet-person]').map(node => node.dataset.sheetPerson), ['zoe'],
+    'recherche sans accents');
+  await big.type('tableSearch', 'xyz');
+  assert.equal(big.node('tableSheetList').textContent, 'Aucune personne trouvée.');
+  await big.type('tableSearch', '');
+  assert.equal(big.node('tableSheetList').querySelectorAll('[data-sheet-person]').length, 10);
+
+  const english = await open({ state, languages: ['en'] });
+  assert.equal(english.node('tableAllButton').textContent, 'See the whole table (3)');
+  assert.equal(english.node('peopleHeading').textContent, 'My singers');
+
+  // « Reprendre un chanteur inscrit » (catalogue) ouvre la liste de la table.
+  const none = await open({ state: baseState({ managedIds: [] }) });
+  await none.click(none.node('nav-catalog'));
+  await none.tap('catalogAccessActions', '[data-access-go="claim"]');
+  assert.equal(none.find('sheetPanel', 'h3').textContent, 'Toute la table');
+});
+
+test('table déjà commencée : « Rejoindre la table » en tête, puis la carte « Fais scanner ta table »', async () => {
+  const state = baseState({ managedIds: [] });
+  state.tablePeople.push(person('bob', 'Bob'));
+  const page = await open({ state, respond: (url, body, self) => {
+    if (url === '/api/join') {
+      self.state.tablePeople.push(person('zoe', body.name));
+      self.state.managedIds = ['zoe'];
+      return { id: 'zoe', token: 'jeton-zoe' };
+    }
+    if (url.startsWith('/api/table/invite?')) return { url: 'http://192.168.1.20:3000/t/1/secret', qr: 'data:image/png;base64,TABLEQR' };
+    return undefined;
+  } });
+  assert.equal(page.node('joinBox').hidden, false, 'la carte d’accueil reste en tête');
+  assert.equal(page.node('joinHeading').textContent, 'Bienvenue à Table 1 !');
+  assert.equal(page.node('joinNameLabel').textContent, 'Ton prénom');
+  assert.equal(page.node('joinSubmit').textContent, 'Rejoindre la table');
+  assert.equal(page.node('joinOthers').hidden, false);
+  assert.equal(page.node('tableBox').hidden, true, 'les fiches des autres ne s’affichent pas');
+  await page.click(page.node('joinOthers'));
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Toute la table');
+  assert.match(page.find('tableSheetList', '[data-sheet-person="alice"]').textContent, /C’est moi/);
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+
+  page.node('firstName').value = 'Zoé';
+  await page.submit('joinForm');
+  assert.deepEqual(postsTo(page, '/api/join'), [['/api/join', { table: '1', access: 'secret', name: 'Zoé' }]]);
+  assert.equal(page.node('joinBox').hidden, true);
+  assert.equal(page.node('inviteBox').hidden, false);
+  assert.equal(page.node('invitePanel').hidden, false, 'déployée juste après la première inscription');
+  assert.equal(page.node('inviteToggle').hidden, true);
+  assert.equal(page.find('inviteQr', 'img').attrs.src, 'data:image/png;base64,TABLEQR');
+  const inviteRequests = () => page.requests.filter(request => request.url.startsWith('/api/table/invite?'));
+  assert.equal(inviteRequests().length, 1);
+  assert.equal(inviteRequests()[0].url, '/api/table/invite?table=1&access=secret');
+  assert.deepEqual(page.node('peopleList').querySelectorAll('[data-person-card]').map(node => node.dataset.personCard), ['zoe']);
+  await page.click(page.node('inviteShare'));
+  assert.deepEqual(page.copies, ['http://192.168.1.20:3000/t/1/secret'], 'sans partage du téléphone : lien copié');
+  assert.equal(page.toast().text, 'Lien copié : colle-le dans ton message.');
+  await page.click(page.node('inviteClose'));
+  assert.equal(page.node('invitePanel').hidden, true);
+  assert.equal(page.node('inviteToggle').hidden, false);
+  assert.equal(page.node('inviteToggle').textContent, 'Faire scanner ma table');
+  await page.poll();
+  assert.equal(page.node('invitePanel').hidden, true, 'repliée ensuite');
+  await page.click(page.node('inviteToggle'));
+  assert.equal(page.node('invitePanel').hidden, false);
+  assert.equal(inviteRequests().length, 1, 'QR déjà chargé');
+
+  const invite = { url: 'https://karaoke.example/t/1/secret', qr: 'data:image/png;base64,QR' };
+  const shared = await open({ share: true, respond: url => url.startsWith('/api/table/invite?') ? invite : undefined });
+  assert.equal(shared.node('inviteBox').hidden, false, 'téléphone déjà inscrit : carte repliée');
+  assert.equal(shared.node('invitePanel').hidden, true);
+  await shared.click(shared.node('inviteToggle'));
+  await shared.click(shared.node('inviteShare'));
+  assert.deepEqual(shared.shares, [{ title: 'Karaoké', text: 'Rejoins notre table au karaoké :', url: invite.url }]);
+  const failed = await open({ clipboardFails: true, respond: url => url.startsWith('/api/table/invite?') ? invite : undefined });
+  await failed.click(failed.node('inviteToggle'));
+  await failed.click(failed.node('inviteShare'));
+  assert.deepEqual(failed.toast(), { text: `Copie impossible. Lien de la table : ${invite.url}`, bad: true, warn: false, hidden: false });
+  const refused = await open({ respond: url => url.startsWith('/api/table/invite?') ? reply(400, { error: 'Une erreur est survenue.' }) : undefined });
+  await refused.click(refused.node('inviteToggle'));
+  assert.deepEqual(refused.toast(), { text: 'Une erreur est survenue.', bad: true, warn: false, hidden: false });
+  assert.equal(refused.node('invitePanel').hidden, true, 'QR indisponible : la carte se replie');
+  await refused.click(refused.node('inviteShare'));
+  assert.equal(refused.copies.length, 0, 'aucun lien à partager');
+
+  const solo = await soloPage('', soloState({ tablePeople: [person('m1', 'Marie')], managedIds: ['m1'] }));
+  assert.equal(solo.node('inviteBox').hidden, true, 'pas pour « En solo »');
+  assert.equal(solo.node('tableAllButton').hidden, true);
+
+  const empty = await open({ state: baseState({ tablePeople: [], managedIds: [] }) });
+  assert.equal(empty.node('joinNameLabel').textContent, 'Prénom de la première personne');
+  assert.equal(empty.node('joinSubmit').textContent, 'Commencer');
+  assert.equal(empty.node('joinOthers').hidden, true, 'table vide : personne à retrouver');
+
+  const fullState = baseState({ managedIds: [] });
+  fullState.table.headcount = 1;
+  const full = await open({ state: fullState });
+  assert.equal(full.node('joinBox').hidden, false);
+  assert.equal(full.node('joinSubmit').disabled, true);
+  assert.equal(full.node('headcountNotice').hidden, false);
+  assert.equal(full.node('headcountNotice').textContent, 'La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.');
 });

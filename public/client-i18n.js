@@ -110,8 +110,6 @@ window.CLIENT_TRANSLATIONS = {
       'Bienvenue à {table} !': 'Welcome to {table}!',
       'Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.':
         'Sign up with your phone. You can also sign up people without a phone, whether they sing or only vote for a Battle.',
-      'Cette invitation du bar est personnelle et ne sert qu’une fois. Inscris-toi avec ton prénom pour choisir tes chansons.':
-        'This invitation from the bar is personal and works only once. Sign up with your first name to choose your songs.',
       'Le bar doit d’abord indiquer combien de personnes sont à cette table.': 'The bar first needs to set how many people are at this table.',
       'Prénom de la première personne': 'First person’s first name',
       'Ton prénom': 'Your first name',
@@ -121,21 +119,52 @@ window.CLIENT_TRANSLATIONS = {
       'Indique un prénom.': 'Please enter a first name.',
       '{name} est inscrit.': '{name} is signed up.',
       '{name} est ajouté à la table.': '{name} was added to the table.',
-      'Ce téléphone gère déjà une personne dans « En solo ».': 'This phone already manages someone in “Solo”.',
+      'Rejoindre la table': 'Join the table',
+      'Déjà inscrit par un autre téléphone ?': 'Already signed up from another phone?',
+      // Prénom obligatoire (QR individuel ou d’événement ouvert)
+      'Bienvenue ! Quel est ton prénom ?': 'Welcome! What’s your first name?',
+      'Il s’affiche dans la file et sur l’écran du bar quand c’est ton tour.': 'It shows in the queue and on the bar’s screen when it’s your turn.',
+      'Valider': 'Confirm',
+      'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).': 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.).',
+      // QR individuel et événement privé
+      'Un instant : ouverture de ton QR…': 'One moment: opening your QR code…',
+      'Ce QR d’événement n’est plus actif. Demande au bar.': 'This event QR code is no longer active. Ask the bar.',
+      'C’est bien toi, {name} ?': 'Is that you, {name}?',
+      'Ce QR personnel garde tes chansons pour la soirée. Récupère-les sur ce téléphone : l’autre téléphone perdra leur gestion.':
+        'This personal QR code keeps your songs for the evening. Recover them on this phone: the other phone will no longer manage them.',
+      'Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.':
+        'This personal QR code belongs to {name}. Tap “Recover my songs” to get them on this phone.',
+      'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).':
+        'To find this page again later, open it in your browser (Safari or Chrome).',
+      // Table : ses chanteurs, toute la table, QR à faire scanner
+      'Mes chanteurs': 'My singers',
+      'Voir toute la table ({n})': 'See the whole table ({n})',
+      'Toute la table': 'The whole table',
+      'Chercher un prénom': 'Search for a first name',
+      'Aucune personne trouvée.': 'Nobody found.',
+      'géré par ce téléphone': 'managed by this phone',
+      'C’est moi': 'That’s me',
+      '{n} titre prêt': ['{n} song ready', '{n} songs ready'],
+      'Déjà inscrit par un autre téléphone ? Le plus simple : scanne le QR code « Transférer » affiché sur ce téléphone-là. Sinon, touche « C’est moi » et saisis le code à 4 chiffres qu’il te donne (ou celui du bar).':
+        'Already signed up from another phone? Easiest: scan the “Transfer” QR code shown on that phone. Otherwise, tap “That’s me” and enter the 4-digit code it gives you (or the bar’s).',
+      'Faire scanner ma table': 'Let others scan my table',
+      'Fais scanner ta table': 'Let others scan your table',
+      'Les autres personnes de la table scannent ce QR avec leur téléphone pour s’inscrire et choisir leurs chansons.':
+        'The other people at the table scan this QR code with their phone to sign up and choose their songs.',
+      'QR code de la table': 'Table QR code',
+      'Partager le lien': 'Share the link',
+      'Replier': 'Collapse',
+      'Rejoins notre table au karaoké :': 'Join our table at karaoke:',
+      'Copie impossible. Lien de la table : {url}': 'Could not copy. Table link: {url}',
       'Dans « En solo », inscris-toi depuis ton propre téléphone.': 'In “Solo”, sign up from your own phone.',
-      'Ajouter une personne': 'Add a person',
+      'Ajouter une personne sans téléphone': 'Add someone without a phone',
       'La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.':
         'This table is full. Ask the bar to change the number of people if needed.',
       'Son prénom (chanteur ou votant)': 'Their first name (singer or voter)',
       'Ajouter': 'Add',
       'Pour ajouter une chanson': 'To add a song',
-      'Cette invitation personnelle permet de t’inscrire. Si tu avais déjà un profil, demande plutôt un code de reprise au bar.':
-        'This personal invitation lets you sign up. If you already had a profile, ask the bar for a recovery code instead.',
-      'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.':
-        'This invitation has already been used or has expired. Ask the bar for a new personal QR code.',
       'Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.':
         'To sign up, ask the bar for a personal QR code. This shared link lets you see the queue or recover your songs.',
-      'M’inscrire': 'Sign me up',
       'Reprendre un chanteur inscrit': 'Take over a signed-up singer',
       'Inscrire une personne': 'Sign someone up',
       'Pour gérer une personne déjà inscrite, scanne le QR code « Transférer » de son téléphone actuel ou ouvre le lien qu’il t’envoie. Téléphone éteint ou perdu ? Le bar peut te donner un QR code ou un code à 4 chiffres.':
@@ -162,8 +191,6 @@ window.CLIENT_TRANSLATIONS = {
       'Chanson prête dans la file': 'Song ready in the queue',
       'Chansons choisies': 'Songs chosen',
       'Pas encore de chanson': 'No song yet',
-      'géré sur ce téléphone': 'managed on this phone',
-      'autre téléphone': 'other phone',
       'DÉJÀ PRÊTE DANS LA FILE': 'ALREADY IN THE QUEUE',
       'sur scène': 'on stage',
       'bientôt sur scène': 'on stage soon',
@@ -190,7 +217,6 @@ window.CLIENT_TRANSLATIONS = {
       'Accepter': 'Accept',
       'Refuser': 'Decline',
       'Seul le téléphone qui gère {name} peut répondre.': 'Only the phone that manages {name} can answer.',
-      'C’est moi, {name} : répondre ici': 'It’s me, {name}: answer here',
       '{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.':
         '{name} will also sing a duet with {from} on “{title}”. Their own songs stay on their list for a later turn.',
       'Confirme la présence de {name} pour son prochain passage.': 'Confirm that {name} is here for their next turn.',
@@ -225,12 +251,9 @@ window.CLIENT_TRANSLATIONS = {
       'Déjà inscrit à cette table ?': 'Already signed up at this table?',
       'Ton prénom est déjà inscrit ? Demande au bar ou à ton ancien téléphone un code de reprise à 4 chiffres.':
         'Your name is already signed up? Ask the bar or your old phone for a 4-digit recovery code.',
-      'Ton prénom est déjà inscrit ? Le plus simple : scanne le QR code « Transférer » affiché sur le téléphone qui te gère (ou ouvre le lien qu’il t’a envoyé). Sinon, touche ton nom et saisis son code à 4 chiffres.':
-        'Your name is already signed up? Easiest: scan the “Transfer” QR code on the phone that manages you (or open the link it sent you). Otherwise, tap your name and enter its 4-digit code.',
       'Récupérer mes chansons': 'Recover my songs',
       'Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.':
         'If you were already signed up in “Solo”, choose your name and enter the 4-digit code from the bar or your old phone. This moves your songs to this phone.',
-      'Je suis {name}': 'I am {name}',
       'Je suis {name} · reprendre mes chansons': 'I am {name} · recover my songs',
       'Gérer les chansons de {name}': 'Manage {name}’s songs',
       'Tu es {name} ? Demande le code au bar ou à ton ancien téléphone.': 'Are you {name}? Ask the bar or your old phone for the code.',
