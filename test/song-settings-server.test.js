@@ -1240,3 +1240,22 @@ test('titre isolé : pendant une relance ⏮, le titre en cours n’est pas pris
     assert.deepEqual(f.events('song.settingsReset'), []);
   }
 });
+
+test('titre isolé : une Battle de la file garde le réglage de KaraFun, comme celle ajoutée dans KaraFun', async () => {
+  const f = harness();
+  const link = kcsBridge(f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  const tr = sendNext(f, 'q-1');
+  const item = kfItem('q-1', 101, tr.sel.label, { options: { mod: BATTLE_MOD } });
+  link.bridge.queue = [item];
+  link.bridge.status = playing(item, { pitch: 2, tracks: [{ volume: 100, track: { type: 4 } }, { volume: 25, track: { type: 5 } }] });
+  f.sync();
+  assert.deepEqual(link.sent, [], 'rien pendant une Battle');
+  assert.equal(tr.liveChecked, 'q-1');
+  // Le titre suivant, lui, repart des valeurs neutres.
+  const next = kfItem('n-2', 102, 'Quelqu’un');
+  link.bridge.queue = [next];
+  link.bridge.status = playing(next, { pitch: 2 });
+  f.sync();
+  assert.deepEqual(link.sent, [{ type: 'remote.PitchRequest', payload: { pitch: 0 } }]);
+});

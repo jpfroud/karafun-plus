@@ -892,7 +892,7 @@ function catchUpSongSettings(tr) {
   tr.liveChecked = mark;
   const commands = catchUpCommands({ settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, live,
     tracksAvailable: live?.tracks || songTracksOf(kfItemOf(tr)), duo: tr.sel.ids.length > 1, ranges: songRanges(),
-    defaults: songDefaults(), neutral: startNeutral(mark) });
+    defaults: songDefaults(), neutral: isBattleItem(kfItemOf(tr)) ? null : startNeutral(mark) }); // Battle : voir checkUntrackedSettings
   applyStartCommands(commands, live, { title: tr.sel.song.title, entryId: tr.sel.song.entryId || null, queueId: tr.queueId });
 }
 
