@@ -97,7 +97,6 @@ window.CLIENT_TRANSLATIONS = {
       'La file': 'Queue',
       'Catalogue': 'Catalogue',
       'Table {id}': 'Table {id}',
-      'En solo': 'Solo',
       'Lien de table invalide.': 'Invalid table link.',
       'Scanne le QR code affiché par le bar pour accéder à ta table.': 'Scan the QR code shown by the bar to open your table.',
       'Une erreur est survenue.': 'Something went wrong.',
@@ -112,6 +111,7 @@ window.CLIENT_TRANSLATIONS = {
       // Inscription
       'Bienvenue à ta table !': 'Welcome to your table!',
       'Bienvenue à {table} !': 'Welcome to {table}!',
+      'Bienvenue': 'Welcome',
       'Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.':
         'Sign up with your phone. You can also sign up people without a phone, whether they sing or only vote for a Battle.',
       'Le bar doit d’abord indiquer combien de personnes sont à cette table.': 'The bar first needs to set how many people are at this table.',
@@ -160,7 +160,7 @@ window.CLIENT_TRANSLATIONS = {
       'Replier': 'Collapse',
       'Rejoins notre table au karaoké :': 'Join our table at karaoke:',
       'Copie impossible. Lien de la table : {url}': 'Could not copy. Table link: {url}',
-      'Dans « En solo », inscris-toi depuis ton propre téléphone.': 'In “Solo”, sign up from your own phone.',
+      'Chacun s’inscrit depuis son propre téléphone.': 'Everyone signs up from their own phone.',
       'Ajouter une personne sans téléphone': 'Add someone without a phone',
       'La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.':
         'This table is full. Ask the bar to change the number of people if needed.',
@@ -256,8 +256,8 @@ window.CLIENT_TRANSLATIONS = {
       'Ton prénom est déjà inscrit ? Demande au bar ou à ton ancien téléphone un code de reprise à 4 chiffres.':
         'Your name is already signed up? Ask the bar or your old phone for a 4-digit recovery code.',
       'Récupérer mes chansons': 'Recover my songs',
-      'Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.':
-        'If you were already signed up in “Solo”, choose your name and enter the 4-digit code from the bar or your old phone. This moves your songs to this phone.',
+      'Si tu étais déjà inscrit, choisis ton prénom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.':
+        'If you were already signed up, choose your name and enter the 4-digit code from the bar or your old phone. This moves your songs to this phone.',
       'Je suis {name} · reprendre mes chansons': 'I am {name} · recover my songs',
       'Gérer les chansons de {name}': 'Manage {name}’s songs',
       'Tu es {name} ? Demande le code au bar ou à ton ancien téléphone.': 'Are you {name}? Ask the bar or your old phone for the code.',
@@ -306,8 +306,8 @@ window.CLIENT_TRANSLATIONS = {
       'Changer de téléphone': 'Switch phones',
       'Transférer {name} vers un autre téléphone': 'Transfer {name} to another phone',
       'Impossible de scanner ? Utilise un code': 'Can’t scan? Use a code',
-      'Sur l’autre téléphone, ouvre le QR « En solo » que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :':
-        'On the other phone, open the “Solo” QR code the bar shows you, tap “I am {name}”, then enter this code (valid for 10 minutes):',
+      'Sur l’autre téléphone, ouvre le QR que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :':
+        'On the other phone, open the QR code the bar shows you, tap “I am {name}”, then enter this code (valid for 10 minutes):',
       'Sur l’autre téléphone, ouvre le QR code de la table, touche « Je suis {name} », puis saisis ce code valable 10 minutes :':
         'On the other phone, open the table’s QR code, tap “I am {name}”, then enter this code (valid for 10 minutes):',
       'Lien copié : colle-le dans ton message.': 'Link copied: paste it into your message.',
@@ -405,7 +405,7 @@ window.CLIENT_TRANSLATIONS = {
       'Chansons pour {name}.': 'Songs for {name}.',
       'Chansons pour {name}. Tu pourras changer de chanteur avant de valider.': 'Songs for {name}. You can change the singer before confirming.',
       'Choisis un titre, puis la personne qui le chantera.': 'Choose a song, then who will sing it.',
-      'Explore le catalogue. Pour ajouter un titre, inscris-toi dans « En solo ».': 'Browse the catalogue. To add a song, sign up in “Solo”.',
+      'Explore le catalogue. Pour ajouter un titre, demande au bar ton QR individuel.': 'Browse the catalogue. To add a song, ask the bar for your personal QR code.',
       'Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.':
         'Browse the catalogue. To add a song, sign someone up or take them over with a code.',
       'Ce téléphone ne gère pas ce chanteur.': 'This phone doesn’t manage this singer.',
@@ -445,6 +445,7 @@ window.CLIENT_TRANSLATIONS = {
       'Avec qui ?': 'With whom?',
       'À ma table': 'At my table',
       'Autres tables · invitation à accepter': 'Other tables · invitation to accept',
+      'Autres personnes · invitation à accepter': 'Other people · invitation to accept',
       'Ajouter le duo': 'Add the duet',
       'Envoyer l’invitation': 'Send the invitation',
       'Son accord est nécessaire.': 'They need to accept.',
@@ -619,9 +620,9 @@ window.CLIENT_TRANSLATIONS = {
       'Le bar ferme bientôt : plus de Battle ce soir.': 'The bar is closing soon: no more Battles tonight.',
       'Lien de table invalide ou périmé. Scanne le QR code affiché à ta table.': 'Invalid or expired table link. Scan the QR code shown at your table.',
       'Cette table n’est plus ouverte.': 'This table is no longer open.',
-      'Ce téléphone gère déjà une personne dans « En solo ». Chacun utilise son propre téléphone.': 'This phone already manages someone in “Solo”. Everyone uses their own phone.',
+      'Ce téléphone a déjà un prénom inscrit. Chacun utilise son propre téléphone.': 'This phone already has someone signed up. Everyone uses their own phone.',
       'Ce téléphone ne gère pas cette personne. Demande au bar un code de reprise si tu as changé de téléphone.': 'This phone doesn’t manage this person. Ask the bar for a recovery code if you changed phones.',
-      'Demande au bar une invitation personnelle pour t’inscrire en solo. Ce lien sert à consulter la file.': 'Ask the bar for a personal invitation to sign up solo. This link is for viewing the queue.',
+      'Demande au bar ton QR individuel pour t’inscrire. Ce lien sert à consulter la file.': 'Ask the bar for your personal QR code to sign up. This link is for viewing the queue.',
       'Le bar doit d’abord indiquer le nombre de personnes à cette table.': 'The bar first needs to set the number of people at this table.',
       'Effectif de la table à définir au bar.': 'The bar needs to set the number of people at this table.',
       'Combien êtes-vous à la table ?': 'How many of you are at the table?',
@@ -634,13 +635,13 @@ window.CLIENT_TRANSLATIONS = {
       'Code de partage incorrect.': 'Wrong sharing code.',
       'Indique ton prénom.': 'Please enter your first name.',
       'Indique d’abord ton prénom.': 'Enter your first name first.',
-      'Ce QR individuel ne sert que pour « En solo ».': 'This personal QR code only works for “Solo”.',
+      'Ce QR individuel n’est pas valable pour cette table.': 'This personal QR code isn’t valid for this table.',
       'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.':
         'This invitation has already been used or has expired. Ask the bar for a new personal QR code.',
       'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.': 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.',
       'Ce QR d’événement n’est plus actif. Demande au bar.': 'This event QR code is no longer active. Ask the bar.',
       'Trop d’inscriptions d’un coup : réessaie dans une minute.': 'Too many sign-ups at once: try again in a minute.',
-      'Pas de QR à partager pour « En solo » : chacun demande son QR individuel au bar.': 'No QR code to share for “Solo”: everyone asks the bar for their own personal QR code.',
+      'Pas de QR à partager : chacun demande son QR individuel au bar.': 'No QR code to share: everyone asks the bar for their own personal QR code.',
       'Prénom limité à 24 caractères.': 'First names are limited to 24 characters.',
       'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.': 'This name is already signed up at this table. Use the existing profile or add a detail to the name.',
       'Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.': 'This song is being sent to KaraFun. Try again in a moment.',

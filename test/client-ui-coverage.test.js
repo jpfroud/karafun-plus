@@ -626,7 +626,7 @@ const partners = [
   { id: 'marc', name: 'Marc', tableId: '1', table: 'Table 1' },
   { id: 'marc', name: 'Marc', tableId: '1', table: 'Table 1' },
   { id: 'zoe', name: 'Zoé', tableId: '2', table: 'Table 2', guestDuos: 2 },
-  { id: 'sam', name: 'Sam', tableId: 'Comptoir', table: 'En solo', guestDuos: 1 },
+  { id: 'sam', name: 'Sam', tableId: 'Comptoir', table: '', individual: true, guestDuos: 1 },
 ];
 
 test('duo : partenaires de la table et des autres tables, invitation ou ajout direct', async () => {
@@ -647,7 +647,7 @@ test('duo : partenaires de la table et des autres tables, invitation ou ajout di
   const own = select.querySelector('optgroup[label="À ma table"]');
   const others = select.querySelector('optgroup[label="Autres tables · invitation à accepter"]');
   assert.deepEqual(own.querySelectorAll('option').map(option => option.textContent), ['Marc · Table 1'], 'Marc une seule fois, jamais soi-même');
-  assert.deepEqual(others.querySelectorAll('option').map(option => option.textContent), ['↗ Zoé · Table 2', '↗ Sam · En solo']);
+  assert.deepEqual(others.querySelectorAll('option').map(option => option.textContent), ['↗ Zoé · Table 2', '↗ Sam'], 'un soliste : son prénom seul');
   assert.equal(select.value, 'marc');
   assert.equal(page.node('sendDuo').textContent, 'Ajouter le duo');
   assert.equal(page.node('duoConsent').textContent, 'Même table : le duo est ajouté directement.');
@@ -880,7 +880,8 @@ test('transférer : copie refusée, lien https sans heure, code seul et « En so
   await solo.tap('peopleList', '[data-share-person="alice"]');
   assert.equal(solo.find('sheetPanel', 'h3').textContent, 'Changer de téléphone');
   assert.ok(solo.sheetHtml().includes(encodeURIComponent('Lien pour récupérer mes chansons du karaoké sur ce téléphone :')));
-  assert.match(solo.sheetHtml(), /ouvre le QR « En solo » que te montre le bar/);
+  assert.match(solo.sheetHtml(), /ouvre le QR que te montre le bar, touche « Je suis Alice »/);
+  assert.doesNotMatch(solo.sheetHtml(), /En solo/, 'le groupe n’est jamais nommé');
 });
 
 // ================================================================ alertes
@@ -1925,6 +1926,43 @@ test('invitation de duo sans réponse : avertie chez l’auteur et l’invité, 
   await pickCatalogSong(soloDuo);
   assert.equal(soloDuo.node('sendDuo').textContent, 'Envoyer l’invitation');
   assert.equal(soloDuo.node('duoConsent').textContent, 'Son accord est nécessaire. Sans réponse avant ton tour, tu chanteras seul.');
+});
+
+// ================================================================ prénom seul des solistes (lot K)
+test('soliste : prénom en en-tête, « Bienvenue » avant le prénom, partenaires sans « À ma table » (FR et EN)', async () => {
+  const soloTable = { id: 'Comptoir', name: 'En solo', individual: true, count: 3 };
+  const page = await open({ state: baseState({ table: soloTable }), path: '/t/Comptoir/secret',
+    respond: url => url.startsWith('/api/duo/partners?') ? partners : undefined });
+  assert.equal(page.node('tableName').textContent, 'Alice', 'en-tête : le prénom du soliste');
+  assert.equal(page.node('joinHeading').textContent, 'Bienvenue');
+  await page.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(page);
+  const select = page.node('duoPartner');
+  assert.equal(select.querySelector('optgroup[label="À ma table"]'), null, 'les autres solistes ne sont pas « à ma table »');
+  const others = select.querySelector('optgroup[label="Autres personnes · invitation à accepter"]');
+  assert.deepEqual(others.querySelectorAll('option').map(option => option.textContent), ['↗ Marc · Table 1', '↗ Zoé · Table 2', '↗ Sam']);
+  assert.doesNotMatch(page.sheetHtml(), /En solo/);
+
+  const english = await open({ state: baseState({ table: soloTable }), path: '/t/Comptoir/secret', languages: ['en'],
+    respond: url => url.startsWith('/api/duo/partners?') ? partners : undefined });
+  assert.equal(english.node('tableName').textContent, 'Alice');
+  await english.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(english);
+  const englishOthers = english.node('duoPartner').querySelector('optgroup[label="Other people · invitation to accept"]');
+  assert.deepEqual(englishOthers.querySelectorAll('option').map(option => option.textContent), ['↗ Marc · Table 1', '↗ Zoé · Table 2', '↗ Sam']);
+  assert.doesNotMatch(english.sheetHtml(), /Solo\b/);
+
+  // Prénom pas encore donné, ou personne gérée : « Bienvenue » / « Welcome ».
+  const waiting = await open({ state: baseState({ table: soloTable, tablePeople: [person('alice', 'Solo 1', { nameRequired: true })] }),
+    path: '/t/Comptoir/secret' });
+  assert.equal(waiting.node('tableName').textContent, 'Bienvenue', 'jamais le prénom provisoire');
+  const nobody = await open({ state: baseState({ table: soloTable, managedIds: [] }), path: '/t/Comptoir/secret', languages: ['en'] });
+  assert.equal(nobody.node('tableName').textContent, 'Welcome');
+
+  // Une table garde son nom en en-tête.
+  const table = await open({ state: baseState() });
+  assert.equal(table.node('tableName').textContent, 'Table 1');
+  assert.equal(table.node('joinHeading').textContent, 'Bienvenue à Table 1\u00a0!');
 });
 
 // ================================================================ fermeture du bar

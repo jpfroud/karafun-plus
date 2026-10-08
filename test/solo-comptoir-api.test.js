@@ -171,10 +171,15 @@ async function ok(path, body, cookie = '') {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(live.stage?.ids?.includes(alice.value.id));
+  // Lot K : un soliste n'a que son prénom, sur l'écran de KaraFun aussi.
+  assert.equal(live.stage.singer, 'Alice');
+  assert.equal(live.kf.queue.find(item => String(item.queueId) === String(live.stage.queueId))?.singer, 'Alice',
+    'nom reçu par le faux KaraFun : le prénom seul');
   await ok('/api/staff/duo-mark', { queueId: live.stage.queueId, partnerId: neighbor.value.id });
   live = (await ok('/api/staff/state')).value;
   assert.deepEqual(live.stage.ids, [alice.value.id, neighbor.value.id]);
   assert.match(live.stage.singer, /Alice.*Camille/);
+  assert.doesNotMatch(live.stage.singer, /En solo/, 'duo soliste + table : seule la table');
   assert.equal(live.people.find(p => p.id === neighbor.value.id).sung, 0,
     'Le duo joué avec une autre table ne consomme pas le tour de l’invitée.');
   const revoked = await invite();

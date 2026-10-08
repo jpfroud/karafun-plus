@@ -180,7 +180,6 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .live-person { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .live-singer { font-size: 22px; font-weight: 850; color: var(--accent); line-height: 1.15; }
 .live-table { font-size: 12px; font-weight: 750; padding: 2px 9px; border-radius: 999px; background: rgba(124,92,255,.18); color: #cfc4ff; border: 1px solid rgba(124,92,255,.45); white-space: nowrap; }
-.live-table.solo { background: rgba(61,220,151,.14); color: var(--ok); border-color: rgba(61,220,151,.45); }
 .live-table.native { background: rgba(255,176,32,.12); color: var(--warn); border-color: rgba(255,176,32,.45); }
 .live-and { color: var(--muted); font-weight: 700; }
 .live-song { display: grid; gap: 1px; }
