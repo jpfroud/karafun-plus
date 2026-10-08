@@ -270,6 +270,28 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .solo-invite-panel p { margin: 5px 0 0; }
 .solo-invite-list { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px; }
 .solo-invite-list .btn { margin-left: 5px; }
+/* Événement privé (un seul QR) et liste « Solistes » : toute la largeur du panneau solo. */
+.solo-invite-panel > div.private-event, .solo-invite-panel > div.soloists { flex: 1 1 100%; min-width: 0; }
+.private-event { display: grid; gap: 4px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.private-event .switch { font-weight: 750; }
+.private-event-panel { display: grid; gap: 8px; }
+.private-event-panel .solo-invite-url { margin-bottom: 0; }
+.private-event-panel a.btn { display: inline-flex; align-items: center; color: var(--text); text-decoration: none; }
+.soloists { display: grid; gap: 6px; }
+.soloists .welcome-title { margin-top: 4px; }
+.soloist-list { display: grid; gap: 0; max-height: 420px; overflow-y: auto; }
+.soloist-row { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
+.soloist-row .identity-photo { width: 26px; height: 26px; font-size: 12px; }
+.soloist-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.soloist-who > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soloist-row .btn { white-space: nowrap; }
+/* Dernière activité d'un solo : orange dès 20 min, rouge dès 45 min. */
+.activity { font-size: 12px; color: var(--muted); }
+.activity.warn { color: var(--warn); font-weight: 700; }
+.activity.late { color: var(--bad); font-weight: 700; }
+.staff-alert .activity { font-size: inherit; }
+.badge.name-missing { color: var(--warn); border-color: rgba(255,176,32,.45); justify-self: start; }
+.queue-item .idle-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bad); font-size: 11px; font-weight: 700; }
 .manual-history { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2, #211d39); }
 .manual-history summary { cursor: pointer; font-weight: 700; }
 .manual-history .count { margin-left: 4px; }
