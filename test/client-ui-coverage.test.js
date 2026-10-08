@@ -1571,6 +1571,33 @@ test('Battle : vote oui/non, vote par titre, choix obligatoire et résultats en 
   assert.deepEqual(page.posts.at(-1)[1], { table: '1', access: 'secret', personId: 'alice', choice: '10' });
 });
 
+// Regression: retours du bar — une personne arrivée après l'ouverture du
+// vote Battle doit pouvoir voter dès l'état suivant, sans recharger la page.
+test('Battle : la personne admise au vote après son ouverture voit le vote au prochain état (FR et EN)', async () => {
+  for (const [languages, label, text, notice] of [
+    [['fr-FR'], 'Oui', /2 votants sur 6 ; il en faut au moins 5\./, 'Vote Battle : toute la salle chante !'],
+    [['en-GB'], 'Yes', /2 voters out of 6; at least 5 needed\./, null],
+  ]) {
+    const state = baseState({ battle: { id: 'late', phase: 'voting', mode: 'yesno', eligiblePersonIds: ['bob', 'carl', 'dan', 'eve', 'fay'],
+      votedPersonIds: ['bob'], closesAt: Date.now() + 120000, eligible: 5, threshold: 5, voters: 1, yesVotes: 1, noVotes: 0,
+      minVoters: 5, registered: 6 } });
+    const page = await open({ state, languages });
+    assert.equal(page.node('battleVotes').querySelector('[data-battle-vote="alice"]'), null, 'pas encore électrice : pas de vote');
+    assert.equal(page.node('attention').hidden, true, 'ni notification de vote');
+    page.state.battle = { ...page.state.battle, eligiblePersonIds: [...page.state.battle.eligiblePersonIds, 'alice'],
+      eligible: 6, voters: 2, votedPersonIds: ['bob', 'carl'] };
+    await page.poll();
+    assert.match(page.node('battleText').textContent, text, 'l’électorat agrandi est affiché');
+    const button = page.find('battleVotes', '[data-battle-vote="alice"][data-choice="yes"]');
+    assert.ok(button, 'le vote apparaît sans recharger');
+    assert.equal(button.textContent, label);
+    assert.equal(page.node('attention').hidden, false, 'la demande de vote s’affiche');
+    if (notice) assert.equal(page.node('attentionTitle').textContent, notice);
+    await page.tap('battleVotes', '[data-battle-vote="alice"][data-choice="yes"]');
+    assert.deepEqual(page.posts.at(-1), ['/api/table/battle/vote', { table: '1', access: 'secret', personId: 'alice', choice: 'yes' }]);
+  }
+});
+
 test('Battle : proposition à plusieurs, recherche sans résultat, retrait, limites et messages du vote', async () => {
   const state = baseState();
   state.tablePeople.push(person('bob', 'Bob'));
