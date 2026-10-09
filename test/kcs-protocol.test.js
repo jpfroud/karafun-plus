@@ -1396,6 +1396,51 @@ test('réglages de titre : un nouveau code oublie les titres vus se charger et l
   assert.equal(bridge._observedBacking, null);
   assert.equal(bridge._lastBacking, null);
 });
+// Regression: contre-relecture RT4 — titres vus se charger gardés d'une
+// session KCS à l'autre avec le même code : KaraFun relancé (AppLeftEvent)
+// renumérote sa file depuis 1, et le titre 1 de la nouvelle session, vu pour
+// la première fois en pleine chanson, passait pour vu se charger (remis aux
+// valeurs neutres en pleine chanson). Toute session perdue ou reprise
+// oublie ces titres et les chœurs observés, pas les chœurs par défaut relevés.
+for (const how of ['AppLeftEvent', 'coupure', 'Reconnecter']) {
+  test(`réglages de titre : ${how} puis nouvelle session (numéros repris depuis 1), titres vus se charger oubliés`, async t => {
+    mockTime(t);
+    const { bridge, ws, env } = await adminBridge(t);
+    t.after(() => bridge.disconnect());
+    const status = backingStatus(ws);
+    status('1', 1, 0);
+    status('1', 3, 53);
+    status('1', 4, 53);
+    assert.equal(bridge.seenLoading('1'), true);
+    assert.equal(bridge.observedDefaults.backing, 53);
+    const session = bridge.kcsSession;
+    if (how === 'AppLeftEvent') ws.receive({ type: 'remote.AppLeftEvent', payload: {} });
+    else if (how === 'coupure') ws.serverClose(1006);
+    else { bridge.disconnect(); bridge.connect(CODE); }
+    assert.equal(bridge.seenLoading('1'), false, 'session perdue : titre 1 jamais vu se charger');
+    assert.equal(bridge._observedFor, null);
+    assert.equal(bridge._observedBacking, null);
+    assert.equal(bridge._lastBacking, null);
+    assert.ok(bridge.kcsSession > session, 'nouvelle session signalée au serveur');
+    t.mock.timers.tick(3000);
+    await flush();
+    const ws2 = env.sockets.at(-1);
+    assert.notEqual(ws2, ws, 'nouvelle connexion');
+    ws2.open();
+    ws2.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+    // KaraFun relancé en pleine chanson : titre 1 (un autre) déjà en lecture, chœurs réglés en direct.
+    const status2 = backingStatus(ws2);
+    status2('1', 4, 80);
+    assert.equal(bridge.ready, true);
+    assert.equal(bridge.seenLoading('1'), false, 'titre 1 vu pour la première fois en lecture');
+    assert.equal(bridge.observedDefaults.backing, 53, 'chœurs par défaut relevés gardés');
+    assert.equal(bridge.statusSession, bridge.kcsSession, 'état reçu dans la nouvelle session');
+    status2('2', 1, 0);
+    status2('2', 3, 53);
+    assert.equal(bridge.seenLoading('2'), true);
+    assert.equal(bridge.observedDefaults.backing, 53);
+  });
+}
 test('réglages de titre : le pont déclare les chœurs observés dès sa création', () => {
   const bridge = new KaraFunBridge();
   assert.ok(Object.hasOwn(bridge, '_observedBacking'));

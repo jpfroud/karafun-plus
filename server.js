@@ -949,17 +949,20 @@ function catchUpSongSettings(tr) {
 // KaraFunBridge.seenLoading). Un titre vu pour la première fois déjà en
 // lecture (application redémarrée, ou télécommande reconnectée, en pleine
 // chanson) n'en est pas un : ses réglages en direct ne sont pas remis. Sans
-// numéro d'état (ancienne télécommande), après un titre déjà vu.
+// numéro d'état (ancienne télécommande), après un titre déjà vu. Autre
+// session KCS (KaraFun relancé renumérote sa file depuis 1) : nouveau titre,
+// sans titre d'avant connu.
 function noteLoadedLive(loadedId) {
   const live = loadedId ? liveFromStatus(bridge.status) : null;
   if (!live || String(live.queueId) !== loadedId) return false;
-  const fresh = loadedLive?.queueId !== loadedId;
+  const session = bridge.statusSession ?? null;
+  const fresh = loadedLive?.queueId !== loadedId || loadedLive.session !== session;
   const kcsState = bridge.status?.kcsState;
   const seenLoading = !Number.isInteger(kcsState) ? !!loadedLive : kcsState === 3 ||
     (typeof bridge.seenLoading === 'function' ? bridge.seenLoading(loadedId) : !!loadedLive);
-  if (loadedLive && fresh) previousLoaded = loadedLive;
+  if (loadedLive && fresh) previousLoaded = loadedLive.session === session ? loadedLive : null;
   // Vu se charger : décidé au premier état vu du titre, gardé ensuite.
-  loadedLive = { queueId: loadedId, backing: live.backing, seenLoading: fresh ? seenLoading : loadedLive.seenLoading };
+  loadedLive = { queueId: loadedId, backing: live.backing, seenLoading: fresh ? seenLoading : loadedLive.seenLoading, session };
   return fresh && seenLoading;
 }
 

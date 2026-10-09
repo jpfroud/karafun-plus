@@ -1520,6 +1520,30 @@ test('reconnexion pendant un titre ajouté dans KaraFun : ses réglages en direc
   assert.deepEqual(bare(frames(isoStatus(3, z, live))), [pitchTo(0), { type: 'remote.TempoRequest', payload: { tempo: 0 } }, volumeTo(5, 0)]);
 });
 
+// Regression: contre-relecture RT4 — KaraFun relancé (même code) renumérote
+// sa file depuis 1. Le titre 1 d'avant, vu se charger, et le titre 1 d'après,
+// lancé pendant la coupure et vu pour la première fois déjà en lecture,
+// étaient confondus (pont et serveur) : valeurs neutres envoyées en pleine
+// chanson. Une nouvelle session KCS oublie ce qui a été vu se charger.
+test('KaraFun relancé, numéros de file repris depuis 1 : le titre 1 déjà en lecture n’est pas remis à zéro', async t => {
+  const f = harness();
+  const { frames, reconnect } = replayBridge(t, f);
+  const old = isoItem('1', 776, { singer: 'Quelqu’un' });
+  frames(queueEvent(old), isoStatus(1, old), isoStatus(2, old), isoStatus(3, old), isoStatus(4, old));
+  reconnect();
+  singer(f, openTable(f, '1'), 'Léa', 777);
+  const tr = sendNext(f, '1');
+  const x = isoItem('1', tr.sel.song.songId, { singer: tr.sel.label });
+  const live = { pitch: 2, tempo: 10, guide: 25 };
+  assert.deepEqual(bare(frames(queueEvent(x), isoStatus(4, x, live))), [], 'rien en pleine chanson');
+  assert.deepEqual(bare(frames(isoStatus(5, x, live), isoStatus(4, x, live))), []);
+  assert.deepEqual(f.events('song.settingsReset'), []);
+  // Le titre suivant, vu se charger dans la nouvelle session, reste isolé.
+  const y = isoItem('2', 778, { singer: 'Autre' });
+  assert.deepEqual(bare(frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y, live))), []);
+  assert.deepEqual(bare(frames(isoStatus(3, y, live))), [pitchTo(0), tempoTo(0), volumeTo(5, 0)]);
+});
+
 // Regression: vérification de la relecture R1 — premier titre de
 // l'application vu annoncé puis se charger (états 1 et 2), puis directement
 // en lecture (sans trame d'état 3) : il n'était plus isolé du précédent.

@@ -329,6 +329,10 @@ class KaraFunBridge extends EventEmitter {
     this._observedBacking = null; // chœurs du premier état vu du titre `_observedFor`
     this._lastBacking = null; // chœurs du dernier état du titre `_observedFor`
     this._loadingSeen = new Set(); // titres vus annoncés ou se charger (états 1 à 3)
+    // Numéro de la session KCS (voir _forgetSession) et celui de la session
+    // qui a donné `status` : le serveur ne confond pas deux sessions.
+    this.kcsSession = 0;
+    this.statusSession = 0;
     this.nameConflictSince = null;
     this.nameConflictTries = 0;
     this._generation = 0;
@@ -691,11 +695,9 @@ class KaraFunBridge extends EventEmitter {
     this._appLeftChecked = false;
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
-      this.observedDefaults = {}; this._observedFor = null; this._backingChanged = false;
-      this.provisionalDefaults = false; this._carriedUnseen = false;
-      this._observedBacking = null; this._lastBacking = null;
-      // Autre installation : un identifiant de file repris n'a pas été vu se charger.
-      this._loadingSeen.clear();
+      // Autre installation : chœurs par défaut à relever de nouveau (titres
+      // vus se charger et chœurs observés : oubliés par disconnect).
+      this.observedDefaults = {}; this._backingChanged = false; this.provisionalDefaults = false;
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -853,6 +855,7 @@ class KaraFunBridge extends EventEmitter {
   // la page, puis essais arrêtés), 'page' (page dès que le budget et la
   // limite le permettent) ou 'stop' (essais arrêtés tout de suite).
   _retry(reason = 'Connexion KaraFun perdue', { detail = this.lastError, same = detail, mode = 'socket', kind = null } = {}) {
+    this._forgetSession();
     this._attempt++;
     const now = Date.now(), link = this._link;
     this._closeSocket();
@@ -923,6 +926,7 @@ class KaraFunBridge extends EventEmitter {
 
   _accept(name, data) {
     this[name] = data;
+    if (name === 'status') this.statusSession = this.kcsSession;
     if (name === 'permissions') this._checkPermissions(data);
     if (name === 'queue' || name === 'status') {
       this._fresh[name] = true;
@@ -940,6 +944,7 @@ class KaraFunBridge extends EventEmitter {
   _openKcs(url, active, { kept = false } = {}) {
     const socket = new KcsTransport(url);
     this._optionAdds.clear(); // identifiants propres à chaque connexion
+    this._forgetSession();
     this.protocol = 'kcs';
     this.socket = socket;
     this._setPhase('opening');
@@ -1201,6 +1206,7 @@ class KaraFunBridge extends EventEmitter {
   }
 
   disconnect() {
+    this._forgetSession();
     this._generation++;
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
@@ -1389,6 +1395,19 @@ class KaraFunBridge extends EventEmitter {
     if (this._loadingSeen.size > 50) this._loadingSeen.delete(this._loadingSeen.values().next().value);
   }
   seenLoading(id) { return id != null && this._loadingSeen.has(String(id)); }
+
+  // Session KCS perdue (coupure, AppLeftEvent, déconnexion) ou nouvelle :
+  // KaraFun relancé renumérote sa file depuis 1, un titre vu se charger ou
+  // observé avant ne dit rien du titre de même numéro d'après. Les chœurs
+  // par défaut relevés (observedDefaults, provisionalDefaults) et les
+  // chœurs changés pendant la soirée (_backingChanged) restent ; un titre
+  // vu de nouveau en pleine chanson reprend la chaîne (_carriedUnseen).
+  _forgetSession() {
+    this.kcsSession++;
+    this._loadingSeen.clear();
+    this._observedFor = null; this._observedBacking = null; this._lastBacking = null;
+    this._carriedUnseen = false;
+  }
 
   // Valeur par défaut des chœurs sur ce KaraFun (celui du bar les met à 53) :
   // relevée à la première trame d'un titre chargé (état 2 ou plus, pistes
