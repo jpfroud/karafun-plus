@@ -2165,6 +2165,14 @@ function releaseGoneSoloDevice(req, owner) {
   if (!owner.soloDeviceHashes.length) delete owner.soloDeviceHashes;
 }
 
+// Place provisoire de ce navigateur, encore sans prénom ni titre (le QR de
+// l'événement rescanné depuis une autre application) : comme une place
+// partie, elle ne retient pas une reprise. La reprise la retire sans trace
+// (rien au journal tant qu'il n'y a pas de prénom).
+function disposablePlaceholder(person) {
+  return !!person && !person.withdrawnAt && !!person.nameRequired && !sched.songsOf(person).length;
+}
+
 function soloDeviceError(code) {
   const error = new Error(code === 'SOLO_DEVICE_USED' ?
     'Ce téléphone a déjà un prénom inscrit. Chacun utilise son propre téléphone.' :
@@ -2240,11 +2248,22 @@ function placeholderName(tableId) {
 function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent = false } = {}) {
   const before = { log: sched.log.slice(), version: sched.version, invitations: soloInvitations.serialize(),
     cookie: res.getHeader('Set-Cookie') };
+  // Appareil compté par l'adresse de la connexion, jamais par X-Forwarded-For
+  // (un en-tête que n'importe quel script peut inventer).
+  const client = String(req.socket?.remoteAddress || '');
   let person = null, admittedAt = null;
   try {
     if (viaEvent) {
       const now = Date.now();
-      if (!privateEvent.admit([...sched.people.values()].filter(p => p.viaEvent).length, now)) {
+      // Les personnes marquées parties libèrent leur place ; nommées ou non, les présentes comptent.
+      const present = [...sched.people.values()].filter(p => p.viaEvent && !p.withdrawnAt).length;
+      const admitted = privateEvent.admit(present, client, now);
+      if (admitted === 'full') {
+        const full = new Error('L’événement est complet par ce QR : demande au bar un QR individuel.');
+        full.code = 'PRIVATE_EVENT_FULL';
+        throw full;
+      }
+      if (admitted !== 'ok') {
         const busy = new Error('Trop d’inscriptions d’un coup : réessaie dans une minute.');
         busy.code = 'PRIVATE_EVENT_BUSY';
         throw busy;
@@ -2264,7 +2283,7 @@ function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent
       sched.people.delete(person.id);
       sched.byToken.delete(person.token);
     }
-    if (admittedAt !== null) privateEvent.release(admittedAt);
+    if (admittedAt !== null) privateEvent.release(admittedAt, client);
     soloInvitations.restore(before.invitations);
     sched.log = before.log;
     sched.version = before.version;
@@ -2284,9 +2303,10 @@ function openSoloInvitation(req, res, body) {
   const owner = soloDeviceOwner(req);
   const known = keyTarget(body.invitation, t);
   if (known) {
-    // Reprise par la clé personnelle : seule une place active la bloque.
+    // Reprise par la clé personnelle : seule une place active la bloque
+    // (pas une place provisoire sans prénom de ce navigateur).
     const active = activeSoloDeviceOwner(req);
-    if (active && active.id !== known.id) throw soloDeviceError('SOLO_DEVICE_USED');
+    if (active && active.id !== known.id && !disposablePlaceholder(active)) throw soloDeviceError('SOLO_DEVICE_USED');
     // Le téléphone qui la gère rouvre son QR : la même personne.
     if (currentSoloDevice(req, known)) {
       known.lastActionAt = Date.now();
@@ -2471,11 +2491,12 @@ function claimPerson(body, req, res) {
   const p = sched.people.get(String(body.personId || ''));
   if (!p || p.tableId !== t.id || p.withdrawnAt) throw new Error('Chanteur indisponible à cette table.');
   // Reprise (QR de reprise, QR personnel, code) : une place partie de ce
-  // navigateur ne la bloque pas, une place active si.
+  // navigateur ne la bloque pas, ni une place provisoire sans prénom ; une
+  // place active si.
   const goneOwner = t.individual ? soloDeviceOwner(req) : null;
   if (t.individual) {
     const owner = activeSoloDeviceOwner(req);
-    if (owner && owner.id !== p.id) throw soloDeviceError('SOLO_DEVICE_USED');
+    if (owner && owner.id !== p.id && !disposablePlaceholder(owner)) throw soloDeviceError('SOLO_DEVICE_USED');
   }
   const saved = personShareCodes.get(p.id);
   if (body.key !== undefined) {
@@ -2505,7 +2526,11 @@ function claimPerson(body, req, res) {
   p.token = crypto.randomBytes(16).toString('hex');
   sched.byToken.set(p.token, p.id);
   if (t.individual) {
-    if (goneOwner && goneOwner.id !== p.id) releaseGoneSoloDevice(req, goneOwner);
+    if (goneOwner && goneOwner.id !== p.id && disposablePlaceholder(goneOwner)) {
+      // Jamais deux places actives pour un navigateur : la place provisoire part.
+      sched.people.delete(goneOwner.id);
+      sched.byToken.delete(goneOwner.token);
+    } else if (goneOwner && goneOwner.id !== p.id) releaseGoneSoloDevice(req, goneOwner);
     bindSoloDevice(req, res, p);
   }
   p.lastActionAt = Date.now();
@@ -2553,7 +2578,14 @@ function claimPersonDurably(body, req, res) {
     sched.byToken.set(oldToken, person.id);
     if (oldDeviceHashes) person.soloDeviceHashes = oldDeviceHashes;
     else delete person.soloDeviceHashes;
-    if (goneOwner && goneOwner !== person) goneOwner.soloDeviceHashes = goneOwnerHashes;
+    if (goneOwner && goneOwner !== person) {
+      goneOwner.soloDeviceHashes = goneOwnerHashes;
+      // Place provisoire retirée par la reprise : elle revient telle quelle.
+      if (!sched.people.has(goneOwner.id)) {
+        sched.people.set(goneOwner.id, goneOwner);
+        sched.byToken.set(goneOwner.token, goneOwner.id);
+      }
+    }
     soloInvitations.restore(oldSoloInvitations);
     if (code) { code.attempts = attempts; personShareCodes.set(id, code); }
     sched.log = oldLog;

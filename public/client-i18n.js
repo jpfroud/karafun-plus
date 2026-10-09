@@ -132,6 +132,7 @@ window.CLIENT_TRANSLATIONS = {
       'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).': 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.).',
       // QR individuel et événement privé
       'Un instant : ouverture de ton QR…': 'One moment: opening your QR code…',
+      'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…': 'Lots of people arriving at once: trying again in a moment…',
       'Ce QR d’événement n’est plus actif. Demande au bar.': 'This event QR code is no longer active. Ask the bar.',
       'C’est bien toi, {name} ?': 'Is that you, {name}?',
       'Ce QR personnel garde tes chansons pour la soirée. Récupère-les sur ce téléphone : l’autre téléphone perdra leur gestion.':
@@ -645,6 +646,7 @@ window.CLIENT_TRANSLATIONS = {
       'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.': 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.',
       'Ce QR d’événement n’est plus actif. Demande au bar.': 'This event QR code is no longer active. Ask the bar.',
       'Trop d’inscriptions d’un coup : réessaie dans une minute.': 'Too many sign-ups at once: try again in a minute.',
+      'L’événement est complet par ce QR : demande au bar un QR individuel.': 'This event is full through this QR code: ask the bar for a personal QR code.',
       'Pas de QR à partager : chacun demande son QR individuel au bar.': 'No QR code to share: everyone asks the bar for their own personal QR code.',
       'Prénom limité à 24 caractères.': 'First names are limited to 24 characters.',
       'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.': 'This name is already signed up at this table. Use the existing profile or add a detail to the name.',

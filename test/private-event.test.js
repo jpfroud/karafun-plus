@@ -4,7 +4,7 @@
 // « Renouveler le QR » et disparaît à la nouvelle soirée. Une sauvegarde
 // abîmée coupe le mode sans jamais faire échouer la soirée.
 const assert = require('node:assert/strict');
-const { PrivateEvent, CREATIONS_PER_MINUTE, MAX_PEOPLE } = require('../private-event');
+const { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE } = require('../private-event');
 
 const event = new PrivateEvent();
 assert.equal(event.enabled, false);
@@ -64,24 +64,32 @@ assert.equal(event.secret, null);
 assert.equal(event.verify(rotated), false);
 assert.throws(() => event.rotate(), /Active d’abord l’événement privé/, 'renouveler suppose le mode actif');
 
-// Plafonds : 30 créations par minute, 400 personnes au plus.
-assert.equal(CREATIONS_PER_MINUTE, 30);
+// Plafonds : 5 créations par minute et par appareil, 120 pour tout le bar,
+// 400 personnes présentes au plus (les parties ne comptent pas, côté serveur).
+assert.equal(CREATIONS_PER_MINUTE, 120);
+assert.equal(CLIENT_CREATIONS_PER_MINUTE, 5);
 assert.equal(MAX_PEOPLE, 400);
 const capped = new PrivateEvent();
 capped.enable();
 const t0 = 1_000_000;
-for (let i = 0; i < CREATIONS_PER_MINUTE; i++) assert.equal(capped.admit(i, t0 + i), true);
-assert.equal(capped.admit(30, t0 + 100), false, 'trente créations dans la minute : la suivante attend');
-assert.equal(capped.admit(30, t0 + 60_001), true, 'une minute plus tard, de nouveau possible');
-assert.equal(capped.admit(MAX_PEOPLE, t0 + 200_000), false,
-  'au-delà de 400 personnes venues par l’événement, plus aucune création');
+for (let i = 0; i < CLIENT_CREATIONS_PER_MINUTE; i++) assert.equal(capped.admit(i, 'a', t0 + i), 'ok');
+assert.equal(capped.admit(5, 'a', t0 + 10), 'busy', 'six créations du même appareil dans la minute : la suivante attend');
+assert.equal(capped.admit(5, 'b', t0 + 11), 'ok', 'un autre appareil entre');
+assert.equal(capped.admit(6, 'a', t0 + 60_001), 'ok', 'une minute plus tard, de nouveau possible');
+const venue = new PrivateEvent();
+venue.enable();
+for (let i = 0; i < CREATIONS_PER_MINUTE; i++) assert.equal(venue.admit(i, `c${Math.floor(i / 5)}`, t0), 'ok');
+assert.equal(venue.admit(120, 'nouveau', t0 + 1), 'busy', '120 créations dans la minute pour le bar : la suivante attend');
+assert.equal(capped.admit(MAX_PEOPLE, 'z', t0 + 200_000), 'full',
+  '400 personnes présentes venues par l’événement : plus aucune création');
 // Une création annulée (sauvegarde impossible) libère sa place dans la minute.
 const undo = new PrivateEvent();
 undo.enable();
-for (let i = 0; i < CREATIONS_PER_MINUTE; i++) undo.admit(0, t0);
-undo.release(t0);
-assert.equal(undo.admit(0, t0 + 1), true);
-undo.release(42); // horodatage inconnu : sans effet
-assert.equal(undo.admit(0, t0 + 2), false);
+for (let i = 0; i < CLIENT_CREATIONS_PER_MINUTE; i++) undo.admit(0, 'a', t0);
+undo.release(t0, 'a');
+assert.equal(undo.admit(0, 'a', t0 + 1), 'ok');
+undo.release(42, 'a'); // horodatage inconnu : sans effet
+undo.release(t0 + 1, 'b'); // autre appareil : sans effet
+assert.equal(undo.admit(0, 'a', t0 + 2), 'busy');
 
 console.log('Événement privé : QR unique, coupure, renouvellement, sauvegarde tolérante et plafonds OK');
