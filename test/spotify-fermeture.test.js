@@ -922,7 +922,7 @@ function outageSpotify(f, mode) {
   const noDevice = () => json({ error: { status: 404, message: 'no device' } }, 404);
   f.spotify.fetchImpl = async (url, request = {}) => {
     if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
-    const now = mode();
+    const now = mode(url);
     if (typeof now === 'number') return json({ error: { status: now, message: 'panne' } }, now);
     const lost = now === 'nodevice';
     if (url.endsWith('/me/player/devices')) return json({ devices: lost ? [] : [{ id: 'pc', name: 'PC du bar', type: 'Computer', is_active: true }] });
@@ -981,4 +981,75 @@ test('Spotify : appareil perdu à deux silences de suite à moins de 10 minutes,
   await ticks(f, clock, 2 * 60);
   assert.equal(state.playing, true, 'seconde reprise, dans un autre silence');
   assert.equal(logs.filter(line => /Spotify rétabli/.test(line)).length, 2, logs.join('\n'));
+});
+
+// Regression: troisième relecture finale R1 — l'appel de relance échoue en 5xx
+// (appareil qui ne répond plus), puis la vérification voit Spotify sans
+// appareil ou toute l'API en panne, puis Spotify revient. Seule la panne
+// « error » marquait l'échec comme non propre à l'appel de relance : après
+// « aucun appareil », la vérification « prête » ne reprenait rien et la
+// musique restait coupée tout le silence.
+for (const between of ['nodevice', 503]) {
+  test(`Spotify : relance en 503, puis ${between === 'nodevice' ? 'plus d’appareil' : 'toute l’API en panne'}, puis retour : la musique repart, un seul « rétabli »`, async () => {
+    const logs = [];
+    const f = harness({ logs });
+    const clock = { now: Date.now() };
+    f.spotifyAutomation.now = () => clock.now;
+    f.spotify.now = () => clock.now;
+    let phase = 'play';
+    let refused = 0;
+    const state = outageSpotify(f, url => phase !== 'play' ? phase : url.includes('/me/player/play') ? (refused++, 503) : null);
+    f.setBridge(fakeBridge([], []));
+    await ticks(f, clock, 150);
+    assert.equal(refused, 3, 'trois essais refusés en 503');
+    assert.equal(f.spotifyAutomation.done, true);
+    phase = between;
+    await ticks(f, clock, 150);
+    assert.equal(f.staffState().spotify.health.state, between === 'nodevice' ? 'no-device' : 'error');
+    phase = null;
+    await ticks(f, clock, 150);
+    assert.equal(state.playing, true, 'Spotify revenu : la relance abandonnée repart');
+    assert.equal(logs.filter(line => /Spotify rétabli/.test(line)).length, 1, logs.join('\n'));
+  });
+}
+
+// Regression: troisième relecture finale R2 — la règle « pas de reprise après
+// un 5xx de l'appel » visait aussi la pause : un 502 sur la pause laissait
+// Spotify jouer par-dessus le chanteur toute la chanson. Elle ne vaut que
+// pour la relance ; une pause en échec reprend quand Spotify répond de nouveau.
+test('Spotify : pause refusée en 502 pendant un titre, puis Spotify sain : la pause reprend', async () => {
+  const logs = [];
+  const f = harness({ logs });
+  const clock = { now: Date.now() };
+  f.spotifyAutomation.now = () => clock.now;
+  f.spotify.now = () => clock.now;
+  // Les trois essais de la pause échouent en 502, puis Spotify répond de nouveau.
+  let pauses = 0;
+  const state = outageSpotify(f, url => url.includes('/me/player/pause') && ++pauses <= 3 ? 502 : null);
+  state.playing = true;
+  f.setBridge(fakeBridge([], [], 'q1'));
+  assert.equal(f.karaokeOutlook(), 'singing');
+  for (let i = 0; i < 100 && pauses < 3; i++) { await f.spotifyTick(); clock.now += 3000; }
+  assert.equal(pauses, 3);
+  assert.equal(f.spotifyAutomation.done, true, 'trois essais de pause en échec');
+  assert.equal(state.playing, true, 'Spotify joue toujours');
+  await ticks(f, clock, 150);
+  assert.equal(state.playing, false, 'pause reprise quand Spotify répond de nouveau');
+  assert.equal(logs.filter(line => /Spotify rétabli/.test(line)).length, 1, logs.join('\n'));
+});
+
+test('Spotify : pause toujours refusée en 502 pendant un titre : reprise au plus une fois par 10 minutes', async () => {
+  const logs = [];
+  const f = harness({ logs });
+  const clock = { now: Date.now() };
+  f.spotifyAutomation.now = () => clock.now;
+  f.spotify.now = () => clock.now;
+  let pauses = 0;
+  const state = outageSpotify(f, url => url.includes('/me/player/pause') ? (pauses++, 502) : null);
+  state.playing = true;
+  f.setBridge(fakeBridge([], [], 'q1'));
+  await ticks(f, clock, 25 * 60);
+  const recovered = logs.filter(line => /Spotify rétabli/.test(line)).length;
+  assert.ok(recovered >= 1 && recovered <= 3, `au plus une reprise par 10 minutes (${recovered})`);
+  assert.equal(pauses, 3 * (recovered + 1), 'trois essais par reprise');
 });

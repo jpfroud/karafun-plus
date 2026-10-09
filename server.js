@@ -867,7 +867,7 @@ function songSettingsTarget(entryId, started) {
 function songSettingsInput(input, { song, ids }) {
   if (input != null && (typeof input !== 'object' || Array.isArray(input) || 'guideVoices' in input)) return input;
   const kept = song?.settings?.guideVoices;
-  const duoVoice = ids?.length > 1 && input?.guide != null ? { 6: input.guide } : null;
+  const duoVoice = ids?.length > 1 && input?.guide != null ? { [TRACK.LEAD_B]: input.guide } : null;
   if (!kept && !duoVoice) return input;
   return { ...(input || {}), guideVoices: { ...kept, ...duoVoice } };
 }
@@ -943,6 +943,9 @@ function catchUpSongSettings(tr) {
   applyStartCommands(commands, live, { title: tr.sel.song.title, entryId: tr.sel.song.entryId || null, queueId: tr.queueId });
 }
 
+// Chanson d'un titre de KaraFun (titre ou quiz) : compare deux états du même numéro.
+const loadedSongOf = item => String(item?.songId ?? item?.quizId ?? item?.title ?? '');
+
 // Dernier état vu du titre chargé ; le précédent est gardé au changement.
 // true : ce titre vient d'être chargé (premier état vu pour lui) et cette
 // application l'a vu annoncé ou se charger (états 1 à 3, voir
@@ -955,7 +958,6 @@ function catchUpSongSettings(tr) {
 // et sa chanson, jamais remis pour autant ; vu se charger seulement s'il
 // l'est de nouveau (état 3, ou vu annoncé dans cette session). Sinon nouveau
 // titre, sans titre d'avant connu.
-const loadedSongOf = item => String(item?.songId ?? item?.quizId ?? item?.title ?? '');
 function noteLoadedLive(loadedId) {
   const live = loadedId ? liveFromStatus(bridge.status) : null;
   if (!live || String(live.queueId) !== loadedId) return false;
@@ -3158,14 +3160,16 @@ async function playKaraFun({ queueId = null } = {}) {
 }
 
 // Vérification de Spotify (appareils et lecteur). Rétabli (appareil retrouvé,
-// réseau revenu, reconnexion) : la relance abandonnée du silence en cours
+// réseau revenu, reconnexion) : l'action abandonnée de la période en cours
 // repart, sauf si le bar a lui-même coupé ou lancé la musique, au plus une
 // fois par 10 minutes et pas quand seul l'appel de relance échoue en 5xx
-// (SpotifyAutomation.recover). Rien de repris : rien au journal.
+// (SpotifyAutomation.recover). Spotify en panne ou sans appareil après cet
+// échec : la panne n'était pas propre à l'appel, la reprise est permise.
+// Rien de repris : rien au journal.
 async function spotifyCheck() {
   const before = spotify.health.state;
   const health = await spotify.checkHealth();
-  if (health.state === 'error') spotifyAutomation.checkFailed();
+  if (health.state === 'error' || health.state === 'no-device') spotifyAutomation.checkFailed();
   if (health.state === 'ready' && (before !== 'ready' || health.adopted) && spotifyAutomation.recover()) {
     appLog('Spotify rétabli : la relance automatique reprend.');
   }
@@ -3394,6 +3398,10 @@ function clearEvening() {
   // il retirerait ses nouveaux titres à la reconnexion.
   settings.queueClearPending = false;
   queueClearRemovalRequests.clear();
+  // Chœurs par défaut relevés oubliés (sauvegarde et pont) : une valeur
+  // relevée à tort ne dure jamais plus d'une soirée.
+  delete settings.karafunDefaults;
+  bridge?.forgetDefaults?.();
   if (stopAuto) settings.auto = false;
   journal.start({ rules: journalRules() });
   phaseKey = null; presenceAskKey = null; lastSampleAt = 0;
