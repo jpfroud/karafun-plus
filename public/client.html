@@ -1210,6 +1210,8 @@
       const error = failure(() => serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));
       error.status = response.status;
       error.code = data.code;
+      // Prénom déjà pris : sa personne se reprend-elle d'ici (code à 4 chiffres) ?
+      error.recoverable = data.recoverable === true;
       // Délai annoncé par le serveur avant un nouvel essai (429), en secondes.
       error.retryAfter = Number(response.headers?.get?.('Retry-After')) || null;
       throw error;
@@ -2326,6 +2328,8 @@
   let gateClaimShown = '';
   function renderGateClaim() {
     const box = $('nameGateClaim');
+    // Un seul titre, celui de l'étape (aussi après translateStatic).
+    $('nameGateTitle').textContent = gateClaim ? t('Récupérer mes chansons') : t('Bienvenue ! Quel est ton prénom ?');
     $('nameGateForm').hidden = !!gateClaim;
     $('nameGateIntro').hidden = !!gateClaim;
     $('nameGateClaimLink').hidden = !!gateClaim;
@@ -2340,12 +2344,10 @@
     gateClaimShown = signature;
     const typed = $('nameGateClaimCode')?.value || '';
     const back = `<button type="button" class="btn ghost wide" data-gate-claim-back>${esc(t('Retour'))}</button>`;
-    const title = `<h3 id="nameGateClaimTitle" tabindex="-1">${esc(t('Récupérer mes chansons'))}</h3>`;
-    box.innerHTML = chosen ? `${title}
-      <p class="small muted">${esc(t('Tu es {name} ? Demande le code au bar ou à ton ancien téléphone.', { name: chosen.name }))} ${esc(t('Le code dure 10 minutes.'))}</p>
+    box.innerHTML = chosen ? `<p class="small muted">${esc(t('Tu es {name} ? Demande le code au bar ou à ton ancien téléphone.', { name: chosen.name }))} ${esc(t('Le code dure 10 minutes.'))}</p>
       <form id="nameGateClaimForm"><label class="field" for="nameGateClaimCode">${esc(t('Code de reprise à 4 chiffres'))}</label><input id="nameGateClaimCode" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" required>
       <button type="submit" id="nameGateClaimSubmit" class="btn primary wide">${esc(t('Prendre en charge'))}</button></form>${back}`
-      : `${title}<p class="small muted">${esc(candidates.length
+      : `<p class="small muted">${esc(candidates.length
         ? t('Si tu étais déjà inscrit, choisis ton prénom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.')
         : t('Demande d’abord au bar ou à ton ancien téléphone un code de reprise à 4 chiffres : ton prénom apparaîtra ici.'))}</p>
       <div class="name-gate-claim-people">${candidates.map(candidate => `<button type="button" class="btn" data-gate-claim-person="${esc(candidate.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: candidate.name }))}</button>`).join('')}</div>${back}`;
@@ -2354,7 +2356,7 @@
   $('nameGateClaimLink').addEventListener('click', () => {
     gateClaim = { personId: '' };
     renderGateClaim();
-    $('nameGateClaimTitle').focus({ preventScroll: true });
+    $('nameGateTitle').focus({ preventScroll: true });
   });
   $('nameGateClaim').addEventListener('click', event => {
     const chosen = event.target.closest('[data-gate-claim-person]');
@@ -2367,7 +2369,7 @@
     if (event.target.closest('[data-gate-claim-back]')) {
       gateClaim = gateClaim?.personId ? { personId: '' } : null;
       renderGateClaim();
-      (gateClaim ? $('nameGateClaimTitle') : $('nameGateTitle')).focus({ preventScroll: true });
+      $('nameGateTitle').focus({ preventScroll: true });
     }
   });
   $('nameGateClaim').addEventListener('submit', event => {
@@ -2418,9 +2420,12 @@
       await refresh();
       toast(t('{name} est inscrit.', { name }));
     } catch (failure) {
-      // Son propre prénom, souvent : la reprise par code d'abord, l'initiale sinon.
-      setNameGateMessage(failure.code === 'NAME_TAKEN' ? () => t('Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit ? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).')
-        : failure.localized || (() => failure.message));
+      // Son propre prénom, souvent : la reprise par code d'abord, l'initiale
+      // sinon. Une personne que ce téléphone ne peut pas reprendre (partie,
+      // autre groupe : le serveur le dit) : l'initiale, ou voir le bar.
+      setNameGateMessage(failure.code !== 'NAME_TAKEN' ? failure.localized || (() => failure.message)
+        : failure.recoverable ? () => t('Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit ? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).')
+          : () => t('Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.). Si c’est bien toi, demande au bar.'));
     } finally { button.disabled = false; }
   });
 

@@ -131,6 +131,8 @@ window.CLIENT_TRANSLATIONS = {
       'Valider': 'Confirm',
       'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit ? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).':
         'This first name is already signed up. If it’s you, tap “Already signed up? I have a code”; otherwise add the initial of your last name (e.g. Mary L.).',
+      'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.). Si c’est bien toi, demande au bar.':
+        'This first name is already signed up. Add the initial of your last name (e.g. Mary L.). If it really is you, ask the bar.',
       // QR individuel et événement privé
       'Un instant : ouverture de ton QR…': 'One moment: opening your QR code…',
       'Inscription en cours…': 'Signing you up…',

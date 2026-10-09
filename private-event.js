@@ -9,10 +9,12 @@ const SECRET_RE = /^[A-Za-z0-9_-]{22}$/;
 // appareil (adresse IPv4, ou préfixe /64 en IPv6, voir clientKey) crée au plus
 // 30 chanteurs par minute (assez pour un Wi-Fi qui sort par une seule adresse
 // publique), tout le bar 120 ; au plus 400 personnes présentes venues par
-// l'événement, dont les places sans prénom des 10 dernières minutes.
+// l'événement, dont les places sans prénom des 10 dernières minutes, et au
+// plus 800 fiches venues par l'événement (pas parties), quel que soit leur âge.
 const CREATIONS_PER_MINUTE = 120;
 const CLIENT_CREATIONS_PER_MINUTE = 30;
 const MAX_PEOPLE = 400;
+const MAX_EVENT_PEOPLE = 2 * MAX_PEOPLE;
 const PLACEHOLDER_COUNT_MS = 10 * 60000;
 
 // Appareil d'une adresse réseau : l'adresse IPv4 (aussi quand elle arrive
@@ -106,13 +108,33 @@ class PrivateEvent {
     return count;
   }
 
+  // Place sans prénom du QR de l'événement abandonnée : ouverte il y a 10
+  // minutes ou plus (elle ne compte déjà plus), jamais relue par sa page
+  // (lastSeen au plus une seconde après l'ouverture : touchSeen le change dès
+  // la première relecture visible qui suit cette seconde) et sans aucune
+  // action. Ni partie
+  // (laissée au bar), ni venue par un QR personnel. Le serveur vérifie en plus
+  // qu'elle n'a aucun titre, puis la retire sans trace avant chaque création.
+  static abandoned(person, now = Date.now()) {
+    if (!person?.viaEvent || !person.nameRequired || person.withdrawnAt || person.soloKeyHash || person.lastActionAt) return false;
+    const joinedAt = Number(person.joinedAt) || 0;
+    return now - joinedAt >= PLACEHOLDER_COUNT_MS && (Number(person.lastSeen) || 0) <= joinedAt + 1000;
+  }
+
+  // Fiches venues par l'événement et pas parties, nommées ou non, de tout âge.
+  static held(people) {
+    let count = 0;
+    for (const person of people) if (person?.viaEvent && !person.withdrawnAt) count++;
+    return count;
+  }
+
   // Avant de créer un chanteur : `total` = personnes qui comptent (present),
   // `client` = appareil (clientKey ; null : inconnu, seule la limite du bar
-  // compte). « ok », « busy » (trop de créations dans la
-  // minute : réessayer) ou « full » (plafond de personnes).
-  admit(total, client, now = Date.now()) {
+  // compte), `held` = fiches de l'événement (held). « ok », « busy » (trop de
+  // créations dans la minute : réessayer) ou « full » (plafond de personnes).
+  admit(total, client, now = Date.now(), held = 0) {
     this.recent = this.recent.filter(entry => now - entry.at < 60000);
-    if (total >= MAX_PEOPLE) return 'full';
+    if (total >= MAX_PEOPLE || held >= MAX_EVENT_PEOPLE) return 'full';
     if (this.recent.length >= CREATIONS_PER_MINUTE || (client !== null &&
       this.recent.filter(entry => entry.client === client).length >= CLIENT_CREATIONS_PER_MINUTE)) return 'busy';
     this.recent.push({ at: now, client });
@@ -142,4 +164,4 @@ class PrivateEvent {
   }
 }
 
-module.exports = { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, PLACEHOLDER_COUNT_MS, clientKey };
+module.exports = { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, MAX_EVENT_PEOPLE, PLACEHOLDER_COUNT_MS, clientKey };
