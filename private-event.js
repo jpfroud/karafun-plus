@@ -110,8 +110,9 @@ class PrivateEvent {
 
   // Place sans prénom du QR de l'événement abandonnée : ouverte il y a 10
   // minutes ou plus (elle ne compte déjà plus), jamais relue par sa page
-  // (lastSeen au plus une seconde après l'ouverture : touchSeen ne le change
-  // qu'après une minute de page visible) et sans aucune action. Ni partie
+  // (lastSeen au plus une seconde après l'ouverture : touchSeen le change dès
+  // la première relecture visible qui suit cette seconde) et sans aucune
+  // action. Ni partie
   // (laissée au bar), ni venue par un QR personnel. Le serveur vérifie en plus
   // qu'elle n'a aucun titre, puis la retire sans trace avant chaque création.
   static abandoned(person, now = Date.now()) {
