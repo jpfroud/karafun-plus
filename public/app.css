@@ -292,8 +292,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .badge.name-missing { color: var(--warn); border-color: rgba(255,176,32,.45); justify-self: start; }
 .queue-item .idle-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bad); font-size: 11px; font-weight: 700; }
 /* Titre au-delà de la durée maximale : repère court au téléphone, où .queue-tags
-   (et son badge « plus long que … ») est caché. */
-.queue-item .too-long-tag { display: none; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--warn); font-size: 11px; font-weight: 700; }
+   (et son badge « plus long que … ») est caché. Toujours entier : le prénom et
+   la table prennent les « … ». */
+.queue-item .too-long-tag { display: none; flex: none; white-space: nowrap; color: var(--warn); font-size: 11px; font-weight: 700; }
 .manual-history { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2, #211d39); }
 .manual-history summary { cursor: pointer; font-weight: 700; }
 .manual-history .count { margin-left: 4px; }
@@ -378,13 +379,14 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .save-status.warn { color: var(--warn); }
 .link-btn { appearance: none; border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .staff [aria-invalid="true"] { border-color: var(--bad); }
-.scene-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.scene-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; max-width: 100%; }
 .scene-chips #autoWarn { cursor: pointer; }
 /* Pastilles Spotify : texte court ; un nom d'appareil long est abrégé par « … »
    au lieu de déborder (inline-block : « … » impossible dans une boîte flex). */
 #spotifyPill, #spotifyChip { display: inline-block; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 /* Celle de la Scène est un bouton : elle mène aux réglages de Spotify. */
-#spotifyChip { max-width: min(100%, 260px); cursor: pointer; }
+/* En px : un % ne compte pas dans sa largeur minimale (nom d'appareil long). */
+#spotifyChip { max-width: 260px; cursor: pointer; }
 #spotifyChip:hover, #spotifyChip:focus-visible { border-color: var(--accent-2); background: var(--surface); }
 #spotifyChip:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
 .closing-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 3px 2px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; font-weight: 750; }

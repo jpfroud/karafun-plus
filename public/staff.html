@@ -196,6 +196,7 @@
 
   <section class="card spotify-panel" data-tab="plus" id="spotifyPanel">
     <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
+    <p class="small" id="spotifyText" role="status"></p>
     <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (ce PC, celui de KaraFun, une enceinte) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
     <div class="row wrap" id="spotifyReconnectRow" hidden><button class="btn small primary" id="spotifyReconnect">Reconnecter Spotify</button><span class="small muted">depuis ce PC : Spotify revient sur son adresse locale.</span></div>
     <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
@@ -216,7 +217,6 @@
       <label class="small spotify-delay" for="spotifyLead">Couper Spotify <input id="spotifyLead" type="number" inputmode="numeric" min="0" max="10"> s avant de lancer un titre (0 à 10 s) <span class="save-status" data-save-status="spotifyLead" aria-live="polite"></span></label>
       <div class="row wrap"><button class="btn small" id="spotifyPlay">▶ Spotify</button><button class="btn small" id="spotifyPause">⏸ Spotify</button><button class="btn small danger" id="spotifyDisconnect">Déconnecter</button></div>
     </div>
-    <p class="small" id="spotifyText" role="status"></p>
   </section>
 
   <section class="card diagnostics-panel" data-tab="plus" id="kfPanel">

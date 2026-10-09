@@ -3500,13 +3500,17 @@ test('relecture : fenêtre de prénom ouverte, le focus va au titre, jamais au c
 });
 
 // Regression: U7 — les « C’est moi » répétés de « Toute la table » n'avaient pas de nom distinct.
+// Regression: U7 (vérification adverse) — en anglais, le nom « It’s me, Bob »
+// ne contenait pas le texte visible « That’s me » (WCAG 2.5.3, nom dans le libellé).
 test('relecture : chaque « C’est moi » de la fiche de la table porte le prénom (FR et EN)', async () => {
-  for (const [languages, label] of [[['fr-FR'], 'C’est moi, Bob'], [['en-US'], 'It’s me, Bob']]) {
+  for (const [languages, label] of [[['fr-FR'], 'C’est moi, Bob'], [['en-US'], 'That’s me, Bob']]) {
     const state = baseState();
     state.tablePeople.push(person('bob', 'Bob'));
     const page = await open({ state, languages });
     await page.click(page.node('tableAllButton'));
-    assert.equal(page.find('tableSheetList', '[data-sheet-claim="bob"]').getAttribute('aria-label'), label);
+    const claim = page.find('tableSheetList', '[data-sheet-claim="bob"]');
+    assert.equal(claim.getAttribute('aria-label'), label);
+    assert.ok(claim.getAttribute('aria-label').startsWith(claim.textContent.trim()), `${languages[0]} : le nom accessible commence par le texte visible`);
   }
 });
 

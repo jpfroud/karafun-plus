@@ -156,7 +156,7 @@ for (const id of ['#spotifyPill', '#spotifyChip']) {
   for (const width of [390, 1366]) {
     const pill = computed(id, width);
     assert.equal(pill.display, 'inline-block', `${id} à ${width} px : « … » possible (pas en flex)`);
-    assert.match(String(pill['max-width']), /100%/, `${id} à ${width} px : jamais plus large que son cadre`);
+    if (id === '#spotifyPill') assert.match(String(pill['max-width']), /100%/, `${id} à ${width} px : jamais plus large que son cadre`);
     assert.equal(pill.overflow, 'hidden');
     assert.equal(pill['text-overflow'], 'ellipsis');
   }
@@ -181,4 +181,27 @@ assert.equal(computed('.queue-item .person-cell .queue-tags', 390).display, 'non
 assert.notEqual(computed('.queue-item .too-long-tag', 390).display, 'none', '390 px : repère visible');
 assert.notEqual(computed('.queue-item .too-long-tag', 650).display, 'none', '650 px : repère visible');
 assert.equal(computed('.queue-item .too-long-tag', 651).display, 'none', 'au-delà, le badge de .queue-tags est visible');
+// ---------------------------------------------------------- vérification adverse (affichage)
+// Regression: U2 — un nom d'appareil Spotify long (45 caractères et plus)
+// élargissait la Scène à 405 px sur un téléphone de 390 (et de 360) : un
+// max-width en % ne compte pas dans la largeur minimale de la pastille, et
+// .scene-chips (élément flex, min-width:auto) ne pouvait pas rétrécir.
+// Mesuré au navigateur (Chromium, 390x800) : scrollWidth 405 avant, 390 après.
+for (const width of [360, 390, 1366]) {
+  const chip = computed('#spotifyChip', width)['max-width'];
+  assert.ok(px(chip) > 0 && !/%/.test(chip), `${width} px : largeur maximale de la pastille de la Scène en px (${chip}), pas en %`);
+  assert.equal(computed('.scene-chips', width)['min-width'], '0', `${width} px : les pastilles de la Scène peuvent rétrécir`);
+  assert.equal(computed('.scene-chips', width)['max-width'], '100%', `${width} px : jamais plus larges que l’en-tête`);
+}
+// Regression: U10 — le repère « trop long » rétrécissait avec le prénom et la
+// table : « trop l… » à 390 px, « tr… » à 360 px. Il garde sa largeur ; le
+// prénom et la table prennent les « … ».
+for (const width of [360, 390]) assert.equal(computed('.queue-item .too-long-tag', width).flex, 'none', `${width} px : « trop long » entier`);
+// Regression: U1 — la phrase complète de Spotify (raison, heure du nouvel
+// essai) était tout en bas du panneau, hors de l'écran du téléphone, alors
+// que le guide la place sous le titre du panneau, à côté de la pastille.
+const staffHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8');
+const spotifyPanel = /<section[^>]*id="spotifyPanel"[^>]*>([\s\S]*?)<\/section>/.exec(staffHtml)[1];
+assert.match(spotifyPanel, /^\s*<div class="section-heading">.*?id="spotifyPill".*?<\/span><\/div>\s*<p class="small" id="spotifyText" role="status"><\/p>/,
+  'la phrase complète de Spotify suit directement le titre du panneau et sa pastille');
 console.log('Bar : barre d’onglets, barre du haut, colonne d’actions et diagnostic à 360 px OK');
