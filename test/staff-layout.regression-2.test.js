@@ -262,10 +262,38 @@ assert.equal(ALL.some(r => r.selectors.some(s => /person-cell.*too-long-tag/.tes
 // Regression: U2 (seconde relecture) — dans une cellule qui passe à la ligne
 // (duo avec repères « inactif »), le nom seul sur sa ligne gardait
 // max-width: 45 % (60 % avec un repère ✎) et restait coupé.
-for (const width of [360, 390, 650, 1366]) {
-  for (const selector of ['.queue-item .person-cell:has(.idle-tag.duo) .person', '.queue-item .person-cell:has(.idle-tag.duo) button.person']) {
+for (const width of [360, 390, 650, 1280, 1366]) {
+  // Regression: D3-1 (troisième relecture) — soliste aussi : la durée passée à
+  // la ligne, « Marie-Charlotte » restait bornée à 45 % (« Marie… » à 360 px).
+  for (const selector of ['.queue-item .person-cell:has(.idle-tag) .person', '.queue-item .person-cell:has(.idle-tag) button.person']) {
     assert.equal(computed(selector, width)['max-width'], '100%', `${width} px : ${selector} prend toute la ligne`);
   }
+  // Regression: D3-4 (troisième relecture) — la table vide d'un duo passait à
+  // la ligne avant le premier repère « inactif » et le décalait de 5 px.
+  assert.equal(computed('.queue-item .table-tag:empty', width).display, 'none', `${width} px : table vide sans place`);
+  // Regression: D3-2 (troisième relecture) — « trop long » et « ⚠ Chanté » ne
+  // laissaient que 18 à 24 px au titre : avec des repères, la cellule passe à
+  // la ligne et le titre (.song-main) prend toute la largeur sous eux.
+  const marked = computed('.queue-item .song-cell.has-marks', width);
+  assert.equal(marked.display, 'flex', `${width} px : cellule du titre avec repères en flex`);
+  assert.equal(marked['flex-wrap'], 'wrap', `${width} px : le titre passe sous les repères`);
+  const main = computed('.queue-item .song-cell .song-main', width);
+  assert.equal(main.flex, '0 1 auto', `${width} px : le titre entier ou toute la ligne`);
+  assert.equal(main['min-width'], '0');
+  assert.equal(main['max-width'], '100%');
+  assert.equal(main['text-overflow'], 'ellipsis', `${width} px : titre plus long que la colonne coupé par « … »`);
+  assert.equal(main.overflow, 'hidden');
+  assert.equal(main['white-space'], 'nowrap');
+  // L'interprète n'a que la place qui reste : il ne fait pas passer à la ligne
+  // un titre qui tient à côté des repères (« Dancing Queen » à 360 px).
+  const artist = computed('.queue-item .song-cell.has-marks > .song-artist', width);
+  assert.equal(artist.flex, '1 1 0', `${width} px : interprète dans la place qui reste`);
+  assert.equal(artist['min-width'], '0');
+  assert.equal(artist['text-overflow'], 'ellipsis');
+  // Ni marge ni padding : un titre coupé occupe toute la ligne, l'interprète
+  // (largeur 0) le suit au lieu de passer seul sur une ligne de plus.
+  assert.equal(artist.padding, undefined); assert.equal(artist['padding-left'], undefined); assert.equal(artist['margin-left'], undefined);
+  assert.equal(artist['white-space'], 'pre', `${width} px : l’espace avant « · » reste en début d’élément`);
 }
 // Regression: U4 (seconde relecture) — le disque des initiales de « Solistes »
 // avait le fond du panneau (--surface-2) : invisible.

@@ -243,6 +243,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .queue-item .note-pop { display: none; position: absolute; left: 0; top: calc(100% + 2px); z-index: 20; width: max-content; max-width: min(320px, 80vw); padding: 7px 10px; border-radius: 8px; border: 1px solid var(--accent-2); background: var(--surface); color: var(--text); font-size: 12px; font-weight: 600; white-space: normal; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
 .queue-item .person-cell.has-note:hover .note-pop, .queue-item .person-cell.has-note:focus-within .note-pop, .queue-item .person-cell.show-note .note-pop { display: block; }
 .queue-item .table-tag { display: inline-block; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; max-width: 27%; }
+/* Table vide (duo de deux tables) : sans place ni écart, sinon elle passait à
+   la ligne avant le premier repère « inactif » et le décalait de 5 px. */
+.queue-item .table-tag:empty { display: none; }
 .queue-item .song-title { font-weight: 600; }
 .queue-item .song-artist { color: var(--muted); font-size: 11px; }
 /* Badges : seulement la place qui reste après le nom, la table et le repère
@@ -250,9 +253,18 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
    rétrécir le nom, « Bob » coupé à « B » sur PC. */
 .queue-item .queue-tags { display: inline-flex; gap: 3px; flex: 1 1 0; min-width: 0; overflow: hidden; }
 .queue-item .queue-tags .badge { font-size: 10px; padding: 1px 5px; }
-/* Repères au début du titre (« ⚠ Doublon », « trop long ») : toujours entiers,
-   le titre prend les « … ». */
+/* Repères au début du titre (« ⚠ Doublon », « trop long ») : toujours entiers.
+   Le titre (réglages compris, .song-main) reste à côté s'il y tient entier ;
+   sinon il passe sous les repères, sur toute la largeur, et y prend les « … »
+   (avec deux repères, il ne gardait que 18 à 24 px). L'interprète n'a que la
+   place qui reste (flex-basis 0, sans marge : white-space: pre garde l'espace
+   avant « · ») : il ne fait jamais passer le titre dessous, et suit le titre
+   coupé sur sa ligne au lieu d'en prendre une de plus. */
 .queue-item .song-cell .badge.repeat, .queue-item .song-cell .too-long-tag { font-size: 10px; padding: 1px 5px; margin-right: 5px; vertical-align: 1px; }
+.queue-item .song-cell.has-marks { display: flex; flex-wrap: wrap; align-items: baseline; row-gap: 1px; }
+.queue-item .song-cell.has-marks > .badge { flex: none; }
+.queue-item .song-cell .song-main { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item .song-cell.has-marks > .song-artist { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .queue-item .eta { font-size: 12px; font-weight: 700; white-space: nowrap; }
 .queue-item .queue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .queue-item .queue-actions button { white-space: nowrap; min-height: 30px; padding: 3px 7px; font-size: 11px; }
@@ -311,8 +323,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
    réduire le nom et les prénoms à rien et de couper la seconde durée. Seul un
    prénom plus long que la colonne prend les « … » (min-width: 0, max-width). */
 .queue-item .person-cell:has(.idle-tag) { flex-wrap: wrap; row-gap: 0; }
-/* Le nom du duo, seul sur sa ligne, en prend toute la largeur (sinon 45 %, ou 60 % avec ✎). */
-.queue-item .person-cell:has(.idle-tag.duo) .person, .queue-item .person-cell:has(.idle-tag.duo) button.person { max-width: 100%; }
+/* Le nom, seul sur sa ligne quand le repère passe dessous, en prend toute la
+   largeur (sinon 45 %, ou 60 % avec ✎) : duo comme soliste (« Marie… » à 360 px). */
+.queue-item .person-cell:has(.idle-tag) .person, .queue-item .person-cell:has(.idle-tag) button.person { max-width: 100%; }
 .queue-item .idle-tag.duo { display: inline-flex; align-items: baseline; gap: 0 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 /* Sous 380 px, « Bob : inactif depuis 21:04 » ne tient plus sur une ligne de
    la colonne (134 px pour 123 à 360 px) : le prénom passe au-dessus de la

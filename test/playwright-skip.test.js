@@ -25,7 +25,9 @@ try {
     assert.doesNotMatch(local.stdout, /::warning::/, `${file} : pas d'annotation hors CI`);
     const ci = run(true);
     assert.equal(ci.status, 0, `${file} sans navigateur, en CI : ${ci.stderr}`);
-    assert.match(ci.stdout, /^::warning::.+ : ignoré \(Playwright absent\)$/m, `${file} : annotation visible dans la CI (${ci.stdout})`);
+    // Regression: M3-5 (troisième relecture) — ici seul Chromium manque, mais
+    // l'annotation de la CI disait « Playwright absent » : même raison partout.
+    assert.match(ci.stdout, /^::warning::.+ : ignoré \(Playwright ou Chromium absent\)$/m, `${file} : annotation visible dans la CI (${ci.stdout})`);
   }
 } finally {
   fs.rmSync(nowhere, { recursive: true, force: true });
