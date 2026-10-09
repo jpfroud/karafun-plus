@@ -2891,7 +2891,7 @@ test('QR individuel : ouverture comptée par un seul POST, fenêtre de prénom b
       return { id: 's1', token: 'jeton-s1', nameRequired: true };
     }
     if (url === '/api/table/person/rename') {
-      if (body.name === 'Marie') return reply(400, { error: 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.', code: 'NAME_TAKEN' });
+      if (body.name === 'Marie') return reply(400, { error: 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.', code: 'NAME_TAKEN', recoverable: true });
       if (body.name === 'Erreur') return reply(400, { error: 'Prénom limité à 24 caractères.' });
       self.state.tablePeople = [person('s1', body.name)];
       return { ok: true };
@@ -3545,7 +3545,7 @@ test('fenêtre de prénom : message retraduit, effacé à chaque essai, reste de
       return { id: 's1', token: 'jeton-s1', nameRequired: true };
     }
     if (url === '/api/table/person/rename') {
-      if (body.name === 'Marie') return reply(400, { error: 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.', code: 'NAME_TAKEN' });
+      if (body.name === 'Marie') return reply(400, { error: 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.', code: 'NAME_TAKEN', recoverable: true });
       if (body.name === 'Erreur') return reply(400, { error: 'Prénom limité à 24 caractères.' });
       self.state.tablePeople = [person('s1', body.name)];
       return { ok: true };
@@ -3801,7 +3801,7 @@ test('fenêtre de prénom : « Déjà inscrit ? J’ai un code » reprend son pr
   assert.equal(page.node('nameGateForm').hidden, true, 'le prénom laisse la place au code');
   assert.equal(page.node('nameGateClaimLink').hidden, true);
   assert.equal(page.node('nameGateClaim').hidden, false);
-  assert.equal(page.document.activeElement, page.node('nameGateClaimTitle'));
+  assert.equal(page.document.activeElement, page.node('nameGateTitle'));
   assert.equal(page.find('nameGateClaim', '[data-gate-claim-person="c1"]').textContent, 'Je suis Clara · reprendre mes chansons');
   // Retour : du choix du prénom à la fenêtre de prénom.
   await page.tap('nameGateClaim', '[data-gate-claim-back]');
@@ -3845,7 +3845,7 @@ test('fenêtre de prénom : « Déjà inscrit ? J’ai un code » reprend son pr
     recoveryPeople: [person('c1', 'Clara')] }), respond, { languages: ['en'] });
   assert.equal(english.node('nameGateClaimLink').textContent, 'Already signed up? I have a code');
   await english.click(english.node('nameGateClaimLink'));
-  assert.equal(english.node('nameGateClaimTitle').textContent, 'Recover my songs');
+  assert.equal(english.node('nameGateTitle').textContent, 'Recover my songs');
   assert.equal(english.find('nameGateClaim', '[data-gate-claim-person="c1"]').textContent, 'I am Clara · recover my songs');
   await english.tap('nameGateClaim', '[data-gate-claim-person="c1"]');
   assert.equal(english.find('nameGateClaim', '[data-gate-claim-back]').textContent, 'Back');
@@ -3884,4 +3884,91 @@ test('événement privé : QR renouvelé ou coupé, un inscrit de ce navigateur 
   assert.equal(refused.node('noSingerActions').querySelector('[data-entry-retry]'), null);
   await refused.poll();
   assert.equal(postsTo(refused, '/api/table/enter').length, 1);
+});
+
+// ================================================================ troisième passe finale (E3, E5, E6)
+// Regression: troisième relecture finale (A3-1) — « prénom déjà pris »
+// renvoyait toujours vers « J’ai un code », même quand la personne de ce
+// prénom ne peut pas être reprise d'ici (partie, autre groupe) : la liste
+// restait vide et le bar ne peut pas donner de code à une personne partie.
+test('prénom déjà pris : « J’ai un code » seulement si le serveur dit la personne reprenable d’ici, sinon l’initiale et le bar (FR et EN)', async () => {
+  const taken = recoverable => reply(400, { error: 'Ce prénom est déjà inscrit ce soir. Ajoute l’initiale de ton nom (ex. Marie L.).', code: 'NAME_TAKEN',
+    ...(recoverable === undefined ? {} : { recoverable }) });
+  const respond = (url, body, self) => {
+    if (url === '/api/table/solo/open') {
+      self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+      self.state.managedIds = ['s1'];
+      return { id: 's1', token: 'jeton-s1', nameRequired: true };
+    }
+    if (url === '/api/table/person/rename') return taken({ Marie: true, Zoé: false }[body.name]);
+    return undefined;
+  };
+  const page = await soloPage('?invitation=CLE-SOLO', soloState(), respond);
+  const error = () => page.node('nameGateError').textContent;
+  const typed = async name => { page.node('nameGateInput').value = name; await page.submit('nameGateForm'); };
+  await typed('Marie');
+  assert.equal(error(), 'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit ? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).');
+  for (const name of ['Zoé', 'Inconnu']) {
+    await typed(name);
+    assert.equal(error(), 'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.). Si c’est bien toi, demande au bar.', name);
+  }
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error(), 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.). If it really is you, ask the bar.');
+  const english = await soloPage('?invitation=CLE-SOLO', soloState(), respond, { languages: ['en'] });
+  english.node('nameGateInput').value = 'Zoé';
+  await english.submit('nameGateForm');
+  assert.equal(english.node('nameGateError').textContent, 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.). If it really is you, ask the bar.');
+});
+
+// Regression: troisième relecture finale (D3-3) — en reprise par code, la
+// fenêtre gardait le titre « Bienvenue ! Quel est ton prénom ? » au-dessus de
+// « Récupérer mes chansons » : un seul titre, celui de l'étape.
+test('fenêtre de prénom : en reprise par code, un seul titre « Récupérer mes chansons », rendu par « Retour » (FR et EN)', async () => {
+  const respond = (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
+    self.state.managedIds = ['s2'];
+    return { id: 's2', token: 'jeton-s2', nameRequired: true };
+  };
+  const state = () => soloState({ soloInvitationReady: false, privateEventReady: true, recoveryPeople: [person('c1', 'Clara')] });
+  const page = await soloPage('?evenement=SECRET-EV', state(), respond);
+  const title = () => page.node('nameGateTitle').textContent;
+  const headings = () => page.node('nameGate').querySelectorAll('h2, h3').filter(node => !node.hidden);
+  assert.equal(title(), 'Bienvenue\u00a0! Quel est ton prénom\u00a0?');
+  await page.click(page.node('nameGateClaimLink'));
+  assert.equal(title(), 'Récupérer mes chansons');
+  assert.deepEqual(headings().map(node => node.textContent), ['Récupérer mes chansons'], 'un seul titre');
+  assert.equal(page.document.activeElement, page.node('nameGateTitle'), 'le titre de l’étape est annoncé');
+  await page.tap('nameGateClaim', '[data-gate-claim-person="c1"]');
+  assert.equal(title(), 'Récupérer mes chansons');
+  await page.poll();
+  assert.equal(title(), 'Récupérer mes chansons', 'un rafraîchissement garde le titre');
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(title(), 'Recover my songs', 'la langue change sans revenir au prénom');
+  await page.tap('nameGateClaim', '[data-gate-claim-back]');
+  assert.equal(title(), 'Recover my songs', 'retour au choix du prénom : toujours la reprise');
+  await page.tap('nameGateClaim', '[data-gate-claim-back]');
+  assert.equal(title(), 'Welcome! What’s your first name?', '« Retour » rend le titre de la fenêtre');
+  assert.equal(page.document.activeElement, page.node('nameGateTitle'));
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+  assert.equal(title(), 'Bienvenue\u00a0! Quel est ton prénom\u00a0?');
+  const english = await soloPage('?evenement=SECRET-EV', state(), respond, { languages: ['en'] });
+  await english.click(english.node('nameGateClaimLink'));
+  assert.equal(english.node('nameGateTitle').textContent, 'Recover my songs');
+});
+
+// Regression: troisième relecture finale (ADV F2) — le téléphone d'un
+// soliste marqué parti qui ouvre un QR personnel neuf (sa page ne le gère
+// plus) affiche « marquée partie, demande au bar » (PERSON_LEFT), FR et EN.
+test('QR personnel neuf sur le téléphone d’un soliste marqué parti : le message PERSON_LEFT (FR et EN)', async () => {
+  const left = url => url === '/api/table/solo/open'
+    ? reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' }) : undefined;
+  const fr = await soloPage('?invitation=CLE-NEUVE', soloState(), left);
+  assert.deepEqual(postsTo(fr, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-NEUVE' }]]);
+  assert.equal(fr.node('noSingerText').textContent, 'Cette personne a été marquée partie. Demande au bar de la réactiver.');
+  assert.equal(fr.node('nameGate').hidden, true);
+  const en = await soloPage('?invitation=CLE-NEUVE', soloState(), left, { languages: ['en'] });
+  assert.equal(en.node('noSingerText').textContent, 'This person was marked as gone. Ask the bar to bring them back.');
+  await en.poll();
+  assert.equal(postsTo(en, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
 });

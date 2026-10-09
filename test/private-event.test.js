@@ -4,7 +4,8 @@
 // « Renouveler le QR » et disparaît à la nouvelle soirée. Une sauvegarde
 // abîmée coupe le mode sans jamais faire échouer la soirée.
 const assert = require('node:assert/strict');
-const { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, PLACEHOLDER_COUNT_MS, clientKey } = require('../private-event');
+const { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, MAX_EVENT_PEOPLE, PLACEHOLDER_COUNT_MS,
+  clientKey } = require('../private-event');
 
 const event = new PrivateEvent();
 assert.equal(event.enabled, false);
@@ -154,5 +155,32 @@ const people = [
 ];
 assert.equal(PrivateEvent.present(people, now), 2);
 assert.equal(PrivateEvent.present(new Map(people.map((p, i) => [i, p])).values(), now), 2, 'accepte un itérable');
+
+// Regression: troisième relecture finale (P3-1, S3-1) — les places sans
+// prénom de plus de 10 minutes ne comptaient plus, mais rien ne les retirait :
+// une boucle sans cookie en ajoutait sans fin (sauvegarde, liste « Solistes »).
+// Abandonnée : venue par l'événement, sans prénom ni clé personnelle, pas
+// partie, ouverte il y a 10 minutes ou plus, jamais relue par sa page
+// (lastSeen au plus une seconde après l'ouverture) et sans aucune action.
+const opened = { viaEvent: true, nameRequired: true, joinedAt: now - PLACEHOLDER_COUNT_MS, lastSeen: now - PLACEHOLDER_COUNT_MS + 1000 };
+assert.equal(PrivateEvent.abandoned(opened, now), true);
+assert.equal(PrivateEvent.abandoned({ ...opened, joinedAt: now - PLACEHOLDER_COUNT_MS + 1, lastSeen: now - PLACEHOLDER_COUNT_MS + 1 }, now), false,
+  'moins de 10 minutes : gardée');
+assert.equal(PrivateEvent.abandoned({ ...opened, lastSeen: opened.joinedAt + 1001 }, now), false, 'page relue après l’ouverture : gardée');
+assert.equal(PrivateEvent.abandoned({ ...opened, lastActionAt: now - 1 }, now), false, 'une action : gardée');
+assert.equal(PrivateEvent.abandoned({ ...opened, nameRequired: undefined }, now), false, 'nommée : jamais');
+assert.equal(PrivateEvent.abandoned({ ...opened, withdrawnAt: now - 1 }, now), false, 'partie : laissée au bar');
+assert.equal(PrivateEvent.abandoned({ ...opened, viaEvent: undefined }, now), false, 'QR individuel : jamais');
+assert.equal(PrivateEvent.abandoned({ ...opened, soloKeyHash: 'a'.repeat(64) }, now), false, 'clé personnelle : jamais');
+assert.equal(PrivateEvent.abandoned(null, now), false);
+// Plafond dur : 800 personnes venues par l'événement et pas parties, nommées
+// ou non, quel que soit leur âge ; au-delà, « complet ».
+assert.equal(MAX_EVENT_PEOPLE, 2 * MAX_PEOPLE);
+assert.equal(PrivateEvent.held(people), 4, 'les parties et les QR individuels ne comptent pas');
+const heavy = new PrivateEvent();
+heavy.enable();
+assert.equal(heavy.admit(0, 'a', t0, MAX_EVENT_PEOPLE - 1), 'ok');
+assert.equal(heavy.admit(0, 'b', t0, MAX_EVENT_PEOPLE), 'full', '800 fiches de l’événement : plus aucune création');
+assert.equal(heavy.admit(0, 'c', t0), 'ok', 'sans compte de fiches : la règle des 400 seule');
 
 console.log('Événement privé : QR unique, coupure, renouvellement, sauvegarde tolérante et plafonds OK');
