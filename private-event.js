@@ -4,8 +4,11 @@ const crypto = require('crypto');
 
 const SECRET_RE = /^[A-Za-z0-9_-]{22}$/;
 // Garde-fous d'un QR commun qui circulerait hors du bar : la sauvegarde et la
-// page du bar restent lisibles même si quelqu'un scanne en boucle.
-const CREATIONS_PER_MINUTE = 30;
+// page du bar restent lisibles même si quelqu'un scanne en boucle. Un même
+// appareil (adresse du réseau) crée au plus 5 chanteurs par minute, tout le
+// bar 120 ; au plus 400 personnes présentes venues par l'événement.
+const CREATIONS_PER_MINUTE = 120;
+const CLIENT_CREATIONS_PER_MINUTE = 5;
 const MAX_PEOPLE = 400;
 
 // Événement privé (bar privatisé) : un seul QR pour tout le monde, qui crée un
@@ -63,19 +66,24 @@ class PrivateEvent {
     return crypto.timingSafeEqual(digest(this.secret), digest(token));
   }
 
-  // Avant de créer un chanteur : `total` = personnes déjà venues par
-  // l'événement. Faux = plafond atteint (le serveur répond au téléphone).
-  admit(total, now = Date.now()) {
-    this.recent = this.recent.filter(at => now - at < 60000);
-    if (total >= MAX_PEOPLE || this.recent.length >= CREATIONS_PER_MINUTE) return false;
-    this.recent.push(now);
-    return true;
+  // Avant de créer un chanteur : `total` = personnes présentes venues par
+  // l'événement, `client` = adresse de l'appareil (null : inconnue, seule la
+  // limite du bar compte). « ok », « busy » (trop de créations dans la
+  // minute : réessayer) ou « full » (plafond de personnes).
+  admit(total, client, now = Date.now()) {
+    this.recent = this.recent.filter(entry => now - entry.at < 60000);
+    if (total >= MAX_PEOPLE) return 'full';
+    if (this.recent.length >= CREATIONS_PER_MINUTE || (client !== null &&
+      this.recent.filter(entry => entry.client === client).length >= CLIENT_CREATIONS_PER_MINUTE)) return 'busy';
+    this.recent.push({ at: now, client });
+    return 'ok';
   }
 
   // Création annulée (sauvegarde impossible) : elle ne compte pas.
-  release(at) {
-    const index = this.recent.lastIndexOf(at);
-    if (index >= 0) this.recent.splice(index, 1);
+  release(at, client) {
+    for (let index = this.recent.length - 1; index >= 0; index--) {
+      if (this.recent[index].at === at && this.recent[index].client === client) { this.recent.splice(index, 1); return; }
+    }
   }
 
   serialize() {
@@ -83,4 +91,4 @@ class PrivateEvent {
   }
 }
 
-module.exports = { PrivateEvent, CREATIONS_PER_MINUTE, MAX_PEOPLE };
+module.exports = { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE };

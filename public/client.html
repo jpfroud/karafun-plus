@@ -1289,12 +1289,18 @@
   // lecture (un aperçu de lien ne crée personne). Une seule demande par page ;
   // un réseau coupé laisse réessayer au rafraîchissement suivant.
   let entry = { status: '', recover: null, error: '' };
+  // Beaucoup d'arrivées dans la même minute (PRIVATE_EVENT_BUSY) : la page
+  // réessaie seule, quelques fois, toutes les 15 à 20 s (étalé pour ne pas
+  // revenir tous ensemble). Le plafond de l'événement, lui, ne se réessaie pas.
+  const ENTRY_RETRIES = 4;
+  let entryRetries = 0;
   async function openPersonalEntry() {
     if (!state.table?.individual || entry.status) return;
     // Son chanteur est déjà sur ce téléphone : le QR d'événement n'a plus
-    // d'objet. Un chanteur marqué parti (doublon) n'empêche pas le QR
+    // d'objet. Un chanteur marqué parti (doublon), ou une place encore sans
+    // prénom (QR de l'événement rescanné ailleurs), n'empêche pas le QR
     // personnel de proposer la reprise de son profil.
-    if (soloInvitation ? managedPeople().length : list(state.managedIds).length) {
+    if (soloInvitation ? managedPeople().filter(person => !person.nameRequired).length : list(state.managedIds).length) {
       if (eventToken) forgetEventToken();
       return;
     }
@@ -1315,8 +1321,18 @@
       // Même QR ouvert sur un autre navigateur : « C'est bien toi ? »
       entry = { status: 'recover', recover: result.recover, error: '' };
     } catch (error) {
-      // Message gardé dans sa forme traduisible : il suit le changement de langue.
-      entry = error.status ? { status: 'failed', recover: null, error: error.localized || (() => error.message) } : { status: '', recover: null, error: '' };
+      if (error.code === 'PRIVATE_EVENT_BUSY' && path === '/api/table/enter' && entryRetries < ENTRY_RETRIES) {
+        entryRetries++;
+        entry = { status: 'retry', recover: null, error: '' };
+        setTimeout(() => {
+          if (entry.status !== 'retry') return;
+          entry.status = '';
+          openPersonalEntry();
+        }, 15000 + Math.floor(Math.random() * 5000));
+      } else {
+        // Message gardé dans sa forme traduisible : il suit le changement de langue.
+        entry = error.status ? { status: 'failed', recover: null, error: error.localized || (() => error.message) } : { status: '', recover: null, error: '' };
+      }
     }
     render();
   }
@@ -1446,6 +1462,7 @@
       // QR ouvert (individuel ou d'événement) : la page s'en charge seule.
       const opening = entry.status === 'pending' || (!entry.status && (soloInvitation || (eventToken && state.privateEventReady)));
       const explanation = entry.status === 'failed' ? entry.error()
+        : entry.status === 'retry' ? t('Beaucoup d’arrivées en même temps : nouvel essai dans un instant…')
         : entry.status === 'recover' ? t('Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.', { name: entry.recover.name })
           : opening ? t('Un instant : ouverture de ton QR…')
             : eventToken ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
@@ -1509,7 +1526,7 @@
   }
 
   $('transferBox').addEventListener('click', event => {
-    if (event.target.closest('[data-transfer-dismiss]')) { forgetTransferLink(); renderTransfer(); return; }
+    if (event.target.closest('[data-transfer-dismiss]')) { forgetTransferLink(); renderTransfer(); renderNameGate(); return; }
     const claim = event.target.closest('[data-transfer-claim]');
     const offer = state?.transferOffer;
     if (!claim || !offer?.personId) return;
@@ -2204,9 +2221,14 @@
   // Fenêtre de prénom : tant que la personne du téléphone n'a qu'un prénom
   // provisoire (« Solo 3 »), rien d'autre n'est visible ni possible. Aucune
   // fermeture : ni croix, ni Échap, ni Retour.
+  // Une reprise proposée (lien de transfert ou clé personnelle d'une autre
+  // personne) passe avant : « Solo 3 » vient souvent d'un QR rescanné
+  // depuis une autre application, et la personne a déjà son prénom.
   let namePersonId = '';
   function renderNameGate() {
-    const person = managedPeople().find(candidate => candidate.nameRequired);
+    const offer = transferLink ? state?.transferOffer : null;
+    const takeover = entry.status === 'recover' || (!!offer?.personId && !manages(offer.personId));
+    const person = takeover ? null : managedPeople().find(candidate => candidate.nameRequired);
     namePersonId = person ? String(person.id) : '';
     if (person && $('nameGate').hidden && !$('sheet').hidden) closeSheet();
     $('nameGate').hidden = !person;
