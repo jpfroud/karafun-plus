@@ -735,10 +735,10 @@
       $('shareUrl').value = result.url || '';
       $('shareHelp').textContent = result.url ?
         'Fais scanner ce QR code par le nouveau téléphone (ou envoie-lui le lien) : la page propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd seulement ce chanteur ; ses autres chanteurs n’y changent pas.' :
-        solo ? 'Sur l’autre téléphone, ouvre la page karaoké du bar, touche « Je suis … » et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.' :
+        solo ? 'Sur l’autre téléphone, ouvre la page karaoké du bar (si elle demande un prénom, touche d’abord « Déjà inscrit ? J’ai un code »), touche « Je suis … » et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.' :
         'Sur l’autre téléphone, ouvre la page de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom, et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.';
       $('shareCodeHelp').textContent = solo ?
-        'Sans appareil photo : ouvrir la page karaoké du bar, toucher « Je suis … » puis saisir ce code.' :
+        'Sans appareil photo : ouvrir la page karaoké du bar (si elle demande un prénom, toucher d’abord « Déjà inscrit ? J’ai un code »), toucher « Je suis … » puis saisir ce code.' :
         'Sans appareil photo : sur la page de la table, toucher « Voir toute la table », puis « C’est moi » à côté du prénom, et saisir ce code.';
       $('shareExpires').textContent = [result.linkExpiresAt ? `QR et lien valables jusqu’à ${hhmm(result.linkExpiresAt)}` : '',
         result.expiresAt ? `code jusqu’à ${hhmm(result.expiresAt)}` : ''].filter(Boolean).join(', ') + ' ; un seul usage.';

@@ -905,7 +905,7 @@ test('transférer : copie refusée, lien https sans heure, code seul et « En so
   await solo.tap('peopleList', '[data-share-person="alice"]');
   assert.equal(solo.find('sheetPanel', 'h3').textContent, 'Changer de téléphone');
   assert.ok(solo.sheetHtml().includes(encodeURIComponent('Lien pour récupérer mes chansons du karaoké sur ce téléphone :')));
-  assert.match(solo.sheetHtml(), /ouvre le QR que te montre le bar, touche « Je suis Alice »/);
+  assert.match(solo.sheetHtml(), /ouvre le QR que te montre le bar \(si la page demande un prénom, touche d’abord « Déjà inscrit\u00a0\? J’ai un code »\), touche « Je suis Alice »/);
   assert.doesNotMatch(solo.sheetHtml(), /En solo/, 'le groupe n’est jamais nommé');
 });
 
@@ -3030,8 +3030,11 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
   await page.poll();
   assert.equal(postsTo(page, '/api/table/enter').length, 1);
 
-  const inactive = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false, privateEventReady: false }));
-  assert.equal(inactive.posts.length, 0, 'QR coupé ou renouvelé : rien n’est demandé');
+  // QR coupé ou renouvelé : la page demande quand même (un inscrit de ce
+  // navigateur y retrouve sa place) ; le refus dit « QR plus actif ».
+  const inactive = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false, privateEventReady: false }), url => url === '/api/table/enter'
+    ? reply(403, { error: 'Ce QR d’événement n’est plus actif. Demande au bar.', code: 'PRIVATE_EVENT' }) : undefined);
+  assert.equal(postsTo(inactive, '/api/table/enter').length, 1);
   assert.equal(inactive.node('noSingerText').textContent, 'Ce QR d’événement n’est plus actif. Demande au bar.');
 
   const mine = await soloPage('?evenement=SECRET-EV', soloState({ privateEventReady: true, tablePeople: [person('s2', 'Léa')], managedIds: ['s2'] }));
@@ -3745,4 +3748,124 @@ test('relecture : partage de la table refusé, le lien est copié ; partage annu
   assert.equal(cancelled.shares.length, 1);
   assert.deepEqual(cancelled.copies, [], 'annulé par la personne : pas de copie');
   assert.equal(cancelled.toast().hidden, true, 'ni message');
+});
+
+// ================================================================ troisième relecture finale (RT1, RT3)
+// Regression: troisième relecture finale (RT1) — un soliste dont le nouveau
+// navigateur avait ouvert un QR montré par le bar se retrouvait dans la
+// fenêtre de prénom (« Solo 2 »), sans accès au code à 4 chiffres : redonner
+// son prénom répondait « déjà inscrit », et il finissait inscrit deux fois.
+test('fenêtre de prénom : « Déjà inscrit ? J’ai un code » reprend son profil par le code, la fenêtre se ferme (FR et EN)', async () => {
+  let refuse = true;
+  const respond = (url, body, self) => {
+    if (url === '/api/table/enter') {
+      self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
+      self.state.managedIds = ['s2'];
+      return { id: 's2', token: 'jeton-s2', nameRequired: true };
+    }
+    if (url === '/api/table/person/claim') {
+      if (refuse) { refuse = false; return reply(400, { error: 'Code de partage incorrect.' }); }
+      self.state.tablePeople = [person('c1', 'Clara')];
+      self.state.managedIds = ['c1'];
+      self.state.recoveryPeople = [];
+      return { id: 'c1', token: 'jeton-c1' };
+    }
+    return undefined;
+  };
+  const session = sessionMap();
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true,
+    recoveryPeople: [person('c1', 'Clara'), person('d1', 'Dan')] }), respond, { session });
+  assert.equal(page.node('nameGate').hidden, false);
+  assert.equal(page.node('claimBox').hidden, false, 'une place sans prénom ne cache pas la reprise');
+  const link = page.node('nameGateClaimLink');
+  assert.equal(link.hidden, false);
+  assert.equal(link.textContent, 'Déjà inscrit\u00a0? J’ai un code');
+  assert.equal(page.node('nameGateClaim').hidden, true);
+  await page.click(link);
+  assert.equal(page.node('nameGateForm').hidden, true, 'le prénom laisse la place au code');
+  assert.equal(page.node('nameGateClaimLink').hidden, true);
+  assert.equal(page.node('nameGateClaim').hidden, false);
+  assert.equal(page.document.activeElement, page.node('nameGateClaimTitle'));
+  assert.equal(page.find('nameGateClaim', '[data-gate-claim-person="c1"]').textContent, 'Je suis Clara · reprendre mes chansons');
+  // Retour : du choix du prénom à la fenêtre de prénom.
+  await page.tap('nameGateClaim', '[data-gate-claim-back]');
+  assert.equal(page.node('nameGateForm').hidden, false);
+  assert.equal(page.node('nameGateClaim').hidden, true);
+  await page.click(page.node('nameGateClaimLink'));
+  await page.tap('nameGateClaim', '[data-gate-claim-person="c1"]');
+  assert.match(page.node('nameGateClaim').textContent, /Tu es Clara\u00a0\? Demande le code au bar ou à ton ancien téléphone\./);
+  const code = page.node('nameGateClaimCode');
+  assert.equal(code.getAttribute('inputmode'), 'numeric');
+  assert.equal(page.document.activeElement, code);
+  // Un rafraîchissement ne vide pas le code en cours de saisie.
+  code.value = '12';
+  await page.poll();
+  assert.equal(page.node('nameGateClaimCode').value, '12');
+  page.node('nameGateClaimCode').value = '1234';
+  await page.submit('nameGateClaimForm');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', personId: 'c1', code: '1234' }]);
+  assert.deepEqual(page.toast(), { text: 'Code de partage incorrect.', bad: true, warn: false, hidden: false });
+  assert.equal(page.node('nameGate').hidden, false, 'refusé : la fenêtre reste');
+  await page.submit('nameGateClaimForm');
+  assert.equal(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')).c1, 'jeton-c1');
+  assert.equal(page.node('nameGate').hidden, true, 'repris : la fenêtre de prénom se ferme');
+  assert.equal(page.node('mainContent').hidden, false);
+  assert.equal(page.node('tableName').textContent, 'Clara');
+  assert.equal(page.toast().text, 'Tu gères maintenant Clara sur ce téléphone.');
+  assert.equal(session.getItem('kfEventPlace:Comptoir:secret'), '', 'la place « Solo 2 » retirée n’est pas un « QR plus actif »');
+
+  // Aucun code demandé pour l'instant : la marche à suivre.
+  const none = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), respond);
+  await none.click(none.node('nameGateClaimLink'));
+  assert.equal(none.node('nameGateClaim').querySelector('[data-gate-claim-person]'), null);
+  assert.match(none.node('nameGateClaim').textContent, /Demande d’abord au bar ou à ton ancien téléphone un code de reprise à 4 chiffres : ton prénom apparaîtra ici\./);
+  // Le code demandé entre-temps : son prénom apparaît au rafraîchissement suivant.
+  none.state.recoveryPeople = [person('c1', 'Clara')];
+  await none.poll();
+  assert.ok(none.find('nameGateClaim', '[data-gate-claim-person="c1"]'));
+
+  // En anglais, et la langue change sans perdre l'étape.
+  const english = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true,
+    recoveryPeople: [person('c1', 'Clara')] }), respond, { languages: ['en'] });
+  assert.equal(english.node('nameGateClaimLink').textContent, 'Already signed up? I have a code');
+  await english.click(english.node('nameGateClaimLink'));
+  assert.equal(english.node('nameGateClaimTitle').textContent, 'Recover my songs');
+  assert.equal(english.find('nameGateClaim', '[data-gate-claim-person="c1"]').textContent, 'I am Clara · recover my songs');
+  await english.tap('nameGateClaim', '[data-gate-claim-person="c1"]');
+  assert.equal(english.find('nameGateClaim', '[data-gate-claim-back]').textContent, 'Back');
+  english.node('nameGateClaimCode').value = '98';
+  await english.tap('nameGateLang', '[data-lang="fr"]');
+  assert.equal(english.node('nameGateClaimCode').value, '98', 'le code tapé reste');
+  assert.equal(english.find('nameGateClaim', 'label').textContent, 'Code de reprise à 4 chiffres');
+  // Retour depuis le code : le choix du prénom.
+  await english.tap('nameGateClaim', '[data-gate-claim-back]');
+  assert.ok(english.find('nameGateClaim', '[data-gate-claim-person="c1"]'));
+});
+
+// Regression: troisième relecture finale (RT3) — après « Renouveler le QR »
+// ou le mode coupé, la page d'un inscrit qui avait perdu son jeton ne
+// demandait plus rien (QR « plus actif ») : le serveur la retrouve par son
+// cookie, la page doit donc envoyer sa demande.
+test('événement privé : QR renouvelé ou coupé, un inscrit de ce navigateur retrouve sa place', async () => {
+  const page = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false, privateEventReady: false }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    self.state.tablePeople = [person('l1', 'Léa')];
+    self.state.managedIds = ['l1'];
+    return { id: 'l1', token: 'jeton-l1', nameRequired: false, resumed: true };
+  });
+  assert.deepEqual(postsTo(page, '/api/table/enter'), [['/api/table/enter', { table: 'Comptoir', access: 'secret', event: 'VIEUX' }]]);
+  assert.deepEqual(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')), { l1: 'jeton-l1' });
+  assert.equal(page.node('tableName').textContent, 'Léa');
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(page.node('noSingerBox').hidden, true);
+  assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret');
+
+  // Refusé : « QR plus actif », sans « Réessayer » ni nouvel essai.
+  const refused = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false, privateEventReady: false }), url => url === '/api/table/enter'
+    ? reply(403, { error: 'Ce QR d’événement n’est plus actif. Demande au bar.', code: 'PRIVATE_EVENT' }) : undefined, { languages: ['en'] });
+  assert.equal(refused.node('noSingerText').textContent, 'This event QR code is no longer active. Ask the bar.');
+  assert.equal(refused.node('noSingerTitle').textContent, 'To add a song');
+  assert.equal(refused.node('noSingerActions').querySelector('[data-entry-retry]'), null);
+  await refused.poll();
+  assert.equal(postsTo(refused, '/api/table/enter').length, 1);
 });

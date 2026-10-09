@@ -657,7 +657,7 @@ test('repères chanteurs : transfert vers un autre téléphone (lien, code, erre
   assert.equal(page.$('shareUrl').hidden, true);
   assert.equal(page.$('shareLinkActions').hidden, true);
   assert.match(page.$('shareHelp').textContent, /saisis ce code/);
-  assert.match(page.$('shareCodeHelp').textContent, /ouvrir la page karaoké du bar, toucher « Je suis … »/);
+  assert.match(page.$('shareCodeHelp').textContent, /ouvrir la page karaoké du bar \(si elle demande un prénom, toucher d’abord « Déjà inscrit \? J’ai un code »\), toucher « Je suis … »/);
   assert.doesNotMatch(page.$('shareCodeHelp').textContent, /En solo/, 'fenêtre montrée au client : le groupe n’est pas nommé');
   assert.equal(page.$('shareExpires').textContent, `code jusqu’à ${hhmm(expiresAt)} ; un seul usage.`);
   page.$('shareDialog').close();

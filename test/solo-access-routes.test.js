@@ -78,7 +78,7 @@ function harness({ persistent = false } = {}) {
     setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, access, soloInvitations, privateEvent, staffState, journal,
-      ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, STAFF_KEY, PORT, PUBLIC_PORT,
+      ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, journalSample, publicState, STAFF_KEY, PORT, PUBLIC_PORT,
       handle: server.listeners('request')[0] };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
@@ -1443,4 +1443,128 @@ test('durée envoyée par un téléphone : seulement un nombre borné, pour un t
   // Ce que les téléphones reçoivent.
   const view = await get(f, `/api/state?table=7&access=${tb.access}`, { headers: { 'x-person-tokens': JSON.stringify([people[0].token]) } });
   assert.ok(view.text.length < 50000, 'aucune durée géante renvoyée aux téléphones');
+});
+
+// ---------------------------------------------------------------- troisième relecture finale (RT1 à RT3)
+// Regression: troisième relecture finale (RT1) — un soliste dont le nouveau
+// navigateur avait ouvert un QR montré par le bar (QR de l'événement ou QR
+// personnel neuf) avait une place « Solo N » : la liste de reprise lui était
+// cachée, le code à 4 chiffres ne servait plus, et redonner son prénom
+// répondait NAME_TAKEN (inscrit deux fois).
+test('reprise par code : la place sans prénom de ce navigateur (événement ou QR neuf) laisse voir et utiliser le code', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const clara = await opened(f, tb, invite());
+  await post(f, '/api/table/person/rename', { ...tb, personId: clara.personId, token: clara.token, name: 'Clara' }, { cookie: clara.cookie });
+  const share = await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  assert.equal(share.status, 200, share.text);
+
+  // Nouveau navigateur : QR de l'événement, place « Solo 2 » sans prénom.
+  const ghost = await eventEntry(f, tb, secret);
+  assert.equal(f.sched.people.get(ghost.personId).nameRequired, true);
+  const view = (await stateOf(f, tb, ghost)).body;
+  assert.deepEqual(view.managedIds, [ghost.personId]);
+  assert.deepEqual(plain(view.recoveryPeople), [{ id: clara.personId, name: 'Clara' }], 'la reprise par code reste proposée');
+  // Même vue par l'ancienne lecture au jeton seul.
+  const byToken = await get(f, `/api/state?token=${ghost.token}`, { cookie: ghost.cookie });
+  assert.deepEqual(plain(byToken.body.recoveryPeople), [{ id: clara.personId, name: 'Clara' }]);
+  const claimed = await post(f, '/api/table/person/claim', { ...tb, personId: clara.personId, code: share.body.code }, { cookie: ghost.cookie });
+  assert.equal(claimed.status, 200, claimed.text);
+  assert.equal(f.sched.people.has(ghost.personId), false, 'la place sans prénom part : jamais deux places');
+  const back = { ...tb, personId: clara.personId, token: claimed.body.token, cookie: cookieOf(claimed) || ghost.cookie };
+  assert.deepEqual((await stateOf(f, tb, back)).body.managedIds, [clara.personId]);
+  assert.deepEqual((await stateOf(f, tb, back)).body.recoveryPeople, [], 'nommée : plus de liste de reprise');
+
+  // QR personnel neuf ouvert dans un autre navigateur : même chose.
+  const share2 = await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  const fresh = await opened(f, tb, invite());
+  assert.equal(f.sched.people.get(fresh.personId).nameRequired, true);
+  assert.deepEqual(plain((await stateOf(f, tb, fresh)).body.recoveryPeople), [{ id: clara.personId, name: 'Clara' }]);
+  const again = await post(f, '/api/table/person/claim', { ...tb, personId: clara.personId, code: share2.body.code }, { cookie: fresh.cookie });
+  assert.equal(again.status, 200, again.text);
+  assert.equal(f.sched.people.has(fresh.personId), false);
+
+  // Une place nommée, elle, ne voit jamais les codes des autres.
+  const share3 = await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  assert.equal(share3.status, 200);
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  assert.deepEqual((await stateOf(f, tb, lea)).body.recoveryPeople, []);
+  assert.deepEqual((await get(f, `/api/state?token=${lea.token}`, { cookie: lea.cookie })).body.recoveryPeople, []);
+});
+
+// Regression: troisième relecture finale (RT1) — l'ancien navigateur d'une
+// place sans prénom reprise ailleurs (clé personnelle) n'en est plus le
+// téléphone actuel : il ne voit pas la liste de reprise pour autant.
+test('reprise par code : une place sans prénom dont ce navigateur n’est plus le téléphone actuel ne montre pas la liste', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const clara = await opened(f, tb, invite());
+  await post(f, '/api/table/person/rename', { ...tb, personId: clara.personId, token: clara.token, name: 'Clara' }, { cookie: clara.cookie });
+  await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  const key = invite();
+  const first = await opened(f, tb, key);
+  const moved = await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { remote: '10.0.9.9' });
+  assert.equal(moved.body.id, first.personId, 'reprise sans confirmation : place encore sans prénom');
+  const view = (await get(f, `/api/state?token=${first.token}`, { cookie: first.cookie })).body;
+  assert.ok(!view.recoveryPeople?.length, 'ancien navigateur : rien');
+});
+
+// Regression: troisième relecture finale (RT2) — le relevé de la file comptait
+// les places « Solo N » sans prénom parmi les personnes présentes, gonflant la
+// courbe « Personnes présentes » des statistiques ; la tuile « En solo » du
+// bar les comptait aussi comme solistes.
+test('personnes présentes : relevé du journal, tuile « En solo » et effectif de la page sans les places sans prénom', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  await eventEntry(f, tb, secret);
+  await opened(f, tb, invite());
+  const gone = await eventEntry(f, tb, secret, 'Zoé');
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: gone.personId });
+  f.journalSample(Date.now());
+  assert.equal(events(f, 'queue.sample').at(-1).present, 1, 'Léa seule : ni « Solo N », ni partie');
+  const tile = f.staffState().tables.find(t => t.id === 'Comptoir');
+  assert.equal(tile.activeCount, 1, 'tuile « En solo » : 1 soliste');
+  assert.equal(tile.count, 4, 'inscrits : toutes les fiches');
+  assert.equal((await stateOf(f, tb, lea)).body.table.activeCount, 1);
+});
+
+// Regression: troisième relecture finale (RT3) — après « Renouveler le QR » ou
+// le mode coupé, une personne inscrite (avec prénom) dont la page avait perdu
+// son jeton mais gardé le cookie, qui rescannait le QR de l'événement qu'elle
+// avait, était refusée (« QR plus actif ») : les inscrits gardent leur accès.
+test('événement privé : un inscrit nommé qui rescanne l’ancien QR retrouve sa place ; créer une place exige le QR actif', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  const unnamed = await opened(f, tb, invite()); // QR individuel, encore sans prénom
+  const gone = await eventEntry(f, tb, secret, 'Zoé');
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: gone.personId });
+  await post(f, staff(f, '/api/staff/private-event'), { rotate: true });
+  const size = f.sched.people.size;
+
+  const back = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: lea.cookie });
+  assert.equal(back.status, 200, back.text);
+  assert.deepEqual([back.body.id, back.body.token, back.body.nameRequired, back.body.resumed], [lea.personId, lea.token, false, true]);
+  // Sans place nommée : l'ancien QR ne crée rien, ne reprend rien.
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: unnamed.cookie })).body.code, 'PRIVATE_EVENT');
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: gone.cookie })).body.code, 'PRIVATE_EVENT');
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret })).body.code, 'PRIVATE_EVENT');
+  assert.equal(f.sched.people.size, size, 'personne de créé');
+
+  // Mode coupé : même chose.
+  await post(f, staff(f, '/api/staff/private-event'), { enabled: false });
+  const off = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: lea.cookie });
+  assert.equal(off.status, 200, off.text);
+  assert.equal(off.body.id, lea.personId);
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: 'A'.repeat(22) })).status, 403);
+  // Pas pour une table ordinaire, même avec le cookie d'un soliste.
+  const table = openTable(f, '3');
+  assert.equal((await post(f, '/api/table/enter', { ...table, event: secret }, { cookie: lea.cookie })).body.code, 'PRIVATE_EVENT');
 });

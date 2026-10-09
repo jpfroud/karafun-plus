@@ -218,6 +218,9 @@
   .client .name-gate-panel h2 { font-size: 24px; margin: 0 0 8px; }
   .client .name-gate-panel .notice { margin: 10px 0 0; }
   .client .name-gate-panel .btn { margin-top: 14px; }
+  .client .name-gate-panel h3:focus { outline: none; }
+  .client .name-gate-claim-people { display: grid; gap: 8px; margin-top: 10px; }
+  .client .name-gate-claim-people .btn { margin-top: 0; }
   /* Page d'une table : QR à faire scanner, toute la table dans une fiche. */
   .client .invite-card .row h2 { margin: 0; }
   .client .table-all-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
@@ -418,13 +421,15 @@
       <button type="button" data-lang="en" lang="en" aria-label="English" aria-pressed="false">EN</button>
     </div>
     <h2 id="nameGateTitle" tabindex="-1" data-i18n>Bienvenue ! Quel est ton prénom ?</h2>
-    <p class="small muted" data-i18n>Il s’affiche dans la file et sur l’écran du bar quand c’est ton tour.</p>
+    <p id="nameGateIntro" class="small muted" data-i18n>Il s’affiche dans la file et sur l’écran du bar quand c’est ton tour.</p>
     <form id="nameGateForm">
       <label class="field" for="nameGateInput" data-i18n>Ton prénom</label>
       <input id="nameGateInput" type="text" maxlength="24" autocomplete="given-name" required placeholder="Ex. Marie" data-i18n-attr="placeholder">
       <p id="nameGateError" class="notice warn small" role="alert" hidden></p>
       <button class="btn primary wide" type="submit" data-i18n>Valider</button>
     </form>
+    <button type="button" class="link-btn join-others" id="nameGateClaimLink" data-i18n>Déjà inscrit ? J’ai un code</button>
+    <div id="nameGateClaim" hidden></div>
   </div>
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
@@ -591,6 +596,10 @@
   const managedIds = () => new Set(list(state?.managedIds).map(String));
   const manages = id => managedIds().has(String(id));
   const managedPeople = () => list(state?.tablePeople).filter(person => person.active !== false && manages(person.id));
+  // Une place « Solo N » encore sans prénom (un QR montré par le bar, ouvert
+  // sur ce nouveau téléphone) n'empêche pas la reprise par code : seule une
+  // personne avec son prénom la ferme.
+  const holdsNamedPlace = () => managedPeople().some(person => !person.nameRequired);
 
   function eta(value) {
     if (value == null || value === '') return '';
@@ -1339,7 +1348,10 @@
       if (eventToken) forgetEventToken();
       return;
     }
-    const path = soloInvitation ? '/api/table/solo/open' : eventToken && state.privateEventReady ? '/api/table/enter' : '';
+    // QR de l'événement renouvelé ou coupé (privateEventReady faux) : la
+    // demande part quand même, un inscrit de ce navigateur y retrouve sa
+    // place ; sinon le refus dit « QR plus actif ».
+    const path = soloInvitation ? '/api/table/solo/open' : eventToken ? '/api/table/enter' : '';
     if (!path) return;
     entry = { status: 'pending', recover: null, error: '' };
     try {
@@ -1361,7 +1373,10 @@
     } catch (error) {
       const delay = error.retryAfter >= 1 ? Math.min(error.retryAfter, 120) * 1000 + Math.floor(Math.random() * 3000)
         : 15000 + Math.floor(Math.random() * 5000);
-      if (error.code === 'PRIVATE_EVENT_BUSY' && path === '/api/table/enter' && entryWaited + delay <= ENTRY_RETRY_MS) {
+      if (error.code === 'PRIVATE_EVENT' && path === '/api/table/enter') {
+        // QR plus actif : le message vient de eventToken, sans « Réessayer ».
+        entry = { status: 'expired', recover: null, error: '' };
+      } else if (error.code === 'PRIVATE_EVENT_BUSY' && path === '/api/table/enter' && entryWaited + delay <= ENTRY_RETRY_MS) {
         entryWaited += delay;
         entry = { status: 'retry', recover: null, error: '' };
         setTimeout(() => {
@@ -1387,7 +1402,7 @@
     const waiting = list(state.waiting);
     const individual = !!state.table?.individual;
     const owned = managedPeople();
-    const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
+    const recoveryPeople = individual && !holdsNamedPlace() ? list(state.recoveryPeople) : [];
     const count = individual ? Number(state.table?.count ?? people.length) : people.length;
     // « En solo » n'a pas de nombre de places : seule une table ordinaire est complète.
     const full = !individual && Number.isInteger(state.table?.headcount) && count >= state.table.headcount;
@@ -1497,11 +1512,11 @@
   function renderSongAccess(people, others, full) {
     const owned = managedPeople();
     const individual = !!state.table?.individual;
-    const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
+    const recoveryPeople = individual && !holdsNamedPlace() ? list(state.recoveryPeople) : [];
     const canRegister = !full && Number.isInteger(state.table?.headcount) && state.table.headcount > 0;
     if (individual) {
       // QR ouvert (individuel ou d'événement) : la page s'en charge seule.
-      const opening = entry.status === 'pending' || (!entry.status && (soloInvitation || (eventToken && state.privateEventReady)));
+      const opening = entry.status === 'pending' || (!entry.status && (soloInvitation || eventToken));
       const explanation = entry.status === 'failed' ? entry.error()
         : entry.status === 'retry' ? t('Beaucoup d’arrivées en même temps : nouvel essai dans un instant…')
         : entry.status === 'recover' ? t('Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.', { name: entry.recover.name })
@@ -1613,7 +1628,7 @@
       ${linkPart}
       <details class="transfer-fallback"${share.url ? '' : ' open'}><summary>${esc(t('Impossible de scanner ? Utilise un code'))}</summary>
         <p class="small muted">${esc(individual
-          ? t('Sur l’autre téléphone, ouvre le QR que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name })
+          ? t('Sur l’autre téléphone, ouvre le QR que te montre le bar (si la page demande un prénom, touche d’abord « Déjà inscrit ? J’ai un code »), touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name })
           : t('Sur l’autre téléphone, ouvre le QR code de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom {name}, et saisis ce code valable 10 minutes :', { name }))}</p>
         <p class="share-code">${esc(share.code)}</p>
       </details>`);
@@ -1636,7 +1651,7 @@
 
   function goToAccess(kind) {
     if (state?.table?.individual && kind === 'claim' &&
-      (managedPeople().length || !list(state.recoveryPeople).length)) return;
+      (holdsNamedPlace() || !list(state.recoveryPeople).length)) return;
     // Table : on retrouve sa fiche dans la liste de toute la table (« C'est moi »).
     if (kind === 'claim' && !state?.table?.individual) return openTableSheet();
     closeSheet({ keepPending: true });
@@ -2226,7 +2241,7 @@
 
   function openClaim(personId) {
     const individual = !!state?.table?.individual;
-    if (individual && managedPeople().length) return;
+    if (individual && holdsNamedPlace()) return;
     const person = individual
       ? list(state.recoveryPeople).find(candidate => String(candidate.id) === String(personId))
       : personById(personId);
@@ -2238,14 +2253,24 @@
     $('claimForm').addEventListener('submit', e => {
       e.preventDefault();
       perform($('claimSubmit'), async () => {
-        const result = await post('/api/table/person/claim', { personId: person.id, code: $('claimCode').value,
-          ...(individual && soloInvitation ? { invitation: soloInvitation } : {}) });
-        savePersonToken(result.id, result.token);
-        if (individual && soloInvitation) forgetSoloInvitation();
+        await claimByCode(person, $('claimCode').value);
         closeSheet({ keepPending: true }); await refresh(); toast(t('{name} est maintenant géré sur ce téléphone.', { name: person.name }));
         continuePendingSong();
       });
     });
+  }
+
+  // Reprise par le code à 4 chiffres (fiche de reprise ou fenêtre de prénom).
+  // En solo, le serveur retire la place sans prénom de ce téléphone : elle
+  // n'est pas un « QR d'événement plus actif ».
+  async function claimByCode(person, code) {
+    const individual = !!state?.table?.individual;
+    const result = await post('/api/table/person/claim', { personId: person.id, code,
+      ...(individual && soloInvitation ? { invitation: soloInvitation } : {}) });
+    savePersonToken(result.id, result.token);
+    if (individual && soloInvitation) forgetSoloInvitation();
+    if (individual && eventPlaceId) rememberEventPlace('');
+    return result;
   }
 
   // « Récupérer mes chansons » avec le QR individuel rouvert ailleurs : même
@@ -2279,11 +2304,80 @@
     $('nameGate').hidden = !person;
     $('tabsNav').hidden = !!person;
     $('mainContent').hidden = !!person;
+    if (!person) gateClaim = null;
+    renderGateClaim();
     syncBackground();
     // Fenêtre qui s'ouvre : son titre est annoncé ; le champ n'a pas le
     // focus, pour ne pas ouvrir le clavier d'iOS d'office.
     if (opening) $('nameGateTitle').focus({ preventScroll: true });
   }
+  // « Déjà inscrit ? J’ai un code » : la reprise par code (son prénom, puis
+  // le code à 4 chiffres) dans la fenêtre de prénom, qui recouvre la page.
+  // gateClaim : null (prénom), { personId: '' } (choix du prénom) ou
+  // { personId } (saisie du code). Redessinée seulement si l'étape, la
+  // langue ou la liste change ; le code en cours de saisie reste.
+  let gateClaim = null;
+  let gateClaimShown = '';
+  function renderGateClaim() {
+    const box = $('nameGateClaim');
+    $('nameGateForm').hidden = !!gateClaim;
+    $('nameGateIntro').hidden = !!gateClaim;
+    $('nameGateClaimLink').hidden = !!gateClaim;
+    box.hidden = !gateClaim;
+    if (!gateClaim) { gateClaimShown = ''; box.innerHTML = ''; return; }
+    const candidates = list(state?.recoveryPeople);
+    const chosen = gateClaim.personId ? candidates.find(candidate => String(candidate.id) === gateClaim.personId) : null;
+    // Code expiré entre-temps : retour au choix du prénom.
+    if (!chosen) gateClaim.personId = '';
+    const signature = JSON.stringify([lang, chosen ? [chosen.id, chosen.name] : candidates.map(candidate => [candidate.id, candidate.name])]);
+    if (signature === gateClaimShown) return;
+    gateClaimShown = signature;
+    const typed = $('nameGateClaimCode')?.value || '';
+    const back = `<button type="button" class="btn ghost wide" data-gate-claim-back>${esc(t('Retour'))}</button>`;
+    const title = `<h3 id="nameGateClaimTitle" tabindex="-1">${esc(t('Récupérer mes chansons'))}</h3>`;
+    box.innerHTML = chosen ? `${title}
+      <p class="small muted">${esc(t('Tu es {name} ? Demande le code au bar ou à ton ancien téléphone.', { name: chosen.name }))} ${esc(t('Le code dure 10 minutes.'))}</p>
+      <form id="nameGateClaimForm"><label class="field" for="nameGateClaimCode">${esc(t('Code de reprise à 4 chiffres'))}</label><input id="nameGateClaimCode" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" required>
+      <button type="submit" id="nameGateClaimSubmit" class="btn primary wide">${esc(t('Prendre en charge'))}</button></form>${back}`
+      : `${title}<p class="small muted">${esc(candidates.length
+        ? t('Si tu étais déjà inscrit, choisis ton prénom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.')
+        : t('Demande d’abord au bar ou à ton ancien téléphone un code de reprise à 4 chiffres : ton prénom apparaîtra ici.'))}</p>
+      <div class="name-gate-claim-people">${candidates.map(candidate => `<button type="button" class="btn" data-gate-claim-person="${esc(candidate.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: candidate.name }))}</button>`).join('')}</div>${back}`;
+    if (chosen && typed) $('nameGateClaimCode').value = typed;
+  }
+  $('nameGateClaimLink').addEventListener('click', () => {
+    gateClaim = { personId: '' };
+    renderGateClaim();
+    $('nameGateClaimTitle').focus({ preventScroll: true });
+  });
+  $('nameGateClaim').addEventListener('click', event => {
+    const chosen = event.target.closest('[data-gate-claim-person]');
+    if (chosen) {
+      gateClaim = { personId: String(chosen.dataset.gateClaimPerson) };
+      renderGateClaim();
+      $('nameGateClaimCode')?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.target.closest('[data-gate-claim-back]')) {
+      gateClaim = gateClaim?.personId ? { personId: '' } : null;
+      renderGateClaim();
+      (gateClaim ? $('nameGateClaimTitle') : $('nameGateTitle')).focus({ preventScroll: true });
+    }
+  });
+  $('nameGateClaim').addEventListener('submit', event => {
+    if (event.target.id !== 'nameGateClaimForm') return;
+    event.preventDefault();
+    const person = list(state?.recoveryPeople).find(candidate => String(candidate.id) === gateClaim?.personId);
+    if (!person) return;
+    perform($('nameGateClaimSubmit'), async () => {
+      await claimByCode(person, $('nameGateClaimCode').value);
+      gateClaim = null;
+      await refresh();
+      toast(t('Tu gères maintenant {name} sur ce téléphone.', { name: person.name }));
+      continuePendingSong();
+    });
+  });
+
   // Message de la fenêtre : gardé comme fonction qui le traduit (clé
   // française et valeurs, ou message d'origine du serveur), redessiné dans
   // la langue courante par setLanguage.

@@ -1480,11 +1480,19 @@ function journalOutlook({ current, upcoming, awaitingPresence }, now) {
 // Relevé de la file : titres prêts, demandes et personnes présentes.
 function journalSample(now = Date.now()) {
   lastSampleAt = now;
-  const active = [...sched.people.values()].filter(p => !p.withdrawnAt);
+  // Présentes : ni parties, ni places « Solo N » encore sans prénom.
+  const active = [...sched.people.values()].filter(countsAsPresent);
   journalEvent('queue.sample', { ready: readyTurns().length,
     songsListed: active.reduce((n, p) => n + sched.songsOf(p).length, 0),
     demanding: active.filter(p => sched.songsOf(p).length).length,
     deferred: sched._deferredOwners().length, present: active.length, inKaraFun: tracked.filter(tr => !tr.startedAt).length });
+}
+
+// Personne présente pour les comptes (relevé du journal, tuile du bar, effectif
+// de la page) : pas marquée partie, et déjà un prénom (une place « Solo N »
+// ouverte par un QR n'est encore personne).
+function countsAsPresent(p) {
+  return !p.withdrawnAt && !p.nameRequired;
 }
 
 // Dernier signe de vie d'un téléphone : au plus un par personne toutes les 5 min.
@@ -1827,7 +1835,7 @@ function publicState(person, tableId, managed = null) {
   if (tid) {
     const t = sched.table(tid, false);
     out.table = t ? { id: t.id, name: t.name, headcount: t.headcount, individual: t.individual,
-      count: sched.tableSingers(t.id).length, activeCount: sched.tableSingers(t.id).filter(p => !p.withdrawnAt).length } :
+      count: sched.tableSingers(t.id).length, activeCount: sched.tableSingers(t.id).filter(countsAsPresent).length } :
       { id: tid, name: /^\d+$/.test(tid) ? `Table ${tid}` : tid, headcount: null, count: 0, activeCount: 0 };
     if (t?.individual) {
       out.people = out.people.filter(item => item.id === person?.id);
@@ -1836,8 +1844,11 @@ function publicState(person, tableId, managed = null) {
       out.battle.votedPersonIds = out.battle.votedPersonIds.filter(id => id === person?.id);
       // Seules les personnes qui ont demandé un code de reprise au bar (ou
       // sur leur ancien téléphone) apparaissent dans ce parcours temporaire.
-      // Personne partie sur ce téléphone (un doublon) : la reprise reste ouverte.
-      out.recoveryPeople = person && !person.withdrawnAt ? [] : sched.tableSingers(tid).filter(p => !p.withdrawnAt &&
+      // Personne partie sur ce téléphone (un doublon), ou place encore sans
+      // prénom ni titre (un QR montré par le bar, ouvert sur ce nouveau
+      // téléphone) : la reprise reste ouverte. La route filtre ensuite selon
+      // le téléphone actuel de cette place.
+      out.recoveryPeople = person && !person.withdrawnAt && !disposablePlaceholder(person) ? [] : sched.tableSingers(tid).filter(p => !p.withdrawnAt &&
         personShareCodes.get(p.id)?.expiresAt > Date.now() && personShareCodes.get(p.id).attempts < 5)
         .map(p => ({ id: p.id, name: p.name }));
     }
@@ -1998,7 +2009,7 @@ function staffState() {
       url: access.get(t.id) ? access.url(phoneBase(), t.id) : null,
       qrUrl: access.get(t.id) ? `/qr/${encodeURIComponent(t.id)}.svg` : null,
       count: sched.tableSingers(t.id).length,
-      activeCount: sched.tableSingers(t.id).filter(p => !p.withdrawnAt).length,
+      activeCount: sched.tableSingers(t.id).filter(countsAsPresent).length,
       inQueue: sched.tableSingers(t.id).filter(p => sched.Q.includes(p.id)).length })),
     people: [...sched.people.values()].map(p => ({ id: p.id, name: p.name, tableId: p.tableId,
       sung: p.sung, inQueue: sched.Q.includes(p.id), lastSeen: p.lastSeen,
@@ -2411,18 +2422,26 @@ function openSoloInvitation(req, res, body) {
 // POST /api/table/enter : QR de l'événement privé. Même navigateur : son
 // chanteur revient. Autre navigateur : toujours un nouveau chanteur (pas de
 // reprise par prénom, décision du gérant).
+// Une personne inscrite (prénom donné, pas partie) dont ce navigateur est le
+// téléphone actuel revient même avec un QR renouvelé ou un mode coupé : les
+// inscrits gardent leur accès. Seule une nouvelle place exige le QR actif.
 function enterPrivateEvent(req, res, body) {
   const t = tableByAccess(body.table, body.access);
+  const found = t.individual ? soloDeviceOwner(req) : null;
+  const owner = found && currentSoloDevice(req, found) ? found : null;
+  const resume = () => {
+    owner.lastActionAt = Date.now();
+    return { id: owner.id, token: owner.token, nameRequired: !!owner.nameRequired, resumed: true };
+  };
+  if (owner && !owner.withdrawnAt && !owner.nameRequired) return resume();
   if (!t.individual || !privateEvent.verify(body.event)) {
     const error = new Error('Ce QR d’événement n’est plus actif. Demande au bar.');
     error.code = 'PRIVATE_EVENT';
     throw error;
   }
-  const owner = soloDeviceOwner(req);
-  if (owner && currentSoloDevice(req, owner)) {
+  if (owner) {
     if (owner.withdrawnAt) throw personLeftError();
-    owner.lastActionAt = Date.now();
-    return { id: owner.id, token: owner.token, nameRequired: !!owner.nameRequired, resumed: true };
+    return resume();
   }
   return createPlaceholderDurably(req, res, t, { viaEvent: true });
 }
@@ -4267,6 +4286,11 @@ const server = http.createServer(async (req, res) => {
           requireSoloControl(req, me);
           if (req.headers['x-page-visible'] !== '0') touchSeen(me);
           const view = publicState(me, me.tableId, new Set([me.id]));
+          // Même règle que la lecture par table : seule la place sans prénom
+          // dont ce navigateur est le téléphone actuel laisse la reprise ouverte.
+          if (view.recoveryPeople && !me.withdrawnAt && !ownDisposablePlaceholder(req, me)) {
+            view.recoveryPeople = view.recoveryPeople.filter(person => person.id === me.id);
+          }
           view.managedIds = [me.id];
           return send(res, 200, view);
         }
@@ -4290,7 +4314,7 @@ const server = http.createServer(async (req, res) => {
           view.transferOffer = target ? { personId: target.id, name: target.name,
             expiresAt: personShareCodes.get(target.id)?.linkExpiresAt || null } : { invalid: true };
         }
-        if (t.individual && soloOwner && !soloOwner.withdrawnAt) {
+        if (t.individual && soloOwner && !soloOwner.withdrawnAt && !ownDisposablePlaceholder(req, soloOwner)) {
           view.recoveryPeople = (view.recoveryPeople || []).filter(person => person.id === soloOwner.id);
         }
         view.managedIds = [...new Set(owned.map(person => person.id))];

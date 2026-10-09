@@ -273,6 +273,10 @@ window.CLIENT_TRANSLATIONS = {
       'Demande le code à son téléphone actuel ou au bar, même si l’ancien téléphone est éteint.': 'Ask their current phone or the bar for the code, even if the old phone is off.',
       'Le code dure 10 minutes.': 'The code lasts 10 minutes.',
       'Code de reprise à 4 chiffres': '4-digit recovery code',
+      'Déjà inscrit ? J’ai un code': 'Already signed up? I have a code',
+      'Demande d’abord au bar ou à ton ancien téléphone un code de reprise à 4 chiffres : ton prénom apparaîtra ici.':
+        'First ask the bar or your old phone for a 4-digit recovery code: your name will show up here.',
+      'Retour': 'Back',
       'Prendre en charge': 'Take over',
       '{name} est maintenant géré sur ce téléphone.': '{name} is now managed on this phone.',
       'Fermer': 'Close',
@@ -315,8 +319,8 @@ window.CLIENT_TRANSLATIONS = {
       'Changer de téléphone': 'Switch phones',
       'Transférer {name} vers un autre téléphone': 'Transfer {name} to another phone',
       'Impossible de scanner ? Utilise un code': 'Can’t scan? Use a code',
-      'Sur l’autre téléphone, ouvre le QR que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :':
-        'On the other phone, open the QR code the bar shows you, tap “I am {name}”, then enter this code (valid for 10 minutes):',
+      'Sur l’autre téléphone, ouvre le QR que te montre le bar (si la page demande un prénom, touche d’abord « Déjà inscrit ? J’ai un code »), touche « Je suis {name} », puis saisis ce code valable 10 minutes :':
+        'On the other phone, open the QR code the bar shows you (if the page asks for a first name, first tap “Already signed up? I have a code”), tap “I am {name}”, then enter this code (valid for 10 minutes):',
       'Sur l’autre téléphone, ouvre le QR code de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom {name}, et saisis ce code valable 10 minutes :':
         'On the other phone, open the table’s QR code, tap “See the whole table”, then “That’s me” next to {name}, and enter this code (valid for 10 minutes):',
       'Lien copié : colle-le dans ton message.': 'Link copied: paste it into your message.',
