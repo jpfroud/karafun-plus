@@ -111,7 +111,7 @@
   <section class="card identity-panel" data-tab="reperes">
     <div class="section-heading"><div><div class="eyebrow">Reconnaître les chanteurs</div><h2>Repères <span class="count" id="identityCount">0</span></h2></div></div>
     <div id="identityStageBox" class="identity-stage" hidden><h3>Sur scène maintenant</h3><div id="identityStage"></div></div>
-    <p class="small muted">Note un signe distinctif, par exemple « t-shirt rouge », pour reconnaître le bon chanteur au micro. Le repère s’enregistre tout seul ; seul le bar le voit. Une personne partie garde sa fiche et son ancienneté.</p>
+    <p id="identityIntro" class="small muted">Note un signe distinctif, par exemple « t-shirt rouge », pour reconnaître le bon chanteur au micro. Le repère s’enregistre tout seul ; seul le bar le voit. Une personne partie garde sa fiche et son ancienneté. Une place « Solo N » de l’événement, sans prénom ni titre, disparaît.</p>
     <div class="identity-filters"><label>Table <select id="identityTable"></select></label><label>Rechercher <span class="search-field"><input id="identitySearch" type="search" placeholder="Prénom ou description"><button type="button" class="clear-input" data-clear-for="identitySearch" aria-label="Effacer la recherche" hidden>×</button></span></label></div>
     <div id="identityBody" class="identity-list"></div>
   </section>
@@ -877,7 +877,13 @@
     const row = event.target.closest('[data-identity-person]');
     if (!row) return;
     const personId = row.dataset.identityPerson;
-    if (event.target.closest('[data-identity-leave]') && confirm('Marquer ce chanteur comme parti ? Ses titres en attente seront retirés, mais sa fiche restera inscrite.')) {
+    // Place « Solo N » de l'événement sans prénom ni titre : le serveur la
+    // supprime (son message remplace « marqué parti »).
+    const person = personOf(personId);
+    const placeholder = person?.viaEvent && person.nameRequired && !person.songCount;
+    if (event.target.closest('[data-identity-leave]') && confirm(placeholder
+      ? `Retirer la place « ${person.name} » ? Sans prénom ni titre, elle disparaît : il n’y aura rien à réactiver.`
+      : 'Marquer ce chanteur comme parti ? Ses titres en attente seront retirés, mais sa fiche restera inscrite.')) {
       act('/api/staff/person/leave', { personId }, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
     }
     if (event.target.closest('[data-identity-reactivate]')) {

@@ -1330,7 +1330,8 @@
   let entryWaited = 0;
   // Place sans prénom ouverte ici par le QR de l'événement, gardée pour cet
   // onglet (rechargement compris) : l'adresse a perdu ?evenement=, mais si
-  // « Renouveler le QR » la retire, la page dit encore « QR plus actif ».
+  // « Parti » du bar ou « Renouveler le QR » la retire, la page dit de
+  // rescanner le QR de l'événement.
   // Oubliée dès qu'elle a un prénom (une place nommée n'est jamais retirée)
   // ou qu'une reprise l'a remplacée (refresh).
   const eventPlaceKey = `kfEventPlace:${tableId}:${access}`;
@@ -1534,7 +1535,11 @@
             // Ce téléphone ne gère que des personnes marquées parties : seul le bar les réactive.
             : !owned.length && list(state.tablePeople).some(person => person.active === false && manages(person.id))
               ? t('Cette personne a été marquée partie. Demande au bar de la réactiver.')
-            : eventToken || eventPlaceLost() ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
+            : eventToken ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
+              // Place sans prénom retirée : « Parti » du bar ou QR renouvelé, la page
+              // ne sait pas lequel. Rescanner le QR en donne une nouvelle (un QR
+              // renouvelé répond alors « QR plus actif »).
+              : eventPlaceLost() ? t('Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.')
               : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
       const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'recover'
         ? `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'failed'

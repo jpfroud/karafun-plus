@@ -1050,6 +1050,9 @@ test('événement privé : « Parti » du bar sur une place sans prénom ni titr
   const version = f.sched.version;
   const left = await post(f, staff(f, '/api/staff/person/leave'), { personId: ghost.personId });
   assert.equal(left.status, 200, left.text);
+  // Regression: vérification de la troisième relecture — sans `message`, le
+  // bar lisait « Chanteur marqué parti », alors que la place n'existe plus.
+  assert.match(left.body.message, /^Place « Solo \d+ » sans prénom retirée : s’il est encore là, il rescanne le QR de l’événement\.$/);
   assert.equal(f.sched.people.has(ghost.personId), false, 'place retirée, pas marquée partie');
   assert.equal(f.sched.person(ghost.token), null);
   assert.ok(f.sched.version > version, 'les pages se mettent à jour');
@@ -1064,7 +1067,9 @@ test('événement privé : « Parti » du bar sur une place sans prénom ni titr
   const lea = await eventEntry(f, tb, secret, 'Léa');
   const sam = await opened(f, tb, invite());
   for (const kept of [lea, sam]) {
-    assert.equal((await post(f, staff(f, '/api/staff/person/leave'), { personId: kept.personId })).status, 200);
+    const keptLeft = await post(f, staff(f, '/api/staff/person/leave'), { personId: kept.personId });
+    assert.equal(keptLeft.status, 200);
+    assert.equal(keptLeft.body.message, undefined, 'le bar garde « marqué parti »');
     assert.ok(f.sched.people.get(kept.personId).withdrawnAt, 'gardée, marquée partie');
   }
 });

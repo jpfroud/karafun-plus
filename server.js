@@ -4034,7 +4034,8 @@ const handlers = {
       dropPlaceholder(p);
       sched.version++;
       sync();
-      return { ok: true, removedFromKaraFun: 0, pendingCancelled: false };
+      return { ok: true, removedFromKaraFun: 0, pendingCancelled: false,
+        message: `Place « ${p.name} » sans prénom retirée : s’il est encore là, il rescanne le QR de l’événement.` };
     }
     // Invitée d'un duo déjà chargé : le titre reste dans KaraFun, au nom de
     // son auteur seul.

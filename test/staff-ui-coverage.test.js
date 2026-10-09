@@ -609,6 +609,30 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   assert.equal(page.posts.length, total);
 });
 
+// Regression: vérification de la troisième relecture — « Parti » sur une
+// place « Solo N » de l'événement sans prénom ni titre la supprime, mais la
+// confirmation disait encore « sa fiche restera inscrite » et le toast
+// « marqué parti ».
+test('repères chanteurs : « Parti » sur une place « Solo N » de l’événement dit qu’elle disparaît', async () => {
+  const world = baseWorld();
+  world.people.push({ id: 's1', name: 'Solo 1', tableId: 'Comptoir', active: true, nameRequired: true, viaEvent: true, songCount: 0, sung: 0 },
+    { id: 's2', name: 'Solo 2', tableId: 'Comptoir', active: true, nameRequired: true, songCount: 0, sung: 0 });
+  const page = await openPage({ world });
+  assert.match(page.$('identityIntro').textContent, /Une place « Solo N » de l’événement, sans prénom ni titre, disparaît\./);
+  const row = id => page.in('identityBody', `[data-identity-person="${id}"]`);
+  const message = 'Place « Solo 1 » sans prénom retirée : s’il est encore là, il rescanne le QR de l’événement.';
+  page.replies['/api/staff/person/leave'] = { ok: true, message };
+  await page.click(row('s1').querySelector('[data-identity-leave]'));
+  assert.equal(page.confirms.at(-1), 'Retirer la place « Solo 1 » ? Sans prénom ni titre, elle disparaît : il n’y aura rien à réactiver.');
+  assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 's1' });
+  assert.equal(page.toast().text, message);
+  // Place sans prénom d'un QR individuel : marquée partie comme avant.
+  page.replies['/api/staff/person/leave'] = { ok: true };
+  await page.click(row('s2').querySelector('[data-identity-leave]'));
+  assert.match(page.confirms.at(-1), /^Marquer ce chanteur comme parti \?/);
+  assert.equal(page.toast().text, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
+});
+
 test('repères chanteurs : transfert vers un autre téléphone (lien, code, erreurs)', async () => {
   const page = await openPage();
   const row = id => page.in('identityBody', `[data-identity-person="${id}"]`);

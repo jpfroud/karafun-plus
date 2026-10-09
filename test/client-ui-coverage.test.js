@@ -3053,7 +3053,11 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
 // prénom ouverte par le QR de l'événement, retirée par « Renouveler le QR »,
 // laissait sa page (et son rechargement) dire « demande au bar un QR
 // individuel » : l'adresse avait déjà perdu ?evenement=.
-test('événement privé : place sans prénom retirée par « Renouveler le QR » = « QR plus actif », même après rechargement', async () => {
+// Regression: vérification de la troisième relecture — retirée aussi par
+// « Parti » du bar, la page disait « QR plus actif » alors que rescanner le
+// QR de l'événement donne une nouvelle place. La page ne distingue pas les
+// deux cas : elle dit de rescanner (un QR renouvelé refusera, « QR plus actif »).
+test('événement privé : place sans prénom retirée (« Parti » du bar ou QR renouvelé) = rescanner le QR, même après rechargement', async () => {
   const session = sessionMap();
   const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
     if (url !== '/api/table/enter') return undefined;
@@ -3063,16 +3067,16 @@ test('événement privé : place sans prénom retirée par « Renouveler le QR �
   }, { session });
   assert.equal(page.node('nameGate').hidden, false);
   assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret');
-  // Le bar renouvelle le QR : la place part sans trace.
+  // Le bar touche « Parti » sur « Solo 2 » (ou renouvelle le QR) : la place part sans trace.
   page.state.tablePeople = [];
   page.state.managedIds = [];
   page.state.privateEventReady = false;
   await page.poll();
   assert.equal(page.node('nameGate').hidden, true);
-  assert.equal(page.node('noSingerText').textContent, 'Ce QR d’événement n’est plus actif. Demande au bar.');
+  assert.equal(page.node('noSingerText').textContent, 'Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.');
   const reloaded = await soloPage('', page.state, undefined, { session, languages: ['en'] });
   assert.equal(reloaded.posts.length, 0);
-  assert.equal(reloaded.node('noSingerText').textContent, 'This event QR code is no longer active. Ask the bar.');
+  assert.equal(reloaded.node('noSingerText').textContent, 'Your spot without a name was removed. Scan the event QR code again to get a new one, or ask the bar.');
 
   // Place nommée puis passée sur un autre téléphone : pas un QR inactif.
   const named = sessionMap();

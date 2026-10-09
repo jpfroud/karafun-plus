@@ -136,6 +136,8 @@ window.CLIENT_TRANSLATIONS = {
       'Inscription en cours…': 'Signing you up…',
       'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…': 'Lots of people arriving at once: trying again in a moment…',
       'Ce QR d’événement n’est plus actif. Demande au bar.': 'This event QR code is no longer active. Ask the bar.',
+      'Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.':
+        'Your spot without a name was removed. Scan the event QR code again to get a new one, or ask the bar.',
       'Cette personne a été marquée partie. Demande au bar de la réactiver.': 'This person was marked as gone. Ask the bar to bring them back.',
       'C’est bien toi, {name} ?': 'Is that you, {name}?',
       'Ce QR personnel garde tes chansons pour la soirée. Récupère-les sur ce téléphone : l’autre téléphone perdra leur gestion.':
