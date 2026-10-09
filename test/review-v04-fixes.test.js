@@ -624,9 +624,13 @@ test('Spotify : jeton révoqué, déconnexion au lieu d’un appel toutes les 3 
   let tokenCalls = 0;
   f.spotify.fetchImpl = async () => { tokenCalls++; return json({ error: 'invalid_grant' }, 400); };
   f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'révoqué' };
+  // Regression: U3 (vérification de la seconde relecture) — le dernier titre lu
+  // restait dans l'état après le refus : « En lecture » à côté de « Non connecté ».
+  f.spotify.player = { isPlaying: true, at: Date.now(), track: { title: 'Get Lucky' }, device: { name: 'PC du bar' } };
   for (let i = 0; i < 5; i++) await f.spotifyTick();
   assert.equal(tokenCalls, 1);
   assert.equal(f.spotify.connected, false, 'le panneau repasse à « Non connecté »');
+  assert.equal(f.staffState().spotify.player, null, 'jeton refusé : plus de dernier titre lu');
   assert.match(f.spotify.lastError, /reconnecte/);
   assert.equal(f.staffState().spotify.health.state, 'disconnected', 'pastille « Spotify non connecté »');
 });
@@ -743,6 +747,10 @@ test('Spotify : un seul renouvellement du jeton à la fois, jeton refusé effac�
   await both;
   assert.equal(tokens, 1, 'boucle et bouton du bar partagent le renouvellement');
   assert.equal(link.config.refreshToken, 'r2');
+  // Autre application Spotify (Client ID changé) : le dernier titre lu est oublié.
+  link.player = { isPlaying: true, at: Date.now(), track: { title: 'Get Lucky' } };
+  link.setClientId('fedcba9876543210fedcba9876543210');
+  assert.equal(link.view().player, null, 'autre Client ID : plus de dernier titre lu');
   const stale = linked(async () => json({ error: 'invalid_grant' }, 400));
   stale.config.refreshToken = 'nouveau';
   await assert.rejects(stale._token({ grant_type: 'refresh_token', refresh_token: 'ancien' }));

@@ -1341,9 +1341,10 @@
     const lastText = last ? `Dernière action à ${hhmm(last.at)} : ${last.kind === 'resume' ? 'relance' : 'pause'}${last.result === 'already' ? ' (rien à faire)' : last.ok ? '' : ' en échec'}.` : '';
     const checked = sp.connected && sp.health?.checkedAt ? `Vérifié à ${hhmm(sp.health.checkedAt)}.` : '';
     // Dernier état lu du lecteur : en lecture ou en pause, et à quelle heure.
-    // Aucun appareil ou Spotify en erreur : ce titre ancien contredirait la phrase.
+    // Seulement pour un Spotify vérifié et prêt : non connecté, en vérification,
+    // sans appareil ou en erreur, ce titre ancien contredirait la phrase.
     const player = sp.player;
-    const track = player?.track && health.state !== 'no-device' && health.state !== 'error' ?
+    const track = player?.track && health.state === 'ready' ?
       `${player.isPlaying ? 'En lecture' : 'En pause'}${player.at ? ` à ${hhmm(player.at)}` : ''} : ${player.track.title}${player.track.artist ? ` — ${player.track.artist}` : ''}${player.device ? ` sur ${player.device.name}` : ''}.` : '';
     // Refus : le message de Spotify est déjà dans la phrase, pas répété.
     $('spotifyText').textContent = [health.long ? `${health.text}.` : '', health.refused && sp.lastError === sp.health.message ? '' : sp.lastError, track, lastText, checked]

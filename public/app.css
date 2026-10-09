@@ -245,7 +245,10 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .queue-item .table-tag { display: inline-block; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; max-width: 27%; }
 .queue-item .song-title { font-weight: 600; }
 .queue-item .song-artist { color: var(--muted); font-size: 11px; }
-.queue-item .queue-tags { display: inline-flex; gap: 3px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+/* Badges : seulement la place qui reste après le nom, la table et le repère
+   « inactif » (flex-basis 0) ; sinon la largeur de tous les badges faisait
+   rétrécir le nom, « Bob » coupé à « B » sur PC. */
+.queue-item .queue-tags { display: inline-flex; gap: 3px; flex: 1 1 0; min-width: 0; overflow: hidden; }
 .queue-item .queue-tags .badge { font-size: 10px; padding: 1px 5px; }
 /* Repères au début du titre (« ⚠ Doublon », « trop long ») : toujours entiers,
    le titre prend les « … ». */
@@ -282,8 +285,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .soloists .welcome-title { margin-top: 4px; }
 .soloist-list { display: grid; gap: 0; max-height: 420px; overflow-y: auto; }
 .soloist-row { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
-/* Fond de la carte, pas celui du panneau (--surface-2) : le disque des initiales reste visible. */
-.soloist-row .identity-photo { width: 26px; height: 26px; font-size: 12px; background: var(--surface); }
+/* Disque des initiales sur le panneau (--surface-2) : fond de la carte, à peine
+   plus sombre (1,10:1), et contour d'accent comme le badge « Duo » (2,4:1). */
+.soloist-row .identity-photo { width: 26px; height: 26px; font-size: 12px; background: var(--surface); border: 1px solid rgba(255,79,163,.55); }
 .soloist-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
 .soloist-who > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .soloist-row .btn { white-space: nowrap; }
@@ -300,11 +304,13 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .queue-item .idle-tag { display: contents; color: var(--bad); font-size: 11px; font-weight: 700; }
 .queue-item .idle-tag .idle-who { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-item .idle-tag .idle-for { flex: none; white-space: nowrap; }
-/* Duo : chaque « Prénom : inactif 52 min » est un bloc entier qui passe à la
+/* Cellule avec repère : ce qui ne tient pas passe à la ligne. Soliste : la
+   durée passe sous le nom plutôt que de le réduire à « B » (360 px).
+   Duo : chaque « Prénom : inactif 52 min » est un bloc entier qui passe à la
    ligne sous le nom du duo (un ou deux partenaires sans nouvelles), au lieu de
    réduire le nom et les prénoms à rien et de couper la seconde durée. Seul un
    prénom plus long que la colonne prend les « … » (min-width: 0, max-width). */
-.queue-item .person-cell:has(.idle-tag.duo) { flex-wrap: wrap; row-gap: 0; }
+.queue-item .person-cell:has(.idle-tag) { flex-wrap: wrap; row-gap: 0; }
 /* Le nom du duo, seul sur sa ligne, en prend toute la largeur (sinon 45 %, ou 60 % avec ✎). */
 .queue-item .person-cell:has(.idle-tag.duo) .person, .queue-item .person-cell:has(.idle-tag.duo) button.person { max-width: 100%; }
 .queue-item .idle-tag.duo { display: inline-flex; align-items: baseline; gap: 0 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
@@ -312,6 +318,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
    la colonne (134 px pour 123 à 360 px) : le prénom passe au-dessus de la
    durée plutôt que de devenir « B. ». */
 @media (max-width: 380px) { .queue-item .idle-tag.duo { flex-wrap: wrap; } }
+/* Dans ces cellules qui passent à la ligne, les badges gardent leur largeur et
+   prennent la ligne suivante, entiers, au lieu du peu de place qui reste. */
+.queue-item .person-cell:has(.idle-tag) .queue-tags { flex-basis: auto; }
 /* Prénom avec repère (bouton, d'ordinaire entier) : il cède la place à la durée. */
 .queue-item .person-cell:has(.idle-tag) button.person { flex: 0 1 auto; min-width: 0; }
 .manual-history { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2, #211d39); }

@@ -232,7 +232,9 @@ for (const width of [360, 390, 650, 1366]) {
   // inactifs perdait son nom et ses deux prénoms (0 px), la seconde durée
   // coupée de 8 à 13 px (390 et 1366 px), et « Léa : » devenait « L. ».
   // « Prénom : inactif 52 min » est un bloc qui passe à la ligne sous le nom.
-  assert.equal(computed('.queue-item .person-cell:has(.idle-tag.duo)', width)['flex-wrap'], 'wrap', `${width} px : les repères d'un duo passent à la ligne`);
+  // Regression: U1 (vérification de la seconde relecture) — un soliste
+  // inactif aussi : à 360 px, « inactif depuis 21:04 » réduisait « Bob » à « B ».
+  assert.equal(computed('.queue-item .person-cell:has(.idle-tag)', width)['flex-wrap'], 'wrap', `${width} px : les repères d'un soliste ou d'un duo passent à la ligne`);
   const duo = computed('.queue-item .idle-tag.duo', width);
   assert.equal(duo.display, 'inline-flex', `${width} px : prénom et durée du duo restent ensemble`);
   // Sans min-width: 0, le bloc garde la largeur de sa phrase entière et déborde.
@@ -243,6 +245,16 @@ for (const width of [360, 390, 650, 1366]) {
   const named = computed('.queue-item .person-cell:has(.idle-tag) button.person', width);
   assert.equal(named.flex, '0 1 auto', `${width} px : le prénom avec repère rétrécit devant la durée`);
   assert.equal(named['min-width'], '0');
+}
+// Regression: U1 (vérification de la seconde relecture) — sur PC, .queue-tags
+// (flex-basis : la largeur de tous ses badges) prenait la place du nom :
+// « Bob » coupé à 22 px, et à 6 px avec « inactif depuis 21:04 ». Les badges
+// n'ont que la place qui reste.
+for (const width of [700, 1366]) {
+  assert.equal(computed('.queue-item .queue-tags', width).flex, '1 1 0', `${width} px : les badges ne prennent pas la place du nom`);
+  // Dans une cellule avec repère « inactif », qui passe à la ligne, ils
+  // prennent la ligne suivante, entiers, comme avant pour les duos.
+  assert.equal(computed('.queue-item .person-cell:has(.idle-tag) .queue-tags', width)['flex-basis'], 'auto', `${width} px : badges d'une ligne avec repère sur leur propre ligne`);
 }
 // Repère d'inactivité et « trop long » sur la même ligne : « trop long » est
 // dans la cellule du titre, la cellule du nom n'a plus à passer à la ligne pour lui.
@@ -260,6 +272,9 @@ for (const width of [360, 390, 650, 1366]) {
 for (const width of [390, 1366]) {
   assert.equal(computed('.solo-invite-panel', width).background, 'var(--surface-2)');
   assert.equal(computed('.soloist-row .identity-photo', width).background, 'var(--surface)', `${width} px : disque visible sur le panneau`);
+  // Vérification : --surface sur --surface-2, c'est 1,10:1, toujours invisible.
+  // Le contour (couleur d'accent, comme le badge « Duo ») dessine le disque.
+  assert.match(computed('.soloist-row .identity-photo', width).border || '', /^1px solid rgba\(255,\s*79,\s*163,\s*\.55\)$/, `${width} px : contour du disque`);
 }
 // Regression: U5 (seconde relecture) — au téléphone, la pastille « Envoi et
 // lecture automatiques coupés » de la Scène (bouton) faisait moins de 44 px.

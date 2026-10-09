@@ -1929,6 +1929,16 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.equal(page.$('spotifyText').textContent, `Spotify injoignable, nouvel essai à ${hhmm(retryAt)}. Dernière action à ${hhmm(at)} : relance. Vérifié à ${hhmm(at)}.`,
     'injoignable : pas de titre « en lecture » d’une lecture ancienne');
   assert.equal(page.$('tabDotPlus').hidden, false, 'injoignable : point sur « Plus » même sans erreur d’action');
+  // Regression: U3 (vérification de la seconde relecture) — jeton refusé par
+  // Spotify : « Spotify non connecté » à côté de « En lecture à … sur Enceinte ».
+  // Le titre n'est affiché que pour un Spotify vérifié et prêt.
+  await page.update({ spotify: { ...connected, connected: false, lastAction: null, lastError: 'Connexion Spotify refusée ou expirée : reconnecte Spotify.',
+    health: { state: 'disconnected', device: null, checkedAt: at, retryAt: 0 } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify non connecté');
+  assert.equal(page.$('spotifyText').textContent, 'Connexion Spotify refusée ou expirée : reconnecte Spotify.', 'non connecté : pas de titre « en lecture »');
+  await page.update({ spotify: { ...connected, lastAction: null, health: { state: 'unknown', device: null, checkedAt: 0 } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify : vérification…');
+  assert.equal(page.$('spotifyText').textContent, '', 'vérification en cours : pas de titre « en lecture »');
 
   // Pastille de la Scène : mène au panneau Spotify.
   await page.click(page.$('spotifyChip'));
