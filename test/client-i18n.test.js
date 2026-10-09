@@ -230,7 +230,7 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   assert.equal(get('firstName').attributes.placeholder, 'e.g. Mary', 'attribut traduit');
   assert.equal(get('conn').textContent, 'Live');
   assert.equal(get('stageWho').textContent, 'Group Battle', 'Battle ajoutée dans KaraFun');
-  assert.equal(get('peopleCount').textContent, '2 here · 2 signed up');
+  assert.equal(get('peopleCount').textContent, '2 here · 2 signed up at the table');
   assert.match(get('peopleList').innerHTML, /THEIR LIST · 1 SONG</);
   assert.match(get('peopleList').innerHTML, /2nd in the queue · around \d\d:\d\d/);
   assert.match(get('peopleList').innerHTML, /aria-label="Add a song for Alice">＋ Song</, 'bouton court, intitulé complet (avec le prénom) pour les lecteurs d’écran');
@@ -274,7 +274,7 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
     await settle();
     assert.equal(page.document.documentElement.lang, 'fr', JSON.stringify(options));
     assert.equal(page.get('navTableLabel').textContent, 'Ma table');
-    assert.equal(page.get('peopleCount').textContent, '2 présentes · 2 inscrites');
+    assert.equal(page.get('peopleCount').textContent, '2 présentes · 2 inscrites à la table');
     assert.match(page.get('battleVotes').innerHTML, /0 voix</, '0 au singulier en français');
   }
   // Sans le fichier de traductions, la page reste entièrement en français.

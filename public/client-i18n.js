@@ -139,8 +139,8 @@ window.CLIENT_TRANSLATIONS = {
         'This personal QR code keeps your songs for the evening. Recover them on this phone: the other phone will no longer manage them.',
       'Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.':
         'This personal QR code belongs to {name}. Tap “Recover my songs” to get them on this phone.',
-      'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).':
-        'To find this page again later, open it in your browser (Safari or Chrome).',
+      'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).':
+        'To find this page again later, open it in your browser: menu ⋯ → “Open in browser” (Safari or Chrome).',
       'Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.':
         'To get back to this page, scan the event QR code again from the same app.',
       'Pour retrouver cette page, rescanne le même QR depuis la même application, ou demande au bar un QR de reprise.':
@@ -190,11 +190,13 @@ window.CLIENT_TRANSLATIONS = {
         'Add the songs you want to sing. Other people who came alone manage their own.',
       'Les personnes de la table': 'People at this table',
       'Mes chansons': 'My songs',
-      'Seul le téléphone associé à une personne peut modifier ses chansons.': 'Only the phone linked to a person can change their songs.',
+      'Les personnes inscrites avec ce téléphone. Pour voir toute la table : « Voir toute la table ».':
+        'The people signed up with this phone. To see everyone: “See the whole table”.',
       'Tes chansons sont visibles ici. Les autres personnes ne peuvent pas les modifier.': 'Your songs are shown here. Nobody else can change them.',
       'Mon profil': 'My profile',
       '{n} présente': ['{n} here', '{n} here'],
       '{n} inscrite': ['{n} signed up', '{n} signed up'],
+      '{present} · {signed} à la table': '{present} · {signed} at the table',
       'Parti · historique conservé': 'Left · history kept',
       '{pos} dans la file': '{pos} in the queue',
       '{pos} dans la file · vers {time}': '{pos} in the queue · around {time}',

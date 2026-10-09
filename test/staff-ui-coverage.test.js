@@ -3745,14 +3745,29 @@ test('activité des solos : tuile « En solo », ligne de la file au-delà de 45
   assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '6 solistes · 3 sans nouvelles');
   assert.equal(card('1').querySelector('.occupancy').textContent, '2 actifs / 2 inscrits / 4 places', 'tables : inchangé');
   const lines = page.all('qBody', '.queue-item');
-  assert.equal(lines[0].querySelector('.idle-tag').textContent, 'sans nouvelles depuis 1 h 05');
-  assert.equal(lines[0].querySelector('.idle-tag').title, `Dernière activité sur son téléphone à ${hhmm(world.now - 65 * MIN - 5000)}`);
+  // Repère court, la durée d'abord (jamais coupé au téléphone) ; la phrase complète dans l'infobulle.
+  assert.equal(lines[0].querySelector('.idle-tag').textContent, 'inactif 1 h 05');
+  assert.equal(lines[0].querySelector('.idle-tag .idle-for').textContent, 'inactif 1 h 05', 'la durée est dans la partie jamais abrégée');
+  assert.equal(lines[0].querySelector('.idle-tag .idle-who'), null, 'solo : pas de prénom répété');
+  assert.equal(lines[0].querySelector('.idle-tag').title, `Sans nouvelles depuis 1 h 05 · Dernière activité sur son téléphone à ${hhmm(world.now - 65 * MIN - 5000)}`);
   assert.equal(lines[1].querySelector('.idle-tag'), null, '25 min : pas encore sur la file');
   assert.equal(lines[2].querySelector('.idle-tag'), null, 'table ordinaire : rien');
-  assert.equal(lines[3].querySelector('.idle-tag').textContent, `Solo 3 : pas revenu depuis l’ouverture du QR (${hhmm(world.now - 50 * MIN)})`, 'duo : la personne concernée est nommée');
+  assert.equal(lines[3].querySelector('.idle-tag').textContent, `Solo 3 : inactif depuis ${hhmm(world.now - 50 * MIN)}`, 'duo : la personne concernée est nommée');
+  assert.equal(lines[3].querySelector('.idle-tag .idle-who').textContent, 'Solo 3 : ', 'duo : seul le prénom peut prendre les « … »');
+  assert.equal(lines[3].querySelector('.idle-tag .idle-for').textContent, `inactif depuis ${hhmm(world.now - 50 * MIN)}`);
+  assert.equal(lines[3].querySelector('.idle-tag').title, `Solo 3 : Pas revenu depuis l’ouverture du QR (${hhmm(world.now - 50 * MIN)}) · Dernière activité sur son téléphone à ${hhmm(world.now - 50 * MIN)}`);
   assert.equal(lines[4].querySelector('.idle-tag'), null);
   const gone = page.all('staffAlerts', '.gone-alert');
   assert.equal(gone[0].querySelector('.activity').textContent, 'Sans nouvelles depuis 1 h 05');
+  // Moins d'une heure : « inactif 52 min » ; l'Accueil et les Repères gardent la phrase complète.
+  const hana = page.world.people.find(p => p.id === 'hana');
+  const hanaBefore = hana.lastActiveAt;
+  hana.lastActiveAt = page.world.now - 52 * MIN;
+  await page.poll();
+  assert.equal(page.all('qBody', '.queue-item')[0].querySelector('.idle-tag').textContent, 'inactif 52 min');
+  assert.equal(page.all('staffAlerts', '.gone-alert')[0].querySelector('.activity').textContent, 'Sans nouvelles depuis 52 min');
+  hana.lastActiveAt = hanaBefore;
+  await page.poll();
   assert.equal(gone[1].querySelector('.activity'), null, 'table ordinaire : pas d’activité');
   // Plus personne sans nouvelles : la tuile ne compte que les solistes.
   for (const p of page.world.people) if (p.lastActiveAt) p.lastActiveAt = page.world.now;

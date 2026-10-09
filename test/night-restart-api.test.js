@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const root = path.join(__dirname, '..');
+const { NightStateStore } = require('../night-state');
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-api-restart-'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -299,8 +300,39 @@ NightStateStore.prototype.save = function(snapshot, options) {
       .map(name => readAll(path.join(sandbox, 'data', name))).join('');
     assert.ok(fs.existsSync(path.join(sandbox, 'data', 'soirees')), 'le journal de la soirée est bien relu');
     assert.ok(!saved.includes(reprise) && !saved.includes(`"${link.code}"`), 'ni le lien ni le code ne sont écrits en clair');
+    // Événement privé allumé, une entrée par son QR avant la coupure.
+    const eventView = await second.ok('/api/staff/private-event', { enabled: true });
+    assert.equal(eventView.enabled, true);
+    const eventSecret = new URL(eventView.url).searchParams.get('evenement');
+    assert.ok(eventSecret, 'QR de l’événement avec son secret');
+    const entered = await second.request('/api/table/enter', soloBody({ event: eventSecret }));
+    assert.equal(entered.status, 200, JSON.stringify(entered.data));
+    assert.ok(entered.cookie, 'le navigateur entré garde son chanteur');
+    const eventBefore = (await second.staff()).privateEvent;
     await stop(second, true);
+    // Coupure pendant un titre : la copie n'a pas de KaraFun, l'horloge de la
+    // scène est écrite dans la dernière sauvegarde comme le serveur l'aurait fait.
+    const store = new NightStateStore(path.join(sandbox, 'data', 'soiree'));
+    const beforeCrash = store.load();
+    assert.equal(beforeCrash.stageClock, null, 'aucun titre sur scène sans KaraFun');
+    const playing = { key: '9001', segAt: Date.now() - 42000, mediaMs: 15000, rate: 1.1, paused: false, position: 15 };
+    store.save({ ...beforeCrash, stageClock: playing });
     second = await launch();
+    state = await second.staff();
+    assert.deepEqual(state.privateEvent, eventBefore, 'événement privé : même état et même QR après le crash');
+    const back = await second.request('/api/table/enter', soloBody({ event: eventSecret }), entered.cookie);
+    assert.equal(back.status, 200, 'le même QR d’événement est encore accepté');
+    assert.equal(back.data.id, entered.data.id, 'le même navigateur retrouve son chanteur');
+    assert.equal(back.data.resumed, true);
+    const newcomer = await second.request('/api/table/enter', soloBody({ event: eventSecret }));
+    assert.equal(newcomer.status, 200, 'un autre navigateur entre encore par ce QR');
+    assert.notEqual(newcomer.data.id, entered.data.id);
+    // L'entrée a écrit une nouvelle sauvegarde : l'horloge restaurée y est reprise telle quelle.
+    const afterRestart = new NightStateStore(path.join(sandbox, 'data', 'soiree')).load();
+    assert.ok(afterRestart.scheduler.people.some(person => person.id === newcomer.data.id),
+      'sauvegarde écrite après le redémarrage');
+    assert.deepEqual(afterRestart.stageClock, playing, 'l’horloge du titre sur scène survit au redémarrage');
+    console.log('ok - crash : événement privé, son QR et l’horloge de la scène restaurés');
     assert.equal((await second.ok('/api/state?' + new URLSearchParams({
       table: 'Comptoir', access: soloAccess, reprise,
     }))).transferOffer.personId, solo.id, 'le lien est reconnu après le redémarrage');

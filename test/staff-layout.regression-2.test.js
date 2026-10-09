@@ -204,4 +204,46 @@ const staffHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'staff.ht
 const spotifyPanel = /<section[^>]*id="spotifyPanel"[^>]*>([\s\S]*?)<\/section>/.exec(staffHtml)[1];
 assert.match(spotifyPanel, /^\s*<div class="section-heading">.*?id="spotifyPill".*?<\/span><\/div>\s*<p class="small" id="spotifyText" role="status"><\/p>/,
   'la phrase complète de Spotify suit directement le titre du panneau et sa pastille');
+// Regression: D15-A (relecture finale) — au téléphone du bar, « Sans nouvelles
+// depuis 1 h 05 » / « pas revenu depuis l’ouverture du QR (21:04) » était
+// coupé par « … » avant la durée. La ligne affiche « inactif 1 h 05 », dont la
+// durée (.idle-for) ne rétrécit jamais ; seul le prénom d'un duo (.idle-who)
+// prend les « … », et le prénom avec repère (bouton) cède la place.
+for (const width of [360, 390, 650, 1366]) {
+  const tag = computed('.queue-item .idle-tag', width);
+  // Un repère inline-flex garde la largeur de sa phrase entière (contribution
+  // minimale de ses enfants) : la durée débordait encore pour un duo à 390 px.
+  assert.equal(tag.display, 'contents', `${width} px : prénom du duo et durée sont des éléments de la cellule`);
+  assert.notEqual(tag.overflow, 'hidden', `${width} px : rien de caché dans le repère`);
+  assert.notEqual(tag['text-overflow'], 'ellipsis');
+  const duration = computed('.queue-item .idle-tag .idle-for', width);
+  assert.equal(duration.flex, 'none', `${width} px : la durée ne rétrécit jamais`);
+  assert.equal(duration['white-space'], 'nowrap');
+  assert.notEqual(duration.overflow, 'hidden');
+  const who = computed('.queue-item .idle-tag .idle-who', width);
+  assert.equal(who['text-overflow'], 'ellipsis', `${width} px : le prénom du duo prend les « … »`);
+  assert.equal(who['min-width'], '0');
+  const named = computed('.queue-item .person-cell:has(.idle-tag) button.person', width);
+  assert.equal(named.flex, '0 1 auto', `${width} px : le prénom avec repère rétrécit devant la durée`);
+  assert.equal(named['min-width'], '0');
+}
+// Repère d'inactivité et « trop long » sur la même ligne : à 360 px (et à
+// 390 px pour « inactif depuis 21:04 »), « trop long » était coupé de 8 à
+// 16 px dans Chromium. La cellule passe alors à la ligne.
+for (const width of [360, 390]) {
+  assert.equal(computed('.queue-item .person-cell:has(.idle-tag):has(.too-long-tag)', width)['flex-wrap'], 'wrap', `${width} px : les deux repères restent entiers`);
+}
+// Place du prénom à 390 px (colonne 3 de la ligne) contre le repère le plus
+// long, « inactif depuis 23:59 » (20 caractères, 11 px gras, ~0,62 em par
+// caractère au plus) : il tient entier, même sans prénom ni table visibles.
+{
+  const item = computed('.queue-item', 390);
+  const columns = item['grid-template-columns'].replace(/minmax\([^)]*\)/g, '0px').split(/\s+/).map(px);
+  const nameColumn = 390 - 2 * px(computed('body.staff', 390)['padding-left']) - 2 * px(computed('.staff .card', 390)['padding-left'])
+    - 2 * px(item['padding-left']) - columns.reduce((a, b) => a + b, 0) - (columns.length - 1) * px(item['column-gap']);
+  const longest = 'inactif depuis 23:59'.length * px(computed('.queue-item .idle-tag', 390)['font-size']) * 0.62; // 106 px mesurés dans Chromium
+  assert.ok(nameColumn > 140 && longest < nameColumn, `390 px : repère de ${Math.round(longest)} px dans une colonne de ${Math.round(nameColumn)} px`);
+}
+const staffSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8');
+assert.match(staffSource, /<span class="idle-for">\$\{esc\(a\.short\)\}<\/span>/, 'la ligne de la file affiche le repère court');
 console.log('Bar : barre d’onglets, barre du haut, colonne d’actions et diagnostic à 360 px OK');

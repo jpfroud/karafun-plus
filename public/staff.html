@@ -793,7 +793,10 @@
     const never = !!joined && last < joined + 1000;
     const text = minutes < 2 ? 'Actif à l’instant' : never ? `Pas revenu depuis l’ouverture du QR (${hhmm(joined)})` :
       level ? `Sans nouvelles depuis ${sinceText(minutes)}` : `Actif il y a ${minutes} min`;
-    return { minutes, level, text, title: `Dernière activité sur son téléphone à ${hhmm(at)}` };
+    // Repère court de la ligne de la file, la durée d'abord : jamais coupé au
+    // téléphone. La phrase complète reste dans son infobulle.
+    const short = never ? `inactif depuis ${hhmm(joined)}` : `inactif ${sinceText(minutes)}`;
+    return { minutes, level, text, short, title: `Dernière activité sur son téléphone à ${hhmm(at)}` };
   }
   const activityHtml = a => a ? `<span class="activity${a.level ? ` ${a.level}` : ''}" title="${esc(a.title)}">${esc(a.text)}</span>` : '';
   const recentActivity = p => Math.max(Number(p.lastActiveAt) || 0, Number(p.joinedAt) || 0);
@@ -1859,7 +1862,11 @@
       // Solo sans nouvelles depuis 45 min, sur le point d'être appelé.
       const lineIds = q.ids?.length ? q.ids : q.source === 'helper' && q.id != null ? [q.id] : [];
       const idleTags = lineIds.map(personOf).map(p => [p, activityOf(p)]).filter(([, a]) => a?.level === 'late')
-        .map(([p, a]) => `<span class="idle-tag" title="${esc(a.title)}">${esc((lineIds.length > 1 ? `${p.name} : ` : '') + a.text.charAt(0).toLowerCase() + a.text.slice(1))}</span>`).join('');
+        .map(([p, a]) => {
+          // Au téléphone, seul le prénom d'un duo peut prendre les « … », jamais la durée.
+          const who = lineIds.length > 1 ? `${p.name} : ` : '';
+          return `<span class="idle-tag" title="${esc(`${who}${a.text} · ${a.title}`)}">${who ? `<span class="idle-who">${esc(who)}</span>` : ''}<span class="idle-for">${esc(a.short)}</span></span>`;
+        }).join('');
       // Durée maximale dépassée : le badge de .queue-tags est caché au téléphone, ce repère court y reste.
       const tooLongTitle = q.tooLongSec && S.tooLong?.limitSec ? `Ce titre dure ${minSec(q.tooLongSec)}, au-delà de la durée maximale (« Plus » › règles) : ajouté avant la limite, il reste dans la file sauf retrait.` : '';
       const tooLongTag = tooLongTitle ? `<span class="too-long-tag" title="${esc(tooLongTitle)}">trop long</span>` : '';

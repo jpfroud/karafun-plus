@@ -3188,7 +3188,7 @@ test('navigateur intégré (Instagram, WebView…) : conseil d’ouvrir la page 
   // Son adresse garde sa clé personnelle : Safari ou Chrome la retrouvent.
   const insta = await soloPage('?invitation=CLE', solo, undefined, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile Instagram 300.0' });
   assert.equal(insta.node('inAppHint').hidden, false);
-  assert.equal(insta.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
+  assert.equal(insta.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).');
   const webview = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A; wv) AppleWebKit/537.36' });
   assert.equal(webview.node('inAppHint').hidden, false);
   const safari = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Version/17.0 Mobile/15E148 Safari/604.1' });
@@ -3219,9 +3219,9 @@ test('navigateur intégré, événement privé : le bandeau dit de rescanner le 
   const personal = await soloPage('?invitation=CLE', soloState({ tablePeople: [person('p1', 'Marie')], managedIds: ['p1'] }), undefined,
     { userAgent: insta, languages: ['en'] });
   assert.equal(personal.node('inAppHint').hidden, false);
-  assert.equal(personal.node('inAppHint').textContent, 'To find this page again later, open it in your browser (Safari or Chrome).');
+  assert.equal(personal.node('inAppHint').textContent, 'To find this page again later, open it in your browser: menu ⋯ → “Open in browser” (Safari or Chrome).');
   await personal.tap('langSwitch', '[data-lang="fr"]');
-  assert.equal(personal.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
+  assert.equal(personal.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).');
 
   // Prénom encore à saisir : la fenêtre de prénom couvre la page, rien ne change.
   const gate = await soloPage('', soloState({ tablePeople: [person('e2', 'Solo 2', { viaEvent: true, nameRequired: true })], managedIds: ['e2'] }),
@@ -3254,7 +3254,7 @@ test('navigateur intégré : le bandeau suit ce qui ramène vraiment la page (pe
   assert.equal(en.node('inAppHint').textContent, 'To get back to this page, scan the same QR code again from the same app, or ask the bar for a recovery QR code.');
   // Personne sur ce téléphone (lien commun) : conseil inchangé.
   const nobody = await soloPage('', soloState(), undefined, { userAgent: insta });
-  assert.equal(nobody.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
+  assert.equal(nobody.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).');
 });
 
 test('QR refusé : le message du serveur suit le changement de langue', async () => {
@@ -3284,6 +3284,15 @@ test('table : la page ne montre que les personnes du téléphone, « Voir toute 
   assert.equal(page.node('claimBox').hidden, true, 'plus de « Je suis… » sur la page principale');
   assert.equal(page.node('tableAllButton').hidden, false);
   assert.equal(page.node('tableAllButton').textContent, 'Voir toute la table (3)');
+  // D15-B : la carte ne liste que ce téléphone ; l'effectif de toute la table
+  // est à côté de « Voir toute la table », jamais dans l'en-tête de la carte.
+  assert.equal(page.node('peopleIntro').textContent, 'Les personnes inscrites avec ce téléphone. Pour voir toute la table : « Voir toute la table ».');
+  assert.equal(page.node('peopleCount').textContent, '1 présente · 3 inscrites à la table');
+  assert.equal(page.node('tableAllRow').hidden, false);
+  const cardSource = /<div class="card" id="peopleCard">([\s\S]*?)<\/div>\s*<div class="card" id="addPersonBox">/.exec(fs.readFileSync(path.join(__dirname, '..', 'public', 'client.html'), 'utf8'))[1];
+  assert.doesNotMatch(/<div class="table-head">[\s\S]*?<ul id="peopleList"/.exec(cardSource)[0], /peopleCount/, 'pas d’effectif de la table dans l’en-tête');
+  assert.match(cardSource, /<div class="table-all-row" id="tableAllRow">\s*<button[^>]*id="tableAllButton"[^>]*><\/button>\s*<span id="peopleCount"/,
+    'l’effectif suit le bouton « Voir toute la table »');
   assert.equal(page.find('addPersonBox', 'h3').textContent, 'Ajouter une personne sans téléphone');
   await page.click(page.node('tableAllButton'));
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Toute la table');
@@ -3315,6 +3324,10 @@ test('table : la page ne montre que les personnes du téléphone, « Voir toute 
   const english = await open({ state, languages: ['en'] });
   assert.equal(english.node('tableAllButton').textContent, 'See the whole table (3)');
   assert.equal(english.node('peopleHeading').textContent, 'My singers');
+  assert.equal(english.node('peopleIntro').textContent, 'The people signed up with this phone. To see everyone: “See the whole table”.');
+  assert.equal(english.node('peopleCount').textContent, '1 here · 3 signed up at the table');
+  await english.tap('langSwitch', '[data-lang="fr"]');
+  assert.equal(english.node('peopleCount').textContent, '1 présente · 3 inscrites à la table', 'le changement de langue suit');
 
   // « Reprendre un chanteur inscrit » (catalogue) ouvre la liste de la table.
   const none = await open({ state: baseState({ managedIds: [] }) });
@@ -3392,6 +3405,8 @@ test('table déjà commencée : « Rejoindre la table » en tête, puis la carte
   const solo = await soloPage('', soloState({ tablePeople: [person('m1', 'Marie')], managedIds: ['m1'] }));
   assert.equal(solo.node('inviteBox').hidden, true, 'pas pour « En solo »');
   assert.equal(solo.node('tableAllButton').hidden, true);
+  assert.equal(solo.node('tableAllRow').hidden, true, 'solo : ni bouton ni effectif de table');
+  assert.equal(solo.node('peopleCount').hidden, true);
 
   const empty = await open({ state: baseState({ tablePeople: [], managedIds: [] }) });
   assert.equal(empty.node('joinNameLabel').textContent, 'Prénom de la première personne');

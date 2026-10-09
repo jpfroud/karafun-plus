@@ -290,7 +290,20 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .activity.late { color: var(--bad); font-weight: 700; }
 .staff-alert .activity { font-size: inherit; }
 .badge.name-missing { color: var(--warn); border-color: rgba(255,176,32,.45); justify-self: start; }
-.queue-item .idle-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bad); font-size: 11px; font-weight: 700; }
+/* Solo sans nouvelles, sur la ligne de la file : « inactif 1 h 05 », la durée
+   toujours entière (largeur minimale du repère) ; seul le prénom d'un duo
+   (« Marie : ») prend les « … ». La phrase complète est dans l'infobulle. */
+/* display: contents : ses deux parties sont des éléments de .person-cell, où
+   la durée garde sa largeur et le reste (prénom, table, prénom du duo) rétrécit
+   (mesuré dans Chromium à 390 et 360 px). L'infobulle reste celle du repère. */
+.queue-item .idle-tag { display: contents; color: var(--bad); font-size: 11px; font-weight: 700; }
+.queue-item .idle-tag .idle-who { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item .idle-tag .idle-for { flex: none; white-space: nowrap; }
+/* Repère d'inactivité et « trop long » ensemble (rare) : la cellule passe à
+   la ligne plutôt que de couper l'un des deux. */
+.queue-item .person-cell:has(.idle-tag):has(.too-long-tag) { flex-wrap: wrap; row-gap: 0; }
+/* Prénom avec repère (bouton, d'ordinaire entier) : il cède la place à la durée. */
+.queue-item .person-cell:has(.idle-tag) button.person { flex: 0 1 auto; min-width: 0; }
 /* Titre au-delà de la durée maximale : repère court au téléphone, où .queue-tags
    (et son badge « plus long que … ») est caché. Toujours entier : le prénom et
    la table prennent les « … ». */

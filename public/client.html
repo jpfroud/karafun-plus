@@ -220,7 +220,9 @@
   .client .name-gate-panel .btn { margin-top: 14px; }
   /* Page d'une table : QR à faire scanner, toute la table dans une fiche. */
   .client .invite-card .row h2 { margin: 0; }
-  .client .table-all { margin-top: 12px; }
+  .client .table-all-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+  .client .table-all-row[hidden] { display: none; }
+  .client .table-count { min-width: 0; overflow-wrap: anywhere; }
   .client .join-others { display: block; margin: 12px auto 0; font-size: 14px; min-height: 44px; padding: 10px 12px; }
   .client .table-sheet li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
   .client .table-sheet li:last-child { border-bottom: 0; }
@@ -280,7 +282,7 @@
       <button type="button" class="btn small ghost" id="alertsToggle" data-i18n>Activer les notifications</button>
       <p class="tiny muted alert-help" id="alertsHelp"></p>
     </div>
-    <p id="inAppHint" class="card notice warn small" role="note" hidden data-i18n>Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).</p>
+    <p id="inAppHint" class="card notice warn small" role="note" hidden data-i18n>Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).</p>
     <div id="transferBox" class="card notice ok" role="region" aria-labelledby="transferHeading" hidden>
       <h2 id="transferHeading" data-i18n>Récupérer un chanteur</h2>
       <p id="transferText" class="small"></p>
@@ -327,12 +329,15 @@
         <div class="table-head">
           <div class="grow">
             <h2 id="peopleHeading" data-i18n>Les personnes de la table</h2>
-            <p class="muted small intro" id="peopleIntro" data-i18n>Seul le téléphone associé à une personne peut modifier ses chansons.</p>
+            <p class="muted small intro" id="peopleIntro" data-i18n>Les personnes inscrites avec ce téléphone. Pour voir toute la table : « Voir toute la table ».</p>
           </div>
-          <span id="peopleCount" class="pill"></span>
         </div>
         <ul id="peopleList" class="person-list"></ul>
-        <button type="button" class="btn table-all" id="tableAllButton" hidden></button>
+        <!-- Effectif de toute la table, à côté du bouton qui la montre (la carte ne liste que ce téléphone). -->
+        <div class="table-all-row" id="tableAllRow">
+          <button type="button" class="btn table-all" id="tableAllButton" hidden></button>
+          <span id="peopleCount" class="muted small table-count"></span>
+        </div>
       </div>
       <div class="card" id="addPersonBox">
         <h3 data-i18n>Ajouter une personne sans téléphone</h3>
@@ -1381,7 +1386,7 @@
     $('peopleHeading').textContent = individual ? t('Mes chansons') : t('Mes chanteurs');
     $('peopleIntro').textContent = individual
       ? t('Tes chansons sont visibles ici. Les autres personnes ne peuvent pas les modifier.')
-      : t('Seul le téléphone associé à une personne peut modifier ses chansons.');
+      : t('Les personnes inscrites avec ce téléphone. Pour voir toute la table : « Voir toute la table ».');
     $('peopleCard').hidden = individual && owned.length === 0;
     $('waitingLabel').textContent = individual ? t('Mes chansons à choisir') : t('À notre table, sans chanson');
     // « En solo » s'inscrit par son QR (fenêtre de prénom) : jamais ce formulaire.
@@ -1399,7 +1404,7 @@
     $('claimPeople').innerHTML = recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: person.name }))}</button>`).join('');
     const present = state.table?.activeCount ?? people.length;
     $('peopleCount').textContent = individual ? t('Mon profil')
-      : `${tp(present, '{n} présente', '{n} présentes')} · ${tp(people.length, '{n} inscrite', '{n} inscrites')}`;
+      : t('{present} · {signed} à la table', { present: tp(present, '{n} présente', '{n} présentes'), signed: tp(people.length, '{n} inscrite', '{n} inscrites') });
     $('addPersonBox').hidden = individual || full;
     $('addPersonForm').hidden = individual || full;
     $('capacityNotice').hidden = individual || !full;
@@ -1414,7 +1419,8 @@
       ? t('Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.')
       : held.length && !soloInvitation
         ? t('Pour retrouver cette page, rescanne le même QR depuis la même application, ou demande au bar un QR de reprise.')
-        : t('Pour retrouver cette page plus tard, ouvre-la dans ton navigateur (Safari ou Chrome).');
+        : t('Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).');
+    $('tableAllRow').hidden = individual;
     $('tableAllButton').hidden = individual;
     $('tableAllButton').textContent = t('Voir toute la table ({n})', { n: people.length });
     renderSongAccess(people, others, full);
