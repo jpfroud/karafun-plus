@@ -1550,8 +1550,9 @@ test('KaraFun relancé, numéros de file repris depuis 1 : le titre 1 déjà en 
 // que le titre suivant est annoncé (état 1), après un titre vu pour la
 // première fois en pleine chanson avec des chœurs à 80 réglés en direct,
 // gardés par un KaraFun collant : 80 était sauvegardé comme chœurs par
-// défaut du KaraFun (repris à chaque redémarrage).
-test('coupure pendant l’état 1 après un titre vu en pleine chanson : chœurs en direct jamais sauvegardés comme défaut', async t => {
+// défaut du KaraFun (repris à chaque redémarrage). Vérification de la
+// troisième relecture finale R4 : sauvegardés seulement comme provisoires.
+test('coupure pendant l’état 1 après un titre vu en pleine chanson : chœurs en direct jamais sauvegardés comme défaut confirmé', async t => {
   const f = harness();
   const { bridge, frames, reconnect } = replayBridge(t, f);
   bridge.code = '123456';
@@ -1562,7 +1563,7 @@ test('coupure pendant l’état 1 après un titre vu en pleine chanson : chœurs
   reconnect();
   frames(queueEvent(b), isoStatus(1, b), isoStatus(2, b, { backing: 80 }), isoStatus(3, b, { backing: 80 }), isoStatus(4, b, { backing: 80 }));
   assert.equal(bridge.provisionalDefaults, true);
-  assert.equal(f.settings.karafunDefaults?.backing ?? null, null, 'réglage en direct sauvegardé comme chœurs par défaut');
+  assert.equal(plain(f.settings.karafunDefaults)?.provisional, true, 'réglage en direct sauvegardé comme chœurs par défaut confirmés');
 });
 
 // Regression: vérification de la contre-relecture RT4 — une nouvelle
@@ -1699,18 +1700,20 @@ for (const sticky of [false, true]) {
 // au redémarrage (même code seulement). Avec un KaraFun collant relancé en
 // pleine chanson, le titre suivant revient aux chœurs relevés (53) au lieu
 // d'apprendre ceux gardés du titre en cours.
+// Regression: vérification de la troisième relecture finale R4 — un pont
+// neuf part d'une histoire inconnue et un KaraFun collant ne remet jamais
+// ses chœurs au chargement : la valeur relevée restait provisoire, n'était
+// plus sauvegardée, et un redémarrage réapprenait les chœurs gardés. Elle
+// est sauvegardée comme provisoire, et reprise comme telle.
 test('chœurs par défaut relevés gardés dans la sauvegarde et repris au redémarrage (KaraFun collant)', async t => {
   const f = harness();
   const { bridge, frames } = replayBridge(t, f);
   bridge.code = '123456';
-  // Pont neuf : histoire inconnue (troisième relecture finale R4), la valeur
-  // n'est sauvegardée qu'après une remise par KaraFun au chargement.
-  const before = isoItem('P-id', 775, { singer: 'Avant' });
-  frames(queueEvent(before), isoStatus(4, before, { backing: 20 }));
   const a = isoItem('A-id', 776, { singer: 'Quelqu’un' });
   frames(queueEvent(a), isoStatus(1, a), isoStatus(2, a), isoStatus(3, a));
   const saved = plain(f.settings.karafunDefaults);
   assert.equal(saved?.backing, 53, 'relevé puis gardé dans les réglages sauvegardés');
+  assert.equal(saved.provisional, true, 'pont neuf : histoire de KaraFun inconnue, valeur provisoire');
   assert.match(saved.code, /^[0-9a-f]{16}$/, 'empreinte du code, jamais le code');
   assert.equal(JSON.stringify(saved).includes('123456'), false);
   // Redémarrage : même code, puis un autre code (autre KaraFun).
@@ -1727,19 +1730,61 @@ test('chœurs par défaut relevés gardés dans la sauvegarde et repris au redé
     assert.deepEqual(bare(other.frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y, { backing: 80 }))), []);
     assert.deepEqual(bare(other.frames(isoStatus(3, y, { backing: 80 }))), code === '123456' ? [volumeTo(4, 53)] : [],
       `code ${code} : chœurs gardés par KaraFun`);
-    // Autre code, rien de sauvegardé : 80 relevé pour la soirée à titre
-    // provisoire (vérification de la deuxième relecture R2(c)), jamais sauvegardé.
+    // Autre code, rien de sauvegardé pour lui : 80 relevé pour la soirée à
+    // titre provisoire (vérification de la deuxième relecture R2(c)).
     assert.equal(other.bridge.observedDefaults.backing, code === '123456' ? 53 : 80);
-    assert.deepEqual(plain(g.settings.karafunDefaults), saved, `code ${code} : sauvegarde inchangée`);
+    assert.equal(other.bridge.provisionalDefaults, true);
+    if (code === '123456') assert.deepEqual(plain(g.settings.karafunDefaults), saved, 'sauvegarde inchangée');
+    else assert.deepEqual(plain(g.settings.karafunDefaults), { code: crypto.createHash('sha256').update('karafun:654321').digest('hex').slice(0, 16),
+      backing: 80, provisional: true }, 'autre KaraFun : sa valeur provisoire');
   }
+});
+
+// Regression: vérification de la troisième relecture finale R4 — KaraFun
+// collant, application démarrée sur un KaraFun propre (53) : A puis B à 53,
+// chœurs réglés à 80 en direct sur B, redémarrage entre B et C. Rien n'était
+// sauvegardé (valeur provisoire) : le pont relancé relevait 80, gardé par
+// KaraFun au chargement de C, et ramenait chaque titre suivant à 80.
+test('KaraFun collant, redémarrage après des chœurs réglés en direct : la valeur provisoire sauvegardée revient, pas le réglage', async t => {
+  const f = harness();
+  const { bridge, frames } = replayBridge(t, f);
+  bridge.code = '123456';
+  const a = isoItem('A-id', 801, { singer: 'Un' });
+  const b = isoItem('B-id', 802, { singer: 'Deux' });
+  frames(queueEvent(a, b), isoStatus(1, a), isoStatus(2, a), isoStatus(3, a), isoStatus(4, a));
+  frames(queueEvent(b), isoStatus(1, b), isoStatus(2, b), isoStatus(3, b), isoStatus(4, b));
+  frames(isoStatus(4, b, { backing: 80 })); // réglage en direct
+  const saved = plain(f.settings.karafunDefaults);
+  assert.equal(saved?.backing, 53, 'valeur relevée gardée pour un redémarrage');
+  // Redémarrage entre B et C : KaraFun collant charge C à 80.
+  const g = harness();
+  g.settings.karafunDefaults = saved;
+  const other = replayBridge(t, g);
+  other.bridge.code = '123456';
+  g.restoreKaraFunDefaults();
+  const c = isoItem('C-id', 803, { singer: 'Trois' });
+  other.frames(isoStatus(1, c), queueEvent(c), isoStatus(2, c, { backing: 80 }));
+  assert.deepEqual(bare(other.frames(isoStatus(3, c, { backing: 80 }))), [], 'titre d’avant inconnu : C laissé tel quel');
+  assert.equal(other.bridge.observedDefaults.backing, 53, 'réglage gardé par KaraFun jamais relevé');
+  other.frames(isoStatus(4, c, { backing: 80 }), isoStatus(4, c, { backing: 30 })); // réglage en direct sur C
+  const d = isoItem('D-id', 804, { singer: 'Quatre' });
+  other.frames(isoStatus(1, d), queueEvent(d), isoStatus(2, d, { backing: 30 }));
+  assert.deepEqual(bare(other.frames(isoStatus(3, d, { backing: 30 }))), [volumeTo(4, 53)], 'D ramené à 53, pas à 80');
+  // KaraFun remet ses chœurs au chargement : valeur définitive, sauvegardée comme telle.
+  other.frames(isoStatus(4, d, { backing: 53 }), isoStatus(4, d, { backing: 90 }));
+  const e = isoItem('E-id', 805, { singer: 'Cinq' });
+  other.frames(isoStatus(1, e), queueEvent(e), isoStatus(2, e, { backing: 60 }));
+  assert.equal(other.bridge.provisionalDefaults, false);
+  assert.deepEqual(plain(g.settings.karafunDefaults), { code: saved.code, backing: 60 });
 });
 
 // Regression: vérification de la deuxième relecture R2(b) et R2(c) — une
 // valeur provisoire (relevée après un redémarrage en pleine chanson) n'est
 // sauvegardée qu'une fois confirmée par une remise de KaraFun au chargement ;
 // une valeur sauvegardée que KaraFun contredit (remise à une autre valeur)
-// est remplacée dans la sauvegarde.
-test('chœurs par défaut : valeur provisoire sauvegardée une fois confirmée, valeur sauvegardée remplacée si KaraFun la contredit', async t => {
+// est remplacée dans la sauvegarde. Troisième relecture finale R4 : la
+// valeur provisoire est sauvegardée comme telle.
+test('chœurs par défaut : valeur provisoire sauvegardée comme telle, puis confirmée, valeur sauvegardée remplacée si KaraFun la contredit', async t => {
   const f = harness();
   const { bridge, frames } = replayBridge(t, f);
   bridge.code = '123456';
@@ -1748,12 +1793,13 @@ test('chœurs par défaut : valeur provisoire sauvegardée une fois confirmée, 
   const y = isoItem('Y-id', 777, { singer: 'Autre' });
   frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y), isoStatus(3, y), isoStatus(4, y));
   assert.equal(bridge.observedDefaults.backing, 53, 'relevée pour la soirée');
-  assert.equal(f.settings.karafunDefaults, undefined, 'provisoire : pas sauvegardée');
+  assert.equal(plain(f.settings.karafunDefaults)?.provisional, true, 'sauvegardée comme provisoire');
   // Chœurs changés en direct sur y, puis KaraFun remet z à 53 : confirmée.
   frames(isoStatus(4, y, { backing: 20 }));
   const z = isoItem('Z-id', 778, { singer: 'Encore' });
   frames(isoStatus(1, z), queueEvent(z), isoStatus(2, z));
   assert.equal(plain(f.settings.karafunDefaults)?.backing, 53, 'confirmée puis sauvegardée');
+  assert.equal(plain(f.settings.karafunDefaults)?.provisional, undefined);
   // Redémarrage : 53 repris, mais le bar a changé la valeur dans KaraFun (70).
   const g = harness();
   g.settings.karafunDefaults = plain(f.settings.karafunDefaults);
@@ -1791,8 +1837,10 @@ test('connexion à KaraFun : chœurs par défaut sauvegardés pour ce code repri
 // deux titres avant toute valeur sauvegardée, chœurs 80 réglés en direct sur
 // le dernier titre et gardés par un KaraFun collant : le premier titre vu se
 // charger les donnait comme chœurs par défaut, sauvegardés pour toujours et
-// remis à chaque titre des soirées suivantes.
-test('application relancée entre deux titres, KaraFun collant à 80 : rien de sauvegardé comme chœurs par défaut', async t => {
+// remis à chaque titre des soirées suivantes. Sauvegardés seulement comme
+// provisoires (vérification de la troisième relecture R4), oubliés à la
+// nouvelle soirée.
+test('application relancée entre deux titres, KaraFun collant à 80 : sauvegardé seulement comme provisoire', async t => {
   const f = harness();
   const { bridge, frames } = replayBridge(t, f);
   bridge.code = '123456';
@@ -1803,14 +1851,15 @@ test('application relancée entre deux titres, KaraFun collant à 80 : rien de s
   }
   assert.equal(bridge.observedDefaults.backing, 80, 'relevée pour la soirée');
   assert.equal(bridge.provisionalDefaults, true);
-  assert.equal(f.settings.karafunDefaults, undefined, 'réglage en direct gardé par KaraFun : jamais sauvegardé');
+  assert.deepEqual(plain(f.settings.karafunDefaults), { code: crypto.createHash('sha256').update('karafun:123456').digest('hex').slice(0, 16),
+    backing: 80, provisional: true }, 'réglage en direct gardé par KaraFun : jamais sauvegardé comme confirmé');
 });
 
 // Regression: troisième relecture finale R4(b) — une valeur sauvegardée à
 // tort (relevée d'un réglage gardé par KaraFun) ne se réapprenait jamais
 // et passait à toutes les soirées. « Nouvelle soirée » l'oublie : la
-// nouvelle soirée relève de nouveau les chœurs, sauvegardés seulement après
-// une remise par KaraFun au chargement.
+// nouvelle soirée relève de nouveau les chœurs, sauvegardés comme confirmés
+// seulement après une remise par KaraFun au chargement.
 test('nouvelle soirée : chœurs par défaut sauvegardés oubliés, relevés de nouveau', async t => {
   const f = harness();
   const { bridge, frames } = replayBridge(t, f);
@@ -1824,14 +1873,15 @@ test('nouvelle soirée : chœurs par défaut sauvegardés oubliés, relevés de 
   f.clearEvening();
   f.sync();
   assert.equal(f.settings.karafunDefaults, undefined, 'nouvelle soirée : plus de chœurs par défaut sauvegardés');
-  // Le titre suivant (KaraFun collant à 80) : relevé pour la soirée, pas sauvegardé.
+  // Le titre suivant (KaraFun collant à 80) : relevé pour la soirée, provisoire.
   const z = isoItem('Z-id', 778, { singer: 'Encore' });
   frames(isoStatus(1, z), queueEvent(z), isoStatus(2, z, { backing: 80 }), isoStatus(3, z, { backing: 80 }), isoStatus(4, z, { backing: 30 }));
-  assert.equal(f.settings.karafunDefaults, undefined);
+  assert.equal(plain(f.settings.karafunDefaults)?.provisional, true);
   // KaraFun remet ses chœurs à 53 au chargement : la vraie valeur, sauvegardée.
   const w = isoItem('W-id', 779, { singer: 'Dernier' });
   frames(isoStatus(1, w), queueEvent(w), isoStatus(2, w, { backing: 53 }));
   assert.equal(plain(f.settings.karafunDefaults)?.backing, 53);
+  assert.equal(plain(f.settings.karafunDefaults)?.provisional, undefined);
 });
 
 // Regression: deuxième relecture finale R4 — pages gardées en cache d'avant

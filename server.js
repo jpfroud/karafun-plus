@@ -1119,14 +1119,17 @@ function liveSongSetting(body) {
 // observedDefaults) : gardés dans les réglages sauvegardés avec une empreinte
 // du code KaraFun, jamais le code ; repris au redémarrage pour ce code
 // seulement, au lieu d'être réappris de chœurs qu'un KaraFun « collant »
-// garderait d'un titre réglé en direct.
+// garderait d'un titre réglé en direct. Une valeur provisoire (pas encore
+// confirmée par une remise de KaraFun au chargement, jamais chez un KaraFun
+// collant) est gardée comme telle : « Nouvelle soirée » l'oublie.
 const karafunKey = code => crypto.createHash('sha256').update(`karafun:${code}`).digest('hex').slice(0, 16);
 function rememberKaraFunDefaults() {
   const backing = bridge?.observedDefaults?.backing;
-  if (!Number.isInteger(backing) || !bridge.code || bridge.provisionalDefaults) return;
-  const code = karafunKey(bridge.code);
-  if (settings.karafunDefaults?.code === code && settings.karafunDefaults.backing === backing) return;
-  settings.karafunDefaults = { code, backing };
+  if (!Number.isInteger(backing) || !bridge.code) return;
+  const code = karafunKey(bridge.code), provisional = bridge.provisionalDefaults === true;
+  const saved = settings.karafunDefaults;
+  if (saved?.code === code && saved.backing === backing && (saved.provisional === true) === provisional) return;
+  settings.karafunDefaults = provisional ? { code, backing, provisional } : { code, backing };
   saveNight();
 }
 function restoreKaraFunDefaults() {

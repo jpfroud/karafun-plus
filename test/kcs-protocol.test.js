@@ -1506,10 +1506,21 @@ test('réglages de titre : coupure avant tout titre vu, premier titre vu se char
 // suivant comme chœurs par défaut définitifs (sauvegardés pour toujours).
 // Un pont neuf part d'une histoire inconnue : la valeur reste provisoire
 // jusqu'à une remise par KaraFun au chargement d'un titre vu après un autre.
+// Vérification de la troisième relecture finale R4(i) : connect() passe par
+// la branche « nouveau code » (forgetDefaults) et cachait l'état laissé par le
+// constructeur ; le pont neuf est ici ouvert sur KCS sans connect(), comme
+// celui de l'application relancée par les tests du serveur.
 test('réglages de titre : pont neuf, KaraFun collant qui garde des chœurs réglés en direct : valeur provisoire, puis définitive à une remise', async t => {
   mockTime(t);
-  const { bridge, ws } = await adminBridge(t);
+  const env = fakes(t);
+  const bridge = new KaraFunBridge();
   t.after(() => bridge.disconnect());
+  bridge._openKcs(KCS_URL, () => true);
+  const ws = env.sockets.at(-1);
+  ws.open();
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+  ws.receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: BAR_CONFIGURATION } });
+  ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: ADMIN_PERMISSIONS } });
   const status = backingStatus(ws);
   for (const id of ['B', 'C']) { status(id, 1, 0); status(id, 2, 80); status(id, 3, 80); status(id, 4, 80); }
   assert.equal(bridge.observedDefaults.backing, 80, 'relevée pour la soirée');
@@ -1558,7 +1569,7 @@ test('réglages de titre : nouveau code, même KaraFun avec des chœurs réglés
 // chœurs du titre en cours étaient déjà à la valeur par défaut (53) : les
 // téléphones gardaient 100. Les deux cas se ressemblent trame pour trame :
 // la valeur du titre suivant est relevée pour la soirée mais reste
-// provisoire (jamais sauvegardée) tant qu'une remise par KaraFun au
+// provisoire (sauvegardée comme telle) tant qu'une remise par KaraFun au
 // chargement (autre valeur que celle du titre d'avant) ne l'a pas confirmée.
 for (const sticky of [true, false]) {
   test(`réglages de titre : relancé en pleine chanson, chœurs du titre suivant relevés à titre provisoire (KaraFun ${sticky ? 'collant' : 'qui remet à zéro'})`, async t => {
@@ -1619,6 +1630,31 @@ test('réglages de titre : valeur par défaut des chœurs reprise après un red�
     assert.equal(other.restoreDefaults(bad), false);
   }
   assert.equal(other.observedDefaults.backing, undefined);
+});
+
+// Regression: vérification de la troisième relecture finale R4 — valeur
+// provisoire sauvegardée (KaraFun collant, jamais remis au chargement) :
+// reprise comme provisoire, jamais remplacée par une valeur provisoire
+// relevée après le redémarrage, remplacée par une remise de KaraFun (alors
+// définitive) ; sans effet sur une valeur déjà confirmée.
+test('réglages de titre : valeur provisoire sauvegardée reprise comme provisoire, confirmée par une remise de KaraFun', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  assert.equal(bridge.restoreDefaults({ backing: 53, provisional: true }), true);
+  assert.equal(bridge.observedDefaults.backing, 53);
+  assert.equal(bridge.provisionalDefaults, true);
+  const status = backingStatus(ws);
+  for (const id of ['y', 'z']) { status(id, 1, 0); status(id, 2, 80); status(id, 3, 80); status(id, 4, 80); }
+  assert.equal(bridge.observedDefaults.backing, 53, 'chœurs 80 gardés par KaraFun : jamais relevés à la place');
+  assert.equal(bridge.provisionalDefaults, true);
+  status('w', 1, 0);
+  status('w', 2, 60);
+  assert.equal(bridge.observedDefaults.backing, 60, 'remise par KaraFun au chargement');
+  assert.equal(bridge.provisionalDefaults, false);
+  assert.equal(bridge.restoreDefaults({ backing: 53, provisional: true }), false, 'valeur confirmée gardée');
+  assert.equal(bridge.restoreDefaults({ backing: 53 }), true);
+  assert.deepEqual([bridge.observedDefaults.backing, bridge.provisionalDefaults], [60, false]);
 });
 
 // Regression: vérification de la deuxième relecture R2(b) — valeur par défaut

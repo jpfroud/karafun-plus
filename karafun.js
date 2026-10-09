@@ -1446,7 +1446,7 @@ class KaraFunBridge extends EventEmitter {
   // réglage en direct, ou la valeur par défaut) passent au titre suivant chez
   // un KaraFun « collant » comme chez un KaraFun qui remet à zéro : sans
   // valeur connue ni chœurs changés, celle du titre suivant est relevée pour
-  // la soirée, mais provisoire (provisionalDefaults, jamais sauvegardée)
+  // la soirée, mais provisoire (provisionalDefaults, sauvegardée comme telle)
   // jusqu'à une remise ; avec une valeur connue, rien n'est relevé avant une
   // remise.
   _observeDefaults(status) {
@@ -1483,12 +1483,19 @@ class KaraFunBridge extends EventEmitter {
 
   // Chœurs par défaut relevés avant un redémarrage (sauvegarde de la soirée,
   // même code KaraFun) : repris tels quels, jamais réappris de chœurs qu'un
-  // KaraFun « collant » aurait gardés. false : valeur abîmée, rien repris.
+  // KaraFun « collant » aurait gardés. Une valeur sauvegardée provisoire (un
+  // KaraFun collant ne remet jamais ses chœurs au chargement) reste
+  // provisoire : reprise seulement sans valeur confirmée, jamais remplacée
+  // par une valeur provisoire relevée ensuite, remplacée par une remise de
+  // KaraFun au chargement (_observeDefaults). false : valeur abîmée, ou
+  // provisoire face à une valeur confirmée, rien repris.
   restoreDefaults(saved) {
     const backing = saved?.backing;
     if (!Number.isInteger(backing) || backing < 0 || backing > 100) return false;
-    if (this.observedDefaults.backing == null || this.provisionalDefaults) this.observedDefaults.backing = backing;
-    this.provisionalDefaults = false;
+    const confirmed = this.observedDefaults.backing != null && !this.provisionalDefaults;
+    if (saved.provisional === true && confirmed) return false;
+    if (!confirmed) this.observedDefaults.backing = backing;
+    this.provisionalDefaults = saved.provisional === true;
     this._backingChanged = true;
     return true;
   }

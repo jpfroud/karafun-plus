@@ -212,8 +212,16 @@ try {
   restoreNight(JSON.parse(JSON.stringify(snapshotNight({ scheduler: solos, access: soloAccess, settings: withDefaults }))),
     { scheduler: new Scheduler(), access: new TableAccess(), settings: kept });
   assert.deepEqual(kept.karafunDefaults, kfDefaults, 'chœurs par défaut repris');
+  // Vérification de la troisième relecture finale R4 : valeur provisoire
+  // (KaraFun collant) gardée comme telle.
+  const provisional = { ...kfDefaults, provisional: true };
+  const keptProvisional = settings();
+  restoreNight(JSON.parse(JSON.stringify(snapshotNight({ scheduler: solos, access: soloAccess,
+    settings: { ...settings(), karafunDefaults: provisional } }))),
+  { scheduler: new Scheduler(), access: new TableAccess(), settings: keptProvisional });
+  assert.deepEqual(keptProvisional.karafunDefaults, provisional, 'valeur provisoire reprise');
   for (const bad of [null, 'x', [], { code: 'a1b2', backing: 53 }, { code: kfDefaults.code, backing: 101 },
-    { code: kfDefaults.code, backing: 52.5 }, { code: kfDefaults.code }]) {
+    { code: kfDefaults.code, backing: 52.5 }, { code: kfDefaults.code }, { ...kfDefaults, provisional: 'oui' }]) {
     const damaged = snapshotNight({ scheduler: solos, access: soloAccess, settings: { ...settings(), karafunDefaults: bad } });
     const target = settings();
     restoreNight(damaged, { scheduler: new Scheduler(), access: new TableAccess(), settings: target });
