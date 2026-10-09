@@ -324,7 +324,7 @@ class KaraFunBridge extends EventEmitter {
     this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
     this._backingChanged = false;
     this.provisionalDefaults = false; // chœurs relevés après un titre vu déjà en lecture, pas encore confirmés
-    this._carriedUnseen = false; // chœurs transmis d'un titre vu pour la première fois déjà en lecture
+    this._carriedUnseen = false; // chœurs transmis d'un titre vu pour la première fois déjà en lecture, ou d'avant une session perdue
     this._observedFor = null;
     this._observedBacking = null; // chœurs du premier état vu du titre `_observedFor`
     this._lastBacking = null; // chœurs du dernier état du titre `_observedFor`
@@ -698,6 +698,7 @@ class KaraFunBridge extends EventEmitter {
       // Autre installation : chœurs par défaut à relever de nouveau (titres
       // vus se charger et chœurs observés : oubliés par disconnect).
       this.observedDefaults = {}; this._backingChanged = false; this.provisionalDefaults = false;
+      this._carriedUnseen = false;
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -1400,13 +1401,17 @@ class KaraFunBridge extends EventEmitter {
   // KaraFun relancé renumérote sa file depuis 1, un titre vu se charger ou
   // observé avant ne dit rien du titre de même numéro d'après. Les chœurs
   // par défaut relevés (observedDefaults, provisionalDefaults) et les
-  // chœurs changés pendant la soirée (_backingChanged) restent ; un titre
-  // vu de nouveau en pleine chanson reprend la chaîne (_carriedUnseen).
+  // chœurs changés pendant la soirée (_backingChanged) restent. Les chœurs
+  // laissés au titre suivant, eux, ne sont plus connus (réglés en direct
+  // pendant la coupure, ou par un titre vu en pleine chanson) : dès qu'un
+  // titre a été vu ou des chœurs envoyés, la chaîne passe pour inconnue
+  // (_carriedUnseen), comme après un titre vu pour la première fois en
+  // lecture. Sans rien de vu, la reprise vaut un démarrage.
   _forgetSession() {
     this.kcsSession++;
     this._loadingSeen.clear();
+    if (this._observedFor != null || this._lastBacking != null) this._carriedUnseen = true;
     this._observedFor = null; this._observedBacking = null; this._lastBacking = null;
-    this._carriedUnseen = false;
   }
 
   // Valeur par défaut des chœurs sur ce KaraFun (celui du bar les met à 53) :
@@ -1423,7 +1428,8 @@ class KaraFunBridge extends EventEmitter {
   // d'avant). La voix guide n'est jamais relevée : coupée par défaut (0).
   // Une telle remise par KaraFun au chargement donne toujours la valeur, même
   // déjà relevée ou reprise de la sauvegarde (valeur changée dans KaraFun).
-  // Après un titre vu pour la première fois déjà en lecture, ses chœurs (un
+  // Après un titre vu pour la première fois déjà en lecture (ou une session
+  // KCS perdue après un titre vu, voir _forgetSession), ses chœurs (un
   // réglage en direct, ou la valeur par défaut) passent au titre suivant chez
   // un KaraFun « collant » comme chez un KaraFun qui remet à zéro : sans
   // valeur connue, celle du titre suivant est relevée pour la soirée, mais

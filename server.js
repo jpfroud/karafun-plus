@@ -949,20 +949,28 @@ function catchUpSongSettings(tr) {
 // KaraFunBridge.seenLoading). Un titre vu pour la première fois déjà en
 // lecture (application redémarrée, ou télécommande reconnectée, en pleine
 // chanson) n'en est pas un : ses réglages en direct ne sont pas remis. Sans
-// numéro d'état (ancienne télécommande), après un titre déjà vu. Autre
-// session KCS (KaraFun relancé renumérote sa file depuis 1) : nouveau titre,
-// sans titre d'avant connu.
+// numéro d'état (ancienne télécommande), après un titre déjà vu dans la
+// même session. Autre session (coupure, « Reconnecter », KaraFun relancé qui
+// renumérote sa file depuis 1) : même titre seulement s'il garde son numéro
+// et sa chanson, jamais remis pour autant ; vu se charger seulement s'il
+// l'est de nouveau (état 3, ou vu annoncé dans cette session). Sinon nouveau
+// titre, sans titre d'avant connu.
+const loadedSongOf = item => String(item?.songId ?? item?.quizId ?? item?.title ?? '');
 function noteLoadedLive(loadedId) {
   const live = loadedId ? liveFromStatus(bridge.status) : null;
   if (!live || String(live.queueId) !== loadedId) return false;
   const session = bridge.statusSession ?? null;
-  const fresh = loadedLive?.queueId !== loadedId || loadedLive.session !== session;
+  const song = loadedSongOf(bridge.status?.current || bridge.status?.songPlaying);
+  const sameSession = loadedLive?.session === session;
+  const fresh = loadedLive?.queueId !== loadedId || (!sameSession && loadedLive.song !== song);
   const kcsState = bridge.status?.kcsState;
-  const seenLoading = !Number.isInteger(kcsState) ? !!loadedLive : kcsState === 3 ||
+  const seenNow = !Number.isInteger(kcsState) ? !!loadedLive && sameSession : kcsState === 3 ||
     (typeof bridge.seenLoading === 'function' ? bridge.seenLoading(loadedId) : !!loadedLive);
-  if (loadedLive && fresh) previousLoaded = loadedLive.session === session ? loadedLive : null;
-  // Vu se charger : décidé au premier état vu du titre, gardé ensuite.
-  loadedLive = { queueId: loadedId, backing: live.backing, seenLoading: fresh ? seenLoading : loadedLive.seenLoading, session };
+  if (loadedLive && fresh) previousLoaded = sameSession ? loadedLive : null;
+  // Vu se charger : décidé au premier état vu du titre, gardé ensuite dans
+  // la même session.
+  const seenLoading = fresh ? seenNow : sameSession ? loadedLive.seenLoading : loadedLive.seenLoading && seenNow;
+  loadedLive = { queueId: loadedId, song, backing: live.backing, seenLoading, session };
   return fresh && seenLoading;
 }
 

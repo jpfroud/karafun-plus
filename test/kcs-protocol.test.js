@@ -1441,6 +1441,63 @@ for (const how of ['AppLeftEvent', 'coupure', 'Reconnecter']) {
     assert.equal(bridge.observedDefaults.backing, 53);
   });
 }
+// Regression: vérification de la contre-relecture RT4 — une coupure (même
+// KaraFun, même file) pendant que le titre suivant est seulement annoncé
+// (état 1), après un titre vu pour la première fois en pleine chanson avec
+// des chœurs réglés en direct (80) qu'un KaraFun collant garde : la session
+// oubliée remettait la chaîne à « propre », et 80 était relevé comme chœurs
+// par défaut définitifs (sauvegardés pour les soirées suivantes). Après une
+// session perdue où un titre a été vu, la chaîne est inconnue : le titre
+// suivant ne donne qu'une valeur provisoire, jusqu'à une remise par KaraFun.
+for (const when of ['état 1', 'état 3']) {
+  test(`réglages de titre : coupure pendant l’${when} du titre suivant, chœurs gardés d’un titre vu en pleine chanson : provisoires`, async t => {
+    mockTime(t);
+    const { bridge, ws, env } = await adminBridge(t);
+    t.after(() => bridge.disconnect());
+    const status = backingStatus(ws);
+    status('A', 4, 80); // vu pour la première fois en lecture, chœurs 80 réglés en direct
+    if (when === 'état 1') status('B', 1, 0);
+    else { status('B', 1, 0); status('B', 2, 80); status('B', 3, 80); }
+    const provisional = bridge.provisionalDefaults, learned = bridge.observedDefaults.backing ?? null;
+    ws.serverClose(1006);
+    t.mock.timers.tick(3000);
+    await flush();
+    const ws2 = env.sockets.at(-1);
+    ws2.open();
+    ws2.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+    const status2 = backingStatus(ws2);
+    if (when === 'état 1') status2('B', 1, 0);
+    status2('B', 2, 80); // KaraFun collant : 80 gardé de A
+    status2('B', 3, 80);
+    status2('B', 4, 80);
+    assert.equal(bridge.observedDefaults.backing, 80);
+    assert.equal(bridge.provisionalDefaults, true, 'chœurs d’un réglage en direct jamais définitifs');
+    if (when === 'état 3') assert.deepEqual([learned, provisional], [80, true]);
+    // KaraFun remet ses chœurs au titre suivant : valeur définitive.
+    status2('C', 1, 0);
+    status2('C', 2, 53);
+    assert.equal(bridge.observedDefaults.backing, 53);
+    assert.equal(bridge.provisionalDefaults, false);
+  });
+}
+// Sans titre vu avant la coupure (ni chœurs envoyés), la reprise est un
+// démarrage : le premier titre vu se charger donne la valeur définitive.
+test('réglages de titre : coupure avant tout titre vu, premier titre vu se charger relevé comme au démarrage', async t => {
+  mockTime(t);
+  const { bridge, ws, env } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  ws.serverClose(1006);
+  t.mock.timers.tick(3000);
+  await flush();
+  const ws2 = env.sockets.at(-1);
+  ws2.open();
+  ws2.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+  const status2 = backingStatus(ws2);
+  status2('A', 1, 0);
+  status2('A', 3, 53);
+  assert.equal(bridge.observedDefaults.backing, 53);
+  assert.equal(bridge.provisionalDefaults, false);
+});
 test('réglages de titre : le pont déclare les chœurs observés dès sa création', () => {
   const bridge = new KaraFunBridge();
   assert.ok(Object.hasOwn(bridge, '_observedBacking'));

@@ -1544,6 +1544,88 @@ test('KaraFun relancé, numéros de file repris depuis 1 : le titre 1 déjà en 
   assert.deepEqual(bare(frames(isoStatus(3, y, live))), [pitchTo(0), tempoTo(0), volumeTo(5, 0)]);
 });
 
+// Regression: vérification de la contre-relecture RT4 — coupure pendant
+// que le titre suivant est annoncé (état 1), après un titre vu pour la
+// première fois en pleine chanson avec des chœurs à 80 réglés en direct,
+// gardés par un KaraFun collant : 80 était sauvegardé comme chœurs par
+// défaut du KaraFun (repris à chaque redémarrage).
+test('coupure pendant l’état 1 après un titre vu en pleine chanson : chœurs en direct jamais sauvegardés comme défaut', async t => {
+  const f = harness();
+  const { bridge, frames, reconnect } = replayBridge(t, f);
+  bridge.code = '123456';
+  const a = isoItem('10', 900, { singer: 'Bar' });
+  const b = isoItem('11', 901, { singer: 'Autre' });
+  frames(queueEvent(a, b), isoStatus(4, a, { backing: 80 }));
+  frames(queueEvent(b), isoStatus(1, b));
+  reconnect();
+  frames(queueEvent(b), isoStatus(1, b), isoStatus(2, b, { backing: 80 }), isoStatus(3, b, { backing: 80 }), isoStatus(4, b, { backing: 80 }));
+  assert.equal(bridge.provisionalDefaults, true);
+  assert.equal(f.settings.karafunDefaults?.backing ?? null, null, 'réglage en direct sauvegardé comme chœurs par défaut');
+});
+
+// Regression: vérification de la contre-relecture RT4 — une nouvelle
+// session KCS suffisait à faire d'un titre déjà chargé un nouveau titre :
+// titre ajouté dans KaraFun, remis aux valeurs neutres à l'état 3, tonalité
+// réglée ensuite par le bar avant « Lecture », puis coupure : à la reprise
+// (même titre, même numéro, toujours à l'état 3), la tonalité du bar était
+// remise à 0. Même numéro de file et même chanson : même titre.
+test('coupure pendant l’état 3 d’un titre ajouté dans KaraFun : la tonalité réglée ensuite par le bar est gardée', async t => {
+  const f = harness();
+  const { frames, reconnect } = replayBridge(t, f);
+  const a = isoItem('1', 900, { singer: 'Bar' });
+  const b = isoItem('2', 901, { singer: 'Bar2' });
+  frames(queueEvent(a, b), isoStatus(1, a), isoStatus(2, a), isoStatus(3, a), isoStatus(4, a));
+  assert.deepEqual(bare(frames(queueEvent(b), isoStatus(1, b), isoStatus(2, b, { pitch: 1 }), isoStatus(3, b, { pitch: 1 }))), [pitchTo(0)]);
+  assert.deepEqual(bare(frames(isoStatus(3, b, { pitch: 2 }))), []); // réglé par le bar dans KaraFun
+  reconnect();
+  assert.deepEqual(bare(frames(queueEvent(b), isoStatus(3, b, { pitch: 2 }))), [], 'tonalité du bar remise à 0 à la reprise');
+  assert.deepEqual(bare(frames(isoStatus(4, b, { pitch: 2 }))), []);
+  // KaraFun relancé, numéro 2 repris par une autre chanson qui se charge : nouveau titre.
+  reconnect();
+  const c = isoItem('2', 902, { singer: 'Bar3' });
+  assert.deepEqual(bare(frames(queueEvent(c), isoStatus(1, c), isoStatus(2, c, { pitch: 2 }), isoStatus(3, c, { pitch: 2 }))), [pitchTo(0)]);
+});
+
+// Regression: vérification de la contre-relecture RT4 — ancienne
+// télécommande (faux KaraFun de la démo, réglages permis) : après une
+// reconnexion, le titre ajouté dans KaraFun en cours de lecture passait pour
+// un nouveau titre vu se charger, et sa tonalité réglée en direct était
+// remise à 0 en pleine chanson.
+test('ancienne télécommande : reconnexion en pleine chanson d’un titre ajouté dans KaraFun, rien remis', async t => {
+  const f = harness();
+  const bridge = new KaraFunBridge({ bases: ['http://127.0.0.1:9'] });
+  t.after(() => bridge.disconnect());
+  f.setBridge(bridge);
+  const sent = [];
+  const up = () => {
+    Object.assign(bridge, { protocol: 'socket.io', ready: true, connected: true });
+    bridge.permissions = { ...ADMIN, managePlayer: true };
+    bridge.socket = { emit(name, payload) { sent.push([name, payload]); }, close() {}, removeAllListeners() {} };
+  };
+  up();
+  const item = (queueId, songId) => ({ queueId, songId, title: `Titre ${songId}`, artist: 'A', singer: 'Bar', status: 'ready', songTracks: [4, 5] });
+  const st = (state, it, { pitch = 0, backing = 100, guide = 0 } = {}) => ({ state, songPlaying: it, position: 0, pitch, tempo: 0,
+    tracks: it && state === 'playing' ? [{ volume: backing, track: { type: 4 } }, { volume: guide, track: { type: 5 } }] : [] });
+  const a = item(1, 500), b = item(2, 501), c = item(3, 502);
+  const accept = (queue, status) => { bridge._accept('queue', queue); bridge._accept('status', status); f.sync(); };
+  accept([a, b], st('playing', a));
+  accept([b], st('idle', b));
+  accept([b], st('playing', b));
+  accept([b], st('playing', b, { pitch: 2 })); // tonalité +2 réglée en direct
+  sent.length = 0;
+  bridge.disconnect(); up();
+  accept([b], st('playing', b, { pitch: 2 }));
+  assert.deepEqual(sent, [], 'rien envoyé en pleine chanson');
+  // Coupure pendant la chanson suivante, vue pour la première fois en lecture : rien non plus.
+  bridge.disconnect(); up();
+  accept([c], st('playing', c, { pitch: 2 }));
+  assert.deepEqual(sent, []);
+  // Le titre d'après, vu commencer dans cette session, est remis aux valeurs neutres.
+  const d = item(4, 503);
+  accept([d], st('playing', d, { pitch: 2 }));
+  assert.deepEqual(sent, [['pitch', 0]]);
+});
+
 // Regression: vérification de la relecture R1 — premier titre de
 // l'application vu annoncé puis se charger (états 1 et 2), puis directement
 // en lecture (sans trame d'état 3) : il n'était plus isolé du précédent.
