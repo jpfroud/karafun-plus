@@ -744,14 +744,19 @@ function replayBridge(t, f, { permissions = ADMIN } = {}) {
   const bridge = new KaraFunBridge();
   t.after(() => { bridge.disconnect(); globalThis.WebSocket = saved; });
   f.setBridge(bridge);
-  bridge._openKcs('wss://kcs.exemple.invalid/remote', () => true);
-  const ws = FakeWS.last;
+  let ws;
   const receive = message => ws.emit('message', { data: JSON.stringify(message) });
-  ws.emit('open');
-  receive({ type: 'core.AuthenticatedEvent', payload: {} });
-  receive({ type: 'remote.UsernameUpdateEvent', payload: { username: bridge.username } });
-  receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: BAR_CONFIGURATION } });
-  receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions } });
+  // Connexion (ou reconnexion, même pont) : poignée de main de KaraFun.
+  const open = () => {
+    bridge._openKcs('wss://kcs.exemple.invalid/remote', () => true);
+    ws = FakeWS.last;
+    ws.emit('open');
+    receive({ type: 'core.AuthenticatedEvent', payload: {} });
+    receive({ type: 'remote.UsernameUpdateEvent', payload: { username: bridge.username } });
+    receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: BAR_CONFIGURATION } });
+    receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions } });
+  };
+  open();
   receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
   receive({ type: 'remote.StatusEvent', payload: { status: { state: 1, pitch: 0, tempo: 0, tracks: [], current: null } } });
   ws.out.length = 0;
@@ -761,7 +766,14 @@ function replayBridge(t, f, { permissions = ADMIN } = {}) {
     f.sync();
     return ws.out.splice(0).filter(m => !m.type.startsWith('core.'));
   };
-  return { bridge, ws, frames };
+  // Coupure de la télécommande puis reconnexion : demandes de la reprise oubliées.
+  const reconnect = () => {
+    bridge.disconnect();
+    f.sync();
+    open();
+    ws.out.length = 0;
+  };
+  return { bridge, get ws() { return ws; }, frames, reconnect };
 }
 const bare = messages => messages.map(({ type, payload }) => ({ type, payload }));
 const DJ_ID = 'a0c6bc1b-7a57-4537-846b-d4ded79e830c';
@@ -1484,4 +1496,43 @@ test('titre de la file réglé dans KaraFun même : sa tonalité KaraFun est gar
     assert.deepEqual(bare(frames(isoStatus(3, tuned, carried))), applied ? [] : [pitchTo(3)], 'la valeur de KaraFun, pas 0');
     assert.deepEqual(bare(frames(isoStatus(4, tuned, { pitch: 3 }))), []);
   }
+});
+
+// Regression: vérification de la relecture R1 — coupure de la télécommande :
+// pendant la coupure, un titre ajouté dans KaraFun démarre et le bar le règle
+// dans KaraFun. À la reconnexion, son premier état vu est la lecture : il
+// était remis aux valeurs neutres en pleine chanson (un titre déjà vu avant
+// la coupure suffisait). Seul un titre vu se charger est remis.
+test('reconnexion pendant un titre ajouté dans KaraFun : ses réglages en direct ne sont pas remis à zéro', async t => {
+  const f = harness();
+  const { frames, reconnect } = replayBridge(t, f);
+  const x = isoItem('X-id', 777, { singer: 'Quelqu’un' });
+  frames(queueEvent(x), isoStatus(1, x), isoStatus(2, x), isoStatus(3, x), isoStatus(4, x));
+  reconnect();
+  const y = isoItem('Y-id', 778, { singer: 'Autre' });
+  const live = { pitch: 2, tempo: 10, guide: 25 };
+  assert.deepEqual(bare(frames(queueEvent(y), isoStatus(4, y, live))), [], 'rien en pleine chanson');
+  assert.deepEqual(bare(frames(isoStatus(5, y, live), isoStatus(4, y, live))), []);
+  assert.deepEqual(f.events('song.settingsReset'), []);
+  // Le titre suivant, vu se charger, reste isolé.
+  const z = isoItem('Z-id', 779, { singer: 'Encore' });
+  assert.deepEqual(bare(frames(isoStatus(1, z), queueEvent(z), isoStatus(2, z, live))), []);
+  assert.deepEqual(bare(frames(isoStatus(3, z, live))), [pitchTo(0), { type: 'remote.TempoRequest', payload: { tempo: 0 } }, volumeTo(5, 0)]);
+});
+
+// Regression: vérification de la relecture R1 — premier titre de
+// l'application vu annoncé puis se charger (états 1 et 2), puis directement
+// en lecture (sans trame d'état 3) : il n'était plus isolé du précédent.
+test('titre vu se charger (états 1 et 2) puis directement en lecture : remis aux valeurs neutres', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const y = isoItem('Y-id', 778, { singer: 'Autre' });
+  const live = { pitch: 2, tempo: 10, guide: 25 };
+  assert.deepEqual(bare(frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y, live))), []);
+  assert.deepEqual(bare(frames(isoStatus(4, y, live))), [pitchTo(0), { type: 'remote.TempoRequest', payload: { tempo: 0 } }, volumeTo(5, 0)]);
+  // Même trames reçues d'un bloc avant la synchronisation.
+  const g = harness();
+  const other = replayBridge(t, g);
+  assert.deepEqual(bare(other.frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y, live), isoStatus(4, y, live))),
+    [pitchTo(0), { type: 'remote.TempoRequest', payload: { tempo: 0 } }, volumeTo(5, 0)]);
 });

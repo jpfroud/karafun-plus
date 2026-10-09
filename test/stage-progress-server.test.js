@@ -237,3 +237,32 @@ test('sauvegarde : horloge abîmée ou absente ignorée sans bloquer la soirée'
   delete snapshot.stageClock;
   assert.equal(restoreNight(snapshot, { scheduler, access, settings: {} }).stageClock, null, 'sauvegarde d’une version précédente');
 });
+
+// Regression: vérification de la relecture C5 — une durée envoyée par un
+// téléphone avant la borne (30 à 1200 s) restait telle quelle dans la
+// soirée sauvegardée : reprise après la mise à jour, elle repartait vers
+// chaque téléphone (200 000 caractères). La reprise la borne aussi.
+test('reprise d’une soirée sauvegardée avant la borne : durées des titres bornées', () => {
+  const scheduler = new Scheduler({ solverEnabled: false });
+  const access = new TableAccess();
+  scheduler.table('1').headcount = 4;
+  access.issue('1');
+  const ana = scheduler.join({ tableId: '1', name: 'Ana' });
+  const bob = scheduler.join({ tableId: '1', name: 'Bob' });
+  // Titres gardés par une version d'avant la borne.
+  scheduler.chooseSong(ana, { songId: 5, title: 'Énorme', artist: 'A', duration: 'x'.repeat(200000) });
+  scheduler.chooseSong(ana, { songId: 6, title: 'Long', artist: 'A', duration: 99999 }, 'append');
+  scheduler.chooseSong(bob, { songId: 7, title: 'Juste', artist: 'A', duration: 215 });
+  const sel = scheduler.select();
+  const settings = { auto: true, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 };
+  const snapshot = plain(snapshotNight({ scheduler, access, settings,
+    tracked: [{ queueId: 'q1', sel: { ...sel, song: { ...sel.song, duration: 5 } }, addedAt: T0, startedAt: null }],
+    pending: { sel: { ...sel, song: { ...sel.song, duration: 'y'.repeat(1000) } }, before: [], at: T0, attempts: 1 } }));
+  const target = new Scheduler({ solverEnabled: false });
+  const restored = restoreNight(snapshot, { scheduler: target, access: new TableAccess(), settings: {} });
+  const people = [...target.people.values()];
+  const a = people.find(p => p.name === 'Ana'), b = people.find(p => p.name === 'Bob');
+  assert.deepEqual([a.song, ...a.backlog, b.song].map(song => song.duration).sort(), [1200, 215, null].sort());
+  assert.equal(restored.tracked[0].sel.song.duration, 30);
+  assert.equal(restored.pending.sel.song.duration, null);
+});

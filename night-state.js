@@ -11,7 +11,7 @@ const { SoloInvitations } = require('./solo-invitations');
 const { PrivateEvent } = require('./private-event');
 const { PLAYED_LIMIT } = require('./song-repeats');
 const { sanitizeSettings } = require('./song-settings');
-const { sanitizeClock } = require('./stage-progress');
+const { sanitizeClock, clientDuration } = require('./stage-progress');
 
 const FORMAT = 1;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -56,7 +56,8 @@ function cleanSentSettings(holder, legacy) {
   delete holder.statusAtOptions; // numéro d'état de KaraFun propre à l'exécution précédente
   for (const flag of ['settingsDirty', 'settingsChanged']) if (flag in holder && typeof holder[flag] !== 'boolean') delete holder[flag];
 }
-function dropCovers(snapshot) {
+// Titres gardés dans la sauvegarde (listes, invitations, envois à KaraFun).
+function savedSongs(snapshot) {
   const songs = [];
   for (const p of Array.isArray(snapshot.scheduler?.people) ? snapshot.scheduler.people : []) {
     songs.push(p?.song, p?.invite?.song);
@@ -64,7 +65,15 @@ function dropCovers(snapshot) {
   }
   for (const tr of Array.isArray(snapshot.tracked) ? snapshot.tracked : []) songs.push(tr?.sel?.song);
   songs.push(snapshot.pending?.sel?.song);
-  for (const song of songs) if (song && typeof song === 'object' && 'img' in song) song.img = null;
+  return songs.filter(song => song && typeof song === 'object');
+}
+function dropCovers(snapshot) {
+  for (const song of savedSongs(snapshot)) if ('img' in song) song.img = null;
+}
+// Durée envoyée par un téléphone : bornée comme à l'arrivée (une sauvegarde
+// d'avant la borne a pu la garder telle quelle).
+function boundDurations(snapshot) {
+  for (const song of savedSongs(snapshot)) if ('duration' in song) song.duration = clientDuration(Number(song.duration));
 }
 
 // `remaining` peut compter un envoi déjà en route en plus du report.
@@ -163,6 +172,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // Sauvegarde antérieure à la certification des vignettes : une image a pu
   // être choisie par un téléphone. Elle n'est pas reprise.
   if (snapshot.coversCertified !== true) dropCovers(snapshot);
+  boundDurations(snapshot);
   const legacyVoices = snapshot.guideVoicesSaved !== true;
   const data = object(snapshot.scheduler, 'ordonnanceur');
   const restoredSoloInvitations = new SoloInvitations(snapshot.soloInvitations ?? []);

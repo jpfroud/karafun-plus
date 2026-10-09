@@ -937,15 +937,19 @@ function catchUpSongSettings(tr) {
 }
 
 // Dernier état vu du titre chargé ; le précédent est gardé au changement.
-// true : ce titre vient d'être chargé (premier état vu pour lui), vu se
-// charger (état 3) ou après un titre déjà vu par cette application. Le
-// premier titre vu déjà en lecture (application redémarrée en pleine
-// chanson) n'en est pas un : ses réglages en direct ne sont pas remis.
+// true : ce titre vient d'être chargé (premier état vu pour lui) et cette
+// application l'a vu annoncé ou se charger (états 1 à 3, voir
+// KaraFunBridge.seenLoading). Un titre vu pour la première fois déjà en
+// lecture (application redémarrée, ou télécommande reconnectée, en pleine
+// chanson) n'en est pas un : ses réglages en direct ne sont pas remis. Sans
+// numéro d'état (ancienne télécommande), après un titre déjà vu.
 function noteLoadedLive(loadedId) {
   const live = loadedId ? liveFromStatus(bridge.status) : null;
   if (!live || String(live.queueId) !== loadedId) return false;
   const fresh = loadedLive?.queueId !== loadedId;
-  const seenLoading = !!loadedLive || bridge.status?.kcsState === 3;
+  const kcsState = bridge.status?.kcsState;
+  const seenLoading = !Number.isInteger(kcsState) ? !!loadedLive : kcsState === 3 ||
+    (typeof bridge.seenLoading === 'function' ? bridge.seenLoading(loadedId) : !!loadedLive);
   if (loadedLive && fresh) previousLoaded = loadedLive;
   loadedLive = { queueId: loadedId, backing: live.backing };
   return fresh && seenLoading;
