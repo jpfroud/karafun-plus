@@ -1,6 +1,6 @@
 'use strict';
 // Regression: T2-5 (seconde relecture) — sans Playwright ou sans Chromium, les
-// mesures en vrai navigateur de la page du bar étaient ignorées en silence :
+// mesures en vrai navigateur (page du bar, fenêtre de prénom) étaient ignorées en silence :
 // la CI ne les faisait jamais, sans que personne le voie. Elles restent
 // lançables hors ligne sur le PC du bar, mais dans la CI (variable CI) une
 // annotation GitHub Actions « ::warning:: » signale qu'elles sont ignorées.
@@ -15,7 +15,7 @@ const { spawnSync } = require('node:child_process');
 const root = path.join(__dirname, '..');
 const nowhere = fs.mkdtempSync(path.join(os.tmpdir(), 'sans-navigateur-'));
 try {
-  for (const file of ['test/staff-qr-layout.test.js', 'test/staff-idle-layout.test.js']) {
+  for (const file of ['test/staff-qr-layout.test.js', 'test/staff-idle-layout.test.js', 'test/client-name-gate-layout.test.js']) {
     const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: nowhere, BASE: 'http://127.0.0.1:9' };
     delete env.CI;
     const run = ci => spawnSync(process.execPath, [file], { cwd: root, encoding: 'utf8', timeout: 60000, env: ci ? { ...env, CI: 'true' } : env });

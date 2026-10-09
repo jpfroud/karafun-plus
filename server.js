@@ -4026,6 +4026,16 @@ const handlers = {
   'POST /api/staff/person/leave': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p) throw new Error('Chanteur inconnu.');
+    // Place « Solo N » du QR de l'événement, sans prénom ni titre : supprimée
+    // sans trace, comme par /api/leave. Marquée partie, son navigateur
+    // resterait lié à une fiche que le bar ne saurait pas réactiver ; il
+    // rescanne le QR de l'événement et retrouve une nouvelle place.
+    if (p.viaEvent && disposablePlaceholder(p)) {
+      dropPlaceholder(p);
+      sched.version++;
+      sync();
+      return { ok: true, removedFromKaraFun: 0, pendingCancelled: false };
+    }
     // Invitée d'un duo déjà chargé : le titre reste dans KaraFun, au nom de
     // son auteur seul.
     const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(new Set([p.id]));

@@ -3287,9 +3287,31 @@ test('doublon marqué parti sur ce navigateur : son QR personnel propose encore 
   // Une personne présente sur ce téléphone : rien n'est demandé (inchangé).
   const active = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false, tablePeople: [person('d1', 'Clara B.')], managedIds: ['d1'] }));
   assert.equal(postsTo(active, '/api/table/solo/open').length, 0);
-  // QR de l'événement rescanné par ce navigateur : le serveur répond (personne partie).
-  const event = await soloPage('?evenement=SECRET-EV', soloState({ privateEventReady: true, tablePeople: [person('d1', 'Clara B.', { active: false })], managedIds: ['d1'] }));
-  assert.equal(postsTo(event, '/api/table/enter').length, 0, 'son chanteur parti est sur ce téléphone : le bar le réactive');
+});
+
+// Regression: troisième relecture finale (RT1) — le QR de l'événement rescanné
+// par une personne marquée partie comptait sa fiche partie comme « son
+// chanteur est déjà là » : ?evenement= retiré sans demande au serveur, et la
+// page disait « demande au bar un QR individuel » au lieu de « marquée partie ».
+test('personne marquée partie : le QR de l’événement rescanné dit « demande au bar de te réactiver » (FR/EN)', async () => {
+  const gone = () => soloState({ soloInvitationReady: false, privateEventReady: true,
+    tablePeople: [person('d1', 'Clara B.', { viaEvent: true, active: false })], managedIds: ['d1'] });
+  const left = () => reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
+  for (const [languages, text] of [[undefined, 'Cette personne a été marquée partie. Demande au bar de la réactiver.'],
+    [['en'], 'This person was marked as gone. Ask the bar to bring them back.']]) {
+    const event = await soloPage('?evenement=SECRET-EV', gone(), url => url === '/api/table/enter' ? left() : undefined, { languages });
+    assert.deepEqual(postsTo(event, '/api/table/enter'), [['/api/table/enter', { table: 'Comptoir', access: 'secret', event: 'SECRET-EV' }]]);
+    assert.equal(event.node('noSingerText').textContent, text);
+    assert.equal(event.node('catalogAccessText').textContent, text);
+    // Rechargée sans ?evenement= (lien commun) : le même avis, jamais « QR individuel ».
+    const bare = await soloPage('', gone(), undefined, { languages });
+    assert.equal(bare.posts.length, 0);
+    assert.equal(bare.node('noSingerText').textContent, text);
+  }
+  // Une place active sur ce téléphone : rien n'est demandé (inchangé).
+  const mine = await soloPage('?evenement=SECRET-EV', soloState({ privateEventReady: true,
+    tablePeople: [person('d1', 'Clara B.', { active: false }), person('s2', 'Léa')], managedIds: ['d1', 's2'] }));
+  assert.equal(postsTo(mine, '/api/table/enter').length, 0);
 });
 
 test('navigateur intégré (Instagram, WebView…) : conseil d’ouvrir la page dans son navigateur, en solo seulement', async () => {
