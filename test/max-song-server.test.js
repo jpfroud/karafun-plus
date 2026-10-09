@@ -303,3 +303,38 @@ test('sauvegarde de la soirée : la limite revient après un redémarrage, une v
   assert.equal(restore(null), null);
   assert.equal(restore(undefined), null, 'ancienne sauvegarde sans le champ : option coupée');
 });
+
+// Regression: D14-C (relecture finale) — vote Battle ouvert, l'accueil des
+// retardataires (battleVote.admit) qui lève une exception ne doit ni faire
+// échouer une action réussie, ni masquer le code d'erreur d'une action
+// refusée ; l'action suivante accueille les personnes arrivées entre-temps.
+test('vote Battle : une panne de l’accueil des retardataires ne change pas la réponse des actions', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const [alice] = await table(f, 'Alice', 'Bob');
+  await staff(f, '/api/staff/settings', { battleMinVoters: 2 });
+  const proposed = await call(f, '/api/table/battle/propose', { ...alice, songs: [{ songId: 1 }, { songId: 3 }], proposerChoice: 1 });
+  assert.equal(proposed.status, 200, proposed.text);
+  assert.equal(f.battleVote.view().phase, 'voting');
+  assert.equal(f.battleVote.view().eligible, 2);
+  const tb = { table: '1', access: alice.access };
+  let failures = 0;
+  f.battleVote.admit = () => { failures++; throw new Error('Panne simulée de l’électorat'); };
+  const chloe = await call(f, '/api/table/person', { ...tb, name: 'Chloé' });
+  assert.equal(chloe.status, 200, 'l’action réussie répond 200 malgré la panne');
+  assert.ok(chloe.body.id && chloe.body.token);
+  assert.ok(f.sched.people.has(chloe.body.id), 'Chloé est bien inscrite');
+  const taken = await call(f, '/api/table/person', { ...tb, name: 'Alice' });
+  assert.equal(taken.status, 400);
+  assert.equal(taken.body.code, 'NAME_TAKEN', 'l’action refusée garde son propre code d’erreur');
+  assert.equal(taken.body.error, 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.');
+  assert.equal(failures, 2, 'l’accueil a été tenté après chaque action');
+  assert.equal(f.battleVote.view().eligible, 2, 'pendant la panne, l’électorat ne bouge pas');
+  delete f.battleVote.admit; // fin de la panne : méthode d'origine
+  const dam = await call(f, '/api/table/person', { ...tb, name: 'Dam' });
+  assert.equal(dam.status, 200, dam.text);
+  const view = f.battleVote.view();
+  assert.equal(view.phase, 'voting');
+  assert.equal(view.eligible, 4, 'l’action suivante accueille Chloé (arrivée pendant la panne) et Dam');
+  assert.ok(view.eligiblePersonIds.includes(chloe.body.id) && view.eligiblePersonIds.includes(dam.body.id));
+});
