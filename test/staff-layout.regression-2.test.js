@@ -147,4 +147,38 @@ for (const width of [390, 1366]) assert.ok(parseFloat(computed('.solo-invite-url
 const clientCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'client.html'), 'utf8');
 const transferField = /\.client \.transfer-url \{([^}]*)\}/.exec(clientCss);
 assert.ok(transferField && parseFloat(/font-size:\s*([\d.]+)px/.exec(transferField[1])?.[1]) >= 16, 'téléphone : champ du lien de transfert en 16 px');
+// ---------------------------------------------------------- relecture finale (affichage)
+// Regression: U1 — la pastille du panneau Spotify (nowrap) débordait de la
+// carte à 390 px ; U2 — la pastille Spotify de la Scène est un bouton qui
+// ressemblait à une étiquette fixe. Les deux restent dans leur cadre (nom
+// d'appareil long abrégé par « … ») ; celle de la Scène se touche au doigt.
+for (const id of ['#spotifyPill', '#spotifyChip']) {
+  for (const width of [390, 1366]) {
+    const pill = computed(id, width);
+    assert.equal(pill.display, 'inline-block', `${id} à ${width} px : « … » possible (pas en flex)`);
+    assert.match(String(pill['max-width']), /100%/, `${id} à ${width} px : jamais plus large que son cadre`);
+    assert.equal(pill.overflow, 'hidden');
+    assert.equal(pill['text-overflow'], 'ellipsis');
+  }
+}
+assert.equal(computed('#spotifyChip', 1366).cursor, 'pointer', 'la pastille de la Scène se touche');
+assert.ok(ALL.some(rule => rule.selectors.includes('#spotifyChip:hover') && rule.selectors.includes('#spotifyChip:focus-visible')),
+  'survol et focus clavier visibles');
+assert.ok(px(computed('#spotifyChip', 390)['min-height']) >= 44, 'cible au doigt de 44 px au téléphone');
+assert.ok(px(computed('#spotifyChip', 899)['min-height']) >= 44, 'et jusqu’à 899 px');
+assert.equal(computed('#spotifyChip', 1366)['min-height'], undefined, 'sur PC, taille d’une pastille');
+// Regression: U6 — la liste des solistes défilait dans la page au téléphone
+// (défilement imbriqué) ; ses boutons faisaient moins de 40 px.
+for (const width of [390, 899]) {
+  assert.equal(computed('.soloist-list', width)['max-height'], 'none', `${width} px : pas de hauteur bornée`);
+  assert.equal(computed('.soloist-list', width).overflow, 'visible', `${width} px : pas de défilement imbriqué`);
+  assert.ok(px(computed('.soloist-row .btn', width)['min-height']) >= 40, `${width} px : « QR de reprise » de 40 px`);
+}
+assert.equal(computed('.soloist-list', 1366)['overflow-y'], 'auto', 'sur PC, la liste reste bornée');
+// Regression: U10 — « plus long que … » était dans .queue-tags, cachées au
+// téléphone : le repère court « trop long » s'y affiche, sur PC le badge suffit.
+assert.equal(computed('.queue-item .person-cell .queue-tags', 390).display, 'none');
+assert.notEqual(computed('.queue-item .too-long-tag', 390).display, 'none', '390 px : repère visible');
+assert.notEqual(computed('.queue-item .too-long-tag', 650).display, 'none', '650 px : repère visible');
+assert.equal(computed('.queue-item .too-long-tag', 651).display, 'none', 'au-delà, le badge de .queue-tags est visible');
 console.log('Bar : barre d’onglets, barre du haut, colonne d’actions et diagnostic à 360 px OK');

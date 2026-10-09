@@ -311,7 +311,8 @@ function boot(options = {}) {
     ...(options.language !== undefined ? { language: options.language } : {}),
     ...(options.userAgent !== undefined ? { userAgent: options.userAgent } : {}),
     vibrate: pattern => { page.vibrations.push([...pattern]); return true; },
-    ...(options.share ? { share: async data => { page.shares.push({ ...data }); } } : {}),
+    // options.share en fonction : sa réponse (refus, annulation) suit le partage.
+    ...(options.share ? { share: async data => { page.shares.push({ ...data }); if (typeof options.share === 'function') await options.share(data); } } : {}),
     // Page en http sur le Wi-Fi du bar : ni partage ni presse-papiers.
     ...(options.noClipboard ? {} : { clipboard: { writeText: async text => { if (options.clipboardFails) throw new Error('refusé'); page.copies.push(text); } } }),
   };
@@ -3452,4 +3453,79 @@ test('table complète : plus d’invitation à scanner la table, elle revient si
   page.state.tablePeople.push(person('chloe', 'Chloé'));
   await page.poll();
   assert.equal(page.node('inviteBox').hidden, true, 'carte ouverte puis table complète : masquée aussi');
+});
+
+// ---------------------------------------------------------------- relecture finale (affichage)
+// Regression: U3 — dans la fenêtre de prénom, FR/EN (boîte inline-flex) ne
+// se plaçait pas en haut à droite : justify-content n'y changeait rien.
+// Regression: U5 — un titre trop long était grisé en entier (opacité .55) :
+// « trop long » finissait vers 3:1 de contraste. Seuls pochette et titre pâlissent.
+// Regression: U8 — « Déjà inscrit par un autre téléphone ? » : cible de moins de 44 px.
+test('relecture : FR/EN en haut à droite de la fenêtre de prénom, « trop long » lisible, lien « Déjà inscrit » de 44 px', () => {
+  const css = html.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = selector => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(match => match[1].split(',').map(part => part.trim()).includes(selector)).map(match => match[2]).join(';');
+  const gateLang = rules('.client .name-gate-panel .lang-switch');
+  assert.match(gateLang, /display:\s*flex/);
+  assert.match(gateLang, /width:\s*max-content/);
+  assert.match(gateLang, /margin-left:\s*auto/);
+  assert.match(gateLang, /margin-bottom:\s*18px/, 'espacement gardé');
+  assert.doesNotMatch(rules('.client .catalog-list .too-long'), /opacity/, 'la ligne entière ne pâlit plus');
+  for (const part of ['.cover', '.song-title', 'b']) assert.match(rules(`.client .catalog-list .too-long ${part}`), /opacity:\s*\.55/, `${part} pâlit`);
+  const join = rules('.client .join-others');
+  assert.ok(Number(/min-height:\s*(\d+)px/.exec(join)?.[1]) >= 44, 'cible au doigt de 44 px');
+  assert.match(join, /padding:/);
+});
+
+// Regression: U4 — la fenêtre de prénom s'ouvrait sans focus : rien n'était
+// annoncé. Le focus va à son titre (pas au champ : pas de clavier forcé sur iOS).
+test('relecture : fenêtre de prénom ouverte, le focus va au titre, jamais au champ', async () => {
+  const page = await soloPage('?invitation=CLE-SOLO', soloState(), (url, body, self) => {
+    if (url === '/api/table/solo/open') {
+      self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+      self.state.managedIds = ['s1'];
+      return { id: 's1', token: 'jeton-s1', nameRequired: true };
+    }
+    return undefined;
+  });
+  assert.equal(page.node('nameGate').hidden, false);
+  assert.equal(page.node('nameGateTitle').getAttribute('tabindex'), '-1', 'titre focalisable par la page seulement');
+  assert.equal(page.document.activeElement, page.node('nameGateTitle'), 'le titre est annoncé');
+  assert.equal(page.node('nameGateTitle').focusCount, 1);
+  assert.equal(page.node('nameGateInput').focusCount || 0, 0, 'pas de clavier forcé');
+  page.node('nameGateInput').focus();
+  await page.poll();
+  assert.equal(page.document.activeElement, page.node('nameGateInput'), 'fenêtre déjà ouverte : le focus n’est pas repris');
+  assert.equal(page.node('nameGateTitle').focusCount, 1);
+});
+
+// Regression: U7 — les « C’est moi » répétés de « Toute la table » n'avaient pas de nom distinct.
+test('relecture : chaque « C’est moi » de la fiche de la table porte le prénom (FR et EN)', async () => {
+  for (const [languages, label] of [[['fr-FR'], 'C’est moi, Bob'], [['en-US'], 'It’s me, Bob']]) {
+    const state = baseState();
+    state.tablePeople.push(person('bob', 'Bob'));
+    const page = await open({ state, languages });
+    await page.click(page.node('tableAllButton'));
+    assert.equal(page.find('tableSheetList', '[data-sheet-claim="bob"]').getAttribute('aria-label'), label);
+  }
+});
+
+// Regression: U9 — « Partager le lien » : tout échec du partage (refus,
+// partage indisponible) était avalé ; seule l'annulation reste silencieuse.
+test('relecture : partage de la table refusé, le lien est copié ; partage annulé, rien de plus', async () => {
+  const invite = { url: 'https://karaoke.example/t/1/secret', qr: 'data:image/png;base64,QR' };
+  const respond = url => url.startsWith('/api/table/invite?') ? invite : undefined;
+  const failure = name => () => { const error = new Error(name); error.name = name; throw error; };
+  const refused = await open({ share: failure('NotAllowedError'), respond });
+  await refused.click(refused.node('inviteToggle'));
+  await refused.click(refused.node('inviteShare'));
+  assert.equal(refused.shares.length, 1);
+  assert.deepEqual(refused.copies, [invite.url], 'partage refusé : lien copié');
+  assert.equal(refused.toast().text, 'Lien copié : colle-le dans ton message.');
+  const cancelled = await open({ share: failure('AbortError'), respond });
+  await cancelled.click(cancelled.node('inviteToggle'));
+  await cancelled.click(cancelled.node('inviteShare'));
+  assert.equal(cancelled.shares.length, 1);
+  assert.deepEqual(cancelled.copies, [], 'annulé par la personne : pas de copie');
+  assert.equal(cancelled.toast().hidden, true, 'ni message');
 });

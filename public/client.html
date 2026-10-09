@@ -183,8 +183,8 @@
   .client .catalog-list .song-row .grow { min-width: 0; }
   .client .catalog-list .song-row .song-title, .client .catalog-list .song-row .song-artist { display: block; }
   .client .catalog-list .song-row.picked { color: var(--ok); }
-  /* Durée maximale du bar dépassée : titre grisé, « trop long ». */
-  .client .catalog-list .too-long { opacity: .55; }
+  /* Durée maximale du bar dépassée : pochette et titre grisés ; la ligne « 6:12 · trop long » garde son contraste. */
+  .client .catalog-list .too-long .cover, .client .catalog-list .too-long .song-title, .client .catalog-list .too-long b { opacity: .55; }
   .client .catalog-grid { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .client .category-tile { --h: 260; position: relative; width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 14px; overflow: hidden; cursor: pointer;
     display: flex; align-items: flex-end; padding: 10px; text-align: left; color: #fff; font-weight: 800; font-size: 15px;
@@ -212,14 +212,16 @@
   .client .name-gate { position: fixed; inset: 0; z-index: 28; background: var(--bg); overflow: auto; display: flex; align-items: center; justify-content: center;
     padding: max(20px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)); }
   .client .name-gate-panel { width: 100%; max-width: 440px; }
-  .client .name-gate-panel .lang-switch { justify-content: flex-end; margin-bottom: 18px; }
+  /* FR/EN en haut à droite : la boîte prend la largeur de ses boutons, poussée à droite. */
+  .client .name-gate-panel .lang-switch { display: flex; width: max-content; margin-left: auto; margin-bottom: 18px; }
+  .client .name-gate-panel h2:focus { outline: none; }
   .client .name-gate-panel h2 { font-size: 24px; margin: 0 0 8px; }
   .client .name-gate-panel .notice { margin: 10px 0 0; }
   .client .name-gate-panel .btn { margin-top: 14px; }
   /* Page d'une table : QR à faire scanner, toute la table dans une fiche. */
   .client .invite-card .row h2 { margin: 0; }
   .client .table-all { margin-top: 12px; }
-  .client .join-others { display: block; margin: 12px auto 0; font-size: 14px; }
+  .client .join-others { display: block; margin: 12px auto 0; font-size: 14px; min-height: 44px; padding: 10px 12px; }
   .client .table-sheet li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
   .client .table-sheet li:last-child { border-bottom: 0; }
   .client .table-sheet .btn { width: auto; margin: 0; }
@@ -410,7 +412,7 @@
       <button type="button" data-lang="fr" lang="fr" aria-label="Français" aria-pressed="true">FR</button>
       <button type="button" data-lang="en" lang="en" aria-label="English" aria-pressed="false">EN</button>
     </div>
-    <h2 id="nameGateTitle" data-i18n>Bienvenue ! Quel est ton prénom ?</h2>
+    <h2 id="nameGateTitle" tabindex="-1" data-i18n>Bienvenue ! Quel est ton prénom ?</h2>
     <p class="small muted" data-i18n>Il s’affiche dans la file et sur l’écran du bar quand c’est ton tour.</p>
     <form id="nameGateForm">
       <label class="field" for="nameGateInput" data-i18n>Ton prénom</label>
@@ -640,12 +642,17 @@
   }
   // Partage du téléphone s'il existe, sinon copie du lien.
   async function shareOrCopy(url, { text, copied, failed }) {
+    const copy = async () => {
+      if (await copyLink(url)) toast(copied);
+      else toast(failed, true);
+    };
     if (navigator.share) {
-      navigator.share({ title: t('Karaoké'), text, url }).catch(() => { /* Partage annulé. */ });
+      // Annulé par la personne : rien de plus ; tout autre échec (refus,
+      // partage indisponible) : le lien est copié.
+      navigator.share({ title: t('Karaoké'), text, url }).catch(error => error?.name === 'AbortError' ? undefined : copy());
       return;
     }
-    if (await copyLink(url)) toast(copied);
-    else toast(failed, true);
+    await copy();
   }
 
   // Alerte « titre en double » : jamais bloquante, seulement informative.
@@ -2204,11 +2211,15 @@
   function renderNameGate() {
     const person = managedPeople().find(candidate => candidate.nameRequired);
     namePersonId = person ? String(person.id) : '';
-    if (person && $('nameGate').hidden && !$('sheet').hidden) closeSheet();
+    const opening = !!person && $('nameGate').hidden;
+    if (opening && !$('sheet').hidden) closeSheet();
     $('nameGate').hidden = !person;
     $('tabsNav').hidden = !!person;
     $('mainContent').hidden = !!person;
     syncBackground();
+    // Fenêtre qui s'ouvre : son titre est annoncé ; le champ n'a pas le
+    // focus, pour ne pas ouvrir le clavier d'iOS d'office.
+    if (opening) $('nameGateTitle').focus({ preventScroll: true });
   }
   // Message de la fenêtre : gardé comme fonction qui le traduit (clé
   // française et valeurs, ou message d'origine du serveur), redessiné dans
@@ -2259,7 +2270,7 @@
     return rows.length ? rows.map(person => {
       const ready = list(person.songs).length + list(person.inKaraFun).length;
       const action = manages(person.id) ? `<span class="badge">${esc(t('géré par ce téléphone'))}</span>`
-        : person.active === false ? '' : `<button type="button" class="btn small" data-sheet-claim="${esc(person.id)}">${esc(t('C’est moi'))}</button>`;
+        : person.active === false ? '' : `<button type="button" class="btn small" data-sheet-claim="${esc(person.id)}" aria-label="${esc(t('C’est moi, {name}', { name: person.name }))}">${esc(t('C’est moi'))}</button>`;
       return `<li data-sheet-person="${esc(person.id)}"><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(person.active === false
         ? t('Parti · historique conservé') : tp(ready, '{n} titre prêt', '{n} titres prêts'))}</div></div>${action}</li>`;
     }).join('') : `<li class="empty-copy">${esc(t('Aucune personne trouvée.'))}</li>`;

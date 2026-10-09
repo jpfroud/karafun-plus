@@ -368,3 +368,38 @@ test('Spotify : déconnexion pendant une vérification, rien n’est gardé', as
     assert.equal(link.health.state, 'unknown');
   }
 });
+
+// Regression: U11 (relecture finale) — toute erreur de vérification était
+// « error », affichée « Spotify injoignable, nouvel essai à … », même quand
+// Spotify avait répondu en refusant (401, 403). Réseau, 5xx et 429 restent
+// « injoignable » ; un autre refus garde son code dans l'état vu par le bar.
+test('Spotify : vérification refusée (401, 403) distincte d’un Spotify injoignable (réseau, 5xx, 429)', async () => {
+  const answer = (status, error = {}) => ({ ok: status < 300, status, headers: { get: () => null },
+    json: async () => ({ error }), text: async () => JSON.stringify({ error }) });
+  let reply = null;
+  const fetchImpl = async url => {
+    if (url.endsWith('/api/token')) return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ access_token: 'jeton', expires_in: 3600 }) };
+    if (reply === 'down') throw new TypeError('fetch failed');
+    return reply;
+  };
+  const link = new SpotifyLink({ fetchImpl });
+  link.config = { ...link.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r' };
+  reply = answer(403, { status: 403, message: 'Forbidden', reason: 'PREMIUM_REQUIRED' });
+  const refused = await link.checkHealth();
+  assert.equal(refused.state, 'error');
+  assert.equal(refused.status, 403, 'Spotify a répondu : son code est gardé');
+  assert.equal(refused.message, 'Spotify refuse la commande : un abonnement Premium est nécessaire.');
+  assert.equal(link.connected, true);
+  reply = answer(401, { status: 401, message: 'Invalid access token' });
+  const expired = await link.checkHealth();
+  assert.equal(expired.status, 401);
+  assert.match(expired.message, /reconnecte Spotify/);
+  for (const [why, next] of [['réseau', 'down'], ['5xx', answer(503)], ['429', answer(429)]]) {
+    reply = next;
+    const down = await link.checkHealth();
+    assert.equal(down.state, 'error', `${why} : injoignable`);
+    assert.equal('status' in down, false, `${why} : pas de code de refus`);
+  }
+  reply = answer(400, { status: 400, message: 'Bad request' });
+  assert.equal((await link.checkHealth()).status, 400, 'tout autre refus garde son code');
+});

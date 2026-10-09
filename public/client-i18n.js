@@ -152,6 +152,7 @@ window.CLIENT_TRANSLATIONS = {
       'Aucune personne trouvée.': 'Nobody found.',
       'géré par ce téléphone': 'managed by this phone',
       'C’est moi': 'That’s me',
+      'C’est moi, {name}': 'It’s me, {name}',
       '{n} titre prêt': ['{n} song ready', '{n} songs ready'],
       'Déjà inscrit par un autre téléphone ? Le plus simple : scanne le QR code « Transférer » affiché sur ce téléphone-là. Sinon, touche « C’est moi » et saisis le code à 4 chiffres qu’il te donne (ou celui du bar).':
         'Already signed up from another phone? Easiest: scan the “Transfer” QR code shown on that phone. Otherwise, tap “That’s me” and enter the 4-digit code it gives you (or the bar’s).',
