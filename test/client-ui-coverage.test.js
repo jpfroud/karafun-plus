@@ -2074,7 +2074,7 @@ function keepSettings(self, body) {
   for (const [field, value] of Object.entries(body.settings || {})) {
     if (Number.isInteger(value) && !((field === 'pitch' || field === 'tempo') && value === 0)) out[field] = value;
   }
-  if (body.settings?.guideVoices) out.guideVoices = { ...body.settings.guideVoices };
+  if (Object.keys(body.settings?.guideVoices || {}).length) out.guideVoices = { ...body.settings.guideVoices };
   for (const p of self.state.tablePeople) for (const song of [...p.songs, ...p.inKaraFun]) {
     if (song.entryId === body.entryId) song.settings = Object.keys(out).length ? out : null;
   }
@@ -2119,7 +2119,7 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.equal(card('alice').querySelector('[data-song-settings="e1"]').closest('li').querySelector('.tune-badge').textContent, '♯ +2',
     'le badge suit le réglage tout de suite');
   await page.runTimers(600);
-  assert.deepEqual(tunePosts(page), [{ table: '1', access: 'secret', personId: 'alice', entryId: 'e1', settings: { pitch: 2 } }]);
+  assert.deepEqual(tunePosts(page), [{ table: '1', access: 'secret', personId: 'alice', entryId: 'e1', settings: { pitch: 2, guideVoices: {} } }]);
   assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
   await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="-5"]');
   await page.tap('songSettingsBody', '[data-tune="guide"][data-value="50"]');
@@ -2128,7 +2128,7 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.deepEqual(pressed(page, 'guide'), ['50']);
   assert.deepEqual(pressed(page, 'backing'), ['0']);
   await page.runTimers(600);
-  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, tempo: -5, guide: 50, backing: 0 }, 'un seul envoi pour trois changements');
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, tempo: -5, guide: 50, backing: 0, guideVoices: {} }, 'un seul envoi pour trois changements');
   await page.poll();
   assert.equal(page.node('tunePitch').textContent, '+2', 'valeur relue sur le serveur');
   // Bornes de KaraFun : + désactivé à +6.
@@ -2141,7 +2141,7 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   await page.click(page.node('tuneReset'));
   assert.equal(page.node('tunePitch').textContent, '0');
   await page.runTimers(600);
-  assert.deepEqual(tunePosts(page).at(-1).settings, null, 'réinitialiser : réglages de KaraFun');
+  assert.deepEqual(tunePosts(page).at(-1).settings, { guideVoices: {} }, 'réinitialiser : réglages de KaraFun (clé des autres voix toujours envoyée)');
   await page.poll();
   assert.equal(card('alice').querySelector('[data-song-settings="e1"]').closest('li').querySelector('.tune-badge') === null, true, 'plus de badge');
 
@@ -2153,7 +2153,7 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.doesNotMatch(page.node('songSettingsBody').textContent, /Si le titre en a/);
   await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
   await page.runTimers(600);
-  assert.deepEqual(tunePosts(page).at(-1), { table: '1', access: 'secret', personId: 'alice', entryId: 'k1', settings: { pitch: 2, tempo: -5 } });
+  assert.deepEqual(tunePosts(page).at(-1), { table: '1', access: 'secret', personId: 'alice', entryId: 'k1', settings: { pitch: 2, tempo: -5, guideVoices: {} } });
   assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
 });
 
@@ -2174,7 +2174,7 @@ test('réglages de titre : le rafraîchissement n’écrase pas un réglage en c
   assert.equal(tunePosts(page).length, 1, 'un seul envoi à la fois');
   waiting.shift()();
   await page.settle();
-  assert.deepEqual(tunePosts(page).map(body => body.settings), [{ pitch: 1 }, { pitch: 2 }]);
+  assert.deepEqual(tunePosts(page).map(body => body.settings), [{ pitch: 1, guideVoices: {} }, { pitch: 2, guideVoices: {} }]);
   await page.poll();
   assert.equal(page.node('tunePitch').textContent, '+2', 'réponse du premier envoi sans effet sur la valeur suivante');
   waiting.shift()();
@@ -2189,7 +2189,7 @@ test('réglages de titre : le rafraîchissement n’écrase pas un réglage en c
   await page.tap('songSettingsBody', '[data-tune="guide"][data-value="25"]');
   await page.click(page.find('sheetPanel', '[data-close-sheet]'));
   assert.equal(page.sheetOpen(), false);
-  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, guide: 25 });
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, guide: 25, guideVoices: {} });
   waiting.shift()();
   await page.settle();
 });
@@ -2227,7 +2227,7 @@ test('réglages de titre : duo, titre commencé, envoi en cours, fonction coupé
     'réglage refusé : le badge montre ce que le serveur a gardé (rien), pas le choix non enregistré, et signale le refus');
   answer = null;
   await page.tap('tuneStatus', '[data-tune-retry]');
-  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: -1 }, 'réessayé avec la même valeur');
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: -1, guideVoices: {} }, 'réessayé avec la même valeur');
   assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
 
   // Le titre part sur scène pendant que la fiche est ouverte.
@@ -3040,12 +3040,12 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
   assert.equal(busy.node('noSingerText').textContent, 'Too many sign-ups at once: try again in a minute.');
 });
 
-test('activité : en-tête x-page-visible seulement page visible ; la page cachée continue d’interroger', async () => {
+test('activité : en-tête x-page-visible « 1 » page visible, « 0 » cachée ; la page cachée continue d’interroger', async () => {
   const page = await open({ hidden: true });
-  assert.equal(page.stateRequests()[0].headers['x-page-visible'], undefined);
+  assert.equal(page.stateRequests()[0].headers['x-page-visible'], '0', 'page cachée : « 0 » (sans en-tête, le serveur compte une page d’avant la mise à jour)');
   await page.poll();
   assert.equal(page.stateRequests().length, 2, 'la lecture continue en arrière-plan');
-  assert.equal(page.stateRequests().at(-1).headers['x-page-visible'], undefined, 'page cachée : pas une activité');
+  assert.equal(page.stateRequests().at(-1).headers['x-page-visible'], '0', 'page cachée : pas une activité');
   page.document.hidden = false;
   page.document.listeners.visibilitychange.forEach(entry => entry.listener());
   await page.settle();

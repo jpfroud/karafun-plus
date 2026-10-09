@@ -780,7 +780,7 @@ test('routes de table : personne inconnue, partie ou gérée par un autre télé
   assert.equal(r.body.code, 'TABLE_ACCESS');
   f.sched.people.get(alice.personId).withdrawnAt = Date.now();
   r = await post(f, '/api/table/confirm', alice);
-  assert.equal(r.status, 400);
+  assert.equal(r.status, 403);
   assert.deepEqual([r.body.code, r.body.error], ['PERSON_LEFT', 'Cette personne a été marquée partie. Demande au bar de la réactiver.']);
 });
 

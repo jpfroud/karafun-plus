@@ -117,9 +117,10 @@ function rememberBattleSongs(songs) {
   }
   return songs;
 }
-// Titre choisi par un téléphone : sa vignette vient du catalogue.
+// Titre choisi par un téléphone : sa vignette vient du catalogue ; sa durée,
+// non vérifiée, n'est gardée que bornée comme pour la barre de lecture.
 const withCover = song => song && typeof song === 'object' ?
-  { ...song, img: catalogCovers.get(Number(song.songId)) || null } : song;
+  { ...song, img: catalogCovers.get(Number(song.songId)) || null, duration: stageProgress.clientDuration(Number(song.duration)) } : song;
 function certifiedBattleSongs(songs) {
   if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {
     throw new Error('Propose entre un et trois titres du catalogue pour la Battle.');
@@ -146,9 +147,13 @@ function journalNames(fields = {}) {
   const table = fields.tableId != null && sched.table(fields.tableId, false);
   if (table) journal.table(table.id, { name: table.name, individual: table.individual });
 }
+// Prénom provisoire (QR ouvert sans prénom) : pas au journal ; le premier vrai
+// prénom l'y inscrit (person.joined), même après un redémarrage.
 function journalRoster() {
   for (const t of sched.tables.values()) journal.table(t.id, { name: t.name, individual: t.individual });
-  for (const person of sched.people.values()) journal.person(person.id, { name: person.name, tableId: person.tableId });
+  for (const person of sched.people.values()) {
+    if (!person.nameRequired) journal.person(person.id, { name: person.name, tableId: person.tableId });
+  }
 }
 function journalEvent(type, fields = {}) {
   // QR ouvert sans prénom (peut-être abandonné) : rien au journal tant que la
@@ -854,6 +859,15 @@ function songSettingsTarget(entryId, started) {
   throw missing();
 }
 
+// Réglages reçus d'une page : sans la clé `guideVoices` (page gardée en cache
+// d'avant les voix guides par voix), les autres voix guides du titre restent.
+// Les pages actuelles envoient toujours la clé ({} quand il n'y en a plus).
+function songSettingsInput(input, song) {
+  const kept = song?.settings?.guideVoices;
+  if (!kept || (input != null && (typeof input !== 'object' || Array.isArray(input) || 'guideVoices' in input))) return input;
+  return { ...(input || {}), guideVoices: kept };
+}
+
 // Enregistre les réglages sur le titre, puis les applique selon où il en est.
 // Rend 'list' (au prochain envoi), 'sending' (dès l'accusé de KaraFun),
 // 'karafun' (envoyés) ou 'start' (au début du titre, ou au retour de KaraFun).
@@ -912,21 +926,29 @@ function catchUpSongSettings(tr) {
   const live = liveFromStatus(bridge.status);
   if (live?.queueId != null && String(live.queueId) !== mark) return; // état de KaraFun pas encore à jour
   tr.liveChecked = mark;
+  // Valeurs neutres complétées par les options du titre dans KaraFun : une
+  // tonalité réglée par le bar dans KaraFun même est gardée (comme pour un
+  // titre ajouté directement dans KaraFun). Les réglages du titre priment.
+  const item = kfItemOf(tr);
   const commands = catchUpCommands({ settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, live,
-    tracksAvailable: live?.tracks || songTracksOf(kfItemOf(tr)), ranges: songRanges(),
-    defaults: songDefaults(), neutral: isBattleItem(kfItemOf(tr)) ? null : startNeutral(mark) }); // Battle : voir checkUntrackedSettings
+    tracksAvailable: live?.tracks || songTracksOf(item), ranges: songRanges(),
+    defaults: songDefaults(), neutral: isBattleItem(item) ? null : startNeutral(mark, item?.options || null) }); // Battle : voir checkUntrackedSettings
   applyStartCommands(commands, live, { title: tr.sel.song.title, entryId: tr.sel.song.entryId || null, queueId: tr.queueId });
 }
 
 // Dernier état vu du titre chargé ; le précédent est gardé au changement.
-// true : ce titre vient d'être chargé (premier état vu pour lui).
+// true : ce titre vient d'être chargé (premier état vu pour lui), vu se
+// charger (état 3) ou après un titre déjà vu par cette application. Le
+// premier titre vu déjà en lecture (application redémarrée en pleine
+// chanson) n'en est pas un : ses réglages en direct ne sont pas remis.
 function noteLoadedLive(loadedId) {
   const live = loadedId ? liveFromStatus(bridge.status) : null;
   if (!live || String(live.queueId) !== loadedId) return false;
   const fresh = loadedLive?.queueId !== loadedId;
+  const seenLoading = !!loadedLive || bridge.status?.kcsState === 3;
   if (loadedLive && fresh) previousLoaded = loadedLive;
   loadedLive = { queueId: loadedId, backing: live.backing };
-  return fresh;
+  return fresh && seenLoading;
 }
 
 // Valeurs neutres du titre `queueId` qui se charge, avec ses options KaraFun
@@ -2165,6 +2187,12 @@ function releaseGoneSoloDevice(req, owner) {
   if (!owner.soloDeviceHashes.length) delete owner.soloDeviceHashes;
 }
 
+function personLeftError() {
+  const error = new Error('Cette personne a été marquée partie. Demande au bar de la réactiver.');
+  error.code = 'PERSON_LEFT';
+  return error;
+}
+
 function soloDeviceError(code) {
   const error = new Error(code === 'SOLO_DEVICE_USED' ?
     'Ce téléphone a déjà un prénom inscrit. Chacun utilise son propre téléphone.' :
@@ -2301,9 +2329,7 @@ function openSoloInvitation(req, res, body) {
   // Son propre QR rouvert par ce navigateur alors qu'il a été marqué parti :
   // le dire (comme le QR de l'événement), pas « invitation utilisée ».
   if (owner?.withdrawnAt && owner.soloKeyHash && owner.soloKeyHash === SoloInvitations.digest(body.invitation)) {
-    const error = new Error('Cette personne a été marquée partie. Demande au bar de la réactiver.');
-    error.code = 'PERSON_LEFT';
-    throw error;
+    throw personLeftError();
   }
   if (!soloInvitations.verify(body.invitation, t.id)) {
     const error = new Error('Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.');
@@ -2326,11 +2352,7 @@ function enterPrivateEvent(req, res, body) {
   }
   const owner = soloDeviceOwner(req);
   if (owner && currentSoloDevice(req, owner)) {
-    if (owner.withdrawnAt) {
-      const error = new Error('Cette personne a été marquée partie. Demande au bar de la réactiver.');
-      error.code = 'PERSON_LEFT';
-      throw error;
-    }
+    if (owner.withdrawnAt) throw personLeftError();
     owner.lastActionAt = Date.now();
     return { id: owner.id, token: owner.token, nameRequired: !!owner.nameRequired, resumed: true };
   }
@@ -2404,10 +2426,7 @@ function personAtTable(body, { passive = false } = {}) {
   if (!p || p.tableId !== t.id) {
     const e = new Error('Chanteur inconnu à cette table.'); e.code = 'NO_PERSON'; throw e;
   }
-  if (p.withdrawnAt) {
-    const e = new Error('Cette personne a été marquée partie. Demande au bar de la réactiver.');
-    e.code = 'PERSON_LEFT'; throw e;
-  }
+  if (p.withdrawnAt) throw personLeftError();
   if (!body.token || body.token !== p.token) {
     const e = new Error('Ce téléphone ne gère pas ce chanteur. Demande-lui son code de partage, ou vois avec le bar.');
     e.code = 'PERSON_ACCESS'; throw e;
@@ -3334,7 +3353,7 @@ const handlers = {
         songSettingsError(`${sched.people.get(target.ids[0])?.name || 'L’auteur du titre'} a choisi ce duo : les réglages se font sur son téléphone.`, 'DUO_GUEST') :
         songSettingsError('Ce titre n’est pas dans ta liste.', 'NOT_OWNER');
     }
-    const values = normalizeSettings(body.settings, songRanges());
+    const values = normalizeSettings(songSettingsInput(body.settings, target.song), songRanges());
     return { ok: true, settings: values, applied: applySongSettings(target, values, { by: 'self' }) };
   },
   'POST /api/table/song/reorder': async (req, res, body) => {
@@ -3821,7 +3840,7 @@ const handlers = {
     if (personId && !target.ids.includes(personId)) {
       throw songSettingsError(`Ce titre n’est pas celui de ${sched.people.get(personId)?.name || 'cette personne'}.`, 'NOT_OWNER');
     }
-    const values = normalizeSettings(body.settings, songRanges());
+    const values = normalizeSettings(songSettingsInput(body.settings, target.song), songRanges());
     return { ok: true, settings: values, applied: applySongSettings(target, values, { by: 'staff' }) };
   },
   'POST /api/staff/bonus': async (req, res, body) => {
@@ -4155,7 +4174,7 @@ const server = http.createServer(async (req, res) => {
         const me = sched.person(u.searchParams.get('token') || '');
         if (me && !u.searchParams.has('table')) {
           requireSoloControl(req, me);
-          if (req.headers['x-page-visible'] === '1') touchSeen(me);
+          if (req.headers['x-page-visible'] !== '0') touchSeen(me);
           const view = publicState(me, me.tableId, new Set([me.id]));
           view.managedIds = [me.id];
           return send(res, 200, view);
@@ -4184,9 +4203,10 @@ const server = http.createServer(async (req, res) => {
           view.recoveryPeople = (view.recoveryPeople || []).filter(person => person.id === soloOwner.id);
         }
         view.managedIds = [...new Set(owned.map(person => person.id))];
-        // Activité : seulement une page visible (la page continue d'interroger
+        // Activité : sauf une page cachée (« 0 » ; la page continue d'interroger
         // en arrière-plan), pour toutes les personnes gérées par ce téléphone.
-        if (req.headers['x-page-visible'] === '1') for (const person of owned) touchSeen(person);
+        // Sans en-tête : page gardée en cache d'avant la mise à jour, comptée.
+        if (req.headers['x-page-visible'] !== '0') for (const person of owned) touchSeen(person);
         for (const person of owned) noteSeen(person);
         return send(res, 200, view);
       }
@@ -4303,7 +4323,7 @@ const server = http.createServer(async (req, res) => {
       if (!p.startsWith('/api/staff/') && p !== '/api/join' && !p.startsWith('/api/table/')) {
         me = sched.person(body.token || '');
         if (!me) return send(res, 401, { error: 'Session inconnue : inscris-toi à nouveau.', code: 'NO_SESSION' });
-        if (me.withdrawnAt) return send(res, 403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
+        if (me.withdrawnAt) throw personLeftError();
         requireSoloControl(req, me);
         claimActivity(body, me);
       }
@@ -4334,7 +4354,7 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 405, 'Méthode non gérée', 'text/plain');
   } catch (e) {
-    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION', 'PRIVATE_EVENT'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null });
+    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'PERSON_LEFT', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION', 'PRIVATE_EVENT'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null });
   }
 });
 // Point d'entrée réservé au tunnel HTTPS. Lié uniquement à la boucle locale et

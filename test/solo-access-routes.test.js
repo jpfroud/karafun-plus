@@ -78,7 +78,7 @@ function harness({ persistent = false } = {}) {
     setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, access, soloInvitations, privateEvent, staffState, journal,
-      ensureSoloGroup, clearEvening, battleElectorate, saveNight, STAFF_KEY, PORT, PUBLIC_PORT,
+      ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, STAFF_KEY, PORT, PUBLIC_PORT,
       handle: server.listeners('request')[0] };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
@@ -295,8 +295,9 @@ test('QR individuel : refus inchangés (téléphone déjà solo, invitation expi
 
   // Ouverte avant l'expiration, la personne garde sa fenêtre de prénom ensuite.
   f.soloInvitations.clear();
-  const reopen = await opened(f, tb, 'x'.repeat(32), sam.cookie).catch(error => error);
-  assert.ok(reopen instanceof Error, 'un autre jeton inconnu reste refusé');
+  const reopen = await post(f, '/api/table/solo/open', { ...tb, invitation: 'x'.repeat(32) }, { cookie: sam.cookie });
+  assert.equal(reopen.status, 403, 'un autre jeton inconnu reste refusé');
+  assert.equal(reopen.body.code, 'SOLO_INVITATION');
   const named = await post(f, '/api/table/person/rename', { ...tb, personId: sam.personId, token: sam.token, name: 'Sam' },
     { cookie: sam.cookie });
   assert.equal(named.status, 200, '30 min plus tard, le prénom se donne encore');
@@ -374,7 +375,7 @@ test('QR personnel rouvert ailleurs : même personne proposée, récupération p
   assert.equal(gone.body.code, 'SOLO_INVITATION');
   // Son propre navigateur rouvre la clé : « marquée partie », pas « invitation utilisée ».
   const mine = await post(f, '/api/table/solo/open', { ...tb, invitation: token }, { cookie: next.cookie });
-  assert.equal(mine.status, 400, 'même statut que le QR de l’événement');
+  assert.equal(mine.status, 403, 'même statut que le QR de l’événement et les autres routes');
   assert.equal(mine.body.code, 'PERSON_LEFT');
   assert.equal(mine.body.error, 'Cette personne a été marquée partie. Demande au bar de la réactiver.');
   assert.equal((await post(f, '/api/table/person/claim', { ...tb, key: token })).status, 400);
@@ -765,7 +766,7 @@ test('sauvegarde de la soirée : événement privé et champs des personnes repr
 });
 
 // ---------------------------------------------------------------- C : dernière activité
-test('activité : seule une page visible compte, pour toutes les personnes du téléphone ; actions comptées, accusé non', async () => {
+test('activité : seule une page cachée (x-page-visible: 0) ne compte pas ; une page visible compte pour toutes les personnes du téléphone ; actions comptées, accusé non', async () => {
   const f = harness();
   const tb = openTable(f, '5');
   const ana = await post(f, '/api/table/person', { ...tb, name: 'Ana' });
@@ -775,10 +776,8 @@ test('activité : seule une page visible compte, pour toutes les personnes du t�
   for (const p of people) { p.lastSeen = old; delete p.lastActionAt; }
   const poll = headers => get(f, `/api/state?table=5&access=${tb.access}`,
     { headers: { 'x-person-tokens': JSON.stringify(people.map(p => p.token)), ...headers } });
-  await poll({});
-  assert.deepEqual(people.map(p => p.lastSeen), [old, old], 'page cachée : rien ne bouge');
   await poll({ 'x-page-visible': '0' });
-  assert.deepEqual(people.map(p => p.lastSeen), [old, old]);
+  assert.deepEqual(people.map(p => p.lastSeen), [old, old], 'page cachée : rien ne bouge');
   await poll({ 'x-page-visible': '1' });
   assert.ok(people.every(p => p.lastSeen > old), 'page visible : toutes les personnes du téléphone');
   // Au plus une fois par minute.
@@ -791,7 +790,7 @@ test('activité : seule une page visible compte, pour toutes les personnes du t�
   await get(f, `/api/state?table=5&access=${tb.access}`, { headers: { 'x-page-visible': '1' } });
   assert.equal(people[0].lastSeen, old);
   // Ancienne lecture par jeton seul : même règle.
-  await get(f, `/api/state?token=${people[0].token}`);
+  await get(f, `/api/state?token=${people[0].token}`, { headers: { 'x-page-visible': '0' } });
   assert.equal(people[0].lastSeen, old);
   await get(f, `/api/state?token=${people[0].token}`, { headers: { 'x-page-visible': '1' } });
   assert.ok(people[0].lastSeen > old);
@@ -884,4 +883,120 @@ test('QR de table pour le téléphone : même lien que le QR imprimé, pas pour 
   assert.equal(soloInvite.status, 400);
   assert.equal(soloInvite.body.error, 'Pas de QR à partager : chacun demande son QR individuel au bar.');
   assert.equal((await get(f, '/api/table/inconnue')).status, 404);
+});
+
+// ---------------------------------------------------------------- relecture finale (lot serveur)
+// Regression: relecture finale C1 — une page des chanteurs gardée en cache
+// d'avant une mise à jour en cours de soirée n'envoie jamais x-page-visible :
+// ses solos apparaissaient « Sans nouvelles » au bar. Seul « 0 » (page
+// cachée, nouvelle page) ne compte pas.
+test('activité : une page d’avant la mise à jour (sans en-tête) compte encore ; « 0 » seulement ne compte pas', async () => {
+  const f = harness();
+  const tb = openTable(f, '5');
+  const ana = await post(f, '/api/table/person', { ...tb, name: 'Ana' });
+  const p = f.sched.people.get(ana.body.id);
+  const old = Date.now() - 30 * 60000;
+  const poll = headers => get(f, `/api/state?table=5&access=${tb.access}`,
+    { headers: { 'x-person-tokens': JSON.stringify([p.token]), ...headers } });
+  p.lastSeen = old;
+  await poll({});
+  assert.ok(p.lastSeen > old, 'page en cache sans en-tête : activité notée');
+  p.lastSeen = old;
+  await poll({ 'x-page-visible': '0' });
+  assert.equal(p.lastSeen, old, 'nouvelle page cachée : rien');
+  // Ancienne lecture par jeton seul : même règle.
+  await get(f, `/api/state?token=${p.token}`);
+  assert.ok(p.lastSeen > old, 'lecture par jeton sans en-tête : activité notée');
+  p.lastSeen = old;
+  await get(f, `/api/state?token=${p.token}`, { headers: { 'x-page-visible': '0' } });
+  assert.equal(p.lastSeen, old);
+  // Solo : page en cache avec le cookie de son téléphone.
+  const { tb: solo, invite } = openSolo(f);
+  const sam = await opened(f, solo, invite());
+  const sp = f.sched.people.get(sam.personId);
+  sp.lastSeen = old;
+  await stateOf(f, solo, sam);
+  assert.ok(sp.lastSeen > old, 'solo : page en cache comptée');
+});
+
+// Regression: relecture finale C3 — au redémarrage, journalRoster() inscrivait
+// au journal le prénom provisoire (« Solo 1 ») des QR ouverts sans prénom
+// (spéc. A1.5 : une ouverture abandonnée n'entre ni au journal ni aux stats).
+test('journal : au redémarrage, une personne encore sans prénom n’entre pas dans les prénoms du journal', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const sam = await opened(f, tb, invite());
+  const zoe = await opened(f, tb, invite());
+  assert.equal((await post(f, '/api/table/person/rename', { ...tb, personId: zoe.personId, token: zoe.token, name: 'Zoé' },
+    { cookie: zoe.cookie })).status, 200);
+  f.journalRoster(); // ce que fait le démarrage (et une nouvelle soirée)
+  const roster = f.journal.current.meta.roster;
+  assert.equal(roster[sam.personId], undefined, 'prénom provisoire absent');
+  assert.equal(roster[zoe.personId].name, 'Zoé');
+  const exported = await get(f, staff(f, '/api/staff/stats/export?names=1'));
+  assert.equal(exported.status, 200, exported.text);
+  assert.ok(!exported.text.includes('Solo 1'), 'export avec prénoms : aucun prénom provisoire');
+  assert.ok(exported.text.includes('Zoé'));
+  // Son premier vrai prénom l'inscrit ensuite, comme sans redémarrage.
+  await post(f, '/api/table/person/rename', { ...tb, personId: sam.personId, token: sam.token, name: 'Sam' }, { cookie: sam.cookie });
+  assert.equal(f.journal.current.meta.roster[sam.personId].name, 'Sam');
+});
+
+// Regression: relecture finale C4 — PERSON_LEFT répondait 400 depuis les
+// routes de table (QR individuel, QR de l'événement, actions d'une personne)
+// mais 403 depuis l'ancienne API par jeton.
+test('personne marquée partie : 403 PERSON_LEFT sur toutes les routes', async () => {
+  const f = harness();
+  const message = 'Cette personne a été marquée partie. Demande au bar de la réactiver.';
+  const { tb, invite } = openSolo(f);
+  const token = invite();
+  const sam = await opened(f, tb, token);
+  await post(f, '/api/table/person/rename', { ...tb, personId: sam.personId, token: sam.token, name: 'Sam' }, { cookie: sam.cookie });
+  const secret = new URL((await post(f, staff(f, '/api/staff/private-event'), { enabled: true })).body.url).searchParams.get('evenement');
+  const eva = await post(f, '/api/table/enter', { ...tb, event: secret });
+  assert.equal(eva.status, 200, eva.text);
+  const evaCookie = cookieOf(eva);
+  const table = openTable(f, '3');
+  const ana = await post(f, '/api/table/person', { ...table, name: 'Ana' });
+  for (const personId of [sam.personId, eva.body.id, ana.body.id]) await post(f, staff(f, '/api/staff/person/leave'), { personId });
+  const answers = [
+    await post(f, '/api/table/solo/open', { ...tb, invitation: token }, { cookie: sam.cookie }),
+    await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: evaCookie }),
+    await post(f, '/api/table/confirm', { ...table, personId: ana.body.id, token: ana.body.token }),
+    await post(f, '/api/confirm', { token: ana.body.token }),
+  ];
+  assert.deepEqual(answers.map(r => [r.status, r.body.code, r.body.error]), Array(4).fill([403, 'PERSON_LEFT', message]));
+});
+
+// Regression: relecture finale C5 — la durée envoyée par un téléphone était
+// gardée telle quelle (une chaîne de 200 Ko acceptée) et renvoyée à tous les
+// téléphones. Seul un nombre borné (30 à 1200 s) est gardé, sinon rien.
+test('durée envoyée par un téléphone : seulement un nombre borné, pour un titre comme pour un duo', async () => {
+  const f = harness();
+  const tb = openTable(f, '7', 6);
+  const people = [];
+  for (const name of ['Ana', 'Ben', 'Cléo', 'Dan']) people.push((await post(f, '/api/table/person', { ...tb, name })).body);
+  const at = (person, extra) => ({ ...tb, personId: person.id, token: person.token, ...extra });
+  const choose = async (person, songId, duration) => {
+    const r = await post(f, '/api/table/song', at(person, { song: { songId, title: `T${songId}`, artist: 'A', duration } }));
+    assert.equal(r.status, 200, r.text);
+  };
+  await choose(people[0], 1, 'x'.repeat(200000));
+  await choose(people[0], 2, 99999);
+  await choose(people[0], 3, 10);
+  await choose(people[0], 4, 215.4);
+  await choose(people[0], 5, '215');
+  const durations = f.sched.songsOf(f.sched.people.get(people[0].id)).map(song => song.duration);
+  assert.deepEqual(durations, [null, 1200, 30, 215, 215]);
+  // Duo : même règle.
+  const duet = await post(f, '/api/table/duet', at(people[1], { partnerId: people[2].id,
+    song: { songId: 9, title: 'Duo', artist: 'A', duration: 'y'.repeat(5000) } }));
+  assert.equal(duet.status, 200, duet.text);
+  assert.equal(f.sched.songsOf(f.sched.people.get(people[1].id)).at(-1).duration, null);
+  // Ancienne API par jeton : même règle.
+  assert.equal((await post(f, '/api/song', { token: people[3].token, song: { songId: 8, title: 'T8', artist: 'A', duration: [1, 2] } })).status, 200);
+  assert.equal(f.sched.songsOf(f.sched.people.get(people[3].id))[0].duration, null);
+  // Ce que les téléphones reçoivent.
+  const view = await get(f, `/api/state?table=7&access=${tb.access}`, { headers: { 'x-person-tokens': JSON.stringify([people[0].token]) } });
+  assert.ok(view.text.length < 50000, 'aucune durée géante renvoyée aux téléphones');
 });

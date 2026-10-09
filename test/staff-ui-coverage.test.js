@@ -2855,7 +2855,7 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   assert.equal(page.$('songSheetStatus').textContent, 'Modifié…');
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(page.lastPost('/api/staff/song/settings').body, { personId: 'bruno', entryId: 'b1', settings: { tempo: -5 } });
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body, { personId: 'bruno', entryId: 'b1', settings: { tempo: -5, guideVoices: {} } });
   assert.equal(page.$('songSheetStatus').textContent, 'Enregistrement…');
   await page.poll();
   assert.equal(page.in('songSheetBody', '[id="sheetTempo"]').textContent, '−5 %', 'le rafraîchissement de 2 s n’écrase pas le réglage en cours d’envoi');
@@ -2870,14 +2870,14 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   assert.equal(page.in('songSheetBody', '[id="sheetTempo"]').textContent, '0 %');
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, {}, 'réinitialiser : réglages de KaraFun');
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guideVoices: {} }, 'réinitialiser : réglages de KaraFun (clé des autres voix toujours envoyée)');
   release();
   await page.flush();
   // Fermer la fiche : un changement en attente part tout de suite.
   await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
   await page.click(page.$('songSheetClose'));
   assert.equal(page.$('songSheet').open, false);
-  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { pitch: 1 });
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { pitch: 1, guideVoices: {} });
   release();
   await page.flush();
 
@@ -2892,7 +2892,7 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="-1"]'));
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(page.lastPost('/api/staff/song/settings').body, { personId: 'alice', entryId: 'k1', settings: { pitch: 1, tempo: -10 } });
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body, { personId: 'alice', entryId: 'k1', settings: { pitch: 1, tempo: -10, guideVoices: {} } });
   assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓ · appliqué au début du titre');
   // Le titre monte sur scène pendant que la fiche est ouverte.
   page.world.queue = page.world.queue.filter(q => q.song.entryId !== 'k1');
@@ -3265,21 +3265,21 @@ test('enregistrement automatique : un envoi à la fois par champ, le suivant par
   await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(sent(), [{ pitch: 1 }]);
+  assert.deepEqual(sent(), [{ pitch: 1, guideVoices: {} }]);
   // Le premier envoi traîne (Wi-Fi) : un second « + » attend sa réponse.
   await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(sent(), [{ pitch: 1 }], 'pas de second envoi en parallèle');
+  assert.deepEqual(sent(), [{ pitch: 1, guideVoices: {} }], 'pas de second envoi en parallèle');
   assert.equal(page.$('songSheetStatus').textContent, 'Modifié…');
   held.shift()();
   await page.flush();
-  assert.deepEqual(sent(), [{ pitch: 1 }, { pitch: 2 }], 'la dernière valeur part après la réponse');
+  assert.deepEqual(sent(), [{ pitch: 1, guideVoices: {} }, { pitch: 2, guideVoices: {} }], 'la dernière valeur part après la réponse');
   held.shift()();
   await page.flush();
   await page.poll();
   assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓');
-  assert.deepEqual(page.world.queue.find(q => q.song.entryId === 'b1').song.settings, { pitch: 2 });
+  assert.deepEqual(page.world.queue.find(q => q.song.entryId === 'b1').song.settings, { pitch: 2, guideVoices: {} });
 
   // Case à cocher : deux appuis rapides, un seul envoi à la fois, la dernière valeur gagne.
   let release;

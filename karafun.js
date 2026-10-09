@@ -1392,7 +1392,9 @@ class KaraFunBridge extends EventEmitter {
       if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
       return;
     }
-    if (!this._backingChanged && backing != null) this.observedDefaults.backing = backing;
+    // Le verrou ne vaut qu'une fois une valeur relevée : un premier titre
+    // envoyé avec ses chœurs n'empêche pas de relever ceux du titre suivant.
+    if ((!this._backingChanged || this.observedDefaults.backing == null) && backing != null) this.observedDefaults.backing = backing;
   }
 
   songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }

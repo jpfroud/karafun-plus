@@ -1060,13 +1060,13 @@ test('duo devenu solo dans KaraFun : la voix guide 2 posée par la file revient 
   assert.deepEqual(plain(tr.sel.ids), [ana.person.id]);
   const b = message => message.payload.options.tracks.find(row => row.track.type === 6)?.volume;
   // Ana (téléphone) règle la voix 1 seule : la voix 2, plus réglée, revient à 0.
-  await f.call('POST /api/table/song/settings', { ...ana.body, entryId: duo.entryId, settings: { guide: 50 } });
+  await f.call('POST /api/table/song/settings', { ...ana.body, entryId: duo.entryId, settings: { guide: 50, guideVoices: {} } });
   assert.equal(link.sent.at(-1).type, 'remote.SetQueueItemOptionsRequest');
   assert.deepEqual(link.sent.at(-1).payload.options.tracks, [{ track: { type: 5 }, volume: 50 }, { track: { type: 6 }, volume: 0 }]);
   await f.call('POST /api/staff/song/settings', { personId: ana.person.id, entryId: duo.entryId, settings: { guide: 25, guideVoices: { 6: 75 } } });
   assert.equal(b(link.sent.at(-1)), 75, 'chaque voix la sienne');
   // Réglage remis par défaut : la voix 2 revient aussi à la valeur par défaut.
-  await f.call('POST /api/staff/song/settings', { personId: ana.person.id, entryId: duo.entryId, settings: null });
+  await f.call('POST /api/staff/song/settings', { personId: ana.person.id, entryId: duo.entryId, settings: { guideVoices: {} } });
   assert.equal(b(link.sent.at(-1)), 0);
   // Au début du titre, KaraFun a laissé la voix 2 à 50 : rattrapée.
   f.sched.setSongSettings(tr.sel.song, { guide: 0 });
@@ -1413,4 +1413,75 @@ test('titre isolé : une Battle de la file garde le réglage de KaraFun, comme c
   link.bridge.status = playing(next, { pitch: 2 });
   f.sync();
   assert.deepEqual(link.sent, [{ type: 'remote.PitchRequest', payload: { pitch: 0 } }]);
+});
+
+// ---------------------------------------------------------------- relecture finale (lot serveur)
+// Regression: relecture finale C2 — une page gardée en cache d'avant les voix
+// guides par voix envoie ses réglages sans `guideVoices` : le serveur
+// remplaçait tout et effaçait le réglage de la voix 2. Sans la clé, les
+// autres voix guides du titre restent ; les nouvelles pages l'envoient
+// toujours ({} quand il n'y en a plus).
+test('ancienne page sans guideVoices : les réglages des autres voix guides du titre sont gardés', async () => {
+  const f = harness();
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa', 101);
+  const entryId = lea.person.song.entryId;
+  await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: { guide: 50, guideVoices: { 6: 75 } } });
+  // Page des chanteurs d'avant la mise à jour.
+  const old = await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: { pitch: 2, guide: 50 } });
+  assert.deepEqual(plain(lea.person.song.settings), { pitch: 2, guide: 50, guideVoices: { 6: 75 } });
+  assert.deepEqual(plain(old.settings), { pitch: 2, guide: 50, guideVoices: { 6: 75 } });
+  // Page du bar d'avant la mise à jour : même règle, remise par défaut comprise.
+  await f.call('POST /api/staff/song/settings', { personId: lea.person.id, entryId, settings: { tempo: -10 } });
+  assert.deepEqual(plain(lea.person.song.settings), { tempo: -10, guideVoices: { 6: 75 } });
+  await f.call('POST /api/staff/song/settings', { personId: lea.person.id, entryId, settings: null });
+  assert.deepEqual(plain(lea.person.song.settings), { guideVoices: { 6: 75 } }, 'ce que l’ancienne page ne montre pas reste');
+  // Nouvelle page : la clé est là, vide quand la voix 2 n'est plus réglée.
+  await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: { pitch: 1, guideVoices: { 6: 25 } } });
+  assert.deepEqual(plain(lea.person.song.settings), { pitch: 1, guideVoices: { 6: 25 } });
+  await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: { pitch: 1, guideVoices: {} } });
+  assert.deepEqual(plain(lea.person.song.settings), { pitch: 1 });
+  await f.call('POST /api/staff/song/settings', { personId: lea.person.id, entryId, settings: { guideVoices: {} } });
+  assert.equal(lea.person.song.settings ?? null, null);
+});
+
+// Regression: relecture finale R1 — après un redémarrage de l'application, le
+// premier état vu (titre ajouté directement dans KaraFun, déjà en lecture)
+// était pris pour un titre tout juste chargé : valeurs neutres envoyées en
+// pleine chanson, réglages en direct du bar effacés.
+test('redémarrage pendant un titre ajouté dans KaraFun : ses réglages en direct ne sont pas remis à zéro', async t => {
+  for (const state of [4, 5]) {
+    const f = harness();
+    const { frames } = replayBridge(t, f);
+    const own = isoItem('X-id', 777, { singer: 'Quelqu’un' });
+    const live = { pitch: 2, tempo: 10, guide: 25, backing: 0 };
+    assert.deepEqual(bare(frames(queueEvent(own), isoStatus(state, own, live))), [], `état ${state} : rien en pleine chanson`);
+    assert.deepEqual(bare(frames(isoStatus(4, own, live), isoStatus(5, own, live))), []);
+    assert.deepEqual(f.events('song.settingsReset'), []);
+    assert.deepEqual(resetNotes(f), []);
+    // Le titre suivant, vu se charger, reste isolé du précédent.
+    const next = isoItem('Y-id', 778, { singer: 'Autre' });
+    assert.deepEqual(bare(frames(isoStatus(1, next), queueEvent(next), isoStatus(2, next, live))), []);
+    assert.deepEqual(bare(frames(isoStatus(3, next, live))), [pitchTo(0), { type: 'remote.TempoRequest', payload: { tempo: 0 } }, volumeTo(5, 0)]);
+  }
+});
+
+// Regression: relecture finale R2 — tonalité changée par le bar dans
+// l'application KaraFun sur un titre de la file : remise à 0 à son chargement
+// (le titre ajouté directement dans KaraFun, lui, gardait ses options).
+test('titre de la file réglé dans KaraFun même : sa tonalité KaraFun est gardée à son chargement', async t => {
+  for (const applied of [true, false]) {
+    const run = aThenB(t);
+    const { f, frames, A, B } = run;
+    await f.call('POST /api/staff/kf', { action: 'pitch', value: 2, queueId: 'A-id' });
+    frames(isoStatus(4, A, { pitch: 2 }));
+    // Le bar règle B dans KaraFun : tonalité +3 dans les options du titre.
+    const tuned = { ...B, song: { ...B.song, options: { ...B.song.options, pitch: 3 } } };
+    assert.deepEqual(bare(frames(queueEvent(A, tuned))), []);
+    // KaraFun collant qui applique (ou non) les options de B.
+    const carried = { pitch: applied ? 3 : 2 };
+    assert.deepEqual(bare(frames(isoStatus(1, tuned), queueEvent(tuned), isoStatus(2, tuned, carried))), []);
+    assert.deepEqual(bare(frames(isoStatus(3, tuned, carried))), applied ? [] : [pitchTo(3)], 'la valeur de KaraFun, pas 0');
+    assert.deepEqual(bare(frames(isoStatus(4, tuned, { pitch: 3 }))), []);
+  }
 });
