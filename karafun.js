@@ -323,9 +323,16 @@ class KaraFunBridge extends EventEmitter {
     this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
     this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
     this._backingChanged = false;
+    this.provisionalDefaults = false; // chœurs relevés après un titre vu déjà en lecture, pas encore confirmés
+    this._carriedUnseen = false; // chœurs transmis d'un titre vu pour la première fois déjà en lecture, ou d'avant une session perdue
     this._observedFor = null;
+    this._observedBacking = null; // chœurs du premier état vu du titre `_observedFor`
     this._lastBacking = null; // chœurs du dernier état du titre `_observedFor`
     this._loadingSeen = new Set(); // titres vus annoncés ou se charger (états 1 à 3)
+    // Numéro de la session KCS (voir _forgetSession) et celui de la session
+    // qui a donné `status` : le serveur ne confond pas deux sessions.
+    this.kcsSession = 0;
+    this.statusSession = 0;
     this.nameConflictSince = null;
     this.nameConflictTries = 0;
     this._generation = 0;
@@ -688,7 +695,10 @@ class KaraFunBridge extends EventEmitter {
     this._appLeftChecked = false;
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
-      this.observedDefaults = {}; this._observedFor = null; this._backingChanged = false; this._lastBacking = null;
+      // Autre installation : chœurs par défaut à relever de nouveau (titres
+      // vus se charger et chœurs observés : oubliés par disconnect).
+      this.observedDefaults = {}; this._backingChanged = false; this.provisionalDefaults = false;
+      this._carriedUnseen = false;
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -846,6 +856,7 @@ class KaraFunBridge extends EventEmitter {
   // la page, puis essais arrêtés), 'page' (page dès que le budget et la
   // limite le permettent) ou 'stop' (essais arrêtés tout de suite).
   _retry(reason = 'Connexion KaraFun perdue', { detail = this.lastError, same = detail, mode = 'socket', kind = null } = {}) {
+    this._forgetSession();
     this._attempt++;
     const now = Date.now(), link = this._link;
     this._closeSocket();
@@ -916,6 +927,7 @@ class KaraFunBridge extends EventEmitter {
 
   _accept(name, data) {
     this[name] = data;
+    if (name === 'status') this.statusSession = this.kcsSession;
     if (name === 'permissions') this._checkPermissions(data);
     if (name === 'queue' || name === 'status') {
       this._fresh[name] = true;
@@ -933,6 +945,7 @@ class KaraFunBridge extends EventEmitter {
   _openKcs(url, active, { kept = false } = {}) {
     const socket = new KcsTransport(url);
     this._optionAdds.clear(); // identifiants propres à chaque connexion
+    this._forgetSession();
     this.protocol = 'kcs';
     this.socket = socket;
     this._setPhase('opening');
@@ -1194,6 +1207,7 @@ class KaraFunBridge extends EventEmitter {
   }
 
   disconnect() {
+    this._forgetSession();
     this._generation++;
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
@@ -1365,7 +1379,8 @@ class KaraFunBridge extends EventEmitter {
     if (typeof volume !== 'number' || !Number.isFinite(volume)) throw new Error('Volume invalide.');
     this._settingsAllowed('manageVolumes');
     const value = Math.min(100, Math.max(0, Math.round(volume)));
-    if (type === TRACK.BACKING) this._backingChanged = true;
+    // Chœurs laissés au titre suivant : ceux envoyés, même avant la trame qui les montre.
+    if (type === TRACK.BACKING) { this._backingChanged = true; this._lastBacking = value; }
     this._emit('trackVolume', { type, volume: value });
     this._probeSetting('trackVolume', type === TRACK.BACKING ? 'backing' : `voice:${type}`, value);
     return value;
@@ -1382,6 +1397,23 @@ class KaraFunBridge extends EventEmitter {
   }
   seenLoading(id) { return id != null && this._loadingSeen.has(String(id)); }
 
+  // Session KCS perdue (coupure, AppLeftEvent, déconnexion) ou nouvelle :
+  // KaraFun relancé renumérote sa file depuis 1, un titre vu se charger ou
+  // observé avant ne dit rien du titre de même numéro d'après. Les chœurs
+  // par défaut relevés (observedDefaults, provisionalDefaults) et les
+  // chœurs changés pendant la soirée (_backingChanged) restent. Les chœurs
+  // laissés au titre suivant, eux, ne sont plus connus (réglés en direct
+  // pendant la coupure, ou par un titre vu en pleine chanson) : dès qu'un
+  // titre a été vu ou des chœurs envoyés, la chaîne passe pour inconnue
+  // (_carriedUnseen), comme après un titre vu pour la première fois en
+  // lecture. Sans rien de vu, la reprise vaut un démarrage.
+  _forgetSession() {
+    this.kcsSession++;
+    this._loadingSeen.clear();
+    if (this._observedFor != null || this._lastBacking != null) this._carriedUnseen = true;
+    this._observedFor = null; this._observedBacking = null; this._lastBacking = null;
+  }
+
   // Valeur par défaut des chœurs sur ce KaraFun (celui du bar les met à 53) :
   // relevée à la première trame d'un titre chargé (état 2 ou plus, pistes
   // reçues) sans volumes dans ses options. L'état 1 annonce le titre sans
@@ -1394,6 +1426,15 @@ class KaraFunBridge extends EventEmitter {
   // qu'aucune n'est relevée, un titre dont KaraFun a changé les chœurs de
   // lui-même au chargement (autre valeur que celle laissée par le titre
   // d'avant). La voix guide n'est jamais relevée : coupée par défaut (0).
+  // Une telle remise par KaraFun au chargement donne toujours la valeur, même
+  // déjà relevée ou reprise de la sauvegarde (valeur changée dans KaraFun).
+  // Après un titre vu pour la première fois déjà en lecture (ou une session
+  // KCS perdue après un titre vu, voir _forgetSession), ses chœurs (un
+  // réglage en direct, ou la valeur par défaut) passent au titre suivant chez
+  // un KaraFun « collant » comme chez un KaraFun qui remet à zéro : sans
+  // valeur connue, celle du titre suivant est relevée pour la soirée, mais
+  // provisoire (provisionalDefaults, jamais sauvegardée) jusqu'à une remise ;
+  // avec une valeur connue, rien n'est relevé avant une remise.
   _observeDefaults(status) {
     const current = status.current;
     if (!current || current.id == null) return;
@@ -1413,12 +1454,30 @@ class KaraFunBridge extends EventEmitter {
       if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
       return;
     }
-    if (status.state >= 4 && !this.seenLoading(current.id)) return;
-    const reset = this.observedDefaults.backing == null && carried != null && backing !== carried;
-    if ((!this._backingChanged || reset) && backing != null) this.observedDefaults.backing = backing;
+    if (status.state >= 4 && !this.seenLoading(current.id)) { this._carriedUnseen = true; return; }
+    if (backing == null) return;
+    if (carried != null && backing !== carried) {
+      this.observedDefaults.backing = backing;
+      this.provisionalDefaults = false;
+      this._carriedUnseen = false;
+    } else if (this._carriedUnseen) {
+      if (this.observedDefaults.backing == null) { this.observedDefaults.backing = backing; this.provisionalDefaults = true; }
+    } else if (!this._backingChanged) this.observedDefaults.backing = backing;
   }
 
   songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }
+
+  // Chœurs par défaut relevés avant un redémarrage (sauvegarde de la soirée,
+  // même code KaraFun) : repris tels quels, jamais réappris de chœurs qu'un
+  // KaraFun « collant » aurait gardés. false : valeur abîmée, rien repris.
+  restoreDefaults(saved) {
+    const backing = saved?.backing;
+    if (!Number.isInteger(backing) || backing < 0 || backing > 100) return false;
+    if (this.observedDefaults.backing == null || this.provisionalDefaults) this.observedDefaults.backing = backing;
+    this.provisionalDefaults = false;
+    this._backingChanged = true;
+    return true;
+  }
 
   // Réglages de titre possibles avec cette connexion : true, false (ancienne
   // télécommande d'un vrai KaraFun) ou null (pas encore connecté).

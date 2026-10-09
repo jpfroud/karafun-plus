@@ -202,6 +202,24 @@ try {
   assert.deepEqual(restoredSolos.people.get(solo.id).soloDeviceHashes, solo.soloDeviceHashes,
     'le lien sécurisé avec le téléphone solo survit au redémarrage');
 
+  // Regression: deuxième relecture finale R2 — chœurs par défaut relevés sur
+  // le KaraFun du bar : gardés dans la sauvegarde (code KaraFun en empreinte),
+  // repris après un redémarrage ; une valeur abîmée est ignorée sans refuser
+  // la soirée.
+  const kfDefaults = { code: 'a1b2c3d4e5f60718', backing: 53 };
+  const withDefaults = { ...settings(), karafunDefaults: kfDefaults };
+  const kept = settings();
+  restoreNight(JSON.parse(JSON.stringify(snapshotNight({ scheduler: solos, access: soloAccess, settings: withDefaults }))),
+    { scheduler: new Scheduler(), access: new TableAccess(), settings: kept });
+  assert.deepEqual(kept.karafunDefaults, kfDefaults, 'chœurs par défaut repris');
+  for (const bad of [null, 'x', [], { code: 'a1b2', backing: 53 }, { code: kfDefaults.code, backing: 101 },
+    { code: kfDefaults.code, backing: 52.5 }, { code: kfDefaults.code }]) {
+    const damaged = snapshotNight({ scheduler: solos, access: soloAccess, settings: { ...settings(), karafunDefaults: bad } });
+    const target = settings();
+    restoreNight(damaged, { scheduler: new Scheduler(), access: new TableAccess(), settings: target });
+    assert.equal('karafunDefaults' in target, false, `valeur abîmée ignorée : ${JSON.stringify(bad)}`);
+  }
+
   console.log('ok - reprise après crash : file, titres, duos, téléphones, QR, écritures atomiques et envoi ambigu');
 } finally {
   // Ce dossier est créé exclusivement sous le répertoire temporaire du test.

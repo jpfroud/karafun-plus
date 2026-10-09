@@ -860,12 +860,16 @@ function songSettingsTarget(entryId, started) {
 }
 
 // Réglages reçus d'une page : sans la clé `guideVoices` (page gardée en cache
-// d'avant les voix guides par voix), les autres voix guides du titre restent.
+// d'avant les voix guides par voix), les autres voix guides du titre restent ;
+// sur un duo (`target.ids`), la voix 2 suit la voix guide, comme sur ces pages
+// (et comme à la reprise d'une ancienne sauvegarde, legacyDuoVoice).
 // Les pages actuelles envoient toujours la clé ({} quand il n'y en a plus).
-function songSettingsInput(input, song) {
+function songSettingsInput(input, { song, ids }) {
+  if (input != null && (typeof input !== 'object' || Array.isArray(input) || 'guideVoices' in input)) return input;
   const kept = song?.settings?.guideVoices;
-  if (!kept || (input != null && (typeof input !== 'object' || Array.isArray(input) || 'guideVoices' in input))) return input;
-  return { ...(input || {}), guideVoices: kept };
+  const duoVoice = ids?.length > 1 && input?.guide != null ? { 6: input.guide } : null;
+  if (!kept && !duoVoice) return input;
+  return { ...(input || {}), guideVoices: { ...kept, ...duoVoice } };
 }
 
 // Enregistre les réglages sur le titre, puis les applique selon où il en est.
@@ -929,10 +933,13 @@ function catchUpSongSettings(tr) {
   // Valeurs neutres complétées par les options du titre dans KaraFun : une
   // tonalité réglée par le bar dans KaraFun même est gardée (comme pour un
   // titre ajouté directement dans KaraFun). Les réglages du titre priment.
+  // Titre vu pour la première fois déjà en lecture (application redémarrée,
+  // télécommande reconnectée) : ses seuls réglages, jamais de valeur neutre
+  // en pleine chanson. Battle : voir checkUntrackedSettings.
   const item = kfItemOf(tr);
+  const neutral = !isBattleItem(item) && seenLoadingLive(mark) ? startNeutral(mark, item?.options || null) : null;
   const commands = catchUpCommands({ settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, live,
-    tracksAvailable: live?.tracks || songTracksOf(item), ranges: songRanges(),
-    defaults: songDefaults(), neutral: isBattleItem(item) ? null : startNeutral(mark, item?.options || null) }); // Battle : voir checkUntrackedSettings
+    tracksAvailable: live?.tracks || songTracksOf(item), ranges: songRanges(), defaults: songDefaults(), neutral });
   applyStartCommands(commands, live, { title: tr.sel.song.title, entryId: tr.sel.song.entryId || null, queueId: tr.queueId });
 }
 
@@ -942,18 +949,34 @@ function catchUpSongSettings(tr) {
 // KaraFunBridge.seenLoading). Un titre vu pour la première fois déjà en
 // lecture (application redémarrée, ou télécommande reconnectée, en pleine
 // chanson) n'en est pas un : ses réglages en direct ne sont pas remis. Sans
-// numéro d'état (ancienne télécommande), après un titre déjà vu.
+// numéro d'état (ancienne télécommande), après un titre déjà vu dans la
+// même session. Autre session (coupure, « Reconnecter », KaraFun relancé qui
+// renumérote sa file depuis 1) : même titre seulement s'il garde son numéro
+// et sa chanson, jamais remis pour autant ; vu se charger seulement s'il
+// l'est de nouveau (état 3, ou vu annoncé dans cette session). Sinon nouveau
+// titre, sans titre d'avant connu.
+const loadedSongOf = item => String(item?.songId ?? item?.quizId ?? item?.title ?? '');
 function noteLoadedLive(loadedId) {
   const live = loadedId ? liveFromStatus(bridge.status) : null;
   if (!live || String(live.queueId) !== loadedId) return false;
-  const fresh = loadedLive?.queueId !== loadedId;
+  const session = bridge.statusSession ?? null;
+  const song = loadedSongOf(bridge.status?.current || bridge.status?.songPlaying);
+  const sameSession = loadedLive?.session === session;
+  const fresh = loadedLive?.queueId !== loadedId || (!sameSession && loadedLive.song !== song);
   const kcsState = bridge.status?.kcsState;
-  const seenLoading = !Number.isInteger(kcsState) ? !!loadedLive : kcsState === 3 ||
+  const seenNow = !Number.isInteger(kcsState) ? !!loadedLive && sameSession : kcsState === 3 ||
     (typeof bridge.seenLoading === 'function' ? bridge.seenLoading(loadedId) : !!loadedLive);
-  if (loadedLive && fresh) previousLoaded = loadedLive;
-  loadedLive = { queueId: loadedId, backing: live.backing };
+  if (loadedLive && fresh) previousLoaded = sameSession ? loadedLive : null;
+  // Vu se charger : décidé au premier état vu du titre, gardé ensuite dans
+  // la même session.
+  const seenLoading = fresh ? seenNow : sameSession ? loadedLive.seenLoading : loadedLive.seenLoading && seenNow;
+  loadedLive = { queueId: loadedId, song, backing: live.backing, seenLoading, session };
   return fresh && seenLoading;
 }
+
+// Le titre `queueId` est le titre chargé, et cette application l'a vu se
+// charger : ses valeurs neutres peuvent être visées (voir noteLoadedLive).
+const seenLoadingLive = queueId => loadedLive?.queueId === queueId && !!loadedLive.seenLoading;
 
 // Valeurs neutres du titre `queueId` qui se charge, avec ses options KaraFun
 // pour un titre ajouté directement dans KaraFun.
@@ -1067,13 +1090,19 @@ function liveSongSetting(body) {
     throw new Error(type === TRACK.LEAD_A ? 'Ce titre n’a pas de voix guide.' : 'Ce titre n’a pas cette voix guide.');
   }
   if (field === 'backing' && tracks && !tracks.includes(TRACK.BACKING)) throw new Error('Ce titre n’a pas de chœurs.');
+  // Page du bar d'avant les voix une à une (sans queueId) : sur un duo de la
+  // file, sa voix guide règle aussi la voix 2, comme avant.
+  const duoVoice = body.queueId == null && type === TRACK.LEAD_A && tr?.sel.ids.length > 1 &&
+    (!tracks || tracks.includes(TRACK.LEAD_B));
   if (field === 'pitch') bridge.setPitch(value);
   else if (field === 'tempo') bridge.setTempo(value);
   else bridge.setTrackVolume(type, value);
+  if (duoVoice) bridge.setTrackVolume(TRACK.LEAD_B, value);
   if (tr) {
     const next = { ...(tr.sel.song.settings || {}) };
     if (type != null && type !== TRACK.BACKING && type !== TRACK.LEAD_A) next.guideVoices = { ...next.guideVoices, [type]: value };
     else next[field] = value;
+    if (duoVoice) next.guideVoices = { ...next.guideVoices, [TRACK.LEAD_B]: value };
     if ((field === 'pitch' || field === 'tempo') && value === 0) delete next[field]; // tonalité ou tempo d'origine
     sched.setSongSettings(tr.sel.song, Object.keys(next).length ? next : null);
     // Réglé en direct : rien à rattraper, même avant l'écho de KaraFun.
@@ -1084,9 +1113,29 @@ function liveSongSetting(body) {
   return { ok: true, field: type == null ? field : trackField(type), value };
 }
 
+// Chœurs par défaut relevés sur le KaraFun du bar (KaraFunBridge
+// observedDefaults) : gardés dans les réglages sauvegardés avec une empreinte
+// du code KaraFun, jamais le code ; repris au redémarrage pour ce code
+// seulement, au lieu d'être réappris de chœurs qu'un KaraFun « collant »
+// garderait d'un titre réglé en direct.
+const karafunKey = code => crypto.createHash('sha256').update(`karafun:${code}`).digest('hex').slice(0, 16);
+function rememberKaraFunDefaults() {
+  const backing = bridge?.observedDefaults?.backing;
+  if (!Number.isInteger(backing) || !bridge.code || bridge.provisionalDefaults) return;
+  const code = karafunKey(bridge.code);
+  if (settings.karafunDefaults?.code === code && settings.karafunDefaults.backing === backing) return;
+  settings.karafunDefaults = { code, backing };
+  saveNight();
+}
+function restoreKaraFunDefaults() {
+  const saved = settings.karafunDefaults;
+  if (bridge?.code && saved?.code === karafunKey(bridge.code)) bridge.restoreDefaults(saved);
+}
+
 // ------------------------------------------------------------------ synchronisation avec KaraFun
 function sync() {
   if (!bridge || !bridge.ready) { notePhase('unknown', 'offline'); return; }
+  rememberKaraFunDefaults();
   if (settings.auto && bridge.permissions?.addToQueue === false) {
     settings.auto = false;
     permissionPause = true;
@@ -3056,10 +3105,13 @@ async function playKaraFun({ queueId = null } = {}) {
 
 // Vérification de Spotify (appareils et lecteur). Rétabli (appareil retrouvé,
 // réseau revenu, reconnexion) : la relance abandonnée du silence en cours
-// repart, sauf si le bar a lui-même coupé ou lancé la musique.
+// repart, sauf si le bar a lui-même coupé ou lancé la musique, au plus une
+// fois par 10 minutes et pas quand seul l'appel de relance échoue en 5xx
+// (SpotifyAutomation.recover). Rien de repris : rien au journal.
 async function spotifyCheck() {
   const before = spotify.health.state;
   const health = await spotify.checkHealth();
+  if (health.state === 'error') spotifyAutomation.checkFailed();
   if (health.state === 'ready' && (before !== 'ready' || health.adopted) && spotifyAutomation.recover()) {
     appLog('Spotify rétabli : la relance automatique reprend.');
   }
@@ -3092,7 +3144,7 @@ async function spotifyTick() {
     // Un titre lancé pendant la relance : rien à suspendre.
     if (action === 'resume' && !closed && karaokeOutlook() !== 'singing') holdAutoPlay();
   } catch (error) {
-    spotifyAutomation.settle(false);
+    spotifyAutomation.settle(false, error);
     journalEvent('spotify', { action, result: 'error', trigger: closed ? 'closing' : 'auto' });
     spotify.lastError = error.message;
   } finally { spotifyBusy--; spotifyWork = null; release(); }
@@ -3398,7 +3450,7 @@ const handlers = {
         songSettingsError(`${sched.people.get(target.ids[0])?.name || 'L’auteur du titre'} a choisi ce duo : les réglages se font sur son téléphone.`, 'DUO_GUEST') :
         songSettingsError('Ce titre n’est pas dans ta liste.', 'NOT_OWNER');
     }
-    const values = normalizeSettings(songSettingsInput(body.settings, target.song), songRanges());
+    const values = normalizeSettings(songSettingsInput(body.settings, target), songRanges());
     return { ok: true, settings: values, applied: applySongSettings(target, values, { by: 'self' }) };
   },
   'POST /api/table/song/reorder': async (req, res, body) => {
@@ -3885,7 +3937,7 @@ const handlers = {
     if (personId && !target.ids.includes(personId)) {
       throw songSettingsError(`Ce titre n’est pas celui de ${sched.people.get(personId)?.name || 'cette personne'}.`, 'NOT_OWNER');
     }
-    const values = normalizeSettings(songSettingsInput(body.settings, target.song), songRanges());
+    const values = normalizeSettings(songSettingsInput(body.settings, target), songRanges());
     return { ok: true, settings: values, applied: applySongSettings(target, values, { by: 'staff' }) };
   },
   'POST /api/staff/bonus': async (req, res, body) => {
@@ -4425,6 +4477,7 @@ function connectKaraFun(code = CODE) {
   // Budget de l'heure épuisé et connexion prête : le pont garde son code
   // (faute de frappe probable). Le code retenu suit toujours le pont.
   CODE = bridge.code || code;
+  restoreKaraFunDefaults();
   rememberCode();
   appLog(result === 'kept' ? `KaraFun (code ${maskCode(code)}) : connexion en cours ou prête, gardée.` :
     result?.ok === false ? `KaraFun (code ${maskCode(code)}) : clic sans nouvel essai. ${result.message}` :

@@ -392,14 +392,14 @@ class SpotifyLink {
       const player = await this.readPlayer();
       if (player.isPlaying) return 'already';
       try {
-        await this._api('PUT', `/me/player/play${this._deviceQuery()}`);
+        await this._command('PUT', `/me/player/play${this._deviceQuery()}`);
       } catch (error) {
         if (error.status !== 404) throw error;
         // Identifiant périmé ou plus d'appareil actif : la liste dit où jouer,
         // puis un seul nouvel essai, par transfert (marche même sans appareil actif).
         const target = this.resolveDevice(await this.devices());
         if (!target) { this._setHealth('no-device', { device: this._wanted() }); throw error; }
-        await this._api('PUT', '/me/player', { device_ids: [target.id], play: true });
+        await this._command('PUT', '/me/player', { device_ids: [target.id], play: true });
         this._setHealth('ready', { device: target });
       }
       this.player = { ...player, isPlaying: true, at: this.now() };
@@ -411,10 +411,17 @@ class SpotifyLink {
     return this._act('pause', async () => {
       const player = await this.readPlayer();
       if (!player.isPlaying) return 'already';
-      await this._api('PUT', `/me/player/pause${player.device?.id ? `?device_id=${encodeURIComponent(player.device.id)}` : ''}`);
+      await this._command('PUT', `/me/player/pause${player.device?.id ? `?device_id=${encodeURIComponent(player.device.id)}` : ''}`);
       this.player = { ...player, isPlaying: false, at: this.now() };
       return 'done';
     });
+  }
+
+  // Commande de l'action (lecture, transfert, pause), pas la lecture du
+  // lecteur ni la liste des appareils : son échec est marqué (actionCall)
+  // pour SpotifyAutomation.recover.
+  _command(...call) {
+    return this._api(...call).catch(error => { error.actionCall = true; throw error; });
   }
 
   async _act(kind, work) {
@@ -441,6 +448,10 @@ class SpotifyLink {
   }
 }
 
+// Reprise d'une relance abandonnée (SpotifyAutomation.recover) : au plus une
+// par 10 minutes dans une même période (silence, chanson…).
+const RECOVER_EVERY_MS = 10 * 60000;
+
 // Décide quand agir, à partir de l'état de KaraFun : « singing » (un titre
 // joue ou est en pause), « between » (rien ne joue mais un titre suivant
 // arrive : Spotify n'est pas relancé entre deux chansons), « silent » (file
@@ -456,6 +467,8 @@ class SpotifyAutomation {
     this.attempts = 0;
     this.retryAt = 0;
     this.failed = false;      // dernière action de la période en échec
+    this.failure = null;      // { status, actionCall, checkFailed } : échec de cette action
+    this.recoveredAt = -Infinity;
   }
 
   step(karaoke, { autoResume = DEFAULTS.autoResume, autoPause = DEFAULTS.autoPause,
@@ -468,6 +481,8 @@ class SpotifyAutomation {
       this.attempts = 0;
       this.retryAt = 0;
       this.failed = false;
+      this.failure = null;
+      this.recoveredAt = -Infinity;
     }
     if (this.done || karaoke === 'unknown' || now < this.retryAt) return null;
     if (karaoke === 'singing') return autoPause ? 'pause' : null;
@@ -480,26 +495,43 @@ class SpotifyAutomation {
   handled() {
     this.done = true;
     this.failed = false;
+    this.failure = null;
   }
 
   // Résultat de l'action demandée : réussite, ou nouvel essai dans 30 s
-  // (trois essais au plus par période).
-  settle(ok) {
+  // (trois essais au plus par période). `error` : l'erreur de l'échec.
+  settle(ok, error = null) {
     this.attempts++;
     this.failed = !ok;
+    this.failure = ok ? null : { status: Number(error?.status) || 0, actionCall: !!error?.actionCall, checkFailed: false };
     if (ok || this.attempts >= 3) this.done = true;
     else this.retryAt = this.now() + 30000;
+  }
+
+  // Vérification de Spotify (appareils, lecteur) en échec depuis l'échec de
+  // l'action : sa panne n'était pas propre à l'appel de l'action.
+  checkFailed() {
+    if (this.failure) this.failure.checkFailed = true;
   }
 
   // Spotify rétabli (appareil retrouvé, réseau revenu, reconnexion) : l'action
   // de la période, abandonnée ou en attente après un échec, repart tout de
   // suite avec trois nouveaux essais. Un choix du bar (handled) reste respecté.
+  // Au plus une fois par 10 minutes dans la période ; jamais quand seul
+  // la commande de l'action (lecture, transfert, pause) échoue en 5xx :
+  // la vérification réussie n'en dit rien. Une panne du lecteur ou de la
+  // liste des appareils, elle, est reprise. false : rien repris.
   recover() {
     if (!this.failed) return false;
+    if (this.failure?.actionCall && this.failure.status >= 500 && !this.failure.checkFailed) return false;
+    const now = this.now();
+    if (now - this.recoveredAt < RECOVER_EVERY_MS) return false;
+    this.recoveredAt = now;
     this.done = false;
     this.attempts = 0;
     this.retryAt = 0;
     this.failed = false;
+    this.failure = null;
     return true;
   }
 }
