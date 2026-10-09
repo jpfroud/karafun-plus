@@ -207,14 +207,29 @@ printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail
 # 11b. Hook git pre-push de la porte : installé dans le dépôt du projet,
 #      une seule fois, jamais par-dessus un hook étranger ni avec core.hooksPath.
 git_q() { git -c init.defaultBranch=main "$@" >/dev/null 2>&1; }
+# Regression: T2-4 (seconde relecture) — le contrôle du fichier temporaire
+# visait $ROOT/.git/hooks/pre-push.tmp.<PID du test> : ni le bon dépôt, ni le
+# PID du hook. On cherche tout pre-push.tmp.* dans les dépôts de test.
+no_tmp() { local left; left="$(ls -d "$WORK"/*/.git/hooks/pre-push.tmp.* "$WORK"/*/.githooks/pre-push.tmp.* 2>/dev/null)"
+  [ -z "$left" ] || fail "fichier temporaire laissé ($1) : $left"; }
 installed="$WORK/home-.claude_skills_gstack"
 repo="$WORK/projet"; git_q init "$repo" || fail "dépôt de test"
 out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null)" || fail "démarrage avec projet"
 cmp -s "$ROOT/.claude/hooks/pre-push" "$repo/.git/hooks/pre-push" || fail "hook pre-push non installé"
 [ -x "$repo/.git/hooks/pre-push" ] || fail "hook pre-push non exécutable"
-before="$(stat -c %Y "$repo/.git/hooks/pre-push" 2>/dev/null || echo 0)"
+no_tmp "installation"
+# Regression: T2-3 (seconde relecture) — l'heure de modification était
+# comparée à la seconde près, dans la même seconde : le contrôle ne voyait
+# jamais une réécriture. Le hook est daté de 2001 avant le second démarrage.
+touch -d '2001-01-01 12:00' "$repo/.git/hooks/pre-push" || fail "datation du hook"
 quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null >/dev/null || fail "second démarrage avec projet"
-[ "$(stat -c %Y "$repo/.git/hooks/pre-push" 2>/dev/null || echo 0)" = "$before" ] || fail "hook pre-push réécrit sans raison"
+[ "$(date -r "$repo/.git/hooks/pre-push" +%Y)" = 2001 ] || fail "hook pre-push réécrit sans raison"
+no_tmp "second démarrage"
+# Ancienne version de la porte : remplacée, sans fichier temporaire laissé.
+printf '#!/bin/sh\n# Porte gstack karafun-plus (ancienne version)\nexit 0\n' >"$repo/.git/hooks/pre-push"
+quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null >/dev/null || fail "mise à jour du hook"
+cmp -s "$ROOT/.claude/hooks/pre-push" "$repo/.git/hooks/pre-push" || fail "ancienne porte pre-push non remplacée"
+no_tmp "mise à jour"
 out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" UserPromptSubmit </dev/null)" || fail "rappel avec projet"
 other="$WORK/projet-etranger"; git_q init "$other"; printf '#!/bin/sh\nexit 0\n' >"$other/.git/hooks/pre-push"
 out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$other" bash "$START" SessionStart </dev/null)" || fail "hook étranger"
@@ -225,7 +240,7 @@ out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$paths" bash "$START" Ses
 [ ! -e "$paths/.git/hooks/pre-push" ] && [ ! -e "$paths/.githooks/pre-push" ] || fail "core.hooksPath ignoré"
 printf '%s' "$out" | field additionalContext | grep -q 'core.hooksPath est réglé' || fail "core.hooksPath non signalé"
 quiet_env HOME="$installed" bash "$START" SessionStart </dev/null >/dev/null || fail "démarrage sans projet"
-[ ! -e "$ROOT/.git/hooks/pre-push.tmp.$$" ] || fail "fichier temporaire laissé"
+no_tmp "fin"
 
 # 11. Les réglages du projet enregistrent les trois hooks, avec un délai qui
 #     laisse le temps d'installer gstack.

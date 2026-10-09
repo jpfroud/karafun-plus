@@ -956,3 +956,14 @@ test('graduations des durées : pas selon la largeur, au moins 60 unités entre 
     }
   }
 });
+
+// Regression: M2-4 (seconde relecture) — renderFocus déclarait une constante
+// locale « who » (un texte) qui masquait l'aide who(personId, tableId) du
+// module : un appel à who() ajouté plus bas dans la fonction aurait levé
+// « who is not a function ».
+test('renderFocus : aucun nom local ne masque l’aide who() du module', () => {
+  assert.match(script, /^const who = \(personId, tableId\) =>/m, 'aide du module');
+  const focus = /function renderFocus\(\) \{([\s\S]*?)\n\}\n/.exec(script)[1];
+  assert.doesNotMatch(focus, /\b(?:const|let|var)\s+who\b/, 'renderFocus ne redéclare pas who');
+  assert.equal([...script.matchAll(/\b(?:const|let|var|function)\s+who\b/g)].length, 1, 'une seule déclaration de who dans la page');
+});

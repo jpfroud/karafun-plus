@@ -154,17 +154,18 @@ class SpotifyLink {
     this._save();
   }
 
-  // Liste et vérification oubliées (déconnexion, autre application).
+  // Liste, vérification et dernier titre lu oubliés (déconnexion, autre
+  // application).
   _forget() {
     this.deviceList = [];
     this.health = { state: 'unknown', device: null, checkedAt: 0, okAt: 0, message: null };
+    this.player = null;
   }
 
   disconnect() {
     this.config = { ...this.config, refreshToken: '', deviceId: '', deviceName: '', deviceType: '' };
     this.access = null;
     this._forget();
-    this.player = null;
     this.lastError = null;
     this.failures = 0;
     this.waitUntil = 0;
@@ -208,6 +209,7 @@ class SpotifyLink {
         // Accès retiré dans Spotify : inutile de redemander ce jeton.
         this.config.refreshToken = '';
         this.access = null;
+        this.player = null;
         this._save();
         this.log('Spotify a refusé le jeton enregistré : reconnecte Spotify depuis la page du bar.');
       }
