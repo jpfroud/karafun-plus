@@ -466,8 +466,8 @@ class SpotifyAutomation {
     this.done = false;
     this.attempts = 0;
     this.retryAt = 0;
-    this.failed = false;      // dernière action de la période en échec
-    this.failure = null;      // { status, actionCall, checkFailed } : échec de cette action
+    // Dernière action de la période en échec : { action, status, actionCall, checkFailed }.
+    this.failure = null;
     this.recoveredAt = -Infinity;
   }
 
@@ -480,7 +480,6 @@ class SpotifyAutomation {
       this.done = false;
       this.attempts = 0;
       this.retryAt = 0;
-      this.failed = false;
       this.failure = null;
       this.recoveredAt = -Infinity;
     }
@@ -494,7 +493,6 @@ class SpotifyAutomation {
   // jusqu'au prochain changement (titre qui démarre, ou nouveau silence).
   handled() {
     this.done = true;
-    this.failed = false;
     this.failure = null;
   }
 
@@ -502,8 +500,8 @@ class SpotifyAutomation {
   // (trois essais au plus par période). `error` : l'erreur de l'échec.
   settle(ok, error = null) {
     this.attempts++;
-    this.failed = !ok;
-    this.failure = ok ? null : { status: Number(error?.status) || 0, actionCall: !!error?.actionCall, checkFailed: false };
+    this.failure = ok ? null : { action: this.phase === 'singing' ? 'pause' : 'resume',
+      status: Number(error?.status) || 0, actionCall: !!error?.actionCall, checkFailed: false };
     if (ok || this.attempts >= 3) this.done = true;
     else this.retryAt = this.now() + 30000;
   }
@@ -518,19 +516,20 @@ class SpotifyAutomation {
   // de la période, abandonnée ou en attente après un échec, repart tout de
   // suite avec trois nouveaux essais. Un choix du bar (handled) reste respecté.
   // Au plus une fois par 10 minutes dans la période ; jamais quand seul
-  // la commande de l'action (lecture, transfert, pause) échoue en 5xx :
-  // la vérification réussie n'en dit rien. Une panne du lecteur ou de la
-  // liste des appareils, elle, est reprise. false : rien repris.
+  // l'appel de relance (lecture, transfert) échoue en 5xx : la vérification
+  // réussie n'en dit rien. Une panne du lecteur ou de la liste des appareils,
+  // elle, est reprise, comme une pause en échec (sinon Spotify jouerait sur
+  // le chanteur toute la chanson). false : rien repris.
   recover() {
-    if (!this.failed) return false;
-    if (this.failure?.actionCall && this.failure.status >= 500 && !this.failure.checkFailed) return false;
+    const failure = this.failure;
+    if (!failure) return false;
+    if (failure.action === 'resume' && failure.actionCall && failure.status >= 500 && !failure.checkFailed) return false;
     const now = this.now();
     if (now - this.recoveredAt < RECOVER_EVERY_MS) return false;
     this.recoveredAt = now;
     this.done = false;
     this.attempts = 0;
     this.retryAt = 0;
-    this.failed = false;
     this.failure = null;
     return true;
   }

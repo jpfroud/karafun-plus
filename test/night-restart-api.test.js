@@ -316,7 +316,9 @@ NightStateStore.prototype.save = function(snapshot, options) {
     const beforeCrash = store.load();
     assert.equal(beforeCrash.stageClock, null, 'aucun titre sur scène sans KaraFun');
     const playing = { key: '9001', segAt: Date.now() - 42000, mediaMs: 15000, rate: 1.1, paused: false, position: 15 };
-    store.save({ ...beforeCrash, stageClock: playing });
+    // Chœurs par défaut relevés sur un KaraFun lors de cette soirée (empreinte du code).
+    const kfDefaults = { code: 'a1b2c3d4e5f60718', backing: 80 };
+    store.save({ ...beforeCrash, stageClock: playing, settings: { ...beforeCrash.settings, karafunDefaults: kfDefaults } });
     second = await launch();
     state = await second.staff();
     assert.deepEqual(state.privateEvent, eventBefore, 'événement privé : même état et même QR après le crash');
@@ -332,6 +334,7 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.ok(afterRestart.scheduler.people.some(person => person.id === newcomer.data.id),
       'sauvegarde écrite après le redémarrage');
     assert.deepEqual(afterRestart.stageClock, playing, 'l’horloge du titre sur scène survit au redémarrage');
+    assert.deepEqual(afterRestart.settings.karafunDefaults, kfDefaults, 'chœurs par défaut gardés après un crash');
     console.log('ok - crash : événement privé, son QR et l’horloge de la scène restaurés');
     assert.equal((await second.ok('/api/state?' + new URLSearchParams({
       table: 'Comptoir', access: soloAccess, reprise,
@@ -350,6 +353,10 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.equal(renewedSolo[0].name, 'En solo');
     assert.equal(renewedSolo[0].individual, true);
     assert.deepEqual(fs.readdirSync(photoDir), [], 'Le reset retire aussi les fichiers photo.');
+    // Regression: troisième relecture finale R4(b) — les chœurs par défaut
+    // sauvegardés passaient à toutes les soirées : « Nouvelle soirée » les oublie.
+    assert.equal('karafunDefaults' in new NightStateStore(path.join(sandbox, 'data', 'soiree')).load().settings, false,
+      'nouvelle soirée : chœurs par défaut oubliés dans la sauvegarde');
     await stop(second, true); // Le reset doit survivre lui aussi à une coupure.
 
     const third = await launch();

@@ -324,7 +324,10 @@ class KaraFunBridge extends EventEmitter {
     this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
     this._backingChanged = false;
     this.provisionalDefaults = false; // chœurs relevés après un titre vu déjà en lecture, pas encore confirmés
-    this._carriedUnseen = false; // chœurs transmis d'un titre vu pour la première fois déjà en lecture, ou d'avant une session perdue
+    // Chœurs transmis d'un titre vu pour la première fois déjà en lecture, ou
+    // d'avant une session perdue ou ce pont : inconnus au départ (application
+    // relancée entre deux titres, KaraFun qui garde un réglage en direct).
+    this._carriedUnseen = true;
     this._observedFor = null;
     this._observedBacking = null; // chœurs du premier état vu du titre `_observedFor`
     this._lastBacking = null; // chœurs du dernier état du titre `_observedFor`
@@ -696,9 +699,10 @@ class KaraFunBridge extends EventEmitter {
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
       // Autre installation : chœurs par défaut à relever de nouveau (titres
-      // vus se charger et chœurs observés : oubliés par disconnect).
-      this.observedDefaults = {}; this._backingChanged = false; this.provisionalDefaults = false;
-      this._carriedUnseen = false;
+      // vus se charger et chœurs observés : oubliés par disconnect). Le même
+      // KaraFun peut continuer sous un nouveau code avec des chœurs réglés en
+      // direct : chaîne inconnue, comme pour un pont neuf.
+      this.forgetDefaults();
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -1397,6 +1401,13 @@ class KaraFunBridge extends EventEmitter {
   }
   seenLoading(id) { return id != null && this._loadingSeen.has(String(id)); }
 
+  // Nouvelle soirée ou nouveau code : chœurs par défaut à relever de nouveau,
+  // provisoires jusqu'à une remise par KaraFun au chargement (_observeDefaults).
+  forgetDefaults() {
+    this.observedDefaults = {}; this._backingChanged = false; this.provisionalDefaults = false;
+    this._carriedUnseen = true;
+  }
+
   // Session KCS perdue (coupure, AppLeftEvent, déconnexion) ou nouvelle :
   // KaraFun relancé renumérote sa file depuis 1, un titre vu se charger ou
   // observé avant ne dit rien du titre de même numéro d'après. Les chœurs
@@ -1406,7 +1417,8 @@ class KaraFunBridge extends EventEmitter {
   // pendant la coupure, ou par un titre vu en pleine chanson) : dès qu'un
   // titre a été vu ou des chœurs envoyés, la chaîne passe pour inconnue
   // (_carriedUnseen), comme après un titre vu pour la première fois en
-  // lecture. Sans rien de vu, la reprise vaut un démarrage.
+  // lecture. Sans rien de vu, la chaîne reste ce qu'elle était (inconnue au
+  // démarrage du pont).
   _forgetSession() {
     this.kcsSession++;
     this._loadingSeen.clear();
@@ -1429,12 +1441,14 @@ class KaraFunBridge extends EventEmitter {
   // Une telle remise par KaraFun au chargement donne toujours la valeur, même
   // déjà relevée ou reprise de la sauvegarde (valeur changée dans KaraFun).
   // Après un titre vu pour la première fois déjà en lecture (ou une session
-  // KCS perdue après un titre vu, voir _forgetSession), ses chœurs (un
+  // KCS perdue après un titre vu, voir _forgetSession, un pont neuf ou un
+  // nouveau code : l'histoire de KaraFun est inconnue), ses chœurs (un
   // réglage en direct, ou la valeur par défaut) passent au titre suivant chez
   // un KaraFun « collant » comme chez un KaraFun qui remet à zéro : sans
-  // valeur connue, celle du titre suivant est relevée pour la soirée, mais
-  // provisoire (provisionalDefaults, jamais sauvegardée) jusqu'à une remise ;
-  // avec une valeur connue, rien n'est relevé avant une remise.
+  // valeur connue ni chœurs changés, celle du titre suivant est relevée pour
+  // la soirée, mais provisoire (provisionalDefaults, sauvegardée comme telle)
+  // jusqu'à une remise ; avec une valeur connue, rien n'est relevé avant une
+  // remise.
   _observeDefaults(status) {
     const current = status.current;
     if (!current || current.id == null) return;
@@ -1461,7 +1475,7 @@ class KaraFunBridge extends EventEmitter {
       this.provisionalDefaults = false;
       this._carriedUnseen = false;
     } else if (this._carriedUnseen) {
-      if (this.observedDefaults.backing == null) { this.observedDefaults.backing = backing; this.provisionalDefaults = true; }
+      if (this.observedDefaults.backing == null && !this._backingChanged) { this.observedDefaults.backing = backing; this.provisionalDefaults = true; }
     } else if (!this._backingChanged) this.observedDefaults.backing = backing;
   }
 
@@ -1469,12 +1483,19 @@ class KaraFunBridge extends EventEmitter {
 
   // Chœurs par défaut relevés avant un redémarrage (sauvegarde de la soirée,
   // même code KaraFun) : repris tels quels, jamais réappris de chœurs qu'un
-  // KaraFun « collant » aurait gardés. false : valeur abîmée, rien repris.
+  // KaraFun « collant » aurait gardés. Une valeur sauvegardée provisoire (un
+  // KaraFun collant ne remet jamais ses chœurs au chargement) reste
+  // provisoire : reprise seulement sans valeur confirmée, jamais remplacée
+  // par une valeur provisoire relevée ensuite, remplacée par une remise de
+  // KaraFun au chargement (_observeDefaults). false : valeur abîmée, ou
+  // provisoire face à une valeur confirmée, rien repris.
   restoreDefaults(saved) {
     const backing = saved?.backing;
     if (!Number.isInteger(backing) || backing < 0 || backing > 100) return false;
-    if (this.observedDefaults.backing == null || this.provisionalDefaults) this.observedDefaults.backing = backing;
-    this.provisionalDefaults = false;
+    const confirmed = this.observedDefaults.backing != null && !this.provisionalDefaults;
+    if (saved.provisional === true && confirmed) return false;
+    if (!confirmed) this.observedDefaults.backing = backing;
+    this.provisionalDefaults = saved.provisional === true;
     this._backingChanged = true;
     return true;
   }
