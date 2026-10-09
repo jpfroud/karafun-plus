@@ -2245,12 +2245,21 @@ function placeholderName(tableId) {
 // Chanteur créé à l'ouverture d'un QR (individuel ou d'événement), avant son
 // prénom. Même règle que joinPersonDurably : rien n'est annoncé tant que la
 // soirée n'est pas sauvegardée, et tout est défait sinon.
+// Appareil qui scanne le QR de l'événement. Sur le Wi-Fi : l'adresse de la
+// connexion, jamais X-Forwarded-For (un en-tête que n'importe quel script peut
+// inventer). Par le tunnel, tout arrive de 127.0.0.1 : l'adresse que
+// Cloudflare réécrit (CF-Connecting-IP) ; sans elle, null = pas de limite par
+// appareil, celle du bar seulement.
+function eventClient(req) {
+  if (req.socket?.localPort !== PUBLIC_PORT) return String(req.socket?.remoteAddress || '');
+  const edge = req.headers['cf-connecting-ip'];
+  return typeof edge === 'string' && edge.trim() ? `cf:${edge.trim().slice(0, 64)}` : null;
+}
+
 function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent = false } = {}) {
   const before = { log: sched.log.slice(), version: sched.version, invitations: soloInvitations.serialize(),
     cookie: res.getHeader('Set-Cookie') };
-  // Appareil compté par l'adresse de la connexion, jamais par X-Forwarded-For
-  // (un en-tête que n'importe quel script peut inventer).
-  const client = String(req.socket?.remoteAddress || '');
+  const client = eventClient(req);
   let person = null, admittedAt = null;
   try {
     if (viaEvent) {

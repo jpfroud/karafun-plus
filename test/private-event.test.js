@@ -76,6 +76,11 @@ for (let i = 0; i < CLIENT_CREATIONS_PER_MINUTE; i++) assert.equal(capped.admit(
 assert.equal(capped.admit(5, 'a', t0 + 10), 'busy', 'six créations du même appareil dans la minute : la suivante attend');
 assert.equal(capped.admit(5, 'b', t0 + 11), 'ok', 'un autre appareil entre');
 assert.equal(capped.admit(6, 'a', t0 + 60_001), 'ok', 'une minute plus tard, de nouveau possible');
+// Appareil inconnu (tunnel sans CF-Connecting-IP) : seule la limite du bar compte.
+const unknown = new PrivateEvent();
+unknown.enable();
+for (let i = 0; i < CREATIONS_PER_MINUTE; i++) assert.equal(unknown.admit(i, null, t0), 'ok');
+assert.equal(unknown.admit(120, null, t0 + 1), 'busy', 'appareils inconnus : 120 par minute pour le bar');
 const venue = new PrivateEvent();
 venue.enable();
 for (let i = 0; i < CREATIONS_PER_MINUTE; i++) assert.equal(venue.admit(i, `c${Math.floor(i / 5)}`, t0), 'ok');

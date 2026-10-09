@@ -67,13 +67,14 @@ class PrivateEvent {
   }
 
   // Avant de créer un chanteur : `total` = personnes présentes venues par
-  // l'événement, `client` = adresse de l'appareil. « ok », « busy » (trop de
-  // créations dans la minute : réessayer) ou « full » (plafond de personnes).
+  // l'événement, `client` = adresse de l'appareil (null : inconnue, seule la
+  // limite du bar compte). « ok », « busy » (trop de créations dans la
+  // minute : réessayer) ou « full » (plafond de personnes).
   admit(total, client, now = Date.now()) {
     this.recent = this.recent.filter(entry => now - entry.at < 60000);
     if (total >= MAX_PEOPLE) return 'full';
-    if (this.recent.length >= CREATIONS_PER_MINUTE ||
-      this.recent.filter(entry => entry.client === client).length >= CLIENT_CREATIONS_PER_MINUTE) return 'busy';
+    if (this.recent.length >= CREATIONS_PER_MINUTE || (client !== null &&
+      this.recent.filter(entry => entry.client === client).length >= CLIENT_CREATIONS_PER_MINUTE)) return 'busy';
     this.recent.push({ at: now, client });
     return 'ok';
   }

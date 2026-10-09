@@ -685,6 +685,37 @@ test('rescan : la clé personnelle reprend son profil malgré la place sans pré
   placeholderGone(f, rescan2.personId);
 });
 
+// Relecture finale (ADV2) : l'ancien navigateur de Léa (B1) rescanne le QR de
+// l'événement après son passage sur Safari (B2), puis reprend Léa par un QR de
+// reprise. Le rescan remplace le cookie de B1 (celui de la place « Solo N ») :
+// la reprise retire cette place, aucun « Solo N » ne reste chez le bar.
+test('rescan : l’ancien navigateur de la personne reprise retire aussi sa place sans prénom', async () => {
+  const f = harness();
+  const { tb } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  // Léa passe sur Safari (B2) par le QR de reprise du bar.
+  const toSafari = await post(f, staff(f, '/api/staff/person/share'), { personId: lea.personId });
+  assert.equal((await post(f, '/api/table/person/claim', { ...tb, link: linkOf(toSafari) })).status, 200);
+  // De retour dans Instagram (B1), elle rescanne le QR de l'événement.
+  const rescan = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: lea.cookie, remote: '10.0.4.1' });
+  assert.equal(rescan.status, 200, rescan.text);
+  assert.equal(rescan.body.nameRequired, true);
+  const placeholder = rescan.body.id;
+  const b1 = cookieOf(rescan) || lea.cookie;
+  // Le bar lui redonne un QR de reprise, scanné dans B1.
+  const back = await post(f, staff(f, '/api/staff/person/share'), { personId: lea.personId });
+  const claimed = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(back) }, { cookie: b1 });
+  assert.equal(claimed.status, 200, claimed.text);
+  assert.equal(claimed.body.id, lea.personId);
+  placeholderGone(f, placeholder);
+  const view = (await get(f, `/api/state?table=Comptoir&access=${tb.access}`, { cookie: cookieOf(claimed),
+    headers: { 'x-person-tokens': JSON.stringify([claimed.body.token, rescan.body.token]) } })).body;
+  assert.deepEqual(view.managedIds, [lea.personId]);
+  assert.deepEqual(plain(f.staffState().people).map(p => p.name), ['Léa']);
+});
+
 test('rescan : sauvegarde impossible pendant la reprise = place provisoire et profil intacts', async () => {
   const f = harness({ persistent: true });
   const { tb } = openSolo(f);
@@ -850,6 +881,31 @@ test('événement privé : 5 créations par minute et par appareil, 120 pour le 
   assert.deepEqual(Object.keys(saved.privateEvent).sort(), ['enabled', 'secret', 'since']);
   assert.equal(saved.privateEvent.enabled, true);
   assert.equal(saved.scheduler.people.filter(p => p.viaEvent && p.nameRequired).length, 120);
+});
+
+// Regression: relecture finale (ADV1) — par le tunnel HTTPS (cloudflared vers
+// le port clients, la configuration du guide), chaque invité arrive de
+// 127.0.0.1 : la limite par appareil devenait 5 invités par minute pour tout
+// le bar.
+test('événement privé par le tunnel HTTPS : l’appareil est l’adresse donnée par Cloudflare', async () => {
+  const f = harness();
+  const { tb } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const enter = headers => post(f, '/api/table/enter', { ...tb, event: secret },
+    { port: f.PUBLIC_PORT, remote: '127.0.0.1', headers });
+  for (let i = 1; i <= 8; i++) {
+    const r = await enter({ 'cf-connecting-ip': `203.0.113.${i}` });
+    assert.equal(r.status, 200, `invité ${i} : ${r.text}`);
+  }
+  // Un même invité reste limité à 5 par minute, même s'il invente X-Forwarded-For.
+  for (let i = 0; i < 5; i++) assert.equal((await enter({ 'cf-connecting-ip': '198.51.100.7' })).status, 200);
+  assert.equal((await enter({ 'cf-connecting-ip': '198.51.100.7', 'x-forwarded-for': '10.9.9.9' })).body.code, 'PRIVATE_EVENT_BUSY');
+  // Tunnel sans cet en-tête : pas de limite par appareil, celle du bar (120) seulement.
+  for (let i = 0; i < 6; i++) assert.equal((await enter({})).status, 200);
+  // Sur le port du Wi-Fi, l'en-tête n'est pas cru : l'adresse de la connexion compte.
+  const lan = (remote, ip) => post(f, '/api/table/enter', { ...tb, event: secret }, { remote, headers: { 'cf-connecting-ip': ip } });
+  for (let i = 0; i < 5; i++) assert.equal((await lan('10.0.5.1', `192.0.2.${i}`)).status, 200);
+  assert.equal((await lan('10.0.5.1', '192.0.2.99')).body.code, 'PRIVATE_EVENT_BUSY');
 });
 
 test('événement privé : le plafond de 400 compte les personnes présentes (nommées ou non), pas les parties', async () => {
