@@ -52,7 +52,7 @@ label.field { display: block; margin: 12px 0 6px; color: var(--muted); font-size
 .badge.new { color: var(--accent-2); border-color: rgba(124,92,255,.4); }
 .badge.duo { color: var(--accent); border-color: rgba(255,79,163,.4); }
 .badge.wait { color: var(--warn); border-color: rgba(255,176,32,.4); }
-.badge.repeat { color: var(--warn); border-color: rgba(255,176,32,.55); background: rgba(255,176,32,.1); }
+.badge.repeat, .badge.too-long-tag { color: var(--warn); border-color: rgba(255,176,32,.55); background: rgba(255,176,32,.1); }
 .avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex: none; background: var(--surface-2); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; color: var(--muted); border: 1px solid var(--line); }
 .avatar.lg { width: 56px; height: 56px; font-size: 20px; }
 
@@ -247,7 +247,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .queue-item .song-artist { color: var(--muted); font-size: 11px; }
 .queue-item .queue-tags { display: inline-flex; gap: 3px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .queue-item .queue-tags .badge { font-size: 10px; padding: 1px 5px; }
-.queue-item .song-cell .badge.repeat { font-size: 10px; padding: 1px 5px; margin-right: 5px; vertical-align: 1px; }
+/* Repères au début du titre (« ⚠ Doublon », « trop long ») : toujours entiers,
+   le titre prend les « … ». */
+.queue-item .song-cell .badge.repeat, .queue-item .song-cell .too-long-tag { font-size: 10px; padding: 1px 5px; margin-right: 5px; vertical-align: 1px; }
 .queue-item .eta { font-size: 12px; font-weight: 700; white-space: nowrap; }
 .queue-item .queue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .queue-item .queue-actions button { white-space: nowrap; min-height: 30px; padding: 3px 7px; font-size: 11px; }
@@ -280,7 +282,8 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .soloists .welcome-title { margin-top: 4px; }
 .soloist-list { display: grid; gap: 0; max-height: 420px; overflow-y: auto; }
 .soloist-row { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
-.soloist-row .identity-photo { width: 26px; height: 26px; font-size: 12px; }
+/* Fond de la carte, pas celui du panneau (--surface-2) : le disque des initiales reste visible. */
+.soloist-row .identity-photo { width: 26px; height: 26px; font-size: 12px; background: var(--surface); }
 .soloist-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
 .soloist-who > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .soloist-row .btn { white-space: nowrap; }
@@ -302,20 +305,15 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
    réduire le nom et les prénoms à rien et de couper la seconde durée. Seul un
    prénom plus long que la colonne prend les « … » (min-width: 0, max-width). */
 .queue-item .person-cell:has(.idle-tag.duo) { flex-wrap: wrap; row-gap: 0; }
+/* Le nom du duo, seul sur sa ligne, en prend toute la largeur (sinon 45 %, ou 60 % avec ✎). */
+.queue-item .person-cell:has(.idle-tag.duo) .person, .queue-item .person-cell:has(.idle-tag.duo) button.person { max-width: 100%; }
 .queue-item .idle-tag.duo { display: inline-flex; align-items: baseline; gap: 0 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 /* Sous 380 px, « Bob : inactif depuis 21:04 » ne tient plus sur une ligne de
    la colonne (134 px pour 123 à 360 px) : le prénom passe au-dessus de la
    durée plutôt que de devenir « B. ». */
 @media (max-width: 380px) { .queue-item .idle-tag.duo { flex-wrap: wrap; } }
-/* Repère d'inactivité et « trop long » ensemble (rare) : la cellule passe à
-   la ligne plutôt que de couper l'un des deux. */
-.queue-item .person-cell:has(.idle-tag):has(.too-long-tag) { flex-wrap: wrap; row-gap: 0; }
 /* Prénom avec repère (bouton, d'ordinaire entier) : il cède la place à la durée. */
 .queue-item .person-cell:has(.idle-tag) button.person { flex: 0 1 auto; min-width: 0; }
-/* Titre au-delà de la durée maximale : repère court au téléphone, où .queue-tags
-   (et son badge « plus long que … ») est caché. Toujours entier : le prénom et
-   la table prennent les « … ». */
-.queue-item .too-long-tag { display: none; flex: none; white-space: nowrap; color: var(--warn); font-size: 11px; font-weight: 700; }
 .manual-history { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2, #211d39); }
 .manual-history summary { cursor: pointer; font-weight: 700; }
 .manual-history .count { margin-left: 4px; }
@@ -526,7 +524,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .stage-history-actions .btn { min-height: 36px; padding: 4px 10px; font-size: 12px; }
   .identity-list, .stage-history-list, .soloist-list { max-height: none; overflow: visible; }
   .soloist-row .btn { min-height: 40px; }
-  #spotifyChip { min-height: 44px; line-height: 34px; }
+  #spotifyChip, .scene-chips #autoWarn { min-height: 44px; line-height: 34px; }
 }
 
 @media (max-width: 1100px) {
@@ -549,7 +547,6 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .queue-item { grid-template-columns: 44px 22px minmax(0,1fr) 43px 48px; row-gap: 2px; padding: 5px 3px; min-height: 58px; }
   .queue-item .person-cell { grid-column: 3; }
   .queue-item .person-cell .queue-tags { display: none; }
-  .queue-item .too-long-tag { display: inline; }
   .queue-item .song-cell { grid-column: 3 / 5; grid-row: 2; }
   .queue-item .eta { grid-column: 4; grid-row: 1; }
   .queue-item .row-actions { grid-column: 5; grid-row: 1 / 3; }

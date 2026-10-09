@@ -6,22 +6,12 @@
 // focus ; seul un navigateur mesure le défilement de la fenêtre.
 //
 // Lancé par run-offline.js sur la démo. Il faut Playwright et son Chromium
-// (installation locale ou globale de npm) : sans eux, le test est ignoré.
+// (installation locale ou globale de npm) : sans eux, le test est ignoré, avec
+// une annotation dans la CI (playwright-browser.js).
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const { staffRoute } = require('./staff-auth');
+const { loadPlaywright, skipped } = require('./playwright-browser');
 const BASE = process.env.BASE || 'http://127.0.0.1:3114';
-
-function loadPlaywright() {
-  for (const where of ['playwright', path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'playwright')]) {
-    try {
-      const { chromium } = require(where);
-      if (fs.existsSync(chromium.executablePath())) return chromium;
-    } catch (_) { /* absent ici */ }
-  }
-  return null;
-}
 
 async function request(route, body) {
   const response = await fetch(BASE + await staffRoute(BASE, route), body === undefined ? {} : {
@@ -51,7 +41,7 @@ function assertWhole(label, m) {
 
 (async () => {
   const chromium = loadPlaywright();
-  if (!chromium) { console.log('Fenêtres de QR en navigateur : ignoré (Playwright ou Chromium absent)'); return; }
+  if (!chromium) { skipped('Fenêtres de QR en navigateur'); return; }
   await request('/api/staff/table', { id: '7', headcount: 4 });
   const tables = (await request('/api/staff/state')).tables;
   const access = new URL(tables.find(t => t.id === '7').url).pathname.split('/').pop();

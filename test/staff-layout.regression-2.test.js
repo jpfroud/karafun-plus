@@ -176,11 +176,19 @@ for (const width of [390, 899]) {
 }
 assert.equal(computed('.soloist-list', 1366)['overflow-y'], 'auto', 'sur PC, la liste reste bornée');
 // Regression: U10 — « plus long que … » était dans .queue-tags, cachées au
-// téléphone : le repère court « trop long » s'y affiche, sur PC le badge suffit.
+// téléphone. Regression: U1 (seconde relecture) — sur PC, le badge était coupé
+// à « p » au bout de .queue-tags et le repère court caché au-delà de 650 px :
+// un seul repère « trop long », au début du titre et visible à toutes les largeurs.
 assert.equal(computed('.queue-item .person-cell .queue-tags', 390).display, 'none');
-assert.notEqual(computed('.queue-item .too-long-tag', 390).display, 'none', '390 px : repère visible');
-assert.notEqual(computed('.queue-item .too-long-tag', 650).display, 'none', '650 px : repère visible');
-assert.equal(computed('.queue-item .too-long-tag', 651).display, 'none', 'au-delà, le badge de .queue-tags est visible');
+for (const width of [360, 390, 650, 651, 1366]) {
+  for (const rule of ALL.filter(r => applies(r.media, width) && r.selectors.some(s => s.includes('too-long-tag')))) {
+    assert.doesNotMatch(rule.body, /display:\s*none/, `${width} px : repère « trop long » jamais caché (${rule.selectors.join(', ')})`);
+  }
+  const mark = computed('.queue-item .song-cell .too-long-tag', width);
+  assert.equal(mark['margin-right'], '5px', `${width} px : repère compact au début du titre, comme « ⚠ Doublon »`);
+  assert.equal(mark['font-size'], '10px');
+}
+assert.equal(computed('.badge.too-long-tag', 1366).color, 'var(--warn)', 'repère orange');
 // ---------------------------------------------------------- vérification adverse (affichage)
 // Regression: U2 — un nom d'appareil Spotify long (45 caractères et plus)
 // élargissait la Scène à 405 px sur un téléphone de 390 (et de 360) : un
@@ -194,9 +202,8 @@ for (const width of [360, 390, 1366]) {
   assert.equal(computed('.scene-chips', width)['max-width'], '100%', `${width} px : jamais plus larges que l’en-tête`);
 }
 // Regression: U10 — le repère « trop long » rétrécissait avec le prénom et la
-// table : « trop l… » à 390 px, « tr… » à 360 px. Il garde sa largeur ; le
-// prénom et la table prennent les « … ».
-for (const width of [360, 390]) assert.equal(computed('.queue-item .too-long-tag', width).flex, 'none', `${width} px : « trop long » entier`);
+// table : « trop l… » à 390 px, « tr… » à 360 px. Il est désormais au début
+// du titre (élément en ligne, jamais rétréci), hors de la cellule du nom.
 // Regression: U1 — la phrase complète de Spotify (raison, heure du nouvel
 // essai) était tout en bas du panneau, hors de l'écran du téléphone, alors
 // que le guide la place sous le titre du panneau, à côté de la pastille.
@@ -237,11 +244,30 @@ for (const width of [360, 390, 650, 1366]) {
   assert.equal(named.flex, '0 1 auto', `${width} px : le prénom avec repère rétrécit devant la durée`);
   assert.equal(named['min-width'], '0');
 }
-// Repère d'inactivité et « trop long » sur la même ligne : à 360 px (et à
-// 390 px pour « inactif depuis 21:04 »), « trop long » était coupé de 8 à
-// 16 px dans Chromium. La cellule passe alors à la ligne.
-for (const width of [360, 390]) {
-  assert.equal(computed('.queue-item .person-cell:has(.idle-tag):has(.too-long-tag)', width)['flex-wrap'], 'wrap', `${width} px : les deux repères restent entiers`);
+// Repère d'inactivité et « trop long » sur la même ligne : « trop long » est
+// dans la cellule du titre, la cellule du nom n'a plus à passer à la ligne pour lui.
+assert.equal(ALL.some(r => r.selectors.some(s => /person-cell.*too-long-tag/.test(s))), false, 'plus de règle du nom pour « trop long »');
+// Regression: U2 (seconde relecture) — dans une cellule qui passe à la ligne
+// (duo avec repères « inactif »), le nom seul sur sa ligne gardait
+// max-width: 45 % (60 % avec un repère ✎) et restait coupé.
+for (const width of [360, 390, 650, 1366]) {
+  for (const selector of ['.queue-item .person-cell:has(.idle-tag.duo) .person', '.queue-item .person-cell:has(.idle-tag.duo) button.person']) {
+    assert.equal(computed(selector, width)['max-width'], '100%', `${width} px : ${selector} prend toute la ligne`);
+  }
+}
+// Regression: U4 (seconde relecture) — le disque des initiales de « Solistes »
+// avait le fond du panneau (--surface-2) : invisible.
+for (const width of [390, 1366]) {
+  assert.equal(computed('.solo-invite-panel', width).background, 'var(--surface-2)');
+  assert.equal(computed('.soloist-row .identity-photo', width).background, 'var(--surface)', `${width} px : disque visible sur le panneau`);
+}
+// Regression: U5 (seconde relecture) — au téléphone, la pastille « Envoi et
+// lecture automatiques coupés » de la Scène (bouton) faisait moins de 44 px.
+for (const width of [360, 390, 899]) {
+  for (const selector of ['#spotifyChip', '.scene-chips #autoWarn']) {
+    assert.ok(px(computed(selector, width)['min-height']) >= 44, `${width} px : ${selector} de 44 px`);
+    assert.equal(computed(selector, width)['line-height'], '34px');
+  }
 }
 // Place du prénom à 390 px (colonne 3 de la ligne) contre le repère le plus
 // long, « inactif depuis 23:59 » (20 caractères, 11 px gras, ~0,62 em par

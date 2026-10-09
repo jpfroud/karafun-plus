@@ -637,8 +637,8 @@ function renderFocus() {
   if (f.startsWith('p:')) {
     const singer = singerById(f.slice(2));
     if (!singer) { box.hidden = true; return; }
-    const who = nameOf(singer.id);
-    box.appendChild(h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: `Soirée ${/^[aeiouyàâäéèêëîïôöûùüh]/i.test(who) ? 'd’' : 'de '}${who}` }),
+    const singerName = nameOf(singer.id);
+    box.appendChild(h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: `Soirée ${/^[aeiouyàâäéèêëîïôöûùüh]/i.test(singerName) ? 'd’' : 'de '}${singerName}` }),
       h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)} · ${singer.explicitLeft ? 'départ' : 'dernier signe + 30 min'} ${hhmm(singer.leftAt)} · présence ${dur(singer.presenceSec)}` }))));
     box.appendChild(h('div', { class: 'st-mini' },
       ...[[singer.turns, 'passages'], [singer.guestTurns, 'comme invité'], [fmtNum(singer.turnsPerHour, 2), 'par heure'],

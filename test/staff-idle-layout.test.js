@@ -11,23 +11,14 @@
 // démo, avancé de 65 minutes et regroupé en duos.
 //
 // Lancé par run-offline.js sur la démo. Il faut Playwright et son Chromium
-// (installation locale ou globale de npm) : sans eux, le test est ignoré.
+// (installation locale ou globale de npm) : sans eux, le test est ignoré, avec
+// une annotation dans la CI (playwright-browser.js).
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const { staffRoute } = require('./staff-auth');
+const { loadPlaywright, skipped } = require('./playwright-browser');
 const BASE = process.env.BASE || 'http://127.0.0.1:3114';
 const MIN = 60000;
 
-function loadPlaywright() {
-  for (const where of ['playwright', path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'playwright')]) {
-    try {
-      const { chromium } = require(where);
-      if (fs.existsSync(chromium.executablePath())) return chromium;
-    } catch (_) { /* absent ici */ }
-  }
-  return null;
-}
 
 async function request(route, body, cookie = '') {
   const response = await fetch(BASE + await staffRoute(BASE, route), {
@@ -48,7 +39,8 @@ const NAMES = ['Marie-Charlotte Vanden', 'Léa', 'Bob', 'Maximilien-Alexandre B.
 const DUOS = [['Léa', 'Marie-Charlotte Vanden'], ['Maximilien-Alexandre B.', 'Bob'], ['Noé', 'Zoé']];
 
 // Réponse de /api/staff/state : 65 min plus tard, Léa et Zoé à 52 min, Bob
-// jamais revenu depuis l'ouverture de son QR, Noé actif, et trois duos.
+// jamais revenu depuis l'ouverture de son QR, Noé actif, et trois duos. Le
+// titre de Noé et Zoé dépasse la durée maximale (5:00) : repère « trop long ».
 function reshape(state) {
   state.now += 65 * MIN;
   const by = name => state.people.find(p => p.name === name && p.tableId === 'Comptoir');
@@ -62,7 +54,9 @@ function reshape(state) {
     line.ids = [a.id, b.id];
     line.singers = [a, b].map(p => ({ id: p.id, name: p.name, table: 'En solo', individual: true }));
     line.name = line.singer = `${a.name} & ${b.name}`;
+    if (first === 'Noé') line.tooLongSec = 372;
   }
+  state.tooLong = { limitSec: 300, count: 1 };
   return state;
 }
 
@@ -74,6 +68,8 @@ const measure = page => page.evaluate(() => {
     rows: [...document.querySelectorAll('#qBody .queue-item')].filter(row => row.querySelector('.idle-tag')).map(row => ({
       cell: box(row.querySelector('.person-cell')),
       name: box(row.querySelector('.person')),
+      song: box(row.querySelector('.song-cell')),
+      tooLong: row.querySelector('.too-long-tag') ? box(row.querySelector('.too-long-tag')) : null,
       who: [...row.querySelectorAll('.idle-tag .idle-who')].map(box),
       for: [...row.querySelectorAll('.idle-tag .idle-for')].map(box),
     })),
@@ -85,7 +81,7 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
 
 (async () => {
   const chromium = loadPlaywright();
-  if (!chromium) { console.log('Repères « inactif » de la file en navigateur : ignoré (Playwright ou Chromium absent)'); return; }
+  if (!chromium) { skipped('Repères « inactif » de la file en navigateur'); return; }
   await request('/api/staff/settings', { auto: false });
   const tables = (await request('/api/staff/state')).value.tables;
   const access = new URL(tables.find(t => t.id === 'Comptoir').url).pathname.split('/').pop();
@@ -130,9 +126,20 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
           assert.ok(inside(part, row.cell), `${label} : « ${part.text} » hors de la cellule (${JSON.stringify({ part, cell: row.cell })})`);
         }
       }
+      // Regression: U1 (seconde relecture) — sur PC, « plus long que 5:00 »,
+      // dernier badge de .queue-tags, était coupé à « p » ; le repère court était
+      // caché au-delà de 650 px. Un seul repère, entier, au début du titre.
+      const long = rows.filter(row => row.tooLong);
+      assert.equal(long.length, 1, `${at} : un titre trop long`);
+      assert.ok(long[0].tooLong.width > 0 && long[0].tooLong.scroll <= long[0].tooLong.client + 1, `${at} : « trop long » visible et entier (${JSON.stringify(long[0].tooLong)})`);
+      assert.ok(inside(long[0].tooLong, long[0].song), `${at} : « trop long » dans la cellule du titre`);
+      assert.ok(long[0].tooLong.left - long[0].song.left < 2, `${at} : « trop long » au début du titre`);
       for (const row of duos) {
         const label = `${at}, duo ${row.name.text}`;
         assert.ok(row.name.width >= 40, `${label} : nom du duo réduit à ${Math.round(row.name.width)} px`);
+        // Regression: U2 (seconde relecture) — dans la cellule qui passe à la
+        // ligne, le nom seul sur sa ligne restait borné à 45 % et coupé.
+        if (row.name.scroll > row.name.client + 1) assert.ok(row.name.width >= row.cell.width - 1, `${label} : nom coupé à ${Math.round(row.name.width)} px sur ${Math.round(row.cell.width)}`);
         for (const who of row.who) {
           assert.ok(inside(who, row.cell), `${label} : « ${who.text} » hors de la cellule`);
           // Un prénom court reste entier ; un prénom plus long que la colonne garde sa première partie.
@@ -140,10 +147,24 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
           else assert.ok(who.width >= 40, `${label} : « ${who.text} » réduit à ${Math.round(who.width)} px`);
         }
       }
+      if (phone) {
+        // Regression: U5 (seconde relecture) — « Envoi et lecture automatiques
+        // coupés » (bouton de la Scène) faisait moins de 44 px au téléphone.
+        await page.locator('[data-tab-btn="scene"]').tap();
+        const warn = await page.locator('#autoWarn').boundingBox();
+        assert.ok(warn && warn.height >= 44, `${at} : pastille « automatiques coupés » de ${warn?.height} px`);
+        // Regression: U4 (seconde relecture) — le disque des initiales de
+        // « Solistes » avait le fond du panneau : invisible.
+        await page.locator('[data-tab-btn="accueil"]').tap();
+        await page.waitForSelector('#soloistList .soloist-row .identity-photo');
+        const [disc, panel] = await page.evaluate(() => [getComputedStyle(document.querySelector('#soloistList .soloist-row .identity-photo')).backgroundColor,
+          getComputedStyle(document.querySelector('#soloistList').closest('.solo-invite-panel')).backgroundColor]);
+        assert.notEqual(disc, panel, `${at} : disque des initiales distinct du panneau (${disc})`);
+      }
       await context.close();
     }
   } finally {
     await browser.close();
   }
-  console.log('Repères « inactif » des duos en navigateur : prénoms et durées entiers à 360, 390 et 1366 px OK');
+  console.log('Repères « inactif » des duos et « trop long » en navigateur : prénoms, noms et durées entiers à 360, 390 et 1366 px, pastille de 44 px et disque des solistes visible OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

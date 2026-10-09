@@ -1868,7 +1868,7 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   const at = Date.now() - 60000;
   const ready = { state: 'ready', device: { id: 'dev-2', name: 'Enceinte', active: true }, checkedAt: at, okAt: at, retryAt: 0, message: null };
   const connected = { configured: true, connected: true, clientId: '0123456789abcdef', autoResume: true, autoPause: false,
-    deviceId: 'dev-2', deviceName: 'Enceinte', player: { isPlaying: true, track: { title: 'Get Lucky', artist: 'Daft Punk' },
+    deviceId: 'dev-2', deviceName: 'Enceinte', player: { isPlaying: true, at, track: { title: 'Get Lucky', artist: 'Daft Punk' },
       device: { name: 'Enceinte' } }, lastAction: { at, kind: 'resume', ok: true }, lastError: null,
     devices: [{ id: 'dev-1', name: 'PC du bar', type: 'Computer', active: false }, { id: 'dev-2', name: 'Enceinte', type: 'Speaker', active: true }] };
   await page.update({ spotify: { ...connected, health: { state: 'unknown', device: null, checkedAt: 0 } } });
@@ -1885,7 +1885,15 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.equal(page.$('spotifyChip').textContent, 'Spotify · Enceinte');
   assert.equal(page.$('spotifyChip').className, 'pill ok');
   assert.equal(page.$('tabDotPlus').hidden, true, 'tout va bien : pas de point sur « Plus »');
-  assert.equal(page.$('spotifyText').textContent, `Spotify : Get Lucky — Daft Punk sur Enceinte. Dernière action à ${hhmm(at)} : relance. Vérifié à ${hhmm(at)}.`);
+  // Regression: U3 (seconde relecture) — la ligne du titre ne disait plus si
+  // Spotify jouait ou était en pause, ni de quand datait la lecture.
+  assert.equal(page.$('spotifyText').textContent, `En lecture à ${hhmm(at)} : Get Lucky — Daft Punk sur Enceinte. Dernière action à ${hhmm(at)} : relance. Vérifié à ${hhmm(at)}.`);
+  const readAt = at - 240000;
+  await page.update({ spotify: { ...connected, player: { isPlaying: false, at: readAt, track: { title: 'Get Lucky' } }, health: ready } });
+  assert.match(page.$('spotifyText').textContent, new RegExp(`^En pause à ${hhmm(readAt)} : Get Lucky\\. Dernière action`), 'pause et heure de la lecture');
+  await page.update({ spotify: { ...connected, player: { isPlaying: true, track: { title: 'Get Lucky' } }, health: ready } });
+  assert.match(page.$('spotifyText').textContent, /^En lecture : Get Lucky\. /, 'heure inconnue : pas d’« Invalid Date »');
+  await page.update({ spotify: { ...connected, health: ready } });
   assert.equal(page.$('spotifyAutoResume').checked, true);
   assert.equal(page.$('spotifyAutoPause').checked, false);
   assert.equal(page.$('spotifyDelay').value, 3, 'délai par défaut');
@@ -1901,7 +1909,8 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.equal(page.$('spotifyChip').textContent, 'Spotify : aucun appareil');
   assert.equal(page.$('spotifyChip').className, 'pill warn');
   assert.equal(page.$('tabDotPlus').hidden, false);
-  assert.equal(page.$('spotifyText').textContent, `Spotify connecté, aucun appareil : ouvre Spotify sur Tablette. Spotify : appareil introuvable. Spotify : Get Lucky. Dernière action à ${hhmm(at)} : pause (rien à faire). Vérifié à ${hhmm(at)}.`);
+  // Aucun appareil : le dernier titre lu contredirait la phrase, il n'est pas affiché.
+  assert.equal(page.$('spotifyText').textContent, `Spotify connecté, aucun appareil : ouvre Spotify sur Tablette. Spotify : appareil introuvable. Dernière action à ${hhmm(at)} : pause (rien à faire). Vérifié à ${hhmm(at)}.`);
   assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'PC du bar', 'Enceinte (actif)', 'Appareil choisi (introuvable)'],
     'l’appareil choisi reste affiché, même absent');
   assert.equal(page.$('spotifyDevice').value, 'dev-3', 'et sélectionné : pas de bascule silencieuse');
@@ -1917,6 +1926,8 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.equal(page.$('spotifyText').textContent, `Spotify injoignable, nouvel essai à ${hhmm(retryAt)}. Spotify ne répond pas correctement (réseau). Dernière action à ${hhmm(at)} : relance en échec. Vérifié à ${hhmm(at)}.`);
   assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify']);
   await page.update({ spotify: { ...connected, lastError: null, health: { state: 'error', device: null, checkedAt: at, retryAt } } });
+  assert.equal(page.$('spotifyText').textContent, `Spotify injoignable, nouvel essai à ${hhmm(retryAt)}. Dernière action à ${hhmm(at)} : relance. Vérifié à ${hhmm(at)}.`,
+    'injoignable : pas de titre « en lecture » d’une lecture ancienne');
   assert.equal(page.$('tabDotPlus').hidden, false, 'injoignable : point sur « Plus » même sans erreur d’action');
 
   // Pastille de la Scène : mène au panneau Spotify.
@@ -3851,7 +3862,7 @@ test('durée maximale : interrupteur coupé par défaut, 5:00 à l’activation,
   assert.equal(page.$('maxSongOn').checked, false, 'coupé par défaut');
   assert.equal(page.$('maxSongFields').hidden, true, 'durée cachée tant que l’option est coupée');
   assert.equal(page.$('tooLongActions').hidden, true);
-  assert.doesNotMatch(page.$('qBody').innerHTML, /plus long que/);
+  assert.doesNotMatch(page.$('qBody').innerHTML, /too-long-tag/);
 
   page.replies['/api/staff/settings'] = body => {
     page.world.settings.maxSongSec = body.maxSongSec;
@@ -3866,10 +3877,12 @@ test('durée maximale : interrupteur coupé par défaut, 5:00 à l’activation,
   assert.equal(page.$('maxSongFields').hidden, false);
   assert.equal(page.$('maxSongMin').value, 5);
   assert.equal(page.$('maxSongSecPart').value, 0);
-  // File : seul le titre pas encore envoyé et trop long porte le repère.
-  const badges = page.all('qBody', '.badge').map(node => node.textContent).filter(text => text.startsWith('plus long'));
-  assert.deepEqual(badges, ['plus long que 5:00']);
-  assert.match(page.$('qBody').innerHTML, /Ce titre dure 6:12/);
+  // File : seul le titre pas encore envoyé et trop long porte le repère court,
+  // au début de son titre ; la phrase complète est dans l'infobulle.
+  const marks = page.all('qBody', '.too-long-tag');
+  assert.deepEqual(marks.map(node => [node.closest('.song-cell') ? 'titre' : 'ailleurs', node.textContent]), [['titre', 'trop long']]);
+  assert.match(marks[0].title, /Ce titre dure 6:12/);
+  assert.doesNotMatch(page.$('qBody').innerHTML, /plus long que/, 'plus de long badge dans .queue-tags');
   assert.equal(page.$('tooLongActions').hidden, false);
   assert.equal(page.$('removeTooLong').textContent, 'Retirer le titre trop long');
 
@@ -3957,7 +3970,7 @@ test('Spotify : pastille courte, phrase longue sous le titre, refus de Spotify d
 // Regression: U10 — le repère « plus long que … » était dans .queue-tags,
 // caché au téléphone : un repère court hors de .queue-tags le remplace.
 // Regression: U12 — l'aide promettait un « ajout pour quelqu’un » du bar, qui n'existe pas.
-test('relecture : nom accessible des « QR de reprise », repère trop long au téléphone, aide de la durée maximale', async () => {
+test('relecture : nom accessible des « QR de reprise », repère « trop long » au début du titre, aide de la durée maximale', async () => {
   const solo = await openPage({ world: soloWorld() });
   const share = solo.in('soloistList', '[data-soloist="gael"] [data-soloist-share]');
   assert.equal(share.getAttribute('aria-label'), 'QR de reprise pour Gaël');
@@ -3969,12 +3982,21 @@ test('relecture : nom accessible des « QR de reprise », repère trop long au t
     { source: 'helper', id: 'dora', pos: 2, name: 'Dora', ids: ['dora'], song: { entryId: 'd1', title: 'Court', duration: 200 } }];
   const page = await openPage({ world });
   const [long, short] = page.all('qBody', '.queue-item');
-  const mark = long.querySelector('.person-cell .too-long-tag');
-  assert.ok(mark, 'repère court dans la cellule du nom');
-  assert.equal(mark.closest('.queue-tags'), null, 'hors des badges cachés au téléphone');
+  // Regression: U1 (seconde relecture) — sur PC, « plus long que 5:00 » était le
+  // dernier badge de .queue-tags (overflow: hidden) : seul « p » restait, et les
+  // prénoms courts devenaient des initiales. Un seul repère court, au début du
+  // titre à toutes les largeurs (comme « ⚠ Doublon »), rend au nom et à la table toute leur place.
+  const mark = long.querySelector('.song-cell .too-long-tag');
+  assert.ok(mark, 'repère court dans la cellule du titre');
+  assert.ok(mark === long.querySelector('.song-cell').children[0], 'au début du titre');
+  assert.equal(long.querySelectorAll('.too-long-tag').length, 1, 'un seul repère');
+  assert.equal(long.querySelector('.person-cell .too-long-tag'), null, 'rien dans la cellule du nom');
+  assert.doesNotMatch(long.querySelector('.queue-tags').textContent, /plus long/, 'plus de long badge dans .queue-tags');
   assert.equal(mark.textContent, 'trop long');
   assert.match(mark.title, /Ce titre dure 6:12/);
   assert.equal(short.querySelector('.too-long-tag'), null);
+  assert.doesNotMatch(page.$('maxSongOn').closest('section').textContent, /plus long que/, 'l’aide décrit le repère affiché');
+  assert.match(page.$('maxSongOn').closest('section').textContent, /marqués « trop long »/);
   const help = page.$('maxSongOn').closest('section').textContent;
   assert.doesNotMatch(help, /ajout pour quelqu/, 'aucune route du bar n’ajoute pour quelqu’un');
   assert.match(help, /Battle lancée par le bar/);

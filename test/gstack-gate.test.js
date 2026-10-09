@@ -255,5 +255,27 @@ assert.match(settings.UserPromptSubmit[0].hooks.map(h => h.command).join(' '), /
 assert.match(command(settings.PreToolUse, 'Skill'), /check-gstack\.sh/);
 assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstack karafun-plus/, 'marque reconnue par l\'installateur');
 
+// 7. Regression: M2-3 (seconde relecture) — la liste des dossiers où chercher
+//    gstack existe en quatre copies (porte, garde-fou des compétences, hook de
+//    démarrage, installateur) : une copie oubliée lors d'un ajout ferait
+//    refuser les compétences ou réinstaller gstack alors qu'il est présent.
+//    Les quatre listes doivent rester identiques, dans le même ordre.
+{
+  const read = name => fs.readFileSync(path.join(HOOKS, name), 'utf8');
+  const shellList = name => {
+    const loop = /for candidate in ((?:[^;]|\\\n)*?); do/.exec(read(name));
+    assert.ok(loop, `${name} : boucle « for candidate in … » introuvable`);
+    return [...loop[1].matchAll(/"([^"]*)"/g)].map(m => m[1].replace(/^\$HOME\//, '').replace(/^\$\{GSTACK_ROOT:-\}$/, 'GSTACK_ROOT'));
+  };
+  const gate = /function gstackDir\(\) \{([\s\S]*?)\n\}/.exec(read('gstack-gate.js'));
+  assert.ok(gate, 'gstack-gate.js : gstackDir() introuvable');
+  const gateList = ['GSTACK_ROOT', ...[.../\.\.\.\[([^\]]*)\]/.exec(gate[1])[1].matchAll(/'([^']*)'/g)].map(m => m[1])];
+  assert.match(gate[1], /process\.env\.GSTACK_ROOT \?[^,]*,\s*\.\.\.\[/, 'gstack-gate.js : GSTACK_ROOT en premier');
+  assert.ok(gateList.length >= 13 && gateList.includes('.claude/skills/gstack'), `liste de la porte lue : ${gateList.join(', ')}`);
+  for (const name of ['check-gstack.sh', 'gstack-session-start.sh', 'install-gstack.sh']) {
+    assert.deepStrictEqual(shellList(name), gateList, `${name} : même liste de dossiers gstack que gstack-gate.js`);
+  }
+}
+
 fs.rmSync(work, { recursive: true, force: true });
 console.log('Porte gstack : modification sans compétence gstack, envoi sans relecture /review du contenu exact et écriture GitHub directe refusés OK');
