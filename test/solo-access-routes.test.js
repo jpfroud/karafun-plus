@@ -1038,6 +1038,44 @@ test('événement privé : quitter une place sans prénom ni titre la supprime, 
   assert.ok(f.sched.people.get(sam.personId).withdrawnAt);
 });
 
+// Regression: troisième relecture finale (RT2) — « Parti » du bar sur une
+// place « Solo N » du QR de l'événement la gardait, marquée partie : son
+// navigateur restait lié à une fiche que le bar ne sait pas reconnaître pour
+// la réactiver. Comme /api/leave : supprimée sans trace, et le QR de
+// l'événement rescanné donne une nouvelle place.
+test('événement privé : « Parti » du bar sur une place sans prénom ni titre la supprime ; le même navigateur repart', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const ghost = await eventEntry(f, tb, secret);
+  const before = events(f).length;
+  const version = f.sched.version;
+  const left = await post(f, staff(f, '/api/staff/person/leave'), { personId: ghost.personId });
+  assert.equal(left.status, 200, left.text);
+  // Regression: vérification de la troisième relecture — sans `message`, le
+  // bar lisait « Chanteur marqué parti », alors que la place n'existe plus.
+  assert.match(left.body.message, /^Place « Solo \d+ » sans prénom retirée : s’il est encore là, il rescanne le QR de l’événement\.$/);
+  assert.equal(f.sched.people.has(ghost.personId), false, 'place retirée, pas marquée partie');
+  assert.equal(f.sched.person(ghost.token), null);
+  assert.ok(f.sched.version > version, 'les pages se mettent à jour');
+  assert.deepEqual(events(f).slice(before).filter(e => e.personId), [], 'rien au journal');
+  assert.deepEqual((await stateOf(f, tb, ghost)).body.managedIds, []);
+  // Le même navigateur rescanne le QR de l'événement : une nouvelle place.
+  const again = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: ghost.cookie });
+  assert.equal(again.status, 200, again.text);
+  assert.notEqual(again.body.id, ghost.personId);
+  assert.equal(again.body.nameRequired, true);
+  // Nommée, ou sans prénom par un QR individuel : « Parti » comme avant.
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  const sam = await opened(f, tb, invite());
+  for (const kept of [lea, sam]) {
+    const keptLeft = await post(f, staff(f, '/api/staff/person/leave'), { personId: kept.personId });
+    assert.equal(keptLeft.status, 200);
+    assert.equal(keptLeft.body.message, undefined, 'le bar garde « marqué parti »');
+    assert.ok(f.sched.people.get(kept.personId).withdrawnAt, 'gardée, marquée partie');
+  }
+});
+
 // Regression: deuxième relecture finale (ADV F5) — un QR individuel neuf était
 // refusé (« Ce téléphone a déjà un prénom inscrit ») sur un navigateur qui ne
 // gardait qu'une place sans prénom du QR de l'événement.
@@ -1388,6 +1426,10 @@ test('personne marquée partie : 403 PERSON_LEFT sur toutes les routes', async (
   const eva = await post(f, '/api/table/enter', { ...tb, event: secret });
   assert.equal(eva.status, 200, eva.text);
   const evaCookie = cookieOf(eva);
+  // Avec un prénom : une place « Solo N » sans prénom ni titre, elle, est
+  // supprimée par « Parti » (RT2), jamais marquée partie.
+  assert.equal((await post(f, '/api/table/person/rename', { ...tb, personId: eva.body.id, token: eva.body.token, name: 'Eva' },
+    { cookie: evaCookie })).status, 200);
   const table = openTable(f, '3');
   const ana = await post(f, '/api/table/person', { ...table, name: 'Ana' });
   for (const personId of [sam.personId, eva.body.id, ana.body.id]) await post(f, staff(f, '/api/staff/person/leave'), { personId });

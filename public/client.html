@@ -208,10 +208,13 @@
 
   .client .song-stack .song-actions .btn.tune svg { display: block; margin: 0 auto; }
 
-  /* Prénom obligatoire (QR individuel ou d'événement ouvert) : écran plein, sans fermeture. */
-  .client .name-gate { position: fixed; inset: 0; z-index: 28; background: var(--bg); overflow: auto; display: flex; align-items: center; justify-content: center;
+  /* Prénom obligatoire (QR individuel ou d'événement ouvert) : écran plein, sans fermeture.
+     Centrée par les marges automatiques du panneau, pas par align-items: center,
+     qui coupait le haut (FR/EN, titre) d'un panneau plus haut que l'écran :
+     plus haut, il défile depuis le haut. */
+  .client .name-gate { position: fixed; inset: 0; z-index: 28; background: var(--bg); overflow: auto; display: flex; align-items: flex-start; justify-content: center;
     padding: max(20px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)); }
-  .client .name-gate-panel { width: 100%; max-width: 440px; }
+  .client .name-gate-panel { width: 100%; max-width: 440px; margin: auto 0; }
   /* FR/EN en haut à droite : la boîte prend la largeur de ses boutons, poussée à droite. */
   .client .name-gate-panel .lang-switch { display: flex; width: max-content; margin-left: auto; margin-bottom: 18px; }
   .client .name-gate-panel h2:focus { outline: none; }
@@ -1329,7 +1332,8 @@
   let entryWaited = 0;
   // Place sans prénom ouverte ici par le QR de l'événement, gardée pour cet
   // onglet (rechargement compris) : l'adresse a perdu ?evenement=, mais si
-  // « Renouveler le QR » la retire, la page dit encore « QR plus actif ».
+  // « Parti » du bar ou « Renouveler le QR » la retire, la page dit de
+  // rescanner le QR de l'événement.
   // Oubliée dès qu'elle a un prénom (une place nommée n'est jamais retirée)
   // ou qu'une reprise l'a remplacée (refresh).
   const eventPlaceKey = `kfEventPlace:${tableId}:${access}`;
@@ -1351,8 +1355,9 @@
     // Son chanteur est déjà sur ce téléphone : le QR d'événement n'a plus
     // d'objet. Un chanteur marqué parti (doublon), ou une place encore sans
     // prénom (QR de l'événement rescanné ailleurs), n'empêche pas le QR
-    // personnel de proposer la reprise de son profil.
-    if (soloInvitation ? managedPeople().filter(person => !person.nameRequired).length : list(state.managedIds).length) {
+    // personnel de proposer la reprise de son profil. Marqué parti, le QR de
+    // l'événement demande quand même : le serveur répond « marquée partie ».
+    if (soloInvitation ? managedPeople().filter(person => !person.nameRequired).length : managedPeople().length) {
       if (eventToken) forgetEventToken();
       return;
     }
@@ -1529,7 +1534,14 @@
         : entry.status === 'retry' ? t('Beaucoup d’arrivées en même temps : nouvel essai dans un instant…')
         : entry.status === 'recover' ? t('Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.', { name: entry.recover.name })
           : opening ? t('Un instant : ouverture de ton QR…')
-            : eventToken || eventPlaceLost() ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
+            // Ce téléphone ne gère que des personnes marquées parties : seul le bar les réactive.
+            : !owned.length && list(state.tablePeople).some(person => person.active === false && manages(person.id))
+              ? t('Cette personne a été marquée partie. Demande au bar de la réactiver.')
+            : eventToken ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
+              // Place sans prénom retirée : « Parti » du bar ou QR renouvelé, la page
+              // ne sait pas lequel. Rescanner le QR en donne une nouvelle (un QR
+              // renouvelé répond alors « QR plus actif »).
+              : eventPlaceLost() ? t('Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.')
               : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
       const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'recover'
         ? `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'failed'

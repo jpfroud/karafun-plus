@@ -3053,7 +3053,11 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
 // prénom ouverte par le QR de l'événement, retirée par « Renouveler le QR »,
 // laissait sa page (et son rechargement) dire « demande au bar un QR
 // individuel » : l'adresse avait déjà perdu ?evenement=.
-test('événement privé : place sans prénom retirée par « Renouveler le QR » = « QR plus actif », même après rechargement', async () => {
+// Regression: vérification de la troisième relecture — retirée aussi par
+// « Parti » du bar, la page disait « QR plus actif » alors que rescanner le
+// QR de l'événement donne une nouvelle place. La page ne distingue pas les
+// deux cas : elle dit de rescanner (un QR renouvelé refusera, « QR plus actif »).
+test('événement privé : place sans prénom retirée (« Parti » du bar ou QR renouvelé) = rescanner le QR, même après rechargement', async () => {
   const session = sessionMap();
   const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
     if (url !== '/api/table/enter') return undefined;
@@ -3063,16 +3067,16 @@ test('événement privé : place sans prénom retirée par « Renouveler le QR �
   }, { session });
   assert.equal(page.node('nameGate').hidden, false);
   assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret');
-  // Le bar renouvelle le QR : la place part sans trace.
+  // Le bar touche « Parti » sur « Solo 2 » (ou renouvelle le QR) : la place part sans trace.
   page.state.tablePeople = [];
   page.state.managedIds = [];
   page.state.privateEventReady = false;
   await page.poll();
   assert.equal(page.node('nameGate').hidden, true);
-  assert.equal(page.node('noSingerText').textContent, 'Ce QR d’événement n’est plus actif. Demande au bar.');
+  assert.equal(page.node('noSingerText').textContent, 'Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.');
   const reloaded = await soloPage('', page.state, undefined, { session, languages: ['en'] });
   assert.equal(reloaded.posts.length, 0);
-  assert.equal(reloaded.node('noSingerText').textContent, 'This event QR code is no longer active. Ask the bar.');
+  assert.equal(reloaded.node('noSingerText').textContent, 'Your spot without a name was removed. Scan the event QR code again to get a new one, or ask the bar.');
 
   // Place nommée puis passée sur un autre téléphone : pas un QR inactif.
   const named = sessionMap();
@@ -3287,9 +3291,31 @@ test('doublon marqué parti sur ce navigateur : son QR personnel propose encore 
   // Une personne présente sur ce téléphone : rien n'est demandé (inchangé).
   const active = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false, tablePeople: [person('d1', 'Clara B.')], managedIds: ['d1'] }));
   assert.equal(postsTo(active, '/api/table/solo/open').length, 0);
-  // QR de l'événement rescanné par ce navigateur : le serveur répond (personne partie).
-  const event = await soloPage('?evenement=SECRET-EV', soloState({ privateEventReady: true, tablePeople: [person('d1', 'Clara B.', { active: false })], managedIds: ['d1'] }));
-  assert.equal(postsTo(event, '/api/table/enter').length, 0, 'son chanteur parti est sur ce téléphone : le bar le réactive');
+});
+
+// Regression: troisième relecture finale (RT1) — le QR de l'événement rescanné
+// par une personne marquée partie comptait sa fiche partie comme « son
+// chanteur est déjà là » : ?evenement= retiré sans demande au serveur, et la
+// page disait « demande au bar un QR individuel » au lieu de « marquée partie ».
+test('personne marquée partie : le QR de l’événement rescanné dit « demande au bar de te réactiver » (FR/EN)', async () => {
+  const gone = () => soloState({ soloInvitationReady: false, privateEventReady: true,
+    tablePeople: [person('d1', 'Clara B.', { viaEvent: true, active: false })], managedIds: ['d1'] });
+  const left = () => reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
+  for (const [languages, text] of [[undefined, 'Cette personne a été marquée partie. Demande au bar de la réactiver.'],
+    [['en'], 'This person was marked as gone. Ask the bar to bring them back.']]) {
+    const event = await soloPage('?evenement=SECRET-EV', gone(), url => url === '/api/table/enter' ? left() : undefined, { languages });
+    assert.deepEqual(postsTo(event, '/api/table/enter'), [['/api/table/enter', { table: 'Comptoir', access: 'secret', event: 'SECRET-EV' }]]);
+    assert.equal(event.node('noSingerText').textContent, text);
+    assert.equal(event.node('catalogAccessText').textContent, text);
+    // Rechargée sans ?evenement= (lien commun) : le même avis, jamais « QR individuel ».
+    const bare = await soloPage('', gone(), undefined, { languages });
+    assert.equal(bare.posts.length, 0);
+    assert.equal(bare.node('noSingerText').textContent, text);
+  }
+  // Une place active sur ce téléphone : rien n'est demandé (inchangé).
+  const mine = await soloPage('?evenement=SECRET-EV', soloState({ privateEventReady: true,
+    tablePeople: [person('d1', 'Clara B.', { active: false }), person('s2', 'Léa')], managedIds: ['d1', 's2'] }));
+  assert.equal(postsTo(mine, '/api/table/enter').length, 0);
 });
 
 test('navigateur intégré (Instagram, WebView…) : conseil d’ouvrir la page dans son navigateur, en solo seulement', async () => {
