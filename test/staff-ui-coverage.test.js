@@ -4041,3 +4041,27 @@ test('relecture : nom accessible des « QR de reprise », repère « trop long �
   assert.match(help, /« Relancer »/);
   assert.match(help, /déjà dans KaraFun/);
 });
+
+// Regression: D3-2 (troisième relecture) — « trop long » et « ⚠ Chanté » au
+// début du titre : le titre, dans la même ligne qu'eux, ne gardait que 18 à
+// 24 px. Avec des repères, le titre (réglages compris) forme un bloc
+// .song-main qui passe sous les repères quand ils ne lui laissent pas la
+// place, suivi de l'interprète ; sans repère, la cellule est inchangée.
+test('troisième relecture : titre sous ses repères « trop long » et « ⚠ Chanté »', async () => {
+  const world = baseWorld();
+  world.settings.maxSongSec = 300;
+  world.tooLong = { limitSec: 300, count: 1 };
+  world.queue = [{ source: 'helper', id: 'bruno', pos: 1, name: 'Bruno', ids: ['bruno'], tooLongSec: 372, repeat: { playedAt: Date.now() - 40 * 60000 },
+    song: { entryId: 'b1', title: 'Épopée', artist: 'Groupe', duration: 372 } },
+  { source: 'helper', id: 'dora', pos: 2, name: 'Dora', ids: ['dora'], song: { entryId: 'd1', title: 'Court', artist: 'Autre', duration: 200 } }];
+  const page = await openPage({ world });
+  const [both, plain] = page.all('qBody', '.queue-item').map(row => row.querySelector('.song-cell'));
+  const kids = node => node.children.filter(child => typeof child !== 'string').map(child => child.className);
+  assert.ok(both.classList.contains('has-marks'), 'cellule avec repères');
+  assert.deepEqual(kids(both), ['badge too-long-tag', 'badge repeat', 'song-main', 'song-artist'], 'repères, le titre en un bloc, puis l’interprète');
+  assert.deepEqual(kids(both.querySelector('.song-main')), ['song-title']);
+  assert.equal(both.querySelector('.song-main .song-title').textContent, 'Épopée');
+  assert.equal(both.title, 'Épopée — Groupe');
+  assert.equal(plain.classList.contains('has-marks'), false, 'sans repère : cellule inchangée');
+  assert.deepEqual(kids(plain), ['song-title', 'song-artist']);
+});

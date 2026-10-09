@@ -32,7 +32,8 @@ async function request(route, body, cookie = '') {
 }
 
 // Six solistes du comptoir, chacun avec un titre.
-const NAMES = ['Marie-Charlotte Vanden', 'Léa', 'Bob', 'Maximilien-Alexandre B.', 'Noé', 'Zoé'];
+// Les deux derniers restent actifs, seuls, sans repère « inactif ».
+const NAMES = ['Marie-Charlotte Vanden', 'Léa', 'Bob', 'Maximilien-Alexandre B.', 'Noé', 'Zoé', 'Anne-Sophie Delacroix', 'Jean-Baptiste Lemercier'];
 // Duos : deux partenaires inactifs (prénom long puis court, puis l'inverse avec
 // « inactif depuis 21:04 », le repère le plus long), et un seul partenaire
 // inactif, le second.
@@ -50,6 +51,11 @@ function reshape(state) {
   by('Léa').lastActiveAt = by('Zoé').lastActiveAt = state.now - 52 * MIN;
   Object.assign(by('Bob'), { joinedAt: state.now - 50 * MIN, lastActiveAt: state.now - 50 * MIN });
   by('Noé').lastActiveAt = state.now;
+  // Regression: D3-1 bis (vérification de la troisième relecture) — deux
+  // solistes actifs au nom long, l'un avec un repère privé (✎) et une table.
+  by('Anne-Sophie Delacroix').lastActiveAt = state.now;
+  Object.assign(by('Jean-Baptiste Lemercier'), { lastActiveAt: state.now, privateNote: 'habitué' });
+  state.queue.find(q => q.ids?.length === 1 && q.ids[0] === by('Jean-Baptiste Lemercier').id).table = 'Terrasse';
   for (const [first, second] of DUOS) {
     const [a, b] = [by(first), by(second)];
     const line = state.queue.find(q => q.ids?.length === 1 && q.ids[0] === a.id);
@@ -57,8 +63,15 @@ function reshape(state) {
     line.singers = [a, b].map(p => ({ id: p.id, name: p.name, table: 'En solo', individual: true }));
     line.name = line.singer = `${a.name} & ${b.name}`;
     if (first === 'Noé') line.tooLongSec = 372;
+    // Un seul repère, court : le titre qui tient à côté y reste.
+    if (first === 'Léa') Object.assign(line, { repeat: { earlier: [1] } }, { song: { ...line.song, title: 'Hey' } });
   }
-  state.queue.find(q => q.ids?.length === 1 && q.ids[0] === by('Bob').id).tooLongSec = 400;
+  // Regression: D3-2 (troisième relecture) — titre de Bob trop long ET déjà
+  // chanté : avec « trop long » et « ⚠ Chanté 21:04 » au début de la cellule,
+  // le titre ne gardait que 18 à 24 px.
+  const bob = state.queue.find(q => q.ids?.length === 1 && q.ids[0] === by('Bob').id);
+  Object.assign(bob, { tooLongSec: 400, repeat: { playedAt: state.now - 40 * MIN } });
+  bob.song = { ...bob.song, title: 'Bohemian Rhapsody (version longue remasterisée)' };
   state.tooLong = { limitSec: 300, count: 2 };
   return state;
 }
@@ -72,10 +85,18 @@ const measure = page => page.evaluate(() => {
       cell: box(row.querySelector('.person-cell')),
       name: box(row.querySelector('.person')),
       song: box(row.querySelector('.song-cell')),
+      title: box(row.querySelector('.song-title')),
+      artist: row.querySelector('.song-artist') ? box(row.querySelector('.song-artist')) : null,
+      repeat: row.querySelector('.song-cell .badge.repeat') ? box(row.querySelector('.song-cell .badge.repeat')) : null,
       tags: box(row.querySelector('.queue-tags')),
       tooLong: row.querySelector('.too-long-tag') ? box(row.querySelector('.too-long-tag')) : null,
       who: [...row.querySelectorAll('.idle-tag .idle-who')].map(box),
       for: [...row.querySelectorAll('.idle-tag .idle-for')].map(box),
+    })),
+    active: [...document.querySelectorAll('#qBody .queue-item')].filter(row => !row.querySelector('.idle-tag')).map(row => ({
+      cell: box(row.querySelector('.person-cell')),
+      name: box(row.querySelector('.person')),
+      table: box(row.querySelector('.table-tag')),
     })),
   };
 });
@@ -90,7 +111,7 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
   const tables = (await request('/api/staff/state')).value.tables;
   const access = new URL(tables.find(t => t.id === 'Comptoir').url).pathname.split('/').pop();
   const songs = [];
-  for (const q of ['Queen', 'the', 'a', 'o']) for (const song of (await request(`/api/search?q=${q}`)).value) if (!songs.some(s => s.songId === song.songId)) songs.push(song);
+  for (const q of ['Queen', 'the', 'me']) for (const song of (await request(`/api/search?q=${q}`)).value) if (!songs.some(s => s.songId === song.songId)) songs.push(song);
   assert.ok(songs.length >= NAMES.length, `catalogue de démo : ${songs.length} titres`);
   // Relancé sur une démo déjà utilisée : les solistes déjà inscrits avec un titre servent tels quels.
   const before = (await request('/api/staff/state')).value;
@@ -106,7 +127,7 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
   const staff = BASE + await staffRoute(BASE, '/staff');
   const browser = await chromium.launch();
   try {
-    for (const [width, height] of [[390, 844], [360, 740], [1366, 900]]) {
+    for (const [width, height] of [[390, 844], [360, 740], [1280, 800], [1366, 900]]) {
       const phone = width < 700;
       const context = await browser.newContext({ viewport: { width, height }, isMobile: phone, hasTouch: phone });
       const page = await context.newPage();
@@ -117,7 +138,7 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
       await page.goto(staff + '#file');
       if (phone) await page.locator('[data-tab-btn="file"]').tap();
       await page.waitForFunction(() => document.querySelectorAll('#qBody .idle-tag .idle-who').length === 5);
-      const { overflow, rows } = await measure(page);
+      const { overflow, rows, active } = await measure(page);
       const at = `${width} px`;
       assert.equal(overflow, 0, `${at} : pas de défilement horizontal`);
       const duos = rows.filter(row => row.who.length);
@@ -140,6 +161,27 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
         assert.ok(inside(row.tooLong, row.song), `${at} : « trop long » dans la cellule du titre`);
         assert.ok(row.tooLong.left - row.song.left < 2, `${at} : « trop long » au début du titre`);
       }
+      // Regression: D3-2 (troisième relecture) — « trop long » et « ⚠ Chanté »
+      // au début du titre : quand ils ne laissent pas la place au titre, ils
+      // restent sur leur ligne et le titre passe dessous, sur toute la largeur.
+      const marked = rows.filter(row => row.repeat);
+      assert.deepEqual(marked.map(row => !!row.tooLong), [false, true], `${at} : « ⚠ Doublon » sur le premier duo, deux repères sur la ligne de Bob`);
+      for (const row of marked) {
+        const label = `${at}, titre de ${row.name.text}`;
+        const marks = [row.tooLong, row.repeat].filter(Boolean);
+        for (const mark of marks) assert.ok(inside(mark, row.song) && mark.scroll <= mark.client + 1, `${label} : « ${mark.text} » entier dans la cellule`);
+        const last = marks.at(-1);
+        const visible = Math.min(row.title.right, row.song.right) - row.title.left;
+        if (row.title.right > row.song.right + 0.5) {
+          assert.ok(row.title.top >= last.bottom - 1 && row.title.left - row.song.left < 2,
+            `${label} : coupé à côté des repères (${Math.round(visible)} px visibles sur ${Math.round(row.song.width)})`);
+        }
+        assert.ok(visible >= Math.min(row.title.width, row.song.width - 1), `${label} : ${Math.round(visible)} px visibles`);
+        // L'interprète suit le titre sur sa ligne, jamais seul sur une ligne de plus.
+        if (row.artist) assert.ok(row.artist.top < row.title.bottom && row.artist.bottom > row.title.top, `${label} : interprète passé sous le titre (${JSON.stringify({ artist: row.artist, title: row.title })})`);
+        // Un titre qui tient à côté du dernier repère y reste (l'interprète ne le fait pas passer dessous).
+        if (last.right + 5 + row.title.width <= row.song.right - 1) assert.ok(row.title.top < last.bottom, `${label} : passé sous « ${last.text} » alors qu'il tenait à côté`);
+      }
       // Regression: U1 (vérification de la seconde relecture) — sur une ligne de
       // soliste inactif, .queue-tags (et la durée) prenaient la place du nom :
       // « Bob » réduit à « B » à 360 et 1366 px, avec ou sans « trop long ».
@@ -150,6 +192,29 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
         assert.ok(inside(row.name, row.cell), `${label} : nom hors de la cellule`);
         if (row.name.text.length <= 8) assert.ok(row.name.scroll <= row.name.client + 1, `${label} : nom coupé à ${Math.round(row.name.width)} px (${JSON.stringify(row.name)})`);
         else assert.ok(row.name.width >= 40, `${label} : nom réduit à ${Math.round(row.name.width)} px`);
+        // Regression: D3-1 (troisième relecture) — la durée passée à la ligne,
+        // le nom restait borné à 45 % : « Marie… » à 360 px. Coupé, il prend
+        // toute la largeur de la cellule, comme le nom d'un duo.
+        if (row.name.scroll > row.name.client + 1) assert.ok(row.name.width >= row.cell.width - 1, `${label} : nom coupé à ${Math.round(row.name.width)} px sur ${Math.round(row.cell.width)}`);
+      }
+      // Regression: D3-1 bis (vérification de la troisième relecture) — au
+      // téléphone, les badges sont cachés : le nom d'un soliste actif restait
+      // borné à 45 % (60 % avec ✎), « Anne-… » suivi de 68 px vides à 360 px,
+      // alors que le même nom s'allongeait une fois le soliste inactif.
+      // Il prend toute la place que la table lui laisse ; la table garde sa
+      // part (entière jusqu'à 27 % de la colonne, le nom passe d'abord).
+      if (phone) {
+        const longNames = active.filter(row => row.name.text.length > 20);
+        assert.equal(longNames.length, 2, `${at} : deux solistes actifs au nom long`);
+        for (const row of longNames) {
+          const label = `${at}, soliste actif ${row.name.text.trim()}`;
+          assert.ok(inside(row.name, row.cell), `${label} : nom hors de la cellule`);
+          if (row.table.width > 0) {
+            assert.ok(inside(row.table, row.cell) && row.table.width >= Math.min(row.table.scroll, 0.27 * row.cell.width) - 1, `${label} : table « ${row.table.text} » réduite (${JSON.stringify(row.table)})`);
+          }
+          const room = row.cell.width - (row.table.width > 0 ? row.table.width + 5 : 0);
+          if (row.name.scroll > row.name.client + 1) assert.ok(row.name.width >= room - 1, `${label} : nom coupé à ${Math.round(row.name.width)} px sur ${Math.round(room)}`);
+        }
       }
       // Sur PC, les badges d'une ligne avec repère ont leur propre ligne, entiers.
       if (!phone) for (const row of rows) assert.ok(row.tags.width >= row.cell.width - 1, `${at}, ${row.name.text} : badges réduits à ${Math.round(row.tags.width)} px`);
@@ -159,6 +224,12 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
         // Regression: U2 (seconde relecture) — dans la cellule qui passe à la
         // ligne, le nom seul sur sa ligne restait borné à 45 % et coupé.
         if (row.name.scroll > row.name.client + 1) assert.ok(row.name.width >= row.cell.width - 1, `${label} : nom coupé à ${Math.round(row.name.width)} px sur ${Math.round(row.cell.width)}`);
+        // Regression: D3-4 (troisième relecture) — la table vide du duo (span
+        // .table-tag sans texte) passait à la ligne avant le premier repère et
+        // le décalait de l'écart (5 px) : chaque ligne de repère part du bord.
+        for (const who of row.who) if (who.top >= row.name.bottom - 1 && !row.who.some(other => other !== who && Math.abs(other.top - who.top) < 1 && other.left < who.left)) {
+          assert.ok(who.left - row.cell.left < 1, `${label} : « ${who.text} » décalé de ${(who.left - row.cell.left).toFixed(1)} px`);
+        }
         for (const who of row.who) {
           assert.ok(inside(who, row.cell), `${label} : « ${who.text} » hors de la cellule`);
           // Un prénom court reste entier ; un prénom plus long que la colonne garde sa première partie.
@@ -197,5 +268,5 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
   } finally {
     await browser.close();
   }
-  console.log('Repères « inactif » des solistes et des duos, « trop long » en navigateur : prénoms, noms, durées et badges entiers à 360, 390 et 1366 px, pastille de 44 px et contour du disque des solistes visible OK');
+  console.log('Repères « inactif » des solistes et des duos, « trop long » en navigateur : prénoms, noms, durées et badges entiers, titre sous ses repères à 360, 390, 1280 et 1366 px, pastille de 44 px et contour du disque des solistes visible OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

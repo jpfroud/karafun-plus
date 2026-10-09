@@ -17,8 +17,11 @@ function loadPlaywright() {
   return null;
 }
 
+// Une seule raison, en CI comme sur le PC du bar : loadPlaywright ne distingue
+// pas Playwright absent de Chromium absent.
 function skipped(label) {
-  console.log(process.env.CI ? `::warning::${label} : ignoré (Playwright absent)` : `${label} : ignoré (Playwright ou Chromium absent)`);
+  const line = `${label} : ignoré (Playwright ou Chromium absent)`;
+  console.log(process.env.CI ? `::warning::${line}` : line);
 }
 
 module.exports = { loadPlaywright, skipped };
