@@ -240,8 +240,10 @@ for (const width of [360, 390, 650, 1366]) {
   // Sans min-width: 0, le bloc garde la largeur de sa phrase entière et déborde.
   assert.equal(duo['min-width'], '0');
   assert.equal(duo['max-width'], '100%');
-  // Sous 380 px, « Bob : inactif depuis 21:04 » ne tient plus sur une ligne.
-  assert.equal(duo['flex-wrap'], width <= 380 ? 'wrap' : undefined, `${width} px : le prénom ${width <= 380 ? 'passe au-dessus de' : 'reste à côté de'} la durée`);
+  // « Bob : inactif depuis 21:04 » qui ne tient pas sur une ligne (sous 380 px,
+  // mais aussi à 1280 px selon les chiffres de l'heure) : le prénom passe
+  // au-dessus de la durée à toutes les largeurs, au lieu d'être abrégé.
+  assert.equal(duo['flex-wrap'], 'wrap', `${width} px : le prénom passe au-dessus de la durée quand elle ne tient pas`);
   const named = computed('.queue-item .person-cell:has(.idle-tag) button.person', width);
   assert.equal(named.flex, '0 1 auto', `${width} px : le prénom avec repère rétrécit devant la durée`);
   assert.equal(named['min-width'], '0');

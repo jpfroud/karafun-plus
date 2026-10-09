@@ -326,11 +326,11 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 /* Le nom, seul sur sa ligne quand le repère passe dessous, en prend toute la
    largeur (sinon 45 %, ou 60 % avec ✎) : duo comme soliste (« Marie… » à 360 px). */
 .queue-item .person-cell:has(.idle-tag) .person, .queue-item .person-cell:has(.idle-tag) button.person { max-width: 100%; }
-.queue-item .idle-tag.duo { display: inline-flex; align-items: baseline; gap: 0 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
-/* Sous 380 px, « Bob : inactif depuis 21:04 » ne tient plus sur une ligne de
-   la colonne (134 px pour 123 à 360 px) : le prénom passe au-dessus de la
-   durée plutôt que de devenir « B. ». */
-@media (max-width: 380px) { .queue-item .idle-tag.duo { flex-wrap: wrap; } }
+/* Quand « Bob : inactif depuis 21:04 » ne tient pas sur une ligne de la
+   colonne (134 px pour 123 à 360 px ; à 1280 px aussi, selon les chiffres de
+   l'heure), le prénom passe au-dessus de la durée plutôt que de devenir « B. »,
+   à toutes les largeurs. */
+.queue-item .idle-tag.duo { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 /* Dans ces cellules qui passent à la ligne, les badges gardent leur largeur et
    prennent la ligne suivante, entiers, au lieu du peu de place qui reste. */
 .queue-item .person-cell:has(.idle-tag) .queue-tags { flex-basis: auto; }

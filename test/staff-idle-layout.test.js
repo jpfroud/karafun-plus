@@ -237,6 +237,18 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
           else assert.ok(who.width >= 40, `${label} : « ${who.text} » réduit à ${Math.round(who.width)} px`);
         }
       }
+      // Regression: vérification de la troisième relecture (suite fusionnée) —
+      // « Bob : inactif depuis 21:04 » affiche l'heure réelle : selon ses
+      // chiffres, la durée s'élargissait et « Bob : » devenait « Bo… » à
+      // 1280 px, car la ligne du duo ne passait à la ligne que sous 380 px.
+      // Durée élargie quelle que soit l'heure : un prénom court reste entier.
+      const widened = await page.evaluate(() => {
+        for (const el of document.querySelectorAll('#qBody .idle-tag.duo .idle-for')) el.textContent = 'inactif depuis 22:22 · 00:00';
+        return [...document.querySelectorAll('#qBody .idle-tag.duo .idle-who')].filter(el => el.textContent.trim().length <= 8)
+          .map(el => ({ text: el.textContent, scroll: el.scrollWidth, client: el.clientWidth }));
+      });
+      assert.ok(widened.length >= 2, `${at} : prénoms courts de duo mesurés`);
+      for (const who of widened) assert.ok(who.scroll <= who.client + 1, `${at} : « ${who.text} » abrégé quand la durée s'allonge (${JSON.stringify(who)})`);
       if (phone) {
         // Regression: U5 (seconde relecture) — « Envoi et lecture automatiques
         // coupés » (bouton de la Scène) faisait moins de 44 px au téléphone.
