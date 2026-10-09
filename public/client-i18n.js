@@ -132,6 +132,7 @@ window.CLIENT_TRANSLATIONS = {
       'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).': 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.).',
       // QR individuel et événement privé
       'Un instant : ouverture de ton QR…': 'One moment: opening your QR code…',
+      'Inscription en cours…': 'Signing you up…',
       'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…': 'Lots of people arriving at once: trying again in a moment…',
       'Ce QR d’événement n’est plus actif. Demande au bar.': 'This event QR code is no longer active. Ask the bar.',
       'C’est bien toi, {name} ?': 'Is that you, {name}?',

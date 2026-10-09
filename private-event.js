@@ -1,15 +1,43 @@
 'use strict';
 
 const crypto = require('crypto');
+const net = require('net');
 
 const SECRET_RE = /^[A-Za-z0-9_-]{22}$/;
 // Garde-fous d'un QR commun qui circulerait hors du bar : la sauvegarde et la
 // page du bar restent lisibles même si quelqu'un scanne en boucle. Un même
-// appareil (adresse du réseau) crée au plus 5 chanteurs par minute, tout le
-// bar 120 ; au plus 400 personnes présentes venues par l'événement.
+// appareil (adresse IPv4, ou préfixe /64 en IPv6, voir clientKey) crée au plus
+// 30 chanteurs par minute (assez pour un Wi-Fi qui sort par une seule adresse
+// publique), tout le bar 120 ; au plus 400 personnes présentes venues par
+// l'événement, dont les places sans prénom des 10 dernières minutes.
 const CREATIONS_PER_MINUTE = 120;
-const CLIENT_CREATIONS_PER_MINUTE = 5;
+const CLIENT_CREATIONS_PER_MINUTE = 30;
 const MAX_PEOPLE = 400;
+const PLACEHOLDER_COUNT_MS = 10 * 60000;
+
+// Appareil d'une adresse réseau : l'adresse IPv4 (aussi quand elle arrive
+// mappée, ::ffff:a.b.c.d), ou les quatre premiers groupes d'une adresse IPv6
+// (un téléphone change d'adresse dans son /64). Texte inconnu : gardé, borné.
+function clientKey(address) {
+  let text = String(address ?? '').trim().toLowerCase();
+  const zone = text.indexOf('%');
+  if (zone >= 0) text = text.slice(0, zone);
+  if (net.isIPv4(text)) return text;
+  if (!net.isIPv6(text)) return text.slice(0, 64);
+  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (dotted) {
+    const [a, b, c, d] = dotted.slice(1).map(Number);
+    text = `${text.slice(0, dotted.index)}${(a << 8 | b).toString(16)}:${(c << 8 | d).toString(16)}`;
+  }
+  const [head, tail] = text.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const words = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right].map(word => parseInt(word, 16));
+  if (words.slice(0, 5).every(word => word === 0) && words[5] === 0xffff) {
+    return [words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255].join('.');
+  }
+  return `${words.slice(0, 4).map(word => word.toString(16)).join(':')}::/64`;
+}
 
 // Événement privé (bar privatisé) : un seul QR pour tout le monde, qui crée un
 // chanteur « En solo » à chaque nouveau navigateur. Le secret est gardé en
@@ -66,9 +94,21 @@ class PrivateEvent {
     return crypto.timingSafeEqual(digest(this.secret), digest(token));
   }
 
-  // Avant de créer un chanteur : `total` = personnes présentes venues par
-  // l'événement, `client` = adresse de l'appareil (null : inconnue, seule la
-  // limite du bar compte). « ok », « busy » (trop de créations dans la
+  // Personnes qui comptent dans le plafond : venues par l'événement, présentes,
+  // nommées ; une place encore sans prénom seulement pendant 10 minutes (elle
+  // reste nommable ensuite, sans plus occuper l'événement).
+  static present(people, now = Date.now()) {
+    let count = 0;
+    for (const person of people) {
+      if (!person?.viaEvent || person.withdrawnAt) continue;
+      if (!person.nameRequired || now - (Number(person.joinedAt) || 0) < PLACEHOLDER_COUNT_MS) count++;
+    }
+    return count;
+  }
+
+  // Avant de créer un chanteur : `total` = personnes qui comptent (present),
+  // `client` = appareil (clientKey ; null : inconnu, seule la limite du bar
+  // compte). « ok », « busy » (trop de créations dans la
   // minute : réessayer) ou « full » (plafond de personnes).
   admit(total, client, now = Date.now()) {
     this.recent = this.recent.filter(entry => now - entry.at < 60000);
@@ -77,6 +117,17 @@ class PrivateEvent {
       this.recent.filter(entry => entry.client === client).length >= CLIENT_CREATIONS_PER_MINUTE)) return 'busy';
     this.recent.push({ at: now, client });
     return 'ok';
+  }
+
+  // Après « busy » : secondes avant qu'une création se libère, au moins 1
+  // (en-tête Retry-After).
+  retryAfter(client, now = Date.now()) {
+    const recent = this.recent.filter(entry => now - entry.at < 60000);
+    const own = client === null ? [] : recent.filter(entry => entry.client === client);
+    const waits = [0];
+    if (recent.length >= CREATIONS_PER_MINUTE) waits.push(recent[recent.length - CREATIONS_PER_MINUTE].at + 60000 - now);
+    if (own.length >= CLIENT_CREATIONS_PER_MINUTE) waits.push(own[own.length - CLIENT_CREATIONS_PER_MINUTE].at + 60000 - now);
+    return Math.max(1, Math.ceil(Math.max(...waits) / 1000));
   }
 
   // Création annulée (sauvegarde impossible) : elle ne compte pas.
@@ -91,4 +142,4 @@ class PrivateEvent {
   }
 }
 
-module.exports = { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE };
+module.exports = { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, PLACEHOLDER_COUNT_MS, clientKey };

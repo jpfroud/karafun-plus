@@ -175,7 +175,7 @@ function parseInto(page, rootNode, markup) {
 
 // ---------------------------------------------------------------- page chargée
 const REPLY = Symbol('réponse');
-const reply = (status, data = {}) => ({ [REPLY]: true, status, data });
+const reply = (status, data = {}, headers = {}) => ({ [REPLY]: true, status, data, headers });
 const timeOf = (value, lang = 'fr') => new Date(value).toLocaleTimeString(lang === 'en' ? 'en-GB' : 'fr-FR', { hour: '2-digit', minute: '2-digit' });
 
 const person = (id, name, extra = {}) => ({ id, name, active: true, songs: [], invites: [], inKaraFun: [], joinRequests: [],
@@ -303,7 +303,9 @@ function boot(options = {}) {
     if (result === undefined) result = url.startsWith('/api/state?') ? JSON.parse(JSON.stringify(page.state)) : defaultRoute(url);
     if (result instanceof Error) throw result;
     const response = result?.[REPLY] ? result : { status: 200, data: result };
-    return { ok: response.status < 400, status: response.status, json: async () => response.data };
+    const headers = Object.fromEntries(Object.entries(response.headers || {}).map(([name, value]) => [name.toLowerCase(), String(value)]));
+    return { ok: response.status < 400, status: response.status, json: async () => response.data,
+      headers: { get: name => headers[String(name).toLowerCase()] ?? null } };
   };
 
   const navigator = {
@@ -3037,7 +3039,7 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
   assert.equal(mine.history.urls.at(-1), '/t/Comptoir/secret');
 
   const busy = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), url => url === '/api/table/enter'
-    ? reply(400, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' }) : undefined, { languages: ['en'] });
+    ? reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' }) : undefined, { languages: ['en'] });
   assert.equal(busy.node('noSingerText').textContent, 'Lots of people arriving at once: trying again in a moment…');
 });
 
@@ -3045,7 +3047,7 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
 // arrivaient dans la même minute, la page restait en échec sans jamais
 // réessayer ; le plafond de l'événement, lui, ne doit pas boucler.
 const retryDelay = page => [...page.timers.values()].map(timer => timer.ms).find(ms => ms >= 15000 && ms <= 20000);
-const eventBusy = () => reply(400, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' });
+const eventBusy = () => reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' });
 test('événement privé : arrivées nombreuses = nouvel essai automatique, puis prénom', async () => {
   let busyLeft = 2;
   const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
@@ -3056,6 +3058,7 @@ test('événement privé : arrivées nombreuses = nouvel essai automatique, puis
     return { id: 's3', token: 'jeton-s3', nameRequired: true };
   });
   assert.equal(page.node('noSingerText').textContent, 'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…');
+  assert.equal(page.node('noSingerTitle').textContent, 'Inscription en cours…');
   assert.equal(page.node('nameGate').hidden, true);
   await page.poll();
   assert.equal(postsTo(page, '/api/table/enter').length, 1, 'le rafraîchissement régulier ne relance pas tout de suite');
@@ -3071,26 +3074,74 @@ test('événement privé : arrivées nombreuses = nouvel essai automatique, puis
   assert.equal(postsTo(page, '/api/table/enter').length, 3);
 });
 
-test('événement privé : quelques essais seulement, en anglais aussi ; plafond atteint = message, sans boucle', async () => {
+// Regression: deuxième relecture finale (A2-2, D2-4) — quatre essais en une
+// minute à peine puis un échec définitif, sans bouton pour réessayer ; le
+// délai annoncé par le serveur (Retry-After) était ignoré.
+test('événement privé : nouveaux essais pendant 5 minutes environ, puis « Réessayer » ; titre « Inscription en cours… »', async () => {
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }),
+    url => url === '/api/table/enter' ? eventBusy() : undefined);
+  assert.equal(page.node('noSingerTitle').textContent, 'Inscription en cours…');
+  assert.equal(page.node('noSingerText').textContent, 'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…');
+  let waited = 0;
+  for (let i = 0; i < 40 && retryDelay(page); i++) { waited += retryDelay(page); await page.runTimers(retryDelay(page)); }
+  const tries = postsTo(page, '/api/table/enter').length;
+  assert.ok(tries >= 15 && tries <= 21, `essais pendant environ 5 minutes : ${tries}`);
+  assert.ok(waited <= 5 * 60000 && waited > 4 * 60000, `attente totale : ${waited} ms`);
+  assert.equal(retryDelay(page), undefined, 'puis plus rien d’automatique');
+  assert.equal(page.node('noSingerText').textContent, 'Trop d’inscriptions d’un coup : réessaie dans une minute.');
+  assert.equal(page.node('noSingerTitle').textContent, 'Pour ajouter une chanson');
+  const again = page.find('noSingerActions', '[data-entry-retry]');
+  assert.equal(again.textContent, 'Réessayer');
+  await page.poll();
+  assert.equal(postsTo(page, '/api/table/enter').length, tries, 'le rafraîchissement ne relance pas');
+  // « Réessayer » : un essai tout de suite, puis de nouveau les essais automatiques.
+  await page.tap('noSingerActions', '[data-entry-retry]');
+  assert.equal(postsTo(page, '/api/table/enter').length, tries + 1);
+  assert.equal(page.node('noSingerTitle').textContent, 'Inscription en cours…');
+  assert.ok(retryDelay(page), 'nouvelle série d’essais');
+});
+
+test('événement privé : le délai Retry-After du serveur est suivi', async () => {
+  let busyLeft = 1;
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    if (busyLeft-- > 0) return reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' }, { 'Retry-After': '7' });
+    self.state.tablePeople = [person('s4', 'Solo 4', { nameRequired: true })];
+    self.state.managedIds = ['s4'];
+    return { id: 's4', token: 'jeton-s4', nameRequired: true };
+  });
+  const delays = [...page.timers.values()].map(timer => timer.ms).filter(ms => ms >= 7000 && ms < 10000);
+  assert.equal(delays.length, 1, `un essai prévu après 7 s (plus un écart de moins de 3 s) : ${[...page.timers.values()].map(timer => timer.ms)}`);
+  assert.equal(retryDelay(page), undefined, 'pas le délai par défaut');
+  await page.runTimers(delays[0]);
+  assert.equal(postsTo(page, '/api/table/enter').length, 2);
+  assert.equal(page.node('nameGate').hidden, false, 'inscrite : le prénom est demandé');
+});
+
+test('événement privé en anglais : titre, attente et « Try again » ; plafond atteint = message, sans essai automatique', async () => {
   const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }),
     url => url === '/api/table/enter' ? eventBusy() : undefined, { languages: ['en'] });
+  assert.equal(page.node('noSingerTitle').textContent, 'Signing you up…');
   assert.equal(page.node('noSingerText').textContent, 'Lots of people arriving at once: trying again in a moment…');
-  for (let i = 0; i < 10 && retryDelay(page); i++) await page.runTimers(retryDelay(page));
-  assert.equal(postsTo(page, '/api/table/enter').length, 5, 'un essai, puis quatre nouveaux essais');
-  assert.equal(retryDelay(page), undefined);
+  for (let i = 0; i < 40 && retryDelay(page); i++) await page.runTimers(retryDelay(page));
   assert.equal(page.node('noSingerText').textContent, 'Too many sign-ups at once: try again in a minute.');
-  await page.poll();
-  assert.equal(postsTo(page, '/api/table/enter').length, 5, 'puis plus rien d’automatique');
+  assert.equal(page.node('noSingerTitle').textContent, 'To add a song');
+  assert.equal(page.find('noSingerActions', '[data-entry-retry]').textContent, 'Try again');
 
   for (const languages of [['fr'], ['en']]) {
     const full = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), url => url === '/api/table/enter'
-      ? reply(400, { error: 'L’événement est complet par ce QR : demande au bar un QR individuel.', code: 'PRIVATE_EVENT_FULL' }) : undefined, { languages });
+      ? reply(403, { error: 'L’événement est complet par ce QR : demande au bar un QR individuel.', code: 'PRIVATE_EVENT_FULL' }) : undefined, { languages });
     assert.equal(full.node('noSingerText').textContent, languages[0] === 'fr'
       ? 'L’événement est complet par ce QR : demande au bar un QR individuel.'
       : 'This event is full through this QR code: ask the bar for a personal QR code.');
     assert.equal(retryDelay(full), undefined, 'plafond atteint : pas de nouvel essai');
+    assert.equal([...full.timers.values()].filter(timer => timer.ms > 1000).length, 0, 'aucun essai prévu');
+    assert.equal(full.node('nameGate').hidden, true);
+    assert.equal(full.node('fatalBox').hidden, true, 'un refus de l’inscription n’est pas un lien invalide');
     await full.poll();
     assert.equal(postsTo(full, '/api/table/enter').length, 1);
+    assert.equal(full.find('noSingerActions', '[data-entry-retry]').textContent, languages[0] === 'fr' ? 'Réessayer' : 'Try again',
+      'essai à la main seulement');
   }
 });
 

@@ -4,7 +4,7 @@
 // « Renouveler le QR » et disparaît à la nouvelle soirée. Une sauvegarde
 // abîmée coupe le mode sans jamais faire échouer la soirée.
 const assert = require('node:assert/strict');
-const { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE } = require('../private-event');
+const { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, PLACEHOLDER_COUNT_MS, clientKey } = require('../private-event');
 
 const event = new PrivateEvent();
 assert.equal(event.enabled, false);
@@ -64,16 +64,16 @@ assert.equal(event.secret, null);
 assert.equal(event.verify(rotated), false);
 assert.throws(() => event.rotate(), /Active d’abord l’événement privé/, 'renouveler suppose le mode actif');
 
-// Plafonds : 5 créations par minute et par appareil, 120 pour tout le bar,
+// Plafonds : 30 créations par minute et par appareil, 120 pour tout le bar,
 // 400 personnes présentes au plus (les parties ne comptent pas, côté serveur).
 assert.equal(CREATIONS_PER_MINUTE, 120);
-assert.equal(CLIENT_CREATIONS_PER_MINUTE, 5);
+assert.equal(CLIENT_CREATIONS_PER_MINUTE, 30);
 assert.equal(MAX_PEOPLE, 400);
 const capped = new PrivateEvent();
 capped.enable();
 const t0 = 1_000_000;
 for (let i = 0; i < CLIENT_CREATIONS_PER_MINUTE; i++) assert.equal(capped.admit(i, 'a', t0 + i), 'ok');
-assert.equal(capped.admit(5, 'a', t0 + 10), 'busy', 'six créations du même appareil dans la minute : la suivante attend');
+assert.equal(capped.admit(5, 'a', t0 + 10), 'busy', '31 créations du même appareil dans la minute : la suivante attend');
 assert.equal(capped.admit(5, 'b', t0 + 11), 'ok', 'un autre appareil entre');
 assert.equal(capped.admit(6, 'a', t0 + 60_001), 'ok', 'une minute plus tard, de nouveau possible');
 // Appareil inconnu (tunnel sans CF-Connecting-IP) : seule la limite du bar compte.
@@ -96,5 +96,63 @@ assert.equal(undo.admit(0, 'a', t0 + 1), 'ok');
 undo.release(42, 'a'); // horodatage inconnu : sans effet
 undo.release(t0 + 1, 'b'); // autre appareil : sans effet
 assert.equal(undo.admit(0, 'a', t0 + 2), 'busy');
+
+// Regression: deuxième relecture finale (ADV F1, S2-1, S2-2, P2-1) — l'appareil
+// était l'adresse exacte : un téléphone en IPv6 change d'adresse dans son
+// préfixe /64 et passait la limite ; une adresse IPv4 mappée (::ffff:a.b.c.d)
+// comptait à part de la même adresse IPv4.
+assert.equal(clientKey('192.0.2.7'), '192.0.2.7');
+assert.equal(clientKey('::ffff:192.0.2.7'), '192.0.2.7', 'IPv4 mappée = la même adresse IPv4');
+assert.equal(clientKey('::FFFF:C000:0207'), '192.0.2.7', 'forme hexadécimale aussi');
+const v6 = clientKey('2001:db8:1:2:aaaa::1');
+assert.equal(v6, clientKey('2001:0db8:0001:0002:bbbb:cccc:dddd:eeee'), 'même préfixe /64 = même appareil');
+assert.equal(v6, clientKey('2001:DB8:1:2::99'));
+assert.equal(v6, clientKey('2001:db8:1:2:1:2:192.0.2.1'), 'adresse IPv6 terminée par une IPv4');
+assert.notEqual(v6, clientKey('2001:db8:1:3::1'), 'autre /64 = autre appareil');
+assert.notEqual(v6, clientKey('2001:db8:1::'));
+assert.equal(clientKey('fe80::1%wlan0'), clientKey('fe80::2'), 'zone ignorée');
+assert.equal(clientKey('::1'), clientKey('::2'));
+assert.equal(clientKey(''), '');
+assert.equal(clientKey('pas une adresse'), 'pas une adresse');
+assert.equal(clientKey('x'.repeat(100)).length, 64, 'texte inconnu borné');
+// Une même box IPv6 : 30 créations dans la minute, puis attente.
+const prefix = new PrivateEvent();
+prefix.enable();
+for (let i = 0; i < CLIENT_CREATIONS_PER_MINUTE; i++) assert.equal(prefix.admit(0, clientKey(`2001:db8:1:2::${i.toString(16)}`), t0), 'ok');
+assert.equal(prefix.admit(0, clientKey('2001:db8:1:2:ffff::1'), t0 + 1), 'busy', 'nouvelle adresse du même /64 : refusée');
+assert.equal(prefix.admit(0, clientKey('2001:db8:1:3::1'), t0 + 1), 'ok');
+
+// Regression: deuxième relecture finale (A2-2) — « réessaie » sans dire quand :
+// Retry-After donne les secondes avant qu'une création se libère (au moins 1).
+const wait = new PrivateEvent();
+wait.enable();
+for (let i = 0; i < CLIENT_CREATIONS_PER_MINUTE; i++) wait.admit(0, 'a', t0 + i * 1000);
+assert.equal(wait.admit(0, 'a', t0 + 45_000), 'busy');
+assert.equal(wait.retryAfter('a', t0 + 45_000), 15, 'la plus ancienne création de l’appareil sort de la minute dans 15 s');
+assert.equal(wait.retryAfter('a', t0 + 59_999), 1, 'au moins une seconde');
+assert.equal(wait.retryAfter('b', t0 + 45_000), 1, 'rien ne bloque cet appareil : une seconde');
+const crowded = new PrivateEvent();
+crowded.enable();
+for (let i = 0; i < CREATIONS_PER_MINUTE; i++) crowded.admit(0, `c${i}`, t0 + i * 100);
+assert.equal(crowded.admit(0, 'nouveau', t0 + 30_000), 'busy');
+assert.equal(crowded.retryAfter('nouveau', t0 + 30_000), 30, 'limite du bar : la plus ancienne création sort dans 30 s');
+assert.equal(crowded.retryAfter(null, t0 + 30_000), 30);
+
+// Regression: deuxième relecture finale (ADV F1) — 400 « Solo N » sans prénom
+// remplissaient l'événement pour toujours. Le plafond compte les personnes
+// nommées présentes et les places sans prénom des 10 dernières minutes.
+assert.equal(PLACEHOLDER_COUNT_MS, 10 * 60000);
+const now = 50_000_000;
+const people = [
+  { viaEvent: true, joinedAt: now - 3600_000 }, // nommée : compte
+  { viaEvent: true, joinedAt: now - 3600_000, withdrawnAt: now - 1 }, // partie : non
+  { viaEvent: true, nameRequired: true, joinedAt: now - 60_000 }, // sans prénom, récente : compte
+  { viaEvent: true, nameRequired: true, joinedAt: now - PLACEHOLDER_COUNT_MS }, // sans prénom, trop ancienne : non
+  { viaEvent: true, nameRequired: true }, // sans heure : non
+  { nameRequired: true, joinedAt: now }, // QR individuel : non
+  { joinedAt: now }, // pas venue par l'événement : non
+];
+assert.equal(PrivateEvent.present(people, now), 2);
+assert.equal(PrivateEvent.present(new Map(people.map((p, i) => [i, p])).values(), now), 2, 'accepte un itérable');
 
 console.log('Événement privé : QR unique, coupure, renouvellement, sauvegarde tolérante et plafonds OK');
