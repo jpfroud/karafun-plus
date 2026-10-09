@@ -323,6 +323,8 @@ class KaraFunBridge extends EventEmitter {
     this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
     this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
     this._backingChanged = false;
+    this.provisionalDefaults = false; // chœurs relevés après un titre vu déjà en lecture, pas encore confirmés
+    this._carriedUnseen = false; // chœurs transmis d'un titre vu pour la première fois déjà en lecture
     this._observedFor = null;
     this._observedBacking = null; // chœurs du premier état vu du titre `_observedFor`
     this._lastBacking = null; // chœurs du dernier état du titre `_observedFor`
@@ -690,6 +692,7 @@ class KaraFunBridge extends EventEmitter {
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
       this.observedDefaults = {}; this._observedFor = null; this._backingChanged = false;
+      this.provisionalDefaults = false; this._carriedUnseen = false;
       this._observedBacking = null; this._lastBacking = null;
       // Autre installation : un identifiant de file repris n'a pas été vu se charger.
       this._loadingSeen.clear();
@@ -1369,7 +1372,8 @@ class KaraFunBridge extends EventEmitter {
     if (typeof volume !== 'number' || !Number.isFinite(volume)) throw new Error('Volume invalide.');
     this._settingsAllowed('manageVolumes');
     const value = Math.min(100, Math.max(0, Math.round(volume)));
-    if (type === TRACK.BACKING) this._backingChanged = true;
+    // Chœurs laissés au titre suivant : ceux envoyés, même avant la trame qui les montre.
+    if (type === TRACK.BACKING) { this._backingChanged = true; this._lastBacking = value; }
     this._emit('trackVolume', { type, volume: value });
     this._probeSetting('trackVolume', type === TRACK.BACKING ? 'backing' : `voice:${type}`, value);
     return value;
@@ -1398,10 +1402,14 @@ class KaraFunBridge extends EventEmitter {
   // qu'aucune n'est relevée, un titre dont KaraFun a changé les chœurs de
   // lui-même au chargement (autre valeur que celle laissée par le titre
   // d'avant). La voix guide n'est jamais relevée : coupée par défaut (0).
-  // Un titre vu pour la première fois déjà en lecture compte comme des chœurs
-  // changés : un KaraFun « collant » transmet son réglage au titre suivant.
-  // Ses chœurs ne servent qu'à reconnaître une remise par KaraFun au
-  // chargement du suivant (KaraFun qui remet à zéro).
+  // Une telle remise par KaraFun au chargement donne toujours la valeur, même
+  // déjà relevée ou reprise de la sauvegarde (valeur changée dans KaraFun).
+  // Après un titre vu pour la première fois déjà en lecture, ses chœurs (un
+  // réglage en direct, ou la valeur par défaut) passent au titre suivant chez
+  // un KaraFun « collant » comme chez un KaraFun qui remet à zéro : sans
+  // valeur connue, celle du titre suivant est relevée pour la soirée, mais
+  // provisoire (provisionalDefaults, jamais sauvegardée) jusqu'à une remise ;
+  // avec une valeur connue, rien n'est relevé avant une remise.
   _observeDefaults(status) {
     const current = status.current;
     if (!current || current.id == null) return;
@@ -1421,9 +1429,15 @@ class KaraFunBridge extends EventEmitter {
       if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
       return;
     }
-    if (status.state >= 4 && !this.seenLoading(current.id)) { this._backingChanged = true; return; }
-    const reset = this.observedDefaults.backing == null && carried != null && backing !== carried;
-    if ((!this._backingChanged || reset) && backing != null) this.observedDefaults.backing = backing;
+    if (status.state >= 4 && !this.seenLoading(current.id)) { this._carriedUnseen = true; return; }
+    if (backing == null) return;
+    if (carried != null && backing !== carried) {
+      this.observedDefaults.backing = backing;
+      this.provisionalDefaults = false;
+      this._carriedUnseen = false;
+    } else if (this._carriedUnseen) {
+      if (this.observedDefaults.backing == null) { this.observedDefaults.backing = backing; this.provisionalDefaults = true; }
+    } else if (!this._backingChanged) this.observedDefaults.backing = backing;
   }
 
   songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }
@@ -1434,7 +1448,8 @@ class KaraFunBridge extends EventEmitter {
   restoreDefaults(saved) {
     const backing = saved?.backing;
     if (!Number.isInteger(backing) || backing < 0 || backing > 100) return false;
-    if (this.observedDefaults.backing == null) this.observedDefaults.backing = backing;
+    if (this.observedDefaults.backing == null || this.provisionalDefaults) this.observedDefaults.backing = backing;
+    this.provisionalDefaults = false;
     this._backingChanged = true;
     return true;
   }

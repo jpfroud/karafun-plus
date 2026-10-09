@@ -1615,8 +1615,46 @@ test('chœurs par défaut relevés gardés dans la sauvegarde et repris au redé
     assert.deepEqual(bare(other.frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y, { backing: 80 }))), []);
     assert.deepEqual(bare(other.frames(isoStatus(3, y, { backing: 80 }))), code === '123456' ? [volumeTo(4, 53)] : [],
       `code ${code} : chœurs gardés par KaraFun`);
-    assert.equal(other.bridge.observedDefaults.backing, code === '123456' ? 53 : undefined, 'jamais 80');
+    // Autre code, rien de sauvegardé : 80 relevé pour la soirée à titre
+    // provisoire (vérification de la deuxième relecture R2(c)), jamais sauvegardé.
+    assert.equal(other.bridge.observedDefaults.backing, code === '123456' ? 53 : 80);
+    assert.deepEqual(plain(g.settings.karafunDefaults), saved, `code ${code} : sauvegarde inchangée`);
   }
+});
+
+// Regression: vérification de la deuxième relecture R2(b) et R2(c) — une
+// valeur provisoire (relevée après un redémarrage en pleine chanson) n'est
+// sauvegardée qu'une fois confirmée par une remise de KaraFun au chargement ;
+// une valeur sauvegardée que KaraFun contredit (remise à une autre valeur)
+// est remplacée dans la sauvegarde.
+test('chœurs par défaut : valeur provisoire sauvegardée une fois confirmée, valeur sauvegardée remplacée si KaraFun la contredit', async t => {
+  const f = harness();
+  const { bridge, frames } = replayBridge(t, f);
+  bridge.code = '123456';
+  const x = isoItem('X-id', 776, { singer: 'Quelqu’un' });
+  frames(queueEvent(x), isoStatus(4, x, { backing: 53 }));
+  const y = isoItem('Y-id', 777, { singer: 'Autre' });
+  frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y), isoStatus(3, y), isoStatus(4, y));
+  assert.equal(bridge.observedDefaults.backing, 53, 'relevée pour la soirée');
+  assert.equal(f.settings.karafunDefaults, undefined, 'provisoire : pas sauvegardée');
+  // Chœurs changés en direct sur y, puis KaraFun remet z à 53 : confirmée.
+  frames(isoStatus(4, y, { backing: 20 }));
+  const z = isoItem('Z-id', 778, { singer: 'Encore' });
+  frames(isoStatus(1, z), queueEvent(z), isoStatus(2, z));
+  assert.equal(plain(f.settings.karafunDefaults)?.backing, 53, 'confirmée puis sauvegardée');
+  // Redémarrage : 53 repris, mais le bar a changé la valeur dans KaraFun (70).
+  const g = harness();
+  g.settings.karafunDefaults = plain(f.settings.karafunDefaults);
+  const other = replayBridge(t, g);
+  other.bridge.code = '123456';
+  g.restoreKaraFunDefaults();
+  const a = isoItem('A-id', 779, { singer: 'Un' });
+  other.frames(isoStatus(1, a), queueEvent(a), isoStatus(2, a, { backing: 70 }), isoStatus(3, a, { backing: 70 }), isoStatus(4, a, { backing: 53 }));
+  const b = isoItem('B-id', 780, { singer: 'Deux' });
+  other.frames(isoStatus(1, b), queueEvent(b), isoStatus(2, b, { backing: 70 }));
+  assert.equal(other.bridge.observedDefaults.backing, 70, 'KaraFun remet 70 au chargement');
+  assert.equal(plain(g.settings.karafunDefaults)?.backing, 70, 'sauvegarde remplacée');
+  assert.deepEqual(bare(other.frames(isoStatus(3, b, { backing: 70 }))), [], 'b reste à 70, plus ramené à 53');
 });
 
 // Regression: deuxième relecture finale R4 — pages gardées en cache d'avant

@@ -355,13 +355,21 @@ test('Spotify : reprise de l’automate après un rétablissement, jamais contre
   now += 10 * 60000;
   auto.step('singing', opts); auto.settle(true);
   assert.equal(auto.step('silent', opts), 'resume');
-  auto.settle(false, Object.assign(new Error('Spotify est indisponible'), { status: 503 }));
+  auto.settle(false, Object.assign(new Error('Spotify est indisponible'), { status: 503, actionCall: true }));
   assert.equal(auto.recover(), false, 'relance seule en 5xx : la vérification n’en dit rien');
   auto.checkFailed();
   assert.equal(auto.recover(), true, 'panne de Spotify vue aussi par la vérification');
   auto.settle(false, Object.assign(new Error('Spotify refuse la commande'), { status: 403 }));
+  assert.equal(auto.recover(), false, 'une reprise par 10 minutes dans ce silence');
   now += 10 * 60000;
   assert.equal(auto.recover(), true, 'un refus (403) suit la règle des 10 minutes');
+  // Vérification de la deuxième relecture R5 : le lecteur (GET) en 5xx dans
+  // la relance n'est pas l'appel de relance : repris une fois rétabli. Et la
+  // limite des 10 minutes repart à chaque période (nouveau silence).
+  auto.step('singing', opts); auto.settle(true);
+  assert.equal(auto.step('silent', opts), 'resume');
+  for (let i = 0; i < 3; i++) { auto.settle(false, Object.assign(new Error('Spotify est indisponible'), { status: 503 })); now += 30000; }
+  assert.equal(auto.recover(), true, 'lecteur en 5xx : panne de Spotify, reprise au nouveau silence malgré la reprise d’il y a une minute');
 });
 
 test('Spotify : déconnexion pendant une vérification, rien n’est gardé', async () => {

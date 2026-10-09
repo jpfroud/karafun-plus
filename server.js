@@ -1110,7 +1110,7 @@ function liveSongSetting(body) {
 const karafunKey = code => crypto.createHash('sha256').update(`karafun:${code}`).digest('hex').slice(0, 16);
 function rememberKaraFunDefaults() {
   const backing = bridge?.observedDefaults?.backing;
-  if (!Number.isInteger(backing) || !bridge.code) return;
+  if (!Number.isInteger(backing) || !bridge.code || bridge.provisionalDefaults) return;
   const code = karafunKey(bridge.code);
   if (settings.karafunDefaults?.code === code && settings.karafunDefaults.backing === backing) return;
   settings.karafunDefaults = { code, backing };
