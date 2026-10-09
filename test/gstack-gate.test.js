@@ -198,6 +198,10 @@ assert.strictEqual(prePush(pushLine, { HOME: empty, USERPROFILE: empty }).status
 assert.strictEqual(prePush(pushLine, { GSTACK_GATE: 'off' }).status, 0, 'GSTACK_GATE=off');
 
 // Vrai git push : quelle que soit l'écriture de la commande, c'est git qui appelle la porte.
+// Ces cas couvrent un envoi non relu fait par mégarde par Claude Code, pas un
+// contournement voulu : git push --no-verify, une référence refs/remotes locale
+// forgée, CLAUDECODE absent, GSTACK_GATE=off ou la porte modifiée dans la copie
+// de travail passent. La vraie barrière est la protection de branche de GitHub.
 function push(args, env = {}, cwd = project) {
   return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env: { ...gitEnv, ...baseEnv, CLAUDECODE: '1', ...env } });
 }

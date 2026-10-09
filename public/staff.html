@@ -151,7 +151,7 @@
     <div class="rule-fields" id="maxSongFields" hidden>
       <label for="maxSongMin">Durée maximale (2:00 à 15:00) <span class="hint">Au-delà, un client ne peut plus ajouter le titre, ni le proposer en duo ou en Battle.</span><span class="field-number"><input id="maxSongMin" type="number" inputmode="numeric" min="2" max="15"> min <input id="maxSongSecPart" type="number" inputmode="numeric" min="0" max="59" aria-label="Durée maximale : secondes"> s</span><span class="save-status" data-save-status="maxSongMin" aria-live="polite"></span><span class="save-status" data-save-status="maxSongSecPart" aria-live="polite"></span></label>
     </div>
-    <p class="small muted">Coupé par défaut ; 5:00 proposé à l’activation. Le bar n’est jamais limité (ajout pour quelqu’un, Battle lancée par le bar, « Relancer ») ; les titres déjà dans KaraFun non plus. Les titres déjà dans la file restent, marqués « plus long que … » dans la File.</p>
+    <p class="small muted">Coupé par défaut ; 5:00 proposé à l’activation. Le bar n’est jamais limité (Battle lancée par le bar, « Relancer ») ; les titres déjà dans KaraFun non plus. Les titres déjà dans la file restent, marqués « plus long que … » dans la File.</p>
     <div class="row wrap" id="tooLongActions" hidden><button type="button" class="btn small danger" id="removeTooLong">Retirer les titres trop longs</button><span class="small muted">Seulement les titres pas encore dans KaraFun ; chaque personne est prévenue sur son téléphone.</span></div>
     <div class="row wrap"><label class="switch presence-switch"><input id="requirePresence" type="checkbox"> Exiger « Je suis là » avant l’envoi du titre</label><span class="save-status" data-save-status="requirePresence" aria-live="polite"></span></div>
     <p class="small muted">La confirmation est demandée au prochain passage pendant le titre en cours ; pour un duo, la réponse de l’un des deux suffit. Sans réponse une fois la scène libre, la soirée continue avec le passage suivant et le titre revient juste après lui, avec une nouvelle demande. Au bout du nombre de fois indiqué, le titre est retiré et le bar est prévenu que la personne est peut-être partie.</p>
@@ -196,6 +196,7 @@
 
   <section class="card spotify-panel" data-tab="plus" id="spotifyPanel">
     <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
+    <p class="small" id="spotifyText" role="status"></p>
     <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (ce PC, celui de KaraFun, une enceinte) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
     <div class="row wrap" id="spotifyReconnectRow" hidden><button class="btn small primary" id="spotifyReconnect">Reconnecter Spotify</button><span class="small muted">depuis ce PC : Spotify revient sur son adresse locale.</span></div>
     <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
@@ -216,7 +217,6 @@
       <label class="small spotify-delay" for="spotifyLead">Couper Spotify <input id="spotifyLead" type="number" inputmode="numeric" min="0" max="10"> s avant de lancer un titre (0 à 10 s) <span class="save-status" data-save-status="spotifyLead" aria-live="polite"></span></label>
       <div class="row wrap"><button class="btn small" id="spotifyPlay">▶ Spotify</button><button class="btn small" id="spotifyPause">⏸ Spotify</button><button class="btn small danger" id="spotifyDisconnect">Déconnecter</button></div>
     </div>
-    <p class="small" id="spotifyText" role="status"></p>
   </section>
 
   <section class="card diagnostics-panel" data-tab="plus" id="kfPanel">
@@ -809,7 +809,7 @@
     $('soloistCount').textContent = solos.length;
     const query = searchable ? $('soloistSearch').value.trim().toLocaleLowerCase('fr') : '';
     const shown = query ? solos.filter(p => `${p.name} ${p.privateNote || ''}`.toLocaleLowerCase('fr').includes(query)) : solos;
-    patch($('soloistList'), shown.map(p => `<div class="soloist-row" data-soloist="${esc(p.id)}">${photoHtml(p, p.name)}<span class="soloist-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}${p.privateNote ? `<span class="soloist-note tiny muted">${esc(p.privateNote)}</span>` : ''}${activityHtml(activityOf(p))}</span><button type="button" class="btn small" data-soloist-share>QR de reprise</button></div>`).join('') ||
+    patch($('soloistList'), shown.map(p => `<div class="soloist-row" data-soloist="${esc(p.id)}">${photoHtml(p, p.name)}<span class="soloist-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}${p.privateNote ? `<span class="soloist-note tiny muted">${esc(p.privateNote)}</span>` : ''}${activityHtml(activityOf(p))}</span><button type="button" class="btn small" data-soloist-share aria-label="QR de reprise pour ${esc(p.name)}">QR de reprise</button></div>`).join('') ||
       `<p class="small muted">${solos.length ? 'Aucun soliste à ce nom.' : 'Personne en solo pour le moment.'}</p>`);
   }
   $('soloistSearch').addEventListener('input', () => { if (S) renderSoloists(); });
@@ -1305,14 +1305,18 @@
 
   // Spotify : connexion, appareil et relance automatique pendant les silences.
   // État de la dernière vérification faite par le serveur (toutes les minutes) :
-  // texte du panneau, version courte pour l'écran Scène, couleur.
+  // phrase complète (message de « Vérifier Spotify » ; sous le titre du
+  // panneau quand elle dit plus que la pastille), pastille courte (panneau
+  // et écran Scène), couleur.
   function spotifyHealth(sp) {
     const health = sp.health || { state: 'unknown' };
     const name = health.device?.name || sp.deviceName || 'l’appareil voulu';
     if (!sp.connected) return { state: 'disconnected', text: 'Spotify non connecté', chip: 'Spotify non connecté', cls: 'bad' };
     if (health.state === 'ready') return { state: 'ready', text: `Spotify connecté · ${name}`, chip: `Spotify · ${name}`, cls: 'ok' };
-    if (health.state === 'no-device') return { state: 'no-device', text: `Spotify connecté, aucun appareil : ouvre Spotify sur ${name}`, chip: 'Spotify : aucun appareil', cls: 'warn' };
-    if (health.state === 'error') return { state: 'error', text: `Spotify injoignable, nouvel essai à ${hhmm(health.retryAt)}`, chip: 'Spotify injoignable', cls: 'bad' };
+    if (health.state === 'no-device') return { state: 'no-device', text: `Spotify connecté, aucun appareil : ouvre Spotify sur ${name}`, chip: 'Spotify : aucun appareil', cls: 'warn', long: true };
+    // Spotify a répondu en refusant (jeton, compte…) : son message, sans promettre de nouvel essai.
+    if (health.state === 'error' && health.status) return { state: 'error', text: `Spotify refuse la demande : ${String(health.message || `code ${health.status}`).replace(/\.$/, '')}`, chip: 'Spotify refuse la demande', cls: 'bad', long: true, refused: true };
+    if (health.state === 'error') return { state: 'error', text: `Spotify injoignable, nouvel essai à ${hhmm(health.retryAt)}`, chip: 'Spotify injoignable', cls: 'bad', long: true };
     return { state: 'unknown', text: 'Vérification de Spotify…', chip: 'Spotify : vérification…', cls: '' };
   }
   function renderSpotify() {
@@ -1325,7 +1329,7 @@
     $('spotifySetup').open = !sp.connected && !!$('spotifySetup').open;
     $('spotifyLogin').disabled = !sp.configured;
     const health = spotifyHealth(sp);
-    $('spotifyPill').textContent = sp.configured ? health.text : 'Non configuré';
+    $('spotifyPill').textContent = sp.configured ? health.chip : 'Non configuré';
     $('spotifyPill').className = 'pill' + (sp.configured && health.cls ? ` ${health.cls}` : '');
     $('spotifyChip').textContent = health.chip;
     $('spotifyChip').className = 'pill' + (health.cls ? ` ${health.cls}` : '');
@@ -1333,7 +1337,8 @@
     const last = sp.lastAction;
     const lastText = last ? `Dernière action à ${hhmm(last.at)} : ${last.kind === 'resume' ? 'relance' : 'pause'}${last.result === 'already' ? ' (rien à faire)' : last.ok ? '' : ' en échec'}.` : '';
     const checked = sp.connected && sp.health?.checkedAt ? `Vérifié à ${hhmm(sp.health.checkedAt)}.` : '';
-    $('spotifyText').textContent = [sp.lastError, sp.player?.track ? `Spotify : ${sp.player.track.title}${sp.player.track.artist ? ` — ${sp.player.track.artist}` : ''}${sp.player.device ? ` sur ${sp.player.device.name}` : ''}.` : '', lastText, checked]
+    // Refus : le message de Spotify est déjà dans la phrase, pas répété.
+    $('spotifyText').textContent = [health.long ? `${health.text}.` : '', health.refused && sp.lastError === sp.health.message ? '' : sp.lastError, sp.player?.track ? `Spotify : ${sp.player.track.title}${sp.player.track.artist ? ` — ${sp.player.track.artist}` : ''}${sp.player.device ? ` sur ${sp.player.device.name}` : ''}.` : '', lastText, checked]
       .filter(Boolean).join(' ');
     if (!sp.connected) return;
     for (const id of ['spotifyAutoResume', 'spotifyAutoPause', 'spotifyDelay', 'spotifyLead']) syncField($(id));
@@ -1855,6 +1860,9 @@
       const lineIds = q.ids?.length ? q.ids : q.source === 'helper' && q.id != null ? [q.id] : [];
       const idleTags = lineIds.map(personOf).map(p => [p, activityOf(p)]).filter(([, a]) => a?.level === 'late')
         .map(([p, a]) => `<span class="idle-tag" title="${esc(a.title)}">${esc((lineIds.length > 1 ? `${p.name} : ` : '') + a.text.charAt(0).toLowerCase() + a.text.slice(1))}</span>`).join('');
+      // Durée maximale dépassée : le badge de .queue-tags est caché au téléphone, ce repère court y reste.
+      const tooLongTitle = q.tooLongSec && S.tooLong?.limitSec ? `Ce titre dure ${minSec(q.tooLongSec)}, au-delà de la durée maximale (« Plus » › règles) : ajouté avant la limite, il reste dans la file sauf retrait.` : '';
+      const tooLongTag = tooLongTitle ? `<span class="too-long-tag" title="${esc(tooLongTitle)}">trop long</span>` : '';
       // Réglages de titre : tout titre à venir de la file, même déjà chargé dans KaraFun.
       const tunable = q.song?.entryId && (q.source === 'helper' || (q.ours && (q.source === 'karafun' || q.source === 'envoi')));
       const tune = tunable ? `<button class="btn small" data-song-settings="${esc(q.song.entryId)}" data-person-id="${esc(q.ids?.[0] ?? q.id ?? '')}" aria-label="Réglages de « ${esc(title)} » : tonalité, tempo, voix">Réglages</button>` : '';
@@ -1865,7 +1873,7 @@
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${q.tooLongSec && S.tooLong?.limitSec ? `<span class="badge wait" title="Ce titre dure ${esc(minSec(q.tooLongSec))}, au-delà de la durée maximale (« Plus » › règles) : ajouté avant la limite, il reste dans la file sauf retrait.">plus long que ${esc(minSec(S.tooLong.limitSec))}</span>` : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}${tooLongTag}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tooLongTitle ? `<span class="badge wait" title="${esc(tooLongTitle)}">plus long que ${esc(minSec(S.tooLong.limitSec))}</span>` : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
         <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings, q.tracks)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>

@@ -57,7 +57,8 @@ class SpotifyLink {
     this.player = null;       // dernier état lu : { isPlaying, device, track, at }
     this.deviceList = [];     // dernière liste des appareils, gardée pour la page du bar
     // Dernière vérification : « ready » (appareil prêt), « no-device » (aucun
-    // appareil à commander), « error » (Spotify injoignable), « unknown »
+    // appareil à commander), « error » (Spotify injoignable, ou refus avec
+    // son code dans `status`), « unknown »
     // (pas encore vérifié). « disconnected » se déduit de la connexion.
     this.health = { state: 'unknown', device: null, checkedAt: 0, okAt: 0, message: null };
     this.failures = 0;        // échecs d'affilée
@@ -235,7 +236,7 @@ class SpotifyLink {
     try { await this.authorizing; } finally { this.authorizing = null; }
     this.lastError = null;
     // Nouvelle connexion : vérifiée au prochain passage de la boucle.
-    this.health = { ...this.health, state: 'unknown' };
+    this.health = { ...this.health, state: 'unknown', status: undefined };
     this.failures = 0;
     this.waitUntil = 0;
     this.blockedUntil = 0;
@@ -264,7 +265,7 @@ class SpotifyLink {
       this.waitUntil = 0;
       this.blockedUntil = 0;
       // Spotify répond de nouveau : la vérification suivante dira où on en est.
-      if (this.health.state === 'error') this.health = { ...this.health, state: 'unknown' };
+      if (this.health.state === 'error') this.health = { ...this.health, state: 'unknown', status: undefined };
       return data;
     } catch (error) {
       // Échec d'une connexion déjà remplacée : sans effet sur la nouvelle.
@@ -335,10 +336,13 @@ class SpotifyLink {
     return found;
   }
 
-  _setHealth(state, { device = null, message = null, checked = false } = {}) {
+  // `status` : code HTTP d'un refus de Spotify (il a répondu), absent quand
+  // il est injoignable (réseau, 5xx, 429).
+  _setHealth(state, { device = null, message = null, checked = false, status = 0 } = {}) {
     const at = this.now();
     this.health = { state, device: device ? { id: device.id, name: device.name, active: !!device.active } : null,
-      checkedAt: checked ? at : this.health.checkedAt, okAt: state === 'ready' || state === 'no-device' ? at : this.health.okAt, message };
+      checkedAt: checked ? at : this.health.checkedAt, okAt: state === 'ready' || state === 'no-device' ? at : this.health.okAt, message,
+      ...(status ? { status } : {}) };
   }
 
   // Liste des appareils et état du lecteur : le jeton marche-t-il, l'appareil
@@ -358,7 +362,10 @@ class SpotifyLink {
     } catch (error) {
       if (generation !== this.generation) return this.healthView();
       this.lastError = error.message;
-      this._setHealth('error', { message: error.message, checked: true });
+      // Même partage que _api : réseau, 5xx et 429 = injoignable ; tout autre
+      // code = Spotify a répondu en refusant (jeton, compte, Premium…).
+      const refused = error.status && error.status < 500 && error.status !== 429 ? error.status : 0;
+      this._setHealth('error', { message: error.message, checked: true, status: refused });
     }
     return { ...this.healthView(), adopted: before !== this.config.deviceId };
   }

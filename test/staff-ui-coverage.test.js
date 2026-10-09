@@ -1874,13 +1874,13 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   await page.update({ spotify: { ...connected, health: { state: 'unknown', device: null, checkedAt: 0 } } });
   assert.equal(page.$('spotifyConnected').hidden, false);
   assert.equal(page.$('spotifyReconnectRow').hidden, true);
-  assert.equal(page.$('spotifyPill').textContent, 'Vérification de Spotify…');
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify : vérification…');
   assert.equal(page.$('spotifyPill').className, 'pill');
   assert.equal(page.$('spotifyChip').textContent, 'Spotify : vérification…');
   assert.equal(page.$('spotifyChip').className, 'pill');
   // Prêt : lecture en cours, appareil choisi, dernière action, heure de vérification.
   await page.update({ spotify: { ...connected, health: ready } });
-  assert.equal(page.$('spotifyPill').textContent, 'Spotify connecté · Enceinte');
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify · Enceinte');
   assert.equal(page.$('spotifyPill').className, 'pill ok');
   assert.equal(page.$('spotifyChip').textContent, 'Spotify · Enceinte');
   assert.equal(page.$('spotifyChip').className, 'pill ok');
@@ -1896,25 +1896,25 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   await page.update({ spotify: { ...connected, player: { isPlaying: false, track: { title: 'Get Lucky' } }, deviceId: 'dev-3', deviceName: '',
     lastAction: { at, kind: 'pause', ok: true, result: 'already' }, lastError: 'Spotify : appareil introuvable.',
     health: { state: 'no-device', device: { id: 'dev-3', name: 'Tablette', active: false }, checkedAt: at } } });
-  assert.equal(page.$('spotifyPill').textContent, 'Spotify connecté, aucun appareil : ouvre Spotify sur Tablette');
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify : aucun appareil');
   assert.equal(page.$('spotifyPill').className, 'pill warn');
   assert.equal(page.$('spotifyChip').textContent, 'Spotify : aucun appareil');
   assert.equal(page.$('spotifyChip').className, 'pill warn');
   assert.equal(page.$('tabDotPlus').hidden, false);
-  assert.equal(page.$('spotifyText').textContent, `Spotify : appareil introuvable. Spotify : Get Lucky. Dernière action à ${hhmm(at)} : pause (rien à faire). Vérifié à ${hhmm(at)}.`);
+  assert.equal(page.$('spotifyText').textContent, `Spotify connecté, aucun appareil : ouvre Spotify sur Tablette. Spotify : appareil introuvable. Spotify : Get Lucky. Dernière action à ${hhmm(at)} : pause (rien à faire). Vérifié à ${hhmm(at)}.`);
   assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'PC du bar', 'Enceinte (actif)', 'Appareil choisi (introuvable)'],
     'l’appareil choisi reste affiché, même absent');
   assert.equal(page.$('spotifyDevice').value, 'dev-3', 'et sélectionné : pas de bascule silencieuse');
   await page.update({ spotify: { ...connected, deviceId: '', deviceName: '', health: { state: 'no-device', device: null, checkedAt: at } } });
-  assert.equal(page.$('spotifyPill').textContent, 'Spotify connecté, aucun appareil : ouvre Spotify sur l’appareil voulu');
+  assert.match(page.$('spotifyText').textContent, /^Spotify connecté, aucun appareil : ouvre Spotify sur l’appareil voulu\./);
   // Injoignable : rouge, heure du nouvel essai.
   const retryAt = Date.now() + 120000;
   await page.update({ spotify: { ...connected, player: null, deviceId: '', devices: [], lastAction: { at, kind: 'resume', ok: false },
     lastError: 'Spotify ne répond pas correctement (réseau).', health: { state: 'error', device: null, checkedAt: at, retryAt, message: 'réseau' } } });
-  assert.equal(page.$('spotifyPill').textContent, `Spotify injoignable, nouvel essai à ${hhmm(retryAt)}`);
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify injoignable');
   assert.equal(page.$('spotifyPill').className, 'pill bad');
   assert.equal(page.$('spotifyChip').textContent, 'Spotify injoignable');
-  assert.equal(page.$('spotifyText').textContent, `Spotify ne répond pas correctement (réseau). Dernière action à ${hhmm(at)} : relance en échec. Vérifié à ${hhmm(at)}.`);
+  assert.equal(page.$('spotifyText').textContent, `Spotify injoignable, nouvel essai à ${hhmm(retryAt)}. Spotify ne répond pas correctement (réseau). Dernière action à ${hhmm(at)} : relance en échec. Vérifié à ${hhmm(at)}.`);
   assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify']);
   await page.update({ spotify: { ...connected, lastError: null, health: { state: 'error', device: null, checkedAt: at, retryAt } } });
   assert.equal(page.$('tabDotPlus').hidden, false, 'injoignable : point sur « Plus » même sans erreur d’action');
@@ -3901,4 +3901,66 @@ test('durée maximale : interrupteur coupé par défaut, 5:00 à l’activation,
   await page.poll();
   assert.equal(page.$('maxSongFields').hidden, true);
   assert.equal(page.$('tooLongActions').hidden, true);
+});
+
+// ---------------------------------------------------------------- relecture finale (affichage)
+// Regression: U1 — la pastille du panneau Spotify portait la phrase longue
+// (« Spotify connecté, aucun appareil : ouvre Spotify sur … », nowrap) et
+// débordait de la carte à 390 px. Pastille courte, phrase dans le texte.
+// Regression: U11 — un refus de Spotify (401, 403…) s'affichait « Spotify
+// injoignable, nouvel essai à … » alors que Spotify avait répondu.
+test('Spotify : pastille courte, phrase longue sous le titre, refus de Spotify distinct de « injoignable »', async () => {
+  const world = baseWorld();
+  const at = Date.now() - 60000;
+  world.spotify = { configured: true, connected: true, clientId: '0123456789abcdef', autoResume: true, autoPause: false,
+    deviceId: 'dev-3', deviceName: 'Tablette', player: null, lastAction: null, lastError: null, devices: [],
+    health: { state: 'no-device', device: { id: 'dev-3', name: 'Tablette', active: false }, checkedAt: at } };
+  const page = await openPage({ world });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify : aucun appareil', 'pastille courte');
+  assert.equal(page.$('spotifyPill').className, 'pill warn');
+  assert.equal(page.$('spotifyText').textContent, `Spotify connecté, aucun appareil : ouvre Spotify sur Tablette. Vérifié à ${hhmm(at)}.`,
+    'la phrase complète reste lisible sous le titre');
+  const retryAt = Date.now() + 120000;
+  await page.update({ spotify: { ...world.spotify, health: { state: 'error', device: null, checkedAt: at, retryAt, message: 'réseau' } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify injoignable');
+  assert.match(page.$('spotifyText').textContent, new RegExp(`^Spotify injoignable, nouvel essai à ${hhmm(retryAt)}\\.`));
+  // Refus de Spotify : le code et le message, sans promesse de nouvel essai.
+  await page.update({ spotify: { ...world.spotify, lastError: 'Spotify refuse la commande pour ce compte.',
+    health: { state: 'error', status: 403, device: null, checkedAt: at, retryAt, message: 'Spotify refuse la commande pour ce compte.' } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify refuse la demande');
+  assert.equal(page.$('spotifyPill').className, 'pill bad');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify refuse la demande');
+  assert.equal(page.$('spotifyText').textContent, `Spotify refuse la demande : Spotify refuse la commande pour ce compte. Vérifié à ${hhmm(at)}.`,
+    'message une seule fois, pas d’« injoignable » ni de nouvel essai annoncé');
+  assert.doesNotMatch(page.$('spotifyText').textContent, /injoignable|nouvel essai/);
+  assert.equal(page.$('tabDotPlus').hidden, false, 'refus : point sur « Plus »');
+});
+
+// Regression: U7 — les boutons « QR de reprise » répétés n'avaient pas de nom distinct.
+// Regression: U10 — le repère « plus long que … » était dans .queue-tags,
+// caché au téléphone : un repère court hors de .queue-tags le remplace.
+// Regression: U12 — l'aide promettait un « ajout pour quelqu’un » du bar, qui n'existe pas.
+test('relecture : nom accessible des « QR de reprise », repère trop long au téléphone, aide de la durée maximale', async () => {
+  const solo = await openPage({ world: soloWorld() });
+  const share = solo.in('soloistList', '[data-soloist="gael"] [data-soloist-share]');
+  assert.equal(share.getAttribute('aria-label'), 'QR de reprise pour Gaël');
+
+  const world = baseWorld();
+  world.settings.maxSongSec = 300;
+  world.tooLong = { limitSec: 300, count: 1 };
+  world.queue = [{ source: 'helper', id: 'bruno', pos: 1, name: 'Bruno', ids: ['bruno'], tooLongSec: 372, song: { entryId: 'b1', title: 'Épopée', duration: 372 } },
+    { source: 'helper', id: 'dora', pos: 2, name: 'Dora', ids: ['dora'], song: { entryId: 'd1', title: 'Court', duration: 200 } }];
+  const page = await openPage({ world });
+  const [long, short] = page.all('qBody', '.queue-item');
+  const mark = long.querySelector('.person-cell .too-long-tag');
+  assert.ok(mark, 'repère court dans la cellule du nom');
+  assert.equal(mark.closest('.queue-tags'), null, 'hors des badges cachés au téléphone');
+  assert.equal(mark.textContent, 'trop long');
+  assert.match(mark.title, /Ce titre dure 6:12/);
+  assert.equal(short.querySelector('.too-long-tag'), null);
+  const help = page.$('maxSongOn').closest('section').textContent;
+  assert.doesNotMatch(help, /ajout pour quelqu/, 'aucune route du bar n’ajoute pour quelqu’un');
+  assert.match(help, /Battle lancée par le bar/);
+  assert.match(help, /« Relancer »/);
+  assert.match(help, /déjà dans KaraFun/);
 });

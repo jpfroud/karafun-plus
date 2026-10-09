@@ -291,6 +291,10 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .staff-alert .activity { font-size: inherit; }
 .badge.name-missing { color: var(--warn); border-color: rgba(255,176,32,.45); justify-self: start; }
 .queue-item .idle-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bad); font-size: 11px; font-weight: 700; }
+/* Titre au-delà de la durée maximale : repère court au téléphone, où .queue-tags
+   (et son badge « plus long que … ») est caché. Toujours entier : le prénom et
+   la table prennent les « … ». */
+.queue-item .too-long-tag { display: none; flex: none; white-space: nowrap; color: var(--warn); font-size: 11px; font-weight: 700; }
 .manual-history { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2, #211d39); }
 .manual-history summary { cursor: pointer; font-weight: 700; }
 .manual-history .count { margin-left: 4px; }
@@ -375,8 +379,16 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .save-status.warn { color: var(--warn); }
 .link-btn { appearance: none; border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .staff [aria-invalid="true"] { border-color: var(--bad); }
-.scene-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.scene-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; max-width: 100%; }
 .scene-chips #autoWarn { cursor: pointer; }
+/* Pastilles Spotify : texte court ; un nom d'appareil long est abrégé par « … »
+   au lieu de déborder (inline-block : « … » impossible dans une boîte flex). */
+#spotifyPill, #spotifyChip { display: inline-block; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+/* Celle de la Scène est un bouton : elle mène aux réglages de Spotify. */
+/* En px : un % ne compte pas dans sa largeur minimale (nom d'appareil long). */
+#spotifyChip { max-width: 260px; cursor: pointer; }
+#spotifyChip:hover, #spotifyChip:focus-visible { border-color: var(--accent-2); background: var(--surface); }
+#spotifyChip:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
 .closing-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 3px 2px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; font-weight: 750; }
 .closing-chip .btn { min-height: 30px; padding: 2px 9px; font-size: 12px; }
 .stage-card .live-who, .next-card .live-who { display: grid; gap: 10px; }
@@ -491,7 +503,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .identity-row .btn, .identity-bonus { min-height: 40px; }
   .identity-row [data-identity-note] { min-height: 42px; }
   .stage-history-actions .btn { min-height: 36px; padding: 4px 10px; font-size: 12px; }
-  .identity-list, .stage-history-list { max-height: none; overflow: visible; }
+  .identity-list, .stage-history-list, .soloist-list { max-height: none; overflow: visible; }
+  .soloist-row .btn { min-height: 40px; }
+  #spotifyChip { min-height: 44px; line-height: 34px; }
 }
 
 @media (max-width: 1100px) {
@@ -514,6 +528,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .queue-item { grid-template-columns: 44px 22px minmax(0,1fr) 43px 48px; row-gap: 2px; padding: 5px 3px; min-height: 58px; }
   .queue-item .person-cell { grid-column: 3; }
   .queue-item .person-cell .queue-tags { display: none; }
+  .queue-item .too-long-tag { display: inline; }
   .queue-item .song-cell { grid-column: 3 / 5; grid-row: 2; }
   .queue-item .eta { grid-column: 4; grid-row: 1; }
   .queue-item .row-actions { grid-column: 5; grid-row: 1 / 3; }
