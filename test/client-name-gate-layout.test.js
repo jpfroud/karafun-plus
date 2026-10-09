@@ -9,7 +9,8 @@
 // Le DOM simulé de client-ui-coverage.test.js ne calcule pas la mise en page :
 // seul un vrai navigateur mesure ces positions. Aucun serveur ni port : la
 // vraie page (client.html, app.css, client-i18n.js) est servie par Playwright,
-// avec un état de « Solo 3 » encore sans prénom et six reprises proposées.
+// avec un état de « Solo 3 » encore sans prénom et dix reprises proposées
+// (assez pour dépasser l'écran aux quatre tailles, même avec un seul titre).
 // Sans Playwright ou son Chromium, le test est ignoré (playwright-browser.js).
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -20,7 +21,7 @@ const root = path.join(__dirname, '..');
 const ORIGIN = 'http://karaoke.test';
 const FILES = { '/t/Comptoir/secret': ['client.html', 'text/html'], '/app.css': ['app.css', 'text/css'],
   '/client-i18n.js': ['client-i18n.js', 'text/javascript'] };
-const NAMES = ['Marie', 'Léa', 'Maximilien-Alexandre', 'Noé', 'Zoé', 'Bob'];
+const NAMES = ['Marie', 'Léa', 'Maximilien-Alexandre', 'Noé', 'Zoé', 'Bob', 'Inès', 'Gaston', 'Anne-Sophie', 'Hugo'];
 
 const stateOf = candidates => ({
   table: { id: 'Comptoir', name: 'En solo', individual: true, count: 9 },
@@ -48,7 +49,7 @@ const measure = page => page.evaluate(() => {
   const browser = await chromium.launch();
   try {
     for (const [width, height] of [[320, 568], [375, 560], [390, 664], [640, 360]]) {
-      for (const candidates of [6, 0]) {
+      for (const candidates of [NAMES.length, 0]) {
         const at = `${width}x${height}, ${candidates} prénom(s)`;
         const context = await browser.newContext({ viewport: { width, height }, isMobile: true, hasTouch: true });
         const page = await context.newPage();
@@ -94,5 +95,5 @@ const measure = page => page.evaluate(() => {
   } finally {
     await browser.close();
   }
-  console.log('Fenêtre de prénom en navigateur : FR/EN et titre atteignables avec six reprises à 320x568, 375x560, 390x664 et 640x360, panneau court centré OK');
+  console.log('Fenêtre de prénom en navigateur : FR/EN et titre atteignables avec dix reprises à 320x568, 375x560, 390x664 et 640x360, panneau court centré OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });
