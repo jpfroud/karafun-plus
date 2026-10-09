@@ -1863,9 +1863,10 @@
       const lineIds = q.ids?.length ? q.ids : q.source === 'helper' && q.id != null ? [q.id] : [];
       const idleTags = lineIds.map(personOf).map(p => [p, activityOf(p)]).filter(([, a]) => a?.level === 'late')
         .map(([p, a]) => {
-          // Au téléphone, seul le prénom d'un duo peut prendre les « … », jamais la durée.
+          // Duo : « Prénom : inactif 52 min » forme un bloc, qui passe à la ligne
+          // sous le nom du duo plutôt que de perdre le prénom ou la durée.
           const who = lineIds.length > 1 ? `${p.name} : ` : '';
-          return `<span class="idle-tag" title="${esc(`${who}${a.text} · ${a.title}`)}">${who ? `<span class="idle-who">${esc(who)}</span>` : ''}<span class="idle-for">${esc(a.short)}</span></span>`;
+          return `<span class="idle-tag${who ? ' duo' : ''}" title="${esc(`${who}${a.text} · ${a.title}`)}">${who ? `<span class="idle-who">${esc(who)}</span>` : ''}<span class="idle-for">${esc(a.short)}</span></span>`;
         }).join('');
       // Durée maximale dépassée : le badge de .queue-tags est caché au téléphone, ce repère court y reste.
       const tooLongTitle = q.tooLongSec && S.tooLong?.limitSec ? `Ce titre dure ${minSec(q.tooLongSec)}, au-delà de la durée maximale (« Plus » › règles) : ajouté avant la limite, il reste dans la file sauf retrait.` : '';

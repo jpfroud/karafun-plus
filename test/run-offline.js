@@ -31,7 +31,7 @@ function run(file, env = {}) {
       await new Promise(r=>setTimeout(r,100));
     }
     if (!ready) throw new Error('Démo non prête');
-    await run(script, {BASE:base});
+    for (const one of [].concat(script)) await run(one, {BASE:base});
   } finally {
     if (demo.exitCode === null) {
       await new Promise(resolve => {
@@ -54,7 +54,8 @@ function run(file, env = {}) {
   await demoTest(3111, 4, 'test/bar-feedback-api.test.js');
   await demoTest(3112, 10, 'test/transfer-link-api.test.js');
   await demoTest(3113, 30, 'test/bar-feedback-v04-api.test.js');
-  await demoTest(3114, 10, 'test/staff-qr-layout.test.js');
+  // Mesures de la page du bar dans un vrai navigateur, sur la même démo.
+  await demoTest(3114, 10, ['test/staff-qr-layout.test.js', 'test/staff-idle-layout.test.js']);
   await demoTest(3118, 10, 'test/stage-progress-api.test.js');
   await demoTest(3115, 10, 'test/solo-access-api.test.js');
   await demoTest(3127, 10, 'test/battle-late-joiner-api.test.js');

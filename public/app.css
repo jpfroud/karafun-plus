@@ -291,14 +291,22 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .staff-alert .activity { font-size: inherit; }
 .badge.name-missing { color: var(--warn); border-color: rgba(255,176,32,.45); justify-self: start; }
 /* Solo sans nouvelles, sur la ligne de la file : « inactif 1 h 05 », la durée
-   toujours entière (largeur minimale du repère) ; seul le prénom d'un duo
-   (« Marie : ») prend les « … ». La phrase complète est dans l'infobulle. */
-/* display: contents : ses deux parties sont des éléments de .person-cell, où
-   la durée garde sa largeur et le reste (prénom, table, prénom du duo) rétrécit
-   (mesuré dans Chromium à 390 et 360 px). L'infobulle reste celle du repère. */
+   toujours entière ; le prénom et la table rétrécissent. La phrase complète
+   est dans l'infobulle. display: contents : la durée est un élément de
+   .person-cell (mesuré dans Chromium à 390 et 360 px). */
 .queue-item .idle-tag { display: contents; color: var(--bad); font-size: 11px; font-weight: 700; }
 .queue-item .idle-tag .idle-who { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-item .idle-tag .idle-for { flex: none; white-space: nowrap; }
+/* Duo : chaque « Prénom : inactif 52 min » est un bloc entier qui passe à la
+   ligne sous le nom du duo (un ou deux partenaires sans nouvelles), au lieu de
+   réduire le nom et les prénoms à rien et de couper la seconde durée. Seul un
+   prénom plus long que la colonne prend les « … » (min-width: 0, max-width). */
+.queue-item .person-cell:has(.idle-tag.duo) { flex-wrap: wrap; row-gap: 0; }
+.queue-item .idle-tag.duo { display: inline-flex; align-items: baseline; gap: 0 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
+/* Sous 380 px, « Bob : inactif depuis 21:04 » ne tient plus sur une ligne de
+   la colonne (134 px pour 123 à 360 px) : le prénom passe au-dessus de la
+   durée plutôt que de devenir « B. ». */
+@media (max-width: 380px) { .queue-item .idle-tag.duo { flex-wrap: wrap; } }
 /* Repère d'inactivité et « trop long » ensemble (rare) : la cellule passe à
    la ligne plutôt que de couper l'un des deux. */
 .queue-item .person-cell:has(.idle-tag):has(.too-long-tag) { flex-wrap: wrap; row-gap: 0; }

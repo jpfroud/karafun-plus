@@ -207,13 +207,11 @@ assert.match(spotifyPanel, /^\s*<div class="section-heading">.*?id="spotifyPill"
 // Regression: D15-A (relecture finale) — au téléphone du bar, « Sans nouvelles
 // depuis 1 h 05 » / « pas revenu depuis l’ouverture du QR (21:04) » était
 // coupé par « … » avant la durée. La ligne affiche « inactif 1 h 05 », dont la
-// durée (.idle-for) ne rétrécit jamais ; seul le prénom d'un duo (.idle-who)
-// prend les « … », et le prénom avec repère (bouton) cède la place.
+// durée (.idle-for) ne rétrécit jamais ; le prénom avec repère (bouton) cède
+// la place. Duo : voir plus bas et staff-idle-layout.test.js (mesures réelles).
 for (const width of [360, 390, 650, 1366]) {
   const tag = computed('.queue-item .idle-tag', width);
-  // Un repère inline-flex garde la largeur de sa phrase entière (contribution
-  // minimale de ses enfants) : la durée débordait encore pour un duo à 390 px.
-  assert.equal(tag.display, 'contents', `${width} px : prénom du duo et durée sont des éléments de la cellule`);
+  assert.equal(tag.display, 'contents', `${width} px : la durée d'un soliste est un élément de la cellule`);
   assert.notEqual(tag.overflow, 'hidden', `${width} px : rien de caché dans le repère`);
   assert.notEqual(tag['text-overflow'], 'ellipsis');
   const duration = computed('.queue-item .idle-tag .idle-for', width);
@@ -221,8 +219,20 @@ for (const width of [360, 390, 650, 1366]) {
   assert.equal(duration['white-space'], 'nowrap');
   assert.notEqual(duration.overflow, 'hidden');
   const who = computed('.queue-item .idle-tag .idle-who', width);
-  assert.equal(who['text-overflow'], 'ellipsis', `${width} px : le prénom du duo prend les « … »`);
+  assert.equal(who['text-overflow'], 'ellipsis', `${width} px : seul un prénom plus long que la colonne prend les « … »`);
   assert.equal(who['min-width'], '0');
+  // Vérification de la relecture : un duo dont les deux partenaires étaient
+  // inactifs perdait son nom et ses deux prénoms (0 px), la seconde durée
+  // coupée de 8 à 13 px (390 et 1366 px), et « Léa : » devenait « L. ».
+  // « Prénom : inactif 52 min » est un bloc qui passe à la ligne sous le nom.
+  assert.equal(computed('.queue-item .person-cell:has(.idle-tag.duo)', width)['flex-wrap'], 'wrap', `${width} px : les repères d'un duo passent à la ligne`);
+  const duo = computed('.queue-item .idle-tag.duo', width);
+  assert.equal(duo.display, 'inline-flex', `${width} px : prénom et durée du duo restent ensemble`);
+  // Sans min-width: 0, le bloc garde la largeur de sa phrase entière et déborde.
+  assert.equal(duo['min-width'], '0');
+  assert.equal(duo['max-width'], '100%');
+  // Sous 380 px, « Bob : inactif depuis 21:04 » ne tient plus sur une ligne.
+  assert.equal(duo['flex-wrap'], width <= 380 ? 'wrap' : undefined, `${width} px : le prénom ${width <= 380 ? 'passe au-dessus de' : 'reste à côté de'} la durée`);
   const named = computed('.queue-item .person-cell:has(.idle-tag) button.person', width);
   assert.equal(named.flex, '0 1 auto', `${width} px : le prénom avec repère rétrécit devant la durée`);
   assert.equal(named['min-width'], '0');

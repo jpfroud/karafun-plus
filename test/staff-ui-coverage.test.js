@@ -3749,11 +3749,13 @@ test('activité des solos : tuile « En solo », ligne de la file au-delà de 45
   assert.equal(lines[0].querySelector('.idle-tag').textContent, 'inactif 1 h 05');
   assert.equal(lines[0].querySelector('.idle-tag .idle-for').textContent, 'inactif 1 h 05', 'la durée est dans la partie jamais abrégée');
   assert.equal(lines[0].querySelector('.idle-tag .idle-who'), null, 'solo : pas de prénom répété');
+  assert.equal(lines[0].querySelector('.idle-tag').classList.contains('duo'), false, 'solo : la durée reste sur la ligne du prénom');
   assert.equal(lines[0].querySelector('.idle-tag').title, `Sans nouvelles depuis 1 h 05 · Dernière activité sur son téléphone à ${hhmm(world.now - 65 * MIN - 5000)}`);
   assert.equal(lines[1].querySelector('.idle-tag'), null, '25 min : pas encore sur la file');
   assert.equal(lines[2].querySelector('.idle-tag'), null, 'table ordinaire : rien');
   assert.equal(lines[3].querySelector('.idle-tag').textContent, `Solo 3 : inactif depuis ${hhmm(world.now - 50 * MIN)}`, 'duo : la personne concernée est nommée');
   assert.equal(lines[3].querySelector('.idle-tag .idle-who').textContent, 'Solo 3 : ', 'duo : seul le prénom peut prendre les « … »');
+  assert.equal(lines[3].querySelector('.idle-tag').classList.contains('duo'), true, 'duo : « Prénom : inactif … » est un bloc qui passe à la ligne (staff-idle-layout.test.js)');
   assert.equal(lines[3].querySelector('.idle-tag .idle-for').textContent, `inactif depuis ${hhmm(world.now - 50 * MIN)}`);
   assert.equal(lines[3].querySelector('.idle-tag').title, `Solo 3 : Pas revenu depuis l’ouverture du QR (${hhmm(world.now - 50 * MIN)}) · Dernière activité sur son téléphone à ${hhmm(world.now - 50 * MIN)}`);
   assert.equal(lines[4].querySelector('.idle-tag'), null);
