@@ -2918,9 +2918,12 @@ test('QR individuel : ouverture comptée par un seul POST, fenêtre de prénom b
   page.dispatch(page.body, 'keydown', { key: 'Escape' });
   assert.equal(page.node('nameGate').hidden, false, 'Échap ne ferme pas la fenêtre');
 
+  // Regression: deuxième relecture finale (RT1) — « déjà inscrit » ne parlait
+  // que de l'initiale : la personne qui tapait son propre prénom s'inscrivait
+  // une deuxième fois au lieu de reprendre son profil par le code.
   page.node('nameGateInput').value = 'Marie';
   await page.submit('nameGateForm');
-  assert.equal(page.node('nameGateError').textContent, 'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).');
+  assert.equal(page.node('nameGateError').textContent, 'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit\u00a0? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).');
   assert.equal(page.node('nameGate').hidden, false);
   page.node('nameGateInput').value = 'Erreur';
   await page.submit('nameGateForm');
@@ -3200,12 +3203,14 @@ test('rescan : le lien de transfert et la clé personnelle passent avant la fen�
     }
     return extra?.(url, body, self);
   };
+  // « Solo 9 » ouvert dans cet onglet par le QR de l'événement.
+  const session = sessionMap({ 'kfEventPlace:Comptoir:secret': 's9' });
   const page = await soloPage('?reprise=LIEN-TEST', placeholder(), withOffer({ personId: 'lea', name: 'Léa' }, (url, body, self) => {
     if (url !== '/api/table/person/claim') return undefined;
     self.state.tablePeople = [person('lea', 'Léa')];
     self.state.managedIds = ['lea'];
     return { id: 'lea', token: 'jeton-lea' };
-  }));
+  }), { session });
   assert.equal(page.node('nameGate').hidden, true, 'la reprise passe avant le prénom');
   assert.equal(page.node('mainContent').hidden, false);
   assert.equal(page.node('transferBox').hidden, false);
@@ -3214,6 +3219,15 @@ test('rescan : le lien de transfert et la clé personnelle passent avant la fen�
   assert.deepEqual(page.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', link: 'LIEN-TEST' }]);
   assert.equal(page.node('nameGate').hidden, true);
   assert.equal(page.toast().text, 'Tu gères maintenant Léa sur ce téléphone.');
+  // Regression: deuxième relecture finale — la place « Solo 9 » retirée par la
+  // reprise restait notée : Léa partie plus tard sur un autre téléphone, cet
+  // onglet disait « QR d’événement plus actif » alors qu'il l'est toujours.
+  assert.equal(session.getItem('kfEventPlace:Comptoir:secret'), '', 'reprise par lien : la place « Solo 9 » oubliée');
+  page.state.tablePeople = [person('lea', 'Léa')];
+  page.state.managedIds = [];
+  await page.poll();
+  assert.equal(page.node('noSingerBox').hidden, false);
+  assert.doesNotMatch(page.node('noSingerText').textContent, /plus actif/, 'Léa reprise ailleurs : pas « QR plus actif »');
 
   // « Pas maintenant » : la fenêtre de prénom revient.
   const later = await soloPage('?reprise=LIEN-TEST', placeholder(), withOffer({ personId: 'lea', name: 'Léa' }));
@@ -3224,19 +3238,21 @@ test('rescan : le lien de transfert et la clé personnelle passent avant la fen�
   assert.equal(expired.node('nameGate').hidden, false);
 
   // Clé personnelle d'une autre personne : « C'est bien toi ? » avant le prénom.
+  const keySession = sessionMap({ 'kfEventPlace:Comptoir:secret': 's9' });
   const key = await soloPage('?invitation=CLE-CLARA', placeholder(), (url, body, self) => {
     if (url === '/api/table/solo/open') return { recover: { id: 'c1', name: 'Clara' } };
     if (url !== '/api/table/person/claim') return undefined;
     self.state.tablePeople = [person('c1', 'Clara')];
     self.state.managedIds = ['c1'];
     return { id: 'c1', token: 'jeton-c1' };
-  }, { languages: ['en'] });
+  }, { languages: ['en'], session: keySession });
   assert.deepEqual(postsTo(key, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-CLARA' }]]);
   assert.equal(key.node('nameGate').hidden, true);
   assert.equal(key.node('transferHeading').textContent, 'Is that you, Clara?');
   await key.tap('transferActions', '[data-key-claim]');
   assert.deepEqual(key.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', key: 'CLE-CLARA' }]);
   assert.equal(key.node('nameGate').hidden, true);
+  assert.equal(keySession.getItem('kfEventPlace:Comptoir:secret'), '', 'reprise par la clé personnelle : la place « Solo 9 » oubliée');
   // Un prénom déjà donné sur ce téléphone : la clé n'est pas rouverte (inchangé).
   const named = await soloPage('?invitation=CLE-CLARA', soloState({ soloInvitationReady: false, tablePeople: [person('s9', 'Marie')], managedIds: ['s9'] }));
   assert.equal(postsTo(named, '/api/table/solo/open').length, 0);
@@ -3547,13 +3563,13 @@ test('fenêtre de prénom : message retraduit, effacé à chaque essai, reste de
 
   page.node('nameGateInput').value = 'Marie';
   await page.submit('nameGateForm');
-  assert.equal(error().textContent, 'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).');
+  assert.equal(error().textContent, 'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit\u00a0? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).');
   await page.tap('nameGateLang', '[data-lang="en"]');
-  assert.equal(error().textContent, 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.).', 'le message suit la langue');
+  assert.equal(error().textContent, 'This first name is already signed up. If it’s you, tap “Already signed up? I have a code”; otherwise add the initial of your last name (e.g. Mary L.).', 'le message suit la langue');
   assert.equal(error().hidden, false);
   for (const node of background()) assert.equal(node.inert, true, 'toujours inerte après le changement de langue');
   await page.tap('nameGateLang', '[data-lang="fr"]');
-  assert.equal(error().textContent, 'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).');
+  assert.equal(error().textContent, 'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit\u00a0? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).');
 
   // Message du serveur : retraduit lui aussi.
   page.node('nameGateInput').value = 'Erreur';

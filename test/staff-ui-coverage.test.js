@@ -3619,7 +3619,7 @@ function soloWorld() {
   const world = baseWorld();
   const now = Date.parse('2026-10-04T21:00:00');
   world.now = now;
-  world.tables[2].activeCount = 6; world.tables[2].count = 7;
+  world.tables[2].activeCount = 5; world.tables[2].count = 7; // « Solo 3 » sans prénom : pas compté (countsAsPresent)
   world.people[0].lastActiveAt = now - 80 * MIN; // table ordinaire : jamais d'indication
   world.people.push(
     { id: 'eva', name: 'Eva', tableId: 'Comptoir', active: true, songCount: 1, sung: 0, joinedAt: now - 90 * MIN, lastActiveAt: now - 30000 },
@@ -3680,7 +3680,9 @@ test('Accueil : liste « Solistes » triée par activité, prénom à saisir, QR
   const page = await openPage({ world });
   const names = () => texts(page.all('soloistList', '.soloist-row strong'));
   assert.deepEqual(names(), ['Eva', 'Farid', 'Gaël', 'Solo 3', 'Hana', 'Dora'], 'activité la plus récente d’abord, partis exclus');
-  assert.equal(page.$('soloistCount').textContent, '6');
+  // Regression: deuxième relecture finale (RT2) — le nombre comptait « Solo 3 »
+  // (sans prénom) : « 6 » à côté de « 5 solistes présents ».
+  assert.equal(page.$('soloistCount').textContent, '5', 'une place « Solo N » sans prénom n’est pas comptée');
   assert.equal(page.$('soloistSearchBox').hidden, true, 'pas de recherche jusqu’à 8 solistes');
   const row = id => page.in('soloistList', `[data-soloist="${id}"]`);
   assert.equal(row('solo3').querySelector('.badge.name-missing').textContent, 'prénom à saisir');
@@ -3742,7 +3744,9 @@ test('activité des solos : tuile « En solo », ligne de la file au-delà de 45
   world.maybeGone = [{ id: 'hana', name: 'Hana', table: 'En solo', skips: 2, title: 'A' }, { id: 'alice', name: 'Alice', table: 'Table 1', skips: 2, title: 'C' }];
   const page = await openPage({ world });
   const card = id => page.in('tBody', `[data-table-card="${id}"]`);
-  assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '6 solistes · 3 sans nouvelles');
+  // Regression: deuxième relecture finale (RT2) — « Solo 3 » (sans prénom,
+  // 50 min) comptait parmi les « sans nouvelles » mais pas parmi les solistes.
+  assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '5 solistes · 2 sans nouvelles', 'Gaël et Hana ; « Solo 3 » sans prénom ne compte pas');
   assert.equal(card('1').querySelector('.occupancy').textContent, '2 actifs / 2 inscrits / 4 places', 'tables : inchangé');
   const lines = page.all('qBody', '.queue-item');
   // Repère court, la durée d'abord (jamais coupé au téléphone) ; la phrase complète dans l'infobulle.
@@ -3774,7 +3778,7 @@ test('activité des solos : tuile « En solo », ligne de la file au-delà de 45
   // Plus personne sans nouvelles : la tuile ne compte que les solistes.
   for (const p of page.world.people) if (p.lastActiveAt) p.lastActiveAt = page.world.now;
   await page.poll();
-  assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '6 solistes');
+  assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '5 solistes');
 });
 
 test('événement privé : interrupteur, QR en grand, copier, imprimer, renouveler avec confirmation', async () => {

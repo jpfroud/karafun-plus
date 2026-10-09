@@ -129,7 +129,8 @@ window.CLIENT_TRANSLATIONS = {
       'Bienvenue ! Quel est ton prénom ?': 'Welcome! What’s your first name?',
       'Il s’affiche dans la file et sur l’écran du bar quand c’est ton tour.': 'It shows in the queue and on the bar’s screen when it’s your turn.',
       'Valider': 'Confirm',
-      'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).': 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.).',
+      'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit ? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).':
+        'This first name is already signed up. If it’s you, tap “Already signed up? I have a code”; otherwise add the initial of your last name (e.g. Mary L.).',
       // QR individuel et événement privé
       'Un instant : ouverture de ton QR…': 'One moment: opening your QR code…',
       'Inscription en cours…': 'Signing you up…',

@@ -1261,7 +1261,12 @@
         try { localStorage.removeItem(tokenKey); } catch (_) { /* Aucun stockage à nettoyer. */ }
       }
       const granted = new Set(list(data.managedIds).map(String));
-      if (eventPlaceId && list(data.tablePeople).some(person => String(person.id) === eventPlaceId && !person.nameRequired)) rememberEventPlace('');
+      // Place de l'événement oubliée dès qu'elle a un prénom, ou dès que ce
+      // téléphone gère quelqu'un d'autre : toute reprise (code, lien, clé
+      // personnelle, QR individuel neuf) l'a retirée, ce n'est pas un « QR
+      // d'événement plus actif ».
+      if (eventPlaceId && (list(data.tablePeople).some(person => String(person.id) === eventPlaceId && !person.nameRequired)
+        || (granted.size && !granted.has(eventPlaceId)))) rememberEventPlace('');
       let changed = false;
       const movedAway = [];
       for (const id of Object.keys(personTokens)) if (!granted.has(id)) {
@@ -1323,7 +1328,8 @@
   // Place sans prénom ouverte ici par le QR de l'événement, gardée pour cet
   // onglet (rechargement compris) : l'adresse a perdu ?evenement=, mais si
   // « Renouveler le QR » la retire, la page dit encore « QR plus actif ».
-  // Oubliée dès qu'elle a un prénom (une place nommée n'est jamais retirée).
+  // Oubliée dès qu'elle a un prénom (une place nommée n'est jamais retirée)
+  // ou qu'une reprise l'a remplacée (refresh).
   const eventPlaceKey = `kfEventPlace:${tableId}:${access}`;
   let eventPlaceId = '';
   try { eventPlaceId = sessionStore()?.getItem(eventPlaceKey) || ''; } catch (_) { /* Rien de gardé. */ }
@@ -2412,7 +2418,8 @@
       await refresh();
       toast(t('{name} est inscrit.', { name }));
     } catch (failure) {
-      setNameGateMessage(failure.code === 'NAME_TAKEN' ? () => t('Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.).')
+      // Son propre prénom, souvent : la reprise par code d'abord, l'initiale sinon.
+      setNameGateMessage(failure.code === 'NAME_TAKEN' ? () => t('Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit ? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).')
         : failure.localized || (() => failure.message));
     } finally { button.disabled = false; }
   });
