@@ -1274,3 +1274,104 @@ test('réglages de titre : défauts relevés quand KaraFun a chargé le titre, p
   status('after', 3, [{ volume: 0, track: { type: 4 } }, { volume: 0, track: { type: 5 } }]);
   assert.equal(bridge.snapshot().songSettings.defaults.backing, 60);
 });
+
+// Regression: relecture finale R3 — un premier titre chargé avec un volume de
+// chœurs dans ses options verrouillait le relevé : la valeur par défaut du
+// bar (53) n'était jamais apprise de toute la soirée, et les chœurs n'étaient
+// plus remis entre deux titres (titre isolé, lot G). Le verrou ne vaut
+// qu'une fois une valeur par défaut relevée.
+test('réglages de titre : chœurs par défaut relevés même si le premier titre portait ses propres chœurs', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const status = (id, state, backing, options = { singer: 'Lina · Table 4' }) => ws.receive({ type: 'remote.StatusEvent', payload: {
+    status: { current: { id, song: { id: { type: 1, id: 12458 }, title: 'T', songTracks: [{ type: 4 }, { type: 5 }], options } },
+      state, pitch: 0, tempo: 0, tracks: [{ volume: backing, track: { type: 4 } }, { volume: 0, track: { type: 5 } }] } } });
+  // Titre 1 : envoyé avec chœurs à 75.
+  status('t1', 3, 75, { singer: 'Léa', tracks: [{ track: { type: 4 }, volume: 75 }] });
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 100, 'pas relevé sur un titre qui règle ses chœurs');
+  // Titres 2 à 4 sans options : le KaraFun du bar les met à 53.
+  for (const id of ['t2', 't3', 't4']) status(id, 3, 53);
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 53);
+  assert.equal(bridge.observedDefaults.backing, 53, 'les chœurs seront remis à 53 entre deux titres');
+  // Une fois relevée, la valeur ne change plus après un réglage des chœurs.
+  bridge.setTrackVolume(4, 0);
+  status('t5', 3, 0);
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 53);
+});
+
+// Regression: vérification de la relecture R3 — KaraFun « collant » : le
+// premier titre (options chœurs 75, ou 0) garde ses chœurs au titre suivant
+// sans options. La valeur gardée était apprise comme valeur par défaut du
+// bar, puis imposée à tous les titres suivants. Rien n'est relevé tant que
+// les chœurs du titre suivant sont ceux laissés par le précédent.
+const backingStatus = ws => (id, state, backing, options = { singer: 'Zoé' }) => ws.receive({ type: 'remote.StatusEvent', payload: {
+  status: { current: { id, song: { id: { type: 1, id: 12458 }, title: 'T', songTracks: [{ type: 4 }, { type: 5 }], options } },
+    state, pitch: 0, tempo: 0, tracks: state === 1 ? [] : [{ volume: backing, track: { type: 4 } }, { volume: 0, track: { type: 5 } }] } } });
+for (const kept of [75, 0]) {
+  test(`réglages de titre : KaraFun collant, les chœurs gardés du titre précédent (${kept}) ne deviennent pas la valeur par défaut`, async t => {
+    mockTime(t);
+    const { bridge, ws } = await adminBridge(t);
+    t.after(() => bridge.disconnect());
+    const status = backingStatus(ws);
+    status('t1', 3, kept, { singer: 'Léa', tracks: [{ track: { type: 4 }, volume: kept }] });
+    for (const id of ['t2', 't3']) {
+      status(id, 2, kept);
+      status(id, 3, kept);
+    }
+    assert.equal(bridge.observedDefaults.backing, undefined, `chœurs ${kept} gardés par KaraFun : pas une valeur par défaut`);
+    assert.equal(bridge.snapshot().songSettings.defaults.backing, 100);
+    // Le bar règle les chœurs en direct sur t3 : t4 les garde, toujours rien.
+    status('t3', 4, 80);
+    status('t4', 3, 80);
+    assert.equal(bridge.observedDefaults.backing, undefined);
+    // Un titre que KaraFun remet de lui-même à une autre valeur la donne.
+    status('t5', 3, 53);
+    assert.equal(bridge.observedDefaults.backing, 53);
+    status('t6', 3, 0);
+    assert.equal(bridge.observedDefaults.backing, 53, 'relevée une fois');
+  });
+}
+
+// Regression: vérification de la relecture (redémarrage) — application
+// relancée en pleine chanson : le premier état vu est un titre déjà en
+// lecture, chœurs réglés en direct (80). Ce réglage était appris comme
+// valeur par défaut. Un titre vu pour la première fois déjà en lecture ne
+// donne pas de valeur par défaut ; le suivant, vu se charger, la donne.
+for (const state of [4, 5]) {
+  test(`réglages de titre : un titre vu pour la première fois déjà en lecture (état ${state}) ne donne pas les chœurs par défaut`, async t => {
+    mockTime(t);
+    const { bridge, ws } = await adminBridge(t);
+    t.after(() => bridge.disconnect());
+    const status = backingStatus(ws);
+    status('x', state, 80);
+    status('x', 4, 80);
+    assert.equal(bridge.observedDefaults.backing, undefined, 'réglage en direct, pas une valeur par défaut');
+    assert.equal(bridge.seenLoading('x'), false);
+    status('y', 1, 0);
+    status('y', 2, 53);
+    status('y', 3, 53);
+    assert.equal(bridge.observedDefaults.backing, 53);
+  });
+}
+test('réglages de titre : titre annoncé (état 1) puis vu directement en lecture : vu se charger', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const status = backingStatus(ws);
+  status('z', 1, 0);
+  status('z', 4, 53);
+  assert.equal(bridge.observedDefaults.backing, 53);
+  assert.equal(bridge.seenLoading('z'), true);
+  assert.equal(bridge.seenLoading('inconnu'), false);
+});
+test('réglages de titre : titre vu pour la première fois en lecture avec ses propres chœurs : le titre suivant qui les garde ne les donne pas', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const status = backingStatus(ws);
+  status('x', 4, 0, { singer: 'Léa', tracks: [{ track: { type: 4 }, volume: 0 }] });
+  status('y', 2, 0);
+  status('y', 3, 0);
+  assert.equal(bridge.observedDefaults.backing, undefined, 'chœurs de Léa gardés par KaraFun');
+});

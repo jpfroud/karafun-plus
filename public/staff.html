@@ -566,7 +566,9 @@
     // de la fiche le changent, puis il suit le même enregistrement que les autres.
     songSettings: { text: true, delay: 700, validate: () => null,
       send: async (value, id) => {
-        const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id, settings: JSON.parse(value || '{}') });
+        // Clé des autres voix guides toujours envoyée ({} : plus aucune).
+        const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id,
+          settings: { guideVoices: {}, ...JSON.parse(value || '{}') } });
         return SAVED_TUNE[result?.applied] || 'Enregistré ✓';
       },
       server: id => tuneKey(songTarget(id)?.q.song?.settings),

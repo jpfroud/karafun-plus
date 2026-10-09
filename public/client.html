@@ -1215,9 +1215,10 @@
     if (legacyToken && !credentials.includes(legacyToken)) credentials.push(legacyToken);
     try {
       // Dernière activité vue par le bar : seulement une page visible. La page
-      // cachée continue d'interroger (notifications), sans compter comme activité.
+      // cachée continue d'interroger (notifications), sans compter comme activité
+      // (« 0 » ; sans en-tête, le serveur compte une page d'avant la mise à jour).
       const data = await request(`/api/state?${params}`, {
-        headers: { 'x-person-tokens': JSON.stringify(credentials), ...(document.hidden ? {} : { 'x-page-visible': '1' }) },
+        headers: { 'x-person-tokens': JSON.stringify(credentials), 'x-page-visible': document.hidden ? '0' : '1' },
       });
       if (number !== stateRequest) return;
       state = data;
@@ -1971,7 +1972,10 @@
     draft.busy = true;
     renderTune();
     try {
-      const result = await post('/api/table/song/settings', { personId: draft.personId, entryId: draft.entryId, settings: draft.value });
+      // Clé des autres voix guides toujours envoyée ({} : plus aucune), sans
+      // quoi le serveur les garde (page d'avant la mise à jour).
+      const result = await post('/api/table/song/settings', { personId: draft.personId, entryId: draft.entryId,
+        settings: { ...draft.value, guideVoices: draft.value?.guideVoices || {} } });
       if (tuneDrafts.get(key) === draft && draft.seq === seq && draft.state === 'saving') {
         // Le brouillon s'efface au premier état demandé après cet envoi.
         draft.state = 'saved';
