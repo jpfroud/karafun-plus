@@ -1252,6 +1252,7 @@
         try { localStorage.removeItem(tokenKey); } catch (_) { /* Aucun stockage à nettoyer. */ }
       }
       const granted = new Set(list(data.managedIds).map(String));
+      if (eventPlaceId && list(data.tablePeople).some(person => String(person.id) === eventPlaceId && !person.nameRequired)) rememberEventPlace('');
       let changed = false;
       const movedAway = [];
       for (const id of Object.keys(personTokens)) if (!granted.has(id)) {
@@ -1310,6 +1311,18 @@
   // Le plafond de l'événement, lui, ne se réessaie pas tout seul.
   const ENTRY_RETRY_MS = 5 * 60000;
   let entryWaited = 0;
+  // Place sans prénom ouverte ici par le QR de l'événement, gardée pour cet
+  // onglet (rechargement compris) : l'adresse a perdu ?evenement=, mais si
+  // « Renouveler le QR » la retire, la page dit encore « QR plus actif ».
+  // Oubliée dès qu'elle a un prénom (une place nommée n'est jamais retirée).
+  const eventPlaceKey = `kfEventPlace:${tableId}:${access}`;
+  let eventPlaceId = '';
+  try { eventPlaceId = sessionStore()?.getItem(eventPlaceKey) || ''; } catch (_) { /* Rien de gardé. */ }
+  function rememberEventPlace(id) {
+    eventPlaceId = id ? String(id) : '';
+    try { sessionStore()?.setItem(eventPlaceKey, eventPlaceId); } catch (_) { /* Gardé pour cette page seulement. */ }
+  }
+  const eventPlaceLost = () => !!eventPlaceId && !managedIds().has(eventPlaceId);
   function retryEntry() {
     entryWaited = 0;
     entry = { status: '', recover: null, error: '' };
@@ -1336,7 +1349,10 @@
         savePersonToken(result.id, result.token);
         // L'adresse garde ?invitation= : ce QR reste la clé de la soirée
         // (historique, favori, « Ouvrir dans le navigateur »).
-        if (!soloInvitation) forgetEventToken();
+        if (!soloInvitation) {
+          forgetEventToken();
+          if (result.nameRequired) rememberEventPlace(result.id);
+        }
         await refresh();
         return;
       }
@@ -1490,7 +1506,7 @@
         : entry.status === 'retry' ? t('Beaucoup d’arrivées en même temps : nouvel essai dans un instant…')
         : entry.status === 'recover' ? t('Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.', { name: entry.recover.name })
           : opening ? t('Un instant : ouverture de ton QR…')
-            : eventToken ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
+            : eventToken || eventPlaceLost() ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
               : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
       const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'recover'
         ? `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'failed'

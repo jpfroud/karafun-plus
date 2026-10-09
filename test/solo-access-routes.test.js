@@ -1068,6 +1068,55 @@ test('QR individuel neuf : la place sans prénom de ce navigateur part, le QR s�
   assert.equal(again.body.code, 'SOLO_DEVICE_USED');
 });
 
+// Regression: deuxième relecture finale (vérification E2) — un QR individuel
+// neuf, ou une reprise, retirait la place sans prénom que ce navigateur ne gère
+// plus : reprise entre-temps par un autre navigateur (QR personnel donné à un
+// ami, essayé par le bar), elle disparaissait avec sa clé personnelle.
+test('QR individuel neuf ou reprise : la place sans prénom reprise par un autre navigateur reste la sienne', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const k1 = invite();
+  const a = await opened(f, tb, k1);
+  // Le QR K1 passe à un ami (navigateur B) : place encore sans prénom, reprise tout de suite.
+  const takeover = await post(f, '/api/table/solo/open', { ...tb, invitation: k1 });
+  assert.equal(takeover.status, 200, takeover.text);
+  assert.equal(takeover.body.id, a.personId);
+  const b = { ...tb, personId: takeover.body.id, token: takeover.body.token, cookie: cookieOf(takeover) };
+  // A ouvre un QR neuf : refusé, la place de B reste.
+  const k2 = invite();
+  const fresh = await post(f, '/api/table/solo/open', { ...tb, invitation: k2 }, { cookie: a.cookie });
+  assert.equal(fresh.status, 403, fresh.text);
+  assert.equal(fresh.body.code, 'SOLO_DEVICE_USED');
+  assert.ok(f.soloInvitations.verify(k2, 'Comptoir'), 'QR neuf intact');
+  assert.ok(f.sched.people.has(b.personId), 'la place de B existe toujours');
+  // A reprend un autre profil (lien de transfert) : refusé aussi, la place de B reste.
+  const zoe = await opened(f, tb, invite());
+  await post(f, '/api/table/person/rename', { ...tb, personId: zoe.personId, token: zoe.token, name: 'Zoé' }, { cookie: zoe.cookie });
+  const share = await post(f, staff(f, '/api/staff/person/share'), { personId: zoe.personId });
+  const claim = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie: a.cookie });
+  assert.equal(claim.status, 403, claim.text);
+  assert.equal(claim.body.code, 'SOLO_DEVICE_USED');
+  assert.ok(f.sched.people.has(b.personId), 'la place de B existe toujours après la reprise refusée');
+  // A ouvre la clé d'une autre place encore sans prénom : refusé, rien ne bouge.
+  const k3 = invite();
+  const other = await opened(f, tb, k3);
+  const byKey = await post(f, '/api/table/solo/open', { ...tb, invitation: k3 }, { cookie: a.cookie });
+  assert.equal(byKey.status, 403, byKey.text);
+  assert.equal(byKey.body.code, 'SOLO_DEVICE_USED');
+  assert.ok(f.sched.people.has(b.personId), 'la place de B existe toujours après la clé refusée');
+  assert.deepEqual((await stateOf(f, tb, other)).body.managedIds, [other.personId]);
+  assert.deepEqual((await stateOf(f, tb, b)).body.managedIds, [b.personId]);
+  const named = await post(f, '/api/table/person/rename', { ...tb, personId: b.personId, token: b.token, name: 'Inès' }, { cookie: b.cookie });
+  assert.equal(named.status, 200, named.text);
+  // Sa clé personnelle la retrouve toujours, sur ce navigateur comme ailleurs.
+  const again = await post(f, '/api/table/solo/open', { ...tb, invitation: k1 }, { cookie: b.cookie });
+  assert.equal(again.status, 200, again.text);
+  assert.equal(again.body.id, b.personId);
+  const elsewhere = await post(f, '/api/table/solo/open', { ...tb, invitation: k1 });
+  assert.equal(elsewhere.status, 200, elsewhere.text);
+  assert.equal(elsewhere.body.recover?.id, b.personId);
+});
+
 // Regression: deuxième relecture finale (A2-3) — une personne marquée partie
 // qui rouvrait son QR personnel dans un autre navigateur lisait « demande un
 // nouveau QR » au lieu de « marquée partie ».

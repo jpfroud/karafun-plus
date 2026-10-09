@@ -3043,6 +3043,45 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
   assert.equal(busy.node('noSingerText').textContent, 'Lots of people arriving at once: trying again in a moment…');
 });
 
+// Regression: deuxième relecture finale (vérification E1(d)) — la place sans
+// prénom ouverte par le QR de l'événement, retirée par « Renouveler le QR »,
+// laissait sa page (et son rechargement) dire « demande au bar un QR
+// individuel » : l'adresse avait déjà perdu ?evenement=.
+test('événement privé : place sans prénom retirée par « Renouveler le QR » = « QR plus actif », même après rechargement', async () => {
+  const session = sessionMap();
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
+    self.state.managedIds = ['s2'];
+    return { id: 's2', token: 'jeton-s2', nameRequired: true };
+  }, { session });
+  assert.equal(page.node('nameGate').hidden, false);
+  assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret');
+  // Le bar renouvelle le QR : la place part sans trace.
+  page.state.tablePeople = [];
+  page.state.managedIds = [];
+  page.state.privateEventReady = false;
+  await page.poll();
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(page.node('noSingerText').textContent, 'Ce QR d’événement n’est plus actif. Demande au bar.');
+  const reloaded = await soloPage('', page.state, undefined, { session, languages: ['en'] });
+  assert.equal(reloaded.posts.length, 0);
+  assert.equal(reloaded.node('noSingerText').textContent, 'This event QR code is no longer active. Ask the bar.');
+
+  // Place nommée puis passée sur un autre téléphone : pas un QR inactif.
+  const named = sessionMap();
+  const moved = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    self.state.tablePeople = [person('s3', 'Léa')];
+    self.state.managedIds = ['s3'];
+    return { id: 's3', token: 'jeton-s3', nameRequired: true };
+  }, { session: named });
+  await moved.poll();
+  moved.state.managedIds = [];
+  await moved.poll();
+  assert.match(moved.node('noSingerText').textContent, /^Pour t’inscrire, demande au bar un QR individuel\./);
+});
+
 // Regression: relecture finale (ADV1) — refusée parce que beaucoup d'invités
 // arrivaient dans la même minute, la page restait en échec sans jamais
 // réessayer ; le plafond de l'événement, lui, ne doit pas boucler.
