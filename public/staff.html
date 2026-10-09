@@ -735,10 +735,10 @@
       $('shareUrl').value = result.url || '';
       $('shareHelp').textContent = result.url ?
         'Fais scanner ce QR code par le nouveau téléphone (ou envoie-lui le lien) : la page propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd seulement ce chanteur ; ses autres chanteurs n’y changent pas.' :
-        solo ? 'Sur l’autre téléphone, ouvre la page karaoké du bar, touche « Je suis … » et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.' :
+        solo ? 'Sur l’autre téléphone, ouvre la page karaoké du bar (si elle demande un prénom, touche d’abord « Déjà inscrit ? J’ai un code »), touche « Je suis … » et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.' :
         'Sur l’autre téléphone, ouvre la page de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom, et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.';
       $('shareCodeHelp').textContent = solo ?
-        'Sans appareil photo : ouvrir la page karaoké du bar, toucher « Je suis … » puis saisir ce code.' :
+        'Sans appareil photo : ouvrir la page karaoké du bar (si elle demande un prénom, toucher d’abord « Déjà inscrit ? J’ai un code »), toucher « Je suis … » puis saisir ce code.' :
         'Sans appareil photo : sur la page de la table, toucher « Voir toute la table », puis « C’est moi » à côté du prénom, et saisir ce code.';
       $('shareExpires').textContent = [result.linkExpiresAt ? `QR et lien valables jusqu’à ${hhmm(result.linkExpiresAt)}` : '',
         result.expiresAt ? `code jusqu’à ${hhmm(result.expiresAt)}` : ''].filter(Boolean).join(', ') + ' ; un seul usage.';
@@ -809,7 +809,9 @@
       .sort((a, b) => recentActivity(b) - recentActivity(a) || a.name.localeCompare(b.name, 'fr'));
     const searchable = solos.length > 8;
     $('soloistSearchBox').hidden = !searchable;
-    $('soloistCount').textContent = solos.length;
+    // Le nombre suit « N solistes présents » : une place « Solo N » sans
+    // prénom reste dans la liste (badge « prénom à saisir ») sans être comptée.
+    $('soloistCount').textContent = solos.filter(p => !p.nameRequired).length;
     const query = searchable ? $('soloistSearch').value.trim().toLocaleLowerCase('fr') : '';
     const shown = query ? solos.filter(p => `${p.name} ${p.privateNote || ''}`.toLocaleLowerCase('fr').includes(query)) : solos;
     patch($('soloistList'), shown.map(p => `<div class="soloist-row" data-soloist="${esc(p.id)}">${photoHtml(p, p.name)}<span class="soloist-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}${p.privateNote ? `<span class="soloist-note tiny muted">${esc(p.privateNote)}</span>` : ''}${activityHtml(activityOf(p))}</span><button type="button" class="btn small" data-soloist-share aria-label="QR de reprise pour ${esc(p.name)}">QR de reprise</button></div>`).join('') ||
@@ -1364,8 +1366,10 @@
   // Tables : une tuile par table ; la toucher montre son QR en grand.
   function renderTables() {
     patch($('tBody'), S.tables.map(t => {
-      // « En solo » : combien n'ont plus donné de nouvelles depuis 20 min.
-      const idle = t.individual ? S.people.filter(p => p.tableId === t.id && activityOf(p)?.level).length : 0;
+      // « En solo » : combien n'ont plus donné de nouvelles depuis 20 min,
+      // parmi les solistes comptés (une place « Solo N » sans prénom n'en est
+      // pas une, comme dans activeCount : countsAsPresent du serveur).
+      const idle = t.individual ? S.people.filter(p => p.tableId === t.id && !p.nameRequired && activityOf(p)?.level).length : 0;
       const occupancy = t.individual ? `${t.activeCount} soliste${t.activeCount === 1 ? '' : 's'}${idle ? ` · ${idle} sans nouvelles` : ''}` :
         `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'} / ${t.count} inscrit${t.count === 1 ? '' : 's'} / ${t.headcount || '—'} places`;
       const tile = t.individual ?

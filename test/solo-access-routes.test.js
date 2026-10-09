@@ -78,7 +78,7 @@ function harness({ persistent = false } = {}) {
     setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, access, soloInvitations, privateEvent, staffState, journal,
-      ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, STAFF_KEY, PORT, PUBLIC_PORT,
+      ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, journalSample, publicState, STAFF_KEY, PORT, PUBLIC_PORT,
       handle: server.listeners('request')[0] };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
@@ -274,7 +274,11 @@ test('QR individuel : refus inchangés (téléphone déjà solo, invitation expi
   const f = harness();
   const { tb, invite } = openSolo(f);
   const sam = await opened(f, tb, invite());
-  const second = await post(f, '/api/table/solo/open', { ...tb, invitation: invite() }, { cookie: sam.cookie });
+  // Téléphone qui a déjà un prénom inscrit : un autre QR individuel est refusé
+  // (une place encore sans prénom, elle, laisse la place au nouveau QR).
+  const nina = await opened(f, tb, invite());
+  await post(f, '/api/table/person/rename', { ...tb, personId: nina.personId, token: nina.token, name: 'Nina' }, { cookie: nina.cookie });
+  const second = await post(f, '/api/table/solo/open', { ...tb, invitation: invite() }, { cookie: nina.cookie });
   assert.equal(second.status, 403);
   assert.equal(second.body.code, 'SOLO_DEVICE_USED');
 
@@ -291,7 +295,7 @@ test('QR individuel : refus inchangés (téléphone déjà solo, invitation expi
   const wrong = await post(f, '/api/table/solo/open', { ...table, invitation: invite() });
   assert.equal(wrong.status, 400);
   assert.equal(wrong.body.error, 'Ce QR individuel n’est pas valable pour cette table.');
-  assert.equal(f.sched.people.size, 1);
+  assert.equal(f.sched.people.size, 2);
 
   // Ouverte avant l'expiration, la personne garde sa fenêtre de prénom ensuite.
   f.soloInvitations.clear();
@@ -373,7 +377,7 @@ test('QR personnel rouvert ailleurs : même personne proposée, récupération p
   // Marquée partie : la clé ne sert plus ; une nouvelle soirée l'efface aussi.
   await post(f, staff(f, '/api/staff/person/leave'), { personId: first.personId });
   const gone = await post(f, '/api/table/solo/open', { ...tb, invitation: token });
-  assert.equal(gone.body.code, 'SOLO_INVITATION');
+  assert.equal(gone.body.code, 'PERSON_LEFT', 'ailleurs aussi : « marquée partie »');
   // Son propre navigateur rouvre la clé : « marquée partie », pas « invitation utilisée ».
   const mine = await post(f, '/api/table/solo/open', { ...tb, invitation: token }, { cookie: next.cookie });
   assert.equal(mine.status, 403, 'même statut que le QR de l’événement et les autres routes');
@@ -417,7 +421,7 @@ test('inscription par l’ancien formulaire : le QR devient aussi la clé person
 // depuis une autre application) ne pouvait plus reprendre son ancien profil,
 // même après que le bar avait marqué le doublon « Parti » : la reprise
 // répondait « Ce téléphone a déjà un prénom inscrit. ».
-// Chaque entrée vient d'un téléphone distinct (5 créations par minute et par appareil).
+// Chaque entrée vient d'un téléphone distinct (30 créations par minute et par appareil).
 let eventDevices = 0;
 async function eventEntry(f, tb, secret, name, cookie) {
   const r = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie, remote: `10.1.${eventDevices >> 8 & 255}.${eventDevices++ & 255}` });
@@ -851,7 +855,10 @@ test('événement privé : interrupteur du bar, QR unique, même navigateur = m�
 // minute pour tout le bar et un plafond de 400 qui comptait aussi les partis :
 // un script sans cookie bloquait les vrais invités, et le 31e invité de la
 // minute était refusé.
-test('événement privé : 5 créations par minute et par appareil, 120 pour le bar, X-Forwarded-For ignoré', async () => {
+// Regression: deuxième relecture finale (ADV F1, S2-2, A2-2) — 5 par appareil
+// bloquaient tout un Wi-Fi qui sort par une seule adresse publique (tunnel) ;
+// le refus répondait 400 sans dire quand réessayer.
+test('événement privé : 30 créations par minute et par appareil, 120 pour le bar, 429 + Retry-After, X-Forwarded-For ignoré', async () => {
   const f = harness({ persistent: true });
   const { tb } = openSolo(f);
   const secret = f.privateEvent.enable();
@@ -862,26 +869,51 @@ test('événement privé : 5 créations par minute et par appareil, 120 pour le 
   assert.equal(f.sched.people.size, 0);
   assert.equal(failed.headers['set-cookie'], undefined);
   f.night.fail = null;
-  // Une création annulée ne compte pas : cinq de plus depuis le même appareil.
-  for (let i = 0; i < 5; i++) assert.equal((await enter('10.0.0.1')).status, 200);
+  // Une création annulée ne compte pas : trente de plus depuis le même appareil.
+  for (let i = 0; i < 30; i++) assert.equal((await enter('10.0.0.1')).status, 200);
   const busy = await enter('10.0.0.1');
+  assert.equal(busy.status, 429, 'trop de demandes : 429');
   assert.equal(busy.body.code, 'PRIVATE_EVENT_BUSY');
   assert.equal(busy.body.error, 'Trop d’inscriptions d’un coup : réessaie dans une minute.');
+  const retryAfter = Number(busy.headers['retry-after']);
+  assert.ok(Number.isInteger(retryAfter) && retryAfter >= 1 && retryAfter <= 60, `Retry-After : ${busy.headers['retry-after']}`);
   // Un en-tête X-Forwarded-For inventé ne change pas d'appareil.
   assert.equal((await enter('10.0.0.1', { 'x-forwarded-for': '10.9.9.9' })).body.code, 'PRIVATE_EVENT_BUSY');
   // Les autres invités entrent toujours.
   assert.equal((await enter('10.0.0.2')).status, 200, 'un autre appareil n’est pas bloqué');
   // Le bar entier : 120 par minute.
   for (let n = 3; f.sched.people.size < 120; n++) {
-    for (let i = 0; i < 5 && f.sched.people.size < 120; i++) assert.equal((await enter(`10.0.1.${n}`)).status, 200);
+    for (let i = 0; i < 30 && f.sched.people.size < 120; i++) assert.equal((await enter(`10.0.1.${n}`)).status, 200);
   }
   const venue = await enter('10.0.2.1');
+  assert.equal(venue.status, 429);
   assert.equal(venue.body.code, 'PRIVATE_EVENT_BUSY', '121e création de la minute : nouvel essai plus tard');
+  assert.ok(Number(venue.headers['retry-after']) >= 1);
   assert.equal(f.sched.people.size, 120);
   const saved = f.night.saves.at(-1);
   assert.deepEqual(Object.keys(saved.privateEvent).sort(), ['enabled', 'secret', 'since']);
   assert.equal(saved.privateEvent.enabled, true);
   assert.equal(saved.scheduler.people.filter(p => p.viaEvent && p.nameRequired).length, 120);
+});
+
+// Regression: deuxième relecture finale (ADV F1, S2-1) — l'appareil était
+// l'adresse exacte : un téléphone en IPv6 change d'adresse dans son /64 et
+// passait la limite ; ::ffff:a.b.c.d comptait à part de a.b.c.d.
+test('événement privé : un même /64 IPv6 est un seul appareil, une IPv4 mappée est son IPv4', async () => {
+  const f = harness();
+  const { tb } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const enter = (remote, options = {}) => post(f, '/api/table/enter', { ...tb, event: secret }, { remote, ...options });
+  for (let i = 1; i <= 30; i++) assert.equal((await enter(`2001:db8:5:6::${i.toString(16)}`)).status, 200);
+  assert.equal((await enter('2001:db8:5:6:abcd:ef01:2345:6789')).body.code, 'PRIVATE_EVENT_BUSY', 'nouvelle adresse du même /64');
+  assert.equal((await enter('2001:db8:5:7::1')).status, 200, 'autre /64 : autre appareil');
+  for (let i = 0; i < 15; i++) assert.equal((await enter('::ffff:10.4.4.4')).status, 200);
+  for (let i = 0; i < 15; i++) assert.equal((await enter('10.4.4.4')).status, 200);
+  assert.equal((await enter('::ffff:10.4.4.4')).body.code, 'PRIVATE_EVENT_BUSY', 'IPv4 mappée et IPv4 : même appareil');
+  // Par le tunnel : même règle sur l'adresse donnée par Cloudflare.
+  const edge = ip => enter('127.0.0.1', { port: f.PUBLIC_PORT, headers: { 'cf-connecting-ip': ip } });
+  for (let i = 1; i <= 30; i++) assert.equal((await edge(`2001:db8:9:9:${i.toString(16)}::1`)).status, 200);
+  assert.equal((await edge('2001:db8:9:9:ffff::1')).body.code, 'PRIVATE_EVENT_BUSY');
 });
 
 // Regression: relecture finale (ADV1) — par le tunnel HTTPS (cloudflared vers
@@ -898,18 +930,20 @@ test('événement privé par le tunnel HTTPS : l’appareil est l’adresse donn
     const r = await enter({ 'cf-connecting-ip': `203.0.113.${i}` });
     assert.equal(r.status, 200, `invité ${i} : ${r.text}`);
   }
-  // Un même invité reste limité à 5 par minute, même s'il invente X-Forwarded-For.
-  for (let i = 0; i < 5; i++) assert.equal((await enter({ 'cf-connecting-ip': '198.51.100.7' })).status, 200);
+  // Un même invité reste limité à 30 par minute, même s'il invente X-Forwarded-For.
+  for (let i = 0; i < 30; i++) assert.equal((await enter({ 'cf-connecting-ip': '198.51.100.7' })).status, 200);
   assert.equal((await enter({ 'cf-connecting-ip': '198.51.100.7', 'x-forwarded-for': '10.9.9.9' })).body.code, 'PRIVATE_EVENT_BUSY');
   // Tunnel sans cet en-tête : pas de limite par appareil, celle du bar (120) seulement.
-  for (let i = 0; i < 6; i++) assert.equal((await enter({})).status, 200);
+  for (let i = 0; i < 31; i++) assert.equal((await enter({})).status, 200);
   // Sur le port du Wi-Fi, l'en-tête n'est pas cru : l'adresse de la connexion compte.
   const lan = (remote, ip) => post(f, '/api/table/enter', { ...tb, event: secret }, { remote, headers: { 'cf-connecting-ip': ip } });
-  for (let i = 0; i < 5; i++) assert.equal((await lan('10.0.5.1', `192.0.2.${i}`)).status, 200);
+  for (let i = 0; i < 30; i++) assert.equal((await lan('10.0.5.1', `192.0.2.${i}`)).status, 200);
   assert.equal((await lan('10.0.5.1', '192.0.2.99')).body.code, 'PRIVATE_EVENT_BUSY');
 });
 
-test('événement privé : le plafond de 400 compte les personnes présentes (nommées ou non), pas les parties', async () => {
+// Regression: deuxième relecture finale (ADV F1, A2-2) — 400 « Solo N » jamais
+// nommés remplissaient l'événement pour toute la soirée ; complet répondait 400.
+test('événement privé : le plafond de 400 compte les présents nommés et les places sans prénom des 10 dernières minutes', async () => {
   const f = harness();
   const { tb } = openSolo(f);
   const secret = f.privateEvent.enable();
@@ -920,14 +954,215 @@ test('événement privé : le plafond de 400 compte les personnes présentes (no
     crowd.push(p);
   }
   const full = await post(f, '/api/table/enter', { ...tb, event: secret }, { remote: '10.0.3.1' });
+  assert.equal(full.status, 403, 'complet : 403');
   assert.equal(full.body.code, 'PRIVATE_EVENT_FULL', '400 présents : plus de création par le QR commun');
   assert.equal(full.body.error, 'L’événement est complet par ce QR : demande au bar un QR individuel.');
+  assert.equal(full.headers['retry-after'], undefined, 'pas de nouvel essai annoncé');
   // Deux personnes marquées parties (une nommée, une sans prénom) libèrent leur place.
   f.sched.leave(crowd[0], 'staff');
   f.sched.leave(crowd[1], 'staff');
   assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { remote: '10.0.3.2' })).status, 200);
   assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { remote: '10.0.3.3' })).status, 200);
   assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { remote: '10.0.3.4' })).body.code, 'PRIVATE_EVENT_FULL');
+  // Places sans prénom ouvertes il y a plus de 10 minutes : elles ne comptent plus…
+  for (const p of crowd.slice(2, 12)) if (p.nameRequired) p.joinedAt = Date.now() - 10 * 60000 - 1;
+  for (let i = 0; i < 5; i++) {
+    const r = await post(f, '/api/table/enter', { ...tb, event: secret }, { remote: `10.0.4.${i}` });
+    assert.equal(r.status, 200, r.text);
+  }
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { remote: '10.0.4.9' })).body.code, 'PRIVATE_EVENT_FULL');
+  // … mais restent nommables.
+  const late = crowd[3];
+  assert.equal(f.sched.people.get(late.id).nameRequired, true);
+  f.sched.rename(late, 'Tardive');
+  assert.equal(late.nameRequired, undefined);
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { remote: '10.0.4.10' })).body.code, 'PRIVATE_EVENT_FULL',
+    'une fois nommée, elle compte de nouveau');
+});
+
+// Regression: deuxième relecture finale (ADV F1, D2-4) — « Renouveler » ne
+// faisait pas baisser le compte : les « Solo N » jamais nommés restaient.
+test('événement privé : « Renouveler le QR » retire sans trace les places sans prénom ni titre venues par l’événement', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  const ghost = await eventEntry(f, tb, secret);
+  const other = await eventEntry(f, tb, secret);
+  const personal = await opened(f, tb, invite()); // QR individuel sans prénom : gardé
+  const before = events(f).length;
+  const rotated = await post(f, staff(f, '/api/staff/private-event'), { rotate: true });
+  assert.equal(rotated.status, 200, rotated.text);
+  assert.ok(f.sched.people.has(lea.personId), 'nommée : gardée');
+  assert.ok(f.sched.people.has(personal.personId), 'QR individuel : gardé');
+  for (const gone of [ghost, other]) {
+    assert.equal(f.sched.people.has(gone.personId), false, 'place sans prénom retirée');
+    assert.equal(f.sched.person(gone.token), null);
+  }
+  assert.deepEqual(events(f).slice(before).filter(e => e.personId), [], 'rien au journal pour ces places');
+  // La page de la place retirée qui se recharge : l'ancien QR n'est plus actif.
+  const reload = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: ghost.cookie });
+  assert.equal(reload.status, 403);
+  assert.equal(reload.body.code, 'PRIVATE_EVENT');
+  assert.deepEqual((await stateOf(f, tb, ghost)).body.managedIds, []);
+  // Léa garde son accès.
+  assert.deepEqual((await stateOf(f, tb, lea)).body.managedIds, [lea.personId]);
+});
+
+// Regression: deuxième relecture finale (ADV F1) — /api/leave sur une place
+// sans prénom puis un nouveau scan sans cookie : des fiches parties
+// s'accumulaient pour toute la soirée.
+test('événement privé : quitter une place sans prénom ni titre la supprime, sans trace', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const before = f.sched.people.size;
+  for (let i = 0; i < 3; i++) {
+    const me = await eventEntry(f, tb, secret);
+    const left = await post(f, '/api/leave', { token: me.token }, { cookie: me.cookie });
+    assert.equal(left.status, 200, left.text);
+    assert.equal(f.sched.people.has(me.personId), false);
+  }
+  assert.equal(f.sched.people.size, before, 'aucune fiche partie accumulée');
+  assert.deepEqual(events(f, 'person.left'), []);
+  // Une personne nommée qui part reste inscrite (marquée partie).
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  assert.equal((await post(f, '/api/leave', { token: lea.token }, { cookie: lea.cookie })).status, 200);
+  assert.ok(f.sched.people.get(lea.personId).withdrawnAt);
+  // QR individuel sans prénom : marquée partie comme avant (le bar peut la réactiver).
+  const sam = await opened(f, tb, invite());
+  assert.equal((await post(f, '/api/leave', { token: sam.token }, { cookie: sam.cookie })).status, 200);
+  assert.ok(f.sched.people.get(sam.personId).withdrawnAt);
+});
+
+// Regression: deuxième relecture finale (ADV F5) — un QR individuel neuf était
+// refusé (« Ce téléphone a déjà un prénom inscrit ») sur un navigateur qui ne
+// gardait qu'une place sans prénom du QR de l'événement.
+test('QR individuel neuf : la place sans prénom de ce navigateur part, le QR s’ouvre ; jamais deux places', async () => {
+  const f = harness({ persistent: true });
+  const { tb, invite } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const ghost = await eventEntry(f, tb, secret);
+  // Sauvegarde impossible : la place provisoire reste, l'invitation aussi.
+  const token = invite();
+  f.night.fail = 'disque plein';
+  const failed = await post(f, '/api/table/solo/open', { ...tb, invitation: token }, { cookie: ghost.cookie });
+  assert.equal(failed.status, 400);
+  assert.ok(f.sched.people.has(ghost.personId), 'place provisoire intacte');
+  assert.equal(f.sched.person(ghost.token)?.id, ghost.personId);
+  assert.ok(f.soloInvitations.verify(token, 'Comptoir'));
+  f.night.fail = null;
+  const before = events(f).length;
+  const r = await post(f, '/api/table/solo/open', { ...tb, invitation: token }, { cookie: ghost.cookie });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.nameRequired, true);
+  assert.notEqual(r.body.id, ghost.personId);
+  assert.equal(f.sched.people.has(ghost.personId), false, 'la place provisoire part');
+  assert.deepEqual(events(f).slice(before).filter(e => e.personId === ghost.personId), [], 'sans trace');
+  const me = { ...tb, personId: r.body.id, token: r.body.token, cookie: cookieOf(r) || ghost.cookie };
+  assert.deepEqual((await stateOf(f, tb, me)).body.managedIds, [r.body.id]);
+  // Nommée ou avec un titre : toujours refusé.
+  await post(f, '/api/table/person/rename', { ...tb, personId: me.personId, token: me.token, name: 'Nina' }, { cookie: me.cookie });
+  const again = await post(f, '/api/table/solo/open', { ...tb, invitation: invite() }, { cookie: me.cookie });
+  assert.equal(again.body.code, 'SOLO_DEVICE_USED');
+});
+
+// Regression: deuxième relecture finale (vérification E2) — un QR individuel
+// neuf, ou une reprise, retirait la place sans prénom que ce navigateur ne gère
+// plus : reprise entre-temps par un autre navigateur (QR personnel donné à un
+// ami, essayé par le bar), elle disparaissait avec sa clé personnelle.
+test('QR individuel neuf ou reprise : la place sans prénom reprise par un autre navigateur reste la sienne', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const k1 = invite();
+  const a = await opened(f, tb, k1);
+  // Le QR K1 passe à un ami (navigateur B) : place encore sans prénom, reprise tout de suite.
+  const takeover = await post(f, '/api/table/solo/open', { ...tb, invitation: k1 });
+  assert.equal(takeover.status, 200, takeover.text);
+  assert.equal(takeover.body.id, a.personId);
+  const b = { ...tb, personId: takeover.body.id, token: takeover.body.token, cookie: cookieOf(takeover) };
+  // A ouvre un QR neuf : refusé, la place de B reste.
+  const k2 = invite();
+  const fresh = await post(f, '/api/table/solo/open', { ...tb, invitation: k2 }, { cookie: a.cookie });
+  assert.equal(fresh.status, 403, fresh.text);
+  assert.equal(fresh.body.code, 'SOLO_DEVICE_USED');
+  assert.ok(f.soloInvitations.verify(k2, 'Comptoir'), 'QR neuf intact');
+  assert.ok(f.sched.people.has(b.personId), 'la place de B existe toujours');
+  // A reprend un autre profil (lien de transfert) : refusé aussi, la place de B reste.
+  const zoe = await opened(f, tb, invite());
+  await post(f, '/api/table/person/rename', { ...tb, personId: zoe.personId, token: zoe.token, name: 'Zoé' }, { cookie: zoe.cookie });
+  const share = await post(f, staff(f, '/api/staff/person/share'), { personId: zoe.personId });
+  const claim = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie: a.cookie });
+  assert.equal(claim.status, 403, claim.text);
+  assert.equal(claim.body.code, 'SOLO_DEVICE_USED');
+  assert.ok(f.sched.people.has(b.personId), 'la place de B existe toujours après la reprise refusée');
+  // A ouvre la clé d'une autre place encore sans prénom : refusé, rien ne bouge.
+  const k3 = invite();
+  const other = await opened(f, tb, k3);
+  const byKey = await post(f, '/api/table/solo/open', { ...tb, invitation: k3 }, { cookie: a.cookie });
+  assert.equal(byKey.status, 403, byKey.text);
+  assert.equal(byKey.body.code, 'SOLO_DEVICE_USED');
+  assert.ok(f.sched.people.has(b.personId), 'la place de B existe toujours après la clé refusée');
+  assert.deepEqual((await stateOf(f, tb, other)).body.managedIds, [other.personId]);
+  assert.deepEqual((await stateOf(f, tb, b)).body.managedIds, [b.personId]);
+  const named = await post(f, '/api/table/person/rename', { ...tb, personId: b.personId, token: b.token, name: 'Inès' }, { cookie: b.cookie });
+  assert.equal(named.status, 200, named.text);
+  // Sa clé personnelle la retrouve toujours, sur ce navigateur comme ailleurs.
+  const again = await post(f, '/api/table/solo/open', { ...tb, invitation: k1 }, { cookie: b.cookie });
+  assert.equal(again.status, 200, again.text);
+  assert.equal(again.body.id, b.personId);
+  const elsewhere = await post(f, '/api/table/solo/open', { ...tb, invitation: k1 });
+  assert.equal(elsewhere.status, 200, elsewhere.text);
+  assert.equal(elsewhere.body.recover?.id, b.personId);
+});
+
+// Regression: deuxième relecture finale (A2-3) — une personne marquée partie
+// qui rouvrait son QR personnel dans un autre navigateur lisait « demande un
+// nouveau QR » au lieu de « marquée partie ».
+test('QR personnel d’une personne marquée partie, ouvert ailleurs : PERSON_LEFT', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const token = invite();
+  const sam = await opened(f, tb, token);
+  await post(f, '/api/table/person/rename', { ...tb, personId: sam.personId, token: sam.token, name: 'Sam' }, { cookie: sam.cookie });
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: sam.personId });
+  for (const cookie of [undefined, (await opened(f, tb, invite())).cookie]) {
+    const r = await post(f, '/api/table/solo/open', { ...tb, invitation: token }, { cookie });
+    assert.equal(r.status, 403);
+    assert.equal(r.body.code, 'PERSON_LEFT');
+  }
+  // Une invitation jamais utilisée garde son message.
+  const unknown = await post(f, '/api/table/solo/open', { ...tb, invitation: 'y'.repeat(32) });
+  assert.equal(unknown.body.code, 'SOLO_INVITATION');
+});
+
+// Regression: deuxième relecture finale (P2-2) — chaque reprise ajoutait une
+// empreinte de téléphone, même redemandée par le téléphone actuel : la liste
+// grandissait sans fin.
+test('reprises répétées : le téléphone actuel ne se réassocie pas ; au plus 8 empreintes, l’actuelle en dernier', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const token = invite();
+  const sam = await opened(f, tb, token);
+  await post(f, '/api/table/person/rename', { ...tb, personId: sam.personId, token: sam.token, name: 'Sam' }, { cookie: sam.cookie });
+  const person = f.sched.people.get(sam.personId);
+  let cookie = sam.cookie;
+  for (let i = 0; i < 5; i++) {
+    const again = await post(f, '/api/table/person/claim', { ...tb, key: token }, { cookie });
+    assert.equal(again.status, 200, again.text);
+    assert.equal(again.headers['set-cookie'], undefined, 'même téléphone : même cookie');
+  }
+  assert.equal(person.soloDeviceHashes.length, 1, 'le téléphone actuel ne s’ajoute pas à chaque reprise');
+  assert.equal(person.soloDeviceHashes.at(-1), crypto.createHash('sha256').update(cookie.split('=')[1]).digest('hex'));
+  for (let i = 0; i < 12; i++) {
+    const claimed = await post(f, '/api/table/person/claim', { ...tb, key: token });
+    assert.equal(claimed.status, 200, claimed.text);
+    cookie = cookieOf(claimed);
+  }
+  assert.equal(person.soloDeviceHashes.length, 8, 'au plus 8 empreintes');
+  assert.equal(person.soloDeviceHashes.at(-1), crypto.createHash('sha256').update(cookie.split('=')[1]).digest('hex'), 'l’actuelle en dernier');
+  assert.deepEqual((await stateOf(f, tb, { token: f.sched.people.get(sam.personId).token, cookie })).body.managedIds, [sam.personId]);
 });
 
 test('sauvegarde de la soirée : événement privé et champs des personnes repris, formes abîmées tolérées', () => {
@@ -1208,4 +1443,128 @@ test('durée envoyée par un téléphone : seulement un nombre borné, pour un t
   // Ce que les téléphones reçoivent.
   const view = await get(f, `/api/state?table=7&access=${tb.access}`, { headers: { 'x-person-tokens': JSON.stringify([people[0].token]) } });
   assert.ok(view.text.length < 50000, 'aucune durée géante renvoyée aux téléphones');
+});
+
+// ---------------------------------------------------------------- troisième relecture finale (RT1 à RT3)
+// Regression: troisième relecture finale (RT1) — un soliste dont le nouveau
+// navigateur avait ouvert un QR montré par le bar (QR de l'événement ou QR
+// personnel neuf) avait une place « Solo N » : la liste de reprise lui était
+// cachée, le code à 4 chiffres ne servait plus, et redonner son prénom
+// répondait NAME_TAKEN (inscrit deux fois).
+test('reprise par code : la place sans prénom de ce navigateur (événement ou QR neuf) laisse voir et utiliser le code', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const clara = await opened(f, tb, invite());
+  await post(f, '/api/table/person/rename', { ...tb, personId: clara.personId, token: clara.token, name: 'Clara' }, { cookie: clara.cookie });
+  const share = await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  assert.equal(share.status, 200, share.text);
+
+  // Nouveau navigateur : QR de l'événement, place « Solo 2 » sans prénom.
+  const ghost = await eventEntry(f, tb, secret);
+  assert.equal(f.sched.people.get(ghost.personId).nameRequired, true);
+  const view = (await stateOf(f, tb, ghost)).body;
+  assert.deepEqual(view.managedIds, [ghost.personId]);
+  assert.deepEqual(plain(view.recoveryPeople), [{ id: clara.personId, name: 'Clara' }], 'la reprise par code reste proposée');
+  // Même vue par l'ancienne lecture au jeton seul.
+  const byToken = await get(f, `/api/state?token=${ghost.token}`, { cookie: ghost.cookie });
+  assert.deepEqual(plain(byToken.body.recoveryPeople), [{ id: clara.personId, name: 'Clara' }]);
+  const claimed = await post(f, '/api/table/person/claim', { ...tb, personId: clara.personId, code: share.body.code }, { cookie: ghost.cookie });
+  assert.equal(claimed.status, 200, claimed.text);
+  assert.equal(f.sched.people.has(ghost.personId), false, 'la place sans prénom part : jamais deux places');
+  const back = { ...tb, personId: clara.personId, token: claimed.body.token, cookie: cookieOf(claimed) || ghost.cookie };
+  assert.deepEqual((await stateOf(f, tb, back)).body.managedIds, [clara.personId]);
+  assert.deepEqual((await stateOf(f, tb, back)).body.recoveryPeople, [], 'nommée : plus de liste de reprise');
+
+  // QR personnel neuf ouvert dans un autre navigateur : même chose.
+  const share2 = await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  const fresh = await opened(f, tb, invite());
+  assert.equal(f.sched.people.get(fresh.personId).nameRequired, true);
+  assert.deepEqual(plain((await stateOf(f, tb, fresh)).body.recoveryPeople), [{ id: clara.personId, name: 'Clara' }]);
+  const again = await post(f, '/api/table/person/claim', { ...tb, personId: clara.personId, code: share2.body.code }, { cookie: fresh.cookie });
+  assert.equal(again.status, 200, again.text);
+  assert.equal(f.sched.people.has(fresh.personId), false);
+
+  // Une place nommée, elle, ne voit jamais les codes des autres.
+  const share3 = await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  assert.equal(share3.status, 200);
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  assert.deepEqual((await stateOf(f, tb, lea)).body.recoveryPeople, []);
+  assert.deepEqual((await get(f, `/api/state?token=${lea.token}`, { cookie: lea.cookie })).body.recoveryPeople, []);
+});
+
+// Regression: troisième relecture finale (RT1) — l'ancien navigateur d'une
+// place sans prénom reprise ailleurs (clé personnelle) n'en est plus le
+// téléphone actuel : il ne voit pas la liste de reprise pour autant.
+test('reprise par code : une place sans prénom dont ce navigateur n’est plus le téléphone actuel ne montre pas la liste', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const clara = await opened(f, tb, invite());
+  await post(f, '/api/table/person/rename', { ...tb, personId: clara.personId, token: clara.token, name: 'Clara' }, { cookie: clara.cookie });
+  await post(f, staff(f, '/api/staff/person/share'), { personId: clara.personId });
+  const key = invite();
+  const first = await opened(f, tb, key);
+  const moved = await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { remote: '10.0.9.9' });
+  assert.equal(moved.body.id, first.personId, 'reprise sans confirmation : place encore sans prénom');
+  const view = (await get(f, `/api/state?token=${first.token}`, { cookie: first.cookie })).body;
+  assert.ok(!view.recoveryPeople?.length, 'ancien navigateur : rien');
+});
+
+// Regression: troisième relecture finale (RT2) — le relevé de la file comptait
+// les places « Solo N » sans prénom parmi les personnes présentes, gonflant la
+// courbe « Personnes présentes » des statistiques ; la tuile « En solo » du
+// bar les comptait aussi comme solistes.
+test('personnes présentes : relevé du journal, tuile « En solo » et effectif de la page sans les places sans prénom', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  await eventEntry(f, tb, secret);
+  await opened(f, tb, invite());
+  const gone = await eventEntry(f, tb, secret, 'Zoé');
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: gone.personId });
+  f.journalSample(Date.now());
+  assert.equal(events(f, 'queue.sample').at(-1).present, 1, 'Léa seule : ni « Solo N », ni partie');
+  const tile = f.staffState().tables.find(t => t.id === 'Comptoir');
+  assert.equal(tile.activeCount, 1, 'tuile « En solo » : 1 soliste');
+  assert.equal(tile.count, 4, 'inscrits : toutes les fiches');
+  assert.equal((await stateOf(f, tb, lea)).body.table.activeCount, 1);
+});
+
+// Regression: troisième relecture finale (RT3) — après « Renouveler le QR » ou
+// le mode coupé, une personne inscrite (avec prénom) dont la page avait perdu
+// son jeton mais gardé le cookie, qui rescannait le QR de l'événement qu'elle
+// avait, était refusée (« QR plus actif ») : les inscrits gardent leur accès.
+test('événement privé : un inscrit nommé qui rescanne l’ancien QR retrouve sa place ; créer une place exige le QR actif', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  const unnamed = await opened(f, tb, invite()); // QR individuel, encore sans prénom
+  const gone = await eventEntry(f, tb, secret, 'Zoé');
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: gone.personId });
+  await post(f, staff(f, '/api/staff/private-event'), { rotate: true });
+  const size = f.sched.people.size;
+
+  const back = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: lea.cookie });
+  assert.equal(back.status, 200, back.text);
+  assert.deepEqual([back.body.id, back.body.token, back.body.nameRequired, back.body.resumed], [lea.personId, lea.token, false, true]);
+  // Sans place nommée : l'ancien QR ne crée rien, ne reprend rien.
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: unnamed.cookie })).body.code, 'PRIVATE_EVENT');
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: gone.cookie })).body.code, 'PRIVATE_EVENT');
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret })).body.code, 'PRIVATE_EVENT');
+  assert.equal(f.sched.people.size, size, 'personne de créé');
+
+  // Mode coupé : même chose.
+  await post(f, staff(f, '/api/staff/private-event'), { enabled: false });
+  const off = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: lea.cookie });
+  assert.equal(off.status, 200, off.text);
+  assert.equal(off.body.id, lea.personId);
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: 'A'.repeat(22) })).status, 403);
+  // Pas pour une table ordinaire, même avec le cookie d'un soliste.
+  const table = openTable(f, '3');
+  assert.equal((await post(f, '/api/table/enter', { ...table, event: secret }, { cookie: lea.cookie })).body.code, 'PRIVATE_EVENT');
 });
