@@ -1375,3 +1375,72 @@ test('réglages de titre : titre vu pour la première fois en lecture avec ses p
   status('y', 3, 0);
   assert.equal(bridge.observedDefaults.backing, undefined, 'chœurs de Léa gardés par KaraFun');
 });
+
+// Regression: deuxième relecture finale R3 — nouveau code KaraFun (autre
+// installation) : les titres vus se charger avec l'ancien code étaient
+// gardés. Un identifiant de file repris par le nouveau KaraFun, vu pour la
+// première fois en pleine chanson, passait pour vu se charger.
+test('réglages de titre : un nouveau code oublie les titres vus se charger et les chœurs observés', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const status = backingStatus(ws);
+  status('q1', 1, 0);
+  status('q1', 3, 53);
+  assert.equal(bridge.seenLoading('q1'), true);
+  assert.equal(bridge._observedBacking, 53);
+  bridge.connect('654321');
+  assert.equal(bridge.seenLoading('q1'), false, 'autre installation : titre jamais vu se charger');
+  assert.equal(bridge._observedBacking, null);
+  assert.equal(bridge._lastBacking, null);
+});
+test('réglages de titre : le pont déclare les chœurs observés dès sa création', () => {
+  const bridge = new KaraFunBridge();
+  assert.ok(Object.hasOwn(bridge, '_observedBacking'));
+  assert.equal(bridge._observedBacking, null);
+});
+
+// Regression: deuxième relecture finale R2 — KaraFun « collant », application
+// relancée en pleine chanson : les chœurs du titre vu pour la première fois
+// en lecture (réglés en direct) restaient au titre suivant, qui les donnait
+// comme valeur par défaut. Un tel titre n'apprend rien et ne laisse rien
+// apprendre de ce qu'il transmet ; seule une remise par KaraFun au
+// chargement (autre valeur) donne la valeur par défaut.
+test('réglages de titre : KaraFun collant relancé en pleine chanson, les chœurs gardés ne deviennent pas la valeur par défaut', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const status = backingStatus(ws);
+  status('x', 4, 70);
+  status('x', 5, 70);
+  for (const id of ['y', 'z']) {
+    status(id, 1, 0);
+    status(id, 2, 70);
+    status(id, 3, 70);
+    status(id, 4, 70);
+  }
+  assert.equal(bridge.observedDefaults.backing, undefined, 'chœurs 70 gardés par KaraFun, pas sa valeur par défaut');
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 100);
+});
+
+// Valeur relevée gardée dans la sauvegarde : reprise après un redémarrage,
+// jamais réapprise de chœurs gardés par KaraFun.
+test('réglages de titre : valeur par défaut des chœurs reprise après un redémarrage, pas réapprise', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  assert.equal(bridge.restoreDefaults({ backing: 53 }), true);
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 53);
+  const status = backingStatus(ws);
+  // Redémarrage entre deux titres : le suivant, vu se charger, garde les chœurs 80 réglés avant.
+  status('y', 1, 0);
+  status('y', 3, 80);
+  status('z', 3, 60);
+  assert.equal(bridge.observedDefaults.backing, 53, 'reprise, pas réapprise');
+  // Valeurs abîmées : rien n'est repris.
+  const other = new KaraFunBridge();
+  for (const bad of [null, {}, { backing: -1 }, { backing: 101 }, { backing: 52.5 }, { backing: '53' }]) {
+    assert.equal(other.restoreDefaults(bad), false);
+  }
+  assert.equal(other.observedDefaults.backing, undefined);
+});

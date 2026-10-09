@@ -335,6 +335,8 @@ test('Spotify : reprise de l’automate après un rétablissement, jamais contre
   assert.equal(auto.step('silent', opts), 'resume', 'Spotify rétabli : la relance repart pour ce silence');
   auto.settle(false);
   assert.equal(auto.step('silent', opts), null, 'nouvel essai dans 30 s…');
+  assert.equal(auto.recover(), false, 'une reprise par 10 minutes au plus');
+  now += 10 * 60000;
   assert.equal(auto.recover(), true);
   assert.equal(auto.step('silent', opts), 'resume', '… ou tout de suite si Spotify est rétabli');
   auto.settle(true);
@@ -347,6 +349,19 @@ test('Spotify : reprise de l’automate après un rétablissement, jamais contre
   auto.handled();
   assert.equal(auto.recover(), false);
   assert.equal(auto.step('silent', opts), null, 'pause décidée par le bar respectée');
+  // Deuxième relecture finale R5 : seul l'appel de relance échoue en 5xx (les
+  // vérifications réussissent) : rien n'est repris ; une vérification en
+  // échec depuis montre une panne de Spotify, reprise une fois rétabli.
+  now += 10 * 60000;
+  auto.step('singing', opts); auto.settle(true);
+  assert.equal(auto.step('silent', opts), 'resume');
+  auto.settle(false, Object.assign(new Error('Spotify est indisponible'), { status: 503 }));
+  assert.equal(auto.recover(), false, 'relance seule en 5xx : la vérification n’en dit rien');
+  auto.checkFailed();
+  assert.equal(auto.recover(), true, 'panne de Spotify vue aussi par la vérification');
+  auto.settle(false, Object.assign(new Error('Spotify refuse la commande'), { status: 403 }));
+  now += 10 * 60000;
+  assert.equal(auto.recover(), true, 'un refus (403) suit la règle des 10 minutes');
 });
 
 test('Spotify : déconnexion pendant une vérification, rien n’est gardé', async () => {
@@ -402,4 +417,45 @@ test('Spotify : vérification refusée (401, 403) distincte d’un Spotify injoi
   }
   reply = answer(400, { status: 400, message: 'Bad request' });
   assert.equal((await link.checkHealth()).status, 400, 'tout autre refus garde son code');
+});
+
+// Regression: deuxième relecture finale R6 — refus de PUT /me/player/play
+// autre que 404 : resume() échoue avec ce code, sans liste d'appareils ni
+// transfert, et sans croire Spotify en lecture. Seuls le réseau et les 5xx
+// rendent Spotify « injoignable » (403 : Spotify a répondu).
+test('Spotify : relance refusée (403, 503) ou réseau coupé : échec avec ce code, ni appareils ni transfert', async () => {
+  for (const [why, reply, status] of [['403', 403, 403], ['503', 503, 503], ['réseau', 'down', undefined]]) {
+    const calls = [];
+    const fetchImpl = async (url, options = {}) => {
+      const route = url.replace(/^https:\/\/[^/]+/, '').split('?')[0];
+      const method = options.method || 'GET';
+      calls.push(`${method} ${route}`);
+      if (url.endsWith('/api/token')) return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ access_token: 'jeton', expires_in: 3600 }) };
+      if (method === 'GET' && route === '/v1/me/player') {
+        return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ is_playing: false, device: { id: 'pc', name: 'PC' } }) };
+      }
+      if (method === 'GET' && route === '/v1/me/player/devices') {
+        return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ devices: [{ id: 'pc', name: 'PC', type: 'Computer', is_active: true }] }) };
+      }
+      if (method === 'PUT' && route === '/v1/me/player/play') {
+        if (reply === 'down') throw new TypeError('fetch failed');
+        return { ok: false, status: reply, headers: { get: () => null }, text: async () => JSON.stringify({ error: { status: reply, message: 'refus' } }) };
+      }
+      throw new Error(`inattendu : ${method} ${route}`);
+    };
+    const link = new SpotifyLink({ fetchImpl });
+    link.config = { ...link.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r', deviceId: 'pc', deviceName: 'PC' };
+    assert.equal((await link.checkHealth()).state, 'ready', `${why} : appareils en bonne santé`);
+    calls.length = 0;
+    await assert.rejects(link.resume(), error => {
+      assert.equal(error.status, status, why);
+      if (reply === 'down') assert.match(error.message, /fetch failed|injoignable|réseau/i);
+      return true;
+    });
+    assert.deepEqual(calls.filter(call => !call.endsWith('/api/token')), ['GET /v1/me/player', 'PUT /v1/me/player/play'],
+      `${why} : ni liste des appareils ni transfert`);
+    assert.equal(link.player.isPlaying, false, `${why} : Spotify pas cru en lecture`);
+    assert.deepEqual(link.lastAction && { kind: link.lastAction.kind, result: link.lastAction.result }, { kind: 'resume', result: 'error' });
+    assert.equal(link.health.state, reply === 403 ? 'ready' : 'error', `${why} : injoignable seulement pour le réseau et les 5xx`);
+  }
 });

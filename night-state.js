@@ -342,6 +342,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if ('singerSongSettings' in restoredSettings && typeof restoredSettings.singerSongSettings !== 'boolean') {
     delete restoredSettings.singerSongSettings;
   }
+  // Chœurs par défaut relevés sur le KaraFun du bar (empreinte de son code) :
+  // une valeur abîmée est oubliée, ils seront relevés de nouveau.
+  const kf = restoredSettings.karafunDefaults;
+  if ('karafunDefaults' in restoredSettings && !(kf && typeof kf === 'object' && /^[0-9a-f]{16}$/.test(String(kf.code)) &&
+    Number.isInteger(kf.backing) && kf.backing >= 0 && kf.backing <= 100)) delete restoredSettings.karafunDefaults;
   // Durée maximale des titres (lot J) : une valeur invalide coupe la limite.
   if ('maxSongSec' in restoredSettings && !(Number.isInteger(restoredSettings.maxSongSec) &&
     restoredSettings.maxSongSec >= 120 && restoredSettings.maxSongSec <= 900)) restoredSettings.maxSongSec = null;

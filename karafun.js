@@ -324,6 +324,7 @@ class KaraFunBridge extends EventEmitter {
     this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
     this._backingChanged = false;
     this._observedFor = null;
+    this._observedBacking = null; // chœurs du premier état vu du titre `_observedFor`
     this._lastBacking = null; // chœurs du dernier état du titre `_observedFor`
     this._loadingSeen = new Set(); // titres vus annoncés ou se charger (états 1 à 3)
     this.nameConflictSince = null;
@@ -688,7 +689,10 @@ class KaraFunBridge extends EventEmitter {
     this._appLeftChecked = false;
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
-      this.observedDefaults = {}; this._observedFor = null; this._backingChanged = false; this._lastBacking = null;
+      this.observedDefaults = {}; this._observedFor = null; this._backingChanged = false;
+      this._observedBacking = null; this._lastBacking = null;
+      // Autre installation : un identifiant de file repris n'a pas été vu se charger.
+      this._loadingSeen.clear();
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -1394,6 +1398,10 @@ class KaraFunBridge extends EventEmitter {
   // qu'aucune n'est relevée, un titre dont KaraFun a changé les chœurs de
   // lui-même au chargement (autre valeur que celle laissée par le titre
   // d'avant). La voix guide n'est jamais relevée : coupée par défaut (0).
+  // Un titre vu pour la première fois déjà en lecture compte comme des chœurs
+  // changés : un KaraFun « collant » transmet son réglage au titre suivant.
+  // Ses chœurs ne servent qu'à reconnaître une remise par KaraFun au
+  // chargement du suivant (KaraFun qui remet à zéro).
   _observeDefaults(status) {
     const current = status.current;
     if (!current || current.id == null) return;
@@ -1413,12 +1421,23 @@ class KaraFunBridge extends EventEmitter {
       if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
       return;
     }
-    if (status.state >= 4 && !this.seenLoading(current.id)) return;
+    if (status.state >= 4 && !this.seenLoading(current.id)) { this._backingChanged = true; return; }
     const reset = this.observedDefaults.backing == null && carried != null && backing !== carried;
     if ((!this._backingChanged || reset) && backing != null) this.observedDefaults.backing = backing;
   }
 
   songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }
+
+  // Chœurs par défaut relevés avant un redémarrage (sauvegarde de la soirée,
+  // même code KaraFun) : repris tels quels, jamais réappris de chœurs qu'un
+  // KaraFun « collant » aurait gardés. false : valeur abîmée, rien repris.
+  restoreDefaults(saved) {
+    const backing = saved?.backing;
+    if (!Number.isInteger(backing) || backing < 0 || backing > 100) return false;
+    if (this.observedDefaults.backing == null) this.observedDefaults.backing = backing;
+    this._backingChanged = true;
+    return true;
+  }
 
   // Réglages de titre possibles avec cette connexion : true, false (ancienne
   // télécommande d'un vrai KaraFun) ou null (pas encore connecté).

@@ -439,6 +439,10 @@ class SpotifyLink {
   }
 }
 
+// Reprise d'une relance abandonnée (SpotifyAutomation.recover) : au plus une
+// par période de 10 minutes.
+const RECOVER_EVERY_MS = 10 * 60000;
+
 // Décide quand agir, à partir de l'état de KaraFun : « singing » (un titre
 // joue ou est en pause), « between » (rien ne joue mais un titre suivant
 // arrive : Spotify n'est pas relancé entre deux chansons), « silent » (file
@@ -454,6 +458,8 @@ class SpotifyAutomation {
     this.attempts = 0;
     this.retryAt = 0;
     this.failed = false;      // dernière action de la période en échec
+    this.failure = null;      // { status, checkFailed } : échec de cette action
+    this.recoveredAt = -Infinity;
   }
 
   step(karaoke, { autoResume = DEFAULTS.autoResume, autoPause = DEFAULTS.autoPause,
@@ -466,6 +472,7 @@ class SpotifyAutomation {
       this.attempts = 0;
       this.retryAt = 0;
       this.failed = false;
+      this.failure = null;
     }
     if (this.done || karaoke === 'unknown' || now < this.retryAt) return null;
     if (karaoke === 'singing') return autoPause ? 'pause' : null;
@@ -478,26 +485,41 @@ class SpotifyAutomation {
   handled() {
     this.done = true;
     this.failed = false;
+    this.failure = null;
   }
 
   // Résultat de l'action demandée : réussite, ou nouvel essai dans 30 s
-  // (trois essais au plus par période).
-  settle(ok) {
+  // (trois essais au plus par période). `error` : l'erreur de l'échec.
+  settle(ok, error = null) {
     this.attempts++;
     this.failed = !ok;
+    this.failure = ok ? null : { status: Number(error?.status) || 0, checkFailed: false };
     if (ok || this.attempts >= 3) this.done = true;
     else this.retryAt = this.now() + 30000;
+  }
+
+  // Vérification de Spotify (appareils, lecteur) en échec depuis l'échec de
+  // l'action : sa panne n'était pas propre à l'appel de l'action.
+  checkFailed() {
+    if (this.failure) this.failure.checkFailed = true;
   }
 
   // Spotify rétabli (appareil retrouvé, réseau revenu, reconnexion) : l'action
   // de la période, abandonnée ou en attente après un échec, repart tout de
   // suite avec trois nouveaux essais. Un choix du bar (handled) reste respecté.
+  // Au plus une fois par 10 minutes ; jamais quand seul l'appel de l'action
+  // échoue en 5xx (la vérification réussie n'en dit rien). false : rien repris.
   recover() {
     if (!this.failed) return false;
+    if (this.failure?.status >= 500 && !this.failure.checkFailed) return false;
+    const now = this.now();
+    if (now - this.recoveredAt < RECOVER_EVERY_MS) return false;
+    this.recoveredAt = now;
     this.done = false;
     this.attempts = 0;
     this.retryAt = 0;
     this.failed = false;
+    this.failure = null;
     return true;
   }
 }

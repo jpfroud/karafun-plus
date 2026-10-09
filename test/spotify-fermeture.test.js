@@ -840,3 +840,71 @@ test('lancement : la pause d’avant-titre attend une vérification Spotify en c
   assert.equal(state.playing, false);
   assert.equal(state.checks, 1);
 });
+
+// Regression: deuxième relecture finale R5 — PUT /me/player/play refusé alors
+// que la liste des appareils et le lecteur répondent. Un refus (403) ne
+// touche pas l'état de santé : rien n'est « rétabli ». Une panne 5xx du seul
+// appel de relance mettait la santé en erreur ; la vérification suivante la
+// voyait « prête » et relançait trois essais de plus, avec un faux
+// « Spotify rétabli », toutes les quelques minutes. Une relance abandonnée
+// ne repart qu'une fois par 10 minutes au plus, et jamais quand c'est l'appel
+// de relance lui-même qui échoue en 5xx.
+function failingPlaySpotify(f, now, failure) {
+  const state = { playing: false, plays: 0, transfers: 0 };
+  const empty = { ok: true, status: 204, headers: { get: () => null }, text: async () => '' };
+  f.spotify.fetchImpl = async (url, request = {}) => {
+    if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
+    if (url.endsWith('/me/player/devices')) return json({ devices: [{ id: 'pc', name: 'PC du bar', type: 'Computer', is_active: true }] });
+    if (url.endsWith('/me/player') && (request.method || 'GET') === 'GET') return json({ is_playing: state.playing, device: { id: 'pc', name: 'PC du bar' } });
+    if (url.endsWith('/me/player')) { state.transfers++; return empty; }
+    if (url.includes('/me/player/play')) {
+      state.plays++;
+      const answer = failure();
+      if (answer === 'network') throw new TypeError('fetch failed');
+      if (answer) return json({ error: { status: answer, message: 'refus' } }, answer);
+      state.playing = true;
+      return empty;
+    }
+    throw new Error(`inattendu : ${url} ${request.method || ''}`);
+  };
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r',
+    deviceId: 'pc', deviceName: 'PC du bar', deviceType: 'Computer', autoResume: true, autoPause: true, resumeDelaySec: 0, pauseLeadSec: 0 };
+  return state;
+}
+// Silence de file vide pendant `minutes`, un passage de l'automate toutes les 30 s.
+async function silence(f, clock, minutes) {
+  for (let i = 0; i < minutes * 2; i++) { await f.spotifyTick(); clock.now += 30000; }
+}
+
+for (const status of [403, 503]) {
+  test(`Spotify : relance refusée (${status}) avec des appareils en bonne santé, pas de relance en boucle ni de faux « rétabli »`, async () => {
+    const logs = [];
+    const f = harness({ logs });
+    const clock = { now: Date.now() };
+    f.spotifyAutomation.now = () => clock.now;
+    f.spotify.now = () => clock.now;
+    const state = failingPlaySpotify(f, clock, () => status);
+    f.setBridge(fakeBridge([], []));
+    const checked = await f.handlers['POST /api/staff/spotify'](null, null, { action: 'refresh' });
+    assert.equal(checked.health.state, 'ready', 'appareils en bonne santé');
+    await silence(f, clock, 30);
+    assert.equal(state.plays, 3, 'trois essais pour ce silence, puis plus rien');
+    assert.equal(state.transfers, 0, 'pas de transfert : seul le 404 en demande un');
+    assert.equal(f.spotifyAutomation.done, true, 'abandon gardé');
+    assert.equal(logs.some(line => /Spotify rétabli/.test(line)), false, logs.join('\n'));
+  });
+}
+
+test('Spotify : relance coupée par le réseau, appareils en bonne santé : repart au plus une fois par 10 minutes', async () => {
+  const logs = [];
+  const f = harness({ logs });
+  const clock = { now: Date.now() };
+  f.spotifyAutomation.now = () => clock.now;
+  f.spotify.now = () => clock.now;
+  const state = failingPlaySpotify(f, clock, () => 'network');
+  f.setBridge(fakeBridge([], []));
+  await silence(f, clock, 30);
+  const recovered = logs.filter(line => /Spotify rétabli/.test(line)).length;
+  assert.ok(recovered >= 1 && recovered <= 3, `au plus une reprise par 10 minutes (${recovered})`);
+  assert.equal(state.plays, 3 * (recovered + 1), 'trois essais par reprise');
+});
