@@ -569,6 +569,11 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .queue-item { grid-template-columns: 44px 22px minmax(0,1fr) 43px 48px; row-gap: 2px; padding: 5px 3px; min-height: 58px; }
   .queue-item .person-cell { grid-column: 3; }
   .queue-item .person-cell .queue-tags { display: none; }
+  /* Sans badges, rien ne justifie la borne de 45 % (60 % avec ✎) : le nom
+     prend la place que la table, entière jusqu'à 27 %, lui laisse
+     (« Anne-… » suivi de 68 px vides à 360 px). */
+  .queue-item .person, .queue-item button.person { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+  .queue-item .table-tag { flex: none; }
   .queue-item .song-cell { grid-column: 3 / 5; grid-row: 2; }
   .queue-item .eta { grid-column: 4; grid-row: 1; }
   .queue-item .row-actions { grid-column: 5; grid-row: 1 / 3; }

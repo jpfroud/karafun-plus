@@ -32,7 +32,8 @@ async function request(route, body, cookie = '') {
 }
 
 // Six solistes du comptoir, chacun avec un titre.
-const NAMES = ['Marie-Charlotte Vanden', 'Léa', 'Bob', 'Maximilien-Alexandre B.', 'Noé', 'Zoé'];
+// Les deux derniers restent actifs, seuls, sans repère « inactif ».
+const NAMES = ['Marie-Charlotte Vanden', 'Léa', 'Bob', 'Maximilien-Alexandre B.', 'Noé', 'Zoé', 'Anne-Sophie Delacroix', 'Jean-Baptiste Lemercier'];
 // Duos : deux partenaires inactifs (prénom long puis court, puis l'inverse avec
 // « inactif depuis 21:04 », le repère le plus long), et un seul partenaire
 // inactif, le second.
@@ -50,6 +51,11 @@ function reshape(state) {
   by('Léa').lastActiveAt = by('Zoé').lastActiveAt = state.now - 52 * MIN;
   Object.assign(by('Bob'), { joinedAt: state.now - 50 * MIN, lastActiveAt: state.now - 50 * MIN });
   by('Noé').lastActiveAt = state.now;
+  // Regression: D3-1 bis (vérification de la troisième relecture) — deux
+  // solistes actifs au nom long, l'un avec un repère privé (✎) et une table.
+  by('Anne-Sophie Delacroix').lastActiveAt = state.now;
+  Object.assign(by('Jean-Baptiste Lemercier'), { lastActiveAt: state.now, privateNote: 'habitué' });
+  state.queue.find(q => q.ids?.length === 1 && q.ids[0] === by('Jean-Baptiste Lemercier').id).table = 'Terrasse';
   for (const [first, second] of DUOS) {
     const [a, b] = [by(first), by(second)];
     const line = state.queue.find(q => q.ids?.length === 1 && q.ids[0] === a.id);
@@ -87,6 +93,11 @@ const measure = page => page.evaluate(() => {
       who: [...row.querySelectorAll('.idle-tag .idle-who')].map(box),
       for: [...row.querySelectorAll('.idle-tag .idle-for')].map(box),
     })),
+    active: [...document.querySelectorAll('#qBody .queue-item')].filter(row => !row.querySelector('.idle-tag')).map(row => ({
+      cell: box(row.querySelector('.person-cell')),
+      name: box(row.querySelector('.person')),
+      table: box(row.querySelector('.table-tag')),
+    })),
   };
 });
 
@@ -100,7 +111,7 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
   const tables = (await request('/api/staff/state')).value.tables;
   const access = new URL(tables.find(t => t.id === 'Comptoir').url).pathname.split('/').pop();
   const songs = [];
-  for (const q of ['Queen', 'the', 'a', 'o']) for (const song of (await request(`/api/search?q=${q}`)).value) if (!songs.some(s => s.songId === song.songId)) songs.push(song);
+  for (const q of ['Queen', 'the', 'me']) for (const song of (await request(`/api/search?q=${q}`)).value) if (!songs.some(s => s.songId === song.songId)) songs.push(song);
   assert.ok(songs.length >= NAMES.length, `catalogue de démo : ${songs.length} titres`);
   // Relancé sur une démo déjà utilisée : les solistes déjà inscrits avec un titre servent tels quels.
   const before = (await request('/api/staff/state')).value;
@@ -127,7 +138,7 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
       await page.goto(staff + '#file');
       if (phone) await page.locator('[data-tab-btn="file"]').tap();
       await page.waitForFunction(() => document.querySelectorAll('#qBody .idle-tag .idle-who').length === 5);
-      const { overflow, rows } = await measure(page);
+      const { overflow, rows, active } = await measure(page);
       const at = `${width} px`;
       assert.equal(overflow, 0, `${at} : pas de défilement horizontal`);
       const duos = rows.filter(row => row.who.length);
@@ -185,6 +196,25 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
         // le nom restait borné à 45 % : « Marie… » à 360 px. Coupé, il prend
         // toute la largeur de la cellule, comme le nom d'un duo.
         if (row.name.scroll > row.name.client + 1) assert.ok(row.name.width >= row.cell.width - 1, `${label} : nom coupé à ${Math.round(row.name.width)} px sur ${Math.round(row.cell.width)}`);
+      }
+      // Regression: D3-1 bis (vérification de la troisième relecture) — au
+      // téléphone, les badges sont cachés : le nom d'un soliste actif restait
+      // borné à 45 % (60 % avec ✎), « Anne-… » suivi de 68 px vides à 360 px,
+      // alors que le même nom s'allongeait une fois le soliste inactif.
+      // Il prend toute la place que la table lui laisse ; la table garde sa
+      // part (entière jusqu'à 27 % de la colonne, le nom passe d'abord).
+      if (phone) {
+        const longNames = active.filter(row => row.name.text.length > 20);
+        assert.equal(longNames.length, 2, `${at} : deux solistes actifs au nom long`);
+        for (const row of longNames) {
+          const label = `${at}, soliste actif ${row.name.text.trim()}`;
+          assert.ok(inside(row.name, row.cell), `${label} : nom hors de la cellule`);
+          if (row.table.width > 0) {
+            assert.ok(inside(row.table, row.cell) && row.table.width >= Math.min(row.table.scroll, 0.27 * row.cell.width) - 1, `${label} : table « ${row.table.text} » réduite (${JSON.stringify(row.table)})`);
+          }
+          const room = row.cell.width - (row.table.width > 0 ? row.table.width + 5 : 0);
+          if (row.name.scroll > row.name.client + 1) assert.ok(row.name.width >= room - 1, `${label} : nom coupé à ${Math.round(row.name.width)} px sur ${Math.round(room)}`);
+        }
       }
       // Sur PC, les badges d'une ligne avec repère ont leur propre ligne, entiers.
       if (!phone) for (const row of rows) assert.ok(row.tags.width >= row.cell.width - 1, `${at}, ${row.name.text} : badges réduits à ${Math.round(row.tags.width)} px`);
