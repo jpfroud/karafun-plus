@@ -1948,6 +1948,85 @@ test('nouveau code, même KaraFun collant : chœurs coupés du titre en cours ja
   assert.equal(bridge.observedDefaults.backing, undefined);
 });
 
+const codeKey = code => crypto.createHash('sha256').update(`karafun:${code}`).digest('hex').slice(0, 16);
+const idleStatus = () => ({ type: 'remote.StatusEvent', payload: { status: { state: 1, pitch: 0, tempo: 0, tracks: [], current: null } } });
+
+// Regression: vérification de la quatrième passe (K1) — chœurs coupés en
+// direct, puis session KCS perdue avant « Nouvelle soirée » (coupure, KaraFun
+// entre deux titres) ou avant le nouveau code (l'ancien cesse de marcher le
+// premier) : 0, gardé au titre suivant par un KaraFun collant, était relevé
+// (provisoire, sauvegardé, sous l'empreinte du nouveau code) puis imposé à un
+// titre chargé à 53.
+for (const how of ['nouvelle soirée', 'nouveau code']) {
+  test(`${how} après une coupure, KaraFun collant : chœurs coupés en direct jamais relevés ni imposés ensuite`, async t => {
+    const f = harness();
+    const { bridge, frames, reconnect } = replayBridge(t, f);
+    bridge.code = '123456';
+    const a = isoItem('A-id', 801, { singer: 'Un' });
+    frames(queueEvent(a), isoStatus(1, a), isoStatus(2, a), isoStatus(3, a), isoStatus(4, a));
+    const learned = plain(f.settings.karafunDefaults);
+    assert.deepEqual(learned, { code: codeKey('123456'), backing: 53, provisional: true });
+    frames(isoStatus(4, a, { backing: 0 })); // chœurs coupés en direct sur a
+    if (how === 'nouvelle soirée') {
+      reconnect(); // coupure ; a a fini, KaraFun attend le titre suivant
+      frames(queueEvent(), idleStatus());
+      f.clearEvening();
+      f.sync();
+    } else {
+      bridge.disconnect(); // l'ancien code ne marche plus
+      f.sync();
+      bridge._open = () => {};
+      f.connectKaraFun('654321');
+      reconnect();
+      frames(queueEvent(), idleStatus());
+    }
+    const b = isoItem('B-id', 802, { singer: 'Deux' });
+    assert.deepEqual(bare(frames(isoStatus(1, b), queueEvent(b), isoStatus(2, b, { backing: 0 }), isoStatus(3, b, { backing: 0 }),
+      isoStatus(4, b, { backing: 0 }))), []);
+    assert.equal(bridge.observedDefaults.backing, undefined, 'chœurs gardés de a : jamais relevés');
+    assert.deepEqual(plain(f.settings.karafunDefaults), how === 'nouvelle soirée' ? undefined : learned, 'rien de sauvegardé');
+    // Remis à 53 en direct sur b, c se charge à 53 : jamais ramené à 0.
+    frames(isoStatus(4, b, { backing: 53 }));
+    const c = isoItem('C-id', 803, { singer: 'Trois' });
+    frames(isoStatus(1, c), queueEvent(c), isoStatus(2, c, { backing: 53 }));
+    assert.deepEqual(bare(frames(isoStatus(3, c, { backing: 53 }))), []);
+  });
+}
+
+// Regression: vérification de la quatrième passe (K1) — « Supprimer toutes
+// les tables » avec le dernier titre sur scène, chœurs jamais changés : la
+// valeur provisoire oubliée n'était plus relevée pour toute la suite (pages à
+// 100 au lieu de « Réglage de KaraFun : 53 ») et, chez un KaraFun collant,
+// les chœurs coupés par un titre restaient aux titres suivants. De même
+// après un redémarrage qui reprend une valeur provisoire sauvegardée.
+for (const start of ['pont neuf', 'valeur provisoire reprise']) {
+  test(`nouvelle soirée, chœurs jamais changés (${start}) : valeur relevée de nouveau, chœurs coupés ensuite ramenés`, async t => {
+    const f = harness();
+    if (start !== 'pont neuf') f.settings.karafunDefaults = { code: codeKey('123456'), backing: 53, provisional: true };
+    const { bridge, frames } = replayBridge(t, f);
+    bridge.code = '123456';
+    if (start !== 'pont neuf') f.restoreKaraFunDefaults();
+    const shown = () => plain(f.publicState().songSettings.defaults.backing);
+    const a = isoItem('A-id', 801, { singer: 'Un' });
+    frames(queueEvent(a), isoStatus(1, a), isoStatus(2, a), isoStatus(3, a), isoStatus(4, a));
+    assert.deepEqual([shown(), plain(f.settings.karafunDefaults)?.provisional], [53, true]);
+    f.clearEvening();
+    f.sync();
+    assert.equal(f.settings.karafunDefaults, undefined, 'valeur provisoire oubliée');
+    // b se charge avec les chœurs de a, jamais changés : relevée de nouveau, provisoire.
+    const b = isoItem('B-id', 802, { singer: 'Deux' });
+    assert.deepEqual(bare(frames(isoStatus(1, b), queueEvent(b), isoStatus(2, b), isoStatus(3, b), isoStatus(4, b))), []);
+    assert.equal(shown(), 53, 'pages : réglage de KaraFun 53');
+    assert.deepEqual(plain(f.settings.karafunDefaults), { code: codeKey('123456'), backing: 53, provisional: true });
+    // e coupe les chœurs par ses options ; g, sans réglage, les garde (KaraFun collant) : ramenés à 53.
+    const e = isoItem('E-id', 900, { singer: 'E', tracks: [{ track: { type: 4 }, volume: 0 }] });
+    frames(isoStatus(1, e), queueEvent(e), isoStatus(2, e, { backing: 0 }), isoStatus(3, e, { backing: 0 }), isoStatus(4, e, { backing: 0 }));
+    const g = isoItem('G-id', 901, { singer: 'G' });
+    frames(isoStatus(1, g), queueEvent(g), isoStatus(2, g, { backing: 0 }));
+    assert.deepEqual(bare(frames(isoStatus(3, g, { backing: 0 }))), [volumeTo(4, 53)]);
+  });
+}
+
 // Regression: deuxième relecture finale R4 — pages gardées en cache d'avant
 // les voix guides réglées une à une : leur unique « voix guide » réglait les
 // deux voix d'un duo. Sur un duo, un réglage sans `guideVoices` pose aussi la
