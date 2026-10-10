@@ -1978,6 +1978,42 @@ test('pages d’avant les voix une à une : sur un duo, la voix guide règle aus
   assert.deepEqual(plain(solo.person.song.settings), { guide: 40, guideVoices: { 6: 75 } });
 });
 
+// Regression: relecture finale, quatrième passe (K4) — sur un duo, la remise
+// par défaut d'une page d'avant les voix une à une (« Réinitialiser » des
+// téléphones : settings null ; bar : {}) gardait la voix 2 posée par sa voix
+// guide : la page montrait les valeurs par défaut, KaraFun gardait l'ancienne
+// voix 2. Sans `guideVoices`, la voix 2 d'un duo suit toujours la voix guide.
+test('pages d’avant les voix une à une : sur un duo, leur remise par défaut remet aussi la voix 2', async t => {
+  const f = harness();
+  replayBridge(t, f);
+  const tb = openTable(f, '1');
+  const lea = singer(f, tb, 'Léa');
+  const tom = singer(f, tb, 'Tom');
+  f.sched.inviteDuet(lea.person, tom.person.id, { songId: 12458, title: 'Titre 12458', artist: 'Artiste' });
+  const entryId = lea.person.song.entryId;
+  // Ancienne page des chanteurs : voix guide 40 (la voix 2 suit), puis « Réinitialiser ».
+  await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: { guide: 40 } });
+  assert.deepEqual(plain(lea.person.song.settings), { guide: 40, guideVoices: { 6: 40 } });
+  const reset = await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: null });
+  assert.equal(reset.settings, null);
+  assert.equal(lea.person.song.settings ?? null, null, 'plus de voix 2 restée à 40');
+  // Ancienne page du bar : voix guide 30, puis remise par défaut.
+  await f.call('POST /api/staff/song/settings', { personId: lea.person.id, entryId, settings: { guide: 30 } });
+  assert.deepEqual(plain(lea.person.song.settings), { guide: 30, guideVoices: { 6: 30 } });
+  const cleared = await f.call('POST /api/staff/song/settings', { personId: lea.person.id, entryId, settings: {} });
+  assert.equal(cleared.settings, null);
+  assert.equal(lea.person.song.settings ?? null, null);
+  // Voix 3 réglée par une page actuelle : gardée par la remise d'une ancienne page.
+  await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: { guide: 50, guideVoices: { 6: 75, 7: 25 } } });
+  await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: null });
+  assert.deepEqual(plain(lea.person.song.settings), { guideVoices: { 7: 25 } });
+  // Pages actuelles : leur voix 2 explicite ne bouge pas.
+  await f.call('POST /api/table/song/settings', { ...lea.body, entryId, settings: { guide: 50, guideVoices: { 6: 75 } } });
+  assert.deepEqual(plain(lea.person.song.settings), { guide: 50, guideVoices: { 6: 75 } });
+  await f.call('POST /api/staff/song/settings', { personId: lea.person.id, entryId, settings: { pitch: 1, guideVoices: { 6: 75 } } });
+  assert.deepEqual(plain(lea.person.song.settings), { pitch: 1, guideVoices: { 6: 75 } });
+});
+
 test('ancienne page du bar : la voix guide en direct d’un duo de la file règle aussi la piste B', async t => {
   const songTracks = [{ type: 4 }, { type: 5 }, { type: 6 }];
   const run = aThenB(t, { duoA: true, songTracks });

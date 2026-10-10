@@ -861,15 +861,19 @@ function songSettingsTarget(entryId, started) {
 
 // Réglages reçus d'une page : sans la clé `guideVoices` (page gardée en cache
 // d'avant les voix guides par voix), les autres voix guides du titre restent ;
-// sur un duo (`target.ids`), la voix 2 suit la voix guide, comme sur ces pages
-// (et comme à la reprise d'une ancienne sauvegarde, legacyDuoVoice).
+// sur un duo (`target.ids`), la voix 2 suit toujours la voix guide, comme sur
+// ces pages (et comme à la reprise d'une ancienne sauvegarde, legacyDuoVoice) :
+// sans voix guide (remise par défaut), plus de voix 2.
 // Les pages actuelles envoient toujours la clé ({} quand il n'y en a plus).
 function songSettingsInput(input, { song, ids }) {
   if (input != null && (typeof input !== 'object' || Array.isArray(input) || 'guideVoices' in input)) return input;
-  const kept = song?.settings?.guideVoices;
-  const duoVoice = ids?.length > 1 && input?.guide != null ? { [TRACK.LEAD_B]: input.guide } : null;
-  if (!kept && !duoVoice) return input;
-  return { ...(input || {}), guideVoices: { ...kept, ...duoVoice } };
+  const voices = { ...song?.settings?.guideVoices };
+  if (ids?.length > 1) {
+    delete voices[TRACK.LEAD_B];
+    if (input?.guide != null) voices[TRACK.LEAD_B] = input.guide;
+  }
+  if (!Object.keys(voices).length) return input;
+  return { ...(input || {}), guideVoices: voices };
 }
 
 // Enregistre les réglages sur le titre, puis les applique selon où il en est.
