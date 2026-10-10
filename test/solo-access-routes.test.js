@@ -84,7 +84,8 @@ function harness({ persistent = false, clock = false, modules = {} } = {}) {
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, access, soloInvitations, privateEvent, battleVote, staffState, journal,
       ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, journalSample, publicState, transferSnapshot, personShareCodes,
-      STAFF_KEY, PORT, PUBLIC_PORT, handle: server.listeners('request')[0], setTracked: value => { tracked = value; } };
+      STAFF_KEY, PORT, PUBLIC_PORT, handle: server.listeners('request')[0], setTracked: value => { tracked = value; },
+      setPending: value => { pending = value; } };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
   f.settings.auto = false;
@@ -2016,6 +2017,68 @@ test('événement privé : une fiche partie d’elle-même compte encore après 
   assert.equal((await enter(f, tb, '10.0.5.7')).status, 200);
 });
 
+// Regression: relecture finale fraîche, première passe (adverse MOYEN,
+// décision du gérant) — les personnes de l'événement parties d'elles-mêmes
+// après un historique gardaient leur fiche toute la soirée : un script
+// (entrée, prénom, un titre, POST /api/leave) fermait le QR de l'événement
+// pour de bon, et ni « Renouveler le QR » ni couper puis rallumer le mode ne
+// le rouvraient. Le renouvellement libère maintenant les fiches parties
+// d'elles-mêmes de l'ancien QR : le plafond des fiches vaut pour chaque QR.
+test('événement privé : « Renouveler le QR » libère les fiches parties d’elles-mêmes de l’ancien QR, même après un redémarrage', async () => {
+  const { restoreNight } = require('../night-state');
+  const f = harness({ persistent: true });
+  const { tb } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const enter = (g, gtb, event, remote) => post(g, '/api/table/enter', { ...gtb, event }, { remote });
+  // Fiches remplies de départs volontaires avec un titre : la plupart
+  // directement, deux par les routes (entrée, prénom, un titre, « Je pars »).
+  for (let i = 0; i < MAX_EVENT_PEOPLE - 2; i++) {
+    const p = f.sched.join({ tableId: 'Comptoir', name: `Partie ${i}` });
+    p.viaEvent = true;
+    f.sched.chooseSong(p, song(9000 + i, `Titre ${i}`));
+    f.sched.leave(p, 'self');
+  }
+  for (const name of ['Léa', 'Max']) {
+    const me = await eventEntry(f, tb, secret, name);
+    assert.equal((await post(f, '/api/table/song', { ...me, song: song(7, name) }, { cookie: me.cookie })).status, 200);
+    assert.equal((await post(f, '/api/leave', { token: me.token }, { cookie: me.cookie })).status, 200);
+  }
+  assert.equal(PrivateEvent.held(f.sched.people.values()), MAX_EVENT_PEOPLE);
+  assert.equal((await enter(f, tb, secret, '10.0.7.1')).body.code, 'PRIVATE_EVENT_FULL');
+  // Couper puis rallumer le mode ne libère rien.
+  assert.equal((await post(f, staff(f, '/api/staff/private-event'), { enabled: false })).status, 200);
+  assert.equal((await post(f, staff(f, '/api/staff/private-event'), { enabled: true })).status, 200);
+  assert.equal((await enter(f, tb, secret, '10.0.7.2')).body.code, 'PRIVATE_EVENT_FULL', 'couper puis rallumer : toujours complet');
+  // « Renouveler le QR » : les fiches parties d'elles-mêmes se libèrent ; elles
+  // restent (prénom, historique), marquées parties.
+  const rotated = await post(f, staff(f, '/api/staff/private-event'), { rotate: true });
+  assert.equal(rotated.status, 200, rotated.text);
+  const fresh = new URL(rotated.body.url).searchParams.get('evenement');
+  assert.notEqual(fresh, secret);
+  assert.equal(PrivateEvent.held(f.sched.people.values()), 0, 'fiches libérées');
+  const gone = [...f.sched.people.values()].filter(p => p.withdrawnAt);
+  assert.equal(gone.length, MAX_EVENT_PEOPLE, 'les fiches restent');
+  assert.ok(gone.every(p => p.withdrawnBy === 'staff'), 'libérées comme un départ marqué par le bar');
+  assert.ok(f.sched.log.some(line => /Fiches libérées \(parties d’elles-mêmes\) : 400/.test(line.msg)), 'le journal du bar le dit');
+  assert.equal((await enter(f, tb, secret, '10.0.7.3')).body.code, 'PRIVATE_EVENT', 'l’ancien QR est refusé');
+  const nina = await eventEntry(f, tb, fresh, 'Nina');
+  // Le plafond vaut de nouveau pour le nouveau QR : un départ volontaire y compte.
+  assert.equal((await post(f, '/api/table/song', { ...nina, song: song(8, 'Nina') }, { cookie: nina.cookie })).status, 200);
+  assert.equal((await post(f, '/api/leave', { token: nina.token }, { cookie: nina.cookie })).status, 200);
+  assert.equal(f.sched.people.get(nina.personId).withdrawnBy, 'self');
+  assert.equal(PrivateEvent.held(f.sched.people.values()), 1, 'départ volontaire du nouveau QR : compté');
+  // Redémarrage : la soirée sauvegardée garde les fiches libérées.
+  const saved = plain(f.night.saves.at(-1));
+  assert.equal(saved.scheduler.people.filter(p => p.withdrawnBy === 'staff').length, MAX_EVENT_PEOPLE);
+  const g = harness();
+  const result = restoreNight(saved, { scheduler: g.sched, access: g.access, settings: g.settings });
+  g.privateEvent.restore(result.privateEvent);
+  const gtb = { table: 'Comptoir', access: g.access.get('Comptoir') };
+  assert.equal(PrivateEvent.held(g.sched.people.values()), 1, 'après un redémarrage : seule Nina compte');
+  assert.equal((await enter(g, gtb, fresh, '10.0.7.4')).status, 200, 'après un redémarrage, le nouveau QR fait entrer');
+});
+
 // Regression: troisième passe de la relecture finale (sécurité CRITIQUE) —
 // seule une personne de l'événement sans aucun historique disparaît à son
 // départ : un titre demandé (même retiré), un duo, la Battle en cours ou un
@@ -2075,6 +2138,53 @@ test('événement privé : « Je pars » garde la fiche dès qu’il y a un hist
   assert.ok(f.battleVote.ballot.eligiblePersonIds.includes(silent.personId));
   assert.equal((await leave(silent)).status, 200);
   assert.equal(f.sched.people.has(silent.personId), false, 'votante possible sans vote : retirée');
+});
+
+// Relecture finale fraîche (tests) : deux gardes de withoutHistory n'étaient
+// vérifiées par aucun test (les retirer laissait tout passer). Une invitée
+// d'un duo accepté, ou une personne citée par un titre en route vers KaraFun
+// (envoi en attente ou titre suivi), garde sa fiche à « Je pars ».
+test('événement privé : « Je pars » d’une invitée de duo accepté garde sa fiche, le duo est défait, la soirée se reprend', async () => {
+  const { restoreNight } = require('../night-state');
+  const f = harness({ persistent: true });
+  const { tb } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const as = (me, route, extra) => post(f, route, { ...me, ...extra }, { cookie: me.cookie });
+  const ana = await eventEntry(f, tb, secret, 'Ana');
+  const bea = await eventEntry(f, tb, secret, 'Bea');
+  assert.equal((await as(ana, '/api/table/duet', { partnerId: bea.personId, song: song(77, 'Duo Ana Bea') })).status, 200);
+  const entryId = f.sched.songsOf(f.sched.people.get(ana.personId))[0].entryId;
+  assert.equal((await as(bea, '/api/table/duet/answer', { accept: true, entryId })).status, 200);
+  const b = f.sched.people.get(bea.personId);
+  assert.equal(b.duetOf, ana.personId);
+  assert.deepEqual([b.sung || 0, b.lastAppearanceTurn || 0, f.sched.Q.includes(b.id), !!b.invite, f.sched.songsOf(b).length],
+    [0, 0, false, false, 0], 'seul le duo accepté la cite');
+  assert.equal((await post(f, '/api/leave', { token: bea.token }, { cookie: bea.cookie })).status, 200);
+  assert.ok(f.sched.people.get(bea.personId)?.withdrawnAt, 'fiche partie gardée');
+  assert.equal(f.sched.people.get(bea.personId).withdrawnBy, 'self');
+  assert.equal(f.sched.songsOf(f.sched.people.get(ana.personId))[0].duet, undefined, 'le titre d’Ana redevient un solo');
+  const restored = harness();
+  restoreNight(plain(f.night.saves.at(-1)), { scheduler: restored.sched, access: restored.access, settings: restored.settings });
+  assert.ok(restored.sched.people.get(bea.personId)?.withdrawnAt);
+});
+
+test('événement privé : « Je pars » garde la fiche d’une personne citée par un titre en route vers KaraFun (envoi ou titre suivi)', async () => {
+  for (const where of ['pending', 'tracked']) {
+    const f = harness();
+    const { tb } = openSolo(f);
+    const secret = f.privateEvent.enable();
+    const ana = await eventEntry(f, tb, secret, 'Ana');
+    const gil = await eventEntry(f, tb, secret, 'Gil');
+    const sel = { ids: [ana.personId, gil.personId], names: ['Ana', 'Gil'], label: 'Ana & Gil', kind: 'duo',
+      song: { songId: 88, title: 'Duo en route', artist: 'Artiste', entryId: 'e-88' } };
+    if (where === 'pending') f.setPending({ sel, before: new Set(), at: Date.now(), attempts: 1 });
+    else f.setTracked([{ queueId: 901, sel, addedAt: Date.now(), startedAt: null, cancelled: true, removeRequestedAt: Date.now(), uncommitted: true }]);
+    const g = f.sched.people.get(gil.personId);
+    assert.deepEqual([g.sung || 0, g.lastAppearanceTurn || 0, f.sched.roundPeople.has(g.id), f.sched.Q.includes(g.id), !!g.duetOf, !!g.invite],
+      [0, 0, false, false, false, false], `${where} : seul le titre en route la cite`);
+    assert.equal((await post(f, '/api/leave', { token: gil.token }, { cookie: gil.cookie })).status, 200);
+    assert.ok(f.sched.people.get(gil.personId)?.withdrawnAt, `${where} : fiche partie gardée`);
+  }
 });
 
 // Regression: vérification de la troisième passe de la relecture finale —

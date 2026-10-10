@@ -24,6 +24,7 @@ const zlib = require('node:zlib');
 const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
 const { Scheduler } = require('../scheduler');
+const { PrivateEvent, MAX_PEOPLE } = require('../private-event');
 
 const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
@@ -199,6 +200,81 @@ test('un téléphone qui change la file la voit changée dès sa relecture, et l
   for (const phone of phones) assert.equal((await poll(f, phone)).status, 200);
   assert.equal((await get(f, staff(f, '/api/staff/state'))).status, 200);
   assert.equal(spy.count, 1, `l’ajout puis 14 lectures : ${spy.count} prévisions au lieu d’une`);
+});
+
+// Regression: relecture finale fraîche, première passe (performance
+// CRITIQUE) — une entrée refusée par le QR de l'événement (429 trop
+// d'inscriptions dans la minute, 403 complet) ne change rien, mais son retour
+// arrière réécrivait `version` : la prévision gardée était oubliée et la
+// lecture suivante la recalculait (environ 0,2 s à 200 invités). Les refus ne
+// sont pas limités : un script, ou les nouveaux essais des téléphones pendant
+// une affluence, saturaient le serveur.
+test('entrée refusée par le QR de l’événement (trop d’inscriptions, complet) : la prévision gardée reste servie', async () => {
+  const f = harness();
+  const { tb, secret, phones } = await eventRoom(f, 12);
+  const enter = remote => post(f, '/api/table/enter', { ...tb, event: secret }, { remote });
+  const readAll = async () => {
+    for (const phone of phones) assert.equal((await poll(f, phone)).status, 200);
+    assert.equal((await get(f, staff(f, '/api/staff/state'))).status, 200);
+  };
+  // Un même appareil : 30 créations par minute, puis 429.
+  for (let i = 0; i < 30; i++) assert.equal((await enter('10.9.9.9')).status, 200);
+  await readAll();
+  const spy = countForecasts(f.sched);
+  let version = f.sched.version;
+  for (let i = 0; i < 10; i++) {
+    const busy = await enter('10.9.9.9');
+    assert.deepEqual([busy.status, busy.body.code], [429, 'PRIVATE_EVENT_BUSY'], busy.text);
+    await readAll();
+  }
+  assert.equal(f.sched.version, version, '429 : aucun changement d’état');
+  assert.equal(spy.count, 0, `10 refus (429) puis lectures : ${spy.count} prévisions recalculées pour un état inchangé`);
+  // Complet : 200 personnes nommées présentes venues par l'événement.
+  for (let n = 0; PrivateEvent.present(f.sched.people.values()) < MAX_PEOPLE; n++) {
+    f.sched.join({ tableId: 'Comptoir', name: `Complet ${n}` }).viaEvent = true;
+  }
+  await readAll();
+  spy.count = 0;
+  version = f.sched.version;
+  for (let i = 0; i < 10; i++) {
+    const full = await enter(`10.8.0.${i}`);
+    assert.deepEqual([full.status, full.body.code], [403, 'PRIVATE_EVENT_FULL'], full.text);
+    await readAll();
+  }
+  assert.equal(f.sched.version, version, '403 : aucun changement d’état');
+  assert.equal(spy.count, 0, `10 refus (403) puis lectures : ${spy.count} prévisions recalculées pour un état inchangé`);
+  // Une place libérée par le bar, puis une entrée acceptée : l'état change,
+  // la lecture suivante recalcule, une seule fois pour tous.
+  const freed = [...f.sched.people.values()].find(p => p.name === 'Complet 0');
+  assert.equal((await post(f, staff(f, '/api/staff/person/leave'), { personId: freed.id })).status, 200);
+  await readAll();
+  spy.count = 0;
+  version = f.sched.version;
+  const accepted = await enter('10.8.1.1');
+  assert.equal(accepted.status, 200, accepted.text);
+  assert.ok(f.sched.version > version, 'entrée acceptée : nouvelle version');
+  await readAll();
+  assert.equal(spy.count, 1, `entrée acceptée puis lectures : ${spy.count} prévisions au lieu d’une`);
+});
+
+// Même règle pour une inscription refusée à une table (prénom déjà pris) :
+// rien n'a changé, la version n'est pas réécrite.
+test('inscription refusée à une table (prénom déjà pris) : la prévision gardée reste servie', async () => {
+  const f = harness();
+  const { phones } = await eventRoom(f, 6);
+  f.sched.table('4').headcount = 6;
+  const tb = { table: '4', access: f.access.issue('4') };
+  assert.equal((await post(f, '/api/table/person', { ...tb, name: 'Max' })).status, 200);
+  for (const phone of phones) assert.equal((await poll(f, phone)).status, 200);
+  const spy = countForecasts(f.sched);
+  const version = f.sched.version;
+  for (let i = 0; i < 5; i++) {
+    const taken = await post(f, '/api/table/person', { ...tb, name: 'max' });
+    assert.deepEqual([taken.status, taken.body.code], [400, 'NAME_TAKEN'], taken.text);
+    for (const phone of phones) assert.equal((await poll(f, phone)).status, 200);
+  }
+  assert.equal(f.sched.version, version, 'aucun changement d’état');
+  assert.equal(spy.count, 0, `5 refus puis lectures : ${spy.count} prévisions recalculées pour un état inchangé`);
 });
 
 test('prévision du Scheduler : un seul calcul par état, des copies que l’appelant peut trier', () => {

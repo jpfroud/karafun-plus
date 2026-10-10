@@ -278,6 +278,34 @@ test('changer de partenaire après le départ du chanteur : refusé sans rien d�
   assert.equal(dam.duetGuestCount || 0, 0);
 });
 
+// Regression: relecture finale fraîche, première passe (adverse BAS) — le duo
+// noté au bar acceptait n'importe quel titre suivi dans KaraFun, pas
+// seulement celui sur scène. Noté sur un titre chargé mais pas commencé dont
+// l'invitée avait aussi son propre titre chargé, puis ce titre passé dans
+// KaraFun, le dernier passage de l'invitée dépassait le compteur des
+// passages : la soirée sauvegardée ne se reprenait plus au redémarrage.
+test('duo noté sur un titre chargé dans KaraFun mais pas commencé : refusé sans rien changer ; sur scène, accepté', async () => {
+  const { f, s, dam, zoe, loaded, bridge, queue, beforeMark, credits } = evening();
+  const zoeBefore = fairness(s, zoe);
+  const creditsBefore = credits();
+  await assert.rejects(f.call('POST /api/staff/duo-mark', { queueId: 2, partnerId: zoe.id }),
+    { message: 'Ce titre n’a pas encore commencé : note le duo pendant la chanson en cours.' });
+  assert.deepEqual(plain(loaded.ids), [dam.id], 'le titre chargé reste un solo');
+  assert.equal(loaded.staffDuo, undefined);
+  assert.deepEqual(fairness(s, zoe), zoeBefore, 'Zoé n’est pas comptée');
+  assert.deepEqual(fairness(s, dam), beforeMark);
+  assert.deepEqual(credits(), creditsBefore);
+  assert.deepEqual(bridge.removed, [], 'rien n’est retiré de KaraFun');
+  // Le même titre lancé par KaraFun, avant même que la file le note commencé :
+  // il est sur scène, le duo se note.
+  queue.splice(0, 1);
+  bridge.status = { state: 'playing', songPlaying: { queueId: 2 } };
+  assert.equal(f.tracked()[1].startedAt, null);
+  const marked = plain(await f.call('POST /api/staff/duo-mark', { queueId: 2, partnerId: zoe.id }));
+  assert.equal(marked.ok, true);
+  assert.deepEqual(plain(loaded.ids), [dam.id, zoe.id]);
+});
+
 test('duo prévu par les chanteurs : le bar ne peut pas l’annuler comme un duo improvisé', async () => {
   const { f, stage, jp } = evening();
   stage.ids.push(jp.id); stage.names.push('JP'); stage.kind = 'duo';
