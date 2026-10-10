@@ -622,6 +622,9 @@ class Scheduler {
     this._songsGone(p, this.songsOf(p));
     p.song = null; p.backlog = []; p.withdrawnAt = Date.now();
     p.presenceRetry = false; p.presenceSkips = 0; p.maybeGone = null; p.deferral = null;
+    // Clé personnelle d'un QR individuel (server.js, keyHolder) : un départ la
+    // révoque pour de bon, « Réactiver » ne la ranime pas (décision du gérant).
+    if (p.soloKeyHash) p.soloKeyRevoked = true;
     this._removeFromQ(p.id);
     if (this.reservedNext?.personId === p.id) this.releaseNext();
     this.invalidateManualOrder();

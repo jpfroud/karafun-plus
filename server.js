@@ -2005,7 +2005,7 @@ function staffState() {
     // Duo noté au bar sur le titre en cours : la page propose de le corriger.
     stage: pub.stage && stageTr?.sel.staffDuo ? { ...pub.stage, staffDuo: staffDuoView(stageTr.sel.staffDuo) } : pub.stage,
     // Repères réservés au bar : titres en double, « Je suis là » manqués.
-    // « plus long que 5:00 » : titre pas encore envoyé, au-delà de la durée maximale.
+    // « trop long » (tooLongSec) : titre pas encore envoyé, au-delà de la durée maximale.
     queue: pub.queue.map((line, index) => {
       const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
       const skips = owner && owner.song?.entryId === line.song?.entryId ? sched.presenceSkipsOf(owner) : 0;
@@ -2360,8 +2360,10 @@ function currentSoloDevice(req, person) {
 
 // Le QR individuel reste la clé personnelle de son chanteur pour la soirée :
 // rouvert ailleurs, il retrouve cette personne, jamais une deuxième place.
-// keyHolder : la personne de cette clé, même marquée partie ; keyTarget : la
-// même, seulement présente (marquée partie, la clé ne sert plus).
+// keyHolder : la personne de cette clé, même marquée partie ou revenue depuis ;
+// keyTarget : la même, seulement si sa clé vit encore. Marquée partie une
+// fois, la clé meurt pour de bon (soloKeyRevoked, scheduler.leave) : réactivée,
+// la personne ne se reprend plus que par un QR de reprise du bar.
 function keyHolder(key, table) {
   const hash = SoloInvitations.digest(key);
   if (!hash) return null;
@@ -2372,7 +2374,13 @@ function keyHolder(key, table) {
 }
 function keyTarget(key, table) {
   const holder = keyHolder(key, table);
-  return holder && !holder.withdrawnAt ? holder : null;
+  return holder && !holder.withdrawnAt && !holder.soloKeyRevoked ? holder : null;
+}
+
+function soloKeyRevokedError() {
+  const error = new Error('Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+  error.code = 'SOLO_KEY_REVOKED';
+  return error;
 }
 
 // Prénom déjà pris par un soliste : la reprise par code (« Déjà inscrit ?
@@ -2433,6 +2441,14 @@ function dropPlaceholder(person) {
   personShareCodes.delete(person.id);
 }
 
+// Départ (« Je pars », « Parti » du bar) : comme la clé personnelle
+// (scheduler.leave), le lien et le code de reprise en attente meurent ;
+// « Réactiver » ne les ranime pas, le bar donne un nouveau QR de reprise.
+function leavePerson(person, by) {
+  sched.leave(person, by);
+  personShareCodes.delete(person.id);
+}
+
 // Avant chaque création par le QR de l'événement : les places sans prénom
 // abandonnées (PrivateEvent.abandoned, sans titre, sans code ni lien de
 // reprise encore valable donné par le bar) partent sans trace. Une boucle
@@ -2451,16 +2467,18 @@ function sweepAbandonedEventPlaces(now = Date.now()) {
 
 // Chanteur créé à l'ouverture d'un QR (individuel ou d'événement), avant son
 // prénom. Même règle que joinPersonDurably : rien n'est annoncé tant que la
-// soirée n'est pas sauvegardée, et tout est défait sinon.
+// soirée n'est pas sauvegardée, et tout est défait sinon. Le ménage des places
+// abandonnées se fait avant et pour lui-même : une création refusée ou non
+// sauvegardée le laisse fait, avec son numéro de version (les pages le voient).
 function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent = false } = {}) {
+  const now = Date.now();
+  if (viaEvent) sweepAbandonedEventPlaces(now);
   const before = { log: sched.log.slice(), version: sched.version, invitations: soloInvitations.serialize(),
     cookie: res.getHeader('Set-Cookie') };
   const client = eventClient(req);
   let person = null, admittedAt = null;
   try {
     if (viaEvent) {
-      const now = Date.now();
-      sweepAbandonedEventPlaces(now);
       // Les personnes marquées parties libèrent leur place ; une place sans
       // prénom ne compte que ses 10 premières minutes. Plafond dur : 800
       // fiches de l'événement pas parties (PrivateEvent.held).
@@ -2529,7 +2547,10 @@ function openSoloInvitation(req, res, body) {
   }
   // QR personnel d'une personne marquée partie, sur ce navigateur ou un
   // autre : le dire (comme le QR de l'événement), pas « invitation utilisée ».
-  if (keyHolder(body.invitation, t)?.withdrawnAt) throw personLeftError();
+  // Revenue depuis, sa clé est morte : le bar lui donne un QR de reprise.
+  const holder = keyHolder(body.invitation, t);
+  if (holder?.withdrawnAt) throw personLeftError();
+  if (holder?.soloKeyRevoked) throw soloKeyRevokedError();
   if (!soloInvitations.verify(body.invitation, t.id)) {
     const error = new Error('Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.');
     error.code = 'SOLO_INVITATION';
@@ -2538,13 +2559,16 @@ function openSoloInvitation(req, res, body) {
   if (owner && !ownEventPlaceholder(req, owner)) refuseSoloDeviceOwner(req, owner);
   if (!owner) return createPlaceholderDurably(req, res, t, { invitation: body.invitation });
   // Place sans prénom ni titre de ce navigateur (QR de l'événement) : elle
-  // part sans trace, jamais deux places ; elle revient si la sauvegarde échoue.
+  // part sans trace, jamais deux places ; elle revient si la sauvegarde
+  // échoue, avec son code de reprise.
+  const ownerCode = personShareCodes.get(owner.id);
   dropPlaceholder(owner);
   try {
     return createPlaceholderDurably(req, res, t, { invitation: body.invitation });
   } catch (error) {
     sched.people.set(owner.id, owner);
     sched.byToken.set(owner.token, owner.id);
+    if (ownerCode) personShareCodes.set(owner.id, ownerCode);
     throw error;
   }
 }
@@ -2564,7 +2588,9 @@ function enterPrivateEvent(req, res, body) {
     return { id: owner.id, token: owner.token, nameRequired: !!owner.nameRequired, resumed: true };
   };
   if (owner && !owner.withdrawnAt && !owner.nameRequired) return resume();
-  if (!t.individual || !privateEvent.verify(body.event)) {
+  // Le secret n'est donné que pour « En solo » (Comptoir, voir
+  // privateEventView) : un autre groupe individuel le refuse.
+  if (!t.individual || t.id !== 'Comptoir' || !privateEvent.verify(body.event)) {
     const error = new Error('Ce QR d’événement n’est plus actif. Demande au bar.');
     error.code = 'PRIVATE_EVENT';
     throw error;
@@ -2669,6 +2695,9 @@ async function createPersonShareCode(p) {
     url = `${access.url(phoneBase(), p.tableId)}?reprise=${link}`;
     qr = await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' });
   } catch (error) { url = null; appLog(`Lien de transfert indisponible : ${error.message}`); }
+  // Pendant le QR, la personne a pu partir (place retirée, marquée partie) :
+  // pas de code pour elle.
+  if (sched.people.get(p.id) !== p || p.withdrawnAt) throw new Error('Chanteur inconnu ou parti.');
   personShareCodes.set(p.id, { hash: sha256(code), expiresAt, attempts: 0,
     linkHash: url ? sha256(link) : null, linkExpiresAt: url ? linkExpiresAt : 0 });
   return { code, expiresAt, url, qr, linkExpiresAt: url ? linkExpiresAt : null, name: p.name };
@@ -2746,9 +2775,8 @@ function claimPerson(body, req, res) {
   if (t.individual) {
     if (goneOwner && goneOwner.id !== p.id && ownEventPlaceholder(req, goneOwner)) {
       // Jamais deux places actives pour un navigateur : la place provisoire
-      // du QR de l'événement part.
-      sched.people.delete(goneOwner.id);
-      sched.byToken.delete(goneOwner.token);
+      // du QR de l'événement part, avec son code de reprise.
+      dropPlaceholder(goneOwner);
     } else if (goneOwner && goneOwner.id !== p.id) {
       // Place partie, ou place sans prénom d'un QR personnel (peut-être celui
       // de quelqu'un d'autre, ouvert par erreur) : ce navigateur la quitte,
@@ -2786,6 +2814,7 @@ function claimPersonDurably(body, req, res) {
   // Place partie que ce navigateur quitte en reprenant ce profil.
   const goneOwner = person && sched.table(person.tableId, false)?.individual ? soloDeviceOwner(req) : null;
   const goneOwnerHashes = goneOwner?.soloDeviceHashes?.slice();
+  const goneOwnerCode = goneOwner ? personShareCodes.get(goneOwner.id) : undefined;
   const oldSoloInvitations = soloInvitations.serialize();
   const oldLog = sched.log.slice();
   const oldVersion = sched.version;
@@ -2808,10 +2837,12 @@ function claimPersonDurably(body, req, res) {
     else delete person.soloDeviceHashes;
     if (goneOwner && goneOwner !== person) {
       goneOwner.soloDeviceHashes = goneOwnerHashes;
-      // Place provisoire retirée par la reprise : elle revient telle quelle.
+      // Place provisoire retirée par la reprise : elle revient telle quelle,
+      // avec son code de reprise.
       if (!sched.people.has(goneOwner.id)) {
         sched.people.set(goneOwner.id, goneOwner);
         sched.byToken.set(goneOwner.token, goneOwner.id);
+        if (goneOwnerCode) personShareCodes.set(goneOwner.id, goneOwnerCode);
       }
     }
     soloInvitations.restore(oldSoloInvitations);
@@ -3117,10 +3148,9 @@ function assertRoomBeforeClosing(p, mode) {
 // un duo ni une proposition de Battle plus long que la limite. Le bar, les
 // titres déjà dans KaraFun et « Relancer » ne sont jamais concernés ; les
 // titres déjà dans la file restent (signalés au bar, retrait groupé possible).
-const MAX_SONG_MIN_SEC = 120, MAX_SONG_MAX_SEC = 900;
-const validMaxSong = value => Number.isInteger(value) && value >= MAX_SONG_MIN_SEC && value <= MAX_SONG_MAX_SEC;
+// Bornes partagées avec la reprise de la sauvegarde (stage-progress.js).
 function maxSongLimit() {
-  return validMaxSong(settings.maxSongSec) ? settings.maxSongSec : null;
+  return stageProgress.validMaxSong(settings.maxSongSec) ? settings.maxSongSec : null;
 }
 // « 6:12 »
 const minSec = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
@@ -3740,7 +3770,7 @@ const handlers = {
     // Place sans prénom ni titre du QR de l'événement : supprimée, sans trace
     // (sinon chaque nouveau scan laisserait une fiche partie de plus).
     if (me.viaEvent && disposablePlaceholder(me)) { dropPlaceholder(me); sched.version++; }
-    else sched.leave(me);
+    else leavePerson(me);
     sync(); return { ok: true };
   },
   // Une place sans prénom n'a pas de photo (400 Ko au plus, gardés en mémoire).
@@ -3817,7 +3847,7 @@ const handlers = {
     // Durée maximale des titres : null (ou false) coupe la limite.
     const nextMaxSong = 'maxSongSec' in body ? (body.maxSongSec === null || body.maxSongSec === false ? null : Number(body.maxSongSec))
       : maxSongLimit();
-    if (nextMaxSong !== null && !validMaxSong(nextMaxSong)) {
+    if (nextMaxSong !== null && !stageProgress.validMaxSong(nextMaxSong)) {
       throw new Error('La durée maximale des chansons doit être entre 2:00 et 15:00.');
     }
     if (body.auto && recoveredPending) throw new Error('Vérifie d’abord l’envoi interrompu dans KaraFun.');
@@ -4131,11 +4161,18 @@ const handlers = {
   'POST /api/staff/person/leave': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p) throw new Error('Chanteur inconnu.');
+    const placeholder = p.viaEvent && disposablePlaceholder(p);
+    // La page du bar a confirmé « Retirer la place « Solo N » ? » sur l'état
+    // qu'elle affichait : si l'invitée a donné son prénom entre-temps, rien
+    // ne change. Sans ce drapeau (page d'avant la mise à jour) : comme avant.
+    if (body.expectPlaceholder === true && !placeholder) {
+      throw new Error('Cette place vient de recevoir un prénom : vérifie avant de la marquer partie.');
+    }
     // Place « Solo N » du QR de l'événement, sans prénom ni titre : supprimée
     // sans trace, comme par /api/leave. Marquée partie, son navigateur
     // resterait lié à une fiche que le bar ne saurait pas réactiver ; il
     // rescanne le QR de l'événement et retrouve une nouvelle place.
-    if (p.viaEvent && disposablePlaceholder(p)) {
+    if (placeholder) {
       dropPlaceholder(p);
       sched.version++;
       sync();
@@ -4145,7 +4182,7 @@ const handlers = {
     // Invitée d'un duo déjà chargé : le titre reste dans KaraFun, au nom de
     // son auteur seul.
     const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(new Set([p.id]));
-    sched.leave(p, 'staff');
+    leavePerson(p, 'staff');
     if (pending?.sel.ids.includes(p.id)) pending.cancelled = true;
     removeLeaversTracks(upcomingTracks, new Set([p.id]));
     sync();
@@ -4173,7 +4210,10 @@ const handlers = {
     p.withdrawnAt = null;
     journalEvent('person.reactivated', { personId: p.id });
     sched.note(`${t.individual ? `${p.name} revient` : `${p.name} revient à ${t.name}`} ; son historique de passages est conservé`, 'staff');
-    return { ok: true };
+    // Sa clé personnelle est morte au départ : son téléphone retrouve ses
+    // droits, mais une page perdue ne revient que par un QR de reprise.
+    return p.soloKeyRevoked ? { ok: true,
+      message: `${p.name} revient. Son QR personnel ne sert plus : s’il a perdu sa page, donne-lui un QR de reprise.` } : { ok: true };
   },
   // Heure de fermeture : à régler, décaler (« encore une chanson ! ») ou retirer.
   'POST /api/staff/closing': async (req, res, body) => {
@@ -4472,13 +4512,7 @@ const server = http.createServer(async (req, res) => {
         const owned = [...u.searchParams.getAll('token'), ...headerTokens].slice(0, 40).map(token => sched.person(token))
           .filter(person => person && person.tableId === t.id && (!t.individual || person.id === soloOwner?.id));
         const view = publicState(owned[0] || null, t.id, new Set(owned.map(person => person.id)));
-        if (t.individual) {
-          view.soloInvitationReady = !!soloInvitations.verify(u.searchParams.get('invitation'), t.id);
-          // Pour les pages gardées en cache d'avant la mise à jour seulement :
-          // la page actuelle envoie le QR de l'événement par POST même quand
-          // il n'est plus valable (un inscrit y retrouve sa place).
-          view.privateEventReady = privateEvent.verify(u.searchParams.get('evenement'));
-        }
+        if (t.individual) view.soloInvitationReady = !!soloInvitations.verify(u.searchParams.get('invitation'), t.id);
         if (u.searchParams.has('reprise')) {
           const target = transferTarget(u.searchParams.get('reprise'), t);
           view.transferOffer = target ? { personId: target.id, name: target.name,
@@ -4643,8 +4677,8 @@ const server = http.createServer(async (req, res) => {
     if (e.code === 'PRIVATE_EVENT_BUSY') {
       return send(res, 429, { error: e.message, code: e.code }, undefined, { 'Retry-After': String(Math.max(1, e.retryAfter || 1)) });
     }
-    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'PERSON_LEFT', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION', 'PRIVATE_EVENT',
-      'PRIVATE_EVENT_FULL'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null,
+    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'PERSON_LEFT', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION', 'SOLO_KEY_REVOKED',
+      'PRIVATE_EVENT', 'PRIVATE_EVENT_FULL'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null,
       ...(typeof e.recoverable === 'boolean' ? { recoverable: e.recoverable } : {}) });
   }
 });

@@ -878,13 +878,15 @@
     if (!row) return;
     const personId = row.dataset.identityPerson;
     // Place « Solo N » de l'événement sans prénom ni titre : le serveur la
-    // supprime (son message remplace « marqué parti »).
+    // supprime (son message remplace « marqué parti »). `expectPlaceholder` :
+    // si elle a reçu un prénom depuis l'affichage, le serveur refuse.
     const person = personOf(personId);
     const placeholder = person?.viaEvent && person.nameRequired && !person.songCount;
     if (event.target.closest('[data-identity-leave]') && confirm(placeholder
       ? `Retirer la place « ${person.name} » ? Sans prénom ni titre, elle disparaît : il n’y aura rien à réactiver.`
       : 'Marquer ce chanteur comme parti ? Ses titres en attente seront retirés, mais sa fiche restera inscrite.')) {
-      act('/api/staff/person/leave', { personId }, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
+      act('/api/staff/person/leave', { personId, ...(placeholder ? { expectPlaceholder: true } : {}) },
+        'Chanteur marqué parti ; ses titres en attente ont été retirés');
     }
     if (event.target.closest('[data-identity-reactivate]')) {
       act('/api/staff/person/reactivate', { personId }, 'Personne réactivée, historique conservé');

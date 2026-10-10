@@ -11,7 +11,7 @@ const { SoloInvitations } = require('./solo-invitations');
 const { PrivateEvent } = require('./private-event');
 const { PLAYED_LIMIT } = require('./song-repeats');
 const { sanitizeSettings } = require('./song-settings');
-const { sanitizeClock, clientDuration } = require('./stage-progress');
+const { sanitizeClock, clientDuration, validMaxSong } = require('./stage-progress');
 
 const FORMAT = 1;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -86,12 +86,27 @@ const selectionValid = sel => sel && typeof sel === 'object' &&
   sel.ids.every(x => typeof x === 'string') && songValid(sel.song) &&
   sel.song !== null && typeof sel.label === 'string';
 
+// Empreinte de chaque photo gardée, calculée une seule fois (première
+// sauvegarde, ou vérification à la reprise) : la soirée est sauvegardée toutes
+// les deux secondes et après chaque action, et relire 800 photos de 400 Ko à
+// chaque fois prenait près d'une seconde. Une photo n'est jamais modifiée sur
+// place : une nouvelle photo est un nouveau Buffer, avec sa propre empreinte.
+const photoChecksums = new WeakMap();
+const sha256Hex = buf => crypto.createHash('sha256').update(buf).digest('hex');
+function photoChecksum(buf) {
+  let checksum = photoChecksums.get(buf);
+  if (!checksum) {
+    checksum = sha256Hex(buf);
+    photoChecksums.set(buf, checksum);
+  }
+  return checksum;
+}
+
 function savePhoto(photo, directory) {
-  const checksum = crypto.createHash('sha256').update(photo.buf).digest('hex');
-  const filename = `${checksum}.bin`;
+  const filename = `${photoChecksum(photo.buf)}.bin`;
   const target = path.join(directory, filename);
-  fs.mkdirSync(directory, { recursive: true });
   if (!fs.existsSync(target)) {
+    fs.mkdirSync(directory, { recursive: true });
     const temporary = `${target}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     let fd;
     try {
@@ -213,6 +228,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     if (person.viaEvent !== undefined && person.viaEvent !== true) delete person.viaEvent;
     if (person.soloKeyHash !== undefined &&
         (typeof person.soloKeyHash !== 'string' || !/^[a-f0-9]{64}$/.test(person.soloKeyHash))) delete person.soloKeyHash;
+    // Clé personnelle morte au départ (scheduler.leave) : une personne partie
+    // qui a une clé l'a perdue, même dans une sauvegarde d'avant ce champ.
+    if (person.soloKeyRevoked !== undefined && person.soloKeyRevoked !== true) delete person.soloKeyRevoked;
+    if (person.soloKeyHash && person.withdrawnAt) person.soloKeyRevoked = true;
     if (person.lastActionAt !== undefined && !Number.isFinite(person.lastActionAt)) delete person.lastActionAt;
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');
@@ -223,9 +242,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
           const file = path.join(photoDir, photo.file);
           if (fs.statSync(file).size > 400 * 1024) throw new Error('photo trop grande');
           const buf = fs.readFileSync(file);
-          if (crypto.createHash('sha256').update(buf).digest('hex') !== photo.file.slice(0, 64)) {
-            throw new Error('empreinte photo incorrecte');
-          }
+          const checksum = photo.file.slice(0, 64);
+          if (sha256Hex(buf) !== checksum) throw new Error('empreinte photo incorrecte');
+          photoChecksums.set(buf, checksum);
           person.photo = { type: photo.type, buf };
         } catch (_) { person.photo = null; /* conserver la file même si une photo est abîmée */ }
       } else {
@@ -350,8 +369,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     Number.isInteger(kf.backing) && kf.backing >= 0 && kf.backing <= 100 &&
     (!('provisional' in kf) || typeof kf.provisional === 'boolean'))) delete restoredSettings.karafunDefaults;
   // Durée maximale des titres (lot J) : une valeur invalide coupe la limite.
-  if ('maxSongSec' in restoredSettings && !(Number.isInteger(restoredSettings.maxSongSec) &&
-    restoredSettings.maxSongSec >= 120 && restoredSettings.maxSongSec <= 900)) restoredSettings.maxSongSec = null;
+  if ('maxSongSec' in restoredSettings && !validMaxSong(restoredSettings.maxSongSec)) restoredSettings.maxSongSec = null;
 
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||
@@ -370,9 +388,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   }
   // Un lien de transfert déjà envoyé (WhatsApp, SMS…) reste valable après un
   // redémarrage. Les lignes expirées ou mal formées sont simplement ignorées.
+  // Un départ l'annule (server.js, leavePerson) : celui d'une personne partie,
+  // gardé par une sauvegarde d'avant cette règle, est oublié.
   const hex = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
   const restoredTransfers = clone(list(snapshot.transfers ?? [], 'transferts')).filter(row =>
-    row && typeof row === 'object' && tmp.people.has(row.personId) && hex(row.hash) &&
+    row && typeof row === 'object' && tmp.people.has(row.personId) && !tmp.people.get(row.personId).withdrawnAt && hex(row.hash) &&
     (row.linkHash === null || hex(row.linkHash)) && Number.isFinite(row.expiresAt) &&
     Number.isFinite(row.linkExpiresAt) && Number.isInteger(row.attempts) && row.attempts >= 0 &&
     row.attempts <= 5 && Math.max(row.expiresAt, row.linkExpiresAt) > Date.now());

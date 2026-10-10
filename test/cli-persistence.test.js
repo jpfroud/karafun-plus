@@ -564,6 +564,16 @@ test('Reprise : bonus des tables, crédits de tour, historique de scène et lien
   const { result } = restore(transfers);
   assert.deepEqual(result.transfers.map(row => row.personId), [alice.id, bob.id],
     'seuls les liens encore valables et bien formés survivent au redémarrage');
+
+  // Regression: vérification de la quatrième relecture finale — un départ
+  // annule les transferts en attente ; une sauvegarde d'avant cette règle qui
+  // en garde un pour une personne partie l'oublie (« Réactiver » le ranimait).
+  const left = night();
+  left.sched.leave(left.bob);
+  const gone = snapshotNight({ scheduler: left.sched, access: left.access, settings: settings() });
+  gone.transfers = [{ ...valid, personId: left.alice.id }, { ...valid, personId: left.bob.id }];
+  assert.deepEqual(restore(gone).result.transfers.map(row => row.personId), [left.alice.id],
+    'transfert d’une personne partie oublié');
 });
 
 test('Reprise : prochain passage garanti, réglages, envoi en cours et titres KaraFun abîmés', () => {

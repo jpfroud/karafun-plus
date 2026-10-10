@@ -13,6 +13,10 @@
 const MAX_TRUSTED_SEC = 3600;            // au-delà, la valeur est absurde
 const CLIENT_MIN_SEC = 30, CLIENT_MAX_SEC = 1200; // durée venue d'un téléphone
 const MIN_RATE = 0.25, MAX_RATE = 2;
+// Durée maximale des titres réglée par le bar (lot J), de 2:00 à 15:00 :
+// mêmes bornes pour le réglage (server.js) et la reprise de la sauvegarde.
+const MAX_SONG_MIN_SEC = 120, MAX_SONG_MAX_SEC = 900;
+const validMaxSong = value => Number.isInteger(value) && value >= MAX_SONG_MIN_SEC && value <= MAX_SONG_MAX_SEC;
 
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 
@@ -88,4 +92,4 @@ function sanitizeClock(value) {
 }
 
 module.exports = { trustedDuration, clientDuration, stageDuration, protocolDuration, protocolPosition,
-  pausedOf, rateOf, startClock, observeClock, clockView, sanitizeClock };
+  pausedOf, rateOf, startClock, observeClock, clockView, sanitizeClock, validMaxSong };

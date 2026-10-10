@@ -1361,9 +1361,9 @@
       if (eventToken) forgetEventToken();
       return;
     }
-    // QR de l'événement renouvelé ou coupé (privateEventReady faux) : la
-    // demande part quand même, un inscrit de ce navigateur y retrouve sa
-    // place ; sinon le refus dit « QR plus actif ».
+    // QR de l'événement renouvelé ou coupé : la demande part quand même, un
+    // inscrit de ce navigateur y retrouve sa place ; sinon le refus dit « QR
+    // plus actif ».
     const path = soloInvitation ? '/api/table/solo/open' : eventToken ? '/api/table/enter' : '';
     if (!path) return;
     entry = { status: 'pending', recover: null, error: '' };
