@@ -2,8 +2,8 @@
 # Porte gstack karafun-plus : hook git pre-push, copié dans le dossier des
 # hooks du dépôt par .claude/hooks/gstack-session-start.sh. Seuls les envois
 # lancés par Claude Code (CLAUDECODE=1) sont contrôlés : le dernier commit
-# envoyé sur chaque branche (le contenu envoyé) doit avoir le contenu exact
-# d'une relecture gstack /review terminée.
+# envoyé sur chaque branche doit avoir le contenu exact d'une relecture gstack
+# /review terminée ; les commits intermédiaires ne sont pas comparés.
 [ "${CLAUDECODE:-}" = 1 ] || exit 0
 [ "${GSTACK_GATE:-}" = off ] && exit 0
 # Script de la porte : celui du worktree envoyé, sinon celui du dépôt principal

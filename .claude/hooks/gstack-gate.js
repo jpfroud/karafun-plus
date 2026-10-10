@@ -14,7 +14,7 @@
 // gstack n'a été lancée dans la session (les sous-agents partagent la session
 // de l'agent principal).
 // pre-push : pour un envoi lancé par Claude Code (CLAUDECODE=1), le dernier
-// commit envoyé sur chaque branche ou étiquette (le contenu envoyé) doit avoir
+// commit envoyé sur chaque branche ou étiquette doit avoir
 // exactement l'arbre d'une relecture gstack /review terminée et convergée
 // (journal de relecture de gstack) ; les commits intermédiaires ne sont pas
 // comparés (choix du gérant). C'est git qui appelle ce contrôle : l'écriture

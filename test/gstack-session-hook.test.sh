@@ -174,9 +174,13 @@ done
 # Regression: G1 (quatrième relecture finale, décision D3 du gérant) — le hook
 # pre-push ne compare que le dernier commit envoyé sur chaque branche ; le
 # rappel disait « refuse d'envoyer un commit dont le contenu… ».
-printf '%s' "$out" | field additionalContext | grep -qF "le dernier commit envoyé sur chaque branche, c'est-à-dire le contenu envoyé," ||
+# Regression: G1 bis (vérification de la quatrième relecture finale) — il disait
+# ensuite « le dernier commit envoyé, c'est-à-dire le contenu envoyé », alors
+# qu'un commit intermédiaire jamais relu part avec le dernier.
+printf '%s' "$out" | field additionalContext | grep -qF "le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture review terminée (les commits intermédiaires ne sont pas comparés)" ||
   fail "le rappel ne dit pas que seul le dernier commit envoyé est comparé"
 ! printf '%s' "$out" | field additionalContext | grep -qF "envoyer un commit dont" || fail "le rappel laisse croire que chaque commit envoyé est comparé"
+! printf '%s' "$out" | field additionalContext | grep -qF "contenu envoyé" || fail "le rappel laisse croire que tout le contenu envoyé a été relu"
 
 # 7. Installations existantes (Claude Code, Codex, dépôt migré) : acceptées sans rien relancer.
 for dir in .claude/skills/gstack .codex/skills/gstack .gstack/repos/gstack; do

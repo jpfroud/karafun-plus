@@ -303,6 +303,10 @@ assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstac
 //    textes qui décrivent la porte d'envoi disaient « chaque commit envoyé »
 //    alors que seul le dernier commit envoyé sur chaque branche est comparé
 //    (section 4). Commentaires et retours à la ligne ignorés.
+//    Regression: G1 bis (vérification de la quatrième relecture finale) — « le
+//    dernier commit envoyé (le contenu envoyé) » laissait croire que tout ce
+//    qui part a été relu, alors qu'un commit intermédiaire jamais relu part
+//    avec le dernier (section 4) : chaque texte le dit.
 {
   const flat = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
     .replace(/^[ \t]*(?:\/\/|#)[ \t]?/gm, '').replace(/\s+/g, ' ');
@@ -312,6 +316,9 @@ assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstac
     assert.match(text, /dernier commit/, `${file} : doit dire que le dernier commit envoyé est comparé`);
     assert.doesNotMatch(text, /chaque commit envoyé|envoyer un commit dont|tout envoi dont le contenu/,
       `${file} : laisse croire que chaque commit envoyé est comparé`);
+    assert.match(text, /les commits intermédiaires ne sont pas comparés/,
+      `${file} : doit dire que les commits intermédiaires ne sont pas comparés`);
+    assert.doesNotMatch(text, /contenu envoyé/, `${file} : laisse croire que tout le contenu envoyé a été relu`);
   }
 }
 
