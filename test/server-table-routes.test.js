@@ -689,6 +689,25 @@ test('transfert par lien : une seule utilisation, il annule le code, et ne vaut 
   assert.equal(r.body.error, 'Code de partage expiré. Demande un nouveau code au chanteur ou au bar.');
 });
 
+// Regression: seconde passe de la quatrième relecture finale (adverse) —
+// « Table partie » retirait les personnes de la table sans leurs codes et
+// liens de reprise : ils restaient en mémoire et dans chaque sauvegarde de la
+// soirée jusqu'à leur expiration (30 minutes).
+test('transfert : « Table partie » efface les codes et liens de reprise de ses personnes, en mémoire et dans la sauvegarde', async () => {
+  const f = harness({ persistent: true });
+  const max = await joinTable(f, openTable(f, '4'), 'Max');
+  const lea = await joinTable(f, openTable(f, '5'), 'Léa');
+  for (const me of [max, lea]) assert.equal((await post(f, '/api/table/person/share', me)).status, 200);
+  const left = await post(f, `/api/staff/table-left?key=${f.STAFF_KEY}`, { id: '4' });
+  assert.equal(left.status, 200, left.text);
+  assert.equal(f.personShareCodes.has(max.personId), false, 'plus rien en mémoire');
+  assert.deepEqual(f.night.saves.at(-1).snapshot.transfers.map(row => row.personId), [lea.personId],
+    'ni dans la sauvegarde ; l’autre table garde le sien');
+  // Par précaution, une ligne restée pour une personne disparue n'est jamais sauvegardée.
+  f.personShareCodes.set('disparu', f.personShareCodes.get(lea.personId));
+  assert.deepEqual(plain(f.transferSnapshot()).map(row => row.personId), [lea.personId]);
+});
+
 // ---------------------------------------------------------------- liste de chansons d'une personne
 async function addSongs(f, person, list) {
   for (const [songId, title] of list) {

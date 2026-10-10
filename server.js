@@ -2435,6 +2435,14 @@ function eventClient(req) {
   return typeof edge === 'string' && edge.trim() ? `cf:${clientKey(edge.slice(0, 64))}` : null;
 }
 
+// Plafond de l'événement atteint (création d'une place ou son premier
+// prénom) : 403, sans nouvel essai automatique, le bar donne un QR individuel.
+function privateEventFullError() {
+  const error = new Error('L’événement est complet par ce QR : demande au bar un QR individuel.');
+  error.code = 'PRIVATE_EVENT_FULL';
+  return error;
+}
+
 // Place provisoire retirée sans trace (rien au journal tant qu'il n'y a pas
 // de prénom) : son téléphone ne gère plus personne.
 function dropPlaceholder(person) {
@@ -2481,16 +2489,13 @@ function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent
   let person = null, admittedAt = null;
   try {
     if (viaEvent) {
-      // Les personnes marquées parties libèrent leur place ; une place sans
-      // prénom ne compte que ses 10 premières minutes. Plafond dur : 800
-      // fiches de l'événement pas parties (PrivateEvent.held).
-      const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values(), now), client, now,
+      // Seules les personnes nommées et présentes comptent (les parties
+      // libèrent leur place, une place sans prénom ne coûte rien à la
+      // prévision) ; le premier prénom d'une place revérifie ce plafond.
+      // Plafond dur : 400 fiches de l'événement pas parties (PrivateEvent.held).
+      const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values()), client, now,
         PrivateEvent.held(sched.people.values()));
-      if (admitted === 'full') {
-        const full = new Error('L’événement est complet par ce QR : demande au bar un QR individuel.');
-        full.code = 'PRIVATE_EVENT_FULL';
-        throw full;
-      }
+      if (admitted === 'full') throw privateEventFullError();
       if (admitted !== 'ok') {
         const busy = new Error('Trop d’inscriptions d’un coup : réessaie dans une minute.');
         busy.code = 'PRIVATE_EVENT_BUSY';
@@ -2705,9 +2710,11 @@ async function createPersonShareCode(p) {
   return { code, expiresAt, url, qr, linkExpiresAt: url ? linkExpiresAt : null, name: p.name };
 }
 
+// Seulement les personnes encore dans la soirée (la reprise ignore les autres).
 function transferSnapshot() {
   const now = Date.now();
-  return [...personShareCodes].filter(([, saved]) => Math.max(saved.expiresAt, saved.linkExpiresAt) > now)
+  return [...personShareCodes].filter(([personId, saved]) => sched.people.has(personId) &&
+    Math.max(saved.expiresAt, saved.linkExpiresAt) > now)
     .map(([personId, saved]) => ({ personId, hash: saved.hash.toString('hex'), expiresAt: saved.expiresAt,
       attempts: saved.attempts, linkHash: saved.linkHash ? saved.linkHash.toString('hex') : null,
       linkExpiresAt: saved.linkExpiresAt }));
@@ -2749,7 +2756,7 @@ function claimPerson(body, req, res) {
   }
   const saved = personShareCodes.get(p.id);
   if (body.key !== undefined) {
-    if (keyTarget(body.key, t)?.id !== p.id) throw new Error('Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+    if (keyTarget(body.key, t)?.id !== p.id) throw soloKeyRevokedError();
   } else if (body.link !== undefined) {
     // Le lien contient un secret de 128 bits : pas de limite de tentatives.
     if (transferTarget(body.link, t)?.id !== p.id) {
@@ -2799,8 +2806,10 @@ function claimPerson(body, req, res) {
 
 function claimPersonDurably(body, req, res) {
   if (body.key !== undefined) {
+    // Clé inconnue ou morte : même refus qu'un QR personnel révoqué à son
+    // ouverture (403, SOLO_KEY_REVOKED), même texte sur le téléphone.
     const target = keyTarget(body.key, tableByAccess(body.table, body.access));
-    if (!target) throw new Error('Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+    if (!target) throw soloKeyRevokedError();
     body = { ...body, personId: target.id };
   } else if (body.link !== undefined) {
     const target = transferTarget(body.link, tableByAccess(body.table, body.access));
@@ -3601,6 +3610,10 @@ const handlers = {
   'POST /api/table/person/claim': async (req, res, body) => claimPersonDurably(body, req, res),
   'POST /api/table/person/rename': async (req, res, body) => {
     const p = personAtTable(body);
+    // Premier prénom d'une place du QR de l'événement : elle compte alors dans
+    // le plafond des personnes nommées, revérifié ici comme à la création (une
+    // place ouverte avant que l'événement soit complet ne le dépasse pas).
+    if (p.viaEvent && p.nameRequired && PrivateEvent.full(sched.people.values())) throw privateEventFullError();
     try { sched.rename(p, body.name); }
     catch (error) {
       if (error.code === 'NAME_TAKEN' && sched.table(p.tableId, false)?.individual) error.recoverable = nameRecoverable(req, p, body.name);
@@ -3993,6 +4006,8 @@ const handlers = {
     const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(ids);
     if (pending?.sel.ids.some(id => ids.has(id))) pending.cancelled = true;
     sched.tableLeft(tableId);
+    // Comme un départ (leavePerson) : leurs codes et liens de reprise meurent.
+    for (const id of ids) personShareCodes.delete(id);
     soloInvitations.revokeTable(tableId);
     access.revoke(tableId);
     saveTables();
