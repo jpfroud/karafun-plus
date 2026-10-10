@@ -325,6 +325,6 @@ for (const width of [360, 390, 899]) {
   const longest = 'inactif depuis 23:59'.length * px(computed('.queue-item .idle-tag', 390)['font-size']) * 0.62; // 106 px mesurés dans Chromium
   assert.ok(nameColumn > 140 && longest < nameColumn, `390 px : repère de ${Math.round(longest)} px dans une colonne de ${Math.round(nameColumn)} px`);
 }
-const staffSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8');
-assert.match(staffSource, /<span class="idle-for">\$\{esc\(a\.short\)\}<\/span>/, 'la ligne de la file affiche le repère court');
+// Le repère court affiché (« inactif 1 h 05 » dans .idle-for) est vérifié sur
+// la page rendue par staff-ui-coverage.test.js, pas dans le source.
 console.log('Bar : barre d’onglets, barre du haut, colonne d’actions et diagnostic à 360 px OK');
