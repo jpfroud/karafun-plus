@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { spawn, execFileSync } = require('child_process');
 const QRCode = require('qrcode');
 
@@ -2168,9 +2169,31 @@ function normalizeBaseUrl(value) {
 
 // ------------------------------------------------------------------ HTTP
 const PUB = path.join(__dirname, 'public');
+// JSON compressé (gzip) quand le navigateur l'accepte, ce que font tous les
+// navigateurs : à 400 invités, une lecture de téléphone (toutes les 4 s, pages
+// cachées comprises) pèse environ 240 Ko en clair, dix fois moins compressée,
+// par le Wi-Fi du bar comme par le tunnel. Niveau le plus rapide, calcul hors
+// du fil principal (environ 0,6 ms, plus 0,3 ms sur le fil principal, pour
+// 240 Ko), en un seul passage pour une sortie jusqu'à 64 Ko ; une petite
+// réponse part en clair.
+const GZIP_MIN_LENGTH = 1024;
+function acceptsGzip(req) {
+  return String(req?.headers?.['accept-encoding'] || '').split(',').some(part => {
+    const [coding, q] = part.split(/;\s*q=/).map(text => text.trim().toLowerCase());
+    return coding === 'gzip' && (q === undefined || Number(q) > 0);
+  });
+}
 const send = (res, code, body, type = 'application/json; charset=utf-8', extra = {}) => {
-  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...extra });
-  res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
+  const headers = { 'Content-Type': type, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...extra };
+  const data = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
+  if (!type.startsWith('application/json') || data.length < GZIP_MIN_LENGTH || !acceptsGzip(res.req)) {
+    res.writeHead(code, headers);
+    return res.end(data);
+  }
+  zlib.gzip(data, { level: zlib.constants.Z_BEST_SPEED, chunkSize: 64 * 1024 }, (error, zipped) => {
+    res.writeHead(code, error ? headers : { ...headers, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+    res.end(error ? data : zipped);
+  });
 };
 const sendFile = (res, file, type) => fs.readFile(path.join(PUB, file), (err, buf) => err ? send(res, 404, 'Introuvable', 'text/plain') : send(res, 200, buf, type));
 

@@ -1797,11 +1797,18 @@ class Scheduler {
     return result;
   }
 
-  _maybeRequestSolver() {
-    // Ni plan adopté ni optimiseur disponible : rien à décider, l'empreinte
-    // (toute la file sérialisée) ne servirait à rien à chaque lecture.
-    if (!this.solverPlan && !this.solverBridge?.available) return false;
-    const fingerprint = this.solverContextFingerprint();
+  // Plan adopté ou optimiseur disponible : _maybeRequestSolver a besoin de
+  // l'empreinte de la file. Sinon rien à décider, l'empreinte (toute la file
+  // sérialisée) ne servirait à rien à chaque lecture.
+  _solverWatching() {
+    return !!this.solverPlan || !!this.solverBridge?.available;
+  }
+
+  // `fingerprint` : empreinte de l'état courant déjà connue (readyView, celle
+  // d'une prévision gardée encore juste) ; sinon elle est calculée ici.
+  _maybeRequestSolver(fingerprint = null) {
+    if (!this._solverWatching()) return false;
+    fingerprint ??= this.solverContextFingerprint();
     if (this.solverPlan && this.solverPlan.fingerprint !== undefined &&
         this.solverPlan.fingerprint !== fingerprint) this.solverPlan = null;
     if (this.solverPlan?.fingerprint === fingerprint) {
@@ -2616,20 +2623,33 @@ class Scheduler {
   // pas modifier) à toutes les lectures, tant que rien ne change. Elle est
   // oubliée à chaque écriture de `version`, quand le plan adopté ou un réglage
   // lu change, et à l'heure où un report « Pas prêt » ou une confirmation
-  // « Je suis là » prend fin (_viewExpiry).
+  // « Je suis là » prend fin (_viewExpiry). L'empreinte de la file relevée
+  // avec elle (optimiseur disponible ou plan adopté) vaut aussi tant qu'elle
+  // est juste : la resérialiser à chaque lecture coûtait plus que la lecture.
   readyView(excludeIds = [], provisional = null, ignorePresence = false) {
-    this._maybeRequestSolver();
     const now = Date.now();
     const key = this._viewKey(excludeIds, provisional, ignorePresence);
+    const kept = this._viewFresh(this._views.get(key), now);
+    const fingerprint = kept?.fingerprint ?? (this._solverWatching() ? this.solverContextFingerprint() : null);
+    this._maybeRequestSolver(fingerprint);
+    // Une demande à l'optimiseur écrit `version` : la prévision est oubliée.
+    if (kept && this._viewFresh(this._views.get(key), now) === kept) {
+      kept.fingerprint = fingerprint;
+      return kept.view.slice();
+    }
     const plan = this.solverPlan;
-    const kept = this._views.get(key);
-    if (kept && kept.plan === plan && kept.planFingerprint === plan?.fingerprint && kept.ranks === plan?.ranks &&
-        now >= kept.at && now < kept.until) return kept.view.slice();
     const until = this._viewExpiry(now);
     const view = this._readyView(excludeIds, provisional, ignorePresence);
     if (this._views.size >= VIEW_CACHE_MAX) this._views.clear();
-    this._views.set(key, { view, at: now, until, plan, planFingerprint: plan?.fingerprint, ranks: plan?.ranks });
+    this._views.set(key, { view, at: now, until, plan, planFingerprint: plan?.fingerprint, ranks: plan?.ranks, fingerprint });
     return view.slice();
+  }
+
+  // Prévision gardée encore juste pour le plan adopté et l'heure `now`, sinon null.
+  _viewFresh(kept, now) {
+    const plan = this.solverPlan;
+    return kept && kept.plan === plan && kept.planFingerprint === plan?.fingerprint && kept.ranks === plan?.ranks &&
+      now >= kept.at && now < kept.until ? kept : null;
   }
 
   // Toute écriture de `version` oublie les prévisions gardées, même quand le
