@@ -267,7 +267,7 @@ Constats de la relecture gstack (`review`, spécialistes tests, maintenabilité,
 
 ## Retour arrière
 
-Annuler la PR. Les nouveaux champs (personne : `nameRequired`, `soloKeyHash`, `lastActionAt` ; soirée : `privateEvent` ; Spotify : `deviceType`) sont facultatifs à la lecture : une ancienne version ignore ces champs.
+Annuler la PR. La version d'avant reprend la sauvegarde de cette version (même format) sans comprendre ses nouveaux champs : une place « Solo N » encore sans prénom (`nameRequired`, QR individuel comme QR de l'événement privé) y est traitée comme un soliste ordinaire de ce nom (pas de fenêtre de prénom sur les anciennes pages ; elle vote aux Battles, est proposée en partenaire de duo et entre au journal sous « Solo N ») ; les réglages voix par voix (`guideVoices`) sont abandonnés (en duo, la voix 2 suit de nouveau la voix 1) ; la durée maximale des titres (`maxSongSec`) cesse de s'appliquer, sans avertissement. Avant le retour arrière, faire « Supprimer toutes les tables » (nouvelle soirée : plus aucune place « Solo N » ni événement privé) et accepter la perte des réglages de la voix 2 et de la limite de durée.
 
 ## Documentation
 
