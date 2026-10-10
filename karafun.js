@@ -694,15 +694,16 @@ class KaraFunBridge extends EventEmitter {
   }
 
   _restart(code, sameCode) {
+    // Autre installation : chœurs par défaut à relever de nouveau, avant que
+    // disconnect n'oublie le titre vu (titres vus se charger et chœurs
+    // observés). Le même KaraFun peut continuer sous un nouveau code avec des
+    // chœurs réglés en direct : chaîne inconnue, chœurs du titre vu jamais
+    // relevés (forgetDefaults).
+    if (!sameCode) this.forgetDefaults();
     this.disconnect();
     this._appLeftChecked = false;
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
-      // Autre installation : chœurs par défaut à relever de nouveau (titres
-      // vus se charger et chœurs observés : oubliés par disconnect). Le même
-      // KaraFun peut continuer sous un nouveau code avec des chœurs réglés en
-      // direct : chaîne inconnue, comme pour un pont neuf.
-      this.forgetDefaults();
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -1403,8 +1404,15 @@ class KaraFunBridge extends EventEmitter {
 
   // Nouvelle soirée ou nouveau code : chœurs par défaut à relever de nouveau,
   // provisoires jusqu'à une remise par KaraFun au chargement (_observeDefaults).
-  forgetDefaults() {
-    this.observedDefaults = {}; this._backingChanged = false; this.provisionalDefaults = false;
+  // `keepConfirmed` (nouvelle soirée) : une valeur confirmée par une telle
+  // remise reste pour ce code. Un titre vu dans cette session (ou des chœurs
+  // envoyés) : ses chœurs, qu'un KaraFun « collant » garde au titre suivant,
+  // ne sont jamais relevés ; les chœurs passent pour changés jusqu'à une
+  // remise au chargement. Sans rien de vu, comme un pont neuf.
+  forgetDefaults({ keepConfirmed = false } = {}) {
+    if (keepConfirmed && this.observedDefaults.backing != null && !this.provisionalDefaults) return;
+    this.observedDefaults = {}; this.provisionalDefaults = false;
+    this._backingChanged = this._observedFor != null || this._lastBacking != null;
     this._carriedUnseen = true;
   }
 

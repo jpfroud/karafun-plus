@@ -3466,10 +3466,11 @@ function clearEvening() {
   // il retirerait ses nouveaux titres à la reconnexion.
   settings.queueClearPending = false;
   queueClearRemovalRequests.clear();
-  // Chœurs par défaut relevés oubliés (sauvegarde et pont) : une valeur
-  // relevée à tort ne dure jamais plus d'une soirée.
-  delete settings.karafunDefaults;
-  bridge?.forgetDefaults?.();
+  // Chœurs par défaut relevés provisoires oubliés (sauvegarde et pont) : une
+  // valeur relevée à tort ne dure jamais plus d'une soirée. Une valeur
+  // confirmée par une remise de KaraFun au chargement reste pour ce KaraFun.
+  if (settings.karafunDefaults?.provisional === true) delete settings.karafunDefaults;
+  bridge?.forgetDefaults?.({ keepConfirmed: true });
   if (stopAuto) settings.auto = false;
   journal.start({ rules: journalRules() });
   phaseKey = null; presenceAskKey = null; lastSampleAt = 0;

@@ -354,10 +354,15 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.equal(renewedSolo[0].individual, true);
     assert.deepEqual(fs.readdirSync(photoDir), [], 'Le reset retire aussi les fichiers photo.');
     // Regression: troisième relecture finale R4(b) — les chœurs par défaut
-    // sauvegardés passaient à toutes les soirées : « Nouvelle soirée » les oublie.
-    assert.equal('karafunDefaults' in new NightStateStore(path.join(sandbox, 'data', 'soiree')).load().settings, false,
-      'nouvelle soirée : chœurs par défaut oubliés dans la sauvegarde');
+    // sauvegardés passaient à toutes les soirées : « Nouvelle soirée » oublie
+    // une valeur provisoire. Quatrième passe (K1) : une valeur confirmée par
+    // une remise de KaraFun au chargement reste dans la sauvegarde.
+    assert.deepEqual(new NightStateStore(path.join(sandbox, 'data', 'soiree')).load().settings.karafunDefaults, kfDefaults,
+      'nouvelle soirée : valeur confirmée gardée dans la sauvegarde');
     await stop(second, true); // Le reset doit survivre lui aussi à une coupure.
+    // Valeur provisoire sauvegardée avant la relance : oubliée au prochain reset.
+    const afterReset = store.load();
+    store.save({ ...afterReset, settings: { ...afterReset.settings, karafunDefaults: { ...kfDefaults, provisional: true } } });
 
     const third = await launch();
     state = await third.staff();
@@ -368,6 +373,9 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.equal((await third.request(new URL(oldUrl).pathname)).status, 403);
     await third.ok('/api/staff/table', { id: 'R1', headcount: 1 });
     assert.notEqual((await third.staff()).tables.find(table => table.id === 'R1').url, oldUrl);
+    await third.ok('/api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+    assert.equal('karafunDefaults' in new NightStateStore(path.join(sandbox, 'data', 'soiree')).load().settings, false,
+      'nouvelle soirée : valeur provisoire oubliée dans la sauvegarde');
     await stop(third);
     console.log(`ok - reset persistant après crash, anciens QR révoqués sur les ports ${port}/${port + 1}`);
   } finally {

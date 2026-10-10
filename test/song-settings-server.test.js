@@ -1857,31 +1857,95 @@ test('application relancée entre deux titres, KaraFun collant à 80 : sauvegard
 
 // Regression: troisième relecture finale R4(b) — une valeur sauvegardée à
 // tort (relevée d'un réglage gardé par KaraFun) ne se réapprenait jamais
-// et passait à toutes les soirées. « Nouvelle soirée » l'oublie : la
-// nouvelle soirée relève de nouveau les chœurs, sauvegardés comme confirmés
-// seulement après une remise par KaraFun au chargement.
-test('nouvelle soirée : chœurs par défaut sauvegardés oubliés, relevés de nouveau', async t => {
+// et passait à toutes les soirées. « Nouvelle soirée » oublie une valeur
+// provisoire. Relecture finale, quatrième passe (K1) : elle oubliait aussi
+// la valeur confirmée, puis relevait comme valeur provisoire (sauvegardée,
+// imposée aux titres suivants) les chœurs coupés du titre en cours qu'un
+// KaraFun collant garde au titre suivant. Une valeur confirmée par une
+// remise de KaraFun au chargement reste ; les chœurs laissés par un titre
+// vu ne sont jamais relevés, seule une remise au chargement donne la valeur.
+test('nouvelle soirée : valeur confirmée gardée, valeur provisoire oubliée, chœurs gardés du titre en cours jamais relevés', async t => {
   const f = harness();
   const { bridge, frames } = replayBridge(t, f);
   bridge.code = '123456';
-  // Valeur fausse sauvegardée lors d'une soirée précédente, reprise au démarrage.
+  // Valeur confirmée : x vu en pleine chanson à 20, y remis à 53 par KaraFun au chargement.
   const x = isoItem('X-id', 776, { singer: 'Quelqu’un' });
   frames(queueEvent(x), isoStatus(4, x, { backing: 20 }));
   const y = isoItem('Y-id', 777, { singer: 'Autre' });
-  frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y, { backing: 80 }));
-  assert.equal(plain(f.settings.karafunDefaults)?.backing, 80, 'remise par KaraFun : sauvegardée');
+  frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y), isoStatus(3, y), isoStatus(4, y));
+  const confirmed = plain(f.settings.karafunDefaults);
+  assert.deepEqual([confirmed?.backing, confirmed?.provisional], [53, undefined], 'remise par KaraFun : confirmée');
+  frames(isoStatus(4, y, { backing: 0 })); // chœurs coupés en direct sur y
   f.clearEvening();
   f.sync();
-  assert.equal(f.settings.karafunDefaults, undefined, 'nouvelle soirée : plus de chœurs par défaut sauvegardés');
-  // Le titre suivant (KaraFun collant à 80) : relevé pour la soirée, provisoire.
+  assert.deepEqual(plain(f.settings.karafunDefaults), confirmed, 'valeur confirmée gardée pour ce KaraFun');
+  // KaraFun collant : z garde les chœurs coupés de y, ramenés à 53.
   const z = isoItem('Z-id', 778, { singer: 'Encore' });
-  frames(isoStatus(1, z), queueEvent(z), isoStatus(2, z, { backing: 80 }), isoStatus(3, z, { backing: 80 }), isoStatus(4, z, { backing: 30 }));
-  assert.equal(plain(f.settings.karafunDefaults)?.provisional, true);
-  // KaraFun remet ses chœurs à 53 au chargement : la vraie valeur, sauvegardée.
+  frames(isoStatus(1, z), queueEvent(z), isoStatus(2, z, { backing: 0 }));
+  assert.deepEqual(bare(frames(isoStatus(3, z, { backing: 0 }))), [volumeTo(4, 53)]);
+  assert.deepEqual(plain(f.settings.karafunDefaults), confirmed);
+
+  // Valeur provisoire (KaraFun collant, jamais remis au chargement) : oubliée.
+  const g = harness();
+  const other = replayBridge(t, g);
+  other.bridge.code = '123456';
+  const a = isoItem('A-id', 801, { singer: 'Un' });
+  other.frames(queueEvent(a), isoStatus(1, a), isoStatus(2, a), isoStatus(3, a), isoStatus(4, a));
+  assert.equal(plain(g.settings.karafunDefaults)?.provisional, true);
+  other.frames(isoStatus(4, a, { backing: 0 })); // chœurs coupés en direct sur a
+  g.clearEvening();
+  g.sync();
+  assert.equal(g.settings.karafunDefaults, undefined, 'valeur provisoire oubliée');
+  // b garde les chœurs coupés de a : valeur habituelle inconnue, rien envoyé ni relevé.
+  const b = isoItem('B-id', 802, { singer: 'Deux' });
+  other.frames(isoStatus(1, b), queueEvent(b), isoStatus(2, b, { backing: 0 }));
+  assert.deepEqual(bare(other.frames(isoStatus(3, b, { backing: 0 }), isoStatus(4, b, { backing: 0 }))), []);
+  assert.equal(other.bridge.observedDefaults.backing, undefined, 'chœurs gardés de a : jamais relevés');
+  assert.equal(g.settings.karafunDefaults, undefined);
+  // Remis à 53 en direct sur b, c se charge à 53 : jamais ramené à 0.
+  other.frames(isoStatus(4, b, { backing: 53 }));
+  const c = isoItem('C-id', 803, { singer: 'Trois' });
+  other.frames(isoStatus(1, c), queueEvent(c), isoStatus(2, c, { backing: 53 }));
+  assert.deepEqual(bare(other.frames(isoStatus(3, c, { backing: 53 }))), []);
+  // KaraFun remet ses chœurs au chargement : relevée de nouveau, confirmée.
+  other.frames(isoStatus(4, c, { backing: 90 }));
+  const d = isoItem('D-id', 804, { singer: 'Quatre' });
+  other.frames(isoStatus(1, d), queueEvent(d), isoStatus(2, d, { backing: 53 }));
+  assert.deepEqual(plain(g.settings.karafunDefaults), { code: confirmed.code, backing: 53 });
+});
+
+// Regression: relecture finale, quatrième passe (K1) — nouveau code alors que
+// le même KaraFun continue, chœurs coupés en direct sur le titre en cours :
+// la déconnexion oubliait le titre vu avant que les chœurs par défaut ne
+// soient oubliés, et 0, gardé au titre suivant par un KaraFun collant, était
+// relevé (provisoire, sauvegardé) puis imposé aux titres suivants.
+test('nouveau code, même KaraFun collant : chœurs coupés du titre en cours jamais relevés ni imposés ensuite', async t => {
+  const f = harness();
+  const { bridge, frames, reconnect } = replayBridge(t, f);
+  bridge.code = '123456';
+  const x = isoItem('X-id', 776, { singer: 'Quelqu’un' });
+  frames(queueEvent(x), isoStatus(4, x, { backing: 20 }));
+  const y = isoItem('Y-id', 777, { singer: 'Autre' });
+  frames(isoStatus(1, y), queueEvent(y), isoStatus(2, y), isoStatus(3, y), isoStatus(4, y));
+  assert.equal(plain(f.settings.karafunDefaults)?.backing, 53);
+  frames(isoStatus(4, y, { backing: 0 })); // chœurs coupés en direct sur y
+  // « Connecter » avec un autre code : le faux canal tient lieu de découverte.
+  bridge._open = () => {};
+  f.connectKaraFun('654321');
+  assert.equal(bridge.code, '654321');
+  reconnect();
+  frames(queueEvent(y), isoStatus(4, y, { backing: 0 }));
+  const z = isoItem('Z-id', 778, { singer: 'Encore' });
+  frames(isoStatus(1, z), queueEvent(z), isoStatus(2, z, { backing: 0 }));
+  assert.deepEqual(bare(frames(isoStatus(3, z, { backing: 0 }), isoStatus(4, z, { backing: 0 }))), []);
+  assert.equal(bridge.observedDefaults.backing, undefined, 'chœurs gardés de y : jamais relevés');
+  assert.equal(bridge.provisionalDefaults, false);
+  // Remis à 53 en direct sur z, w se charge à 53 : jamais ramené à 0.
+  frames(isoStatus(4, z, { backing: 53 }));
   const w = isoItem('W-id', 779, { singer: 'Dernier' });
   frames(isoStatus(1, w), queueEvent(w), isoStatus(2, w, { backing: 53 }));
-  assert.equal(plain(f.settings.karafunDefaults)?.backing, 53);
-  assert.equal(plain(f.settings.karafunDefaults)?.provisional, undefined);
+  assert.deepEqual(bare(frames(isoStatus(3, w, { backing: 53 }))), []);
+  assert.equal(bridge.observedDefaults.backing, undefined);
 });
 
 // Regression: deuxième relecture finale R4 — pages gardées en cache d'avant
