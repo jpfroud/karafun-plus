@@ -273,6 +273,31 @@ test('serveur : soliste « Léa » sur scène, dans la file et en préparation ;
   assert.doesNotMatch(JSON.stringify(state.queue.map(line => line.singer)), /En solo/);
 });
 
+// Relecture finale, quatrième passe (K6) : le nom d'un passage envoyé est
+// recalculé à partir de ses personnes. Un prénom changé après l'envoi se
+// voit sur scène, dans la file et sur la carte Scène du bar ; KaraFun garde
+// le nom reçu, sous lequel le titre est reconnu.
+test('serveur : prénom changé après l’envoi, nouveau nom sur scène, dans la file et sur la carte Scène du bar', () => {
+  const f = harness();
+  const lea = f.person('Comptoir', 'Léa'), max = f.person('4', 'Max');
+  const solo = f.sent('q-1', [lea.id], 71);
+  const table = f.sent('q-2', [max.id], 72);
+  assert.deepEqual([solo.item.singer, table.item.singer], ['Léa', 'Max · Table 4'], 'noms reçus par KaraFun');
+  f.sched.rename(lea, 'Lucie');
+  f.sched.rename(max, 'Maxime');
+  f.play(solo.item, [table.item]);
+  let state = plain(f.publicState());
+  assert.equal(state.stage.singer, 'Lucie');
+  assert.equal(state.queue.find(line => line.queueId === 'q-2').singer, 'Maxime · Table 4');
+  assert.equal(plain(f.staffState()).stage.singer, 'Lucie', 'carte Scène du bar');
+  // Le titre de Maxime sur scène : nom de table recalculé lui aussi.
+  f.play(table.item);
+  state = plain(f.publicState());
+  assert.equal(state.stage.singer, 'Maxime · Table 4');
+  assert.equal(plain(f.staffState()).stage.singer, 'Maxime · Table 4');
+  assert.deepEqual([solo.tr.sel.label, table.tr.sel.label], ['Léa', 'Max · Table 4'], 'noms reçus par KaraFun inchangés');
+});
+
 test('serveur : soirée enregistrée à l’ancien format, affichée au nouveau ; KaraFun reconnu sous le nom enregistré', () => {
   const old = harness();
   const lea = old.person('Comptoir', 'Léa'), max = old.person('4', 'Max');
