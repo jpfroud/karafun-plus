@@ -235,7 +235,7 @@ window.CLIENT_TRANSLATIONS = {
       'une chanson': 'a song',
       'Accepter': 'Accept',
       'Refuser': 'Decline',
-      'Seul le téléphone qui gère {name} peut répondre.': 'Only the phone that manages {name} can answer.',
+      'Pour répondre, demande au bar de réactiver {name}.': 'To answer, ask the bar to bring {name} back.',
       '{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.':
         '{name} will also sing a duet with {from} on “{title}”. Their own songs stay on their list for a later turn.',
       'Confirme la présence de {name} pour son prochain passage.': 'Confirm that {name} is here for their next turn.',

@@ -221,7 +221,6 @@
   .client .name-gate-panel h2 { font-size: 24px; margin: 0 0 8px; }
   .client .name-gate-panel .notice { margin: 10px 0 0; }
   .client .name-gate-panel .btn { margin-top: 14px; }
-  .client .name-gate-panel h3:focus { outline: none; }
   .client .name-gate-claim-people { display: grid; gap: 8px; margin-top: 10px; }
   .client .name-gate-claim-people .btn { margin-top: 0; }
   /* Page d'une table : QR à faire scanner, toute la table dans une fiche. */
@@ -1791,10 +1790,11 @@
     return item.singer || t('Chanteur');
   }
 
-  // Demande ou invitation d'une personne partie : plus de réponse depuis ce
-  // téléphone. (Une table ne montre plus que ses propres personnes : une
+  // Demande ou invitation d'une personne partie (envoyée depuis une liste des
+  // partenaires ouverte avant son départ) : la réponse attend que le bar la
+  // réactive. (Une table ne montre plus que ses propres personnes : une
   // personne gérée ailleurs se reprend depuis « Voir toute la table ».)
-  const notMine = person => `<div class="small muted">${esc(t('Seul le téléphone qui gère {name} peut répondre.', { name: person.name }))}</div>`;
+  const leftNotice = person => `<div class="small muted">${esc(t('Pour répondre, demande au bar de réactiver {name}.', { name: person.name }))}</div>`;
 
   function renderPeople(people, queue) {
     $('peopleList').innerHTML = people.map(person => {
@@ -1833,7 +1833,7 @@
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
       const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(t('{name} propose un duo', { name: invite.fromName || t('Un chanteur') }))}</b> ${esc(t('sur « {title} »', { title: invite.song?.title || t('une chanson') }))}${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}. ${esc(t('Réponds avant son tour, sinon l’invitation expire.'))}
-        ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : notMine(person)}</div>`).join('');
+        ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : leftNotice(person)}</div>`).join('');
       const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(t('{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.',
         { name: person.name, from: duo.fromName, title: duo.song?.title || t('une chanson') }))}${tuneBadge(duo.song)}${canEdit && duo.ownerId ? `<div class="invite-actions"><button type="button" class="btn small ghost" data-duet-leave="${esc(duo.entryId)}" data-owner-id="${esc(duo.ownerId)}" data-owner-name="${esc(duo.fromName || '')}" data-title="${esc(duo.song?.title || '')}" data-person-id="${esc(person.id)}">${esc(t('Je ne chante plus ce duo'))}</button></div>` : ''}</div>`).join('');
       // Présence demandée et report possible : une seule question, deux réponses.
@@ -1850,7 +1850,7 @@
           <div class="invite-actions"><button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Pas prêt : repousser d’une chanson'))}</button></div></div>` : '';
       // Demandes de duo reçues sur ses titres, et envoyées sur ceux des autres.
       const joinMarkup = list(person.joinRequests).map(request => `<div class="notice warn"><b>${esc(t('{from} aimerait chanter « {title} » avec {name}.', { from: request.fromName || t('Quelqu’un'), title: request.song?.title || t('ce titre'), name: person.name }))}</b> ${esc(t('{name} garde son passage.', { name: person.name }))}
-          ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-join-answer="yes" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-join-answer="no" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Refuser'))}</button></div>` : notMine(person)}</div>`).join('')
+          ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-join-answer="yes" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-join-answer="no" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Refuser'))}</button></div>` : leftNotice(person)}</div>`).join('')
         + list(person.sentJoinRequests).map(request => `<div class="notice small">${esc(t('Demande de duo envoyée à {name} pour « {title} ».', { name: request.ownerName || t('quelqu’un'), title: request.song?.title || t('ce titre') }))} ${request.seen === false ? `<b>${esc(t('{name} ne l’a pas encore vue : va lui en parler !', { name: request.ownerName || t('quelqu’un') }))}</b> ` : request.seen ? `${esc(t('{name} l’a vue.', { name: request.ownerName || t('quelqu’un') }))} ` : ''}${esc(t('Sans réponse avant l’envoi de son titre, elle expire.'))}
           ${canEdit ? `<button type="button" class="btn small ghost" data-join-cancel="${esc(request.ownerId)}" data-join-entry="${esc(request.entryId)}" data-person-id="${esc(person.id)}">${esc(t('Annuler la demande'))}</button>` : ''}</div>`).join('');
       return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson pour {name}', { name: person.name }))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo pour {name}', { name: person.name }))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Transférer la gestion de {name}', { name: person.name }))}"`}>${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;

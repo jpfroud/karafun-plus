@@ -1383,7 +1383,12 @@ test('fiches : sur scène, duos, présence, report, parti, personne gérée aill
   assert.ok(page.node('claimCode'), 'code de reprise demandé');
   await page.click(page.find('sheetPanel', '[data-close-sheet]'));
   // Personne partie : sa fiche reste, sans réponse ni modification possibles.
-  assert.match(card('dan').textContent, /Léa propose un duo sur « Slow » — Lui\..*Seul le téléphone qui gère Dan peut répondre\./s);
+  // Regression: U7 (quatrième relecture) — « Seul le téléphone qui gère Dan
+  // peut répondre. » sur le téléphone qui le gère. L'invitation arrive encore
+  // après le départ (liste des partenaires ouverte avant « Parti » : le serveur
+  // l'accepte) ; elle se répond une fois Dan réactivé.
+  assert.match(card('dan').textContent, /Léa propose un duo sur « Slow » — Lui\..*Pour répondre, demande au bar de réactiver Dan\./s);
+  assert.doesNotMatch(card('dan').textContent, /Seul le téléphone/);
   assert.equal(card('dan').querySelector('[data-duet-answer]'), null, 'pas de réponse pour une personne partie');
   assert.equal(card('dan').querySelector('[data-rename-person]'), null);
   assert.equal(card('dan').querySelector('[data-remove-song]'), null);
@@ -1402,6 +1407,7 @@ test('fiches : sur scène, duos, présence, report, parti, personne gérée aill
   const english = await open({ state, languages: ['en'] });
   assert.match(english.find('peopleList', '[data-person-card="carla"]').querySelector('.person-state').textContent,
     new RegExp(`^2nd in the queue · around ${timeOf(at, 'en')}`));
+  assert.match(english.find('peopleList', '[data-person-card="dan"]').textContent, /To answer, ask the bar to bring Dan back\./);
 });
 
 // ================================================================ actions depuis les fiches
