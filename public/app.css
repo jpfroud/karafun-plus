@@ -399,7 +399,9 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .battle-settings label { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; font-size: 13px; }
 .battle-settings input { width: 68px; min-height: 36px; padding: 5px 8px; }
 #battleActions { margin-top: 12px; }
-.rules-panel .presence-switch, .rules-panel .tune-switch { font-weight: 700; }
+.rules-panel .presence-switch, .rules-panel .tune-switch, .rules-panel .max-song-switch { font-weight: 700; }
+/* Même écart que la marge des paragraphes entre deux blocs de règles. */
+#tooLongActions { margin-bottom: 14px; }
 .rotation-options { display: grid; gap: 3px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 12px; padding: 14px; margin-bottom: 18px; }
 .rotation-options .switch { font-weight: 750; }
 .rotation-options p { margin: 0 0 9px 28px; }
@@ -573,13 +575,20 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
      prend la place que la table, entière jusqu'à 27 %, lui laisse
      (« Anne-… » suivi de 68 px vides à 360 px). */
   .queue-item .person, .queue-item button.person { flex: 0 1 auto; min-width: 0; max-width: 100%; }
-  .queue-item .table-tag { flex: none; }
+  /* La table a sa part (27 % de la colonne, ou sa largeur si elle est plus
+     courte), la garde face à un nom coupé (flex-shrink: 0) et grandit,
+     jusqu'à être entière, dans la place que le nom laisse : plus de
+     « Terra… » suivi de 60 px vides. */
+  .queue-item .table-tag { flex: 1 0 27%; max-width: max-content; }
   .queue-item .song-cell { grid-column: 3 / 5; grid-row: 2; }
   .queue-item .eta { grid-column: 4; grid-row: 1; }
   .queue-item .row-actions { grid-column: 5; grid-row: 1 / 3; }
-  .identity-row { grid-template-columns: 28px minmax(0,1fr); gap: 4px 6px; }
+  /* Repères : deux classes, comme les règles de .identity-panel qu'elles
+     remplacent ; avec une seule, les trois colonnes restaient et la dernière
+     activité tenait dans 90 px à côté de 170 px vides. */
+  .identity-panel .identity-row { grid-template-columns: 28px minmax(0,1fr); gap: 4px 6px; }
   .identity-row .identity-note { grid-column: 1 / -1; }
-  .identity-actions { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; }
+  .identity-panel .identity-actions { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; }
   .queue-item .person-cell.has-note .note-pop { max-width: calc(100vw - 140px); }
   .new-table { grid-template-columns: minmax(0,1fr) 110px; }
   .new-table button { grid-column: 1 / -1; }
