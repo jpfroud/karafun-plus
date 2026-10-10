@@ -2220,6 +2220,48 @@ test('code de reprise demandé pendant que la place est retirée : aucun code re
   assert.ok(!sharedIds(f).includes(ghost.personId), 'pas de code pour une place retirée');
 });
 
+// Regression: vérification de la quatrième relecture finale (comme D2 « La
+// clé meurt ») — un lien ou un code de reprise donné avant le départ (« Parti »
+// du bar, « Je pars ») ne servait pas pendant le départ, mais reprenait le
+// profil après « Réactiver » : le nouveau téléphone l'obtenait, l'actuel le perdait.
+test('départ : le lien et le code de reprise en attente meurent, « Réactiver » ne les ranime pas', async () => {
+  const f = harness({ persistent: true });
+  const { tb, invite } = openSolo(f);
+  const table = openTable(f, '3');
+  // Soliste : QR de reprise donné par le bar, puis « Parti » du bar.
+  const sam = await opened(f, tb, invite());
+  await post(f, '/api/table/person/rename', { ...sam, name: 'Sam' }, { cookie: sam.cookie });
+  // Personne de table : « Transférer la gestion » sur son téléphone, puis « Je pars ».
+  const joined = await post(f, '/api/table/person', { ...table, name: 'Ana' });
+  const ana = { ...table, personId: joined.body.id, token: joined.body.token };
+  for (const [me, at, share, leave] of [
+    [sam, tb, () => post(f, staff(f, '/api/staff/person/share'), { personId: sam.personId }),
+      () => post(f, staff(f, '/api/staff/person/leave'), { personId: sam.personId })],
+    [ana, table, () => post(f, '/api/table/person/share', ana), () => post(f, '/api/leave', { token: ana.token })],
+  ]) {
+    const shared = await share();
+    assert.equal(shared.status, 200, shared.text);
+    assert.equal((await leave()).status, 200);
+    assert.equal((await post(f, staff(f, '/api/staff/person/reactivate'), { personId: me.personId })).status, 200);
+    // Revenue : ni l'offre « C'est bien toi ? », ni le lien, ni le code d'avant le départ.
+    const offer = await get(f, `/api/state?table=${at.table}&access=${at.access}&reprise=${linkOf(shared)}`);
+    assert.deepEqual(offer.body.transferOffer, { invalid: true }, me.personId);
+    const byLink = await post(f, '/api/table/person/claim', { ...at, link: linkOf(shared) });
+    assert.equal(byLink.body.error, 'Ce lien de transfert a expiré ou a déjà servi. Demande un nouveau lien ou un code au bar.');
+    const byCode = await post(f, '/api/table/person/claim', { ...at, personId: me.personId, code: shared.body.code });
+    assert.equal(byCode.body.error, 'Code de partage expiré. Demande un nouveau code au chanteur ou au bar.');
+    if (at === tb) assert.deepEqual((await get(f, `/api/state?table=Comptoir&access=${tb.access}`)).body.recoveryPeople, []);
+    assert.ok(!sharedIds(f).includes(me.personId), 'plus de transfert en attente');
+    assert.ok(!f.night.saves.at(-1).transfers.some(row => row.personId === me.personId), 'ni dans la sauvegarde');
+    // Son téléphone garde le profil ; un transfert demandé après le retour sert.
+    assert.equal(f.sched.people.get(me.personId).token, me.token);
+    assert.deepEqual((await stateOf(f, at, me)).body.managedIds, [me.personId]);
+    const handed = await post(f, '/api/table/person/claim', { ...at, link: linkOf(await share()) });
+    assert.equal(handed.status, 200, handed.text);
+    assert.equal(handed.body.id, me.personId);
+  }
+});
+
 // Regression: quatrième relecture finale (maintenabilité) — le ménage des
 // places abandonnées avant une création restait fait quand la création
 // échouait, mais son numéro de version était défait : les pages ne voyaient

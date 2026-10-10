@@ -388,9 +388,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   }
   // Un lien de transfert déjà envoyé (WhatsApp, SMS…) reste valable après un
   // redémarrage. Les lignes expirées ou mal formées sont simplement ignorées.
+  // Un départ l'annule (server.js, leavePerson) : celui d'une personne partie,
+  // gardé par une sauvegarde d'avant cette règle, est oublié.
   const hex = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
   const restoredTransfers = clone(list(snapshot.transfers ?? [], 'transferts')).filter(row =>
-    row && typeof row === 'object' && tmp.people.has(row.personId) && hex(row.hash) &&
+    row && typeof row === 'object' && tmp.people.has(row.personId) && !tmp.people.get(row.personId).withdrawnAt && hex(row.hash) &&
     (row.linkHash === null || hex(row.linkHash)) && Number.isFinite(row.expiresAt) &&
     Number.isFinite(row.linkExpiresAt) && Number.isInteger(row.attempts) && row.attempts >= 0 &&
     row.attempts <= 5 && Math.max(row.expiresAt, row.linkExpiresAt) > Date.now());

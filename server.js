@@ -2418,6 +2418,14 @@ function dropPlaceholder(person) {
   personShareCodes.delete(person.id);
 }
 
+// Départ (« Je pars », « Parti » du bar) : comme la clé personnelle
+// (scheduler.leave), le lien et le code de reprise en attente meurent ;
+// « Réactiver » ne les ranime pas, le bar donne un nouveau QR de reprise.
+function leavePerson(person, by) {
+  sched.leave(person, by);
+  personShareCodes.delete(person.id);
+}
+
 // Avant chaque création par le QR de l'événement : les places sans prénom
 // abandonnées (PrivateEvent.abandoned, sans titre, sans code ni lien de
 // reprise encore valable donné par le bar) partent sans trace. Une boucle
@@ -3739,7 +3747,7 @@ const handlers = {
     // Place sans prénom ni titre du QR de l'événement : supprimée, sans trace
     // (sinon chaque nouveau scan laisserait une fiche partie de plus).
     if (me.viaEvent && disposablePlaceholder(me)) { dropPlaceholder(me); sched.version++; }
-    else sched.leave(me);
+    else leavePerson(me);
     sync(); return { ok: true };
   },
   // Une place sans prénom n'a pas de photo (400 Ko au plus, gardés en mémoire).
@@ -4151,7 +4159,7 @@ const handlers = {
     // Invitée d'un duo déjà chargé : le titre reste dans KaraFun, au nom de
     // son auteur seul.
     const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(new Set([p.id]));
-    sched.leave(p, 'staff');
+    leavePerson(p, 'staff');
     if (pending?.sel.ids.includes(p.id)) pending.cancelled = true;
     removeLeaversTracks(upcomingTracks, new Set([p.id]));
     sync();

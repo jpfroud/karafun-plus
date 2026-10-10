@@ -3017,7 +3017,7 @@ test('QR individuel rouvert ailleurs : « C’est bien toi ? », récupération 
 });
 
 test('événement privé : un seul POST d’entrée, paramètre retiré de l’adresse, QR inactif ou complet signalé', async () => {
-  const page = await soloPage('?evenement=SECRET-EV&utm=x', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+  const page = await soloPage('?evenement=SECRET-EV&utm=x', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url === '/api/table/enter') {
       self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
       self.state.managedIds = ['s2'];
@@ -3035,16 +3035,16 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
 
   // QR coupé ou renouvelé : la page demande quand même (un inscrit de ce
   // navigateur y retrouve sa place) ; le refus dit « QR plus actif ».
-  const inactive = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false, privateEventReady: false }), url => url === '/api/table/enter'
+  const inactive = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false }), url => url === '/api/table/enter'
     ? reply(403, { error: 'Ce QR d’événement n’est plus actif. Demande au bar.', code: 'PRIVATE_EVENT' }) : undefined);
   assert.equal(postsTo(inactive, '/api/table/enter').length, 1);
   assert.equal(inactive.node('noSingerText').textContent, 'Ce QR d’événement n’est plus actif. Demande au bar.');
 
-  const mine = await soloPage('?evenement=SECRET-EV', soloState({ privateEventReady: true, tablePeople: [person('s2', 'Léa')], managedIds: ['s2'] }));
+  const mine = await soloPage('?evenement=SECRET-EV', soloState({ tablePeople: [person('s2', 'Léa')], managedIds: ['s2'] }));
   assert.equal(mine.posts.length, 0, 'son chanteur est déjà sur ce téléphone');
   assert.equal(mine.history.urls.at(-1), '/t/Comptoir/secret');
 
-  const busy = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), url => url === '/api/table/enter'
+  const busy = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), url => url === '/api/table/enter'
     ? reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' }) : undefined, { languages: ['en'] });
   assert.equal(busy.node('noSingerText').textContent, 'Lots of people arriving at once: trying again in a moment…');
 });
@@ -3059,7 +3059,7 @@ test('événement privé : un seul POST d’entrée, paramètre retiré de l’a
 // deux cas : elle dit de rescanner (un QR renouvelé refusera, « QR plus actif »).
 test('événement privé : place sans prénom retirée (« Parti » du bar ou QR renouvelé) = rescanner le QR, même après rechargement', async () => {
   const session = sessionMap();
-  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url !== '/api/table/enter') return undefined;
     self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
     self.state.managedIds = ['s2'];
@@ -3070,7 +3070,6 @@ test('événement privé : place sans prénom retirée (« Parti » du bar ou QR
   // Le bar touche « Parti » sur « Solo 2 » (ou renouvelle le QR) : la place part sans trace.
   page.state.tablePeople = [];
   page.state.managedIds = [];
-  page.state.privateEventReady = false;
   await page.poll();
   assert.equal(page.node('nameGate').hidden, true);
   assert.equal(page.node('noSingerText').textContent, 'Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.');
@@ -3080,7 +3079,7 @@ test('événement privé : place sans prénom retirée (« Parti » du bar ou QR
 
   // Place nommée puis passée sur un autre téléphone : pas un QR inactif.
   const named = sessionMap();
-  const moved = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+  const moved = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url !== '/api/table/enter') return undefined;
     self.state.tablePeople = [person('s3', 'Léa')];
     self.state.managedIds = ['s3'];
@@ -3099,7 +3098,7 @@ const retryDelay = page => [...page.timers.values()].map(timer => timer.ms).find
 const eventBusy = () => reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' });
 test('événement privé : arrivées nombreuses = nouvel essai automatique, puis prénom', async () => {
   let busyLeft = 2;
-  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url !== '/api/table/enter') return undefined;
     if (busyLeft-- > 0) return eventBusy();
     self.state.tablePeople = [person('s3', 'Solo 3', { nameRequired: true })];
@@ -3127,7 +3126,7 @@ test('événement privé : arrivées nombreuses = nouvel essai automatique, puis
 // minute à peine puis un échec définitif, sans bouton pour réessayer ; le
 // délai annoncé par le serveur (Retry-After) était ignoré.
 test('événement privé : nouveaux essais pendant 5 minutes environ, puis « Réessayer » ; titre « Inscription en cours… »', async () => {
-  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }),
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }),
     url => url === '/api/table/enter' ? eventBusy() : undefined);
   assert.equal(page.node('noSingerTitle').textContent, 'Inscription en cours…');
   assert.equal(page.node('noSingerText').textContent, 'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…');
@@ -3152,7 +3151,7 @@ test('événement privé : nouveaux essais pendant 5 minutes environ, puis « R�
 
 test('événement privé : le délai Retry-After du serveur est suivi', async () => {
   let busyLeft = 1;
-  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), (url, body, self) => {
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url !== '/api/table/enter') return undefined;
     if (busyLeft-- > 0) return reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' }, { 'Retry-After': '7' });
     self.state.tablePeople = [person('s4', 'Solo 4', { nameRequired: true })];
@@ -3168,7 +3167,7 @@ test('événement privé : le délai Retry-After du serveur est suivi', async ()
 });
 
 test('événement privé en anglais : titre, attente et « Try again » ; plafond atteint = message, sans essai automatique', async () => {
-  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }),
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }),
     url => url === '/api/table/enter' ? eventBusy() : undefined, { languages: ['en'] });
   assert.equal(page.node('noSingerTitle').textContent, 'Signing you up…');
   assert.equal(page.node('noSingerText').textContent, 'Lots of people arriving at once: trying again in a moment…');
@@ -3178,7 +3177,7 @@ test('événement privé en anglais : titre, attente et « Try again » ; plafon
   assert.equal(page.find('noSingerActions', '[data-entry-retry]').textContent, 'Try again');
 
   for (const languages of [['fr'], ['en']]) {
-    const full = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), url => url === '/api/table/enter'
+    const full = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), url => url === '/api/table/enter'
       ? reply(403, { error: 'L’événement est complet par ce QR : demande au bar un QR individuel.', code: 'PRIVATE_EVENT_FULL' }) : undefined, { languages });
     assert.equal(full.node('noSingerText').textContent, languages[0] === 'fr'
       ? 'L’événement est complet par ce QR : demande au bar un QR individuel.'
@@ -3298,7 +3297,7 @@ test('doublon marqué parti sur ce navigateur : son QR personnel propose encore 
 // chanteur est déjà là » : ?evenement= retiré sans demande au serveur, et la
 // page disait « demande au bar un QR individuel » au lieu de « marquée partie ».
 test('personne marquée partie : le QR de l’événement rescanné dit « demande au bar de te réactiver » (FR/EN)', async () => {
-  const gone = () => soloState({ soloInvitationReady: false, privateEventReady: true,
+  const gone = () => soloState({ soloInvitationReady: false,
     tablePeople: [person('d1', 'Clara B.', { viaEvent: true, active: false })], managedIds: ['d1'] });
   const left = () => reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
   for (const [languages, text] of [[undefined, 'Cette personne a été marquée partie. Demande au bar de la réactiver.'],
@@ -3313,7 +3312,7 @@ test('personne marquée partie : le QR de l’événement rescanné dit « deman
     assert.equal(bare.node('noSingerText').textContent, text);
   }
   // Une place active sur ce téléphone : rien n'est demandé (inchangé).
-  const mine = await soloPage('?evenement=SECRET-EV', soloState({ privateEventReady: true,
+  const mine = await soloPage('?evenement=SECRET-EV', soloState({
     tablePeople: [person('d1', 'Clara B.', { active: false }), person('s2', 'Léa')], managedIds: ['d1', 's2'] }));
   assert.equal(postsTo(mine, '/api/table/enter').length, 0);
 });
@@ -3815,7 +3814,7 @@ test('fenêtre de prénom : « Déjà inscrit ? J’ai un code » reprend son pr
     return undefined;
   };
   const session = sessionMap();
-  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true,
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false,
     recoveryPeople: [person('c1', 'Clara'), person('d1', 'Dan')] }), respond, { session });
   assert.equal(page.node('nameGate').hidden, false);
   assert.equal(page.node('claimBox').hidden, false, 'une place sans prénom ne cache pas la reprise');
@@ -3857,7 +3856,7 @@ test('fenêtre de prénom : « Déjà inscrit ? J’ai un code » reprend son pr
   assert.equal(session.getItem('kfEventPlace:Comptoir:secret'), '', 'la place « Solo 2 » retirée n’est pas un « QR plus actif »');
 
   // Aucun code demandé pour l'instant : la marche à suivre.
-  const none = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true }), respond);
+  const none = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), respond);
   await none.click(none.node('nameGateClaimLink'));
   assert.equal(none.node('nameGateClaim').querySelector('[data-gate-claim-person]'), null);
   assert.match(none.node('nameGateClaim').textContent, /Demande d’abord au bar ou à ton ancien téléphone un code de reprise à 4 chiffres : ton prénom apparaîtra ici\./);
@@ -3867,7 +3866,7 @@ test('fenêtre de prénom : « Déjà inscrit ? J’ai un code » reprend son pr
   assert.ok(none.find('nameGateClaim', '[data-gate-claim-person="c1"]'));
 
   // En anglais, et la langue change sans perdre l'étape.
-  const english = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false, privateEventReady: true,
+  const english = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false,
     recoveryPeople: [person('c1', 'Clara')] }), respond, { languages: ['en'] });
   assert.equal(english.node('nameGateClaimLink').textContent, 'Already signed up? I have a code');
   await english.click(english.node('nameGateClaimLink'));
@@ -3889,7 +3888,7 @@ test('fenêtre de prénom : « Déjà inscrit ? J’ai un code » reprend son pr
 // demandait plus rien (QR « plus actif ») : le serveur la retrouve par son
 // cookie, la page doit donc envoyer sa demande.
 test('événement privé : QR renouvelé ou coupé, un inscrit de ce navigateur retrouve sa place', async () => {
-  const page = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false, privateEventReady: false }), (url, body, self) => {
+  const page = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url !== '/api/table/enter') return undefined;
     self.state.tablePeople = [person('l1', 'Léa')];
     self.state.managedIds = ['l1'];
@@ -3903,7 +3902,7 @@ test('événement privé : QR renouvelé ou coupé, un inscrit de ce navigateur 
   assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret');
 
   // Refusé : « QR plus actif », sans « Réessayer » ni nouvel essai.
-  const refused = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false, privateEventReady: false }), url => url === '/api/table/enter'
+  const refused = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false }), url => url === '/api/table/enter'
     ? reply(403, { error: 'Ce QR d’événement n’est plus actif. Demande au bar.', code: 'PRIVATE_EVENT' }) : undefined, { languages: ['en'] });
   assert.equal(refused.node('noSingerText').textContent, 'This event QR code is no longer active. Ask the bar.');
   assert.equal(refused.node('noSingerTitle').textContent, 'To add a song');
@@ -3956,7 +3955,7 @@ test('fenêtre de prénom : en reprise par code, un seul titre « Récupérer me
     self.state.managedIds = ['s2'];
     return { id: 's2', token: 'jeton-s2', nameRequired: true };
   };
-  const state = () => soloState({ soloInvitationReady: false, privateEventReady: true, recoveryPeople: [person('c1', 'Clara')] });
+  const state = () => soloState({ soloInvitationReady: false, recoveryPeople: [person('c1', 'Clara')] });
   const page = await soloPage('?evenement=SECRET-EV', state(), respond);
   const title = () => page.node('nameGateTitle').textContent;
   const headings = () => page.node('nameGate').querySelectorAll('h2, h3').filter(node => !node.hidden);
