@@ -1397,8 +1397,9 @@
           openPersonalEntry();
         }, delay);
       } else {
-        // Message gardé dans sa forme traduisible : il suit le changement de langue.
-        entry = error.status ? { status: 'failed', recover: null, error: error.localized || (() => error.message) } : { status: '', recover: null, error: '' };
+        // Message gardé dans sa forme traduisible : il suit le changement de
+        // langue. Le code dit si « Réessayer » peut servir (pas pour une clé morte).
+        entry = error.status ? { status: 'failed', code: error.code, recover: null, error: error.localized || (() => error.message) } : { status: '', recover: null, error: '' };
       }
     }
     render();
@@ -1542,8 +1543,10 @@
               // renouvelé répond alors « QR plus actif »).
               : eventPlaceLost() ? t('Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.')
               : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
+      // Clé personnelle morte (SOLO_KEY_REVOKED) : réessayer ne servirait à
+      // rien, seul un QR de reprise du bar rend l'accès.
       const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'recover'
-        ? `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'failed'
+        ? `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'failed' && entry.code !== 'SOLO_KEY_REVOKED'
         ? `<button type="button" class="btn" data-entry-retry>${esc(t('Réessayer'))}</button>` : ''}`;
       $('noSingerTitle').textContent = opening || entry.status === 'retry' ? t('Inscription en cours…') : t('Pour ajouter une chanson');
       $('noSingerBox').hidden = owned.length > 0 || entry.status === 'recover';
@@ -2299,7 +2302,19 @@
   function claimWithKey(button) {
     const name = entry.recover?.name;
     perform(button, async () => {
-      const result = await post('/api/table/person/claim', { key: soloInvitation });
+      let result;
+      try { result = await post('/api/table/person/claim', { key: soloInvitation }); }
+      catch (error) {
+        // Refus définitif (clé morte, personne marquée partie) : l'offre
+        // « C’est bien toi ? » ne peut plus aboutir, la page affiche le refus
+        // à sa place (sans « Réessayer » pour une clé morte) ; le toast le dit
+        // aussi. Un refus passager (réseau, serveur) garde l'offre.
+        if (error.code === 'SOLO_KEY_REVOKED' || error.code === 'PERSON_LEFT') {
+          entry = { status: 'failed', code: error.code, recover: null, error: error.localized || (() => error.message) };
+          render();
+        }
+        throw error;
+      }
       savePersonToken(result.id, result.token);
       entry = { status: 'done', recover: null, error: '' };
       await refresh();

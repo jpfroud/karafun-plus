@@ -2968,7 +2968,9 @@ test('QR individuel rouvert ailleurs : « C’est bien toi ? », récupération 
   const page = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url === '/api/table/solo/open') return { recover: { id: 'm1', name: 'Marie' } };
     if (url === '/api/table/person/claim') {
-      if (refuse) { refuse = false; return reply(403, { error: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.', code: 'SOLO_KEY_REVOKED' }); }
+      // Réseau coupé : un refus passager (un refus définitif retire la carte,
+      // voir le test suivant).
+      if (refuse) { refuse = false; return new TypeError('Failed to fetch'); }
       self.state.tablePeople = [person('m1', 'Marie')];
       self.state.managedIds = ['m1'];
       return { id: 'm1', token: 'jeton-m1' };
@@ -2983,28 +2985,30 @@ test('QR individuel rouvert ailleurs : « C’est bien toi ? », récupération 
   assert.ok(page.find('catalogAccessActions', '[data-key-claim]'), 'la récupération aussi depuis le catalogue');
   await page.tap('transferActions', '[data-key-claim]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', key: 'CLE-SOLO' }]);
-  assert.deepEqual(page.toast(), { text: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.', bad: true, warn: false, hidden: false });
-  assert.equal(page.node('transferBox').hidden, false, 'la carte reste après un refus');
+  assert.deepEqual(page.toast(), { text: 'Connexion perdue : réessaie dans un instant.', bad: true, warn: false, hidden: false });
+  assert.equal(page.node('transferBox').hidden, false, 'la carte reste après un refus passager');
   await page.tap('transferActions', '[data-key-claim]');
   assert.deepEqual(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')), { m1: 'jeton-m1' });
   assert.equal(page.node('transferBox').hidden, true);
   assert.equal(page.toast().text, 'Tu gères maintenant Marie sur ce téléphone.');
   assert.equal(page.history.urls.length, 0, 'la clé reste dans l’adresse après la récupération');
   assert.equal(postsTo(page, '/api/table/solo/open').length, 1);
+  // Serveur indisponible (5xx, réponse sans JSON) : passager aussi, la carte reste.
   const english = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }),
     url => url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } }
-      : url === '/api/table/person/claim' ? reply(403, { error: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.', code: 'SOLO_KEY_REVOKED' })
-        : undefined, { languages: ['en'] });
+      : url === '/api/table/person/claim' ? reply(503) : undefined, { languages: ['en'] });
   assert.equal(english.node('transferHeading').textContent, 'Is that you, Marie?');
   assert.equal(english.find('transferActions', '[data-key-claim]').textContent, 'Recover my songs');
   await english.tap('transferActions', '[data-key-claim]');
-  assert.equal(english.toast().text, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
+  assert.equal(english.toast().text, 'Something went wrong.');
+  assert.equal(english.node('transferBox').hidden, false, 'erreur du serveur : la carte reste');
 
   const used = await soloPage('?invitation=VIEUX', soloState({ soloInvitationReady: false }), url => url === '/api/table/solo/open'
     ? reply(403, { error: 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.', code: 'SOLO_INVITATION' }) : undefined);
   assert.equal(used.node('noSingerBox').hidden, false);
   assert.equal(used.node('noSingerText').textContent, 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.');
   assert.equal(used.node('fatalBox').hidden, true, 'un refus de l’invitation n’est pas un lien de table invalide');
+  assert.ok(used.node('noSingerActions').querySelector('[data-entry-retry]'), 'autre refus que la clé morte : « Réessayer » reste');
   await used.poll();
   assert.equal(postsTo(used, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
 
@@ -3024,6 +3028,47 @@ test('QR individuel rouvert ailleurs : « C’est bien toi ? », récupération 
   const bare = await soloPage('', soloState({ soloInvitationReady: false }));
   assert.equal(bare.posts.length, 0, 'lien commun : rien à ouvrir');
   assert.match(bare.node('noSingerText').textContent, /^Pour t’inscrire, demande au bar un QR individuel\./);
+});
+
+// Regression: troisième passe de la relecture finale (design) — un refus
+// définitif de « Récupérer mes chansons » (clé morte : SOLO_KEY_REVOKED ;
+// personne marquée partie : PERSON_LEFT) ne laissait qu'un toast de 4 s : la
+// carte « C’est bien toi ? » restait et invitait à réessayer en vain.
+test('refus définitif pendant « C’est bien toi ? » : la carte de reprise disparaît, le refus reste affiché (sans « Réessayer » pour une clé morte)', async () => {
+  const revoked = 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.';
+  const left = 'Cette personne a été marquée partie. Demande au bar de la réactiver.';
+  const offer = (code, error, options) => soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }), url =>
+    url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } }
+      : url === '/api/table/person/claim' ? reply(403, { error, code }) : undefined, options);
+  const page = await offer('SOLO_KEY_REVOKED', revoked);
+  assert.equal(page.node('transferBox').hidden, false);
+  await page.tap('transferActions', '[data-key-claim]');
+  assert.equal(page.node('transferBox').hidden, true, 'plus d’offre de reprise par une clé morte');
+  assert.equal(page.node('noSingerBox').hidden, false);
+  assert.equal(page.node('noSingerText').textContent, revoked);
+  assert.equal(page.node('catalogAccessText').textContent, revoked);
+  for (const id of ['noSingerActions', 'catalogAccessActions']) {
+    assert.ok(!page.node(id).querySelector('[data-key-claim]'), `#${id} : plus de « Récupérer mes chansons »`);
+    assert.ok(!page.node(id).querySelector('[data-entry-retry]'), `#${id} : une clé morte ne se réessaie pas`);
+  }
+  assert.deepEqual(page.toast(), { text: revoked, bad: true, warn: false, hidden: false });
+  await page.poll();
+  assert.equal(page.node('transferBox').hidden, true, 'l’offre ne revient pas au rafraîchissement');
+  assert.equal(postsTo(page, '/api/table/solo/open').length, 1, 'pas de nouvelle ouverture');
+  assert.equal(postsTo(page, '/api/table/person/claim').length, 1);
+  // Le refus suit la langue de la page.
+  const english = await offer('SOLO_KEY_REVOKED', revoked, { languages: ['en'] });
+  await english.tap('transferActions', '[data-key-claim]');
+  assert.equal(english.node('transferBox').hidden, true);
+  assert.equal(english.node('noSingerText').textContent, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
+  // Marquée partie entre-temps : la carte disparaît aussi ; le bar peut la
+  // réactiver, « Réessayer » reste.
+  const gone = await offer('PERSON_LEFT', left);
+  await gone.tap('transferActions', '[data-key-claim]');
+  assert.equal(gone.node('transferBox').hidden, true);
+  assert.equal(gone.node('noSingerText').textContent, left);
+  assert.ok(gone.node('noSingerActions').querySelector('[data-entry-retry]'), 'marquée partie : « Réessayer » reste');
+  assert.ok(!gone.node('noSingerActions').querySelector('[data-key-claim]'), 'plus de « Récupérer mes chansons »');
 });
 
 test('événement privé : un seul POST d’entrée, paramètre retiré de l’adresse, QR inactif ou complet signalé', async () => {
@@ -4044,6 +4089,11 @@ test('QR personnel mort (personne réactivée après un départ) : la page dit d
   assert.deepEqual(postsTo(fr, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-MORTE' }]]);
   assert.equal(fr.node('noSingerText').textContent, 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
   assert.equal(fr.node('nameGate').hidden, true);
+  // Troisième passe de la relecture finale (design) : une clé morte ne se
+  // réessaie pas, rien à toucher sinon demander le QR de reprise.
+  for (const id of ['noSingerActions', 'catalogAccessActions']) {
+    assert.ok(!fr.node(id).querySelector('[data-entry-retry]'), `#${id} : pas de « Réessayer » pour une clé morte`);
+  }
   const en = await soloPage('?invitation=CLE-MORTE', soloState({ soloInvitationReady: false }), revoked, { languages: ['en'] });
   assert.equal(en.node('noSingerText').textContent, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
   await en.poll();

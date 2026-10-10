@@ -10,8 +10,13 @@ const SECRET_RE = /^[A-Za-z0-9_-]{22}$/;
 // 30 chanteurs par minute (assez pour un Wi-Fi qui sort par une seule adresse
 // publique), tout le bar 120 ; au plus 200 personnes nommées présentes venues
 // par l'événement (vérifié à la création d'une place et à son premier
-// prénom), et au plus 400 fiches venues par l'événement (pas parties),
-// nommées ou non, quel que soit leur âge.
+// prénom), et au plus 400 fiches venues par l'événement, nommées ou non,
+// quel que soit leur âge : celles qui ne sont pas parties, et celles parties
+// d'elles-mêmes (POST /api/leave, qu'aucune page n'appelle ; troisième passe
+// de la relecture finale : une boucle prénom puis départ libérait sa fiche à
+// chaque tour et n'était jamais arrêtée). Une personne marquée partie par le
+// bar libère sa fiche ; une personne de l'événement qui part d'elle-même sans
+// aucun historique ne laisse pas de fiche (server.js, POST /api/leave).
 // 200 : valeur mesurée (seconde passe de la quatrième relecture finale). Chaque
 // écriture acceptée fait recalculer toute la prévision, O(titres × chanteurs) :
 // avec trois titres par invité, environ 0,2 s à 200 invités, 0,3 s à 250 et
@@ -131,10 +136,13 @@ class PrivateEvent {
     return now - joinedAt >= PLACEHOLDER_ABANDON_MS && (Number(person.lastSeen) || 0) <= joinedAt + 1000;
   }
 
-  // Fiches venues par l'événement et pas parties, nommées ou non, de tout âge.
+  // Fiches venues par l'événement, nommées ou non, de tout âge : pas parties,
+  // ou parties d'elles-mêmes (withdrawnBy « self », scheduler.leave, gardé
+  // par la sauvegarde). Marquée partie par le bar, ou partie dans une
+  // sauvegarde d'avant ce champ, une personne libère sa fiche.
   static held(people) {
     let count = 0;
-    for (const person of people) if (person?.viaEvent && !person.withdrawnAt) count++;
+    for (const person of people) if (person?.viaEvent && (!person.withdrawnAt || person.withdrawnBy === 'self')) count++;
     return count;
   }
 

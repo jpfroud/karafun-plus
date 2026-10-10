@@ -232,6 +232,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // qui a une clé l'a perdue, même dans une sauvegarde d'avant ce champ.
     if (person.soloKeyRevoked !== undefined && person.soloKeyRevoked !== true) delete person.soloKeyRevoked;
     if (person.soloKeyHash && person.withdrawnAt) person.soloKeyRevoked = true;
+    // Auteur du départ (scheduler.leave) : partie d'elle-même, une personne de
+    // l'événement privé garde sa fiche dans le plafond après un redémarrage.
+    // Abîmé ou absent (sauvegarde d'avant ce champ) : la fiche est libérée.
+    if (person.withdrawnBy !== undefined && person.withdrawnBy !== 'self' && person.withdrawnBy !== 'staff') delete person.withdrawnBy;
     if (person.lastActionAt !== undefined && !Number.isFinite(person.lastActionAt)) delete person.lastActionAt;
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');

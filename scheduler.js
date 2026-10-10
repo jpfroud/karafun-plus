@@ -621,6 +621,13 @@ class Scheduler {
     this._removeDuetsForPerson(p, true);
     this._songsGone(p, this.songsOf(p));
     p.song = null; p.backlog = []; p.withdrawnAt = Date.now();
+    // Auteur du départ (sauvegardé) : partie d'elle-même, une personne venue
+    // par l'événement privé garde sa fiche dans le plafond des fiches
+    // (private-event.js, held) ; marquée partie par le bar, elle la libère.
+    // Sa photo (400 Ko au plus) est libérée : une fiche partie ne la garde
+    // ni en mémoire ni dans chaque sauvegarde.
+    p.withdrawnBy = by;
+    p.photo = null;
     p.presenceRetry = false; p.presenceSkips = 0; p.maybeGone = null; p.deferral = null;
     // Clé personnelle d'un QR individuel (server.js, keyHolder) : un départ la
     // révoque pour de bon, « Réactiver » ne la ranime pas (décision du gérant).
