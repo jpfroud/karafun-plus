@@ -3233,13 +3233,14 @@ async function playKaraFun({ queueId = null } = {}) {
 // fois par 10 minutes et pas quand seul l'appel de relance échoue en 5xx
 // (SpotifyAutomation.recover). Spotify en panne ou sans appareil après cet
 // échec : la panne n'était pas propre à l'appel, la reprise est permise.
-// Rien de repris : rien au journal.
+// Rien de repris : rien au journal ; sinon l'action reprise (pause ou relance).
 async function spotifyCheck() {
   const before = spotify.health.state;
   const health = await spotify.checkHealth();
   if (health.state === 'error' || health.state === 'no-device') spotifyAutomation.checkFailed();
+  const action = spotifyAutomation.failure?.action;
   if (health.state === 'ready' && (before !== 'ready' || health.adopted) && spotifyAutomation.recover()) {
-    appLog('Spotify rétabli : la relance automatique reprend.');
+    appLog(`Spotify rétabli : la ${action === 'pause' ? 'pause' : 'relance'} automatique reprend.`);
   }
   return health;
 }
