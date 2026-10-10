@@ -111,6 +111,12 @@ assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir-2', name: '
   'This first name is already signed up tonight. Add the initial of your last name (e.g. Mary L.).');
 assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir', name: 'Max · Table 4' }))), 'First names can’t contain “·”.');
 assert.match(serverText(fullTable), /^Table 7 is full \(3 signed up for 3 places\)/);
+// Regression: vérification de la quatrième relecture — invitation de duo
+// envoyée depuis une liste des partenaires ouverte avant « Parti » : refus traduit.
+const inviter = sched.join({ tableId: '8', name: 'Eli', headcount: 2 }), gone = sched.join({ tableId: '8', name: 'Fanny' });
+sched.leave(gone);
+assert.equal(serverText(thrown(() => sched.inviteDuet(inviter, gone.id, { songId: 1, title: 'Un' }))),
+  'This singer has left: choose another partner.');
 assert.ok(serverSources.includes('Recherche KaraFun impossible : ${e.message}'));
 assert.equal(serverText('Recherche KaraFun impossible : délai dépassé'), 'KaraFun search failed: délai dépassé');
 // Durée maximale des titres (lot J) : refus avec la durée du titre et la limite.

@@ -31,9 +31,9 @@ async function request(route, body, cookie = '') {
   return { value, cookie: response.headers.get('set-cookie')?.split(';')[0] || '' };
 }
 
-// Six solistes du comptoir, chacun avec un titre.
-// Les deux derniers restent actifs, seuls, sans repère « inactif ».
-const NAMES = ['Marie-Charlotte Vanden', 'Léa', 'Bob', 'Maximilien-Alexandre B.', 'Noé', 'Zoé', 'Anne-Sophie Delacroix', 'Jean-Baptiste Lemercier'];
+// Neuf solistes du comptoir, chacun avec un titre.
+// Les trois derniers restent actifs, seuls, sans repère « inactif ».
+const NAMES = ['Marie-Charlotte Vanden', 'Léa', 'Bob', 'Maximilien-Alexandre B.', 'Noé', 'Zoé', 'Anne-Sophie Delacroix', 'Jean-Baptiste Lemercier', 'Ana'];
 // Duos : deux partenaires inactifs (prénom long puis court, puis l'inverse avec
 // « inactif depuis 21:04 », le repère le plus long), et un seul partenaire
 // inactif, le second.
@@ -56,6 +56,9 @@ function reshape(state) {
   by('Anne-Sophie Delacroix').lastActiveAt = state.now;
   Object.assign(by('Jean-Baptiste Lemercier'), { lastActiveAt: state.now, privateNote: 'habitué' });
   state.queue.find(q => q.ids?.length === 1 && q.ids[0] === by('Jean-Baptiste Lemercier').id).table = 'Terrasse';
+  // Regression: U4 (quatrième relecture) — prénom court et table courte.
+  by('Ana').lastActiveAt = state.now;
+  state.queue.find(q => q.ids?.length === 1 && q.ids[0] === by('Ana').id).table = 'Terrasse';
   for (const [first, second] of DUOS) {
     const [a, b] = [by(first), by(second)];
     const line = state.queue.find(q => q.ids?.length === 1 && q.ids[0] === a.id);
@@ -73,6 +76,8 @@ function reshape(state) {
   Object.assign(bob, { tooLongSec: 400, repeat: { playedAt: state.now - 40 * MIN } });
   bob.song = { ...bob.song, title: 'Bohemian Rhapsody (version longue remasterisée)' };
   state.tooLong = { limitSec: 300, count: 2 };
+  // Limite active : « Retirer les 2 titres trop longs » s'affiche dans « Plus ».
+  state.settings = { ...state.settings, maxSongSec: 300 };
   return state;
 }
 
@@ -214,7 +219,20 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
           }
           const room = row.cell.width - (row.table.width > 0 ? row.table.width + 5 : 0);
           if (row.name.scroll > row.name.client + 1) assert.ok(row.name.width >= room - 1, `${label} : nom coupé à ${Math.round(row.name.width)} px sur ${Math.round(room)}`);
+          // Regression: U4 (quatrième relecture) — un nom coupé garde la
+          // priorité : sa table n'a alors que sa part, jamais davantage.
+          if (row.table.width > 0 && row.name.scroll > row.name.client + 1) {
+            assert.ok(row.table.width <= Math.min(row.table.scroll, 0.27 * row.cell.width) + 1, `${label} : la table « ${row.table.text} » (${Math.round(row.table.width)} px) passe devant le nom coupé`);
+          }
         }
+        // Regression: U4 (quatrième relecture) — la table, bornée à 27 % de la
+        // colonne, était coupée (« Terra… ») avec 60 à 84 px vides dans la
+        // cellule : elle prend la place que le prénom lui laisse.
+        const ana = active.find(row => row.name.text.trim() === 'Ana');
+        assert.ok(ana && ana.table.text === 'Terrasse', `${at} : ligne « Ana · Terrasse » dans la file`);
+        assert.ok(ana.name.scroll + 5 + ana.table.scroll <= ana.cell.width, `${at} : la cellule d'Ana a la place (${JSON.stringify(ana)})`);
+        assert.ok(inside(ana.table, ana.cell) && ana.table.scroll <= ana.table.client + 1, `${at} : table « Terrasse » coupée à ${Math.round(ana.table.width)} px dans une cellule qui a la place (${JSON.stringify(ana)})`);
+        assert.ok(ana.name.scroll <= ana.name.client + 1, `${at} : prénom d'Ana entier`);
       }
       // Sur PC, les badges d'une ligne avec repère ont leur propre ligne, entiers.
       if (!phone) for (const row of rows) assert.ok(row.tags.width >= row.cell.width - 1, `${at}, ${row.name.text} : badges réduits à ${Math.round(row.tags.width)} px`);
@@ -249,6 +267,50 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
       });
       assert.ok(widened.length >= 2, `${at} : prénoms courts de duo mesurés`);
       for (const who of widened) assert.ok(who.scroll <= who.client + 1, `${at} : « ${who.text} » abrégé quand la durée s'allonge (${JSON.stringify(who)})`);
+      // Regression: U1 (quatrième relecture) — Repères au téléphone : la règle
+      // .identity-panel .identity-row (deux classes) gardait ses trois colonnes
+      // et celle du téléphone (une classe) ne s'appliquait jamais. Prénom et
+      // dernière activité tenaient dans 88 à 98 px, 170 px vides à côté
+      // (« Pas revenu depuis l'ouverture du QR (21:06) » sur trois lignes,
+      // « Anne-So… »). Ils prennent la largeur de la ligne ; le repère et les
+      // boutons passent dessous, entiers et dans la ligne.
+      if (phone) await page.locator('[data-tab-btn="reperes"]').tap();
+      const identities = await page.evaluate(() => [...document.querySelectorAll('#identityBody .identity-row')].filter(row => row.querySelector('.activity')).map(row => {
+        const box = el => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height, scroll: el.scrollWidth, client: el.clientWidth, text: el.textContent }; };
+        const activity = row.querySelector('.activity');
+        const range = document.createRange();
+        range.selectNodeContents(activity);
+        return { row: box(row), who: box(row.querySelector('.identity-who')), name: box(row.querySelector('.identity-who > strong')), activity: box(activity),
+          lines: new Set([...range.getClientRects()].map(rect => Math.round(rect.top))).size, note: box(row.querySelector('[data-identity-note]')),
+          actions: box(row.querySelector('.identity-actions')), controls: [...row.querySelectorAll('.identity-actions select, .identity-actions button')].map(box) };
+      }));
+      assert.equal(identities.length, NAMES.length, `${at} : dernière activité des ${NAMES.length} solistes dans les Repères`);
+      for (const one of identities) {
+        const label = `${at}, Repères de ${one.name.text}`;
+        for (const part of [one.who, one.note, one.actions, ...one.controls]) assert.ok(inside(part, one.row), `${label} : « ${part.text.trim().slice(0, 30)} » hors de la ligne (${JSON.stringify({ part, row: one.row })})`);
+        assert.ok(one.actions.scroll <= one.actions.client + 1, `${label} : boutons coupés (${JSON.stringify(one.actions)})`);
+        if (!phone) continue;
+        assert.ok(one.who.right >= one.row.right - 1, `${label} : prénom et activité dans ${Math.round(one.who.width)} px, ${Math.round(one.row.right - one.who.right)} px vides à côté`);
+        assert.ok(one.name.scroll <= one.name.client + 1, `${label} : prénom coupé à ${Math.round(one.name.width)} px`);
+        assert.ok(one.lines <= 2, `${label} : « ${one.activity.text} » sur ${one.lines} lignes dans ${Math.round(one.activity.width)} px`);
+        assert.ok(one.note.top >= one.who.bottom - 1 && one.actions.top >= one.note.bottom - 1, `${label} : repère puis boutons sous le prénom`);
+        for (const control of one.controls) assert.ok(control.height >= 40, `${label} : « ${control.text.trim().slice(0, 20)} » de ${control.height} px`);
+      }
+      // Regression: U2 et U3 (quatrième relecture) — « Limiter la durée des
+      // chansons » s'affichait en graisse normale (400) entre les autres
+      // interrupteurs de règle (700), et « Retirer les titres trop longs »
+      // touchait (0 px) « Exiger « Je suis là » », au lieu des 14 px entre blocs.
+      if (phone) await page.locator('[data-tab-btn="plus"]').tap();
+      const rules = await page.evaluate(() => {
+        const weight = id => getComputedStyle(document.getElementById(id).closest('label')).fontWeight;
+        const actions = document.getElementById('tooLongActions');
+        const gap = (a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().bottom;
+        return { weights: ['singerSongSettings', 'maxSongOn', 'requirePresence'].map(weight), hidden: actions.hidden,
+          above: gap(actions.previousElementSibling, actions), below: gap(actions, document.getElementById('requirePresence').closest('.row')) };
+      });
+      assert.deepEqual(rules.weights, ['700', '700', '700'], `${at} : interrupteurs des règles de la soirée en gras`);
+      assert.equal(rules.hidden, false, `${at} : « Retirer les 2 titres trop longs » affiché`);
+      assert.ok(Math.abs(rules.below - rules.above) <= 1, `${at} : ${rules.below} px sous « Retirer les titres trop longs », ${rules.above} px au-dessus`);
       if (phone) {
         // Regression: U5 (seconde relecture) — « Envoi et lecture automatiques
         // coupés » (bouton de la Scène) faisait moins de 44 px au téléphone.
@@ -280,5 +342,5 @@ const inside = (part, cell) => part.width > 0 && part.left >= cell.left - 0.5 &&
   } finally {
     await browser.close();
   }
-  console.log('Repères « inactif » des solistes et des duos, « trop long » en navigateur : prénoms, noms, durées et badges entiers, titre sous ses repères à 360, 390, 1280 et 1366 px, pastille de 44 px et contour du disque des solistes visible OK');
+  console.log('Repères « inactif » des solistes et des duos, « trop long » en navigateur : prénoms, noms, tables, durées et badges entiers, titre sous ses repères à 360, 390, 1280 et 1366 px, Repères et règles de la soirée, pastille de 44 px et contour du disque des solistes visible OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -3691,6 +3691,9 @@ test('activité des solos : libellés, seuils 20 et 45 min, info-bulle, rien pou
   const activity = id => row(id).querySelector('.activity');
   assert.equal(activity('eva').textContent, 'Actif à l’instant');
   assert.equal(activity('eva').className, 'activity');
+  // Regression: U5 (quatrième relecture) — sans l'heure, qu'un relevé de page
+  // visible avance chaque minute à sa propre seconde.
+  assert.equal(activity('eva').title, 'Dernière activité sur son téléphone il y a moins de 3 min');
   assert.equal(activity('farid').textContent, 'Actif il y a 12 min');
   assert.equal(activity('gael').textContent, 'Sans nouvelles depuis 25 min');
   assert.equal(activity('gael').className, 'activity warn', 'orange dès 20 min');
@@ -3722,10 +3725,138 @@ test('activité des solos : libellés, seuils 20 et 45 min, info-bulle, rien pou
 });
 
 test('activité des solos : sans heure du serveur, l’heure de l’appareil sert de repli', async () => {
+  // Horloge de l'appareil au début d'une minute (U5 : minutes comptées au
+  // début de la minute en cours, le test ne dépend pas de la seconde).
+  const realNow = Date.now;
+  const now = Date.parse('2026-10-04T21:00:00');
+  Date.now = () => now;
+  try {
+    const world = baseWorld();
+    world.people[3].lastActiveAt = now - 3 * MIN - 1000;
+    const page = await openPage({ world });
+    assert.equal(page.in('identityBody', '[data-identity-person="dora"] .activity').textContent, 'Actif il y a 3 min');
+  } finally { Date.now = realNow; }
+});
+
+// Regression: U6 (quatrième relecture) — seuils de la dernière activité
+// (spécification C3) vérifiés à leurs bords : « Actif à l'instant » sous
+// 2 min, orange dès 20 min, rouge dès 45 min, « Pas revenu depuis l'ouverture
+// du QR » quand la dernière activité suit l'ouverture de moins d'une seconde.
+// À 21:00:00 pile, le début de la minute de l'horloge du serveur (U5).
+test('activité des solos : seuils de 2, 20 et 45 min et ouverture du QR, à leurs bords', async () => {
   const world = baseWorld();
-  world.people[3].lastActiveAt = Date.now() - 3 * MIN - 1000;
+  const now = Date.parse('2026-10-04T21:00:00');
+  world.now = now;
+  const solo = (id, ago, joinedAgo = 90 * MIN) => ({ id, name: id, tableId: 'Comptoir', active: true, songCount: 1, sung: 0,
+    joinedAt: now - joinedAgo, lastActiveAt: now - ago });
+  world.people.push(solo('s1m30', 90000), solo('s2m', 2 * MIN), solo('s19m59', 20 * MIN - 1000), solo('s20m', 20 * MIN),
+    solo('s44m59', 45 * MIN - 1000), solo('s45m', 45 * MIN), solo('qr900', 50 * MIN - 900, 50 * MIN), solo('qr1000', 50 * MIN - 1000, 50 * MIN));
   const page = await openPage({ world });
-  assert.equal(page.in('identityBody', '[data-identity-person="dora"] .activity').textContent, 'Actif il y a 3 min');
+  const shown = id => { const a = page.in('identityBody', `[data-identity-person="${id}"] .activity`); return [a.textContent, a.className]; };
+  assert.deepEqual(shown('s1m30'), ['Actif à l’instant', 'activity'], '1 min 30');
+  assert.deepEqual(shown('s2m'), ['Actif il y a 2 min', 'activity']);
+  assert.deepEqual(shown('s19m59'), ['Actif il y a 19 min', 'activity'], '19:59 : pas encore orange');
+  assert.deepEqual(shown('s20m'), ['Sans nouvelles depuis 20 min', 'activity warn'], 'orange dès 20 min');
+  assert.deepEqual(shown('s44m59'), ['Sans nouvelles depuis 44 min', 'activity warn'], '44:59 : encore orange');
+  assert.deepEqual(shown('s45m'), ['Sans nouvelles depuis 45 min', 'activity late'], 'rouge dès 45 min');
+  // QR ouvert à 20:10:00 : un relevé 900 ms plus tard est celui de l'ouverture ;
+  // une seconde plus tard, c'est une vraie visite.
+  assert.deepEqual(shown('qr900'), [`Pas revenu depuis l’ouverture du QR (${hhmm(now - 50 * MIN)})`, 'activity late']);
+  assert.deepEqual(shown('qr1000'), ['Sans nouvelles depuis 49 min', 'activity late']);
+  // Toute la minute de 21:00 garde ces libellés ; à 21:01:00, tous avancent ensemble.
+  await page.update({ now: now + MIN - 1 });
+  assert.deepEqual(['s1m30', 's19m59', 's44m59'].map(shown), [['Actif à l’instant', 'activity'], ['Actif il y a 19 min', 'activity'],
+    ['Sans nouvelles depuis 44 min', 'activity warn']], '21:00:59.999 : même minute, mêmes libellés');
+  await page.update({ now: now + MIN });
+  assert.deepEqual(['s1m30', 's19m59', 's44m59'].map(shown), [['Actif il y a 2 min', 'activity'], ['Sans nouvelles depuis 20 min', 'activity warn'],
+    ['Sans nouvelles depuis 45 min', 'activity late']], '21:01:00 : chacun passe le seuil suivant');
+});
+
+// Regression: vérification de la quatrième relecture — minutes comptées au
+// début de la minute en cours (U5) : en cours de minute, le libellé retarde
+// jusqu'à 59 s sur le temps écoulé. « Actif à l'instant » dure jusqu'à
+// 2 min 59 s, mais son info-bulle disait « il y a moins de 2 min » ; l'orange
+// arrive 20 à 21 min après la dernière activité, le rouge 45 à 46 min après.
+test('activité des solos : en cours de minute, « Actif à l’instant » sous 3 min, orange et rouge à la minute suivante', async () => {
+  const world = baseWorld();
+  const at = clock => Date.parse(`2026-10-04T${clock}`);
+  world.now = at('21:00:50');
+  const solo = (id, last) => ({ id, name: id, tableId: 'Comptoir', active: true, songCount: 1, sung: 0,
+    joinedAt: at('19:00:00'), lastActiveAt: at(last) });
+  world.people.push(solo('a2m40', '20:58:10'), solo('a2m49', '20:58:00.001'), solo('a2m50', '20:58:00'),
+    solo('w20m49', '20:40:00.001'), solo('w20m50', '20:40:00'), solo('l45m49', '20:15:00.001'), solo('l45m50', '20:15:00'));
+  const page = await openPage({ world });
+  const shown = id => { const a = page.in('identityBody', `[data-identity-person="${id}"] .activity`); return [a.textContent, a.className, a.title]; };
+  const instant = ['Actif à l’instant', 'activity', 'Dernière activité sur son téléphone il y a moins de 3 min'];
+  assert.deepEqual(shown('a2m40'), instant, '2 min 40 s');
+  assert.deepEqual(shown('a2m49'), instant, '2 min 49,999 s');
+  assert.deepEqual(shown('a2m50'), ['Actif il y a 2 min', 'activity', `Dernière activité sur son téléphone à ${hhmm(at('20:58:00'))}`], '2 min 50 s');
+  assert.deepEqual(shown('w20m49').slice(0, 2), ['Actif il y a 19 min', 'activity'], '20 min 49,999 s : pas encore orange');
+  assert.deepEqual(shown('w20m50').slice(0, 2), ['Sans nouvelles depuis 20 min', 'activity warn'], '20 min 50 s : orange');
+  assert.deepEqual(shown('l45m49').slice(0, 2), ['Sans nouvelles depuis 44 min', 'activity warn'], '45 min 49,999 s : encore orange');
+  assert.deepEqual(shown('l45m50').slice(0, 2), ['Sans nouvelles depuis 45 min', 'activity late'], '45 min 50 s : rouge');
+  // Fin de la minute : toujours sous 3 min ; à 21:01:00, la minute change.
+  await page.update({ now: at('21:00:59.999') });
+  assert.deepEqual(shown('a2m49'), instant, '2 min 59,998 s');
+  await page.update({ now: at('21:01:00') });
+  assert.deepEqual(shown('a2m49').slice(0, 2), ['Actif il y a 2 min', 'activity'], '2 min 59,999 s');
+});
+
+// Regression: U5 (quatrième relecture) — les minutes d'activité étaient
+// comptées depuis l'heure de chacun : chaque libellé changeait à sa propre
+// seconde, et les listes « Solistes » et Repères étaient réécrites à presque
+// chaque relevé de 2 s (60 solistes : ~140 ms par relevé, boutons remplacés
+// sous le doigt). Une page visible (relevé du serveur au plus une fois par
+// minute, chacun à sa seconde) faisait aussi remonter sa ligne de « Solistes ».
+test('activité des solos : 40 solistes, listes « Solistes » et Repères réécrites une fois par minute au plus', async () => {
+  const world = baseWorld();
+  const start = Date.parse('2026-10-04T21:00:07');
+  world.now = start;
+  world.tables[2].activeCount = world.tables[2].count = 41;
+  // Dernières activités étalées sur une minute (1,5 s d'écart), de « à
+  // l'instant » à plus d'une heure ; les dix premiers gardent leur page visible.
+  for (let i = 0; i < 40; i++) {
+    world.people.push({ id: `s${i}`, name: `Soliste ${String(i).padStart(2, '0')}`, tableId: 'Comptoir', active: true, songCount: 1, sung: 0,
+      joinedAt: start - 120 * MIN, lastActiveAt: start - (i < 10 ? 0 : (i - 10) * 2 * MIN) - i * 1500 });
+  }
+  const page = await openPage({ world });
+  const writes = {};
+  for (const id of ['soloistList', 'identityBody']) {
+    const el = page.$(id), setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'innerHTML');
+    writes[id] = 0;
+    Object.defineProperty(el, 'innerHTML', { configurable: true, get() { return setter.get.call(this); }, set(value) { writes[id]++; setter.set.call(this, value); } });
+  }
+  const order = () => texts(page.all('soloistList', '.soloist-row strong'));
+  const first = order();
+  // Trois minutes de relevés toutes les 2 s, de 21:00:09 à 21:03:07.
+  for (let at = start + 2000; at <= start + 3 * MIN; at += 2000) {
+    page.world.now = at;
+    // Page visible : le serveur note un relevé au plus une fois par minute.
+    for (const p of page.world.people.filter(p => /^s\d$/.test(p.id))) if (at - p.lastActiveAt >= MIN) p.lastActiveAt = at;
+    await page.poll();
+  }
+  // Trois changements de minute (21:01, 21:02, 21:03) : au plus trois réécritures.
+  assert.ok(writes.soloistList <= 3 && writes.identityBody <= 3, `listes réécrites ${JSON.stringify(writes)} fois en 3 minutes`);
+  assert.deepEqual(order().slice(0, 10), first.slice(0, 10), '« Actif à l’instant » : les pages visibles ne changent pas l’ordre');
+  assert.deepEqual(order().slice(0, 10), [...Array(10).keys()].map(i => `Soliste 0${i}`), '« Actif à l’instant » par prénom');
+});
+
+// Regression: vérification de la quatrième relecture — « Actif à l'instant »
+// couvre les minutes 0 et 1 comptées au début de la minute : un seul groupe,
+// par prénom. Rangé à la minute, un soliste de la minute 1 passait après un
+// autre de la minute 0 (le relevé d'une page visible, toutes les 60 à 64 s,
+// atteint la minute 1 quelques secondes) ; le test précédent ne l'atteint pas.
+test('activité des solos : « Actif à l’instant » forme un seul groupe, par prénom, dans « Solistes »', async () => {
+  const world = baseWorld();
+  const now = Date.parse('2026-10-04T21:00:20'), minuteStart = Date.parse('2026-10-04T21:00:00');
+  world.now = now;
+  const solo = (id, name, last) => ({ id, name, tableId: 'Comptoir', active: true, songCount: 1, sung: 0, joinedAt: now - 90 * MIN, lastActiveAt: last });
+  // Zoé : 5 s, minute 0 ; Aline et Basile : 1 min 50 s et 1 min 30 s, minute 1.
+  world.people.push(solo('zoe', 'Zoé', now - 5000), solo('aline', 'Aline', minuteStart - 90000), solo('basile', 'Basile', minuteStart - 70000));
+  const page = await openPage({ world });
+  assert.deepEqual(texts(page.all('soloistList', '.activity')), Array(3).fill('Actif à l’instant'));
+  assert.deepEqual(texts(page.all('soloistList', '.soloist-row strong')), ['Aline', 'Basile', 'Zoé', 'Dora'],
+    'par prénom, minute 1 comme minute 0 ; activité inconnue en dernier');
 });
 
 test('Accueil : liste « Solistes » triée par activité, prénom à saisir, QR de reprise en un toucher, recherche au-delà de 8', async () => {

@@ -51,6 +51,7 @@ let joins = 0;
 let opens = 0;
 let renames = 0;
 let claimPosts = 0;
+let personPosts = 0;
 let lastClaimCode = null;
 let lastOpen = null;
 let count = 2;
@@ -88,6 +89,8 @@ const fetch = async (url, options = {}) => {
     return response({ ok: true });
   }
   if (url === '/api/join') { joins++; return response({}); }
+  // Second profil créé depuis la page : compté, pour vérifier qu'il ne part jamais.
+  if (url === '/api/table/person') { personPosts++; return response({ id: 'faux', token: 'faux-token' }); }
   if (url === '/api/table/person/claim') {
     claimPosts++;
     const body = JSON.parse(options.body);
@@ -167,10 +170,15 @@ const settleAll = async () => { for (let i = 0; i < 6; i++) await settle(); };
   assert.doesNotMatch(get('queueList').innerHTML, /Passage prévu/,
     'le rang et l’heure suffisent pour une chanson simplement prévue');
 
+  // Regression: U8 (quatrième relecture) — l'ancienne vérification comptait
+  // les ouvertures de QR, pas l'envoi du formulaire (POST /api/table/person,
+  // dont l'erreur restait muette) : sans le garde-fou, le test passait.
   get('newName').value = 'Faux profil';
   get('addPersonForm').listeners.submit({ preventDefault() {} });
-  await settle();
-  assert.equal(count, 3, 'un téléphone du Comptoir ne peut pas inscrire un deuxième profil via l’interface');
+  await settleAll();
+  assert.equal(personPosts, 0, 'un téléphone du Comptoir ne peut pas inscrire un deuxième profil via l’interface');
+  assert.equal(get('toast').textContent, 'Chacun s’inscrit depuis son propre téléphone.');
+  assert.equal(get('toast').className, 'toast bad');
   get('claimPeople').listeners.click({ target: { closest: () => ({ dataset: { claimPerson: 'alice' } }) } });
   assert.equal(get('sheet').hidden, true, 'le parcours de reprise des autres reste inaccessible après inscription');
 
