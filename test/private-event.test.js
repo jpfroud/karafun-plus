@@ -189,6 +189,22 @@ assert.equal(PrivateEvent.abandoned(null, now), false);
 // ou non, quel que soit leur âge ; au-delà, « complet ».
 assert.equal(MAX_EVENT_PEOPLE, 2 * MAX_PEOPLE);
 assert.equal(PrivateEvent.held(people), 4, 'les parties et les QR individuels ne comptent pas');
+// Regression: troisième passe de la relecture finale (sécurité CRITIQUE) — une
+// boucle prénom puis « Je pars » (POST /api/leave, qu'aucune page n'appelle)
+// libérait sa fiche à chaque tour et n'était jamais arrêtée. Partie d'elle-même
+// (withdrawnBy « self »), une personne de l'événement garde sa fiche dans le
+// compte ; marquée partie par le bar, ou d'une sauvegarde d'avant ce champ,
+// elle la libère. Elle ne compte jamais dans les 200 personnes nommées.
+const departures = [
+  { viaEvent: true, withdrawnAt: now - 1, withdrawnBy: 'self' }, // partie d'elle-même : compte
+  { viaEvent: true, withdrawnAt: now - 1, withdrawnBy: 'staff' }, // « Parti » du bar : non
+  { viaEvent: true, withdrawnAt: now - 1 }, // sauvegarde d'avant ce champ : non
+  { withdrawnAt: now - 1, withdrawnBy: 'self' }, // QR individuel : non
+  { viaEvent: true, withdrawnBy: 'self' }, // réactivée : comptée une fois, comme présente
+];
+assert.equal(PrivateEvent.held(departures), 2);
+assert.equal(PrivateEvent.present(departures), 1, 'seule la réactivée est présente');
+assert.equal(PrivateEvent.full([...namedGuests(MAX_PEOPLE - 1), departures[0]]), false, 'partie : hors des 200 nommés');
 const heavy = new PrivateEvent();
 heavy.enable();
 assert.equal(heavy.admit(0, 'a', t0, MAX_EVENT_PEOPLE - 1), 'ok');

@@ -2459,6 +2459,42 @@ function leavePerson(person, by) {
   personShareCodes.delete(person.id);
 }
 
+// Personne sans aucun historique dans la soirée : jamais montée sur scène
+// (ni en duo), pas comptée dans le tour en cours, aucun titre demandé
+// (jamais entrée dans la file) ni en route vers KaraFun, aucun duo (titre,
+// invitation, demande ou répit), aucun vote ni proposition dans la Battle en
+// cours. Sa fiche peut disparaître : ni la file, ni le tour, ni l'ordre du
+// bar ne la citent (la reprise de la sauvegarde refuserait une personne
+// inconnue). Le tour se vérifie à part : un duo retiré de KaraFun sans être
+// chanté, après une autre intervention du bar, remet les compteurs de son
+// invitée à zéro mais peut la laisser dans le tour qu'il avait ouvert
+// (rollbackUnplayed ; vérification de la troisième passe).
+function withoutHistory(person) {
+  const id = person.id;
+  const ballot = battleVote.ballot;
+  return !person.sung && !person.duetGuestCount && !person.lastAppearanceTurn && !sched.roundPeople.has(id) &&
+    !sched.songsOf(person).length && !sched.Q.includes(id) &&
+    ![pending?.sel, ...tracked.map(tr => tr.sel)].some(sel => sel?.ids?.includes(id)) &&
+    !person.duet && !person.duetOf && !person.invite && !sched.duetCooldowns.has(id) &&
+    ![...sched.people.values()].some(owner => sched.songsOf(owner).some(song =>
+      Array.isArray(song.duoRequests) && song.duoRequests.some(row => row?.fromId === id))) &&
+    !(ballot && (ballot.proposerId === id || ballot.votes?.some(([voter]) => voter === id)));
+}
+
+// « Je pars » (POST /api/leave) d'une personne de l'événement privé sans
+// aucun historique (troisième passe de la relecture finale) : une fiche
+// partie ne garderait rien d'utile, et une boucle prénom puis départ en
+// laissait une de plus à chaque tour. Comme une place provisoire, la fiche
+// disparaît (son prénom se libère, elle ne compte pas dans les fiches de
+// l'événement) ; son inscription est au journal, son départ y est noté comme
+// par leavePerson (person.left, par elle-même, aucun titre retiré).
+function forgetEventPerson(person) {
+  journalEvent('person.left', { personId: person.id, by: 'self', songsDropped: 0 });
+  sched.note(`${sched.personRef(person)} est parti sans titre ni passage : sa fiche est retirée`);
+  dropPlaceholder(person);
+  seenJournal.delete(person.id);
+}
+
 // Avant chaque création par le QR de l'événement : les places sans prénom
 // abandonnées (PrivateEvent.abandoned, sans titre, sans code ni lien de
 // reprise encore valable donné par le bar) partent sans trace. Une boucle
@@ -2492,7 +2528,8 @@ function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent
       // Seules les personnes nommées et présentes comptent (les parties
       // libèrent leur place, une place sans prénom ne coûte rien à la
       // prévision) ; le premier prénom d'une place revérifie ce plafond.
-      // Plafond dur : 400 fiches de l'événement pas parties (PrivateEvent.held).
+      // Plafond dur : 400 fiches de l'événement, pas parties ou parties
+      // d'elles-mêmes (PrivateEvent.held).
       const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values()), client, now,
         PrivateEvent.held(sched.people.values()));
       if (admitted === 'full') throw privateEventFullError();
@@ -2756,6 +2793,8 @@ function claimPerson(body, req, res) {
   }
   const saved = personShareCodes.get(p.id);
   if (body.key !== undefined) {
+    // Même règle que l'ouverture du QR (openSoloInvitation, D2).
+    if (keyHolder(body.key, t)?.withdrawnAt) throw personLeftError();
     if (keyTarget(body.key, t)?.id !== p.id) throw soloKeyRevokedError();
   } else if (body.link !== undefined) {
     // Le lien contient un secret de 128 bits : pas de limite de tentatives.
@@ -2806,9 +2845,13 @@ function claimPerson(body, req, res) {
 
 function claimPersonDurably(body, req, res) {
   if (body.key !== undefined) {
-    // Clé inconnue ou morte : même refus qu'un QR personnel révoqué à son
-    // ouverture (403, SOLO_KEY_REVOKED), même texte sur le téléphone.
-    const target = keyTarget(body.key, tableByAccess(body.table, body.access));
+    // Même refus que l'ouverture du même QR (openSoloInvitation, D2) :
+    // personne marquée partie, PERSON_LEFT (le bar la réactive) ; clé
+    // inconnue ou morte (réactivée depuis), SOLO_KEY_REVOKED (403, QR de
+    // reprise), même texte sur le téléphone.
+    const table = tableByAccess(body.table, body.access);
+    if (keyHolder(body.key, table)?.withdrawnAt) throw personLeftError();
+    const target = keyTarget(body.key, table);
     if (!target) throw soloKeyRevokedError();
     body = { ...body, personId: target.id };
   } else if (body.link !== undefined) {
@@ -3610,12 +3653,17 @@ const handlers = {
   'POST /api/table/person/claim': async (req, res, body) => claimPersonDurably(body, req, res),
   'POST /api/table/person/rename': async (req, res, body) => {
     const p = personAtTable(body);
-    // Premier prénom d'une place du QR de l'événement : elle compte alors dans
-    // le plafond des personnes nommées, revérifié ici comme à la création (une
-    // place ouverte avant que l'événement soit complet ne le dépasse pas).
-    if (p.viaEvent && p.nameRequired && PrivateEvent.full(sched.people.values())) throw privateEventFullError();
-    try { sched.rename(p, body.name); }
-    catch (error) {
+    try {
+      // Prénom vérifié d'abord : à l'événement complet, le prénom déjà inscrit
+      // d'une invitée (sa page rouverte ailleurs) garde NAME_TAKEN et la
+      // reprise par code (recoverable), pas « complet ».
+      sched.validName(body.name, p.tableId, p.id);
+      // Premier prénom d'une place du QR de l'événement : elle compte alors dans
+      // le plafond des personnes nommées, revérifié ici comme à la création (une
+      // place ouverte avant que l'événement soit complet ne le dépasse pas).
+      if (p.viaEvent && p.nameRequired && PrivateEvent.full(sched.people.values())) throw privateEventFullError();
+      sched.rename(p, body.name);
+    } catch (error) {
       if (error.code === 'NAME_TAKEN' && sched.table(p.tableId, false)?.individual) error.recoverable = nameRecoverable(req, p, body.name);
       throw error;
     }
@@ -3787,6 +3835,10 @@ const handlers = {
     // Place sans prénom ni titre du QR de l'événement : supprimée, sans trace
     // (sinon chaque nouveau scan laisserait une fiche partie de plus).
     if (me.viaEvent && disposablePlaceholder(me)) { dropPlaceholder(me); sched.version++; }
+    // Nommée mais sans aucun historique : supprimée aussi, départ au journal.
+    else if (me.viaEvent && withoutHistory(me)) forgetEventPerson(me);
+    // Sinon marquée partie ; venue par l'événement, sa fiche reste comptée
+    // dans le plafond des fiches (partie d'elle-même, PrivateEvent.held).
     else leavePerson(me);
     sync(); return { ok: true };
   },
@@ -4319,8 +4371,9 @@ const handlers = {
     const inFlight = tracked.filter(item => item !== target.tr && !item.startedAt && !item.cancelled &&
       !isOnStage(item, current) && item.sel.ids.includes(partnerId)).map(item => item.sel);
     // Chanson finie (plus suivie) : le duo est noté sur le titre du passage,
-    // pour que le journal et les statistiques le rattachent au bon passage.
-    const sel = target.tr ? target.tr.sel : { song: { entryId: target.entry?.entryId || null } };
+    // pour que le journal et les statistiques le rattachent au bon passage,
+    // et l'invité compté au tour de ce passage (relevé par recordStage).
+    const sel = target.tr ? target.tr.sel : { song: { entryId: target.entry?.entryId || null }, turn: target.entry?.turn };
     const partner = sched.staffCountPartner(ownerId, partnerId, sel, inFlight);
     const mark = sel.staffDuo;
     mark.kindBefore = holder.kind || 'solo';
