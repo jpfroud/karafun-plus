@@ -3998,3 +3998,19 @@ test('QR personnel neuf sur le téléphone d’un soliste marqué parti : le mes
   await en.poll();
   assert.equal(postsTo(en, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
 });
+
+// Regression: quatrième relecture finale (décision D2 « La clé meurt ») — le
+// QR personnel d'une personne marquée partie puis réactivée ne l'ouvre plus
+// (SOLO_KEY_REVOKED) : la page dit de demander un QR de reprise, FR et EN.
+test('QR personnel mort (personne réactivée après un départ) : la page dit de demander un QR de reprise (FR et EN)', async () => {
+  const revoked = url => url === '/api/table/solo/open'
+    ? reply(403, { error: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.', code: 'SOLO_KEY_REVOKED' }) : undefined;
+  const fr = await soloPage('?invitation=CLE-MORTE', soloState({ soloInvitationReady: false }), revoked);
+  assert.deepEqual(postsTo(fr, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-MORTE' }]]);
+  assert.equal(fr.node('noSingerText').textContent, 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+  assert.equal(fr.node('nameGate').hidden, true);
+  const en = await soloPage('?invitation=CLE-MORTE', soloState({ soloInvitationReady: false }), revoked, { languages: ['en'] });
+  assert.equal(en.node('noSingerText').textContent, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
+  await en.poll();
+  assert.equal(postsTo(en, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
+});

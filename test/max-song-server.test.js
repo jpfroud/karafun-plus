@@ -302,6 +302,16 @@ test('sauvegarde de la soirée : la limite revient après un redémarrage, une v
   for (const bad of [60, 1000, '300', 300.5, true, {}]) assert.equal(restore(bad), null, JSON.stringify(bad));
   assert.equal(restore(null), null);
   assert.equal(restore(undefined), null, 'ancienne sauvegarde sans le champ : option coupée');
+  // Regression: quatrième relecture finale (maintenabilité) — bornes écrites
+  // deux fois (littéraux de night-state.js) : la reprise accepte exactement la
+  // plage du réglage du bar, bornes partagées par stage-progress.js.
+  const { validMaxSong } = require('../stage-progress');
+  assert.deepEqual([119, 120, 900, 901].map(validMaxSong), [false, true, true, false], '2:00 à 15:00, comme le dit le refus du bar');
+  for (const value of [119, 120, 121, 899, 900, 901]) {
+    const kept = validMaxSong(value) ? value : null;
+    assert.equal(restore(value), kept, `reprise de ${value}`);
+    assert.equal((await limit(f, value)).status, kept === null ? 400 : 200, `réglage de ${value}`);
+  }
 });
 
 // Regression: D14-C (relecture finale) — vote Battle ouvert, l'accueil des

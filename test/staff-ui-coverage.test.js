@@ -624,12 +624,20 @@ test('repères chanteurs : « Parti » sur une place « Solo N » de l’événe
   page.replies['/api/staff/person/leave'] = { ok: true, message };
   await page.click(row('s1').querySelector('[data-identity-leave]'));
   assert.equal(page.confirms.at(-1), 'Retirer la place « Solo 1 » ? Sans prénom ni titre, elle disparaît : il n’y aura rien à réactiver.');
-  assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 's1' });
+  // Regression: quatrième relecture finale (ADV) — la page dit au serveur
+  // qu'elle a confirmé le retrait d'une place sans prénom : si l'invitée a
+  // donné son prénom entre-temps, le serveur refuse au lieu de la marquer partie.
+  assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 's1', expectPlaceholder: true });
   assert.equal(page.toast().text, message);
-  // Place sans prénom d'un QR individuel : marquée partie comme avant.
+  const late = 'Cette place vient de recevoir un prénom : vérifie avant de la marquer partie.';
+  page.replies['/api/staff/person/leave'] = { status: 400, error: late };
+  await page.click(row('s1').querySelector('[data-identity-leave]'));
+  assert.deepEqual(page.toast(), { text: late, bad: true }, 'le refus du serveur s’affiche');
+  // Place sans prénom d'un QR individuel : marquée partie comme avant, sans le drapeau.
   page.replies['/api/staff/person/leave'] = { ok: true };
   await page.click(row('s2').querySelector('[data-identity-leave]'));
   assert.match(page.confirms.at(-1), /^Marquer ce chanteur comme parti \?/);
+  assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 's2' });
   assert.equal(page.toast().text, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
 });
 

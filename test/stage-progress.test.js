@@ -13,7 +13,7 @@ const playing = { paused: false, rate: 1, position: null };
 
 test('exports figés du module', () => {
   assert.deepEqual(Object.keys(progress).sort(), ['clientDuration', 'clockView', 'observeClock', 'pausedOf',
-    'protocolDuration', 'protocolPosition', 'rateOf', 'sanitizeClock', 'stageDuration', 'startClock', 'trustedDuration']);
+    'protocolDuration', 'protocolPosition', 'rateOf', 'sanitizeClock', 'stageDuration', 'startClock', 'trustedDuration', 'validMaxSong']);
 });
 
 test('départ : le temps écoulé part du début du titre', () => {

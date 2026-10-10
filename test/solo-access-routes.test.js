@@ -56,7 +56,8 @@ function fakeNightStore() {
 }
 
 // clock : server.js lit l'heure de ce fichier (Date.now remplaçable par le test).
-function harness({ persistent = false, clock = false } = {}) {
+// modules : modules remplacés pour ce test (qrcode, pour retenir un QR en cours).
+function harness({ persistent = false, clock = false, modules = {} } = {}) {
   const entry = source.lastIndexOf('main().catch(');
   assert.ok(entry > 0, 'point d’entrée du serveur introuvable');
   const memory = memoryDisk();
@@ -72,6 +73,7 @@ function harness({ persistent = false, clock = false } = {}) {
       return { ...real, SpotifyLink: class extends real.SpotifyLink { constructor(o) { super({ ...o, file: null }); } } };
     })(),
   } : {};
+  Object.assign(overrides, modules);
   const fixtureProcess = Object.create(process);
   fixtureProcess.argv = [process.argv[0], path.join(root, 'server.js'), ...(persistent ? [] : ['--demo'])];
   const context = { require: name => name === 'fs' ? memory.memFs : overrides[name] || fromServer(name),
@@ -79,7 +81,7 @@ function harness({ persistent = false, clock = false } = {}) {
     setImmediate, AbortSignal, ...(clock ? { Date } : {}) };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, access, soloInvitations, privateEvent, staffState, journal,
-      ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, journalSample, publicState, STAFF_KEY, PORT, PUBLIC_PORT,
+      ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, journalSample, publicState, transferSnapshot, STAFF_KEY, PORT, PUBLIC_PORT,
       handle: server.listeners('request')[0] };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
@@ -567,9 +569,10 @@ test('doublon parti : la place quittée ne revient pas au navigateur qu’un tra
     // Le bar réactive Bea : elle revient sans téléphone, Z reste écarté.
     assert.equal((await post(f, staff(f, '/api/staff/person/reactivate'), { personId: z.personId })).status, 200);
     if (viaKey) {
+      // Sa clé personnelle est morte au départ (quatrième relecture finale, D2).
       const reopened = await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { cookie: z.cookie });
       assert.equal(reopened.body.token, undefined, 'clé personnelle rouverte par Z : pas de jeton direct');
-      assert.deepEqual(reopened.body, { recover: { id: z.personId, name: 'Bea K' } });
+      assert.equal(reopened.body.code, 'SOLO_KEY_REVOKED');
     } else {
       const rescan = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: z.cookie });
       assert.notEqual(rescan.body.id, z.personId, 'QR de l’événement rescanné par Z : pas Bea');
@@ -782,10 +785,9 @@ test('événement privé : interrupteur du bar, QR unique, même navigateur = m�
   assert.match(svg.text, /<svg/);
   assert.equal((await get(f, '/qr-evenement.svg')).status, 403, 'QR réservé au bar');
 
-  // L'état de la page dit si le QR est valable ; une lecture ne crée personne.
+  // Une lecture d'état ne crée personne et ne renvoie pas le secret.
   const ready = await get(f, `/api/state?table=Comptoir&access=${tb.access}&evenement=${secret}`);
-  assert.equal(ready.body.privateEventReady, true);
-  assert.equal((await get(f, `/api/state?table=Comptoir&access=${tb.access}&evenement=${fresh}`)).body.privateEventReady, false);
+  assert.equal(ready.status, 200, ready.text);
   assert.ok(!ready.text.includes(secret), 'la page ne reçoit pas le secret');
   assert.equal(f.sched.people.size, 0);
 
@@ -1227,12 +1229,22 @@ test('sauvegarde de la soirée : événement privé et champs des personnes repr
   assert.equal(restore(old).result.privateEvent, null);
   const broken = JSON.parse(JSON.stringify(snapshot));
   broken.privateEvent = { enabled: true, secret: 'abîmé', since: 1 };
-  Object.assign(broken.scheduler.people[0], { nameRequired: 'oui', soloKeyHash: 'zz', lastActionAt: 'hier', viaEvent: 1 });
+  Object.assign(broken.scheduler.people[0], { nameRequired: 'oui', soloKeyHash: 'zz', lastActionAt: 'hier', viaEvent: 1, soloKeyRevoked: 'oui' });
   const fixed = restore(broken);
   assert.equal(fixed.result.privateEvent, null, 'forme abîmée : mode coupé');
-  for (const field of ['nameRequired', 'soloKeyHash', 'lastActionAt', 'viaEvent']) {
+  for (const field of ['nameRequired', 'soloKeyHash', 'lastActionAt', 'viaEvent', 'soloKeyRevoked']) {
     assert.equal(fixed.person[field], undefined, `${field} abîmé : ignoré`);
   }
+  // Clé personnelle morte au départ (quatrième relecture finale, D2) : gardée
+  // par la sauvegarde. Une sauvegarde d'avant ce champ : une personne partie
+  // qui a une clé l'a perdue, une personne présente la garde.
+  assert.equal(person.soloKeyRevoked, undefined, 'présente : clé vivante');
+  const revoked = JSON.parse(JSON.stringify(snapshot));
+  revoked.scheduler.people[0].soloKeyRevoked = true;
+  assert.equal(restore(revoked).person.soloKeyRevoked, true);
+  const leftBefore = JSON.parse(JSON.stringify(snapshot));
+  leftBefore.scheduler.people[0].withdrawnAt = 456;
+  assert.equal(restore(leftBefore).person.soloKeyRevoked, true, 'partie avec sa clé : clé morte');
 });
 
 // ---------------------------------------------------------------- C : dernière activité
@@ -1988,6 +2000,287 @@ test('événement privé : une page vue quelques secondes ou une place avec un c
     assert.equal(f.sched.people.has(never.personId), false, 'jamais relue : retirée');
     const claimed = await post(f, '/api/table/person/claim', { ...tb, personId: shared.personId, code: code.body.code }, { remote: '10.0.8.3' });
     assert.equal(claimed.status, 200, claimed.text);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+// ================================================================ quatrième relecture finale
+// Regression: quatrième relecture finale (sécurité, décision D2 « La clé
+// meurt ») — la clé personnelle n'était que suspendue pendant le départ :
+// « Réactiver » la ranimait, et quiconque gardait l'adresse du QR personnel
+// reprenait le profil après chaque retour.
+test('QR personnel : marquée partie, la clé meurt ; « Réactiver » ne la ranime pas, le QR de reprise rend l’accès', async () => {
+  const f = harness();
+  const { tb, invite } = openSolo(f);
+  for (const [name, leave] of [
+    ['Sam', me => post(f, staff(f, '/api/staff/person/leave'), { personId: me.personId })],
+    ['Inès', me => post(f, '/api/leave', { token: me.token }, { cookie: me.cookie })],
+  ]) {
+    const key = invite();
+    const me = await opened(f, tb, key);
+    await post(f, '/api/table/person/rename', { ...me, name }, { cookie: me.cookie });
+    const left = await leave(me);
+    assert.equal(left.status, 200, left.text);
+    // Partie : la clé dit « marquée partie », sur tout navigateur (inchangé).
+    for (const cookie of [undefined, me.cookie]) {
+      assert.equal((await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { cookie })).body.code, 'PERSON_LEFT', name);
+    }
+    const back = await post(f, staff(f, '/api/staff/person/reactivate'), { personId: me.personId });
+    assert.equal(back.status, 200, back.text);
+    assert.equal(back.body.message, `${name} revient. Son QR personnel ne sert plus : s’il a perdu sa page, donne-lui un QR de reprise.`);
+    // Réactivée : la clé ne l'ouvre plus, ni ailleurs ni sur son propre navigateur, ni par la reprise.
+    for (const cookie of [undefined, me.cookie]) {
+      const refused = await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { cookie });
+      assert.equal(refused.status, 403, refused.text);
+      assert.equal(refused.body.code, 'SOLO_KEY_REVOKED');
+      assert.equal(refused.body.error, 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+      assert.equal(refused.headers['set-cookie'], undefined);
+    }
+    const claim = await post(f, '/api/table/person/claim', { ...tb, key });
+    assert.equal(claim.body.error, 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+    assert.equal(f.sched.people.get(me.personId).token, me.token, 'rien de repris par la clé');
+    // Son téléphone, lui, retrouve ses droits avec la réactivation.
+    assert.deepEqual((await stateOf(f, tb, me)).body.managedIds, [me.personId]);
+    // Le bar rend l'accès ailleurs par un QR de reprise ; la clé reste morte.
+    const share = await post(f, staff(f, '/api/staff/person/share'), { personId: me.personId });
+    const handed = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) });
+    assert.equal(handed.status, 200, handed.text);
+    assert.equal(handed.body.id, me.personId);
+    assert.equal((await post(f, '/api/table/solo/open', { ...tb, invitation: key }, { cookie: cookieOf(handed) })).body.code, 'SOLO_KEY_REVOKED');
+  }
+  // Réactiver une personne sans clé personnelle : message habituel du bar.
+  const table = openTable(f, '3');
+  const ana = await post(f, '/api/table/person', { ...table, name: 'Ana' });
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: ana.body.id });
+  assert.deepEqual((await post(f, staff(f, '/api/staff/person/reactivate'), { personId: ana.body.id })).body, { ok: true });
+});
+
+test('clé morte : la sauvegarde garde la révocation après un redémarrage, même depuis une sauvegarde d’avant ce champ', async () => {
+  const { restoreNight } = require('../night-state');
+  const f = harness({ persistent: true });
+  const { tb, invite } = openSolo(f);
+  const key = invite();
+  const me = await opened(f, tb, key);
+  await post(f, '/api/table/person/rename', { ...me, name: 'Sam' }, { cookie: me.cookie });
+  await post(f, staff(f, '/api/staff/person/leave'), { personId: me.personId });
+  await post(f, staff(f, '/api/staff/person/reactivate'), { personId: me.personId });
+  const saved = plain(f.night.saves.at(-1));
+  assert.equal(saved.scheduler.people.find(p => p.id === me.personId).soloKeyRevoked, true, 'révocation sauvegardée');
+  // Redémarrage : la soirée sauvegardée reprise par un nouveau serveur.
+  const restart = snapshot => {
+    const g = harness();
+    restoreNight(snapshot, { scheduler: g.sched, access: g.access, settings: g.settings });
+    return { g, gtb: { table: 'Comptoir', access: g.access.get('Comptoir') } };
+  };
+  const { g, gtb } = restart(plain(saved));
+  assert.equal((await post(g, '/api/table/solo/open', { ...gtb, invitation: key })).body.code, 'SOLO_KEY_REVOKED');
+  // Sauvegarde d'avant ce champ : partie avec sa clé, elle l'a perdue.
+  const old = plain(saved);
+  const row = old.scheduler.people.find(p => p.id === me.personId);
+  delete row.soloKeyRevoked;
+  row.withdrawnAt = Date.now();
+  const { g: h, gtb: htb } = restart(old);
+  assert.equal((await post(h, '/api/table/solo/open', { ...htb, invitation: key })).body.code, 'PERSON_LEFT');
+  await post(h, staff(h, '/api/staff/person/reactivate'), { personId: me.personId });
+  assert.equal((await post(h, '/api/table/solo/open', { ...htb, invitation: key })).body.code, 'SOLO_KEY_REVOKED');
+  // Présente dans une sauvegarde d'avant ce champ : sa clé vit toujours.
+  const present = plain(saved);
+  delete present.scheduler.people.find(p => p.id === me.personId).soloKeyRevoked;
+  const { g: k, gtb: ktb } = restart(present);
+  assert.deepEqual((await post(k, '/api/table/solo/open', { ...ktb, invitation: key })).body, { recover: { id: me.personId, name: 'Sam' } });
+});
+
+// Regression: quatrième relecture finale (sécurité) — le secret de
+// l'événement privé, donné pour « En solo », ouvrait une place dans
+// n'importe quel groupe individuel créé par le bar.
+test('événement privé : le secret ne vaut que pour « En solo », pas pour un autre groupe individuel', async () => {
+  const f = harness();
+  const { tb } = openSolo(f);
+  const on = await post(f, staff(f, '/api/staff/private-event'), { enabled: true });
+  const secret = new URL(on.body.url).searchParams.get('evenement');
+  const created = await post(f, staff(f, '/api/staff/table'), { id: 'Solo 2', individual: true });
+  assert.equal(created.status, 200, created.text);
+  const other = { table: 'Solo 2', access: f.access.get('Solo 2') };
+  assert.ok(other.access, 'le groupe a son QR');
+  const refused = await post(f, '/api/table/enter', { ...other, event: secret });
+  assert.equal(refused.status, 403, refused.text);
+  assert.equal(refused.body.code, 'PRIVATE_EVENT');
+  assert.equal(refused.body.error, 'Ce QR d’événement n’est plus actif. Demande au bar.');
+  assert.equal(refused.headers['set-cookie'], undefined);
+  assert.equal(f.sched.tableSingers('Solo 2').length, 0, 'personne de créé dans l’autre groupe');
+  // « En solo » accepte toujours le même secret.
+  assert.equal((await post(f, '/api/table/enter', { ...tb, event: secret })).status, 200);
+});
+
+// Regression: quatrième relecture finale (ADV) — « Retirer la place
+// « Solo N » ? » était décidé sur l'état affiché : si l'invitée donnait son
+// prénom entre-temps, elle était marquée partie (PERSON_LEFT à son prochain
+// scan) et le bar lisait « Chanteur marqué parti ».
+test('« Parti » du bar sur une place « Solo N » qui vient de recevoir un prénom : refusé, rien ne change', async () => {
+  const f = harness();
+  const { tb } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const guest = await eventEntry(f, tb, secret);
+  // La page du bar montrait « Solo 1 » ; l'invitée donne son prénom avant la confirmation.
+  await post(f, '/api/table/person/rename', { ...guest, name: 'Léa' }, { cookie: guest.cookie });
+  const before = events(f).length;
+  const version = f.sched.version;
+  const refused = await post(f, staff(f, '/api/staff/person/leave'), { personId: guest.personId, expectPlaceholder: true });
+  assert.equal(refused.status, 400, refused.text);
+  assert.equal(refused.body.error, 'Cette place vient de recevoir un prénom : vérifie avant de la marquer partie.');
+  assert.equal(f.sched.people.get(guest.personId).withdrawnAt, null, 'pas marquée partie');
+  assert.equal(events(f).length, before, 'rien au journal');
+  assert.equal(f.sched.version, version, 'rien ne change');
+  const again = await post(f, '/api/table/enter', { ...tb, event: secret }, { cookie: guest.cookie });
+  assert.deepEqual([again.body.id, again.body.resumed], [guest.personId, true], 'son navigateur la retrouve');
+  // Toujours une place sans prénom : retirée sans trace, comme avant.
+  const ghost = await eventEntry(f, tb, secret);
+  const removed = await post(f, staff(f, '/api/staff/person/leave'), { personId: ghost.personId, expectPlaceholder: true });
+  assert.equal(removed.status, 200, removed.text);
+  assert.match(removed.body.message, /^Place « Solo \d+ » sans prénom retirée/);
+  assert.equal(f.sched.people.has(ghost.personId), false);
+  // Sans ce drapeau (page du bar d'avant la mise à jour) : marquée partie, comme avant.
+  const left = await post(f, staff(f, '/api/staff/person/leave'), { personId: guest.personId });
+  assert.equal(left.status, 200, left.text);
+  assert.ok(f.sched.people.get(guest.personId).withdrawnAt);
+});
+
+// Regression: quatrième relecture finale (ADV) — la reprise d'un profil
+// retirait la place « Solo N » de ce navigateur sans son code de reprise
+// (orphelin en mémoire et dans la sauvegarde) ; un code demandé pendant le
+// retrait d'une place la recréait ; un QR individuel neuf refusé (sauvegarde
+// impossible) rendait la place sans son code.
+const sharedIds = f => plain(f.transferSnapshot()).map(row => row.personId);
+test('place « Solo N » retirée par une reprise : son code de reprise part avec elle, et revient avec elle', async () => {
+  const f = harness({ persistent: true });
+  const { tb } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const lea = await eventEntry(f, tb, secret, 'Léa');
+  const rescan = await eventEntry(f, tb, secret);
+  // Le bar avait donné un code de reprise à cette place.
+  assert.equal((await post(f, staff(f, '/api/staff/person/share'), { personId: rescan.personId })).status, 200);
+  const share = await post(f, staff(f, '/api/staff/person/share'), { personId: lea.personId });
+  const claimed = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { cookie: rescan.cookie });
+  assert.equal(claimed.status, 200, claimed.text);
+  assert.equal(f.sched.people.has(rescan.personId), false, 'place retirée');
+  assert.ok(!sharedIds(f).includes(rescan.personId), 'pas de code orphelin en mémoire');
+  assert.ok(!f.night.saves.at(-1).transfers.some(row => row.personId === rescan.personId), 'ni dans la sauvegarde');
+  // Sauvegarde impossible pendant la reprise : la place revient avec son code.
+  const other = await eventEntry(f, tb, secret);
+  const code = await post(f, staff(f, '/api/staff/person/share'), { personId: other.personId });
+  const max = await eventEntry(f, tb, secret, 'Max');
+  const maxShare = await post(f, staff(f, '/api/staff/person/share'), { personId: max.personId });
+  f.night.fail = 'disque plein';
+  const failed = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(maxShare) }, { cookie: other.cookie });
+  assert.equal(failed.status, 400, failed.text);
+  f.night.fail = null;
+  assert.ok(f.sched.people.has(other.personId), 'la place revient');
+  assert.ok(sharedIds(f).includes(other.personId), 'avec son code');
+  const byCode = await post(f, '/api/table/person/claim', { ...tb, personId: other.personId, code: code.body.code }, { remote: '10.0.9.1' });
+  assert.equal(byCode.status, 200, byCode.text);
+});
+
+test('QR individuel neuf refusé (sauvegarde impossible) : la place « Solo N » revient avec son code de reprise', async () => {
+  const f = harness({ persistent: true });
+  const { tb, invite } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const ghost = await eventEntry(f, tb, secret);
+  const code = await post(f, staff(f, '/api/staff/person/share'), { personId: ghost.personId });
+  f.night.fail = 'disque plein';
+  const failed = await post(f, '/api/table/solo/open', { ...tb, invitation: invite() }, { cookie: ghost.cookie });
+  assert.equal(failed.status, 400, failed.text);
+  f.night.fail = null;
+  assert.ok(f.sched.people.has(ghost.personId), 'la place revient');
+  assert.ok(sharedIds(f).includes(ghost.personId), 'avec son code');
+  const byCode = await post(f, '/api/table/person/claim', { ...tb, personId: ghost.personId, code: code.body.code }, { remote: '10.0.9.2' });
+  assert.equal(byCode.status, 200, byCode.text);
+});
+
+test('code de reprise demandé pendant que la place est retirée : aucun code recréé pour elle', async () => {
+  const realQr = fromServer('qrcode');
+  let started, release;
+  const generating = new Promise(resolve => { started = resolve; });
+  const qrcode = { ...realQr, toDataURL: () => new Promise(resolve => {
+    release = () => resolve('data:image/png;base64,QQ');
+    started();
+  }) };
+  const f = harness({ modules: { qrcode } });
+  const { tb } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const ghost = await eventEntry(f, tb, secret);
+  const sharing = post(f, staff(f, '/api/staff/person/share'), { personId: ghost.personId });
+  await generating; // le QR de reprise est en cours de fabrication
+  const removed = await post(f, staff(f, '/api/staff/person/leave'), { personId: ghost.personId });
+  assert.equal(removed.status, 200, removed.text);
+  release();
+  const shared = await sharing;
+  assert.equal(shared.status, 400, shared.text);
+  assert.equal(shared.body.error, 'Chanteur inconnu ou parti.');
+  assert.ok(!sharedIds(f).includes(ghost.personId), 'pas de code pour une place retirée');
+});
+
+// Regression: quatrième relecture finale (maintenabilité) — le ménage des
+// places abandonnées avant une création restait fait quand la création
+// échouait, mais son numéro de version était défait : les pages ne voyaient
+// pas les places retirées.
+test('événement privé : création refusée ou non sauvegardée, le ménage des places abandonnées reste fait et visible', async () => {
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const f = harness({ persistent: true, clock: true });
+    const { tb } = openSolo(f);
+    const secret = f.privateEvent.enable();
+    const enter = remote => post(f, '/api/table/enter', { ...tb, event: secret }, { remote });
+    // Sauvegarde impossible.
+    const lost = await enter('10.9.1.1');
+    clock += 10 * 60000 + 1000;
+    let version = f.sched.version;
+    f.night.fail = 'disque plein';
+    const failed = await enter('10.9.1.2');
+    f.night.fail = null;
+    assert.equal(failed.status, 400, failed.text);
+    assert.equal(f.sched.people.has(lost.body.id), false, 'la place abandonnée est partie');
+    assert.ok(f.sched.version > version, 'les pages voient le ménage');
+    // Trop de créations dans la minute pour cet appareil.
+    const lostAgain = await enter('10.9.1.3');
+    clock += 9.5 * 60000;
+    for (let i = 0; i < 30; i++) assert.equal((await enter('10.9.1.4')).status, 200);
+    clock += 31000; // place abandonnée depuis 10 minutes, rafale encore dans la minute
+    version = f.sched.version;
+    const busy = await enter('10.9.1.4');
+    assert.equal(busy.status, 429, busy.text);
+    assert.equal(f.sched.people.has(lostAgain.body.id), false, 'la place abandonnée est partie');
+    assert.ok(f.sched.version > version, 'les pages voient le ménage');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+// Regression: quatrième relecture finale (tests) — le ménage garde une place
+// dont le code OU le lien de reprise vaut encore ; seul le code était
+// vérifié (retirer linkExpiresAt du calcul passait tous les tests).
+test('événement privé : code de reprise expiré mais lien encore valable, la place abandonnée est gardée et le lien la reprend', async () => {
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const f = harness({ clock: true });
+    const { tb } = openSolo(f);
+    const secret = f.privateEvent.enable();
+    const shared = await eventEntry(f, tb, secret);
+    const share = await post(f, staff(f, '/api/staff/person/share'), { personId: shared.personId });
+    assert.equal(share.status, 200, share.text);
+    // 11 minutes : place abandonnée (jamais relue), code expiré (10 min), lien valable (30 min).
+    clock += 11 * 60000;
+    await eventEntry(f, tb, secret);
+    assert.ok(f.sched.people.has(shared.personId), 'lien de reprise valable : place gardée');
+    const expired = await post(f, '/api/table/person/claim', { ...tb, personId: shared.personId, code: share.body.code }, { remote: '10.0.9.3' });
+    assert.equal(expired.body.error, 'Code de partage expiré. Demande un nouveau code au chanteur ou au bar.');
+    const claimed = await post(f, '/api/table/person/claim', { ...tb, link: linkOf(share) }, { remote: '10.0.9.4' });
+    assert.equal(claimed.status, 200, claimed.text);
+    assert.equal(claimed.body.id, shared.personId);
   } finally {
     Date.now = realNow;
   }

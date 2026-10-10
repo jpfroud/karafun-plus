@@ -99,7 +99,6 @@ async function ok(path, body, cookie = '', headers = {}) {
   assert.equal(svg.status, 200);
   assert.match(await svg.text(), /<svg/);
   assert.equal((await fetch(`${BASE}/qr-evenement.svg`)).status, 403);
-  assert.equal((await state({ evenement: secret })).value.privateEventReady, true);
   const before = await soloCount();
   const a = await ok('/api/table/enter', fields({ event: secret }));
   assert.equal(a.value.nameRequired, true);
