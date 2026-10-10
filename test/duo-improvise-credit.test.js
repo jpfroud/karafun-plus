@@ -69,6 +69,27 @@ test('duo improvisé : sans titre en route, le comptage reste celui d’avant', 
   assert.equal(dam.duetGuestCount, 1);
 });
 
+// Vérification de la troisième passe de la relecture finale : l'invité est
+// compté au tour du passage noté (son reçu, ou le tour relevé dans les
+// derniers passages). Un tour relevé abîmé, ou au-dessus du compteur actuel
+// (passage resté en scène après « Nouvelle soirée »), n'est jamais recopié.
+test('duo improvisé : invité compté au tour du passage noté, jamais au-dessus du compteur', () => {
+  const s = new Scheduler();
+  const { marine, dam, stage, loaded } = barScenario(s, true);
+  const entry = s.stageHistory.at(-1);
+  assert.equal(entry.turn, marine.lastAppearanceTurn, 'tour relevé au début du passage');
+  assert.equal(loaded.turnCredit.after.appearanceSerial, entry.turn + 1, 'le titre de Dam est compté après');
+  for (const turn of [s.appearanceSerial + 5, 1.5, 'deux', -1, undefined]) {
+    const other = new Scheduler();
+    const run = barScenario(other, true);
+    other.staffCountPartner(run.marine.id, run.dam.id, { song: { ...run.stage.song }, turn }, [run.loaded]);
+    assert.equal(run.dam.lastAppearanceTurn, run.marine.lastAppearanceTurn, `tour ${turn} : dernier passage du chanteur`);
+    assert.ok(run.dam.lastAppearanceTurn <= other.appearanceSerial);
+  }
+  s.staffCountPartner(marine.id, dam.id, stage, [loaded]);
+  assert.equal(dam.lastAppearanceTurn, entry.turn, 'reçu du passage en scène');
+});
+
 // ---------------------------------------------------------------- de bout en bout, faux KaraFun
 const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');

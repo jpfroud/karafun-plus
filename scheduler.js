@@ -1109,6 +1109,19 @@ class Scheduler {
     if (Array.isArray(after.people)) after.people = after.people.filter(row => row.id !== gid);
   }
 
+  // Tour d'un passage : celui de son envoi à KaraFun (son reçu, ligne de son
+  // chanteur), sinon `sel.turn` (passage fini, relevé par recordStage). Pas
+  // le dernier passage du chanteur, peut-être son titre suivant déjà chargé
+  // dans KaraFun. 0 : inconnu (soirée sauvegardée avant ce relevé), ou hors
+  // du compteur actuel des passages.
+  _passageTurn(sel) {
+    const credit = sel?.turnCredit;
+    const row = credit && !credit.rolledBack && Array.isArray(credit.after?.people) ?
+      credit.after.people.find(item => item.id === sel.ids?.[0]) : null;
+    const turn = row ? row.lastAppearanceTurn : sel?.turn;
+    return Number.isSafeInteger(turn) && turn > 0 && turn <= this.appearanceSerial ? turn : 0;
+  }
+
   // `sel` : passage déjà confirmé par KaraFun auquel le bar ajoute l'invité.
   // `inFlight` : passages déjà envoyés à KaraFun, pas encore chantés, où
   // figure l'invité. Si l'un d'eux est retiré de KaraFun, son annulation ne
@@ -1134,7 +1147,12 @@ class Scheduler {
         .map(other => ({ entryId: other.song?.entryId || null, creditBefore: clone(other.turnCredit) })) };
     this.duetCooldowns.set(partner.id, 2);
     partner.duetGuestCount = (partner.duetGuestCount || 0) + 1;
-    partner.lastAppearanceTurn = owner.lastAppearanceTurn || ++this.appearanceSerial;
+    // Au tour du passage noté, pas au dernier passage du chanteur : son titre
+    // suivant, déjà chargé dans KaraFun puis passé sans être chanté, fait
+    // redescendre le compteur des passages (rollbackUnplayed), et un tour
+    // resté au-dessus rendait la soirée sauvegardée impossible à reprendre
+    // (vérification de la troisième passe de la relecture finale).
+    partner.lastAppearanceTurn = this._passageTurn(sel) || owner.lastAppearanceTurn || ++this.appearanceSerial;
     this.roundPeople.add(partner.id);
     this.roundApps.set(partner.id, (this.roundApps.get(partner.id) || 0) + 1);
     this.roundOwed.delete(partner.id);
@@ -3093,6 +3111,10 @@ class Scheduler {
       kind: sel.kind || (sel.ids.length > 1 ? 'duo' : 'solo') };
     // Duo noté au bar avant le début du titre : annulable depuis l'historique.
     if (sel.staffDuo) entry.staffDuo = sel.staffDuo;
+    // Tour de ce passage : un duo noté après la chanson y compte l'invité
+    // (staffCountPartner), même si le titre suivant du chanteur est déjà parti.
+    const turn = this._passageTurn(sel);
+    if (turn) entry.turn = turn;
     this.stageHistory.push(entry);
     if (this.stageHistory.length > 60) this.stageHistory.splice(0, this.stageHistory.length - 60);
     this.version++;

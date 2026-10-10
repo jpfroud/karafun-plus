@@ -84,7 +84,7 @@ function harness({ persistent = false, clock = false, modules = {} } = {}) {
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, access, soloInvitations, privateEvent, battleVote, staffState, journal,
       ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, journalSample, publicState, transferSnapshot, personShareCodes,
-      STAFF_KEY, PORT, PUBLIC_PORT, handle: server.listeners('request')[0] };
+      STAFF_KEY, PORT, PUBLIC_PORT, handle: server.listeners('request')[0], setTracked: value => { tracked = value; } };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
   f.settings.auto = false;
@@ -2075,6 +2075,60 @@ test('événement privé : « Je pars » garde la fiche dès qu’il y a un hist
   assert.ok(f.battleVote.ballot.eligiblePersonIds.includes(silent.personId));
   assert.equal((await leave(silent)).status, 200);
   assert.equal(f.sched.people.has(silent.personId), false, 'votante possible sans vote : retirée');
+});
+
+// Regression: vérification de la troisième passe de la relecture finale —
+// withoutHistory ne regardait pas le tour en cours. Un duo chargé dans
+// KaraFun qui ouvre un nouveau tour, puis passé avant la lecture après un duo
+// noté au bar sur le passage en scène, laisse son invitée dans les personnes
+// du tour, compteurs remis à zéro (rollbackUnplayed). « Je pars » retirait sa
+// fiche : chaque sauvegarde citait une personne inconnue et la soirée ne
+// redémarrait plus (« personne du tour inconnue »).
+test('événement privé : « Je pars » garde la fiche d’une personne encore comptée dans le tour (duo passé dans KaraFun)', async () => {
+  const { restoreNight } = require('../night-state');
+  const f = harness({ persistent: true });
+  const { tb } = openSolo(f);
+  const secret = f.privateEvent.enable();
+  const as = (me, route, extra) => post(f, route, { ...me, ...extra }, { cookie: me.cookie });
+  const ok = r => assert.equal(r.status, 200, r.text);
+  const entryOf = me => f.sched.songsOf(f.sched.people.get(me.personId))[0].entryId;
+  const olga = await eventEntry(f, tb, secret, 'Olga');
+  const gil = await eventEntry(f, tb, secret, 'Gil');
+  const ana = await eventEntry(f, tb, secret, 'Ana');
+  const bea = await eventEntry(f, tb, secret, 'Bea');
+  // Olga passe deux fois dans le tour (son solo, puis invitée d'Ana) : plafond atteint.
+  ok(await as(olga, '/api/table/song', { song: song(101, 'Solo Olga') }));
+  f.sched.commit(f.sched.select({ stageFree: true }));
+  ok(await as(ana, '/api/table/duet', { partnerId: olga.personId, song: song(102, 'Duo Ana Olga') }));
+  ok(await as(olga, '/api/table/duet/answer', { accept: true, entryId: entryOf(ana) }));
+  f.sched.commit(f.sched.select({ stageFree: true }));
+  // Bea chante ; le duo d'Olga avec Gil (qui n'a rien demandé) est chargé ensuite et ouvre un nouveau tour.
+  ok(await as(bea, '/api/table/song', { song: song(104, 'Solo Bea') }));
+  const stage = f.sched.select({ stageFree: true });
+  assert.deepEqual(stage.ids, [bea.personId]);
+  f.sched.commit(stage);
+  ok(await as(olga, '/api/table/duet', { partnerId: gil.personId, song: song(103, 'Duo Olga Gil') }));
+  ok(await as(gil, '/api/table/duet/answer', { accept: true, entryId: entryOf(olga) }));
+  const duo = f.sched.select({ stageFree: false });
+  assert.deepEqual([duo.ids, duo.newPersonRound], [[olga.personId, gil.personId], true]);
+  f.sched.commit(duo);
+  const onStage = { sel: stage, queueId: 501, addedAt: Date.now() - 1000, startedAt: Date.now() };
+  f.setTracked([onStage, { sel: duo, queueId: 502, addedAt: Date.now() }]);
+  // Le bar note Ana en duo avec Bea ; le duo est ensuite passé dans KaraFun avant la lecture (sync).
+  ok(await post(f, staff(f, '/api/staff/duo-mark'), { queueId: 501, partnerId: ana.personId }));
+  f.sched.rollbackUnplayed(duo, { requeue: true });
+  f.setTracked([onStage]);
+  const g = f.sched.people.get(gil.personId);
+  assert.deepEqual([f.sched.roundPeople.has(g.id), g.sung, g.duetGuestCount || 0, g.lastAppearanceTurn || 0, f.sched.Q.includes(g.id)],
+    [true, 0, 0, 0, false], 'Gil reste compté dans le tour, sans autre historique');
+  ok(await post(f, '/api/leave', { token: gil.token }, { cookie: gil.cookie }));
+  assert.ok(f.sched.people.get(gil.personId)?.withdrawnAt, 'compté dans le tour : fiche partie gardée');
+  assert.equal(f.sched.people.get(gil.personId).withdrawnBy, 'self');
+  // La sauvegarde écrite par la route se reprend au redémarrage.
+  const restored = harness();
+  restoreNight(plain(f.night.saves.at(-1)), { scheduler: restored.sched, access: restored.access, settings: restored.settings });
+  assert.ok(restored.sched.people.get(gil.personId)?.withdrawnAt);
+  assert.ok(restored.sched.roundPeople.has(gil.personId));
 });
 
 // Regression: troisième relecture finale (ADV F1, M3-4) — un QR personnel neuf

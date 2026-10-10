@@ -2460,15 +2460,19 @@ function leavePerson(person, by) {
 }
 
 // Personne sans aucun historique dans la soirée : jamais montée sur scène
-// (ni en duo), aucun titre demandé (jamais entrée dans la file) ni en route
-// vers KaraFun, aucun duo (titre, invitation, demande ou répit), aucun vote
-// ni proposition dans la Battle en cours. Sa fiche peut disparaître : ni la
-// file, ni le tour, ni l'ordre du bar ne la citent (la reprise de la
-// sauvegarde refuserait une personne inconnue).
+// (ni en duo), pas comptée dans le tour en cours, aucun titre demandé
+// (jamais entrée dans la file) ni en route vers KaraFun, aucun duo (titre,
+// invitation, demande ou répit), aucun vote ni proposition dans la Battle en
+// cours. Sa fiche peut disparaître : ni la file, ni le tour, ni l'ordre du
+// bar ne la citent (la reprise de la sauvegarde refuserait une personne
+// inconnue). Le tour se vérifie à part : un duo retiré de KaraFun sans être
+// chanté, après une autre intervention du bar, remet les compteurs de son
+// invitée à zéro mais peut la laisser dans le tour qu'il avait ouvert
+// (rollbackUnplayed ; vérification de la troisième passe).
 function withoutHistory(person) {
   const id = person.id;
   const ballot = battleVote.ballot;
-  return !person.sung && !person.duetGuestCount && !person.lastAppearanceTurn &&
+  return !person.sung && !person.duetGuestCount && !person.lastAppearanceTurn && !sched.roundPeople.has(id) &&
     !sched.songsOf(person).length && !sched.Q.includes(id) &&
     ![pending?.sel, ...tracked.map(tr => tr.sel)].some(sel => sel?.ids?.includes(id)) &&
     !person.duet && !person.duetOf && !person.invite && !sched.duetCooldowns.has(id) &&
@@ -4367,8 +4371,9 @@ const handlers = {
     const inFlight = tracked.filter(item => item !== target.tr && !item.startedAt && !item.cancelled &&
       !isOnStage(item, current) && item.sel.ids.includes(partnerId)).map(item => item.sel);
     // Chanson finie (plus suivie) : le duo est noté sur le titre du passage,
-    // pour que le journal et les statistiques le rattachent au bon passage.
-    const sel = target.tr ? target.tr.sel : { song: { entryId: target.entry?.entryId || null } };
+    // pour que le journal et les statistiques le rattachent au bon passage,
+    // et l'invité compté au tour de ce passage (relevé par recordStage).
+    const sel = target.tr ? target.tr.sel : { song: { entryId: target.entry?.entryId || null }, turn: target.entry?.turn };
     const partner = sched.staffCountPartner(ownerId, partnerId, sel, inFlight);
     const mark = sel.staffDuo;
     mark.kindBefore = holder.kind || 'solo';

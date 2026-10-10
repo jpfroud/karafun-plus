@@ -1403,6 +1403,7 @@
       }
     }
     render();
+    showEntryRefusal();
   }
 
   // Navigateur intégré à une application (scanner d'Instagram, de Snapchat…) :
@@ -2297,6 +2298,14 @@
     return result;
   }
 
+  // Refus du QR personnel sur un téléphone qui garde une place sans prénom
+  // (QR de l'événement scanné plus tôt) : la fenêtre de prénom recouvre la
+  // page et le message de #noSingerBox. Le refus s'y affiche, dans la langue
+  // de la page, jusqu'à la première saisie (vérification de la troisième passe).
+  function showEntryRefusal() {
+    if (entry.status === 'failed' && namePersonId) setNameGateMessage(entry.error);
+  }
+
   // « Récupérer mes chansons » avec le QR individuel rouvert ailleurs : même
   // effet qu'une reprise (l'ancien téléphone perd la gestion).
   function claimWithKey(button) {
@@ -2312,6 +2321,7 @@
         if (error.code === 'SOLO_KEY_REVOKED' || error.code === 'PERSON_LEFT') {
           entry = { status: 'failed', code: error.code, recover: null, error: error.localized || (() => error.message) };
           render();
+          showEntryRefusal();
         }
         throw error;
       }

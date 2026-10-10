@@ -3071,6 +3071,42 @@ test('refus définitif pendant « C’est bien toi ? » : la carte de reprise di
   assert.ok(!gone.node('noSingerActions').querySelector('[data-key-claim]'), 'plus de « Récupérer mes chansons »');
 });
 
+// Regression: vérification de la troisième passe de la relecture finale
+// (design) — un téléphone qui garde une place sans prénom (QR de l'événement
+// scanné plus tôt) ouvre le QR personnel de Marie. Après un refus définitif,
+// la fenêtre de prénom recouvrait la page et son message : le refus ne restait
+// que 4 s dans le toast (et n'était pas montré du tout à l'ouverture d'une
+// clé morte). La fenêtre l'affiche, dans la langue de la page, jusqu'à la
+// première saisie.
+test('place sans prénom sur ce téléphone : un refus définitif du QR personnel s’affiche dans la fenêtre de prénom', async () => {
+  const revoked = 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.';
+  const left = 'Cette personne a été marquée partie. Demande au bar de la réactiver.';
+  const placeholder = { soloInvitationReady: false, tablePeople: [person('p1', 'Solo 2', { nameRequired: true })], managedIds: ['p1'] };
+  const storage = { storage: { 'kfPeople:Comptoir:secret': JSON.stringify({ p1: 'jeton-p1' }) } };
+  const error = page => page.node('nameGateError');
+  for (const [code, text] of [['SOLO_KEY_REVOKED', revoked], ['PERSON_LEFT', left]]) {
+    const page = await soloPage('?invitation=CLE-SOLO', soloState(placeholder), url =>
+      url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } }
+        : url === '/api/table/person/claim' ? reply(403, { error: text, code }) : undefined, storage);
+    assert.deepEqual([page.node('transferBox').hidden, page.node('nameGate').hidden], [false, true], `${code} : « C’est bien toi ? » d’abord`);
+    await page.tap('transferActions', '[data-key-claim]');
+    assert.equal(page.node('transferBox').hidden, true, code);
+    assert.equal(page.node('nameGate').hidden, false, `${code} : la place sans prénom demande son prénom`);
+    assert.deepEqual([error(page).hidden, error(page).textContent], [false, text], `${code} : le refus reste affiché dans la fenêtre`);
+    await page.poll();
+    assert.equal(error(page).textContent, text, `${code} : toujours là après un rafraîchissement`);
+    await page.type('nameGateInput', 'Mar');
+    assert.equal(error(page).hidden, true, `${code} : effacé dès la saisie`);
+  }
+  // Ouverture d'une clé morte sur ce même téléphone : même chose, dans la langue de la page.
+  const opened = await soloPage('?invitation=CLE-MORTE', soloState(placeholder), url =>
+    url === '/api/table/solo/open' ? reply(403, { error: revoked, code: 'SOLO_KEY_REVOKED' }) : undefined, storage);
+  assert.equal(opened.node('nameGate').hidden, false);
+  assert.deepEqual([error(opened).hidden, error(opened).textContent], [false, revoked]);
+  await opened.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error(opened).textContent, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
+});
+
 test('événement privé : un seul POST d’entrée, paramètre retiré de l’adresse, QR inactif ou complet signalé', async () => {
   const page = await soloPage('?evenement=SECRET-EV&utm=x', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url === '/api/table/enter') {
