@@ -336,7 +336,11 @@
     } catch (_) { /* L'alerte reste affichée à l'écran. */ }
   }
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const hhmm = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  // Un seul formateur : toLocaleTimeString en recrée un à chaque appel (plus
+  // de la moitié d'un relevé avec 60 solistes, une heure par activité). Même
+  // texte, « Invalid Date » compris.
+  const HHMM = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const hhmm = (t) => { const date = new Date(t); return isNaN(date) ? String(date) : HHMM.format(date); };
   const personOf = id => id == null ? null : S?.people.find(p => String(p.id) === String(id)) || null;
   const tableOf = id => S?.tables.find(t => String(t.id) === String(id)) || null;
   const initial = name => esc(String(name || '?').charAt(0).toUpperCase());
@@ -777,8 +781,12 @@
   // Page visible ou action sur son téléphone (lastActiveAt du serveur), comptée
   // à l'heure du serveur (S.now) : l'appareil du bar peut avoir une autre heure.
   // Solos seulement : à une table, un téléphone gère aussi des amis sans
-  // téléphone, l'indication tromperait. Libellé à la minute : la liste n'est
-  // redessinée qu'une fois par minute.
+  // téléphone, l'indication tromperait. Minutes écoulées au début de la minute
+  // de l'horloge du serveur : tous les libellés changent ensemble, une fois par
+  // minute, et les listes ne sont redessinées qu'à ce moment. Comptées depuis
+  // l'heure de chacun, elles changeaient chacune à sa seconde (listes
+  // réécrites à presque chaque relevé). Jamais plus que le temps écoulé : une
+  // page visible (relevé toutes les 60 à 64 s) reste « Actif à l'instant ».
   const IDLE_WARN_MIN = 20, IDLE_LATE_MIN = 45;
   const isSolo = p => !!tableOf(p?.tableId)?.individual;
   const sinceText = minutes => minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')}`;
@@ -787,7 +795,8 @@
     const joined = Number(p.joinedAt) || 0, last = Number(p.lastActiveAt) || 0;
     const at = Math.max(joined, last);
     if (!at) return null;
-    const minutes = Math.max(0, Math.floor(((Number(S?.now) || Date.now()) - at) / 60000));
+    const minuteStart = Math.floor((Number(S?.now) || Date.now()) / 60000) * 60000;
+    const minutes = Math.max(0, Math.floor((minuteStart - at) / 60000));
     const level = minutes >= IDLE_LATE_MIN ? 'late' : minutes >= IDLE_WARN_MIN ? 'warn' : '';
     // Rien depuis l'ouverture du QR : la création note la même heure (à la seconde près).
     const never = !!joined && last < joined + 1000;
@@ -796,17 +805,25 @@
     // Repère court de la ligne de la file, la durée d'abord : jamais coupé au
     // téléphone. La phrase complète reste dans son infobulle.
     const short = never ? `inactif depuis ${hhmm(joined)}` : `inactif ${sinceText(minutes)}`;
-    return { minutes, level, text, short, title: `Dernière activité sur son téléphone à ${hhmm(at)}` };
+    // « Actif à l'instant » : sans l'heure, que chaque relevé de page visible
+    // avance à sa propre seconde (la ligne serait réécrite à chaque fois).
+    return { minutes, level, text, short, title: minutes < 2 ? 'Dernière activité sur son téléphone il y a moins de 2 min'
+      : `Dernière activité sur son téléphone à ${hhmm(at)}` };
   }
   const activityHtml = a => a ? `<span class="activity${a.level ? ` ${a.level}` : ''}" title="${esc(a.title)}">${esc(a.text)}</span>` : '';
-  const recentActivity = p => Math.max(Number(p.lastActiveAt) || 0, Number(p.joinedAt) || 0);
+  // Rang d'activité, à la minute comme le libellé : « Actif à l'instant » forme
+  // un seul groupe. Le relevé d'une page visible (chacun à sa seconde) ne fait
+  // donc plus remonter sa ligne ; activité inconnue (ancienne sauvegarde) en dernier.
+  const activityRank = p => { const a = activityOf(p); return !a ? Infinity : a.minutes < 2 ? 0 : a.minutes; };
 
-  // Accueil : liste « Solistes », la plus récente activité d'abord, recherche
-  // au-delà de 8 et « QR de reprise » (fenêtre de transfert) en un toucher.
+  // Accueil : liste « Solistes », la plus récente activité d'abord (à la
+  // minute près, puis par prénom), recherche au-delà de 8 et « QR de reprise »
+  // (fenêtre de transfert) en un toucher.
   function renderSoloists() {
     $('soloistsBox').hidden = !S.tables.some(t => t.id === 'Comptoir' && t.individual);
-    const solos = S.people.filter(p => p.active !== false && isSolo(p))
-      .sort((a, b) => recentActivity(b) - recentActivity(a) || a.name.localeCompare(b.name, 'fr'));
+    const solos = S.people.filter(p => p.active !== false && isSolo(p));
+    const rank = new Map(solos.map(p => [p, activityRank(p)]));
+    solos.sort((a, b) => rank.get(a) - rank.get(b) || a.name.localeCompare(b.name, 'fr'));
     const searchable = solos.length > 8;
     $('soloistSearchBox').hidden = !searchable;
     // Le nombre suit « N solistes présents » : une place « Solo N » sans
