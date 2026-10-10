@@ -16,7 +16,7 @@ const MIN_RATE = 0.25, MAX_RATE = 2;
 
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 
-// Durée donnée par KaraFun (catalogue, recherche, protocole) ou la démo.
+// Durée donnée par KaraFun (catalogue, recherche) ou la démo.
 function trustedDuration(value) {
   return finite(value) && value > 0 && value <= MAX_TRUSTED_SEC ? Math.round(value) : null;
 }
@@ -27,15 +27,8 @@ function clientDuration(value) {
   return Math.min(CLIENT_MAX_SEC, Math.max(CLIENT_MIN_SEC, Math.round(value)));
 }
 
-function stageDuration({ demoSec = null, protocolSec = null, catalogSec = null, clientSec = null } = {}) {
-  return trustedDuration(demoSec) ?? trustedDuration(protocolSec) ?? trustedDuration(catalogSec) ?? clientDuration(clientSec);
-}
-
-// Si KaraFun envoie un jour une durée numérique du titre en cours.
-function protocolDuration(status, rawStatus = null) {
-  const current = status?.current || status?.songPlaying || null;
-  return trustedDuration(current?.duration) ?? trustedDuration(current?.song?.duration) ??
-    trustedDuration(status?.duration) ?? trustedDuration(rawStatus?.current?.song?.duration);
+function stageDuration({ demoSec = null, catalogSec = null, clientSec = null } = {}) {
+  return trustedDuration(demoSec) ?? trustedDuration(catalogSec) ?? clientDuration(clientSec);
 }
 
 // Position en secondes (faux KaraFun de la démo : instantané à l'envoi).
@@ -87,5 +80,5 @@ function sanitizeClock(value) {
   return { key, segAt, mediaMs, rate, paused, position: finite(position) && position >= 0 ? position : null };
 }
 
-module.exports = { trustedDuration, clientDuration, stageDuration, protocolDuration, protocolPosition,
+module.exports = { trustedDuration, clientDuration, stageDuration, protocolPosition,
   pausedOf, rateOf, startClock, observeClock, clockView, sanitizeClock };

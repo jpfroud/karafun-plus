@@ -60,7 +60,7 @@ class SpotifyLink {
     // appareil à commander), « error » (Spotify injoignable, ou refus avec
     // son code dans `status`), « unknown »
     // (pas encore vérifié). « disconnected » se déduit de la connexion.
-    this.health = { state: 'unknown', device: null, checkedAt: 0, okAt: 0, message: null };
+    this.health = { state: 'unknown', device: null, checkedAt: 0, message: null };
     this.failures = 0;        // échecs d'affilée
     this.waitUntil = 0;       // pas d'appel automatique avant (échecs, 429)
     this.blockedUntil = 0;    // Spotify demande de patienter (429) : même la pause attend
@@ -158,7 +158,7 @@ class SpotifyLink {
   // application).
   _forget() {
     this.deviceList = [];
-    this.health = { state: 'unknown', device: null, checkedAt: 0, okAt: 0, message: null };
+    this.health = { state: 'unknown', device: null, checkedAt: 0, message: null };
     this.player = null;
   }
 
@@ -343,7 +343,7 @@ class SpotifyLink {
   _setHealth(state, { device = null, message = null, checked = false, status = 0 } = {}) {
     const at = this.now();
     this.health = { state, device: device ? { id: device.id, name: device.name, active: !!device.active } : null,
-      checkedAt: checked ? at : this.health.checkedAt, okAt: state === 'ready' || state === 'no-device' ? at : this.health.okAt, message,
+      checkedAt: checked ? at : this.health.checkedAt, message,
       ...(status ? { status } : {}) };
   }
 
@@ -378,7 +378,7 @@ class SpotifyLink {
   }
 
   healthView() {
-    if (!this.connected) return { state: 'disconnected', device: null, checkedAt: this.health.checkedAt, okAt: this.health.okAt, retryAt: 0, message: null };
+    if (!this.connected) return { state: 'disconnected', device: null, checkedAt: this.health.checkedAt, retryAt: 0, message: null };
     return { ...this.health, retryAt: this.health.state === 'error' ? Math.max(this.waitUntil, this.now()) : 0 };
   }
 

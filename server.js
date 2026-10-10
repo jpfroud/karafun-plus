@@ -970,8 +970,7 @@ function noteLoadedLive(loadedId) {
   const sameSession = loadedLive?.session === session;
   const fresh = loadedLive?.queueId !== loadedId || (!sameSession && loadedLive.song !== song);
   const kcsState = bridge.status?.kcsState;
-  const seenNow = !Number.isInteger(kcsState) ? !!loadedLive && sameSession : kcsState === 3 ||
-    (typeof bridge.seenLoading === 'function' ? bridge.seenLoading(loadedId) : !!loadedLive);
+  const seenNow = !Number.isInteger(kcsState) ? !!loadedLive && sameSession : kcsState === 3 || bridge.seenLoading(loadedId);
   if (loadedLive && fresh) previousLoaded = sameSession ? loadedLive : null;
   // Vu se charger : décidé au premier état vu du titre, gardé ensuite dans
   // la même session.
@@ -1470,13 +1469,12 @@ function syncStageClock(current, key, now) {
     rate: stageProgress.rateOf(liveFromStatus(bridge.status)?.tempo), position: stageProgress.protocolPosition(bridge.status) });
 }
 
-// Durée du titre sur scène : démo, protocole, catalogue, puis téléphone (bornée).
+// Durée du titre sur scène : démo, catalogue, puis téléphone (bornée).
 // Une Battle n'a pas de durée sûre (phase d'inscription, chanteurs alternés).
 function stageProgressView(current, kind, now) {
   if (!stageClock || stageClock.key !== stageKey(current)) return null;
   const tr = tracked.find(item => isOnStage(item, current));
   const durationSec = kind === 'battle' ? null : stageProgress.stageDuration({ demoSec: fake ? SONG_SECONDS : null,
-    protocolSec: stageProgress.protocolDuration(bridge?.status, bridge?.raw?.status),
     catalogSec: catalogDurations.get(Number(tr?.sel.song.songId ?? current.songId)),
     clientSec: tr?.sel.song.duration });
   return stageProgress.clockView(stageClock, now, durationSec);
@@ -4189,7 +4187,6 @@ const handlers = {
     if (action === 'client') spotify.setClientId(body.clientId);
     else if (action === 'auth-url') return { ok: true, url: spotify.authUrl(spotifyRedirect()) };
     else if (action === 'disconnect') spotify.disconnect();
-    else if (action === 'devices') return { ok: true, devices: await spotify.devices() };
     else if (action === 'device') { spotify.setDevice(body.deviceId, body.deviceName); await spotifyCheck(); }
     else if (action === 'options') spotify.setOptions({
       ...('autoResume' in body ? { autoResume: !!body.autoResume } : {}),
