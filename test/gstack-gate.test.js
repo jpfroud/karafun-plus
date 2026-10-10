@@ -311,7 +311,7 @@ assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstac
   const flat = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
     .replace(/^[ \t]*(?:\/\/|#)[ \t]?/gm, '').replace(/\s+/g, ' ');
   for (const file of ['.claude/hooks/gstack-gate.js', '.claude/hooks/pre-push', '.claude/hooks/gstack-session-start.sh',
-    'AGENTS.md', 'CONTEXTE-REPRISE.md', 'docs/designs/retours-soiree-4-octobre.md']) {
+    'AGENTS.md', 'CLAUDE.md', 'CONTEXTE-REPRISE.md', 'docs/designs/retours-soiree-4-octobre.md']) {
     const text = flat(file);
     assert.match(text, /dernier commit/, `${file} : doit dire que le dernier commit envoyé est comparé`);
     assert.doesNotMatch(text, /chaque commit envoyé|envoyer un commit dont|tout envoi dont le contenu/,
