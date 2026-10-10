@@ -13,12 +13,14 @@
 // edit : refuse de modifier un fichier du dépôt tant qu'aucune compétence
 // gstack n'a été lancée dans la session (les sous-agents partagent la session
 // de l'agent principal).
-// pre-push : pour un envoi lancé par Claude Code (CLAUDECODE=1), chaque
-// commit envoyé doit avoir exactement l'arbre d'une relecture gstack /review
-// terminée et convergée (journal de relecture de gstack). C'est git qui
-// appelle ce contrôle : l'écriture de la commande (git -C, alias, worktree
-// lié…) n'y change rien, et les envois tapés par l'utilisateur ne sont pas
-// concernés. Un commit déjà présent sur le serveur et une suppression passent.
+// pre-push : pour un envoi lancé par Claude Code (CLAUDECODE=1), le dernier
+// commit envoyé sur chaque branche ou étiquette (le contenu envoyé) doit avoir
+// exactement l'arbre d'une relecture gstack /review terminée et convergée
+// (journal de relecture de gstack) ; les commits intermédiaires ne sont pas
+// comparés (choix du gérant). C'est git qui appelle ce contrôle : l'écriture
+// de la commande (git -C, alias, worktree lié…) n'y change rien, et les envois
+// tapés par l'utilisateur ne sont pas concernés. Un commit déjà présent sur le
+// serveur et une suppression passent.
 // github : refuse l'écriture de fichiers dans ce dépôt par l'API GitHub, qui
 // contournerait le contrôle de l'envoi.
 //
@@ -233,11 +235,14 @@ function onPrePush(stdin) {
   const refuse = message => {
     process.stderr.write(`\nPorte gstack : envoi refusé, ${message}\n` +
       'Lancer la compétence gstack review (outil Skill) et la mener jusqu\'à son journal de relecture, commiter exactement ' +
-      'le contenu relu, puis renvoyer. Si la porte se trompe, le dire à l\'utilisateur : lui seul peut la couper (GSTACK_GATE=off).\n\n');
+      'le contenu relu, puis renvoyer : seul le dernier commit envoyé sur chaque branche est comparé. ' +
+      'Si la porte se trompe, le dire à l\'utilisateur : lui seul peut la couper (GSTACK_GATE=off).\n\n');
     return 1;
   };
   const updates = stdin.split(/\r?\n/).map(line => line.trim().split(/\s+/)).filter(parts => parts.length >= 4);
   const pending = [];
+  // git ne donne que le dernier commit de chaque référence envoyée : c'est lui
+  // qui est comparé, pas les commits intermédiaires (choix du gérant).
   for (const [localRef, localSha] of updates) {
     if (/^0+$/.test(localSha)) continue; // suppression d'une branche ou d'une étiquette
     // Déjà sur le serveur (étiquette d'une version publiée, branche à jour) : rien de nouveau.
@@ -259,7 +264,7 @@ function onPrePush(stdin) {
     const done = rows.filter(row => reviewedTree(row, tree));
     if (!done.length) {
       return refuse(rows.some(row => REVIEW_SKILLS.has(row.skill))
-        ? `${ref} n'a pas exactement le contenu d'une relecture gstack terminée et convergée.`
+        ? `le dernier commit envoyé (${ref}) n'a pas exactement le contenu d'une relecture gstack terminée et convergée.`
         : `aucune relecture gstack n'a été faite sur cette branche (${ref}).`);
     }
     const last = done[done.length - 1];

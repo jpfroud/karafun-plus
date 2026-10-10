@@ -70,7 +70,8 @@ rm -f "$home/setup-args"
 out="$(run_auto "$home")" || fail "second démarrage"
 printf '%s' "$out" | field additionalContext | grep -q "^GSTACK_OK : gstack est installé" || fail "second démarrage"
 # Au démarrage aussi, la table de routage accompagne GSTACK_OK.
-for route in "l'annoncer en une ligne" "→ investigate" "→ review" "ne jamais passer ce choix sous silence"; do
+for route in "l'annoncer en une ligne" "→ investigate" "→ review" "ne jamais passer ce choix sous silence" \
+  "le dernier commit envoyé sur chaque branche"; do
   printf '%s' "$out" | field additionalContext | grep -qF "$route" || fail "table de routage absente au démarrage : $route"
 done
 [ ! -e "$home/setup-args" ] || fail "gstack ne doit pas être réinstallé"
@@ -170,6 +171,12 @@ printf '%s' "$out" | field additionalContext | grep -q '^gstack : .*review avant
 for route in "l'annoncer en une ligne" "→ investigate" "→ spec" "→ qa" "→ review" "aucune commande gstack" "ne jamais passer ce choix sous silence"; do
   printf '%s' "$out" | field additionalContext | grep -qF "$route" || fail "table de routage incomplète : $route"
 done
+# Regression: G1 (quatrième relecture finale, décision D3 du gérant) — le hook
+# pre-push ne compare que le dernier commit envoyé sur chaque branche ; le
+# rappel disait « refuse d'envoyer un commit dont le contenu… ».
+printf '%s' "$out" | field additionalContext | grep -qF "le dernier commit envoyé sur chaque branche, c'est-à-dire le contenu envoyé," ||
+  fail "le rappel ne dit pas que seul le dernier commit envoyé est comparé"
+! printf '%s' "$out" | field additionalContext | grep -qF "envoyer un commit dont" || fail "le rappel laisse croire que chaque commit envoyé est comparé"
 
 # 7. Installations existantes (Claude Code, Codex, dépôt migré) : acceptées sans rien relancer.
 for dir in .claude/skills/gstack .codex/skills/gstack .gstack/repos/gstack; do

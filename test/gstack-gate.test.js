@@ -1,10 +1,11 @@
 'use strict';
 // Porte gstack (.claude/hooks/gstack-gate.js et son hook git pre-push) :
 // modification refusée sans compétence gstack lancée dans la session ; envoi
-// refusé par git tant que le commit n'a pas exactement le contenu d'une
-// relecture /review terminée et convergée ; écriture par l'API GitHub refusée
-// dans ce dépôt. Un faux gstack et un faux journal de relecture remplacent les
-// vrais ; les dépôts de test ignorent la configuration git de la machine.
+// refusé par git tant que le dernier commit envoyé sur chaque branche n'a pas
+// exactement le contenu d'une relecture /review terminée et convergée ;
+// écriture par l'API GitHub refusée dans ce dépôt. Un faux gstack et un faux
+// journal de relecture remplacent les vrais ; les dépôts de test ignorent la
+// configuration git de la machine.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -227,7 +228,28 @@ assert.strictEqual(push(['push', 'essai', 'v9.9.9']).status, 0, 'étiquette d\'u
 fs.writeFileSync(path.join(project, 'server.js'), '// app modifiée après relecture\n');
 git(project, 'commit', '-qam', 'après relecture');
 journal(row());
-assert.notStrictEqual(push(['push', 'essai', 'HEAD:refs/heads/e']).status, 0, 'commit postérieur à la relecture');
+r = push(['push', 'essai', 'HEAD:refs/heads/e']);
+assert.notStrictEqual(r.status, 0, 'commit postérieur à la relecture');
+// Regression: G1 (quatrième relecture finale, décision D3 du gérant) — le
+// refus nomme ce qui est comparé : le dernier commit envoyé, pas chaque commit.
+assert.match(r.stderr, /le dernier commit envoyé \(HEAD\) n'a pas exactement le contenu d'une relecture gstack terminée/);
+assert.match(r.stderr, /seul le dernier commit envoyé sur chaque branche est comparé/);
+// Seul le dernier commit envoyé est comparé (choix du gérant, D3) : un commit
+// intermédiaire jamais relu part avec lui. Les textes de la porte le disent
+// (section 8) ; vérifier chaque commit demanderait de les changer aussi.
+{
+  fs.writeFileSync(path.join(project, 'brouillon.js'), '// jamais relu\n');
+  git(project, 'add', '-A');
+  git(project, 'commit', '-qm', 'intermédiaire jamais relu');
+  const middle = git(project, 'rev-parse', 'HEAD');
+  git(project, 'rm', '-q', 'brouillon.js');
+  git(project, 'commit', '-qm', 'retour au contenu relu');
+  const tipTree = git(project, 'rev-parse', 'HEAD^{tree}');
+  journal(row({ wtree: tipTree, review_binding: { state: 'verified', start_wtree: tipTree, end_wtree: tipTree } }));
+  r = push(['push', 'essai', 'HEAD:refs/heads/f']);
+  assert.strictEqual(r.status, 0, `dernier commit relu : envoi accepté (${r.stderr})`);
+  assert.ok(git(remote, 'rev-list', 'refs/heads/f').split('\n').includes(middle), 'le commit intermédiaire part avec le dernier');
+}
 
 // 5. Entrées invalides et coupure par l'utilisateur : les hooks Claude Code ne bloquent jamais.
 assert.strictEqual(edit('zz', path.join(project, 'server.js'), { GSTACK_GATE: 'off' }), null, 'GSTACK_GATE=off');
@@ -274,6 +296,22 @@ assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstac
   assert.ok(gateList.length >= 13 && gateList.includes('.claude/skills/gstack'), `liste de la porte lue : ${gateList.join(', ')}`);
   for (const name of ['check-gstack.sh', 'gstack-session-start.sh', 'install-gstack.sh']) {
     assert.deepStrictEqual(shellList(name), gateList, `${name} : même liste de dossiers gstack que gstack-gate.js`);
+  }
+}
+
+// 8. Regression: G1 (quatrième relecture finale, décision D3 du gérant) — les
+//    textes qui décrivent la porte d'envoi disaient « chaque commit envoyé »
+//    alors que seul le dernier commit envoyé sur chaque branche est comparé
+//    (section 4). Commentaires et retours à la ligne ignorés.
+{
+  const flat = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
+    .replace(/^[ \t]*(?:\/\/|#)[ \t]?/gm, '').replace(/\s+/g, ' ');
+  for (const file of ['.claude/hooks/gstack-gate.js', '.claude/hooks/pre-push', '.claude/hooks/gstack-session-start.sh',
+    'AGENTS.md', 'CONTEXTE-REPRISE.md', 'docs/designs/retours-soiree-4-octobre.md']) {
+    const text = flat(file);
+    assert.match(text, /dernier commit/, `${file} : doit dire que le dernier commit envoyé est comparé`);
+    assert.doesNotMatch(text, /chaque commit envoyé|envoyer un commit dont|tout envoi dont le contenu/,
+      `${file} : laisse croire que chaque commit envoyé est comparé`);
   }
 }
 
