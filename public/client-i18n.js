@@ -678,6 +678,7 @@ window.CLIENT_TRANSLATIONS = {
       'Position invalide dans la liste.': 'Invalid position in the list.',
       'La présence sera demandée quand ce chanteur sera le prochain à passer.': 'Presence will be asked for when this singer is next up.',
       'Partenaire introuvable.': 'Partner not found.',
+      'Ce chanteur est parti : choisis un autre partenaire.': 'This singer has left: choose another partner.',
       'Choisis l’invitation à laquelle répondre.': 'Choose which invitation to answer.',
       'Pas d\'invitation en cours.': 'No pending invitation.',
       'Invitation expirée.': 'Invitation expired.',

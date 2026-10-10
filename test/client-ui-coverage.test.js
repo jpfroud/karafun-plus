@@ -1384,9 +1384,9 @@ test('fiches : sur scène, duos, présence, report, parti, personne gérée aill
   await page.click(page.find('sheetPanel', '[data-close-sheet]'));
   // Personne partie : sa fiche reste, sans réponse ni modification possibles.
   // Regression: U7 (quatrième relecture) — « Seul le téléphone qui gère Dan
-  // peut répondre. » sur le téléphone qui le gère. L'invitation arrive encore
-  // après le départ (liste des partenaires ouverte avant « Parti » : le serveur
-  // l'accepte) ; elle se répond une fois Dan réactivé.
+  // peut répondre. » sur le téléphone qui le gère. Le serveur refuse désormais
+  // d'inviter une personne partie ; une invitation restée d'une sauvegarde
+  // d'une version précédente se répond une fois Dan réactivé.
   assert.match(card('dan').textContent, /Léa propose un duo sur « Slow » — Lui\..*Pour répondre, demande au bar de réactiver Dan\./s);
   assert.doesNotMatch(card('dan').textContent, /Seul le téléphone/);
   assert.equal(card('dan').querySelector('[data-duet-answer]'), null, 'pas de réponse pour une personne partie');

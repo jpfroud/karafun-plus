@@ -1790,10 +1790,11 @@
     return item.singer || t('Chanteur');
   }
 
-  // Demande ou invitation d'une personne partie (envoyée depuis une liste des
-  // partenaires ouverte avant son départ) : la réponse attend que le bar la
-  // réactive. (Une table ne montre plus que ses propres personnes : une
-  // personne gérée ailleurs se reprend depuis « Voir toute la table ».)
+  // Demande ou invitation d'une personne partie : la réponse attend que le bar
+  // la réactive. Le serveur n'en crée plus (invitation refusée, départ qui les
+  // efface) ; reste une sauvegarde écrite par une version précédente. (Une
+  // table ne montre plus que ses propres personnes : une personne gérée
+  // ailleurs se reprend depuis « Voir toute la table ».)
   const leftNotice = person => `<div class="small muted">${esc(t('Pour répondre, demande au bar de réactiver {name}.', { name: person.name }))}</div>`;
 
   function renderPeople(people, queue) {

@@ -838,6 +838,11 @@ class Scheduler {
   inviteDuet(p, partnerId, song) {
     const q = this.people.get(partnerId);
     if (!q || q.id === p.id) throw new Error('Partenaire introuvable.');
+    // Marquée partie après l'ouverture de la liste des partenaires (qui ne la
+    // propose plus) : refusée, comme l'auteur parti d'une demande de duo. Son
+    // départ a effacé ses invitations ; aucune ne doit en recréer, et à la
+    // même table, aucun duo direct avec elle.
+    if (q.withdrawnAt) throw new Error('Ce chanteur est parti : choisis un autre partenaire.');
     this.chooseSong(p, song, 'append');
     // Comme un titre solo, un duo est ajouté à la fin de la liste. Une personne
     // peut ensuite réordonner ses titres si elle souhaite le chanter plus tôt.
