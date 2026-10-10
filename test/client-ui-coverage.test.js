@@ -2968,7 +2968,7 @@ test('QR individuel rouvert ailleurs : « C’est bien toi ? », récupération 
   const page = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }), (url, body, self) => {
     if (url === '/api/table/solo/open') return { recover: { id: 'm1', name: 'Marie' } };
     if (url === '/api/table/person/claim') {
-      if (refuse) { refuse = false; return reply(400, { error: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.' }); }
+      if (refuse) { refuse = false; return reply(403, { error: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.', code: 'SOLO_KEY_REVOKED' }); }
       self.state.tablePeople = [person('m1', 'Marie')];
       self.state.managedIds = ['m1'];
       return { id: 'm1', token: 'jeton-m1' };
@@ -2992,9 +2992,13 @@ test('QR individuel rouvert ailleurs : « C’est bien toi ? », récupération 
   assert.equal(page.history.urls.length, 0, 'la clé reste dans l’adresse après la récupération');
   assert.equal(postsTo(page, '/api/table/solo/open').length, 1);
   const english = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }),
-    url => url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } } : undefined, { languages: ['en'] });
+    url => url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } }
+      : url === '/api/table/person/claim' ? reply(403, { error: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.', code: 'SOLO_KEY_REVOKED' })
+        : undefined, { languages: ['en'] });
   assert.equal(english.node('transferHeading').textContent, 'Is that you, Marie?');
   assert.equal(english.find('transferActions', '[data-key-claim]').textContent, 'Recover my songs');
+  await english.tap('transferActions', '[data-key-claim]');
+  assert.equal(english.toast().text, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
 
   const used = await soloPage('?invitation=VIEUX', soloState({ soloInvitationReady: false }), url => url === '/api/table/solo/open'
     ? reply(403, { error: 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.', code: 'SOLO_INVITATION' }) : undefined);

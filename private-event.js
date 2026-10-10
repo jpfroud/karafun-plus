@@ -8,12 +8,16 @@ const SECRET_RE = /^[A-Za-z0-9_-]{22}$/;
 // page du bar restent lisibles même si quelqu'un scanne en boucle. Un même
 // appareil (adresse IPv4, ou préfixe /64 en IPv6, voir clientKey) crée au plus
 // 30 chanteurs par minute (assez pour un Wi-Fi qui sort par une seule adresse
-// publique), tout le bar 120 ; au plus 400 personnes présentes venues par
+// publique), tout le bar 120 ; au plus 200 personnes présentes venues par
 // l'événement, dont les places sans prénom des 10 dernières minutes, et au
-// plus 800 fiches venues par l'événement (pas parties), quel que soit leur âge.
+// plus 400 fiches venues par l'événement (pas parties), quel que soit leur âge.
+// 200 : valeur mesurée (seconde passe de la quatrième relecture finale). Chaque
+// écriture acceptée fait recalculer toute la prévision, O(titres × chanteurs) :
+// avec trois titres par invité, environ 0,2 s à 200 invités, 0,3 s à 250 et
+// 0,7 s à 400, où le serveur ne suit plus un ajout de titre par seconde.
 const CREATIONS_PER_MINUTE = 120;
 const CLIENT_CREATIONS_PER_MINUTE = 30;
-const MAX_PEOPLE = 400;
+const MAX_PEOPLE = 200;
 const MAX_EVENT_PEOPLE = 2 * MAX_PEOPLE;
 const PLACEHOLDER_COUNT_MS = 10 * 60000;
 

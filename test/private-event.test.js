@@ -66,10 +66,13 @@ assert.equal(event.verify(rotated), false);
 assert.throws(() => event.rotate(), /Active d’abord l’événement privé/, 'renouveler suppose le mode actif');
 
 // Plafonds : 30 créations par minute et par appareil, 120 pour tout le bar,
-// 400 personnes présentes au plus (les parties ne comptent pas, côté serveur).
+// 200 personnes présentes au plus (les parties ne comptent pas, côté serveur).
+// Regression: seconde passe de la quatrième relecture finale (adverse,
+// performance) — à 400, chaque écriture acceptée bloquait le serveur environ
+// 0,7 s (prévision recalculée, trois titres par invité) : 200, valeur mesurée.
 assert.equal(CREATIONS_PER_MINUTE, 120);
 assert.equal(CLIENT_CREATIONS_PER_MINUTE, 30);
-assert.equal(MAX_PEOPLE, 400);
+assert.equal(MAX_PEOPLE, 200);
 const capped = new PrivateEvent();
 capped.enable();
 const t0 = 1_000_000;
@@ -87,7 +90,7 @@ venue.enable();
 for (let i = 0; i < CREATIONS_PER_MINUTE; i++) assert.equal(venue.admit(i, `c${Math.floor(i / 5)}`, t0), 'ok');
 assert.equal(venue.admit(120, 'nouveau', t0 + 1), 'busy', '120 créations dans la minute pour le bar : la suivante attend');
 assert.equal(capped.admit(MAX_PEOPLE, 'z', t0 + 200_000), 'full',
-  '400 personnes présentes venues par l’événement : plus aucune création');
+  '200 personnes présentes venues par l’événement : plus aucune création');
 // Une création annulée (sauvegarde impossible) libère sa place dans la minute.
 const undo = new PrivateEvent();
 undo.enable();
@@ -173,14 +176,14 @@ assert.equal(PrivateEvent.abandoned({ ...opened, withdrawnAt: now - 1 }, now), f
 assert.equal(PrivateEvent.abandoned({ ...opened, viaEvent: undefined }, now), false, 'QR individuel : jamais');
 assert.equal(PrivateEvent.abandoned({ ...opened, soloKeyHash: 'a'.repeat(64) }, now), false, 'clé personnelle : jamais');
 assert.equal(PrivateEvent.abandoned(null, now), false);
-// Plafond dur : 800 personnes venues par l'événement et pas parties, nommées
+// Plafond dur : 400 personnes venues par l'événement et pas parties, nommées
 // ou non, quel que soit leur âge ; au-delà, « complet ».
 assert.equal(MAX_EVENT_PEOPLE, 2 * MAX_PEOPLE);
 assert.equal(PrivateEvent.held(people), 4, 'les parties et les QR individuels ne comptent pas');
 const heavy = new PrivateEvent();
 heavy.enable();
 assert.equal(heavy.admit(0, 'a', t0, MAX_EVENT_PEOPLE - 1), 'ok');
-assert.equal(heavy.admit(0, 'b', t0, MAX_EVENT_PEOPLE), 'full', '800 fiches de l’événement : plus aucune création');
-assert.equal(heavy.admit(0, 'c', t0), 'ok', 'sans compte de fiches : la règle des 400 seule');
+assert.equal(heavy.admit(0, 'b', t0, MAX_EVENT_PEOPLE), 'full', '400 fiches de l’événement : plus aucune création');
+assert.equal(heavy.admit(0, 'c', t0), 'ok', 'sans compte de fiches : la règle des 200 seule');
 
 console.log('Événement privé : QR unique, coupure, renouvellement, sauvegarde tolérante et plafonds OK');

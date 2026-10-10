@@ -2482,7 +2482,7 @@ function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent
   try {
     if (viaEvent) {
       // Les personnes marquées parties libèrent leur place ; une place sans
-      // prénom ne compte que ses 10 premières minutes. Plafond dur : 800
+      // prénom ne compte que ses 10 premières minutes. Plafond dur : 400
       // fiches de l'événement pas parties (PrivateEvent.held).
       const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values(), now), client, now,
         PrivateEvent.held(sched.people.values()));
@@ -2705,9 +2705,11 @@ async function createPersonShareCode(p) {
   return { code, expiresAt, url, qr, linkExpiresAt: url ? linkExpiresAt : null, name: p.name };
 }
 
+// Seulement les personnes encore dans la soirée (la reprise ignore les autres).
 function transferSnapshot() {
   const now = Date.now();
-  return [...personShareCodes].filter(([, saved]) => Math.max(saved.expiresAt, saved.linkExpiresAt) > now)
+  return [...personShareCodes].filter(([personId, saved]) => sched.people.has(personId) &&
+    Math.max(saved.expiresAt, saved.linkExpiresAt) > now)
     .map(([personId, saved]) => ({ personId, hash: saved.hash.toString('hex'), expiresAt: saved.expiresAt,
       attempts: saved.attempts, linkHash: saved.linkHash ? saved.linkHash.toString('hex') : null,
       linkExpiresAt: saved.linkExpiresAt }));
@@ -2749,7 +2751,7 @@ function claimPerson(body, req, res) {
   }
   const saved = personShareCodes.get(p.id);
   if (body.key !== undefined) {
-    if (keyTarget(body.key, t)?.id !== p.id) throw new Error('Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+    if (keyTarget(body.key, t)?.id !== p.id) throw soloKeyRevokedError();
   } else if (body.link !== undefined) {
     // Le lien contient un secret de 128 bits : pas de limite de tentatives.
     if (transferTarget(body.link, t)?.id !== p.id) {
@@ -2799,8 +2801,10 @@ function claimPerson(body, req, res) {
 
 function claimPersonDurably(body, req, res) {
   if (body.key !== undefined) {
+    // Clé inconnue ou morte : même refus qu'un QR personnel révoqué à son
+    // ouverture (403, SOLO_KEY_REVOKED), même texte sur le téléphone.
     const target = keyTarget(body.key, tableByAccess(body.table, body.access));
-    if (!target) throw new Error('Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+    if (!target) throw soloKeyRevokedError();
     body = { ...body, personId: target.id };
   } else if (body.link !== undefined) {
     const target = transferTarget(body.link, tableByAccess(body.table, body.access));
@@ -3993,6 +3997,8 @@ const handlers = {
     const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(ids);
     if (pending?.sel.ids.some(id => ids.has(id))) pending.cancelled = true;
     sched.tableLeft(tableId);
+    // Comme un départ (leavePerson) : leurs codes et liens de reprise meurent.
+    for (const id of ids) personShareCodes.delete(id);
     soloInvitations.revokeTable(tableId);
     access.revoke(tableId);
     saveTables();
