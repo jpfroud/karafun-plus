@@ -4,7 +4,7 @@
 // « Renouveler le QR » et disparaît à la nouvelle soirée. Une sauvegarde
 // abîmée coupe le mode sans jamais faire échouer la soirée.
 const assert = require('node:assert/strict');
-const { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, MAX_EVENT_PEOPLE, PLACEHOLDER_COUNT_MS,
+const { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, MAX_EVENT_PEOPLE, PLACEHOLDER_ABANDON_MS,
   clientKey } = require('../private-event');
 
 const event = new PrivateEvent();
@@ -66,7 +66,7 @@ assert.equal(event.verify(rotated), false);
 assert.throws(() => event.rotate(), /Active d’abord l’événement privé/, 'renouveler suppose le mode actif');
 
 // Plafonds : 30 créations par minute et par appareil, 120 pour tout le bar,
-// 200 personnes présentes au plus (les parties ne comptent pas, côté serveur).
+// 200 personnes nommées présentes au plus (les parties ne comptent pas, côté serveur).
 // Regression: seconde passe de la quatrième relecture finale (adverse,
 // performance) — à 400, chaque écriture acceptée bloquait le serveur environ
 // 0,7 s (prévision recalculée, trois titres par invité) : 200, valeur mesurée.
@@ -90,7 +90,7 @@ venue.enable();
 for (let i = 0; i < CREATIONS_PER_MINUTE; i++) assert.equal(venue.admit(i, `c${Math.floor(i / 5)}`, t0), 'ok');
 assert.equal(venue.admit(120, 'nouveau', t0 + 1), 'busy', '120 créations dans la minute pour le bar : la suivante attend');
 assert.equal(capped.admit(MAX_PEOPLE, 'z', t0 + 200_000), 'full',
-  '200 personnes présentes venues par l’événement : plus aucune création');
+  '200 personnes nommées venues par l’événement : plus aucune création');
 // Une création annulée (sauvegarde impossible) libère sa place dans la minute.
 const undo = new PrivateEvent();
 undo.enable();
@@ -143,21 +143,29 @@ assert.equal(crowded.retryAfter('nouveau', t0 + 30_000), 30, 'limite du bar : la
 assert.equal(crowded.retryAfter(null, t0 + 30_000), 30);
 
 // Regression: deuxième relecture finale (ADV F1) — 400 « Solo N » sans prénom
-// remplissaient l'événement pour toujours. Le plafond compte les personnes
-// nommées présentes et les places sans prénom des 10 dernières minutes.
-assert.equal(PLACEHOLDER_COUNT_MS, 10 * 60000);
-const now = 50_000_000;
+// remplissaient l'événement pour toujours. Vérification de la seconde passe de
+// la quatrième relecture finale (adverse) : les places sans prénom des 10
+// dernières minutes y comptaient encore et des rescans fermaient l'événement
+// sous les 200, alors qu'une place sans prénom ne coûte rien à la prévision.
+// Le plafond ne compte que les personnes nommées présentes, revérifié au
+// premier prénom d'une place (full) ; les places sans prénom restent bornées
+// par les fiches (held), le ménage (abandoned) et les limites par minute.
+const now = Date.now();
 const people = [
   { viaEvent: true, joinedAt: now - 3600_000 }, // nommée : compte
   { viaEvent: true, joinedAt: now - 3600_000, withdrawnAt: now - 1 }, // partie : non
-  { viaEvent: true, nameRequired: true, joinedAt: now - 60_000 }, // sans prénom, récente : compte
-  { viaEvent: true, nameRequired: true, joinedAt: now - PLACEHOLDER_COUNT_MS }, // sans prénom, trop ancienne : non
+  { viaEvent: true, nameRequired: true, joinedAt: now - 60_000 }, // sans prénom, même récente : non
+  { viaEvent: true, nameRequired: true, joinedAt: now - 20 * 60000 }, // sans prénom, ancienne : non
   { viaEvent: true, nameRequired: true }, // sans heure : non
   { nameRequired: true, joinedAt: now }, // QR individuel : non
   { joinedAt: now }, // pas venue par l'événement : non
 ];
-assert.equal(PrivateEvent.present(people, now), 2);
-assert.equal(PrivateEvent.present(new Map(people.map((p, i) => [i, p])).values(), now), 2, 'accepte un itérable');
+assert.equal(PrivateEvent.present(people), 1);
+assert.equal(PrivateEvent.present(new Map(people.map((p, i) => [i, p])).values()), 1, 'accepte un itérable');
+const namedGuests = count => Array.from({ length: count }, () => ({ viaEvent: true }));
+assert.equal(PrivateEvent.full([...namedGuests(MAX_PEOPLE - 1), ...people.slice(1)]), false, 'encore un prénom possible');
+assert.equal(PrivateEvent.full([...namedGuests(MAX_PEOPLE), { viaEvent: true, nameRequired: true }]), true,
+  '200 personnes nommées venues par l’événement : plus de prénom par ce QR');
 
 // Regression: troisième relecture finale (P3-1, S3-1) — les places sans
 // prénom de plus de 10 minutes ne comptaient plus, mais rien ne les retirait :
@@ -165,9 +173,10 @@ assert.equal(PrivateEvent.present(new Map(people.map((p, i) => [i, p])).values()
 // Abandonnée : venue par l'événement, sans prénom ni clé personnelle, pas
 // partie, ouverte il y a 10 minutes ou plus, jamais relue par sa page
 // (lastSeen au plus une seconde après l'ouverture) et sans aucune action.
-const opened = { viaEvent: true, nameRequired: true, joinedAt: now - PLACEHOLDER_COUNT_MS, lastSeen: now - PLACEHOLDER_COUNT_MS + 1000 };
+assert.equal(PLACEHOLDER_ABANDON_MS, 10 * 60000);
+const opened = { viaEvent: true, nameRequired: true, joinedAt: now - PLACEHOLDER_ABANDON_MS, lastSeen: now - PLACEHOLDER_ABANDON_MS + 1000 };
 assert.equal(PrivateEvent.abandoned(opened, now), true);
-assert.equal(PrivateEvent.abandoned({ ...opened, joinedAt: now - PLACEHOLDER_COUNT_MS + 1, lastSeen: now - PLACEHOLDER_COUNT_MS + 1 }, now), false,
+assert.equal(PrivateEvent.abandoned({ ...opened, joinedAt: now - PLACEHOLDER_ABANDON_MS + 1, lastSeen: now - PLACEHOLDER_ABANDON_MS + 1 }, now), false,
   'moins de 10 minutes : gardée');
 assert.equal(PrivateEvent.abandoned({ ...opened, lastSeen: opened.joinedAt + 1001 }, now), false, 'page relue après l’ouverture : gardée');
 assert.equal(PrivateEvent.abandoned({ ...opened, lastActionAt: now - 1 }, now), false, 'une action : gardée');

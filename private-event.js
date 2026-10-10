@@ -8,18 +8,22 @@ const SECRET_RE = /^[A-Za-z0-9_-]{22}$/;
 // page du bar restent lisibles même si quelqu'un scanne en boucle. Un même
 // appareil (adresse IPv4, ou préfixe /64 en IPv6, voir clientKey) crée au plus
 // 30 chanteurs par minute (assez pour un Wi-Fi qui sort par une seule adresse
-// publique), tout le bar 120 ; au plus 200 personnes présentes venues par
-// l'événement, dont les places sans prénom des 10 dernières minutes, et au
-// plus 400 fiches venues par l'événement (pas parties), quel que soit leur âge.
+// publique), tout le bar 120 ; au plus 200 personnes nommées présentes venues
+// par l'événement (vérifié à la création d'une place et à son premier
+// prénom), et au plus 400 fiches venues par l'événement (pas parties),
+// nommées ou non, quel que soit leur âge.
 // 200 : valeur mesurée (seconde passe de la quatrième relecture finale). Chaque
 // écriture acceptée fait recalculer toute la prévision, O(titres × chanteurs) :
 // avec trois titres par invité, environ 0,2 s à 200 invités, 0,3 s à 250 et
-// 0,7 s à 400, où le serveur ne suit plus un ajout de titre par seconde.
+// 0,7 s à 400, où le serveur ne suit plus un ajout de titre par seconde. Une
+// place sans prénom n'a aucun titre et ne coûte rien à la prévision : elle ne
+// compte que dans les 400 fiches (bornées aussi par les limites par minute et
+// le ménage des places abandonnées).
 const CREATIONS_PER_MINUTE = 120;
 const CLIENT_CREATIONS_PER_MINUTE = 30;
 const MAX_PEOPLE = 200;
 const MAX_EVENT_PEOPLE = 2 * MAX_PEOPLE;
-const PLACEHOLDER_COUNT_MS = 10 * 60000;
+const PLACEHOLDER_ABANDON_MS = 10 * 60000;
 
 // Appareil d'une adresse réseau : l'adresse IPv4 (aussi quand elle arrive
 // mappée, ::ffff:a.b.c.d), ou les quatre premiers groupes d'une adresse IPv6
@@ -100,29 +104,31 @@ class PrivateEvent {
     return crypto.timingSafeEqual(digest(this.secret), digest(token));
   }
 
-  // Personnes qui comptent dans le plafond : venues par l'événement, présentes,
-  // nommées ; une place encore sans prénom seulement pendant 10 minutes (elle
-  // reste nommable ensuite, sans plus occuper l'événement).
-  static present(people, now = Date.now()) {
+  // Personnes qui comptent dans le plafond (MAX_PEOPLE) : venues par
+  // l'événement, présentes et nommées. Une place encore sans prénom n'y compte
+  // pas, quel que soit son âge (seulement dans held).
+  static present(people) {
     let count = 0;
-    for (const person of people) {
-      if (!person?.viaEvent || person.withdrawnAt) continue;
-      if (!person.nameRequired || now - (Number(person.joinedAt) || 0) < PLACEHOLDER_COUNT_MS) count++;
-    }
+    for (const person of people) if (person?.viaEvent && !person.withdrawnAt && !person.nameRequired) count++;
     return count;
   }
 
+  // Premier prénom d'une place venue par l'événement : il la ferait compter
+  // dans le plafond, refusé une fois celui-ci atteint (comme une création).
+  static full(people) {
+    return PrivateEvent.present(people) >= MAX_PEOPLE;
+  }
+
   // Place sans prénom du QR de l'événement abandonnée : ouverte il y a 10
-  // minutes ou plus (elle ne compte déjà plus), jamais relue par sa page
-  // (lastSeen au plus une seconde après l'ouverture : touchSeen le change dès
-  // la première relecture visible qui suit cette seconde) et sans aucune
-  // action. Ni partie
-  // (laissée au bar), ni venue par un QR personnel. Le serveur vérifie en plus
-  // qu'elle n'a aucun titre, puis la retire sans trace avant chaque création.
+  // minutes ou plus, jamais relue par sa page (lastSeen au plus une seconde
+  // après l'ouverture : touchSeen le change dès la première relecture visible
+  // qui suit cette seconde) et sans aucune action. Ni partie (laissée au bar),
+  // ni venue par un QR personnel. Le serveur vérifie en plus qu'elle n'a aucun
+  // titre, puis la retire sans trace avant chaque création.
   static abandoned(person, now = Date.now()) {
     if (!person?.viaEvent || !person.nameRequired || person.withdrawnAt || person.soloKeyHash || person.lastActionAt) return false;
     const joinedAt = Number(person.joinedAt) || 0;
-    return now - joinedAt >= PLACEHOLDER_COUNT_MS && (Number(person.lastSeen) || 0) <= joinedAt + 1000;
+    return now - joinedAt >= PLACEHOLDER_ABANDON_MS && (Number(person.lastSeen) || 0) <= joinedAt + 1000;
   }
 
   // Fiches venues par l'événement et pas parties, nommées ou non, de tout âge.
@@ -168,4 +174,4 @@ class PrivateEvent {
   }
 }
 
-module.exports = { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, MAX_EVENT_PEOPLE, PLACEHOLDER_COUNT_MS, clientKey };
+module.exports = { PrivateEvent, CREATIONS_PER_MINUTE, CLIENT_CREATIONS_PER_MINUTE, MAX_PEOPLE, MAX_EVENT_PEOPLE, PLACEHOLDER_ABANDON_MS, clientKey };

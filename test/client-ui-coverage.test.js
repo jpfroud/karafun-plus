@@ -3203,6 +3203,32 @@ test('événement privé en anglais : titre, attente et « Try again » ; plafon
   }
 });
 
+// Vérification de la seconde passe de la quatrième relecture finale (adverse) :
+// le serveur revérifie le plafond de l'événement au premier prénom d'une place.
+// La fenêtre de prénom affiche ce refus, dans la langue du téléphone, et reste
+// ouverte ; la page n'est pas un lien invalide.
+test('événement privé complet au moment du prénom : la fenêtre affiche le refus (FR et EN) et reste ouverte', async () => {
+  for (const languages of [['fr'], ['en']]) {
+    const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
+      if (url === '/api/table/enter') {
+        self.state.tablePeople = [person('s4', 'Solo 4', { nameRequired: true, viaEvent: true })];
+        self.state.managedIds = ['s4'];
+        return { id: 's4', token: 'jeton-s4', nameRequired: true };
+      }
+      return url === '/api/table/person/rename'
+        ? reply(403, { error: 'L’événement est complet par ce QR : demande au bar un QR individuel.', code: 'PRIVATE_EVENT_FULL' }) : undefined;
+    }, { languages });
+    assert.equal(page.node('nameGate').hidden, false);
+    page.node('nameGateInput').value = 'Léa';
+    await page.submit('nameGateForm');
+    assert.equal(page.node('nameGateError').textContent, languages[0] === 'fr'
+      ? 'L’événement est complet par ce QR : demande au bar un QR individuel.'
+      : 'This event is full through this QR code: ask the bar for a personal QR code.');
+    assert.equal(page.node('nameGate').hidden, false, 'la fenêtre reste ouverte');
+    assert.equal(page.node('fatalBox').hidden, true, 'un refus du prénom n’est pas un lien invalide');
+  }
+});
+
 // Regression: relecture finale (ADV3) — sur un navigateur qui venait de
 // rescanner le QR de l'événement (« Solo N » sans prénom), la fenêtre de
 // prénom cachait le lien de transfert et la clé personnelle.

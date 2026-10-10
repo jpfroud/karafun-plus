@@ -2435,6 +2435,14 @@ function eventClient(req) {
   return typeof edge === 'string' && edge.trim() ? `cf:${clientKey(edge.slice(0, 64))}` : null;
 }
 
+// Plafond de l'événement atteint (création d'une place ou son premier
+// prénom) : 403, sans nouvel essai automatique, le bar donne un QR individuel.
+function privateEventFullError() {
+  const error = new Error('L’événement est complet par ce QR : demande au bar un QR individuel.');
+  error.code = 'PRIVATE_EVENT_FULL';
+  return error;
+}
+
 // Place provisoire retirée sans trace (rien au journal tant qu'il n'y a pas
 // de prénom) : son téléphone ne gère plus personne.
 function dropPlaceholder(person) {
@@ -2481,16 +2489,13 @@ function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent
   let person = null, admittedAt = null;
   try {
     if (viaEvent) {
-      // Les personnes marquées parties libèrent leur place ; une place sans
-      // prénom ne compte que ses 10 premières minutes. Plafond dur : 400
-      // fiches de l'événement pas parties (PrivateEvent.held).
-      const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values(), now), client, now,
+      // Seules les personnes nommées et présentes comptent (les parties
+      // libèrent leur place, une place sans prénom ne coûte rien à la
+      // prévision) ; le premier prénom d'une place revérifie ce plafond.
+      // Plafond dur : 400 fiches de l'événement pas parties (PrivateEvent.held).
+      const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values()), client, now,
         PrivateEvent.held(sched.people.values()));
-      if (admitted === 'full') {
-        const full = new Error('L’événement est complet par ce QR : demande au bar un QR individuel.');
-        full.code = 'PRIVATE_EVENT_FULL';
-        throw full;
-      }
+      if (admitted === 'full') throw privateEventFullError();
       if (admitted !== 'ok') {
         const busy = new Error('Trop d’inscriptions d’un coup : réessaie dans une minute.');
         busy.code = 'PRIVATE_EVENT_BUSY';
@@ -3605,6 +3610,10 @@ const handlers = {
   'POST /api/table/person/claim': async (req, res, body) => claimPersonDurably(body, req, res),
   'POST /api/table/person/rename': async (req, res, body) => {
     const p = personAtTable(body);
+    // Premier prénom d'une place du QR de l'événement : elle compte alors dans
+    // le plafond des personnes nommées, revérifié ici comme à la création (une
+    // place ouverte avant que l'événement soit complet ne le dépasse pas).
+    if (p.viaEvent && p.nameRequired && PrivateEvent.full(sched.people.values())) throw privateEventFullError();
     try { sched.rename(p, body.name); }
     catch (error) {
       if (error.code === 'NAME_TAKEN' && sched.table(p.tableId, false)?.individual) error.recoverable = nameRecoverable(req, p, body.name);
