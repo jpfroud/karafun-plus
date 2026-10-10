@@ -2518,29 +2518,32 @@ function sweepAbandonedEventPlaces(now = Date.now()) {
 // sauvegardée le laisse fait, avec son numéro de version (les pages le voient).
 function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent = false } = {}) {
   const now = Date.now();
-  if (viaEvent) sweepAbandonedEventPlaces(now);
-  const before = { log: sched.log.slice(), version: sched.version, invitations: soloInvitations.serialize(),
-    cookie: res.getHeader('Set-Cookie') };
   const client = eventClient(req);
   let person = null, admittedAt = null;
-  try {
-    if (viaEvent) {
-      // Seules les personnes nommées et présentes comptent (les parties
-      // libèrent leur place, une place sans prénom ne coûte rien à la
-      // prévision) ; le premier prénom d'une place revérifie ce plafond.
-      // Plafond dur : 400 fiches de l'événement, pas parties ou parties
-      // d'elles-mêmes (PrivateEvent.held).
-      const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values()), client, now,
-        PrivateEvent.held(sched.people.values()));
-      if (admitted === 'full') throw privateEventFullError();
-      if (admitted !== 'ok') {
-        const busy = new Error('Trop d’inscriptions d’un coup : réessaie dans une minute.');
-        busy.code = 'PRIVATE_EVENT_BUSY';
-        busy.retryAfter = privateEvent.retryAfter(client, now);
-        throw busy;
-      }
-      admittedAt = now;
+  if (viaEvent) {
+    sweepAbandonedEventPlaces(now);
+    // Seules les personnes nommées et présentes comptent (les parties
+    // libèrent leur place, une place sans prénom ne coûte rien à la
+    // prévision) ; le premier prénom d'une place revérifie ce plafond.
+    // Plafond dur : 400 fiches de l'événement, pas parties ou parties
+    // d'elles-mêmes (PrivateEvent.held). Un refus ne change rien et n'écrit
+    // rien, pas même `version` (relecture finale fraîche) : une écriture
+    // oublierait la prévision gardée, et chaque refus, ou chaque nouvel essai
+    // d'un téléphone pendant une affluence, la ferait recalculer.
+    const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values()), client, now,
+      PrivateEvent.held(sched.people.values()));
+    if (admitted === 'full') throw privateEventFullError();
+    if (admitted !== 'ok') {
+      const busy = new Error('Trop d’inscriptions d’un coup : réessaie dans une minute.');
+      busy.code = 'PRIVATE_EVENT_BUSY';
+      busy.retryAfter = privateEvent.retryAfter(client, now);
+      throw busy;
     }
+    admittedAt = now;
+  }
+  const before = { log: sched.log.slice(), version: sched.version, invitations: soloInvitations.serialize(),
+    cookie: res.getHeader('Set-Cookie') };
+  try {
     person = sched.join({ tableId: table.id, name: placeholderName(table.id), nameRequired: true });
     if (invitation) {
       soloInvitations.consume(invitation, table.id);
@@ -2557,7 +2560,9 @@ function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent
     if (admittedAt !== null) privateEvent.release(admittedAt, client);
     soloInvitations.restore(before.invitations);
     sched.log = before.log;
-    sched.version = before.version;
+    // Version inchangée : rien de ce qu'elle couvre n'a bougé, la prévision
+    // gardée reste juste (pas de réécriture, voir Scheduler#version).
+    if (sched.version !== before.version) sched.version = before.version;
     if (before.cookie === undefined) res.removeHeader('Set-Cookie');
     else res.setHeader('Set-Cookie', before.cookie);
     throw error;
@@ -2679,7 +2684,9 @@ function joinPersonDurably(req, res, table, body, photo = null) {
     table.headcount = before.headcount;
     soloInvitations.restore(before.invitations);
     sched.log = before.log;
-    sched.version = before.version;
+    // Inscription refusée avant tout changement (prénom déjà pris…) : la
+    // version n'a pas bougé et n'est pas réécrite (prévision gardée).
+    if (sched.version !== before.version) sched.version = before.version;
     if (before.cookie === undefined) res.removeHeader('Set-Cookie');
     else res.setHeader('Set-Cookie', before.cookie);
     throw error;
@@ -2793,8 +2800,9 @@ function claimPerson(body, req, res) {
   }
   const saved = personShareCodes.get(p.id);
   if (body.key !== undefined) {
-    // Même règle que l'ouverture du QR (openSoloInvitation, D2).
-    if (keyHolder(body.key, t)?.withdrawnAt) throw personLeftError();
+    // Même règle que l'ouverture du QR (openSoloInvitation, D2). Personne
+    // marquée partie (PERSON_LEFT) : refusée avant, par claimPersonDurably,
+    // seul appelant, qui résout la clé.
     if (keyTarget(body.key, t)?.id !== p.id) throw soloKeyRevokedError();
   } else if (body.link !== undefined) {
     // Le lien contient un secret de 128 bits : pas de limite de tentatives.
@@ -4020,7 +4028,18 @@ const handlers = {
       const dropped = [...sched.people.values()].filter(p => p.viaEvent && p.nameRequired && !sched.songsOf(p).length);
       dropped.forEach(dropPlaceholder);
       if (dropped.length) sched.version++;
-      sched.note('Nouveau QR d’événement privé : l’ancien est refusé, les inscrits gardent leur accès.', 'staff');
+      // Les personnes de l'ancien QR parties d'elles-mêmes libèrent leur fiche
+      // (relecture finale fraîche, décision du gérant) : un script entrée,
+      // prénom, un titre puis « Je pars » ne ferme plus le QR pour la soirée,
+      // le plafond des fiches vaut pour chaque QR. Comme un départ marqué par
+      // le bar (withdrawnBy « staff », sauvegardé), la fiche et son historique
+      // restent. Couper puis rallumer le mode ne libère rien.
+      let freed = 0;
+      for (const p of sched.people.values()) {
+        if (p.viaEvent && p.withdrawnAt && p.withdrawnBy === 'self') { p.withdrawnBy = 'staff'; freed++; }
+      }
+      sched.note(`Nouveau QR d’événement privé : l’ancien est refusé, les inscrits gardent leur accès.${freed ?
+        ` Fiches libérées (parties d’elles-mêmes) : ${freed}.` : ''}`, 'staff');
     }
     journalSettings(before);
     return privateEventView();
@@ -4345,6 +4364,15 @@ const handlers = {
     const byEntry = body.stageEntryId != null && body.stageEntryId !== '';
     const target = byEntry ? staffDuoTarget(body) :
       staffDuoTarget({ queueId: body.queueId }, 'Choisis un passage solo encore visible dans KaraFun.');
+    const { current } = analyze();
+    // Titre suivi pas encore commencé (chargé ou en attente dans KaraFun) :
+    // refusé, comme sur la page du bar qui n'envoie que le titre sur scène
+    // (relecture finale fraîche). Noté avant son passage puis sauté, il
+    // laissait le dernier passage de l'invitée au-delà du compteur des
+    // passages.
+    if (!byEntry && !target.tr.startedAt && !isOnStage(target.tr, current)) {
+      throw new Error('Ce titre n’a pas encore commencé : note le duo pendant la chanson en cours.');
+    }
     const record = staffDuoRecord(target);
     const holder = target.tr ? target.tr.sel : target.entry;
     if (body.replace && !record && holder.ids.length !== 1) throw new Error('Aucun duo noté par le bar sur ce passage.');
@@ -4364,7 +4392,6 @@ const handlers = {
       previous = sched.people.get(record.partnerId);
       undoText = undoStaffDuo(target, record);
     }
-    const { current } = analyze();
     const ownerId = holder.ids[0];
     // Ses titres déjà chargés dans KaraFun gardent le duo dans leur reçu : si
     // l'un est retiré sans être chanté, le duo compte toujours pour lui.
@@ -4813,6 +4840,7 @@ async function main() {
     stageClock = recovered.stageClock;
     recoveredPending = recovered.recoveredPending;
     appLog(`Soirée restaurée : ${sched.tables.size} tables, ${sched.people.size} personnes, ${sched.Q.length} tickets.`);
+    for (const warning of recovered.warnings) appLog(`Sauvegarde de soirée réparée : ${warning}.`);
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');
   } else loadTables();
   ensureSoloGroup();

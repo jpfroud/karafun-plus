@@ -318,6 +318,12 @@ NightStateStore.prototype.save = function(snapshot, options) {
     const playing = { key: '9001', segAt: Date.now() - 42000, mediaMs: 15000, rate: 1.1, paused: false, position: 15 };
     // Chœurs par défaut relevés sur un KaraFun lors de cette soirée (empreinte du code).
     const kfDefaults = { code: 'a1b2c3d4e5f60718', backing: 80 };
+    // Regression: relecture finale fraîche (équipe rouge) — un dernier passage
+    // au-delà du compteur des passages dans la sauvegarde empêchait
+    // l'application de démarrer (« Impossible de démarrer ») : il est ramené au
+    // compteur, avec un avertissement au journal du serveur.
+    const serial = beforeCrash.scheduler.appearanceSerial;
+    beforeCrash.scheduler.people.find(person => person.id === alice.id).lastAppearanceTurn = serial + 3;
     store.save({ ...beforeCrash, stageClock: playing, settings: { ...beforeCrash.settings, karafunDefaults: kfDefaults } });
     second = await launch();
     state = await second.staff();
@@ -335,7 +341,13 @@ NightStateStore.prototype.save = function(snapshot, options) {
       'sauvegarde écrite après le redémarrage');
     assert.deepEqual(afterRestart.stageClock, playing, 'l’horloge du titre sur scène survit au redémarrage');
     assert.deepEqual(afterRestart.settings.karafunDefaults, kfDefaults, 'chœurs par défaut gardés après un crash');
-    console.log('ok - crash : événement privé, son QR et l’horloge de la scène restaurés');
+    assert.equal(afterRestart.scheduler.people.find(person => person.id === alice.id).lastAppearanceTurn, serial,
+      'dernier passage ramené au compteur des passages');
+    const serverLog = fs.readdirSync(path.join(sandbox, 'journal')).filter(name => name.startsWith('serveur-'))
+      .map(name => fs.readFileSync(path.join(sandbox, 'journal', name), 'utf8')).join('');
+    assert.ok(serverLog.includes(`Sauvegarde de soirée réparée : dernier passage ${serial + 3} de la personne ${alice.id}`),
+      'la réparation est notée au journal du serveur');
+    console.log('ok - crash : événement privé, son QR, l’horloge de la scène et un compteur des passages abîmé restaurés');
     assert.equal((await second.ok('/api/state?' + new URLSearchParams({
       table: 'Comptoir', access: soloAccess, reprise,
     }))).transferOffer.personId, solo.id, 'le lien est reconnu après le redémarrage');

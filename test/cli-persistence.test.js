@@ -455,8 +455,14 @@ test('Sauvegarde : une écriture interrompue garde le compteur et se réessaie',
   assert.throws(() => new NightStateStore(''), /Chemin de sauvegarde manquant\./);
 });
 
-test('Reprise : passages physiques et compteur de passages abîmés sont refusés', () => {
-  const { sched, access, alice } = night();
+// Regression: relecture finale fraîche (équipe rouge) — un compteur dérivé en
+// désaccord (dernier passage d'une personne au-delà du compteur des passages,
+// personne du tour inconnue), que l'application en marche tolère et
+// sauvegarde toutes les deux secondes, faisait refuser toute la soirée : elle
+// ne redémarrait plus. Il est réparé à la reprise, avec un avertissement ; une
+// valeur qui n'est pas un entier positif reste refusée.
+test('Reprise : passages physiques et compteur abîmés refusés ; compteurs dérivés en désaccord réparés et signalés', () => {
+  const { sched, access, alice, bob } = night();
   const base = snapshotNight({ scheduler: sched, access, settings: settings() });
   for (const value of [-1, 2.5, '3']) {
     const snapshot = structuredClone(base);
@@ -466,10 +472,25 @@ test('Reprise : passages physiques et compteur de passages abîmés sont refusé
   const behind = structuredClone(base);
   behind.scheduler.people.find(p => p.id === alice.id).lastAppearanceTurn = 5;
   behind.scheduler.appearanceSerial = 2;
-  assertRefused(behind, 'compteur des passages physiques mal formé');
-  const negative = structuredClone(base);
-  negative.scheduler.appearanceSerial = -1;
-  assertRefused(negative, 'compteur des passages physiques mal formé');
+  behind.scheduler.roundPeople = [bob.id, 'a1b2c3d4e5f6'];
+  const { scheduler, result } = restore(behind);
+  assert.equal(scheduler.people.get(alice.id).lastAppearanceTurn, 2, 'dernier passage ramené au compteur');
+  assert.equal(scheduler.appearanceSerial, 2, 'le compteur ne bouge pas');
+  assert.deepEqual([...scheduler.roundPeople], [bob.id], 'personne du tour inconnue oubliée');
+  assert.deepEqual(result.warnings, [
+    `dernier passage 5 de la personne ${alice.id} au-delà du compteur des passages 2 : ramené à 2`,
+    '1 personne du tour inconnue oubliée']);
+  const strangers = structuredClone(base);
+  strangers.scheduler.roundPeople = ['a1b2c3d4e5f6', bob.id, 'b1b2c3d4e5f6'];
+  const twice = restore(strangers);
+  assert.deepEqual([...twice.scheduler.roundPeople], [bob.id]);
+  assert.deepEqual(twice.result.warnings, ['2 personnes du tour inconnues oubliées']);
+  assert.deepEqual(restore(structuredClone(base)).result.warnings, [], 'sauvegarde juste : aucun avertissement');
+  for (const serial of [-1, 2.5, '2']) {
+    const broken = structuredClone(base);
+    broken.scheduler.appearanceSerial = serial;
+    assertRefused(broken, 'compteur des passages physiques mal formé');
+  }
 
   // Ancienne sauvegarde sans compteur : il repart du dernier passage connu.
   const legacy = structuredClone(base);

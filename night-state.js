@@ -280,11 +280,30 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   tmp.appearanceSerial = data.appearanceSerial == null ?
     Math.max(0, ...[...tmp.people.values()].map(p => p.lastAppearanceTurn || 0)) :
     data.appearanceSerial;
-  if (!Number.isSafeInteger(tmp.appearanceSerial) || tmp.appearanceSerial < 0 ||
-      [...tmp.people.values()].some(p => (p.lastAppearanceTurn || 0) > tmp.appearanceSerial)) {
+  if (!Number.isSafeInteger(tmp.appearanceSerial) || tmp.appearanceSerial < 0) {
     fail('compteur des passages physiques mal formé');
   }
-  if ([...tmp.roundPeople].some(pid => !tmp.people.has(pid))) fail('personne du tour inconnue');
+  // Compteurs dérivés en désaccord (relecture finale fraîche, équipe rouge) :
+  // l'application en marche les tolère et les sauvegarde toutes les deux
+  // secondes, et refuser toute la soirée l'empêchait de redémarrer. Un
+  // dernier passage au-delà du compteur est ramené au compteur (la personne
+  // passe pour la dernière montée sur scène : l'espacement la fait attendre
+  // le plus) ; une personne du tour inconnue est oubliée, comme celles des
+  // crédits de tour. Chaque réparation est rendue (warnings), pour le journal
+  // du serveur.
+  const warnings = [];
+  for (const p of tmp.people.values()) {
+    if ((p.lastAppearanceTurn || 0) <= tmp.appearanceSerial) continue;
+    warnings.push(`dernier passage ${p.lastAppearanceTurn} de la personne ${p.id} au-delà du compteur des passages ` +
+      `${tmp.appearanceSerial} : ramené à ${tmp.appearanceSerial}`);
+    p.lastAppearanceTurn = tmp.appearanceSerial;
+  }
+  const strangers = [...tmp.roundPeople].filter(pid => !tmp.people.has(pid));
+  strangers.forEach(pid => tmp.roundPeople.delete(pid));
+  if (strangers.length) {
+    warnings.push(strangers.length === 1 ? '1 personne du tour inconnue oubliée' :
+      `${strangers.length} personnes du tour inconnues oubliées`);
+  }
   if (data.roundPeoplePhysical != null && typeof data.roundPeoplePhysical !== 'boolean') {
     fail('version du tour physique mal formée');
   }
@@ -424,7 +443,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize(),
     transfers: restoredTransfers, evening, stageClock: sanitizeClock(snapshot.stageClock),
     // Champ ajouté avec l'événement privé : absent ou abîmé = mode coupé.
-    privateEvent: PrivateEvent.normalize(snapshot.privateEvent) };
+    privateEvent: PrivateEvent.normalize(snapshot.privateEvent), warnings };
 }
 
 // À utiliser uniquement après le premier instantané QueueEvent frais de

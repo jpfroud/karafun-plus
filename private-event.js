@@ -16,7 +16,9 @@ const SECRET_RE = /^[A-Za-z0-9_-]{22}$/;
 // de la relecture finale : une boucle prénom puis départ libérait sa fiche à
 // chaque tour et n'était jamais arrêtée). Une personne marquée partie par le
 // bar libère sa fiche ; une personne de l'événement qui part d'elle-même sans
-// aucun historique ne laisse pas de fiche (server.js, POST /api/leave).
+// aucun historique ne laisse pas de fiche (server.js, POST /api/leave) ;
+// « Renouveler le QR » libère les fiches parties d'elles-mêmes de l'ancien
+// QR : les 400 fiches valent pour chaque QR.
 // 200 : valeur mesurée (seconde passe de la quatrième relecture finale). Chaque
 // écriture acceptée fait recalculer toute la prévision, O(titres × chanteurs) :
 // avec trois titres par invité, environ 0,2 s à 200 invités, 0,3 s à 250 et
@@ -139,7 +141,9 @@ class PrivateEvent {
   // Fiches venues par l'événement, nommées ou non, de tout âge : pas parties,
   // ou parties d'elles-mêmes (withdrawnBy « self », scheduler.leave, gardé
   // par la sauvegarde). Marquée partie par le bar, ou partie dans une
-  // sauvegarde d'avant ce champ, une personne libère sa fiche.
+  // sauvegarde d'avant ce champ, une personne libère sa fiche ; « Renouveler
+  // le QR » libère celles de l'ancien QR parties d'elles-mêmes (server.js,
+  // withdrawnBy « staff »).
   static held(people) {
     let count = 0;
     for (const person of people) if (person?.viaEvent && (!person.withdrawnAt || person.withdrawnBy === 'self')) count++;
