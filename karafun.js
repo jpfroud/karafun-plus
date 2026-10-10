@@ -694,15 +694,15 @@ class KaraFunBridge extends EventEmitter {
   }
 
   _restart(code, sameCode) {
+    // Autre installation : chœurs par défaut à relever de nouveau. Le même
+    // KaraFun peut continuer sous un nouveau code avec des chœurs réglés en
+    // direct : chaîne inconnue, et des chœurs déjà changés (même avant une
+    // coupure) ne sont jamais relevés (forgetDefaults).
+    if (!sameCode) this.forgetDefaults();
     this.disconnect();
     this._appLeftChecked = false;
     if (!sameCode) {
       this.bestPermissions = null; this.permissionWarning = null;
-      // Autre installation : chœurs par défaut à relever de nouveau (titres
-      // vus se charger et chœurs observés : oubliés par disconnect). Le même
-      // KaraFun peut continuer sous un nouveau code avec des chœurs réglés en
-      // direct : chaîne inconnue, comme pour un pont neuf.
-      this.forgetDefaults();
       this.nameConflictSince = null; this.nameConflictTries = 0;
       this._tries = 0; this._failures = 0;
       // Nouveau code : l'URL de l'ancien est oubliée, pas le budget de l'heure ;
@@ -1403,8 +1403,16 @@ class KaraFunBridge extends EventEmitter {
 
   // Nouvelle soirée ou nouveau code : chœurs par défaut à relever de nouveau,
   // provisoires jusqu'à une remise par KaraFun au chargement (_observeDefaults).
-  forgetDefaults() {
-    this.observedDefaults = {}; this._backingChanged = false; this.provisionalDefaults = false;
+  // `keepConfirmed` (nouvelle soirée) : une valeur confirmée par une telle
+  // remise reste pour ce code. Les chœurs changés depuis le démarrage du pont
+  // (_backingChanged : par la file, par des options de titre, en direct, ou
+  // vus à une autre valeur que la valeur connue), même avant une coupure, le
+  // restent : ceux qu'un KaraFun « collant » en garde au titre suivant ne sont
+  // jamais relevés, seulement une remise au chargement. Sans chœurs changés,
+  // la valeur est relevée de nouveau au titre suivant, comme pour un pont neuf.
+  forgetDefaults({ keepConfirmed = false } = {}) {
+    if (keepConfirmed && this.observedDefaults.backing != null && !this.provisionalDefaults) return;
+    this.observedDefaults = {}; this.provisionalDefaults = false;
     this._carriedUnseen = true;
   }
 
@@ -1412,7 +1420,7 @@ class KaraFunBridge extends EventEmitter {
   // KaraFun relancé renumérote sa file depuis 1, un titre vu se charger ou
   // observé avant ne dit rien du titre de même numéro d'après. Les chœurs
   // par défaut relevés (observedDefaults, provisionalDefaults) et les
-  // chœurs changés pendant la soirée (_backingChanged) restent. Les chœurs
+  // chœurs changés (_backingChanged, jamais oubliés) restent. Les chœurs
   // laissés au titre suivant, eux, ne sont plus connus (réglés en direct
   // pendant la coupure, ou par un titre vu en pleine chanson) : dès qu'un
   // titre a été vu ou des chœurs envoyés, la chaîne passe pour inconnue
@@ -1468,22 +1476,27 @@ class KaraFunBridge extends EventEmitter {
       if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
       return;
     }
-    if (status.state >= 4 && !this.seenLoading(current.id)) { this._carriedUnseen = true; return; }
-    if (backing == null) return;
-    if (carried != null && backing !== carried) {
+    if (status.state >= 4 && !this.seenLoading(current.id)) this._carriedUnseen = true;
+    else if (backing == null) return;
+    else if (carried != null && backing !== carried) {
       this.observedDefaults.backing = backing;
       this.provisionalDefaults = false;
       this._carriedUnseen = false;
     } else if (this._carriedUnseen) {
       if (this.observedDefaults.backing == null && !this._backingChanged) { this.observedDefaults.backing = backing; this.provisionalDefaults = true; }
     } else if (!this._backingChanged) this.observedDefaults.backing = backing;
+    // Titre vu à d'autres chœurs que la valeur connue, sans remise par KaraFun
+    // au chargement (réglés avant un redémarrage, pendant une coupure ou en
+    // pleine chanson) : chœurs changés, qu'un KaraFun collant garde au suivant.
+    if (backing != null && this.observedDefaults.backing != null && backing !== this.observedDefaults.backing) this._backingChanged = true;
   }
 
   songSettingsDefaults() { return { ...SETTINGS_DEFAULTS, ...this.observedDefaults }; }
 
   // Chœurs par défaut relevés avant un redémarrage (sauvegarde de la soirée,
   // même code KaraFun) : repris tels quels, jamais réappris de chœurs qu'un
-  // KaraFun « collant » aurait gardés. Une valeur sauvegardée provisoire (un
+  // KaraFun « collant » aurait gardés. Une valeur reprise ne tient pas les
+  // chœurs pour changés (forgetDefaults). Une valeur sauvegardée provisoire (un
   // KaraFun collant ne remet jamais ses chœurs au chargement) reste
   // provisoire : reprise seulement sans valeur confirmée, jamais remplacée
   // par une valeur provisoire relevée ensuite, remplacée par une remise de
@@ -1496,7 +1509,6 @@ class KaraFunBridge extends EventEmitter {
     if (saved.provisional === true && confirmed) return false;
     if (!confirmed) this.observedDefaults.backing = backing;
     this.provisionalDefaults = saved.provisional === true;
-    this._backingChanged = true;
     return true;
   }
 

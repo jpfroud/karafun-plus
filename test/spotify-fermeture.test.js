@@ -1036,6 +1036,9 @@ test('Spotify : pause refusée en 502 pendant un titre, puis Spotify sain : la p
   await ticks(f, clock, 150);
   assert.equal(state.playing, false, 'pause reprise quand Spotify répond de nouveau');
   assert.equal(logs.filter(line => /Spotify rétabli/.test(line)).length, 1, logs.join('\n'));
+  // Relecture finale, quatrième passe (K3) : le journal disait « la relance
+  // automatique reprend » pour une pause reprise.
+  assert.ok(logs.some(line => /Spotify rétabli : la pause automatique reprend\./.test(line)), logs.join('\n'));
 });
 
 test('Spotify : pause toujours refusée en 502 pendant un titre : reprise au plus une fois par 10 minutes', async () => {

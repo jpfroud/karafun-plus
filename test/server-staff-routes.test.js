@@ -790,14 +790,15 @@ test('Spotify : identifiant, adresse de connexion, appareils et options depuis l
   assert.equal(auth.searchParams.get('code_challenge_method'), 'S256');
   assert.equal(view.redirectUri, auth.searchParams.get('redirect_uri'));
 
-  // Connecté (jeton factice) : liste des appareils, sans ceux sans identifiant.
+  // Connecté (jeton factice) : « Vérifier Spotify » garde la liste des
+  // appareils sur le serveur pour la page, sans ceux sans identifiant.
   f.spotify.config.refreshToken = 'renouvellement-factice';
   const { calls } = fakeSpotify(f);
-  const { devices } = plain(await f.call('POST /api/staff/spotify', { action: 'devices' }));
-  assert.deepEqual(devices, [
+  assert.equal(plain(await f.call('POST /api/staff/spotify', { action: 'refresh' })).health.state, 'ready');
+  assert.deepEqual(plain(f.staffState().spotify.devices), [
     { id: 'pc-bar', name: 'PC du bar', type: 'Computer', active: true },
     { id: 'enceinte', name: 'Appareil', type: 'Speaker', active: false }]);
-  assert.deepEqual(calls.map(c => c[1]), ['https://accounts.spotify.com/api/token', '/me/player/devices']);
+  assert.deepEqual(calls.map(c => c[1]), ['https://accounts.spotify.com/api/token', '/me/player/devices', '/me/player']);
 
   // Choix d'un appareil : vérifié tout de suite, type repris de la liste.
   calls.length = 0;
@@ -829,13 +830,16 @@ test('Spotify : identifiant, adresse de connexion, appareils et options depuis l
 
   await assert.rejects(f.call('POST /api/staff/spotify', { action: 'volume' }), { message: 'Action Spotify inconnue.' });
   await assert.rejects(f.call('POST /api/staff/spotify', {}), { message: 'Action Spotify inconnue.' });
+  // L'ancienne liste à la demande n'existe plus : la page lit `devices` de l'état.
+  await assert.rejects(f.call('POST /api/staff/spotify', { action: 'devices' }), { message: 'Action Spotify inconnue.' });
 
   await f.call('POST /api/staff/spotify', { action: 'disconnect' });
   view = plain(f.staffState().spotify);
   assert.equal(view.connected, false);
   assert.equal(view.configured, true, 'l’identifiant de l’application reste');
   assert.equal(view.deviceId, '');
-  await assert.rejects(f.call('POST /api/staff/spotify', { action: 'devices' }), { message: 'Spotify n’est pas connecté.' });
+  assert.deepEqual(view.devices, [], 'liste oubliée à la déconnexion');
+  assert.equal(plain(await f.call('POST /api/staff/spotify', { action: 'refresh' })).health.state, 'disconnected');
 });
 
 test('Spotify : lecture et pause du bar, l’automate ne les défait pas', async () => {

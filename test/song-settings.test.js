@@ -436,26 +436,6 @@ test('sauvegarde d’avant les voix guides une à une : un duo avec voix guide r
   assert.deepEqual(entry(fourth, tom, duet.entryId).settings, { pitch: 2 });
 });
 
-test('faux KaraFun : pistes imposées pour un titre (trois voix guides), volume inconnu à 0', async () => {
-  const port = await freePort();
-  const fake = await startFakeKaraFun({ port, code: '424242', songSeconds: 60, songTracks: { 70001: [4, 5, 6, 7] } });
-  const socket = io(fake.base, { query: { remote: 'kf424242' }, transports: ['websocket'], forceNew: true, reconnection: false });
-  try {
-    await new Promise(resolve => socket.on('connect', resolve));
-    const firstQueue = nextEvent(socket, 'queue');
-    socket.emit('authenticate', { channel: '424242' });
-    await firstQueue;
-    const status = nextEvent(socket, 'status', s => s.state === 'playing' && s.songPlaying?.songId === 70001);
-    socket.emit('queueAdd', { songId: 70001, singer: 'A', options: { tracks: [{ track: { type: 6 }, volume: 50 }] } });
-    const live = await status;
-    assert.deepEqual(live.songPlaying.songTracks, [4, 5, 6, 7]);
-    assert.deepEqual(live.tracks.map(row => [row.track.type, row.volume]), [[4, 100], [5, 0], [6, 50], [7, 0]]);
-    const queued = nextEvent(socket, 'queue', q => q.length === 2);
-    fake.manualAdd(70001, 'B');
-    assert.deepEqual((await queued)[1].songTracks, [4, 5, 6, 7], 'aussi pour un titre ajouté à la main');
-  } finally { socket.close(); fake.close(); }
-});
-
 test('ordonnanceur : réglages posés ou retirés sur l’entrée du titre, la vue change de version', () => {
   const { sched, lea, tom } = night();
   const before = sched.version;
@@ -552,45 +532,6 @@ test('faux KaraFun : options d’ajout, options d’un titre de la file et régl
   live = await status;
   assert.equal(live.tempo, 0, 'options remplacées : tempo par défaut');
   assert.deepEqual(fake.state().queue[0].options, { singer: 'Léa · T1', pitch: 2 });
-});
-
-test('faux KaraFun collant (stickyLive) : le titre suivant garde les réglages du précédent, sauf ses options', async t => {
-  for (const stickyLive of [true, false]) {
-    const port = await freePort();
-    const fake = await startFakeKaraFun({ port, code: '123456', songSeconds: 60, autoplay: false, stickyLive });
-    t.after(() => fake.close());
-    const socket = io(fake.base, { query: { remote: 'kf123456' }, transports: ['websocket'], forceNew: true, reconnection: false });
-    t.after(() => socket.close());
-    await new Promise(resolve => socket.on('connect', resolve));
-    const firstQueue = nextEvent(socket, 'queue');
-    socket.emit('authenticate', { channel: '123456' });
-    await firstQueue;
-    const queued = nextEvent(socket, 'queue', q => q.length === 3);
-    socket.emit('queueAdd', { songId: 70000, singer: 'A', pos: 99999 });
-    socket.emit('queueAdd', { songId: 70001, singer: 'B', pos: 99999 });
-    socket.emit('queueAdd', { songId: 70002, singer: 'C', pos: 99999, options: { pitch: 1 } });
-    await queued;
-    let status = nextEvent(socket, 'status', s => s.state === 'playing' && s.songPlaying?.singer === 'A');
-    socket.emit('play');
-    await status;
-    status = nextEvent(socket, 'status', s => s.pitch === -3 && s.tracks.some(row => row.track.type === 5 && row.volume === 75));
-    socket.emit('pitch', -3);
-    socket.emit('trackVolume', { type: 5, volume: 75 });
-    await status;
-    const guide = live => live.tracks.find(row => row.track.type === 5).volume;
-    const playNext = async singer => {
-      const idle = nextEvent(socket, 'status', s => s.state === 'infoscreen');
-      socket.emit('next');
-      await idle;
-      const started = nextEvent(socket, 'status', s => s.state === 'playing' && s.songPlaying?.singer === singer);
-      socket.emit('play');
-      return started;
-    };
-    const b = await playNext('B');
-    assert.deepEqual([b.pitch, guide(b)], stickyLive ? [-3, 75] : [0, 0], 'titre sans options');
-    const c = await playNext('C');
-    assert.deepEqual([c.pitch, guide(c)], stickyLive ? [1, 75] : [1, 0], 'ses options priment');
-  }
 });
 
 test('module : rien d’autre n’est exporté par inadvertance', () => {

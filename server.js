@@ -862,15 +862,19 @@ function songSettingsTarget(entryId, started) {
 
 // Réglages reçus d'une page : sans la clé `guideVoices` (page gardée en cache
 // d'avant les voix guides par voix), les autres voix guides du titre restent ;
-// sur un duo (`target.ids`), la voix 2 suit la voix guide, comme sur ces pages
-// (et comme à la reprise d'une ancienne sauvegarde, legacyDuoVoice).
+// sur un duo (`target.ids`), la voix 2 suit toujours la voix guide, comme sur
+// ces pages (et comme à la reprise d'une ancienne sauvegarde, legacyDuoVoice) :
+// sans voix guide (remise par défaut), plus de voix 2.
 // Les pages actuelles envoient toujours la clé ({} quand il n'y en a plus).
 function songSettingsInput(input, { song, ids }) {
   if (input != null && (typeof input !== 'object' || Array.isArray(input) || 'guideVoices' in input)) return input;
-  const kept = song?.settings?.guideVoices;
-  const duoVoice = ids?.length > 1 && input?.guide != null ? { [TRACK.LEAD_B]: input.guide } : null;
-  if (!kept && !duoVoice) return input;
-  return { ...(input || {}), guideVoices: { ...kept, ...duoVoice } };
+  const voices = { ...song?.settings?.guideVoices };
+  if (ids?.length > 1) {
+    delete voices[TRACK.LEAD_B];
+    if (input?.guide != null) voices[TRACK.LEAD_B] = input.guide;
+  }
+  if (!Object.keys(voices).length) return input;
+  return { ...(input || {}), guideVoices: voices };
 }
 
 // Enregistre les réglages sur le titre, puis les applique selon où il en est.
@@ -967,8 +971,7 @@ function noteLoadedLive(loadedId) {
   const sameSession = loadedLive?.session === session;
   const fresh = loadedLive?.queueId !== loadedId || (!sameSession && loadedLive.song !== song);
   const kcsState = bridge.status?.kcsState;
-  const seenNow = !Number.isInteger(kcsState) ? !!loadedLive && sameSession : kcsState === 3 ||
-    (typeof bridge.seenLoading === 'function' ? bridge.seenLoading(loadedId) : !!loadedLive);
+  const seenNow = !Number.isInteger(kcsState) ? !!loadedLive && sameSession : kcsState === 3 || bridge.seenLoading(loadedId);
   if (loadedLive && fresh) previousLoaded = sameSession ? loadedLive : null;
   // Vu se charger : décidé au premier état vu du titre, gardé ensuite dans
   // la même session.
@@ -1467,13 +1470,12 @@ function syncStageClock(current, key, now) {
     rate: stageProgress.rateOf(liveFromStatus(bridge.status)?.tempo), position: stageProgress.protocolPosition(bridge.status) });
 }
 
-// Durée du titre sur scène : démo, protocole, catalogue, puis téléphone (bornée).
+// Durée du titre sur scène : démo, catalogue, puis téléphone (bornée).
 // Une Battle n'a pas de durée sûre (phase d'inscription, chanteurs alternés).
 function stageProgressView(current, kind, now) {
   if (!stageClock || stageClock.key !== stageKey(current)) return null;
   const tr = tracked.find(item => isOnStage(item, current));
   const durationSec = kind === 'battle' ? null : stageProgress.stageDuration({ demoSec: fake ? SONG_SECONDS : null,
-    protocolSec: stageProgress.protocolDuration(bridge?.status, bridge?.raw?.status),
     catalogSec: catalogDurations.get(Number(tr?.sel.song.songId ?? current.songId)),
     clientSec: tr?.sel.song.duration });
   return stageProgress.clockView(stageClock, now, durationSec);
@@ -3286,13 +3288,14 @@ async function playKaraFun({ queueId = null } = {}) {
 // fois par 10 minutes et pas quand seul l'appel de relance échoue en 5xx
 // (SpotifyAutomation.recover). Spotify en panne ou sans appareil après cet
 // échec : la panne n'était pas propre à l'appel, la reprise est permise.
-// Rien de repris : rien au journal.
+// Rien de repris : rien au journal ; sinon l'action reprise (pause ou relance).
 async function spotifyCheck() {
   const before = spotify.health.state;
   const health = await spotify.checkHealth();
   if (health.state === 'error' || health.state === 'no-device') spotifyAutomation.checkFailed();
+  const action = spotifyAutomation.failure?.action;
   if (health.state === 'ready' && (before !== 'ready' || health.adopted) && spotifyAutomation.recover()) {
-    appLog('Spotify rétabli : la relance automatique reprend.');
+    appLog(`Spotify rétabli : la ${action === 'pause' ? 'pause' : 'relance'} automatique reprend.`);
   }
   return health;
 }
@@ -3519,10 +3522,11 @@ function clearEvening() {
   // il retirerait ses nouveaux titres à la reconnexion.
   settings.queueClearPending = false;
   queueClearRemovalRequests.clear();
-  // Chœurs par défaut relevés oubliés (sauvegarde et pont) : une valeur
-  // relevée à tort ne dure jamais plus d'une soirée.
-  delete settings.karafunDefaults;
-  bridge?.forgetDefaults?.();
+  // Chœurs par défaut relevés provisoires oubliés (sauvegarde et pont) : une
+  // valeur relevée à tort ne dure jamais plus d'une soirée. Une valeur
+  // confirmée par une remise de KaraFun au chargement reste pour ce KaraFun.
+  if (settings.karafunDefaults?.provisional === true) delete settings.karafunDefaults;
+  bridge?.forgetDefaults?.({ keepConfirmed: true });
   if (stopAuto) settings.auto = false;
   journal.start({ rules: journalRules() });
   phaseKey = null; presenceAskKey = null; lastSampleAt = 0;
@@ -4246,7 +4250,6 @@ const handlers = {
     if (action === 'client') spotify.setClientId(body.clientId);
     else if (action === 'auth-url') return { ok: true, url: spotify.authUrl(spotifyRedirect()) };
     else if (action === 'disconnect') spotify.disconnect();
-    else if (action === 'devices') return { ok: true, devices: await spotify.devices() };
     else if (action === 'device') { spotify.setDevice(body.deviceId, body.deviceName); await spotifyCheck(); }
     else if (action === 'options') spotify.setOptions({
       ...('autoResume' in body ? { autoResume: !!body.autoResume } : {}),

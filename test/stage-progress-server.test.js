@@ -99,6 +99,20 @@ test('notre titre : le temps part de son début sur scène, durée du téléphon
   assert.deepEqual(plain(f.staffState().stage.progress), f.progress(), 'la page du bar reçoit la même barre');
 });
 
+// Relecture finale, quatrième passe (K5) : le départ de notre titre est son
+// début noté (`startedAt`, sauvegardé), pas l'instant où le serveur le voit :
+// relancé d'une sauvegarde sans horloge, le titre ne repart pas de 0:00.
+test('notre titre déjà commencé, sans horloge sauvegardée : le temps part de son début noté', () => {
+  const f = harness();
+  const { tr, item } = f.ours(1, 101, 200);
+  tr.startedAt = T0;
+  f.at(60);
+  assert.equal(f.stageClock(), null, 'aucune horloge reprise');
+  f.play(item);
+  assert.equal(tr.startedAt, T0, 'début gardé');
+  assert.deepEqual(f.progress(), { elapsedSec: 60, durationSec: 200, paused: false, rate: 1 });
+});
+
 test('durée : le catalogue relayé par le serveur passe avant celle envoyée par le téléphone', () => {
   const f = harness();
   f.rememberBattleSongs([{ songId: 101, title: 'Titre 101', artist: 'Artiste', duration: 237 },

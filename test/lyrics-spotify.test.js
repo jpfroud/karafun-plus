@@ -210,7 +210,6 @@ test('Spotify : vérification — 204 sans appareil, jeton refusé, réseau coup
   assert.equal(seen.state, 'no-device', 'un 204 n’est plus « en pause » en vert');
   assert.equal(seen.device, null);
   assert.equal(seen.checkedAt, now);
-  assert.equal(seen.okAt, now, 'Spotify a répondu');
   assert.equal(link.player.isPlaying, false);
   assert.equal(link.lastError, null, 'une vérification réussie efface l’erreur ancienne');
   assert.deepEqual(link.view().devices.map(d => d.id), ['a', 'b'], 'la liste reste sur le serveur pour la page');

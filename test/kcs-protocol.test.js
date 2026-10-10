@@ -1537,7 +1537,11 @@ test('réglages de titre : pont neuf, KaraFun collant qui garde des chœurs rég
 // cours) : la branche « nouveau code » remettait la chaîne à « connue » juste
 // après que la déconnexion l'avait marquée inconnue, et 80 gardé au titre
 // suivant devenait la valeur par défaut définitive.
-test('réglages de titre : nouveau code, même KaraFun avec des chœurs réglés en direct : valeur du titre suivant provisoire', async t => {
+// Regression: relecture finale, quatrième passe (K1) — 80 restait relevé à
+// titre provisoire (sauvegardé, imposé aux titres suivants) : les chœurs
+// laissés par un titre vu avant le nouveau code ne sont plus relevés du tout,
+// seule une remise par KaraFun au chargement donne la valeur.
+test('réglages de titre : nouveau code, même KaraFun avec des chœurs réglés en direct : chœurs gardés jamais relevés, remise relevée', async t => {
   mockTime(t);
   const { bridge, ws, env } = await adminBridge(t);
   t.after(() => bridge.disconnect());
@@ -1556,9 +1560,151 @@ test('réglages de titre : nouveau code, même KaraFun avec des chœurs réglés
   status2('B', 1, 0);
   status2('B', 2, 80);
   status2('B', 3, 80);
-  assert.equal(bridge.observedDefaults.backing, 80);
-  assert.equal(bridge.provisionalDefaults, true, 'réglage en direct gardé par KaraFun : jamais définitif');
+  assert.equal(bridge.observedDefaults.backing, undefined, 'réglage en direct gardé par KaraFun : jamais relevé');
+  assert.equal(bridge.provisionalDefaults, false);
+  // KaraFun remet ses chœurs au chargement du titre suivant : valeur confirmée.
+  status2('C', 1, 0);
+  status2('C', 2, 53);
+  assert.equal(bridge.observedDefaults.backing, 53);
+  assert.equal(bridge.provisionalDefaults, false);
 });
+
+// Relecture finale, quatrième passe (K2) : une session perdue après un titre
+// vu rend la chaîne des chœurs inconnue même avec une valeur confirmée. Des
+// chœurs réglés à 80 dans KaraFun pendant la coupure, gardés par le titre
+// suivant vu se charger dans la nouvelle session, ne la remplacent pas.
+test('réglages de titre : valeur confirmée, coupure, chœurs gardés au titre suivant de la nouvelle session : jamais relevés', async t => {
+  mockTime(t);
+  const { bridge, ws, env } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const status = backingStatus(ws);
+  status('A', 1, 0);
+  status('A', 2, 80);
+  status('A', 3, 80);
+  status('B', 1, 0);
+  status('B', 2, 53); // KaraFun remet ses chœurs au chargement : confirmée
+  status('B', 4, 53);
+  assert.deepEqual([bridge.observedDefaults.backing, bridge.provisionalDefaults], [53, false]);
+  ws.serverClose(1006);
+  t.mock.timers.tick(3000);
+  await flush();
+  const ws2 = env.sockets.at(-1);
+  assert.notEqual(ws2, ws, 'nouvelle connexion');
+  ws2.open();
+  ws2.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+  const status2 = backingStatus(ws2);
+  status2('C', 1, 0);
+  status2('C', 2, 80);
+  status2('C', 3, 80);
+  assert.equal(bridge.observedDefaults.backing, 53, 'chœurs gardés d’avant la coupure : jamais relevés');
+  assert.equal(bridge.provisionalDefaults, false);
+});
+
+// Regression: vérification de la quatrième passe (K1) — chœurs réglés en
+// direct, puis session KCS perdue avant le nouveau code ou « Nouvelle
+// soirée » (l'ancien code cesse de marcher le premier, coupure) :
+// forgetDefaults, sans titre vu dans la session, tenait les chœurs pour
+// inchangés, et 80, gardé au titre suivant par un KaraFun collant, était
+// relevé (provisoire, sauvegardé, imposé ensuite).
+for (const how of ['nouveau code', 'nouvelle soirée']) {
+  test(`réglages de titre : chœurs réglés en direct, session KCS perdue, puis ${how} : chœurs gardés jamais relevés`, async t => {
+    mockTime(t);
+    const { bridge, ws, env } = await adminBridge(t);
+    t.after(() => bridge.disconnect());
+    const status = backingStatus(ws);
+    status('A', 1, 0);
+    status('A', 3, 53);
+    status('A', 4, 80); // réglage en direct
+    assert.deepEqual([bridge.observedDefaults.backing, bridge.provisionalDefaults], [53, true]);
+    ws.serverClose(1006);
+    await flush();
+    if (how === 'nouveau code') bridge.connect('654321');
+    else t.mock.timers.tick(3000);
+    await flush();
+    const ws2 = env.sockets.at(-1);
+    assert.notEqual(ws2, ws, 'nouvelle connexion');
+    ws2.open();
+    ws2.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+    ws2.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: ADMIN_PERMISSIONS } });
+    if (how === 'nouvelle soirée') bridge.forgetDefaults({ keepConfirmed: true }); // KaraFun entre deux titres
+    const status2 = backingStatus(ws2);
+    status2('B', 1, 0);
+    status2('B', 2, 80);
+    status2('B', 3, 80);
+    assert.equal(bridge.observedDefaults.backing, undefined, 'réglage en direct gardé par KaraFun : jamais relevé');
+    assert.equal(bridge.provisionalDefaults, false);
+  });
+}
+
+// Regression: vérification de la quatrième passe (K1) — « Nouvelle soirée »
+// (ou un nouveau code) avec un titre vu dont les chœurs n'ont jamais changé
+// tenait les chœurs pour changés : la valeur provisoire oubliée n'était plus
+// jamais relevée chez un KaraFun collant (pages à 100, chœurs coupés par un
+// titre jamais ramenés). Une valeur reprise de la sauvegarde ne compte pas
+// non plus pour des chœurs changés.
+for (const start of ['pont neuf', 'valeur provisoire reprise']) {
+  test(`réglages de titre : ${start}, chœurs jamais changés, « Nouvelle soirée » avec un titre sur scène : valeur relevée de nouveau`, async t => {
+    mockTime(t);
+    const { bridge, ws } = await adminBridge(t);
+    t.after(() => bridge.disconnect());
+    if (start !== 'pont neuf') assert.equal(bridge.restoreDefaults({ backing: 53, provisional: true }), true);
+    const status = backingStatus(ws);
+    for (const id of ['B', 'C']) { status(id, 1, 0); status(id, 2, 53); status(id, 3, 53); status(id, 4, 53); }
+    assert.deepEqual([bridge.observedDefaults.backing, bridge.provisionalDefaults], [53, true]);
+    bridge.forgetDefaults({ keepConfirmed: true });
+    assert.equal(bridge.observedDefaults.backing, undefined, 'valeur provisoire oubliée');
+    status('D', 1, 0);
+    status('D', 2, 53);
+    assert.deepEqual([bridge.observedDefaults.backing, bridge.provisionalDefaults], [53, true], 'relevée de nouveau, provisoire');
+    assert.equal(bridge.snapshot().songSettings.defaults.backing, 53);
+  });
+}
+
+// Garde de la même vérification : un titre vu à d'autres chœurs que la valeur
+// connue sans remise de KaraFun au chargement (réglés pendant une coupure, en
+// pleine chanson pendant la coupure, ou avant un redémarrage de
+// l'application) porte des chœurs changés, même oublié avec sa session : après
+// « Nouvelle soirée », ceux qu'un KaraFun collant en garde au titre suivant ne
+// sont pas relevés.
+for (const how of ['coupure', 'coupure en pleine chanson', 'redémarrage', 'coupure, puis seconde coupure']) {
+  test(`réglages de titre : titre vu à d’autres chœurs que la valeur connue (${how}), « Nouvelle soirée » : jamais relevés`, async t => {
+    mockTime(t);
+    const { bridge, ws, env } = await adminBridge(t);
+    t.after(() => bridge.disconnect());
+    // Coupure de la télécommande, puis nouvelle session KCS (relance après 3 s, puis 6 s ± 15 %).
+    const drop = async (from, wait) => {
+      from.serverClose(1006);
+      t.mock.timers.tick(wait);
+      await flush();
+      const next = env.sockets.at(-1);
+      assert.notEqual(next, from, 'nouvelle connexion');
+      next.open();
+      next.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+      return next;
+    };
+    let link = ws;
+    if (how === 'redémarrage') assert.equal(bridge.restoreDefaults({ backing: 53, provisional: true }), true);
+    else {
+      const status = backingStatus(ws);
+      status('A', 1, 0);
+      status('A', 3, 53);
+      status('A', 4, 53);
+      link = await drop(ws, 3000);
+    }
+    assert.deepEqual([bridge.observedDefaults.backing, bridge.provisionalDefaults], [53, true]);
+    let status = backingStatus(link);
+    // Réglé à 80 pendant la coupure (ou avant le redémarrage) : B le garde.
+    if (how === 'coupure en pleine chanson') status('B', 4, 80);
+    else { status('B', 1, 0); status('B', 2, 80); status('B', 3, 80); }
+    assert.equal(bridge.observedDefaults.backing, 53, 'valeur connue gardée');
+    if (how.endsWith('seconde coupure')) status = backingStatus(await drop(link, 7000)); // B oublié avec sa session
+    bridge.forgetDefaults({ keepConfirmed: true });
+    status('C', 1, 0);
+    status('C', 2, 80);
+    status('C', 3, 80);
+    assert.equal(bridge.observedDefaults.backing, undefined, 'chœurs gardés de B : jamais relevés');
+  });
+}
 
 // Regression: deuxième relecture finale R2 — KaraFun « collant », application
 // relancée en pleine chanson : les chœurs du titre vu pour la première fois

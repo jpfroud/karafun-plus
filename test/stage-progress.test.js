@@ -5,7 +5,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const progress = require('../stage-progress');
-const { trustedDuration, clientDuration, stageDuration, protocolDuration, protocolPosition,
+const { trustedDuration, clientDuration, stageDuration, protocolPosition,
   pausedOf, rateOf, startClock, observeClock, clockView, sanitizeClock } = progress;
 
 const T0 = 1_800_000_000_000;
@@ -13,7 +13,7 @@ const playing = { paused: false, rate: 1, position: null };
 
 test('exports figés du module', () => {
   assert.deepEqual(Object.keys(progress).sort(), ['clientDuration', 'clockView', 'observeClock', 'pausedOf',
-    'protocolDuration', 'protocolPosition', 'rateOf', 'sanitizeClock', 'stageDuration', 'startClock', 'trustedDuration', 'validMaxSong']);
+    'protocolPosition', 'rateOf', 'sanitizeClock', 'stageDuration', 'startClock', 'trustedDuration', 'validMaxSong']);
 });
 
 test('départ : le temps écoulé part du début du titre', () => {
@@ -78,30 +78,24 @@ test('durée envoyée par un téléphone : bornée à 30–1200 s (99999 → 120
   for (const bad of [0, -5, NaN, Infinity, '200', null, undefined, true]) assert.equal(clientDuration(bad), null, String(bad));
 });
 
-test('durée de confiance : catalogue ou protocole, sans valeur absurde', () => {
+test('durée de confiance : catalogue ou démo, sans valeur absurde', () => {
   assert.equal(trustedDuration(362), 362);
   assert.equal(trustedDuration(4), 4, 'les titres très courts de la démo restent possibles');
   assert.equal(trustedDuration(3601), null);
   for (const bad of [0, -1, NaN, '362', null, undefined, {}]) assert.equal(trustedDuration(bad), null, String(bad));
 });
 
-test('choix de la durée : démo, puis protocole, puis catalogue, puis téléphone borné', () => {
-  assert.equal(stageDuration({ demoSec: 45, protocolSec: 200, catalogSec: 237, clientSec: 99999 }), 45);
-  assert.equal(stageDuration({ protocolSec: 200, catalogSec: 237, clientSec: 99999 }), 200);
+test('choix de la durée : démo, puis catalogue, puis téléphone borné', () => {
+  assert.equal(stageDuration({ demoSec: 45, catalogSec: 237, clientSec: 99999 }), 45);
   assert.equal(stageDuration({ catalogSec: 237, clientSec: 99999 }), 237, 'le catalogue passe avant le téléphone');
   assert.equal(stageDuration({ catalogSec: null, clientSec: 99999 }), 1200);
   assert.equal(stageDuration({}), null);
   assert.equal(stageDuration(), null);
 });
 
-test('protocole : position et durée numériques prises si KaraFun les envoie un jour', () => {
-  assert.equal(protocolDuration({ current: { duration: 210 } }), 210);
-  assert.equal(protocolDuration({ songPlaying: { duration: 190 } }), 190);
-  assert.equal(protocolDuration({ duration: 180 }), 180);
-  assert.equal(protocolDuration({ current: {} }, { current: { song: { duration: 205 } } }), 205);
+test('protocole : position numérique prise si KaraFun l’envoie un jour', () => {
   // Trames réelles du bar (2 octobre) : ni position ni durée.
-  assert.equal(protocolDuration({ current: { id: 'a', song: { id: 1 } }, state: 'playing', pitch: 0, tempo: 0 }), null);
-  assert.equal(protocolDuration(null, null), null);
+  assert.equal(protocolPosition({ current: { id: 'a', song: { id: 1 } }, state: 'playing', pitch: 0, tempo: 0 }), null);
   assert.equal(protocolPosition({ position: 12 }), 12);
   assert.equal(protocolPosition({ position: -1 }), null);
   assert.equal(protocolPosition({ position: '12' }), null);

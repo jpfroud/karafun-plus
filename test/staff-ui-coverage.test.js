@@ -1898,7 +1898,7 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
 
   // Connecté, pas encore vérifié : pastille neutre.
   const at = Date.now() - 60000;
-  const ready = { state: 'ready', device: { id: 'dev-2', name: 'Enceinte', active: true }, checkedAt: at, okAt: at, retryAt: 0, message: null };
+  const ready = { state: 'ready', device: { id: 'dev-2', name: 'Enceinte', active: true }, checkedAt: at, retryAt: 0, message: null };
   const connected = { configured: true, connected: true, clientId: '0123456789abcdef', autoResume: true, autoPause: false,
     deviceId: 'dev-2', deviceName: 'Enceinte', player: { isPlaying: true, at, track: { title: 'Get Lucky', artist: 'Daft Punk' },
       device: { name: 'Enceinte' } }, lastAction: { at, kind: 'resume', ok: true }, lastError: null,
