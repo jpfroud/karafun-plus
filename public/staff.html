@@ -785,8 +785,10 @@
   // de l'horloge du serveur : tous les libellés changent ensemble, une fois par
   // minute, et les listes ne sont redessinées qu'à ce moment. Comptées depuis
   // l'heure de chacun, elles changeaient chacune à sa seconde (listes
-  // réécrites à presque chaque relevé). Jamais plus que le temps écoulé : une
-  // page visible (relevé toutes les 60 à 64 s) reste « Actif à l'instant ».
+  // réécrites à presque chaque relevé). Jamais plus que le temps écoulé, au
+  // plus 59 s de moins : une page visible (relevé toutes les 60 à 64 s) reste
+  // « Actif à l'instant », l'orange vient 20 à 21 min après la dernière
+  // activité et le rouge 45 à 46 min après.
   const IDLE_WARN_MIN = 20, IDLE_LATE_MIN = 45;
   const isSolo = p => !!tableOf(p?.tableId)?.individual;
   const sinceText = minutes => minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')}`;
@@ -805,9 +807,10 @@
     // Repère court de la ligne de la file, la durée d'abord : jamais coupé au
     // téléphone. La phrase complète reste dans son infobulle.
     const short = never ? `inactif depuis ${hhmm(joined)}` : `inactif ${sinceText(minutes)}`;
-    // « Actif à l'instant » : sans l'heure, que chaque relevé de page visible
-    // avance à sa propre seconde (la ligne serait réécrite à chaque fois).
-    return { minutes, level, text, short, title: minutes < 2 ? 'Dernière activité sur son téléphone il y a moins de 2 min'
+    // « Actif à l'instant » (minutes 0 et 1 : moins de 3 min écoulées) : sans
+    // l'heure, que chaque relevé de page visible avance à sa propre seconde
+    // (la ligne serait réécrite à chaque fois).
+    return { minutes, level, text, short, title: minutes < 2 ? 'Dernière activité sur son téléphone il y a moins de 3 min'
       : `Dernière activité sur son téléphone à ${hhmm(at)}` };
   }
   const activityHtml = a => a ? `<span class="activity${a.level ? ` ${a.level}` : ''}" title="${esc(a.title)}">${esc(a.text)}</span>` : '';
