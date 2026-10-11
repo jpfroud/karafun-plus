@@ -1084,3 +1084,23 @@ test('fermeture : à la fin d’un titre de durée connue, le titre suivant n’
   f.sync();
   assert.ok(kf.some(call => call[0] === 'remove' && call[1] === 6));
 });
+
+// Relecture du 11 octobre : la durée vient du téléphone qui a choisi le titre
+// (non vérifiée). Une durée gonflée ne doit pas faire retirer le titre d'un autre.
+test('fermeture : une durée de titre envoyée par un téléphone ne fait pas retirer le titre suivant', () => {
+  const f = harness();
+  const kf = [];
+  f.sched.opts.defaultSlotSec = 300;
+  singers(f, ['Chay', 'Eny']);
+  const onStage = f.sched.select(); f.sched.commit(onStage);
+  onStage.song.duration = 1200;
+  const next = f.sched.select(); f.sched.commit(next);
+  f.setBridge(fakeBridge(kf, [{ queueId: 5, songId: onStage.song.songId, singer: onStage.label },
+    { queueId: 6, songId: next.song.songId, singer: next.label }], 5));
+  f.tracked.push({ queueId: 5, sel: onStage, startedAt: Date.now() - 60000, addedAt: Date.now() - 120000 });
+  f.tracked.push({ queueId: 6, sel: next, startedAt: null, addedAt: Date.now() });
+  // Passage moyen : la scène se libère dans 4 min, la moitié du titre d'Eny tient.
+  f.settings.closingAt = Date.now() + 400000;
+  f.sync();
+  assert.ok(!kf.some(call => call[0] === 'remove'), 'le titre d’Eny reste chargé');
+});

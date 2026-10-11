@@ -8,8 +8,10 @@
  * - présence : de l'inscription (ou du retour) au départ signalé ; sans
  *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun à
- *   la fermeture (fin du dernier passage, ou heure de fermeture atteinte si
- *   plus tard). Les arrêts de l'application sont retirés.
+ *   la fermeture (heure de fermeture, ou fin du dernier passage s'il finit
+ *   plus tard ; sans heure de fermeture, déconnexion de KaraFun après le
+ *   dernier titre, sinon fin du journal). Les arrêts de l'application sont
+ *   retirés.
  * - passage : un titre de la file réellement lancé sur scène (stage.started).
  *   Un titre envoyé puis retiré de KaraFun ne compte pas ; une relance non plus.
  * - attente : du moment où le titre pouvait passer (sa demande, ou la fin du
@@ -25,7 +27,7 @@ const FAIR_MIN_MS = 30 * 60000;      // équité : au moins 30 min de présence
 const DEMAND_MIN_MS = 15 * 60000;    // équité par demande : au moins 15 min avec un titre
 const MAX_SONG_SEC = 20 * 60;        // durée jouée plafonnée (déconnexion pendant un titre)
 const GAP_MIN_MS = 1000;
-// Même table que BONUS_WEIGHTS dans scheduler.js.
+// Même table que BONUS_WEIGHTS dans lib/scheduler/common.js.
 const BONUS_WEIGHTS = { '-3': 0.5, '-2': 2 / 3, '-1': 0.8, 0: 1, 1: 1.25, 2: 1.5, 3: 2 };
 const bonusWeight = level => BONUS_WEIGHTS[String(Number(level) || 0)] || 1;
 const WAIT_BUCKETS = [[0, 10], [10, 20], [20, 30], [30, 45], [45, 60], [60, 90], [90, null]];
@@ -53,7 +55,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (fin du dernier passage, ou heure de fermeture atteinte si plus tard). Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture, ou fin du dernier passage s’il finit plus tard ; sans heure de fermeture, déconnexion de KaraFun après le dernier titre). Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -554,7 +556,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'closing.cleared': closing.cleared++; closing.closingAt = null; if (lastClosingReached != null) closingReopened = true; break;
       case 'closing.reached':
         closing.reachedAt ??= t;
-        lastClosingReached = Math.min(t, Number.isFinite(e.closingAt) ? e.closingAt : t);
+        // Noté dès qu'aucun titre ne peut plus partir, parfois avant l'heure :
+        // le bar ferme à l'heure annoncée.
+        lastClosingReached = Number.isFinite(e.closingAt) ? e.closingAt : t;
         closingReopened = false;
         break;
       case 'closing.refused': closing.refused++; break;
@@ -601,14 +605,17 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const connected = phases[0]?.blocker === 'offline' ? phases.find(ph => ph.blocker !== 'offline') : null;
   const openedAt = connected ? Math.max(E0, Math.min(connected.start, stages[0]?.start ?? Infinity)) : E0;
   // Fermeture du bar : heure de fermeture atteinte (ou fin du dernier titre
-  // s'il finit plus tard) ; sinon KaraFun déconnecté après le dernier titre
-  // d'une soirée finie ; sinon fin du journal. Soirée du 10 octobre, close au
-  // bar le lendemain à 12:54 : la présence s'arrête à 03:17 (dernier titre
-  // après la fermeture de 03:10) au lieu de compter la matinée.
+  // s'il finit plus tard) ; sinon KaraFun déconnecté pendant ou après le
+  // dernier titre d'une soirée finie ; sinon fin du journal. Soirée du
+  // 10 octobre, close au bar le lendemain à 12:54 : la présence s'arrête à
+  // 03:17 (dernier titre après la fermeture de 03:10) au lieu de compter la
+  // matinée. KaraFun coupé pendant le dernier titre : sa fin n'est pas notée
+  // (seulement estimée), la coupure ferme la soirée.
   const lastStageEnd = stages.length ? Math.max(...stages.map(st => st.endAt)) : null;
+  const lastStageStart = stages.length ? Math.max(...stages.map(st => st.start)) : null;
   const barClosed = lastClosingReached != null && !(live && closingReopened);
-  const offlineAfter = !live && lastStageEnd != null ?
-    phases.find(ph => ph.start >= lastStageEnd && ph.blocker === 'offline') : null;
+  const offlineAfter = !live && lastStageStart != null ?
+    phases.find(ph => ph.start > lastStageStart && ph.blocker === 'offline') : null;
   const closedAt = Math.max(openedAt, Math.min(E1, barClosed ? Math.max(lastStageEnd ?? -Infinity, lastClosingReached) :
     offlineAfter ? offlineAfter.start : E1));
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
@@ -884,7 +891,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       closedBy: closedEvent?.by || null, queueClearedAt },
     global, fairness, singers, tables: tableRows,
     timeline: {
-      start: E0, end: E1, openedAt, closedAt,
+      start: E0, end: E1,
       stages: stages.map((st, i) => ({ i, start: st.start, end: st.endAt, ongoing: !!st.ongoing, endKnown: st.endKnown,
         playedSec: st.playedSec, durationSec: st.durationSec, title: st.title, artist: st.artist, ids: st.ids,
         ownerId: st.ownerId, kind: st.kind, source: st.source, improvised: st.improvised, entryId: st.entryId,
@@ -954,7 +961,10 @@ function insights(stats, { nameOf = id => id, tableName = id => id } = {}) {
     add('battle', `Battles : ${g.battle.launched} lancée${g.battle.launched > 1 ? 's' : ''}, ${g.battle.proposals} vote${g.battle.proposals > 1 ? 's' : ''} proposé${g.battle.proposals > 1 ? 's' : ''} (${approved} accepté${approved > 1 ? 's' : ''}${g.battle.outcomes.quorum ? `, ${g.battle.outcomes.quorum} sans assez de votants` : ''}).`);
   }
   if (g.duoStages) add('duo', `${g.duoStages} duo${g.duoStages > 1 ? 's' : ''} sur ${g.ours} passages (${Math.round(100 * g.duoRate)} %)${g.duos.improvisedStages ? `, dont ${g.duos.improvisedStages} noté${g.duos.improvisedStages > 1 ? 's' : ''} par le bar` : ''}.`);
-  if (g.closing.pulled || g.closing.refused) add('closing', `Fermeture : ${g.closing.pulled} titre${g.closing.pulled > 1 ? 's' : ''} retiré${g.closing.pulled > 1 ? 's' : ''} de KaraFun, ${g.closing.refused} ajout${g.closing.refused > 1 ? 's' : ''} refusé${g.closing.refused > 1 ? 's' : ''}.`);
+  // Les ajouts ne sont plus refusés à la fermeture : seuls d'anciens journaux en comptent.
+  const pulled = `${g.closing.pulled} titre${g.closing.pulled > 1 ? 's' : ''} retiré${g.closing.pulled > 1 ? 's' : ''} de KaraFun`;
+  const refused = g.closing.refused ? `, ${g.closing.refused} ajout${g.closing.refused > 1 ? 's' : ''} refusé${g.closing.refused > 1 ? 's' : ''}` : '';
+  if (g.closing.pulled || g.closing.refused) add('closing', `Fermeture : ${pulled}${refused}.`);
   if (g.spotify.silences) add('spotify', `Spotify a comblé ${g.spotify.silences} silence${g.spotify.silences > 1 ? 's' : ''} (${duration(g.spotify.silenceSec)} au total).`);
   if (stats.evening.restarts) add('restarts', `L’application a redémarré ${stats.evening.restarts} fois (${duration(stats.evening.offlineSec)} d’arrêt).`, 'warn');
   return out;

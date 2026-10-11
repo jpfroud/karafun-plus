@@ -196,6 +196,8 @@ test('un titre ajouté sans option Battle ne valide pas la demande et ne part pa
   assert.equal(f.battleAdds.length, 1);
   f.bridge.queue = [item('sans-battle', choice, 'Battle collective')];
   f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
   assert.equal(f.battleVote.view().phase, 'requested');
   assert.equal(f.battleVote.view().automation.status, 'failed');
   assert.match(f.battleVote.view().automation.failure, /sans le mode Battle/);
@@ -224,6 +226,9 @@ test('titre ajouté sans mode Battle par KaraFun : copie retirée, Battle sur le
   // Réponse réelle de KaraFun : même titre, sans mode ni nom de chanteur.
   f.bridge.queue = [item('copie-normale', refused, '')];
   f.sync();
+  assert.deepEqual(f.removes, [], 'une trame seule ne suffit pas : le mode Battle peut suivre');
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
   assert.deepEqual(f.removes, ['copie-normale'], 'la copie normale est retirée de KaraFun');
   const view = f.battleVote.view();
   assert.equal(view.phase, 'requested', 'la Battle reste décidée');
@@ -236,10 +241,14 @@ test('titre ajouté sans mode Battle par KaraFun : copie retirée, Battle sur le
   f.bridge.queue = [battleItem('battle-ok', other)];
   f.sync();
   assert.equal(f.battleVote.view().automation.status, 'queued');
-  // Le titre refusé ne repart plus en Battle ce soir, même lancé par le bar.
+  // Le titre refusé n'est plus proposé par la salle ce soir ; le bar peut le retenter.
   f.battleVote.updateAutomation('after');
   f.battleVote.updateAutomation('released');
-  assert.throws(() => f.battleVote.staffLaunch({ song: refused }), { code: 'BATTLE_SONG_REFUSED' });
+  f.battleVote.endCooldownNow();
+  assert.throws(() => f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client'],
+    songs: [refused], proposerChoice: refused.songId }), { code: 'BATTLE_SONG_REFUSED' });
+  f.battleVote.staffLaunch({ song: refused });
+  assert.deepEqual(f.battleVote.view().refusedSongIds, [], 'décision du bar : titre de nouveau permis');
 });
 
 test('titre sans mode Battle et aucun autre titre voté : la demande attend le bar, sans nouvel envoi', () => {
@@ -250,6 +259,8 @@ test('titre sans mode Battle et aucun autre titre voté : la demande attend le b
   assert.equal(f.battleAdds.length, 1);
   f.bridge.queue = [item('copie-normale', refused, '')];
   f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
   assert.deepEqual(f.removes, ['copie-normale']);
   const view = f.battleVote.view();
   assert.equal(view.automation.status, 'failed');
@@ -258,6 +269,59 @@ test('titre sans mode Battle et aucun autre titre voté : la demande attend le b
   f.sync();
   assert.equal(f.battleAdds.length, 1, 'aucune nouvelle commande sur un titre refusé');
   assert.ok(f.sched.log.some(entry => /Battle à préparer par le bar/.test(entry.msg)), 'le bar est prévenu');
+});
+
+test('trame Battle reçue d’abord sans son mode : rien n’est retiré, la Battle est confirmée', () => {
+  const f = harness();
+  const choice = song(5091, 'Battle');
+  f.battleVote.staffLaunch({ song: choice });
+  f.sync();
+  f.bridge.queue = [item('battle-uuid', choice, '')];
+  f.sync();
+  f.bridge.queue = [battleItem('battle-uuid', choice)];
+  f.sync();
+  assert.deepEqual(f.removes, []);
+  assert.equal(f.battleVote.view().automation.status, 'queued');
+  assert.deepEqual(f.battleVote.view().refusedSongIds, []);
+});
+
+test('copie normale vue après les 15 s d’attente (coupure, redémarrage) : laissée au bar, titre non écarté', () => {
+  const f = harness();
+  const refused = song(18179, 'Sarà perché ti amo');
+  f.battleVote.staffLaunch({ song: refused });
+  f.sync();
+  f.battleVote.automation.sentAt = Date.now() - 16000;
+  f.bridge.queue = [item('copie-tardive', refused, '')];
+  f.sync();
+  f.sync();
+  assert.deepEqual(f.removes, [], 'rien n’est retiré du vrai KaraFun');
+  assert.equal(f.battleVote.view().automation.status, 'failed');
+  assert.deepEqual(f.battleVote.view().refusedSongIds, []);
+});
+
+test('copie normale de la Battle : retrait refusé par KaraFun, le bar est prévenu de la retirer à la main', () => {
+  const f = harness();
+  const refused = song(18179, 'Sarà perché ti amo');
+  f.battleVote.staffLaunch({ song: refused });
+  f.sync();
+  f.bridge.remove = () => { throw new Error('KaraFun est déconnecté'); };
+  f.bridge.queue = [item('copie-normale', refused, '')];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  assert.doesNotThrow(() => f.sync());
+  const view = f.battleVote.view();
+  assert.equal(view.automation.status, 'failed');
+  assert.match(view.automation.failure, /retire la copie normale dans KaraFun/);
+  assert.deepEqual(view.refusedSongIds, [refused.songId]);
+});
+
+test('envoi Battle refusé par KaraFun : une seule note au journal du bar', () => {
+  const f = harness();
+  f.bridge.addBattle = () => { throw new Error('Permission Battle refusée.'); };
+  f.battleVote.staffLaunch({ song: song(5091, 'Battle') });
+  f.sync();
+  const notes = f.sched.log.filter(entry => /Permission Battle refusée/.test(entry.msg));
+  assert.equal(notes.length, 1, notes.map(entry => entry.msg).join(' | '));
 });
 
 test('après la Battle, un titre lancé directement dans KaraFun libère la file', () => {
@@ -276,6 +340,11 @@ test('après la Battle, un titre lancé directement dans KaraFun libère la file
   assert.equal(f.battleVote.view().automation.status, 'after');
   const next = item('lance-dans-karafun', song(7, 'Titre suivant'), 'Léa');
   f.bridge.queue = [next];
+  // Transition : KaraFun dit « lecture » sans nommer de titre. Le premier de
+  // la file n'est pas sur scène : la pause continue.
+  f.bridge.status = { state: 'playing', current: null };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'after');
   f.bridge.status = { state: 'playing', current: next };
   f.sync();
   assert.equal(f.battleVote.view().automation.status, 'released');

@@ -802,7 +802,7 @@ test('file du bar : statuts, badges, doublons, repères et séparateur de fermet
   assert.equal(page.$('closingTime').value, `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`);
   assert.equal(page.$('closingClear').disabled, false);
   await page.update({ closing: { ...closing, full: true, fitCount: 1, afterCount: 1 } });
-  assert.equal(page.$('closingPill').className, 'pill bad');
+  assert.equal(page.$('closingPill').className, 'pill warn');
   assert.equal(page.$('closingText').textContent, `1 titre passera avant ${hhmm(world.closing.at)}, 1 après : il ne sera pas lancé (réordonne, ou décale l’heure). File complète jusqu’à la fermeture : les clients peuvent encore ajouter des titres, la rotation décide qui passe avant l’heure.`);
   await page.update({ closing: { ...closing, passed: true, afterCount: 0 } });
   assert.equal(page.$('closingPill').textContent, 'Fermeture atteinte');
@@ -4215,11 +4215,13 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   assert.deepEqual(page.lastPost('/api/staff/settings').body, { duoOnly: true });
   await page.poll();
   assert.equal(page.$('duoOnly').checked, true);
+  assert.equal(page.$('duoOnlyChip').hidden, false, 'rappel sur l’écran Scène');
   // Le bouton est dans « Fin de soirée », avec les autres remises à zéro.
   assert.equal(page.$('resetSettings').closest('section'), page.$('clearQueue').closest('section'));
   page.confirmAnswer = false;
   await page.click(page.$('resetSettings'));
   assert.match(page.confirms.at(-1), /^Remettre toutes les options à leur valeur d’origine \?.*code KaraFun, la connexion Spotify/);
+  assert.match(page.confirms.at(-1), /Les solos seront de nouveau permis\./, 'ce qui change ce soir est annoncé');
   assert.equal(page.postsTo('/api/staff/settings-reset').length, 0, 'rien sans confirmation');
   page.confirmAnswer = true;
   page.replies['/api/staff/settings-reset'] = { ok: true, kept: [] };
@@ -4229,6 +4231,9 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   page.replies['/api/staff/settings-reset'] = { ok: true, kept: ['auto'] };
   await page.click(page.$('resetSettings'));
   assert.equal(page.toast().text, 'Options remises par défaut. L’envoi automatique reste coupé : vérifie KaraFun.');
+  page.replies['/api/staff/settings-reset'] = { ok: true, kept: ['spotify'], spotifyError: 'disque plein' };
+  await page.click(page.$('resetSettings'));
+  assert.deepEqual(page.toast(), { text: 'Options remises par défaut. Automatismes Spotify non remis : disque plein', bad: true });
   page.replies['/api/staff/settings-reset'] = { status: 400, error: 'Sauvegarde indisponible.' };
   await page.click(page.$('resetSettings'));
   assert.deepEqual(page.toast(), { text: 'Sauvegarde indisponible.', bad: true });

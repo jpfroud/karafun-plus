@@ -370,8 +370,13 @@ function drawTimeline(plot) {
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Déroulé de la soirée : qui a chanté quand' }, plot);
   axisX(svg, timeTicks(t0, t1, W - right - left, timeGap(t0, t1)), x, top - 6, H - 22, timeLabel(t0, t1));
   if (tl.end > t1) {
-    const closed = state.data.evening.current ? 'soirée encore ouverte'
-      : `soirée close ${new Date(tl.end).toDateString() === new Date(lastEnd).toDateString() ? '' : `le ${dayLabel(tl.end)} `}à ${hhmm(tl.end)}`;
+    // Fin du karaoké (en-tête) et clôture de la soirée dans l'application
+    // (souvent le lendemain) : deux heures distinctes, nommées comme telles.
+    const day = at => new Date(at).toDateString() === new Date(lastEnd).toDateString() ? '' : `le ${dayLabel(at)} `;
+    const barClosed = st.evening?.closedAt;
+    const closed = live ? 'soirée encore ouverte'
+      : `${Number.isFinite(barClosed) && barClosed - lastEnd >= 60000 ? `fin du karaoké à ${hhmm(barClosed)} · ` : ''}` +
+        `soirée close dans l’application ${day(tl.end)}à ${hhmm(tl.end)}`;
     plot.appendChild(h('p', { class: 'st-caption', text: `Dernier passage à ${hhmm(lastEnd)} · ${closed}` }));
   }
   // Temps morts (un titre attendait) sous la ligne « Scène ».

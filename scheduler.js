@@ -159,9 +159,14 @@ class Scheduler {
   // passée dans ce tour. Il est pris sur son tour suivant (dette), comme un
   // malus : sans cela, ce second passage était gratuit et la personne
   // repassait aussi tôt que les autres au tour suivant (Dadou deux fois
-  // pendant l'attente d'Eny, soirée du 10 octobre).
+  // pendant l'attente d'Eny, soirée du 10 octobre). Le prochain annoncé
+  // quand le tour semblait fini, puis rattrapé par une arrivée, est dans le
+  // même cas (`reservedNext.borrowable`). Sans malus, un passage non emprunté
+  // d'une personne déjà comptée dans le tour (invitée de duo, ordre du bar)
+  // ne coûte rien de plus, dette en cours ou non.
   _useRound(roundPeople, roundUse, pid, borrowed = false) {
     const cost = 1 / this.personWeight(pid);
+    if (Math.abs(cost - 1) < EPS && !borrowed && roundPeople.has(pid)) return;
     const already = borrowed && roundPeople.has(pid);
     if (Math.abs(cost - 1) < EPS && !roundUse.has(pid) && !already) { roundPeople.add(pid); return; }
     const used = (roundUse.get(pid) ?? (already ? 1 : 0)) + cost;

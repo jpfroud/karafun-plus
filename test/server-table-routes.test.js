@@ -360,6 +360,23 @@ test('sauvegarde : échec toléré hors inscription, double écriture pour une n
   assert.equal(f.staffState().persistenceError, 'disque débranché');
 });
 
+test('« Vider toutes les chansons » : une dette de tour reste due une seule fois', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  const ben = f.sched.join({ tableId: '2', name: 'Ben', headcount: 1 });
+  // Ana a chanté deux fois dans ce tour (second passage emprunté), Ben une fois.
+  f.sched.roundPeople.add(ana.id);
+  f.sched.roundPeople.add(ben.id);
+  f.sched.roundUse.set(ana.id, 2);
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  assert.equal(f.sched.roundUse.get(ana.id), 1, 'le tour vidé est soldé, la dette reste');
+  assert.ok(f.sched.roundPeople.has(ana.id), 'Ana laisse passer le tour suivant');
+  assert.ok(!f.sched.roundPeople.has(ben.id), 'Ben repart à zéro');
+});
+
 test('« Arrêter le vidage » : sauvegarde en échec, le vidage reste en cours en mémoire comme sur le disque', async () => {
   const f = harness({ persistent: true });
   f.loadTables();

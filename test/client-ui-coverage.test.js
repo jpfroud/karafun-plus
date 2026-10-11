@@ -1161,7 +1161,7 @@ test('demandes : la fenêtre ouverte dessous reste intacte, Retour ne ferme pas 
 test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux au plus, × gardé pour l’onglet', async () => {
   const now = Date.now();
   const state = baseState({
-    battle: { id: 'b3', phase: 'requested', mode: 'staff', selectedSong: { title: 'Tube', artist: 'Groupe' }, eligiblePersonIds: [], votedPersonIds: [],
+    battle: { id: 'b3', phase: 'requested', mode: 'staff', selectedSong: { songId: 77, title: 'Tube', artist: 'Groupe' }, eligiblePersonIds: [], votedPersonIds: [],
       lastOutcome: { id: 'b2', outcome: 'rejected', at: now - 60000 } },
     next: { ours: true, ids: ['alice'], song: { entryId: 'e1' }, title: 'Mon titre' },
     closing: { at: now + 3600000, full: true, passed: false, fitCount: 2 },
@@ -1185,7 +1185,7 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
     'duo ajouté depuis ce même téléphone : effacé sans être montré');
   await page.tap('infoBar', '[data-info-more]');
   assert.deepEqual(items().slice(2), ['Alice passe juste après la chanson en cours : prépare-toi\u00a0!',
-    'Fermeture du bar à ' + timeOf(now + 3600000) + ' : La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passe avant si la rotation le place assez tôt.',
+    'Fermeture du bar à ' + timeOf(now + 3600000) + ' : La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passera avant la fermeture si la rotation le place assez tôt.',
     'La demande de duo d’Alice à Zoé a expiré : « Hit » est parti dans KaraFun.', 'Bob chantera « Slow » en duo avec Alice.']);
   // « Pas prêt » depuis l'info du passage imminent.
   await page.tap('infoBar', '[data-info-defer="alice"]');
@@ -1194,7 +1194,7 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
   await page.tap('infoBar', '[data-info-dismiss="notice:n1"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/notice/ack', { table: '1', access: 'secret', personId: 'alice', ids: ['n1'] }]);
   assert.ok(!items().some(text => /a expiré/.test(text)));
-  await page.tap('infoBar', '[data-info-dismiss="battle-req:b3"]');
+  await page.tap('infoBar', '[data-info-dismiss="battle-req:b3:77"]');
   // « Je ne chante pas ce duo » : confirmation dans la fenêtre.
   await page.tap('infoBar', '[data-info-leave="notice:n2"]');
   assert.equal(page.node('attentionTitle').textContent, 'Alice ne chante plus ce duo\u00a0?');
@@ -1205,6 +1205,15 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
   const reloaded = await open({ state: page.state, session });
   assert.ok(!reloaded.node('infoBar').querySelectorAll('.info-item').some(item => /Battle\u00a0!/.test(item.textContent)));
   assert.deepEqual(reloaded.vibrations, []);
+  // KaraFun refuse le mode Battle pour ce titre : la Battle passe sur un autre,
+  // l'info revient même fermée (soirée du 10 octobre).
+  reloaded.state.battle = { ...reloaded.state.battle, selectedSong: { songId: 78, title: 'Autre tube', artist: 'Groupe' } };
+  await reloaded.poll();
+  reloaded.node('infoBar').querySelector('[data-info-more]') && await reloaded.tap('infoBar', '[data-info-more]');
+  assert.ok(reloaded.node('infoBar').querySelectorAll('.info-item').some(item => /Autre tube/.test(item.textContent)));
+  assert.equal(reloaded.vibrations.length, 1, 'nouvelle info signalée');
+  await reloaded.tap('infoBar', '[data-info-dismiss="battle-req:b3:78"]');
+  reloaded.vibrations.length = 0;
   // Sur scène : plus d'avis de passage (retour du bar, 4 octobre), rien ne vibre.
   reloaded.state.stage = { ours: true, ids: ['alice'], queueId: 5, title: 'Mon titre' };
   reloaded.state.next = null;
@@ -1366,6 +1375,9 @@ test('fiches : sur scène, duos, présence, report, parti, personne gérée aill
   assert.match(card('alice').textContent, /B · à suivre · duo avec un autre chanteur/);
   assert.equal(card('alice').querySelectorAll('[data-reorder-song]').length, 2, 'ordre modifiable');
   assert.equal(card('alice').querySelectorAll('[data-duet-cancel]').length, 2, 'duos annulables');
+  const strict = await open({ state: { ...state, rules: { ...state.rules, duoOnly: true } } });
+  assert.equal(strict.find('peopleList', '[data-person-card="alice"]').querySelectorAll('[data-duet-cancel]').length, 0,
+    'duos uniquement : un duo prévu ne redevient pas un solo (le titre peut être retiré)');
   assert.match(card('alice').textContent, /Alice chantera aussi en duo avec Marc sur « Hit »\. Ses propres chansons restent dans sa liste/);
   assert.match(card('alice').textContent, /Confirme la présence d’Alice pour son prochain passage\./);
   assert.ok(card('alice').querySelector('[data-confirm-person="alice"]') && card('alice').querySelector('[data-defer-person="alice"]'),
@@ -2043,7 +2055,7 @@ test('fermeture : place restante, file complète, heure passée, annonce retiré
   assert.equal(box.classList.contains('warn'), true);
   page.state.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 0 };
   await page.poll();
-  assert.equal(box.querySelector('b').textContent, 'Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.');
+  assert.equal(box.querySelector('b').textContent, 'Fermeture du bar atteinte');
   // Regression: essai au bar du 2 octobre — les titres d'après l'heure ne sont plus lancés.
   assert.match(box.textContent, /Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale\.$/);
   assert.equal(box.classList.contains('warn'), true);
@@ -4143,7 +4155,11 @@ test('duos uniquement : pas de « ＋ Chanson », la fiche d’un titre ne propo
     : url.startsWith('/api/search?') ? catalog : undefined;
   const page = await open({ state: baseState({ rules: { duoOnly: true } }), respond });
   assert.doesNotMatch(page.node('peopleList').innerHTML, /data-add-song=/, 'pas de bouton « ＋ Chanson »');
-  assert.match(page.node('peopleList').innerHTML, /data-duet-song="alice"/, 'le duo reste proposé');
+  assert.match(page.node('peopleList').innerHTML, /class="btn add-duo primary" data-duet-song="alice"/, 'le duo reste proposé, en bouton principal');
+  assert.match(page.node('infoBar').textContent, /Ce soir, le bar ne prend que des duos : chante à deux/);
+  const solo = await open({ state: baseState({ rules: { duoOnly: true }, soloInvitationReady: false,
+    table: { id: 'Comptoir', name: 'En solo', individual: true, count: 3 } }), path: '/t/Comptoir/secret' });
+  assert.equal(solo.node('quickSongActions').textContent, 'Choisir un duo', 'le bouton dit ce qu’il ouvre');
   await page.click(page.node('nav-catalog'));
   await page.tap('catalogContent', '[data-category-index="0"]');
   await page.tap('catalogContent', '[data-song-index="0"]');
@@ -4152,6 +4168,7 @@ test('duos uniquement : pas de « ＋ Chanson », la fiche d’un titre ne propo
   assert.equal(page.$('replaceSong').hidden, true);
   assert.equal(page.$('duetSongChoice').hidden, false);
   assert.match(page.$('duetSongChoice').className, /primary/);
+  assert.doesNotMatch(page.sheetHtml(), /ne peut plus être remplacée/, 'pas d’explication d’un bouton absent');
   // Option coupée : la fiche habituelle.
   const free = await open({ state: baseState(), respond });
   assert.match(free.node('peopleList').innerHTML, /data-add-song="alice"/);

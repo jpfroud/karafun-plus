@@ -17,7 +17,7 @@
   <!-- ======================================================== Scène -->
   <section class="card live-panel" data-tab="scene">
     <div class="section-heading compact"><div><div class="eyebrow">KaraFun</div><h2>Sur scène</h2></div>
-      <div class="scene-chips"><button type="button" id="spotifyChip" class="pill" hidden title="Spotify : toucher pour les réglages"></button><button type="button" id="autoWarn" class="pill warn" hidden></button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
+      <div class="scene-chips"><button type="button" id="spotifyChip" class="pill" hidden title="Spotify : toucher pour les réglages"></button><button type="button" id="autoWarn" class="pill warn" hidden></button><button type="button" id="duoOnlyChip" class="pill warn" hidden title="Règles de la soirée : toucher pour changer">Duos uniquement</button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
     <div id="stage" class="live-card stage-card">—</div>
     <div id="stageProgress" class="stage-progress" hidden></div>
     <div class="live-actions">
@@ -119,7 +119,7 @@
   <!-- ======================================================== Plus -->
   <section class="card evening-panel" data-tab="plus">
     <div class="section-heading"><div><div class="eyebrow">Fin de soirée</div><h2>Fermeture du bar</h2></div><span id="closingPill" class="pill">Pas d’heure</span></div>
-    <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Les clients peuvent toujours ajouter des titres : la rotation décide lesquels passent avant l’heure (quelqu’un qui n’a pas encore chanté peut passer devant). À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
+    <p class="small muted">Annoncée aux clients avec les titres qui passeront encore. Les clients peuvent toujours ajouter des titres : la rotation décide lesquels passent avant l’heure (quelqu’un qui n’a pas encore chanté peut passer devant). À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
     <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><span class="save-status" id="closingStatus" data-save-status="closingTime" aria-live="polite"></span></div>
     <div class="row wrap closing-draft" id="closingDraftActions" hidden><button type="button" class="btn small primary" id="closingConfirm">Valider l’heure</button><button type="button" class="btn small" id="closingCancel">Annuler</button></div>
     <div class="row wrap closing-actions"><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
@@ -145,7 +145,7 @@
       <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>
     <div class="row wrap"><label class="switch duo-only-switch"><input id="duoOnly" type="checkbox"> Duos uniquement</label><span class="save-status" data-save-status="duoOnly" aria-live="polite"></span></div>
-    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent ; une invitation sans réponse ou refusée part en solo, comme d’habitude.</p>
+    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent ; un duo prévu ne peut plus être changé en solo par le client ; une invitation sans réponse ou refusée part en solo, comme d’habitude. Revient à « non » à la nouvelle soirée.</p>
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
@@ -269,7 +269,7 @@
     <p class="small muted">Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.</p>
     <div class="table-reset"><button class="btn small danger" id="clearQueue">Vider toutes les chansons</button><span class="small muted">Conserve les tables, les chanteurs, leurs accès et l’historique. La chanson sur scène continue ; les autres retraits doivent être confirmés par KaraFun.</span></div>
     <div class="table-reset"><button class="btn small danger" id="clearTables">Supprimer toutes les tables</button><span class="small muted">Nouvelle soirée : efface les chanteurs, leurs titres et les anciens QR. Le titre déjà sur scène continue.</span></div>
-    <div class="table-reset"><button class="btn small danger" id="resetSettings">Options par défaut</button><span class="small muted">Remet toutes les options à leur valeur d’origine (délais, cases, Battle, « Je suis là », duos, durée des titres, heure de fermeture, Spotify automatique). Garde le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file.</span></div>
+    <div class="table-reset"><button class="btn small danger" id="resetSettings">Remettre les options par défaut</button><span class="small muted">Remet toutes les options à leur valeur d’origine (délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture, Spotify automatique) : l’envoi automatique à KaraFun est rallumé, la lecture automatique coupée. Garde le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file.</span></div>
   </section>
 </main>
 
@@ -496,6 +496,7 @@
   $('kfPill').onclick = () => goTo('plus', 'kfPanel');
   // Envoi coupé : direction « Plus ». Lecture seule coupée : son interrupteur, sur Scène.
   $('autoWarn').onclick = () => S?.settings?.auto ? goTo('scene', 'autoPlay') : goTo('plus', 'auto');
+  $('duoOnlyChip').onclick = () => goTo('plus', 'duoOnly');
 
   // ------------------------------------------------------------ enregistrement automatique
   // Chaque réglage s'enregistre seul : après une courte pause de frappe, en
@@ -1331,7 +1332,7 @@
     const closing = S.closing;
     $('closingPill').textContent = !closing ? 'Pas d’heure' : closing.passed ? 'Fermeture atteinte' :
       closing.full ? `File complète · ${hhmm(closing.at)}` : `Fermeture ${hhmm(closing.at)}`;
-    $('closingPill').className = 'pill' + (!closing ? '' : closing.full ? ' bad' : ' ok');
+    $('closingPill').className = 'pill' + (!closing ? '' : closing.full ? ' warn' : ' ok');
     $('closingText').textContent = !closing ? 'Aucune heure annoncée : les clients ajoutent des titres librement.' :
       `${closing.fitCount} titre${closing.fitCount > 1 ? 's' : ''} passer${closing.fitCount > 1 ? 'ont' : 'a'} avant ${hhmm(closing.at)}` +
       (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
@@ -1807,6 +1808,8 @@
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
     $('autoPlayHeldTxt').hidden = !S.settings.autoPlayHeld;
     $('autoWarn').hidden = !!(S.settings.auto && S.settings.autoPlay);
+    // Règle qui change ce que chaque client peut ajouter : rappelée sur Scène.
+    $('duoOnlyChip').hidden = !S.settings.duoOnly;
     $('autoWarn').textContent = !S.settings.auto && !S.settings.autoPlay ? 'Envoi et lecture automatiques coupés' :
       !S.settings.auto ? 'Envoi automatique coupé' : 'Lecture automatique coupée';
     $('rotationPeople').checked = !S.settings.tableRotation;
@@ -2131,12 +2134,19 @@
   };
   $('resetSettings').onclick = async () => {
     if (!S) return;
-    if (!confirm('Remettre toutes les options à leur valeur d’origine ? Délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture et automatismes Spotify reviennent par défaut. Le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file sont gardés.')) return;
+    // Ce qui change tout de suite pour la soirée en cours est dit d'abord.
+    const now = [!S.settings?.auto ? 'L’envoi automatique à KaraFun sera rallumé.' : '',
+      S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : '',
+      S.settings?.duoOnly ? 'Les solos seront de nouveau permis.' : '',
+      S.closing ? 'L’heure de fermeture sera retirée.' : ''].filter(Boolean).join(' ');
+    if (!confirm(`Remettre toutes les options à leur valeur d’origine ?${now ? ` ${now}` : ''} Délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture et automatismes Spotify reviennent par défaut. Le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file sont gardés.`)) return;
     try {
       const result = await post('/api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
       await load();
-      toast(result.kept?.includes('auto') ? 'Options remises par défaut. L’envoi automatique reste coupé : vérifie KaraFun.' :
-        'Options remises par défaut.');
+      toast(['Options remises par défaut.',
+        result.kept?.includes('auto') ? 'L’envoi automatique reste coupé : vérifie KaraFun.' : '',
+        result.spotifyError ? `Automatismes Spotify non remis : ${result.spotifyError}` : ''].filter(Boolean).join(' '),
+      !!result.spotifyError);
     } catch (error) { toast(error.message, true); }
   };
   $('recalculateQueue').onclick = () => {

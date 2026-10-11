@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Same bar policy as scheduler.js#_pick, evaluated on a whole planned queue.
+ * Same bar policy as lib/scheduler/rotation.js#_pick, evaluated on a whole planned queue.
  * Hard: the singer's own playlist order, first appearances of the evening
  * before anyone's return, at most roundCap stage appearances per person in a
  * round, and `spacing` other songs before a person returns when another
@@ -145,7 +145,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 }
             }
 
-            // Each table's share of the round, as in scheduler.js.
+            // Each table's share of the round, as in lib/scheduler/rotation.js.
             Map<String, Double> weights = groupWeights(candidates, plan);
             double total = weights.values().stream().mapToDouble(Double::doubleValue).sum();
             int window = Math.max(4, owners.size());
@@ -164,7 +164,11 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             }
 
             // A passage granted by the interleave rule to someone who already
-            // sang in this round is taken from their next round (scheduler.js).
+            // sang in this round is taken from their next round
+            // (lib/scheduler/rotation.js). The JS rule also charges an announced
+            // next passage caught up by an arrival (reservedNext.borrowable);
+            // that pinned head is not simulated here, and the local rule still
+            // decides whether a plan is adopted.
             boolean borrowed = alternates.contains(current);
             for (String singer : current.getSingers()) {
                 lastSeen.put(singer, pos);
@@ -209,7 +213,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
     }
 
     // Owed people go first, even when their duo brings back someone who
-    // already sang in this round (same as scheduler.js).
+    // already sang in this round (same as lib/scheduler/rotation.js).
     private static List<Performance> preferOwed(List<Performance> list, Set<String> owed, Set<String> round) {
         if (owed.isEmpty()) return list;
         List<Performance> owing = new ArrayList<>();
@@ -230,7 +234,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         return false;
     }
 
-    // Same as scheduler.js: nobody who sang in the last `spacing` songs.
+    // Same as lib/scheduler/rotation.js: nobody who sang in the last `spacing` songs.
     private static boolean spaced(Performance c, Map<String, Integer> lastSeen, int pos, int spacing) {
         for (String singer : c.getSingers()) {
             Integer last = lastSeen.get(singer);
@@ -273,6 +277,9 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
     private static void useRound(Set<String> round, Map<String, Double> use, String person, double weight,
                                  boolean borrowed) {
         double cost = 1 / weight;
+        // Without bonus or malus, a passage that is not borrowed costs nothing
+        // more to someone already counted in this round (duet guest), debt or not.
+        if (Math.abs(cost - 1) < EPS && !borrowed && round.contains(person)) return;
         boolean already = borrowed && round.contains(person);
         if (Math.abs(cost - 1) < EPS && !use.containsKey(person) && !already) { round.add(person); return; }
         double used = (use.containsKey(person) ? use.get(person) : (already ? 1.0 : 0.0)) + cost;

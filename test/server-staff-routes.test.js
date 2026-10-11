@@ -28,7 +28,7 @@ function harness() {
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, settings, handlers, access, spotify, spotifyAutomation, staffState, publicState, battleVote,
+    globalThis.fixture = { sched, settings, handlers, access, spotify, spotifyAutomation, staffState, publicState, battleVote, journalRules, clearEvening,
       tracked: () => tracked, setBridge: b => { bridge = b; }, setPending: p => { pending = p; },
       getPending: () => pending };
   `, context, { filename: 'server.js' });
@@ -1002,10 +1002,22 @@ test('duos uniquement : plus de solo depuis les téléphones, duos et titres dé
   await f.call('POST /api/table/duet', { ...as(ana), partnerId: ben.id, song: { songId: 4002, title: 'Duo' } });
   assert.deepEqual(f.sched.songsOf(ana).map(song => [song.title, !!song.duet]), [['Titre Ana', false], ['Duo', true]],
     'le solo déjà choisi reste, le duo s’ajoute');
+  // Inviter puis annuler ne laisse pas un solo : le duo reste, le titre peut être retiré.
+  const duo = f.sched.songsOf(ana).at(-1);
+  for (const route of ['POST /api/table/duet/cancel', 'POST /api/table/duet/solo']) {
+    await assert.rejects(f.call(route, { ...as(ana), entryId: duo.entryId }), error => error.code === 'DUO_ONLY', route);
+  }
+  await assert.rejects(f.handlers['POST /api/duet/cancel']({}, {}, { entryId: duo.entryId }, ana),
+    error => error.code === 'DUO_ONLY', 'POST /api/duet/cancel');
+  assert.equal(f.sched.songsOf(ana).at(-1).duet?.partnerId, ben.id, 'toujours un duo');
+  assert.equal(f.journalRules().duoOnly, true, 'règle notée au début d’une soirée');
   await assert.rejects(f.call('POST /api/staff/settings', { duoOnly: 'oui' }), /Duos uniquement/);
   await f.call('POST /api/staff/settings', { duoOnly: false });
   await f.call('POST /api/table/song', { ...as(ben), mode: 'append', song: { songId: 4003, title: 'Solo de Ben' } });
   assert.equal(f.sched.songsOf(ben).length, 1);
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  f.clearEvening();
+  assert.equal(f.settings.duoOnly, false, 'nouvelle soirée : les solos sont de nouveau permis');
 });
 
 // Retours du 11 octobre : remettre le système prêt pour une nouvelle soirée
@@ -1044,4 +1056,12 @@ test('options par défaut : réglages d’origine, connexions, adresse des QR, t
   const blocked = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
   assert.deepEqual(plain(blocked.kept), ['auto']);
   assert.equal(f.settings.auto, false);
+  // Écriture des réglages Spotify impossible : le reste est remis, l'échec est dit.
+  f.spotify.setOptions = () => { throw new Error('disque plein'); };
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  const partial = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.deepEqual(plain(partial.kept), ['auto', 'spotify']);
+  assert.equal(partial.spotifyError, 'disque plein');
+  assert.equal(f.settings.duoOnly, false);
+  assert.match(lastNote(f).msg, /Automatismes Spotify non remis : disque plein/);
 });

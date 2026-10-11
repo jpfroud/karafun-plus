@@ -16,6 +16,8 @@ const MAX_MINUTES = 120;
 const REJECTED_COOLDOWN_MS = 5 * 60 * 1000;
 const REFUSED = new Set(['quorum', 'expired', 'rejected', 'dismissed']);
 const MIN_VOTERS = 5;
+// Titres écartés de la Battle gardés au plus pour une soirée.
+const REFUSED_SONGS_MAX = 200;
 
 // Règles du vote : il dure un temps fixe (compte à rebours visible) et se
 // décide avec les personnes qui ont voté. Il faut un nombre minimal de
@@ -72,9 +74,10 @@ class BattleVote {
     this.lastOutcome = saved?.lastOutcome || null;
     // Titres que KaraFun a ajoutés sans le mode Battle ce soir (soirée du
     // 10 octobre : « Sarà perché ti amo », deux fois en chanson normale). Ils
-    // ne sont plus proposés ni lancés en Battle jusqu'à la remise à zéro.
+    // ne sont plus proposés en Battle par les clients jusqu'à la remise à
+    // zéro ; le bar peut les relancer lui-même.
     this.refusedSongIds = new Set((Array.isArray(saved?.refusedSongIds) ? saved.refusedSongIds : [])
-      .filter(id => Number.isSafeInteger(id) && id > 0).slice(-200));
+      .filter(id => Number.isSafeInteger(id) && id > 0).slice(-REFUSED_SONGS_MAX));
     if (this.ballot?.phase === 'voting' && this.ballot.rule !== 'voters') {
       // Vote ouvert avant la mise à jour : appliquer les nouvelles règles.
       this.ballot.rule = 'voters';
@@ -217,7 +220,9 @@ class BattleVote {
       throw new Error('Titre Battle invalide.');
     }
     const chosen = { songId, title, artist };
-    this.assertBattleSong(chosen);
+    // Le bar peut retenter un titre écarté : c'est sa décision, il est de
+    // nouveau écarté si KaraFun le refuse encore.
+    this.refusedSongIds.delete(songId);
     const time = this.now();
     this.ballot = { id: randomUUID(), phase: 'requested', proposalName: 'Le bar', rule: 'staff',
       proposerId: null, suggestedSong: chosen, songs: [chosen], mode: 'staff',
@@ -249,7 +254,7 @@ class BattleVote {
     }
     const refused = this.automation.songId;
     if (refused) this.refusedSongIds.add(refused);
-    while (this.refusedSongIds.size > 200) this.refusedSongIds.delete(this.refusedSongIds.values().next().value);
+    while (this.refusedSongIds.size > REFUSED_SONGS_MAX) this.refusedSongIds.delete(this.refusedSongIds.values().next().value);
     const b = this.ballot;
     const next = b.mode !== 'songs' ? null : b.songs.map((song, index) => ({ song, index,
       votes: b.votes.filter(([, answer]) => answer === `song:${song.songId}`).length }))

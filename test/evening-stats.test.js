@@ -742,3 +742,97 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
   assert.equal(other.evening.closedAt, T(210));
   assert.equal(singerOf(other, 'pA').presenceSec, (210 - 60) * 60);
 });
+
+// Relectures du 11 octobre : cas limites de la soirée du karaoké.
+{
+  const T = m => T0 + m * 60000;
+  const evening = () => {
+    let seq = 0;
+    return (minutes, ev, fields = {}) => ({ v: 1, seq: ++seq, t: T(minutes), ev, ...fields });
+  };
+
+  test('présence en direct : fermeture atteinte puis décalée par le bar, la soirée continue', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Un' }),
+      e(30, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], ownerId: 'pA', source: 'queue' }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(40, 'closing.set', { closingAt: T(60) }),
+      e(60, 'closing.reached', { closingAt: T(60) }),
+      e(61, 'closing.set', { closingAt: T(120) }),
+      e(90, 'person.seen', { personId: 'pA' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0) }, events, now: T(100), live: true });
+    assert.equal(stats.evening.closedAt, null, 'fermeture décalée : soirée encore ouverte');
+    assert.ok(singerOf(stats, 'pA').presenceSec > (60 - 10) * 60, 'présence comptée après l’ancienne heure');
+  });
+
+  test('demande : un titre choisi avant la connexion de KaraFun compte depuis la connexion', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(15, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Un' }),
+      e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(90, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], ownerId: 'pA', source: 'queue' }),
+      e(94, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(100, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(100) }, events });
+    assert.equal(stats.evening.openedAt, T(60));
+    assert.equal(singerOf(stats, 'pA').demandSec, (90 - 60) * 60, 'demande bornée à la soirée du karaoké');
+  });
+
+  test('KaraFun coupé pendant le dernier titre, sans heure de fermeture : la coupure ferme la soirée', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Un' }),
+      e(30, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], ownerId: 'pA', source: 'queue', durationSec: 240 }),
+      e(31, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      ...Array.from({ length: 40 }, (_, k) => e(40 + k * 25, 'person.seen', { personId: 'pA' })),
+      e(1100, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(1100) }, events });
+    assert.equal(stats.evening.closedAt, T(31));
+    assert.ok(singerOf(stats, 'pA').presenceSec <= (31 - 10) * 60, `présence : ${singerOf(stats, 'pA').presenceSec} s`);
+  });
+
+  test('fermeture notée avant l’heure (plus aucun titre ne tient) : la soirée finit à l’heure annoncée', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Un' }),
+      e(30, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], ownerId: 'pA', source: 'queue' }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(35, 'closing.set', { closingAt: T(60) }),
+      e(52, 'closing.reached', { closingAt: T(60) }),
+      e(58, 'person.seen', { personId: 'pA' }),
+      e(200, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events });
+    assert.equal(stats.evening.closedAt, T(60));
+    assert.equal(singerOf(stats, 'pA').presenceSec, (60 - 10) * 60);
+  });
+
+  test('fermeture sans refus d’ajout : pas de « 0 ajout refusé »', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }),
+      e(1, 'closing.set', { closingAt: T(30) }),
+      e(2, 'turn.unsent', { entryId: 'x', reason: 'pulled-closing' }),
+    ];
+    const stats = computeStats({ meta: { eveningId: 'e', startedAt: T(0), endedAt: T(40) }, events, now: T(40) });
+    const text = insights(stats).map(item => item.text).join('\n');
+    assert.match(text, /Fermeture : 1 titre retiré de KaraFun\./);
+    assert.doesNotMatch(text, /ajout refusé/);
+  });
+}

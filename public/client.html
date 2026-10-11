@@ -1078,7 +1078,7 @@
     const people = managedPeople();
     const battle = state?.battle || {};
     if (battle.phase === 'requested' && battle.id) {
-      infos.push({ key: `battle-req:${battle.id}`, tone: 'hot', text: [battle.mode === 'staff' ? t('Le bar lance une Battle !') : t('La Battle aura lieu !'),
+      infos.push({ key: `battle-req:${battle.id}:${battle.selectedSong?.songId || ''}`, tone: 'hot', text: [battle.mode === 'staff' ? t('Le bar lance une Battle !') : t('La Battle aura lieu !'),
         ...(battle.selectedSong ? [`${fullSong(battle.selectedSong)}.`] : []), t('Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.')].join(' ') });
     }
     const outcome = battle.lastOutcome;
@@ -1105,8 +1105,11 @@
       const time = eta(closing.at);
       const phase = closing.passed ? 'passed' : closing.full ? 'full' : 'open';
       infos.push({ key: `closing:${closing.at}:${phase}`, text: phase === 'passed' ? t('Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.')
-        : phase === 'full' ? `${t('Fermeture du bar à {time}', { time })} : ${t('La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passe avant si la rotation le place assez tôt.')}`
+        : phase === 'full' ? `${t('Fermeture du bar à {time}', { time })} : ${t('La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passera avant la fermeture si la rotation le place assez tôt.')}`
           : t('Fermeture du bar à {time}', { time }) });
+    }
+    if (duoOnly() && people.length) {
+      infos.push({ key: 'duo-only', text: t('Ce soir, le bar ne prend que des duos : chante à deux pour faire monter plus de monde sur scène.') });
     }
     for (const person of people) for (const notice of list(person.inbox)) {
       // Duo ajouté depuis ce même téléphone : rien à apprendre.
@@ -1516,9 +1519,9 @@
     if (!closing) { closingShown = ''; return; }
     const time = eta(closing.at);
     const detail = closing.passed ? t('Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.')
-      : closing.full ? t('La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passe avant si la rotation le place assez tôt.')
+      : closing.full ? t('La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passera avant la fermeture si la rotation le place assez tôt.')
         : tp(closing.fitCount, '{n} titre prévu passera avant la fermeture : il reste de la place.', '{n} titres prévus passeront avant la fermeture : il reste de la place.');
-    const html = `<b>${esc(closing.passed ? t('Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.') : t('Fermeture du bar à {time}', { time }))}</b><span class="small">${esc(detail)}</span>`;
+    const html = `<b>${esc(closing.passed ? t('Fermeture du bar atteinte') : t('Fermeture du bar à {time}', { time }))}</b><span class="small">${esc(detail)}</span>`;
     box.classList.toggle('warn', !!(closing.full || closing.passed));
     if (html !== closingShown) { box.innerHTML = html; closingShown = html; }
   }
@@ -1557,7 +1560,7 @@
       $('catalogAccessText').textContent = explanation;
       $('catalogAccessActions').innerHTML = actions;
       $('quickSongBox').hidden = owned.length === 0;
-      $('quickSongActions').innerHTML = owned.map(person => `<button type="button" class="btn primary" data-quick-song="${esc(person.id)}">${esc(t('Choisir une chanson'))}</button>`).join('');
+      $('quickSongActions').innerHTML = owned.map(person => `<button type="button" class="btn primary" data-quick-song="${esc(person.id)}">${esc(duoOnly() ? t('Choisir un duo') : t('Choisir une chanson'))}</button>`).join('');
       return;
     }
     const actions = `${others.length ? `<button type="button" class="btn primary" data-access-go="claim">${esc(t('Reprendre un chanteur inscrit'))}</button>` : ''}${canRegister ? `<button type="button" class="btn primary" data-access-go="register">${esc(t('Inscrire une personne'))}</button>` : ''}`;
@@ -1835,7 +1838,7 @@
         // Invitation sans réponse : le titre ne l'attend pas, il partira en solo.
         const soloHint = duet?.state === 'pending' ? `<div class="tiny muted invite-solo">${esc(individual ? t('Sans réponse avant ton tour, tu chanteras seul.')
           : t('Sans réponse avant son tour, {name} chantera seul.', { name: person.name }))}</div>` : '';
-        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(withLength(song.artist || '', song))} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(withLength(song.artist || '', song))} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet && !duoOnly() ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>${canEdit && ready.length > 1 ? `<p class="tiny muted order-hint">${esc(individual
         ? t('⇅ change l’ordre de tes titres sans perdre ta place dans la file.') : t('⇅ change l’ordre de ses titres sans perdre sa place dans la file.'))}</p>` : ''}`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
@@ -1861,7 +1864,7 @@
           ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-join-answer="yes" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-join-answer="no" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Refuser'))}</button></div>` : leftNotice(person)}</div>`).join('')
         + list(person.sentJoinRequests).map(request => `<div class="notice small">${esc(t('Demande de duo envoyée à {name} pour « {title} ».', { name: request.ownerName || t('quelqu’un'), title: request.song?.title || t('ce titre') }))} ${request.seen === false ? `<b>${esc(t('{name} ne l’a pas encore vue : va lui en parler !', { name: request.ownerName || t('quelqu’un') }))}</b> ` : request.seen ? `${esc(t('{name} l’a vue.', { name: request.ownerName || t('quelqu’un') }))} ` : ''}${esc(t('Sans réponse avant l’envoi de son titre, elle expire.'))}
           ${canEdit ? `<button type="button" class="btn small ghost" data-join-cancel="${esc(request.ownerId)}" data-join-entry="${esc(request.entryId)}" data-person-id="${esc(person.id)}">${esc(t('Annuler la demande'))}</button>` : ''}</div>`).join('');
-      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual || duoOnly() ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson pour {name}', { name: person.name }))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo pour {name}', { name: person.name }))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Transférer la gestion de {name}', { name: person.name }))}"`}>${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
+      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual || duoOnly() ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson pour {name}', { name: person.name }))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo${duoOnly() ? ' primary' : ''}" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo pour {name}', { name: person.name }))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Transférer la gestion de {name}', { name: person.name }))}"`}>${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
     }).join('');
   }
 
@@ -3359,7 +3362,7 @@
         : `<label class="field" for="songPerson">${esc(t('Chanteur'))}</label><select id="songPerson">${people.map(person => `<option value="${esc(person.id)}" ${String(person.id) === String(selected.id) ? 'selected' : ''}>${esc(person.name)}</option>`).join('')}</select>`}
       ${duoOnly() ? `<p class="notice small" role="status">${esc(t('Ce soir, le bar ne prend que des duos : choisis avec qui tu chantes.'))}</p>` : ''}
       <div class="sheet-actions"><button type="button" class="btn primary" id="appendSong">${esc(state?.table?.individual ? t('Ajouter à ma liste') : t('Ajouter à sa liste'))}</button><button type="button" class="btn" id="replaceSong">${esc(t('Remplacer ma prochaine chanson'))}</button><button type="button" class="btn${duoOnly() ? ' primary' : ''}" id="duetSongChoice">${esc(t('Chanter en duo'))}</button><button type="button" class="btn ghost" id="songLyrics">${esc(t('Voir les paroles'))}</button>${canProposeBattle() ? `<button type="button" class="btn ghost" id="songBattle">${esc(t('Proposer en Battle'))}</button>` : ''}</div>
-      <p class="tiny muted" style="margin:10px 0 0">${esc(t('Une chanson déjà prête dans la file ne peut plus être remplacée ici.'))}</p>`);
+      ${duoOnly() ? '' : `<p class="tiny muted" style="margin:10px 0 0">${esc(t('Une chanson déjà prête dans la file ne peut plus être remplacée ici.'))}</p>`}`);
     $('songLyrics').addEventListener('click', () => openLyrics(song, () => chooseSong(song)));
     $('songBattle')?.addEventListener('click', () => { if (addToBattleDraft(song)) openBattleProposal(); });
     const updateReplace = () => {

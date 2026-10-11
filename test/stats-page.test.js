@@ -777,6 +777,24 @@ test('déroulé : une soirée restée ouverte 4 jours garde des barres lisibles 
   }
 });
 
+// Retours du 11 octobre : l'en-tête donne les heures du karaoké (connexion de
+// KaraFun → fermeture du bar), pas le lancement de l'application ni sa remise à zéro.
+test('en-tête : heures du karaoké, et lancement et clôture pour un ancien journal', async () => {
+  const view = apiView({ live: false, endedAt: at(600) });
+  view.stats.evening.openedAt = at(30);
+  view.stats.evening.closedAt = at(95);
+  const page = loadPage({ responses: viewResponse(view) });
+  await settle();
+  assert.match(text(page.$('eveningLine')), new RegExp(` · ${localHHMM(at(30))} – ${localHHMM(at(95))} · `));
+  assert.match(text(timelineCaption(page)), new RegExp(`fin du karaoké à ${localHHMM(at(95))} · soirée close dans l’application`));
+  const legacy = apiView({ live: false, endedAt: at(600) });
+  delete legacy.stats.evening.openedAt;
+  delete legacy.stats.evening.closedAt;
+  const old = loadPage({ responses: viewResponse(legacy) });
+  await settle();
+  assert.match(text(old.$('eveningLine')), new RegExp(` · ${localHHMM(at(0))} – ${localHHMM(at(600))} · `));
+});
+
 // Regression: ISSUE-037 — la soirée close 6 jours plus tard gardait le même graphique illisible pour de bon
 test('déroulé : une soirée close 6 jours plus tard est dessinée sur ses passages, avec l’heure de clôture', async () => {
   const endedAt = at(6 * 24 * 60);
@@ -787,13 +805,13 @@ test('déroulé : une soirée close 6 jours plus tard est dessinée sur ses pass
   assertReadableAxis(axis, 'déroulé clos');
   assertMarksSpread(axis, 'déroulé clos');
   const day = new Date(endedAt).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
-  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close le ${day} à ${localHHMM(endedAt)}`);
+  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close dans l’application le ${day} à ${localHHMM(endedAt)}`);
   // Clôture moins de 3 h après le dernier passage : l'axe s'arrête aussi
   // 15 min après lui (retour du 10 octobre), la note donne la clôture.
   const soonView = apiView({ live: false, endedAt: at(90 + 170) });
   const soon = loadPage({ responses: viewResponse(soonView) });
   await settle();
-  assert.equal(text(timelineCaption(soon)), `Dernier passage à ${localHHMM(lastStageEnd(soonView))} · soirée close à ${localHHMM(at(90 + 170))}`);
+  assert.equal(text(timelineCaption(soon)), `Dernier passage à ${localHHMM(lastStageEnd(soonView))} · soirée close dans l’application à ${localHHMM(at(90 + 170))}`);
   // Clôture 10 min après le dernier passage : rien de coupé, pas de note.
   const nowView = apiView({ live: false, endedAt: lastStageEnd(soonView) + 10 * 60000 });
   const now = loadPage({ responses: viewResponse(nowView) });
@@ -832,7 +850,7 @@ test('déroulé : soirée close le jour même plus de 3 h après le dernier pass
   const view = { ...apiView({ live: false }), stats };
   const page = loadPage({ responses: viewResponse(view) });
   await settle();
-  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close à ${localHHMM(endedAt)}`);
+  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close dans l’application à ${localHHMM(endedAt)}`);
 });
 
 // Regression: ISSUE-037 — la soirée normale en direct ne change pas : « maintenant » reste visible, un temps mort aussi
