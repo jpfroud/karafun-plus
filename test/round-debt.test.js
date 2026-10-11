@@ -230,3 +230,26 @@ test('« Je suis là » : prochain annoncé en fin de tour puis rattrapé par un
   assert.equal(sent.ids[0], announced.ids[0]);
   assert.deepEqual(sent.borrowedIds, [announced.ids[0]]);
 });
+
+test('invitée avec bonus ou malus retirée d’un duo envoyé : la part exacte prise est rendue', () => {
+  for (const legacy of [false, true]) for (const level of [1, -1]) {
+    const s = new Scheduler();
+    s._maybeRequestSolver = () => {};
+    const alice = s.join({ tableId: '1', name: 'Alice', headcount: 2 });
+    const bruno = s.join({ tableId: '2', name: 'Bruno', headcount: 2 });
+    s.setPersonBonus(bruno.id, level);
+    const duo = s.inviteDuet(alice, bruno.id, { songId: 1, title: 'Un', artist: 'A' });
+    s.answerDuet(bruno, true, duo.entryId);
+    const sel = s.select();
+    assert.deepEqual(sel.ids, [alice.id, bruno.id]);
+    s.commit(sel);
+    const charged = s.roundUse.get(bruno.id);
+    assert.ok(charged > 0, `niveau ${level}`);
+    assert.deepEqual(sel.turnCredit.roundCharged.find(([pid]) => pid === bruno.id), [bruno.id, charged]);
+    // Ancien reçu, d'avant ce relevé : un passage entier est rendu, comme avant.
+    if (legacy) delete sel.turnCredit.roundCharged;
+    s.leaveSentDuet(sel, bruno.id);
+    assert.equal(s.roundUse.has(bruno.id), false, `niveau ${level}${legacy ? ', ancien reçu' : ''}`);
+    assert.equal(s.roundPeople.has(bruno.id), false);
+  }
+});

@@ -377,6 +377,27 @@ test('« Vider toutes les chansons » : une dette de tour reste due une seule fo
   assert.ok(!f.sched.roundPeople.has(ben.id), 'Ben repart à zéro');
 });
 
+test('« Vider toutes les chansons » pendant qu’un passage emprunté attend dans KaraFun : retiré sans être chanté, il ne coûte rien', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  f.sched.chooseSong(ana, { songId: 9101, title: 'Second passage' }, 'append');
+  // Ana a déjà chanté dans ce tour ; ce second passage est pris sur le suivant.
+  f.sched.roundPeople.add(ana.id);
+  const sel = f.sched.select();
+  Object.assign(sel, { newPersonRound: false, roundResets: 0, borrowedIds: [ana.id] });
+  f.sched.commit(sel);
+  assert.equal(f.sched.roundUse.get(ana.id), 2);
+  f.getTracked().push({ queueId: 'q-emprunt', sel, startedAt: null, addedAt: Date.now() });
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  // KaraFun confirme le retrait : le passage n'a jamais eu lieu.
+  f.sched.rollbackUnplayed(sel);
+  assert.equal(f.sched.roundUse.has(ana.id), false, 'aucune dette pour un titre jamais chanté');
+  assert.equal(f.sched.roundPeople.has(ana.id), false, 'Ana repart à zéro dans le nouveau tour');
+});
+
 test('« Arrêter le vidage » : sauvegarde en échec, le vidage reste en cours en mémoire comme sur le disque', async () => {
   const f = harness({ persistent: true });
   f.loadTables();

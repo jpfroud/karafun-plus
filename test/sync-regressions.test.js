@@ -237,11 +237,13 @@ test('titre ajouté sans mode Battle par KaraFun : copie laissée au bar, Battle
   assert.equal(view.automation.status, 'waiting');
   assert.deepEqual(view.refusedSongIds, [refused.songId]);
   assert.match(f.sched.log.at(-1).msg, /retire cette copie dans KaraFun\. La Battle passe ensuite sur « Je veux »/);
+  assert.match(view.automation.notice, /retire cette copie dans KaraFun/, 'consigne affichée au bar');
   f.sync();
   assert.equal(f.battleAdds.length, 1, 'la copie encore dans KaraFun : la Battle suivante attend');
-  // Le bar retire la copie : la Battle part sur le titre suivant.
+  // Le bar retire la copie : la consigne s'efface et la Battle part sur le titre suivant.
   f.bridge.queue = [];
   f.sync();
+  assert.equal(f.battleVote.view().automation.status === 'waiting' ? f.battleVote.view().automation.notice : null, null);
   assert.deepEqual(f.battleAdds.map(add => add.songId), [refused.songId, other.songId]);
   f.bridge.queue = [battleItem('battle-ok', other)];
   f.sync();
@@ -350,6 +352,13 @@ test('après la Battle, un titre lancé directement dans KaraFun libère la file
   f.bridge.status = { state: 'playing', current: null };
   f.sync();
   assert.equal(f.battleVote.view().automation.status, 'after');
+  // La Battle elle-même, revue sans son mode : ce n'est pas un titre suivant.
+  const again = item('battle-uuid', choice, '');
+  f.bridge.queue = [again];
+  f.bridge.status = { state: 'playing', current: again };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'after');
+  f.bridge.queue = [next];
   f.bridge.status = { state: 'playing', current: next };
   f.sync();
   assert.equal(f.battleVote.view().automation.status, 'released');

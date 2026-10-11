@@ -806,7 +806,8 @@ test('file du bar : statuts, badges, doublons, repères et séparateur de fermet
   assert.equal(page.$('closingText').textContent, `1 titre passera avant ${hhmm(world.closing.at)}, 1 après : il ne sera pas lancé (réordonne, ou décale l’heure). File complète jusqu’à la fermeture : les clients peuvent encore ajouter des titres, la rotation décide qui passe avant l’heure.`);
   await page.update({ closing: { ...closing, passed: true, afterCount: 0 } });
   assert.equal(page.$('closingPill').textContent, 'Fermeture atteinte');
-  assert.match(page.$('closingText').textContent, /passeront avant \d\d:\d\d\. Il reste/);
+  assert.equal(page.$('closingText').textContent, `Heure de fermeture passée (${hhmm(world.closing.at)}) : plus aucun titre n’est envoyé ni lancé automatiquement. Décale l’heure pour une dernière chanson.`,
+    'heure passée : pas de « passeront avant » une heure déjà dépassée');
   page.$('closingTime').focus();
   page.$('closingTime').value = '23:55';
   await page.update({ closing: null });
@@ -1605,6 +1606,12 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   await step('waiting');
   assert.equal(pill().textContent, 'En attente du passage promis');
   assert.match(status(), /^Battle demandée sur Africa — Toto\. Le prochain chanteur déjà annoncé garde sa place/);
+  // Titre précédent refusé par KaraFun : la consigne de retrait est affichée.
+  await page.update({ battle: { id: 3, phase: 'requested', selectedSong: song,
+    automation: { status: 'waiting', notice: 'KaraFun a ajouté « Hello » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun, puis lance une Battle sans vote sur un autre titre.' } } });
+  assert.equal(pill().textContent, 'Copie à retirer');
+  assert.match(pill().className, /bad/);
+  assert.match(status(), /retire cette copie dans KaraFun, puis lance une Battle sans vote sur un autre titre\. La Battle passera ensuite sur Africa — Toto, dès que la file de KaraFun sera libre\./);
   await step('sending');
   assert.equal(pill().textContent, 'Ajout en cours');
   assert.match(status(), /^Envoi de Africa — Toto à KaraFun\./);
@@ -4230,7 +4237,7 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   page.world.persistenceError = 'disque plein';
   await page.poll();
   await page.click(page.$('resetSettings'));
-  assert.match(page.confirms.at(-1), /L’envoi automatique à KaraFun restera coupé : vérifie KaraFun d’abord\./);
+  assert.match(page.confirms.at(-1), /L’envoi automatique à KaraFun restera coupé : la sauvegarde est impossible\./);
   assert.doesNotMatch(page.confirms.at(-1), /sera rallumé/);
   delete page.world.persistenceError;
   page.world.settings.auto = true;

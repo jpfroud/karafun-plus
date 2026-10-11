@@ -785,6 +785,9 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(100) }, events });
     assert.equal(stats.evening.openedAt, T(60));
     assert.equal(singerOf(stats, 'pA').demandSec, (90 - 60) * 60, 'demande bornée à la soirée du karaoké');
+    const stage = stats.timeline.stages.find(st => st.entryId === 'a1');
+    assert.equal(stage.waitSec, (90 - 60) * 60, 'attente comptée depuis la connexion de KaraFun');
+    assert.equal(stage.requestDelaySec, (90 - 60) * 60);
   });
 
   test('KaraFun coupé pendant le dernier titre, sans heure de fermeture : la coupure ferme la soirée', () => {
@@ -822,6 +825,25 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     ];
     const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events });
     assert.equal(stats.evening.closedAt, T(95), 'la déconnexion définitive ferme la soirée');
+  });
+
+  test('KaraFun coupé après le dernier titre, reconnecté le lendemain avant la remise à zéro : la soirée finit à la coupure', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(195, 'stage.started', { queueId: 2, source: 'native', title: 'Dernier' }),
+      e(205, 'stage.ended', { queueId: 2, playedSec: 600 }),
+      e(210, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      ...Array.from({ length: 50 }, (_, k) => e(220 + k * 15, 'person.seen', { personId: 'pA' })),
+      e(900, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(1000, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events });
+    assert.equal(stats.evening.closedAt, T(210));
+    assert.equal(singerOf(stats, 'pA').presenceSec, (210 - 60) * 60);
   });
 
   test('fermeture notée avant l’heure (plus aucun titre ne tient) : la soirée finit à l’heure annoncée', () => {

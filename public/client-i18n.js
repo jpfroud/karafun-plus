@@ -560,7 +560,7 @@ window.CLIENT_TRANSLATIONS = {
       'Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.': 'Closing time reached: no more songs will start unless the bar moves the time.',
       'Fermeture du bar atteinte': 'Closing time reached',
       'Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.': 'Songs planned after closing time will not be started, unless the bar moves the time.',
-      'La file est complète jusqu’à cette heure. Tu peux encore ajouter un titre : la rotation décide s’il passe avant.': 'The queue is full until then. You can still add a song: the rotation decides whether it plays before.',
+      'La file est complète jusqu’à cette heure. Tu peux encore ajouter un titre : la rotation décide s’il passe avant.': 'The queue is full until then. You can still add a song: the rotation decides whether it plays before closing.',
       '{n} titre prévu passera avant la fermeture : il reste de la place.': [
         '{n} planned song will play before closing time: there is still room.',
         '{n} planned songs will play before closing time: there is still room.',

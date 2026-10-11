@@ -145,7 +145,7 @@
       <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>
     <div class="row wrap"><label class="switch duo-only-switch"><input id="duoOnly" type="checkbox"> Duos uniquement</label><span class="save-status" data-save-status="duoOnly" aria-live="polite"></span></div>
-    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent. Un duo accepté ne redevient pas un solo par son auteur ni par une invitée de la même table (le titre peut être retiré). Comme d’habitude, une invitation sans réponse, refusée ou quittée par une autre table part en solo, et l’auteur d’un duo déjà dans KaraFun peut le chanter seul si son partenaire manque. Se décoche à la nouvelle soirée (« Supprimer toutes les tables »).</p>
+    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent. Un duo accepté ne redevient pas un solo par son auteur ni par une invitée de la même table (le titre peut être retiré). Comme d’habitude, une invitation sans réponse, refusée ou quittée par une autre table part en solo, et un duo déjà chargé dans KaraFun peut finir en solo si l’un des deux manque. Se décoche à la nouvelle soirée (« Supprimer toutes les tables »).</p>
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
@@ -1334,6 +1334,7 @@
       closing.full ? `File complète · ${hhmm(closing.at)}` : `Fermeture ${hhmm(closing.at)}`;
     $('closingPill').className = 'pill' + (!closing ? '' : closing.full ? ' warn' : ' ok');
     $('closingText').textContent = !closing ? 'Aucune heure annoncée : les clients ajoutent des titres librement.' :
+      closing.passed ? `Heure de fermeture passée (${hhmm(closing.at)}) : plus aucun titre n’est envoyé ni lancé automatiquement. Décale l’heure pour une dernière chanson.` :
       `${closing.fitCount} titre${closing.fitCount > 1 ? 's' : ''} passer${closing.fitCount > 1 ? 'ont' : 'a'} avant ${hhmm(closing.at)}` +
       (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
       (closing.full ? ' File complète jusqu’à la fermeture : les clients peuvent encore ajouter des titres, la rotation décide qui passe avant l’heure.' : ' Il reste de la place avant la fermeture.');
@@ -2023,7 +2024,7 @@
     const selectedSong = battleSong(battle.selectedSong);
     const battleStep = battle.automation?.status;
     $('battlePill').textContent = battleStep === 'failed' ? 'À vérifier' :
-      battleStep === 'waiting' ? 'En attente du passage promis' :
+      battleStep === 'waiting' ? (battle.automation?.notice ? 'Copie à retirer' : 'En attente du passage promis') :
       battleStep === 'sending' ? 'Ajout en cours' :
       battleStep === 'queued' ? 'Prête dans KaraFun' :
       battleStep === 'playing' ? 'En cours' :
@@ -2032,11 +2033,14 @@
       battleStep === 'resuming' ? 'Reprise demandée' :
       battle.phase === 'requested' ? 'À organiser' : battle.phase === 'voting' ? 'Vote en cours' :
       battle.phase === 'cooldown' ? 'Pause entre votes' : 'Aucune demande';
-    $('battlePill').className = 'pill' + (['failed', 'after'].includes(battleStep) ? ' bad' :
+    $('battlePill').className = 'pill' + (['failed', 'after'].includes(battleStep) || (battleStep === 'waiting' && battle.automation?.notice) ? ' bad' :
       ['queued', 'playing'].includes(battleStep) || battle.phase === 'voting' ? ' ok' : '');
     $('battleStatus').className = 'battle-status' + (['failed', 'after'].includes(battleStep) ? ' battle-requested' : '');
     const battleFailure = String(battle.automation?.failure || 'Vérifie KaraFun').replace(/[.!?\s]+$/, '');
-    $('battleStatus').textContent = battleStep === 'waiting'
+    const battleNotice = String(battle.automation?.notice || '').replace(/[.!?\s]+$/, '');
+    $('battleStatus').textContent = battleStep === 'waiting' && battleNotice
+      ? `${battleNotice}. La Battle passera ensuite sur ${selectedSong}, dès que la file de KaraFun sera libre.`
+      : battleStep === 'waiting'
       ? `Battle demandée sur ${selectedSong}. Le prochain chanteur déjà annoncé garde sa place ; la Battle sera ajoutée ensuite.`
       : battleStep === 'sending' ? `Envoi de ${selectedSong} à KaraFun. Le mode Battle doit être confirmé avant de lancer le titre.`
       : battleStep === 'failed' ? `${battleFailure.startsWith('Permission Battle refusée') ? 'Ajout automatique impossible' : 'Ajout automatique non confirmé'} : ${battleFailure}. Organise la Battle manuellement ou ferme la demande.`
@@ -2137,8 +2141,9 @@
     // Ce qui change tout de suite pour la soirée en cours est dit d'abord.
     // L'envoi automatique reste coupé tant que le serveur l'interdit (mêmes
     // raisons que la route settings-reset).
-    const autoBlocked = !!(S.recoveredPending || S.persistenceError || S.kf?.permissions?.addToQueue === false);
-    const now = [!S.settings?.auto ? (autoBlocked ? 'L’envoi automatique à KaraFun restera coupé : vérifie KaraFun d’abord.'
+    const autoBlocked = S.persistenceError ? 'la sauvegarde est impossible' : S.recoveredPending ? 'un envoi interrompu est à vérifier dans KaraFun'
+      : S.kf?.permissions?.addToQueue === false ? 'KaraFun refuse l’ajout de titres' : '';
+    const now = [!S.settings?.auto ? (autoBlocked ? `L’envoi automatique à KaraFun restera coupé : ${autoBlocked}.`
       : 'L’envoi automatique à KaraFun sera rallumé.') : '',
       S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : '',
       S.settings?.duoOnly ? 'Les solos seront de nouveau permis.' : '',

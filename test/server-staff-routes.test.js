@@ -1040,6 +1040,32 @@ test('duos uniquement : plus de solo depuis les téléphones, duos et titres dé
   assert.equal(f.settings.duoOnly, false, 'nouvelle soirée : les solos sont de nouveau permis');
 });
 
+test('duos uniquement : le blocage vise le duo nommé, pas un autre duo de la personne', async () => {
+  const f = harness();
+  const [ana] = singers(f, ['Ana']);
+  const ben = f.sched.join({ tableId: '1', name: 'Ben' });
+  const chloe = f.sched.join({ tableId: '2', name: 'Chloé', headcount: 2 });
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  const access = f.access.issue('1');
+  const as = person => ({ table: '1', access, personId: person.id, token: person.token });
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: ben.id, song: { songId: 4101, title: 'Gardé' } });
+  const kept = f.sched.songsOf(ana).at(-1);
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: chloe.id, song: { songId: 4102, title: 'En attente' } });
+  const pending = f.sched.songsOf(ana).at(-1);
+  await f.call('POST /api/table/duet/cancel', { ...as(ana), entryId: pending.entryId });
+  assert.equal(pending.duet ?? null, null, 'invitation en attente annulée');
+  assert.equal(kept.duet?.state, 'accepted', 'le duo accepté reste');
+  const zoe = f.sched.join({ tableId: '2', name: 'Zoé' });
+  const zoeAs = { table: '2', access: f.access.issue('2'), personId: zoe.id, token: zoe.token };
+  await f.call('POST /api/table/duet', { ...zoeAs, partnerId: ben.id, song: { songId: 4103, title: 'Ailleurs' } });
+  const other = f.sched.songsOf(zoe).at(-1);
+  await f.call('POST /api/table/duet/answer', { ...as(ben), accept: true, entryId: other.entryId });
+  await f.call('POST /api/table/duet/leave', { ...as(ben), ownerId: zoe.id, entryId: other.entryId });
+  assert.equal(other.duet ?? null, null, 'duo d’une autre table quitté');
+  await assert.rejects(f.call('POST /api/table/duet/leave', { ...as(ben), ownerId: ana.id, entryId: kept.entryId }),
+    error => error.code === 'DUO_ONLY', 'duo de sa table : refusé');
+});
+
 // Retours du 11 octobre : remettre le système prêt pour une nouvelle soirée
 // quand quelqu'un a changé des réglages, sans toucher aux connexions.
 test('options par défaut : réglages d’origine, connexions, adresse des QR, tables et file gardées', async () => {

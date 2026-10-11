@@ -1113,12 +1113,16 @@
       if (notice.kind === 'duoAdded' && manages(notice.params?.fromId)) { ackNotice(person.id, notice.id); continue; }
       const text = noticeText(notice, person);
       if (!text) continue;
-      const leave = notice.kind === 'duoAdded' && notice.params?.entryId &&
+      // Duo ajouté par sa table : en « Duos uniquement », l'invitée ne le
+      // change pas en solo (le serveur le refuse) ; seul × reste.
+      const leave = notice.kind === 'duoAdded' && !duoOnly() && notice.params?.entryId &&
         list(person.guestDuos).find(duo => String(duo.entryId) === String(notice.params.entryId));
       infos.push({ key: `notice:${notice.id}`, text, notice: { id: notice.id, personId: person.id },
         leave: leave ? { personId: person.id, ownerId: leave.ownerId, entryId: leave.entryId, owner: leave.fromName, title: leave.song?.title } : null });
     }
-    // Règle de la soirée : après les messages, qu'elle ne cache jamais.
+    // Règle de la soirée : après les messages, qu'elle ne cache jamais. Coupée
+    // puis rallumée par le bar, elle s'annonce de nouveau.
+    if (!duoOnly() && memory.dismissed.includes('duo-only')) memory.dismissed = memory.dismissed.filter(key => key !== 'duo-only');
     if (duoOnly() && people.length) {
       infos.push({ key: 'duo-only', text: t('Ce soir, le bar ne prend que des duos : chante à deux pour faire monter plus de monde sur scène.') });
     }

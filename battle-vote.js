@@ -267,8 +267,10 @@ class BattleVote {
     }
     b.selectedSong = next;
     b.refusedSongIds = [...(b.refusedSongIds || []), refused];
+    // `notice` : ce que le bar doit faire avant l'envoi du titre suivant
+    // (retirer la copie normale restée dans KaraFun).
     this.automation = { ballotId: b.id, songId: next.songId, status: 'waiting', before: [],
-      sentAt: null, queueId: null, failure: null };
+      sentAt: null, queueId: null, failure: null, notice: failure };
     this.lastOutcome = { id: b.id, outcome: 'approved', at: this.now(),
       proposalName: b.proposalName, selectedSong: next };
     this._changed('fallback');
@@ -549,7 +551,7 @@ class BattleVote {
       mode: null, eligiblePersonIds: [],
       votedPersonIds: [], lastOutcome: this.lastOutcome, refusedSongIds: [...this.refusedSongIds],
       automation: this.automation ? { status: this.automation.status,
-        queueId: this.automation.queueId, failure: this.automation.failure } : null };
+        queueId: this.automation.queueId, failure: this.automation.failure, notice: this.automation.notice || null } : null };
     const songOptions = (b.songs || []).map(song => ({ ...song,
       votes: b.votes.filter(([, choice]) => choice === `song:${song.songId}`).length }));
     return { id: b.id, phase: b.phase, proposalName: b.proposalName,
@@ -567,7 +569,7 @@ class BattleVote {
       votedPersonIds: b.votes.map(([id]) => id), lastOutcome: this.lastOutcome,
       refusedSongIds: [...this.refusedSongIds],
       automation: this.automation ? { status: this.automation.status,
-        queueId: this.automation.queueId, failure: this.automation.failure } : null };
+        queueId: this.automation.queueId, failure: this.automation.failure, notice: this.automation.notice || null } : null };
   }
 
   view() { this.tick(); return this.viewWithoutTick(); }

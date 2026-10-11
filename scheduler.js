@@ -164,8 +164,8 @@ class Scheduler {
   // même cas (`reservedNext.borrowable`). Sans bonus ni malus, un passage non emprunté
   // d'une personne déjà comptée dans le tour (invitée de duo, ordre du bar)
   // ne coûte rien de plus, dette en cours ou non.
-  // Rend la part de crédit ajoutée à roundUse (0 sans changement), pour que
-  // le retrait d'une invitée rende exactement ce qui a été pris.
+  // Rend la hausse de roundUse (0 quand seul roundPeople change), pour que
+  // le retrait d'une invitée rende exactement ce qui a été ajouté.
   _useRound(roundPeople, roundUse, pid, borrowed = false) {
     const cost = 1 / this.personWeight(pid);
     if (Math.abs(cost - 1) < EPS && !borrowed && roundPeople.has(pid)) return 0;

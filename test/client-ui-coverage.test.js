@@ -4183,6 +4183,30 @@ test('duos uniquement : pas de « ＋ Chanson », la fiche d’un titre ne propo
   assert.deepEqual(strictGuest.find('peopleList', '[data-person-card="alice"]').querySelectorAll('[data-duet-leave]').map(button => button.dataset.ownerId), ['zoe']);
   const freeGuest = await open({ state: guestState({}), respond });
   assert.deepEqual(freeGuest.find('peopleList', '[data-person-card="alice"]').querySelectorAll('[data-duet-leave]').map(button => button.dataset.ownerId), ['bob', 'zoe']);
+  // Message « duo ajouté par ta table » : avant la règle de la soirée, sans
+  // « Je ne chante pas ce duo » en mode duos (le serveur le refuserait).
+  const noticeState = rules => {
+    const state = guestState(rules);
+    state.tablePeople[0].inbox = [{ id: 'n1', kind: 'duoAdded', params: { name: 'Bob', fromId: 'bob', title: 'Duo', entryId: 'b1' }, at: Date.now() }];
+    return state;
+  };
+  const strictNotice = await open({ state: noticeState({ duoOnly: true }), respond });
+  const infoTexts = strictNotice.node('infoBar').querySelectorAll('.info-item').map(item => item.textContent);
+  assert.match(infoTexts[0], /Bob/, 'le message passe avant la règle');
+  assert.ok(infoTexts.slice(1).some(text => /ne prend que des duos : chante à deux/.test(text)) ||
+    strictNotice.node('infoBar').querySelector('[data-info-more]'), 'la règle suit');
+  assert.equal(strictNotice.node('infoBar').querySelector('[data-info-leave]'), null);
+  const freeNotice = await open({ state: noticeState({}), respond });
+  assert.ok(freeNotice.node('infoBar').querySelector('[data-info-leave="notice:n1"]'), 'hors mode duos : le bouton reste');
+  // Règle fermée (×), coupée puis rallumée par le bar : annoncée de nouveau.
+  const rule = await open({ state: baseState({ rules: { duoOnly: true } }), respond });
+  await rule.tap('infoBar', '[data-info-dismiss="duo-only"]');
+  assert.doesNotMatch(rule.node('infoBar').textContent, /chante à deux/);
+  rule.state.rules = { duoOnly: false };
+  await rule.poll();
+  rule.state.rules = { duoOnly: true };
+  await rule.poll();
+  assert.match(rule.node('infoBar').textContent, /chante à deux/, 'règle rallumée : annoncée de nouveau');
   // Option coupée : la fiche habituelle.
   const free = await open({ state: baseState(), respond });
   assert.match(free.node('peopleList').innerHTML, /data-add-song="alice"/);

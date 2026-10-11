@@ -565,8 +565,16 @@ function battleHoldsQueue() {
 // file de KaraFun libre.
 function refuseBattleSong() {
   const title = battleVote.ballot?.selectedSong?.title || 'ce titre';
-  const { fallback } = battleVote.refuseSong(`KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : ` +
-    'retire cette copie dans KaraFun, puis lance une Battle sans vote sur un autre titre.');
+  let fallback;
+  try {
+    ({ fallback } = battleVote.refuseSong(`KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : ` +
+      'retire cette copie dans KaraFun, puis lance une Battle sans vote sur un autre titre.'));
+  } catch (error) {
+    // État Battle incohérent (sauvegarde abîmée) : sync() continue, l'envoi
+    // finit en échec au bout de l'attente de l'accusé.
+    appLog(`Refus Battle non traité : ${error.message}`);
+    return;
+  }
   if (fallback) sched.note(`KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun. ` +
     `La Battle passe ensuite sur « ${fallback.title} », titre suivant du vote.`, 'battle');
 }
@@ -590,6 +598,12 @@ function syncBattle({ current, upcoming, q }, now) {
   if (!state || state.status === 'released') return;
   const matches = q.filter(item => Number(item.songId) === state.songId && isBattleItem(item));
   if (state.status === 'waiting') {
+    // Copie normale du titre refusé retirée par le bar : la consigne s'efface.
+    const refused = battleVote.ballot?.refusedSongIds?.at(-1);
+    if (state.notice && !q.some(item => Number(item.songId) === refused && !isBattleItem(item))) {
+      delete state.notice;
+      battleVote._changed('automation-notice');
+    }
     if (matches.length === 1) {
       battleVote.confirmAutomation(matches[0].queueId);
       sched.note('Battle reconnue dans KaraFun : le bar laisse les téléphones rejoindre avant le départ.', 'battle');
@@ -661,7 +675,7 @@ function syncBattle({ current, upcoming, q }, now) {
       state.missingSince = null;
       battleVote._changed('automation-found');
     }
-  } else if (state.status === 'after' && current && !isBattleItem(current) &&
+  } else if (state.status === 'after' && current && !isBattleItem(current) && String(current.queueId) !== String(state.queueId) &&
       String(bridge.status?.current?.queueId ?? bridge.status?.songPlaying?.queueId ?? '') === String(current.queueId)) {
     // Titre suivant lancé directement dans KaraFun : la Battle est finie, la
     // file reprend (sinon elle restait retenue et le vote suivant bloqué).
@@ -1535,7 +1549,11 @@ function stageProgressView(current, kind, now, { trustedOnly = false, fromStart 
   const tr = tracked.find(item => isOnStage(item, current));
   const synced = stageClock && stageClock.key === stageKey(current);
   if (!synced && !fromStart) return null;
+  // Horloge provisoire lue comme syncStageClock le fera (pause, tempo,
+  // position) : la décision de fermeture ne change pas une fois relevée.
   const clock = synced ? stageClock : stageProgress.startClock(stageKey(current), tr?.startedAt || now);
+  if (!synced) stageProgress.observeClock(clock, now, { paused: stageProgress.pausedOf(bridge.status),
+    rate: stageProgress.rateOf(liveFromStatus(bridge.status)?.tempo), position: stageProgress.protocolPosition(bridge.status) });
   const durationSec = kind === 'battle' ? null : stageProgress.stageDuration({ demoSec: fake ? SONG_SECONDS : null,
     catalogSec: catalogDurations.get(Number(tr?.sel.song.songId ?? current.songId)),
     clientSec: trustedOnly ? null : tr?.sel.song.duration });
@@ -1828,7 +1846,10 @@ function publicState(person, tableId, managed = null) {
   const byQid = new Map(tracked.map(tr => [tr.queueId, tr]));
   const slot = sched.avgSlotSec() * 1000;
   const curTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
-  const firstFreeAt = current ? ((curTr && curTr.startedAt) ? curTr.startedAt + slot : Date.now() + slot / 2) : Date.now();
+  // Heure de fermeture fixée : heures affichées, repère et arrêt partent de la
+  // même fin de scène (stageFreeAt) ; sinon, le passage moyen.
+  const firstFreeAt = !current ? Date.now() : closingAt() != null ? stageFreeAt(current)
+    : (curTr && curTr.startedAt) ? curTr.startedAt + slot : Date.now() + slot / 2;
   const stage = current ? describe(current, byQid) : null;
   if (stage) stage.progress = stageProgressView(current, stage.kind, Date.now());
   const queue = upcoming.map((it, i) => ({ ...describe(it, byQid),
@@ -1862,9 +1883,8 @@ function publicState(person, tableId, managed = null) {
     guaranteed: !v.future && sched.reservedNext?.personId === v.ids[0],
     deferred: !v.future && sched.isDeferred(sched.people.get(v.ids[0])) });
   // Heure de fermeture : titres qui passeront encore avant elle.
-  const shift = closingAt() != null ? stageFreeAt(current) - firstFreeAt : 0;
-  const closing = closingView(queue, firstFreeAt, slot, shift);
-  if (closing) for (const item of queue) item.afterClosing = !(Number.isFinite(item.eta) && item.eta + shift + slot / 2 <= closing.at);
+  const closing = closingView(queue, firstFreeAt, slot);
+  if (closing) for (const item of queue) item.afterClosing = !(Number.isFinite(item.eta) && item.eta + slot / 2 <= closing.at);
   // « Pas prêt » : un titre déjà chargé dans KaraFun, ou le prochain passage
   // encore à envoyer, peut être repoussé par ses chanteurs.
   // Personne → titre concerné, tant que ce titre peut encore laisser passer
@@ -3154,15 +3174,13 @@ function closingAt(now = Date.now()) {
 // (les titres suivants de chacun viennent après) : la file est complète
 // quand ce tour ne peut plus accueillir un titre de plus. Simple repère : les
 // ajouts restent possibles et la rotation décide qui passe avant l'heure.
-// `shift` : écart entre la fin de scène de la fermeture (stageFreeAt) et
-// celle des heures affichées, pour que le repère et l'arrêt coïncident.
-function closingView(queue, firstFreeAt, slot, shift = 0) {
+function closingView(queue, firstFreeAt, slot) {
   const now = Date.now();
   const at = closingAt(now);
   if (at == null) return null;
-  const fits = item => Number.isFinite(item.eta) && item.eta + shift + slot / 2 <= at;
+  const fits = item => Number.isFinite(item.eta) && item.eta + slot / 2 <= at;
   const fitCount = queue.filter(fits).length;
-  const roundEnd = Math.max(now, firstFreeAt + shift) + queue.filter(item => !item.future).length * slot;
+  const roundEnd = Math.max(now, firstFreeAt) + queue.filter(item => !item.future).length * slot;
   return { at, passed: now >= at, full: now >= at || roundEnd + slot / 2 > at, fitCount,
     afterCount: queue.length - fitCount };
 }
@@ -3536,7 +3554,21 @@ function clearQueue() {
   sched.roundGroups.clear();
   // Le tour en cours se termine comme un tour normal : une dette (passage
   // emprunté, malus) reste due au tour suivant, sans compter deux fois le
-  // passage que le vidage efface du tour.
+  // passage que le vidage efface du tour. Les reçus des titres encore en
+  // route vers KaraFun passent au même nouveau tour : un titre retiré sans
+  // avoir été chanté rend alors sa part (rollbackUnplayed compare à ce reçu).
+  for (const sel of [...tracked.map(tr => tr.sel), pending?.sel]) {
+    const credit = sel?.turnCredit;
+    if (!credit || credit.rolledBack) continue;
+    for (const state of [credit.before, credit.after]) {
+      if (!Array.isArray(state?.roundPeople) || !Array.isArray(state.roundUse)) continue;
+      const people = new Set(state.roundPeople), use = new Map(state.roundUse), apps = new Map(state.roundApps || []);
+      sched._resetRound(people, use, apps);
+      state.roundPeople = [...people];
+      state.roundUse = [...use];
+      if (Array.isArray(state.roundApps)) state.roundApps = [...apps];
+    }
+  }
   sched._resetRound(sched.roundPeople, sched.roundUse, sched.roundApps);
   sched.roundOwed.clear();
   sched.invalidateManualOrder();

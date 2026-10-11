@@ -1087,6 +1087,7 @@ test('fermeture : à la fin d’un titre de durée connue, le titre suivant n’
 
 // Relecture du 11 octobre : la durée du catalogue de KaraFun décide de la fin
 // du titre en cours, au tempo réglé, plutôt que le passage moyen.
+const closingTimeOf = view => view.closing.at;
 function closingCase(f, { catalogSec, tempo = null, closingInSec }) {
   const kf = [];
   f.sched.opts.defaultSlotSec = 300;
@@ -1109,12 +1110,47 @@ test('fermeture : une durée du catalogue plus longue que le passage moyen fait 
   const { kf, view } = closingCase(harness(), { catalogSec: 600, closingInSec: 400 });
   assert.ok(kf.some(call => call[0] === 'remove' && call[1] === 6));
   assert.equal(view.closing.fitCount, 0, 'le repère du bar dit la même chose');
+  const row = view.queue.find(item => String(item.queueId) === '6');
+  assert.equal(row?.afterClosing, true, 'ligne marquée après la fermeture');
+  assert.ok(row.eta + 150000 > closingTimeOf(view), 'son heure affichée est cohérente avec ce repère');
 });
 
 test('fermeture : tempo +50 % raccourcit la fin du titre en cours', () => {
   const { kf } = closingCase(harness(), { catalogSec: 600, tempo: 50, closingInSec: 600 });
   assert.ok(!kf.some(call => call[0] === 'remove'));
 });
+
+// Relecture du 11 octobre : au changement de titre, la décision de garder un
+// titre retiré pour la fermeture est prise avant le relevé de l'horloge de
+// scène, puis celle de le retirer après : elles doivent coïncider.
+for (const tempo of [0, -20]) {
+  test(`fermeture, titre tout juste sur scène (tempo ${tempo}) : même décision avant et après le relevé de l’horloge`, () => {
+    const f = harness();
+    const kf = [];
+    f.sched.opts.defaultSlotSec = 300;
+    singers(f, ['Chay', 'Eny']);
+    const onStage = f.sched.select(); f.sched.commit(onStage);
+    const next = f.sched.select(); f.sched.commit(next);
+    f.catalogDurations.set(Number(onStage.song.songId), 200);
+    const bridge = fakeBridge(kf, [{ queueId: 5, songId: onStage.song.songId, singer: onStage.label },
+      { queueId: 6, songId: next.song.songId, singer: next.label }], 5);
+    bridge.status.tempo = tempo;
+    f.setBridge(bridge);
+    f.tracked.push({ queueId: 5, sel: onStage, startedAt: null, addedAt: Date.now() - 120000 });
+    const pulled = { queueId: 6, sel: next, startedAt: null, addedAt: Date.now(),
+      pulled: { reason: 'closing', at: Date.now() - 1000 }, removeRequestedAt: Date.now() - 1000 };
+    f.tracked.push(pulled);
+    f.settings.closingAt = Date.now() + 400000;
+    const owner = f.sched.people.get(next.ids[0]);
+    const notices = f.sched.inboxOf(owner).length;
+    f.sync();
+    if (tempo === 0) assert.ok(pulled.unpulled && !pulled.pulled, 'durée du catalogue : le titre tient');
+    else {
+      assert.deepEqual(kf.filter(call => call[0] === 'remove'), [], 'pas de second retrait');
+      assert.equal(f.sched.inboxOf(owner).length, notices, 'pas de second message');
+    }
+  });
+}
 
 // Relecture du 11 octobre : la durée vient du téléphone qui a choisi le titre
 // (non vérifiée). Une durée gonflée ne doit pas faire retirer le titre d'un autre.
