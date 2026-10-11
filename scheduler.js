@@ -161,17 +161,21 @@ class Scheduler {
   // repassait aussi tôt que les autres au tour suivant (Dadou deux fois
   // pendant l'attente d'Eny, soirée du 10 octobre). Le prochain annoncé
   // quand le tour semblait fini, puis rattrapé par une arrivée, est dans le
-  // même cas (`reservedNext.borrowable`). Sans malus, un passage non emprunté
+  // même cas (`reservedNext.borrowable`). Sans bonus ni malus, un passage non emprunté
   // d'une personne déjà comptée dans le tour (invitée de duo, ordre du bar)
   // ne coûte rien de plus, dette en cours ou non.
+  // Rend la part de crédit ajoutée à roundUse (0 sans changement), pour que
+  // le retrait d'une invitée rende exactement ce qui a été pris.
   _useRound(roundPeople, roundUse, pid, borrowed = false) {
     const cost = 1 / this.personWeight(pid);
-    if (Math.abs(cost - 1) < EPS && !borrowed && roundPeople.has(pid)) return;
+    if (Math.abs(cost - 1) < EPS && !borrowed && roundPeople.has(pid)) return 0;
     const already = borrowed && roundPeople.has(pid);
-    if (Math.abs(cost - 1) < EPS && !roundUse.has(pid) && !already) { roundPeople.add(pid); return; }
+    if (Math.abs(cost - 1) < EPS && !roundUse.has(pid) && !already) { roundPeople.add(pid); return 0; }
+    const previous = roundUse.get(pid) || 0;
     const used = (roundUse.get(pid) ?? (already ? 1 : 0)) + cost;
     roundUse.set(pid, used);
     if (used >= 1 - EPS) roundPeople.add(pid);
+    return used - previous;
   }
 
   // Nouveau tour : chacun récupère un crédit. Un malus reporte sa dette et

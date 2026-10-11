@@ -375,7 +375,7 @@ function drawTimeline(plot) {
     const day = at => new Date(at).toDateString() === new Date(lastEnd).toDateString() ? '' : `le ${dayLabel(at)} `;
     const barClosed = st.evening?.closedAt;
     const closed = live ? 'soirée encore ouverte'
-      : `${Number.isFinite(barClosed) && barClosed - lastEnd >= 60000 ? `fin du karaoké à ${hhmm(barClosed)} · ` : ''}` +
+      : `${Number.isFinite(barClosed) && barClosed - lastEnd >= 60000 ? `fin du karaoké ${day(barClosed)}à ${hhmm(barClosed)} · ` : ''}` +
         `soirée close dans l’application ${day(tl.end)}à ${hhmm(tl.end)}`;
     plot.appendChild(h('p', { class: 'st-caption', text: `Dernier passage à ${hhmm(lastEnd)} · ${closed}` }));
   }

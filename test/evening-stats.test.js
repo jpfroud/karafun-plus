@@ -804,6 +804,26 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     assert.ok(singerOf(stats, 'pA').presenceSec <= (31 - 10) * 60, `présence : ${singerOf(stats, 'pA').presenceSec} s`);
   });
 
+  test('KaraFun coupé quelques secondes pendant le dernier titre puis reconnecté : la soirée finit à la vraie déconnexion', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Un' }),
+      e(30, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], ownerId: 'pA', source: 'queue', durationSec: 240 }),
+      e(31, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(31.1, 'karaoke.phase', { phase: 'singing', blocker: null }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(34, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      ...Array.from({ length: 6 }, (_, k) => e(40 + k * 10, 'person.seen', { personId: 'pA' })),
+      e(95, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(200, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events });
+    assert.equal(stats.evening.closedAt, T(95), 'la déconnexion définitive ferme la soirée');
+  });
+
   test('fermeture notée avant l’heure (plus aucun titre ne tient) : la soirée finit à l’heure annoncée', () => {
     const e = evening();
     const events = [

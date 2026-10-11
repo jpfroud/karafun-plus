@@ -245,9 +245,10 @@ class BattleVote {
   }
 
   // KaraFun a ajouté le titre en chanson normale, sans le mode Battle. Le
-  // titre est écarté pour la soirée et la Battle passe au titre suivant du
-  // vote (le plus voté parmi les autres, au moins une voix), sans repasser
-  // par le vote. Sans autre titre, la demande attend le bar (« failed »).
+  // titre n'est plus proposé par la salle jusqu'à la remise à zéro (le bar
+  // peut le relancer) et la Battle passe au titre suivant du vote (le plus
+  // voté parmi les autres, au moins une voix), sans repasser par le vote.
+  // Sans autre titre, la demande attend le bar (« failed »).
   refuseSong(failure) {
     if (this.ballot?.phase !== 'requested' || this.automation?.status !== 'sending') {
       throw new Error('Refus Battle inattendu.');

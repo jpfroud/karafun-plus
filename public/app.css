@@ -423,7 +423,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .link-btn { appearance: none; border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .staff [aria-invalid="true"] { border-color: var(--bad); }
 .scene-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; max-width: 100%; }
-.scene-chips #autoWarn { cursor: pointer; }
+.scene-chips #autoWarn, .scene-chips #duoOnlyChip { cursor: pointer; }
 /* Pastilles Spotify : texte court ; un nom d'appareil long est abrégé par « … »
    au lieu de déborder (inline-block : « … » impossible dans une boîte flex). */
 #spotifyPill, #spotifyChip { display: inline-block; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
@@ -548,7 +548,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
   .stage-history-actions .btn { min-height: 36px; padding: 4px 10px; font-size: 12px; }
   .identity-list, .stage-history-list, .soloist-list { max-height: none; overflow: visible; }
   .soloist-row .btn { min-height: 40px; }
-  #spotifyChip, .scene-chips #autoWarn { min-height: 44px; line-height: 34px; }
+  #spotifyChip, .scene-chips #autoWarn, .scene-chips #duoOnlyChip { min-height: 44px; line-height: 34px; }
 }
 
 @media (max-width: 1100px) {

@@ -560,7 +560,7 @@ window.CLIENT_TRANSLATIONS = {
       'Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.': 'Closing time reached: no more songs will start unless the bar moves the time.',
       'Fermeture du bar atteinte': 'Closing time reached',
       'Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.': 'Songs planned after closing time will not be started, unless the bar moves the time.',
-      'La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passera avant la fermeture si la rotation le place assez tôt.': 'The queue is full until closing time. You can still add a song: it will play before closing if the rotation places it early enough.',
+      'La file est complète jusqu’à cette heure. Tu peux encore ajouter un titre : la rotation décide s’il passe avant.': 'The queue is full until then. You can still add a song: the rotation decides whether it plays before.',
       '{n} titre prévu passera avant la fermeture : il reste de la place.': [
         '{n} planned song will play before closing time: there is still room.',
         '{n} planned songs will play before closing time: there is still room.',
@@ -638,6 +638,7 @@ window.CLIENT_TRANSLATIONS = {
     errors: {
       'Ce soir, le bar ne prend que des duos : choisis un titre puis « Chanter en duo ».': 'Tonight the bar only takes duets: pick a song, then “Sing a duet”.',
       'Ce soir, le bar ne prend que des duos : garde ton duo ou retire ce titre.': 'Tonight the bar only takes duets: keep your duet or remove this song.',
+      'Ce soir, le bar ne prend que des duos : l’auteur du titre peut le retirer.': 'Tonight the bar only takes duets: the person who chose this song can remove it.',
       'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.': 'Nobody else is waiting to sing: your turn can’t be pushed back.',
       'Choisis le duo à annuler.': 'Choose the duet to cancel.',
       'Trop tard : ce duo est déjà sur scène.': 'Too late: this duet is already on stage.',

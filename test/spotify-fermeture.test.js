@@ -31,7 +31,7 @@ function harness({ logs = null } = {}) {
     console: logs ? { ...console, log: (...parts) => logs.push(parts.join(' ')) } : console, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, tracked, settings, handlers, spotify, spotifyAutomation, spotifyTick, sync, analyze,
-      karaokeOutlook, playKaraFun, staffState, access, battleVote, closingBlocksStart, catalogPhoneError,
+      karaokeOutlook, playKaraFun, staffState, access, battleVote, closingBlocksStart, catalogPhoneError, catalogDurations,
       setBridge: b => { bridge = b; }, getPending: () => pending, getPlayStarting: () => playStarting };
   `, context, { filename: 'server.js' });
   context.fixture.settings.auto = false;
@@ -1083,6 +1083,37 @@ test('fermeture : à la fin d’un titre de durée connue, le titre suivant n’
   f.settings.closingAt = Date.now() + 120000;
   f.sync();
   assert.ok(kf.some(call => call[0] === 'remove' && call[1] === 6));
+});
+
+// Relecture du 11 octobre : la durée du catalogue de KaraFun décide de la fin
+// du titre en cours, au tempo réglé, plutôt que le passage moyen.
+function closingCase(f, { catalogSec, tempo = null, closingInSec }) {
+  const kf = [];
+  f.sched.opts.defaultSlotSec = 300;
+  singers(f, ['Chay', 'Eny']);
+  const onStage = f.sched.select(); f.sched.commit(onStage);
+  const next = f.sched.select(); f.sched.commit(next);
+  f.catalogDurations.set(Number(onStage.song.songId), catalogSec);
+  const bridge = fakeBridge(kf, [{ queueId: 5, songId: onStage.song.songId, singer: onStage.label },
+    { queueId: 6, songId: next.song.songId, singer: next.label }], 5);
+  if (tempo != null) bridge.status.tempo = tempo;
+  f.setBridge(bridge);
+  f.tracked.push({ queueId: 5, sel: onStage, startedAt: Date.now() - 60000, addedAt: Date.now() - 120000 });
+  f.tracked.push({ queueId: 6, sel: next, startedAt: null, addedAt: Date.now() });
+  f.settings.closingAt = Date.now() + closingInSec * 1000;
+  f.sync();
+  return { kf, view: f.staffState() };
+}
+
+test('fermeture : une durée du catalogue plus longue que le passage moyen fait retirer le titre suivant', () => {
+  const { kf, view } = closingCase(harness(), { catalogSec: 600, closingInSec: 400 });
+  assert.ok(kf.some(call => call[0] === 'remove' && call[1] === 6));
+  assert.equal(view.closing.fitCount, 0, 'le repère du bar dit la même chose');
+});
+
+test('fermeture : tempo +50 % raccourcit la fin du titre en cours', () => {
+  const { kf } = closingCase(harness(), { catalogSec: 600, tempo: 50, closingInSec: 600 });
+  assert.ok(!kf.some(call => call[0] === 'remove'));
 });
 
 // Relecture du 11 octobre : la durée vient du téléphone qui a choisi le titre

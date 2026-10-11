@@ -145,7 +145,7 @@
       <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>
     <div class="row wrap"><label class="switch duo-only-switch"><input id="duoOnly" type="checkbox"> Duos uniquement</label><span class="save-status" data-save-status="duoOnly" aria-live="polite"></span></div>
-    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent ; un duo prévu ne peut plus être changé en solo par le client ; une invitation sans réponse ou refusée part en solo, comme d’habitude. Revient à « non » à la nouvelle soirée.</p>
+    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent. Un duo accepté ne redevient pas un solo par son auteur ni par une invitée de la même table (le titre peut être retiré). Comme d’habitude, une invitation sans réponse, refusée ou quittée par une autre table part en solo, et l’auteur d’un duo déjà dans KaraFun peut le chanter seul si son partenaire manque. Se décoche à la nouvelle soirée (« Supprimer toutes les tables »).</p>
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
@@ -269,7 +269,7 @@
     <p class="small muted">Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.</p>
     <div class="table-reset"><button class="btn small danger" id="clearQueue">Vider toutes les chansons</button><span class="small muted">Conserve les tables, les chanteurs, leurs accès et l’historique. La chanson sur scène continue ; les autres retraits doivent être confirmés par KaraFun.</span></div>
     <div class="table-reset"><button class="btn small danger" id="clearTables">Supprimer toutes les tables</button><span class="small muted">Nouvelle soirée : efface les chanteurs, leurs titres et les anciens QR. Le titre déjà sur scène continue.</span></div>
-    <div class="table-reset"><button class="btn small danger" id="resetSettings">Remettre les options par défaut</button><span class="small muted">Remet toutes les options à leur valeur d’origine (délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture, Spotify automatique) : l’envoi automatique à KaraFun est rallumé, la lecture automatique coupée. Garde le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file.</span></div>
+    <div class="table-reset"><button class="btn small danger" id="resetSettings">Remettre les options par défaut</button><span class="small muted">Remet toutes les options à leur valeur d’origine (délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture, Spotify automatique) : l’envoi automatique à KaraFun est rallumé si KaraFun le permet, la lecture automatique coupée. Garde le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file.</span></div>
   </section>
 </main>
 
@@ -2135,11 +2135,15 @@
   $('resetSettings').onclick = async () => {
     if (!S) return;
     // Ce qui change tout de suite pour la soirée en cours est dit d'abord.
-    const now = [!S.settings?.auto ? 'L’envoi automatique à KaraFun sera rallumé.' : '',
+    // L'envoi automatique reste coupé tant que le serveur l'interdit (mêmes
+    // raisons que la route settings-reset).
+    const autoBlocked = !!(S.recoveredPending || S.persistenceError || S.kf?.permissions?.addToQueue === false);
+    const now = [!S.settings?.auto ? (autoBlocked ? 'L’envoi automatique à KaraFun restera coupé : vérifie KaraFun d’abord.'
+      : 'L’envoi automatique à KaraFun sera rallumé.') : '',
       S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : '',
       S.settings?.duoOnly ? 'Les solos seront de nouveau permis.' : '',
       S.closing ? 'L’heure de fermeture sera retirée.' : ''].filter(Boolean).join(' ');
-    if (!confirm(`Remettre toutes les options à leur valeur d’origine ?${now ? ` ${now}` : ''} Délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture et automatismes Spotify reviennent par défaut. Le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file sont gardés.`)) return;
+    if (!confirm(`Remettre toutes les options à leur valeur d’origine ?${now ? ` ${now}` : ''} Délais, cases cochées, règles de rotation, Battle, « Je suis là » et durée des titres reviennent aussi par défaut, comme les automatismes Spotify. Le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file sont gardés.`)) return;
     try {
       const result = await post('/api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
       await load();

@@ -1009,8 +1009,28 @@ test('duos uniquement : plus de solo depuis les téléphones, duos et titres dé
   }
   await assert.rejects(f.handlers['POST /api/duet/cancel']({}, {}, { entryId: duo.entryId }, ana),
     error => error.code === 'DUO_ONLY', 'POST /api/duet/cancel');
+  // L'invitée de la même table (duo accepté d'office) non plus.
+  await assert.rejects(f.call('POST /api/table/duet/leave', { ...as(ben), ownerId: ana.id, entryId: duo.entryId }),
+    error => error.code === 'DUO_ONLY' && /l’auteur du titre peut le retirer/.test(error.message));
   assert.equal(f.sched.songsOf(ana).at(-1).duet?.partnerId, ben.id, 'toujours un duo');
   assert.equal(f.journalRules().duoOnly, true, 'règle notée au début d’une soirée');
+  // Restent possibles : retirer le titre, annuler une invitation en attente,
+  // et pour une invitée d'une autre table, se retirer (comme refuser).
+  await f.call('POST /api/table/song/remove', { ...as(ana), entryId: duo.entryId });
+  assert.ok(!f.sched.songsOf(ana).some(song => song.entryId === duo.entryId), 'titre retiré');
+  const chloe = f.sched.join({ tableId: '2', name: 'Chloé', headcount: 1 });
+  const chloeAs = { table: '2', access: f.access.issue('2'), personId: chloe.id, token: chloe.token };
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: chloe.id, song: { songId: 4005, title: 'Invitation' } });
+  const pending = f.sched.songsOf(ana).at(-1);
+  assert.equal(pending.duet?.state, 'pending');
+  await f.call('POST /api/table/duet/cancel', { ...as(ana), entryId: pending.entryId });
+  assert.equal(pending.duet ?? null, null, 'invitation en attente annulée, comme si elle expirait');
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: chloe.id, song: { songId: 4006, title: 'Accepté' } });
+  const accepted = f.sched.songsOf(ana).at(-1);
+  await f.call('POST /api/table/duet/answer', { ...chloeAs, accept: true, entryId: accepted.entryId });
+  assert.equal(accepted.duet?.state, 'accepted');
+  await f.call('POST /api/table/duet/leave', { ...chloeAs, ownerId: ana.id, entryId: accepted.entryId });
+  assert.equal(accepted.duet ?? null, null, 'invitée d’une autre table : elle peut se retirer');
   await assert.rejects(f.call('POST /api/staff/settings', { duoOnly: 'oui' }), /Duos uniquement/);
   await f.call('POST /api/staff/settings', { duoOnly: false });
   await f.call('POST /api/table/song', { ...as(ben), mode: 'append', song: { songId: 4003, title: 'Solo de Ben' } });

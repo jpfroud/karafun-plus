@@ -139,8 +139,10 @@ class SpotifyLink {
     if ('pauseLeadSec' in options && next.pauseLeadSec !== Number(options.pauseLeadSec)) {
       throw new Error('Le silence entre Spotify et un titre doit être entre 0 et 10 secondes.');
     }
+    // Écriture impossible : rien ne change, ni en mémoire ni sur le disque.
+    const before = this.config;
     this.config = { ...this.config, ...next };
-    this._save();
+    try { this._save(); } catch (error) { this.config = before; throw error; }
   }
 
   // Choix du bar. Le type vient de la dernière liste : il départage deux

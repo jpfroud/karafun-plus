@@ -276,23 +276,23 @@ try {
   }
 
   {
-  // « Duos uniquement » : gardé après un redémarrage ; une valeur abîmée laisse la valeur actuelle.
-  const base = { auto: true, autoPlay: false, pushDelaySec: 45, playDelaySec: 8, closingAt: null };
-  const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: new Scheduler({ solverEnabled: false }),
-    access: new TableAccess(), settings: { ...base, duoOnly: true } })));
-  const restore = (value, current = false) => {
-    const copy = structuredClone(snapshot);
-    if (value === undefined) delete copy.settings.duoOnly; else copy.settings.duoOnly = value;
-    const settings = { ...base, duoOnly: current };
-    restoreNight(copy, { scheduler: new Scheduler({ solverEnabled: false }), access: new TableAccess(), settings });
-    return settings.duoOnly;
-  };
-  assert.equal(restore(true), true, 'option gardée après un redémarrage');
-  for (const bad of ['oui', 1, null, {}]) assert.equal(restore(bad, false), false, JSON.stringify(bad));
-  assert.equal(restore(undefined, false), false, 'ancienne sauvegarde sans le champ');
-}
+    // « Duos uniquement » : gardé après un redémarrage ; une valeur abîmée laisse la valeur actuelle.
+    const base = { auto: true, autoPlay: false, pushDelaySec: 45, playDelaySec: 8, closingAt: null };
+    const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: new Scheduler({ solverEnabled: false }),
+      access: new TableAccess(), settings: { ...base, duoOnly: true } })));
+    const restore = (value, current = false) => {
+      const copy = structuredClone(snapshot);
+      if (value === undefined) delete copy.settings.duoOnly; else copy.settings.duoOnly = value;
+      const settings = { ...base, duoOnly: current };
+      restoreNight(copy, { scheduler: new Scheduler({ solverEnabled: false }), access: new TableAccess(), settings });
+      return settings.duoOnly;
+    };
+    assert.equal(restore(true), true, 'option gardée après un redémarrage');
+    for (const bad of ['oui', 1, null, {}]) assert.equal(restore(bad, false), false, JSON.stringify(bad));
+    assert.equal(restore(undefined, false), false, 'ancienne sauvegarde sans le champ');
+  }
 
-console.log('ok - reprise après crash : file, titres, duos, téléphones, QR, écritures atomiques et envoi ambigu');
+  console.log('ok - reprise après crash : file, titres, duos, téléphones, QR, écritures atomiques et envoi ambigu');
 } finally {
   // Ce dossier est créé exclusivement sous le répertoire temporaire du test.
   if (path.resolve(dir).startsWith(path.resolve(os.tmpdir()) + path.sep)) {

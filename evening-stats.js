@@ -9,9 +9,9 @@
  *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun à
  *   la fermeture (heure de fermeture, ou fin du dernier passage s'il finit
- *   plus tard ; sans heure de fermeture, déconnexion de KaraFun après le
- *   dernier titre, sinon fin du journal). Les arrêts de l'application sont
- *   retirés.
+ *   plus tard ; sans heure de fermeture, déconnexion définitive de KaraFun
+ *   pendant ou après le dernier titre, sinon fin du journal). Les arrêts de
+ *   l'application sont retirés.
  * - passage : un titre de la file réellement lancé sur scène (stage.started).
  *   Un titre envoyé puis retiré de KaraFun ne compte pas ; une relance non plus.
  * - attente : du moment où le titre pouvait passer (sa demande, ou la fin du
@@ -55,7 +55,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture, ou fin du dernier passage s’il finit plus tard ; sans heure de fermeture, déconnexion de KaraFun après le dernier titre). Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture, ou fin du dernier passage s’il finit plus tard ; sans heure de fermeture, déconnexion définitive de KaraFun pendant ou après le dernier titre). Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -610,12 +610,14 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // 10 octobre, close au bar le lendemain à 12:54 : la présence s'arrête à
   // 03:17 (dernier titre après la fermeture de 03:10) au lieu de compter la
   // matinée. KaraFun coupé pendant le dernier titre : sa fin n'est pas notée
-  // (seulement estimée), la coupure ferme la soirée.
+  // (seulement estimée), la coupure ferme la soirée. Seule compte la coupure
+  // définitive : une coupure suivie d'une reconnexion ne ferme rien.
   const lastStageEnd = stages.length ? Math.max(...stages.map(st => st.endAt)) : null;
   const lastStageStart = stages.length ? Math.max(...stages.map(st => st.start)) : null;
   const barClosed = lastClosingReached != null && !(live && closingReopened);
+  const lastOnline = phases.reduce((index, ph, i) => ph.blocker !== 'offline' ? i : index, -1);
   const offlineAfter = !live && lastStageStart != null ?
-    phases.find(ph => ph.start > lastStageStart && ph.blocker === 'offline') : null;
+    phases.find((ph, i) => i > lastOnline && ph.start > lastStageStart && ph.blocker === 'offline') : null;
   const closedAt = Math.max(openedAt, Math.min(E1, barClosed ? Math.max(lastStageEnd ?? -Infinity, lastClosingReached) :
     offlineAfter ? offlineAfter.start : E1));
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];

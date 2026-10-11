@@ -111,6 +111,26 @@ test('Spotify : connexion PKCE sans secret, relance seulement si rien ne joue', 
   assert.equal(link.view().resumeDelaySec, 2);
 });
 
+// Relecture du 11 octobre : « Options par défaut » annonçait « automatismes
+// Spotify non remis » alors que la mémoire était déjà remise.
+test('Spotify : écriture des options impossible, rien ne change en mémoire', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-spotify-'));
+  try {
+    const file = path.join(dir, 'spotify.json');
+    const link = new SpotifyLink({ file });
+    link.setOptions({ autoResume: false, resumeDelaySec: 30 });
+    fs.mkdirSync(`${file}.tmp`); // écriture du fichier temporaire impossible
+    assert.throws(() => link.setOptions({ autoResume: true, resumeDelaySec: 3 }));
+    assert.equal(link.view().resumeDelaySec, 30);
+    assert.equal(link.view().autoResume, false);
+  } finally {
+    if (path.resolve(dir).startsWith(path.resolve(os.tmpdir()) + path.sep)) fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('Spotify : une action par silence ou par titre, jamais à l’aveugle si KaraFun est absent', () => {
   let now = 0;
   const auto = new SpotifyAutomation({ now: () => now });

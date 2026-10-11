@@ -153,3 +153,80 @@ test('dette en cours : chanter en invitée de duo ne coûte pas un tour de plus'
   s._useRound(s.roundPeople, s.roundUse, ana.id, true);
   assert.equal(s.roundUse.get(ana.id), 2, 'un nouveau passage emprunté reste décompté');
 });
+
+test('dette en cours, invitée d’un duo qui ouvre le tour puis se retire : la dette reste due', () => {
+  let n = 1;
+  const song = () => ({ songId: n++, title: `Titre ${n}`, artist: 'Essai' });
+  const s = new Scheduler();
+  s._maybeRequestSolver = () => {};
+  const ana = s.join({ tableId: '1', name: 'Ana', headcount: 2 });
+  const xia = s.join({ tableId: '1', name: 'Xia' });
+  // Tour fini ; Xia a chanté deux fois (second passage emprunté au tour suivant).
+  s.roundPeople.add(ana.id);
+  s.roundPeople.add(xia.id);
+  s.roundUse.set(xia.id, 2);
+  s.inviteDuet(ana, xia.id, song());
+  const duo = s.select();
+  assert.deepEqual(duo.ids, [ana.id, xia.id]);
+  assert.ok(duo.newPersonRound, 'le duo ouvre le tour suivant');
+  s.commit(duo);
+  assert.equal(s.roundUse.get(xia.id), 1, 'tour suivant pris par la dette');
+  s.leaveSentDuet(duo, xia.id);
+  assert.equal(s.roundUse.get(xia.id), 1, 'le retrait ne rend pas une part jamais prise');
+  assert.ok(s.roundPeople.has(xia.id), 'Xia laisse toujours passer ce tour');
+});
+
+test('prochain annoncé emprunteur : la dette survit à un redémarrage', () => {
+  const { TableAccess } = require('../table-access');
+  const { snapshotNight, restoreNight } = require('../night-state');
+  const { s, song, send } = evening();
+  for (let i = 0; i < 4; i++) send();
+  const announced = s.reserveNext();
+  assert.equal(s.reservedNext.borrowable, true);
+  const access = new TableAccess();
+  for (const id of s.tables.keys()) access.issue(id);
+  const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access,
+    settings: { auto: true, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 } })));
+  const restore = () => {
+    const r = new Scheduler();
+    r._maybeRequestSolver = () => {};
+    restoreNight(structuredClone(snapshot), { scheduler: r, access: new TableAccess(), settings: {} });
+    return r;
+  };
+  const r = restore();
+  assert.equal(r.reservedNext?.borrowable, true);
+  const sara = r.join({ tableId: 'Clem', name: 'Sara' });
+  r.chooseSong(sara, song(), 'append');
+  const sel = r.select();
+  r.commit(sel);
+  assert.deepEqual(sel.borrowedIds, [announced.ids[0]], 'dette toujours prise sur le tour suivant');
+  snapshot.scheduler.reservedNext.borrowable = 'oui';
+  assert.equal(restore().reservedNext?.borrowable, undefined, 'valeur non booléenne ignorée');
+});
+
+test('« Je suis là » : prochain annoncé en fin de tour puis rattrapé par une arrivée, passage emprunté', () => {
+  let n = 1;
+  const song = () => ({ songId: n++, title: `Titre ${n}`, artist: 'Essai' });
+  const s = new Scheduler({ requirePresence: true });
+  s._maybeRequestSolver = () => {};
+  s.setHeadcount('Clem', 12);
+  for (const name of ['Dadou', 'Eny', 'Sof', 'Lei']) {
+    const p = s.join({ tableId: ['Dadou', 'Lei'].includes(name) ? 'Comptoir' : 'Clem', name });
+    for (let k = 0; k < 6; k++) s.chooseSong(p, song(), 'append');
+  }
+  const send = () => {
+    for (const p of s.people.values()) if (p.song) s.confirm(p);
+    const sel = s.select();
+    s.commit(sel);
+    s.songEnded(sel.ids);
+    return sel;
+  };
+  for (let i = 0; i < 4; i++) send();
+  const announced = s.reservePresenceNext();
+  assert.equal(s.reservedNext?.borrowable, true);
+  const sara = s.join({ tableId: 'Clem', name: 'Sara' });
+  s.chooseSong(sara, song(), 'append');
+  const sent = send();
+  assert.equal(sent.ids[0], announced.ids[0]);
+  assert.deepEqual(sent.borrowedIds, [announced.ids[0]]);
+});

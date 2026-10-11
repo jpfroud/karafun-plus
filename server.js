@@ -547,6 +547,8 @@ function pullFromKaraFun(tr, reason) {
   tr.removeRequestedAt = Date.now();
 }
 const PULL_ALERT_MS = 45000; // KaraFun garde un titre à retirer : le bar est prévenu
+const BATTLE_ACK_MS = 15000; // attente de l'accusé d'un ajout Battle ; aucun second envoi
+const BATTLE_SETTLE_MS = 1500; // état de la file KaraFun confirmé sur cette durée (trames arrivées en deux temps)
 const PULL_LATE_MS = 20000; // un retrait envoyé (renvoyé toutes les 20 s) peut encore aboutir
 
 function battleHoldsQueue() {
@@ -556,17 +558,17 @@ function battleHoldsQueue() {
 }
 
 // KaraFun a ajouté le titre de la Battle en chanson normale (titre sans mode
-// Battle chez KaraFun) : la copie est retirée pour ne pas passer en solo
-// sans chanteur, le titre est écarté pour la soirée et la Battle passe au
-// titre suivant du vote s'il y en a un.
-function refuseBattleSong(copy) {
-  const title = battleVote.ballot?.selectedSong?.title || copy.title || 'ce titre';
-  let removed = false;
-  try { bridge.remove(copy.queueId); removed = true; }
-  catch (error) { appLog(`Copie Battle à retirer à la main : ${error.message}`); }
-  const where = removed ? 'retrait de la copie normale demandé à KaraFun' : 'retire la copie normale dans KaraFun';
-  const { fallback } = battleVote.refuseSong(`KaraFun a ajouté « ${title} » sans le mode Battle (titre sans Battle chez KaraFun) : ${where}. Choisis un autre titre.`);
-  if (fallback) sched.note(`KaraFun refuse le mode Battle pour « ${title} » (${where}) : la Battle passe sur « ${fallback.title} », titre suivant du vote.`, 'battle');
+// Battle chez KaraFun, soirée du 10 octobre). Rien n'est retiré de KaraFun
+// d'office (copie peut-être déjà lancée, attribution déduite) : le bar la
+// retire lui-même. Le titre n'est plus proposé par la salle (le bar peut le
+// relancer) et la Battle passe au titre suivant du vote, envoyé une fois la
+// file de KaraFun libre.
+function refuseBattleSong() {
+  const title = battleVote.ballot?.selectedSong?.title || 'ce titre';
+  const { fallback } = battleVote.refuseSong(`KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : ` +
+    'retire cette copie dans KaraFun, puis lance une Battle sans vote sur un autre titre.');
+  if (fallback) sched.note(`KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun. ` +
+    `La Battle passe ensuite sur « ${fallback.title} », titre suivant du vote.`, 'battle');
 }
 
 function syncBattle({ current, upcoming, q }, now) {
@@ -626,17 +628,17 @@ function syncBattle({ current, upcoming, q }, now) {
     } else if (battles.length > 1) {
       if (state.status !== 'failed') battleVote.updateAutomation('failed', 'Plusieurs Battles identiques sont apparues dans KaraFun.');
     } else if (state.status === 'sending' && plain.length === 1 &&
-        now - (state.plainSince ?? state.sentAt) <= 15000) {
+        now - (state.plainSince ?? state.sentAt) <= BATTLE_ACK_MS) {
       // Copie attribuée seulement si elle reste sans mode Battle 1,5 s, apparue
       // pendant l'attente de l'accusé : une trame Battle incomplète ou un
-      // suivi resté « sending » après une coupure ne retire rien de KaraFun.
+      // suivi resté « sending » après une coupure ne compte pas.
       const id = String(plain[0].queueId);
       if (state.plainId !== id) {
         state.plainId = id;
         state.plainSince = now;
         battleVote._changed('automation-plain');
-      } else if (now - state.plainSince >= 1500) refuseBattleSong(plain[0]);
-    } else if (state.status === 'sending' && now - state.sentAt > 15000) {
+      } else if (now - state.plainSince >= BATTLE_SETTLE_MS) refuseBattleSong();
+    } else if (state.status === 'sending' && now - state.sentAt > BATTLE_ACK_MS) {
       // Pas de seconde commande : un accusé tardif pourrait créer un doublon.
       battleVote.updateAutomation('failed', 'KaraFun n’a pas confirmé l’ajout Battle. Vérifie sa file avant d’agir.');
     }
@@ -651,7 +653,7 @@ function syncBattle({ current, upcoming, q }, now) {
       if (state.status === 'queued' && !state.missingSince) {
         state.missingSince = now;
         battleVote._changed('automation-missing');
-      } else if (state.status === 'playing' || now - state.missingSince >= 1500) {
+      } else if (state.status === 'playing' || now - state.missingSince >= BATTLE_SETTLE_MS) {
         battleVote.updateAutomation('after');
         sched.note('Battle terminée : le prochain titre attend le lancement manuel du bar.', 'battle');
       }
@@ -1526,14 +1528,18 @@ function syncStageClock(current, key, now) {
 
 // Durée du titre sur scène : démo, catalogue, puis téléphone (bornée).
 // Une Battle n'a pas de durée sûre (phase d'inscription, chanteurs alternés).
-// `trustedOnly` : sans la durée envoyée par un téléphone (décisions de fermeture).
-function stageProgressView(current, kind, now, { trustedOnly = false } = {}) {
-  if (!stageClock || stageClock.key !== stageKey(current)) return null;
+// `trustedOnly` : sans la durée envoyée par un téléphone (décisions de
+// fermeture). `fromStart` : titre tout juste monté sur scène, horloge pas
+// encore relevée dans ce passage de sync() : position comptée depuis son début.
+function stageProgressView(current, kind, now, { trustedOnly = false, fromStart = false } = {}) {
   const tr = tracked.find(item => isOnStage(item, current));
+  const synced = stageClock && stageClock.key === stageKey(current);
+  if (!synced && !fromStart) return null;
+  const clock = synced ? stageClock : stageProgress.startClock(stageKey(current), tr?.startedAt || now);
   const durationSec = kind === 'battle' ? null : stageProgress.stageDuration({ demoSec: fake ? SONG_SECONDS : null,
     catalogSec: catalogDurations.get(Number(tr?.sel.song.songId ?? current.songId)),
     clientSec: trustedOnly ? null : tr?.sel.song.duration });
-  return stageProgress.clockView(stageClock, now, durationSec);
+  return stageProgress.clockView(clock, now, durationSec);
 }
 
 // ------------------------------------------------------------------ journal de soirée
@@ -1856,8 +1862,9 @@ function publicState(person, tableId, managed = null) {
     guaranteed: !v.future && sched.reservedNext?.personId === v.ids[0],
     deferred: !v.future && sched.isDeferred(sched.people.get(v.ids[0])) });
   // Heure de fermeture : titres qui passeront encore avant elle.
-  const closing = closingView(queue, firstFreeAt, slot);
-  if (closing) for (const item of queue) item.afterClosing = !(Number.isFinite(item.eta) && item.eta + slot / 2 <= closing.at);
+  const shift = closingAt() != null ? stageFreeAt(current) - firstFreeAt : 0;
+  const closing = closingView(queue, firstFreeAt, slot, shift);
+  if (closing) for (const item of queue) item.afterClosing = !(Number.isFinite(item.eta) && item.eta + shift + slot / 2 <= closing.at);
   // « Pas prêt » : un titre déjà chargé dans KaraFun, ou le prochain passage
   // encore à envoyer, peut être repoussé par ses chanteurs.
   // Personne → titre concerné, tant que ce titre peut encore laisser passer
@@ -3020,12 +3027,19 @@ function assertDuoAllowed() {
   throw error;
 }
 
-// « Duos uniquement » : l'auteur d'un duo encore prévu ne le change pas en
-// solo (inviter quelqu'un puis annuler contournait la règle). Il peut retirer
-// le titre ; une invitation déclinée ou expirée part encore en solo.
-function assertDuoKept() {
+// « Duos uniquement » : un duo accepté et encore prévu ne redevient pas un
+// solo par le client (inviter puis annuler contournait la règle) : ni par
+// son auteur, ni par l'invitée de la même table (duo accepté d'office). Le
+// titre peut être retiré ; une invitation en attente peut être annulée, et
+// une invitation d'une autre table déclinée, expirée ou quittée part en solo.
+function assertDuoKept(p, entryId) {
   if (!settings.duoOnly) return;
-  const error = new Error('Ce soir, le bar ne prend que des duos : garde ton duo ou retire ce titre.');
+  const key = entryId ? String(entryId) : null;
+  const own = sched.songsOf(p).some(song => song.duet?.state === 'accepted' && (!key || song.entryId === key));
+  const guest = !own && sched.guestDuetsOf(p).find(duo => !key || duo.entryId === key);
+  if (!own && !(guest && sched.people.get(guest.ownerId)?.group === p.group)) return;
+  const error = new Error(own ? 'Ce soir, le bar ne prend que des duos : garde ton duo ou retire ce titre.'
+    : 'Ce soir, le bar ne prend que des duos : l’auteur du titre peut le retirer.');
   error.code = 'DUO_ONLY';
   throw error;
 }
@@ -3140,44 +3154,50 @@ function closingAt(now = Date.now()) {
 // (les titres suivants de chacun viennent après) : la file est complète
 // quand ce tour ne peut plus accueillir un titre de plus. Simple repère : les
 // ajouts restent possibles et la rotation décide qui passe avant l'heure.
-function closingView(queue, firstFreeAt, slot) {
+// `shift` : écart entre la fin de scène de la fermeture (stageFreeAt) et
+// celle des heures affichées, pour que le repère et l'arrêt coïncident.
+function closingView(queue, firstFreeAt, slot, shift = 0) {
   const now = Date.now();
   const at = closingAt(now);
   if (at == null) return null;
-  const fits = item => Number.isFinite(item.eta) && item.eta + slot / 2 <= at;
+  const fits = item => Number.isFinite(item.eta) && item.eta + shift + slot / 2 <= at;
   const fitCount = queue.filter(fits).length;
-  const roundEnd = Math.max(now, firstFreeAt) + queue.filter(item => !item.future).length * slot;
+  const roundEnd = Math.max(now, firstFreeAt + shift) + queue.filter(item => !item.future).length * slot;
   return { at, passed: now >= at, full: now >= at || roundEnd + slot / 2 > at, fitCount,
     afterCount: queue.length - fitCount };
 }
 
+// Heure où la scène se libère : fin du titre en cours, sa durée moins la
+// position de lecture, en temps réel selon le tempo, plus le temps moyen entre
+// deux titres. Sinon un passage moyen (notre titre vient de monter sur scène
+// si son début n'est pas encore noté). La durée envoyée par un téléphone peut
+// seulement avancer cette estimation : elle ne fait jamais retirer le titre
+// d'un autre. Soirée du 10 octobre : à la fin du titre de Chay, « début +
+// passage moyen » plaçait encore 1 min 30 de chanson devant « Hello » ;
+// retiré pour la fermeture, Eny prévenue, puis renvoyé une seconde plus tard.
+function stageFreeAt(current, now = Date.now()) {
+  if (!current) return now;
+  const slot = sched.avgSlotSec() * 1000;
+  const live = tracked.find(tr => isOnStage(tr, current));
+  const kind = isBattleItem(current) ? 'battle' : null;
+  const sure = stageProgressView(current, kind, now, { trustedOnly: true, fromStart: true });
+  const told = !sure?.durationSec ? stageProgressView(current, kind, now, { fromStart: true }) : null;
+  const endsAt = view => now + Math.max(0, view.durationSec - view.elapsedSec) * 1000 / (view.rate > 0 ? view.rate : 1) + SONG_GAP_MS;
+  const estimate = live ? Math.max(now, (live.startedAt || now) + slot) : now + slot / 2;
+  return sure?.durationSec ? endsAt(sure) : told?.durationSec ? Math.min(estimate, endsAt(told)) : estimate;
+}
+
 // Fermeture du bar : un titre qui démarrerait dans `ahead` passages ne part
 // vers KaraFun et ne démarre que si au moins sa moitié passe avant l'heure,
-// comme le repère des téléphones. Un titre en cours qui déborde repousse
-// l'estimation ; un titre écarté revient s'il tient de nouveau avant l'heure
-// (heure décalée, chanson plus courte que la moyenne).
+// avec la même fin de scène que le repère des téléphones (closingView). Un
+// titre en cours qui déborde repousse l'estimation ; un titre écarté revient
+// s'il tient de nouveau avant l'heure (heure décalée, chanson plus courte).
 // Le bar peut toujours lancer un titre lui-même.
 function closingBlocksStart(current, ahead = 0, now = Date.now()) {
   const at = closingAt(now);
   if (at == null) return false;
   const slot = sched.avgSlotSec() * 1000;
-  const live = current ? tracked.find(tr => isOnStage(tr, current)) : null;
-  // Fin du titre en cours : sa durée moins la position de lecture, en temps
-  // réel selon le tempo, plus le temps moyen entre deux titres. Sinon un
-  // passage moyen (notre titre vient de monter sur scène si son début n'est
-  // pas encore noté). La durée envoyée par un téléphone peut seulement
-  // avancer cette estimation : elle ne fait jamais retirer le titre d'un
-  // autre. Soirée du 10 octobre : à la fin du titre de Chay, « début +
-  // passage moyen » plaçait encore 1 min 30 de chanson devant « Hello » ;
-  // retiré pour la fermeture, Eny prévenue, puis renvoyé une seconde plus tard.
-  const kind = current && isBattleItem(current) ? 'battle' : null;
-  const sure = current ? stageProgressView(current, kind, now, { trustedOnly: true }) : null;
-  const told = current && !sure?.durationSec ? stageProgressView(current, kind, now) : null;
-  const endsAt = view => now + Math.max(0, view.durationSec - view.elapsedSec) * 1000 / (view.rate > 0 ? view.rate : 1) + SONG_GAP_MS;
-  const estimate = live ? Math.max(now, (live.startedAt || now) + slot) : now + slot / 2;
-  const freeAt = !current ? now : sure?.durationSec ? endsAt(sure) :
-    told?.durationSec ? Math.min(estimate, endsAt(told)) : estimate;
-  return freeAt + ahead * slot + slot / 2 > at;
+  return stageFreeAt(current, now) + ahead * slot + slot / 2 > at;
 }
 const SONG_GAP_MS = 20000; // temps moyen entre deux titres (18 s mesurées le 10 octobre)
 let closingNoted = null;
@@ -3815,7 +3835,7 @@ const handlers = {
   'POST /api/table/duet/cancel': async (req, res, body) => {
     const p = personAtTable(body);
     assertDuoCancelNotSending(p, body.entryId);
-    assertDuoKept();
+    assertDuoKept(p, body.entryId);
     sched.cancelDuet(p, body.entryId); sync(); return { ok: true };
   },
   // Invitée qui ne chante plus un duo accepté, avant ou après son envoi.
@@ -3825,6 +3845,7 @@ const handlers = {
     assertDuoNotSending(entryId, p.id);
     const tr = tracked.find(item => item.sel.song?.entryId === entryId && item.sel.ids.indexOf(p.id) > 0);
     if (tr) { leaveSentDuo(tr, p.id, 'guest'); sync(); return { ok: true, stage: 'sent' }; }
+    assertDuoKept(p, entryId);
     sched.leaveDuet(p, body.ownerId, entryId); sync(); return { ok: true, stage: 'planned' };
   },
   // « Chanter seul » : l'auteur d'un duo déjà chargé dans KaraFun le garde en solo.
@@ -3834,7 +3855,7 @@ const handlers = {
     assertDuoNotSending(entryId, p.id);
     const tr = tracked.find(item => item.sel.song?.entryId === entryId && item.sel.ids[0] === p.id && item.sel.ids.length > 1);
     if (tr) { leaveSentDuo(tr, tr.sel.ids[1], 'owner'); sync(); return { ok: true, stage: 'sent' }; }
-    assertDuoKept();
+    assertDuoKept(p, entryId);
     sched.cancelDuet(p, entryId); sync(); return { ok: true, stage: 'planned' };
   },
   // Messages lus sur le téléphone qui gère la personne.
@@ -3910,7 +3931,7 @@ const handlers = {
   },
   'POST /api/duet/cancel': async (req, res, body, me) => {
     assertDuoCancelNotSending(me, body.entryId);
-    assertDuoKept();
+    assertDuoKept(me, body.entryId);
     sched.cancelDuet(me, body.entryId); sync(); return { ok: true };
   },
   'POST /api/confirm': async (req, res, body, me) => { confirmPresence(me); return { ok: true }; },

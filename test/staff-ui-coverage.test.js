@@ -4222,6 +4222,19 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   await page.click(page.$('resetSettings'));
   assert.match(page.confirms.at(-1), /^Remettre toutes les options à leur valeur d’origine \?.*code KaraFun, la connexion Spotify/);
   assert.match(page.confirms.at(-1), /Les solos seront de nouveau permis\./, 'ce qui change ce soir est annoncé');
+  // Envoi automatique coupé : rallumé, sauf si le serveur le garde coupé.
+  page.world.settings.auto = false;
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /L’envoi automatique à KaraFun sera rallumé\./);
+  page.world.persistenceError = 'disque plein';
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /L’envoi automatique à KaraFun restera coupé : vérifie KaraFun d’abord\./);
+  assert.doesNotMatch(page.confirms.at(-1), /sera rallumé/);
+  delete page.world.persistenceError;
+  page.world.settings.auto = true;
+  await page.poll();
   assert.equal(page.postsTo('/api/staff/settings-reset').length, 0, 'rien sans confirmation');
   page.confirmAnswer = true;
   page.replies['/api/staff/settings-reset'] = { ok: true, kept: [] };
