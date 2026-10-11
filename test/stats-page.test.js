@@ -790,6 +790,13 @@ test('en-tête : heures du karaoké, et lancement et clôture pour un ancien jou
   const page = loadPage({ responses: viewResponse(view) });
   await settle();
   assert.match(text(page.$('eveningLine')), new RegExp(` · ${localHHMM(at(30))} – ${localHHMM(at(95))} · `));
+  // En direct, karaoké déjà fermé par les statistiques : l'heure, pas « en cours ».
+  const liveClosed = apiView({ live: true });
+  liveClosed.stats.evening.openedAt = at(30);
+  liveClosed.stats.evening.closedAt = at(95);
+  const livePage = loadPage({ responses: viewResponse(liveClosed) });
+  await settle();
+  assert.match(text(livePage.$('eveningLine')), new RegExp(` · ${localHHMM(at(30))} – ${localHHMM(at(95))} · `));
   assert.match(text(timelineCaption(page)), new RegExp(`fin du karaoké à ${localHHMM(at(95))} · soirée close dans l’application`));
   const legacy = apiView({ live: false, endedAt: at(600) });
   delete legacy.stats.evening.openedAt;

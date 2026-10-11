@@ -620,7 +620,8 @@ function renderHeader() {
   // par les statistiques), pas du lancement de l'application à sa remise à zéro.
   const opened = stats.evening.openedAt ?? evening.startedAt;
   const closed = stats.evening.closedAt ?? evening.endedAt ?? stats.timeline.end;
-  $('eveningLine').textContent = `${dayLabel(opened)} · ${hhmm(opened)} – ${live ? 'en cours' : hhmm(closed)}` +
+  // En direct, « en cours » tant que les statistiques n'ont pas fermé le karaoké.
+  $('eveningLine').textContent = `${dayLabel(opened)} · ${hhmm(opened)} – ${live && stats.evening.closedAt == null ? 'en cours' : hhmm(closed)}` +
     ` · ${stats.global.registered} inscrit${stats.global.registered > 1 ? 's' : ''}${evening.truncated ? ' · dernière ligne du journal illisible ignorée' : ''}`;
   renderErrors();
 }

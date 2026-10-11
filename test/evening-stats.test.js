@@ -773,7 +773,7 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
   // Codex sur la PR #16 : la même soirée, archivée sans nouvelle fermeture
   // atteinte, ne doit pas être coupée à l'ancienne heure. Une heure retirée le
   // lendemain (« Options par défaut ») sans titre chanté depuis ne rouvre rien.
-  test('soirée archivée : fermeture atteinte puis décalée, on rechante ensuite : la nouvelle heure compte', () => {
+  test('soirée archivée : fermeture atteinte puis décalée, on rechante ensuite : l’ancienne heure ne coupe plus', () => {
     const e = evening();
     const events = [
       e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
@@ -790,7 +790,7 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
       e(300, 'evening.closed', { by: 'staff-reset' }),
     ];
     const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events });
-    assert.equal(stats.evening.closedAt, T(120), 'heure décalée puis rechantée : la soirée finit à la nouvelle heure, pas à l’ancienne');
+    assert.equal(stats.evening.closedAt, T(100), 'heure décalée puis rechantée, KaraFun coupé avant la nouvelle heure : la coupure finit le karaoké');
     // Heure retirée le lendemain sans titre chanté depuis : la fermeture tient.
     const nextDay = [...events.filter(ev => ev.t < T(61)), e(280, 'closing.cleared'), e(300, 'evening.closed', { by: 'staff-reset' })];
     assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: nextDay }).evening.closedAt, T(60));
@@ -821,6 +821,39 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     const quiet = events.filter(ev => !/^closing\.(reached|set)$/.test(ev.ev) || ev.t === T(40))
       .filter(ev => !(ev.ev === 'stage.started' && ev.t === T(65)) && !(ev.ev === 'stage.ended' && ev.t === T(69)));
     assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: quiet }).evening.closedAt, T(60));
+  });
+
+  // Relecture du 11 octobre (troisième passe) : l'heure en vigueur au début
+  // du dernier titre ne suffit pas, un changement fait avant qu'elle passe
+  // compte aussi ; après, seule une prolongation dans les 30 min rouvre.
+  test('heure de fermeture : avancée ou prolongée avant qu’elle passe, changée le lendemain, KaraFun quitté avant l’heure', () => {
+    const e = evening();
+    const base = () => [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'closing.set', { closingAt: T(180) }),
+      e(100, 'stage.started', { queueId: 1, source: 'native', title: 'Dernier' }),
+      e(104, 'stage.ended', { queueId: 1, playedSec: 240 }),
+    ];
+    const end = (extra, opts = {}) => computeStats({ meta: { startedAt: T(0), endedAt: opts.live ? undefined : T(900) },
+      events: [...base(), ...extra, ...(opts.live ? [] : [e(900, 'evening.closed', { by: 'staff-reset' })])].sort((a, b) => a.t - b.t),
+      ...(opts.live ? { now: opts.now, live: true } : {}) }).evening.closedAt;
+    // Avancée après le dernier titre (titres retenus) : la nouvelle heure.
+    assert.equal(end([e(106, 'closing.set', { closingAt: T(110) }), e(110, 'closing.reached', { closingAt: T(110) })]), T(110));
+    // « + 15 min » avant l'heure, sans titre ensuite : même fin en direct et une fois close.
+    const later = [e(170, 'closing.set', { closingAt: T(195) })];
+    assert.equal(end(later), T(195));
+    assert.equal(end(later, { live: true, now: T(200) }), T(195));
+    // Le lendemain : heure retirée ou réglée pour le soir même, rien ne change.
+    assert.equal(end([e(700, 'closing.cleared')]), T(180));
+    assert.equal(end([e(700, 'closing.set', { closingAt: T(1400) })]), T(180));
+    assert.equal(end([e(700, 'closing.cleared')], { live: true, now: T(720) }), T(180));
+    // KaraFun quitté pour de bon avant l'heure, PC allumé : pas de KaraFun, pas de karaoké.
+    assert.equal(end([e(120, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]), T(120));
+    // Ancien journal (aucun réglage noté) : la dernière fermeture atteinte.
+    const old = [...base().filter(ev => ev.ev !== 'closing.set'), e(150, 'closing.reached', { closingAt: T(150) }), e(900, 'evening.closed', { by: 'staff-reset' })];
+    assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(900) }, events: old }).evening.closedAt, T(150));
   });
 
   test('en direct le lendemain matin, fermeture atteinte et PC éteint avant l’heure : même fin qu’une fois la soirée close', () => {

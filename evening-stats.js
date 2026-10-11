@@ -8,12 +8,12 @@
  * - présence : de l'inscription (ou du retour) au départ signalé ; sans
  *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun à
- *   la fermeture (heure de fermeture, ou fin du dernier passage s'il finit
- *   plus tard ; sans heure de fermeture, déconnexion de KaraFun pendant ou
- *   après le dernier titre, sauf retour dans les 30 min, sinon fin du
- *   journal ; dans les deux cas, plus tôt si l'application est arrêtée
- *   pendant au moins 30 min à partir du début du dernier titre). Les arrêts
- *   de l'application sont retirés.
+ *   la fermeture (heure de fermeture en vigueur à la fin des titres, ou fin
+ *   du dernier passage s'il finit plus tard ; plus tôt, déconnexion de
+ *   KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min,
+ *   ou application arrêtée pendant au moins 30 min à partir du début du
+ *   dernier titre ; sinon fin du journal). Les arrêts de l'application sont
+ *   retirés.
  * - passage : un titre de la file réellement lancé sur scène (stage.started).
  *   Un titre envoyé puis retiré de KaraFun ne compte pas ; une relance non plus.
  * - attente : du moment où le titre pouvait passer (sa demande, ou la fin du
@@ -58,7 +58,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture, ou fin du dernier passage s’il finit plus tard ; sans heure de fermeture, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min ; dans les deux cas, plus tôt si l’application est arrêtée pendant au moins 30 min à partir du début du dernier titre). Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture en vigueur à la fin des titres, ou fin du dernier passage s’il finit plus tard ; plus tôt, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre ; sinon fin du journal). Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -607,9 +607,10 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // du 10 octobre : application lancée à 15:41, KaraFun connecté à 20:19.
   const connected = phases[0]?.blocker === 'offline' ? phases.find(ph => ph.blocker !== 'offline') : null;
   const openedAt = connected ? Math.max(E0, Math.min(connected.start, stages[0]?.start ?? Infinity)) : E0;
-  // Fermeture du bar : heure de fermeture atteinte (ou fin du dernier titre
-  // s'il finit plus tard) ; sinon KaraFun déconnecté pendant ou après le
-  // dernier titre d'une soirée finie ; sinon fin du journal. Soirée du
+  // Fermeture du bar : heure de fermeture (ci-dessous), ou fin du dernier
+  // titre s'il finit plus tard ; plus tôt, KaraFun déconnecté pour de bon ou
+  // le PC éteint pendant ou après le dernier titre d'une soirée finie ; sinon
+  // fin du journal. Soirée du
   // 10 octobre, close au bar le lendemain à 12:54 : la présence s'arrête à
   // 03:17 (dernier titre après la fermeture de 03:10) au lieu de compter la
   // matinée. KaraFun coupé pendant le dernier titre : sa fin n'est pas notée
@@ -622,33 +623,39 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const lastStageStart = stages.length ? Math.max(...stages.map(st => st.start)) : null;
   // Arrêt de l'application d'au moins 30 min à partir du début du dernier titre.
   const appStop = lastStageStart != null ? offline.find(([a, b]) => a >= lastStageStart && b - a >= BLIP_MS) : null;
-  // Heure de fermeture de la soirée : celle en vigueur au début du dernier
-  // titre, qu'une « fermeture atteinte » ait été notée ou non (le serveur ne
-  // la note que si un titre est retenu) ; une heure décalée puis suivie
-  // d'autres titres compte donc. Sans heure à ce moment, la première réglée
-  // ensuite (le bar ferme après le dernier titre). Un changement fait après
-  // le dernier titre (« + 10 min », « Options par défaut » le lendemain) ne
-  // compte qu'en direct, tant que le PC n'a pas été éteint depuis. Ancien
-  // journal sans réglage noté : la dernière fermeture atteinte.
-  const closingAtTime = time => closingChanges.filter(([at]) => at <= time).at(-1)?.[1] ?? null;
-  let closingHour = closing.closingAt;
-  if (!closingChanges.length) closingHour = lastClosingReached;
-  else if (lastStageStart != null) {
-    const later = closingChanges.filter(([at]) => at > lastStageStart);
-    closingHour = closingAtTime(lastStageStart) ?? later.find(([, hour]) => hour != null)?.[1] ?? null;
-    const liveLater = live ? later.filter(([at]) => !appStop || at < appStop[0]) : [];
-    if (liveLater.length) closingHour = liveLater.at(-1)[1];
+  // Heure de fermeture de la soirée, qu'une « fermeture atteinte » ait été
+  // notée ou non (le serveur ne la note que si un titre est retenu) : celle
+  // en vigueur au début du dernier titre, puis chaque changement fait avant
+  // qu'elle passe (avancée, « + 10 min », retrait). Une fois passée, seule
+  // une prolongation dans les 30 min rouvre la soirée ; un retrait ou une
+  // heure changée plus tard (« Options par défaut » le lendemain) ne change
+  // rien, en direct comme une fois la soirée close. Les changements faits
+  // après l'arrêt du PC ne comptent pas. Ancien journal sans réglage noté :
+  // la dernière fermeture atteinte.
+  let closingHour = lastClosingReached;
+  if (closingChanges.length) {
+    const from = lastStageStart ?? -Infinity, until = appStop ? appStop[0] : Infinity;
+    let hour = closingChanges.filter(([at]) => at <= from).at(-1)?.[1] ?? null;
+    let passed = null;
+    for (const [at, next] of closingChanges.filter(([at]) => at > from && at < until)) {
+      if (passed == null && hour != null && hour <= at) passed = hour;
+      if (passed == null) hour = next;
+      else if (next != null && next > at && at - passed < BLIP_MS) { hour = next; passed = null; }
+    }
+    closingHour = passed ?? hour;
   }
   const barClosed = closingHour != null && closingHour <= E1;
   const backWithin = (ph, i) => (phases.slice(i + 1).find(next => next.blocker !== 'offline')?.start ?? Infinity) - ph.start < BLIP_MS;
   const ended = !live && lastStageStart != null;
-  const offlineAfter = ended && !barClosed ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && !backWithin(ph, i)) : null;
-  // Le PC éteint après le début du dernier titre finit la soirée, même avant
-  // l'heure de fermeture ; en direct, une fois cette heure passée (le
-  // lendemain matin, avant la remise à zéro).
+  // KaraFun coupé pour de bon après le début du dernier titre : pas de
+  // KaraFun, pas de karaoké, même avant l'heure de fermeture.
+  const offlineAfter = ended ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && !backWithin(ph, i)) : null;
+  // Le PC éteint après le début du dernier titre finit aussi la soirée ; en
+  // direct, une fois l'heure de fermeture passée (le lendemain matin, avant
+  // la remise à zéro).
   const appStopped = ended || barClosed ? appStop : null;
-  const end = barClosed ? Math.max(lastStageEnd ?? -Infinity, closingHour) : offlineAfter?.start ?? E1;
-  const closedAt = Math.max(openedAt, Math.min(E1, end, appStopped?.[0] ?? Infinity));
+  const end = barClosed ? Math.max(lastStageEnd ?? -Infinity, closingHour) : E1;
+  const closedAt = Math.max(openedAt, Math.min(E1, end, offlineAfter?.start ?? Infinity, appStopped?.[0] ?? Infinity));
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
   // Arrêts de l'application pendant le karaoké : l'arrêt du PC après la
   // fermeture (jusqu'au lendemain) n'est pas un incident de la soirée.
