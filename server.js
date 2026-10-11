@@ -564,7 +564,7 @@ function refuseBattleSong(copy) {
   let removed = false;
   try { bridge.remove(copy.queueId); removed = true; }
   catch (error) { appLog(`Copie Battle à retirer à la main : ${error.message}`); }
-  const where = removed ? 'la copie normale est retirée de KaraFun' : 'retire la copie normale dans KaraFun';
+  const where = removed ? 'retrait de la copie normale demandé à KaraFun' : 'retire la copie normale dans KaraFun';
   const { fallback } = battleVote.refuseSong(`KaraFun a ajouté « ${title} » sans le mode Battle (titre sans Battle chez KaraFun) : ${where}. Choisis un autre titre.`);
   if (fallback) sched.note(`KaraFun refuse le mode Battle pour « ${title} » (${where}) : la Battle passe sur « ${fallback.title} », titre suivant du vote.`, 'battle');
 }
