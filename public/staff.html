@@ -2153,7 +2153,7 @@
       const result = await post('/api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
       await load();
       toast(['Options remises par défaut.',
-        result.kept?.includes('auto') ? 'L’envoi automatique reste coupé : vérifie KaraFun.' : '',
+        result.kept?.includes('auto') ? `L’envoi automatique reste coupé : ${String(result.autoBlocked || 'vérifie KaraFun').replace(/[.!?\s]+$/, '')}.` : '',
         result.spotifyError ? `Automatismes Spotify non remis : ${result.spotifyError}` : ''].filter(Boolean).join(' '),
       !!result.spotifyError);
     } catch (error) { toast(error.message, true); }

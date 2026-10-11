@@ -248,8 +248,9 @@ class BattleVote {
   // titre n'est plus proposé par la salle jusqu'à la remise à zéro (le bar
   // peut le relancer) et la Battle passe au titre suivant du vote (le plus
   // voté parmi les autres, au moins une voix), sans repasser par le vote.
-  // Sans autre titre, la demande attend le bar (« failed »).
-  refuseSong(failure) {
+  // Sans autre titre, la demande attend le bar (« failed » avec `failure`) ;
+  // sinon `notice` est la consigne affichée avant l'envoi du titre suivant.
+  refuseSong(failure, notice = failure) {
     if (this.ballot?.phase !== 'requested' || this.automation?.status !== 'sending') {
       throw new Error('Refus Battle inattendu.');
     }
@@ -270,7 +271,7 @@ class BattleVote {
     // `notice` : ce que le bar doit faire avant l'envoi du titre suivant
     // (retirer la copie normale restée dans KaraFun).
     this.automation = { ballotId: b.id, songId: next.songId, status: 'waiting', before: [],
-      sentAt: null, queueId: null, failure: null, notice: failure };
+      sentAt: null, queueId: null, failure: null, notice };
     this.lastOutcome = { id: b.id, outcome: 'approved', at: this.now(),
       proposalName: b.proposalName, selectedSong: next };
     this._changed('fallback');

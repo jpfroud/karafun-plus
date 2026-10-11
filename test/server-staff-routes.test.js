@@ -1101,7 +1101,9 @@ test('options par défaut : réglages d’origine, connexions, adresse des QR, t
   f.setBridge({ ...fakeBridge(), permissions: { addToQueue: false } });
   const blocked = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
   assert.deepEqual(plain(blocked.kept), ['auto']);
+  assert.equal(blocked.autoBlocked, 'KaraFun refuse l’ajout de titres');
   assert.equal(f.settings.auto, false);
+  assert.equal(lastNote(f).msg, 'Options remises par défaut (envoi automatique laissé coupé : KaraFun refuse l’ajout de titres).');
   // Écriture des réglages Spotify impossible : le reste est remis, l'échec est dit.
   f.spotify.setOptions = () => { throw new Error('disque plein'); };
   await f.call('POST /api/staff/settings', { duoOnly: true });

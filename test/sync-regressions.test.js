@@ -240,10 +240,18 @@ test('titre ajouté sans mode Battle par KaraFun : copie laissée au bar, Battle
   assert.match(view.automation.notice, /retire cette copie dans KaraFun/, 'consigne affichée au bar');
   f.sync();
   assert.equal(f.battleAdds.length, 1, 'la copie encore dans KaraFun : la Battle suivante attend');
-  // Le bar retire la copie : la consigne s'efface et la Battle part sur le titre suivant.
+  assert.equal(view.automation.notice, 'KaraFun a ajouté « Sarà perché ti amo » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun.',
+    'la Battle suivante est automatique : la consigne ne demande pas d’en lancer une autre');
+  // Le bar retire la copie (un autre titre ajouté dans KaraFun reste avant la
+  // Battle) : la consigne s'efface, la Battle attend toujours sa place.
+  const barSong = item('titre-du-bar', song(41, 'Titre du bar'), 'Bar');
+  f.bridge.queue = [barSong];
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'waiting');
+  assert.equal(f.battleVote.view().automation.notice, null, 'copie retirée : consigne effacée');
+  assert.equal(f.battleAdds.length, 1);
   f.bridge.queue = [];
   f.sync();
-  assert.equal(f.battleVote.view().automation.status === 'waiting' ? f.battleVote.view().automation.notice : null, null);
   assert.deepEqual(f.battleAdds.map(add => add.songId), [refused.songId, other.songId]);
   f.bridge.queue = [battleItem('battle-ok', other)];
   f.sync();
@@ -256,6 +264,52 @@ test('titre ajouté sans mode Battle par KaraFun : copie laissée au bar, Battle
     songs: [refused], proposerChoice: refused.songId }), { code: 'BATTLE_SONG_REFUSED' });
   f.battleVote.staffLaunch({ song: refused });
   assert.deepEqual(f.battleVote.view().refusedSongIds, [], 'décision du bar : titre de nouveau permis');
+});
+
+test('refus Battle sur un état incohérent (sauvegarde abîmée) : la synchronisation continue, échec à l’accusé', () => {
+  const f = harness();
+  const refused = song(18179, 'Sarà perché ti amo');
+  f.battleVote.staffLaunch({ song: refused });
+  f.sync();
+  f.battleVote.ballot.phase = 'cooldown';
+  f.bridge.queue = [item('copie-normale', refused, '')];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  assert.doesNotThrow(() => f.sync());
+  assert.deepEqual(f.removes, []);
+  assert.equal(f.battleVote.automation.status, 'sending');
+  f.battleVote.automation.sentAt -= 16000;
+  f.battleVote.automation.plainSince -= 16000;
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'failed');
+});
+
+test('consigne Battle : un passage de la file sur le même titre ne la garde pas affichée', () => {
+  const f = harness();
+  const refused = song(18179, 'Sarà perché ti amo');
+  const other = song(30193, 'Je veux');
+  f.battleVote.propose({ personId: 'client', personName: 'Client', eligiblePersonIds: ['client', 'b', 'c', 'd'],
+    songs: [other, refused], proposerChoice: refused.songId });
+  f.battleVote.vote({ personId: 'b', choice: refused.songId });
+  f.battleVote.vote({ personId: 'c', choice: other.songId });
+  f.battleVote.closeNow();
+  f.sync();
+  f.bridge.queue = [item('copie-normale', refused, '')];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
+  assert.ok(f.battleVote.view().automation.notice, 'consigne affichée');
+  // Alice a demandé ce titre en chanson normale : son passage n'est pas la copie.
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(p, refused);
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  const ours = item('passage-alice', refused, sel.label);
+  f.tracked().push({ queueId: ours.queueId, sel, addedAt: Date.now(), startedAt: null });
+  f.bridge.queue = [ours];
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'waiting');
+  assert.equal(f.battleVote.view().automation.notice, null, 'copie retirée : consigne effacée malgré le passage d’Alice');
 });
 
 test('titre sans mode Battle et aucun autre titre voté : la demande attend le bar, sans nouvel envoi', () => {

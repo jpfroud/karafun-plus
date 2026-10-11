@@ -4248,9 +4248,9 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   await page.click(page.$('resetSettings'));
   assert.deepEqual(page.lastPost('/api/staff/settings-reset').body, { confirmation: 'OPTIONS PAR DÉFAUT' });
   assert.equal(page.toast().text, 'Options remises par défaut.');
-  page.replies['/api/staff/settings-reset'] = { ok: true, kept: ['auto'] };
+  page.replies['/api/staff/settings-reset'] = { ok: true, kept: ['auto'], autoBlocked: 'un envoi interrompu est à vérifier dans KaraFun' };
   await page.click(page.$('resetSettings'));
-  assert.equal(page.toast().text, 'Options remises par défaut. L’envoi automatique reste coupé : vérifie KaraFun.');
+  assert.equal(page.toast().text, 'Options remises par défaut. L’envoi automatique reste coupé : un envoi interrompu est à vérifier dans KaraFun.');
   page.replies['/api/staff/settings-reset'] = { ok: true, kept: ['spotify'], spotifyError: 'disque plein' };
   await page.click(page.$('resetSettings'));
   assert.deepEqual(page.toast(), { text: 'Options remises par défaut. Automatismes Spotify non remis : disque plein', bad: true });

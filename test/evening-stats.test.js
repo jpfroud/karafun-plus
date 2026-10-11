@@ -846,6 +846,63 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     assert.equal(singerOf(stats, 'pA').presenceSec, (210 - 60) * 60);
   });
 
+  test('application arrêtée après le dernier titre, relancée le lendemain avec KaraFun : la soirée finit à l’arrêt', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(195, 'stage.started', { queueId: 2, source: 'native', title: 'Dernier' }),
+      e(205, 'stage.ended', { queueId: 2, playedSec: 600 }),
+      // PC du bar éteint à 210, rallumé le lendemain à 900 : KaraFun revient aussitôt.
+      e(900, 'app.started', { restored: true, offlineMs: 690 * 60000 }),
+      e(900, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(901, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      ...Array.from({ length: 5 }, (_, k) => e(905 + k * 15, 'person.seen', { personId: 'pA' })),
+      e(1000, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events });
+    assert.equal(stats.evening.closedAt, T(210), 'l’arrêt de l’application ferme la soirée');
+    assert.equal(singerOf(stats, 'pA').presenceSec, (210 - 10) * 60, 'pas de présence le lendemain');
+    // Arrêt bref (20 min) : la soirée continue.
+    const brief = events.map(ev => ev.ev === 'app.started' && ev.offlineMs ? { ...ev, t: T(230), offlineMs: 20 * 60000 } : ev);
+    assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events: brief }).evening.closedAt, null);
+  });
+
+  test('coupure de KaraFun après le dernier titre : 20 min ne ferme pas la soirée, 40 min la ferme', () => {
+    const e = evening();
+    const cut = minutes => [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Dernier' }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(40, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(40 + minutes, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(200, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const closedAt = minutes => computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: cut(minutes) }).evening.closedAt;
+    assert.equal(closedAt(20), null, 'coupure brève : la soirée continue jusqu’à la fin du journal');
+    assert.equal(closedAt(40), T(40), 'coupure longue : la soirée finit à la coupure');
+  });
+
+  test('premier passage : compté depuis la connexion de KaraFun, pas depuis un titre choisi avant', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(15, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Un' }),
+      e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(90, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], ownerId: 'pA', source: 'queue' }),
+      e(94, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(100, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(100) }, events });
+    assert.equal(singerOf(stats, 'pA').firstTurnSec, (90 - 60) * 60);
+    assert.equal(stats.global.firstTurnAvgSec, (90 - 60) * 60);
+  });
+
   test('fermeture notée avant l’heure (plus aucun titre ne tient) : la soirée finit à l’heure annoncée', () => {
     const e = evening();
     const events = [

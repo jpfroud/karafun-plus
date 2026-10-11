@@ -565,18 +565,17 @@ function battleHoldsQueue() {
 // file de KaraFun libre.
 function refuseBattleSong() {
   const title = battleVote.ballot?.selectedSong?.title || 'ce titre';
+  const copy = `KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun`;
   let fallback;
   try {
-    ({ fallback } = battleVote.refuseSong(`KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : ` +
-      'retire cette copie dans KaraFun, puis lance une Battle sans vote sur un autre titre.'));
+    ({ fallback } = battleVote.refuseSong(`${copy}, puis lance une Battle sans vote sur un autre titre.`, `${copy}.`));
   } catch (error) {
     // État Battle incohérent (sauvegarde abîmée) : sync() continue, l'envoi
     // finit en échec au bout de l'attente de l'accusé.
     appLog(`Refus Battle non traité : ${error.message}`);
     return;
   }
-  if (fallback) sched.note(`KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun. ` +
-    `La Battle passe ensuite sur « ${fallback.title} », titre suivant du vote.`, 'battle');
+  if (fallback) sched.note(`${copy}. La Battle passe ensuite sur « ${fallback.title} », titre suivant du vote.`, 'battle');
 }
 
 function syncBattle({ current, upcoming, q }, now) {
@@ -598,9 +597,11 @@ function syncBattle({ current, upcoming, q }, now) {
   if (!state || state.status === 'released') return;
   const matches = q.filter(item => Number(item.songId) === state.songId && isBattleItem(item));
   if (state.status === 'waiting') {
-    // Copie normale du titre refusé retirée par le bar : la consigne s'efface.
+    // Copie normale du titre refusé retirée par le bar : la consigne s'efface
+    // (un passage de la file sur le même titre n'est pas cette copie).
     const refused = battleVote.ballot?.refusedSongIds?.at(-1);
-    if (state.notice && !q.some(item => Number(item.songId) === refused && !isBattleItem(item))) {
+    if (state.notice && !q.some(item => Number(item.songId) === refused && !isBattleItem(item) &&
+        !tracked.some(tr => String(tr.queueId) === String(item.queueId)))) {
       delete state.notice;
       battleVote._changed('automation-notice');
     }
@@ -3557,6 +3558,8 @@ function clearQueue() {
   // passage que le vidage efface du tour. Les reçus des titres encore en
   // route vers KaraFun passent au même nouveau tour : un titre retiré sans
   // avoir été chanté rend alors sa part (rollbackUnplayed compare à ce reçu).
+  // Leur roundOwed reste tel quel : un passage dû, retiré sans être chanté,
+  // redevient dû malgré le vidage.
   for (const sel of [...tracked.map(tr => tr.sel), pending?.sel]) {
     const credit = sel?.turnCredit;
     if (!credit || credit.rolledBack) continue;
@@ -4121,8 +4124,11 @@ const handlers = {
   'POST /api/staff/settings-reset': async (req, res, body) => {
     if (body.confirmation !== 'OPTIONS PAR DÉFAUT') throw new Error('Confirmation de la remise aux options par défaut manquante.');
     const kept = [];
-    // L'envoi automatique ne se rallume que si rien ne l'interdit encore.
-    const autoBlocked = recoveredPending || persistenceError || bridge?.permissions?.addToQueue === false;
+    // L'envoi automatique ne se rallume que si rien ne l'interdit encore
+    // (mêmes raisons que la confirmation de la page du bar).
+    const autoBlocked = persistenceError ? 'la sauvegarde est impossible'
+      : recoveredPending ? 'un envoi interrompu est à vérifier dans KaraFun'
+      : bridge?.permissions?.addToQueue === false ? 'KaraFun refuse l’ajout de titres' : null;
     if (autoBlocked && !settings.auto) kept.push('auto');
     const { auto, ...rest } = DEFAULT_SETTINGS;
     await handlers['POST /api/staff/settings'](req, res, { ...rest, ...(autoBlocked ? {} : { auto }),
@@ -4137,9 +4143,9 @@ const handlers = {
     let spotifyError = null;
     try { spotify.setOptions({ ...SPOTIFY_DEFAULTS }); }
     catch (error) { spotifyError = error.message; kept.push('spotify'); }
-    sched.note(`Options remises par défaut${kept.includes('auto') ? ' (envoi automatique laissé coupé : vérifie KaraFun)' : ''}` +
+    sched.note(`Options remises par défaut${kept.includes('auto') ? ` (envoi automatique laissé coupé : ${autoBlocked})` : ''}` +
       `${spotifyError ? `. Automatismes Spotify non remis : ${spotifyError}` : ''}.`, 'staff');
-    return { ok: true, kept, ...(spotifyError ? { spotifyError } : {}) };
+    return { ok: true, kept, ...(kept.includes('auto') ? { autoBlocked } : {}), ...(spotifyError ? { spotifyError } : {}) };
   },
   'POST /api/staff/table': async (req, res, body) => {
     const id = TableAccess.key(body.id);
