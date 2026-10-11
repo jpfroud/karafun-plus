@@ -251,6 +251,23 @@ out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$paths" bash "$START" Ses
 [ ! -e "$paths/.git/hooks/pre-push" ] && [ ! -e "$paths/.githooks/pre-push" ] || fail "core.hooksPath ignoré"
 printf '%s' "$out" | field additionalContext | grep -q 'core.hooksPath est réglé' || fail "core.hooksPath non signalé"
 quiet_env HOME="$installed" bash "$START" SessionStart </dev/null >/dev/null || fail "démarrage sans projet"
+# Regression: CI Windows de la PR #15 (relecture adverse) — un poste Windows
+# qui avait extrait la branche avant la règle eol=lf de .gitattributes garde
+# un hook pre-push en CRLF (git ne réécrit pas un fichier inchangé) : bash le
+# refuse (« exit 0\r ») et tout envoi, même tapé à la main, échouait.
+# L'installateur copie le hook sans retours chariot et répare une copie
+# installée en CRLF, sans la réécrire ensuite à chaque démarrage.
+crlf="$WORK/hooks-crlf"; cp -R "$ROOT/.claude/hooks" "$crlf" || fail "copie des hooks"
+sed 's/$/\r/' "$ROOT/.claude/hooks/pre-push" >"$crlf/pre-push"
+fixed="$WORK/projet-crlf"; git_q init "$fixed" || fail "dépôt de test CRLF"
+sed 's/$/\r/' "$ROOT/.claude/hooks/pre-push" >"$fixed/.git/hooks/pre-push"
+quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$fixed" bash "$crlf/gstack-session-start.sh" SessionStart </dev/null >/dev/null ||
+  fail "démarrage avec un hook source en CRLF"
+cmp -s "$ROOT/.claude/hooks/pre-push" "$fixed/.git/hooks/pre-push" || fail "hook pre-push installé ou laissé en CRLF"
+touch -d '2001-01-01 12:00' "$fixed/.git/hooks/pre-push" || fail "datation du hook CRLF"
+quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$fixed" bash "$crlf/gstack-session-start.sh" SessionStart </dev/null >/dev/null ||
+  fail "second démarrage avec un hook source en CRLF"
+[ "$(date -r "$fixed/.git/hooks/pre-push" +%Y)" = 2001 ] || fail "hook pre-push réécrit à chaque démarrage depuis une source en CRLF"
 no_tmp "fin"
 
 # 11. Les réglages du projet enregistrent les trois hooks, avec un délai qui

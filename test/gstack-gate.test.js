@@ -54,6 +54,14 @@ git(project, 'remote', 'add', 'origin', 'git@github.com:Exemple/Projet.git');
 git(project, 'remote', 'add', 'essai', remote);
 const hooksDir = path.join(project, '.git', 'hooks');
 fs.mkdirSync(hooksDir, { recursive: true });
+// Regression: CI Windows de la PR #15 — sans extension .sh, le hook pre-push
+// était extrait en CRLF sous Windows : bash le refuse (« exit 0\r ») et, sous
+// Linux, git ne peut pas l'exécuter et git push reste bloqué. Vérifié avant
+// les vrais envois de la section 4, pour échouer ici avec ce message.
+assert.ok(!fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8').includes('\r'),
+  'hook pre-push en fins de ligne LF (copie extraite avant la règle eol=lf : supprimer .claude/hooks/pre-push puis git checkout -- .claude/hooks/pre-push)');
+assert.match(spawnSync('git', ['-C', path.join(__dirname, '..'), 'check-attr', 'eol', '--', '.claude/hooks/pre-push'],
+  { encoding: 'utf8' }).stdout, /: eol: lf\s*$/, '.gitattributes : hook pre-push extrait en LF sous Windows');
 fs.copyFileSync(path.join(HOOKS, 'pre-push'), path.join(hooksDir, 'pre-push'));
 fs.chmodSync(path.join(hooksDir, 'pre-push'), 0o755);
 const linked = path.join(work, 'worktree lié');
@@ -203,17 +211,21 @@ assert.strictEqual(prePush(pushLine, { GSTACK_GATE: 'off' }).status, 0, 'GSTACK_
 // contournement voulu : git push --no-verify, une référence refs/remotes locale
 // forgée, CLAUDECODE absent, GSTACK_GATE=off ou la porte modifiée dans la copie
 // de travail passent. La vraie barrière est la protection de branche de GitHub.
-function push(args, env = {}, cwd = project) {
-  // Délai : un hook illisible (fins de ligne CRLF) bloquait git push au lieu d'échouer.
-  return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 60000,
+// Délai : un hook illisible (fins de ligne CRLF) bloquait git push. Un délai
+// dépassé échoue ici au lieu de passer pour un refus (statut null).
+function runPush(args, cwd, env = {}) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000,
     env: { ...gitEnv, ...baseEnv, CLAUDECODE: '1', ...env } });
+  assert.ifError(r.error);
+  assert.strictEqual(r.signal, null, `git ${args.join(' ')} interrompu`);
+  return r;
 }
+const push = (args, env = {}, cwd = project) => runPush(['-C', cwd, ...args], undefined, env);
 journal();
 r = push(['push', 'essai', 'HEAD:refs/heads/a']);
 assert.notStrictEqual(r.status, 0, 'git -C "<chemin avec espace>" push sans relecture');
 assert.match(r.stderr, /Porte gstack : envoi refusé/);
-assert.notStrictEqual(spawnSync('git', ['push', 'essai', 'HEAD:refs/heads/b'], { cwd: project, encoding: 'utf8',
-  env: { ...gitEnv, ...baseEnv, CLAUDECODE: '1' } }).status, 0, 'git push depuis le dossier');
+assert.notStrictEqual(runPush(['push', 'essai', 'HEAD:refs/heads/b'], project).status, 0, 'git push depuis le dossier');
 git(project, 'config', 'alias.envoi', 'push');
 assert.notStrictEqual(push(['envoi', 'essai', 'HEAD:refs/heads/c']).status, 0, 'alias git');
 fs.writeFileSync(path.join(linked, 'nouveau.js'), '1\n');
@@ -278,11 +290,6 @@ assert.match(command(settings.PostToolUse, 'Skill'), /gstack-gate\.js" skill$/);
 assert.match(settings.UserPromptSubmit[0].hooks.map(h => h.command).join(' '), /gstack-gate\.js" prompt/);
 assert.match(command(settings.PreToolUse, 'Skill'), /check-gstack\.sh/);
 assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstack karafun-plus/, 'marque reconnue par l\'installateur');
-// Regression: CI Windows de la PR #15 — sans extension .sh, le hook pre-push
-// était extrait en CRLF sous Windows et sh le refusait (« Syntax error »).
-assert.ok(!fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8').includes('\r'), 'hook pre-push en fins de ligne LF');
-assert.match(spawnSync('git', ['-C', path.join(__dirname, '..'), 'check-attr', 'eol', '--', '.claude/hooks/pre-push'],
-  { encoding: 'utf8' }).stdout, /: eol: lf\s*$/, '.gitattributes : hook pre-push extrait en LF sous Windows');
 
 // 7. Regression: M2-3 (seconde relecture) — la liste des dossiers où chercher
 //    gstack existe en quatre copies (porte, garde-fou des compétences, hook de

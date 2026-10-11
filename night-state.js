@@ -304,6 +304,22 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     warnings.push(strangers.length === 1 ? '1 personne du tour inconnue oubliée' :
       `${strangers.length} personnes du tour inconnues oubliées`);
   }
+  // Deux solistes du même prénom dans deux groupes individuels : permis avant
+  // la v0.5 (prénom unique par groupe), indiscernables depuis que le nom d'un
+  // soliste n'affiche plus son groupe. Le second prend un numéro libre
+  // (« Léa 2 »), dans la limite de 24 caractères d'un prénom.
+  const nameKey = name => name.toLocaleLowerCase('fr');
+  const solos = [...tmp.people.values()].filter(p => tmp.tables.get(p.tableId).individual);
+  const taken = new Set(solos.map(p => nameKey(p.name)));
+  const kept = new Set();
+  for (const p of solos) {
+    if (!kept.has(nameKey(p.name))) { kept.add(nameKey(p.name)); continue; }
+    let next;
+    for (let n = 2; !next || taken.has(nameKey(next)); n++) next = `${p.name.slice(0, 24 - ` ${n}`.length).trimEnd()} ${n}`;
+    warnings.push(`soliste « ${p.name} » renommé « ${next} » : même prénom qu’un autre soliste`);
+    taken.add(nameKey(next)); kept.add(nameKey(next));
+    p.name = next;
+  }
   if (data.roundPeoplePhysical != null && typeof data.roundPeoplePhysical !== 'boolean') {
     fail('version du tour physique mal formée');
   }

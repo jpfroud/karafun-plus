@@ -73,8 +73,10 @@ install_pre_push() {
     PRE_PUSH_NOTE="Porte gstack : un autre hook pre-push existe déjà, le contrôle des envois n'est pas installé."
     return 0
   fi
-  cmp -s "$HOOKS_DIR/pre-push" "$target" 2>/dev/null && return 0
-  if ! { mkdir -p "$hooks" && cp "$HOOKS_DIR/pre-push" "$target.tmp.$$" && chmod +x "$target.tmp.$$" && mv -f "$target.tmp.$$" "$target"; }; then
+  # Copie sans retours chariot : un poste Windows qui avait extrait le hook
+  # avant la règle eol=lf de .gitattributes le garde en CRLF, que bash refuse.
+  tr -d '\r' <"$HOOKS_DIR/pre-push" | cmp -s - "$target" 2>/dev/null && return 0
+  if ! { mkdir -p "$hooks" && tr -d '\r' <"$HOOKS_DIR/pre-push" >"$target.tmp.$$" && chmod +x "$target.tmp.$$" && mv -f "$target.tmp.$$" "$target"; }; then
     rm -f "$target.tmp.$$"
     PRE_PUSH_NOTE="Porte gstack : installation du hook pre-push impossible ($target)."
   fi

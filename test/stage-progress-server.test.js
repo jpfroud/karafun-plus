@@ -120,9 +120,13 @@ test('durée : le catalogue relayé par le serveur passe avant celle envoyée pa
   const { item } = f.ours(1, 101, 99999);
   f.play(item);
   assert.equal(f.progress().durationSec, 237);
-  // Une nouvelle réponse du catalogue sans durée oublie l'ancienne.
+  // Une nouvelle réponse du catalogue sans durée garde la durée fiable déjà
+  // connue (relecture Codex de la PR #15 : l'oublier faisait sauter la durée
+  // maximale des titres) ; une nouvelle durée fiable la remplace.
   f.rememberBattleSongs([{ songId: 101, title: 'Titre 101', artist: 'Artiste' }]);
-  assert.equal(f.progress().durationSec, 1200);
+  assert.equal(f.progress().durationSec, 237);
+  f.rememberBattleSongs([{ songId: 101, title: 'Titre 101', artist: 'Artiste', duration: 241 }]);
+  assert.equal(f.progress().durationSec, 241);
 });
 
 test('titre ajouté dans KaraFun : départ à son apparition sur scène, durée inconnue', () => {

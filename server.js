@@ -111,9 +111,9 @@ function rememberBattleSongs(songs) {
     catalogCovers.delete(songId);
     if (song.img) catalogCovers.set(songId, song.img);
     if (catalogCovers.size > 10000) catalogCovers.delete(catalogCovers.keys().next().value);
+    // Une liste sans durée (catalog.js rend null) garde la durée déjà connue.
     const duration = stageProgress.trustedDuration(song.duration);
-    catalogDurations.delete(songId);
-    if (duration) catalogDurations.set(songId, duration);
+    if (duration) { catalogDurations.delete(songId); catalogDurations.set(songId, duration); }
     if (catalogDurations.size > 10000) catalogDurations.delete(catalogDurations.keys().next().value);
   }
   return songs;

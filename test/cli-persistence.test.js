@@ -503,6 +503,41 @@ test('Reprise : passages physiques et compteur abîmés refusés ; compteurs dé
   assertRefused(physical, 'version du tour physique mal formée');
 });
 
+// Regression: relecture Codex de la PR #15 — avant la v0.5, un prénom n'était
+// unique que dans son groupe : une soirée sauvegardée pouvait compter deux
+// « Léa » dans deux groupes individuels. Le nom d'un soliste n'affichant plus
+// son groupe, les deux devenaient indiscernables (KaraFun, file, bar). À la
+// reprise, le second prend un numéro libre, avec un avertissement.
+test('Reprise : deux solistes du même prénom dans deux groupes individuels, le second est numéroté', () => {
+  const sched = new Scheduler();
+  const access = new TableAccess();
+  for (const id of ['Comptoir', 'Comptoir-2', 'Comptoir-3']) { sched.table(id); access.issue(id); }
+  const lea = sched.join({ tableId: 'Comptoir', name: 'Léa' });
+  const lea2 = sched.join({ tableId: 'Comptoir-3', name: 'Léa 2' });
+  const twin = sched.join({ tableId: 'Comptoir-2', name: 'Zoé' });
+  const long = sched.join({ tableId: 'Comptoir-2', name: 'Maximilienne-Alexandrine' });
+  const longTwin = sched.join({ tableId: 'Comptoir-3', name: 'Paul' });
+  sched.table('4'); sched.setHeadcount('4', 2); access.issue('4');
+  const atTable = sched.join({ tableId: '4', name: 'Bruno' });
+  const snapshot = snapshotNight({ scheduler: sched, access, settings: settings() });
+  const row = id => snapshot.scheduler.people.find(p => p.id === id);
+  row(twin.id).name = 'LÉA';
+  row(longTwin.id).name = 'maximilienne-alexandrine';
+  row(atTable.id).name = 'Léa';
+  const { scheduler, result } = restore(snapshot);
+  const name = id => scheduler.people.get(id).name;
+  assert.equal(name(lea.id), 'Léa', 'le premier garde son prénom');
+  assert.equal(name(lea2.id), 'Léa 2');
+  assert.equal(name(twin.id), 'LÉA 3', 'numéro libre suivant');
+  assert.equal(name(long.id), 'Maximilienne-Alexandrine');
+  assert.equal(name(longTwin.id), 'maximilienne-alexandri 2', '24 caractères au plus');
+  assert.equal(name(atTable.id), 'Léa', 'une personne de table garde son prénom (son nom porte sa table)');
+  assert.deepEqual(result.warnings, [
+    'soliste « LÉA » renommé « LÉA 3 » : même prénom qu’un autre soliste',
+    'soliste « maximilienne-alexandrine » renommé « maximilienne-alexandri 2 » : même prénom qu’un autre soliste']);
+  assert.notEqual(scheduler.passageLabel([lea.id]), scheduler.passageLabel([twin.id]));
+});
+
 test('Reprise : changements manuels du bar abîmés', () => {
   const { sched, access, bob, alice } = night();
   const base = snapshotNight({ scheduler: sched, access, settings: settings() });

@@ -217,6 +217,23 @@ test('durée : le catalogue fiable passe avant celle du téléphone ; téléphon
   }
 });
 
+// Regression: relecture Codex de la PR #15 — une liste du catalogue sans durée
+// (catalog.js rend null) effaçait la durée fiable apprise par la recherche :
+// le téléphone envoyait alors ce titre sans durée et passait la limite.
+test('une liste sans durée garde la durée fiable déjà connue ; une nouvelle durée la remplace', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  f.rememberBattleSongs([{ songId: 2, title: 'Épopée', artist: 'B', duration: null }]);
+  const [alice] = await table(f, 'Alice');
+  await limit(f, 300);
+  let r = await call(f, '/api/table/song', { ...alice, song: { songId: 2, title: 'Épopée', artist: 'B' } });
+  assert.equal(r.status, 400, r.text);
+  assert.equal(r.body.error, 'Ce titre dure 6:12 : le bar limite les chansons à 5:00.');
+  f.rememberBattleSongs([{ songId: 2, title: 'Épopée', artist: 'B', duration: 250 }]);
+  r = await call(f, '/api/table/song', { ...alice, song: { songId: 2, title: 'Épopée', artist: 'B' } });
+  assert.equal(r.status, 200, r.text);
+});
+
 test('le bar n’est jamais limité : Battle lancée par le bar', async () => {
   const f = harness();
   f.rememberBattleSongs(plain(CATALOG));
