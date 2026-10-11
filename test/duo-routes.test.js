@@ -403,3 +403,34 @@ test('duo direct à la même table : les autres personnes qui demandaient ce tit
   assert.deepEqual(f.sched.duetJoinRequestsBy(chloe.p), []);
   assert.deepEqual(plain(chloe.p.inbox.map(n => [n.kind, n.params])), [['joinRefused', { name: 'Alice', title: 'Un' }]]);
 });
+
+// Regression: vérification de la quatrième relecture — la liste des
+// partenaires ne propose plus une personne marquée partie, mais une liste
+// ouverte avant « Parti » l'envoyait encore : le serveur acceptait
+// l'invitation (le téléphone de Dan la gardait, sans réponse possible) et, à
+// la même table, notait directement un duo avec une personne partie.
+test('invitation de duo à une personne marquée partie : refusée comme une demande, rien n’est ajouté', async () => {
+  const f = harness();
+  const lea = person(f, '1', 'Léa'), max = person(f, '1', 'Max'), dan = person(f, '2', 'Dan');
+  const partners = () => new Promise(resolve => {
+    const req = new EventEmitter();
+    Object.assign(req, { method: 'GET', url: `/api/duo/partners?table=1&access=${lea.body.access}`, headers: {},
+      socket: { remoteAddress: '127.0.0.1', localPort: 3000 } });
+    const res = { setHeader() {}, getHeader() {}, writeHead() {}, end: data => resolve(JSON.parse(String(data)).map(row => row.name).sort()) };
+    f.handle(req, res);
+  });
+  assert.deepEqual(await partners(), ['Dan', 'Léa', 'Max']);
+  for (const gone of [dan, max]) await f.call('POST /api/staff/person/leave', { personId: gone.p.id });
+  assert.deepEqual(await partners(), ['Léa'], 'la liste ne les propose plus');
+  // La liste déjà ouverte sur le téléphone de Léa les envoie quand même.
+  const refused = { message: 'Ce chanteur est parti : choisis un autre partenaire.' };
+  await assert.rejects(f.call('POST /api/table/duet', { ...lea.body, partnerId: dan.p.id, song: song(1, 'Un') }), refused, 'autre table');
+  await assert.rejects(f.call('POST /api/table/duet', { ...lea.body, partnerId: max.p.id, song: song(1, 'Un') }), refused, 'même table');
+  await assert.rejects(f.handlers['POST /api/duet']({}, {}, { partnerId: dan.p.id, song: song(1, 'Un') }, lea.p), refused, 'ancienne route');
+  assert.deepEqual(f.sched.songsOf(lea.p), [], 'rien n’est ajouté, pas même en solo');
+  assert.deepEqual(plain(f.publicState(null, '2', new Set([dan.p.id])).tablePeople[0].invites), []);
+  // Réactivé par le bar, Dan peut de nouveau être invité.
+  await f.call('POST /api/staff/person/reactivate', { personId: dan.p.id });
+  assert.equal(plain(await f.call('POST /api/table/duet', { ...lea.body, partnerId: dan.p.id, song: song(1, 'Un') })).ok, true);
+  assert.deepEqual(plain(f.sched.duetInvites(dan.p).map(x => x.fromId)), [lea.p.id]);
+});

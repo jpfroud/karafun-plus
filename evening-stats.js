@@ -512,7 +512,10 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'battle.decided': {
         battles.outcomes[e.outcome] = (battles.outcomes[e.outcome] || 0) + 1;
         if (Number.isFinite(e.voters)) battles.voters.push(e.voters);
-        battles.list.push({ t, kind: 'decided', ballotId: e.ballotId, outcome: e.outcome, voters: e.voters ?? null, yes: e.yes ?? null });
+        // L'électorat peut grandir pendant le vote (arrivées admises) : la
+        // décision garde le nombre final, la proposition celui de l'ouverture.
+        battles.list.push({ t, kind: 'decided', ballotId: e.ballotId, outcome: e.outcome, voters: e.voters ?? null, yes: e.yes ?? null,
+          eligible: Number.isFinite(e.eligible) ? e.eligible : null });
         break;
       }
       case 'battle.staffLaunch': battles.staffLaunches++; battles.list.push({ t, kind: 'staff', ballotId: e.ballotId, title: e.title || '' }); break;

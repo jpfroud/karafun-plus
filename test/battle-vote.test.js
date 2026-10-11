@@ -447,4 +447,83 @@ function fixture(extra = {}) {
   assert.deepEqual([again.view().voteMinutes, again.view().cooldownMinutes], [5, 15], 'choix du bar après migration gardé');
 }
 
+{
+  // Regression: retours du bar — une personne arrivée après l'ouverture du
+  // vote Battle ne pouvait pas voter (électorat figé à la proposition).
+  const f = fixture(), vote = new BattleVote(f.opts);
+  assert.equal(vote.admit(['z']), false, 'aucun vote ouvert : personne n’est ajouté');
+  assert.deepEqual(f.events, [], 'sans vote, aucun événement');
+  vote.propose({ personId: 'a', personName: 'Alice', eligiblePersonIds: ['a', 'b', 'c'] });
+  f.events.length = 0;
+  assert.throws(() => vote.vote({ personId: 'd', choice: 'yes' }), /ne peut pas voter/);
+  assert.equal(vote.admit(['a', 'b', 'c', 'd', 'd', 4, '', null]), true, 'arrivées admises pendant le vote');
+  assert.deepEqual(vote.view().eligiblePersonIds, ['a', 'b', 'c', 'd', '4'], 'sans doublon ni identifiant vide');
+  assert.deepEqual(f.events, ['admitted']);
+  assert.equal(vote.view().eligible, 5, 'le nombre de votants possibles suit les arrivées');
+  assert.equal(vote.view().threshold, 3, 'le minimum de votants ne change pas');
+  assert.equal(vote.admit(['a', 'd']), false, 'déjà admis : rien de nouveau');
+  assert.equal(vote.admit([]), false);
+  assert.equal(vote.admit(null), false, 'liste absente : rien');
+  assert.deepEqual(f.events, ['admitted'], 'aucun événement quand rien ne change');
+  vote.vote({ personId: 'd', choice: 'yes' });
+  assert.equal(vote.view().voters, 2, 'le vote de l’arrivée compte');
+  assert.equal(vote.admit(['a']), false, 'personne n’est jamais retiré');
+  assert.equal(vote.view().eligible, 5);
+  // Sauvegarde et reprise : l'électorat agrandi est gardé.
+  const restored = new BattleVote({ ...f.opts, saved: JSON.parse(JSON.stringify(vote.serialize())) });
+  assert.deepEqual(restored.view().eligiblePersonIds, ['a', 'b', 'c', 'd', '4']);
+  assert.deepEqual(restored.view().votedPersonIds, ['a', 'd']);
+  // Tout le monde, arrivées comprises, a voté : clôture anticipée.
+  vote.vote({ personId: 'b', choice: 'yes' });
+  vote.vote({ personId: 'c', choice: 'no' });
+  assert.equal(vote.view().phase, 'voting', 'l’arrivée n’a pas encore voté');
+  const decided = vote.vote({ personId: '4', choice: 'yes' });
+  assert.equal(decided.phase, 'requested', 'clôture dès que tout l’électorat agrandi a voté');
+  assert.equal(decided.closedBy, 'all-voted');
+  f.events.length = 0;
+  assert.equal(vote.admit(['e']), false, 'demande au bar : plus d’admission');
+  vote.resolve({ outcome: 'done' });
+  f.events.length = 0;
+  assert.equal(vote.admit(['e']), false, 'pause entre Battles : plus d’admission');
+  assert.deepEqual(f.events, []);
+  assert.ok(!vote.view().eligiblePersonIds.includes('e'));
+}
+
+{
+  // Battle lancée par le bar : pas de vote, donc pas d'admission.
+  const f = fixture(), vote = new BattleVote(f.opts);
+  vote.staffLaunch({ song: { songId: 7, title: 'Toxic', artist: 'Britney Spears' } });
+  f.events.length = 0;
+  assert.equal(vote.admit(['a']), false);
+  assert.deepEqual(vote.view().eligiblePersonIds, []);
+  assert.deepEqual(f.events, []);
+}
+
+{
+  // Vote arrivé à échéance mais pas encore clos par le minuteur (tick toutes
+  // les 2 s) : plus d'admission, l'électorat de la décision reste juste.
+  const f = fixture(), vote = new BattleVote(f.opts);
+  vote.propose({ personId: 'a', personName: 'Alice', eligiblePersonIds: ['a', 'b', 'c'] });
+  f.clock(120_000);
+  assert.equal(vote.admit(['late']), false, 'vote échu : pas d’admission');
+  assert.equal(vote.view().eligible, 3);
+}
+
+{
+  // L'arrivée vote « contre » : la décision tient compte de sa voix, et
+  // le plafond de 5000 identifiants reste appliqué.
+  const f = fixture({ minVoters: 2 }), vote = new BattleVote(f.opts);
+  const electorate = Array.from({ length: 4999 }, (_, index) => `p${index}`);
+  vote.propose({ personId: 'p0', personName: 'Paul', eligiblePersonIds: electorate });
+  assert.equal(vote.admit(['late1', 'late2', 'late3']), true);
+  assert.equal(vote.view().eligible, 5000, 'au-delà de 5000, les identifiants en trop sont ignorés');
+  assert.ok(vote.view().eligiblePersonIds.includes('late1'));
+  assert.ok(!vote.view().eligiblePersonIds.includes('late2'));
+  assert.equal(vote.admit(['late2']), false, 'plafond atteint : rien de nouveau');
+  vote.vote({ personId: 'late1', choice: 'no' });
+  vote.vote({ personId: 'p1', choice: 'no' });
+  f.clock(120_000);
+  assert.equal(vote.view().outcome, 'rejected', 'deux voix contre une : la voix de l’arrivée compte');
+}
+
 console.log('Battle collective : minuteur, votants minimum, décision des votants, pause après la Battle et lancement par le bar OK');

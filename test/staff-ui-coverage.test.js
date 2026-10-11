@@ -114,6 +114,7 @@ class El {
   // Comme dans un navigateur, un bouton désactivé ne réagit pas.
   click() { return this.disabled ? null : dispatch(this, 'click'); }
   focus() { this.ownerDocument.activeElement = this; }
+  blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = null; }
   select() { this.selectedAll = true; }
   // Avec `doc.dialogFocus`, comme un navigateur : la fenêtre ouverte donne le
   // focus à son élément `autofocus`, sinon à son premier élément focalisable
@@ -210,6 +211,7 @@ function makeDocument() {
     return found;
   };
   doc.body = body;
+  doc.contains = node => body.contains(node);
   return doc;
 }
 
@@ -279,7 +281,9 @@ async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash =
   };
   const timers = new Map();
   let timerId = 0;
-  page.runTimers = ms => { for (const [id, timer] of timers) if (timer.ms === ms) { timers.delete(id); timer.fn(); } };
+  // Minuteurs dus à cet instant seulement : un minuteur qui se reprogramme
+  // (barre de lecture) attend l'appel suivant.
+  page.runTimers = ms => { for (const [id, timer] of [...timers]) if (timer.ms === ms) { timers.delete(id); timer.fn(); } };
   class AudioContext {
     constructor() { if (audioThrows) throw new Error('audio bloqué'); this.currentTime = 0; this.destination = {}; }
     resume() {}
@@ -319,7 +323,7 @@ async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash =
   const context = { document: doc, fetch, location, URL, URLSearchParams, localStorage,
     window: { open: (...args) => page.opened.push(args), AudioContext, Notification, isSecureContext: secure, history,
       addEventListener: (type, listener) => (page.windowListeners[type] ||= []).push(listener), scrollTo() {} },
-    Notification, navigator: { clipboard: { writeText: async text => {
+    Notification, navigator: page.navigator = { clipboard: { writeText: async text => {
       if (!page.clipboardWorks) throw new Error('presse-papiers refusé');
       page.clipboard.push(text);
     } } },
@@ -581,16 +585,60 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   assert.equal(page.postsTo('/api/staff/person/leave').length, 0, 'départ annulé : rien n’est envoyé');
   assert.match(page.confirms.at(-1), /Marquer ce chanteur comme parti/);
   page.confirmAnswer = true;
-  await page.click(row('bruno').querySelector('[data-identity-leave]'));
+  // Regression: le bouton cliqué garde le focus (Chrome sur PC) ; la ligne ne
+  // changeait pas et un deuxième clic renvoyait le départ.
+  const leave = row('bruno').querySelector('[data-identity-leave]');
+  leave.focus();
+  page.world.people[1].active = false;
+  await page.click(leave);
   assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 'bruno' });
   assert.equal(page.toast().text, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
-  await page.click(row('chloe').querySelector('[data-identity-reactivate]'));
+  assert.match(row('bruno').textContent, /parti, fiche conservée/, 'la ligne suit le départ malgré le focus');
+  assert.equal(row('bruno').querySelector('[data-identity-leave]'), null, 'plus de bouton « Parti » à recliquer');
+  const reactivate = row('chloe').querySelector('[data-identity-reactivate]');
+  reactivate.focus();
+  page.world.people[2].active = true;
+  await page.click(reactivate);
   assert.deepEqual(page.lastPost('/api/staff/person/reactivate').body, { personId: 'chloe' });
   assert.equal(page.toast().text, 'Personne réactivée, historique conservé');
+  assert.doesNotMatch(row('chloe').textContent, /parti, fiche conservée/, 'la ligne suit la réactivation malgré le focus');
+  page.doc.activeElement = null;
   // Un clic hors d'une ligne ne fait rien.
   const total = page.posts.length;
   await page.click(page.$('identityBody'));
   assert.equal(page.posts.length, total);
+});
+
+// Regression: vérification de la troisième relecture — « Parti » sur une
+// place « Solo N » de l'événement sans prénom ni titre la supprime, mais la
+// confirmation disait encore « sa fiche restera inscrite » et le toast
+// « marqué parti ».
+test('repères chanteurs : « Parti » sur une place « Solo N » de l’événement dit qu’elle disparaît', async () => {
+  const world = baseWorld();
+  world.people.push({ id: 's1', name: 'Solo 1', tableId: 'Comptoir', active: true, nameRequired: true, viaEvent: true, songCount: 0, sung: 0 },
+    { id: 's2', name: 'Solo 2', tableId: 'Comptoir', active: true, nameRequired: true, songCount: 0, sung: 0 });
+  const page = await openPage({ world });
+  assert.match(page.$('identityIntro').textContent, /Une place « Solo N » de l’événement, sans prénom ni titre, disparaît\./);
+  const row = id => page.in('identityBody', `[data-identity-person="${id}"]`);
+  const message = 'Place « Solo 1 » sans prénom retirée : s’il est encore là, il rescanne le QR de l’événement.';
+  page.replies['/api/staff/person/leave'] = { ok: true, message };
+  await page.click(row('s1').querySelector('[data-identity-leave]'));
+  assert.equal(page.confirms.at(-1), 'Retirer la place « Solo 1 » ? Sans prénom ni titre, elle disparaît : il n’y aura rien à réactiver.');
+  // Regression: quatrième relecture finale (ADV) — la page dit au serveur
+  // qu'elle a confirmé le retrait d'une place sans prénom : si l'invitée a
+  // donné son prénom entre-temps, le serveur refuse au lieu de la marquer partie.
+  assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 's1', expectPlaceholder: true });
+  assert.equal(page.toast().text, message);
+  const late = 'Cette place vient de recevoir un prénom : vérifie avant de la marquer partie.';
+  page.replies['/api/staff/person/leave'] = { status: 400, error: late };
+  await page.click(row('s1').querySelector('[data-identity-leave]'));
+  assert.deepEqual(page.toast(), { text: late, bad: true }, 'le refus du serveur s’affiche');
+  // Place sans prénom d'un QR individuel : marquée partie comme avant, sans le drapeau.
+  page.replies['/api/staff/person/leave'] = { ok: true };
+  await page.click(row('s2').querySelector('[data-identity-leave]'));
+  assert.match(page.confirms.at(-1), /^Marquer ce chanteur comme parti \?/);
+  assert.deepEqual(page.lastPost('/api/staff/person/leave').body, { personId: 's2' });
+  assert.equal(page.toast().text, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
 });
 
 test('repères chanteurs : transfert vers un autre téléphone (lien, code, erreurs)', async () => {
@@ -610,7 +658,7 @@ test('repères chanteurs : transfert vers un autre téléphone (lien, code, erre
   assert.equal(page.$('shareLinkActions').hidden, false);
   assert.equal(page.$('shareUrl').value, 'https://bar.example/t/1/x?transfer=abc');
   assert.match(page.$('shareHelp').textContent, /ou envoie-lui le lien/);
-  assert.match(page.$('shareCodeHelp').textContent, /sur la page de la table/);
+  assert.match(page.$('shareCodeHelp').textContent, /sur la page de la table, toucher « Voir toute la table », puis « C’est moi »/);
   assert.equal(page.$('shareExpires').textContent,
     `QR et lien valables jusqu’à ${hhmm(linkExpiresAt)}, code jusqu’à ${hhmm(expiresAt)} ; un seul usage.`);
   await page.click(page.$('shareCopy'));
@@ -621,8 +669,12 @@ test('repères chanteurs : transfert vers un autre téléphone (lien, code, erre
   assert.equal(page.$('shareUrl').selectedAll, true, 'sans presse-papiers, le lien est sélectionné');
   assert.equal(page.toast().text, 'Sélectionne le lien pour le copier');
   page.doc.copyWorks = true;
+  page.$('shareCopy').focus();
   await page.click(page.$('shareCopy'));
   assert.equal(page.toast().text, 'Lien copié', 'copie de secours du navigateur');
+  // Regression: copié par le champ, le focus revient au bouton « Copier »
+  // (pas perdu en haut de la page).
+  assert.ok(page.doc.activeElement === page.$('shareCopy'), `focus rendu au bouton (${page.doc.activeElement?.id})`);
   await page.click(page.$('shareClose'));
   assert.equal(page.$('shareDialog').open, false);
   assert.equal(page.$('shareCode').textContent, '', 'le code ne reste pas affiché après fermeture');
@@ -637,7 +689,8 @@ test('repères chanteurs : transfert vers un autre téléphone (lien, code, erre
   assert.equal(page.$('shareUrl').hidden, true);
   assert.equal(page.$('shareLinkActions').hidden, true);
   assert.match(page.$('shareHelp').textContent, /saisis ce code/);
-  assert.match(page.$('shareCodeHelp').textContent, /ouvrir le QR « En solo »/);
+  assert.match(page.$('shareCodeHelp').textContent, /ouvrir la page karaoké du bar \(si elle demande un prénom, toucher d’abord « Déjà inscrit \? J’ai un code »\), toucher « Je suis … »/);
+  assert.doesNotMatch(page.$('shareCodeHelp').textContent, /En solo/, 'fenêtre montrée au client : le groupe n’est pas nommé');
   assert.equal(page.$('shareExpires').textContent, `code jusqu’à ${hhmm(expiresAt)} ; un seul usage.`);
   page.$('shareDialog').close();
 
@@ -952,7 +1005,8 @@ test('sur scène : derniers passages, repère, départ et vidage de l’historiq
       { id: 'alice', name: 'Alice', table: 'Table 1', active: true, privateNote: 't-shirt rouge' }] },
     { onStage: false, at, title: 'Fini', people: [
       { id: 'chloe', name: 'Chloé', table: 'Table 2', active: false },
-      { id: 'dora', name: 'Dora', table: 'En solo', active: true, photoUrl: '/photo/dora.jpg' }] },
+      { id: 'dora', name: 'Dora', table: 'En solo', individual: true, active: true, photoUrl: '/photo/dora.jpg' },
+      { id: 'eve', name: 'Eve', table: 'En solo', individual: true, active: false }] },
   ];
   const history = world.stageHistory;
   const page = await openPage({ world });
@@ -966,6 +1020,9 @@ test('sur scène : derniers passages, repère, départ et vidage de l’historiq
   assert.match(person('chloe').textContent, /Table 2 · parti/);
   assert.equal(person('chloe').querySelector('[data-history-leave]'), null, 'une personne déjà partie ne se marque pas partie');
   assert.equal(person('dora').querySelector('img').src, '/photo/dora.jpg');
+  assert.doesNotMatch(person('dora').textContent, /En solo/, 'un soliste : son prénom seul');
+  assert.match(person('eve').textContent, /Eve\s*parti/, 'soliste parti : « parti » sans nom de groupe');
+  assert.doesNotMatch(person('eve').textContent, /En solo|· parti/);
   assert.equal(page.$('clearStageHistory').disabled, false);
 
   // « Repère » ouvre l'écran Repères sur cette personne, prêt à écrire.
@@ -1017,8 +1074,12 @@ test('en direct : duo noté, absent, relance, passer, lecture et envoi en cours'
   world.next = { ours: false, singer: 'Client', title: 'Manuel' };
   world.tracked = [{ queueId: 77, startedAt: Date.now() }, { queueId: 78, ids: ['bruno'], startedAt: null }];
   world.pending = { label: 'Bruno', title: 'Chanson A' };
+  // QR ouvert sans prénom : jamais proposé comme partenaire (lot K).
+  world.people.push({ id: 's9', name: 'Solo 9', tableId: 'Comptoir', active: true, nameRequired: true, songCount: 0, sung: 0 });
   const page = await openPage({ world });
-  assert.match(page.$('stage').textContent, /Alice.*Table 1.*Dora.*En solo.*Duo.*Ensemble.*Interprète inconnu/s);
+  assert.match(page.$('stage').textContent, /Alice.*Table 1.*Dora.*Duo.*Ensemble.*Interprète inconnu/s);
+  assert.doesNotMatch(page.$('stage').textContent, /En solo/, 'un soliste : son prénom, sans pastille');
+  assert.equal(page.all('stage', '.live-table').length, 1, 'seule la table d’Alice a sa pastille');
   assert.match(page.$('next').textContent, /Client.*Ajouté dans KaraFun.*Manuel/s);
   assert.equal(page.$('pendingTxt').textContent, 'Envoi en cours à KaraFun : Bruno — Chanson A');
 
@@ -1026,8 +1087,8 @@ test('en direct : duo noté, absent, relance, passer, lecture et envoi en cours'
   assert.equal(page.$('markDuoBox').hidden, false);
   assert.equal(page.$('markDuoBox').dataset.queueId, 'q-live');
   assert.deepEqual(page.all('markDuoPartner', 'optgroup').map(g => g.getAttribute('label')),
-    ['Même table', 'Autres tables et personnes en solo']);
-  assert.deepEqual(texts(page.$('markDuoPartner').options), ['Choisir…', 'Bruno — Table 1', 'Dora — En solo']);
+    ['Même table', 'Autres personnes']);
+  assert.deepEqual(texts(page.$('markDuoPartner').options), ['Choisir…', 'Bruno — Table 1', 'Dora'], 'soliste : prénom seul ; « Solo 9 » exclu');
   assert.equal(page.$('markDuoPartner').value, '', 'personne n’est choisi d’avance');
   await page.click(page.$('markDuoBtn'));
   assert.equal(page.postsTo('/api/staff/duo-mark').length, 0, 'sans partenaire choisi, rien ne part');
@@ -1399,6 +1460,23 @@ test('accueil en solo : QR individuel, copie, invitations en attente et erreurs'
   await page.click(page.$('soloInviteCopy'));
   assert.equal(page.$('soloInviteUrl').selectedAll, true);
   assert.deepEqual(page.toast(), { text: 'Sélectionne le lien pour le copier.', bad: true });
+  // Regression: page du bar ouverte en http depuis un téléphone (contexte non
+  // sécurisé, pas d'API presse-papiers) : « Copier le lien » ne copiait rien.
+  // Signalé par le gérant le 8 octobre 2026 ; reproduit dans Chromium.
+  page.doc.copyWorks = true;
+  await page.click(page.$('soloInviteCopy'));
+  assert.equal(page.toast().text, 'Lien individuel copié', 'copie de secours du navigateur');
+  const clipboardApi = page.navigator.clipboard;
+  delete page.navigator.clipboard;
+  page.$('soloInviteUrl').selectedAll = false;
+  page.$('soloInviteUrl').readOnly = true;
+  await page.click(page.$('soloInviteCopy'));
+  assert.equal(page.$('soloInviteUrl').selectedAll, true, 'le champ lui-même est sélectionné, dans la fenêtre ouverte');
+  assert.equal(page.toast().text, 'Lien individuel copié', 'sans API presse-papiers, la copie de secours copie le lien');
+  assert.equal(page.$('soloInviteUrl').readOnly, true, 'le champ redevient en lecture seule après la copie');
+  page.navigator.clipboard = clipboardApi;
+  page.doc.copyWorks = false;
+  page.clipboardWorks = true;
   await page.click(page.$('soloInviteClose'));
   assert.equal(page.$('soloInviteDialog').open, false);
   page.replies['/api/staff/solo-invite'] = { status: 409, error: 'Trop d’invitations en attente.' };
@@ -1766,6 +1844,9 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   world.spotify = { configured: false, connected: false, redirectUri: 'http://127.0.0.1:3000/spotify/callback', clientId: '' };
   const page = await openPage({ world });
   assert.equal(page.$('spotifyPill').textContent, 'Non configuré');
+  assert.equal(page.$('spotifyPill').className, 'pill');
+  assert.equal(page.$('spotifyChip').hidden, true, 'pas de pastille Spotify sur Scène sans Spotify');
+  assert.equal(page.$('spotifyReconnectRow').hidden, true);
   assert.equal(page.$('spotifyLogin').disabled, true, 'sans Client ID, pas de connexion possible');
   assert.equal(page.$('spotifyConnected').hidden, true);
   assert.equal(page.$('spotifyRedirect').textContent, 'http://127.0.0.1:3000/spotify/callback');
@@ -1781,8 +1862,16 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   await page.change(clientId);
   assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'client', clientId: '0123456789abcdef' });
   assert.equal(status('spotifyClientId'), 'Enregistré ✓');
-  await page.update({ spotify: { ...world.spotify, configured: true, clientId: '0123456789abcdef' } });
-  assert.equal(page.$('spotifyPill').textContent, 'Non connecté');
+  await page.update({ spotify: { ...world.spotify, configured: true, clientId: '0123456789abcdef',
+    health: { state: 'disconnected', device: null, checkedAt: 0, retryAt: 0 } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify non connecté');
+  assert.equal(page.$('spotifyPill').className, 'pill bad');
+  assert.equal(page.$('spotifyChip').hidden, false, 'Spotify configuré : pastille sur Scène');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify non connecté');
+  assert.equal(page.$('spotifyChip').className, 'pill bad');
+  assert.equal(page.$('spotifyReconnectRow').hidden, false, 'bouton « Reconnecter Spotify »');
+  assert.equal(page.$('spotifyReconnect').textContent, 'Reconnecter Spotify');
+  assert.equal(page.$('spotifyText').textContent, '', 'pas d’heure de vérification sans connexion');
   assert.equal(page.$('spotifyLogin').disabled, false);
   assert.equal(page.$('spotifyClientId').value, '0123456789abcdef');
 
@@ -1792,6 +1881,10 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'auth-url' });
   assert.deepEqual(page.opened, [['https://accounts.spotify.com/authorize?client_id=fake', '_blank', 'noopener']]);
   assert.notEqual(page.toast().text, 'Fais cette connexion depuis le PC du bar : Spotify revient sur son adresse locale.');
+  // « Reconnecter Spotify » : même parcours que la première connexion.
+  await page.click(page.$('spotifyReconnect'));
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'auth-url' });
+  assert.equal(page.opened.length, 2);
   // Depuis un téléphone : la page s'ouvre aussi, avec l'avertissement.
   const phone = await openPage({ world, hostname: '192.168.1.20' });
   phone.replies['/api/staff/spotify'] = { url: 'https://accounts.spotify.com/authorize?client_id=fake' };
@@ -1803,52 +1896,129 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   assert.deepEqual(phone.toast(), { text: 'Client ID Spotify manquant.', bad: true });
   assert.equal(phone.opened.length, 1, 'pas de page Spotify après un refus');
 
-  // Connecté : lecture en cours, appareil choisi, dernière action.
+  // Connecté, pas encore vérifié : pastille neutre.
   const at = Date.now() - 60000;
+  const ready = { state: 'ready', device: { id: 'dev-2', name: 'Enceinte', active: true }, checkedAt: at, retryAt: 0, message: null };
   const connected = { configured: true, connected: true, clientId: '0123456789abcdef', autoResume: true, autoPause: false,
-    deviceId: 'dev-2', deviceName: 'Enceinte', player: { isPlaying: true, track: { title: 'Get Lucky', artist: 'Daft Punk' },
-      device: { name: 'Enceinte' } }, lastAction: { at, kind: 'resume', ok: true }, lastError: null };
-  await page.update({ spotify: connected });
+    deviceId: 'dev-2', deviceName: 'Enceinte', player: { isPlaying: true, at, track: { title: 'Get Lucky', artist: 'Daft Punk' },
+      device: { name: 'Enceinte' } }, lastAction: { at, kind: 'resume', ok: true }, lastError: null,
+    devices: [{ id: 'dev-1', name: 'PC du bar', type: 'Computer', active: false }, { id: 'dev-2', name: 'Enceinte', type: 'Speaker', active: true }] };
+  await page.update({ spotify: { ...connected, health: { state: 'unknown', device: null, checkedAt: 0 } } });
   assert.equal(page.$('spotifyConnected').hidden, false);
-  assert.equal(page.$('spotifyPill').textContent, 'Spotify en lecture');
+  assert.equal(page.$('spotifyReconnectRow').hidden, true);
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify : vérification…');
+  assert.equal(page.$('spotifyPill').className, 'pill');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify : vérification…');
+  assert.equal(page.$('spotifyChip').className, 'pill');
+  // Prêt : lecture en cours, appareil choisi, dernière action, heure de vérification.
+  await page.update({ spotify: { ...connected, health: ready } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify · Enceinte');
   assert.equal(page.$('spotifyPill').className, 'pill ok');
-  assert.equal(page.$('spotifyText').textContent, `Spotify : Get Lucky — Daft Punk sur Enceinte. Dernière action à ${hhmm(at)} : relance.`);
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify · Enceinte');
+  assert.equal(page.$('spotifyChip').className, 'pill ok');
+  assert.equal(page.$('tabDotPlus').hidden, true, 'tout va bien : pas de point sur « Plus »');
+  // Regression: U3 (seconde relecture) — la ligne du titre ne disait plus si
+  // Spotify jouait ou était en pause, ni de quand datait la lecture.
+  assert.equal(page.$('spotifyText').textContent, `En lecture à ${hhmm(at)} : Get Lucky — Daft Punk sur Enceinte. Dernière action à ${hhmm(at)} : relance. Vérifié à ${hhmm(at)}.`);
+  const readAt = at - 240000;
+  await page.update({ spotify: { ...connected, player: { isPlaying: false, at: readAt, track: { title: 'Get Lucky' } }, health: ready } });
+  assert.match(page.$('spotifyText').textContent, new RegExp(`^En pause à ${hhmm(readAt)} : Get Lucky\\. Dernière action`), 'pause et heure de la lecture');
+  await page.update({ spotify: { ...connected, player: { isPlaying: true, track: { title: 'Get Lucky' } }, health: ready } });
+  assert.match(page.$('spotifyText').textContent, /^En lecture : Get Lucky\. /, 'heure inconnue : pas d’« Invalid Date »');
+  await page.update({ spotify: { ...connected, health: ready } });
   assert.equal(page.$('spotifyAutoResume').checked, true);
   assert.equal(page.$('spotifyAutoPause').checked, false);
   assert.equal(page.$('spotifyDelay').value, 3, 'délai par défaut');
-  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'Enceinte']);
+  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'PC du bar', 'Enceinte (actif)'],
+    'liste gardée par le serveur : elle survit au rechargement de la page');
   assert.equal(page.$('spotifyDevice').value, 'dev-2');
+  // Aucun appareil (204) : orange, plus vert ; le nom de l'appareil choisi est donné.
   await page.update({ spotify: { ...connected, player: { isPlaying: false, track: { title: 'Get Lucky' } }, deviceId: 'dev-3', deviceName: '',
-    lastAction: { at, kind: 'pause', ok: true, result: 'already' }, lastError: 'Spotify : appareil introuvable.' } });
-  assert.equal(page.$('spotifyPill').textContent, 'Spotify en pause');
-  assert.equal(page.$('spotifyPill').className, 'pill bad', 'une erreur Spotify est signalée');
-  assert.equal(page.$('spotifyText').textContent, `Spotify : appareil introuvable. Spotify : Get Lucky. Dernière action à ${hhmm(at)} : pause (rien à faire).`);
-  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'Appareil choisi']);
-  await page.update({ spotify: { ...connected, player: null, deviceId: '', lastAction: { at, kind: 'resume', ok: false } } });
-  assert.equal(page.$('spotifyPill').textContent, 'Connecté');
-  assert.equal(page.$('spotifyText').textContent, `Dernière action à ${hhmm(at)} : relance en échec.`);
+    lastAction: { at, kind: 'pause', ok: true, result: 'already' }, lastError: 'Spotify : appareil introuvable.',
+    health: { state: 'no-device', device: { id: 'dev-3', name: 'Tablette', active: false }, checkedAt: at } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify : aucun appareil');
+  assert.equal(page.$('spotifyPill').className, 'pill warn');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify : aucun appareil');
+  assert.equal(page.$('spotifyChip').className, 'pill warn');
+  assert.equal(page.$('tabDotPlus').hidden, false);
+  // Aucun appareil : le dernier titre lu contredirait la phrase, il n'est pas affiché.
+  assert.equal(page.$('spotifyText').textContent, `Spotify connecté, aucun appareil : ouvre Spotify sur Tablette. Spotify : appareil introuvable. Dernière action à ${hhmm(at)} : pause (rien à faire). Vérifié à ${hhmm(at)}.`);
+  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'PC du bar', 'Enceinte (actif)', 'Appareil choisi (introuvable)'],
+    'l’appareil choisi reste affiché, même absent');
+  assert.equal(page.$('spotifyDevice').value, 'dev-3', 'et sélectionné : pas de bascule silencieuse');
+  await page.update({ spotify: { ...connected, deviceId: '', deviceName: '', health: { state: 'no-device', device: null, checkedAt: at } } });
+  assert.match(page.$('spotifyText').textContent, /^Spotify connecté, aucun appareil : ouvre Spotify sur l’appareil voulu\./);
+  // Injoignable : rouge, heure du nouvel essai.
+  const retryAt = Date.now() + 120000;
+  await page.update({ spotify: { ...connected, player: null, deviceId: '', devices: [], lastAction: { at, kind: 'resume', ok: false },
+    lastError: 'Spotify ne répond pas correctement (réseau).', health: { state: 'error', device: null, checkedAt: at, retryAt, message: 'réseau' } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify injoignable');
+  assert.equal(page.$('spotifyPill').className, 'pill bad');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify injoignable');
+  assert.equal(page.$('spotifyText').textContent, `Spotify injoignable, nouvel essai à ${hhmm(retryAt)}. Spotify ne répond pas correctement (réseau). Dernière action à ${hhmm(at)} : relance en échec. Vérifié à ${hhmm(at)}.`);
   assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify']);
+  await page.update({ spotify: { ...connected, lastError: null, health: { state: 'error', device: null, checkedAt: at, retryAt } } });
+  assert.equal(page.$('spotifyText').textContent, `Spotify injoignable, nouvel essai à ${hhmm(retryAt)}. Dernière action à ${hhmm(at)} : relance. Vérifié à ${hhmm(at)}.`,
+    'injoignable : pas de titre « en lecture » d’une lecture ancienne');
+  assert.equal(page.$('tabDotPlus').hidden, false, 'injoignable : point sur « Plus » même sans erreur d’action');
+  // Regression: U3 (vérification de la seconde relecture) — jeton refusé par
+  // Spotify : « Spotify non connecté » à côté de « En lecture à … sur Enceinte ».
+  // Le titre n'est affiché que pour un Spotify vérifié et prêt.
+  await page.update({ spotify: { ...connected, connected: false, lastAction: null, lastError: 'Connexion Spotify refusée ou expirée : reconnecte Spotify.',
+    health: { state: 'disconnected', device: null, checkedAt: at, retryAt: 0 } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify non connecté');
+  assert.equal(page.$('spotifyText').textContent, 'Connexion Spotify refusée ou expirée : reconnecte Spotify.', 'non connecté : pas de titre « en lecture »');
+  await page.update({ spotify: { ...connected, lastAction: null, health: { state: 'unknown', device: null, checkedAt: 0 } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify : vérification…');
+  assert.equal(page.$('spotifyText').textContent, '', 'vérification en cours : pas de titre « en lecture »');
 
-  // Liste des appareils.
-  page.replies['/api/staff/spotify'] = body => body.action === 'devices'
-    ? { devices: [{ id: 'dev-1', name: 'PC du bar', active: true }, { id: 'dev-2', name: 'Enceinte' }] } : { ok: true };
-  await page.update({ spotify: { ...connected } });
-  await page.click(page.$('spotifyDevices'));
-  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'devices' });
-  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'PC du bar (actif)', 'Enceinte']);
-  assert.equal(page.$('spotifyDevice').value, 'dev-2', 'l’appareil enregistré reste sélectionné');
+  // Pastille de la Scène : mène au panneau Spotify.
+  await page.click(page.$('spotifyChip'));
+  assert.equal(page.doc.body.dataset.tab, 'plus');
+
+  // Appareil enregistré absent : affiché « (introuvable) », sélectionné, rien n'est envoyé.
+  await page.update({ spotify: { ...connected, deviceId: 'pc-OLD', deviceName: 'PC du bar', health: { state: 'no-device', device: { id: 'pc-OLD', name: 'PC du bar' }, checkedAt: at },
+    devices: [{ id: 'dev-2', name: 'Enceinte', active: false }] } });
+  const before = page.postsTo('/api/staff/spotify').length;
+  await page.poll();
+  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'Enceinte', 'PC du bar (introuvable)']);
+  assert.equal(page.$('spotifyDevice').value, 'pc-OLD');
+  assert.equal(page.postsTo('/api/staff/spotify').length, before, 'aucun choix d’appareil envoyé sans geste du bar');
+  // Liste ouverte (focus) : pas reconstruite sous le doigt.
+  page.$('spotifyDevice').focus();
+  await page.update({ spotify: { ...page.world.spotify, devices: [{ id: 'autre', name: 'Autre' }] } });
+  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify', 'Enceinte', 'PC du bar (introuvable)']);
+  page.doc.activeElement = null;
+  // Rechoisir l'appareil introuvable : le nom part sans « (introuvable) ».
+  await page.update({ spotify: { ...page.world.spotify, devices: [{ id: 'dev-2', name: 'Enceinte' }] } });
+  page.replies['/api/staff/spotify'] = { ok: true };
+  await page.change(page.$('spotifyDevice'), 'pc-OLD');
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: 'pc-OLD', deviceName: 'PC du bar' });
+
+  // « Vérifier Spotify » (ancien « Actualiser la liste ») : vérification sur le serveur.
+  assert.equal(page.$('spotifyCheck').textContent, 'Vérifier Spotify');
+  page.replies['/api/staff/spotify'] = body => body.action === 'refresh'
+    ? { ok: true, health: { state: 'ready', device: { id: 'pc-NEW', name: 'PC du bar', active: true }, checkedAt: Date.now(), adopted: true } } : { ok: true };
+  await page.update({ spotify: { ...connected, health: ready } });
+  await page.click(page.$('spotifyCheck'));
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'refresh' });
+  assert.deepEqual(page.toast(), { text: 'Spotify connecté · PC du bar', bad: false });
   await page.change(page.$('spotifyDevice'), 'dev-1');
-  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: 'dev-1', deviceName: 'PC du bar' },
-    'le nom enregistré ne garde pas « (actif) »');
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: 'dev-1', deviceName: 'PC du bar' });
   assert.equal(page.toast().text, 'Appareil Spotify enregistré');
+  await page.change(page.$('spotifyDevice'), 'dev-2');
+  assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: 'dev-2', deviceName: 'Enceinte' },
+    'le nom enregistré ne garde pas « (actif) »');
   await page.change(page.$('spotifyDevice'), '');
   assert.deepEqual(page.lastPost('/api/staff/spotify').body, { action: 'device', deviceId: '', deviceName: '' });
-  page.replies['/api/staff/spotify'] = { devices: [] };
-  await page.click(page.$('spotifyDevices'));
-  assert.deepEqual(page.toast(), { text: 'Aucun appareil : ouvre Spotify sur l’appareil voulu, puis actualise.', bad: true });
-  assert.deepEqual(texts(page.$('spotifyDevice').options), ['Appareil actif de Spotify']);
+  page.replies['/api/staff/spotify'] = { ok: true, health: { state: 'no-device', device: { id: 'dev-2', name: 'Enceinte' } } };
+  await page.click(page.$('spotifyCheck'));
+  assert.deepEqual(page.toast(), { text: 'Spotify connecté, aucun appareil : ouvre Spotify sur Enceinte', bad: true });
+  page.replies['/api/staff/spotify'] = { ok: true, health: { state: 'disconnected', device: null } };
+  await page.click(page.$('spotifyCheck'));
+  assert.deepEqual(page.toast(), { text: 'Spotify non connecté', bad: true });
   page.replies['/api/staff/spotify'] = { status: 401, error: 'Connexion Spotify expirée.' };
-  await page.click(page.$('spotifyDevices'));
+  await page.click(page.$('spotifyCheck'));
   assert.deepEqual(page.toast(), { text: 'Connexion Spotify expirée.', bad: true });
   page.replies['/api/staff/spotify'] = { ok: true };
 
@@ -2290,6 +2460,22 @@ test('barre du haut : essais KaraFun arrêtés, alerte avec Reconnecter et Saisi
   assert.equal(page.doc.activeElement, page.$('code'));
 });
 
+test('soliste sur scène : prénom seul (carte, Repères, partenaires), autres solistes hors « Même table » (lot K)', async () => {
+  const world = baseWorld();
+  world.stage = { ours: true, ids: ['dora'], queueId: 'q-solo', singers: [{ id: 'dora', name: 'Dora', table: 'En solo', individual: true }], title: 'Solo' };
+  world.people.push({ id: 'sam', name: 'Sam', tableId: 'Comptoir', active: true, songCount: 0, sung: 0 },
+    { id: 's9', name: 'Solo 9', tableId: 'Comptoir', active: true, nameRequired: true, songCount: 0, sung: 0 });
+  const page = await openPage({ world });
+  assert.equal(page.in('stage', '[data-stage-person="dora"]').querySelector('.live-table'), null, 'pas de pastille « En solo »');
+  assert.doesNotMatch(page.$('stage').textContent, /En solo/);
+  assert.doesNotMatch(page.$('identityStage').textContent, /En solo/, 'Repères : prénom seul');
+  assert.deepEqual(page.all('markDuoPartner', 'optgroup').map(g => g.getAttribute('label')), ['Autres personnes'],
+    'les autres solistes ne sont pas « Même table »');
+  const options = texts(page.$('markDuoPartner').options);
+  assert.ok(options.includes('Sam') && options.includes('Alice — Table 1'), options.join(' | '));
+  assert.ok(!options.some(text => /Solo 9|En solo/.test(text)), 'ni prénom provisoire ni nom de groupe');
+});
+
 test('sur scène : photo, repère de la personne et titre KaraFun sans fiche', async () => {
   const world = baseWorld();
   world.stage = { ours: true, ids: ['alice'], queueId: 'q1', singers: [{ id: 'alice', name: 'Alice', table: 'Table 1' }], title: 'Titre' };
@@ -2303,6 +2489,7 @@ test('sur scène : photo, repère de la personne et titre KaraFun sans fiche', a
   assert.equal(next.querySelector('img').src, '/photo/dora.jpg');
   assert.equal(next.querySelector('[data-autosave="note"]').value, '', 'sans repère, champ vide à remplir');
   assert.equal(next.querySelector('[data-autosave="note"]').placeholder, 'ex. t-shirt rouge');
+  assert.equal(next.querySelector('.live-table'), null, 'Ensuite : soliste sans pastille de groupe');
   assert.equal(page.$('identityStageBox').hidden, false, 'Repères : la personne sur scène en tête');
   assert.ok(page.in('identityStage', '[data-identity-stage="alice"]'));
   // Repère modifié sur la carte : enregistré seul, recopié dans l'écran Repères.
@@ -2330,6 +2517,64 @@ test('sur scène : photo, repère de la personne et titre KaraFun sans fiche', a
   assert.match(page.$('stage').textContent, /Bruno.*Table 1.*Repère/s);
   await page.update({ stage: { ours: true, ids: ['inconnu'], singer: 'Quelqu’un', title: 'Seul' } });
   assert.match(page.$('stage').textContent, /Quelqu’un.*Seul/s);
+});
+
+// Lot F : barre de lecture du titre sur scène, avancée seule chaque seconde
+// (minuteur de 1100 ms), horloge du serveur corrigée par S.now.
+test('barre de lecture sur scène : temps, reste, tempo, pause, durée inconnue, Battle, jamais sur « Ensuite »', async () => {
+  const realNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const world = baseWorld();
+    const progress = (fields = {}) => ({ elapsedSec: 102, durationSec: 237, paused: false, rate: 1, ...fields });
+    world.now = now - 2000; // horloge du serveur 2 s en retard sur ce PC
+    const stage = { ours: false, singer: 'Client', title: 'Manuel' };
+    world.stage = { ...stage, progress: progress() };
+    world.next = { ours: false, singer: 'Suivant', title: 'Après', progress: progress() };
+    const page = await openPage({ world });
+    const text = () => page.in('stageProgress', '.stage-progress-text')?.textContent;
+    const width = () => page.in('stageProgress', '.stage-progress-fill')?.getAttribute('style');
+    assert.equal(page.$('stageProgress').hidden, false);
+    assert.equal(text(), '1:42 / 3:57 · reste 2:15');
+    assert.equal(width(), 'width:43.0%');
+    assert.equal(page.$('next').querySelector('.stage-progress-fill'), null, 'pas de barre sur le titre suivant');
+    now += 1000;
+    page.runTimers(1100);
+    assert.equal(text(), '1:43 / 3:57 · reste 2:14', 'avance seule entre deux lectures');
+    // Tempo +20 en direct : le titre avance plus vite, le reste raccourcit.
+    await page.update({ now, stage: { ...stage, progress: progress({ elapsedSec: 120, durationSec: 240, rate: 1.2 }) } });
+    assert.equal(text(), '2:00 / 4:00 · reste 1:40');
+    now += 5000;
+    page.runTimers(1100);
+    assert.equal(text(), '2:06 / 4:00 · reste 1:35');
+    // Pause : figée, plus de minuteur.
+    await page.update({ now, stage: { ...stage, progress: progress({ elapsedSec: 60, durationSec: 200, paused: true }) } });
+    assert.equal(text(), 'En pause · 1:00 / 3:20 · reste 2:20');
+    now += 10000;
+    page.runTimers(1100);
+    page.runTimers(1100);
+    assert.equal(text(), 'En pause · 1:00 / 3:20 · reste 2:20');
+    // Titre plus long que prévu : barre pleine, jamais au-delà.
+    await page.update({ now, stage: { ...stage, progress: progress({ elapsedSec: 250 }) } });
+    assert.equal(text(), '3:57 / 3:57 · reste 0:00');
+    assert.equal(width(), 'width:100.0%');
+    // Durée inconnue, puis Battle (même avec une durée) : temps écoulé seul.
+    await page.update({ now, stage: { ...stage, progress: progress({ elapsedSec: 75, durationSec: null }) } });
+    assert.equal(text(), '1:15 écoulées');
+    assert.equal(width(), undefined, 'pas de barre sans durée');
+    await page.update({ now, stage: { ...stage, kind: 'battle', progress: progress({ elapsedSec: 75 }) } });
+    assert.equal(text(), '1:15 écoulées');
+    // État sans heure du serveur : valeur reçue montrée telle quelle.
+    await page.update({ now: undefined, stage: { ...stage, progress: progress() } });
+    now += 30000;
+    page.runTimers(1100);
+    assert.equal(text(), '1:42 / 3:57 · reste 2:15');
+    await page.update({ stage: { ...stage, progress: null } });
+    assert.equal(page.$('stageProgress').hidden, true);
+    await page.update({ stage: null });
+    assert.equal(page.$('stageProgress').hidden, true);
+  } finally { Date.now = realNow; }
 });
 
 test('duo improvisé noté : changer de partenaire ou annuler, sur scène puis dans les derniers passages', async () => {
@@ -2465,7 +2710,7 @@ test('accueil : donner un chanteur à un autre téléphone depuis une recherche 
   await page.type(page.$('transferSearch'), '');
   assert.equal(page.$('transferResults').innerHTML, '');
   await page.type(page.$('transferSearch'), 'DOR');
-  assert.deepEqual(results(), ['Dora En solo']);
+  assert.deepEqual(results(), ['Dora'], 'un soliste : son prénom seul');
   page.replies['/api/staff/person/share'] = { code: '1234', expiresAt: Date.now() + 600000 };
   await page.click(page.in('transferResults', '[data-transfer-person="dora"]'));
   assert.deepEqual(page.lastPost('/api/staff/person/share').body, { personId: 'dora' });
@@ -2510,7 +2755,7 @@ function tuneWorld() {
   world.songSettings = { enabled: true, ranges: { pitch: { min: -6, max: 6, step: 1 }, tempo: { min: -50, max: 50, step: 5 },
     volume: { min: 0, max: 100, step: 25 } }, defaults: { pitch: 0, tempo: 0, guide: 0, backing: 53 },
   permissions: { manageVolumes: true, manageQueue: true }, support: unknownSupport(), notice: null,
-  live: { queueId: 7, pitch: 0, tempo: 0, guide: 0, guideB: null, backing: 53, tracks: [4, 5], entryId: 'st1', title: 'Tube', settings: null } };
+  live: { queueId: 7, pitch: 0, tempo: 0, guide: 0, backing: 53, voices: { 5: 0 }, tracks: [4, 5], entryId: 'st1', title: 'Tube', settings: null } };
   world.queue = [
     { source: 'karafun', ours: true, queueId: 9, pos: 1, name: 'Alice', singer: 'Alice', ids: ['alice'], tracks: [5],
       song: { entryId: 'k1', title: 'Déjà chargé', artist: 'A', settings: { pitch: 2, tempo: -10 } } },
@@ -2570,7 +2815,7 @@ test('réglages de titre : la carte « Sur scène » règle le titre en cours en
   assert.equal(page.in('liveTune', '[id="liveTempo"]').textContent, '0 %');
   assert.equal(page.$('liveTuneSummary').textContent, 'Réglages en direct · réglages d’origine');
   await page.click(page.in('liveTune', '[data-live="pitch"][data-step="1"]'));
-  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'pitch', value: 1 });
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'pitch', value: 1, queueId: 7 }, 'le titre affiché est visé');
   assert.equal(page.in('liveTune', '[id="livePitch"]').textContent, '+1', 'valeur envoyée affichée en attendant KaraFun');
   assert.equal(page.$('liveTuneStatus').textContent, 'Envoyé à KaraFun…');
   await page.poll();
@@ -2589,16 +2834,26 @@ test('réglages de titre : la carte « Sur scène » règle le titre en cours en
   assert.equal(page.in('liveTune', '[data-live="guide"]'), null);
   live.tracks = [4, 5];
   await page.click(page.in('liveTune', '[data-live="tempo"][data-step="-5"]'));
-  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'tempo', value: -5 });
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'tempo', value: -5, queueId: 8 });
   await page.click(page.in('liveTune', '[data-live="guide"][data-value="50"]'));
-  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 'guide', value: 50 });
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 'guide', value: 50, queueId: 8 });
   await page.click(page.in('liveTune', '[data-live="backing"][data-value="0"]'));
-  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 'backing', value: 0 });
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 'backing', value: 0, queueId: 8 });
   // KaraFun n'applique pas : au bout de quelques secondes, la valeur de KaraFun revient.
   page.runTimers(8000);
   await page.poll();
   assert.equal(page.in('liveTune', '[id="liveTempo"]').textContent, '0 %');
   assert.equal(page.$('liveTuneStatus').textContent, 'KaraFun n’a pas confirmé ce réglage : vérifie dans KaraFun.');
+  // Voix guide restée à 25 d'un titre à l'autre : le résumé la montre (coupée par défaut).
+  live.guide = 25;
+  await page.poll();
+  assert.match(page.$('liveTuneSummary').textContent, /guide 25/);
+  live.guide = 0;
+  // Titre changé entre-temps : le refus du serveur est affiché.
+  page.replies['/api/staff/kf'] = { status: 400, error: 'Le titre a changé : réglage non envoyé.' };
+  await page.click(page.in('liveTune', '[data-live="pitch"][data-step="1"]'));
+  assert.equal(page.$('liveTuneStatus').textContent, 'Non appliqué : Le titre a changé : réglage non envoyé.');
+  page.replies['/api/staff/kf'] = { ok: true };
   // Refus du serveur.
   page.replies['/api/staff/kf'] = { status: 400, error: 'Ce titre n’a pas de chœurs.' };
   await page.click(page.in('liveTune', '[data-live="backing"][data-value="100"]'));
@@ -2653,7 +2908,7 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   assert.equal(page.$('songSheetStatus').textContent, 'Modifié…');
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(page.lastPost('/api/staff/song/settings').body, { personId: 'bruno', entryId: 'b1', settings: { tempo: -5 } });
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body, { personId: 'bruno', entryId: 'b1', settings: { tempo: -5, guideVoices: {} } });
   assert.equal(page.$('songSheetStatus').textContent, 'Enregistrement…');
   await page.poll();
   assert.equal(page.in('songSheetBody', '[id="sheetTempo"]').textContent, '−5 %', 'le rafraîchissement de 2 s n’écrase pas le réglage en cours d’envoi');
@@ -2668,14 +2923,14 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   assert.equal(page.in('songSheetBody', '[id="sheetTempo"]').textContent, '0 %');
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, {}, 'réinitialiser : réglages de KaraFun');
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guideVoices: {} }, 'réinitialiser : réglages de KaraFun (clé des autres voix toujours envoyée)');
   release();
   await page.flush();
   // Fermer la fiche : un changement en attente part tout de suite.
   await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
   await page.click(page.$('songSheetClose'));
   assert.equal(page.$('songSheet').open, false);
-  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { pitch: 1 });
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { pitch: 1, guideVoices: {} });
   release();
   await page.flush();
 
@@ -2690,7 +2945,7 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="-1"]'));
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(page.lastPost('/api/staff/song/settings').body, { personId: 'alice', entryId: 'k1', settings: { pitch: 1, tempo: -10 } });
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body, { personId: 'alice', entryId: 'k1', settings: { pitch: 1, tempo: -10, guideVoices: {} } });
   assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓ · appliqué au début du titre');
   // Le titre monte sur scène pendant que la fiche est ouverte.
   page.world.queue = page.world.queue.filter(q => q.song.entryId !== 'k1');
@@ -2699,15 +2954,20 @@ test('réglages de titre : « File », menu ⋯ → Réglages, fiche enregistré
   await page.poll();
   assert.match(page.$('songSheetNote').textContent, /Ce titre est sur scène : règle-le en direct sur l’écran Scène\./);
   assert.equal(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]').disabled, true);
-  // Duo : la voix guide des deux chanteurs suit le réglage ; refus du serveur.
+  // Duo, pistes pas encore connues : « Voix 1 » et « Voix 2 », chacune la sienne ; refus du serveur.
   await page.click(page.$('songSheetClose'));
   page.replies['/api/staff/song/settings'] = { status: 409, error: 'Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.' };
   await page.click(page.in('qBody', '[data-song-settings="d1"]'));
-  assert.match(page.$('songSheetBody').textContent, /Duo : les deux voix guides suivent ce réglage\./);
+  assert.equal(page.$('songSheetBody').textContent.includes('Duo : les deux voix guides'), false, 'plus de voix 2 qui suit la voix 1');
+  assert.match(page.$('songSheetBody').textContent, /Voix 1[\s\S]*Voix 2Si le titre en a deux\./);
   assert.deepEqual(sheetPressed(page, 'guide'), ['50']);
+  assert.deepEqual(sheetPressed(page, 'voice:6'), ['0'], 'voix 2 sans réglage : coupée');
   await page.click(page.in('songSheetBody', '[data-tune="guide"][data-value="0"]'));
+  await page.click(page.in('songSheetBody', '[data-tune="voice:6"][data-value="25"]'));
+  assert.deepEqual(sheetPressed(page, 'voice:6'), ['25']);
   page.runTimers(700);
   await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guide: 0, guideVoices: { 6: 25 } });
   assert.equal(page.$('songSheetStatus').textContent, 'Non enregistré : Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré. · Réessayer');
   // Retirée de la file : la fiche le dit.
   page.world.queue = page.world.queue.filter(q => q.song.entryId !== 'd1');
@@ -2760,6 +3020,70 @@ test('réglages de titre : silence de KaraFun, avis par fonction et ancienne té
   assert.match(page.$('songSheetNote').textContent, /ancienne télécommande KaraFun/);
   assert.equal(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]').disabled, true);
   assert.equal(page.$('songSheetReset').disabled, true);
+});
+
+// Lot G2 (décision D6) : un réglage par voix guide, sans curseur commun.
+test('réglages de titre : une voix guide par curseur en direct et dans la fiche, résumé voix par voix', async () => {
+  const world = tuneWorld();
+  Object.assign(world.songSettings.live, { guide: 50, voices: { 5: 50, 6: 25 }, tracks: [4, 5, 6] });
+  world.queue[0].tracks = [4, 5, 6];
+  world.queue[0].song.settings = { guide: 50, guideVoices: { 6: 25 } };
+  const page = await openPage({ world });
+  const pressed = field => page.all('liveTune', `[data-live="${field}"]`).filter(node => node.getAttribute('aria-pressed') === 'true')
+    .map(node => node.dataset.value);
+  const labels = container => page.all(container, '.tune-label').map(node => node.textContent);
+  assert.deepEqual(labels('liveTune'), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Chœurs'], 'pas de curseur commun');
+  assert.equal(page.$('liveTuneSummary').textContent, 'Réglages en direct · voix 1 50 · voix 2 25');
+  assert.deepEqual([pressed('guide'), pressed('voice:6')], [['50'], ['25']]);
+  assert.ok(page.in('liveTune', '[id="liveVoice6"]'));
+  // La voix 2 seule : envoyée par sa piste, affichée en attendant KaraFun.
+  await page.click(page.in('liveTune', '[data-live="voice:6"][data-value="75"]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 6, value: 75, queueId: 7 });
+  assert.deepEqual([pressed('guide'), pressed('voice:6')], [['50'], ['75']]);
+  page.world.songSettings.live.voices = { 5: 50, 6: 75 };
+  await page.poll();
+  assert.equal(page.$('liveTuneStatus').textContent, 'Appliqué par KaraFun ✓');
+  assert.equal(page.$('liveTuneSummary').textContent, 'Réglages en direct · voix 1 50 · voix 2 75');
+  // Troisième voix annoncée par KaraFun : « Voix 3 », sans valeur connue encore.
+  page.world.songSettings.live.tracks = [4, 5, 6, 7];
+  await page.poll();
+  assert.deepEqual(labels('liveTune'), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Voix 3', 'Chœurs']);
+  assert.deepEqual(pressed('voice:7'), ['0']);
+  await page.click(page.in('liveTune', '[data-live="voice:7"][data-value="100"]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'track', track: 7, value: 100, queueId: 7 });
+  // Une seule voix : « Voix guide ». Pistes inconnues : voix 1, et voix 2 si le titre en a deux.
+  page.world.songSettings.live.tracks = [4, 5];
+  await page.poll();
+  assert.deepEqual(labels('liveTune'), ['Tonalité', 'Tempo', 'Voix guide', 'Chœurs']);
+  page.world.songSettings.live.tracks = null;
+  await page.poll();
+  assert.deepEqual(labels('liveTune'), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Chœurs']);
+  assert.match(page.$('liveTune').textContent, /Si le titre en a deux\./);
+  // File : badge voix par voix, d'après les pistes du titre.
+  const row = entryId => page.in('qBody', `[data-song-settings="${entryId}"]`).closest('.queue-item');
+  assert.equal(row('k1').querySelector('.badge.tune').textContent, 'voix 1 50 · voix 2 25');
+  page.world.queue[0].tracks = [5];
+  page.world.queue[0].song.settings = { guide: 50 };
+  await page.poll();
+  assert.equal(row('k1').querySelector('.badge.tune').textContent, 'guide 50', 'une seule voix : « guide »');
+  page.world.queue[0].song.settings = { guideVoices: { 6: 0 } };
+  page.world.songSettings.defaults.guide = 25;
+  await page.poll();
+  assert.equal(row('k1').querySelector('.badge.tune').textContent, 'voix 2 coupée', 'voix 2 réglée : nommée même si le titre n’en annonce qu’une');
+  page.world.songSettings.defaults.guide = 0;
+  // Fiche d'un titre chargé à deux voix : chaque voix enregistrée pour elle-même.
+  page.world.queue[0].tracks = [4, 5, 6];
+  page.world.queue[0].song.settings = { guide: 50, guideVoices: { 6: 25 } };
+  page.replies['/api/staff/song/settings'] = { ok: true, applied: 'karafun' };
+  await page.poll();
+  await page.click(page.in('qBody', '[data-song-settings="k1"]'));
+  assert.deepEqual(labels('songSheetBody'), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Chœurs']);
+  assert.deepEqual(sheetPressed(page, 'voice:6'), ['25']);
+  await page.click(page.in('songSheetBody', '[data-tune="voice:6"][data-value="100"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guide: 50, guideVoices: { 6: 100 } });
+  assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
 });
 
 test('réglages de titre : file au téléphone, nom du titre avant le badge des réglages', async () => {
@@ -2994,21 +3318,21 @@ test('enregistrement automatique : un envoi à la fois par champ, le suivant par
   await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(sent(), [{ pitch: 1 }]);
+  assert.deepEqual(sent(), [{ pitch: 1, guideVoices: {} }]);
   // Le premier envoi traîne (Wi-Fi) : un second « + » attend sa réponse.
   await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
   page.runTimers(700);
   await page.flush();
-  assert.deepEqual(sent(), [{ pitch: 1 }], 'pas de second envoi en parallèle');
+  assert.deepEqual(sent(), [{ pitch: 1, guideVoices: {} }], 'pas de second envoi en parallèle');
   assert.equal(page.$('songSheetStatus').textContent, 'Modifié…');
   held.shift()();
   await page.flush();
-  assert.deepEqual(sent(), [{ pitch: 1 }, { pitch: 2 }], 'la dernière valeur part après la réponse');
+  assert.deepEqual(sent(), [{ pitch: 1, guideVoices: {} }, { pitch: 2, guideVoices: {} }], 'la dernière valeur part après la réponse');
   held.shift()();
   await page.flush();
   await page.poll();
   assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓');
-  assert.deepEqual(page.world.queue.find(q => q.song.entryId === 'b1').song.settings, { pitch: 2 });
+  assert.deepEqual(page.world.queue.find(q => q.song.entryId === 'b1').song.settings, { pitch: 2, guideVoices: {} });
 
   // Case à cocher : deux appuis rapides, un seul envoi à la fois, la dernière valeur gagne.
   let release;
@@ -3338,4 +3662,545 @@ test('Battle : durée du vote de 1 à 120 min (plus de limite de 10), repli à 1
   await page.flush();
   assert.equal(page.doc.body.querySelector('[data-save-status="battleVoteMin"]').textContent, 'Non enregistré : entre 1 et 120 minutes');
   assert.ok(!/1 à 10 min/.test(html), 'plus de mention « 1 à 10 min »');
+});
+
+// ------------------------------------------------------------------ retours du 4 octobre : accès solo, événement privé, activité
+// Solos à des moments différents de leur dernière activité, comptée à l'heure
+// du serveur (`now`), jamais à celle de l'appareil du bar.
+const MIN = 60000;
+function soloWorld() {
+  const world = baseWorld();
+  const now = Date.parse('2026-10-04T21:00:00');
+  world.now = now;
+  world.tables[2].activeCount = 5; world.tables[2].count = 7; // « Solo 3 » sans prénom : pas compté (countsAsPresent)
+  world.people[0].lastActiveAt = now - 80 * MIN; // table ordinaire : jamais d'indication
+  world.people.push(
+    { id: 'eva', name: 'Eva', tableId: 'Comptoir', active: true, songCount: 1, sung: 0, joinedAt: now - 90 * MIN, lastActiveAt: now - 30000 },
+    { id: 'farid', name: 'Farid', tableId: 'Comptoir', active: true, songCount: 0, sung: 1, joinedAt: now - 90 * MIN, lastActiveAt: now - 12 * MIN - 20000, privateNote: 'casquette' },
+    { id: 'gael', name: 'Gaël', tableId: 'Comptoir', active: true, songCount: 1, sung: 0, joinedAt: now - 90 * MIN, lastActiveAt: now - 25 * MIN },
+    { id: 'hana', name: 'Hana', tableId: 'Comptoir', active: true, songCount: 1, sung: 2, joinedAt: now - 120 * MIN, lastActiveAt: now - 65 * MIN - 5000 },
+    { id: 'solo3', name: 'Solo 3', tableId: 'Comptoir', active: true, songCount: 0, sung: 0, nameRequired: true, joinedAt: now - 50 * MIN, lastActiveAt: now - 50 * MIN },
+    { id: 'ines', name: 'Inès', tableId: 'Comptoir', active: false, songCount: 0, sung: 1, joinedAt: now - 150 * MIN, lastActiveAt: now - 100 * MIN });
+  return world;
+}
+
+test('activité des solos : libellés, seuils 20 et 45 min, info-bulle, rien pour les tables ni les partis (Repères)', async () => {
+  const world = soloWorld();
+  const page = await openPage({ world });
+  const row = id => page.in('identityBody', `[data-identity-person="${id}"]`);
+  const activity = id => row(id).querySelector('.activity');
+  assert.equal(activity('eva').textContent, 'Actif à l’instant');
+  assert.equal(activity('eva').className, 'activity');
+  // Regression: U5 (quatrième relecture) — sans l'heure, qu'un relevé de page
+  // visible avance chaque minute à sa propre seconde.
+  assert.equal(activity('eva').title, 'Dernière activité sur son téléphone il y a moins de 3 min');
+  assert.equal(activity('farid').textContent, 'Actif il y a 12 min');
+  assert.equal(activity('gael').textContent, 'Sans nouvelles depuis 25 min');
+  assert.equal(activity('gael').className, 'activity warn', 'orange dès 20 min');
+  assert.equal(activity('hana').textContent, 'Sans nouvelles depuis 1 h 05', 'au-delà d’une heure');
+  assert.equal(activity('hana').className, 'activity late', 'rouge dès 45 min');
+  assert.equal(activity('hana').title, `Dernière activité sur son téléphone à ${hhmm(world.now - 65 * MIN - 5000)}`);
+  assert.equal(activity('solo3').textContent, `Pas revenu depuis l’ouverture du QR (${hhmm(world.now - 50 * MIN)})`);
+  assert.equal(activity('solo3').className, 'activity late');
+  assert.equal(activity('alice'), null, 'table ordinaire : un téléphone gère aussi des amis sans téléphone');
+  assert.equal(activity('ines'), null, 'personne partie : rien');
+  assert.equal(activity('dora'), null, 'activité inconnue (ancienne sauvegarde) : rien');
+  // La ligne « N titres · N passages » reste un élément à part.
+  assert.equal(row('hana').querySelector('.tiny').textContent, '1 titre · 2 passages');
+  assert.equal(row('solo3').querySelector('.badge.name-missing').textContent, 'prénom à saisir', 'prénom provisoire signalé');
+  assert.equal(row('solo3').querySelector('strong').textContent, 'Solo 3');
+  assert.equal(row('eva').querySelector('.badge.name-missing'), null);
+
+  // Le libellé ne change qu'à la minute : pas de redessin toutes les 2 s.
+  const before = row('eva');
+  await page.update({ now: world.now + 20000 });
+  assert.equal(row('eva'), before, 'même minute : la liste n’est pas réécrite');
+  await page.update({ now: world.now + 100000 });
+  assert.notEqual(row('eva'), before);
+  assert.equal(activity('eva').textContent, 'Actif il y a 2 min');
+  // La page redevenue visible : l'activité repart à « Actif à l'instant ».
+  page.world.people.find(p => p.id === 'gael').lastActiveAt = page.world.now - 10000;
+  await page.poll();
+  assert.equal(activity('gael').textContent, 'Actif à l’instant');
+});
+
+test('activité des solos : sans heure du serveur, l’heure de l’appareil sert de repli', async () => {
+  // Horloge de l'appareil au début d'une minute (U5 : minutes comptées au
+  // début de la minute en cours, le test ne dépend pas de la seconde).
+  const realNow = Date.now;
+  const now = Date.parse('2026-10-04T21:00:00');
+  Date.now = () => now;
+  try {
+    const world = baseWorld();
+    world.people[3].lastActiveAt = now - 3 * MIN - 1000;
+    const page = await openPage({ world });
+    assert.equal(page.in('identityBody', '[data-identity-person="dora"] .activity').textContent, 'Actif il y a 3 min');
+  } finally { Date.now = realNow; }
+});
+
+// Regression: U6 (quatrième relecture) — seuils de la dernière activité
+// (spécification C3) vérifiés à leurs bords : « Actif à l'instant » sous
+// 2 min, orange dès 20 min, rouge dès 45 min, « Pas revenu depuis l'ouverture
+// du QR » quand la dernière activité suit l'ouverture de moins d'une seconde.
+// À 21:00:00 pile, le début de la minute de l'horloge du serveur (U5).
+test('activité des solos : seuils de 2, 20 et 45 min et ouverture du QR, à leurs bords', async () => {
+  const world = baseWorld();
+  const now = Date.parse('2026-10-04T21:00:00');
+  world.now = now;
+  const solo = (id, ago, joinedAgo = 90 * MIN) => ({ id, name: id, tableId: 'Comptoir', active: true, songCount: 1, sung: 0,
+    joinedAt: now - joinedAgo, lastActiveAt: now - ago });
+  world.people.push(solo('s1m30', 90000), solo('s2m', 2 * MIN), solo('s19m59', 20 * MIN - 1000), solo('s20m', 20 * MIN),
+    solo('s44m59', 45 * MIN - 1000), solo('s45m', 45 * MIN), solo('qr900', 50 * MIN - 900, 50 * MIN), solo('qr1000', 50 * MIN - 1000, 50 * MIN));
+  const page = await openPage({ world });
+  const shown = id => { const a = page.in('identityBody', `[data-identity-person="${id}"] .activity`); return [a.textContent, a.className]; };
+  assert.deepEqual(shown('s1m30'), ['Actif à l’instant', 'activity'], '1 min 30');
+  assert.deepEqual(shown('s2m'), ['Actif il y a 2 min', 'activity']);
+  assert.deepEqual(shown('s19m59'), ['Actif il y a 19 min', 'activity'], '19:59 : pas encore orange');
+  assert.deepEqual(shown('s20m'), ['Sans nouvelles depuis 20 min', 'activity warn'], 'orange dès 20 min');
+  assert.deepEqual(shown('s44m59'), ['Sans nouvelles depuis 44 min', 'activity warn'], '44:59 : encore orange');
+  assert.deepEqual(shown('s45m'), ['Sans nouvelles depuis 45 min', 'activity late'], 'rouge dès 45 min');
+  // QR ouvert à 20:10:00 : un relevé 900 ms plus tard est celui de l'ouverture ;
+  // une seconde plus tard, c'est une vraie visite.
+  assert.deepEqual(shown('qr900'), [`Pas revenu depuis l’ouverture du QR (${hhmm(now - 50 * MIN)})`, 'activity late']);
+  assert.deepEqual(shown('qr1000'), ['Sans nouvelles depuis 49 min', 'activity late']);
+  // Toute la minute de 21:00 garde ces libellés ; à 21:01:00, tous avancent ensemble.
+  await page.update({ now: now + MIN - 1 });
+  assert.deepEqual(['s1m30', 's19m59', 's44m59'].map(shown), [['Actif à l’instant', 'activity'], ['Actif il y a 19 min', 'activity'],
+    ['Sans nouvelles depuis 44 min', 'activity warn']], '21:00:59.999 : même minute, mêmes libellés');
+  await page.update({ now: now + MIN });
+  assert.deepEqual(['s1m30', 's19m59', 's44m59'].map(shown), [['Actif il y a 2 min', 'activity'], ['Sans nouvelles depuis 20 min', 'activity warn'],
+    ['Sans nouvelles depuis 45 min', 'activity late']], '21:01:00 : chacun passe le seuil suivant');
+});
+
+// Regression: vérification de la quatrième relecture — minutes comptées au
+// début de la minute en cours (U5) : en cours de minute, le libellé retarde
+// jusqu'à 59 s sur le temps écoulé. « Actif à l'instant » dure jusqu'à
+// 2 min 59 s, mais son info-bulle disait « il y a moins de 2 min » ; l'orange
+// arrive 20 à 21 min après la dernière activité, le rouge 45 à 46 min après.
+test('activité des solos : en cours de minute, « Actif à l’instant » sous 3 min, orange et rouge à la minute suivante', async () => {
+  const world = baseWorld();
+  const at = clock => Date.parse(`2026-10-04T${clock}`);
+  world.now = at('21:00:50');
+  const solo = (id, last) => ({ id, name: id, tableId: 'Comptoir', active: true, songCount: 1, sung: 0,
+    joinedAt: at('19:00:00'), lastActiveAt: at(last) });
+  world.people.push(solo('a2m40', '20:58:10'), solo('a2m49', '20:58:00.001'), solo('a2m50', '20:58:00'),
+    solo('w20m49', '20:40:00.001'), solo('w20m50', '20:40:00'), solo('l45m49', '20:15:00.001'), solo('l45m50', '20:15:00'));
+  const page = await openPage({ world });
+  const shown = id => { const a = page.in('identityBody', `[data-identity-person="${id}"] .activity`); return [a.textContent, a.className, a.title]; };
+  const instant = ['Actif à l’instant', 'activity', 'Dernière activité sur son téléphone il y a moins de 3 min'];
+  assert.deepEqual(shown('a2m40'), instant, '2 min 40 s');
+  assert.deepEqual(shown('a2m49'), instant, '2 min 49,999 s');
+  assert.deepEqual(shown('a2m50'), ['Actif il y a 2 min', 'activity', `Dernière activité sur son téléphone à ${hhmm(at('20:58:00'))}`], '2 min 50 s');
+  assert.deepEqual(shown('w20m49').slice(0, 2), ['Actif il y a 19 min', 'activity'], '20 min 49,999 s : pas encore orange');
+  assert.deepEqual(shown('w20m50').slice(0, 2), ['Sans nouvelles depuis 20 min', 'activity warn'], '20 min 50 s : orange');
+  assert.deepEqual(shown('l45m49').slice(0, 2), ['Sans nouvelles depuis 44 min', 'activity warn'], '45 min 49,999 s : encore orange');
+  assert.deepEqual(shown('l45m50').slice(0, 2), ['Sans nouvelles depuis 45 min', 'activity late'], '45 min 50 s : rouge');
+  // Fin de la minute : toujours sous 3 min ; à 21:01:00, la minute change.
+  await page.update({ now: at('21:00:59.999') });
+  assert.deepEqual(shown('a2m49'), instant, '2 min 59,998 s');
+  await page.update({ now: at('21:01:00') });
+  assert.deepEqual(shown('a2m49').slice(0, 2), ['Actif il y a 2 min', 'activity'], '2 min 59,999 s');
+});
+
+// Regression: U5 (quatrième relecture) — les minutes d'activité étaient
+// comptées depuis l'heure de chacun : chaque libellé changeait à sa propre
+// seconde, et les listes « Solistes » et Repères étaient réécrites à presque
+// chaque relevé de 2 s (60 solistes : ~140 ms par relevé, boutons remplacés
+// sous le doigt). Une page visible (relevé du serveur au plus une fois par
+// minute, chacun à sa seconde) faisait aussi remonter sa ligne de « Solistes ».
+test('activité des solos : 40 solistes, listes « Solistes » et Repères réécrites une fois par minute au plus', async () => {
+  const world = baseWorld();
+  const start = Date.parse('2026-10-04T21:00:07');
+  world.now = start;
+  world.tables[2].activeCount = world.tables[2].count = 41;
+  // Dernières activités étalées sur une minute (1,5 s d'écart), de « à
+  // l'instant » à plus d'une heure ; les dix premiers gardent leur page visible.
+  for (let i = 0; i < 40; i++) {
+    world.people.push({ id: `s${i}`, name: `Soliste ${String(i).padStart(2, '0')}`, tableId: 'Comptoir', active: true, songCount: 1, sung: 0,
+      joinedAt: start - 120 * MIN, lastActiveAt: start - (i < 10 ? 0 : (i - 10) * 2 * MIN) - i * 1500 });
+  }
+  const page = await openPage({ world });
+  const writes = {};
+  for (const id of ['soloistList', 'identityBody']) {
+    const el = page.$(id), setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'innerHTML');
+    writes[id] = 0;
+    Object.defineProperty(el, 'innerHTML', { configurable: true, get() { return setter.get.call(this); }, set(value) { writes[id]++; setter.set.call(this, value); } });
+  }
+  const order = () => texts(page.all('soloistList', '.soloist-row strong'));
+  const first = order();
+  // Trois minutes de relevés toutes les 2 s, de 21:00:09 à 21:03:07.
+  for (let at = start + 2000; at <= start + 3 * MIN; at += 2000) {
+    page.world.now = at;
+    // Page visible : le serveur note un relevé au plus une fois par minute.
+    for (const p of page.world.people.filter(p => /^s\d$/.test(p.id))) if (at - p.lastActiveAt >= MIN) p.lastActiveAt = at;
+    await page.poll();
+  }
+  // Trois changements de minute (21:01, 21:02, 21:03) : au plus trois réécritures.
+  assert.ok(writes.soloistList <= 3 && writes.identityBody <= 3, `listes réécrites ${JSON.stringify(writes)} fois en 3 minutes`);
+  assert.deepEqual(order().slice(0, 10), first.slice(0, 10), '« Actif à l’instant » : les pages visibles ne changent pas l’ordre');
+  assert.deepEqual(order().slice(0, 10), [...Array(10).keys()].map(i => `Soliste 0${i}`), '« Actif à l’instant » par prénom');
+});
+
+// Regression: vérification de la quatrième relecture — « Actif à l'instant »
+// couvre les minutes 0 et 1 comptées au début de la minute : un seul groupe,
+// par prénom. Rangé à la minute, un soliste de la minute 1 passait après un
+// autre de la minute 0 (le relevé d'une page visible, toutes les 60 à 64 s,
+// atteint la minute 1 quelques secondes) ; le test précédent ne l'atteint pas.
+test('activité des solos : « Actif à l’instant » forme un seul groupe, par prénom, dans « Solistes »', async () => {
+  const world = baseWorld();
+  const now = Date.parse('2026-10-04T21:00:20'), minuteStart = Date.parse('2026-10-04T21:00:00');
+  world.now = now;
+  const solo = (id, name, last) => ({ id, name, tableId: 'Comptoir', active: true, songCount: 1, sung: 0, joinedAt: now - 90 * MIN, lastActiveAt: last });
+  // Zoé : 5 s, minute 0 ; Aline et Basile : 1 min 50 s et 1 min 30 s, minute 1.
+  world.people.push(solo('zoe', 'Zoé', now - 5000), solo('aline', 'Aline', minuteStart - 90000), solo('basile', 'Basile', minuteStart - 70000));
+  const page = await openPage({ world });
+  assert.deepEqual(texts(page.all('soloistList', '.activity')), Array(3).fill('Actif à l’instant'));
+  assert.deepEqual(texts(page.all('soloistList', '.soloist-row strong')), ['Aline', 'Basile', 'Zoé', 'Dora'],
+    'par prénom, minute 1 comme minute 0 ; activité inconnue en dernier');
+});
+
+test('Accueil : liste « Solistes » triée par activité, prénom à saisir, QR de reprise en un toucher, recherche au-delà de 8', async () => {
+  const world = soloWorld();
+  const page = await openPage({ world });
+  const names = () => texts(page.all('soloistList', '.soloist-row strong'));
+  assert.deepEqual(names(), ['Eva', 'Farid', 'Gaël', 'Solo 3', 'Hana', 'Dora'], 'activité la plus récente d’abord, partis exclus');
+  // Regression: deuxième relecture finale (RT2) — le nombre comptait « Solo 3 »
+  // (sans prénom) : « 6 » à côté de « 5 solistes présents ».
+  assert.equal(page.$('soloistCount').textContent, '5', 'une place « Solo N » sans prénom n’est pas comptée');
+  assert.equal(page.$('soloistSearchBox').hidden, true, 'pas de recherche jusqu’à 8 solistes');
+  const row = id => page.in('soloistList', `[data-soloist="${id}"]`);
+  assert.equal(row('solo3').querySelector('.badge.name-missing').textContent, 'prénom à saisir');
+  assert.equal(row('gael').querySelector('.activity').textContent, 'Sans nouvelles depuis 25 min');
+  assert.equal(row('farid').querySelector('.soloist-note').textContent, 'casquette', 'repère du bar pour la reconnaître');
+  assert.equal(row('dora').querySelector('.activity'), null);
+  // « QR de reprise » : la fenêtre de transfert habituelle, sans recherche.
+  page.replies['/api/staff/person/share'] = { code: '1234', qr: 'data:image/png;base64,QR', url: 'http://192.168.1.20:3000/r/x', expiresAt: world.now + 10 * MIN };
+  await page.click(row('gael').querySelector('[data-soloist-share]'));
+  assert.deepEqual(page.lastPost('/api/staff/person/share').body, { personId: 'gael' });
+  assert.equal(page.$('shareDialog').open, true);
+  assert.equal(page.$('shareTitle').textContent, 'Accès à Gaël');
+  await page.click(page.$('shareClose'));
+  const shares = page.postsTo('/api/staff/person/share').length;
+  await page.click(row('gael').querySelector('.activity'));
+  assert.equal(page.postsTo('/api/staff/person/share').length, shares, 'toucher la ligne ailleurs ne fait rien');
+
+  // Plus de 8 solistes : recherche par prénom (ou repère).
+  for (let i = 1; i <= 3; i++) {
+    page.world.people.push({ id: `x${i}`, name: `Xavier ${i}`, tableId: 'Comptoir', active: true, songCount: 0, sung: 0, joinedAt: world.now - 200 * MIN });
+  }
+  await page.poll();
+  assert.equal(page.$('soloistSearchBox').hidden, false);
+  await page.type(page.$('soloistSearch'), 'ga');
+  assert.deepEqual(names(), ['Gaël']);
+  await page.type(page.$('soloistSearch'), 'CASQ');
+  assert.deepEqual(names(), ['Farid'], 'recherche aussi sur le repère');
+  await page.type(page.$('soloistSearch'), 'zz');
+  assert.equal(page.$('soloistList').textContent.trim(), 'Aucun soliste à ce nom.');
+  await page.type(page.$('soloistSearch'), '');
+  assert.equal(names().length, 9);
+  // Retour sous 9 solistes : la recherche disparaît et ne filtre plus.
+  await page.type(page.$('soloistSearch'), 'ga');
+  page.world.people = page.world.people.filter(p => !p.id.startsWith('x'));
+  page.doc.activeElement = null;
+  await page.poll();
+  assert.equal(page.$('soloistSearchBox').hidden, true);
+  assert.equal(names().length, 6);
+
+  // Personne en solo.
+  page.world.people = page.world.people.filter(p => p.tableId !== 'Comptoir');
+  await page.poll();
+  assert.equal(page.$('soloistList').textContent.trim(), 'Personne en solo pour le moment.');
+  // Pas de groupe « En solo » : pas de liste.
+  page.world.tables = page.world.tables.filter(t => t.id !== 'Comptoir');
+  await page.poll();
+  assert.equal(page.$('soloistsBox').hidden, true);
+});
+
+test('activité des solos : tuile « En solo », ligne de la file au-delà de 45 min et alerte « Je suis là »', async () => {
+  const world = soloWorld();
+  world.queue = [
+    { source: 'helper', id: 'hana', pos: 1, name: 'Hana', table: 'En solo', ids: ['hana'], song: { title: 'A', entryId: 'h1' } },
+    { source: 'helper', id: 'gael', pos: 2, name: 'Gaël', table: 'En solo', ids: ['gael'], song: { title: 'B', entryId: 'g1' } },
+    { source: 'helper', id: 'alice', pos: 3, name: 'Alice', table: 'Table 1', ids: ['alice'], song: { title: 'C', entryId: 'a1' } },
+    { source: 'helper', id: 'duo9', pos: 4, name: 'Eva & Solo 3', table: 'En solo', ids: ['eva', 'solo3'], kind: 'duo', song: { title: 'D', entryId: 'd1' } },
+    { source: 'karafun', ours: false, pos: 5, singer: 'Invité', title: 'E' },
+  ];
+  world.maybeGone = [{ id: 'hana', name: 'Hana', table: 'En solo', skips: 2, title: 'A' }, { id: 'alice', name: 'Alice', table: 'Table 1', skips: 2, title: 'C' }];
+  const page = await openPage({ world });
+  const card = id => page.in('tBody', `[data-table-card="${id}"]`);
+  // Regression: deuxième relecture finale (RT2) — « Solo 3 » (sans prénom,
+  // 50 min) comptait parmi les « sans nouvelles » mais pas parmi les solistes.
+  assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '5 solistes · 2 sans nouvelles', 'Gaël et Hana ; « Solo 3 » sans prénom ne compte pas');
+  assert.equal(card('1').querySelector('.occupancy').textContent, '2 actifs / 2 inscrits / 4 places', 'tables : inchangé');
+  const lines = page.all('qBody', '.queue-item');
+  // Repère court, la durée d'abord (jamais coupé au téléphone) ; la phrase complète dans l'infobulle.
+  assert.equal(lines[0].querySelector('.idle-tag').textContent, 'inactif 1 h 05');
+  assert.equal(lines[0].querySelector('.idle-tag .idle-for').textContent, 'inactif 1 h 05', 'la durée est dans la partie jamais abrégée');
+  assert.equal(lines[0].querySelector('.idle-tag .idle-who'), null, 'solo : pas de prénom répété');
+  assert.equal(lines[0].querySelector('.idle-tag').classList.contains('duo'), false, 'solo : la durée reste sur la ligne du prénom');
+  assert.equal(lines[0].querySelector('.idle-tag').title, `Sans nouvelles depuis 1 h 05 · Dernière activité sur son téléphone à ${hhmm(world.now - 65 * MIN - 5000)}`);
+  assert.equal(lines[1].querySelector('.idle-tag'), null, '25 min : pas encore sur la file');
+  assert.equal(lines[2].querySelector('.idle-tag'), null, 'table ordinaire : rien');
+  assert.equal(lines[3].querySelector('.idle-tag').textContent, `Solo 3 : inactif depuis ${hhmm(world.now - 50 * MIN)}`, 'duo : la personne concernée est nommée');
+  assert.equal(lines[3].querySelector('.idle-tag .idle-who').textContent, 'Solo 3 : ', 'duo : seul le prénom peut prendre les « … »');
+  assert.equal(lines[3].querySelector('.idle-tag').classList.contains('duo'), true, 'duo : « Prénom : inactif … » est un bloc qui passe à la ligne (staff-idle-layout.test.js)');
+  assert.equal(lines[3].querySelector('.idle-tag .idle-for').textContent, `inactif depuis ${hhmm(world.now - 50 * MIN)}`);
+  assert.equal(lines[3].querySelector('.idle-tag').title, `Solo 3 : Pas revenu depuis l’ouverture du QR (${hhmm(world.now - 50 * MIN)}) · Dernière activité sur son téléphone à ${hhmm(world.now - 50 * MIN)}`);
+  assert.equal(lines[4].querySelector('.idle-tag'), null);
+  const gone = page.all('staffAlerts', '.gone-alert');
+  assert.equal(gone[0].querySelector('.activity').textContent, 'Sans nouvelles depuis 1 h 05');
+  // Moins d'une heure : « inactif 52 min » ; l'Accueil et les Repères gardent la phrase complète.
+  const hana = page.world.people.find(p => p.id === 'hana');
+  const hanaBefore = hana.lastActiveAt;
+  hana.lastActiveAt = page.world.now - 52 * MIN;
+  await page.poll();
+  assert.equal(page.all('qBody', '.queue-item')[0].querySelector('.idle-tag').textContent, 'inactif 52 min');
+  assert.equal(page.all('staffAlerts', '.gone-alert')[0].querySelector('.activity').textContent, 'Sans nouvelles depuis 52 min');
+  hana.lastActiveAt = hanaBefore;
+  await page.poll();
+  assert.equal(gone[1].querySelector('.activity'), null, 'table ordinaire : pas d’activité');
+  // Plus personne sans nouvelles : la tuile ne compte que les solistes.
+  for (const p of page.world.people) if (p.lastActiveAt) p.lastActiveAt = page.world.now;
+  await page.poll();
+  assert.equal(card('Comptoir').querySelector('.occupancy').textContent, '5 solistes');
+});
+
+test('événement privé : interrupteur, QR en grand, copier, imprimer, renouveler avec confirmation', async () => {
+  const world = soloWorld();
+  world.privateEvent = { enabled: false, url: null, qrUrl: null };
+  const page = await openPage({ world });
+  const toggle = page.$('privateEventToggle');
+  assert.match(toggle.closest('label').textContent, /Événement privé : un seul QR pour tout le monde/);
+  assert.match(page.$('privateEventBox').textContent, /Bar privatisé : chaque personne scanne le même QR avec son téléphone et gère ses propres chansons\./);
+  assert.equal(toggle.checked, false);
+  assert.equal(toggle.disabled, false);
+  assert.equal(page.$('privateEventPanel').hidden, true, 'mode coupé : pas de QR');
+  await page.change(toggle, true);
+  assert.deepEqual(page.lastPost('/api/staff/private-event').body, { enabled: true });
+  assert.equal(page.toast().text, 'Événement privé activé : montre ou imprime son QR');
+  const url = 'http://192.168.1.20:3000/t/Comptoir/abc?evenement=secret';
+  await page.update({ privateEvent: { enabled: true, url, qrUrl: '/qr-evenement.svg' } });
+  assert.equal(toggle.checked, true);
+  assert.equal(page.$('privateEventPanel').hidden, false);
+  const src = page.$('privateEventQr').src;
+  assert.match(src, new RegExp(`^/qr-evenement\\.svg\\?v=[0-9a-f]+&key=${KEY}$`), 'QR réservé au bar, versionné par son adresse');
+  assert.equal(page.$('privateEventUrl').value, url);
+  assert.equal(page.$('privateEventPrint').getAttribute('href'), `/print?key=${KEY}`);
+  await page.poll();
+  assert.equal(page.$('privateEventQr').src, src, 'pas de rechargement du QR à chaque rafraîchissement');
+  await page.click(page.$('privateEventCopy'));
+  assert.deepEqual(page.clipboard, [url]);
+  assert.equal(page.toast().text, 'Lien de l’événement copié');
+  // Renouveler : confirmation obligatoire.
+  page.confirmAnswer = false;
+  await page.click(page.$('privateEventRotate'));
+  assert.match(page.confirms.at(-1), /^Renouveler le QR de l’événement privé \?/);
+  assert.match(page.confirms.at(-1), /les personnes déjà inscrites gardent leur accès/);
+  assert.equal(page.postsTo('/api/staff/private-event').length, 1, 'refusé : rien n’est envoyé');
+  page.confirmAnswer = true;
+  await page.click(page.$('privateEventRotate'));
+  assert.deepEqual(page.lastPost('/api/staff/private-event').body, { rotate: true });
+  assert.equal(page.toast().text, 'Nouveau QR d’événement privé : l’ancien est refusé');
+  await page.update({ privateEvent: { enabled: true, url: url.replace('secret', 'neuf'), qrUrl: '/qr-evenement.svg' } });
+  assert.notEqual(page.$('privateEventQr').src, src, 'nouveau QR affiché');
+  // Couper.
+  await page.change(toggle, false);
+  assert.deepEqual(page.lastPost('/api/staff/private-event').body, { enabled: false });
+  assert.equal(page.toast().text, 'Événement privé coupé : son QR ne permet plus de s’inscrire');
+  // Refus du serveur : le message s'affiche, l'interrupteur suit ensuite le serveur.
+  page.replies['/api/staff/private-event'] = { status: 400, error: 'Refusé.' };
+  await page.change(toggle, false);
+  assert.deepEqual(page.toast(), { text: 'Refusé.', bad: true });
+  await page.poll();
+  assert.equal(toggle.checked, true, 'l’état affiché est celui du serveur');
+  // Ancien serveur (pas de privateEvent) ou pas de groupe « En solo ».
+  delete page.world.privateEvent;
+  await page.poll();
+  assert.equal(toggle.checked, false);
+  assert.equal(page.$('privateEventPanel').hidden, true);
+  page.world.tables = page.world.tables.filter(t => t.id !== 'Comptoir');
+  await page.poll();
+  assert.equal(toggle.disabled, true);
+});
+
+// Lot J (8 octobre) : durée maximale des titres, dans « Plus » › règles ;
+// titres déjà dans la file gardés, signalés, retirés d'un geste (décision D9).
+test('durée maximale : interrupteur coupé par défaut, 5:00 à l’activation, minutes et secondes, badge et retrait groupé', async () => {
+  const world = baseWorld();
+  world.settings.maxSongSec = null;
+  world.tooLong = { limitSec: null, count: 0 };
+  world.queue = [
+    { source: 'karafun', ours: true, queueId: 9, pos: 1, name: 'Alice', ids: ['alice'], song: { entryId: 'k1', title: 'Déjà chargé' } },
+    { source: 'helper', id: 'bruno', pos: 2, name: 'Bruno', ids: ['bruno'], song: { entryId: 'b1', title: 'Épopée', duration: 372 } },
+    { source: 'helper', id: 'dora', pos: 3, name: 'Dora', ids: ['dora'], song: { entryId: 'd1', title: 'Court', duration: 200 } },
+  ];
+  const page = await openPage({ world });
+  assert.equal(page.$('maxSongOn').closest('section').dataset.tab, 'plus', 'avec les autres règles, dans « Plus »');
+  assert.equal(page.$('maxSongOn').checked, false, 'coupé par défaut');
+  assert.equal(page.$('maxSongFields').hidden, true, 'durée cachée tant que l’option est coupée');
+  assert.equal(page.$('tooLongActions').hidden, true);
+  assert.doesNotMatch(page.$('qBody').innerHTML, /too-long-tag/);
+
+  page.replies['/api/staff/settings'] = body => {
+    page.world.settings.maxSongSec = body.maxSongSec;
+    page.world.tooLong = { limitSec: body.maxSongSec, count: body.maxSongSec != null && body.maxSongSec < 372 ? 1 : 0 };
+    page.world.queue[1].tooLongSec = page.world.tooLong.count ? 372 : undefined;
+    return { ok: true };
+  };
+  await page.change(page.$('maxSongOn'), true);
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { maxSongSec: 300 }, '5:00 proposé à l’activation');
+  await page.poll();
+  assert.equal(page.$('maxSongOn').checked, true);
+  assert.equal(page.$('maxSongFields').hidden, false);
+  assert.equal(page.$('maxSongMin').value, 5);
+  assert.equal(page.$('maxSongSecPart').value, 0);
+  // File : seul le titre pas encore envoyé et trop long porte le repère court,
+  // au début de son titre ; la phrase complète est dans l'infobulle.
+  const marks = page.all('qBody', '.too-long-tag');
+  assert.deepEqual(marks.map(node => [node.closest('.song-cell') ? 'titre' : 'ailleurs', node.textContent]), [['titre', 'trop long']]);
+  assert.match(marks[0].title, /Ce titre dure 6:12/);
+  assert.doesNotMatch(page.$('qBody').innerHTML, /plus long que/, 'plus de long badge dans .queue-tags');
+  assert.equal(page.$('tooLongActions').hidden, false);
+  assert.equal(page.$('removeTooLong').textContent, 'Retirer le titre trop long');
+
+  // Minutes et secondes : valeur vérifiée avant l'envoi, puis enregistrée ensemble.
+  const status = key => page.doc.body.querySelector(`[data-save-status="${key}"]`).textContent;
+  await page.type(page.$('maxSongMin'), '1');
+  assert.equal(status('maxSongMin'), 'Non enregistré : entre 2:00 et 15:00');
+  await page.type(page.$('maxSongMin'), '6');
+  page.runTimers(800);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { maxSongSec: 360 });
+  await page.poll();
+  await page.type(page.$('maxSongSecPart'), '75');
+  assert.equal(status('maxSongSecPart'), 'Non enregistré : minutes et secondes entières (0 à 59 s)');
+  await page.type(page.$('maxSongSecPart'), '');
+  assert.equal(status('maxSongSecPart'), 'Non enregistré : minutes et secondes entières (0 à 59 s)');
+  await page.type(page.$('maxSongSecPart'), '30');
+  dispatch(page.$('maxSongSecPart'), 'blur');
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { maxSongSec: 390 });
+  await page.poll();
+  assert.equal(page.$('tooLongActions').hidden, true, 'plus aucun titre au-delà de 6:30');
+
+  // Plusieurs titres trop longs : confirmation, puis retrait groupé.
+  Object.assign(page.world, { tooLong: { limitSec: 300, count: 2 } });
+  page.world.settings.maxSongSec = 300;
+  await page.poll();
+  assert.equal(page.$('removeTooLong').textContent, 'Retirer les 2 titres trop longs');
+  page.confirmAnswer = false;
+  await page.click(page.$('removeTooLong'));
+  assert.match(page.confirms.at(-1), /^Retirer de la file les 2 titres plus longs que 5:00 \? Chaque personne est prévenue sur son téléphone\./);
+  assert.equal(page.postsTo('/api/staff/songs-too-long/remove').length, 0, 'annulé : rien n’est retiré');
+  page.confirmAnswer = true;
+  page.replies['/api/staff/songs-too-long/remove'] = { ok: true, removed: 2, message: '2 titres trop longs retirés.' };
+  await page.click(page.$('removeTooLong'));
+  assert.deepEqual(page.lastPost('/api/staff/songs-too-long/remove').body, {});
+  assert.equal(page.toast().text, '2 titres trop longs retirés.');
+  page.world.tooLong = { limitSec: 300, count: 1 };
+  await page.poll();
+  await page.click(page.$('removeTooLong'));
+  assert.match(page.confirms.at(-1), /^Retirer de la file le titre plus long que 5:00 \?/);
+
+  // Coupé : plus de champs ni de bouton.
+  await page.change(page.$('maxSongOn'), false);
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { maxSongSec: null });
+  await page.poll();
+  assert.equal(page.$('maxSongFields').hidden, true);
+  assert.equal(page.$('tooLongActions').hidden, true);
+});
+
+// ---------------------------------------------------------------- relecture finale (affichage)
+// Regression: U1 — la pastille du panneau Spotify portait la phrase longue
+// (« Spotify connecté, aucun appareil : ouvre Spotify sur … », nowrap) et
+// débordait de la carte à 390 px. Pastille courte, phrase dans le texte.
+// Regression: U11 — un refus de Spotify (401, 403…) s'affichait « Spotify
+// injoignable, nouvel essai à … » alors que Spotify avait répondu.
+test('Spotify : pastille courte, phrase longue sous le titre, refus de Spotify distinct de « injoignable »', async () => {
+  const world = baseWorld();
+  const at = Date.now() - 60000;
+  world.spotify = { configured: true, connected: true, clientId: '0123456789abcdef', autoResume: true, autoPause: false,
+    deviceId: 'dev-3', deviceName: 'Tablette', player: null, lastAction: null, lastError: null, devices: [],
+    health: { state: 'no-device', device: { id: 'dev-3', name: 'Tablette', active: false }, checkedAt: at } };
+  const page = await openPage({ world });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify : aucun appareil', 'pastille courte');
+  assert.equal(page.$('spotifyPill').className, 'pill warn');
+  assert.equal(page.$('spotifyText').textContent, `Spotify connecté, aucun appareil : ouvre Spotify sur Tablette. Vérifié à ${hhmm(at)}.`,
+    'la phrase complète reste lisible sous le titre');
+  const retryAt = Date.now() + 120000;
+  await page.update({ spotify: { ...world.spotify, health: { state: 'error', device: null, checkedAt: at, retryAt, message: 'réseau' } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify injoignable');
+  assert.match(page.$('spotifyText').textContent, new RegExp(`^Spotify injoignable, nouvel essai à ${hhmm(retryAt)}\\.`));
+  // Refus de Spotify : le code et le message, sans promesse de nouvel essai.
+  await page.update({ spotify: { ...world.spotify, lastError: 'Spotify refuse la commande pour ce compte.',
+    health: { state: 'error', status: 403, device: null, checkedAt: at, retryAt, message: 'Spotify refuse la commande pour ce compte.' } } });
+  assert.equal(page.$('spotifyPill').textContent, 'Spotify refuse la demande');
+  assert.equal(page.$('spotifyPill').className, 'pill bad');
+  assert.equal(page.$('spotifyChip').textContent, 'Spotify refuse la demande');
+  assert.equal(page.$('spotifyText').textContent, `Spotify refuse la demande : Spotify refuse la commande pour ce compte. Vérifié à ${hhmm(at)}.`,
+    'message une seule fois, pas d’« injoignable » ni de nouvel essai annoncé');
+  assert.doesNotMatch(page.$('spotifyText').textContent, /injoignable|nouvel essai/);
+  assert.equal(page.$('tabDotPlus').hidden, false, 'refus : point sur « Plus »');
+});
+
+// Regression: U7 — les boutons « QR de reprise » répétés n'avaient pas de nom distinct.
+// Regression: U10 — le repère « plus long que … » était dans .queue-tags,
+// caché au téléphone : un repère court hors de .queue-tags le remplace.
+// Regression: U12 — l'aide promettait un « ajout pour quelqu’un » du bar, qui n'existe pas.
+test('relecture : nom accessible des « QR de reprise », repère « trop long » au début du titre, aide de la durée maximale', async () => {
+  const solo = await openPage({ world: soloWorld() });
+  const share = solo.in('soloistList', '[data-soloist="gael"] [data-soloist-share]');
+  assert.equal(share.getAttribute('aria-label'), 'QR de reprise pour Gaël');
+
+  const world = baseWorld();
+  world.settings.maxSongSec = 300;
+  world.tooLong = { limitSec: 300, count: 1 };
+  world.queue = [{ source: 'helper', id: 'bruno', pos: 1, name: 'Bruno', ids: ['bruno'], tooLongSec: 372, song: { entryId: 'b1', title: 'Épopée', duration: 372 } },
+    { source: 'helper', id: 'dora', pos: 2, name: 'Dora', ids: ['dora'], song: { entryId: 'd1', title: 'Court', duration: 200 } }];
+  const page = await openPage({ world });
+  const [long, short] = page.all('qBody', '.queue-item');
+  // Regression: U1 (seconde relecture) — sur PC, « plus long que 5:00 » était le
+  // dernier badge de .queue-tags (overflow: hidden) : seul « p » restait, et les
+  // prénoms courts devenaient des initiales. Un seul repère court, au début du
+  // titre à toutes les largeurs (comme « ⚠ Doublon »), rend au nom et à la table toute leur place.
+  const mark = long.querySelector('.song-cell .too-long-tag');
+  assert.ok(mark, 'repère court dans la cellule du titre');
+  assert.ok(mark === long.querySelector('.song-cell').children[0], 'au début du titre');
+  assert.equal(long.querySelectorAll('.too-long-tag').length, 1, 'un seul repère');
+  assert.equal(long.querySelector('.person-cell .too-long-tag'), null, 'rien dans la cellule du nom');
+  assert.doesNotMatch(long.querySelector('.queue-tags').textContent, /plus long/, 'plus de long badge dans .queue-tags');
+  assert.equal(mark.textContent, 'trop long');
+  assert.match(mark.title, /Ce titre dure 6:12/);
+  assert.equal(short.querySelector('.too-long-tag'), null);
+  assert.doesNotMatch(page.$('maxSongOn').closest('section').textContent, /plus long que/, 'l’aide décrit le repère affiché');
+  assert.match(page.$('maxSongOn').closest('section').textContent, /marqués « trop long »/);
+  const help = page.$('maxSongOn').closest('section').textContent;
+  assert.doesNotMatch(help, /ajout pour quelqu/, 'aucune route du bar n’ajoute pour quelqu’un');
+  assert.match(help, /Battle lancée par le bar/);
+  assert.match(help, /« Relancer »/);
+  assert.match(help, /déjà dans KaraFun/);
+});
+
+// Regression: D3-2 (troisième relecture) — « trop long » et « ⚠ Chanté » au
+// début du titre : le titre, dans la même ligne qu'eux, ne gardait que 18 à
+// 24 px. Avec des repères, le titre (réglages compris) forme un bloc
+// .song-main qui passe sous les repères quand ils ne lui laissent pas la
+// place, suivi de l'interprète ; sans repère, la cellule est inchangée.
+test('troisième relecture : titre sous ses repères « trop long » et « ⚠ Chanté »', async () => {
+  const world = baseWorld();
+  world.settings.maxSongSec = 300;
+  world.tooLong = { limitSec: 300, count: 1 };
+  world.queue = [{ source: 'helper', id: 'bruno', pos: 1, name: 'Bruno', ids: ['bruno'], tooLongSec: 372, repeat: { playedAt: Date.now() - 40 * 60000 },
+    song: { entryId: 'b1', title: 'Épopée', artist: 'Groupe', duration: 372 } },
+  { source: 'helper', id: 'dora', pos: 2, name: 'Dora', ids: ['dora'], song: { entryId: 'd1', title: 'Court', artist: 'Autre', duration: 200 } }];
+  const page = await openPage({ world });
+  const [both, plain] = page.all('qBody', '.queue-item').map(row => row.querySelector('.song-cell'));
+  const kids = node => node.children.filter(child => typeof child !== 'string').map(child => child.className);
+  assert.ok(both.classList.contains('has-marks'), 'cellule avec repères');
+  assert.deepEqual(kids(both), ['badge too-long-tag', 'badge repeat', 'song-main', 'song-artist'], 'repères, le titre en un bloc, puis l’interprète');
+  assert.deepEqual(kids(both.querySelector('.song-main')), ['song-title']);
+  assert.equal(both.querySelector('.song-main .song-title').textContent, 'Épopée');
+  assert.equal(both.title, 'Épopée — Groupe');
+  assert.equal(plain.classList.contains('has-marks'), false, 'sans repère : cellule inchangée');
+  assert.deepEqual(kids(plain), ['song-title', 'song-artist']);
 });

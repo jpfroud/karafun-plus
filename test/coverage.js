@@ -27,8 +27,8 @@ if (minLines != null && !(minLines >= 0 && minLines <= 100)) throw new Error('--
 
 // Fichiers mesurés : le code livré dans le kit du bar.
 const SOURCES = ['battle-vote.js', 'catalog.js', 'evening-journal.js', 'evening-stats.js', 'fake-karafun.js', 'karafun-state.js', 'karafun.js',
-  'kcs-transport.js', 'lyrics.js', 'night-state.js', 'scheduler.js', 'server.js', 'solo-invitations.js',
-  'song-repeats.js', 'song-settings.js', 'spotify.js', 'start-evening.js', 'stop.js', 'table-access.js', 'solver/bridge.js',
+  'kcs-transport.js', 'lyrics.js', 'night-state.js', 'scheduler.js', 'server.js', 'solo-invitations.js', 'private-event.js',
+  'song-repeats.js', 'song-settings.js', 'spotify.js', 'stage-progress.js', 'start-evening.js', 'stop.js', 'table-access.js', 'solver/bridge.js',
   'public/client-i18n.js', 'public/client.html', 'public/staff.html', 'public/stats.html'];
 // Scripts chargés dans un bac à sable par les tests (nom donné à `vm`) : le
 // premier <script> en ligne d'une page, ou le fichier depuis son début.

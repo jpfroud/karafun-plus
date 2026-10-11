@@ -105,4 +105,226 @@ for (const width of [360, 390, 1366]) {
 }
 assert.equal(computed('.kv > div', 360)['overflow-wrap'], 'anywhere', 'les adresses et droits longs passent à la ligne');
 assert.equal(computed('.kv > div', 360)['min-width'], '0');
+
+// ---------------------------------------------------------- constats QA du 8 octobre
+// Regression: constat QA Q7 — Repères : « N titres · N passages » et « Pas
+// revenu depuis l'ouverture du QR (21:38) » coupés par « … » à 390 et à
+// 1366 px, l'heure perdue. Les lignes secondaires passent à la ligne ; le
+// prénom garde ses points de suspension.
+for (const width of [390, 1366]) {
+  const secondary = computed('.identity-who > span', width);
+  assert.notEqual(secondary['white-space'], 'nowrap', `${width} px : lignes secondaires sur plusieurs lignes`);
+  assert.notEqual(secondary['text-overflow'], 'ellipsis', `${width} px : jamais de « … » sur l’activité`);
+  assert.notEqual(secondary.overflow, 'hidden', `${width} px : rien de caché`);
+  assert.equal(secondary['overflow-wrap'], 'break-word', `${width} px : un mot trop long passe à la ligne`);
+  const name = computed('.identity-who > strong', width);
+  assert.equal(name['white-space'], 'nowrap', `${width} px : prénom sur une ligne`);
+  assert.equal(name['text-overflow'], 'ellipsis', `${width} px : prénom long abrégé`);
+}
+assert.ok(!ALL.some(rule => rule.selectors.some(sel => /identity-who > span|\.activity\b/.test(sel)) && /nowrap|ellipsis/.test(rule.body)),
+  'aucune autre règle ne recoupe l’activité');
+
+// Regression: constat QA Q4 — à 390 px, le message avec un long lien (copie
+// impossible) dépassait du bord de l'écran. Il passe à la ligne dans le cadre.
+for (const width of [390, 1366]) {
+  const toast = computed('.toast', width);
+  assert.equal(toast['overflow-wrap'], 'anywhere', `${width} px : un lien long passe à la ligne`);
+  assert.equal(toast['max-width'], '90vw');
+  // Centré par left: 50 %, le cadre ne prendrait que la moitié de l'écran
+  // (195 px à 390 px, mesuré dans Chromium) : sa largeur suit le texte, bornée à 90vw.
+  assert.equal(toast.width, 'max-content', `${width} px : le cadre utilise toute la largeur permise`);
+  assert.notEqual(toast['white-space'], 'nowrap');
+}
+for (const page of ['client.html', 'staff.html']) {
+  const inline = fs.readFileSync(path.join(__dirname, '..', 'public', page), 'utf8');
+  for (const match of inline.matchAll(/([^{}]*\.toast[^{}]*)\{([^{}]*)\}/g)) {
+    assert.doesNotMatch(match[2], /white-space|overflow-wrap|word-break/, `${page} : ${match[1].trim()} ne bloque pas le retour à la ligne`);
+  }
+}
+// Regression: Q3 (relecture) — la copie de secours donne le focus au champ du
+// lien : sous 16 px, Safari iOS zoome la page et ne la rend pas ensuite.
+for (const width of [390, 1366]) assert.ok(parseFloat(computed('.solo-invite-url', width)['font-size']) >= 16, `${width} px : champ du lien du bar en 16 px`);
+const clientCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'client.html'), 'utf8');
+const transferField = /\.client \.transfer-url \{([^}]*)\}/.exec(clientCss);
+assert.ok(transferField && parseFloat(/font-size:\s*([\d.]+)px/.exec(transferField[1])?.[1]) >= 16, 'téléphone : champ du lien de transfert en 16 px');
+// ---------------------------------------------------------- relecture finale (affichage)
+// Regression: U1 — la pastille du panneau Spotify (nowrap) débordait de la
+// carte à 390 px ; U2 — la pastille Spotify de la Scène est un bouton qui
+// ressemblait à une étiquette fixe. Les deux restent dans leur cadre (nom
+// d'appareil long abrégé par « … ») ; celle de la Scène se touche au doigt.
+for (const id of ['#spotifyPill', '#spotifyChip']) {
+  for (const width of [390, 1366]) {
+    const pill = computed(id, width);
+    assert.equal(pill.display, 'inline-block', `${id} à ${width} px : « … » possible (pas en flex)`);
+    if (id === '#spotifyPill') assert.match(String(pill['max-width']), /100%/, `${id} à ${width} px : jamais plus large que son cadre`);
+    assert.equal(pill.overflow, 'hidden');
+    assert.equal(pill['text-overflow'], 'ellipsis');
+  }
+}
+assert.equal(computed('#spotifyChip', 1366).cursor, 'pointer', 'la pastille de la Scène se touche');
+assert.ok(ALL.some(rule => rule.selectors.includes('#spotifyChip:hover') && rule.selectors.includes('#spotifyChip:focus-visible')),
+  'survol et focus clavier visibles');
+assert.ok(px(computed('#spotifyChip', 390)['min-height']) >= 44, 'cible au doigt de 44 px au téléphone');
+assert.ok(px(computed('#spotifyChip', 899)['min-height']) >= 44, 'et jusqu’à 899 px');
+assert.equal(computed('#spotifyChip', 1366)['min-height'], undefined, 'sur PC, taille d’une pastille');
+// Regression: U6 — la liste des solistes défilait dans la page au téléphone
+// (défilement imbriqué) ; ses boutons faisaient moins de 40 px.
+for (const width of [390, 899]) {
+  assert.equal(computed('.soloist-list', width)['max-height'], 'none', `${width} px : pas de hauteur bornée`);
+  assert.equal(computed('.soloist-list', width).overflow, 'visible', `${width} px : pas de défilement imbriqué`);
+  assert.ok(px(computed('.soloist-row .btn', width)['min-height']) >= 40, `${width} px : « QR de reprise » de 40 px`);
+}
+assert.equal(computed('.soloist-list', 1366)['overflow-y'], 'auto', 'sur PC, la liste reste bornée');
+// Regression: U10 — « plus long que … » était dans .queue-tags, cachées au
+// téléphone. Regression: U1 (seconde relecture) — sur PC, le badge était coupé
+// à « p » au bout de .queue-tags et le repère court caché au-delà de 650 px :
+// un seul repère « trop long », au début du titre et visible à toutes les largeurs.
+assert.equal(computed('.queue-item .person-cell .queue-tags', 390).display, 'none');
+for (const width of [360, 390, 650, 651, 1366]) {
+  for (const rule of ALL.filter(r => applies(r.media, width) && r.selectors.some(s => s.includes('too-long-tag')))) {
+    assert.doesNotMatch(rule.body, /display:\s*none/, `${width} px : repère « trop long » jamais caché (${rule.selectors.join(', ')})`);
+  }
+  const mark = computed('.queue-item .song-cell .too-long-tag', width);
+  assert.equal(mark['margin-right'], '5px', `${width} px : repère compact au début du titre, comme « ⚠ Doublon »`);
+  assert.equal(mark['font-size'], '10px');
+}
+assert.equal(computed('.badge.too-long-tag', 1366).color, 'var(--warn)', 'repère orange');
+// ---------------------------------------------------------- vérification adverse (affichage)
+// Regression: U2 — un nom d'appareil Spotify long (45 caractères et plus)
+// élargissait la Scène à 405 px sur un téléphone de 390 (et de 360) : un
+// max-width en % ne compte pas dans la largeur minimale de la pastille, et
+// .scene-chips (élément flex, min-width:auto) ne pouvait pas rétrécir.
+// Mesuré au navigateur (Chromium, 390x800) : scrollWidth 405 avant, 390 après.
+for (const width of [360, 390, 1366]) {
+  const chip = computed('#spotifyChip', width)['max-width'];
+  assert.ok(px(chip) > 0 && !/%/.test(chip), `${width} px : largeur maximale de la pastille de la Scène en px (${chip}), pas en %`);
+  assert.equal(computed('.scene-chips', width)['min-width'], '0', `${width} px : les pastilles de la Scène peuvent rétrécir`);
+  assert.equal(computed('.scene-chips', width)['max-width'], '100%', `${width} px : jamais plus larges que l’en-tête`);
+}
+// Regression: U10 — le repère « trop long » rétrécissait avec le prénom et la
+// table : « trop l… » à 390 px, « tr… » à 360 px. Il est désormais au début
+// du titre (élément en ligne, jamais rétréci), hors de la cellule du nom.
+// Regression: U1 — la phrase complète de Spotify (raison, heure du nouvel
+// essai) était tout en bas du panneau, hors de l'écran du téléphone, alors
+// que le guide la place sous le titre du panneau, à côté de la pastille.
+const staffHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8');
+const spotifyPanel = /<section[^>]*id="spotifyPanel"[^>]*>([\s\S]*?)<\/section>/.exec(staffHtml)[1];
+assert.match(spotifyPanel, /^\s*<div class="section-heading">.*?id="spotifyPill".*?<\/span><\/div>\s*<p class="small" id="spotifyText" role="status"><\/p>/,
+  'la phrase complète de Spotify suit directement le titre du panneau et sa pastille');
+// Regression: D15-A (relecture finale) — au téléphone du bar, « Sans nouvelles
+// depuis 1 h 05 » / « pas revenu depuis l’ouverture du QR (21:04) » était
+// coupé par « … » avant la durée. La ligne affiche « inactif 1 h 05 », dont la
+// durée (.idle-for) ne rétrécit jamais ; le prénom avec repère (bouton) cède
+// la place. Duo : voir plus bas et staff-idle-layout.test.js (mesures réelles).
+for (const width of [360, 390, 650, 1366]) {
+  const tag = computed('.queue-item .idle-tag', width);
+  assert.equal(tag.display, 'contents', `${width} px : la durée d'un soliste est un élément de la cellule`);
+  assert.notEqual(tag.overflow, 'hidden', `${width} px : rien de caché dans le repère`);
+  assert.notEqual(tag['text-overflow'], 'ellipsis');
+  const duration = computed('.queue-item .idle-tag .idle-for', width);
+  assert.equal(duration.flex, 'none', `${width} px : la durée ne rétrécit jamais`);
+  assert.equal(duration['white-space'], 'nowrap');
+  assert.notEqual(duration.overflow, 'hidden');
+  const who = computed('.queue-item .idle-tag .idle-who', width);
+  assert.equal(who['text-overflow'], 'ellipsis', `${width} px : seul un prénom plus long que la colonne prend les « … »`);
+  assert.equal(who['min-width'], '0');
+  // Vérification de la relecture : un duo dont les deux partenaires étaient
+  // inactifs perdait son nom et ses deux prénoms (0 px), la seconde durée
+  // coupée de 8 à 13 px (390 et 1366 px), et « Léa : » devenait « L. ».
+  // « Prénom : inactif 52 min » est un bloc qui passe à la ligne sous le nom.
+  // Regression: U1 (vérification de la seconde relecture) — un soliste
+  // inactif aussi : à 360 px, « inactif depuis 21:04 » réduisait « Bob » à « B ».
+  assert.equal(computed('.queue-item .person-cell:has(.idle-tag)', width)['flex-wrap'], 'wrap', `${width} px : les repères d'un soliste ou d'un duo passent à la ligne`);
+  const duo = computed('.queue-item .idle-tag.duo', width);
+  assert.equal(duo.display, 'inline-flex', `${width} px : prénom et durée du duo restent ensemble`);
+  // Sans min-width: 0, le bloc garde la largeur de sa phrase entière et déborde.
+  assert.equal(duo['min-width'], '0');
+  assert.equal(duo['max-width'], '100%');
+  // « Bob : inactif depuis 21:04 » qui ne tient pas sur une ligne (sous 380 px,
+  // mais aussi à 1280 px selon les chiffres de l'heure) : le prénom passe
+  // au-dessus de la durée à toutes les largeurs, au lieu d'être abrégé.
+  assert.equal(duo['flex-wrap'], 'wrap', `${width} px : le prénom passe au-dessus de la durée quand elle ne tient pas`);
+  const named = computed('.queue-item .person-cell:has(.idle-tag) button.person', width);
+  assert.equal(named.flex, '0 1 auto', `${width} px : le prénom avec repère rétrécit devant la durée`);
+  assert.equal(named['min-width'], '0');
+}
+// Regression: U1 (vérification de la seconde relecture) — sur PC, .queue-tags
+// (flex-basis : la largeur de tous ses badges) prenait la place du nom :
+// « Bob » coupé à 22 px, et à 6 px avec « inactif depuis 21:04 ». Les badges
+// n'ont que la place qui reste.
+for (const width of [700, 1366]) {
+  assert.equal(computed('.queue-item .queue-tags', width).flex, '1 1 0', `${width} px : les badges ne prennent pas la place du nom`);
+  // Dans une cellule avec repère « inactif », qui passe à la ligne, ils
+  // prennent la ligne suivante, entiers, comme avant pour les duos.
+  assert.equal(computed('.queue-item .person-cell:has(.idle-tag) .queue-tags', width)['flex-basis'], 'auto', `${width} px : badges d'une ligne avec repère sur leur propre ligne`);
+}
+// Repère d'inactivité et « trop long » sur la même ligne : « trop long » est
+// dans la cellule du titre, la cellule du nom n'a plus à passer à la ligne pour lui.
+assert.equal(ALL.some(r => r.selectors.some(s => /person-cell.*too-long-tag/.test(s))), false, 'plus de règle du nom pour « trop long »');
+// Regression: U2 (seconde relecture) — dans une cellule qui passe à la ligne
+// (duo avec repères « inactif »), le nom seul sur sa ligne gardait
+// max-width: 45 % (60 % avec un repère ✎) et restait coupé.
+for (const width of [360, 390, 650, 1280, 1366]) {
+  // Regression: D3-1 (troisième relecture) — soliste aussi : la durée passée à
+  // la ligne, « Marie-Charlotte » restait bornée à 45 % (« Marie… » à 360 px).
+  for (const selector of ['.queue-item .person-cell:has(.idle-tag) .person', '.queue-item .person-cell:has(.idle-tag) button.person']) {
+    assert.equal(computed(selector, width)['max-width'], '100%', `${width} px : ${selector} prend toute la ligne`);
+  }
+  // Regression: D3-4 (troisième relecture) — la table vide d'un duo passait à
+  // la ligne avant le premier repère « inactif » et le décalait de 5 px.
+  assert.equal(computed('.queue-item .table-tag:empty', width).display, 'none', `${width} px : table vide sans place`);
+  // Regression: D3-2 (troisième relecture) — « trop long » et « ⚠ Chanté » ne
+  // laissaient que 18 à 24 px au titre : avec des repères, la cellule passe à
+  // la ligne et le titre (.song-main) prend toute la largeur sous eux.
+  const marked = computed('.queue-item .song-cell.has-marks', width);
+  assert.equal(marked.display, 'flex', `${width} px : cellule du titre avec repères en flex`);
+  assert.equal(marked['flex-wrap'], 'wrap', `${width} px : le titre passe sous les repères`);
+  const main = computed('.queue-item .song-cell .song-main', width);
+  assert.equal(main.flex, '0 1 auto', `${width} px : le titre entier ou toute la ligne`);
+  assert.equal(main['min-width'], '0');
+  assert.equal(main['max-width'], '100%');
+  assert.equal(main['text-overflow'], 'ellipsis', `${width} px : titre plus long que la colonne coupé par « … »`);
+  assert.equal(main.overflow, 'hidden');
+  assert.equal(main['white-space'], 'nowrap');
+  // L'interprète n'a que la place qui reste : il ne fait pas passer à la ligne
+  // un titre qui tient à côté des repères (« Dancing Queen » à 360 px).
+  const artist = computed('.queue-item .song-cell.has-marks > .song-artist', width);
+  assert.equal(artist.flex, '1 1 0', `${width} px : interprète dans la place qui reste`);
+  assert.equal(artist['min-width'], '0');
+  assert.equal(artist['text-overflow'], 'ellipsis');
+  // Ni marge ni padding : un titre coupé occupe toute la ligne, l'interprète
+  // (largeur 0) le suit au lieu de passer seul sur une ligne de plus.
+  assert.equal(artist.padding, undefined); assert.equal(artist['padding-left'], undefined); assert.equal(artist['margin-left'], undefined);
+  assert.equal(artist['white-space'], 'pre', `${width} px : l’espace avant « · » reste en début d’élément`);
+}
+// Regression: U4 (seconde relecture) — le disque des initiales de « Solistes »
+// avait le fond du panneau (--surface-2) : invisible.
+for (const width of [390, 1366]) {
+  assert.equal(computed('.solo-invite-panel', width).background, 'var(--surface-2)');
+  assert.equal(computed('.soloist-row .identity-photo', width).background, 'var(--surface)', `${width} px : disque visible sur le panneau`);
+  // Vérification : --surface sur --surface-2, c'est 1,10:1, toujours invisible.
+  // Le contour (couleur d'accent, comme le badge « Duo ») dessine le disque.
+  assert.match(computed('.soloist-row .identity-photo', width).border || '', /^1px solid rgba\(255,\s*79,\s*163,\s*\.55\)$/, `${width} px : contour du disque`);
+}
+// Regression: U5 (seconde relecture) — au téléphone, la pastille « Envoi et
+// lecture automatiques coupés » de la Scène (bouton) faisait moins de 44 px.
+for (const width of [360, 390, 899]) {
+  for (const selector of ['#spotifyChip', '.scene-chips #autoWarn']) {
+    assert.ok(px(computed(selector, width)['min-height']) >= 44, `${width} px : ${selector} de 44 px`);
+    assert.equal(computed(selector, width)['line-height'], '34px');
+  }
+}
+// Place du prénom à 390 px (colonne 3 de la ligne) contre le repère le plus
+// long, « inactif depuis 23:59 » (20 caractères, 11 px gras, ~0,62 em par
+// caractère au plus) : il tient entier, même sans prénom ni table visibles.
+{
+  const item = computed('.queue-item', 390);
+  const columns = item['grid-template-columns'].replace(/minmax\([^)]*\)/g, '0px').split(/\s+/).map(px);
+  const nameColumn = 390 - 2 * px(computed('body.staff', 390)['padding-left']) - 2 * px(computed('.staff .card', 390)['padding-left'])
+    - 2 * px(item['padding-left']) - columns.reduce((a, b) => a + b, 0) - (columns.length - 1) * px(item['column-gap']);
+  const longest = 'inactif depuis 23:59'.length * px(computed('.queue-item .idle-tag', 390)['font-size']) * 0.62; // 106 px mesurés dans Chromium
+  assert.ok(nameColumn > 140 && longest < nameColumn, `390 px : repère de ${Math.round(longest)} px dans une colonne de ${Math.round(nameColumn)} px`);
+}
+// Le repère court affiché (« inactif 1 h 05 » dans .idle-for) est vérifié sur
+// la page rendue par staff-ui-coverage.test.js, pas dans le source.
 console.log('Bar : barre d’onglets, barre du haut, colonne d’actions et diagnostic à 360 px OK');

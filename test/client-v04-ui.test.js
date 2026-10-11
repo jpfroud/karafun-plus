@@ -37,6 +37,7 @@ get('sheet').hidden = true;
 const document = {
   title: '', activeElement: null, hidden: false, listeners: {}, documentElement: { lang: 'fr' },
   getElementById: get,
+  body: { children: [] }, // fenêtres modales : fond rendu inerte
   querySelectorAll(selector) {
     if (selector === '.tabs button') return tabs;
     if (selector === '[data-catalog]') return catalogButtons;

@@ -455,8 +455,14 @@ test('Sauvegarde : une écriture interrompue garde le compteur et se réessaie',
   assert.throws(() => new NightStateStore(''), /Chemin de sauvegarde manquant\./);
 });
 
-test('Reprise : passages physiques et compteur de passages abîmés sont refusés', () => {
-  const { sched, access, alice } = night();
+// Regression: relecture finale fraîche (équipe rouge) — un compteur dérivé en
+// désaccord (dernier passage d'une personne au-delà du compteur des passages,
+// personne du tour inconnue), que l'application en marche tolère et
+// sauvegarde toutes les deux secondes, faisait refuser toute la soirée : elle
+// ne redémarrait plus. Il est réparé à la reprise, avec un avertissement ; une
+// valeur qui n'est pas un entier positif reste refusée.
+test('Reprise : passages physiques et compteur abîmés refusés ; compteurs dérivés en désaccord réparés et signalés', () => {
+  const { sched, access, alice, bob } = night();
   const base = snapshotNight({ scheduler: sched, access, settings: settings() });
   for (const value of [-1, 2.5, '3']) {
     const snapshot = structuredClone(base);
@@ -466,10 +472,25 @@ test('Reprise : passages physiques et compteur de passages abîmés sont refusé
   const behind = structuredClone(base);
   behind.scheduler.people.find(p => p.id === alice.id).lastAppearanceTurn = 5;
   behind.scheduler.appearanceSerial = 2;
-  assertRefused(behind, 'compteur des passages physiques mal formé');
-  const negative = structuredClone(base);
-  negative.scheduler.appearanceSerial = -1;
-  assertRefused(negative, 'compteur des passages physiques mal formé');
+  behind.scheduler.roundPeople = [bob.id, 'a1b2c3d4e5f6'];
+  const { scheduler, result } = restore(behind);
+  assert.equal(scheduler.people.get(alice.id).lastAppearanceTurn, 2, 'dernier passage ramené au compteur');
+  assert.equal(scheduler.appearanceSerial, 2, 'le compteur ne bouge pas');
+  assert.deepEqual([...scheduler.roundPeople], [bob.id], 'personne du tour inconnue oubliée');
+  assert.deepEqual(result.warnings, [
+    `dernier passage 5 de la personne ${alice.id} au-delà du compteur des passages 2 : ramené à 2`,
+    '1 personne du tour inconnue oubliée']);
+  const strangers = structuredClone(base);
+  strangers.scheduler.roundPeople = ['a1b2c3d4e5f6', bob.id, 'b1b2c3d4e5f6'];
+  const twice = restore(strangers);
+  assert.deepEqual([...twice.scheduler.roundPeople], [bob.id]);
+  assert.deepEqual(twice.result.warnings, ['2 personnes du tour inconnues oubliées']);
+  assert.deepEqual(restore(structuredClone(base)).result.warnings, [], 'sauvegarde juste : aucun avertissement');
+  for (const serial of [-1, 2.5, '2']) {
+    const broken = structuredClone(base);
+    broken.scheduler.appearanceSerial = serial;
+    assertRefused(broken, 'compteur des passages physiques mal formé');
+  }
 
   // Ancienne sauvegarde sans compteur : il repart du dernier passage connu.
   const legacy = structuredClone(base);
@@ -480,6 +501,66 @@ test('Reprise : passages physiques et compteur de passages abîmés sont refusé
   const physical = structuredClone(base);
   physical.scheduler.roundPeoplePhysical = 'oui';
   assertRefused(physical, 'version du tour physique mal formée');
+});
+
+// Regression: relecture Codex de la PR #15 — avant la v0.5, un prénom n'était
+// unique que dans son groupe : une soirée sauvegardée pouvait compter deux
+// « Léa » dans deux groupes individuels. Le nom d'un soliste n'affichant plus
+// son groupe, les deux devenaient indiscernables (KaraFun, file, bar). À la
+// reprise, le second prend un numéro libre, avec un avertissement.
+test('Reprise : deux solistes du même prénom dans deux groupes individuels, le second est numéroté', () => {
+  const sched = new Scheduler();
+  const access = new TableAccess();
+  for (const id of ['Comptoir', 'Comptoir-2', 'Comptoir-3']) { sched.table(id); access.issue(id); }
+  const lea = sched.join({ tableId: 'Comptoir', name: 'Léa' });
+  const lea2 = sched.join({ tableId: 'Comptoir-3', name: 'Léa 2' });
+  const twin = sched.join({ tableId: 'Comptoir-2', name: 'Zoé' });
+  const long = sched.join({ tableId: 'Comptoir-2', name: 'Maximilienne-Alexandrine' });
+  const longTwin = sched.join({ tableId: 'Comptoir-3', name: 'Paul' });
+  sched.table('4'); sched.setHeadcount('4', 2); access.issue('4');
+  const atTable = sched.join({ tableId: '4', name: 'Bruno' });
+  const snapshot = snapshotNight({ scheduler: sched, access, settings: settings() });
+  const row = id => snapshot.scheduler.people.find(p => p.id === id);
+  row(twin.id).name = 'LÉA';
+  row(longTwin.id).name = 'maximilienne-alexandrine';
+  row(atTable.id).name = 'Léa';
+  const { scheduler, result } = restore(snapshot);
+  const name = id => scheduler.people.get(id).name;
+  assert.equal(name(lea.id), 'Léa', 'le premier garde son prénom');
+  assert.equal(name(lea2.id), 'Léa 2');
+  assert.equal(name(twin.id), 'LÉA 3', 'numéro libre suivant');
+  assert.equal(name(long.id), 'Maximilienne-Alexandrine');
+  assert.equal(name(longTwin.id), 'maximilienne-alexandri 2', '24 caractères au plus');
+  assert.equal(name(atTable.id), 'Léa', 'une personne de table garde son prénom (son nom porte sa table)');
+  assert.deepEqual(result.warnings, [
+    'soliste « LÉA » renommé « LÉA 3 » : même prénom qu’un autre soliste',
+    'soliste « maximilienne-alexandrine » renommé « maximilienne-alexandri 2 » : même prénom qu’un autre soliste']);
+  assert.notEqual(scheduler.passageLabel([lea.id]), scheduler.passageLabel([twin.id]));
+  assert.ok(scheduler.log.some(e => e.msg === 'LÉA s’appelle maintenant LÉA 3 (même prénom qu’un autre soliste)'),
+    'le bar voit le renommage dans son journal');
+});
+
+// Regression: seconde passe de la relecture du correctif CI Windows — le
+// soliste encore présent garde son prénom avant un homonyme déjà parti, et un
+// prénom tronqué ne coupe pas un emoji en deux (demi-caractère illisible).
+test('Reprise : le soliste présent garde son prénom avant un homonyme parti ; troncature sans emoji coupé', () => {
+  const sched = new Scheduler();
+  const access = new TableAccess();
+  for (const id of ['Comptoir', 'Comptoir-2']) { sched.table(id); access.issue(id); }
+  const gone = sched.join({ tableId: 'Comptoir', name: 'Léa' });
+  const here = sched.join({ tableId: 'Comptoir-2', name: 'Zoé' });
+  const emoji = `${'x'.repeat(21)}😀y`;
+  const first = sched.join({ tableId: 'Comptoir', name: emoji });
+  const second = sched.join({ tableId: 'Comptoir-2', name: 'Paul' });
+  sched.leave(gone);
+  const snapshot = snapshotNight({ scheduler: sched, access, settings: settings() });
+  snapshot.scheduler.people.find(p => p.id === here.id).name = 'Léa';
+  snapshot.scheduler.people.find(p => p.id === second.id).name = emoji;
+  const { scheduler } = restore(snapshot);
+  assert.equal(scheduler.people.get(here.id).name, 'Léa', 'la personne présente garde son prénom');
+  assert.equal(scheduler.people.get(gone.id).name, 'Léa 2', 'l’homonyme parti est numéroté');
+  assert.equal(scheduler.people.get(first.id).name, emoji);
+  assert.equal(scheduler.people.get(second.id).name, `${'x'.repeat(21)} 2`, 'emoji retiré entier, 24 caractères au plus');
 });
 
 test('Reprise : changements manuels du bar abîmés', () => {
@@ -564,6 +645,16 @@ test('Reprise : bonus des tables, crédits de tour, historique de scène et lien
   const { result } = restore(transfers);
   assert.deepEqual(result.transfers.map(row => row.personId), [alice.id, bob.id],
     'seuls les liens encore valables et bien formés survivent au redémarrage');
+
+  // Regression: vérification de la quatrième relecture finale — un départ
+  // annule les transferts en attente ; une sauvegarde d'avant cette règle qui
+  // en garde un pour une personne partie l'oublie (« Réactiver » le ranimait).
+  const left = night();
+  left.sched.leave(left.bob);
+  const gone = snapshotNight({ scheduler: left.sched, access: left.access, settings: settings() });
+  gone.transfers = [{ ...valid, personId: left.alice.id }, { ...valid, personId: left.bob.id }];
+  assert.deepEqual(restore(gone).result.transfers.map(row => row.personId), [left.alice.id],
+    'transfert d’une personne partie oublié');
 });
 
 test('Reprise : prochain passage garanti, réglages, envoi en cours et titres KaraFun abîmés', () => {

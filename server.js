@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { spawn, execFileSync } = require('child_process');
 const QRCode = require('qrcode');
 
@@ -44,6 +45,7 @@ const { KaraFunBridge, isBattleItem, maskCode, unknownSettingsSupport } = requir
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
+const { PrivateEvent, clientKey } = require('./private-event');
 const { Catalog } = require('./catalog');
 const { BattleVote } = require('./battle-vote');
 const { NightStateStore, snapshotNight, restoreNight } = require('./night-state');
@@ -52,8 +54,9 @@ const { Lyrics } = require('./lyrics');
 const { SpotifyLink, SpotifyAutomation } = require('./spotify');
 const { EveningJournal, validEveningId } = require('./evening-journal');
 const { computeStats, insights, exportEvening } = require('./evening-stats');
-const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, liveFromStatus,
-  settingsFromLive, catchUpCommands } = require('./song-settings');
+const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, guideVoicesOf, liveFromStatus,
+  settingsFromLive, neutralTarget, catchUpCommands } = require('./song-settings');
+const stageProgress = require('./stage-progress');
 
 // ------------------------------------------------------------------ paramètres
 const argv = process.argv.slice(2);
@@ -87,6 +90,8 @@ const SOLO_COOKIE = 'karaoke_solo_device';
 // montrée aux téléphones, jamais une adresse envoyée par l'un d'eux.
 const battleCatalogSongs = new Map();
 const catalogCovers = new Map(); // songId → adresse https de la vignette
+// Durées données par le catalogue ou la recherche de KaraFun (barre de lecture).
+const catalogDurations = new Map(); // songId → secondes
 function coverUrl(value) {
   if (typeof value !== 'string' || !value || value.length > 500) return null;
   let url;
@@ -103,15 +108,20 @@ function rememberBattleSongs(songs) {
     battleCatalogSongs.delete(songId);
     battleCatalogSongs.set(songId, { songId, title, artist });
     if (battleCatalogSongs.size > 10000) battleCatalogSongs.delete(battleCatalogSongs.keys().next().value);
-    catalogCovers.delete(songId);
-    if (song.img) catalogCovers.set(songId, song.img);
+    // Une liste sans image ou sans durée (catalog.js rend null) garde celle
+    // déjà connue ; une nouvelle valeur fiable la remplace.
+    if (song.img) { catalogCovers.delete(songId); catalogCovers.set(songId, song.img); }
     if (catalogCovers.size > 10000) catalogCovers.delete(catalogCovers.keys().next().value);
+    const duration = stageProgress.trustedDuration(song.duration);
+    if (duration) { catalogDurations.delete(songId); catalogDurations.set(songId, duration); }
+    if (catalogDurations.size > 10000) catalogDurations.delete(catalogDurations.keys().next().value);
   }
   return songs;
 }
-// Titre choisi par un téléphone : sa vignette vient du catalogue.
+// Titre choisi par un téléphone : sa vignette vient du catalogue ; sa durée,
+// non vérifiée, n'est gardée que bornée comme pour la barre de lecture.
 const withCover = song => song && typeof song === 'object' ?
-  { ...song, img: catalogCovers.get(Number(song.songId)) || null } : song;
+  { ...song, img: catalogCovers.get(Number(song.songId)) || null, duration: stageProgress.clientDuration(Number(song.duration)) } : song;
 function certifiedBattleSongs(songs) {
   if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {
     throw new Error('Propose entre un et trois titres du catalogue pour la Battle.');
@@ -138,11 +148,18 @@ function journalNames(fields = {}) {
   const table = fields.tableId != null && sched.table(fields.tableId, false);
   if (table) journal.table(table.id, { name: table.name, individual: table.individual });
 }
+// Prénom provisoire (QR ouvert sans prénom) : pas au journal ; le premier vrai
+// prénom l'y inscrit (person.joined), même après un redémarrage.
 function journalRoster() {
   for (const t of sched.tables.values()) journal.table(t.id, { name: t.name, individual: t.individual });
-  for (const person of sched.people.values()) journal.person(person.id, { name: person.name, tableId: person.tableId });
+  for (const person of sched.people.values()) {
+    if (!person.nameRequired) journal.person(person.id, { name: person.name, tableId: person.tableId });
+  }
 }
 function journalEvent(type, fields = {}) {
+  // QR ouvert sans prénom (peut-être abandonné) : rien au journal tant que la
+  // personne ne s'est pas vraiment inscrite. Les statistiques l'ignorent.
+  if (typeof fields?.personId === 'string' && sched.people.get(fields.personId)?.nameRequired) return null;
   try { journalNames(fields); } catch (_) { /* noms au mieux */ }
   return journal.append(type, fields);
 }
@@ -172,6 +189,8 @@ const spotify = new SpotifyLink({ file: DEMO ? null : path.join(__dirname, 'data
 const spotifyAutomation = new SpotifyAutomation();
 const access = new TableAccess();
 const soloInvitations = new SoloInvitations();
+// Événement privé (bar privatisé) : un seul QR qui inscrit chaque navigateur.
+const privateEvent = new PrivateEvent();
 const battleVote = new BattleVote({
   saved: !DEMO && fs.existsSync(BATTLE_FILE) ? JSON.parse(fs.readFileSync(BATTLE_FILE, 'utf8')) : null,
   onChange(event) {
@@ -262,6 +281,9 @@ const settings = { auto: true, autoPlay: false, baseUrl: null,
   // d'envoi ni de lancement, titres chargés retirés, Spotify relancé (voir
   // closingBlocksStart).
   closingAt: null,
+  // Durée maximale d'un titre ajouté par un client, en secondes (null : pas
+  // de limite, réglage par défaut). Voir maxSongLimit et assertSongLength.
+  maxSongSec: null,
   // Spotify a repris en fin de file : la lecture automatique attend que le
   // bar lance lui-même le titre suivant (« Lecture »), puis se rétablit.
   autoPlayHeld: false,
@@ -272,6 +294,9 @@ const settings = { auto: true, autoPlay: false, baseUrl: null,
   queueClearPending: false };
 const queueClearRemovalRequests = new Map();
 let curKey = null, curSince = 0;
+// Barre de lecture : horloge du titre sur scène (stage-progress.js), gardée
+// dans la sauvegarde pour qu'un redémarrage ne remette pas le titre à zéro.
+let stageClock = null;
 let presenceWait = null; // { key, askedAt, freeSince } : demande « Je suis là » en cours
 let pending = null;     // chanson envoyée à KaraFun, en attente de confirmation
 let restartOp = null;   // « Relancer depuis le début » en cours (copie du titre puis Suivant)
@@ -295,7 +320,7 @@ function saveNight({ required = false, replaceBoth = false } = {}) {
   if (!nightStore) return true;
   try {
     const snapshot = snapshotNight({ scheduler: sched, access, settings, pending, tracked,
-      soloInvitations, transfers: transferSnapshot(),
+      soloInvitations, privateEvent, transfers: transferSnapshot(), stageClock,
       photoDir: PHOTO_DIR, evening: journal.snapshot() });
     nightStore.save(snapshot);
     if (replaceBoth) nightStore.save(snapshot, { force: true });
@@ -472,7 +497,7 @@ function restore(tr, reason) {
     const i = sched.Q.indexOf(pid);
     if (i >= 0) { sched.Q.splice(i, 1); sched.Q.splice(Math.min(3, sched.Q.length), 0, pid); }
   }
-  sched.note(`« ${tr.sel.song.title} » (${tr.sel.label}) ${reason} : garde sa chanson et reprend la 4e place`, 'staff');
+  sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) ${reason} : garde sa chanson et reprend la 4e place`, 'staff');
 }
 
 // Titre retiré de KaraFun pour être chanté plus tard (« Pas prêt », ou
@@ -483,16 +508,16 @@ function restorePulled(tr) {
   sched.requeueUnplayed(tr.sel);
   if (!tr.pulled) {
     sched.note(tr.unpulled?.reason === 'duo' ?
-      `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun malgré l’annulation du duo : il revient en tête de la liste de son chanteur.` :
-      `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun juste avant le changement de l’heure de fermeture : il revient dans la liste de son chanteur.`, 'skip');
+      `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun malgré l’annulation du duo : il revient en tête de la liste de son chanteur.` :
+      `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun juste avant le changement de l’heure de fermeture : il revient dans la liste de son chanteur.`, 'skip');
     return;
   }
   const { reason } = tr.pulled;
   sched.note(reason === 'closing' ?
-    `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun : il passerait après la fermeture. Il repartira s’il passe de nouveau avant l’heure, par exemple si le bar la décale.` :
+    `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : il passerait après la fermeture. Il repartira s’il passe de nouveau avant l’heure, par exemple si le bar la décale.` :
     reason === 'duo' ?
-    `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun après le duo improvisé : il repassera plus tard` :
-    `« ${tr.sel.song.title} » (${tr.sel.label}) retiré de KaraFun : ${tr.sel.names.join(' & ')} laisse passer la chanson suivante`, 'skip');
+    `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun après le duo improvisé : il repassera plus tard` :
+    `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ${passageNames(tr.sel)} laisse passer la chanson suivante`, 'skip');
 }
 
 // Retire de KaraFun un titre pas encore chanté pour le rechanter plus tard.
@@ -637,7 +662,10 @@ function startRestart() {
     throw new Error('KaraFun ne donne pas l’identifiant de ce titre : relance-le depuis KaraFun.');
   }
   const tr = tracked.find(item => isOnStage(item, current));
-  const singer = tr ? tr.sel.label : String(current.singer || '');
+  // Titre suivi : le nom recalculé (prénom seul pour un soliste), sous lequel
+  // la copie est aussi reconnue. Ligne non suivie : le nom vu dans KaraFun,
+  // sans le groupe individuel, comme la carte Scène l'affiche.
+  const singer = tr ? shownLabel(tr.sel) : withoutSoloGroup(String(current.singer || ''));
   restartOp = { songId, singer, title: tr?.sel.song.title || current.title || 'le titre',
     before: q.map(item => String(item.queueId)), at: Date.now(), phase: 'adding',
     originalQueueId: current.queueId, trackedQueueId: tr ? tr.queueId : null };
@@ -646,7 +674,7 @@ function startRestart() {
   // Pistes vocales du titre connues : volumes seulement pour celles-là.
   const songSettings = tr ? tr.sel.song.settings || null : settingsFromLive(liveFromStatus(bridge.status), songDefaults());
   const tracksAvailable = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
-  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { duo: !!tr && tr.sel.ids.length > 1, tracksAvailable }) || null; }
+  try { restartOp.sentSettings = bridge.add(songId, singer, 1, songSettings, { tracksAvailable }) || null; }
   catch (error) { restartOp = null; throw error; }
   sched.note(`Le bar relance « ${restartOp.title} » depuis le début.`, 'stage');
 }
@@ -762,11 +790,18 @@ function syncRestart({ current, upcoming, q }, now) {
 // champ de l'entrée du titre : il part avec elle dans les options d'ajout,
 // remplace les options du titre déjà chargé dans KaraFun
 // (SetQueueItemOptionsRequest), puis il est rattrapé une seule fois au début
-// du titre si KaraFun ne l'a pas appliqué (Pitch, Tempo, TrackVolume).
+// du titre si KaraFun ne l'a pas appliqué (Pitch, Tempo, TrackVolume). Ce que
+// le titre ne règle pas revient alors à sa valeur neutre : rien ne passe
+// d'un titre au suivant.
 const songRanges = () => rangesFrom(bridge?.raw?.configuration);
 // Valeurs par défaut de ce KaraFun (chœurs à 53 au bar), relevées par le pont.
 const songDefaults = () => bridge?.songSettingsDefaults?.() || { ...SONG_DEFAULTS };
 const kfItemOf = tr => bridge?.queue?.find(item => String(item.queueId) === String(tr.queueId)) || null;
+// Chaque titre est isolé du précédent : à son chargement, la file vise les
+// valeurs neutres (song-settings.js, neutralTarget), complétées par ses
+// réglages. `loadedLive` : dernier état vu du titre chargé ; `previousLoaded` :
+// celui du titre d'avant (ses chœurs décident s'ils sont remis par défaut).
+let loadedLive = null, previousLoaded = null;
 // Numéro de l'état de KaraFun : il change à chaque nouvel état reçu
 // (StatusEvent), pour savoir si KaraFun a parlé depuis une demande.
 let statusSeen = null, statusNumber = 0;
@@ -825,6 +860,23 @@ function songSettingsTarget(entryId, started) {
   throw missing();
 }
 
+// Réglages reçus d'une page : sans la clé `guideVoices` (page gardée en cache
+// d'avant les voix guides par voix), les autres voix guides du titre restent ;
+// sur un duo (`target.ids`), la voix 2 suit toujours la voix guide, comme sur
+// ces pages (et comme à la reprise d'une ancienne sauvegarde, legacyDuoVoice) :
+// sans voix guide (remise par défaut), plus de voix 2.
+// Les pages actuelles envoient toujours la clé ({} quand il n'y en a plus).
+function songSettingsInput(input, { song, ids }) {
+  if (input != null && (typeof input !== 'object' || Array.isArray(input) || 'guideVoices' in input)) return input;
+  const voices = { ...song?.settings?.guideVoices };
+  if (ids?.length > 1) {
+    delete voices[TRACK.LEAD_B];
+    if (input?.guide != null) voices[TRACK.LEAD_B] = input.guide;
+  }
+  if (!Object.keys(voices).length) return input;
+  return { ...(input || {}), guideVoices: voices };
+}
+
 // Enregistre les réglages sur le titre, puis les applique selon où il en est.
 // Rend 'list' (au prochain envoi), 'sending' (dès l'accusé de KaraFun),
 // 'karafun' (envoyés) ou 'start' (au début du titre, ou au retour de KaraFun).
@@ -856,7 +908,7 @@ function pushQueueItemSettings(tr) {
   try {
     const sent = bridge.setQueueItemOptions(tr.queueId, { singer: item.singer || tr.sel.label, mod: item.options?.mod || null,
       settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, current: item.options || null,
-      tracksAvailable: songTracksOf(item), duo: tr.sel.ids.length > 1 });
+      tracksAvailable: songTracksOf(item) });
     if (sent) tr.sentSettings = sent;
     tr.statusAtOptions = statusSeq();
     return true;
@@ -868,7 +920,8 @@ function pushQueueItemSettings(tr) {
 
 // Titre chargé ou sur scène : ce que KaraFun n'a pas appliqué (options
 // d'ajout ou du titre ignorées) est envoyé une seule fois, pour ce titre de
-// KaraFun. Un titre examiné sans réglage l'est aussi : un réglage en direct
+// KaraFun, ainsi que les valeurs neutres de ce que le titre ne règle pas
+// (un KaraFun peut garder celles du titre précédent). Un réglage en direct
 // fait ensuite n'est pas « rattrapé » une seconde fois.
 function catchUpSongSettings(tr) {
   const mark = String(tr.queueId);
@@ -882,25 +935,117 @@ function catchUpSongSettings(tr) {
   const live = liveFromStatus(bridge.status);
   if (live?.queueId != null && String(live.queueId) !== mark) return; // état de KaraFun pas encore à jour
   tr.liveChecked = mark;
-  if (!tr.sel.song.settings && !tr.sentSettings) return;
+  // Valeurs neutres complétées par les options du titre dans KaraFun : une
+  // tonalité réglée par le bar dans KaraFun même est gardée (comme pour un
+  // titre ajouté directement dans KaraFun). Les réglages du titre priment.
+  // Titre vu pour la première fois déjà en lecture (application redémarrée,
+  // télécommande reconnectée) : ses seuls réglages, jamais de valeur neutre
+  // en pleine chanson. Battle : voir checkUntrackedSettings.
+  const item = kfItemOf(tr);
+  const neutral = !isBattleItem(item) && seenLoadingLive(mark) ? startNeutral(mark, item?.options || null) : null;
   const commands = catchUpCommands({ settings: tr.sel.song.settings || null, sent: tr.sentSettings || null, live,
-    tracksAvailable: live?.tracks || songTracksOf(kfItemOf(tr)), duo: tr.sel.ids.length > 1, ranges: songRanges(),
-    defaults: songDefaults() });
+    tracksAvailable: live?.tracks || songTracksOf(item), ranges: songRanges(), defaults: songDefaults(), neutral });
+  applyStartCommands(commands, live, { title: tr.sel.song.title, entryId: tr.sel.song.entryId || null, queueId: tr.queueId });
+}
+
+// Chanson d'un titre de KaraFun (titre ou quiz) : compare deux états du même numéro.
+const loadedSongOf = item => String(item?.songId ?? item?.quizId ?? item?.title ?? '');
+
+// Dernier état vu du titre chargé ; le précédent est gardé au changement.
+// true : ce titre vient d'être chargé (premier état vu pour lui) et cette
+// application l'a vu annoncé ou se charger (états 1 à 3, voir
+// KaraFunBridge.seenLoading). Un titre vu pour la première fois déjà en
+// lecture (application redémarrée, ou télécommande reconnectée, en pleine
+// chanson) n'en est pas un : ses réglages en direct ne sont pas remis. Sans
+// numéro d'état (ancienne télécommande), après un titre déjà vu dans la
+// même session. Autre session (coupure, « Reconnecter », KaraFun relancé qui
+// renumérote sa file depuis 1) : même titre seulement s'il garde son numéro
+// et sa chanson, jamais remis pour autant ; vu se charger seulement s'il
+// l'est de nouveau (état 3, ou vu annoncé dans cette session). Sinon nouveau
+// titre, sans titre d'avant connu.
+function noteLoadedLive(loadedId) {
+  const live = loadedId ? liveFromStatus(bridge.status) : null;
+  if (!live || String(live.queueId) !== loadedId) return false;
+  const session = bridge.statusSession ?? null;
+  const song = loadedSongOf(bridge.status?.current || bridge.status?.songPlaying);
+  const sameSession = loadedLive?.session === session;
+  const fresh = loadedLive?.queueId !== loadedId || (!sameSession && loadedLive.song !== song);
+  const kcsState = bridge.status?.kcsState;
+  const seenNow = !Number.isInteger(kcsState) ? !!loadedLive && sameSession : kcsState === 3 || bridge.seenLoading(loadedId);
+  if (loadedLive && fresh) previousLoaded = sameSession ? loadedLive : null;
+  // Vu se charger : décidé au premier état vu du titre, gardé ensuite dans
+  // la même session.
+  const seenLoading = fresh ? seenNow : sameSession ? loadedLive.seenLoading : loadedLive.seenLoading && seenNow;
+  loadedLive = { queueId: loadedId, song, backing: live.backing, seenLoading, session };
+  return fresh && seenLoading;
+}
+
+// Le titre `queueId` est le titre chargé, et cette application l'a vu se
+// charger : ses valeurs neutres peuvent être visées (voir noteLoadedLive).
+const seenLoadingLive = queueId => loadedLive?.queueId === queueId && !!loadedLive.seenLoading;
+
+// Valeurs neutres du titre `queueId` qui se charge, avec ses options KaraFun
+// pour un titre ajouté directement dans KaraFun.
+function startNeutral(queueId, options = null) {
+  const previous = loadedLive?.queueId === queueId ? previousLoaded : null;
+  return neutralTarget({ backingDefault: bridge?.observedDefaults?.backing ?? null, previousBacking: previous?.backing ?? null, options });
+}
+
+const signedValue = n => (n > 0 ? `+${n}` : String(n));
+// Voix guide nommée comme sur les pages : « voix guide » pour un titre qui
+// n'en a qu'une, sinon « voix 1 », « voix 2 »… dans l'ordre des pistes.
+function voiceLabel(type, tracks) {
+  const voices = guideVoicesOf([...(guideVoicesOf(tracks) || [TRACK.LEAD_A]), type]);
+  return voices.length > 1 ? `voix ${voices.indexOf(type) + 1}` : 'voix guide';
+}
+const resetLabel = (command, live) => command.kind === 'pitch' ? `tonalité ${signedValue(live.pitch)}`
+  : command.kind === 'tempo' ? `tempo ${signedValue(live.tempo)} %`
+    : command.type === TRACK.BACKING ? `chœurs ${live.backing}` : `${voiceLabel(command.type, live.tracks)} ${live.voices?.[command.type]}`;
+// Champ d'une commande pour le journal : 'guide' (voix 1) ou 'guideVoices.6'…
+const trackField = type => type === TRACK.BACKING ? 'backing' : type === TRACK.LEAD_A ? 'guide' : `guideVoices.${type}`;
+const commandField = command => command.kind !== 'track' ? command.kind : trackField(command.type);
+
+// Commandes du début d'un titre : réglages du titre rattrapés
+// (song.settingsCaughtUp) et valeurs neutres rétablies (song.settingsReset).
+// Sans le droit « Personnaliser la chanson en cours », un seul avis au bar.
+function applyStartCommands(commands, live, { title, entryId, queueId }) {
   if (!commands.length) return;
+  const own = commands.filter(command => !command.neutral);
   if (bridge.permissions?.manageVolumes === false) {
-    sched.note(`KaraFun n’a pas appliqué les réglages de « ${tr.sel.song.title} » et ne laisse pas ${bridge.username} personnaliser la chanson en cours : règle-la dans KaraFun.`, 'error');
+    if (own.length) sched.note(`KaraFun n’a pas appliqué les réglages de « ${title} » et ne laisse pas ${bridge.username} personnaliser la chanson en cours : règle-la dans KaraFun.`, 'error');
+    else {
+      const left = commands.map(command => resetLabel(command, live)).join(', ');
+      sched.note(`Le réglage du titre précédent est peut-être resté sur « ${left} » : KaraFun ne laisse pas l’application personnaliser la chanson en cours.`, 'error');
+    }
     return;
   }
-  const fields = new Set();
+  const caught = new Set(), reset = new Set();
   for (const command of commands) {
     try {
       if (command.kind === 'pitch') bridge.setPitch(command.value);
       else if (command.kind === 'tempo') bridge.setTempo(command.value);
       else bridge.setTrackVolume(command.type, command.value);
-      fields.add(command.kind !== 'track' ? command.kind : command.type === TRACK.BACKING ? 'backing' : 'guide');
-    } catch (error) { appLog(`Réglage de « ${tr.sel.song.title} » non rattrapé : ${error.message}`); }
+      (command.neutral ? reset : caught).add(commandField(command));
+    } catch (error) { appLog(`Réglage de « ${title} » non rattrapé : ${error.message}`); }
   }
-  if (fields.size) journalEvent('song.settingsCaughtUp', { entryId: tr.sel.song.entryId || null, queueId: tr.queueId, fields: [...fields] });
+  if (caught.size) journalEvent('song.settingsCaughtUp', { entryId, queueId, fields: [...caught] });
+  if (reset.size) journalEvent('song.settingsReset', { entryId, queueId, fields: [...reset] });
+}
+
+// Titre ajouté directement dans KaraFun, tout juste chargé : mêmes valeurs
+// neutres, complétées par ses propres options KaraFun, une seule fois. Un
+// titre suivi qui cesse de l'être en cours de route (relance ⏮ : le suivi
+// passe sur la copie) n'est pas concerné. Une Battle garde le réglage de
+// KaraFun (le bar ne la règle pas en direct non plus).
+function checkUntrackedSettings(loadedId) {
+  if (tracked.some(tr => String(tr.queueId) === loadedId)) return;
+  const live = liveFromStatus(bridge.status);
+  const item = bridge.status?.current || bridge.status?.songPlaying;
+  if (isBattleItem(item)) return;
+  const options = bridge.queue?.find(row => String(row.queueId) === loadedId)?.options || item.options || null;
+  const commands = catchUpCommands({ settings: null, live, tracksAvailable: live.tracks || songTracksOf(item), ranges: songRanges(),
+    defaults: songDefaults(), neutral: startNeutral(loadedId, options) });
+  applyStartCommands(commands, live, { title: item.title || 'le titre', entryId: null, queueId: item.queueId });
 }
 
 // KaraFun a répondu Error à un ajout qui portait des réglages : le titre
@@ -925,45 +1070,81 @@ function resendWithoutOptions(add) {
   } catch (error) { appLog(`Nouvel envoi sans réglages impossible : ${error.message}`); }
 }
 
-// Titre en cours, réglé en direct par le bar (POST /api/staff/kf). Pour un
-// titre de la file, la valeur est aussi gardée sur le titre : une relance ⏮
-// la reprend.
+// Piste réglée en direct : 'guide' (voix 1), 'backing', ou le type d'une
+// autre voix guide (6, 7…) ; null si inconnue.
+const liveTrackType = track => track === 'guide' ? TRACK.LEAD_A : track === 'backing' ? TRACK.BACKING
+  : guideVoicesOf([typeof track === 'string' || typeof track === 'number' ? Number(track) : NaN])[0] ?? null;
+
+// Titre en cours, réglé en direct par le bar (POST /api/staff/kf), visé par
+// son `queueId`. Pour un titre de la file, la valeur est aussi gardée sur le
+// titre : une relance ⏮ la reprend. Chaque voix guide se règle seule, en solo
+// comme en duo.
 function liveSongSetting(body) {
   if (!bridge?.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de régler le titre en cours.');
   const { current } = analyze();
   if (!current) throw new Error('Aucun titre en cours à régler.');
-  const field = body.action === 'track' ? ({ guide: 'guide', backing: 'backing' })[body.track] : body.action;
+  const type = body.action === 'track' ? liveTrackType(body.track) : null;
+  const field = body.action !== 'track' ? body.action : type === TRACK.BACKING ? 'backing' : type != null ? 'guide' : null;
   if (!field) throw new Error('Piste vocale inconnue.');
+  // La page du bar vise le titre qu'elle affiche : s'il a changé entre-temps,
+  // le réglage n'est ni envoyé ni gardé sur le nouveau titre.
+  if (body.queueId != null && String(current.queueId) !== String(body.queueId)) throw new Error('Le titre a changé : réglage non envoyé.');
   const value = validateField(field, body.value, songRanges());
   const tr = tracked.find(item => isOnStage(item, current));
   const tracks = liveFromStatus(bridge.status)?.tracks || songTracksOf(current);
-  if (field === 'guide' && tracks && !tracks.includes(TRACK.LEAD_A)) throw new Error('Ce titre n’a pas de voix guide.');
+  if (field === 'guide' && tracks && !tracks.includes(type)) {
+    throw new Error(type === TRACK.LEAD_A ? 'Ce titre n’a pas de voix guide.' : 'Ce titre n’a pas cette voix guide.');
+  }
   if (field === 'backing' && tracks && !tracks.includes(TRACK.BACKING)) throw new Error('Ce titre n’a pas de chœurs.');
+  // Page du bar d'avant les voix une à une (sans queueId) : sur un duo de la
+  // file, sa voix guide règle aussi la voix 2, comme avant.
+  const duoVoice = body.queueId == null && type === TRACK.LEAD_A && tr?.sel.ids.length > 1 &&
+    (!tracks || tracks.includes(TRACK.LEAD_B));
   if (field === 'pitch') bridge.setPitch(value);
   else if (field === 'tempo') bridge.setTempo(value);
-  else if (field === 'backing') bridge.setTrackVolume(TRACK.BACKING, value);
-  else {
-    bridge.setTrackVolume(TRACK.LEAD_A, value);
-    // Duo : la voix guide B suit la voix guide A, aussi pour un duo devenu
-    // solo dans KaraFun dont la file avait posé la piste B.
-    const followA = tr && (tr.sel.ids.length > 1 || tr.sentSettings?.guideB != null);
-    if (followA && (!tracks || tracks.includes(TRACK.LEAD_B))) bridge.setTrackVolume(TRACK.LEAD_B, value);
-  }
+  else bridge.setTrackVolume(type, value);
+  if (duoVoice) bridge.setTrackVolume(TRACK.LEAD_B, value);
   if (tr) {
-    const next = { ...(tr.sel.song.settings || {}), [field]: value };
+    const next = { ...(tr.sel.song.settings || {}) };
+    if (type != null && type !== TRACK.BACKING && type !== TRACK.LEAD_A) next.guideVoices = { ...next.guideVoices, [type]: value };
+    else next[field] = value;
+    if (duoVoice) next.guideVoices = { ...next.guideVoices, [TRACK.LEAD_B]: value };
     if ((field === 'pitch' || field === 'tempo') && value === 0) delete next[field]; // tonalité ou tempo d'origine
     sched.setSongSettings(tr.sel.song, Object.keys(next).length ? next : null);
     // Réglé en direct : rien à rattraper, même avant l'écho de KaraFun.
     tr.liveChecked = String(tr.queueId);
   }
   journalEvent('song.settings', { by: 'staff', where: 'live', personId: tr?.sel.ids[0] || null, entryId: tr?.sel.song.entryId || null,
-    queueId: current.queueId ?? null, field, value });
-  return { ok: true, field, value };
+    queueId: current.queueId ?? null, field: type == null ? field : trackField(type), value });
+  return { ok: true, field: type == null ? field : trackField(type), value };
+}
+
+// Chœurs par défaut relevés sur le KaraFun du bar (KaraFunBridge
+// observedDefaults) : gardés dans les réglages sauvegardés avec une empreinte
+// du code KaraFun, jamais le code ; repris au redémarrage pour ce code
+// seulement, au lieu d'être réappris de chœurs qu'un KaraFun « collant »
+// garderait d'un titre réglé en direct. Une valeur provisoire (pas encore
+// confirmée par une remise de KaraFun au chargement, jamais chez un KaraFun
+// collant) est gardée comme telle : « Nouvelle soirée » l'oublie.
+const karafunKey = code => crypto.createHash('sha256').update(`karafun:${code}`).digest('hex').slice(0, 16);
+function rememberKaraFunDefaults() {
+  const backing = bridge?.observedDefaults?.backing;
+  if (!Number.isInteger(backing) || !bridge.code) return;
+  const code = karafunKey(bridge.code), provisional = bridge.provisionalDefaults === true;
+  const saved = settings.karafunDefaults;
+  if (saved?.code === code && saved.backing === backing && (saved.provisional === true) === provisional) return;
+  settings.karafunDefaults = provisional ? { code, backing, provisional } : { code, backing };
+  saveNight();
+}
+function restoreKaraFunDefaults() {
+  const saved = settings.karafunDefaults;
+  if (bridge?.code && saved?.code === karafunKey(bridge.code)) bridge.restoreDefaults(saved);
 }
 
 // ------------------------------------------------------------------ synchronisation avec KaraFun
 function sync() {
   if (!bridge || !bridge.ready) { notePhase('unknown', 'offline'); return; }
+  rememberKaraFunDefaults();
   if (settings.auto && bridge.permissions?.addToQueue === false) {
     settings.auto = false;
     permissionPause = true;
@@ -1036,7 +1217,7 @@ function sync() {
       // Le renvoyer créerait un doublon si la première commande arrive tard.
       recoveredPending = true;
       journalEvent('send.unconfirmed', { entryId: pending.sel.song.entryId || null, ids: pending.sel.ids });
-      sched.note(`KaraFun n'a pas confirmé « ${pending.sel.song.title} » (${pending.sel.label}). Vérifie sa file avant de reprendre l'envoi automatique.`, 'error');
+      sched.note(`KaraFun n'a pas confirmé « ${pending.sel.song.title} » (${shownLabel(pending.sel)}). Vérifie sa file avant de reprendre l'envoi automatique.`, 'error');
       appLog('Ajout KaraFun sans confirmation : envoi automatique suspendu, aucune seconde commande envoyée.');
     }
   }
@@ -1075,6 +1256,7 @@ function sync() {
   // Titre chargé par KaraFun (état 3, avant la musique) : ses réglages
   // peuvent déjà être rattrapés.
   const loadedId = loadedQueueId();
+  const freshLoad = noteLoadedLive(loadedId);
   for (const tr of tracked.slice()) {
     const onStage = isOnStage(tr, current);
     // Si KaraFun était déconnecté lors du vidage, ce titre pouvait déjà être
@@ -1108,13 +1290,13 @@ function sync() {
       // Retrait ignoré : rien d'autre ne part tant que ce titre attend en tête.
       tr.pulled.alerted = true;
       sched.note(tr.pulled.reason === 'closing' ?
-        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${tr.sel.label}), qui passerait après la fermeture : retire-le dans KaraFun. Il ne sera pas lancé automatiquement tant qu’il passerait après l’heure.` :
-        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${tr.sel.label}) : retire-le dans KaraFun, ou lance-le si ${tr.sel.names.join(' & ')} est prêt.`, 'error');
+        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}), qui passerait après la fermeture : retire-le dans KaraFun. Il ne sera pas lancé automatiquement tant qu’il passerait après l’heure.` :
+        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}) : retire-le dans KaraFun, ou lance-le si ${passageNames(tr.sel)} est prêt.`, 'error');
     }
     if (onStage && !tr.startedAt) {
       tr.startedAt = Date.now();
       sched.recordStage(tr.sel, tr.startedAt);
-      sched.note(`Sur scène : ${tr.sel.label} — « ${tr.sel.song.title} »`, 'stage');
+      sched.note(`Sur scène : ${shownLabel(tr.sel)} — « ${tr.sel.song.title} »`, 'stage');
     }
     const usable = !tr.cancelled && !tr.pulled && !tr.absent;
     // Réglé pendant l'envoi, ou KaraFun revenu : les options du titre de
@@ -1147,12 +1329,13 @@ function sync() {
       else if (tr.pulled || (tr.unpulled && now - tr.unpulled.at < PULL_LATE_MS)) restorePulled(tr);
       else {
         sched.rollbackUnplayed(tr.sel, { requeue: true });
-        sched.note(`« ${tr.sel.song.title} » (${tr.sel.label}) a été passée dans KaraFun avant la lecture : elle ne sera pas renvoyée automatiquement`, 'skip');
+        sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) a été passée dans KaraFun avant la lecture : elle ne sera pas renvoyée automatiquement`, 'skip');
       }
       tracked = tracked.filter(x => x !== tr);
       sched.version++;
     }
   }
+  if (freshLoad) checkUntrackedSettings(loadedId);
 
   // Le même événement QueueEvent peut confirmer un solo promis puis libérer
   // immédiatement la place pour la Battle, ou confirmer le premier titre
@@ -1166,7 +1349,7 @@ function sync() {
     sched.note('File vidée dans KaraFun : les nouveaux choix peuvent être envoyés.', 'staff');
   }
 
-  const key = current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
+  const key = stageKey(current);
   if (key !== curKey) {
     if (curKey !== null) journalEvent('stage.ended', { queueId: curQueueId, playedSec: Math.round((now - curSince) / 1000) });
     curKey = key; curSince = Date.now();
@@ -1177,6 +1360,7 @@ function sync() {
       journalStageStarted(current);
     } else if (current) journalEvent('stage.restarted', { queueId: current.queueId ?? null });
   }
+  syncStageClock(current, key, now);
   // Dès qu'un titre est sur scène, le nom annoncé pour le passage suivant
   // reste fixe. L'envoi physique à KaraFun peut attendre le délai configuré.
   if (!upcoming.length && !pending && !settings.queueClearPending && !battleHoldsQueue()) {
@@ -1232,8 +1416,8 @@ function sync() {
           // La commande distante n'a pas d'accusé immédiat : conserver la
           // tentative sur disque avant de l'envoyer pour éviter un doublon.
           saveNight({ required: true });
-          // Réglages du titre dans les options d'ajout ; duo : voix guide B.
-          const sentSettings = bridge.add(sel.song.songId, sel.label, undefined, sel.song.settings || null, { duo: sel.ids.length > 1 });
+          // Réglages du titre dans les options d'ajout (chaque voix guide la sienne).
+          const sentSettings = bridge.add(sel.song.songId, sel.label, undefined, sel.song.settings || null);
           if (sentSettings) pending.sentSettings = sentSettings;
         } catch (e) { pending = null; settings.auto = false; appLog(`ERREUR envoi : ${e.message}`); }
       } else pending = null;
@@ -1263,6 +1447,38 @@ function sync() {
   } else { idleSince = null; idleQueueId = null; }
   journalOutlook({ current, upcoming, awaitingPresence }, now);
   saveNight();
+}
+
+// ------------------------------------------------------------------ barre de lecture
+const stageKey = current => current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
+
+// Départ : début de notre titre sur scène (sauvegardé, remis à l'heure par
+// une relance), sinon son apparition sur scène. Pauses et tempo de KaraFun
+// pris à chaque balayage. KaraFun déconnecté (sync() s'arrête avant) :
+// l'horloge attend son retour.
+function syncStageClock(current, key, now) {
+  if (!current) {
+    // KaraFun annonce un autre état (titre fini, suivant en chargement).
+    if (bridge.status?.state) stageClock = null;
+    return;
+  }
+  if (stageClock?.key !== key) {
+    const tr = tracked.find(item => isOnStage(item, current));
+    stageClock = stageProgress.startClock(key, tr?.startedAt || curSince || now);
+  }
+  stageProgress.observeClock(stageClock, now, { paused: stageProgress.pausedOf(bridge.status),
+    rate: stageProgress.rateOf(liveFromStatus(bridge.status)?.tempo), position: stageProgress.protocolPosition(bridge.status) });
+}
+
+// Durée du titre sur scène : démo, catalogue, puis téléphone (bornée).
+// Une Battle n'a pas de durée sûre (phase d'inscription, chanteurs alternés).
+function stageProgressView(current, kind, now) {
+  if (!stageClock || stageClock.key !== stageKey(current)) return null;
+  const tr = tracked.find(item => isOnStage(item, current));
+  const durationSec = kind === 'battle' ? null : stageProgress.stageDuration({ demoSec: fake ? SONG_SECONDS : null,
+    catalogSec: catalogDurations.get(Number(tr?.sel.song.songId ?? current.songId)),
+    clientSec: tr?.sel.song.duration });
+  return stageProgress.clockView(stageClock, now, durationSec);
 }
 
 // ------------------------------------------------------------------ journal de soirée
@@ -1321,16 +1537,24 @@ function journalOutlook({ current, upcoming, awaitingPresence }, now) {
 // Relevé de la file : titres prêts, demandes et personnes présentes.
 function journalSample(now = Date.now()) {
   lastSampleAt = now;
-  const active = [...sched.people.values()].filter(p => !p.withdrawnAt);
+  // Présentes : ni parties, ni places « Solo N » encore sans prénom.
+  const active = [...sched.people.values()].filter(countsAsPresent);
   journalEvent('queue.sample', { ready: readyTurns().length,
     songsListed: active.reduce((n, p) => n + sched.songsOf(p).length, 0),
     demanding: active.filter(p => sched.songsOf(p).length).length,
     deferred: sched._deferredOwners().length, present: active.length, inKaraFun: tracked.filter(tr => !tr.startedAt).length });
 }
 
+// Personne présente pour les comptes (relevé du journal, tuile du bar, effectif
+// de la page) : pas marquée partie, et déjà un prénom (une place « Solo N »
+// ouverte par un QR n'est encore personne).
+function countsAsPresent(p) {
+  return !p.withdrawnAt && !p.nameRequired;
+}
+
 // Dernier signe de vie d'un téléphone : au plus un par personne toutes les 5 min.
 function noteSeen(person, now = Date.now()) {
-  if (!person || now - (seenJournal.get(person.id) || 0) < 5 * 60000) return;
+  if (!person || person.nameRequired || now - (seenJournal.get(person.id) || 0) < 5 * 60000) return;
   seenJournal.set(person.id, now);
   journalEvent('person.seen', { personId: person.id });
 }
@@ -1456,7 +1680,40 @@ const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title
     // Invitation en attente : vue ou non sur le téléphone de l'invité.
     ...(s.duet.state === 'pending' ? { seen: !!s.duet.seenAt } : {}) } : null } : null;
 
-// Chanteurs d'un passage avec leur table (ou « En solo »), pour l'affichage.
+// Nom affiché d'un passage suivi : recalculé à partir de ses personnes
+// (Scheduler#passageLabel), jamais repris du texte enregistré, si bien
+// qu'une soirée commencée avant la mise à jour s'affiche au nouveau format.
+// `sel.label` reste le nom envoyé à KaraFun : il sert seulement à y
+// reconnaître le titre. Une personne qui n'est plus dans la soirée : le texte
+// enregistré, sans le groupe individuel.
+function shownLabel(sel) {
+  const ids = Array.isArray(sel?.ids) ? sel.ids : [];
+  if (ids.length && ids.every(pid => sched.people.has(String(pid)))) return sched.passageLabel(ids);
+  return withoutSoloGroup(sel?.label || '');
+}
+// Prénoms d'un passage envoyé : ceux d'aujourd'hui (prénom changé, soliste
+// homonyme numéroté à la reprise), sinon ceux notés à l'envoi.
+function passageNames(sel) {
+  return (sel?.ids || []).map((pid, i) => sched.people.get(String(pid))?.name || sel.names?.[i]).filter(Boolean).join(' & ');
+}
+
+// Ligne de KaraFun que l'application ne suit pas (ajoutée à la main, ou
+// envoyée avant la mise à jour puis perdue) : le nom du groupe individuel
+// (« Léa · En solo », « Léa & Max · En solo + Table 4 ») est retiré à
+// l'affichage. Le nom actuel du groupe compte, et son nom par défaut.
+function withoutSoloGroup(singer) {
+  const text = String(singer || '');
+  const cut = text.lastIndexOf(' · ');
+  if (cut < 0) return text;
+  const solo = new Set(['En solo', ...[...sched.tables.values()].filter(t => t.individual).map(t => t.name)]);
+  const parts = text.slice(cut + 3).split(' + ');
+  const kept = parts.filter(part => !solo.has(part.trim()));
+  if (kept.length === parts.length) return text;
+  return kept.length ? `${text.slice(0, cut)} · ${kept.join(' + ')}` : text.slice(0, cut);
+}
+
+// Chanteurs d'un passage avec leur table (`individual` : groupe des
+// solistes, dont le nom ne s'affiche jamais à côté d'un prénom).
 function singersOf(ids = []) {
   return ids.map(pid => sched.people.get(pid)).filter(Boolean).map(p => {
     const table = sched.table(p.tableId, false);
@@ -1469,7 +1726,7 @@ function describe(item, byQid) {
   return {
     singers: tr ? singersOf(tr.sel.ids) : [],
     ours: !!tr, queueId: item.queueId || null,
-    singer: tr ? tr.sel.label : (item.singer || (isBattleItem(item) ? 'Battle collective' : '')),
+    singer: tr ? shownLabel(tr.sel) : withoutSoloGroup(item.singer || (isBattleItem(item) ? 'Battle collective' : '')),
     // Pour nos titres, le catalogue KaraFun choisi par le chanteur fait foi.
     title: (tr && tr.sel.song.title) || item.title || '', artist: (tr && tr.sel.song.artist) || item.artist || '',
     img: coverUrl(tr ? tr.sel.song.img : item.img),
@@ -1478,9 +1735,16 @@ function describe(item, byQid) {
   };
 }
 
-// Chaque personne inscrite (même sans chanson) a une voix pour la Battle.
+// Chaque personne inscrite (même sans chanson) a une voix pour la Battle. Un
+// QR ouvert sans prénom ne compte pas : il empêcherait le vote de se clore.
 function battleElectorate() {
-  return [...sched.people.values()].filter(person => !person.withdrawnAt).map(person => person.id);
+  return [...sched.people.values()].filter(person => !person.withdrawnAt && !person.nameRequired).map(person => person.id);
+}
+// Vote Battle ouvert : les personnes arrivées depuis (table, bar, QR solo,
+// événement privé) ou qui viennent de saisir leur prénom votent aussi.
+// Appelé après chaque action (routes POST) et avant chaque vote.
+function syncBattleElectorate() {
+  if (battleVote.ballot?.phase === 'voting') battleVote.admit(battleElectorate());
 }
 
 // Duo déjà chargé dans KaraFun, vu par l'une de ses deux personnes : rôle et
@@ -1505,27 +1769,28 @@ function publicState(person, tableId, managed = null) {
   const curTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
   const firstFreeAt = current ? ((curTr && curTr.startedAt) ? curTr.startedAt + slot : Date.now() + slot / 2) : Date.now();
   const stage = current ? describe(current, byQid) : null;
+  if (stage) stage.progress = stageProgressView(current, stage.kind, Date.now());
   const queue = upcoming.map((it, i) => ({ ...describe(it, byQid),
     source: 'karafun', pos: i + 1, eta: firstFreeAt + i * slot,
     waitingPresence: i === 0 && presence?.source === 'karafun' && presenceMissingIds.size > 0,
-    name: byQid.has(it.queueId) ? byQid.get(it.queueId).sel.names.join(' & ') :
-      (it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
-    song: fmtSong(byQid.get(it.queueId)?.sel.song || it), table: byQid.has(it.queueId) ? sched.table(sched.people.get(byQid.get(it.queueId).sel.ids[0])?.tableId, false)?.name || '' : '',
-    // Pistes vocales du titre annoncées par KaraFun (4 chœurs, 5 et 6 voix guides).
+    name: byQid.has(it.queueId) ? passageNames(byQid.get(it.queueId).sel) :
+      withoutSoloGroup(it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
+    song: fmtSong(byQid.get(it.queueId)?.sel.song || it), table: byQid.has(it.queueId) ? sched.passageTables(byQid.get(it.queueId).sel.ids).join(' + ') : '',
+    // Pistes vocales du titre annoncées par KaraFun (4 chœurs, 5, 6… voix guides).
     tracks: songTracksOf(it),
   }));
   if (pending) queue.push({ source: 'envoi', ours: true, queueId: null,
     pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
-    singer: pending.sel.label, name: pending.sel.names.join(' & '),
+    singer: shownLabel(pending.sel), name: passageNames(pending.sel),
     title: pending.sel.song.title, artist: pending.sel.song.artist,
     ids: pending.sel.ids, kind: pending.sel.kind, song: fmtSong(pending.sel.song), singers: singersOf(pending.sel.ids),
-    table: sched.table(sched.people.get(pending.sel.ids[0])?.tableId, false)?.name || '' });
+    table: sched.passageTables(pending.sel.ids).join(' + ') });
   // La file affichée montre aussi les titres dont la présence sera demandée
   // plus tard. Seul le prochain reçoit l'alerte et bloque l'envoi réel.
   const ready = sched.presenceView(pending ? (pending.sel.consumedIds || pending.sel.ids) : [], pending ? pending.sel : null);
   for (const v of ready) queue.push({ source: 'helper', ours: true, queueId: null,
     pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
-    singer: `${v.name} · ${v.table}`, name: v.name, title: v.song.title, artist: v.song.artist,
+    singer: v.label, name: v.name, title: v.song.title, artist: v.song.artist,
     id: v.ids[0], ids: v.ids, kind: v.kind, song: fmtSong(v.song), table: v.table, tableId: v.tableId,
     singers: singersOf(v.ids),
     qi: v.qi, over: v.over, cap: v.cap, confirmed: v.confirmed, future: !!v.future,
@@ -1590,7 +1855,9 @@ function publicState(person, tableId, managed = null) {
     avgSlotMin: Math.round(sched.avgSlotSec() / 6) / 10,
     rules: { gap: sched.opts.gap, cap: sched.opts.cap, protectTop: sched.opts.protectTop,
       requirePresence: sched.opts.requirePresence, tableRotation: sched.opts.tableRotation,
-      weightedTables: sched.opts.weightedTables },
+      weightedTables: sched.opts.weightedTables,
+      // Durée maximale des titres (secondes, null : pas de limite).
+      maxSongSec: maxSongLimit() },
     log: sched.log.slice(-30).reverse(),
     v: sched.version,
     // « registered » : personnes qui pourraient voter. En dessous du minimum
@@ -1630,7 +1897,7 @@ function publicState(person, tableId, managed = null) {
   if (tid) {
     const t = sched.table(tid, false);
     out.table = t ? { id: t.id, name: t.name, headcount: t.headcount, individual: t.individual,
-      count: sched.tableSingers(t.id).length, activeCount: sched.tableSingers(t.id).filter(p => !p.withdrawnAt).length } :
+      count: sched.tableSingers(t.id).length, activeCount: sched.tableSingers(t.id).filter(countsAsPresent).length } :
       { id: tid, name: /^\d+$/.test(tid) ? `Table ${tid}` : tid, headcount: null, count: 0, activeCount: 0 };
     if (t?.individual) {
       out.people = out.people.filter(item => item.id === person?.id);
@@ -1639,12 +1906,20 @@ function publicState(person, tableId, managed = null) {
       out.battle.votedPersonIds = out.battle.votedPersonIds.filter(id => id === person?.id);
       // Seules les personnes qui ont demandé un code de reprise au bar (ou
       // sur leur ancien téléphone) apparaissent dans ce parcours temporaire.
-      out.recoveryPeople = person ? [] : sched.tableSingers(tid).filter(p => !p.withdrawnAt &&
+      // Personne partie sur ce téléphone (un doublon), ou place encore sans
+      // prénom ni titre (un QR montré par le bar, ouvert sur ce nouveau
+      // téléphone) : la reprise reste ouverte. La route filtre ensuite selon
+      // le téléphone actuel de cette place.
+      out.recoveryPeople = person && !person.withdrawnAt && !disposablePlaceholder(person) ? [] : sched.tableSingers(tid).filter(p => !p.withdrawnAt &&
         personShareCodes.get(p.id)?.expiresAt > Date.now() && personShareCodes.get(p.id).attempts < 5)
         .map(p => ({ id: p.id, name: p.name }));
     }
     out.tablePeople = sched.tableSingers(tid).filter(p => !t?.individual || p.id === person?.id)
       .map(p => ({ id: p.id, name: p.name,
+      ...(p.nameRequired ? { nameRequired: true } : {}),
+      // Venu par le QR de l'événement privé : son adresse ne garde pas ce QR,
+      // le téléphone conseille de le rescanner depuis la même application.
+      ...(t?.individual && p.viaEvent ? { viaEvent: true } : {}),
       active: !p.withdrawnAt,
       songs: sched.songsOf(p).map(fmtSong),
       confirmed: confirmedForPage(p),
@@ -1681,7 +1956,7 @@ function publicState(person, tableId, managed = null) {
   }
 
   if (person) {
-    if (Date.now() - (person.lastSeen || 0) >= 60000) person.lastSeen = Date.now();
+    // La dernière activité ne bouge que sur une page visible (voir /api/state).
     noteSeen(person);
     const i = sched.Q.indexOf(person.id);
     const mine = queue.find(v => v.ids?.includes(person.id)) || null;
@@ -1691,6 +1966,8 @@ function publicState(person, tableId, managed = null) {
     const partner = person.duet ? sched.people.get(person.duet.partnerId) : null;
     out.me = {
       id: person.id, name: person.name, tableId: person.tableId, photo: person.photo ? `/photo/${person.id}` : null,
+      // Prénom provisoire (« Solo 3 ») : la page demande d'abord le vrai prénom.
+      nameRequired: !!person.nameRequired,
       song: fmtSong(person.song), songs: sched.songsOf(person).map(fmtSong),
       inKaraFun: out.tablePeople?.find(p => p.id === person.id)?.inKaraFun || [],
       sung: person.sung, inQueue: i >= 0,
@@ -1735,12 +2012,16 @@ function staffState() {
     // Duo noté au bar sur le titre en cours : la page propose de le corriger.
     stage: pub.stage && stageTr?.sel.staffDuo ? { ...pub.stage, staffDuo: staffDuoView(stageTr.sel.staffDuo) } : pub.stage,
     // Repères réservés au bar : titres en double, « Je suis là » manqués.
+    // « trop long » (tooLongSec) : titre pas encore envoyé, au-delà de la durée maximale.
     queue: pub.queue.map((line, index) => {
       const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
       const skips = owner && owner.song?.entryId === line.song?.entryId ? sched.presenceSkipsOf(owner) : 0;
-      return repeats[index] || skips ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
-        ...(skips ? { presenceSkips: skips } : {}) } : line;
+      const tooLong = owner ? tooLongSec(line.song) : null;
+      return repeats[index] || skips || tooLong ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
+        ...(skips ? { presenceSkips: skips } : {}), ...(tooLong ? { tooLongSec: tooLong } : {}) } : line;
     }),
+    // Durée maximale : titres de la file qu'un retrait groupé enlèverait.
+    tooLong: { limitSec: maxSongLimit(), count: tooLongEntries().length },
     battle: { ...battleVote.view(), registered: battleElectorate().length },
     // Demandes de duo encore sans réponse de l'auteur du titre.
     joinRequests: [...sched.duetJoinRequestsByPerson()].flatMap(([requesterId, rows]) => rows.map(row => ({
@@ -1765,7 +2046,8 @@ function staffState() {
     presencePending,
     // « Je suis là » manqué plusieurs fois : titre retiré, le bar vérifie.
     maybeGone: [...sched.people.values()].filter(p => p.maybeGone && !p.withdrawnAt).map(p => ({
-      id: p.id, name: p.name, table: sched.table(p.tableId, false)?.name || '',
+      // Un soliste est nommé par son seul prénom (jamais « En solo »).
+      id: p.id, name: p.name, table: sched.table(p.tableId, false)?.individual ? '' : sched.table(p.tableId, false)?.name || '',
       title: p.maybeGone.title, skips: p.maybeGone.skips, at: p.maybeGone.at })),
     persistenceError, recoveredPending, queueClearPending: !!settings.queueClearPending,
     removalPending: tracked.filter(tr => tr.cancelled).length,
@@ -1783,21 +2065,26 @@ function staffState() {
     restarting: !!restartOp,
     restartRetryAt: restartSweep && Date.now() <= restartSweep.until ? restartSweep.until : null,
     soloInvitations: soloInvitations.view(),
+    privateEvent: privateEventView(),
     phoneBase: phoneBase(), ips, port: PORT, staffKey: STAFF_KEY,
     tables: [...sched.tables.values()].map(t => ({ ...t,
       url: access.get(t.id) ? access.url(phoneBase(), t.id) : null,
       qrUrl: access.get(t.id) ? `/qr/${encodeURIComponent(t.id)}.svg` : null,
       count: sched.tableSingers(t.id).length,
-      activeCount: sched.tableSingers(t.id).filter(p => !p.withdrawnAt).length,
+      activeCount: sched.tableSingers(t.id).filter(countsAsPresent).length,
       inQueue: sched.tableSingers(t.id).filter(p => sched.Q.includes(p.id)).length })),
     people: [...sched.people.values()].map(p => ({ id: p.id, name: p.name, tableId: p.tableId,
       sung: p.sung, inQueue: sched.Q.includes(p.id), lastSeen: p.lastSeen,
+      // Dernière activité sur son téléphone (page visible ou action), à
+      // comparer à `now` (heure du serveur). Réservé au bar.
+      lastActiveAt: Math.max(Number(p.lastSeen) || 0, Number(p.lastActionAt) || 0) || null,
+      joinedAt: p.joinedAt, nameRequired: !!p.nameRequired, viaEvent: !!p.viaEvent,
       active: !p.withdrawnAt, songCount: sched.songsOf(p).length,
       privateNote: p.privateNote || '', bonus: p.bonus || 0,
       appearances: (p.sung || 0) + (p.duetGuestCount || 0),
       presenceSkips: sched.presenceSkipsOf(p), presenceRetry: sched._isPresenceRetry(p),
       photoUrl: p.photo ? `/photo/${p.id}` : null })),
-    pending: pending ? { label: pending.sel.label, title: pending.sel.song.title } : null,
+    pending: pending ? { label: shownLabel(pending.sel), title: pending.sel.song.title } : null,
     tracked: tracked.map(tr => ({ queueId: tr.queueId, label: tr.sel.label, title: tr.sel.song.title,
       ids: tr.sel.ids, startedAt: tr.startedAt })),
     kf: bridge ? bridge.snapshot() : null,
@@ -1889,9 +2176,31 @@ function normalizeBaseUrl(value) {
 
 // ------------------------------------------------------------------ HTTP
 const PUB = path.join(__dirname, 'public');
+// JSON compressé (gzip) quand le navigateur l'accepte, ce que font tous les
+// navigateurs : à 400 invités, une lecture de téléphone (toutes les 4 s, pages
+// cachées comprises) pèse environ 240 Ko en clair, dix fois moins compressée,
+// par le Wi-Fi du bar comme par le tunnel. Niveau le plus rapide, calcul hors
+// du fil principal (environ 0,6 ms, plus 0,3 ms sur le fil principal, pour
+// 240 Ko), en un seul passage pour une sortie jusqu'à 64 Ko ; une petite
+// réponse part en clair.
+const GZIP_MIN_LENGTH = 1024;
+function acceptsGzip(req) {
+  return String(req?.headers?.['accept-encoding'] || '').split(',').some(part => {
+    const [coding, q] = part.split(/;\s*q=/).map(text => text.trim().toLowerCase());
+    return coding === 'gzip' && (q === undefined || Number(q) > 0);
+  });
+}
 const send = (res, code, body, type = 'application/json; charset=utf-8', extra = {}) => {
-  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...extra });
-  res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
+  const headers = { 'Content-Type': type, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...extra };
+  const data = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
+  if (!type.startsWith('application/json') || data.length < GZIP_MIN_LENGTH || !acceptsGzip(res.req)) {
+    res.writeHead(code, headers);
+    return res.end(data);
+  }
+  zlib.gzip(data, { level: zlib.constants.Z_BEST_SPEED, chunkSize: 64 * 1024 }, (error, zipped) => {
+    res.writeHead(code, error ? headers : { ...headers, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+    res.end(error ? data : zipped);
+  });
 };
 const sendFile = (res, file, type) => fs.readFile(path.join(PUB, file), (err, buf) => err ? send(res, 404, 'Introuvable', 'text/plain') : send(res, 200, buf, type));
 
@@ -1954,9 +2263,70 @@ function soloDeviceOwner(req) {
     Array.isArray(person.soloDeviceHashes) && person.soloDeviceHashes.includes(hash)) || null;
 }
 
+// Place solo qui empêche ce navigateur d'en reprendre une autre : une personne
+// marquée partie ne la retient plus (son doublon, par exemple), une personne
+// présente oui. Créer une place reste refusé même après un départ
+// (soloDeviceOwner) : la personne partie peut être réactivée par le bar.
+function activeSoloDeviceOwner(req) {
+  const owner = soloDeviceOwner(req);
+  return owner && !owner.withdrawnAt ? owner : null;
+}
+
+// Reprise d'un profil par ce navigateur : il quitte sa place partie, qui
+// revient sans téléphone si le bar la réactive (jamais deux places actives
+// pour un navigateur), ou la place sans prénom d'un QR personnel, qui reste
+// à son papier. Le téléphone actuel est le dernier de la liste : à sa
+// place, une empreinte qu'aucun navigateur n'envoie, pour qu'un ancien
+// téléphone écarté par un transfert ne redevienne pas le téléphone actuel.
+function releaseSoloDevice(req, owner) {
+  const hash = soloCookieHash(req);
+  if (!hash || !Array.isArray(owner.soloDeviceHashes)) return;
+  const current = owner.soloDeviceHashes.at(-1) === hash;
+  owner.soloDeviceHashes = owner.soloDeviceHashes.filter(saved => saved !== hash);
+  if (current && owner.soloDeviceHashes.length) owner.soloDeviceHashes.push(crypto.randomBytes(32).toString('hex'));
+  if (!owner.soloDeviceHashes.length) delete owner.soloDeviceHashes;
+}
+
+function personLeftError() {
+  const error = new Error('Cette personne a été marquée partie. Demande au bar de la réactiver.');
+  error.code = 'PERSON_LEFT';
+  return error;
+}
+
+// Place provisoire de ce navigateur, encore sans prénom ni titre (le QR de
+// l'événement rescanné depuis une autre application) : comme une place
+// partie, elle ne retient pas une reprise. La reprise la retire sans trace
+// (rien au journal tant qu'il n'y a pas de prénom).
+function disposablePlaceholder(person) {
+  return !!person && !person.withdrawnAt && !!person.nameRequired && !sched.songsOf(person).length;
+}
+
+// Seul le téléphone actuel de cette place la retire. Une reprise d'une place
+// sans prénom en détache aussitôt tous les autres navigateurs (claimPerson).
+function ownDisposablePlaceholder(req, person) {
+  return disposablePlaceholder(person) && currentSoloDevice(req, person);
+}
+
+// Place provisoire du QR de l'événement (sans clé personnelle) : la seule
+// qu'un QR personnel neuf, ou la reprise d'une autre place sans prénom,
+// retire. Celle d'un QR personnel garde ce QR (peut-être celui de quelqu'un
+// d'autre) : elle ne part que pour reprendre un profil nommé (son propriétaire
+// revenu sur ce navigateur, RT1).
+function ownEventPlaceholder(req, person) {
+  return ownDisposablePlaceholder(req, person) && !!person.viaEvent && !person.soloKeyHash;
+}
+
+// Créer une place depuis ce navigateur : refusé s'il en a déjà une, en disant
+// pourquoi (personne marquée partie dont il est le téléphone actuel : le bar
+// la réactive ; un ancien téléphone de cette personne n'a rien à réactiver).
+function refuseSoloDeviceOwner(req, owner) {
+  if (owner?.withdrawnAt && currentSoloDevice(req, owner)) throw personLeftError();
+  if (owner) throw soloDeviceError('SOLO_DEVICE_USED');
+}
+
 function soloDeviceError(code) {
   const error = new Error(code === 'SOLO_DEVICE_USED' ?
-    'Ce téléphone gère déjà une personne dans « En solo ». Chacun utilise son propre téléphone.' :
+    'Ce téléphone a déjà un prénom inscrit. Chacun utilise son propre téléphone.' :
     'Ce téléphone ne gère pas cette personne. Demande au bar un code de reprise si tu as changé de téléphone.');
   error.code = code;
   return error;
@@ -1964,7 +2334,7 @@ function soloDeviceError(code) {
 
 function requireSoloInvitation(table, token) {
   if (!soloInvitations.verify(token, table.id)) {
-    const error = new Error('Demande au bar une invitation personnelle pour t’inscrire en solo. Ce lien sert à consulter la file.');
+    const error = new Error('Demande au bar ton QR individuel pour t’inscrire. Ce lien sert à consulter la file.');
     error.code = 'SOLO_INVITATION';
     throw error;
   }
@@ -1976,11 +2346,321 @@ function requireSoloControl(req, person) {
   }
 }
 
+// Le téléphone qui gère déjà cette personne garde son cookie (une reprise
+// redemandée n'ajoute rien). Au plus les 8 derniers téléphones sont gardés,
+// l'actuel en dernier.
+const SOLO_DEVICE_HISTORY = 8;
 function bindSoloDevice(req, res, person) {
+  if (currentSoloDevice(req, person)) return;
   const value = crypto.randomBytes(24).toString('base64url');
   const hash = crypto.createHash('sha256').update(value).digest('hex');
-  person.soloDeviceHashes = [...new Set([...(person.soloDeviceHashes || []), hash])];
+  person.soloDeviceHashes = [...new Set([...(person.soloDeviceHashes || []), hash])].slice(-SOLO_DEVICE_HISTORY);
   res.setHeader('Set-Cookie', `${SOLO_COOKIE}=${value}; Path=/; Max-Age=7776000; HttpOnly; SameSite=Lax${req.socket.localPort === PUBLIC_PORT ? '; Secure' : ''}`);
+}
+
+// Téléphone actuel d'un solo : le dernier associé (une reprise en ajoute un).
+// Les anciens restent « propriétaires » pour SOLO_DEVICE_USED, sans plus gérer.
+function currentSoloDevice(req, person) {
+  const hash = soloCookieHash(req);
+  return !!hash && Array.isArray(person.soloDeviceHashes) && person.soloDeviceHashes.at(-1) === hash;
+}
+
+// Le QR individuel reste la clé personnelle de son chanteur pour la soirée :
+// rouvert ailleurs, il retrouve cette personne, jamais une deuxième place.
+// keyHolder : la personne de cette clé, même marquée partie ou revenue depuis ;
+// keyTarget : la même, seulement si sa clé vit encore. Marquée partie une
+// fois, la clé meurt pour de bon (soloKeyRevoked, scheduler.leave) : réactivée,
+// la personne ne se reprend plus que par un QR de reprise du bar.
+function keyHolder(key, table) {
+  const hash = SoloInvitations.digest(key);
+  if (!hash) return null;
+  const digest = Buffer.from(hash, 'hex');
+  return sched.tableSingers(table.id).find(person =>
+    typeof person.soloKeyHash === 'string' && /^[a-f0-9]{64}$/.test(person.soloKeyHash) &&
+    crypto.timingSafeEqual(Buffer.from(person.soloKeyHash, 'hex'), digest)) || null;
+}
+function keyTarget(key, table) {
+  const holder = keyHolder(key, table);
+  return holder && !holder.withdrawnAt && !holder.soloKeyRevoked ? holder : null;
+}
+
+function soloKeyRevokedError() {
+  const error = new Error('Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+  error.code = 'SOLO_KEY_REVOKED';
+  return error;
+}
+
+// Prénom déjà pris par un soliste : la reprise par code (« Déjà inscrit ?
+// J’ai un code ») ne vaut que si sa personne peut apparaître dans la liste de
+// reprise de ce téléphone (même règle que publicState et /api/state) : place
+// sans prénom ni titre dont ce navigateur est le téléphone actuel, personne
+// du même groupe, pas partie. Sinon (partie, autre groupe), voir le bar.
+function nameRecoverable(req, person, name) {
+  const wanted = String(name || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('fr');
+  const rival = sched.nameRivals(person.tableId, person.id).find(other => other.name.toLocaleLowerCase('fr') === wanted);
+  return !!rival && ownDisposablePlaceholder(req, person) && rival.tableId === person.tableId && !rival.withdrawnAt;
+}
+
+function requireNamed(person) {
+  if (person.nameRequired) {
+    const error = new Error('Indique d’abord ton prénom.');
+    error.code = 'NAME_REQUIRED';
+    throw error;
+  }
+}
+
+// Page visible : au plus un relevé par minute (chaque relevé change la sauvegarde).
+// Exception : place encore sans prénom, sa première relecture passé la
+// première seconde après l'ouverture compte tout de suite ; une invitée qui a
+// vu sa fenêtre de prénom quelques secondes garde sa place (PrivateEvent.abandoned).
+function touchSeen(person, now = Date.now()) {
+  const last = Number(person.lastSeen) || 0;
+  const opened = Number(person.joinedAt) || 0;
+  const firstRead = !!person.nameRequired && last <= opened + 1000 && now > opened + 1000;
+  if (firstRead || now - last >= 60000) person.lastSeen = now;
+}
+
+// Prénom provisoire unique : « Solo 1 », « Solo 2 »… le plus petit libre.
+function placeholderName(tableId) {
+  const taken = new Set(sched.nameRivals(tableId).map(person => person.name.toLocaleLowerCase('fr')));
+  let n = 1;
+  while (taken.has(`solo ${n}`)) n++;
+  return `Solo ${n}`;
+}
+
+// Appareil qui scanne le QR de l'événement. Sur le Wi-Fi : l'adresse de la
+// connexion, jamais X-Forwarded-For (un en-tête que n'importe quel script peut
+// inventer). Par le tunnel, tout arrive de 127.0.0.1 : l'adresse que
+// Cloudflare réécrit (CF-Connecting-IP) ; sans elle, null = pas de limite par
+// appareil, celle du bar seulement. L'adresse IPv4, ou le préfixe /64 d'une
+// adresse IPv6 (clientKey, dans private-event.js).
+function eventClient(req) {
+  if (req.socket?.localPort !== PUBLIC_PORT) return clientKey(req.socket?.remoteAddress);
+  const edge = req.headers['cf-connecting-ip'];
+  return typeof edge === 'string' && edge.trim() ? `cf:${clientKey(edge.slice(0, 64))}` : null;
+}
+
+// Plafond de l'événement atteint (création d'une place ou son premier
+// prénom) : 403, sans nouvel essai automatique, le bar donne un QR individuel.
+function privateEventFullError() {
+  const error = new Error('L’événement est complet par ce QR : demande au bar un QR individuel.');
+  error.code = 'PRIVATE_EVENT_FULL';
+  return error;
+}
+
+// Place provisoire retirée sans trace (rien au journal tant qu'il n'y a pas
+// de prénom) : son téléphone ne gère plus personne.
+function dropPlaceholder(person) {
+  sched.people.delete(person.id);
+  sched.byToken.delete(person.token);
+  personShareCodes.delete(person.id);
+}
+
+// Départ (« Je pars », « Parti » du bar) : comme la clé personnelle
+// (scheduler.leave), le lien et le code de reprise en attente meurent ;
+// « Réactiver » ne les ranime pas, le bar donne un nouveau QR de reprise.
+function leavePerson(person, by) {
+  sched.leave(person, by);
+  personShareCodes.delete(person.id);
+}
+
+// Personne sans aucun historique dans la soirée : jamais montée sur scène
+// (ni en duo), pas comptée dans le tour en cours, aucun titre demandé
+// (jamais entrée dans la file) ni en route vers KaraFun, aucun duo (titre,
+// invitation, demande ou répit), aucun vote ni proposition dans la Battle en
+// cours. Sa fiche peut disparaître : ni la file, ni le tour, ni l'ordre du
+// bar ne la citent (la reprise de la sauvegarde refuserait une personne
+// inconnue). Le tour se vérifie à part : un duo retiré de KaraFun sans être
+// chanté, après une autre intervention du bar, remet les compteurs de son
+// invitée à zéro mais peut la laisser dans le tour qu'il avait ouvert
+// (rollbackUnplayed ; vérification de la troisième passe).
+function withoutHistory(person) {
+  const id = person.id;
+  const ballot = battleVote.ballot;
+  return !person.sung && !person.duetGuestCount && !person.lastAppearanceTurn && !sched.roundPeople.has(id) &&
+    !sched.songsOf(person).length && !sched.Q.includes(id) &&
+    ![pending?.sel, ...tracked.map(tr => tr.sel)].some(sel => sel?.ids?.includes(id)) &&
+    !person.duet && !person.duetOf && !person.invite && !sched.duetCooldowns.has(id) &&
+    ![...sched.people.values()].some(owner => sched.songsOf(owner).some(song =>
+      Array.isArray(song.duoRequests) && song.duoRequests.some(row => row?.fromId === id))) &&
+    !(ballot && (ballot.proposerId === id || ballot.votes?.some(([voter]) => voter === id)));
+}
+
+// « Je pars » (POST /api/leave) d'une personne de l'événement privé sans
+// aucun historique (troisième passe de la relecture finale) : une fiche
+// partie ne garderait rien d'utile, et une boucle prénom puis départ en
+// laissait une de plus à chaque tour. Comme une place provisoire, la fiche
+// disparaît (son prénom se libère, elle ne compte pas dans les fiches de
+// l'événement) ; son inscription est au journal, son départ y est noté comme
+// par leavePerson (person.left, par elle-même, aucun titre retiré).
+function forgetEventPerson(person) {
+  journalEvent('person.left', { personId: person.id, by: 'self', songsDropped: 0 });
+  sched.note(`${sched.personRef(person)} est parti sans titre ni passage : sa fiche est retirée`);
+  dropPlaceholder(person);
+  seenJournal.delete(person.id);
+}
+
+// Avant chaque création par le QR de l'événement : les places sans prénom
+// abandonnées (PrivateEvent.abandoned, sans titre, sans code ni lien de
+// reprise encore valable donné par le bar) partent sans trace. Une boucle
+// sans cookie ne fait plus grossir la soirée ; une page qui revient après
+// coup rescanne le QR de l'événement pour une nouvelle place.
+function sweepAbandonedEventPlaces(now = Date.now()) {
+  const shared = person => {
+    const saved = personShareCodes.get(person.id);
+    return !!saved && Math.max(saved.expiresAt, saved.linkExpiresAt) > now;
+  };
+  const abandoned = [...sched.people.values()].filter(person =>
+    PrivateEvent.abandoned(person, now) && disposablePlaceholder(person) && !shared(person));
+  abandoned.forEach(dropPlaceholder);
+  if (abandoned.length) sched.version++;
+}
+
+// Chanteur créé à l'ouverture d'un QR (individuel ou d'événement), avant son
+// prénom. Même règle que joinPersonDurably : rien n'est annoncé tant que la
+// soirée n'est pas sauvegardée, et tout est défait sinon. Le ménage des places
+// abandonnées se fait avant et pour lui-même : une création refusée ou non
+// sauvegardée le laisse fait, avec son numéro de version (les pages le voient).
+function createPlaceholderDurably(req, res, table, { invitation = null, viaEvent = false } = {}) {
+  const now = Date.now();
+  const client = eventClient(req);
+  let person = null, admittedAt = null;
+  if (viaEvent) {
+    sweepAbandonedEventPlaces(now);
+    // Seules les personnes nommées et présentes comptent (les parties
+    // libèrent leur place, une place sans prénom ne coûte rien à la
+    // prévision) ; le premier prénom d'une place revérifie ce plafond.
+    // Plafond dur : 400 fiches de l'événement, pas parties ou parties
+    // d'elles-mêmes (PrivateEvent.held). Un refus ne change rien et n'écrit
+    // rien, pas même `version` (relecture finale fraîche) : une écriture
+    // oublierait la prévision gardée, et chaque refus, ou chaque nouvel essai
+    // d'un téléphone pendant une affluence, la ferait recalculer.
+    const admitted = privateEvent.admit(PrivateEvent.present(sched.people.values()), client, now,
+      PrivateEvent.held(sched.people.values()));
+    if (admitted === 'full') throw privateEventFullError();
+    if (admitted !== 'ok') {
+      const busy = new Error('Trop d’inscriptions d’un coup : réessaie dans une minute.');
+      busy.code = 'PRIVATE_EVENT_BUSY';
+      busy.retryAfter = privateEvent.retryAfter(client, now);
+      throw busy;
+    }
+    admittedAt = now;
+  }
+  const before = { log: sched.log.slice(), version: sched.version, invitations: soloInvitations.serialize(),
+    cookie: res.getHeader('Set-Cookie') };
+  try {
+    person = sched.join({ tableId: table.id, name: placeholderName(table.id), nameRequired: true });
+    if (invitation) {
+      soloInvitations.consume(invitation, table.id);
+      person.soloKeyHash = SoloInvitations.digest(invitation);
+    }
+    if (viaEvent) person.viaEvent = true;
+    bindSoloDevice(req, res, person);
+    saveNight({ required: true });
+  } catch (error) {
+    if (person) {
+      sched.people.delete(person.id);
+      sched.byToken.delete(person.token);
+    }
+    if (admittedAt !== null) privateEvent.release(admittedAt, client);
+    soloInvitations.restore(before.invitations);
+    sched.log = before.log;
+    // Version inchangée : rien de ce qu'elle couvre n'a bougé, la prévision
+    // gardée reste juste (pas de réécriture, voir Scheduler#version).
+    if (sched.version !== before.version) sched.version = before.version;
+    if (before.cookie === undefined) res.removeHeader('Set-Cookie');
+    else res.setHeader('Set-Cookie', before.cookie);
+    throw error;
+  }
+  res.nightAlreadySaved = true;
+  return { id: person.id, token: person.token, nameRequired: true };
+}
+
+// POST /api/table/solo/open : la page ouverte par un QR individuel (jamais une
+// lecture GET : un aperçu de lien ne crée personne).
+function openSoloInvitation(req, res, body) {
+  const t = tableByAccess(body.table, body.access);
+  if (!t.individual) throw new Error('Ce QR individuel n’est pas valable pour cette table.');
+  const owner = soloDeviceOwner(req);
+  const known = keyTarget(body.invitation, t);
+  if (known) {
+    // Reprise par la clé personnelle : seule une place active la bloque
+    // (pas une place provisoire sans prénom de ce navigateur).
+    const active = activeSoloDeviceOwner(req);
+    if (active && active.id !== known.id && !ownDisposablePlaceholder(req, active)) throw soloDeviceError('SOLO_DEVICE_USED');
+    // Le téléphone qui la gère rouvre son QR : la même personne.
+    if (currentSoloDevice(req, known)) {
+      known.lastActionAt = Date.now();
+      return { id: known.id, token: known.token, nameRequired: !!known.nameRequired };
+    }
+    // Autre navigateur : proposer « C'est bien toi ? » ; sans prénom encore,
+    // rien à confirmer, la page est reprise tout de suite.
+    if (!known.nameRequired) return { recover: { id: known.id, name: known.name } };
+    const claimed = claimPersonDurably({ table: body.table, access: body.access, key: body.invitation }, req, res);
+    return { ...claimed, nameRequired: true, recovered: true };
+  }
+  // QR personnel d'une personne marquée partie, sur ce navigateur ou un
+  // autre : le dire (comme le QR de l'événement), pas « invitation utilisée ».
+  // Revenue depuis, sa clé est morte : le bar lui donne un QR de reprise.
+  const holder = keyHolder(body.invitation, t);
+  if (holder?.withdrawnAt) throw personLeftError();
+  if (holder?.soloKeyRevoked) throw soloKeyRevokedError();
+  if (!soloInvitations.verify(body.invitation, t.id)) {
+    const error = new Error('Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.');
+    error.code = 'SOLO_INVITATION';
+    throw error;
+  }
+  if (owner && !ownEventPlaceholder(req, owner)) refuseSoloDeviceOwner(req, owner);
+  if (!owner) return createPlaceholderDurably(req, res, t, { invitation: body.invitation });
+  // Place sans prénom ni titre de ce navigateur (QR de l'événement) : elle
+  // part sans trace, jamais deux places ; elle revient si la sauvegarde
+  // échoue, avec son code de reprise.
+  const ownerCode = personShareCodes.get(owner.id);
+  dropPlaceholder(owner);
+  try {
+    return createPlaceholderDurably(req, res, t, { invitation: body.invitation });
+  } catch (error) {
+    sched.people.set(owner.id, owner);
+    sched.byToken.set(owner.token, owner.id);
+    if (ownerCode) personShareCodes.set(owner.id, ownerCode);
+    throw error;
+  }
+}
+
+// POST /api/table/enter : QR de l'événement privé. Même navigateur : son
+// chanteur revient. Autre navigateur : toujours un nouveau chanteur (pas de
+// reprise par prénom, décision du gérant).
+// Une personne inscrite (prénom donné, pas partie) dont ce navigateur est le
+// téléphone actuel revient même avec un QR renouvelé ou un mode coupé : les
+// inscrits gardent leur accès. Seule une nouvelle place exige le QR actif.
+function enterPrivateEvent(req, res, body) {
+  const t = tableByAccess(body.table, body.access);
+  const found = t.individual ? soloDeviceOwner(req) : null;
+  const owner = found && currentSoloDevice(req, found) ? found : null;
+  const resume = () => {
+    owner.lastActionAt = Date.now();
+    return { id: owner.id, token: owner.token, nameRequired: !!owner.nameRequired, resumed: true };
+  };
+  if (owner && !owner.withdrawnAt && !owner.nameRequired) return resume();
+  // Le secret n'est donné que pour « En solo » (Comptoir, voir
+  // privateEventView) : un autre groupe individuel le refuse.
+  if (!t.individual || t.id !== 'Comptoir' || !privateEvent.verify(body.event)) {
+    const error = new Error('Ce QR d’événement n’est plus actif. Demande au bar.');
+    error.code = 'PRIVATE_EVENT';
+    throw error;
+  }
+  if (owner) {
+    if (owner.withdrawnAt) throw personLeftError();
+    return resume();
+  }
+  return createPlaceholderDurably(req, res, t, { viaEvent: true });
+}
+
+// Vue du bar : adresse et QR seulement quand le mode est allumé.
+function privateEventView() {
+  const url = privateEvent.enabled && privateEvent.secret && access.get('Comptoir') ?
+    `${access.url(phoneBase(), 'Comptoir')}?evenement=${privateEvent.secret}` : null;
+  return { enabled: !!url, url, qrUrl: url ? '/qr-evenement.svg' : null };
 }
 
 function joinPersonDurably(req, res, table, body, photo = null) {
@@ -1995,6 +2675,7 @@ function joinPersonDurably(req, res, table, body, photo = null) {
       headcount: body.headcount });
     if (table.individual) {
       soloInvitations.consume(body.invitation, table.id);
+      person.soloKeyHash = SoloInvitations.digest(body.invitation);
       bindSoloDevice(req, res, person);
     }
     // Ne jamais annoncer une inscription que le disque n'a pas conservée :
@@ -2008,7 +2689,9 @@ function joinPersonDurably(req, res, table, body, photo = null) {
     table.headcount = before.headcount;
     soloInvitations.restore(before.invitations);
     sched.log = before.log;
-    sched.version = before.version;
+    // Inscription refusée avant tout changement (prénom déjà pris…) : la
+    // version n'a pas bougé et n'est pas réécrite (prévision gardée).
+    if (sched.version !== before.version) sched.version = before.version;
     if (before.cookie === undefined) res.removeHeader('Set-Cookie');
     else res.setHeader('Set-Cookie', before.cookie);
     throw error;
@@ -2020,20 +2703,34 @@ function joinPersonDurably(req, res, table, body, photo = null) {
   return { id: person.id, token: person.token };
 }
 
-function personAtTable(body) {
+// Activité d'une personne (spec C1) : seule une action ACCEPTÉE compte. Les
+// routes réclament l'activité sur le corps de la requête (un objet propre à
+// chaque requête) ; le répartiteur des POST ne la note qu'après le succès du
+// traitement. Un refus (prénom déjà pris ou vide, toute erreur 4xx) ne la
+// touche donc jamais, quelle que soit la route.
+const PENDING_ACTIVITY = Symbol('activité en attente');
+function claimActivity(body, person) {
+  if (body && typeof body === 'object') body[PENDING_ACTIVITY] = person;
+}
+function creditActivity(body) {
+  const person = body && typeof body === 'object' ? body[PENDING_ACTIVITY] : null;
+  if (person) person.lastActionAt = Date.now();
+}
+
+// `passive` : geste automatique de la page (accusé des messages), qui ne
+// compte pas comme activité de la personne.
+function personAtTable(body, { passive = false } = {}) {
   const t = tableByAccess(body.table, body.access);
   const p = sched.people.get(String(body.personId || ''));
   if (!p || p.tableId !== t.id) {
     const e = new Error('Chanteur inconnu à cette table.'); e.code = 'NO_PERSON'; throw e;
   }
-  if (p.withdrawnAt) {
-    const e = new Error('Cette personne a été marquée partie. Demande au bar de la réactiver.');
-    e.code = 'PERSON_LEFT'; throw e;
-  }
+  if (p.withdrawnAt) throw personLeftError();
   if (!body.token || body.token !== p.token) {
     const e = new Error('Ce téléphone ne gère pas ce chanteur. Demande-lui son code de partage, ou vois avec le bar.');
     e.code = 'PERSON_ACCESS'; throw e;
   }
+  if (!passive) claimActivity(body, p);
   return p;
 }
 
@@ -2054,14 +2751,19 @@ async function createPersonShareCode(p) {
     url = `${access.url(phoneBase(), p.tableId)}?reprise=${link}`;
     qr = await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' });
   } catch (error) { url = null; appLog(`Lien de transfert indisponible : ${error.message}`); }
+  // Pendant le QR, la personne a pu partir (place retirée, marquée partie) :
+  // pas de code pour elle.
+  if (sched.people.get(p.id) !== p || p.withdrawnAt) throw new Error('Chanteur inconnu ou parti.');
   personShareCodes.set(p.id, { hash: sha256(code), expiresAt, attempts: 0,
     linkHash: url ? sha256(link) : null, linkExpiresAt: url ? linkExpiresAt : 0 });
   return { code, expiresAt, url, qr, linkExpiresAt: url ? linkExpiresAt : null, name: p.name };
 }
 
+// Seulement les personnes encore dans la soirée (la reprise ignore les autres).
 function transferSnapshot() {
   const now = Date.now();
-  return [...personShareCodes].filter(([, saved]) => Math.max(saved.expiresAt, saved.linkExpiresAt) > now)
+  return [...personShareCodes].filter(([personId, saved]) => sched.people.has(personId) &&
+    Math.max(saved.expiresAt, saved.linkExpiresAt) > now)
     .map(([personId, saved]) => ({ personId, hash: saved.hash.toString('hex'), expiresAt: saved.expiresAt,
       attempts: saved.attempts, linkHash: saved.linkHash ? saved.linkHash.toString('hex') : null,
       linkExpiresAt: saved.linkExpiresAt }));
@@ -2091,12 +2793,23 @@ function claimPerson(body, req, res) {
   const t = tableByAccess(body.table, body.access);
   const p = sched.people.get(String(body.personId || ''));
   if (!p || p.tableId !== t.id || p.withdrawnAt) throw new Error('Chanteur indisponible à cette table.');
+  // Reprise (QR de reprise, QR personnel, code) : une place partie de ce
+  // navigateur ne la bloque pas, ni une place provisoire sans prénom dont il
+  // est le téléphone actuel ; une place active si.
+  const goneOwner = t.individual ? soloDeviceOwner(req) : null;
   if (t.individual) {
-    const owner = soloDeviceOwner(req);
-    if (owner && owner.id !== p.id) throw soloDeviceError('SOLO_DEVICE_USED');
+    const owner = activeSoloDeviceOwner(req);
+    if (owner && owner.id !== p.id && !(p.nameRequired ? ownEventPlaceholder(req, owner) : ownDisposablePlaceholder(req, owner))) {
+      throw soloDeviceError('SOLO_DEVICE_USED');
+    }
   }
   const saved = personShareCodes.get(p.id);
-  if (body.link !== undefined) {
+  if (body.key !== undefined) {
+    // Même règle que l'ouverture du QR (openSoloInvitation, D2). Personne
+    // marquée partie (PERSON_LEFT) : refusée avant, par claimPersonDurably,
+    // seul appelant, qui résout la clé.
+    if (keyTarget(body.key, t)?.id !== p.id) throw soloKeyRevokedError();
+  } else if (body.link !== undefined) {
     // Le lien contient un secret de 128 bits : pas de limite de tentatives.
     if (transferTarget(body.link, t)?.id !== p.id) {
       throw new Error('Ce lien de transfert a expiré ou a déjà servi. Demande un nouveau lien ou un code au bar.');
@@ -2120,14 +2833,41 @@ function claimPerson(body, req, res) {
   sched.byToken.delete(p.token);
   p.token = crypto.randomBytes(16).toString('hex');
   sched.byToken.set(p.token, p.id);
-  if (t.individual) bindSoloDevice(req, res, p);
+  if (t.individual) {
+    if (goneOwner && goneOwner.id !== p.id && ownEventPlaceholder(req, goneOwner)) {
+      // Jamais deux places actives pour un navigateur : la place provisoire
+      // du QR de l'événement part, avec son code de reprise.
+      dropPlaceholder(goneOwner);
+    } else if (goneOwner && goneOwner.id !== p.id) {
+      // Place partie, ou place sans prénom d'un QR personnel (peut-être celui
+      // de quelqu'un d'autre, ouvert par erreur) : ce navigateur la quitte,
+      // elle reste à son papier, que son propriétaire rescanne.
+      releaseSoloDevice(req, goneOwner);
+    }
+    // Place encore sans prénom reprise ailleurs (papier donné à quelqu'un
+    // d'autre, autre application) : rien à protéger, ses anciens navigateurs
+    // en sont détachés tout de suite et chacun peut ouvrir sa propre place.
+    if (p.nameRequired && !currentSoloDevice(req, p)) delete p.soloDeviceHashes;
+    bindSoloDevice(req, res, p);
+  }
+  p.lastActionAt = Date.now();
   journalEvent('person.transferred', { personId: p.id });
   sched.note(`${p.name} est désormais géré depuis un autre téléphone`, 'info');
   return { id: p.id, token: p.token };
 }
 
 function claimPersonDurably(body, req, res) {
-  if (body.link !== undefined) {
+  if (body.key !== undefined) {
+    // Même refus que l'ouverture du même QR (openSoloInvitation, D2) :
+    // personne marquée partie, PERSON_LEFT (le bar la réactive) ; clé
+    // inconnue ou morte (réactivée depuis), SOLO_KEY_REVOKED (403, QR de
+    // reprise), même texte sur le téléphone.
+    const table = tableByAccess(body.table, body.access);
+    if (keyHolder(body.key, table)?.withdrawnAt) throw personLeftError();
+    const target = keyTarget(body.key, table);
+    if (!target) throw soloKeyRevokedError();
+    body = { ...body, personId: target.id };
+  } else if (body.link !== undefined) {
     const target = transferTarget(body.link, tableByAccess(body.table, body.access));
     if (!target) throw new Error('Ce lien de transfert a expiré ou a déjà servi. Demande un nouveau lien ou un code au bar.');
     body = { ...body, personId: target.id };
@@ -2138,6 +2878,10 @@ function claimPersonDurably(body, req, res) {
   const attempts = code?.attempts;
   const oldToken = person?.token;
   const oldDeviceHashes = person?.soloDeviceHashes?.slice();
+  // Place partie que ce navigateur quitte en reprenant ce profil.
+  const goneOwner = person && sched.table(person.tableId, false)?.individual ? soloDeviceOwner(req) : null;
+  const goneOwnerHashes = goneOwner?.soloDeviceHashes?.slice();
+  const goneOwnerCode = goneOwner ? personShareCodes.get(goneOwner.id) : undefined;
   const oldSoloInvitations = soloInvitations.serialize();
   const oldLog = sched.log.slice();
   const oldVersion = sched.version;
@@ -2158,6 +2902,16 @@ function claimPersonDurably(body, req, res) {
     sched.byToken.set(oldToken, person.id);
     if (oldDeviceHashes) person.soloDeviceHashes = oldDeviceHashes;
     else delete person.soloDeviceHashes;
+    if (goneOwner && goneOwner !== person) {
+      goneOwner.soloDeviceHashes = goneOwnerHashes;
+      // Place provisoire retirée par la reprise : elle revient telle quelle,
+      // avec son code de reprise.
+      if (!sched.people.has(goneOwner.id)) {
+        sched.people.set(goneOwner.id, goneOwner);
+        sched.byToken.set(goneOwner.token, goneOwner.id);
+        if (goneOwnerCode) personShareCodes.set(goneOwner.id, goneOwnerCode);
+      }
+    }
     soloInvitations.restore(oldSoloInvitations);
     if (code) { code.attempts = attempts; personShareCodes.set(id, code); }
     sched.log = oldLog;
@@ -2183,6 +2937,7 @@ function repeatNotice(song, tableId, entryId = null) {
 
 function chooseFor(p, song, mode) {
   assertRoomBeforeClosing(p, mode);
+  assertSongLength(p, [song], 'song');
   const songId = Number(song?.songId);
   if ([...(pending && pending.sel.ids.includes(p.id) ? [pending.sel.song] : []),
     ...tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => tr.sel.song)]
@@ -2455,11 +3210,58 @@ function assertRoomBeforeClosing(p, mode) {
   throw error;
 }
 
+// ------------------------------------------------- durée maximale des titres
+// Réglage du bar (coupé par défaut) : un client ne peut plus ajouter un titre,
+// un duo ni une proposition de Battle plus long que la limite. Le bar, les
+// titres déjà dans KaraFun et « Relancer » ne sont jamais concernés ; les
+// titres déjà dans la file restent (signalés au bar, retrait groupé possible).
+// Bornes partagées avec la reprise de la sauvegarde (stage-progress.js).
+function maxSongLimit() {
+  return stageProgress.validMaxSong(settings.maxSongSec) ? settings.maxSongSec : null;
+}
+// « 6:12 »
+const minSec = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+// Durée retenue : celle du catalogue relayé par ce serveur, sinon celle du
+// téléphone, bornée comme pour la barre de lecture ; null si inconnue.
+function songLengthSec(song) {
+  return catalogDurations.get(Number(song?.songId)) ?? stageProgress.clientDuration(Number(song?.duration));
+}
+// Durée d'un titre au-delà de la limite active, sinon null (durée inconnue : accepté).
+function tooLongSec(song) {
+  const limit = maxSongLimit();
+  const sec = limit == null ? null : songLengthSec(song);
+  return sec != null && sec > limit ? sec : null;
+}
+function assertSongLength(p, songs, route) {
+  for (const song of songs) {
+    const sec = tooLongSec(song);
+    if (sec == null) continue;
+    const limit = maxSongLimit();
+    journalEvent('songLength.refused', { personId: p.id, songId: Number(song?.songId) || null, durationSec: sec, limitSec: limit, route });
+    const error = new Error(`Ce titre dure ${minSec(sec)} : le bar limite les chansons à ${minSec(limit)}.`);
+    error.code = 'SONG_TOO_LONG';
+    throw error;
+  }
+}
+// Titres de la file plus longs que la limite et pas encore partis vers
+// KaraFun (le titre en cours d'envoi reste).
+function tooLongEntries() {
+  if (maxSongLimit() == null) return [];
+  const sending = sendingEntryId();
+  const rows = [];
+  for (const p of sched.people.values()) for (const song of sched.songsOf(p)) {
+    const sec = song.entryId === sending ? null : tooLongSec(song);
+    if (sec != null) rows.push({ p, song, sec });
+  }
+  return rows;
+}
+
 // ------------------------------------------------------------------ Spotify
 const spotifyRedirect = () => `http://127.0.0.1:${PORT}/spotify/callback`;
-const SPOTIFY_POLL_MS = 30000; // lecture de l'état affiché au bar, hors action
-let spotifyBusy = false;
-let spotifyPolledAt = 0;
+// spotifyBusy : passages de l'automate et pauses d'avant-titre en cours ;
+// spotifyWork : passage de l'automate en cours, qu'une pause d'avant-titre attend.
+let spotifyBusy = 0;
+let spotifyWork = null;
 // Soirée vue par Spotify. « between » : rien ne joue, mais un titre suivant
 // arrive (chargé dans KaraFun, en cours d'envoi, ou prêt dans la file avec
 // l'envoi automatique) : Spotify ne reprend pas entre deux chansons.
@@ -2513,15 +3315,19 @@ async function playKaraFun({ queueId = null } = {}) {
     if (playStarting === running) playStarting = null;
   }
   const mine = (async () => {
-    if (spotify.connected && spotify.config.autoPause && !spotify.blocked && !spotifyBusy) {
-      spotifyBusy = true;
+    if (spotify.connected && spotify.config.autoPause && !spotify.blocked) {
+      // Une vérification ou une relance de l'automate en cours ne fait plus
+      // sauter la pause : elle part juste après, dans le même délai.
+      const running = spotifyWork;
+      spotifyBusy++;
       let paused = null;
       try {
-        paused = await Promise.race([spotify.pause(), new Promise(resolve => setTimeout(resolve, SPOTIFY_PAUSE_WAIT_MS, 'timeout'))]);
+        paused = await Promise.race([running ? running.then(() => spotify.pause()) : spotify.pause(),
+          new Promise(resolve => setTimeout(resolve, SPOTIFY_PAUSE_WAIT_MS, 'timeout'))]);
       } catch (error) { spotify.lastError = error.message; }
       // Une pause encore en route après le délai peut croiser le prochain
       // passage de l'automate : sans effet, Spotify est déjà en pause.
-      finally { spotifyBusy = false; }
+      finally { spotifyBusy--; }
       const lead = Number(spotify.config.pauseLeadSec) || 0;
       if (paused === 'done' && lead > 0) await new Promise(resolve => setTimeout(resolve, lead * 1000));
     }
@@ -2541,6 +3347,24 @@ async function playKaraFun({ queueId = null } = {}) {
   finally { if (playStarting === mine) playStarting = null; }
 }
 
+// Vérification de Spotify (appareils et lecteur). Rétabli (appareil retrouvé,
+// réseau revenu, reconnexion) : l'action abandonnée de la période en cours
+// repart, sauf si le bar a lui-même coupé ou lancé la musique, au plus une
+// fois par 10 minutes et pas quand seul l'appel de relance échoue en 5xx
+// (SpotifyAutomation.recover). Spotify en panne ou sans appareil après cet
+// échec : la panne n'était pas propre à l'appel, la reprise est permise.
+// Rien de repris : rien au journal ; sinon l'action reprise (pause ou relance).
+async function spotifyCheck() {
+  const before = spotify.health.state;
+  const health = await spotify.checkHealth();
+  if (health.state === 'error' || health.state === 'no-device') spotifyAutomation.checkFailed();
+  const action = spotifyAutomation.failure?.action;
+  if (health.state === 'ready' && (before !== 'ready' || health.adopted) && spotifyAutomation.recover()) {
+    appLog(`Spotify rétabli : la ${action === 'pause' ? 'pause' : 'relance'} automatique reprend.`);
+  }
+  return health;
+}
+
 async function spotifyTick() {
   if (!spotify.connected || spotifyBusy) return;
   const karaoke = karaokeOutlook();
@@ -2550,12 +3374,13 @@ async function spotifyTick() {
   const action = spotifyAutomation.step(karaoke, closed ? { ...spotify.config, autoResume: true } : spotify.config);
   // Après un échec, Spotify n'est pas rappelé avant le délai ; seule la pause
   // d'un titre qui démarre passe outre (sauf si Spotify demande d'attendre).
-  if (spotify.blocked || (spotify.waiting && action !== 'pause') ||
-      (!action && Date.now() - spotifyPolledAt < SPOTIFY_POLL_MS)) return;
-  spotifyBusy = true;
-  spotifyPolledAt = Date.now();
+  // Sans action : vérification toutes les minutes (ou après un échec).
+  if (spotify.blocked || (spotify.waiting && action !== 'pause') || (!action && !spotify.checkDue)) return;
+  spotifyBusy++;
+  let release;
+  spotifyWork = new Promise(resolve => { release = resolve; });
   try {
-    if (!action) { await spotify.readPlayer(); return; }
+    if (!action) { await spotifyCheck(); return; }
     const result = action === 'resume' ? await spotify.resume() : await spotify.pause();
     spotifyAutomation.settle(true);
     journalEvent('spotify', { action, result: String(result || ''), trigger: closed ? 'closing' : 'auto' });
@@ -2566,9 +3391,10 @@ async function spotifyTick() {
     // Un titre lancé pendant la relance : rien à suspendre.
     if (action === 'resume' && !closed && karaokeOutlook() !== 'singing') holdAutoPlay();
   } catch (error) {
-    if (action) { spotifyAutomation.settle(false); journalEvent('spotify', { action, result: 'error', trigger: closed ? 'closing' : 'auto' }); }
+    spotifyAutomation.settle(false, error);
+    journalEvent('spotify', { action, result: 'error', trigger: closed ? 'closing' : 'auto' });
     spotify.lastError = error.message;
-  } finally { spotifyBusy = false; }
+  } finally { spotifyBusy--; spotifyWork = null; release(); }
 }
 
 // Le catalogue essaie les deux domaines KaraFun comme la recherche, en gardant
@@ -2725,6 +3551,7 @@ function clearEvening() {
   for (const tr of tracked) delete tr.uncommitted;
   for (const tableId of sched.tables.keys()) access.revoke(tableId);
   soloInvitations.clear();
+  privateEvent.clear();
   sched.tables.clear();
   sched.people.clear();
   sched.byToken.clear();
@@ -2760,6 +3587,11 @@ function clearEvening() {
   // il retirerait ses nouveaux titres à la reconnexion.
   settings.queueClearPending = false;
   queueClearRemovalRequests.clear();
+  // Chœurs par défaut relevés provisoires oubliés (sauvegarde et pont) : une
+  // valeur relevée à tort ne dure jamais plus d'une soirée. Une valeur
+  // confirmée par une remise de KaraFun au chargement reste pour ce KaraFun.
+  if (settings.karafunDefaults?.provisional === true) delete settings.karafunDefaults;
+  bridge?.forgetDefaults?.({ keepConfirmed: true });
   if (stopAuto) settings.auto = false;
   journal.start({ rules: journalRules() });
   phaseKey = null; presenceAskKey = null; lastSampleAt = 0;
@@ -2787,7 +3619,8 @@ function journalSettingsState() {
     weightedTables: !!sched.opts.weightedTables, interleaveArrivals: sched.opts.interleaveArrivals !== false,
     battleCooldownMin: battleVote.cooldownMs / 60000, battleRejectedCooldownMin: battleVote.rejectedCooldownMs / 60000,
     battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters, baseUrl: !!settings.baseUrl,
-    singerSongSettings: settings.singerSongSettings !== false };
+    singerSongSettings: settings.singerSongSettings !== false, privateEvent: privateEvent.enabled,
+    maxSongSec: maxSongLimit() };
 }
 function journalSettings(before) {
   const after = journalSettingsState();
@@ -2800,7 +3633,7 @@ const handlers = {
   // ---------------- clients
   'POST /api/join': async (req, res, body) => {
     const t = tableByAccess(body.table, body.access);
-    if (t.individual && soloDeviceOwner(req)) throw soloDeviceError('SOLO_DEVICE_USED');
+    if (t.individual) refuseSoloDeviceOwner(req, soloDeviceOwner(req));
     if (t.individual) requireSoloInvitation(t, body.invitation);
     if (t.headcount == null && !t.individual) {
       const e = new Error('Le bar doit d’abord indiquer le nombre de personnes à cette table.');
@@ -2809,10 +3642,22 @@ const handlers = {
     const photo = decodePhoto(body.photo);
     return joinPersonDurably(req, res, t, body, photo);
   },
-  'POST /api/song': async (req, res, body, me) => { chooseFor(me, body.song, body.mode || 'replace'); return { ok: true }; },
+  'POST /api/song': async (req, res, body, me) => { requireNamed(me); chooseFor(me, body.song, body.mode || 'replace'); return { ok: true }; },
+  // QR individuel ouvert : la personne existe dès maintenant (prénom à saisir),
+  // ou le même QR rouvert ailleurs propose de récupérer ses chansons.
+  'POST /api/table/solo/open': async (req, res, body) => openSoloInvitation(req, res, body),
+  // QR de l'événement privé.
+  'POST /api/table/enter': async (req, res, body) => enterPrivateEvent(req, res, body),
+  // QR de sa table à faire scanner aux amis, depuis un téléphone de la table.
+  'GET /api/table/invite': async (req, res, u) => {
+    const t = tableByAccess(u.searchParams.get('table'), u.searchParams.get('access'));
+    if (t.individual) throw new Error('Pas de QR à partager : chacun demande son QR individuel au bar.');
+    const url = access.url(phoneBase(), t.id);
+    return { url, qr: await QRCode.toDataURL(url, { margin: 1, errorCorrectionLevel: 'M' }) };
+  },
   'POST /api/table/person': async (req, res, body) => {
     const t = tableByAccess(body.table, body.access);
-    if (t.individual && soloDeviceOwner(req)) throw soloDeviceError('SOLO_DEVICE_USED');
+    if (t.individual) refuseSoloDeviceOwner(req, soloDeviceOwner(req));
     if (t.individual) requireSoloInvitation(t, body.invitation);
     if (t.headcount == null && !t.individual) { const e = new Error('Effectif de la table à définir au bar.'); e.code = 'NEED_HEADCOUNT'; throw e; }
     return joinPersonDurably(req, res, t, body);
@@ -2821,7 +3666,21 @@ const handlers = {
   'POST /api/table/person/claim': async (req, res, body) => claimPersonDurably(body, req, res),
   'POST /api/table/person/rename': async (req, res, body) => {
     const p = personAtTable(body);
-    sched.rename(p, body.name); sync(); return { ok: true };
+    try {
+      // Prénom vérifié d'abord : à l'événement complet, le prénom déjà inscrit
+      // d'une invitée (sa page rouverte ailleurs) garde NAME_TAKEN et la
+      // reprise par code (recoverable), pas « complet ».
+      sched.validName(body.name, p.tableId, p.id);
+      // Premier prénom d'une place du QR de l'événement : elle compte alors dans
+      // le plafond des personnes nommées, revérifié ici comme à la création (une
+      // place ouverte avant que l'événement soit complet ne le dépasse pas).
+      if (p.viaEvent && p.nameRequired && PrivateEvent.full(sched.people.values())) throw privateEventFullError();
+      sched.rename(p, body.name);
+    } catch (error) {
+      if (error.code === 'NAME_TAKEN' && sched.table(p.tableId, false)?.individual) error.recoverable = nameRecoverable(req, p, body.name);
+      throw error;
+    }
+    sync(); return { ok: true };
   },
   'POST /api/table/confirm': async (req, res, body) => {
     const p = personAtTable(body);
@@ -2829,6 +3688,7 @@ const handlers = {
   },
   'POST /api/table/song': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     const notice = chooseFor(p, body.song, body.mode || 'append');
     return { ok: true, notice };
   },
@@ -2856,7 +3716,7 @@ const handlers = {
         songSettingsError(`${sched.people.get(target.ids[0])?.name || 'L’auteur du titre'} a choisi ce duo : les réglages se font sur son téléphone.`, 'DUO_GUEST') :
         songSettingsError('Ce titre n’est pas dans ta liste.', 'NOT_OWNER');
     }
-    const values = normalizeSettings(body.settings, songRanges());
+    const values = normalizeSettings(songSettingsInput(body.settings, target), songRanges());
     return { ok: true, settings: values, applied: applySongSettings(target, values, { by: 'self' }) };
   },
   'POST /api/table/song/reorder': async (req, res, body) => {
@@ -2871,12 +3731,15 @@ const handlers = {
   },
   'POST /api/table/duet': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     assertRoomBeforeClosing(p, 'append');
+    assertSongLength(p, [body.song], 'duet');
     const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
     const p = personAtTable(body);
+    if (body.accept) requireNamed(p);
     if (body.accept) assertInviteNotSending(p, body.entryId);
     sched.answerDuet(p, !!body.accept, body.entryId); sync(); return { ok: true };
   },
@@ -2905,18 +3768,20 @@ const handlers = {
   },
   // Messages lus sur le téléphone qui gère la personne.
   'POST /api/table/notice/ack': async (req, res, body) => {
-    const p = personAtTable(body);
+    const p = personAtTable(body, { passive: true });
     return { ok: true, removed: sched.ackNotices(p, body.ids) };
   },
   // Demander à chanter en duo le titre prévu par une autre personne.
   'POST /api/table/duet/join': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     assertNotSending(body.entryId);
     const result = sched.requestDuetJoin(p, body.ownerId, body.entryId); sync();
     return { ok: true, direct: result.direct };
   },
   'POST /api/table/duet/join/answer': async (req, res, body) => {
     const p = personAtTable(body);
+    if (body.accept) requireNamed(p);
     if (body.accept) assertNotSending(body.entryId);
     sched.answerDuetJoin(p, body.entryId, body.fromId, !!body.accept); sync(); return { ok: true };
   },
@@ -2943,25 +3808,33 @@ const handlers = {
   },
   'POST /api/table/battle/propose': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
     if (closingBlocksStart(analyze().current)) {
       const error = new Error('Le bar ferme bientôt : plus de Battle ce soir.');
       error.code = 'CLOSING';
       throw error;
     }
+    const songs = certifiedBattleSongs(body.songs);
+    assertSongLength(p, songs, 'battle');
     const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds: battleElectorate(),
-      songs: certifiedBattleSongs(body.songs), proposerChoice: body.proposerChoice });
+      songs, proposerChoice: body.proposerChoice });
     return { ok: true, battle };
   },
   'POST /api/table/battle/vote': async (req, res, body) => {
     const p = personAtTable(body);
+    requireNamed(p);
+    syncBattleElectorate();
     const battle = battleVote.vote({ personId: p.id, choice: body.choice });
     return { ok: true, battle };
   },
   'POST /api/duet': async (req, res, body, me) => {
+    requireNamed(me);
     assertRoomBeforeClosing(me, 'append');
+    assertSongLength(me, [body.song], 'duet');
     sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
   },
   'POST /api/duet/answer': async (req, res, body, me) => {
+    if (body.accept) requireNamed(me);
     if (body.accept) assertInviteNotSending(me, body.entryId);
     sched.answerDuet(me, !!body.accept, body.entryId); sync(); return { ok: true };
   },
@@ -2971,8 +3844,19 @@ const handlers = {
   },
   'POST /api/confirm': async (req, res, body, me) => { confirmPresence(me); return { ok: true }; },
   'POST /api/give': async (req, res, body, me) => { sched.giveSpot(me, body.to); sync(); return { ok: true }; },
-  'POST /api/leave': async (req, res, body, me) => { sched.leave(me); sync(); return { ok: true }; },
-  'POST /api/photo': async (req, res, body, me) => { me.photo = decodePhoto(body.photo); sched.version++; return { ok: true }; },
+  'POST /api/leave': async (req, res, body, me) => {
+    // Place sans prénom ni titre du QR de l'événement : supprimée, sans trace
+    // (sinon chaque nouveau scan laisserait une fiche partie de plus).
+    if (me.viaEvent && disposablePlaceholder(me)) { dropPlaceholder(me); sched.version++; }
+    // Nommée mais sans aucun historique : supprimée aussi, départ au journal.
+    else if (me.viaEvent && withoutHistory(me)) forgetEventPerson(me);
+    // Sinon marquée partie ; venue par l'événement, sa fiche reste comptée
+    // dans le plafond des fiches (partie d'elle-même, PrivateEvent.held).
+    else leavePerson(me);
+    sync(); return { ok: true };
+  },
+  // Une place sans prénom n'a pas de photo (400 Ko au plus, gardés en mémoire).
+  'POST /api/photo': async (req, res, body, me) => { requireNamed(me); me.photo = decodePhoto(body.photo); sched.version++; return { ok: true }; },
 
   // ---------------- bar
   // Un code vide est refusé : il effaçait le code retenu sans rien connecter.
@@ -3042,6 +3926,12 @@ const handlers = {
     if (typeof nextSingerSettings !== 'boolean') {
       throw new Error('Le réglage des titres depuis les téléphones est activé ou désactivé (oui ou non).');
     }
+    // Durée maximale des titres : null (ou false) coupe la limite.
+    const nextMaxSong = 'maxSongSec' in body ? (body.maxSongSec === null || body.maxSongSec === false ? null : Number(body.maxSongSec))
+      : maxSongLimit();
+    if (nextMaxSong !== null && !stageProgress.validMaxSong(nextMaxSong)) {
+      throw new Error('La durée maximale des chansons doit être entre 2:00 et 15:00.');
+    }
     if (body.auto && recoveredPending) throw new Error('Vérifie d’abord l’envoi interrompu dans KaraFun.');
     if (body.auto && persistenceError) throw new Error('Sauvegarde indisponible : l’envoi automatique reste suspendu.');
     if (body.auto && bridge?.permissions?.addToQueue === false) {
@@ -3078,6 +3968,13 @@ const handlers = {
     settings.presenceGraceSec = nextPresenceGrace;
     settings.presenceMaxSkips = nextPresenceSkips;
     settings.singerSongSettings = nextSingerSettings;
+    if (nextMaxSong !== maxSongLimit()) {
+      settings.maxSongSec = nextMaxSong;
+      const count = tooLongEntries().length;
+      sched.note(nextMaxSong === null ? 'Durée des chansons : plus de limite.' :
+        `Durée des chansons limitée à ${minSec(nextMaxSong)} pour les nouveaux ajouts des clients` +
+        (count ? ` ; ${count} titre${count > 1 ? 's' : ''} de la file ${count > 1 ? 'dépassent' : 'dépasse'} (« Plus » › règles pour ${count > 1 ? 'les' : 'le'} retirer).` : '.'), 'staff');
+    }
     if (nextBattleCooldown !== null) battleVote.setCooldownMinutes(nextBattleCooldown);
     if (nextRejectedCooldown !== null) battleVote.setRejectedCooldownMinutes(nextRejectedCooldown);
     if (nextVoteMin !== null) battleVote.setVoteMinutes(nextVoteMin);
@@ -3115,6 +4012,43 @@ const handlers = {
     sched.note(`Le bar a préparé une invitation individuelle pour ${t.name}.`, 'staff');
     return { id: invitation.id, url, qr, expiresAt: invitation.expiresAt };
   },
+  // Événement privé : allumer, couper (le QR imprimé reste pour le rallumer)
+  // ou renouveler le QR. Le journal ne note que l'état, jamais le secret.
+  'POST /api/staff/private-event': async (req, res, body) => {
+    if ('enabled' in body && typeof body.enabled !== 'boolean') {
+      throw new Error('L’événement privé est activé ou désactivé (oui ou non).');
+    }
+    const before = journalSettingsState();
+    if (body.enabled === true && !privateEvent.enabled) {
+      privateEvent.enable();
+      sched.note('Événement privé activé : un seul QR pour tout le monde.', 'staff');
+    } else if (body.enabled === false && privateEvent.enabled) {
+      privateEvent.disable();
+      sched.note('Événement privé coupé : son QR ne permet plus de s’inscrire.', 'staff');
+    }
+    if (body.rotate) {
+      privateEvent.rotate();
+      // Les places venues par l'ancien QR, encore sans prénom ni titre, partent
+      // sans trace : leur page retombe sur « QR d'événement plus actif ».
+      const dropped = [...sched.people.values()].filter(p => p.viaEvent && p.nameRequired && !sched.songsOf(p).length);
+      dropped.forEach(dropPlaceholder);
+      if (dropped.length) sched.version++;
+      // Les personnes de l'ancien QR parties d'elles-mêmes libèrent leur fiche
+      // (relecture finale fraîche, décision du gérant) : un script entrée,
+      // prénom, un titre puis « Je pars » ne ferme plus le QR pour la soirée,
+      // le plafond des fiches vaut pour chaque QR. Comme un départ marqué par
+      // le bar (withdrawnBy « staff », sauvegardé), la fiche et son historique
+      // restent. Couper puis rallumer le mode ne libère rien.
+      let freed = 0;
+      for (const p of sched.people.values()) {
+        if (p.viaEvent && p.withdrawnAt && p.withdrawnBy === 'self') { p.withdrawnBy = 'staff'; freed++; }
+      }
+      sched.note(`Nouveau QR d’événement privé : l’ancien est refusé, les inscrits gardent leur accès.${freed ?
+        ` Fiches libérées (parties d’elles-mêmes) : ${freed}.` : ''}`, 'staff');
+    }
+    journalSettings(before);
+    return privateEventView();
+  },
   'POST /api/staff/solo-invite/revoke': async (req, res, body) => {
     if (!soloInvitations.revoke(String(body.id || ''))) throw new Error('Invitation inconnue ou déjà utilisée.');
     sched.note('Le bar a annulé une invitation individuelle.', 'staff');
@@ -3148,6 +4082,8 @@ const handlers = {
     const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(ids);
     if (pending?.sel.ids.some(id => ids.has(id))) pending.cancelled = true;
     sched.tableLeft(tableId);
+    // Comme un départ (leavePerson) : leurs codes et liens de reprise meurent.
+    for (const id of ids) personShareCodes.delete(id);
     soloInvitations.revokeTable(tableId);
     access.revoke(tableId);
     saveTables();
@@ -3257,6 +4193,30 @@ const handlers = {
     return { ok: true, removed, skipped: skipped.length,
       message: `${removed} titre${removed > 1 ? 's' : ''} retiré${removed > 1 ? 's' : ''}${skipped.length ? ` ; ${skipped.length} ignoré${skipped.length > 1 ? 's' : ''} (${[...new Set(skipped)].join(', ')})` : ''}.` };
   },
+  // Durée maximale (décision D9) : les titres trop longs déjà dans la file
+  // restent jusqu'à ce geste du bar ; chaque personne est prévenue sur son
+  // téléphone, l'invitée d'un duo aussi (au lieu de « … a annulé le duo »).
+  // Les titres déjà dans KaraFun ou en cours d'envoi restent.
+  'POST /api/staff/songs-too-long/remove': async () => {
+    const limit = maxSongLimit();
+    if (limit == null) throw new Error('Active d’abord « Limiter la durée des chansons ».');
+    let removed = 0;
+    const skipped = [];
+    for (const { p, song, sec } of tooLongEntries()) {
+      const partnerId = song.duet?.partnerId || null;
+      try { sched.staffRemoveEntry(p.id, song.entryId, pid => pid !== partnerId); }
+      catch (error) { skipped.push(error.message); continue; }
+      removed++;
+      const params = { title: song.title, length: minSec(sec), limit: minSec(limit) };
+      sched.notify(p.id, 'tooLongRemoved', params);
+      if (partnerId) sched.notify(partnerId, 'tooLongRemoved', { ...params, name: p.name });
+    }
+    journalEvent('songLength.removed', { count: removed, limitSec: limit });
+    if (removed) sched.note(`Le bar a retiré ${removed} titre${removed > 1 ? 's' : ''} plus long${removed > 1 ? 's' : ''} que ${minSec(limit)} ; les personnes concernées sont prévenues.`, 'staff');
+    sync();
+    return { ok: true, removed, skipped: skipped.length,
+      message: `${removed} titre${removed > 1 ? 's' : ''} trop long${removed > 1 ? 's' : ''} retiré${removed > 1 ? 's' : ''}${skipped.length ? ` ; ${skipped.length} ignoré${skipped.length > 1 ? 's' : ''} (${[...new Set(skipped)].join(', ')})` : ''}.` };
+  },
   'POST /api/staff/queue-optimize': async () => {
     const started = sched.forceReplan(30000);
     sync();
@@ -3272,7 +4232,7 @@ const handlers = {
     if (personId && !target.ids.includes(personId)) {
       throw songSettingsError(`Ce titre n’est pas celui de ${sched.people.get(personId)?.name || 'cette personne'}.`, 'NOT_OWNER');
     }
-    const values = normalizeSettings(body.settings, songRanges());
+    const values = normalizeSettings(songSettingsInput(body.settings, target), songRanges());
     return { ok: true, settings: values, applied: applySongSettings(target, values, { by: 'staff' }) };
   },
   'POST /api/staff/bonus': async (req, res, body) => {
@@ -3296,10 +4256,28 @@ const handlers = {
   'POST /api/staff/person/leave': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p) throw new Error('Chanteur inconnu.');
+    const placeholder = p.viaEvent && disposablePlaceholder(p);
+    // La page du bar a confirmé « Retirer la place « Solo N » ? » sur l'état
+    // qu'elle affichait : si l'invitée a donné son prénom entre-temps, rien
+    // ne change. Sans ce drapeau (page d'avant la mise à jour) : comme avant.
+    if (body.expectPlaceholder === true && !placeholder) {
+      throw new Error('Cette place vient de recevoir un prénom : vérifie avant de la marquer partie.');
+    }
+    // Place « Solo N » du QR de l'événement, sans prénom ni titre : supprimée
+    // sans trace, comme par /api/leave. Marquée partie, son navigateur
+    // resterait lié à une fiche que le bar ne saurait pas réactiver ; il
+    // rescanne le QR de l'événement et retrouve une nouvelle place.
+    if (placeholder) {
+      dropPlaceholder(p);
+      sched.version++;
+      sync();
+      return { ok: true, removedFromKaraFun: 0, pendingCancelled: false,
+        message: `Place « ${p.name} » sans prénom retirée : s’il est encore là, il rescanne le QR de l’événement.` };
+    }
     // Invitée d'un duo déjà chargé : le titre reste dans KaraFun, au nom de
     // son auteur seul.
     const { upcomingTracks, keptAsSolo } = keepSentDuosOfLeavers(new Set([p.id]));
-    sched.leave(p, 'staff');
+    leavePerson(p, 'staff');
     if (pending?.sel.ids.includes(p.id)) pending.cancelled = true;
     removeLeaversTracks(upcomingTracks, new Set([p.id]));
     sync();
@@ -3326,8 +4304,11 @@ const handlers = {
     }
     p.withdrawnAt = null;
     journalEvent('person.reactivated', { personId: p.id });
-    sched.note(`${p.name} revient à ${t.name} ; son historique de passages est conservé`, 'staff');
-    return { ok: true };
+    sched.note(`${t.individual ? `${p.name} revient` : `${p.name} revient à ${t.name}`} ; son historique de passages est conservé`, 'staff');
+    // Sa clé personnelle est morte au départ : son téléphone retrouve ses
+    // droits, mais une page perdue ne revient que par un QR de reprise.
+    return p.soloKeyRevoked ? { ok: true,
+      message: `${p.name} revient. Son QR personnel ne sert plus : s’il a perdu sa page, donne-lui un QR de reprise.` } : { ok: true };
   },
   // Heure de fermeture : à régler, décaler (« encore une chanson ! ») ou retirer.
   'POST /api/staff/closing': async (req, res, body) => {
@@ -3360,8 +4341,7 @@ const handlers = {
     if (action === 'client') spotify.setClientId(body.clientId);
     else if (action === 'auth-url') return { ok: true, url: spotify.authUrl(spotifyRedirect()) };
     else if (action === 'disconnect') spotify.disconnect();
-    else if (action === 'devices') return { ok: true, devices: await spotify.devices() };
-    else if (action === 'device') spotify.setDevice(body.deviceId, body.deviceName);
+    else if (action === 'device') { spotify.setDevice(body.deviceId, body.deviceName); await spotifyCheck(); }
     else if (action === 'options') spotify.setOptions({
       ...('autoResume' in body ? { autoResume: !!body.autoResume } : {}),
       ...('autoPause' in body ? { autoPause: !!body.autoPause } : {}),
@@ -3374,7 +4354,8 @@ const handlers = {
       journalEvent('spotify', { action: action === 'play' ? 'resume' : 'pause', result: String(result || ''), trigger: 'staff' });
       return { ok: true, result };
     }
-    else if (action === 'refresh') await spotify.readPlayer();
+    // « Vérifier Spotify » : liste des appareils, appareil repris, état du lecteur.
+    else if (action === 'refresh') return { ok: true, health: await spotifyCheck() };
     else throw new Error('Action Spotify inconnue.');
     return { ok: true };
   },
@@ -3383,9 +4364,20 @@ const handlers = {
   // chanson, `stageEntryId` désigne le passage dans les derniers passages.
   'POST /api/staff/duo-mark': async (req, res, body) => {
     const partnerId = String(body.partnerId || '');
+    // Vérifié avant tout changement (un remplacement annule d'abord l'ancien duo).
+    if (sched.people.get(partnerId)?.nameRequired) throw new Error('Cette personne n’a pas encore saisi son prénom.');
     const byEntry = body.stageEntryId != null && body.stageEntryId !== '';
     const target = byEntry ? staffDuoTarget(body) :
       staffDuoTarget({ queueId: body.queueId }, 'Choisis un passage solo encore visible dans KaraFun.');
+    const { current } = analyze();
+    // Titre suivi pas encore commencé (chargé ou en attente dans KaraFun) :
+    // refusé, comme sur la page du bar qui n'envoie que le titre sur scène
+    // (relecture finale fraîche). Noté avant son passage puis sauté, il
+    // laissait le dernier passage de l'invitée au-delà du compteur des
+    // passages.
+    if (!byEntry && !target.tr.startedAt && !isOnStage(target.tr, current)) {
+      throw new Error('Ce titre n’a pas encore commencé : note le duo pendant la chanson en cours.');
+    }
     const record = staffDuoRecord(target);
     const holder = target.tr ? target.tr.sel : target.entry;
     if (body.replace && !record && holder.ids.length !== 1) throw new Error('Aucun duo noté par le bar sur ce passage.');
@@ -3405,15 +4397,15 @@ const handlers = {
       previous = sched.people.get(record.partnerId);
       undoText = undoStaffDuo(target, record);
     }
-    const { current } = analyze();
     const ownerId = holder.ids[0];
     // Ses titres déjà chargés dans KaraFun gardent le duo dans leur reçu : si
     // l'un est retiré sans être chanté, le duo compte toujours pour lui.
     const inFlight = tracked.filter(item => item !== target.tr && !item.startedAt && !item.cancelled &&
       !isOnStage(item, current) && item.sel.ids.includes(partnerId)).map(item => item.sel);
     // Chanson finie (plus suivie) : le duo est noté sur le titre du passage,
-    // pour que le journal et les statistiques le rattachent au bon passage.
-    const sel = target.tr ? target.tr.sel : { song: { entryId: target.entry?.entryId || null } };
+    // pour que le journal et les statistiques le rattachent au bon passage,
+    // et l'invité compté au tour de ce passage (relevé par recordStage).
+    const sel = target.tr ? target.tr.sel : { song: { entryId: target.entry?.entryId || null }, turn: target.entry?.turn };
     const partner = sched.staffCountPartner(ownerId, partnerId, sel, inFlight);
     const mark = sel.staffDuo;
     mark.kindBefore = holder.kind || 'solo';
@@ -3422,9 +4414,7 @@ const handlers = {
       target.tr.sel.ids.push(partner.id);
       target.tr.sel.names.push(partner.name);
       target.tr.sel.kind = 'duo';
-      const ownerTable = sched.table(sched.people.get(ownerId).tableId);
-      const partnerTable = sched.table(partner.tableId);
-      target.tr.sel.label = `${target.tr.sel.names.join(' & ')} · ${ownerTable.name}${ownerTable.id === partnerTable.id ? '' : ` + ${partnerTable.name}`}`;
+      target.tr.sel.label = sched.passageLabel(target.tr.sel.ids);
     }
     if (target.entry) {
       sched.setStagePeople(target.entry, [...target.entry.ids, partner.id], 'duo');
@@ -3605,7 +4595,13 @@ const server = http.createServer(async (req, res) => {
         const me = sched.person(u.searchParams.get('token') || '');
         if (me && !u.searchParams.has('table')) {
           requireSoloControl(req, me);
+          if (req.headers['x-page-visible'] !== '0') touchSeen(me);
           const view = publicState(me, me.tableId, new Set([me.id]));
+          // Même règle que la lecture par table : seule la place sans prénom
+          // dont ce navigateur est le téléphone actuel laisse la reprise ouverte.
+          if (view.recoveryPeople && !me.withdrawnAt && !ownDisposablePlaceholder(req, me)) {
+            view.recoveryPeople = view.recoveryPeople.filter(person => person.id === me.id);
+          }
           view.managedIds = [me.id];
           return send(res, 200, view);
         }
@@ -3625,10 +4621,14 @@ const server = http.createServer(async (req, res) => {
           view.transferOffer = target ? { personId: target.id, name: target.name,
             expiresAt: personShareCodes.get(target.id)?.linkExpiresAt || null } : { invalid: true };
         }
-        if (t.individual && soloOwner) {
+        if (t.individual && soloOwner && !soloOwner.withdrawnAt && !ownDisposablePlaceholder(req, soloOwner)) {
           view.recoveryPeople = (view.recoveryPeople || []).filter(person => person.id === soloOwner.id);
         }
         view.managedIds = [...new Set(owned.map(person => person.id))];
+        // Activité : sauf une page cachée (« 0 » ; la page continue d'interroger
+        // en arrière-plan), pour toutes les personnes gérées par ce téléphone.
+        // Sans en-tête : page gardée en cache d'avant la mise à jour, comptée.
+        if (req.headers['x-page-visible'] !== '0') for (const person of owned) touchSeen(person);
         for (const person of owned) noteSeen(person);
         return send(res, 200, view);
       }
@@ -3673,9 +4673,11 @@ const server = http.createServer(async (req, res) => {
         for (const owner of sched.people.values()) for (const item of sched.songsOf(owner)) {
           if (item.duet?.partnerId) guestDuos.set(item.duet.partnerId, (guestDuos.get(item.duet.partnerId) || 0) + 1);
         }
-        return send(res, 200, [...sched.people.values()].filter(person => !person.withdrawnAt)
+        // Un soliste est proposé sous son seul prénom : son groupe n'est pas une table.
+        return send(res, 200, [...sched.people.values()].filter(person => !person.withdrawnAt && !person.nameRequired)
           .map(person => ({ id: person.id, name: person.name, tableId: person.tableId,
-            table: sched.table(person.tableId, false)?.name || person.tableId,
+            ...(sched.table(person.tableId, false)?.individual ? { table: '', individual: true } :
+              { table: sched.table(person.tableId, false)?.name || person.tableId }),
             sameTable: person.tableId === table.id, guestDuos: guestDuos.get(person.id) || 0 })));
       }
       if (p === '/api/search') {
@@ -3706,6 +4708,15 @@ const server = http.createServer(async (req, res) => {
         const svg = await QRCode.toString(target, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
         return send(res, 200, svg, 'image/svg+xml');
       }
+      // QR de l'événement privé, hors de /qr/<table>.svg (une table peut
+      // s'appeler « evenement »). Réservé au bar, seulement mode allumé.
+      if (p === '/qr-evenement.svg') {
+        if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8');
+        const { url } = privateEventView();
+        if (!url) return send(res, 404, 'QR inconnu', 'text/plain; charset=utf-8');
+        const svg = await QRCode.toString(url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+        return send(res, 200, svg, 'image/svg+xml');
+      }
       m = /^\/qr\/([^/]+)\.svg$/.exec(p);
       if (m) {
         if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8');
@@ -3715,6 +4726,9 @@ const server = http.createServer(async (req, res) => {
         const svg = await QRCode.toString(target, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
         return send(res, 200, svg, 'image/svg+xml');
       }
+      // Routes GET des téléphones déclarées avec les autres (traductions vérifiées).
+      const tableGet = p.startsWith('/api/table/') && handlers[`GET ${p}`];
+      if (tableGet) return send(res, 200, await tableGet(req, res, u));
       return send(res, 404, 'Introuvable', 'text/plain; charset=utf-8');
     }
     if (req.method === 'POST') {
@@ -3731,23 +4745,44 @@ const server = http.createServer(async (req, res) => {
       if (!p.startsWith('/api/staff/') && p !== '/api/join' && !p.startsWith('/api/table/')) {
         me = sched.person(body.token || '');
         if (!me) return send(res, 401, { error: 'Session inconnue : inscris-toi à nouveau.', code: 'NO_SESSION' });
-        if (me.withdrawnAt) return send(res, 403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
+        if (me.withdrawnAt) throw personLeftError();
         requireSoloControl(req, me);
+        claimActivity(body, me);
       }
-      if (p.startsWith('/api/table/') && p !== '/api/table/person' && p !== '/api/table/person/claim') {
+      // Routes qui créent ou rattachent une personne : pas encore de téléphone associé.
+      if (p.startsWith('/api/table/') && !['/api/table/person', '/api/table/person/claim',
+        '/api/table/solo/open', '/api/table/enter'].includes(p)) {
         const table = tableByAccess(body.table, body.access);
         if (table.individual) {
           const owner = soloDeviceOwner(req);
           if (!owner || owner.id !== String(body.personId || '')) throw soloDeviceError('SOLO_DEVICE_ACCESS');
         }
       }
-      const out = await h(req, res, body, me);
+      let out;
+      // Toute action peut ajouter ou nommer une personne : un vote Battle
+      // ouvert l'accueille aussitôt, même si l'action échoue ensuite.
+      try { out = await h(req, res, body, me); }
+      finally {
+        // Une écriture impossible ne doit ni masquer l'erreur de l'action, ni
+        // faire échouer une action réussie : le vote réessaiera.
+        try { syncBattleElectorate(); }
+        catch (error) { appLog(`Électorat Battle non mis à jour : ${error.message}`); }
+      }
+      // Seule une action acceptée compte comme activité (une action refusée
+      // a levé son erreur avant d'arriver ici).
+      creditActivity(body);
       if (p !== '/api/table/person/claim' && !res.nightAlreadySaved) saveNight({ required: true });
       return send(res, 200, out || { ok: true });
     }
     send(res, 405, 'Méthode non gérée', 'text/plain');
   } catch (e) {
-    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null });
+    // Trop d'inscriptions dans la minute : 429 et le délai avant un essai utile.
+    if (e.code === 'PRIVATE_EVENT_BUSY') {
+      return send(res, 429, { error: e.message, code: e.code }, undefined, { 'Retry-After': String(Math.max(1, e.retryAfter || 1)) });
+    }
+    send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'PERSON_LEFT', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION', 'SOLO_KEY_REVOKED',
+      'PRIVATE_EVENT', 'PRIVATE_EVENT_FULL'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null,
+      ...(typeof e.recoverable === 'boolean' ? { recoverable: e.recoverable } : {}) });
   }
 });
 // Point d'entrée réservé au tunnel HTTPS. Lié uniquement à la boucle locale et
@@ -3773,6 +4808,7 @@ function connectKaraFun(code = CODE) {
   // Budget de l'heure épuisé et connexion prête : le pont garde son code
   // (faute de frappe probable). Le code retenu suit toujours le pont.
   CODE = bridge.code || code;
+  restoreKaraFunDefaults();
   rememberCode();
   appLog(result === 'kept' ? `KaraFun (code ${maskCode(code)}) : connexion en cours ou prête, gardée.` :
     result?.ok === false ? `KaraFun (code ${maskCode(code)}) : clic sans nouvel essai. ${result.message}` :
@@ -3804,9 +4840,12 @@ async function main() {
     pending = recovered.pending;
     tracked = recovered.tracked;
     soloInvitations.restore(recovered.soloInvitations);
+    privateEvent.restore(recovered.privateEvent);
     restoreTransfers(recovered.transfers);
+    stageClock = recovered.stageClock;
     recoveredPending = recovered.recoveredPending;
     appLog(`Soirée restaurée : ${sched.tables.size} tables, ${sched.people.size} personnes, ${sched.Q.length} tickets.`);
+    for (const warning of recovered.warnings) appLog(`Sauvegarde de soirée réparée : ${warning}.`);
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');
   } else loadTables();
   ensureSoloGroup();
@@ -3814,6 +4853,7 @@ async function main() {
   // reportées à leur heure, pour que les présences restent justes.
   if (previousNight && !resumed) {
     for (const p of sched.people.values()) {
+      if (p.nameRequired) continue; // QR ouvert, pas encore inscrite
       journal.append('person.joined', { personId: p.id, tableId: p.tableId, restored: true }, p.joinedAt);
       if (p.withdrawnAt) journal.append('person.left', { personId: p.id, by: 'restored' }, p.withdrawnAt);
     }

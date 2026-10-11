@@ -278,6 +278,34 @@ test('changer de partenaire après le départ du chanteur : refusé sans rien d�
   assert.equal(dam.duetGuestCount || 0, 0);
 });
 
+// Regression: relecture finale fraîche, première passe (adverse BAS) — le duo
+// noté au bar acceptait n'importe quel titre suivi dans KaraFun, pas
+// seulement celui sur scène. Noté sur un titre chargé mais pas commencé dont
+// l'invitée avait aussi son propre titre chargé, puis ce titre passé dans
+// KaraFun, le dernier passage de l'invitée dépassait le compteur des
+// passages : la soirée sauvegardée ne se reprenait plus au redémarrage.
+test('duo noté sur un titre chargé dans KaraFun mais pas commencé : refusé sans rien changer ; sur scène, accepté', async () => {
+  const { f, s, dam, zoe, loaded, bridge, queue, beforeMark, credits } = evening();
+  const zoeBefore = fairness(s, zoe);
+  const creditsBefore = credits();
+  await assert.rejects(f.call('POST /api/staff/duo-mark', { queueId: 2, partnerId: zoe.id }),
+    { message: 'Ce titre n’a pas encore commencé : note le duo pendant la chanson en cours.' });
+  assert.deepEqual(plain(loaded.ids), [dam.id], 'le titre chargé reste un solo');
+  assert.equal(loaded.staffDuo, undefined);
+  assert.deepEqual(fairness(s, zoe), zoeBefore, 'Zoé n’est pas comptée');
+  assert.deepEqual(fairness(s, dam), beforeMark);
+  assert.deepEqual(credits(), creditsBefore);
+  assert.deepEqual(bridge.removed, [], 'rien n’est retiré de KaraFun');
+  // Le même titre lancé par KaraFun, avant même que la file le note commencé :
+  // il est sur scène, le duo se note.
+  queue.splice(0, 1);
+  bridge.status = { state: 'playing', songPlaying: { queueId: 2 } };
+  assert.equal(f.tracked()[1].startedAt, null);
+  const marked = plain(await f.call('POST /api/staff/duo-mark', { queueId: 2, partnerId: zoe.id }));
+  assert.equal(marked.ok, true);
+  assert.deepEqual(plain(loaded.ids), [dam.id, zoe.id]);
+});
+
 test('duo prévu par les chanteurs : le bar ne peut pas l’annuler comme un duo improvisé', async () => {
   const { f, stage, jp } = evening();
   stage.ids.push(jp.id); stage.names.push('JP'); stage.kind = 'duo';
@@ -318,4 +346,75 @@ test('après la chanson : duo noté ou corrigé rattaché au titre du passage (j
   assert.deepEqual(duoEvents(), [['duo.improvised', stage.song.entryId, dam.id]]);
   await f.call('POST /api/staff/duo-unmark', { stageEntryId: entry.id });
   assert.equal(events.find(([type]) => type === 'duo.improvisedCancelled')?.[1].entryId, stage.song.entryId);
+});
+
+// Olga chante (queueId 1) ; personne d'autre n'attend : son titre suivant est
+// déjà chargé dans KaraFun (queueId 2). Bea est dans la salle, sans titre.
+// `stageTurn` : tour du passage d'Olga en scène.
+function ownerNextLoaded() {
+  const f = harness();
+  const s = f.sched;
+  const olga = s.join({ tableId: 'A', name: 'Olga', headcount: 1 });
+  const bea = s.join({ tableId: 'B', name: 'Bea', headcount: 1 });
+  s.chooseSong(olga, { songId: 1, title: 'Olga 1' }, 'append');
+  s.chooseSong(olga, { songId: 2, title: 'Olga 2' }, 'append');
+  const stage = s.select(); s.commit(stage); s.recordStage(stage, Date.now() - 60000);
+  const stageTurn = olga.lastAppearanceTurn;
+  const next = s.select(); s.commit(next);
+  assert.deepEqual([plain(stage.ids), plain(next.ids)], [[olga.id], [olga.id]], 'titre suivant d’Olga déjà chargé');
+  const queue = [{ queueId: 1, songId: 1, singer: stage.label }, { queueId: 2, songId: 2, singer: next.label }];
+  const bridge = fakeBridge(queue, 1);
+  f.setBridge(bridge);
+  f.tracked().push({ queueId: 1, sel: stage, startedAt: Date.now() - 60000, addedAt: Date.now() - 90000 },
+    { queueId: 2, sel: next, startedAt: null, addedAt: Date.now() - 30000 });
+  return { f, s, olga, bea, stage, next, bridge, queue, stageTurn };
+}
+
+// Sauvegarde de la soirée puis reprise, comme après un redémarrage.
+function restart(f) {
+  const { snapshotNight, restoreNight } = require('../night-state');
+  const { TableAccess } = require('../table-access');
+  const { Scheduler } = require('../scheduler');
+  const access = new TableAccess();
+  for (const id of f.sched.tables.keys()) access.issue(id);
+  const settings = { auto: false, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 };
+  const snapshot = plain(snapshotNight({ scheduler: f.sched, access, settings, tracked: f.tracked() }));
+  const scheduler = new Scheduler({});
+  restoreNight(snapshot, { scheduler, access: new TableAccess(), settings: { ...settings } });
+  return scheduler;
+}
+
+// Regression: vérification de la troisième passe de la relecture finale —
+// le duo noté au bar comptait l'invitée au dernier passage du chanteur, qui
+// pouvait être son titre suivant déjà chargé dans KaraFun. Ce titre passé
+// avant la lecture, le compteur des passages redescendait sous le tour de
+// l'invitée : jusqu'au passage suivant, la soirée sauvegardée était refusée
+// au redémarrage (« compteur des passages physiques mal formé »).
+test('duo noté sur le passage en cours, titre suivant du chanteur passé dans KaraFun : invitée comptée au tour du passage, soirée reprise', async () => {
+  const { f, s, bea, queue, stageTurn } = ownerNextLoaded();
+  await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: bea.id });
+  assert.equal(bea.lastAppearanceTurn, stageTurn, 'Bea est montée pendant ce passage, pas pendant le suivant');
+  queue.splice(1, 1); // passé dans KaraFun avant la lecture
+  f.sync();
+  assert.equal(f.tracked().length, 1, 'le titre suivant n’est plus suivi');
+  assert.equal(s.appearanceSerial, stageTurn, 'il ne compte plus');
+  assert.equal(bea.lastAppearanceTurn, stageTurn);
+  assert.equal(restart(f).people.get(bea.id).lastAppearanceTurn, stageTurn, 'la soirée se reprend');
+});
+
+test('duo noté après la chanson, titre suivant du chanteur passé dans KaraFun : même tour, soirée reprise', async () => {
+  const { f, s, olga, bea, bridge, queue, stageTurn } = ownerNextLoaded();
+  queue.splice(0, 1); // la chanson d'Olga finit
+  bridge.status = { state: 'idle' };
+  f.sync();
+  const entry = s.stageHistory.at(-1);
+  assert.ok(entry.endedAt);
+  assert.equal(olga.lastAppearanceTurn, stageTurn + 1, 'son titre suivant est déjà compté');
+  await f.call('POST /api/staff/duo-mark', { stageEntryId: entry.id, partnerId: bea.id, replace: true });
+  assert.deepEqual(plain(entry.ids), [olga.id, bea.id]);
+  assert.equal(bea.lastAppearanceTurn, stageTurn, 'Bea est comptée au tour du passage fini');
+  queue.splice(0, 1); // son titre suivant est passé dans KaraFun avant la lecture
+  f.sync();
+  assert.equal(s.appearanceSerial, stageTurn);
+  assert.equal(restart(f).people.get(bea.id).lastAppearanceTurn, stageTurn, 'la soirée se reprend');
 });

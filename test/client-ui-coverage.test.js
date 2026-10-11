@@ -128,7 +128,19 @@ class Element {
     return null;
   }
   focus() { this.focusCount++; this.page.document.activeElement = this; }
-  select() { this.selected = true; }
+  appendChild(child) { child.parent = this; child.detached = false; this.children.push(child); return child; }
+  remove() {
+    if (!this.parent) return;
+    // Comme un navigateur : retirer l'élément qui a le focus le rend à la page.
+    for (let node = this.page.document.activeElement; node; node = node.parent) if (node === this) { this.page.document.activeElement = this.page.body; break; }
+    this.parent.children = this.parent.children.filter(child => child !== this);
+    this.parent = null;
+    this.detached = true;
+  }
+  blur() { if (this.page.document.activeElement === this) this.page.document.activeElement = this.page.body; }
+  setSelectionRange(start, end) { this.selection = [start, end]; }
+  // Comme un navigateur : select() donne aussi le focus au champ.
+  select() { this.selected = true; this.page.document.activeElement = this; }
   scrollIntoView(options) { this.scrolled = options || true; }
 }
 function selectValue(select) {
@@ -163,7 +175,7 @@ function parseInto(page, rootNode, markup) {
 
 // ---------------------------------------------------------------- page chargée
 const REPLY = Symbol('réponse');
-const reply = (status, data = {}) => ({ [REPLY]: true, status, data });
+const reply = (status, data = {}, headers = {}) => ({ [REPLY]: true, status, data, headers });
 const timeOf = (value, lang = 'fr') => new Date(value).toLocaleTimeString(lang === 'en' ? 'en-GB' : 'fr-FR', { hour: '2-digit', minute: '2-digit' });
 
 const person = (id, name, extra = {}) => ({ id, name, active: true, songs: [], invites: [], inKaraFun: [], joinRequests: [],
@@ -222,7 +234,14 @@ function boot(options = {}) {
     querySelector: selector => body.querySelector(selector),
     addEventListener(type, listener, opts = {}) { (this.listeners[type] ||= []).push({ listener, once: !!opts?.once }); },
     contains: node => connected(node),
-    execCommand: command => { page.execCommands = (page.execCommands || 0) + 1; return command === 'copy' && !!options.execCopy; },
+    createElement: tag => new Element(page, tag),
+    // Copie de secours : le champ sélectionné au moment de la copie est noté.
+    execCommand: command => {
+      page.execCommands = (page.execCommands || 0) + 1;
+      const field = [...page.body.descendants()].reverse().find(node => node.selected);
+      page.execCopied = (page.execCopied || []).concat(field ? [field.value] : []);
+      return command === 'copy' && !!options.execCopy;
+    },
   };
   const connected = node => {
     for (let current = node; current; current = current.parent) {
@@ -234,6 +253,8 @@ function boot(options = {}) {
   page.document = document;
   page.body = body;
   body.innerHTML = bodyMarkup;
+  // Le balisage commence à <body> : c'est lui, document.body.
+  document.body = body.children.find(node => node.tag === 'body') || body;
 
   // Historique du navigateur : URL réécrites par la page (lien de transfert oublié).
   const windowListeners = {};
@@ -282,15 +303,20 @@ function boot(options = {}) {
     if (result === undefined) result = url.startsWith('/api/state?') ? JSON.parse(JSON.stringify(page.state)) : defaultRoute(url);
     if (result instanceof Error) throw result;
     const response = result?.[REPLY] ? result : { status: 200, data: result };
-    return { ok: response.status < 400, status: response.status, json: async () => response.data };
+    const headers = Object.fromEntries(Object.entries(response.headers || {}).map(([name, value]) => [name.toLowerCase(), String(value)]));
+    return { ok: response.status < 400, status: response.status, json: async () => response.data,
+      headers: { get: name => headers[String(name).toLowerCase()] ?? null } };
   };
 
   const navigator = {
     ...(options.languages !== undefined ? { languages: options.languages } : { languages: ['fr-FR'] }),
     ...(options.language !== undefined ? { language: options.language } : {}),
+    ...(options.userAgent !== undefined ? { userAgent: options.userAgent } : {}),
     vibrate: pattern => { page.vibrations.push([...pattern]); return true; },
-    ...(options.share ? { share: async data => { page.shares.push({ ...data }); } } : {}),
-    clipboard: { writeText: async text => { if (options.clipboardFails) throw new Error('refusé'); page.copies.push(text); } },
+    // options.share en fonction : sa réponse (refus, annulation) suit le partage.
+    ...(options.share ? { share: async data => { page.shares.push({ ...data }); if (typeof options.share === 'function') await options.share(data); } } : {}),
+    // Page en http sur le Wi-Fi du bar : ni partage ni presse-papiers.
+    ...(options.noClipboard ? {} : { clipboard: { writeText: async text => { if (options.clipboardFails) throw new Error('refusé'); page.copies.push(text); } } }),
   };
   const window = {
     isSecureContext: !!options.secure, history,
@@ -498,6 +524,85 @@ test('gestion passée sur un autre téléphone : prévenu, jeton oublié, catalo
     'Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.', 'plus de chanteur visé');
 });
 
+// Demande du gérant (8 octobre) : voir la durée d'un titre avant de l'ajouter.
+test('durée des titres : catalogue, fiche avant l’ajout et « Mes titres »', async () => {
+  const page = await open({
+    state: baseState({ tablePeople: [person('alice', 'Alice', { songs: [
+      { entryId: 'e1', songId: 1, title: 'Mon titre', artist: 'Moi', duration: 245 },
+      { entryId: 'e2', songId: 2, title: 'Sans durée', artist: 'Lui' }] })] }),
+    respond: url => url.startsWith('/api/catalog/songs?') ? { songs: [
+      { songId: 9, title: 'Tube', artist: 'Groupe', duration: 237 },
+      { songId: 10, title: 'Inconnu', artist: 'Personne', duration: null },
+      { songId: 11, title: 'Aberrant', artist: 'Erreur', duration: 99999 },
+      { songId: 12, title: 'Court', artist: '', duration: 59.6 }], total: 4 } : undefined,
+  });
+  assert.match(page.node('peopleList').innerHTML, /Moi · 4:05 · prochain titre/, 'durée dans « Mes titres »');
+  assert.match(page.node('peopleList').innerHTML, /Lui · à suivre/, 'sans durée connue, rien de plus');
+  await page.click(page.node('nav-catalog'));
+  await page.tap('catalogContent', '[data-category-index="0"]');
+  const list = page.node('catalogContent').innerHTML;
+  assert.match(list, /Groupe · 3:57/, 'durée à côté de l’artiste');
+  assert.match(list, />Personne</, 'durée inconnue : artiste seul');
+  assert.doesNotMatch(list, /Erreur ·/, 'durée aberrante ignorée');
+  assert.match(list, />1:00</, 'sans artiste : la durée seule, arrondie');
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.equal(page.sheetOpen(), true);
+  assert.match(page.sheetHtml(), /Groupe · 3:57/, 'durée dans la fiche, avant l’ajout');
+});
+
+// Lot J (8 octobre) : durée maximale réglée au bar, envoyée dans rules.maxSongSec.
+test('durée maximale : titre trop long grisé « trop long », fiche avec le message, Battle refusée, traduit', async () => {
+  const catalog = [{ songId: 9, title: 'Tube', artist: 'Groupe', duration: 237 },
+    { songId: 13, title: 'Épopée', artist: 'Rock', duration: 372 },
+    { songId: 10, title: 'Inconnu', artist: 'Personne', duration: null }];
+  const respond = url => url.startsWith('/api/catalog/songs?') ? { songs: catalog, total: 3 }
+    : url.startsWith('/api/search?') ? catalog : undefined;
+  const page = await open({ state: baseState({ rules: { maxSongSec: 300 } }), respond });
+  await page.click(page.node('nav-catalog'));
+  await page.tap('catalogContent', '[data-category-index="0"]');
+  const rows = page.node('catalogContent').querySelectorAll('[data-song-index]');
+  assert.deepEqual(rows.map(row => row.className), ['song-row', 'song-row too-long', 'song-row'], 'seul le titre trop long est grisé');
+  assert.match(page.node('catalogContent').innerHTML, /Rock · 6:12 · trop long/);
+  assert.match(page.node('catalogContent').innerHTML, /Groupe · 3:57</, 'un titre normal reste inchangé');
+  assert.match(page.node('catalogContent').innerHTML, />Personne</, 'durée inconnue : rien ne change');
+  await page.tap('catalogContent', '[data-song-index="1"]');
+  assert.equal(page.sheetOpen(), true);
+  assert.match(page.sheetHtml(), /Ce titre dure 6:12 : le bar limite les chansons à 5:00\./);
+  assert.equal(page.$('appendSong'), null, 'pas de bouton d’ajout pour un titre trop long');
+  assert.equal(page.posts.filter(([url]) => url === '/api/table/song').length, 0);
+  await page.tap('sheetPanel', '[data-close-sheet]');
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.ok(page.$('appendSong'), 'titre normal : la fiche d’ajout habituelle');
+  await page.tap('sheetPanel', '[data-close-sheet]');
+
+  // Proposition de Battle : le titre trop long est grisé et refusé.
+  await page.click(page.node('nav-queue'));
+  await page.tap('battleVotes', '[data-battle-propose]');
+  page.node('battleSearch').value = 'Rock';
+  await page.submit('battleSearchForm');
+  const result = page.find('battleSearchResults', '[data-battle-result="1"]');
+  assert.equal(result.className, 'too-long');
+  assert.match(page.node('battleSearchResults').innerHTML, /Rock · 6:12 · trop long/);
+  assert.match(page.node('battleSearchResults').innerHTML, />Groupe</, 'les autres titres gardent leur artiste seul');
+  await page.click(result);
+  assert.deepEqual(page.toast(), { text: 'Ce titre dure 6:12 : le bar limite les chansons à 5:00.', bad: true, warn: false, hidden: false });
+  assert.equal(page.node('battleSelected').querySelectorAll('[data-battle-remove]').length, 0, 'titre trop long non retenu');
+
+  // En anglais, et sans limite : rien de grisé.
+  const english = await open({ state: baseState({ rules: { maxSongSec: 300 } }), respond, languages: ['en'] });
+  await english.click(english.node('nav-catalog'));
+  await english.tap('catalogContent', '[data-category-index="0"]');
+  assert.match(english.node('catalogContent').innerHTML, /Rock · 6:12 · too long/);
+  await english.tap('catalogContent', '[data-song-index="1"]');
+  assert.match(english.sheetHtml(), /This song lasts 6:12: the bar limits songs to 5:00\./);
+  const free = await open({ state: baseState(), respond });
+  await free.click(free.node('nav-catalog'));
+  await free.tap('catalogContent', '[data-category-index="0"]');
+  assert.doesNotMatch(free.node('catalogContent').innerHTML, /trop long/);
+  await free.tap('catalogContent', '[data-song-index="1"]');
+  assert.ok(free.$('appendSong'), 'option coupée : le titre long s’ajoute comme avant');
+});
+
 // ================================================================ catalogue ouvert pour un chanteur
 test('catalogue pour un chanteur : cible, duo, et refus pour un chanteur non géré', async () => {
   const state = baseState();
@@ -515,7 +620,7 @@ test('catalogue pour un chanteur : cible, duo, et refus pour un chanteur non gé
 
   // Garde-fou : un bouton visant une personne gérée par un autre téléphone.
   await page.click(page.node('nav-table'));
-  assert.equal(page.find('peopleList', '[data-person-card="chloe"]').querySelector('[data-add-song]'), null, 'pas de bouton pour Chloé');
+  assert.equal(page.node('peopleList').querySelector('[data-person-card="chloe"]'), null, 'Chloé, gérée ailleurs, n’est pas sur la page');
   const stray = new Element(page, 'button', { 'data-add-song': 'chloe' });
   stray.parent = page.node('peopleList');
   page.dispatch(stray, 'click');
@@ -546,7 +651,7 @@ const partners = [
   { id: 'marc', name: 'Marc', tableId: '1', table: 'Table 1' },
   { id: 'marc', name: 'Marc', tableId: '1', table: 'Table 1' },
   { id: 'zoe', name: 'Zoé', tableId: '2', table: 'Table 2', guestDuos: 2 },
-  { id: 'sam', name: 'Sam', tableId: 'Comptoir', table: 'En solo', guestDuos: 1 },
+  { id: 'sam', name: 'Sam', tableId: 'Comptoir', table: '', individual: true, guestDuos: 1 },
 ];
 
 test('duo : partenaires de la table et des autres tables, invitation ou ajout direct', async () => {
@@ -567,7 +672,7 @@ test('duo : partenaires de la table et des autres tables, invitation ou ajout di
   const own = select.querySelector('optgroup[label="À ma table"]');
   const others = select.querySelector('optgroup[label="Autres tables · invitation à accepter"]');
   assert.deepEqual(own.querySelectorAll('option').map(option => option.textContent), ['Marc · Table 1'], 'Marc une seule fois, jamais soi-même');
-  assert.deepEqual(others.querySelectorAll('option').map(option => option.textContent), ['↗ Zoé · Table 2', '↗ Sam · En solo']);
+  assert.deepEqual(others.querySelectorAll('option').map(option => option.textContent), ['↗ Zoé · Table 2', '↗ Sam'], 'un soliste : son prénom seul');
   assert.equal(select.value, 'marc');
   assert.equal(page.node('sendDuo').textContent, 'Ajouter le duo');
   assert.equal(page.node('duoConsent').textContent, 'Même table : le duo est ajouté directement.');
@@ -693,7 +798,7 @@ test('transfert reçu : récupérer un chanteur, lien oublié ensuite', async ()
   assert.ok(JSON.parse(last.headers['x-person-tokens']).includes('jeton-bob'));
   assert.equal(page.node('transferBox').hidden, true);
   assert.equal(page.toast().text, 'Tu gères maintenant Bob sur ce téléphone.');
-  assert.match(page.find('peopleList', '[data-person-card="bob"]').textContent, /géré sur ce téléphone/);
+  assert.ok(page.find('peopleList', '[data-person-card="bob"]'), 'Bob apparaît parmi les chanteurs du téléphone');
 });
 
 test('transfert reçu : lien expiré, déjà géré, « En solo », « Pas maintenant » et refus du serveur', async () => {
@@ -793,14 +898,15 @@ test('transférer : copie refusée, lien https sans heure, code seul et « En so
   assert.equal(codeOnly.node('sheetPanel').querySelector('img'), null, 'pas de QR sans lien');
   assert.equal('open' in codeOnly.find('sheetPanel', 'details').attrs, true, 'le code est déplié');
   assert.equal(codeOnly.find('sheetPanel', '.share-code').textContent, '9876');
-  assert.match(codeOnly.sheetHtml(), /ouvre le QR code de la table, touche « Je suis Alice »/);
+  assert.match(codeOnly.sheetHtml(), /ouvre le QR code de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom Alice/);
 
   const state = baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true, count: 2 } });
   const solo = await open({ state, path: '/t/Comptoir/secret', respond: url => url === '/api/table/person/share' ? share() : undefined });
   await solo.tap('peopleList', '[data-share-person="alice"]');
   assert.equal(solo.find('sheetPanel', 'h3').textContent, 'Changer de téléphone');
   assert.ok(solo.sheetHtml().includes(encodeURIComponent('Lien pour récupérer mes chansons du karaoké sur ce téléphone :')));
-  assert.match(solo.sheetHtml(), /ouvre le QR « En solo » que te montre le bar/);
+  assert.match(solo.sheetHtml(), /ouvre le QR que te montre le bar \(si la page demande un prénom, touche d’abord « Déjà inscrit\u00a0\? J’ai un code »\), touche « Je suis Alice »/);
+  assert.doesNotMatch(solo.sheetHtml(), /En solo/, 'le groupe n’est jamais nommé');
 });
 
 // ================================================================ alertes
@@ -1126,6 +1232,9 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
     ['joinExpired', { name: 'Bob', reason: 'removed' }, 'La demande de duo d’Alice à Bob est close : « ce titre » n’est plus dans sa liste.'],
     ['presenceRemoved', { title: 'T', skips: 3 }, '« T » est retiré de la liste d’Alice : présence non confirmée 3 fois. Vois avec le bar si besoin.'],
     ['closingPulled', { title: 'T' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste d’Alice.'],
+    // Durée maximale : retrait groupé des titres trop longs par le bar.
+    ['tooLongRemoved', { title: 'T', limit: '5:00' }, '« T » est retiré de la liste d’Alice : le bar limite maintenant les chansons à 5:00.'],
+    ['tooLongRemoved', { title: 'T', limit: '5:00', name: 'Bob' }, 'Le duo « T » avec Bob est retiré de la file : le bar limite maintenant les chansons à 5:00.'],
     // Invitée d'un duo : le titre revient dans la liste de son auteur.
     ['closingPulled', { title: 'T', name: 'Bob' }, '« T » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de Bob.']];
   const state = baseState({ closing: { at: at + 600000, passed: true } });
@@ -1138,6 +1247,7 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
   await english.tap('infoBar', '[data-info-more]');
   assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” was removed from Alice’s list: presence not confirmed 3 times. Check with the bar if needed.'));
   assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” would play after closing time: it was taken out of KaraFun and stays on Bob’s list.'));
+  assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” was removed from Alice’s list: the bar now limits songs to 5:00.'));
   state.closing = { at: at + 600000, passed: false, full: false };
   state.tablePeople[0].inbox = [];
   state.battle = { ...state.battle, lastOutcome: { id: 'old', outcome: 'quorum', at } };
@@ -1226,7 +1336,10 @@ test('mise à jour : la page cachée continue de se mettre à jour et son titre 
 });
 
 // ================================================================ fiches des personnes
-test('fiches : sur scène, duos, présence, report, parti, autre téléphone', async () => {
+// Retours du 4 octobre (D3) : la page d'une table ne montre plus que les
+// personnes gérées par ce téléphone ; une personne gérée ailleurs se retrouve
+// dans « Voir toute la table », avec « C'est moi ».
+test('fiches : sur scène, duos, présence, report, parti, personne gérée ailleurs', async () => {
   const at = Date.now() + 15 * 60000;
   const state = baseState({ rules: { requirePresence: true }, me: { id: 'eve', inKaraFun: [{ title: 'Prête', artist: '' }] } });
   state.tablePeople = [
@@ -1236,16 +1349,17 @@ test('fiches : sur scène, duos, présence, report, parti, autre téléphone', a
     person('bob', 'Bob', { invites: [{ entryId: 'x9', fromName: 'Léa', song: { title: 'Slow', artist: 'Lui' } }],
       songs: [{ entryId: 'b1', title: 'Rock', artist: 'R' }] }),
     person('carla', 'Carla', { confirmed: true, deferral: { remaining: 2, pendingRemoval: true, canDeferMore: true } }),
-    person('dan', 'Dan', { active: false }),
+    person('dan', 'Dan', { active: false, invites: [{ entryId: 'x8', fromName: 'Léa', song: { title: 'Slow', artist: 'Lui' } }],
+      songs: [{ entryId: 'd1', title: 'Rock', artist: 'R' }] }),
     person('eve', 'Eve'),
   ];
-  state.managedIds = ['alice', 'carla', 'eve'];
-  state.queue = [{ pos: 2, ids: ['bob'], id: 'bob', name: 'Bob', title: 'Rock', source: 'helper', eta: at, song: { entryId: 'b1' } }];
+  state.managedIds = ['alice', 'carla', 'dan', 'eve'];
+  state.queue = [{ pos: 2, ids: ['carla'], id: 'carla', name: 'Carla', title: 'Rock', source: 'helper', eta: at, song: { entryId: 'c1' } }];
   const page = await open({ state });
   const card = id => page.find('peopleList', `[data-person-card="${id}"]`);
   const status = id => card(id).querySelector('.person-state').textContent;
 
-  assert.equal(status('alice'), 'Sur scène · géré sur ce téléphone');
+  assert.equal(status('alice'), 'Sur scène');
   assert.match(card('alice').textContent, /DÉJÀ PRÊTE DANS LA FILE.*Chanson KF.*Artiste · sur scène/s);
   assert.match(card('alice').textContent, /SA LISTE · 2 CHANSONS/);
   assert.match(card('alice').textContent, /A · prochain titre · duo avec Zoé \(en attente de sa réponse\)/);
@@ -1258,18 +1372,27 @@ test('fiches : sur scène, duos, présence, report, parti, autre téléphone', a
     'présence et report : une seule question, deux réponses');
   assert.doesNotMatch(card('alice').textContent, /C’est bientôt au tour/, 'pas de seconde question');
 
-  assert.equal(status('bob'), `2e dans la file · vers ${timeOf(at)} · autre téléphone`);
-  assert.match(card('bob').textContent, /Léa propose un duo sur « Slow » — Lui\..*Seul le téléphone qui gère Bob peut répondre\./s);
-  assert.equal(card('bob').querySelector('[data-duet-answer]'), null, 'pas de réponse depuis ce téléphone');
+  assert.equal(page.node('peopleList').querySelector('[data-person-card="bob"]'), null, 'Bob, géré ailleurs, n’est pas sur la page');
+  assert.equal(status('carla'), `2e dans la file · vers ${timeOf(at)}`);
   // Regression: soirée du 2 octobre — Mel voyait la demande de JP sans aucun
-  // bouton. Si c'est bien Bob, il reprend sa fiche ici avec le code du bar.
-  await page.tap('peopleList', '[data-claim-here="bob"]');
+  // bouton. Si c'est bien Bob, il reprend sa fiche avec le code du bar, depuis
+  // « Voir toute la table ».
+  await page.click(page.node('tableAllButton'));
+  await page.tap('tableSheetList', '[data-sheet-claim="bob"]');
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Gérer les chansons de Bob');
   assert.ok(page.node('claimCode'), 'code de reprise demandé');
   await page.click(page.find('sheetPanel', '[data-close-sheet]'));
-  assert.equal(card('bob').querySelector('[data-rename-person]'), null);
-  assert.equal(card('bob').querySelector('[data-remove-song]'), null);
-  assert.ok(card('bob').querySelector('[data-lyrics-title="Rock"]'), 'les paroles restent consultables');
+  // Personne partie : sa fiche reste, sans réponse ni modification possibles.
+  // Regression: U7 (quatrième relecture) — « Seul le téléphone qui gère Dan
+  // peut répondre. » sur le téléphone qui le gère. Le serveur refuse désormais
+  // d'inviter une personne partie ; une invitation restée d'une sauvegarde
+  // d'une version précédente se répond une fois Dan réactivé.
+  assert.match(card('dan').textContent, /Léa propose un duo sur « Slow » — Lui\..*Pour répondre, demande au bar de réactiver Dan\./s);
+  assert.doesNotMatch(card('dan').textContent, /Seul le téléphone/);
+  assert.equal(card('dan').querySelector('[data-duet-answer]'), null, 'pas de réponse pour une personne partie');
+  assert.equal(card('dan').querySelector('[data-rename-person]'), null);
+  assert.equal(card('dan').querySelector('[data-remove-song]'), null);
+  assert.ok(card('dan').querySelector('[data-lyrics-title="Rock"]'), 'les paroles restent consultables');
 
   assert.match(card('carla').textContent, /Passage repoussé : encore 2 chansons avant Carla\. Son titre sort de KaraFun et garde son tour\./);
   assert.ok(card('carla').querySelector('[data-ready-person="carla"]'));
@@ -1277,13 +1400,14 @@ test('fiches : sur scène, duos, présence, report, parti, autre téléphone', a
   assert.match(card('carla').textContent, /Présence confirmée pour ce passage\./);
   assert.match(card('carla').textContent, /Aucune chanson préparée\./);
 
-  assert.equal(status('dan'), 'Parti · historique conservé · autre téléphone');
-  assert.equal(status('eve'), 'Chanson prête dans la file · géré sur ce téléphone', 'titre envoyé connu par « me »');
+  assert.equal(status('dan'), 'Parti · historique conservé');
+  assert.equal(status('eve'), 'Chanson prête dans la file', 'titre envoyé connu par « me »');
   assert.match(card('eve').textContent, /Prête · bientôt sur scène/);
 
   const english = await open({ state, languages: ['en'] });
-  assert.match(english.find('peopleList', '[data-person-card="bob"]').querySelector('.person-state').textContent,
+  assert.match(english.find('peopleList', '[data-person-card="carla"]').querySelector('.person-state').textContent,
     new RegExp(`^2nd in the queue · around ${timeOf(at, 'en')}`));
+  assert.match(english.find('peopleList', '[data-person-card="dan"]').textContent, /To answer, ask the bar to bring Dan back\./);
 });
 
 // ================================================================ actions depuis les fiches
@@ -1422,10 +1546,11 @@ test('fenêtre : Tab reste dans la fenêtre, Échap la ferme et rend le focus', 
 test('accès : « Inscrire une personne » et « Reprendre » mènent au bon formulaire, le titre choisi est gardé', async () => {
   const state = baseState({ managedIds: [] });
   const page = await open({ state, respond: (url, body, self) => {
-    if (url === '/api/table/person') {
-      self.state.tablePeople.push(person('zoe', 'Zoé'));
-      self.state.managedIds = ['zoe'];
-      return { id: 'zoe', token: 'jeton-zoe' };
+    if (url === '/api/join' || url === '/api/table/person') {
+      const id = body.name === 'Zoé' ? 'zoe' : 'karim';
+      self.state.tablePeople.push(person(id, body.name));
+      self.state.managedIds = [...self.state.managedIds, id];
+      return { id, token: `jeton-${id}` };
     }
     return undefined;
   } });
@@ -1435,29 +1560,51 @@ test('accès : « Inscrire une personne » et « Reprendre » mènent au bon for
   await pickCatalogSong(page);
   assert.match(page.find('sheetPanel', 'h3').textContent, /^Avant d’ajouter « Tube »$/);
   assert.match(page.sheetHtml(), /Ton titre restera sélectionné pendant l’inscription\./);
+  // Retours du 4 octobre (D3) : reprendre se fait depuis la liste de toute la table.
   await page.tap('sheetPanel', '[data-access-go="claim"]');
-  assert.equal(page.sheetOpen(), false);
-  assert.equal(page.tabShown(), 'table');
-  assert.ok(page.node('claimBox').scrolled);
-  assert.equal(page.document.activeElement, page.find('claimPeople', '[data-claim-person="alice"]'), '« Je suis Alice » prêt à toucher');
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Toute la table');
+  assert.ok(page.find('tableSheetList', '[data-sheet-claim="alice"]'), '« C’est moi » prêt à toucher');
 
   await page.click(page.node('nav-catalog'));
   await page.tap('catalogContent', '[data-song-index="0"]');
   await page.tap('sheetPanel', '[data-access-go="register"]');
-  assert.ok(page.node('addPersonBox').scrolled, 'table déjà occupée : ajouter une personne');
-  assert.equal(page.document.activeElement, page.node('newName'));
-  page.node('newName').value = 'Zoé';
-  await page.submit('addPersonForm');
-  assert.deepEqual(page.posts.at(-1), ['/api/table/person', { table: '1', access: 'secret', name: 'Zoé' }]);
+  assert.equal(page.sheetOpen(), false);
+  assert.equal(page.tabShown(), 'table');
+  assert.ok(page.node('joinBox').scrolled, 'téléphone sans personne : il rejoint la table');
+  assert.equal(page.document.activeElement, page.node('firstName'));
+  page.node('firstName').value = 'Zoé';
+  await page.submit('joinForm');
+  assert.deepEqual(page.posts.at(-1), ['/api/join', { table: '1', access: 'secret', name: 'Zoé' }]);
   assert.deepEqual(JSON.parse(page.storage.get('kfPeople:1:secret')), { zoe: 'jeton-zoe' });
-  assert.equal(page.node('newName').value, '');
-  assert.equal(page.toast().text, 'Zoé est ajouté à la table.');
+  assert.equal(page.node('firstName').value, '');
+  assert.equal(page.toast().text, 'Zoé est inscrit.');
   assert.equal(page.sheetOpen(), true, 'le titre choisi revient tout de suite');
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Tube');
   assert.match(page.sheetHtml(), /Pour Zoé/);
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+
+  // Téléphone qui gère déjà quelqu'un : ajouter une personne sans téléphone.
+  await page.click(page.node('nav-catalog'));
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Tube');
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+  page.state.managedIds = ['zoe'];
+  const register = Object.assign(new Element(page, 'button', { 'data-access-go': 'register' }), { parent: page.node('catalogAccessActions') });
+  page.dispatch(register, 'click');
+  await page.settle();
+  assert.ok(page.node('addPersonBox').scrolled, 'table déjà occupée : ajouter une personne');
+  assert.equal(page.document.activeElement, page.node('newName'));
+  page.node('newName').value = 'Karim';
+  await page.submit('addPersonForm');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person', { table: '1', access: 'secret', name: 'Karim' }]);
+  assert.equal(page.node('newName').value, '');
+  assert.equal(page.toast().text, 'Karim est ajouté à la table.');
 
   page.node('newName').value = '';
   await page.submit('addPersonForm');
+  assert.deepEqual(page.toast(), { text: 'Indique un prénom.', bad: true, warn: false, hidden: false });
+  page.node('firstName').value = '';
+  await page.submit('joinForm');
   assert.deepEqual(page.toast(), { text: 'Indique un prénom.', bad: true, warn: false, hidden: false });
 });
 
@@ -1511,6 +1658,33 @@ test('Battle : vote oui/non, vote par titre, choix obligatoire et résultats en 
   assert.deepEqual(rows().map(row => row.querySelector('i').style.width), ['67%', '100%', '33%']);
   await page.tap('battleVotes', '[data-battle-vote="alice"]');
   assert.deepEqual(page.posts.at(-1)[1], { table: '1', access: 'secret', personId: 'alice', choice: '10' });
+});
+
+// Regression: retours du bar — une personne arrivée après l'ouverture du
+// vote Battle doit pouvoir voter dès l'état suivant, sans recharger la page.
+test('Battle : la personne admise au vote après son ouverture voit le vote au prochain état (FR et EN)', async () => {
+  for (const [languages, label, text, notice] of [
+    [['fr-FR'], 'Oui', /2 votants sur 6 ; il en faut au moins 5\./, 'Vote Battle : toute la salle chante !'],
+    [['en-GB'], 'Yes', /2 voters out of 6; at least 5 needed\./, null],
+  ]) {
+    const state = baseState({ battle: { id: 'late', phase: 'voting', mode: 'yesno', eligiblePersonIds: ['bob', 'carl', 'dan', 'eve', 'fay'],
+      votedPersonIds: ['bob'], closesAt: Date.now() + 120000, eligible: 5, threshold: 5, voters: 1, yesVotes: 1, noVotes: 0,
+      minVoters: 5, registered: 6 } });
+    const page = await open({ state, languages });
+    assert.equal(page.node('battleVotes').querySelector('[data-battle-vote="alice"]'), null, 'pas encore électrice : pas de vote');
+    assert.equal(page.node('attention').hidden, true, 'ni notification de vote');
+    page.state.battle = { ...page.state.battle, eligiblePersonIds: [...page.state.battle.eligiblePersonIds, 'alice'],
+      eligible: 6, voters: 2, votedPersonIds: ['bob', 'carl'] };
+    await page.poll();
+    assert.match(page.node('battleText').textContent, text, 'l’électorat agrandi est affiché');
+    const button = page.find('battleVotes', '[data-battle-vote="alice"][data-choice="yes"]');
+    assert.ok(button, 'le vote apparaît sans recharger');
+    assert.equal(button.textContent, label);
+    assert.equal(page.node('attention').hidden, false, 'la demande de vote s’affiche');
+    if (notice) assert.equal(page.node('attentionTitle').textContent, notice);
+    await page.tap('battleVotes', '[data-battle-vote="alice"][data-choice="yes"]');
+    assert.deepEqual(page.posts.at(-1), ['/api/table/battle/vote', { table: '1', access: 'secret', personId: 'alice', choice: 'yes' }]);
+  }
 });
 
 test('Battle : proposition à plusieurs, recherche sans résultat, retrait, limites et messages du vote', async () => {
@@ -1812,6 +1986,43 @@ test('invitation de duo sans réponse : avertie chez l’auteur et l’invité, 
   assert.equal(soloDuo.node('duoConsent').textContent, 'Son accord est nécessaire. Sans réponse avant ton tour, tu chanteras seul.');
 });
 
+// ================================================================ prénom seul des solistes (lot K)
+test('soliste : prénom en en-tête, « Bienvenue » avant le prénom, partenaires sans « À ma table » (FR et EN)', async () => {
+  const soloTable = { id: 'Comptoir', name: 'En solo', individual: true, count: 3 };
+  const page = await open({ state: baseState({ table: soloTable }), path: '/t/Comptoir/secret',
+    respond: url => url.startsWith('/api/duo/partners?') ? partners : undefined });
+  assert.equal(page.node('tableName').textContent, 'Alice', 'en-tête : le prénom du soliste');
+  assert.equal(page.node('joinHeading').textContent, 'Bienvenue');
+  await page.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(page);
+  const select = page.node('duoPartner');
+  assert.equal(select.querySelector('optgroup[label="À ma table"]'), null, 'les autres solistes ne sont pas « à ma table »');
+  const others = select.querySelector('optgroup[label="Autres personnes · invitation à accepter"]');
+  assert.deepEqual(others.querySelectorAll('option').map(option => option.textContent), ['↗ Marc · Table 1', '↗ Zoé · Table 2', '↗ Sam']);
+  assert.doesNotMatch(page.sheetHtml(), /En solo/);
+
+  const english = await open({ state: baseState({ table: soloTable }), path: '/t/Comptoir/secret', languages: ['en'],
+    respond: url => url.startsWith('/api/duo/partners?') ? partners : undefined });
+  assert.equal(english.node('tableName').textContent, 'Alice');
+  await english.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(english);
+  const englishOthers = english.node('duoPartner').querySelector('optgroup[label="Other people · invitation to accept"]');
+  assert.deepEqual(englishOthers.querySelectorAll('option').map(option => option.textContent), ['↗ Marc · Table 1', '↗ Zoé · Table 2', '↗ Sam']);
+  assert.doesNotMatch(english.sheetHtml(), /Solo\b/);
+
+  // Prénom pas encore donné, ou personne gérée : « Bienvenue » / « Welcome ».
+  const waiting = await open({ state: baseState({ table: soloTable, tablePeople: [person('alice', 'Solo 1', { nameRequired: true })] }),
+    path: '/t/Comptoir/secret' });
+  assert.equal(waiting.node('tableName').textContent, 'Bienvenue', 'jamais le prénom provisoire');
+  const nobody = await open({ state: baseState({ table: soloTable, managedIds: [] }), path: '/t/Comptoir/secret', languages: ['en'] });
+  assert.equal(nobody.node('tableName').textContent, 'Welcome');
+
+  // Une table garde son nom en en-tête.
+  const table = await open({ state: baseState() });
+  assert.equal(table.node('tableName').textContent, 'Table 1');
+  assert.equal(table.node('joinHeading').textContent, 'Bienvenue à Table 1\u00a0!');
+});
+
 // ================================================================ fermeture du bar
 test('fermeture : place restante, file complète, heure passée, annonce retirée', async () => {
   const at = Date.now() + 45 * 60000;
@@ -1872,6 +2083,7 @@ function keepSettings(self, body) {
   for (const [field, value] of Object.entries(body.settings || {})) {
     if (Number.isInteger(value) && !((field === 'pitch' || field === 'tempo') && value === 0)) out[field] = value;
   }
+  if (Object.keys(body.settings?.guideVoices || {}).length) out.guideVoices = { ...body.settings.guideVoices };
   for (const p of self.state.tablePeople) for (const song of [...p.songs, ...p.inKaraFun]) {
     if (song.entryId === body.entryId) song.settings = Object.keys(out).length ? out : null;
   }
@@ -1889,8 +2101,13 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.equal(button.getAttribute('aria-label'), 'Réglages de Mon titre', 'texte lu par le lecteur d’écran');
   assert.ok(card('alice').querySelector('[data-song-settings="k1"]'), 'titre déjà dans KaraFun, pas commencé : réglable');
   assert.equal(card('alice').querySelector('.tune-badge').textContent, '♯ +2 · tempo −10 %', 'badge des réglages');
-  assert.equal(card('bob').querySelector('[data-song-settings]') === null, true, 'autre téléphone : aucun bouton');
-  assert.equal(card('bob').querySelector('.tune-badge').textContent, '♭ −1 · guide 50', 'réglages visibles');
+  assert.equal(page.node('peopleList').querySelector('[data-person-card="bob"]'), null, 'autre téléphone : pas sur la page');
+  const gone = tuneState({ managedIds: ['alice', 'bob'] });
+  gone.tablePeople[1].active = false;
+  gone.managedIds = ['alice', 'bob'];
+  const bobCard = (await open({ state: gone })).find('peopleList', '[data-person-card="bob"]');
+  assert.equal(bobCard.querySelector('[data-song-settings]'), null, 'personne partie : aucun bouton');
+  assert.equal(bobCard.querySelector('.tune-badge').textContent, '♭ −1 · guide 50', 'réglages visibles');
 
   await page.click(button);
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Réglages · Mon titre');
@@ -1911,7 +2128,7 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.equal(card('alice').querySelector('[data-song-settings="e1"]').closest('li').querySelector('.tune-badge').textContent, '♯ +2',
     'le badge suit le réglage tout de suite');
   await page.runTimers(600);
-  assert.deepEqual(tunePosts(page), [{ table: '1', access: 'secret', personId: 'alice', entryId: 'e1', settings: { pitch: 2 } }]);
+  assert.deepEqual(tunePosts(page), [{ table: '1', access: 'secret', personId: 'alice', entryId: 'e1', settings: { pitch: 2, guideVoices: {} } }]);
   assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
   await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="-5"]');
   await page.tap('songSettingsBody', '[data-tune="guide"][data-value="50"]');
@@ -1920,7 +2137,7 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.deepEqual(pressed(page, 'guide'), ['50']);
   assert.deepEqual(pressed(page, 'backing'), ['0']);
   await page.runTimers(600);
-  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, tempo: -5, guide: 50, backing: 0 }, 'un seul envoi pour trois changements');
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, tempo: -5, guide: 50, backing: 0, guideVoices: {} }, 'un seul envoi pour trois changements');
   await page.poll();
   assert.equal(page.node('tunePitch').textContent, '+2', 'valeur relue sur le serveur');
   // Bornes de KaraFun : + désactivé à +6.
@@ -1933,7 +2150,7 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   await page.click(page.node('tuneReset'));
   assert.equal(page.node('tunePitch').textContent, '0');
   await page.runTimers(600);
-  assert.deepEqual(tunePosts(page).at(-1).settings, null, 'réinitialiser : réglages de KaraFun');
+  assert.deepEqual(tunePosts(page).at(-1).settings, { guideVoices: {} }, 'réinitialiser : réglages de KaraFun (clé des autres voix toujours envoyée)');
   await page.poll();
   assert.equal(card('alice').querySelector('[data-song-settings="e1"]').closest('li').querySelector('.tune-badge') === null, true, 'plus de badge');
 
@@ -1945,7 +2162,7 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.doesNotMatch(page.node('songSettingsBody').textContent, /Si le titre en a/);
   await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
   await page.runTimers(600);
-  assert.deepEqual(tunePosts(page).at(-1), { table: '1', access: 'secret', personId: 'alice', entryId: 'k1', settings: { pitch: 2, tempo: -5 } });
+  assert.deepEqual(tunePosts(page).at(-1), { table: '1', access: 'secret', personId: 'alice', entryId: 'k1', settings: { pitch: 2, tempo: -5, guideVoices: {} } });
   assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
 });
 
@@ -1966,7 +2183,7 @@ test('réglages de titre : le rafraîchissement n’écrase pas un réglage en c
   assert.equal(tunePosts(page).length, 1, 'un seul envoi à la fois');
   waiting.shift()();
   await page.settle();
-  assert.deepEqual(tunePosts(page).map(body => body.settings), [{ pitch: 1 }, { pitch: 2 }]);
+  assert.deepEqual(tunePosts(page).map(body => body.settings), [{ pitch: 1, guideVoices: {} }, { pitch: 2, guideVoices: {} }]);
   await page.poll();
   assert.equal(page.node('tunePitch').textContent, '+2', 'réponse du premier envoi sans effet sur la valeur suivante');
   waiting.shift()();
@@ -1981,7 +2198,7 @@ test('réglages de titre : le rafraîchissement n’écrase pas un réglage en c
   await page.tap('songSettingsBody', '[data-tune="guide"][data-value="25"]');
   await page.click(page.find('sheetPanel', '[data-close-sheet]'));
   assert.equal(page.sheetOpen(), false);
-  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, guide: 25 });
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: 2, guide: 25, guideVoices: {} });
   waiting.shift()();
   await page.settle();
 });
@@ -2006,7 +2223,9 @@ test('réglages de titre : duo, titre commencé, envoi en cours, fonction coupé
   assert.equal(card('bob').querySelector('.tune-badge').textContent, '♯ +3', 'partenaire : réglages de l’auteur visibles');
 
   await page.tap('peopleList', '[data-song-settings="e1"]');
-  assert.match(page.node('songSettingsBody').textContent, /Duo : les deux voix guides suivent ce réglage\./);
+  // Duo : plus de voix 2 qui suit la voix 1 ; chaque voix a son réglage (D6).
+  assert.doesNotMatch(page.node('songSettingsBody').textContent, /Duo : les deux voix guides/);
+  assert.match(page.node('songSettingsBody').textContent, /Voix 2Si le titre en a deux\./);
   // Refus du serveur : message dans la fiche, « Réessayer ».
   answer = reply(409, { error: 'Ce titre a déjà commencé : seul le bar peut encore le régler.', code: 'SONG_STARTED' });
   await page.tap('songSettingsBody', '[data-tune="pitch"][data-step="-1"]');
@@ -2017,7 +2236,7 @@ test('réglages de titre : duo, titre commencé, envoi en cours, fonction coupé
     'réglage refusé : le badge montre ce que le serveur a gardé (rien), pas le choix non enregistré, et signale le refus');
   answer = null;
   await page.tap('tuneStatus', '[data-tune-retry]');
-  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: -1 }, 'réessayé avec la même valeur');
+  assert.deepEqual(tunePosts(page).at(-1).settings, { pitch: -1, guideVoices: {} }, 'réessayé avec la même valeur');
   assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓');
 
   // Le titre part sur scène pendant que la fiche est ouverte.
@@ -2049,7 +2268,7 @@ test('réglages de titre : en anglais, textes de la fiche et refus traduits', as
   await page.click(button);
   assert.equal(page.find('sheetPanel', 'h3').textContent, 'Settings · Mon titre');
   const body = page.node('songSettingsBody').textContent;
-  for (const text of ['Key', '0 = original', 'Tempo', 'Guide vocals', 'Backing vocals', 'Off', 'If the song has them.', 'KaraFun setting: 53']) {
+  for (const text of ['Key', '0 = original', 'Tempo', 'Voice 1', 'Voice 2', 'If the song has two.', 'Backing vocals', 'Off', 'If the song has them.', 'KaraFun setting: 53']) {
     assert.ok(body.includes(text), `texte anglais : ${text}`);
   }
   assert.equal(page.node('tuneReset').textContent, 'Reset');
@@ -2063,6 +2282,57 @@ test('réglages de titre : en anglais, textes de la fiche et refus traduits', as
   await duo.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
   await duo.runTimers(600);
   assert.equal(duo.node('tuneStatus').textContent, 'Not saved: Alice picked this duet: settings are made on their phone. · Try again');
+});
+
+// Lot G2 (décision D6) : un réglage par voix guide, sans réglage commun ;
+// pistes inconnues avant l'envoi : voix 1, et voix 2 si le titre en a deux.
+test('réglages de titre : une voix guide par réglage, voix 1 et voix 2, résumé voix par voix, en français et en anglais', async () => {
+  const state = tuneState();
+  state.tablePeople[0].inKaraFun[0].tracks = [4, 5, 6];
+  state.tablePeople[0].inKaraFun[0].settings = { guide: 50, guideVoices: { 6: 25 } };
+  const page = await open({ state, respond: (url, body, self) => url === '/api/table/song/settings' ? keepSettings(self, body) : undefined });
+  const labels = () => page.node('songSettingsBody').querySelectorAll('.tune-label').map(node => node.textContent);
+  const badge = entryId => page.find('peopleList', `[data-song-settings="${entryId}"]`).closest('li').querySelector('.tune-badge');
+  assert.equal(badge('k1').textContent, 'voix 1 50 · voix 2 25');
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  assert.deepEqual(labels(), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Chœurs']);
+  assert.deepEqual([pressed(page, 'guide'), pressed(page, 'voice:6')], [['50'], ['25']]);
+  assert.ok(page.node('tuneLabel-voice6'));
+  await page.tap('songSettingsBody', '[data-tune="voice:6"][data-value="75"]');
+  assert.equal(badge('k1').textContent, 'voix 1 50 · voix 2 75', 'le badge suit tout de suite');
+  await page.runTimers(600);
+  assert.deepEqual(tunePosts(page).at(-1).settings, { guide: 50, guideVoices: { 6: 75 } }, 'la voix 1 garde son réglage');
+  await page.poll();
+  assert.deepEqual(pressed(page, 'voice:6'), ['75'], 'valeur relue sur le serveur');
+  // Troisième voix annoncée : « Voix 3 ». Une seule voix : « Voix guide ».
+  page.state.tablePeople[0].inKaraFun[0].tracks = [4, 5, 6, 7];
+  await page.poll();
+  assert.deepEqual(labels(), ['Tonalité', 'Tempo', 'Voix 1', 'Voix 2', 'Voix 3', 'Chœurs']);
+  page.state.tablePeople[0].inKaraFun[0].tracks = [4, 5];
+  page.state.tablePeople[0].inKaraFun[0].settings = { guide: 50 };
+  await page.poll();
+  assert.deepEqual(labels(), ['Tonalité', 'Tempo', 'Voix guide', 'Chœurs']);
+  assert.equal(badge('k1').textContent, 'guide 50');
+  // Voix 2 coupée alors que KaraFun la mettrait ailleurs par défaut : rappelée.
+  page.state.tablePeople[0].inKaraFun[0].settings = { guideVoices: { 6: 0 } };
+  page.state.songSettings.defaults.guide = 25;
+  await page.poll();
+  assert.equal(badge('k1').textContent, 'voix 2 coupée');
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+  // En anglais.
+  const english = tuneState();
+  english.tablePeople[0].inKaraFun[0].tracks = [4, 5, 6];
+  english.tablePeople[0].inKaraFun[0].settings = { guide: 50, guideVoices: { 6: 25 } };
+  const en = await open({ languages: ['en'], state: english });
+  assert.equal(en.find('peopleList', '[data-song-settings="k1"]').closest('li').querySelector('.tune-badge').textContent, 'voice 1 50 · voice 2 25');
+  en.state.tablePeople[0].inKaraFun[0].settings = { guideVoices: { 6: 0 } };
+  en.state.songSettings.defaults.guide = 25;
+  await en.poll();
+  assert.equal(en.find('peopleList', '[data-song-settings="k1"]').closest('li').querySelector('.tune-badge').textContent, 'voice 2 off');
+  en.state.tablePeople[0].inKaraFun[0].tracks = [5];
+  await en.poll();
+  await en.tap('peopleList', '[data-song-settings="k1"]');
+  assert.match(en.node('songSettingsBody').textContent, /Guide vocals/);
 });
 
 test('réglages de titre : un refus oublié quand le titre n’est plus réglable ; titre sans voix guide', async () => {
@@ -2190,7 +2460,8 @@ test('français : « d’Alice », « de Bruno », espace insécable avant « ? 
   assert.ok(!/\u00a0/.test(en.node('attentionTitle').textContent), 'pas d’espace insécable en anglais');
   // Feuille de reprise.
   const claim = await open({ state: otherPhoneState('Émilie') });
-  await claim.tap('peopleList', '[data-claim-here="other"]');
+  await claim.click(claim.node('tableAllButton'));
+  await claim.tap('tableSheetList', '[data-sheet-claim="other"]');
   assert.equal(claim.find('sheetPanel', 'h3').textContent, 'Gérer les chansons d’Émilie');
 });
 
@@ -2292,7 +2563,8 @@ test('transfert : la fiche se ferme quand l’autre téléphone a repris la pers
 // Regression: ISSUE-018 — le champ du code de reprise n'avait pas le style des autres champs
 test('reprise : le champ du code à 4 chiffres a le type texte (style des champs), clavier numérique', async () => {
   const page = await open({ state: otherPhoneState('Bob') });
-  await page.tap('peopleList', '[data-claim-here="other"]');
+  await page.click(page.node('tableAllButton'));
+  await page.tap('tableSheetList', '[data-sheet-claim="other"]');
   const input = page.node('claimCode');
   assert.equal(input.getAttribute('type'), 'text', 'input[type=text] reçoit le style commun (48 px, coins arrondis)');
   assert.equal(input.getAttribute('inputmode'), 'numeric');
@@ -2554,4 +2826,1312 @@ test('catalogue : Retour vers les résultats gardés par « ＋ Chanson » ne re
   await page.settle();
   assertQueenKept(page, 'Retour');
   assert.equal(searchUrls(page).length, sent, 'pas de nouvelle recherche');
+});
+
+// Lot F : barre de lecture sous le titre sur scène, avancée seule chaque
+// seconde (minuteur de 1100 ms) ; rien pour une Battle ou sans durée.
+test('barre de lecture sur scène : reste en minutes traduit, pause, Battle et durée inconnue sans barre', async () => {
+  const realNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const progress = (fields = {}) => ({ elapsedSec: 102, durationSec: 237, paused: false, rate: 1, ...fields });
+    const stage = { ours: false, singer: 'Client', title: 'Manuel', artist: 'X' };
+    const page = await open({ state: baseState({ now: now + 3000, stage: { ...stage, progress: progress() } }) });
+    const box = page.node('stageProgress');
+    const text = () => box.querySelector('.stage-progress-text')?.textContent;
+    const width = () => box.querySelector('.stage-progress-fill')?.getAttribute('style');
+    assert.equal(box.hidden, false);
+    assert.equal(text(), 'reste 2 min');
+    assert.equal(width(), 'width:43.0%');
+    now += 60_000;
+    await page.runTimers(1100);
+    assert.equal(text(), 'reste 1 min', 'avance seule entre deux lectures (horloge du serveur 3 s en avance)');
+    now += 60_000;
+    await page.runTimers(1100);
+    assert.equal(text(), 'Bientôt fini', '15 s avant la fin');
+    assert.equal(width(), 'width:93.7%');
+    now += 60_000;
+    await page.runTimers(1100);
+    assert.equal(width(), 'width:100.0%', 'jamais au-delà de la durée');
+    // Tempo +50 : le reste raccourcit.
+    Object.assign(page.state, { now, stage: { ...stage, progress: progress({ elapsedSec: 0, durationSec: 300, rate: 1.5 }) } });
+    await page.poll();
+    assert.equal(text(), 'reste 3 min');
+    Object.assign(page.state, { now, stage: { ...stage, progress: progress({ paused: true }) } });
+    await page.poll();
+    assert.equal(text(), 'En pause');
+    now += 60_000;
+    await page.runTimers(1100);
+    await page.runTimers(1100);
+    assert.equal(text(), 'En pause', 'figée pendant la pause');
+    for (const shown of [{ ...stage, progress: progress({ durationSec: null }) }, { ...stage, kind: 'battle', progress: progress() },
+      { ...stage, progress: null }, null]) {
+      Object.assign(page.state, { now, stage: shown });
+      await page.poll();
+      assert.equal(box.hidden, true, JSON.stringify(shown));
+    }
+    // Sans heure du serveur : valeur reçue montrée telle quelle. En anglais.
+    const english = await open({ languages: ['en-US'], state: baseState({ stage: { ...stage, progress: progress() } }) });
+    now += 600_000;
+    await english.runTimers(1100);
+    assert.equal(english.node('stageProgress').querySelector('.stage-progress-text').textContent, '2 min left');
+  } finally { Date.now = realNow; }
+});
+
+// ================================================================ retours du 4 octobre (accès solo, événement privé, tables)
+// Regression: retours de la soirée du 4 octobre (docs/designs/retours-soiree-4-octobre.md,
+// lots A, B, C et D). Ouvrir un QR individuel n'enregistrait rien (inscription
+// au prénom seulement, 30 min après l'émission), la page retirait ensuite la
+// clé de l'adresse, et un téléphone de table affichait toute la table.
+const soloState = (extra = {}) => baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true, count: 3 },
+  tablePeople: [], managedIds: [], soloInvitationReady: true, ...extra });
+const soloPage = (search, state, respond, extra = {}) => open({ path: '/t/Comptoir/secret', search, state, respond, ...extra });
+const postsTo = (page, route) => page.posts.filter(([url]) => url === route);
+
+test('QR individuel : ouverture comptée par un seul POST, fenêtre de prénom bloquante, adresse gardée', async () => {
+  const page = await soloPage('?invitation=CLE-SOLO', soloState(), (url, body, self) => {
+    if (url === '/api/table/solo/open') {
+      self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+      self.state.managedIds = ['s1'];
+      return { id: 's1', token: 'jeton-s1', nameRequired: true };
+    }
+    if (url === '/api/table/person/rename') {
+      if (body.name === 'Marie') return reply(400, { error: 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.', code: 'NAME_TAKEN', recoverable: true });
+      if (body.name === 'Erreur') return reply(400, { error: 'Prénom limité à 24 caractères.' });
+      self.state.tablePeople = [person('s1', body.name)];
+      return { ok: true };
+    }
+    return undefined;
+  });
+  assert.match(page.stateRequests()[0].url, /invitation=CLE-SOLO/, 'la lecture d’état transmet seulement le QR, sans rien créer');
+  assert.deepEqual(postsTo(page, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-SOLO' }]]);
+  assert.deepEqual(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')), { s1: 'jeton-s1' });
+  assert.equal(page.node('nameGate').hidden, false, 'fenêtre de prénom affichée');
+  assert.equal(page.node('tabsNav').hidden, true, 'onglets masqués');
+  assert.equal(page.node('mainContent').hidden, true, 'reste de la page masqué');
+  assert.equal(page.find('nameGate', 'h2').textContent, 'Bienvenue ! Quel est ton prénom ?');
+  assert.equal(page.node('nameGate').querySelector('[data-close-sheet]'), null, 'aucune croix');
+  assert.equal(page.history.urls.length, 0, 'l’adresse garde ?invitation= : c’est la clé de la soirée');
+  await page.poll();
+  await page.poll();
+  assert.equal(postsTo(page, '/api/table/solo/open').length, 1, 'jamais une deuxième ouverture');
+
+  page.node('nameGateInput').value = '  ';
+  await page.submit('nameGateForm');
+  assert.equal(page.node('nameGateError').textContent, 'Indique un prénom.');
+  assert.equal(page.node('nameGateError').hidden, false);
+  page.dispatch(page.body, 'keydown', { key: 'Escape' });
+  assert.equal(page.node('nameGate').hidden, false, 'Échap ne ferme pas la fenêtre');
+
+  // Regression: deuxième relecture finale (RT1) — « déjà inscrit » ne parlait
+  // que de l'initiale : la personne qui tapait son propre prénom s'inscrivait
+  // une deuxième fois au lieu de reprendre son profil par le code.
+  page.node('nameGateInput').value = 'Marie';
+  await page.submit('nameGateForm');
+  assert.equal(page.node('nameGateError').textContent, 'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit\u00a0? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).');
+  assert.equal(page.node('nameGate').hidden, false);
+  page.node('nameGateInput').value = 'Erreur';
+  await page.submit('nameGateForm');
+  assert.equal(page.node('nameGateError').textContent, 'Prénom limité à 24 caractères.');
+
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(page.find('nameGate', 'h2').textContent, 'Welcome! What’s your first name?');
+  assert.equal(page.find('nameGateLang', '[data-lang="en"]').attrs['aria-pressed'], 'true');
+  assert.equal(page.node('nameGate').hidden, false, 'la langue change sans fermer la fenêtre');
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+
+  page.node('nameGateInput').value = 'Marie L.';
+  await page.submit('nameGateForm');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person/rename',
+    { table: 'Comptoir', access: 'secret', personId: 's1', name: 'Marie L.', token: 'jeton-s1' }]);
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(page.node('nameGateError').hidden, true);
+  assert.equal(page.node('tabsNav').hidden, false);
+  assert.equal(page.node('mainContent').hidden, false);
+  assert.equal(page.toast().text, 'Marie L. est inscrit.');
+  assert.equal(page.history.urls.length, 0, 'la clé reste dans l’adresse après le prénom');
+
+  // Fenêtre ouverte au moment où la personne doit donner son prénom : elle se referme.
+  const sheet = await soloPage('', soloState({ tablePeople: [person('s1', 'Léa')], managedIds: ['s1'] }));
+  await sheet.tap('peopleList', '[data-rename-person="s1"]');
+  assert.equal(sheet.sheetOpen(), true);
+  sheet.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+  await sheet.poll();
+  assert.equal(sheet.sheetOpen(), false);
+  assert.equal(sheet.node('nameGate').hidden, false);
+  assert.equal(sheet.posts.length, 0, 'téléphone qui gère déjà sa personne : aucune ouverture');
+});
+
+test('QR individuel rouvert ailleurs : « C’est bien toi ? », récupération par la clé ; erreurs sans nouvel essai', async () => {
+  let refuse = true;
+  const page = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }), (url, body, self) => {
+    if (url === '/api/table/solo/open') return { recover: { id: 'm1', name: 'Marie' } };
+    if (url === '/api/table/person/claim') {
+      // Réseau coupé : un refus passager (un refus définitif retire la carte,
+      // voir le test suivant).
+      if (refuse) { refuse = false; return new TypeError('Failed to fetch'); }
+      self.state.tablePeople = [person('m1', 'Marie')];
+      self.state.managedIds = ['m1'];
+      return { id: 'm1', token: 'jeton-m1' };
+    }
+    return undefined;
+  });
+  assert.equal(page.node('transferBox').hidden, false);
+  assert.equal(page.node('transferHeading').textContent, 'C’est bien toi, Marie ?');
+  assert.match(page.node('transferText').textContent, /ce téléphone/);
+  assert.equal(page.node('noSingerBox').hidden, true, 'pas de message « invitation utilisée »');
+  assert.match(page.node('catalogAccessText').textContent, /Marie/);
+  assert.ok(page.find('catalogAccessActions', '[data-key-claim]'), 'la récupération aussi depuis le catalogue');
+  await page.tap('transferActions', '[data-key-claim]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', key: 'CLE-SOLO' }]);
+  assert.deepEqual(page.toast(), { text: 'Connexion perdue : réessaie dans un instant.', bad: true, warn: false, hidden: false });
+  assert.equal(page.node('transferBox').hidden, false, 'la carte reste après un refus passager');
+  await page.tap('transferActions', '[data-key-claim]');
+  assert.deepEqual(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')), { m1: 'jeton-m1' });
+  assert.equal(page.node('transferBox').hidden, true);
+  assert.equal(page.toast().text, 'Tu gères maintenant Marie sur ce téléphone.');
+  assert.equal(page.history.urls.length, 0, 'la clé reste dans l’adresse après la récupération');
+  assert.equal(postsTo(page, '/api/table/solo/open').length, 1);
+  // Serveur indisponible (5xx, réponse sans JSON) : passager aussi, la carte reste.
+  const english = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }),
+    url => url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } }
+      : url === '/api/table/person/claim' ? reply(503) : undefined, { languages: ['en'] });
+  assert.equal(english.node('transferHeading').textContent, 'Is that you, Marie?');
+  assert.equal(english.find('transferActions', '[data-key-claim]').textContent, 'Recover my songs');
+  await english.tap('transferActions', '[data-key-claim]');
+  assert.equal(english.toast().text, 'Something went wrong.');
+  assert.equal(english.node('transferBox').hidden, false, 'erreur du serveur : la carte reste');
+
+  const used = await soloPage('?invitation=VIEUX', soloState({ soloInvitationReady: false }), url => url === '/api/table/solo/open'
+    ? reply(403, { error: 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.', code: 'SOLO_INVITATION' }) : undefined);
+  assert.equal(used.node('noSingerBox').hidden, false);
+  assert.equal(used.node('noSingerText').textContent, 'Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.');
+  assert.equal(used.node('fatalBox').hidden, true, 'un refus de l’invitation n’est pas un lien de table invalide');
+  assert.ok(used.node('noSingerActions').querySelector('[data-entry-retry]'), 'autre refus que la clé morte : « Réessayer » reste');
+  await used.poll();
+  assert.equal(postsTo(used, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
+
+  let offline = true;
+  const network = await soloPage('?invitation=CLE-SOLO', soloState(), (url, body, self) => {
+    if (url !== '/api/table/solo/open') return undefined;
+    if (offline) { offline = false; return new Error('réseau coupé'); }
+    self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+    self.state.managedIds = ['s1'];
+    return { id: 's1', token: 'jeton-s1', nameRequired: true };
+  });
+  assert.equal(network.node('noSingerText').textContent, 'Un instant : ouverture de ton QR…');
+  await network.poll();
+  assert.equal(postsTo(network, '/api/table/solo/open').length, 2, 'réseau coupé : nouvel essai au rafraîchissement suivant');
+  assert.equal(network.node('nameGate').hidden, false);
+
+  const bare = await soloPage('', soloState({ soloInvitationReady: false }));
+  assert.equal(bare.posts.length, 0, 'lien commun : rien à ouvrir');
+  assert.match(bare.node('noSingerText').textContent, /^Pour t’inscrire, demande au bar un QR individuel\./);
+});
+
+// Regression: troisième passe de la relecture finale (design) — un refus
+// définitif de « Récupérer mes chansons » (clé morte : SOLO_KEY_REVOKED ;
+// personne marquée partie : PERSON_LEFT) ne laissait qu'un toast de 4 s : la
+// carte « C’est bien toi ? » restait et invitait à réessayer en vain.
+test('refus définitif pendant « C’est bien toi ? » : la carte de reprise disparaît, le refus reste affiché (sans « Réessayer » pour une clé morte)', async () => {
+  const revoked = 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.';
+  const left = 'Cette personne a été marquée partie. Demande au bar de la réactiver.';
+  const offer = (code, error, options) => soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false }), url =>
+    url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } }
+      : url === '/api/table/person/claim' ? reply(403, { error, code }) : undefined, options);
+  const page = await offer('SOLO_KEY_REVOKED', revoked);
+  assert.equal(page.node('transferBox').hidden, false);
+  await page.tap('transferActions', '[data-key-claim]');
+  assert.equal(page.node('transferBox').hidden, true, 'plus d’offre de reprise par une clé morte');
+  assert.equal(page.node('noSingerBox').hidden, false);
+  assert.equal(page.node('noSingerText').textContent, revoked);
+  assert.equal(page.node('catalogAccessText').textContent, revoked);
+  for (const id of ['noSingerActions', 'catalogAccessActions']) {
+    assert.ok(!page.node(id).querySelector('[data-key-claim]'), `#${id} : plus de « Récupérer mes chansons »`);
+    assert.ok(!page.node(id).querySelector('[data-entry-retry]'), `#${id} : une clé morte ne se réessaie pas`);
+  }
+  assert.deepEqual(page.toast(), { text: revoked, bad: true, warn: false, hidden: false });
+  await page.poll();
+  assert.equal(page.node('transferBox').hidden, true, 'l’offre ne revient pas au rafraîchissement');
+  assert.equal(postsTo(page, '/api/table/solo/open').length, 1, 'pas de nouvelle ouverture');
+  assert.equal(postsTo(page, '/api/table/person/claim').length, 1);
+  // Le refus suit la langue de la page.
+  const english = await offer('SOLO_KEY_REVOKED', revoked, { languages: ['en'] });
+  await english.tap('transferActions', '[data-key-claim]');
+  assert.equal(english.node('transferBox').hidden, true);
+  assert.equal(english.node('noSingerText').textContent, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
+  // Marquée partie entre-temps : la carte disparaît aussi ; le bar peut la
+  // réactiver, « Réessayer » reste.
+  const gone = await offer('PERSON_LEFT', left);
+  await gone.tap('transferActions', '[data-key-claim]');
+  assert.equal(gone.node('transferBox').hidden, true);
+  assert.equal(gone.node('noSingerText').textContent, left);
+  assert.ok(gone.node('noSingerActions').querySelector('[data-entry-retry]'), 'marquée partie : « Réessayer » reste');
+  assert.ok(!gone.node('noSingerActions').querySelector('[data-key-claim]'), 'plus de « Récupérer mes chansons »');
+});
+
+// Regression: vérification de la troisième passe de la relecture finale
+// (design) — un téléphone qui garde une place sans prénom (QR de l'événement
+// scanné plus tôt) ouvre le QR personnel de Marie. Après un refus définitif,
+// la fenêtre de prénom recouvrait la page et son message : le refus ne restait
+// que 4 s dans le toast (et n'était pas montré du tout à l'ouverture d'une
+// clé morte). La fenêtre l'affiche, dans la langue de la page, jusqu'à la
+// première saisie.
+test('place sans prénom sur ce téléphone : un refus définitif du QR personnel s’affiche dans la fenêtre de prénom', async () => {
+  const revoked = 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.';
+  const left = 'Cette personne a été marquée partie. Demande au bar de la réactiver.';
+  const placeholder = { soloInvitationReady: false, tablePeople: [person('p1', 'Solo 2', { nameRequired: true })], managedIds: ['p1'] };
+  const storage = { storage: { 'kfPeople:Comptoir:secret': JSON.stringify({ p1: 'jeton-p1' }) } };
+  const error = page => page.node('nameGateError');
+  for (const [code, text] of [['SOLO_KEY_REVOKED', revoked], ['PERSON_LEFT', left]]) {
+    const page = await soloPage('?invitation=CLE-SOLO', soloState(placeholder), url =>
+      url === '/api/table/solo/open' ? { recover: { id: 'm1', name: 'Marie' } }
+        : url === '/api/table/person/claim' ? reply(403, { error: text, code }) : undefined, storage);
+    assert.deepEqual([page.node('transferBox').hidden, page.node('nameGate').hidden], [false, true], `${code} : « C’est bien toi ? » d’abord`);
+    await page.tap('transferActions', '[data-key-claim]');
+    assert.equal(page.node('transferBox').hidden, true, code);
+    assert.equal(page.node('nameGate').hidden, false, `${code} : la place sans prénom demande son prénom`);
+    assert.deepEqual([error(page).hidden, error(page).textContent], [false, text], `${code} : le refus reste affiché dans la fenêtre`);
+    await page.poll();
+    assert.equal(error(page).textContent, text, `${code} : toujours là après un rafraîchissement`);
+    await page.type('nameGateInput', 'Mar');
+    assert.equal(error(page).hidden, true, `${code} : effacé dès la saisie`);
+  }
+  // Ouverture d'une clé morte sur ce même téléphone : même chose, dans la langue de la page.
+  const opened = await soloPage('?invitation=CLE-MORTE', soloState(placeholder), url =>
+    url === '/api/table/solo/open' ? reply(403, { error: revoked, code: 'SOLO_KEY_REVOKED' }) : undefined, storage);
+  assert.equal(opened.node('nameGate').hidden, false);
+  assert.deepEqual([error(opened).hidden, error(opened).textContent], [false, revoked]);
+  await opened.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error(opened).textContent, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
+});
+
+test('événement privé : un seul POST d’entrée, paramètre retiré de l’adresse, QR inactif ou complet signalé', async () => {
+  const page = await soloPage('?evenement=SECRET-EV&utm=x', soloState({ soloInvitationReady: false }), (url, body, self) => {
+    if (url === '/api/table/enter') {
+      self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
+      self.state.managedIds = ['s2'];
+      return { id: 's2', token: 'jeton-s2', nameRequired: true };
+    }
+    return undefined;
+  });
+  assert.match(page.stateRequests()[0].url, /evenement=SECRET-EV/);
+  assert.deepEqual(postsTo(page, '/api/table/enter'), [['/api/table/enter', { table: 'Comptoir', access: 'secret', event: 'SECRET-EV' }]]);
+  assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret?utm=x');
+  assert.doesNotMatch(page.stateRequests().at(-1).url, /evenement/);
+  assert.equal(page.node('nameGate').hidden, false, 'le prénom est demandé tout de suite');
+  await page.poll();
+  assert.equal(postsTo(page, '/api/table/enter').length, 1);
+
+  // QR coupé ou renouvelé : la page demande quand même (un inscrit de ce
+  // navigateur y retrouve sa place) ; le refus dit « QR plus actif ».
+  const inactive = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false }), url => url === '/api/table/enter'
+    ? reply(403, { error: 'Ce QR d’événement n’est plus actif. Demande au bar.', code: 'PRIVATE_EVENT' }) : undefined);
+  assert.equal(postsTo(inactive, '/api/table/enter').length, 1);
+  assert.equal(inactive.node('noSingerText').textContent, 'Ce QR d’événement n’est plus actif. Demande au bar.');
+
+  const mine = await soloPage('?evenement=SECRET-EV', soloState({ tablePeople: [person('s2', 'Léa')], managedIds: ['s2'] }));
+  assert.equal(mine.posts.length, 0, 'son chanteur est déjà sur ce téléphone');
+  assert.equal(mine.history.urls.at(-1), '/t/Comptoir/secret');
+
+  const busy = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), url => url === '/api/table/enter'
+    ? reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' }) : undefined, { languages: ['en'] });
+  assert.equal(busy.node('noSingerText').textContent, 'Lots of people arriving at once: trying again in a moment…');
+});
+
+// Regression: deuxième relecture finale (vérification E1(d)) — la place sans
+// prénom ouverte par le QR de l'événement, retirée par « Renouveler le QR »,
+// laissait sa page (et son rechargement) dire « demande au bar un QR
+// individuel » : l'adresse avait déjà perdu ?evenement=.
+// Regression: vérification de la troisième relecture — retirée aussi par
+// « Parti » du bar, la page disait « QR plus actif » alors que rescanner le
+// QR de l'événement donne une nouvelle place. La page ne distingue pas les
+// deux cas : elle dit de rescanner (un QR renouvelé refusera, « QR plus actif »).
+test('événement privé : place sans prénom retirée (« Parti » du bar ou QR renouvelé) = rescanner le QR, même après rechargement', async () => {
+  const session = sessionMap();
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
+    self.state.managedIds = ['s2'];
+    return { id: 's2', token: 'jeton-s2', nameRequired: true };
+  }, { session });
+  assert.equal(page.node('nameGate').hidden, false);
+  assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret');
+  // Le bar touche « Parti » sur « Solo 2 » (ou renouvelle le QR) : la place part sans trace.
+  page.state.tablePeople = [];
+  page.state.managedIds = [];
+  await page.poll();
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(page.node('noSingerText').textContent, 'Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.');
+  const reloaded = await soloPage('', page.state, undefined, { session, languages: ['en'] });
+  assert.equal(reloaded.posts.length, 0);
+  assert.equal(reloaded.node('noSingerText').textContent, 'Your spot without a name was removed. Scan the event QR code again to get a new one, or ask the bar.');
+
+  // Place nommée puis passée sur un autre téléphone : pas un QR inactif.
+  const named = sessionMap();
+  const moved = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    self.state.tablePeople = [person('s3', 'Léa')];
+    self.state.managedIds = ['s3'];
+    return { id: 's3', token: 'jeton-s3', nameRequired: true };
+  }, { session: named });
+  await moved.poll();
+  moved.state.managedIds = [];
+  await moved.poll();
+  assert.match(moved.node('noSingerText').textContent, /^Pour t’inscrire, demande au bar un QR individuel\./);
+});
+
+// Regression: relecture finale (ADV1) — refusée parce que beaucoup d'invités
+// arrivaient dans la même minute, la page restait en échec sans jamais
+// réessayer ; le plafond de l'événement, lui, ne doit pas boucler.
+const retryDelay = page => [...page.timers.values()].map(timer => timer.ms).find(ms => ms >= 15000 && ms <= 20000);
+const eventBusy = () => reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' });
+test('événement privé : arrivées nombreuses = nouvel essai automatique, puis prénom', async () => {
+  let busyLeft = 2;
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    if (busyLeft-- > 0) return eventBusy();
+    self.state.tablePeople = [person('s3', 'Solo 3', { nameRequired: true })];
+    self.state.managedIds = ['s3'];
+    return { id: 's3', token: 'jeton-s3', nameRequired: true };
+  });
+  assert.equal(page.node('noSingerText').textContent, 'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…');
+  assert.equal(page.node('noSingerTitle').textContent, 'Inscription en cours…');
+  assert.equal(page.node('nameGate').hidden, true);
+  await page.poll();
+  assert.equal(postsTo(page, '/api/table/enter').length, 1, 'le rafraîchissement régulier ne relance pas tout de suite');
+  assert.ok(retryDelay(page), 'nouvel essai prévu dans 15 à 20 s');
+  await page.runTimers(retryDelay(page));
+  assert.equal(postsTo(page, '/api/table/enter').length, 2);
+  assert.equal(page.node('noSingerText').textContent, 'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…');
+  await page.runTimers(retryDelay(page));
+  assert.equal(postsTo(page, '/api/table/enter').length, 3);
+  assert.equal(page.node('nameGate').hidden, false, 'inscrite : le prénom est demandé');
+  assert.equal(retryDelay(page), undefined, 'plus aucun essai prévu après le succès');
+  await page.poll();
+  assert.equal(postsTo(page, '/api/table/enter').length, 3);
+});
+
+// Regression: deuxième relecture finale (A2-2, D2-4) — quatre essais en une
+// minute à peine puis un échec définitif, sans bouton pour réessayer ; le
+// délai annoncé par le serveur (Retry-After) était ignoré.
+test('événement privé : nouveaux essais pendant 5 minutes environ, puis « Réessayer » ; titre « Inscription en cours… »', async () => {
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }),
+    url => url === '/api/table/enter' ? eventBusy() : undefined);
+  assert.equal(page.node('noSingerTitle').textContent, 'Inscription en cours…');
+  assert.equal(page.node('noSingerText').textContent, 'Beaucoup d’arrivées en même temps : nouvel essai dans un instant…');
+  let waited = 0;
+  for (let i = 0; i < 40 && retryDelay(page); i++) { waited += retryDelay(page); await page.runTimers(retryDelay(page)); }
+  const tries = postsTo(page, '/api/table/enter').length;
+  assert.ok(tries >= 15 && tries <= 21, `essais pendant environ 5 minutes : ${tries}`);
+  assert.ok(waited <= 5 * 60000 && waited > 4 * 60000, `attente totale : ${waited} ms`);
+  assert.equal(retryDelay(page), undefined, 'puis plus rien d’automatique');
+  assert.equal(page.node('noSingerText').textContent, 'Trop d’inscriptions d’un coup : réessaie dans une minute.');
+  assert.equal(page.node('noSingerTitle').textContent, 'Pour ajouter une chanson');
+  const again = page.find('noSingerActions', '[data-entry-retry]');
+  assert.equal(again.textContent, 'Réessayer');
+  await page.poll();
+  assert.equal(postsTo(page, '/api/table/enter').length, tries, 'le rafraîchissement ne relance pas');
+  // « Réessayer » : un essai tout de suite, puis de nouveau les essais automatiques.
+  await page.tap('noSingerActions', '[data-entry-retry]');
+  assert.equal(postsTo(page, '/api/table/enter').length, tries + 1);
+  assert.equal(page.node('noSingerTitle').textContent, 'Inscription en cours…');
+  assert.ok(retryDelay(page), 'nouvelle série d’essais');
+});
+
+test('événement privé : le délai Retry-After du serveur est suivi', async () => {
+  let busyLeft = 1;
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    if (busyLeft-- > 0) return reply(429, { error: 'Trop d’inscriptions d’un coup : réessaie dans une minute.', code: 'PRIVATE_EVENT_BUSY' }, { 'Retry-After': '7' });
+    self.state.tablePeople = [person('s4', 'Solo 4', { nameRequired: true })];
+    self.state.managedIds = ['s4'];
+    return { id: 's4', token: 'jeton-s4', nameRequired: true };
+  });
+  const delays = [...page.timers.values()].map(timer => timer.ms).filter(ms => ms >= 7000 && ms < 10000);
+  assert.equal(delays.length, 1, `un essai prévu après 7 s (plus un écart de moins de 3 s) : ${[...page.timers.values()].map(timer => timer.ms)}`);
+  assert.equal(retryDelay(page), undefined, 'pas le délai par défaut');
+  await page.runTimers(delays[0]);
+  assert.equal(postsTo(page, '/api/table/enter').length, 2);
+  assert.equal(page.node('nameGate').hidden, false, 'inscrite : le prénom est demandé');
+});
+
+test('événement privé en anglais : titre, attente et « Try again » ; plafond atteint = message, sans essai automatique', async () => {
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }),
+    url => url === '/api/table/enter' ? eventBusy() : undefined, { languages: ['en'] });
+  assert.equal(page.node('noSingerTitle').textContent, 'Signing you up…');
+  assert.equal(page.node('noSingerText').textContent, 'Lots of people arriving at once: trying again in a moment…');
+  for (let i = 0; i < 40 && retryDelay(page); i++) await page.runTimers(retryDelay(page));
+  assert.equal(page.node('noSingerText').textContent, 'Too many sign-ups at once: try again in a minute.');
+  assert.equal(page.node('noSingerTitle').textContent, 'To add a song');
+  assert.equal(page.find('noSingerActions', '[data-entry-retry]').textContent, 'Try again');
+
+  for (const languages of [['fr'], ['en']]) {
+    const full = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), url => url === '/api/table/enter'
+      ? reply(403, { error: 'L’événement est complet par ce QR : demande au bar un QR individuel.', code: 'PRIVATE_EVENT_FULL' }) : undefined, { languages });
+    assert.equal(full.node('noSingerText').textContent, languages[0] === 'fr'
+      ? 'L’événement est complet par ce QR : demande au bar un QR individuel.'
+      : 'This event is full through this QR code: ask the bar for a personal QR code.');
+    assert.equal(retryDelay(full), undefined, 'plafond atteint : pas de nouvel essai');
+    assert.equal([...full.timers.values()].filter(timer => timer.ms > 1000).length, 0, 'aucun essai prévu');
+    assert.equal(full.node('nameGate').hidden, true);
+    assert.equal(full.node('fatalBox').hidden, true, 'un refus de l’inscription n’est pas un lien invalide');
+    await full.poll();
+    assert.equal(postsTo(full, '/api/table/enter').length, 1);
+    assert.equal(full.find('noSingerActions', '[data-entry-retry]').textContent, languages[0] === 'fr' ? 'Réessayer' : 'Try again',
+      'essai à la main seulement');
+  }
+});
+
+// Vérification de la seconde passe de la quatrième relecture finale (adverse) :
+// le serveur revérifie le plafond de l'événement au premier prénom d'une place.
+// La fenêtre de prénom affiche ce refus, dans la langue du téléphone, et reste
+// ouverte ; la page n'est pas un lien invalide.
+test('événement privé complet au moment du prénom : la fenêtre affiche le refus (FR et EN) et reste ouverte', async () => {
+  for (const languages of [['fr'], ['en']]) {
+    const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), (url, body, self) => {
+      if (url === '/api/table/enter') {
+        self.state.tablePeople = [person('s4', 'Solo 4', { nameRequired: true, viaEvent: true })];
+        self.state.managedIds = ['s4'];
+        return { id: 's4', token: 'jeton-s4', nameRequired: true };
+      }
+      return url === '/api/table/person/rename'
+        ? reply(403, { error: 'L’événement est complet par ce QR : demande au bar un QR individuel.', code: 'PRIVATE_EVENT_FULL' }) : undefined;
+    }, { languages });
+    assert.equal(page.node('nameGate').hidden, false);
+    page.node('nameGateInput').value = 'Léa';
+    await page.submit('nameGateForm');
+    assert.equal(page.node('nameGateError').textContent, languages[0] === 'fr'
+      ? 'L’événement est complet par ce QR : demande au bar un QR individuel.'
+      : 'This event is full through this QR code: ask the bar for a personal QR code.');
+    assert.equal(page.node('nameGate').hidden, false, 'la fenêtre reste ouverte');
+    assert.equal(page.node('fatalBox').hidden, true, 'un refus du prénom n’est pas un lien invalide');
+  }
+});
+
+// Regression: relecture finale (ADV3) — sur un navigateur qui venait de
+// rescanner le QR de l'événement (« Solo N » sans prénom), la fenêtre de
+// prénom cachait le lien de transfert et la clé personnelle.
+test('rescan : le lien de transfert et la clé personnelle passent avant la fenêtre de prénom', async () => {
+  const placeholder = () => soloState({ soloInvitationReady: false, tablePeople: [person('s9', 'Solo 9', { nameRequired: true })], managedIds: ['s9'] });
+  const withOffer = (offer, extra) => (url, body, self) => {
+    if (url.startsWith('/api/state?')) {
+      const data = JSON.parse(JSON.stringify(self.state));
+      if (new URLSearchParams(url.split('?')[1]).get('reprise')) data.transferOffer = offer;
+      return data;
+    }
+    return extra?.(url, body, self);
+  };
+  // « Solo 9 » ouvert dans cet onglet par le QR de l'événement.
+  const session = sessionMap({ 'kfEventPlace:Comptoir:secret': 's9' });
+  const page = await soloPage('?reprise=LIEN-TEST', placeholder(), withOffer({ personId: 'lea', name: 'Léa' }, (url, body, self) => {
+    if (url !== '/api/table/person/claim') return undefined;
+    self.state.tablePeople = [person('lea', 'Léa')];
+    self.state.managedIds = ['lea'];
+    return { id: 'lea', token: 'jeton-lea' };
+  }), { session });
+  assert.equal(page.node('nameGate').hidden, true, 'la reprise passe avant le prénom');
+  assert.equal(page.node('mainContent').hidden, false);
+  assert.equal(page.node('transferBox').hidden, false);
+  assert.equal(page.node('transferHeading').textContent, 'Récupérer tes chansons sur ce téléphone');
+  await page.tap('transferActions', '[data-transfer-claim]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', link: 'LIEN-TEST' }]);
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(page.toast().text, 'Tu gères maintenant Léa sur ce téléphone.');
+  // Regression: deuxième relecture finale — la place « Solo 9 » retirée par la
+  // reprise restait notée : Léa partie plus tard sur un autre téléphone, cet
+  // onglet disait « QR d’événement plus actif » alors qu'il l'est toujours.
+  assert.equal(session.getItem('kfEventPlace:Comptoir:secret'), '', 'reprise par lien : la place « Solo 9 » oubliée');
+  page.state.tablePeople = [person('lea', 'Léa')];
+  page.state.managedIds = [];
+  await page.poll();
+  assert.equal(page.node('noSingerBox').hidden, false);
+  assert.doesNotMatch(page.node('noSingerText').textContent, /plus actif/, 'Léa reprise ailleurs : pas « QR plus actif »');
+
+  // « Pas maintenant » : la fenêtre de prénom revient.
+  const later = await soloPage('?reprise=LIEN-TEST', placeholder(), withOffer({ personId: 'lea', name: 'Léa' }));
+  await later.tap('transferActions', '[data-transfer-dismiss]');
+  assert.equal(later.node('nameGate').hidden, false);
+  // Lien expiré : rien à reprendre, le prénom reste demandé.
+  const expired = await soloPage('?reprise=LIEN-TEST', placeholder(), withOffer({ invalid: true }));
+  assert.equal(expired.node('nameGate').hidden, false);
+
+  // Clé personnelle d'une autre personne : « C'est bien toi ? » avant le prénom.
+  const keySession = sessionMap({ 'kfEventPlace:Comptoir:secret': 's9' });
+  const key = await soloPage('?invitation=CLE-CLARA', placeholder(), (url, body, self) => {
+    if (url === '/api/table/solo/open') return { recover: { id: 'c1', name: 'Clara' } };
+    if (url !== '/api/table/person/claim') return undefined;
+    self.state.tablePeople = [person('c1', 'Clara')];
+    self.state.managedIds = ['c1'];
+    return { id: 'c1', token: 'jeton-c1' };
+  }, { languages: ['en'], session: keySession });
+  assert.deepEqual(postsTo(key, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-CLARA' }]]);
+  assert.equal(key.node('nameGate').hidden, true);
+  assert.equal(key.node('transferHeading').textContent, 'Is that you, Clara?');
+  await key.tap('transferActions', '[data-key-claim]');
+  assert.deepEqual(key.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', key: 'CLE-CLARA' }]);
+  assert.equal(key.node('nameGate').hidden, true);
+  assert.equal(keySession.getItem('kfEventPlace:Comptoir:secret'), '', 'reprise par la clé personnelle : la place « Solo 9 » oubliée');
+  // Un prénom déjà donné sur ce téléphone : la clé n'est pas rouverte (inchangé).
+  const named = await soloPage('?invitation=CLE-CLARA', soloState({ soloInvitationReady: false, tablePeople: [person('s9', 'Marie')], managedIds: ['s9'] }));
+  assert.equal(postsTo(named, '/api/table/solo/open').length, 0);
+});
+
+test('activité : en-tête x-page-visible « 1 » page visible, « 0 » cachée ; la page cachée continue d’interroger', async () => {
+  const page = await open({ hidden: true });
+  assert.equal(page.stateRequests()[0].headers['x-page-visible'], '0', 'page cachée : « 0 » (sans en-tête, le serveur compte une page d’avant la mise à jour)');
+  await page.poll();
+  assert.equal(page.stateRequests().length, 2, 'la lecture continue en arrière-plan');
+  assert.equal(page.stateRequests().at(-1).headers['x-page-visible'], '0', 'page cachée : pas une activité');
+  page.document.hidden = false;
+  page.document.listeners.visibilitychange.forEach(entry => entry.listener());
+  await page.settle();
+  assert.equal(page.stateRequests().at(-1).headers['x-page-visible'], '1', 'page revenue : activité notée tout de suite');
+  const visible = await open();
+  assert.equal(visible.stateRequests()[0].headers['x-page-visible'], '1');
+});
+
+test('doublon marqué parti sur ce navigateur : son QR personnel propose encore « C’est bien toi ? »', async () => {
+  // Regression: la page ne demandait rien tant qu'elle « gérait » une personne,
+  // même partie : le QR personnel ne pouvait plus reprendre l'ancien profil.
+  const gone = soloState({ soloInvitationReady: false, tablePeople: [person('d1', 'Clara B.', { active: false })], managedIds: ['d1'] });
+  const page = await soloPage('?invitation=CLE-SOLO', gone,
+    url => url === '/api/table/solo/open' ? { recover: { id: 'c1', name: 'Clara' } } : undefined);
+  assert.deepEqual(postsTo(page, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-SOLO' }]]);
+  assert.equal(page.node('transferHeading').textContent, 'C’est bien toi, Clara ?');
+  // Sa propre personne marquée partie : le serveur le dit, la page l'affiche.
+  const left = await soloPage('?invitation=CLE-SOLO', gone, url => url === '/api/table/solo/open'
+    ? reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' }) : undefined, { languages: ['en'] });
+  assert.equal(left.node('noSingerText').textContent, 'This person was marked as gone. Ask the bar to bring them back.');
+  // Une personne présente sur ce téléphone : rien n'est demandé (inchangé).
+  const active = await soloPage('?invitation=CLE-SOLO', soloState({ soloInvitationReady: false, tablePeople: [person('d1', 'Clara B.')], managedIds: ['d1'] }));
+  assert.equal(postsTo(active, '/api/table/solo/open').length, 0);
+});
+
+// Regression: troisième relecture finale (RT1) — le QR de l'événement rescanné
+// par une personne marquée partie comptait sa fiche partie comme « son
+// chanteur est déjà là » : ?evenement= retiré sans demande au serveur, et la
+// page disait « demande au bar un QR individuel » au lieu de « marquée partie ».
+test('personne marquée partie : le QR de l’événement rescanné dit « demande au bar de te réactiver » (FR/EN)', async () => {
+  const gone = () => soloState({ soloInvitationReady: false,
+    tablePeople: [person('d1', 'Clara B.', { viaEvent: true, active: false })], managedIds: ['d1'] });
+  const left = () => reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
+  for (const [languages, text] of [[undefined, 'Cette personne a été marquée partie. Demande au bar de la réactiver.'],
+    [['en'], 'This person was marked as gone. Ask the bar to bring them back.']]) {
+    const event = await soloPage('?evenement=SECRET-EV', gone(), url => url === '/api/table/enter' ? left() : undefined, { languages });
+    assert.deepEqual(postsTo(event, '/api/table/enter'), [['/api/table/enter', { table: 'Comptoir', access: 'secret', event: 'SECRET-EV' }]]);
+    assert.equal(event.node('noSingerText').textContent, text);
+    assert.equal(event.node('catalogAccessText').textContent, text);
+    // Rechargée sans ?evenement= (lien commun) : le même avis, jamais « QR individuel ».
+    const bare = await soloPage('', gone(), undefined, { languages });
+    assert.equal(bare.posts.length, 0);
+    assert.equal(bare.node('noSingerText').textContent, text);
+  }
+  // Une place active sur ce téléphone : rien n'est demandé (inchangé).
+  const mine = await soloPage('?evenement=SECRET-EV', soloState({
+    tablePeople: [person('d1', 'Clara B.', { active: false }), person('s2', 'Léa')], managedIds: ['d1', 's2'] }));
+  assert.equal(postsTo(mine, '/api/table/enter').length, 0);
+});
+
+test('navigateur intégré (Instagram, WebView…) : conseil d’ouvrir la page dans son navigateur, en solo seulement', async () => {
+  const solo = soloState({ tablePeople: [person('m1', 'Marie')], managedIds: ['m1'] });
+  // Son adresse garde sa clé personnelle : Safari ou Chrome la retrouvent.
+  const insta = await soloPage('?invitation=CLE', solo, undefined, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile Instagram 300.0' });
+  assert.equal(insta.node('inAppHint').hidden, false);
+  assert.equal(insta.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).');
+  const webview = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A; wv) AppleWebKit/537.36' });
+  assert.equal(webview.node('inAppHint').hidden, false);
+  const safari = await soloPage('', solo, undefined, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Version/17.0 Mobile/15E148 Safari/604.1' });
+  assert.equal(safari.node('inAppHint').hidden, true);
+  const table = await open({ userAgent: 'Mozilla/5.0 (iPhone) Instagram 300.0' });
+  assert.equal(table.node('inAppHint').hidden, true, 'téléphone de table : rien');
+  const unknown = await soloPage('', solo);
+  assert.equal(unknown.node('inAppHint').hidden, true, 'navigateur sans identification');
+});
+
+test('navigateur intégré, événement privé : le bandeau dit de rescanner le QR de l’événement depuis la même application', async () => {
+  // Après l'inscription, l'adresse perd ?evenement= : l'ouvrir dans Safari ou
+  // Chrome mène au lien commun, et un autre navigateur crée un deuxième
+  // chanteur (décision D1). Seul un nouveau scan dans la même application
+  // ramène la même personne.
+  const insta = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile Instagram 300.0';
+  const event = soloState({ tablePeople: [person('e1', 'Léa', { viaEvent: true })], managedIds: ['e1'] });
+  const fr = await soloPage('', event, undefined, { userAgent: insta });
+  assert.equal(fr.node('inAppHint').hidden, false);
+  assert.equal(fr.node('inAppHint').textContent, 'Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.');
+  const en = await soloPage('', event, undefined, { userAgent: insta, languages: ['en'] });
+  assert.equal(en.node('inAppHint').textContent, 'To get back to this page, scan the event QR code again from the same app.');
+  // Changement de langue sur la page : le bandeau suit.
+  await en.tap('langSwitch', '[data-lang="fr"]');
+  assert.equal(en.node('inAppHint').textContent, 'Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.');
+
+  // QR individuel : son adresse garde la clé, l'ouvrir dans Safari ou Chrome marche.
+  const personal = await soloPage('?invitation=CLE', soloState({ tablePeople: [person('p1', 'Marie')], managedIds: ['p1'] }), undefined,
+    { userAgent: insta, languages: ['en'] });
+  assert.equal(personal.node('inAppHint').hidden, false);
+  assert.equal(personal.node('inAppHint').textContent, 'To find this page again later, open it in your browser: menu ⋯ → “Open in browser” (Safari or Chrome).');
+  await personal.tap('langSwitch', '[data-lang="fr"]');
+  assert.equal(personal.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).');
+
+  // Prénom encore à saisir : la fenêtre de prénom couvre la page, rien ne change.
+  const gate = await soloPage('', soloState({ tablePeople: [person('e2', 'Solo 2', { viaEvent: true, nameRequired: true })], managedIds: ['e2'] }),
+    undefined, { userAgent: insta });
+  assert.equal(gate.node('nameGate').hidden, false);
+  assert.equal(gate.node('mainContent').hidden, true, 'bandeau caché sous la fenêtre de prénom');
+
+  const table = await open({ state: baseState({ tablePeople: [person('alice', 'Alice', { viaEvent: true })], managedIds: ['alice'] }),
+    userAgent: insta });
+  assert.equal(table.node('inAppHint').hidden, true, 'téléphone de table : rien');
+});
+
+test('navigateur intégré : le bandeau suit ce qui ramène vraiment la page (personne partie, profil repris)', async () => {
+  const insta = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile Instagram 300.0';
+  // Regression: une personne venue par l'événement puis marquée partie
+  // retrouvait le conseil Safari/Chrome, qui mène au lien commun.
+  const gone = soloState({ tablePeople: [person('e1', 'Léa', { viaEvent: true, active: false })], managedIds: ['e1'] });
+  for (const [languages, text] of [[undefined, 'Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.'],
+    [['en'], 'To get back to this page, scan the event QR code again from the same app.']]) {
+    const page = await soloPage('', gone, undefined, { userAgent: insta, languages });
+    assert.equal(page.node('inAppHint').hidden, false);
+    assert.equal(page.node('inAppHint').textContent, text);
+  }
+  // Regression: un soliste repris par code ou QR de reprise n'a plus sa clé
+  // dans l'adresse ; Safari ou Chrome mènerait au lien commun.
+  const recovered = soloState({ tablePeople: [person('p1', 'Marie')], managedIds: ['p1'] });
+  const fr = await soloPage('', recovered, undefined, { userAgent: insta });
+  assert.equal(fr.node('inAppHint').textContent, 'Pour retrouver cette page, rescanne le même QR depuis la même application, ou demande au bar un QR de reprise.');
+  const en = await soloPage('', recovered, undefined, { userAgent: insta, languages: ['en'] });
+  assert.equal(en.node('inAppHint').textContent, 'To get back to this page, scan the same QR code again from the same app, or ask the bar for a recovery QR code.');
+  // Personne sur ce téléphone (lien commun) : conseil inchangé.
+  const nobody = await soloPage('', soloState(), undefined, { userAgent: insta });
+  assert.equal(nobody.node('inAppHint').textContent, 'Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).');
+});
+
+test('QR refusé : le message du serveur suit le changement de langue', async () => {
+  // Regression: la page gardait le message dans la langue de l'ouverture
+  // (« To add a song Cette personne a été marquée partie… »).
+  const gone = soloState({ soloInvitationReady: false, tablePeople: [person('d1', 'Clara', { active: false })], managedIds: ['d1'] });
+  const left = () => reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' });
+  const fr = await soloPage('?invitation=CLE-SOLO', gone, url => url === '/api/table/solo/open' ? left() : undefined);
+  assert.equal(fr.node('noSingerText').textContent, 'Cette personne a été marquée partie. Demande au bar de la réactiver.');
+  await fr.tap('langSwitch', '[data-lang="en"]');
+  assert.equal(fr.node('noSingerText').textContent, 'This person was marked as gone. Ask the bar to bring them back.');
+  const en = await soloPage('?invitation=CLE-SOLO', gone, url => url === '/api/table/solo/open' ? left() : undefined, { languages: ['en'] });
+  assert.equal(en.node('noSingerText').textContent, 'This person was marked as gone. Ask the bar to bring them back.');
+  await en.tap('langSwitch', '[data-lang="fr"]');
+  assert.equal(en.node('noSingerText').textContent, 'Cette personne a été marquée partie. Demande au bar de la réactiver.');
+});
+
+test('table : la page ne montre que les personnes du téléphone, « Voir toute la table (N) » liste tout le monde', async () => {
+  const state = baseState();
+  state.tablePeople.push(person('bob', 'Bob', { songs: [{ entryId: 'b1', title: 'Rock' }], inKaraFun: [{ title: 'Pop' }] }),
+    person('dan', 'Dan', { active: false }));
+  const page = await open({ state });
+  assert.ok(page.find('peopleList', '[data-person-card="alice"]'));
+  assert.equal(page.node('peopleList').querySelector('[data-person-card="bob"]'), null, 'Bob est géré par un autre téléphone');
+  assert.equal(page.node('peopleHeading').textContent, 'Mes chanteurs');
+  assert.equal(page.find('peopleList', '[data-person-card="alice"]').querySelector('.person-state').textContent, 'Chansons choisies');
+  assert.equal(page.node('claimBox').hidden, true, 'plus de « Je suis… » sur la page principale');
+  assert.equal(page.node('tableAllButton').hidden, false);
+  assert.equal(page.node('tableAllButton').textContent, 'Voir toute la table (3)');
+  // D15-B : la carte ne liste que ce téléphone ; l'effectif de toute la table
+  // est à côté de « Voir toute la table », jamais dans l'en-tête de la carte.
+  assert.equal(page.node('peopleIntro').textContent, 'Les personnes inscrites avec ce téléphone. Pour voir toute la table : « Voir toute la table ».');
+  assert.equal(page.node('peopleCount').textContent, '1 présente · 3 inscrites à la table');
+  assert.equal(page.node('tableAllRow').hidden, false);
+  const cardSource = /<div class="card" id="peopleCard">([\s\S]*?)<\/div>\s*<div class="card" id="addPersonBox">/.exec(fs.readFileSync(path.join(__dirname, '..', 'public', 'client.html'), 'utf8'))[1];
+  assert.doesNotMatch(/<div class="table-head">[\s\S]*?<ul id="peopleList"/.exec(cardSource)[0], /peopleCount/, 'pas d’effectif de la table dans l’en-tête');
+  assert.match(cardSource, /<div class="table-all-row" id="tableAllRow">\s*<button[^>]*id="tableAllButton"[^>]*><\/button>\s*<span id="peopleCount"/,
+    'l’effectif suit le bouton « Voir toute la table »');
+  assert.equal(page.find('addPersonBox', 'h3').textContent, 'Ajouter une personne sans téléphone');
+  await page.click(page.node('tableAllButton'));
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Toute la table');
+  assert.equal(page.$('tableSearch'), null, 'pas de recherche jusqu’à 8 personnes');
+  const row = id => page.find('tableSheetList', `[data-sheet-person="${id}"]`);
+  assert.match(row('alice').textContent, /^Alice1 titre prêtgéré par ce téléphone$/);
+  assert.match(row('bob').textContent, /^Bob2 titres prêtsC’est moi$/);
+  assert.match(row('dan').textContent, /^DanParti · historique conservé$/);
+  assert.equal(row('dan').querySelector('[data-sheet-claim]'), null, 'personne partie : rien à reprendre');
+  await page.tap('tableSheetList', '[data-sheet-claim="bob"]');
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Gérer les chansons de Bob');
+  assert.ok(page.node('claimCode'), 'reprise par code, flux habituel');
+
+  const crowd = baseState();
+  crowd.table.headcount = 20;
+  for (let i = 1; i <= 8; i++) crowd.tablePeople.push(person(`p${i}`, `Invité ${i}`));
+  crowd.tablePeople.push(person('zoe', 'Zoé'));
+  const big = await open({ state: crowd });
+  assert.equal(big.node('tableAllButton').textContent, 'Voir toute la table (10)');
+  await big.click(big.node('tableAllButton'));
+  await big.type('tableSearch', 'zoe');
+  assert.deepEqual(big.node('tableSheetList').querySelectorAll('[data-sheet-person]').map(node => node.dataset.sheetPerson), ['zoe'],
+    'recherche sans accents');
+  await big.type('tableSearch', 'xyz');
+  assert.equal(big.node('tableSheetList').textContent, 'Aucune personne trouvée.');
+  await big.type('tableSearch', '');
+  assert.equal(big.node('tableSheetList').querySelectorAll('[data-sheet-person]').length, 10);
+
+  const english = await open({ state, languages: ['en'] });
+  assert.equal(english.node('tableAllButton').textContent, 'See the whole table (3)');
+  assert.equal(english.node('peopleHeading').textContent, 'My singers');
+  assert.equal(english.node('peopleIntro').textContent, 'The people signed up with this phone. To see everyone: “See the whole table”.');
+  assert.equal(english.node('peopleCount').textContent, '1 here · 3 signed up at the table');
+  await english.tap('langSwitch', '[data-lang="fr"]');
+  assert.equal(english.node('peopleCount').textContent, '1 présente · 3 inscrites à la table', 'le changement de langue suit');
+
+  // « Reprendre un chanteur inscrit » (catalogue) ouvre la liste de la table.
+  const none = await open({ state: baseState({ managedIds: [] }) });
+  await none.click(none.node('nav-catalog'));
+  await none.tap('catalogAccessActions', '[data-access-go="claim"]');
+  assert.equal(none.find('sheetPanel', 'h3').textContent, 'Toute la table');
+});
+
+test('table déjà commencée : « Rejoindre la table » en tête, puis la carte « Fais scanner ta table »', async () => {
+  const state = baseState({ managedIds: [] });
+  state.tablePeople.push(person('bob', 'Bob'));
+  const page = await open({ state, respond: (url, body, self) => {
+    if (url === '/api/join') {
+      self.state.tablePeople.push(person('zoe', body.name));
+      self.state.managedIds = ['zoe'];
+      return { id: 'zoe', token: 'jeton-zoe' };
+    }
+    if (url.startsWith('/api/table/invite?')) return { url: 'http://192.168.1.20:3000/t/1/secret', qr: 'data:image/png;base64,TABLEQR' };
+    return undefined;
+  } });
+  assert.equal(page.node('joinBox').hidden, false, 'la carte d’accueil reste en tête');
+  assert.equal(page.node('joinHeading').textContent, 'Bienvenue à Table 1 !');
+  assert.equal(page.node('joinNameLabel').textContent, 'Ton prénom');
+  assert.equal(page.node('joinSubmit').textContent, 'Rejoindre la table');
+  assert.equal(page.node('joinOthers').hidden, false);
+  assert.equal(page.node('tableBox').hidden, true, 'les fiches des autres ne s’affichent pas');
+  await page.click(page.node('joinOthers'));
+  assert.equal(page.find('sheetPanel', 'h3').textContent, 'Toute la table');
+  assert.match(page.find('tableSheetList', '[data-sheet-person="alice"]').textContent, /C’est moi/);
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+
+  page.node('firstName').value = 'Zoé';
+  await page.submit('joinForm');
+  assert.deepEqual(postsTo(page, '/api/join'), [['/api/join', { table: '1', access: 'secret', name: 'Zoé' }]]);
+  assert.equal(page.node('joinBox').hidden, true);
+  assert.equal(page.node('inviteBox').hidden, false);
+  assert.equal(page.node('invitePanel').hidden, false, 'déployée juste après la première inscription');
+  assert.equal(page.node('inviteToggle').hidden, true);
+  assert.equal(page.find('inviteQr', 'img').attrs.src, 'data:image/png;base64,TABLEQR');
+  const inviteRequests = () => page.requests.filter(request => request.url.startsWith('/api/table/invite?'));
+  assert.equal(inviteRequests().length, 1);
+  assert.equal(inviteRequests()[0].url, '/api/table/invite?table=1&access=secret');
+  assert.deepEqual(page.node('peopleList').querySelectorAll('[data-person-card]').map(node => node.dataset.personCard), ['zoe']);
+  await page.click(page.node('inviteShare'));
+  assert.deepEqual(page.copies, ['http://192.168.1.20:3000/t/1/secret'], 'sans partage du téléphone : lien copié');
+  assert.equal(page.toast().text, 'Lien copié : colle-le dans ton message.');
+  await page.click(page.node('inviteClose'));
+  assert.equal(page.node('invitePanel').hidden, true);
+  assert.equal(page.node('inviteToggle').hidden, false);
+  assert.equal(page.node('inviteToggle').textContent, 'Faire scanner ma table');
+  await page.poll();
+  assert.equal(page.node('invitePanel').hidden, true, 'repliée ensuite');
+  await page.click(page.node('inviteToggle'));
+  assert.equal(page.node('invitePanel').hidden, false);
+  assert.equal(inviteRequests().length, 1, 'QR déjà chargé');
+
+  const invite = { url: 'https://karaoke.example/t/1/secret', qr: 'data:image/png;base64,QR' };
+  const shared = await open({ share: true, respond: url => url.startsWith('/api/table/invite?') ? invite : undefined });
+  assert.equal(shared.node('inviteBox').hidden, false, 'téléphone déjà inscrit : carte repliée');
+  assert.equal(shared.node('invitePanel').hidden, true);
+  await shared.click(shared.node('inviteToggle'));
+  await shared.click(shared.node('inviteShare'));
+  assert.deepEqual(shared.shares, [{ title: 'Karaoké', text: 'Rejoins notre table au karaoké :', url: invite.url }]);
+  const failed = await open({ clipboardFails: true, respond: url => url.startsWith('/api/table/invite?') ? invite : undefined });
+  await failed.click(failed.node('inviteToggle'));
+  await failed.click(failed.node('inviteShare'));
+  assert.deepEqual(failed.toast(), { text: `Copie impossible. Lien de la table : ${invite.url}`, bad: true, warn: false, hidden: false });
+  const refused = await open({ respond: url => url.startsWith('/api/table/invite?') ? reply(400, { error: 'Une erreur est survenue.' }) : undefined });
+  await refused.click(refused.node('inviteToggle'));
+  assert.deepEqual(refused.toast(), { text: 'Une erreur est survenue.', bad: true, warn: false, hidden: false });
+  assert.equal(refused.node('invitePanel').hidden, true, 'QR indisponible : la carte se replie');
+  await refused.click(refused.node('inviteShare'));
+  assert.equal(refused.copies.length, 0, 'aucun lien à partager');
+
+  const solo = await soloPage('', soloState({ tablePeople: [person('m1', 'Marie')], managedIds: ['m1'] }));
+  assert.equal(solo.node('inviteBox').hidden, true, 'pas pour « En solo »');
+  assert.equal(solo.node('tableAllButton').hidden, true);
+  assert.equal(solo.node('tableAllRow').hidden, true, 'solo : ni bouton ni effectif de table');
+  assert.equal(solo.node('peopleCount').hidden, true);
+
+  const empty = await open({ state: baseState({ tablePeople: [], managedIds: [] }) });
+  assert.equal(empty.node('joinNameLabel').textContent, 'Prénom de la première personne');
+  assert.equal(empty.node('joinSubmit').textContent, 'Commencer');
+  assert.equal(empty.node('joinOthers').hidden, true, 'table vide : personne à retrouver');
+
+  const fullState = baseState({ managedIds: [] });
+  fullState.table.headcount = 1;
+  const full = await open({ state: fullState });
+  assert.equal(full.node('joinBox').hidden, false);
+  assert.equal(full.node('joinSubmit').disabled, true);
+  assert.equal(full.node('headcountNotice').hidden, false);
+  assert.equal(full.node('headcountNotice').textContent, 'La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.');
+});
+
+// ================================================================ constats QA du 8 octobre
+// Regression: constat QA Q2 — le message de la fenêtre de prénom gardait
+// l'ancienne langue après FR/EN, et « prénom déjà pris » restait affiché
+// après un nouvel essai.
+// Regression: constat QA Q9 — fenêtre de prénom ouverte, Tab atteignait les
+// boutons FR/EN de l'en-tête et le contenu derrière.
+test('fenêtre de prénom : message retraduit, effacé à chaque essai, reste de la page inerte', async () => {
+  const page = await soloPage('?invitation=CLE-SOLO', soloState(), (url, body, self) => {
+    if (url === '/api/table/solo/open') {
+      self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+      self.state.managedIds = ['s1'];
+      return { id: 's1', token: 'jeton-s1', nameRequired: true };
+    }
+    if (url === '/api/table/person/rename') {
+      if (body.name === 'Marie') return reply(400, { error: 'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.', code: 'NAME_TAKEN', recoverable: true });
+      if (body.name === 'Erreur') return reply(400, { error: 'Prénom limité à 24 caractères.' });
+      self.state.tablePeople = [person('s1', body.name)];
+      return { ok: true };
+    }
+    return undefined;
+  });
+  const error = () => page.node('nameGateError');
+  assert.equal(page.node('nameGate').hidden, false);
+  // Q9 : tout sauf la fenêtre (et la zone d'état) est inerte, en-tête compris.
+  const background = () => page.document.body.children.filter(node => node.tag !== '#text' && !['nameGate', 'toast'].includes(node.id));
+  assert.ok(background().some(node => node.classList.contains('stagebox')), 'la scène fait partie du fond');
+  for (const node of background()) assert.equal(node.inert, true, `${node.id || node.className} inerte`);
+  assert.notEqual(page.node('nameGate').inert, true, 'la fenêtre reste utilisable');
+  assert.notEqual(page.node('toast').inert, true, 'zone d’état annoncée');
+
+  page.node('nameGateInput').value = 'Marie';
+  await page.submit('nameGateForm');
+  assert.equal(error().textContent, 'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit\u00a0? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).');
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error().textContent, 'This first name is already signed up. If it’s you, tap “Already signed up? I have a code”; otherwise add the initial of your last name (e.g. Mary L.).', 'le message suit la langue');
+  assert.equal(error().hidden, false);
+  for (const node of background()) assert.equal(node.inert, true, 'toujours inerte après le changement de langue');
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+  assert.equal(error().textContent, 'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit\u00a0? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).');
+
+  // Message du serveur : retraduit lui aussi.
+  page.node('nameGateInput').value = 'Erreur';
+  await page.submit('nameGateForm');
+  assert.equal(error().textContent, 'Prénom limité à 24 caractères.');
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error().textContent, 'First names are limited to 24 characters.');
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+
+  // Saisie : l'ancien message disparaît.
+  await page.type('nameGateInput', 'Mar');
+  assert.equal(error().hidden, true, 'effacé dès la saisie');
+  assert.equal(error().textContent, '');
+  // Champ vide bloqué par le navigateur (required) : l'ancien message ne reste pas.
+  page.node('nameGateInput').value = 'Marie';
+  await page.submit('nameGateForm');
+  assert.equal(error().hidden, false);
+  page.node('nameGateInput').value = '';
+  page.dispatch(page.node('nameGateInput'), 'invalid');
+  assert.equal(error().hidden, true, 'essai vide refusé par le navigateur : message effacé');
+  // Nouvel essai : le message est remplacé, jamais empilé.
+  page.node('nameGateInput').value = 'Marie';
+  await page.submit('nameGateForm');
+  page.node('nameGateInput').value = '   ';
+  await page.submit('nameGateForm');
+  assert.equal(error().textContent, 'Indique un prénom.');
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error().textContent, 'Please enter a first name.');
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+
+  page.node('nameGateInput').value = 'Julie';
+  await page.submit('nameGateForm');
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(error().hidden, true);
+  for (const node of background()) assert.notEqual(node.inert, true, `${node.id || node.className} rendu à la page`);
+});
+
+// Regression: constat QA Q3 — « Partager le lien » ne copiait jamais sur un
+// téléphone en http (ni navigator.share ni navigator.clipboard).
+test('partager le lien de la table en http : copie de secours, sinon le lien dans le message', async () => {
+  const invite = { url: 'http://192.0.2.2:3520/t/Les%20Pirates/secret', qr: 'data:image/png;base64,QR' };
+  const respond = url => url.startsWith('/api/table/invite?') ? invite : undefined;
+  const page = await open({ noClipboard: true, execCopy: true, respond });
+  await page.click(page.node('inviteToggle'));
+  page.node('inviteShare').focus();
+  await page.click(page.node('inviteShare'));
+  assert.equal(page.execCommands, 1, 'copie de secours du navigateur');
+  assert.deepEqual(page.execCopied, [invite.url], 'le lien de la table était sélectionné');
+  assert.equal(page.document.body.children.some(node => node.tag === 'textarea'), false, 'champ temporaire retiré');
+  assert.ok(page.document.activeElement === page.node('inviteShare'), `le focus revient au bouton, pas en haut de la page (${page.document.activeElement.tag})`);
+  assert.deepEqual(page.toast(), { text: 'Lien copié : colle-le dans ton message.', bad: false, warn: false, hidden: false });
+
+  const failed = await open({ noClipboard: true, respond, languages: ['en-US'] });
+  await failed.click(failed.node('inviteToggle'));
+  await failed.click(failed.node('inviteShare'));
+  assert.deepEqual(failed.toast(), { text: `Could not copy. Table link: ${invite.url}`, bad: true, warn: false, hidden: false });
+
+  // Fiche « Transférer » : même chemin, sur le champ du lien affiché.
+  const shareReply = { code: '4321', url: 'http://192.0.2.2:3520/t/1/secret?reprise=abc', qr: 'data:image/png;base64,T' };
+  const transfer = await open({ noClipboard: true, execCopy: true, respond: url => url === '/api/table/person/share' ? shareReply : undefined });
+  await transfer.tap('peopleList', '[data-share-person="alice"]');
+  transfer.node('transferUrl').readOnly = true; // attribut readonly du balisage
+  transfer.node('copyTransfer').focus();
+  await transfer.click(transfer.node('copyTransfer'));
+  assert.deepEqual(transfer.execCopied, [shareReply.url]);
+  assert.equal(transfer.toast().text, 'Lien copié : colle-le dans ton message.');
+  // Copié : le champ ne garde pas le focus (clavier et zoom d'iOS) et reste en lecture seule.
+  assert.ok(transfer.document.activeElement === transfer.node('copyTransfer'), `focus rendu au bouton « Copier le lien » (${transfer.document.activeElement.id || transfer.document.activeElement.tag})`);
+  assert.equal(transfer.node('transferUrl').readOnly, true);
+});
+
+// Regression: constat QA Q5 — le téléphone demandait les sélections alors que
+// le serveur annonçait déjà le catalogue indisponible (502 dans la console).
+test('catalogue annoncé indisponible : aucune demande de sélections, chargement à son retour', async () => {
+  const state = baseState({ catalogAvailable: false });
+  const page = await open({ state });
+  const catalogCalls = () => page.requests.filter(request => request.url.startsWith('/api/catalog/'));
+  await page.click(page.node('nav-catalog'));
+  assert.equal(catalogCalls().length, 0, 'pas de requête vouée à l’échec');
+  assert.equal(page.node('catalogContent').textContent, 'Le catalogue est momentanément indisponible. Réessaie dans un instant.');
+  await page.tap(page.body, '[data-catalog="news"]');
+  assert.equal(catalogCalls().length, 0, 'Nouveautés non plus');
+  await page.poll();
+  assert.equal(catalogCalls().length, 0);
+  await page.tap(page.body, '[data-catalog="styles"]');
+  page.state.catalogAvailable = true;
+  // Recherche en cours de saisie quand le catalogue revient : elle n'est pas effacée.
+  page.node('searchInput').value = 'que';
+  await page.poll();
+  assert.equal(page.node('searchInput').value, 'que');
+  assert.equal(catalogCalls().length, 0);
+  page.node('searchInput').value = '';
+  await page.poll();
+  assert.equal(catalogCalls().length, 1, 'catalogue revenu : une seule demande');
+  assert.match(catalogCalls()[0].url, /^\/api\/catalog\/categories\?type=styles/);
+  assert.match(page.node('catalogContent').textContent, /Années 80/);
+  await page.poll();
+  assert.equal(catalogCalls().length, 1, 'pas de nouvelle demande ensuite');
+});
+
+// Regression: constat QA Q10 — « Faire scanner ma table » restait proposé
+// alors que la table était complète.
+test('table complète : plus d’invitation à scanner la table, elle revient si une place se libère', async () => {
+  const state = baseState({ tablePeople: [person('alice', 'Alice'), person('bob', 'Bob')], managedIds: ['alice'] });
+  state.table.headcount = 2;
+  const page = await open({ state, respond: url => url.startsWith('/api/table/invite?') ? { url: 'http://x/t/1/s', qr: 'data:image/png;base64,Q' } : undefined });
+  assert.equal(page.node('inviteBox').hidden, true, 'table complète : ni bouton ni carte');
+  page.state.table.headcount = 3;
+  await page.poll();
+  assert.equal(page.node('inviteBox').hidden, false, 'une place libre : le bouton revient');
+  await page.click(page.node('inviteToggle'));
+  assert.equal(page.node('invitePanel').hidden, false);
+  page.state.tablePeople.push(person('chloe', 'Chloé'));
+  await page.poll();
+  assert.equal(page.node('inviteBox').hidden, true, 'carte ouverte puis table complète : masquée aussi');
+});
+
+// ---------------------------------------------------------------- relecture finale (affichage)
+// Regression: U3 — dans la fenêtre de prénom, FR/EN (boîte inline-flex) ne
+// se plaçait pas en haut à droite : justify-content n'y changeait rien.
+// Regression: U5 — un titre trop long était grisé en entier (opacité .55) :
+// « trop long » finissait vers 3:1 de contraste. Seuls pochette et titre pâlissent.
+// Regression: U8 — « Déjà inscrit par un autre téléphone ? » : cible de moins de 44 px.
+test('relecture : FR/EN en haut à droite de la fenêtre de prénom, « trop long » lisible, lien « Déjà inscrit » de 44 px', () => {
+  const css = html.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = selector => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(match => match[1].split(',').map(part => part.trim()).includes(selector)).map(match => match[2]).join(';');
+  const gateLang = rules('.client .name-gate-panel .lang-switch');
+  assert.match(gateLang, /display:\s*flex/);
+  assert.match(gateLang, /width:\s*max-content/);
+  assert.match(gateLang, /margin-left:\s*auto/);
+  assert.match(gateLang, /margin-bottom:\s*18px/, 'espacement gardé');
+  assert.doesNotMatch(rules('.client .catalog-list .too-long'), /opacity/, 'la ligne entière ne pâlit plus');
+  for (const part of ['.cover', '.song-title', 'b']) assert.match(rules(`.client .catalog-list .too-long ${part}`), /opacity:\s*\.55/, `${part} pâlit`);
+  const join = rules('.client .join-others');
+  assert.ok(Number(/min-height:\s*(\d+)px/.exec(join)?.[1]) >= 44, 'cible au doigt de 44 px');
+  assert.match(join, /padding:/);
+});
+
+// Regression: U4 — la fenêtre de prénom s'ouvrait sans focus : rien n'était
+// annoncé. Le focus va à son titre (pas au champ : pas de clavier forcé sur iOS).
+test('relecture : fenêtre de prénom ouverte, le focus va au titre, jamais au champ', async () => {
+  const page = await soloPage('?invitation=CLE-SOLO', soloState(), (url, body, self) => {
+    if (url === '/api/table/solo/open') {
+      self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+      self.state.managedIds = ['s1'];
+      return { id: 's1', token: 'jeton-s1', nameRequired: true };
+    }
+    return undefined;
+  });
+  assert.equal(page.node('nameGate').hidden, false);
+  assert.equal(page.node('nameGateTitle').getAttribute('tabindex'), '-1', 'titre focalisable par la page seulement');
+  assert.equal(page.document.activeElement, page.node('nameGateTitle'), 'le titre est annoncé');
+  assert.equal(page.node('nameGateTitle').focusCount, 1);
+  assert.equal(page.node('nameGateInput').focusCount || 0, 0, 'pas de clavier forcé');
+  page.node('nameGateInput').focus();
+  await page.poll();
+  assert.equal(page.document.activeElement, page.node('nameGateInput'), 'fenêtre déjà ouverte : le focus n’est pas repris');
+  assert.equal(page.node('nameGateTitle').focusCount, 1);
+});
+
+// Regression: U7 — les « C’est moi » répétés de « Toute la table » n'avaient pas de nom distinct.
+// Regression: U7 (vérification adverse) — en anglais, le nom « It’s me, Bob »
+// ne contenait pas le texte visible « That’s me » (WCAG 2.5.3, nom dans le libellé).
+test('relecture : chaque « C’est moi » de la fiche de la table porte le prénom (FR et EN)', async () => {
+  for (const [languages, label] of [[['fr-FR'], 'C’est moi, Bob'], [['en-US'], 'That’s me, Bob']]) {
+    const state = baseState();
+    state.tablePeople.push(person('bob', 'Bob'));
+    const page = await open({ state, languages });
+    await page.click(page.node('tableAllButton'));
+    const claim = page.find('tableSheetList', '[data-sheet-claim="bob"]');
+    assert.equal(claim.getAttribute('aria-label'), label);
+    assert.ok(claim.getAttribute('aria-label').startsWith(claim.textContent.trim()), `${languages[0]} : le nom accessible commence par le texte visible`);
+  }
+});
+
+// Regression: U9 — « Partager le lien » : tout échec du partage (refus,
+// partage indisponible) était avalé ; seule l'annulation reste silencieuse.
+test('relecture : partage de la table refusé, le lien est copié ; partage annulé, rien de plus', async () => {
+  const invite = { url: 'https://karaoke.example/t/1/secret', qr: 'data:image/png;base64,QR' };
+  const respond = url => url.startsWith('/api/table/invite?') ? invite : undefined;
+  const failure = name => () => { const error = new Error(name); error.name = name; throw error; };
+  const refused = await open({ share: failure('NotAllowedError'), respond });
+  await refused.click(refused.node('inviteToggle'));
+  await refused.click(refused.node('inviteShare'));
+  assert.equal(refused.shares.length, 1);
+  assert.deepEqual(refused.copies, [invite.url], 'partage refusé : lien copié');
+  assert.equal(refused.toast().text, 'Lien copié : colle-le dans ton message.');
+  const cancelled = await open({ share: failure('AbortError'), respond });
+  await cancelled.click(cancelled.node('inviteToggle'));
+  await cancelled.click(cancelled.node('inviteShare'));
+  assert.equal(cancelled.shares.length, 1);
+  assert.deepEqual(cancelled.copies, [], 'annulé par la personne : pas de copie');
+  assert.equal(cancelled.toast().hidden, true, 'ni message');
+});
+
+// ================================================================ troisième relecture finale (RT1, RT3)
+// Regression: troisième relecture finale (RT1) — un soliste dont le nouveau
+// navigateur avait ouvert un QR montré par le bar se retrouvait dans la
+// fenêtre de prénom (« Solo 2 »), sans accès au code à 4 chiffres : redonner
+// son prénom répondait « déjà inscrit », et il finissait inscrit deux fois.
+test('fenêtre de prénom : « Déjà inscrit ? J’ai un code » reprend son profil par le code, la fenêtre se ferme (FR et EN)', async () => {
+  let refuse = true;
+  const respond = (url, body, self) => {
+    if (url === '/api/table/enter') {
+      self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
+      self.state.managedIds = ['s2'];
+      return { id: 's2', token: 'jeton-s2', nameRequired: true };
+    }
+    if (url === '/api/table/person/claim') {
+      if (refuse) { refuse = false; return reply(400, { error: 'Code de partage incorrect.' }); }
+      self.state.tablePeople = [person('c1', 'Clara')];
+      self.state.managedIds = ['c1'];
+      self.state.recoveryPeople = [];
+      return { id: 'c1', token: 'jeton-c1' };
+    }
+    return undefined;
+  };
+  const session = sessionMap();
+  const page = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false,
+    recoveryPeople: [person('c1', 'Clara'), person('d1', 'Dan')] }), respond, { session });
+  assert.equal(page.node('nameGate').hidden, false);
+  assert.equal(page.node('claimBox').hidden, false, 'une place sans prénom ne cache pas la reprise');
+  const link = page.node('nameGateClaimLink');
+  assert.equal(link.hidden, false);
+  assert.equal(link.textContent, 'Déjà inscrit\u00a0? J’ai un code');
+  assert.equal(page.node('nameGateClaim').hidden, true);
+  await page.click(link);
+  assert.equal(page.node('nameGateForm').hidden, true, 'le prénom laisse la place au code');
+  assert.equal(page.node('nameGateClaimLink').hidden, true);
+  assert.equal(page.node('nameGateClaim').hidden, false);
+  assert.equal(page.document.activeElement, page.node('nameGateTitle'));
+  assert.equal(page.find('nameGateClaim', '[data-gate-claim-person="c1"]').textContent, 'Je suis Clara · reprendre mes chansons');
+  // Retour : du choix du prénom à la fenêtre de prénom.
+  await page.tap('nameGateClaim', '[data-gate-claim-back]');
+  assert.equal(page.node('nameGateForm').hidden, false);
+  assert.equal(page.node('nameGateClaim').hidden, true);
+  await page.click(page.node('nameGateClaimLink'));
+  await page.tap('nameGateClaim', '[data-gate-claim-person="c1"]');
+  assert.match(page.node('nameGateClaim').textContent, /Tu es Clara\u00a0\? Demande le code au bar ou à ton ancien téléphone\./);
+  const code = page.node('nameGateClaimCode');
+  assert.equal(code.getAttribute('inputmode'), 'numeric');
+  assert.equal(page.document.activeElement, code);
+  // Un rafraîchissement ne vide pas le code en cours de saisie.
+  code.value = '12';
+  await page.poll();
+  assert.equal(page.node('nameGateClaimCode').value, '12');
+  page.node('nameGateClaimCode').value = '1234';
+  await page.submit('nameGateClaimForm');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/person/claim', { table: 'Comptoir', access: 'secret', personId: 'c1', code: '1234' }]);
+  assert.deepEqual(page.toast(), { text: 'Code de partage incorrect.', bad: true, warn: false, hidden: false });
+  assert.equal(page.node('nameGate').hidden, false, 'refusé : la fenêtre reste');
+  await page.submit('nameGateClaimForm');
+  assert.equal(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')).c1, 'jeton-c1');
+  assert.equal(page.node('nameGate').hidden, true, 'repris : la fenêtre de prénom se ferme');
+  assert.equal(page.node('mainContent').hidden, false);
+  assert.equal(page.node('tableName').textContent, 'Clara');
+  assert.equal(page.toast().text, 'Tu gères maintenant Clara sur ce téléphone.');
+  assert.equal(session.getItem('kfEventPlace:Comptoir:secret'), '', 'la place « Solo 2 » retirée n’est pas un « QR plus actif »');
+
+  // Aucun code demandé pour l'instant : la marche à suivre.
+  const none = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false }), respond);
+  await none.click(none.node('nameGateClaimLink'));
+  assert.equal(none.node('nameGateClaim').querySelector('[data-gate-claim-person]'), null);
+  assert.match(none.node('nameGateClaim').textContent, /Demande d’abord au bar ou à ton ancien téléphone un code de reprise à 4 chiffres : ton prénom apparaîtra ici\./);
+  // Le code demandé entre-temps : son prénom apparaît au rafraîchissement suivant.
+  none.state.recoveryPeople = [person('c1', 'Clara')];
+  await none.poll();
+  assert.ok(none.find('nameGateClaim', '[data-gate-claim-person="c1"]'));
+
+  // En anglais, et la langue change sans perdre l'étape.
+  const english = await soloPage('?evenement=SECRET-EV', soloState({ soloInvitationReady: false,
+    recoveryPeople: [person('c1', 'Clara')] }), respond, { languages: ['en'] });
+  assert.equal(english.node('nameGateClaimLink').textContent, 'Already signed up? I have a code');
+  await english.click(english.node('nameGateClaimLink'));
+  assert.equal(english.node('nameGateTitle').textContent, 'Recover my songs');
+  assert.equal(english.find('nameGateClaim', '[data-gate-claim-person="c1"]').textContent, 'I am Clara · recover my songs');
+  await english.tap('nameGateClaim', '[data-gate-claim-person="c1"]');
+  assert.equal(english.find('nameGateClaim', '[data-gate-claim-back]').textContent, 'Back');
+  english.node('nameGateClaimCode').value = '98';
+  await english.tap('nameGateLang', '[data-lang="fr"]');
+  assert.equal(english.node('nameGateClaimCode').value, '98', 'le code tapé reste');
+  assert.equal(english.find('nameGateClaim', 'label').textContent, 'Code de reprise à 4 chiffres');
+  // Retour depuis le code : le choix du prénom.
+  await english.tap('nameGateClaim', '[data-gate-claim-back]');
+  assert.ok(english.find('nameGateClaim', '[data-gate-claim-person="c1"]'));
+});
+
+// Regression: troisième relecture finale (RT3) — après « Renouveler le QR »
+// ou le mode coupé, la page d'un inscrit qui avait perdu son jeton ne
+// demandait plus rien (QR « plus actif ») : le serveur la retrouve par son
+// cookie, la page doit donc envoyer sa demande.
+test('événement privé : QR renouvelé ou coupé, un inscrit de ce navigateur retrouve sa place', async () => {
+  const page = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false }), (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    self.state.tablePeople = [person('l1', 'Léa')];
+    self.state.managedIds = ['l1'];
+    return { id: 'l1', token: 'jeton-l1', nameRequired: false, resumed: true };
+  });
+  assert.deepEqual(postsTo(page, '/api/table/enter'), [['/api/table/enter', { table: 'Comptoir', access: 'secret', event: 'VIEUX' }]]);
+  assert.deepEqual(JSON.parse(page.storage.get('kfPeople:Comptoir:secret')), { l1: 'jeton-l1' });
+  assert.equal(page.node('tableName').textContent, 'Léa');
+  assert.equal(page.node('nameGate').hidden, true);
+  assert.equal(page.node('noSingerBox').hidden, true);
+  assert.equal(page.history.urls.at(-1), '/t/Comptoir/secret');
+
+  // Refusé : « QR plus actif », sans « Réessayer » ni nouvel essai.
+  const refused = await soloPage('?evenement=VIEUX', soloState({ soloInvitationReady: false }), url => url === '/api/table/enter'
+    ? reply(403, { error: 'Ce QR d’événement n’est plus actif. Demande au bar.', code: 'PRIVATE_EVENT' }) : undefined, { languages: ['en'] });
+  assert.equal(refused.node('noSingerText').textContent, 'This event QR code is no longer active. Ask the bar.');
+  assert.equal(refused.node('noSingerTitle').textContent, 'To add a song');
+  assert.equal(refused.node('noSingerActions').querySelector('[data-entry-retry]'), null);
+  await refused.poll();
+  assert.equal(postsTo(refused, '/api/table/enter').length, 1);
+});
+
+// ================================================================ troisième passe finale (E3, E5, E6)
+// Regression: troisième relecture finale (A3-1) — « prénom déjà pris »
+// renvoyait toujours vers « J’ai un code », même quand la personne de ce
+// prénom ne peut pas être reprise d'ici (partie, autre groupe) : la liste
+// restait vide et le bar ne peut pas donner de code à une personne partie.
+test('prénom déjà pris : « J’ai un code » seulement si le serveur dit la personne reprenable d’ici, sinon l’initiale et le bar (FR et EN)', async () => {
+  const taken = recoverable => reply(400, { error: 'Ce prénom est déjà inscrit ce soir. Ajoute l’initiale de ton nom (ex. Marie L.).', code: 'NAME_TAKEN',
+    ...(recoverable === undefined ? {} : { recoverable }) });
+  const respond = (url, body, self) => {
+    if (url === '/api/table/solo/open') {
+      self.state.tablePeople = [person('s1', 'Solo 1', { nameRequired: true })];
+      self.state.managedIds = ['s1'];
+      return { id: 's1', token: 'jeton-s1', nameRequired: true };
+    }
+    if (url === '/api/table/person/rename') return taken({ Marie: true, Zoé: false }[body.name]);
+    return undefined;
+  };
+  const page = await soloPage('?invitation=CLE-SOLO', soloState(), respond);
+  const error = () => page.node('nameGateError').textContent;
+  const typed = async name => { page.node('nameGateInput').value = name; await page.submit('nameGateForm'); };
+  await typed('Marie');
+  assert.equal(error(), 'Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit ? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).');
+  for (const name of ['Zoé', 'Inconnu']) {
+    await typed(name);
+    assert.equal(error(), 'Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.). Si c’est bien toi, demande au bar.', name);
+  }
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(error(), 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.). If it really is you, ask the bar.');
+  const english = await soloPage('?invitation=CLE-SOLO', soloState(), respond, { languages: ['en'] });
+  english.node('nameGateInput').value = 'Zoé';
+  await english.submit('nameGateForm');
+  assert.equal(english.node('nameGateError').textContent, 'This first name is already signed up. Add the initial of your last name (e.g. Mary L.). If it really is you, ask the bar.');
+});
+
+// Regression: troisième relecture finale (D3-3) — en reprise par code, la
+// fenêtre gardait le titre « Bienvenue ! Quel est ton prénom ? » au-dessus de
+// « Récupérer mes chansons » : un seul titre, celui de l'étape.
+test('fenêtre de prénom : en reprise par code, un seul titre « Récupérer mes chansons », rendu par « Retour » (FR et EN)', async () => {
+  const respond = (url, body, self) => {
+    if (url !== '/api/table/enter') return undefined;
+    self.state.tablePeople = [person('s2', 'Solo 2', { nameRequired: true })];
+    self.state.managedIds = ['s2'];
+    return { id: 's2', token: 'jeton-s2', nameRequired: true };
+  };
+  const state = () => soloState({ soloInvitationReady: false, recoveryPeople: [person('c1', 'Clara')] });
+  const page = await soloPage('?evenement=SECRET-EV', state(), respond);
+  const title = () => page.node('nameGateTitle').textContent;
+  const headings = () => page.node('nameGate').querySelectorAll('h2, h3').filter(node => !node.hidden);
+  assert.equal(title(), 'Bienvenue\u00a0! Quel est ton prénom\u00a0?');
+  await page.click(page.node('nameGateClaimLink'));
+  assert.equal(title(), 'Récupérer mes chansons');
+  assert.deepEqual(headings().map(node => node.textContent), ['Récupérer mes chansons'], 'un seul titre');
+  assert.equal(page.document.activeElement, page.node('nameGateTitle'), 'le titre de l’étape est annoncé');
+  await page.tap('nameGateClaim', '[data-gate-claim-person="c1"]');
+  assert.equal(title(), 'Récupérer mes chansons');
+  await page.poll();
+  assert.equal(title(), 'Récupérer mes chansons', 'un rafraîchissement garde le titre');
+  await page.tap('nameGateLang', '[data-lang="en"]');
+  assert.equal(title(), 'Recover my songs', 'la langue change sans revenir au prénom');
+  await page.tap('nameGateClaim', '[data-gate-claim-back]');
+  assert.equal(title(), 'Recover my songs', 'retour au choix du prénom : toujours la reprise');
+  await page.tap('nameGateClaim', '[data-gate-claim-back]');
+  assert.equal(title(), 'Welcome! What’s your first name?', '« Retour » rend le titre de la fenêtre');
+  assert.equal(page.document.activeElement, page.node('nameGateTitle'));
+  await page.tap('nameGateLang', '[data-lang="fr"]');
+  assert.equal(title(), 'Bienvenue\u00a0! Quel est ton prénom\u00a0?');
+  const english = await soloPage('?evenement=SECRET-EV', state(), respond, { languages: ['en'] });
+  await english.click(english.node('nameGateClaimLink'));
+  assert.equal(english.node('nameGateTitle').textContent, 'Recover my songs');
+});
+
+// Regression: troisième relecture finale (ADV F2) — le téléphone d'un
+// soliste marqué parti qui ouvre un QR personnel neuf (sa page ne le gère
+// plus) affiche « marquée partie, demande au bar » (PERSON_LEFT), FR et EN.
+test('QR personnel neuf sur le téléphone d’un soliste marqué parti : le message PERSON_LEFT (FR et EN)', async () => {
+  const left = url => url === '/api/table/solo/open'
+    ? reply(403, { error: 'Cette personne a été marquée partie. Demande au bar de la réactiver.', code: 'PERSON_LEFT' }) : undefined;
+  const fr = await soloPage('?invitation=CLE-NEUVE', soloState(), left);
+  assert.deepEqual(postsTo(fr, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-NEUVE' }]]);
+  assert.equal(fr.node('noSingerText').textContent, 'Cette personne a été marquée partie. Demande au bar de la réactiver.');
+  assert.equal(fr.node('nameGate').hidden, true);
+  const en = await soloPage('?invitation=CLE-NEUVE', soloState(), left, { languages: ['en'] });
+  assert.equal(en.node('noSingerText').textContent, 'This person was marked as gone. Ask the bar to bring them back.');
+  await en.poll();
+  assert.equal(postsTo(en, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
+});
+
+// Regression: quatrième relecture finale (décision D2 « La clé meurt ») — le
+// QR personnel d'une personne marquée partie puis réactivée ne l'ouvre plus
+// (SOLO_KEY_REVOKED) : la page dit de demander un QR de reprise, FR et EN.
+test('QR personnel mort (personne réactivée après un départ) : la page dit de demander un QR de reprise (FR et EN)', async () => {
+  const revoked = url => url === '/api/table/solo/open'
+    ? reply(403, { error: 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.', code: 'SOLO_KEY_REVOKED' }) : undefined;
+  const fr = await soloPage('?invitation=CLE-MORTE', soloState({ soloInvitationReady: false }), revoked);
+  assert.deepEqual(postsTo(fr, '/api/table/solo/open'), [['/api/table/solo/open', { table: 'Comptoir', access: 'secret', invitation: 'CLE-MORTE' }]]);
+  assert.equal(fr.node('noSingerText').textContent, 'Ce QR personnel n’est plus valable. Demande au bar un QR de reprise.');
+  assert.equal(fr.node('nameGate').hidden, true);
+  // Troisième passe de la relecture finale (design) : une clé morte ne se
+  // réessaie pas, rien à toucher sinon demander le QR de reprise.
+  for (const id of ['noSingerActions', 'catalogAccessActions']) {
+    assert.ok(!fr.node(id).querySelector('[data-entry-retry]'), `#${id} : pas de « Réessayer » pour une clé morte`);
+  }
+  const en = await soloPage('?invitation=CLE-MORTE', soloState({ soloInvitationReady: false }), revoked, { languages: ['en'] });
+  assert.equal(en.node('noSingerText').textContent, 'This personal QR code is no longer valid. Ask the bar for a recovery QR code.');
+  await en.poll();
+  assert.equal(postsTo(en, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
 });

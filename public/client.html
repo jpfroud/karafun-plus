@@ -128,7 +128,7 @@
   .client .share-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-top: 8px; }
   .client .share-links .btn { width: 100%; margin: 0; }
   .client .share-links a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: var(--text); }
-  .client .transfer-url { width: 100%; margin-top: 8px; font-size: 12px; }
+  .client .transfer-url { width: 100%; margin-top: 8px; font-size: 16px; }
   .client .transfer-fallback { margin-top: 12px; font-size: 14px; }
   .client .transfer-fallback summary { cursor: pointer; color: var(--muted); }
   .client #transferBox .sheet-actions { margin-top: 10px; }
@@ -183,6 +183,8 @@
   .client .catalog-list .song-row .grow { min-width: 0; }
   .client .catalog-list .song-row .song-title, .client .catalog-list .song-row .song-artist { display: block; }
   .client .catalog-list .song-row.picked { color: var(--ok); }
+  /* Durée maximale du bar dépassée : pochette et titre grisés ; la ligne « 6:12 · trop long » garde son contraste. */
+  .client .catalog-list .too-long .cover, .client .catalog-list .too-long .song-title, .client .catalog-list .too-long b { opacity: .55; }
   .client .catalog-grid { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .client .category-tile { --h: 260; position: relative; width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 14px; overflow: hidden; cursor: pointer;
     display: flex; align-items: flex-end; padding: 10px; text-align: left; color: #fff; font-weight: 800; font-size: 15px;
@@ -205,6 +207,31 @@
   .client .sheet-song p { margin: 2px 0 0; }
 
   .client .song-stack .song-actions .btn.tune svg { display: block; margin: 0 auto; }
+
+  /* Prénom obligatoire (QR individuel ou d'événement ouvert) : écran plein, sans fermeture.
+     Centrée par les marges automatiques du panneau, pas par align-items: center,
+     qui coupait le haut (FR/EN, titre) d'un panneau plus haut que l'écran :
+     plus haut, il défile depuis le haut. */
+  .client .name-gate { position: fixed; inset: 0; z-index: 28; background: var(--bg); overflow: auto; display: flex; align-items: flex-start; justify-content: center;
+    padding: max(20px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)); }
+  .client .name-gate-panel { width: 100%; max-width: 440px; margin: auto 0; }
+  /* FR/EN en haut à droite : la boîte prend la largeur de ses boutons, poussée à droite. */
+  .client .name-gate-panel .lang-switch { display: flex; width: max-content; margin-left: auto; margin-bottom: 18px; }
+  .client .name-gate-panel h2:focus { outline: none; }
+  .client .name-gate-panel h2 { font-size: 24px; margin: 0 0 8px; }
+  .client .name-gate-panel .notice { margin: 10px 0 0; }
+  .client .name-gate-panel .btn { margin-top: 14px; }
+  .client .name-gate-claim-people { display: grid; gap: 8px; margin-top: 10px; }
+  .client .name-gate-claim-people .btn { margin-top: 0; }
+  /* Page d'une table : QR à faire scanner, toute la table dans une fiche. */
+  .client .invite-card .row h2 { margin: 0; }
+  .client .table-all-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+  .client .table-all-row[hidden] { display: none; }
+  .client .table-count { min-width: 0; overflow-wrap: anywhere; }
+  .client .join-others { display: block; margin: 12px auto 0; font-size: 14px; min-height: 44px; padding: 10px 12px; }
+  .client .table-sheet li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .client .table-sheet li:last-child { border-bottom: 0; }
+  .client .table-sheet .btn { width: auto; margin: 0; }
 </style>
 </head>
 <body class="client">
@@ -230,6 +257,7 @@
       <div class="grow">
         <div class="who" id="stageWho" data-i18n>Chargement…</div>
         <div class="what" id="stageWhat"></div>
+        <div id="stageProgress" class="stage-progress" hidden></div>
       </div>
     </div>
     <div class="next" id="nextBox" hidden>
@@ -259,6 +287,7 @@
       <button type="button" class="btn small ghost" id="alertsToggle" data-i18n>Activer les notifications</button>
       <p class="tiny muted alert-help" id="alertsHelp"></p>
     </div>
+    <p id="inAppHint" class="card notice warn small" role="note" hidden data-i18n>Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).</p>
     <div id="transferBox" class="card notice ok" role="region" aria-labelledby="transferHeading" hidden>
       <h2 id="transferHeading" data-i18n>Récupérer un chanteur</h2>
       <p id="transferText" class="small"></p>
@@ -271,13 +300,23 @@
       <form id="joinForm">
         <label class="field" for="firstName" id="joinNameLabel" data-i18n>Prénom de la première personne</label>
         <input id="firstName" type="text" maxlength="24" autocomplete="given-name" required placeholder="Ex. Marie" data-i18n-attr="placeholder">
-        <button class="btn primary wide" type="submit" style="margin-top:12px" data-i18n>Commencer</button>
+        <button class="btn primary wide" type="submit" id="joinSubmit" style="margin-top:12px" data-i18n>Commencer</button>
       </form>
+      <button type="button" class="link-btn join-others" id="joinOthers" hidden data-i18n>Déjà inscrit par un autre téléphone ?</button>
     </div>
 
     <div id="tableBox" hidden>
+      <div class="card invite-card" id="inviteBox" hidden>
+        <button type="button" class="btn wide" id="inviteToggle" data-i18n>Faire scanner ma table</button>
+        <div id="invitePanel" hidden>
+          <div class="row"><h2 class="grow" data-i18n>Fais scanner ta table</h2><button type="button" class="btn small ghost" id="inviteClose" aria-label="Replier" data-i18n-attr="aria-label">✕</button></div>
+          <p class="small muted" data-i18n>Les autres personnes de la table scannent ce QR avec leur téléphone pour s’inscrire et choisir leurs chansons.</p>
+          <div class="transfer-qr" id="inviteQr"></div>
+          <button type="button" class="btn primary wide" id="inviteShare" data-i18n>Partager le lien</button>
+        </div>
+      </div>
       <div class="card" id="noSingerBox" hidden>
-        <h2 data-i18n>Pour ajouter une chanson</h2>
+        <h2 id="noSingerTitle" data-i18n>Pour ajouter une chanson</h2>
         <p id="noSingerText" class="small muted"></p>
         <div class="access-actions" id="noSingerActions"></div>
       </div>
@@ -295,14 +334,18 @@
         <div class="table-head">
           <div class="grow">
             <h2 id="peopleHeading" data-i18n>Les personnes de la table</h2>
-            <p class="muted small intro" id="peopleIntro" data-i18n>Seul le téléphone associé à une personne peut modifier ses chansons.</p>
+            <p class="muted small intro" id="peopleIntro" data-i18n>Les personnes inscrites avec ce téléphone. Pour voir toute la table : « Voir toute la table ».</p>
           </div>
-          <span id="peopleCount" class="pill"></span>
         </div>
         <ul id="peopleList" class="person-list"></ul>
+        <!-- Effectif de toute la table, à côté du bouton qui la montre (la carte ne liste que ce téléphone). -->
+        <div class="table-all-row" id="tableAllRow">
+          <button type="button" class="btn table-all" id="tableAllButton" hidden></button>
+          <span id="peopleCount" class="muted small table-count"></span>
+        </div>
       </div>
       <div class="card" id="addPersonBox">
-        <h3 data-i18n>Ajouter une personne</h3>
+        <h3 data-i18n>Ajouter une personne sans téléphone</h3>
         <p id="capacityNotice" class="empty-copy" hidden data-i18n>La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.</p>
         <form id="addPersonForm" class="form-row">
           <div class="field-wrap">
@@ -373,6 +416,24 @@
     <p id="attentionError" class="attention-error" role="alert" hidden></p>
   </div>
 </div>
+<div id="nameGate" class="name-gate" role="dialog" aria-modal="true" aria-labelledby="nameGateTitle" hidden>
+  <div class="name-gate-panel">
+    <div id="nameGateLang" class="lang-switch" role="group" aria-label="Langue · Language">
+      <button type="button" data-lang="fr" lang="fr" aria-label="Français" aria-pressed="true">FR</button>
+      <button type="button" data-lang="en" lang="en" aria-label="English" aria-pressed="false">EN</button>
+    </div>
+    <h2 id="nameGateTitle" tabindex="-1" data-i18n>Bienvenue ! Quel est ton prénom ?</h2>
+    <p id="nameGateIntro" class="small muted" data-i18n>Il s’affiche dans la file et sur l’écran du bar quand c’est ton tour.</p>
+    <form id="nameGateForm">
+      <label class="field" for="nameGateInput" data-i18n>Ton prénom</label>
+      <input id="nameGateInput" type="text" maxlength="24" autocomplete="given-name" required placeholder="Ex. Marie" data-i18n-attr="placeholder">
+      <p id="nameGateError" class="notice warn small" role="alert" hidden></p>
+      <button class="btn primary wide" type="submit" data-i18n>Valider</button>
+    </form>
+    <button type="button" class="link-btn join-others" id="nameGateClaimLink" data-i18n>Déjà inscrit ? J’ai un code</button>
+    <div id="nameGateClaim" hidden></div>
+  </div>
+</div>
 <div id="toast" class="toast" role="status" hidden></div>
 
 <script src="/client-i18n.js"></script>
@@ -386,6 +447,8 @@
   let soloInvitation = new URLSearchParams(location.search || '').get('invitation') || '';
   // Lien de transfert reçu d'un autre téléphone ou du bar (QR, WhatsApp…).
   let transferLink = new URLSearchParams(location.search || '').get('reprise') || '';
+  // QR de l'événement privé (bar privatisé) : un seul QR pour tout le monde.
+  let eventToken = new URLSearchParams(location.search || '').get('evenement') || '';
   function forgetQueryParam(name) {
     const params = new URLSearchParams(location.search || '');
     params.delete(name);
@@ -399,6 +462,10 @@
   function forgetTransferLink() {
     transferLink = '';
     forgetQueryParam('reprise');
+  }
+  function forgetEventToken() {
+    eventToken = '';
+    forgetQueryParam('evenement');
   }
   const tokenKey = `kfTok:${tableId}:${access}`;
   const tokensKey = `kfPeople:${tableId}:${access}`;
@@ -513,7 +580,7 @@
     if (document.documentElement) document.documentElement.lang = lang;
     for (const [node, text] of staticTexts) node.textContent = t(text);
     for (const [node, name, text] of staticAttributes) node.setAttribute(name, t(text));
-    for (const button of $('langSwitch').querySelectorAll('[data-lang]')) {
+    for (const button of [...$('langSwitch').querySelectorAll('[data-lang]'), ...$('nameGateLang').querySelectorAll('[data-lang]')]) {
       button.setAttribute('aria-pressed', String(button.dataset.lang === lang));
     }
   }
@@ -521,8 +588,9 @@
   const fullSong = song => `${song.title || t('Sans titre')}${song.artist ? ' — ' + song.artist : ''}`;
   const englishOrdinal = n => `${n}${[11, 12, 13].includes(n % 100) ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
   const position = n => lang === 'en' ? englishOrdinal(n) : n === 1 ? '1re' : `${n}e`;
-  // Le groupe « En solo » porte son nom par défaut : il se traduit aussi.
-  const tableLabel = table => table?.individual && table.name === 'En solo' ? t('En solo') : table?.name;
+  // Nom de table affiché. Le groupe des solistes n'en a pas : un soliste
+  // n'est nommé que par son prénom.
+  const tableLabel = table => table?.individual ? '' : table?.name;
   const personById = id => list(state && state.tablePeople).find(p => String(p.id) === String(id));
   const ownIds = () => state?.table?.individual
     ? managedIds()
@@ -530,6 +598,10 @@
   const managedIds = () => new Set(list(state?.managedIds).map(String));
   const manages = id => managedIds().has(String(id));
   const managedPeople = () => list(state?.tablePeople).filter(person => person.active !== false && manages(person.id));
+  // Une place « Solo N » encore sans prénom (un QR montré par le bar, ouvert
+  // sur ce nouveau téléphone) n'empêche pas la reprise par code : seule une
+  // personne avec son prénom la ferme.
+  const holdsNamedPlace = () => managedPeople().some(person => !person.nameRequired);
 
   function eta(value) {
     if (value == null || value === '') return '';
@@ -545,6 +617,58 @@
     node.hidden = false;
     clearTimeout(toast.timer);
     toast.timer = setTimeout(() => { node.hidden = true; }, ms);
+  }
+
+  // Copie d'un lien, même sur le Wi-Fi du bar en http : hors contexte sécurisé,
+  // ni navigator.share ni navigator.clipboard n'existent. Presse-papiers,
+  // sinon copie de secours du navigateur sur `field` (champ du lien déjà
+  // affiché, laissé sélectionné pour une copie à la main) ou sur un champ
+  // temporaire. iOS ne sélectionne pas un champ en lecture seule : il devient
+  // modifiable le temps de la copie. select() donne le focus au champ : une
+  // fois copié, il revient au bouton touché (ni retour en haut de la page, ni
+  // clavier ou zoom d'iOS) ; copie refusée, le champ affiché reste sélectionné.
+  async function copyLink(url, field = null) {
+    try { await navigator.clipboard.writeText(url); return true; } catch (_) { /* Copie de secours. */ }
+    const temporary = !field;
+    const input = field || document.createElement('textarea');
+    const readOnly = input.readOnly;
+    const back = document.activeElement;
+    let copied = false;
+    try {
+      if (temporary) {
+        input.value = url;
+        input.setAttribute('aria-hidden', 'true');
+        Object.assign(input.style, { position: 'fixed', top: '0', left: '0', opacity: '0', fontSize: '16px' });
+        document.body.appendChild(input);
+      }
+      input.readOnly = false;
+      input.select();
+      input.setSelectionRange?.(0, String(input.value).length);
+      copied = !!document.execCommand?.('copy');
+    } catch (_) { copied = false; }
+    finally {
+      input.readOnly = readOnly;
+      if (temporary) input.remove();
+      if (copied || temporary) {
+        input.blur?.();
+        if (back && back !== input && back !== document.body && document.contains?.(back)) back.focus?.({ preventScroll: true });
+      }
+    }
+    return copied;
+  }
+  // Partage du téléphone s'il existe, sinon copie du lien.
+  async function shareOrCopy(url, { text, copied, failed }) {
+    const copy = async () => {
+      if (await copyLink(url)) toast(copied);
+      else toast(failed, true);
+    };
+    if (navigator.share) {
+      // Annulé par la personne : rien de plus ; tout autre échec (refus,
+      // partage indisponible) : le lien est copié.
+      navigator.share({ title: t('Karaoké'), text, url }).catch(error => error?.name === 'AbortError' ? undefined : copy());
+      return;
+    }
+    await copy();
   }
 
   // Alerte « titre en double » : jamais bloquante, seulement informative.
@@ -764,20 +888,23 @@
       item.kind === 'battle' ? [item.battle.mode, list(item.battle.songOptions).map(song => song.songId)] : null]);
   }
 
-  // Le message de confirmation (#toast, role=status, sans bouton) reste hors
-  // de cette liste : rendu inerte, il ne serait pas annoncé par un lecteur
-  // d'écran pendant qu'une autre demande reste ouverte.
-  function setBackground(blocked) {
-    for (const id of ['topBar', 'infoBar', 'tabsNav', 'mainContent', 'sheet']) {
-      const node = $(id);
-      if (node) node.inert = blocked;
+  // Fenêtre modale ouverte (fenêtre de prénom, sinon demande en grand) : tout
+  // le reste de la page est inerte, en-tête FR/EN compris (la fenêtre de
+  // prénom a ses propres boutons de langue). Le message de confirmation
+  // (#toast, role=status, sans bouton) reste hors de cette liste : rendu
+  // inerte, il ne serait pas annoncé par un lecteur d'écran.
+  function syncBackground() {
+    const modal = !$('nameGate').hidden ? 'nameGate' : !$('attention').hidden ? 'attention' : '';
+    for (const node of document.body.children) {
+      if (node.tagName === 'SCRIPT' || node.id === 'toast') continue;
+      node.inert = !!modal && node.id !== modal;
     }
   }
 
   function closeAttention() {
     $('attention').hidden = true;
     attentionShown = '';
-    setBackground(false);
+    syncBackground();
     const back = attentionReturn;
     attentionReturn = null;
     if (back && document.contains(back)) back.focus?.();
@@ -799,8 +926,8 @@
     if (signature !== attentionShown || $('attention').hidden) {
       if ($('attention').hidden) {
         attentionReturn = document.activeElement;
-        setBackground(true);
         $('attention').hidden = false;
+        syncBackground();
       }
       attentionShown = signature;
       const content = attentionContent(head);
@@ -929,6 +1056,10 @@
       case 'inviteUnanswered': return t('{name} n’a pas répondu à temps : {person} chante « {title} » en solo.', values);
       case 'presenceRemoved': return tp(Number(p.skips) || 1, '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.',
         '« {title} » est retiré de la liste de {person} : présence non confirmée {n} fois. Vois avec le bar si besoin.', values);
+      // Invitée d'un duo : le titre était dans la liste de {name}.
+      case 'tooLongRemoved': return p.name
+        ? t('Le duo « {title} » avec {name} est retiré de la file : le bar limite maintenant les chansons à {limit}.', { ...values, limit: p.limit || '' })
+        : t('« {title} » est retiré de la liste de {person} : le bar limite maintenant les chansons à {limit}.', { ...values, limit: p.limit || '' });
       case 'closingPulled': return p.name
         ? t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {name}.', values)
         : t('« {title} » passerait après la fermeture : il est retiré de KaraFun et reste dans la liste de {person}.', values);
@@ -1071,13 +1202,20 @@
   async function request(path, options = {}) {
     let response;
     // Réseau coupé : le navigateur donne un message technique (« Failed to fetch »).
+    // Chaque erreur sait se redire dans la langue courante (`localized`) :
+    // un message resté affiché suit le changement de langue.
+    const failure = localized => Object.assign(new Error(localized()), { localized });
     try { response = await fetch(path, { cache: 'no-store', ...options }); }
-    catch (_) { throw new Error(t('Connexion perdue : réessaie dans un instant.')); }
+    catch (_) { throw failure(() => t('Connexion perdue : réessaie dans un instant.')); }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));
+      const error = failure(() => serverText(data.error) || (response.status === 403 ? t('Lien de table invalide.') : t('Une erreur est survenue.')));
       error.status = response.status;
       error.code = data.code;
+      // Prénom déjà pris : sa personne se reprend-elle d'ici (code à 4 chiffres) ?
+      error.recoverable = data.recoverable === true;
+      // Délai annoncé par le serveur avant un nouvel essai (429), en secondes.
+      error.retryAfter = Number(response.headers?.get?.('Retry-After')) || null;
       throw error;
     }
     return data;
@@ -1099,14 +1237,20 @@
     const params = new URLSearchParams({ table: tableId, access });
     if (soloInvitation) params.set('invitation', soloInvitation);
     if (transferLink) params.set('reprise', transferLink);
+    if (eventToken) params.set('evenement', eventToken);
     const credentials = Object.values(personTokens).filter(value => typeof value === 'string');
     if (legacyToken && !credentials.includes(legacyToken)) credentials.push(legacyToken);
     try {
+      // Dernière activité vue par le bar : seulement une page visible. La page
+      // cachée continue d'interroger (notifications), sans compter comme activité
+      // (« 0 » ; sans en-tête, le serveur compte une page d'avant la mise à jour).
       const data = await request(`/api/state?${params}`, {
-        headers: { 'x-person-tokens': JSON.stringify(credentials) },
+        headers: { 'x-person-tokens': JSON.stringify(credentials), 'x-page-visible': document.hidden ? '0' : '1' },
       });
       if (number !== stateRequest) return;
       state = data;
+      // Écart entre l'horloge du serveur et celle du téléphone (barre de lecture).
+      clockSkew = Number.isFinite(data.now) ? data.now - Date.now() : 0;
       // Réponses données avant cette lecture : l'état les montre déjà.
       for (const [key, at] of answered) if (at <= startedAt) answered.delete(key);
       // Réglages de titre enregistrés avant cette lecture : le serveur les montre.
@@ -1121,6 +1265,12 @@
         try { localStorage.removeItem(tokenKey); } catch (_) { /* Aucun stockage à nettoyer. */ }
       }
       const granted = new Set(list(data.managedIds).map(String));
+      // Place de l'événement oubliée dès qu'elle a un prénom, ou dès que ce
+      // téléphone gère quelqu'un d'autre : toute reprise (code, lien, clé
+      // personnelle, QR individuel neuf) l'a retirée, ce n'est pas un « QR
+      // d'événement plus actif ».
+      if (eventPlaceId && (list(data.tablePeople).some(person => String(person.id) === eventPlaceId && !person.nameRequired)
+        || (granted.size && !granted.has(eventPlaceId)))) rememberEventPlace('');
       let changed = false;
       const movedAway = [];
       for (const id of Object.keys(personTokens)) if (!granted.has(id)) {
@@ -1138,6 +1288,7 @@
       }
       render();
       setConnection(() => t('À jour'), 'ok');
+      openPersonalEntry();
     } catch (error) {
       if (number !== stateRequest) return;
       if (error.status === 403) { invalidAccess = true; return showInvalidLink(); }
@@ -1166,19 +1317,115 @@
     setConnection(() => t('Accès refusé'), 'bad');
   }
 
+  // QR individuel (invitation du bar) ou QR de l'événement privé : la page
+  // inscrit ou retrouve son chanteur par un POST, jamais par une simple
+  // lecture (un aperçu de lien ne crée personne). Une seule demande par page ;
+  // un réseau coupé laisse réessayer au rafraîchissement suivant.
+  let entry = { status: '', recover: null, error: '' };
+  // Beaucoup d'arrivées dans la même minute (PRIVATE_EVENT_BUSY) : la page
+  // réessaie seule pendant 5 minutes environ, après le délai donné par le
+  // serveur (Retry-After), sinon toutes les 15 à 20 s (étalé pour ne pas
+  // revenir tous ensemble). Ensuite, ou après un autre refus, « Réessayer ».
+  // Le plafond de l'événement, lui, ne se réessaie pas tout seul.
+  const ENTRY_RETRY_MS = 5 * 60000;
+  let entryWaited = 0;
+  // Place sans prénom ouverte ici par le QR de l'événement, gardée pour cet
+  // onglet (rechargement compris) : l'adresse a perdu ?evenement=, mais si
+  // « Parti » du bar ou « Renouveler le QR » la retire, la page dit de
+  // rescanner le QR de l'événement.
+  // Oubliée dès qu'elle a un prénom (une place nommée n'est jamais retirée)
+  // ou qu'une reprise l'a remplacée (refresh).
+  const eventPlaceKey = `kfEventPlace:${tableId}:${access}`;
+  let eventPlaceId = '';
+  try { eventPlaceId = sessionStore()?.getItem(eventPlaceKey) || ''; } catch (_) { /* Rien de gardé. */ }
+  function rememberEventPlace(id) {
+    eventPlaceId = id ? String(id) : '';
+    try { sessionStore()?.setItem(eventPlaceKey, eventPlaceId); } catch (_) { /* Gardé pour cette page seulement. */ }
+  }
+  const eventPlaceLost = () => !!eventPlaceId && !managedIds().has(eventPlaceId);
+  function retryEntry() {
+    entryWaited = 0;
+    entry = { status: '', recover: null, error: '' };
+    openPersonalEntry();
+    render();
+  }
+  async function openPersonalEntry() {
+    if (!state.table?.individual || entry.status) return;
+    // Son chanteur est déjà sur ce téléphone : le QR d'événement n'a plus
+    // d'objet. Un chanteur marqué parti (doublon), ou une place encore sans
+    // prénom (QR de l'événement rescanné ailleurs), n'empêche pas le QR
+    // personnel de proposer la reprise de son profil. Marqué parti, le QR de
+    // l'événement demande quand même : le serveur répond « marquée partie ».
+    if (soloInvitation ? managedPeople().filter(person => !person.nameRequired).length : managedPeople().length) {
+      if (eventToken) forgetEventToken();
+      return;
+    }
+    // QR de l'événement renouvelé ou coupé : la demande part quand même, un
+    // inscrit de ce navigateur y retrouve sa place ; sinon le refus dit « QR
+    // plus actif ».
+    const path = soloInvitation ? '/api/table/solo/open' : eventToken ? '/api/table/enter' : '';
+    if (!path) return;
+    entry = { status: 'pending', recover: null, error: '' };
+    try {
+      const result = await post(path, soloInvitation ? { invitation: soloInvitation } : { event: eventToken });
+      if (!result.recover) {
+        entry.status = 'done';
+        savePersonToken(result.id, result.token);
+        // L'adresse garde ?invitation= : ce QR reste la clé de la soirée
+        // (historique, favori, « Ouvrir dans le navigateur »).
+        if (!soloInvitation) {
+          forgetEventToken();
+          if (result.nameRequired) rememberEventPlace(result.id);
+        }
+        await refresh();
+        return;
+      }
+      // Même QR ouvert sur un autre navigateur : « C'est bien toi ? »
+      entry = { status: 'recover', recover: result.recover, error: '' };
+    } catch (error) {
+      const delay = error.retryAfter >= 1 ? Math.min(error.retryAfter, 120) * 1000 + Math.floor(Math.random() * 3000)
+        : 15000 + Math.floor(Math.random() * 5000);
+      if (error.code === 'PRIVATE_EVENT' && path === '/api/table/enter') {
+        // QR plus actif : le message vient de eventToken, sans « Réessayer ».
+        entry = { status: 'expired', recover: null, error: '' };
+      } else if (error.code === 'PRIVATE_EVENT_BUSY' && path === '/api/table/enter' && entryWaited + delay <= ENTRY_RETRY_MS) {
+        entryWaited += delay;
+        entry = { status: 'retry', recover: null, error: '' };
+        setTimeout(() => {
+          if (entry.status !== 'retry') return;
+          entry.status = '';
+          openPersonalEntry();
+        }, delay);
+      } else {
+        // Message gardé dans sa forme traduisible : il suit le changement de
+        // langue. Le code dit si « Réessayer » peut servir (pas pour une clé morte).
+        entry = error.status ? { status: 'failed', code: error.code, recover: null, error: error.localized || (() => error.message) } : { status: '', recover: null, error: '' };
+      }
+    }
+    render();
+    showEntryRefusal();
+  }
+
+  // Navigateur intégré à une application (scanner d'Instagram, de Snapchat…) :
+  // la page s'y perd facilement, mieux vaut l'ouvrir dans son navigateur.
+  const inAppBrowser = /\b(?:Instagram|FBAN|FBAV|FB_IAB|Snapchat|TikTok|musical_ly)\b|; wv\)/i.test(String(navigator.userAgent || ''));
+
   function render() {
     const people = list(state.tablePeople);
     const queue = list(state.queue);
     const waiting = list(state.waiting);
     const individual = !!state.table?.individual;
     const owned = managedPeople();
-    const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
+    const recoveryPeople = individual && !holdsNamedPlace() ? list(state.recoveryPeople) : [];
     const count = individual ? Number(state.table?.count ?? people.length) : people.length;
     // « En solo » n'a pas de nombre de places : seule une table ordinaire est complète.
     const full = !individual && Number.isInteger(state.table?.headcount) && count >= state.table.headcount;
-    const tableName = tableLabel(state.table) || t('Table {id}', { id: tableId });
+    // Téléphone d'un soliste : son prénom en en-tête (« Bienvenue » avant
+    // qu'il l'ait donné), jamais le nom du groupe.
+    const soloName = individual ? owned.find(person => !person.nameRequired)?.name : '';
+    const tableName = individual ? soloName || t('Bienvenue') : tableLabel(state.table) || t('Table {id}', { id: tableId });
     $('tableName').textContent = tableName;
-    $('joinHeading').textContent = t('Bienvenue à {table} !', { table: tableName });
+    $('joinHeading').textContent = individual ? t('Bienvenue') : t('Bienvenue à {table} !', { table: tableName });
     $('navTableLabel').textContent = individual ? t('Mes titres') : t('Ma table');
     $('quickSongBox').classList.toggle('solo-song-cta', individual);
     $('quickSongHeading').hidden = individual;
@@ -1186,53 +1433,76 @@
     $('peopleIntro').hidden = individual;
     $('peopleCount').hidden = individual;
     renderStage(queue);
-    $('joinIntro').textContent = individual
-      ? t('Cette invitation du bar est personnelle et ne sert qu’une fois. Inscris-toi avec ton prénom pour choisir tes chansons.')
-      : t('Inscris-toi avec ton téléphone. Tu peux aussi inscrire les personnes sans téléphone, qu’elles chantent ou viennent seulement voter pour une Battle.');
-    $('joinNameLabel').textContent = individual ? t('Ton prénom') : t('Prénom de la première personne');
+    // Table déjà commencée : un nouveau téléphone la rejoint avec son prénom.
+    $('joinNameLabel').textContent = people.length ? t('Ton prénom') : t('Prénom de la première personne');
+    $('joinSubmit').textContent = people.length ? t('Rejoindre la table') : t('Commencer');
+    $('joinOthers').hidden = !people.length;
     $('quickSongIntro').textContent = individual
       ? t('Ajoute les chansons que tu veux chanter. Les autres personnes venues seules gèrent les leurs.')
       : t('Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.');
-    $('peopleHeading').textContent = individual ? t('Mes chansons') : t('Les personnes de la table');
+    $('peopleHeading').textContent = individual ? t('Mes chansons') : t('Mes chanteurs');
     $('peopleIntro').textContent = individual
       ? t('Tes chansons sont visibles ici. Les autres personnes ne peuvent pas les modifier.')
-      : t('Seul le téléphone associé à une personne peut modifier ses chansons.');
+      : t('Les personnes inscrites avec ce téléphone. Pour voir toute la table : « Voir toute la table ».');
     $('peopleCard').hidden = individual && owned.length === 0;
     $('waitingLabel').textContent = individual ? t('Mes chansons à choisir') : t('À notre table, sans chanson');
-    $('joinBox').hidden = individual ? owned.length > 0 || full || !state.soloInvitationReady : people.length > 0;
-    $('headcountNotice').hidden = individual || !!state.table?.headcount;
-    $('joinForm').querySelector('button[type=submit]').disabled = (!individual && !state.table?.headcount) || full || (individual && !state.soloInvitationReady);
-    $('tableBox').hidden = individual ? owned.length === 0 && !full && recoveryPeople.length === 0 && state.soloInvitationReady : people.length === 0;
+    // « En solo » s'inscrit par son QR (fenêtre de prénom) : jamais ce formulaire.
+    $('joinBox').hidden = individual || owned.length > 0;
+    $('headcountNotice').hidden = individual || (!!state.table?.headcount && !full);
+    $('headcountNotice').textContent = full ? t('La table a atteint son nombre de personnes. Demande au bar d’ajuster l’effectif si nécessaire.')
+      : t('Le bar doit d’abord indiquer combien de personnes sont à cette table.');
+    $('joinSubmit').disabled = !state.table?.headcount || full;
+    $('tableBox').hidden = !individual && owned.length === 0;
     const others = individual ? [] : people.filter(person => person.active && !manages(person.id));
-    $('claimBox').hidden = individual ? recoveryPeople.length === 0 : others.length === 0;
-    $('claimHeading').textContent = individual ? t('Récupérer mes chansons') : t('Déjà inscrit à cette table ?');
-    $('claimIntro').textContent = individual
-      ? t('Si tu étais déjà inscrit dans « En solo », choisis ton nom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.')
-      : t('Ton prénom est déjà inscrit ? Le plus simple : scanne le QR code « Transférer » affiché sur le téléphone qui te gère (ou ouvre le lien qu’il t’a envoyé). Sinon, touche ton nom et saisis son code à 4 chiffres.');
-    $('claimPeople').innerHTML = individual
-      ? recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: person.name }))}</button>`).join('')
-      : others.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name}', { name: person.name }))}</button>`).join('');
+    // Reprise par code : sur une table, depuis « Voir toute la table » seulement.
+    $('claimBox').hidden = recoveryPeople.length === 0;
+    $('claimHeading').textContent = t('Récupérer mes chansons');
+    $('claimIntro').textContent = t('Si tu étais déjà inscrit, choisis ton prénom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.');
+    $('claimPeople').innerHTML = recoveryPeople.map(person => `<button type="button" class="btn small" data-claim-person="${esc(person.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: person.name }))}</button>`).join('');
     const present = state.table?.activeCount ?? people.length;
     $('peopleCount').textContent = individual ? t('Mon profil')
-      : `${tp(present, '{n} présente', '{n} présentes')} · ${tp(people.length, '{n} inscrite', '{n} inscrites')}`;
+      : t('{present} · {signed} à la table', { present: tp(present, '{n} présente', '{n} présentes'), signed: tp(people.length, '{n} inscrite', '{n} inscrites') });
     $('addPersonBox').hidden = individual || full;
     $('addPersonForm').hidden = individual || full;
     $('capacityNotice').hidden = individual || !full;
+    $('inAppHint').hidden = !individual || !inAppBrowser;
+    // Le conseil dépend de ce qui ramène vraiment la page. Venu par le QR de
+    // l'événement (même marqué parti) : l'adresse ne garde pas ce QR, et un
+    // autre navigateur crée un nouveau chanteur ; seul un nouveau scan dans la
+    // même application le retrouve. Repris par code ou QR de reprise : la clé
+    // n'est plus dans l'adresse. Le QR individuel, lui, y reste.
+    const held = people.filter(person => manages(person.id));
+    $('inAppHint').textContent = held.some(person => person.viaEvent)
+      ? t('Pour retrouver cette page, rescanne le QR de l’événement depuis la même application.')
+      : held.length && !soloInvitation
+        ? t('Pour retrouver cette page, rescanne le même QR depuis la même application, ou demande au bar un QR de reprise.')
+        : t('Pour retrouver cette page plus tard, ouvre-la dans ton navigateur : menu ⋯ → « Ouvrir dans le navigateur » (Safari ou Chrome).');
+    $('tableAllRow').hidden = individual;
+    $('tableAllButton').hidden = individual;
+    $('tableAllButton').textContent = t('Voir toute la table ({n})', { n: people.length });
     renderSongAccess(people, others, full);
     renderTransfer();
+    // Table complète : personne n'est invité à scanner ; revient si une place se libère.
+    renderInvite(!individual && owned.length > 0 && !full);
     $('signalsBox').hidden = owned.length === 0;
-    renderPeople(individual ? owned : people, queue);
+    // Page d'une table : seulement les personnes gérées par ce téléphone.
+    renderPeople(individual ? owned : people.filter(person => manages(person.id)), queue);
     renderTune();
     renderBattle(individual ? owned : people);
     renderQueue(queue, waiting);
     renderClosing();
     renderBattlePick();
     updateTarget();
-    if (state.catalogAvailable === false && activeTab === 'catalog' && catalogMode === 'categories' && !categories.length) {
+    // Catalogue revenu : la sélection reportée part, sauf recherche en cours de saisie.
+    if (catalogDeferred && state.catalogAvailable !== false && activeTab === 'catalog' && ['categories', 'highlights'].includes(catalogMode)
+      && !$('searchInput').value.trim()) {
+      showCategories(catalogDeferred);
+    } else if (state.catalogAvailable === false && activeTab === 'catalog' && catalogMode === 'categories' && !categories.length) {
       showCatalogView(catalogMessage(() => t('Le catalogue est momentanément indisponible. Réessaie dans un instant.')));
     }
     const freshInfo = renderInfos();
     signalAttention(renderAttention(), freshInfo);
+    renderNameGate();
   }
 
   // Heure de fermeture annoncée par le bar et titres qui passeront encore.
@@ -1256,16 +1526,31 @@
   function renderSongAccess(people, others, full) {
     const owned = managedPeople();
     const individual = !!state.table?.individual;
-    const recoveryPeople = individual && !owned.length ? list(state.recoveryPeople) : [];
-    const canRegister = !full && (!individual || (!owned.length && state.soloInvitationReady)) &&
-      (individual || (Number.isInteger(state.table?.headcount) && state.table.headcount > 0));
+    const recoveryPeople = individual && !holdsNamedPlace() ? list(state.recoveryPeople) : [];
+    const canRegister = !full && Number.isInteger(state.table?.headcount) && state.table.headcount > 0;
     if (individual) {
-      const explanation = canRegister ? t('Cette invitation personnelle permet de t’inscrire. Si tu avais déjà un profil, demande plutôt un code de reprise au bar.')
-          : soloInvitation ? t('Cette invitation a déjà été utilisée ou a expiré. Demande un nouveau QR individuel au bar.')
-            : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
-      const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${canRegister
-        ? `<button type="button" class="btn primary" data-access-go="register">${esc(t('M’inscrire'))}</button>` : ''}`;
-      $('noSingerBox').hidden = owned.length > 0 || canRegister;
+      // QR ouvert (individuel ou d'événement) : la page s'en charge seule.
+      const opening = entry.status === 'pending' || (!entry.status && (soloInvitation || eventToken));
+      const explanation = entry.status === 'failed' ? entry.error()
+        : entry.status === 'retry' ? t('Beaucoup d’arrivées en même temps : nouvel essai dans un instant…')
+        : entry.status === 'recover' ? t('Ce QR personnel est celui de {name}. Touche « Récupérer mes chansons » pour les retrouver sur ce téléphone.', { name: entry.recover.name })
+          : opening ? t('Un instant : ouverture de ton QR…')
+            // Ce téléphone ne gère que des personnes marquées parties : seul le bar les réactive.
+            : !owned.length && list(state.tablePeople).some(person => person.active === false && manages(person.id))
+              ? t('Cette personne a été marquée partie. Demande au bar de la réactiver.')
+            : eventToken ? t('Ce QR d’événement n’est plus actif. Demande au bar.')
+              // Place sans prénom retirée : « Parti » du bar ou QR renouvelé, la page
+              // ne sait pas lequel. Rescanner le QR en donne une nouvelle (un QR
+              // renouvelé répond alors « QR plus actif »).
+              : eventPlaceLost() ? t('Ta place sans prénom a été retirée. Rescanne le QR de l’événement pour en avoir une nouvelle, ou demande au bar.')
+              : t('Pour t’inscrire, demande au bar un QR individuel. Ce lien commun permet de consulter la file ou de reprendre tes chansons.');
+      // Clé personnelle morte (SOLO_KEY_REVOKED) : réessayer ne servirait à
+      // rien, seul un QR de reprise du bar rend l'accès.
+      const actions = `${recoveryPeople.length ? `<button type="button" class="btn" data-access-go="claim">${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'recover'
+        ? `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>` : ''}${entry.status === 'failed' && entry.code !== 'SOLO_KEY_REVOKED'
+        ? `<button type="button" class="btn" data-entry-retry>${esc(t('Réessayer'))}</button>` : ''}`;
+      $('noSingerTitle').textContent = opening || entry.status === 'retry' ? t('Inscription en cours…') : t('Pour ajouter une chanson');
+      $('noSingerBox').hidden = owned.length > 0 || entry.status === 'recover';
       $('noSingerText').textContent = explanation;
       $('noSingerActions').innerHTML = actions;
       $('catalogAccessBox').hidden = owned.length > 0;
@@ -1291,6 +1576,14 @@
   }
 
   function renderTransfer() {
+    if (entry.status === 'recover') {
+      // Le QR individuel rouvert sur un autre navigateur : la même personne, jamais une deuxième place.
+      $('transferBox').hidden = false;
+      $('transferHeading').textContent = t('C’est bien toi, {name} ?', { name: entry.recover.name });
+      $('transferText').textContent = t('Ce QR personnel garde tes chansons pour la soirée. Récupère-les sur ce téléphone : l’autre téléphone perdra leur gestion.');
+      $('transferActions').innerHTML = `<button type="button" class="btn primary" data-key-claim>${esc(t('Récupérer mes chansons'))}</button>`;
+      return;
+    }
     const offer = transferLink ? state?.transferOffer : null;
     $('transferBox').hidden = !offer;
     if (!offer) return;
@@ -1314,7 +1607,7 @@
   }
 
   $('transferBox').addEventListener('click', event => {
-    if (event.target.closest('[data-transfer-dismiss]')) { forgetTransferLink(); renderTransfer(); return; }
+    if (event.target.closest('[data-transfer-dismiss]')) { forgetTransferLink(); renderTransfer(); renderNameGate(); return; }
     const claim = event.target.closest('[data-transfer-claim]');
     const offer = state?.transferOffer;
     if (!claim || !offer?.personId) return;
@@ -1358,8 +1651,8 @@
       ${linkPart}
       <details class="transfer-fallback"${share.url ? '' : ' open'}><summary>${esc(t('Impossible de scanner ? Utilise un code'))}</summary>
         <p class="small muted">${esc(individual
-          ? t('Sur l’autre téléphone, ouvre le QR « En solo » que te montre le bar, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name })
-          : t('Sur l’autre téléphone, ouvre le QR code de la table, touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name }))}</p>
+          ? t('Sur l’autre téléphone, ouvre le QR que te montre le bar (si la page demande un prénom, touche d’abord « Déjà inscrit ? J’ai un code »), touche « Je suis {name} », puis saisis ce code valable 10 minutes :', { name })
+          : t('Sur l’autre téléphone, ouvre le QR code de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom {name}, et saisis ce code valable 10 minutes :', { name }))}</p>
         <p class="share-code">${esc(share.code)}</p>
       </details>`);
     transferSheetFor = person?.id == null ? null : String(person.id);
@@ -1367,12 +1660,7 @@
       navigator.share({ title: t('Karaoké'), text: message, url: share.url }).catch(() => { /* Partage annulé. */ });
     });
     $('copyTransfer')?.addEventListener('click', async () => {
-      let copied = false;
-      try { await navigator.clipboard.writeText(share.url); copied = true; }
-      catch (_) {
-        $('transferUrl').select();
-        try { copied = document.execCommand('copy'); } catch (__) { copied = false; }
-      }
+      const copied = await copyLink(share.url, $('transferUrl'));
       toast(copied ? t('Lien copié : colle-le dans ton message.') : t('Sélectionne le lien ci-dessous pour le copier.'), !copied);
     });
   }
@@ -1386,12 +1674,12 @@
 
   function goToAccess(kind) {
     if (state?.table?.individual && kind === 'claim' &&
-      (managedPeople().length || !list(state.recoveryPeople).length)) return;
+      (holdsNamedPlace() || !list(state.recoveryPeople).length)) return;
+    // Table : on retrouve sa fiche dans la liste de toute la table (« C'est moi »).
+    if (kind === 'claim' && !state?.table?.individual) return openTableSheet();
     closeSheet({ keepPending: true });
     setTab('table');
-    const target = kind === 'claim' ? $('claimBox')
-      : state?.table?.individual ? $('joinBox')
-        : list(state?.tablePeople).length ? $('addPersonBox') : $('joinBox');
+    const target = kind === 'claim' ? $('claimBox') : managedPeople().length ? $('addPersonBox') : $('joinBox');
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     target.querySelector(kind === 'claim' ? '[data-claim-person]' : 'input')?.focus({ preventScroll: true });
   }
@@ -1405,6 +1693,11 @@
     }
     const accessButton = event.target.closest('[data-access-go]');
     if (accessButton) { goToAccess(accessButton.dataset.accessGo); return; }
+    const keyClaim = event.target.closest('[data-key-claim]');
+    if (keyClaim) { claimWithKey(keyClaim); return; }
+    if (event.target.closest('[data-entry-retry]')) { retryEntry(); return; }
+    const sheetClaim = event.target.closest('[data-sheet-claim]');
+    if (sheetClaim) { openClaim(sheetClaim.dataset.sheetClaim); return; }
     const songButton = event.target.closest('[data-quick-song]');
     if (songButton) openCatalog(songButton.dataset.quickSong);
   });
@@ -1422,6 +1715,26 @@
   function coverImg(url) {
     return typeof url === 'string' && /^https:\/\//.test(url) && !failedCovers.has(url)
       ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : '';
+  }
+  // Durée d'un titre (secondes du catalogue KaraFun) en « 3:57 », ou '' si
+  // elle est inconnue ou aberrante ; ajoutée après l'artiste.
+  function songLength(song) {
+    const sec = Math.round(Number(song?.duration));
+    if (!Number.isFinite(sec) || sec < 20 || sec > 3600) return '';
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  }
+  const withLength = (artist, song) => [artist, songLength(song)].filter(Boolean).join(' · ');
+  // Durée maximale réglée au bar (rules.maxSongSec) : un titre plus long ne
+  // s'ajoute pas depuis le téléphone ; le serveur le refuse de toute façon.
+  function songTooLong(song) {
+    const limit = Number(state?.rules?.maxSongSec);
+    return limit > 0 && songLength(song) !== '' && Math.round(Number(song.duration)) > limit;
+  }
+  const lengthLabel = (artist, song) => withLength(artist, song) + (songTooLong(song) ? ` · ${t('trop long')}` : '');
+  function tooLongText(song) {
+    const limit = Number(state.rules.maxSongSec);
+    return t('Ce titre dure {length} : le bar limite les chansons à {limit}.',
+      { length: songLength(song), limit: `${Math.floor(limit / 60)}:${String(limit % 60).padStart(2, '0')}` });
   }
   function cover(song, size = '') {
     const title = String(song?.title || '').trim();
@@ -1451,27 +1764,42 @@
       $('nextTxt').textContent = `${singerLabel(next)} · ${next.title || t('Chanson')}`;
       $('nextEta').textContent = eta(next.eta || state.nextEta);
     }
+    renderStageProgress();
   }
 
-  // Noms affichés d'un passage. Une Battle ajoutée hors de la file porte un
-  // nom donné par le serveur ; en anglais, le nom par défaut du groupe
-  // « En solo » est traduit comme dans l'en-tête.
+  // Barre de lecture du titre sur scène : temps calculé par le serveur à
+  // state.now, avancé ici chaque seconde (minuteur de 1100 ms qui se
+  // reprogramme tant que le titre joue). Rien pour une Battle ni sans durée.
+  let clockSkew = 0, progressTimer = null;
+  function renderStageProgress() {
+    const box = $('stageProgress'), p = state?.stage?.progress;
+    const known = !!p && p.durationSec > 0 && state.stage.kind !== 'battle';
+    if (!box) return;
+    box.hidden = !known;
+    if (!known) return;
+    const since = Number.isFinite(state.now) && !p.paused ? Math.max(0, Date.now() + clockSkew - state.now) / 1000 : 0;
+    const elapsed = Math.min(p.durationSec, p.elapsedSec + since * p.rate);
+    const left = (p.durationSec - elapsed) / p.rate;
+    const label = p.paused ? t('En pause') : left < 30 ? t('Bientôt fini') : tp(Math.round(left / 60), 'reste {n} min', 'reste {n} min');
+    const html = `<div class="stage-progress-track"><span class="stage-progress-fill" style="width:${(elapsed / p.durationSec * 100).toFixed(1)}%"></span></div><span class="stage-progress-text">${esc(label)}</span>`;
+    if (box.innerHTML !== html) box.innerHTML = html;
+    if (!p.paused && !progressTimer) progressTimer = setTimeout(() => { progressTimer = null; renderStageProgress(); }, 1100);
+  }
+
+  // Noms affichés d'un passage, tels que le serveur les compose (prénom seul
+  // pour un soliste, « Max · Table 4 » à une table). Une Battle ajoutée hors
+  // de la file porte un nom donné par le serveur, traduit ici.
   function singerLabel(item) {
     if (!item.ours && item.kind === 'battle' && item.singer === 'Battle collective') return t('Battle collective');
-    const singers = list(item.singers);
-    if (lang === 'en' && singers.some(singer => singer.individual && singer.table === 'En solo')) {
-      const tables = [...new Set(singers.map(singer => tableLabel({ individual: singer.individual, name: singer.table })))];
-      return `${singers.map(singer => singer.name).join(' & ')} · ${tables.join(' + ')}`;
-    }
     return item.singer || t('Chanteur');
   }
 
-  // Demande ou invitation affichée sur un téléphone qui ne gère pas la
-  // personne : seul son téléphone peut répondre. Si c'est bien elle, elle
-  // reprend sa fiche ici avec le code du bar (soirée du 2 octobre : Mel
-  // voyait la demande de JP sans bouton pour l'accepter).
-  const notMine = person => `<div class="small muted">${esc(t('Seul le téléphone qui gère {name} peut répondre.', { name: person.name }))}</div>${state?.table?.individual ? ''
-    : `<div class="invite-actions"><button type="button" class="btn small" data-claim-here="${esc(person.id)}">${esc(t('C’est moi, {name} : répondre ici', { name: person.name }))}</button></div>`}`;
+  // Demande ou invitation d'une personne partie : la réponse attend que le bar
+  // la réactive. Le serveur n'en crée plus (invitation refusée, départ qui les
+  // efface) ; reste une sauvegarde écrite par une version précédente. (Une
+  // table ne montre plus que ses propres personnes : une personne gérée
+  // ailleurs se reprend depuis « Voir toute la table ».)
+  const leftNotice = person => `<div class="small muted">${esc(t('Pour répondre, demande au bar de réactiver {name}.', { name: person.name }))}</div>`;
 
   function renderPeople(people, queue) {
     $('peopleList').innerHTML = people.map(person => {
@@ -1494,7 +1822,7 @@
       // Réglages de titre : l'auteur, titre pas commencé (le serveur le dit), fonction ouverte par le bar.
       const sentTune = song => canEdit && song.canAdjust && song.entryId != null && tuneEnabled() ? tuneButton(song, person.id) : '';
       const sentMarkup = sent.length ? `<div class="song-mark">${esc(t('DÉJÀ PRÊTE DANS LA FILE'))}</div><ul class="song-stack">${sent.map(song =>
-        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}${sentDuo(song)}${tuneBadge(song)}</div></div><div class="song-actions">${lyricsButton(song)}${sentTune(song)}${sentLeave(song)}</div></li>`).join('')}</ul>` : '';
+        `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(withLength(song.artist || '', song))} · ${esc(song.stage ? t('sur scène') : t('bientôt sur scène'))}${sentDuo(song)}${tuneBadge(song)}</div></div><div class="song-actions">${lyricsButton(song)}${sentTune(song)}${sentLeave(song)}</div></li>`).join('')}</ul>` : '';
       const readyMarkup = ready.length ? `<div class="song-mark">${esc(individual ? tp(ready.length, 'MES CHANSONS · {n} CHANSON', 'MES CHANSONS · {n} CHANSONS') : tp(ready.length, 'SA LISTE · {n} CHANSON', 'SA LISTE · {n} CHANSONS'))}</div><ul class="song-stack">${ready.map((song, index) => {
         const duet = song.duet;
         const duetDetail = duet ? ` · ${esc(duet.state === 'pending'
@@ -1504,13 +1832,13 @@
         // Invitation sans réponse : le titre ne l'attend pas, il partira en solo.
         const soloHint = duet?.state === 'pending' ? `<div class="tiny muted invite-solo">${esc(individual ? t('Sans réponse avant ton tour, tu chanteras seul.')
           : t('Sans réponse avant son tour, {name} chantera seul.', { name: person.name }))}</div>` : '';
-        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(song.artist || '')} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(withLength(song.artist || '', song))} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${duet ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>${canEdit && ready.length > 1 ? `<p class="tiny muted order-hint">${esc(individual
         ? t('⇅ change l’ordre de tes titres sans perdre ta place dans la file.') : t('⇅ change l’ordre de ses titres sans perdre sa place dans la file.'))}</p>` : ''}`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
       const invites = list(person.invites).length ? list(person.invites) : person.invite ? [person.invite] : [];
       const inviteMarkup = invites.map(invite => `<div class="notice warn"><b>${esc(t('{name} propose un duo', { name: invite.fromName || t('Un chanteur') }))}</b> ${esc(t('sur « {title} »', { title: invite.song?.title || t('une chanson') }))}${invite.song?.artist ? ' — ' + esc(invite.song.artist) : ''}. ${esc(t('Réponds avant son tour, sinon l’invitation expire.'))}
-        ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : notMine(person)}</div>`).join('');
+        ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-duet-answer="yes" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-duet-answer="no" data-person-id="${esc(person.id)}" data-invite-entry="${esc(invite.entryId || '')}">${esc(t('Refuser'))}</button></div>` : leftNotice(person)}</div>`).join('');
       const guestMarkup = list(person.guestDuos).map(duo => `<div class="notice ok small">${esc(t('{name} chantera aussi en duo avec {from} sur « {title} ». Ses propres chansons restent dans sa liste pour un prochain passage.',
         { name: person.name, from: duo.fromName, title: duo.song?.title || t('une chanson') }))}${tuneBadge(duo.song)}${canEdit && duo.ownerId ? `<div class="invite-actions"><button type="button" class="btn small ghost" data-duet-leave="${esc(duo.entryId)}" data-owner-id="${esc(duo.ownerId)}" data-owner-name="${esc(duo.fromName || '')}" data-title="${esc(duo.song?.title || '')}" data-person-id="${esc(person.id)}">${esc(t('Je ne chante plus ce duo'))}</button></div>` : ''}</div>`).join('');
       // Présence demandée et report possible : une seule question, deux réponses.
@@ -1527,11 +1855,10 @@
           <div class="invite-actions"><button type="button" class="btn small" data-defer-person="${esc(person.id)}">${esc(t('Pas prêt : repousser d’une chanson'))}</button></div></div>` : '';
       // Demandes de duo reçues sur ses titres, et envoyées sur ceux des autres.
       const joinMarkup = list(person.joinRequests).map(request => `<div class="notice warn"><b>${esc(t('{from} aimerait chanter « {title} » avec {name}.', { from: request.fromName || t('Quelqu’un'), title: request.song?.title || t('ce titre'), name: person.name }))}</b> ${esc(t('{name} garde son passage.', { name: person.name }))}
-          ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-join-answer="yes" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-join-answer="no" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Refuser'))}</button></div>` : notMine(person)}</div>`).join('')
+          ${canEdit ? `<div class="invite-actions"><button type="button" class="btn primary small" data-join-answer="yes" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Accepter'))}</button><button type="button" class="btn small" data-join-answer="no" data-person-id="${esc(person.id)}" data-join-entry="${esc(request.entryId)}" data-join-from="${esc(request.fromId)}">${esc(t('Refuser'))}</button></div>` : leftNotice(person)}</div>`).join('')
         + list(person.sentJoinRequests).map(request => `<div class="notice small">${esc(t('Demande de duo envoyée à {name} pour « {title} ».', { name: request.ownerName || t('quelqu’un'), title: request.song?.title || t('ce titre') }))} ${request.seen === false ? `<b>${esc(t('{name} ne l’a pas encore vue : va lui en parler !', { name: request.ownerName || t('quelqu’un') }))}</b> ` : request.seen ? `${esc(t('{name} l’a vue.', { name: request.ownerName || t('quelqu’un') }))} ` : ''}${esc(t('Sans réponse avant l’envoi de son titre, elle expire.'))}
           ${canEdit ? `<button type="button" class="btn small ghost" data-join-cancel="${esc(request.ownerId)}" data-join-entry="${esc(request.entryId)}" data-person-id="${esc(person.id)}">${esc(t('Annuler la demande'))}</button>` : ''}</div>`).join('');
-      const phone = individual ? '' : ` · ${canEdit ? t('géré sur ce téléphone') : t('autre téléphone')}`;
-      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status + phone)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson pour {name}', { name: person.name }))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo pour {name}', { name: person.name }))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Transférer la gestion de {name}', { name: person.name }))}"`}>${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
+      return `<li class="person-card ${individual ? 'solo-person' : ''}" data-person-card="${esc(person.id)}"><div class="person-head"><span class="avatar" aria-hidden="true">${esc((person.name || '?').trim().charAt(0).toUpperCase())}</span><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(status)}</div></div>${canEdit ? `<button type="button" class="btn small ghost icon" data-rename-person="${esc(person.id)}" aria-label="${esc(individual ? t('Corriger mon nom') : t('Renommer {name}', { name: person.name }))}" title="${esc(individual ? t('Corriger mon nom') : t('Renommer'))}">✎</button>` : ''}</div>${inviteMarkup}${joinMarkup}${guestMarkup}${presenceMarkup}${deferMarkup}${sentMarkup}${readyMarkup}${canEdit ? `<div class="person-actions">${individual ? '' : `<button type="button" class="btn primary" data-add-song="${esc(person.id)}" aria-label="${esc(t('Ajouter une chanson pour {name}', { name: person.name }))}">＋ ${esc(t('Chanson'))}</button>`}<button type="button" class="btn add-duo" data-duet-song="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Ajouter un duo pour {name}', { name: person.name }))}"`}>${esc(individual ? t('Chanter en duo') : `＋ ${t('Duo')}`)}</button><button type="button" class="btn small ghost share" data-share-person="${esc(person.id)}"${individual ? '' : ` aria-label="${esc(t('Transférer la gestion de {name}', { name: person.name }))}"`}>${esc(individual ? t('Changer de téléphone') : t('Transférer la gestion'))}</button></div>` : ''}</li>`;
     }).join('');
   }
 
@@ -1547,7 +1874,19 @@
   const TUNE_SAVED_MS = 2600;
   const VOLUME_CHOICES = [0, 25, 50, 75, 100];
   const TUNE_FIELDS = ['pitch', 'tempo', 'guide', 'backing'];
-  const TRACK_BACKING = 4, TRACK_GUIDE = 5;
+  const TRACK_BACKING = 4, TRACK_GUIDE = 5, TRACK_VOICE_2 = 6;
+  // Chaque voix guide a son réglage : `guide` pour la voix 1 (piste 5),
+  // `guideVoices` { "6": 50 } pour les autres ; champ 'voice:6' dans la fiche.
+  const isVoice = type => Number.isInteger(type) && type >= TRACK_GUIDE && type <= 15;
+  const voicesOf = tracks => Array.isArray(tracks) ? [...new Set(tracks.filter(isVoice))].sort((a, b) => a - b) : null;
+  const voiceField = type => type === TRACK_GUIDE ? 'guide' : `voice:${type}`;
+  const fieldType = field => field === 'guide' ? TRACK_GUIDE : /^voice:\d+$/.test(field) ? Number(field.slice(6)) : null;
+  const tuneValue = (value, field) => fieldType(field) > TRACK_GUIDE ? value?.guideVoices?.[fieldType(field)] : value?.[field];
+  function setTune(value, field, n) {
+    if (fieldType(field) > TRACK_GUIDE) value.guideVoices = { ...value.guideVoices, [fieldType(field)]: n };
+    else value[field] = n;
+    return value;
+  }
   const tuneDrafts = new Map(); // entryId → { personId, entryId, value, state, error, seq, timer, busy, again, afterLoad }
   const tuneSaved = new Map();  // entryId → repère « Enregistré ✓ » : { applied }
   let tuneSeq = 0;
@@ -1565,6 +1904,9 @@
       const n = value?.[field];
       if (Number.isInteger(n) && !(n === 0 && (field === 'pitch' || field === 'tempo'))) out[field] = n;
     }
+    for (const [key, n] of Object.entries(value?.guideVoices || {})) {
+      if (isVoice(Number(key)) && Number(key) > TRACK_GUIDE && Number.isInteger(n)) setTune(out, voiceField(Number(key)), n);
+    }
     return Object.keys(out).length ? out : null;
   }
   const signed = n => n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
@@ -1574,14 +1916,22 @@
     const draft = song?.entryId != null ? tuneDrafts.get(String(song.entryId)) : null;
     return draft && draft.state !== 'error' ? draft.value : cleanTune(song?.settings);
   }
-  // Résumé court : « ♯ +2 · tempo −10 % · guide 50 ». Un volume laissé à sa
-  // valeur par défaut n'est pas rappelé.
-  function tuneSummary(value) {
+  // Résumé court : « ♯ +2 · tempo −10 % · guide 50 » ; un titre à plusieurs
+  // voix guides : « voix 1 50 · voix 2 25 ». Un volume laissé à sa valeur par
+  // défaut n'est pas rappelé.
+  function tuneSummary(value, tracks = null) {
     const defaults = tuneDefaults();
     const parts = [];
     if (value?.pitch) parts.push(`${value.pitch > 0 ? '♯' : '♭'} ${signed(value.pitch)}`);
     if (value?.tempo) parts.push(t('tempo {n} %', { n: signed(value.tempo) }));
-    if (value?.guide != null && value.guide !== defaults.guide) parts.push(value.guide ? t('guide {n}', { n: value.guide }) : t('guide coupé'));
+    const set = [TRACK_GUIDE, ...Object.keys(value?.guideVoices || {}).map(Number)].filter(type => tuneValue(value, voiceField(type)) != null);
+    const voices = voicesOf([...(voicesOf(tracks) || []), TRACK_GUIDE, ...set]);
+    for (const type of set) {
+      const n = tuneValue(value, voiceField(type)), i = voices.indexOf(type) + 1;
+      if (n === defaults.guide) continue;
+      if (voices.length > 1) parts.push(n ? t('voix {i} {n}', { i, n }) : t('voix {i} coupée', { i }));
+      else parts.push(n ? t('guide {n}', { n }) : t('guide coupé'));
+    }
     if (value?.backing != null && value.backing !== defaults.backing) parts.push(value.backing ? t('chœurs {n}', { n: value.backing }) : t('chœurs coupés'));
     return parts.join(' · ');
   }
@@ -1589,7 +1939,7 @@
   // réglage refusé reste signalé sur la ligne tant que le titre se règle.
   function tuneBadge(song) {
     if (!tuneEnabled()) return '';
-    const summary = tuneSummary(tuneOf(song));
+    const summary = tuneSummary(tuneOf(song), Array.isArray(song?.tracks) ? song.tracks : null);
     const failed = song?.entryId != null && tuneDrafts.get(String(song.entryId))?.state === 'error';
     return `${summary ? ` <span class="tune-badge" aria-label="${esc(t('Réglages : {summary}', { summary }))}">${esc(summary)}</span>` : ''}${failed
       ? ` <span class="tune-badge bad">${esc(t('Réglages non enregistrés'))}</span>` : ''}`;
@@ -1603,10 +1953,10 @@
     const person = personById(personId);
     const key = String(entryId);
     const listed = list(person?.songs).find(song => String(song.entryId) === key);
-    if (listed) return { person, song: listed, canAdjust: manages(person.id) && person.active !== false, tracks: null, duo: !!listed.duet };
+    if (listed) return { person, song: listed, canAdjust: manages(person.id) && person.active !== false, tracks: null };
     const sent = list(person?.inKaraFun).find(song => String(song.entryId) === key);
     return sent ? { person, song: sent, canAdjust: manages(person.id) && !!sent.canAdjust,
-      tracks: Array.isArray(sent.tracks) ? sent.tracks : null, duo: !!sent.duo } : null;
+      tracks: Array.isArray(sent.tracks) ? sent.tracks : null } : null;
   }
 
   // Pourquoi ce titre ne se règle plus depuis ce téléphone.
@@ -1652,22 +2002,29 @@
         <div class="tune-stepper" role="group" aria-labelledby="tuneLabel-${field}"><button type="button" class="btn" data-tune="${field}" data-step="${-range.step}" data-focus="${field}-down" aria-label="${esc(down)}"${lock || n - range.step < range.min ? ' disabled' : ''}>−</button><output class="tune-value" id="tune${field === 'pitch' ? 'Pitch' : 'Tempo'}">${esc(shown(n))}</output><button type="button" class="btn" data-tune="${field}" data-step="${range.step}" data-focus="${field}-up" aria-label="${esc(up)}"${lock || n + range.step > range.max ? ' disabled' : ''}>+</button></div></div>`;
     };
     const volume = (field, label, hint) => {
-      const n = value[field] ?? defaults[field];
-      const kept = value[field] == null && !VOLUME_CHOICES.includes(defaults[field])
-        ? `<span class="tune-hint">${esc(t('Réglage de KaraFun : {n}', { n: defaults[field] }))}</span>` : '';
-      return `<div class="tune-row"><span class="tune-label" id="tuneLabel-${field}">${esc(label)}</span>${hint ? `<span class="tune-hint">${esc(hint)}</span>` : ''}
-        <div class="tune-seg" role="group" aria-labelledby="tuneLabel-${field}">${VOLUME_CHOICES.map(level => `<button type="button" class="btn" data-tune="${field}" data-value="${level}" data-focus="${field}-${level}" aria-pressed="${n === level}"${off}>${esc(level ? String(level) : t('Coupé'))}</button>`).join('')}</div>${kept}</div>`;
+      const own = tuneValue(value, field), base = defaults[fieldType(field) ? 'guide' : field], n = own ?? base;
+      const id = field.replace(':', '');
+      const kept = own == null && !VOLUME_CHOICES.includes(base)
+        ? `<span class="tune-hint">${esc(t('Réglage de KaraFun : {n}', { n: base }))}</span>` : '';
+      return `<div class="tune-row"><span class="tune-label" id="tuneLabel-${id}">${esc(label)}</span>${hint ? `<span class="tune-hint">${esc(hint)}</span>` : ''}
+        <div class="tune-seg" role="group" aria-labelledby="tuneLabel-${id}">${VOLUME_CHOICES.map(level => `<button type="button" class="btn" data-tune="${field}" data-value="${level}" data-focus="${field}-${level}" aria-pressed="${n === level}"${off}>${esc(level ? String(level) : t('Coupé'))}</button>`).join('')}</div>${kept}</div>`;
     };
-    // Pistes vocales : connues une fois le titre chargé dans KaraFun.
+    // Pistes vocales : connues une fois le titre chargé dans KaraFun. Un
+    // réglage par voix guide : « Voix guide » pour une seule voix, « Voix 1 »,
+    // « Voix 2 »… sinon ; pistes inconnues : voix 1, et voix 2 si le titre en a deux.
     const tracks = entry?.tracks || null;
+    const voices = voicesOf(tracks);
+    const original = t('La voix du chanteur original, pour se repérer.');
+    const guides = !voices ? volume('guide', t('Voix {n}', { n: 1 }), original) + volume(voiceField(TRACK_VOICE_2), t('Voix {n}', { n: 2 }), t('Si le titre en a deux.'))
+      : !voices.length ? `<p class="tune-hint">${esc(t('Ce titre n’a pas de voix guide.'))}</p>`
+        : voices.map((type, index) => volume(voiceField(type), voices.length > 1 ? t('Voix {n}', { n: index + 1 }) : t('Voix guide'), index ? '' : original)).join('');
     const pitchStep = ranges.pitch.step, tempoStep = ranges.tempo.step;
     const html = `${lock ? `<p class="notice warn small tune-lock">${esc(lock)}</p>` : ''}
       ${stepper('pitch', t('Tonalité'), t('0 = originale'), signed,
         [tp(pitchStep, 'Baisser de {n} demi-ton', 'Baisser de {n} demi-tons'), tp(pitchStep, 'Monter de {n} demi-ton', 'Monter de {n} demi-tons')])}
       ${stepper('tempo', t('Tempo'), t('0 = tempo original'), n => `${signed(n)} %`,
         [t('Ralentir de {n} %', { n: tempoStep }), t('Accélérer de {n} %', { n: tempoStep })])}
-      ${!tracks || tracks.includes(TRACK_GUIDE) ? volume('guide', t('Voix guide'), entry?.duo ? t('Duo : les deux voix guides suivent ce réglage.')
-        : t('La voix du chanteur original, pour se repérer.')) : `<p class="tune-hint">${esc(t('Ce titre n’a pas de voix guide.'))}</p>`}
+      ${guides}
       ${!tracks || tracks.includes(TRACK_BACKING) ? volume('backing', t('Chœurs'), tracks ? '' : t('Si le titre en a.'))
         : `<p class="tune-hint">${esc(t('Ce titre n’a pas de chœurs.'))}</p>`}`;
     if (html !== tuneShown) {
@@ -1716,7 +2073,10 @@
     draft.busy = true;
     renderTune();
     try {
-      const result = await post('/api/table/song/settings', { personId: draft.personId, entryId: draft.entryId, settings: draft.value });
+      // Clé des autres voix guides toujours envoyée ({} : plus aucune), sans
+      // quoi le serveur les garde (page d'avant la mise à jour).
+      const result = await post('/api/table/song/settings', { personId: draft.personId, entryId: draft.entryId,
+        settings: { ...draft.value, guideVoices: draft.value?.guideVoices || {} } });
       if (tuneDrafts.get(key) === draft && draft.seq === seq && draft.state === 'saving') {
         // Le brouillon s'efface au premier état demandé après cet envoi.
         draft.state = 'saved';
@@ -1754,7 +2114,7 @@
     if (control?.dataset.step) {
       const field = control.dataset.tune, range = tuneRanges()[field];
       next[field] = Math.min(range.max, Math.max(range.min, (next[field] ?? 0) + Number(control.dataset.step)));
-    } else if (control) next[control.dataset.tune] = Number(control.dataset.value);
+    } else if (control) setTune(next, control.dataset.tune, Number(control.dataset.value));
     editTune(entry, cleanTune(next));
   });
 
@@ -1869,15 +2229,14 @@
 
   $('joinForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (state?.table?.individual && managedPeople().length) return toast(t('Ce téléphone gère déjà une personne dans « En solo ».'), true);
     const name = $('firstName').value.trim();
     if (!name) return toast(t('Indique un prénom.'), true);
-    const button = $('joinForm').querySelector('button[type=submit]');
-    perform(button, async () => {
-      const result = await post('/api/join', { name, ...(state?.table?.individual ? { invitation: soloInvitation } : {}) });
+    perform($('joinSubmit'), async () => {
+      const result = await post('/api/join', { name });
       if (result.token) savePersonToken(result.id, result.token);
-      if (state?.table?.individual) forgetSoloInvitation();
       $('firstName').value = '';
+      // Première inscription de ce téléphone : le QR de la table, à faire scanner aux autres.
+      inviteOpen = true;
       await refresh();
       toast(t('{name} est inscrit.', { name }));
       continuePendingSong();
@@ -1886,7 +2245,7 @@
 
   $('addPersonForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (state?.table?.individual) return toast(t('Dans « En solo », inscris-toi depuis ton propre téléphone.'), true);
+    if (state?.table?.individual) return toast(t('Chacun s’inscrit depuis son propre téléphone.'), true);
     const name = $('newName').value.trim();
     if (!name) return toast(t('Indique un prénom.'), true);
     const button = $('addPersonForm').querySelector('button[type=submit]');
@@ -1907,7 +2266,7 @@
 
   function openClaim(personId) {
     const individual = !!state?.table?.individual;
-    if (individual && managedPeople().length) return;
+    if (individual && holdsNamedPlace()) return;
     const person = individual
       ? list(state.recoveryPeople).find(candidate => String(candidate.id) === String(personId))
       : personById(personId);
@@ -1919,21 +2278,261 @@
     $('claimForm').addEventListener('submit', e => {
       e.preventDefault();
       perform($('claimSubmit'), async () => {
-        const result = await post('/api/table/person/claim', { personId: person.id, code: $('claimCode').value,
-          ...(individual && soloInvitation ? { invitation: soloInvitation } : {}) });
-        savePersonToken(result.id, result.token);
-        if (individual && soloInvitation) forgetSoloInvitation();
+        await claimByCode(person, $('claimCode').value);
         closeSheet({ keepPending: true }); await refresh(); toast(t('{name} est maintenant géré sur ce téléphone.', { name: person.name }));
         continuePendingSong();
       });
     });
   }
 
+  // Reprise par le code à 4 chiffres (fiche de reprise ou fenêtre de prénom).
+  // En solo, le serveur retire la place sans prénom de ce téléphone : elle
+  // n'est pas un « QR d'événement plus actif ».
+  async function claimByCode(person, code) {
+    const individual = !!state?.table?.individual;
+    const result = await post('/api/table/person/claim', { personId: person.id, code,
+      ...(individual && soloInvitation ? { invitation: soloInvitation } : {}) });
+    savePersonToken(result.id, result.token);
+    if (individual && soloInvitation) forgetSoloInvitation();
+    if (individual && eventPlaceId) rememberEventPlace('');
+    return result;
+  }
+
+  // Refus du QR personnel sur un téléphone qui garde une place sans prénom
+  // (QR de l'événement scanné plus tôt) : la fenêtre de prénom recouvre la
+  // page et le message de #noSingerBox. Le refus s'y affiche, dans la langue
+  // de la page, jusqu'à la première saisie (vérification de la troisième passe).
+  function showEntryRefusal() {
+    if (entry.status === 'failed' && namePersonId) setNameGateMessage(entry.error);
+  }
+
+  // « Récupérer mes chansons » avec le QR individuel rouvert ailleurs : même
+  // effet qu'une reprise (l'ancien téléphone perd la gestion).
+  function claimWithKey(button) {
+    const name = entry.recover?.name;
+    perform(button, async () => {
+      let result;
+      try { result = await post('/api/table/person/claim', { key: soloInvitation }); }
+      catch (error) {
+        // Refus définitif (clé morte, personne marquée partie) : l'offre
+        // « C’est bien toi ? » ne peut plus aboutir, la page affiche le refus
+        // à sa place (sans « Réessayer » pour une clé morte) ; le toast le dit
+        // aussi. Un refus passager (réseau, serveur) garde l'offre.
+        if (error.code === 'SOLO_KEY_REVOKED' || error.code === 'PERSON_LEFT') {
+          entry = { status: 'failed', code: error.code, recover: null, error: error.localized || (() => error.message) };
+          render();
+          showEntryRefusal();
+        }
+        throw error;
+      }
+      savePersonToken(result.id, result.token);
+      entry = { status: 'done', recover: null, error: '' };
+      await refresh();
+      toast(t('Tu gères maintenant {name} sur ce téléphone.', { name }));
+      continuePendingSong();
+    });
+  }
+
+  // Fenêtre de prénom : tant que la personne du téléphone n'a qu'un prénom
+  // provisoire (« Solo 3 »), rien d'autre n'est visible ni possible. Aucune
+  // fermeture : ni croix, ni Échap, ni Retour.
+  // Une reprise proposée (lien de transfert ou clé personnelle d'une autre
+  // personne) passe avant : « Solo 3 » vient souvent d'un QR rescanné
+  // depuis une autre application, et la personne a déjà son prénom.
+  let namePersonId = '';
+  function renderNameGate() {
+    const offer = transferLink ? state?.transferOffer : null;
+    const takeover = entry.status === 'recover' || (!!offer?.personId && !manages(offer.personId));
+    const person = takeover ? null : managedPeople().find(candidate => candidate.nameRequired);
+    namePersonId = person ? String(person.id) : '';
+    const opening = !!person && $('nameGate').hidden;
+    if (opening && !$('sheet').hidden) closeSheet();
+    $('nameGate').hidden = !person;
+    $('tabsNav').hidden = !!person;
+    $('mainContent').hidden = !!person;
+    if (!person) gateClaim = null;
+    renderGateClaim();
+    syncBackground();
+    // Fenêtre qui s'ouvre : son titre est annoncé ; le champ n'a pas le
+    // focus, pour ne pas ouvrir le clavier d'iOS d'office.
+    if (opening) $('nameGateTitle').focus({ preventScroll: true });
+  }
+  // « Déjà inscrit ? J’ai un code » : la reprise par code (son prénom, puis
+  // le code à 4 chiffres) dans la fenêtre de prénom, qui recouvre la page.
+  // gateClaim : null (prénom), { personId: '' } (choix du prénom) ou
+  // { personId } (saisie du code). Redessinée seulement si l'étape, la
+  // langue ou la liste change ; le code en cours de saisie reste.
+  let gateClaim = null;
+  let gateClaimShown = '';
+  function renderGateClaim() {
+    const box = $('nameGateClaim');
+    // Un seul titre, celui de l'étape (aussi après translateStatic).
+    $('nameGateTitle').textContent = gateClaim ? t('Récupérer mes chansons') : t('Bienvenue ! Quel est ton prénom ?');
+    $('nameGateForm').hidden = !!gateClaim;
+    $('nameGateIntro').hidden = !!gateClaim;
+    $('nameGateClaimLink').hidden = !!gateClaim;
+    box.hidden = !gateClaim;
+    if (!gateClaim) { gateClaimShown = ''; box.innerHTML = ''; return; }
+    const candidates = list(state?.recoveryPeople);
+    const chosen = gateClaim.personId ? candidates.find(candidate => String(candidate.id) === gateClaim.personId) : null;
+    // Code expiré entre-temps : retour au choix du prénom.
+    if (!chosen) gateClaim.personId = '';
+    const signature = JSON.stringify([lang, chosen ? [chosen.id, chosen.name] : candidates.map(candidate => [candidate.id, candidate.name])]);
+    if (signature === gateClaimShown) return;
+    gateClaimShown = signature;
+    const typed = $('nameGateClaimCode')?.value || '';
+    const back = `<button type="button" class="btn ghost wide" data-gate-claim-back>${esc(t('Retour'))}</button>`;
+    box.innerHTML = chosen ? `<p class="small muted">${esc(t('Tu es {name} ? Demande le code au bar ou à ton ancien téléphone.', { name: chosen.name }))} ${esc(t('Le code dure 10 minutes.'))}</p>
+      <form id="nameGateClaimForm"><label class="field" for="nameGateClaimCode">${esc(t('Code de reprise à 4 chiffres'))}</label><input id="nameGateClaimCode" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" required>
+      <button type="submit" id="nameGateClaimSubmit" class="btn primary wide">${esc(t('Prendre en charge'))}</button></form>${back}`
+      : `<p class="small muted">${esc(candidates.length
+        ? t('Si tu étais déjà inscrit, choisis ton prénom et saisis le code à 4 chiffres donné par le bar ou ton ancien téléphone. Cette reprise transférera tes chansons sur ce téléphone.')
+        : t('Demande d’abord au bar ou à ton ancien téléphone un code de reprise à 4 chiffres : ton prénom apparaîtra ici.'))}</p>
+      <div class="name-gate-claim-people">${candidates.map(candidate => `<button type="button" class="btn" data-gate-claim-person="${esc(candidate.id)}">${esc(t('Je suis {name} · reprendre mes chansons', { name: candidate.name }))}</button>`).join('')}</div>${back}`;
+    if (chosen && typed) $('nameGateClaimCode').value = typed;
+  }
+  $('nameGateClaimLink').addEventListener('click', () => {
+    gateClaim = { personId: '' };
+    renderGateClaim();
+    $('nameGateTitle').focus({ preventScroll: true });
+  });
+  $('nameGateClaim').addEventListener('click', event => {
+    const chosen = event.target.closest('[data-gate-claim-person]');
+    if (chosen) {
+      gateClaim = { personId: String(chosen.dataset.gateClaimPerson) };
+      renderGateClaim();
+      $('nameGateClaimCode')?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.target.closest('[data-gate-claim-back]')) {
+      gateClaim = gateClaim?.personId ? { personId: '' } : null;
+      renderGateClaim();
+      $('nameGateTitle').focus({ preventScroll: true });
+    }
+  });
+  $('nameGateClaim').addEventListener('submit', event => {
+    if (event.target.id !== 'nameGateClaimForm') return;
+    event.preventDefault();
+    const person = list(state?.recoveryPeople).find(candidate => String(candidate.id) === gateClaim?.personId);
+    if (!person) return;
+    perform($('nameGateClaimSubmit'), async () => {
+      await claimByCode(person, $('nameGateClaimCode').value);
+      gateClaim = null;
+      await refresh();
+      toast(t('Tu gères maintenant {name} sur ce téléphone.', { name: person.name }));
+      continuePendingSong();
+    });
+  });
+
+  // Message de la fenêtre : gardé comme fonction qui le traduit (clé
+  // française et valeurs, ou message d'origine du serveur), redessiné dans
+  // la langue courante par setLanguage.
+  let nameGateMessage = null;
+  function renderNameGateMessage() {
+    const node = $('nameGateError');
+    node.textContent = nameGateMessage ? nameGateMessage() : '';
+    node.hidden = !nameGateMessage;
+  }
+  function setNameGateMessage(message) {
+    nameGateMessage = message;
+    renderNameGateMessage();
+  }
+  // Nouvelle saisie, ou essai vide bloqué par le navigateur (champ requis) :
+  // l'ancien message ne reste pas.
+  $('nameGateInput').addEventListener('input', () => setNameGateMessage(null));
+  $('nameGateInput').addEventListener('invalid', () => setNameGateMessage(null));
+  $('nameGateLang').addEventListener('click', event => {
+    const button = event.target.closest('[data-lang]');
+    if (button) setLanguage(button.dataset.lang);
+  });
+  $('nameGateForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const name = $('nameGateInput').value.trim();
+    setNameGateMessage(null);
+    if (!name) return setNameGateMessage(() => t('Indique un prénom.'));
+    const button = $('nameGateForm').querySelector('button[type=submit]');
+    button.disabled = true;
+    try {
+      await post('/api/table/person/rename', { personId: namePersonId, name });
+      $('nameGateInput').value = '';
+      await refresh();
+      toast(t('{name} est inscrit.', { name }));
+    } catch (failure) {
+      // Son propre prénom, souvent : la reprise par code d'abord, l'initiale
+      // sinon. Une personne que ce téléphone ne peut pas reprendre (partie,
+      // autre groupe : le serveur le dit) : l'initiale, ou voir le bar.
+      setNameGateMessage(failure.code !== 'NAME_TAKEN' ? failure.localized || (() => failure.message)
+        : failure.recoverable ? () => t('Ce prénom est déjà inscrit. Si c’est toi, touche « Déjà inscrit ? J’ai un code » ; sinon ajoute l’initiale de ton nom (ex. Marie L.).')
+          : () => t('Ce prénom est déjà inscrit. Ajoute l’initiale de ton nom (ex. Marie L.). Si c’est bien toi, demande au bar.'));
+    } finally { button.disabled = false; }
+  });
+
+  // Toute la table, dans une fiche : chacun avec ses titres prêts, et
+  // « C'est moi » (reprise par code) pour une personne gérée ailleurs.
+  let tableSheetQuery = '';
+  const plain = text => String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLocaleLowerCase();
+  function tableSheetRows() {
+    const query = plain(tableSheetQuery.trim());
+    const rows = list(state?.tablePeople).filter(person => plain(person.name).includes(query));
+    return rows.length ? rows.map(person => {
+      const ready = list(person.songs).length + list(person.inKaraFun).length;
+      const action = manages(person.id) ? `<span class="badge">${esc(t('géré par ce téléphone'))}</span>`
+        : person.active === false ? '' : `<button type="button" class="btn small" data-sheet-claim="${esc(person.id)}" aria-label="${esc(t('C’est moi, {name}', { name: person.name }))}">${esc(t('C’est moi'))}</button>`;
+      return `<li data-sheet-person="${esc(person.id)}"><div class="grow"><div class="person-name">${esc(person.name)}</div><div class="person-state">${esc(person.active === false
+        ? t('Parti · historique conservé') : tp(ready, '{n} titre prêt', '{n} titres prêts'))}</div></div>${action}</li>`;
+    }).join('') : `<li class="empty-copy">${esc(t('Aucune personne trouvée.'))}</li>`;
+  }
+  function openTableSheet() {
+    tableSheetQuery = '';
+    const search = list(state?.tablePeople).length > 8
+      ? `<label class="field" for="tableSearch">${esc(t('Chercher un prénom'))}</label><input id="tableSearch" type="search" autocomplete="off">` : '';
+    openSheet(`<div class="row"><h3 class="grow">${esc(t('Toute la table'))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+      <p class="small muted">${esc(t('Déjà inscrit par un autre téléphone ? Le plus simple : scanne le QR code « Transférer » affiché sur ce téléphone-là. Sinon, touche « C’est moi » et saisis le code à 4 chiffres qu’il te donne (ou celui du bar).'))}</p>
+      ${search}<ul class="table-sheet person-list" id="tableSheetList">${tableSheetRows()}</ul>`);
+    $('tableSearch')?.addEventListener('input', () => {
+      tableSheetQuery = $('tableSearch').value;
+      $('tableSheetList').innerHTML = tableSheetRows();
+    });
+  }
+  $('tableAllButton').addEventListener('click', openTableSheet);
+  $('joinOthers').addEventListener('click', openTableSheet);
+
+  // « Fais scanner ta table » : le QR de la table, déployé juste après la
+  // première inscription du téléphone, replié ensuite en un bouton.
+  let inviteOpen = false;
+  let invite = null;
+  let inviteShown = '';
+  async function loadInvite() {
+    try {
+      invite = await request(`/api/table/invite?${new URLSearchParams({ table: tableId, access })}`);
+    } catch (error) {
+      inviteOpen = false;
+      toast(error.message, true);
+    }
+    render();
+  }
+  function renderInvite(show) {
+    $('inviteBox').hidden = !show;
+    $('inviteToggle').hidden = inviteOpen;
+    $('invitePanel').hidden = !inviteOpen;
+    const html = invite ? `<img src="${esc(invite.qr)}" alt="${esc(t('QR code de la table'))}">` : '';
+    if (html !== inviteShown) { $('inviteQr').innerHTML = html; inviteShown = html; }
+    if (show && inviteOpen && !invite && !loadInvite.pending) {
+      loadInvite.pending = true;
+      loadInvite().finally(() => { loadInvite.pending = false; });
+    }
+  }
+  $('inviteToggle').addEventListener('click', () => { inviteOpen = true; render(); });
+  $('inviteClose').addEventListener('click', () => { inviteOpen = false; render(); });
+  $('inviteShare').addEventListener('click', () => {
+    if (!invite?.url) return;
+    shareOrCopy(invite.url, { text: t('Rejoins notre table au karaoké :'), copied: t('Lien copié : colle-le dans ton message.'),
+      failed: t('Copie impossible. Lien de la table : {url}', { url: invite.url }) });
+  });
+
   $('peopleList').addEventListener('click', event => {
     const tune = event.target.closest('[data-song-settings]');
     if (tune) { openTune(tune.dataset.personId, tune.dataset.songSettings); return; }
-    const claimHere = event.target.closest('[data-claim-here]');
-    if (claimHere) { openClaim(claimHere.dataset.claimHere); return; }
     const share = event.target.closest('[data-share-person]');
     if (share) {
       perform(share, async () => {
@@ -2072,6 +2671,7 @@
 
   function addToBattleDraft(song) {
     if (!song?.songId) return false;
+    if (songTooLong(song)) { toast(tooLongText(song), true); return false; }
     if (battleDraft.some(item => Number(item.songId) === Number(song.songId))) { toast(t('Titre déjà proposé.'), true); return false; }
     if (battleDraft.length >= 3) { toast(t('Trois titres maximum.'), true); return false; }
     battleDraft.push({ songId: Number(song.songId), title: String(song.title), artist: String(song.artist || '') });
@@ -2164,7 +2764,7 @@
         found = list(data).slice(0, 20).filter(song => Number.isSafeInteger(Number(song?.songId)) &&
           Number(song.songId) > 0 && String(song.title || '').trim());
         resultsNode.innerHTML = found.length
-          ? `<ul class="catalog-list">${found.map((song, index) => `<li><button type="button" data-battle-result="${index}"><b>${esc(song.title)}</b><br><span class="tiny muted">${esc(song.artist || '')}</span></button></li>`).join('')}</ul>`
+          ? `<ul class="catalog-list">${found.map((song, index) => `<li><button type="button" data-battle-result="${index}"${songTooLong(song) ? ' class="too-long"' : ''}><b>${esc(song.title)}</b><br><span class="tiny muted">${esc(songTooLong(song) ? lengthLabel(song.artist || '', song) : song.artist || '')}</span></button></li>`).join('')}</ul>`
           : `<p>${esc(t('Aucun titre trouvé.'))}</p>`;
       }).catch(error => {
         if (number !== searchNumber) return;
@@ -2381,7 +2981,7 @@
     $('catalogTarget').textContent = duetMode && person ? t('Choisis un titre pour un duo avec {name}.', { name: person.name }) : person
       ? managedPeople().length === 1 ? t('Chansons pour {name}.', { name: person.name }) : t('Chansons pour {name}. Tu pourras changer de chanteur avant de valider.', { name: person.name })
       : managedPeople().length ? t('Choisis un titre, puis la personne qui le chantera.')
-        : state?.table?.individual ? t('Explore le catalogue. Pour ajouter un titre, inscris-toi dans « En solo ».')
+        : state?.table?.individual ? t('Explore le catalogue. Pour ajouter un titre, demande au bar ton QR individuel.')
           : t('Explore le catalogue. Pour ajouter un titre, inscris une personne ou reprends sa gestion avec un code.');
   }
 
@@ -2470,13 +3070,24 @@
       : `<p class="empty-copy">${esc(t('Aucune sélection disponible.'))}</p>`);
   }
 
+  // Sélection reportée : le serveur annonce déjà le catalogue indisponible,
+  // la demande échouerait (502). Elle part dès son retour (render).
+  let catalogDeferred = null;
   async function showCategories(type) {
     setCatalogType(type);
     $('searchInput').value = '';
     renderSearchClear();
     currentCategory = null;
     const number = ++catalogRequest;
-    if (type === 'news' || type === 'featured') {
+    const highlights = type === 'news' || type === 'featured';
+    if (state?.catalogAvailable === false) {
+      catalogMode = highlights ? 'highlights' : 'categories';
+      catalogDeferred = type;
+      showCatalogView(catalogMessage(() => t('Le catalogue est momentanément indisponible. Réessaie dans un instant.')));
+      return;
+    }
+    catalogDeferred = null;
+    if (highlights) {
       catalogMode = 'highlights';
       showCatalogView(catalogMessage(() => t('Chargement des chansons…')));
       try {
@@ -2526,7 +3137,7 @@
       + (songs.length ? `<ul class="catalog-list">${songs.map((song, index) => {
         // Choix des titres d'une Battle : ceux déjà retenus sont marqués.
         const picked = battlePickMode && battleDraft.some(item => Number(item.songId) === Number(song.songId));
-        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(song.artist || '')}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
+        return `<li><button type="button" class="song-row${picked ? ' picked' : ''}${songTooLong(song) ? ' too-long' : ''}" data-song-index="${index}"${battlePickMode ? ` aria-pressed="${picked}"` : ''}>${cover(song)}<span class="grow"><span class="song-title">${esc(song.title)}</span><span class="song-artist">${esc(lengthLabel(song.artist || '', song))}</span></span>${picked ? `<span class="badge lock">✓ ${esc(t('Choisi'))}</span>` : ''}</button></li>`;
       }).join('')}</ul>` : `<p class="empty-copy">${esc(t('Aucune chanson trouvée.'))}</p>`)
       + (catalogMode === 'songs' && songs.length < totalSongs ? `<button type="button" class="btn wide" data-more style="margin-top:12px">${esc(t('Voir plus'))}</button>` : ''));
   }
@@ -2711,6 +3322,12 @@
 
   function chooseSong(song) {
     if (!song || !song.songId) return;
+    // Plus long que la limite du bar : la fiche explique au lieu d'ajouter.
+    if (songTooLong(song)) {
+      openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(lengthLabel(song.artist || '', song))}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+        <p class="notice warn small" role="status">${esc(tooLongText(song))}</p>`);
+      return;
+    }
     // Choix des titres d'une Battle depuis le catalogue.
     if (battlePickMode) {
       if (addToBattleDraft(song)) {
@@ -2731,7 +3348,7 @@
     pendingSong = null;
     const selected = people.find(person => String(person.id) === targetPersonId) || people[0];
     if (duetMode) return openDuoPartner(song, selected.id);
-    openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(song.artist || '')}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+    openSheet(`<div class="sheet-song">${cover(song, 'xl')}<div class="grow"><h3>${esc(song.title)}</h3><p class="muted small">${esc(withLength(song.artist || '', song))}</p></div><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <div style="height:12px"></div>
       <p id="songNotice" class="notice warn small song-notice" role="status" hidden></p>
       <div id="songJoinOffer" class="sheet-actions" hidden></div>
@@ -2781,15 +3398,18 @@
       return true;
     });
     if (!partners.length) return toast(t('Aucun partenaire disponible pour un duo.'), true);
-    const ownTable = partners.filter(person => String(person.tableId) === String(state?.table?.id));
-    const otherTables = partners.filter(person => String(person.tableId) !== String(state?.table?.id));
-    const partnerTable = person => person.table === 'En solo' && person.tableId === 'Comptoir' ? t('En solo') : person.table;
-    const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table ? ' · ' + esc(partnerTable(person)) : ''}</option>`;
+    // Téléphone d'un soliste : les autres solistes ne sont pas « à sa table »,
+    // chaque duo est une invitation. Un soliste est proposé sous son prénom.
+    const soloPhone = !!state?.table?.individual;
+    const ownTable = soloPhone ? [] : partners.filter(person => String(person.tableId) === String(state?.table?.id));
+    const otherTables = soloPhone ? partners : partners.filter(person => String(person.tableId) !== String(state?.table?.id));
+    const partnerOption = (person, otherTable = false) => `<option value="${esc(person.id)}">${otherTable ? '↗ ' : ''}${esc(person.name)}${person.table && !person.individual ? ' · ' + esc(person.table) : ''}</option>`;
+    const otherLabel = soloPhone ? t('Autres personnes · invitation à accepter') : t('Autres tables · invitation à accepter');
     openSheet(`<div class="row"><h3 class="grow">${esc(t('Duo sur « {title} »', { title: song.title }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <p class="muted small">${esc(t('{name} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour.', { name: owner.name }))} <span id="duoConsent"></span></p>
       <p id="duoNotice" class="notice warn small song-notice" role="status" hidden></p>
       <label class="field" for="duoPartner">${esc(t('Avec qui ?'))}</label>
-      <select id="duoPartner">${ownTable.length ? `<optgroup label="${esc(t('À ma table'))}">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="${esc(t('Autres tables · invitation à accepter'))}">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
+      <select id="duoPartner">${ownTable.length ? `<optgroup label="${esc(t('À ma table'))}">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="${esc(otherLabel)}">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
       <p id="duoPartnerHint" class="notice warn small" role="status" hidden></p>
       <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">${esc(t('Ajouter le duo'))}</button></div>`);
     const updateDuoAction = () => {
@@ -2830,6 +3450,7 @@
     lang = next;
     try { localStorage.setItem(langKey, lang); } catch (_) { /* Choix gardé pendant cette visite. */ }
     translateStatic();
+    renderNameGateMessage();
     $('conn').textContent = connectionText();
     renderAlertPreference();
     if (invalidAccess) showInvalidLink();

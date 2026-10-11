@@ -60,6 +60,16 @@ async function ok(path, body, cookie = '') {
   const alice = await ok('/api/join', fields({ name: 'Alice', invitation: aliceInvite.token }));
   const replay = await request('/api/join', fields({ name: 'Faux', invitation: aliceInvite.token }));
   assert.equal(replay.status, 403, 'un lien individuel déjà utilisé ne crée aucun autre profil sur un nouveau navigateur');
+  // Retours du 4 octobre (décision D2) : le QR individuel devient la clé
+  // personnelle de la soirée. Rouvert sur un nouveau navigateur, il propose
+  // de récupérer la même personne, sans créer de profil ni de cookie.
+  const peopleBefore = (await ok('/api/staff/state')).value.people.length;
+  const reopened = await request('/api/table/solo/open', fields({ invitation: aliceInvite.token }));
+  assert.equal(reopened.status, 200);
+  assert.deepEqual(reopened.value, { recover: { id: alice.value.id, name: 'Alice' } },
+    'invitation consommée = récupération de la même personne');
+  assert.equal(reopened.cookie, '', 'rien n’est associé avant la confirmation');
+  assert.equal((await ok('/api/staff/state')).value.people.length, peopleBefore, 'aucune deuxième place');
   const bob = await ok('/api/join', fields({ name: 'Bob', invitation: bobInvite.token }));
   assert.ok(alice.cookie && bob.cookie && alice.cookie !== bob.cookie,
     'chaque téléphone solo reçoit une identité distincte');
@@ -161,10 +171,15 @@ async function ok(path, body, cookie = '') {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(live.stage?.ids?.includes(alice.value.id));
+  // Lot K : un soliste n'a que son prénom, sur l'écran de KaraFun aussi.
+  assert.equal(live.stage.singer, 'Alice');
+  assert.equal(live.kf.queue.find(item => String(item.queueId) === String(live.stage.queueId))?.singer, 'Alice',
+    'nom reçu par le faux KaraFun : le prénom seul');
   await ok('/api/staff/duo-mark', { queueId: live.stage.queueId, partnerId: neighbor.value.id });
   live = (await ok('/api/staff/state')).value;
   assert.deepEqual(live.stage.ids, [alice.value.id, neighbor.value.id]);
   assert.match(live.stage.singer, /Alice.*Camille/);
+  assert.doesNotMatch(live.stage.singer, /En solo/, 'duo soliste + table : seule la table');
   assert.equal(live.people.find(p => p.id === neighbor.value.id).sung, 0,
     'Le duo joué avec une autre table ne consomme pas le tour de l’invitée.');
   const revoked = await invite();

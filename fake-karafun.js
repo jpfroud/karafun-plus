@@ -6,7 +6,7 @@
  * Réglages de titre comme la télécommande KCS : options à l'ajout,
  * queueItemOptions (options d'un titre de la file, remplacées en entier),
  * pitch, tempo et trackVolume pour le titre en cours ; chaque titre annonce
- * ses pistes vocales (4 chœurs, 5 et 6 voix guides). Avant la lecture, le
+ * ses pistes vocales (4 chœurs, 5, 6 voix guides). Avant la lecture, le
  * titre est annoncé sans être chargé, comme l'état 1 de KaraFun.
  * Les chansons « durent » SONG_SECONDS secondes.
  */
@@ -46,7 +46,6 @@ function liveFrom(options = {}) {
   }
   return { pitch: Number.isInteger(options.pitch) ? options.pitch : 0, tempo: Number.isInteger(options.tempo) ? options.tempo : 0, volumes };
 }
-
 function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, log = () => {} } = {}) {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://localhost');
@@ -74,7 +73,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     return { state, songPlaying: cur ? { title: cur.title, artist: cur.artist, singer: cur.singer, songId: cur.songId, queueId: cur.queueId,
       songTracks: cur.songTracks } : null, position: cur ? Math.round((Date.now() - startedAt) / 1000) : 0,
     pitch: cur ? live.pitch : 0, tempo: cur ? live.tempo : 0,
-    tracks: cur ? cur.songTracks.map(type => ({ volume: live.volumes[type], track: { type } })) : [] };
+    tracks: cur ? cur.songTracks.map(type => ({ volume: live.volumes[type] ?? 0, track: { type } })) : [] };
   };
   const playingItem = () => state === 'playing' && queue[0] ? queue[0] : null;
   const broadcast = () => { io.emit('queue', withIds()); io.emit('status', statusPayload()); };

@@ -496,7 +496,7 @@ test('« En solo » : invitation obligatoire, téléphone attaché par cookie, u
   let r = await post(f, '/api/table/person', { ...tb, name: 'Zoé' });
   assert.equal(r.status, 403);
   assert.equal(r.body.code, 'SOLO_INVITATION');
-  assert.equal(r.body.error, 'Demande au bar une invitation personnelle pour t’inscrire en solo. Ce lien sert à consulter la file.');
+  assert.equal(r.body.error, 'Demande au bar ton QR individuel pour t’inscrire. Ce lien sert à consulter la file.');
   const invitation = invite();
   r = await post(f, '/api/table/person', { ...tb, name: 'Zoé', invitation });
   assert.equal(r.status, 200);
@@ -510,7 +510,7 @@ test('« En solo » : invitation obligatoire, téléphone attaché par cookie, u
   r = await post(f, '/api/table/person', { ...tb, name: 'Yann', invitation: invite() }, { cookie: zoe.cookie });
   assert.equal(r.status, 403);
   assert.equal(r.body.code, 'SOLO_DEVICE_USED');
-  assert.equal(r.body.error, 'Ce téléphone gère déjà une personne dans « En solo ». Chacun utilise son propre téléphone.');
+  assert.equal(r.body.error, 'Ce téléphone a déjà un prénom inscrit. Chacun utilise son propre téléphone.');
   r = await post(f, '/api/join', { ...tb, name: 'Yann', invitation: invite() }, { cookie: zoe.cookie });
   assert.equal(r.body.code, 'SOLO_DEVICE_USED', 'ancienne route d’inscription aussi');
   // Par le tunnel HTTPS, le cookie n'est envoyé qu'en HTTPS.
@@ -689,6 +689,25 @@ test('transfert par lien : une seule utilisation, il annule le code, et ne vaut 
   assert.equal(r.body.error, 'Code de partage expiré. Demande un nouveau code au chanteur ou au bar.');
 });
 
+// Regression: seconde passe de la quatrième relecture finale (adverse) —
+// « Table partie » retirait les personnes de la table sans leurs codes et
+// liens de reprise : ils restaient en mémoire et dans chaque sauvegarde de la
+// soirée jusqu'à leur expiration (30 minutes).
+test('transfert : « Table partie » efface les codes et liens de reprise de ses personnes, en mémoire et dans la sauvegarde', async () => {
+  const f = harness({ persistent: true });
+  const max = await joinTable(f, openTable(f, '4'), 'Max');
+  const lea = await joinTable(f, openTable(f, '5'), 'Léa');
+  for (const me of [max, lea]) assert.equal((await post(f, '/api/table/person/share', me)).status, 200);
+  const left = await post(f, `/api/staff/table-left?key=${f.STAFF_KEY}`, { id: '4' });
+  assert.equal(left.status, 200, left.text);
+  assert.equal(f.personShareCodes.has(max.personId), false, 'plus rien en mémoire');
+  assert.deepEqual(f.night.saves.at(-1).snapshot.transfers.map(row => row.personId), [lea.personId],
+    'ni dans la sauvegarde ; l’autre table garde le sien');
+  // Par précaution, une ligne restée pour une personne disparue n'est jamais sauvegardée.
+  f.personShareCodes.set('disparu', f.personShareCodes.get(lea.personId));
+  assert.deepEqual(plain(f.transferSnapshot()).map(row => row.personId), [lea.personId]);
+});
+
 // ---------------------------------------------------------------- liste de chansons d'une personne
 async function addSongs(f, person, list) {
   for (const [songId, title] of list) {
@@ -780,7 +799,7 @@ test('routes de table : personne inconnue, partie ou gérée par un autre télé
   assert.equal(r.body.code, 'TABLE_ACCESS');
   f.sched.people.get(alice.personId).withdrawnAt = Date.now();
   r = await post(f, '/api/table/confirm', alice);
-  assert.equal(r.status, 400);
+  assert.equal(r.status, 403);
   assert.deepEqual([r.body.code, r.body.error], ['PERSON_LEFT', 'Cette personne a été marquée partie. Demande au bar de la réactiver.']);
 });
 
