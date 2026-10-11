@@ -204,7 +204,9 @@ assert.strictEqual(prePush(pushLine, { GSTACK_GATE: 'off' }).status, 0, 'GSTACK_
 // forgée, CLAUDECODE absent, GSTACK_GATE=off ou la porte modifiée dans la copie
 // de travail passent. La vraie barrière est la protection de branche de GitHub.
 function push(args, env = {}, cwd = project) {
-  return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env: { ...gitEnv, ...baseEnv, CLAUDECODE: '1', ...env } });
+  // Délai : un hook illisible (fins de ligne CRLF) bloquait git push au lieu d'échouer.
+  return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 60000,
+    env: { ...gitEnv, ...baseEnv, CLAUDECODE: '1', ...env } });
 }
 journal();
 r = push(['push', 'essai', 'HEAD:refs/heads/a']);
@@ -276,6 +278,11 @@ assert.match(command(settings.PostToolUse, 'Skill'), /gstack-gate\.js" skill$/);
 assert.match(settings.UserPromptSubmit[0].hooks.map(h => h.command).join(' '), /gstack-gate\.js" prompt/);
 assert.match(command(settings.PreToolUse, 'Skill'), /check-gstack\.sh/);
 assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstack karafun-plus/, 'marque reconnue par l\'installateur');
+// Regression: CI Windows de la PR #15 — sans extension .sh, le hook pre-push
+// était extrait en CRLF sous Windows et sh le refusait (« Syntax error »).
+assert.ok(!fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8').includes('\r'), 'hook pre-push en fins de ligne LF');
+assert.match(spawnSync('git', ['-C', path.join(__dirname, '..'), 'check-attr', 'eol', '--', '.claude/hooks/pre-push'],
+  { encoding: 'utf8' }).stdout, /: eol: lf\s*$/, '.gitattributes : hook pre-push extrait en LF sous Windows');
 
 // 7. Regression: M2-3 (seconde relecture) — la liste des dossiers où chercher
 //    gstack existe en quatre copies (porte, garde-fou des compétences, hook de

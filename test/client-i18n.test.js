@@ -98,10 +98,18 @@ sched.join({ tableId: '7', name: 'Chloé' });
 const fullTable = thrown(() => sched.join({ tableId: '7', name: 'Dan' }));
 // Regression: relecture du lot K — les refus de prénom levés par le
 // planificateur (et non par une route) arrivent aussi traduits.
-const schedulerJs = fs.readFileSync(path.join(root, 'scheduler.js'), 'utf8').replace(/\\'/g, '\'');
-const validNameBody = schedulerJs.slice(schedulerJs.indexOf('  validName('), schedulerJs.indexOf('\n  }\n', schedulerJs.indexOf('  validName(')));
-const nameMessages = [...validNameBody.matchAll(/'([A-ZÉ][^'\n]*[.»])'/g)].map(m => m[1]);
+const validNameMessages = source => {
+  const text = source.replace(/\r\n/g, '\n').replace(/\\'/g, '\'');
+  const start = text.indexOf('  validName('), end = text.indexOf('\n  }\n', start);
+  assert.ok(start >= 0 && end > start, 'corps de validName repéré dans scheduler.js');
+  return [...text.slice(start, end).matchAll(/'([A-ZÉ][^'\n]*[.»])'/g)].map(m => m[1]);
+};
+const schedulerSource = fs.readFileSync(path.join(root, 'scheduler.js'), 'utf8');
+const nameMessages = validNameMessages(schedulerSource);
 assert.ok(nameMessages.length >= 5, `refus de prénom repérés : ${nameMessages.length}`);
+// Regression: CI Windows de la PR #15 — git y extrait les sources en CRLF : la
+// fin de validName n'était plus trouvée et tout le reste du fichier était lu.
+assert.deepStrictEqual(validNameMessages(schedulerSource.replace(/\r?\n/g, '\r\n')), nameMessages);
 for (const message of nameMessages) assert.ok(serverText(message), `refus de prénom sans traduction : « ${message} »`);
 sched.table('Comptoir');
 sched.join({ tableId: 'Comptoir', name: 'Léa' });
