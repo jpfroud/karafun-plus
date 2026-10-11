@@ -1185,7 +1185,7 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
     'duo ajouté depuis ce même téléphone : effacé sans être montré');
   await page.tap('infoBar', '[data-info-more]');
   assert.deepEqual(items().slice(2), ['Alice passe juste après la chanson en cours : prépare-toi\u00a0!',
-    'Fermeture du bar à ' + timeOf(now + 3600000) + ' : La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.',
+    'Fermeture du bar à ' + timeOf(now + 3600000) + ' : La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passe avant si la rotation le place assez tôt.',
     'La demande de duo d’Alice à Zoé a expiré : « Hit » est parti dans KaraFun.', 'Bob chantera « Slow » en duo avec Alice.']);
   // « Pas prêt » depuis l'info du passage imminent.
   await page.tap('infoBar', '[data-info-defer="alice"]');
@@ -1242,7 +1242,7 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
   const page = await open({ state });
   await page.tap('infoBar', '[data-info-more]');
   assert.deepEqual(page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent),
-    ['Le bar ferme : plus de nouveau titre ce soir.', ...notices.map(row => row[2])]);
+    ['Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.', ...notices.map(row => row[2])]);
   const english = await open({ state, languages: ['en'] });
   await english.tap('infoBar', '[data-info-more]');
   assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” was removed from Alice’s list: presence not confirmed 3 times. Check with the bar if needed.'));
@@ -2039,11 +2039,11 @@ test('fermeture : place restante, file complète, heure passée, annonce retiré
   assert.match(box.textContent, /1 titre prévu passera avant la fermeture : il reste de la place\.$/);
   page.state.closing = { at, passed: false, full: true, fitCount: 1, afterCount: 2 };
   await page.poll();
-  assert.match(box.textContent, /La file est complète jusqu’à la fermeture : plus de nouvel ajout\./);
+  assert.match(box.textContent, /La file est complète jusqu’à la fermeture\. Tu peux encore ajouter un titre/);
   assert.equal(box.classList.contains('warn'), true);
   page.state.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 0 };
   await page.poll();
-  assert.equal(box.querySelector('b').textContent, 'Le bar ferme : plus de nouveau titre ce soir.');
+  assert.equal(box.querySelector('b').textContent, 'Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.');
   // Regression: essai au bar du 2 octobre — les titres d'après l'heure ne sont plus lancés.
   assert.match(box.textContent, /Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale\.$/);
   assert.equal(box.classList.contains('warn'), true);

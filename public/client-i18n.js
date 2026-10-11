@@ -554,9 +554,9 @@ window.CLIENT_TRANSLATIONS = {
 
       // Heure de fermeture
       'Fermeture du bar à {time}': 'The bar closes at {time}',
-      'Le bar ferme : plus de nouveau titre ce soir.': 'The bar is closing: no new songs tonight.',
+      'Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.': 'Closing time reached: no more songs will start unless the bar moves the time.',
       'Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.': 'Songs planned after closing time will not be started, unless the bar moves the time.',
-      'La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.': 'The queue is full until closing time: no more songs can be added. Planned songs stay.',
+      'La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passe avant si la rotation le place assez tôt.': 'The queue is full until closing time. You can still add a song: it plays before closing if the rotation places it early enough.',
       '{n} titre prévu passera avant la fermeture : il reste de la place.': [
         '{n} planned song will play before closing time: there is still room.',
         '{n} planned songs will play before closing time: there is still room.',
@@ -744,9 +744,6 @@ window.CLIENT_TRANSLATIONS = {
       [/^Catalogue KaraFun : (.*)$/, 'KaraFun catalogue: {1}'],
       [/^Catalogue KaraFun indisponible pour le moment \(refus HTTP (\d{3})\)\. La recherche reste possible\.$/,
         'The KaraFun catalogue is unavailable right now (HTTP {1} refusal). Search still works.'],
-      [/^Le bar ferme à (\d\d:\d\d) : plus de nouveau titre ce soir\.$/, 'The bar closes at {1}: no new songs tonight.'],
-      [/^Le bar ferme à (\d\d:\d\d) : la file est complète jusqu’à la fermeture\.$/, 'The bar closes at {1}: the queue is full until closing time.'],
-      [/^Le bar ferme à (\d\d:\d\d) : un titre de plus passerait après la fermeture\.$/, 'The bar closes at {1}: one more song would play after closing time.'],
       [/^Ce titre dure (\d+:\d\d) : le bar limite les chansons à (\d+:\d\d)\.$/, 'This song lasts {1}: the bar limits songs to {2}.'],
       [/^Repousse ton passage de 1 à (\d+) chansons\.$/, 'Push back your turn by 1 to {1} songs.'],
       [/^Un passage ne peut pas être repoussé de plus de (\d+) chansons\.$/, 'A turn can’t be pushed back by more than {1} songs.'],

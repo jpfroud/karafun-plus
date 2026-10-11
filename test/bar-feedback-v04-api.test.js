@@ -64,14 +64,14 @@ const clock = at => { const d = new Date(at); return `${pad(d.getHours())}:${pad
   state = await staff();
   assert.equal(state.closing.passed, true);
   assert.ok(state.queue.every(line => line.afterClosing), 'après la fermeture, plus rien ne passe');
-  const refused = await addSong('A1');
-  assert.equal(refused.status, 400);
-  assert.equal(refused.data.code, 'CLOSING');
-  assert.match(refused.data.error, /^Le bar ferme à \d\d:\d\d : plus de nouveau titre ce soir\.$/);
+  // Soirée du 10 octobre : 50 ajouts refusés pendant la fermeture. L'ajout
+  // reste toujours possible : la rotation décide qui passe encore avant.
+  assert.equal((await addSong('A1')).status, 200, 'ajout accepté après l’heure de fermeture');
+  assert.ok((await staff()).queue.filter(line => line.afterClosing).length > 0, 'les titres restent marqués après la fermeture');
   assert.equal((await addSong('A1', 'replace')).status, 200, 'remplacer son titre reste possible');
   const extended = await ok('/api/staff/closing', { extendMin: 30 });
   assert.ok(extended.closingAt > Date.now() + 25 * 60000, 'décalage à partir de maintenant');
-  assert.equal((await addSong('A1')).status, 200, 'après décalage, l’ajout est de nouveau possible');
+  assert.equal((await addSong('A1')).status, 200, 'après décalage, l’ajout est toujours possible');
   await ok('/api/staff/closing', { clear: true });
   assert.equal((await staff()).closing, null);
 

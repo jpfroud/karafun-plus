@@ -2972,7 +2972,6 @@ function repeatNotice(song, tableId, entryId = null) {
 }
 
 function chooseFor(p, song, mode) {
-  assertRoomBeforeClosing(p, mode);
   assertSongLength(p, [song], 'song');
   const songId = Number(song?.songId);
   if ([...(pending && pending.sel.ids.includes(p.id) ? [pending.sel.song] : []),
@@ -3221,29 +3220,6 @@ function removeLeaversTracks(upcomingTracks, ids) {
       if (!ids.has(gid)) sched.notify(gid, 'duoCancelled', { name: ownerName, title: tr.sel.song.title });
     }
   }
-}
-
-function assertRoomBeforeClosing(p, mode) {
-  if (closingAt() == null) return;
-  // Remplacer son prochain titre n'ajoute pas de passage.
-  if (mode === 'replace' && sched.songsOf(p).length) return;
-  const state = publicState(null, null);
-  const closing = state.closing;
-  if (!closing) return;
-  let message = closing.full ? (closing.passed ? `Le bar ferme à ${hhmm(closing.at)} : plus de nouveau titre ce soir.` :
-    `Le bar ferme à ${hhmm(closing.at)} : la file est complète jusqu’à la fermeture.`) : null;
-  // Un titre de plus passe un tour après son dernier titre prévu.
-  const mine = state.queue.filter(item => item.ids?.includes(p.id) && Number.isFinite(item.eta)).at(-1);
-  if (!message && mine) {
-    const slot = sched.avgSlotSec() * 1000;
-    const round = state.queue.filter(item => !item.future).length;
-    if (mine.eta + (round + 0.5) * slot > closing.at) message = `Le bar ferme à ${hhmm(closing.at)} : un titre de plus passerait après la fermeture.`;
-  }
-  if (!message) return;
-  journalEvent('closing.refused', { personId: p.id, mode });
-  const error = new Error(message);
-  error.code = 'CLOSING';
-  throw error;
 }
 
 // ------------------------------------------------- durée maximale des titres
@@ -3768,7 +3744,6 @@ const handlers = {
   'POST /api/table/duet': async (req, res, body) => {
     const p = personAtTable(body);
     requireNamed(p);
-    assertRoomBeforeClosing(p, 'append');
     assertSongLength(p, [body.song], 'duet');
     const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
@@ -3865,7 +3840,6 @@ const handlers = {
   },
   'POST /api/duet': async (req, res, body, me) => {
     requireNamed(me);
-    assertRoomBeforeClosing(me, 'append');
     assertSongLength(me, [body.song], 'duet');
     sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
   },

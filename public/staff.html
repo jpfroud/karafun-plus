@@ -119,7 +119,7 @@
   <!-- ======================================================== Plus -->
   <section class="card evening-panel" data-tab="plus">
     <div class="section-heading"><div><div class="eyebrow">Fin de soirée</div><h2>Fermeture du bar</h2></div><span id="closingPill" class="pill">Pas d’heure</span></div>
-    <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
+    <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Les clients peuvent toujours ajouter des titres : la rotation décide lesquels passent avant l’heure (quelqu’un qui n’a pas encore chanté peut passer devant). À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
     <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><span class="save-status" id="closingStatus" data-save-status="closingTime" aria-live="polite"></span></div>
     <div class="row wrap closing-draft" id="closingDraftActions" hidden><button type="button" class="btn small primary" id="closingConfirm">Valider l’heure</button><button type="button" class="btn small" id="closingCancel">Annuler</button></div>
     <div class="row wrap closing-actions"><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
@@ -1329,7 +1329,7 @@
     $('closingText').textContent = !closing ? 'Aucune heure annoncée : les clients ajoutent des titres librement.' :
       `${closing.fitCount} titre${closing.fitCount > 1 ? 's' : ''} passer${closing.fitCount > 1 ? 'ont' : 'a'} avant ${hhmm(closing.at)}` +
       (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
-      (closing.full ? ' Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.' : ' Il reste de la place : les clients peuvent encore ajouter des titres.');
+      (closing.full ? ' File complète jusqu’à la fermeture : les clients peuvent encore ajouter des titres, la rotation décide qui passe avant l’heure.' : ' Il reste de la place avant la fermeture.');
     renderClosingField();
     // Sur l'écran Scène : rappel discret, avec le décalage le plus courant.
     $('closingChip').hidden = !closing;

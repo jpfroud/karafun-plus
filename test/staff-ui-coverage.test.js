@@ -797,13 +797,13 @@ test('file du bar : statuts, badges, doublons, repères et séparateur de fermet
   // Fermeture : texte du bar selon la situation.
   assert.equal(page.$('closingPill').textContent, `Fermeture ${hhmm(world.closing.at)}`);
   assert.equal(page.$('closingPill').className, 'pill ok');
-  assert.equal(page.$('closingText').textContent, `5 titres passeront avant ${hhmm(world.closing.at)}, 2 après : ils ne seront pas lancés (réordonne, ou décale l’heure). Il reste de la place : les clients peuvent encore ajouter des titres.`);
+  assert.equal(page.$('closingText').textContent, `5 titres passeront avant ${hhmm(world.closing.at)}, 2 après : ils ne seront pas lancés (réordonne, ou décale l’heure). Il reste de la place avant la fermeture.`);
   const at = new Date(world.closing.at);
   assert.equal(page.$('closingTime').value, `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`);
   assert.equal(page.$('closingClear').disabled, false);
   await page.update({ closing: { ...closing, full: true, fitCount: 1, afterCount: 1 } });
   assert.equal(page.$('closingPill').className, 'pill bad');
-  assert.equal(page.$('closingText').textContent, `1 titre passera avant ${hhmm(world.closing.at)}, 1 après : il ne sera pas lancé (réordonne, ou décale l’heure). Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.`);
+  assert.equal(page.$('closingText').textContent, `1 titre passera avant ${hhmm(world.closing.at)}, 1 après : il ne sera pas lancé (réordonne, ou décale l’heure). File complète jusqu’à la fermeture : les clients peuvent encore ajouter des titres, la rotation décide qui passe avant l’heure.`);
   await page.update({ closing: { ...closing, passed: true, afterCount: 0 } });
   assert.equal(page.$('closingPill').textContent, 'Fermeture atteinte');
   assert.match(page.$('closingText').textContent, /passeront avant \d\d:\d\d\. Il reste/);

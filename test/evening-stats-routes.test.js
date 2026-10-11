@@ -318,11 +318,11 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   const claim = await call(f, 'POST', '/api/table/person/claim', { body: { table: alice.table, access: alice.access, personId: alice.personId, code: share.body.code } });
   assert.equal(claim.status, 200, claim.text);
   assert.ok(has('person.transferred'));
-  // Ajout refusé à la fermeture : noté sans prénom.
+  // Ajout après l'heure de fermeture : accepté, plus aucun refus noté.
   f.settings.closingAt = Date.now() - 60000;
-  const refused = await call(f, 'POST', '/api/table/song', { body: { ...alice, token: claim.body.token, song: { songId: 403, title: 'Trop tard' } } });
-  assert.equal(refused.status, 400);
-  assert.ok(has('closing.refused', e => e.personId === alice.personId));
+  const late = await call(f, 'POST', '/api/table/song', { body: { ...alice, token: claim.body.token, song: { songId: 403, title: 'Tard' } } });
+  assert.equal(late.status, 200, late.text);
+  assert.ok(!has('closing.refused'));
   f.settings.closingAt = null;
   // Battle : proposition, votes et décision, une seule fois chacun.
   f.battleVote.minVoters = 1;

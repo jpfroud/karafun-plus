@@ -1104,8 +1104,8 @@
     if (closing) {
       const time = eta(closing.at);
       const phase = closing.passed ? 'passed' : closing.full ? 'full' : 'open';
-      infos.push({ key: `closing:${closing.at}:${phase}`, text: phase === 'passed' ? t('Le bar ferme : plus de nouveau titre ce soir.')
-        : phase === 'full' ? `${t('Fermeture du bar à {time}', { time })} : ${t('La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.')}`
+      infos.push({ key: `closing:${closing.at}:${phase}`, text: phase === 'passed' ? t('Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.')
+        : phase === 'full' ? `${t('Fermeture du bar à {time}', { time })} : ${t('La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passe avant si la rotation le place assez tôt.')}`
           : t('Fermeture du bar à {time}', { time }) });
     }
     for (const person of people) for (const notice of list(person.inbox)) {
@@ -1516,9 +1516,9 @@
     if (!closing) { closingShown = ''; return; }
     const time = eta(closing.at);
     const detail = closing.passed ? t('Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.')
-      : closing.full ? t('La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.')
+      : closing.full ? t('La file est complète jusqu’à la fermeture. Tu peux encore ajouter un titre : il passe avant si la rotation le place assez tôt.')
         : tp(closing.fitCount, '{n} titre prévu passera avant la fermeture : il reste de la place.', '{n} titres prévus passeront avant la fermeture : il reste de la place.');
-    const html = `<b>${esc(closing.passed ? t('Le bar ferme : plus de nouveau titre ce soir.') : t('Fermeture du bar à {time}', { time }))}</b><span class="small">${esc(detail)}</span>`;
+    const html = `<b>${esc(closing.passed ? t('Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.') : t('Fermeture du bar à {time}', { time }))}</b><span class="small">${esc(detail)}</span>`;
     box.classList.toggle('warn', !!(closing.full || closing.passed));
     if (html !== closingShown) { box.innerHTML = html; closingShown = html; }
   }
