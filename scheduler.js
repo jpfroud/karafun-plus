@@ -91,6 +91,11 @@ const plainSolverError = message => message == null ? null :
   String(message).replace(/\bTimefold\b/gi, 'd’optimisation').replace(/^\w+(Exception|Error): /, '');
 
 class Scheduler {
+  // Prénom : 24 caractères au plus ; deux prénoms sont les mêmes à la casse
+  // près (validName, nameRivals, reprise d'une sauvegarde dans night-state.js).
+  static NAME_MAX = 24;
+  static nameKey(name) { return String(name).toLocaleLowerCase('fr'); }
+
   constructor(opts = {}) {
     this.opts = Object.assign({}, DEFAULTS, opts);
     this.people = new Map();  // personId -> personne
@@ -521,7 +526,7 @@ class Scheduler {
   validName(name, tableId, exceptId = null) {
     const clean = String(name || '').replace(/\s+/g, ' ').trim();
     if (!clean) throw new Error('Indique ton prénom.');
-    if (clean.length > 24) throw new Error('Prénom limité à 24 caractères.');
+    if (clean.length > Scheduler.NAME_MAX) throw new Error('Prénom limité à 24 caractères.');
     // Un soliste est nommé par son seul prénom dans KaraFun : celui-ci se
     // confondrait avec la Battle (voir server.js, détection de la Battle).
     if (clean.toLocaleLowerCase('fr') === 'battle collective') {
@@ -536,7 +541,7 @@ class Scheduler {
       e.code = 'NAME_INVALID'; throw e;
     }
     const individual = !!this.table(tableId, false)?.individual;
-    if (this.nameRivals(tableId, exceptId).some(p => p.name.toLocaleLowerCase('fr') === clean.toLocaleLowerCase('fr'))) {
+    if (this.nameRivals(tableId, exceptId).some(p => Scheduler.nameKey(p.name) === Scheduler.nameKey(clean))) {
       const e = new Error(individual ? 'Ce prénom est déjà inscrit ce soir. Ajoute l’initiale de ton nom (ex. Marie L.).' :
         'Ce prénom est déjà inscrit à cette table. Utilise la fiche existante ou précise le nom.');
       e.code = 'NAME_TAKEN'; throw e;

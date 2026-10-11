@@ -66,6 +66,22 @@ test('vignettes : un titre choisi garde l’image du catalogue, jamais celle env
   assert.ok(imgs.every(img => img === null || img.startsWith('https://')), 'aucune adresse non https envoyée');
 });
 
+// Regression: seconde passe de la relecture du correctif CI Windows — comme la
+// durée, la vignette connue d'un titre n'est plus oubliée quand une liste du
+// catalogue arrive sans image ; une nouvelle image du catalogue la remplace.
+test('vignettes : une liste sans image garde la vignette connue ; une nouvelle image la remplace', () => {
+  const f = harness();
+  f.rememberBattleSongs([{ songId: 501, title: 'Avec image', artist: 'A', img: 'https://cdn.example/501.jpg' }]);
+  f.rememberBattleSongs([{ songId: 501, title: 'Avec image', artist: 'A', img: null }]);
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  f.chooseFor(alice, { songId: 501, title: 'Avec image', artist: 'A' }, 'append');
+  assert.equal(alice.song.img, 'https://cdn.example/501.jpg');
+  f.rememberBattleSongs([{ songId: 501, title: 'Avec image', artist: 'A', img: 'https://cdn.example/501-v2.jpg' }]);
+  const bruno = f.sched.join({ tableId: '1', name: 'Bruno' });
+  f.chooseFor(bruno, { songId: 501, title: 'Avec image', artist: 'A' }, 'append');
+  assert.equal(bruno.song.img, 'https://cdn.example/501-v2.jpg');
+});
+
 test('vignettes : titre déjà parti vers KaraFun, la vignette reste dans la liste du chanteur', () => {
   const f = harness();
   f.rememberBattleSongs([{ songId: 601, title: 'Envoyé', artist: 'A', img: 'https://cdn.example/601.jpg' },

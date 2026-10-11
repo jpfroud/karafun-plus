@@ -289,6 +289,12 @@ test('serveur : prénom changé après l’envoi, nouveau nom sur scène, dans l
   let state = plain(f.publicState());
   assert.equal(state.stage.singer, 'Lucie');
   assert.equal(state.queue.find(line => line.queueId === 'q-2').singer, 'Maxime · Table 4');
+  // Regression: seconde passe de la relecture du correctif CI Windows — le
+  // prénom d'une ligne envoyée (`name`, lu par la file du bar et les avis des
+  // téléphones) restait celui noté à l'envoi, même après la reprise qui
+  // numérote un soliste homonyme.
+  assert.equal(state.queue.find(line => line.queueId === 'q-2').name, 'Maxime');
+  assert.equal(plain(f.staffState()).queue.find(line => line.queueId === 'q-2').name, 'Maxime', 'file du bar');
   assert.equal(plain(f.staffState()).stage.singer, 'Lucie', 'carte Scène du bar');
   // Le titre de Maxime sur scène : nom de table recalculé lui aussi.
   f.play(table.item);

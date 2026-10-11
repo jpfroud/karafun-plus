@@ -306,18 +306,26 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   }
   // Deux solistes du même prénom dans deux groupes individuels : permis avant
   // la v0.5 (prénom unique par groupe), indiscernables depuis que le nom d'un
-  // soliste n'affiche plus son groupe. Le second prend un numéro libre
-  // (« Léa 2 »), dans la limite de 24 caractères d'un prénom.
-  const nameKey = name => name.toLocaleLowerCase('fr');
-  const solos = [...tmp.people.values()].filter(p => tmp.tables.get(p.tableId).individual);
+  // soliste n'affiche plus son groupe. Une personne présente garde son prénom
+  // avant une personne partie ; l'autre prend un numéro libre (« Léa 2 »), le
+  // prénom raccourci caractère par caractère (jamais un emoji coupé en deux).
+  const { nameKey, NAME_MAX } = Scheduler;
+  const numbered = (name, n) => {
+    const chars = Array.from(name);
+    while (chars.join('').length + ` ${n}`.length > NAME_MAX) chars.pop();
+    return `${chars.join('').trimEnd()} ${n}`;
+  };
+  const solos = [...tmp.people.values()].filter(p => tmp.tables.get(p.tableId).individual)
+    .sort((a, b) => !!a.withdrawnAt - !!b.withdrawnAt);
   const taken = new Set(solos.map(p => nameKey(p.name)));
-  const kept = new Set();
+  const kept = new Set(), renamed = [];
   for (const p of solos) {
     if (!kept.has(nameKey(p.name))) { kept.add(nameKey(p.name)); continue; }
-    let next;
-    for (let n = 2; !next || taken.has(nameKey(next)); n++) next = `${p.name.slice(0, 24 - ` ${n}`.length).trimEnd()} ${n}`;
+    let n = 2, next;
+    do next = numbered(p.name, n++); while (taken.has(nameKey(next)));
     warnings.push(`soliste « ${p.name} » renommé « ${next} » : même prénom qu’un autre soliste`);
-    taken.add(nameKey(next)); kept.add(nameKey(next));
+    renamed.push([p.name, next]);
+    taken.add(nameKey(next));
     p.name = next;
   }
   if (data.roundPeoplePhysical != null && typeof data.roundPeoplePhysical !== 'boolean') {
@@ -379,6 +387,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     if (p.bonus != null && (!Number.isInteger(p.bonus) || p.bonus < -3 || p.bonus > 3)) fail('bonus de personne mal formé');
   }
   tmp.log = clone(list(data.log, 'journal')).slice(-300);
+  for (const [from, to] of renamed) tmp.note(`${from} s’appelle maintenant ${to} (même prénom qu’un autre soliste)`);
   tmp.slotSamples = [...list(data.slotSamples, 'durées mesurées')].slice(-20);
   tmp.version = Number.isSafeInteger(data.version) ? data.version : 0;
   tmp._refreshDuetViews();

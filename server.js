@@ -108,10 +108,10 @@ function rememberBattleSongs(songs) {
     battleCatalogSongs.delete(songId);
     battleCatalogSongs.set(songId, { songId, title, artist });
     if (battleCatalogSongs.size > 10000) battleCatalogSongs.delete(battleCatalogSongs.keys().next().value);
-    catalogCovers.delete(songId);
-    if (song.img) catalogCovers.set(songId, song.img);
+    // Une liste sans image ou sans durée (catalog.js rend null) garde celle
+    // déjà connue ; une nouvelle valeur fiable la remplace.
+    if (song.img) { catalogCovers.delete(songId); catalogCovers.set(songId, song.img); }
     if (catalogCovers.size > 10000) catalogCovers.delete(catalogCovers.keys().next().value);
-    // Une liste sans durée (catalog.js rend null) garde la durée déjà connue.
     const duration = stageProgress.trustedDuration(song.duration);
     if (duration) { catalogDurations.delete(songId); catalogDurations.set(songId, duration); }
     if (catalogDurations.size > 10000) catalogDurations.delete(catalogDurations.keys().next().value);
@@ -517,7 +517,7 @@ function restorePulled(tr) {
     `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : il passerait après la fermeture. Il repartira s’il passe de nouveau avant l’heure, par exemple si le bar la décale.` :
     reason === 'duo' ?
     `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun après le duo improvisé : il repassera plus tard` :
-    `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ${tr.sel.names.join(' & ')} laisse passer la chanson suivante`, 'skip');
+    `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ${passageNames(tr.sel)} laisse passer la chanson suivante`, 'skip');
 }
 
 // Retire de KaraFun un titre pas encore chanté pour le rechanter plus tard.
@@ -1291,7 +1291,7 @@ function sync() {
       tr.pulled.alerted = true;
       sched.note(tr.pulled.reason === 'closing' ?
         `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}), qui passerait après la fermeture : retire-le dans KaraFun. Il ne sera pas lancé automatiquement tant qu’il passerait après l’heure.` :
-        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}) : retire-le dans KaraFun, ou lance-le si ${tr.sel.names.join(' & ')} est prêt.`, 'error');
+        `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}) : retire-le dans KaraFun, ou lance-le si ${passageNames(tr.sel)} est prêt.`, 'error');
     }
     if (onStage && !tr.startedAt) {
       tr.startedAt = Date.now();
@@ -1691,6 +1691,11 @@ function shownLabel(sel) {
   if (ids.length && ids.every(pid => sched.people.has(String(pid)))) return sched.passageLabel(ids);
   return withoutSoloGroup(sel?.label || '');
 }
+// Prénoms d'un passage envoyé : ceux d'aujourd'hui (prénom changé, soliste
+// homonyme numéroté à la reprise), sinon ceux notés à l'envoi.
+function passageNames(sel) {
+  return (sel?.ids || []).map((pid, i) => sched.people.get(String(pid))?.name || sel.names?.[i]).filter(Boolean).join(' & ');
+}
 
 // Ligne de KaraFun que l'application ne suit pas (ajoutée à la main, ou
 // envoyée avant la mise à jour puis perdue) : le nom du groupe individuel
@@ -1768,7 +1773,7 @@ function publicState(person, tableId, managed = null) {
   const queue = upcoming.map((it, i) => ({ ...describe(it, byQid),
     source: 'karafun', pos: i + 1, eta: firstFreeAt + i * slot,
     waitingPresence: i === 0 && presence?.source === 'karafun' && presenceMissingIds.size > 0,
-    name: byQid.has(it.queueId) ? byQid.get(it.queueId).sel.names.join(' & ') :
+    name: byQid.has(it.queueId) ? passageNames(byQid.get(it.queueId).sel) :
       withoutSoloGroup(it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
     song: fmtSong(byQid.get(it.queueId)?.sel.song || it), table: byQid.has(it.queueId) ? sched.passageTables(byQid.get(it.queueId).sel.ids).join(' + ') : '',
     // Pistes vocales du titre annoncées par KaraFun (4 chœurs, 5, 6… voix guides).
@@ -1776,7 +1781,7 @@ function publicState(person, tableId, managed = null) {
   }));
   if (pending) queue.push({ source: 'envoi', ours: true, queueId: null,
     pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
-    singer: shownLabel(pending.sel), name: pending.sel.names.join(' & '),
+    singer: shownLabel(pending.sel), name: passageNames(pending.sel),
     title: pending.sel.song.title, artist: pending.sel.song.artist,
     ids: pending.sel.ids, kind: pending.sel.kind, song: fmtSong(pending.sel.song), singers: singersOf(pending.sel.ids),
     table: sched.passageTables(pending.sel.ids).join(' + ') });

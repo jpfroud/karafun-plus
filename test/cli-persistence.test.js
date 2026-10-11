@@ -536,6 +536,31 @@ test('Reprise : deux solistes du même prénom dans deux groupes individuels, le
     'soliste « LÉA » renommé « LÉA 3 » : même prénom qu’un autre soliste',
     'soliste « maximilienne-alexandrine » renommé « maximilienne-alexandri 2 » : même prénom qu’un autre soliste']);
   assert.notEqual(scheduler.passageLabel([lea.id]), scheduler.passageLabel([twin.id]));
+  assert.ok(scheduler.log.some(e => e.msg === 'LÉA s’appelle maintenant LÉA 3 (même prénom qu’un autre soliste)'),
+    'le bar voit le renommage dans son journal');
+});
+
+// Regression: seconde passe de la relecture du correctif CI Windows — le
+// soliste encore présent garde son prénom avant un homonyme déjà parti, et un
+// prénom tronqué ne coupe pas un emoji en deux (demi-caractère illisible).
+test('Reprise : le soliste présent garde son prénom avant un homonyme parti ; troncature sans emoji coupé', () => {
+  const sched = new Scheduler();
+  const access = new TableAccess();
+  for (const id of ['Comptoir', 'Comptoir-2']) { sched.table(id); access.issue(id); }
+  const gone = sched.join({ tableId: 'Comptoir', name: 'Léa' });
+  const here = sched.join({ tableId: 'Comptoir-2', name: 'Zoé' });
+  const emoji = `${'x'.repeat(21)}😀y`;
+  const first = sched.join({ tableId: 'Comptoir', name: emoji });
+  const second = sched.join({ tableId: 'Comptoir-2', name: 'Paul' });
+  sched.leave(gone);
+  const snapshot = snapshotNight({ scheduler: sched, access, settings: settings() });
+  snapshot.scheduler.people.find(p => p.id === here.id).name = 'Léa';
+  snapshot.scheduler.people.find(p => p.id === second.id).name = emoji;
+  const { scheduler } = restore(snapshot);
+  assert.equal(scheduler.people.get(here.id).name, 'Léa', 'la personne présente garde son prénom');
+  assert.equal(scheduler.people.get(gone.id).name, 'Léa 2', 'l’homonyme parti est numéroté');
+  assert.equal(scheduler.people.get(first.id).name, emoji);
+  assert.equal(scheduler.people.get(second.id).name, `${'x'.repeat(21)} 2`, 'emoji retiré entier, 24 caractères au plus');
 });
 
 test('Reprise : changements manuels du bar abîmés', () => {
