@@ -216,6 +216,10 @@ const battleVote = new BattleVote({
     else if (event === 'quorum') sched.note('Vote Battle terminé : pas assez de votants. Prochain vote après la pause.', 'battle');
     else if (event === 'expired' || event === 'rejected') sched.note('Vote Battle terminé sans majorité pour la Battle. Prochain vote après la pause.', 'battle');
     else if (event === 'done' || event === 'dismissed') sched.note('Demande Battle traitée par le bar. Pause entre les votes.', 'battle');
+    else if (event === 'automation-failed') {
+      const failure = battleVote.automation?.failure;
+      sched.note(`Battle à préparer par le bar${failure ? ` : ${failure}` : '.'}`, 'battle');
+    }
     if (!DEMO) setImmediate(() => saveNight());
   },
 });
@@ -259,8 +263,15 @@ function journalBattle(event) {
   } else if (event === 'external' && b) journalEvent('battle.external', { ballotId: b.id, songId: battleVote.automation?.songId || null });
   else if (event === 'done' || event === 'dismissed') journalEvent('battle.resolved', { ballotId: b?.id || null, outcome: event });
   else if (event === 'cooldown-reset') journalEvent('battle.cooldownLifted', {});
+  else if (event === 'fallback' && b) {
+    journalEvent('battle.fallback', { ballotId: b.id, refusedSongId: b.refusedSongIds?.at(-1) || null,
+      songId: b.selectedSong?.songId || null, title: b.selectedSong?.title || '' });
+  }
   else if (/^automation-(sending|queued|playing|after|resuming|released|failed|manual)$/.test(event)) {
-    journalEvent('battle.automation', { ballotId: battleVote.automation?.ballotId || null, status: event.slice(11) });
+    const status = event.slice(11);
+    journalEvent('battle.automation', { ballotId: battleVote.automation?.ballotId || null, status,
+      songId: battleVote.automation?.songId || null,
+      ...(status === 'failed' ? { failure: battleVote.automation?.failure || null } : {}) });
   }
 }
 if (DEMO) sched.opts.defaultSlotSec = parseInt(arg('song-seconds', 45), 10) + 1;
@@ -537,6 +548,20 @@ function battleHoldsQueue() {
     !(state === 'waiting' && sched.reservedNext);
 }
 
+// KaraFun a ajouté le titre de la Battle en chanson normale (titre sans mode
+// Battle chez KaraFun) : la copie est retirée pour ne pas passer en solo
+// sans chanteur, le titre est écarté pour la soirée et la Battle passe au
+// titre suivant du vote s'il y en a un.
+function refuseBattleSong(copy) {
+  const title = battleVote.ballot?.selectedSong?.title || copy.title || 'ce titre';
+  let removed = false;
+  try { bridge.remove(copy.queueId); removed = true; }
+  catch (error) { appLog(`Copie Battle à retirer à la main : ${error.message}`); }
+  const where = removed ? 'la copie normale est retirée de KaraFun' : 'retire la copie normale dans KaraFun';
+  const { fallback } = battleVote.refuseSong(`KaraFun a ajouté « ${title} » sans le mode Battle (titre sans Battle chez KaraFun) : ${where}. Choisis un autre titre.`);
+  if (fallback) sched.note(`KaraFun refuse le mode Battle pour « ${title} » (${where}) : la Battle passe sur « ${fallback.title} », titre suivant du vote.`, 'battle');
+}
+
 function syncBattle({ current, upcoming, q }, now) {
   let state = battleVote.automation;
   const native = [current, ...q].filter(Boolean).find(item => isBattleItem(item) &&
@@ -582,13 +607,20 @@ function syncBattle({ current, upcoming, q }, now) {
     const fresh = q.filter(item => !state.before.includes(String(item.queueId)) &&
       Number(item.songId) === state.songId);
     const battles = fresh.filter(isBattleItem);
+    // Notre ajout sans le mode Battle : même titre, apparu depuis l'envoi, et
+    // aucun passage de la file. La trame KCS ne porte pas le nom « Battle
+    // collective » (seulement le mode) : le nom ne permettait pas de le
+    // reconnaître sur le vrai KaraFun (soirée du 10 octobre).
+    const plain = fresh.filter(item => !isBattleItem(item) &&
+      !tracked.some(tr => String(tr.queueId) === String(item.queueId)) &&
+      !(pending && Number(pending.sel.song.songId) === state.songId));
     if (battles.length === 1) {
       battleVote.confirmAutomation(battles[0].queueId);
       sched.note('KaraFun confirme le mode Battle : la pause entre votes commence.', 'battle');
     } else if (battles.length > 1) {
       if (state.status !== 'failed') battleVote.updateAutomation('failed', 'Plusieurs Battles identiques sont apparues dans KaraFun.');
-    } else if (fresh.some(item => item.singer === 'Battle collective')) {
-      if (state.status !== 'failed') battleVote.updateAutomation('failed', 'KaraFun a ajouté le titre sans le mode Battle. Vérifie-le avant de lancer.');
+    } else if (state.status === 'sending' && plain.length === 1) {
+      refuseBattleSong(plain[0]);
     } else if (state.status === 'sending' && now - state.sentAt > 15000) {
       // Pas de seconde commande : un accusé tardif pourrait créer un doublon.
       battleVote.updateAutomation('failed', 'KaraFun n’a pas confirmé l’ajout Battle. Vérifie sa file avant d’agir.');
@@ -612,6 +644,10 @@ function syncBattle({ current, upcoming, q }, now) {
       state.missingSince = null;
       battleVote._changed('automation-found');
     }
+  } else if (state.status === 'after' && current && !isBattleItem(current)) {
+    // Titre suivant lancé directement dans KaraFun : la Battle est finie, la
+    // file reprend (sinon elle restait retenue et le vote suivant bloqué).
+    battleVote.updateAutomation('released');
   } else if (state.status === 'resuming') {
     if (current && !isBattleItem(current)) {
       battleVote.updateAutomation('released');

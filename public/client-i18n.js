@@ -738,6 +738,8 @@ window.CLIENT_TRANSLATIONS = {
         '{1} is full ({2} signed up for {3} places). If there are more of you, ask the bar to adjust.'],
       [/^Une Battle se propose à partir de (\d+) personnes inscrites\.$/,
         'A Battle can be suggested once {1} people are signed up.'],
+      [/^KaraFun a refusé le mode Battle pour « (.+) » ce soir : choisis un autre titre\.$/,
+        'KaraFun refused Battle mode for “{1}” tonight: choose another song.'],
       [/^Recherche KaraFun impossible : (.*)$/, 'KaraFun search failed: {1}'],
       [/^Catalogue KaraFun : (.*)$/, 'KaraFun catalogue: {1}'],
       [/^Catalogue KaraFun indisponible pour le moment \(refus HTTP (\d{3})\)\. La recherche reste possible\.$/,
