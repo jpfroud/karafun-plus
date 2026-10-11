@@ -45,6 +45,8 @@ $fichiers = @(
   'karafun.js', 'kcs-transport.js', 'night-state.js', 'scheduler.js',
   'server.js', 'start-evening.js', 'stop.js', 'table-access.js', 'solo-invitations.js', 'private-event.js', 'song-repeats.js', 'song-settings.js', 'stage-progress.js',
   'lyrics.js', 'spotify.js', 'evening-journal.js', 'evening-stats.js',
+  # Planificateur réparti par thème (scheduler.js charge ces parties).
+  'lib\scheduler\common.js', 'lib\scheduler\duets.js', 'lib\scheduler\presence.js', 'lib\scheduler\staff.js', 'lib\scheduler\solver.js', 'lib\scheduler\rotation.js', 'lib\scheduler\passages.js',
   'solver\bridge.js', 'solver\karafun-solver.jar'
 )
 foreach ($nom in $fichiers) {
