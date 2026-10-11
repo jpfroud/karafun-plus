@@ -163,12 +163,15 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 medium -= Math.round((best - picked) * 150);
             }
 
+            // A passage granted by the interleave rule to someone who already
+            // sang in this round is taken from their next round (scheduler.js).
+            boolean borrowed = alternates.contains(current);
             for (String singer : current.getSingers()) {
                 lastSeen.put(singer, pos);
                 appeared.merge(singer, 1, Integer::sum);
                 apps.merge(singer, 1, Integer::sum);
                 owed.remove(singer);
-                useRound(round, roundUse, singer, weight(plan, singer));
+                useRound(round, roundUse, singer, weight(plan, singer), borrowed && singer.equals(current.getOwner()));
             }
             history.add(current.getGroups());
             previous = current.getGroups();
@@ -267,10 +270,12 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         return best;
     }
 
-    private static void useRound(Set<String> round, Map<String, Double> use, String person, double weight) {
+    private static void useRound(Set<String> round, Map<String, Double> use, String person, double weight,
+                                 boolean borrowed) {
         double cost = 1 / weight;
-        if (Math.abs(cost - 1) < EPS && !use.containsKey(person)) { round.add(person); return; }
-        double used = use.getOrDefault(person, 0.0) + cost;
+        boolean already = borrowed && round.contains(person);
+        if (Math.abs(cost - 1) < EPS && !use.containsKey(person) && !already) { round.add(person); return; }
+        double used = (use.containsKey(person) ? use.get(person) : (already ? 1.0 : 0.0)) + cost;
         use.put(person, used);
         if (used >= 1 - EPS) round.add(person);
     }

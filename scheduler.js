@@ -210,10 +210,16 @@ class Scheduler {
 
   // Un passage consomme 1/poids de crédit de tour. Sans bonus ni malus, cela
   // revient exactement à « une fois par tour » (ensemble roundPeople).
-  _useRound(roundPeople, roundUse, pid) {
+  // `borrowed` : passage accordé par la règle anti-série à une personne déjà
+  // passée dans ce tour. Il est pris sur son tour suivant (dette), comme un
+  // malus : sans cela, ce second passage était gratuit et la personne
+  // repassait aussi tôt que les autres au tour suivant (Dadou deux fois
+  // pendant l'attente d'Eny, soirée du 10 octobre).
+  _useRound(roundPeople, roundUse, pid, borrowed = false) {
     const cost = 1 / this.personWeight(pid);
-    if (Math.abs(cost - 1) < EPS && !roundUse.has(pid)) { roundPeople.add(pid); return; }
-    const used = (roundUse.get(pid) || 0) + cost;
+    const already = borrowed && roundPeople.has(pid);
+    if (Math.abs(cost - 1) < EPS && !roundUse.has(pid) && !already) { roundPeople.add(pid); return; }
+    const used = (roundUse.get(pid) ?? (already ? 1 : 0)) + cost;
     roundUse.set(pid, used);
     if (used >= 1 - EPS) roundPeople.add(pid);
   }
@@ -2293,15 +2299,23 @@ class Scheduler {
       return owing.length ? owing : list;
     };
     const newPersonRound = roundResets > 0;
+    let interleaved = null; // passages proposés par la règle anti-série
+    const reserved = reservation && cands.find(c => c.ids[0] === reservation.personId);
     const withRound = c => {
       // Un duo peut réunir une table déjà servie et une table encore neuve.
       // Ce passage complète alors le tour ; il ne remet pas à zéro les tables
       // restantes (compteurs conservés pour l'historique).
       const newGroupRound = newPersonRound || cands.every(candidate =>
         candidate.groups.every(group => roundGroups.has(group)));
-      return { ...c, newPersonRound, roundResets, newGroupRound, ...(newPersonRound ? { owed: [...owed] } : {}) };
+      // Passage repris d'un tour déjà commencé : choisi par la règle
+      // anti-série, ou prochain annoncé automatiquement quand le tour semblait
+      // fini, puis rattrapé par une arrivée (Dam's à 01:49 le 10 octobre). Une
+      // priorité donnée par le bar ne crée pas de dette.
+      const borrowing = interleaved?.includes(c) || (c === reserved && !reservation.byStaff && !newPersonRound);
+      const borrowedIds = borrowing ? c.consumedIds.filter(pid => physicalRound.has(pid)) : [];
+      return { ...c, newPersonRound, roundResets, newGroupRound, ...(newPersonRound ? { owed: [...owed] } : {}),
+        ...(borrowedIds.length ? { borrowedIds } : {}) };
     };
-    const reserved = reservation && cands.find(c => c.ids[0] === reservation.personId);
     if (reserved) return withRound(reserved);
     // Place de chaque personne dans l'ordre manuel du bar (la première, comme
     // indexOf), relevée une fois par passage prévu plutôt qu'à chaque candidat.
@@ -2385,7 +2399,7 @@ class Scheduler {
           return seen > 0 && cands.every(other => other.consumedIds.every(q =>
             c.ids.includes(q) || seen <= waitStart(q)));
         }));
-      if (alternates.length) choices = alternates;
+      if (alternates.length) choices = interleaved = alternates;
     }
     // Un plan (Timefold ou ordre manuel du bar) départage les passages que
     // l'équité autorise ; il ne peut jamais contourner les règles ci-dessus.
@@ -2567,7 +2581,7 @@ class Scheduler {
       for (let k = 0; k < resets; k++) this._resetRound(roundPeople, roundUse, roundApps);
       if (resets) { roundOwed.clear(); (c.owed || []).forEach(pid => roundOwed.add(pid)); }
       if (c.newGroupRound) round.clear();
-      c.ids.forEach(pid => this._useRound(roundPeople, roundUse, pid));
+      c.ids.forEach(pid => this._useRound(roundPeople, roundUse, pid, !!c.borrowedIds?.includes(pid)));
       c.ids.forEach(pid => roundApps.set(pid, (roundApps.get(pid) || 0) + 1));
       c.ids.forEach(pid => roundOwed.delete(pid));
       const groups = c.groups || [c.group];
@@ -3045,7 +3059,7 @@ class Scheduler {
     sel.ids.forEach(pid => {
       this.roundOwed.delete(pid);
       if (!this.people.has(pid)) return;
-      this._useRound(this.roundPeople, this.roundUse, pid);
+      this._useRound(this.roundPeople, this.roundUse, pid, !!sel.borrowedIds?.includes(pid));
       this.roundApps.set(pid, (this.roundApps.get(pid) || 0) + 1);
     });
     (sel.groups || [sel.group]).forEach(g => {
