@@ -30,7 +30,7 @@ function harness() {
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, handlers, access, spotify, spotifyAutomation, staffState, publicState, battleVote, journalRules, clearEvening,
       tracked: () => tracked, setBridge: b => { bridge = b; }, setPending: p => { pending = p; },
-      getPending: () => pending, setRecoveredPending: value => { recoveredPending = value; } };
+      getPending: () => pending, setRecoveredPending: value => { recoveredPending = value; }, rememberBattleSongs };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
   f.settings.auto = false;
@@ -1155,4 +1155,28 @@ test('Battle : la réponse d’un vote du téléphone ne donne ni consignes du b
   assert.deepEqual(result.battle.eligiblePersonIds, [alice.id], 'électeurs de sa table seulement');
   assert.deepEqual(result.battle.votedPersonIds, [alice.id]);
   assert.deepEqual(plain(f.staffState().battle.votedPersonIds).sort(), [alice.id, bruno.id].sort(), 'le bar voit tout');
+});
+
+test('Battle : la réponse d’une proposition et la vue « En solo » suivent la vue des téléphones', async () => {
+  const f = harness();
+  const [alice, bruno] = singers(f, ['Alice', 'Bruno']);
+  f.battleVote.setMinVoters(1);
+  f.battleVote.refusedSongIds.add(30193);
+  const songs = [{ songId: 5091, title: 'Battle', artist: 'Groupe' }];
+  f.rememberBattleSongs(songs);
+  const access = f.access.issue(alice.tableId);
+  const proposed = plain(await f.call('POST /api/table/battle/propose', { table: alice.tableId, access, personId: alice.id, token: alice.token,
+    songs, proposerChoice: 5091 }));
+  assert.equal('automation' in proposed.battle, false);
+  assert.equal('refusedSongIds' in proposed.battle, false);
+  assert.deepEqual(proposed.battle.eligiblePersonIds, [alice.id], 'électeurs de sa table seulement');
+  assert.ok(plain(f.staffState().battle.eligiblePersonIds).includes(bruno.id));
+  // « En solo » : chaque personne ne voit qu'elle-même.
+  const solo1 = f.sched.join({ tableId: 'Comptoir', name: 'Solène' });
+  const solo2 = f.sched.join({ tableId: 'Comptoir', name: 'Sacha' });
+  f.sched.table('Comptoir').individual = true;
+  f.battleVote.admit([solo1.id, solo2.id]);
+  const solo = plain(f.publicState(solo1, 'Comptoir').battle);
+  assert.deepEqual(solo.eligiblePersonIds, [solo1.id]);
+  assert.equal('automation' in solo, false);
 });

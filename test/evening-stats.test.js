@@ -770,6 +770,49 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     assert.ok(singerOf(stats, 'pA').presenceSec > (60 - 10) * 60, 'présence comptée après l’ancienne heure');
   });
 
+  // Codex sur la PR #16 : la même soirée, archivée sans nouvelle fermeture
+  // atteinte, ne doit pas être coupée à l'ancienne heure. Une heure retirée le
+  // lendemain (« Options par défaut ») sans titre chanté depuis ne rouvre rien.
+  test('soirée archivée : fermeture atteinte puis décalée, on rechante ensuite, la soirée continue', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Un' }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(40, 'closing.set', { closingAt: T(60) }),
+      e(60, 'closing.reached', { closingAt: T(60) }),
+      e(61, 'closing.set', { closingAt: T(120) }),
+      e(90, 'stage.started', { queueId: 2, source: 'native', title: 'Deux' }),
+      e(94, 'stage.ended', { queueId: 2, playedSec: 240 }),
+      e(100, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(300, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events });
+    assert.equal(stats.evening.closedAt, T(100), 'heure décalée : la soirée finit à la coupure de KaraFun, pas à l’ancienne heure');
+    // Heure retirée le lendemain sans titre chanté depuis : la fermeture tient.
+    const nextDay = [...events.filter(ev => ev.t < T(61)), e(280, 'closing.cleared'), e(300, 'evening.closed', { by: 'staff-reset' })];
+    assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: nextDay }).evening.closedAt, T(60));
+  });
+
+  test('en direct le lendemain matin, fermeture atteinte et PC éteint avant l’heure : même fin qu’une fois la soirée close', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(150, 'closing.set', { closingAt: T(200) }),
+      e(180, 'stage.started', { queueId: 2, source: 'native', title: 'Dernier' }),
+      e(184, 'stage.ended', { queueId: 2, playedSec: 240 }),
+      e(188, 'closing.reached', { closingAt: T(200) }),
+      e(900, 'app.started', { restored: true, offlineMs: 710 * 60000 }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0) }, events, now: T(920), live: true });
+    assert.equal(stats.evening.closedAt, T(190));
+    assert.ok(!insights(stats).some(item => /redémarré/.test(item.text)), 'pas de redémarrage annoncé le lendemain');
+  });
+
   test('demande : un titre choisi avant la connexion de KaraFun compte depuis la connexion', () => {
     const e = evening();
     const events = [

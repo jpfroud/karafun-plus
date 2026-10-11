@@ -10,9 +10,10 @@
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun à
  *   la fermeture (heure de fermeture, ou fin du dernier passage s'il finit
  *   plus tard ; sans heure de fermeture, déconnexion de KaraFun pendant ou
- *   après le dernier titre, sauf retour dans les 30 min, ou arrêt de
- *   l'application d'au moins 30 min, sinon fin du journal). Les arrêts de
- *   l'application sont retirés.
+ *   après le dernier titre, sauf retour dans les 30 min, sinon fin du
+ *   journal ; dans les deux cas, plus tôt si l'application est arrêtée
+ *   pendant au moins 30 min à partir du début du dernier titre). Les arrêts
+ *   de l'application sont retirés.
  * - passage : un titre de la file réellement lancé sur scène (stage.started).
  *   Un titre envoyé puis retiré de KaraFun ne compte pas ; une relance non plus.
  * - attente : du moment où le titre pouvait passer (sa demande, ou la fin du
@@ -57,7 +58,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture, ou fin du dernier passage s’il finit plus tard ; sans heure de fermeture, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou arrêt de l’application d’au moins 30 min). Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture, ou fin du dernier passage s’il finit plus tard ; sans heure de fermeture, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min ; dans les deux cas, plus tôt si l’application est arrêtée pendant au moins 30 min à partir du début du dernier titre). Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -255,7 +256,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const other = {};
   const settingsChanges = [];
   let queueClearedAt = null;
-  let lastClosingReached = null, closingReopened = false;
+  let lastClosingReached = null, closingReopenedAt = null;
 
   const reopen = (stage, queueId, now) => {
     for (const [qid, value] of openStages) if (value === stage) openStages.delete(qid);
@@ -553,15 +554,15 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'settings.changed': staff.settings++; settingsChanges.push({ t, setting: e.setting, from: e.from ?? null, to: e.to ?? null }); break;
       case 'closing.set':
         closing.sets++; closing.closingAt = e.closingAt ?? closing.closingAt;
-        if (lastClosingReached != null && closing.closingAt > t) closingReopened = true;
+        if (lastClosingReached != null && closing.closingAt > t) closingReopenedAt ??= t;
         break;
-      case 'closing.cleared': closing.cleared++; closing.closingAt = null; if (lastClosingReached != null) closingReopened = true; break;
+      case 'closing.cleared': closing.cleared++; closing.closingAt = null; if (lastClosingReached != null) closingReopenedAt ??= t; break;
       case 'closing.reached':
         closing.reachedAt ??= t;
         // Noté dès qu'aucun titre ne peut plus partir, parfois avant l'heure :
         // le bar ferme à l'heure annoncée.
         lastClosingReached = Number.isFinite(e.closingAt) ? e.closingAt : t;
-        closingReopened = false;
+        closingReopenedAt = null;
         break;
       case 'closing.refused': closing.refused++; break;
       case 'spotify': {
@@ -619,11 +620,18 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // revient aussitôt et la coupure semblerait brève.
   const lastStageEnd = stages.length ? Math.max(...stages.map(st => st.endAt)) : null;
   const lastStageStart = stages.length ? Math.max(...stages.map(st => st.start)) : null;
-  const barClosed = lastClosingReached != null && !(live && closingReopened);
+  // Fermeture décalée ou retirée après avoir été atteinte : en direct, la
+  // soirée continue ; une soirée close ne la compte que si l'on a rechanté
+  // depuis (une heure retirée le lendemain, « Options par défaut », ne rouvre rien).
+  const reopened = closingReopenedAt != null && (live || (lastStageStart ?? -Infinity) > closingReopenedAt);
+  const barClosed = lastClosingReached != null && !reopened;
   const backWithin = (ph, i) => (phases.slice(i + 1).find(next => next.blocker !== 'offline')?.start ?? Infinity) - ph.start < BLIP_MS;
   const ended = !live && lastStageStart != null;
   const offlineAfter = ended ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && !backWithin(ph, i)) : null;
-  const appStopped = ended ? offline.find(([a, b]) => a >= lastStageStart && b - a >= BLIP_MS) : null;
+  // Fermeture atteinte : même en direct (le lendemain matin, avant la remise
+  // à zéro), un arrêt du PC après le dernier titre est la fin de la soirée.
+  const appStopped = (ended || (barClosed && lastStageStart != null)) ?
+    offline.find(([a, b]) => a >= lastStageStart && b - a >= BLIP_MS) : null;
   const stoppedAt = Math.min(offlineAfter?.start ?? Infinity, appStopped?.[0] ?? Infinity);
   // Heure de fermeture réglée : le PC éteint avant cette heure, après le
   // dernier titre, ferme aussi la soirée (pas de redémarrage le lendemain).

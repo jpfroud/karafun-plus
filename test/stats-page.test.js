@@ -818,6 +818,15 @@ test('en-tête : heures du karaoké, et lancement et clôture pour un ancien jou
   queueButton.dispatch('click');
   const rows = page.doc.getElementById('chartQueue').byTag('tbody')[0].children.map(row => text(row.children[0]));
   assert.deepEqual(rows, samples.filter(t => t >= at(30) && t <= at(95)).map(localHHMM));
+  // Codex sur la PR #16 : aucun relevé pendant le karaoké, rien n'est montré
+  // (pas les relevés de l'après-midi ou du lendemain).
+  const night = apiView({ live: false, endedAt: at(600) });
+  night.stats.evening.openedAt = at(500);
+  night.stats.evening.closedAt = at(510);
+  assert.ok(night.stats.timeline.queue.every(q => q.t < at(500)), 'tous les relevés sont hors du karaoké');
+  const empty = loadPage({ responses: viewResponse(night) });
+  await settle();
+  assert.equal(text(empty.doc.getElementById('chartQueuePlot')), 'Pas encore de données.');
 });
 
 // Regression: ISSUE-037 — la soirée close 6 jours plus tard gardait le même graphique illisible pour de bon

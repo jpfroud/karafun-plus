@@ -479,14 +479,14 @@ function drawRates(plot, rows) {
 }
 
 // Relevés de la file pendant le karaoké (connexion de KaraFun → fermeture) :
-// la nuit après la fermeture ne tasse plus la soirée à gauche. Tous les
-// relevés si aucun n'y tombe (ancien journal).
+// la nuit après la fermeture ne tasse plus la soirée à gauche. Un ancien
+// journal, sans ces bornes, garde tous ses relevés ; aucun relevé pendant le
+// karaoké : la carte est vide.
 function karaokeSamples(st) {
   const all = st.timeline.queue;
   if (!Array.isArray(all)) return all;
   const { openedAt, closedAt } = st.evening;
-  const kept = all.filter(q => (openedAt == null || q.t >= openedAt) && (closedAt == null || q.t <= closedAt));
-  return kept.length ? kept : all;
+  return all.filter(q => (openedAt == null || q.t >= openedAt) && (closedAt == null || q.t <= closedAt));
 }
 
 function drawQueue(plot) {

@@ -1841,8 +1841,6 @@ function sentDuo(tr, p, current) {
   canLeave: !tr.cancelled && !tr.pulled && !tr.absent && !tr.startedAt && !isOnStage(tr, current) };
 }
 
-// `managed` : personnes gérées par le téléphone qui demande, seules à
-// recevoir leurs messages (voir Scheduler#notify).
 // Vue Battle d'un téléphone (état et réponses des routes de la table) : sans
 // les consignes du bar (copie à retirer, refus de KaraFun) ni les titres
 // écartés, que seule la page du bar lit ; électeurs et votants de sa table,
@@ -1858,6 +1856,8 @@ function battleForPhone(battle, tableId, person) {
   return out;
 }
 
+// `managed` : personnes gérées par le téléphone qui demande, seules à
+// recevoir leurs messages (voir Scheduler#notify).
 function publicState(person, tableId, managed = null) {
   const { current, upcoming } = analyze();
   const presence = presenceCandidate({ current, upcoming });
