@@ -568,7 +568,9 @@ function refuseBattleSong() {
   const copy = `KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun`;
   let fallback;
   try {
-    ({ fallback } = battleVote.refuseSong(`${copy}, puis lance une Battle sans vote sur un autre titre.`, `${copy}.`));
+    // Une Battle sans vote n'est acceptée qu'une fois cette demande fermée.
+    ({ fallback } = battleVote.refuseSong(`${copy}. Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois », ` +
+      'puis « Lancer une Battle sans vote ».', `${copy}.`));
   } catch (error) {
     // État Battle incohérent (sauvegarde abîmée) : sync() continue, l'envoi
     // finit en échec au bout de l'attente de l'accusé.
@@ -1973,9 +1975,14 @@ function publicState(person, tableId, managed = null) {
     // journal des actions des autres tables ne concernent pas ce téléphone.
     out.waiting = out.waiting.filter(item => sched.people.get(item.id)?.tableId === tid);
     delete out.log;
-    out.battle = { ...out.battle,
-      eligiblePersonIds: out.battle.eligiblePersonIds.filter(id => sched.people.get(id)?.tableId === tid),
-      votedPersonIds: out.battle.votedPersonIds.filter(id => sched.people.get(id)?.tableId === tid) };
+    // Consignes du bar (copie à retirer, refus de KaraFun) et titres écartés :
+    // seule la page du bar s'en sert.
+    const battle = { ...out.battle };
+    delete battle.automation;
+    delete battle.refusedSongIds;
+    out.battle = { ...battle,
+      eligiblePersonIds: battle.eligiblePersonIds.filter(id => sched.people.get(id)?.tableId === tid),
+      votedPersonIds: battle.votedPersonIds.filter(id => sched.people.get(id)?.tableId === tid) };
   }
   if (tid) {
     const t = sched.table(tid, false);

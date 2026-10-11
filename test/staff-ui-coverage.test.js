@@ -1608,10 +1608,11 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.match(status(), /^Battle demandée sur Africa — Toto\. Le prochain chanteur déjà annoncé garde sa place/);
   // Titre précédent refusé par KaraFun : la consigne de retrait est affichée.
   await page.update({ battle: { id: 3, phase: 'requested', selectedSong: song,
-    automation: { status: 'waiting', notice: 'KaraFun a ajouté « Hello » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun, puis lance une Battle sans vote sur un autre titre.' } } });
+    automation: { status: 'waiting', notice: 'KaraFun a ajouté « Hello » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun.' } } });
   assert.equal(pill().textContent, 'Copie à retirer');
   assert.match(pill().className, /bad/);
-  assert.match(status(), /retire cette copie dans KaraFun, puis lance une Battle sans vote sur un autre titre\. La Battle passera ensuite sur Africa — Toto, dès que la file de KaraFun sera libre\./);
+  assert.equal(status(), 'KaraFun a ajouté « Hello » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun. La Battle passera ensuite sur Africa — Toto, dès que la file de KaraFun sera libre.');
+  assert.match(page.$('battleStatus').className, /battle-requested/, 'action du bar : consigne mise en avant');
   await step('sending');
   assert.equal(pill().textContent, 'Ajout en cours');
   assert.match(status(), /^Envoi de Africa — Toto à KaraFun\./);
@@ -1635,6 +1636,13 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(pill().textContent, 'À vérifier');
   assert.equal(pill().className, 'pill bad');
   assert.equal(status(), 'Ajout automatique non confirmé : Vérifie KaraFun. Organise la Battle manuellement ou ferme la demande.');
+  // Mode Battle refusé sur ce titre : une seule consigne, celle du serveur.
+  const refusal = 'KaraFun a ajouté « Africa » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun. ' +
+    'Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois », puis « Lancer une Battle sans vote ».';
+  await step('failed', { automation: { status: 'failed', failure: refusal } });
+  assert.equal(status(), `Mode Battle refusé par KaraFun : ${refusal}`);
+  assert.equal(page.$('battleActions').hidden, false, '« Ne pas lancer cette fois » proposé');
+  await step('failed');
   assert.equal(page.$('battleDone').hidden, false);
   await page.click(page.$('battleDone'));
   assert.deepEqual(page.lastPost('/api/staff/battle/resolve').body, { outcome: 'done' });

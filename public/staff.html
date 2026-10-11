@@ -269,7 +269,7 @@
     <p class="small muted">Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.</p>
     <div class="table-reset"><button class="btn small danger" id="clearQueue">Vider toutes les chansons</button><span class="small muted">Conserve les tables, les chanteurs, leurs accès et l’historique. La chanson sur scène continue ; les autres retraits doivent être confirmés par KaraFun.</span></div>
     <div class="table-reset"><button class="btn small danger" id="clearTables">Supprimer toutes les tables</button><span class="small muted">Nouvelle soirée : efface les chanteurs, leurs titres et les anciens QR. Le titre déjà sur scène continue.</span></div>
-    <div class="table-reset"><button class="btn small danger" id="resetSettings">Remettre les options par défaut</button><span class="small muted">Remet toutes les options à leur valeur d’origine (délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture, Spotify automatique) : l’envoi automatique à KaraFun est rallumé si KaraFun le permet, la lecture automatique coupée. Garde le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file.</span></div>
+    <div class="table-reset"><button class="btn small danger" id="resetSettings">Remettre les options par défaut</button><span class="small muted">Remet toutes les options à leur valeur d’origine (délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture, Spotify automatique) : l’envoi automatique à KaraFun est rallumé si rien ne l’interdit (sauvegarde impossible, envoi interrompu à vérifier, droits KaraFun), la lecture automatique coupée. Garde le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file.</span></div>
   </section>
 </main>
 
@@ -2035,7 +2035,7 @@
       battle.phase === 'cooldown' ? 'Pause entre votes' : 'Aucune demande';
     $('battlePill').className = 'pill' + (['failed', 'after'].includes(battleStep) || (battleStep === 'waiting' && battle.automation?.notice) ? ' bad' :
       ['queued', 'playing'].includes(battleStep) || battle.phase === 'voting' ? ' ok' : '');
-    $('battleStatus').className = 'battle-status' + (['failed', 'after'].includes(battleStep) ? ' battle-requested' : '');
+    $('battleStatus').className = 'battle-status' + (['failed', 'after'].includes(battleStep) || (battleStep === 'waiting' && battle.automation?.notice) ? ' battle-requested' : '');
     const battleFailure = String(battle.automation?.failure || 'Vérifie KaraFun').replace(/[.!?\s]+$/, '');
     const battleNotice = String(battle.automation?.notice || '').replace(/[.!?\s]+$/, '');
     $('battleStatus').textContent = battleStep === 'waiting' && battleNotice
@@ -2043,6 +2043,8 @@
       : battleStep === 'waiting'
       ? `Battle demandée sur ${selectedSong}. Le prochain chanteur déjà annoncé garde sa place ; la Battle sera ajoutée ensuite.`
       : battleStep === 'sending' ? `Envoi de ${selectedSong} à KaraFun. Le mode Battle doit être confirmé avant de lancer le titre.`
+      // Copie sans mode Battle : la consigne du serveur dit déjà quoi faire.
+      : battleStep === 'failed' && battleFailure.startsWith('KaraFun a ajouté') ? `Mode Battle refusé par KaraFun : ${battleFailure}.`
       : battleStep === 'failed' ? `${battleFailure.startsWith('Permission Battle refusée') ? 'Ajout automatique impossible' : 'Ajout automatique non confirmé'} : ${battleFailure}. Organise la Battle manuellement ou ferme la demande.`
       : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'

@@ -623,11 +623,16 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const backWithin = (ph, i) => (phases.slice(i + 1).find(next => next.blocker !== 'offline')?.start ?? Infinity) - ph.start < BLIP_MS;
   const ended = !live && lastStageStart != null;
   const offlineAfter = ended ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && !backWithin(ph, i)) : null;
-  const appStopped = ended ? offline.find(([a, b]) => a > lastStageStart && b - a >= BLIP_MS) : null;
+  const appStopped = ended ? offline.find(([a, b]) => a >= lastStageStart && b - a >= BLIP_MS) : null;
   const stoppedAt = Math.min(offlineAfter?.start ?? Infinity, appStopped?.[0] ?? Infinity);
   const closedAt = Math.max(openedAt, Math.min(E1, barClosed ? Math.max(lastStageEnd ?? -Infinity, lastClosingReached) :
     Number.isFinite(stoppedAt) ? stoppedAt : E1));
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
+  // Arrêts de l'application pendant le karaoké : l'arrêt du PC après la
+  // fermeture (jusqu'au lendemain) n'est pas un incident de la soirée.
+  const eveningOffline = offline.map(inEvening).filter(([a, b]) => b > a);
+  const eveningRestarts = list.filter(e => e.ev === 'app.started' && e.restored && ((e.t >= openedAt && e.t <= closedAt) ||
+    eveningOffline.some(([a, b]) => e.t - (e.offlineMs || 0) < b && e.t > a))).length;
   for (const silence of spotify.silences) {
     silence.end = Math.max(Math.min(silence.end, closedAt), Math.min(silence.start, closedAt));
     if (silence.end < E1 && silence.ongoing) silence.ongoing = false;
@@ -898,7 +903,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     format: 'karaoke-evening-stats', version: FORMAT,
     evening: { id: meta.eveningId || null, startedAt: E0, endedAt: Number.isFinite(meta.endedAt) || closedEvent ? E1 : null,
       openedAt, closedAt: barClosed || Number.isFinite(stoppedAt) ? closedAt : null,
-      live: !!live, durationSec: sec(E1 - E0), offlineSec: sec(sum(offline.map(([a, b]) => b - a))), restarts,
+      live: !!live, durationSec: sec(E1 - E0), offlineSec: sec(sum(eveningOffline.map(([a, b]) => b - a))), restarts: eveningRestarts,
       closedBy: closedEvent?.by || null, queueClearedAt },
     global, fairness, singers, tables: tableRows,
     timeline: {

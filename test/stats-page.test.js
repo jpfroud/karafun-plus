@@ -783,6 +783,8 @@ test('en-tête : heures du karaoké, et lancement et clôture pour un ancien jou
   const view = apiView({ live: false, endedAt: at(600) });
   view.stats.evening.openedAt = at(30);
   view.stats.evening.closedAt = at(95);
+  // Alice, inscrite avant la connexion de KaraFun, présente jusqu'à la fermeture.
+  Object.assign(view.stats.singers.find(singer => singer.id === 'pA'), { joinedAt: at(0), leftAt: at(95), explicitLeft: false });
   const page = loadPage({ responses: viewResponse(view) });
   await settle();
   assert.match(text(page.$('eveningLine')), new RegExp(` · ${localHHMM(at(30))} – ${localHHMM(at(95))} · `));
@@ -793,6 +795,19 @@ test('en-tête : heures du karaoké, et lancement et clôture pour un ancien jou
   const old = loadPage({ responses: viewResponse(legacy) });
   await settle();
   assert.match(text(old.$('eveningLine')), new RegExp(` · ${localHHMM(at(0))} – ${localHHMM(at(600))} · `));
+  const focus = page.$('focusSelect');
+  focus.value = 'p:pA';
+  focus.dispatch('change', { target: focus });
+  const card = text(page.$('focusCard'));
+  assert.match(card, new RegExp(`arrivée ${localHHMM(at(0))} \\(comptée dès ${localHHMM(at(30))}\\) · fin du karaoké ${localHHMM(at(95))} · présence`));
+  assert.doesNotMatch(card, /dernier signe/);
+  // File d'attente : relevés du karaoké seulement (pas la nuit après la fermeture).
+  const samples = view.stats.timeline.queue.map(q => q.t);
+  assert.ok(samples.some(t => t < at(30) || t > at(95)), 'le jeu d’essai a des relevés hors du karaoké');
+  const queueButton = page.doc.getElementById('chartQueue').byTag('button')[0];
+  queueButton.dispatch('click');
+  const rows = page.doc.getElementById('chartQueue').byTag('tbody')[0].children.map(row => text(row.children[0]));
+  assert.deepEqual(rows, samples.filter(t => t >= at(30) && t <= at(95)).map(localHHMM));
 });
 
 // Regression: ISSUE-037 — la soirée close 6 jours plus tard gardait le même graphique illisible pour de bon

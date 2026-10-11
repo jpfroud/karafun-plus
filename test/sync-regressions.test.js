@@ -325,11 +325,18 @@ test('titre sans mode Battle et aucun autre titre voté : la demande attend le b
   assert.deepEqual(f.removes, []);
   const view = f.battleVote.view();
   assert.equal(view.automation.status, 'failed');
-  assert.match(view.automation.failure, /en chanson normale, sans le mode Battle : retire cette copie dans KaraFun/);
+  // Une Battle sans vote n'est acceptée qu'une fois la demande fermée.
+  assert.equal(view.automation.failure, 'KaraFun a ajouté « Sarà perché ti amo » en chanson normale, sans le mode Battle : ' +
+    'retire cette copie dans KaraFun. Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois », puis « Lancer une Battle sans vote ».');
   f.bridge.queue = [];
   f.sync();
   assert.equal(f.battleAdds.length, 1, 'aucune nouvelle commande sur un titre refusé');
   assert.ok(f.sched.log.some(entry => /Battle à préparer par le bar/.test(entry.msg)), 'le bar est prévenu');
+  // La consigne mène à une Battle acceptée : refusée tant que la demande reste ouverte.
+  assert.throws(() => f.battleVote.staffLaunch({ song: song(30193, 'Je veux') }), /déjà en préparation/);
+  f.battleVote.resolve({ outcome: 'dismissed' });
+  f.battleVote.staffLaunch({ song: song(30193, 'Je veux') });
+  assert.equal(f.battleVote.view().automation.status, 'waiting');
 });
 
 test('trame Battle reçue d’abord sans son mode : rien n’est retiré, la Battle est confirmée', () => {

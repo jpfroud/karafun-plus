@@ -864,9 +864,41 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events });
     assert.equal(stats.evening.closedAt, T(210), 'l’arrêt de l’application ferme la soirée');
     assert.equal(singerOf(stats, 'pA').presenceSec, (210 - 10) * 60, 'pas de présence le lendemain');
+    // L'arrêt de la nuit n'est pas un incident de la soirée.
+    assert.deepEqual([stats.evening.restarts, stats.evening.offlineSec], [0, 0]);
+    assert.ok(!insights(stats).some(item => item.id === 'restarts' || /redémarré/.test(item.text)));
     // Arrêt bref (20 min) : la soirée continue.
     const brief = events.map(ev => ev.ev === 'app.started' && ev.offlineMs ? { ...ev, t: T(230), offlineMs: 20 * 60000 } : ev);
     assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events: brief }).evening.closedAt, null);
+  });
+
+  test('arrêt de l’application : PC éteint pendant le dernier titre ferme la soirée, un redémarrage en milieu de soirée non', () => {
+    const e = evening();
+    // Rien n'est noté après le début du dernier titre : l'arrêt commence à cet instant.
+    const lastSong = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(195, 'stage.started', { queueId: 2, source: 'native', title: 'Dernier' }),
+      e(900, 'app.started', { restored: true, offlineMs: 705 * 60000 }),
+      e(900, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(901, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(1000, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events: lastSong }).evening.closedAt, T(195));
+    // PC redémarré 40 min en milieu de soirée, puis on rechante : la soirée continue.
+    const reboot = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Avant' }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(80, 'app.started', { restored: true, offlineMs: 40 * 60000 }),
+      e(90, 'stage.started', { queueId: 2, source: 'native', title: 'Après' }),
+      e(94, 'stage.ended', { queueId: 2, playedSec: 240 }),
+      e(200, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: reboot }).evening.closedAt, null);
   });
 
   test('coupure de KaraFun après le dernier titre : 20 min ne ferme pas la soirée, 40 min la ferme', () => {

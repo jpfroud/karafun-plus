@@ -30,7 +30,7 @@ function harness() {
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, handlers, access, spotify, spotifyAutomation, staffState, publicState, battleVote, journalRules, clearEvening,
       tracked: () => tracked, setBridge: b => { bridge = b; }, setPending: p => { pending = p; },
-      getPending: () => pending };
+      getPending: () => pending, setRecoveredPending: value => { recoveredPending = value; } };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
   f.settings.auto = false;
@@ -1104,6 +1104,12 @@ test('options par défaut : réglages d’origine, connexions, adresse des QR, t
   assert.equal(blocked.autoBlocked, 'KaraFun refuse l’ajout de titres');
   assert.equal(f.settings.auto, false);
   assert.equal(lastNote(f).msg, 'Options remises par défaut (envoi automatique laissé coupé : KaraFun refuse l’ajout de titres).');
+  // Envoi interrompu à vérifier : cette raison passe avant les droits KaraFun.
+  f.setRecoveredPending(true);
+  const recovered = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.equal(recovered.autoBlocked, 'un envoi interrompu est à vérifier dans KaraFun');
+  assert.equal(f.settings.auto, false);
+  f.setRecoveredPending(false);
   // Écriture des réglages Spotify impossible : le reste est remis, l'échec est dit.
   f.spotify.setOptions = () => { throw new Error('disque plein'); };
   await f.call('POST /api/staff/settings', { duoOnly: true });
@@ -1112,4 +1118,22 @@ test('options par défaut : réglages d’origine, connexions, adresse des QR, t
   assert.equal(partial.spotifyError, 'disque plein');
   assert.equal(f.settings.duoOnly, false);
   assert.match(lastNote(f).msg, /Automatismes Spotify non remis : disque plein/);
+});
+
+// Relecture du 11 octobre : les consignes Battle du bar (copie à retirer,
+// refus de KaraFun) et les titres écartés n'ont rien à faire sur les téléphones.
+test('Battle : consignes du bar et titres écartés réservés à la page du bar', async () => {
+  const f = harness();
+  const [alice] = singers(f, ['Alice']);
+  f.battleVote.staffLaunch({ song: { songId: 18179, title: 'Sarà perché ti amo', artist: 'Ricchi e Poveri' } });
+  f.battleVote.automation.notice = 'KaraFun a ajouté « Hello » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun.';
+  f.battleVote.refusedSongIds.add(30193);
+  const phone = plain(f.publicState(alice, alice.tableId).battle);
+  assert.equal(phone.phase, 'requested');
+  assert.equal(phone.selectedSong.title, 'Sarà perché ti amo', 'la salle voit toujours la Battle décidée');
+  assert.equal('automation' in phone, false);
+  assert.equal('refusedSongIds' in phone, false);
+  const bar = plain(f.staffState().battle);
+  assert.match(bar.automation.notice, /retire cette copie/);
+  assert.deepEqual(bar.refusedSongIds, [30193]);
 });

@@ -478,8 +478,19 @@ function drawRates(plot, rows) {
   });
 }
 
+// Relevés de la file pendant le karaoké (connexion de KaraFun → fermeture) :
+// la nuit après la fermeture ne tasse plus la soirée à gauche. Tous les
+// relevés si aucun n'y tombe (ancien journal).
+function karaokeSamples(st) {
+  const all = st.timeline.queue;
+  if (!Array.isArray(all)) return all;
+  const { openedAt, closedAt } = st.evening;
+  const kept = all.filter(q => (openedAt == null || q.t >= openedAt) && (closedAt == null || q.t <= closedAt));
+  return kept.length ? kept : all;
+}
+
 function drawQueue(plot) {
-  const samples = state.data.stats.timeline.queue;
+  const samples = karaokeSamples(state.data.stats);
   const W = plotWidth(plot), left = 34, right = 12, top = 10, H = 220, bottom = 24;
   const t0 = samples[0].t, t1 = Math.max(samples.at(-1).t, t0 + 60000);
   const max = Math.max(...samples.map(q => Math.max(q.ready || 0, q.present || 0)), 2);
@@ -657,8 +668,13 @@ function renderFocus() {
     const singer = singerById(f.slice(2));
     if (!singer) { box.hidden = true; return; }
     const singerName = nameOf(singer.id);
+    // La présence ne compte que pendant le karaoké (connexion de KaraFun →
+    // fermeture) : la fiche le dit au lieu de prendre la fermeture pour un départ.
+    const { openedAt, closedAt } = state.data.stats.evening;
+    const counted = openedAt != null && singer.joinedAt < openedAt ? ` (comptée dès ${hhmm(openedAt)})` : '';
+    const end = closedAt != null && singer.leftAt === closedAt ? 'fin du karaoké' : singer.explicitLeft ? 'départ' : 'dernier signe + 30 min';
     box.appendChild(h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: `Soirée ${/^[aeiouyàâäéèêëîïôöûùüh]/i.test(singerName) ? 'd’' : 'de '}${singerName}` }),
-      h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)} · ${singer.explicitLeft ? 'départ' : 'dernier signe + 30 min'} ${hhmm(singer.leftAt)} · présence ${dur(singer.presenceSec)}` }))));
+      h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)}${counted} · ${end} ${hhmm(singer.leftAt)} · présence ${dur(singer.presenceSec)}` }))));
     box.appendChild(h('div', { class: 'st-mini' },
       ...[[singer.turns, 'passages'], [singer.guestTurns, 'comme invité'], [fmtNum(singer.turnsPerHour, 2), 'par heure'],
         [fmtNum(singer.expectedTurns, 1), 'passages attendus'], [dur(singer.waits.avgSec), 'attente moyenne'], [dur(singer.firstTurnSec), 'avant le 1er passage'],
@@ -706,7 +722,7 @@ function renderCharts() {
   card({ id: 'chartQueue', title: 'File d’attente au fil de la soirée', subtitle: 'Relevés à chaque envoi et toutes les 5 minutes.',
     legend: [['Titres prêts', 'var(--s1)', 'line'], ['Personnes présentes', 'var(--s2)', 'line']],
     table: () => [[['Heure'], ['Titres prêts', true], ['Titres listés', true], ['Présents', true]],
-      st.timeline.queue.map(q => ({ cells: [hhmm(q.t), q.ready, q.songsListed, q.present] }))],
+      karaokeSamples(st).map(q => ({ cells: [hhmm(q.t), q.ready, q.songsListed, q.present] }))],
     draw: drawQueue });
   const histo = g.waitHistogram.some(b => b.count) ? g.waitHistogram : [];
   card({ id: 'chartHistogram', title: 'Répartition des attentes', subtitle: `${fmtNum(st.timeline.stages.filter(x => x.waitSec != null).length, 0)} passages de la file`,
