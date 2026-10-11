@@ -6,8 +6,10 @@
  *
  * Définitions principales (reprises dans `definitions`) :
  * - présence : de l'inscription (ou du retour) au départ signalé ; sans
- *   départ signalé, jusqu'au dernier signe d'activité + 30 min, au plus
- *   jusqu'à la fin de la soirée. Les arrêts de l'application sont retirés.
+ *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
+ *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun à
+ *   la fermeture (fin du dernier passage, ou heure de fermeture atteinte si
+ *   plus tard). Les arrêts de l'application sont retirés.
  * - passage : un titre de la file réellement lancé sur scène (stage.started).
  *   Un titre envoyé puis retiré de KaraFun ne compte pas ; une relance non plus.
  * - attente : du moment où le titre pouvait passer (sa demande, ou la fin du
@@ -51,7 +53,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min, au plus jusqu’à la fin de la soirée. Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (fin du dernier passage, ou heure de fermeture atteinte si plus tard). Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -175,7 +177,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     if (!id) return null;
     if (!people.has(id)) {
       people.set(id, { id, tableId: roster[id]?.tableId ?? null, joinedAt: t, intervals: [], openSince: t,
-        lastActivity: t, explicitLeft: null, bonus: 0, bonusLog: [], active: new Set(), demandSince: null, demandMs: 0,
+        lastActivity: t, explicitLeft: null, bonus: 0, bonusLog: [], active: new Set(), demandSince: null, demandSpans: [],
         requests: 0, removed: 0, removedBy: {}, deferrals: 0, deferSongs: 0, deferMs: 0,
         presenceAsks: 0, presenceLatencies: [], presenceSkips: 0, presenceRemoved: 0, absences: 0,
         battleProposals: 0, battleVotes: 0, invitesSent: 0, invitesReceived: 0, joinRequests: 0,
@@ -186,7 +188,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const touch = (id, t) => { const p = personOf(id, t); if (p) p.lastActivity = Math.max(p.lastActivity, t); };
   const startDemand = (p, t) => { if (p.active.size && p.demandSince == null) p.demandSince = t; };
   const stopDemand = (p, t) => {
-    if (!p.active.size && p.demandSince != null) { p.demandMs += Math.max(0, t - p.demandSince); p.demandSince = null; }
+    if (!p.active.size && p.demandSince != null) { p.demandSpans.push([p.demandSince, t]); p.demandSince = null; }
   };
   const dropEntry = (personId, entryId, t) => {
     const p = people.get(personId);
@@ -249,6 +251,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const other = {};
   const settingsChanges = [];
   let queueClearedAt = null;
+  let lastClosingReached = null, closingReopened = false;
 
   const reopen = (stage, queueId, now) => {
     for (const [qid, value] of openStages) if (value === stage) openStages.delete(qid);
@@ -544,9 +547,16 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'staff.play': staff.play++; break;
       case 'staff.next': staff.next++; break;
       case 'settings.changed': staff.settings++; settingsChanges.push({ t, setting: e.setting, from: e.from ?? null, to: e.to ?? null }); break;
-      case 'closing.set': closing.sets++; closing.closingAt = e.closingAt ?? closing.closingAt; break;
-      case 'closing.cleared': closing.cleared++; closing.closingAt = null; break;
-      case 'closing.reached': closing.reachedAt ??= t; break;
+      case 'closing.set':
+        closing.sets++; closing.closingAt = e.closingAt ?? closing.closingAt;
+        if (lastClosingReached != null && closing.closingAt > t) closingReopened = true;
+        break;
+      case 'closing.cleared': closing.cleared++; closing.closingAt = null; if (lastClosingReached != null) closingReopened = true; break;
+      case 'closing.reached':
+        closing.reachedAt ??= t;
+        lastClosingReached = Math.min(t, Number.isFinite(e.closingAt) ? e.closingAt : t);
+        closingReopened = false;
+        break;
       case 'closing.refused': closing.refused++; break;
       case 'spotify': {
         spotify.actions++;
@@ -584,6 +594,30 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     st.playedSec = Math.max(0, Math.round((st.endAt - st.start) / 1000));
   }
 
+  // ------------------------------------------------ soirée du karaoké
+  // Ouverture : connexion de la télécommande KaraFun quand le journal montre
+  // KaraFun déconnecté au lancement, au plus tard le premier passage. Soirée
+  // du 10 octobre : application lancée à 15:41, KaraFun connecté à 20:19.
+  const connected = phases[0]?.blocker === 'offline' ? phases.find(ph => ph.blocker !== 'offline') : null;
+  const openedAt = connected ? Math.max(E0, Math.min(connected.start, stages[0]?.start ?? Infinity)) : E0;
+  // Fermeture du bar : heure de fermeture atteinte (ou fin du dernier titre
+  // s'il finit plus tard) ; sinon KaraFun déconnecté après le dernier titre
+  // d'une soirée finie ; sinon fin du journal. Soirée du 10 octobre, close au
+  // bar le lendemain à 12:54 : la présence s'arrête à 03:17 (dernier titre
+  // après la fermeture de 03:10) au lieu de compter la matinée.
+  const lastStageEnd = stages.length ? Math.max(...stages.map(st => st.endAt)) : null;
+  const barClosed = lastClosingReached != null && !(live && closingReopened);
+  const offlineAfter = !live && lastStageEnd != null ?
+    phases.find(ph => ph.start >= lastStageEnd && ph.blocker === 'offline') : null;
+  const closedAt = Math.max(openedAt, Math.min(E1, barClosed ? Math.max(lastStageEnd ?? -Infinity, lastClosingReached) :
+    offlineAfter ? offlineAfter.start : E1));
+  const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
+  for (const silence of spotify.silences) {
+    silence.end = Math.max(Math.min(silence.end, closedAt), Math.min(silence.start, closedAt));
+    if (silence.end < E1 && silence.ongoing) silence.ongoing = false;
+  }
+  spotify.silences = spotify.silences.filter(silence => silence.end > silence.start);
+
   // ------------------------------------------------ présences
   for (const p of people.values()) {
     if (p.openSince != null) {
@@ -593,9 +627,11 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     }
     if (p.demandSince != null) {
       const presentEnd = Math.max(...p.intervals.map(([, b]) => b), p.demandSince);
-      p.demandMs += Math.max(0, Math.min(E1, presentEnd) - p.demandSince);
+      p.demandSpans.push([p.demandSince, Math.min(E1, presentEnd)]);
       p.demandSince = null;
     }
+    p.intervals = p.intervals.map(inEvening).filter(([a, b]) => b > a);
+    p.demandMs = sum(p.demandSpans.map(inEvening).map(([a, b]) => Math.max(0, b - a)));
     p.presenceMs = Math.max(0, sum(p.intervals.map(([a, b]) => Math.max(0, b - a) - overlapMs(a, b, offline))));
     p.leftAt = p.intervals.length ? p.intervals.at(-1)[1] : null;
     p.leftEstimated = p.intervals.length ? p.intervals.at(-1)[2] : false;
@@ -843,11 +879,12 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const stats = {
     format: 'karaoke-evening-stats', version: FORMAT,
     evening: { id: meta.eveningId || null, startedAt: E0, endedAt: Number.isFinite(meta.endedAt) || closedEvent ? E1 : null,
+      openedAt, closedAt: barClosed || offlineAfter ? closedAt : null,
       live: !!live, durationSec: sec(E1 - E0), offlineSec: sec(sum(offline.map(([a, b]) => b - a))), restarts,
       closedBy: closedEvent?.by || null, queueClearedAt },
     global, fairness, singers, tables: tableRows,
     timeline: {
-      start: E0, end: E1,
+      start: E0, end: E1, openedAt, closedAt,
       stages: stages.map((st, i) => ({ i, start: st.start, end: st.endAt, ongoing: !!st.ongoing, endKnown: st.endKnown,
         playedSec: st.playedSec, durationSec: st.durationSec, title: st.title, artist: st.artist, ids: st.ids,
         ownerId: st.ownerId, kind: st.kind, source: st.source, improvised: st.improvised, entryId: st.entryId,

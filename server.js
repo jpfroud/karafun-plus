@@ -1992,8 +1992,8 @@ function publicState(person, tableId, managed = null) {
   }
 
   if (person) {
-    // La dernière activité ne bouge que sur une page visible (voir /api/state).
-    noteSeen(person);
+    // La dernière activité ne bouge que sur une page visible : /api/state
+    // note les signes de vie (une page cachée continue d'interroger).
     const i = sched.Q.indexOf(person.id);
     const mine = queue.find(v => v.ids?.includes(person.id)) || null;
     const onStageNow = !!(stage && stage.ours && stage.ids.includes(person.id));
@@ -4631,7 +4631,10 @@ const server = http.createServer(async (req, res) => {
         const me = sched.person(u.searchParams.get('token') || '');
         if (me && !u.searchParams.has('table')) {
           requireSoloControl(req, me);
-          if (req.headers['x-page-visible'] !== '0') touchSeen(me);
+          // Page cachée (« 0 ») : aucun signe de vie, ni affiché ni au journal.
+          // Soirée du 10 octobre : des téléphones restés ouverts en arrière-plan
+          // ont compté des présences jusqu'au lendemain midi.
+          if (req.headers['x-page-visible'] !== '0') { touchSeen(me); noteSeen(me); }
           const view = publicState(me, me.tableId, new Set([me.id]));
           // Même règle que la lecture par table : seule la place sans prénom
           // dont ce navigateur est le téléphone actuel laisse la reprise ouverte.
@@ -4664,8 +4667,7 @@ const server = http.createServer(async (req, res) => {
         // Activité : sauf une page cachée (« 0 » ; la page continue d'interroger
         // en arrière-plan), pour toutes les personnes gérées par ce téléphone.
         // Sans en-tête : page gardée en cache d'avant la mise à jour, comptée.
-        if (req.headers['x-page-visible'] !== '0') for (const person of owned) touchSeen(person);
-        for (const person of owned) noteSeen(person);
+        if (req.headers['x-page-visible'] !== '0') for (const person of owned) { touchSeen(person); noteSeen(person); }
         return send(res, 200, view);
       }
       if (['/stats', '/api/staff/stats', '/api/staff/stats/evenings', '/api/staff/stats/export'].includes(p)) {

@@ -702,3 +702,43 @@ test('titres remplacés, abandonnés au départ ou annulés : retirés, plus « 
     [[1, 1], [0, 1], [0, 1], [0, 2]]);
   assert.deepEqual(singerOf(stats, 'pD').removedBy, { self: 1, staff: 1 });
 });
+
+// Soirée du 10 octobre : application lancée à 15:41, KaraFun connecté à 20:19,
+// fermeture à 03:10 (dernier titre fini à 03:17), soirée close au bar le
+// lendemain à 12:54. Des pages restées ouvertes ont compté JP 15 h et Le Vieux
+// 16 h de présence.
+test('présence : de la connexion de KaraFun à la fermeture du bar, pas la matinée suivante', () => {
+  const T = m => T0 + m * 60000;
+  let seq = 0;
+  const e = (minutes, ev, fields = {}) => ({ v: 1, seq: ++seq, t: T(minutes), ev, ...fields });
+  const events = [
+    e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+    e(0, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+    e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+    e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+    e(70, 'person.joined', { personId: 'pB', tableId: '1' }),
+    e(80, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Un' }),
+    e(90, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], ownerId: 'pA', source: 'queue' }),
+    e(94, 'stage.ended', { queueId: 1, playedSec: 240 }),
+    e(150, 'closing.set', { closingAt: T(200) }),
+    e(195, 'stage.started', { queueId: 2, source: 'native', title: 'Dernier' }),
+    e(200, 'closing.reached', { closingAt: T(200) }),
+    e(205, 'stage.ended', { queueId: 2, playedSec: 600 }),
+    e(206, 'spotify', { action: 'resume', result: 'done', trigger: 'closing' }),
+    e(210, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+    // Téléphones restés ouverts : signes de vie jusqu'au lendemain.
+    ...Array.from({ length: 50 }, (_, k) => e(220 + k * 15, 'person.seen', { personId: k % 2 ? 'pA' : 'pB' })),
+    e(1000, 'evening.closed', { by: 'staff-reset' }),
+  ];
+  const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events });
+  assert.equal(stats.evening.openedAt, T(60), 'ouverture : connexion de KaraFun');
+  assert.equal(stats.evening.closedAt, T(205), 'fermeture : fin du dernier titre, après l’heure de fermeture');
+  assert.equal(singerOf(stats, 'pA').presenceSec, (205 - 60) * 60, 'inscrite avant la connexion : comptée depuis la connexion');
+  assert.equal(singerOf(stats, 'pB').presenceSec, (205 - 70) * 60);
+  assert.equal(stats.global.spotify.silences, 0, 'la musique d’après la fermeture n’est pas un silence de la soirée');
+  // Sans heure de fermeture : KaraFun déconnecté après le dernier titre.
+  const noClosing = events.filter(ev => !/^closing\./.test(ev.ev));
+  const other = computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events: noClosing });
+  assert.equal(other.evening.closedAt, T(210));
+  assert.equal(singerOf(other, 'pA').presenceSec, (210 - 60) * 60);
+});

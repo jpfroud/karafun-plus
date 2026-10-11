@@ -353,15 +353,23 @@ function drawTimeline(plot) {
   const singers = [];
   for (const stage of stages) for (const id of stage.ids) if (!singers.includes(id)) singers.push(id);
   const H = top + laneH + 8 + singers.length * rowH + 28;
-  // Soirée restée ouverte (ou close) bien après le dernier passage : l'axe
-  // s'arrête 15 min après lui ; sinon il va jusqu'à maintenant (temps mort visible).
-  const lastEnd = Math.max(...stages.map(x => x.end));
-  const idleTail = tl.end - lastEnd > 3 * 3600000;
-  const t0 = tl.start, t1 = Math.max(idleTail ? lastEnd + 15 * 60000 : tl.end, lastEnd, t0 + 60000);
+  // Axe resserré sur les passages, 15 min de marge de chaque côté : ni les
+  // heures vides avant le premier titre (application lancée l'après-midi), ni
+  // celles d'après la fermeture (soirée close le lendemain). En direct, l'axe
+  // va jusqu'à maintenant (temps mort visible) tant que le dernier passage a
+  // moins de 3 h.
+  const MARGIN = 15 * 60000;
+  // Sans passage : toute la soirée, comme avant.
+  const firstStart = stages.length ? Math.min(...stages.map(x => x.start)) : tl.start + MARGIN;
+  const lastEnd = stages.length ? Math.max(...stages.map(x => x.end)) : tl.end;
+  const live = !!state.data.evening.current;
+  const t0 = Math.max(tl.start, firstStart - MARGIN);
+  const tail = !live ? Math.min(tl.end, lastEnd + MARGIN) : tl.end - lastEnd > 3 * 3600000 ? lastEnd + MARGIN : tl.end;
+  const t1 = Math.max(tail, lastEnd, t0 + 60000);
   const x = linear(t0, t1, left, W - right);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Déroulé de la soirée : qui a chanté quand' }, plot);
   axisX(svg, timeTicks(t0, t1, W - right - left, timeGap(t0, t1)), x, top - 6, H - 22, timeLabel(t0, t1));
-  if (idleTail) {
+  if (tl.end > t1) {
     const closed = state.data.evening.current ? 'soirée encore ouverte'
       : `soirée close ${new Date(tl.end).toDateString() === new Date(lastEnd).toDateString() ? '' : `le ${dayLabel(tl.end)} `}à ${hhmm(tl.end)}`;
     plot.appendChild(h('p', { class: 'st-caption', text: `Dernier passage à ${hhmm(lastEnd)} · ${closed}` }));
@@ -590,7 +598,11 @@ function renderHeader() {
   const { evening, stats } = state.data;
   const live = evening.current;
   $('livePill').hidden = !live;
-  $('eveningLine').textContent = `${dayLabel(evening.startedAt)} · ${hhmm(evening.startedAt)} – ${live ? 'en cours' : hhmm(evening.endedAt || stats.timeline.end)}` +
+  // Le karaoké : de la connexion de KaraFun à la fermeture du bar (calculées
+  // par les statistiques), pas du lancement de l'application à sa remise à zéro.
+  const opened = stats.evening.openedAt ?? evening.startedAt;
+  const closed = stats.evening.closedAt ?? evening.endedAt ?? stats.timeline.end;
+  $('eveningLine').textContent = `${dayLabel(opened)} · ${hhmm(opened)} – ${live ? 'en cours' : hhmm(closed)}` +
     ` · ${stats.global.registered} inscrit${stats.global.registered > 1 ? 's' : ''}${evening.truncated ? ' · dernière ligne du journal illisible ignorée' : ''}`;
   renderErrors();
 }

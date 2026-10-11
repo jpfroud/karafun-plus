@@ -75,10 +75,10 @@ function harness({ persistent = false, memory = memoryDisk() } = {}) {
   return Object.assign(f, { memory, saves });
 }
 
-function call(f, method, url, { body, port = f.PORT } = {}) {
+function call(f, method, url, { body, port = f.PORT, headers = {} } = {}) {
   return new Promise(resolve => {
     const req = new EventEmitter();
-    Object.assign(req, { method, url, headers: {}, socket: { remoteAddress: '127.0.0.1', localPort: port }, destroy() {} });
+    Object.assign(req, { method, url, headers, socket: { remoteAddress: '127.0.0.1', localPort: port }, destroy() {} });
     const out = { status: null, headers: {} };
     const res = {
       setHeader(name, value) { out.headers[name.toLowerCase()] = value; },
@@ -518,6 +518,14 @@ test('signes de vie des téléphones, lecture automatique rétablie et absent à
   assert.equal((await call(f, 'GET', url)).status, 200);
   assert.deepEqual(evs().filter(e => e.ev === 'person.seen').map(e => e.personId).sort(), [alice.personId, bruno.personId].sort());
   const other = await joinWithSong(f, '2', 'Chloé', 703);
+  // Soirée du 10 octobre : des pages restées ouvertes en arrière-plan ont
+  // noté des signes de vie jusqu'au lendemain midi. Page cachée : rien.
+  const hidden = { headers: { 'x-page-visible': '0' } };
+  assert.equal((await call(f, 'GET', `/api/state?token=${other.token}`, hidden)).status, 200);
+  assert.ok(!evs().some(e => e.ev === 'person.seen' && e.personId === other.personId), 'page cachée : pas de signe de vie');
+  const dan = await joinWithSong(f, '1', 'Dan', 704);
+  assert.equal((await call(f, 'GET', `/api/state?table=1&access=${alice.access}&token=${dan.token}`, hidden)).status, 200);
+  assert.ok(!evs().some(e => e.ev === 'person.seen' && e.personId === dan.personId), 'page de table cachée : pas de signe de vie');
   assert.equal((await call(f, 'GET', `/api/state?token=${other.token}`)).status, 200);
   assert.ok(evs().some(e => e.ev === 'person.seen' && e.personId === other.personId));
   // Un titre démarre pendant que la lecture automatique est suspendue.

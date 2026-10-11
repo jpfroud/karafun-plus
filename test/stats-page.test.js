@@ -788,11 +788,37 @@ test('déroulé : une soirée close 6 jours plus tard est dessinée sur ses pass
   assertMarksSpread(axis, 'déroulé clos');
   const day = new Date(endedAt).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close le ${day} à ${localHHMM(endedAt)}`);
-  // Clôture moins de 3 h après le dernier passage : axe jusqu'à la clôture, sans note.
-  const soon = loadPage({ responses: viewResponse(apiView({ live: false, endedAt: at(90 + 170) })) });
+  // Clôture moins de 3 h après le dernier passage : l'axe s'arrête aussi
+  // 15 min après lui (retour du 10 octobre), la note donne la clôture.
+  const soonView = apiView({ live: false, endedAt: at(90 + 170) });
+  const soon = loadPage({ responses: viewResponse(soonView) });
   await settle();
-  assert.equal(timelineCaption(soon), undefined);
-  assert.equal(soon.doc.getElementById('chartTimelinePlot').find(n => n.tagName === 'P').length, 0);
+  assert.equal(text(timelineCaption(soon)), `Dernier passage à ${localHHMM(lastStageEnd(soonView))} · soirée close à ${localHHMM(at(90 + 170))}`);
+  // Clôture 10 min après le dernier passage : rien de coupé, pas de note.
+  const nowView = apiView({ live: false, endedAt: lastStageEnd(soonView) + 10 * 60000 });
+  const now = loadPage({ responses: viewResponse(nowView) });
+  await settle();
+  assert.equal(timelineCaption(now), undefined);
+});
+
+// Regression: soirée du 10 octobre — application lancée à 15:41, premier titre à 22:38 :
+// la frise montrait sept heures vides avant les passages
+test('déroulé : les heures vides avant le premier passage ne sont pas dessinées', async () => {
+  const early = 7 * 60;
+  const events = eveningEvents().map(ev => ev.ev === 'evening.started' || ev.ev === 'app.started' ? ev : { ...ev, t: ev.t + early * 60000 });
+  const endedAt = at(early + 90);
+  const stats = computeStats({ meta: { ...meta, startedAt: at(0), endedAt }, events, now: endedAt, live: false });
+  const view = { ...apiView({ live: false }), stats };
+  for (const width of [900, 360]) {
+    const page = loadPage({ width, responses: viewResponse(view) });
+    await settle();
+    const axis = timelineAxis(page);
+    assertReadableAxis(axis, `déroulé ${width} px`);
+    const rects = axis.svg.children.filter(n => n.tagName === 'RECT' && n.getAttribute('class') === 'st-mark');
+    const x0 = Math.min(...rects.map(r => Number(r.getAttribute('x'))));
+    assert.ok(x0 - axis.plotLeft <= 0.25 * axis.usable, `premier passage à ${Math.round(x0 - axis.plotLeft)} unités du bord gauche`);
+    assert.ok(!axis.labels.some(l => l.label === localHHMM(at(60))), 'aucune heure de l’après-midi vide');
+  }
 });
 
 // Regression: ISSUE-037 — clôture plus de 3 h après, le même jour : l'heure seule
