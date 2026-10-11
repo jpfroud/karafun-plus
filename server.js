@@ -3123,10 +3123,20 @@ function closingBlocksStart(current, ahead = 0, now = Date.now()) {
   if (at == null) return false;
   const slot = sched.avgSlotSec() * 1000;
   const live = current ? tracked.find(tr => isOnStage(tr, current)) : null;
-  // Notre titre vient de monter sur scène si son début n'est pas encore noté.
-  const freeAt = !current ? now : live ? Math.max(now, (live.startedAt || now) + slot) : now + slot / 2;
+  // Fin du titre en cours : sa durée connue (catalogue, téléphone) quand la
+  // barre de lecture la donne, plus le temps moyen entre deux titres. Sinon
+  // un passage moyen (notre titre vient de monter sur scène si son début
+  // n'est pas encore noté). Soirée du 10 octobre : à la fin du titre de Chay,
+  // « début + passage moyen » plaçait encore 1 min 30 de chanson devant
+  // « Hello » ; retiré pour la fermeture, Eny prévenue, puis renvoyé une
+  // seconde plus tard quand la scène s'est libérée.
+  const progress = current ? stageProgressView(current, isBattleItem(current) ? 'battle' : null, now) : null;
+  const remaining = progress?.durationSec ? Math.max(0, progress.durationSec - progress.elapsedSec) * 1000 : null;
+  const freeAt = !current ? now : remaining != null ? now + remaining + SONG_GAP_MS :
+    live ? Math.max(now, (live.startedAt || now) + slot) : now + slot / 2;
   return freeAt + ahead * slot + slot / 2 > at;
 }
+const SONG_GAP_MS = 20000; // temps moyen entre deux titres (18 s mesurées le 10 octobre)
 let closingNoted = null;
 function noteClosingStop() {
   if (closingNoted === settings.closingAt) return;
