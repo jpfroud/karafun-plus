@@ -256,7 +256,8 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const other = {};
   const settingsChanges = [];
   let queueClearedAt = null;
-  let lastClosingReached = null, closingReopenedAt = null;
+  let lastClosingReached = null;
+  const closingChanges = []; // [heure du changement, heure de fermeture ou null]
 
   const reopen = (stage, queueId, now) => {
     for (const [qid, value] of openStages) if (value === stage) openStages.delete(qid);
@@ -554,15 +555,14 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'settings.changed': staff.settings++; settingsChanges.push({ t, setting: e.setting, from: e.from ?? null, to: e.to ?? null }); break;
       case 'closing.set':
         closing.sets++; closing.closingAt = e.closingAt ?? closing.closingAt;
-        if (lastClosingReached != null && closing.closingAt > t) closingReopenedAt ??= t;
+        closingChanges.push([t, closing.closingAt]);
         break;
-      case 'closing.cleared': closing.cleared++; closing.closingAt = null; if (lastClosingReached != null) closingReopenedAt ??= t; break;
+      case 'closing.cleared': closing.cleared++; closing.closingAt = null; closingChanges.push([t, null]); break;
       case 'closing.reached':
         closing.reachedAt ??= t;
         // Noté dès qu'aucun titre ne peut plus partir, parfois avant l'heure :
         // le bar ferme à l'heure annoncée.
         lastClosingReached = Number.isFinite(e.closingAt) ? e.closingAt : t;
-        closingReopenedAt = null;
         break;
       case 'closing.refused': closing.refused++; break;
       case 'spotify': {
@@ -620,23 +620,35 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // revient aussitôt et la coupure semblerait brève.
   const lastStageEnd = stages.length ? Math.max(...stages.map(st => st.endAt)) : null;
   const lastStageStart = stages.length ? Math.max(...stages.map(st => st.start)) : null;
-  // Fermeture décalée ou retirée après avoir été atteinte : en direct, la
-  // soirée continue ; une soirée close ne la compte que si l'on a rechanté
-  // depuis (une heure retirée le lendemain, « Options par défaut », ne rouvre rien).
-  const reopened = closingReopenedAt != null && (live || (lastStageStart ?? -Infinity) > closingReopenedAt);
-  const barClosed = lastClosingReached != null && !reopened;
+  // Arrêt de l'application d'au moins 30 min à partir du début du dernier titre.
+  const appStop = lastStageStart != null ? offline.find(([a, b]) => a >= lastStageStart && b - a >= BLIP_MS) : null;
+  // Heure de fermeture de la soirée : celle en vigueur au début du dernier
+  // titre, qu'une « fermeture atteinte » ait été notée ou non (le serveur ne
+  // la note que si un titre est retenu) ; une heure décalée puis suivie
+  // d'autres titres compte donc. Sans heure à ce moment, la première réglée
+  // ensuite (le bar ferme après le dernier titre). Un changement fait après
+  // le dernier titre (« + 10 min », « Options par défaut » le lendemain) ne
+  // compte qu'en direct, tant que le PC n'a pas été éteint depuis. Ancien
+  // journal sans réglage noté : la dernière fermeture atteinte.
+  const closingAtTime = time => closingChanges.filter(([at]) => at <= time).at(-1)?.[1] ?? null;
+  let closingHour = closing.closingAt;
+  if (!closingChanges.length) closingHour = lastClosingReached;
+  else if (lastStageStart != null) {
+    const later = closingChanges.filter(([at]) => at > lastStageStart);
+    closingHour = closingAtTime(lastStageStart) ?? later.find(([, hour]) => hour != null)?.[1] ?? null;
+    const liveLater = live ? later.filter(([at]) => !appStop || at < appStop[0]) : [];
+    if (liveLater.length) closingHour = liveLater.at(-1)[1];
+  }
+  const barClosed = closingHour != null && closingHour <= E1;
   const backWithin = (ph, i) => (phases.slice(i + 1).find(next => next.blocker !== 'offline')?.start ?? Infinity) - ph.start < BLIP_MS;
   const ended = !live && lastStageStart != null;
-  const offlineAfter = ended ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && !backWithin(ph, i)) : null;
-  // Fermeture atteinte : même en direct (le lendemain matin, avant la remise
-  // à zéro), un arrêt du PC après le dernier titre est la fin de la soirée.
-  const appStopped = (ended || (barClosed && lastStageStart != null)) ?
-    offline.find(([a, b]) => a >= lastStageStart && b - a >= BLIP_MS) : null;
-  const stoppedAt = Math.min(offlineAfter?.start ?? Infinity, appStopped?.[0] ?? Infinity);
-  // Heure de fermeture réglée : le PC éteint avant cette heure, après le
-  // dernier titre, ferme aussi la soirée (pas de redémarrage le lendemain).
-  const barEnd = Math.min(Math.max(lastStageEnd ?? -Infinity, lastClosingReached), appStopped?.[0] ?? Infinity);
-  const closedAt = Math.max(openedAt, Math.min(E1, barClosed ? barEnd : Number.isFinite(stoppedAt) ? stoppedAt : E1));
+  const offlineAfter = ended && !barClosed ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && !backWithin(ph, i)) : null;
+  // Le PC éteint après le début du dernier titre finit la soirée, même avant
+  // l'heure de fermeture ; en direct, une fois cette heure passée (le
+  // lendemain matin, avant la remise à zéro).
+  const appStopped = ended || barClosed ? appStop : null;
+  const end = barClosed ? Math.max(lastStageEnd ?? -Infinity, closingHour) : offlineAfter?.start ?? E1;
+  const closedAt = Math.max(openedAt, Math.min(E1, end, appStopped?.[0] ?? Infinity));
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
   // Arrêts de l'application pendant le karaoké : l'arrêt du PC après la
   // fermeture (jusqu'au lendemain) n'est pas un incident de la soirée.
@@ -915,7 +927,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const stats = {
     format: 'karaoke-evening-stats', version: FORMAT,
     evening: { id: meta.eveningId || null, startedAt: E0, endedAt: Number.isFinite(meta.endedAt) || closedEvent ? E1 : null,
-      openedAt, closedAt: barClosed || Number.isFinite(stoppedAt) ? closedAt : null,
+      openedAt, closedAt: barClosed || offlineAfter || appStopped ? closedAt : null,
       live: !!live, durationSec: sec(E1 - E0), offlineSec: sec(sum(eveningOffline.map(([a, b]) => b - a))), restarts: eveningRestarts,
       closedBy: closedEvent?.by || null, queueClearedAt },
     global, fairness, singers, tables: tableRows,

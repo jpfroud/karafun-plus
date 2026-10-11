@@ -2149,7 +2149,10 @@
       : 'L’envoi automatique à KaraFun sera rallumé.') : '',
       S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : '',
       S.settings?.duoOnly ? 'Les solos seront de nouveau permis.' : '',
-      S.closing ? 'L’heure de fermeture sera retirée.' : ''].filter(Boolean).join(' ');
+      S.closing ? 'L’heure de fermeture sera retirée.' : '',
+      // En fin de soirée, l'envoi rallumé sans heure de fermeture fait partir
+      // les titres que la fermeture retenait.
+      S.closing?.afterCount > 0 ? `Les ${S.closing.afterCount} titre${S.closing.afterCount > 1 ? 's' : ''} retenu${S.closing.afterCount > 1 ? 's' : ''} par la fermeture repartir${S.closing.afterCount > 1 ? 'ont' : 'a'} vers KaraFun : vide la file d’abord si la soirée est finie.` : ''].filter(Boolean).join(' ');
     if (!confirm(`Remettre toutes les options à leur valeur d’origine ?${now ? ` ${now}` : ''} Délais, cases cochées, règles de rotation, Battle, « Je suis là » et durée des titres reviennent aussi par défaut, comme les automatismes Spotify. Le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file sont gardés.`)) return;
     try {
       const result = await post('/api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });

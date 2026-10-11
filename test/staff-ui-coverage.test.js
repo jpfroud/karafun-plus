@@ -4242,6 +4242,16 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   await page.poll();
   await page.click(page.$('resetSettings'));
   assert.match(page.confirms.at(-1), /L’envoi automatique à KaraFun sera rallumé\./);
+  // Relecture du 11 octobre : en fin de soirée, des titres retenus par la
+  // fermeture repartiraient vers KaraFun ; la confirmation le dit.
+  page.world.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 2 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /Les 2 titres retenus par la fermeture repartiront vers KaraFun : vide la file d’abord si la soirée est finie\./);
+  delete page.world.closing;
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.doesNotMatch(page.confirms.at(-1), /retenus par la fermeture/);
   page.world.persistenceError = 'disque plein';
   await page.poll();
   await page.click(page.$('resetSettings'));

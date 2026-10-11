@@ -773,7 +773,7 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
   // Codex sur la PR #16 : la même soirée, archivée sans nouvelle fermeture
   // atteinte, ne doit pas être coupée à l'ancienne heure. Une heure retirée le
   // lendemain (« Options par défaut ») sans titre chanté depuis ne rouvre rien.
-  test('soirée archivée : fermeture atteinte puis décalée, on rechante ensuite, la soirée continue', () => {
+  test('soirée archivée : fermeture atteinte puis décalée, on rechante ensuite : la nouvelle heure compte', () => {
     const e = evening();
     const events = [
       e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
@@ -790,10 +790,37 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
       e(300, 'evening.closed', { by: 'staff-reset' }),
     ];
     const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events });
-    assert.equal(stats.evening.closedAt, T(100), 'heure décalée : la soirée finit à la coupure de KaraFun, pas à l’ancienne heure');
+    assert.equal(stats.evening.closedAt, T(120), 'heure décalée puis rechantée : la soirée finit à la nouvelle heure, pas à l’ancienne');
     // Heure retirée le lendemain sans titre chanté depuis : la fermeture tient.
     const nextDay = [...events.filter(ev => ev.t < T(61)), e(280, 'closing.cleared'), e(300, 'evening.closed', { by: 'staff-reset' })];
     assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: nextDay }).evening.closedAt, T(60));
+  });
+
+  // Relecture du 11 octobre : la file vide à la nouvelle heure, le serveur ne
+  // note pas de nouvelle « fermeture atteinte » ; la soirée finit quand même.
+  test('fermeture atteinte, « + 15 min », on rechante, file vide à la nouvelle heure : la soirée finit à la nouvelle heure', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(40, 'closing.set', { closingAt: T(60) }),
+      e(50, 'stage.started', { queueId: 1, source: 'native', title: 'Un' }),
+      e(54, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(60, 'closing.reached', { closingAt: T(60) }),
+      e(61, 'closing.set', { closingAt: T(75) }),
+      e(65, 'stage.started', { queueId: 2, source: 'native', title: 'Deux' }),
+      e(69, 'stage.ended', { queueId: 2, playedSec: 240 }),
+      ...Array.from({ length: 20 }, (_, k) => e(80 + k * 10, 'person.seen', { personId: 'pA' })),
+      e(300, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events });
+    assert.equal(stats.evening.closedAt, T(75));
+    assert.equal(singerOf(stats, 'pA').presenceSec, (75 - 10) * 60);
+    // Heure jamais « atteinte » (rien de retenu) : elle ferme aussi la soirée.
+    const quiet = events.filter(ev => !/^closing\.(reached|set)$/.test(ev.ev) || ev.t === T(40))
+      .filter(ev => !(ev.ev === 'stage.started' && ev.t === T(65)) && !(ev.ev === 'stage.ended' && ev.t === T(69)));
+    assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: quiet }).evening.closedAt, T(60));
   });
 
   test('en direct le lendemain matin, fermeture atteinte et PC éteint avant l’heure : même fin qu’une fois la soirée close', () => {
@@ -807,6 +834,8 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
       e(184, 'stage.ended', { queueId: 2, playedSec: 240 }),
       e(188, 'closing.reached', { closingAt: T(200) }),
       e(900, 'app.started', { restored: true, offlineMs: 710 * 60000 }),
+      // « Options par défaut » le matin : l'heure de fermeture est retirée.
+      e(910, 'closing.cleared'),
     ];
     const stats = computeStats({ meta: { startedAt: T(0) }, events, now: T(920), live: true });
     assert.equal(stats.evening.closedAt, T(190));
