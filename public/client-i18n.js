@@ -247,6 +247,7 @@ window.CLIENT_TRANSLATIONS = {
       'Renommer {name}': 'Rename {name}',
       'Ajouter une chanson pour {name}': 'Add a song for {name}',
       'Chanter en duo': 'Sing a duet',
+      'Ce soir, le bar ne prend que des duos : choisis avec qui tu chantes.': 'Tonight the bar only takes duets: choose who you’re singing with.',
       'Ajouter un duo pour {name}': 'Add a duet for {name}',
       'Transférer la gestion': 'Transfer',
       'Transférer la gestion de {name}': 'Transfer {name} to another phone',
@@ -632,6 +633,7 @@ window.CLIENT_TRANSLATIONS = {
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
     errors: {
+      'Ce soir, le bar ne prend que des duos : choisis un titre puis « Chanter en duo ».': 'Tonight the bar only takes duets: pick a song, then “Sing a duet”.',
       'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.': 'Nobody else is waiting to sing: your turn can’t be pushed back.',
       'Choisis le duo à annuler.': 'Choose the duet to cancel.',
       'Trop tard : ce duo est déjà sur scène.': 'Too late: this duet is already on stage.',

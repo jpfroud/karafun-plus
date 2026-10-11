@@ -4204,3 +4204,32 @@ test('troisième relecture : titre sous ses repères « trop long » et « ⚠ C
   assert.equal(plain.classList.contains('has-marks'), false, 'sans repère : cellule inchangée');
   assert.deepEqual(kids(plain), ['song-title', 'song-artist']);
 });
+
+// Retours du 11 octobre : « Duos uniquement » et « Options par défaut ».
+test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut » demande confirmation à côté des remises à zéro', async () => {
+  const page = await openPage();
+  assert.equal(page.$('duoOnly').checked, false, 'coupé par défaut');
+  assert.equal(page.$('duoOnly').closest('section').dataset.tab, 'plus');
+  page.replies['/api/staff/settings'] = body => { page.world.settings.duoOnly = body.duoOnly; return { ok: true }; };
+  await page.change(page.$('duoOnly'), true);
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { duoOnly: true });
+  await page.poll();
+  assert.equal(page.$('duoOnly').checked, true);
+  // Le bouton est dans « Fin de soirée », avec les autres remises à zéro.
+  assert.equal(page.$('resetSettings').closest('section'), page.$('clearQueue').closest('section'));
+  page.confirmAnswer = false;
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /^Remettre toutes les options à leur valeur d’origine \?.*code KaraFun, la connexion Spotify/);
+  assert.equal(page.postsTo('/api/staff/settings-reset').length, 0, 'rien sans confirmation');
+  page.confirmAnswer = true;
+  page.replies['/api/staff/settings-reset'] = { ok: true, kept: [] };
+  await page.click(page.$('resetSettings'));
+  assert.deepEqual(page.lastPost('/api/staff/settings-reset').body, { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.equal(page.toast().text, 'Options remises par défaut.');
+  page.replies['/api/staff/settings-reset'] = { ok: true, kept: ['auto'] };
+  await page.click(page.$('resetSettings'));
+  assert.equal(page.toast().text, 'Options remises par défaut. L’envoi automatique reste coupé : vérifie KaraFun.');
+  page.replies['/api/staff/settings-reset'] = { status: 400, error: 'Sauvegarde indisponible.' };
+  await page.click(page.$('resetSettings'));
+  assert.deepEqual(page.toast(), { text: 'Sauvegarde indisponible.', bad: true });
+});

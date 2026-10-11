@@ -4135,3 +4135,29 @@ test('QR personnel mort (personne réactivée après un départ) : la page dit d
   await en.poll();
   assert.equal(postsTo(en, '/api/table/solo/open').length, 1, 'refus du serveur : pas de nouvel essai');
 });
+
+// Retours du 11 octobre : « Duos uniquement » réglé au bar pour une soirée chargée.
+test('duos uniquement : pas de « ＋ Chanson », la fiche d’un titre ne propose que le duo', async () => {
+  const catalog = [{ songId: 9, title: 'Tube', artist: 'Groupe', duration: 237 }];
+  const respond = url => url.startsWith('/api/catalog/songs?') ? { songs: catalog, total: 1 }
+    : url.startsWith('/api/search?') ? catalog : undefined;
+  const page = await open({ state: baseState({ rules: { duoOnly: true } }), respond });
+  assert.doesNotMatch(page.node('peopleList').innerHTML, /data-add-song=/, 'pas de bouton « ＋ Chanson »');
+  assert.match(page.node('peopleList').innerHTML, /data-duet-song="alice"/, 'le duo reste proposé');
+  await page.click(page.node('nav-catalog'));
+  await page.tap('catalogContent', '[data-category-index="0"]');
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.match(page.sheetHtml(), /Ce soir, le bar ne prend que des duos : choisis avec qui tu chantes\./);
+  assert.equal(page.$('appendSong').hidden, true, 'pas d’ajout en solo');
+  assert.equal(page.$('replaceSong').hidden, true);
+  assert.equal(page.$('duetSongChoice').hidden, false);
+  assert.match(page.$('duetSongChoice').className, /primary/);
+  // Option coupée : la fiche habituelle.
+  const free = await open({ state: baseState(), respond });
+  assert.match(free.node('peopleList').innerHTML, /data-add-song="alice"/);
+  await free.click(free.node('nav-catalog'));
+  await free.tap('catalogContent', '[data-category-index="0"]');
+  await free.tap('catalogContent', '[data-song-index="0"]');
+  assert.equal(free.$('appendSong').hidden, false);
+  assert.doesNotMatch(free.sheetHtml(), /que des duos/);
+});

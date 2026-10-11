@@ -535,4 +535,4 @@ class SpotifyAutomation {
   }
 }
 
-module.exports = { SpotifyLink, SpotifyAutomation };
+module.exports = { SpotifyLink, SpotifyAutomation, OPTION_DEFAULTS: DEFAULTS };

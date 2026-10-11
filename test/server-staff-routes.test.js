@@ -983,3 +983,65 @@ test('état du bar : invitations de duo en attente, avec l’état vu / pas enco
   f.sched.answerDuet(zoe, true, song.entryId);
   assert.deepEqual(plain(f.staffState().duoInvites), [], 'acceptée : plus en attente');
 });
+
+// Retours du 11 octobre : « Duos uniquement » pour une soirée chargée.
+test('duos uniquement : plus de solo depuis les téléphones, duos et titres déjà choisis gardés', async () => {
+  const f = harness();
+  const [ana] = singers(f, ['Ana']);
+  const ben = f.sched.join({ tableId: '1', name: 'Ben' });
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  assert.equal(f.staffState().settings.duoOnly, true);
+  assert.equal(f.publicState(null, '1').rules.duoOnly, true, 'annoncé aux téléphones');
+  assert.match(lastNote(f).msg, /^Duos uniquement : les clients n’ajoutent plus que des duos/);
+  const access = f.access.issue('1');
+  const as = person => ({ table: '1', access, personId: person.id, token: person.token });
+  for (const mode of ['append', 'replace']) {
+    await assert.rejects(f.call('POST /api/table/song', { ...as(ana), mode, song: { songId: 4001, title: 'Solo' } }),
+      error => error.code === 'DUO_ONLY', `solo refusé (${mode})`);
+  }
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: ben.id, song: { songId: 4002, title: 'Duo' } });
+  assert.deepEqual(f.sched.songsOf(ana).map(song => [song.title, !!song.duet]), [['Titre Ana', false], ['Duo', true]],
+    'le solo déjà choisi reste, le duo s’ajoute');
+  await assert.rejects(f.call('POST /api/staff/settings', { duoOnly: 'oui' }), /Duos uniquement/);
+  await f.call('POST /api/staff/settings', { duoOnly: false });
+  await f.call('POST /api/table/song', { ...as(ben), mode: 'append', song: { songId: 4003, title: 'Solo de Ben' } });
+  assert.equal(f.sched.songsOf(ben).length, 1);
+});
+
+// Retours du 11 octobre : remettre le système prêt pour une nouvelle soirée
+// quand quelqu'un a changé des réglages, sans toucher aux connexions.
+test('options par défaut : réglages d’origine, connexions, adresse des QR, tables et file gardées', async () => {
+  const f = harness();
+  const [ana] = singers(f, ['Ana']);
+  f.settings.baseUrl = 'http://192.168.1.20:3000';
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'jeton',
+    deviceId: 'pc', deviceName: 'PC du bar' };
+  await f.call('POST /api/staff/settings', { autoPlay: true, pushDelaySec: 10, playDelaySec: 2, repeatWarnMin: 0,
+    presenceGraceSec: 60, presenceMaxSkips: 5, requirePresence: true, tableRotation: true, weightedTables: true,
+    interleaveArrivals: false, gap: 2, cap: 5, singerSongSettings: false, maxSongSec: 300, duoOnly: true,
+    battleCooldownMin: 10, battleRejectedCooldownMin: 2, battleVoteMin: 3, battleMinVoters: 2 });
+  await f.call('POST /api/staff/closing', { time: '23:30' });
+  await f.call('POST /api/staff/spotify', { action: 'options', autoResume: false, autoPause: false, resumeDelaySec: 30, pauseLeadSec: 5 });
+  await assert.rejects(f.call('POST /api/staff/settings-reset', {}), /Confirmation/);
+  assert.equal(f.settings.duoOnly, true, 'sans confirmation, rien ne change');
+  const result = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.deepEqual(plain(result.kept), []);
+  const s = plain(f.staffState().settings);
+  assert.deepEqual([s.auto, s.autoPlay, s.pushDelaySec, s.playDelaySec, s.repeatWarnMin, s.presenceGraceSec, s.presenceMaxSkips,
+    s.requirePresence, s.tableRotation, s.weightedTables, s.interleaveArrivals, s.gap, s.cap, s.singerSongSettings, s.maxSongSec,
+    s.duoOnly, s.closingAt, s.battleCooldownMin, s.battleRejectedCooldownMin, s.battleVoteMin, s.battleMinVoters],
+  [true, false, 15, 8, 45, 30, 3, false, false, false, true, 4, 2, true, null, false, null, 30, 5, 15, 5]);
+  const spotify = plain(f.spotify.config);
+  assert.deepEqual([spotify.autoResume, spotify.autoPause, spotify.resumeDelaySec, spotify.pauseLeadSec], [true, true, 3, 2]);
+  assert.deepEqual([spotify.clientId, spotify.refreshToken, spotify.deviceId], ['0123456789abcdef0123456789abcdef', 'jeton', 'pc'],
+    'connexion et appareil Spotify gardés');
+  assert.equal(f.settings.baseUrl, 'http://192.168.1.20:3000', 'adresse des QR gardée');
+  assert.equal(f.sched.songsOf(ana).length, 1, 'file gardée');
+  assert.match(lastNote(f).msg, /^Options remises par défaut/);
+  // KaraFun interdit l'ajout de titres : l'envoi automatique reste coupé.
+  f.settings.auto = false;
+  f.setBridge({ ...fakeBridge(), permissions: { addToQueue: false } });
+  const blocked = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.deepEqual(plain(blocked.kept), ['auto']);
+  assert.equal(f.settings.auto, false);
+});

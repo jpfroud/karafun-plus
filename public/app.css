@@ -399,7 +399,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .battle-settings label { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; font-size: 13px; }
 .battle-settings input { width: 68px; min-height: 36px; padding: 5px 8px; }
 #battleActions { margin-top: 12px; }
-.rules-panel .presence-switch, .rules-panel .tune-switch, .rules-panel .max-song-switch { font-weight: 700; }
+.rules-panel .presence-switch, .rules-panel .tune-switch, .rules-panel .max-song-switch, .rules-panel .duo-only-switch { font-weight: 700; }
 /* Même écart que la marge des paragraphes entre deux blocs de règles. */
 #tooLongActions { margin-bottom: 14px; }
 .rotation-options { display: grid; gap: 3px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 12px; padding: 14px; margin-bottom: 18px; }

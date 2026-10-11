@@ -40,18 +40,18 @@ function readBuildInfo() {
 const BUILD = readBuildInfo();
 // Identifie ce démarrage : une alerte fermée au bar revient après un redémarrage.
 const BOOT_ID = crypto.randomBytes(6).toString('hex');
-const { Scheduler, DEFER_MAX } = require('./scheduler');
+const { Scheduler, DEFER_MAX, DEFAULTS: SCHED_DEFAULTS } = require('./scheduler');
 const { KaraFunBridge, isBattleItem, maskCode, unknownSettingsSupport } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
 const { PrivateEvent, clientKey } = require('./private-event');
 const { Catalog } = require('./catalog');
-const { BattleVote } = require('./battle-vote');
+const { BattleVote, VOTE_DURATION_MS, COOLDOWN_MS, REJECTED_COOLDOWN_MS, MIN_VOTERS } = require('./battle-vote');
 const { NightStateStore, snapshotNight, restoreNight } = require('./night-state');
 const { DEFAULT_REPEAT_MIN, songNotice, queueRepeats } = require('./song-repeats');
 const { Lyrics } = require('./lyrics');
-const { SpotifyLink, SpotifyAutomation } = require('./spotify');
+const { SpotifyLink, SpotifyAutomation, OPTION_DEFAULTS: SPOTIFY_DEFAULTS } = require('./spotify');
 const { EveningJournal, validEveningId } = require('./evening-journal');
 const { computeStats, insights, exportEvening } = require('./evening-stats');
 const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, guideVoicesOf, liveFromStatus,
@@ -278,30 +278,37 @@ if (DEMO) sched.opts.defaultSlotSec = parseInt(arg('song-seconds', 45), 10) + 1;
 let bridge = null;
 let fake = null;
 const SONG_SECONDS = parseInt(arg('song-seconds', 45), 10);
-// La chanson suivante est choisie le plus tard possible (pour tenir compte des derniers arrivés),
-// mais assez tôt pour que KaraFun la charge : `pushDelaySec` après le début de la chanson en cours.
-const settings = { auto: true, autoPlay: false, baseUrl: null,
+// Réglages du bar à leur valeur d'origine. « Options par défaut » (Plus ›
+// Fin de soirée) y revient, avec les règles de la file, de la Battle et de
+// Spotify, sans toucher au code de la télécommande, à la connexion Spotify,
+// à l'adresse des QR, à l'événement privé, aux tables ni à la file.
+const DEFAULT_SETTINGS = Object.freeze({ auto: true, autoPlay: false,
+  // La chanson suivante est choisie le plus tard possible (pour tenir compte des derniers arrivés),
+  // mais assez tôt pour que KaraFun la charge : `pushDelaySec` après le début de la chanson en cours.
   pushDelaySec: DEMO ? Math.max(1, Math.round(SONG_SECONDS / 3)) : 45, playDelaySec: 8,
   // Alerte « titre déjà chanté » : fenêtre en minutes, 0 pour la couper.
   repeatWarnMin: DEFAULT_REPEAT_MIN,
   // « Je suis là » : délai une fois la scène libre, puis nombre de passages
   // manqués avant de retirer le titre et de prévenir le bar.
   presenceGraceSec: 30, presenceMaxSkips: 3,
-  // Heure de fermeture du bar (horodatage), annoncée aux clients : au-delà
-  // de ce que la file peut contenir, plus d'ajout de titre ; à l'heure, plus
-  // d'envoi ni de lancement, titres chargés retirés, Spotify relancé (voir
-  // closingBlocksStart).
-  closingAt: null,
   // Durée maximale d'un titre ajouté par un client, en secondes (null : pas
   // de limite, réglage par défaut). Voir maxSongLimit et assertSongLength.
   maxSongSec: null,
-  // Spotify a repris en fin de file : la lecture automatique attend que le
-  // bar lance lui-même le titre suivant (« Lecture »), puis se rétablit.
-  autoPlayHeld: false,
   // Réglages de titre (tonalité, tempo, voix) depuis les téléphones des
   // chanteurs : le bar peut les couper, comme « Personnaliser la chanson en
   // cours » dans KaraFun. Gardé d'une soirée à l'autre.
   singerSongSettings: true,
+  // Duos uniquement : les clients n'ajoutent que des duos (soirée chargée,
+  // plus de monde sur scène par heure). Les titres déjà choisis restent.
+  duoOnly: false });
+const settings = { ...DEFAULT_SETTINGS, baseUrl: null,
+  // Heure de fermeture du bar (horodatage), annoncée aux clients. L'ajout de
+  // titres reste toujours possible ; à l'heure, plus d'envoi ni de
+  // lancement, titres chargés retirés, Spotify relancé (closingBlocksStart).
+  closingAt: null,
+  // Spotify a repris en fin de file : la lecture automatique attend que le
+  // bar lance lui-même le titre suivant (« Lecture »), puis se rétablit.
+  autoPlayHeld: false,
   queueClearPending: false };
 const queueClearRemovalRequests = new Map();
 let curKey = null, curSince = 0;
@@ -1893,7 +1900,7 @@ function publicState(person, tableId, managed = null) {
       requirePresence: sched.opts.requirePresence, tableRotation: sched.opts.tableRotation,
       weightedTables: sched.opts.weightedTables,
       // Durée maximale des titres (secondes, null : pas de limite).
-      maxSongSec: maxSongLimit() },
+      maxSongSec: maxSongLimit(), duoOnly: !!settings.duoOnly },
     log: sched.log.slice(-30).reverse(),
     v: sched.version,
     // « registered » : personnes qui pourraient voter. En dessous du minimum
@@ -2972,6 +2979,7 @@ function repeatNotice(song, tableId, entryId = null) {
 }
 
 function chooseFor(p, song, mode) {
+  assertDuoAllowed();
   assertSongLength(p, [song], 'song');
   const songId = Number(song?.songId);
   if ([...(pending && pending.sel.ids.includes(p.id) ? [pending.sel.song] : []),
@@ -2989,6 +2997,15 @@ function chooseFor(p, song, mode) {
   sync();
   const added = sched.songsOf(p).find(item => item.songId === songId);
   return added ? repeatNotice(added, p.tableId, added.entryId) : null;
+}
+
+// « Duos uniquement » : un client n'ajoute plus de solo (titre ou
+// remplacement) ; duos, demandes de duo et titres déjà choisis restent.
+function assertDuoAllowed() {
+  if (!settings.duoOnly) return;
+  const error = new Error('Ce soir, le bar ne prend que des duos : choisis un titre puis « Chanter en duo ».');
+  error.code = 'DUO_ONLY';
+  throw error;
 }
 
 function confirmPresence(p) {
@@ -3642,7 +3659,7 @@ function journalSettingsState() {
     battleCooldownMin: battleVote.cooldownMs / 60000, battleRejectedCooldownMin: battleVote.rejectedCooldownMs / 60000,
     battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters, baseUrl: !!settings.baseUrl,
     singerSongSettings: settings.singerSongSettings !== false, privateEvent: privateEvent.enabled,
-    maxSongSec: maxSongLimit() };
+    maxSongSec: maxSongLimit(), duoOnly: !!settings.duoOnly };
 }
 function journalSettings(before) {
   const after = journalSettingsState();
@@ -3946,6 +3963,8 @@ const handlers = {
     if (typeof nextSingerSettings !== 'boolean') {
       throw new Error('Le réglage des titres depuis les téléphones est activé ou désactivé (oui ou non).');
     }
+    const nextDuoOnly = 'duoOnly' in body ? body.duoOnly : !!settings.duoOnly;
+    if (typeof nextDuoOnly !== 'boolean') throw new Error('« Duos uniquement » est activé ou désactivé (oui ou non).');
     // Durée maximale des titres : null (ou false) coupe la limite.
     const nextMaxSong = 'maxSongSec' in body ? (body.maxSongSec === null || body.maxSongSec === false ? null : Number(body.maxSongSec))
       : maxSongLimit();
@@ -3988,6 +4007,11 @@ const handlers = {
     settings.presenceGraceSec = nextPresenceGrace;
     settings.presenceMaxSkips = nextPresenceSkips;
     settings.singerSongSettings = nextSingerSettings;
+    if (nextDuoOnly !== !!settings.duoOnly) {
+      settings.duoOnly = nextDuoOnly;
+      sched.note(nextDuoOnly ? 'Duos uniquement : les clients n’ajoutent plus que des duos ; les titres déjà choisis restent.' :
+        'Duos uniquement coupé : les clients peuvent de nouveau ajouter des solos.', 'staff');
+    }
     if (nextMaxSong !== maxSongLimit()) {
       settings.maxSongSec = nextMaxSong;
       const count = tooLongEntries().length;
@@ -4002,6 +4026,28 @@ const handlers = {
     journalSettings(settingsBefore);
     sched.version++; sync();
     return { ok: true };
+  },
+  // Toutes les options du bar à leur valeur d'origine, pour une nouvelle
+  // soirée ou après des réglages faits par quelqu'un d'autre. Gardés : code
+  // et connexion KaraFun, connexion et appareil Spotify, adresse des QR,
+  // événement privé, tables, bonus, file et soirée en cours.
+  'POST /api/staff/settings-reset': async (req, res, body) => {
+    if (body.confirmation !== 'OPTIONS PAR DÉFAUT') throw new Error('Confirmation de la remise aux options par défaut manquante.');
+    const kept = [];
+    // L'envoi automatique ne se rallume que si rien ne l'interdit encore.
+    const autoBlocked = recoveredPending || persistenceError || bridge?.permissions?.addToQueue === false;
+    if (autoBlocked && !settings.auto) kept.push('auto');
+    const { auto, ...rest } = DEFAULT_SETTINGS;
+    await handlers['POST /api/staff/settings'](req, res, { ...rest, ...(autoBlocked ? {} : { auto }),
+      gap: SCHED_DEFAULTS.gap, cap: SCHED_DEFAULTS.cap, requirePresence: SCHED_DEFAULTS.requirePresence,
+      tableRotation: SCHED_DEFAULTS.tableRotation, weightedTables: SCHED_DEFAULTS.weightedTables,
+      interleaveArrivals: SCHED_DEFAULTS.interleaveArrivals,
+      battleCooldownMin: COOLDOWN_MS / 60000, battleRejectedCooldownMin: REJECTED_COOLDOWN_MS / 60000,
+      battleVoteMin: VOTE_DURATION_MS / 60000, battleMinVoters: MIN_VOTERS });
+    if (settings.closingAt != null) await handlers['POST /api/staff/closing'](req, res, { clear: true });
+    spotify.setOptions({ ...SPOTIFY_DEFAULTS });
+    sched.note(`Options remises par défaut${kept.length ? ' (envoi automatique laissé coupé : vérifie KaraFun)' : ''}.`, 'staff');
+    return { ok: true, kept };
   },
   'POST /api/staff/table': async (req, res, body) => {
     const id = TableAccess.key(body.id);
@@ -4336,7 +4382,7 @@ const handlers = {
     if (body.clear) {
       settings.closingAt = null;
       journalEvent('closing.cleared', {});
-      sched.note('Heure de fermeture retirée : les ajouts de titres sont de nouveau libres.', 'staff');
+      sched.note('Heure de fermeture retirée : la file n’a plus d’heure de fin.', 'staff');
     } else if (body.extendMin !== undefined) {
       const minutes = Number(body.extendMin);
       if (closingAt() == null) throw new Error('Indique d’abord une heure de fermeture.');

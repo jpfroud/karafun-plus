@@ -416,6 +416,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if ('karafunDefaults' in restoredSettings && !(kf && typeof kf === 'object' && /^[0-9a-f]{16}$/.test(String(kf.code)) &&
     Number.isInteger(kf.backing) && kf.backing >= 0 && kf.backing <= 100 &&
     (!('provisional' in kf) || typeof kf.provisional === 'boolean'))) delete restoredSettings.karafunDefaults;
+  // « Duos uniquement » abîmé : la valeur actuelle reste.
+  if ('duoOnly' in restoredSettings && typeof restoredSettings.duoOnly !== 'boolean') delete restoredSettings.duoOnly;
   // Durée maximale des titres (lot J) : une valeur invalide coupe la limite.
   if ('maxSongSec' in restoredSettings && !validMaxSong(restoredSettings.maxSongSec)) restoredSettings.maxSongSec = null;
 
