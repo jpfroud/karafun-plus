@@ -37,7 +37,7 @@ TOOLS="$WORK/outils"; mkdir -p "$TOOLS"; printf '#!/usr/bin/env bash\nexit 0\n' 
 
 # Environnement maîtrisé : pas de session web ni de gstack existant, et pas
 # de CODEX_HOME réel (le faux setup y écrirait ses compétences de test).
-quiet_env() { env -u GSTACK_ROOT -u CODEX_HOME -u CLAUDE_CODE_REMOTE -u CLAUDE_ENV_FILE -u GSTACK_CHROMIUM_PATH -u GSTACK_SKIP_PLAYWRIGHT "$@"; }
+quiet_env() { env -u GSTACK_ROOT -u CODEX_HOME -u CLAUDE_CODE_REMOTE -u CLAUDE_ENV_FILE -u GSTACK_CHROMIUM_PATH -u GSTACK_SKIP_PLAYWRIGHT -u CLAUDE_PROJECT_DIR "$@"; }
 run_start() { local home="$1"; shift; printf '%s' '{"hook_event_name":"SessionStart","source":"startup"}' |
   quiet_env HOME="$home" GSTACK_AUTO_INSTALL=0 "$@" bash "$START" SessionStart; }
 run_auto() { local home="$1"; shift; printf '{}' |
@@ -69,6 +69,11 @@ printf '%s' "$out" | field additionalContext |
 rm -f "$home/setup-args"
 out="$(run_auto "$home")" || fail "second démarrage"
 printf '%s' "$out" | field additionalContext | grep -q "^GSTACK_OK : gstack est installé" || fail "second démarrage"
+# Au démarrage aussi, la table de routage accompagne GSTACK_OK.
+for route in "l'annoncer en une ligne" "→ investigate" "→ review" "ne jamais passer ce choix sous silence" \
+  "le dernier commit envoyé sur chaque branche"; do
+  printf '%s' "$out" | field additionalContext | grep -qF "$route" || fail "table de routage absente au démarrage : $route"
+done
 [ ! -e "$home/setup-args" ] || fail "gstack ne doit pas être réinstallé"
 
 # 3. Échecs : jamais bloquants, raison donnée, rien de faussement « installé ».
@@ -162,6 +167,20 @@ printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING.*install
 mkdir -p "$home/.claude/skills/gstack/bin"
 out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel avec gstack"
 printf '%s' "$out" | field additionalContext | grep -q '^gstack : .*review avant livraison' || fail "parcours non rappelé"
+# Table de routage (modèle RetroGemini) : choix annoncé, aucune omission silencieuse.
+for route in "l'annoncer en une ligne" "→ investigate" "→ spec" "→ qa" "→ review" "aucune commande gstack" "ne jamais passer ce choix sous silence"; do
+  printf '%s' "$out" | field additionalContext | grep -qF "$route" || fail "table de routage incomplète : $route"
+done
+# Regression: G1 (quatrième relecture finale, décision D3 du gérant) — le hook
+# pre-push ne compare que le dernier commit envoyé sur chaque branche ; le
+# rappel disait « refuse d'envoyer un commit dont le contenu… ».
+# Regression: G1 bis (vérification de la quatrième relecture finale) — il disait
+# ensuite « le dernier commit envoyé, c'est-à-dire le contenu envoyé », alors
+# qu'un commit intermédiaire jamais relu part avec le dernier.
+printf '%s' "$out" | field additionalContext | grep -qF "le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture review terminée (les commits intermédiaires ne sont pas comparés)" ||
+  fail "le rappel ne dit pas que seul le dernier commit envoyé est comparé"
+! printf '%s' "$out" | field additionalContext | grep -qF "envoyer un commit dont" || fail "le rappel laisse croire que chaque commit envoyé est comparé"
+! printf '%s' "$out" | field additionalContext | grep -qF "contenu envoyé" || fail "le rappel laisse croire que tout le contenu envoyé a été relu"
 
 # 7. Installations existantes (Claude Code, Codex, dépôt migré) : acceptées sans rien relancer.
 for dir in .claude/skills/gstack .codex/skills/gstack .gstack/repos/gstack; do
@@ -196,6 +215,61 @@ out="$(quiet_env HOME="$empty" GSTACK_AUTO_INSTALL=0 bash "$START" < <(sleep 20)
 [ $(( $(date +%s) - started )) -lt 10 ] || fail "le hook attend une entrée standard qui ne se ferme pas"
 printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail "sortie invalide avec entrée ouverte"
 
+# 11b. Hook git pre-push de la porte : installé dans le dépôt du projet,
+#      une seule fois, jamais par-dessus un hook étranger ni avec core.hooksPath.
+git_q() { git -c init.defaultBranch=main "$@" >/dev/null 2>&1; }
+# Regression: T2-4 (seconde relecture) — le contrôle du fichier temporaire
+# visait $ROOT/.git/hooks/pre-push.tmp.<PID du test> : ni le bon dépôt, ni le
+# PID du hook. On cherche tout pre-push.tmp.* dans les dépôts de test.
+no_tmp() { local left; left="$(ls -d "$WORK"/*/.git/hooks/pre-push.tmp.* "$WORK"/*/.githooks/pre-push.tmp.* 2>/dev/null)"
+  [ -z "$left" ] || fail "fichier temporaire laissé ($1) : $left"; }
+installed="$WORK/home-.claude_skills_gstack"
+repo="$WORK/projet"; git_q init "$repo" || fail "dépôt de test"
+out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null)" || fail "démarrage avec projet"
+cmp -s "$ROOT/.claude/hooks/pre-push" "$repo/.git/hooks/pre-push" || fail "hook pre-push non installé"
+[ -x "$repo/.git/hooks/pre-push" ] || fail "hook pre-push non exécutable"
+no_tmp "installation"
+# Regression: T2-3 (seconde relecture) — l'heure de modification était
+# comparée à la seconde près, dans la même seconde : le contrôle ne voyait
+# jamais une réécriture. Le hook est daté de 2001 avant le second démarrage.
+touch -d '2001-01-01 12:00' "$repo/.git/hooks/pre-push" || fail "datation du hook"
+quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null >/dev/null || fail "second démarrage avec projet"
+[ "$(date -r "$repo/.git/hooks/pre-push" +%Y)" = 2001 ] || fail "hook pre-push réécrit sans raison"
+no_tmp "second démarrage"
+# Ancienne version de la porte : remplacée, sans fichier temporaire laissé.
+printf '#!/bin/sh\n# Porte gstack karafun-plus (ancienne version)\nexit 0\n' >"$repo/.git/hooks/pre-push"
+quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null >/dev/null || fail "mise à jour du hook"
+cmp -s "$ROOT/.claude/hooks/pre-push" "$repo/.git/hooks/pre-push" || fail "ancienne porte pre-push non remplacée"
+no_tmp "mise à jour"
+out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" UserPromptSubmit </dev/null)" || fail "rappel avec projet"
+other="$WORK/projet-etranger"; git_q init "$other"; printf '#!/bin/sh\nexit 0\n' >"$other/.git/hooks/pre-push"
+out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$other" bash "$START" SessionStart </dev/null)" || fail "hook étranger"
+grep -q 'exit 0' "$other/.git/hooks/pre-push" && ! grep -q 'Porte gstack' "$other/.git/hooks/pre-push" || fail "hook pre-push étranger écrasé"
+printf '%s' "$out" | field additionalContext | grep -q 'un autre hook pre-push existe' || fail "hook étranger non signalé"
+paths="$WORK/projet-hookspath"; git_q init "$paths"; git -C "$paths" config core.hooksPath .githooks
+out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$paths" bash "$START" SessionStart </dev/null)" || fail "core.hooksPath"
+[ ! -e "$paths/.git/hooks/pre-push" ] && [ ! -e "$paths/.githooks/pre-push" ] || fail "core.hooksPath ignoré"
+printf '%s' "$out" | field additionalContext | grep -q 'core.hooksPath est réglé' || fail "core.hooksPath non signalé"
+quiet_env HOME="$installed" bash "$START" SessionStart </dev/null >/dev/null || fail "démarrage sans projet"
+# Regression: CI Windows de la PR #15 (relecture adverse) — un poste Windows
+# qui avait extrait la branche avant la règle eol=lf de .gitattributes garde
+# un hook pre-push en CRLF (git ne réécrit pas un fichier inchangé) : bash le
+# refuse (« exit 0\r ») et tout envoi, même tapé à la main, échouait.
+# L'installateur copie le hook sans retours chariot et répare une copie
+# installée en CRLF, sans la réécrire ensuite à chaque démarrage.
+crlf="$WORK/hooks-crlf"; cp -R "$ROOT/.claude/hooks" "$crlf" || fail "copie des hooks"
+sed 's/$/\r/' "$ROOT/.claude/hooks/pre-push" >"$crlf/pre-push"
+fixed="$WORK/projet-crlf"; git_q init "$fixed" || fail "dépôt de test CRLF"
+sed 's/$/\r/' "$ROOT/.claude/hooks/pre-push" >"$fixed/.git/hooks/pre-push"
+quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$fixed" bash "$crlf/gstack-session-start.sh" SessionStart </dev/null >/dev/null ||
+  fail "démarrage avec un hook source en CRLF"
+cmp -s "$ROOT/.claude/hooks/pre-push" "$fixed/.git/hooks/pre-push" || fail "hook pre-push installé ou laissé en CRLF"
+touch -d '2001-01-01 12:00' "$fixed/.git/hooks/pre-push" || fail "datation du hook CRLF"
+quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$fixed" bash "$crlf/gstack-session-start.sh" SessionStart </dev/null >/dev/null ||
+  fail "second démarrage avec un hook source en CRLF"
+[ "$(date -r "$fixed/.git/hooks/pre-push" +%Y)" = 2001 ] || fail "hook pre-push réécrit à chaque démarrage depuis une source en CRLF"
+no_tmp "fin"
+
 # 11. Les réglages du projet enregistrent les trois hooks, avec un délai qui
 #     laisse le temps d'installer gstack.
 SETTINGS="$ROOT/.claude/settings.json"
@@ -209,4 +283,4 @@ if (!/gstack-session-start\.sh"? SessionStart$/.test(start.command || "") || !(s
 if (!/gstack-session-start\.sh"? UserPromptSubmit$/.test(prompt) || !pre.includes("check-gstack.sh")) process.exit(1);
 ' "$SETTINGS" || fail "hooks absents ou délai trop court dans .claude/settings.json"
 
-echo "Hooks gstack Claude Code : installation automatique au démarrage, rappel à chaque demande, refus des compétences sans gstack OK"
+echo "Hooks gstack Claude Code : installation automatique au démarrage, table de routage, hook pre-push installé sans écraser l'existant, refus des compétences sans gstack OK"

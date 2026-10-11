@@ -250,6 +250,27 @@ class BattleVote {
   }
 
 
+  // Personnes arrivées (ou ayant saisi leur prénom) pendant le vote : elles
+  // votent comme les autres. Seulement pendant le vote ; personne n'est
+  // retiré (une personne partie reste comptée, comme à l'ouverture).
+  admit(personIds) {
+    const b = this.ballot;
+    // Vote échu mais pas encore clos par tick() : la décision garde son électorat.
+    if (b?.phase !== 'voting' || this.now() >= b.closesAt || !Array.isArray(personIds)) return false;
+    const known = new Set(b.eligiblePersonIds);
+    let added = false;
+    for (const raw of personIds) {
+      if (b.eligiblePersonIds.length >= 5000) break;
+      const id = raw == null ? '' : String(raw);
+      if (!id || known.has(id)) continue;
+      known.add(id);
+      b.eligiblePersonIds.push(id);
+      added = true;
+    }
+    if (added) this._changed('admitted');
+    return added;
+  }
+
   vote({ personId, choice }) {
     this.tick();
     const b = this.ballot;

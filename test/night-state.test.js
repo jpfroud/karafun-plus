@@ -104,6 +104,53 @@ try {
   assert.deepEqual(resumed.manualOverrideState(), beforeManual,
     'après redémarrage, annuler restitue précisément l’état avant déplacement');
 
+  // Regression: quatrième relecture finale (performance) — chaque sauvegarde
+  // (toutes les 2 s et après chaque action acceptée) recalculait l'empreinte
+  // de chaque photo gardée : 800 photos de 400 Ko, près d'une seconde.
+  const photoDir = path.join(dir, 'photos');
+  const photoBytes = 64 * 1024;
+  const portraits = new Scheduler();
+  const portraitAccess = new TableAccess();
+  portraits.table('Comptoir'); portraits.setHeadcount('Comptoir', 40); portraitAccess.issue('Comptoir');
+  const faces = [1, 2, 3].map(n => portraits.join({ tableId: 'Comptoir', name: `Visage ${n}`,
+    photo: { type: 'image/jpeg', buf: crypto.randomBytes(photoBytes) } }));
+  const portraitSnapshot = () => snapshotNight({ scheduler: portraits, access: portraitAccess, settings: settings(), photoDir });
+  const realCreateHash = crypto.createHash;
+  let photoHashes = 0;
+  crypto.createHash = (...args) => {
+    const hash = realCreateHash(...args);
+    const update = hash.update.bind(hash);
+    hash.update = (data, ...rest) => {
+      if (Buffer.isBuffer(data) && data.length === photoBytes) photoHashes++;
+      return update(data, ...rest);
+    };
+    return hash;
+  };
+  try {
+    const firstPhotos = portraitSnapshot().scheduler.people.map(p => p.photo);
+    assert.equal(photoHashes, 3, 'une empreinte par photo');
+    assert.deepEqual(portraitSnapshot().scheduler.people.map(p => p.photo), firstPhotos, 'mêmes fichiers');
+    assert.equal(photoHashes, 3, 'une deuxième sauvegarde ne relit pas les photos inchangées');
+    faces[0].photo = { type: 'image/png', buf: crypto.randomBytes(photoBytes) };
+    const changed = portraitSnapshot().scheduler.people.map(p => p.photo);
+    assert.equal(photoHashes, 4, 'une photo changée est lue une fois');
+    assert.notEqual(changed[0].file, firstPhotos[0].file);
+    assert.deepEqual(changed.slice(1), firstPhotos.slice(1));
+    // Reprise : chaque fichier est vérifié une fois, les photos restent
+    // lisibles et la sauvegarde suivante ne les relit pas.
+    const saved = JSON.parse(JSON.stringify(portraitSnapshot()));
+    const restoredPortraits = new Scheduler();
+    const restoredAccess = new TableAccess();
+    restoreNight(saved, { scheduler: restoredPortraits, access: restoredAccess, settings: settings(), photoDir });
+    assert.equal(photoHashes, 7, 'la reprise vérifie chaque photo');
+    for (const face of faces) assert.deepEqual(restoredPortraits.people.get(face.id).photo, face.photo);
+    const again = snapshotNight({ scheduler: restoredPortraits, access: restoredAccess, settings: settings(), photoDir });
+    assert.equal(photoHashes, 7, 'pas de nouvelle lecture après la reprise');
+    assert.deepEqual(again.scheduler.people.map(p => p.photo), saved.scheduler.people.map(p => p.photo));
+  } finally {
+    crypto.createHash = realCreateHash;
+  }
+
   const legacy = structuredClone(newest);
   delete legacy.scheduler.manualChanges;
   delete legacy.scheduler.roundPeoplePhysical;
@@ -201,6 +248,32 @@ try {
     { scheduler: restoredSolos, access: new TableAccess(), settings: settings() });
   assert.deepEqual(restoredSolos.people.get(solo.id).soloDeviceHashes, solo.soloDeviceHashes,
     'le lien sécurisé avec le téléphone solo survit au redémarrage');
+
+  // Regression: deuxième relecture finale R2 — chœurs par défaut relevés sur
+  // le KaraFun du bar : gardés dans la sauvegarde (code KaraFun en empreinte),
+  // repris après un redémarrage ; une valeur abîmée est ignorée sans refuser
+  // la soirée.
+  const kfDefaults = { code: 'a1b2c3d4e5f60718', backing: 53 };
+  const withDefaults = { ...settings(), karafunDefaults: kfDefaults };
+  const kept = settings();
+  restoreNight(JSON.parse(JSON.stringify(snapshotNight({ scheduler: solos, access: soloAccess, settings: withDefaults }))),
+    { scheduler: new Scheduler(), access: new TableAccess(), settings: kept });
+  assert.deepEqual(kept.karafunDefaults, kfDefaults, 'chœurs par défaut repris');
+  // Vérification de la troisième relecture finale R4 : valeur provisoire
+  // (KaraFun collant) gardée comme telle.
+  const provisional = { ...kfDefaults, provisional: true };
+  const keptProvisional = settings();
+  restoreNight(JSON.parse(JSON.stringify(snapshotNight({ scheduler: solos, access: soloAccess,
+    settings: { ...settings(), karafunDefaults: provisional } }))),
+  { scheduler: new Scheduler(), access: new TableAccess(), settings: keptProvisional });
+  assert.deepEqual(keptProvisional.karafunDefaults, provisional, 'valeur provisoire reprise');
+  for (const bad of [null, 'x', [], { code: 'a1b2', backing: 53 }, { code: kfDefaults.code, backing: 101 },
+    { code: kfDefaults.code, backing: 52.5 }, { code: kfDefaults.code }, { ...kfDefaults, provisional: 'oui' }]) {
+    const damaged = snapshotNight({ scheduler: solos, access: soloAccess, settings: { ...settings(), karafunDefaults: bad } });
+    const target = settings();
+    restoreNight(damaged, { scheduler: new Scheduler(), access: new TableAccess(), settings: target });
+    assert.equal('karafunDefaults' in target, false, `valeur abîmée ignorée : ${JSON.stringify(bad)}`);
+  }
 
   console.log('ok - reprise après crash : file, titres, duos, téléphones, QR, écritures atomiques et envoi ambigu');
 } finally {

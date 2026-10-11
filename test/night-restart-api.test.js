@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const root = path.join(__dirname, '..');
+const { NightStateStore } = require('../night-state');
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-api-restart-'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -299,8 +300,54 @@ NightStateStore.prototype.save = function(snapshot, options) {
       .map(name => readAll(path.join(sandbox, 'data', name))).join('');
     assert.ok(fs.existsSync(path.join(sandbox, 'data', 'soirees')), 'le journal de la soirée est bien relu');
     assert.ok(!saved.includes(reprise) && !saved.includes(`"${link.code}"`), 'ni le lien ni le code ne sont écrits en clair');
+    // Événement privé allumé, une entrée par son QR avant la coupure.
+    const eventView = await second.ok('/api/staff/private-event', { enabled: true });
+    assert.equal(eventView.enabled, true);
+    const eventSecret = new URL(eventView.url).searchParams.get('evenement');
+    assert.ok(eventSecret, 'QR de l’événement avec son secret');
+    const entered = await second.request('/api/table/enter', soloBody({ event: eventSecret }));
+    assert.equal(entered.status, 200, JSON.stringify(entered.data));
+    assert.ok(entered.cookie, 'le navigateur entré garde son chanteur');
+    const eventBefore = (await second.staff()).privateEvent;
     await stop(second, true);
+    // Coupure pendant un titre : la copie n'a pas de KaraFun, l'horloge de la
+    // scène est écrite dans la dernière sauvegarde comme le serveur l'aurait fait.
+    const store = new NightStateStore(path.join(sandbox, 'data', 'soiree'));
+    const beforeCrash = store.load();
+    assert.equal(beforeCrash.stageClock, null, 'aucun titre sur scène sans KaraFun');
+    const playing = { key: '9001', segAt: Date.now() - 42000, mediaMs: 15000, rate: 1.1, paused: false, position: 15 };
+    // Chœurs par défaut relevés sur un KaraFun lors de cette soirée (empreinte du code).
+    const kfDefaults = { code: 'a1b2c3d4e5f60718', backing: 80 };
+    // Regression: relecture finale fraîche (équipe rouge) — un dernier passage
+    // au-delà du compteur des passages dans la sauvegarde empêchait
+    // l'application de démarrer (« Impossible de démarrer ») : il est ramené au
+    // compteur, avec un avertissement au journal du serveur.
+    const serial = beforeCrash.scheduler.appearanceSerial;
+    beforeCrash.scheduler.people.find(person => person.id === alice.id).lastAppearanceTurn = serial + 3;
+    store.save({ ...beforeCrash, stageClock: playing, settings: { ...beforeCrash.settings, karafunDefaults: kfDefaults } });
     second = await launch();
+    state = await second.staff();
+    assert.deepEqual(state.privateEvent, eventBefore, 'événement privé : même état et même QR après le crash');
+    const back = await second.request('/api/table/enter', soloBody({ event: eventSecret }), entered.cookie);
+    assert.equal(back.status, 200, 'le même QR d’événement est encore accepté');
+    assert.equal(back.data.id, entered.data.id, 'le même navigateur retrouve son chanteur');
+    assert.equal(back.data.resumed, true);
+    const newcomer = await second.request('/api/table/enter', soloBody({ event: eventSecret }));
+    assert.equal(newcomer.status, 200, 'un autre navigateur entre encore par ce QR');
+    assert.notEqual(newcomer.data.id, entered.data.id);
+    // L'entrée a écrit une nouvelle sauvegarde : l'horloge restaurée y est reprise telle quelle.
+    const afterRestart = new NightStateStore(path.join(sandbox, 'data', 'soiree')).load();
+    assert.ok(afterRestart.scheduler.people.some(person => person.id === newcomer.data.id),
+      'sauvegarde écrite après le redémarrage');
+    assert.deepEqual(afterRestart.stageClock, playing, 'l’horloge du titre sur scène survit au redémarrage');
+    assert.deepEqual(afterRestart.settings.karafunDefaults, kfDefaults, 'chœurs par défaut gardés après un crash');
+    assert.equal(afterRestart.scheduler.people.find(person => person.id === alice.id).lastAppearanceTurn, serial,
+      'dernier passage ramené au compteur des passages');
+    const serverLog = fs.readdirSync(path.join(sandbox, 'journal')).filter(name => name.startsWith('serveur-'))
+      .map(name => fs.readFileSync(path.join(sandbox, 'journal', name), 'utf8')).join('');
+    assert.ok(serverLog.includes(`Sauvegarde de soirée réparée : dernier passage ${serial + 3} de la personne ${alice.id}`),
+      'la réparation est notée au journal du serveur');
+    console.log('ok - crash : événement privé, son QR, l’horloge de la scène et un compteur des passages abîmé restaurés');
     assert.equal((await second.ok('/api/state?' + new URLSearchParams({
       table: 'Comptoir', access: soloAccess, reprise,
     }))).transferOffer.personId, solo.id, 'le lien est reconnu après le redémarrage');
@@ -318,7 +365,16 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.equal(renewedSolo[0].name, 'En solo');
     assert.equal(renewedSolo[0].individual, true);
     assert.deepEqual(fs.readdirSync(photoDir), [], 'Le reset retire aussi les fichiers photo.');
+    // Regression: troisième relecture finale R4(b) — les chœurs par défaut
+    // sauvegardés passaient à toutes les soirées : « Nouvelle soirée » oublie
+    // une valeur provisoire. Quatrième passe (K1) : une valeur confirmée par
+    // une remise de KaraFun au chargement reste dans la sauvegarde.
+    assert.deepEqual(new NightStateStore(path.join(sandbox, 'data', 'soiree')).load().settings.karafunDefaults, kfDefaults,
+      'nouvelle soirée : valeur confirmée gardée dans la sauvegarde');
     await stop(second, true); // Le reset doit survivre lui aussi à une coupure.
+    // Valeur provisoire sauvegardée avant la relance : oubliée au prochain reset.
+    const afterReset = store.load();
+    store.save({ ...afterReset, settings: { ...afterReset.settings, karafunDefaults: { ...kfDefaults, provisional: true } } });
 
     const third = await launch();
     state = await third.staff();
@@ -329,6 +385,9 @@ NightStateStore.prototype.save = function(snapshot, options) {
     assert.equal((await third.request(new URL(oldUrl).pathname)).status, 403);
     await third.ok('/api/staff/table', { id: 'R1', headcount: 1 });
     assert.notEqual((await third.staff()).tables.find(table => table.id === 'R1').url, oldUrl);
+    await third.ok('/api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+    assert.equal('karafunDefaults' in new NightStateStore(path.join(sandbox, 'data', 'soiree')).load().settings, false,
+      'nouvelle soirée : valeur provisoire oubliée dans la sauvegarde');
     await stop(third);
     console.log(`ok - reset persistant après crash, anciens QR révoqués sur les ports ${port}/${port + 1}`);
   } finally {

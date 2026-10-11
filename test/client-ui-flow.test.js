@@ -35,6 +35,7 @@ const tabs = ['table', 'queue', 'catalog'].map(name => Object.assign(get(`nav-${
 const document = {
   title: '', activeElement: null, listeners: {},
   getElementById: get,
+  body: { children: [] }, // fenêtres modales : fond rendu inerte
   querySelectorAll(selector) { return selector === '.tabs button' ? tabs : []; },
   addEventListener(name, listener) { this.listeners[name] = listener; },
   contains() { return true; },
@@ -121,9 +122,11 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.match(get('sheetPanel').innerHTML, /Avant d’ajouter « La chanson »/);
   assert.match(get('sheetPanel').innerHTML, /Reprendre un chanteur inscrit/);
 
+  // Retours du 4 octobre (D3) : on se retrouve dans la liste de toute la table, « C’est moi ».
   document.listeners.click({ target: { closest: selector => selector === '[data-access-go]' ? { dataset: { accessGo: 'claim' } } : null } });
-  assert.equal(get('tab-table').hidden, false);
-  get('claimPeople').listeners.click({ target: { closest: () => ({ dataset: { claimPerson: 'alice' } }) } });
+  assert.match(get('sheetPanel').innerHTML, /Toute la table/);
+  assert.match(get('sheetPanel').innerHTML, /data-sheet-claim="alice"/);
+  document.listeners.click({ target: { closest: selector => selector === '[data-sheet-claim]' ? { dataset: { sheetClaim: 'alice' } } : null } });
   assert.match(get('sheetPanel').innerHTML, /Code de reprise à 4 chiffres/);
   get('claimCode').value = '1234';
   get('claimForm').listeners.submit({ preventDefault() {} });

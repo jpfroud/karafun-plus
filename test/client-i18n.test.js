@@ -96,9 +96,41 @@ sched.setHeadcount('7', 3);
 sched.join({ tableId: '7', name: 'Bruno' });
 sched.join({ tableId: '7', name: 'Chloé' });
 const fullTable = thrown(() => sched.join({ tableId: '7', name: 'Dan' }));
+// Regression: relecture du lot K — les refus de prénom levés par le
+// planificateur (et non par une route) arrivent aussi traduits.
+const validNameMessages = source => {
+  const text = source.replace(/\r\n/g, '\n').replace(/\\'/g, '\'');
+  const start = text.indexOf('  validName('), end = text.indexOf('\n  }\n', start);
+  assert.ok(start >= 0 && end > start, 'corps de validName repéré dans scheduler.js');
+  return [...text.slice(start, end).matchAll(/'([A-ZÉ][^'\n]*[.»])'/g)].map(m => m[1]);
+};
+const schedulerSource = fs.readFileSync(path.join(root, 'scheduler.js'), 'utf8');
+const nameMessages = validNameMessages(schedulerSource);
+assert.ok(nameMessages.length >= 5, `refus de prénom repérés : ${nameMessages.length}`);
+// Regression: CI Windows de la PR #15 — git y extrait les sources en CRLF : la
+// fin de validName n'était plus trouvée et tout le reste du fichier était lu.
+assert.deepStrictEqual(validNameMessages(schedulerSource.replace(/\r?\n/g, '\r\n')), nameMessages);
+for (const message of nameMessages) assert.ok(serverText(message), `refus de prénom sans traduction : « ${message} »`);
+sched.table('Comptoir');
+sched.join({ tableId: 'Comptoir', name: 'Léa' });
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir', name: 'Battle collective' }))),
+  'This name is reserved for the Battle. Please choose another first name.');
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir-2', name: 'léa' }))),
+  'This first name is already signed up tonight. Add the initial of your last name (e.g. Mary L.).');
+assert.equal(serverText(thrown(() => sched.join({ tableId: 'Comptoir', name: 'Max · Table 4' }))), 'First names can’t contain “·”.');
 assert.match(serverText(fullTable), /^Table 7 is full \(3 signed up for 3 places\)/);
+// Regression: vérification de la quatrième relecture — invitation de duo
+// envoyée depuis une liste des partenaires ouverte avant « Parti » : refus traduit.
+const inviter = sched.join({ tableId: '8', name: 'Eli', headcount: 2 }), gone = sched.join({ tableId: '8', name: 'Fanny' });
+sched.leave(gone);
+assert.equal(serverText(thrown(() => sched.inviteDuet(inviter, gone.id, { songId: 1, title: 'Un' }))),
+  'This singer has left: choose another partner.');
 assert.ok(serverSources.includes('Recherche KaraFun impossible : ${e.message}'));
 assert.equal(serverText('Recherche KaraFun impossible : délai dépassé'), 'KaraFun search failed: délai dépassé');
+// Durée maximale des titres (lot J) : refus avec la durée du titre et la limite.
+assert.ok(serverSources.includes('Ce titre dure ${minSec(sec)} : le bar limite les chansons à ${minSec(limit)}.'));
+assert.equal(serverText('Ce titre dure 6:12 : le bar limite les chansons à 5:00.'), 'This song lasts 6:12: the bar limits songs to 5:00.');
+assert.equal(serverText('Ce titre dure 20:00 : le bar limite les chansons à 15:00.'), 'This song lasts 20:00: the bar limits songs to 15:00.');
 assert.equal(serverText('Catalogue KaraFun : HTTP 503'), 'KaraFun catalogue: HTTP 503');
 // Catalogue refusé par les deux domaines KaraFun : texte clair, traduit, recherche encore possible.
 assert.ok(serverSources.includes('Catalogue KaraFun indisponible pour le moment (refus HTTP ${e.status}). La recherche reste possible.'));
@@ -154,6 +186,7 @@ function boot({ languages, language, saved = null, translations = true, respond 
   const document = {
     title: '', activeElement: null, hidden: false, listeners: {}, documentElement: { lang: 'fr' },
     getElementById: get,
+    body: { children: [] }, // fenêtres modales : fond rendu inerte
     querySelector: () => new Element(),
     querySelectorAll(selector) {
       if (selector === '.tabs button') return tabs;
@@ -172,7 +205,9 @@ function boot({ languages, language, saved = null, translations = true, respond 
       { id: 'bob', name: 'Bob', active: true, songs: [], invites: [], inKaraFun: [] }],
     managedIds: ['alice'], people: [], waiting: [], catalogAvailable: true, rules: {},
     queue: [{ pos: 2, ids: ['alice'], singer: 'Alice · Table 1', title: 'Song 2', eta: Date.UTC(2026, 9, 1, 20, 5) },
-      { pos: 3, ids: ['zoe'], singer: 'Zoé · En solo', singers: [{ id: 'zoe', name: 'Zoé', table: 'En solo', individual: true }], title: 'Solo song' }],
+      { pos: 3, ids: ['zoe'], singer: 'Zoé', singers: [{ id: 'zoe', name: 'Zoé', table: 'En solo', individual: true }], title: 'Solo song' },
+      { pos: 4, ids: ['zoe', 'max'], singer: 'Zoé & Max · Table 2', singers: [{ id: 'zoe', name: 'Zoé', table: 'En solo', individual: true },
+        { id: 'max', name: 'Max', table: 'Table 2', individual: false }], title: 'Duet song' }],
     stage: { ours: false, kind: 'battle', singer: 'Battle collective', title: 'We Are The Champions', artist: 'Queen' },
     next: null,
     battle: { id: 'b1', phase: 'voting', mode: 'songs', closesAt: Date.now() + 90000, voters: 1, eligible: 2, threshold: 2,
@@ -209,11 +244,14 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
   assert.equal(get('firstName').attributes.placeholder, 'e.g. Mary', 'attribut traduit');
   assert.equal(get('conn').textContent, 'Live');
   assert.equal(get('stageWho').textContent, 'Group Battle', 'Battle ajoutée dans KaraFun');
-  assert.equal(get('peopleCount').textContent, '2 here · 2 signed up');
+  assert.equal(get('peopleCount').textContent, '2 here · 2 signed up at the table');
   assert.match(get('peopleList').innerHTML, /THEIR LIST · 1 SONG</);
   assert.match(get('peopleList').innerHTML, /2nd in the queue · around \d\d:\d\d/);
   assert.match(get('peopleList').innerHTML, /aria-label="Add a song for Alice">＋ Song</, 'bouton court, intitulé complet (avec le prénom) pour les lecteurs d’écran');
-  assert.match(get('queueList').innerHTML, /Zoé · Solo/, 'le groupe « En solo » est traduit');
+  // Un soliste n'a que son prénom, en anglais aussi : le nom du serveur est gardé.
+  assert.match(get('queueList').innerHTML, /class="name">Zoé</, 'soliste : prénom seul');
+  assert.match(get('queueList').innerHTML, /Zoé &amp; Max · Table 2/, 'duo soliste + table : seule la table');
+  assert.doesNotMatch(get('queueList').innerHTML, /Zoé · |En solo/);
   assert.match(get('queueList').innerHTML, /Alice · Table 1/);
   assert.match(get('battleText').textContent, /^Choose a song or “No Battle”\. Vote ends in \d:\d\d\. 1 voter out of 2; at least 2 needed\./);
   assert.match(get('battleVotes').innerHTML, /1 vote · leading/);
@@ -250,7 +288,7 @@ const click = (node, target) => node.listeners.click({ target: { closest: select
     await settle();
     assert.equal(page.document.documentElement.lang, 'fr', JSON.stringify(options));
     assert.equal(page.get('navTableLabel').textContent, 'Ma table');
-    assert.equal(page.get('peopleCount').textContent, '2 présentes · 2 inscrites');
+    assert.equal(page.get('peopleCount').textContent, '2 présentes · 2 inscrites à la table');
     assert.match(page.get('battleVotes').innerHTML, /0 voix</, '0 au singulier en français');
   }
   // Sans le fichier de traductions, la page reste entièrement en français.

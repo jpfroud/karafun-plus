@@ -11,12 +11,19 @@
   .notice.public { border-color: #24734e; background: #ecf8f1; }
   .check { display: block; margin: 12px 0 20px; font-weight: 600; }
   .check input { margin-right: 6px; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
   .card { border: 2px dashed #bbb; border-radius: 14px; padding: 16px; text-align: center; break-inside: avoid; }
   .card h2 { margin: 0 0 4px; font-size: 26px; }
   .card p { margin: 4px 0; font-size: 14px; }
-  .card img { width: 190px; height: 190px; }
+  /* Un QR ne dépasse jamais sa carte (téléphone) ; il garde sa taille sur ordinateur et à l'impression. */
+  .card img { width: 190px; height: auto; aspect-ratio: 1; max-width: 100%; }
   .url { font-size: 11px; color: #555; word-break: break-all; }
+  .card.event-card { grid-column: 1 / -1; border: 3px solid #111; }
+  .card.event-card h2 { font-size: 40px; }
+  .card.event-card p { font-size: 18px; }
+  .card.event-card img { width: 340px; height: auto; max-width: 100%; }
+  .card.event-card .url { font-size: 13px; }
+  @media screen and (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
   @media print { .bar, .check { display: none; } body { margin: 0; } .notice { background: #fff; } .grid { gap: 8px; } }
 </style>
 </head>
@@ -58,7 +65,9 @@
     // Le QR commun « En solo » ne permet pas de s'inscrire : chaque personne
     // seule reçoit son QR individuel au bar. Ne pas l'imprimer évite la confusion.
     const tables = (S.tables || []).filter(t => !t.individual);
-    if (!tables.length) {
+    // Événement privé : un seul QR pour toute la salle, en grand.
+    const event = S.privateEvent?.enabled && S.privateEvent.url && S.privateEvent.qrUrl ? S.privateEvent : null;
+    if (!tables.length && !event) {
       info.textContent = 'Crée les tables depuis la page du bar avant d’imprimer leurs QR codes.';
       notice.textContent = 'Aucun QR code à imprimer.';
       return;
@@ -75,10 +84,18 @@
       : 'Je confirme que les clients utiliseront le même Wi-Fi que le PC KaraFun.';
     info.textContent = missing.length
       ? 'Lien ou QR manquant pour certaines tables : vérifie la page du bar.'
+      : event && !tables.length ? 'Vérifie l’accès ci-dessous avant d’imprimer le QR de l’événement privé.'
       : 'Vérifie l’accès ci-dessous avant d’imprimer : chaque QR contient le lien unique de sa table.';
     confirmAccess.disabled = missing.length > 0;
     confirmAccess.onchange = () => { printBtn.disabled = missing.length > 0 || !confirmAccess.checked; };
-    grid.innerHTML = tables.map(t => `<div class="card">
+    const eventCard = event ? `<div class="card event-card">
+      <h2>Événement privé</h2>
+      <p><b>Scanne avec ton propre téléphone pour choisir tes chansons 🎤</b></p>
+      <img src="${esc(qrSrc(event))}" alt="QR de l’événement privé">
+      <p>Chacun scanne une fois avec son téléphone et gère ses chansons. Page perdue : rescanne ce QR.</p>
+      <p><b>${localOnly ? 'Connexion au Wi-Fi du lieu requise' : 'Accès HTTPS par Internet'}</b></p>
+      <p class="url">${esc(event.url)}</p></div>` : '';
+    grid.innerHTML = eventCard + tables.map(t => `<div class="card">
       <h2>${esc(t.name)}</h2>
       <p><b>Scanne pour chanter 🎤</b></p>
       ${t.url && t.qrUrl ? `<img src="${esc(qrSrc(t))}" alt="QR de ${esc(t.name)}">` : '<p>QR indisponible</p>'}

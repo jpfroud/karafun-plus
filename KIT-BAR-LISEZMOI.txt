@@ -18,8 +18,9 @@ La licence du Node.js embarqué est dans node/LICENSE.
    DEMARRER.bat pour en lire le détail dans sa fenêtre noire.
 3. La page du bar s'ouvre. Saisis le code actuel de la Télécommande si
    « KaraFun connecté » n'apparaît pas ; il sera mémorisé sur ce PC.
-4. Crée une table ou utilise le groupe « En solo » déjà présent, puis teste
-   son QR sur un téléphone.
+4. Crée une table et teste son QR sur un téléphone. Pour le groupe
+   « En solo » déjà présent, crée un QR avec « Personne seule : QR
+   individuel » (écran Accueil) et teste-le de la même façon.
    Sans domaine HTTPS préparé, utilise le Wi-Fi du bar pour cet essai : les
    données mobiles ne peuvent pas joindre une adresse 192.168.x.x.
 5. Pour arrêter proprement, double-clique sur ARRETER.bat sur ce PC (la

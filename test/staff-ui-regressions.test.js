@@ -180,7 +180,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   poll();
   await settle();
   assert.equal(get('markDuoBox').hidden, false);
-  assert.match(get('markDuoPartner').innerHTML, /Même table[\s\S]*Camille[\s\S]*Autres tables et personnes en solo[\s\S]*Yannick/,
+  assert.match(get('markDuoPartner').innerHTML, /Même table[\s\S]*Camille[\s\S]*Autres personnes[\s\S]*Yannick/,
     'un chanteur déjà chargé comme prochain titre KaraFun peut aussi chanter sur scène en duo');
   assert.doesNotMatch(get('markDuoPartner').innerHTML, /Parti/);
   battle = { phase: 'requested', selectedSong: { title: 'Titre Battle' },

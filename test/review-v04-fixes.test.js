@@ -441,6 +441,7 @@ test('fermeture : Spotify reprend dans le silence d’après l’heure, même sa
   f.spotify.fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
     if (url.endsWith('/me/player')) return json({ is_playing: false, device: { id: 'pc', name: 'PC' } });
+    if (url.endsWith('/me/player/devices')) return json({ devices: [{ id: 'pc', name: 'PC', is_active: true }] });
     if (url.includes('/me/player/play')) { plays.push(now); return { ok: true, status: 204, text: async () => '' }; }
     if (url.includes('/me/player/pause')) return { ok: true, status: 204, text: async () => '' };
     throw new Error(`inattendu : ${url}`);
@@ -623,10 +624,15 @@ test('Spotify : jeton révoqué, déconnexion au lieu d’un appel toutes les 3 
   let tokenCalls = 0;
   f.spotify.fetchImpl = async () => { tokenCalls++; return json({ error: 'invalid_grant' }, 400); };
   f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'révoqué' };
+  // Regression: U3 (vérification de la seconde relecture) — le dernier titre lu
+  // restait dans l'état après le refus : « En lecture » à côté de « Non connecté ».
+  f.spotify.player = { isPlaying: true, at: Date.now(), track: { title: 'Get Lucky' }, device: { name: 'PC du bar' } };
   for (let i = 0; i < 5; i++) await f.spotifyTick();
   assert.equal(tokenCalls, 1);
   assert.equal(f.spotify.connected, false, 'le panneau repasse à « Non connecté »');
+  assert.equal(f.staffState().spotify.player, null, 'jeton refusé : plus de dernier titre lu');
   assert.match(f.spotify.lastError, /reconnecte/);
+  assert.equal(f.staffState().spotify.health.state, 'disconnected', 'pastille « Spotify non connecté »');
 });
 
 test('Spotify : réseau coupé, nouvel essai seulement après le délai d’attente', async () => {
@@ -638,6 +644,45 @@ test('Spotify : réseau coupé, nouvel essai seulement après le délai d’atte
   assert.equal(calls, 1);
   assert.equal(f.spotify.waiting, true);
   assert.equal(f.spotify.connected, true, 'une panne réseau ne déconnecte pas');
+  const health = f.staffState().spotify.health;
+  assert.equal(health.state, 'error', 'pastille « Spotify injoignable »');
+  assert.equal(health.retryAt, f.spotify.waitUntil, 'nouvel essai à la fin du délai');
+});
+
+// Regression: retours de la soirée du 4 octobre — la vérification de la
+// connexion et de l'appareil ne martèle pas Spotify : une par minute.
+test('Spotify : vérification une fois par minute quand rien d’autre ne se passe, et plus vite après une panne', async () => {
+  const f = harness();
+  let now = Date.now();
+  f.spotify.now = () => now;
+  const calls = [];
+  let down = false;
+  f.spotify.fetchImpl = async url => {
+    calls.push(url.replace(/^https:\/\/[^/]+/, ''));
+    if (down) throw new Error('réseau coupé');
+    if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
+    if (url.endsWith('/me/player/devices')) return json({ devices: [{ id: 'pc', name: 'PC', is_active: true }] });
+    if (url.endsWith('/me/player')) return json({ is_playing: false, device: { id: 'pc', name: 'PC' } });
+    throw new Error(`inattendu : ${url}`);
+  };
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r', deviceId: 'pc', deviceName: 'PC' };
+  for (let i = 0; i < 5; i++) { await f.spotifyTick(); now += 3000; }
+  assert.deepEqual(calls, ['/api/token', '/v1/me/player/devices', '/v1/me/player'], 'une seule vérification en 15 s');
+  assert.equal(f.staffState().spotify.health.state, 'ready');
+  now += 45000;
+  await f.spotifyTick();
+  assert.equal(calls.length, 5, 'nouvelle vérification après une minute');
+  down = true;
+  now += 60000;
+  for (let i = 0; i < 5; i++) { await f.spotifyTick(); now += 3000; }
+  assert.equal(calls.length, 6, 'panne : un appel, puis attente');
+  assert.equal(f.staffState().spotify.health.state, 'error');
+  down = false;
+  now += 30000;
+  await f.spotifyTick();
+  assert.equal(calls.length, 8, 'délai écoulé : vérifié sans attendre la minute');
+  assert.equal(f.staffState().spotify.health.state, 'ready');
+  assert.equal(f.spotify.lastError, null);
 });
 
 // Regression: relecture Codex de la PR #9 — une pause faite au bar pendant
@@ -651,6 +696,7 @@ test('Spotify : pause faite au bar pendant un silence, pas de relance automatiqu
   f.spotify.fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
     if (url.endsWith('/me/player')) return json({ is_playing: playing, device: { id: 'pc', name: 'PC' } });
+    if (url.endsWith('/me/player/devices')) return json({ devices: [{ id: 'pc', name: 'PC', is_active: true }] });
     if (url.includes('/me/player/play')) { plays.push(now); playing = true; return { ok: true, status: 204, text: async () => '' }; }
     if (url.includes('/me/player/pause')) { playing = false; return { ok: true, status: 204, text: async () => '' }; }
     throw new Error(`inattendu : ${url}`);
@@ -701,6 +747,10 @@ test('Spotify : un seul renouvellement du jeton à la fois, jeton refusé effac�
   await both;
   assert.equal(tokens, 1, 'boucle et bouton du bar partagent le renouvellement');
   assert.equal(link.config.refreshToken, 'r2');
+  // Autre application Spotify (Client ID changé) : le dernier titre lu est oublié.
+  link.player = { isPlaying: true, at: Date.now(), track: { title: 'Get Lucky' } };
+  link.setClientId('fedcba9876543210fedcba9876543210');
+  assert.equal(link.view().player, null, 'autre Client ID : plus de dernier titre lu');
   const stale = linked(async () => json({ error: 'invalid_grant' }, 400));
   stale.config.refreshToken = 'nouveau';
   await assert.rejects(stale._token({ grant_type: 'refresh_token', refresh_token: 'ancien' }));
@@ -743,6 +793,7 @@ test('Spotify : après des erreurs, la pause d’un titre qui démarre passe qua
     if (down) throw new Error('réseau coupé');
     if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
     if (url.endsWith('/me/player')) return json({ is_playing: true, device: { id: 'pc', name: 'PC' } });
+    if (url.endsWith('/me/player/devices')) return json({ devices: [{ id: 'pc', name: 'PC', is_active: true }] });
     if (url.includes('/me/player/pause')) { paused++; return { ok: true, status: 204, text: async () => '' }; }
     throw new Error(`inattendu : ${url}`);
   };

@@ -6,9 +6,11 @@
 #
 # SessionStart : installe gstack s'il manque (install-gstack.sh, demandé par
 # l'utilisateur) puis rappelle le parcours obligatoire du projet.
-# UserPromptSubmit : rappelle ce parcours à chaque demande, sans rien
-# installer. Ne bloque jamais l'agent (code de sortie 0) ; le hook PreToolUse
-# check-gstack.sh refuse ensuite les compétences si gstack manque toujours.
+# UserPromptSubmit : à chaque demande, sans rien installer, donne la table de
+# routage des commandes gstack et exige d'annoncer celle qui est choisie (sur
+# le modèle de RetroGemini). Ne bloque jamais l'agent (code de sortie 0) : les
+# blocages viennent de check-gstack.sh (compétences refusées sans gstack) et de
+# gstack-gate.js (modification sans compétence gstack, envoi sans relecture).
 
 EVENT="${1:-SessionStart}"
 case "$EVENT" in SessionStart|UserPromptSubmit) ;; *) EVENT=SessionStart ;; esac
@@ -23,7 +25,7 @@ GSTACK_DIR=""
 for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
   "$HOME/.factory/skills/gstack" "$HOME/.kiro/skills/gstack" "$HOME/.config/opencode/skills/gstack" \
   "$HOME/.slate/skills/gstack" "$HOME/.cursor/skills/gstack" "$HOME/.openclaw/skills/gstack" \
-  "$HOME/.hermes/skills/gstack" "$HOME/.gbrain/skills/gstack" "$HOME/.gstack/repos/gstack"; do
+  "$HOME/.hermes/skills/gstack" "$HOME/.gbrain/skills/gstack" "$HOME/.copilot/skills/gstack" "$HOME/.gstack/repos/gstack"; do
   if [ -z "$GSTACK_DIR" ] && [ -n "$candidate" ] && [ -d "$candidate/bin" ]; then
     GSTACK_DIR="$candidate"
   fi
@@ -52,21 +54,52 @@ if [ "$EVENT" = SessionStart ] && [ "${CLAUDE_CODE_REMOTE:-}" = true ] && [ -n "
   printf 'export GSTACK_CHROMIUM_PATH=%q\n' "$CHROMIUM" >>"$CLAUDE_ENV_FILE"
 fi
 
+# Table de routage : courte, elle est ajoutée à chaque demande.
+ROUTING="Avant d'agir, choisir la commande gstack adaptée à cette demande, l'annoncer en une ligne et la lancer avec l'outil Skill : défaut signalé ou « pourquoi X » → investigate ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; parcours dans l'application → qa (qa-only pour un simple constat) ; modification écrite, avant commit, push ou PR → review ; sécurité → cso ; état du code → health ; documentation après un changement → document-release. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. Les hooks refusent toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session, et le hook git pre-push exige que le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture review terminée (les commits intermédiaires ne sont pas comparés)."
+# Hook git pre-push de la porte gstack : contrôle des envois lancés par Claude
+# Code. Installé seulement dans le dépôt du projet (CLAUDE_PROJECT_DIR), jamais
+# par-dessus un hook pre-push étranger ni quand core.hooksPath est réglé.
+PRE_PUSH_NOTE=""
+install_pre_push() {
+  local project="${CLAUDE_PROJECT_DIR:-}" common hooks target
+  [ -n "$project" ] && [ -f "$HOOKS_DIR/pre-push" ] || return 0
+  common="$(git -C "$project" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  if [ -n "$(git -C "$project" config --get core.hooksPath 2>/dev/null)" ]; then
+    PRE_PUSH_NOTE="Porte gstack : core.hooksPath est réglé, le contrôle des envois (hook pre-push) n'est pas installé."
+    return 0
+  fi
+  hooks="$common/hooks"; target="$hooks/pre-push"
+  if [ -e "$target" ] && ! grep -q 'Porte gstack karafun-plus' "$target" 2>/dev/null; then
+    PRE_PUSH_NOTE="Porte gstack : un autre hook pre-push existe déjà, le contrôle des envois n'est pas installé."
+    return 0
+  fi
+  # Copie sans retours chariot : un poste Windows qui avait extrait le hook
+  # avant la règle eol=lf de .gitattributes le garde en CRLF, que bash refuse.
+  tr -d '\r' <"$HOOKS_DIR/pre-push" | cmp -s - "$target" 2>/dev/null && return 0
+  if ! { mkdir -p "$hooks" && tr -d '\r' <"$HOOKS_DIR/pre-push" >"$target.tmp.$$" && chmod +x "$target.tmp.$$" && mv -f "$target.tmp.$$" "$target"; }; then
+    rm -f "$target.tmp.$$"
+    PRE_PUSH_NOTE="Porte gstack : installation du hook pre-push impossible ($target)."
+  fi
+}
+[ "$EVENT" = SessionStart ] && install_pre_push
+
 RULES="Parcours obligatoire du projet : investigate pour un défaut, qa pour les parcours navigateur, review avant livraison. Après toute modification de la file, des duos, des présences ou des tables : node test/run-offline.js, puis consigner le résultat dans RAPPORT-TEST.md."
 RETRY="L'utilisateur a donné son accord : pour réessayer, lancer bash .claude/hooks/install-gstack.sh puis redémarrer l'agent. En attendant, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence."
 if [ "$EVENT" = UserPromptSubmit ]; then
   if [ -n "$GSTACK_DIR" ]; then
-    MESSAGE="gstack : appliquer la compétence adaptée à cette demande. $RULES"
+    MESSAGE="gstack : $ROUTING $RULES"
   else
     MESSAGE="GSTACK_MISSING : gstack est obligatoire mais pas installé. Le dire à l'utilisateur avant tout changement de code. $RETRY $RULES"
   fi
 elif [ -n "$INSTALLED" ]; then
-  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). $RULES"
+  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). $ROUTING $RULES"
 elif [ -n "$GSTACK_DIR" ]; then
-  MESSAGE="GSTACK_OK : gstack est installé ($GSTACK_DIR). $RULES"
+  MESSAGE="GSTACK_OK : gstack est installé ($GSTACK_DIR). $ROUTING $RULES"
 else
   MESSAGE="GSTACK_MISSING : gstack est obligatoire dans ce dépôt et son installation automatique a échoué : ${REASON:-raison inconnue}. Le dire tout de suite à l'utilisateur, avant tout changement de code. $RETRY $RULES"
 fi
+
+[ -n "$PRE_PUSH_NOTE" ] && MESSAGE="$MESSAGE $PRE_PUSH_NOTE"
 
 json_escape() {
   local text="$1"

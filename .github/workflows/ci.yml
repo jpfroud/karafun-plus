@@ -46,7 +46,9 @@ jobs:
         run: .\test\gstack-hook.test.ps1
       - name: Tester les hooks gstack de Claude Code
         shell: bash
-        run: bash test/gstack-session-hook.test.sh
+        run: |
+          bash test/gstack-session-hook.test.sh
+          node test/gstack-gate.test.js
       - name: Preparer et verifier le kit Windows
         shell: powershell
         run: |

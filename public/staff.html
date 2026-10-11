@@ -17,8 +17,9 @@
   <!-- ======================================================== Scène -->
   <section class="card live-panel" data-tab="scene">
     <div class="section-heading compact"><div><div class="eyebrow">KaraFun</div><h2>Sur scène</h2></div>
-      <div class="scene-chips"><button type="button" id="autoWarn" class="pill warn" hidden></button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
+      <div class="scene-chips"><button type="button" id="spotifyChip" class="pill" hidden title="Spotify : toucher pour les réglages"></button><button type="button" id="autoWarn" class="pill warn" hidden></button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
     <div id="stage" class="live-card stage-card">—</div>
+    <div id="stageProgress" class="stage-progress" hidden></div>
     <div class="live-actions">
       <button class="btn primary" id="playBtn">▶ Lecture</button>
       <button class="btn" id="skipBtn">⏭ Passer</button>
@@ -68,10 +69,26 @@
   <section class="card tables-panel" data-tab="accueil">
     <div class="section-heading"><div><div class="eyebrow">Accueil des clients</div><h2>Accueil</h2></div></div>
     <div class="solo-invite-panel">
+      <div id="privateEventBox" class="private-event">
+        <label class="switch"><input type="checkbox" id="privateEventToggle"> Événement privé : un seul QR pour tout le monde</label>
+        <p class="small muted">Bar privatisé : chaque personne scanne le même QR avec son téléphone et gère ses propres chansons.</p>
+        <div id="privateEventPanel" class="private-event-panel" hidden>
+          <div class="staff-qr big-qr"><img id="privateEventQr" alt="QR de l’événement privé"></div>
+          <input id="privateEventUrl" class="solo-invite-url" readonly aria-label="Lien de l’événement privé">
+          <div class="row wrap"><button type="button" class="btn small" id="privateEventCopy">Copier le lien</button><a class="btn small" id="privateEventPrint" href="/print" target="_blank" rel="noopener">Imprimer</a><button type="button" class="btn small danger" id="privateEventRotate">Renouveler le QR</button></div>
+          <p class="tiny muted">Page perdue : la personne rescanne ce QR (même navigateur, elle retrouve sa page). Renouveler refuse l’ancien QR, affiché ou imprimé ; les inscrits gardent leur accès.</p>
+        </div>
+      </div>
       <button type="button" class="btn primary welcome-main" id="issueSoloInvitation">Personne seule : QR individuel</button>
       <p class="small muted">Un QR pour une seule inscription « En solo », valable 30 minutes. Montre-le à la personne qui arrive seule.</p>
       <div id="soloInvitationStatus" class="small muted" role="status"></div>
       <div id="soloInvitationList" class="solo-invite-list"></div>
+      <div id="soloistsBox" class="soloists">
+        <h3 class="welcome-title">Solistes <span class="count" id="soloistCount">0</span></h3>
+        <p class="tiny muted">Dernière activité sur son téléphone d’abord. Une personne a perdu sa page : « QR de reprise », puis fais-le scanner par son téléphone.</p>
+        <span class="search-field" id="soloistSearchBox" hidden><input id="soloistSearch" type="search" placeholder="Prénom ou repère" autocomplete="off" aria-label="Chercher une personne en solo"><button type="button" class="clear-input" data-clear-for="soloistSearch" aria-label="Effacer la recherche" hidden>×</button></span>
+        <div id="soloistList" class="soloist-list"></div>
+      </div>
     </div>
     <h3 class="welcome-title">Tables</h3>
     <div class="new-table">
@@ -94,7 +111,7 @@
   <section class="card identity-panel" data-tab="reperes">
     <div class="section-heading"><div><div class="eyebrow">Reconnaître les chanteurs</div><h2>Repères <span class="count" id="identityCount">0</span></h2></div></div>
     <div id="identityStageBox" class="identity-stage" hidden><h3>Sur scène maintenant</h3><div id="identityStage"></div></div>
-    <p class="small muted">Note un signe distinctif, par exemple « t-shirt rouge », pour reconnaître le bon chanteur au micro. Le repère s’enregistre tout seul ; seul le bar le voit. Une personne partie garde sa fiche et son ancienneté.</p>
+    <p id="identityIntro" class="small muted">Note un signe distinctif, par exemple « t-shirt rouge », pour reconnaître le bon chanteur au micro. Le repère s’enregistre tout seul ; seul le bar le voit. Une personne partie garde sa fiche et son ancienneté. Une place « Solo N » de l’événement, sans prénom ni titre, disparaît.</p>
     <div class="identity-filters"><label>Table <select id="identityTable"></select></label><label>Rechercher <span class="search-field"><input id="identitySearch" type="search" placeholder="Prénom ou description"><button type="button" class="clear-input" data-clear-for="identitySearch" aria-label="Effacer la recherche" hidden>×</button></span></label></div>
     <div id="identityBody" class="identity-list"></div>
   </section>
@@ -130,6 +147,12 @@
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
+    <div class="row wrap"><label class="switch max-song-switch"><input id="maxSongOn" type="checkbox"> Limiter la durée des chansons</label><span class="save-status" data-save-status="maxSongOn" aria-live="polite"></span></div>
+    <div class="rule-fields" id="maxSongFields" hidden>
+      <label for="maxSongMin">Durée maximale (2:00 à 15:00) <span class="hint">Au-delà, un client ne peut plus ajouter le titre, ni le proposer en duo ou en Battle.</span><span class="field-number"><input id="maxSongMin" type="number" inputmode="numeric" min="2" max="15"> min <input id="maxSongSecPart" type="number" inputmode="numeric" min="0" max="59" aria-label="Durée maximale : secondes"> s</span><span class="save-status" data-save-status="maxSongMin" aria-live="polite"></span><span class="save-status" data-save-status="maxSongSecPart" aria-live="polite"></span></label>
+    </div>
+    <p class="small muted">Coupé par défaut ; 5:00 proposé à l’activation. Le bar n’est jamais limité (Battle lancée par le bar, « Relancer ») ; les titres déjà dans KaraFun non plus. Les titres déjà dans la file restent, marqués « trop long » au début de leur titre dans la File (durée et limite dans l’infobulle).</p>
+    <div class="row wrap" id="tooLongActions" hidden><button type="button" class="btn small danger" id="removeTooLong">Retirer les titres trop longs</button><span class="small muted">Seulement les titres pas encore dans KaraFun ; chaque personne est prévenue sur son téléphone.</span></div>
     <div class="row wrap"><label class="switch presence-switch"><input id="requirePresence" type="checkbox"> Exiger « Je suis là » avant l’envoi du titre</label><span class="save-status" data-save-status="requirePresence" aria-live="polite"></span></div>
     <p class="small muted">La confirmation est demandée au prochain passage pendant le titre en cours ; pour un duo, la réponse de l’un des deux suffit. Sans réponse une fois la scène libre, la soirée continue avec le passage suivant et le titre revient juste après lui, avec une nouvelle demande. Au bout du nombre de fois indiqué, le titre est retiré et le bar est prévenu que la personne est peut-être partie.</p>
     <div class="rule-fields">
@@ -171,9 +194,11 @@
     <p class="tiny muted">Sur HTTPS avec autorisation, le navigateur peut notifier si cette page reste ouverte. Sur HTTP, les demandes restent visibles dans la page et une alerte sonore peut retentir ; aucune alerte ne fonctionne après fermeture du navigateur.</p>
   </section>
 
-  <section class="card spotify-panel" data-tab="plus">
+  <section class="card spotify-panel" data-tab="plus" id="spotifyPanel">
     <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
+    <p class="small" id="spotifyText" role="status"></p>
     <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (ce PC, celui de KaraFun, une enceinte) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
+    <div class="row wrap" id="spotifyReconnectRow" hidden><button class="btn small primary" id="spotifyReconnect">Reconnecter Spotify</button><span class="small muted">depuis ce PC : Spotify revient sur son adresse locale.</span></div>
     <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
       <ol class="small">
         <li>Sur <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a>, connecte-toi avec le compte Spotify du bar et crée une application (cocher « Web API »).</li>
@@ -183,7 +208,7 @@
       <div class="row wrap"><input id="spotifyClientId" type="text" autocomplete="off" placeholder="Client ID de l’application Spotify" aria-label="Client ID Spotify"><span class="save-status" data-save-status="spotifyClientId" aria-live="polite"></span><button class="btn small primary" id="spotifyLogin">Se connecter à Spotify</button></div>
     </details>
     <div id="spotifyConnected" hidden>
-      <div class="row wrap"><label class="small" for="spotifyDevice">Appareil qui joue la musique</label><select id="spotifyDevice"><option value="">Appareil actif de Spotify</option></select><button class="btn small" id="spotifyDevices">Actualiser la liste</button></div>
+      <div class="row wrap"><label class="small" for="spotifyDevice">Appareil qui joue la musique</label><select id="spotifyDevice"><option value="">Appareil actif de Spotify</option></select><button class="btn small" id="spotifyCheck">Vérifier Spotify</button></div>
       <div class="control-stack">
         <div class="row wrap"><label class="switch"><input type="checkbox" id="spotifyAutoResume"> Relancer Spotify quand la file est vide</label><span class="save-status" data-save-status="spotifyAutoResume" aria-live="polite"></span></div>
         <div class="row wrap"><label class="switch"><input type="checkbox" id="spotifyAutoPause"> Mettre Spotify en pause quand un titre démarre</label><span class="save-status" data-save-status="spotifyAutoPause" aria-live="polite"></span></div>
@@ -192,7 +217,6 @@
       <label class="small spotify-delay" for="spotifyLead">Couper Spotify <input id="spotifyLead" type="number" inputmode="numeric" min="0" max="10"> s avant de lancer un titre (0 à 10 s) <span class="save-status" data-save-status="spotifyLead" aria-live="polite"></span></label>
       <div class="row wrap"><button class="btn small" id="spotifyPlay">▶ Spotify</button><button class="btn small" id="spotifyPause">⏸ Spotify</button><button class="btn small danger" id="spotifyDisconnect">Déconnecter</button></div>
     </div>
-    <p class="small" id="spotifyText" role="status"></p>
   </section>
 
   <section class="card diagnostics-panel" data-tab="plus" id="kfPanel">
@@ -258,8 +282,8 @@
      champ de moins de 16 px focalisé pendant un toucher fait zoomer la page et cache une partie du QR. Un
      élément focalisé plus bas (« Fermer », le lien) ferait défiler la fenêtre à l'ouverture : titre et haut
      du QR sortiraient de l'écran d'un téléphone. -->
-<dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle" tabindex="-1" autofocus>Donner un chanteur à un autre téléphone</h2></div><p class="small" id="shareHelp">Fais scanner ce QR code par le nouveau téléphone : il propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd seulement ce chanteur.</p><div class="staff-qr solo-invite-qr" id="shareQrBox" hidden><img id="shareQr" alt="QR code de transfert du chanteur"></div><input id="shareUrl" class="solo-invite-url" readonly aria-label="Lien de transfert à envoyer" hidden><div class="row wrap" id="shareLinkActions" hidden><button type="button" class="btn small" id="shareCopy">Copier le lien</button></div><p class="small muted" id="shareCodeHelp">Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.</p><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
-<dialog id="soloInviteDialog" class="staff-dialog" aria-labelledby="soloInviteTitle"><h2 id="soloInviteTitle" tabindex="-1" autofocus>QR pour une personne seule</h2><p class="small">Montre ce QR à une seule personne. Dès son inscription, il ne fonctionnera plus pour créer un autre profil.</p><div class="staff-qr solo-invite-qr"><img id="soloInviteQr" alt="QR individuel pour une inscription En solo"></div><p class="small muted" id="soloInviteExpires"></p><input id="soloInviteUrl" class="solo-invite-url" readonly aria-label="Lien individuel d’inscription"><div class="row wrap"><button type="button" class="btn small" id="soloInviteCopy">Copier le lien</button><button type="button" class="btn small primary" id="soloInviteClose">Fermer</button></div></dialog>
+<dialog id="shareDialog" class="staff-dialog" aria-labelledby="shareTitle"><div class="section-heading"><h2 id="shareTitle" tabindex="-1" autofocus>Donner un chanteur à un autre téléphone</h2></div><p class="small" id="shareHelp">Fais scanner ce QR code par le nouveau téléphone : il propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd seulement ce chanteur.</p><div class="staff-qr solo-invite-qr" id="shareQrBox" hidden><img id="shareQr" alt="QR code de transfert du chanteur"></div><input id="shareUrl" class="solo-invite-url" readonly aria-label="Lien de transfert à envoyer" hidden><div class="row wrap" id="shareLinkActions" hidden><button type="button" class="btn small" id="shareCopy">Copier le lien</button></div><p class="small muted" id="shareCodeHelp">Sans appareil photo : sur la page de la table, toucher « Voir toute la table », puis « C’est moi » à côté du prénom, et saisir ce code.</p><div id="shareCode" class="share-code"></div><p class="small muted" id="shareExpires"></p><button type="button" class="btn small primary" id="shareClose">Fermer</button></dialog>
+<dialog id="soloInviteDialog" class="staff-dialog" aria-labelledby="soloInviteTitle"><h2 id="soloInviteTitle" tabindex="-1" autofocus>QR pour une personne seule</h2><p class="small">Montre ce QR à une seule personne. Dès son inscription, il ne fonctionnera plus pour créer un autre profil.</p><div class="staff-qr solo-invite-qr"><img id="soloInviteQr" alt="QR individuel d’inscription"></div><p class="small muted" id="soloInviteExpires"></p><input id="soloInviteUrl" class="solo-invite-url" readonly aria-label="Lien individuel d’inscription"><div class="row wrap"><button type="button" class="btn small" id="soloInviteCopy">Copier le lien</button><button type="button" class="btn small primary" id="soloInviteClose">Fermer</button></div></dialog>
 <dialog id="tableQrDialog" class="staff-dialog qr-dialog" aria-labelledby="tableQrName"><h2 id="tableQrName" tabindex="-1" autofocus>Table</h2><div class="staff-qr big-qr"><img id="tableQrImg" alt="QR code de la table"></div><p class="qr-help">Scannez ce QR avec l’appareil photo du téléphone pour inscrire les chanteurs de la table.</p><p class="small muted">Un chanteur est déjà inscrit sur le téléphone d’un ami ? Le bar peut le donner à ce téléphone : Accueil › « Donner un chanteur à un autre téléphone ».</p><input id="tableQrUrl" class="solo-invite-url" readonly aria-label="Lien de la table"><div class="row wrap"><button type="button" class="btn small" id="tableQrCopy">Copier le lien</button><a class="btn small" id="tableQrPage" href="#" target="_blank" rel="noopener">Page</a><button type="button" class="btn small primary" id="tableQrClose">Fermer</button></div></dialog>
 <dialog id="songSheet" class="staff-dialog song-sheet" aria-labelledby="songSheetTitle"><h2 id="songSheetTitle">Réglages du titre</h2><p class="small muted" id="songSheetInfo"></p>
   <input type="hidden" id="songSheetValue" data-autosave="songSettings">
@@ -312,7 +336,11 @@
     } catch (_) { /* L'alerte reste affichée à l'écran. */ }
   }
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const hhmm = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  // Un seul formateur : toLocaleTimeString en recrée un à chaque appel (plus
+  // de la moitié d'un relevé avec 60 solistes, une heure par activité). Même
+  // texte, « Invalid Date » compris.
+  const HHMM = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const hhmm = (t) => { const date = new Date(t); return isNaN(date) ? String(date) : HHMM.format(date); };
   const personOf = id => id == null ? null : S?.people.find(p => String(p.id) === String(id)) || null;
   const tableOf = id => S?.tables.find(t => String(t.id) === String(id)) || null;
   const initial = name => esc(String(name || '?').charAt(0).toUpperCase());
@@ -363,9 +391,30 @@
       load();
     } catch (e) { toast(e.message, true); }
   }
+  // Copie d'un lien affiché. Sans API presse-papiers (page du bar ouverte en
+  // http depuis un téléphone : contexte non sécurisé), copie de secours du
+  // navigateur sur le champ lui-même, qui est dans la fenêtre ouverte (le
+  // reste de la page est alors inerte). iOS ne sélectionne pas un champ en
+  // lecture seule : il devient modifiable le temps de la copie.
   async function copyText(input, done, failed, bad) {
-    try { await navigator.clipboard.writeText(input.value); toast(done); }
-    catch (_) { input.select(); const copied = !!document.execCommand?.('copy'); toast(copied ? done : failed, bad && !copied); }
+    try { await navigator.clipboard.writeText(input.value); toast(done); return; } catch (_) {}
+    const readOnly = input.readOnly;
+    const back = document.activeElement;
+    let copied = false;
+    try {
+      input.readOnly = false;
+      input.focus?.();
+      input.select();
+      input.setSelectionRange?.(0, input.value.length);
+      copied = !!document.execCommand?.('copy');
+    } catch (_) { copied = false; }
+    finally { input.readOnly = readOnly; }
+    // Copié : le focus revient au bouton touché ; refusé, le champ reste sélectionné.
+    if (copied) {
+      input.blur?.();
+      if (back && back !== input && back !== document.body && document.contains?.(back)) back.focus?.({ preventScroll: true });
+    }
+    toast(copied ? done : failed, bad && !copied);
   }
 
   // ------------------------------------------------------------ onglets (téléphone)
@@ -462,7 +511,27 @@
     send: value => post('/api/staff/settings', { [name]: value }), server: () => S.settings?.[name] ?? fallback });
   const spotifyField = (name, min, max, fallback) => ({ min, max, unit: 'secondes', delay: 800,
     send: value => post('/api/staff/spotify', { action: 'options', [name]: value }), server: () => S.spotify?.[name] ?? fallback });
+  // Durée maximale des titres : minutes et secondes, enregistrées ensemble.
+  const minSec = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  function maxSongCheck(min, sec) {
+    const m = Number(min), s = Number(sec);
+    if (String(min).trim() === '' || String(sec).trim() === '' || !Number.isInteger(m) || !Number.isInteger(s) || s < 0 || s > 59) {
+      return 'minutes et secondes entières (0 à 59 s)';
+    }
+    return m * 60 + s < 120 || m * 60 + s > 900 ? 'entre 2:00 et 15:00' : null;
+  }
+  const maxSongShown = () => S.settings?.maxSongSec ?? 300;
+  const maxSongField = part => ({ text: true, delay: 800,
+    validate: value => part === 'min' ? maxSongCheck(value, $('maxSongSecPart').value) : maxSongCheck($('maxSongMin').value, value),
+    send: value => post('/api/staff/settings', { maxSongSec: part === 'min' ? Number(value) * 60 + Number($('maxSongSecPart').value)
+      : Number($('maxSongMin').value) * 60 + Number(value) }),
+    server: () => part === 'min' ? Math.floor(maxSongShown() / 60) : maxSongShown() % 60 });
   const FIELDS = {
+    // 5:00 proposé à l'activation ; coupé : plus de limite.
+    maxSongOn: { check: true, send: value => post('/api/staff/settings', { maxSongSec: value ? 300 : null }),
+      server: () => S.settings?.maxSongSec != null },
+    maxSongMin: maxSongField('min'),
+    maxSongSecPart: maxSongField('sec'),
     presenceGraceSec: settingsField('presenceGraceSec', 10, 300, 'secondes', 30),
     presenceMaxSkips: settingsField('presenceMaxSkips', 1, 10, 'fois', 3),
     playDelaySec: settingsField('playDelaySec', 0, 30, 'secondes', 8),
@@ -497,11 +566,13 @@
     singerSongSettings: { check: true, send: value => post('/api/staff/settings', { singerSongSettings: value }),
       server: () => S.settings?.singerSongSettings !== false },
     // Réglages d'un titre à venir (fiche ouverte depuis la file) : un champ
-    // caché porte { pitch?, tempo?, guide?, backing? } en JSON ; les boutons
+    // caché porte { pitch?, tempo?, guide?, backing?, guideVoices? } en JSON ; les boutons
     // de la fiche le changent, puis il suit le même enregistrement que les autres.
     songSettings: { text: true, delay: 700, validate: () => null,
       send: async (value, id) => {
-        const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id, settings: JSON.parse(value || '{}') });
+        // Clé des autres voix guides toujours envoyée ({} : plus aucune).
+        const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id,
+          settings: { guideVoices: {}, ...JSON.parse(value || '{}') } });
         return SAVED_TUNE[result?.applied] || 'Enregistré ✓';
       },
       server: id => tuneKey(songTarget(id)?.q.song?.settings),
@@ -668,10 +739,11 @@
       $('shareUrl').value = result.url || '';
       $('shareHelp').textContent = result.url ?
         'Fais scanner ce QR code par le nouveau téléphone (ou envoie-lui le lien) : la page propose aussitôt de récupérer ce chanteur. L’ancien téléphone perd seulement ce chanteur ; ses autres chanteurs n’y changent pas.' :
-        'Sur l’autre téléphone, ouvre la page de la table, touche « Je suis … » et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.';
+        solo ? 'Sur l’autre téléphone, ouvre la page karaoké du bar (si elle demande un prénom, touche d’abord « Déjà inscrit ? J’ai un code »), touche « Je suis … » et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.' :
+        'Sur l’autre téléphone, ouvre la page de la table, touche « Voir toute la table », puis « C’est moi » à côté du prénom, et saisis ce code. L’ancien téléphone perdra seulement ce chanteur.';
       $('shareCodeHelp').textContent = solo ?
-        'Sans appareil photo : ouvrir le QR « En solo », toucher « Je suis … » puis saisir ce code.' :
-        'Sans appareil photo : sur la page de la table, toucher « Je suis … » puis saisir ce code.';
+        'Sans appareil photo : ouvrir la page karaoké du bar (si elle demande un prénom, toucher d’abord « Déjà inscrit ? J’ai un code »), toucher « Je suis … » puis saisir ce code.' :
+        'Sans appareil photo : sur la page de la table, toucher « Voir toute la table », puis « C’est moi » à côté du prénom, et saisir ce code.';
       $('shareExpires').textContent = [result.linkExpiresAt ? `QR et lien valables jusqu’à ${hhmm(result.linkExpiresAt)}` : '',
         result.expiresAt ? `code jusqu’à ${hhmm(result.expiresAt)}` : ''].filter(Boolean).join(', ') + ' ; un seul usage.';
       openDialog('shareDialog');
@@ -682,7 +754,7 @@
     if (!S || !q) { $('transferResults').innerHTML = ''; return; }
     const found = S.people.filter(p => p.active !== false &&
       `${p.name} ${tableOf(p.tableId)?.name || ''}`.toLocaleLowerCase('fr').includes(q)).slice(0, 8);
-    $('transferResults').innerHTML = found.length ? found.map(p => `<button type="button" class="btn small transfer-person" data-transfer-person="${esc(p.id)}"><b>${esc(p.name)}</b> <span class="muted">${esc(tableOf(p.tableId)?.name || '')}</span></button>`).join('') :
+    $('transferResults').innerHTML = found.length ? found.map(p => `<button type="button" class="btn small transfer-person" data-transfer-person="${esc(p.id)}"><b>${esc(p.name)}</b>${isSolo(p) ? '' : ` <span class="muted">${esc(tableOf(p.tableId)?.name || '')}</span>`}</button>`).join('') :
       '<p class="small muted">Aucun chanteur présent à ce nom.</p>';
   }
   $('transferSearch').addEventListener('input', renderTransfer);
@@ -702,6 +774,74 @@
   }
   const photoHtml = (p, name, cls = 'identity-photo') => p?.photoUrl ?
     `<img class="${cls}" src="${esc(p.photoUrl)}" alt="Photo de ${esc(name)}">` : `<span class="${cls} identity-avatar" aria-hidden="true">${initial(name)}</span>`;
+  // QR ouvert, prénom pas encore donné : le prénom affiché est provisoire (« Solo 3 »).
+  const nameBadge = p => p?.nameRequired ? '<span class="badge name-missing" title="QR ouvert, prénom pas encore saisi sur son téléphone">prénom à saisir</span>' : '';
+
+  // ------------------------------------------------------------ dernière activité des solos
+  // Page visible ou action sur son téléphone (lastActiveAt du serveur), comptée
+  // à l'heure du serveur (S.now) : l'appareil du bar peut avoir une autre heure.
+  // Solos seulement : à une table, un téléphone gère aussi des amis sans
+  // téléphone, l'indication tromperait. Minutes écoulées au début de la minute
+  // de l'horloge du serveur : tous les libellés changent ensemble, une fois par
+  // minute, et les listes ne sont redessinées qu'à ce moment. Comptées depuis
+  // l'heure de chacun, elles changeaient chacune à sa seconde (listes
+  // réécrites à presque chaque relevé). Jamais plus que le temps écoulé, au
+  // plus 59 s de moins : une page visible (relevé toutes les 60 à 64 s) reste
+  // « Actif à l'instant », l'orange vient 20 à 21 min après la dernière
+  // activité et le rouge 45 à 46 min après.
+  const IDLE_WARN_MIN = 20, IDLE_LATE_MIN = 45;
+  const isSolo = p => !!tableOf(p?.tableId)?.individual;
+  const sinceText = minutes => minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')}`;
+  function activityOf(p) {
+    if (!p || p.active === false || !isSolo(p)) return null;
+    const joined = Number(p.joinedAt) || 0, last = Number(p.lastActiveAt) || 0;
+    const at = Math.max(joined, last);
+    if (!at) return null;
+    const minuteStart = Math.floor((Number(S?.now) || Date.now()) / 60000) * 60000;
+    const minutes = Math.max(0, Math.floor((minuteStart - at) / 60000));
+    const level = minutes >= IDLE_LATE_MIN ? 'late' : minutes >= IDLE_WARN_MIN ? 'warn' : '';
+    // Rien depuis l'ouverture du QR : la création note la même heure (à la seconde près).
+    const never = !!joined && last < joined + 1000;
+    const text = minutes < 2 ? 'Actif à l’instant' : never ? `Pas revenu depuis l’ouverture du QR (${hhmm(joined)})` :
+      level ? `Sans nouvelles depuis ${sinceText(minutes)}` : `Actif il y a ${minutes} min`;
+    // Repère court de la ligne de la file, la durée d'abord : jamais coupé au
+    // téléphone. La phrase complète reste dans son infobulle.
+    const short = never ? `inactif depuis ${hhmm(joined)}` : `inactif ${sinceText(minutes)}`;
+    // « Actif à l'instant » (minutes 0 et 1 : moins de 3 min écoulées) : sans
+    // l'heure, que chaque relevé de page visible avance à sa propre seconde
+    // (la ligne serait réécrite à chaque fois).
+    return { minutes, level, text, short, title: minutes < 2 ? 'Dernière activité sur son téléphone il y a moins de 3 min'
+      : `Dernière activité sur son téléphone à ${hhmm(at)}` };
+  }
+  const activityHtml = a => a ? `<span class="activity${a.level ? ` ${a.level}` : ''}" title="${esc(a.title)}">${esc(a.text)}</span>` : '';
+  // Rang d'activité, à la minute comme le libellé : « Actif à l'instant » forme
+  // un seul groupe. Le relevé d'une page visible (chacun à sa seconde) ne fait
+  // donc plus remonter sa ligne ; activité inconnue (ancienne sauvegarde) en dernier.
+  const activityRank = p => { const a = activityOf(p); return !a ? Infinity : a.minutes < 2 ? 0 : a.minutes; };
+
+  // Accueil : liste « Solistes », la plus récente activité d'abord (à la
+  // minute près, puis par prénom), recherche au-delà de 8 et « QR de reprise »
+  // (fenêtre de transfert) en un toucher.
+  function renderSoloists() {
+    $('soloistsBox').hidden = !S.tables.some(t => t.id === 'Comptoir' && t.individual);
+    const solos = S.people.filter(p => p.active !== false && isSolo(p));
+    const rank = new Map(solos.map(p => [p, activityRank(p)]));
+    solos.sort((a, b) => rank.get(a) - rank.get(b) || a.name.localeCompare(b.name, 'fr'));
+    const searchable = solos.length > 8;
+    $('soloistSearchBox').hidden = !searchable;
+    // Le nombre suit « N solistes présents » : une place « Solo N » sans
+    // prénom reste dans la liste (badge « prénom à saisir ») sans être comptée.
+    $('soloistCount').textContent = solos.filter(p => !p.nameRequired).length;
+    const query = searchable ? $('soloistSearch').value.trim().toLocaleLowerCase('fr') : '';
+    const shown = query ? solos.filter(p => `${p.name} ${p.privateNote || ''}`.toLocaleLowerCase('fr').includes(query)) : solos;
+    patch($('soloistList'), shown.map(p => `<div class="soloist-row" data-soloist="${esc(p.id)}">${photoHtml(p, p.name)}<span class="soloist-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}${p.privateNote ? `<span class="soloist-note tiny muted">${esc(p.privateNote)}</span>` : ''}${activityHtml(activityOf(p))}</span><button type="button" class="btn small" data-soloist-share aria-label="QR de reprise pour ${esc(p.name)}">QR de reprise</button></div>`).join('') ||
+      `<p class="small muted">${solos.length ? 'Aucun soliste à ce nom.' : 'Personne en solo pour le moment.'}</p>`);
+  }
+  $('soloistSearch').addEventListener('input', () => { if (S) renderSoloists(); });
+  $('soloistList').addEventListener('click', event => {
+    const row = event.target?.closest?.('[data-soloist]');
+    if (row && event.target.closest('[data-soloist-share]')) openShare(row.dataset.soloist);
+  });
 
   function renderIdentities(force = false) {
     if (!S) return;
@@ -717,7 +857,7 @@
     // Sur scène maintenant : en tête de l'écran Repères.
     const onStage = S.stage?.ours ? (S.stage.ids || []).map(personOf).filter(Boolean) : [];
     $('identityStageBox').hidden = !onStage.length;
-    patch($('identityStage'), onStage.map(p => `<div class="identity-stage-row" data-identity-stage="${esc(p.id)}">${photoHtml(p, p.name)}<div class="identity-who"><strong>${esc(p.name)}</strong><span class="tiny muted">${esc(tables.get(p.tableId)?.name || '')}</span></div>${markerHtml(p)}</div>`).join(''));
+    patch($('identityStage'), onStage.map(p => `<div class="identity-stage-row" data-identity-stage="${esc(p.id)}">${photoHtml(p, p.name)}<div class="identity-who"><strong>${esc(p.name)}</strong>${tables.get(p.tableId)?.individual ? '' : `<span class="tiny muted">${esc(tables.get(p.tableId)?.name || '')}</span>`}</div>${markerHtml(p)}</div>`).join(''));
     const filter = $('identitySearch').value.trim().toLocaleLowerCase('fr');
     const people = S.people.filter(p => {
       const table = tables.get(p.tableId);
@@ -727,7 +867,7 @@
     // Une ligne compacte par personne, regroupée par table.
     const row = p => `<div class="identity-row${p.active ? '' : ' gone'}" data-identity-person="${esc(p.id)}">
       ${photoHtml(p, p.name)}
-      <div class="identity-who"><strong>${esc(p.name)}</strong><span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span></div>
+      <div class="identity-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}<span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${activityHtml(activityOf(p))}</div>
       <span class="identity-note"><input data-identity-note data-autosave="note" data-autosave-id="${esc(p.id)}" type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}"><span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span></span>
       <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
     </div>`;
@@ -737,7 +877,8 @@
       groups.at(-1).people.push(p);
     }
     const container = $('identityBody');
-    if (!force && container.contains(document.activeElement)) return;
+    // Saisie en cours (repère, bonus) : patch() attend. Un bouton cliqué qui
+    // garde le focus (« Parti », « Réactiver ») n'empêche pas la ligne de suivre.
     patch(container, people.length ? groups.map(group => `<section class="identity-group">
       <h4>${esc(tables.get(group.tableId)?.name || group.tableId)} <span class="tiny muted">${group.people.length} personne${group.people.length > 1 ? 's' : ''}</span></h4>
       ${group.people.map(row).join('')}</section>`).join('') : '<p class="small muted">Aucun chanteur pour ce filtre.</p>', force);
@@ -756,8 +897,16 @@
     const row = event.target.closest('[data-identity-person]');
     if (!row) return;
     const personId = row.dataset.identityPerson;
-    if (event.target.closest('[data-identity-leave]') && confirm('Marquer ce chanteur comme parti ? Ses titres en attente seront retirés, mais sa fiche restera inscrite.')) {
-      act('/api/staff/person/leave', { personId }, 'Chanteur marqué parti ; ses titres en attente ont été retirés');
+    // Place « Solo N » de l'événement sans prénom ni titre : le serveur la
+    // supprime (son message remplace « marqué parti »). `expectPlaceholder` :
+    // si elle a reçu un prénom depuis l'affichage, le serveur refuse.
+    const person = personOf(personId);
+    const placeholder = person?.viaEvent && person.nameRequired && !person.songCount;
+    if (event.target.closest('[data-identity-leave]') && confirm(placeholder
+      ? `Retirer la place « ${person.name} » ? Sans prénom ni titre, elle disparaît : il n’y aura rien à réactiver.`
+      : 'Marquer ce chanteur comme parti ? Ses titres en attente seront retirés, mais sa fiche restera inscrite.')) {
+      act('/api/staff/person/leave', { personId, ...(placeholder ? { expectPlaceholder: true } : {}) },
+        'Chanteur marqué parti ; ses titres en attente ont été retirés');
     }
     if (event.target.closest('[data-identity-reactivate]')) {
       act('/api/staff/person/reactivate', { personId }, 'Personne réactivée, historique conservé');
@@ -851,6 +1000,8 @@
       if (!r.ok) throw new Error(r.status === 403 ? 'Accès réservé aux gérants.' : 'Serveur indisponible');
       const previousBattle = S?.battle?.id === undefined ? null : `${S.battle.id}:${S.battle.phase}`;
       S = await r.json();
+      // Écart entre l'horloge du serveur et celle de cet appareil (barre de lecture).
+      clockSkew = Number.isFinite(S.now) ? S.now - Date.now() : 0;
       shownLoad = Math.max(shownLoad, number);
       if (!dragging) render();
       const currentBattle = S.battle?.id === undefined ? null : `${S.battle.id}:${S.battle.phase}`;
@@ -981,7 +1132,9 @@
       connection?.phase === 'stopped' ? '<div class="staff-alert kf-alert kf-stopped"><span>KaraFun fermé ou code changé : la file n’essaie plus seule, les titres ne partent plus. Une fois KaraFun ouvert (télécommande activée), clique sur « Reconnecter » ; si le code a changé, utilise « Saisir le code ».</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button><button type="button" class="btn small" data-alert-goto="kfPanel">Saisir le code</button></span></div>' :
       kf.down ? `<div class="staff-alert kf-alert"><span>${esc(kf.text)} : les titres ne partent plus.</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span></div>` :
       connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';
-    const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
+    // Solo : sa dernière activité aide à décider s'il est encore là.
+    const goneActivity = p => { const activity = activityHtml(activityOf(personOf(p.id))); return activity ? ` ${activity}` : ''; };
+    const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?${goneActivity(p)}</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
     // Une alerte qui porte sa propre sortie (« Arrêter le vidage ») ne se
     // ferme pas : la croix masquerait le seul moyen d'en sortir.
     const shown = alerts.filter(([key, text, actions]) => actions || dismissedAlerts[key] !== text).map(([key, text, actions]) => actions ?
@@ -1038,25 +1191,46 @@
     const artist = item.song?.artist || item.artist || '';
     const song = `${item.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${pendingInviteBadge(item)}<div class="live-song"><span class="live-title">${esc(title)}</span>${artist ? `<span class="live-artist">${esc(artist)}</span>` : '<span class="live-artist muted">Interprète inconnu</span>'}</div>`;
     const singers = item.singers?.length ? item.singers : item.ours ? (item.ids || []).map(personOf).filter(Boolean)
-      .map(p => ({ id: p.id, name: p.name, table: tableOf(p.tableId)?.name || '', individual: !!tableOf(p.tableId)?.individual })) : [];
+      .map(p => ({ id: p.id, name: p.name, table: isSolo(p) ? '' : tableOf(p.tableId)?.name || '', individual: isSolo(p) })) : [];
     if (!singers.length) {
       return `<div class="live-who"><span class="live-person"><span class="live-singer">${esc(item.singer || item.name || 'Hors file')}</span>${item.ours ? '' : '<span class="live-table native">Ajouté dans KaraFun : pas de fiche</span>'}</span></div>${song}`;
     }
     const people = singers.map((s, index) => {
       const p = personOf(s.id ?? item.ids?.[index]);
-      return `<div class="stage-person"${p ? ` data-stage-person="${esc(p.id)}"` : ''}>${photoHtml(p, s.name, 'stage-photo')}<div class="stage-person-main"><span class="live-person"><span class="live-singer">${esc(s.name)}</span><span class="live-table${s.individual ? ' solo' : ''}">${esc(s.table || (s.individual ? 'En solo' : ''))}</span></span>${p ? markerHtml(p) : ''}</div></div>`;
+      return `<div class="stage-person"${p ? ` data-stage-person="${esc(p.id)}"` : ''}>${photoHtml(p, s.name, 'stage-photo')}<div class="stage-person-main"><span class="live-person"><span class="live-singer">${esc(s.name)}</span>${s.individual || !s.table ? '' : `<span class="live-table">${esc(s.table)}</span>`}</span>${p ? markerHtml(p) : ''}</div></div>`;
     }).join('<span class="live-and">&amp;</span>');
     return `<div class="live-who">${people}</div>${song}`;
   }
 
+  // Barre de lecture du titre sur scène : temps calculé par le serveur à
+  // S.now, puis avancé ici chaque seconde (minuteur qui se reprogramme tant
+  // que le titre joue). Durée inconnue ou Battle : temps écoulé seul.
+  let clockSkew = 0, progressTimer = null;
+  const clockText = sec => { const s = Math.max(0, Math.floor(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  function renderStageProgress() {
+    const box = $('stageProgress'), p = S?.stage?.progress;
+    box.hidden = !p;
+    if (!p) return;
+    const since = Number.isFinite(S.now) && !p.paused ? Math.max(0, Date.now() + clockSkew - S.now) / 1000 : 0;
+    const known = p.durationSec > 0 && S.stage.kind !== 'battle';
+    const elapsed = known ? Math.min(p.durationSec, p.elapsedSec + since * p.rate) : p.elapsedSec + since * p.rate;
+    const text = known ? `${clockText(elapsed)} / ${clockText(p.durationSec)} · reste ${clockText((p.durationSec - elapsed) / p.rate)}` :
+      `${clockText(elapsed)} écoulées`;
+    patch(box, `${known ? `<div class="stage-progress-track"><span class="stage-progress-fill" style="width:${(elapsed / p.durationSec * 100).toFixed(1)}%"></span></div>` : ''}<span class="stage-progress-text">${p.paused ? 'En pause · ' : ''}${text}</span>`);
+    if (!p.paused && !progressTimer) progressTimer = setTimeout(() => { progressTimer = null; renderStageProgress(); }, 1100);
+  }
+
   // Duo improvisé : noter le second chanteur, puis le changer ou l'annuler.
   let duoStage = null, duoChanging = false;
+  // Un soliste est proposé sous son seul prénom, et les autres solistes ne
+  // sont pas « à sa table ». Un QR ouvert sans prénom (« Solo 3 ») n'est
+  // jamais proposé : son nom provisoire finirait sur l'écran de KaraFun.
   function partnerOptions(owner, exclude) {
-    const candidates = S.people.filter(p => p.active !== false && !exclude.has(String(p.id)));
-    const sameTable = candidates.filter(p => p.tableId === owner.tableId);
-    const otherTables = candidates.filter(p => p.tableId !== owner.tableId);
-    const option = p => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(tableOf(p.tableId)?.name || p.tableId)}</option>`;
-    return { count: candidates.length, html: `${sameTable.length ? `<optgroup label="Même table">${sameTable.map(option).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres tables et personnes en solo">${otherTables.map(option).join('')}</optgroup>` : ''}` };
+    const candidates = S.people.filter(p => p.active !== false && !p.nameRequired && !exclude.has(String(p.id)));
+    const sameTable = isSolo(owner) ? [] : candidates.filter(p => p.tableId === owner.tableId);
+    const otherTables = candidates.filter(p => !sameTable.includes(p));
+    const option = p => `<option value="${esc(p.id)}">${esc(p.name)}${isSolo(p) ? '' : ` — ${esc(tableOf(p.tableId)?.name || p.tableId)}`}</option>`;
+    return { count: candidates.length, html: `${sameTable.length ? `<optgroup label="Même table">${sameTable.map(option).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="Autres personnes">${otherTables.map(option).join('')}</optgroup>` : ''}` };
   }
   // La liste n'est redessinée que si son contenu change ; le choix fait reste
   // choisi tant que le même titre est sur scène, et repart à « Choisir… »
@@ -1141,7 +1315,7 @@
       <div class="stage-history-body"><b>${esc(item.title)}</b>${item.artist ? ` <span class="muted small">· ${esc(item.artist)}</span>` : ''}
         ${item.people.map(person => `<div class="stage-history-person" data-history-person="${esc(person.id)}">
           ${photoHtml(person, person.name)}
-          <span><b>${esc(person.name)}</b> <span class="small muted">${esc(person.table)}${person.active ? '' : ' · parti'}</span>${person.privateNote ? `<br><span class="small">${esc(person.privateNote)}</span>` : ''}</span>
+          <span><b>${esc(person.name)}</b> <span class="small muted">${person.individual ? '' : esc(person.table)}${person.active ? '' : person.individual ? 'parti' : ' · parti'}</span>${person.privateNote ? `<br><span class="small">${esc(person.privateNote)}</span>` : ''}</span>
           <span class="stage-history-actions"><button class="btn small" data-history-note>Repère</button>${person.active ? '<button class="btn small danger" data-history-leave>Marquer parti</button>' : ''}</span>
         </div>`).join('')}${duoLine(item)}</div></div>`).join('') : '<p class="small muted">Aucun passage pour le moment.</p>');
   }
@@ -1163,36 +1337,68 @@
   }
 
   // Spotify : connexion, appareil et relance automatique pendant les silences.
-  let spotifyDevicesList = null;
+  // État de la dernière vérification faite par le serveur (toutes les minutes) :
+  // phrase complète (message de « Vérifier Spotify » ; sous le titre du
+  // panneau quand elle dit plus que la pastille), pastille courte (panneau
+  // et écran Scène), couleur.
+  function spotifyHealth(sp) {
+    const health = sp.health || { state: 'unknown' };
+    const name = health.device?.name || sp.deviceName || 'l’appareil voulu';
+    if (!sp.connected) return { state: 'disconnected', text: 'Spotify non connecté', chip: 'Spotify non connecté', cls: 'bad' };
+    if (health.state === 'ready') return { state: 'ready', text: `Spotify connecté · ${name}`, chip: `Spotify · ${name}`, cls: 'ok' };
+    if (health.state === 'no-device') return { state: 'no-device', text: `Spotify connecté, aucun appareil : ouvre Spotify sur ${name}`, chip: 'Spotify : aucun appareil', cls: 'warn', long: true };
+    // Spotify a répondu en refusant (jeton, compte…) : son message, sans promettre de nouvel essai.
+    if (health.state === 'error' && health.status) return { state: 'error', text: `Spotify refuse la demande : ${String(health.message || `code ${health.status}`).replace(/\.$/, '')}`, chip: 'Spotify refuse la demande', cls: 'bad', long: true, refused: true };
+    if (health.state === 'error') return { state: 'error', text: `Spotify injoignable, nouvel essai à ${hhmm(health.retryAt)}`, chip: 'Spotify injoignable', cls: 'bad', long: true };
+    return { state: 'unknown', text: 'Vérification de Spotify…', chip: 'Spotify : vérification…', cls: '' };
+  }
   function renderSpotify() {
     const sp = S.spotify;
+    $('spotifyChip').hidden = !sp?.configured;
     if (!sp) return;
     $('spotifyRedirect').textContent = sp.redirectUri || '';
     syncField($('spotifyClientId'));
     $('spotifyConnected').hidden = !sp.connected;
     $('spotifySetup').open = !sp.connected && !!$('spotifySetup').open;
     $('spotifyLogin').disabled = !sp.configured;
-    const playing = sp.player ? (sp.player.isPlaying ? 'en lecture' : 'en pause') : null;
-    $('spotifyPill').textContent = !sp.configured ? 'Non configuré' : !sp.connected ? 'Non connecté' :
-      playing ? `Spotify ${playing}` : 'Connecté';
-    $('spotifyPill').className = 'pill' + (sp.lastError ? ' bad' : sp.connected ? ' ok' : '');
+    const health = spotifyHealth(sp);
+    $('spotifyPill').textContent = sp.configured ? health.chip : 'Non configuré';
+    $('spotifyPill').className = 'pill' + (sp.configured && health.cls ? ` ${health.cls}` : '');
+    $('spotifyChip').textContent = health.chip;
+    $('spotifyChip').className = 'pill' + (health.cls ? ` ${health.cls}` : '');
+    $('spotifyReconnectRow').hidden = !sp.configured || sp.connected;
     const last = sp.lastAction;
     const lastText = last ? `Dernière action à ${hhmm(last.at)} : ${last.kind === 'resume' ? 'relance' : 'pause'}${last.result === 'already' ? ' (rien à faire)' : last.ok ? '' : ' en échec'}.` : '';
-    $('spotifyText').textContent = [sp.lastError, sp.player?.track ? `Spotify : ${sp.player.track.title}${sp.player.track.artist ? ` — ${sp.player.track.artist}` : ''}${sp.player.device ? ` sur ${sp.player.device.name}` : ''}.` : '', lastText]
+    const checked = sp.connected && sp.health?.checkedAt ? `Vérifié à ${hhmm(sp.health.checkedAt)}.` : '';
+    // Dernier état lu du lecteur : en lecture ou en pause, et à quelle heure.
+    // Seulement pour un Spotify vérifié et prêt : non connecté, en vérification,
+    // sans appareil ou en erreur, ce titre ancien contredirait la phrase.
+    const player = sp.player;
+    const track = player?.track && health.state === 'ready' ?
+      `${player.isPlaying ? 'En lecture' : 'En pause'}${player.at ? ` à ${hhmm(player.at)}` : ''} : ${player.track.title}${player.track.artist ? ` — ${player.track.artist}` : ''}${player.device ? ` sur ${player.device.name}` : ''}.` : '';
+    // Refus : le message de Spotify est déjà dans la phrase, pas répété.
+    $('spotifyText').textContent = [health.long ? `${health.text}.` : '', health.refused && sp.lastError === sp.health.message ? '' : sp.lastError, track, lastText, checked]
       .filter(Boolean).join(' ');
     if (!sp.connected) return;
     for (const id of ['spotifyAutoResume', 'spotifyAutoPause', 'spotifyDelay', 'spotifyLead']) syncField($(id));
+    // Liste gardée par le serveur ; l'appareil choisi reste affiché et
+    // sélectionné même absent de la liste : jamais de bascule silencieuse.
     if (document.activeElement !== $('spotifyDevice')) {
-      const devices = spotifyDevicesList || (sp.deviceId ? [{ id: sp.deviceId, name: sp.deviceName || 'Appareil choisi' }] : []);
+      const devices = (sp.devices || []).slice();
+      if (sp.deviceId && !devices.some(d => d.id === sp.deviceId)) devices.push({ id: sp.deviceId, name: sp.deviceName || 'Appareil choisi', missing: true });
       $('spotifyDevice').innerHTML = '<option value="">Appareil actif de Spotify</option>' + devices.map(d =>
-        `<option value="${esc(d.id)}" ${d.id === sp.deviceId ? 'selected' : ''}>${esc(d.name)}${d.active ? ' (actif)' : ''}</option>`).join('');
+        `<option value="${esc(d.id)}" ${d.id === sp.deviceId ? 'selected' : ''}>${esc(d.name)}${d.missing ? ' (introuvable)' : d.active ? ' (actif)' : ''}</option>`).join('');
     }
   }
 
   // Tables : une tuile par table ; la toucher montre son QR en grand.
   function renderTables() {
     patch($('tBody'), S.tables.map(t => {
-      const occupancy = t.individual ? `${t.activeCount} soliste${t.activeCount === 1 ? '' : 's'}` :
+      // « En solo » : combien n'ont plus donné de nouvelles depuis 20 min,
+      // parmi les solistes comptés (une place « Solo N » sans prénom n'en est
+      // pas une, comme dans activeCount : countsAsPresent du serveur).
+      const idle = t.individual ? S.people.filter(p => p.tableId === t.id && !p.nameRequired && activityOf(p)?.level).length : 0;
+      const occupancy = t.individual ? `${t.activeCount} soliste${t.activeCount === 1 ? '' : 's'}${idle ? ` · ${idle} sans nouvelles` : ''}` :
         `${t.activeCount} actif${t.activeCount === 1 ? '' : 's'} / ${t.count} inscrit${t.count === 1 ? '' : 's'} / ${t.headcount || '—'} places`;
       const tile = t.individual ?
         `<button type="button" class="table-tile solo" data-solo-invite><strong>${esc(t.name)}</strong><span class="occupancy">${occupancy}</span><span class="table-tile-cta">QR individuel</span></button>` :
@@ -1286,9 +1492,23 @@
   // Tonalité, tempo, voix guide et chœurs. Le bar règle le titre en cours en
   // direct (Scène : envoi immédiat, valeurs lues dans KaraFun) et chaque titre
   // à venir (File, menu ⋯ → Réglages : fiche enregistrée toute seule).
+  // Chaque voix guide a son réglage : `guide` pour la voix 1 (piste 5),
+  // `guideVoices` { "6": 50 } pour les autres ; champ 'voice:6' sur la page.
   const VOLUME_CHOICES = [0, 25, 50, 75, 100];
   const TUNE_FIELDS = ['pitch', 'tempo', 'guide', 'backing'];
-  const TRACK_BACKING = 4, TRACK_GUIDE = 5;
+  const TRACK_BACKING = 4, TRACK_GUIDE = 5, TRACK_VOICE_2 = 6;
+  const isVoice = type => Number.isInteger(type) && type >= TRACK_GUIDE && type <= 15;
+  // Voix guides d'un titre dans l'ordre des pistes ; null : pistes inconnues.
+  const voicesOf = tracks => Array.isArray(tracks) ? [...new Set(tracks.filter(isVoice))].sort((a, b) => a - b) : null;
+  const voiceField = type => type === TRACK_GUIDE ? 'guide' : `voice:${type}`;
+  const fieldType = field => field === 'guide' ? TRACK_GUIDE : /^voice:\d+$/.test(field) ? Number(field.slice(6)) : null;
+  // Valeur d'un champ ('pitch', 'guide', 'voice:6'…) dans des réglages.
+  const tuneValue = (value, field) => fieldType(field) > TRACK_GUIDE ? value?.guideVoices?.[fieldType(field)] : value?.[field];
+  function setTune(value, field, n) {
+    if (fieldType(field) > TRACK_GUIDE) value.guideVoices = { ...value.guideVoices, [fieldType(field)]: n };
+    else value[field] = n;
+    return value;
+  }
   const LIVE_CONFIRM_MS = 8000; // sans écho de KaraFun passé ce délai, sa valeur revient
   const SAVED_TUNE = { karafun: 'Enregistré ✓ · envoyé à KaraFun', start: 'Enregistré ✓ · appliqué au début du titre',
     sending: 'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre' };
@@ -1302,21 +1522,31 @@
       const n = value?.[field];
       if (Number.isInteger(n) && !(n === 0 && (field === 'pitch' || field === 'tempo'))) out[field] = n;
     }
+    for (const [key, n] of Object.entries(value?.guideVoices || {})) {
+      if (isVoice(Number(key)) && Number(key) > TRACK_GUIDE && Number.isInteger(n)) setTune(out, voiceField(Number(key)), n);
+    }
     return out;
   }
   const tuneKey = value => JSON.stringify(cleanTune(value));
   const signed = n => n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
-  // « ♯ +2 · tempo −10 % · guide 50 » ; un volume à sa valeur par défaut n'est pas rappelé.
-  function tuneSummary(value) {
+  // « ♯ +2 · tempo −10 % · guide 50 » ; un titre à plusieurs voix guides :
+  // « voix 1 50 · voix 2 25 ». Un volume à sa valeur par défaut n'est pas rappelé.
+  function tuneSummary(value, tracks = null) {
     const defaults = tuneDefaults();
     const parts = [];
     if (value?.pitch) parts.push(`${value.pitch > 0 ? '♯' : '♭'} ${signed(value.pitch)}`);
     if (value?.tempo) parts.push(`tempo ${signed(value.tempo)} %`);
-    if (value?.guide != null && value.guide !== defaults.guide) parts.push(value.guide ? `guide ${value.guide}` : 'guide coupé');
+    const set = [TRACK_GUIDE, ...Object.keys(value?.guideVoices || {}).map(Number)].filter(type => tuneValue(value, voiceField(type)) != null);
+    const voices = voicesOf([...(voicesOf(tracks) || []), TRACK_GUIDE, ...set]);
+    for (const type of set) {
+      const n = tuneValue(value, voiceField(type));
+      const name = voices.length > 1 ? `voix ${voices.indexOf(type) + 1}` : 'guide';
+      if (n !== defaults.guide) parts.push(n ? `${name} ${n}` : `${name} coupée`);
+    }
     if (value?.backing != null && value.backing !== defaults.backing) parts.push(value.backing ? `chœurs ${value.backing}` : 'chœurs coupés');
     return parts.join(' · ');
   }
-  const tuneBadge = settings => { const text = tuneSummary(settings); return text ? `<span class="badge tune" title="Réglages du titre">${esc(text)}</span>` : ''; };
+  const tuneBadge = (settings, tracks) => { const text = tuneSummary(settings, tracks); return text ? `<span class="badge tune" title="Réglages du titre">${esc(text)}</span>` : ''; };
   // Contenu d'une liste de boutons redessinée sans perdre celui qui a le focus.
   function patchFocus(container, html) {
     if (rendered.get(container) === html) return;
@@ -1327,7 +1557,10 @@
   }
   // Boutons des réglages : `attr` les distingue (fiche ou direct), `prefix`
   // nomme les valeurs affichées. Pistes connues : seulement celles du titre.
-  function tuneControls(prefix, attr, { value, tracks = null, duo = false, lock = false, refused = {} }) {
+  // Un curseur par voix guide, sans curseur commun : « Voix guide » pour un
+  // titre à une voix, « Voix 1 », « Voix 2 »… sinon ; pistes inconnues :
+  // « Voix 1 » et « Voix 2 », appliquée seulement si le titre en a deux.
+  function tuneControls(prefix, attr, { value, tracks = null, lock = false, refused = {} }) {
     const ranges = tuneRanges(), defaults = tuneDefaults();
     const stepper = (field, label, hint, shown, [down, up]) => {
       const range = ranges[field], n = value[field] ?? 0, off = lock || refused[field];
@@ -1336,25 +1569,29 @@
         <div class="tune-stepper" role="group" aria-labelledby="${id}Label"><button type="button" class="btn" ${attr}="${field}" data-step="${-range.step}" data-focus="${field}-down" aria-label="${esc(down)}"${off || n - range.step < range.min ? ' disabled' : ''}>−</button><output class="tune-value" id="${id}">${esc(shown(n))}</output><button type="button" class="btn" ${attr}="${field}" data-step="${range.step}" data-focus="${field}-up" aria-label="${esc(up)}"${off || n + range.step > range.max ? ' disabled' : ''}>+</button></div></div>`;
     };
     const volume = (field, label, hint) => {
-      const n = value[field] ?? defaults[field], off = lock || refused[field];
-      const id = `${prefix}${field === 'guide' ? 'Guide' : 'Backing'}`;
-      const other = VOLUME_CHOICES.includes(n) ? '' : `<span class="tune-hint">${value[field] == null ? 'Réglage de KaraFun' : 'Actuellement'} : ${esc(n)}</span>`;
+      const type = fieldType(field), own = tuneValue(value, field);
+      const n = own ?? defaults[type ? 'guide' : field], off = lock || refused[type ? 'guide' : field];
+      const id = `${prefix}${type > TRACK_GUIDE ? `Voice${type}` : type ? 'Guide' : 'Backing'}`;
+      const other = VOLUME_CHOICES.includes(n) ? '' : `<span class="tune-hint">${own == null ? 'Réglage de KaraFun' : 'Actuellement'} : ${esc(n)}</span>`;
       return `<div class="tune-row"><span class="tune-label" id="${id}Label">${label}</span>${hint ? `<span class="tune-hint">${hint}</span>` : ''}
         <div class="tune-seg" role="group" id="${id}" aria-labelledby="${id}Label">${VOLUME_CHOICES.map(level => `<button type="button" class="btn" ${attr}="${field}" data-value="${level}" data-focus="${field}-${level}" aria-pressed="${n === level}"${off ? ' disabled' : ''}>${level || 'Coupé'}</button>`).join('')}</div>${other}</div>`;
     };
     const pitchStep = ranges.pitch.step, tempoStep = ranges.tempo.step;
+    const voices = voicesOf(tracks);
+    const guides = !voices ? volume('guide', 'Voix 1', '') + volume(voiceField(TRACK_VOICE_2), 'Voix 2', 'Si le titre en a deux.')
+      : !voices.length ? '<p class="tune-hint">Ce titre n’a pas de voix guide.</p>'
+        : voices.map((type, index) => volume(voiceField(type), voices.length > 1 ? `Voix ${index + 1}` : 'Voix guide', '')).join('');
     return stepper('pitch', 'Tonalité', '0 = originale, en demi-tons', signed,
       pitchStep === 1 ? ['Baisser d’un demi-ton', 'Monter d’un demi-ton'] : [`Baisser de ${pitchStep} demi-tons`, `Monter de ${pitchStep} demi-tons`]) +
       stepper('tempo', 'Tempo', '0 = tempo original', n => `${signed(n)} %`, [`Ralentir de ${tempoStep} %`, `Accélérer de ${tempoStep} %`]) +
-      (!tracks || tracks.includes(TRACK_GUIDE) ? volume('guide', 'Voix guide', duo ? 'Duo : les deux voix guides suivent ce réglage.' : '')
-        : '<p class="tune-hint">Ce titre n’a pas de voix guide.</p>') +
+      guides +
       (!tracks || tracks.includes(TRACK_BACKING) ? volume('backing', 'Chœurs', tracks ? '' : 'Si le titre en a.')
         : '<p class="tune-hint">Ce titre n’a pas de chœurs.</p>');
   }
 
   // Titre en cours, en direct : la valeur envoyée s'affiche jusqu'à ce que
   // KaraFun la renvoie (« Appliqué ») ; sans écho, la valeur de KaraFun revient.
-  const liveDrafts = new Map(); // champ → { value, queueId, sent, timer }
+  const liveDrafts = new Map(); // champ ('guide', 'voice:6'…) → { value, queueId, sent, timer }
   let liveStatus = { text: '', tone: '' }, liveQueueId = null;
   function renderLiveTune() {
     const live = S.songSettings?.live;
@@ -1364,16 +1601,21 @@
     const queueId = box.hidden ? null : live.queueId;
     if (queueId !== liveQueueId) { liveQueueId = queueId; liveStatus = { text: '', tone: '' }; }
     if (box.hidden) { liveDrafts.clear(); return; }
+    const tracks = Array.isArray(live.tracks) ? live.tracks : null;
+    // Voix du titre (pistes inconnues : voix 1 et 2), et celles en attente.
+    const voiceFields = (voicesOf(tracks) || [TRACK_GUIDE, TRACK_VOICE_2]).filter(type => type > TRACK_GUIDE).map(voiceField);
+    const liveValue = field => fieldType(field) > TRACK_GUIDE ? live.voices?.[fieldType(field)] ?? null : live[field];
     const value = {};
-    for (const field of TUNE_FIELDS) {
+    for (const field of [...new Set([...TUNE_FIELDS, ...voiceFields, ...liveDrafts.keys()])]) {
       const draft = liveDrafts.get(field);
       if (draft && draft.queueId !== live.queueId) { clearTimeout(draft.timer); liveDrafts.delete(field); }
-      else if (draft?.sent && live[field] === draft.value) {
+      else if (draft?.sent && liveValue(field) === draft.value) {
         clearTimeout(draft.timer);
         liveDrafts.delete(field);
         liveStatus = { text: 'Appliqué par KaraFun ✓', tone: 'ok' };
       }
-      value[field] = liveDrafts.has(field) ? liveDrafts.get(field).value : live[field];
+      const n = liveDrafts.has(field) ? liveDrafts.get(field).value : liveValue(field);
+      if (n != null || !fieldType(field) || fieldType(field) === TRACK_GUIDE) setTune(value, field, n);
     }
     const perms = S.songSettings.permissions || {}, support = S.songSettings.support || {}, notices = S.songSettings.notices || {};
     const unavailable = S.songSettings.available === false;
@@ -1390,10 +1632,9 @@
           : told.length ? told.join(' ') : Object.values(refused).some(Boolean) ? 'KaraFun ne prend pas en charge certains de ces réglages.' : '';
     $('liveTuneReason').hidden = !reason;
     $('liveTuneReason').textContent = reason;
-    const summary = tuneSummary(cleanTune(value));
+    const summary = tuneSummary(cleanTune(value), tracks);
     $('liveTuneSummary').textContent = `Réglages en direct · ${summary || 'réglages d’origine'}`;
-    patchFocus($('liveTune'), tuneControls('live', 'data-live', { value, tracks: Array.isArray(live.tracks) ? live.tracks : null,
-      duo: (S.stage.ids || []).length > 1, lock, refused }));
+    patchFocus($('liveTune'), tuneControls('live', 'data-live', { value, tracks, lock, refused }));
     $('liveTuneStatus').textContent = liveStatus.text;
     $('liveTuneStatus').className = `save-status${liveStatus.tone ? ` ${liveStatus.tone}` : ''}`;
   }
@@ -1406,7 +1647,11 @@
     liveStatus = { text: 'Envoyé à KaraFun…', tone: '' };
     renderLiveTune();
     try {
-      await post('/api/staff/kf', field === 'guide' || field === 'backing' ? { action: 'track', track: field, value } : { action: field, value });
+      // Le titre affiché est visé : s'il a changé entre-temps, le serveur refuse.
+      // Une voix guide autre que la première est nommée par sa piste (6, 7…).
+      const track = field === 'guide' || field === 'backing' ? field : fieldType(field);
+      await post('/api/staff/kf', track ? { action: 'track', track, value, queueId: live.queueId }
+        : { action: field, value, queueId: live.queueId });
       if (liveDrafts.get(field) !== draft) return;
       draft.sent = true;
       draft.timer = setTimeout(() => {
@@ -1429,7 +1674,7 @@
     const field = control.dataset.live;
     if (control.dataset.step) {
       const range = tuneRanges()[field];
-      const now = liveDrafts.get(field)?.value ?? live[field] ?? 0;
+      const now = liveDrafts.get(field)?.value ?? live[field] ?? 0; // tonalité ou tempo
       sendLive(field, Math.min(range.max, Math.max(range.min, now + Number(control.dataset.step))));
     } else sendLive(field, Number(control.dataset.value));
   });
@@ -1444,7 +1689,7 @@
     if (entryId == null || entryId === '') return null;
     if (S?.songSettings?.live?.entryId === entryId) return { onStage: true, q: { song: S.songSettings.live } };
     const q = (S?.queue || []).find(item => item.song?.entryId === entryId);
-    return q ? { q, tracks: Array.isArray(q.tracks) ? q.tracks : null, duo: q.kind === 'duo' || (q.ids || []).length > 1 } : null;
+    return q ? { q, tracks: Array.isArray(q.tracks) ? q.tracks : null } : null;
   }
   function openSongSheet(entryId, personId) {
     songSheetEntry = String(entryId);
@@ -1475,7 +1720,7 @@
     $('songSheetNote').textContent = note;
     let value = {};
     try { value = cleanTune(JSON.parse(input.value || '{}')); } catch (_) { /* valeur abîmée : réglages de KaraFun */ }
-    patchFocus($('songSheetBody'), tuneControls('sheet', 'data-tune', { value, tracks: target?.tracks || null, duo: !!target?.duo, lock: !!lock }));
+    patchFocus($('songSheetBody'), tuneControls('sheet', 'data-tune', { value, tracks: target?.tracks || null, lock: !!lock }));
     $('songSheetReset').disabled = !!lock || !Object.keys(value).length;
   }
   $('songSheet').addEventListener('click', event => {
@@ -1488,7 +1733,7 @@
     if (control?.dataset.step) {
       const field = control.dataset.tune, range = tuneRanges()[field];
       next[field] = Math.min(range.max, Math.max(range.min, (next[field] ?? 0) + Number(control.dataset.step)));
-    } else if (control) next[control.dataset.tune] = Number(control.dataset.value);
+    } else if (control) setTune(next, control.dataset.tune, Number(control.dataset.value));
     input.value = tuneKey(next);
     fieldEvent({ type: 'input' }, input);
     renderSongSheet();
@@ -1496,6 +1741,22 @@
   $('songSheetClose').onclick = () => $('songSheet').close();
   // Fermée (bouton, Retour) : un changement en attente part tout de suite.
   $('songSheet').addEventListener('close', () => { flushAll(); songSheetEntry = null; });
+
+  // Durée maximale des titres : champs visibles une fois l'option active, et
+  // retrait groupé des titres de la file déjà trop longs (décision D9).
+  function renderMaxSong() {
+    const on = S.settings?.maxSongSec != null;
+    const count = on ? S.tooLong?.count || 0 : 0;
+    $('maxSongFields').hidden = !on;
+    $('tooLongActions').hidden = !count;
+    $('removeTooLong').textContent = count > 1 ? `Retirer les ${count} titres trop longs` : 'Retirer le titre trop long';
+  }
+  $('removeTooLong').onclick = () => {
+    const count = S?.tooLong?.count || 0;
+    if (!count || !confirm(`Retirer de la file ${count > 1 ? `les ${count} titres` : 'le titre'} plus long${count > 1 ? 's' : ''} que ${minSec(S.tooLong.limitSec)} ? ` +
+      'Chaque personne est prévenue sur son téléphone. Les titres déjà dans KaraFun restent.')) return;
+    act('/api/staff/songs-too-long/remove', {});
+  };
 
   // Interrupteur des chanteurs : ce que KaraFun a accepté, refusé ou laissé
   // sans réponse depuis la connexion (un avis par fonction).
@@ -1531,7 +1792,9 @@
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     for (const id of ['battleCooldownMin', 'battleRejectedCooldownMin', 'battleVoteMin', 'battleMinVoters', 'requirePresence',
-      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings']) syncField($(id));
+      'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings',
+      'maxSongOn', 'maxSongMin', 'maxSongSecPart']) syncField($(id));
+    renderMaxSong();
     renderSongSupport();
     renderStaffAlerts();
     if (!renderedOnce && !$('code').value) $('code').value = S.code || '';
@@ -1548,6 +1811,7 @@
     renderStageHistory();
 
     patch($('stage'), liveCard(S.stage));
+    renderStageProgress();
     renderLiveTune();
     patch($('next'), liveCard(S.next));
     // Après une relance ratée, une copie tardive peut encore arriver : nouvel essai une minute plus tard.
@@ -1633,6 +1897,25 @@
       const notes = (q.ids || []).map(pid => S.people.find(p => p.id === pid)).filter(p => p?.privateNote)
         .map(p => (q.ids.length > 1 ? `${p.name} : ` : '') + p.privateNote);
       const inviteBadge = pendingInviteBadge(q);
+      // Solo sans nouvelles depuis 45 min, sur le point d'être appelé.
+      const lineIds = q.ids?.length ? q.ids : q.source === 'helper' && q.id != null ? [q.id] : [];
+      const idleTags = lineIds.map(personOf).map(p => [p, activityOf(p)]).filter(([, a]) => a?.level === 'late')
+        .map(([p, a]) => {
+          // Duo : « Prénom : inactif 52 min » forme un bloc, qui passe à la ligne
+          // sous le nom du duo plutôt que de perdre le prénom ou la durée.
+          const who = lineIds.length > 1 ? `${p.name} : ` : '';
+          return `<span class="idle-tag${who ? ' duo' : ''}" title="${esc(`${who}${a.text} · ${a.title}`)}">${who ? `<span class="idle-who">${esc(who)}</span>` : ''}<span class="idle-for">${esc(a.short)}</span></span>`;
+        }).join('');
+      // Durée maximale dépassée : repère court au début du titre, à toutes les
+      // largeurs (comme « ⚠ Doublon ») ; la phrase complète est dans l'infobulle.
+      const tooLongTitle = q.tooLongSec && S.tooLong?.limitSec ? `Ce titre dure ${minSec(q.tooLongSec)}, plus que la durée maximale de ${minSec(S.tooLong.limitSec)} (« Plus » › règles) : ajouté avant la limite, il reste dans la file sauf retrait.` : '';
+      const tooLongTag = tooLongTitle ? `<span class="badge too-long-tag" title="${esc(tooLongTitle)}">trop long</span>` : '';
+      // Repères au début du titre : avec eux, le titre (et ses réglages) forme
+      // un bloc qui passe dessous quand il ne tient pas à côté ; l'interprète
+      // n'a que la place qui reste (app.css, .song-main).
+      const marks = tooLongTag + repeatBadge(q.repeat);
+      const songMain = `<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings, q.tracks)}` : ''}`;
+      const songArtist = artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : '';
       // Réglages de titre : tout titre à venir de la file, même déjà chargé dans KaraFun.
       const tunable = q.song?.entryId && (q.source === 'helper' || (q.ours && (q.source === 'karafun' || q.source === 'envoi')));
       const tune = tunable ? `<button class="btn small" data-song-settings="${esc(q.song.entryId)}" data-person-id="${esc(q.ids?.[0] ?? q.id ?? '')}" aria-label="Réglages de « ${esc(title)} » : tonalité, tempo, voix">Réglages</button>` : '';
@@ -1643,8 +1926,8 @@
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span><span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
-        <div class="song-cell" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${repeatBadge(q.repeat)}<span class="song-title">${esc(title)}</span>${q.song?.settings ? ` ${tuneBadge(q.song.settings)}` : ''}${artist ? `<span class="song-artist"> · ${esc(artist)}</span>` : ''}</div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="song-cell${marks ? ' has-marks' : ''}" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${marks ? `${marks}<span class="song-main">${songMain}</span>` : songMain}${songArtist}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
       </div>`;
@@ -1720,6 +2003,8 @@
         act('/api/staff/solo-invite/revoke', { id: button.dataset.soloRevoke }, 'Invitation annulée');
       }
     });
+    renderPrivateEvent(soloTable);
+    renderSoloists();
     renderIdentities();
     const battle = S.battle || { phase: 'idle' };
     const remaining = (at) => Math.max(0, Math.ceil((Number(at) - Date.now()) / 1000));
@@ -1782,7 +2067,8 @@
     const badge = (id, count) => { $(id).hidden = !count; $(id).textContent = count ? String(count) : ''; };
     badge('tabBadgeFile', S.queue.length);
     badge('tabBadgeAccueil', soloPending.length);
-    $('tabDotPlus').hidden = !(battle.phase === 'requested' || status.cls === 'bad' || !!S.spotify?.lastError);
+    $('tabDotPlus').hidden = !(battle.phase === 'requested' || status.cls === 'bad' || !!S.spotify?.lastError ||
+      (!!S.spotify?.connected && ['no-device', 'error'].includes(spotifyHealth(S.spotify).state)));
 
     const p = kf && kf.preferences, perm = kf && kf.permissions;
     $('diag').innerHTML = kf ? [
@@ -1949,7 +2235,7 @@
     if (clear) clear.hidden = !input.value;
   });
   const spotifyAction = (body, message) => act('/api/staff/spotify', body, message);
-  $('spotifyLogin').onclick = async () => {
+  $('spotifyLogin').onclick = $('spotifyReconnect').onclick = async () => {
     try {
       const { url } = await post('/api/staff/spotify', { action: 'auth-url' });
       // Spotify revient sur 127.0.0.1 : la connexion doit se faire sur ce PC.
@@ -1957,18 +2243,22 @@
       window.open(url, '_blank', 'noopener');
     } catch (e) { toast(e.message, true); }
   };
-  $('spotifyDevices').onclick = async () => {
+  // « Vérifier Spotify » : le serveur relit les appareils, reprend l'appareil
+  // choisi s'il a changé d'identifiant et dit où on en est.
+  $('spotifyCheck').onclick = async () => {
     try {
-      spotifyDevicesList = (await post('/api/staff/spotify', { action: 'devices' })).devices;
-      if (!spotifyDevicesList.length) toast('Aucun appareil : ouvre Spotify sur l’appareil voulu, puis actualise.', true);
-      render();
+      const { health } = await post('/api/staff/spotify', { action: 'refresh' });
+      const seen = spotifyHealth({ ...S.spotify, connected: health.state !== 'disconnected', health });
+      toast(seen.text, seen.cls !== 'ok');
+      load();
     } catch (e) { toast(e.message, true); }
   };
   $('spotifyDevice').onchange = () => {
     const option = $('spotifyDevice').selectedOptions?.[0];
     spotifyAction({ action: 'device', deviceId: $('spotifyDevice').value,
-      deviceName: $('spotifyDevice').value ? (option?.textContent || '').replace(/ \(actif\)$/, '') : '' }, 'Appareil Spotify enregistré');
+      deviceName: $('spotifyDevice').value ? (option?.textContent || '').replace(/ \((actif|introuvable)\)$/, '') : '' }, 'Appareil Spotify enregistré');
   };
+  $('spotifyChip').onclick = () => goTo('plus', 'spotifyPanel');
   $('spotifyPlay').onclick = () => spotifyAction({ action: 'play' }, 'Spotify relancé');
   $('spotifyPause').onclick = () => spotifyAction({ action: 'pause' }, 'Spotify en pause');
   $('spotifyDisconnect').onclick = () => { if (confirm('Déconnecter Spotify de la file karaoké ?')) spotifyAction({ action: 'disconnect' }, 'Spotify déconnecté'); };
@@ -2019,6 +2309,32 @@
   $('shareClose').onclick = () => $('shareDialog').close();
   $('shareDialog').addEventListener('close', () => { $('shareCode').textContent = ''; $('shareUrl').value = ''; $('shareQr').removeAttribute('src'); });
   $('shareCopy').onclick = () => copyText($('shareUrl'), 'Lien copié', 'Sélectionne le lien pour le copier', false);
+  // ------------------------------------------------------------ événement privé
+  // Bar privatisé : un seul QR, chacun scanne avec son téléphone. Couper puis
+  // rallumer garde le même QR ; « Renouveler » refuse l'ancien.
+  function renderPrivateEvent(soloTable) {
+    const event = S.privateEvent || {};
+    const on = !!event.enabled && !!event.url && !!event.qrUrl;
+    $('privateEventToggle').disabled = !soloTable;
+    $('privateEventToggle').checked = on;
+    $('privateEventPanel').hidden = !on;
+    if (!on) return;
+    const src = qrSrc(event);
+    if ($('privateEventQr').getAttribute('src') !== src) $('privateEventQr').src = src;
+    $('privateEventUrl').value = event.url;
+    $('privateEventPrint').href = '/print' + kq;
+  }
+  $('privateEventToggle').onchange = () => {
+    const enabled = !!$('privateEventToggle').checked;
+    act('/api/staff/private-event', { enabled }, enabled ? 'Événement privé activé : montre ou imprime son QR' :
+      'Événement privé coupé : son QR ne permet plus de s’inscrire');
+  };
+  $('privateEventCopy').onclick = () => copyText($('privateEventUrl'), 'Lien de l’événement copié', 'Sélectionne le lien pour le copier.', true);
+  $('privateEventRotate').onclick = () => {
+    if (confirm('Renouveler le QR de l’événement privé ? L’ancien QR, affiché ou imprimé, ne permettra plus de s’inscrire ; les personnes déjà inscrites gardent leur accès. Pense à réimprimer le nouveau.')) {
+      act('/api/staff/private-event', { rotate: true }, 'Nouveau QR d’événement privé : l’ancien est refusé');
+    }
+  };
   $('issueSoloInvitation').onclick = async () => {
     try {
       const invite = await post('/api/staff/solo-invite', { tableId: 'Comptoir' });
@@ -2029,15 +2345,7 @@
       load();
     } catch (error) { toast(error.message, true); }
   };
-  $('soloInviteCopy').onclick = async () => {
-    try {
-      await navigator.clipboard.writeText($('soloInviteUrl').value);
-      toast('Lien individuel copié');
-    } catch (_) {
-      $('soloInviteUrl').select();
-      toast('Sélectionne le lien pour le copier.', true);
-    }
-  };
+  $('soloInviteCopy').onclick = () => copyText($('soloInviteUrl'), 'Lien individuel copié', 'Sélectionne le lien pour le copier.', true);
   $('soloInviteClose').onclick = () => $('soloInviteDialog').close();
   // Adresse des QR : choix gardé jusqu'à « Utiliser », malgré le rafraîchissement.
   $('ipSel').addEventListener('change', () => { $('ipSel').dataset.touched = '1'; });

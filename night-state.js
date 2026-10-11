@@ -8,8 +8,10 @@ const crypto = require('crypto');
 const { Scheduler, DEFER_MAX } = require('./scheduler');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
+const { PrivateEvent } = require('./private-event');
 const { PLAYED_LIMIT } = require('./song-repeats');
 const { sanitizeSettings } = require('./song-settings');
+const { sanitizeClock, clientDuration, validMaxSong } = require('./stage-progress');
 
 const FORMAT = 1;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -35,15 +37,27 @@ function cleanSongSettings(song) {
   if (settings) song.settings = settings;
   else delete song.settings;
 }
-// Titre envoyé à KaraFun : réglages transmis et rattrapage déjà fait.
-function cleanSentSettings(holder) {
+// Sauvegarde d'avant les voix guides réglées une à une (`guideVoicesSaved`
+// absent) : dans un duo, la voix 2 suivait la voix 1. Elle reçoit donc le
+// même réglage (`guideVoices["6"]`), pour rien perdre.
+function legacyDuoVoice(song, duo) {
+  const settings = song?.settings;
+  if (!duo || !settings || settings.guide == null || settings.guideVoices?.['6'] != null) return;
+  song.settings = { ...settings, guideVoices: { ...settings.guideVoices, 6: settings.guide } };
+}
+// Titre envoyé à KaraFun : réglages transmis et rattrapage déjà fait. Duo
+// d'une ancienne sauvegarde : un duo, ou un duo devenu solo dont la file
+// avait posé la voix guide B (`sentSettings.guideB`).
+function cleanSentSettings(holder, legacy) {
   cleanSongSettings(holder.sel?.song);
+  if (legacy) legacyDuoVoice(holder.sel?.song, holder.sel?.ids?.length > 1 || holder.sentSettings?.guideB != null);
   if ('sentSettings' in holder) holder.sentSettings = sanitizeSettings(holder.sentSettings, { keepDefaults: true });
   if (holder.liveChecked != null && typeof holder.liveChecked !== 'string') delete holder.liveChecked;
   delete holder.statusAtOptions; // numéro d'état de KaraFun propre à l'exécution précédente
   for (const flag of ['settingsDirty', 'settingsChanged']) if (flag in holder && typeof holder[flag] !== 'boolean') delete holder[flag];
 }
-function dropCovers(snapshot) {
+// Titres gardés dans la sauvegarde (listes, invitations, envois à KaraFun).
+function savedSongs(snapshot) {
   const songs = [];
   for (const p of Array.isArray(snapshot.scheduler?.people) ? snapshot.scheduler.people : []) {
     songs.push(p?.song, p?.invite?.song);
@@ -51,7 +65,15 @@ function dropCovers(snapshot) {
   }
   for (const tr of Array.isArray(snapshot.tracked) ? snapshot.tracked : []) songs.push(tr?.sel?.song);
   songs.push(snapshot.pending?.sel?.song);
-  for (const song of songs) if (song && typeof song === 'object' && 'img' in song) song.img = null;
+  return songs.filter(song => song && typeof song === 'object');
+}
+function dropCovers(snapshot) {
+  for (const song of savedSongs(snapshot)) if ('img' in song) song.img = null;
+}
+// Durée envoyée par un téléphone : bornée comme à l'arrivée (une sauvegarde
+// d'avant la borne a pu la garder telle quelle).
+function boundDurations(snapshot) {
+  for (const song of savedSongs(snapshot)) if ('duration' in song) song.duration = clientDuration(Number(song.duration));
 }
 
 // `remaining` peut compter un envoi déjà en route en plus du report.
@@ -64,12 +86,27 @@ const selectionValid = sel => sel && typeof sel === 'object' &&
   sel.ids.every(x => typeof x === 'string') && songValid(sel.song) &&
   sel.song !== null && typeof sel.label === 'string';
 
+// Empreinte de chaque photo gardée, calculée une seule fois (première
+// sauvegarde, ou vérification à la reprise) : la soirée est sauvegardée toutes
+// les deux secondes et après chaque action, et relire 800 photos de 400 Ko à
+// chaque fois prenait près d'une seconde. Une photo n'est jamais modifiée sur
+// place : une nouvelle photo est un nouveau Buffer, avec sa propre empreinte.
+const photoChecksums = new WeakMap();
+const sha256Hex = buf => crypto.createHash('sha256').update(buf).digest('hex');
+function photoChecksum(buf) {
+  let checksum = photoChecksums.get(buf);
+  if (!checksum) {
+    checksum = sha256Hex(buf);
+    photoChecksums.set(buf, checksum);
+  }
+  return checksum;
+}
+
 function savePhoto(photo, directory) {
-  const checksum = crypto.createHash('sha256').update(photo.buf).digest('hex');
-  const filename = `${checksum}.bin`;
+  const filename = `${photoChecksum(photo.buf)}.bin`;
   const target = path.join(directory, filename);
-  fs.mkdirSync(directory, { recursive: true });
   if (!fs.existsSync(target)) {
+    fs.mkdirSync(directory, { recursive: true });
     const temporary = `${target}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     let fd;
     try {
@@ -88,7 +125,7 @@ function savePhoto(photo, directory) {
 }
 
 function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null,
-  soloInvitations = null, transfers = [], evening = null }) {
+  soloInvitations = null, privateEvent = null, transfers = [], evening = null, stageClock = null }) {
   if (!scheduler || !access || !settings) throw new Error('État de soirée incomplet.');
   const tables = [...scheduler.tables.values()].map(t => ({ ...clone(t), secret: access.get(t.id) }));
   if (tables.some(t => !t.secret)) throw new Error('Secret QR manquant dans une table.');
@@ -105,6 +142,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
     version: FORMAT,
     // Vignettes certifiées par le catalogue (voir withCover dans server.js).
     coversCertified: true,
+    // Voix guides réglées une à une (song-settings.js, `guideVoices`).
+    guideVoicesSaved: true,
     scheduler: {
       opts: clone(scheduler.opts), tables, people,
       Q: [...scheduler.Q], lastGroup: clone(scheduler.lastGroup),
@@ -127,12 +166,16 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
     },
     settings: clone(settings),
     soloInvitations: soloInvitations ? soloInvitations.serialize() : [],
+    // Événement privé (QR unique) : secret en clair comme ceux des tables.
+    privateEvent: privateEvent ? privateEvent.serialize() : null,
     // Transferts en cours : empreintes seulement, jamais le lien ni le code.
     transfers: clone(transfers),
     pending: pending ? { ...clone(pending), before: [...pending.before] } : null,
     tracked: clone(tracked),
     // Soirée du journal (data/soirees/<id>) : reprise après un redémarrage.
     evening: evening ? { id: String(evening.id), startedAt: Number(evening.startedAt) || null } : null,
+    // Barre de lecture du titre sur scène (stage-progress.js), facultative.
+    stageClock: stageClock ? clone(stageClock) : null,
   };
 }
 
@@ -144,6 +187,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // Sauvegarde antérieure à la certification des vignettes : une image a pu
   // être choisie par un téléphone. Elle n'est pas reprise.
   if (snapshot.coversCertified !== true) dropCovers(snapshot);
+  boundDurations(snapshot);
+  const legacyVoices = snapshot.guideVoicesSaved !== true;
   const data = object(snapshot.scheduler, 'ordonnanceur');
   const restoredSoloInvitations = new SoloInvitations(snapshot.soloInvitations ?? []);
   object(data.opts, 'règles');
@@ -174,8 +219,24 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     delete person.verifiedAt; // ancienne vérification des repères, retirée : le repère seul reste
     cleanSongSettings(person.song);
     person.backlog.forEach(cleanSongSettings);
+    if (legacyVoices) for (const song of [person.song, ...person.backlog]) legacyDuoVoice(song, !!song?.duet);
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.
     if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
+    // Champs facultatifs de l'accès solo et de l'activité : abîmés, ils sont
+    // ignorés (prénom libre, pas de clé personnelle, activité inconnue).
+    if (person.nameRequired !== undefined && person.nameRequired !== true) delete person.nameRequired;
+    if (person.viaEvent !== undefined && person.viaEvent !== true) delete person.viaEvent;
+    if (person.soloKeyHash !== undefined &&
+        (typeof person.soloKeyHash !== 'string' || !/^[a-f0-9]{64}$/.test(person.soloKeyHash))) delete person.soloKeyHash;
+    // Clé personnelle morte au départ (scheduler.leave) : une personne partie
+    // qui a une clé l'a perdue, même dans une sauvegarde d'avant ce champ.
+    if (person.soloKeyRevoked !== undefined && person.soloKeyRevoked !== true) delete person.soloKeyRevoked;
+    if (person.soloKeyHash && person.withdrawnAt) person.soloKeyRevoked = true;
+    // Auteur du départ (scheduler.leave) : partie d'elle-même, une personne de
+    // l'événement privé garde sa fiche dans le plafond après un redémarrage.
+    // Abîmé ou absent (sauvegarde d'avant ce champ) : la fiche est libérée.
+    if (person.withdrawnBy !== undefined && person.withdrawnBy !== 'self' && person.withdrawnBy !== 'staff') delete person.withdrawnBy;
+    if (person.lastActionAt !== undefined && !Number.isFinite(person.lastActionAt)) delete person.lastActionAt;
     if (p.photo != null) {
       const photo = object(p.photo, 'photo');
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(photo.type)) fail('photo mal formée');
@@ -185,9 +246,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
           const file = path.join(photoDir, photo.file);
           if (fs.statSync(file).size > 400 * 1024) throw new Error('photo trop grande');
           const buf = fs.readFileSync(file);
-          if (crypto.createHash('sha256').update(buf).digest('hex') !== photo.file.slice(0, 64)) {
-            throw new Error('empreinte photo incorrecte');
-          }
+          const checksum = photo.file.slice(0, 64);
+          if (sha256Hex(buf) !== checksum) throw new Error('empreinte photo incorrecte');
+          photoChecksums.set(buf, checksum);
           person.photo = { type: photo.type, buf };
         } catch (_) { person.photo = null; /* conserver la file même si une photo est abîmée */ }
       } else {
@@ -219,11 +280,54 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   tmp.appearanceSerial = data.appearanceSerial == null ?
     Math.max(0, ...[...tmp.people.values()].map(p => p.lastAppearanceTurn || 0)) :
     data.appearanceSerial;
-  if (!Number.isSafeInteger(tmp.appearanceSerial) || tmp.appearanceSerial < 0 ||
-      [...tmp.people.values()].some(p => (p.lastAppearanceTurn || 0) > tmp.appearanceSerial)) {
+  if (!Number.isSafeInteger(tmp.appearanceSerial) || tmp.appearanceSerial < 0) {
     fail('compteur des passages physiques mal formé');
   }
-  if ([...tmp.roundPeople].some(pid => !tmp.people.has(pid))) fail('personne du tour inconnue');
+  // Compteurs dérivés en désaccord (relecture finale fraîche, équipe rouge) :
+  // l'application en marche les tolère et les sauvegarde toutes les deux
+  // secondes, et refuser toute la soirée l'empêchait de redémarrer. Un
+  // dernier passage au-delà du compteur est ramené au compteur (la personne
+  // passe pour la dernière montée sur scène : l'espacement la fait attendre
+  // le plus) ; une personne du tour inconnue est oubliée, comme celles des
+  // crédits de tour. Chaque réparation est rendue (warnings), pour le journal
+  // du serveur.
+  const warnings = [];
+  for (const p of tmp.people.values()) {
+    if ((p.lastAppearanceTurn || 0) <= tmp.appearanceSerial) continue;
+    warnings.push(`dernier passage ${p.lastAppearanceTurn} de la personne ${p.id} au-delà du compteur des passages ` +
+      `${tmp.appearanceSerial} : ramené à ${tmp.appearanceSerial}`);
+    p.lastAppearanceTurn = tmp.appearanceSerial;
+  }
+  const strangers = [...tmp.roundPeople].filter(pid => !tmp.people.has(pid));
+  strangers.forEach(pid => tmp.roundPeople.delete(pid));
+  if (strangers.length) {
+    warnings.push(strangers.length === 1 ? '1 personne du tour inconnue oubliée' :
+      `${strangers.length} personnes du tour inconnues oubliées`);
+  }
+  // Deux solistes du même prénom dans deux groupes individuels : permis avant
+  // la v0.5 (prénom unique par groupe), indiscernables depuis que le nom d'un
+  // soliste n'affiche plus son groupe. Une personne présente garde son prénom
+  // avant une personne partie ; l'autre prend un numéro libre (« Léa 2 »), le
+  // prénom raccourci caractère par caractère (jamais un emoji coupé en deux).
+  const { nameKey, NAME_MAX } = Scheduler;
+  const numbered = (name, n) => {
+    const chars = Array.from(name);
+    while (chars.join('').length + ` ${n}`.length > NAME_MAX) chars.pop();
+    return `${chars.join('').trimEnd()} ${n}`;
+  };
+  const solos = [...tmp.people.values()].filter(p => tmp.tables.get(p.tableId).individual)
+    .sort((a, b) => !!a.withdrawnAt - !!b.withdrawnAt);
+  const taken = new Set(solos.map(p => nameKey(p.name)));
+  const kept = new Set(), renamed = [];
+  for (const p of solos) {
+    if (!kept.has(nameKey(p.name))) { kept.add(nameKey(p.name)); continue; }
+    let n = 2, next;
+    do next = numbered(p.name, n++); while (taken.has(nameKey(next)));
+    warnings.push(`soliste « ${p.name} » renommé « ${next} » : même prénom qu’un autre soliste`);
+    renamed.push([p.name, next]);
+    taken.add(nameKey(next));
+    p.name = next;
+  }
   if (data.roundPeoplePhysical != null && typeof data.roundPeoplePhysical !== 'boolean') {
     fail('version du tour physique mal formée');
   }
@@ -283,6 +387,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     if (p.bonus != null && (!Number.isInteger(p.bonus) || p.bonus < -3 || p.bonus > 3)) fail('bonus de personne mal formé');
   }
   tmp.log = clone(list(data.log, 'journal')).slice(-300);
+  for (const [from, to] of renamed) tmp.note(`${from} s’appelle maintenant ${to} (même prénom qu’un autre soliste)`);
   tmp.slotSamples = [...list(data.slotSamples, 'durées mesurées')].slice(-20);
   tmp.version = Number.isSafeInteger(data.version) ? data.version : 0;
   tmp._refreshDuetViews();
@@ -304,6 +409,15 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if ('singerSongSettings' in restoredSettings && typeof restoredSettings.singerSongSettings !== 'boolean') {
     delete restoredSettings.singerSongSettings;
   }
+  // Chœurs par défaut relevés sur le KaraFun du bar (empreinte de son code,
+  // provisional : pas encore confirmés par KaraFun) : une valeur abîmée est
+  // oubliée, ils seront relevés de nouveau.
+  const kf = restoredSettings.karafunDefaults;
+  if ('karafunDefaults' in restoredSettings && !(kf && typeof kf === 'object' && /^[0-9a-f]{16}$/.test(String(kf.code)) &&
+    Number.isInteger(kf.backing) && kf.backing >= 0 && kf.backing <= 100 &&
+    (!('provisional' in kf) || typeof kf.provisional === 'boolean'))) delete restoredSettings.karafunDefaults;
+  // Durée maximale des titres (lot J) : une valeur invalide coupe la limite.
+  if ('maxSongSec' in restoredSettings && !validMaxSong(restoredSettings.maxSongSec)) restoredSettings.maxSongSec = null;
 
   const pending = snapshot.pending === null ? null : object(snapshot.pending, 'envoi en cours');
   if (pending && (!selectionValid(pending.sel) || !Array.isArray(pending.before) ||
@@ -322,9 +436,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   }
   // Un lien de transfert déjà envoyé (WhatsApp, SMS…) reste valable après un
   // redémarrage. Les lignes expirées ou mal formées sont simplement ignorées.
+  // Un départ l'annule (server.js, leavePerson) : celui d'une personne partie,
+  // gardé par une sauvegarde d'avant cette règle, est oublié.
   const hex = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
   const restoredTransfers = clone(list(snapshot.transfers ?? [], 'transferts')).filter(row =>
-    row && typeof row === 'object' && tmp.people.has(row.personId) && hex(row.hash) &&
+    row && typeof row === 'object' && tmp.people.has(row.personId) && !tmp.people.get(row.personId).withdrawnAt && hex(row.hash) &&
     (row.linkHash === null || hex(row.linkHash)) && Number.isFinite(row.expiresAt) &&
     Number.isFinite(row.linkExpiresAt) && Number.isInteger(row.attempts) && row.attempts >= 0 &&
     row.attempts <= 5 && Math.max(row.expiresAt, row.linkExpiresAt) > Date.now());
@@ -334,7 +450,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     /^\d{4}-\d{2}-\d{2}_\d{4}_[0-9a-f]{4}$/.test(String(snapshot.evening.id)) ?
     { id: snapshot.evening.id, startedAt: Number.isFinite(snapshot.evening.startedAt) ? snapshot.evening.startedAt : null } : null;
   const restoredTracked = clone(tracked);
-  for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder);
+  for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder, legacyVoices);
 
   // Aucun effet sur les objets fournis avant ce point.
   for (const id of scheduler.tables.keys()) access.revoke(id);
@@ -350,7 +466,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if (restoredPending) settings.auto = false;
   return { pending: restoredPending, tracked: restoredTracked,
     recoveredPending: !!restoredPending, soloInvitations: restoredSoloInvitations.serialize(),
-    transfers: restoredTransfers, evening };
+    transfers: restoredTransfers, evening, stageClock: sanitizeClock(snapshot.stageClock),
+    // Champ ajouté avec l'événement privé : absent ou abîmé = mode coupé.
+    privateEvent: PrivateEvent.normalize(snapshot.privateEvent), warnings };
 }
 
 // À utiliser uniquement après le premier instantané QueueEvent frais de

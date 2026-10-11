@@ -1,2 +1,4 @@
 # Scripts des hooks lancés par bash, y compris sous Windows (Git Bash).
 *.sh text eol=lf
+# Hooks de .claude/hooks, dont le hook git pre-push, sans extension et lancé par sh.
+.claude/hooks/* text eol=lf
