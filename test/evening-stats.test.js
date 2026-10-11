@@ -901,6 +901,40 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: reboot }).evening.closedAt, null);
   });
 
+  test('présence entièrement avant la connexion de KaraFun : rien de compté, heure de départ réelle gardée', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'person.left', { personId: 'pA', by: 'self', songsDropped: 0 }),
+      e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(100, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const pA = singerOf(computeStats({ meta: { startedAt: T(0), endedAt: T(100) }, events }), 'pA');
+    assert.deepEqual([pA.presenceSec, pA.leftAt, pA.rawLeftAt, pA.explicitLeft], [0, null, T(20), true]);
+  });
+
+  test('heure de fermeture réglée, PC éteint après le dernier titre et avant l’heure : la soirée finit à l’arrêt, sans redémarrage', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(150, 'closing.set', { closingAt: T(200) }),
+      e(180, 'stage.started', { queueId: 2, source: 'native', title: 'Dernier' }),
+      e(184, 'stage.ended', { queueId: 2, playedSec: 240 }),
+      // Plus aucun titre ne tient avant 200 : fermeture notée en avance.
+      e(188, 'closing.reached', { closingAt: T(200) }),
+      e(900, 'app.started', { restored: true, offlineMs: 710 * 60000 }),
+      e(1000, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events });
+    assert.equal(stats.evening.closedAt, T(190));
+    assert.deepEqual([stats.evening.restarts, stats.evening.offlineSec], [0, 0]);
+    assert.ok(!insights(stats).some(item => /redémarré/.test(item.text)));
+  });
+
   test('coupure de KaraFun après le dernier titre : 20 min ne ferme pas la soirée, 40 min la ferme', () => {
     const e = evening();
     const cut = minutes => [

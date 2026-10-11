@@ -1137,3 +1137,22 @@ test('Battle : consignes du bar et titres écartés réservés à la page du bar
   assert.match(bar.automation.notice, /retire cette copie/);
   assert.deepEqual(bar.refusedSongIds, [30193]);
 });
+
+// Relecture du 11 octobre : la réponse d'un vote (route du téléphone) suit la
+// même vue que l'état des téléphones, pas la vue complète du bar.
+test('Battle : la réponse d’un vote du téléphone ne donne ni consignes du bar ni électeurs des autres tables', async () => {
+  const f = harness();
+  const [alice, bruno] = singers(f, ['Alice', 'Bruno']);
+  f.battleVote.setMinVoters(1);
+  f.battleVote.refusedSongIds.add(30193);
+  const songs = [{ songId: 5091, title: 'Battle', artist: 'Groupe' }];
+  f.battleVote.propose({ personId: bruno.id, personName: 'Bruno', eligiblePersonIds: [alice.id, bruno.id], songs, proposerChoice: 5091 });
+  const access = f.access.issue(alice.tableId);
+  const result = plain(await f.call('POST /api/table/battle/vote', { table: alice.tableId, access, personId: alice.id, token: alice.token, choice: 5091 }));
+  assert.equal(result.ok, true);
+  assert.equal('automation' in result.battle, false);
+  assert.equal('refusedSongIds' in result.battle, false);
+  assert.deepEqual(result.battle.eligiblePersonIds, [alice.id], 'électeurs de sa table seulement');
+  assert.deepEqual(result.battle.votedPersonIds, [alice.id]);
+  assert.deepEqual(plain(f.staffState().battle.votedPersonIds).sort(), [alice.id, bruno.id].sort(), 'le bar voit tout');
+});

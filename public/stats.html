@@ -670,11 +670,16 @@ function renderFocus() {
     const singerName = nameOf(singer.id);
     // La présence ne compte que pendant le karaoké (connexion de KaraFun →
     // fermeture) : la fiche le dit au lieu de prendre la fermeture pour un départ.
+    // Présence entièrement hors du karaoké (avant la connexion, après la
+    // fermeture) : départ réel, et rien de compté.
     const { openedAt, closedAt } = state.data.stats.evening;
-    const counted = openedAt != null && singer.joinedAt < openedAt ? ` (comptée dès ${hhmm(openedAt)})` : '';
-    const end = closedAt != null && singer.leftAt === closedAt ? 'fin du karaoké' : singer.explicitLeft ? 'départ' : 'dernier signe + 30 min';
+    const outside = singer.leftAt == null;
+    const counted = !outside && openedAt != null && singer.joinedAt < openedAt ? ` (comptée dès ${hhmm(openedAt)})` : '';
+    const left = singer.explicitLeft ? 'départ' : 'dernier signe + 30 min';
+    const end = outside ? (singer.rawLeftAt != null ? `${left} ${hhmm(singer.rawLeftAt)} · hors du karaoké,` : 'hors du karaoké,')
+      : `${closedAt != null && singer.leftAt === closedAt ? 'fin du karaoké' : left} ${hhmm(singer.leftAt)} ·`;
     box.appendChild(h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: `Soirée ${/^[aeiouyàâäéèêëîïôöûùüh]/i.test(singerName) ? 'd’' : 'de '}${singerName}` }),
-      h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)}${counted} · ${end} ${hhmm(singer.leftAt)} · présence ${dur(singer.presenceSec)}` }))));
+      h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)}${counted} · ${end} présence ${dur(singer.presenceSec)}` }))));
     box.appendChild(h('div', { class: 'st-mini' },
       ...[[singer.turns, 'passages'], [singer.guestTurns, 'comme invité'], [fmtNum(singer.turnsPerHour, 2), 'par heure'],
         [fmtNum(singer.expectedTurns, 1), 'passages attendus'], [dur(singer.waits.avgSec), 'attente moyenne'], [dur(singer.firstTurnSec), 'avant le 1er passage'],
@@ -793,7 +798,7 @@ function renderSingerTable() {
   });
   const focus = focusIds();
   const el = h('figure', { class: 'st-card wide', id: 'cardSingers' }, h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: 'Tous les chanteurs' }),
-    h('p', { text: 'Touchez un en-tête pour trier. « Présence » : départ signalé, sinon dernier signe d’activité + 30 min.' }))));
+    h('p', { text: 'Touchez un en-tête pour trier. « Présence » : départ signalé, sinon dernier signe d’activité + 30 min, comptée pendant le karaoké seulement (connexion de KaraFun → fermeture).' }))));
   el.appendChild(h('div', { class: 'st-table-wrap' }, dataTable(cols, rows.map(r => ({ id: r.id, cells: [nameOf(r.id), personTable(r.tableId),
     dur(r.presenceSec), r.turns, r.guestTurns, fmtNum(r.turnsPerHour, 2), fmtNum(r.expectedTurns, 1), dur(r.waits.avgSec), dur(r.waits.maxSec),
     dur(r.firstTurnSec), r.deferrals, r.presenceSkips, r.removed, r.battleVotes] })),

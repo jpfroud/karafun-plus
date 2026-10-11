@@ -4207,6 +4207,15 @@ test('duos uniquement : pas de « ＋ Chanson », la fiche d’un titre ne propo
   rule.state.rules = { duoOnly: true };
   await rule.poll();
   assert.match(rule.node('infoBar').textContent, /chante à deux/, 'règle rallumée : annoncée de nouveau');
+  // Même chose avec un rechargement de l'onglet entre les deux : la fermeture
+  // oubliée quand le bar coupe la règle l'est aussi dans le stockage de l'onglet.
+  const session = sessionMap();
+  const tab = await open({ state: baseState({ rules: { duoOnly: true } }), respond, session });
+  await tab.tap('infoBar', '[data-info-dismiss="duo-only"]');
+  tab.state.rules = { duoOnly: false };
+  await tab.poll();
+  const reloaded = await open({ state: baseState({ rules: { duoOnly: true } }), respond, session });
+  assert.match(reloaded.node('infoBar').textContent, /chante à deux/, 'rechargée après la coupure : règle annoncée de nouveau');
   // Option coupée : la fiche habituelle.
   const free = await open({ state: baseState(), respond });
   assert.match(free.node('peopleList').innerHTML, /data-add-song="alice"/);

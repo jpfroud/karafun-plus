@@ -1638,7 +1638,7 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(status(), 'Ajout automatique non confirmé : Vérifie KaraFun. Organise la Battle manuellement ou ferme la demande.');
   // Mode Battle refusé sur ce titre : une seule consigne, celle du serveur.
   const refusal = 'KaraFun a ajouté « Africa » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun. ' +
-    'Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois », puis « Lancer une Battle sans vote ».';
+    'Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois » sur l’écran « Scène », puis « Lancer une Battle sans vote » dans « Plus ».';
   await step('failed', { automation: { status: 'failed', failure: refusal } });
   assert.equal(status(), `Mode Battle refusé par KaraFun : ${refusal}`);
   assert.equal(page.$('battleActions').hidden, false, '« Ne pas lancer cette fois » proposé');

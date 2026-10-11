@@ -569,8 +569,9 @@ function refuseBattleSong() {
   let fallback;
   try {
     // Une Battle sans vote n'est acceptée qu'une fois cette demande fermée.
-    ({ fallback } = battleVote.refuseSong(`${copy}. Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois », ` +
-      'puis « Lancer une Battle sans vote ».', `${copy}.`));
+    // Le bouton est sur l'écran « Scène », la recherche dans « Plus ».
+    ({ fallback } = battleVote.refuseSong(`${copy}. Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois » ` +
+      'sur l’écran « Scène », puis « Lancer une Battle sans vote » dans « Plus ».', `${copy}.`));
   } catch (error) {
     // État Battle incohérent (sauvegarde abîmée) : sync() continue, l'envoi
     // finit en échec au bout de l'attente de l'accusé.
@@ -1842,6 +1843,21 @@ function sentDuo(tr, p, current) {
 
 // `managed` : personnes gérées par le téléphone qui demande, seules à
 // recevoir leurs messages (voir Scheduler#notify).
+// Vue Battle d'un téléphone (état et réponses des routes de la table) : sans
+// les consignes du bar (copie à retirer, refus de KaraFun) ni les titres
+// écartés, que seule la page du bar lit ; électeurs et votants de sa table,
+// ou de la personne seule sur un groupe individuel (« En solo »).
+function battleForPhone(battle, tableId, person) {
+  const out = { ...battle };
+  delete out.automation;
+  delete out.refusedSongIds;
+  const individual = !!sched.table(tableId, false)?.individual;
+  const shown = id => individual ? id === person?.id : sched.people.get(id)?.tableId === tableId;
+  out.eligiblePersonIds = (battle.eligiblePersonIds || []).filter(shown);
+  out.votedPersonIds = (battle.votedPersonIds || []).filter(shown);
+  return out;
+}
+
 function publicState(person, tableId, managed = null) {
   const { current, upcoming } = analyze();
   const presence = presenceCandidate({ current, upcoming });
@@ -1975,14 +1991,7 @@ function publicState(person, tableId, managed = null) {
     // journal des actions des autres tables ne concernent pas ce téléphone.
     out.waiting = out.waiting.filter(item => sched.people.get(item.id)?.tableId === tid);
     delete out.log;
-    // Consignes du bar (copie à retirer, refus de KaraFun) et titres écartés :
-    // seule la page du bar s'en sert.
-    const battle = { ...out.battle };
-    delete battle.automation;
-    delete battle.refusedSongIds;
-    out.battle = { ...battle,
-      eligiblePersonIds: battle.eligiblePersonIds.filter(id => sched.people.get(id)?.tableId === tid),
-      votedPersonIds: battle.votedPersonIds.filter(id => sched.people.get(id)?.tableId === tid) };
+    out.battle = battleForPhone(out.battle, tid, person);
   }
   if (tid) {
     const t = sched.table(tid, false);
@@ -1992,8 +2001,6 @@ function publicState(person, tableId, managed = null) {
     if (t?.individual) {
       out.people = out.people.filter(item => item.id === person?.id);
       out.waiting = [];
-      out.battle.eligiblePersonIds = out.battle.eligiblePersonIds.filter(id => id === person?.id);
-      out.battle.votedPersonIds = out.battle.votedPersonIds.filter(id => id === person?.id);
       // Seules les personnes qui ont demandé un code de reprise au bar (ou
       // sur leur ancien téléphone) apparaissent dans ce parcours temporaire.
       // Personne partie sur ce téléphone (un doublon), ou place encore sans
@@ -3952,14 +3959,14 @@ const handlers = {
     assertSongLength(p, songs, 'battle');
     const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds: battleElectorate(),
       songs, proposerChoice: body.proposerChoice });
-    return { ok: true, battle };
+    return { ok: true, battle: battleForPhone(battle, p.tableId, p) };
   },
   'POST /api/table/battle/vote': async (req, res, body) => {
     const p = personAtTable(body);
     requireNamed(p);
     syncBattleElectorate();
     const battle = battleVote.vote({ personId: p.id, choice: body.choice });
-    return { ok: true, battle };
+    return { ok: true, battle: battleForPhone(battle, p.tableId, p) };
   },
   'POST /api/duet': async (req, res, body, me) => {
     requireNamed(me);

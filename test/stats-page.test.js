@@ -785,6 +785,8 @@ test('en-tête : heures du karaoké, et lancement et clôture pour un ancien jou
   view.stats.evening.closedAt = at(95);
   // Alice, inscrite avant la connexion de KaraFun, présente jusqu'à la fermeture.
   Object.assign(view.stats.singers.find(singer => singer.id === 'pA'), { joinedAt: at(0), leftAt: at(95), explicitLeft: false });
+  // Bruno : présence entièrement avant la connexion (statistiques : leftAt nul).
+  Object.assign(view.stats.singers.find(singer => singer.id === 'pB'), { joinedAt: at(2), leftAt: null, rawLeftAt: at(20), explicitLeft: true, presenceSec: 0 });
   const page = loadPage({ responses: viewResponse(view) });
   await settle();
   assert.match(text(page.$('eveningLine')), new RegExp(` · ${localHHMM(at(30))} – ${localHHMM(at(95))} · `));
@@ -801,6 +803,14 @@ test('en-tête : heures du karaoké, et lancement et clôture pour un ancien jou
   const card = text(page.$('focusCard'));
   assert.match(card, new RegExp(`arrivée ${localHHMM(at(0))} \\(comptée dès ${localHHMM(at(30))}\\) · fin du karaoké ${localHHMM(at(95))} · présence`));
   assert.doesNotMatch(card, /dernier signe/);
+  // La légende du tableau des chanteurs donne la même règle.
+  assert.match(text(page.doc.getElementById('cardSingers')), /« Présence » : départ signalé, sinon dernier signe d’activité \+ 30 min, comptée pendant le karaoké seulement \(connexion de KaraFun → fermeture\)\./);
+  // Bruno, inscrit et parti avant la connexion de KaraFun : aucune présence comptée.
+  focus.value = 'p:pB';
+  focus.dispatch('change', { target: focus });
+  const outside = text(page.$('focusCard'));
+  assert.match(outside, new RegExp(`arrivée ${localHHMM(at(2))} · départ ${localHHMM(at(20))} · hors du karaoké, présence 0 s`));
+  assert.doesNotMatch(outside, /comptée dès|—/);
   // File d'attente : relevés du karaoké seulement (pas la nuit après la fermeture).
   const samples = view.stats.timeline.queue.map(q => q.t);
   assert.ok(samples.some(t => t < at(30) || t > at(95)), 'le jeu d’essai a des relevés hors du karaoké');

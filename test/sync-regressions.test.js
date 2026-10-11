@@ -327,7 +327,8 @@ test('titre sans mode Battle et aucun autre titre voté : la demande attend le b
   assert.equal(view.automation.status, 'failed');
   // Une Battle sans vote n'est acceptée qu'une fois la demande fermée.
   assert.equal(view.automation.failure, 'KaraFun a ajouté « Sarà perché ti amo » en chanson normale, sans le mode Battle : ' +
-    'retire cette copie dans KaraFun. Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois », puis « Lancer une Battle sans vote ».');
+    'retire cette copie dans KaraFun. Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois » sur l’écran « Scène », ' +
+    'puis « Lancer une Battle sans vote » dans « Plus ».');
   f.bridge.queue = [];
   f.sync();
   assert.equal(f.battleAdds.length, 1, 'aucune nouvelle commande sur un titre refusé');

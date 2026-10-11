@@ -625,8 +625,10 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const offlineAfter = ended ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && !backWithin(ph, i)) : null;
   const appStopped = ended ? offline.find(([a, b]) => a >= lastStageStart && b - a >= BLIP_MS) : null;
   const stoppedAt = Math.min(offlineAfter?.start ?? Infinity, appStopped?.[0] ?? Infinity);
-  const closedAt = Math.max(openedAt, Math.min(E1, barClosed ? Math.max(lastStageEnd ?? -Infinity, lastClosingReached) :
-    Number.isFinite(stoppedAt) ? stoppedAt : E1));
+  // Heure de fermeture réglée : le PC éteint avant cette heure, après le
+  // dernier titre, ferme aussi la soirée (pas de redémarrage le lendemain).
+  const barEnd = Math.min(Math.max(lastStageEnd ?? -Infinity, lastClosingReached), appStopped?.[0] ?? Infinity);
+  const closedAt = Math.max(openedAt, Math.min(E1, barClosed ? barEnd : Number.isFinite(stoppedAt) ? stoppedAt : E1));
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
   // Arrêts de l'application pendant le karaoké : l'arrêt du PC après la
   // fermeture (jusqu'au lendemain) n'est pas un incident de la soirée.
@@ -651,6 +653,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       p.demandSpans.push([p.demandSince, Math.min(E1, presentEnd)]);
       p.demandSince = null;
     }
+    // Départ réel (avant le découpage au karaoké) : la fiche d'une personne
+    // venue seulement hors du karaoké le montre encore.
+    p.rawLeftAt = p.intervals.length ? p.intervals.at(-1)[1] : null;
     p.intervals = p.intervals.map(inEvening).filter(([a, b]) => b > a);
     p.demandMs = sum(p.demandSpans.map(inEvening).map(([a, b]) => Math.max(0, b - a)));
     p.presenceMs = Math.max(0, sum(p.intervals.map(([a, b]) => Math.max(0, b - a) - overlapMs(a, b, offline))));
@@ -694,7 +699,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     const firstStage = own[0]?.start ?? null;
     const mySongs = [...songs.values()].filter(s => s.personId === p.id);
     return {
-      id: p.id, tableId: p.tableId, joinedAt: p.joinedAt, leftAt: p.leftAt, leftEstimated: p.leftEstimated,
+      id: p.id, tableId: p.tableId, joinedAt: p.joinedAt, leftAt: p.leftAt, rawLeftAt: p.rawLeftAt, leftEstimated: p.leftEstimated,
       explicitLeft: p.explicitLeft != null, presenceSec: sec(p.presenceMs), demandSec: sec(p.demandMs),
       requests: p.requests, removed: p.removed, removedBy: p.removedBy,
       waiting: mySongs.filter(s => !s.stageAt && !s.removedAt).length,

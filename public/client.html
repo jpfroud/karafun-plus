@@ -1122,7 +1122,10 @@
     }
     // Règle de la soirée : après les messages, qu'elle ne cache jamais. Coupée
     // puis rallumée par le bar, elle s'annonce de nouveau.
-    if (!duoOnly() && memory.dismissed.includes('duo-only')) memory.dismissed = memory.dismissed.filter(key => key !== 'duo-only');
+    if (!duoOnly() && memory.dismissed.includes('duo-only')) {
+      memory.dismissed = memory.dismissed.filter(key => key !== 'duo-only');
+      saveMemory();
+    }
     if (duoOnly() && people.length) {
       infos.push({ key: 'duo-only', text: t('Ce soir, le bar ne prend que des duos : chante à deux pour faire monter plus de monde sur scène.') });
     }
