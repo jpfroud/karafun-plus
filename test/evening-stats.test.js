@@ -1238,6 +1238,21 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     ];
     const pN = singerOf(computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: reboot }), 'pN');
     assert.equal(pN.demandSec, 20 * 60, '40 min d’attente moins 20 min d’arrêt');
+    // Titre encore en attente à la fermeture, PC éteint la nuit : l'arrêt après la fermeture ne retire rien.
+    const overnight = [...start,
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(5, 'closing.set', { closingAt: T(120) }),
+      e(90, 'stage.started', { queueId: 1, source: 'native', title: 'Dernier' }),
+      e(94, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(95, 'person.joined', { personId: 'pO', tableId: '2' }),
+      e(100, 'song.requested', { personId: 'pO', entryId: 'o1', title: 'Trop tard' }),
+      e(110, 'person.seen', { personId: 'pO' }),
+      e(130, 'queue.sample', { ready: 1 }),
+      e(700, 'app.started', { restored: true, offlineMs: 570 * 60000 }),
+      e(800, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const pO = singerOf(computeStats({ meta: { startedAt: T(0), endedAt: T(800) }, events: overnight }), 'pO');
+    assert.deepEqual([pO.demandSec, pO.askedInKaraoke], [20 * 60, true]);
     // « Options par défaut » avant tout titre : l'heure est retirée, comme un retrait du bar.
     const noStage = reason => computeStats({ meta: { startedAt: T(0) }, now: T(200), live: true, events: [...start,
       e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
@@ -1290,6 +1305,14 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
       e(700, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]), T(980));
     // PC resté allumé, KaraFun quitté la nuit.
     assert.equal(opened([e(40, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]), T(980));
+    // PC éteint la nuit, essai de l'après-midi, KaraFun refermé : la dernière interruption compte.
+    assert.equal(opened([e(30, 'queue.sample', { ready: 0 }), e(700, 'app.started', { restored: true, offlineMs: 670 * 60000 }),
+      e(720, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }), e(800, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]), T(980));
+    // Titre d'essai du bar retiré avant que KaraFun ne soit fermé : la coupure sépare encore la soirée.
+    assert.equal(opened([e(20, 'person.joined', { personId: 'pBar', tableId: '9' }),
+      e(21, 'song.requested', { personId: 'pBar', entryId: 'essai', title: 'Essai' }),
+      e(23, 'song.removed', { personId: 'pBar', entryId: 'essai', by: 'staff' }),
+      e(40, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]), T(980));
     // Tout resté allumé et connecté : début du journal, comme avant.
     assert.equal(opened([]), T(0));
     // Interruptions courtes (moins de 30 min) : rien ne sépare la soirée.

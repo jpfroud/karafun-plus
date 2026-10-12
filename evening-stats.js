@@ -9,15 +9,18 @@
  *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun
  *   (celle qui suit le dernier arrêt du PC ou de KaraFun d'au moins 30 min
- *   commencé avant la première demande de titre) à la fermeture. Fermeture : heure de fermeture en vigueur au début du
- *   dernier titre, avec les changements faits avant qu'elle passe ; une fois
- *   passée, seule une prolongation faite dans les 30 min la repousse ; le
- *   retrait d'« Options par défaut » fait après le début du dernier titre ne
- *   compte pas ; sans heure de fermeture, la clôture de la soirée dans
- *   l'application. Si le dernier passage finit plus tard, sa fin. Plus tôt :
- *   déconnexion de KaraFun pendant ou après le dernier titre, sauf retour
- *   dans les 30 min, ou application arrêtée pendant au moins 30 min à partir
- *   du début du dernier titre. Les arrêts de l'application sont retirés.
+ *   avant le premier titre, commencé sans titre en attente ; au plus tard le
+ *   premier titre) à la fermeture. Fermeture : heure de fermeture en vigueur
+ *   au début du dernier titre, avec les changements faits avant qu'elle passe
+ *   (une heure réglée alors qu'elle était déjà passée compte depuis son
+ *   réglage) ; une fois passée, seule une prolongation faite dans les 30 min
+ *   la repousse ; le retrait d'« Options par défaut » fait après le début du
+ *   dernier titre ne compte pas ; sans heure de fermeture, la clôture de la
+ *   soirée dans l'application. Si le dernier passage finit plus tard, sa fin.
+ *   Plus tôt : déconnexion de KaraFun pendant ou après le dernier titre, sauf
+ *   retour dans les 30 min, ou application arrêtée pendant au moins 30 min à
+ *   partir du début du dernier titre. Les arrêts de l'application sont
+ *   retirés.
  * - passage : un titre de la file réellement lancé sur scène (stage.started).
  *   Un titre envoyé puis retiré de KaraFun ne compte pas ; une relance non plus.
  * - attente : du moment où le titre pouvait passer (sa demande, ou la fin du
@@ -34,7 +37,7 @@ const DEMAND_MIN_MS = 15 * 60000;    // équité par demande : au moins 15 min a
 const MAX_SONG_SEC = 20 * 60;        // durée jouée plafonnée (déconnexion pendant un titre)
 const GAP_MIN_MS = 1000;
 const BLIP_MS = 30 * 60000;          // KaraFun revenu plus vite : coupure brève (ni ouverture ni fin de la soirée)
-const APP_STOP_MS = 30 * 60000;      // arrêt de l'application : avant la première demande, sépare la soirée ; après le début du dernier titre, la ferme
+const APP_STOP_MS = 30 * 60000;      // arrêt de l'application : sépare la soirée (ouverture) ou la ferme (dernier titre)
 const REOPEN_MS = 30 * 60000;        // heure de fermeture passée : une prolongation dans ce délai rouvre la soirée
 // Même table que BONUS_WEIGHTS dans lib/scheduler/common.js.
 const BONUS_WEIGHTS = { '-3': 0.5, '-2': 2 / 3, '-1': 0.8, 0: 1, 1: 1.25, 2: 1.5, 3: 2 };
@@ -64,7 +67,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké, de la connexion de la télécommande KaraFun (celle qui suit le dernier arrêt du PC ou de KaraFun d’au moins 30 min commencé avant la première demande de titre) à la fermeture. Fermeture : heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe ; une fois passée, seule une prolongation faite dans les 30 min la repousse ; le retrait d’« Options par défaut » fait après le début du dernier titre ne compte pas ; sans heure de fermeture, la clôture de la soirée dans l’application. Si le dernier passage finit plus tard, sa fin. Plus tôt : déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre. Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké, de la connexion de la télécommande KaraFun (celle qui suit le dernier arrêt du PC ou de KaraFun d’au moins 30 min avant le premier titre, commencé sans titre en attente ; au plus tard le premier titre) à la fermeture. Fermeture : heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe (une heure réglée alors qu’elle était déjà passée compte depuis son réglage) ; une fois passée, seule une prolongation faite dans les 30 min la repousse ; le retrait d’« Options par défaut » fait après le début du dernier titre ne compte pas ; sans heure de fermeture, la clôture de la soirée dans l’application. Si le dernier passage finit plus tard, sa fin. Plus tôt : déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre. Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -634,18 +637,20 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // ------------------------------------------------ soirée du karaoké
   // Ouverture : connexion de la télécommande KaraFun après la dernière
   // interruption (KaraFun coupé pour de bon, ou application arrêtée au moins
-  // 30 min) commencée avant la première demande de titre, au plus tard le
-  // premier passage. Soirée du 10 octobre : application lancée à 15:41,
-  // KaraFun connecté à 20:19. « Supprimer toutes les tables » en fin de nuit,
-  // KaraFun encore connecté : le journal suivant commence connecté, mais
+  // 30 min) avant le premier titre, commencée sans titre en attente ; au plus
+  // tard le premier passage. Soirée du 10 octobre : application lancée à
+  // 15:41, KaraFun connecté à 20:19. « Supprimer toutes les tables » en fin de
+  // nuit, KaraFun encore connecté : le journal suivant commence connecté, mais
   // l'arrêt du PC ou de KaraFun pendant la nuit le sépare de la soirée. Une
-  // coupure une fois les premiers titres demandés ne déplace rien : les
-  // attentes de ceux qui patientaient restent comptées.
+  // coupure pendant que des titres attendent ne déplace rien : leurs attentes
+  // restent comptées (un essai du bar retiré avant n'empêche rien).
   const firstStageStart = stages[0]?.start ?? Infinity;
-  const firstAsk = Math.min(firstStageStart, ...[...songs.values()].map(s => s.requestedAt));
+  const waitingAt = x => [...people.values()].some(p =>
+    (p.demandSince != null && p.demandSince <= x) || p.demandSpans.some(([a, b]) => a <= x && x < b));
   const interruptions = [
-    ...offline.filter(([a, b]) => b - a >= APP_STOP_MS && a < firstAsk && b <= firstStageStart).map(([, b]) => b),
-    ...phases.filter((ph, k) => ph.blocker === 'offline' && ph.start < firstAsk && lasting(ph, k)).map(ph => ph.start),
+    ...offline.filter(([a, b]) => b - a >= APP_STOP_MS && b <= firstStageStart && !waitingAt(a)).map(([, b]) => b),
+    ...phases.filter((ph, k) => ph.blocker === 'offline' && ph.start < firstStageStart && !waitingAt(ph.start) &&
+      lasting(ph, k)).map(ph => ph.start),
   ];
   const resumeFrom = interruptions.length ? Math.max(...interruptions) : null;
   const connected = resumeFrom != null || phases[0]?.blocker === 'offline'
