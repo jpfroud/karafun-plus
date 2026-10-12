@@ -297,7 +297,8 @@ class Scheduler {
   // « Compromis », la part d'une table suit ses chanteurs inscrits
   // (_registeredWeights) : un départ, un premier titre ou le retrait du dernier
   // titre de quelqu'un qui n'a pas encore chanté, à une table qui a un titre
-  // prêt, la relance ; pas un changement à une table sans titre prêt.
+  // en attente (prêt ou non) ou l'invitée d'un duo accepté, la relance ; pas
+  // un changement à une table sans titre en attente.
   solverContextFingerprint() {
     const readyQ = this.Q.filter(pid => {
       const p = this.people.get(pid);
