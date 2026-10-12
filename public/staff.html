@@ -2041,7 +2041,7 @@
       ? `Battle demandée sur ${selectedSong}. Le prochain chanteur déjà annoncé garde sa place ; la Battle sera ajoutée ensuite.`
       // Titre ajouté en chanson normale : la page le passe en mode Battle.
       : battleStep === 'sending' && battle.automation?.modeCaption
-      ? `KaraFun a ajouté ${selectedSong} sans le mode Battle : la page le passe en mode Battle sur la voix de ${battle.automation.modeCaption}. Attends sa confirmation.`
+      ? `KaraFun a ajouté ${selectedSong} sans le mode Battle : la page le passe en mode Battle sur la voix « ${battle.automation.modeCaption} ». Attends sa confirmation.`
       : battleStep === 'sending' ? `Envoi de ${selectedSong} à KaraFun. Le mode Battle doit être confirmé avant de lancer le titre.`
       // Copie sans mode Battle : la consigne du serveur dit déjà quoi faire.
       : battleStep === 'failed' && /^KaraFun a (ajouté|lancé)/.test(battleFailure) ? `${battleFailure}.`

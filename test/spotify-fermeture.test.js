@@ -1057,15 +1057,15 @@ test('Spotify : pause toujours refusée en 502 pendant un titre : reprise au plu
   assert.equal(pauses, 3 * (recovered + 1), 'trois essais par reprise');
 });
 
-// Soirée du 10 octobre : à 02:51, fin du titre de Chay (228 s, durée connue).
+// Soirée du 10 octobre : à 02:51, fin d'un titre (228 s, durée connue).
 // « Début + passage moyen » laissait encore 1 min 30 de chanson : « Hello »
-// d'Eny, déjà chargé, était retiré pour la fermeture (Eny prévenue), puis
+// de Bea, déjà chargé, était retiré pour la fermeture (Bea prévenue), puis
 // renvoyé une seconde plus tard. La durée connue du titre en cours compte.
 test('fermeture : à la fin d’un titre de durée connue, le titre suivant n’est pas retiré à tort', () => {
   const f = harness();
   const kf = [];
   f.sched.opts.defaultSlotSec = 300;
-  singers(f, ['Chay', 'Eny']);
+  singers(f, ['Ana', 'Bea']);
   const onStage = f.sched.select(); f.sched.commit(onStage);
   onStage.song.duration = 228;
   const next = f.sched.select(); f.sched.commit(next);
@@ -1073,12 +1073,12 @@ test('fermeture : à la fin d’un titre de durée connue, le titre suivant n’
     { queueId: 6, songId: next.song.songId, singer: next.label }], 5));
   f.tracked.push({ queueId: 5, sel: onStage, startedAt: Date.now() - 225000, addedAt: Date.now() - 300000 });
   f.tracked.push({ queueId: 6, sel: next, startedAt: null, addedAt: Date.now() });
-  // Fermeture dans 3 min 30 : la moitié du titre d'Eny tient encore.
+  // Fermeture dans 3 min 30 : la moitié du titre de Bea tient encore.
   f.settings.closingAt = Date.now() + 210000;
   f.sync();
-  assert.ok(!kf.some(call => call[0] === 'remove'), 'le titre d’Eny reste chargé');
+  assert.ok(!kf.some(call => call[0] === 'remove'), 'le titre de Bea reste chargé');
   assert.equal(f.tracked.find(item => item.queueId === 6).pulled ?? null, null);
-  assert.equal(f.sched.inboxOf(f.sched.people.get(next.ids[0])).length, 0, 'Eny n’est pas prévenue d’un retrait');
+  assert.equal(f.sched.inboxOf(f.sched.people.get(next.ids[0])).length, 0, 'Bea n’est pas prévenue d’un retrait');
   // Fermeture dans 2 min : il ne tiendrait plus, il est retiré.
   f.settings.closingAt = Date.now() + 120000;
   f.sync();
@@ -1091,7 +1091,7 @@ const closingTimeOf = view => view.closing.at;
 function closingCase(f, { catalogSec, tempo = null, closingInSec }) {
   const kf = [];
   f.sched.opts.defaultSlotSec = 300;
-  singers(f, ['Chay', 'Eny']);
+  singers(f, ['Ana', 'Bea']);
   const onStage = f.sched.select(); f.sched.commit(onStage);
   const next = f.sched.select(); f.sched.commit(next);
   f.catalogDurations.set(Number(onStage.song.songId), catalogSec);
@@ -1128,7 +1128,7 @@ for (const tempo of [0, -20]) {
     const f = harness();
     const kf = [];
     f.sched.opts.defaultSlotSec = 300;
-    singers(f, ['Chay', 'Eny']);
+    singers(f, ['Ana', 'Bea']);
     const onStage = f.sched.select(); f.sched.commit(onStage);
     const next = f.sched.select(); f.sched.commit(next);
     f.catalogDurations.set(Number(onStage.song.songId), 200);
@@ -1158,7 +1158,7 @@ test('fermeture : une durée de titre envoyée par un téléphone ne fait pas re
   const f = harness();
   const kf = [];
   f.sched.opts.defaultSlotSec = 300;
-  singers(f, ['Chay', 'Eny']);
+  singers(f, ['Ana', 'Bea']);
   const onStage = f.sched.select(); f.sched.commit(onStage);
   onStage.song.duration = 1200;
   const next = f.sched.select(); f.sched.commit(next);
@@ -1166,8 +1166,8 @@ test('fermeture : une durée de titre envoyée par un téléphone ne fait pas re
     { queueId: 6, songId: next.song.songId, singer: next.label }], 5));
   f.tracked.push({ queueId: 5, sel: onStage, startedAt: Date.now() - 60000, addedAt: Date.now() - 120000 });
   f.tracked.push({ queueId: 6, sel: next, startedAt: null, addedAt: Date.now() });
-  // Passage moyen : la scène se libère dans 4 min, la moitié du titre d'Eny tient.
+  // Passage moyen : la scène se libère dans 4 min, la moitié du titre de Bea tient.
   f.settings.closingAt = Date.now() + 400000;
   f.sync();
-  assert.ok(!kf.some(call => call[0] === 'remove'), 'le titre d’Eny reste chargé');
+  assert.ok(!kf.some(call => call[0] === 'remove'), 'le titre de Bea reste chargé');
 });

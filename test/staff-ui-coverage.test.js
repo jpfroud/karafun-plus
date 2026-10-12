@@ -1613,7 +1613,7 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   // Copie normale (duo) passée en mode Battle par la page : la voix est dite.
   await step('sending', { automation: { status: 'sending', modeCaption: 'Angela Brambati' } });
   assert.equal(pill().textContent, 'Ajout en cours');
-  assert.equal(status(), 'KaraFun a ajouté Africa — Toto sans le mode Battle : la page le passe en mode Battle sur la voix de Angela Brambati. Attends sa confirmation.');
+  assert.equal(status(), 'KaraFun a ajouté Africa — Toto sans le mode Battle : la page le passe en mode Battle sur la voix « Angela Brambati ». Attends sa confirmation.');
   assert.equal(page.$('battleActions').hidden, true);
   page.world.queue = [{ source: 'karafun', ours: true, queueId: 'b1', pos: 1, kind: 'battle', title: 'Africa' }];
   await step('queued');

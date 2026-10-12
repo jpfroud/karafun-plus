@@ -327,5 +327,5 @@ function catchUpCommands({ settings, sent = null, live, tracksAvailable = null, 
 }
 
 module.exports = { TRACK, FIELDS, DEFAULTS, VOLUME_STEP, rangesFrom, validateField, normalizeSettings, sanitizeSettings,
-  clampSettings, addOptions, queueItemOptions, songTracksOf, guideVoicesOf, liveFromStatus, settingsFromLive, neutralTarget,
+  clampSettings, addOptions, queueItemOptions, songTracksOf, guideVoicesOf, isGuideVoice, liveFromStatus, settingsFromLive, neutralTarget,
   catchUpCommands };

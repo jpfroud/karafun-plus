@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const io = require('socket.io-client');
 const { KcsTransport } = require('./kcs-transport');
-const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, guideVoicesOf, liveFromStatus, TRACK,
+const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, guideVoicesOf, isGuideVoice, liveFromStatus, TRACK,
   DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
 // Valeur en direct d'un réglage essayé : 'pitch', 'tempo', 'backing' ou
 // 'voice:<type>' (volume d'une voix guide).
@@ -47,12 +47,13 @@ function isBattleItem(item) {
   return isBattleMod(item?.options?.mod || item?.song?.options?.mod);
 }
 // Mode Battle à demander pour ce titre, d'après ses pistes vocales KaraFun
-// (`songTracks` bruts : type et nom de chaque voix guide) : première voix
-// nommée pour un duo, comme KaraFun le 10 octobre ; sinon « Battle ».
+// (`songTracks` bruts : type et nom de chaque voix guide). Duo (au moins deux
+// voix guides, la première nommée) : sa première voix, comme KaraFun le
+// 10 octobre ; sinon « Battle ».
 function battleModFor(songTracks) {
   const guides = (Array.isArray(songTracks) ? songTracks : [])
-    .filter(track => track && Number(track.type) >= 5).sort((a, b) => Number(a.type) - Number(b.type));
-  const caption = typeof guides[0]?.caption === 'string' ? guides[0].caption.trim().slice(0, 100) : '';
+    .filter(track => isGuideVoice(Number(track?.type))).sort((a, b) => Number(a.type) - Number(b.type));
+  const caption = guides.length >= 2 && typeof guides[0].caption === 'string' ? guides[0].caption.trim().slice(0, 100) : '';
   return caption ? { id: 2, caption, data: { battle: { subtype: 1 } } } : BATTLE_MOD;
 }
 
@@ -346,6 +347,7 @@ class KaraFunBridge extends EventEmitter {
     this.settingsNotices = {}; // un avis par fonction, le plus récent en dernier
     this._settingsProbe = {};  // dernière valeur envoyée en direct, à confirmer par l'état de KaraFun
     this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
+    this._battleModes = new Map(); // identifiant KCS → passage d'un titre en mode Battle sans réponse
     this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
     this._backingChanged = false;
     this.provisionalDefaults = false; // chœurs relevés après un titre vu déjà en lecture, pas encore confirmés
@@ -974,6 +976,7 @@ class KaraFunBridge extends EventEmitter {
   _openKcs(url, active, { kept = false } = {}) {
     const socket = new KcsTransport(url);
     this._optionAdds.clear(); // identifiants propres à chaque connexion
+    this._battleModes.clear();
     this._forgetSession();
     this.protocol = 'kcs';
     this.socket = socket;
@@ -1090,14 +1093,18 @@ class KaraFunBridge extends EventEmitter {
           return;
         }
         // Réglage de titre refusé : traité avec sa demande (événement 'reply').
-        if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id))) return;
+        if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id) ||
+          this._battleModes.has(m.id))) return;
         this.lastError = `Commande KaraFun refusée : ${p.message || p.type || 'erreur inconnue'}`;
         this.emit('change');
       }
     });
     socket.on('reply', (type, message) => {
       if (!active()) return;
-      if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], message);
+      // Passage en mode Battle : sa réponse n'a rien à voir avec les réglages
+      // de titre (même type de demande) ; elle va au suivi de la Battle.
+      if (this._battleModes.has(message.id)) this._battleModeAnswer(message.id, message);
+      else if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], message);
       else if (this._optionAdds.has(message.id)) {
         const add = this._optionAdds.get(message.id);
         this._optionAdds.delete(message.id);
@@ -1131,14 +1138,15 @@ class KaraFunBridge extends EventEmitter {
       this._retry(reason, { mode: 'page' });
     };
     socket.on('stale', message => lost(message, 'KaraFun ne répond plus'));
-    socket.on('request-timeout', type => {
+    socket.on('request-timeout', (type, id) => {
       if (!active()) return;
       if (!SOFT_REQUESTS.has(type)) {
         lost(`KaraFun ne confirme plus les commandes (${type}) ; reconnexion en cours.`, 'Commande KaraFun non confirmée');
         return;
       }
       this._record('info', 'sans-reponse', type);
-      if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], null);
+      if (this._battleModes.has(id)) this._battleModeAnswer(id, null);
+      else if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], null);
       if (this.ready && this.nameConflictSince == null) this._setPhase('ready');
       if (!softWarned) {
         softWarned = true;
@@ -1382,12 +1390,23 @@ class KaraFunBridge extends EventEmitter {
 
   // Titre de la file passé en mode Battle, comme son option dans KaraFun :
   // options remplacées en entier (une Battle n'a ni chanteur ni réglage).
-  // Droit « Éditer la file d'attente ».
+  // Droit « Éditer la file d'attente ». La réponse de KaraFun arrive par
+  // 'battle-mode-answer' : { queueId, mod, ok } (ok null sans réponse en 8 s)
+  // et `message`, la raison d'un refus.
   setBattleMode(queueId, mod) {
     if (queueId === null || queueId === undefined || queueId === '') throw new Error('Titre de la file KaraFun inconnu.');
     if (!isBattleMod(mod)) throw new Error('Mode Battle invalide.');
     this._settingsAllowed('manageQueue');
-    this._emit('queueItemOptions', { queueId, options: { mod } });
+    const id = this._emit('queueItemOptions', { queueId, options: { mod } });
+    if (id !== undefined) this._battleModes.set(id, { queueId: String(queueId), mod });
+  }
+
+  _battleModeAnswer(id, message) {
+    const request = this._battleModes.get(id);
+    this._battleModes.delete(id);
+    const refused = message?.type === 'Error';
+    this.emit('battle-mode-answer', { ...request, ok: message ? !refused : null,
+      message: refused ? String(message.payload?.message || message.payload?.type || 'erreur inconnue') : null });
   }
   _localFake() { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(this.base).hostname); }
 
@@ -1634,5 +1653,5 @@ function normalizeResults(data) {
   })).filter(s => s.songId && s.title).slice(0, 40);
 }
 
-module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, isBattleItem, battleModFor,
+module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, BATTLE_MODS_MAX, isBattleItem, battleModFor,
   maskCode, lockIdentity, unknownSettingsSupport: freshSupport };

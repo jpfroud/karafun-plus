@@ -1,7 +1,7 @@
 'use strict';
-// Soirée du 10 octobre : Eny (Table clem) attend 65 min. Pendant ce temps,
-// Dadou (« En solo ») repasse une seconde fois dans le même tour grâce à la
-// règle anti-série, puis repasse encore devant elle au tour suivant. Un
+// Soirée du 10 octobre : une chanteuse de table attend 65 min. Pendant ce
+// temps, un soliste (« En solo ») repasse une seconde fois dans le même tour
+// grâce à la règle anti-série, puis repasse encore devant elle au tour suivant. Un
 // passage pris en avance sur le tour doit être décompté du tour suivant.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
@@ -12,9 +12,9 @@ function evening() {
   const song = () => ({ songId: n++, title: `Titre ${n}`, artist: 'Essai' });
   const s = new Scheduler();
   s._maybeRequestSolver = () => {};
-  s.setHeadcount('Clem', 12);
-  const people = ['Dadou', 'Eny', 'Sof', 'Lei'].map(name =>
-    s.join({ tableId: ['Dadou', 'Lei'].includes(name) ? 'Comptoir' : 'Clem', name }));
+  s.setHeadcount('T1', 12);
+  const people = ['Solo1', 'Attente', 'Amie', 'Solo2'].map(name =>
+    s.join({ tableId: ['Solo1', 'Solo2'].includes(name) ? 'Comptoir' : 'T1', name }));
   for (const p of people) for (let k = 0; k < 6; k++) s.chooseSong(p, song(), 'append');
   const played = [];
   const send = () => {
@@ -43,20 +43,20 @@ function doublesDuringWait(s, played, personId) {
 test('passage emprunté par la règle anti-série : pris sur le tour suivant', () => {
   const { s, song, send, played, byName } = evening();
   for (let i = 0; i < 8; i++) send();
-  // Arrivée d'un seul titre à la Table clem, juste après un passage de sa table.
-  const sara = s.join({ tableId: 'Clem', name: 'Sara' });
+  // Arrivée d'un seul titre à cette table, juste après un passage de sa table.
+  const sara = s.join({ tableId: 'T1', name: 'Sara' });
   s.chooseSong(sara, song(), 'append');
   const borrowed = send();
-  assert.equal(borrowed.names[0], 'Dadou', 'la règle anti-série intercale un soliste');
-  assert.deepEqual(borrowed.borrowedIds, [byName('Dadou').id], 'second passage du tour : emprunté');
+  assert.equal(borrowed.names[0], 'Solo1', 'la règle anti-série intercale un soliste');
+  assert.deepEqual(borrowed.borrowedIds, [byName('Solo1').id], 'second passage du tour : emprunté');
   for (let i = 0; i < 8; i++) send();
-  assert.deepEqual(doublesDuringWait(s, played, byName('Eny').id), [],
+  assert.deepEqual(doublesDuringWait(s, played, byName('Attente').id), [],
     played.map(sel => sel.names[0]).join(' '));
-  // Au tour suivant, Dadou passe après celles et ceux qui attendaient.
+  // Au tour suivant, Solo1 passe après celles et ceux qui attendaient.
   const nextRound = played.slice(played.indexOf(borrowed) + 1);
   const start = nextRound.findIndex(sel => sel.newPersonRound);
   const round = nextRound.slice(start, start + 3).map(sel => sel.names[0]);
-  assert.ok(!round.slice(0, 2).includes('Dadou'), `tour suivant : ${round.join(' ')}`);
+  assert.ok(!round.slice(0, 2).includes('Solo1'), `tour suivant : ${round.join(' ')}`);
 });
 
 test('prochain annoncé en fin de tour puis rattrapé par une arrivée : passage emprunté', () => {
@@ -65,7 +65,7 @@ test('prochain annoncé en fin de tour puis rattrapé par une arrivée : passage
   // Tout le monde a chanté dans ce tour : le prochain annoncé ouvre le tour suivant.
   const announced = s.reserveNext();
   assert.ok(announced.newPersonRound, 'annoncé comme premier du tour suivant');
-  const sara = s.join({ tableId: 'Clem', name: 'Sara' });
+  const sara = s.join({ tableId: 'T1', name: 'Sara' });
   s.chooseSong(sara, song(), 'append');
   const sent = send();
   assert.equal(sent.ids[0], announced.ids[0], 'la promesse faite au prochain annoncé tient');
@@ -80,10 +80,10 @@ test('prochain annoncé en fin de tour puis rattrapé par une arrivée : passage
 test('priorité donnée par le bar : aucune dette de tour', () => {
   const { s, send, byName } = evening();
   for (let i = 0; i < 4; i++) send();
-  const dadou = byName('Dadou');
-  s.reservedNext = { personId: dadou.id, reservedAt: Date.now(), byStaff: true };
+  const solo1 = byName('Solo1');
+  s.reservedNext = { personId: solo1.id, reservedAt: Date.now(), byStaff: true };
   const sent = send();
-  assert.equal(sent.ids[0], dadou.id);
+  assert.equal(sent.ids[0], solo1.id);
   assert.equal(sent.borrowedIds, undefined, 'la décision du bar ne retarde pas son tour suivant');
 });
 
@@ -195,7 +195,7 @@ test('prochain annoncé emprunteur : la dette survit à un redémarrage', () => 
   };
   const r = restore();
   assert.equal(r.reservedNext?.borrowable, true);
-  const sara = r.join({ tableId: 'Clem', name: 'Sara' });
+  const sara = r.join({ tableId: 'T1', name: 'Sara' });
   r.chooseSong(sara, song(), 'append');
   const sel = r.select();
   r.commit(sel);
@@ -209,9 +209,9 @@ test('« Je suis là » : prochain annoncé en fin de tour puis rattrapé par un
   const song = () => ({ songId: n++, title: `Titre ${n}`, artist: 'Essai' });
   const s = new Scheduler({ requirePresence: true });
   s._maybeRequestSolver = () => {};
-  s.setHeadcount('Clem', 12);
-  for (const name of ['Dadou', 'Eny', 'Sof', 'Lei']) {
-    const p = s.join({ tableId: ['Dadou', 'Lei'].includes(name) ? 'Comptoir' : 'Clem', name });
+  s.setHeadcount('T1', 12);
+  for (const name of ['Solo1', 'Attente', 'Amie', 'Solo2']) {
+    const p = s.join({ tableId: ['Solo1', 'Solo2'].includes(name) ? 'Comptoir' : 'T1', name });
     for (let k = 0; k < 6; k++) s.chooseSong(p, song(), 'append');
   }
   const send = () => {
@@ -224,7 +224,7 @@ test('« Je suis là » : prochain annoncé en fin de tour puis rattrapé par un
   for (let i = 0; i < 4; i++) send();
   const announced = s.reservePresenceNext();
   assert.equal(s.reservedNext?.borrowable, true);
-  const sara = s.join({ tableId: 'Clem', name: 'Sara' });
+  const sara = s.join({ tableId: 'T1', name: 'Sara' });
   s.chooseSong(sara, song(), 'append');
   const sent = send();
   assert.equal(sent.ids[0], announced.ids[0]);

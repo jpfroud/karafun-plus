@@ -158,8 +158,8 @@ class Scheduler {
   // `borrowed` : passage accordé par la règle anti-série à une personne déjà
   // passée dans ce tour. Il est pris sur son tour suivant (dette), comme un
   // malus : sans cela, ce second passage était gratuit et la personne
-  // repassait aussi tôt que les autres au tour suivant (Dadou deux fois
-  // pendant l'attente d'Eny, soirée du 10 octobre). Le prochain annoncé
+  // repassait aussi tôt que les autres au tour suivant (un soliste deux fois
+  // pendant une attente de 65 min, soirée du 10 octobre). Le prochain annoncé
   // quand le tour semblait fini, puis rattrapé par une arrivée, est dans le
   // même cas (`reservedNext.borrowable`). Sans bonus ni malus, un passage non emprunté
   // d'une personne déjà comptée dans le tour (invitée de duo, ordre du bar)

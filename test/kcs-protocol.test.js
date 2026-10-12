@@ -31,7 +31,7 @@ require.cache[ioPath] = { id: ioPath, filename: ioPath, loaded: true,
   exports: (base, options) => new FakeIoSocket(base, options) };
 
 const { KcsTransport } = require('../kcs-transport');
-const { KaraFunBridge, readSettings, normalizeKcsItem, normalizeResults, BATTLE_MOD, isBattleItem, battleModFor } = require('../karafun');
+const { KaraFunBridge, readSettings, normalizeKcsItem, normalizeResults, BATTLE_MOD, BATTLE_MODS_MAX, isBattleItem, battleModFor } = require('../karafun');
 
 // --- Faux WebSocket : ce que KaraFun envoie et ce qu'il reçoit ---
 class FakeWebSocket {
@@ -772,6 +772,55 @@ test('Battle KCS d’un duo : mode de la première voix appris de la file, envoy
   const sent = ws.sent.length;
   assert.throws(() => bridge.setBattleMode('920bd91b', SARA_MOD), /Éditer la file d’attente/);
   assert.equal(ws.sent.length, sent);
+});
+
+test('Battle KCS : mode d’un duo seulement avec deux voix guides, dans l’ordre des pistes ; mémoire bornée', async t => {
+  mockTime(t);
+  // Voix listées dans le désordre, chœurs nommés : la première voix guide (5) donne le mode.
+  assert.deepEqual(battleModFor([{ type: 6, caption: 'Angelo Sotgiu' }, { type: 4, caption: 'Chœurs' }, { type: 5, caption: 'Angela Brambati' }]), SARA_MOD);
+  // Une seule voix guide, même nommée : titre à une voix, mode « Battle ».
+  assert.deepEqual(battleModFor([{ type: 4 }, { type: 5, caption: 'Indochine' }]), BATTLE_MOD);
+  // Piste hors des voix guides (au-delà de 15) : ignorée.
+  assert.deepEqual(battleModFor([{ type: 5, caption: 'A' }, { type: 16, caption: 'B' }]), BATTLE_MOD);
+  assert.deepEqual(battleModFor([{ type: 5 }, { type: 6, caption: 'B' }]), BATTLE_MOD, 'première voix sans nom');
+  const { bridge, ws } = await connected(t);
+  t.after(() => bridge.disconnect());
+  // Battle sur scène (StatusEvent) : son mode est gardé pour le titre.
+  ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 4, current: saraItem({ mod: SARA_MOD }) } } });
+  assert.deepEqual(bridge.battleModForSong(18179), SARA_MOD);
+  // Mémoire bornée : le titre le plus ancien sort, un titre revu reste.
+  const duo = id => normalizeKcsItem({ id: `q${id}`, song: { id: { type: 1, id }, title: `Duo ${id}`, songTracks: SARA_TRACKS } });
+  bridge._learnBattleMods([duo(1), duo(2)]);
+  bridge._learnBattleMods([duo(1)]);
+  bridge._learnBattleMods(Array.from({ length: BATTLE_MODS_MAX - 1 }, (_, i) => duo(1000 + i)));
+  assert.equal(bridge.battleMods.size, BATTLE_MODS_MAX);
+  assert.equal(bridge.battleMods.has(18179), false, 'le plus ancien est sorti');
+  assert.equal(bridge.battleMods.has(2), false);
+  assert.equal(bridge.battleMods.has(1), true, 'revu plus tard : gardé');
+});
+
+test('Battle KCS : la réponse au passage en mode Battle va au suivi de la Battle, pas aux réglages de titre', async t => {
+  mockTime(t);
+  const { bridge, ws } = await connected(t);
+  t.after(() => bridge.disconnect());
+  ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: { addToQueue: true, manageQueue: true,
+    shownTypes: { battle: true } } } });
+  const answers = [];
+  bridge.on('battle-mode-answer', answer => answers.push(answer));
+  bridge.setBattleMode('920bd91b', SARA_MOD);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 3, message: 'Not allowed' } });
+  assert.deepEqual(answers.at(-1), { queueId: '920bd91b', mod: SARA_MOD, ok: false, message: 'Not allowed' });
+  bridge.setBattleMode('920bd91b', SARA_MOD);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'remote.SetQueueItemOptionsResponse', payload: {} });
+  assert.deepEqual(answers.at(-1), { queueId: '920bd91b', mod: SARA_MOD, ok: true, message: null });
+  bridge.setBattleMode('920bd91b', SARA_MOD);
+  t.mock.timers.tick(8000);
+  assert.deepEqual(answers.at(-1), { queueId: '920bd91b', mod: SARA_MOD, ok: null, message: null });
+  assert.equal(answers.length, 3);
+  const settings = bridge.snapshot().songSettings;
+  assert.equal(settings.support.queueItemOptions, 'unknown', 'les réglages de titre ne sont pas jugés sur la Battle');
+  assert.deepEqual(settings.notices, {});
+  assert.equal(bridge.lastError, null, 'le refus va à la Battle, pas à l’erreur générale');
 });
 
 test('Battle sans télécommande récente : refusée sur un vrai KaraFun ancien protocole', () => {

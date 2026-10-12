@@ -1370,6 +1370,15 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
       e(34, 'stage.ended', { queueId: 1, playedSec: 240 }), e(300, 'evening.closed', { by: 'staff-reset' }),
     ] });
     assert.equal(lateLink.evening.openedAt, T(15));
+    // KaraFun connecté en plein titre : stage.started est noté avant la phase ; l'ouverture est au plus tard le premier titre.
+    const midSong = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Déjà lancé' }),
+      e(30.5, 'karaoke.phase', { phase: 'singing', blocker: null }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }), e(300, 'evening.closed', { by: 'staff-reset' }),
+    ] });
+    assert.equal(midSong.evening.openedAt, T(30));
     // Titre demandé après la coupure de la nuit et jamais chanté : l'ouverture reste à la connexion,
     // soirée close comme en direct.
     const byTime = list => list.map((x, i) => [x, i]).sort((a, b) => a[0].t - b[0].t || a[1] - b[1]).map(([x]) => x);

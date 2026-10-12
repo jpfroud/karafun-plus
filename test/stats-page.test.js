@@ -877,10 +877,14 @@ test('déroulé : une soirée close 6 jours plus tard est dessinée sur ses pass
   assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close dans l’application le ${day} à ${localHHMM(endedAt)}`);
   // Clôture moins de 3 h après le dernier passage : l'axe s'arrête aussi
   // 15 min après lui (retour du 10 octobre), la note donne la clôture.
+  // Le jour n'est donné que si la clôture tombe un autre jour (heure locale) que
+  // le dernier passage : selon le fuseau de la machine (Paris : après minuit).
   const soonView = apiView({ live: false, endedAt: at(90 + 170) });
   const soon = loadPage({ responses: viewResponse(soonView) });
   await settle();
-  assert.equal(text(timelineCaption(soon)), `Dernier passage à ${localHHMM(lastStageEnd(soonView))} · soirée close dans l’application à ${localHHMM(at(90 + 170))}`);
+  const soonDay = new Date(at(90 + 170)).toDateString() === new Date(lastStageEnd(soonView)).toDateString() ? ''
+    : `le ${new Date(at(90 + 170)).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} `;
+  assert.equal(text(timelineCaption(soon)), `Dernier passage à ${localHHMM(lastStageEnd(soonView))} · soirée close dans l’application ${soonDay}à ${localHHMM(at(90 + 170))}`);
   // Clôture 10 min après le dernier passage : rien de coupé, pas de note.
   const nowView = apiView({ live: false, endedAt: lastStageEnd(soonView) + 10 * 60000 });
   const now = loadPage({ responses: viewResponse(nowView) });

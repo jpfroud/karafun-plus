@@ -263,11 +263,16 @@ function journalBattle(event) {
   } else if (event === 'external' && b) journalEvent('battle.external', { ballotId: b.id, songId: battleVote.automation?.songId || null });
   else if (event === 'done' || event === 'dismissed') journalEvent('battle.resolved', { ballotId: b?.id || null, outcome: event });
   else if (event === 'cooldown-reset') journalEvent('battle.cooldownLifted', {});
-  else if (/^automation-(sending|queued|playing|after|resuming|released|failed|manual)$/.test(event)) {
-    const status = event.slice(11);
-    journalEvent('battle.automation', { ballotId: battleVote.automation?.ballotId || null, status,
-      songId: battleVote.automation?.songId || null,
-      ...(status === 'failed' ? { failure: battleVote.automation?.failure || null } : {}) });
+  else if (/^automation-(sending|mode|queued|playing|after|resuming|released|failed|manual)$/.test(event)) {
+    // Mode demandé à KaraFun (envoi, puis passage d'une copie normale en
+    // Battle) : une Battle confirmée ensuite se distingue de celle faite par
+    // le bar dans KaraFun.
+    const status = event.slice(11), automation = battleVote.automation;
+    journalEvent('battle.automation', { ballotId: automation?.ballotId || null, status,
+      songId: automation?.songId || null,
+      ...(status === 'sending' && automation?.sentMod ? { mod: automation.sentMod } : {}),
+      ...(status === 'mode' ? { queueId: automation?.modeTarget || null, mod: { id: automation?.modeId ?? null, caption: automation?.modeCaption || '' } } : {}),
+      ...(status === 'failed' ? { failure: automation?.failure || null } : {}) });
   }
 }
 if (DEMO) sched.opts.defaultSlotSec = parseInt(arg('song-seconds', 45), 10) + 1;
@@ -561,34 +566,41 @@ function battleHoldsQueue() {
 // page fait de même, une seule fois, avec le mode tiré des voix du titre.
 // Rien n'est retiré de KaraFun d'office : sans mode connu, ou si KaraFun ne
 // suit pas, le bar s'en charge et la Battle est reconnue dès qu'il l'a fait.
+const battleTitle = () => battleVote.ballot?.selectedSong?.title || 'ce titre';
 const plainBattleCopy = title => `KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle. ` +
   'Passe ce titre en mode Battle dans KaraFun (la page reconnaîtra la Battle), ou retire-le et touche « Ne pas lancer cette fois »';
-function setBattleMode(copy, current, now) {
+const plainBattleOnStage = title => `KaraFun a lancé « ${title} » en chanson normale, sans le mode Battle : ` +
+  'laisse-le finir ou passe au titre suivant, puis touche « Ne pas lancer cette fois »';
+// Échec d'une copie normale : consigne selon qu'elle attend ou passe déjà.
+function failPlainBattleCopy(copyId, current, reason = '') {
+  const onStage = current && String(current.queueId) === String(copyId);
+  const text = (onStage ? plainBattleOnStage : plainBattleCopy)(battleTitle());
+  battleVote.updateAutomation('failed', reason ? `${text} (${String(reason).replace(/[.!?\s]+$/, '')})` : text);
+}
+function switchPlainBattleCopy(copy, current) {
   const state = battleVote.automation;
-  const title = battleVote.ballot?.selectedSong?.title || 'ce titre';
-  const id = String(copy.queueId);
-  state.modeSentTo = id;
   const sent = state.sentMod || BATTLE_MOD;
   const mod = copy.battleMod;
-  if (current && String(current.queueId) === id) {
-    battleVote.updateAutomation('failed', `KaraFun a lancé « ${title} » en chanson normale, sans le mode Battle : ` +
-      'laisse-le finir ou passe au titre suivant, puis touche « Ne pas lancer cette fois »');
-    return;
-  }
-  if (!mod || (Number(mod.id) === Number(sent.id) && mod.caption === sent.caption)) {
-    battleVote.updateAutomation('failed', plainBattleCopy(title));
+  if ((current && String(current.queueId) === String(copy.queueId)) ||
+      !mod || (Number(mod.id) === Number(sent.id) && mod.caption === sent.caption)) {
+    failPlainBattleCopy(copy.queueId, current);
     return;
   }
   try {
-    bridge.setBattleMode(id, mod);
+    bridge.setBattleMode(copy.queueId, mod);
   } catch (error) {
-    battleVote.updateAutomation('failed', `${plainBattleCopy(title)} (${String(error.message).replace(/[.!?\s]+$/, '')})`);
+    failPlainBattleCopy(copy.queueId, current, error.message);
     return;
   }
-  state.modeSentAt = now;
-  state.modeCaption = mod.caption;
-  battleVote._changed('automation-mode');
-  sched.note(`KaraFun a ajouté « ${title} » sans le mode Battle : la page le passe en mode Battle sur la voix de ${mod.caption}.`, 'battle');
+  battleVote.noteModeSwitch(copy.queueId, mod);
+  sched.note(`KaraFun a ajouté « ${battleTitle()} » sans le mode Battle : la page le passe en mode Battle sur la voix « ${mod.caption} ».`, 'battle');
+}
+// Réponse de KaraFun au passage en mode Battle : un refus fait échouer tout
+// de suite, avec sa raison ; une réponse positive attend la file de KaraFun.
+function battleModeAnswer(answer) {
+  const state = battleVote.automation;
+  if (answer?.ok !== false || state?.status !== 'sending' || state.modeTarget !== String(answer.queueId)) return;
+  failPlainBattleCopy(answer.queueId, analyze().current, `KaraFun : ${answer.message}`);
 }
 
 function syncBattle({ current, upcoming, q }, now) {
@@ -625,9 +637,8 @@ function syncBattle({ current, upcoming, q }, now) {
       // attend qu'il ait chanté avant d'occuper la prochaine case libre.
       // Mode Battle que KaraFun connaît pour ce titre s'il est déjà passé par
       // sa file (voix d'un duo), sinon « Battle ».
-      const mod = bridge.battleModForSong?.(state.songId) || BATTLE_MOD;
-      battleVote.beginAutomation(q.map(item => String(item.queueId)));
-      battleVote.automation.sentMod = { id: mod.id, caption: mod.caption };
+      const mod = bridge.battleModForSong(state.songId);
+      battleVote.beginAutomation(q.map(item => String(item.queueId)), { sentMod: mod });
       try {
         bridge.addBattle(state.songId, current ? 1 : 0, mod);
         sched.note('Titre Battle envoyé à KaraFun : attente de la confirmation du mode Battle.', 'battle');
@@ -653,7 +664,7 @@ function syncBattle({ current, upcoming, q }, now) {
       sched.note('KaraFun confirme le mode Battle : la pause entre votes commence.', 'battle');
     } else if (battles.length > 1) {
       if (state.status !== 'failed') battleVote.updateAutomation('failed', 'Plusieurs Battles identiques sont apparues dans KaraFun.');
-    } else if (state.status === 'sending' && plain.length === 1 && state.modeSentTo == null &&
+    } else if (state.status === 'sending' && plain.length === 1 && state.modeTarget == null &&
         now - (state.plainSince ?? state.sentAt) <= BATTLE_ACK_MS) {
       // Copie attribuée seulement si elle reste sans mode Battle 1,5 s, apparue
       // pendant l'attente de l'accusé : une trame Battle incomplète ou un
@@ -663,12 +674,12 @@ function syncBattle({ current, upcoming, q }, now) {
         state.plainId = id;
         state.plainSince = now;
         battleVote._changed('automation-plain');
-      } else if (now - state.plainSince >= BATTLE_SETTLE_MS) setBattleMode(plain[0], current, now);
+      } else if (now - state.plainSince >= BATTLE_SETTLE_MS) switchPlainBattleCopy(plain[0], current);
     } else if (state.status === 'sending' && now - (state.modeSentAt ?? state.sentAt) > BATTLE_ACK_MS) {
       // Pas de seconde commande : un accusé tardif pourrait créer un doublon.
-      const copy = state.modeSentTo != null && plain.some(item => String(item.queueId) === state.modeSentTo);
-      battleVote.updateAutomation('failed', copy ? plainBattleCopy(battleVote.ballot?.selectedSong?.title || 'ce titre')
-        : 'KaraFun n’a pas confirmé l’ajout Battle. Vérifie sa file avant d’agir.');
+      if (state.modeTarget != null && plain.some(item => String(item.queueId) === state.modeTarget)) {
+        failPlainBattleCopy(state.modeTarget, current);
+      } else battleVote.updateAutomation('failed', 'KaraFun n’a pas confirmé l’ajout Battle. Vérifie sa file avant d’agir.');
     }
   } else if (state.status === 'queued' || state.status === 'playing') {
     const queueHasBattle = q.some(item => String(item.queueId) === state.queueId);
@@ -3224,9 +3235,9 @@ function closingView(queue, firstFreeAt, slot) {
 // deux titres. Sinon un passage moyen (notre titre vient de monter sur scène
 // si son début n'est pas encore noté). La durée envoyée par un téléphone peut
 // seulement avancer cette estimation : elle ne fait jamais retirer le titre
-// d'un autre. Soirée du 10 octobre : à la fin du titre de Chay, « début +
-// passage moyen » plaçait encore 1 min 30 de chanson devant « Hello » ;
-// retiré pour la fermeture, Eny prévenue, puis renvoyé une seconde plus tard.
+// d'un autre. Soirée du 10 octobre : à la fin d'un titre, « début + passage
+// moyen » plaçait encore 1 min 30 de chanson devant « Hello » ; retiré pour la
+// fermeture, sa chanteuse prévenue, puis renvoyé une seconde plus tard.
 function stageFreeAt(current, now = Date.now()) {
   if (!current) return now;
   const slot = sched.avgSlotSec() * 1000;
@@ -4999,6 +5010,7 @@ function connectKaraFun(code = CODE) {
       lockOwner: DEMO ? null : { port: PORT } });
     bridge.on('change', () => setImmediate(sync));
     bridge.on('add-options-refused', add => setImmediate(() => resendWithoutOptions(add)));
+    bridge.on('battle-mode-answer', answer => setImmediate(() => battleModeAnswer(answer)));
   }
   const result = bridge.connect(code);
   // Budget de l'heure épuisé et connexion prête : le pont garde son code

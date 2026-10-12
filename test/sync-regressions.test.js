@@ -28,7 +28,7 @@ function harness() {
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate,
   };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, access, sync, publicState, presenceCandidate,
+    globalThis.fixture = { sched, access, sync, publicState, presenceCandidate, battleModeAnswer,
       settings, clearEvening, clearQueue, battleVote,
       staffPlay() { return handlers['POST /api/staff/kf'](null, null, { action: 'play' }); },
       finishBattle() { return handlers['POST /api/staff/battle/resolve'](null, null, { outcome: 'finished' }); },
@@ -53,6 +53,7 @@ function harness() {
     add(songId, singer) { adds.push({ songId, singer }); },
     addBattle(songId, position, mod) { battleAdds.push({ songId, position }); battleModes.push({ add: songId, mod }); },
     setBattleMode(queueId, mod) { battleModes.push({ queueId, mod }); },
+    battleModForSong() { return BATTLE_MOD; },
     play() { plays.push(Date.now()); }, next() {}, remove(queueId) { removes.push(queueId); },
   };
   f.setBridge(bridge);
@@ -225,7 +226,7 @@ test('duo ajouté sans mode Battle (10 octobre) : la page le passe en mode Battl
   assert.equal(view.selectedSong.songId, SARA.songId, 'le titre voté par la salle reste celui de la Battle');
   assert.equal(view.automation.status, 'sending');
   assert.equal(view.automation.modeCaption, 'Angela Brambati');
-  assert.match(f.sched.log.at(-1).msg, /la page le passe en mode Battle sur la voix de Angela Brambati/);
+  assert.match(f.sched.log.at(-1).msg, /la page le passe en mode Battle sur la voix « Angela Brambati »/);
   f.sync();
   assert.equal(f.battleModes.length, 2, 'une seule commande de mode');
   // Copie passée en Battle par KaraFun (QueueEvent de 23:22:17).
@@ -298,6 +299,76 @@ test('titre à une voix ajouté sans mode Battle : rien n’est retiré ni modif
   assert.equal(f.plays.length, 0, 'la copie normale ne part pas en lecture automatique');
   assert.equal(f.battleAdds.length, 1);
   assert.ok(f.sched.log.some(entry => /Battle à préparer par le bar/.test(entry.msg)), 'le bar est prévenu');
+});
+
+test('mode de la voix déjà demandé et ignoré par KaraFun : pas de seconde commande identique, la demande attend le bar', () => {
+  const f = harness();
+  f.bridge.battleModForSong = () => SARA_MOD;
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  assert.deepEqual(f.battleModes, [{ add: SARA.songId, mod: SARA_MOD }]);
+  f.bridge.queue = [saraCopy('copie-normale')];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
+  assert.equal(f.battleModes.length, 1, 'le même mode n’est pas redemandé');
+  assert.equal(f.battleVote.view().automation.status, 'failed');
+  assert.equal(f.battleVote.view().automation.failure, PLAIN_SARA);
+});
+
+test('copie normale sans voix connues (ancien protocole, pistes absentes) : échec tout de suite, sans commande', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  f.bridge.queue = [item('copie-sans-voix', SARA, '')];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  assert.doesNotThrow(() => f.sync());
+  assert.equal(f.battleModes.length, 1);
+  assert.equal(f.battleVote.view().automation.failure, PLAIN_SARA);
+});
+
+test('mode Battle demandé puis copie partie de KaraFun, ou lancée entre-temps : la consigne suit l’état de la copie', () => {
+  const gone = harness();
+  gone.battleVote.staffLaunch({ song: SARA });
+  gone.sync();
+  gone.bridge.queue = [saraCopy('copie-normale')];
+  gone.sync();
+  gone.battleVote.automation.plainSince -= 1600;
+  gone.sync();
+  gone.bridge.queue = [];
+  gone.battleVote.automation.modeSentAt -= 16000;
+  gone.sync();
+  assert.match(gone.battleVote.view().automation.failure, /n’a pas confirmé l’ajout Battle/, 'copie partie : message général');
+  const played = harness();
+  played.battleVote.staffLaunch({ song: SARA });
+  played.sync();
+  const copy = saraCopy('copie-normale');
+  played.bridge.queue = [copy];
+  played.sync();
+  played.battleVote.automation.plainSince -= 1600;
+  played.sync();
+  played.bridge.status = { state: 'playing', current: copy };
+  played.battleVote.automation.modeSentAt -= 16000;
+  played.sync();
+  assert.match(played.battleVote.view().automation.failure, /^KaraFun a lancé « Sarà perché ti amo » en chanson normale.*laisse-le finir/);
+});
+
+test('refus de KaraFun au passage en mode Battle : la demande échoue tout de suite avec sa raison', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  const copy = saraCopy('copie-normale');
+  f.bridge.queue = [copy];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
+  f.battleModeAnswer({ queueId: 'autre-titre', ok: false, message: 'Not allowed' });
+  assert.equal(f.battleVote.view().automation.status, 'sending', 'réponse sur un autre titre : ignorée');
+  f.battleModeAnswer({ queueId: copy.queueId, ok: true, message: null });
+  assert.equal(f.battleVote.view().automation.status, 'sending', 'accepté : on attend la file de KaraFun');
+  f.battleModeAnswer({ queueId: copy.queueId, ok: false, message: 'Not allowed' });
+  assert.equal(f.battleVote.view().automation.failure, `${PLAIN_SARA} (KaraFun : Not allowed)`);
 });
 
 test('passage en mode Battle refusé par KaraFun (droit « Éditer la file d’attente ») : raison donnée au bar', () => {
