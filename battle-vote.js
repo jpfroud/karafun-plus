@@ -334,6 +334,17 @@ class BattleVote {
     this._changed('automation-sending');
   }
 
+  // Copie normale du titre vue dans KaraFun pendant l'envoi : elle doit rester
+  // sans mode Battle un moment avant d'être attribuée à cet envoi.
+  notePlainCopy(queueId) {
+    if (this.automation?.status !== 'sending' || queueId == null || this.automation.modeTarget != null) {
+      throw new Error('Copie normale inattendue.');
+    }
+    this.automation.plainId = String(queueId);
+    this.automation.plainSince = this.now();
+    this._changed('automation-plain');
+  }
+
   // KaraFun a ajouté le titre en chanson normale : la page lui demande de le
   // passer dans ce mode Battle (une seule fois par envoi).
   noteModeSwitch(queueId, mod) {

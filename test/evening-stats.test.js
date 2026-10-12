@@ -705,8 +705,8 @@ test('titres remplacés, abandonnés au départ ou annulés : retirés, plus « 
 
 // Soirée du 10 octobre : application lancée à 15:41, KaraFun connecté à 20:19,
 // fermeture à 03:10 (dernier titre fini à 03:17), soirée close au bar le
-// lendemain à 12:54. Des pages restées ouvertes ont compté JP 15 h et Le Vieux
-// 16 h de présence.
+// lendemain à 12:54. Des pages restées ouvertes ont compté 15 h et 16 h de
+// présence à deux habitués.
 test('présence : de la connexion de KaraFun à la fermeture du bar, pas la matinée suivante', () => {
   const T = m => T0 + m * 60000;
   let seq = 0;
@@ -940,6 +940,7 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     // Application redémarrée 9 min pendant le titre, plus rien sur scène au retour : titre fini.
     const restart = [e(205, 'app.started', { restored: true, offlineMs: 9 * 60000 })];
     assert.equal(live(restart, 207).evening.closedAt, T(200));
+    assert.equal(live(restart, 207).timeline.stages.at(-1).playedSec, 240, 'plus « en cours » : fin estimée à sa durée');
     // Arrêt compté depuis le dernier événement noté, ici le début du titre.
     assert.equal(live([e(205, 'app.started', { restored: true, offlineMs: 10 * 60000 })], 207).evening.closedAt, T(200));
     assert.equal(archived(restart, 300), T(200));
@@ -1424,6 +1425,18 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     ] });
     assert.equal(crash.evening.closedAt, T(120));
     assert.deepEqual([crash.evening.restarts, crash.evening.offlineSec], [1, 300]);
+    // Panne de 10 min pendant le karaoké, puis PC éteint la nuit et rallumé le lendemain matin : seule la panne compte.
+    const morning = computeStats({ meta: { startedAt: T(0), endedAt: T(1000) }, events: [
+      e(0, 'evening.started', { rules: {} }), e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }), e(20, 'closing.set', { closingAt: T(120) }),
+      e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Premier' }), e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(60, 'queue.sample', { ready: 0 }), e(70, 'app.started', { restored: true, offlineMs: 10 * 60000 }),
+      e(100, 'stage.started', { queueId: 2, source: 'native', title: 'Dernier' }), e(104, 'stage.ended', { queueId: 2, playedSec: 240 }),
+      e(130, 'queue.sample', { ready: 0 }), e(900, 'app.started', { restored: true, offlineMs: 770 * 60000 }),
+      e(1000, 'evening.closed', { by: 'staff-reset' }),
+    ] });
+    assert.deepEqual([morning.evening.restarts, morning.evening.offlineSec], [1, 600]);
+    assert.ok(insights(morning).some(item => /redémarré 1 fois/.test(item.text)), insights(morning).map(item => item.text).join(' | '));
   });
 
   test('KaraFun quitté pendant un titre puis rouvert bien plus tard : le passage finit à la coupure', () => {

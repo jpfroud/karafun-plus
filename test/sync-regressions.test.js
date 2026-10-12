@@ -28,7 +28,7 @@ function harness() {
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate,
   };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, access, sync, publicState, presenceCandidate, battleModeAnswer,
+    globalThis.fixture = { sched, access, sync, publicState, presenceCandidate, battleModeAnswer, journal, wireBridge,
       settings, clearEvening, clearQueue, battleVote,
       staffPlay() { return handlers['POST /api/staff/kf'](null, null, { action: 'play' }); },
       finishBattle() { return handlers['POST /api/staff/battle/resolve'](null, null, { outcome: 'finished' }); },
@@ -368,6 +368,60 @@ test('refus de KaraFun au passage en mode Battle : la demande échoue tout de su
   f.battleModeAnswer({ queueId: copy.queueId, ok: true, message: null });
   assert.equal(f.battleVote.view().automation.status, 'sending', 'accepté : on attend la file de KaraFun');
   f.battleModeAnswer({ queueId: copy.queueId, ok: false, message: 'Not allowed' });
+  assert.equal(f.battleVote.view().automation.failure, `${PLAIN_SARA} (KaraFun : Not allowed)`);
+});
+
+// Événements Battle notés au journal de la soirée (soirée pas encore ouverte : file d'attente du journal).
+const battleJournal = f => [...(f.journal.current?.events || []), ...f.journal.early.map(([ev, fields]) => ({ ev, ...fields }))]
+  .filter(event => event.ev === 'battle.automation');
+
+test('journal : mode Battle demandé à l’envoi, puis passage d’une copie normale en mode Battle', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  const copy = saraCopy('920bd91b');
+  f.bridge.queue = [copy];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
+  const events = JSON.parse(JSON.stringify(battleJournal(f).map(({ status, mod, queueId }) => ({ status, mod, queueId }))));
+  assert.deepEqual(events.find(event => event.status === 'sending'), { status: 'sending', mod: { id: 1, caption: 'Battle' } });
+  assert.deepEqual(events.find(event => event.status === 'mode'), { status: 'mode', mod: { id: 2, caption: 'Angela Brambati' }, queueId: '920bd91b' });
+});
+
+test('copie normale : un titre suivi par la file sur la même chanson n’est jamais passé en mode Battle', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  // Titre d'Alice sur la même chanson, déjà suivi par la file.
+  const p = f.sched.join({ tableId: '1', name: 'Alice', headcount: 1 });
+  f.sched.chooseSong(p, SARA);
+  const sel = f.sched.select();
+  f.sched.commit(sel);
+  const ours = saraCopy('passage-alice');
+  f.tracked().push({ queueId: ours.queueId, sel, addedAt: Date.now(), startedAt: null });
+  f.bridge.queue = [ours];
+  f.sync();
+  f.battleVote.automation.plainSince = (f.battleVote.automation.plainSince ?? Date.now()) - 1600;
+  f.sync();
+  assert.equal(f.battleModes.length, 1, 'aucune commande de mode sur le titre d’Alice');
+  assert.equal(f.battleVote.automation.plainId, undefined, 'titre suivi : pas attribué à la Battle');
+  assert.equal(f.battleVote.view().automation.status, 'sending');
+});
+
+test('pont KaraFun relié : un refus de KaraFun au passage en mode Battle fait échouer la demande tout de suite', async () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  const copy = saraCopy('copie-normale');
+  f.bridge.queue = [copy];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
+  const real = new KaraFunBridge();
+  f.wireBridge(real);
+  real.emit('battle-mode-answer', { queueId: copy.queueId, mod: { id: 2 }, ok: false, message: 'Not allowed' });
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.battleVote.view().automation.failure, `${PLAIN_SARA} (KaraFun : Not allowed)`);
 });
 

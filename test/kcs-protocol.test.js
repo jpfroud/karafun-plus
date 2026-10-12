@@ -823,6 +823,30 @@ test('Battle KCS : la réponse au passage en mode Battle va au suivi de la Battl
   assert.equal(bridge.lastError, null, 'le refus va à la Battle, pas à l’erreur générale');
 });
 
+test('Battle KCS : passage en mode Battle sans réponse puis reconnexion : une réponse de la nouvelle connexion ne va pas à la Battle', async t => {
+  mockTime(t);
+  const { bridge, ws, env } = await connected(t);
+  t.after(() => bridge.disconnect());
+  ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: { addToQueue: true, manageQueue: true,
+    shownTypes: { battle: true } } } });
+  const answers = [];
+  bridge.on('battle-mode-answer', answer => answers.push(answer));
+  bridge.setBattleMode('920bd91b', SARA_MOD);
+  const staleId = ws.sent.at(-1).id;
+  assert.equal(bridge._battleModes.size, 1);
+  ws.receive({ type: 'remote.AppLeftEvent', payload: {} });
+  t.mock.timers.tick(3000);
+  const ws2 = env.sockets.at(-1);
+  assert.notEqual(ws2, ws);
+  ws2.open();
+  assert.equal(bridge._battleModes.size, 0, 'identifiants propres à chaque connexion');
+  // Réponse portant le même identifiant sur la nouvelle connexion : rien pour la Battle.
+  ws2.receive({ id: staleId, type: 'Error', payload: { type: 3, message: 'Autre demande' } });
+  assert.deepEqual(answers, []);
+  // Une même voix listée deux fois : titre à une voix.
+  assert.deepEqual(battleModFor([{ type: 5, caption: 'Indochine' }, { type: 5, caption: 'Indochine' }]), BATTLE_MOD);
+});
+
 test('Battle sans télécommande récente : refusée sur un vrai KaraFun ancien protocole', () => {
   const bridge = new KaraFunBridge({ bases: ['https://kf.exemple.invalid'] });
   bridge.protocol = 'socket.io';

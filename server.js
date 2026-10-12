@@ -603,6 +603,13 @@ function battleModeAnswer(answer) {
   failPlainBattleCopy(answer.queueId, analyze().current, `KaraFun : ${answer.message}`);
 }
 
+// Événements du pont KaraFun que la file suit.
+function wireBridge(b) {
+  b.on('change', () => setImmediate(sync));
+  b.on('add-options-refused', add => setImmediate(() => resendWithoutOptions(add)));
+  b.on('battle-mode-answer', answer => setImmediate(() => battleModeAnswer(answer)));
+}
+
 function syncBattle({ current, upcoming, q }, now) {
   let state = battleVote.automation;
   const native = [current, ...q].filter(Boolean).find(item => isBattleItem(item) &&
@@ -669,12 +676,8 @@ function syncBattle({ current, upcoming, q }, now) {
       // Copie attribuée seulement si elle reste sans mode Battle 1,5 s, apparue
       // pendant l'attente de l'accusé : une trame Battle incomplète ou un
       // suivi resté « sending » après une coupure ne compte pas.
-      const id = String(plain[0].queueId);
-      if (state.plainId !== id) {
-        state.plainId = id;
-        state.plainSince = now;
-        battleVote._changed('automation-plain');
-      } else if (now - state.plainSince >= BATTLE_SETTLE_MS) switchPlainBattleCopy(plain[0], current);
+      if (state.plainId !== String(plain[0].queueId)) battleVote.notePlainCopy(plain[0].queueId);
+      else if (now - state.plainSince >= BATTLE_SETTLE_MS) switchPlainBattleCopy(plain[0], current);
     } else if (state.status === 'sending' && now - (state.modeSentAt ?? state.sentAt) > BATTLE_ACK_MS) {
       // Pas de seconde commande : un accusé tardif pourrait créer un doublon.
       if (state.modeTarget != null && plain.some(item => String(item.queueId) === state.modeTarget)) {
@@ -5008,9 +5011,7 @@ function connectKaraFun(code = CODE) {
       identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json'),
       budgetFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-pages.json'),
       lockOwner: DEMO ? null : { port: PORT } });
-    bridge.on('change', () => setImmediate(sync));
-    bridge.on('add-options-refused', add => setImmediate(() => resendWithoutOptions(add)));
-    bridge.on('battle-mode-answer', answer => setImmediate(() => battleModeAnswer(answer)));
+    wireBridge(bridge);
   }
   const result = bridge.connect(code);
   // Budget de l'heure épuisé et connexion prête : le pont garde son code
