@@ -745,3 +745,49 @@ test('patience et compromis : pas de calcul inutile pendant une prévision', () 
   assert.equal(waits, 0, 'premier tour : aucun début d’attente calculé');
   assert.ok(scans <= 1, `${scans} parcours des inscrits pour une prévision`);
 });
+
+// Relecture : une personne avec bonus peut chanter plus souvent, mais jamais
+// deux de ses titres de suite pendant que d'autres attendent. (Invitée d'un
+// duo puis son propre titre, au bonus +3, reste possible : tous les autres
+// ont déjà chanté dans le tour, comme avant la règle de patience.)
+test('bonus : jamais deux titres de suite de la même personne pendant que d’autres attendent', () => {
+  for (const level of [1, 2, 3]) {
+    const s = new Scheduler();
+    s.setHeadcount('1', 5);
+    const alice = s.join({ tableId: '1', name: 'Alice' });
+    const bruno = s.join({ tableId: '1', name: 'Bruno' });
+    const chloe = s.join({ tableId: '1', name: 'Chloé' });
+    const sam = s.join({ tableId: 'Comptoir', name: 'Sam' });
+    let n = 1;
+    for (let k = 0; k < 4; k++) s.chooseSong(alice, song(n++), 'append');
+    for (let k = 0; k < 4; k++) s.chooseSong(bruno, song(n++), 'append');
+    for (let k = 0; k < 3; k++) s.chooseSong(chloe, song(n++), 'append');
+    s.chooseSong(sam, song(n++), 'append');
+    const duo = s.inviteDuet(sam, chloe.id, song(n++));
+    s.answerDuet(chloe, true, duo.entryId);
+    s.setPersonBonus(chloe.id, level);
+    const played = [];
+    for (let i = 0; i < 13; i++) {
+      const sel = s.select();
+      if (!sel) break;
+      s.commit(sel); s.songEnded(sel.ids);
+      played.push(sel);
+    }
+    const names = played.map(sel => sel.names.join(' & '));
+    played.forEach((sel, i) => {
+      if (i) assert.notEqual(sel.ids[0], played[i - 1].ids[0], `bonus ${level} : ${names.join(' ')}`);
+    });
+  }
+});
+
+// Relecture : « Je pars » vide la file de la personne ; un titre rechoisi
+// ensuite commence une nouvelle attente, même juste après un retrait.
+test('retrait du dernier titre puis « Je pars » : l’attente recommence', () => {
+  const { s, more } = twoTablesAndSolo();
+  for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  const solo = [...s.people.values()].find(p => p.name === 'S');
+  s.removeSong(solo, s.songsOf(solo)[0].entryId, 'self');
+  s.leave(solo);
+  s.chooseSong(solo, more(), 'append');
+  assert.equal(solo.readySerial, s.appearanceSerial);
+});

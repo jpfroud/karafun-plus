@@ -35,9 +35,9 @@
  *   attente quand un autre passage permis l'évite. Selon le mode (choix du
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
  *   règle des tables ; « Tables à tour de rôle » et « Compromis » après. Un
- *   bonus peut doubler, un malus n'est pas protégé. Un titre échangé (retrait
- *   du dernier titre puis ajout, sans passage entre les deux) garde l'attente
- *   en cours.
+ *   bonus peut doubler, mais pas juste après sa chanson ; un malus n'est pas
+ *   protégé. Un titre échangé (retrait du dernier titre puis ajout, sans
+ *   passage entre les deux, ticket resté dans la file) garde l'attente en cours.
  * - Le bar peut accorder un bonus ou un malus (niveaux -3 à +3) à une table
  *   ou à une personne : il change la fréquence de passage, jamais la priorité
  *   des premiers passages. Les clients ne le voient pas.
@@ -652,7 +652,10 @@ class Scheduler {
     // passés « devant » cette personne (voir l'anti-série et la patience de
     // _pick). Un titre échangé (retrait du dernier titre puis ajout, sans
     // passage entre les deux) garde l'attente en cours.
-    if (!this.songsOf(p).length && p.emptiedAt !== this.appearanceSerial) p.readySerial = this.appearanceSerial;
+    // Échange seulement si le ticket est resté dans la file : « Je pars » et
+    // « Vider toutes les chansons » la vident, et l'attente recommence.
+    const swapped = p.emptiedAt === this.appearanceSerial && this.Q.includes(p.id) && !p.withdrawnAt;
+    if (!this.songsOf(p).length && !swapped) p.readySerial = this.appearanceSerial;
     delete p.emptiedAt;
     if (mode === 'append' && p.song) p.backlog.push(next);
     else {

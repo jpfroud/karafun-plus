@@ -140,7 +140,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 int[] seen = new int[allowedNow.size()];
                 boolean anySeen = false;
                 for (int k = 0; k < seen.length; k++) {
-                    seen[k] = lastSung(allowedNow.get(k), lastSeen, appeared, plan);
+                    seen[k] = lastSung(allowedNow.get(k), pos, lastSeen, appeared, plan);
                     anySeen |= seen[k] > UNKNOWN;
                 }
                 if (anySeen) {
@@ -310,12 +310,16 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         return out;
     }
 
-    // Last appearance of a singer of `c` without bonus who already sang, or UNKNOWN.
-    private static int lastSung(Performance c, Map<String, Integer> lastSeen, Map<String, Integer> appeared, QueuePlan plan) {
+    // Last appearance of a singer of `c` who already sang, or UNKNOWN. A bonus
+    // singer counts only until rested (two other passages since), as in Node.
+    private static int lastSung(Performance c, int pos, Map<String, Integer> lastSeen, Map<String, Integer> appeared,
+                                QueuePlan plan) {
         int seen = UNKNOWN;
         for (String singer : c.getSingers()) {
-            if (weight(plan, singer) > 1 + EPS || appeared.getOrDefault(singer, 0) == 0) continue;
-            seen = Math.max(seen, lastSeen.getOrDefault(singer, UNKNOWN));
+            if (appeared.getOrDefault(singer, 0) == 0) continue;
+            int last = lastSeen.getOrDefault(singer, UNKNOWN);
+            if (weight(plan, singer) > 1 + EPS && pos - last >= 3) continue;
+            seen = Math.max(seen, last);
         }
         return seen;
     }
