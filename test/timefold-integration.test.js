@@ -703,8 +703,9 @@ function compromiseRequest() {
   const a = ['A1', 'A2', 'A3', 'A4'].map(name => s.join({ tableId: 'A', name }));
   let n = 9500;
   for (const p of [...b, a[0], a[1]]) for (let k = 0; k < 2; k++) s.chooseSong(p, { songId: n++, title: `T${n}`, artist: 'x' }, 'append');
-  // A3 et A4 ont choisi puis retiré un titre ; un prénom de B n'a rien choisi.
-  for (const p of [a[2], a[3]]) { s.chooseSong(p, { songId: n++, title: `T${n}`, artist: 'x' }, 'append'); s.removeSong(p, p.song.entryId); }
+  // A3 et A4 ont déjà chanté ce soir et n'ont plus de titre : seule la
+  // taille envoyée les compte. Un prénom de B n'a rien choisi.
+  for (const p of [a[2], a[3]]) p.sung = 1;
   s.join({ tableId: 'B', name: 'B3' });
   let request;
   s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };

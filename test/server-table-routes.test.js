@@ -440,6 +440,22 @@ test('« Compromis » après « Vider toutes les chansons » : ceux qui ont chan
   assert.equal(sizes.get(ben.group), 1);
 });
 
+test('« Compromis » après « Vider » : un titre retiré avant le vidage ne compte pas', async () => {
+  const f = harness(); f.loadTables(); f.setBridge(null);
+  Object.assign(f.sched.opts, { tableRotation: true, weightedTables: true });
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 3 });
+  const ben = f.sched.join({ tableId: '2', name: 'Ben', headcount: 3 });
+  const bob = f.sched.join({ tableId: '2', name: 'Bob' });
+  let n = 9600;
+  for (const p of [ana, ben, bob]) f.sched.chooseSong(p, { songId: n++, title: `T${n}` }, 'append');
+  f.sched.removeSong(bob, bob.song.entryId);
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  f.sched.chooseSong(ana, { songId: n++, title: `T${n}` }, 'append');
+  f.sched.chooseSong(ben, { songId: n++, title: `T${n}` }, 'append');
+  assert.equal(f.sched._registeredWeights().get(ben.group), 1, 'Bob : ni titre en attente, ni passage');
+});
+
 test('« Arrêter le vidage » : sauvegarde en échec, le vidage reste en cours en mémoire comme sur le disque', async () => {
   const f = harness({ persistent: true });
   f.loadTables();

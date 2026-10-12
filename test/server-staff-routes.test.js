@@ -594,7 +594,7 @@ test('réglages de rotation : chaque mode est annoncé et les déplacements manu
   assert.equal(lastNote(f).msg, 'Rotation : compromis, grandes tables un peu plus tôt dans le tour');
   assert.equal(f.staffState().settings.weightedTables, true);
   await f.call('POST /api/staff/settings', { tableRotation: false, weightedTables: false });
-  assert.equal(lastNote(f).msg, 'Rotation : chacun son tour, tables au prorata des chanteurs');
+  assert.equal(lastNote(f).msg, 'Rotation : chacun son tour, la patience d’abord');
   const count = f.sched.log.length;
   await f.call('POST /api/staff/settings', { tableRotation: false });
   assert.equal(f.sched.log.length, count, 'un réglage inchangé n’ajoute rien au journal');

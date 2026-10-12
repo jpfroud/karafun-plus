@@ -513,10 +513,11 @@ for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }]
   });
 }
 
-// « Compromis » : la taille d'une table est le nombre de chanteurs inscrits,
-// titre prêt ou non. Une table de 4 inscrits dont 2 ont un titre passe devant
-// une table de 2 inscrits, créée avant elle ; « Chacun son tour » compte les
-// seuls titres prêts et départage ici par l'ordre des tables.
+// « Compromis » : la taille d'une table est le nombre de chanteurs inscrits
+// qui ont un titre, prêt ou non. Une table de 4 chanteurs dont 2 ont un titre
+// prêt (les 2 autres « Pas prêt ») passe devant une table de 2 chanteurs,
+// créée avant elle ; « Chacun son tour » compte les seuls titres prêts et
+// départage ici par l'ordre des tables.
 test('compromis : la part d’une table suit ses chanteurs inscrits, pas ses seuls titres prêts', () => {
   const first = (opts, idle = 0) => {
     const s = new Scheduler(opts);
@@ -526,8 +527,11 @@ test('compromis : la part d’une table suit ses chanteurs inscrits, pas ses seu
     const a = ['A1', 'A2', 'A3', 'A4'].map(name => s.join({ tableId: 'A', name }));
     let n = 100;
     for (const p of [...b, a[0], a[1]]) s.chooseSong(p, song(n++), 'append');
-    // A3 et A4 ont choisi un titre puis l'ont retiré : inscrits, sans titre prêt.
-    for (const p of [a[2], a[3]]) { s.chooseSong(p, song(n++), 'append'); s.removeSong(p, p.song.entryId); }
+    // A3 et A4 ont un titre, mais « Pas prêt » : inscrits, sans titre prêt.
+    for (const p of [a[2], a[3]]) {
+      s.chooseSong(p, song(n++), 'append');
+      s.deferPassage(p.id, { entryId: p.song.entryId, ids: [p.id] }, 2);
+    }
     // Prénoms inscrits à B sans aucun titre : ils ne comptent pas.
     for (let k = 0; k < idle; k++) s.join({ tableId: 'B', name: `B-sans-titre-${k}` });
     return s.people.get(s.select().ids[0]).tableId;
@@ -537,21 +541,22 @@ test('compromis : la part d’une table suit ses chanteurs inscrits, pas ses seu
   assert.equal(first({}), 'B');
 });
 
-// Relecture : un titre choisi puis retiré ne garde pas sa place dans la
-// taille de la table : il compte pendant l'échange, plus après le passage
-// suivant (sinon des tickets vides gonfleraient la part d'une table).
-test('compromis : un titre choisi puis retiré ne compte plus après le passage suivant', () => {
+// Relecture : un titre choisi puis retiré ne compte pas dans la taille de la
+// table, même répété après chaque passage (sinon des tickets vides
+// gonfleraient la part d'une table).
+test('compromis : un titre choisi puis retiré ne compte pas', () => {
   const s = new Scheduler({ tableRotation: true, weightedTables: true });
   s.setHeadcount('A', 6); s.setHeadcount('B', 6);
   const a = s.join({ tableId: 'A', name: 'A1' }), b = s.join({ tableId: 'B', name: 'B1' });
-  s.chooseSong(a, song(1)); s.chooseSong(b, song(2));
+  for (let k = 0; k < 3; k++) { s.chooseSong(a, song(10 + k), 'append'); s.chooseSong(b, song(20 + k), 'append'); }
   const r = s.join({ tableId: 'B', name: 'B2' });
-  s.chooseSong(r, song(3)); s.removeSong(r, r.song.entryId);
-  assert.equal(s._registeredWeights().get(b.group), 2, 'échange en cours : compte encore');
-  const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
-  assert.equal(s._registeredWeights().get(b.group), 1, 'ticket vide après un passage : ne compte plus');
-  s.chooseSong(r, song(4));
-  assert.equal(s._registeredWeights().get(b.group), 2, 'nouveau titre : compte de nouveau');
+  for (let i = 0; i < 3; i++) {
+    s.chooseSong(r, song(30 + i)); s.removeSong(r, r.song.entryId);
+    assert.equal(s._registeredWeights().get(b.group), 1, `titre retiré (${i + 1}) : ne compte pas`);
+    const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+  }
+  s.chooseSong(r, song(40));
+  assert.equal(s._registeredWeights().get(b.group), 2, 'titre gardé : compte');
 });
 
 // Échange de titre : seul un retrait réel, sans passage entre le retrait et
@@ -866,9 +871,12 @@ test('compromis : un chanteur sans titre prêt qui part change l’empreinte du 
   s.setHeadcount('A', 8); s.setHeadcount('B', 8);
   const a = s.join({ tableId: 'A', name: 'A1' }), b = s.join({ tableId: 'B', name: 'B1' });
   s.chooseSong(a, song(1)); s.chooseSong(b, song(2));
-  // A2 a choisi puis retiré son titre : inscrite à A, sans titre prêt.
+  // A2 a chanté son titre et n'en a pas d'autre : inscrite à A, sans titre prêt.
   const a2 = s.join({ tableId: 'A', name: 'A2' });
-  s.chooseSong(a2, song(3)); s.removeSong(a2, a2.song.entryId);
+  s.chooseSong(a2, song(3));
+  s.chooseSong(a, song(5), 'append'); s.chooseSong(b, song(6), 'append');
+  for (let i = 0; i < 3 && !a2.sung; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  assert.ok(a2.sung && !s.songsOf(a2).length && s.songsOf(a).length);
   const before = s.solverContextFingerprint();
   s.leave(a2);
   assert.notEqual(s.solverContextFingerprint(), before, 'A compte un chanteur de moins');
@@ -936,6 +944,27 @@ test('duo annulé : l’invitée sans titre ne garde pas une ancienne attente', 
   assert.equal(guest.emptiedAt, undefined, 'l’invitée n’est pas en échange de titre');
   s.chooseSong(guest, song(n++), 'append');
   assert.equal(guest.readySerial, s.appearanceSerial, 'nouvelle attente pour l’invitée');
+});
+
+// Même règle quand l'invitée choisit son titre pendant l'envoi du duo.
+test('duo annulé : l’invitée qui choisit un titre pendant l’envoi ne garde pas une ancienne attente', () => {
+  const s = new Scheduler();
+  const people = ['A', 'B', 'C', 'D'].map(t => s.join({ tableId: t, name: `${t}1`, headcount: 2 }));
+  let n = 1;
+  people.forEach(p => s.chooseSong(p, song(n++), 'append'));
+  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel; };
+  const guest = s.people.get(play().ids[0]);
+  for (let i = 0; i < 3; i++) play();
+  const owner = people.find(p => p.id !== guest.id);
+  for (const p of people) if (p.id !== guest.id) s.chooseSong(p, song(n++), 'append');
+  const duo = s.inviteDuet(owner, guest.id, song(n++));
+  s.answerDuet(guest, true, duo.entryId);
+  let sel = s.select();
+  while (!sel.ids.includes(guest.id)) { s.commit(sel); s.songEnded(sel.ids); sel = s.select(); }
+  s.commit(sel);
+  s.chooseSong(guest, song(n++), 'append');
+  s.rollbackUnplayed(sel, { requeue: true });
+  assert.equal(guest.readySerial, s.appearanceSerial);
 });
 
 // Relecture : une personne arrivée pendant un passage ensuite annulé
@@ -1049,9 +1078,10 @@ test('duo noté puis retiré sans passage connu : un échange de titre fait entr
   assert.equal(c.readySerial, before);
 });
 
-// Relecture : en « Compromis », une invitée de duo sans titre à elle est
-// déjà montée sur scène : elle compte dans la taille de sa table.
-test('compromis : une invitée de duo sans titre à elle compte dans la taille de sa table', () => {
+// Relecture : en « Compromis », des invités de duo sans titre à eux ne
+// grossissent pas leur table (un duo de la même table se fait sans l'accord
+// de l'invité) ; un chanteur qui a chanté son titre compte, liste vide ou non.
+test('compromis : des invités de duo sans titre à eux ne grossissent pas leur table', () => {
   const s = new Scheduler({ tableRotation: true, weightedTables: true });
   s.setHeadcount('B', 4); s.setHeadcount('A', 6);
   const b = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
@@ -1059,6 +1089,20 @@ test('compromis : une invitée de duo sans titre à elle compte dans la taille d
   let n = 9500;
   for (const p of [...b, a[0], a[1]]) s.chooseSong(p, song(n++), 'append');
   for (const guest of [a[2], a[3]]) s.staffCountPartner(a[0].id, guest.id, { song: { entryId: `inconnu-${guest.id}` } });
-  assert.equal(s._registeredWeights().get(a[0].group), 4);
+  assert.equal(s._registeredWeights().get(a[0].group), 2);
   assert.equal(s._registeredWeights().get(b[0].group), 2);
+  for (let i = 0; i < 4; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  assert.ok(b.every(p => p.sung && !s.songsOf(p).length));
+  assert.equal(s._registeredWeights().get(b[0].group), 2, 'B1 et B2 ont chanté : comptent encore');
+});
+
+// Relecture : un titre retiré faute de « Je suis là » (trois fois manqué)
+// n'est pas un échange ; le titre rechoisi commence une nouvelle attente.
+test('titre retiré faute de présence : le titre suivant commence une nouvelle attente', () => {
+  const { s, more } = twoTablesAndSolo();
+  for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  const solo = [...s.people.values()].find(p => p.name === 'S');
+  s.removeSong(solo, s.songsOf(solo)[0].entryId, 'presence-max');
+  s.chooseSong(solo, more(), 'append');
+  assert.equal(solo.readySerial, s.appearanceSerial);
 });

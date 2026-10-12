@@ -31,7 +31,7 @@
  *   La même table ne reprend pas le micro quand une autre peut chanter (en
  *   « Chacun son tour », sauf pour respecter la patience). En compromis, la
  *   taille d'une table est son nombre de chanteurs inscrits (titre en attente
- *   ou déjà monté sur scène ce soir).
+ *   ou déjà chanté ce soir).
  * - Patience : personne ne voit quelqu'un chanter deux fois pendant sa propre
  *   attente quand un autre passage permis l'évite. Selon le mode (choix du
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
@@ -295,8 +295,8 @@ class Scheduler {
   // confirmations, notes et photos n'y figurent pas : la fin d'une chanson ou
   // une inscription sans titre ne relancent donc pas Timefold. En
   // « Compromis », la part d'une table suit ses chanteurs inscrits
-  // (_registeredWeights) : un départ ou un échange de titre à une table qui a
-  // un titre prêt la relance, pas un changement à une table sans titre prêt.
+  // (_registeredWeights) : un départ ou un premier titre à une table qui a un
+  // titre prêt la relance, pas un changement à une table sans titre prêt.
   solverContextFingerprint() {
     const readyQ = this.Q.filter(pid => {
       const p = this.people.get(pid);
@@ -696,7 +696,9 @@ class Scheduler {
     if (p.song && p.song.entryId === key) {
       this._songsGone(p, [p.song]);
       p.song = (p.backlog || []).shift() || null;
-      this._noteEmptied(p);
+      // Un titre retiré faute de « Je suis là » n'ouvre pas d'échange : le
+      // titre suivant commence une nouvelle attente.
+      if (by !== 'presence-max') this._noteEmptied(p);
     } else {
       const i = (p.backlog || []).findIndex(s => s.entryId === key);
       if (i < 0) throw new Error('Chanson introuvable dans la liste.');

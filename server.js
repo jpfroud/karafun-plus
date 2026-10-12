@@ -4120,7 +4120,7 @@ const handlers = {
       // Le tour des personnes est conservé : changer de mode ne doit jamais
       // permettre à quelqu'un de rechanter avant ceux qui attendent ce tour.
       sched.invalidateManualOrder();
-      sched.note(`Rotation : ${nextWeighted ? 'compromis, grandes tables un peu plus tôt dans le tour' : nextTableRotation ? 'tables à tour de rôle' : 'chacun son tour, tables au prorata des chanteurs'}`, 'staff');
+      sched.note(`Rotation : ${nextWeighted ? 'compromis, grandes tables un peu plus tôt dans le tour' : nextTableRotation ? 'tables à tour de rôle' : 'chacun son tour, la patience d’abord'}`, 'staff');
     }
     if ('interleaveArrivals' in body && !!body.interleaveArrivals !== (sched.opts.interleaveArrivals !== false)) {
       sched.opts.interleaveArrivals = !!body.interleaveArrivals;
