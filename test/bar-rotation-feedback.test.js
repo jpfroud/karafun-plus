@@ -459,12 +459,11 @@ test('titre échangé sans passage entre le retrait et l’ajout : la prévision
 
 // Choix du bar après le 12 octobre : quand les tables n'ont pas le même
 // nombre de titres prêts (4 contre 3), la règle de patience passe avant la
-// règle des tables en « Chacun son tour », et aussi en « Compromis », où
-// aucun tour sans la même table deux fois de suite n'existe alors. Au
-// changement de tour, la même table chante deux fois de suite plutôt que de
-// faire voir à quelqu'un un passage en double.
-for (const [mode, opts] of [['chacun son tour', {}], ['compromis', { tableRotation: true, weightedTables: true }]]) test(`${mode}, tables inégales : la patience passe avant la règle des tables`, () => {
-  const s = new Scheduler(opts);
+// règle des tables en « Chacun son tour ». Au changement de tour, la même
+// table chante deux fois de suite plutôt que de faire voir à quelqu'un un
+// passage en double.
+test('chacun son tour, tables inégales : la patience passe avant la règle des tables', () => {
+  const s = new Scheduler();
   s.setHeadcount('A', 6);
   s.setHeadcount('B', 6);
   const people = ['A1', 'B1', 'A2', 'B2', 'A3', 'B3', 'A4'].map(name => s.join({ tableId: name[0], name }));
@@ -483,4 +482,101 @@ for (const [mode, opts] of [['chacun son tour', {}], ['compromis', { tableRotati
   const runs = tableRuns(played);
   assert.ok(runs.same > 0, 'la même table enchaîne au changement de tour');
   assert.equal(runs.longest, 2, `jamais trois fois de suite : ${names.join(' ')}`);
+});
+
+// « Tables à tour de rôle » et « Compromis » : la rotation des tables passe
+// avant la patience. Avec 4 contre 3, la même table ne chante deux fois de
+// suite qu'en fin de tour, quand l'autre table a déjà toute chanté.
+for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }],
+  ['compromis', { tableRotation: true, weightedTables: true }]]) {
+  test(`${mode}, tables inégales : la rotation des tables passe avant la patience`, () => {
+    const s = new Scheduler(opts);
+    s.setHeadcount('A', 6);
+    s.setHeadcount('B', 6);
+    const people = ['A1', 'B1', 'A2', 'B2', 'A3', 'B3', 'A4'].map(name => s.join({ tableId: name[0], name }));
+    let n = 1;
+    for (const p of people) s.chooseSong(p, song(n++), 'append');
+    const played = [];
+    for (let i = 0; i < 28; i++) {
+      const selected = s.select();
+      s.commit(selected); s.songEnded(selected.ids);
+      played.push(selected);
+      s.chooseSong(s.people.get(selected.ids[0]), song(n++), 'append');
+    }
+    const names = played.map(item => item.names.join('&')).join(' ');
+    played.forEach((current, index) => {
+      if (!index || current.groups[0] !== played[index - 1].groups[0]) return;
+      // Même table deux fois de suite : dernier passage de son tour.
+      assert.ok(!played[index + 1] || played[index + 1].newPersonRound, `${index} : ${names}`);
+    });
+    assert.equal(tableRuns(played).longest, 2, names);
+  });
+}
+
+// « Compromis » : la taille d'une table est le nombre de chanteurs inscrits,
+// titre prêt ou non. Une table de 4 inscrits dont 2 ont un titre passe devant
+// une table de 2 inscrits, créée avant elle ; « Chacun son tour » compte les
+// seuls titres prêts et départage ici par l'ordre des tables.
+test('compromis : la part d’une table suit ses chanteurs inscrits, pas ses seuls titres prêts', () => {
+  const first = opts => {
+    const s = new Scheduler(opts);
+    s.setHeadcount('B', 4);
+    s.setHeadcount('A', 6);
+    const b = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+    const a = ['A1', 'A2', 'A3', 'A4'].map(name => s.join({ tableId: 'A', name }));
+    let n = 100;
+    for (const p of [...b, a[0], a[1]]) s.chooseSong(p, song(n++), 'append');
+    return s.people.get(s.select().ids[0]).tableId;
+  };
+  assert.equal(first({ tableRotation: true, weightedTables: true }), 'A');
+  assert.equal(first({}), 'B');
+});
+
+// Échange de titre : seul un retrait réel, sans passage entre le retrait et
+// l'ajout, garde l'attente. Retrait du bar sans titre, passage annulé puis
+// nouveau passage, et deuxième vidage de la liste commencent une attente.
+test('échange de titre : retrait du bar sans titre, passage annulé, liste revidée', () => {
+  const fresh = () => {
+    const s = new Scheduler();
+    s.setHeadcount('A', 4); s.setHeadcount('B', 4); s.setHeadcount('C', 4);
+    const [a, b, c] = ['A', 'B', 'C'].map(t => s.join({ tableId: t, name: `${t}1` }));
+    return { s, a, b, c };
+  };
+  // Le bar confirme un retrait resté affiché alors que la liste était déjà vide.
+  {
+    const { s, a, b } = fresh();
+    s.chooseSong(a, song(1)); s.chooseSong(b, song(2)); s.chooseSong(b, song(3), 'append');
+    for (let i = 0; i < 2; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+    assert.equal(s.songsOf(a).length, 0);
+    s.staffRemove(a.id);
+    s.chooseSong(a, song(4), 'append');
+    assert.equal(a.readySerial, s.appearanceSerial, 'retrait sans titre : nouvelle attente');
+  }
+  // Retrait après un envoi, envoi annulé, puis vrai passage avant l'ajout.
+  {
+    const { s, a, b, c } = fresh();
+    s.chooseSong(a, song(1)); s.chooseSong(b, song(2)); s.chooseSong(c, song(3));
+    const first = s.select(); s.commit(first); s.songEnded(first.ids);
+    const p = s.people.get(first.ids[0]);
+    s.chooseSong(p, song(4), 'append');
+    const skipped = s.select(); s.commit(skipped);
+    s.removeSong(p, p.song.entryId);
+    s.rollbackUnplayed(skipped);
+    const sung = s.select(); s.commit(sung); s.songEnded(sung.ids);
+    s.chooseSong(p, song(5));
+    assert.equal(p.readySerial, s.appearanceSerial, 'un passage a eu lieu pendant la liste vide');
+  }
+  // Échange, puis liste revidée autrement (départ) et rechoisie : nouvelle attente.
+  {
+    const { s, a, b } = fresh();
+    s.chooseSong(a, song(1)); s.chooseSong(b, song(2)); s.chooseSong(b, song(3), 'append');
+    const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+    const p = s.people.get(sel.ids[0]);
+    s.chooseSong(p, song(4), 'append');
+    const before = p.readySerial;
+    s.removeSong(p, p.song.entryId);
+    s.chooseSong(p, song(5));
+    assert.equal(p.readySerial, before, 'échange : même attente');
+    assert.equal(p.emptiedAt, undefined, 'la marque d’échange sert une seule fois');
+  }
 });

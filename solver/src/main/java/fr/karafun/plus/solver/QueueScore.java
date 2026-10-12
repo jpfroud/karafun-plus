@@ -16,7 +16,7 @@ import java.util.Set;
  * round, and `spacing` other songs before a person returns when another
  * passage of the round allows it. Medium: once per round (with bonus/malus credits),
  * nobody sees someone sing twice during their own wait when another allowed
- * passage avoids it (after the table rule in EQUAL, and in SQRT when tables can alternate),
+ * passage avoids it (after the table rule in EQUAL and SQRT),
  * no table twice in a row when another can sing, spacing
  * of a returning person, and each table's share of the round. Soft: stability
  * versus the order proposed by the Node process.
@@ -128,12 +128,10 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // Patience (lib/scheduler/rotation.js#_patient): among the allowed
             // passages, those that make the fewest waiting people see someone
             // sing twice. PEOPLE: before the table rule, which only breaks ties.
-            // SQRT: the table rule first when no table holds more than half of
-            // the ready titles (a round without the same table twice exists),
-            // patience first otherwise. EQUAL: the table rule always first,
-            // then patience among the other tables. Node applies it before the
-            // plan, so a plan that breaks it is never followed: it costs almost
-            // as much as leaving the fair choices.
+            // EQUAL and SQRT: the table rule first, then patience among the
+            // other tables. Node applies it before the plan, so a plan that
+            // breaks it is never followed: it costs almost as much as leaving
+            // the fair choices.
             List<Performance> patient = allowedNow;
             Map<Performance, Integer> doubles = new HashMap<>();
             int least = 0;
@@ -145,7 +143,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 int most = doubles.values().stream().mapToInt(Integer::intValue).max().orElse(0);
                 if (most > fewest) {
                     List<Performance> base = allowedNow;
-                    if (tablesFirst(plan, candidates)) {
+                    if (plan.getRotation() != QueuePlan.Rotation.PEOPLE) {
                         List<Performance> offTable = new ArrayList<>();
                         for (Performance c : allowedNow) if (!overlaps(c.getGroups(), prior)) offTable.add(c);
                         if (!offTable.isEmpty()) base = offTable;
@@ -277,16 +275,6 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         return true;
     }
 
-    // Patience before or after the table rule, as in lib/scheduler/rotation.js#_patient.
-    private static boolean tablesFirst(QueuePlan plan, List<Performance> candidates) {
-        if (plan.getRotation() == QueuePlan.Rotation.EQUAL) return true;
-        if (plan.getRotation() != QueuePlan.Rotation.SQRT) return false;
-        Map<String, Integer> sizes = new HashMap<>();
-        for (Performance c : candidates) sizes.merge(c.getGroups().get(0), 1, Integer::sum);
-        int largest = sizes.values().stream().mapToInt(Integer::intValue).max().orElse(0);
-        return largest * 2 <= candidates.size();
-    }
-
     // Wait start of each protected person (owner of a candidate title, no
     // malus): their last appearance, or when their list stopped being empty,
     // as for the interleave rule.
@@ -343,7 +331,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             for (String person : entry.getValue()) sum += weight(plan, person);
             double value = entry.getValue().isEmpty() ? 0 : switch (plan.getRotation()) {
                 case PEOPLE -> sum;
-                case SQRT -> Math.sqrt(sum);
+                case SQRT -> Math.sqrt(Math.max(sum, plan.getGroupSizes().getOrDefault(entry.getKey(), 0.0)));
                 case EQUAL -> plan.getTableWeights().getOrDefault(entry.getKey(), 1.0);
             };
             out.put(entry.getKey(), value);
