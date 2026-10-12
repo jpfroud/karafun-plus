@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const io = require('socket.io-client');
 const { KcsTransport } = require('./kcs-transport');
-const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, guideVoicesOf, isGuideVoice, liveFromStatus, TRACK,
+const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, guideVoicesOf, liveFromStatus, TRACK,
   DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
 // Valeur en direct d'un réglage essayé : 'pitch', 'tempo', 'backing' ou
 // 'voice:<type>' (volume d'une voix guide).
@@ -51,9 +51,10 @@ function isBattleItem(item) {
 // voix guides, la première nommée) : sa première voix, comme KaraFun le
 // 10 octobre ; sinon « Battle ».
 function battleModFor(songTracks) {
-  const guides = (Array.isArray(songTracks) ? songTracks : [])
-    .filter(track => isGuideVoice(Number(track?.type))).sort((a, b) => Number(a.type) - Number(b.type));
-  const caption = guides.length >= 2 && typeof guides[0].caption === 'string' ? guides[0].caption.trim().slice(0, 100) : '';
+  const tracks = Array.isArray(songTracks) ? songTracks : [];
+  const voices = guideVoicesOf(tracks.map(track => Number(track?.type))) || [];
+  const first = voices.length >= 2 ? tracks.find(track => Number(track?.type) === voices[0]) : null;
+  const caption = typeof first?.caption === 'string' ? first.caption.trim().slice(0, 100) : '';
   return caption ? { id: 2, caption, data: { battle: { subtype: 1 } } } : BATTLE_MOD;
 }
 
