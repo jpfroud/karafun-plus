@@ -3185,7 +3185,9 @@ function closingAt(now = Date.now()) {
 }
 
 // Retrait de l'heure de fermeture. Celui d'« Options par défaut » est noté
-// comme tel : les statistiques gardent l'heure de la soirée.
+// comme tel : fait après le début du dernier titre, les statistiques gardent
+// l'heure de la soirée (voir evening-stats.js) ; avant, ou suivi d'un autre
+// titre, il retire l'heure comme un retrait du bar.
 function clearClosing(reason = null) {
   settings.closingAt = null;
   journalEvent('closing.cleared', reason ? { reason } : {});

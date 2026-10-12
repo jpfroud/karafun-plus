@@ -718,7 +718,7 @@ function renderCharts() {
     table: () => [[['Chanteur'], ['Table'], ['Passages', true], ['Moyenne', true], ['Médiane', true], ['Plus longue', true]],
       waitRows.map(r => ({ cells: [nameOf(r.id), personTable(r.tableId), r.waits.n, dur(r.waits.avgSec), dur(r.waits.medianSec), dur(r.waits.maxSec)] }))],
     draw: plot => drawWaits(plot, waitRows) });
-  const rateRows = st.singers.filter(x => x.requests > 0 && x.presenceSec > 0).sort((a, b) => (b.turnsPerHour || 0) - (a.turnsPerHour || 0));
+  const rateRows = st.singers.filter(x => x.askedInKaraoke && x.presenceSec > 0).sort((a, b) => (b.turnsPerHour || 0) - (a.turnsPerHour || 0));
   card({ id: 'chartRates', title: 'Rythme de passage',
     subtitle: 'Passages de ses titres par heure de présence ; trait = part attendue au même rythme pour tous (× bonus ou malus).',
     legend: [['Passages par heure', 'var(--s1)'], ['Part attendue', 'var(--ref)', 'tick']],
