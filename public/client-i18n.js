@@ -424,6 +424,7 @@ window.CLIENT_TRANSLATIONS = {
       'Nouveautés': 'New',
       'À découvrir': 'Discover',
       'Choisis un titre pour un duo avec {name}.': 'Choose a song for a duet with {name}.',
+      'Choisis le titre de ton duo : tu choisiras ensuite avec qui chanter.': 'Choose the song for your duet: you’ll pick who to sing with next.',
       'Chansons pour {name}.': 'Songs for {name}.',
       'Chansons pour {name}. Tu pourras changer de chanteur avant de valider.': 'Songs for {name}. You can change the singer before confirming.',
       'Choisis un titre, puis la personne qui le chantera.': 'Choose a song, then who will sing it.',

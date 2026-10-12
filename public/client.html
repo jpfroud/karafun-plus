@@ -2992,7 +2992,9 @@
 
   function updateTarget() {
     const person = managedPeople().find(candidate => String(candidate.id) === targetPersonId);
-    $('catalogTarget').textContent = duetMode && person ? t('Choisis un titre pour un duo avec {name}.', { name: person.name }) : person
+    // Téléphone « En solo » : la personne est celle qui tient le téléphone.
+    $('catalogTarget').textContent = duetMode && person ? (state?.table?.individual ? t('Choisis le titre de ton duo : tu choisiras ensuite avec qui chanter.')
+      : t('Choisis un titre pour un duo avec {name}.', { name: person.name })) : person
       ? managedPeople().length === 1 ? t('Chansons pour {name}.', { name: person.name }) : t('Chansons pour {name}. Tu pourras changer de chanteur avant de valider.', { name: person.name })
       : managedPeople().length ? t('Choisis un titre, puis la personne qui le chantera.')
         : state?.table?.individual ? t('Explore le catalogue. Pour ajouter un titre, demande au bar ton QR individuel.')

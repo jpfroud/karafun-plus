@@ -643,6 +643,10 @@ test('catalogue en solo : « Choisir une chanson » ouvre le catalogue pour soi'
   await page.tap('quickSongActions', '[data-quick-song="alice"]');
   assert.equal(page.tabShown(), 'catalog');
   assert.equal(page.node('catalogTarget').textContent, 'Chansons pour Alice.');
+  // Duo depuis son propre téléphone : pas « un duo avec Alice » sur le téléphone d'Alice.
+  await page.click(page.node('nav-table'));
+  await page.tap('peopleList', '[data-duet-song="alice"]');
+  assert.equal(page.node('catalogTarget').textContent, 'Choisis le titre de ton duo : tu choisiras ensuite avec qui chanter.');
 });
 
 // ================================================================ partenaire de duo

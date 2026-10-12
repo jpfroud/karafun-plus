@@ -79,7 +79,7 @@ const DEFINITIONS = {
   demandJain: 'Indice de Jain sur les passages par heure avec au moins un titre en attente, pendant la présence au karaoké et avant l’heure de fermeture (au moins 15 min).',
   deadTime: 'Temps entre deux chansons alors qu’un titre attendait, rapporté au temps de spectacle (chansons + temps morts). File vide et fermeture exclues.',
   songsPerHour: 'Chansons terminées par heure, du début de la première à la fin de la dernière (titre en cours et arrêts de l’application exclus).',
-  firstTurn: 'De la première demande de titre encore en attente à la connexion de KaraFun ou faite après (au plus tôt cette connexion) au premier passage de la personne.',
+  firstTurn: 'Depuis la première demande de titre encore en attente lors de la connexion de KaraFun, ou faite après (comptée au plus tôt depuis cette connexion), jusqu’au premier passage de la personne.',
 };
 
 const sum = list => list.reduce((a, b) => a + b, 0);
@@ -718,7 +718,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // Arrêts de l'application pendant le karaoké : l'arrêt du PC après la
   // fermeture (jusqu'au lendemain) n'est pas un incident de la soirée.
   const eveningOffline = offline.map(inEvening).filter(([a, b]) => b > a);
-  const eveningRestarts = list.filter(e => e.ev === 'app.started' && e.restored && ((e.t >= openedAt && e.t <= closedAt) ||
+  // Le redémarrage qui termine l'arrêt de la nuit (ouverture ancrée sur lui, en
+  // direct tant que KaraFun n'est pas connecté) n'est pas un incident du karaoké.
+  const eveningRestarts = list.filter(e => e.ev === 'app.started' && e.restored && ((e.t > openedAt && e.t <= closedAt) ||
     eveningOffline.some(([a, b]) => e.t - (e.offlineMs || 0) < b && e.t > a))).length;
   // Silences comblés par Spotify pendant le karaoké seulement : ni l'après-midi
   // avant la connexion de KaraFun, ni la nuit après la fermeture.
@@ -795,7 +797,8 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     // l'ouverture ou faite après (un essai retiré avant l'ouverture ne compte
     // pas), au plus tôt l'ouverture.
     const openAsks = p.demandSpans.filter(([a, b]) => b > openedAt && a <= (firstStage ?? Infinity)).map(([a]) => Math.max(a, openedAt));
-    const askedFrom = openAsks.length ? Math.min(...openAsks) : p.firstRequestAt != null ? Math.max(p.firstRequestAt, openedAt) : null;
+    const askedFrom = openAsks.length ? openAsks.reduce((min, at) => Math.min(min, at), Infinity)
+      : p.firstRequestAt != null ? Math.max(p.firstRequestAt, openedAt) : null;
     const mySongs = [...songs.values()].filter(s => s.personId === p.id);
     return {
       id: p.id, tableId: p.tableId, joinedAt: p.joinedAt, leftAt: p.leftAt, rawLeftAt: p.rawLeftAt, leftEstimated: p.leftEstimated,
@@ -1075,7 +1078,7 @@ function insights(stats, { nameOf = id => id, tableName = id => id } = {}) {
     add('longest-wait', `Plus longue attente : ${duration(g.longestWait.sec)} (${nameOf(g.longestWait.personId)}, « ${g.longestWait.title} »).`,
       g.waitAvgSec && g.longestWait.sec > 3 * g.waitAvgSec ? 'warn' : 'info');
   }
-  if (g.firstTurnAvgSec != null && g.sang >= 2) add('first-turn', `Premier passage en ${duration(g.firstTurnAvgSec)} en moyenne après la première demande.`);
+  if (g.firstTurnAvgSec != null && g.sang >= 2) add('first-turn', `Premier passage en ${duration(g.firstTurnAvgSec)} en moyenne après la première demande du karaoké.`);
   if (g.peakHour && g.peakHour.songs >= 3) {
     const h = new Date(g.peakHour.start).getHours();
     add('peak', `Heure la plus chargée : ${h} h – ${(h + 1) % 24} h, ${g.peakHour.songs} chansons.`);
