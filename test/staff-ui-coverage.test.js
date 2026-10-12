@@ -1764,7 +1764,7 @@ test('alertes et notifications du bar : sonnerie, personnes parties, avis KaraFu
   assert.match(page.in('staffAlerts', '[data-gone="x"]').textContent, /^X n’a pas répondu/);
   await page.click(gone.querySelector('[data-gone-present]'));
   assert.deepEqual(page.lastPost('/api/staff/person/present').body, { personId: 'bruno' });
-  assert.equal(page.toast().text, 'Noté : la personne est toujours là');
+  assert.equal(page.toast().text, 'Alerte fermée : son prochain titre redemande « Je suis là »');
   page.confirmAnswer = false;
   await page.click(page.in('staffAlerts', '[data-gone="bruno"] [data-gone-leave]'));
   assert.equal(page.postsTo('/api/staff/person/leave').length, 0);

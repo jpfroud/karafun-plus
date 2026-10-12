@@ -196,17 +196,34 @@ test('titre passé dont la personne chante en invitée juste devant : présence 
 
 // Relecture : le guide dit qu'un titre retiré faute de « Je suis là »
 // n'envoie pas la personne en fin de tour (son titre suivant est annoncé
-// aussitôt, avec une nouvelle demande) et que « Marquer parti » arrête ces
-// annonces.
-test('titre retiré faute de présence avec un autre titre : le suivant est annoncé aussitôt, « Marquer parti » l’arrête', () => {
-  const s = new Scheduler({ requirePresence: true });
-  const ppl = ['Alice', 'Bruno', 'Chloé', 'Dan'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
-  for (const p of ppl) { s.chooseSong(p, song()); s.chooseSong(p, song(), 'append'); }
-  const [alice] = ppl;
+// aussitôt, avec une nouvelle demande), que « Toujours là » ferme seulement
+// l'alerte, et que « Marquer parti » retire ses titres et arrête ces annonces.
+test('titre retiré faute de présence en cours de soirée : suivant annoncé aussitôt, « Toujours là » ne confirme rien, « Marquer parti » arrête', () => {
+  const { s, people, sing } = evening();
+  const alice = people.Alice;
+  const next = () => {
+    const r = s.reservePresenceNext();
+    for (const pid of r.ids) s.confirm(s.people.get(pid));
+    sing(s.select());
+  };
+  for (let miss = 1; miss <= 2; miss++) {
+    assert.equal(s.reservePresenceNext().ids[0], alice.id);
+    assert.equal(s.skipUnconfirmed(alice.id, 3).removed, false);
+    next();
+  }
   assert.equal(s.reservePresenceNext().ids[0], alice.id);
-  assert.equal(s.skipUnconfirmed(alice.id, 1).removed, true);
+  assert.equal(s.skipUnconfirmed(alice.id, 3).removed, true, 'troisième manque : titre retiré');
+  assert.ok(s.appearanceSerial >= 2, 'des passages ont eu lieu entre-temps');
   assert.equal(s.songsOf(alice).length, 1);
   assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
+  const view = JSON.stringify(s.presenceView().map(v => v.ids));
+  s.dismissMaybeGone(alice);
+  assert.equal(alice.maybeGone, null);
+  assert.equal(s.select(), null, '« Toujours là » ne confirme pas la présence');
+  assert.equal(JSON.stringify(s.presenceView().map(v => v.ids)), view, 'ni ne change la file');
   s.leave(alice, 'staff');
-  assert.notEqual(s.reservePresenceNext()?.ids[0], alice.id, '« Marquer parti » arrête les annonces');
+  assert.equal(s.songsOf(alice).length, 0, '« Marquer parti » retire ses titres restants');
+  assert.equal(s.reservedNext, null);
+  const after = s.reservePresenceNext();
+  assert.ok(after && after.ids[0] !== alice.id, 'et arrête les annonces : la suite part sans elle');
 });

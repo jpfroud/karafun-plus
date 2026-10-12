@@ -922,20 +922,24 @@ test('compromis : la table de l’invitée d’un duo accepté relance aussi le 
 
 // Relecture : la page et le guide promettent une échelle précise en
 // « Compromis » (racine de la taille) : une table de 4 compte comme 2
-// solistes, une table de 9 comme 3.
+// solistes, une table de 9 comme 3. La taille compte les inscrits qui ont un
+// titre, même quand un seul passage de la table est candidat, et pas les
+// places déclarées ni un prénom sans titre.
 test('compromis : une table de 4 compte comme 2 solistes, une table de 9 comme 3', () => {
   const s = new Scheduler({ tableRotation: true, weightedTables: true });
   let k = 1;
-  const seat = (t, size) => {
-    s.setHeadcount(t, size);
-    return Array.from({ length: size }, (_, i) => {
+  const seat = (t, titled, idle) => {
+    s.setHeadcount(t, titled + idle + 3);
+    const people = Array.from({ length: titled }, (_, i) => {
       const p = s.join({ tableId: t, name: `${t}${i}` });
       s.chooseSong(p, song(k++));
       return p;
     });
+    for (let i = 0; i < idle; i++) s.join({ tableId: t, name: `${t}x${i}` });
+    return people;
   };
-  const [a, b, c] = [seat('A', 4), seat('B', 9), seat('C', 1)];
-  const w = s._groupWeights([...a, ...b, ...c].map(p => ({ ids: [p.id], groups: [p.group] })));
+  const [a, b, c] = [seat('A', 4, 2), seat('B', 9, 1), seat('C', 1, 0)];
+  const w = s._groupWeights([a[0], b[0], c[0]].map(p => ({ ids: [p.id], groups: [p.group] })));
   assert.deepEqual([w.get(a[0].group), w.get(b[0].group), w.get(c[0].group)], [2, 3, 1]);
 });
 

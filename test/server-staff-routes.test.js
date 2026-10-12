@@ -659,7 +659,7 @@ test('bonus, fiche privée et « toujours là » depuis la page du bar', async (
   assert.deepEqual(plain(f.staffState().maybeGone.map(m => [m.name, m.table, m.skips])), [['Alice', 'Table 1', 3]]);
   await f.call('POST /api/staff/person/present', { personId: alice.id });
   assert.equal(f.staffState().maybeGone.length, 0);
-  assert.equal(lastNote(f).msg, 'Le bar a confirmé que Alice est toujours là');
+  assert.equal(lastNote(f).msg, 'Alerte fermée par le bar : Alice serait toujours là ; son prochain titre redemande « Je suis là »');
   await assert.rejects(f.call('POST /api/staff/person/present', { personId: 'x' }), { message: 'Personne introuvable.' });
 });
 
