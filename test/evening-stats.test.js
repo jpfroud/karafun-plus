@@ -849,11 +849,56 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     assert.equal(end([e(700, 'closing.cleared')]), T(180));
     assert.equal(end([e(700, 'closing.set', { closingAt: T(1400) })]), T(180));
     assert.equal(end([e(700, 'closing.cleared')], { live: true, now: T(720) }), T(180));
-    // KaraFun quitté pour de bon avant l'heure, PC allumé : pas de KaraFun, pas de karaoké.
-    assert.equal(end([e(120, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]), T(120));
+    // KaraFun quitté pour de bon avant l'heure, PC allumé : pas de KaraFun, pas de karaoké,
+    // en direct aussi une fois la coupure longue de 30 min (pas avant).
+    const quit = [e(120, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })];
+    assert.equal(end(quit), T(120));
+    assert.equal(end(quit, { live: true, now: T(160) }), T(120));
+    assert.equal(end(quit, { live: true, now: T(130) }), null, 'coupure de 10 min : la soirée reste en cours');
+    // Retrait de l'heure après le dernier titre, avant qu'elle passe : plus de fermeture.
+    assert.equal(end([e(150, 'closing.cleared')]), null);
+    // Retrait dans les 30 min après l'heure passée : ignoré (seule une prolongation rouvre).
+    assert.equal(end([e(190, 'closing.cleared')]), T(180));
+    // Heure déjà passée réglée par erreur, corrigée une minute après : la correction compte.
+    assert.equal(end([e(150, 'closing.set', { closingAt: T(30) }), e(151, 'closing.set', { closingAt: T(200) })]), T(200));
+    // Prolongation notée juste avant l'arrêt du PC (dernier événement) : elle compte, et
+    // l'arrêt du PC finit la soirée (à l'arrêt, pas à l'ancienne heure).
+    assert.equal(end([e(185, 'closing.set', { closingAt: T(195) }), e(900, 'app.started', { restored: true, offlineMs: 715 * 60000 })]), T(185));
     // Ancien journal (aucun réglage noté) : la dernière fermeture atteinte.
     const old = [...base().filter(ev => ev.ev !== 'closing.set'), e(150, 'closing.reached', { closingAt: T(150) }), e(900, 'evening.closed', { by: 'staff-reset' })];
     assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(900) }, events: old }).evening.closedAt, T(150));
+  });
+
+  test('en direct : redémarrage du PC en milieu de soirée, puis on rechante : la soirée reste en cours', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'closing.set', { closingAt: T(300) }),
+      e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Avant' }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(80, 'app.started', { restored: true, offlineMs: 40 * 60000 }),
+      e(90, 'stage.started', { queueId: 2, source: 'native', title: 'Après' }),
+      e(94, 'stage.ended', { queueId: 2, playedSec: 240 }),
+    ];
+    assert.equal(computeStats({ meta: { startedAt: T(0) }, events, now: T(100), live: true }).evening.closedAt, null);
+  });
+
+  test('en direct, dernier titre encore sur scène après l’heure de fermeture : karaoké « en cours », pas une fin qui avance', () => {
+    const e = evening();
+    const events = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'closing.set', { closingAt: T(60) }),
+      e(58, 'stage.started', { queueId: 1, source: 'native', title: 'Dernier', durationSec: 300 }),
+    ];
+    const stats = computeStats({ meta: { startedAt: T(0) }, events, now: T(61), live: true });
+    assert.equal(stats.evening.closedAt, null);
+    // Titre fini : la fin du karaoké est connue.
+    const after = computeStats({ meta: { startedAt: T(0) }, events: [...events, e(63, 'stage.ended', { queueId: 1, playedSec: 300 })], now: T(70), live: true });
+    assert.equal(after.evening.closedAt, T(63));
   });
 
   test('en direct le lendemain matin, fermeture atteinte et PC éteint avant l’heure : même fin qu’une fois la soirée close', () => {

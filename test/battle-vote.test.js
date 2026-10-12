@@ -567,4 +567,35 @@ function fixture(extra = {}) {
   assert.deepEqual(vote.view().refusedSongIds, [1, 2, 3]);
 }
 
+{
+  // Relecture du 12 octobre : le plus voté passe avant l'ordre de proposition.
+  const song = songId => ({ songId, title: `Titre ${songId}`, artist: 'Artiste' });
+  const f = fixture({ minVoters: 1 }), vote = new BattleVote(f.opts);
+  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b', 'c', 'd', 'e'],
+    songs: [song(1), song(2), song(3)], proposerChoice: 1 });
+  vote.vote({ personId: 'b', choice: 3 });
+  vote.vote({ personId: 'c', choice: 3 });
+  vote.vote({ personId: 'd', choice: 2 });
+  vote.vote({ personId: 'e', choice: 1 });
+  if (vote.view().phase === 'voting') vote.closeNow();
+  assert.equal(vote.view().selectedSong.songId, 1, '1 et 3 à égalité : le premier proposé');
+  vote.beginAutomation([]);
+  assert.equal(vote.refuseSong('refus').fallback.songId, 3, 'deux voix avant une : le plus voté, proposé après');
+  vote.beginAutomation([]);
+  assert.equal(vote.refuseSong('refus').fallback.songId, 2);
+}
+
+{
+  // Un titre sans voix n'est jamais choisi.
+  const song = songId => ({ songId, title: `Titre ${songId}`, artist: 'Artiste' });
+  const f = fixture({ minVoters: 1 }), vote = new BattleVote(f.opts);
+  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b', 'c'],
+    songs: [song(1), song(2)], proposerChoice: 1 });
+  vote.vote({ personId: 'b', choice: 1 });
+  if (vote.view().phase === 'voting') vote.closeNow();
+  assert.equal(vote.view().selectedSong.songId, 1);
+  vote.beginAutomation([]);
+  assert.equal(vote.refuseSong('refus').fallback, null, 'le titre 2, sans voix, n’est pas choisi');
+}
+
 console.log('Battle collective : minuteur, votants minimum, décision des votants, pause après la Battle et lancement par le bar OK');

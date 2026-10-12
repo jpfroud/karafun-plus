@@ -4252,8 +4252,13 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   await page.poll();
   await page.click(page.$('resetSettings'));
   assert.match(page.confirms.at(-1), /Le titre retenu par la fermeture repartira vers KaraFun : vide la file d’abord si la soirée est finie\./);
-  // Heure pas encore passée : les titres « après » ne sont pas retenus.
+  // Heure pas encore passée, file complète : les titres d'après sont déjà retenus.
   page.world.closing = { at: Date.now() + 3600000, passed: false, full: true, fitCount: 3, afterCount: 2 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /Les 2 titres retenus par la fermeture repartiront vers KaraFun/);
+  // Place encore avant l'heure : rien n'est retenu.
+  page.world.closing = { at: Date.now() + 3600000, passed: false, full: false, fitCount: 3, afterCount: 2 };
   await page.poll();
   await page.click(page.$('resetSettings'));
   assert.doesNotMatch(page.confirms.at(-1), /retenus? par la fermeture/);

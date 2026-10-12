@@ -8,8 +8,9 @@
  * - présence : de l'inscription (ou du retour) au départ signalé ; sans
  *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun à
- *   la fermeture (heure de fermeture en vigueur à la fin des titres, ou fin
- *   du dernier passage s'il finit plus tard ; plus tôt, déconnexion de
+ *   la fermeture (heure de fermeture en vigueur au début du dernier titre,
+ *   avec les changements faits avant qu'elle passe, ou fin du dernier
+ *   passage s'il finit plus tard ; plus tôt, déconnexion de
  *   KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min,
  *   ou application arrêtée pendant au moins 30 min à partir du début du
  *   dernier titre ; sinon fin du journal). Les arrêts de l'application sont
@@ -30,6 +31,8 @@ const DEMAND_MIN_MS = 15 * 60000;    // équité par demande : au moins 15 min a
 const MAX_SONG_SEC = 20 * 60;        // durée jouée plafonnée (déconnexion pendant un titre)
 const GAP_MIN_MS = 1000;
 const BLIP_MS = 30 * 60000;          // KaraFun revenu plus vite : coupure brève, la soirée continue
+const APP_STOP_MS = 30 * 60000;      // arrêt de l'application après le début du dernier titre : fin de la soirée
+const REOPEN_MS = 30 * 60000;        // heure de fermeture passée : une prolongation dans ce délai rouvre la soirée
 // Même table que BONUS_WEIGHTS dans lib/scheduler/common.js.
 const BONUS_WEIGHTS = { '-3': 0.5, '-2': 2 / 3, '-1': 0.8, 0: 1, 1: 1.25, 2: 1.5, 3: 2 };
 const bonusWeight = level => BONUS_WEIGHTS[String(Number(level) || 0)] || 1;
@@ -58,7 +61,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture en vigueur à la fin des titres, ou fin du dernier passage s’il finit plus tard ; plus tôt, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre ; sinon fin du journal). Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe, ou fin du dernier passage s’il finit plus tard ; plus tôt, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre ; sinon fin du journal). Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -622,40 +625,42 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const lastStageEnd = stages.length ? Math.max(...stages.map(st => st.endAt)) : null;
   const lastStageStart = stages.length ? Math.max(...stages.map(st => st.start)) : null;
   // Arrêt de l'application d'au moins 30 min à partir du début du dernier titre.
-  const appStop = lastStageStart != null ? offline.find(([a, b]) => a >= lastStageStart && b - a >= BLIP_MS) : null;
+  const appStop = lastStageStart != null ? offline.find(([a, b]) => a >= lastStageStart && b - a >= APP_STOP_MS) : null;
   // Heure de fermeture de la soirée, qu'une « fermeture atteinte » ait été
   // notée ou non (le serveur ne la note que si un titre est retenu) : celle
   // en vigueur au début du dernier titre, puis chaque changement fait avant
   // qu'elle passe (avancée, « + 10 min », retrait). Une fois passée, seule
   // une prolongation dans les 30 min rouvre la soirée ; un retrait ou une
   // heure changée plus tard (« Options par défaut » le lendemain) ne change
-  // rien, en direct comme une fois la soirée close. Les changements faits
-  // après l'arrêt du PC ne comptent pas. Ancien journal sans réglage noté :
-  // la dernière fermeture atteinte.
+  // rien, en direct comme une fois la soirée close. Une heure réglée déjà
+  // passée (par erreur) ne passe qu'au moment où elle est réglée. Les
+  // changements faits après l'arrêt du PC ne comptent pas (celui noté juste
+  // avant, si). Ancien journal sans réglage noté : la dernière fermeture atteinte.
   let closingHour = lastClosingReached;
   if (closingChanges.length) {
     const from = lastStageStart ?? -Infinity, until = appStop ? appStop[0] : Infinity;
-    let hour = closingChanges.filter(([at]) => at <= from).at(-1)?.[1] ?? null;
-    let passed = null;
-    for (const [at, next] of closingChanges.filter(([at]) => at > from && at < until)) {
-      if (passed == null && hour != null && hour <= at) passed = hour;
-      if (passed == null) hour = next;
-      else if (next != null && next > at && at - passed < BLIP_MS) { hour = next; passed = null; }
+    const inForce = closingChanges.filter(([at]) => at <= from).at(-1);
+    let hour = inForce?.[1] ?? null, setAt = inForce?.[0] ?? -Infinity, passedAt = null;
+    for (const [at, next] of closingChanges.filter(([at]) => at > from && at <= until)) {
+      if (passedAt == null && hour != null && hour <= at) passedAt = Math.max(hour, setAt);
+      if (passedAt == null || (next != null && next > at && at - passedAt < REOPEN_MS)) {
+        hour = next; setAt = at; passedAt = null;
+      }
     }
-    closingHour = passed ?? hour;
+    closingHour = hour;
   }
   const barClosed = closingHour != null && closingHour <= E1;
-  const backWithin = (ph, i) => (phases.slice(i + 1).find(next => next.blocker !== 'offline')?.start ?? Infinity) - ph.start < BLIP_MS;
-  const ended = !live && lastStageStart != null;
-  // KaraFun coupé pour de bon après le début du dernier titre : pas de
-  // KaraFun, pas de karaoké, même avant l'heure de fermeture.
-  const offlineAfter = ended ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && !backWithin(ph, i)) : null;
-  // Le PC éteint après le début du dernier titre finit aussi la soirée ; en
-  // direct, une fois l'heure de fermeture passée (le lendemain matin, avant
-  // la remise à zéro).
-  const appStopped = ended || barClosed ? appStop : null;
+  // KaraFun coupé pour de bon après le début du dernier titre (sans retour
+  // dans les 30 min ; en direct, coupé depuis au moins 30 min) : pas de
+  // KaraFun, pas de karaoké, même avant l'heure de fermeture. Le PC éteint
+  // après le début du dernier titre finit aussi la soirée. Même règle en
+  // direct et une fois la soirée close.
+  const lasting = (ph, i) => (phases.slice(i + 1).find(next => next.blocker !== 'offline')?.start ?? (live ? E1 : Infinity)) - ph.start >= BLIP_MS;
+  const offlineAfter = lastStageStart != null ? phases.find((ph, i) => ph.blocker === 'offline' && ph.start > lastStageStart && lasting(ph, i)) : null;
   const end = barClosed ? Math.max(lastStageEnd ?? -Infinity, closingHour) : E1;
-  const closedAt = Math.max(openedAt, Math.min(E1, end, offlineAfter?.start ?? Infinity, appStopped?.[0] ?? Infinity));
+  const closedAt = Math.max(openedAt, Math.min(E1, end, offlineAfter?.start ?? Infinity, appStop?.[0] ?? Infinity));
+  // En direct, un titre encore sur scène : le karaoké n'est pas fini.
+  const ended = !stages.some(st => st.ongoing) && (barClosed || !!offlineAfter || !!appStop);
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
   // Arrêts de l'application pendant le karaoké : l'arrêt du PC après la
   // fermeture (jusqu'au lendemain) n'est pas un incident de la soirée.
@@ -934,7 +939,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const stats = {
     format: 'karaoke-evening-stats', version: FORMAT,
     evening: { id: meta.eveningId || null, startedAt: E0, endedAt: Number.isFinite(meta.endedAt) || closedEvent ? E1 : null,
-      openedAt, closedAt: barClosed || offlineAfter || appStopped ? closedAt : null,
+      openedAt, closedAt: ended ? closedAt : null,
       live: !!live, durationSec: sec(E1 - E0), offlineSec: sec(sum(eveningOffline.map(([a, b]) => b - a))), restarts: eveningRestarts,
       closedBy: closedEvent?.by || null, queueClearedAt },
     global, fairness, singers, tables: tableRows,
