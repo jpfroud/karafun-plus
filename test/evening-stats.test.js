@@ -1205,6 +1205,39 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     const setLate = computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: pastSet });
     assert.equal(singerOf(setLate, 'pL').askedInKaraoke, true, 'titre en attente avant le réglage');
     assert.equal(setLate.fairness.neverSang, 1);
+    // Même réglage entre deux titres (rien sur scène) : le karaoké finit au réglage, pas à l'heure tapée.
+    const between = pastSet.filter(ev => !/^stage\./.test(ev.ev)).concat([
+      e(70, 'stage.started', { queueId: 1, source: 'native', title: 'Dernier' }), e(74, 'stage.ended', { queueId: 1, playedSec: 240 }),
+    ]).map(ev => ev.ev === 'song.requested' ? { ...ev, t: T(76) } : ev).sort((a, b) => a.t - b.t);
+    const setBetween = computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: between });
+    assert.equal(setBetween.evening.closedAt, T(80));
+    assert.equal(singerOf(setBetween, 'pL').askedInKaraoke, true);
+    // Heure déjà passée réglée avant le début du dernier titre (heure en vigueur) : demandes comptées jusqu'au réglage.
+    const inForce = [...start,
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pM', tableId: '1' }),
+      e(70, 'song.requested', { personId: 'pM', entryId: 'm1', title: 'Juste avant' }),
+      e(75, 'closing.set', { closingAt: T(60) }),
+      e(76, 'person.seen', { personId: 'pM' }),
+      e(78, 'stage.started', { queueId: 1, source: 'native', title: 'Dernier' }),
+      e(82, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(200, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    assert.equal(singerOf(computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: inForce }), 'pM').askedInKaraoke, true);
+    // Attente pendant un arrêt de l'application : retirée, comme la présence.
+    const reboot = [...start,
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pN', tableId: '1' }),
+      e(20, 'song.requested', { personId: 'pN', entryId: 'n1', title: 'Attend' }),
+      e(25, 'person.seen', { personId: 'pN' }),
+      e(50, 'app.started', { restored: true, offlineMs: 20 * 60000 }),
+      e(55, 'person.seen', { personId: 'pN' }),
+      e(60, 'stage.started', { queueId: 1, entryId: 'n1', ids: ['pN'], source: 'queue', title: 'Attend', durationSec: 240 }),
+      e(64, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(200, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const pN = singerOf(computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: reboot }), 'pN');
+    assert.equal(pN.demandSec, 20 * 60, '40 min d’attente moins 20 min d’arrêt');
     // « Options par défaut » avant tout titre : l'heure est retirée, comme un retrait du bar.
     const noStage = reason => computeStats({ meta: { startedAt: T(0) }, now: T(200), live: true, events: [...start,
       e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
@@ -1259,6 +1292,40 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     assert.equal(opened([e(40, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]), T(980));
     // Tout resté allumé et connecté : début du journal, comme avant.
     assert.equal(opened([]), T(0));
+    // Interruptions courtes (moins de 30 min) : rien ne sépare la soirée.
+    assert.equal(opened([e(30, 'queue.sample', { ready: 0 }), e(50, 'app.started', { restored: true, offlineMs: 20 * 60000 })]), T(0));
+    assert.equal(opened([e(40, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }), e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' })]), T(0));
+    // Coupure de 40 min une fois un titre demandé : l'ouverture ne bouge pas (attente gardée).
+    const queued = before => computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: [
+      e(0, 'evening.started', { rules: {} }), e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(before ? 11 : 65, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Premier' }),
+      e(20, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }), e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(70, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], source: 'queue', title: 'Premier', durationSec: 240 }),
+      e(74, 'stage.ended', { queueId: 1, playedSec: 240 }), e(300, 'evening.closed', { by: 'staff-reset' }),
+    ].sort((a, b) => a.t - b.t) }).evening.openedAt;
+    assert.equal(queued(true), T(0), 'titre demandé avant la coupure');
+    assert.equal(queued(false), T(60), 'titre demandé après la coupure : connexion qui la suit');
+    // PC redémarré 40 min une fois un titre demandé : idem.
+    const rebooted = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: [
+      e(0, 'evening.started', { rules: {} }), e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(11, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Premier' }),
+      e(20, 'queue.sample', { ready: 1 }), e(60, 'app.started', { restored: true, offlineMs: 40 * 60000 }),
+      e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(70, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], source: 'queue', title: 'Premier', durationSec: 240 }),
+      e(74, 'stage.ended', { queueId: 1, playedSec: 240 }), e(300, 'evening.closed', { by: 'staff-reset' }),
+    ] });
+    assert.equal(rebooted.evening.openedAt, T(0));
+    // Titres joués sans demande (KaraFun) avant et après une coupure : la première demande ou le premier titre bornent.
+    const native = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: [
+      e(0, 'evening.started', { rules: {} }), e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Un' }), e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(50, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }), e(90, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(100, 'stage.started', { queueId: 2, source: 'native', title: 'Deux' }), e(104, 'stage.ended', { queueId: 2, playedSec: 240 }),
+      e(300, 'evening.closed', { by: 'staff-reset' }),
+    ] });
+    assert.equal(native.evening.openedAt, T(0));
   });
 
   test('KaraFun quitté pendant un titre puis rouvert bien plus tard : le passage finit à la coupure', () => {

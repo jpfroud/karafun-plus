@@ -541,7 +541,7 @@ test('rythme de passage et chanteurs : une demande après la fermeture n’y ent
   assert.match(plot, /Alice/);
   assert.doesNotMatch(plot, /Dina/);
   const tile = page.$('kpis').children.find(n => /Chanteurs/.test(text(n)));
-  assert.match(text(tile), /avaient un titre pendant le karaoké/);
+  assert.match(text(tile), /avaient un titre pendant leur présence/);
 });
 
 // Regression: ISSUE-035 — « Rythme de passage » : le trait de la part attendue barrait les valeurs
