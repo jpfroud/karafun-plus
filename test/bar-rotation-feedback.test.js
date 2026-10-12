@@ -340,3 +340,145 @@ test('un plan adopté survit au passage prévu de sa tête (pas de nouveau calcu
   await s.whenPlanReady();
   assert.equal(requests.length, 2, 'un nouveau titre relance le calcul');
 });
+
+// Retour du bar : deux tables de quatre et une personne seule, deux titres
+// chacun. Au deuxième tour, la personne seule passait devant une personne
+// qui avait chanté avant elle au premier tour : celle-ci la voyait chanter
+// deux fois pendant sa propre attente (règle de patience de _pick).
+function twoTablesAndSolo() {
+  const s = new Scheduler();
+  s.setHeadcount('A', 6);
+  s.setHeadcount('B', 6);
+  const solo = s.join({ tableId: 'Comptoir', name: 'S' });
+  const people = ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4'].map(name =>
+    name === 'S' ? solo : s.join({ tableId: name[0], name }));
+  let n = 1;
+  for (const p of people) for (let k = 0; k < 2; k++) s.chooseSong(p, song(n++), 'append');
+  return { s, more: () => song(1000 + n++) };
+}
+
+// Pour chaque passage, personnes vues deux fois depuis le passage précédent
+// du même chanteur.
+function doublesDuringWait(played) {
+  let doubles = 0;
+  const last = new Map();
+  played.forEach((current, index) => {
+    for (const pid of current.ids) {
+      if (last.has(pid)) {
+        const seen = new Map();
+        for (const other of played.slice(last.get(pid) + 1, index)) {
+          for (const q of other.ids) seen.set(q, (seen.get(q) || 0) + 1);
+        }
+        doubles += [...seen.values()].filter(count => count >= 2).length;
+      }
+      last.set(pid, index);
+    }
+  });
+  return doubles;
+}
+
+test('deux tables de quatre et une personne seule : le deuxième tour reprend l’ordre du premier', () => {
+  const { s } = twoTablesAndSolo();
+  const first = s.select();
+  s.commit(first);
+  const forecast = [first.names.join('&'), ...s.readyView().map(item => item.name)];
+  assert.equal(forecast.length, 18);
+  assert.deepEqual(forecast.slice(9), forecast.slice(0, 9), `prévision : ${forecast.join(' ')}`);
+  s.songEnded(first.ids);
+  const played = [first];
+  for (let guard = 0; guard < 40; guard++) {
+    const selected = s.select();
+    if (!selected) break;
+    s.commit(selected); s.songEnded(selected.ids);
+    played.push(selected);
+  }
+  assert.deepEqual(played.map(item => item.names.join('&')), forecast, 'ordre joué = ordre annoncé');
+  assert.equal(doublesDuringWait(played), 0);
+});
+
+test('chacun rajoute un titre après avoir chanté : personne ne voit quelqu’un chanter deux fois pendant son attente', () => {
+  const { s, more } = twoTablesAndSolo();
+  const played = [];
+  for (let i = 0; i < 45; i++) {
+    const selected = s.select();
+    s.commit(selected); s.songEnded(selected.ids);
+    played.push(selected);
+    s.chooseSong(s.people.get(selected.ids[0]), more(), 'append');
+  }
+  const names = played.map(item => item.names.join('&'));
+  assert.equal(doublesDuringWait(played), 0, names.join(' '));
+  assert.equal(tableRuns(played).same, 0, `pas deux fois la même table de suite : ${names.join(' ')}`);
+});
+
+test('un plan adopté ne contourne pas la règle de patience', () => {
+  const { s } = twoTablesAndSolo();
+  for (let i = 0; i < 12; i++) {
+    const selected = s.select();
+    s.commit(selected); s.songEnded(selected.ids);
+  }
+  const view = s.readyView();
+  assert.equal(view[0].name, 'B2', view.map(item => item.name).join(' '));
+  const solo = view.find(item => item.name === 'S');
+  // Le plan met la personne seule en tête : elle chanterait une deuxième fois
+  // pendant l'attente de B2, passé avant elle au premier tour.
+  s.solverPlan = { version: s.version, ranks: new Map([
+    [solo.entryId, 0], ...view.filter(item => item !== solo).map((item, index) => [item.entryId, index + 1]),
+  ]) };
+  assert.deepEqual(s.select().names, ['B2']);
+});
+
+// Le bar retire le dernier titre d'une personne puis en ajoute un autre,
+// sans passage entre les deux : c'est un échange, l'attente continue. Sans
+// cela, la personne n'était plus protégée par la règle de patience et la
+// personne seule repassait devant elle au deuxième tour.
+test('titre échangé sans passage entre le retrait et l’ajout : la prévision ne bouge pas', () => {
+  for (const by of ['self', 'staff']) {
+    for (let k = 9; k <= 12; k++) {
+      for (const name of ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4']) {
+        const { s, more } = twoTablesAndSolo();
+        const played = [];
+        for (let i = 0; i < k; i++) {
+          const selected = s.select();
+          s.commit(selected); s.songEnded(selected.ids);
+          played.push(selected);
+        }
+        const p = [...s.people.values()].find(person => person.name === name);
+        if (!s.songsOf(p).length) continue;
+        const before = s.readyView().map(item => item.name);
+        if (by === 'staff') s.staffRemove(p.id);
+        else s.removeSong(p, s.songsOf(p)[0].entryId, 'self');
+        assert.equal(s.songsOf(p).length, 0);
+        s.chooseSong(p, more(), 'append');
+        const after = s.readyView();
+        assert.deepEqual(after.map(item => item.name), before, `${by}, ${k} passages, échange de ${name}`);
+        assert.equal(doublesDuringWait([...played, ...after]), 0, `${by}, ${k} passages, échange de ${name} : ${before.join(' ')}`);
+      }
+    }
+  }
+});
+
+// Choix du bar après le 12 octobre : quand les tables n'ont pas le même
+// nombre de titres prêts (4 contre 3), la règle de patience passe avant la
+// règle des tables. Au changement de tour, la même table chante deux fois de
+// suite plutôt que de faire voir à quelqu'un un passage en double.
+test('tables inégales : la patience passe avant la règle des tables', () => {
+  const s = new Scheduler();
+  s.setHeadcount('A', 6);
+  s.setHeadcount('B', 6);
+  const people = ['A1', 'B1', 'A2', 'B2', 'A3', 'B3', 'A4'].map(name => s.join({ tableId: name[0], name }));
+  let n = 1;
+  for (const p of people) s.chooseSong(p, song(n++), 'append');
+  const played = [];
+  for (let i = 0; i < 35; i++) {
+    const selected = s.select();
+    s.commit(selected); s.songEnded(selected.ids);
+    played.push(selected);
+    s.chooseSong(s.people.get(selected.ids[0]), song(n++), 'append');
+  }
+  const names = played.map(item => item.names.join('&'));
+  assert.equal(doublesDuringWait(played), 0, names.join(' '));
+  assert.deepEqual(names.slice(7, 14), names.slice(0, 7), `le tour 2 reprend l’ordre du tour 1 : ${names.join(' ')}`);
+  const runs = tableRuns(played);
+  assert.ok(runs.same > 0, 'la même table enchaîne au changement de tour');
+  assert.equal(runs.longest, 2, `jamais trois fois de suite : ${names.join(' ')}`);
+});

@@ -71,22 +71,46 @@ t('une table de 5 qui arrive d\'un coup est étalée', () => {
   for (let k = 1; k < idx.length; k++) assert.ok(idx[k] - idx[k - 1] >= 2, `positions ${idx}`);
 });
 
-t('jamais deux chansons de suite pour la même table quand les effectifs le permettent', () => {
+// En « Tables à tour de rôle » et en « Compromis », la rotation des tables
+// passe avant la règle de patience (choix du bar après le 12 octobre).
+for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }],
+  ['compromis', { tableRotation: true, weightedTables: true }]]) {
+  t(`${mode} : jamais deux chansons de suite pour la même table quand les effectifs le permettent`, () => {
+    const s = new Scheduler(opts);
+    const people = [];
+    for (let i = 0; i < 2; i++) people.push(singerAt(s, 'A', `A${i}`, 2));
+    people.push(singerAt(s, 'B', 'B0', 1));
+    people.push(singerAt(s, 'C', 'C0', 1));
+    people.forEach((p, i) => s.chooseSong(p, song(i)));
+    let last = null;
+    for (let k = 0; k < 18; k++) {
+      const sel = play(s);
+      const tab = s.people.get(sel.ids[0]).tableId;
+      const others = [...s.people.values()].some(p => p.tableId !== last);
+      if (last && others) assert.notStrictEqual(tab, last, `deux fois ${tab}`);
+      last = tab;
+      sel.ids.forEach(pid => s.chooseSong(s.people.get(pid), song(100 + k)));
+    }
+  });
+}
+
+// En « Chacun son tour », la règle de patience passe avant : chaque tour
+// reprend l'ordre du premier, et personne ne voit quelqu'un chanter deux fois
+// pendant son attente, même si la table A enchaîne au changement de tour.
+t('chacun son tour : l’ordre du premier tour se répète, sans double pendant une attente', () => {
   const s = new Scheduler();
   const people = [];
   for (let i = 0; i < 2; i++) people.push(singerAt(s, 'A', `A${i}`, 2));
   people.push(singerAt(s, 'B', 'B0', 1));
   people.push(singerAt(s, 'C', 'C0', 1));
   people.forEach((p, i) => s.chooseSong(p, song(i)));
-  let last = null;
-  for (let k = 0; k < 18; k++) {
+  const order = [];
+  for (let k = 0; k < 16; k++) {
     const sel = play(s);
-    const tab = s.people.get(sel.ids[0]).tableId;
-    const others = [...s.people.values()].some(p => p.tableId !== last);
-    if (last && others) assert.notStrictEqual(tab, last, `deux fois ${tab}`);
-    last = tab;
+    order.push(s.people.get(sel.ids[0]).name);
     sel.ids.forEach(pid => s.chooseSong(s.people.get(pid), song(100 + k)));
   }
+  for (let k = 4; k < order.length; k++) assert.strictEqual(order[k], order[k - 4], `ordre : ${order.join(' ')}`);
 });
 
 t('pas prêt : garde sa place, pas de cumul', () => {

@@ -28,7 +28,15 @@
  * - Table plafonnée à son nombre de personnes (anti faux noms / navigation privée).
  * - Dans un tour, les tables se partagent les passages selon le mode : au
  *   prorata des chanteurs (par défaut), à parts égales, ou entre les deux.
- *   La même table ne reprend pas le micro quand une autre peut chanter.
+ *   La même table ne reprend pas le micro quand une autre peut chanter (en
+ *   « Chacun son tour », sauf pour respecter la patience).
+ * - Patience : personne ne voit quelqu'un chanter deux fois pendant sa propre
+ *   attente quand un autre passage permis l'évite. Selon le mode (choix du
+ *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
+ *   règle des tables, « Compromis » après, « Tables à tour de rôle » garde la
+ *   rotation des tables coûte que coûte. Un bonus peut doubler, un malus
+ *   n'est pas protégé. Un titre échangé (retrait du dernier titre puis ajout,
+ *   sans passage entre les deux) garde l'attente en cours.
  * - Le bar peut accorder un bonus ou un malus (niveaux -3 à +3) à une table
  *   ou à une personne : il change la fréquence de passage, jamais la priorité
  *   des premiers passages. Les clients ne le voient pas.
@@ -640,8 +648,10 @@ class Scheduler {
     this.invalidateManualOrder();
     const replaced = mode === 'replace' ? this.songsOf(p).map(s => s.entryId) : [];
     // Début de l'attente pour ce titre : ceux qui ont chanté avant ne sont pas
-    // passés « devant » cette personne (voir la règle anti-série de _pick).
-    if (!this.songsOf(p).length) p.readySerial = this.appearanceSerial;
+    // passés « devant » cette personne (voir l'anti-série et la patience de
+    // _pick). Un titre échangé (retrait du dernier titre puis ajout, sans
+    // passage entre les deux) garde l'attente en cours.
+    if (!this.songsOf(p).length && p.emptiedAt !== this.appearanceSerial) p.readySerial = this.appearanceSerial;
     if (mode === 'append' && p.song) p.backlog.push(next);
     else {
       if (mode === 'replace') {
@@ -673,6 +683,7 @@ class Scheduler {
     if (p.song && p.song.entryId === key) {
       this._songsGone(p, [p.song]);
       p.song = (p.backlog || []).shift() || null;
+      this._noteEmptied(p);
     } else {
       const i = (p.backlog || []).findIndex(s => s.entryId === key);
       if (i < 0) throw new Error('Chanson introuvable dans la liste.');
@@ -683,6 +694,12 @@ class Scheduler {
     if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
     this._event('song.removed', { personId: p.id, entryId: key, by });
     this.note(`${p.name} a retiré une chanson de sa liste`);
+  }
+
+  // Liste vidée par un retrait : un titre rechoisi avant le passage suivant
+  // reprend la même attente (voir chooseSong).
+  _noteEmptied(p) {
+    if (!this.songsOf(p).length) p.emptiedAt = this.appearanceSerial;
   }
 
   reorderSongs(p, entryId, toIndex) {

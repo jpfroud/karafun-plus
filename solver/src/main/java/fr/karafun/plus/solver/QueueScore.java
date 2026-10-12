@@ -15,9 +15,11 @@ import java.util.Set;
  * before anyone's return, at most roundCap stage appearances per person in a
  * round, and `spacing` other songs before a person returns when another
  * passage of the round allows it. Medium: once per round (with bonus/malus credits),
- * no table twice in a row when another can sing, spacing of a returning
- * person, and each table's share of the round. Soft: stability versus the
- * order proposed by the Node process.
+ * nobody sees someone sing twice during their own wait when another allowed
+ * passage avoids it (not in EQUAL rotation, after the table rule in SQRT),
+ * no table twice in a row when another can sing, spacing
+ * of a returning person, and each table's share of the round. Soft: stability
+ * versus the order proposed by the Node process.
  */
 public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoftScore> {
     private static final double EPS = 1e-9;
@@ -123,10 +125,40 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 }
             }
             List<Performance> allowedNow = alternates.isEmpty() ? choices : alternates;
+            // Patience (lib/scheduler/rotation.js#_patient): among the allowed
+            // passages, those that make the fewest waiting people see someone
+            // sing twice. PEOPLE: before the table rule, which only breaks ties.
+            // SQRT: the table rule first, then patience among the other tables.
+            // EQUAL: table rotation at all costs, no patience step. Node applies
+            // it before the plan, so a plan that breaks it is never followed:
+            // it costs almost as much as leaving the fair choices.
+            List<Performance> patient = allowedNow;
+            Map<Performance, Integer> doubles = new HashMap<>();
+            int least = 0;
+            if (allowedNow.size() > 1 && plan.getRotation() != QueuePlan.Rotation.EQUAL) {
+                Map<String, Integer> waits = waitStarts(candidates, lastSeen, plan);
+                int[] sorted = waits.values().stream().mapToInt(Integer::intValue).sorted().toArray();
+                for (Performance c : allowedNow) doubles.put(c, doubled(c, waits, sorted, lastSeen, appeared, plan));
+                int fewest = doubles.values().stream().mapToInt(Integer::intValue).min().orElse(0);
+                int most = doubles.values().stream().mapToInt(Integer::intValue).max().orElse(0);
+                if (most > fewest) {
+                    List<Performance> base = allowedNow;
+                    if (plan.getRotation() == QueuePlan.Rotation.SQRT) {
+                        List<Performance> offTable = new ArrayList<>();
+                        for (Performance c : allowedNow) if (!overlaps(c.getGroups(), prior)) offTable.add(c);
+                        if (!offTable.isEmpty()) base = offTable;
+                    }
+                    least = base.stream().mapToInt(doubles::get).min().orElse(0);
+                    patient = new ArrayList<>();
+                    for (Performance c : base) if (doubles.get(c) == least) patient.add(c);
+                }
+            }
             if (!pinned && !allowedNow.contains(current)) {
                 if (!tier.contains(current)) hard -= 1;
                 else if (!choices.contains(current)) medium -= 5_000;
                 // Otherwise only the streak was avoidable: counted below.
+            } else if (!pinned && !patient.contains(current)) {
+                medium -= 4_000L * Math.max(1, doubles.get(current) - least);
             }
 
             boolean overlapsPrevious = !prior.isEmpty() && overlaps(current.getGroups(), prior);
@@ -157,7 +189,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                         (recent.size() + 1) * entry.getValue() / total - served : -served);
             }
             double best = Double.NEGATIVE_INFINITY;
-            for (Performance c : allowedNow) best = Math.max(best, need(c, deficits));
+            for (Performance c : patient) best = Math.max(best, need(c, deficits));
             double picked = need(current, deficits);
             if (best > picked + EPS && best != Double.NEGATIVE_INFINITY) {
                 medium -= Math.round((best - picked) * 150);
@@ -241,6 +273,45 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             if (last != null && last > UNKNOWN && pos - last <= spacing) return false;
         }
         return true;
+    }
+
+    // Wait start of each protected person (owner of a candidate title, no
+    // malus): their last appearance, or when their list stopped being empty,
+    // as for the interleave rule.
+    private static Map<String, Integer> waitStarts(List<Performance> candidates, Map<String, Integer> lastSeen,
+            QueuePlan plan) {
+        Map<String, Integer> waits = new HashMap<>();
+        for (Performance other : candidates) {
+            String owner = other.getOwner();
+            if (weight(plan, owner) < 1 - EPS) continue;
+            waits.put(owner, Math.max(lastSeen.getOrDefault(owner, UNKNOWN),
+                    plan.getReadyAt().getOrDefault(owner, UNKNOWN)));
+        }
+        return waits;
+    }
+
+    // Same as lib/scheduler/rotation.js#_patient: protected people for whom
+    // a singer of `c` (without bonus) already sang since their wait started.
+    // `sorted`: the values of `waits`, sorted.
+    private static int doubled(Performance c, Map<String, Integer> waits, int[] sorted,
+            Map<String, Integer> lastSeen, Map<String, Integer> appeared, QueuePlan plan) {
+        int seen = UNKNOWN;
+        for (String singer : c.getSingers()) {
+            if (weight(plan, singer) > 1 + EPS || appeared.getOrDefault(singer, 0) == 0) continue;
+            seen = Math.max(seen, lastSeen.getOrDefault(singer, UNKNOWN));
+        }
+        if (seen <= UNKNOWN) return 0;
+        int lo = 0, hi = sorted.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (sorted[mid] < seen) lo = mid + 1; else hi = mid;
+        }
+        // The singers of `c` do not count against themselves.
+        for (String singer : c.getSingers()) {
+            Integer wait = waits.get(singer);
+            if (wait != null && wait < seen) lo--;
+        }
+        return lo;
     }
 
     private static double weight(QueuePlan plan, String person) {

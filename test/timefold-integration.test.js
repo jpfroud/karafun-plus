@@ -636,3 +636,30 @@ test('soirée réaliste six tables : arrivées, duos, listes, départs et procha
       } finally { s.closeSolver(); }
     }
   });
+
+// Soirée du 12 octobre avec Timefold actif : Timefold « améliorait » le 2e
+// tour en faisant repasser la personne seule devant une table qui avait
+// chanté avant elle, et ce plan était adopté. La règle de patience de _pick
+// passe avant le plan : l'ordre du 1er tour reste, quel que soit le solveur.
+test('avec Timefold actif, deux tables de 4 et une personne seule gardent l’ordre du 1er tour',
+  { skip: !fs.existsSync(JAR) && !fs.existsSync(path.join(__dirname, '..', 'solver', 'karafun-solver.jar')) },
+  async () => {
+    const s = new Scheduler({ solverEnabled: true });
+    s.setHeadcount('A', 6);
+    s.setHeadcount('B', 6);
+    const names = ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4'];
+    const people = new Map(names.map(name =>
+      [name, s.join({ tableId: name === 'S' ? 'Comptoir' : name[0], name })]));
+    let songId = 9100;
+    for (const name of names) for (let k = 0; k < 2; k++) {
+      s.chooseSong(people.get(name), { songId: songId++, title: `${name} ${k + 1}`, artist: 'Test' }, 'append');
+    }
+    try {
+      await s.whenPlanReady();
+      const first = s.select();
+      s.commit(first); s.songEnded(first.ids);
+      assert.equal(await s.whenPlanReady(), true, 'un plan Timefold est confirmé ou adopté');
+      const planned = [first.names[0], ...s.readyView().map(v => v.name)];
+      assert.deepEqual(planned.slice(9), planned.slice(0, 9), 'le 2e tour reprend l’ordre du 1er');
+    } finally { s.closeSolver(); }
+  });

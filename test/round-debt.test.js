@@ -7,10 +7,18 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { Scheduler } = require('../scheduler');
 
-function evening() {
+// `opts` : réglages de la soirée. En « Chacun son tour » (défaut), la règle
+// de patience garde l'ordre du tour précédent (Amie, Solo1, Solo2, Attente) :
+// la personne qui attend depuis le plus longtemps est alors de la table T1, et
+// la règle anti-série ne peut intercaler aucun soliste sans la doubler. Les
+// scénarios d'emprunt par la règle anti-série tournent donc en « Tables à tour
+// de rôle », où la rotation des tables passe avant la patience.
+const TABLES_TOUR_DE_ROLE = { tableRotation: true };
+
+function evening(opts = {}) {
   let n = 1;
   const song = () => ({ songId: n++, title: `Titre ${n}`, artist: 'Essai' });
-  const s = new Scheduler();
+  const s = new Scheduler(opts);
   s._maybeRequestSolver = () => {};
   s.setHeadcount('T1', 12);
   const people = ['Solo1', 'Attente', 'Amie', 'Solo2'].map(name =>
@@ -41,7 +49,7 @@ function doublesDuringWait(s, played, personId) {
 }
 
 test('passage emprunté par la règle anti-série : pris sur le tour suivant', () => {
-  const { s, song, send, played, byName } = evening();
+  const { s, song, send, played, byName } = evening(TABLES_TOUR_DE_ROLE);
   for (let i = 0; i < 8; i++) send();
   // Arrivée d'un seul titre à cette table, juste après un passage de sa table.
   const sara = s.join({ tableId: 'T1', name: 'Sara' });
@@ -72,9 +80,34 @@ test('prochain annoncé en fin de tour puis rattrapé par une arrivée : passage
   assert.ok(!sent.newPersonRound, 'Sara n’a pas chanté : le tour continue');
   assert.deepEqual(sent.borrowedIds, [announced.ids[0]], 'son passage est pris sur le tour suivant');
   assert.ok(s.roundUse.get(announced.ids[0]) > 1, 'dette reportée au tour suivant');
+  // Le prochain annoncé (Amie, de T1) attendait depuis le plus longtemps. Sara,
+  // de la même table, laisse passer un soliste (règle anti-série), lui aussi
+  // pris sur le tour suivant, puis chante.
+  const interleaved = send();
+  assert.equal(interleaved.names[0], 'Solo1', 'la règle anti-série intercale un soliste');
+  assert.deepEqual(interleaved.borrowedIds, [interleaved.ids[0]]);
   const after = send();
   assert.equal(after.ids[0], sara.id, 'Sara chante ensuite');
   assert.equal(s.roundUse.get(announced.ids[0]), 2, 'dette inchangée par le passage de Sara');
+});
+
+test('« Chacun son tour » : une arrivée à la table qui vient de chanter ne fait doubler personne', () => {
+  const { s, song, send, played, byName } = evening();
+  for (let i = 0; i < 8; i++) send();
+  assert.deepEqual(played.map(sel => sel.names[0]),
+    ['Amie', 'Solo1', 'Solo2', 'Attente', 'Amie', 'Solo1', 'Solo2', 'Attente'], 'le tour 2 reprend l’ordre du tour 1');
+  const sara = s.join({ tableId: 'T1', name: 'Sara' });
+  s.chooseSong(sara, song(), 'append');
+  // Intercaler un soliste ferait voir à Amie, qui attend depuis le plus
+  // longtemps, un passage en double : Sara chante tout de suite, même si sa
+  // table vient de chanter.
+  const next = send();
+  assert.equal(next.ids[0], sara.id);
+  assert.equal(next.borrowedIds, undefined, 'aucun emprunt');
+  for (let i = 0; i < 8; i++) send();
+  for (const name of ['Attente', 'Amie', 'Solo1', 'Solo2']) {
+    assert.deepEqual(doublesDuringWait(s, played, byName(name).id), [], `${name} : ${played.map(sel => sel.names[0]).join(' ')}`);
+  }
 });
 
 test('priorité donnée par le bar : aucune dette de tour', () => {
@@ -257,7 +290,7 @@ test('invitée avec bonus ou malus retirée d’un duo envoyé : la part exacte 
 // Relecture du 12 octobre : chemin du serveur (annonce pendant la chanson en
 // cours, puis envoi) pour le passage intercalé par la règle anti-série.
 test('passage de la règle anti-série annoncé pendant la chanson en cours : pris sur le tour suivant', () => {
-  const { s, song, byName } = evening();
+  const { s, song, byName } = evening(TABLES_TOUR_DE_ROLE);
   for (let i = 0; i < 8; i++) announceThenSend(s);
   const arrival = s.join({ tableId: 'T1', name: 'Arrivée' });
   s.chooseSong(arrival, song(), 'append');
