@@ -591,7 +591,7 @@ test('réglages de rotation : chaque mode est annoncé et les déplacements manu
   assert.equal(f.sched.manualChanges.length, 0, 'l’intervention du bar n’est plus annulable');
   assert.equal(f.staffState().settings.tableRotation, true);
   await f.call('POST /api/staff/settings', { weightedTables: true });
-  assert.equal(lastNote(f).msg, 'Rotation : compromis, grandes tables un peu plus souvent');
+  assert.equal(lastNote(f).msg, 'Rotation : compromis, grandes tables un peu plus tôt dans le tour');
   assert.equal(f.staffState().settings.weightedTables, true);
   await f.call('POST /api/staff/settings', { tableRotation: false, weightedTables: false });
   assert.equal(lastNote(f).msg, 'Rotation : chacun son tour, tables au prorata des chanteurs');

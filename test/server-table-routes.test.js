@@ -419,6 +419,27 @@ test('« Vider toutes les chansons » juste après un retrait : le titre rechois
   assert.equal(ana.readySerial, f.sched.appearanceSerial, 'file vidée : nouvelle attente');
 });
 
+test('« Compromis » après « Vider toutes les chansons » : ceux qui ont chanté comptent encore dans la taille de leur table', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  Object.assign(f.sched.opts, { tableRotation: true, weightedTables: true });
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 3 });
+  const abe = f.sched.join({ tableId: '1', name: 'Abe' });
+  const ben = f.sched.join({ tableId: '2', name: 'Ben', headcount: 3 });
+  let n = 9400;
+  for (const p of [ana, abe, ben]) f.sched.chooseSong(p, { songId: n++, title: `T${n}` }, 'append');
+  for (let i = 0; i < 3; i++) { const sel = f.sched.select(); f.sched.commit(sel); f.sched.songEnded(sel.ids); }
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  assert.equal(f.sched.Q.length, 0);
+  f.sched.chooseSong(ana, { songId: n++, title: `T${n}` }, 'append');
+  f.sched.chooseSong(ben, { songId: n++, title: `T${n}` }, 'append');
+  const sizes = f.sched._registeredWeights();
+  assert.equal(sizes.get(ana.group), 2, 'Ana (titre) et Abe (a chanté)');
+  assert.equal(sizes.get(ben.group), 1);
+});
+
 test('« Arrêter le vidage » : sauvegarde en échec, le vidage reste en cours en mémoire comme sur le disque', async () => {
   const f = harness({ persistent: true });
   f.loadTables();

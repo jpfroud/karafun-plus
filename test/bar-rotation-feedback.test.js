@@ -537,6 +537,23 @@ test('compromis : la part d’une table suit ses chanteurs inscrits, pas ses seu
   assert.equal(first({}), 'B');
 });
 
+// Relecture : un titre choisi puis retiré ne garde pas sa place dans la
+// taille de la table : il compte pendant l'échange, plus après le passage
+// suivant (sinon des tickets vides gonfleraient la part d'une table).
+test('compromis : un titre choisi puis retiré ne compte plus après le passage suivant', () => {
+  const s = new Scheduler({ tableRotation: true, weightedTables: true });
+  s.setHeadcount('A', 6); s.setHeadcount('B', 6);
+  const a = s.join({ tableId: 'A', name: 'A1' }), b = s.join({ tableId: 'B', name: 'B1' });
+  s.chooseSong(a, song(1)); s.chooseSong(b, song(2));
+  const r = s.join({ tableId: 'B', name: 'B2' });
+  s.chooseSong(r, song(3)); s.removeSong(r, r.song.entryId);
+  assert.equal(s._registeredWeights().get(b.group), 2, 'échange en cours : compte encore');
+  const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+  assert.equal(s._registeredWeights().get(b.group), 1, 'ticket vide après un passage : ne compte plus');
+  s.chooseSong(r, song(4));
+  assert.equal(s._registeredWeights().get(b.group), 2, 'nouveau titre : compte de nouveau');
+});
+
 // Échange de titre : seul un retrait réel, sans passage entre le retrait et
 // l'ajout, garde l'attente. Retrait du bar sans titre, passage annulé puis
 // nouveau passage, et deuxième vidage de la liste commencent une attente.
@@ -864,6 +881,18 @@ test('compromis : un chanteur sans titre prêt qui part change l’empreinte du 
   const still = t.solverContextFingerprint();
   t.leave(t2);
   assert.equal(t.solverContextFingerprint(), still);
+  // En « Compromis », le départ d'une chanteuse d'une table sans titre prêt
+  // (elle a chanté, sa liste est vide) garde le plan : rien n'y change.
+  const u = new Scheduler({ tableRotation: true, weightedTables: true });
+  for (const table of ['A', 'B', 'C']) u.setHeadcount(table, 4);
+  const [ua, ub, uc] = ['A', 'B', 'C'].map(table => u.join({ tableId: table, name: `${table}1` }));
+  let n = 10;
+  for (const p of [uc, ua, ua, ub, ub]) u.chooseSong(p, song(n++), 'append');
+  for (let i = 0; i < 6 && !uc.sung; i++) { const sel = u.select(); u.commit(sel); u.songEnded(sel.ids); }
+  assert.ok(uc.sung && !u.songsOf(uc).length);
+  const kept = u.solverContextFingerprint();
+  u.leave(uc);
+  assert.equal(u.solverContextFingerprint(), kept, 'table sans titre prêt : plan gardé');
 });
 
 // Relecture : titre retiré juste avant ou pendant l'envoi d'un passage
@@ -883,6 +912,30 @@ test('échange de titre autour d’un passage annulé : l’attente continue', (
     const order = s.readyView().map(x => x.name);
     assert.ok(order.indexOf('B2') < order.indexOf('S'), `removeFirst=${removeFirst}: ${order.join(' ')}`);
   }
+});
+
+// Relecture : un duo annulé ne rend l'échange de titre qu'à la personne dont
+// le titre est parti, pas à l'invitée, qui commence une nouvelle attente.
+test('duo annulé : l’invitée sans titre ne garde pas une ancienne attente', () => {
+  const s = new Scheduler();
+  const people = ['A', 'B', 'C', 'D'].map(t => s.join({ tableId: t, name: `${t}1`, headcount: 2 }));
+  let n = 1;
+  people.forEach(p => s.chooseSong(p, song(n++), 'append'));
+  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel; };
+  const guest = s.people.get(play().ids[0]);
+  assert.equal(s.songsOf(guest).length, 0);
+  for (let i = 0; i < 3; i++) play();
+  const owner = people.find(p => p.id !== guest.id);
+  for (const p of people) if (p.id !== guest.id) s.chooseSong(p, song(n++), 'append');
+  const duo = s.inviteDuet(owner, guest.id, song(n++));
+  s.answerDuet(guest, true, duo.entryId);
+  let sel = s.select();
+  while (!sel.ids.includes(guest.id)) { s.commit(sel); s.songEnded(sel.ids); sel = s.select(); }
+  s.commit(sel);
+  s.rollbackUnplayed(sel, { requeue: true });
+  assert.equal(guest.emptiedAt, undefined, 'l’invitée n’est pas en échange de titre');
+  s.chooseSong(guest, song(n++), 'append');
+  assert.equal(guest.readySerial, s.appearanceSerial, 'nouvelle attente pour l’invitée');
 });
 
 // Relecture : une personne arrivée pendant un passage ensuite annulé
@@ -925,6 +978,17 @@ for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }]
     const last = new Set(s.lastGroup);
     const pick = s.select();
     assert.ok(pick.groups.every(g => !last.has(g)), `${pick.names} (table ${pick.groups}) après la table ${[...last]}`);
+    // Un plan Timefold (sans répit) qui classe l'invitée d'abord, puis la
+    // table qui vient de chanter, ne redonne pas non plus le micro à celle-ci.
+    const own = guest.song, again = Object.values(people).find(p => last.has(p.group) && p.song);
+    if (own && again) {
+      const others = Object.values(people).filter(p => p.song && p !== guest && p !== again);
+      const ranks = new Map([own, again.song, ...others.map(p => p.song)].map((x, i) => [x.entryId, i]));
+      s.solverPlan = { version: s.version, fingerprint: s.solverContextFingerprint(), ranks, source: 'timefold' };
+      const planned = s.select();
+      s.solverPlan = null;
+      assert.ok(planned.groups.every(g => !last.has(g)), `plan : ${planned.names} (table ${planned.groups})`);
+    }
   });
 }
 
@@ -965,4 +1029,36 @@ test('duo noté puis retiré sans passage connu : début d’attente ramené au 
   assert.equal(c.readySerial, s.appearanceSerial);
   s.staffUncountPartner(sel.staffDuo, sel, []);
   assert.ok((c.readySerial || 0) <= s.appearanceSerial, `${c.readySerial} > ${s.appearanceSerial}`);
+});
+
+// Relecture : un titre retiré pendant qu'un duo noté sans passage connu
+// compte un passage reste un échange quand le bar retire ce duo.
+test('duo noté puis retiré sans passage connu : un échange de titre fait entre-temps est gardé', () => {
+  const s = new Scheduler();
+  const [a, b, c, d] = ['A', 'B', 'C', 'D'].map(t => { s.setHeadcount(t, 2); return s.join({ tableId: t, name: t }); });
+  s.chooseSong(a, song(1)); s.chooseSong(c, song(2));
+  const first = s.select(); s.commit(first); s.songEnded(first.ids);
+  assert.deepEqual(first.names, ['A']);
+  const before = c.readySerial;
+  const sel = { song: { entryId: 'inconnu' } };
+  s.staffCountPartner(d.id, b.id, sel); // D n'a jamais chanté : le duo ajoute un passage
+  assert.equal(s.appearanceSerial, 2);
+  s.removeSong(c, c.song.entryId);
+  s.staffUncountPartner(sel.staffDuo, sel, []);
+  s.chooseSong(c, song(3));
+  assert.equal(c.readySerial, before);
+});
+
+// Relecture : en « Compromis », une invitée de duo sans titre à elle est
+// déjà montée sur scène : elle compte dans la taille de sa table.
+test('compromis : une invitée de duo sans titre à elle compte dans la taille de sa table', () => {
+  const s = new Scheduler({ tableRotation: true, weightedTables: true });
+  s.setHeadcount('B', 4); s.setHeadcount('A', 6);
+  const b = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+  const a = ['A1', 'A2', 'A3', 'A4'].map(name => s.join({ tableId: 'A', name }));
+  let n = 9500;
+  for (const p of [...b, a[0], a[1]]) s.chooseSong(p, song(n++), 'append');
+  for (const guest of [a[2], a[3]]) s.staffCountPartner(a[0].id, guest.id, { song: { entryId: `inconnu-${guest.id}` } });
+  assert.equal(s._registeredWeights().get(a[0].group), 4);
+  assert.equal(s._registeredWeights().get(b[0].group), 2);
 });

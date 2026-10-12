@@ -696,7 +696,7 @@ test('QueueScore : un ordre qui fait voir un double coûte au moins 4 000 en med
 
 // « Compromis » : la taille d'une table envoyée à Timefold (groupSizes) compte
 // ses chanteurs inscrits, titre prêt ou non, et change bien le score.
-test('compromis : Timefold reçoit et utilise la taille des tables (inscrits)', async () => {
+function compromiseRequest() {
   const s = new Scheduler({ tableRotation: true, weightedTables: true });
   s.setHeadcount('B', 4); s.setHeadcount('A', 6);
   const b = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
@@ -709,8 +709,17 @@ test('compromis : Timefold reçoit et utilise la taille des tables (inscrits)', 
   let request;
   s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
   s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  return { request, a, b };
+}
+
+test('compromis : Timefold reçoit la taille des tables (inscrits)', () => {
+  const { request, a, b } = compromiseRequest();
   assert.deepEqual(request.groupSizes, { [a[0].group]: 4, [b[0].group]: 2 });
-  if (!fs.existsSync(JAR)) return;
+});
+
+test('compromis : Timefold utilise la taille des tables (inscrits)',
+  { skip: !fs.existsSync(JAR) && !fs.existsSync(path.join(__dirname, '..', 'solver', 'karafun-solver.jar')) }, async () => {
+  const { request } = compromiseRequest();
   const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
   const bridge = new TimefoldBridge();
   try {

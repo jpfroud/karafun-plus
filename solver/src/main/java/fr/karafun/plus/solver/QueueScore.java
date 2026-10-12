@@ -132,7 +132,8 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // EQUAL and SQRT: the table rule first, then patience among the
             // other tables. Node applies it before the plan, so a plan that
             // breaks it is never followed: it costs almost as much as leaving
-            // the fair choices.
+            // the fair choices. Node also skips other-table passages whose duet
+            // guest is still cooling down; cooldowns are not sent here.
             List<Performance> patient = allowedNow;
             int[] doubles = null;
             int least = 0;

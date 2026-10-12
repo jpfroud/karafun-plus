@@ -30,8 +30,8 @@
  *   prorata des chanteurs (par défaut), à parts égales, ou entre les deux.
  *   La même table ne reprend pas le micro quand une autre peut chanter (en
  *   « Chacun son tour », sauf pour respecter la patience). En compromis, la
- *   taille d'une table est son nombre de chanteurs inscrits (titre choisi ce
- *   soir, prêt ou non).
+ *   taille d'une table est son nombre de chanteurs inscrits (titre en attente
+ *   ou déjà monté sur scène ce soir).
  * - Patience : personne ne voit quelqu'un chanter deux fois pendant sa propre
  *   attente quand un autre passage permis l'évite. Selon le mode (choix du
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
@@ -293,8 +293,10 @@ class Scheduler {
 
   // Empreinte de tout ce qui détermine l'ordre prévu. Les heures, reculs,
   // confirmations, notes et photos n'y figurent pas : la fin d'une chanson ou
-  // une inscription sans titre ne relancent donc pas Timefold, sauf en
-  // « Compromis », où la part d'une table suit ses chanteurs inscrits.
+  // une inscription sans titre ne relancent donc pas Timefold. En
+  // « Compromis », la part d'une table suit ses chanteurs inscrits
+  // (_registeredWeights) : un départ ou un échange de titre à une table qui a
+  // un titre prêt la relance, pas un changement à une table sans titre prêt.
   solverContextFingerprint() {
     const readyQ = this.Q.filter(pid => {
       const p = this.people.get(pid);
@@ -319,6 +321,8 @@ class Scheduler {
       return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
         p.lastAppearanceTurn || 0, this._isPresenceRetry(p), this._deferralKey(p)] : [pid];
     });
+    // Tailles envoyées au solveur (groupSizes) : tables des passages prévus.
+    const sized = new Set([...relevant].map(pid => this.people.get(pid)?.group));
     const context = { entries, physical, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
       roundUse: [...this.roundUse], roundApps: [...this.roundApps], roundOwed: [...this.roundOwed],
@@ -326,7 +330,8 @@ class Scheduler {
       duetCooldowns: [...this.duetCooldowns],
       rotation: [!!this.opts.tableRotation, !!this.opts.weightedTables, this.opts.interleaveArrivals !== false],
       appearanceSerial: this.appearanceSerial, bonus: this._bonusContext(),
-      registered: this.opts.tableRotation && this.opts.weightedTables ? [...this._registeredWeights()] : null,
+      registered: this.opts.tableRotation && this.opts.weightedTables ?
+        [...this._registeredWeights()].filter(([group]) => sized.has(group)) : null,
       ...this.manualOverrideState() };
     return crypto.createHash('sha256').update(JSON.stringify(context)).digest('hex');
   }
