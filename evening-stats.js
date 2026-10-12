@@ -70,7 +70,7 @@ const DEFINITIONS = {
   wait: 'Du moment où le titre pouvait passer (sa demande, ou la fin du passage précédent de la personne, au plus tôt la connexion de KaraFun) au début de son passage.',
   requestDelay: 'De la demande du titre (au plus tôt la connexion de KaraFun) à son passage sur scène, même s’il était loin dans la liste de la personne.',
   fairShare: 'Rythme attendu si chaque chanteur passait au même rythme par heure de présence, multiplié par son bonus ou malus moyen (pondéré par le temps où il était actif pendant sa présence).',
-  jain: 'Indice de Jain sur les passages par heure de présence : 1 = tout le monde au même rythme, 1/n = une seule personne chante. Calculé sur les chanteurs présents au moins 30 min qui ont demandé un titre pendant le karaoké.',
+  jain: 'Indice de Jain sur les passages par heure de présence : 1 = tout le monde au même rythme, 1/n = une seule personne chante. Calculé sur les chanteurs présents au moins 30 min qui ont chanté ou avaient un titre en attente pendant le karaoké, avant l’heure de fermeture.',
   jainAdjusted: 'Même indice après division du rythme de chacun par son bonus ou malus moyen, pondéré par le temps où il était actif pendant sa présence (les écarts voulus par le bar ne comptent pas).',
   demandJain: 'Indice de Jain sur les passages par heure avec au moins un titre en attente (au moins 15 min).',
   deadTime: 'Temps entre deux chansons alors qu’un titre attendait, rapporté au temps de spectacle (chansons + temps morts). File vide et fermeture exclues.',
@@ -687,6 +687,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // En direct, un titre encore sur scène : le karaoké n'est pas fini.
   const ended = !stages.some(st => st.ongoing) && (barClosed || !!offlineAfter || !!appStop);
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
+  // Demandes de l'équité : jusqu'à l'heure de fermeture une fois passée (après
+  // elle, plus aucun titre ne part), même si le dernier titre finit plus tard.
+  const requestEnd = barClosed ? Math.min(closedAt, closingHour) : closedAt;
   // Arrêts de l'application pendant le karaoké : l'arrêt du PC après la
   // fermeture (jusqu'au lendemain) n'est pas un incident de la soirée.
   const eveningOffline = offline.map(inEvening).filter(([a, b]) => b > a);
@@ -762,9 +765,10 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       id: p.id, tableId: p.tableId, joinedAt: p.joinedAt, leftAt: p.leftAt, rawLeftAt: p.rawLeftAt, leftEstimated: p.leftEstimated,
       explicitLeft: p.explicitLeft != null, presenceSec: sec(p.presenceMs), demandSec: sec(p.demandMs),
       requests: p.requests, removed: p.removed, removedBy: p.removedBy,
-      // Titre en attente ou chanté pendant le karaoké : une demande faite
-      // après la fermeture (ajout toujours possible) ne compte pas dans l'équité.
-      askedInKaraoke: p.demandMs > 0 || own.length > 0,
+      // Titre chanté, ou en attente pendant le karaoké avant l'heure de
+      // fermeture : une demande faite après elle (ajout toujours possible) ne
+      // compte ni dans l'équité ni parmi les chanteurs (soirée et tables).
+      askedInKaraoke: own.length > 0 || p.demandSpans.some(([a, b]) => Math.min(b, requestEnd) > Math.max(a, openedAt)),
       waiting: mySongs.filter(s => !s.stageAt && !s.removedAt).length,
       turns: own.length, guestTurns: guest.length, appearances: own.length + guest.length,
       improvisedGuest: guest.filter(st => st.improvised).length,
@@ -823,10 +827,11 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     waitSpread: singerWaits.filter(w => w > 0).length >= 2 ?
       round(Math.max(...singerWaits) / Math.max(1, Math.min(...singerWaits.filter(w => w > 0))), 2) : null,
     waitJain: round(jain(singerWaits), 3),
-    // Titre en attente pendant le karaoké seulement : une demande après la
-    // fermeture n'est pas un passage manqué de la rotation.
-    neverSang: singers.filter(s => s.askedInKaraoke && s.appearances === 0).length,
-    neverSangLeft: singers.filter(s => s.askedInKaraoke && s.appearances === 0 && s.explicitLeft).length,
+    // Titre en attente pendant le karaoké, personne présente pendant le
+    // karaoké : une demande après la fermeture, ou d'une personne déjà partie,
+    // n'est pas un passage manqué de la rotation.
+    neverSang: singers.filter(s => s.askedInKaraoke && s.appearances === 0 && s.presenceSec > 0).length,
+    neverSangLeft: singers.filter(s => s.askedInKaraoke && s.appearances === 0 && s.presenceSec > 0 && s.explicitLeft).length,
     fairRate: round(fairRate, 2),
   };
 

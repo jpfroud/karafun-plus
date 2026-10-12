@@ -651,7 +651,7 @@ function renderKpis() {
       // Pas encore calculable : personne n'a 30 min de présence, ou personne n'a encore chanté.
       : f.n ? 'aucun passage pour le moment' : g.singers ? 'personne n’est encore là depuis 30 min' : 'pas encore de chanteurs'],
     ['Temps mort', pct(g.deadShare), g.deadGapCount ? `${dur(g.deadAvgSec)} en moyenne entre deux chansons` : 'aucun entre deux chansons'],
-    ['Chanteurs', `${g.sang} / ${g.singers}`, `ont chanté / ont demandé un titre`],
+    ['Chanteurs', `${g.sang} / ${g.singers}`, `ont chanté / avaient un titre pendant le karaoké`],
     ['Chansons', fmtNum(g.songs, 0), `${g.ours} de la file · ${g.battles} Battle${g.battles > 1 ? 's' : ''} · ${g.native} hors file`],
     ['Duos', fmtNum(g.duoStages, 0), g.ours ? `${pct(g.duoRate)} des passages` : '—'],
     ['Battles', fmtNum(g.battle.launched, 0), `${g.battle.proposals} vote${g.battle.proposals > 1 ? 's' : ''} proposé${g.battle.proposals > 1 ? 's' : ''}`],

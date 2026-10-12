@@ -528,6 +528,22 @@ test('équité et temps morts : la vraie raison, et les accords au singulier', a
   assert.match(text(page.doc.getElementById('chartDead').byTag('p')[0]), /\(1 intervalle\)$/);
 });
 
+// Relecture du 12 octobre : une demande faite après l'heure de fermeture
+// (ajout toujours possible) ne met pas la personne dans les rythmes de passage,
+// et la tuile « Chanteurs » dit qui elle compte.
+test('rythme de passage et chanteurs : une demande après la fermeture n’y entre pas', async () => {
+  const page = loadPage({ responses: withView(view => {
+    const dina = view.stats.singers.find(singer => singer.id === 'pD');
+    Object.assign(dina, { askedInKaraoke: false, requests: 1, presenceSec: 3600, turns: 0, turnsPerHour: 0 });
+  }) });
+  await settle();
+  const plot = text(page.doc.getElementById('chartRatesPlot'));
+  assert.match(plot, /Alice/);
+  assert.doesNotMatch(plot, /Dina/);
+  const tile = page.$('kpis').children.find(n => /Chanteurs/.test(text(n)));
+  assert.match(text(tile), /avaient un titre pendant le karaoké/);
+});
+
 // Regression: ISSUE-035 — « Rythme de passage » : le trait de la part attendue barrait les valeurs
 test('rythme de passage : la valeur s’écrit après le trait de la part attendue quand il touche la barre', async () => {
   const page = loadPage({ responses: withView(view => {
