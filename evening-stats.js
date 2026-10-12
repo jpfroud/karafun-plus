@@ -9,8 +9,8 @@
  *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun
  *   (celle qui suit le dernier arrêt du PC ou de KaraFun d'au moins 30 min
- *   avant le premier titre, commencé sans titre en attente ; au plus tard le
- *   premier titre) à la fermeture. Fermeture : heure de fermeture en vigueur
+ *   survenu alors qu'aucun titre n'attendait, avant le premier titre ; au
+ *   plus tard le premier titre) à la fermeture. Fermeture : heure de fermeture en vigueur
  *   au début du dernier titre, avec les changements faits avant qu'elle passe
  *   (une heure réglée alors qu'elle était déjà passée compte depuis son
  *   réglage) ; une fois passée, seule une prolongation faite dans les 30 min
@@ -67,7 +67,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké, de la connexion de la télécommande KaraFun (celle qui suit le dernier arrêt du PC ou de KaraFun d’au moins 30 min avant le premier titre, commencé sans titre en attente ; au plus tard le premier titre) à la fermeture. Fermeture : heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe (une heure réglée alors qu’elle était déjà passée compte depuis son réglage) ; une fois passée, seule une prolongation faite dans les 30 min la repousse ; le retrait d’« Options par défaut » fait après le début du dernier titre ne compte pas ; sans heure de fermeture, la clôture de la soirée dans l’application. Si le dernier passage finit plus tard, sa fin. Plus tôt : déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre. Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké, de la connexion de la télécommande KaraFun (celle qui suit le dernier arrêt du PC ou de KaraFun d’au moins 30 min survenu alors qu’aucun titre n’attendait, avant le premier titre ; au plus tard le premier titre) à la fermeture. Fermeture : heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe (une heure réglée alors qu’elle était déjà passée compte depuis son réglage) ; une fois passée, seule une prolongation faite dans les 30 min la repousse ; le retrait d’« Options par défaut » fait après le début du dernier titre ne compte pas ; sans heure de fermeture, la clôture de la soirée dans l’application. Si le dernier passage finit plus tard, sa fin. Plus tôt : déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre. Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -79,7 +79,7 @@ const DEFINITIONS = {
   demandJain: 'Indice de Jain sur les passages par heure avec au moins un titre en attente, pendant la présence au karaoké et avant l’heure de fermeture (au moins 15 min).',
   deadTime: 'Temps entre deux chansons alors qu’un titre attendait, rapporté au temps de spectacle (chansons + temps morts). File vide et fermeture exclues.',
   songsPerHour: 'Chansons terminées par heure, du début de la première à la fin de la dernière (titre en cours et arrêts de l’application exclus).',
-  firstTurn: 'De la première demande de titre (au plus tôt la connexion de KaraFun) au premier passage de la personne.',
+  firstTurn: 'De la première demande de titre encore en attente à la connexion de KaraFun ou faite après (au plus tôt cette connexion) au premier passage de la personne.',
 };
 
 const sum = list => list.reduce((a, b) => a + b, 0);
@@ -637,8 +637,8 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // ------------------------------------------------ soirée du karaoké
   // Ouverture : connexion de la télécommande KaraFun après la dernière
   // interruption (KaraFun coupé pour de bon, ou application arrêtée au moins
-  // 30 min) avant le premier titre, commencée sans titre en attente ; au plus
-  // tard le premier passage. Soirée du 10 octobre : application lancée à
+  // 30 min) survenue alors qu'aucun titre n'attendait, avant le premier
+  // titre ; au plus tard le premier passage. Soirée du 10 octobre : application lancée à
   // 15:41, KaraFun connecté à 20:19. « Supprimer toutes les tables » en fin de
   // nuit, KaraFun encore connecté : le journal suivant commence connecté, mais
   // l'arrêt du PC ou de KaraFun pendant la nuit le sépare de la soirée. Une
@@ -791,6 +791,11 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     const myWaits = waits.filter(w => w.personId === p.id).map(w => w.sec);
     const hours = p.presenceMs / 3600000;
     const firstStage = own[0]?.start ?? null;
+    // Premier passage : depuis la première demande encore en attente à
+    // l'ouverture ou faite après (un essai retiré avant l'ouverture ne compte
+    // pas), au plus tôt l'ouverture.
+    const openAsks = p.demandSpans.filter(([a, b]) => b > openedAt && a <= (firstStage ?? Infinity)).map(([a]) => Math.max(a, openedAt));
+    const askedFrom = openAsks.length ? Math.min(...openAsks) : p.firstRequestAt != null ? Math.max(p.firstRequestAt, openedAt) : null;
     const mySongs = [...songs.values()].filter(s => s.personId === p.id);
     return {
       id: p.id, tableId: p.tableId, joinedAt: p.joinedAt, leftAt: p.leftAt, rawLeftAt: p.rawLeftAt, leftEstimated: p.leftEstimated,
@@ -812,7 +817,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       waits: { n: myWaits.length, avgSec: round(mean(myWaits)), medianSec: round(median(myWaits)),
         maxSec: myWaits.length ? Math.max(...myWaits) : null, minSec: myWaits.length ? Math.min(...myWaits) : null },
       requestDelayAvgSec: round(mean(waits.filter(w => w.personId === p.id).map(w => w.requestDelaySec))),
-      firstTurnSec: firstStage != null && p.firstRequestAt != null ? sec(firstStage - Math.max(p.firstRequestAt, openedAt)) : null,
+      firstTurnSec: firstStage != null && askedFrom != null ? sec(firstStage - askedFrom) : null,
       deferrals: p.deferrals, deferSongs: p.deferSongs,
       deferSec: sec(sum(mySongs.map(s => s.deferMs))),
       presenceAsks: p.presenceAsks, presenceSkips: p.presenceSkips, presenceRemoved: p.presenceRemoved,

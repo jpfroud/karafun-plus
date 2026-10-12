@@ -1340,7 +1340,7 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
       e(74, 'stage.ended', { queueId: 1, playedSec: 240 }), e(300, 'evening.closed', { by: 'staff-reset' }),
     ] });
     assert.equal(rebooted.evening.openedAt, T(0));
-    // Titres joués sans demande (KaraFun) avant et après une coupure : la première demande ou le premier titre bornent.
+    // Titres joués sans demande (KaraFun) avant et après une coupure : une coupure après le premier titre ne déplace pas l’ouverture.
     const native = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: [
       e(0, 'evening.started', { rules: {} }), e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
       e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Un' }), e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
@@ -1349,6 +1349,27 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
       e(300, 'evening.closed', { by: 'staff-reset' }),
     ] });
     assert.equal(native.evening.openedAt, T(0));
+    // Titre encore en attente à la fin du journal (jamais chanté ni retiré) : la coupure ne déplace pas l'ouverture.
+    assert.equal(opened([e(20, 'person.joined', { personId: 'pB', tableId: '2' }),
+      e(21, 'song.requested', { personId: 'pB', entryId: 'b1', title: 'Jamais chanté' }),
+      e(40, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]), T(0));
+    // File vidée juste avant d'éteindre le PC (dernier événement), KaraFun reconnecté au redémarrage : plus rien
+    // n'attendait, la nuit sépare la soirée.
+    assert.equal(opened([e(20, 'person.joined', { personId: 'pB', tableId: '2' }),
+      e(21, 'song.requested', { personId: 'pB', entryId: 'b1', title: 'Retiré' }),
+      e(30, 'song.removed', { personId: 'pB', entryId: 'b1', by: 'staff' }),
+      e(700, 'app.started', { restored: true, offlineMs: 670 * 60000 }),
+      e(700, 'karaoke.phase', { phase: 'silent', blocker: 'empty' })]), T(700));
+    // Journal commencé KaraFun pas encore connecté, connexion 15 min après, avant toute demande : ouverture à la connexion.
+    const lateLink = computeStats({ meta: { startedAt: T(0), endedAt: T(300) }, events: [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+      e(0, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }), e(15, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(20, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(21, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Premier' }),
+      e(30, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], source: 'queue', title: 'Premier', durationSec: 240 }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }), e(300, 'evening.closed', { by: 'staff-reset' }),
+    ] });
+    assert.equal(lateLink.evening.openedAt, T(15));
   });
 
   test('KaraFun quitté pendant un titre puis rouvert bien plus tard : le passage finit à la coupure', () => {
@@ -1451,6 +1472,19 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     const stats = computeStats({ meta: { startedAt: T(0), endedAt: T(100) }, events });
     assert.equal(singerOf(stats, 'pA').firstTurnSec, (90 - 60) * 60);
     assert.equal(stats.global.firstTurnAvgSec, (90 - 60) * 60);
+    // Essai retiré avant une coupure de la nuit, nouvelle demande le soir : compté depuis cette demande.
+    const trial = computeStats({ meta: { startedAt: T(0), endedAt: T(1200) }, events: [
+      e(0, 'evening.started', { rules: {} }), e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(20, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(21, 'song.requested', { personId: 'pA', entryId: 'essai', title: 'Essai' }),
+      e(23, 'song.removed', { personId: 'pA', entryId: 'essai', by: 'staff' }),
+      e(40, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }), e(980, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(991, 'song.requested', { personId: 'pA', entryId: 'a1', title: 'Premier' }),
+      e(1000, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['pA'], ownerId: 'pA', source: 'queue', title: 'Premier', durationSec: 240 }),
+      e(1004, 'stage.ended', { queueId: 1, playedSec: 240 }), e(1200, 'evening.closed', { by: 'staff-reset' }),
+    ] });
+    assert.equal(trial.evening.openedAt, T(980));
+    assert.equal(singerOf(trial, 'pA').firstTurnSec, (1000 - 991) * 60);
   });
 
   test('fermeture notée avant l’heure (plus aucun titre ne tient) : la soirée finit à l’heure annoncée', () => {
