@@ -16,7 +16,7 @@ import java.util.Set;
  * round, and `spacing` other songs before a person returns when another
  * passage of the round allows it. Medium: once per round (with bonus/malus credits),
  * nobody sees someone sing twice during their own wait when another allowed
- * passage avoids it (not in EQUAL rotation, after the table rule in SQRT),
+ * passage avoids it (after the table rule in EQUAL, and in SQRT when tables can alternate),
  * no table twice in a row when another can sing, spacing
  * of a returning person, and each table's share of the round. Soft: stability
  * versus the order proposed by the Node process.
@@ -128,14 +128,16 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // Patience (lib/scheduler/rotation.js#_patient): among the allowed
             // passages, those that make the fewest waiting people see someone
             // sing twice. PEOPLE: before the table rule, which only breaks ties.
-            // SQRT: the table rule first, then patience among the other tables.
-            // EQUAL: table rotation at all costs, no patience step. Node applies
-            // it before the plan, so a plan that breaks it is never followed:
-            // it costs almost as much as leaving the fair choices.
+            // SQRT: the table rule first when no table holds more than half of
+            // the ready titles (a round without the same table twice exists),
+            // patience first otherwise. EQUAL: the table rule always first,
+            // then patience among the other tables. Node applies it before the
+            // plan, so a plan that breaks it is never followed: it costs almost
+            // as much as leaving the fair choices.
             List<Performance> patient = allowedNow;
             Map<Performance, Integer> doubles = new HashMap<>();
             int least = 0;
-            if (allowedNow.size() > 1 && plan.getRotation() != QueuePlan.Rotation.EQUAL) {
+            if (allowedNow.size() > 1) {
                 Map<String, Integer> waits = waitStarts(candidates, lastSeen, plan);
                 int[] sorted = waits.values().stream().mapToInt(Integer::intValue).sorted().toArray();
                 for (Performance c : allowedNow) doubles.put(c, doubled(c, waits, sorted, lastSeen, appeared, plan));
@@ -143,7 +145,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 int most = doubles.values().stream().mapToInt(Integer::intValue).max().orElse(0);
                 if (most > fewest) {
                     List<Performance> base = allowedNow;
-                    if (plan.getRotation() == QueuePlan.Rotation.SQRT) {
+                    if (tablesFirst(plan, candidates)) {
                         List<Performance> offTable = new ArrayList<>();
                         for (Performance c : allowedNow) if (!overlaps(c.getGroups(), prior)) offTable.add(c);
                         if (!offTable.isEmpty()) base = offTable;
@@ -273,6 +275,16 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             if (last != null && last > UNKNOWN && pos - last <= spacing) return false;
         }
         return true;
+    }
+
+    // Patience before or after the table rule, as in lib/scheduler/rotation.js#_patient.
+    private static boolean tablesFirst(QueuePlan plan, List<Performance> candidates) {
+        if (plan.getRotation() == QueuePlan.Rotation.EQUAL) return true;
+        if (plan.getRotation() != QueuePlan.Rotation.SQRT) return false;
+        Map<String, Integer> sizes = new HashMap<>();
+        for (Performance c : candidates) sizes.merge(c.getGroups().get(0), 1, Integer::sum);
+        int largest = sizes.values().stream().mapToInt(Integer::intValue).max().orElse(0);
+        return largest * 2 <= candidates.size();
     }
 
     // Wait start of each protected person (owner of a candidate title, no

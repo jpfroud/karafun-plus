@@ -33,8 +33,9 @@
  * - Patience : personne ne voit quelqu'un chanter deux fois pendant sa propre
  *   attente quand un autre passage permis l'évite. Selon le mode (choix du
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
- *   règle des tables, « Compromis » après, « Tables à tour de rôle » garde la
- *   rotation des tables coûte que coûte. Un bonus peut doubler, un malus
+ *   règle des tables ; « Compromis » après, quand les effectifs permettent
+ *   d'alterner les tables sur tout un tour, avant sinon ; « Tables à tour de
+ *   rôle » toujours après (rotation coûte que coûte). Un bonus peut doubler, un malus
  *   n'est pas protégé. Un titre échangé (retrait du dernier titre puis ajout,
  *   sans passage entre les deux) garde l'attente en cours.
  * - Le bar peut accorder un bonus ou un malus (niveaux -3 à +3) à une table

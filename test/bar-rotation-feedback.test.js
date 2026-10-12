@@ -459,10 +459,12 @@ test('titre échangé sans passage entre le retrait et l’ajout : la prévision
 
 // Choix du bar après le 12 octobre : quand les tables n'ont pas le même
 // nombre de titres prêts (4 contre 3), la règle de patience passe avant la
-// règle des tables. Au changement de tour, la même table chante deux fois de
-// suite plutôt que de faire voir à quelqu'un un passage en double.
-test('tables inégales : la patience passe avant la règle des tables', () => {
-  const s = new Scheduler();
+// règle des tables en « Chacun son tour », et aussi en « Compromis », où
+// aucun tour sans la même table deux fois de suite n'existe alors. Au
+// changement de tour, la même table chante deux fois de suite plutôt que de
+// faire voir à quelqu'un un passage en double.
+for (const [mode, opts] of [['chacun son tour', {}], ['compromis', { tableRotation: true, weightedTables: true }]]) test(`${mode}, tables inégales : la patience passe avant la règle des tables`, () => {
+  const s = new Scheduler(opts);
   s.setHeadcount('A', 6);
   s.setHeadcount('B', 6);
   const people = ['A1', 'B1', 'A2', 'B2', 'A3', 'B3', 'A4'].map(name => s.join({ tableId: name[0], name }));
