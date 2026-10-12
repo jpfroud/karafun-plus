@@ -193,3 +193,20 @@ test('titre passé dont la personne chante en invitée juste devant : présence 
   }
   assert.deepEqual(real, forecast, 'la prévision montrait déjà cet ordre');
 });
+
+// Relecture : le guide dit qu'un titre retiré faute de « Je suis là »
+// n'envoie pas la personne en fin de tour (son titre suivant est annoncé
+// aussitôt, avec une nouvelle demande) et que « Marquer parti » arrête ces
+// annonces.
+test('titre retiré faute de présence avec un autre titre : le suivant est annoncé aussitôt, « Marquer parti » l’arrête', () => {
+  const s = new Scheduler({ requirePresence: true });
+  const ppl = ['Alice', 'Bruno', 'Chloé', 'Dan'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  for (const p of ppl) { s.chooseSong(p, song()); s.chooseSong(p, song(), 'append'); }
+  const [alice] = ppl;
+  assert.equal(s.reservePresenceNext().ids[0], alice.id);
+  assert.equal(s.skipUnconfirmed(alice.id, 1).removed, true);
+  assert.equal(s.songsOf(alice).length, 1);
+  assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
+  s.leave(alice, 'staff');
+  assert.notEqual(s.reservePresenceNext()?.ids[0], alice.id, '« Marquer parti » arrête les annonces');
+});

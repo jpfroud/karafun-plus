@@ -34,9 +34,10 @@ public class QueuePlan {
     private Map<String, Double> personWeights;
     private Map<String, Double> tableWeights;
     /**
-     * SQRT rotation: weight sum, per table, of the named people not marked as left who have a title in
+     * SQRT rotation: weight sum, per table, of the named people who have not left who have a title in
      * their list (ready or not) or already sang one of their own titles tonight (Node
-     * rotation.js#_registeredWeights); names without a title and duet guests without one are not counted.
+     * rotation.js#_registeredWeights); people with neither are not counted, and singing as a duet guest
+     * does not count as singing one of their own titles.
      */
     private Map<String, Double> groupSizes = Map.of();
     private List<List<String>> history;

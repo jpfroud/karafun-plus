@@ -295,10 +295,11 @@ class Scheduler {
   // confirmations, notes et photos n'y figurent pas : la fin d'une chanson ou
   // une inscription sans titre ne relancent donc pas Timefold. En
   // « Compromis », la part d'une table suit ses chanteurs inscrits
-  // (_registeredWeights) : un départ, un premier titre ou le retrait du dernier
-  // titre de quelqu'un qui n'a pas encore chanté, à une table qui a un titre
-  // en attente (prêt ou non) ou l'invitée d'un duo accepté, la relance ; pas
-  // un changement à une table sans titre en attente.
+  // (_registeredWeights) : un changement de ce nombre (départ de quelqu'un
+  // qui compte, premier titre, retrait du dernier titre de quelqu'un qui n'a
+  // pas encore chanté) à une table présente dans la file (titre en attente,
+  // prêt ou non, ou invitée d'un duo accepté) la relance ; pas à une autre
+  // table.
   solverContextFingerprint() {
     const readyQ = this.Q.filter(pid => {
       const p = this.people.get(pid);

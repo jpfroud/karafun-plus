@@ -903,6 +903,42 @@ test('compromis : un chanteur sans titre prêt qui part change l’empreinte du 
   assert.equal(u.solverContextFingerprint(), kept, 'table sans titre prêt : plan gardé');
 });
 
+// Relecture : la table de l'invitée d'un duo accepté entre aussi dans le plan
+// Timefold ; un changement de ses chanteurs inscrits le redemande.
+test('compromis : la table de l’invitée d’un duo accepté relance aussi le plan', () => {
+  const v = new Scheduler({ tableRotation: true, weightedTables: true });
+  for (const t of ['A', 'G', 'C']) v.setHeadcount(t, 4);
+  const va = v.join({ tableId: 'A', name: 'A1' }), vc = v.join({ tableId: 'C', name: 'C1' });
+  const g = v.join({ tableId: 'G', name: 'G1' }), g2 = v.join({ tableId: 'G', name: 'G2' });
+  v.chooseSong(g2, song(30)); v.chooseSong(va, song(31)); v.chooseSong(vc, song(32));
+  v.chooseSong(va, song(33), 'append'); v.chooseSong(vc, song(34), 'append');
+  for (let i = 0; i < 6 && !g2.sung; i++) { const sel = v.select(); v.commit(sel); v.songEnded(sel.ids); }
+  assert.ok(g2.sung && !v.songsOf(g2).length && !v.songsOf(g).length);
+  v.inviteDuet(va, g.id, song(35)); v.answerDuet(g, true, v.songsOf(va).at(-1).entryId);
+  const duoKept = v.solverContextFingerprint();
+  v.leave(g2);
+  assert.notEqual(v.solverContextFingerprint(), duoKept, 'table de l’invitée d’un duo accepté : plan relancé');
+});
+
+// Relecture : la page et le guide promettent une échelle précise en
+// « Compromis » (racine de la taille) : une table de 4 compte comme 2
+// solistes, une table de 9 comme 3.
+test('compromis : une table de 4 compte comme 2 solistes, une table de 9 comme 3', () => {
+  const s = new Scheduler({ tableRotation: true, weightedTables: true });
+  let k = 1;
+  const seat = (t, size) => {
+    s.setHeadcount(t, size);
+    return Array.from({ length: size }, (_, i) => {
+      const p = s.join({ tableId: t, name: `${t}${i}` });
+      s.chooseSong(p, song(k++));
+      return p;
+    });
+  };
+  const [a, b, c] = [seat('A', 4), seat('B', 9), seat('C', 1)];
+  const w = s._groupWeights([...a, ...b, ...c].map(p => ({ ids: [p.id], groups: [p.group] })));
+  assert.deepEqual([w.get(a[0].group), w.get(b[0].group), w.get(c[0].group)], [2, 3, 1]);
+});
+
 // Relecture : titre retiré juste avant ou pendant l'envoi d'un passage
 // ensuite annulé, puis rechoisi : l'attente continue, à sa place.
 test('échange de titre autour d’un passage annulé : l’attente continue', () => {
