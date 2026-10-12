@@ -8,14 +8,15 @@
  * - présence : de l'inscription (ou du retour) au départ signalé ; sans
  *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun à
- *   la fermeture (heure de fermeture en vigueur au début du dernier titre,
- *   avec les changements faits avant qu'elle passe, sauf le retrait
- *   d'« Options par défaut » fait après le début du dernier titre, ou fin du
- *   dernier passage s'il finit plus tard ; plus tôt, déconnexion de
- *   KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min,
- *   ou application arrêtée pendant au moins 30 min à partir du début du
- *   dernier titre ; sinon fin du journal). Les arrêts de l'application sont
- *   retirés.
+ *   la fermeture. Fermeture : heure de fermeture en vigueur au début du
+ *   dernier titre, avec les changements faits avant qu'elle passe ; une fois
+ *   passée, seule une prolongation faite dans les 30 min la repousse ; le
+ *   retrait d'« Options par défaut » fait après le début du dernier titre ne
+ *   compte pas. Si le dernier passage finit plus tard, sa fin. Plus tôt :
+ *   déconnexion de KaraFun pendant ou après le dernier titre, sauf retour
+ *   dans les 30 min, ou application arrêtée pendant au moins 30 min à partir
+ *   du début du dernier titre. Sinon, fin du journal. Les arrêts de
+ *   l'application sont retirés.
  * - passage : un titre de la file réellement lancé sur scène (stage.started).
  *   Un titre envoyé puis retiré de KaraFun ne compte pas ; une relance non plus.
  * - attente : du moment où le titre pouvait passer (sa demande, ou la fin du
@@ -62,7 +63,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe, sauf le retrait d’« Options par défaut » fait après le début du dernier titre, ou fin du dernier passage s’il finit plus tard ; plus tôt, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre ; sinon fin du journal). Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké, de la connexion de la télécommande KaraFun à la fermeture. Fermeture : heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe ; une fois passée, seule une prolongation faite dans les 30 min la repousse ; le retrait d’« Options par défaut » fait après le début du dernier titre ne compte pas. Si le dernier passage finit plus tard, sa fin. Plus tôt : déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre. Sinon, fin du journal. Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -656,7 +657,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     const inForce = closingChanges.filter(([at]) => at <= from).at(-1);
     let hour = inForce?.[1] ?? null, setAt = inForce?.[0] ?? -Infinity, passedAt = null;
     for (const [at, next, reset] of closingChanges.filter(([at]) => at > from && at <= until)) {
-      if (reset) continue;
+      if (reset && lastStageStart != null) continue;
       if (passedAt == null && hour != null && hour <= at) passedAt = Math.max(hour, setAt);
       if (passedAt == null || (next != null && next > at && at - passedAt < REOPEN_MS)) {
         hour = next; setAt = at; passedAt = null;
@@ -682,8 +683,11 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const eveningOffline = offline.map(inEvening).filter(([a, b]) => b > a);
   const eveningRestarts = list.filter(e => e.ev === 'app.started' && e.restored && ((e.t >= openedAt && e.t <= closedAt) ||
     eveningOffline.some(([a, b]) => e.t - (e.offlineMs || 0) < b && e.t > a))).length;
+  // Silences comblés par Spotify pendant le karaoké seulement : ni l'après-midi
+  // avant la connexion de KaraFun, ni la nuit après la fermeture.
   for (const silence of spotify.silences) {
     silence.end = Math.max(Math.min(silence.end, closedAt), Math.min(silence.start, closedAt));
+    silence.start = Math.min(Math.max(silence.start, openedAt), silence.end);
     if (silence.end < E1 && silence.ongoing) silence.ongoing = false;
   }
   spotify.silences = spotify.silences.filter(silence => silence.end > silence.start);
@@ -807,8 +811,10 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     waitSpread: singerWaits.filter(w => w > 0).length >= 2 ?
       round(Math.max(...singerWaits) / Math.max(1, Math.min(...singerWaits.filter(w => w > 0))), 2) : null,
     waitJain: round(jain(singerWaits), 3),
-    neverSang: singers.filter(s => s.requests > 0 && s.appearances === 0).length,
-    neverSangLeft: singers.filter(s => s.requests > 0 && s.appearances === 0 && s.explicitLeft).length,
+    // Présents pendant le karaoké seulement : une arrivée après la fermeture
+    // n'est pas un passage manqué de la rotation.
+    neverSang: singers.filter(s => s.requests > 0 && s.appearances === 0 && s.presenceSec > 0).length,
+    neverSangLeft: singers.filter(s => s.requests > 0 && s.appearances === 0 && s.presenceSec > 0 && s.explicitLeft).length,
     fairRate: round(fairRate, 2),
   };
 

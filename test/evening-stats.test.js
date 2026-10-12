@@ -855,6 +855,9 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     assert.equal(end(quit), T(120));
     assert.equal(end(quit, { live: true, now: T(160) }), T(120));
     assert.equal(end(quit, { live: true, now: T(130) }), null, 'coupure de 10 min : la soirée reste en cours');
+    // Soirée close 20 min après avoir quitté KaraFun : la coupure compte déjà, rien ne peut plus la suivre.
+    const quickClose = [...base(), ...quit, e(140, 'evening.closed', { by: 'staff-reset' })];
+    assert.equal(computeStats({ meta: { startedAt: T(0), endedAt: T(140) }, events: quickClose }).evening.closedAt, T(120));
     // Retrait de l'heure après le dernier titre, avant qu'elle passe : plus de fermeture.
     assert.equal(end([e(150, 'closing.cleared')]), null);
     // Retrait dans les 30 min après l'heure passée : ignoré (seule une prolongation rouvre).
@@ -937,6 +940,8 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     // Application redémarrée 9 min pendant le titre, plus rien sur scène au retour : titre fini.
     const restart = [e(205, 'app.started', { restored: true, offlineMs: 9 * 60000 })];
     assert.equal(live(restart, 207).evening.closedAt, T(200));
+    // Arrêt compté depuis le dernier événement noté, ici le début du titre.
+    assert.equal(live([e(205, 'app.started', { restored: true, offlineMs: 10 * 60000 })], 207).evening.closedAt, T(200));
     assert.equal(archived(restart, 300), T(200));
     // Même redémarrage, titre retrouvé sur scène au retour : encore en cours.
     const back = live([...restart, e(205, 'stage.started', { queueId: 2, source: 'native', title: 'Dernier', durationSec: 240 })], 207);
@@ -1106,6 +1111,51 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     ];
     const pA = singerOf(computeStats({ meta: { startedAt: T(0), endedAt: T(100) }, events }), 'pA');
     assert.deepEqual([pA.presenceSec, pA.leftAt, pA.rawLeftAt, pA.explicitLeft], [0, null, T(20), true]);
+  });
+
+  test('karaoké seulement : Spotify avant la connexion de KaraFun, demande après la fermeture, « Options par défaut » avant tout titre', () => {
+    const e = evening();
+    const start = [
+      e(0, 'evening.started', { rules: {} }), e(0, 'app.started', { restored: false, offlineMs: 0 }),
+    ];
+    // Spotify lancé par le bar l'après-midi, coupé au premier titre : seul le silence du karaoké compte.
+    const spotify = [...start,
+      e(0, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+      e(10, 'spotify', { action: 'resume', result: 'done', trigger: 'staff' }),
+      e(60, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(70, 'spotify', { action: 'pause', result: 'done', trigger: 'auto' }),
+      e(70, 'stage.started', { queueId: 1, source: 'native', title: 'Premier' }),
+      e(74, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(100, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const g = computeStats({ meta: { startedAt: T(0), endedAt: T(100) }, events: spotify }).global;
+    assert.deepEqual([g.spotify.silences, g.spotify.silenceSec], [1, 10 * 60]);
+    // Arrivée après la fermeture : sa demande n'est pas un passage manqué de la rotation.
+    const late = [...start,
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(5, 'closing.set', { closingAt: T(60) }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'person.joined', { personId: 'pC', tableId: '3' }),
+      e(21, 'song.requested', { personId: 'pC', entryId: 'c1', title: 'Jamais chanté' }),
+      e(30, 'stage.started', { queueId: 1, source: 'native', title: 'Dernier' }),
+      e(34, 'stage.ended', { queueId: 1, playedSec: 240 }),
+      e(80, 'person.joined', { personId: 'pB', tableId: '2' }),
+      e(81, 'song.requested', { personId: 'pB', entryId: 'b1', title: 'Trop tard' }),
+      e(200, 'evening.closed', { by: 'staff-reset' }),
+    ];
+    const after = computeStats({ meta: { startedAt: T(0), endedAt: T(200) }, events: late });
+    assert.equal(after.evening.closedAt, T(60));
+    assert.equal(singerOf(after, 'pB').presenceSec, 0);
+    assert.equal(after.fairness.neverSang, 1, 'pC, présente pendant le karaoké ; pas pB, arrivé après');
+    // « Options par défaut » avant tout titre : l'heure est retirée, comme un retrait du bar.
+    const noStage = reason => computeStats({ meta: { startedAt: T(0) }, now: T(200), live: true, events: [...start,
+      e(0, 'karaoke.phase', { phase: 'silent', blocker: 'empty' }),
+      e(10, 'person.joined', { personId: 'pA', tableId: '1' }),
+      e(20, 'closing.set', { closingAt: T(180) }),
+      e(30, 'closing.cleared', reason ? { reason } : {}),
+    ] }).evening.closedAt;
+    assert.equal(noStage(null), null);
+    assert.equal(noStage('settings-reset'), null);
   });
 
   test('heure de fermeture réglée, PC éteint après le dernier titre et avant l’heure : la soirée finit à l’arrêt, sans redémarrage', () => {
