@@ -4258,11 +4258,15 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   await page.click(page.$('resetSettings'));
   assert.match(page.confirms.at(-1), /Les 2 titres prévus après l’heure de fermeture partiront aussi vers KaraFun : vide la file d’abord si la soirée est finie/);
   assert.doesNotMatch(page.confirms.at(-1), /retenus? par la fermeture/);
-  // Place encore avant l'heure : rien n'est retenu.
+  page.world.closing = { ...page.world.closing, afterCount: 1 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /Le titre prévu après l’heure de fermeture partira aussi vers KaraFun : vide la file d’abord si la soirée est finie\./);
+  // Place encore avant l'heure : aucun avertissement.
   page.world.closing = { at: Date.now() + 3600000, passed: false, full: false, fitCount: 3, afterCount: 2 };
   await page.poll();
   await page.click(page.$('resetSettings'));
-  assert.doesNotMatch(page.confirms.at(-1), /retenus? par la fermeture/);
+  assert.doesNotMatch(page.confirms.at(-1), /vide la file d’abord|prévus? après l’heure de fermeture|retenus? par la fermeture/);
   // Envoi automatique gardé coupé par le serveur : rien ne repart.
   page.world.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 2 };
   page.world.persistenceError = 'disque plein';

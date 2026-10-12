@@ -9,8 +9,9 @@
  *   départ signalé, jusqu'au dernier signe d'activité + 30 min. Elle reste
  *   dans la soirée du karaoké : de la connexion de la télécommande KaraFun à
  *   la fermeture (heure de fermeture en vigueur au début du dernier titre,
- *   avec les changements faits avant qu'elle passe, ou fin du dernier
- *   passage s'il finit plus tard ; plus tôt, déconnexion de
+ *   avec les changements faits avant qu'elle passe, sauf le retrait
+ *   d'« Options par défaut » fait après le début du dernier titre, ou fin du
+ *   dernier passage s'il finit plus tard ; plus tôt, déconnexion de
  *   KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min,
  *   ou application arrêtée pendant au moins 30 min à partir du début du
  *   dernier titre ; sinon fin du journal). Les arrêts de l'application sont
@@ -61,7 +62,7 @@ const CAUSES = {
 const NOT_DEAD = new Set(['empty', 'closing']);
 
 const DEFINITIONS = {
-  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe, ou fin du dernier passage s’il finit plus tard ; plus tôt, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre ; sinon fin du journal). Les arrêts de l’application sont retirés.',
+  presence: 'De l’inscription (ou du retour) au départ signalé. Sans départ signalé : jusqu’au dernier signe d’activité + 30 min. Comptée seulement pendant le karaoké : de la connexion de la télécommande KaraFun à la fermeture (heure de fermeture en vigueur au début du dernier titre, avec les changements faits avant qu’elle passe, sauf le retrait d’« Options par défaut » fait après le début du dernier titre, ou fin du dernier passage s’il finit plus tard ; plus tôt, déconnexion de KaraFun pendant ou après le dernier titre, sauf retour dans les 30 min, ou application arrêtée pendant au moins 30 min à partir du début du dernier titre ; sinon fin du journal). Les arrêts de l’application sont retirés.',
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
@@ -260,7 +261,8 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const settingsChanges = [];
   let queueClearedAt = null;
   let lastClosingReached = null;
-  const closingChanges = []; // [heure du changement, heure de fermeture ou null]
+  // [heure du changement, heure de fermeture ou null, retrait d'« Options par défaut »]
+  const closingChanges = [];
 
   const reopen = (stage, queueId, now) => {
     for (const [qid, value] of openStages) if (value === stage) openStages.delete(qid);
