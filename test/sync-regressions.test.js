@@ -8,7 +8,7 @@ const { createRequire } = require('node:module');
 const { Scheduler } = require('../scheduler');
 const { TableAccess } = require('../table-access');
 const { snapshotNight, restoreNight } = require('../night-state');
-const { KaraFunBridge, BATTLE_MOD, isBattleItem, normalizeKcsItem, battleModFor } = require('../karafun');
+const { KaraFunBridge, BATTLE_MOD, isBattleItem, normalizeKcsItem } = require('../karafun');
 
 const root = path.join(__dirname, '..');
 const fromServer = createRequire(path.join(root, 'server.js'));
