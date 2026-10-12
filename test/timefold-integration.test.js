@@ -663,3 +663,33 @@ test('avec Timefold actif, deux tables de 4 et une personne seule gardent l’or
       assert.deepEqual(planned.slice(9), planned.slice(0, 9), 'le 2e tour reprend l’ordre du 1er');
     } finally { s.closeSolver(); }
   });
+
+// Relecture : le score Java applique la règle de patience. Un ordre qui fait
+// voir à quelqu'un un passage en double coûte au moins 4 000 en « medium »,
+// moins que sortir des choix équitables (5 000).
+test('QueueScore : un ordre qui fait voir un double coûte au moins 4 000 en medium', { skip: !fs.existsSync(JAR) }, async () => {
+  const s = new Scheduler();
+  s.setHeadcount('A', 6); s.setHeadcount('B', 6);
+  const names = ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4'];
+  const people = new Map(names.map(name => [name, s.join({ tableId: name === 'S' ? 'Comptoir' : name[0], name })]));
+  let n = 9300;
+  for (const name of names) for (let k = 0; k < 2; k++) s.chooseSong(people.get(name), { songId: n++, title: `${name} ${k}`, artist: 'x' }, 'append');
+  const first = s.select(); s.commit(first); s.songEnded(first.ids);
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  const nameOf = row => s.people.get(row.owner).name;
+  const node = request.performances;
+  const i = node.findIndex((row, k) => k > 8 && nameOf(row) === 'B2');
+  const broken = node.slice(); [broken[i], broken[i + 1]] = [broken[i + 1], broken[i]];
+  assert.equal(nameOf(broken[i]), 'S');
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge();
+  try {
+    const seed = async (rows, id) => (await bridge.solve({ ...request, requestId: id, budgetMs: 100,
+      performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore;
+    const kept = medium(await seed(node, 'patience-kept')), doubled = medium(await seed(broken, 'patience-broken'));
+    assert.ok(doubled <= kept - 4000, `${doubled} contre ${kept}`);
+    assert.ok(doubled > kept - 5000 - 2000, `pénalité plafonnée : ${doubled} contre ${kept}`);
+  } finally { bridge.close(); }
+});

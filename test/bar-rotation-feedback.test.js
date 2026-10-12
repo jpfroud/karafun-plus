@@ -580,3 +580,168 @@ test('échange de titre : retrait du bar sans titre, passage annulé, liste revi
     assert.equal(p.emptiedAt, undefined, 'la marque d’échange sert une seule fois');
   }
 });
+
+// Relecture : dans les modes de rotation des tables, la patience choisit
+// encore entre les passages des autres tables. Tables équilibrées, chacun
+// reprend un titre : au plus un double au recalage, jamais deux fois la même
+// table.
+for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }],
+  ['compromis', { tableRotation: true, weightedTables: true }]]) {
+  test(`${mode}, tables équilibrées : la patience départage les autres tables`, () => {
+    const s = new Scheduler(opts);
+    for (const t of ['A', 'B', 'C', 'D']) s.setHeadcount(t, 8);
+    const people = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'D1'].map(name => s.join({ tableId: name[0], name }));
+    let n = 1;
+    for (const p of people) s.chooseSong(p, song(n++), 'append');
+    const played = [];
+    for (let i = 0; i < 28; i++) {
+      const selected = s.select(); s.commit(selected); s.songEnded(selected.ids); played.push(selected);
+      s.chooseSong(s.people.get(selected.ids[0]), song(n++), 'append');
+    }
+    assert.ok(doublesDuringWait(played) <= 1, played.map(x => x.names.join('&')).join(' '));
+    assert.equal(tableRuns(played).same, 0);
+  });
+}
+
+// Un malus n'est pas protégé par la patience : la personne seule, passée
+// pendant l'attente de B2, peut repasser devant elle.
+test('malus : la personne n’est pas protégée par la patience', () => {
+  const { s } = twoTablesAndSolo();
+  for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  const order = () => s.readyView().map(x => x.name);
+  assert.ok(order().indexOf('B2') < order().indexOf('S'), order().join(' '));
+  const b2 = [...s.people.values()].find(p => p.name === 'B2');
+  s.setPersonBonus(b2.id, -1);
+  assert.ok(order().indexOf('S') < order().indexOf('B2'), order().join(' '));
+});
+
+// Retrait du dernier titre, un passage, puis ajout : ce n'est pas un échange,
+// l'attente recommence et la personne seule passe devant.
+test('retrait du dernier titre, un passage, puis ajout : l’attente recommence', () => {
+  const { s, more } = twoTablesAndSolo();
+  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); };
+  for (let i = 0; i < 9; i++) play();
+  const b2 = [...s.people.values()].find(p => p.name === 'B2');
+  const swapped = s.readyView().map(x => x.name);
+  assert.ok(swapped.indexOf('B2') < swapped.indexOf('S'), swapped.join(' '));
+  s.removeSong(b2, s.songsOf(b2)[0].entryId, 'self');
+  play();
+  s.chooseSong(b2, more(), 'append');
+  const order = s.readyView().map(x => x.name);
+  assert.ok(order.indexOf('S') < order.indexOf('B2'), order.join(' '));
+});
+
+// Duo : ses propres chanteurs ne comptent pas comme doublés.
+test('duo : ses propres chanteurs ne comptent pas comme doublés', () => {
+  const s = new Scheduler();
+  for (const t of ['A', 'B', 'C']) s.setHeadcount(t, 6);
+  const [b0, c1, c2, b3] = [['B', 'B0'], ['C', 'C1'], ['C', 'C2'], ['B', 'B3']].map(([tableId, name]) => s.join({ tableId, name }));
+  let n = 1;
+  for (const p of [b0, c1, c2, b3]) s.chooseSong(p, song(n++));
+  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel.names; };
+  assert.deepEqual(play(), ['B0']);
+  s.inviteDuet(b0, b3.id, song(n++));
+  assert.deepEqual(play(), ['C2']);
+  s.chooseSong(c2, song(n++));
+  assert.deepEqual(play(), ['B3']);
+  assert.deepEqual(play(), ['C1']);
+  assert.deepEqual(play(), ['B0', 'B3']);
+});
+
+// Relecture : un déplacement du bar ne touche que la ligne déplacée, dans
+// tous les modes, même si l'ordre gardé fait alors voir un double.
+for (const [mode, opts] of modes) {
+  test(`${mode} : un déplacement du bar garde l’ordre des autres lignes`, () => {
+    let broken = 0, total = 0;
+    for (let seed = 1; seed <= 30; seed++) {
+      const s = new Scheduler(opts);
+      const random = rng(seed);
+      let n = 1;
+      for (let t = 0; t < 3; t++) {
+        s.setHeadcount(`T${t}`, 6);
+        const count = 1 + Math.floor(random() * 4);
+        for (let k = 0; k < count; k++) {
+          const p = s.join({ tableId: `T${t}`, name: `T${t}-${k}` });
+          s.chooseSong(p, song(n++), 'append'); s.chooseSong(p, song(n++), 'append');
+        }
+      }
+      for (let i = 0; i < 4; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+      const before = s.presenceView().filter(v => !v.future).map(v => v.ids[0]);
+      if (before.length < 4) continue;
+      const moved = before[before.length - 1];
+      s.staffMove(moved, 1);
+      const after = s.presenceView().filter(v => !v.future).map(v => v.ids[0]);
+      const others = list => list.filter(pid => pid !== moved);
+      total++;
+      if (JSON.stringify(others(after)) !== JSON.stringify(others(before))) broken++;
+    }
+    assert.ok(total >= 20, `${total} essais`);
+    assert.equal(broken, 0, `${broken} déplacements sur ${total} ont bougé d’autres lignes`);
+  });
+}
+
+// Relecture : un duo corrigé sur un passage ancien ne fait pas reculer le
+// dernier passage du nouveau partenaire, qui garde sa place.
+test('duo corrigé sur un passage ancien : le partenaire garde sa place', () => {
+  const s = new Scheduler();
+  const names = ['O', 'Q', 'B', 'C', 'D', 'P', 'E'];
+  const people = Object.fromEntries(names.map((name, i) => {
+    s.setHeadcount(`S${i}`, 4);
+    const p = s.join({ tableId: `S${i}`, name });
+    for (let k = 0; k < 3; k++) s.chooseSong(p, song(i * 10 + k + 1), 'append');
+    return [name, p];
+  }));
+  const played = [];
+  for (let i = 0; i < names.length; i++) {
+    const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); played.push(sel);
+  }
+  const first = played.find(sel => sel.ids[0] === people.O.id);
+  const lastP = people.P.lastAppearanceTurn;
+  s.staffCountPartner(people.O.id, people.Q.id, first);
+  s.staffUncountPartner(first.staffDuo, first, []);
+  s.staffCountPartner(people.O.id, people.P.id, { song: { entryId: first.song.entryId }, turn: people.O.lastAppearanceTurn });
+  assert.equal(people.P.lastAppearanceTurn, lastP);
+  const order = s.readyView().map(v => v.name);
+  assert.ok(order.indexOf('P') > order.indexOf('D'), order.join(' '));
+});
+
+// Relecture : un titre envoyé puis remis en file (« Pas prêt », retrait du
+// bar) rend à sa personne son début d'attente, même si elle a choisi un autre
+// titre entre-temps.
+test('passage remis en file : la personne retrouve son début d’attente', () => {
+  const s = new Scheduler();
+  const people = ['A', 'B', 'C', 'D', 'E'].map((name, i) => { s.setHeadcount(String(i + 1), 4); return s.join({ tableId: String(i + 1), name }); });
+  let n = 1;
+  for (const p of people) s.chooseSong(p, song(n++));
+  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel; };
+  for (let i = 0; i < 5; i++) { const sel = play(); s.chooseSong(s.people.get(sel.ids[0]), song(n++)); }
+  const sent = s.select(); s.commit(sent);
+  const owner = s.people.get(sent.ids[0]);
+  const before = owner.readySerial;
+  s.chooseSong(owner, song(n++), 'append');
+  assert.ok(owner.readySerial >= before);
+  s.rollbackUnplayed(sent, { requeue: true });
+  assert.ok(owner.readySerial <= before, `${owner.readySerial} > ${before}`);
+  assert.ok(owner.readySerial <= s.appearanceSerial);
+});
+
+// Coût (relecture) : au premier tour, aucun passage proposé n'a encore
+// chanté, la patience ne calcule aucun début d'attente ; en « Compromis »,
+// les chanteurs inscrits sont comptés une fois par prévision.
+test('patience et compromis : pas de calcul inutile pendant une prévision', () => {
+  const s = new Scheduler({ tableRotation: true, weightedTables: true });
+  let n = 1;
+  for (const t of ['T1', 'T2', 'T3']) {
+    s.setHeadcount(t, 6);
+    for (let i = 0; i < 5; i++) s.chooseSong(s.join({ tableId: t, name: `${t}P${i}` }), song(n++));
+  }
+  let waits = 0, scans = 0;
+  const patient = s._patient, registered = s._registeredWeights;
+  s._patient = function (choices, cands, lastTable, lastApp, waitStart) {
+    return patient.call(this, choices, cands, lastTable, lastApp, pid => { waits++; return waitStart(pid); });
+  };
+  s._registeredWeights = function () { scans++; return registered.call(this); };
+  s._forecast(false, [], null, true);
+  assert.equal(waits, 0, 'premier tour : aucun début d’attente calculé');
+  assert.ok(scans <= 1, `${scans} parcours des inscrits pour une prévision`);
+});

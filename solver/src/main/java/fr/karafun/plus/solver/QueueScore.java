@@ -3,6 +3,7 @@ package fr.karafun.plus.solver;
 import ai.timefold.solver.core.api.score.HardMediumSoftScore;
 import ai.timefold.solver.core.api.score.calculator.EasyScoreCalculator;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -133,24 +134,39 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // breaks it is never followed: it costs almost as much as leaving
             // the fair choices.
             List<Performance> patient = allowedNow;
-            Map<Performance, Integer> doubles = new HashMap<>();
+            int[] doubles = null;
             int least = 0;
             if (allowedNow.size() > 1) {
-                Map<String, Integer> waits = waitStarts(candidates, lastSeen, plan);
-                int[] sorted = waits.values().stream().mapToInt(Integer::intValue).sorted().toArray();
-                for (Performance c : allowedNow) doubles.put(c, doubled(c, waits, sorted, lastSeen, appeared, plan));
-                int fewest = doubles.values().stream().mapToInt(Integer::intValue).min().orElse(0);
-                int most = doubles.values().stream().mapToInt(Integer::intValue).max().orElse(0);
-                if (most > fewest) {
-                    List<Performance> base = allowedNow;
-                    if (plan.getRotation() != QueuePlan.Rotation.PEOPLE) {
-                        List<Performance> offTable = new ArrayList<>();
-                        for (Performance c : allowedNow) if (!overlaps(c.getGroups(), prior)) offTable.add(c);
-                        if (!offTable.isEmpty()) base = offTable;
+                int[] seen = new int[allowedNow.size()];
+                boolean anySeen = false;
+                for (int k = 0; k < seen.length; k++) {
+                    seen[k] = lastSung(allowedNow.get(k), lastSeen, appeared, plan);
+                    anySeen |= seen[k] > UNKNOWN;
+                }
+                if (anySeen) {
+                    int[] waits = waitStarts(candidates, lastSeen, plan);
+                    doubles = new int[seen.length];
+                    for (int k = 0; k < seen.length; k++) doubles[k] = doubled(allowedNow.get(k), seen[k], waits, lastSeen, owners, plan);
+                    int fewest = Integer.MAX_VALUE, most = Integer.MIN_VALUE;
+                    for (int count : doubles) { fewest = Math.min(fewest, count); most = Math.max(most, count); }
+                    if (most > fewest) {
+                        // Table rotation modes: patience only chooses among the
+                        // other tables; the last table's passages stay for the
+                        // table rule below, as in Node.
+                        boolean tablesFirst = plan.getRotation() != QueuePlan.Rotation.PEOPLE;
+                        boolean[] off = new boolean[seen.length];
+                        boolean anyOff = false;
+                        for (int k = 0; k < seen.length; k++) {
+                            off[k] = tablesFirst && !overlaps(allowedNow.get(k).getGroups(), prior);
+                            anyOff |= off[k];
+                        }
+                        least = Integer.MAX_VALUE;
+                        for (int k = 0; k < seen.length; k++) if (!anyOff || off[k]) least = Math.min(least, doubles[k]);
+                        patient = new ArrayList<>();
+                        for (int k = 0; k < seen.length; k++) {
+                            if ((anyOff && !off[k]) || doubles[k] == least) patient.add(allowedNow.get(k));
+                        }
                     }
-                    least = base.stream().mapToInt(doubles::get).min().orElse(0);
-                    patient = new ArrayList<>();
-                    for (Performance c : base) if (doubles.get(c) == least) patient.add(c);
                 }
             }
             if (!pinned && !allowedNow.contains(current)) {
@@ -158,7 +174,10 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 else if (!choices.contains(current)) medium -= 5_000;
                 // Otherwise only the streak was avoidable: counted below.
             } else if (!pinned && !patient.contains(current)) {
-                medium -= 4_000L * Math.max(1, doubles.get(current) - least);
+                // Below the 5_000 of leaving the fair choices: more doubles cost
+                // a little more, never as much as breaking « once per round ».
+                int extra = doubles[allowedNow.indexOf(current)] - least;
+                medium -= 4_000L + Math.min(900L, 100L * Math.max(0, extra - 1));
             }
 
             boolean overlapsPrevious = !prior.isEmpty() && overlaps(current.getGroups(), prior);
@@ -277,39 +296,46 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
 
     // Wait start of each protected person (owner of a candidate title, no
     // malus): their last appearance, or when their list stopped being empty,
-    // as for the interleave rule.
-    private static Map<String, Integer> waitStarts(List<Performance> candidates, Map<String, Integer> lastSeen,
-            QueuePlan plan) {
-        Map<String, Integer> waits = new HashMap<>();
+    // as for the interleave rule. Sorted, for doubled().
+    private static int[] waitStarts(List<Performance> candidates, Map<String, Integer> lastSeen, QueuePlan plan) {
+        int[] waits = new int[candidates.size()];
+        int count = 0;
         for (Performance other : candidates) {
             String owner = other.getOwner();
             if (weight(plan, owner) < 1 - EPS) continue;
-            waits.put(owner, Math.max(lastSeen.getOrDefault(owner, UNKNOWN),
-                    plan.getReadyAt().getOrDefault(owner, UNKNOWN)));
+            waits[count++] = Math.max(lastSeen.getOrDefault(owner, UNKNOWN), plan.getReadyAt().getOrDefault(owner, UNKNOWN));
         }
-        return waits;
+        int[] out = Arrays.copyOf(waits, count);
+        Arrays.sort(out);
+        return out;
     }
 
-    // Same as lib/scheduler/rotation.js#_patient: protected people for whom
-    // a singer of `c` (without bonus) already sang since their wait started.
-    // `sorted`: the values of `waits`, sorted.
-    private static int doubled(Performance c, Map<String, Integer> waits, int[] sorted,
-            Map<String, Integer> lastSeen, Map<String, Integer> appeared, QueuePlan plan) {
+    // Last appearance of a singer of `c` without bonus who already sang, or UNKNOWN.
+    private static int lastSung(Performance c, Map<String, Integer> lastSeen, Map<String, Integer> appeared, QueuePlan plan) {
         int seen = UNKNOWN;
         for (String singer : c.getSingers()) {
             if (weight(plan, singer) > 1 + EPS || appeared.getOrDefault(singer, 0) == 0) continue;
             seen = Math.max(seen, lastSeen.getOrDefault(singer, UNKNOWN));
         }
+        return seen;
+    }
+
+    // Same as lib/scheduler/rotation.js#_patient: protected people whose wait
+    // started before `seen`, the last appearance of a singer of `c`. `owners`:
+    // the candidates' owners, whose wait starts are in `waits`.
+    private static int doubled(Performance c, int seen, int[] waits, Map<String, Integer> lastSeen,
+                               Set<String> owners, QueuePlan plan) {
         if (seen <= UNKNOWN) return 0;
-        int lo = 0, hi = sorted.length;
+        int lo = 0, hi = waits.length;
         while (lo < hi) {
             int mid = (lo + hi) >>> 1;
-            if (sorted[mid] < seen) lo = mid + 1; else hi = mid;
+            if (waits[mid] < seen) lo = mid + 1; else hi = mid;
         }
         // The singers of `c` do not count against themselves.
         for (String singer : c.getSingers()) {
-            Integer wait = waits.get(singer);
-            if (wait != null && wait < seen) lo--;
+            if (weight(plan, singer) < 1 - EPS) continue;
+            int wait = Math.max(lastSeen.getOrDefault(singer, UNKNOWN), plan.getReadyAt().getOrDefault(singer, UNKNOWN));
+            if (wait < seen && owners.contains(singer)) lo--;
         }
         return lo;
     }
