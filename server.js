@@ -4503,8 +4503,7 @@ const handlers = {
   'POST /api/staff/person/present': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p) throw new Error('Personne introuvable.');
-    sched.dismissMaybeGone(p);
-    return { ok: true };
+    return { ok: true, message: sched.dismissMaybeGone(p) || 'Alerte déjà fermée' };
   },
   'POST /api/staff/person/reactivate': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));

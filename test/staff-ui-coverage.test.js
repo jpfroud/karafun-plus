@@ -1762,9 +1762,11 @@ test('alertes et notifications du bar : sonnerie, personnes parties, avis KaraFu
   assert.equal(gone.querySelector('span').textContent,
     'Bruno (Table 1) n’a pas répondu à « Je suis là » 3 fois : « Chanson A » a été retiré de sa liste. Cette personne est-elle encore là ?');
   assert.match(page.in('staffAlerts', '[data-gone="x"]').textContent, /^X n’a pas répondu/);
+  page.replies['/api/staff/person/present'] = { ok: true, message: 'Alerte fermée : sa liste est vide : si elle est là, elle doit rechoisir un titre' };
   await page.click(gone.querySelector('[data-gone-present]'));
   assert.deepEqual(page.lastPost('/api/staff/person/present').body, { personId: 'bruno' });
-  assert.equal(page.toast().text, 'Alerte fermée : son prochain titre redemande « Je suis là »');
+  assert.equal(page.toast().text, 'Alerte fermée : sa liste est vide : si elle est là, elle doit rechoisir un titre', 'le message du serveur dit la suite');
+  delete page.replies['/api/staff/person/present'];
   page.confirmAnswer = false;
   await page.click(page.in('staffAlerts', '[data-gone="bruno"] [data-gone-leave]'));
   assert.equal(page.postsTo('/api/staff/person/leave').length, 0);

@@ -1176,7 +1176,7 @@
     const gone = event.target.closest?.('[data-gone]');
     if (!gone) return;
     const personId = gone.dataset.gone;
-    if (event.target.closest('[data-gone-present]')) act('/api/staff/person/present', { personId }, 'Alerte fermée : son prochain titre redemande « Je suis là »');
+    if (event.target.closest('[data-gone-present]')) act('/api/staff/person/present', { personId }, 'Alerte fermée');
     if (event.target.closest('[data-gone-leave]') && confirm('Marquer cette personne comme partie ? Ses titres restants seront retirés, sa fiche conservée.')) {
       act('/api/staff/person/leave', { personId }, 'Personne marquée partie ; ses titres restants ont été retirés');
     }

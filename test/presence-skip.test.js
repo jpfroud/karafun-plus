@@ -217,13 +217,30 @@ test('titre retiré faute de présence en cours de soirée : suivant annoncé au
   assert.equal(s.songsOf(alice).length, 1);
   assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
   const view = JSON.stringify(s.presenceView().map(v => v.ids));
-  s.dismissMaybeGone(alice);
+  const state = JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]);
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée : son prochain titre redemande « Je suis là »');
   assert.equal(alice.maybeGone, null);
   assert.equal(s.select(), null, '« Toujours là » ne confirme pas la présence');
   assert.equal(JSON.stringify(s.presenceView().map(v => v.ids)), view, 'ni ne change la file');
+  assert.equal(JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]), state,
+    'ni sa place dans le tour');
+  assert.equal(s.dismissMaybeGone(alice), null, 'alerte déjà fermée');
   s.leave(alice, 'staff');
   assert.equal(s.songsOf(alice).length, 0, '« Marquer parti » retire ses titres restants');
   assert.equal(s.reservedNext, null);
   const after = s.reservePresenceNext();
   assert.ok(after && after.ids[0] !== alice.id, 'et arrête les annonces : la suite part sans elle');
+});
+
+// Relecture : avec un seul titre, le retrait faute de « Je suis là » vide sa
+// liste ; « Toujours là » le dit au lieu d'annoncer une nouvelle demande.
+test('« Toujours là » après le retrait du seul titre : le message dit que la liste est vide', () => {
+  const s = new Scheduler({ requirePresence: true });
+  const [alice, bruno] = ['Alice', 'Bruno'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  s.chooseSong(alice, song()); s.chooseSong(bruno, song());
+  assert.equal(s.reservePresenceNext().ids[0], alice.id);
+  assert.equal(s.skipUnconfirmed(alice.id, 1).removed, true);
+  assert.equal(s.songsOf(alice).length, 0);
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée : sa liste est vide : si elle est là, elle doit rechoisir un titre');
+  assert.equal(s.reservePresenceNext().ids[0], bruno.id);
 });
