@@ -297,7 +297,7 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   await ok('/api/staff/closing', { extendMin: 10 });
   assert.ok(has('closing.set', e => e.deltaMin === 10));
   await ok('/api/staff/closing', { clear: true });
-  assert.ok(has('closing.cleared'));
+  assert.ok(has('closing.cleared', e => e.reason === undefined), 'retrait par le bar : sans motif');
   const order = f.sched.presenceView().filter(v => !v.future).map(v => v.ids[0]);
   await ok('/api/staff/move', { personId: order[1], toIndex: 0, priority: true });
   assert.ok(has('staff.move', e => e.kind === 'priority' && e.from === 2 && e.to === 1));
@@ -354,6 +354,11 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   f.spotify.resume = async () => { throw new Error('Spotify injoignable'); };
   await f.spotifyTick();
   assert.ok(has('spotify', e => e.result === 'error'));
+  // « Options par défaut » : retrait de l'heure noté comme tel (les statistiques gardent l'heure).
+  await ok('/api/staff/closing', { time: `${String(soon.getHours()).padStart(2, '0')}:${String(soon.getMinutes()).padStart(2, '0')}` });
+  await ok('/api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.equal(f.settings.closingAt, null);
+  assert.ok(has('closing.cleared', e => e.reason === 'settings-reset'));
   const text = JSON.stringify(evs());
   for (const name of ['Alice', 'Bruno']) assert.ok(!text.includes(name), name);
 });

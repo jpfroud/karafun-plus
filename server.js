@@ -3184,6 +3184,14 @@ function closingAt(now = Date.now()) {
   return Number.isFinite(at) && now - at < CLOSING_EXPIRE_MS ? at : null;
 }
 
+// Retrait de l'heure de fermeture. Celui d'« Options par défaut » est noté
+// comme tel : les statistiques gardent l'heure de la soirée.
+function clearClosing(reason = null) {
+  settings.closingAt = null;
+  journalEvent('closing.cleared', reason ? { reason } : {});
+  sched.note('Heure de fermeture retirée : la file n’a plus d’heure de fin.', 'staff');
+}
+
 // Titres qui passeront avant la fermeture : au moins la moitié du titre
 // avant l'heure annoncée. Un nouveau chanteur entre dans le tour en cours
 // (les titres suivants de chacun viennent après) : la file est complète
@@ -4151,7 +4159,7 @@ const handlers = {
       interleaveArrivals: SCHED_DEFAULTS.interleaveArrivals,
       battleCooldownMin: COOLDOWN_MS / 60000, battleRejectedCooldownMin: REJECTED_COOLDOWN_MS / 60000,
       battleVoteMin: VOTE_DURATION_MS / 60000, battleMinVoters: MIN_VOTERS });
-    if (settings.closingAt != null) await handlers['POST /api/staff/closing'](req, res, { clear: true });
+    if (settings.closingAt != null) { clearClosing('settings-reset'); sched.version++; }
     // Réglages de la file déjà remis : un échec d'écriture Spotify est
     // signalé sans annoncer une remise à zéro ratée.
     let spotifyError = null;
@@ -4491,11 +4499,8 @@ const handlers = {
   // Heure de fermeture : à régler, décaler (« encore une chanson ! ») ou retirer.
   'POST /api/staff/closing': async (req, res, body) => {
     const closingBefore = settings.closingAt;
-    if (body.clear) {
-      settings.closingAt = null;
-      journalEvent('closing.cleared', {});
-      sched.note('Heure de fermeture retirée : la file n’a plus d’heure de fin.', 'staff');
-    } else if (body.extendMin !== undefined) {
+    if (body.clear) clearClosing();
+    else if (body.extendMin !== undefined) {
       const minutes = Number(body.extendMin);
       if (closingAt() == null) throw new Error('Indique d’abord une heure de fermeture.');
       if (!Number.isInteger(minutes) || minutes === 0 || minutes < -60 || minutes > 180) {

@@ -356,15 +356,17 @@ function drawTimeline(plot) {
   // Axe resserré sur les passages, 15 min de marge de chaque côté : ni les
   // heures vides avant le premier titre (application lancée l'après-midi), ni
   // celles d'après la fermeture (soirée close le lendemain). En direct, l'axe
-  // va jusqu'à maintenant (temps mort visible) tant que le dernier passage a
-  // moins de 3 h.
+  // va jusqu'à maintenant (temps mort visible) tant que le karaoké n'est pas
+  // fini et que le dernier passage a moins de 3 h.
   const MARGIN = 15 * 60000;
   // Sans passage : toute la soirée, comme avant.
   const firstStart = stages.length ? Math.min(...stages.map(x => x.start)) : tl.start + MARGIN;
   const lastEnd = stages.length ? Math.max(...stages.map(x => x.end)) : tl.end;
   const live = !!state.data.evening.current;
+  const barClosed = st.evening?.closedAt;
   const t0 = Math.max(tl.start, firstStart - MARGIN);
-  const tail = !live ? Math.min(tl.end, lastEnd + MARGIN) : tl.end - lastEnd > 3 * 3600000 ? lastEnd + MARGIN : tl.end;
+  const tail = !live || Number.isFinite(barClosed) ? Math.min(tl.end, lastEnd + MARGIN)
+    : tl.end - lastEnd > 3 * 3600000 ? lastEnd + MARGIN : tl.end;
   const t1 = Math.max(tail, lastEnd, t0 + 60000);
   const x = linear(t0, t1, left, W - right);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Déroulé de la soirée : qui a chanté quand' }, plot);
@@ -373,10 +375,8 @@ function drawTimeline(plot) {
     // Fin du karaoké (en-tête) et clôture de la soirée dans l'application
     // (souvent le lendemain) : deux heures distinctes, nommées comme telles.
     const day = at => new Date(at).toDateString() === new Date(lastEnd).toDateString() ? '' : `le ${dayLabel(at)} `;
-    const barClosed = st.evening?.closedAt;
-    const closed = live ? 'soirée encore ouverte'
-      : `${Number.isFinite(barClosed) && barClosed - lastEnd >= 60000 ? `fin du karaoké ${day(barClosed)}à ${hhmm(barClosed)} · ` : ''}` +
-        `soirée close dans l’application ${day(tl.end)}à ${hhmm(tl.end)}`;
+    const closed = `${Number.isFinite(barClosed) && barClosed - lastEnd >= 60000 ? `fin du karaoké ${day(barClosed)}à ${hhmm(barClosed)} · ` : ''}` +
+      (live ? 'soirée encore ouverte' : `soirée close dans l’application ${day(tl.end)}à ${hhmm(tl.end)}`);
     plot.appendChild(h('p', { class: 'st-caption', text: `Dernier passage à ${hhmm(lastEnd)} · ${closed}` }));
   }
   // Temps morts (un titre attendait) sous la ligne « Scène ».

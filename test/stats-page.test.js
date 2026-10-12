@@ -797,6 +797,18 @@ test('en-tête : heures du karaoké, et lancement et clôture pour un ancien jou
   const livePage = loadPage({ responses: viewResponse(liveClosed) });
   await settle();
   assert.match(text(livePage.$('eveningLine')), new RegExp(` · ${localHHMM(at(30))} – ${localHHMM(at(95))} · `));
+  // Déroulé en direct, karaoké fini : même fin que l'en-tête, axe arrêté 15 min
+  // après le dernier passage (pas jusqu'à maintenant).
+  const liveLate = apiView({ live: true, now: at(200) });
+  const liveEnd = lastStageEnd(liveLate);
+  liveLate.stats.evening.closedAt = liveEnd + 10 * 60000;
+  const latePage = loadPage({ responses: viewResponse(liveLate) });
+  await settle();
+  assert.equal(text(timelineCaption(latePage)),
+    `Dernier passage à ${localHHMM(liveEnd)} · fin du karaoké à ${localHHMM(liveEnd + 10 * 60000)} · soirée encore ouverte`);
+  const lateAxis = timelineAxis(latePage);
+  lateAxis.svg.dispatch('pointermove', { clientX: 10 + lateAxis.W - 12, target: lateAxis.svg });
+  assert.match(text(latePage.$('tooltip')), new RegExp(`^${localHHMM(liveEnd + 15 * 60000)}`));
   assert.match(text(timelineCaption(page)), new RegExp(`fin du karaoké à ${localHHMM(at(95))} · soirée close dans l’application`));
   const legacy = apiView({ live: false, endedAt: at(600) });
   delete legacy.stats.evening.openedAt;

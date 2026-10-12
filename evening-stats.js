@@ -560,7 +560,10 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         closing.sets++; closing.closingAt = e.closingAt ?? closing.closingAt;
         closingChanges.push([t, closing.closingAt]);
         break;
-      case 'closing.cleared': closing.cleared++; closing.closingAt = null; closingChanges.push([t, null]); break;
+      case 'closing.cleared':
+        closing.cleared++; closing.closingAt = null;
+        closingChanges.push([t, null, e.reason === 'settings-reset']);
+        break;
       case 'closing.reached':
         closing.reachedAt ??= t;
         // Noté dès qu'aucun titre ne peut plus partir, parfois avant l'heure :
@@ -593,12 +596,19 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   if (spotify.open) spotify.silences.push({ ...spotify.open, end: E1, ongoing: live });
 
   // Fin des passages : connue, sinon le passage suivant, sinon maintenant.
+  // En direct, le dernier titre sans fin notée est encore sur scène, sauf
+  // s'il a commencé il y a plus de 20 min (KaraFun coupé ou PC éteint
+  // pendant le titre depuis au moins 30 min, titre laissé en pause) ou si
+  // l'application a redémarré depuis sans le retrouver sur scène : sa fin est
+  // alors estimée comme une fois la soirée close.
   for (let i = 0; i < stages.length; i++) {
     const st = stages[i];
     if (st.endAt == null) {
-      st.endAt = i < stages.length - 1 ? stages[i + 1].start : live ? Math.max(st.start, E1) :
+      const last = i === stages.length - 1;
+      st.ongoing = live && last && E1 - st.start < MAX_SONG_SEC * 1000 &&
+        !offline.some(([a]) => a >= (st.segmentStart ?? st.start));
+      st.endAt = !last ? stages[i + 1].start : st.ongoing ? Math.max(st.start, E1) :
         Math.max(st.start, Math.min(E1, st.durationSec ? st.start + st.durationSec * 1000 : E1));
-      st.ongoing = live && i === stages.length - 1;
     }
     st.endAt = Math.min(st.endAt, st.start + MAX_SONG_SEC * 1000);
     st.playedSec = Math.max(0, Math.round((st.endAt - st.start) / 1000));
@@ -612,8 +622,8 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const openedAt = connected ? Math.max(E0, Math.min(connected.start, stages[0]?.start ?? Infinity)) : E0;
   // Fermeture du bar : heure de fermeture (ci-dessous), ou fin du dernier
   // titre s'il finit plus tard ; plus tôt, KaraFun déconnecté pour de bon ou
-  // le PC éteint pendant ou après le dernier titre d'une soirée finie ; sinon
-  // fin du journal. Soirée du
+  // le PC éteint pendant ou après le dernier titre (en direct aussi, une fois
+  // la coupure longue de 30 min) ; sinon fin du journal. Soirée du
   // 10 octobre, close au bar le lendemain à 12:54 : la présence s'arrête à
   // 03:17 (dernier titre après la fermeture de 03:10) au lieu de compter la
   // matinée. KaraFun coupé pendant le dernier titre : sa fin n'est pas notée
@@ -631,8 +641,10 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // en vigueur au début du dernier titre, puis chaque changement fait avant
   // qu'elle passe (avancée, « + 10 min », retrait). Une fois passée, seule
   // une prolongation dans les 30 min rouvre la soirée ; un retrait ou une
-  // heure changée plus tard (« Options par défaut » le lendemain) ne change
-  // rien, en direct comme une fois la soirée close. Une heure réglée déjà
+  // heure changée plus tard (le lendemain) ne change rien, en direct comme
+  // une fois la soirée close. Le retrait d'« Options par défaut » après le
+  // début du dernier titre n'en est pas un (réglages remis en fin de
+  // soirée) : l'heure reste. Une heure réglée déjà
   // passée (par erreur) ne passe qu'au moment où elle est réglée. Les
   // changements faits après l'arrêt du PC ne comptent pas (celui noté juste
   // avant, si). Ancien journal sans réglage noté : la dernière fermeture atteinte.
@@ -641,7 +653,8 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     const from = lastStageStart ?? -Infinity, until = appStop ? appStop[0] : Infinity;
     const inForce = closingChanges.filter(([at]) => at <= from).at(-1);
     let hour = inForce?.[1] ?? null, setAt = inForce?.[0] ?? -Infinity, passedAt = null;
-    for (const [at, next] of closingChanges.filter(([at]) => at > from && at <= until)) {
+    for (const [at, next, reset] of closingChanges.filter(([at]) => at > from && at <= until)) {
+      if (reset) continue;
       if (passedAt == null && hour != null && hour <= at) passedAt = Math.max(hour, setAt);
       if (passedAt == null || (next != null && next > at && at - passedAt < REOPEN_MS)) {
         hour = next; setAt = at; passedAt = null;
