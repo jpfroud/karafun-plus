@@ -1120,22 +1120,23 @@ test('options par défaut : réglages d’origine, connexions, adresse des QR, t
   assert.match(lastNote(f).msg, /Automatismes Spotify non remis : disque plein/);
 });
 
-// Relecture du 11 octobre : les consignes Battle du bar (copie à retirer,
-// refus de KaraFun) et les titres écartés n'ont rien à faire sur les téléphones.
-test('Battle : consignes du bar et titres écartés réservés à la page du bar', async () => {
+// Relecture du 11 octobre : le suivi de l'ajout Battle et ses consignes au bar
+// (mode Battle demandé à KaraFun, copie normale) n'ont rien à faire sur les
+// téléphones.
+test('Battle : suivi de l’ajout à KaraFun et consignes réservés à la page du bar', async () => {
   const f = harness();
   const [alice] = singers(f, ['Alice']);
   f.battleVote.staffLaunch({ song: { songId: 18179, title: 'Sarà perché ti amo', artist: 'Ricchi e Poveri' } });
-  f.battleVote.automation.notice = 'KaraFun a ajouté « Hello » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun.';
-  f.battleVote.refusedSongIds.add(30193);
+  f.battleVote.beginAutomation([]);
+  f.battleVote.automation.modeCaption = 'Angela Brambati';
+  f.battleVote.updateAutomation('failed', 'KaraFun a ajouté « Sarà perché ti amo » en chanson normale, sans le mode Battle.');
   const phone = plain(f.publicState(alice, alice.tableId).battle);
   assert.equal(phone.phase, 'requested');
   assert.equal(phone.selectedSong.title, 'Sarà perché ti amo', 'la salle voit toujours la Battle décidée');
   assert.equal('automation' in phone, false);
-  assert.equal('refusedSongIds' in phone, false);
   const bar = plain(f.staffState().battle);
-  assert.match(bar.automation.notice, /retire cette copie/);
-  assert.deepEqual(bar.refusedSongIds, [30193]);
+  assert.match(bar.automation.failure, /en chanson normale/);
+  assert.equal(bar.automation.modeCaption, 'Angela Brambati');
 });
 
 // Relecture du 11 octobre : la réponse d'un vote (route du téléphone) suit la
@@ -1144,14 +1145,12 @@ test('Battle : la réponse d’un vote du téléphone ne donne ni consignes du b
   const f = harness();
   const [alice, bruno] = singers(f, ['Alice', 'Bruno']);
   f.battleVote.setMinVoters(1);
-  f.battleVote.refusedSongIds.add(30193);
   const songs = [{ songId: 5091, title: 'Battle', artist: 'Groupe' }];
   f.battleVote.propose({ personId: bruno.id, personName: 'Bruno', eligiblePersonIds: [alice.id, bruno.id], songs, proposerChoice: 5091 });
   const access = f.access.issue(alice.tableId);
   const result = plain(await f.call('POST /api/table/battle/vote', { table: alice.tableId, access, personId: alice.id, token: alice.token, choice: 5091 }));
   assert.equal(result.ok, true);
   assert.equal('automation' in result.battle, false);
-  assert.equal('refusedSongIds' in result.battle, false);
   assert.deepEqual(result.battle.eligiblePersonIds, [alice.id], 'électeurs de sa table seulement');
   assert.deepEqual(result.battle.votedPersonIds, [alice.id]);
   assert.deepEqual(plain(f.staffState().battle.votedPersonIds).sort(), [alice.id, bruno.id].sort(), 'le bar voit tout');
@@ -1161,14 +1160,12 @@ test('Battle : la réponse d’une proposition et la vue « En solo » suivent l
   const f = harness();
   const [alice, bruno] = singers(f, ['Alice', 'Bruno']);
   f.battleVote.setMinVoters(1);
-  f.battleVote.refusedSongIds.add(30193);
   const songs = [{ songId: 5091, title: 'Battle', artist: 'Groupe' }];
   f.rememberBattleSongs(songs);
   const access = f.access.issue(alice.tableId);
   const proposed = plain(await f.call('POST /api/table/battle/propose', { table: alice.tableId, access, personId: alice.id, token: alice.token,
     songs, proposerChoice: 5091 }));
   assert.equal('automation' in proposed.battle, false);
-  assert.equal('refusedSongIds' in proposed.battle, false);
   assert.deepEqual(proposed.battle.eligiblePersonIds, [alice.id], 'électeurs de sa table seulement');
   assert.ok(plain(f.staffState().battle.eligiblePersonIds).includes(bruno.id));
   // « En solo » : chaque personne ne voit qu'elle-même.

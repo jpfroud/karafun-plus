@@ -41,7 +41,7 @@ const BUILD = readBuildInfo();
 // Identifie ce démarrage : une alerte fermée au bar revient après un redémarrage.
 const BOOT_ID = crypto.randomBytes(6).toString('hex');
 const { Scheduler, DEFER_MAX, DEFAULTS: SCHED_DEFAULTS } = require('./scheduler');
-const { KaraFunBridge, isBattleItem, maskCode, unknownSettingsSupport } = require('./karafun');
+const { KaraFunBridge, BATTLE_MOD, isBattleItem, maskCode, unknownSettingsSupport } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
@@ -263,10 +263,6 @@ function journalBattle(event) {
   } else if (event === 'external' && b) journalEvent('battle.external', { ballotId: b.id, songId: battleVote.automation?.songId || null });
   else if (event === 'done' || event === 'dismissed') journalEvent('battle.resolved', { ballotId: b?.id || null, outcome: event });
   else if (event === 'cooldown-reset') journalEvent('battle.cooldownLifted', {});
-  else if (event === 'fallback' && b) {
-    journalEvent('battle.fallback', { ballotId: b.id, refusedSongId: b.refusedSongIds?.at(-1) || null,
-      songId: b.selectedSong?.songId || null, title: b.selectedSong?.title || '' });
-  }
   else if (/^automation-(sending|queued|playing|after|resuming|released|failed|manual)$/.test(event)) {
     const status = event.slice(11);
     journalEvent('battle.automation', { ballotId: battleVote.automation?.ballotId || null, status,
@@ -557,28 +553,42 @@ function battleHoldsQueue() {
     !(state === 'waiting' && sched.reservedNext);
 }
 
-// KaraFun a ajouté le titre de la Battle en chanson normale (titre sans mode
-// Battle chez KaraFun, soirée du 10 octobre). Rien n'est retiré de KaraFun
-// d'office (copie peut-être déjà lancée, attribution déduite) : le bar la
-// retire lui-même. Le titre n'est plus proposé par la salle (le bar peut le
-// relancer) et la Battle passe au titre suivant du vote, envoyé une fois la
-// file de KaraFun libre.
-function refuseBattleSong() {
+// KaraFun a ajouté le titre de la Battle en chanson normale : le mode demandé
+// n'existe pas pour ce titre. Soirée du 10 octobre, « Sarà perché ti amo »
+// (un duo) : la demande portait le mode « Battle » des titres à une voix,
+// alors que sa Battle se fait sur une voix (numéro 2, « Angela Brambati ») ;
+// le bar l'a passé en mode Battle dans KaraFun et la Battle a eu lieu. La
+// page fait de même, une seule fois, avec le mode tiré des voix du titre.
+// Rien n'est retiré de KaraFun d'office : sans mode connu, ou si KaraFun ne
+// suit pas, le bar s'en charge et la Battle est reconnue dès qu'il l'a fait.
+const plainBattleCopy = title => `KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle. ` +
+  'Passe ce titre en mode Battle dans KaraFun (la page reconnaîtra la Battle), ou retire-le et touche « Ne pas lancer cette fois »';
+function setBattleMode(copy, current, now) {
+  const state = battleVote.automation;
   const title = battleVote.ballot?.selectedSong?.title || 'ce titre';
-  const copy = `KaraFun a ajouté « ${title} » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun`;
-  let fallback;
-  try {
-    // Une Battle sans vote n'est acceptée qu'une fois cette demande fermée.
-    // Le bouton est sur l'écran « Scène », la recherche dans « Plus ».
-    ({ fallback } = battleVote.refuseSong(`${copy}. Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois » ` +
-      'sur l’écran « Scène », puis « Lancer une Battle sans vote » dans « Plus ».', `${copy}.`));
-  } catch (error) {
-    // État Battle incohérent (sauvegarde abîmée) : sync() continue, l'envoi
-    // finit en échec au bout de l'attente de l'accusé.
-    appLog(`Refus Battle non traité : ${error.message}`);
+  const id = String(copy.queueId);
+  state.modeSentTo = id;
+  const sent = state.sentMod || BATTLE_MOD;
+  const mod = copy.battleMod;
+  if (current && String(current.queueId) === id) {
+    battleVote.updateAutomation('failed', `KaraFun a lancé « ${title} » en chanson normale, sans le mode Battle : ` +
+      'laisse-le finir ou passe au titre suivant, puis touche « Ne pas lancer cette fois »');
     return;
   }
-  if (fallback) sched.note(`${copy}. La Battle passe ensuite sur « ${fallback.title} », titre suivant du vote.`, 'battle');
+  if (!mod || (Number(mod.id) === Number(sent.id) && mod.caption === sent.caption)) {
+    battleVote.updateAutomation('failed', plainBattleCopy(title));
+    return;
+  }
+  try {
+    bridge.setBattleMode(id, mod);
+  } catch (error) {
+    battleVote.updateAutomation('failed', `${plainBattleCopy(title)} (${String(error.message).replace(/[.!?\s]+$/, '')})`);
+    return;
+  }
+  state.modeSentAt = now;
+  state.modeCaption = mod.caption;
+  battleVote._changed('automation-mode');
+  sched.note(`KaraFun a ajouté « ${title} » sans le mode Battle : la page le passe en mode Battle sur la voix de ${mod.caption}.`, 'battle');
 }
 
 function syncBattle({ current, upcoming, q }, now) {
@@ -600,14 +610,6 @@ function syncBattle({ current, upcoming, q }, now) {
   if (!state || state.status === 'released') return;
   const matches = q.filter(item => Number(item.songId) === state.songId && isBattleItem(item));
   if (state.status === 'waiting') {
-    // Copie normale du titre refusé retirée par le bar : la consigne s'efface
-    // (un passage de la file sur le même titre n'est pas cette copie).
-    const refused = battleVote.ballot?.refusedSongIds?.at(-1);
-    if (state.notice && !q.some(item => Number(item.songId) === refused && !isBattleItem(item) &&
-        !tracked.some(tr => String(tr.queueId) === String(item.queueId)))) {
-      delete state.notice;
-      battleVote._changed('automation-notice');
-    }
     if (matches.length === 1) {
       battleVote.confirmAutomation(matches[0].queueId);
       sched.note('Battle reconnue dans KaraFun : le bar laisse les téléphones rejoindre avant le départ.', 'battle');
@@ -621,9 +623,13 @@ function syncBattle({ current, upcoming, q }, now) {
         !sched.reservedNext && bridge.permissions?.addToQueue !== false && !closingBlocksStart(current, 0, now)) {
       // Le passage suivant déjà garanti garde sa place. Une Battle approuvée
       // attend qu'il ait chanté avant d'occuper la prochaine case libre.
+      // Mode Battle que KaraFun connaît pour ce titre s'il est déjà passé par
+      // sa file (voix d'un duo), sinon « Battle ».
+      const mod = bridge.battleModForSong?.(state.songId) || BATTLE_MOD;
       battleVote.beginAutomation(q.map(item => String(item.queueId)));
+      battleVote.automation.sentMod = { id: mod.id, caption: mod.caption };
       try {
-        bridge.addBattle(state.songId, current ? 1 : 0);
+        bridge.addBattle(state.songId, current ? 1 : 0, mod);
         sched.note('Titre Battle envoyé à KaraFun : attente de la confirmation du mode Battle.', 'battle');
       } catch (error) {
         battleVote.updateAutomation('failed', error.message);
@@ -641,11 +647,13 @@ function syncBattle({ current, upcoming, q }, now) {
       !tracked.some(tr => String(tr.queueId) === String(item.queueId)) &&
       !(pending && Number(pending.sel.song.songId) === state.songId));
     if (battles.length === 1) {
+      // Confirmée par KaraFun, même après un échec : le bar a pu passer la
+      // copie en mode Battle dans KaraFun lui-même.
       battleVote.confirmAutomation(battles[0].queueId);
       sched.note('KaraFun confirme le mode Battle : la pause entre votes commence.', 'battle');
     } else if (battles.length > 1) {
       if (state.status !== 'failed') battleVote.updateAutomation('failed', 'Plusieurs Battles identiques sont apparues dans KaraFun.');
-    } else if (state.status === 'sending' && plain.length === 1 &&
+    } else if (state.status === 'sending' && plain.length === 1 && state.modeSentTo == null &&
         now - (state.plainSince ?? state.sentAt) <= BATTLE_ACK_MS) {
       // Copie attribuée seulement si elle reste sans mode Battle 1,5 s, apparue
       // pendant l'attente de l'accusé : une trame Battle incomplète ou un
@@ -655,10 +663,12 @@ function syncBattle({ current, upcoming, q }, now) {
         state.plainId = id;
         state.plainSince = now;
         battleVote._changed('automation-plain');
-      } else if (now - state.plainSince >= BATTLE_SETTLE_MS) refuseBattleSong();
-    } else if (state.status === 'sending' && now - state.sentAt > BATTLE_ACK_MS) {
+      } else if (now - state.plainSince >= BATTLE_SETTLE_MS) setBattleMode(plain[0], current, now);
+    } else if (state.status === 'sending' && now - (state.modeSentAt ?? state.sentAt) > BATTLE_ACK_MS) {
       // Pas de seconde commande : un accusé tardif pourrait créer un doublon.
-      battleVote.updateAutomation('failed', 'KaraFun n’a pas confirmé l’ajout Battle. Vérifie sa file avant d’agir.');
+      const copy = state.modeSentTo != null && plain.some(item => String(item.queueId) === state.modeSentTo);
+      battleVote.updateAutomation('failed', copy ? plainBattleCopy(battleVote.ballot?.selectedSong?.title || 'ce titre')
+        : 'KaraFun n’a pas confirmé l’ajout Battle. Vérifie sa file avant d’agir.');
     }
   } else if (state.status === 'queued' || state.status === 'playing') {
     const queueHasBattle = q.some(item => String(item.queueId) === state.queueId);
@@ -1842,13 +1852,12 @@ function sentDuo(tr, p, current) {
 }
 
 // Vue Battle d'un téléphone (état et réponses des routes de la table) : sans
-// les consignes du bar (copie à retirer, refus de KaraFun) ni les titres
-// écartés, que seule la page du bar lit ; électeurs et votants de sa table,
-// ou de la personne seule sur un groupe individuel (« En solo »).
+// le suivi de l'ajout à KaraFun ni ses consignes, que seule la page du bar
+// lit ; électeurs et votants de sa table, ou de la personne seule sur un
+// groupe individuel (« En solo »).
 function battleForPhone(battle, tableId, person) {
   const out = { ...battle };
   delete out.automation;
-  delete out.refusedSongIds;
   const individual = !!sched.table(tableId, false)?.individual;
   const shown = id => individual ? id === person?.id : sched.people.get(id)?.tableId === tableId;
   out.eligiblePersonIds = (battle.eligiblePersonIds || []).filter(shown);

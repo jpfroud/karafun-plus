@@ -1606,17 +1606,15 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   await step('waiting');
   assert.equal(pill().textContent, 'En attente du passage promis');
   assert.match(status(), /^Battle demandée sur Africa — Toto\. Le prochain chanteur déjà annoncé garde sa place/);
-  // Titre précédent refusé par KaraFun : la consigne de retrait est affichée.
-  await page.update({ battle: { id: 3, phase: 'requested', selectedSong: song,
-    automation: { status: 'waiting', notice: 'KaraFun a ajouté « Hello » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun.' } } });
-  assert.equal(pill().textContent, 'Copie à retirer');
-  assert.match(pill().className, /bad/);
-  assert.equal(status(), 'KaraFun a ajouté « Hello » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun. La Battle passera ensuite sur Africa — Toto, dès que la file de KaraFun sera libre.');
-  assert.match(page.$('battleStatus').className, /battle-requested/, 'action du bar : consigne mise en avant');
   await step('sending');
   assert.equal(pill().textContent, 'Ajout en cours');
   assert.match(status(), /^Envoi de Africa — Toto à KaraFun\./);
   assert.equal(page.$('battleActions').hidden, true, 'pendant l’envoi, pas de décision du bar');
+  // Copie normale (duo) passée en mode Battle par la page : la voix est dite.
+  await step('sending', { automation: { status: 'sending', modeCaption: 'Angela Brambati' } });
+  assert.equal(pill().textContent, 'Ajout en cours');
+  assert.equal(status(), 'KaraFun a ajouté Africa — Toto sans le mode Battle : la page le passe en mode Battle sur la voix de Angela Brambati. Attends sa confirmation.');
+  assert.equal(page.$('battleActions').hidden, true);
   page.world.queue = [{ source: 'karafun', ours: true, queueId: 'b1', pos: 1, kind: 'battle', title: 'Africa' }];
   await step('queued');
   assert.equal(pill().textContent, 'Prête dans KaraFun');
@@ -1636,12 +1634,15 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(pill().textContent, 'À vérifier');
   assert.equal(pill().className, 'pill bad');
   assert.equal(status(), 'Ajout automatique non confirmé : Vérifie KaraFun. Organise la Battle manuellement ou ferme la demande.');
-  // Mode Battle refusé sur ce titre : une seule consigne, celle du serveur.
-  const refusal = 'KaraFun a ajouté « Africa » en chanson normale, sans le mode Battle : retire cette copie dans KaraFun. ' +
-    'Pour une Battle sur un autre titre, touche « Ne pas lancer cette fois » sur l’écran « Scène », puis « Lancer une Battle sans vote » dans « Plus ».';
-  await step('failed', { automation: { status: 'failed', failure: refusal } });
-  assert.equal(status(), `Mode Battle refusé par KaraFun : ${refusal}`);
+  // Copie normale laissée au bar : une seule consigne, celle du serveur.
+  const plainCopy = 'KaraFun a ajouté « Africa » en chanson normale, sans le mode Battle. ' +
+    'Passe ce titre en mode Battle dans KaraFun (la page reconnaîtra la Battle), ou retire-le et touche « Ne pas lancer cette fois »';
+  await step('failed', { automation: { status: 'failed', failure: plainCopy } });
+  assert.equal(status(), `${plainCopy}.`);
   assert.equal(page.$('battleActions').hidden, false, '« Ne pas lancer cette fois » proposé');
+  const onStage = 'KaraFun a lancé « Africa » en chanson normale, sans le mode Battle : laisse-le finir ou passe au titre suivant, puis touche « Ne pas lancer cette fois »';
+  await step('failed', { automation: { status: 'failed', failure: onStage } });
+  assert.equal(status(), `${onStage}.`);
   await step('failed');
   assert.equal(page.$('battleDone').hidden, false);
   await page.click(page.$('battleDone'));

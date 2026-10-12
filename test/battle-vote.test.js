@@ -527,75 +527,21 @@ function fixture(extra = {}) {
 }
 
 {
-  // Soirée du 10 octobre : titre que KaraFun ajoute sans le mode Battle.
-  const song = (songId, title = `Titre ${songId}`) => ({ songId, title, artist: 'Artiste' });
+  // Soirée du 10 octobre : copie normale du titre passée en mode Battle par la
+  // page, sur une voix du duo. Le bar voit cette voix ; une sauvegarde de la
+  // version précédente (titres écartés) se restaure sans eux.
   const f = fixture({ minVoters: 1 }), vote = new BattleVote(f.opts);
-  assert.throws(() => vote.refuseSong('x'), /Refus Battle inattendu/, 'hors envoi : refus ignoré');
-  vote.staffLaunch({ song: song(18179, 'Sarà perché ti amo') });
+  vote.staffLaunch({ song: { songId: 18179, title: 'Sarà perché ti amo', artist: 'Ricchi e Poveri' } });
   vote.beginAutomation([]);
-  const { fallback } = vote.refuseSong('KaraFun a ajouté le titre sans le mode Battle');
-  assert.equal(fallback, null, 'Battle du bar : pas de titre suivant');
-  assert.equal(vote.view().automation.status, 'failed');
-  const restored = new BattleVote({ ...f.opts, saved: JSON.parse(JSON.stringify(vote.serialize())) });
-  assert.deepEqual(restored.view().refusedSongIds, [18179], 'titre écarté gardé après un redémarrage');
-  restored.updateAutomation('released');
-  restored.resolve({ outcome: 'dismissed' });
-  restored.endCooldownNow();
-  assert.throws(() => restored.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a'],
-    songs: [song(18179, 'Sarà perché ti amo')] }), { code: 'BATTLE_SONG_REFUSED' });
-  restored.reset();
-  assert.deepEqual(restored.view().refusedSongIds, [], 'remise à zéro : plus rien d’écarté');
-}
-
-{
-  // Titre suivant du vote : le plus voté, à égalité le premier proposé, jamais un titre sans voix.
-  const song = songId => ({ songId, title: `Titre ${songId}`, artist: 'Artiste' });
-  const f = fixture({ minVoters: 1 }), vote = new BattleVote(f.opts);
-  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b', 'c', 'd'],
-    songs: [song(1), song(2), song(3)], proposerChoice: 1 });
-  vote.vote({ personId: 'b', choice: 1 });
-  vote.vote({ personId: 'c', choice: 3 });
-  vote.vote({ personId: 'd', choice: 2 });
-  if (vote.view().phase === 'voting') vote.closeNow();
-  assert.equal(vote.view().selectedSong.songId, 1);
-  vote.beginAutomation([]);
-  assert.equal(vote.refuseSong('refus').fallback.songId, 2, 'égalité 2 et 3 : ordre de proposition');
-  vote.beginAutomation([]);
-  assert.equal(vote.refuseSong('refus').fallback.songId, 3);
-  vote.beginAutomation([]);
-  assert.equal(vote.refuseSong('refus').fallback, null, 'plus aucun titre voté');
-  assert.deepEqual(vote.view().refusedSongIds, [1, 2, 3]);
-}
-
-{
-  // Relecture du 12 octobre : le plus voté passe avant l'ordre de proposition.
-  const song = songId => ({ songId, title: `Titre ${songId}`, artist: 'Artiste' });
-  const f = fixture({ minVoters: 1 }), vote = new BattleVote(f.opts);
-  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b', 'c', 'd', 'e'],
-    songs: [song(1), song(2), song(3)], proposerChoice: 1 });
-  vote.vote({ personId: 'b', choice: 3 });
-  vote.vote({ personId: 'c', choice: 3 });
-  vote.vote({ personId: 'd', choice: 2 });
-  vote.vote({ personId: 'e', choice: 1 });
-  if (vote.view().phase === 'voting') vote.closeNow();
-  assert.equal(vote.view().selectedSong.songId, 1, '1 et 3 à égalité : le premier proposé');
-  vote.beginAutomation([]);
-  assert.equal(vote.refuseSong('refus').fallback.songId, 3, 'deux voix avant une : le plus voté, proposé après');
-  vote.beginAutomation([]);
-  assert.equal(vote.refuseSong('refus').fallback.songId, 2);
-}
-
-{
-  // Un titre sans voix n'est jamais choisi.
-  const song = songId => ({ songId, title: `Titre ${songId}`, artist: 'Artiste' });
-  const f = fixture({ minVoters: 1 }), vote = new BattleVote(f.opts);
-  vote.propose({ personId: 'a', personName: 'A', eligiblePersonIds: ['a', 'b', 'c'],
-    songs: [song(1), song(2)], proposerChoice: 1 });
-  vote.vote({ personId: 'b', choice: 1 });
-  if (vote.view().phase === 'voting') vote.closeNow();
-  assert.equal(vote.view().selectedSong.songId, 1);
-  vote.beginAutomation([]);
-  assert.equal(vote.refuseSong('refus').fallback, null, 'le titre 2, sans voix, n’est pas choisi');
+  assert.equal(vote.view().automation.modeCaption, null);
+  vote.automation.modeCaption = 'Angela Brambati';
+  assert.equal(vote.view().automation.modeCaption, 'Angela Brambati');
+  const restored = new BattleVote({ ...f.opts, saved: { ...JSON.parse(JSON.stringify(vote.serialize())), refusedSongIds: [18179] } });
+  assert.equal(restored.view().automation.modeCaption, 'Angela Brambati');
+  assert.equal('refusedSongIds' in restored.view(), false);
+  assert.equal('refusedSongIds' in restored.serialize(), false);
+  restored.confirmAutomation('920bd91b');
+  assert.equal(restored.view().automation.status, 'queued');
 }
 
 console.log('Battle collective : minuteur, votants minimum, décision des votants, pause après la Battle et lancement par le bar OK');

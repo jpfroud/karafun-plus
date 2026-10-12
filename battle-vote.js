@@ -16,8 +16,6 @@ const MAX_MINUTES = 120;
 const REJECTED_COOLDOWN_MS = 5 * 60 * 1000;
 const REFUSED = new Set(['quorum', 'expired', 'rejected', 'dismissed']);
 const MIN_VOTERS = 5;
-// Titres écartés de la Battle gardés au plus pour une soirée.
-const REFUSED_SONGS_MAX = 200;
 
 // Règles du vote : il dure un temps fixe (compte à rebours visible) et se
 // décide avec les personnes qui ont voté. Il faut un nombre minimal de
@@ -72,12 +70,6 @@ class BattleVote {
     this.ballot = saved?.ballot ? structuredClone(saved.ballot) : null;
     this.automation = saved?.automation ? structuredClone(saved.automation) : null;
     this.lastOutcome = saved?.lastOutcome || null;
-    // Titres que KaraFun a ajoutés sans le mode Battle ce soir (soirée du
-    // 10 octobre : « Sarà perché ti amo », deux fois en chanson normale). Ils
-    // ne sont plus proposés en Battle par les clients jusqu'à la remise à
-    // zéro ; le bar peut les relancer lui-même.
-    this.refusedSongIds = new Set((Array.isArray(saved?.refusedSongIds) ? saved.refusedSongIds : [])
-      .filter(id => Number.isSafeInteger(id) && id > 0).slice(-REFUSED_SONGS_MAX));
     if (this.ballot?.phase === 'voting' && this.ballot.rule !== 'voters') {
       // Vote ouvert avant la mise à jour : appliquer les nouvelles règles.
       this.ballot.rule = 'voters';
@@ -187,7 +179,6 @@ class BattleVote {
       if (new Set(options.map(item => item.songId)).size !== options.length) {
         throw new Error('Chaque titre Battle doit être différent.');
       }
-      options.forEach(item => this.assertBattleSong(item));
       const picked = Number(proposerChoice ?? options[0].songId);
       if (!options.some(item => item.songId === picked)) throw new Error('Vote du proposant invalide.');
       proposerChoice = `song:${picked}`;
@@ -219,11 +210,8 @@ class BattleVote {
     if (!Number.isSafeInteger(songId) || songId <= 0 || !title || title.length > 100 || artist.length > 80) {
       throw new Error('Titre Battle invalide.');
     }
-    const chosen = { songId, title, artist };
-    // Le bar peut retenter un titre écarté : c'est sa décision, il est de
-    // nouveau écarté si KaraFun le refuse encore.
-    this.refusedSongIds.delete(songId);
     const time = this.now();
+    const chosen = { songId, title, artist };
     this.ballot = { id: randomUUID(), phase: 'requested', proposalName: 'Le bar', rule: 'staff',
       proposerId: null, suggestedSong: chosen, songs: [chosen], mode: 'staff',
       selectedSong: chosen, eligiblePersonIds: [], votes: [], threshold: 0, openedAt: time,
@@ -234,48 +222,6 @@ class BattleVote {
       proposalName: 'Le bar', selectedSong: chosen };
     this._changed('staff-launch');
     return this.view();
-  }
-
-  // Titre refusé en Battle par KaraFun pendant la soirée.
-  assertBattleSong(song) {
-    if (!this.refusedSongIds.has(Number(song?.songId))) return;
-    const error = new Error(`KaraFun a refusé le mode Battle pour « ${String(song.title || '').trim()} » ce soir : choisis un autre titre.`);
-    error.code = 'BATTLE_SONG_REFUSED';
-    throw error;
-  }
-
-  // KaraFun a ajouté le titre en chanson normale, sans le mode Battle. Le
-  // titre n'est plus proposé par la salle jusqu'à la remise à zéro (le bar
-  // peut le relancer) et la Battle passe au titre suivant du vote (le plus
-  // voté parmi les autres, au moins une voix), sans repasser par le vote.
-  // Sans autre titre, la demande attend le bar (« failed » avec `failure`) ;
-  // sinon `notice` est la consigne affichée avant l'envoi du titre suivant.
-  refuseSong(failure, notice = failure) {
-    if (this.ballot?.phase !== 'requested' || this.automation?.status !== 'sending') {
-      throw new Error('Refus Battle inattendu.');
-    }
-    const refused = this.automation.songId;
-    if (refused) this.refusedSongIds.add(refused);
-    while (this.refusedSongIds.size > REFUSED_SONGS_MAX) this.refusedSongIds.delete(this.refusedSongIds.values().next().value);
-    const b = this.ballot;
-    const next = b.mode !== 'songs' ? null : b.songs.map((song, index) => ({ song, index,
-      votes: b.votes.filter(([, answer]) => answer === `song:${song.songId}`).length }))
-      .filter(item => item.votes > 0 && !this.refusedSongIds.has(item.song.songId))
-      .sort((x, y) => y.votes - x.votes || x.index - y.index)[0]?.song || null;
-    if (!next) {
-      this.updateAutomation('failed', failure);
-      return { refusedSongId: refused, fallback: null };
-    }
-    b.selectedSong = next;
-    b.refusedSongIds = [...(b.refusedSongIds || []), refused];
-    // `notice` : ce que le bar doit faire avant l'envoi du titre suivant
-    // (retirer la copie normale restée dans KaraFun).
-    this.automation = { ballotId: b.id, songId: next.songId, status: 'waiting', before: [],
-      sentAt: null, queueId: null, failure: null, notice };
-    this.lastOutcome = { id: b.id, outcome: 'approved', at: this.now(),
-      proposalName: b.proposalName, selectedSong: next };
-    this._changed('fallback');
-    return { refusedSongId: refused, fallback: next };
   }
 
   closeNow() {
@@ -538,7 +484,6 @@ class BattleVote {
     this.ballot = null;
     this.automation = null;
     this.lastOutcome = null;
-    this.refusedSongIds.clear();
     this._changed('reset');
   }
 
@@ -550,9 +495,9 @@ class BattleVote {
       cooldownMinutes: this.cooldownMs / 60000, rejectedCooldownMinutes: this.rejectedCooldownMs / 60000,
       proposalName: null, suggestedSong: null, selectedSong: null, songOptions: [],
       mode: null, eligiblePersonIds: [],
-      votedPersonIds: [], lastOutcome: this.lastOutcome, refusedSongIds: [...this.refusedSongIds],
+      votedPersonIds: [], lastOutcome: this.lastOutcome,
       automation: this.automation ? { status: this.automation.status,
-        queueId: this.automation.queueId, failure: this.automation.failure, notice: this.automation.notice || null } : null };
+        queueId: this.automation.queueId, failure: this.automation.failure, modeCaption: this.automation.modeCaption || null } : null };
     const songOptions = (b.songs || []).map(song => ({ ...song,
       votes: b.votes.filter(([, choice]) => choice === `song:${song.songId}`).length }));
     return { id: b.id, phase: b.phase, proposalName: b.proposalName,
@@ -568,9 +513,8 @@ class BattleVote {
       cooldownMinutes: this.cooldownMs / 60000, rejectedCooldownMinutes: this.rejectedCooldownMs / 60000,
       eligiblePersonIds: [...b.eligiblePersonIds],
       votedPersonIds: b.votes.map(([id]) => id), lastOutcome: this.lastOutcome,
-      refusedSongIds: [...this.refusedSongIds],
       automation: this.automation ? { status: this.automation.status,
-        queueId: this.automation.queueId, failure: this.automation.failure, notice: this.automation.notice || null } : null };
+        queueId: this.automation.queueId, failure: this.automation.failure, modeCaption: this.automation.modeCaption || null } : null };
   }
 
   view() { this.tick(); return this.viewWithoutTick(); }
@@ -582,8 +526,7 @@ class BattleVote {
       minVoters: this.minVoters,
       ballot: this.ballot ? structuredClone(this.ballot) : null,
       automation: this.automation ? structuredClone(this.automation) : null,
-      lastOutcome: this.lastOutcome ? { ...this.lastOutcome } : null,
-      refusedSongIds: [...this.refusedSongIds] };
+      lastOutcome: this.lastOutcome ? { ...this.lastOutcome } : null };
   }
 }
 

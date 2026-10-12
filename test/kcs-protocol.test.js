@@ -31,7 +31,7 @@ require.cache[ioPath] = { id: ioPath, filename: ioPath, loaded: true,
   exports: (base, options) => new FakeIoSocket(base, options) };
 
 const { KcsTransport } = require('../kcs-transport');
-const { KaraFunBridge, readSettings, normalizeKcsItem, normalizeResults, BATTLE_MOD, isBattleItem } = require('../karafun');
+const { KaraFunBridge, readSettings, normalizeKcsItem, normalizeResults, BATTLE_MOD, isBattleItem, battleModFor } = require('../karafun');
 
 // --- Faux WebSocket : ce que KaraFun envoie et ce qu'il reçoit ---
 class FakeWebSocket {
@@ -722,6 +722,56 @@ test('Battle KCS : envoyée seulement si KaraFun la déclare compatible et permi
   ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: { addToQueue: true, shownTypes: { battle: true } } } });
   bridge.addBattle('5091');
   assert.deepEqual(ws.sent.at(-1).payload, { song: { type: 1, id: 5091 }, options: { mod: BATTLE_MOD }, position: 0 });
+});
+
+// Trames réelles du 10 octobre (journal KaraFun du bar) : « Sarà perché ti
+// amo » est un duo. La Battle demandée avec le mode « Battle » des titres à
+// une voix arrive sans aucune option ; passée en Battle dans KaraFun, elle
+// porte le mode de sa première voix.
+const SARA_TRACKS = [{ caption: 'Angela Brambati', color: { red: 254, green: 71, blue: 208 }, type: 5 },
+  { caption: 'Angelo Sotgiu', color: { red: 74, green: 142, blue: 255 }, type: 6 }];
+const SARA_MOD = { id: 2, caption: 'Angela Brambati', data: { battle: { subtype: 1 } } };
+const saraItem = options => ({ id: '920bd91b-d963-48b6-9d9f-6b5bfe82be94', song: { id: { type: 1, id: 18179 },
+  artist: 'Ricchi e Poveri', songTracks: SARA_TRACKS, title: 'Sarà perché ti amo', ...(options ? { options } : {}) } });
+
+test('Battle KCS d’un duo : mode de la première voix appris de la file, envoyé ensuite, et Battle de KaraFun reconnue', async t => {
+  mockTime(t);
+  const { bridge, ws } = await connected(t);
+  t.after(() => bridge.disconnect());
+  ws.receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: { compatibleMods: { battle: [1] } } } });
+  ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: { addToQueue: true, manageQueue: true,
+    shownTypes: { battle: true } } } });
+  // Titre jamais vu : mode « Battle » (titre à une voix, comme « L'aventurier »).
+  assert.deepEqual(bridge.battleModForSong(18179), BATTLE_MOD);
+  assert.deepEqual(battleModFor([{ type: 5 }]), BATTLE_MOD, 'une voix guide sans nom : « Battle »');
+  assert.deepEqual(battleModFor([{ type: 4 }, { type: 5 }]), BATTLE_MOD);
+  assert.deepEqual(battleModFor(SARA_TRACKS), SARA_MOD, 'duo : première voix, numéro 2');
+  // Copie normale reçue (QueueEvent de 23:21:56) : ses voix donnent le mode.
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [saraItem(null)] } } });
+  assert.equal(isBattleItem(bridge.queue[0]), false);
+  assert.deepEqual(bridge.queue[0].battleMod, SARA_MOD);
+  assert.deepEqual(bridge.battleModForSong(18179), SARA_MOD);
+  bridge.addBattle(18179, 1);
+  assert.deepEqual(ws.sent.at(-1).payload, { song: { type: 1, id: 18179 }, options: { mod: SARA_MOD }, position: 1 });
+  // Passage en mode Battle d'un titre de la file : options remplacées par le mode seul.
+  bridge.setBattleMode('920bd91b-d963-48b6-9d9f-6b5bfe82be94', SARA_MOD);
+  assert.deepEqual(ws.sent.at(-1), { id: ws.sent.at(-1).id, type: 'remote.SetQueueItemOptionsRequest',
+    payload: { queueItemId: '920bd91b-d963-48b6-9d9f-6b5bfe82be94', options: { mod: SARA_MOD } } });
+  assert.throws(() => bridge.setBattleMode('920bd91b', { id: 2, caption: 'x', data: {} }), /Mode Battle invalide/);
+  assert.throws(() => bridge.addBattle(18179, 1, { id: 0, data: { battle: { subtype: 1 } } }), /Mode Battle invalide/);
+  // Battle passée dans KaraFun (QueueEvent de 23:22:17) : reconnue, et son mode gardé.
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [saraItem({ mod: SARA_MOD })] } } });
+  assert.equal(isBattleItem(bridge.queue[0]), true, 'mode numéro 2 : c’est une Battle');
+  // Une copie vue ensuite sans voix connues ne remplace pas le mode observé.
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [{ ...saraItem(null),
+    song: { ...saraItem(null).song, songTracks: [{ type: 5 }] } }] } } });
+  assert.deepEqual(bridge.battleModForSong(18179), SARA_MOD);
+  // Droit « Éditer la file d'attente » retiré : rien n'est envoyé.
+  ws.receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: { addToQueue: true, manageQueue: false,
+    shownTypes: { battle: true } } } });
+  const sent = ws.sent.length;
+  assert.throws(() => bridge.setBattleMode('920bd91b', SARA_MOD), /Éditer la file d’attente/);
+  assert.equal(ws.sent.length, sent);
 });
 
 test('Battle sans télécommande récente : refusée sur un vrai KaraFun ancien protocole', () => {

@@ -2024,7 +2024,7 @@
     const selectedSong = battleSong(battle.selectedSong);
     const battleStep = battle.automation?.status;
     $('battlePill').textContent = battleStep === 'failed' ? 'À vérifier' :
-      battleStep === 'waiting' ? (battle.automation?.notice ? 'Copie à retirer' : 'En attente du passage promis') :
+      battleStep === 'waiting' ? 'En attente du passage promis' :
       battleStep === 'sending' ? 'Ajout en cours' :
       battleStep === 'queued' ? 'Prête dans KaraFun' :
       battleStep === 'playing' ? 'En cours' :
@@ -2033,18 +2033,18 @@
       battleStep === 'resuming' ? 'Reprise demandée' :
       battle.phase === 'requested' ? 'À organiser' : battle.phase === 'voting' ? 'Vote en cours' :
       battle.phase === 'cooldown' ? 'Pause entre votes' : 'Aucune demande';
-    $('battlePill').className = 'pill' + (['failed', 'after'].includes(battleStep) || (battleStep === 'waiting' && battle.automation?.notice) ? ' bad' :
+    $('battlePill').className = 'pill' + (['failed', 'after'].includes(battleStep) ? ' bad' :
       ['queued', 'playing'].includes(battleStep) || battle.phase === 'voting' ? ' ok' : '');
-    $('battleStatus').className = 'battle-status' + (['failed', 'after'].includes(battleStep) || (battleStep === 'waiting' && battle.automation?.notice) ? ' battle-requested' : '');
+    $('battleStatus').className = 'battle-status' + (['failed', 'after'].includes(battleStep) ? ' battle-requested' : '');
     const battleFailure = String(battle.automation?.failure || 'Vérifie KaraFun').replace(/[.!?\s]+$/, '');
-    const battleNotice = String(battle.automation?.notice || '').replace(/[.!?\s]+$/, '');
-    $('battleStatus').textContent = battleStep === 'waiting' && battleNotice
-      ? `${battleNotice}. La Battle passera ensuite sur ${selectedSong}, dès que la file de KaraFun sera libre.`
-      : battleStep === 'waiting'
+    $('battleStatus').textContent = battleStep === 'waiting'
       ? `Battle demandée sur ${selectedSong}. Le prochain chanteur déjà annoncé garde sa place ; la Battle sera ajoutée ensuite.`
+      // Titre ajouté en chanson normale : la page le passe en mode Battle.
+      : battleStep === 'sending' && battle.automation?.modeCaption
+      ? `KaraFun a ajouté ${selectedSong} sans le mode Battle : la page le passe en mode Battle sur la voix de ${battle.automation.modeCaption}. Attends sa confirmation.`
       : battleStep === 'sending' ? `Envoi de ${selectedSong} à KaraFun. Le mode Battle doit être confirmé avant de lancer le titre.`
       // Copie sans mode Battle : la consigne du serveur dit déjà quoi faire.
-      : battleStep === 'failed' && battleFailure.startsWith('KaraFun a ajouté') ? `Mode Battle refusé par KaraFun : ${battleFailure}.`
+      : battleStep === 'failed' && /^KaraFun a (ajouté|lancé)/.test(battleFailure) ? `${battleFailure}.`
       : battleStep === 'failed' ? `${battleFailure.startsWith('Permission Battle refusée') ? 'Ajout automatique impossible' : 'Ajout automatique non confirmé'} : ${battleFailure}. Organise la Battle manuellement ou ferme la demande.`
       : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'
