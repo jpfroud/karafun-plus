@@ -425,6 +425,58 @@ test('pont KaraFun relié : un refus de KaraFun au passage en mode Battle fait �
   assert.equal(f.battleVote.view().automation.failure, `${PLAIN_SARA} (KaraFun : Not allowed)`);
 });
 
+test('deux copies normales du même titre pendant l’envoi : aucune n’est passée en mode Battle', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  f.bridge.queue = [saraCopy('copie-a'), saraCopy('copie-b')];
+  f.sync();
+  if (f.battleVote.automation.plainSince != null) f.battleVote.automation.plainSince -= 1600;
+  f.sync();
+  assert.equal(f.battleModes.length, 1, 'attribution ambiguë : aucune commande de mode');
+  assert.equal(f.battleVote.automation.plainId, undefined);
+  f.battleVote.automation.sentAt -= 16000;
+  f.sync();
+  assert.match(f.battleVote.view().automation.failure, /n’a pas confirmé l’ajout Battle/);
+  assert.deepEqual(f.removes, []);
+});
+
+test('copie normale différente vue après les 15 s d’attente : jamais attribuée, même après une première copie notée', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  f.bridge.queue = [saraCopy('copie-a')];
+  f.sync();
+  assert.equal(f.battleVote.automation.plainId, 'copie-a');
+  // La première copie disparaît, une autre arrive 16 s après l'ajout.
+  f.bridge.queue = [];
+  f.sync();
+  f.battleVote.automation.sentAt -= 16000;
+  f.bridge.queue = [saraCopy('copie-b')];
+  f.sync();
+  assert.equal(f.battleVote.automation.plainId, 'copie-a', 'copie tardive : pas notée');
+  assert.equal(f.battleModes.length, 1, 'ni passée en mode Battle');
+  assert.match(f.battleVote.view().automation.failure, /n’a pas confirmé l’ajout Battle/);
+});
+
+test('réponse sans verdict ou refus arrivé après la confirmation : ignorés', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  const copy = saraCopy('copie-normale');
+  f.bridge.queue = [copy];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  f.sync();
+  f.battleModeAnswer({ queueId: copy.queueId, ok: null, message: null });
+  assert.equal(f.battleVote.view().automation.status, 'sending', 'sans réponse : l’attente de 15 s décide');
+  f.bridge.queue = [saraCopy(copy.queueId, { mod: SARA_MOD })];
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'queued');
+  assert.doesNotThrow(() => f.battleModeAnswer({ queueId: copy.queueId, ok: false, message: 'Not allowed' }));
+  assert.equal(f.battleVote.view().automation.status, 'queued', 'refus tardif : la Battle confirmée reste');
+});
+
 test('passage en mode Battle refusé par KaraFun (droit « Éditer la file d’attente ») : raison donnée au bar', () => {
   const f = harness();
   f.bridge.setBattleMode = () => { throw new Error('KaraFun ne laisse pas FileKaraoke modifier les titres de sa file.'); };

@@ -1115,6 +1115,16 @@ test('fermeture : une durée du catalogue plus longue que le passage moyen fait 
   assert.ok(row.eta + 150000 > closingTimeOf(view), 'son heure affichée est cohérente avec ce repère');
 });
 
+// Relecture du 12 octobre : titre en cours au-delà de sa durée du catalogue
+// (30 s, sur scène depuis 60 s) : la scène se libère au plus tôt maintenant,
+// jamais dans le passé.
+test('fermeture : titre en cours qui dépasse sa durée du catalogue, la scène se libère au plus tôt maintenant', () => {
+  for (const [closingInSec, removed] of [[165, true], [200, false]]) {
+    const { kf } = closingCase(harness(), { catalogSec: 30, closingInSec });
+    assert.equal(kf.some(call => call[0] === 'remove' && call[1] === 6), removed, `fermeture dans ${closingInSec} s`);
+  }
+});
+
 test('fermeture : tempo +50 % raccourcit la fin du titre en cours', () => {
   const { kf } = closingCase(harness(), { catalogSec: 600, tempo: 50, closingInSec: 600 });
   assert.ok(!kf.some(call => call[0] === 'remove'));

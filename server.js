@@ -672,9 +672,10 @@ function syncBattle({ current, upcoming, q }, now) {
     } else if (battles.length > 1) {
       if (state.status !== 'failed') battleVote.updateAutomation('failed', 'Plusieurs Battles identiques sont apparues dans KaraFun.');
     } else if (state.status === 'sending' && plain.length === 1 && state.modeTarget == null &&
-        now - (state.plainSince ?? state.sentAt) <= BATTLE_ACK_MS) {
+        now - (state.plainId === String(plain[0].queueId) ? state.plainSince : state.sentAt) <= BATTLE_ACK_MS) {
       // Copie attribuée seulement si elle reste sans mode Battle 1,5 s, apparue
-      // pendant l'attente de l'accusé : une trame Battle incomplète ou un
+      // pendant l'attente de l'accusé (comptée depuis l'ajout ; une copie déjà
+      // notée, depuis qu'elle l'a été) : une trame Battle incomplète ou un
       // suivi resté « sending » après une coupure ne compte pas.
       if (state.plainId !== String(plain[0].queueId)) battleVote.notePlainCopy(plain[0].queueId);
       else if (now - state.plainSince >= BATTLE_SETTLE_MS) switchPlainBattleCopy(plain[0], current);

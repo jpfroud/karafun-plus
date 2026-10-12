@@ -253,3 +253,35 @@ test('invitée avec bonus ou malus retirée d’un duo envoyé : la part exacte 
     assert.equal(s.roundPeople.has(bruno.id), false);
   }
 });
+
+// Relecture du 12 octobre : chemin du serveur (annonce pendant la chanson en
+// cours, puis envoi) pour le passage intercalé par la règle anti-série.
+test('passage de la règle anti-série annoncé pendant la chanson en cours : pris sur le tour suivant', () => {
+  const { s, song, byName } = evening();
+  for (let i = 0; i < 8; i++) announceThenSend(s);
+  const arrival = s.join({ tableId: 'T1', name: 'Arrivée' });
+  s.chooseSong(arrival, song(), 'append');
+  const announced = s.reserveNext();
+  assert.equal(announced.names[0], 'Solo1', 'la règle anti-série intercale un soliste');
+  assert.equal(s.reservedNext.borrowable, true, 'annonce notée comme emprunt');
+  const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+  assert.deepEqual(sel.borrowedIds, [byName('Solo1').id], 'flux du serveur : second passage du tour emprunté');
+  assert.ok(s.roundUse.get(byName('Solo1').id) > 1, 'dette reportée au tour suivant');
+});
+
+test('ordre du bar en fin de tour, annoncé premier du tour suivant puis rattrapé par une arrivée : aucune dette', () => {
+  const { s, song, send } = evening();
+  const first = send();
+  send();
+  send();
+  // Le bar place quelqu'un qui a déjà chanté juste après le dernier du tour.
+  s.staffMove(first.ids[0], 1);
+  announceThenSend(s);
+  const announced = s.reserveNext();
+  assert.equal(announced.ids[0], first.ids[0], 'place choisie par le bar');
+  const sara = s.join({ tableId: 'T1', name: 'Sara' });
+  s.chooseSong(sara, song(), 'append');
+  const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+  assert.equal(sel.ids[0], first.ids[0]);
+  assert.equal(sel.borrowedIds, undefined, 'l’ordre du bar ne crée pas de dette, même rattrapé par une arrivée');
+});
