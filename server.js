@@ -4503,7 +4503,10 @@ const handlers = {
   'POST /api/staff/person/present': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
     if (!p) throw new Error('Personne introuvable.');
-    return { ok: true, message: sched.dismissMaybeGone(p) || 'Alerte déjà fermée' };
+    // Page d'un autre appareil en retard : la personne a déjà été marquée
+    // partie (ce qui ferme aussi l'alerte) ; le dire plutôt qu'un succès.
+    if (p.withdrawnAt) return { ok: false, message: `« Parti » déjà noté pour ${p.name} : « Réactiver » dans « Repères » si cette personne est là` };
+    return { ok: true, message: sched.dismissMaybeGone(p) || `Alerte déjà fermée pour ${p.name}` };
   },
   'POST /api/staff/person/reactivate': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));

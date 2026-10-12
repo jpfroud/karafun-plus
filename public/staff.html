@@ -378,7 +378,7 @@
     for (const char of table.url) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
     return table.qrUrl + (table.qrUrl.includes('?') ? '&' : '?') + 'v=' + (hash >>> 0).toString(16) + (key ? '&key=' + encodeURIComponent(key) : '');
   }
-  function toast(msg, bad) { const t = $('toast'); t.textContent = msg; t.className = 'toast' + (bad ? ' bad' : ''); t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 3500); }
+  function toast(msg, bad) { const t = $('toast'); t.textContent = msg; t.className = 'toast' + (bad ? ' bad' : ''); t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, Math.max(3500, String(msg).length * 60)); }
   async function post(path, body) {
     const r = await fetch(path + kq, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-staff-key': key }, body: JSON.stringify(body || {}) });
     const j = await r.json().catch(() => ({}));
@@ -1176,7 +1176,9 @@
     const gone = event.target.closest?.('[data-gone]');
     if (!gone) return;
     const personId = gone.dataset.gone;
-    if (event.target.closest('[data-gone-present]')) act('/api/staff/person/present', { personId }, 'Alerte fermée');
+    const present = event.target.closest('[data-gone-present]');
+    // Un seul envoi : un double appui répondrait « Alerte déjà fermée » par-dessus le message utile.
+    if (present && !present.disabled) { present.disabled = true; act('/api/staff/person/present', { personId }, 'Alerte fermée'); }
     if (event.target.closest('[data-gone-leave]') && confirm('Marquer cette personne comme partie ? Ses titres restants seront retirés, sa fiche conservée.')) {
       act('/api/staff/person/leave', { personId }, 'Personne marquée partie ; ses titres restants ont été retirés');
     }

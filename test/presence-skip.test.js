@@ -218,7 +218,7 @@ test('titre retiré faute de présence en cours de soirée : suivant annoncé au
   assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
   const view = JSON.stringify(s.presenceView().map(v => v.ids));
   const state = JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]);
-  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée : son prochain titre redemande « Je suis là »');
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice. Son prochain titre redemande « Je suis là ».');
   assert.equal(alice.maybeGone, null);
   assert.equal(s.select(), null, '« Toujours là » ne confirme pas la présence');
   assert.equal(JSON.stringify(s.presenceView().map(v => v.ids)), view, 'ni ne change la file');
@@ -241,6 +241,24 @@ test('« Toujours là » après le retrait du seul titre : le message dit que la
   assert.equal(s.reservePresenceNext().ids[0], alice.id);
   assert.equal(s.skipUnconfirmed(alice.id, 1).removed, true);
   assert.equal(s.songsOf(alice).length, 0);
-  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée : sa liste est vide : si elle est là, elle doit rechoisir un titre');
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice. Plus aucun titre à son nom : il faut en rechoisir un pour chanter.');
   assert.equal(s.reservePresenceNext().ids[0], bruno.id);
+  // Option coupée ensuite, alerte encore ouverte : la liste vide se dit quand même.
+  s.opts.requirePresence = false;
+  alice.maybeGone = { at: Date.now(), title: 'x', skips: 1 };
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice. Plus aucun titre à son nom : il faut en rechoisir un pour chanter.');
+});
+
+// Relecture : sans titre à elle mais invitée d'un duo accepté, la personne
+// reste annoncée dans ce duo ; le message le dit au lieu d'une liste vide.
+test('« Toujours là » sans titre à soi mais invitée d’un duo : le message dit que le duo reste prévu', () => {
+  const s = new Scheduler({ requirePresence: true });
+  const alice = s.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  const olga = s.join({ tableId: '1', name: 'Olga', headcount: 2 });
+  s.chooseSong(alice, song());
+  s.inviteDuet(olga, alice.id, song()); // même table : duo accepté d'office
+  assert.equal(s.skipUnconfirmed(alice.id, 1).removed, true);
+  assert.equal(s.songsOf(alice).length, 0);
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice. Plus aucun titre à son nom ; le duo avec Olga reste prévu.');
+  assert.ok(s.presenceView().some(v => v.ids.includes(alice.id)), 'le duo reste dans la file');
 });
