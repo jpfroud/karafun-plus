@@ -218,7 +218,7 @@ test('titre retiré faute de présence en cours de soirée : suivant annoncé au
   assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
   const view = JSON.stringify(s.presenceView().map(v => v.ids));
   const state = JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]);
-  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice. Son prochain titre redemande « Je suis là ».');
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice (Table 1). Son prochain titre redemande « Je suis là ».');
   assert.equal(alice.maybeGone, null);
   assert.equal(s.select(), null, '« Toujours là » ne confirme pas la présence');
   assert.equal(JSON.stringify(s.presenceView().map(v => v.ids)), view, 'ni ne change la file');
@@ -241,12 +241,12 @@ test('« Toujours là » après le retrait du seul titre : le message dit que la
   assert.equal(s.reservePresenceNext().ids[0], alice.id);
   assert.equal(s.skipUnconfirmed(alice.id, 1).removed, true);
   assert.equal(s.songsOf(alice).length, 0);
-  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice. Plus aucun titre à son nom : il faut en rechoisir un pour chanter.');
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice (Table 1). Plus aucun titre à son nom : il faut en rechoisir un pour chanter.');
   assert.equal(s.reservePresenceNext().ids[0], bruno.id);
   // Option coupée ensuite, alerte encore ouverte : la liste vide se dit quand même.
   s.opts.requirePresence = false;
   alice.maybeGone = { at: Date.now(), title: 'x', skips: 1 };
-  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice. Plus aucun titre à son nom : il faut en rechoisir un pour chanter.');
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice (Table 1). Plus aucun titre à son nom : il faut en rechoisir un pour chanter.');
 });
 
 // Relecture : sans titre à elle mais invitée d'un duo accepté, la personne
@@ -259,6 +259,31 @@ test('« Toujours là » sans titre à soi mais invitée d’un duo : le message
   s.inviteDuet(olga, alice.id, song()); // même table : duo accepté d'office
   assert.equal(s.skipUnconfirmed(alice.id, 1).removed, true);
   assert.equal(s.songsOf(alice).length, 0);
-  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice. Plus aucun titre à son nom ; le duo avec Olga reste prévu.');
+  assert.equal(s.dismissMaybeGone(alice),
+    'Alerte fermée pour Alice (Table 1). Plus aucun titre à son nom ; le duo avec Olga (Table 1) reste prévu. Pour un passage à son nom, il faut rechoisir un titre.');
   assert.ok(s.presenceView().some(v => v.ids.includes(alice.id)), 'le duo reste dans la file');
+});
+
+// Relecture : un titre à soi passe avant le duo d'invitée dans le message ;
+// plusieurs duos sont nommés dans l'ordre de la file (pas l'ordre d'arrivée) ;
+// une invitation de duo en attente est signalée.
+test('« Toujours là » : titre à soi d’abord, duos dans l’ordre de la file, invitation en attente', () => {
+  const s = new Scheduler({ requirePresence: true });
+  const zoe = s.join({ tableId: '1', name: 'Zoé', headcount: 3 });
+  const alice = s.join({ tableId: '1', name: 'Alice', headcount: 3 });
+  const olga = s.join({ tableId: '1', name: 'Olga', headcount: 3 });
+  const max = s.join({ tableId: '2', name: 'Max', headcount: 1 });
+  s.chooseSong(alice, song()); s.chooseSong(alice, song(), 'append');
+  s.inviteDuet(olga, alice.id, song());
+  s.chooseSong(zoe, song()); s.chooseSong(zoe, song(), 'append');
+  s.inviteDuet(zoe, alice.id, song());
+  s.inviteDuet(max, alice.id, song());
+  alice.maybeGone = { at: Date.now(), title: 'x', skips: 3 };
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice (Table 1). Son prochain titre redemande « Je suis là ».',
+    'un titre à son nom passe avant les duos');
+  for (const entry of s.songsOf(alice)) s.removeSong(alice, entry.entryId, 'staff');
+  const order = s.presenceView().filter(v => v.ids.length > 1 && v.ids[1] === alice.id).map(v => s.people.get(v.ids[0]).name);
+  assert.deepEqual(order, ['Olga', 'Zoé'], 'Olga est arrivée après Zoé mais passe avant');
+  assert.equal(s.presenceFollowUp(alice),
+    "Plus aucun titre à son nom ; les duos avec Olga (Table 1) puis Zoé (Table 1) restent prévus. Pour un passage à son nom, il faut rechoisir un titre. L'invitation de duo de Max (Table 2) attend sa réponse.");
 });

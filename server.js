@@ -4505,8 +4505,15 @@ const handlers = {
     if (!p) throw new Error('Personne introuvable.');
     // Page d'un autre appareil en retard : la personne a déjà été marquée
     // partie (ce qui ferme aussi l'alerte) ; le dire plutôt qu'un succès.
-    if (p.withdrawnAt) return { ok: false, message: `« Parti » déjà noté pour ${p.name} : « Réactiver » dans « Repères » si cette personne est là` };
-    return { ok: true, message: sched.dismissMaybeGone(p) || `Alerte déjà fermée pour ${p.name}` };
+    if (p.withdrawnAt) {
+      return { ok: false, message: `« Parti » déjà noté pour ${sched.personRef(p)} : ses titres ont été retirés. Si cette personne est là, « Réactiver » dans « Repères », puis rechoisir un titre.` };
+    }
+    // Double appui ou second appareil : l'alerte est déjà fermée, mais le bar
+    // reçoit encore la suite utile.
+    const dismissed = sched.dismissMaybeGone(p);
+    if (dismissed) return { ok: true, message: dismissed };
+    const next = sched.presenceFollowUp(p);
+    return { ok: true, message: `Alerte déjà fermée pour ${sched.personRef(p)}.${next ? ` ${next}` : ''}` };
   },
   'POST /api/staff/person/reactivate': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));
