@@ -657,28 +657,27 @@ test('bonus, fiche privée et « toujours là » depuis la page du bar', async (
 
   alice.maybeGone = { title: 'Titre Alice', skips: 3, at: Date.now() };
   assert.deepEqual(plain(f.staffState().maybeGone.map(m => [m.name, m.table, m.skips])), [['Alice', 'Table 1', 3]]);
-  // « Toujours là » ferme seulement l'alerte ; le message dit la suite selon
-  // l'état : option coupée, prochain titre avec « Je suis là », liste vide.
-  assert.equal((await f.call('POST /api/staff/person/present', { personId: alice.id })).message, 'Alerte fermée pour Alice (Table 1).');
+  // « Toujours là » ferme seulement l'alerte ; le message donne son prochain
+  // passage selon l'état : option coupée, « Je suis là » redemandé, aucun
+  // passage prévu, alerte déjà fermée (même suite, ou passage déjà envoyé).
+  const present = async () => plain(await f.call('POST /api/staff/person/present', { personId: alice.id })).message;
+  assert.equal(await present(), 'Alerte fermée pour Alice (Table 1). Prochain passage : « Titre Alice ».');
   assert.equal(f.staffState().maybeGone.length, 0);
-  assert.equal(lastNote(f).msg, 'Alerte fermée par le bar : Alice (Table 1) serait toujours là.');
-  assert.equal((await f.call('POST /api/staff/person/present', { personId: alice.id })).message, 'Alerte déjà fermée pour Alice (Table 1).');
+  assert.equal(lastNote(f).msg, 'Alerte fermée par le bar : Alice (Table 1) serait toujours là. Prochain passage : « Titre Alice ».');
+  assert.equal(await present(), 'Alerte déjà fermée pour Alice (Table 1). Prochain passage : « Titre Alice ».');
   f.sched.opts.requirePresence = true;
   alice.maybeGone = { title: 'Titre Alice', skips: 3, at: Date.now() };
-  assert.equal((await f.call('POST /api/staff/person/present', { personId: alice.id })).message,
-    'Alerte fermée pour Alice (Table 1). Son prochain titre redemande « Je suis là ».');
-  assert.equal(lastNote(f).msg, 'Alerte fermée par le bar : Alice (Table 1) serait toujours là. Son prochain titre redemande « Je suis là ».');
+  assert.equal(await present(), 'Alerte fermée pour Alice (Table 1). Prochain passage : « Titre Alice ». Ce passage redemandera « Je suis là ».');
+  f.setPending({ sel: { ids: [alice.id], song: { title: 'Titre Alice' } }, before: new Set(), at: Date.now() });
+  assert.equal(await present(), 'Alerte déjà fermée pour Alice (Table 1) : son passage « Titre Alice » est déjà dans KaraFun.');
+  f.setPending(null);
   for (const song of f.sched.songsOf(alice)) f.sched.removeSong(alice, song.entryId, 'staff');
   alice.maybeGone = { title: 'Titre Alice', skips: 3, at: Date.now() };
-  assert.equal((await f.call('POST /api/staff/person/present', { personId: alice.id })).message,
-    'Alerte fermée pour Alice (Table 1). Plus aucun titre à son nom : il faut en rechoisir un pour chanter.');
-  // Double appui ou second appareil : la suite utile est redite.
-  assert.equal((await f.call('POST /api/staff/person/present', { personId: alice.id })).message,
-    'Alerte déjà fermée pour Alice (Table 1). Plus aucun titre à son nom : il faut en rechoisir un pour chanter.');
+  assert.equal(await present(), 'Alerte fermée pour Alice (Table 1). Aucun passage prévu : un titre à rechoisir sur son téléphone.');
   // Page d'un autre appareil en retard : déjà marquée partie, refus explicite.
   f.sched.leave(alice, 'staff');
   assert.deepEqual(plain(await f.call('POST /api/staff/person/present', { personId: alice.id })),
-    { ok: false, message: '« Parti » déjà noté pour Alice (Table 1) : ses titres ont été retirés. Si cette personne est là, « Réactiver » dans « Repères », puis rechoisir un titre.' });
+    { ok: false, message: '« Parti » déjà noté pour Alice (Table 1) : ses titres ont été retirés. Si cette personne est là : « Réactiver » dans « Repères », puis un titre à rechoisir sur son téléphone.' });
   await assert.rejects(f.call('POST /api/staff/person/present', { personId: 'x' }), { message: 'Personne introuvable.' });
 });
 

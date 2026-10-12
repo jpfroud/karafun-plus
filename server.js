@@ -4505,15 +4505,17 @@ const handlers = {
     if (!p) throw new Error('Personne introuvable.');
     // Page d'un autre appareil en retard : la personne a déjà été marquée
     // partie (ce qui ferme aussi l'alerte) ; le dire plutôt qu'un succès.
+    const ref = sched.personRef(p);
     if (p.withdrawnAt) {
-      return { ok: false, message: `« Parti » déjà noté pour ${sched.personRef(p)} : ses titres ont été retirés. Si cette personne est là, « Réactiver » dans « Repères », puis rechoisir un titre.` };
+      return { ok: false, message: `« Parti » déjà noté pour ${ref} : ses titres ont été retirés. Si cette personne est là : « Réactiver » dans « Repères », puis un titre à rechoisir sur son téléphone.` };
     }
-    // Double appui ou second appareil : l'alerte est déjà fermée, mais le bar
-    // reçoit encore la suite utile.
     const dismissed = sched.dismissMaybeGone(p);
     if (dismissed) return { ok: true, message: dismissed };
-    const next = sched.presenceFollowUp(p);
-    return { ok: true, message: `Alerte déjà fermée pour ${sched.personRef(p)}.${next ? ` ${next}` : ''}` };
+    // Alerte déjà fermée (second appareil, page en retard, double appui) :
+    // un passage déjà envoyé l'a peut-être fermée ; sinon, la même suite.
+    const sent = [pending?.sel, ...tracked.map(tr => tr.sel)].find(sel => sel?.ids?.includes(p.id));
+    if (sent) return { ok: true, message: `Alerte déjà fermée pour ${ref} : son passage « ${sent.song?.title || '?'} » est déjà dans KaraFun.` };
+    return { ok: true, message: `Alerte déjà fermée pour ${ref}. ${sched.presenceFollowUp(p)}` };
   },
   'POST /api/staff/person/reactivate': async (req, res, body) => {
     const p = sched.people.get(String(body.personId || ''));

@@ -1762,9 +1762,13 @@ test('alertes et notifications du bar : sonnerie, personnes parties, avis KaraFu
   assert.equal(gone.querySelector('span').textContent,
     'Bruno (Table 1) n’a pas répondu à « Je suis là » 3 fois : « Chanson A » a été retiré de sa liste. Cette personne est-elle encore là ?');
   assert.match(page.in('staffAlerts', '[data-gone="x"]').textContent, /^X n’a pas répondu/);
-  const message = 'Alerte fermée pour Bruno. Plus aucun titre à son nom : il faut en rechoisir un pour chanter.';
+  const message = 'Alerte fermée pour Bruno (Table 1). Aucun passage prévu : un titre à rechoisir sur son téléphone.';
   page.replies['/api/staff/person/present'] = { ok: true, message };
-  await page.click(gone.querySelector('[data-gone-present]'));
+  // Double appui avant la réponse : un seul envoi.
+  const present = gone.querySelector('[data-gone-present]');
+  present.click(); present.click();
+  await page.flush();
+  assert.equal(page.postsTo('/api/staff/person/present').length, 1, 'un seul envoi pour un double appui');
   assert.deepEqual(page.lastPost('/api/staff/person/present').body, { personId: 'bruno' });
   assert.equal(page.toast().text, message, 'le message du serveur dit la suite');
   delete page.replies['/api/staff/person/present'];

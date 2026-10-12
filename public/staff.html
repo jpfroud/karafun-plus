@@ -1097,6 +1097,9 @@
     dismissedAlerts = saved.alerts && typeof saved.alerts === 'object' ? saved.alerts : {};
   } catch (_) { dismissedAlerts = {}; }
   const saveDismissed = () => store.set('bar-dismissed-alerts', JSON.stringify({ boot: dismissedBoot, alerts: dismissedAlerts }));
+  // « Toujours là » envoyé, réponse attendue : un seul envoi, même si la
+  // page se redessine entre-temps (rafraîchissement toutes les 2 s).
+  const presentPending = new Set();
   function renderAlerts() {
     if (S.bootId && S.bootId !== dismissedBoot) { dismissedBoot = S.bootId; dismissedAlerts = {}; saveDismissed(); }
     const grace = S.settings?.presenceGraceSec || 30;
@@ -1141,7 +1144,7 @@
       connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';
     // Solo : sa dernière activité aide à décider s'il est encore là.
     const goneActivity = p => { const activity = activityHtml(activityOf(personOf(p.id))); return activity ? ` ${activity}` : ''; };
-    const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?${goneActivity(p)}</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
+    const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?${goneActivity(p)}</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present${presentPending.has(p.id) ? ' disabled' : ''}>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
     // Une alerte qui porte sa propre sortie (« Arrêter le vidage ») ne se
     // ferme pas : la croix masquerait le seul moyen d'en sortir.
     const shown = alerts.filter(([key, text, actions]) => actions || dismissedAlerts[key] !== text).map(([key, text, actions]) => actions ?
@@ -1176,7 +1179,10 @@
     const gone = event.target.closest?.('[data-gone]');
     if (!gone) return;
     const personId = gone.dataset.gone;
-    if (event.target.closest('[data-gone-present]')) act('/api/staff/person/present', { personId }, 'Alerte fermée');
+    if (event.target.closest('[data-gone-present]') && !presentPending.has(personId)) {
+      presentPending.add(personId);
+      act('/api/staff/person/present', { personId }, 'Alerte fermée').finally(() => presentPending.delete(personId));
+    }
     if (event.target.closest('[data-gone-leave]') && confirm('Marquer cette personne comme partie ? Ses titres restants seront retirés, sa fiche conservée.')) {
       act('/api/staff/person/leave', { personId }, 'Personne marquée partie ; ses titres restants ont été retirés');
     }
