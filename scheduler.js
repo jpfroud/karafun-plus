@@ -30,7 +30,8 @@
  *   prorata des chanteurs (par défaut), à parts égales, ou entre les deux.
  *   La même table ne reprend pas le micro quand une autre peut chanter (en
  *   « Chacun son tour », sauf pour respecter la patience). En compromis, la
- *   taille d'une table est son nombre de chanteurs inscrits.
+ *   taille d'une table est son nombre de chanteurs inscrits (titre choisi ce
+ *   soir, prêt ou non).
  * - Patience : personne ne voit quelqu'un chanter deux fois pendant sa propre
  *   attente quand un autre passage permis l'évite. Selon le mode (choix du
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
@@ -292,7 +293,8 @@ class Scheduler {
 
   // Empreinte de tout ce qui détermine l'ordre prévu. Les heures, reculs,
   // confirmations, notes et photos n'y figurent pas : la fin d'une chanson ou
-  // une inscription sans titre ne relancent donc pas Timefold.
+  // une inscription sans titre ne relancent donc pas Timefold, sauf en
+  // « Compromis », où la part d'une table suit ses chanteurs inscrits.
   solverContextFingerprint() {
     const readyQ = this.Q.filter(pid => {
       const p = this.people.get(pid);
@@ -324,6 +326,7 @@ class Scheduler {
       duetCooldowns: [...this.duetCooldowns],
       rotation: [!!this.opts.tableRotation, !!this.opts.weightedTables, this.opts.interleaveArrivals !== false],
       appearanceSerial: this.appearanceSerial, bonus: this._bonusContext(),
+      registered: this.opts.tableRotation && this.opts.weightedTables ? [...this._registeredWeights()] : null,
       ...this.manualOverrideState() };
     return crypto.createHash('sha256').update(JSON.stringify(context)).digest('hex');
   }

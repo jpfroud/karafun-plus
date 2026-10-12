@@ -693,3 +693,31 @@ test('QueueScore : un ordre qui fait voir un double coûte au moins 4 000 en med
     assert.ok(doubled > kept - 5000 - 2000, `pénalité plafonnée : ${doubled} contre ${kept}`);
   } finally { bridge.close(); }
 });
+
+// « Compromis » : la taille d'une table envoyée à Timefold (groupSizes) compte
+// ses chanteurs inscrits, titre prêt ou non, et change bien le score.
+test('compromis : Timefold reçoit et utilise la taille des tables (inscrits)', async () => {
+  const s = new Scheduler({ tableRotation: true, weightedTables: true });
+  s.setHeadcount('B', 4); s.setHeadcount('A', 6);
+  const b = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+  const a = ['A1', 'A2', 'A3', 'A4'].map(name => s.join({ tableId: 'A', name }));
+  let n = 9500;
+  for (const p of [...b, a[0], a[1]]) for (let k = 0; k < 2; k++) s.chooseSong(p, { songId: n++, title: `T${n}`, artist: 'x' }, 'append');
+  // A3 et A4 ont choisi puis retiré un titre ; un prénom de B n'a rien choisi.
+  for (const p of [a[2], a[3]]) { s.chooseSong(p, { songId: n++, title: `T${n}`, artist: 'x' }, 'append'); s.removeSong(p, p.song.entryId); }
+  s.join({ tableId: 'B', name: 'B3' });
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  assert.deepEqual(request.groupSizes, { [a[0].group]: 4, [b[0].group]: 2 });
+  if (!fs.existsSync(JAR)) return;
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge();
+  try {
+    const seed = async (req, id) => medium((await bridge.solve({ ...req, requestId: id, budgetMs: 100,
+      performances: req.performances.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+    const bFirst = { ...request, performances: [request.performances[1], request.performances[0], ...request.performances.slice(2)] };
+    const withSizes = await seed(bFirst, 'sizes-with'), withoutSizes = await seed({ ...bFirst, groupSizes: {} }, 'sizes-without');
+    assert.ok(withSizes < withoutSizes, `${withSizes} contre ${withoutSizes}`);
+  } finally { bridge.close(); }
+});

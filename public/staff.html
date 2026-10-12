@@ -133,14 +133,14 @@
 
   <section class="card rules-panel" data-tab="plus">
     <div class="section-heading"><div><div class="eyebrow">Comportement</div><h2>Règles de la soirée</h2></div><span class="small muted">Chaque réglage s’enregistre dès qu’il change.</span></div>
-    <div class="rotation-options" role="radiogroup" aria-label="Partage des passages entre les tables">
-      <p class="small">Dans tous les modes, chacun chante une fois par tour et personne ne rechante avant les premiers passages : le mode ne change pas combien de fois chacun chante, seulement l’ordre dans le tour. Deux règles s’ajoutent quand c’est évitable : la patience (personne ne voit quelqu’un chanter deux fois pendant sa propre attente) et la rotation des tables (la même table ne reprend pas le micro). Le mode choisit laquelle passe d’abord.</p>
+    <div class="rotation-options" role="radiogroup" aria-label="Ordre de passage dans le tour">
+      <p class="small">Dans tous les modes, personne ne rechante avant les premiers passages et chacun chante une fois par tour (bonus et malus à part) : le mode ne change que l’ordre dans le tour. Deux règles s’ajoutent quand c’est évitable : la patience (personne ne voit quelqu’un chanter deux fois pendant sa propre attente) et la rotation des tables (la même table ne reprend pas le micro). Le mode choisit laquelle des deux l’emporte.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationPeople" value="people"> Chacun son tour (recommandé)</label>
-      <p class="small muted">Priorité : la patience. Dès le deuxième tour, chacun repasse dans l’ordre du tour précédent ; avec des tables inégales, la même table peut enchaîner au changement de tour. Au premier tour, les tables sont entremêlées au prorata de leurs chanteurs.</p>
+      <p class="small muted">Priorité : la patience. Au premier tour, les tables sont entremêlées au prorata de leurs chanteurs prêts ; ensuite, chacun repasse dans l’ordre du tour précédent, et la même table peut enchaîner au changement de tour quand les tables n’ont pas autant de titres prêts.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationTables" value="tables"> Tables à tour de rôle</label>
       <p class="small muted">Priorité : la rotation des tables, puis la patience. Les tables passent à tour de rôle quel que soit leur nombre de chanteurs : les petites tables chantent tôt dans le tour, la grande table enchaîne ses chanteurs restants en fin de tour.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationCompromise" value="compromise"> Compromis</label>
-      <p class="small muted">Priorité : la rotation des tables, puis la patience. Dans le tour, une table passe d’autant plus tôt qu’elle a de chanteurs inscrits (racine de leur nombre) : entre « Chacun son tour » et « Tables à tour de rôle ».</p>
+      <p class="small muted">Priorité : la rotation des tables, puis la patience, comme « Tables à tour de rôle ». Mais une table passe d’autant plus tôt dans le tour qu’elle compte de chanteurs (inscrits ayant choisi un titre ce soir, et non places déclarées).</p>
       <label class="switch"><input id="interleaveArrivals" type="checkbox"> Intercaler une table qui arrive en nombre</label>
       <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>

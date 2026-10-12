@@ -292,6 +292,32 @@ try {
     assert.equal(restore(undefined, false), false, 'ancienne sauvegarde sans le champ');
   }
 
+  {
+    // Relecture : une sauvegarde prise entre un passage annulé et le suivant
+    // peut porter un début d'attente ou une marque d'échange au-delà du
+    // compteur ; la reprise les ramène, sinon la personne perdrait la
+    // protection de patience.
+    const sched = new Scheduler();
+    const access = new TableAccess();
+    for (const id of ['1', '2']) { sched.table(id); sched.setHeadcount(id, 4); access.issue(id); }
+    const ana = sched.join({ tableId: '1', name: 'Ana' });
+    const ben = sched.join({ tableId: '2', name: 'Ben' });
+    sched.chooseSong(ana, { songId: 1, title: 'A' });
+    sched.chooseSong(ben, { songId: 2, title: 'B' });
+    const sel = sched.select(); sched.commit(sel); sched.songEnded(sel.ids);
+    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: sched, access, settings: settings() })));
+    const row = saved.scheduler.people.find(p => p.id === ben.id);
+    row.readySerial = sched.appearanceSerial + 1;
+    row.emptiedAt = sched.appearanceSerial + 1;
+    saved.scheduler.people.find(p => p.id === ana.id).readySerial = -4;
+    const resumed = new Scheduler();
+    restoreNight(saved, { scheduler: resumed, access: new TableAccess(), settings: settings() });
+    const back = resumed.people.get(ben.id);
+    assert.equal(back.readySerial, resumed.appearanceSerial, 'début d’attente ramené au compteur');
+    assert.equal(back.emptiedAt, undefined, 'marque d’échange future abandonnée');
+    assert.equal(resumed.people.get(ana.id).readySerial, 0, 'début d’attente invalide remis à zéro');
+  }
+
   console.log('ok - reprise après crash : file, titres, duos, téléphones, QR, écritures atomiques et envoi ambigu');
 } finally {
   // Ce dossier est créé exclusivement sous le répertoire temporaire du test.

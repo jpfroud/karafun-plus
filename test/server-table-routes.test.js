@@ -398,6 +398,27 @@ test('« Vider toutes les chansons » pendant qu’un passage emprunté attend d
   assert.equal(f.sched.roundPeople.has(ana.id), false, 'Ana repart à zéro dans le nouveau tour');
 });
 
+test('« Vider toutes les chansons » juste après un retrait : le titre rechoisi commence une nouvelle attente', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  const ben = f.sched.join({ tableId: '2', name: 'Ben', headcount: 1 });
+  f.sched.chooseSong(ana, { songId: 9201, title: 'A1' }, 'append');
+  f.sched.chooseSong(ben, { songId: 9301, title: 'B1' }, 'append');
+  f.sched.chooseSong(ben, { songId: 9302, title: 'B2' }, 'append');
+  const play = () => { const sel = f.sched.select(); f.sched.commit(sel); f.sched.songEnded(sel.ids); return sel; };
+  assert.deepEqual(play().names, ['Ana']);
+  f.sched.chooseSong(ana, { songId: 9202, title: 'A2' }, 'append');
+  assert.deepEqual(play().names, ['Ben']);
+  // Échange de titre interrompu par le vidage : la file repart de zéro.
+  f.sched.removeSong(ana, f.sched.songsOf(ana)[0].entryId);
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  f.sched.chooseSong(ana, { songId: 9203, title: 'A3' }, 'append');
+  assert.equal(ana.readySerial, f.sched.appearanceSerial, 'file vidée : nouvelle attente');
+});
+
 test('« Arrêter le vidage » : sauvegarde en échec, le vidage reste en cours en mémoire comme sur le disque', async () => {
   const f = harness({ persistent: true });
   f.loadTables();

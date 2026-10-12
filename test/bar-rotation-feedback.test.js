@@ -518,17 +518,22 @@ for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }]
 // une table de 2 inscrits, créée avant elle ; « Chacun son tour » compte les
 // seuls titres prêts et départage ici par l'ordre des tables.
 test('compromis : la part d’une table suit ses chanteurs inscrits, pas ses seuls titres prêts', () => {
-  const first = opts => {
+  const first = (opts, idle = 0) => {
     const s = new Scheduler(opts);
-    s.setHeadcount('B', 4);
+    s.setHeadcount('B', 8);
     s.setHeadcount('A', 6);
     const b = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
     const a = ['A1', 'A2', 'A3', 'A4'].map(name => s.join({ tableId: 'A', name }));
     let n = 100;
     for (const p of [...b, a[0], a[1]]) s.chooseSong(p, song(n++), 'append');
+    // A3 et A4 ont choisi un titre puis l'ont retiré : inscrits, sans titre prêt.
+    for (const p of [a[2], a[3]]) { s.chooseSong(p, song(n++), 'append'); s.removeSong(p, p.song.entryId); }
+    // Prénoms inscrits à B sans aucun titre : ils ne comptent pas.
+    for (let k = 0; k < idle; k++) s.join({ tableId: 'B', name: `B-sans-titre-${k}` });
     return s.people.get(s.select().ids[0]).tableId;
   };
   assert.equal(first({ tableRotation: true, weightedTables: true }), 'A');
+  assert.equal(first({ tableRotation: true, weightedTables: true }, 5), 'A', 'des prénoms sans titre ne font pas passer B');
   assert.equal(first({}), 'B');
 });
 
@@ -680,6 +685,29 @@ for (const [mode, opts] of modes) {
   });
 }
 
+// Même règle sur un cas où la patience aurait réordonné les autres lignes :
+// en « Compromis », un passage avancé en tête par le bar.
+test('compromis : un passage avancé en tête par le bar ne réordonne pas les autres lignes', () => {
+  const s = new Scheduler({ tableRotation: true, weightedTables: true });
+  const random = rng(2);
+  let n = 1;
+  for (let t = 0; t < 3; t++) {
+    s.setHeadcount(`T${t}`, 6);
+    const count = 1 + Math.floor(random() * 4);
+    for (let k = 0; k < count; k++) {
+      const p = s.join({ tableId: `T${t}`, name: `T${t}-${k}` });
+      for (let j = 0; j < 4; j++) s.chooseSong(p, song(n++), 'append');
+    }
+  }
+  for (let i = 0; i < 4; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  const before = s.presenceView().filter(v => !v.future).map(v => v.ids[0]);
+  const moved = before[2];
+  s.staffMove(moved, 0);
+  const after = s.presenceView().filter(v => !v.future).map(v => v.ids[0]);
+  const others = list => list.filter(pid => pid !== moved);
+  assert.deepEqual(others(after), others(before));
+});
+
 // Relecture : un duo corrigé sur un passage ancien ne fait pas reculer le
 // dernier passage du nouveau partenaire, qui garde sa place.
 test('duo corrigé sur un passage ancien : le partenaire garde sa place', () => {
@@ -735,22 +763,26 @@ test('patience et compromis : pas de calcul inutile pendant une prévision', () 
     s.setHeadcount(t, 6);
     for (let i = 0; i < 5; i++) s.chooseSong(s.join({ tableId: t, name: `${t}P${i}` }), song(n++));
   }
-  let waits = 0, scans = 0;
+  let calls = 0, waits = 0, scans = 0;
   const patient = s._patient, registered = s._registeredWeights;
-  s._patient = function (choices, cands, lastTable, lastApp, waitStart) {
-    return patient.call(this, choices, cands, lastTable, lastApp, pid => { waits++; return waitStart(pid); });
+  s._patient = function (...args) {
+    calls++;
+    const waitStart = args[4];
+    args[4] = pid => { waits++; return waitStart(pid); };
+    return patient.apply(this, args);
   };
   s._registeredWeights = function () { scans++; return registered.call(this); };
   s._forecast(false, [], null, true);
+  assert.ok(calls > 0, 'la patience est bien consultée pendant la prévision');
   assert.equal(waits, 0, 'premier tour : aucun début d’attente calculé');
-  assert.ok(scans <= 1, `${scans} parcours des inscrits pour une prévision`);
+  assert.equal(scans, 1, `${scans} parcours des inscrits pour une prévision`);
 });
 
-// Relecture : une personne avec bonus peut chanter plus souvent, mais jamais
-// deux de ses titres de suite pendant que d'autres attendent. (Invitée d'un
-// duo puis son propre titre, au bonus +3, reste possible : tous les autres
-// ont déjà chanté dans le tour, comme avant la règle de patience.)
-test('bonus : jamais deux titres de suite de la même personne pendant que d’autres attendent', () => {
+// Relecture : une personne avec bonus peut chanter plus souvent, sans
+// enchaîner deux de ses titres tant qu'un autre passage du tour est possible.
+// (En fin de tour, il peut ne rester qu'elle : invitée d'un duo puis son
+// propre titre, ou ses deux passages du tour, comme avant la patience.)
+test('bonus : pas deux titres de suite de la même personne tant qu’un autre passage du tour est possible', () => {
   for (const level of [1, 2, 3]) {
     const s = new Scheduler();
     s.setHeadcount('1', 5);
@@ -790,4 +822,147 @@ test('retrait du dernier titre puis « Je pars » : l’attente recommence', () 
   s.leave(solo);
   s.chooseSong(solo, more(), 'append');
   assert.equal(solo.readySerial, s.appearanceSerial);
+});
+
+// Relecture : un titre échangé pendant qu'un passage part vers KaraFun, puis
+// ce passage annulé (retiré avant d'être chanté) : toujours un échange.
+test('échange de titre pendant un envoi ensuite annulé : l’attente est gardée', () => {
+  const s = new Scheduler();
+  for (const t of ['A', 'B', 'C', 'D']) s.setHeadcount(t, 4);
+  const people = ['A', 'B', 'C', 'D'].map(t => s.join({ tableId: t, name: `${t}1` }));
+  people.forEach((p, i) => s.chooseSong(p, song(i + 1)));
+  const first = s.select(); s.commit(first); s.songEnded(first.ids);
+  const inFlight = s.select(); s.commit(inFlight);
+  const p = people.find(q => !first.ids.includes(q.id) && !inFlight.ids.includes(q.id));
+  const before = p.readySerial || 0;
+  s.removeSong(p, p.song.entryId);
+  s.rollbackUnplayed(inFlight);
+  s.chooseSong(p, song(9));
+  assert.equal(p.readySerial || 0, before);
+});
+
+// Relecture : en « Compromis », la part d'une table suit ses chanteurs
+// inscrits, titre prêt ou non ; le départ d'un chanteur sans titre prêt doit
+// donc redemander un plan à Timefold (groupSizes).
+test('compromis : un chanteur sans titre prêt qui part change l’empreinte du plan', () => {
+  const s = new Scheduler({ tableRotation: true, weightedTables: true });
+  s.setHeadcount('A', 8); s.setHeadcount('B', 8);
+  const a = s.join({ tableId: 'A', name: 'A1' }), b = s.join({ tableId: 'B', name: 'B1' });
+  s.chooseSong(a, song(1)); s.chooseSong(b, song(2));
+  // A2 a choisi puis retiré son titre : inscrite à A, sans titre prêt.
+  const a2 = s.join({ tableId: 'A', name: 'A2' });
+  s.chooseSong(a2, song(3)); s.removeSong(a2, a2.song.entryId);
+  const before = s.solverContextFingerprint();
+  s.leave(a2);
+  assert.notEqual(s.solverContextFingerprint(), before, 'A compte un chanteur de moins');
+  // Hors « Compromis », ce départ sans titre ne relance pas Timefold.
+  const t = new Scheduler();
+  t.setHeadcount('A', 8);
+  t.chooseSong(t.join({ tableId: 'A', name: 'A1' }), song(1));
+  const t2 = t.join({ tableId: 'A', name: 'A2' });
+  t.chooseSong(t2, song(3)); t.removeSong(t2, t2.song.entryId);
+  const still = t.solverContextFingerprint();
+  t.leave(t2);
+  assert.equal(t.solverContextFingerprint(), still);
+});
+
+// Relecture : titre retiré juste avant ou pendant l'envoi d'un passage
+// ensuite annulé, puis rechoisi : l'attente continue, à sa place.
+test('échange de titre autour d’un passage annulé : l’attente continue', () => {
+  for (const removeFirst of [true, false]) {
+    const { s, more } = twoTablesAndSolo();
+    for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+    const b2 = [...s.people.values()].find(p => p.name === 'B2');
+    const before = b2.readySerial;
+    let sent;
+    if (removeFirst) { s.removeSong(b2, s.songsOf(b2)[0].entryId, 'self'); sent = s.select(); s.commit(sent); }
+    else { sent = s.select(); s.commit(sent); s.removeSong(b2, s.songsOf(b2)[0].entryId, 'self'); }
+    s.rollbackUnplayed(sent, { requeue: true });
+    s.chooseSong(b2, more(), 'append');
+    assert.equal(b2.readySerial, before, `removeFirst=${removeFirst}`);
+    const order = s.readyView().map(x => x.name);
+    assert.ok(order.indexOf('B2') < order.indexOf('S'), `removeFirst=${removeFirst}: ${order.join(' ')}`);
+  }
+});
+
+// Relecture : une personne arrivée pendant un passage ensuite annulé
+// n'attend pas depuis un passage qui n'existe plus.
+test('passage annulé : une arrivée pendant ce passage n’attend pas depuis un passage disparu', () => {
+  const { s, more } = twoTablesAndSolo();
+  for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  s.setHeadcount('C', 4);
+  const sent = s.select(); s.commit(sent);
+  const late = s.join({ tableId: 'C', name: 'X' });
+  s.chooseSong(late, more(), 'append');
+  s.rollbackUnplayed(sent, { requeue: true });
+  assert.ok(late.readySerial <= s.appearanceSerial, `${late.readySerial} > ${s.appearanceSerial}`);
+});
+
+// Relecture : en modes tables, un duo noté tard par le bar met l'invitée au
+// répit ; la patience ne doit pas alors laisser la table qui vient de
+// chanter reprendre le micro alors qu'une autre table peut chanter.
+for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }],
+  ['compromis', { tableRotation: true, weightedTables: true }]]) {
+  test(`${mode} : un duo noté tard ne redonne pas le micro à la même table`, () => {
+    const s = new Scheduler(opts);
+    let n = 1;
+    const people = {};
+    for (const [t, names] of [['A', ['a1', 'a2', 'a3', 'a4']], ['B', ['b1', 'b2']], ['C', ['c1', 'c2']]]) {
+      s.setHeadcount(t, names.length);
+      for (const name of names) people[name] = s.join({ tableId: t, name });
+    }
+    Object.values(people).forEach(p => s.chooseSong(p, song(n++), 'append'));
+    const played = [];
+    for (let i = 0; i < 8; i++) {
+      const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+      played.push({ sel, turn: s.appearanceSerial });
+      for (const pid of sel.ids) { const p = s.people.get(pid); if (!s.songsOf(p).length) s.chooseSong(p, song(n++), 'append'); }
+    }
+    const first = played[0];
+    const guest = Object.values(people).find(p => p.tableId !== s.people.get(first.sel.ids[0]).tableId &&
+      p.id !== first.sel.ids[0] && p.lastAppearanceTurn < 4);
+    s.staffCountPartner(first.sel.ids[0], guest.id, { song: { entryId: first.sel.song.entryId }, turn: first.turn }, []);
+    const last = new Set(s.lastGroup);
+    const pick = s.select();
+    assert.ok(pick.groups.every(g => !last.has(g)), `${pick.names} (table ${pick.groups}) après la table ${[...last]}`);
+  });
+}
+
+// Relecture : un passage passé dans KaraFun sans être chanté (titre non
+// rendu) ; rechoisir un titre avant ou après l'annulation garde l'attente.
+test('passage annulé, titre rechoisi avant ou après l’annulation : même attente', () => {
+  for (const repickFirst of [true, false]) {
+    const s = new Scheduler();
+    const people = ['A', 'B', 'C', 'D'].map(t => s.join({ tableId: t, name: `${t}1`, headcount: 2 }));
+    let n = 1;
+    people.forEach(p => s.chooseSong(p, song(n++), 'append'));
+    const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel; };
+    const owner = s.people.get(play().ids[0]);
+    play();
+    s.chooseSong(owner, song(n++), 'append');
+    const waitStart = owner.readySerial;
+    play(); play();
+    people.forEach(p => { if (!s.songsOf(p).length) s.chooseSong(p, song(n++), 'append'); });
+    const sel = s.select();
+    assert.equal(sel.ids[0], owner.id);
+    s.commit(sel);
+    if (repickFirst) s.chooseSong(owner, song(n++), 'append');
+    s.rollbackUnplayed(sel, { requeue: true });
+    if (!repickFirst) s.chooseSong(owner, song(n++), 'append');
+    assert.equal(owner.readySerial, waitStart, `rechoisi ${repickFirst ? 'avant' : 'après'} l’annulation`);
+  }
+});
+
+// Relecture : un duo noté sans passage connu ajoute un passage au compteur ;
+// le retirer le rend, et personne n'attend depuis un passage disparu.
+test('duo noté puis retiré sans passage connu : début d’attente ramené au compteur', () => {
+  const s = new Scheduler();
+  const [a, b, c] = ['A', 'B', 'C'].map(t => { s.setHeadcount(t, 2); return s.join({ tableId: t, name: t }); });
+  s.chooseSong(a, song(1));
+  const sel = { song: { entryId: 'inconnu' } };
+  s.staffCountPartner(a.id, b.id, sel);
+  s.chooseSong(c, song(2));
+  assert.equal(c.readySerial, s.appearanceSerial);
+  s.staffUncountPartner(sel.staffDuo, sel, []);
+  assert.ok((c.readySerial || 0) <= s.appearanceSerial, `${c.readySerial} > ${s.appearanceSerial}`);
 });
