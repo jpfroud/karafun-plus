@@ -1106,3 +1106,36 @@ test('titre retiré faute de présence : le titre suivant commence une nouvelle 
   s.chooseSong(solo, more(), 'append');
   assert.equal(solo.readySerial, s.appearanceSerial);
 });
+
+// Relecture : retrait faute de « Je suis là » alors qu'un autre titre attend
+// dans la liste : ce titre commence lui aussi une nouvelle attente.
+test('titre retiré faute de présence avec une liste : le titre suivant commence une nouvelle attente', () => {
+  const s = new Scheduler();
+  s.setHeadcount('A', 6); s.setHeadcount('B', 6);
+  const solo = s.join({ tableId: 'Comptoir', name: 'S' });
+  const people = ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4'].map(name => name === 'S' ? solo : s.join({ tableId: name[0], name }));
+  let n = 1;
+  for (const p of people) for (let k = 0; k < (p === solo ? 3 : 2); k++) s.chooseSong(p, song(n++), 'append');
+  for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  for (let i = 0; i < 3; i++) s.skipUnconfirmed(solo.id, 3);
+  assert.equal(s.songsOf(solo).length, 1);
+  assert.equal(Math.max(solo.lastAppearanceTurn || 0, solo.readySerial || 0), s.appearanceSerial);
+});
+
+// Relecture : un passage annulé puis rendu laisse un repère d'échange ; un
+// retrait faute de « Je suis là » l'efface, le titre rechoisi recommence.
+test('passage rendu puis retiré faute de présence : le titre rechoisi commence une nouvelle attente', () => {
+  const s = new Scheduler();
+  const [bob, alice, carl] = ['B', 'A', 'C'].map(t => { s.setHeadcount(t, 2); return s.join({ tableId: t, name: t }); });
+  s.chooseSong(bob, song(1)); s.chooseSong(alice, song(2)); s.chooseSong(carl, song(3));
+  const first = s.select(); s.commit(first); s.songEnded(first.ids);
+  let sel = s.select();
+  while (sel.ids[0] !== alice.id) { s.commit(sel); s.songEnded(sel.ids); sel = s.select(); }
+  s.commit(sel);
+  s.requeueUnplayed(sel);
+  assert.equal(s.songsOf(alice).length, 1, 'titre rendu');
+  s.skipUnconfirmed(alice.id, 1);
+  assert.equal(alice.emptiedAt, undefined);
+  s.chooseSong(alice, song(4));
+  assert.equal(alice.readySerial, s.appearanceSerial);
+});

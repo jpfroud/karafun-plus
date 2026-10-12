@@ -295,8 +295,9 @@ class Scheduler {
   // confirmations, notes et photos n'y figurent pas : la fin d'une chanson ou
   // une inscription sans titre ne relancent donc pas Timefold. En
   // « Compromis », la part d'une table suit ses chanteurs inscrits
-  // (_registeredWeights) : un départ ou un premier titre à une table qui a un
-  // titre prêt la relance, pas un changement à une table sans titre prêt.
+  // (_registeredWeights) : un départ, un premier titre ou le retrait du dernier
+  // titre de quelqu'un qui n'a pas encore chanté, à une table qui a un titre
+  // prêt, la relance ; pas un changement à une table sans titre prêt.
   solverContextFingerprint() {
     const readyQ = this.Q.filter(pid => {
       const p = this.people.get(pid);
@@ -696,9 +697,13 @@ class Scheduler {
     if (p.song && p.song.entryId === key) {
       this._songsGone(p, [p.song]);
       p.song = (p.backlog || []).shift() || null;
-      // Un titre retiré faute de « Je suis là » n'ouvre pas d'échange : le
-      // titre suivant commence une nouvelle attente.
-      if (by !== 'presence-max') this._noteEmptied(p);
+      // Un titre retiré faute de « Je suis là » n'ouvre pas d'échange, et
+      // efface un ancien repère (passage annulé puis rendu) : le titre
+      // suivant de la liste, ou un titre rechoisi, commence une nouvelle attente.
+      if (by === 'presence-max') {
+        delete p.emptiedAt;
+        if (p.song) p.readySerial = this.appearanceSerial;
+      } else this._noteEmptied(p);
     } else {
       const i = (p.backlog || []).findIndex(s => s.entryId === key);
       if (i < 0) throw new Error('Chanson introuvable dans la liste.');
