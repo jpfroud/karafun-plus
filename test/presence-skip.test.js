@@ -193,3 +193,90 @@ test('titre passé dont la personne chante en invitée juste devant : présence 
   }
   assert.deepEqual(real, forecast, 'la prévision montrait déjà cet ordre');
 });
+
+// Relecture : le guide dit qu'un titre retiré faute de « Je suis là »
+// n'envoie pas la personne en fin de tour (son titre suivant est annoncé
+// aussitôt, avec une nouvelle demande), que « Toujours là » ferme seulement
+// l'alerte, et que « Marquer parti » retire ses titres et arrête ces annonces.
+test('titre retiré faute de présence en cours de soirée : suivant annoncé aussitôt, « Toujours là » ne confirme rien, « Marquer parti » arrête', () => {
+  const { s, people, sing } = evening();
+  const alice = people.Alice;
+  const next = () => {
+    const r = s.reservePresenceNext();
+    for (const pid of r.ids) s.confirm(s.people.get(pid));
+    sing(s.select());
+  };
+  for (let miss = 1; miss <= 2; miss++) {
+    assert.equal(s.reservePresenceNext().ids[0], alice.id);
+    assert.equal(s.skipUnconfirmed(alice.id, 3).removed, false);
+    next();
+  }
+  assert.equal(s.reservePresenceNext().ids[0], alice.id);
+  assert.equal(s.skipUnconfirmed(alice.id, 3).removed, true, 'troisième manque : titre retiré');
+  assert.ok(s.appearanceSerial >= 2, 'des passages ont eu lieu entre-temps');
+  assert.equal(s.songsOf(alice).length, 1);
+  assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
+  const view = JSON.stringify(s.presenceView().map(v => v.ids));
+  const state = JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]);
+  assert.equal(s.dismissMaybeGone(alice),
+    `Alerte fermée pour Alice (Table 1). Prochain passage : « ${s.songsOf(alice)[0].title} ». Ce passage redemandera « Je suis là ».`);
+  assert.equal(alice.maybeGone, null);
+  assert.equal(s.select(), null, '« Toujours là » ne confirme pas la présence');
+  assert.equal(JSON.stringify(s.presenceView().map(v => v.ids)), view, 'ni ne change la file');
+  assert.equal(JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]), state,
+    'ni sa place dans le tour');
+  assert.equal(s.dismissMaybeGone(alice), null, 'alerte déjà fermée');
+  s.leave(alice, 'staff');
+  assert.equal(s.songsOf(alice).length, 0, '« Marquer parti » retire ses titres restants');
+  assert.equal(s.reservedNext, null);
+  const after = s.reservePresenceNext();
+  assert.ok(after && after.ids[0] !== alice.id, 'et arrête les annonces : la suite part sans elle');
+});
+
+// Relecture : avec un seul titre, le retrait faute de « Je suis là » vide sa
+// liste ; « Toujours là » le dit au lieu d'annoncer une nouvelle demande.
+test('« Toujours là » après le retrait du seul titre : aucun passage prévu, un titre à rechoisir', () => {
+  const s = new Scheduler({ requirePresence: true });
+  const [alice, bruno] = ['Alice', 'Bruno'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  s.chooseSong(alice, song()); s.chooseSong(bruno, song());
+  assert.equal(s.reservePresenceNext().ids[0], alice.id);
+  assert.equal(s.skipUnconfirmed(alice.id, 1).removed, true);
+  assert.equal(s.songsOf(alice).length, 0);
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice (Table 1). Aucun passage prévu : un titre à rechoisir sur son téléphone.');
+  assert.equal(s.reservePresenceNext().ids[0], bruno.id);
+  // Option coupée ensuite, alerte encore ouverte : la liste vide se dit quand même.
+  s.opts.requirePresence = false;
+  alice.maybeGone = { at: Date.now(), title: 'x', skips: 1 };
+  assert.equal(s.dismissMaybeGone(alice), 'Alerte fermée pour Alice (Table 1). Aucun passage prévu : un titre à rechoisir sur son téléphone.');
+});
+
+// Relecture : le message donne le premier passage de la file où elle chante,
+// duo d'invitée compris, et dit s'il redemandera « Je suis là » ou si la
+// présence est déjà confirmée (par elle ou son partenaire de duo) ; sans
+// titre à son nom, il faut en rechoisir un sur son téléphone.
+test('« Toujours là » : prochain passage de la file, duo d’invitée, présence déjà confirmée', () => {
+  const s = new Scheduler({ requirePresence: true });
+  const zoe = s.join({ tableId: '1', name: 'Zoé', headcount: 3 });
+  const alice = s.join({ tableId: '1', name: 'Alice', headcount: 3 });
+  const olga = s.join({ tableId: '1', name: 'Olga', headcount: 3 });
+  s.chooseSong(alice, song());
+  s.inviteDuet(olga, alice.id, song()); // même table : duo accepté d'office
+  s.chooseSong(zoe, song()); s.chooseSong(zoe, song(), 'append');
+  s.inviteDuet(zoe, alice.id, song());
+  alice.maybeGone = { at: Date.now(), title: 'x', skips: 3 };
+  const first = s.presenceView().find(v => v.ids.includes(alice.id));
+  assert.deepEqual(first.ids, [olga.id, alice.id], 'le duo d’Olga passe avant son propre titre');
+  assert.equal(s.dismissMaybeGone(alice),
+    `Alerte fermée pour Alice (Table 1). Prochain passage : « ${first.song.title} » en duo avec Olga (Table 1). Ce passage redemandera « Je suis là ».`,
+    'le duo qui passe d’abord, sans « titre à rechoisir » : il lui reste le sien');
+  for (const entry of s.songsOf(alice)) s.removeSong(alice, entry.entryId, 'staff');
+  const duos = s.presenceView().filter(v => v.ids.includes(alice.id));
+  assert.deepEqual(duos.map(v => s.people.get(v.ids[0]).name), ['Olga', 'Zoé'], 'Olga est arrivée après Zoé mais passe avant');
+  const duo = `Prochain passage : « ${duos[0].song.title} » en duo avec Olga (Table 1).`;
+  const own = ' Pour un passage à son nom, un titre à rechoisir sur son téléphone.';
+  assert.equal(s.presenceFollowUp(alice), `${duo} Ce passage redemandera « Je suis là ».${own}`);
+  s.confirm(olga);
+  assert.equal(s.presenceFollowUp(alice), `${duo} Présence déjà confirmée.${own}`, 'la réponse de son partenaire suffit');
+  s.opts.requirePresence = false;
+  assert.equal(s.presenceFollowUp(alice), `${duo}${own}`);
+});

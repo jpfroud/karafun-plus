@@ -528,6 +528,22 @@ test('équité et temps morts : la vraie raison, et les accords au singulier', a
   assert.match(text(page.doc.getElementById('chartDead').byTag('p')[0]), /\(1 intervalle\)$/);
 });
 
+// Relecture du 12 octobre : une demande faite après l'heure de fermeture
+// (ajout toujours possible) ne met pas la personne dans les rythmes de passage,
+// et la tuile « Chanteurs » dit qui elle compte.
+test('rythme de passage et chanteurs : une demande après la fermeture n’y entre pas', async () => {
+  const page = loadPage({ responses: withView(view => {
+    const dina = view.stats.singers.find(singer => singer.id === 'pD');
+    Object.assign(dina, { askedInKaraoke: false, requests: 1, presenceSec: 3600, turns: 0, turnsPerHour: 0 });
+  }) });
+  await settle();
+  const plot = text(page.doc.getElementById('chartRatesPlot'));
+  assert.match(plot, /Alice/);
+  assert.doesNotMatch(plot, /Dina/);
+  const tile = page.$('kpis').children.find(n => /Chanteurs/.test(text(n)));
+  assert.match(text(tile), /avaient un titre pendant leur présence/);
+});
+
 // Regression: ISSUE-035 — « Rythme de passage » : le trait de la part attendue barrait les valeurs
 test('rythme de passage : la valeur s’écrit après le trait de la part attendue quand il touche la barre', async () => {
   const page = loadPage({ responses: withView(view => {
@@ -777,6 +793,77 @@ test('déroulé : une soirée restée ouverte 4 jours garde des barres lisibles 
   }
 });
 
+// Retours du 11 octobre : l'en-tête donne les heures du karaoké (connexion de
+// KaraFun → fermeture du bar), pas le lancement de l'application ni sa remise à zéro.
+test('en-tête : heures du karaoké, et lancement et clôture pour un ancien journal', async () => {
+  const view = apiView({ live: false, endedAt: at(600) });
+  view.stats.evening.openedAt = at(30);
+  view.stats.evening.closedAt = at(95);
+  // Alice, inscrite avant la connexion de KaraFun, présente jusqu'à la fermeture.
+  Object.assign(view.stats.singers.find(singer => singer.id === 'pA'), { joinedAt: at(0), leftAt: at(95), explicitLeft: false });
+  // Bruno : présence entièrement avant la connexion (statistiques : leftAt nul).
+  Object.assign(view.stats.singers.find(singer => singer.id === 'pB'), { joinedAt: at(2), leftAt: null, rawLeftAt: at(20), explicitLeft: true, presenceSec: 0 });
+  const page = loadPage({ responses: viewResponse(view) });
+  await settle();
+  assert.match(text(page.$('eveningLine')), new RegExp(` · ${localHHMM(at(30))} – ${localHHMM(at(95))} · `));
+  // En direct, karaoké déjà fermé par les statistiques : l'heure, pas « en cours ».
+  const liveClosed = apiView({ live: true });
+  liveClosed.stats.evening.openedAt = at(30);
+  liveClosed.stats.evening.closedAt = at(95);
+  const livePage = loadPage({ responses: viewResponse(liveClosed) });
+  await settle();
+  assert.match(text(livePage.$('eveningLine')), new RegExp(` · ${localHHMM(at(30))} – ${localHHMM(at(95))} · `));
+  // Déroulé en direct, karaoké fini : même fin que l'en-tête, axe arrêté 15 min
+  // après le dernier passage (pas jusqu'à maintenant).
+  const liveLate = apiView({ live: true, now: at(200) });
+  const liveEnd = lastStageEnd(liveLate);
+  liveLate.stats.evening.closedAt = liveEnd + 10 * 60000;
+  const latePage = loadPage({ responses: viewResponse(liveLate) });
+  await settle();
+  assert.equal(text(timelineCaption(latePage)),
+    `Dernier passage à ${localHHMM(liveEnd)} · fin du karaoké à ${localHHMM(liveEnd + 10 * 60000)} · soirée encore ouverte`);
+  const lateAxis = timelineAxis(latePage);
+  lateAxis.svg.dispatch('pointermove', { clientX: 10 + lateAxis.W - 12, target: lateAxis.svg });
+  assert.match(text(latePage.$('tooltip')), new RegExp(`^${localHHMM(liveEnd + 15 * 60000)}`));
+  assert.match(text(timelineCaption(page)), new RegExp(`fin du karaoké à ${localHHMM(at(95))} · soirée close dans l’application`));
+  const legacy = apiView({ live: false, endedAt: at(600) });
+  delete legacy.stats.evening.openedAt;
+  delete legacy.stats.evening.closedAt;
+  const old = loadPage({ responses: viewResponse(legacy) });
+  await settle();
+  assert.match(text(old.$('eveningLine')), new RegExp(` · ${localHHMM(at(0))} – ${localHHMM(at(600))} · `));
+  const focus = page.$('focusSelect');
+  focus.value = 'p:pA';
+  focus.dispatch('change', { target: focus });
+  const card = text(page.$('focusCard'));
+  assert.match(card, new RegExp(`arrivée ${localHHMM(at(0))} \\(comptée dès ${localHHMM(at(30))}\\) · fin du karaoké ${localHHMM(at(95))} · présence`));
+  assert.doesNotMatch(card, /dernier signe/);
+  // La légende du tableau des chanteurs donne la même règle.
+  assert.match(text(page.doc.getElementById('cardSingers')), /« Présence » : départ signalé, sinon dernier signe d’activité \+ 30 min, comptée pendant le karaoké seulement \(connexion de KaraFun → fermeture\)\./);
+  // Bruno, inscrit et parti avant la connexion de KaraFun : aucune présence comptée.
+  focus.value = 'p:pB';
+  focus.dispatch('change', { target: focus });
+  const outside = text(page.$('focusCard'));
+  assert.match(outside, new RegExp(`arrivée ${localHHMM(at(2))} · départ ${localHHMM(at(20))} · hors du karaoké, présence 0 s`));
+  assert.doesNotMatch(outside, /comptée dès|—/);
+  // File d'attente : relevés du karaoké seulement (pas la nuit après la fermeture).
+  const samples = view.stats.timeline.queue.map(q => q.t);
+  assert.ok(samples.some(t => t < at(30) || t > at(95)), 'le jeu d’essai a des relevés hors du karaoké');
+  const queueButton = page.doc.getElementById('chartQueue').byTag('button')[0];
+  queueButton.dispatch('click');
+  const rows = page.doc.getElementById('chartQueue').byTag('tbody')[0].children.map(row => text(row.children[0]));
+  assert.deepEqual(rows, samples.filter(t => t >= at(30) && t <= at(95)).map(localHHMM));
+  // Codex sur la PR #16 : aucun relevé pendant le karaoké, rien n'est montré
+  // (pas les relevés de l'après-midi ou du lendemain).
+  const night = apiView({ live: false, endedAt: at(600) });
+  night.stats.evening.openedAt = at(500);
+  night.stats.evening.closedAt = at(510);
+  assert.ok(night.stats.timeline.queue.every(q => q.t < at(500)), 'tous les relevés sont hors du karaoké');
+  const empty = loadPage({ responses: viewResponse(night) });
+  await settle();
+  assert.equal(text(empty.doc.getElementById('chartQueuePlot')), 'Pas encore de données.');
+});
+
 // Regression: ISSUE-037 — la soirée close 6 jours plus tard gardait le même graphique illisible pour de bon
 test('déroulé : une soirée close 6 jours plus tard est dessinée sur ses passages, avec l’heure de clôture', async () => {
   const endedAt = at(6 * 24 * 60);
@@ -787,12 +874,42 @@ test('déroulé : une soirée close 6 jours plus tard est dessinée sur ses pass
   assertReadableAxis(axis, 'déroulé clos');
   assertMarksSpread(axis, 'déroulé clos');
   const day = new Date(endedAt).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
-  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close le ${day} à ${localHHMM(endedAt)}`);
-  // Clôture moins de 3 h après le dernier passage : axe jusqu'à la clôture, sans note.
-  const soon = loadPage({ responses: viewResponse(apiView({ live: false, endedAt: at(90 + 170) })) });
+  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close dans l’application le ${day} à ${localHHMM(endedAt)}`);
+  // Clôture moins de 3 h après le dernier passage : l'axe s'arrête aussi
+  // 15 min après lui (retour du 10 octobre), la note donne la clôture.
+  // Le jour n'est donné que si la clôture tombe un autre jour (heure locale) que
+  // le dernier passage : selon le fuseau de la machine (Paris : après minuit).
+  const soonView = apiView({ live: false, endedAt: at(90 + 170) });
+  const soon = loadPage({ responses: viewResponse(soonView) });
   await settle();
-  assert.equal(timelineCaption(soon), undefined);
-  assert.equal(soon.doc.getElementById('chartTimelinePlot').find(n => n.tagName === 'P').length, 0);
+  const soonDay = new Date(at(90 + 170)).toDateString() === new Date(lastStageEnd(soonView)).toDateString() ? ''
+    : `le ${new Date(at(90 + 170)).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} `;
+  assert.equal(text(timelineCaption(soon)), `Dernier passage à ${localHHMM(lastStageEnd(soonView))} · soirée close dans l’application ${soonDay}à ${localHHMM(at(90 + 170))}`);
+  // Clôture 10 min après le dernier passage : rien de coupé, pas de note.
+  const nowView = apiView({ live: false, endedAt: lastStageEnd(soonView) + 10 * 60000 });
+  const now = loadPage({ responses: viewResponse(nowView) });
+  await settle();
+  assert.equal(timelineCaption(now), undefined);
+});
+
+// Regression: soirée du 10 octobre — application lancée à 15:41, premier titre à 22:38 :
+// la frise montrait sept heures vides avant les passages
+test('déroulé : les heures vides avant le premier passage ne sont pas dessinées', async () => {
+  const early = 7 * 60;
+  const events = eveningEvents().map(ev => ev.ev === 'evening.started' || ev.ev === 'app.started' ? ev : { ...ev, t: ev.t + early * 60000 });
+  const endedAt = at(early + 90);
+  const stats = computeStats({ meta: { ...meta, startedAt: at(0), endedAt }, events, now: endedAt, live: false });
+  const view = { ...apiView({ live: false }), stats };
+  for (const width of [900, 360]) {
+    const page = loadPage({ width, responses: viewResponse(view) });
+    await settle();
+    const axis = timelineAxis(page);
+    assertReadableAxis(axis, `déroulé ${width} px`);
+    const rects = axis.svg.children.filter(n => n.tagName === 'RECT' && n.getAttribute('class') === 'st-mark');
+    const x0 = Math.min(...rects.map(r => Number(r.getAttribute('x'))));
+    assert.ok(x0 - axis.plotLeft <= 0.25 * axis.usable, `premier passage à ${Math.round(x0 - axis.plotLeft)} unités du bord gauche`);
+    assert.ok(!axis.labels.some(l => l.label === localHHMM(at(60))), 'aucune heure de l’après-midi vide');
+  }
 });
 
 // Regression: ISSUE-037 — clôture plus de 3 h après, le même jour : l'heure seule
@@ -806,7 +923,7 @@ test('déroulé : soirée close le jour même plus de 3 h après le dernier pass
   const view = { ...apiView({ live: false }), stats };
   const page = loadPage({ responses: viewResponse(view) });
   await settle();
-  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close à ${localHHMM(endedAt)}`);
+  assert.equal(text(timelineCaption(page)), `Dernier passage à ${localHHMM(lastStageEnd(view))} · soirée close dans l’application à ${localHHMM(endedAt)}`);
 });
 
 // Regression: ISSUE-037 — la soirée normale en direct ne change pas : « maintenant » reste visible, un temps mort aussi

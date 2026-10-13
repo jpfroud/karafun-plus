@@ -321,15 +321,41 @@ class BattleVote {
     return this.view();
   }
 
-  beginAutomation(before) {
+  // `sentMod` : mode Battle demandé à KaraFun pour ce titre ({ id, caption }).
+  beginAutomation(before, { sentMod = null } = {}) {
     if (this.ballot?.phase !== 'requested' || this.automation?.status !== 'waiting' ||
       !Array.isArray(before) || before.some(id => typeof id !== 'string')) {
       throw new Error('La Battle ne peut pas être préparée.');
     }
     this.automation.before = [...before];
     this.automation.sentAt = this.now();
+    this.automation.sentMod = sentMod ? { id: sentMod.id, caption: sentMod.caption } : null;
     this.automation.status = 'sending';
     this._changed('automation-sending');
+  }
+
+  // Copie normale du titre vue dans KaraFun pendant l'envoi : elle doit rester
+  // sans mode Battle un moment avant d'être attribuée à cet envoi.
+  notePlainCopy(queueId) {
+    if (this.automation?.status !== 'sending' || queueId == null || this.automation.modeTarget != null) {
+      throw new Error('Copie normale inattendue.');
+    }
+    this.automation.plainId = String(queueId);
+    this.automation.plainSince = this.now();
+    this._changed('automation-plain');
+  }
+
+  // KaraFun a ajouté le titre en chanson normale : la page lui demande de le
+  // passer dans ce mode Battle (une seule fois par envoi).
+  noteModeSwitch(queueId, mod) {
+    if (this.automation?.status !== 'sending' || queueId == null || this.automation.modeTarget != null) {
+      throw new Error('Passage en mode Battle inattendu.');
+    }
+    this.automation.modeTarget = String(queueId);
+    this.automation.modeSentAt = this.now();
+    this.automation.modeCaption = String(mod?.caption || '');
+    this.automation.modeId = Number(mod?.id) || null;
+    this._changed('automation-mode');
   }
 
   confirmAutomation(queueId) {
@@ -497,7 +523,7 @@ class BattleVote {
       mode: null, eligiblePersonIds: [],
       votedPersonIds: [], lastOutcome: this.lastOutcome,
       automation: this.automation ? { status: this.automation.status,
-        queueId: this.automation.queueId, failure: this.automation.failure } : null };
+        queueId: this.automation.queueId, failure: this.automation.failure, modeCaption: this.automation.modeCaption || null } : null };
     const songOptions = (b.songs || []).map(song => ({ ...song,
       votes: b.votes.filter(([, choice]) => choice === `song:${song.songId}`).length }));
     return { id: b.id, phase: b.phase, proposalName: b.proposalName,
@@ -514,7 +540,7 @@ class BattleVote {
       eligiblePersonIds: [...b.eligiblePersonIds],
       votedPersonIds: b.votes.map(([id]) => id), lastOutcome: this.lastOutcome,
       automation: this.automation ? { status: this.automation.status,
-        queueId: this.automation.queueId, failure: this.automation.failure } : null };
+        queueId: this.automation.queueId, failure: this.automation.failure, modeCaption: this.automation.modeCaption || null } : null };
   }
 
   view() { this.tick(); return this.viewWithoutTick(); }

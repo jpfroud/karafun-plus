@@ -636,3 +636,98 @@ test('soirée réaliste six tables : arrivées, duos, listes, départs et procha
       } finally { s.closeSolver(); }
     }
   });
+
+// Soirée du 12 octobre avec Timefold actif : Timefold « améliorait » le 2e
+// tour en faisant repasser la personne seule devant une table qui avait
+// chanté avant elle, et ce plan était adopté. La règle de patience de _pick
+// passe avant le plan : l'ordre du 1er tour reste, quel que soit le solveur.
+test('avec Timefold actif, deux tables de 4 et une personne seule gardent l’ordre du 1er tour',
+  { skip: !fs.existsSync(JAR) && !fs.existsSync(path.join(__dirname, '..', 'solver', 'karafun-solver.jar')) },
+  async () => {
+    const s = new Scheduler({ solverEnabled: true });
+    s.setHeadcount('A', 6);
+    s.setHeadcount('B', 6);
+    const names = ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4'];
+    const people = new Map(names.map(name =>
+      [name, s.join({ tableId: name === 'S' ? 'Comptoir' : name[0], name })]));
+    let songId = 9100;
+    for (const name of names) for (let k = 0; k < 2; k++) {
+      s.chooseSong(people.get(name), { songId: songId++, title: `${name} ${k + 1}`, artist: 'Test' }, 'append');
+    }
+    try {
+      await s.whenPlanReady();
+      const first = s.select();
+      s.commit(first); s.songEnded(first.ids);
+      assert.equal(await s.whenPlanReady(), true, 'un plan Timefold est confirmé ou adopté');
+      const planned = [first.names[0], ...s.readyView().map(v => v.name)];
+      assert.deepEqual(planned.slice(9), planned.slice(0, 9), 'le 2e tour reprend l’ordre du 1er');
+    } finally { s.closeSolver(); }
+  });
+
+// Relecture : le score Java applique la règle de patience. Un ordre qui fait
+// voir à quelqu'un un passage en double coûte au moins 4 000 en « medium »,
+// moins que sortir des choix équitables (5 000).
+test('QueueScore : un ordre qui fait voir un double coûte au moins 4 000 en medium', { skip: !fs.existsSync(JAR) }, async () => {
+  const s = new Scheduler();
+  s.setHeadcount('A', 6); s.setHeadcount('B', 6);
+  const names = ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4'];
+  const people = new Map(names.map(name => [name, s.join({ tableId: name === 'S' ? 'Comptoir' : name[0], name })]));
+  let n = 9300;
+  for (const name of names) for (let k = 0; k < 2; k++) s.chooseSong(people.get(name), { songId: n++, title: `${name} ${k}`, artist: 'x' }, 'append');
+  const first = s.select(); s.commit(first); s.songEnded(first.ids);
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  const nameOf = row => s.people.get(row.owner).name;
+  const node = request.performances;
+  const i = node.findIndex((row, k) => k > 8 && nameOf(row) === 'B2');
+  const broken = node.slice(); [broken[i], broken[i + 1]] = [broken[i + 1], broken[i]];
+  assert.equal(nameOf(broken[i]), 'S');
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge();
+  try {
+    const seed = async (rows, id) => (await bridge.solve({ ...request, requestId: id, budgetMs: 100,
+      performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore;
+    const kept = medium(await seed(node, 'patience-kept')), doubled = medium(await seed(broken, 'patience-broken'));
+    assert.ok(doubled <= kept - 4000, `${doubled} contre ${kept}`);
+    assert.ok(doubled > kept - 5000 - 2000, `pénalité plafonnée : ${doubled} contre ${kept}`);
+  } finally { bridge.close(); }
+});
+
+// « Compromis » : la taille d'une table envoyée à Timefold (groupSizes) compte
+// ses chanteurs inscrits, titre prêt ou non, et change bien le score.
+function compromiseRequest() {
+  const s = new Scheduler({ tableRotation: true, weightedTables: true });
+  s.setHeadcount('B', 4); s.setHeadcount('A', 6);
+  const b = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+  const a = ['A1', 'A2', 'A3', 'A4'].map(name => s.join({ tableId: 'A', name }));
+  let n = 9500;
+  for (const p of [...b, a[0], a[1]]) for (let k = 0; k < 2; k++) s.chooseSong(p, { songId: n++, title: `T${n}`, artist: 'x' }, 'append');
+  // A3 et A4 ont déjà chanté ce soir et n'ont plus de titre : seule la
+  // taille envoyée les compte. Un prénom de B n'a rien choisi.
+  for (const p of [a[2], a[3]]) p.sung = 1;
+  s.join({ tableId: 'B', name: 'B3' });
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  return { request, a, b };
+}
+
+test('compromis : Timefold reçoit la taille des tables (inscrits)', () => {
+  const { request, a, b } = compromiseRequest();
+  assert.deepEqual(request.groupSizes, { [a[0].group]: 4, [b[0].group]: 2 });
+});
+
+test('compromis : Timefold utilise la taille des tables (inscrits)',
+  { skip: !fs.existsSync(JAR) && !fs.existsSync(path.join(__dirname, '..', 'solver', 'karafun-solver.jar')) }, async () => {
+  const { request } = compromiseRequest();
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge();
+  try {
+    const seed = async (req, id) => medium((await bridge.solve({ ...req, requestId: id, budgetMs: 100,
+      performances: req.performances.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+    const bFirst = { ...request, performances: [request.performances[1], request.performances[0], ...request.performances.slice(2)] };
+    const withSizes = await seed(bFirst, 'sizes-with'), withoutSizes = await seed({ ...bFirst, groupSizes: {} }, 'sizes-without');
+    assert.ok(withSizes < withoutSizes, `${withSizes} contre ${withoutSizes}`);
+  } finally { bridge.close(); }
+});

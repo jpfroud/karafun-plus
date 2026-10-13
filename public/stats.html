@@ -353,22 +353,37 @@ function drawTimeline(plot) {
   const singers = [];
   for (const stage of stages) for (const id of stage.ids) if (!singers.includes(id)) singers.push(id);
   const H = top + laneH + 8 + singers.length * rowH + 28;
-  // Soirée restée ouverte (ou close) bien après le dernier passage : l'axe
-  // s'arrête 15 min après lui ; sinon il va jusqu'à maintenant (temps mort visible).
-  const lastEnd = Math.max(...stages.map(x => x.end));
-  const idleTail = tl.end - lastEnd > 3 * 3600000;
-  const t0 = tl.start, t1 = Math.max(idleTail ? lastEnd + 15 * 60000 : tl.end, lastEnd, t0 + 60000);
+  // Axe resserré sur les passages, 15 min de marge de chaque côté : ni les
+  // heures vides avant le premier titre (application lancée l'après-midi), ni
+  // celles d'après la fermeture (soirée close le lendemain). En direct, l'axe
+  // va jusqu'à maintenant (temps mort visible) tant que le karaoké n'est pas
+  // fini et que le dernier passage a moins de 3 h.
+  const MARGIN = 15 * 60000;
+  // Sans passage : toute la soirée, comme avant.
+  const firstStart = stages.length ? Math.min(...stages.map(x => x.start)) : tl.start + MARGIN;
+  const lastEnd = stages.length ? Math.max(...stages.map(x => x.end)) : tl.end;
+  const live = !!state.data.evening.current;
+  const barClosed = st.evening?.closedAt;
+  const t0 = Math.max(tl.start, firstStart - MARGIN);
+  const tail = !live || Number.isFinite(barClosed) ? Math.min(tl.end, lastEnd + MARGIN)
+    : tl.end - lastEnd > 3 * 3600000 ? lastEnd + MARGIN : tl.end;
+  const t1 = Math.max(tail, lastEnd, t0 + 60000);
   const x = linear(t0, t1, left, W - right);
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Déroulé de la soirée : qui a chanté quand' }, plot);
   axisX(svg, timeTicks(t0, t1, W - right - left, timeGap(t0, t1)), x, top - 6, H - 22, timeLabel(t0, t1));
-  if (idleTail) {
-    const closed = state.data.evening.current ? 'soirée encore ouverte'
-      : `soirée close ${new Date(tl.end).toDateString() === new Date(lastEnd).toDateString() ? '' : `le ${dayLabel(tl.end)} `}à ${hhmm(tl.end)}`;
+  if (tl.end > t1) {
+    // Fin du karaoké (en-tête) et clôture de la soirée dans l'application
+    // (souvent le lendemain) : deux heures distinctes, nommées comme telles.
+    const day = at => new Date(at).toDateString() === new Date(lastEnd).toDateString() ? '' : `le ${dayLabel(at)} `;
+    const closed = `${Number.isFinite(barClosed) && barClosed - lastEnd >= 60000 ? `fin du karaoké ${day(barClosed)}à ${hhmm(barClosed)} · ` : ''}` +
+      (live ? 'soirée encore ouverte' : `soirée close dans l’application ${day(tl.end)}à ${hhmm(tl.end)}`);
     plot.appendChild(h('p', { class: 'st-caption', text: `Dernier passage à ${hhmm(lastEnd)} · ${closed}` }));
   }
   // Temps morts (un titre attendait) sous la ligne « Scène ».
-  for (const gap of tl.gaps.filter(g => g.dead)) {
-    const band = s('rect', { x: x(gap.start), y: top, width: Math.max(1, x(gap.end) - x(gap.start)), height: laneH, fill: 'var(--gap-band)' }, svg);
+  // Seulement la partie visible de l'axe resserré.
+  for (const gap of tl.gaps.filter(g => g.dead && g.end > t0 && g.start < t1)) {
+    const from = Math.max(gap.start, t0), to = Math.min(gap.end, t1);
+    const band = s('rect', { x: x(from), y: top, width: Math.max(1, x(to) - x(from)), height: laneH, fill: 'var(--gap-band)' }, svg);
     bindTip(band, () => [`${hhmm(gap.start)} – ${hhmm(gap.end)}`, [[dur(gap.deadSec ?? gap.sec), `temps mort : ${gap.label}`]]]);
   }
   s('text', { x: left - 8, y: top + laneH / 2 + 4, 'text-anchor': 'end', class: 'st-strong' }, svg).textContent = 'Scène';
@@ -463,8 +478,19 @@ function drawRates(plot, rows) {
   });
 }
 
+// Relevés de la file pendant le karaoké (connexion de KaraFun → fermeture) :
+// la nuit après la fermeture ne tasse plus la soirée à gauche. Un ancien
+// journal, sans ces bornes, garde tous ses relevés ; aucun relevé pendant le
+// karaoké : la carte est vide.
+function karaokeSamples(st) {
+  const all = st.timeline.queue;
+  if (!Array.isArray(all)) return all;
+  const { openedAt, closedAt } = st.evening;
+  return all.filter(q => (openedAt == null || q.t >= openedAt) && (closedAt == null || q.t <= closedAt));
+}
+
 function drawQueue(plot) {
-  const samples = state.data.stats.timeline.queue;
+  const samples = karaokeSamples(state.data.stats);
   const W = plotWidth(plot), left = 34, right = 12, top = 10, H = 220, bottom = 24;
   const t0 = samples[0].t, t1 = Math.max(samples.at(-1).t, t0 + 60000);
   const max = Math.max(...samples.map(q => Math.max(q.ready || 0, q.present || 0)), 2);
@@ -590,7 +616,12 @@ function renderHeader() {
   const { evening, stats } = state.data;
   const live = evening.current;
   $('livePill').hidden = !live;
-  $('eveningLine').textContent = `${dayLabel(evening.startedAt)} · ${hhmm(evening.startedAt)} – ${live ? 'en cours' : hhmm(evening.endedAt || stats.timeline.end)}` +
+  // Le karaoké : de la connexion de KaraFun à la fermeture du bar (calculées
+  // par les statistiques), pas du lancement de l'application à sa remise à zéro.
+  const opened = stats.evening.openedAt ?? evening.startedAt;
+  const closed = stats.evening.closedAt ?? evening.endedAt ?? stats.timeline.end;
+  // En direct, « en cours » tant que les statistiques n'ont pas fermé le karaoké.
+  $('eveningLine').textContent = `${dayLabel(opened)} · ${hhmm(opened)} – ${live && stats.evening.closedAt == null ? 'en cours' : hhmm(closed)}` +
     ` · ${stats.global.registered} inscrit${stats.global.registered > 1 ? 's' : ''}${evening.truncated ? ' · dernière ligne du journal illisible ignorée' : ''}`;
   renderErrors();
 }
@@ -620,7 +651,7 @@ function renderKpis() {
       // Pas encore calculable : personne n'a 30 min de présence, ou personne n'a encore chanté.
       : f.n ? 'aucun passage pour le moment' : g.singers ? 'personne n’est encore là depuis 30 min' : 'pas encore de chanteurs'],
     ['Temps mort', pct(g.deadShare), g.deadGapCount ? `${dur(g.deadAvgSec)} en moyenne entre deux chansons` : 'aucun entre deux chansons'],
-    ['Chanteurs', `${g.sang} / ${g.singers}`, `ont chanté / ont demandé un titre`],
+    ['Chanteurs', `${g.sang} / ${g.singers}`, `ont chanté / avaient un titre pendant leur présence`],
     ['Chansons', fmtNum(g.songs, 0), `${g.ours} de la file · ${g.battles} Battle${g.battles > 1 ? 's' : ''} · ${g.native} hors file`],
     ['Duos', fmtNum(g.duoStages, 0), g.ours ? `${pct(g.duoRate)} des passages` : '—'],
     ['Battles', fmtNum(g.battle.launched, 0), `${g.battle.proposals} vote${g.battle.proposals > 1 ? 's' : ''} proposé${g.battle.proposals > 1 ? 's' : ''}`],
@@ -638,8 +669,18 @@ function renderFocus() {
     const singer = singerById(f.slice(2));
     if (!singer) { box.hidden = true; return; }
     const singerName = nameOf(singer.id);
+    // La présence ne compte que pendant le karaoké (connexion de KaraFun →
+    // fermeture) : la fiche le dit au lieu de prendre la fermeture pour un départ.
+    // Présence entièrement hors du karaoké (avant la connexion, après la
+    // fermeture) : départ réel, et rien de compté.
+    const { openedAt, closedAt } = state.data.stats.evening;
+    const outside = singer.leftAt == null;
+    const counted = !outside && openedAt != null && singer.joinedAt < openedAt ? ` (comptée dès ${hhmm(openedAt)})` : '';
+    const left = singer.explicitLeft ? 'départ' : 'dernier signe + 30 min';
+    const end = outside ? (singer.rawLeftAt != null ? `${left} ${hhmm(singer.rawLeftAt)} · hors du karaoké,` : 'hors du karaoké,')
+      : `${closedAt != null && singer.leftAt === closedAt ? 'fin du karaoké' : left} ${hhmm(singer.leftAt)} ·`;
     box.appendChild(h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: `Soirée ${/^[aeiouyàâäéèêëîïôöûùüh]/i.test(singerName) ? 'd’' : 'de '}${singerName}` }),
-      h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)} · ${singer.explicitLeft ? 'départ' : 'dernier signe + 30 min'} ${hhmm(singer.leftAt)} · présence ${dur(singer.presenceSec)}` }))));
+      h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)}${counted} · ${end} présence ${dur(singer.presenceSec)}` }))));
     box.appendChild(h('div', { class: 'st-mini' },
       ...[[singer.turns, 'passages'], [singer.guestTurns, 'comme invité'], [fmtNum(singer.turnsPerHour, 2), 'par heure'],
         [fmtNum(singer.expectedTurns, 1), 'passages attendus'], [dur(singer.waits.avgSec), 'attente moyenne'], [dur(singer.firstTurnSec), 'avant le 1er passage'],
@@ -677,7 +718,7 @@ function renderCharts() {
     table: () => [[['Chanteur'], ['Table'], ['Passages', true], ['Moyenne', true], ['Médiane', true], ['Plus longue', true]],
       waitRows.map(r => ({ cells: [nameOf(r.id), personTable(r.tableId), r.waits.n, dur(r.waits.avgSec), dur(r.waits.medianSec), dur(r.waits.maxSec)] }))],
     draw: plot => drawWaits(plot, waitRows) });
-  const rateRows = st.singers.filter(x => x.requests > 0 && x.presenceSec > 0).sort((a, b) => (b.turnsPerHour || 0) - (a.turnsPerHour || 0));
+  const rateRows = st.singers.filter(x => x.askedInKaraoke && x.presenceSec > 0).sort((a, b) => (b.turnsPerHour || 0) - (a.turnsPerHour || 0));
   card({ id: 'chartRates', title: 'Rythme de passage',
     subtitle: 'Passages de ses titres par heure de présence ; trait = part attendue au même rythme pour tous (× bonus ou malus).',
     legend: [['Passages par heure', 'var(--s1)'], ['Part attendue', 'var(--ref)', 'tick']],
@@ -687,7 +728,7 @@ function renderCharts() {
   card({ id: 'chartQueue', title: 'File d’attente au fil de la soirée', subtitle: 'Relevés à chaque envoi et toutes les 5 minutes.',
     legend: [['Titres prêts', 'var(--s1)', 'line'], ['Personnes présentes', 'var(--s2)', 'line']],
     table: () => [[['Heure'], ['Titres prêts', true], ['Titres listés', true], ['Présents', true]],
-      st.timeline.queue.map(q => ({ cells: [hhmm(q.t), q.ready, q.songsListed, q.present] }))],
+      karaokeSamples(st).map(q => ({ cells: [hhmm(q.t), q.ready, q.songsListed, q.present] }))],
     draw: drawQueue });
   const histo = g.waitHistogram.some(b => b.count) ? g.waitHistogram : [];
   card({ id: 'chartHistogram', title: 'Répartition des attentes', subtitle: `${fmtNum(st.timeline.stages.filter(x => x.waitSec != null).length, 0)} passages de la file`,
@@ -758,7 +799,7 @@ function renderSingerTable() {
   });
   const focus = focusIds();
   const el = h('figure', { class: 'st-card wide', id: 'cardSingers' }, h('div', { class: 'st-head' }, h('div', {}, h('h2', { text: 'Tous les chanteurs' }),
-    h('p', { text: 'Touchez un en-tête pour trier. « Présence » : départ signalé, sinon dernier signe d’activité + 30 min.' }))));
+    h('p', { text: 'Touchez un en-tête pour trier. « Présence » : départ signalé, sinon dernier signe d’activité + 30 min, comptée pendant le karaoké seulement (connexion de KaraFun → fermeture).' }))));
   el.appendChild(h('div', { class: 'st-table-wrap' }, dataTable(cols, rows.map(r => ({ id: r.id, cells: [nameOf(r.id), personTable(r.tableId),
     dur(r.presenceSec), r.turns, r.guestTurns, fmtNum(r.turnsPerHour, 2), fmtNum(r.expectedTurns, 1), dur(r.waits.avgSec), dur(r.waits.maxSec),
     dur(r.firstTurnSec), r.deferrals, r.presenceSkips, r.removed, r.battleVotes] })),

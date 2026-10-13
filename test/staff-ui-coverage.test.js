@@ -797,16 +797,17 @@ test('file du bar : statuts, badges, doublons, repères et séparateur de fermet
   // Fermeture : texte du bar selon la situation.
   assert.equal(page.$('closingPill').textContent, `Fermeture ${hhmm(world.closing.at)}`);
   assert.equal(page.$('closingPill').className, 'pill ok');
-  assert.equal(page.$('closingText').textContent, `5 titres passeront avant ${hhmm(world.closing.at)}, 2 après : ils ne seront pas lancés (réordonne, ou décale l’heure). Il reste de la place : les clients peuvent encore ajouter des titres.`);
+  assert.equal(page.$('closingText').textContent, `5 titres passeront avant ${hhmm(world.closing.at)}, 2 après : ils ne seront pas lancés (réordonne, ou décale l’heure). Il reste de la place avant la fermeture.`);
   const at = new Date(world.closing.at);
   assert.equal(page.$('closingTime').value, `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`);
   assert.equal(page.$('closingClear').disabled, false);
   await page.update({ closing: { ...closing, full: true, fitCount: 1, afterCount: 1 } });
-  assert.equal(page.$('closingPill').className, 'pill bad');
-  assert.equal(page.$('closingText').textContent, `1 titre passera avant ${hhmm(world.closing.at)}, 1 après : il ne sera pas lancé (réordonne, ou décale l’heure). Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.`);
+  assert.equal(page.$('closingPill').className, 'pill warn');
+  assert.equal(page.$('closingText').textContent, `1 titre passera avant ${hhmm(world.closing.at)}, 1 après : il ne sera pas lancé (réordonne, ou décale l’heure). File complète jusqu’à la fermeture : les clients peuvent encore ajouter des titres, la rotation décide qui passe avant l’heure.`);
   await page.update({ closing: { ...closing, passed: true, afterCount: 0 } });
   assert.equal(page.$('closingPill').textContent, 'Fermeture atteinte');
-  assert.match(page.$('closingText').textContent, /passeront avant \d\d:\d\d\. Il reste/);
+  assert.equal(page.$('closingText').textContent, `Heure de fermeture passée (${hhmm(world.closing.at)}) : plus aucun titre n’est envoyé ni lancé automatiquement. Décale l’heure pour une dernière chanson.`,
+    'heure passée : pas de « passeront avant » une heure déjà dépassée');
   page.$('closingTime').focus();
   page.$('closingTime').value = '23:55';
   await page.update({ closing: null });
@@ -1609,6 +1610,11 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(pill().textContent, 'Ajout en cours');
   assert.match(status(), /^Envoi de Africa — Toto à KaraFun\./);
   assert.equal(page.$('battleActions').hidden, true, 'pendant l’envoi, pas de décision du bar');
+  // Copie normale (duo) passée en mode Battle par la page : la voix est dite.
+  await step('sending', { automation: { status: 'sending', modeCaption: 'Angela Brambati' } });
+  assert.equal(pill().textContent, 'Ajout en cours');
+  assert.equal(status(), 'KaraFun a ajouté Africa — Toto sans le mode Battle : la page le passe en mode Battle sur la voix « Angela Brambati ». Attends sa confirmation.');
+  assert.equal(page.$('battleActions').hidden, true);
   page.world.queue = [{ source: 'karafun', ours: true, queueId: 'b1', pos: 1, kind: 'battle', title: 'Africa' }];
   await step('queued');
   assert.equal(pill().textContent, 'Prête dans KaraFun');
@@ -1628,6 +1634,16 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(pill().textContent, 'À vérifier');
   assert.equal(pill().className, 'pill bad');
   assert.equal(status(), 'Ajout automatique non confirmé : Vérifie KaraFun. Organise la Battle manuellement ou ferme la demande.');
+  // Copie normale laissée au bar : une seule consigne, celle du serveur.
+  const plainCopy = 'KaraFun a ajouté « Africa » en chanson normale, sans le mode Battle. ' +
+    'Passe ce titre en mode Battle dans KaraFun (la page reconnaîtra la Battle), ou retire-le et touche « Ne pas lancer cette fois »';
+  await step('failed', { automation: { status: 'failed', failure: plainCopy } });
+  assert.equal(status(), `${plainCopy}.`);
+  assert.equal(page.$('battleActions').hidden, false, '« Ne pas lancer cette fois » proposé');
+  const onStage = 'KaraFun a lancé « Africa » en chanson normale, sans le mode Battle : laisse-le finir ou passe au titre suivant, puis touche « Ne pas lancer cette fois »';
+  await step('failed', { automation: { status: 'failed', failure: onStage } });
+  assert.equal(status(), `${onStage}.`);
+  await step('failed');
   assert.equal(page.$('battleDone').hidden, false);
   await page.click(page.$('battleDone'));
   assert.deepEqual(page.lastPost('/api/staff/battle/resolve').body, { outcome: 'done' });
@@ -1746,9 +1762,16 @@ test('alertes et notifications du bar : sonnerie, personnes parties, avis KaraFu
   assert.equal(gone.querySelector('span').textContent,
     'Bruno (Table 1) n’a pas répondu à « Je suis là » 3 fois : « Chanson A » a été retiré de sa liste. Cette personne est-elle encore là ?');
   assert.match(page.in('staffAlerts', '[data-gone="x"]').textContent, /^X n’a pas répondu/);
-  await page.click(gone.querySelector('[data-gone-present]'));
+  const message = 'Alerte fermée pour Bruno (Table 1). Aucun passage prévu : un titre à rechoisir sur son téléphone.';
+  page.replies['/api/staff/person/present'] = { ok: true, message };
+  // Double appui avant la réponse : un seul envoi.
+  const present = gone.querySelector('[data-gone-present]');
+  present.click(); present.click();
+  await page.flush();
+  assert.equal(page.postsTo('/api/staff/person/present').length, 1, 'un seul envoi pour un double appui');
   assert.deepEqual(page.lastPost('/api/staff/person/present').body, { personId: 'bruno' });
-  assert.equal(page.toast().text, 'Noté : la personne est toujours là');
+  assert.equal(page.toast().text, message, 'le message du serveur dit la suite');
+  delete page.replies['/api/staff/person/present'];
   page.confirmAnswer = false;
   await page.click(page.in('staffAlerts', '[data-gone="bruno"] [data-gone-leave]'));
   assert.equal(page.postsTo('/api/staff/person/leave').length, 0);
@@ -4203,4 +4226,93 @@ test('troisième relecture : titre sous ses repères « trop long » et « ⚠ C
   assert.equal(both.title, 'Épopée — Groupe');
   assert.equal(plain.classList.contains('has-marks'), false, 'sans repère : cellule inchangée');
   assert.deepEqual(kids(plain), ['song-title', 'song-artist']);
+});
+
+// Retours du 11 octobre : « Duos uniquement » et « Options par défaut ».
+test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut » demande confirmation à côté des remises à zéro', async () => {
+  const page = await openPage();
+  assert.equal(page.$('duoOnly').checked, false, 'coupé par défaut');
+  assert.equal(page.$('duoOnly').closest('section').dataset.tab, 'plus');
+  page.replies['/api/staff/settings'] = body => { page.world.settings.duoOnly = body.duoOnly; return { ok: true }; };
+  await page.change(page.$('duoOnly'), true);
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { duoOnly: true });
+  await page.poll();
+  assert.equal(page.$('duoOnly').checked, true);
+  assert.equal(page.$('duoOnlyChip').hidden, false, 'rappel sur l’écran Scène');
+  // Le bouton est dans « Fin de soirée », avec les autres remises à zéro.
+  assert.equal(page.$('resetSettings').closest('section'), page.$('clearQueue').closest('section'));
+  page.confirmAnswer = false;
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /^Remettre toutes les options à leur valeur d’origine \?.*code KaraFun, la connexion Spotify/);
+  assert.match(page.confirms.at(-1), /Les solos seront de nouveau permis\./, 'ce qui change ce soir est annoncé');
+  // Envoi automatique coupé : rallumé, sauf si le serveur le garde coupé.
+  page.world.settings.auto = false;
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /L’envoi automatique à KaraFun sera rallumé\./);
+  // Relecture du 11 octobre : en fin de soirée, des titres retenus par la
+  // fermeture repartiraient vers KaraFun ; la confirmation le dit.
+  page.world.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 2 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /Les 2 titres retenus par la fermeture repartiront vers KaraFun : vide la file d’abord si la soirée est finie\./);
+  page.world.closing = { ...page.world.closing, afterCount: 1 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /Le titre retenu par la fermeture repartira vers KaraFun : vide la file d’abord si la soirée est finie\./);
+  // Heure pas encore passée, file complète : les titres d'après sont prévus, pas encore retenus.
+  page.world.closing = { at: Date.now() + 3600000, passed: false, full: true, fitCount: 3, afterCount: 2 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /Les 2 titres prévus après l’heure de fermeture partiront aussi vers KaraFun : vide la file d’abord si la soirée est finie/);
+  assert.doesNotMatch(page.confirms.at(-1), /retenus? par la fermeture/);
+  page.world.closing = { ...page.world.closing, afterCount: 1 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /Le titre prévu après l’heure de fermeture partira aussi vers KaraFun : vide la file d’abord si la soirée est finie\./);
+  // Place encore avant l'heure : aucun avertissement.
+  page.world.closing = { at: Date.now() + 3600000, passed: false, full: false, fitCount: 3, afterCount: 2 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.doesNotMatch(page.confirms.at(-1), /vide la file d’abord|prévus? après l’heure de fermeture|retenus? par la fermeture/);
+  // Heure passée, file déjà vidée : rien ne repartira.
+  page.world.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 0 };
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /L’heure de fermeture sera retirée\./);
+  assert.doesNotMatch(page.confirms.at(-1), /repartira|partira|vide la file d’abord/);
+  // Envoi automatique gardé coupé par le serveur : rien ne repart.
+  page.world.closing = { at: Date.now() - 60000, passed: true, full: true, fitCount: 0, afterCount: 2 };
+  page.world.persistenceError = 'disque plein';
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.doesNotMatch(page.confirms.at(-1), /retenus? par la fermeture/);
+  delete page.world.persistenceError;
+  delete page.world.closing;
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.doesNotMatch(page.confirms.at(-1), /retenus par la fermeture/);
+  page.world.persistenceError = 'disque plein';
+  await page.poll();
+  await page.click(page.$('resetSettings'));
+  assert.match(page.confirms.at(-1), /L’envoi automatique à KaraFun restera coupé : la sauvegarde est impossible\./);
+  assert.doesNotMatch(page.confirms.at(-1), /sera rallumé/);
+  delete page.world.persistenceError;
+  page.world.settings.auto = true;
+  await page.poll();
+  assert.equal(page.postsTo('/api/staff/settings-reset').length, 0, 'rien sans confirmation');
+  page.confirmAnswer = true;
+  page.replies['/api/staff/settings-reset'] = { ok: true, kept: [] };
+  await page.click(page.$('resetSettings'));
+  assert.deepEqual(page.lastPost('/api/staff/settings-reset').body, { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.equal(page.toast().text, 'Options remises par défaut.');
+  page.replies['/api/staff/settings-reset'] = { ok: true, kept: ['auto'], autoBlocked: 'un envoi interrompu est à vérifier dans KaraFun' };
+  await page.click(page.$('resetSettings'));
+  assert.equal(page.toast().text, 'Options remises par défaut. L’envoi automatique reste coupé : un envoi interrompu est à vérifier dans KaraFun.');
+  page.replies['/api/staff/settings-reset'] = { ok: true, kept: ['spotify'], spotifyError: 'disque plein' };
+  await page.click(page.$('resetSettings'));
+  assert.deepEqual(page.toast(), { text: 'Options remises par défaut. Automatismes Spotify non remis : disque plein', bad: true });
+  page.replies['/api/staff/settings-reset'] = { status: 400, error: 'Sauvegarde indisponible.' };
+  await page.click(page.$('resetSettings'));
+  assert.deepEqual(page.toast(), { text: 'Sauvegarde indisponible.', bad: true });
 });

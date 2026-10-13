@@ -17,7 +17,7 @@
   <!-- ======================================================== Scène -->
   <section class="card live-panel" data-tab="scene">
     <div class="section-heading compact"><div><div class="eyebrow">KaraFun</div><h2>Sur scène</h2></div>
-      <div class="scene-chips"><button type="button" id="spotifyChip" class="pill" hidden title="Spotify : toucher pour les réglages"></button><button type="button" id="autoWarn" class="pill warn" hidden></button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
+      <div class="scene-chips"><button type="button" id="spotifyChip" class="pill" hidden title="Spotify : toucher pour les réglages"></button><button type="button" id="autoWarn" class="pill warn" hidden></button><button type="button" id="duoOnlyChip" class="pill warn" hidden title="Règles de la soirée : toucher pour changer">Duos uniquement</button><span id="closingChip" class="closing-chip" hidden><span id="closingChipText"></span><button type="button" class="btn small" data-closing-extend="15">+15 min</button></span></div></div>
     <div id="stage" class="live-card stage-card">—</div>
     <div id="stageProgress" class="stage-progress" hidden></div>
     <div class="live-actions">
@@ -119,7 +119,7 @@
   <!-- ======================================================== Plus -->
   <section class="card evening-panel" data-tab="plus">
     <div class="section-heading"><div><div class="eyebrow">Fin de soirée</div><h2>Fermeture du bar</h2></div><span id="closingPill" class="pill">Pas d’heure</span></div>
-    <p class="tiny muted">Annoncée aux clients avec les titres qui passeront encore. Quand la file est complète jusqu’à la fermeture, les nouveaux ajouts sont refusés ; décale l’heure si on te réclame une dernière chanson. À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
+    <p class="small muted">Annoncée aux clients avec les titres qui passeront encore. Les clients peuvent toujours ajouter des titres : la rotation décide lesquels passent avant l’heure (quelqu’un qui n’a pas encore chanté peut passer devant). À l’heure, un titre qui ne passerait plus à moitié n’est ni envoyé ni lancé, et Spotify reprend.</p>
     <div class="row wrap"><label class="small" for="closingTime">Heure</label><input id="closingTime" type="time" step="300"><span class="save-status" id="closingStatus" data-save-status="closingTime" aria-live="polite"></span></div>
     <div class="row wrap closing-draft" id="closingDraftActions" hidden><button type="button" class="btn small primary" id="closingConfirm">Valider l’heure</button><button type="button" class="btn small" id="closingCancel">Annuler</button></div>
     <div class="row wrap closing-actions"><button class="btn small" data-closing-extend="10">+10 min</button><button class="btn small" data-closing-extend="15">+15 min</button><button class="btn small" data-closing-extend="30">+30 min</button><button class="btn small danger" id="closingClear">Retirer</button></div>
@@ -133,17 +133,19 @@
 
   <section class="card rules-panel" data-tab="plus">
     <div class="section-heading"><div><div class="eyebrow">Comportement</div><h2>Règles de la soirée</h2></div><span class="small muted">Chaque réglage s’enregistre dès qu’il change.</span></div>
-    <div class="rotation-options" role="radiogroup" aria-label="Partage des passages entre les tables">
-      <p class="small">Dans tous les modes, chacun chante une fois par tour, personne ne rechante avant les premiers passages, et la même table ne reprend pas le micro quand une autre peut chanter. Le mode change seulement la part de chaque table dans un tour.</p>
+    <div class="rotation-options" role="radiogroup" aria-label="Ordre de passage dans le tour">
+      <p class="small">Dans tous les modes, personne ne rechante avant les premiers passages et chacun chante une fois par tour (bonus et malus à part) : le mode ne change que l’ordre dans le tour. Deux règles s’ajoutent quand c’est évitable : la patience (personne ne voit quelqu’un chanter deux fois pendant sa propre attente) et la rotation des tables (la même table ne reprend pas le micro). Le mode choisit laquelle des deux l’emporte, et à quel moment du tour passent les grandes tables.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationPeople" value="people"> Chacun son tour (recommandé)</label>
-      <p class="small muted">Les tables sont entremêlées au prorata de leurs chanteurs : une table de 10 chante deux fois plus souvent qu’une table de 5, mais jamais d’affilée si une autre table attend.</p>
+      <p class="small muted">Priorité : la patience. Au premier tour, les tables sont entremêlées au prorata de leurs chanteurs prêts ; ensuite, chacun repasse dans l’ordre du tour précédent, et la même table peut enchaîner au changement de tour quand les tables n’ont pas autant de titres prêts.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationTables" value="tables"> Tables à tour de rôle</label>
-      <p class="small muted">Chaque table obtient la même part, quel que soit son effectif. Les petites tables chantent tôt dans le tour ; en fin de tour, la grande table enchaîne ses chanteurs restants.</p>
+      <p class="small muted">Priorité : la rotation des tables, puis la patience. Les tables passent à tour de rôle quel que soit leur nombre de chanteurs : les petites tables chantent tôt dans le tour, la grande table enchaîne ses chanteurs restants en fin de tour.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationCompromise" value="compromise"> Compromis</label>
-      <p class="small muted">Les grandes tables passent plus souvent que les petites, mais moins qu’en « Chacun son tour ».</p>
+      <p class="small muted">Priorité : la rotation des tables, puis la patience, comme « Tables à tour de rôle », mais une grande table passe un peu plus tôt dans le tour : une table de 4 compte comme 2 solistes, une table de 9 comme 3. Taille d’une table : les inscrits que le bar n’a pas marqués « Parti » qui ont un titre, prêt ou non, ou ont déjà chanté un de leurs titres ce soir (pas seulement en invité d’un duo) ; pas les places déclarées.</p>
       <label class="switch"><input id="interleaveArrivals" type="checkbox"> Intercaler une table qui arrive en nombre</label>
       <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>
+    <div class="row wrap"><label class="switch duo-only-switch"><input id="duoOnly" type="checkbox"> Duos uniquement</label><span class="save-status" data-save-status="duoOnly" aria-live="polite"></span></div>
+    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent. Un duo accepté ne redevient pas un solo par son auteur ni par une invitée de la même table (le titre peut être retiré). Comme d’habitude, une invitation sans réponse, refusée ou quittée par une autre table part en solo, et un duo déjà chargé dans KaraFun peut finir en solo si l’un des deux manque. Se décoche à la nouvelle soirée (« Supprimer toutes les tables »).</p>
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
@@ -267,6 +269,7 @@
     <p class="small muted">Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.</p>
     <div class="table-reset"><button class="btn small danger" id="clearQueue">Vider toutes les chansons</button><span class="small muted">Conserve les tables, les chanteurs, leurs accès et l’historique. La chanson sur scène continue ; les autres retraits doivent être confirmés par KaraFun.</span></div>
     <div class="table-reset"><button class="btn small danger" id="clearTables">Supprimer toutes les tables</button><span class="small muted">Nouvelle soirée : efface les chanteurs, leurs titres et les anciens QR. Le titre déjà sur scène continue.</span></div>
+    <div class="table-reset"><button class="btn small danger" id="resetSettings">Remettre les options par défaut</button><span class="small muted">Remet toutes les options à leur valeur d’origine (délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture, Spotify automatique) : l’envoi automatique à KaraFun est rallumé si rien ne l’interdit (sauvegarde impossible, envoi interrompu à vérifier, droits KaraFun), la lecture automatique coupée. Garde le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file.</span></div>
   </section>
 </main>
 
@@ -375,7 +378,7 @@
     for (const char of table.url) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
     return table.qrUrl + (table.qrUrl.includes('?') ? '&' : '?') + 'v=' + (hash >>> 0).toString(16) + (key ? '&key=' + encodeURIComponent(key) : '');
   }
-  function toast(msg, bad) { const t = $('toast'); t.textContent = msg; t.className = 'toast' + (bad ? ' bad' : ''); t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 3500); }
+  function toast(msg, bad) { const t = $('toast'); t.textContent = msg; t.className = 'toast' + (bad ? ' bad' : ''); t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, Math.min(10000, Math.max(3500, 2000 + String(msg).length * 60))); }
   async function post(path, body) {
     const r = await fetch(path + kq, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-staff-key': key }, body: JSON.stringify(body || {}) });
     const j = await r.json().catch(() => ({}));
@@ -493,6 +496,7 @@
   $('kfPill').onclick = () => goTo('plus', 'kfPanel');
   // Envoi coupé : direction « Plus ». Lecture seule coupée : son interrupteur, sur Scène.
   $('autoWarn').onclick = () => S?.settings?.auto ? goTo('scene', 'autoPlay') : goTo('plus', 'auto');
+  $('duoOnlyChip').onclick = () => goTo('plus', 'duoOnly');
 
   // ------------------------------------------------------------ enregistrement automatique
   // Chaque réglage s'enregistre seul : après une courte pause de frappe, en
@@ -565,6 +569,9 @@
     // Les chanteurs peuvent-ils régler leurs titres depuis leur téléphone ?
     singerSongSettings: { check: true, send: value => post('/api/staff/settings', { singerSongSettings: value }),
       server: () => S.settings?.singerSongSettings !== false },
+    // Duos uniquement : les clients n'ajoutent plus de solo.
+    duoOnly: { check: true, send: value => post('/api/staff/settings', { duoOnly: value }),
+      server: () => !!S.settings?.duoOnly },
     // Réglages d'un titre à venir (fiche ouverte depuis la file) : un champ
     // caché porte { pitch?, tempo?, guide?, backing?, guideVoices? } en JSON ; les boutons
     // de la fiche le changent, puis il suit le même enregistrement que les autres.
@@ -1090,6 +1097,9 @@
     dismissedAlerts = saved.alerts && typeof saved.alerts === 'object' ? saved.alerts : {};
   } catch (_) { dismissedAlerts = {}; }
   const saveDismissed = () => store.set('bar-dismissed-alerts', JSON.stringify({ boot: dismissedBoot, alerts: dismissedAlerts }));
+  // « Toujours là » envoyé, réponse attendue : un seul envoi, même si la
+  // page se redessine entre-temps (rafraîchissement toutes les 2 s).
+  const presentPending = new Set();
   function renderAlerts() {
     if (S.bootId && S.bootId !== dismissedBoot) { dismissedBoot = S.bootId; dismissedAlerts = {}; saveDismissed(); }
     const grace = S.settings?.presenceGraceSec || 30;
@@ -1134,7 +1144,7 @@
       connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';
     // Solo : sa dernière activité aide à décider s'il est encore là.
     const goneActivity = p => { const activity = activityHtml(activityOf(personOf(p.id))); return activity ? ` ${activity}` : ''; };
-    const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?${goneActivity(p)}</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
+    const gone = (S.maybeGone || []).map(p => `<div class="staff-alert gone-alert" data-gone="${esc(p.id)}"><span><b>${esc(p.name)}</b>${p.table ? ` (${esc(p.table)})` : ''} n’a pas répondu à « Je suis là » ${esc(p.skips)} fois : « ${esc(p.title)} » a été retiré de sa liste. Cette personne est-elle encore là ?${goneActivity(p)}</span><span class="alert-actions"><button type="button" class="btn small" data-gone-present${presentPending.has(p.id) ? ' disabled' : ''}>Toujours là</button><button type="button" class="btn small danger" data-gone-leave>Marquer parti</button></span></div>`);
     // Une alerte qui porte sa propre sortie (« Arrêter le vidage ») ne se
     // ferme pas : la croix masquerait le seul moyen d'en sortir.
     const shown = alerts.filter(([key, text, actions]) => actions || dismissedAlerts[key] !== text).map(([key, text, actions]) => actions ?
@@ -1169,7 +1179,10 @@
     const gone = event.target.closest?.('[data-gone]');
     if (!gone) return;
     const personId = gone.dataset.gone;
-    if (event.target.closest('[data-gone-present]')) act('/api/staff/person/present', { personId }, 'Noté : la personne est toujours là');
+    if (event.target.closest('[data-gone-present]') && !presentPending.has(personId)) {
+      presentPending.add(personId);
+      act('/api/staff/person/present', { personId }, 'Alerte fermée').finally(() => presentPending.delete(personId));
+    }
     if (event.target.closest('[data-gone-leave]') && confirm('Marquer cette personne comme partie ? Ses titres restants seront retirés, sa fiche conservée.')) {
       act('/api/staff/person/leave', { personId }, 'Personne marquée partie ; ses titres restants ont été retirés');
     }
@@ -1325,11 +1338,12 @@
     const closing = S.closing;
     $('closingPill').textContent = !closing ? 'Pas d’heure' : closing.passed ? 'Fermeture atteinte' :
       closing.full ? `File complète · ${hhmm(closing.at)}` : `Fermeture ${hhmm(closing.at)}`;
-    $('closingPill').className = 'pill' + (!closing ? '' : closing.full ? ' bad' : ' ok');
+    $('closingPill').className = 'pill' + (!closing ? '' : closing.full ? ' warn' : ' ok');
     $('closingText').textContent = !closing ? 'Aucune heure annoncée : les clients ajoutent des titres librement.' :
+      closing.passed ? `Heure de fermeture passée (${hhmm(closing.at)}) : plus aucun titre n’est envoyé ni lancé automatiquement. Décale l’heure pour une dernière chanson.` :
       `${closing.fitCount} titre${closing.fitCount > 1 ? 's' : ''} passer${closing.fitCount > 1 ? 'ont' : 'a'} avant ${hhmm(closing.at)}` +
       (closing.afterCount ? `, ${closing.afterCount} après : ${closing.afterCount > 1 ? 'ils ne seront pas lancés' : 'il ne sera pas lancé'} (réordonne, ou décale l’heure).` : '.') +
-      (closing.full ? ' Nouveaux ajouts refusés : décale l’heure pour accepter une dernière chanson.' : ' Il reste de la place : les clients peuvent encore ajouter des titres.');
+      (closing.full ? ' File complète jusqu’à la fermeture : les clients peuvent encore ajouter des titres, la rotation décide qui passe avant l’heure.' : ' Il reste de la place avant la fermeture.');
     renderClosingField();
     // Sur l'écran Scène : rappel discret, avec le décalage le plus courant.
     $('closingChip').hidden = !closing;
@@ -1793,7 +1807,7 @@
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     for (const id of ['battleCooldownMin', 'battleRejectedCooldownMin', 'battleVoteMin', 'battleMinVoters', 'requirePresence',
       'presenceGraceSec', 'presenceMaxSkips', 'playDelaySec', 'repeatWarnMin', 'pushDelaySec', 'gap', 'cap', 'singerSongSettings',
-      'maxSongOn', 'maxSongMin', 'maxSongSecPart']) syncField($(id));
+      'duoOnly', 'maxSongOn', 'maxSongMin', 'maxSongSecPart']) syncField($(id));
     renderMaxSong();
     renderSongSupport();
     renderStaffAlerts();
@@ -1801,6 +1815,8 @@
     $('auto').checked = S.settings.auto; $('autoPlay').checked = S.settings.autoPlay;
     $('autoPlayHeldTxt').hidden = !S.settings.autoPlayHeld;
     $('autoWarn').hidden = !!(S.settings.auto && S.settings.autoPlay);
+    // Règle qui change ce que chaque client peut ajouter : rappelée sur Scène.
+    $('duoOnlyChip').hidden = !S.settings.duoOnly;
     $('autoWarn').textContent = !S.settings.auto && !S.settings.autoPlay ? 'Envoi et lecture automatiques coupés' :
       !S.settings.auto ? 'Envoi automatique coupé' : 'Lecture automatique coupée';
     $('rotationPeople').checked = !S.settings.tableRotation;
@@ -2029,7 +2045,12 @@
     const battleFailure = String(battle.automation?.failure || 'Vérifie KaraFun').replace(/[.!?\s]+$/, '');
     $('battleStatus').textContent = battleStep === 'waiting'
       ? `Battle demandée sur ${selectedSong}. Le prochain chanteur déjà annoncé garde sa place ; la Battle sera ajoutée ensuite.`
+      // Titre ajouté en chanson normale : la page le passe en mode Battle.
+      : battleStep === 'sending' && battle.automation?.modeCaption
+      ? `KaraFun a ajouté ${selectedSong} sans le mode Battle : la page le passe en mode Battle sur la voix « ${battle.automation.modeCaption} ». Attends sa confirmation.`
       : battleStep === 'sending' ? `Envoi de ${selectedSong} à KaraFun. Le mode Battle doit être confirmé avant de lancer le titre.`
+      // Copie sans mode Battle : la consigne du serveur dit déjà quoi faire.
+      : battleStep === 'failed' && /^KaraFun a (ajouté|lancé)/.test(battleFailure) ? `${battleFailure}.`
       : battleStep === 'failed' ? `${battleFailure.startsWith('Permission Battle refusée') ? 'Ajout automatique impossible' : 'Ajout automatique non confirmé'} : ${battleFailure}. Organise la Battle manuellement ou ferme la demande.`
       : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'
@@ -2121,6 +2142,36 @@
         : result.awaitingKaraFun
           ? 'Retraits demandés. Vérifie que la file de KaraFun se vide avant de reprendre.'
           : 'File vidée ; tables et chanteurs conservés.');
+    } catch (error) { toast(error.message, true); }
+  };
+  $('resetSettings').onclick = async () => {
+    if (!S) return;
+    // Ce qui change tout de suite pour la soirée en cours est dit d'abord.
+    // L'envoi automatique reste coupé tant que le serveur l'interdit (mêmes
+    // raisons que la route settings-reset).
+    const autoBlocked = S.persistenceError ? 'la sauvegarde est impossible' : S.recoveredPending ? 'un envoi interrompu est à vérifier dans KaraFun'
+      : S.kf?.permissions?.addToQueue === false ? 'KaraFun refuse l’ajout de titres' : '';
+    const now = [!S.settings?.auto ? (autoBlocked ? `L’envoi automatique à KaraFun restera coupé : ${autoBlocked}.`
+      : 'L’envoi automatique à KaraFun sera rallumé.') : '',
+      S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : '',
+      S.settings?.duoOnly ? 'Les solos seront de nouveau permis.' : '',
+      S.closing ? 'L’heure de fermeture sera retirée.' : '',
+      // File complète jusqu'à l'heure (ou heure passée) : sans elle, l'envoi
+      // (rallumé ou déjà actif) fait partir les titres d'après, retenus une
+      // fois l'heure passée, seulement prévus avant.
+      S.closing?.full && S.closing.afterCount > 0 && (S.settings?.auto || !autoBlocked)
+        ? (S.closing.passed ? (S.closing.afterCount > 1 ? `Les ${S.closing.afterCount} titres retenus par la fermeture repartiront vers KaraFun`
+          : 'Le titre retenu par la fermeture repartira vers KaraFun')
+          : S.closing.afterCount > 1 ? `Les ${S.closing.afterCount} titres prévus après l’heure de fermeture partiront aussi vers KaraFun`
+          : 'Le titre prévu après l’heure de fermeture partira aussi vers KaraFun') + ' : vide la file d’abord si la soirée est finie.' : ''].filter(Boolean).join(' ');
+    if (!confirm(`Remettre toutes les options à leur valeur d’origine ?${now ? ` ${now}` : ''} Délais, cases cochées, règles de rotation, Battle, « Je suis là » et durée des titres reviennent aussi par défaut, comme les automatismes Spotify. Le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file sont gardés.`)) return;
+    try {
+      const result = await post('/api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+      await load();
+      toast(['Options remises par défaut.',
+        result.kept?.includes('auto') ? `L’envoi automatique reste coupé : ${String(result.autoBlocked || 'vérifie KaraFun').replace(/[.!?\s]+$/, '')}.` : '',
+        result.spotifyError ? `Automatismes Spotify non remis : ${result.spotifyError}` : ''].filter(Boolean).join(' '),
+      !!result.spotifyError);
     } catch (error) { toast(error.message, true); }
   };
   $('recalculateQueue').onclick = () => {

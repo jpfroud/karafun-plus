@@ -526,4 +526,30 @@ function fixture(extra = {}) {
   assert.equal(vote.view().outcome, 'rejected', 'deux voix contre une : la voix de l’arrivée compte');
 }
 
+{
+  // Soirée du 10 octobre : copie normale du titre passée en mode Battle par la
+  // page, sur une voix du duo. Le bar voit cette voix ; une sauvegarde de la
+  // version précédente (titres écartés) se restaure sans eux.
+  const f = fixture({ minVoters: 1 }), vote = new BattleVote(f.opts);
+  vote.staffLaunch({ song: { songId: 18179, title: 'Sarà perché ti amo', artist: 'Ricchi e Poveri' } });
+  assert.throws(() => vote.notePlainCopy('920bd91b'), /Copie normale inattendue/, 'avant l’envoi');
+  assert.throws(() => vote.noteModeSwitch('920bd91b', { id: 2, caption: 'Angela Brambati' }), /Passage en mode Battle inattendu/);
+  vote.beginAutomation([], { sentMod: { id: 1, caption: 'Battle', data: { battle: { subtype: 1 } } } });
+  assert.deepEqual(vote.automation.sentMod, { id: 1, caption: 'Battle' }, 'mode demandé gardé dès l’envoi');
+  assert.equal(vote.view().automation.modeCaption, null);
+  vote.notePlainCopy('920bd91b');
+  assert.equal(vote.automation.plainId, '920bd91b');
+  vote.noteModeSwitch('920bd91b', { id: 2, caption: 'Angela Brambati' });
+  assert.equal(vote.view().automation.modeCaption, 'Angela Brambati');
+  assert.deepEqual([vote.automation.modeTarget, vote.automation.modeId], ['920bd91b', 2]);
+  assert.throws(() => vote.noteModeSwitch('920bd91b', { id: 2, caption: 'Angela Brambati' }), /Passage en mode Battle inattendu/, 'une seule fois');
+  assert.throws(() => vote.notePlainCopy('autre'), /Copie normale inattendue/, 'plus d’attribution après le passage en mode Battle');
+  const restored = new BattleVote({ ...f.opts, saved: { ...JSON.parse(JSON.stringify(vote.serialize())), refusedSongIds: [18179] } });
+  assert.equal(restored.view().automation.modeCaption, 'Angela Brambati');
+  assert.equal('refusedSongIds' in restored.view(), false);
+  assert.equal('refusedSongIds' in restored.serialize(), false);
+  restored.confirmAutomation('920bd91b');
+  assert.equal(restored.view().automation.status, 'queued');
+}
+
 console.log('Battle collective : minuteur, votants minimum, décision des votants, pause après la Battle et lancement par le bar OK');

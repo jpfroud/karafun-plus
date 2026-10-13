@@ -30,8 +30,37 @@ function readSettings(html) {
   throw new Error('Paramètres de télécommande incomplets.');
 }
 
+// Mode Battle d'un titre, tel que KaraFun l'écrit dans ses QueueEvent et
+// StatusEvent. Titre à une seule voix guide : numéro 1, « Battle ». Duo (voix
+// guides nommées par leurs interprètes) : un numéro par voix ; soirée du
+// 10 octobre, « Sarà perché ti amo » passé en Battle dans KaraFun :
+// { id: 2, caption: 'Angela Brambati' }, sa première voix. Un numéro que le
+// titre n'a pas est accepté sans erreur, mais KaraFun ajoute alors la chanson
+// normale, sans aucune option. Le mode est confirmé par la file de KaraFun,
+// jamais par le seul envoi.
+const BATTLE_MOD = Object.freeze({ id: 1, caption: 'Battle', data: Object.freeze({ battle: Object.freeze({ subtype: 1 }) }) });
+function isBattleMod(mod) {
+  const id = Number(mod?.id);
+  return Number.isSafeInteger(id) && id > 0 && Number(mod?.data?.battle?.subtype) === 1;
+}
+function isBattleItem(item) {
+  return isBattleMod(item?.options?.mod || item?.song?.options?.mod);
+}
+// Mode Battle à demander pour ce titre, d'après ses pistes vocales KaraFun
+// (`songTracks` bruts : type et nom de chaque voix guide). Duo (au moins deux
+// voix guides, la première nommée) : sa première voix, comme KaraFun le
+// 10 octobre ; sinon « Battle ».
+function battleModFor(songTracks) {
+  const tracks = Array.isArray(songTracks) ? songTracks : [];
+  const voices = guideVoicesOf(tracks.map(track => Number(track?.type))) || [];
+  const first = voices.length >= 2 ? tracks.find(track => Number(track?.type) === voices[0]) : null;
+  const caption = typeof first?.caption === 'string' ? first.caption.trim().slice(0, 100) : '';
+  return caption ? { id: 2, caption, data: { battle: { subtype: 1 } } } : BATTLE_MOD;
+}
+
 // `songTracks` : pistes vocales du titre (4 chœurs, 5, 6… voix guides),
-// seulement si KaraFun les donne. `options` : réglages du titre dans KaraFun.
+// seulement si KaraFun les donne ; `battleMod` : mode Battle de ce titre
+// (battleModFor). `options` : réglages du titre dans KaraFun.
 function normalizeKcsItem(item) {
   const song = item.song || {}, quiz = item.quiz || {};
   const tracks = songTracksOf(song);
@@ -39,17 +68,9 @@ function normalizeKcsItem(item) {
     queueId: String(item.id), id: String(item.id), songId: song.id && song.id.id,
     title: song.title || quiz.title || '', artist: song.artist || '',
     singer: song.options && song.options.singer || '', options: song.options || {},
-    ...(tracks ? { songTracks: tracks } : {}),
+    ...(tracks ? { songTracks: tracks, battleMod: battleModFor(song.songTracks) } : {}),
     ...(quiz.id ? { quizId: quiz.id.id } : {}),
   };
-}
-
-// Forme observée dans les QueueEvent et StatusEvent d'une vraie Battle KaraFun.
-// Le mode est confirmé par la réponse de KaraFun, jamais par le seul envoi.
-const BATTLE_MOD = Object.freeze({ id: 1, caption: 'Battle', data: { battle: { subtype: 1 } } });
-function isBattleItem(item) {
-  const mod = item?.options?.mod || item?.song?.options?.mod;
-  return Number(mod?.id) === 1 && Number(mod?.data?.battle?.subtype) === 1;
 }
 
 // Les droits d'administrateur sont donnés dans KaraFun à un participant
@@ -138,6 +159,8 @@ const IMPORTANT_PERMISSIONS = [
 // délai court sur toute la durée du conflit, pas par WebSocket.
 const NAME_RETRY_MS = 4000;
 const NAME_SWITCH_MS = 120000;
+// Modes Battle gardés en mémoire (un par titre vu dans KaraFun).
+const BATTLE_MODS_MAX = 2000;
 // Reconnexions par l'URL KCS gardée (sans relire la page) : 3 s, 6 s, 12 s,
 // 24 s puis 30 s, un peu dispersées. Elles repartent de 3 s quand la
 // connexion précédente a tenu au moins 10 s : KaraFun absent renvoie son
@@ -298,6 +321,10 @@ class KaraFunBridge extends EventEmitter {
     this.status = this.permissions = this.preferences = null;
     this.raw = {};
     this.protocol = null;
+    // Mode Battle de chaque titre vu dans la file ou sur scène de KaraFun
+    // (songId → mode) : celui d'une vraie Battle de KaraFun l'emporte sur
+    // celui déduit des voix du titre.
+    this.battleMods = new Map();
     this.lastEventAt = 0;
     this.lastError = null;
     this.events = [];
@@ -321,6 +348,7 @@ class KaraFunBridge extends EventEmitter {
     this.settingsNotices = {}; // un avis par fonction, le plus récent en dernier
     this._settingsProbe = {};  // dernière valeur envoyée en direct, à confirmer par l'état de KaraFun
     this._optionAdds = new Map(); // identifiant KCS → ajout avec réglages sans réponse
+    this._battleModes = new Map(); // identifiant KCS → passage d'un titre en mode Battle sans réponse
     this.observedDefaults = {}; // chœurs d'un titre chargé sans réglage (voir _observeDefaults)
     this._backingChanged = false;
     this.provisionalDefaults = false; // chœurs relevés après un titre vu déjà en lecture, pas encore confirmés
@@ -949,6 +977,7 @@ class KaraFunBridge extends EventEmitter {
   _openKcs(url, active, { kept = false } = {}) {
     const socket = new KcsTransport(url);
     this._optionAdds.clear(); // identifiants propres à chaque connexion
+    this._battleModes.clear();
     this._forgetSession();
     this.protocol = 'kcs';
     this.socket = socket;
@@ -1005,12 +1034,15 @@ class KaraFunBridge extends EventEmitter {
         if (!p.queue || !Array.isArray(p.queue.items)) return;
         proven();
         this.raw.queue = p.queue;
-        this._accept('queue', p.queue.items.map(normalizeKcsItem));
+        const items = p.queue.items.map(normalizeKcsItem);
+        this._learnBattleMods(items);
+        this._accept('queue', items);
       } else if (m.type === 'remote.StatusEvent' || m.type === 'remote.StatusResponse') {
         if (!p.status || typeof p.status.state !== 'number') return;
         proven();
         const status = p.status || {};
         this.raw.status = status;
+        if (status.current) this._learnBattleMods([normalizeKcsItem(status.current)]);
         this._noteLoading(status);
         this._observeDefaults(status);
         this._confirmFromStatus(status);
@@ -1062,14 +1094,18 @@ class KaraFunBridge extends EventEmitter {
           return;
         }
         // Réglage de titre refusé : traité avec sa demande (événement 'reply').
-        if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id))) return;
+        if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id) ||
+          this._battleModes.has(m.id))) return;
         this.lastError = `Commande KaraFun refusée : ${p.message || p.type || 'erreur inconnue'}`;
         this.emit('change');
       }
     });
     socket.on('reply', (type, message) => {
       if (!active()) return;
-      if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], message);
+      // Passage en mode Battle : sa réponse n'a rien à voir avec les réglages
+      // de titre (même type de demande) ; elle va au suivi de la Battle.
+      if (this._battleModes.has(message.id)) this._battleModeAnswer(message.id, message);
+      else if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], message);
       else if (this._optionAdds.has(message.id)) {
         const add = this._optionAdds.get(message.id);
         this._optionAdds.delete(message.id);
@@ -1103,14 +1139,15 @@ class KaraFunBridge extends EventEmitter {
       this._retry(reason, { mode: 'page' });
     };
     socket.on('stale', message => lost(message, 'KaraFun ne répond plus'));
-    socket.on('request-timeout', type => {
+    socket.on('request-timeout', (type, id) => {
       if (!active()) return;
       if (!SOFT_REQUESTS.has(type)) {
         lost(`KaraFun ne confirme plus les commandes (${type}) ; reconnexion en cours.`, 'Commande KaraFun non confirmée');
         return;
       }
       this._record('info', 'sans-reponse', type);
-      if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], null);
+      if (this._battleModes.has(id)) this._battleModeAnswer(id, null);
+      else if (SETTING_REQUESTS[type]) this._settingsAnswer(SETTING_REQUESTS[type], null);
       if (this.ready && this.nameConflictSince == null) this._setPhase('ready');
       if (!softWarned) {
         softWarned = true;
@@ -1310,9 +1347,30 @@ class KaraFunBridge extends EventEmitter {
     if (built.sent && id !== undefined) this._optionAdds.set(id, { songId: payload.songId, singer: payload.singer });
     return built.sent;
   }
-  addBattle(songId, pos = 0) {
+  _learnBattleMods(items) {
+    for (const item of items) {
+      const songId = Number(item.songId);
+      if (!Number.isSafeInteger(songId) || songId < 1) continue;
+      let entry;
+      if (isBattleItem(item)) entry = { mod: structuredClone(item.options.mod), observed: true };
+      else if (item.battleMod && !this.battleMods.get(songId)?.observed) entry = { mod: item.battleMod, observed: false };
+      else continue;
+      this.battleMods.delete(songId); // le plus récent en dernier
+      this.battleMods.set(songId, entry);
+    }
+    while (this.battleMods.size > BATTLE_MODS_MAX) this.battleMods.delete(this.battleMods.keys().next().value);
+  }
+
+  // Mode Battle à envoyer pour ce titre : celui que KaraFun lui connaît, s'il
+  // est déjà passé par sa file ce soir ; sinon « Battle » (titre à une voix).
+  battleModForSong(songId) {
+    return this.battleMods.get(Number(songId))?.mod || BATTLE_MOD;
+  }
+
+  addBattle(songId, pos = 0, mod = this.battleModForSong(songId)) {
     const id = Number(songId);
     if (!Number.isSafeInteger(id) || id < 1) throw new Error('Titre Battle invalide.');
+    if (!isBattleMod(mod)) throw new Error('Mode Battle invalide.');
     if (this.protocol === 'kcs') {
       const compatible = this.raw.configuration?.compatibleMods?.battle;
       if (!Array.isArray(compatible) || !compatible.includes(1)) {
@@ -1328,7 +1386,28 @@ class KaraFunBridge extends EventEmitter {
       throw new Error('Le mode Battle automatique nécessite la télécommande KaraFun récente.');
     }
     this._emit('queueAdd', { songId: id, pos,
-      singer: 'Battle collective', mod: BATTLE_MOD });
+      singer: 'Battle collective', mod });
+  }
+
+  // Titre de la file passé en mode Battle, comme son option dans KaraFun :
+  // options remplacées en entier (une Battle n'a ni chanteur ni réglage).
+  // Droit « Éditer la file d'attente ». La réponse de KaraFun arrive par
+  // 'battle-mode-answer' : { queueId, mod, ok } (ok null sans réponse en 8 s)
+  // et `message`, la raison d'un refus.
+  setBattleMode(queueId, mod) {
+    if (queueId === null || queueId === undefined || queueId === '') throw new Error('Titre de la file KaraFun inconnu.');
+    if (!isBattleMod(mod)) throw new Error('Mode Battle invalide.');
+    this._settingsAllowed('manageQueue');
+    const id = this._emit('queueItemOptions', { queueId, options: { mod } });
+    if (id !== undefined) this._battleModes.set(id, { queueId: String(queueId), mod });
+  }
+
+  _battleModeAnswer(id, message) {
+    const request = this._battleModes.get(id);
+    this._battleModes.delete(id);
+    const refused = message?.type === 'Error';
+    this.emit('battle-mode-answer', { ...request, ok: message ? !refused : null,
+      message: refused ? String(message.payload?.message || message.payload?.type || 'erreur inconnue') : null });
   }
   _localFake() { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(this.base).hostname); }
 
@@ -1575,5 +1654,5 @@ function normalizeResults(data) {
   })).filter(s => s.songId && s.title).slice(0, 40);
 }
 
-module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, isBattleItem,
+module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, BATTLE_MODS_MAX, isBattleItem, battleModFor,
   maskCode, lockIdentity, unknownSettingsSupport: freshSupport };

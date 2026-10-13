@@ -32,7 +32,7 @@ function harness() {
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, tracked, settings, handlers, access, spotify, spotifyAutomation, spotifyTick, sync, analyze,
-      startRestart, syncRestart, deferTurn, staffState, nextClosing, clearEvening, publicState, assertRoomBeforeClosing,
+      startRestart, syncRestart, deferTurn, staffState, nextClosing, clearEvening, publicState,
       restart: () => restartOp, setBridge: b => { bridge = b; }, setPending: p => { pending = p; }, getPending: () => pending };
   `, context, { filename: 'server.js' });
   context.fixture.settings.auto = false;
@@ -344,7 +344,9 @@ test('fermeture : effacée par « Nouvelle soirée », oubliée au bout de six h
   assert.equal(f.settings.closingAt, null);
 });
 
-test('fermeture : un titre de plus refusé s’il passerait après, nouveaux chanteurs encore accueillis', async () => {
+// Soirée du 10 octobre : la fermeture refusait l'ajout (50 refus) alors que la
+// priorité peut faire passer une personne qui n'a pas encore chanté.
+test('fermeture : l’ajout reste toujours possible, la rotation décide qui passe avant l’heure', async () => {
   const f = harness();
   const people = ['Alice', 'Bruno', 'Chloé'].map((name, i) => {
     const p = f.sched.join({ tableId: String(i + 1), name, headcount: 1 });
@@ -356,14 +358,24 @@ test('fermeture : un titre de plus refusé s’il passerait après, nouveaux cha
   const round = f.publicState(null, null).queue.filter(item => !item.future);
   assert.equal(round.length, 3);
   assert.equal(f.publicState(null, null).closing.full, false);
-  const first = f.sched.people.get(round[0].ids[0]);
   const last = f.sched.people.get(round[2].ids[0]);
-  f.assertRoomBeforeClosing(first, 'append');
-  assert.throws(() => f.assertRoomBeforeClosing(last, 'append'), error => error.code === 'CLOSING' && /après la fermeture/.test(error.message));
-  f.assertRoomBeforeClosing(f.sched.join({ tableId: '4', name: 'Zoé', headcount: 1 }), 'append');
+  // Ajouts par la route des téléphones, celle qui refusait avant.
+  const viaRoute = (p, song) => f.handlers['POST /api/table/song'](null, null,
+    { table: p.tableId, access: f.access.issue(p.tableId), personId: p.id, token: p.token, song, mode: 'append' });
+  await viaRoute(last, { songId: 70101, title: 'Un de plus' });
+  // Une arrivée qui n'a pas encore chanté passe devant les seconds titres.
+  const zoe = f.sched.join({ tableId: '4', name: 'Zoé', headcount: 1 });
+  await viaRoute(zoe, { songId: 70102, title: 'Premier titre' });
+  const queue = f.publicState(null, null).queue;
+  const zoeAt = queue.findIndex(item => item.ids[0] === zoe.id);
+  const extraAt = queue.findIndex(item => item.song?.title === 'Un de plus');
+  assert.ok(zoeAt >= 0 && extraAt >= 0, 'les deux ajouts sont dans la file');
+  assert.ok(zoeAt < extraAt);
+  assert.equal(queue[zoeAt].afterClosing, false, 'Zoé passe avant l’heure');
+  assert.equal(queue[extraAt].afterClosing, true, 'le titre en plus reste marqué après la fermeture');
   f.settings.closingAt = Date.now() - 60000;
-  await assert.rejects(f.handlers['POST /api/duet'](null, null, { partnerId: people[1].id, song: { songId: 9, title: 'Duo' } }, people[0]),
-    error => error.code === 'CLOSING', 'ancienne route d’invitation en duo soumise à la fermeture');
+  await f.handlers['POST /api/duet'](null, null, { partnerId: people[1].id, song: { songId: 9, title: 'Duo' } }, people[0]);
+  assert.ok(f.sched.songsOf(people[0]).some(song => song.title === 'Duo'), 'invitation en duo acceptée après l’heure');
 });
 
 // Regression: premier essai réel — les titres marqués « Après la fermeture »

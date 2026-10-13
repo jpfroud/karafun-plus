@@ -157,6 +157,8 @@ public final class Main {
                 doubles(input.path("personWeights"), 0.1, 10),
                 doubles(input.path("tableWeights"), 0.1, 10), history(input.path("history")),
                 rotation(input), input.path("interleaveArrivals").asBoolean(true));
+        // Absent chez un ancien client : la taille d'une table est alors ses chanteurs prêts.
+        plan.setGroupSizes(doubles(input.path("groupSizes"), 0, 1000));
         SolverFactory<QueuePlan> factory = factoryFor(budgetMs, randomSeed);
         SolutionManager<QueuePlan, HardMediumSoftScore> manager = SolutionManager.create(factory);
         HardMediumSoftScore seedScore = manager.update(plan);

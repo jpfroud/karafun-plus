@@ -48,6 +48,8 @@ async function main() {
   for (const name of fs.readdirSync(root).filter(name => name.endsWith('.js'))) {
     fs.copyFileSync(path.join(root, name), path.join(sandbox, name));
   }
+  // Parties du planificateur (scheduler.js les charge depuis lib/scheduler/).
+  fs.cpSync(path.join(root, 'lib'), path.join(sandbox, 'lib'), { recursive: true });
   // La copie de crash teste le repli sans JAR, tout en chargeant le même
   // module que le serveur du bar.
   fs.mkdirSync(path.join(sandbox, 'solver'));

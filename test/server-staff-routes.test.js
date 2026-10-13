@@ -28,9 +28,9 @@ function harness() {
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console, Buffer, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, settings, handlers, access, spotify, spotifyAutomation, staffState, publicState, battleVote,
+    globalThis.fixture = { sched, settings, handlers, access, spotify, spotifyAutomation, staffState, publicState, battleVote, journalRules, clearEvening,
       tracked: () => tracked, setBridge: b => { bridge = b; }, setPending: p => { pending = p; },
-      getPending: () => pending };
+      getPending: () => pending, setRecoveredPending: value => { recoveredPending = value; }, rememberBattleSongs };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
   f.settings.auto = false;
@@ -591,10 +591,10 @@ test('réglages de rotation : chaque mode est annoncé et les déplacements manu
   assert.equal(f.sched.manualChanges.length, 0, 'l’intervention du bar n’est plus annulable');
   assert.equal(f.staffState().settings.tableRotation, true);
   await f.call('POST /api/staff/settings', { weightedTables: true });
-  assert.equal(lastNote(f).msg, 'Rotation : compromis, grandes tables un peu plus souvent');
+  assert.equal(lastNote(f).msg, 'Rotation : compromis, grandes tables un peu plus tôt dans le tour');
   assert.equal(f.staffState().settings.weightedTables, true);
   await f.call('POST /api/staff/settings', { tableRotation: false, weightedTables: false });
-  assert.equal(lastNote(f).msg, 'Rotation : chacun son tour, tables au prorata des chanteurs');
+  assert.equal(lastNote(f).msg, 'Rotation : chacun son tour, la patience d’abord');
   const count = f.sched.log.length;
   await f.call('POST /api/staff/settings', { tableRotation: false });
   assert.equal(f.sched.log.length, count, 'un réglage inchangé n’ajoute rien au journal');
@@ -657,9 +657,27 @@ test('bonus, fiche privée et « toujours là » depuis la page du bar', async (
 
   alice.maybeGone = { title: 'Titre Alice', skips: 3, at: Date.now() };
   assert.deepEqual(plain(f.staffState().maybeGone.map(m => [m.name, m.table, m.skips])), [['Alice', 'Table 1', 3]]);
-  await f.call('POST /api/staff/person/present', { personId: alice.id });
+  // « Toujours là » ferme seulement l'alerte ; le message donne son prochain
+  // passage selon l'état : option coupée, « Je suis là » redemandé, aucun
+  // passage prévu, alerte déjà fermée (même suite, ou passage déjà envoyé).
+  const present = async () => plain(await f.call('POST /api/staff/person/present', { personId: alice.id })).message;
+  assert.equal(await present(), 'Alerte fermée pour Alice (Table 1). Prochain passage : « Titre Alice ».');
   assert.equal(f.staffState().maybeGone.length, 0);
-  assert.equal(lastNote(f).msg, 'Le bar a confirmé que Alice est toujours là');
+  assert.equal(lastNote(f).msg, 'Alerte fermée par le bar : Alice (Table 1) serait toujours là. Prochain passage : « Titre Alice ».');
+  assert.equal(await present(), 'Alerte déjà fermée pour Alice (Table 1). Prochain passage : « Titre Alice ».');
+  f.sched.opts.requirePresence = true;
+  alice.maybeGone = { title: 'Titre Alice', skips: 3, at: Date.now() };
+  assert.equal(await present(), 'Alerte fermée pour Alice (Table 1). Prochain passage : « Titre Alice ». Ce passage redemandera « Je suis là ».');
+  f.setPending({ sel: { ids: [alice.id], song: { title: 'Titre Alice' } }, before: new Set(), at: Date.now() });
+  assert.equal(await present(), 'Alerte déjà fermée pour Alice (Table 1) : son passage « Titre Alice » est déjà dans KaraFun.');
+  f.setPending(null);
+  for (const song of f.sched.songsOf(alice)) f.sched.removeSong(alice, song.entryId, 'staff');
+  alice.maybeGone = { title: 'Titre Alice', skips: 3, at: Date.now() };
+  assert.equal(await present(), 'Alerte fermée pour Alice (Table 1). Aucun passage prévu : un titre à rechoisir sur son téléphone.');
+  // Page d'un autre appareil en retard : déjà marquée partie, refus explicite.
+  f.sched.leave(alice, 'staff');
+  assert.deepEqual(plain(await f.call('POST /api/staff/person/present', { personId: alice.id })),
+    { ok: false, message: '« Parti » déjà noté pour Alice (Table 1) : ses titres ont été retirés. Si cette personne est là : « Réactiver » dans « Repères », puis un titre à rechoisir sur son téléphone.' });
   await assert.rejects(f.call('POST /api/staff/person/present', { personId: 'x' }), { message: 'Personne introuvable.' });
 });
 
@@ -982,4 +1000,198 @@ test('état du bar : invitations de duo en attente, avec l’état vu / pas enco
   assert.ok(invites[0].seenAt > 0, 'vue sur le téléphone de l’invitée');
   f.sched.answerDuet(zoe, true, song.entryId);
   assert.deepEqual(plain(f.staffState().duoInvites), [], 'acceptée : plus en attente');
+});
+
+// Retours du 11 octobre : « Duos uniquement » pour une soirée chargée.
+test('duos uniquement : plus de solo depuis les téléphones, duos et titres déjà choisis gardés', async () => {
+  const f = harness();
+  const [ana] = singers(f, ['Ana']);
+  const ben = f.sched.join({ tableId: '1', name: 'Ben' });
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  assert.equal(f.staffState().settings.duoOnly, true);
+  assert.equal(f.publicState(null, '1').rules.duoOnly, true, 'annoncé aux téléphones');
+  assert.match(lastNote(f).msg, /^Duos uniquement : les clients n’ajoutent plus que des duos/);
+  const access = f.access.issue('1');
+  const as = person => ({ table: '1', access, personId: person.id, token: person.token });
+  for (const mode of ['append', 'replace']) {
+    await assert.rejects(f.call('POST /api/table/song', { ...as(ana), mode, song: { songId: 4001, title: 'Solo' } }),
+      error => error.code === 'DUO_ONLY', `solo refusé (${mode})`);
+  }
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: ben.id, song: { songId: 4002, title: 'Duo' } });
+  assert.deepEqual(f.sched.songsOf(ana).map(song => [song.title, !!song.duet]), [['Titre Ana', false], ['Duo', true]],
+    'le solo déjà choisi reste, le duo s’ajoute');
+  // Inviter puis annuler ne laisse pas un solo : le duo reste, le titre peut être retiré.
+  const duo = f.sched.songsOf(ana).at(-1);
+  for (const route of ['POST /api/table/duet/cancel', 'POST /api/table/duet/solo']) {
+    await assert.rejects(f.call(route, { ...as(ana), entryId: duo.entryId }), error => error.code === 'DUO_ONLY', route);
+  }
+  await assert.rejects(f.handlers['POST /api/duet/cancel']({}, {}, { entryId: duo.entryId }, ana),
+    error => error.code === 'DUO_ONLY', 'POST /api/duet/cancel');
+  // L'invitée de la même table (duo accepté d'office) non plus.
+  await assert.rejects(f.call('POST /api/table/duet/leave', { ...as(ben), ownerId: ana.id, entryId: duo.entryId }),
+    error => error.code === 'DUO_ONLY' && /l’auteur du titre peut le retirer/.test(error.message));
+  assert.equal(f.sched.songsOf(ana).at(-1).duet?.partnerId, ben.id, 'toujours un duo');
+  assert.equal(f.journalRules().duoOnly, true, 'règle notée au début d’une soirée');
+  // Restent possibles : retirer le titre, annuler une invitation en attente,
+  // et pour une invitée d'une autre table, se retirer (comme refuser).
+  await f.call('POST /api/table/song/remove', { ...as(ana), entryId: duo.entryId });
+  assert.ok(!f.sched.songsOf(ana).some(song => song.entryId === duo.entryId), 'titre retiré');
+  const chloe = f.sched.join({ tableId: '2', name: 'Chloé', headcount: 1 });
+  const chloeAs = { table: '2', access: f.access.issue('2'), personId: chloe.id, token: chloe.token };
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: chloe.id, song: { songId: 4005, title: 'Invitation' } });
+  const pending = f.sched.songsOf(ana).at(-1);
+  assert.equal(pending.duet?.state, 'pending');
+  await f.call('POST /api/table/duet/cancel', { ...as(ana), entryId: pending.entryId });
+  assert.equal(pending.duet ?? null, null, 'invitation en attente annulée, comme si elle expirait');
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: chloe.id, song: { songId: 4006, title: 'Accepté' } });
+  const accepted = f.sched.songsOf(ana).at(-1);
+  await f.call('POST /api/table/duet/answer', { ...chloeAs, accept: true, entryId: accepted.entryId });
+  assert.equal(accepted.duet?.state, 'accepted');
+  await f.call('POST /api/table/duet/leave', { ...chloeAs, ownerId: ana.id, entryId: accepted.entryId });
+  assert.equal(accepted.duet ?? null, null, 'invitée d’une autre table : elle peut se retirer');
+  await assert.rejects(f.call('POST /api/staff/settings', { duoOnly: 'oui' }), /Duos uniquement/);
+  await f.call('POST /api/staff/settings', { duoOnly: false });
+  await f.call('POST /api/table/song', { ...as(ben), mode: 'append', song: { songId: 4003, title: 'Solo de Ben' } });
+  assert.equal(f.sched.songsOf(ben).length, 1);
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  f.clearEvening();
+  assert.equal(f.settings.duoOnly, false, 'nouvelle soirée : les solos sont de nouveau permis');
+});
+
+test('duos uniquement : le blocage vise le duo nommé, pas un autre duo de la personne', async () => {
+  const f = harness();
+  const [ana] = singers(f, ['Ana']);
+  const ben = f.sched.join({ tableId: '1', name: 'Ben' });
+  const chloe = f.sched.join({ tableId: '2', name: 'Chloé', headcount: 2 });
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  const access = f.access.issue('1');
+  const as = person => ({ table: '1', access, personId: person.id, token: person.token });
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: ben.id, song: { songId: 4101, title: 'Gardé' } });
+  const kept = f.sched.songsOf(ana).at(-1);
+  await f.call('POST /api/table/duet', { ...as(ana), partnerId: chloe.id, song: { songId: 4102, title: 'En attente' } });
+  const pending = f.sched.songsOf(ana).at(-1);
+  await f.call('POST /api/table/duet/cancel', { ...as(ana), entryId: pending.entryId });
+  assert.equal(pending.duet ?? null, null, 'invitation en attente annulée');
+  assert.equal(kept.duet?.state, 'accepted', 'le duo accepté reste');
+  const zoe = f.sched.join({ tableId: '2', name: 'Zoé' });
+  const zoeAs = { table: '2', access: f.access.issue('2'), personId: zoe.id, token: zoe.token };
+  await f.call('POST /api/table/duet', { ...zoeAs, partnerId: ben.id, song: { songId: 4103, title: 'Ailleurs' } });
+  const other = f.sched.songsOf(zoe).at(-1);
+  await f.call('POST /api/table/duet/answer', { ...as(ben), accept: true, entryId: other.entryId });
+  await f.call('POST /api/table/duet/leave', { ...as(ben), ownerId: zoe.id, entryId: other.entryId });
+  assert.equal(other.duet ?? null, null, 'duo d’une autre table quitté');
+  await assert.rejects(f.call('POST /api/table/duet/leave', { ...as(ben), ownerId: ana.id, entryId: kept.entryId }),
+    error => error.code === 'DUO_ONLY', 'duo de sa table : refusé');
+});
+
+// Retours du 11 octobre : remettre le système prêt pour une nouvelle soirée
+// quand quelqu'un a changé des réglages, sans toucher aux connexions.
+test('options par défaut : réglages d’origine, connexions, adresse des QR, tables et file gardées', async () => {
+  const f = harness();
+  const [ana] = singers(f, ['Ana']);
+  f.settings.baseUrl = 'http://192.168.1.20:3000';
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'jeton',
+    deviceId: 'pc', deviceName: 'PC du bar' };
+  await f.call('POST /api/staff/settings', { autoPlay: true, pushDelaySec: 10, playDelaySec: 2, repeatWarnMin: 0,
+    presenceGraceSec: 60, presenceMaxSkips: 5, requirePresence: true, tableRotation: true, weightedTables: true,
+    interleaveArrivals: false, gap: 2, cap: 5, singerSongSettings: false, maxSongSec: 300, duoOnly: true,
+    battleCooldownMin: 10, battleRejectedCooldownMin: 2, battleVoteMin: 3, battleMinVoters: 2 });
+  await f.call('POST /api/staff/closing', { time: '23:30' });
+  await f.call('POST /api/staff/spotify', { action: 'options', autoResume: false, autoPause: false, resumeDelaySec: 30, pauseLeadSec: 5 });
+  await assert.rejects(f.call('POST /api/staff/settings-reset', {}), /Confirmation/);
+  assert.equal(f.settings.duoOnly, true, 'sans confirmation, rien ne change');
+  const result = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.deepEqual(plain(result.kept), []);
+  const s = plain(f.staffState().settings);
+  assert.deepEqual([s.auto, s.autoPlay, s.pushDelaySec, s.playDelaySec, s.repeatWarnMin, s.presenceGraceSec, s.presenceMaxSkips,
+    s.requirePresence, s.tableRotation, s.weightedTables, s.interleaveArrivals, s.gap, s.cap, s.singerSongSettings, s.maxSongSec,
+    s.duoOnly, s.closingAt, s.battleCooldownMin, s.battleRejectedCooldownMin, s.battleVoteMin, s.battleMinVoters],
+  [true, false, 15, 8, 45, 30, 3, false, false, false, true, 4, 2, true, null, false, null, 30, 5, 15, 5]);
+  const spotify = plain(f.spotify.config);
+  assert.deepEqual([spotify.autoResume, spotify.autoPause, spotify.resumeDelaySec, spotify.pauseLeadSec], [true, true, 3, 2]);
+  assert.deepEqual([spotify.clientId, spotify.refreshToken, spotify.deviceId], ['0123456789abcdef0123456789abcdef', 'jeton', 'pc'],
+    'connexion et appareil Spotify gardés');
+  assert.equal(f.settings.baseUrl, 'http://192.168.1.20:3000', 'adresse des QR gardée');
+  assert.equal(f.sched.songsOf(ana).length, 1, 'file gardée');
+  assert.match(lastNote(f).msg, /^Options remises par défaut/);
+  // KaraFun interdit l'ajout de titres : l'envoi automatique reste coupé.
+  f.settings.auto = false;
+  f.setBridge({ ...fakeBridge(), permissions: { addToQueue: false } });
+  const blocked = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.deepEqual(plain(blocked.kept), ['auto']);
+  assert.equal(blocked.autoBlocked, 'KaraFun refuse l’ajout de titres');
+  assert.equal(f.settings.auto, false);
+  assert.equal(lastNote(f).msg, 'Options remises par défaut (envoi automatique laissé coupé : KaraFun refuse l’ajout de titres).');
+  // Envoi interrompu à vérifier : cette raison passe avant les droits KaraFun.
+  f.setRecoveredPending(true);
+  const recovered = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.equal(recovered.autoBlocked, 'un envoi interrompu est à vérifier dans KaraFun');
+  assert.equal(f.settings.auto, false);
+  f.setRecoveredPending(false);
+  // Écriture des réglages Spotify impossible : le reste est remis, l'échec est dit.
+  f.spotify.setOptions = () => { throw new Error('disque plein'); };
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  const partial = await f.call('POST /api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.deepEqual(plain(partial.kept), ['auto', 'spotify']);
+  assert.equal(partial.spotifyError, 'disque plein');
+  assert.equal(f.settings.duoOnly, false);
+  assert.match(lastNote(f).msg, /Automatismes Spotify non remis : disque plein/);
+});
+
+// Relecture du 11 octobre : le suivi de l'ajout Battle et ses consignes au bar
+// (mode Battle demandé à KaraFun, copie normale) n'ont rien à faire sur les
+// téléphones.
+test('Battle : suivi de l’ajout à KaraFun et consignes réservés à la page du bar', async () => {
+  const f = harness();
+  const [alice] = singers(f, ['Alice']);
+  f.battleVote.staffLaunch({ song: { songId: 18179, title: 'Sarà perché ti amo', artist: 'Ricchi e Poveri' } });
+  f.battleVote.beginAutomation([]);
+  f.battleVote.automation.modeCaption = 'Angela Brambati';
+  f.battleVote.updateAutomation('failed', 'KaraFun a ajouté « Sarà perché ti amo » en chanson normale, sans le mode Battle.');
+  const phone = plain(f.publicState(alice, alice.tableId).battle);
+  assert.equal(phone.phase, 'requested');
+  assert.equal(phone.selectedSong.title, 'Sarà perché ti amo', 'la salle voit toujours la Battle décidée');
+  assert.equal('automation' in phone, false);
+  const bar = plain(f.staffState().battle);
+  assert.match(bar.automation.failure, /en chanson normale/);
+  assert.equal(bar.automation.modeCaption, 'Angela Brambati');
+});
+
+// Relecture du 11 octobre : la réponse d'un vote (route du téléphone) suit la
+// même vue que l'état des téléphones, pas la vue complète du bar.
+test('Battle : la réponse d’un vote du téléphone ne donne ni consignes du bar ni électeurs des autres tables', async () => {
+  const f = harness();
+  const [alice, bruno] = singers(f, ['Alice', 'Bruno']);
+  f.battleVote.setMinVoters(1);
+  const songs = [{ songId: 5091, title: 'Battle', artist: 'Groupe' }];
+  f.battleVote.propose({ personId: bruno.id, personName: 'Bruno', eligiblePersonIds: [alice.id, bruno.id], songs, proposerChoice: 5091 });
+  const access = f.access.issue(alice.tableId);
+  const result = plain(await f.call('POST /api/table/battle/vote', { table: alice.tableId, access, personId: alice.id, token: alice.token, choice: 5091 }));
+  assert.equal(result.ok, true);
+  assert.equal('automation' in result.battle, false);
+  assert.deepEqual(result.battle.eligiblePersonIds, [alice.id], 'électeurs de sa table seulement');
+  assert.deepEqual(result.battle.votedPersonIds, [alice.id]);
+  assert.deepEqual(plain(f.staffState().battle.votedPersonIds).sort(), [alice.id, bruno.id].sort(), 'le bar voit tout');
+});
+
+test('Battle : la réponse d’une proposition et la vue « En solo » suivent la vue des téléphones', async () => {
+  const f = harness();
+  const [alice, bruno] = singers(f, ['Alice', 'Bruno']);
+  f.battleVote.setMinVoters(1);
+  const songs = [{ songId: 5091, title: 'Battle', artist: 'Groupe' }];
+  f.rememberBattleSongs(songs);
+  const access = f.access.issue(alice.tableId);
+  const proposed = plain(await f.call('POST /api/table/battle/propose', { table: alice.tableId, access, personId: alice.id, token: alice.token,
+    songs, proposerChoice: 5091 }));
+  assert.equal('automation' in proposed.battle, false);
+  assert.deepEqual(proposed.battle.eligiblePersonIds, [alice.id], 'électeurs de sa table seulement');
+  assert.ok(plain(f.staffState().battle.eligiblePersonIds).includes(bruno.id));
+  // « En solo » : chaque personne ne voit qu'elle-même.
+  const solo1 = f.sched.join({ tableId: 'Comptoir', name: 'Solène' });
+  const solo2 = f.sched.join({ tableId: 'Comptoir', name: 'Sacha' });
+  f.sched.table('Comptoir').individual = true;
+  f.battleVote.admit([solo1.id, solo2.id]);
+  const solo = plain(f.publicState(solo1, 'Comptoir').battle);
+  assert.deepEqual(solo.eligiblePersonIds, [solo1.id]);
+  assert.equal('automation' in solo, false);
 });

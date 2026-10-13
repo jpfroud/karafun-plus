@@ -31,7 +31,7 @@ function harness({ logs = null } = {}) {
     console: logs ? { ...console, log: (...parts) => logs.push(parts.join(' ')) } : console, URL, setTimeout, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, tracked, settings, handlers, spotify, spotifyAutomation, spotifyTick, sync, analyze,
-      karaokeOutlook, playKaraFun, staffState, access, battleVote, closingBlocksStart, catalogPhoneError,
+      karaokeOutlook, playKaraFun, staffState, access, battleVote, closingBlocksStart, catalogPhoneError, catalogDurations,
       setBridge: b => { bridge = b; }, getPending: () => pending, getPlayStarting: () => playStarting };
   `, context, { filename: 'server.js' });
   context.fixture.settings.auto = false;
@@ -1055,4 +1055,129 @@ test('Spotify : pause toujours refusée en 502 pendant un titre : reprise au plu
   const recovered = logs.filter(line => /Spotify rétabli/.test(line)).length;
   assert.ok(recovered >= 1 && recovered <= 3, `au plus une reprise par 10 minutes (${recovered})`);
   assert.equal(pauses, 3 * (recovered + 1), 'trois essais par reprise');
+});
+
+// Soirée du 10 octobre : à 02:51, fin d'un titre (228 s, durée connue).
+// « Début + passage moyen » laissait encore 1 min 30 de chanson : « Hello »
+// de Bea, déjà chargé, était retiré pour la fermeture (Bea prévenue), puis
+// renvoyé une seconde plus tard. La durée connue du titre en cours compte.
+test('fermeture : à la fin d’un titre de durée connue, le titre suivant n’est pas retiré à tort', () => {
+  const f = harness();
+  const kf = [];
+  f.sched.opts.defaultSlotSec = 300;
+  singers(f, ['Ana', 'Bea']);
+  const onStage = f.sched.select(); f.sched.commit(onStage);
+  onStage.song.duration = 228;
+  const next = f.sched.select(); f.sched.commit(next);
+  f.setBridge(fakeBridge(kf, [{ queueId: 5, songId: onStage.song.songId, singer: onStage.label },
+    { queueId: 6, songId: next.song.songId, singer: next.label }], 5));
+  f.tracked.push({ queueId: 5, sel: onStage, startedAt: Date.now() - 225000, addedAt: Date.now() - 300000 });
+  f.tracked.push({ queueId: 6, sel: next, startedAt: null, addedAt: Date.now() });
+  // Fermeture dans 3 min 30 : la moitié du titre de Bea tient encore.
+  f.settings.closingAt = Date.now() + 210000;
+  f.sync();
+  assert.ok(!kf.some(call => call[0] === 'remove'), 'le titre de Bea reste chargé');
+  assert.equal(f.tracked.find(item => item.queueId === 6).pulled ?? null, null);
+  assert.equal(f.sched.inboxOf(f.sched.people.get(next.ids[0])).length, 0, 'Bea n’est pas prévenue d’un retrait');
+  // Fermeture dans 2 min : il ne tiendrait plus, il est retiré.
+  f.settings.closingAt = Date.now() + 120000;
+  f.sync();
+  assert.ok(kf.some(call => call[0] === 'remove' && call[1] === 6));
+});
+
+// Relecture du 11 octobre : la durée du catalogue de KaraFun décide de la fin
+// du titre en cours, au tempo réglé, plutôt que le passage moyen.
+const closingTimeOf = view => view.closing.at;
+function closingCase(f, { catalogSec, tempo = null, closingInSec }) {
+  const kf = [];
+  f.sched.opts.defaultSlotSec = 300;
+  singers(f, ['Ana', 'Bea']);
+  const onStage = f.sched.select(); f.sched.commit(onStage);
+  const next = f.sched.select(); f.sched.commit(next);
+  f.catalogDurations.set(Number(onStage.song.songId), catalogSec);
+  const bridge = fakeBridge(kf, [{ queueId: 5, songId: onStage.song.songId, singer: onStage.label },
+    { queueId: 6, songId: next.song.songId, singer: next.label }], 5);
+  if (tempo != null) bridge.status.tempo = tempo;
+  f.setBridge(bridge);
+  f.tracked.push({ queueId: 5, sel: onStage, startedAt: Date.now() - 60000, addedAt: Date.now() - 120000 });
+  f.tracked.push({ queueId: 6, sel: next, startedAt: null, addedAt: Date.now() });
+  f.settings.closingAt = Date.now() + closingInSec * 1000;
+  f.sync();
+  return { kf, view: f.staffState() };
+}
+
+test('fermeture : une durée du catalogue plus longue que le passage moyen fait retirer le titre suivant', () => {
+  const { kf, view } = closingCase(harness(), { catalogSec: 600, closingInSec: 400 });
+  assert.ok(kf.some(call => call[0] === 'remove' && call[1] === 6));
+  assert.equal(view.closing.fitCount, 0, 'le repère du bar dit la même chose');
+  const row = view.queue.find(item => String(item.queueId) === '6');
+  assert.equal(row?.afterClosing, true, 'ligne marquée après la fermeture');
+  assert.ok(row.eta + 150000 > closingTimeOf(view), 'son heure affichée est cohérente avec ce repère');
+});
+
+// Relecture du 12 octobre : titre en cours au-delà de sa durée du catalogue
+// (30 s, sur scène depuis 60 s) : la scène se libère au plus tôt maintenant,
+// jamais dans le passé.
+test('fermeture : titre en cours qui dépasse sa durée du catalogue, la scène se libère au plus tôt maintenant', () => {
+  for (const [closingInSec, removed] of [[165, true], [200, false]]) {
+    const { kf } = closingCase(harness(), { catalogSec: 30, closingInSec });
+    assert.equal(kf.some(call => call[0] === 'remove' && call[1] === 6), removed, `fermeture dans ${closingInSec} s`);
+  }
+});
+
+test('fermeture : tempo +50 % raccourcit la fin du titre en cours', () => {
+  const { kf } = closingCase(harness(), { catalogSec: 600, tempo: 50, closingInSec: 600 });
+  assert.ok(!kf.some(call => call[0] === 'remove'));
+});
+
+// Relecture du 11 octobre : au changement de titre, la décision de garder un
+// titre retiré pour la fermeture est prise avant le relevé de l'horloge de
+// scène, puis celle de le retirer après : elles doivent coïncider.
+for (const tempo of [0, -20]) {
+  test(`fermeture, titre tout juste sur scène (tempo ${tempo}) : même décision avant et après le relevé de l’horloge`, () => {
+    const f = harness();
+    const kf = [];
+    f.sched.opts.defaultSlotSec = 300;
+    singers(f, ['Ana', 'Bea']);
+    const onStage = f.sched.select(); f.sched.commit(onStage);
+    const next = f.sched.select(); f.sched.commit(next);
+    f.catalogDurations.set(Number(onStage.song.songId), 200);
+    const bridge = fakeBridge(kf, [{ queueId: 5, songId: onStage.song.songId, singer: onStage.label },
+      { queueId: 6, songId: next.song.songId, singer: next.label }], 5);
+    bridge.status.tempo = tempo;
+    f.setBridge(bridge);
+    f.tracked.push({ queueId: 5, sel: onStage, startedAt: null, addedAt: Date.now() - 120000 });
+    const pulled = { queueId: 6, sel: next, startedAt: null, addedAt: Date.now(),
+      pulled: { reason: 'closing', at: Date.now() - 1000 }, removeRequestedAt: Date.now() - 1000 };
+    f.tracked.push(pulled);
+    f.settings.closingAt = Date.now() + 400000;
+    const owner = f.sched.people.get(next.ids[0]);
+    const notices = f.sched.inboxOf(owner).length;
+    f.sync();
+    if (tempo === 0) assert.ok(pulled.unpulled && !pulled.pulled, 'durée du catalogue : le titre tient');
+    else {
+      assert.deepEqual(kf.filter(call => call[0] === 'remove'), [], 'pas de second retrait');
+      assert.equal(f.sched.inboxOf(owner).length, notices, 'pas de second message');
+    }
+  });
+}
+
+// Relecture du 11 octobre : la durée vient du téléphone qui a choisi le titre
+// (non vérifiée). Une durée gonflée ne doit pas faire retirer le titre d'un autre.
+test('fermeture : une durée de titre envoyée par un téléphone ne fait pas retirer le titre suivant', () => {
+  const f = harness();
+  const kf = [];
+  f.sched.opts.defaultSlotSec = 300;
+  singers(f, ['Ana', 'Bea']);
+  const onStage = f.sched.select(); f.sched.commit(onStage);
+  onStage.song.duration = 1200;
+  const next = f.sched.select(); f.sched.commit(next);
+  f.setBridge(fakeBridge(kf, [{ queueId: 5, songId: onStage.song.songId, singer: onStage.label },
+    { queueId: 6, songId: next.song.songId, singer: next.label }], 5));
+  f.tracked.push({ queueId: 5, sel: onStage, startedAt: Date.now() - 60000, addedAt: Date.now() - 120000 });
+  f.tracked.push({ queueId: 6, sel: next, startedAt: null, addedAt: Date.now() });
+  // Passage moyen : la scène se libère dans 4 min, la moitié du titre de Bea tient.
+  f.settings.closingAt = Date.now() + 400000;
+  f.sync();
+  assert.ok(!kf.some(call => call[0] === 'remove'), 'le titre de Bea reste chargé');
 });

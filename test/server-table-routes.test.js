@@ -360,6 +360,102 @@ test('sauvegarde : échec toléré hors inscription, double écriture pour une n
   assert.equal(f.staffState().persistenceError, 'disque débranché');
 });
 
+test('« Vider toutes les chansons » : une dette de tour reste due une seule fois', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  const ben = f.sched.join({ tableId: '2', name: 'Ben', headcount: 1 });
+  // Ana a chanté deux fois dans ce tour (second passage emprunté), Ben une fois.
+  f.sched.roundPeople.add(ana.id);
+  f.sched.roundPeople.add(ben.id);
+  f.sched.roundUse.set(ana.id, 2);
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  assert.equal(f.sched.roundUse.get(ana.id), 1, 'le tour vidé est soldé, la dette reste');
+  assert.ok(f.sched.roundPeople.has(ana.id), 'Ana laisse passer le tour suivant');
+  assert.ok(!f.sched.roundPeople.has(ben.id), 'Ben repart à zéro');
+});
+
+test('« Vider toutes les chansons » pendant qu’un passage emprunté attend dans KaraFun : retiré sans être chanté, il ne coûte rien', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  f.sched.chooseSong(ana, { songId: 9101, title: 'Second passage' }, 'append');
+  // Ana a déjà chanté dans ce tour ; ce second passage est pris sur le suivant.
+  f.sched.roundPeople.add(ana.id);
+  const sel = f.sched.select();
+  Object.assign(sel, { newPersonRound: false, roundResets: 0, borrowedIds: [ana.id] });
+  f.sched.commit(sel);
+  assert.equal(f.sched.roundUse.get(ana.id), 2);
+  f.getTracked().push({ queueId: 'q-emprunt', sel, startedAt: null, addedAt: Date.now() });
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  // KaraFun confirme le retrait : le passage n'a jamais eu lieu.
+  f.sched.rollbackUnplayed(sel);
+  assert.equal(f.sched.roundUse.has(ana.id), false, 'aucune dette pour un titre jamais chanté');
+  assert.equal(f.sched.roundPeople.has(ana.id), false, 'Ana repart à zéro dans le nouveau tour');
+});
+
+test('« Vider toutes les chansons » juste après un retrait : le titre rechoisi commence une nouvelle attente', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  const ben = f.sched.join({ tableId: '2', name: 'Ben', headcount: 1 });
+  f.sched.chooseSong(ana, { songId: 9201, title: 'A1' }, 'append');
+  f.sched.chooseSong(ben, { songId: 9301, title: 'B1' }, 'append');
+  f.sched.chooseSong(ben, { songId: 9302, title: 'B2' }, 'append');
+  const play = () => { const sel = f.sched.select(); f.sched.commit(sel); f.sched.songEnded(sel.ids); return sel; };
+  assert.deepEqual(play().names, ['Ana']);
+  f.sched.chooseSong(ana, { songId: 9202, title: 'A2' }, 'append');
+  assert.deepEqual(play().names, ['Ben']);
+  // Échange de titre interrompu par le vidage : la file repart de zéro.
+  f.sched.removeSong(ana, f.sched.songsOf(ana)[0].entryId);
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  f.sched.chooseSong(ana, { songId: 9203, title: 'A3' }, 'append');
+  assert.equal(ana.readySerial, f.sched.appearanceSerial, 'file vidée : nouvelle attente');
+});
+
+test('« Compromis » après « Vider toutes les chansons » : ceux qui ont chanté comptent encore dans la taille de leur table', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  Object.assign(f.sched.opts, { tableRotation: true, weightedTables: true });
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 3 });
+  const abe = f.sched.join({ tableId: '1', name: 'Abe' });
+  const ben = f.sched.join({ tableId: '2', name: 'Ben', headcount: 3 });
+  let n = 9400;
+  for (const p of [ana, abe, ben]) f.sched.chooseSong(p, { songId: n++, title: `T${n}` }, 'append');
+  for (let i = 0; i < 3; i++) { const sel = f.sched.select(); f.sched.commit(sel); f.sched.songEnded(sel.ids); }
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  assert.equal(f.sched.Q.length, 0);
+  f.sched.chooseSong(ana, { songId: n++, title: `T${n}` }, 'append');
+  f.sched.chooseSong(ben, { songId: n++, title: `T${n}` }, 'append');
+  const sizes = f.sched._registeredWeights();
+  assert.equal(sizes.get(ana.group), 2, 'Ana (titre) et Abe (a chanté)');
+  assert.equal(sizes.get(ben.group), 1);
+});
+
+test('« Compromis » après « Vider » : un titre retiré avant le vidage ne compte pas', async () => {
+  const f = harness(); f.loadTables(); f.setBridge(null);
+  Object.assign(f.sched.opts, { tableRotation: true, weightedTables: true });
+  const ana = f.sched.join({ tableId: '1', name: 'Ana', headcount: 3 });
+  const ben = f.sched.join({ tableId: '2', name: 'Ben', headcount: 3 });
+  const bob = f.sched.join({ tableId: '2', name: 'Bob' });
+  let n = 9600;
+  for (const p of [ana, ben, bob]) f.sched.chooseSong(p, { songId: n++, title: `T${n}` }, 'append');
+  f.sched.removeSong(bob, bob.song.entryId);
+  const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(r.status, 200);
+  f.sched.chooseSong(ana, { songId: n++, title: `T${n}` }, 'append');
+  f.sched.chooseSong(ben, { songId: n++, title: `T${n}` }, 'append');
+  assert.equal(f.sched._registeredWeights().get(ben.group), 1, 'Bob : ni titre en attente, ni passage');
+});
+
 test('« Arrêter le vidage » : sauvegarde en échec, le vidage reste en cours en mémoire comme sur le disque', async () => {
   const f = harness({ persistent: true });
   f.loadTables();

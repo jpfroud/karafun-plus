@@ -192,6 +192,7 @@ window.CLIENT_TRANSLATIONS = {
 
       // Personnes de la table et listes de chansons
       'Choisir une chanson': 'Choose a song',
+      'Choisir un duo': 'Choose a duet',
       'Sélectionne la personne qui chantera. Ce téléphone peut gérer plusieurs personnes.': 'Pick who will sing. This phone can manage several people.',
       'Ajoute les chansons que tu veux chanter. Les autres personnes venues seules gèrent les leurs.':
         'Add the songs you want to sing. Other people who came alone manage their own.',
@@ -247,6 +248,8 @@ window.CLIENT_TRANSLATIONS = {
       'Renommer {name}': 'Rename {name}',
       'Ajouter une chanson pour {name}': 'Add a song for {name}',
       'Chanter en duo': 'Sing a duet',
+      'Ce soir, le bar ne prend que des duos : choisis avec qui tu chantes.': 'Tonight the bar only takes duets: choose who you’re singing with.',
+      'Ce soir, le bar ne prend que des duos : chante à deux pour faire monter plus de monde sur scène.': 'Tonight the bar only takes duets: sing in pairs so more people get on stage.',
       'Ajouter un duo pour {name}': 'Add a duet for {name}',
       'Transférer la gestion': 'Transfer',
       'Transférer la gestion de {name}': 'Transfer {name} to another phone',
@@ -421,6 +424,7 @@ window.CLIENT_TRANSLATIONS = {
       'Nouveautés': 'New',
       'À découvrir': 'Discover',
       'Choisis un titre pour un duo avec {name}.': 'Choose a song for a duet with {name}.',
+      'Choisis le titre de ton duo : tu choisiras ensuite avec qui chanter.': 'Choose the song for your duet: you’ll pick who to sing with next.',
       'Chansons pour {name}.': 'Songs for {name}.',
       'Chansons pour {name}. Tu pourras changer de chanteur avant de valider.': 'Songs for {name}. You can change the singer before confirming.',
       'Choisis un titre, puis la personne qui le chantera.': 'Choose a song, then who will sing it.',
@@ -554,9 +558,10 @@ window.CLIENT_TRANSLATIONS = {
 
       // Heure de fermeture
       'Fermeture du bar à {time}': 'The bar closes at {time}',
-      'Le bar ferme : plus de nouveau titre ce soir.': 'The bar is closing: no new songs tonight.',
+      'Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.': 'Closing time reached: no more songs will start unless the bar moves the time.',
+      'Fermeture du bar atteinte': 'Closing time reached',
       'Les titres prévus après l’heure ne seront pas lancés, sauf si le bar la décale.': 'Songs planned after closing time will not be started, unless the bar moves the time.',
-      'La file est complète jusqu’à la fermeture : plus de nouvel ajout. Les titres prévus restent.': 'The queue is full until closing time: no more songs can be added. Planned songs stay.',
+      'La file est complète jusqu’à cette heure. Tu peux encore ajouter un titre : la rotation décide s’il passe avant.': 'The queue is full until then. You can still add a song: the rotation decides whether it plays before closing.',
       '{n} titre prévu passera avant la fermeture : il reste de la place.': [
         '{n} planned song will play before closing time: there is still room.',
         '{n} planned songs will play before closing time: there is still room.',
@@ -632,6 +637,9 @@ window.CLIENT_TRANSLATIONS = {
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
     errors: {
+      'Ce soir, le bar ne prend que des duos : choisis un titre puis « Chanter en duo ».': 'Tonight the bar only takes duets: pick a song, then “Sing a duet”.',
+      'Ce soir, le bar ne prend que des duos : garde ton duo ou retire ce titre.': 'Tonight the bar only takes duets: keep your duet or remove this song.',
+      'Ce soir, le bar ne prend que des duos : l’auteur du titre peut le retirer.': 'Tonight the bar only takes duets: the person who chose this song can remove it.',
       'Personne d’autre n’attend pour chanter : ton passage ne peut pas être repoussé.': 'Nobody else is waiting to sing: your turn can’t be pushed back.',
       'Choisis le duo à annuler.': 'Choose the duet to cancel.',
       'Trop tard : ce duo est déjà sur scène.': 'Too late: this duet is already on stage.',
@@ -742,9 +750,6 @@ window.CLIENT_TRANSLATIONS = {
       [/^Catalogue KaraFun : (.*)$/, 'KaraFun catalogue: {1}'],
       [/^Catalogue KaraFun indisponible pour le moment \(refus HTTP (\d{3})\)\. La recherche reste possible\.$/,
         'The KaraFun catalogue is unavailable right now (HTTP {1} refusal). Search still works.'],
-      [/^Le bar ferme à (\d\d:\d\d) : plus de nouveau titre ce soir\.$/, 'The bar closes at {1}: no new songs tonight.'],
-      [/^Le bar ferme à (\d\d:\d\d) : la file est complète jusqu’à la fermeture\.$/, 'The bar closes at {1}: the queue is full until closing time.'],
-      [/^Le bar ferme à (\d\d:\d\d) : un titre de plus passerait après la fermeture\.$/, 'The bar closes at {1}: one more song would play after closing time.'],
       [/^Ce titre dure (\d+:\d\d) : le bar limite les chansons à (\d+:\d\d)\.$/, 'This song lasts {1}: the bar limits songs to {2}.'],
       [/^Repousse ton passage de 1 à (\d+) chansons\.$/, 'Push back your turn by 1 to {1} songs.'],
       [/^Un passage ne peut pas être repoussé de plus de (\d+) chansons\.$/, 'A turn can’t be pushed back by more than {1} songs.'],

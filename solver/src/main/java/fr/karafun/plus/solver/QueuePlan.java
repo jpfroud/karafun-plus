@@ -33,6 +33,13 @@ public class QueuePlan {
     private int spacing;
     private Map<String, Double> personWeights;
     private Map<String, Double> tableWeights;
+    /**
+     * SQRT rotation: weight sum, per table, of the named people who have not left who have a title in
+     * their list (ready or not) or already sang one of their own titles tonight (Node
+     * rotation.js#_registeredWeights); people with neither are not counted, and singing as a duet guest
+     * does not count as singing one of their own titles.
+     */
+    private Map<String, Double> groupSizes = Map.of();
     private List<List<String>> history;
     private Rotation rotation;
     private boolean interleaveArrivals;
@@ -93,6 +100,8 @@ public class QueuePlan {
     public int getSpacing() { return spacing; }
     public Map<String, Double> getPersonWeights() { return personWeights; }
     public Map<String, Double> getTableWeights() { return tableWeights; }
+    public Map<String, Double> getGroupSizes() { return groupSizes; }
+    public void setGroupSizes(Map<String, Double> groupSizes) { this.groupSizes = groupSizes == null ? Map.of() : groupSizes; }
     public List<List<String>> getHistory() { return history; }
     public Rotation getRotation() { return rotation; }
     public boolean isInterleaveArrivals() { return interleaveArrivals; }

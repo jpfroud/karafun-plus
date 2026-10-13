@@ -62,7 +62,9 @@ for (const french of Object.keys(english.texts)) {
 }
 
 // Les messages du serveur traduits existent toujours à l'identique.
-const serverSources = ['server.js', 'scheduler.js', 'battle-vote.js', 'song-settings.js']
+// Le planificateur est réparti dans lib/scheduler/ (voir scheduler.js).
+const schedulerParts = fs.readdirSync(path.join(root, 'lib', 'scheduler')).map(file => path.join('lib', 'scheduler', file));
+const serverSources = ['server.js', 'scheduler.js', ...schedulerParts, 'battle-vote.js', 'song-settings.js']
   .map(file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\\'/g, '\'')).join('\n');
 for (const [french, translation] of Object.entries(english.errors)) {
   assert.ok(serverSources.includes(french), `message serveur introuvable : « ${french} »`);

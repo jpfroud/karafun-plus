@@ -273,7 +273,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     const reserved = object(data.reservedNext, 'prochain passage garanti');
     if (typeof reserved.personId !== 'string' || !tmp.people.has(reserved.personId) ||
       !Number.isFinite(reserved.reservedAt)) fail('prochain passage garanti mal formé');
-    tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt, ...(reserved.byStaff === true ? { byStaff: true } : {}) };
+    tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt, ...(reserved.byStaff === true ? { byStaff: true } : {}),
+      ...(reserved.borrowable === true ? { borrowable: true } : {}) };
   }
   tmp.roundGroups = new Set(list(data.roundGroups, 'tables du tour'));
   tmp.roundPeople = new Set(list(data.roundPeople, 'personnes du tour'));
@@ -293,6 +294,12 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // du serveur.
   const warnings = [];
   for (const p of tmp.people.values()) {
+    // Début d'attente au-delà du compteur (sauvegarde entre un passage annulé
+    // et le suivant) : la personne attend depuis maintenant ; une marque
+    // d'échange de titre abîmée ou en avance est oubliée.
+    if (p.readySerial != null && (!Number.isSafeInteger(p.readySerial) || p.readySerial < 0)) p.readySerial = 0;
+    if ((p.readySerial || 0) > tmp.appearanceSerial) p.readySerial = tmp.appearanceSerial;
+    if (p.emptiedAt != null && (!Number.isSafeInteger(p.emptiedAt) || p.emptiedAt > tmp.appearanceSerial)) delete p.emptiedAt;
     if ((p.lastAppearanceTurn || 0) <= tmp.appearanceSerial) continue;
     warnings.push(`dernier passage ${p.lastAppearanceTurn} de la personne ${p.id} au-delà du compteur des passages ` +
       `${tmp.appearanceSerial} : ramené à ${tmp.appearanceSerial}`);
@@ -416,6 +423,8 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   if ('karafunDefaults' in restoredSettings && !(kf && typeof kf === 'object' && /^[0-9a-f]{16}$/.test(String(kf.code)) &&
     Number.isInteger(kf.backing) && kf.backing >= 0 && kf.backing <= 100 &&
     (!('provisional' in kf) || typeof kf.provisional === 'boolean'))) delete restoredSettings.karafunDefaults;
+  // « Duos uniquement » abîmé : la valeur actuelle reste.
+  if ('duoOnly' in restoredSettings && typeof restoredSettings.duoOnly !== 'boolean') delete restoredSettings.duoOnly;
   // Durée maximale des titres (lot J) : une valeur invalide coupe la limite.
   if ('maxSongSec' in restoredSettings && !validMaxSong(restoredSettings.maxSongSec)) restoredSettings.maxSongSec = null;
 

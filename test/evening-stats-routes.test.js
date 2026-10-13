@@ -75,10 +75,10 @@ function harness({ persistent = false, memory = memoryDisk() } = {}) {
   return Object.assign(f, { memory, saves });
 }
 
-function call(f, method, url, { body, port = f.PORT } = {}) {
+function call(f, method, url, { body, port = f.PORT, headers = {} } = {}) {
   return new Promise(resolve => {
     const req = new EventEmitter();
-    Object.assign(req, { method, url, headers: {}, socket: { remoteAddress: '127.0.0.1', localPort: port }, destroy() {} });
+    Object.assign(req, { method, url, headers, socket: { remoteAddress: '127.0.0.1', localPort: port }, destroy() {} });
     const out = { status: null, headers: {} };
     const res = {
       setHeader(name, value) { out.headers[name.toLowerCase()] = value; },
@@ -297,7 +297,7 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   await ok('/api/staff/closing', { extendMin: 10 });
   assert.ok(has('closing.set', e => e.deltaMin === 10));
   await ok('/api/staff/closing', { clear: true });
-  assert.ok(has('closing.cleared'));
+  assert.ok(has('closing.cleared', e => e.reason === undefined), 'retrait par le bar : sans motif');
   const order = f.sched.presenceView().filter(v => !v.future).map(v => v.ids[0]);
   await ok('/api/staff/move', { personId: order[1], toIndex: 0, priority: true });
   assert.ok(has('staff.move', e => e.kind === 'priority' && e.from === 2 && e.to === 1));
@@ -318,11 +318,11 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   const claim = await call(f, 'POST', '/api/table/person/claim', { body: { table: alice.table, access: alice.access, personId: alice.personId, code: share.body.code } });
   assert.equal(claim.status, 200, claim.text);
   assert.ok(has('person.transferred'));
-  // Ajout refusé à la fermeture : noté sans prénom.
+  // Ajout après l'heure de fermeture : accepté, plus aucun refus noté.
   f.settings.closingAt = Date.now() - 60000;
-  const refused = await call(f, 'POST', '/api/table/song', { body: { ...alice, token: claim.body.token, song: { songId: 403, title: 'Trop tard' } } });
-  assert.equal(refused.status, 400);
-  assert.ok(has('closing.refused', e => e.personId === alice.personId));
+  const late = await call(f, 'POST', '/api/table/song', { body: { ...alice, token: claim.body.token, song: { songId: 403, title: 'Tard' } } });
+  assert.equal(late.status, 200, late.text);
+  assert.ok(!has('closing.refused'));
   f.settings.closingAt = null;
   // Battle : proposition, votes et décision, une seule fois chacun.
   f.battleVote.minVoters = 1;
@@ -354,6 +354,11 @@ test('actions du bar notées : réglages, fermeture, départs, retour, transfert
   f.spotify.resume = async () => { throw new Error('Spotify injoignable'); };
   await f.spotifyTick();
   assert.ok(has('spotify', e => e.result === 'error'));
+  // « Options par défaut » : retrait de l'heure noté comme tel (les statistiques gardent l'heure).
+  await ok('/api/staff/closing', { time: `${String(soon.getHours()).padStart(2, '0')}:${String(soon.getMinutes()).padStart(2, '0')}` });
+  await ok('/api/staff/settings-reset', { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.equal(f.settings.closingAt, null);
+  assert.ok(has('closing.cleared', e => e.reason === 'settings-reset'));
   const text = JSON.stringify(evs());
   for (const name of ['Alice', 'Bruno']) assert.ok(!text.includes(name), name);
 });
@@ -518,6 +523,14 @@ test('signes de vie des téléphones, lecture automatique rétablie et absent à
   assert.equal((await call(f, 'GET', url)).status, 200);
   assert.deepEqual(evs().filter(e => e.ev === 'person.seen').map(e => e.personId).sort(), [alice.personId, bruno.personId].sort());
   const other = await joinWithSong(f, '2', 'Chloé', 703);
+  // Soirée du 10 octobre : des pages restées ouvertes en arrière-plan ont
+  // noté des signes de vie jusqu'au lendemain midi. Page cachée : rien.
+  const hidden = { headers: { 'x-page-visible': '0' } };
+  assert.equal((await call(f, 'GET', `/api/state?token=${other.token}`, hidden)).status, 200);
+  assert.ok(!evs().some(e => e.ev === 'person.seen' && e.personId === other.personId), 'page cachée : pas de signe de vie');
+  const dan = await joinWithSong(f, '1', 'Dan', 704);
+  assert.equal((await call(f, 'GET', `/api/state?table=1&access=${alice.access}&token=${dan.token}`, hidden)).status, 200);
+  assert.ok(!evs().some(e => e.ev === 'person.seen' && e.personId === dan.personId), 'page de table cachée : pas de signe de vie');
   assert.equal((await call(f, 'GET', `/api/state?token=${other.token}`)).status, 200);
   assert.ok(evs().some(e => e.ev === 'person.seen' && e.personId === other.personId));
   // Un titre démarre pendant que la lecture automatique est suspendue.

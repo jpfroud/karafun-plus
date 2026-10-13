@@ -57,7 +57,8 @@ async function ok(path, body, cookie = '', headers = {}) {
   const proposed = await ok('/api/table/battle/propose', at(people[0], { songs, proposerChoice: songs[0].songId }));
   assert.equal(proposed.value.battle.phase, 'voting');
   assert.equal(proposed.value.battle.eligible, 5, 'à l’ouverture : les cinq inscrits nommés');
-  assert.ok(!proposed.value.battle.eligiblePersonIds.includes(sam.id), 'prénom pas encore saisi : pas encore électeur');
+  // La réponse du téléphone ne liste que sa table : l'électorat se lit chez le bar.
+  assert.ok(!(await staff()).battle.eligiblePersonIds.includes(sam.id), 'prénom pas encore saisi : pas encore électeur');
 
   // ---- Une sixième personne rejoint la table après l'ouverture du vote.
   const late = (await ok('/api/table/person', { table: 'late', access, name: 'Fanny' })).value;
