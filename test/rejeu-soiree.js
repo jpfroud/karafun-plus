@@ -563,7 +563,11 @@ function applyExternal(ctx, e, upcoming) {
   const P = k => s.people.get(pid(k));
   const entry = id => ctx.real2rep.get(id);
   // Geste que le rejeu ne peut pas faire : noté, et hors du journal rejoué.
-  const skip = why => { ctx.unapplied.add(e); note(ctx, `${e.ev} non rejoué : ${why} ${e.entryId || e.personId || ''}`.trim()); return false; };
+  const skip = why => {
+    ctx.unapplied.add(e);
+    note(ctx, `${e.ev} non rejoué : ${[why, e.personId, e.entryId].filter(Boolean).join(' ')}`);
+    return false;
+  };
   if (NOT_REPLAYED.has(e.ev)) {
     ctx.notReplayed[e.ev] = (ctx.notReplayed[e.ev] || 0) + 1;
     const cleared = '« Vider toutes les chansons » du bar non rejoué : les titres vidés restent à chanter dans le rejeu';
@@ -603,18 +607,25 @@ function applyExternal(ctx, e, upcoming) {
         // de la liste rejouée hors de ceux-là (déjà chantés dans la soirée, pas
         // encore dans le rejeu) restent en place, avant le nouveau titre, avec
         // leur duo et leurs réglages : le nouveau titre est ajouté, puis seuls
-        // les titres remplacés sont retirés (un ajout refusé ne retire rien).
+        // les titres remplacés sont retirés (une chanson invalide ne retire
+        // rien). Un « remplacer » vient toujours de chooseSong, jamais d'un duo.
         const replaced = new Set((e.replacedEntryIds || []).map(id => ctx.real2rep.get(id)).filter(Boolean));
         const kept = e.mode === 'replace' ? s.songsOf(p).filter(x => !replaced.has(x.entryId)) : [];
         // Même chanson redemandée et encore à chanter dans le rejeu : le nouveau
         // titre la remplace aussi, dans le rejeu et dans son journal.
         const same = kept.find(x => x.songId === Number(song.songId));
         const keptCount = kept.length - (same ? 1 : 0);
+        const dropReplaced = () => { for (const x of s.songsOf(p).filter(x => replaced.has(x.entryId))) s.removeSong(p, x.entryId); };
         if (keptCount) {
           if (same) s.removeSong(p, same.entryId);
-          if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
-          else s.chooseSong(p, song, 'append');
-          for (const x of s.songsOf(p).filter(x => replaced.has(x.entryId))) s.removeSong(p, x.entryId);
+          try { s.chooseSong(p, song, 'append'); } catch (err) {
+            // Refus que le « remplacer » du bar n'a pas (même chanson qu'un titre
+            // remplacé, liste pleine avec eux) : les retirer d'abord, puis ajouter.
+            if (!['ALREADY_LISTED', 'LIST_FULL'].includes(err.code)) throw err;
+            dropReplaced();
+            s.chooseSong(p, song, 'append');
+          }
+          dropReplaced();
         } else if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
         else s.chooseSong(p, song, e.mode === 'replace' ? 'replace' : 'append');
         const sameReal = same && ctx.rep2real.get(same.entryId);
@@ -1202,10 +1213,12 @@ function compareReport(cmp, { short = false } = {}) {
   for (const w of [...before.warnings.map(w => `avant : ${w}`), ...after.warnings.map(w => `après : ${w}`)]) out.push(`  ATTENTION ${w}`);
   // Timefold lancé sans plan rendu (jar ou Java en cause) : à réparer, pas à
   // relancer avec --solveur, et jamais lu comme l'apport de Timefold.
-  const broken = [['avant', before], ['après', after]].filter(([, r]) => !r.solver && r.timefold).map(([k]) => k);
+  const broken = [['avant', before], ['après', after]].filter(([, r]) => !r.solver && r.timefold);
   if (broken.length) {
-    out.push(`  ATTENTION Timefold lancé sans plan (${broken.join(' et ')}, voir ci-dessus) : vérifier le jar et Java ` +
-      `(mvn -q -DskipTests package dans solver/), puis relancer ; ${broken.length > 1 ? 'les deux côtés sont rejoués' : 'ce côté est rejoué'} avec la règle locale seule`);
+    out.push(`  ATTENTION Timefold lancé sans plan (${broken.map(([k, r]) => `${k} : ${r.jar || 'jar inconnu'}`).join(' ; ')}) : ` +
+      'vérifier ce jar et Java, le reconstruire (mvn -q -DskipTests package dans son dossier solver) ou en donner un autre ' +
+      '(--solveur pour la version de travail, --solveur-avant pour la version « avant »), puis relancer ; ' +
+      `${broken.length > 1 ? 'les deux côtés sont rejoués' : 'ce côté est rejoué'} avec la règle locale seule`);
   }
   if (!before.solver && !after.solver) {
     if (!broken.length) out.push('  ATTENTION rejeu sans Timefold : au bar, Timefold aide à décider ; relancer avec --solveur pour le bilan à présenter');

@@ -303,6 +303,11 @@ test('rejeu libre : « remplacer » garde un duo à sa place ; même chanson red
   try { await rejeu.runFree(rejeu.loadEvening(evening(1))); } finally { es.computeStats = original; }
   assert.ok(computed.length);
   assert.equal(computed.at(-1).singers.find(x => x.id === 'S01').waiting, 0);
+  // c1 reprend la chanson de b1, le titre remplacé (le « remplacer » du bar
+  // l'accepte) : b1 part, c1 est chanté, a1 gardé, sans avertissement.
+  const sameReplaced = await rejeu.runFree(rejeu.loadEvening(evening(2)));
+  assert.deepEqual(sameReplaced.passages.map(p => p.entryId), ['x1', 'a1', 'c1']);
+  assert.deepEqual(sameReplaced.warnings, []);
   // Demande invalide : rien n'est retiré, b1 reste chanté ; demande hors du journal.
   const invalid = await rejeu.runFree(rejeu.loadEvening(evening(0)));
   assert.deepEqual(invalid.passages.map(p => p.entryId), ['x1', 'a1', 'b1']);
@@ -335,6 +340,8 @@ test('rejeu libre : invitée qui quitte un duo déjà chanté dans le rejeu, ges
   e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
   e(2, 'duo.invited', { personId: 'S01', ownerId: 'S01', partnerId: 'S03', entryId: 'a1', sameGroup: true });
   e(3, 'song.requested', { personId: 'S04', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+  // Demande d'une personne jamais inscrite : la note la nomme.
+  e(4, 'song.requested', { personId: 'S99', entryId: 'z9', songId: 9, title: 'z9', mode: 'append' });
   const stage = (sec, id, ids, q) => {
     e(sec - 5, 'turn.sent', { entryId: id, ownerId: ids[0], ids, queueId: q });
     e(sec, 'stage.started', { entryId: id, ids, queueId: q, source: 'queue', title: id });
@@ -352,6 +359,7 @@ test('rejeu libre : invitée qui quitte un duo déjà chanté dans le rejeu, ges
   assert.deepEqual(a1.ids, ['S01', 'S03']);
   assert.ok(a1.start < T0 + 250000 && a1.end > T0 + 250000, 'duo sur scène au départ réel de S03');
   assert.ok(res.notes.some(n => /duo\.left non rejoué/.test(n)), res.notes.join(' | '));
+  assert.ok(res.notes.some(n => /song\.requested non rejoué : personne inconnue S99 z9$/.test(n)), res.notes.join(' | '));
   assert.equal(res.balance.replay.people.S03.guestTurns, 1);
   assert.equal(res.balance.real.people.S03?.guestTurns ?? 0, 0);
 });
@@ -367,14 +375,14 @@ test('bilan avant/après : un seul côté sans Timefold, note pour le même code
   for (const text of [oneSide('after', true), oneSide('after', false)]) assert.doesNotMatch(text, /ATTENTION rejeu sans Timefold/);
   // Timefold lancé mais sans aucun plan : à réparer, ni « relancer avec
   // --solveur » ni « apport de Timefold ».
-  const noPlan = r => ({ ...r, solver: false, timefold: { asked: 5, ok: 0, failed: 5, lastError: 'x' } });
+  const noPlan = r => ({ ...r, solver: false, jar: '/x/solver/target/karafun-solver.jar', timefold: { asked: 5, ok: 0, failed: 5, lastError: 'x' } });
   const broken = rejeu.compareReport({ ...cmp, before: noPlan(cmp.before), after: { ...cmp.after, solver: true } }, { short: true });
   assert.match(broken, /\n {2}avant : .* \[Timefold sans plan, 0\/5\] ;/);
-  assert.match(broken, /\n {2}ATTENTION Timefold lancé sans plan \(avant, voir ci-dessus\) : vérifier le jar et Java/);
+  assert.match(broken, /\n {2}ATTENTION Timefold lancé sans plan \(avant : \/x\/solver\/target\/karafun-solver\.jar\) : vérifier ce jar et Java.*--solveur-avant/);
   assert.match(broken, /\n {2}ATTENTION avant sans plan Timefold : l'écart vient de la panne du solveur/);
   assert.doesNotMatch(broken, /NOTE|apport de Timefold/);
   const both = rejeu.compareReport({ ...cmp, before: noPlan(cmp.before), after: noPlan(cmp.after) }, { short: true });
-  assert.match(both, /ATTENTION Timefold lancé sans plan \(avant et après, voir ci-dessus\).*les deux côtés sont rejoués/);
+  assert.match(both, /ATTENTION Timefold lancé sans plan \(avant : \S+ ; après : \S+\).*les deux côtés sont rejoués/);
   assert.doesNotMatch(both, /relancer avec --solveur/);
 });
 
@@ -544,6 +552,9 @@ test('rejeu libre : demande pour rejoindre, fermeture retirée, « Je suis là �
   at(first.t + 3601000, 'closing.cleared', {});
   const last = events.filter(e => e.ev === 'stage.started').at(-1);
   at(last.t - 1000, 'staff.queueCleared', {});
+  // « Pas prêt » d'un titre, non rejoué.
+  at(first.t + 600000, 'defer.requested', { entryId: target.e.entryId, ownerId: target.e.personId, songs: 1 });
+  at(first.t + 660000, 'defer.ended', { entryId: target.e.entryId });
   // « Je suis là » rendu obligatoire en cours de soirée par le bar.
   at(first.t + 1800000, 'settings.changed', { setting: 'requirePresence', from: false, to: true });
   const res = await rejeu.runFree(rejeu.loadEvening(raw), { options: { requirePresence: true } });
@@ -554,7 +565,7 @@ test('rejeu libre : demande pour rejoindre, fermeture retirée, « Je suis là �
   assert.equal(res.notReplayed['staff.queueCleared'], 1);
   // Vidage non rejoué : signalé, et hors du journal rejoué (il couperait les attentes des titres gardés).
   assert.ok(res.warnings.some(w => /^« Vider toutes les chansons » du bar non rejoué/.test(w)), res.warnings.join(' | '));
-  assert.equal(rejeu.replayJournal(rejeu.loadEvening(raw), []).filter(e => e.ev === 'staff.queueCleared').length, 0);
+  assert.deepEqual(rejeu.replayJournal(rejeu.loadEvening(raw), []).filter(e => /^(staff\.queueCleared|defer\.)/.test(e.ev)), []);
   assert.match(rejeu.report(res, { short: true }), /gestes non rejoués : .*staff\.queueCleared×1/);
   // Sans l'option, le réglage pris en cours de soirée est aussi rejoué sans.
   const raw2 = structuredClone(ev.raw);
