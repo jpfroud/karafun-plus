@@ -56,7 +56,9 @@
  * définition de la page des statistiques : attente par titre, comme la
  * rotation, et sans monter sur scène par personne) sur un journal : celui de
  * la soirée, ou, en rejeu libre, le même journal où les passages rejoués
- * remplacent les passages réels. Comparées aux attentes enregistrées dans
+ * remplacent les passages réels, sans les gestes réels que le rejeu n'a pas pu
+ * faire ni ceux qu'il ne refait pas (vidage de la file, « Pas prêt »), signalés
+ * dans les notes et les avertissements. Comparées aux attentes enregistrées dans
  * l'export (une version plus ancienne de l'application peut en différer).
  *
  * Seul effet de bord : Date.now est remplacé par l'horloge de la soirée
@@ -88,6 +90,14 @@ const NOT_REPLAYED = new Set(['staff.move', 'staff.undo', 'staff.recalculate', '
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced', 'presence.skipped',
   'turn.unsent', 'stage.restarted', 'battle.external', 'battle.staffLaunch', 'staff.queueCleared',
   'staff.absent']);
+// Gestes sur les titres et les duos : un geste réel que le rejeu n'a pas pu
+// faire (titre déjà chanté ou absent dans le rejeu) sort aussi du journal
+// rejoué, sinon evening-stats.js le compterait comme fait.
+const MUST_MATCH = new Set(['song.requested', 'song.removed', 'song.reordered', 'duo.answered', 'duo.cancelled',
+  'duo.left', 'duo.joinRequested', 'duo.joinAnswered', 'duo.joinCancelled', 'person.gaveSpot']);
+// Gestes non rejoués dont evening-stats.js tiendrait compte (titres vidés,
+// « Pas prêt ») : hors du journal rejoué.
+const NOT_IN_JOURNAL = new Set(['staff.queueCleared', 'defer.requested', 'defer.ended']);
 const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export ne dit rien
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
 
@@ -212,8 +222,9 @@ const STAGE_EVENTS = new Set(['stage.started', 'stage.ended', 'stage.restarted',
 // réels que le rejeu n'a pas pu faire (retrait d'un titre déjà chanté dans le
 // rejeu, demande refusée) ; `patches` : champs d'un geste que le rejeu a fait
 // autrement (« remplacer » qui retire aussi la même chanson encore à chanter).
+// Les gestes non rejoués de NOT_IN_JOURNAL n'y sont pas non plus.
 function replayJournal(ev, passages, skip = new Set(), patches = new Map()) {
-  const merged = ev.events.filter(e => !STAGE_EVENTS.has(e.ev) && !skip.has(e))
+  const merged = ev.events.filter(e => !STAGE_EVENTS.has(e.ev) && !NOT_IN_JOURNAL.has(e.ev) && !skip.has(e))
     .map((e, order) => ({ e: patches.has(e) ? { ...e, ...patches.get(e) } : e, order }));
   passages.forEach((st, k) => {
     const queueId = `rejeu-${k}`;
@@ -551,7 +562,14 @@ function applyExternal(ctx, e, upcoming) {
   const pid = k => ctx.key2pid.get(k);
   const P = k => s.people.get(pid(k));
   const entry = id => ctx.real2rep.get(id);
-  if (NOT_REPLAYED.has(e.ev)) { ctx.notReplayed[e.ev] = (ctx.notReplayed[e.ev] || 0) + 1; return false; }
+  // Geste que le rejeu ne peut pas faire : noté, et hors du journal rejoué.
+  const skip = why => { ctx.unapplied.add(e); note(ctx, `${e.ev} non rejoué : ${why} ${e.entryId || e.personId || ''}`.trim()); return false; };
+  if (NOT_REPLAYED.has(e.ev)) {
+    ctx.notReplayed[e.ev] = (ctx.notReplayed[e.ev] || 0) + 1;
+    const cleared = '« Vider toutes les chansons » du bar non rejoué : les titres vidés restent à chanter dans le rejeu';
+    if (e.ev === 'staff.queueCleared' && !ctx.warnings.includes(cleared)) ctx.warnings.push(cleared);
+    return false;
+  }
   if (!REPLAYED.has(e.ev)) return false;
   try {
     switch (e.ev) {
@@ -575,7 +593,7 @@ function applyExternal(ctx, e, upcoming) {
       }
       case 'song.requested': {
         const p = P(e.personId);
-        if (!p) { ctx.unapplied.add(e); note(ctx, `demande ignorée (personne inconnue ${e.personId})`); return false; }
+        if (!p) return skip('personne inconnue');
         const song = { songId: e.songId, title: e.title || `Titre ${e.songId}`, artist: e.artist || '', duration: e.durationSec };
         const before = new Set(s.songsOf(p).map(x => x.entryId));
         // Un duo est demandé puis aussitôt noté (inviteDuet) : même table, accepté d'office.
@@ -584,24 +602,23 @@ function applyExternal(ctx, e, upcoming) {
         // « Remplacer » : la soirée n'a retiré que e.replacedEntryIds. Les titres
         // de la liste rejouée hors de ceux-là (déjà chantés dans la soirée, pas
         // encore dans le rejeu) restent en place, avant le nouveau titre, avec
-        // leur duo et leurs réglages : seuls les titres remplacés sont retirés.
+        // leur duo et leurs réglages : le nouveau titre est ajouté, puis seuls
+        // les titres remplacés sont retirés (un ajout refusé ne retire rien).
         const replaced = new Set((e.replacedEntryIds || []).map(id => ctx.real2rep.get(id)).filter(Boolean));
         const kept = e.mode === 'replace' ? s.songsOf(p).filter(x => !replaced.has(x.entryId)) : [];
         // Même chanson redemandée et encore à chanter dans le rejeu : le nouveau
         // titre la remplace aussi, dans le rejeu et dans son journal.
         const same = kept.find(x => x.songId === Number(song.songId));
         const keptCount = kept.length - (same ? 1 : 0);
-        if (kept.length) {
-          // Rien n'est retiré si l'ajout doit échouer : la demande reste alors
-          // entière hors du journal.
-          if (!(Number(song.songId) > 0 && Number.isSafeInteger(Number(song.songId)))) throw new Error('Chanson invalide.');
-          if (keptCount >= 20) throw new Error('liste du rejeu pleine (20 titres gardés)');
-          for (const x of s.songsOf(p).filter(x => replaced.has(x.entryId) || x === same)) s.removeSong(p, x.entryId);
-          const sameReal = same && ctx.rep2real.get(same.entryId);
-          if (sameReal) ctx.patches.set(e, { replacedEntryIds: [...(e.replacedEntryIds || []), sameReal] });
-        }
-        if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
-        else s.chooseSong(p, song, e.mode === 'replace' && !kept.length ? 'replace' : 'append');
+        if (keptCount) {
+          if (same) s.removeSong(p, same.entryId);
+          if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
+          else s.chooseSong(p, song, 'append');
+          for (const x of s.songsOf(p).filter(x => replaced.has(x.entryId))) s.removeSong(p, x.entryId);
+        } else if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
+        else s.chooseSong(p, song, e.mode === 'replace' ? 'replace' : 'append');
+        const sameReal = same && ctx.rep2real.get(same.entryId);
+        if (sameReal) ctx.patches.set(e, { replacedEntryIds: [...(e.replacedEntryIds || []), sameReal] });
         const fresh = s.songsOf(p).find(x => !before.has(x.entryId));
         if (fresh) { ctx.real2rep.set(e.entryId, fresh.entryId); ctx.rep2real.set(fresh.entryId, e.entryId); }
         if (keptCount) note(ctx, `remplacement de ${e.personId} : ${keptCount} titre(s) pas encore chanté(s) dans le rejeu gardé(s)`);
@@ -611,31 +628,27 @@ function applyExternal(ctx, e, upcoming) {
       case 'duo.invited': return false; // traité avec song.requested
       case 'duo.answered': {
         const guest = P(e.partnerId || e.personId);
-        if (!guest || !entry(e.entryId)) return false;
+        if (!guest || !entry(e.entryId)) return skip('duo inconnu');
         s.answerDuet(guest, !!e.accepted, entry(e.entryId));
         return true;
       }
       case 'duo.cancelled': {
         const actor = P(e.personId) || P(e.ownerId);
-        if (!actor || !entry(e.entryId)) return false;
+        if (!actor || !entry(e.entryId)) return skip('duo inconnu');
         s.cancelDuet(actor, entry(e.entryId));
         return true;
       }
       case 'duo.left': {
         const guest = P(e.guestId || e.personId);
-        if (!guest || !entry(e.entryId)) return false;
+        if (!guest || !entry(e.entryId)) return skip('duo inconnu');
         s.leaveDuet(guest, pid(e.ownerId), entry(e.entryId));
         return true;
       }
       case 'song.removed': {
         const p = P(e.personId);
         const id = entry(e.entryId);
-        if (!p || !s.songsOf(p).some(x => x.entryId === id)) {
-          // Titre déjà chanté dans le rejeu : ce retrait sort aussi du journal rejoué.
-          ctx.unapplied.add(e);
-          note(ctx, `retrait ignoré (titre déjà passé ou inconnu) ${e.entryId}`);
-          return false;
-        }
+        // Titre déjà chanté dans le rejeu : ce retrait sort aussi du journal rejoué.
+        if (!p || !s.songsOf(p).some(x => x.entryId === id)) return skip('titre déjà passé ou inconnu,');
         s.removeSong(p, id, e.by || 'self');
         return true;
       }
@@ -644,7 +657,7 @@ function applyExternal(ctx, e, upcoming) {
         const id = entry(e.entryId);
         const list = p ? s.songsOf(p) : [];
         const from = list.findIndex(x => x.entryId === id);
-        if (from < 0) { note(ctx, `réordre ignoré (titre absent) ${e.entryId}`); return false; }
+        if (from < 0) return skip('titre absent,');
         const to = Math.max(0, Math.min(Number(e.toIndex) || 0, list.length - 1));
         if (from !== to) s.reorderSongs(p, id, to);
         return true;
@@ -656,23 +669,23 @@ function applyExternal(ctx, e, upcoming) {
       case 'table.bonus': s.setTableBonus(e.tableId, e.level); return true;
       case 'duo.joinRequested': {
         const requester = P(e.requesterId);
-        if (!requester || !entry(e.entryId)) return false;
+        if (!requester || !entry(e.entryId)) return skip('duo inconnu');
         s.requestDuetJoin(requester, pid(e.ownerId), entry(e.entryId));
         return true;
       }
       case 'duo.joinAnswered': {
         const owner = P(e.ownerId || e.personId);
-        if (!owner || !entry(e.entryId)) return false;
+        if (!owner || !entry(e.entryId)) return skip('duo inconnu');
         s.answerDuetJoin(owner, entry(e.entryId), pid(e.requesterId), !!e.accepted);
         return true;
       }
       case 'duo.joinCancelled': {
         const requester = P(e.requesterId || e.personId);
-        if (!requester || !entry(e.entryId)) return false;
+        if (!requester || !entry(e.entryId)) return skip('duo inconnu');
         s.cancelDuetJoin(requester, pid(e.ownerId), entry(e.entryId));
         return true;
       }
-      case 'person.gaveSpot': { const p = P(e.personId); if (!p) return false; s.giveSpot(p, pid(e.toId)); return true; }
+      case 'person.gaveSpot': { const p = P(e.personId); if (!p) return skip('personne inconnue'); s.giveSpot(p, pid(e.toId)); return true; }
       case 'settings.changed': {
         // Une règle remplacée par --option garde la valeur demandée.
         if (!SCHED_RULES.includes(e.setting) || e.setting in ctx.overrides) return false;
@@ -688,8 +701,9 @@ function applyExternal(ctx, e, upcoming) {
       default: return false;
     }
   } catch (err) {
-    // Titre que le rejeu n'a pas pu demander : pas de titre fantôme dans le journal.
-    if (e.ev === 'song.requested' && !ctx.real2rep.has(e.entryId)) ctx.unapplied.add(e);
+    // Geste refusé par l'ordonnanceur rejoué (titre déjà chanté, duo parti…) :
+    // hors du journal, sauf une demande déjà faite avant l'erreur.
+    if (MUST_MATCH.has(e.ev) && !(e.ev === 'song.requested' && ctx.real2rep.has(e.entryId))) ctx.unapplied.add(e);
     note(ctx, `${e.ev} non rejoué : ${err.message}`);
     return false;
   }
@@ -884,8 +898,9 @@ async function runFree(evening, opts = {}) {
     let i = 0;
     clock.now = ext[0]?.t || 0;
     let steps = 0;
+    const maxSteps = opts.maxSteps || MAX_STEPS;
     try {
-      for (; steps < MAX_STEPS; steps++) {
+      for (; steps < maxSteps; steps++) {
         while (i < ext.length && ext[i].t <= clock.now) {
           const e = ext[i++];
           if (e.ev === 'battle.decided') { if (e.outcome === 'approved' && battle === 'none') battle = 'waiting'; continue; }
@@ -908,7 +923,7 @@ async function runFree(evening, opts = {}) {
     } finally {
       if (ctx.solver) ctx.solver.close();
     }
-    if (steps >= MAX_STEPS) ctx.warnings.push(`rejeu arrêté à ${timeOf(clock.now, ev.timezone)} après ${MAX_STEPS} étapes : la fin de la soirée manque`);
+    if (steps >= maxSteps) ctx.warnings.push(`rejeu arrêté à ${timeOf(clock.now, ev.timezone)} après ${maxSteps} étapes : la fin de la soirée manque`);
     const replayPassages = stages.map(st => st.kind === 'song' ? {
       entryId: ctx.rep2real.get(st.sel.song.entryId) || st.sel.song.entryId, ids: st.sel.ids.map(pid => keyOf(ctx, pid)),
       start: st.start, end: st.end, sentAt: st.sentAt, source: 'queue', title: st.sel.song.title,
@@ -1185,14 +1200,28 @@ function compareReport(cmp, { short = false } = {}) {
   if (Object.keys(after.options).length) out.push(`  options : ${Object.entries(after.options).map(([k, v]) => `${k}=${v}`).join(', ')}`);
   out.push('  réel  : la soirée vécue (gestes du bar compris, version de ce soir-là), pour repère ; le verdict compare avant et après');
   for (const w of [...before.warnings.map(w => `avant : ${w}`), ...after.warnings.map(w => `après : ${w}`)]) out.push(`  ATTENTION ${w}`);
+  // Timefold lancé sans plan rendu (jar ou Java en cause) : à réparer, pas à
+  // relancer avec --solveur, et jamais lu comme l'apport de Timefold.
+  const broken = [['avant', before], ['après', after]].filter(([, r]) => !r.solver && r.timefold).map(([k]) => k);
+  if (broken.length) {
+    out.push(`  ATTENTION Timefold lancé sans plan (${broken.join(' et ')}, voir ci-dessus) : vérifier le jar et Java ` +
+      `(mvn -q -DskipTests package dans solver/), puis relancer ; ${broken.length > 1 ? 'les deux côtés sont rejoués' : 'ce côté est rejoué'} avec la règle locale seule`);
+  }
   if (!before.solver && !after.solver) {
-    out.push('  ATTENTION rejeu sans Timefold : au bar, Timefold aide à décider ; relancer avec --solveur pour le bilan à présenter');
+    if (!broken.length) out.push('  ATTENTION rejeu sans Timefold : au bar, Timefold aide à décider ; relancer avec --solveur pour le bilan à présenter');
   } else if (!before.solver || !after.solver) {
     const withoutSolver = !before.solver ? 'avant' : 'après';
-    out.push(cmp.sameCode ?
-      `  NOTE ${withoutSolver} sans Timefold : ce bilan mesure l'apport de Timefold, pas un changement de code` :
-      `  ATTENTION ${withoutSolver} sans Timefold et version différente : le bilan mêle le changement de code et l'apport de Timefold ; ` +
-      'relancer avec Timefold des deux côtés pour le bilan à présenter');
+    if (broken.length) {
+      out.push(cmp.sameCode ?
+        `  ATTENTION ${withoutSolver} sans plan Timefold : l'écart vient de la panne du solveur, pas d'un changement de code` :
+        `  ATTENTION ${withoutSolver} sans plan Timefold et version différente : le bilan mêle le changement de code et la panne du solveur ; ` +
+        'ne pas le présenter avant d\'avoir réparé Timefold');
+    } else {
+      out.push(cmp.sameCode ?
+        `  NOTE ${withoutSolver} sans Timefold : ce bilan mesure l'apport de Timefold, pas un changement de code` :
+        `  ATTENTION ${withoutSolver} sans Timefold et version différente : le bilan mêle le changement de code et l'apport de Timefold ; ` +
+        'relancer avec Timefold des deux côtés pour le bilan à présenter');
+    }
   }
   if (cmp.statsDiffer) {
     out.push('  ATTENTION evening-stats.js diffère entre les deux versions : les deux côtés sont mesurés par celui de la version de travail ; ' +

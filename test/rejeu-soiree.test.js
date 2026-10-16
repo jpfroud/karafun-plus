@@ -229,6 +229,11 @@ test('bilan avant/après : une personne qui perd un passage ou attend plus est s
   delete noStage.balance.replay.people.S13;
   const gone = rejeu.compareReport({ ...cmp, after: noStage });
   assert.match(gone.split('Personnes qui y perdent')[1].split('Personnes qui y gagnent')[0], /\n {2}S13 : titres 0 → 0 \(invité 1 → 0\)/);
+  // Et l'inverse : monter enfin sur scène, même seulement en invitée, y gagne.
+  const noStageBefore = structuredClone(cmp.before);
+  delete noStageBefore.balance.replay.people.S13;
+  const back = rejeu.compareReport({ ...cmp, before: noStageBefore });
+  assert.match(back.split('Personnes qui y gagnent')[1], /\n {2}S13 : titres 0 → 0 \(invité 0 → 1\)/);
 });
 
 test('rejeu libre : « remplacer » ne retire que les titres que la soirée a remplacés', async () => {
@@ -289,6 +294,22 @@ test('rejeu libre : « remplacer » garde un duo à sa place ; même chanson red
   assert.ok(same.passages.find(p => p.entryId === 'c1').waitSec > 0);
   assert.ok(same.notes.some(n => /remplacement de S01 : « a1 » redemandé avant d'être chanté dans le rejeu, chanté une fois/.test(n)));
   assert.deepEqual(same.warnings, ['le rejeu chante 2 titres de la file, la soirée 3']);
+  // Le journal rejoué retire aussi a1 : plus aucun titre en attente pour S01
+  // (sinon evening-stats.js le compterait prêt jusqu'à la fin).
+  const es = require('../evening-stats');
+  const computed = [];
+  const original = es.computeStats;
+  es.computeStats = (...a) => { const r = original(...a); if (a[0].events[0]?.boot === 'rejeu') computed.push(r); return r; };
+  try { await rejeu.runFree(rejeu.loadEvening(evening(1))); } finally { es.computeStats = original; }
+  assert.ok(computed.length);
+  assert.equal(computed.at(-1).singers.find(x => x.id === 'S01').waiting, 0);
+  // Demande invalide : rien n'est retiré, b1 reste chanté ; demande hors du journal.
+  const invalid = await rejeu.runFree(rejeu.loadEvening(evening(0)));
+  assert.deepEqual(invalid.passages.map(p => p.entryId), ['x1', 'a1', 'b1']);
+  assert.deepEqual(invalid.warnings, ['1 demande de titre non rejouée (voir les notes)']);
+  // Rejeu arrêté par la limite d'étapes : dit.
+  const cut = await rejeu.runFree(rejeu.loadEvening(evening(4)), { maxSteps: 3 });
+  assert.ok(cut.warnings.some(w => /^rejeu arrêté à \S+ après 3 étapes : la fin de la soirée manque$/.test(w)), cut.warnings.join(' | '));
   // Ligne d'une autre version et ligne en double (arrêt brutal) : la première
   // est signalée dans le bilan, la seconde ignorée comme dans evening-stats.js.
   const raw = evening(4);
@@ -297,6 +318,42 @@ test('rejeu libre : « remplacer » garde un duo à sa place ; même chanson red
   const cmp = await rejeu.runCompare(rejeu.loadEvening(raw), { before: { code: path.join(__dirname, '..') } });
   assert.deepEqual(cmp.after.passages.map(p => p.entryId), ['x1', 'a1', 'c1']);
   assert.match(rejeu.compareReport(cmp), /\névénements illisibles ou d’une autre version : futur\.geste×1/);
+});
+
+test('rejeu libre : invitée qui quitte un duo déjà chanté dans le rejeu, geste hors du journal', async () => {
+  // En réel : x1 (S02), puis pendant y1 (S04) S03 quitte le duo a1 de S01 (même
+  // table), chanté ensuite en solo. Le rejeu chante a1 en duo juste après x1 :
+  // au départ réel, a1 est sur scène, le geste ne peut pas être refait et ne
+  // doit pas retirer S03 du passage rejoué (ni de la scène dans le bilan).
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const events = [];
+  const e = (sec, ev, fields = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + sec * 1000, ev, ...fields });
+  e(0, 'evening.started', { rules: {} });
+  e(0, 'table.opened', { tableId: 'T1' }); e(0, 'table.opened', { tableId: 'T2' });
+  for (const [key, tableId] of [['S01', 'T1'], ['S02', 'T2'], ['S03', 'T1'], ['S04', 'T2']]) e(0, 'person.joined', { personId: key, tableId });
+  e(1, 'song.requested', { personId: 'S02', entryId: 'x1', songId: 3, title: 'x1', mode: 'append' });
+  e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+  e(2, 'duo.invited', { personId: 'S01', ownerId: 'S01', partnerId: 'S03', entryId: 'a1', sameGroup: true });
+  e(3, 'song.requested', { personId: 'S04', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+  const stage = (sec, id, ids, q) => {
+    e(sec - 5, 'turn.sent', { entryId: id, ownerId: ids[0], ids, queueId: q });
+    e(sec, 'stage.started', { entryId: id, ids, queueId: q, source: 'queue', title: id });
+    e(sec + 180, 'stage.ended', { queueId: q, playedSec: 180 });
+  };
+  stage(10, 'x1', ['S02'], 'q1');
+  stage(200, 'y1', ['S04'], 'q2');
+  e(250, 'duo.left', { personId: 'S03', guestId: 'S03', ownerId: 'S01', entryId: 'a1' });
+  stage(400, 'a1', ['S01'], 'q3');
+  events.sort((a, b) => a.t - b.t || a.seq - b.seq).forEach((x, i) => { x.seq = i + 1; });
+  const raw = { people: ['S01', 'S02', 'S03', 'S04'].map(key => ({ key, table: ['S02', 'S04'].includes(key) ? 'T2' : 'T1' })),
+    tables: [{ key: 'T1' }, { key: 'T2' }], events };
+  const res = await rejeu.runFree(rejeu.loadEvening(raw));
+  const a1 = res.passages.find(p => p.entryId === 'a1');
+  assert.deepEqual(a1.ids, ['S01', 'S03']);
+  assert.ok(a1.start < T0 + 250000 && a1.end > T0 + 250000, 'duo sur scène au départ réel de S03');
+  assert.ok(res.notes.some(n => /duo\.left non rejoué/.test(n)), res.notes.join(' | '));
+  assert.equal(res.balance.replay.people.S03.guestTurns, 1);
+  assert.equal(res.balance.real.people.S03?.guestTurns ?? 0, 0);
 });
 
 test('bilan avant/après : un seul côté sans Timefold, note pour le même code, alerte sinon', async () => {
@@ -308,6 +365,17 @@ test('bilan avant/après : un seul côté sans Timefold, note pour le même code
   assert.match(oneSide('before', true), /\n {2}NOTE après sans Timefold/);
   assert.match(oneSide('after', false), /\n {2}ATTENTION avant sans Timefold et version différente/);
   for (const text of [oneSide('after', true), oneSide('after', false)]) assert.doesNotMatch(text, /ATTENTION rejeu sans Timefold/);
+  // Timefold lancé mais sans aucun plan : à réparer, ni « relancer avec
+  // --solveur » ni « apport de Timefold ».
+  const noPlan = r => ({ ...r, solver: false, timefold: { asked: 5, ok: 0, failed: 5, lastError: 'x' } });
+  const broken = rejeu.compareReport({ ...cmp, before: noPlan(cmp.before), after: { ...cmp.after, solver: true } }, { short: true });
+  assert.match(broken, /\n {2}avant : .* \[Timefold sans plan, 0\/5\] ;/);
+  assert.match(broken, /\n {2}ATTENTION Timefold lancé sans plan \(avant, voir ci-dessus\) : vérifier le jar et Java/);
+  assert.match(broken, /\n {2}ATTENTION avant sans plan Timefold : l'écart vient de la panne du solveur/);
+  assert.doesNotMatch(broken, /NOTE|apport de Timefold/);
+  const both = rejeu.compareReport({ ...cmp, before: noPlan(cmp.before), after: noPlan(cmp.after) }, { short: true });
+  assert.match(both, /ATTENTION Timefold lancé sans plan \(avant et après, voir ci-dessus\).*les deux côtés sont rejoués/);
+  assert.doesNotMatch(both, /relancer avec --solveur/);
 });
 
 test('rejeu : attente avec un temps sans titre, fenêtre des anomalies depuis readySince ; sortie --cles et caractères de contrôle', async () => {
@@ -484,6 +552,9 @@ test('rejeu libre : demande pour rejoindre, fermeture retirée, « Je suis là �
   assert.equal(res.passages.length, 56, 'fermeture retirée et « Je suis là » obligatoire : tout est chanté');
   assert.equal(res.warnings.filter(w => /« Je suis là » obligatoire non rejoué/.test(w)).length, 1, 'avertissement une seule fois');
   assert.equal(res.notReplayed['staff.queueCleared'], 1);
+  // Vidage non rejoué : signalé, et hors du journal rejoué (il couperait les attentes des titres gardés).
+  assert.ok(res.warnings.some(w => /^« Vider toutes les chansons » du bar non rejoué/.test(w)), res.warnings.join(' | '));
+  assert.equal(rejeu.replayJournal(rejeu.loadEvening(raw), []).filter(e => e.ev === 'staff.queueCleared').length, 0);
   assert.match(rejeu.report(res, { short: true }), /gestes non rejoués : .*staff\.queueCleared×1/);
   // Sans l'option, le réglage pris en cours de soirée est aussi rejoué sans.
   const raw2 = structuredClone(ev.raw);
