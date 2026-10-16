@@ -160,6 +160,12 @@ test('CLI : erreur d’utilisation en une ligne, sans trace', async t => {
   assert.equal((await run([FIXTURE, '--avant', '.', '--solveur-avant', 'x.jar'])).code, 2);
   assert.equal((await run([FIXTURE, '--avant', '.', '--trace', '21:39'])).code, 2);
   assert.equal((await run([FIXTURE, '--avant'])).code, 2);
+  // --json sans nom de fichier : l'option suivante n'est pas prise pour lui.
+  assert.throws(() => rejeu.parseArgs([FIXTURE, '--json', '--cles']), /--json attend une valeur/);
+  assert.throws(() => rejeu.parseArgs([FIXTURE, '--trace', '--court']), /--trace attend une valeur/);
+  // Extrait d'un JSON abîmé cité dans l'erreur : sans séquence d'échappement.
+  fs.writeFileSync(path.join(dir, 'echap.json'), '{"events": [\u001b[2J\u202e');
+  assert.doesNotMatch((await run([path.join(dir, 'echap.json')])).err, /[\u001b\u202e]/);
   // Ce qu'apporte Timefold : même code, sans puis avec.
   const o = rejeu.parseArgs([FIXTURE, '--avant', '.', '--solveur', '--solveur-avant', 'sans']);
   assert.deepEqual([o.before, o.solver, o.solverBefore], ['.', true, 'sans']);
@@ -217,6 +223,12 @@ test('bilan avant/après : une personne qui perd un passage ou attend plus est s
   longer.balance.replay.people.S03.stageMaxSec += 2400;
   const mixed = rejeu.compareReport({ ...cmp, after: longer });
   assert.match(mixed.split('Personnes qui y perdent')[1].split('Personnes qui y gagnent')[0], /\n {2}S03 : titres (\d+) → (?!\1)\d+/);
+  // S13, seulement invitée, ne monte plus du tout sur scène : y perd.
+  const noStage = structuredClone(cmp.after);
+  assert.equal(cmp.after.balance.replay.people.S13.turns, 0);
+  delete noStage.balance.replay.people.S13;
+  const gone = rejeu.compareReport({ ...cmp, after: noStage });
+  assert.match(gone.split('Personnes qui y perdent')[1].split('Personnes qui y gagnent')[0], /\n {2}S13 : titres 0 → 0 \(invité 1 → 0\)/);
 });
 
 test('rejeu libre : « remplacer » ne retire que les titres que la soirée a remplacés', async () => {
@@ -234,6 +246,57 @@ test('rejeu libre : « remplacer » ne retire que les titres que la soirée a re
   assert.ok(res.passages.some(p => p.entryId === a.entryId), 'titre gardé et chanté');
   assert.ok(res.passages.some(p => p.entryId === 'remplacant'));
   assert.ok(res.notes.some(n => /remplacement de .* : \d+ titre\(s\) pas encore chanté\(s\) dans le rejeu gardé\(s\)/.test(n)));
+});
+
+test('rejeu libre : « remplacer » garde un duo à sa place ; même chanson redemandée chantée une fois ; lignes illisibles ou en double', async () => {
+  // En réel : duo a1 de S01 avec S03 (même table) chanté d'abord ; pendant ce
+  // passage, S01 remplace b1 par c1. Le rejeu fait passer S02 d'abord : a1
+  // reste à chanter au moment du « remplacer ».
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const evening = second => {
+    const events = [];
+    const e = (sec, ev, fields = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + sec * 1000, ev, ...fields });
+    e(0, 'evening.started', { rules: {} });
+    e(0, 'table.opened', { tableId: 'T1' }); e(0, 'table.opened', { tableId: 'T2' });
+    e(0, 'person.joined', { personId: 'S01', tableId: 'T1' });
+    e(0, 'person.joined', { personId: 'S02', tableId: 'T2' });
+    e(0, 'person.joined', { personId: 'S03', tableId: 'T1' });
+    e(1, 'song.requested', { personId: 'S02', entryId: 'x1', songId: 3, title: 'x1', mode: 'append' });
+    e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+    e(2, 'duo.invited', { personId: 'S01', ownerId: 'S01', partnerId: 'S03', entryId: 'a1', sameGroup: true });
+    e(3, 'song.requested', { personId: 'S01', entryId: 'b1', songId: 2, title: 'b1', mode: 'append' });
+    e(5, 'turn.sent', { entryId: 'a1', ownerId: 'S01', ids: ['S01', 'S03'], queueId: 'q1' });
+    e(10, 'stage.started', { entryId: 'a1', ids: ['S01', 'S03'], queueId: 'q1', source: 'queue', title: 'a1' });
+    e(50, 'song.requested', { personId: 'S01', entryId: 'c1', songId: second, title: 'c1', mode: 'replace', replacedEntryIds: ['b1'] });
+    e(190, 'stage.ended', { queueId: 'q1', playedSec: 180 });
+    e(195, 'turn.sent', { entryId: 'x1', ownerId: 'S02', ids: ['S02'], queueId: 'q2' });
+    e(200, 'stage.started', { entryId: 'x1', ids: ['S02'], queueId: 'q2', source: 'queue', title: 'x1' });
+    e(380, 'stage.ended', { queueId: 'q2', playedSec: 180 });
+    e(385, 'turn.sent', { entryId: 'c1', ownerId: 'S01', ids: ['S01'], queueId: 'q3' });
+    e(390, 'stage.started', { entryId: 'c1', ids: ['S01'], queueId: 'q3', source: 'queue', title: 'c1' });
+    e(570, 'stage.ended', { queueId: 'q3', playedSec: 180 });
+    return { people: ['S01', 'S02', 'S03'].map((key, i) => ({ key, table: i === 1 ? 'T2' : 'T1' })),
+      tables: [{ key: 'T1' }, { key: 'T2' }], events };
+  };
+  const res = await rejeu.runFree(rejeu.loadEvening(evening(4)));
+  assert.deepEqual(res.passages.map(p => [p.entryId, p.ids.join('+')]), [['x1', 'S02'], ['a1', 'S01+S03'], ['c1', 'S01']]);
+  assert.equal(res.balance.replay.people.S03.guestTurns, 1);
+  assert.deepEqual(res.warnings, []);
+  // c1 est la chanson de a1 : le nouveau titre la remplace, chanté une fois,
+  // et la demande reste dans le journal (pas de « demande non rejouée »).
+  const same = await rejeu.runFree(rejeu.loadEvening(evening(1)));
+  assert.deepEqual(same.passages.map(p => p.entryId), ['x1', 'c1']);
+  assert.ok(same.passages.find(p => p.entryId === 'c1').waitSec > 0);
+  assert.ok(same.notes.some(n => /remplacement de S01 : « a1 » redemandé avant d'être chanté dans le rejeu, chanté une fois/.test(n)));
+  assert.deepEqual(same.warnings, ['le rejeu chante 2 titres de la file, la soirée 3']);
+  // Ligne d'une autre version et ligne en double (arrêt brutal) : la première
+  // est signalée dans le bilan, la seconde ignorée comme dans evening-stats.js.
+  const raw = evening(4);
+  raw.events.push({ v: 2, seq: 99, t: T0 + 600000, ev: 'futur.geste' }, { ...raw.events.find(x => x.ev === 'person.joined') });
+  assert.equal(rejeu.loadEvening(raw).events.length, evening(4).events.length);
+  const cmp = await rejeu.runCompare(rejeu.loadEvening(raw), { before: { code: path.join(__dirname, '..') } });
+  assert.deepEqual(cmp.after.passages.map(p => p.entryId), ['x1', 'a1', 'c1']);
+  assert.match(rejeu.compareReport(cmp), /\névénements illisibles ou d’une autre version : futur\.geste×1/);
 });
 
 test('bilan avant/après : un seul côté sans Timefold, note pour le même code, alerte sinon', async () => {
@@ -263,7 +326,7 @@ test('rejeu : attente avec un temps sans titre, fenêtre des anomalies depuis re
   e(29, 'turn.sent', { entryId: 'a2', ids: ['S01'], ownerId: 'S01', queueId: 'q1' });
   e(30, 'stage.started', { queueId: 'q1', entryId: 'a2', ids: ['S01'], ownerId: 'S01', source: 'queue', title: 'a2' });
   e(34, 'stage.ended', { queueId: 'q1', playedSec: 240 });
-  const raw = { people: [{ key: 'S01', table: 'T1', name: 'Zo\u001b[2Jé' }, { key: 'S02', table: 'T2', name: 'S02' }],
+  const raw = { people: [{ key: 'S01', table: 'T1', name: 'Zo\u001b[2Jé\u202e' }, { key: 'S02', table: 'T2', name: 'S02' }],
     tables: [{ key: 'T1' }, { key: 'T2' }], events };
   const ev2 = rejeu.loadEvening(raw);
   const [w] = rejeu.computeWaits(ev2.realPassages, ev2);
@@ -271,7 +334,7 @@ test('rejeu : attente avec un temps sans titre, fenêtre des anomalies depuis re
   assert.equal(w.readyAt, T(1), 'fenêtre des anomalies depuis le début réel de l’attente');
   // Caractères de contrôle d'un prénom neutralisés à l'affichage, prénom absent avec --cles.
   const res = await rejeu.runForced(ev2);
-  assert.doesNotMatch(rejeu.report(res), /\u001b/);
+  assert.doesNotMatch(rejeu.report(res), /[\u001b\u202e]/);
   const out = [];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-cles-'));
   try {
@@ -510,7 +573,9 @@ test('rejeu avec un jar Timefold inutilisable : avertissement, pas de faux « [T
   assert.equal(res.timefold.ok, 0);
   assert.ok(res.timefold.asked > 0);
   assert.ok(res.warnings.some(w => /^Timefold n'a rendu aucun plan sur \d+ demandes/.test(w)), res.warnings.join(' | '));
-  assert.match(rejeu.report(res, { short: true }), /^REJEU FORCÉ \[Timefold\]\nATTENTION Timefold n'a rendu aucun plan/);
+  // Aucun plan : compté sans Timefold (étiquette et bilan avant/après).
+  assert.equal(res.solver, false);
+  assert.match(rejeu.report(res, { short: true }), /^REJEU FORCÉ \[Timefold sans plan\]\nATTENTION Timefold n'a rendu aucun plan/);
 });
 
 test('rejeu libre avec Timefold : une file de moins de deux titres n’est pas un échec',
