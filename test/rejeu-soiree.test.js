@@ -175,27 +175,133 @@ test('bilan avant/après : une personne qui perd un passage ou attend plus est s
   after.balance.replay.jain = Math.round((cmp.after.balance.replay.jain - 0.05) * 1000) / 1000;
   const p = after.passages.find(x => x.owner === 'S09');
   p.waitSec += 1200;
+  // Un titre chanté seulement « avant » (le plus grave, en tête de liste) et
+  // une personne qui y gagne.
+  const lost = after.passages.pop();
+  people.S01.waitMaxSec -= 1200;
   const text = rejeu.compareReport({ ...cmp, after });
+  const titles = text.split('Titres dont l\'attente change')[1].split('\n');
+  assert.match(titles[1], new RegExp(`→ pas chanté  .*«${lost.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}»`));
+  assert.match(text.split('Personnes qui y gagnent')[1], /^ : \n {2}S01 : /);
   assert.match(text, /indice de Jain \(1 = même rythme pour tous\)\s+0,784\s+\S+\s+\S+\s+MOINS BIEN/);
   const losers = text.split('Personnes qui y perdent')[1].split('Personnes qui y gagnent')[0];
   assert.match(losers, /\n {2}S05 : passages (\d+) → (?!\1)\d+/);
   assert.match(losers, /\n {2}S09 : .*plus longue attente d'un titre \d+ → \d+ min/);
-  assert.match(text, /Verdict : .*1 moins bien.*2 personnes y perdent/);
+  assert.match(text, /Verdict : .*1 moins bien.*2 personnes y perdent, 1 y gagne\./);
   assert.match(text, new RegExp(`→ +${Math.round(p.waitSec / 60)} min  S09`));
 });
 
-test('bilan avant/après : révision git extraite à part, dépôt intact', async () => {
-  const git = args => require('node:child_process').execFileSync('git', ['-C', path.join(__dirname, '..'), ...args], { encoding: 'utf8' });
+test('bilan avant/après : révision git extraite à part, dépôt intact', async t => {
+  const repo = path.join(__dirname, '..');
+  const git = args => require('node:child_process').execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  let sha;
+  try { sha = git(['rev-parse', 'HEAD']).trim(); } catch (_) { t.skip('pas de dépôt git'); return; }
+  // Cache propre au test : l'extraction a lieu à chaque fois, puis disparaît.
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-cache-'));
+  const saved = process.env.KARAFUN_REJEU_CACHE;
+  process.env.KARAFUN_REJEU_CACHE = cache;
+  t.after(() => {
+    if (saved === undefined) delete process.env.KARAFUN_REJEU_CACHE; else process.env.KARAFUN_REJEU_CACHE = saved;
+    fs.rmSync(cache, { recursive: true, force: true });
+  });
   const status = git(['status', '--porcelain']);
-  const sha = git(['rev-parse', 'HEAD']).trim();
   const lines = [];
   assert.equal(await rejeu.main([FIXTURE, '--avant', 'HEAD', '--court'], l => lines.push(l), l => lines.push(l)), 0);
   const text = lines.join('\n');
   assert.match(text, new RegExp(`avant : HEAD \\(${sha.slice(0, 7)}\\) \\[sans Timefold\\]`));
   assert.match(text, /après : version de travail \[sans Timefold\]/);
-  assert.match(text, /^Verdict : /m);
-  assert.ok(fs.existsSync(path.join(os.tmpdir(), 'karafun-rejeu', sha, 'scheduler.js')));
-  assert.equal(git(['status', '--porcelain']), status);
+  assert.match(text, /ATTENTION rejeu sans Timefold/);
+  assert.ok(fs.existsSync(path.join(cache, sha, 'scheduler.js')));
+  assert.deepEqual(fs.readdirSync(cache), [sha], 'aucun dossier temporaire laissé');
+  assert.equal(git(['status', '--porcelain']), status, 'index et copie de travail intacts');
+  // Copie de travail propre : la version extraite rejoue comme la version de travail.
+  if (!status.trim()) assert.match(text, /Verdict : 0 indicateur mieux, 0 moins bien/);
+});
+
+test('rejeu : un seul à la fois, et version « avant » inutilisable dite en une ligne', async t => {
+  const real = Date.now;
+  const [a, b] = await Promise.allSettled([rejeu.runFree(ev), rejeu.runFree(ev)]);
+  assert.equal(a.status, 'fulfilled');
+  assert.match(String(b.reason?.message), /déjà en cours/);
+  assert.equal(Date.now, real, 'horloge rendue');
+  const dirs = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-avant-'));
+  t.after(() => fs.rmSync(dirs, { recursive: true, force: true }));
+  const version = (name, source) => {
+    const dir = path.join(dirs, name);
+    fs.mkdirSync(dir);
+    if (source) fs.writeFileSync(path.join(dir, 'scheduler.js'), source);
+    return dir;
+  };
+  const run = async dir => {
+    const err = [];
+    const code = await rejeu.main([FIXTURE, '--avant', dir, '--court'], () => {}, l => err.push(l));
+    return { code, err: err.join('\n') };
+  };
+  const cases = [
+    [version('vide'), /pas de scheduler\.js/],
+    [version('sans-methodes', 'class Scheduler {}\nmodule.exports = { Scheduler };\n'),
+      /pas de méthode _maybeRequestSolver, version trop éloignée de l'outil de rejeu/],
+    [version('qui-plante', 'class Scheduler { constructor() { throw new TypeError(\'boum\'); } }\nmodule.exports = { Scheduler };\n'),
+      /^Rejeu impossible avec .*qui-plante : boum \(at .*\) ; version trop éloignée de l'outil de rejeu \?$/],
+  ];
+  for (const [dir, message] of cases) {
+    const r = await run(dir);
+    assert.equal(r.code, 1, dir);
+    assert.match(r.err, message);
+    assert.doesNotMatch(r.err, /\n\s+at /);
+  }
+});
+
+test('rejeu libre : demande pour rejoindre, fermeture retirée, « Je suis là » et gestes signalés', async () => {
+  const raw = structuredClone(ev.raw);
+  const events = raw.events;
+  // Premier titre solo resté au moins 20 min en attente, demandé alors qu'une
+  // autre personne de la table était inscrite.
+  const startOf = new Map(events.filter(e => e.ev === 'stage.started' && e.entryId).map(e => [e.entryId, e.t]));
+  const tableOf = new Map();
+  let target = null;
+  for (const e of events) {
+    if (e.ev === 'person.joined') tableOf.set(e.personId, e.tableId);
+    if (e.ev !== 'song.requested' || target || !(startOf.get(e.entryId) > e.t + 20 * 60000)) continue;
+    const mate = [...tableOf].find(([pid, tid]) => pid !== e.personId && tid === tableOf.get(e.personId))?.[0];
+    if (mate && !events.some(x => x.entryId === e.entryId && /^duo\./.test(x.ev))) target = { e, mate };
+  }
+  assert.ok(target, 'titre solo avec une personne de la même table');
+  // Événement ajouté à son heure : numéro d'ordre juste après le dernier
+  // événement de la soirée qui le précède.
+  let extra = 0;
+  const at = (t, ev, fields) => {
+    const seq = Math.max(...events.filter(e => e.t <= t).map(e => e.seq)) + 0.5 + (extra += 0.001);
+    events.push({ v: 1, t, seq, ev, ...fields });
+  };
+  at(target.e.t + 1000, 'duo.joinRequested',
+    { requesterId: target.mate, ownerId: target.e.personId, entryId: target.e.entryId, direct: true });
+  // Heure de fermeture posée puis retirée par le bar, vidage de la file à la fin.
+  const first = events.find(e => e.ev === 'stage.started');
+  at(first.t + 3600000, 'closing.set', { closingAt: first.t + 4200000 });
+  at(first.t + 3601000, 'closing.cleared', {});
+  const last = events.filter(e => e.ev === 'stage.started').at(-1);
+  at(last.t - 1000, 'staff.queueCleared', {});
+  const res = await rejeu.runFree(rejeu.loadEvening(raw), { options: { requirePresence: true } });
+  const duo = res.passages.find(p => p.entryId === target.e.entryId);
+  assert.deepEqual(duo?.ids, [target.e.personId, target.mate], 'duo rejoint rejoué');
+  assert.equal(res.passages.length, 56, 'fermeture retirée et « Je suis là » obligatoire : tout est chanté');
+  assert.ok(res.warnings.some(w => /« Je suis là » obligatoire non rejoué/.test(w)));
+  assert.equal(res.notReplayed['staff.queueCleared'], 1);
+  assert.match(rejeu.report(res, { short: true }), /gestes non rejoués : .*staff\.queueCleared×1/);
+});
+
+test('rejeu avec un jar Timefold inutilisable : avertissement, pas de faux « [Timefold] » muet', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-jar-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const jar = path.join(dir, 'faux.jar');
+  fs.writeFileSync(jar, 'pas un jar');
+  const until = ev.events.find(e => e.ev === 'turn.sent' && rejeu.timeOf(e.t) === '21:06:30').t;
+  const res = await rejeu.runForced(ev, { solver: jar, budget: 200, until });
+  assert.equal(res.timefold.ok, 0);
+  assert.ok(res.timefold.asked > 0);
+  assert.ok(res.warnings.some(w => /^Timefold n'a rendu aucun plan sur \d+ demandes/.test(w)), res.warnings.join(' | '));
+  assert.match(rejeu.report(res, { short: true }), /^REJEU FORCÉ \[Timefold\]\nATTENTION Timefold n'a rendu aucun plan/);
 });
 
 test('rejeu forcé avec Timefold : l’égalité de 21:06:30 est départagée comme en réel',

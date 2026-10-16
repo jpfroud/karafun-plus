@@ -27,7 +27,7 @@
  *   --court                résumé seulement (sans la liste des décisions ni des attentes)
  *   --avant <rév|dossier>  BILAN AVANT/APRÈS : la même soirée rejouée librement avec
  *                          l'ordonnanceur d'une autre version (révision git du dépôt,
- *                          extraite dans un dossier temporaire, ou dossier de sources)
+ *                          extraite dans .git/karafun-rejeu, ou dossier de sources)
  *                          puis avec la version de travail, mesurées toutes deux par
  *                          evening-stats.js d'aujourd'hui : attentes, passages de chacun,
  *                          équilibre (indice de Jain, part de chacun), anomalies.
@@ -61,7 +61,6 @@
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
  */
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { Scheduler } = require('../scheduler');
@@ -77,13 +76,15 @@ const SCHED_RULES = ['tableRotation', 'weightedTables', 'interleaveArrivals', 'r
   'spacingSongs', 'requirePresence', 'gap', 'cap'];
 // Événements du journal que le rejeu sait refaire (les autres sont ignorés).
 const REPLAYED = new Set(['table.opened', 'table.headcount', 'person.joined', 'song.requested',
-  'duo.invited', 'duo.answered', 'duo.cancelled', 'duo.left', 'song.removed', 'song.reordered',
+  'duo.invited', 'duo.answered', 'duo.cancelled', 'duo.left', 'duo.joinRequested', 'duo.joinAnswered',
+  'duo.joinCancelled', 'song.removed', 'song.reordered', 'person.gaveSpot',
   'table.left', 'person.left', 'person.reactivated', 'person.bonus', 'table.bonus', 'person.transferred',
   'settings.changed']);
 // Gestes qui changent la file mais que le rejeu ne refait pas : signalés.
 const NOT_REPLAYED = new Set(['staff.move', 'staff.undo', 'staff.recalculate', 'defer.requested',
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced', 'presence.skipped',
-  'turn.unsent', 'stage.restarted', 'battle.external', 'duo.joinAccepted']);
+  'turn.unsent', 'stage.restarted', 'battle.external', 'battle.staffLaunch', 'staff.queueCleared',
+  'staff.absent']);
 const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export ne dit rien
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
 
@@ -196,11 +197,17 @@ function statsOf(events) {
 const STAGE_EVENTS = new Set(['stage.started', 'stage.ended', 'stage.restarted', 'turn.sent', 'turn.unsent',
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced']);
 // Journal du rejeu libre : les événements réels (demandes, duos, retraits,
-// départs, connexions…) et les passages rejoués à la place des passages réels.
-function replayJournal(ev, passages) {
-  const merged = ev.events.filter(e => !STAGE_EVENTS.has(e.ev)).map((e, order) => ({ e, order }));
+// départs, connexions…) et les passages rejoués à la place des passages réels,
+// avec leur envoi (la rotation compte un passage à son envoi). `skip` : retraits
+// réels que le rejeu n'a pas pu faire (titre déjà chanté dans le rejeu).
+function replayJournal(ev, passages, skip = new Set()) {
+  const merged = ev.events.filter(e => !STAGE_EVENTS.has(e.ev) && !skip.has(e)).map((e, order) => ({ e, order }));
   passages.forEach((st, k) => {
     const queueId = `rejeu-${k}`;
+    if (st.sentAt != null && st.source === 'queue') {
+      merged.push({ order: 1e9 - 1, e: { v: 1, t: st.sentAt, ev: 'turn.sent', queueId, entryId: st.entryId,
+        ids: st.ids, ownerId: st.ids[0] || null } });
+    }
     merged.push({ order: 1e9 + 2 * k, e: { v: 1, t: st.start, ev: 'stage.started', queueId, entryId: st.entryId,
       ids: st.ids, ownerId: st.ids[0] || null, source: st.source === 'queue' ? 'queue' : st.source, title: st.title } });
     merged.push({ order: 1e9 + 2 * k + 1, e: { v: 1, t: st.end, ev: 'stage.ended', queueId,
@@ -245,17 +252,57 @@ function summary(waitsSec) {
 // ------------------------------------------------------------------ version de l'ordonnanceur
 // Version de travail : ce dépôt. Une autre version (bilan avant/après) : un
 // dossier de sources, ou une révision git extraite une fois par commit dans
-// le dossier temporaire du système. Seuls scheduler.js et ce qu'il charge
-// (lib/scheduler, solver/bridge.js, song-repeats.js) viennent de l'autre version ;
-// le rejeu et la mesure (evening-stats.js) restent ceux d'aujourd'hui.
+// le dossier git du dépôt (`.git/karafun-rejeu/<sha>`, propre à l'utilisateur
+// et jamais suivi ; KARAFUN_REJEU_CACHE pour un autre dossier), les 5 plus
+// récentes gardées. Seuls scheduler.js et ce qu'il charge (lib/scheduler,
+// solver/bridge.js, song-repeats.js) viennent de l'autre version ; le rejeu
+// et la mesure (evening-stats.js) restent ceux d'aujourd'hui.
 const CURRENT = { label: 'version de travail', dir: ROOT, Scheduler, extracted: false };
 const codeCache = new Map();
 function git(args) {
   try { return execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (_) { return null; }
 }
+function cacheRoot() {
+  if (process.env.KARAFUN_REJEU_CACHE) return path.resolve(process.env.KARAFUN_REJEU_CACHE);
+  const common = git(['rev-parse', '--git-common-dir']);
+  if (!common) throw new UsageError('--avant <révision> : dépôt git introuvable ; donner plutôt un dossier de sources.');
+  return path.join(path.resolve(ROOT, common), 'karafun-rejeu');
+}
+const EXTRACTED_OK = '.rejeu-ok';
+// Extraction d'une révision : index temporaire (ni l'index ni la copie de
+// travail du dépôt ne bougent), dans un dossier temporaire renommé d'un coup ;
+// un autre rejeu qui a fini avant garde la sienne.
+function extract(root, sha, label) {
+  const dir = path.join(root, sha);
+  if (fs.existsSync(path.join(dir, EXTRACTED_OK))) { fs.utimesSync(dir, new Date(), new Date()); return dir; }
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  fs.rmSync(dir, { recursive: true, force: true }); // extraction interrompue
+  const tmp = fs.mkdtempSync(path.join(root, `${sha}.tmp-`));
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: path.join(tmp, '.rejeu-index') };
+    const run = args => execFileSync('git', ['-C', ROOT, ...args], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    run(['read-tree', sha]);
+    run(['checkout-index', '-a', '-f', `--prefix=${tmp.split(path.sep).join('/')}/`]);
+    fs.rmSync(env.GIT_INDEX_FILE, { force: true });
+    fs.writeFileSync(path.join(tmp, EXTRACTED_OK), `${sha}\n`);
+    try { fs.renameSync(tmp, dir); } catch (err) {
+      if (!fs.existsSync(path.join(dir, EXTRACTED_OK))) throw err;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  } catch (err) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    throw new UsageError(`--avant : extraction de ${label} impossible (${String(err.message).split('\n')[0]})`);
+  }
+  // Les 5 révisions les plus récemment utilisées sont gardées.
+  const kept = fs.readdirSync(root, { withFileTypes: true })
+    .filter(d => d.isDirectory() && /^[0-9a-f]{40}$/.test(d.name))
+    .map(d => ({ name: d.name, t: fs.statSync(path.join(root, d.name)).mtimeMs })).sort((a, b) => b.t - a.t);
+  for (const old of kept.slice(5)) if (old.name !== sha) fs.rmSync(path.join(root, old.name), { recursive: true, force: true });
+  return dir;
+}
+// `where` : révision git ou dossier de sources ; rien : la version de travail.
 function loadCode(where) {
-  if (where == null || where === CURRENT) return CURRENT;
-  if (typeof where === 'object') return where;
+  if (where == null) return CURRENT;
   if (codeCache.has(where)) return codeCache.get(where);
   let dir, label, extracted = false;
   if (fs.existsSync(where) && fs.statSync(where).isDirectory()) {
@@ -263,26 +310,9 @@ function loadCode(where) {
   } else {
     const sha = git(['rev-parse', '--verify', '--quiet', `${where}^{commit}`]);
     if (!sha) throw new UsageError(`--avant : « ${where} » n'est ni un dossier ni une révision git de ce dépôt.`);
-    dir = path.join(os.tmpdir(), 'karafun-rejeu', sha);
-    label = `${where} (${sha.slice(0, 7)})`; extracted = true;
-    if (!fs.existsSync(path.join(dir, 'scheduler.js'))) {
-      const tmp = `${dir}.${process.pid}`;
-      fs.rmSync(tmp, { recursive: true, force: true });
-      fs.mkdirSync(tmp, { recursive: true });
-      try {
-        // Index temporaire : ni l'index ni la copie de travail du dépôt ne bougent.
-        const env = { ...process.env, GIT_INDEX_FILE: path.join(tmp, '.rejeu-index') };
-        const run = args => execFileSync('git', ['-C', ROOT, ...args], { env, stdio: ['ignore', 'ignore', 'pipe'] });
-        run(['read-tree', sha]);
-        run(['checkout-index', '-a', '-f', `--prefix=${tmp.split(path.sep).join('/')}/`]);
-        fs.rmSync(env.GIT_INDEX_FILE, { force: true });
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.renameSync(tmp, dir);
-      } catch (err) {
-        fs.rmSync(tmp, { recursive: true, force: true });
-        throw new UsageError(`--avant : extraction de ${label} impossible (${err.message.split('\n')[0]})`);
-      }
-    }
+    // Un sha court donné tel quel n'est pas répété.
+    label = sha.startsWith(where) ? sha.slice(0, 7) : `${where} (${sha.slice(0, 7)})`; extracted = true;
+    dir = extract(cacheRoot(), sha, label);
   }
   const file = path.join(dir, 'scheduler.js');
   if (!fs.existsSync(file)) throw new UsageError(`--avant : pas de scheduler.js dans ${dir}`);
@@ -313,19 +343,32 @@ function resolveJar(solver, code = CURRENT) {
     if (!fs.existsSync(solver)) throw new UsageError(`Jar Timefold introuvable : ${solver}`);
     return solver;
   }
-  let jar = jarsIn(code.dir).find(fs.existsSync);
+  // Révision extraite : son solveur est construit une fois, gardé avec elle ;
+  // seul un jar dont la construction a abouti (marqueur) sert.
+  const built = path.join(code.dir, 'solver', '.rejeu-jar-ok');
+  let jar = code.extracted && !fs.existsSync(built) ? null : jarsIn(code.dir).find(fs.existsSync);
   if (!jar && code.extracted) {
-    // Révision extraite : son solveur est construit une fois, gardé avec elle.
+    const lock = path.join(code.dir, 'solver', '.rejeu-mvn.lock');
     try {
+      try { fs.closeSync(fs.openSync(lock, 'wx')); } catch (err) {
+        if (err.code !== 'EEXIST' || Date.now() - fs.statSync(lock).mtimeMs < 15 * 60_000) {
+          throw new UsageError(`Jar Timefold de ${code.label} : construction déjà en cours (${lock}) ; relancer ensuite.`);
+        }
+        fs.writeFileSync(lock, ''); // verrou abandonné
+      }
       // Windows : mvn.cmd passe par le shell, chemin entre guillemets (espaces).
       const pom = path.join(code.dir, 'solver', 'pom.xml');
       const win = process.platform === 'win32';
       execFileSync('mvn', ['-q', '-B', '-DskipTests', 'package', '-f', win ? `"${pom}"` : pom],
-        { stdio: ['ignore', 'ignore', 'pipe'], shell: win });
+        { stdio: ['ignore', 'ignore', 'pipe'], shell: win, timeout: 10 * 60_000 });
+      fs.writeFileSync(built, '');
     } catch (err) {
+      if (err instanceof UsageError) throw err;
+      fs.rmSync(lock, { force: true });
       throw new UsageError(`Jar Timefold de ${code.label} : construction par Maven impossible (${String(err.stderr || err.message).split('\n')[0]}) ; ` +
         'donner --solveur-avant <jar> ou retirer --solveur.');
     }
+    fs.rmSync(lock, { force: true });
     jar = jarsIn(code.dir).find(fs.existsSync);
   }
   if (!jar) {
@@ -343,7 +386,17 @@ function makeContext(ev, opts) {
   const rules = { ...ev.rules, ...overrides };
   const schedOpts = {};
   for (const k of SCHED_RULES) if (rules[k] !== undefined) schedOpts[k] = rules[k];
+  // « Je suis là » obligatoire : ni les confirmations ni les passages laissés
+  // faute de réponse ne sont rejoués ; sans cela le rejeu ne chanterait rien.
+  const warnings = [];
+  if (schedOpts.requirePresence) {
+    schedOpts.requirePresence = false;
+    warnings.push('« Je suis là » obligatoire non rejoué (confirmations, passages laissés faute de réponse) : rejeu fait sans');
+  }
   const s = new code.Scheduler(schedOpts);
+  for (const m of ['_maybeRequestSolver', '_scheduleRefine', '_requestSolver', 'solverContextFingerprint', 'select', 'reserveNext', 'commit']) {
+    if (typeof s[m] !== 'function') throw new UsageError(`${code.label} : pas de méthode ${m}, version trop éloignée de l'outil de rejeu.`);
+  }
   // Le rejeu demande lui-même le plan à chaque décision (ensurePlan) : pas de
   // calcul lancé en tâche de fond ni d'optimisation continue.
   s._maybeRequestSolver = () => false;
@@ -351,14 +404,14 @@ function makeContext(ev, opts) {
   s.solverBridge = null;
   const ctx = { ev, s, rules, overrides, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
     notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || 3000, solver: null, jar: null,
-    code, warnings: [] };
+    code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null }, unapplied: new Set() };
   const jar = resolveJar(opts.solver, code);
   if (jar) {
     const { TimefoldBridge } = require(path.join(code.dir, 'solver', 'bridge'));
     s.solverBridge = new TimefoldBridge({ jar, settleMs: 0 });
     ctx.solver = s.solverBridge; ctx.jar = jar;
     if (staleJar(jar, code.dir)) {
-      ctx.warnings.push(`jar Timefold plus ancien que ${path.join(code.dir, 'solver', 'src')} : reconstruire (mvn -q -DskipTests package -f solver/pom.xml)`);
+      ctx.warnings.push(`jar Timefold plus ancien que ${path.join(code.dir, 'solver', 'src')} : reconstruire (mvn -q -DskipTests package -f ${path.join(code.dir, 'solver', 'pom.xml')})`);
     }
   }
   return ctx;
@@ -377,8 +430,15 @@ async function ensurePlan(ctx) {
   if (s.solverPlan && s.solverPlan.fingerprint === fp) return;
   s.solverPlan = null;
   s.solverRequestedFingerprint = null;
+  ctx.plans.asked++;
   const started = s._requestSolver(fp, { budgetMs: ctx.budget, forced: true });
-  if (started && s.solverPromise) { try { await s.solverPromise; } catch (_) { /* ordre local */ } }
+  // Échec ou solveur indisponible : ordre local, compté et signalé au rapport.
+  const ok = started && s.solverPromise ? await s.solverPromise.catch(() => false) : false;
+  if (ok) ctx.plans.ok++;
+  else {
+    ctx.plans.failed++;
+    ctx.plans.lastError = s.solverLastError || ctx.solver.lastError || (started ? null : 'solveur indisponible') || ctx.plans.lastError;
+  }
 }
 
 // Choix rendu par select()/reserveNext(), en clés de l'export.
@@ -491,7 +551,12 @@ function applyExternal(ctx, e, upcoming) {
       case 'song.removed': {
         const p = P(e.personId);
         const id = entry(e.entryId);
-        if (!p || !s.songsOf(p).some(x => x.entryId === id)) { note(ctx, `retrait ignoré (titre déjà passé ou inconnu) ${e.entryId}`); return false; }
+        if (!p || !s.songsOf(p).some(x => x.entryId === id)) {
+          // Titre déjà chanté dans le rejeu : ce retrait sort aussi du journal rejoué.
+          ctx.unapplied.add(e);
+          note(ctx, `retrait ignoré (titre déjà passé ou inconnu) ${e.entryId}`);
+          return false;
+        }
         s.removeSong(p, id, e.by || 'self');
         return true;
       }
@@ -510,9 +575,33 @@ function applyExternal(ctx, e, upcoming) {
       case 'person.reactivated': { const p = P(e.personId); if (!p) return false; p.withdrawnAt = null; return true; }
       case 'person.bonus': if (!pid(e.personId)) return false; s.setPersonBonus(pid(e.personId), e.level); return true;
       case 'table.bonus': s.setTableBonus(e.tableId, e.level); return true;
+      case 'duo.joinRequested': {
+        const requester = P(e.requesterId);
+        if (!requester || !entry(e.entryId)) return false;
+        s.requestDuetJoin(requester, pid(e.ownerId), entry(e.entryId));
+        return true;
+      }
+      case 'duo.joinAnswered': {
+        const owner = P(e.ownerId || e.personId);
+        if (!owner || !entry(e.entryId)) return false;
+        s.answerDuetJoin(owner, entry(e.entryId), pid(e.requesterId), !!e.accepted);
+        return true;
+      }
+      case 'duo.joinCancelled': {
+        const requester = P(e.requesterId || e.personId);
+        if (!requester || !entry(e.entryId)) return false;
+        s.cancelDuetJoin(requester, pid(e.ownerId), entry(e.entryId));
+        return true;
+      }
+      case 'person.gaveSpot': { const p = P(e.personId); if (!p) return false; s.giveSpot(p, pid(e.toId)); return true; }
       case 'settings.changed': {
         // Une règle remplacée par --option garde la valeur demandée.
         if (!SCHED_RULES.includes(e.setting) || e.setting in ctx.overrides) return false;
+        if (e.setting === 'requirePresence') {
+          const warning = '« Je suis là » obligatoire non rejoué (confirmations, passages laissés faute de réponse) : rejeu fait sans';
+          if (e.to && !ctx.warnings.includes(warning)) ctx.warnings.push(warning);
+          return false;
+        }
         s.opts[e.setting] = e.to;
         return true;
       }
@@ -651,7 +740,7 @@ async function runFree(evening, opts = {}) {
     const { s } = ctx;
     const pushMs = 1000 * Number(ctx.rules.pushDelaySec ?? 45);
     const ext = ev.events.filter(e => REPLAYED.has(e.ev) || NOT_REPLAYED.has(e.ev) ||
-      ['battle.decided', 'closing.set'].includes(e.ev));
+      ['battle.decided', 'closing.set', 'closing.cleared'].includes(e.ev));
     for (const e of ev.events) countIgnored(ctx, e);
     const realBattle = ev.events.find(e => e.ev === 'battle.decided' && e.outcome === 'approved');
     const auto = ev.events.filter(e => e.ev === 'battle.automation');
@@ -715,6 +804,7 @@ async function runFree(evening, opts = {}) {
           const e = ext[i++];
           if (e.ev === 'battle.decided') { if (e.outcome === 'approved' && battle === 'none') battle = 'waiting'; continue; }
           if (e.ev === 'closing.set') { closingAt = Number.isFinite(e.closingAt) ? e.closingAt : Infinity; continue; }
+          if (e.ev === 'closing.cleared') { closingAt = Infinity; continue; }
           applyExternal(ctx, e, ext.slice(i, i + 5).filter(x => x.t - e.t < 1000));
         }
         // Plusieurs passages du serveur au même instant (fin → début → envoi).
@@ -734,10 +824,10 @@ async function runFree(evening, opts = {}) {
     }
     const replayPassages = stages.map(st => st.kind === 'song' ? {
       entryId: ctx.rep2real.get(st.sel.song.entryId) || st.sel.song.entryId, ids: st.sel.ids.map(pid => keyOf(ctx, pid)),
-      start: st.start, end: st.end, source: 'queue', title: st.sel.song.title,
+      start: st.start, end: st.end, sentAt: st.sentAt, source: 'queue', title: st.sel.song.title,
       newRound: !!st.decision?.pick.newRound, borrowedIds: st.decision?.pick.borrowedIds || [] } :
       { entryId: null, ids: [], start: st.start, end: st.end, source: st.kind, title: st.kind });
-    const journal = replayJournal(ev, replayPassages);
+    const journal = replayJournal(ev, replayPassages, ctx.unapplied);
     const passages = computeWaits(replayPassages, ev, journal).map(w => ({ ...w, borrowedIds: w.borrowedIds || [] }));
     return finish(ctx, 'libre', passages, compareOrders(ev, passages), journal);
   });
@@ -853,13 +943,25 @@ function finish(ctx, mode, passages, order, journal = null) {
     matchFreeAtSend: sends.filter(d => d.freeAtSend ? d.freeAtSend.ids[0] === d.real.ids[0] && d.freeAtSend.entryId === d.real.entryId : d.match).length,
     newRoundAgree: sends.filter(d => d.committed && d.committed.newRound === d.real.newRound).length,
   } : order;
+  // Fiabilité : Timefold qui n'a rien rendu, titres perdus par le rejeu.
+  const warnings = [...ctx.warnings];
+  const plans = ctx.plans;
+  if (ctx.solver && plans.asked && !plans.ok) {
+    warnings.push(`Timefold n'a rendu aucun plan sur ${plans.asked} demandes (${plans.lastError || 'sans réponse'}) : rejeu fait avec la règle locale seule`);
+  } else if (ctx.solver && plans.failed) {
+    warnings.push(`Timefold sans plan pour ${plans.failed} décisions sur ${plans.asked} (${plans.lastError || 'sans réponse'}) : règle locale seule pour celles-là`);
+  }
+  if (mode === 'libre' && passages.length < real.length) {
+    warnings.push(`le rejeu chante ${passages.length} titres de la file, la soirée ${real.length}`);
+  }
   return { mode, code: ctx.code.label, solver: !!ctx.solver, jar: ctx.jar, options: ctx.overrides, timezone: ev.timezone,
+    timefold: ctx.solver ? { ...plans } : null,
     names: Object.fromEntries([...ev.people].map(([k, p]) => [k, p.name])),
     decisions: ctx.decisions, passages, realWaits: real, fidelity, definitionCheck,
     waits: { real: summary(real.map(w => w.waitSec)), replay: summary(passages.map(w => w.waitSec)) },
     stageWaits: { real: stageWaitsOf(ev.events), replay: replayStageWaits },
     balance: { real: balanceOf(statsOf(ev.events)), replay: journal ? balanceOf(statsOf(journal)) : null },
-    analysis: analyse(passages, groupOf(ev)), realAnalysis: analyse(real, groupOf(ev)), notes: ctx.notes, warnings: ctx.warnings,
+    analysis: analyse(passages, groupOf(ev)), realAnalysis: analyse(real, groupOf(ev)), notes: ctx.notes, warnings,
     ignored: ctx.ignored, notReplayed: ctx.notReplayed, unreadable: ev.skipped };
 }
 
@@ -873,16 +975,19 @@ async function runCompare(evening, opts = {}) {
   // Version « avant » chargée (et extraite) avant tout rejeu : une erreur de
   // version arrête tout de suite.
   const beforeOpts = side(opts.before);
-  loadCode(beforeOpts.code ?? null);
+  const code = loadCode(beforeOpts.code);
   let before;
   try {
     before = await runFree(ev, beforeOpts);
   } catch (err) {
-    if (err instanceof UsageError) throw err;
-    // L'autre version n'a pas l'interface que le rejeu appelle (méthode
-    // renommée…) : le dire, avec l'endroit de l'échec.
-    const at = String(err?.stack || '').split('\n').find(l => /^\s+at /.test(l))?.trim() || '';
-    throw new UsageError(`Rejeu impossible avec ${loadCode(beforeOpts.code ?? null).label} : ${err?.message || err}` +
+    // L'autre version a échoué dans son propre code (méthode renommée…) : le
+    // dire, avec l'endroit de l'échec. Toute autre erreur garde sa trace.
+    const stack = String(err?.stack || '');
+    const inside = code !== CURRENT && [path.join(code.dir, 'scheduler.js'), path.join(code.dir, 'lib') + path.sep]
+      .some(f => stack.includes(f));
+    if (err instanceof UsageError || !inside) throw err;
+    const at = stack.split('\n').find(l => /^\s+at /.test(l))?.trim() || '';
+    throw new UsageError(`Rejeu impossible avec ${code.label} : ${err?.message || err}` +
       `${at ? ` (${at})` : ''} ; version trop éloignée de l'outil de rejeu ?`);
   }
   const after = await runFree(ev, side(opts.after));
@@ -903,7 +1008,7 @@ const INDICATORS = [
   { group: 'Sans monter sur scène, invités compris', label: 'plus longue (min)',
     get: r => MIN(maxOf(r.stageWaits.replay)), real: r => MIN(maxOf(r.stageWaits.real)), better: 'down', tol: 1 },
   { label: 'personnes à 60 min ou plus', get: r => r.balance.replay?.stage60, real: r => r.balance.real.stage60, better: 'down', tol: 0 },
-  { group: 'Équilibre des passages', label: 'indice de Jain (1 = même rythme pour tous)', get: r => r.balance.replay?.jain, real: r => r.balance.real.jain, better: 'up', tol: 0.005, digits: 3 },
+  { id: 'jain', group: 'Équilibre des passages', label: 'indice de Jain (1 = même rythme pour tous)', get: r => r.balance.replay?.jain, real: r => r.balance.real.jain, better: 'up', tol: 0.005, digits: 3 },
   { label: 'corrigé des bonus et malus', get: r => r.balance.replay?.jainAdjusted, real: r => r.balance.real.jainAdjusted, better: 'up', tol: 0.005, digits: 3 },
   { label: 'part la plus haute (× sa part)', get: r => r.balance.replay?.shareMax, real: r => r.balance.real.shareMax, better: 'down', tol: 0.05, digits: 2 },
   { label: 'part la plus basse (× sa part)', get: r => r.balance.replay?.shareMin, real: r => r.balance.real.shareMin, better: 'up', tol: 0.05, digits: 2 },
@@ -960,6 +1065,14 @@ function compareReport(cmp, { short = false } = {}) {
   if (Object.keys(after.options).length) out.push(`  options : ${Object.entries(after.options).map(([k, v]) => `${k}=${v}`).join(', ')}`);
   out.push('  réel  : la soirée vécue (gestes du bar compris, version de ce soir-là), pour repère ; le verdict compare avant et après');
   for (const w of [...before.warnings.map(w => `avant : ${w}`), ...after.warnings.map(w => `après : ${w}`)]) out.push(`  ATTENTION ${w}`);
+  if (!before.solver || !after.solver) {
+    out.push('  ATTENTION rejeu sans Timefold : au bar, Timefold aide à décider ; relancer avec --solveur pour le bilan à présenter');
+  }
+  const f = before.fidelity;
+  if (before.solver && f.songsReal && f.samePosition < f.songsReal * 0.9) {
+    out.push(`  ATTENTION la version « avant » ne refait que ${f.samePosition}/${f.songsReal} titres au rang vécu : ` +
+      'si c\'était la version de la soirée, le rejeu s\'en écarte ; bilan à lire avec prudence');
+  }
   out.push('');
   const width = 46;
   out.push(`${''.padEnd(width)}${'réel'.padStart(8)}${'avant'.padStart(8)}${'après'.padStart(8)}  verdict`);
@@ -986,7 +1099,7 @@ function compareReport(cmp, { short = false } = {}) {
   const jainA = before.balance.replay?.jain, jainB = after.balance.replay?.jain;
   out.push('', `Verdict : ${up} indicateur${up > 1 ? 's' : ''} mieux, ${down} moins bien, ${same} ${same > 1 ? 'égaux' : 'égal'} ; ` +
     `équilibre (Jain) ${fmt(jainA, { digits: 3 })} → ${fmt(jainB, { digits: 3 })} ` +
-    `(${verdict(INDICATORS.find(i => i.label.startsWith('indice')), jainA, jainB) || '—'}) ; ` +
+    `(${verdict(INDICATORS.find(i => i.id === 'jain'), jainA, jainB) || '—'}) ; ` +
     `${losers.length} personne${losers.length > 1 ? 's' : ''} y perd${losers.length > 1 ? 'ent' : ''}, ${winners.length} y gagne${winners.length > 1 ? 'nt' : ''}.`);
   if (!short) {
     // Titres dont l'attente change de 5 min au moins.
@@ -997,9 +1110,10 @@ function compareReport(cmp, { short = false } = {}) {
       const a = A.get(id), b = B.get(id);
       const d = (b?.waitSec ?? Infinity) - (a?.waitSec ?? Infinity);
       if (a && b && Math.abs(d) < 300) continue;
-      rows.push({ a, b, d: Number.isFinite(d) ? d : 0 });
+      // Titre chanté d'un seul côté : le cas le plus grave, en tête.
+      rows.push({ a, b, d: Number.isFinite(d) ? d : Infinity });
     }
-    rows.sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+    rows.sort((x, y) => (Math.abs(y.d) - Math.abs(x.d)) || 0);
     out.push('', `Titres dont l'attente change de 5 min ou plus (avant → après) : ${rows.length ? '' : 'aucun'}`);
     const m = p => p ? `${String(Math.round(p.waitSec / 60)).padStart(3)} min` : 'pas chanté';
     for (const { a, b } of rows) {
