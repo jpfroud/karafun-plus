@@ -77,7 +77,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             if (open.isEmpty()) open.addAll(candidates);
 
             List<Performance> tier = firstAppearances(open, appeared);
-            List<Performance> choices = oncePerRound(preferOwed(tier, owed, round), round);
+            List<Performance> choices = oncePerRound(preferOwed(tier, owed, round), round, apps);
             // Spacing: when every fair passage brings back someone who sang
             // in the last `spacing` songs, another passage of the round goes
             // first, never someone who already sang in this round. The table
@@ -89,10 +89,10 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 List<Performance> spacedTier = tier;
                 if (wellSpaced.isEmpty()) {
                     List<Performance> others = new ArrayList<>();
-                    for (Performance c : open) if (spaced(c, lastSeen, at, spacing) && !allIn(c, round)) others.add(c);
+                    for (Performance c : open) if (spaced(c, lastSeen, at, spacing) && repeats(c, round, apps) < c.getSingers().size()) others.add(c);
                     if (!others.isEmpty()) {
                         spacedTier = firstAppearances(others, appeared);
-                        wellSpaced = oncePerRound(preferOwed(spacedTier, owed, round), round);
+                        wellSpaced = oncePerRound(preferOwed(spacedTier, owed, round), round, apps);
                     }
                 }
                 if (!wellSpaced.isEmpty() && (offTable(wellSpaced, prior) || !offTable(choices, prior))) {
@@ -255,13 +255,19 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         return tier;
     }
 
-    private static List<Performance> oncePerRound(List<Performance> tier, Set<String> round) {
+    private static List<Performance> oncePerRound(List<Performance> tier, Set<String> round, Map<String, Integer> apps) {
         List<Performance> choices = new ArrayList<>();
-        for (Performance c : tier) if (noneIn(c, round)) choices.add(c);
+        for (Performance c : tier) if (repeats(c, round, apps) == 0) choices.add(c);
         if (!choices.isEmpty()) return choices;
         int fewest = Integer.MAX_VALUE;
-        for (Performance c : tier) if (!allIn(c, round)) fewest = Math.min(fewest, repeats(c, round));
-        for (Performance c : tier) if (!allIn(c, round) && repeats(c, round) == fewest) choices.add(c);
+        for (Performance c : tier) {
+            int repeats = repeats(c, round, apps);
+            if (repeats < c.getSingers().size()) fewest = Math.min(fewest, repeats);
+        }
+        for (Performance c : tier) {
+            int repeats = repeats(c, round, apps);
+            if (repeats < c.getSingers().size() && repeats == fewest) choices.add(c);
+        }
         if (choices.isEmpty()) choices.addAll(tier);
         return choices;
     }
@@ -413,14 +419,19 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         return true;
     }
 
-    private static boolean noneIn(Performance c, Set<String> round) {
-        for (String singer : c.getSingers()) if (round.contains(singer)) return false;
-        return true;
-    }
-
-    private static int repeats(Performance c, Set<String> round) {
+    // Singers of this passage already counted in the round. A debt (a
+    // passage taken early, a malus) puts its debtor in the round without a
+    // stage appearance; it weighs on the debtor's own title. As the guest of
+    // an owner still new in the round, the debtor counts once really on
+    // stage, so that owner does not pay the guest's debt. An owner already
+    // counted in the round (passage or debt) changes nothing: the guest does
+    // not turn the duet into a new passage (same as lib/scheduler/rotation.js).
+    private static int repeats(Performance c, Set<String> round, Map<String, Integer> apps) {
+        boolean ownerIn = round.contains(c.getOwner());
         int count = 0;
-        for (String singer : c.getSingers()) if (round.contains(singer)) count++;
+        for (String singer : c.getSingers()) {
+            if (round.contains(singer) && (ownerIn || singer.equals(c.getOwner()) || apps.getOrDefault(singer, 0) > 0)) count++;
+        }
         return count;
     }
 

@@ -694,6 +694,85 @@ test('QueueScore : un ordre qui fait voir un double coûte au moins 4 000 en med
   } finally { bridge.close(); }
 });
 
+// Soirée du 15 octobre : la dette de l'invitée d'un duo (passage pris en
+// avance) ne vaut que pour son propre titre. Le score Java suit la règle
+// locale : le duo de l'autrice, qui ne doit rien, garde sa place dans le tour
+// au lieu de passer derrière tout le monde.
+test('QueueScore : la dette de l’invitée d’un duo ne retarde pas le duo de l’autrice', { skip: !fs.existsSync(JAR) }, async () => {
+  const s = new Scheduler();
+  let n = 9400;
+  const song = () => ({ songId: n++, title: `T${n}`, artist: 'x' });
+  const join = (tableId, name) => s.join({ tableId, name, headcount: 4 });
+  const ana = join('T4', 'Ana'), bea = join('T4', 'Bea');
+  const others = [['T1', 'Chris'], ['T2', 'Dina'], ['T3', 'Eli'], ['T5', 'Fred'], ['T6', 'Gus']]
+    .map(([tableId, name]) => join(tableId, name));
+  for (const p of [ana, bea, ...others]) s.chooseSong(p, song(), 'append');
+  for (let i = 0; i < 7; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  s.inviteDuet(ana, bea.id, song());
+  for (const p of others) s.chooseSong(p, song(), 'append');
+  s.roundUse.set(bea.id, 2); // passage de Bea pris sur le tour suivant
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  const nameOf = row => row.singers.map(pid => s.people.get(pid).name).join(' & ');
+  const local = request.performances;
+  const duo = local.findIndex(row => row.singers.length === 2);
+  assert.ok(duo >= 0 && duo < local.length - 2, `duo avant la fin du tour : ${local.map(nameOf).join(', ')}`);
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge();
+  try {
+    const { seedScore } = await bridge.solve({ ...request, requestId: 'guest-debt', budgetMs: 100,
+      performances: local.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true });
+    // Avant la correction, le score Java comptait Bea comme déjà passée et
+    // sanctionnait ce duo comme hors des choix équitables (-5 000).
+    assert.equal(medium(seedScore), 0, `ordre de la règle locale : ${local.map(nameOf).join(', ')}`);
+  } finally { bridge.close(); }
+});
+
+// Même règle, auteur déjà compté dans le tour (passage réel ou dette) : la
+// dette de son invitée compte encore, son duo ne devient pas un passage neuf.
+// Y & Z, qui présente Z, doit passer d'abord, avec ou sans le repli de
+// l'espacement (Y vient de chanter).
+test('QueueScore : auteur déjà compté dans le tour, la dette de son invitée compte encore', { skip: !fs.existsSync(JAR) }, async () => {
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge();
+  try {
+    for (const ownerDebt of [false, true]) for (const yJustSang of [false, true]) {
+      let n = 9450;
+      const song = () => ({ songId: n++, title: `T${n}`, artist: 'x' });
+      const s = new Scheduler();
+      s._maybeRequestSolver = () => {};
+      const join = (tableId, name) => s.join({ tableId, name, headcount: 2 });
+      const X = join('TX', 'X'), G = join('TG', 'G'), Y = join('TY', 'Y'), Z = join('TZ', 'Z'), W = join('TW', 'W');
+      for (const p of [X, G, Y, Z, W]) s.chooseSong(p, song(), 'append');
+      for (let i = 0; i < 5; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+      s.inviteDuet(X, G.id, song()); s.answerDuet(G, true);
+      s.inviteDuet(Y, Z.id, song()); s.answerDuet(Z, true);
+      s.roundPeople = new Set([X.id, G.id, Y.id, W.id]);
+      s.roundApps = new Map(ownerDebt ? [[Y.id, 1], [W.id, 1]] : [[X.id, 1], [Y.id, 1], [W.id, 1]]);
+      s.roundUse = new Map(ownerDebt ? [[X.id, 1], [G.id, 1]] : [[G.id, 1]]);
+      s.roundOwed = new Set();
+      s.appearanceSerial = 40;
+      for (const p of [X, G, Y, Z]) p.lastAppearanceTurn = 10;
+      W.lastAppearanceTurn = 40;
+      if (yJustSang) Y.lastAppearanceTurn = 39;
+      s.lastGroup = W.group;
+      s.recentGroups = [];
+      let request;
+      s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+      s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+      const nameOf = row => row.singers.map(pid => s.people.get(pid).name).join(' & ');
+      const local = request.performances;
+      const label = JSON.stringify({ ownerDebt, yJustSang });
+      assert.deepEqual(local.map(nameOf), ['Y & Z', 'X & G'], label);
+      const seed = async (rows, id) => medium((await bridge.solve({ ...request, requestId: id, budgetMs: 100,
+        performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+      const kept = await seed(local, `owner-counted-${label}`), swapped = await seed([local[1], local[0]], `owner-counted-swap-${label}`);
+      assert.ok(kept > swapped, `${label} : Y & Z d'abord ${kept}, X & G d'abord ${swapped}`);
+    }
+  } finally { bridge.close(); }
+});
+
 // « Compromis » : la taille d'une table envoyée à Timefold (groupSizes) compte
 // ses chanteurs inscrits, titre prêt ou non, et change bien le score.
 function compromiseRequest() {

@@ -171,9 +171,11 @@ class Scheduler {
   // repassait aussi tôt que les autres au tour suivant (un soliste deux fois
   // pendant une attente de 65 min, soirée du 10 octobre). Le prochain annoncé
   // quand le tour semblait fini, puis rattrapé par une arrivée, est dans le
-  // même cas (`reservedNext.borrowable`). Sans bonus ni malus, un passage non emprunté
-  // d'une personne déjà comptée dans le tour (invitée de duo, ordre du bar)
-  // ne coûte rien de plus, dette en cours ou non.
+  // même cas (`reservedNext.borrowable`). Une dette pèse sur les titres du
+  // débiteur : invité du duo d'un auteur encore neuf dans le tour, il ne
+  // retarde pas cet auteur (`inRound` dans `_pick`). Sans bonus ni malus, un
+  // passage non emprunté d'une personne déjà comptée dans le tour (invitée de
+  // duo, ordre du bar) ne coûte rien de plus, dette en cours ou non.
   // Rend la hausse de roundUse (0 quand seul roundPeople change), pour que
   // le retrait d'une invitée rende exactement ce qui a été ajouté.
   _useRound(roundPeople, roundUse, pid, borrowed = false) {
