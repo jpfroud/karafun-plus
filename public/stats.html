@@ -683,7 +683,8 @@ function renderFocus() {
       h('p', { text: `${isIndividual(singer.tableId) ? 'Arrivée' : `${tableName(singer.tableId)} · arrivée`} ${hhmm(singer.joinedAt)}${counted} · ${end} présence ${dur(singer.presenceSec)}` }))));
     box.appendChild(h('div', { class: 'st-mini' },
       ...[[singer.turns, 'passages'], [singer.guestTurns, 'comme invité'], [fmtNum(singer.turnsPerHour, 2), 'par heure'],
-        [fmtNum(singer.expectedTurns, 1), 'passages attendus'], [dur(singer.waits.avgSec), 'attente moyenne'], [dur(singer.firstTurnSec), 'avant le 1er passage'],
+        [fmtNum(singer.expectedTurns, 1), 'passages attendus'], [dur(singer.waits.avgSec), 'attente moyenne par titre'],
+        [dur(singer.stageWaits?.maxSec), 'au plus sans monter sur scène'], [dur(singer.firstTurnSec), 'avant le 1er passage'],
         [singer.deferrals, '« Pas prêt »'], [singer.presenceSkips, '« Je suis là » manqués']]
         .map(([value, label]) => h('div', {}, h('b', { text: String(value ?? '—') }), h('small', { text: label })))));
     box.appendChild(dataTable([['Titre'], ['Demandé'], ['Sur scène'], ['Attente', true], ['État']],
@@ -713,7 +714,7 @@ function renderCharts() {
     draw: drawTimeline });
   const waitRows = st.singers.filter(x => x.waits.n).sort((a, b) => b.waits.avgSec - a.waits.avgSec);
   card({ id: 'chartWaits', title: 'Attente avant de chanter',
-    subtitle: 'Par chanteur : de la plus courte à la plus longue, point = moyenne. Trait vertical : moyenne de la salle.',
+    subtitle: 'Par chanteur, attente de ses titres : de la plus courte à la plus longue, point = moyenne. Trait vertical : moyenne de la salle.',
     legend: [['Moyenne', 'var(--s1)', 'dot'], ['Plus courte – plus longue', 'var(--muted)', 'line'], ['Moyenne de la salle', 'var(--ref)', 'tick']],
     table: () => [[['Chanteur'], ['Table'], ['Passages', true], ['Moyenne', true], ['Médiane', true], ['Plus longue', true]],
       waitRows.map(r => ({ cells: [nameOf(r.id), personTable(r.tableId), r.waits.n, dur(r.waits.avgSec), dur(r.waits.medianSec), dur(r.waits.maxSec)] }))],
@@ -784,10 +785,10 @@ function renderSingerTable() {
   const st = state.data.stats;
   const cols = [['Chanteur', false, 'name'], ['Table', false, 'table'], ['Présence', true, 'presenceSec'], ['Passages', true, 'turns'],
     ['Invité', true, 'guestTurns'], ['Par heure', true, 'turnsPerHour'], ['Attendus', true, 'expectedTurns'], ['Attente moy.', true, 'wait'],
-    ['Plus longue', true, 'waitMax'], ['1er passage', true, 'firstTurnSec'], ['Pas prêt', true, 'deferrals'], ['Je suis là manqués', true, 'presenceSkips'],
+    ['Plus longue', true, 'waitMax'], ['Sans scène (max)', true, 'stageMax'], ['1er passage', true, 'firstTurnSec'], ['Pas prêt', true, 'deferrals'], ['Je suis là manqués', true, 'presenceSkips'],
     ['Titres retirés', true, 'removed'], ['Voix Battle', true, 'battleVotes']];
   const value = (row, key) => key === 'name' ? nameOf(row.id).toLocaleLowerCase('fr') : key === 'table' ? personTable(row.tableId) :
-    key === 'wait' ? row.waits.avgSec : key === 'waitMax' ? row.waits.maxSec : row[key];
+    key === 'wait' ? row.waits.avgSec : key === 'waitMax' ? row.waits.maxSec : key === 'stageMax' ? row.stageWaits?.maxSec : row[key];
   // Ordre alphabétique français (« Émilie » avant « Farid ») ; à égalité, le prénom départage.
   const byName = (a, b) => nameOf(a.id).localeCompare(nameOf(b.id), 'fr', { sensitivity: 'base' });
   const rows = [...st.singers].sort((a, b) => {
@@ -802,7 +803,7 @@ function renderSingerTable() {
     h('p', { text: 'Touchez un en-tête pour trier. « Présence » : départ signalé, sinon dernier signe d’activité + 30 min, comptée pendant le karaoké seulement (connexion de KaraFun → fermeture).' }))));
   el.appendChild(h('div', { class: 'st-table-wrap' }, dataTable(cols, rows.map(r => ({ id: r.id, cells: [nameOf(r.id), personTable(r.tableId),
     dur(r.presenceSec), r.turns, r.guestTurns, fmtNum(r.turnsPerHour, 2), fmtNum(r.expectedTurns, 1), dur(r.waits.avgSec), dur(r.waits.maxSec),
-    dur(r.firstTurnSec), r.deferrals, r.presenceSkips, r.removed, r.battleVotes] })),
+    dur(r.stageWaits?.maxSec), dur(r.firstTurnSec), r.deferrals, r.presenceSkips, r.removed, r.battleVotes] })),
   { focusOf: row => focus?.has(row.id), sortable: key => {
     state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : (['name', 'table'].includes(key) ? 1 : -1) };
     renderAll();
@@ -812,7 +813,7 @@ function renderSingerTable() {
 
 function renderDefinitions() {
   const box = clear($('definitions'));
-  const labels = { presence: 'Présence', turns: 'Passages', wait: 'Attente', requestDelay: 'Délai depuis la demande', fairShare: 'Part attendue',
+  const labels = { presence: 'Présence', turns: 'Passages', wait: 'Attente (par titre)', stageWait: 'Sans monter sur scène', requestDelay: 'Délai depuis la demande', fairShare: 'Part attendue',
     jain: 'Équité (indice de Jain)', jainAdjusted: 'Équité corrigée des bonus', demandJain: 'Équité selon les demandes', deadTime: 'Temps mort',
     songsPerHour: 'Chansons par heure', firstTurn: 'Premier passage', guestTurns: 'Invité', turnsPerHour: 'Par heure' };
   for (const [key, text] of Object.entries(state.data.stats.definitions || {})) {

@@ -135,7 +135,7 @@ test('attentes : depuis la demande ou la fin du passage précédent, report « P
   assert.equal(stats.global.waitAvgSec, 24 * 60);
   assert.equal(stats.global.waitMedianSec, 24 * 60);
   assert.equal(stats.global.netWaitAvgSec, 23 * 60);
-  assert.deepEqual(stats.global.longestWait, { sec: 50 * 60, personId: 'pD', title: 'Cinq', at: at(60) });
+  assert.deepEqual(stats.global.longestWait, { sec: 50 * 60, personId: 'pD', title: 'Cinq', at: at(60), guestStages: 0 });
   assert.deepEqual(stats.global.waitHistogram.map(b => b.count), [0, 2, 2, 0, 1, 0, 0]);
   assert.equal(byId(stats, 'pA').waits.avgSec, 18 * 60);
   assert.equal(byId(stats, 'pA').waits.maxSec, 26 * 60);
@@ -1602,3 +1602,66 @@ test('présence : de la connexion de KaraFun à la fermeture du bar, pas la mati
     assert.doesNotMatch(text, /ajout refusé/);
   });
 }
+
+// Soirée du 15 octobre : attente par titre comme la rotation (un passage en
+// invitée ne la remet pas à zéro ; changer, remplacer ou remonter un titre ne
+// la relance pas) et, à part, attente sans monter sur scène, invités compris.
+test('attentes : par titre comme la rotation, et sans monter sur scène pour chaque personne', () => {
+  const T = m => T0 + m * M;
+  const events = [];
+  const e = (minutes, ev, fields = {}) => events.push({ v: 1, seq: events.length + 1, t: T(minutes), ev, ...fields });
+  const stage = (from, to, entryId, ids, queueId) => {
+    e(from, 'stage.started', { queueId, entryId, ids, ownerId: ids[0], source: 'queue', title: entryId });
+    e(to, 'stage.ended', { queueId, playedSec: (to - from) * 60 });
+  };
+  e(0, 'app.started', { restored: false, offlineMs: 0 });
+  for (const [pid, tableId] of [['bea', '1'], ['ana', '1'], ['chris', '2'], ['leo', '2'],
+    ['eva', '3'], ['fred', '4'], ['gus', '5'], ['hugo', '6']]) e(0, 'person.joined', { personId: pid, tableId });
+  e(0, 'song.requested', { personId: 'bea', entryId: 'n1', title: 'n1', mode: 'append' });
+  e(0, 'song.requested', { personId: 'bea', entryId: 'n2', title: 'n2', mode: 'append' });
+  e(0, 'song.requested', { personId: 'ana', entryId: 'c1', title: 'c1', mode: 'append' });
+  e(1, 'duo.invited', { personId: 'ana', entryId: 'c1', ownerId: 'ana', partnerId: 'bea', sameGroup: true });
+  e(0, 'song.requested', { personId: 'chris', entryId: 'r1', title: 'r1', mode: 'append' });
+  e(0, 'song.requested', { personId: 'chris', entryId: 'r2', title: 'r2', mode: 'append' });
+  e(2, 'duo.invited', { personId: 'chris', entryId: 'r2', ownerId: 'chris', partnerId: 'leo', sameGroup: true });
+  e(1, 'song.requested', { personId: 'eva', entryId: 's1', title: 's1', mode: 'append' });
+  e(1, 'song.requested', { personId: 'eva', entryId: 's2', title: 's2', mode: 'append' });
+  e(1, 'song.requested', { personId: 'fred', entryId: 'y1', title: 'y1', mode: 'append' });
+  e(1, 'song.requested', { personId: 'gus', entryId: 'i1', title: 'i1', mode: 'append' });
+  e(3, 'song.removed', { personId: 'gus', entryId: 'i1', by: 'self' });
+  e(6, 'song.requested', { personId: 'hugo', entryId: 'l1', title: 'l1', mode: 'append' });
+  e(6.5, 'song.removed', { personId: 'hugo', entryId: 'l1', by: 'self' });
+  e(7, 'song.requested', { personId: 'hugo', entryId: 'l2', title: 'l2', mode: 'append' });
+  stage(5, 9, 'n1', ['bea'], 1);
+  stage(10, 14, 'r1', ['chris'], 2);
+  e(12, 'song.requested', { personId: 'gus', entryId: 'i2', title: 'i2', mode: 'append' });
+  stage(15, 19, 'c1', ['ana', 'bea'], 3);
+  stage(20, 24, 'r2', ['chris', 'leo'], 4);
+  stage(25, 29, 'i2', ['gus'], 5);
+  stage(30, 34, 'n2', ['bea'], 6);
+  stage(35, 39, 'l2', ['hugo'], 7);
+  stage(40, 44, 's1', ['eva'], 8);
+  e(41, 'song.requested', { personId: 'fred', entryId: 'y2', title: 'y2', mode: 'replace', replacedEntryIds: ['y1'] });
+  stage(45, 49, 'y2', ['fred'], 9);
+  e(50, 'song.requested', { personId: 'eva', entryId: 's3', title: 's3', mode: 'append' });
+  e(50.5, 'song.reordered', { personId: 'eva', entryId: 's3', fromIndex: 1, toIndex: 0 });
+  stage(60, 64, 's3', ['eva'], 10);
+  const stats = computeStats({ meta: {}, events, now: T(70) });
+  const wait = id => stats.timeline.stages.find(s => s.entryId === id).waitSec / 60;
+  assert.equal(wait('n2'), 30 - 9, 'son passage en invitée (15-19) ne remet pas l’attente de son titre à zéro');
+  assert.equal(wait('s3'), 60 - 44, 'titre remonté en tête : prête depuis la fin de son passage, un autre titre en liste');
+  assert.equal(wait('y2'), 45 - 1, 'titre remplacé : l’attente continue');
+  assert.equal(wait('l2'), 35 - 6, 'retiré puis rechoisi sans passage entre-temps : un échange');
+  assert.equal(wait('i2'), 25 - 12, 'retiré puis rechoisi après des passages : l’attente repart');
+  const sansScene = id => singerOf(stats, id).stageWaits;
+  assert.deepEqual(sansScene('bea'), { n: 3, guestN: 1, avgSec: (5 + 6 + 11) * 60 / 3, medianSec: 6 * 60, maxSec: 11 * 60 });
+  assert.deepEqual(sansScene('leo'), { n: 1, guestN: 1, avgSec: 18 * 60, medianSec: 18 * 60, maxSec: 18 * 60 },
+    'seulement invité : attend depuis le duo accepté');
+  assert.equal(singerOf(stats, 'leo').waits.n, 0, 'aucun titre à lui');
+  assert.equal(sansScene('ana').maxSec, 15 * 60);
+  // Plus longue attente d'un titre traversée par un passage en invitée : dit.
+  const longest = { ...stats, global: { ...stats.global, waitAvgSec: 20 * 60,
+    longestWait: { sec: 21 * 60, personId: 'bea', title: 'n2', at: T(30), guestStages: 1 } } };
+  assert.match(insights(longest).find(i => i.kind === 'longest-wait').text,
+    /Plus longue attente : 21 min \(bea, « n2 », montée sur scène entre-temps en invitée\)\./);
+});
