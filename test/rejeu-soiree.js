@@ -25,12 +25,27 @@
  *                          spacingSongs=2, roundAppearanceCap=0, interleaveArrivals=false,
  *                          pushDelaySec=30 (rejeu libre) : compare les réglages du bar.
  *   --court                résumé seulement (sans la liste des décisions ni des attentes)
+ *   --avant <rév|dossier>  BILAN AVANT/APRÈS : la même soirée rejouée librement avec
+ *                          l'ordonnanceur d'une autre version (révision git du dépôt,
+ *                          extraite dans un dossier temporaire, ou dossier de sources)
+ *                          puis avec la version de travail, mesurées toutes deux par
+ *                          evening-stats.js d'aujourd'hui : attentes, passages de chacun,
+ *                          équilibre (indice de Jain, part de chacun), anomalies.
+ *                          Avec --solveur, le jar de l'autre version est pris dans son
+ *                          dossier, ou construit par Maven pour une révision git.
+ *   --solveur-avant <jar>  jar Timefold de la version « avant » ; « sans » : version
+ *                          « avant » sans Timefold. Ce qu'apporte Timefold :
+ *                          --avant . --solveur --solveur-avant sans
  *
  * Programmatique : const r = require('./rejeu-soiree');
  *   const ev = r.loadEvening('export.json');
  *   const res = await r.runForced(ev, { solver, budget, options, until });   // ou r.runFree
  *   (`until` : rejeu forcé arrêté après cette heure, en ms)
  *   res.decisions, res.passages (attente par titre), res.analysis ; r.report(res)
+ *   const cmp = await r.runCompare(ev, { before: { code: 'fd27698', solver: true },
+ *     after: { solver: true }, budget, options });  r.compareReport(cmp)
+ *   (`code` : révision git ou dossier, version de travail par défaut ; `solver`
+ *   comme ci-dessus, true = jar de cette version)
  *
  * Aucune méthode de l'ordonnanceur n'est copiée ici : les choix viennent de
  * select() et reserveNext(), les explications de son ÉTAT au moment de la
@@ -46,14 +61,17 @@
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { Scheduler } = require('../scheduler');
 const eveningStats = require('../evening-stats');
 
 const ROOT = path.join(__dirname, '..');
-const DEFAULT_JARS = [path.join(ROOT, 'solver', 'target', 'karafun-solver.jar'),
-  path.join(ROOT, 'solver', 'karafun-solver.jar')];
+const jarsIn = dir => [path.join(dir, 'solver', 'target', 'karafun-solver.jar'), path.join(dir, 'solver', 'karafun-solver.jar')];
 const EPS = 1e-9;
+// Erreur d'utilisation (fichier, option, version) : message seul, sans trace.
+class UsageError extends Error {}
 // Règles de la soirée qui sont des options de l'ordonnanceur.
 const SCHED_RULES = ['tableRotation', 'weightedTables', 'interleaveArrivals', 'roundAppearanceCap',
   'spacingSongs', 'requirePresence', 'gap', 'cap'];
@@ -70,11 +88,15 @@ const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export 
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
 
 // ------------------------------------------------------------------ horloge
-const clock = { now: 0 };
+// Une seule horloge par processus : deux rejeux en même temps mélangeraient
+// leurs heures (et laisseraient Date.now figé), le second est donc refusé.
+const clock = { now: 0, busy: false };
 async function withClock(fn) {
+  if (clock.busy) throw new Error('Un rejeu est déjà en cours dans ce processus : les lancer l’un après l’autre.');
   const real = Date.now;
+  clock.busy = true;
   Date.now = () => clock.now;
-  try { return await fn(); } finally { Date.now = real; }
+  try { return await fn(); } finally { Date.now = real; clock.busy = false; }
 }
 function timeOf(t, tz = 'Europe/Paris') {
   return new Date(t).toLocaleTimeString('fr-FR', { timeZone: tz, hour12: false });
@@ -83,8 +105,13 @@ function timeOf(t, tz = 'Europe/Paris') {
 // ------------------------------------------------------------------ export
 // `input` : chemin du fichier ou objet déjà lu.
 function loadEvening(input) {
-  const raw = typeof input === 'string' ? JSON.parse(fs.readFileSync(input, 'utf8')) : input;
-  if (!raw || !Array.isArray(raw.events)) throw new Error('Export de soirée illisible : pas de liste « events ».');
+  let raw = input;
+  if (typeof input === 'string') {
+    let text;
+    try { text = fs.readFileSync(input, 'utf8'); } catch (err) { throw new UsageError(`Export de soirée introuvable ou illisible : ${input} (${err.code || err.message})`); }
+    try { raw = JSON.parse(text); } catch (err) { throw new UsageError(`Export de soirée illisible : ${input} n'est pas du JSON (${err.message})`); }
+  }
+  if (!raw || !Array.isArray(raw.events)) throw new UsageError('Export de soirée illisible : pas de liste « events ».');
   const skipped = {};
   const events = raw.events
     .map((e, i) => ({ e, i }))
@@ -102,14 +129,6 @@ function loadEvening(input) {
   }
   const tables = new Map((raw.tables || []).filter(t => t?.key).map(t => [t.key, { key: t.key, individual: !!t.individual, name: t.name || t.key }]));
   const rules = { ...(events.find(e => e.ev === 'evening.started')?.rules || {}) };
-  // Ouverture du karaoké : celle de evening-stats.js (dans l'export, sinon recalculée).
-  let openedAt = raw.stats?.evening?.openedAt;
-  if (!Number.isFinite(openedAt)) {
-    try { openedAt = eveningStats.computeStats({ events: raw.events, now: events.at(-1)?.t || 0 }).evening.openedAt; } catch (_) { openedAt = null; }
-  }
-  if (!Number.isFinite(openedAt)) openedAt = events.find(e => e.ev === 'stage.started')?.t ?? events[0]?.t ?? 0;
-  const requests = new Map();
-  for (const e of events) if (e.ev === 'song.requested' && e.entryId && !requests.has(e.entryId)) requests.set(e.entryId, e);
   // Durée réellement jouée par titre et délais réels de lancement du k-ième titre :
   // depuis la fin du précédent (lecture auto) et depuis son envoi.
   const played = new Map();
@@ -146,71 +165,22 @@ function loadEvening(input) {
   // Attentes de evening-stats.js présentes dans l'export (vérification de la définition).
   const exportWaits = new Map();
   for (const st of raw.stats?.timeline?.stages || []) if (st.entryId && st.waitSec != null) exportWaits.set(st.entryId, st.waitSec);
-  return { raw, events, people, tables, rules, openedAt, requests, played, startGaps, battleSec, offline,
+  return { raw, events, people, tables, rules, played, startGaps, battleSec, offline,
     timezone, realPassages, exportWaits, skipped };
 }
 
-// Passages réels de la file, comme evening-stats.js les reconstruit : même
-// titre relancé = un passage ; un passage se termine au plus tard au début du
-// suivant ; invitée retirée avant le lancement exclue ; duo noté par le bar ajouté.
+// Passages réels, tels que evening-stats.js les reconstruit (même titre
+// relancé = un passage, invitée retirée avant le lancement exclue, duo noté
+// par le bar ajouté ou annulé), avec le « nouveau tour » noté à l'envoi.
 function passagesFromEvents(events) {
-  const stages = [];
-  const open = new Map();
-  const leftDuo = new Map();
-  const improvisedLater = new Map();
-  const sent = new Map();
-  for (const e of events) {
-    const t = e.t;
-    switch (e.ev) {
-      case 'turn.sent': if (e.entryId) sent.set(e.entryId, e); break;
-      case 'duo.left': {
-        const guest = e.personId || e.partnerId || e.guestId;
-        if (!e.entryId || !guest) break;
-        const st = stages.find(x => x.entryId === e.entryId);
-        if (st && !st.ended) st.ids = st.ids.filter(id => id !== guest);
-        else if (!st) leftDuo.set(e.entryId, [...(leftDuo.get(e.entryId) || []), guest]);
-        break;
-      }
-      case 'duo.improvised': {
-        const st = [...stages].reverse().find(x => e.entryId ? x.entryId === e.entryId : e.queueId != null && x.queueId === e.queueId);
-        if (st) { if (!st.ids.includes(e.partnerId)) st.ids.push(e.partnerId); } else if (e.entryId) improvisedLater.set(e.entryId, e.partnerId);
-        break;
-      }
-      case 'stage.started': {
-        const queueId = e.queueId == null ? null : String(e.queueId);
-        if (queueId != null && open.has(queueId)) { open.get(queueId).segmentStart = t; break; }
-        const previous = stages.at(-1);
-        if (queueId != null && previous?.queueId === queueId) {
-          previous.endAt = null; previous.ended = false; previous.segmentStart = t; open.set(queueId, previous); break;
-        }
-        for (const [qid, st] of open) { if (st.endAt == null) st.endAt = t; open.delete(qid); }
-        let ids = Array.isArray(e.ids) ? e.ids.filter(id => typeof id === 'string') : [];
-        if (e.entryId && leftDuo.has(e.entryId)) ids = ids.filter(id => !leftDuo.get(e.entryId).includes(id));
-        const later = e.entryId && improvisedLater.get(e.entryId);
-        if (later && !ids.includes(later)) ids.push(later);
-        const source = e.source || (ids.length ? 'queue' : 'native');
-        const st = { start: t, endAt: null, ended: false, queueId, entryId: e.entryId || null, ids, source,
-          title: e.title || '', newRound: !!sent.get(e.entryId)?.newRound };
-        stages.push(st);
-        open.set(queueId ?? `#${stages.length}`, st);
-        break;
-      }
-      case 'stage.ended': {
-        const queueId = e.queueId == null ? null : String(e.queueId);
-        const st = (queueId != null && open.get(queueId)) || [...open.values()].at(-1);
-        if (!st) break;
-        const played = Number(e.playedSec);
-        st.endAt = Number.isFinite(played) ? Math.min(t, (st.segmentStart ?? st.start) + played * 1000) : t;
-        st.ended = true;
-        for (const [qid, v] of open) if (v === st) open.delete(qid);
-        break;
-      }
-      default: break;
-    }
-  }
-  return stages.map(st => ({ entryId: st.entryId, ids: st.ids, start: st.start, end: st.endAt ?? st.start,
-    source: st.source, title: st.title, newRound: st.newRound }));
+  const newRound = new Map();
+  for (const e of events) if (e.ev === 'turn.sent' && e.entryId) newRound.set(e.entryId, !!e.newRound);
+  return statsOf(events).timeline.stages.map(st => ({ entryId: st.entryId || null, ids: st.ids, start: st.start,
+    end: st.end ?? st.start, source: st.source, title: st.title || '', newRound: !!newRound.get(st.entryId) }));
 }
+
+// Soirée déjà chargée par loadEvening, ou chemin / export à charger.
+const asEvening = evening => (evening?.events && evening.realPassages ? evening : loadEvening(evening));
 
 // Statistiques de evening-stats.js sur un journal (gardées pour chaque
 // tableau d'événements : la soirée réelle est relue plusieurs fois).
@@ -272,36 +242,124 @@ function summary(waitsSec) {
     over45: waitsSec.filter(x => x >= 2700).length, over60: waitsSec.filter(x => x >= 3600).length };
 }
 
-// ------------------------------------------------------------------ contexte de rejeu
-function resolveJar(solver) {
+// ------------------------------------------------------------------ version de l'ordonnanceur
+// Version de travail : ce dépôt. Une autre version (bilan avant/après) : un
+// dossier de sources, ou une révision git extraite une fois par commit dans
+// le dossier temporaire du système. Seuls scheduler.js et ce qu'il charge
+// (lib/scheduler, solver/bridge.js, song-repeats.js) viennent de l'autre version ;
+// le rejeu et la mesure (evening-stats.js) restent ceux d'aujourd'hui.
+const CURRENT = { label: 'version de travail', dir: ROOT, Scheduler, extracted: false };
+const codeCache = new Map();
+function git(args) {
+  try { return execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (_) { return null; }
+}
+function loadCode(where) {
+  if (where == null || where === CURRENT) return CURRENT;
+  if (typeof where === 'object') return where;
+  if (codeCache.has(where)) return codeCache.get(where);
+  let dir, label, extracted = false;
+  if (fs.existsSync(where) && fs.statSync(where).isDirectory()) {
+    dir = path.resolve(where); label = dir;
+  } else {
+    const sha = git(['rev-parse', '--verify', '--quiet', `${where}^{commit}`]);
+    if (!sha) throw new UsageError(`--avant : « ${where} » n'est ni un dossier ni une révision git de ce dépôt.`);
+    dir = path.join(os.tmpdir(), 'karafun-rejeu', sha);
+    label = `${where} (${sha.slice(0, 7)})`; extracted = true;
+    if (!fs.existsSync(path.join(dir, 'scheduler.js'))) {
+      const tmp = `${dir}.${process.pid}`;
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.mkdirSync(tmp, { recursive: true });
+      try {
+        // Index temporaire : ni l'index ni la copie de travail du dépôt ne bougent.
+        const env = { ...process.env, GIT_INDEX_FILE: path.join(tmp, '.rejeu-index') };
+        const run = args => execFileSync('git', ['-C', ROOT, ...args], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+        run(['read-tree', sha]);
+        run(['checkout-index', '-a', '-f', `--prefix=${tmp.split(path.sep).join('/')}/`]);
+        fs.rmSync(env.GIT_INDEX_FILE, { force: true });
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.renameSync(tmp, dir);
+      } catch (err) {
+        fs.rmSync(tmp, { recursive: true, force: true });
+        throw new UsageError(`--avant : extraction de ${label} impossible (${err.message.split('\n')[0]})`);
+      }
+    }
+  }
+  const file = path.join(dir, 'scheduler.js');
+  if (!fs.existsSync(file)) throw new UsageError(`--avant : pas de scheduler.js dans ${dir}`);
+  let loaded;
+  try { loaded = require(file); } catch (err) {
+    throw new UsageError(`--avant : chargement de ${file} impossible (${String(err.message).split('\n')[0]})`);
+  }
+  const code = { label, dir, Scheduler: loaded.Scheduler, extracted };
+  if (typeof code.Scheduler !== 'function') throw new UsageError(`--avant : ${file} n'exporte pas Scheduler`);
+  codeCache.set(where, code);
+  return code;
+}
+
+// Jar plus ancien que les sources Java de sa version : les règles de Timefold
+// ne seraient pas celles du code mesuré.
+function staleJar(jar, dir) {
+  const src = path.join(dir, 'solver', 'src');
+  if (!fs.existsSync(src)) return false;
+  const built = fs.statSync(jar).mtimeMs;
+  const walk = d => fs.readdirSync(d, { withFileTypes: true }).some(f =>
+    f.isDirectory() ? walk(path.join(d, f.name)) : fs.statSync(path.join(d, f.name)).mtimeMs > built);
+  return walk(src);
+}
+
+function resolveJar(solver, code = CURRENT) {
   if (!solver) return null;
   if (typeof solver === 'string') {
-    if (!fs.existsSync(solver)) throw new Error(`Jar Timefold introuvable : ${solver}`);
+    if (!fs.existsSync(solver)) throw new UsageError(`Jar Timefold introuvable : ${solver}`);
     return solver;
   }
-  const jar = DEFAULT_JARS.find(fs.existsSync);
-  if (!jar) throw new Error('Jar Timefold absent (solver/target/karafun-solver.jar) : construire le solveur ou retirer --solveur.');
+  let jar = jarsIn(code.dir).find(fs.existsSync);
+  if (!jar && code.extracted) {
+    // Révision extraite : son solveur est construit une fois, gardé avec elle.
+    try {
+      // Windows : mvn.cmd passe par le shell, chemin entre guillemets (espaces).
+      const pom = path.join(code.dir, 'solver', 'pom.xml');
+      const win = process.platform === 'win32';
+      execFileSync('mvn', ['-q', '-B', '-DskipTests', 'package', '-f', win ? `"${pom}"` : pom],
+        { stdio: ['ignore', 'ignore', 'pipe'], shell: win });
+    } catch (err) {
+      throw new UsageError(`Jar Timefold de ${code.label} : construction par Maven impossible (${String(err.stderr || err.message).split('\n')[0]}) ; ` +
+        'donner --solveur-avant <jar> ou retirer --solveur.');
+    }
+    jar = jarsIn(code.dir).find(fs.existsSync);
+  }
+  if (!jar) {
+    throw new UsageError(code === CURRENT ?
+      'Jar Timefold absent (solver/target/karafun-solver.jar) : construire le solveur ou retirer --solveur.' :
+      `Jar Timefold absent pour ${code.label} : le construire dans ${path.join(code.dir, 'solver')}, ou donner --solveur-avant <jar>.`);
+  }
   return jar;
 }
 
+// ------------------------------------------------------------------ contexte de rejeu
 function makeContext(ev, opts) {
+  const code = loadCode(opts.code);
   const overrides = { ...(opts.options || {}) };
   const rules = { ...ev.rules, ...overrides };
   const schedOpts = {};
   for (const k of SCHED_RULES) if (rules[k] !== undefined) schedOpts[k] = rules[k];
-  const s = new Scheduler(schedOpts);
+  const s = new code.Scheduler(schedOpts);
   // Le rejeu demande lui-même le plan à chaque décision (ensurePlan) : pas de
   // calcul lancé en tâche de fond ni d'optimisation continue.
   s._maybeRequestSolver = () => false;
   s._scheduleRefine = () => {};
   s.solverBridge = null;
   const ctx = { ev, s, rules, overrides, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
-    notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || 3000, solver: null, jar: null };
-  const jar = resolveJar(opts.solver);
+    notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || 3000, solver: null, jar: null,
+    code, warnings: [] };
+  const jar = resolveJar(opts.solver, code);
   if (jar) {
-    const { TimefoldBridge } = require('../solver/bridge');
+    const { TimefoldBridge } = require(path.join(code.dir, 'solver', 'bridge'));
     s.solverBridge = new TimefoldBridge({ jar, settleMs: 0 });
     ctx.solver = s.solverBridge; ctx.jar = jar;
+    if (staleJar(jar, code.dir)) {
+      ctx.warnings.push(`jar Timefold plus ancien que ${path.join(code.dir, 'solver', 'src')} : reconstruire (mvn -q -DskipTests package -f solver/pom.xml)`);
+    }
   }
   return ctx;
 }
@@ -344,7 +402,10 @@ function explain(ctx) {
     const apps = s.roundApps.get(pid) || 0;
     const use = s.roundUse.get(pid) || 0;
     const last = p.lastAppearanceTurn || 0;
-    return { key: keyOf(ctx, pid), inRound: s.roundPeople.has(pid), roundApps: apps, roundUse: +use.toFixed(3),
+    // roundMember : compté dans le tour (passage ou dette) ; la rotation ne
+    // compte une invitée en dette dans le duo d'un auteur neuf qu'une fois
+    // montée sur scène dans ce tour (roundApps).
+    return { key: keyOf(ctx, pid), roundMember: s.roundPeople.has(pid), roundApps: apps, roundUse: +use.toFixed(3),
       debt: use >= 1 - EPS && apps === 0, owed: s.roundOwed.has(pid), last, waitStart: Math.max(last, p.readySerial || 0),
       spaced: !last || last <= serial - spacing, cooldown: s.duetCooldowns.get(pid) || 0,
       appearances: (p.sung || 0) + (p.duetGuestCount || 0), table: p.tableId || null };
@@ -470,7 +531,7 @@ function countIgnored(ctx, e) {
 
 // ------------------------------------------------------------------ rejeu FORCÉ
 async function runForced(evening, opts = {}) {
-  const ev = evening?.events && evening.requests ? evening : loadEvening(evening);
+  const ev = asEvening(evening);
   return withClock(async () => {
     clock.now = ev.events[0]?.t || 0;
     const ctx = makeContext(ev, opts);
@@ -584,7 +645,7 @@ async function runForced(evening, opts = {}) {
 
 // ------------------------------------------------------------------ rejeu LIBRE
 async function runFree(evening, opts = {}) {
-  const ev = evening?.events && evening.requests ? evening : loadEvening(evening);
+  const ev = asEvening(evening);
   return withClock(async () => {
     const ctx = makeContext(ev, opts);
     const { s } = ctx;
@@ -678,7 +739,7 @@ async function runFree(evening, opts = {}) {
       { entryId: null, ids: [], start: st.start, end: st.end, source: st.kind, title: st.kind });
     const journal = replayJournal(ev, replayPassages);
     const passages = computeWaits(replayPassages, ev, journal).map(w => ({ ...w, borrowedIds: w.borrowedIds || [] }));
-    return finish(ctx, 'libre', passages, compareOrders(ev, passages), stageWaitsOf(journal));
+    return finish(ctx, 'libre', passages, compareOrders(ev, passages), journal);
   });
 }
 
@@ -700,7 +761,9 @@ function compareOrders(ev, passages) {
 
 // ------------------------------------------------------------------ analyse
 // Tours : du premier passage d'un tour (envoi marqué « nouveau tour ») au premier du suivant.
-function analyse(passages) {
+// `groupOf` : groupe de rotation d'une personne (sa table ; chaque personne
+// « En solo » est un groupe à elle).
+function analyse(passages, groupOf = () => null) {
   const rounds = [];
   for (const p of passages) {
     if (!rounds.length || p.newRound) rounds.push({ start: p.start, end: null, passages: [] });
@@ -741,14 +804,42 @@ function analyse(passages) {
   }
   const debts = passages.filter(p => (p.borrowedIds || []).length)
     .map(p => ({ start: p.start, ids: p.ids, title: p.title, borrowedIds: p.borrowedIds }));
+  // Reprises de table : deux passages de la file de suite pour le même groupe
+  // (ce que Timefold cherche d'abord à éviter).
+  let tableRepeats = 0;
+  passages.forEach((p, k) => { if (k && groupOf(p.owner) != null && groupOf(p.owner) === groupOf(passages[k - 1].owner)) tableRepeats++; });
   return { rounds: rounds.map(r => ({ index: r.index, start: r.start, end: r.end, passages: r.passages.length,
     minutes: r.end != null ? Math.round((r.end - r.start) / 6000) / 10 : null })),
   longestRoundMin: longestRoundMs == null ? null : Math.round(longestRoundMs / 6000) / 10,
-  longWaits, doubles, skipped, debts };
+  longWaits, doubles, skipped, debts, tableRepeats };
 }
 
-function finish(ctx, mode, passages, order, replayStageWaits = null) {
+// Équilibre des passages, mesuré par evening-stats.js (page des statistiques) :
+// indice de Jain sur les passages par heure de présence, part de chacun
+// (passages obtenus / passages attendus au même rythme pour tous, bonus compris).
+function balanceOf(stats) {
+  const f = stats.fairness;
+  const people = {};
+  for (const x of stats.singers) {
+    if (!x.askedInKaraoke && !x.appearances) continue;
+    people[x.id] = { turns: x.turns, guestTurns: x.guestTurns, appearances: x.appearances, presenceSec: x.presenceSec,
+      fairRatio: x.fairRatio, waitMaxSec: x.waits.maxSec, waitAvgSec: x.waits.avgSec, stageMaxSec: x.stageWaits.maxSec };
+  }
+  const ratios = Object.values(people).map(p => p.fairRatio).filter(r => r != null);
+  return { songs: stats.global.ours, n: f.n, jain: f.jain, jainAdjusted: f.jainAdjusted, demandJain: f.demandJain,
+    rateMin: f.rateMin, rateMax: f.rateMax, neverSang: f.neverSang,
+    shareMax: ratios.length ? Math.max(...ratios) : null, shareMin: ratios.length ? Math.min(...ratios) : null,
+    stage60: Object.values(people).filter(p => p.stageMaxSec >= 3600).length, people };
+}
+
+const groupOf = ev => key => {
+  const table = ev.people.get(key)?.table;
+  return table == null ? null : ev.tables.get(table)?.individual ? `solo:${key}` : table;
+};
+
+function finish(ctx, mode, passages, order, journal = null) {
   const ev = ctx.ev;
+  const replayStageWaits = journal ? stageWaitsOf(journal) : null;
   const real = computeWaits(ev.realPassages, ev);
   // Définition de l'attente vérifiée contre celle de evening-stats.js (export).
   const checked = real.filter(w => ev.exportWaits.has(w.entryId));
@@ -762,13 +853,166 @@ function finish(ctx, mode, passages, order, replayStageWaits = null) {
     matchFreeAtSend: sends.filter(d => d.freeAtSend ? d.freeAtSend.ids[0] === d.real.ids[0] && d.freeAtSend.entryId === d.real.entryId : d.match).length,
     newRoundAgree: sends.filter(d => d.committed && d.committed.newRound === d.real.newRound).length,
   } : order;
-  return { mode, solver: !!ctx.solver, jar: ctx.jar, options: ctx.overrides, timezone: ev.timezone,
+  return { mode, code: ctx.code.label, solver: !!ctx.solver, jar: ctx.jar, options: ctx.overrides, timezone: ev.timezone,
     names: Object.fromEntries([...ev.people].map(([k, p]) => [k, p.name])),
     decisions: ctx.decisions, passages, realWaits: real, fidelity, definitionCheck,
     waits: { real: summary(real.map(w => w.waitSec)), replay: summary(passages.map(w => w.waitSec)) },
     stageWaits: { real: stageWaitsOf(ev.events), replay: replayStageWaits },
-    analysis: analyse(passages), notes: ctx.notes, ignored: ctx.ignored, notReplayed: ctx.notReplayed,
-    unreadable: ev.skipped };
+    balance: { real: balanceOf(statsOf(ev.events)), replay: journal ? balanceOf(statsOf(journal)) : null },
+    analysis: analyse(passages, groupOf(ev)), realAnalysis: analyse(real, groupOf(ev)), notes: ctx.notes, warnings: ctx.warnings,
+    ignored: ctx.ignored, notReplayed: ctx.notReplayed, unreadable: ev.skipped };
+}
+
+// ------------------------------------------------------------------ bilan avant / après
+// La même soirée rejouée librement par deux versions de l'ordonnanceur, dans
+// les mêmes conditions (inscriptions, demandes, départs, durées réelles),
+// mesurée par la même définition (evening-stats.js de la version de travail).
+async function runCompare(evening, opts = {}) {
+  const ev = asEvening(evening);
+  const side = s => ({ budget: opts.budget, options: opts.options, ...(s || {}) });
+  // Version « avant » chargée (et extraite) avant tout rejeu : une erreur de
+  // version arrête tout de suite.
+  const beforeOpts = side(opts.before);
+  loadCode(beforeOpts.code ?? null);
+  let before;
+  try {
+    before = await runFree(ev, beforeOpts);
+  } catch (err) {
+    if (err instanceof UsageError) throw err;
+    // L'autre version n'a pas l'interface que le rejeu appelle (méthode
+    // renommée…) : le dire, avec l'endroit de l'échec.
+    const at = String(err?.stack || '').split('\n').find(l => /^\s+at /.test(l))?.trim() || '';
+    throw new UsageError(`Rejeu impossible avec ${loadCode(beforeOpts.code ?? null).label} : ${err?.message || err}` +
+      `${at ? ` (${at})` : ''} ; version trop éloignée de l'outil de rejeu ?`);
+  }
+  const after = await runFree(ev, side(opts.after));
+  return { mode: 'avant-après', before, after, timezone: ev.timezone, names: after.names };
+}
+
+// Indicateurs du bilan : valeur réelle, avant, après ; sens du mieux et écart
+// en dessous duquel les deux versions sont « égales ».
+const MIN = sec => sec == null ? null : Math.round(sec / 6) / 10;
+const INDICATORS = [
+  { group: 'Titres de la file chantés', label: 'titres', get: r => r.balance.replay?.songs, real: r => r.balance.real.songs, better: 'up', tol: 0 },
+  { group: 'Attente par titre (min)', label: 'moyenne', get: r => r.waits.replay.avgMin, real: r => r.waits.real.avgMin, better: 'down', tol: 0.5 },
+  { label: 'médiane', get: r => r.waits.replay.medianMin, real: r => r.waits.real.medianMin, better: 'down', tol: 0.5 },
+  { label: '9 titres sur 10 en moins de', get: r => r.waits.replay.p90Min, real: r => r.waits.real.p90Min, better: 'down', tol: 1 },
+  { label: 'plus longue', get: r => r.waits.replay.maxMin, real: r => r.waits.real.maxMin, better: 'down', tol: 1 },
+  { label: 'titres attendus 45 min ou plus', get: r => r.waits.replay.over45, real: r => r.waits.real.over45, better: 'down', tol: 0 },
+  { label: 'titres attendus 60 min ou plus', get: r => r.waits.replay.over60, real: r => r.waits.real.over60, better: 'down', tol: 0 },
+  { group: 'Sans monter sur scène, invités compris', label: 'plus longue (min)',
+    get: r => MIN(maxOf(r.stageWaits.replay)), real: r => MIN(maxOf(r.stageWaits.real)), better: 'down', tol: 1 },
+  { label: 'personnes à 60 min ou plus', get: r => r.balance.replay?.stage60, real: r => r.balance.real.stage60, better: 'down', tol: 0 },
+  { group: 'Équilibre des passages', label: 'indice de Jain (1 = même rythme pour tous)', get: r => r.balance.replay?.jain, real: r => r.balance.real.jain, better: 'up', tol: 0.005, digits: 3 },
+  { label: 'corrigé des bonus et malus', get: r => r.balance.replay?.jainAdjusted, real: r => r.balance.real.jainAdjusted, better: 'up', tol: 0.005, digits: 3 },
+  { label: 'part la plus haute (× sa part)', get: r => r.balance.replay?.shareMax, real: r => r.balance.real.shareMax, better: 'down', tol: 0.05, digits: 2 },
+  { label: 'part la plus basse (× sa part)', get: r => r.balance.replay?.shareMin, real: r => r.balance.real.shareMin, better: 'up', tol: 0.05, digits: 2 },
+  { label: 'jamais passés', get: r => r.balance.replay?.neverSang, real: r => r.balance.real.neverSang, better: 'down', tol: 0 },
+  { group: 'Anomalies de la rotation', label: 'attentes plus longues que le plus long tour', get: r => r.analysis.longWaits.length, real: r => r.realAnalysis.longWaits.length, better: 'down', tol: 0 },
+  { label: 'quelqu\'un vu deux fois pendant une attente', get: r => r.analysis.doubles.length, real: r => r.realAnalysis.doubles.length, better: 'down', tol: 0 },
+  { label: 'prêt pendant tout un tour sans passer', get: r => r.analysis.skipped.length, real: r => r.realAnalysis.skipped.length, better: 'down', tol: 0 },
+  { label: 'même table deux fois de suite', get: r => r.analysis.tableRepeats, real: r => r.realAnalysis.tableRepeats, better: 'down', tol: 0 },
+];
+function maxOf(waits) {
+  const all = Object.values(waits || {}).map(x => x.maxSec).filter(x => x != null);
+  return all.length ? Math.max(...all) : null;
+}
+function verdict(ind, a, b) {
+  if (a == null || b == null) return '';
+  const d = b - a;
+  if (Math.abs(d) <= ind.tol + EPS) return '=';
+  return (ind.better === 'down' ? d < 0 : d > 0) ? 'mieux' : 'MOINS BIEN';
+}
+
+// Personnes dont le sort change : passages, plus longue attente d'un titre,
+// plus longue attente sans monter sur scène (5 min d'écart au moins).
+function peopleChanges(cmp) {
+  const A = cmp.before.balance.replay?.people || {}, B = cmp.after.balance.replay?.people || {};
+  const rows = [];
+  for (const key of new Set([...Object.keys(A), ...Object.keys(B)])) {
+    const a = A[key] || {}, b = B[key] || {};
+    const dWait = (b.waitMaxSec ?? 0) - (a.waitMaxSec ?? 0);
+    const dStage = (b.stageMaxSec ?? 0) - (a.stageMaxSec ?? 0);
+    const dApps = (b.appearances ?? 0) - (a.appearances ?? 0);
+    const worse = dApps < 0 || dWait >= 300 || dStage >= 300;
+    const better = dApps > 0 || dWait <= -300 || dStage <= -300;
+    if (!worse && !better) continue;
+    rows.push({ key, a, b, dWait, dStage, dApps, worse, better,
+      weight: Math.max(Math.abs(dWait), Math.abs(dStage), 600 * Math.abs(dApps)) });
+  }
+  return rows.sort((x, y) => (y.worse - x.worse) || y.weight - x.weight);
+}
+
+function compareReport(cmp, { short = false } = {}) {
+  const { before, after } = cmp;
+  const nm = k => cmp.names[k] || k;
+  const T = t => timeOf(t, cmp.timezone);
+  const fmt = (v, ind) => v == null ? '—' : ind.digits ? v.toFixed(ind.digits).replace('.', ',') : String(v).replace('.', ',');
+  const out = [];
+  // Fidélité : titres rejoués au même rang que dans la soirée vécue. La version
+  // de ce soir-là, avec Timefold, doit refaire l'ordre réel (sinon le rejeu
+  // s'écarte de la soirée et le bilan se lit avec prudence).
+  const side = r => `${r.code} ${r.solver ? '[Timefold]' : '[sans Timefold]'} ; ` +
+    `ordre vécu refait : ${r.fidelity.samePosition}/${r.fidelity.songsReal} titres au même rang`;
+  out.push('BILAN AVANT / APRÈS : la même soirée rejouée par deux versions, mesurée par evening-stats.js');
+  out.push(`  avant : ${side(before)}`);
+  out.push(`  après : ${side(after)}`);
+  if (Object.keys(after.options).length) out.push(`  options : ${Object.entries(after.options).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+  out.push('  réel  : la soirée vécue (gestes du bar compris, version de ce soir-là), pour repère ; le verdict compare avant et après');
+  for (const w of [...before.warnings.map(w => `avant : ${w}`), ...after.warnings.map(w => `après : ${w}`)]) out.push(`  ATTENTION ${w}`);
+  out.push('');
+  const width = 46;
+  out.push(`${''.padEnd(width)}${'réel'.padStart(8)}${'avant'.padStart(8)}${'après'.padStart(8)}  verdict`);
+  let up = 0, down = 0, same = 0;
+  for (const ind of INDICATORS) {
+    if (ind.group) out.push(ind.group);
+    const r = ind.real(after), a = ind.get(before), b = ind.get(after);
+    const v = verdict(ind, a, b);
+    if (v === 'mieux') up++; else if (v === 'MOINS BIEN') down++; else if (v === '=') same++;
+    out.push(`  ${ind.label.padEnd(width - 2)}${fmt(r, ind).padStart(8)}${fmt(a, ind).padStart(8)}${fmt(b, ind).padStart(8)}  ${v}`);
+  }
+  const changes = peopleChanges(cmp);
+  const losers = changes.filter(c => c.worse), winners = changes.filter(c => c.better && !c.worse);
+  const fr = n => n == null ? '—' : String(n).replace('.', ',');
+  const mn = sec => sec == null ? '—' : String(Math.round(sec / 60));
+  const line = c => `  ${nm(c.key)} : passages ${c.a.appearances ?? 0} → ${c.b.appearances ?? 0}` +
+    ` ; plus longue attente d'un titre ${mn(c.a.waitMaxSec)} → ${mn(c.b.waitMaxSec)} min` +
+    ` ; plus longue sans scène ${mn(c.a.stageMaxSec)} → ${mn(c.b.stageMaxSec)} min` +
+    ` ; part ${fr(c.a.fairRatio)} → ${fr(c.b.fairRatio)}`;
+  out.push('', `Personnes qui y perdent (un passage de moins, ou 5 min de plus d'attente) : ${losers.length ? '' : 'personne'}`);
+  for (const c of losers) out.push(line(c));
+  out.push(`Personnes qui y gagnent : ${winners.length ? '' : 'personne'}`);
+  for (const c of winners) out.push(line(c));
+  const jainA = before.balance.replay?.jain, jainB = after.balance.replay?.jain;
+  out.push('', `Verdict : ${up} indicateur${up > 1 ? 's' : ''} mieux, ${down} moins bien, ${same} ${same > 1 ? 'égaux' : 'égal'} ; ` +
+    `équilibre (Jain) ${fmt(jainA, { digits: 3 })} → ${fmt(jainB, { digits: 3 })} ` +
+    `(${verdict(INDICATORS.find(i => i.label.startsWith('indice')), jainA, jainB) || '—'}) ; ` +
+    `${losers.length} personne${losers.length > 1 ? 's' : ''} y perd${losers.length > 1 ? 'ent' : ''}, ${winners.length} y gagne${winners.length > 1 ? 'nt' : ''}.`);
+  if (!short) {
+    // Titres dont l'attente change de 5 min au moins.
+    const A = new Map(before.passages.map(p => [p.entryId, p]));
+    const B = new Map(after.passages.map(p => [p.entryId, p]));
+    const rows = [];
+    for (const id of new Set([...A.keys(), ...B.keys()])) {
+      const a = A.get(id), b = B.get(id);
+      const d = (b?.waitSec ?? Infinity) - (a?.waitSec ?? Infinity);
+      if (a && b && Math.abs(d) < 300) continue;
+      rows.push({ a, b, d: Number.isFinite(d) ? d : 0 });
+    }
+    rows.sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+    out.push('', `Titres dont l'attente change de 5 min ou plus (avant → après) : ${rows.length ? '' : 'aucun'}`);
+    const m = p => p ? `${String(Math.round(p.waitSec / 60)).padStart(3)} min` : 'pas chanté';
+    for (const { a, b } of rows) {
+      const p = b || a;
+      out.push(`  ${m(a)} → ${m(b)}  ${p.ids.map(nm).join(' & ')} «${p.title}»${b ? ` (${T(b.start)})` : ''}`);
+    }
+  }
+  const notes = [...new Set([...before.notes, ...after.notes])];
+  const extra = Object.entries(after.notReplayed).map(([k, n]) => `${k}×${n}`);
+  if (extra.length || notes.length) out.push('');
+  if (extra.length) out.push('gestes non rejoués : ' + extra.join(', '));
+  for (const l of notes) out.push('note : ' + l);
+  return out.join('\n');
 }
 
 // ------------------------------------------------------------------ texte
@@ -782,6 +1026,7 @@ function report(res, { traces = [], short = false } = {}) {
   const head = `REJEU ${res.mode.toUpperCase()}${res.solver ? ' [Timefold]' : ' [sans Timefold]'}` +
     `${Object.keys(res.options).length ? ' options ' + Object.entries(res.options).map(([k, v]) => `${k}=${v}`).join(',') : ''}`;
   out.push(head);
+  for (const w of res.warnings || []) out.push(`ATTENTION ${w}`);
   const f = res.fidelity;
   if (res.mode === 'forcé') {
     out.push(`Fidélité : ${f.matchAtSend}/${f.sends} envois identiques à la réalité ; réservations ${f.matchAtReservation}/${f.reservations} ; ` +
@@ -828,6 +1073,7 @@ function report(res, { traces = [], short = false } = {}) {
   }
   const a = res.analysis;
   out.push('', `Attentes anormales (${res.mode === 'libre' ? 'rejeu' : 'soirée réelle'}) :`);
+  out.push(`  même table deux fois de suite : ${a.tableRepeats}`);
   out.push(`  tours : ${a.rounds.length} (${a.rounds.filter(r => r.minutes != null).map(r => r.minutes + ' min').join(', ') || '—'}) ; plus long ${a.longestRoundMin ?? '—'} min`);
   out.push(`  attentes plus longues que le plus long tour : ${a.longWaits.length ? '' : 'aucune'}`);
   for (const w of a.longWaits) {
@@ -856,7 +1102,7 @@ function traceLines(res, d) {
     lines.push(`    ── ${title} : tour [${st.roundPeople.map(nm).join(', ')}]${st.roundOwed.length ? ` dus [${st.roundOwed.map(nm).join(', ')}]` : ''}` +
       ` passage n° ${st.serial}, espacement ${st.spacing}${st.reserved ? `, annoncé ${nm(st.reserved)}` : ''}${st.plan ? ', plan Timefold actif' : ''}`);
     for (const c of st.candidates) {
-      const people = c.singers.map(p => `${nm(p.key)}[${p.inRound ? 'dans le tour' : 'pas passé'} scène=${p.roundApps}` +
+      const people = c.singers.map(p => `${nm(p.key)}[${p.roundMember ? 'compté dans le tour' : 'pas compté'} scène=${p.roundApps}` +
         `${p.debt ? ' DETTE' : ''}${p.owed ? ' dû' : ''} dernier=${p.last} attend-depuis=${p.waitStart}${p.spaced ? '' : ' trop-proche'}` +
         `${p.cooldown ? ` répit=${p.cooldown}` : ''} table=${p.table}]`).join(' + ');
       const chosen = pick && pick.ids[0] === c.owner && pick.entryId === c.entryId ? '→' : ' ';
@@ -874,10 +1120,17 @@ function traceLines(res, d) {
 
 // ------------------------------------------------------------------ CLI
 function parseArgs(argv) {
-  const o = { file: null, free: false, solver: false, budget: 3000, traces: [], json: null, options: {}, short: false };
+  const o = { file: null, free: false, solver: false, budget: 3000, traces: [], json: null, options: {}, short: false,
+    before: null, solverBefore: null };
+  const value = (k, name) => {
+    if (argv[k] == null || argv[k].startsWith('--')) throw new Error(`${name} attend une valeur`);
+    return argv[k];
+  };
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k];
     if (a === '--libre') o.free = true;
+    else if (a === '--avant') o.before = value(++k, '--avant');
+    else if (a === '--solveur-avant') o.solverBefore = value(++k, '--solveur-avant');
     else if (a === '--solveur') o.solver = argv[k + 1] && !argv[k + 1].startsWith('--') && /\.jar$/i.test(argv[k + 1]) ? argv[++k] : true;
     else if (a === '--budget') o.budget = Number(argv[++k]);
     else if (a === '--trace') o.traces.push(...String(argv[++k] || '').split(',').filter(Boolean));
@@ -893,6 +1146,9 @@ function parseArgs(argv) {
     else throw new Error(`Option inconnue : ${a}`);
   }
   if (!Number.isFinite(o.budget) || o.budget <= 0) throw new Error('--budget attend un nombre de millisecondes');
+  if (o.solverBefore && !o.before) throw new Error('--solveur-avant va avec --avant');
+  if (o.solverBefore && !o.solver) throw new Error('--solveur-avant demande aussi --solveur : les deux versions avec Timefold');
+  if (o.before && o.traces.length) throw new Error('--trace détaille un seul rejeu : le lancer sans --avant');
   return o;
 }
 
@@ -904,17 +1160,34 @@ const USAGE = (() => {
   return lines.slice(from, to).map(l => l.replace(/^ \* ?/, '')).join('\n').trimEnd();
 })();
 
-async function main(argv = process.argv.slice(2), print = console.log) {
+async function main(argv = process.argv.slice(2), print = console.log, printError = console.error) {
   let o;
   try { o = parseArgs(argv); } catch (err) { print(err.message + '\n\n' + USAGE); return 2; }
   if (o.help || !o.file) { print(USAGE); return o.help ? 0 : 2; }
-  const ev = loadEvening(o.file);
-  const run = o.free ? runFree : runForced;
-  const res = await run(ev, { solver: o.solver, budget: o.budget, options: o.options });
-  print(report(res, { traces: o.traces, short: o.short }));
-  if (o.json) fs.writeFileSync(o.json, JSON.stringify(res, null, 1));
-  return 0;
+  try {
+    const ev = loadEvening(o.file);
+    let res, text;
+    if (o.before) {
+      res = await runCompare(ev, { budget: o.budget, options: o.options,
+        // Timefold des deux côtés : le jar de chaque version (un jar donné pour
+        // la version de travail ne vaut pas pour l'autre).
+        before: { code: o.before, solver: o.solverBefore === 'sans' ? false : o.solverBefore || !!o.solver },
+        after: { solver: o.solver } });
+      text = compareReport(res, { short: o.short });
+    } else {
+      res = await (o.free ? runFree : runForced)(ev, { solver: o.solver, budget: o.budget, options: o.options });
+      text = report(res, { traces: o.traces, short: o.short });
+    }
+    print(text);
+    if (o.json) fs.writeFileSync(o.json, JSON.stringify(res, null, 1));
+    return 0;
+  } catch (err) {
+    // Erreur d'utilisation : son message ; défaut du rejeu : la trace complète.
+    printError(err instanceof UsageError ? err.message : err?.stack || String(err));
+    return 1;
+  }
 }
 
-module.exports = { loadEvening, runForced, runFree, report, analyse, computeWaits, replayJournal, stageWaitsOf, passagesFromEvents, summary, main, parseArgs, timeOf };
+module.exports = { loadEvening, runForced, runFree, runCompare, report, compareReport, analyse, computeWaits, replayJournal,
+  stageWaitsOf, passagesFromEvents, balanceOf, summary, main, parseArgs, timeOf, UsageError };
 if (require.main === module) main().then(code => { process.exitCode = code; }, err => { console.error(err); process.exitCode = 1; });
