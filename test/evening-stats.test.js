@@ -1741,6 +1741,33 @@ test('attentes : coupures, temps sans titre et « Pas prêt » comme la rotation
   });
   const a2 = deferred.timeline.stages.find(st => st.entryId === 'a2');
   assert.equal(a2.waitSec, (27 - 1) * 60);
+  // Deux « Pas prêt » qui se chevauchent (2 à 10 et 4 à 12) ne comptent qu'une fois.
+  const twice = scenario((e, stage) => {
+    e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(0, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2' });
+    e(2, 'defer.requested', { ownerId: 'p', entryId: 'a1', songs: 2 });
+    e(4, 'defer.requested', { ownerId: 'p', entryId: 'a2', songs: 2 });
+    e(10, 'defer.ended', { ownerId: 'p', entryId: 'a1' });
+    e(12, 'defer.ended', { ownerId: 'p', entryId: 'a2' });
+    stage(30, 34, 'a1', ['p'], 1);
+  });
+  assert.equal(twice.global.netWaitAvgSec, (30 - 10) * 60, 'union de 2 à 12');
+  // « Pas prêt » puis titre remplacé (choix « remplacer ») : retiré aussi.
+  const replaced = scenario((e, stage) => {
+    e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(2, 'defer.requested', { ownerId: 'p', entryId: 'a1', songs: 3 });
+    e(10, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2', mode: 'replace', replacedEntryIds: ['a1'] });
+    stage(30, 34, 'a2', ['p'], 1);
+  });
+  assert.equal(waitOf(replaced, 'a2'), 30);
+  assert.equal(replaced.global.netWaitAvgSec, (30 - 8) * 60);
+  // « Vider toutes les chansons » au même instant qu'une nouvelle demande : coupure.
+  assert.equal(waitOf(scenario((e, stage) => {
+    e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(5, 'staff.queueCleared', {});
+    e(5, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2' });
+    stage(30, 34, 'a2', ['p'], 1);
+  }), 'a2'), 30 - 5, 'vidage et demande à la même minute');
   assert.equal(deferred.global.netWaitAvgSec, (27 - 1 - 17) * 60, 'seul titre chanté : attente nette moyenne');
   // Plus longue attente traversée par deux passages en invitée : dit, au pluriel.
   const guested = scenario((e, stage) => {

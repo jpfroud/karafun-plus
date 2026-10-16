@@ -172,7 +172,7 @@ test('page des statistiques : chiffres clés, repères, graphiques et tableaux d
   assert.match(text($('eveningSelect')), /Ce soir/);
   const kpis = $('kpis').children;
   assert.equal(kpis.length, 8);
-  assert.match(text(kpis[0]), /Attente moyenne pour chanter/);
+  assert.match(text(kpis[0]), /Attente moyenne par titre/);
   assert.match(text(kpis[2]), /Équité de la rotation/);
   assert.ok($('insights').children.length >= 3);
   assert.match(text($('insights')), /Plus longue attente/);

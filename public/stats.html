@@ -645,7 +645,7 @@ function renderInsights() {
 function renderKpis() {
   const g = state.data.stats.global, f = state.data.stats.fairness;
   const tiles = [
-    ['Attente moyenne pour chanter', dur(g.waitAvgSec), `médiane ${dur(g.waitMedianSec)} · 9 sur 10 sous ${dur(g.waitP90Sec)}`],
+    ['Attente moyenne par titre', dur(g.waitAvgSec), `médiane ${dur(g.waitMedianSec)} · 9 sur 10 sous ${dur(g.waitP90Sec)}`],
     ['Chansons par heure', fmtNum(g.songsPerHour, 1), `durée moyenne ${dur(g.avgSongSec)}`],
     ['Équité de la rotation', fmtNum(f.jain, 2), f.jain != null ? `sur ${f.n} chanteur${f.n > 1 ? 's' : ''}${f.bonusPeople ? ` · corrigé des bonus ${fmtNum(f.jainAdjusted, 2)}` : ' · 1 = même rythme'}`
       // Pas encore calculable : personne n'a 30 min de présence, ou personne n'a encore chanté.
@@ -784,7 +784,7 @@ function renderSocial() {
 function renderSingerTable() {
   const st = state.data.stats;
   const cols = [['Chanteur', false, 'name'], ['Table', false, 'table'], ['Présence', true, 'presenceSec'], ['Passages', true, 'turns'],
-    ['Invité', true, 'guestTurns'], ['Par heure', true, 'turnsPerHour'], ['Attendus', true, 'expectedTurns'], ['Attente moy.', true, 'wait'],
+    ['Invité', true, 'guestTurns'], ['Par heure', true, 'turnsPerHour'], ['Attendus', true, 'expectedTurns'], ['Attente moy. (titre)', true, 'wait'],
     ['Plus longue (titre)', true, 'waitMax'], ['Plus longue sans scène', true, 'stageMax'], ['1er passage', true, 'firstTurnSec'], ['Pas prêt', true, 'deferrals'], ['Je suis là manqués', true, 'presenceSkips'],
     ['Titres retirés', true, 'removed'], ['Voix Battle', true, 'battleVotes']];
   const value = (row, key) => key === 'name' ? nameOf(row.id).toLocaleLowerCase('fr') : key === 'table' ? personTable(row.tableId) :
