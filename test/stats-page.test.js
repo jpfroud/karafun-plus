@@ -301,6 +301,23 @@ test('vue tableau, repère sur une personne ou une table, tri des chanteurs', as
   assert.match(text(header().find(b => text(b).startsWith('Attente moy.'))), /↓/);
   header().find(b => text(b).startsWith('Table')).dispatch('click');
   assert.match(firstRow(), /^(Alice|Bruno)$/);
+  // Plus longue attente sans monter sur scène : colonne à elle, triable, et
+  // dans la fiche ; distincte de la plus longue attente d'un titre.
+  const singers = apiView().stats.singers.filter(x => x.stageWaits?.n);
+  const top = singers.reduce((a, b) => (b.stageWaits.maxSec > a.stageWaits.maxSec ? b : a));
+  const names = { pA: 'Alice', pB: 'Bruno', pC: 'Chloé', pD: 'Dina', pE: 'Eve' };
+  assert.ok(header().some(b => text(b).startsWith('Plus longue (titre)')));
+  const stageHeader = () => header().find(b => text(b).startsWith('Plus longue sans scène'));
+  stageHeader().dispatch('click');
+  if (!/↓/.test(text(stageHeader()))) stageHeader().dispatch('click');
+  assert.match(text(stageHeader()), /↓/);
+  assert.equal(firstRow(), names[top.id]);
+  const row = page.doc.getElementById('cardSingers').byTag('tbody')[0].children[0];
+  const heads = page.doc.getElementById('cardSingers').byTag('th');
+  assert.equal(row.children.length, heads.length, 'une cellule par en-tête');
+  focus.value = `p:${top.id}`;
+  focus.dispatch('change', { target: focus });
+  assert.match(text(card), /plus longue sans monter sur scène/);
 });
 
 test('export, thème, autre soirée, erreurs et soirée vide', async () => {

@@ -1651,7 +1651,7 @@ test('attentes : par titre comme la rotation, et sans monter sur scène pour cha
   assert.equal(wait('n2'), 30 - 9, 'son passage en invitée (15-19) ne remet pas l’attente de son titre à zéro');
   assert.equal(wait('s3'), 60 - 44, 'titre remonté en tête : prête depuis la fin de son passage, un autre titre en liste');
   assert.equal(wait('y2'), 45 - 1, 'titre remplacé : l’attente continue');
-  assert.equal(wait('l2'), 35 - 6, 'retiré puis rechoisi sans passage entre-temps : un échange');
+  assert.equal(wait('l2'), 35 - 6 - 0.5, 'retiré puis rechoisi sans passage entre-temps : un échange, sans le temps sans titre (6,5 à 7)');
   assert.equal(wait('i2'), 25 - 12, 'retiré puis rechoisi après des passages : l’attente repart');
   const sansScene = id => singerOf(stats, id).stageWaits;
   assert.deepEqual(sansScene('bea'), { n: 3, guestN: 1, avgSec: (5 + 6 + 11) * 60 / 3, medianSec: 6 * 60, maxSec: 11 * 60 });
@@ -1659,9 +1659,122 @@ test('attentes : par titre comme la rotation, et sans monter sur scène pour cha
     'seulement invité : attend depuis le duo accepté');
   assert.equal(singerOf(stats, 'leo').waits.n, 0, 'aucun titre à lui');
   assert.equal(sansScene('ana').maxSec, 15 * 60);
-  // Plus longue attente d'un titre traversée par un passage en invitée : dit.
-  const longest = { ...stats, global: { ...stats.global, waitAvgSec: 20 * 60,
-    longestWait: { sec: 21 * 60, personId: 'bea', title: 'n2', at: T(30), guestStages: 1 } } };
-  assert.match(insights(longest).find(i => i.kind === 'longest-wait').text,
-    /Plus longue attente : 21 min \(bea, « n2 », montée sur scène entre-temps en invitée\)\./);
+});
+
+// Attente par titre : coupures, temps sans titre, bornes à l'envoi, « Pas
+// prêt », et plus longue attente traversée par des passages en invitée.
+test('attentes : coupures, temps sans titre et « Pas prêt » comme la rotation', () => {
+  const T = m => T0 + m * M;
+  const scenario = build => {
+    const events = [];
+    const e = (minutes, ev, fields = {}) => events.push({ v: 1, seq: 0, t: T(minutes), ev, ...fields });
+    const stage = (from, to, entryId, ids, queueId, sentAt) => {
+      if (sentAt != null) e(sentAt, 'turn.sent', { entryId, ids, ownerId: ids[0], queueId });
+      e(from, 'stage.started', { queueId, entryId, ids, ownerId: ids[0], source: 'queue', title: entryId });
+      e(to, 'stage.ended', { queueId, playedSec: (to - from) * 60 });
+    };
+    e(0, 'app.started', { restored: false, offlineMs: 0 });
+    for (const pid of ['p', 'q', 'g']) e(0, 'person.joined', { personId: pid, tableId: pid });
+    build(e, stage);
+    events.sort((a, b) => a.t - b.t).forEach((x, i) => { x.seq = i + 1; });
+    return computeStats({ meta: {}, events, now: T(200) });
+  };
+  const waitOf = (stats, id) => stats.timeline.stages.find(st => st.entryId === id).waitSec / 60;
+  // Départ, « Vider toutes les chansons », titre retiré faute de « Je suis là » :
+  // l'attente repart de la coupure, sans aucun passage entre-temps.
+  const cuts = {
+    départ: e => { e(5, 'person.left', { personId: 'p', by: 'staff' }); e(10, 'person.reactivated', { personId: 'p' }); },
+    vidage: e => e(5, 'staff.queueCleared', {}),
+  };
+  for (const [name, cut] of Object.entries(cuts)) {
+    const stats = scenario((e, stage) => {
+      e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+      cut(e);
+      e(12, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2' });
+      stage(30, 34, 'a2', ['p'], 1);
+    });
+    assert.equal(waitOf(stats, 'a2'), 30 - 12, name);
+  }
+  // Coupure au même instant que la nouvelle demande : pas d'échange non plus.
+  assert.equal(waitOf(scenario((e, stage) => {
+    e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(5, 'person.left', { personId: 'p', by: 'staff' }); e(5, 'person.reactivated', { personId: 'p' });
+    e(5, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2' });
+    stage(30, 34, 'a2', ['p'], 1);
+  }), 'a2'), 30 - 5, 'coupure et demande à la même minute');
+  // « Je suis là » manqué trop souvent : le titre suivant de la liste repart de zéro.
+  assert.equal(waitOf(scenario((e, stage) => {
+    e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(0, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2' });
+    e(10, 'song.removed', { personId: 'p', entryId: 'a1', by: 'presence-max' });
+    stage(30, 34, 'a2', ['p'], 1);
+  }), 'a2'), 30 - 10, 'titre suivant après « Je suis là » manqué');
+  // Pause sans passage (titre retiré à 6, rechoisi à 20) : échange, mais les
+  // 14 min sans titre ne sont pas de l'attente.
+  assert.equal(waitOf(scenario((e, stage) => {
+    e(1, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(6, 'song.removed', { personId: 'p', entryId: 'a1', by: 'self' });
+    e(20, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2' });
+    stage(30, 34, 'a2', ['p'], 1);
+  }), 'a2'), 30 - 1 - 14, 'temps sans titre retiré');
+  // La rotation compte un passage à son envoi : retirer avant l'envoi d'un
+  // autre puis rechoisir avant son début n'est plus un échange ; retirer
+  // après l'envoi et rechoisir après le début en est un.
+  const around = (removedAt, addedAt) => waitOf(scenario((e, stage) => {
+    e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(0, 'song.requested', { personId: 'q', entryId: 'b1', title: 'b1' });
+    e(removedAt, 'song.removed', { personId: 'p', entryId: 'a1', by: 'self' });
+    e(addedAt, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2' });
+    stage(10, 14, 'b1', ['q'], 1, 9);
+    stage(30, 34, 'a2', ['p'], 2, 29);
+  }), 'a2');
+  assert.equal(around(8, 9.5), 30 - 9.5, 'envoi de b1 (9) entre le retrait et le nouveau titre');
+  assert.equal(around(9.5, 11), 30 - 0 - 1.5, 'envoi de b1 avant le retrait : échange');
+  // « Pas prêt » sur un titre ensuite remplacé : compté dans l'attente,
+  // retiré de l'attente nette.
+  const deferred = scenario((e, stage) => {
+    e(1, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(3, 'defer.requested', { ownerId: 'p', entryId: 'a1', songs: 3 });
+    e(20, 'song.removed', { personId: 'p', entryId: 'a1', by: 'self' });
+    e(20, 'song.requested', { personId: 'p', entryId: 'a2', title: 'a2' });
+    stage(27, 31, 'a2', ['p'], 1);
+  });
+  const a2 = deferred.timeline.stages.find(st => st.entryId === 'a2');
+  assert.equal(a2.waitSec, (27 - 1) * 60);
+  assert.equal(deferred.global.netWaitAvgSec, (27 - 1 - 17) * 60, 'seul titre chanté : attente nette moyenne');
+  // Plus longue attente traversée par deux passages en invitée : dit, au pluriel.
+  const guested = scenario((e, stage) => {
+    e(0, 'song.requested', { personId: 'g', entryId: 'g1', title: 'g1' });
+    e(0, 'song.requested', { personId: 'q', entryId: 'b1', title: 'b1' });
+    e(1, 'duo.invited', { personId: 'q', entryId: 'b1', ownerId: 'q', partnerId: 'g', sameGroup: true });
+    e(0, 'song.requested', { personId: 'q', entryId: 'b2', title: 'b2' });
+    e(15, 'duo.invited', { personId: 'q', entryId: 'b2', ownerId: 'q', partnerId: 'g', sameGroup: true });
+    stage(10, 14, 'b1', ['q', 'g'], 1);
+    stage(20, 24, 'b2', ['q', 'g'], 2);
+    stage(40, 44, 'g1', ['g'], 3);
+  });
+  assert.deepEqual(guested.global.longestWait, { sec: 40 * 60, personId: 'g', title: 'g1', at: T(40), guestStages: 2 });
+  assert.match(insights(guested).find(i => i.kind === 'longest-wait').text,
+    /Plus longue attente : 40 min \(g, « g1 » ; entre-temps, 2 passages sur scène comme invité d’un duo\)\./);
+  // Sans monter sur scène : duo entre tables, l'invité attend depuis son
+  // accord ; demande pour rejoindre directe, depuis la demande ; invité noté
+  // par le bar sans titre, aucune attente.
+  const cross = scenario((e, stage) => {
+    e(0, 'song.requested', { personId: 'q', entryId: 'b1', title: 'b1' });
+    e(2, 'duo.invited', { personId: 'q', entryId: 'b1', ownerId: 'q', partnerId: 'g', sameGroup: false });
+    e(4, 'duo.answered', { personId: 'g', entryId: 'b1', ownerId: 'q', partnerId: 'g', accepted: true });
+    e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    e(6, 'duo.joinRequested', { requesterId: 'q', ownerId: 'p', entryId: 'a1', direct: true });
+    stage(10, 14, 'b1', ['q', 'g'], 1);
+    stage(20, 24, 'a1', ['p', 'q'], 2);
+    e(30, 'song.requested', { personId: 'q', entryId: 'b2', title: 'b2' });
+    stage(40, 44, 'b2', ['q'], 3);
+    e(41, 'duo.improvised', { entryId: 'b2', partnerId: 'p' });
+  });
+  assert.deepEqual(singerOf(cross, 'g').stageWaits, { n: 1, guestN: 1, avgSec: 6 * 60, medianSec: 6 * 60, maxSec: 6 * 60 },
+    'duo entre tables : depuis l’accord (4)');
+  assert.equal(singerOf(cross, 'q').stageWaits.n, 3, 'q : son titre, son passage en invitée, son second titre');
+  assert.deepEqual(singerOf(cross, 'q').stageWaits, { n: 3, guestN: 1, avgSec: (10 + 6 + 10) * 60 / 3, medianSec: 10 * 60, maxSec: 10 * 60 },
+    'b1 0 à 10, invitée de a1 depuis la fin de b1 (14 à 20), b2 demandé à 30 sans titre entre-temps');
+  assert.equal(singerOf(cross, 'p').stageWaits.n, 1, 'p noté par le bar sur b2 sans titre en liste : aucune attente');
 });
