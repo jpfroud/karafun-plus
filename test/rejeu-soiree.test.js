@@ -181,11 +181,12 @@ test('bilan avant/après : même code des deux côtés, tout est égal', async (
 
 test('bilan avant/après : une personne qui perd un passage ou attend plus est signalée', async () => {
   const cmp = await rejeu.runCompare(ev, { before: { code: path.join(__dirname, '..') } });
-  // Version « après » abîmée à la main : S05 perd un passage, S09 attend 20 min
-  // de plus, l'équilibre baisse.
+  // Version « après » abîmée à la main : S05 perd un de ses titres (mais gagne
+  // un passage en invité), S09 attend 20 min de plus, l'équilibre baisse.
   const after = structuredClone(cmp.after);
   const people = after.balance.replay.people;
-  people.S05.appearances -= 1;
+  people.S05.turns -= 1;
+  people.S05.guestTurns += 1;
   people.S09.waitMaxSec += 1200;
   after.balance.replay.jain = Math.round((cmp.after.balance.replay.jain - 0.05) * 1000) / 1000;
   const p = after.passages.find(x => x.owner === 'S09');
@@ -200,16 +201,107 @@ test('bilan avant/après : une personne qui perd un passage ou attend plus est s
   assert.match(text.split('Personnes qui y gagnent')[1], /^ : \n {2}S01 : /);
   assert.match(text, /indice de Jain \(1 = même rythme pour tous\)\s+0,784\s+\S+\s+\S+\s+MOINS BIEN/);
   const losers = text.split('Personnes qui y perdent')[1].split('Personnes qui y gagnent')[0];
-  assert.match(losers, /\n {2}S05 : passages (\d+) → (?!\1)\d+/);
+  assert.match(losers, /\n {2}S05 : titres (\d+) → (?!\1)\d+ \(invité (\d+) → (?!\2)\d+\)/);
   assert.match(losers, /\n {2}S09 : .*plus longue attente d'un titre \d+ → \d+ min/);
   assert.match(text, /Verdict : .*1 moins bien.*2 personnes y perdent, 1 y gagne\./);
   assert.match(text, new RegExp(`→ +${Math.round(p.waitSec / 60)} min  S09`));
-  // Jamais passé « avant », un passage « après » (avec son attente) : y gagne.
+  // Jamais passé « avant », un titre « après » (avec son attente) : y gagne.
   const before = structuredClone(cmp.before);
   Object.assign(before.balance.replay.people.S02, { appearances: 0, turns: 0, waitMaxSec: null, stageMaxSec: null, fairRatio: 0 });
   const gained = rejeu.compareReport({ ...cmp, before });
-  assert.match(gained.split('Personnes qui y gagnent')[1], /\n {2}S02 : passages 0 → \d+/);
+  assert.match(gained.split('Personnes qui y gagnent')[1], /\n {2}S02 : titres 0 → \d+/);
   assert.doesNotMatch(gained.split('Personnes qui y perdent')[1].split('Personnes qui y gagnent')[0], /S02/);
+  // Un titre de plus, mais 40 min de plus sans monter sur scène : y perd quand même.
+  const longer = structuredClone(cmp.after);
+  longer.balance.replay.people.S03.turns += 1;
+  longer.balance.replay.people.S03.stageMaxSec += 2400;
+  const mixed = rejeu.compareReport({ ...cmp, after: longer });
+  assert.match(mixed.split('Personnes qui y perdent')[1].split('Personnes qui y gagnent')[0], /\n {2}S03 : titres (\d+) → (?!\1)\d+/);
+});
+
+test('rejeu libre : « remplacer » ne retire que les titres que la soirée a remplacés', async () => {
+  const base = await rejeu.runFree(ev);
+  // Titre chanté plus tard dans le rejeu que dans la soirée : juste après son
+  // passage réel, sa chanteuse choisit un titre en « remplacer », sa liste réelle
+  // étant vide (rien de remplacé). Le rejeu doit garder le titre pas encore chanté.
+  const replayed = new Map(base.passages.map(p => [p.entryId, p]));
+  const a = ev.realPassages.find(p => p.source === 'queue' && p.ids.length === 1 && replayed.get(p.entryId)?.start > p.end + 300000);
+  assert.ok(a, 'titre chanté plus tard dans le rejeu');
+  const raw = structuredClone(ev.raw);
+  adder(raw.events)(a.start + 60000, 'song.requested',
+    { personId: a.ids[0], entryId: 'remplacant', songId: 999999, title: 'Remplaçant', durationSec: 200, mode: 'replace', replacedEntryIds: [] });
+  const res = await rejeu.runFree(rejeu.loadEvening(raw));
+  assert.ok(res.passages.some(p => p.entryId === a.entryId), 'titre gardé et chanté');
+  assert.ok(res.passages.some(p => p.entryId === 'remplacant'));
+  assert.ok(res.notes.some(n => /remplacement de .* : \d+ titre\(s\) pas encore chanté\(s\) dans le rejeu gardé\(s\)/.test(n)));
+});
+
+test('bilan avant/après : un seul côté sans Timefold, note pour le même code, alerte sinon', async () => {
+  const cmp = await rejeu.runCompare(ev, { before: { code: path.join(__dirname, '..') } });
+  const oneSide = (side, sameCode) => rejeu.compareReport({ ...cmp, sameCode,
+    [side]: { ...cmp[side], solver: true } }, { short: true });
+  assert.equal(cmp.sameCode, true);
+  assert.match(oneSide('after', true), /\n {2}NOTE avant sans Timefold : ce bilan mesure l'apport de Timefold/);
+  assert.match(oneSide('before', true), /\n {2}NOTE après sans Timefold/);
+  assert.match(oneSide('after', false), /\n {2}ATTENTION avant sans Timefold et version différente/);
+  for (const text of [oneSide('after', true), oneSide('after', false)]) assert.doesNotMatch(text, /ATTENTION rejeu sans Timefold/);
+});
+
+test('rejeu : attente avec un temps sans titre, fenêtre des anomalies depuis readySince ; sortie --cles et caractères de contrôle', async () => {
+  // Soirée minimale : p retire son seul titre à 6 min, en redemande un à 20
+  // (aucun envoi entre les deux), chanté à 30.
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const T = m => T0 + m * 60000;
+  const events = [];
+  const e = (m, ev, fields = {}) => events.push({ v: 1, seq: events.length + 1, t: T(m), ev, ...fields });
+  e(0, 'app.started', { restored: false, offlineMs: 0 });
+  e(0, 'person.joined', { personId: 'S01', tableId: 'T1' });
+  e(0, 'person.joined', { personId: 'S02', tableId: 'T2' });
+  e(1, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+  e(6, 'song.removed', { personId: 'S01', entryId: 'a1', by: 'self' });
+  e(20, 'song.requested', { personId: 'S01', entryId: 'a2', songId: 2, title: 'a2', mode: 'append' });
+  e(29, 'turn.sent', { entryId: 'a2', ids: ['S01'], ownerId: 'S01', queueId: 'q1' });
+  e(30, 'stage.started', { queueId: 'q1', entryId: 'a2', ids: ['S01'], ownerId: 'S01', source: 'queue', title: 'a2' });
+  e(34, 'stage.ended', { queueId: 'q1', playedSec: 240 });
+  const raw = { people: [{ key: 'S01', table: 'T1', name: 'Zo\u001b[2Jé' }, { key: 'S02', table: 'T2', name: 'S02' }],
+    tables: [{ key: 'T1' }, { key: 'T2' }], events };
+  const ev2 = rejeu.loadEvening(raw);
+  const [w] = rejeu.computeWaits(ev2.realPassages, ev2);
+  assert.equal(w.waitSec, (30 - 1 - 14) * 60, 'les 14 min sans titre ne comptent pas');
+  assert.equal(w.readyAt, T(1), 'fenêtre des anomalies depuis le début réel de l’attente');
+  // Caractères de contrôle d'un prénom neutralisés à l'affichage, prénom absent avec --cles.
+  const res = await rejeu.runForced(ev2);
+  assert.doesNotMatch(rejeu.report(res), /\u001b/);
+  const out = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-cles-'));
+  try {
+    const file = path.join(dir, 'soiree.json');
+    fs.writeFileSync(file, JSON.stringify(raw));
+    assert.equal(await rejeu.main([file, '--cles', '--json', path.join(dir, 'r.json')], l => out.push(l)), 0);
+    assert.doesNotMatch(out.join('\n') + fs.readFileSync(path.join(dir, 'r.json'), 'utf8'), /Zo/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache des versions extraites : dossier ou parent modifiable par d’autres refusé', { skip: process.platform === 'win32' && 'droits POSIX' }, async t => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-cache-sur-'));
+  const saved = process.env.KARAFUN_REJEU_CACHE;
+  t.after(() => {
+    if (saved === undefined) delete process.env.KARAFUN_REJEU_CACHE; else process.env.KARAFUN_REJEU_CACHE = saved;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+  const open = path.join(tmp, 'ouvert'); fs.mkdirSync(open); fs.chmodSync(open, 0o777);
+  const group = path.join(tmp, 'groupe'); fs.mkdirSync(group); fs.chmodSync(group, 0o770);
+  const target = path.join(tmp, 'cible'); fs.mkdirSync(target, { mode: 0o700 });
+  const link = path.join(tmp, 'lien'); fs.symlinkSync(target, link);
+  const shared = path.join(tmp, 'partage'); fs.mkdirSync(shared); fs.chmodSync(shared, 0o777);
+  const under = path.join(shared, 'cache');
+  for (const [dir, empty] of [[open, open], [group, group], [link, target], [under, null]]) {
+    process.env.KARAFUN_REJEU_CACHE = dir;
+    const err = [];
+    assert.equal(await rejeu.main([FIXTURE, '--avant', 'HEAD', '--court'], () => {}, l => err.push(l)), 1, dir);
+    assert.match(err.join('\n'), /^Cache des versions extraites non sûr/);
+    if (empty) assert.deepEqual(fs.readdirSync(empty), [], 'rien extrait');
+  }
 });
 
 test('bilan avant/après : révision git extraite à part, dépôt intact', async t => {

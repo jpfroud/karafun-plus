@@ -25,6 +25,8 @@
  *                          spacingSongs=2, roundAppearanceCap=0, interleaveArrivals=false,
  *                          pushDelaySec=30 (rejeu libre) : compare les réglages du bar.
  *   --court                résumé seulement (sans la liste des décisions ni des attentes)
+ *   --cles                 clés S01… à la place des prénoms (texte et JSON) : sortie
+ *                          à reporter dans le dépôt ou une PR
  *   --avant <rév|dossier>  BILAN AVANT/APRÈS : la même soirée rejouée librement avec
  *                          l'ordonnanceur d'une autre version (révision git du dépôt,
  *                          extraite dans .git/karafun-rejeu, ou dossier de sources)
@@ -64,6 +66,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { Scheduler } = require('../scheduler');
+const { BUNDLED_JAVA } = require('../solver/bridge');
 const eveningStats = require('../evening-stats');
 
 const ROOT = path.join(__dirname, '..');
@@ -275,10 +278,23 @@ function cacheRoot() {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   // Le code extrait ici est exécuté : dossier à soi, que nul autre ne peut modifier.
   const st = fs.lstatSync(root);
+  const unsafe = message => new UsageError(`Cache des versions extraites non sûr (${root}) : ${message}.`);
   if (st.isSymbolicLink() || (process.getuid && (st.uid !== process.getuid() || (st.mode & 0o022)))) {
-    throw new UsageError(`Cache des versions extraites non sûr (${root}) : il doit être à l'utilisateur, sans droit d'écriture pour les autres.`);
+    throw unsafe('il doit être à l\'utilisateur, sans droit d\'écriture pour les autres');
   }
-  return fs.realpathSync(root);
+  const real = fs.realpathSync(root);
+  // Parents : un dossier modifiable par d'autres sans sticky bit laisserait
+  // remplacer le cache après ce contrôle (règle de StrictModes d'OpenSSH).
+  if (process.getuid) {
+    for (let dir = path.dirname(real); ; dir = path.dirname(dir)) {
+      const p = fs.statSync(dir);
+      if ((p.uid !== process.getuid() && p.uid !== 0) || ((p.mode & 0o022) && !(p.mode & 0o1000))) {
+        throw unsafe(`le dossier ${dir} peut être modifié par d'autres`);
+      }
+      if (dir === path.dirname(dir)) break;
+    }
+  }
+  return real;
 }
 const EXTRACTED_OK = '.rejeu-ok';
 const HOUR = 3600_000;
@@ -436,7 +452,8 @@ function makeContext(ev, opts) {
   const jar = resolveJar(opts.solver, code);
   if (jar) {
     const { TimefoldBridge } = require(path.join(code.dir, 'solver', 'bridge'));
-    s.solverBridge = new TimefoldBridge({ jar, settleMs: 0 });
+    // Java de la version de travail (runtime du kit s'il est là) des deux côtés.
+    s.solverBridge = new TimefoldBridge({ jar, settleMs: 0, ...(fs.existsSync(BUNDLED_JAVA) ? { java: BUNDLED_JAVA } : {}) });
     ctx.solver = s.solverBridge; ctx.jar = jar;
     if (!(code.extracted && typeof opts.solver === 'string') && staleJar(jar, code.dir)) {
       ctx.warnings.push(`jar Timefold plus ancien que ${path.join(code.dir, 'solver', 'src')} : reconstruire (mvn -q -DskipTests package -f ${path.join(code.dir, 'solver', 'pom.xml')})`);
@@ -460,7 +477,7 @@ async function ensurePlan(ctx) {
   s.solverRequestedFingerprint = null;
   const started = s._requestSolver(fp, { budgetMs: ctx.budget, forced: true });
   // Moins de deux titres : rien à ordonner, ce n'est pas une demande à Timefold.
-  if (!started && !s.solverLastError && ctx.solver.available) return;
+  if (!started && !s.solverLastError) return;
   ctx.plans.asked++;
   // Échec ou solveur indisponible : ordre local, compté et signalé au rapport.
   const ok = started && s.solverPromise ? await s.solverPromise.catch(() => false) : false;
@@ -554,10 +571,23 @@ function applyExternal(ctx, e, upcoming) {
         // Un duo est demandé puis aussitôt noté (inviteDuet) : même table, accepté d'office.
         const duo = upcoming.find(x => x.ev === 'duo.invited' && x.entryId === e.entryId);
         const partner = duo && P(duo.partnerId);
+        // « Remplacer » : la soirée n'a retiré que e.replacedEntryIds. Un titre de
+        // la liste rejouée hors de ceux-là (déjà chanté dans la soirée, pas encore
+        // dans le rejeu) est gardé, rajouté après le nouveau titre.
+        const replaced = new Set((e.replacedEntryIds || []).map(id => ctx.real2rep.get(id)).filter(Boolean));
+        const kept = e.mode === 'replace' ? s.songsOf(p).filter(x => !replaced.has(x.entryId)) : [];
         if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
         else s.chooseSong(p, song, e.mode === 'replace' ? 'replace' : 'append');
         const fresh = s.songsOf(p).find(x => !before.has(x.entryId));
         if (fresh) { ctx.real2rep.set(e.entryId, fresh.entryId); ctx.rep2real.set(fresh.entryId, e.entryId); }
+        for (const x of e.mode === 'replace' && !s.songsOf(p).some(y => kept.includes(y)) ? kept : []) {
+          const realId = ctx.rep2real.get(x.entryId);
+          const listed = new Set(s.songsOf(p).map(y => y.entryId));
+          s.chooseSong(p, { songId: x.songId, title: x.title, artist: x.artist, duration: x.duration }, 'append');
+          const again = s.songsOf(p).find(y => !listed.has(y.entryId));
+          if (again && realId) { ctx.real2rep.set(realId, again.entryId); ctx.rep2real.set(again.entryId, realId); }
+        }
+        if (kept.length) note(ctx, `remplacement de ${e.personId} : ${kept.length} titre(s) pas encore chanté(s) dans le rejeu gardé(s)`);
         return true;
       }
       case 'duo.invited': return false; // traité avec song.requested
@@ -1034,7 +1064,8 @@ async function runCompare(evening, opts = {}) {
     statsDiffer = code.Scheduler !== Scheduler &&
       fs.readFileSync(path.join(code.dir, 'evening-stats.js'), 'utf8') !== fs.readFileSync(path.join(ROOT, 'evening-stats.js'), 'utf8');
   } catch (_) { /* dossier sans evening-stats.js */ }
-  return { mode: 'avant-après', before, after, timezone: ev.timezone, names: after.names, statsDiffer };
+  return { mode: 'avant-après', before, after, timezone: ev.timezone, names: after.names, statsDiffer,
+    sameCode: code.Scheduler === Scheduler, unreadable: ev.skipped };
 }
 
 // Indicateurs du bilan : valeur réelle, avant, après ; sens du mieux et écart
@@ -1074,24 +1105,37 @@ function verdict(ind, a, b) {
 
 // Personnes dont le sort change : passages, plus longue attente d'un titre,
 // plus longue attente sans monter sur scène (5 min d'écart au moins).
+// Écart d'attente qui fait un gagnant ou un perdant, et poids d'un titre
+// gagné ou perdu pour ranger la liste.
+const PERSON_WAIT_SEC = 300;
+const TITLE_WEIGHT_SEC = 600;
 function peopleChanges(cmp) {
   const A = cmp.before.balance.replay?.people || {}, B = cmp.after.balance.replay?.people || {};
   const rows = [];
+  // Attente mesurée d'un seul côté (personne qui n'a rien chanté de l'autre) :
+  // pas d'écart, seul le titre gagné ou perdu compte.
+  const delta = (x, y) => (x == null || y == null ? 0 : y - x);
   for (const key of new Set([...Object.keys(A), ...Object.keys(B)])) {
     const a = A[key] || {}, b = B[key] || {};
-    const dWait = (b.waitMaxSec ?? 0) - (a.waitMaxSec ?? 0);
-    const dStage = (b.stageMaxSec ?? 0) - (a.stageMaxSec ?? 0);
-    const dApps = (b.appearances ?? 0) - (a.appearances ?? 0);
-    // Un passage de plus ou de moins l'emporte : l'attente d'un titre gagné
-    // (aucune « avant ») n'en fait pas un perdant.
-    const worse = dApps < 0 || (dApps === 0 && (dWait >= 300 || dStage >= 300));
-    const better = dApps > 0 || (dApps === 0 && (dWait <= -300 || dStage <= -300));
+    const dWait = delta(a.waitMaxSec, b.waitMaxSec);
+    const dStage = delta(a.stageMaxSec, b.stageMaxSec);
+    // Ses propres titres, comme l'équilibre (Jain) et la part ; les passages en
+    // invité sont montrés, pas comptés.
+    const dTurns = (b.turns ?? 0) - (a.turns ?? 0);
+    // Gagner un titre n'efface pas une attente nettement plus longue : la
+    // personne est alors rangée parmi celles qui y perdent.
+    const worse = dTurns < 0 || dWait >= PERSON_WAIT_SEC || dStage >= PERSON_WAIT_SEC;
+    const better = dTurns > 0 || dWait <= -PERSON_WAIT_SEC || dStage <= -PERSON_WAIT_SEC;
     if (!worse && !better) continue;
-    rows.push({ key, a, b, dWait, dStage, dApps, worse, better,
-      weight: Math.max(Math.abs(dWait), Math.abs(dStage), 600 * Math.abs(dApps)) });
+    rows.push({ key, a, b, dWait, dStage, dTurns, worse, better,
+      weight: Math.max(Math.abs(dWait), Math.abs(dStage), TITLE_WEIGHT_SEC * Math.abs(dTurns)) });
   }
   return rows.sort((x, y) => (y.worse - x.worse) || y.weight - x.weight);
 }
+
+// Prénoms et titres viennent des téléphones : aucun caractère de contrôle
+// (séquences d'échappement) ne part vers le terminal.
+const printable = text => text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '\ufffd');
 
 function compareReport(cmp, { short = false } = {}) {
   const { before, after } = cmp;
@@ -1113,7 +1157,11 @@ function compareReport(cmp, { short = false } = {}) {
   if (!before.solver && !after.solver) {
     out.push('  ATTENTION rejeu sans Timefold : au bar, Timefold aide à décider ; relancer avec --solveur pour le bilan à présenter');
   } else if (!before.solver || !after.solver) {
-    out.push(`  NOTE ${!before.solver ? 'avant' : 'après'} sans Timefold : ce bilan mesure l'apport de Timefold, pas un changement de code`);
+    const side = !before.solver ? 'avant' : 'après';
+    out.push(cmp.sameCode ?
+      `  NOTE ${side} sans Timefold : ce bilan mesure l'apport de Timefold, pas un changement de code` :
+      `  ATTENTION ${side} sans Timefold et version différente : le bilan mêle le changement de code et l'apport de Timefold ; ` +
+      'relancer avec Timefold des deux côtés pour le bilan à présenter');
   }
   if (cmp.statsDiffer) {
     out.push('  ATTENTION evening-stats.js diffère entre les deux versions : les deux côtés sont mesurés par celui de la version de travail ; ' +
@@ -1139,11 +1187,11 @@ function compareReport(cmp, { short = false } = {}) {
   const losers = changes.filter(c => c.worse), winners = changes.filter(c => c.better && !c.worse);
   const fr = n => n == null ? '—' : String(n).replace('.', ',');
   const mn = sec => sec == null ? '—' : String(Math.round(sec / 60));
-  const line = c => `  ${nm(c.key)} : passages ${c.a.appearances ?? 0} → ${c.b.appearances ?? 0}` +
+  const line = c => `  ${nm(c.key)} : titres ${c.a.turns ?? 0} → ${c.b.turns ?? 0} (invité ${c.a.guestTurns ?? 0} → ${c.b.guestTurns ?? 0})` +
     ` ; plus longue attente d'un titre ${mn(c.a.waitMaxSec)} → ${mn(c.b.waitMaxSec)} min` +
     ` ; plus longue sans scène ${mn(c.a.stageMaxSec)} → ${mn(c.b.stageMaxSec)} min` +
     ` ; part ${fr(c.a.fairRatio)} → ${fr(c.b.fairRatio)}`;
-  out.push('', `Personnes qui y perdent (un passage de moins, ou 5 min de plus d'attente) : ${losers.length ? '' : 'personne'}`);
+  out.push('', `Personnes qui y perdent (un de ses titres de moins, ou 5 min de plus d'attente) : ${losers.length ? '' : 'personne'}`);
   for (const c of losers) out.push(line(c));
   out.push(`Personnes qui y gagnent : ${winners.length ? '' : 'personne'}`);
   for (const c of winners) out.push(line(c));
@@ -1174,10 +1222,12 @@ function compareReport(cmp, { short = false } = {}) {
   }
   const notes = [...new Set([...before.notes, ...after.notes])];
   const extra = Object.entries(after.notReplayed).map(([k, n]) => `${k}×${n}`);
-  if (extra.length || notes.length) out.push('');
+  const unreadable = Object.entries(cmp.unreadable || {}).map(([k, n]) => `${k}×${n}`);
+  if (extra.length || unreadable.length || notes.length) out.push('');
   if (extra.length) out.push('gestes non rejoués : ' + extra.join(', '));
+  if (unreadable.length) out.push('événements illisibles ou d’une autre version : ' + unreadable.join(', '));
   for (const l of notes) out.push('note : ' + l);
-  return out.join('\n');
+  return printable(out.join('\n'));
 }
 
 // ------------------------------------------------------------------ texte
@@ -1256,7 +1306,7 @@ function report(res, { traces = [], short = false } = {}) {
   if (extra.length || res.notes.length) out.push('');
   for (const l of extra) out.push(l);
   for (const l of res.notes) out.push('note : ' + l);
-  return out.join('\n');
+  return printable(out.join('\n'));
 }
 
 function traceLines(res, d) {
@@ -1286,7 +1336,7 @@ function traceLines(res, d) {
 // ------------------------------------------------------------------ CLI
 function parseArgs(argv) {
   const o = { file: null, free: false, solver: false, budget: 3000, traces: [], json: null, options: {}, short: false,
-    before: null, solverBefore: null };
+    before: null, solverBefore: null, keys: false };
   const value = (k, name) => {
     if (argv[k] == null || argv[k].startsWith('--')) throw new Error(`${name} attend une valeur`);
     return argv[k];
@@ -1301,6 +1351,7 @@ function parseArgs(argv) {
     else if (a === '--trace') o.traces.push(...String(argv[++k] || '').split(',').filter(Boolean));
     else if (a === '--json') o.json = argv[++k];
     else if (a === '--court') o.short = true;
+    else if (a === '--cles') o.keys = true;
     else if (a === '--option') {
       const [key, ...rest] = String(argv[++k] || '').split('=');
       const raw = rest.join('=');
@@ -1331,6 +1382,8 @@ async function main(argv = process.argv.slice(2), print = console.log, printErro
   if (o.help || !o.file) { print(USAGE); return o.help ? 0 : 2; }
   try {
     const ev = loadEvening(o.file);
+    // --cles : les prénoms de l'export ne sortent pas (rapport, bilan, JSON).
+    if (o.keys) for (const p of ev.people.values()) p.name = p.key;
     let res, text;
     if (o.before) {
       res = await runCompare(ev, { budget: o.budget, options: o.options,
