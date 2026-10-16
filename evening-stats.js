@@ -183,6 +183,7 @@ function passageWaits({ ours, songs, people, openedAt, queueClears = [] }) {
       const deferMs = overlapMs(readySince, st.start, people.get(st.ownerId)?.deferSpans || []);
       st.requestedAt = s.requestedAt;
       st.requestDelaySec = sec(st.start - Math.max(s.requestedAt, openedAt));
+      st.readySince = readySince;
       st.waitSec = sec(Math.max(0, st.start - readySince - holesMs));
       st.deferSec = sec(s.deferMs);
       st.netWaitSec = Math.max(0, st.waitSec - sec(deferMs));
@@ -1160,7 +1161,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       stages: stages.map((st, i) => ({ i, start: st.start, end: st.endAt, ongoing: !!st.ongoing, endKnown: st.endKnown,
         playedSec: st.playedSec, durationSec: st.durationSec, title: st.title, artist: st.artist, ids: st.ids,
         ownerId: st.ownerId, kind: st.kind, source: st.source, improvised: st.improvised, entryId: st.entryId,
-        queueId: st.queueId, requestedAt: st.requestedAt ?? null, waitSec: st.waitSec ?? null,
+        queueId: st.queueId, requestedAt: st.requestedAt ?? null, readySince: st.readySince ?? null, waitSec: st.waitSec ?? null,
         requestDelaySec: st.requestDelaySec ?? null, deferSec: st.deferSec ?? null, presenceSkips: st.presenceSkips ?? 0 })),
       gaps,
       phases: phaseSpans.map(([start, end, blocker], i) => ({ start, end, phase: phases[i].phase, blocker })),

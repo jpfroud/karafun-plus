@@ -14,6 +14,15 @@ const ev = rejeu.loadEvening(FIXTURE);
 let forced = null;
 const forcedRun = async () => forced ||= await rejeu.runForced(ev);
 const ids = d => d?.ids.join('+');
+// Événement ajouté à son heure dans une copie de l'export : numéro d'ordre
+// juste après le dernier événement de la soirée qui le précède.
+function adder(events) {
+  let extra = 0;
+  return (t, ev, fields) => {
+    const seq = Math.max(...events.filter(e => e.t <= t).map(e => e.seq)) + 0.5 + (extra += 0.001);
+    events.push({ v: 1, t, seq, ev, ...fields });
+  };
+}
 
 test('export anonymisé : 56 passages réels, mêmes attentes et même équilibre que l’export complet (instantané)', () => {
   assert.equal(ev.realPassages.filter(p => p.source === 'queue').length, 56);
@@ -50,6 +59,12 @@ test('rejeu libre : le journal rejoué garde les demandes réelles et remplace l
     rejeu.computeWaits(passages, ev).map(w => [w.entryId, w.waitSec]));
   assert.equal(journal.filter(e => e.ev === 'turn.sent').length, 0);
   assert.equal(journal.filter(e => e.ev === 'song.requested').length, ev.events.filter(e => e.ev === 'song.requested').length);
+  // Passages rejoués avec leur envoi : un turn.sent à cette heure (la rotation
+  // compte un passage à l'envoi), au rang des passages de la file seulement.
+  const sent = passages.map(p => p.source === 'queue' ? { ...p, sentAt: p.start - 60000 } : p);
+  const withSends = rejeu.replayJournal(ev, sent).filter(e => e.ev === 'turn.sent');
+  assert.equal(withSends.length, sent.filter(p => p.source === 'queue').length);
+  assert.deepEqual(withSends.map(e => [e.entryId, e.t]), sent.filter(p => p.source === 'queue').map(p => [p.entryId, p.sentAt]));
 });
 
 test('rejeu forcé sans Timefold : chaque envoi réel jusqu’au nouveau tour de 21:49:51, sauf l’égalité de 21:06:30', async () => {
@@ -189,6 +204,12 @@ test('bilan avant/après : une personne qui perd un passage ou attend plus est s
   assert.match(losers, /\n {2}S09 : .*plus longue attente d'un titre \d+ → \d+ min/);
   assert.match(text, /Verdict : .*1 moins bien.*2 personnes y perdent, 1 y gagne\./);
   assert.match(text, new RegExp(`→ +${Math.round(p.waitSec / 60)} min  S09`));
+  // Jamais passé « avant », un passage « après » (avec son attente) : y gagne.
+  const before = structuredClone(cmp.before);
+  Object.assign(before.balance.replay.people.S02, { appearances: 0, turns: 0, waitMaxSec: null, stageMaxSec: null, fairRatio: 0 });
+  const gained = rejeu.compareReport({ ...cmp, before });
+  assert.match(gained.split('Personnes qui y gagnent')[1], /\n {2}S02 : passages 0 → \d+/);
+  assert.doesNotMatch(gained.split('Personnes qui y perdent')[1].split('Personnes qui y gagnent')[0], /S02/);
 });
 
 test('bilan avant/après : révision git extraite à part, dépôt intact', async t => {
@@ -216,6 +237,25 @@ test('bilan avant/après : révision git extraite à part, dépôt intact', asyn
   assert.equal(git(['status', '--porcelain']), status, 'index et copie de travail intacts');
   // Copie de travail propre : la version extraite rejoue comme la version de travail.
   if (!status.trim()) assert.match(text, /Verdict : 0 indicateur mieux, 0 moins bien/);
+  // Ménage : 6 anciennes extractions (marquées), un dossier étranger, une copie
+  // interrompue vieille de 2 h. Restent les 5 plus récentes et le dossier étranger.
+  const old = new Date(Date.now() - 2 * 3600_000);
+  const fakes = Array.from({ length: 6 }, (_, k) => String(k + 1).repeat(40));
+  fakes.forEach((name, k) => {
+    fs.mkdirSync(path.join(cache, name));
+    fs.writeFileSync(path.join(cache, name, '.rejeu-ok'), `${name}\n`);
+    const t = new Date(Date.now() - (10 - k) * 60_000);
+    fs.utimesSync(path.join(cache, name), t, t);
+  });
+  const foreign = 'f'.repeat(40);
+  fs.mkdirSync(path.join(cache, foreign));
+  fs.utimesSync(path.join(cache, foreign), old, old);
+  const stale = path.join(cache, `${sha}.tmp-abcdef`);
+  fs.mkdirSync(stale);
+  fs.utimesSync(stale, old, old);
+  fs.rmSync(path.join(cache, sha), { recursive: true }); // nouvelle extraction de HEAD
+  assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--court'], () => {}, () => {}), 0);
+  assert.deepEqual(fs.readdirSync(cache).sort(), [sha, ...fakes.slice(2), foreign].sort());
 });
 
 test('rejeu : un seul à la fois, et version « avant » inutilisable dite en une ligne', async t => {
@@ -237,6 +277,7 @@ test('rejeu : un seul à la fois, et version « avant » inutilisable dite en un
     const code = await rejeu.main([FIXTURE, '--avant', dir, '--court'], () => {}, l => err.push(l));
     return { code, err: err.join('\n') };
   };
+  const link = path.join(dirs, 'lien-qui-plante');
   const cases = [
     [version('vide'), /pas de scheduler\.js/],
     [version('sans-methodes', 'class Scheduler {}\nmodule.exports = { Scheduler };\n'),
@@ -244,6 +285,10 @@ test('rejeu : un seul à la fois, et version « avant » inutilisable dite en un
     [version('qui-plante', 'class Scheduler { constructor() { throw new TypeError(\'boum\'); } }\nmodule.exports = { Scheduler };\n'),
       /^Rejeu impossible avec .*qui-plante : boum \(at .*\) ; version trop éloignée de l'outil de rejeu \?$/],
   ];
+  if (process.platform !== 'win32') {
+    fs.symlinkSync(cases[2][0], link);
+    cases.push([link, /^Rejeu impossible avec .*lien-qui-plante : boum \(at .*\) ; version trop éloignée de l'outil de rejeu \?$/]);
+  }
   for (const [dir, message] of cases) {
     const r = await run(dir);
     assert.equal(r.code, 1, dir);
@@ -267,13 +312,7 @@ test('rejeu libre : demande pour rejoindre, fermeture retirée, « Je suis là �
     if (mate && !events.some(x => x.entryId === e.entryId && /^duo\./.test(x.ev))) target = { e, mate };
   }
   assert.ok(target, 'titre solo avec une personne de la même table');
-  // Événement ajouté à son heure : numéro d'ordre juste après le dernier
-  // événement de la soirée qui le précède.
-  let extra = 0;
-  const at = (t, ev, fields) => {
-    const seq = Math.max(...events.filter(e => e.t <= t).map(e => e.seq)) + 0.5 + (extra += 0.001);
-    events.push({ v: 1, t, seq, ev, ...fields });
-  };
+  const at = adder(events);
   at(target.e.t + 1000, 'duo.joinRequested',
     { requesterId: target.mate, ownerId: target.e.personId, entryId: target.e.entryId, direct: true });
   // Heure de fermeture posée puis retirée par le bar, vidage de la file à la fin.
@@ -282,13 +321,91 @@ test('rejeu libre : demande pour rejoindre, fermeture retirée, « Je suis là �
   at(first.t + 3601000, 'closing.cleared', {});
   const last = events.filter(e => e.ev === 'stage.started').at(-1);
   at(last.t - 1000, 'staff.queueCleared', {});
+  // « Je suis là » rendu obligatoire en cours de soirée par le bar.
+  at(first.t + 1800000, 'settings.changed', { setting: 'requirePresence', from: false, to: true });
   const res = await rejeu.runFree(rejeu.loadEvening(raw), { options: { requirePresence: true } });
   const duo = res.passages.find(p => p.entryId === target.e.entryId);
   assert.deepEqual(duo?.ids, [target.e.personId, target.mate], 'duo rejoint rejoué');
   assert.equal(res.passages.length, 56, 'fermeture retirée et « Je suis là » obligatoire : tout est chanté');
-  assert.ok(res.warnings.some(w => /« Je suis là » obligatoire non rejoué/.test(w)));
+  assert.equal(res.warnings.filter(w => /« Je suis là » obligatoire non rejoué/.test(w)).length, 1, 'avertissement une seule fois');
   assert.equal(res.notReplayed['staff.queueCleared'], 1);
   assert.match(rejeu.report(res, { short: true }), /gestes non rejoués : .*staff\.queueCleared×1/);
+  // Sans l'option, le réglage pris en cours de soirée est aussi rejoué sans.
+  const raw2 = structuredClone(ev.raw);
+  adder(raw2.events)(first.t + 1800000, 'settings.changed', { setting: 'requirePresence', from: false, to: true });
+  const res2 = await rejeu.runFree(rejeu.loadEvening(raw2));
+  assert.equal(res2.passages.length, 56);
+  assert.equal(res2.warnings.filter(w => /« Je suis là » obligatoire non rejoué/.test(w)).length, 1);
+});
+
+test('rejeu libre : demande acceptée d’une autre table, demande annulée, place cédée', async () => {
+  const raw = structuredClone(ev.raw);
+  const events = raw.events;
+  const at = adder(events);
+  const startOf = new Map(events.filter(e => e.ev === 'stage.started' && e.entryId).map(e => [e.entryId, e.t]));
+  const tableOf = new Map(events.filter(e => e.ev === 'person.joined').map(e => [e.personId, e.tableId]));
+  const joinedAt = new Map(events.filter(e => e.ev === 'person.joined').map(e => [e.personId, e.t]));
+  const solos = events.filter(e => e.ev === 'song.requested' && startOf.get(e.entryId) > e.t + 20 * 60000 &&
+    !events.some(x => x.entryId === e.entryId && /^duo\./.test(x.ev)));
+  // Demande d'une personne d'une autre table, acceptée deux minutes après.
+  const a = solos.find(e => [...tableOf].some(([pid, tid]) => tid !== tableOf.get(e.personId) && joinedAt.get(pid) < e.t));
+  const other = [...tableOf].find(([pid, tid]) => tid !== tableOf.get(a.personId) && joinedAt.get(pid) < a.t)[0];
+  at(a.t + 1000, 'duo.joinRequested', { requesterId: other, ownerId: a.personId, entryId: a.entryId, direct: false });
+  at(a.t + 120000, 'duo.joinAnswered', { personId: a.personId, ownerId: a.personId, requesterId: other, entryId: a.entryId, accepted: true });
+  // Autre demande, annulée par son auteur avant toute réponse.
+  const b = solos.find(e => e !== a && e.personId !== a.personId && [...tableOf].some(([pid, tid]) => tid !== tableOf.get(e.personId) && joinedAt.get(pid) < e.t && pid !== other));
+  const third = [...tableOf].find(([pid, tid]) => tid !== tableOf.get(b.personId) && joinedAt.get(pid) < b.t && pid !== other)[0];
+  at(b.t + 1000, 'duo.joinRequested', { requesterId: third, ownerId: b.personId, entryId: b.entryId, direct: false });
+  at(b.t + 60000, 'duo.joinCancelled', { requesterId: third, ownerId: b.personId, entryId: b.entryId });
+  // Place cédée à une personne de la même table.
+  const c = solos.find(e => [...tableOf].some(([pid, tid]) => pid !== e.personId && tid === tableOf.get(e.personId) && joinedAt.get(pid) < e.t));
+  const mate = [...tableOf].find(([pid, tid]) => pid !== c.personId && tid === tableOf.get(c.personId) && joinedAt.get(pid) < c.t)[0];
+  at(c.t + 2000, 'person.gaveSpot', { personId: c.personId, toId: mate });
+  const res = await rejeu.runFree(rejeu.loadEvening(raw));
+  assert.deepEqual(res.passages.find(p => p.entryId === a.entryId)?.ids, [a.personId, other], 'demande acceptée : duo');
+  assert.deepEqual(res.passages.find(p => p.entryId === b.entryId)?.ids, [b.personId], 'demande annulée : solo');
+  assert.deepEqual(res.notes.filter(n => /joinRequested|joinAnswered|joinCancelled|gaveSpot/.test(n)), [], 'tout rejoué sans erreur');
+});
+
+test('rejeu libre : retrait réel d’un titre déjà chanté dans le rejeu, et demandes refusées, hors du journal', async () => {
+  const base = await rejeu.runFree(ev);
+  const raw = structuredClone(ev.raw);
+  // Titre chanté dans le rejeu, retiré « faute de Je suis là » une minute après :
+  // ce retrait ne doit pas couper l'attente des titres suivants de la personne.
+  const p = base.passages.find((x, k) => base.passages.slice(k + 1).some(q => q.owner === x.owner));
+  adder(raw.events)(p.end + 60000, 'song.removed', { personId: p.owner, entryId: p.entryId, by: 'presence-max' });
+  const res = await rejeu.runFree(rejeu.loadEvening(raw));
+  const next = r => r.passages.filter(q => q.owner === p.owner && q.start > p.end).map(q => q.waitSec);
+  assert.deepEqual(next(res), next(base));
+  // Personne inconnue : demande non rejouée, signalée en avertissement.
+  const raw2 = structuredClone(ev.raw);
+  adder(raw2.events)(p.end, 'song.requested', { personId: 'S99', entryId: 'fantome', songId: 1, title: 'Fantôme', durationSec: 200 });
+  const res2 = await rejeu.runFree(rejeu.loadEvening(raw2));
+  assert.ok(res2.warnings.includes('1 demande de titre non rejouée (voir les notes)'), res2.warnings.join(' | '));
+});
+
+test('rejeu libre : heure de fermeture avancée, titres perdus signalés', async () => {
+  const raw = structuredClone(ev.raw);
+  const first = raw.events.find(e => e.ev === 'stage.started');
+  adder(raw.events)(first.t + 60000, 'closing.set', { closingAt: first.t + 3600000 });
+  const res = await rejeu.runFree(rejeu.loadEvening(raw));
+  assert.ok(res.passages.length < 56);
+  assert.ok(res.warnings.includes(`le rejeu chante ${res.passages.length} titres de la file, la soirée 56`), res.warnings.join(' | '));
+});
+
+test('bilan avant/après : evening-stats.js différent dans la version « avant », signalé', async t => {
+  const repo = path.join(__dirname, '..');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-stats-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const f of ['scheduler.js', 'song-repeats.js', 'lib', path.join('solver', 'bridge.js')]) {
+    fs.cpSync(path.join(repo, f), path.join(dir, f), { recursive: true });
+  }
+  fs.writeFileSync(path.join(dir, 'evening-stats.js'), fs.readFileSync(path.join(repo, 'evening-stats.js'), 'utf8') + '\n// autre version\n');
+  const cmp = await rejeu.runCompare(ev, { before: { code: dir } });
+  assert.equal(cmp.statsDiffer, true);
+  assert.match(rejeu.compareReport(cmp, { short: true }), /ATTENTION evening-stats\.js diffère entre les deux versions/);
+  const same = await rejeu.runCompare(ev, { before: { code: repo } });
+  assert.equal(same.statsDiffer, false);
 });
 
 test('rejeu avec un jar Timefold inutilisable : avertissement, pas de faux « [Timefold] » muet', async t => {
@@ -303,6 +420,52 @@ test('rejeu avec un jar Timefold inutilisable : avertissement, pas de faux « [T
   assert.ok(res.warnings.some(w => /^Timefold n'a rendu aucun plan sur \d+ demandes/.test(w)), res.warnings.join(' | '));
   assert.match(rejeu.report(res, { short: true }), /^REJEU FORCÉ \[Timefold\]\nATTENTION Timefold n'a rendu aucun plan/);
 });
+
+test('rejeu libre avec Timefold : une file de moins de deux titres n’est pas un échec',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const res = await rejeu.runFree(ev, { solver: JAR, budget: 200 });
+    assert.ok(res.timefold.ok > 0);
+    assert.equal(res.timefold.failed, 0, JSON.stringify(res.timefold));
+    assert.deepEqual(res.warnings.filter(w => /Timefold/.test(w)), []);
+  });
+
+test('jar d’une révision extraite : verrou Maven abandonné repris, jar construit gardé',
+  { skip: process.platform === 'win32' && 'faux mvn en script shell' }, async t => {
+    const repo = path.join(__dirname, '..');
+    let sha;
+    try { sha = require('node:child_process').execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); } catch (_) {
+      t.skip('pas de dépôt git'); return;
+    }
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-mvn-'));
+    const saved = { cache: process.env.KARAFUN_REJEU_CACHE, path: process.env.PATH };
+    process.env.KARAFUN_REJEU_CACHE = path.join(tmp, 'cache');
+    t.after(() => {
+      if (saved.cache === undefined) delete process.env.KARAFUN_REJEU_CACHE; else process.env.KARAFUN_REJEU_CACHE = saved.cache;
+      process.env.PATH = saved.path;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    });
+    // Extraction d'abord, puis verrou laissé il y a 3 h par une construction interrompue.
+    assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--court'], () => {}, () => {}), 0);
+    const solver = path.join(tmp, 'cache', sha, 'solver');
+    const lock = path.join(solver, '.rejeu-mvn.lock');
+    fs.writeFileSync(lock, '');
+    const old = new Date(Date.now() - 3 * 3600_000);
+    fs.utimesSync(lock, old, old);
+    // Faux mvn : écrit un jar (inutilisable) à côté du pom donné par -f.
+    const bin = path.join(tmp, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'mvn'), '#!/bin/sh\nwhile [ "$1" != "-f" ]; do shift; done\nd=$(dirname "$2")/target\nmkdir -p "$d" && echo faux > "$d/karafun-solver.jar"\n');
+    fs.chmodSync(path.join(bin, 'mvn'), 0o755);
+    process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
+    const fake = path.join(tmp, 'faux.jar');
+    fs.writeFileSync(fake, 'faux');
+    const out = [];
+    assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--solveur', fake, '--budget', '200', '--court'], l => out.push(l), l => out.push(l)), 0);
+    assert.ok(fs.existsSync(path.join(solver, 'target', 'karafun-solver.jar')), 'faux mvn lancé malgré le vieux verrou');
+    assert.ok(fs.existsSync(path.join(solver, '.rejeu-jar-ok')));
+    assert.ok(!fs.existsSync(lock), 'verrou rendu');
+    assert.match(out.join('\n'), /ATTENTION avant : Timefold n'a rendu aucun plan/);
+  });
 
 test('rejeu forcé avec Timefold : l’égalité de 21:06:30 est départagée comme en réel',
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {

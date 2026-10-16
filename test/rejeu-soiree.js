@@ -92,6 +92,7 @@ const ACK_MS = 100;      // accusé de KaraFun après un envoi
 // Une seule horloge par processus : deux rejeux en même temps mélangeraient
 // leurs heures (et laisseraient Date.now figé), le second est donc refusé.
 const clock = { now: 0, busy: false };
+const realNow = Date.now; // l'heure vraie, même pendant un rejeu
 async function withClock(fn) {
   if (clock.busy) throw new Error('Un rejeu est déjà en cours dans ce processus : les lancer l’un après l’autre.');
   const real = Date.now;
@@ -222,10 +223,12 @@ function replayJournal(ev, passages, skip = new Set()) {
 // hors file) n'ont pas d'attente.
 function computeWaits(passages, ev, events = ev.events) {
   const stats = statsOf(events);
-  const waits = new Map(stats.timeline.stages.filter(st => st.entryId && st.waitSec != null).map(st => [st.entryId, st.waitSec]));
+  const waits = new Map(stats.timeline.stages.filter(st => st.entryId && st.waitSec != null).map(st => [st.entryId, st]));
   return passages.filter(st => st.source === 'queue' && st.ids.length && waits.has(st.entryId)).map(st => {
-    const waitSec = waits.get(st.entryId);
-    return { ...st, owner: st.ids[0], readyAt: st.start - waitSec * 1000, waitSec };
+    const { waitSec, readySince } = waits.get(st.entryId);
+    // Début de l'attente : celui de evening-stats.js (le temps sans titre
+    // n'est pas dans waitSec).
+    return { ...st, owner: st.ids[0], readyAt: readySince ?? st.start - waitSec * 1000, waitSec };
   });
 }
 
@@ -263,20 +266,35 @@ function git(args) {
   try { return execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (_) { return null; }
 }
 function cacheRoot() {
-  if (process.env.KARAFUN_REJEU_CACHE) return path.resolve(process.env.KARAFUN_REJEU_CACHE);
-  const common = git(['rev-parse', '--git-common-dir']);
-  if (!common) throw new UsageError('--avant <révision> : dépôt git introuvable ; donner plutôt un dossier de sources.');
-  return path.join(path.resolve(ROOT, common), 'karafun-rejeu');
+  let root = process.env.KARAFUN_REJEU_CACHE ? path.resolve(process.env.KARAFUN_REJEU_CACHE) : null;
+  if (!root) {
+    const common = git(['rev-parse', '--git-common-dir']);
+    if (!common) throw new UsageError('--avant <révision> : dépôt git introuvable ; donner plutôt un dossier de sources.');
+    root = path.join(path.resolve(ROOT, common), 'karafun-rejeu');
+  }
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  // Le code extrait ici est exécuté : dossier à soi, que nul autre ne peut modifier.
+  const st = fs.lstatSync(root);
+  if (st.isSymbolicLink() || (process.getuid && (st.uid !== process.getuid() || (st.mode & 0o022)))) {
+    throw new UsageError(`Cache des versions extraites non sûr (${root}) : il doit être à l'utilisateur, sans droit d'écriture pour les autres.`);
+  }
+  return fs.realpathSync(root);
 }
 const EXTRACTED_OK = '.rejeu-ok';
+const HOUR = 3600_000;
+// Extraction terminée par l'outil : marqueur au nom de la révision.
+const extracted = (root, name) => {
+  try { return fs.readFileSync(path.join(root, name, EXTRACTED_OK), 'utf8') === `${name}\n`; } catch (_) { return false; }
+};
+const ageMs = file => realNow() - fs.statSync(file).mtimeMs;
 // Extraction d'une révision : index temporaire (ni l'index ni la copie de
 // travail du dépôt ne bougent), dans un dossier temporaire renommé d'un coup ;
 // un autre rejeu qui a fini avant garde la sienne.
 function extract(root, sha, label) {
   const dir = path.join(root, sha);
-  if (fs.existsSync(path.join(dir, EXTRACTED_OK))) { fs.utimesSync(dir, new Date(), new Date()); return dir; }
-  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  fs.rmSync(dir, { recursive: true, force: true }); // extraction interrompue
+  if (extracted(root, sha)) { fs.utimesSync(dir, new Date(), new Date()); return dir; }
+  // Dossier sans marqueur laissé il y a plus d'une heure : abandonné.
+  if (fs.existsSync(dir) && ageMs(dir) > HOUR) fs.rmSync(dir, { recursive: true, force: true });
   const tmp = fs.mkdtempSync(path.join(root, `${sha}.tmp-`));
   try {
     const env = { ...process.env, GIT_INDEX_FILE: path.join(tmp, '.rejeu-index') };
@@ -286,16 +304,23 @@ function extract(root, sha, label) {
     fs.rmSync(env.GIT_INDEX_FILE, { force: true });
     fs.writeFileSync(path.join(tmp, EXTRACTED_OK), `${sha}\n`);
     try { fs.renameSync(tmp, dir); } catch (err) {
-      if (!fs.existsSync(path.join(dir, EXTRACTED_OK))) throw err;
+      if (!extracted(root, sha)) throw err;
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   } catch (err) {
     fs.rmSync(tmp, { recursive: true, force: true });
     throw new UsageError(`--avant : extraction de ${label} impossible (${String(err.message).split('\n')[0]})`);
   }
-  // Les 5 révisions les plus récemment utilisées sont gardées.
-  const kept = fs.readdirSync(root, { withFileTypes: true })
-    .filter(d => d.isDirectory() && /^[0-9a-f]{40}$/.test(d.name))
+  // Ménage : seulement ce que l'outil a extrait. Les 5 révisions les plus
+  // récemment utilisées sont gardées ; une copie interrompue (arrêt pendant
+  // l'extraction) part au bout d'une heure.
+  const entries = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory());
+  for (const d of entries) {
+    if (/^[0-9a-f]{40}([0-9a-f]{24})?\.tmp-/.test(d.name) && ageMs(path.join(root, d.name)) > HOUR) {
+      fs.rmSync(path.join(root, d.name), { recursive: true, force: true });
+    }
+  }
+  const kept = entries.filter(d => /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(d.name) && extracted(root, d.name))
     .map(d => ({ name: d.name, t: fs.statSync(path.join(root, d.name)).mtimeMs })).sort((a, b) => b.t - a.t);
   for (const old of kept.slice(5)) if (old.name !== sha) fs.rmSync(path.join(root, old.name), { recursive: true, force: true });
   return dir;
@@ -303,10 +328,10 @@ function extract(root, sha, label) {
 // `where` : révision git ou dossier de sources ; rien : la version de travail.
 function loadCode(where) {
   if (where == null) return CURRENT;
-  if (codeCache.has(where)) return codeCache.get(where);
   let dir, label, extracted = false;
   if (fs.existsSync(where) && fs.statSync(where).isDirectory()) {
-    dir = path.resolve(where); label = dir;
+    // Chemin réel : celui que require écrit dans les traces d'appels.
+    label = path.resolve(where); dir = fs.realpathSync(where);
   } else {
     const sha = git(['rev-parse', '--verify', '--quiet', `${where}^{commit}`]);
     if (!sha) throw new UsageError(`--avant : « ${where} » n'est ni un dossier ni une révision git de ce dépôt.`);
@@ -314,6 +339,8 @@ function loadCode(where) {
     label = sha.startsWith(where) ? sha.slice(0, 7) : `${where} (${sha.slice(0, 7)})`; extracted = true;
     dir = extract(cacheRoot(), sha, label);
   }
+  // Version déjà chargée depuis ce dossier (même cache, même révision).
+  if (codeCache.has(dir)) return { ...codeCache.get(dir), label };
   const file = path.join(dir, 'scheduler.js');
   if (!fs.existsSync(file)) throw new UsageError(`--avant : pas de scheduler.js dans ${dir}`);
   let loaded;
@@ -322,7 +349,7 @@ function loadCode(where) {
   }
   const code = { label, dir, Scheduler: loaded.Scheduler, extracted };
   if (typeof code.Scheduler !== 'function') throw new UsageError(`--avant : ${file} n'exporte pas Scheduler`);
-  codeCache.set(where, code);
+  codeCache.set(dir, code);
   return code;
 }
 
@@ -334,7 +361,8 @@ function staleJar(jar, dir) {
   const built = fs.statSync(jar).mtimeMs;
   const walk = d => fs.readdirSync(d, { withFileTypes: true }).some(f =>
     f.isDirectory() ? walk(path.join(d, f.name)) : fs.statSync(path.join(d, f.name)).mtimeMs > built);
-  return walk(src);
+  const pom = path.join(dir, 'solver', 'pom.xml');
+  return walk(src) || (fs.existsSync(pom) && fs.statSync(pom).mtimeMs > built);
 }
 
 function resolveJar(solver, code = CURRENT) {
@@ -351,7 +379,7 @@ function resolveJar(solver, code = CURRENT) {
     const lock = path.join(code.dir, 'solver', '.rejeu-mvn.lock');
     try {
       try { fs.closeSync(fs.openSync(lock, 'wx')); } catch (err) {
-        if (err.code !== 'EEXIST' || Date.now() - fs.statSync(lock).mtimeMs < 15 * 60_000) {
+        if (err.code !== 'EEXIST' || ageMs(lock) < 15 * 60_000) {
           throw new UsageError(`Jar Timefold de ${code.label} : construction déjà en cours (${lock}) ; relancer ensuite.`);
         }
         fs.writeFileSync(lock, ''); // verrou abandonné
@@ -410,7 +438,7 @@ function makeContext(ev, opts) {
     const { TimefoldBridge } = require(path.join(code.dir, 'solver', 'bridge'));
     s.solverBridge = new TimefoldBridge({ jar, settleMs: 0 });
     ctx.solver = s.solverBridge; ctx.jar = jar;
-    if (staleJar(jar, code.dir)) {
+    if (!(code.extracted && typeof opts.solver === 'string') && staleJar(jar, code.dir)) {
       ctx.warnings.push(`jar Timefold plus ancien que ${path.join(code.dir, 'solver', 'src')} : reconstruire (mvn -q -DskipTests package -f ${path.join(code.dir, 'solver', 'pom.xml')})`);
     }
   }
@@ -430,14 +458,17 @@ async function ensurePlan(ctx) {
   if (s.solverPlan && s.solverPlan.fingerprint === fp) return;
   s.solverPlan = null;
   s.solverRequestedFingerprint = null;
-  ctx.plans.asked++;
   const started = s._requestSolver(fp, { budgetMs: ctx.budget, forced: true });
+  // Moins de deux titres : rien à ordonner, ce n'est pas une demande à Timefold.
+  if (!started && !s.solverLastError && ctx.solver.available) return;
+  ctx.plans.asked++;
   // Échec ou solveur indisponible : ordre local, compté et signalé au rapport.
   const ok = started && s.solverPromise ? await s.solverPromise.catch(() => false) : false;
   if (ok) ctx.plans.ok++;
   else {
     ctx.plans.failed++;
-    ctx.plans.lastError = s.solverLastError || ctx.solver.lastError || (started ? null : 'solveur indisponible') || ctx.plans.lastError;
+    ctx.plans.lastError = s.solverLastError || ctx.solver.lastError ||
+      (ctx.solver.available ? null : 'solveur indisponible') || ctx.plans.lastError;
   }
 }
 
@@ -517,7 +548,7 @@ function applyExternal(ctx, e, upcoming) {
       }
       case 'song.requested': {
         const p = P(e.personId);
-        if (!p) { note(ctx, `demande ignorée (personne inconnue ${e.personId})`); return false; }
+        if (!p) { ctx.unapplied.add(e); note(ctx, `demande ignorée (personne inconnue ${e.personId})`); return false; }
         const song = { songId: e.songId, title: e.title || `Titre ${e.songId}`, artist: e.artist || '', duration: e.durationSec };
         const before = new Set(s.songsOf(p).map(x => x.entryId));
         // Un duo est demandé puis aussitôt noté (inviteDuet) : même table, accepté d'office.
@@ -609,6 +640,8 @@ function applyExternal(ctx, e, upcoming) {
       default: return false;
     }
   } catch (err) {
+    // Titre que le rejeu n'a pas pu demander : pas de titre fantôme dans le journal.
+    if (e.ev === 'song.requested') ctx.unapplied.add(e);
     note(ctx, `${e.ev} non rejoué : ${err.message}`);
     return false;
   }
@@ -736,6 +769,7 @@ async function runForced(evening, opts = {}) {
 async function runFree(evening, opts = {}) {
   const ev = asEvening(evening);
   return withClock(async () => {
+    clock.now = ev.events[0]?.t || 0;
     const ctx = makeContext(ev, opts);
     const { s } = ctx;
     const pushMs = 1000 * Number(ctx.rules.pushDelaySec ?? 45);
@@ -951,6 +985,8 @@ function finish(ctx, mode, passages, order, journal = null) {
   } else if (ctx.solver && plans.failed) {
     warnings.push(`Timefold sans plan pour ${plans.failed} décisions sur ${plans.asked} (${plans.lastError || 'sans réponse'}) : règle locale seule pour celles-là`);
   }
+  const refused = [...ctx.unapplied].filter(e => e.ev === 'song.requested').length;
+  if (refused) warnings.push(`${refused} demande${refused > 1 ? 's' : ''} de titre non rejouée${refused > 1 ? 's' : ''} (voir les notes)`);
   if (mode === 'libre' && passages.length < real.length) {
     warnings.push(`le rejeu chante ${passages.length} titres de la file, la soirée ${real.length}`);
   }
@@ -983,7 +1019,7 @@ async function runCompare(evening, opts = {}) {
     // L'autre version a échoué dans son propre code (méthode renommée…) : le
     // dire, avec l'endroit de l'échec. Toute autre erreur garde sa trace.
     const stack = String(err?.stack || '');
-    const inside = code !== CURRENT && [path.join(code.dir, 'scheduler.js'), path.join(code.dir, 'lib') + path.sep]
+    const inside = code.Scheduler !== Scheduler && [path.join(code.dir, 'scheduler.js'), path.join(code.dir, 'lib') + path.sep]
       .some(f => stack.includes(f));
     if (err instanceof UsageError || !inside) throw err;
     const at = stack.split('\n').find(l => /^\s+at /.test(l))?.trim() || '';
@@ -991,7 +1027,14 @@ async function runCompare(evening, opts = {}) {
       `${at ? ` (${at})` : ''} ; version trop éloignée de l'outil de rejeu ?`);
   }
   const after = await runFree(ev, side(opts.after));
-  return { mode: 'avant-après', before, after, timezone: ev.timezone, names: after.names };
+  // Les deux côtés sont mesurés par evening-stats.js de la version de travail :
+  // un changement des seules statistiques ne se voit pas dans ce bilan.
+  let statsDiffer = false;
+  try {
+    statsDiffer = code.Scheduler !== Scheduler &&
+      fs.readFileSync(path.join(code.dir, 'evening-stats.js'), 'utf8') !== fs.readFileSync(path.join(ROOT, 'evening-stats.js'), 'utf8');
+  } catch (_) { /* dossier sans evening-stats.js */ }
+  return { mode: 'avant-après', before, after, timezone: ev.timezone, names: after.names, statsDiffer };
 }
 
 // Indicateurs du bilan : valeur réelle, avant, après ; sens du mieux et écart
@@ -1039,8 +1082,10 @@ function peopleChanges(cmp) {
     const dWait = (b.waitMaxSec ?? 0) - (a.waitMaxSec ?? 0);
     const dStage = (b.stageMaxSec ?? 0) - (a.stageMaxSec ?? 0);
     const dApps = (b.appearances ?? 0) - (a.appearances ?? 0);
-    const worse = dApps < 0 || dWait >= 300 || dStage >= 300;
-    const better = dApps > 0 || dWait <= -300 || dStage <= -300;
+    // Un passage de plus ou de moins l'emporte : l'attente d'un titre gagné
+    // (aucune « avant ») n'en fait pas un perdant.
+    const worse = dApps < 0 || (dApps === 0 && (dWait >= 300 || dStage >= 300));
+    const better = dApps > 0 || (dApps === 0 && (dWait <= -300 || dStage <= -300));
     if (!worse && !better) continue;
     rows.push({ key, a, b, dWait, dStage, dApps, worse, better,
       weight: Math.max(Math.abs(dWait), Math.abs(dStage), 600 * Math.abs(dApps)) });
@@ -1065,8 +1110,14 @@ function compareReport(cmp, { short = false } = {}) {
   if (Object.keys(after.options).length) out.push(`  options : ${Object.entries(after.options).map(([k, v]) => `${k}=${v}`).join(', ')}`);
   out.push('  réel  : la soirée vécue (gestes du bar compris, version de ce soir-là), pour repère ; le verdict compare avant et après');
   for (const w of [...before.warnings.map(w => `avant : ${w}`), ...after.warnings.map(w => `après : ${w}`)]) out.push(`  ATTENTION ${w}`);
-  if (!before.solver || !after.solver) {
+  if (!before.solver && !after.solver) {
     out.push('  ATTENTION rejeu sans Timefold : au bar, Timefold aide à décider ; relancer avec --solveur pour le bilan à présenter');
+  } else if (!before.solver || !after.solver) {
+    out.push(`  NOTE ${!before.solver ? 'avant' : 'après'} sans Timefold : ce bilan mesure l'apport de Timefold, pas un changement de code`);
+  }
+  if (cmp.statsDiffer) {
+    out.push('  ATTENTION evening-stats.js diffère entre les deux versions : les deux côtés sont mesurés par celui de la version de travail ; ' +
+      'un changement des seules statistiques ne se voit pas ici');
   }
   const f = before.fidelity;
   if (before.solver && f.songsReal && f.samePosition < f.songsReal * 0.9) {
