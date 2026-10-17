@@ -2414,6 +2414,9 @@ test('bilan avant/après : evening-stats.js différent dans la version « avant 
   assert.match(rejeu.compareReport(cmp, { short: true }), /ATTENTION evening-stats\.js diffère entre les deux versions/);
   const same = await rejeu.runCompare(ev, { before: { code: repo } });
   assert.equal(same.statsDiffer, false);
+  // Même fichier aux fins de ligne CRLF (copie Windows) : pas une autre version.
+  fs.writeFileSync(path.join(dir, 'evening-stats.js'), fs.readFileSync(path.join(repo, 'evening-stats.js'), 'utf8').replace(/\r?\n/g, '\r\n'));
+  assert.equal((await rejeu.runCompare(ev, { before: { code: dir } })).statsDiffer, false);
 });
 
 test('rejeu avec un jar Timefold inutilisable : avertissement, pas de faux « [Timefold] » muet', async t => {
@@ -2483,17 +2486,25 @@ test('jar d’une révision extraite : verrou Maven abandonné repris, jar const
     assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--court'], () => {}, () => {}), 0);
     const solver = path.join(tmp, 'cache', sha, 'solver');
     const lock = path.join(solver, '.rejeu-mvn.lock');
+    const bin = path.join(tmp, 'bin');
+    fs.mkdirSync(bin);
+    const mvn = script => { fs.writeFileSync(path.join(bin, 'mvn'), `#!/bin/sh\n${script}`); fs.chmodSync(path.join(bin, 'mvn'), 0o755); };
+    process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
+    const fake = path.join(tmp, 'faux.jar');
+    fs.writeFileSync(fake, 'faux');
+    // Construction en échec : la cause donnée par Maven (sur sa sortie
+    // standard), pas les lignes de Java sur l'erreur ; verrou rendu.
+    mvn('echo "Picked up JAVA_TOOL_OPTIONS: -Dx=y" >&2\necho "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called" >&2\n' +
+      'echo "[ERROR] Failed to execute goal: pom illisible"\nexit 1\n');
+    const failed = [];
+    assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--solveur', fake, '--budget', '200', '--court'], l => failed.push(l), l => failed.push(l)), 1);
+    assert.match(failed.join('\n'), /construction par Maven impossible \(\[ERROR\] Failed to execute goal: pom illisible\)/);
+    assert.ok(!fs.existsSync(lock));
     fs.writeFileSync(lock, '');
     const old = new Date(Date.now() - 3 * 3600_000);
     fs.utimesSync(lock, old, old);
     // Faux mvn : écrit un jar (inutilisable) à côté du pom donné par -f.
-    const bin = path.join(tmp, 'bin');
-    fs.mkdirSync(bin);
-    fs.writeFileSync(path.join(bin, 'mvn'), '#!/bin/sh\nwhile [ "$1" != "-f" ]; do shift; done\nd=$(dirname "$2")/target\nmkdir -p "$d" && echo faux > "$d/karafun-solver.jar"\n');
-    fs.chmodSync(path.join(bin, 'mvn'), 0o755);
-    process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
-    const fake = path.join(tmp, 'faux.jar');
-    fs.writeFileSync(fake, 'faux');
+    mvn('while [ "$1" != "-f" ]; do shift; done\nd=$(dirname "$2")/target\nmkdir -p "$d" && echo faux > "$d/karafun-solver.jar"\n');
     // Un autre rejeu reprend ce même verrou à l'instant : pas de seconde construction.
     const claim = `${lock}.reprise`;
     fs.writeFileSync(claim, '');
@@ -2551,10 +2562,12 @@ test('Timefold : chaque calcul fait deux fois pour un solveur qui pouvait couper
   const main = fs.readFileSync(path.join(repo, 'solver/src/main/java/fr/karafun/plus/solver/Main.java'), 'utf8');
   // Ancien fil de lecture : la ligne déposée avant de lire la recherche en cours
   // (fins de ligne CRLF sous Windows, git y convertit les sources).
-  const racy = main.replace(/Solver<QueuePlan> running = active\.get\(\);(\r?\n\s*)inbox\.put\(line\);/,
+  const racyOf = source => source.replace(/Solver<QueuePlan> running = active\.get\(\);(\r?\n\s*)inbox\.put\(line\);/,
     'inbox.put(line);$1Solver<QueuePlan> running = active.get();');
+  const racy = racyOf(main);
   assert.notEqual(racy, main);
   const xml = fs.readFileSync(path.join(repo, 'solver/src/main/resources/solverConfig.xml'), 'utf8');
+  const crlf = text => text.replace(/\r?\n/g, '\r\n');
   const version = (name, mainSource, config) => {
     const v = path.join(dir, name);
     for (const f of ['scheduler.js', 'song-repeats.js', 'evening-stats.js', 'lib']) fs.cpSync(path.join(repo, f), path.join(v, f), { recursive: true });
@@ -2604,6 +2617,9 @@ module.exports = { TimefoldBridge };
   assert.equal((await solves(oldVersion, [full, cut])).res.timefold.ceiling, old.res.timefold.asked);
   const lost = (await solves(oldVersion, [full, { fail: true }])).res.timefold;
   assert.deepEqual([lost.ok, lost.failed, lost.ceiling], [lost.asked, 0, lost.asked]);
+  // Sources en CRLF (extraction Windows) : même ancien solveur, même limite.
+  const oldCrlf = await solves(version('ancienne-crlf', racyOf(crlf(main)), crlf(xml)));
+  assert.deepEqual([oldCrlf.res.timefold.retried, oldCrlf.res.timefold.moves], [oldCrlf.res.timefold.asked, 20000]);
   const fixed = await solves(version('corrigee', main, xml));
   assert.deepEqual([fixed.calls, fixed.res.timefold.retried, fixed.res.timefold.moves], [fixed.res.timefold.asked, 0, 20000]);
   // Configuration avec une seconde terminaison (de phase) : limite non appliquée.

@@ -714,12 +714,17 @@ function resolveJar(solver, code = CURRENT) {
       const pom = path.join(code.dir, 'solver', 'pom.xml');
       const win = process.platform === 'win32';
       execFileSync('mvn', ['-q', '-B', '-DskipTests', 'package', '-f', win ? `"${pom}"` : pom],
-        { stdio: ['ignore', 'ignore', 'pipe'], shell: win, timeout: MVN_TIMEOUT_MS });
+        { stdio: ['ignore', 'pipe', 'pipe'], shell: win, timeout: MVN_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
       fs.writeFileSync(built, '');
     } catch (err) {
       if (err instanceof UsageError) throw err;
       fs.rmSync(lock, { force: true });
-      throw new UsageError(`Jar Timefold de ${code.label} : construction par Maven impossible (${String(err.stderr || err.message).split('\n')[0]}) ; ` +
+      // Maven écrit ses [ERROR] sur sa sortie standard (Java met sur l'erreur
+      // « Picked up JAVA_TOOL_OPTIONS » ou ses WARNING) ; sans elles, la
+      // commande en échec ou mvn introuvable.
+      const cause = `${err.stderr || ''}\n${err.stdout || ''}`.split(/\r?\n/).map(l => l.trim())
+        .find(l => l.startsWith('[ERROR]')) || err.message.split('\n')[0];
+      throw new UsageError(`Jar Timefold de ${code.label} : construction par Maven impossible (${cause}) ; ` +
         'donner --solveur-avant <jar> ou retirer --solveur.');
     }
     fs.rmSync(lock, { force: true });
@@ -1807,8 +1812,9 @@ async function runCompare(evening, opts = {}) {
   // un changement des seules statistiques ne se voit pas dans ce bilan.
   let statsDiffer = false;
   try {
-    statsDiffer = code.Scheduler !== Scheduler &&
-      fs.readFileSync(path.join(code.dir, 'evening-stats.js'), 'utf8') !== fs.readFileSync(path.join(ROOT, 'evening-stats.js'), 'utf8');
+    // Fins de ligne ignorées (dossier --avant LF, copie de travail CRLF sous Windows).
+    const statsOf = dir => fs.readFileSync(path.join(dir, 'evening-stats.js'), 'utf8').replace(/\r\n/g, '\n');
+    statsDiffer = code.Scheduler !== Scheduler && statsOf(code.dir) !== statsOf(ROOT);
   } catch (_) { /* dossier sans evening-stats.js */ }
   return { mode: 'avant-après', before, after, timezone: ev.timezone, names: after.names, statsDiffer,
     sameCode: code.Scheduler === Scheduler, unreadable: ev.skipped };
