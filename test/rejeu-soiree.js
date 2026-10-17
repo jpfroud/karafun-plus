@@ -358,7 +358,8 @@ function loadEvening(input) {
     const close = (k, t) => { if (open[k] != null) { listOf(k).push([open[k], t]); open[k] = null; } };
     let appStart = -Infinity, lastSent = -Infinity, unconfirmedAt = -Infinity;
     // Annulations d'un envoi notées au journal : vidage avec envoi en cours
-    // (tout titre), départ marqué par le bar (titres de cette personne).
+    // (tout titre), départ marqué par le bar ou départ d'une table (titres
+    // de ces personnes).
     const starts = [], requestedAt = new Map(), cancels = [];
     for (const e of events) {
       if (e.ev === 'app.started') { appStart = e.t; starts.push(e.t); }
@@ -385,16 +386,22 @@ function loadEvening(input) {
         else if (e.to === true) close('auto', e.t);
       } else if (e.ev === 'turn.sent') {
         const at = Number(e.sentAt) || e.t;
-        // Titre dont l'envoi a été annulé (vidage, départ marqué par le bar)
-        // puis lancé quand même : son turn.sent est daté de l'accusé
-        // silencieux, après l'annulation (server.js, uncommitted), et il a
-        // été demandé avant elle (le vidage efface toutes les listes, le
-        // départ celle de la personne : tout autre titre envoyé ensuite a été
-        // demandé après). Ni envoi en attente, ni preuve d'envoi ; l'envoi
-        // interrompu, lui, a pris fin à cet accusé.
+        // Titre dont l'envoi a été annulé (vidage, départ) puis lancé quand
+        // même pendant un vidage en cours ou arrêté (sans vidage, aucun
+        // turn.sent : server.js, cancelledByClear) : son turn.sent est daté
+        // de l'accusé silencieux (uncommitted), reçu après l'annulation ou
+        // dans la même milliseconde, et il a été demandé avant elle (le
+        // vidage efface toutes les listes, le départ celles de ses personnes :
+        // tout autre titre envoyé ensuite a été demandé après). Pas une preuve
+        // d'envoi. L'envoi interrompu ouvert d'ici l'accusé a pris fin à
+        // celui-ci ; un redémarrage entre l'annulation et l'accusé l'avait
+        // restauré (en attente, envoi automatique laissé coupé, comme plus bas).
         const owner = e.ownerId ?? e.ids?.[0], asked = requestedAt.get(e.entryId) ?? -Infinity;
-        if (cancels.some(([t, pid]) => (pid == null || pid === owner) && asked < t && t <= at)) {
-          if (open['recovered-pending'] != null) close('recovered-pending', Math.max(at, open['recovered-pending']));
+        const cancel = cancels.find(([t, pid]) => (pid == null || pid === owner) && asked < t && t <= at);
+        if (cancel) {
+          if (open['recovered-pending'] != null && open['recovered-pending'] <= at) close('recovered-pending', at);
+          const restart = starts.find(t => t > cancel[0] && t <= at);
+          if (restart != null) { noReserve.push([restart, at]); open.auto ??= at; }
           continue;
         }
         close('recovered-pending', e.t);

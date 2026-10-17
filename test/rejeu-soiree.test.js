@@ -1717,17 +1717,18 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(900, 'settings.changed', { setting: 'auto', from: false, to: true });
   });
   assert.deepEqual(rel(afterClear.noSend), [[305, 310], [310, 320], [320, 900]]);
-  // Envoi de y1 (demandé à 1 s) annulé par un vidage (50 s) que le bar
-  // arrête, redémarrage, puis y1 lancé quand même : pas un envoi restauré,
-  // et son turn.sent n'est pas une preuve d'envoi (l'envoi automatique coupé
-  // à 40 s le reste jusqu'au réglage remis).
-  const cancelledLaunch = (cut, fill = () => {}) => windowsOf(e => {
+  // y1 (demandé à 1 s) tenté à 39 s, envoi automatique coupé à 40 s, envoi
+  // annulé par un vidage (50 s) que le bar arrête, accusé en silence à 53 s,
+  // redémarrage, puis y1 lancé quand même : pas un envoi restauré, et son
+  // turn.sent n'est pas une preuve d'envoi (l'envoi automatique coupé à 40 s
+  // le reste jusqu'au réglage remis).
+  const cancelledLaunch = (cut, fill = () => {}, sentAt = 53) => windowsOf(e => {
     e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
     e(40, 'settings.changed', { setting: 'auto', from: true, to: false });
     cut(e);
     e(120, 'app.started', { restored: true, offlineMs: 15000 });
     fill(e);
-    e(300, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
+    e(300, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + sentAt * 1000 });
     e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
   });
   const windowsBoth = w => [rel(w.noReserve), rel(w.noSend)];
@@ -1737,21 +1738,64 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(60, 'staff.queueClearStopped', {});
   })), notRestored);
   // De même quand l'envoi a été annulé par le départ de S02 ou de sa table,
-  // marqué par le bar (puis un vidage sans envoi en cours), ou par le
-  // premier de deux vidages ; pas par « Je pars », sans effet sur un envoi.
-  assert.deepEqual(windowsBoth(cancelledLaunch(e => {
-    e(52, 'person.left', { personId: 'S02', by: 'staff', songsDropped: 1 });
-    e(60, 'staff.queueCleared', { songs: 0, pendingCancelled: false });
-  })), notRestored);
-  assert.deepEqual(windowsBoth(cancelledLaunch(e => e(52, 'table.left', { tableId: 'T2', personIds: ['S02'], songsDropped: 1 }))), notRestored);
+  // marqué par le bar (le lancement n'est noté que pendant un vidage, ici
+  // sans envoi en cours), ou par le premier de deux vidages.
+  for (const leave of [e => e(52, 'person.left', { personId: 'S02', by: 'staff', songsDropped: 1 }),
+    e => e(52, 'table.left', { tableId: 'T2', personIds: ['S02'], songsDropped: 1 })]) {
+    assert.deepEqual(windowsBoth(cancelledLaunch(e => {
+      leave(e);
+      e(60, 'staff.queueCleared', { songs: 0, pendingCancelled: false });
+    })), notRestored);
+  }
   assert.deepEqual(windowsBoth(cancelledLaunch(e => {
     e(50, 'staff.queueCleared', { songs: 1, pendingCancelled: true });
     e(60, 'staff.queueClearStopped', {});
   }, e => e(130, 'staff.queueCleared', { songs: 1, pendingCancelled: true }))), notRestored);
-  const restoredY1 = [[[105, 120], [120, 300]], [[40, 600], [105, 120], [120, 300]]];
-  assert.deepEqual(windowsBoth(cancelledLaunch(e => e(52, 'person.left', { personId: 'S02', by: 'self', songsDropped: 0 }))), restoredY1);
-  // (ni par le départ d'une autre personne)
-  assert.deepEqual(windowsBoth(cancelledLaunch(e => e(52, 'person.left', { personId: 'S01', by: 'staff', songsDropped: 1 }))), restoredY1);
+  // (vidage noté dans la milliseconde de l'accusé, traité avant lui)
+  assert.deepEqual(windowsBoth(cancelledLaunch(e => {
+    e(53, 'staff.queueCleared', { songs: 1, pendingCancelled: true });
+    e(60, 'staff.queueClearStopped', {});
+  })), notRestored);
+  // Pas par « Je pars », sans effet sur un envoi, ni par le départ d'une
+  // autre personne : y1, tenté à 39 s, reste sans accusé (send.unconfirmed à
+  // 54 s) et le redémarrage le restaure jusqu'à son accusé à 300 s.
+  const restoredY1 = [[[34, 300], [105, 120], [120, 300]], [[34, 300], [40, 600], [105, 120], [120, 300]]];
+  for (const pid of ['S02', 'S01']) {
+    assert.deepEqual(windowsBoth(cancelledLaunch(e => {
+      e(52, 'person.left', { personId: pid, by: pid === 'S02' ? 'self' : 'staff', songsDropped: pid === 'S02' ? 0 : 1 });
+      e(54, 'send.unconfirmed', { entryId: 'y1', ids: ['S02'] });
+    }, () => {}, 39)), restoredY1, pid);
+  }
+  // Envoi annulé par un vidage (50 s), redémarrage (120 s) avant son accusé
+  // (130 s), lancé pendant le vidage restauré : en attente depuis le
+  // redémarrage, puis envoi automatique laissé coupé (restoreNight).
+  const restoredCancel = windowsOf(e => {
+    e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(50, 'staff.queueCleared', { songs: 1, pendingCancelled: true });
+    e(120, 'app.started', { restored: true, offlineMs: 15000 });
+    e(300, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 130000 });
+    e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
+  });
+  assert.deepEqual(windowsBoth(restoredCancel), [[[105, 120], [120, 130]], [[105, 120], [120, 130], [130, 600]]]);
+  // Redémarrage avant l'annulation (20 s) : rien de restauré par lui.
+  assert.deepEqual(windowsBoth(windowsOf(e => {
+    e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(20, 'app.started', { restored: true, offlineMs: 5000 });
+    e(50, 'staff.queueCleared', { songs: 1, pendingCancelled: true });
+    e(300, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
+  })), [[[15, 20]], [[15, 20]]]);
+  // Envoi de y1 annulé par le départ de S02 (50 s), accusé en silence à
+  // 55 s, y1 lancé sans vidage (aucun turn.sent) ; z1 tenté pendant y1 reste
+  // sans accusé (send.unconfirmed à 86 s), puis vidage (100 s) : le turn.sent
+  // tardif de y1 ne ferme pas l'envoi interrompu de z1, ouvert après lui.
+  assert.deepEqual(rel(windowsOf(e => {
+    e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(50, 'person.left', { personId: 'S02', by: 'staff', songsDropped: 1 });
+    e(86, 'send.unconfirmed', { entryId: 'z1', ids: ['S03'] });
+    e(100, 'staff.queueCleared', { songs: 1, pendingCancelled: true });
+    e(101, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
+    e(300, 'karaoke.phase', { phase: 'silent', blocker: 'empty' });
+  }).noReserve), [[66, 300]]);
   // Envoi annulé resté sans accusé 15 s (send.unconfirmed à 66 s), accusé en
   // silence à 75 s, lancé à 200 s : l'envoi interrompu a pris fin à l'accusé.
   assert.deepEqual(rel(windowsOf(e => {
