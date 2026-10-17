@@ -1319,8 +1319,10 @@ async function runFree(evening, opts = {}) {
       // Passage hors file et prochaine Battle (en attente d'envoi, en file, ou
       // décidée pendant « after ») : dans l'ordre de leurs débuts réels
       // (l'heure d'entrée d'un titre dans KaraFun n'est pas notée). Un passage
-      // venu après elle en réel ne la devance ni ne lève sa retenue.
-      const nextBattle = ['waiting', 'queued'].includes(battle) ? battleNow : battleQueue[0];
+      // venu après elle en réel ne la devance ni ne lève sa retenue, sauf si
+      // elle ne peut plus partir (heure de fermeture, fin du karaoké).
+      const stuck = battle === 'queued' ? over() : battle === 'waiting' && (closingBlocks() || over());
+      const nextBattle = ['waiting', 'queued'].includes(battle) ? (stuck ? null : battleNow) : battleQueue[0];
       const outsideFirst = outsideDue.length > 0 && !(nextBattle && nextBattle.realStart <= outsideDue[0].t);
       if (!current && !upcoming && outsideFirst && clock.now >= lastEnd + GAP_MS) {
         const o = outsideDue.shift();
@@ -1348,9 +1350,13 @@ async function runFree(evening, opts = {}) {
         stages.push(current); battle = 'playing';
       }
       // Battle (de l'application ou faite dans KaraFun) qui retient la file,
-      // titre déjà dans KaraFun, application arrêtée : ni réservation ni envoi.
+      // titre déjà dans KaraFun qui passe avant la prochaine Battle,
+      // application arrêtée : ni réservation ni envoi. Un titre hors file venu
+      // après une Battle en attente d'envoi ne retient pas le passage déjà
+      // réservé, qui part avant elle (server.js : passage réservé, Battle,
+      // titre).
       const hold = ['queued', 'playing', 'after'].includes(battle) || (battle === 'waiting' && !s.reservedNext) ||
-        offlineAt(clock.now) || outsideDue.length > 0 ||
+        offlineAt(clock.now) || outsideFirst ||
         current?.source === 'battle';
       if (!upcoming && !hold && current && !s.reservedNext && !over()) {
         await ensurePlan(ctx);

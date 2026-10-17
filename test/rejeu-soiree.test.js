@@ -1108,6 +1108,27 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     stage(460, 'y1', ['S02'], 'q2');
   }));
   assert.deepEqual(externalLater.map(b => b.at), [420, 545]);
+  // Battle en attente derrière ce « after » : un titre lancé dans KaraFun
+  // après elle en réel (440 s) ne la devance pas et ne lève pas la retenue.
+  const behindAfter = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(185, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(210, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(210, null, null, 'b1', 90);
+    e(302, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(330, 'battle.automation', { ballotId: 'v1', status: 'resuming' });
+    e(335, 'battle.external', { ballotId: 'k2', songId: 9 });
+    e(340, 'battle.automation', { ballotId: 'k2', status: 'playing' });
+    stage(340, null, null, 'b2', 90);
+    e(432, 'battle.automation', { ballotId: 'k2', status: 'after' });
+    e(440, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
+    e(441, 'battle.automation', { ballotId: 'k2', status: 'released' });
+    e(500, 'stage.ended', { queueId: 'n1', playedSec: 60 });
+    stage(510, 'y1', ['S02'], 'q2');
+  }));
+  assert.deepEqual(behindAfter, [['queue', 10], ['queue', 200], ['battle', 400], ['battle', 525], ['native', 625]]);
   // Un vote (propose exige « released ») attend aussi la reprise mesurée de
   // la première Battle (10 s après sa fin rejouée, à 520 s).
   const voteLater = await battlesOf(build((e, stage, ask) => {
@@ -1239,6 +1260,43 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     stage(330, 'x1', ['S01'], 'q2', 400);
   }));
   assert.deepEqual(waitingFirst.map(x => x[0]), ['queue', 'queue', 'battle', 'native'], JSON.stringify(waitingFirst));
+  // Vote en attente d'envoi derrière z1, réservé, et titre lancé dans KaraFun
+  // après la Battle en réel (O2, 270 s) déjà dû : z1 part, puis la Battle,
+  // puis O2 (server.js), au lieu de tout bloquer jusqu'au bout.
+  const behindReserved = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S02', 'y1', 2); ask(2, 'S03', 'z1', 3); ask(3, 'S01', 'x1', 1);
+    stage(10, 'z1', ['S03'], 'q1', 95);
+    e(90, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(110, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
+    e(170, 'stage.ended', { queueId: 'n1', playedSec: 60 });
+    e(171, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(175, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(175, null, null, 'b1', 90);
+    e(267, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(270, 'stage.started', { queueId: 'n2', source: 'native', ids: [] });
+    e(271, 'battle.automation', { ballotId: 'v1', status: 'released' });
+    e(330, 'stage.ended', { queueId: 'n2', playedSec: 60 });
+    stage(340, 'y1', ['S02'], 'q2', 60);
+    stage(410, 'x1', ['S01'], 'q3', 300);
+  }));
+  assert.deepEqual(behindReserved, [['queue', 10], ['queue', 80], ['native', 390], ['queue', 460], ['battle', 559], ['native', 658]]);
+  // Battle qui ne peut plus partir (heure de fermeture) : elle ne retient pas
+  // le titre lancé dans KaraFun après elle en réel.
+  const pastClosing = await scenesOf(build((e, stage, ask) => {
+    e(5, 'closing.set', { closingAt: T0 + 450000 });
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    stage(10, 'y1', ['S02'], 'q1', 60);
+    e(30, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(71, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(100, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(100, null, null, 'b1', 100);
+    e(202, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(220, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
+    e(221, 'battle.automation', { ballotId: 'v1', status: 'released' });
+    e(320, 'stage.ended', { queueId: 'n1', playedSec: 100 });
+    stage(330, 'x1', ['S01'], 'q2', 400);
+  }));
+  assert.deepEqual(pastClosing, [['queue', 10], ['native', 420]]);
   // Vote approuvé encore en attente d'envoi, remplacé par la Battle ajoutée
   // dans KaraFun (observeExternalBattle) : une seule Battle, la sienne.
   const superseded = rejeu.loadEvening(build((e, stage, ask) => {
