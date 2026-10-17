@@ -1278,14 +1278,15 @@ async function runFree(evening, opts = {}) {
     const stages = [];
     let current = null, upcoming = null, lastEnd = 0;
     let battle = 'none', battleNow = null, afterUntil = null;
+    const releaseAfter = () => { battle = 'none'; battleNow = null; afterUntil = null; };
     const durOf = sel => 1000 * (ev.played.get(ctx.rep2real.get(sel.song.entryId)) ?? (Number(sel.song.duration) || DEFAULT_SONG_SEC));
     // Début du prochain titre : délais réels du titre de même rang.
     const startAt = () => {
       const g = ev.startGaps[stages.filter(x => x.kind === 'song').length];
       if (!g) return Math.max(lastEnd, upcoming.sentAt) + GAP_MS;
       // Premier passage de la soirée réelle : à son heure réelle au plus tôt,
-      // ou après ce que le rejeu a fait passer avant lui.
-      if (g.endGap == null) return Math.max(lastEnd > 0 ? lastEnd + GAP_MS : g.at, upcoming.sentAt + g.sendGap);
+      // et après ce que le rejeu a fait passer avant lui.
+      if (g.endGap == null) return Math.max(g.at, lastEnd + GAP_MS, upcoming.sentAt + g.sendGap);
       return Math.max(lastEnd + g.endGap, upcoming.sentAt + Math.min(g.sendGap, g.endGap > 60000 ? g.sendGap : 15000));
     };
     // Fermeture du bar (server.js, closingBlocksStart) : un titre ne part ni
@@ -1307,7 +1308,7 @@ async function runFree(evening, opts = {}) {
         if (current.kind === 'battle') { battle = 'after'; afterUntil = current.end + (battleNow.afterGapMs ?? 0); }
         lastEnd = current.end; current = null;
       }
-      if (battle === 'after' && clock.now >= afterUntil) { battle = 'none'; battleNow = null; afterUntil = null; }
+      if (battle === 'after' && clock.now >= afterUntil) releaseAfter();
       // Titre envoyé qui ne tiendrait plus avant l'heure : retiré de KaraFun,
       // il revient dans la liste de son auteur (pullFromKaraFun, restorePulled).
       if (upcoming && (closingBlocks() || over())) {
@@ -1323,6 +1324,17 @@ async function runFree(evening, opts = {}) {
         stages.push(current); upcoming = null;
       }
       while (outside.length && outside[0].t <= clock.now) outsideDue.push(outside.shift());
+      // Battle ajoutée dans KaraFun pendant qu'une Battle de l'application
+      // attend son envoi : le suivi du serveur la prend à sa place (syncBattle :
+      // observeExternalBattle, ou confirmAutomation sur le même titre), une
+      // seule des deux passe.
+      const takeover = battle === 'waiting' ? battleQueue.findIndex(b => b.external) : -1;
+      if (takeover >= 0) {
+        const [external] = battleQueue.splice(takeover, 1);
+        note(ctx, `Battle décidée à ${timeOf(battleNow.decision.t, ev.timezone)} remplacée par la Battle ajoutée dans KaraFun ` +
+          `à ${timeOf(external.decision.t, ev.timezone)} (suivi du serveur) : une seule rejouée`);
+        battleNow = external; battle = 'queued'; battleQueuedAt = clock.now;
+      }
       // Passage hors file et prochaine Battle (en attente d'envoi, en file, ou
       // décidée pendant « after ») : dans l'ordre de leurs débuts réels
       // (l'heure d'entrée d'un titre dans KaraFun n'est pas notée). Un passage
@@ -1337,22 +1349,17 @@ async function runFree(evening, opts = {}) {
         current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? DEFAULT_SONG_SEC) };
         stages.push(current);
         // Titre lancé directement dans KaraFun après une Battle : la file reprend.
-        if (battle === 'after' && o.source !== 'battle') { battle = 'none'; battleNow = null; afterUntil = null; }
+        if (battle === 'after' && o.source !== 'battle') releaseAfter();
       }
       // Battle « sans vote » du bar pendant « after » : son suivi remplace
       // celui de la précédente (battle-vote.js staffLaunch). Un vote (propose
       // exige « released ») ou une Battle ajoutée dans KaraFun (syncBattle)
       // attend la fin de « after », même rejouée pendant celle-ci.
-      if (battle === 'after' && battleQueue.some(b => b.decision.ev === 'battle.staffLaunch')) { battle = 'none'; battleNow = null; afterUntil = null; }
+      if (battle === 'after' && battleQueue.some(b => b.decision.ev === 'battle.staffLaunch')) releaseAfter();
       // Battle ajoutée par le bar dans KaraFun : en file dès son arrivée.
       if (battle === 'none' && battleQueue.length) {
         battleNow = battleQueue.shift();
         if (battleNow.external) { battle = 'queued'; battleQueuedAt = clock.now; } else battle = 'waiting';
-      }
-      // Battle ajoutée dans KaraFun pendant qu'une Battle attend un envoi
-      // qu'elle ne peut pas faire : son suivi la remplace (syncBattle).
-      if (battle === 'waiting' && stuck && battleQueue[0]?.external) {
-        battleNow = battleQueue.shift(); battle = 'queued'; battleQueuedAt = clock.now;
       }
       // Envoi de la Battle (server.js) : application en marche, pas après
       // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
@@ -1477,6 +1484,17 @@ async function runFree(evening, opts = {}) {
       closeSolver(ctx);
     }
     for (const d of [...ctx.deferred]) dropDeferred(d, 'même chanson restée à chanter jusqu\'à la fin');
+    // Scènes de la soirée réelle que le rejeu n'a jamais démarrées (fin du
+    // karaoké, application arrêtée, heure de fermeture) : signalées.
+    const leftOutside = outsideDue.length + outside.length;
+    const leftBattles = battleQueue.length + (['waiting', 'queued'].includes(battle) ? 1 : 0);
+    if (leftOutside + leftBattles) {
+      const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+      const left = [leftOutside && plural(leftOutside, 'titre lancé', 'titres lancés') + ' directement dans KaraFun',
+        leftBattles && plural(leftBattles, 'Battle jouée', 'Battles jouées') + ' en réel'].filter(Boolean);
+      note(ctx, `scènes réelles jamais démarrées dans le rejeu : ${left.join(' et ')}`);
+      ctx.warnings.push(`${plural(leftOutside + leftBattles, 'scène réelle jamais démarrée', 'scènes réelles jamais démarrées')} dans le rejeu (voir les notes)`);
+    }
     if (steps >= maxSteps) ctx.warnings.push(`rejeu arrêté à ${timeOf(clock.now, ev.timezone)} après ${maxSteps} étapes : la fin de la soirée manque`);
     const replayPassages = stages.map(st => st.kind === 'song' ? {
       entryId: ctx.rep2real.get(st.sel.song.entryId) || st.sel.song.entryId, ids: st.sel.ids.map(pid => keyOf(ctx, pid)),

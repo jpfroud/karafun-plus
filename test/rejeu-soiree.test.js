@@ -902,14 +902,17 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
       .map(x => ({ at: (x.t - T0) / 1000, sec: journal.find(y => y.ev === 'stage.ended' && y.queueId === x.queueId).playedSec }));
   };
   // Scènes du journal rejoué, dans l'ordre : source et début (s).
-  const scenesOf = async raw => {
+  // (avec les notes et alertes du rejeu : runOf)
+  const runOf = async raw => {
     const es = require('../evening-stats');
     const original = es.computeStats;
-    let journal = [];
+    let journal = [], res;
     es.computeStats = (...a) => { if (a[0].events[0]?.boot === 'rejeu') journal = a[0].events; return original(...a); };
-    try { await rejeu.runFree(rejeu.loadEvening(raw)); } finally { es.computeStats = original; }
-    return journal.filter(x => x.ev === 'stage.started').map(x => [x.source, Math.round((x.t - T0) / 1000)]);
+    try { res = await rejeu.runFree(rejeu.loadEvening(raw)); } finally { es.computeStats = original; }
+    return { scenes: journal.filter(x => x.ev === 'stage.started').map(x => [x.source, Math.round((x.t - T0) / 1000)]),
+      notes: res.notes, warnings: res.warnings };
   };
+  const scenesOf = async raw => (await runOf(raw)).scenes;
   // Deux Battles approuvées (export sans suivi de l'envoi) : chacune jouée,
   // avec sa durée réelle.
   const many = await battlesOf(build((e, stage, ask) => {
@@ -1282,7 +1285,7 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
   assert.deepEqual(behindReserved, [['queue', 10], ['queue', 80], ['native', 390], ['queue', 460], ['battle', 559], ['native', 658]]);
   // Battle qui ne peut plus partir (heure de fermeture) : elle ne retient pas
   // le titre lancé dans KaraFun après elle en réel.
-  const pastClosing = await scenesOf(build((e, stage, ask) => {
+  const closingVote = extra => build((e, stage, ask) => {
     e(5, 'closing.set', { closingAt: T0 + 450000 });
     ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
     stage(10, 'y1', ['S02'], 'q1', 60);
@@ -1295,32 +1298,44 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(221, 'battle.automation', { ballotId: 'v1', status: 'released' });
     e(320, 'stage.ended', { queueId: 'n1', playedSec: 100 });
     stage(330, 'x1', ['S01'], 'q2', 400);
-  }));
-  assert.deepEqual(pastClosing, [['queue', 10], ['native', 420]]);
+    if (extra) extra(e, stage);
+  });
+  assert.deepEqual(await scenesOf(closingVote()), [['queue', 10], ['native', 420]]);
   // Même vote, Battle ajoutée ensuite dans KaraFun (735 s) : son suivi
   // remplace le vote retenu (syncBattle), elle est jouée.
-  const takeover = await scenesOf(build((e, stage, ask) => {
-    e(5, 'closing.set', { closingAt: T0 + 450000 });
-    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
-    stage(10, 'y1', ['S02'], 'q1', 60);
-    e(30, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
-    e(71, 'battle.automation', { ballotId: 'v1', status: 'sending' });
-    e(100, 'battle.automation', { ballotId: 'v1', status: 'playing' });
-    stage(100, null, null, 'b1', 100);
-    e(202, 'battle.automation', { ballotId: 'v1', status: 'after' });
-    e(220, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
-    e(221, 'battle.automation', { ballotId: 'v1', status: 'released' });
-    e(320, 'stage.ended', { queueId: 'n1', playedSec: 100 });
-    stage(330, 'x1', ['S01'], 'q2', 400);
+  const takeover = await scenesOf(closingVote((e, stage) => {
     e(735, 'battle.external', { ballotId: 'k2', songId: 9 });
     e(740, 'battle.automation', { ballotId: 'k2', status: 'playing' });
     stage(740, null, null, 'b2', 80);
     e(822, 'battle.automation', { ballotId: 'k2', status: 'after' });
   }));
   assert.deepEqual(takeover, [['queue', 10], ['native', 420], ['battle', 740]]);
+  // Vote seulement retardé par le rejeu (x1, déjà envoyé, passe avant lui)
+  // quand le bar ajoute une Battle dans KaraFun (300 s) : le serveur la suit à
+  // la place du vote (syncBattle), une seule Battle passe, la note le dit.
+  const replaced = await runOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    stage(10, 'y1', ['S02'], 'q1', 60);
+    e(30, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(71, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(100, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(100, null, null, 'b1', 100);
+    e(202, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(205, 'battle.automation', { ballotId: 'v1', status: 'resuming' });
+    stage(210, 'x1', ['S01'], 'q2', 400);
+    e(300, 'battle.external', { ballotId: 'k2', songId: 9 });
+    e(615, 'battle.automation', { ballotId: 'k2', status: 'playing' });
+    stage(615, null, null, 'b2', 80);
+    e(697, 'battle.automation', { ballotId: 'k2', status: 'after' });
+    e(700, 'battle.automation', { ballotId: 'k2', status: 'resuming' });
+  }));
+  assert.deepEqual(replaced.scenes, [['queue', 10], ['queue', 420], ['battle', 485]]);
+  assert.ok(replaced.notes.some(n => /Battle décidée à 21:00:30 remplacée par la Battle ajoutée dans KaraFun à 21:05:00/.test(n)),
+    replaced.notes.join(' | '));
   // Vote jamais envoyé avant l'arrêt de l'application (200 s), y1 étant déjà
   // dans KaraFun : KaraFun joue sans elle le titre lancé par le bar (690 s),
-  // la Battle part au redémarrage ; arrêt final : seul le titre passe.
+  // la Battle part au redémarrage ; arrêt final : seul le titre passe, et
+  // l'alerte dit qu'une scène réelle manque.
   const stop = restart => build((e, stage, ask) => {
     ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
     stage(10, 'x1', ['S01'], 'q1', 60);
@@ -1336,23 +1351,30 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(780, 'stage.ended', { queueId: 'n1', playedSec: 90 });
     if (restart) e(1500, 'app.started', { restored: true, offlineMs: 1300000 });
   });
-  assert.deepEqual(await scenesOf(stop(true)), [['queue', 10], ['queue', 305], ['native', 690], ['battle', 1504]]);
-  assert.deepEqual(await scenesOf(stop(false)), [['queue', 10], ['queue', 305], ['native', 690]]);
+  const tempStop = await runOf(stop(true));
+  assert.deepEqual([tempStop.scenes, tempStop.warnings], [[['queue', 10], ['queue', 305], ['native', 690], ['battle', 1504]], []]);
+  const finalStop = await runOf(stop(false));
+  assert.deepEqual([finalStop.scenes, finalStop.warnings], [[['queue', 10], ['queue', 305], ['native', 690]],
+    ['1 scène réelle jamais démarrée dans le rejeu (voir les notes)']]);
+  assert.ok(finalStop.notes.some(n => /scènes réelles jamais démarrées dans le rejeu : 1 Battle jouée en réel$/.test(n)), finalStop.notes.join(' | '));
   // Battle de KaraFun jouée avant le premier titre de la soirée (après lui en
-  // réel) : ce titre démarre juste après elle et sa reprise.
-  const first = await scenesOf(build((e, stage, ask) => {
+  // réel) : ce titre démarre juste après elle et sa reprise, jamais avant son
+  // heure réelle.
+  const firstAfter = at => build((e, stage, ask) => {
     e(1, 'battle.external', { ballotId: 'k1', songId: 9 });
     ask(3, 'S01', 'x1', 1);
-    stage(10, 'x1', ['S01'], 'q1', 60);
-    e(80, 'battle.automation', { ballotId: 'k1', status: 'playing' });
-    stage(80, null, null, 'b1', 90);
-    e(172, 'battle.automation', { ballotId: 'k1', status: 'after' });
-    e(180, 'battle.automation', { ballotId: 'k1', status: 'resuming' });
-  }));
-  assert.deepEqual(first, [['battle', 11], ['queue', 116]]);
+    stage(at, 'x1', ['S01'], 'q1', 60);
+    e(at + 70, 'battle.automation', { ballotId: 'k1', status: 'playing' });
+    stage(at + 70, null, null, 'b1', 90);
+    e(at + 162, 'battle.automation', { ballotId: 'k1', status: 'after' });
+    e(at + 170, 'battle.automation', { ballotId: 'k1', status: 'resuming' });
+  });
+  assert.deepEqual(await scenesOf(firstAfter(10)), [['battle', 11], ['queue', 116]]);
+  assert.deepEqual(await scenesOf(firstAfter(400)), [['battle', 11], ['queue', 400]]);
   // Fin du karaoké (fermeture à 300 s, dernier titre fini à 350 s) : le
-  // titre lancé par le bar, retardé par le rejeu (z1, 400 s), ne démarre plus.
-  const ended = await scenesOf(build((e, stage, ask) => {
+  // titre lancé par le bar, retardé par le rejeu (z1, 400 s), ne démarre plus,
+  // et l'alerte le dit.
+  const ended = await runOf(build((e, stage, ask) => {
     e(1, 'song.requested', { personId: 'S03', entryId: 'z1', songId: 3, title: 'z1', mode: 'append', durationSec: 400 });
     ask(2, 'S01', 'x1', 1);
     e(5, 'closing.set', { closingAt: T0 + 300000 });
@@ -1360,7 +1382,8 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(290, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
     e(350, 'stage.ended', { queueId: 'n1', playedSec: 60 });
   }));
-  assert.deepEqual(ended, [['queue', 10]]);
+  assert.deepEqual([ended.scenes, ended.warnings], [[['queue', 10]], ['1 scène réelle jamais démarrée dans le rejeu (voir les notes)']]);
+  assert.ok(ended.notes.some(n => /scènes réelles jamais démarrées dans le rejeu : 1 titre lancé directement dans KaraFun$/.test(n)), ended.notes.join(' | '));
   // Vote approuvé encore en attente d'envoi, remplacé par la Battle ajoutée
   // dans KaraFun (observeExternalBattle) : une seule Battle, la sienne.
   const superseded = rejeu.loadEvening(build((e, stage, ask) => {
