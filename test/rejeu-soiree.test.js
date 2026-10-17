@@ -1510,6 +1510,18 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(540, 'stage.ended', { queueId: 'q1', playedSec: 180 });
   }));
   assert.deepEqual(openingBattle, [['battle', 100], ['queue', 360]]);
+  // Soirée sans aucun titre de la file chanté en réel : la Battle de KaraFun
+  // passe, sans heure réelle du premier titre à comparer.
+  const noQueue = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    e(5, 'battle.external', { ballotId: 'k1', songId: 9 });
+    e(100, 'battle.automation', { ballotId: 'k1', status: 'playing' });
+    stage(100, null, null, 'b1', 90);
+    e(191, 'battle.automation', { ballotId: 'k1', status: 'after' });
+    e(200, 'battle.automation', { ballotId: 'k1', status: 'resuming' });
+    e(300, 'stage.started', { queueId: 'n1', source: 'native', ids: [] }); e(500, 'stage.ended', { queueId: 'n1', playedSec: 200 });
+  }));
+  assert.ok(noQueue.some(([kind]) => kind === 'battle'), JSON.stringify(noQueue));
   // Mais une Battle de KaraFun jouée après x1 en réel (500 s) reste derrière.
   const laterBattle = await scenesOf(build((e, stage, ask) => {
     ask(1, 'S01', 'x1', 1);
@@ -1583,9 +1595,6 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     const res = await rejeu.runFree(evening);
     assert.ok(res.passages.find(p => p.entryId === 'z1')?.sentAt >= T0 + 600000, `${kind} : ${JSON.stringify(res.passages)}`);
   }
-  // Soirée ouverte envoi automatique coupé (règle), remis sans réglage noté
-  // (droits retrouvés) : le premier envoi réel prouve l'envoi, rien n'est
-  // perdu.
   // Envoi interrompu sans phase notée (scène jamais libre) : send.unconfirmed
   // suffit.
   const unconfirmed = await rejeu.runFree(blockedUntil600({}, e => {
@@ -1593,8 +1602,102 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
   }));
   assert.ok(unconfirmed.passages.find(p => p.entryId === 'z1')?.sentAt >= T0 + 600000, JSON.stringify(unconfirmed.passages));
+  // Soirée ouverte envoi automatique coupé (règle), remis sans réglage noté :
+  // le premier envoi réel (turn.sent) prouve que l'envoi est rétabli, rien
+  // n'est perdu.
   const silentBack = await rejeu.runFree(blockedUntil600({ auto: false }, () => {}));
   assert.deepEqual(silentBack.passages.map(p => p.entryId), ['x1', 'y1', 'z1']);
+  // Accusé de y1 (tenté à 55 s) reçu à 58 s, après la coupure du bar à
+  // 56 s : ce n'est pas une preuve que l'envoi a repris.
+  const lateAck = await rejeu.runFree(blockedUntil600({}, e => {
+    e(5, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+    e(56, 'settings.changed', { setting: 'auto', from: true, to: false });
+    e(58, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
+    e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
+  }, { sent: false }));
+  assert.ok(lateAck.passages.find(p => p.entryId === 'z1')?.sentAt >= T0 + 600000, JSON.stringify(lateAck.passages));
+  // Application relancée (60 à 70 s) pendant l'envoi de y1, accusé à 80 s :
+  // le serveur restauré a laissé l'envoi automatique coupé (restoreNight),
+  // jusqu'au réglage remis par le bar à 600 s.
+  const restored = await rejeu.runFree(blockedUntil600({}, e => {
+    e(5, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+    e(70, 'app.started', { restored: true, offlineMs: 10000 });
+    e(80, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
+    e(381, 'karaoke.phase', { phase: 'between', blocker: 'auto-off' });
+    e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
+  }, { sent: false }));
+  assert.ok(restored.passages.find(p => p.entryId === 'z1')?.sentAt >= T0 + 600000, JSON.stringify(restored.passages));
+  // KaraFun reconnecté pendant y1 (phase « singing » à 250 s) : z1 part
+  // pendant y1, la coupure est finie.
+  const reconnected = await rejeu.runFree(blockedUntil600({}, e => {
+    e(100, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' });
+    e(250, 'karaoke.phase', { phase: 'singing', blocker: null });
+  }, { singing: false }));
+  assert.ok(reconnected.passages.find(p => p.entryId === 'z1')?.sentAt < T0 + 380000, JSON.stringify(reconnected.passages));
+  // Vote décidé pendant un envoi interrompu ou KaraFun déconnecté : le
+  // serveur ne réserve rien (envoi en attente, ou sync() arrêté), la Battle
+  // part au retour, avant z1, comme en réel.
+  const voteDuring = cut => scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2); ask(3, 'S03', 'z1', 3);
+    e(5, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+    e(55, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2' });
+    e(10, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+    e(190, 'stage.ended', { queueId: 'q1', playedSec: 180 });
+    e(200, 'stage.started', { entryId: 'y1', ids: ['S02'], queueId: 'q2', source: 'queue', title: 'y1' });
+    e(380, 'stage.ended', { queueId: 'q2', playedSec: 180 });
+    cut(e);
+    e(250, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(600, 'karaoke.phase', { phase: 'between', blocker: 'battle-hold' });
+    e(601, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(610, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(610, null, null, 'b1', 90);
+    e(701, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(705, 'battle.automation', { ballotId: 'v1', status: 'released' });
+    stage(720, 'z1', ['S03'], 'q3');
+  }));
+  for (const [kind, cut] of [['interrompu', e => e(120, 'send.unconfirmed', { entryId: 'z1', ids: ['S03'] })],
+    ['déconnecté', e => e(100, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' })]]) {
+    const scenes = await voteDuring(cut);
+    assert.deepEqual(scenes.map(x => x[0]), ['queue', 'queue', 'battle', 'queue'], `${kind} : ${JSON.stringify(scenes)}`);
+  }
+  // Fenêtres calculées par loadEvening (secondes) : envoi interrompu ouvert
+  // à la tentative (15 s avant, plus le retard de sync()) mais jamais avant
+  // l'accusé précédent ; envoi restauré au redémarrage, en attente jusqu'à
+  // son accusé puis envoi automatique coupé ; coupure silencieuse levée par
+  // une phase « push-delay » (envoi automatique de nouveau actif).
+  const rel = list => list.map(([a, b]) => [(a - T0) / 1000, Number.isFinite(b) ? (b - T0) / 1000 : b]).sort((x, y) => x[0] - y[0]);
+  const windowsOf = fill => rejeu.loadEvening(build(e => fill(e)));
+  assert.deepEqual(rel(windowsOf(e => {
+    e(55, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2' });
+    e(65, 'send.unconfirmed', { entryId: 'z1', ids: ['S03'] });
+    e(80, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
+  }).noReserve), [[55, 80]]);
+  assert.deepEqual(rel(windowsOf(e => {
+    e(70, 'app.started', { restored: true, offlineMs: 10000 });
+    e(80, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
+    e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
+  }).noSend), [[60, 70], [70, 80], [80, 600]]);
+  assert.deepEqual(rel(windowsOf(e => {
+    e(191, 'karaoke.phase', { phase: 'between', blocker: 'auto-off' });
+    e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
+  }).noSend), [[191, 600]]);
+  // Tentative d'envoi de z1 sur scène libre (400 s) jamais confirmée
+  // (send.unconfirmed à 416 s, vérifiée par le bar à 620 s) : le rejeu ne
+  // l'envoie pas entre-temps, et le titre lancé par le bar passe.
+  const freeStage = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1'); stage(200, 'y1', ['S02'], 'q2');
+    e(381, 'karaoke.phase', { phase: 'silent', blocker: 'empty' });
+    ask(400, 'S03', 'z1', 3);
+    e(400, 'karaoke.phase', { phase: 'between', blocker: 'sending' });
+    e(416, 'send.unconfirmed', { entryId: 'z1', ids: ['S03'] });
+    e(416, 'karaoke.phase', { phase: 'between', blocker: 'recovered-pending' });
+    e(430, 'stage.started', { queueId: 'n1', source: 'native', ids: [] }); e(610, 'stage.ended', { queueId: 'n1', playedSec: 180 });
+    e(620, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
+    stage(630, 'z1', ['S03'], 'q3');
+  }));
+  assert.deepEqual(freeStage.map(x => x[0]), ['queue', 'queue', 'native', 'queue'], JSON.stringify(freeStage));
+  assert.ok(freeStage[3][1] >= 620, JSON.stringify(freeStage));
   // Envoi automatique coupé (6 à 400 s) dès l'envoi de x1, vote décidé à
   // 50 s : le serveur réserve quand même y1 au début de x1, qui part au
   // retour de l'envoi, avant la Battle (passage réservé d'abord).

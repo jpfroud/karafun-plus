@@ -21,11 +21,12 @@
  *                          vote pas encore envoyé, comme le serveur) ; une scène réelle
  *                          jamais démarrée est signalée ; titre ou Battle joué directement
  *                          dans KaraFun, sans suivi, rejoué à son heure ; envoi à
- *                          +pushDelaySec ; rien n'est envoyé pendant un arrêt de
- *                          l'application, KaraFun déconnecté ou sans droit d'ajout, un
- *                          envoi interrompu à vérifier ni un envoi automatique coupé
- *                          (le passage suivant reste réservé, comme sur le serveur) ;
- *                          rien ne part ni ne démarre après la fin du karaoké.
+ *                          +pushDelaySec ; rien n'est réservé ni envoyé pendant un
+ *                          arrêt de l'application, KaraFun déconnecté ou un envoi
+ *                          interrompu à vérifier ; sans droit d'ajout ou envoi
+ *                          automatique coupé, rien n'est envoyé mais le passage suivant
+ *                          reste réservé, comme sur le serveur ; rien ne part ni ne
+ *                          démarre après la fin du karaoké.
  *   --solveur [jar]        avec le plan Timefold (solver/bridge.js), attendu à chaque
  *                          décision. Jar par défaut : solver/target/karafun-solver.jar,
  *                          sinon solver/karafun-solver.jar.
@@ -90,10 +91,11 @@
  * encore envoyé que remplace une Battle ajoutée dans KaraFun (syncBattle) ;
  * un titre ou une Battle joué directement dans KaraFun occupe la scène ; une
  * scène réelle que le rejeu ne démarre jamais est signalée (alerte).
- * Rien ne part pendant un arrêt de l'application, KaraFun déconnecté ou
- * sans droit d'ajout, un envoi interrompu à vérifier ou l'envoi automatique
- * coupé (karaoke.phase, send.unconfirmed, settings.changed), ni après la fin
- * du karaoké de la soirée réelle (evening-stats.js).
+ * Rien n'est réservé ni envoyé pendant un arrêt de l'application, KaraFun
+ * déconnecté ou un envoi interrompu à vérifier ; sans droit d'ajout ou envoi
+ * automatique coupé, rien n'est envoyé mais le passage suivant reste
+ * réservé (karaoke.phase, send.unconfirmed, settings.changed, turn.sent) ;
+ * rien ne part après la fin du karaoké de la soirée réelle (evening-stats.js).
  *
  * Seul effet de bord : Date.now est remplacé par l'horloge de la soirée
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
@@ -137,6 +139,8 @@ const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export 
 const SONG_GAP_MS = 20000; // temps moyen entre deux titres compté par la fermeture (server.js)
 const BATTLE_PRE_GAP_MS = 132000; // scène libre → début d'une Battle (téléphones qui rejoignent), sans mesure
 const BATTLE_STAGE_WINDOW_MS = 60000; // écart toléré entre le « playing » d'une Battle et sa scène
+const UNCONFIRMED_MS = 15000;  // tentative d'envoi → send.unconfirmed (server.js)
+const SYNC_SLACK_MS = 5000;    // retard possible de sync() sur ce délai
 const DEFAULT_SONG_SEC = 200;   // titre ou passage hors file sans durée connue
 const DEFAULT_BATTLE_SEC = 260; // Battle sans fin notée
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
@@ -331,39 +335,52 @@ function loadEvening(input) {
     if (stoppedAt != null) offline.push([stoppedAt, Infinity]); }
   // Envois impossibles (rejeu libre). Ni réservation ni envoi : application
   // arrêtée, KaraFun déconnecté (sync() s'arrête ; phase « offline » jusqu'à
-  // la phase suivante). Envoi seul, le serveur réservant quand même : droit
-  // d'ajout manquant, envoi interrompu à vérifier (send.unconfirmed),
-  // envoi automatique coupé (règle de la soirée, réglage du bar, phase
-  // « auto-off »). journalOutlook ne note sa cause que scène libre, par ordre
+  // la phase suivante), envoi interrompu à vérifier (un envoi attend son
+  // accusé : sync() ne réserve pas ; send.unconfirmed est noté 15 s après la
+  // tentative, ou un accusé arrive après un redémarrage qui a restauré
+  // l'envoi). Envoi seul, le serveur réservant quand même : droit d'ajout
+  // manquant, envoi automatique coupé (règle de la soirée, réglage du bar,
+  // phase « auto-off », ou laissé coupé par un envoi restauré au
+  // redémarrage). journalOutlook ne note sa cause que scène libre, par ordre
   // de priorité : chacune dure jusqu'à une phase scène libre d'une cause
-  // moins prioritaire, une preuve d'envoi (turn.sent, phase « sending » ou
-  // « push-delay ») ou le réglage remis par le bar. KaraFun joue encore ce
-  // qu'il a déjà.
+  // moins prioritaire, une preuve d'envoi (envoi tenté depuis la coupure,
+  // phase « push-delay ») ou le réglage remis par le bar ; un accusé, quel
+  // qu'il soit, met fin à l'envoi interrompu. KaraFun joue encore ce qu'il a.
   const noReserve = [...offline], noSend = [...offline];
   { const above = { permission: ['queue-clear', 'restart', 'closing', 'recovered-pending', 'permission', 'offline'],
       'recovered-pending': ['queue-clear', 'restart', 'closing', 'recovered-pending', 'offline'] };
+    const listOf = k => k === 'link' || k === 'recovered-pending' ? noReserve : noSend;
     const open = { link: null, permission: null, 'recovered-pending': null, auto: rules.auto === false ? events[0]?.t ?? 0 : null };
-    const close = (k, t, list) => { if (open[k] != null) { list.push([open[k], t]); open[k] = null; } };
+    const close = (k, t) => { if (open[k] != null) { listOf(k).push([open[k], t]); open[k] = null; } };
+    let appStart = -Infinity, lastSent = -Infinity;
     for (const e of events) {
-      if (e.ev === 'karaoke.phase') {
+      if (e.ev === 'app.started') appStart = e.t;
+      else if (e.ev === 'karaoke.phase') {
         if (e.blocker === 'offline') open.link ??= e.t;
-        else close('link', e.t, noReserve);
+        else close('link', e.t);
         for (const k of ['permission', 'recovered-pending']) {
           if (e.blocker === k) open[k] ??= e.t;
-          else if (e.phase !== 'singing' && e.blocker && !above[k].includes(e.blocker)) close(k, e.t, noSend);
+          else if (e.phase !== 'singing' && e.blocker && !above[k].includes(e.blocker)) close(k, e.t);
         }
         if (e.blocker === 'auto-off') open.auto ??= e.t;
-      } else if (e.ev === 'send.unconfirmed') open['recovered-pending'] ??= e.t;
+        if (e.blocker === 'push-delay') { close('permission', e.t); close('auto', e.t); }
+      } else if (e.ev === 'send.unconfirmed') open['recovered-pending'] ??= Math.max(lastSent, e.t - UNCONFIRMED_MS - SYNC_SLACK_MS);
       else if (e.ev === 'settings.changed' && e.setting === 'auto') {
         if (e.to === false) open.auto ??= e.t;
-        else if (e.to === true) close('auto', e.t, noSend);
-      }
-      if (e.ev === 'turn.sent' || (e.ev === 'karaoke.phase' && ['sending', 'push-delay'].includes(e.blocker))) {
-        for (const k of ['permission', 'recovered-pending', 'auto']) close(k, e.t, noSend);
+        else if (e.to === true) close('auto', e.t);
+      } else if (e.ev === 'turn.sent') {
+        const at = Number(e.sentAt) || e.t;
+        close('recovered-pending', e.t);
+        // Envoi tenté avant un redémarrage, accusé après : en attente depuis
+        // le redémarrage, puis envoi automatique laissé coupé (restoreNight).
+        if (at < appStart) { noReserve.push([appStart, e.t]); open.auto ??= e.t; }
+        else for (const k of ['permission', 'auto']) if (open[k] != null && at >= open[k]) close(k, e.t);
+        lastSent = e.t;
       }
     }
     if (open.link != null) noReserve.push([open.link, Infinity]);
-    for (const k of ['permission', 'recovered-pending', 'auto']) if (open[k] != null) noSend.push([open[k], Infinity]);
+    if (open['recovered-pending'] != null) noReserve.push([open['recovered-pending'], Infinity]);
+    for (const k of ['permission', 'auto']) if (open[k] != null) noSend.push([open[k], Infinity]);
     noSend.push(...noReserve.slice(offline.length)); }
   const timezone = raw.evening?.timezone || 'Europe/Paris';
   const realPassages = passagesFromEvents(events);
@@ -1334,7 +1351,7 @@ async function runFree(evening, opts = {}) {
     // la scène reste libre pour un titre lancé par le bar.
     const firstWaiting = () => !!upcoming && !stages.some(x => x.kind === 'song') && startAt() > clock.now;
     // De même pour une Battle déjà dans KaraFun jouée avant lui en réel.
-    const battleFirst = () => battle === 'queued' && firstWaiting() && battleNow.realStart < ev.startGaps[0].at;
+    const battleFirst = () => battle === 'queued' && firstWaiting() && battleNow.realStart < (ev.startGaps[0]?.at ?? Infinity);
     // Battle de KaraFun en file pendant qu'une Battle de l'application ou du
     // bar attend son envoi : le suivi du serveur la prend à sa place dès qu'il
     // la voit (syncBattle : observeExternalBattle, ou confirmAutomation sur le
@@ -1438,8 +1455,9 @@ async function runFree(evening, opts = {}) {
       }
       // Battle (de l'application ou faite dans KaraFun) qui retient la file,
       // titre déjà dans KaraFun qui passe avant la prochaine Battle,
-      // application arrêtée ou KaraFun déconnecté : ni réservation ni envoi ;
-      // envoi seul impossible (droit, envoi coupé) : réservation quand même. Un titre hors file venu
+      // application arrêtée, KaraFun déconnecté ou envoi interrompu : ni
+      // réservation ni envoi ; envoi seul impossible (droit d'ajout, envoi
+      // automatique coupé) : réservation quand même. Un titre hors file venu
       // après une Battle en attente d'envoi ne retient pas le passage déjà
       // réservé, qui part avant elle (server.js : passage réservé, Battle,
       // titre).
