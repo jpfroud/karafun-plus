@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const rejeu = require('./rejeu-soiree');
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'soiree-2026-10-15-anonyme.json');
@@ -14,6 +14,14 @@ const ev = rejeu.loadEvening(FIXTURE);
 let forced = null;
 const forcedRun = async () => forced ||= await rejeu.runForced(ev);
 const ids = d => d?.ids.join('+');
+// Configurations Timefold écrites par les rejeux (limite de mouvements) :
+// chacune est effacée en fin de rejeu. Dossier temporaire propre à ce fichier
+// de tests : un rejeu lancé à côté n'y écrit pas.
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-tests-'));
+for (const k of ['TMPDIR', 'TMP', 'TEMP']) process.env[k] = TMP;
+after(() => fs.rmSync(TMP, { recursive: true, force: true }));
+const solverDirs = () => fs.readdirSync(os.tmpdir()).filter(f => f.startsWith('rejeu-timefold-')).sort();
+const dirsBefore = solverDirs();
 // Événement ajouté à son heure dans une copie de l'export : numéro d'ordre
 // juste après le dernier événement de la soirée qui le précède.
 function adder(events) {
@@ -169,6 +177,12 @@ test('CLI : erreur d’utilisation en une ligne, sans trace', async t => {
   // Ce qu'apporte Timefold : même code, sans puis avec.
   const o = rejeu.parseArgs([FIXTURE, '--avant', '.', '--solveur', '--solveur-avant', 'sans']);
   assert.deepEqual([o.before, o.solver, o.solverBefore], ['.', true, 'sans']);
+  // Effort de Timefold : mouvements (0 = temps seul), plafond de temps borné.
+  assert.deepEqual([o.moves, o.budget], [null, null]);
+  assert.deepEqual(['moves', 'budget'].map(k => rejeu.parseArgs([FIXTURE, '--mouvements', '0', '--budget', '3000'])[k]), [0, 3000]);
+  assert.throws(() => rejeu.parseArgs([FIXTURE, '--mouvements', '1.5']), /--mouvements attend un nombre entier/);
+  assert.throws(() => rejeu.parseArgs([FIXTURE, '--mouvements', '--court']), /--mouvements attend une valeur/);
+  assert.throws(() => rejeu.parseArgs([FIXTURE, '--budget', '60000']), /--budget attend un nombre de millisecondes de 100 à 30000/);
 });
 
 test('bilan avant/après : même code des deux côtés, tout est égal', async () => {
@@ -802,6 +816,20 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     stage(310, 'y1', ['S02'], 'q2');
   })));
   assert.equal(forcedBattle.decisions.find(d => d.real.entryId === 'y1')?.reservation ?? null, null);
+  // Envoi de la Battle en échec, puis Battle écartée par le bar (journal :
+  // battle.resolved seul, battle-vote.js passe l'automatisation à
+  // « released ») : la file est relâchée, y1 est réservé pendant x1.
+  const failedDismissed = await rejeu.runForced(rejeu.loadEvening(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(25, 'battle.automation', { ballotId: 'v1', status: 'failed' });
+    e(28, 'battle.resolved', { ballotId: 'v1', outcome: 'dismissed' });
+    ask(30, 'S02', 'y1', 2);
+    stage(200, 'y1', ['S02'], 'q2');
+  })));
+  const freed = failedDismissed.decisions.find(d => d.real.entryId === 'y1')?.reservation;
+  assert.ok(freed && freed.at < T0 + 190000, JSON.stringify(failedDismissed.decisions.map(d => d.reservation?.time ?? null)));
   // Titre repris après un redémarrage (même file KaraFun, sans fin notée) : un
   // seul passage, de son début à la fin de la reprise, et un seul délai de
   // lancement compté.
@@ -920,6 +948,40 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
   assert.deepEqual(rejeu.loadEvening(manualRaw).battles.map(b => [b.preGapMs, b.sec]), [[110000, 200]]);
   const manual = await rejeu.runFree(rejeu.loadEvening(manualRaw));
   assert.ok(manual.passages.find(p => p.entryId === 'y1').sentAt >= T0 + 490000, JSON.stringify(manual.passages));
+  // Battle finie à 300 s : la file reste retenue (« after ») jusqu'au titre
+  // suivant lancé par le bar à 420 s (« resuming »), comme server.js.
+  const afterRaw = build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(30, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(185, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(210, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(210, null, null, 'b1', 90);
+    e(302, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(420, 'battle.automation', { ballotId: 'v1', status: 'resuming' });
+    stage(440, 'y1', ['S02'], 'q2');
+    e(441, 'battle.automation', { ballotId: 'v1', status: 'released' });
+  });
+  assert.deepEqual(rejeu.loadEvening(afterRaw).battles.map(b => [b.preGapMs, b.afterGapMs]), [[20000, 120000]]);
+  const held = await rejeu.runFree(rejeu.loadEvening(afterRaw));
+  assert.ok(held.passages.find(p => p.entryId === 'y1').sentAt >= T0 + 420000, JSON.stringify(held.passages));
+  // Sans reprise notée, un titre lancé directement dans KaraFun (400 s)
+  // relâche la file (server.js) : y1 est chanté ensuite.
+  const nativeRaw = build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(30, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(185, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(210, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(210, null, null, 'b1', 90);
+    e(302, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(400, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
+    e(500, 'stage.ended', { queueId: 'n1', playedSec: 100 });
+    stage(520, 'y1', ['S02'], 'q2');
+  });
+  assert.deepEqual(rejeu.loadEvening(nativeRaw).battles.map(b => b.afterGapMs), [Infinity]);
+  const native = await rejeu.runFree(rejeu.loadEvening(nativeRaw));
+  assert.ok(native.passages.find(p => p.entryId === 'y1')?.sentAt >= T0 + 400000, JSON.stringify(native.passages));
   // Battle approuvée puis écartée, export sans suivi de l'envoi : la Battle
   // faite ensuite dans KaraFun n'est pas la sienne.
   const dismissed = rejeu.loadEvening(build((e, stage) => {
@@ -1380,11 +1442,36 @@ test('rejeu avec un jar Timefold inutilisable : avertissement, pas de faux « [T
   // Aucun plan : compté sans Timefold (étiquette et bilan avant/après).
   assert.equal(res.solver, false);
   assert.match(rejeu.report(res, { short: true }), /^REJEU FORCÉ \[Timefold sans plan\]\nATTENTION Timefold n'a rendu aucun plan/);
+  // Limite de mouvements par défaut, le budget donné reste son plafond ; la
+  // configuration du solveur écrite pour ce rejeu est effacée ensuite.
+  assert.deepEqual([res.timefold.moves, res.timefold.budgetMs], [20000, 200]);
+  assert.deepEqual(solverDirs(), dirsBefore);
+  // Dossier laissé par un rejeu interrompu : effacé au rejeu suivant après un
+  // jour, pas avant.
+  const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-timefold-'));
+  const recent = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-timefold-'));
+  fs.utimesSync(stale, new Date(Date.now() - 25 * 3600_000), new Date(Date.now() - 25 * 3600_000));
+  await rejeu.runForced(ev, { solver: jar, budget: 200, until });
+  assert.deepEqual([fs.existsSync(stale), fs.existsSync(recent)], [false, true]);
+  fs.rmSync(recent, { recursive: true });
+  const timeOnly = await rejeu.runForced(ev, { solver: jar, budget: 200, moves: 0, until });
+  assert.deepEqual([timeOnly.timefold.moves, timeOnly.timefold.budgetMs], [0, 200]);
+  // Version sans configuration du solveur dans ses sources : limite non
+  // appliquée, dite (le temps décide alors du résultat).
+  const copy = path.join(dir, 'version');
+  for (const f of ['scheduler.js', 'song-repeats.js', 'evening-stats.js', 'lib', path.join('solver', 'bridge.js')]) {
+    fs.cpSync(path.join(__dirname, '..', f), path.join(copy, f), { recursive: true });
+  }
+  const cmp = await rejeu.runCompare(ev, { before: { code: copy, solver: jar }, after: { solver: false }, budget: 200 });
+  assert.equal(cmp.before.timefold.moves, 0);
+  assert.ok(cmp.before.warnings.some(w => /^limite de 20 000 mouvements non appliquée \(configuration du solveur introuvable dans .*version\) : Timefold limité au temps/.test(w)),
+    cmp.before.warnings.join(' | '));
+  assert.deepEqual(solverDirs(), dirsBefore);
 });
 
 test('rejeu libre avec Timefold : une file de moins de deux titres n’est pas un échec',
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
-    const res = await rejeu.runFree(ev, { solver: JAR, budget: 200 });
+    const res = await rejeu.runFree(ev, { solver: JAR, moves: 1000 });
     assert.ok(res.timefold.ok > 0);
     assert.equal(res.timefold.failed, 0, JSON.stringify(res.timefold));
     assert.deepEqual(res.warnings.filter(w => /Timefold/.test(w)), []);
@@ -1440,10 +1527,29 @@ test('rejeu forcé avec Timefold : l’égalité de 21:06:30 est départagée co
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
     // Jusqu'au nouveau tour de 21:49:51 seulement : un calcul court par décision.
     const until = ev.events.find(e => e.ev === 'turn.sent' && rejeu.timeOf(e.t) === '21:49:51').t;
-    const res = await rejeu.runForced(ev, { solver: JAR, budget: 200, until });
+    const res = await rejeu.runForced(ev, { solver: JAR, moves: 1000, until });
     const sends = res.decisions.filter(d => d.kind === 'send');
     assert.equal(sends.at(-1).time, '21:49:51');
     const tie = sends.find(d => d.time === '21:06:30');
     assert.equal(tie.match, true, `rejeu : ${ids(tie.pick)}`);
     assert.deepEqual(sends.filter(d => !d.match).map(d => d.time), []);
+  });
+
+test('rejeu avec Timefold : effort compté en mouvements, plafond de temps atteint signalé',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const until = ev.events.find(e => e.ev === 'turn.sent' && rejeu.timeOf(e.t) === '21:49:51').t;
+    // 1 000 mouvements sous un plafond de 5 s : chaque décision s'arrête bien
+    // avant le plafond (une limite ignorée prendrait 5 s à chaque fois).
+    const started = Date.now();
+    const res = await rejeu.runForced(ev, { solver: JAR, moves: 1000, budget: 5000, until });
+    assert.ok(res.timefold.asked > 5 && res.timefold.ok === res.timefold.asked, JSON.stringify(res.timefold));
+    assert.equal(res.timefold.ceiling, 0);
+    assert.ok(Date.now() - started < res.timefold.asked * 2000, `${Date.now() - started} ms pour ${res.timefold.asked} décisions`);
+    assert.match(rejeu.report(res, { short: true }), /^REJEU FORCÉ \[Timefold, 1 000 mouvements par décision\]\n(?!ATTENTION)/);
+    assert.deepEqual(solverDirs(), dirsBefore);
+    // Plafond plus court que la limite : le résultat dépend de la machine, dit.
+    const short = await rejeu.runForced(ev, { solver: JAR, moves: 50_000_000, budget: 300, until });
+    assert.equal(short.timefold.ceiling, short.timefold.asked);
+    assert.ok(short.warnings.some(w => w.startsWith(`Timefold arrêté au plafond de 0,3 s avant 50 000 000 mouvements pour ${short.timefold.asked} décisions`)),
+      short.warnings.join(' | '));
   });

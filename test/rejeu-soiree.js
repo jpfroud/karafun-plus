@@ -14,14 +14,19 @@
  *                          demandes, duos, retraits, réordres et départs à leurs heures
  *                          réelles ; durées jouées réelles ; délais de lancement réels du
  *                          k-ième titre ; chaque Battle jouée en réel envoyée après sa
- *                          décision à la première case libre, avec son délai et sa durée
- *                          réels ; titre ou Battle joué directement dans KaraFun rejoué à
- *                          son heure ; envoi à +pushDelaySec ; rien n'est envoyé pendant
- *                          un arrêt de l'application ni après la fin du karaoké.
+ *                          décision à la première case libre, avec son délai, sa durée et
+ *                          la reprise de la file après elle réels ; titre ou Battle joué
+ *                          directement dans KaraFun rejoué à son heure ; envoi à
+ *                          +pushDelaySec ; rien n'est envoyé pendant un arrêt de
+ *                          l'application ni après la fin du karaoké.
  *   --solveur [jar]        avec le plan Timefold (solver/bridge.js), attendu à chaque
  *                          décision. Jar par défaut : solver/target/karafun-solver.jar,
  *                          sinon solver/karafun-solver.jar.
- *   --budget <ms>          budget Timefold par décision (3000)
+ *   --mouvements <n>       effort de Timefold par décision, en mouvements (20000) : même
+ *                          résultat sur toute machine, même chargée ; 0 = limite de temps
+ *                          seule, comme au bar (résultat qui dépend de la charge)
+ *   --budget <ms>          plafond de temps de Timefold par décision (30000) ; avec
+ *                          --mouvements 0, son temps de calcul (3000)
  *   --trace HH:MM[,HH:MM]  détail des décisions prises à ces minutes (heure de la soirée)
  *   --json <fichier>       décisions, passages, attentes et anomalies en JSON
  *   --option clé=valeur    remplace une règle de la soirée (répétable), par exemple
@@ -44,11 +49,11 @@
  *
  * Programmatique : const r = require('./rejeu-soiree');
  *   const ev = r.loadEvening('export.json');
- *   const res = await r.runForced(ev, { solver, budget, options, until });   // ou r.runFree
+ *   const res = await r.runForced(ev, { solver, moves, budget, options, until });   // ou r.runFree
  *   (`until` : rejeu forcé arrêté après cette heure, en ms)
  *   res.decisions, res.passages (attente par titre), res.analysis ; r.report(res)
  *   const cmp = await r.runCompare(ev, { before: { code: 'fd27698', solver: true },
- *     after: { solver: true }, budget, options });  r.compareReport(cmp)
+ *     after: { solver: true }, moves, budget, options });  r.compareReport(cmp)
  *   (`code` : révision git ou dossier, version de travail par défaut ; `solver`
  *   comme ci-dessus, true = jar de cette version)
  *
@@ -69,8 +74,9 @@
  * suit les départs notés par le bar et les duos quittés ; une chanson
  * redemandée en « ajouter » alors qu'elle reste à chanter dans le rejeu
  * attend qu'elle quitte la liste ; chaque Battle jouée en réel (vote
- * approuvé ou lancée par le bar) est rejouée, avec son délai et sa durée,
- * et un titre ou une Battle joué directement dans KaraFun occupe la scène.
+ * approuvé ou lancée par le bar) est rejouée, avec son délai, sa durée et
+ * le temps où elle retient la file ensuite (« after »), et un titre ou une
+ * Battle joué directement dans KaraFun occupe la scène.
  * Rien ne part pendant un arrêt de l'application ni après la fin du
  * karaoké de la soirée réelle (evening-stats.js).
  *
@@ -78,8 +84,9 @@
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { Scheduler } = require('../scheduler');
 const { BUNDLED_JAVA } = require('../solver/bridge');
 const eveningStats = require('../evening-stats');
@@ -118,6 +125,15 @@ const BATTLE_STAGE_WINDOW_MS = 60000; // écart toléré entre le « playing » 
 const DEFAULT_SONG_SEC = 200;   // titre ou passage hors file sans durée connue
 const DEFAULT_BATTLE_SEC = 260; // Battle sans fin notée
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
+// Effort de Timefold par décision : un nombre de mouvements, pas un temps.
+// Limité au temps, un solveur privé de processeur (machine chargée) rend
+// l'ordre de départ et le bilan change d'une fois à l'autre. Sur la soirée du
+// 15 octobre, 1 000 mouvements rendent déjà l'ordre de 3 s de calcul pour
+// chacune des 40 demandes ; au bar, 3 s font 26 000 à 450 000 mouvements.
+const SOLVER_MOVES = 20000;
+const SOLVER_CEILING_MS = 30000; // plafond de temps (le plus haut accepté par le solveur)
+const SOLVER_TIME_MS = 3000;     // budget de temps seul, comme au bar (--mouvements 0)
+const SOLVER_MAIN = 'fr.karafun.plus.solver.Main';
 
 // ------------------------------------------------------------------ horloge
 // Une seule horloge par processus : deux rejeux en même temps mélangeraient
@@ -223,9 +239,12 @@ function loadEvening(input) {
   // Battles lancées par l'application (vote approuvé, ou « sans vote » du
   // bar) et jouées : chacune suivie par son scrutin, de la décision à son
   // envoi puis à son début. `preGapMs` : de la scène libérée (ou de l'envoi,
-  // scène déjà libre) au début ; `sec` : durée jouée. Une Battle écartée ou
-  // jamais jouée n'y est pas. Export sans suivi de l'envoi : la Battle jouée
-  // qui suit la décision, délai habituel.
+  // scène déjà libre) au début ; `sec` : durée jouée ; `afterGapMs` : de sa
+  // fin à la reprise de la file (server.js : « after » retient la file
+  // jusqu'au titre suivant lancé par le bar, « resuming », ou directement
+  // dans KaraFun, « released » ; sans reprise notée, jusqu'au bout). Une
+  // Battle écartée ou jamais jouée n'y est pas. Export sans suivi de l'envoi :
+  // la Battle jouée qui suit la décision, délai habituel, reprise aussitôt.
   const battles = [];
   const used = new Set();
   {
@@ -241,7 +260,7 @@ function loadEvening(input) {
         const stage = battleStages.find(st => !used.has(st) && st.e.t >= d.t);
         if (dismissed || events.some(mine) || !stage) continue;
         used.add(stage);
-        battles.push({ decision: d, preGapMs: BATTLE_PRE_GAP_MS, sec: stage.sec });
+        battles.push({ decision: d, preGapMs: BATTLE_PRE_GAP_MS, sec: stage.sec, afterGapMs: 0 });
         continue;
       }
       // Sa scène : celle, hors file, qui démarre avec son « playing » (même si
@@ -251,7 +270,11 @@ function loadEvening(input) {
         .sort((a, b) => Math.abs(a.e.t - playing.t) - Math.abs(b.e.t - playing.t))[0];
       if (stage) used.add(stage);
       const freed = events.filter(e => e.ev === 'stage.ended' && e.t > from && e.t <= playing.t).at(-1)?.t ?? from;
-      battles.push({ decision: d, preGapMs: Math.max(0, playing.t - Math.max(from, freed)), sec: stage?.sec ?? null });
+      const after = events.find(e => mine(e) && e.status === 'after' && e.t >= playing.t);
+      const resumed = after && events.find(e => mine(e) && ['resuming', 'released'].includes(e.status) && e.t >= after.t);
+      const ended = Number.isFinite(stage?.sec) ? stage.e.t + 1000 * stage.sec : after?.t;
+      battles.push({ decision: d, preGapMs: Math.max(0, playing.t - Math.max(from, freed)), sec: stage?.sec ?? null,
+        afterGapMs: !after ? 0 : resumed ? Math.max(0, resumed.t - ended) : Infinity });
     }
   }
   // Passages hors file joués en réel (titre ou Battle ajoutés directement
@@ -604,21 +627,71 @@ function makeContext(ev, opts) {
   s._scheduleRefine = () => {};
   s.solverBridge = null;
   const ctx = { ev, s, rules, overrides, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
-    notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || 3000, solver: null, jar: null,
-    code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null }, unapplied: new Set(), aliases: new Map(), added: new Map(),
+    notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || SOLVER_TIME_MS, moves: 0, solver: null, jar: null,
+    solverDir: null, code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null, ceiling: 0 }, unapplied: new Set(), aliases: new Map(), added: new Map(),
     requestedAt: new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t])) };
   const jar = resolveJar(opts.solver, code);
   if (jar) {
     const { TimefoldBridge } = require(path.join(code.dir, 'solver', 'bridge'));
+    const moves = opts.moves ?? SOLVER_MOVES;
+    const limited = moves ? movesLimited(code, jar, moves) : null;
+    if (moves && !limited) {
+      ctx.warnings.push(`limite de ${count(moves)} mouvements non appliquée (configuration du solveur introuvable dans ${code.label}) : ` +
+        'Timefold limité au temps, résultat qui dépend de la charge de la machine');
+    }
+    if (limited) { ctx.moves = moves; ctx.solverDir = limited.dir; ctx.budget = opts.budget || SOLVER_CEILING_MS; }
     // Java de la version de travail (runtime du kit s'il est là) des deux côtés.
-    s.solverBridge = new TimefoldBridge({ jar, settleMs: 0, ...(fs.existsSync(BUNDLED_JAVA) ? { java: BUNDLED_JAVA } : {}) });
+    s.solverBridge = new TimefoldBridge({ jar, settleMs: 0, ...(fs.existsSync(BUNDLED_JAVA) ? { java: BUNDLED_JAVA } : {}),
+      ...(limited ? { spawn: limited.spawn } : {}) });
     ctx.solver = s.solverBridge; ctx.jar = jar;
+    const solve = ctx.solver.solve.bind(ctx.solver);
+    ctx.solver.solve = (request, o) => solve(request, o).then(response => {
+      ctx.solverElapsedMs = Number(response?.elapsedMs);
+      return response;
+    });
     if (!(code.extracted && typeof opts.solver === 'string') && staleJar(jar, code.dir)) {
       ctx.warnings.push(`jar Timefold plus ancien que ${path.join(code.dir, 'solver', 'src')} : reconstruire (mvn -q -DskipTests package -f ${path.join(code.dir, 'solver', 'pom.xml')})`);
     }
   }
   return ctx;
 }
+
+// Configuration Timefold de cette version, avec une limite de mouvements, placée
+// avant le jar dans le classpath : Main la relit pour chaque budget et n'y
+// change que la limite de temps, qui reste un plafond. Ni le jar ni le
+// solveur du bar ne changent. Dossier privé (mkdtemp), effacé en fin de rejeu.
+function movesLimited(code, jar, moves) {
+  const solver = path.join(code.dir, 'solver', 'src', 'main');
+  let xml;
+  try {
+    const main = fs.readFileSync(path.join(solver, 'java', ...SOLVER_MAIN.split('.')) + '.java', 'utf8');
+    if (!main.includes('createFromXmlResource("solverConfig.xml")')) return null;
+    xml = fs.readFileSync(path.join(solver, 'resources', 'solverConfig.xml'), 'utf8');
+  } catch (_) { return null; }
+  if (!xml.includes('</termination>') || xml.includes('moveCountLimit')) return null;
+  // Rejeu interrompu (Ctrl+C) : son dossier reste ; effacé un jour après.
+  for (const f of fs.readdirSync(os.tmpdir()).filter(f => f.startsWith('rejeu-timefold-'))) {
+    try {
+      const old = path.join(os.tmpdir(), f), st = fs.lstatSync(old);
+      if (st.isDirectory() && st.uid === (process.getuid?.() ?? st.uid) && realNow() - st.mtimeMs > 24 * HOUR) {
+        fs.rmSync(old, { recursive: true, force: true });
+      }
+    } catch (_) { /* effacé entre-temps */ }
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-timefold-'));
+  fs.writeFileSync(path.join(dir, 'solverConfig.xml'),
+    xml.replace('</termination>', `  <moveCountLimit>${moves}</moveCountLimit>\n  </termination>`), { mode: 0o600 });
+  const classpath = dir + path.delimiter + path.resolve(jar);
+  return { dir, spawn: (cmd, args, o) => {
+    const k = args.indexOf('-jar');
+    return spawn(cmd, k < 0 ? args : [...args.slice(0, k), '-cp', classpath, SOLVER_MAIN, ...args.slice(k + 2)], o);
+  } };
+}
+function closeSolver(ctx) {
+  if (ctx.solver) ctx.solver.close();
+  if (ctx.solverDir) fs.rmSync(ctx.solverDir, { recursive: true, force: true });
+}
+const count = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 
 const keyOf = (ctx, pid) => ctx.pid2key.get(pid) || pid;
 const nameOf = (ctx, key) => ctx.ev.people.get(key)?.name || key;
@@ -638,7 +711,11 @@ async function ensurePlan(ctx) {
   if (!started && !s.solverLastError) return;
   ctx.plans.asked++;
   // Échec ou solveur indisponible : ordre local, compté et signalé au rapport.
+  ctx.solverElapsedMs = null;
   const ok = started && s.solverPromise ? await s.solverPromise.catch(() => false) : false;
+  // Plafond de temps atteint avant la limite de mouvements : machine trop
+  // chargée (temps du calcul rendu par le solveur, démarrage de Java exclu).
+  if (ok && ctx.moves && ctx.solverElapsedMs >= ctx.budget) ctx.plans.ceiling++;
   if (ok) ctx.plans.ok++;
   else {
     ctx.plans.failed++;
@@ -1096,7 +1173,7 @@ async function runForced(evening, opts = {}) {
         }
       }
     } finally {
-      if (ctx.solver) ctx.solver.close();
+      closeSolver(ctx);
     }
     // Passages : ceux de la soirée réelle (l'état les a suivis), avec la dette
     // de tour comptée par l'ordonnanceur à chaque engagement.
@@ -1136,7 +1213,7 @@ async function runFree(evening, opts = {}) {
     let closingAt = Infinity;
     const stages = [];
     let current = null, upcoming = null, lastEnd = 0;
-    let battle = 'none', battleNow = null;
+    let battle = 'none', battleNow = null, afterUntil = null;
     const durOf = sel => 1000 * (ev.played.get(ctx.rep2real.get(sel.song.entryId)) ?? (Number(sel.song.duration) || DEFAULT_SONG_SEC));
     // Début du prochain titre : délais réels du titre de même rang.
     const startAt = () => {
@@ -1158,9 +1235,11 @@ async function runFree(evening, opts = {}) {
     const stepServer = async () => {
       if (current && clock.now >= current.end) {
         if (current.kind === 'song') { s.recordSlot((current.end - current.start) / 1000); s.songEnded(current.sel.ids); s.endStage(current.sel); }
-        if (current.kind === 'battle') { battle = 'none'; battleNow = null; }
+        // Battle finie : la file attend la reprise réelle (« after »).
+        if (current.kind === 'battle') { battle = 'after'; afterUntil = current.end + (battleNow.afterGapMs ?? 0); }
         lastEnd = current.end; current = null;
       }
+      if (battle === 'after' && clock.now >= afterUntil) { battle = 'none'; battleNow = null; afterUntil = null; }
       // Titre envoyé qui ne tiendrait plus avant l'heure : retiré de KaraFun,
       // il revient dans la liste de son auteur (pullFromKaraFun, restorePulled).
       if (upcoming && (closingBlocks() || over())) {
@@ -1181,6 +1260,8 @@ async function runFree(evening, opts = {}) {
         const o = outsideDue.shift();
         current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? DEFAULT_SONG_SEC) };
         stages.push(current);
+        // Titre lancé directement dans KaraFun après une Battle : la file reprend.
+        if (battle === 'after' && o.source !== 'battle') { battle = 'none'; battleNow = null; afterUntil = null; }
       }
       if (battle === 'none' && battleQueue.length) { battleNow = battleQueue.shift(); battle = 'waiting'; }
       // Envoi de la Battle (server.js) : application en marche, pas après
@@ -1193,7 +1274,7 @@ async function runFree(evening, opts = {}) {
       }
       // Battle (de l'application ou faite dans KaraFun) qui retient la file,
       // titre déjà dans KaraFun, application arrêtée : ni réservation ni envoi.
-      const hold = ['queued', 'playing'].includes(battle) || offlineAt(clock.now) || outsideDue.length > 0 ||
+      const hold = ['queued', 'playing', 'after'].includes(battle) || offlineAt(clock.now) || outsideDue.length > 0 ||
         current?.source === 'battle';
       if (!upcoming && !hold && current && !s.reservedNext && !over()) {
         await ensurePlan(ctx);
@@ -1289,6 +1370,7 @@ async function runFree(evening, opts = {}) {
         if (current) next.push(current.end, current.start + pushMs);
         if (!current && upcoming) next.push(startAt());
         if (!current && !upcoming && battle === 'queued') next.push(Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs);
+        if (battle === 'after' && Number.isFinite(afterUntil)) next.push(afterUntil);
         if (outside.length) next.push(outside[0].t);
         if (!current && !upcoming && outsideDue.length) next.push(lastEnd + GAP_MS);
         for (const [, b] of ev.offline) if (Number.isFinite(b)) next.push(b);
@@ -1297,7 +1379,7 @@ async function runFree(evening, opts = {}) {
         clock.now = Math.min(...future);
       }
     } finally {
-      if (ctx.solver) ctx.solver.close();
+      closeSolver(ctx);
     }
     for (const d of [...ctx.deferred]) dropDeferred(d, 'même chanson restée à chanter jusqu\'à la fin');
     if (steps >= maxSteps) ctx.warnings.push(`rejeu arrêté à ${timeOf(clock.now, ev.timezone)} après ${maxSteps} étapes : la fin de la soirée manque`);
@@ -1430,6 +1512,10 @@ function finish(ctx, mode, passages, order, journal = null) {
   } else if (ctx.solver && plans.failed) {
     warnings.push(`Timefold sans plan pour ${plans.failed} décisions sur ${plans.asked} (${plans.lastError || 'sans réponse'}) : règle locale seule pour celles-là`);
   }
+  if (plans.ceiling) {
+    warnings.push(`Timefold arrêté au plafond de ${String(ctx.budget / 1000).replace('.', ',')} s avant ${count(ctx.moves)} mouvements pour ${plans.ceiling} décision${plans.ceiling > 1 ? 's' : ''} ` +
+      `sur ${plans.asked} (machine trop chargée ?) : résultat qui dépend de la machine, relancer sur une machine libre`);
+  }
   const refused = [...ctx.unapplied].filter(e => e.ev === 'song.requested').length;
   if (refused) warnings.push(`${refused} demande${refused > 1 ? 's' : ''} de titre non rejouée${refused > 1 ? 's' : ''} (voir les notes)`);
   if (mode === 'libre' && passages.length < real.length) {
@@ -1437,7 +1523,7 @@ function finish(ctx, mode, passages, order, journal = null) {
   }
   // Avec Timefold : solveur lancé et au moins un plan rendu (ou aucun demandé).
   return { mode, code: ctx.code.label, solver: !!ctx.solver && (!plans.asked || plans.ok > 0), jar: ctx.jar, options: ctx.overrides, timezone: ev.timezone,
-    timefold: ctx.solver ? { ...plans } : null,
+    timefold: ctx.solver ? { ...plans, moves: ctx.moves, budgetMs: ctx.budget } : null,
     names: Object.fromEntries([...ev.people].map(([k, p]) => [k, p.name])),
     decisions: ctx.decisions, passages, realWaits: real, fidelity, definitionCheck,
     waits: { real: summary(real.map(w => w.waitSec)), replay: summary(passages.map(w => w.waitSec)) },
@@ -1453,7 +1539,7 @@ function finish(ctx, mode, passages, order, journal = null) {
 // mesurée par la même définition (evening-stats.js de la version de travail).
 async function runCompare(evening, opts = {}) {
   const ev = asEvening(evening);
-  const side = s => ({ budget: opts.budget, options: opts.options, ...(s || {}) });
+  const side = s => ({ budget: opts.budget, moves: opts.moves, options: opts.options, ...(s || {}) });
   // Version « avant » chargée (et extraite) avant tout rejeu : une erreur de
   // version arrête tout de suite.
   const beforeOpts = side(opts.before);
@@ -1560,6 +1646,8 @@ function peopleChanges(cmp) {
 const printable = text => String(text)
   .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, '\ufffd');
 
+// Effort de Timefold par décision, dans l'en-tête du rejeu et du bilan.
+const effort = t => !t ? '' : `, ${t.moves ? `${count(t.moves)} mouvements` : `${String((t.budgetMs ?? SOLVER_TIME_MS) / 1000).replace('.', ',')} s`} par décision`;
 function compareReport(cmp, { short = false } = {}) {
   const { before, after } = cmp;
   const nm = k => cmp.names[k] || k;
@@ -1569,7 +1657,7 @@ function compareReport(cmp, { short = false } = {}) {
   // Fidélité : titres rejoués au même rang que dans la soirée vécue. La version
   // de ce soir-là, avec Timefold, doit refaire l'ordre réel (sinon le rejeu
   // s'écarte de la soirée et le bilan se lit avec prudence).
-  const tag = r => r.solver ? '[Timefold]' : r.timefold ? `[Timefold sans plan, 0/${r.timefold.asked}]` : '[sans Timefold]';
+  const tag = r => r.solver ? `[Timefold${effort(r.timefold)}]` : r.timefold ? `[Timefold sans plan, 0/${r.timefold.asked}]` : '[sans Timefold]';
   const side = r => `${r.code} ${tag(r)} ; ` +
     `ordre vécu refait : ${r.fidelity.samePosition}/${r.fidelity.songsReal} titres au même rang`;
   out.push('BILAN AVANT / APRÈS : la même soirée rejouée par deux versions, mesurée par evening-stats.js');
@@ -1679,7 +1767,7 @@ function report(res, { traces = [], short = false } = {}) {
   const W = ids => ids.map(nm).join(' & ');
   const min = sec => `${Math.round(sec / 60)} min`;
   const out = [];
-  const head = `REJEU ${res.mode.toUpperCase()}${res.solver ? ' [Timefold]' : res.timefold ? ' [Timefold sans plan]' : ' [sans Timefold]'}` +
+  const head = `REJEU ${res.mode.toUpperCase()}${res.solver ? ` [Timefold${effort(res.timefold)}]` : res.timefold ? ' [Timefold sans plan]' : ' [sans Timefold]'}` +
     `${Object.keys(res.options).length ? ' options ' + Object.entries(res.options).map(([k, v]) => `${k}=${v}`).join(',') : ''}`;
   out.push(head);
   for (const w of res.warnings || []) out.push(`ATTENTION ${w}`);
@@ -1776,7 +1864,7 @@ function traceLines(res, d) {
 
 // ------------------------------------------------------------------ CLI
 function parseArgs(argv) {
-  const o = { file: null, free: false, solver: false, budget: 3000, traces: [], json: null, options: {}, short: false,
+  const o = { file: null, free: false, solver: false, budget: null, moves: null, traces: [], json: null, options: {}, short: false,
     before: null, solverBefore: null, keys: false };
   const value = (k, name) => {
     if (argv[k] == null || argv[k].startsWith('--')) throw new Error(`${name} attend une valeur`);
@@ -1788,7 +1876,8 @@ function parseArgs(argv) {
     else if (a === '--avant') o.before = value(++k, '--avant');
     else if (a === '--solveur-avant') o.solverBefore = value(++k, '--solveur-avant');
     else if (a === '--solveur') o.solver = argv[k + 1] && !argv[k + 1].startsWith('--') && /\.jar$/i.test(argv[k + 1]) ? argv[++k] : true;
-    else if (a === '--budget') o.budget = Number(argv[++k]);
+    else if (a === '--budget') o.budget = Number(value(++k, '--budget'));
+    else if (a === '--mouvements') o.moves = Number(value(++k, '--mouvements'));
     else if (a === '--trace') o.traces.push(...value(++k, '--trace').split(',').filter(Boolean));
     else if (a === '--json') o.json = value(++k, '--json');
     else if (a === '--court') o.short = true;
@@ -1802,7 +1891,10 @@ function parseArgs(argv) {
     else if (!a.startsWith('--') && !o.file) o.file = a;
     else throw new Error(`Option inconnue : ${a}`);
   }
-  if (!Number.isFinite(o.budget) || o.budget <= 0) throw new Error('--budget attend un nombre de millisecondes');
+  if (o.budget !== null && !(Number.isFinite(o.budget) && o.budget >= 100 && o.budget <= SOLVER_CEILING_MS)) {
+    throw new Error(`--budget attend un nombre de millisecondes de 100 à ${SOLVER_CEILING_MS}`);
+  }
+  if (o.moves !== null && !(Number.isInteger(o.moves) && o.moves >= 0)) throw new Error('--mouvements attend un nombre entier (0 : limite de temps seule)');
   if (o.solverBefore && !o.before) throw new Error('--solveur-avant va avec --avant');
   if (o.solverBefore && !o.solver) throw new Error('--solveur-avant demande aussi --solveur : les deux versions avec Timefold');
   if (o.before && o.traces.length) throw new Error('--trace détaille un seul rejeu : le lancer sans --avant');
@@ -1827,14 +1919,14 @@ async function main(argv = process.argv.slice(2), print = console.log, printErro
     if (o.keys) for (const p of ev.people.values()) p.name = p.key;
     let res, text;
     if (o.before) {
-      res = await runCompare(ev, { budget: o.budget, options: o.options,
+      res = await runCompare(ev, { budget: o.budget, moves: o.moves, options: o.options,
         // Timefold des deux côtés : le jar de chaque version (un jar donné pour
         // la version de travail ne vaut pas pour l'autre).
         before: { code: o.before, solver: o.solverBefore === 'sans' ? false : o.solverBefore || !!o.solver },
         after: { solver: o.solver } });
       text = compareReport(res, { short: o.short });
     } else {
-      res = await (o.free ? runFree : runForced)(ev, { solver: o.solver, budget: o.budget, options: o.options });
+      res = await (o.free ? runFree : runForced)(ev, { solver: o.solver, budget: o.budget, moves: o.moves, options: o.options });
       text = report(res, { traces: o.traces, short: o.short });
     }
     print(text);
