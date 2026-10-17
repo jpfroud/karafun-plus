@@ -308,6 +308,8 @@ function statsOf(events) {
 }
 
 // Événements de passage que le rejeu libre remplace par les siens.
+// Événements qui ouvrent, ferment ou prolongent un passage sur scène.
+const STAGE_SEQ = new Set(['stage.started', 'stage.ended', 'stage.restarted']);
 const STAGE_EVENTS = new Set(['stage.started', 'stage.ended', 'stage.restarted', 'turn.sent', 'turn.unsent',
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced']);
 // Journal du rejeu libre : les événements réels (demandes, duos, retraits,
@@ -934,9 +936,15 @@ async function runForced(evening, opts = {}) {
     const { s } = ctx;
     const sels = new Map(); // entryId réel → passage engagé
     const started = new Set(); // passages engagés déjà lancés
-    let current = null, upcoming = null, hold = false, reservation = null;
+    let current = null, upcoming = null, reservation = null;
+    // Battle de l'application qui retient la file (server.js, battleHoldsQueue) :
+    // de la décision à « released » ou « resuming », sauf en attente d'envoi
+    // quand un passage est déjà réservé.
+    let battleState = null;
+    const holding = () => !!battleState && !['released', 'resuming'].includes(battleState) &&
+      !(battleState === 'waiting' && s.reservedNext);
     const reserveIfDue = async why => {
-      if (!current || current.kind === 'battle' || upcoming || hold || s.reservedNext) return;
+      if (!current || current.kind === 'battle' || upcoming || holding() || s.reservedNext) return;
       await ensurePlan(ctx);
       const sel = s.reserveNext();
       if (sel) reservation = { at: clock.now, time: timeOf(clock.now, ev.timezone), why, pick: pickOf(ctx, sel), state: explain(ctx) };
@@ -1016,24 +1024,29 @@ async function runForced(evening, opts = {}) {
           }
           case 'stage.started': {
             const sel = e.entryId ? sels.get(e.entryId) : null;
-            // Même titre repris (redémarrage) : le passage continue, son début
-            // reste celui noté (server.js).
-            if (sel && current?.sel === sel) break;
+            // Même titre repris sous sa file (redémarrage, reconnexion) : le
+            // passage continue, son début reste celui noté (server.js).
+            if (current && e.queueId != null && String(e.queueId) === current.queueId) break;
+            const queueId = e.queueId == null ? null : String(e.queueId);
             if (sel) {
               started.add(sel);
               s.recordStage(sel, clock.now);
-              current = { kind: 'song', sel, start: clock.now };
+              current = { kind: 'song', sel, start: clock.now, queueId };
               if (upcoming === sel) upcoming = null;
-            } else current = { kind: e.source || 'native', start: clock.now };
+            } else current = { kind: e.source || 'native', start: clock.now, queueId };
             await reserveIfDue('stage.started');
             break;
           }
           case 'stage.ended': {
-            // « Relancer depuis le début » au même instant : le passage continue
-            // sur la copie et ne finit qu'avec elle (server.js).
+            // Prochain événement de scène, quelle que soit son heure : relance
+            // (« Relancer depuis le début ») ou même titre revenu sous sa file
+            // (pause, reconnexion) : le passage continue et ne finit qu'avec
+            // lui (server.js ; evening-stats.js, reopen).
             let k = i + 1;
-            while (k < ev.events.length && ev.events[k].t === e.t && ev.events[k].ev !== 'stage.restarted') k++;
-            if (current && ev.events[k]?.t === e.t && ev.events[k].ev === 'stage.restarted') break;
+            while (k < ev.events.length && !STAGE_SEQ.has(ev.events[k].ev)) k++;
+            const next = ev.events[k];
+            if (current && (next?.ev === 'stage.restarted' ||
+              (next?.ev === 'stage.started' && next.queueId != null && String(next.queueId) === current.queueId))) break;
             if (current?.kind === 'song' && current.sel) {
               s.recordSlot((clock.now - (current.restartedAt ?? current.start)) / 1000);
               s.songEnded(current.sel.ids);
@@ -1043,13 +1056,28 @@ async function runForced(evening, opts = {}) {
             break;
           }
           case 'stage.restarted': {
-            // La durée mesurée repart de la relance (server.js).
-            if (current) current.restartedAt = clock.now;
+            // La durée mesurée repart de la relance, sous la file de la copie
+            // (server.js).
+            if (current) {
+              current.restartedAt = clock.now;
+              if (e.queueId != null) current.queueId = String(e.queueId);
+            }
             break;
           }
+          case 'battle.decided':
+          case 'battle.staffLaunch':
+            if (e.ev === 'battle.staffLaunch' || e.outcome === 'approved') battleState = 'waiting';
+            break;
+          case 'battle.resolved':
+            // Écartée : relâchée ; faite par le bar avant ou après un échec
+            // d'envoi : « manual » (battle-vote.js, resolve).
+            if (e.outcome === 'dismissed') battleState = 'released';
+            else if (['waiting', 'failed'].includes(battleState)) battleState = 'manual';
+            if (!holding()) await reserveIfDue('battle');
+            break;
           case 'battle.automation': {
-            hold = !['released', 'resuming'].includes(e.status);
-            if (!hold) await reserveIfDue('battle');
+            battleState = e.status;
+            if (!holding()) await reserveIfDue('battle');
             break;
           }
           default: break;
@@ -1145,7 +1173,7 @@ async function runFree(evening, opts = {}) {
       if (battle === 'none' && battleQueue.length) { battleNow = battleQueue.shift(); battle = 'waiting'; }
       // Envoi de la Battle (server.js) : application en marche, pas après
       // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
-      if (battle === 'waiting' && !upcoming && !outsideDue.length && !(s.reservedNext && current) && !closingBlocks() && !over() &&
+      if (battle === 'waiting' && !upcoming && !outsideDue.length && !s.reservedNext && !closingBlocks() && !over() &&
         !offlineAt(clock.now)) { battle = 'queued'; battleQueuedAt = clock.now; }
       if (!current && !upcoming && battle === 'queued' && clock.now >= Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs && !over()) {
         current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? DEFAULT_BATTLE_SEC) };
