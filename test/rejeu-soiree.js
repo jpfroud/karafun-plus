@@ -114,6 +114,7 @@ const NOT_IN_JOURNAL = new Set(['staff.queueCleared', 'defer.requested', 'defer.
 const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export ne dit rien
 const SONG_GAP_MS = 20000; // temps moyen entre deux titres compté par la fermeture (server.js)
 const BATTLE_PRE_GAP_MS = 132000; // scène libre → début d'une Battle (téléphones qui rejoignent), sans mesure
+const BATTLE_STAGE_WINDOW_MS = 60000; // écart toléré entre le « playing » d'une Battle et sa scène
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
 
 // ------------------------------------------------------------------ horloge
@@ -238,7 +239,10 @@ function loadEvening(input) {
         battles.push({ decision: d, preGapMs: BATTLE_PRE_GAP_MS, sec: stage.sec });
         continue;
       }
-      const stage = battleStages.filter(st => !used.has(st) && st.e.t >= sending.t)
+      // Sa scène : celle, hors file, qui démarre avec son « playing » (même si
+      // KaraFun ne l'a pas notée comme Battle), jamais une autre plus loin.
+      const stage = stageRecords.filter(st => !used.has(st) && !st.e.entryId && st.e.source !== 'queue' &&
+        Math.abs(st.e.t - playing.t) <= BATTLE_STAGE_WINDOW_MS)
         .sort((a, b) => Math.abs(a.e.t - playing.t) - Math.abs(b.e.t - playing.t))[0];
       if (stage) used.add(stage);
       const freed = events.filter(e => e.ev === 'stage.ended' && e.t > sending.t && e.t <= playing.t).at(-1)?.t ?? sending.t;
@@ -925,9 +929,9 @@ async function runForced(evening, opts = {}) {
     const { s } = ctx;
     const sels = new Map(); // entryId réel → passage engagé
     const started = new Set(); // passages engagés déjà lancés
-    let current = null, upcoming = null, hold = false, reservation = null, lastStage = null;
+    let current = null, upcoming = null, hold = false, reservation = null;
     const reserveIfDue = async why => {
-      if (current?.kind !== 'song' || upcoming || hold || s.reservedNext) return;
+      if (!current || current.kind === 'battle' || upcoming || hold || s.reservedNext) return;
       await ensurePlan(ctx);
       const sel = s.reserveNext();
       if (sel) reservation = { at: clock.now, time: timeOf(clock.now, ev.timezone), why, pick: pickOf(ctx, sel), state: explain(ctx) };
@@ -1007,6 +1011,9 @@ async function runForced(evening, opts = {}) {
           }
           case 'stage.started': {
             const sel = e.entryId ? sels.get(e.entryId) : null;
+            // Même titre repris (redémarrage) : le passage continue, son début
+            // reste celui noté (server.js).
+            if (sel && current?.sel === sel) break;
             if (sel) {
               started.add(sel);
               s.recordStage(sel, clock.now);
@@ -1017,19 +1024,22 @@ async function runForced(evening, opts = {}) {
             break;
           }
           case 'stage.ended': {
-            if (current?.kind === 'song' && current.sel && !current.restarted) {
-              s.recordSlot((clock.now - current.start) / 1000);
+            // « Relancer depuis le début » au même instant : le passage continue
+            // sur la copie et ne finit qu'avec elle (server.js).
+            let k = i + 1;
+            while (k < ev.events.length && ev.events[k].t === e.t && ev.events[k].ev !== 'stage.restarted') k++;
+            if (current && ev.events[k]?.t === e.t && ev.events[k].ev === 'stage.restarted') break;
+            if (current?.kind === 'song' && current.sel) {
+              s.recordSlot((clock.now - (current.restartedAt ?? current.start)) / 1000);
               s.songEnded(current.sel.ids);
               s.endStage(current.sel);
             }
-            lastStage = current;
             current = null;
             break;
           }
           case 'stage.restarted': {
-            // « Relancer depuis le début » : la copie prolonge le passage, déjà
-            // compté par l'ordonnanceur.
-            if (lastStage && !current) current = { ...lastStage, restarted: true };
+            // La durée mesurée repart de la relance (server.js).
+            if (current) current.restartedAt = clock.now;
             break;
           }
           case 'battle.automation': {
@@ -1133,12 +1143,15 @@ async function runFree(evening, opts = {}) {
       if (battle === 'waiting' && !upcoming && !outsideDue.length && !(s.reservedNext && current) && !closingBlocks() && !over() &&
         !offlineAt(clock.now)) { battle = 'queued'; battleQueuedAt = clock.now; }
       if (!current && !upcoming && battle === 'queued' && (!outsideDue.length || battleQueuedAt <= outsideDue[0].t) &&
-        clock.now >= lastEnd + battleNow.preGapMs && !over()) {
+        clock.now >= Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs && !over()) {
         current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? 260) };
         stages.push(current); battle = 'playing';
       }
-      const hold = ['queued', 'playing'].includes(battle) || offlineAt(clock.now) || outsideDue.length > 0;
-      if (!upcoming && !hold && current?.kind === 'song' && !s.reservedNext && !over()) {
+      // Battle (de l'application ou faite dans KaraFun) qui retient la file,
+      // titre déjà dans KaraFun, application arrêtée : ni réservation ni envoi.
+      const hold = ['queued', 'playing'].includes(battle) || offlineAt(clock.now) || outsideDue.length > 0 ||
+        current?.source === 'battle';
+      if (!upcoming && !hold && current && !s.reservedNext && !over()) {
         await ensurePlan(ctx);
         const state = explain(ctx);
         const sel = s.reserveNext();
@@ -1231,7 +1244,7 @@ async function runFree(evening, opts = {}) {
         if (i < ext.length) next.push(ext[i].t);
         if (current) next.push(current.end, current.start + pushMs);
         if (!current && upcoming) next.push(startAt());
-        if (!current && !upcoming && battle === 'queued') next.push(lastEnd + battleNow.preGapMs);
+        if (!current && !upcoming && battle === 'queued') next.push(Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs);
         if (outside.length) next.push(outside[0].t);
         if (!current && !upcoming && outsideDue.length) next.push(lastEnd + GAP_MS);
         for (const [, b] of ev.offline) if (Number.isFinite(b)) next.push(b);

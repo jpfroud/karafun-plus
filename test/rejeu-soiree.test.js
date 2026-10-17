@@ -718,8 +718,33 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
   assert.equal(restartedEv.startGaps.length, 2);
   // Rejeu forcé : pendant la copie, le titre est toujours sur scène (y1,
   // demandé alors, se réserve comme pendant un titre).
-  const forcedRestart = await rejeu.runForced(rejeu.loadEvening(restarted));
+  // Le passage ne finit qu'avec la copie (220 s), mesuré depuis la relance
+  // (180 s), comme server.js ; repris sous la même file après un redémarrage,
+  // il n'est ni recommencé ni raccourci.
+  const { Scheduler } = require('../scheduler');
+  const calls = [];
+  const spied = async raw => {
+    calls.length = 0;
+    const undo = ['recordStage', 'recordSlot', 'songEnded'].map(k => {
+      let P = Scheduler.prototype;
+      while (P && !Object.prototype.hasOwnProperty.call(P, k)) P = Object.getPrototypeOf(P);
+      const orig = P[k];
+      P[k] = function (...a) { calls.push([k, (Date.now() - T0) / 1000, ...(k === 'recordSlot' ? [a[0]] : [])]); return orig.apply(this, a); };
+      return () => { P[k] = orig; };
+    });
+    try { return await rejeu.runForced(rejeu.loadEvening(raw)); } finally { undo.forEach(f => f()); }
+  };
+  const forcedRestart = await spied(restarted);
   assert.equal(forcedRestart.decisions.find(d => d.real.entryId === 'y1')?.reservation?.at, T0 + 100000);
+  assert.deepEqual(calls.filter(c => c[1] <= 220), [['recordStage', 10], ['recordSlot', 220, 180], ['songEnded', 220]]);
+  await spied(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    e(5, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+    e(10, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+    e(100, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+    e(220, 'stage.ended', { queueId: 'q1', playedSec: 120 });
+  }));
+  assert.deepEqual(calls, [['recordStage', 10], ['recordSlot', 220, 210], ['songEnded', 220]]);
   // Titre repris après un redémarrage (même file KaraFun, sans fin notée) : un
   // seul passage, de son début à la fin de la reprise, et un seul délai de
   // lancement compté.
@@ -758,7 +783,7 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
   assert.deepEqual(many.map(b => b.sec), [200, 150]);
   // Suivies par leur scrutin : une Battle votée, une approuvée puis écartée
   // par le bar (jamais jouée), une lancée « sans vote » par le bar.
-  const ballots = await battlesOf(build((e, stage, ask) => {
+  const ballotsRaw = build((e, stage, ask) => {
     for (let k = 1; k <= 4; k++) { ask(k, 'S01', `x${k}`, k); ask(k, 'S02', `y${k}`, 10 + k); }
     e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
     stage(10, 'x1', ['S01'], 'q1'); stage(200, 'y1', ['S02'], 'q2');
@@ -774,8 +799,62 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(1000, 'battle.automation', { ballotId: 'v3', status: 'playing' });
     stage(1000, null, null, 'b3', 150);
     stage(1160, 'x3', ['S01'], 'q5'); stage(1350, 'y3', ['S02'], 'q6');
-  }));
+  });
+  const ballots = await battlesOf(ballotsRaw);
   assert.deepEqual(ballots.map(b => b.sec), [200, 150]);
+  // Délais : de la fin du titre en cours à l'envoi jusqu'au début (y1 380 →
+  // 400 s, y2 980 → 1000 s), pas depuis l'envoi (150 s, 905 s).
+  assert.deepEqual(rejeu.loadEvening(ballotsRaw).battles.map(b => b.preGapMs), [20000, 20000]);
+  // Battle décidée scène libre : son délai réel part de l'envoi, pas de la
+  // fin du dernier titre (190 s).
+  const idle = await battlesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(400, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(401, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(530, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(530, null, null, 'b1', 100);
+  }));
+  assert.deepEqual(idle.map(b => b.at >= 528), [true], JSON.stringify(idle));
+  // Scène d'une Battle notée « native » par KaraFun : c'est la sienne ; une
+  // Battle faite plus tard dans KaraFun reste hors file.
+  const labelled = rejeu.loadEvening(build((e, stage) => {
+    e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(30, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(120, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    e(121, 'stage.started', { queueId: 'b1', source: 'native', ids: [] });
+    e(321, 'stage.ended', { queueId: 'b1', playedSec: 200 });
+    stage(1000, null, null, 'k1', 100);
+  }));
+  assert.deepEqual(labelled.battles.map(b => b.sec), [200]);
+  assert.deepEqual(labelled.outside.map(o => [o.source, o.sec]), [['battle', 100]]);
+  // Battle de l'application en file (dès 200 s) avant qu'un titre hors file
+  // entre dans KaraFun (300 s) : elle passe la première.
+  const es = require('../evening-stats');
+  const original = es.computeStats;
+  let journal = [];
+  es.computeStats = (...a) => { if (a[0].events[0]?.boot === 'rejeu') journal = a[0].events; return original(...a); };
+  try {
+    await rejeu.runFree(rejeu.loadEvening(build((e, stage, ask) => {
+      ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+      e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+      stage(10, 'x1', ['S01'], 'q1'); stage(200, 'y1', ['S02'], 'q2', 90);
+      e(195, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+      e(300, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
+      e(540, 'stage.ended', { queueId: 'n1', playedSec: 240 });
+      e(550, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+      stage(550, null, null, 'b1', 100);
+    })));
+  } finally { es.computeStats = original; }
+  assert.deepEqual(journal.filter(x => x.ev === 'stage.started').map(x => x.source), ['queue', 'queue', 'battle', 'native']);
+  // Battle approuvée puis écartée, export sans suivi de l'envoi : la Battle
+  // faite ensuite dans KaraFun n'est pas la sienne.
+  const dismissed = rejeu.loadEvening(build((e, stage) => {
+    e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(30, 'battle.resolved', { ballotId: 'v1', outcome: 'dismissed' });
+    stage(300, null, null, 'k1', 100);
+  }));
+  assert.deepEqual([dismissed.battles.length, dismissed.outside.length], [0, 1]);
   // Battle reprise sous la même file (reconnexion) : une seule durée, de son
   // début à la fin de la reprise ; envoyée scène libre : délai depuis l'envoi.
   const resumedBattle = rejeu.loadEvening(build((e, stage, ask) => {
@@ -874,6 +953,31 @@ test('rejeu libre : titre ou Battle joués directement dans KaraFun, scène occu
   // x2, envoyé pendant lui, passe avant la Battle entrée ensuite.
   for (let k = 1; k < stages.length; k++) assert.ok(stages[k].start >= stages[k - 1].end, JSON.stringify(stages));
   assert.deepEqual(stages.map(x => x.source), ['queue', 'queue', 'native', 'queue', 'battle']);
+  // Comme au serveur : le suivant se réserve pendant le titre hors file ;
+  // rien ne part pendant la Battle faite dans KaraFun, qui retient la file.
+  const native = stages[2], external = stages[4];
+  assert.ok(res.decisions.some(d => d.kind === 'reserve' && d.at >= native.start && d.at < native.start + 45000),
+    JSON.stringify(res.decisions.map(d => [d.kind, (d.at - T0) / 1000])));
+  assert.ok(!res.decisions.some(d => ['reserve', 'send'].includes(d.kind) && d.at >= external.start && d.at < external.end));
+  // Titre demandé pendant une Battle faite dans KaraFun : il attend sa fin.
+  const during = [];
+  const d = (t, name, f = {}) => during.push({ v: 1, seq: during.length + 1, t: T0 + t * 1000, ev: name, ...f });
+  d(0, 'evening.started', { rules: {} });
+  for (const t of ['T1', 'T2']) d(0, 'table.opened', { tableId: t });
+  for (const [k, t] of [['S01', 'T1'], ['S02', 'T2']]) d(0, 'person.joined', { personId: k, tableId: t });
+  d(1, 'song.requested', { personId: 'S01', entryId: 'x1', songId: 1, title: 'x1', mode: 'append' });
+  d(5, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+  d(10, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+  d(190, 'stage.ended', { queueId: 'q1', playedSec: 180 });
+  d(200, 'stage.started', { queueId: 'k1', source: 'battle', ids: [] });
+  d(250, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+  d(400, 'stage.ended', { queueId: 'k1', playedSec: 200 });
+  d(405, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2' });
+  d(410, 'stage.started', { entryId: 'y1', ids: ['S02'], queueId: 'q2', source: 'queue', title: 'y1' });
+  d(590, 'stage.ended', { queueId: 'q2', playedSec: 180 });
+  const held = await rejeu.runFree(rejeu.loadEvening({ people: [{ key: 'S01', table: 'T1' }, { key: 'S02', table: 'T2' }],
+    tables: [{ key: 'T1' }, { key: 'T2' }], events: during }));
+  assert.ok(held.passages.find(p => p.entryId === 'y1').sentAt >= T0 + 400000, JSON.stringify(held.passages));
   assert.equal(res.notReplayed['battle.external'], undefined);
 });
 
