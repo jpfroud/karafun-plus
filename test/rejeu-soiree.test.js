@@ -1704,6 +1704,35 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(70, 'app.started', { restored: true, offlineMs: 10000 });
     e(200, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
   }).noSend), [[60, 70]]);
+  // Un seul vidage avec envoi annulé (y1, retiré ensuite), puis z1, demandé
+  // après lui, tenté à 300 s et restauré par un redémarrage : un envoi
+  // restauré (le vidage a effacé les listes).
+  const afterClear = windowsOf(e => {
+    e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(52, 'staff.queueCleared', { songs: 2, pendingCancelled: true });
+    e(57, 'turn.unsent', { entryId: 'y1', ids: ['S02'], queueId: 'q2', reason: 'cancelled' });
+    e(200, 'song.requested', { personId: 'S03', entryId: 'z1', songId: 3, title: 'z1', mode: 'append' });
+    e(310, 'app.started', { restored: true, offlineMs: 5000 });
+    e(320, 'turn.sent', { entryId: 'z1', ownerId: 'S03', ids: ['S03'], queueId: 'q3', sentAt: T0 + 300000 });
+    e(900, 'settings.changed', { setting: 'auto', from: false, to: true });
+  });
+  assert.deepEqual(rel(afterClear.noSend), [[305, 310], [310, 320], [320, 900]]);
+  // Vidage arrêté par le bar, z1 envoyé entre-temps, redémarrage, puis y1
+  // (annulé, demandé avant le vidage) lancé quand même : pas un envoi
+  // restauré ; et son turn.sent n'est pas une preuve d'envoi (l'envoi
+  // automatique coupé à 40 s le reste jusqu'au réglage remis).
+  const clearStopped = windowsOf(e => {
+    e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(40, 'settings.changed', { setting: 'auto', from: true, to: false });
+    e(50, 'staff.queueCleared', { songs: 1, pendingCancelled: true });
+    e(60, 'staff.queueClearStopped', {});
+    e(70, 'song.requested', { personId: 'S03', entryId: 'z1', songId: 3, title: 'z1', mode: 'append' });
+    e(81, 'turn.sent', { entryId: 'z1', ownerId: 'S03', ids: ['S03'], queueId: 'q3', sentAt: T0 + 30000 });
+    e(120, 'app.started', { restored: true, offlineMs: 15000 });
+    e(300, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
+    e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
+  });
+  assert.deepEqual([rel(clearStopped.noReserve), rel(clearStopped.noSend)], [[[105, 120]], [[40, 600], [105, 120]]]);
   // Titre accusé, retiré de KaraFun (turn.unsent) puis renvoyé à 100 s,
   // redémarrage pendant ce renvoi, accusé à 115 s : un envoi restauré.
   const resent = windowsOf(e => {

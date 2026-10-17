@@ -357,7 +357,7 @@ function loadEvening(input) {
     const open = { link: null, permission: null, 'recovered-pending': null, auto: rules.auto === false ? events[0]?.t ?? 0 : null };
     const close = (k, t) => { if (open[k] != null) { listOf(k).push([open[k], t]); open[k] = null; } };
     let appStart = -Infinity, lastSent = -Infinity, unconfirmedAt = -Infinity, clearedPendingAt = -Infinity;
-    const starts = [];
+    const starts = [], requestedAt = new Map();
     for (const e of events) {
       if (e.ev === 'app.started') { appStart = e.t; starts.push(e.t); }
       else if (e.ev === 'karaoke.phase') {
@@ -371,7 +371,8 @@ function loadEvening(input) {
         }
         if (e.blocker === 'auto-off') open.auto ??= e.t;
         if (e.blocker === 'push-delay') close('auto', e.t);
-      } else if (e.ev === 'staff.queueCleared') {
+      } else if (e.ev === 'song.requested') requestedAt.set(e.entryId, e.t);
+      else if (e.ev === 'staff.queueCleared') {
         if (e.pendingCancelled) clearedPendingAt = e.t;
       } else if (e.ev === 'send.unconfirmed') {
         unconfirmedAt = e.t;
@@ -382,16 +383,19 @@ function loadEvening(input) {
       } else if (e.ev === 'turn.sent') {
         const at = Number(e.sentAt) || e.t;
         close('recovered-pending', e.t);
+        // Titre dont l'envoi a été annulé par un vidage puis lancé quand
+        // même : son turn.sent est daté de l'accusé silencieux, après ce
+        // vidage (server.js, uncommitted), et il a été demandé avant lui (le
+        // vidage efface toutes les listes : tout autre titre envoyé ensuite a
+        // été demandé après). Ni envoi en attente, ni preuve d'envoi.
+        const cancelledAck = clearedPendingAt <= at && (requestedAt.get(e.entryId) ?? -Infinity) < clearedPendingAt;
+        if (cancelledAck) { /* rien */ }
         // Envoi tenté avant un redémarrage, accusé après : en attente depuis
         // le redémarrage qui a suivi la tentative, puis envoi automatique
         // laissé coupé (restoreNight ; /api/staff/settings refuse de le
-        // remettre d'ici là). Sauf le titre dont l'envoi a été annulé par un
-        // vidage puis lancé quand même : son turn.sent est daté de l'accusé
-        // silencieux, après ce vidage (server.js, uncommitted), rien n'était
-        // en attente. Non notés : la tentative elle-même, et l'envoi
+        // remettre d'ici là). Non notés : la tentative elle-même, et l'envoi
         // automatique remis par « Envoi interrompu vérifié ».
-        const cancelledAck = clearedPendingAt > lastSent && clearedPendingAt <= at;
-        if (at < appStart && !cancelledAck) {
+        else if (at < appStart) {
           noReserve.push([starts.find(t => t > at), e.t]);
           open.auto ??= e.t;
         } else for (const k of ['permission', 'auto']) if (open[k] != null && at >= open[k]) close(k, e.t);
