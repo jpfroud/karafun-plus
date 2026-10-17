@@ -1496,39 +1496,122 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     stage(600, 'x1', ['S01'], 'q1'); stage(790, 'y1', ['S02'], 'q2');
   }));
   assert.deepEqual(warmup, [['native', 100], ['native', 350], ['queue', 605], ['queue', 795]]);
-  // Envoi impossible pendant la soirée : rien n'est envoyé avant 400 s,
-  // comme le serveur, que l'envoi automatique soit coupé (règle de la
-  // soirée ou réglage du bar), KaraFun déconnecté ou sans droit d'ajout.
-  const blockedUntil400 = (rules, fill) => {
+  // De même pour une Battle ajoutée dans KaraFun et suivie (jouée à 100 s,
+  // avant x1 à 360 s) : elle ne reste pas derrière x1.
+  const openingBattle = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    e(3, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+    e(90, 'battle.external', { ballotId: 'k1', songId: 9 });
+    e(100, 'battle.automation', { ballotId: 'k1', status: 'playing' });
+    stage(100, null, null, 'b1', 90);
+    e(191, 'battle.automation', { ballotId: 'k1', status: 'after' });
+    e(200, 'battle.automation', { ballotId: 'k1', status: 'resuming' });
+    e(360, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+    e(540, 'stage.ended', { queueId: 'q1', playedSec: 180 });
+  }));
+  assert.deepEqual(openingBattle, [['battle', 100], ['queue', 360]]);
+  // Mais une Battle de KaraFun jouée après x1 en réel (500 s) reste derrière.
+  const laterBattle = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    e(3, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+    e(90, 'battle.external', { ballotId: 'k1', songId: 9 });
+    e(360, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+    e(480, 'stage.ended', { queueId: 'q1', playedSec: 120 });
+    e(500, 'battle.automation', { ballotId: 'k1', status: 'playing' });
+    stage(500, null, null, 'b1', 90);
+  }));
+  assert.deepEqual(laterBattle.map(x => x[0]), ['queue', 'battle'], JSON.stringify(laterBattle));
+  // Envoi impossible pendant la soirée, alors que KaraFun joue encore ce
+  // qu'il a (y1, envoyé à 55 s, chanté de 200 à 380 s : phase « singing »
+  // sans cause) : z1 n'est envoyé qu'au retour de l'envoi (600 s), comme le
+  // serveur, que l'envoi automatique soit coupé (règle de la soirée, réglage
+  // du bar ou coupure silencieuse vue par la phase « auto-off »), KaraFun
+  // déconnecté, sans droit d'ajout, ou un envoi interrompu à vérifier.
+  const blockedUntil600 = (rules, fill, { sent = true, singing = true } = {}) => {
     const raw = build((e, stage, ask) => {
-      ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
-      stage(10, 'x1', ['S01'], 'q1');
+      ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2); ask(3, 'S03', 'z1', 3);
+      if (sent) { e(5, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+        e(55, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2' }); }
+      e(10, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+      e(190, 'stage.ended', { queueId: 'q1', playedSec: 180 });
+      e(200, 'stage.started', { entryId: 'y1', ids: ['S02'], queueId: 'q2', source: 'queue', title: 'y1' });
+      // (KaraFun déconnecté : sync() s'arrête, aucune autre phase notée)
+      if (singing) e(200, 'karaoke.phase', { phase: 'singing', blocker: null });
+      e(380, 'stage.ended', { queueId: 'q2', playedSec: 180 });
       fill(e);
-      stage(410, 'y1', ['S02'], 'q2');
+      stage(620, 'z1', ['S03'], 'q3');
     });
     Object.assign(raw.events[0].rules, rules);
     return rejeu.loadEvening(raw);
   };
+  const phases = blocker => e => {
+    e(191, 'karaoke.phase', { phase: 'between', blocker });
+    e(381, 'karaoke.phase', { phase: 'between', blocker });
+  };
   const blockedCases = {
-    réglage: blockedUntil400({}, e => {
-      e(20, 'settings.changed', { setting: 'auto', from: true, to: false });
-      e(400, 'settings.changed', { setting: 'auto', from: false, to: true });
+    réglage: blockedUntil600({}, e => {
+      e(100, 'settings.changed', { setting: 'auto', from: true, to: false });
+      e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
     }),
-    règle: blockedUntil400({ auto: false }, e => e(400, 'settings.changed', { setting: 'auto', from: false, to: true })),
-    déconnecté: blockedUntil400({}, e => {
-      e(20, 'karaoke.phase', { phase: 'singing', blocker: null });
-      e(30, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' });
-      e(400, 'karaoke.phase', { phase: 'between', blocker: 'sending' });
+    règle: blockedUntil600({ auto: false }, e => e(600, 'settings.changed', { setting: 'auto', from: false, to: true }), { sent: false }),
+    silencieux: blockedUntil600({}, e => {
+      phases('auto-off')(e);
+      e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
     }),
-    droits: blockedUntil400({}, e => {
-      e(30, 'karaoke.phase', { phase: 'between', blocker: 'permission' });
-      e(400, 'karaoke.phase', { phase: 'between', blocker: 'sending' });
+    déconnecté: blockedUntil600({}, e => {
+      e(100, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' });
+      e(600, 'karaoke.phase', { phase: 'between', blocker: 'sending' });
+    }, { singing: false }),
+    droits: blockedUntil600({}, e => {
+      phases('permission')(e);
+      e(600, 'karaoke.phase', { phase: 'between', blocker: 'sending' });
+    }),
+    interrompu: blockedUntil600({}, e => {
+      e(100, 'send.unconfirmed', { entryId: 'y1', ids: ['S02'] });
+      phases('recovered-pending')(e);
+      e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
+    }),
+    // (une cause plus prioritaire, ici la relance d'un titre, la masque)
+    masqué: blockedUntil600({}, e => {
+      e(100, 'send.unconfirmed', { entryId: 'y1', ids: ['S02'] });
+      e(191, 'karaoke.phase', { phase: 'between', blocker: 'recovered-pending' });
+      e(381, 'karaoke.phase', { phase: 'between', blocker: 'restart' });
+      e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
     }),
   };
   for (const [kind, evening] of Object.entries(blockedCases)) {
     const res = await rejeu.runFree(evening);
-    assert.ok(res.passages.find(p => p.entryId === 'y1').sentAt >= T0 + 400000, `${kind} : ${JSON.stringify(res.passages)}`);
+    assert.ok(res.passages.find(p => p.entryId === 'z1')?.sentAt >= T0 + 600000, `${kind} : ${JSON.stringify(res.passages)}`);
   }
+  // Soirée ouverte envoi automatique coupé (règle), remis sans réglage noté
+  // (droits retrouvés) : le premier envoi réel prouve l'envoi, rien n'est
+  // perdu.
+  // Envoi interrompu sans phase notée (scène jamais libre) : send.unconfirmed
+  // suffit.
+  const unconfirmed = await rejeu.runFree(blockedUntil600({}, e => {
+    e(100, 'send.unconfirmed', { entryId: 'y1', ids: ['S02'] });
+    e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
+  }));
+  assert.ok(unconfirmed.passages.find(p => p.entryId === 'z1')?.sentAt >= T0 + 600000, JSON.stringify(unconfirmed.passages));
+  const silentBack = await rejeu.runFree(blockedUntil600({ auto: false }, () => {}));
+  assert.deepEqual(silentBack.passages.map(p => p.entryId), ['x1', 'y1', 'z1']);
+  // Envoi automatique coupé (6 à 400 s) dès l'envoi de x1, vote décidé à
+  // 50 s : le serveur réserve quand même y1 au début de x1, qui part au
+  // retour de l'envoi, avant la Battle (passage réservé d'abord).
+  const reservedDuringOff = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(6, 'settings.changed', { setting: 'auto', from: true, to: false });
+    e(50, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(400, 'settings.changed', { setting: 'auto', from: false, to: true });
+    stage(410, 'y1', ['S02'], 'q2', 180);
+    e(598, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(600, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(600, null, null, 'b1', 90);
+    e(691, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(693, 'battle.automation', { ballotId: 'v1', status: 'released' });
+  }));
+  assert.deepEqual(reservedDuringOff.map(x => x[0]), ['queue', 'queue', 'battle'], JSON.stringify(reservedDuringOff));
   // Fin du karaoké (fermeture à 300 s, dernier titre fini à 350 s) : le
   // titre lancé par le bar, retardé par le rejeu (z1, 400 s), ne démarre plus,
   // et l'alerte le dit.

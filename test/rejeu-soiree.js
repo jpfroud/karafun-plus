@@ -22,9 +22,10 @@
  *                          jamais démarrée est signalée ; titre ou Battle joué directement
  *                          dans KaraFun, sans suivi, rejoué à son heure ; envoi à
  *                          +pushDelaySec ; rien n'est envoyé pendant un arrêt de
- *                          l'application, KaraFun déconnecté ou sans droit d'ajout, ni
- *                          envoi automatique coupé ; rien ne part ni ne démarre après
- *                          la fin du karaoké.
+ *                          l'application, KaraFun déconnecté ou sans droit d'ajout, un
+ *                          envoi interrompu à vérifier ni un envoi automatique coupé
+ *                          (le passage suivant reste réservé, comme sur le serveur) ;
+ *                          rien ne part ni ne démarre après la fin du karaoké.
  *   --solveur [jar]        avec le plan Timefold (solver/bridge.js), attendu à chaque
  *                          décision. Jar par défaut : solver/target/karafun-solver.jar,
  *                          sinon solver/karafun-solver.jar.
@@ -90,9 +91,9 @@
  * un titre ou une Battle joué directement dans KaraFun occupe la scène ; une
  * scène réelle que le rejeu ne démarre jamais est signalée (alerte).
  * Rien ne part pendant un arrêt de l'application, KaraFun déconnecté ou
- * sans droit d'ajout, ni envoi automatique coupé (karaoke.phase,
- * settings.changed), ni après la fin du karaoké de la soirée réelle
- * (evening-stats.js).
+ * sans droit d'ajout, un envoi interrompu à vérifier ou l'envoi automatique
+ * coupé (karaoke.phase, send.unconfirmed, settings.changed), ni après la fin
+ * du karaoké de la soirée réelle (evening-stats.js).
  *
  * Seul effet de bord : Date.now est remplacé par l'horloge de la soirée
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
@@ -328,30 +329,48 @@ function loadEvening(input) {
       }
     }
     if (stoppedAt != null) offline.push([stoppedAt, Infinity]); }
-  // Envois impossibles (rejeu libre) : application arrêtée, KaraFun
-  // déconnecté ou sans droit d'ajout (bloqueur noté par karaoke.phase,
-  // jusqu'à la phase suivante), envoi automatique coupé (règle de la soirée,
-  // réglage changé par le bar). KaraFun joue encore ce qu'il a déjà.
-  const noSend = [...offline];
-  { let down = null, autoOff = rules.auto === false ? events[0]?.t ?? 0 : null;
+  // Envois impossibles (rejeu libre). Ni réservation ni envoi : application
+  // arrêtée, KaraFun déconnecté (sync() s'arrête ; phase « offline » jusqu'à
+  // la phase suivante). Envoi seul, le serveur réservant quand même : droit
+  // d'ajout manquant, envoi interrompu à vérifier (send.unconfirmed),
+  // envoi automatique coupé (règle de la soirée, réglage du bar, phase
+  // « auto-off »). journalOutlook ne note sa cause que scène libre, par ordre
+  // de priorité : chacune dure jusqu'à une phase scène libre d'une cause
+  // moins prioritaire, une preuve d'envoi (turn.sent, phase « sending » ou
+  // « push-delay ») ou le réglage remis par le bar. KaraFun joue encore ce
+  // qu'il a déjà.
+  const noReserve = [...offline], noSend = [...offline];
+  { const above = { permission: ['queue-clear', 'restart', 'closing', 'recovered-pending', 'permission', 'offline'],
+      'recovered-pending': ['queue-clear', 'restart', 'closing', 'recovered-pending', 'offline'] };
+    const open = { link: null, permission: null, 'recovered-pending': null, auto: rules.auto === false ? events[0]?.t ?? 0 : null };
+    const close = (k, t, list) => { if (open[k] != null) { list.push([open[k], t]); open[k] = null; } };
     for (const e of events) {
       if (e.ev === 'karaoke.phase') {
-        const blocked = e.blocker === 'offline' || e.blocker === 'permission';
-        if (blocked && down == null) down = e.t;
-        else if (!blocked && down != null) { noSend.push([down, e.t]); down = null; }
-      } else if (e.ev === 'settings.changed' && e.setting === 'auto') {
-        if (e.to === false && autoOff == null) autoOff = e.t;
-        else if (e.to === true && autoOff != null) { noSend.push([autoOff, e.t]); autoOff = null; }
+        if (e.blocker === 'offline') open.link ??= e.t;
+        else close('link', e.t, noReserve);
+        for (const k of ['permission', 'recovered-pending']) {
+          if (e.blocker === k) open[k] ??= e.t;
+          else if (e.phase !== 'singing' && e.blocker && !above[k].includes(e.blocker)) close(k, e.t, noSend);
+        }
+        if (e.blocker === 'auto-off') open.auto ??= e.t;
+      } else if (e.ev === 'send.unconfirmed') open['recovered-pending'] ??= e.t;
+      else if (e.ev === 'settings.changed' && e.setting === 'auto') {
+        if (e.to === false) open.auto ??= e.t;
+        else if (e.to === true) close('auto', e.t, noSend);
+      }
+      if (e.ev === 'turn.sent' || (e.ev === 'karaoke.phase' && ['sending', 'push-delay'].includes(e.blocker))) {
+        for (const k of ['permission', 'recovered-pending', 'auto']) close(k, e.t, noSend);
       }
     }
-    if (down != null) noSend.push([down, Infinity]);
-    if (autoOff != null) noSend.push([autoOff, Infinity]); }
+    if (open.link != null) noReserve.push([open.link, Infinity]);
+    for (const k of ['permission', 'recovered-pending', 'auto']) if (open[k] != null) noSend.push([open[k], Infinity]);
+    noSend.push(...noReserve.slice(offline.length)); }
   const timezone = raw.evening?.timezone || 'Europe/Paris';
   const realPassages = passagesFromEvents(events);
   // Attentes de evening-stats.js présentes dans l'export (vérification de la définition).
   const exportWaits = new Map();
   for (const st of raw.stats?.timeline?.stages || []) if (st.entryId && st.waitSec != null) exportWaits.set(st.entryId, st.waitSec);
-  return { raw, events, people, tables, rules, played, startGaps, battles, outside, offline, noSend,
+  return { raw, events, people, tables, rules, played, startGaps, battles, outside, noReserve, noSend,
     timezone, realPassages, exportWaits, skipped };
 }
 
@@ -1300,7 +1319,8 @@ async function runFree(evening, opts = {}) {
     const outside = [...ev.outside];
     const outsideDue = [];
     let battleQueuedAt = null;
-    const noSendAt = t => ev.noSend.some(([a, b]) => t >= a && t < b);
+    const within = list => t => list.some(([a, b]) => t >= a && t < b);
+    const noReserveAt = within(ev.noReserve), noSendAt = within(ev.noSend);
     let closingAt = Infinity;
     const stages = [];
     let current = null, upcoming = null, lastEnd = 0;
@@ -1313,6 +1333,8 @@ async function runFree(evening, opts = {}) {
     // Premier titre de la file envoyé mais pas encore à son heure réelle :
     // la scène reste libre pour un titre lancé par le bar.
     const firstWaiting = () => !!upcoming && !stages.some(x => x.kind === 'song') && startAt() > clock.now;
+    // De même pour une Battle déjà dans KaraFun jouée avant lui en réel.
+    const battleFirst = () => battle === 'queued' && firstWaiting() && battleNow.realStart < ev.startGaps[0].at;
     // Battle de KaraFun en file pendant qu'une Battle de l'application ou du
     // bar attend son envoi : le suivi du serveur la prend à sa place dès qu'il
     // la voit (syncBattle : observeExternalBattle, ou confirmAutomation sur le
@@ -1410,18 +1432,19 @@ async function runFree(evening, opts = {}) {
       // de fermeture ; une Battle envoyée n'est jamais retirée.
       if (battle === 'waiting' && !upcoming && !outsideFirst && !s.reservedNext && !closingBlocks() && !over() &&
         !noSendAt(clock.now)) { battle = 'queued'; battleQueuedAt = clock.now; }
-      if (!current && !upcoming && battle === 'queued' && !outsideFirst && clock.now >= Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs && !over()) {
+      if (!current && (!upcoming || battleFirst()) && battle === 'queued' && !outsideFirst && clock.now >= Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs && !over()) {
         current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? DEFAULT_BATTLE_SEC) };
         stages.push(current); battle = 'playing';
       }
       // Battle (de l'application ou faite dans KaraFun) qui retient la file,
       // titre déjà dans KaraFun qui passe avant la prochaine Battle,
-      // envoi impossible : ni réservation ni envoi. Un titre hors file venu
+      // application arrêtée ou KaraFun déconnecté : ni réservation ni envoi ;
+      // envoi seul impossible (droit, envoi coupé) : réservation quand même. Un titre hors file venu
       // après une Battle en attente d'envoi ne retient pas le passage déjà
       // réservé, qui part avant elle (server.js : passage réservé, Battle,
       // titre).
       const hold = ['queued', 'playing', 'after'].includes(battle) || (battle === 'waiting' && !s.reservedNext) ||
-        noSendAt(clock.now) || outsideFirst ||
+        noReserveAt(clock.now) || outsideFirst ||
         current?.source === 'battle';
       if (!upcoming && !hold && current && !s.reservedNext && !over()) {
         await ensurePlan(ctx);
@@ -1430,7 +1453,7 @@ async function runFree(evening, opts = {}) {
         if (sel) ctx.decisions.push({ kind: 'reserve', at: clock.now, time: timeOf(clock.now, ev.timezone), pick: pickOf(ctx, sel), state });
       }
       const canPush = !current || clock.now - current.start >= pushMs;
-      if (!upcoming && !hold && canPush && !closingBlocks() && !over()) {
+      if (!upcoming && !hold && canPush && !closingBlocks() && !over() && !noSendAt(clock.now)) {
         await ensurePlan(ctx);
         const state = explain(ctx);
         const sel = s.select({ stageFree: !current });
@@ -1516,7 +1539,7 @@ async function runFree(evening, opts = {}) {
         if (i < ext.length) next.push(ext[i].t);
         if (current) next.push(current.end, current.start + pushMs);
         if (!current && upcoming) next.push(startAt());
-        if (!current && !upcoming && battle === 'queued') next.push(Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs);
+        if (!current && (!upcoming || battleFirst()) && battle === 'queued') next.push(Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs);
         if (battle === 'after' && Number.isFinite(afterUntil)) next.push(afterUntil);
         if (outside.length) next.push(outside[0].t);
         if (!current && (!upcoming || firstWaiting()) && outsideDue.length) next.push(lastEnd + GAP_MS);
