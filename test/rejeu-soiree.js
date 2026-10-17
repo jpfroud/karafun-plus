@@ -356,8 +356,8 @@ function loadEvening(input) {
     const listOf = k => k === 'link' || k === 'recovered-pending' ? noReserve : noSend;
     const open = { link: null, permission: null, 'recovered-pending': null, auto: rules.auto === false ? events[0]?.t ?? 0 : null };
     const close = (k, t) => { if (open[k] != null) { listOf(k).push([open[k], t]); open[k] = null; } };
-    let appStart = -Infinity, lastSent = -Infinity, unconfirmedAt = -Infinity;
-    const starts = [], acked = new Set();
+    let appStart = -Infinity, lastSent = -Infinity, unconfirmedAt = -Infinity, clearedPendingAt = -Infinity;
+    const starts = [];
     for (const e of events) {
       if (e.ev === 'app.started') { appStart = e.t; starts.push(e.t); }
       else if (e.ev === 'karaoke.phase') {
@@ -371,6 +371,8 @@ function loadEvening(input) {
         }
         if (e.blocker === 'auto-off') open.auto ??= e.t;
         if (e.blocker === 'push-delay') close('auto', e.t);
+      } else if (e.ev === 'staff.queueCleared') {
+        if (e.pendingCancelled) clearedPendingAt = e.t;
       } else if (e.ev === 'send.unconfirmed') {
         unconfirmedAt = e.t;
         open['recovered-pending'] ??= Math.max(lastSent, e.t - UNCONFIRMED_MS - SYNC_SLACK_MS);
@@ -380,17 +382,19 @@ function loadEvening(input) {
       } else if (e.ev === 'turn.sent') {
         const at = Number(e.sentAt) || e.t;
         close('recovered-pending', e.t);
-        // Envoi tenté avant un redémarrage, accusé après, jamais accusé
-        // avant (un titre annulé par un vidage puis lancé quand même l'a
-        // été) : en attente depuis le redémarrage qui a suivi la tentative,
-        // puis envoi automatique laissé coupé (restoreNight ; le serveur
-        // refuse de le remettre d'ici là). La tentative elle-même n'est pas
-        // notée.
-        if (at < appStart && !acked.has(e.entryId)) {
+        // Envoi tenté avant un redémarrage, accusé après : en attente depuis
+        // le redémarrage qui a suivi la tentative, puis envoi automatique
+        // laissé coupé (restoreNight ; /api/staff/settings refuse de le
+        // remettre d'ici là). Sauf le titre dont l'envoi a été annulé par un
+        // vidage puis lancé quand même : son turn.sent est daté de l'accusé
+        // silencieux, après ce vidage (server.js, uncommitted), rien n'était
+        // en attente. Non notés : la tentative elle-même, et l'envoi
+        // automatique remis par « Envoi interrompu vérifié ».
+        const cancelledAck = clearedPendingAt > lastSent && clearedPendingAt <= at;
+        if (at < appStart && !cancelledAck) {
           noReserve.push([starts.find(t => t > at), e.t]);
           open.auto ??= e.t;
         } else for (const k of ['permission', 'auto']) if (open[k] != null && at >= open[k]) close(k, e.t);
-        if (e.entryId != null) acked.add(e.entryId);
         lastSent = e.t;
       }
     }

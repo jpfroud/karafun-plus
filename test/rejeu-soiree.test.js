@@ -1696,15 +1696,38 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(200, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
     e(260, 'settings.changed', { setting: 'auto', from: false, to: true });
   }).noSend), [[60, 70], [70, 200], [130, 150], [200, 260]]);
-  // Titre déjà accusé (55 s), annulé par un vidage puis lancé quand même
-  // après un redémarrage : son nouveau turn.sent (daté de l'accusé) n'est pas
-  // un envoi restauré, rien n'est coupé.
+  // Envoi de y1 annulé par un vidage (52 s) avant son accusé, accusé sans
+  // turn.sent (55 s), lancé quand même après un redémarrage : son turn.sent
+  // est daté de l'accusé ; rien n'était en attente, rien n'est coupé.
   assert.deepEqual(rel(windowsOf(e => {
-    e(55, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2' });
-    e(60, 'staff.queueCleared', { songs: 1, pendingCancelled: false });
+    e(52, 'staff.queueCleared', { songs: 1, pendingCancelled: true });
     e(70, 'app.started', { restored: true, offlineMs: 10000 });
     e(200, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
   }).noSend), [[60, 70]]);
+  // Titre accusé, retiré de KaraFun (turn.unsent) puis renvoyé à 100 s,
+  // redémarrage pendant ce renvoi, accusé à 115 s : un envoi restauré.
+  const resent = windowsOf(e => {
+    e(20, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2' });
+    e(30, 'turn.unsent', { entryId: 'y1', ids: ['S02'], queueId: 'q2', reason: 'absent' });
+    e(110, 'app.started', { restored: true, offlineMs: 5000 });
+    e(115, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q3', sentAt: T0 + 100000 });
+    e(600, 'settings.changed', { setting: 'auto', from: false, to: true });
+  });
+  assert.deepEqual([rel(resent.noReserve), rel(resent.noSend)], [[[105, 110], [110, 115]], [[105, 110], [110, 115], [115, 600]]]);
+  // Vidage sans envoi en cours (40 s), puis envoi tenté à 50 s et restauré
+  // par un redémarrage : un envoi restauré.
+  assert.deepEqual(rel(windowsOf(e => {
+    e(40, 'staff.queueCleared', { songs: 2, pendingCancelled: false });
+    e(70, 'app.started', { restored: true, offlineMs: 10000 });
+    e(80, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 50000 });
+  }).noReserve), [[60, 70], [70, 80]]);
+  // Accusé noté mais sauvegarde de soirée perdue : l'envoi est restauré au
+  // redémarrage et accusé une seconde fois, toujours un envoi restauré.
+  assert.deepEqual(rel(windowsOf(e => {
+    e(55, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 50000 });
+    e(70, 'app.started', { restored: true, offlineMs: 10000 });
+    e(80, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 50000 });
+  }).noReserve), [[60, 70], [70, 80]]);
   // Envoi restauré au redémarrage jamais accusé (phase « recovered-pending »
   // seulement à la scène libre suivante, sans send.unconfirmed) : en attente
   // dès le redémarrage.
