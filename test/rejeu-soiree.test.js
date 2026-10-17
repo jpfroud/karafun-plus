@@ -531,6 +531,27 @@ test('rejeu libre : heure de fermeture comme le serveur ; chanson redemandée en
   assert.deepEqual(res.passages.map(p => p.entryId).sort(), ['a1', 'a2', 'y1']);
   assert.deepEqual(res.warnings, []);
   assert.ok(res.notes.some(n => /demande de S01 « a1 » différée/.test(n)), res.notes.join(' | '));
+  // Demande différée puis retirée, ou auteur parti, avant que a1 parte (envoyé
+  // à 55 s dans le rejeu) : jamais faite dans le rejeu, ni chantée, et hors du
+  // journal avec ses gestes.
+  const dropped = gesture => build((e, stage) => {
+    e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+    stage(10, 'a1', ['S01'], 'q1');
+    e(30, 'song.requested', { personId: 'S01', entryId: 'a2', songId: 1, title: 'a1', mode: 'append' });
+    e(40, 'song.settings', { personId: 'S01', entryId: 'a2', settings: { key: 1 } });
+    gesture(e);
+    stage(200, 'y1', ['S02'], 'q2');
+  });
+  const removed = await rejeu.runFree(rejeu.loadEvening(dropped(e => e(45, 'song.removed', { personId: 'S01', entryId: 'a2' }))));
+  assert.deepEqual(removed.passages.map(p => p.entryId).sort(), ['a1', 'y1']);
+  assert.ok(removed.notes.some(n => /song\.requested non rejoué : titre retiré avant que la même chanson quitte la liste S01 a2/.test(n)),
+    removed.notes.join(' | '));
+  assert.ok(!removed.notes.some(n => /song\.(settings|removed) non rejoué/.test(n)), removed.notes.join(' | '));
+  const gone = await rejeu.runFree(rejeu.loadEvening(dropped(e => e(45, 'person.left', { personId: 'S01', by: 'self', songsDropped: 2 }))));
+  assert.deepEqual(gone.passages.map(p => p.entryId), ['y1']);
+  assert.ok(gone.notes.some(n => /song\.requested non rejoué : personne partie avant que la même chanson quitte sa liste S01 a2/.test(n)),
+    gone.notes.join(' | '));
 });
 
 test('bilan avant/après : un seul côté sans Timefold, note pour le même code, alerte sinon', async () => {

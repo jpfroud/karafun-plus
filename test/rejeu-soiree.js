@@ -432,7 +432,7 @@ const LOCK_STALE_MS = 25 * 60_000;
 function takeOverLock(lock) {
   const claim = `${lock}.reprise`;
   try { fs.closeSync(fs.openSync(claim, 'wx')); } catch (err) {
-    if (err.code === 'EEXIST' && ageMs(claim) > 60_000) fs.rmSync(claim, { force: true });
+    try { if (err.code === 'EEXIST' && ageMs(claim) > 60_000) fs.rmSync(claim, { force: true }); } catch (_) { /* rendue entre-temps */ }
     return false;
   }
   try {
@@ -805,7 +805,7 @@ function applyExternal(ctx, e, upcoming) {
     // Chanson redemandée en « ajouter » (chantée au bar, encore à chanter dans
     // le rejeu) : la demande attend qu'elle quitte la liste (rejeu libre).
     if (e.ev === 'song.requested' && err.code === 'ALREADY_LISTED' && ctx.deferred && !ctx.real2rep.has(e.entryId)) {
-      ctx.deferred.push({ e, upcoming });
+      ctx.deferred.push({ e, upcoming, follow: [] });
       note(ctx, `demande de ${e.personId} « ${e.title || e.songId} » différée : la même chanson reste à chanter dans le rejeu`);
       return false;
     }
@@ -1031,14 +1031,24 @@ async function runFree(evening, opts = {}) {
       }
     };
     // Demandes différées (même chanson encore dans la liste) : faites dès
-    // qu'elle en est sortie (envoyée, retirée).
+    // qu'elle en est sortie (envoyée, retirée), suivies des gestes réels sur
+    // ce titre arrivés entre-temps. Personne partie avant, titre retiré avant,
+    // ou chanson restée jusqu'à la fin : la demande et ces gestes sortent du
+    // journal rejoué.
     ctx.deferred = [];
+    const dropDeferred = (d, why) => {
+      ctx.deferred.splice(ctx.deferred.indexOf(d), 1);
+      for (const x of [d.e, ...d.follow.map(f => f.e)]) ctx.unapplied.add(x);
+      note(ctx, notReplayedNote(d.e, why));
+    };
     const retryDeferred = () => {
       for (const d of [...ctx.deferred]) {
         const p = s.people.get(ctx.key2pid.get(d.e.personId));
+        if (p?.withdrawnAt) { dropDeferred(d, 'personne partie avant que la même chanson quitte sa liste'); continue; }
         if (p && s.songsOf(p).some(x => x.songId === Number(d.e.songId))) continue;
         ctx.deferred.splice(ctx.deferred.indexOf(d), 1);
         applyExternal(ctx, d.e, d.upcoming);
+        for (const f of d.follow) applyExternal(ctx, f.e, f.soon);
       }
     };
     let i = 0;
@@ -1052,9 +1062,16 @@ async function runFree(evening, opts = {}) {
           if (e.ev === 'battle.decided') { if (e.outcome === 'approved' && battle === 'none') battle = 'waiting'; continue; }
           if (e.ev === 'closing.set') { closingAt = Number.isFinite(e.closingAt) ? e.closingAt : Infinity; continue; }
           if (e.ev === 'closing.cleared') { closingAt = Infinity; continue; }
+          const soon = ext.slice(i, i + 5).filter(x => x.t - e.t < 1000);
+          const held = e.entryId && e.ev !== 'song.requested' && ctx.deferred.find(d => d.e.entryId === e.entryId);
+          if (held) {
+            held.follow.push({ e, soon });
+            if (e.ev === 'song.removed') dropDeferred(held, 'titre retiré avant que la même chanson quitte la liste');
+            continue;
+          }
           let sent = { handled: false, cancel: false };
           try { sent = sentGesture(ctx, e, upcoming?.sel); } catch (err) { note(ctx, `${e.ev} sur le titre envoyé : ${err.message}`); }
-          if (!sent.handled) applyExternal(ctx, e, ext.slice(i, i + 5).filter(x => x.t - e.t < 1000));
+          if (!sent.handled) applyExternal(ctx, e, soon);
           if (sent.cancel) {
             if (upcoming.sel.turnCredit) s.rollbackUnplayed(upcoming.sel);
             note(ctx, `titre envoyé retiré au départ de ${keyOf(ctx, upcoming.sel.ids[0])} : « ${upcoming.sel.song?.title || ''} »`);
@@ -1078,10 +1095,7 @@ async function runFree(evening, opts = {}) {
     } finally {
       if (ctx.solver) ctx.solver.close();
     }
-    for (const d of ctx.deferred) {
-      ctx.unapplied.add(d.e);
-      note(ctx, notReplayedNote(d.e, 'même chanson restée à chanter jusqu\'à la fin'));
-    }
+    for (const d of [...ctx.deferred]) dropDeferred(d, 'même chanson restée à chanter jusqu\'à la fin');
     if (steps >= maxSteps) ctx.warnings.push(`rejeu arrêté à ${timeOf(clock.now, ev.timezone)} après ${maxSteps} étapes : la fin de la soirée manque`);
     const replayPassages = stages.map(st => st.kind === 'song' ? {
       entryId: ctx.rep2real.get(st.sel.song.entryId) || st.sel.song.entryId, ids: st.sel.ids.map(pid => keyOf(ctx, pid)),
