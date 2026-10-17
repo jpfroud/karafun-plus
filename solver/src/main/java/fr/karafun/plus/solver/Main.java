@@ -21,7 +21,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
@@ -36,6 +40,19 @@ public final class Main {
     private static final String EOF = new String("EOF");
     private static final int MAX_RANDOM_SEED = 1_000;
     private static final Map<String, SolverFactory<QueuePlan>> FACTORIES = new ConcurrentHashMap<>();
+    /**
+     * Veille de la recherche en cours : tant qu'une demande plus récente attend,
+     * l'arrêt est redemandé. Timefold efface au début de solve() un arrêt reçu
+     * juste avant (resetTerminateEarly), et le fil de lecture peut avoir lu la
+     * recherche active avant qu'elle le soit : sans veille, la recherche périmée
+     * courait alors tout son budget avant la réponse à la nouvelle demande.
+     */
+    private static final ScheduledExecutorService WATCH = Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "karafun-solver-watch");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final long WATCH_MS = 5;
 
     /**
      * La graine 0 garde la recherche reproductible par défaut. Les passes
@@ -174,12 +191,20 @@ public final class Main {
         Solver<QueuePlan> solver = factory.buildSolver();
         active.set(solver);
         QueuePlan solution;
+        ScheduledFuture<?> watch = null;
         try {
-            // Demande plus récente arrivée pendant la préparation : le fil de
-            // lecture n'a pas pu couper cette recherche, pas encore active.
-            // Inutile de chercher : l'ordre reçu est rendu (et ignoré par Node).
-            solution = superseded.getAsBoolean() ? plan : solver.solve(plan);
+            // Demande plus récente déjà là (arrivée pendant la préparation) :
+            // inutile de chercher, l'ordre reçu est rendu (et ignoré par Node).
+            if (superseded.getAsBoolean()) {
+                solution = plan;
+            } else {
+                watch = WATCH.scheduleWithFixedDelay(() -> {
+                    if (superseded.getAsBoolean()) solver.terminateEarly();
+                }, WATCH_MS, WATCH_MS, TimeUnit.MILLISECONDS);
+                solution = solver.solve(plan);
+            }
         } finally {
+            if (watch != null) watch.cancel(false);
             active.set(null);
         }
         if (solution.getScore() == null || solution.getScore().hardScore() < 0 &&
@@ -234,7 +259,12 @@ public final class Main {
                     if (line.length() > 512_000) throw new IllegalArgumentException("Requête trop grande");
                     JsonNode request = JSON.readTree(line);
                     requestId = request.path("requestId").asText("");
-                    output.println(JSON.writeValueAsString(solve(request, active, () -> !inbox.isEmpty())));
+                    // Demande plus récente en attente ; la fin de l'entrée n'en est pas une
+                    // (appel ponctuel : la dernière demande doit être cherchée).
+                    output.println(JSON.writeValueAsString(solve(request, active, () -> {
+                        String head = inbox.peek();
+                        return head != null && head != EOF;
+                    })));
                 } catch (Exception error) {
                     Map<String, Object> failed = Map.of("requestId", requestId,
                             "error", error.getClass().getSimpleName() + ": " + String.valueOf(error.getMessage()));

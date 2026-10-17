@@ -248,7 +248,7 @@ function loadEvening(input) {
   // (battle.external : en file dès cet instant), et jouées : chacune suivie
   // par son scrutin, de la décision à son envoi puis à son début.
   // `preGapMs` : de la scène libérée (ou de l'envoi, scène déjà libre) au
-  // début ; `sec` : durée jouée ; `afterGapMs` : de sa fin à la reprise de la
+  // début ; `realStart` : son début réel ; `sec` : durée jouée ; `afterGapMs` : de sa fin à la reprise de la
   // file (server.js : « after » retient la file jusqu'au titre suivant lancé
   // par le bar, « resuming », ou directement dans KaraFun, « released » ;
   // ou jusqu'à une Battle « sans vote » du bar ou au vidage de la file, qui
@@ -279,7 +279,7 @@ function loadEvening(input) {
         const stage = battleStages.find(st => !used.has(st) && st.e.t >= d.t);
         if (dismissed || followed || !stage) continue;
         used.add(stage);
-        battles.push({ decision: d, preGapMs: BATTLE_PRE_GAP_MS, sec: stage.sec, afterGapMs: 0 });
+        battles.push({ decision: d, preGapMs: BATTLE_PRE_GAP_MS, sec: stage.sec, afterGapMs: 0, realStart: stage.e.t });
         continue;
       }
       // Sa scène : celle, hors file, qui démarre avec son « playing » (même si
@@ -294,7 +294,8 @@ function loadEvening(input) {
         ((mine(e) && ['resuming', 'released'].includes(e.status)) || (e !== d && replaces(e))));
       const ended = Number.isFinite(stage?.sec) ? stage.e.t + 1000 * stage.sec : after?.t;
       battles.push({ decision: d, preGapMs: Math.max(0, playing.t - Math.max(from, freed)), sec: stage?.sec ?? null,
-        afterGapMs: !after ? 0 : resumed ? Math.max(0, resumed.t - ended) : Infinity, external: d.ev === 'battle.external' });
+        afterGapMs: !after ? 0 : resumed ? Math.max(0, resumed.t - ended) : Infinity, external: d.ev === 'battle.external',
+        realStart: playing.t });
     }
   }
   // Passages hors file joués en réel (titre ou Battle ajoutés directement
@@ -1314,9 +1315,9 @@ async function runFree(evening, opts = {}) {
         stages.push(current); upcoming = null;
       }
       while (outside.length && outside[0].t <= clock.now) outsideDue.push(outside.shift());
-      // KaraFun joue dans l'ordre d'arrivée : une Battle déjà en file passe
-      // avant un passage hors file entré après elle, pas avant.
-      const outsideFirst = outsideDue.length > 0 && (battle !== 'queued' || outsideDue[0].t < battleQueuedAt);
+      // Passage hors file et Battle en file : dans l'ordre de leurs débuts
+      // réels (l'heure d'entrée d'un titre dans KaraFun n'est pas notée).
+      const outsideFirst = outsideDue.length > 0 && (battle !== 'queued' || outsideDue[0].t < battleNow.realStart);
       if (!current && !upcoming && outsideFirst && clock.now >= lastEnd + GAP_MS) {
         const o = outsideDue.shift();
         current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? DEFAULT_SONG_SEC) };
@@ -1325,9 +1326,10 @@ async function runFree(evening, opts = {}) {
         if (battle === 'after' && o.source !== 'battle') { battle = 'none'; battleNow = null; afterUntil = null; }
       }
       // Battle « sans vote » du bar pendant « after » : son suivi remplace
-      // celui de la précédente (battle-vote.js staffLaunch). Une Battle
-      // ajoutée dans KaraFun attend la fin de « after » (syncBattle).
-      if (battle === 'after' && battleQueue.length && !battleQueue[0].external) { battle = 'none'; battleNow = null; afterUntil = null; }
+      // celui de la précédente (battle-vote.js staffLaunch). Un vote (propose
+      // exige « released ») ou une Battle ajoutée dans KaraFun (syncBattle)
+      // attend la fin de « after », même rejouée pendant celle-ci.
+      if (battle === 'after' && battleQueue[0]?.decision.ev === 'battle.staffLaunch') { battle = 'none'; battleNow = null; afterUntil = null; }
       // Battle ajoutée par le bar dans KaraFun : en file dès son arrivée.
       if (battle === 'none' && battleQueue.length) {
         battleNow = battleQueue.shift();
