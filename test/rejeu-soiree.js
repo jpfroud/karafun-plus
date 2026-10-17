@@ -65,7 +65,8 @@
  * ou retire un titre qui ne tiendrait plus avant l'heure ; un titre envoyé
  * suit les départs notés par le bar et les duos quittés ; une chanson
  * redemandée en « ajouter » alors qu'elle reste à chanter dans le rejeu
- * attend qu'elle quitte la liste ; chaque Battle approuvée est rejouée.
+ * attend qu'elle quitte la liste ; chaque Battle jouée en réel (vote
+ * approuvé ou lancée par le bar) est rejouée, avec son délai et sa durée.
  * Rien ne part pendant un arrêt de l'application ni après la fin du
  * karaoké de la soirée réelle (evening-stats.js).
  *
@@ -96,7 +97,7 @@ const REPLAYED = new Set(['table.opened', 'table.headcount', 'person.joined', 's
 // Gestes qui changent la file mais que le rejeu ne refait pas : signalés.
 const NOT_REPLAYED = new Set(['staff.move', 'staff.undo', 'staff.recalculate', 'defer.requested',
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced', 'presence.skipped',
-  'turn.unsent', 'stage.restarted', 'battle.external', 'battle.staffLaunch', 'staff.queueCleared',
+  'turn.unsent', 'battle.external', 'staff.queueCleared',
   'staff.absent']);
 // Gestes sur les titres et les duos : un geste réel que le rejeu n'a pas pu
 // faire (titre déjà chanté ou absent dans le rejeu) sort aussi du journal
@@ -108,6 +109,7 @@ const MUST_MATCH = new Set(['song.requested', 'song.removed', 'song.reordered', 
 const NOT_IN_JOURNAL = new Set(['staff.queueCleared', 'defer.requested', 'defer.ended']);
 const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export ne dit rien
 const SONG_GAP_MS = 20000; // temps moyen entre deux titres compté par la fermeture (server.js)
+const BATTLE_PRE_GAP_MS = 132000; // scène libre → début d'une Battle (téléphones qui rejoignent), sans mesure
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
 
 // ------------------------------------------------------------------ horloge
@@ -165,7 +167,7 @@ function loadEvening(input) {
   // depuis la fin du précédent (lecture auto) et depuis son envoi.
   const played = new Map();
   const startGaps = [];
-  const battles = []; // durée jouée de chaque Battle, dans l'ordre
+  const battleStages = [];
   {
     const open = new Map(); let last = null; let lastEnd = 0; const sent = new Map();
     for (const e of events) {
@@ -182,11 +184,20 @@ function loadEvening(input) {
           continue;
         }
         open.clear();
-        last = { e, q, resumedAt: null };
+        last = { e, q, resumedAt: null, sec: null };
+        if (e.source === 'battle') battleStages.push(last);
         open.set(q ?? `#${e.seq ?? e.t}`, last);
         if (e.source === 'queue' || (e.entryId && e.source !== 'battle')) {
           startGaps.push({ endGap: e.t - lastEnd, sendGap: e.t - (sent.get(e.entryId) ?? e.t) });
         }
+      } else if (e.ev === 'stage.restarted') {
+        // « Relancer depuis le début » : la copie prolonge le même passage,
+        // sous sa propre file (evening-stats.js, reopen).
+        if (!last) continue;
+        for (const [k, v] of open) if (v === last) open.delete(k);
+        if (e.queueId != null) last.q = String(e.queueId);
+        last.resumedAt = e.t;
+        open.set(last.q ?? `#${last.e.seq ?? last.e.t}`, last);
       } else if (e.ev === 'stage.ended') {
         const q = e.queueId == null ? null : String(e.queueId);
         const st = (q != null && open.get(q)) || [...open.values()].at(-1);
@@ -194,11 +205,38 @@ function loadEvening(input) {
         if (!st) continue;
         const playedSec = Number(e.playedSec);
         const endAt = Number.isFinite(playedSec) ? Math.min(e.t, (st.resumedAt ?? st.e.t) + playedSec * 1000) : e.t;
-        const sec = (endAt - st.e.t) / 1000;
-        if (st.e.entryId) played.set(st.e.entryId, sec);
-        else if (st.e.source === 'battle') battles.push(sec);
+        st.sec = (endAt - st.e.t) / 1000;
+        if (st.e.entryId) played.set(st.e.entryId, st.sec);
         for (const [k, v] of open) if (v === st) open.delete(k);
       }
+    }
+  }
+  // Battles lancées par l'application (vote approuvé, ou « sans vote » du
+  // bar) et jouées : chacune suivie par son scrutin, de la décision à son
+  // envoi puis à son début. `preGapMs` : de la scène libérée (ou de l'envoi,
+  // scène déjà libre) au début ; `sec` : durée jouée. Une Battle écartée ou
+  // jamais jouée n'y est pas. Export sans suivi de l'envoi : la Battle jouée
+  // qui suit la décision, délai habituel.
+  const battles = [];
+  {
+    const used = new Set();
+    for (const d of events.filter(e => (e.ev === 'battle.decided' && e.outcome === 'approved') || e.ev === 'battle.staffLaunch')) {
+      const mine = e => e.ev === 'battle.automation' && e.t >= d.t && (d.ballotId == null || e.ballotId === d.ballotId);
+      const sending = events.find(e => mine(e) && e.status === 'sending');
+      const playing = sending && events.find(e => mine(e) && e.status === 'playing' && e.t >= sending.t);
+      if (!playing) {
+        const dismissed = events.some(e => e.ev === 'battle.resolved' && e.outcome === 'dismissed' && e.ballotId === d.ballotId);
+        const stage = battleStages.find(st => !used.has(st) && st.e.t >= d.t);
+        if (dismissed || events.some(mine) || !stage) continue;
+        used.add(stage);
+        battles.push({ decision: d, preGapMs: BATTLE_PRE_GAP_MS, sec: stage.sec });
+        continue;
+      }
+      const stage = battleStages.filter(st => !used.has(st) && st.e.t >= sending.t)
+        .sort((a, b) => Math.abs(a.e.t - playing.t) - Math.abs(b.e.t - playing.t))[0];
+      if (stage) used.add(stage);
+      const freed = events.filter(e => e.ev === 'stage.ended' && e.t > sending.t && e.t <= playing.t).at(-1)?.t ?? sending.t;
+      battles.push({ decision: d, preGapMs: Math.max(0, playing.t - Math.max(sending.t, freed)), sec: stage?.sec ?? null });
     }
   }
   // Arrêts de l'application : rien ne part pendant ces intervalles (rejeu
@@ -876,7 +914,7 @@ async function runForced(evening, opts = {}) {
     const { s } = ctx;
     const sels = new Map(); // entryId réel → passage engagé
     const started = new Set(); // passages engagés déjà lancés
-    let current = null, upcoming = null, hold = false, reservation = null;
+    let current = null, upcoming = null, hold = false, reservation = null, lastStage = null;
     const reserveIfDue = async why => {
       if (current?.kind !== 'song' || upcoming || hold || s.reservedNext) return;
       await ensurePlan(ctx);
@@ -968,12 +1006,19 @@ async function runForced(evening, opts = {}) {
             break;
           }
           case 'stage.ended': {
-            if (current?.kind === 'song' && current.sel) {
+            if (current?.kind === 'song' && current.sel && !current.restarted) {
               s.recordSlot((clock.now - current.start) / 1000);
               s.songEnded(current.sel.ids);
               s.endStage(current.sel);
             }
+            lastStage = current;
             current = null;
+            break;
+          }
+          case 'stage.restarted': {
+            // « Relancer depuis le début » : la copie prolonge le passage, déjà
+            // compté par l'ordonnanceur.
+            if (lastStage && !current) current = { ...lastStage, restarted: true };
             break;
           }
           case 'battle.automation': {
@@ -1008,26 +1053,18 @@ async function runFree(evening, opts = {}) {
     const { s } = ctx;
     const pushMs = 1000 * Number(ctx.rules.pushDelaySec ?? 45);
     const ext = ev.events.filter(e => REPLAYED.has(e.ev) || NOT_REPLAYED.has(e.ev) ||
-      ['battle.decided', 'closing.set', 'closing.cleared'].includes(e.ev));
+      ['battle.decided', 'battle.staffLaunch', 'closing.set', 'closing.cleared'].includes(e.ev));
     for (const e of ev.events) countIgnored(ctx, e);
-    // Battles approuvées en réel : chacune, à son tour, part dans KaraFun à
-    // la première case libre, puis démarre avec le délai et dure le temps de
-    // la Battle réelle de même rang.
-    const auto = ev.events.filter(e => e.ev === 'battle.automation');
-    const sendings = auto.filter(e => e.status === 'sending');
-    const preGaps = sendings.map((sending, k) => {
-      const playing = auto.find(e => e.status === 'playing' && e.t > sending.t && !(e.t > sendings[k + 1]?.t));
-      if (!playing) return null;
-      const freed = ev.events.find(e => e.ev === 'stage.ended' && e.t > sending.t)?.t || sending.t;
-      return Math.max(0, playing.t - Math.max(sending.t, freed));
-    });
-    const preGapOf = k => preGaps[k] ?? preGaps.find(x => x != null) ?? 132000;
-    const battleMsOf = k => 1000 * (ev.battles[k] ?? ev.battles.at(-1) ?? 260);
+    // Battles jouées en réel (loadEvening) : chacune attend sa décision réelle,
+    // part dans KaraFun à la première case libre, puis démarre avec son délai
+    // et dure le temps de la Battle réelle.
+    const battleOf = new Map(ev.battles.map(b => [b.decision, b]));
+    const battleQueue = [];
     const offlineAt = t => ev.offline.some(([a, b]) => t >= a && t < b);
     let closingAt = Infinity;
     const stages = [];
     let current = null, upcoming = null, lastEnd = 0;
-    let battle = 'none', battlesDue = 0, battlesPlayed = 0;
+    let battle = 'none', battleNow = null;
     const durOf = sel => 1000 * (ev.played.get(ctx.rep2real.get(sel.song.entryId)) ?? (Number(sel.song.duration) || 200));
     // Début du prochain titre : délais réels du titre de même rang.
     const startAt = () => {
@@ -1049,10 +1086,7 @@ async function runFree(evening, opts = {}) {
     const stepServer = async () => {
       if (current && clock.now >= current.end) {
         if (current.kind === 'song') { s.recordSlot((current.end - current.start) / 1000); s.songEnded(current.sel.ids); s.endStage(current.sel); }
-        if (current.kind === 'battle') {
-          battlesPlayed++;
-          if (battlesDue) { battlesDue--; battle = 'waiting'; } else battle = 'none';
-        }
+        if (current.kind === 'battle') { battle = 'none'; battleNow = null; }
         lastEnd = current.end; current = null;
       }
       // Titre envoyé qui ne tiendrait plus avant l'heure : retiré de KaraFun,
@@ -1069,15 +1103,17 @@ async function runFree(evening, opts = {}) {
         s.recordStage(upcoming.sel, clock.now);
         stages.push(current); upcoming = null;
       }
-      // Envoi de la Battle (server.js) : pas après l'heure de fermeture ; une
-      // Battle envoyée n'est jamais retirée.
-      if (battle === 'waiting' && !upcoming && !(s.reservedNext && current) && !closingBlocks() && !over()) battle = 'queued';
-      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + preGapOf(battlesPlayed) && !over()) {
-        current = { kind: 'battle', start: clock.now, end: clock.now + battleMsOf(battlesPlayed) };
+      if (battle === 'none' && battleQueue.length) { battleNow = battleQueue.shift(); battle = 'waiting'; }
+      // Envoi de la Battle (server.js) : application en marche, pas après
+      // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
+      if (battle === 'waiting' && !upcoming && !(s.reservedNext && current) && !closingBlocks() && !over() &&
+        !offlineAt(clock.now)) battle = 'queued';
+      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + battleNow.preGapMs && !over()) {
+        current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? 260) };
         stages.push(current); battle = 'playing';
       }
       const hold = ['queued', 'playing'].includes(battle) || offlineAt(clock.now);
-      if (!upcoming && !hold && current?.kind === 'song' && !s.reservedNext) {
+      if (!upcoming && !hold && current?.kind === 'song' && !s.reservedNext && !over()) {
         await ensurePlan(ctx);
         const state = explain(ctx);
         const sel = s.reserveNext();
@@ -1134,8 +1170,8 @@ async function runFree(evening, opts = {}) {
       for (; steps < maxSteps; steps++) {
         while (i < ext.length && ext[i].t <= clock.now) {
           const e = ext[i++];
-          if (e.ev === 'battle.decided') {
-            if (e.outcome === 'approved') { if (battle === 'none') battle = 'waiting'; else battlesDue++; }
+          if (e.ev === 'battle.decided' || e.ev === 'battle.staffLaunch') {
+            if (battleOf.has(e)) battleQueue.push(battleOf.get(e));
             continue;
           }
           if (e.ev === 'closing.set') { closingAt = Number.isFinite(e.closingAt) ? e.closingAt : Infinity; continue; }
@@ -1170,7 +1206,7 @@ async function runFree(evening, opts = {}) {
         if (i < ext.length) next.push(ext[i].t);
         if (current) next.push(current.end, current.start + pushMs);
         if (!current && upcoming) next.push(startAt());
-        if (!current && !upcoming && battle === 'queued') next.push(lastEnd + preGapOf(battlesPlayed));
+        if (!current && !upcoming && battle === 'queued') next.push(lastEnd + battleNow.preGapMs);
         for (const [, b] of ev.offline) if (Number.isFinite(b)) next.push(b);
         const future = next.filter(t => t > clock.now);
         if (!future.length) break;
