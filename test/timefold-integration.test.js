@@ -810,3 +810,31 @@ test('compromis : Timefold utilise la taille des tables (inscrits)',
     assert.ok(withSizes < withoutSizes, `${withSizes} contre ${withoutSizes}`);
   } finally { bridge.close(); }
 });
+
+test('Timefold : une demande arrivée pendant la préparation de la précédente ne l’attend pas',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const bridge = new TimefoldBridge({ jar: JAR, settleMs: 0 });
+    const performances = [];
+    for (let i = 0; i < 60; i++) {
+      for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
+        id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
+        singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
+      });
+    }
+    const request = (requestId, budgetMs) => ({ requestId, budgetMs, performances, pastAppearance: {}, physicalCount: {},
+      pinnedUntil: 0, roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false });
+    try {
+      await bridge.solve(request('chauffe', 100));
+      // La seconde ligne arrive pendant que Java prépare la première (90
+      // titres) : la première ne doit pas chercher ses 5 s avant elle.
+      for (let k = 0; k < 5; k++) {
+        const stale = bridge.solve(request(`ancienne-${k}`, 5000)).catch(() => null);
+        await new Promise(resolve => setTimeout(resolve, 2));
+        const start = Date.now();
+        const fresh = await bridge.solve(request(`nouvelle-${k}`, 200));
+        assert.equal(fresh.requestId, `nouvelle-${k}`);
+        assert.ok(Date.now() - start < 3000, `réponse en ${Date.now() - start} ms (essai ${k + 1})`);
+        await stale;
+      }
+    } finally { bridge.close(); }
+  });

@@ -901,6 +901,15 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     return journal.filter(x => x.ev === 'stage.started' && x.source === 'battle')
       .map(x => ({ at: (x.t - T0) / 1000, sec: journal.find(y => y.ev === 'stage.ended' && y.queueId === x.queueId).playedSec }));
   };
+  // Scènes du journal rejoué, dans l'ordre : source et début (s).
+  const scenesOf = async raw => {
+    const es = require('../evening-stats');
+    const original = es.computeStats;
+    let journal = [];
+    es.computeStats = (...a) => { if (a[0].events[0]?.boot === 'rejeu') journal = a[0].events; return original(...a); };
+    try { await rejeu.runFree(rejeu.loadEvening(raw)); } finally { es.computeStats = original; }
+    return journal.filter(x => x.ev === 'stage.started').map(x => [x.source, Math.round((x.t - T0) / 1000)]);
+  };
   // Deux Battles approuvées (export sans suivi de l'envoi) : chacune jouée,
   // avec sa durée réelle.
   const many = await battlesOf(build((e, stage, ask) => {
@@ -1074,6 +1083,26 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     stage(460, 'y1', ['S02'], 'q2');
   }));
   assert.deepEqual(later.map(b => b.at), [430, 529]);
+  // Une Battle ajoutée dans KaraFun, elle, n'est suivie qu'après « after »
+  // (syncBattle) : rejouée pendant le « after » de la première, elle attend
+  // la reprise mesurée (28 s après la fin de la première, à 510 s).
+  const externalLater = await battlesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(185, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(210, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(210, null, null, 'b1', 90);
+    e(302, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(330, 'battle.automation', { ballotId: 'v1', status: 'resuming' });
+    e(335, 'battle.external', { ballotId: 'k2', songId: 9 });
+    e(340, 'battle.automation', { ballotId: 'k2', status: 'playing' });
+    stage(340, null, null, 'b2', 90);
+    e(432, 'battle.automation', { ballotId: 'k2', status: 'after' });
+    e(440, 'battle.automation', { ballotId: 'k2', status: 'resuming' });
+    stage(460, 'y1', ['S02'], 'q2');
+  }));
+  assert.deepEqual(externalLater.map(b => b.at), [420, 545]);
   // File vidée par le bar pendant « after » (battleVote.reset, sans reprise
   // notée) : fin de la retenue.
   const clearedRaw = build((e, stage, ask) => {
@@ -1121,6 +1150,53 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(292, 'battle.automation', { ballotId: 'k1', status: 'after' });
   }));
   assert.deepEqual(nearClosing.map(b => b.at), [200]);
+  // KaraFun joue dans l'ordre d'arrivée : le titre lancé dans KaraFun (320 s)
+  // passe avant la Battle ajoutée ensuite (330 s).
+  const arrival = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(5, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1', 300);
+    e(320, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
+    e(330, 'battle.external', { ballotId: 'k1', songId: 9 });
+    e(380, 'stage.ended', { queueId: 'n1', playedSec: 60 });
+    e(385, 'battle.automation', { ballotId: 'k1', status: 'playing' });
+    stage(385, null, null, 'b1', 90);
+    e(477, 'battle.automation', { ballotId: 'k1', status: 'after' });
+    e(600, 'battle.automation', { ballotId: 'k1', status: 'resuming' });
+    stage(610, 'y1', ['S02'], 'q2');
+  }));
+  // (délai de la Battle, 5 s, plus court que celui d'un titre hors file)
+  assert.deepEqual(arrival.map(x => x[0]).slice(-2), ['native', 'battle'], JSON.stringify(arrival));
+  // Vote approuvé encore en attente d'envoi, remplacé par la Battle ajoutée
+  // dans KaraFun (observeExternalBattle) : une seule Battle, la sienne.
+  const superseded = rejeu.loadEvening(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(50, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(100, 'battle.external', { ballotId: 'k1', songId: 9 });
+    e(200, 'battle.automation', { ballotId: 'k1', status: 'playing' });
+    stage(200, null, null, 'b1', 90);
+    e(292, 'battle.automation', { ballotId: 'k1', status: 'after' });
+    e(300, 'battle.automation', { ballotId: 'k1', status: 'resuming' });
+  }));
+  assert.deepEqual(superseded.battles.map(b => [b.decision.ev, b.sec]), [['battle.external', 90]]);
+  // Envoi de la Battle retenu par l'heure de fermeture : la file est retenue
+  // aussi (battleHoldsQueue, « waiting » sans passage réservé) ; une fois
+  // l'heure retirée, la Battle passe avant y1, demandé pendant l'attente.
+  const waiting = await scenesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    e(5, 'closing.set', { closingAt: T0 + 280000 });
+    stage(10, 'x1', ['S01'], 'q1');
+    e(100, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    ask(120, 'S02', 'y1', 2);
+    e(200, 'closing.cleared', {});
+    e(200, 'battle.automation', { ballotId: 'v1', status: 'sending' });
+    e(230, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(230, null, null, 'b1', 90);
+    e(322, 'battle.automation', { ballotId: 'v1', status: 'after' });
+    e(330, 'battle.automation', { ballotId: 'v1', status: 'resuming' });
+    stage(340, 'y1', ['S02'], 'q2');
+  }));
+  assert.deepEqual(waiting.map(x => x[0]), ['queue', 'battle', 'queue'], JSON.stringify(waiting));
   // Battle approuvée puis écartée, export sans suivi de l'envoi : la Battle
   // faite ensuite dans KaraFun n'est pas la sienne.
   const dismissed = rejeu.loadEvening(build((e, stage) => {
@@ -1693,7 +1769,7 @@ test('rejeu avec Timefold : effort compté en mouvements, plafond de temps attei
       short.warnings.join(' | '));
   });
 
-test('Timefold : réponse sans amélioration redemandée pour un solveur qui pouvait couper sa recherche ; configuration non reconnue dite', async t => {
+test('Timefold : chaque calcul fait deux fois pour un solveur qui pouvait couper sa recherche, meilleure réponse gardée ; configuration non reconnue dite', async t => {
   const repo = path.join(__dirname, '..');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rejeu-version-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -1713,14 +1789,19 @@ test('Timefold : réponse sans amélioration redemandée pour un solveur qui pou
     fs.mkdirSync(path.join(v, 'solver/src/main/resources'), { recursive: true });
     fs.writeFileSync(path.join(java, 'Main.java'), mainSource);
     fs.writeFileSync(path.join(v, 'solver/src/main/resources/solverConfig.xml'), config);
-    // Faux pont : rend l'ordre reçu, sans amélioration, et compte les demandes.
+    // Faux pont : rend l'ordre reçu et compte les demandes ; la réponse du
+    // n-ième calcul d'une même demande vient de global.rejeuFakeAnswers[n].
     fs.writeFileSync(path.join(v, 'solver/bridge.js'), `'use strict';
 class TimefoldBridge {
-  constructor() { this.available = true; this.lastError = null; }
+  constructor() { this.available = true; this.lastError = null; this.seen = new Map(); }
   solve(request) {
     global.rejeuFakeSolves = (global.rejeuFakeSolves || 0) + 1;
+    const n = this.seen.get(request.requestId) || 0;
+    this.seen.set(request.requestId, n + 1);
+    const answer = (global.rejeuFakeAnswers || [])[n] || { score: '0hard/0medium/0soft', elapsedMs: 1 };
+    if (answer.fail) return Promise.reject(new Error('calcul perdu'));
     return Promise.resolve({ requestId: request.requestId, order: request.performances.map(p => p.id),
-      score: '0hard/0medium/0soft', seedScore: '0hard/0medium/0soft', improved: false, elapsedMs: 1 });
+      seedScore: '0hard/0medium/0soft', improved: false, ...answer });
   }
   close() {}
 }
@@ -1729,14 +1810,26 @@ module.exports = { TimefoldBridge };
     return v;
   };
   const until = ev.events.find(e => e.ev === 'turn.sent' && rejeu.timeOf(e.t) === '21:06:30').t;
-  const solves = async code => {
+  const solves = async (code, answers = []) => {
     global.rejeuFakeSolves = 0;
-    const res = await rejeu.runForced(ev, { code, solver: jar, until });
+    global.rejeuFakeAnswers = answers;
+    const res = await rejeu.runForced(ev, { code, solver: jar, until, budget: 1000 });
     return { res, calls: global.rejeuFakeSolves };
   };
-  const old = await solves(version('ancienne', racy, xml));
+  const oldVersion = version('ancienne', racy, xml);
+  const old = await solves(oldVersion);
   assert.ok(old.res.timefold.asked > 3);
   assert.deepEqual([old.calls, old.res.timefold.retried], [2 * old.res.timefold.asked, old.res.timefold.asked]);
+  assert.match(rejeu.report(old.res, { short: true }), /^REJEU FORCÉ \[Timefold, 20 000 mouvements par décision, chaque calcul fait deux fois/);
+  // La meilleure des deux réponses est gardée (repérée ici par son temps :
+  // au plafond, elle est comptée comme telle), même améliorée la première
+  // fois ; un second calcul perdu laisse la première.
+  const cut = { score: '0hard/-5medium/0soft', elapsedMs: 1, improved: true };
+  const full = { score: '0hard/0medium/0soft', elapsedMs: 1000, improved: true };
+  assert.equal((await solves(oldVersion, [cut, full])).res.timefold.ceiling, old.res.timefold.asked);
+  assert.equal((await solves(oldVersion, [full, cut])).res.timefold.ceiling, old.res.timefold.asked);
+  const lost = (await solves(oldVersion, [full, { fail: true }])).res.timefold;
+  assert.deepEqual([lost.ok, lost.failed, lost.ceiling], [lost.asked, 0, lost.asked]);
   const fixed = await solves(version('corrigee', main, xml));
   assert.deepEqual([fixed.calls, fixed.res.timefold.retried, fixed.res.timefold.moves], [fixed.res.timefold.asked, 0, 20000]);
   // Configuration avec une seconde terminaison (de phase) : limite non appliquée.

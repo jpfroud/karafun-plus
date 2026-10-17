@@ -23,6 +23,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 /**
  * Long-lived local JSON-lines worker. It never opens a network port. A newer
@@ -111,7 +112,8 @@ public final class Main {
         };
     }
 
-    private static Map<String, Object> solve(JsonNode input, AtomicReference<Solver<QueuePlan>> active) {
+    private static Map<String, Object> solve(JsonNode input, AtomicReference<Solver<QueuePlan>> active,
+            BooleanSupplier superseded) {
         long start = System.nanoTime();
         int budgetMs = input.path("budgetMs").asInt(DEFAULT_BUDGET_MS);
         if (budgetMs < 100 || budgetMs > 30_000) {
@@ -173,7 +175,10 @@ public final class Main {
         active.set(solver);
         QueuePlan solution;
         try {
-            solution = solver.solve(plan);
+            // Demande plus récente arrivée pendant la préparation : le fil de
+            // lecture n'a pas pu couper cette recherche, pas encore active.
+            // Inutile de chercher : l'ordre reçu est rendu (et ignoré par Node).
+            solution = superseded.getAsBoolean() ? plan : solver.solve(plan);
         } finally {
             active.set(null);
         }
@@ -229,7 +234,7 @@ public final class Main {
                     if (line.length() > 512_000) throw new IllegalArgumentException("Requête trop grande");
                     JsonNode request = JSON.readTree(line);
                     requestId = request.path("requestId").asText("");
-                    output.println(JSON.writeValueAsString(solve(request, active)));
+                    output.println(JSON.writeValueAsString(solve(request, active, () -> !inbox.isEmpty())));
                 } catch (Exception error) {
                     Map<String, Object> failed = Map.of("requestId", requestId,
                             "error", error.getClass().getSimpleName() + ": " + String.valueOf(error.getMessage()));
