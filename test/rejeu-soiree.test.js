@@ -655,6 +655,23 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     stage(410, 'y1', ['S02'], 'q2');
   })));
   assert.ok(crash.passages.find(p => p.entryId === 'y1').sentAt >= T0 + 400000, JSON.stringify(crash.passages));
+  // Arrêt final de l'application, sans redémarrage : plus rien ne part.
+  const stopped = await rejeu.runFree(rejeu.loadEvening(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(30, 'app.stopped', { reason: 'stop' });
+  })));
+  assert.deepEqual(stopped.passages.map(p => p.entryId), ['x1']);
+  // Fermeture passée, puis heure retirée par « Options par défaut » : la
+  // soirée réelle s'est arrêtée à l'heure (evening-stats.js), x2 n'est
+  // jamais chanté.
+  const reset = await rejeu.runFree(rejeu.loadEvening(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2); ask(3, 'S01', 'x2', 3);
+    e(5, 'closing.set', { closingAt: T0 + 400000 });
+    stage(10, 'x1', ['S01'], 'q1'); stage(200, 'y1', ['S02'], 'q2');
+    e(410, 'closing.cleared', { reason: 'settings-reset' });
+  })));
+  assert.deepEqual(reset.passages.map(p => p.entryId), ['x1', 'y1']);
   // Titre repris après un redémarrage (même file KaraFun, sans fin notée) : un
   // seul passage, de son début à la fin de la reprise, et un seul délai de
   // lancement compté.

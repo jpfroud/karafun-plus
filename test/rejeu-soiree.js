@@ -65,7 +65,9 @@
  * ou retire un titre qui ne tiendrait plus avant l'heure ; un titre envoyé
  * suit les départs notés par le bar et les duos quittés ; une chanson
  * redemandée en « ajouter » alors qu'elle reste à chanter dans le rejeu
- * attend qu'elle quitte la liste.
+ * attend qu'elle quitte la liste ; chaque Battle approuvée est rejouée.
+ * Rien ne part pendant un arrêt de l'application ni après la fin du
+ * karaoké de la soirée réelle (evening-stats.js).
  *
  * Seul effet de bord : Date.now est remplacé par l'horloge de la soirée
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
@@ -202,7 +204,8 @@ function loadEvening(input) {
   // Arrêts de l'application : rien ne part pendant ces intervalles (rejeu
   // libre). Comme evening-stats.js, chaque redémarrage note la durée de
   // l'arrêt (offlineMs), arrêt propre ou coupure ; sans elle (ancien
-  // export), de l'arrêt noté au redémarrage.
+  // export), de l'arrêt noté au redémarrage. Arrêt final sans redémarrage :
+  // jusqu'au bout.
   const offline = [];
   { let stoppedAt = null;
     for (const e of events) {
@@ -213,7 +216,8 @@ function loadEvening(input) {
         else if (stoppedAt != null) offline.push([stoppedAt, e.t]);
         stoppedAt = null;
       }
-    } }
+    }
+    if (stoppedAt != null) offline.push([stoppedAt, Infinity]); }
   const timezone = raw.evening?.timezone || 'Europe/Paris';
   const realPassages = passagesFromEvents(events);
   // Attentes de evening-stats.js présentes dans l'export (vérification de la définition).
@@ -1036,6 +1040,12 @@ async function runFree(evening, opts = {}) {
     // la scène se libérant à la fin du titre en cours plus SONG_GAP_MS.
     const closingBlocks = () => Number.isFinite(closingAt) &&
       (current ? Math.max(current.end + SONG_GAP_MS, clock.now) : clock.now) + s.avgSlotSec() * 500 > closingAt;
+    // Fin du karaoké de la soirée réelle (evening-stats.js : fermeture du bar,
+    // KaraFun ou l'application arrêtés après le dernier titre) : plus rien ne
+    // part ni ne démarre ensuite, dans les deux versions du bilan (titres vidés
+    // par le bar ou heure retirée par « Options par défaut » à la fin).
+    const karaokeEnd = statsOf(ev.events).evening.closedAt ?? Infinity;
+    const over = () => clock.now >= karaokeEnd;
     const stepServer = async () => {
       if (current && clock.now >= current.end) {
         if (current.kind === 'song') { s.recordSlot((current.end - current.start) / 1000); s.songEnded(current.sel.ids); s.endStage(current.sel); }
@@ -1047,9 +1057,10 @@ async function runFree(evening, opts = {}) {
       }
       // Titre envoyé qui ne tiendrait plus avant l'heure : retiré de KaraFun,
       // il revient dans la liste de son auteur (pullFromKaraFun, restorePulled).
-      if (upcoming && closingBlocks()) {
+      if (upcoming && (closingBlocks() || over())) {
         s.requeueUnplayed(upcoming.sel);
-        note(ctx, `titre envoyé retiré à la fermeture, rendu à ${keyOf(ctx, upcoming.sel.ids[0])} : « ${upcoming.sel.song?.title || ''} »`);
+        note(ctx, `titre envoyé retiré à la ${over() ? 'fin du karaoké' : 'fermeture'}, rendu à ${keyOf(ctx, upcoming.sel.ids[0])} : ` +
+          `« ${upcoming.sel.song?.title || ''} »`);
         upcoming = null;
       }
       if (!current && upcoming && clock.now >= startAt()) {
@@ -1060,8 +1071,8 @@ async function runFree(evening, opts = {}) {
       }
       // Envoi de la Battle (server.js) : pas après l'heure de fermeture ; une
       // Battle envoyée n'est jamais retirée.
-      if (battle === 'waiting' && !upcoming && !(s.reservedNext && current) && !closingBlocks()) battle = 'queued';
-      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + preGapOf(battlesPlayed)) {
+      if (battle === 'waiting' && !upcoming && !(s.reservedNext && current) && !closingBlocks() && !over()) battle = 'queued';
+      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + preGapOf(battlesPlayed) && !over()) {
         current = { kind: 'battle', start: clock.now, end: clock.now + battleMsOf(battlesPlayed) };
         stages.push(current); battle = 'playing';
       }
@@ -1073,7 +1084,7 @@ async function runFree(evening, opts = {}) {
         if (sel) ctx.decisions.push({ kind: 'reserve', at: clock.now, time: timeOf(clock.now, ev.timezone), pick: pickOf(ctx, sel), state });
       }
       const canPush = !current || clock.now - current.start >= pushMs;
-      if (!upcoming && !hold && canPush && !closingBlocks()) {
+      if (!upcoming && !hold && canPush && !closingBlocks() && !over()) {
         await ensurePlan(ctx);
         const state = explain(ctx);
         const sel = s.select({ stageFree: !current });
@@ -1160,7 +1171,7 @@ async function runFree(evening, opts = {}) {
         if (current) next.push(current.end, current.start + pushMs);
         if (!current && upcoming) next.push(startAt());
         if (!current && !upcoming && battle === 'queued') next.push(lastEnd + preGapOf(battlesPlayed));
-        for (const [, b] of ev.offline) next.push(b);
+        for (const [, b] of ev.offline) if (Number.isFinite(b)) next.push(b);
         const future = next.filter(t => t > clock.now);
         if (!future.length) break;
         clock.now = Math.min(...future);
