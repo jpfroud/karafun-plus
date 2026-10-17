@@ -866,7 +866,11 @@ public class WatchProbe {
             first.compareAndSet(0, now);
             return now - first.get() > 50_000_000L;
         };
-        System.out.println(json.writeValueAsString(solve.invoke(null, request, new AtomicReference<>(), later)));
+        Object response = solve.invoke(null, request, new AtomicReference<>(), later);
+        System.out.println(json.writeValueAsString(response));
+        // Durée de la recherche seule, depuis le contrôle qui la précède
+        // (sans la préparation de la demande, longue sur une JVM froide).
+        System.out.println((System.nanoTime() - first.get()) / 1_000_000);
     }
 }
 `;
@@ -891,9 +895,10 @@ test('Timefold : une demande plus récente arrête la recherche même après son
       input: JSON.stringify(request), encoding: 'utf8', timeout: 60000,
       env: { ...process.env, JAVA_TOOL_OPTIONS: '-Dorg.slf4j.simpleLogger.defaultLogLevel=warn' },
     });
-    assert.equal(run.status, 0, run.stderr);
-    const response = JSON.parse(run.stdout.trim().split('\n').at(-1));
-    assert.equal(response.requestId, 'veille');
-    // gstack-timing-ok: arrêt redemandé toutes les 5 ms dès 50 ms ; sans veille, la recherche court ses 5 s.
-    assert.ok(response.elapsedMs < 2000, `recherche arrêtée après ${response.elapsedMs} ms`);
+    if (run.error?.code === 'ENOENT') return t.skip('java absent du PATH');
+    assert.equal(run.status, 0, run.stderr || String(run.error));
+    const [line, searchMs] = run.stdout.trim().split('\n').slice(-2);
+    assert.equal(JSON.parse(line).requestId, 'veille');
+    // gstack-timing-ok: arrêt redemandé toutes les 5 ms dès 50 ms ; sans veille, la recherche court son budget de 5 s.
+    assert.ok(Number(searchMs) < 2500, `recherche arrêtée après ${searchMs} ms`);
   });

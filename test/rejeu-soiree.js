@@ -1316,9 +1316,12 @@ async function runFree(evening, opts = {}) {
         stages.push(current); upcoming = null;
       }
       while (outside.length && outside[0].t <= clock.now) outsideDue.push(outside.shift());
-      // Passage hors file et Battle en file : dans l'ordre de leurs débuts
-      // réels (l'heure d'entrée d'un titre dans KaraFun n'est pas notée).
-      const outsideFirst = outsideDue.length > 0 && (battle !== 'queued' || outsideDue[0].t < battleNow.realStart);
+      // Passage hors file et prochaine Battle (en attente d'envoi, en file, ou
+      // décidée pendant « after ») : dans l'ordre de leurs débuts réels
+      // (l'heure d'entrée d'un titre dans KaraFun n'est pas notée). Un passage
+      // venu après elle en réel ne la devance ni ne lève sa retenue.
+      const nextBattle = ['waiting', 'queued'].includes(battle) ? battleNow : battleQueue[0];
+      const outsideFirst = outsideDue.length > 0 && !(nextBattle && nextBattle.realStart <= outsideDue[0].t);
       if (!current && !upcoming && outsideFirst && clock.now >= lastEnd + GAP_MS) {
         const o = outsideDue.shift();
         current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? DEFAULT_SONG_SEC) };
@@ -1330,7 +1333,7 @@ async function runFree(evening, opts = {}) {
       // celui de la précédente (battle-vote.js staffLaunch). Un vote (propose
       // exige « released ») ou une Battle ajoutée dans KaraFun (syncBattle)
       // attend la fin de « after », même rejouée pendant celle-ci.
-      if (battle === 'after' && battleQueue[0]?.decision.ev === 'battle.staffLaunch') { battle = 'none'; battleNow = null; afterUntil = null; }
+      if (battle === 'after' && battleQueue.some(b => b.decision.ev === 'battle.staffLaunch')) { battle = 'none'; battleNow = null; afterUntil = null; }
       // Battle ajoutée par le bar dans KaraFun : en file dès son arrivée.
       if (battle === 'none' && battleQueue.length) {
         battleNow = battleQueue.shift();
@@ -1338,7 +1341,7 @@ async function runFree(evening, opts = {}) {
       }
       // Envoi de la Battle (server.js) : application en marche, pas après
       // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
-      if (battle === 'waiting' && !upcoming && !outsideDue.length && !s.reservedNext && !closingBlocks() && !over() &&
+      if (battle === 'waiting' && !upcoming && !outsideFirst && !s.reservedNext && !closingBlocks() && !over() &&
         !offlineAt(clock.now)) { battle = 'queued'; battleQueuedAt = clock.now; }
       if (!current && !upcoming && battle === 'queued' && !outsideFirst && clock.now >= Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs && !over()) {
         current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? DEFAULT_BATTLE_SEC) };
