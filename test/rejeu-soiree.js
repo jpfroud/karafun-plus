@@ -61,6 +61,14 @@
  * dans les notes et les avertissements. Comparées aux attentes enregistrées dans
  * l'export (une version plus ancienne de l'application peut en différer).
  *
+ * Limites connues du rejeu libre (les deux côtés d'un bilan les partagent,
+ * mais l'écart peut ne tomber que d'un côté) : à l'heure de fermeture, il
+ * envoie et lance encore un titre que le bar aurait retenu (la règle du
+ * serveur, au moins la moitié du titre avant l'heure, n'est pas reprise) ;
+ * une chanson redemandée en « ajouter » alors qu'elle reste à chanter dans le
+ * rejeu (déjà chantée au bar) est refusée comme doublon : la demande est
+ * signalée et sort du journal rejoué.
+ *
  * Seul effet de bord : Date.now est remplacé par l'horloge de la soirée
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
  */
@@ -557,6 +565,38 @@ function explain(ctx) {
 }
 
 // ------------------------------------------------------------------ événements extérieurs (comme server.js)
+// Note d'un geste non rejoué : la raison, la personne qui l'a fait ou qu'il
+// vise (invitée d'un duo, demande pour rejoindre…) et le titre.
+const notReplayedNote = (e, why) => `${e.ev} non rejoué : ` +
+  [why, e.personId || e.guestId || e.requesterId || e.ownerId || e.partnerId, e.entryId].filter(Boolean).join(' ');
+
+// Titre envoyé dans le rejeu, pas encore lancé (`sel`), et gestes réels qui
+// le touchent, comme server.js. Départ noté par le bar (une personne, ou toute
+// une table) : l'invitée d'un duo envoyé le laisse en solo
+// (keepSentDuosOfLeavers) ; le titre d'un auteur parti est retiré de KaraFun
+// et son passage rendu (removeLeaversTracks, puis rollbackUnplayed). Invitée
+// qui quitte le duo, ou auteur qui le chante seul : en solo (leaveSentDuo).
+// « Je pars » tapé par la personne ne touche pas aux titres envoyés.
+// Rend { handled } (geste fait ici) et { cancel } (titre retiré).
+function sentGesture(ctx, e, sel) {
+  const none = { handled: false, cancel: false };
+  if (!sel) return none;
+  const s = ctx.s;
+  const pid = k => ctx.key2pid.get(k);
+  if (e.ev === 'duo.left') {
+    const gid = pid(e.guestId || e.personId);
+    if (!gid || sel.song?.entryId !== ctx.real2rep.get(e.entryId) || sel.ids.indexOf(gid) < 1) return none;
+    s.leaveSentDuet(sel, gid, { by: ['owner', 'staff'].includes(e.by) ? e.by : 'guest' });
+    return { handled: true, cancel: false };
+  }
+  const ids = e.ev === 'table.left' ? s.tableSingers(e.tableId).map(p => p.id) :
+    e.ev === 'person.left' && e.by === 'staff' && pid(e.personId) ? [pid(e.personId)] : [];
+  if (!sel.ids.some(id => ids.includes(id))) return none;
+  if (ids.includes(sel.ids[0])) return { handled: false, cancel: true };
+  for (const gid of sel.ids.slice(1).filter(id => ids.includes(id))) s.leaveSentDuet(sel, gid, { by: 'staff' });
+  return none;
+}
+
 function applyExternal(ctx, e, upcoming) {
   const s = ctx.s;
   const pid = k => ctx.key2pid.get(k);
@@ -565,7 +605,7 @@ function applyExternal(ctx, e, upcoming) {
   // Geste que le rejeu ne peut pas faire : noté, et hors du journal rejoué.
   const skip = why => {
     ctx.unapplied.add(e);
-    note(ctx, `${e.ev} non rejoué : ${[why, e.personId, e.entryId].filter(Boolean).join(' ')}`);
+    note(ctx, notReplayedNote(e, why));
     return false;
   };
   if (NOT_REPLAYED.has(e.ev)) {
@@ -608,24 +648,32 @@ function applyExternal(ctx, e, upcoming) {
         // encore dans le rejeu) restent en place, avant le nouveau titre, avec
         // leur duo et leurs réglages : le nouveau titre est ajouté, puis seuls
         // les titres remplacés sont retirés (une chanson invalide ne retire
-        // rien). Un « remplacer » vient toujours de chooseSong, jamais d'un duo.
+        // rien). Un « remplacer » réel ne crée jamais de duo (inviteDuet ajoute
+        // toujours) : seul le duo d'un titre gardé de même chanson est repris.
         const replaced = new Set((e.replacedEntryIds || []).map(id => ctx.real2rep.get(id)).filter(Boolean));
         const kept = e.mode === 'replace' ? s.songsOf(p).filter(x => !replaced.has(x.entryId)) : [];
         // Même chanson redemandée et encore à chanter dans le rejeu : le nouveau
         // titre la remplace aussi, dans le rejeu et dans son journal.
         const same = kept.find(x => x.songId === Number(song.songId));
         const keptCount = kept.length - (same ? 1 : 0);
+        // Duo de cette même chanson : le nouveau titre le reprend avec son
+        // invitée (qui l'a chanté en réel), accepté comme avant.
+        const sameGuest = same?.duet && s.people.get(same.duet.partnerId);
+        const carry = sameGuest && !sameGuest.withdrawnAt ? sameGuest : null;
+        const add = () => carry ? s.inviteDuet(p, carry.id, song) : s.chooseSong(p, song, 'append');
         const dropReplaced = () => { for (const x of s.songsOf(p).filter(x => replaced.has(x.entryId))) s.removeSong(p, x.entryId); };
-        if (keptCount) {
+        if (keptCount || carry) {
           if (same) s.removeSong(p, same.entryId);
-          try { s.chooseSong(p, song, 'append'); } catch (err) {
+          try { add(); } catch (err) {
             // Refus que le « remplacer » du bar n'a pas (même chanson qu'un titre
             // remplacé, liste pleine avec eux) : les retirer d'abord, puis ajouter.
             if (!['ALREADY_LISTED', 'LIST_FULL'].includes(err.code)) throw err;
             dropReplaced();
-            s.chooseSong(p, song, 'append');
+            add();
           }
           dropReplaced();
+          const added = s.songsOf(p).find(x => !before.has(x.entryId));
+          if (carry && same.duet.state === 'accepted' && added?.duet?.state === 'pending') s.answerDuet(carry, true, added.entryId);
         } else if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
         else s.chooseSong(p, song, e.mode === 'replace' ? 'replace' : 'append');
         const sameReal = same && ctx.rep2real.get(same.entryId);
@@ -715,7 +763,7 @@ function applyExternal(ctx, e, upcoming) {
     // Geste refusé par l'ordonnanceur rejoué (titre déjà chanté, duo parti…) :
     // hors du journal, sauf une demande déjà faite avant l'erreur.
     if (MUST_MATCH.has(e.ev) && !(e.ev === 'song.requested' && ctx.real2rep.has(e.entryId))) ctx.unapplied.add(e);
-    note(ctx, `${e.ev} non rejoué : ${err.message}`);
+    note(ctx, notReplayedNote(e, err.message));
     return false;
   }
 }
@@ -917,7 +965,14 @@ async function runFree(evening, opts = {}) {
           if (e.ev === 'battle.decided') { if (e.outcome === 'approved' && battle === 'none') battle = 'waiting'; continue; }
           if (e.ev === 'closing.set') { closingAt = Number.isFinite(e.closingAt) ? e.closingAt : Infinity; continue; }
           if (e.ev === 'closing.cleared') { closingAt = Infinity; continue; }
-          applyExternal(ctx, e, ext.slice(i, i + 5).filter(x => x.t - e.t < 1000));
+          let sent = { handled: false, cancel: false };
+          try { sent = sentGesture(ctx, e, upcoming?.sel); } catch (err) { note(ctx, `${e.ev} sur le titre envoyé : ${err.message}`); }
+          if (!sent.handled) applyExternal(ctx, e, ext.slice(i, i + 5).filter(x => x.t - e.t < 1000));
+          if (sent.cancel) {
+            if (upcoming.sel.turnCredit) s.rollbackUnplayed(upcoming.sel);
+            note(ctx, `titre envoyé retiré au départ de ${keyOf(ctx, upcoming.sel.ids[0])} : « ${upcoming.sel.song?.title || ''} »`);
+            upcoming = null;
+          }
         }
         // Plusieurs passages du serveur au même instant (fin → début → envoi).
         for (let k = 0; k < 4; k++) await stepServer();

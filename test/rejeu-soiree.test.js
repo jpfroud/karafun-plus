@@ -291,6 +291,9 @@ test('rejeu libre : « remplacer » garde un duo à sa place ; même chanson red
   // et la demande reste dans le journal (pas de « demande non rejouée »).
   const same = await rejeu.runFree(rejeu.loadEvening(evening(1)));
   assert.deepEqual(same.passages.map(p => p.entryId), ['x1', 'c1']);
+  // a1 était un duo : c1, la même chanson, le reprend (l'invitée a chanté en réel).
+  assert.deepEqual(same.passages.find(p => p.entryId === 'c1').ids, ['S01', 'S03']);
+  assert.equal(same.balance.replay.people.S03?.guestTurns, 1);
   assert.ok(same.passages.find(p => p.entryId === 'c1').waitSec > 0);
   assert.ok(same.notes.some(n => /remplacement de S01 : « a1 » redemandé avant d'être chanté dans le rejeu, chanté une fois/.test(n)));
   assert.deepEqual(same.warnings, ['le rejeu chante 2 titres de la file, la soirée 3']);
@@ -349,7 +352,7 @@ test('rejeu libre : invitée qui quitte un duo déjà chanté dans le rejeu, ges
   };
   stage(10, 'x1', ['S02'], 'q1');
   stage(200, 'y1', ['S04'], 'q2');
-  e(250, 'duo.left', { personId: 'S03', guestId: 'S03', ownerId: 'S01', entryId: 'a1' });
+  e(250, 'duo.left', { guestId: 'S03', ownerId: 'S01', entryId: 'a1', sent: false });
   stage(400, 'a1', ['S01'], 'q3');
   events.sort((a, b) => a.t - b.t || a.seq - b.seq).forEach((x, i) => { x.seq = i + 1; });
   const raw = { people: ['S01', 'S02', 'S03', 'S04'].map(key => ({ key, table: ['S02', 'S04'].includes(key) ? 'T2' : 'T1' })),
@@ -358,10 +361,74 @@ test('rejeu libre : invitée qui quitte un duo déjà chanté dans le rejeu, ges
   const a1 = res.passages.find(p => p.entryId === 'a1');
   assert.deepEqual(a1.ids, ['S01', 'S03']);
   assert.ok(a1.start < T0 + 250000 && a1.end > T0 + 250000, 'duo sur scène au départ réel de S03');
-  assert.ok(res.notes.some(n => /duo\.left non rejoué/.test(n)), res.notes.join(' | '));
+  assert.ok(res.notes.some(n => /duo\.left non rejoué : Duo introuvable\. S03 a1$/.test(n)), res.notes.join(' | '));
   assert.ok(res.notes.some(n => /song\.requested non rejoué : personne inconnue S99 z9$/.test(n)), res.notes.join(' | '));
   assert.equal(res.balance.replay.people.S03.guestTurns, 1);
   assert.equal(res.balance.real.people.S03?.guestTurns ?? 0, 0);
+});
+
+test('rejeu libre : départ ou duo quitté pendant qu’un titre est envoyé dans le rejeu, comme le serveur', async () => {
+  // Le rejeu envoie y1 (S02) pendant x1 ; en réel, S02 part pendant x1, y1
+  // n'ayant jamais été envoyé. Départ noté par le bar (personne ou table) :
+  // le serveur retire le titre envoyé et rend le passage. « Je pars » tapé
+  // par la personne : le serveur ne touche pas aux titres envoyés.
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const evening = (sec, ev, fields) => {
+    const events = [];
+    const e = (t, name, f = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + t * 1000, ev: name, ...f });
+    e(0, 'evening.started', { rules: {} });
+    e(0, 'table.opened', { tableId: 'T1' }); e(0, 'table.opened', { tableId: 'T2' });
+    for (const [key, tableId] of [['S01', 'T1'], ['S02', 'T2'], ['S03', 'T1'], ['S04', 'T2']]) e(0, 'person.joined', { personId: key, tableId });
+    const stage = (t, id, ids, q) => {
+      e(t - 5, 'turn.sent', { entryId: id, ownerId: ids[0], ids, queueId: q });
+      e(t, 'stage.started', { entryId: id, ids, queueId: q, source: 'queue', title: id });
+      e(t + 180, 'stage.ended', { queueId: q, playedSec: 180 });
+    };
+    return { e, stage, done: () => {
+      e(sec, ev, fields);
+      events.sort((a, b) => a.t - b.t || a.seq - b.seq).forEach((x, i) => { x.seq = i + 1; });
+      return { people: ['S01', 'S02', 'S03', 'S04'].map(key => ({ key, table: ['S02', 'S04'].includes(key) ? 'T2' : 'T1' })),
+        tables: [{ key: 'T1' }, { key: 'T2' }], events };
+    } };
+  };
+  const ownerLeaves = (ev, fields) => {
+    const b = evening(120, ev, fields);
+    b.e(1, 'song.requested', { personId: 'S01', entryId: 'x1', songId: 1, title: 'x1', mode: 'append' });
+    b.e(2, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    b.stage(10, 'x1', ['S01'], 'q1');
+    b.e(200, 'song.requested', { personId: 'S01', entryId: 'x2', songId: 3, title: 'x2', mode: 'append' });
+    b.stage(210, 'x2', ['S01'], 'q2');
+    return rejeu.runFree(rejeu.loadEvening(b.done()));
+  };
+  const self = await ownerLeaves('person.left', { personId: 'S02', by: 'self', songsDropped: 1 });
+  assert.deepEqual(self.passages.map(p => p.entryId), ['x1', 'y1', 'x2']);
+  for (const left of [await ownerLeaves('person.left', { personId: 'S02', by: 'staff', songsDropped: 1 }),
+    await ownerLeaves('table.left', { tableId: 'T2' })]) {
+    assert.deepEqual(left.passages.map(p => p.entryId), ['x1', 'x2']);
+    assert.ok(!left.balance.replay.people.S02?.turns);
+    assert.ok(left.notes.some(n => /titre envoyé retiré au départ de S02 : « y1 »/.test(n)), left.notes.join(' | '));
+  }
+  // Duo a1 de S01 avec S03 envoyé dans le rejeu pendant x1 ; en réel, S03
+  // quitte le duo (pas encore envoyé) ou est marquée partie par le bar.
+  const guestLeaves = (ev, fields) => {
+    const b = evening(120, ev, fields);
+    b.e(1, 'song.requested', { personId: 'S02', entryId: 'x1', songId: 3, title: 'x1', mode: 'append' });
+    b.e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+    b.e(2, 'duo.invited', { personId: 'S01', ownerId: 'S01', partnerId: 'S03', entryId: 'a1', sameGroup: true });
+    b.e(3, 'song.requested', { personId: 'S04', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    b.stage(10, 'x1', ['S02'], 'q1');
+    b.stage(200, 'y1', ['S04'], 'q2');
+    b.stage(400, 'a1', ['S01'], 'q3');
+    return rejeu.runFree(rejeu.loadEvening(b.done()));
+  };
+  for (const res of [await guestLeaves('duo.left', { guestId: 'S03', ownerId: 'S01', entryId: 'a1', sent: false }),
+    await guestLeaves('person.left', { personId: 'S03', by: 'staff', songsDropped: 0 })]) {
+    const a1 = res.passages.find(p => p.entryId === 'a1');
+    assert.ok(a1.sentAt < T0 + 120000 && a1.start > T0 + 120000, 'duo envoyé dans le rejeu avant le geste réel');
+    assert.deepEqual(a1.ids, ['S01']);
+    assert.ok(!res.balance.replay.people.S03?.guestTurns);
+    assert.ok(!res.notes.some(n => /non rejoué/.test(n)), res.notes.join(' | '));
+  }
 });
 
 test('bilan avant/après : un seul côté sans Timefold, note pour le même code, alerte sinon', async () => {
