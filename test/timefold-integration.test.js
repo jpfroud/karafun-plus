@@ -833,8 +833,67 @@ test('Timefold : une demande arrivée pendant la préparation de la précédente
         const start = Date.now();
         const fresh = await bridge.solve(request(`nouvelle-${k}`, 200));
         assert.equal(fresh.requestId, `nouvelle-${k}`);
+        // gstack-timing-ok: réponse en 0,2 à 0,7 s ; une recherche périmée non coupée la retarde de 5 s.
         assert.ok(Date.now() - start < 3000, `réponse en ${Date.now() - start} ms (essai ${k + 1})`);
         await stale;
       }
     } finally { bridge.close(); }
+  });
+
+// Classe Java lancée sur le jar (java en mode fichier source, JDK 11 et plus) :
+// appelle Main.solve avec une « demande plus récente » qui n'apparaît qu'après
+// le début de la recherche, sans arrêt du fil de lecture. Seule la veille de
+// Main peut alors couper la recherche (Timefold efface au démarrage de solve()
+// un arrêt reçu juste avant).
+const WATCH_PROBE = `import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Method;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+
+public class WatchProbe {
+    public static void main(String[] args) throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        JsonNode request = json.readTree(System.in);
+        Method solve = Class.forName("fr.karafun.plus.solver.Main")
+            .getDeclaredMethod("solve", JsonNode.class, AtomicReference.class, BooleanSupplier.class);
+        solve.setAccessible(true);
+        // Faux au contrôle qui précède la recherche, vrai 50 ms plus tard.
+        AtomicLong first = new AtomicLong();
+        BooleanSupplier later = () -> {
+            long now = System.nanoTime();
+            first.compareAndSet(0, now);
+            return now - first.get() > 50_000_000L;
+        };
+        System.out.println(json.writeValueAsString(solve.invoke(null, request, new AtomicReference<>(), later)));
+    }
+}
+`;
+
+test('Timefold : une demande plus récente arrête la recherche même après son démarrage',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, t => {
+    const { spawnSync } = require('node:child_process');
+    const os = require('node:os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-watch-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(dir, 'WatchProbe.java'), WATCH_PROBE);
+    const performances = [];
+    for (let i = 0; i < 60; i++) {
+      for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
+        id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
+        singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
+      });
+    }
+    const request = { requestId: 'veille', budgetMs: 5000, performances, pastAppearance: {}, physicalCount: {},
+      pinnedUntil: 0, roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false };
+    const run = spawnSync('java', ['-cp', JAR, path.join(dir, 'WatchProbe.java')], {
+      input: JSON.stringify(request), encoding: 'utf8', timeout: 60000,
+      env: { ...process.env, JAVA_TOOL_OPTIONS: '-Dorg.slf4j.simpleLogger.defaultLogLevel=warn' },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const response = JSON.parse(run.stdout.trim().split('\n').at(-1));
+    assert.equal(response.requestId, 'veille');
+    // gstack-timing-ok: arrêt redemandé toutes les 5 ms dès 50 ms ; sans veille, la recherche court ses 5 s.
+    assert.ok(response.elapsedMs < 2000, `recherche arrêtée après ${response.elapsedMs} ms`);
   });

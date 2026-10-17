@@ -1264,8 +1264,9 @@ async function runFree(evening, opts = {}) {
     const battleOf = new Map(ev.battles.map(b => [b.decision, b]));
     const battleQueue = [];
     // Passages hors file (loadEvening) : chacun entre dans KaraFun à son heure
-    // réelle, démarre dès que la scène est libre (après ce qui y était déjà)
-    // et retient d'ici là l'envoi, comme un titre déjà dans KaraFun.
+    // réelle, démarre dès que la scène est libre (face à une Battle en file,
+    // dans l'ordre de leurs débuts réels) et retient d'ici là l'envoi, comme
+    // un titre déjà dans KaraFun.
     const outside = [...ev.outside];
     const outsideDue = [];
     let battleQueuedAt = null;

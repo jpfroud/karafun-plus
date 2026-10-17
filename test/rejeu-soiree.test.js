@@ -1170,8 +1170,8 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(292, 'battle.automation', { ballotId: 'k1', status: 'after' });
   }));
   assert.deepEqual(nearClosing.map(b => b.at), [200]);
-  // KaraFun joue dans l'ordre d'arrivée : le titre lancé dans KaraFun (320 s)
-  // passe avant la Battle ajoutée ensuite (330 s).
+  // Ordre des débuts réels : le titre lancé dans KaraFun (320 s) passe avant
+  // la Battle ajoutée ensuite (330 s), jouée après lui en réel (385 s).
   const arrival = await scenesOf(build((e, stage, ask) => {
     ask(1, 'S01', 'x1', 1); ask(5, 'S02', 'y1', 2);
     stage(10, 'x1', ['S01'], 'q1', 300);
@@ -1795,6 +1795,7 @@ test('rejeu avec Timefold : effort compté en mouvements, plafond de temps attei
     const res = await rejeu.runForced(ev, { solver: JAR, moves: 1000, budget: 5000, until });
     assert.ok(res.timefold.asked > 5 && res.timefold.ok === res.timefold.asked, JSON.stringify(res.timefold));
     assert.equal(res.timefold.ceiling, 0);
+    // gstack-timing-ok: 1 000 mouvements prennent moins de 0,2 s par décision ; une limite ignorée en prend 5.
     assert.ok(Date.now() - started < res.timefold.asked * 2000, `${Date.now() - started} ms pour ${res.timefold.asked} décisions`);
     assert.match(rejeu.report(res, { short: true }), /^REJEU FORCÉ \[Timefold, 1 000 mouvements par décision\]\n(?!ATTENTION)/);
     assert.deepEqual(solverDirs(), dirsBefore);
