@@ -287,16 +287,19 @@ test('rejeu libre : « remplacer » garde un duo à sa place ; même chanson red
   assert.deepEqual(res.passages.map(p => [p.entryId, p.ids.join('+')]), [['x1', 'S02'], ['a1', 'S01+S03'], ['c1', 'S01']]);
   assert.equal(res.balance.replay.people.S03.guestTurns, 1);
   assert.deepEqual(res.warnings, []);
-  // c1 est la chanson de a1 : le nouveau titre la remplace, chanté une fois,
-  // et la demande reste dans le journal (pas de « demande non rejouée »).
+  // c1 est la chanson de a1 : le nouveau titre en est la suite, chantée une
+  // fois ; le passage revient à a1 (pas de « demande non rejouée »).
   const same = await rejeu.runFree(rejeu.loadEvening(evening(1)));
-  assert.deepEqual(same.passages.map(p => p.entryId), ['x1', 'c1']);
+  assert.deepEqual(same.passages.map(p => p.entryId), ['x1', 'a1']);
   // a1 était un duo : c1, la même chanson, le reprend (l'invitée a chanté en réel).
-  assert.deepEqual(same.passages.find(p => p.entryId === 'c1').ids, ['S01', 'S03']);
+  const sung = same.passages.find(p => p.entryId === 'a1');
+  assert.deepEqual(sung.ids, ['S01', 'S03']);
   assert.equal(same.balance.replay.people.S03?.guestTurns, 1);
-  // Le journal rejoué le sait aussi : attente sans scène de l'invitée mesurée.
-  assert.ok(same.balance.replay.people.S03.stageMaxSec > 0, JSON.stringify(same.balance.replay.people.S03));
-  assert.ok(same.passages.find(p => p.entryId === 'c1').waitSec > 0);
+  // Le journal rejoué le sait aussi : l'invitée attend depuis qu'elle a
+  // accepté le duo (2 s), pas depuis le « remplacer » (50 s).
+  assert.ok(same.balance.replay.people.S03.stageMaxSec >= Math.round((sung.start - T0) / 1000) - 3,
+    JSON.stringify({ start: (sung.start - T0) / 1000, S03: same.balance.replay.people.S03 }));
+  assert.ok(sung.waitSec > 0);
   assert.ok(same.notes.some(n => /remplacement de S01 : « a1 » redemandé avant d'être chanté dans le rejeu, chanté une fois/.test(n)));
   assert.deepEqual(same.warnings, ['le rejeu chante 2 titres de la file, la soirée 3']);
   // Le journal rejoué retire aussi a1 : plus aucun titre en attente pour S01
@@ -481,6 +484,48 @@ test('rejeu forcé : invitée qui quitte un duo déjà dans KaraFun ; export lu 
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
 });
 
+test('rejeu forcé : départ noté par le bar pendant qu’un titre est envoyé', async () => {
+  // a1 de S01 (duo avec S03 d'une autre table, accepté) envoyé à 21:03:15 ; à
+  // 21:03:17 le bar note le départ de l'auteur ou de l'invitée. Comme au
+  // serveur : titre retiré et passage rendu, ou duo chanté en solo.
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const run = async (who, ids) => {
+    const events = [];
+    const e = (t, name, f = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + t * 1000, ev: name, ...f });
+    e(0, 'evening.started', { rules: {} });
+    for (const t of ['T1', 'T2', 'T3']) e(0, 'table.opened', { tableId: t });
+    for (const [k, t] of [['S01', 'T1'], ['S02', 'T2'], ['S03', 'T3']]) e(0, 'person.joined', { personId: k, tableId: t });
+    e(1, 'song.requested', { personId: 'S02', entryId: 'x1', songId: 3, title: 'x1', mode: 'append' });
+    e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+    e(2, 'duo.invited', { personId: 'S01', ownerId: 'S01', partnerId: 'S03', entryId: 'a1', sameGroup: false });
+    e(2.5, 'duo.answered', { personId: 'S03', partnerId: 'S03', ownerId: 'S01', entryId: 'a1', accepted: true });
+    e(4, 'song.requested', { personId: 'S02', entryId: 'x2', songId: 2, title: 'x2', mode: 'append' });
+    const stage = (t, id, sids, q) => {
+      e(t - 5, 'turn.sent', { entryId: id, ownerId: sids[0], ids: sids, queueId: q });
+      e(t, 'stage.started', { entryId: id, ids: sids, queueId: q, source: 'queue', title: id });
+      e(t + 180, 'stage.ended', { queueId: q, playedSec: 180 });
+    };
+    stage(10, 'x1', ['S02'], 'q1');
+    e(195, 'turn.sent', { entryId: 'a1', ownerId: 'S01', ids: ['S01', 'S03'], queueId: 'q2' });
+    e(197, 'person.left', { personId: who, by: 'staff', songsDropped: 0 });
+    if (ids) {
+      e(200, 'stage.started', { entryId: 'a1', ids, queueId: 'q2', source: 'queue', title: 'a1' });
+      e(380, 'stage.ended', { queueId: 'q2', playedSec: 180 });
+    }
+    stage(600, 'x2', ['S02'], 'q3');
+    return rejeu.runForced(rejeu.loadEvening({ people: ['S01', 'S02', 'S03'].map(key => ({ key })),
+      tables: ['T1', 'T2', 'T3'].map(key => ({ key })), events }));
+  };
+  const owner = await run('S01', null);
+  assert.ok(owner.notes.some(n => /titre envoyé retiré au départ de S01 : « a1 »/.test(n)), owner.notes.join(' | '));
+  assert.ok(!owner.passages.some(p => p.entryId === 'a1'));
+  assert.equal(owner.decisions.find(d => d.real.entryId === 'x2')?.match, true);
+  const guest = await run('S03', ['S01']);
+  assert.deepEqual(guest.passages.find(p => p.entryId === 'a1')?.ids, ['S01']);
+  assert.ok(!guest.notes.some(n => /non rejoué|titre envoyé retiré/.test(n)), guest.notes.join(' | '));
+  assert.equal(guest.decisions.find(d => d.real.entryId === 'x2')?.match, true);
+});
+
 test('rejeu libre : heure de fermeture comme le serveur ; chanson redemandée en « ajouter » avant d’être chantée dans le rejeu', async () => {
   const T0 = Date.UTC(2026, 9, 15, 19, 0);
   const build = (fill, sort = true) => {
@@ -515,7 +560,7 @@ test('rejeu libre : heure de fermeture comme le serveur ; chanson redemandée en
   // il revient dans la liste de son auteur et n'est pas chanté.
   const pulled = await rejeu.runFree(rejeu.loadEvening(closing(250, 420)));
   assert.deepEqual(pulled.passages.map(p => p.entryId), ['x1', 'y1']);
-  assert.ok(pulled.notes.some(n => /titre envoyé retiré à la fermeture : « x2 »/.test(n)), pulled.notes.join(' | '));
+  assert.ok(pulled.notes.some(n => /titre envoyé retiré à la fermeture, rendu à S01 : « x2 »/.test(n)), pulled.notes.join(' | '));
   // En réel, a1 de S01 passe en premier ; pendant a1, S01 redemande la même
   // chanson en « ajouter » (a2). Le rejeu fait passer y1 d'abord : à cette
   // heure, a1 est encore dans la liste. La demande attend que a1 parte.
@@ -552,6 +597,131 @@ test('rejeu libre : heure de fermeture comme le serveur ; chanson redemandée en
   assert.deepEqual(gone.passages.map(p => p.entryId), ['y1']);
   assert.ok(gone.notes.some(n => /song\.requested non rejoué : personne partie avant que la même chanson quitte sa liste S01 a2/.test(n)),
     gone.notes.join(' | '));
+  // « Remplacer » réel de la demande différée par b1 : b1 chanté, jamais a2.
+  const replaced = await rejeu.runFree(rejeu.loadEvening(dropped(e => {
+    e(45, 'song.requested', { personId: 'S01', entryId: 'b1', songId: 7, title: 'b1', mode: 'replace', replacedEntryIds: ['a2'] });
+    e(400, 'turn.sent', { entryId: 'b1', ownerId: 'S01', ids: ['S01'], queueId: 'q3' });
+  })));
+  assert.deepEqual(replaced.passages.map(p => p.entryId).sort(), ['a1', 'b1', 'y1']);
+  assert.ok(replaced.notes.some(n => /song\.requested non rejoué : titre remplacé avant que la même chanson quitte la liste S01 a2/.test(n)),
+    replaced.notes.join(' | '));
+  // Duo différé (autre table) : l'invitation et la réponse réelles attendent
+  // la demande, puis le duo est chanté à deux.
+  const duet = await rejeu.runFree(rejeu.loadEvening(build((e, stage) => {
+    e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+    stage(10, 'a1', ['S01'], 'q1');
+    e(30, 'song.requested', { personId: 'S01', entryId: 'a2', songId: 1, title: 'a1', mode: 'append' });
+    e(30, 'duo.invited', { personId: 'S01', ownerId: 'S01', partnerId: 'S02', entryId: 'a2', sameGroup: false });
+    e(35, 'duo.answered', { personId: 'S02', partnerId: 'S02', ownerId: 'S01', entryId: 'a2', accepted: true });
+    stage(200, 'y1', ['S02'], 'q2');
+    stage(400, 'a2', ['S01', 'S02'], 'q3');
+  })));
+  assert.deepEqual(duet.passages.find(p => p.entryId === 'a2')?.ids, ['S01', 'S02']);
+  assert.ok(!duet.notes.some(n => /non rejoué/.test(n)), duet.notes.join(' | '));
+  // Fermeture qui retient a1 jusqu'à la fin : a2 n'est jamais fait.
+  const stuck = await rejeu.runFree(rejeu.loadEvening(dropped(e => e(20, 'closing.set', { closingAt: T0 + 150000 }))));
+  assert.deepEqual(stuck.passages.map(p => p.entryId), ['y1']);
+  assert.ok(stuck.notes.some(n => /song\.requested non rejoué : même chanson restée à chanter jusqu'à la fin S01 a2/.test(n)),
+    stuck.notes.join(' | '));
+});
+
+test('rejeu libre : coupure de l’application, passage repris, plusieurs Battles, demande différée à sa place', async () => {
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const build = fill => {
+    const events = [];
+    const e = (t, name, f = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + t * 1000, ev: name, ...f });
+    e(0, 'evening.started', { rules: {} });
+    e(0, 'app.started', { restored: false, offlineMs: 0 });
+    for (const t of ['T1', 'T2']) e(0, 'table.opened', { tableId: t });
+    for (const [k, t] of [['S01', 'T1'], ['S02', 'T2'], ['S03', 'T1']]) e(0, 'person.joined', { personId: k, tableId: t });
+    const stage = (t, id, ids, q, sec = 180) => {
+      if (id) e(t - 5, 'turn.sent', { entryId: id, ownerId: ids[0], ids, queueId: q });
+      e(t, 'stage.started', id ? { entryId: id, ids, queueId: q, source: 'queue', title: id } : { queueId: q, source: 'battle', ids: [] });
+      e(t + sec, 'stage.ended', { queueId: q, playedSec: sec });
+    };
+    const ask = (t, personId, entryId, songId) => e(t, 'song.requested', { personId, entryId, songId, title: entryId, mode: 'append' });
+    fill(e, stage, ask);
+    events.sort((a, b) => a.t - b.t || a.seq - b.seq).forEach((x, i) => { x.seq = i + 1; });
+    return { people: [['S01', 'T1'], ['S02', 'T2'], ['S03', 'T1']].map(([key, table]) => ({ key, table })),
+      tables: [{ key: 'T1' }, { key: 'T2' }], events };
+  };
+  // Coupure de l'application (PC éteint) de 20 s à 400 s, notée seulement par
+  // la durée d'arrêt du redémarrage : rien ne part pendant ce temps.
+  const crash = await rejeu.runFree(rejeu.loadEvening(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(400, 'app.started', { restored: true, offlineMs: 380000 });
+    stage(410, 'y1', ['S02'], 'q2');
+  })));
+  assert.ok(crash.passages.find(p => p.entryId === 'y1').sentAt >= T0 + 400000, JSON.stringify(crash.passages));
+  // Titre repris après un redémarrage (même file KaraFun, sans fin notée) : un
+  // seul passage, de son début à la fin de la reprise, et un seul délai de
+  // lancement compté.
+  const resumed = rejeu.loadEvening(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2);
+    e(5, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+    e(10, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+    e(100, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+    e(200, 'stage.ended', { queueId: 'q1', playedSec: 100 });
+    stage(220, 'y1', ['S02'], 'q2');
+  }));
+  assert.equal(resumed.startGaps.length, 2);
+  assert.equal(resumed.played.get('x1'), 190);
+  // Battles du journal rejoué (lu par evening-stats.js) : durée de chacune.
+  const battlesOf = async raw => {
+    const es = require('../evening-stats');
+    const original = es.computeStats;
+    let journal = [];
+    es.computeStats = (...a) => { if (a[0].events[0]?.boot === 'rejeu') journal = a[0].events; return original(...a); };
+    try { await rejeu.runFree(rejeu.loadEvening(raw)); } finally { es.computeStats = original; }
+    return journal.filter(x => x.ev === 'stage.started' && x.source === 'battle')
+      .map(x => journal.find(y => y.ev === 'stage.ended' && y.queueId === x.queueId).playedSec);
+  };
+  // Deux Battles approuvées : chacune jouée, avec sa durée réelle.
+  const many = await battlesOf(build((e, stage, ask) => {
+    for (let k = 1; k <= 4; k++) { ask(k, 'S01', `x${k}`, k); ask(k, 'S02', `y${k}`, 10 + k); }
+    e(20, 'battle.decided', { outcome: 'approved' });
+    stage(10, 'x1', ['S01'], 'q1'); stage(200, 'y1', ['S02'], 'q2');
+    stage(400, null, null, 'b1', 200);
+    e(700, 'battle.decided', { outcome: 'approved' });
+    stage(610, 'x2', ['S01'], 'q3'); stage(800, 'y2', ['S02'], 'q4');
+    stage(1000, null, null, 'b2', 150);
+    stage(1160, 'x3', ['S01'], 'q5'); stage(1350, 'y3', ['S02'], 'q6');
+  }));
+  assert.deepEqual(many, [200, 150]);
+  // Battle envoyée pendant x1 alors que la fermeture laisse la place : jouée
+  // même si elle démarre plus près de l'heure (server.js ne la retire pas).
+  const late = await battlesOf(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    e(5, 'closing.set', { closingAt: T0 + 400000 });
+    e(20, 'battle.decided', { outcome: 'approved' });
+    stage(10, 'x1', ['S01'], 'q1');
+    stage(330, null, null, 'b1', 200);
+  }));
+  assert.deepEqual(late, [200]);
+  // a2 (même chanson que a1, encore à chanter dans le rejeu) attend ; c1,
+  // demandé après lui, est fait tout de suite. Une fois fait, a2 reprend sa
+  // place réelle, devant c1.
+  const order = await rejeu.runFree(rejeu.loadEvening(build((e, stage, ask) => {
+    ask(1, 'S02', 'y1', 2); ask(2, 'S01', 'a1', 1);
+    stage(10, 'a1', ['S01'], 'q1');
+    ask(30, 'S01', 'a2', 1); ask(35, 'S01', 'c1', 3); ask(36, 'S02', 'y2', 4); ask(37, 'S02', 'y3', 5);
+    stage(200, 'y1', ['S02'], 'q2'); stage(400, 'a2', ['S01'], 'q3'); stage(600, 'y2', ['S02'], 'q4');
+    stage(800, 'c1', ['S01'], 'q5'); stage(1000, 'y3', ['S02'], 'q6');
+  })));
+  const ids = order.passages.map(p => p.entryId);
+  assert.ok(ids.indexOf('a2') >= 0 && ids.indexOf('a2') < ids.indexOf('c1'), ids.join(' '));
+  // Table fermée pendant que la demande attend : notée comme un départ.
+  const closed = await rejeu.runFree(rejeu.loadEvening(build((e, stage, ask) => {
+    ask(1, 'S02', 'y1', 2); ask(2, 'S01', 'a1', 1);
+    stage(10, 'a1', ['S01'], 'q1');
+    ask(30, 'S01', 'a2', 1);
+    e(45, 'table.left', { tableId: 'T1' });
+    stage(200, 'y1', ['S02'], 'q2');
+  })));
+  assert.ok(closed.notes.some(n => /song\.requested non rejoué : personne partie avant que la même chanson quitte sa liste S01 a2/.test(n)),
+    closed.notes.join(' | '));
 });
 
 test('bilan avant/après : un seul côté sans Timefold, note pour le même code, alerte sinon', async () => {
@@ -563,6 +733,12 @@ test('bilan avant/après : un seul côté sans Timefold, note pour le même code
   assert.match(oneSide('before', true), /\n {2}NOTE après sans Timefold/);
   assert.match(oneSide('after', false), /\n {2}ATTENTION avant sans Timefold et version différente/);
   for (const text of [oneSide('after', true), oneSide('after', false)]) assert.doesNotMatch(text, /ATTENTION rejeu sans Timefold/);
+  // Indice de Jain : toute baisse est « moins bien » (AGENTS.md), même de 0,002.
+  const lower = { ...cmp.after, balance: { ...cmp.after.balance,
+    replay: { ...cmp.after.balance.replay, jain: cmp.before.balance.replay.jain - 0.002 } } };
+  const jainText = rejeu.compareReport({ ...cmp, after: lower }, { short: true });
+  assert.match(jainText, /indice de Jain[^\n]*MOINS BIEN/);
+  assert.match(jainText, /équilibre \(Jain\) [\d,]+ → [\d,]+ \(MOINS BIEN\)/);
   // Timefold lancé mais sans aucun plan : à réparer, ni « relancer avec
   // --solveur » ni « apport de Timefold ».
   const noPlan = r => ({ ...r, solver: false, jar: '/x/solver/target/karafun-solver.jar', timefold: { asked: 5, ok: 0, failed: 5, lastError: 'x' } });

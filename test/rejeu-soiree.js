@@ -163,39 +163,63 @@ function loadEvening(input) {
   // depuis la fin du précédent (lecture auto) et depuis son envoi.
   const played = new Map();
   const startGaps = [];
-  let battleSec = null;
+  const battles = []; // durée jouée de chaque Battle, dans l'ordre
   {
     const open = new Map(); let last = null; let lastEnd = 0; const sent = new Map();
     for (const e of events) {
       if (e.ev === 'turn.sent') sent.set(e.entryId, e.t);
       else if (e.ev === 'stage.started') {
-        last = e; if (e.queueId != null) open.set(String(e.queueId), e);
+        const q = e.queueId == null ? null : String(e.queueId);
+        // Même titre noté de nouveau (redémarrage pendant la chanson, reprise
+        // juste après) : un seul passage, comme evening-stats.js ; la durée
+        // jouée notée à sa fin part de la reprise.
+        if (q != null && (open.has(q) || last?.q === q)) {
+          const st = open.get(q) || last;
+          st.resumedAt = e.t;
+          open.set(q, st);
+          continue;
+        }
+        open.clear();
+        last = { e, q, resumedAt: null };
+        open.set(q ?? `#${e.seq ?? e.t}`, last);
         if (e.source === 'queue' || (e.entryId && e.source !== 'battle')) {
           startGaps.push({ endGap: e.t - lastEnd, sendGap: e.t - (sent.get(e.entryId) ?? e.t) });
         }
       } else if (e.ev === 'stage.ended') {
-        const st = (e.queueId != null && open.get(String(e.queueId))) || last;
+        const q = e.queueId == null ? null : String(e.queueId);
+        const st = (q != null && open.get(q)) || [...open.values()].at(-1);
         lastEnd = e.t;
         if (!st) continue;
-        const sec = Number.isFinite(Number(e.playedSec)) ? Number(e.playedSec) : (e.t - st.t) / 1000;
-        if (st.entryId) played.set(st.entryId, sec);
-        else if (st.source === 'battle') battleSec = sec;
+        const playedSec = Number(e.playedSec);
+        const endAt = Number.isFinite(playedSec) ? Math.min(e.t, (st.resumedAt ?? st.e.t) + playedSec * 1000) : e.t;
+        const sec = (endAt - st.e.t) / 1000;
+        if (st.e.entryId) played.set(st.e.entryId, sec);
+        else if (st.e.source === 'battle') battles.push(sec);
+        for (const [k, v] of open) if (v === st) open.delete(k);
       }
     }
   }
-  // Arrêts de l'application : rien ne part pendant ces intervalles (rejeu libre).
+  // Arrêts de l'application : rien ne part pendant ces intervalles (rejeu
+  // libre). Comme evening-stats.js, chaque redémarrage note la durée de
+  // l'arrêt (offlineMs), arrêt propre ou coupure ; sans elle (ancien
+  // export), de l'arrêt noté au redémarrage.
   const offline = [];
   { let stoppedAt = null;
     for (const e of events) {
       if (e.ev === 'app.stopped') stoppedAt = e.t;
-      else if (e.ev === 'app.started' && stoppedAt != null) { offline.push([stoppedAt, e.t]); stoppedAt = null; }
+      else if (e.ev === 'app.started') {
+        const ms = Number(e.offlineMs);
+        if (Number.isFinite(ms)) { if (ms > 0) offline.push([Math.max(events[0].t, e.t - ms), e.t]); }
+        else if (stoppedAt != null) offline.push([stoppedAt, e.t]);
+        stoppedAt = null;
+      }
     } }
   const timezone = raw.evening?.timezone || 'Europe/Paris';
   const realPassages = passagesFromEvents(events);
   // Attentes de evening-stats.js présentes dans l'export (vérification de la définition).
   const exportWaits = new Map();
   for (const st of raw.stats?.timeline?.stages || []) if (st.entryId && st.waitSec != null) exportWaits.set(st.entryId, st.waitSec);
-  return { raw, events, people, tables, rules, played, startGaps, battleSec, offline,
+  return { raw, events, people, tables, rules, played, startGaps, battles, offline,
     timezone, realPassages, exportWaits, skipped };
 }
 
@@ -229,15 +253,24 @@ const STAGE_EVENTS = new Set(['stage.started', 'stage.ended', 'stage.restarted',
 // départs, connexions…) et les passages rejoués à la place des passages réels,
 // avec leur envoi (la rotation compte un passage à son envoi). `skip` : gestes
 // réels que le rejeu n'a pas pu faire (retrait d'un titre déjà chanté dans le
-// rejeu, demande refusée) ; `patches` : champs d'un geste que le rejeu a fait
-// autrement (« remplacer » qui retire aussi la même chanson encore à chanter).
-// Les gestes non rejoués de NOT_IN_JOURNAL n'y sont pas non plus. `added` :
-// gestes que le rejeu a faits en plus, juste après celui qui les a causés
-// (duo repris par un « remplacer »).
-function replayJournal(ev, passages, skip = new Set(), patches = new Map(), added = new Map()) {
-  const merged = ev.events.filter(e => !STAGE_EVENTS.has(e.ev) && !NOT_IN_JOURNAL.has(e.ev) && !skip.has(e))
-    .flatMap(e => [patches.has(e) ? { ...e, ...patches.get(e) } : e, ...(added.get(e) || [])])
-    .map((e, order) => ({ e, order }));
+// rejeu, demande refusée). Les gestes non rejoués de NOT_IN_JOURNAL n'y sont
+// pas non plus. `added` : gestes que le rejeu a faits en plus, juste après
+// celui qui les a causés ; `aliases` : geste → { from, to } : après lui, les
+// gestes réels sur le titre `from` visent le titre `to` (même chanson
+// redemandée par « remplacer » : le rejeu chante l'ancien titre).
+function replayJournal(ev, passages, skip = new Set(), aliases = new Map(), added = new Map()) {
+  const target = new Map();
+  const merged = [];
+  for (const e of ev.events) {
+    if (STAGE_EVENTS.has(e.ev) || NOT_IN_JOURNAL.has(e.ev) || skip.has(e)) continue;
+    let x = target.has(e.entryId) ? { ...e, entryId: target.get(e.entryId) } : e;
+    if (Array.isArray(x.replacedEntryIds) && x.replacedEntryIds.some(id => target.has(id))) {
+      x = { ...x, replacedEntryIds: x.replacedEntryIds.map(id => target.get(id) ?? id) };
+    }
+    merged.push({ e: x, order: merged.length });
+    for (const a of added.get(e) || []) merged.push({ e: a, order: merged.length });
+    if (aliases.has(e)) target.set(aliases.get(e).from, aliases.get(e).to);
+  }
   passages.forEach((st, k) => {
     const queueId = `rejeu-${k}`;
     if (st.sentAt != null && st.source === 'queue') {
@@ -509,7 +542,8 @@ function makeContext(ev, opts) {
   s.solverBridge = null;
   const ctx = { ev, s, rules, overrides, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
     notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || 3000, solver: null, jar: null,
-    code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null }, unapplied: new Set(), patches: new Map(), added: new Map() };
+    code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null }, unapplied: new Set(), aliases: new Map(), added: new Map(),
+    requestedAt: new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t])) };
   const jar = resolveJar(opts.solver, code);
   if (jar) {
     const { TimefoldBridge } = require(path.join(code.dir, 'solver', 'bridge'));
@@ -709,18 +743,26 @@ function applyExternal(ctx, e, upcoming) {
           dropReplaced();
         } else if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
         else s.chooseSong(p, song, e.mode === 'replace' ? 'replace' : 'append');
-        const sameReal = same && ctx.rep2real.get(same.entryId);
-        if (sameReal) ctx.patches.set(e, { replacedEntryIds: [...(e.replacedEntryIds || []), sameReal] });
         const fresh = s.songsOf(p).find(x => !before.has(x.entryId));
         if (fresh) { ctx.real2rep.set(e.entryId, fresh.entryId); ctx.rep2real.set(fresh.entryId, e.entryId); }
+        // Même chanson encore à chanter dans le rejeu : le nouveau titre en est
+        // la suite. Le journal rejoué garde l'ancien titre en liste (son duo,
+        // l'attente de son invitée depuis l'acceptation) et lui donne le
+        // passage ; la demande réelle y est retirée aussitôt, et les gestes
+        // réels qui suivent sur le nouveau titre visent l'ancien.
+        const sameReal = same && ctx.rep2real.get(same.entryId);
+        if (sameReal && fresh) {
+          ctx.rep2real.set(fresh.entryId, sameReal);
+          ctx.real2rep.set(sameReal, fresh.entryId);
+          ctx.aliases.set(e, { from: e.entryId, to: sameReal });
+          ctx.added.set(e, [{ v: 1, t: e.t, ev: 'song.removed', personId: e.personId, entryId: e.entryId, by: 'self' }]);
+        }
         // Duo accepté de cette même chanson : son invitée (qui l'a chanté en
-        // réel) rejoint le nouveau titre, et le journal rejoué le note (titre
-        // déjà enregistré : un refus ici ne retire pas la demande du journal).
+        // réel) rejoint le nouveau titre (titre déjà enregistré : un refus ici
+        // ne retire pas la demande du journal).
         if (carry && fresh) {
           const { direct } = s.requestDuetJoin(carry, p.id, fresh.entryId);
           if (!direct) s.answerDuetJoin(p, fresh.entryId, carry.id, true);
-          const keys = { requesterId: keyOf(ctx, carry.id), ownerId: e.personId, entryId: e.entryId };
-          ctx.added.set(e, [{ v: 1, t: e.t, ev: 'duo.joinRequested', ...keys, direct: true }]);
         }
         if (keptCount) note(ctx, `remplacement de ${e.personId} : ${keptCount} titre(s) pas encore chanté(s) dans le rejeu gardé(s)`);
         if (same) note(ctx, `remplacement de ${e.personId} : « ${same.title} » redemandé avant d'être chanté dans le rejeu, chanté une fois`);
@@ -964,17 +1006,24 @@ async function runFree(evening, opts = {}) {
     const ext = ev.events.filter(e => REPLAYED.has(e.ev) || NOT_REPLAYED.has(e.ev) ||
       ['battle.decided', 'closing.set', 'closing.cleared'].includes(e.ev));
     for (const e of ev.events) countIgnored(ctx, e);
-    const realBattle = ev.events.find(e => e.ev === 'battle.decided' && e.outcome === 'approved');
+    // Battles approuvées en réel : chacune, à son tour, part dans KaraFun à
+    // la première case libre, puis démarre avec le délai et dure le temps de
+    // la Battle réelle de même rang.
     const auto = ev.events.filter(e => e.ev === 'battle.automation');
-    const bSending = auto.find(e => e.status === 'sending'), bPlaying = auto.find(e => e.status === 'playing');
-    const battlePreGap = bSending && bPlaying ?
-      bPlaying.t - Math.max(bSending.t, ev.events.find(e => e.ev === 'stage.ended' && e.t > bSending.t)?.t || bSending.t) : 132000;
-    const battleMs = (ev.battleSec || 260) * 1000;
+    const sendings = auto.filter(e => e.status === 'sending');
+    const preGaps = sendings.map((sending, k) => {
+      const playing = auto.find(e => e.status === 'playing' && e.t > sending.t && !(e.t > sendings[k + 1]?.t));
+      if (!playing) return null;
+      const freed = ev.events.find(e => e.ev === 'stage.ended' && e.t > sending.t)?.t || sending.t;
+      return Math.max(0, playing.t - Math.max(sending.t, freed));
+    });
+    const preGapOf = k => preGaps[k] ?? preGaps.find(x => x != null) ?? 132000;
+    const battleMsOf = k => 1000 * (ev.battles[k] ?? ev.battles.at(-1) ?? 260);
     const offlineAt = t => ev.offline.some(([a, b]) => t >= a && t < b);
     let closingAt = Infinity;
     const stages = [];
     let current = null, upcoming = null, lastEnd = 0;
-    let battle = realBattle ? 'none' : 'never';
+    let battle = 'none', battlesDue = 0, battlesPlayed = 0;
     const durOf = sel => 1000 * (ev.played.get(ctx.rep2real.get(sel.song.entryId)) ?? (Number(sel.song.duration) || 200));
     // Début du prochain titre : délais réels du titre de même rang.
     const startAt = () => {
@@ -990,14 +1039,17 @@ async function runFree(evening, opts = {}) {
     const stepServer = async () => {
       if (current && clock.now >= current.end) {
         if (current.kind === 'song') { s.recordSlot((current.end - current.start) / 1000); s.songEnded(current.sel.ids); s.endStage(current.sel); }
-        if (current.kind === 'battle') battle = 'done';
+        if (current.kind === 'battle') {
+          battlesPlayed++;
+          if (battlesDue) { battlesDue--; battle = 'waiting'; } else battle = 'none';
+        }
         lastEnd = current.end; current = null;
       }
       // Titre envoyé qui ne tiendrait plus avant l'heure : retiré de KaraFun,
       // il revient dans la liste de son auteur (pullFromKaraFun, restorePulled).
       if (upcoming && closingBlocks()) {
         s.requeueUnplayed(upcoming.sel);
-        note(ctx, `titre envoyé retiré à la fermeture : « ${upcoming.sel.song?.title || ''} »`);
+        note(ctx, `titre envoyé retiré à la fermeture, rendu à ${keyOf(ctx, upcoming.sel.ids[0])} : « ${upcoming.sel.song?.title || ''} »`);
         upcoming = null;
       }
       if (!current && upcoming && clock.now >= startAt()) {
@@ -1006,9 +1058,12 @@ async function runFree(evening, opts = {}) {
         s.recordStage(upcoming.sel, clock.now);
         stages.push(current); upcoming = null;
       }
-      if (battle === 'waiting' && !upcoming && !(s.reservedNext && current)) battle = 'queued';
-      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + battlePreGap && !closingBlocks()) {
-        current = { kind: 'battle', start: clock.now, end: clock.now + battleMs }; stages.push(current); battle = 'playing';
+      // Envoi de la Battle (server.js) : pas après l'heure de fermeture ; une
+      // Battle envoyée n'est jamais retirée.
+      if (battle === 'waiting' && !upcoming && !(s.reservedNext && current) && !closingBlocks()) battle = 'queued';
+      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + preGapOf(battlesPlayed)) {
+        current = { kind: 'battle', start: clock.now, end: clock.now + battleMsOf(battlesPlayed) };
+        stages.push(current); battle = 'playing';
       }
       const hold = ['queued', 'playing'].includes(battle) || offlineAt(clock.now);
       if (!upcoming && !hold && current?.kind === 'song' && !s.reservedNext) {
@@ -1032,9 +1087,9 @@ async function runFree(evening, opts = {}) {
     };
     // Demandes différées (même chanson encore dans la liste) : faites dès
     // qu'elle en est sortie (envoyée, retirée), suivies des gestes réels sur
-    // ce titre arrivés entre-temps. Personne partie avant, titre retiré avant,
-    // ou chanson restée jusqu'à la fin : la demande et ces gestes sortent du
-    // journal rejoué.
+    // ce titre arrivés entre-temps. Personne partie avant, titre retiré ou
+    // remplacé avant, ou chanson restée jusqu'à la fin : la demande et ces
+    // gestes sortent du journal rejoué.
     ctx.deferred = [];
     const dropDeferred = (d, why) => {
       ctx.deferred.splice(ctx.deferred.indexOf(d), 1);
@@ -1043,11 +1098,20 @@ async function runFree(evening, opts = {}) {
     };
     const retryDeferred = () => {
       for (const d of [...ctx.deferred]) {
-        const p = s.people.get(ctx.key2pid.get(d.e.personId));
-        if (p?.withdrawnAt) { dropDeferred(d, 'personne partie avant que la même chanson quitte sa liste'); continue; }
+        const pid = ctx.key2pid.get(d.e.personId);
+        const p = s.people.get(pid);
+        // Partie, ou sa table fermée (personne retirée de l'ordonnanceur).
+        if (pid && (!p || p.withdrawnAt)) { dropDeferred(d, 'personne partie avant que la même chanson quitte sa liste'); continue; }
         if (p && s.songsOf(p).some(x => x.songId === Number(d.e.songId))) continue;
         ctx.deferred.splice(ctx.deferred.indexOf(d), 1);
-        applyExternal(ctx, d.e, d.upcoming);
+        if (applyExternal(ctx, d.e, d.upcoming)) {
+          // À sa place réelle : devant les titres demandés après elle.
+          const id = ctx.real2rep.get(d.e.entryId);
+          const list = s.songsOf(p);
+          const from = list.findIndex(x => x.entryId === id);
+          const to = list.findIndex(x => (ctx.requestedAt.get(ctx.rep2real.get(x.entryId)) ?? -Infinity) > d.e.t);
+          if (from >= 0 && to >= 0 && to < from) s.reorderSongs(p, id, to);
+        }
         for (const f of d.follow) applyExternal(ctx, f.e, f.soon);
       }
     };
@@ -1059,11 +1123,20 @@ async function runFree(evening, opts = {}) {
       for (; steps < maxSteps; steps++) {
         while (i < ext.length && ext[i].t <= clock.now) {
           const e = ext[i++];
-          if (e.ev === 'battle.decided') { if (e.outcome === 'approved' && battle === 'none') battle = 'waiting'; continue; }
+          if (e.ev === 'battle.decided') {
+            if (e.outcome === 'approved') { if (battle === 'none') battle = 'waiting'; else battlesDue++; }
+            continue;
+          }
           if (e.ev === 'closing.set') { closingAt = Number.isFinite(e.closingAt) ? e.closingAt : Infinity; continue; }
           if (e.ev === 'closing.cleared') { closingAt = Infinity; continue; }
           const soon = ext.slice(i, i + 5).filter(x => x.t - e.t < 1000);
-          const held = e.entryId && e.ev !== 'song.requested' && ctx.deferred.find(d => d.e.entryId === e.entryId);
+          if (e.ev === 'song.requested' && e.mode === 'replace') {
+            for (const d of ctx.deferred.filter(x => (e.replacedEntryIds || []).includes(x.e.entryId))) {
+              dropDeferred(d, 'titre remplacé avant que la même chanson quitte la liste');
+            }
+          }
+          // Gestes rejoués sur le titre d'une demande différée : ils l'attendent.
+          const held = e.entryId && REPLAYED.has(e.ev) && e.ev !== 'song.requested' && ctx.deferred.find(d => d.e.entryId === e.entryId);
           if (held) {
             held.follow.push({ e, soon });
             if (e.ev === 'song.removed') dropDeferred(held, 'titre retiré avant que la même chanson quitte la liste');
@@ -1086,7 +1159,7 @@ async function runFree(evening, opts = {}) {
         if (i < ext.length) next.push(ext[i].t);
         if (current) next.push(current.end, current.start + pushMs);
         if (!current && upcoming) next.push(startAt());
-        if (!current && !upcoming && battle === 'queued') next.push(lastEnd + battlePreGap);
+        if (!current && !upcoming && battle === 'queued') next.push(lastEnd + preGapOf(battlesPlayed));
         for (const [, b] of ev.offline) next.push(b);
         const future = next.filter(t => t > clock.now);
         if (!future.length) break;
@@ -1102,7 +1175,7 @@ async function runFree(evening, opts = {}) {
       start: st.start, end: st.end, sentAt: st.sentAt, source: 'queue', title: st.sel.song.title,
       newRound: !!st.decision?.pick.newRound, borrowedIds: st.decision?.pick.borrowedIds || [] } :
       { entryId: null, ids: [], start: st.start, end: st.end, source: st.kind, title: st.kind });
-    const journal = replayJournal(ev, replayPassages, ctx.unapplied, ctx.patches, ctx.added);
+    const journal = replayJournal(ev, replayPassages, ctx.unapplied, ctx.aliases, ctx.added);
     const passages = computeWaits(replayPassages, ev, journal).map(w => ({ ...w, borrowedIds: w.borrowedIds || [] }));
     return finish(ctx, 'libre', passages, compareOrders(ev, passages), journal);
   });
@@ -1294,8 +1367,9 @@ const INDICATORS = [
   { group: 'Sans monter sur scène, invités compris', label: 'plus longue (min)',
     get: r => MIN(maxOf(r.stageWaits.replay)), real: r => MIN(maxOf(r.stageWaits.real)), better: 'down', tol: 1 },
   { label: 'personnes à 60 min ou plus', get: r => r.balance.replay?.stage60, real: r => r.balance.real.stage60, better: 'down', tol: 0 },
-  { id: 'jain', group: 'Équilibre des passages', label: 'indice de Jain (1 = même rythme pour tous)', get: r => r.balance.replay?.jain, real: r => r.balance.real.jain, better: 'up', tol: 0.005, digits: 3 },
-  { label: 'corrigé des bonus et malus', get: r => r.balance.replay?.jainAdjusted, real: r => r.balance.real.jainAdjusted, better: 'up', tol: 0.005, digits: 3 },
+  // Indice de Jain : toute baisse compte (AGENTS.md), sans tolérance.
+  { id: 'jain', group: 'Équilibre des passages', label: 'indice de Jain (1 = même rythme pour tous)', get: r => r.balance.replay?.jain, real: r => r.balance.real.jain, better: 'up', tol: 0, digits: 3 },
+  { label: 'corrigé des bonus et malus', get: r => r.balance.replay?.jainAdjusted, real: r => r.balance.real.jainAdjusted, better: 'up', tol: 0, digits: 3 },
   { label: 'part la plus haute (× sa part)', get: r => r.balance.replay?.shareMax, real: r => r.balance.real.shareMax, better: 'down', tol: 0.05, digits: 2 },
   { label: 'part la plus basse (× sa part)', get: r => r.balance.replay?.shareMin, real: r => r.balance.real.shareMin, better: 'up', tol: 0.05, digits: 2 },
   { label: 'jamais passés', get: r => r.balance.replay?.neverSang, real: r => r.balance.real.neverSang, better: 'down', tol: 0 },
