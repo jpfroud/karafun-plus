@@ -24,7 +24,11 @@
  *                          sinon solver/karafun-solver.jar.
  *   --mouvements <n>       effort de Timefold par décision, en mouvements (20000) : même
  *                          résultat sur toute machine, même chargée ; 0 = limite de temps
- *                          seule, comme au bar (résultat qui dépend de la charge)
+ *                          seule, comme au bar (résultat qui dépend de la charge). Limite
+ *                          écrite dans la configuration du solveur des sources de chaque
+ *                          version ; le solveur d'une version d'avant le 17 octobre 2026,
+ *                          qui pouvait couper sa propre recherche, voit chaque réponse
+ *                          sans amélioration redemandée une fois.
  *   --budget <ms>          plafond de temps de Timefold par décision (30000) ; avec
  *                          --mouvements 0, son temps de calcul (3000)
  *   --trace HH:MM[,HH:MM]  détail des décisions prises à ces minutes (heure de la soirée)
@@ -131,6 +135,7 @@ const ACK_MS = 100;      // accusé de KaraFun après un envoi
 // 15 octobre, 1 000 mouvements rendent déjà l'ordre de 3 s de calcul pour
 // chacune des 40 demandes ; au bar, 3 s font 26 000 à 450 000 mouvements.
 const SOLVER_MOVES = 20000;
+const SOLVER_MOVES_MAX = 1_000_000_000;
 const SOLVER_CEILING_MS = 30000; // plafond de temps (le plus haut accepté par le solveur)
 const SOLVER_TIME_MS = 3000;     // budget de temps seul, comme au bar (--mouvements 0)
 const SOLVER_MAIN = 'fr.karafun.plus.solver.Main';
@@ -237,18 +242,25 @@ function loadEvening(input) {
     }
   }
   // Battles lancées par l'application (vote approuvé, ou « sans vote » du
-  // bar) et jouées : chacune suivie par son scrutin, de la décision à son
-  // envoi puis à son début. `preGapMs` : de la scène libérée (ou de l'envoi,
+  // bar), ou ajoutées par le bar dans KaraFun et suivies par l'application
+  // (battle.external : en file dès cet instant), et jouées : chacune suivie
+  // par son scrutin, de la décision à son envoi puis à son début. `preGapMs` : de la scène libérée (ou de l'envoi,
   // scène déjà libre) au début ; `sec` : durée jouée ; `afterGapMs` : de sa
   // fin à la reprise de la file (server.js : « after » retient la file
   // jusqu'au titre suivant lancé par le bar, « resuming », ou directement
-  // dans KaraFun, « released » ; sans reprise notée, jusqu'au bout). Une
+  // dans KaraFun, « released », ou jusqu'à ce qu'une autre Battle remplace
+  // son suivi ou que le bar vide la file, battle-vote.js staffLaunch,
+  // observeExternalBattle, reset ; sans rien de tout cela, jusqu'au bout). Une
   // Battle écartée ou jamais jouée n'y est pas. Export sans suivi de l'envoi :
   // la Battle jouée qui suit la décision, délai habituel, reprise aussitôt.
   const battles = [];
   const used = new Set();
   {
-    for (const d of events.filter(e => (e.ev === 'battle.decided' && e.outcome === 'approved') || e.ev === 'battle.staffLaunch')) {
+    const approved = e => (e.ev === 'battle.decided' && e.outcome === 'approved') || e.ev === 'battle.staffLaunch';
+    const external = e => e.ev === 'battle.external' && e.ballotId != null &&
+      events.some(x => x.ev === 'battle.automation' && x.ballotId === e.ballotId && x.status === 'playing' && x.t >= e.t);
+    const replaces = e => approved(e) || e.ev === 'battle.external' || e.ev === 'staff.queueCleared';
+    for (const d of events.filter(e => approved(e) || external(e))) {
       const mine = e => e.ev === 'battle.automation' && e.t >= d.t && (d.ballotId == null || e.ballotId === d.ballotId);
       // Envoi automatique, ou Battle faite à la main par le bar après un échec
       // (pas d'envoi : la file est retenue dès la décision, server.js).
@@ -271,10 +283,11 @@ function loadEvening(input) {
       if (stage) used.add(stage);
       const freed = events.filter(e => e.ev === 'stage.ended' && e.t > from && e.t <= playing.t).at(-1)?.t ?? from;
       const after = events.find(e => mine(e) && e.status === 'after' && e.t >= playing.t);
-      const resumed = after && events.find(e => mine(e) && ['resuming', 'released'].includes(e.status) && e.t >= after.t);
+      const resumed = after && events.find(e => e.t >= after.t &&
+        ((mine(e) && ['resuming', 'released'].includes(e.status)) || (e !== d && replaces(e))));
       const ended = Number.isFinite(stage?.sec) ? stage.e.t + 1000 * stage.sec : after?.t;
       battles.push({ decision: d, preGapMs: Math.max(0, playing.t - Math.max(from, freed)), sec: stage?.sec ?? null,
-        afterGapMs: !after ? 0 : resumed ? Math.max(0, resumed.t - ended) : Infinity });
+        afterGapMs: !after ? 0 : resumed ? Math.max(0, resumed.t - ended) : Infinity, external: d.ev === 'battle.external' });
     }
   }
   // Passages hors file joués en réel (titre ou Battle ajoutés directement
@@ -330,9 +343,9 @@ function statsOf(events) {
   return statsCache.get(events);
 }
 
-// Événements de passage que le rejeu libre remplace par les siens.
 // Événements qui ouvrent, ferment ou prolongent un passage sur scène.
 const STAGE_SEQ = new Set(['stage.started', 'stage.ended', 'stage.restarted']);
+// Événements de passage que le rejeu libre remplace par les siens.
 const STAGE_EVENTS = new Set(['stage.started', 'stage.ended', 'stage.restarted', 'turn.sent', 'turn.unsent',
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced']);
 // Journal du rejeu libre : les événements réels (demandes, duos, retraits,
@@ -628,27 +641,38 @@ function makeContext(ev, opts) {
   s.solverBridge = null;
   const ctx = { ev, s, rules, overrides, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
     notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || SOLVER_TIME_MS, moves: 0, solver: null, jar: null,
-    solverDir: null, code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null, ceiling: 0 }, unapplied: new Set(), aliases: new Map(), added: new Map(),
+    solverDir: null, code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null, ceiling: 0, retried: 0 }, unapplied: new Set(), aliases: new Map(), added: new Map(),
     requestedAt: new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t])) };
   const jar = resolveJar(opts.solver, code);
   if (jar) {
     const { TimefoldBridge } = require(path.join(code.dir, 'solver', 'bridge'));
     const moves = opts.moves ?? SOLVER_MOVES;
-    const limited = moves ? movesLimited(code, jar, moves) : null;
-    if (moves && !limited) {
-      ctx.warnings.push(`limite de ${count(moves)} mouvements non appliquée (configuration du solveur introuvable dans ${code.label}) : ` +
+    let limited = moves ? movesLimited(code, jar, moves) : null;
+    if (limited?.reason) {
+      ctx.warnings.push(`limite de ${count(moves)} mouvements non appliquée (${limited.reason} dans ${code.label}) : ` +
         'Timefold limité au temps, résultat qui dépend de la charge de la machine');
+      limited = null;
     }
     if (limited) { ctx.moves = moves; ctx.solverDir = limited.dir; ctx.budget = opts.budget || SOLVER_CEILING_MS; }
     // Java de la version de travail (runtime du kit s'il est là) des deux côtés.
     s.solverBridge = new TimefoldBridge({ jar, settleMs: 0, ...(fs.existsSync(BUNDLED_JAVA) ? { java: BUNDLED_JAVA } : {}),
       ...(limited ? { spawn: limited.spawn } : {}) });
     ctx.solver = s.solverBridge; ctx.jar = jar;
+    // Solveur qui peut couper la recherche qu'il vient de recevoir (`racy`) :
+    // une réponse sans amélioration est redemandée une fois. Avec la limite de
+    // mouvements, une recherche complète rend toujours le même ordre, et une
+    // recherche coupée rend l'ordre de départ, comme une recherche sans gain.
     const solve = ctx.solver.solve.bind(ctx.solver);
-    ctx.solver.solve = (request, o) => solve(request, o).then(response => {
+    ctx.solver.solve = async (request, o) => {
+      let response = await solve(request, o);
+      if (limited?.racy && response?.improved === false) {
+        ctx.plans.retried++;
+        const again = await solve(request, o);
+        if (again?.improved) response = again;
+      }
       ctx.solverElapsedMs = Number(response?.elapsedMs);
       return response;
-    });
+    };
     if (!(code.extracted && typeof opts.solver === 'string') && staleJar(jar, code.dir)) {
       ctx.warnings.push(`jar Timefold plus ancien que ${path.join(code.dir, 'solver', 'src')} : reconstruire (mvn -q -DskipTests package -f ${path.join(code.dir, 'solver', 'pom.xml')})`);
     }
@@ -660,15 +684,21 @@ function makeContext(ev, opts) {
 // avant le jar dans le classpath : Main la relit pour chaque budget et n'y
 // change que la limite de temps, qui reste un plafond. Ni le jar ni le
 // solveur du bar ne changent. Dossier privé (mkdtemp), effacé en fin de rejeu.
+// `racy` : Main.java lit la recherche en cours APRÈS avoir déposé la ligne
+// reçue (avant le 17 octobre 2026) ; il peut alors couper la recherche de
+// cette ligne même, qui rend l'ordre de départ (rare, machine chargée).
 function movesLimited(code, jar, moves) {
   const solver = path.join(code.dir, 'solver', 'src', 'main');
-  let xml;
+  let xml, main;
   try {
-    const main = fs.readFileSync(path.join(solver, 'java', ...SOLVER_MAIN.split('.')) + '.java', 'utf8');
-    if (!main.includes('createFromXmlResource("solverConfig.xml")')) return null;
+    main = fs.readFileSync(path.join(solver, 'java', ...SOLVER_MAIN.split('.')) + '.java', 'utf8');
     xml = fs.readFileSync(path.join(solver, 'resources', 'solverConfig.xml'), 'utf8');
-  } catch (_) { return null; }
-  if (!xml.includes('</termination>') || xml.includes('moveCountLimit')) return null;
+  } catch (_) { return { reason: 'configuration du solveur introuvable' }; }
+  // Une seule terminaison, celle du solveur, sans limite de mouvements à elle.
+  if (!main.includes('createFromXmlResource("solverConfig.xml")') || xml.split('<termination>').length !== 2 ||
+    !xml.includes('</termination>') || xml.includes('moveCountLimit')) return { reason: 'configuration du solveur non reconnue' };
+  const put = main.indexOf('inbox.put(line)'), get = main.indexOf('active.get()');
+  const racy = put < 0 || get < 0 || put < get;
   // Rejeu interrompu (Ctrl+C) : son dossier reste ; effacé un jour après.
   for (const f of fs.readdirSync(os.tmpdir()).filter(f => f.startsWith('rejeu-timefold-'))) {
     try {
@@ -682,14 +712,15 @@ function movesLimited(code, jar, moves) {
   fs.writeFileSync(path.join(dir, 'solverConfig.xml'),
     xml.replace('</termination>', `  <moveCountLimit>${moves}</moveCountLimit>\n  </termination>`), { mode: 0o600 });
   const classpath = dir + path.delimiter + path.resolve(jar);
-  return { dir, spawn: (cmd, args, o) => {
+  return { dir, racy, spawn: (cmd, args, o) => {
     const k = args.indexOf('-jar');
     return spawn(cmd, k < 0 ? args : [...args.slice(0, k), '-cp', classpath, SOLVER_MAIN, ...args.slice(k + 2)], o);
   } };
 }
 function closeSolver(ctx) {
   if (ctx.solver) ctx.solver.close();
-  if (ctx.solverDir) fs.rmSync(ctx.solverDir, { recursive: true, force: true });
+  // Java encore en train de s'arrêter (Windows) : le ménage suivant l'effacera.
+  try { if (ctx.solverDir) fs.rmSync(ctx.solverDir, { recursive: true, force: true }); } catch (_) { /* gardé */ }
 }
 const count = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 
@@ -1014,9 +1045,10 @@ async function runForced(evening, opts = {}) {
     const sels = new Map(); // entryId réel → passage engagé
     const started = new Set(); // passages engagés déjà lancés
     let current = null, upcoming = null, reservation = null;
-    // Battle de l'application qui retient la file (server.js, battleHoldsQueue) :
-    // de la décision à « released » ou « resuming », sauf en attente d'envoi
-    // quand un passage est déjà réservé.
+    // Battle suivie par l'application qui retient la file (server.js,
+    // battleHoldsQueue) : de la décision (ou de son arrivée dans KaraFun) à
+    // « released » ou « resuming », sauf en attente d'envoi quand un passage
+    // est déjà réservé.
     let battleState = null;
     const holding = () => !!battleState && !['released', 'resuming'].includes(battleState) &&
       !(battleState === 'waiting' && s.reservedNext);
@@ -1157,6 +1189,16 @@ async function runForced(evening, opts = {}) {
           case 'battle.staffLaunch':
             if (e.ev === 'battle.staffLaunch' || e.outcome === 'approved') battleState = 'waiting';
             break;
+          // Battle ajoutée par le bar dans KaraFun : en file dès qu'elle y est
+          // vue (observeExternalBattle).
+          case 'battle.external':
+            battleState = 'queued';
+            break;
+          // File vidée par le bar : suivi de la Battle effacé (battleVote.reset).
+          case 'staff.queueCleared':
+            battleState = null;
+            await reserveIfDue('staff.queueCleared');
+            break;
           case 'battle.resolved':
             // Écartée : relâchée ; faite par le bar avant ou après un échec
             // d'envoi : « manual » (battle-vote.js, resolve).
@@ -1196,7 +1238,7 @@ async function runFree(evening, opts = {}) {
     const { s } = ctx;
     const pushMs = 1000 * Number(ctx.rules.pushDelaySec ?? 45);
     const ext = ev.events.filter(e => REPLAYED.has(e.ev) || NOT_REPLAYED.has(e.ev) ||
-      ['battle.decided', 'battle.staffLaunch', 'closing.set', 'closing.cleared'].includes(e.ev));
+      ['battle.decided', 'battle.staffLaunch', 'battle.external', 'closing.set', 'closing.cleared'].includes(e.ev));
     for (const e of ev.events) countIgnored(ctx, e);
     // Battles jouées en réel (loadEvening) : chacune attend sa décision réelle,
     // part dans KaraFun à la première case libre, puis démarre avec son délai
@@ -1263,7 +1305,14 @@ async function runFree(evening, opts = {}) {
         // Titre lancé directement dans KaraFun après une Battle : la file reprend.
         if (battle === 'after' && o.source !== 'battle') { battle = 'none'; battleNow = null; afterUntil = null; }
       }
-      if (battle === 'none' && battleQueue.length) { battleNow = battleQueue.shift(); battle = 'waiting'; }
+      // Battle suivante pendant « after » : son suivi remplace celui de la
+      // précédente (battle-vote.js staffLaunch, observeExternalBattle).
+      if (battle === 'after' && battleQueue.length) { battle = 'none'; battleNow = null; afterUntil = null; }
+      // Battle ajoutée par le bar dans KaraFun : en file dès son arrivée.
+      if (battle === 'none' && battleQueue.length) {
+        battleNow = battleQueue.shift();
+        if (battleNow.external) { battle = 'queued'; battleQueuedAt = clock.now; } else battle = 'waiting';
+      }
       // Envoi de la Battle (server.js) : application en marche, pas après
       // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
       if (battle === 'waiting' && !upcoming && !outsideDue.length && !s.reservedNext && !closingBlocks() && !over() &&
@@ -1333,7 +1382,7 @@ async function runFree(evening, opts = {}) {
       for (; steps < maxSteps; steps++) {
         while (i < ext.length && ext[i].t <= clock.now) {
           const e = ext[i++];
-          if (e.ev === 'battle.decided' || e.ev === 'battle.staffLaunch') {
+          if (['battle.decided', 'battle.staffLaunch', 'battle.external'].includes(e.ev)) {
             if (battleOf.has(e)) battleQueue.push(battleOf.get(e));
             continue;
           }
@@ -1876,8 +1925,8 @@ function parseArgs(argv) {
     else if (a === '--avant') o.before = value(++k, '--avant');
     else if (a === '--solveur-avant') o.solverBefore = value(++k, '--solveur-avant');
     else if (a === '--solveur') o.solver = argv[k + 1] && !argv[k + 1].startsWith('--') && /\.jar$/i.test(argv[k + 1]) ? argv[++k] : true;
-    else if (a === '--budget') o.budget = Number(value(++k, '--budget'));
-    else if (a === '--mouvements') o.moves = Number(value(++k, '--mouvements'));
+    else if (a === '--budget') { const raw = value(++k, '--budget'); o.budget = /^\d+$/.test(raw) ? Number(raw) : NaN; }
+    else if (a === '--mouvements') { const raw = value(++k, '--mouvements'); o.moves = /^\d+$/.test(raw) ? Number(raw) : NaN; }
     else if (a === '--trace') o.traces.push(...value(++k, '--trace').split(',').filter(Boolean));
     else if (a === '--json') o.json = value(++k, '--json');
     else if (a === '--court') o.short = true;
@@ -1891,10 +1940,12 @@ function parseArgs(argv) {
     else if (!a.startsWith('--') && !o.file) o.file = a;
     else throw new Error(`Option inconnue : ${a}`);
   }
-  if (o.budget !== null && !(Number.isFinite(o.budget) && o.budget >= 100 && o.budget <= SOLVER_CEILING_MS)) {
+  if (o.budget !== null && !(Number.isInteger(o.budget) && o.budget >= 100 && o.budget <= SOLVER_CEILING_MS)) {
     throw new Error(`--budget attend un nombre de millisecondes de 100 à ${SOLVER_CEILING_MS}`);
   }
-  if (o.moves !== null && !(Number.isInteger(o.moves) && o.moves >= 0)) throw new Error('--mouvements attend un nombre entier (0 : limite de temps seule)');
+  if (o.moves !== null && !(Number.isInteger(o.moves) && o.moves <= SOLVER_MOVES_MAX)) {
+    throw new Error(`--mouvements attend un nombre entier de 0 à ${count(SOLVER_MOVES_MAX)} (0 : limite de temps seule)`);
+  }
   if (o.solverBefore && !o.before) throw new Error('--solveur-avant va avec --avant');
   if (o.solverBefore && !o.solver) throw new Error('--solveur-avant demande aussi --solveur : les deux versions avec Timefold');
   if (o.before && o.traces.length) throw new Error('--trace détaille un seul rejeu : le lancer sans --avant');

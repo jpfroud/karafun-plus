@@ -199,9 +199,12 @@ public final class Main {
         Thread reader = new Thread(() -> {
             try (BufferedReader input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
                 for (String line; (line = input.readLine()) != null;) {
-                    inbox.put(line);
                     // Un état plus récent de la file rend la recherche en cours inutile.
+                    // Elle est lue avant de déposer la ligne : après, le fil principal
+                    // peut déjà chercher pour cette ligne, et c'est elle qui serait
+                    // coupée (ordre de départ rendu sans recherche).
                     Solver<QueuePlan> running = active.get();
+                    inbox.put(line);
                     if (running != null) running.terminateEarly();
                 }
             } catch (Exception error) {
