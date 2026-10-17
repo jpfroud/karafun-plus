@@ -140,6 +140,9 @@ const SONG_GAP_MS = 20000; // temps moyen entre deux titres compté par la ferme
 const BATTLE_PRE_GAP_MS = 132000; // scène libre → début d'une Battle (téléphones qui rejoignent), sans mesure
 const BATTLE_STAGE_WINDOW_MS = 60000; // écart toléré entre le « playing » d'une Battle et sa scène
 const UNCONFIRMED_MS = 15000;  // tentative d'envoi → send.unconfirmed (server.js)
+// Causes notées par journalOutlook (server.js), des plus prioritaires
+// jusqu'au droit d'ajout manquant.
+const BLOCKER_PRIORITY = ['queue-clear', 'restart', 'closing', 'recovered-pending', 'permission'];
 const SYNC_SLACK_MS = 5000;    // retard possible de sync() sur ce délai
 const DEFAULT_SONG_SEC = 200;   // titre ou passage hors file sans durée connue
 const DEFAULT_BATTLE_SEC = 260; // Battle sans fin notée
@@ -334,53 +337,59 @@ function loadEvening(input) {
     }
     if (stoppedAt != null) offline.push([stoppedAt, Infinity]); }
   // Envois impossibles (rejeu libre). Ni réservation ni envoi : application
-  // arrêtée, KaraFun déconnecté (sync() s'arrête ; phase « offline » jusqu'à
-  // la phase suivante), envoi interrompu à vérifier (un envoi attend son
-  // accusé : sync() ne réserve pas ; send.unconfirmed est noté 15 s après la
-  // tentative, ou un accusé arrive après un redémarrage qui a restauré
-  // l'envoi). Envoi seul, le serveur réservant quand même : droit d'ajout
-  // manquant, envoi automatique coupé (règle de la soirée, réglage du bar,
-  // phase « auto-off », ou laissé coupé par un envoi restauré au
-  // redémarrage). journalOutlook ne note sa cause que scène libre, par ordre
-  // de priorité : chacune dure jusqu'à une phase scène libre d'une cause
-  // moins prioritaire, une preuve d'envoi (envoi tenté depuis la coupure,
-  // phase « push-delay ») ou le réglage remis par le bar ; un accusé, quel
-  // qu'il soit, met fin à l'envoi interrompu. KaraFun joue encore ce qu'il a.
+  // arrêtée ; KaraFun déconnecté (sync() s'arrête), de la phase « offline »
+  // à la phase suivante ; envoi interrompu à vérifier (un envoi attend son
+  // accusé, sync() ne réserve pas), de la tentative (send.unconfirmed est
+  // noté 15 s après ; envoi restauré au redémarrage : depuis celui-ci)
+  // jusqu'à un accusé ou une phase scène libre d'une cause moins
+  // prioritaire. Envoi seul, le serveur réservant quand même : droit
+  // d'ajout manquant, jusqu'à une phase scène libre d'une cause moins
+  // prioritaire ou un envoi tenté depuis ; envoi automatique coupé (règle
+  // de la soirée, réglage du bar, phase « auto-off », ou laissé coupé par
+  // un envoi restauré au redémarrage), jusqu'au réglage remis, une phase
+  // « push-delay » ou un envoi tenté depuis. journalOutlook ne note sa
+  // cause que scène libre (« singing » n'en a jamais) : une coupure faite
+  // pendant un titre sans autre trace n'est vue qu'à la fin de celui-ci.
+  // KaraFun joue encore ce qu'il a.
   const noReserve = [...offline], noSend = [...offline];
-  { const above = { permission: ['queue-clear', 'restart', 'closing', 'recovered-pending', 'permission', 'offline'],
-      'recovered-pending': ['queue-clear', 'restart', 'closing', 'recovered-pending', 'offline'] };
+  { const above = k => [...BLOCKER_PRIORITY.slice(0, BLOCKER_PRIORITY.indexOf(k) + 1), 'offline'];
     const listOf = k => k === 'link' || k === 'recovered-pending' ? noReserve : noSend;
     const open = { link: null, permission: null, 'recovered-pending': null, auto: rules.auto === false ? events[0]?.t ?? 0 : null };
     const close = (k, t) => { if (open[k] != null) { listOf(k).push([open[k], t]); open[k] = null; } };
-    let appStart = -Infinity, lastSent = -Infinity;
+    let appStart = -Infinity, lastSent = -Infinity, unconfirmedAt = -Infinity, autoBackAt = -Infinity;
     for (const e of events) {
       if (e.ev === 'app.started') appStart = e.t;
       else if (e.ev === 'karaoke.phase') {
         if (e.blocker === 'offline') open.link ??= e.t;
         else close('link', e.t);
         for (const k of ['permission', 'recovered-pending']) {
-          if (e.blocker === k) open[k] ??= e.t;
-          else if (e.phase !== 'singing' && e.blocker && !above[k].includes(e.blocker)) close(k, e.t);
+          if (e.blocker !== k) { if (e.blocker && !above(k).includes(e.blocker)) close(k, e.t); continue; }
+          // Envoi interrompu sans send.unconfirmed depuis le redémarrage :
+          // restauré par lui, en attente depuis.
+          open[k] ??= k === 'recovered-pending' && unconfirmedAt < appStart ? Math.max(appStart, lastSent) : e.t;
         }
         if (e.blocker === 'auto-off') open.auto ??= e.t;
-        if (e.blocker === 'push-delay') { close('permission', e.t); close('auto', e.t); }
-      } else if (e.ev === 'send.unconfirmed') open['recovered-pending'] ??= Math.max(lastSent, e.t - UNCONFIRMED_MS - SYNC_SLACK_MS);
-      else if (e.ev === 'settings.changed' && e.setting === 'auto') {
+        if (e.blocker === 'push-delay') close('auto', e.t);
+      } else if (e.ev === 'send.unconfirmed') {
+        unconfirmedAt = e.t;
+        open['recovered-pending'] ??= Math.max(lastSent, e.t - UNCONFIRMED_MS - SYNC_SLACK_MS);
+      } else if (e.ev === 'settings.changed' && e.setting === 'auto') {
         if (e.to === false) open.auto ??= e.t;
-        else if (e.to === true) close('auto', e.t);
+        else if (e.to === true) { close('auto', e.t); autoBackAt = e.t; }
       } else if (e.ev === 'turn.sent') {
         const at = Number(e.sentAt) || e.t;
         close('recovered-pending', e.t);
         // Envoi tenté avant un redémarrage, accusé après : en attente depuis
-        // le redémarrage, puis envoi automatique laissé coupé (restoreNight).
-        if (at < appStart) { noReserve.push([appStart, e.t]); open.auto ??= e.t; }
-        else for (const k of ['permission', 'auto']) if (open[k] != null && at >= open[k]) close(k, e.t);
+        // le redémarrage, puis envoi automatique laissé coupé (restoreNight),
+        // sauf si le bar l'a remis entre-temps.
+        if (at < appStart) {
+          noReserve.push([appStart, e.t]);
+          if (autoBackAt < appStart) open.auto ??= e.t;
+        } else for (const k of ['permission', 'auto']) if (open[k] != null && at >= open[k]) close(k, e.t);
         lastSent = e.t;
       }
     }
-    if (open.link != null) noReserve.push([open.link, Infinity]);
-    if (open['recovered-pending'] != null) noReserve.push([open['recovered-pending'], Infinity]);
-    for (const k of ['permission', 'auto']) if (open[k] != null) noSend.push([open[k], Infinity]);
+    for (const k in open) close(k, Infinity);
     noSend.push(...noReserve.slice(offline.length)); }
   const timezone = raw.evening?.timezone || 'Europe/Paris';
   const realPassages = passagesFromEvents(events);
@@ -2145,5 +2154,6 @@ async function main(argv = process.argv.slice(2), print = console.log, printErro
 }
 
 module.exports = { loadEvening, runForced, runFree, runCompare, report, compareReport, analyse, computeWaits, replayJournal,
+  BLOCKER_PRIORITY, UNCONFIRMED_MS,
   stageWaitsOf, passagesFromEvents, balanceOf, summary, main, parseArgs, timeOf, UsageError };
 if (require.main === module) main().then(code => { process.exitCode = code; }, err => { console.error(err); process.exitCode = 1; });

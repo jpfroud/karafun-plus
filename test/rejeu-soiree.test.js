@@ -1510,18 +1510,19 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(540, 'stage.ended', { queueId: 'q1', playedSec: 180 });
   }));
   assert.deepEqual(openingBattle, [['battle', 100], ['queue', 360]]);
-  // Soirée sans aucun titre de la file chanté en réel : la Battle de KaraFun
-  // passe, sans heure réelle du premier titre à comparer.
+  // Soirée sans aucun titre de la file chanté en réel : sans heure réelle du
+  // premier titre à comparer, la Battle de KaraFun (6 s) passe avant x1,
+  // envoyé par le rejeu mais pas encore lancé.
   const noQueue = await scenesOf(build((e, stage, ask) => {
     ask(1, 'S01', 'x1', 1);
     e(5, 'battle.external', { ballotId: 'k1', songId: 9 });
-    e(100, 'battle.automation', { ballotId: 'k1', status: 'playing' });
-    stage(100, null, null, 'b1', 90);
-    e(191, 'battle.automation', { ballotId: 'k1', status: 'after' });
-    e(200, 'battle.automation', { ballotId: 'k1', status: 'resuming' });
+    e(6, 'battle.automation', { ballotId: 'k1', status: 'playing' });
+    stage(6, null, null, 'b1', 90);
+    e(97, 'battle.automation', { ballotId: 'k1', status: 'after' });
+    e(100, 'battle.automation', { ballotId: 'k1', status: 'resuming' });
     e(300, 'stage.started', { queueId: 'n1', source: 'native', ids: [] }); e(500, 'stage.ended', { queueId: 'n1', playedSec: 200 });
   }));
-  assert.ok(noQueue.some(([kind]) => kind === 'battle'), JSON.stringify(noQueue));
+  assert.deepEqual(noQueue, [['battle', 6], ['queue', 106], ['native', 315]]);
   // Mais une Battle de KaraFun jouée après x1 en réel (500 s) reste derrière.
   const laterBattle = await scenesOf(build((e, stage, ask) => {
     ask(1, 'S01', 'x1', 1);
@@ -1579,13 +1580,13 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
       e(600, 'karaoke.phase', { phase: 'between', blocker: 'sending' });
     }),
     interrompu: blockedUntil600({}, e => {
-      e(100, 'send.unconfirmed', { entryId: 'y1', ids: ['S02'] });
+      e(100, 'send.unconfirmed', { entryId: 'z1', ids: ['S03'] });
       phases('recovered-pending')(e);
       e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
     }),
     // (une cause plus prioritaire, ici la relance d'un titre, la masque)
     masqué: blockedUntil600({}, e => {
-      e(100, 'send.unconfirmed', { entryId: 'y1', ids: ['S02'] });
+      e(100, 'send.unconfirmed', { entryId: 'z1', ids: ['S03'] });
       e(191, 'karaoke.phase', { phase: 'between', blocker: 'recovered-pending' });
       e(381, 'karaoke.phase', { phase: 'between', blocker: 'restart' });
       e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
@@ -1595,10 +1596,9 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     const res = await rejeu.runFree(evening);
     assert.ok(res.passages.find(p => p.entryId === 'z1')?.sentAt >= T0 + 600000, `${kind} : ${JSON.stringify(res.passages)}`);
   }
-  // Envoi interrompu sans phase notée (scène jamais libre) : send.unconfirmed
-  // suffit.
+  // send.unconfirmed seul, sans phase « recovered-pending » notée : il suffit.
   const unconfirmed = await rejeu.runFree(blockedUntil600({}, e => {
-    e(100, 'send.unconfirmed', { entryId: 'y1', ids: ['S02'] });
+    e(100, 'send.unconfirmed', { entryId: 'z1', ids: ['S03'] });
     e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
   }));
   assert.ok(unconfirmed.passages.find(p => p.entryId === 'z1')?.sentAt >= T0 + 600000, JSON.stringify(unconfirmed.passages));
@@ -1681,6 +1681,41 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     e(191, 'karaoke.phase', { phase: 'between', blocker: 'auto-off' });
     e(600, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
   }).noSend), [[191, 600]]);
+  // Accusé tardif de la tentative en attente, scène jamais libre : il met fin
+  // à l'envoi interrompu.
+  assert.deepEqual(rel(windowsOf(e => {
+    e(55, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2' });
+    e(75, 'send.unconfirmed', { entryId: 'z1', ids: ['S03'] });
+    e(90, 'turn.sent', { entryId: 'z1', ownerId: 'S03', ids: ['S03'], queueId: 'q3', sentAt: T0 + 60000 });
+  }).noReserve), [[55, 90]]);
+  // Envoi automatique remis par le bar après le redémarrage, avant l'accusé
+  // de l'envoi restauré : rien n'est coupé ensuite.
+  assert.deepEqual(rel(windowsOf(e => {
+    e(70, 'app.started', { restored: true, offlineMs: 10000 });
+    e(72, 'settings.changed', { setting: 'auto', from: false, to: true });
+    e(80, 'turn.sent', { entryId: 'y1', ownerId: 'S02', ids: ['S02'], queueId: 'q2', sentAt: T0 + 55000 });
+  }).noSend), [[60, 70], [70, 80]]);
+  // Envoi restauré au redémarrage jamais accusé (phase « recovered-pending »
+  // seulement à la scène libre suivante, sans send.unconfirmed) : en attente
+  // dès le redémarrage.
+  assert.deepEqual(rel(windowsOf(e => {
+    e(70, 'app.started', { restored: true, offlineMs: 10000 });
+    e(73, 'karaoke.phase', { phase: 'singing', blocker: null });
+    e(190, 'karaoke.phase', { phase: 'between', blocker: 'recovered-pending' });
+    e(400, 'karaoke.phase', { phase: 'between', blocker: 'push-delay' });
+  }).noReserve), [[60, 70], [70, 400]]);
+  // Coupures jamais levées : jusqu'au bout.
+  const unended = windowsOf(e => {
+    e(191, 'karaoke.phase', { phase: 'between', blocker: 'auto-off' });
+    e(300, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' });
+  });
+  assert.deepEqual([rel(unended.noReserve), rel(unended.noSend)], [[[300, Infinity]], [[191, Infinity], [300, Infinity]]]);
+  // Ordre des causes et délai d'envoi non confirmé : ceux de server.js.
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const outlook = server.slice(server.indexOf('function journalOutlook('));
+  const causes = [...outlook.slice(0, outlook.indexOf('notePhase(')).matchAll(/blocker = '([a-z-]+)'/g)].map(m => m[1]);
+  assert.deepEqual(causes.slice(0, rejeu.BLOCKER_PRIORITY.length), rejeu.BLOCKER_PRIORITY);
+  assert.equal(Number(server.match(/!recoveredPending && now - pending\.at > (\d+)/)?.[1]), rejeu.UNCONFIRMED_MS);
   // Tentative d'envoi de z1 sur scène libre (400 s) jamais confirmée
   // (send.unconfirmed à 416 s, vérifiée par le bar à 620 s) : le rejeu ne
   // l'envoie pas entre-temps, et le titre lancé par le bar passe.
