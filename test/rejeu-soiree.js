@@ -20,7 +20,8 @@
  *                          son arrivée) ; titre ou Battle joué directement dans KaraFun,
  *                          sans suivi, rejoué à son heure ; envoi à
  *                          +pushDelaySec ; rien n'est envoyé pendant un arrêt de
- *                          l'application ni après la fin du karaoké.
+ *                          l'application, rien ne part ni ne démarre après la fin
+ *                          du karaoké.
  *   --solveur [jar]        avec le plan Timefold (solver/bridge.js), attendu à chaque
  *                          décision. Jar par défaut : solver/target/karafun-solver.jar,
  *                          sinon solver/karafun-solver.jar.
@@ -200,7 +201,7 @@ function loadEvening(input) {
   const battleStages = [];
   const stageRecords = [];
   {
-    const open = new Map(); let last = null; let lastEnd = 0; const sent = new Map();
+    const open = new Map(); let last = null; let lastEnd = null; const sent = new Map();
     for (const e of events) {
       if (e.ev === 'turn.sent') sent.set(e.entryId, e.t);
       else if (e.ev === 'stage.started') {
@@ -220,7 +221,8 @@ function loadEvening(input) {
         if (e.source === 'battle') battleStages.push(last);
         open.set(q ?? `#${e.seq ?? e.t}`, last);
         if (e.source === 'queue' || (e.entryId && e.source !== 'battle')) {
-          startGaps.push({ endGap: e.t - lastEnd, sendGap: e.t - (sent.get(e.entryId) ?? e.t) });
+          // Premier passage de la soirée : pas de fin précédente (endGap null).
+          startGaps.push({ endGap: lastEnd == null ? null : e.t - lastEnd, at: e.t, sendGap: e.t - (sent.get(e.entryId) ?? e.t) });
         }
       } else if (e.ev === 'stage.restarted') {
         // « Relancer depuis le début » : la copie prolonge le même passage,
@@ -1264,9 +1266,10 @@ async function runFree(evening, opts = {}) {
     const battleOf = new Map(ev.battles.map(b => [b.decision, b]));
     const battleQueue = [];
     // Passages hors file (loadEvening) : chacun entre dans KaraFun à son heure
-    // réelle, démarre dès que la scène est libre (face à une Battle en file,
-    // dans l'ordre de leurs débuts réels) et retient d'ici là l'envoi, comme
-    // un titre déjà dans KaraFun.
+    // réelle, démarre dès que la scène est libre, dans l'ordre des débuts
+    // réels face à la prochaine Battle (en attente d'envoi, en file ou décidée
+    // pendant « after »), et retient l'envoi tant qu'il passe avant elle,
+    // comme un titre déjà dans KaraFun.
     const outside = [...ev.outside];
     const outsideDue = [];
     let battleQueuedAt = null;
@@ -1280,6 +1283,9 @@ async function runFree(evening, opts = {}) {
     const startAt = () => {
       const g = ev.startGaps[stages.filter(x => x.kind === 'song').length];
       if (!g) return Math.max(lastEnd, upcoming.sentAt) + GAP_MS;
+      // Premier passage de la soirée réelle : à son heure réelle au plus tôt,
+      // ou après ce que le rejeu a fait passer avant lui.
+      if (g.endGap == null) return Math.max(lastEnd > 0 ? lastEnd + GAP_MS : g.at, upcoming.sentAt + g.sendGap);
       return Math.max(lastEnd + g.endGap, upcoming.sentAt + Math.min(g.sendGap, g.endGap > 60000 ? g.sendGap : 15000));
     };
     // Fermeture du bar (server.js, closingBlocksStart) : un titre ne part ni
@@ -1289,8 +1295,9 @@ async function runFree(evening, opts = {}) {
       (current ? Math.max(current.end + SONG_GAP_MS, clock.now) : clock.now) + s.avgSlotSec() * 500 > closingAt;
     // Fin du karaoké de la soirée réelle (evening-stats.js : fermeture du bar,
     // KaraFun ou l'application arrêtés après le dernier titre) : plus rien ne
-    // part ni ne démarre ensuite, dans les deux versions du bilan (titres vidés
-    // par le bar ou heure retirée par « Options par défaut » à la fin).
+    // part ni ne démarre ensuite, titres hors file compris, dans les deux
+    // versions du bilan (titres vidés par le bar ou heure retirée par
+    // « Options par défaut » à la fin).
     const karaokeEnd = statsOf(ev.events).evening.closedAt ?? Infinity;
     const over = () => clock.now >= karaokeEnd;
     const stepServer = async () => {
@@ -1320,11 +1327,12 @@ async function runFree(evening, opts = {}) {
       // décidée pendant « after ») : dans l'ordre de leurs débuts réels
       // (l'heure d'entrée d'un titre dans KaraFun n'est pas notée). Un passage
       // venu après elle en réel ne la devance ni ne lève sa retenue, sauf si
-      // elle ne peut plus partir (heure de fermeture, fin du karaoké).
-      const stuck = battle === 'queued' ? over() : battle === 'waiting' && (closingBlocks() || over());
+      // son envoi est retenu (heure de fermeture, application arrêtée :
+      // KaraFun joue sans elle). Après la fin du karaoké, rien ne démarre.
+      const stuck = battle === 'waiting' && (closingBlocks() || offlineAt(clock.now));
       const nextBattle = ['waiting', 'queued'].includes(battle) ? (stuck ? null : battleNow) : battleQueue[0];
       const outsideFirst = outsideDue.length > 0 && !(nextBattle && nextBattle.realStart <= outsideDue[0].t);
-      if (!current && !upcoming && outsideFirst && clock.now >= lastEnd + GAP_MS) {
+      if (!current && !upcoming && outsideFirst && clock.now >= lastEnd + GAP_MS && !over()) {
         const o = outsideDue.shift();
         current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? DEFAULT_SONG_SEC) };
         stages.push(current);
@@ -1340,6 +1348,11 @@ async function runFree(evening, opts = {}) {
       if (battle === 'none' && battleQueue.length) {
         battleNow = battleQueue.shift();
         if (battleNow.external) { battle = 'queued'; battleQueuedAt = clock.now; } else battle = 'waiting';
+      }
+      // Battle ajoutée dans KaraFun pendant qu'une Battle attend un envoi
+      // qu'elle ne peut pas faire : son suivi la remplace (syncBattle).
+      if (battle === 'waiting' && stuck && battleQueue[0]?.external) {
+        battleNow = battleQueue.shift(); battle = 'queued'; battleQueuedAt = clock.now;
       }
       // Envoi de la Battle (server.js) : application en marche, pas après
       // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
