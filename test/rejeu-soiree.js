@@ -357,12 +357,42 @@ function loadEvening(input) {
     const open = { link: null, permission: null, 'recovered-pending': null, auto: rules.auto === false ? events[0]?.t ?? 0 : null };
     const close = (k, t) => { if (open[k] != null) { listOf(k).push([open[k], t]); open[k] = null; } };
     let appStart = -Infinity, lastSent = -Infinity, unconfirmedAt = -Infinity;
-    // Annulations d'un envoi notées au journal : vidage avec envoi en cours
-    // (tout titre), départ marqué par le bar ou départ d'une table (titres
-    // de ces personnes).
-    const starts = [], requestedAt = new Map(), cancels = [];
+    // Titres dont l'envoi a été annulé (vidage avec envoi en cours : tout
+    // titre ; départ marqué par le bar ou départ d'une table : titres de ces
+    // personnes) puis lancés quand même pendant un vidage en cours ou arrêté :
+    // server.js ne note leur turn.sent qu'au lancement (sans vidage, aucun :
+    // cancelledByClear), daté de l'accusé silencieux (uncommitted), reçu
+    // après l'annulation ou dans la même milliseconde, et le titre a été
+    // demandé avant elle (le vidage efface toutes les listes, le départ
+    // celles de ses personnes : tout autre titre envoyé ensuite a été demandé
+    // après ; un accusé reçu titre déjà sur scène note son turn.sent daté de
+    // la tentative, avant l'annulation : envoi ordinaire). Cet accusé est
+    // rejoué à sa date, avec le redémarrage qui a pu restaurer l'envoi entre
+    // l'annulation et lui ; le lancement, lui, n'est pas une preuve d'envoi.
+    const starts = [], requestedAt = new Map(), cancels = [], silentAcks = [], cancelledLaunches = new Set();
     for (const e of events) {
-      if (e.ev === 'app.started') { appStart = e.t; starts.push(e.t); }
+      if (e.ev === 'app.started') starts.push(e.t);
+      else if (e.ev === 'song.requested') requestedAt.set(e.entryId, e.t);
+      else if (e.ev === 'staff.queueCleared') { if (e.pendingCancelled) cancels.push([e.t, null]); }
+      else if (e.ev === 'person.left') { if (e.by === 'staff') cancels.push([e.t, e.personId]); }
+      else if (e.ev === 'table.left') { for (const pid of e.personIds || []) cancels.push([e.t, pid]); }
+      else if (e.ev === 'turn.sent') {
+        const at = Number(e.sentAt) || e.t, owner = e.ownerId ?? e.ids?.[0], asked = requestedAt.get(e.entryId) ?? -Infinity;
+        const cancel = cancels.find(([t, pid]) => (pid == null || pid === owner) && asked < t && t <= at);
+        if (!cancel) continue;
+        cancelledLaunches.add(e);
+        silentAcks.push({ t: at, silentAck: true, restart: starts.find(t => t > cancel[0] && t <= at) });
+      }
+    }
+    for (const e of [...events, ...silentAcks].sort((a, b) => a.t - b.t)) {
+      if (e.silentAck) {
+        // Fin de l'envoi interrompu (le sien : rien d'autre n'est envoyé
+        // avant son accusé) ; restauré par un redémarrage, il attendait
+        // depuis celui-ci et laisse l'envoi automatique coupé (comme plus bas).
+        close('recovered-pending', e.t);
+        if (e.restart != null) { noReserve.push([e.restart, e.t]); open.auto ??= e.t; }
+        lastSent = e.t;
+      } else if (e.ev === 'app.started') appStart = e.t;
       else if (e.ev === 'karaoke.phase') {
         if (e.blocker === 'offline') open.link ??= e.t;
         else close('link', e.t);
@@ -374,36 +404,15 @@ function loadEvening(input) {
         }
         if (e.blocker === 'auto-off') open.auto ??= e.t;
         if (e.blocker === 'push-delay') close('auto', e.t);
-      } else if (e.ev === 'song.requested') requestedAt.set(e.entryId, e.t);
-      else if (e.ev === 'staff.queueCleared') { if (e.pendingCancelled) cancels.push([e.t, null]); }
-      else if (e.ev === 'person.left') { if (e.by === 'staff') cancels.push([e.t, e.personId]); }
-      else if (e.ev === 'table.left') { for (const pid of e.personIds || []) cancels.push([e.t, pid]); }
-      else if (e.ev === 'send.unconfirmed') {
+      } else if (e.ev === 'send.unconfirmed') {
         unconfirmedAt = e.t;
         open['recovered-pending'] ??= Math.max(lastSent, e.t - UNCONFIRMED_MS - SYNC_SLACK_MS);
       } else if (e.ev === 'settings.changed' && e.setting === 'auto') {
         if (e.to === false) open.auto ??= e.t;
         else if (e.to === true) close('auto', e.t);
       } else if (e.ev === 'turn.sent') {
+        if (cancelledLaunches.has(e)) continue;
         const at = Number(e.sentAt) || e.t;
-        // Titre dont l'envoi a été annulé (vidage, départ) puis lancé quand
-        // même pendant un vidage en cours ou arrêté (sans vidage, aucun
-        // turn.sent : server.js, cancelledByClear) : son turn.sent est daté
-        // de l'accusé silencieux (uncommitted), reçu après l'annulation ou
-        // dans la même milliseconde, et il a été demandé avant elle (le
-        // vidage efface toutes les listes, le départ celles de ses personnes :
-        // tout autre titre envoyé ensuite a été demandé après). Pas une preuve
-        // d'envoi. L'envoi interrompu ouvert d'ici l'accusé a pris fin à
-        // celui-ci ; un redémarrage entre l'annulation et l'accusé l'avait
-        // restauré (en attente, envoi automatique laissé coupé, comme plus bas).
-        const owner = e.ownerId ?? e.ids?.[0], asked = requestedAt.get(e.entryId) ?? -Infinity;
-        const cancel = cancels.find(([t, pid]) => (pid == null || pid === owner) && asked < t && t <= at);
-        if (cancel) {
-          if (open['recovered-pending'] != null && open['recovered-pending'] <= at) close('recovered-pending', at);
-          const restart = starts.find(t => t > cancel[0] && t <= at);
-          if (restart != null) { noReserve.push([restart, at]); open.auto ??= at; }
-          continue;
-        }
         close('recovered-pending', e.t);
         // Envoi tenté avant un redémarrage, accusé après : en attente depuis
         // le redémarrage qui a suivi la tentative, puis envoi automatique
