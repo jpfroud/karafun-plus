@@ -833,6 +833,50 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     closed.notes.join(' | '));
 });
 
+test('rejeu libre : titre ou Battle joués directement dans KaraFun, scène occupée', async () => {
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const events = [];
+  const e = (t, name, f = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + t * 1000, ev: name, ...f });
+  e(0, 'evening.started', { rules: {} });
+  for (const t of ['T1', 'T2']) e(0, 'table.opened', { tableId: t });
+  for (const [k, t] of [['S01', 'T1'], ['S02', 'T2']]) e(0, 'person.joined', { personId: k, tableId: t });
+  const ask = (t, personId, entryId, songId) => e(t, 'song.requested', { personId, entryId, songId, title: entryId, mode: 'append' });
+  const stage = (t, id, ids, q) => {
+    e(t - 5, 'turn.sent', { entryId: id, ownerId: ids[0], ids, queueId: q });
+    e(t, 'stage.started', { entryId: id, ids, queueId: q, source: 'queue', title: id });
+    e(t + 180, 'stage.ended', { queueId: q, playedSec: 180 });
+  };
+  ask(1, 'S01', 'x1', 1); ask(2, 'S02', 'y1', 2); ask(3, 'S01', 'x2', 3);
+  stage(10, 'x1', ['S01'], 'q1');
+  // Titre ajouté par le bar dans KaraFun (240 s), puis Battle faite dans
+  // KaraFun (sans vote ni lancement par l'application, 100 s).
+  e(200, 'stage.started', { queueId: 'n1', source: 'native', ids: [], title: 'hors file' });
+  e(440, 'stage.ended', { queueId: 'n1', playedSec: 240 });
+  e(445, 'battle.external', { ballotId: null });
+  e(450, 'stage.started', { queueId: 'k1', source: 'battle', ids: [] });
+  e(550, 'stage.ended', { queueId: 'k1', playedSec: 100 });
+  stage(560, 'y1', ['S02'], 'q2'); stage(750, 'x2', ['S01'], 'q3');
+  const es = require('../evening-stats');
+  const original = es.computeStats;
+  let journal = [];
+  es.computeStats = (...a) => { if (a[0].events[0]?.boot === 'rejeu') journal = a[0].events; return original(...a); };
+  let res;
+  try { res = await rejeu.runFree(rejeu.loadEvening({ people: [{ key: 'S01', table: 'T1' }, { key: 'S02', table: 'T2' }],
+    tables: [{ key: 'T1' }, { key: 'T2' }], events })); } finally { es.computeStats = original; }
+  const stages = journal.filter(x => x.ev === 'stage.started').map(x => {
+    const end = journal.find(y => y.ev === 'stage.ended' && y.queueId === x.queueId);
+    return { source: x.source, start: x.t, end: end.t };
+  });
+  // Les deux passages hors file sont rejoués, avec leur durée réelle…
+  assert.deepEqual(stages.filter(x => x.source !== 'queue').map(x => [x.source, (x.end - x.start) / 1000]), [['native', 240], ['battle', 100]]);
+  // … et aucun titre de la file ne démarre pendant eux. Le titre hors file,
+  // entré dans KaraFun pendant y1, retient l'envoi de x2 jusqu'à son passage ;
+  // x2, envoyé pendant lui, passe avant la Battle entrée ensuite.
+  for (let k = 1; k < stages.length; k++) assert.ok(stages[k].start >= stages[k - 1].end, JSON.stringify(stages));
+  assert.deepEqual(stages.map(x => x.source), ['queue', 'queue', 'native', 'queue', 'battle']);
+  assert.equal(res.notReplayed['battle.external'], undefined);
+});
+
 test('bilan avant/après : un seul côté sans Timefold, note pour le même code, alerte sinon', async () => {
   const cmp = await rejeu.runCompare(ev, { before: { code: path.join(__dirname, '..') } });
   const oneSide = (side, sameCode) => rejeu.compareReport({ ...cmp, sameCode,

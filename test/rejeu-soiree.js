@@ -15,8 +15,9 @@
  *                          réelles ; durées jouées réelles ; délais de lancement réels du
  *                          k-ième titre ; chaque Battle jouée en réel envoyée après sa
  *                          décision à la première case libre, avec son délai et sa durée
- *                          réels ; envoi à +pushDelaySec ; rien n'est envoyé pendant un
- *                          arrêt de l'application ni après la fin du karaoké.
+ *                          réels ; titre ou Battle joué directement dans KaraFun rejoué à
+ *                          son heure ; envoi à +pushDelaySec ; rien n'est envoyé pendant
+ *                          un arrêt de l'application ni après la fin du karaoké.
  *   --solveur [jar]        avec le plan Timefold (solver/bridge.js), attendu à chaque
  *                          décision. Jar par défaut : solver/target/karafun-solver.jar,
  *                          sinon solver/karafun-solver.jar.
@@ -68,7 +69,8 @@
  * suit les départs notés par le bar et les duos quittés ; une chanson
  * redemandée en « ajouter » alors qu'elle reste à chanter dans le rejeu
  * attend qu'elle quitte la liste ; chaque Battle jouée en réel (vote
- * approuvé ou lancée par le bar) est rejouée, avec son délai et sa durée.
+ * approuvé ou lancée par le bar) est rejouée, avec son délai et sa durée,
+ * et un titre ou une Battle joué directement dans KaraFun occupe la scène.
  * Rien ne part pendant un arrêt de l'application ni après la fin du
  * karaoké de la soirée réelle (evening-stats.js).
  *
@@ -99,7 +101,7 @@ const REPLAYED = new Set(['table.opened', 'table.headcount', 'person.joined', 's
 // Gestes qui changent la file mais que le rejeu ne refait pas : signalés.
 const NOT_REPLAYED = new Set(['staff.move', 'staff.undo', 'staff.recalculate', 'defer.requested',
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced', 'presence.skipped',
-  'turn.unsent', 'battle.external', 'staff.queueCleared',
+  'turn.unsent', 'staff.queueCleared',
   'staff.absent']);
 // Gestes sur les titres et les duos : un geste réel que le rejeu n'a pas pu
 // faire (titre déjà chanté ou absent dans le rejeu) sort aussi du journal
@@ -170,6 +172,7 @@ function loadEvening(input) {
   const played = new Map();
   const startGaps = [];
   const battleStages = [];
+  const stageRecords = [];
   {
     const open = new Map(); let last = null; let lastEnd = 0; const sent = new Map();
     for (const e of events) {
@@ -187,6 +190,7 @@ function loadEvening(input) {
         }
         open.clear();
         last = { e, q, resumedAt: null, sec: null };
+        stageRecords.push(last);
         if (e.source === 'battle') battleStages.push(last);
         open.set(q ?? `#${e.seq ?? e.t}`, last);
         if (e.source === 'queue' || (e.entryId && e.source !== 'battle')) {
@@ -220,8 +224,8 @@ function loadEvening(input) {
   // jamais jouée n'y est pas. Export sans suivi de l'envoi : la Battle jouée
   // qui suit la décision, délai habituel.
   const battles = [];
+  const used = new Set();
   {
-    const used = new Set();
     for (const d of events.filter(e => (e.ev === 'battle.decided' && e.outcome === 'approved') || e.ev === 'battle.staffLaunch')) {
       const mine = e => e.ev === 'battle.automation' && e.t >= d.t && (d.ballotId == null || e.ballotId === d.ballotId);
       const sending = events.find(e => mine(e) && e.status === 'sending');
@@ -241,6 +245,10 @@ function loadEvening(input) {
       battles.push({ decision: d, preGapMs: Math.max(0, playing.t - Math.max(sending.t, freed)), sec: stage?.sec ?? null });
     }
   }
+  // Passages hors file joués en réel (titre ou Battle ajoutés directement
+  // dans KaraFun) : heure de début et durée.
+  const outside = stageRecords.filter(st => !st.e.entryId && st.e.source !== 'queue' && !used.has(st))
+    .map(st => ({ t: st.e.t, sec: st.sec, source: st.e.source || 'native' }));
   // Arrêts de l'application : rien ne part pendant ces intervalles (rejeu
   // libre). Comme evening-stats.js, chaque redémarrage note la durée de
   // l'arrêt (offlineMs), arrêt propre ou coupure ; sans elle (ancien
@@ -263,7 +271,7 @@ function loadEvening(input) {
   // Attentes de evening-stats.js présentes dans l'export (vérification de la définition).
   const exportWaits = new Map();
   for (const st of raw.stats?.timeline?.stages || []) if (st.entryId && st.waitSec != null) exportWaits.set(st.entryId, st.waitSec);
-  return { raw, events, people, tables, rules, played, startGaps, battles, offline,
+  return { raw, events, people, tables, rules, played, startGaps, battles, outside, offline,
     timezone, realPassages, exportWaits, skipped };
 }
 
@@ -1063,6 +1071,12 @@ async function runFree(evening, opts = {}) {
     // et dure le temps de la Battle réelle.
     const battleOf = new Map(ev.battles.map(b => [b.decision, b]));
     const battleQueue = [];
+    // Passages hors file (loadEvening) : chacun entre dans KaraFun à son heure
+    // réelle, démarre dès que la scène est libre (après ce qui y était déjà)
+    // et retient d'ici là l'envoi, comme un titre déjà dans KaraFun.
+    const outside = [...ev.outside];
+    const outsideDue = [];
+    let battleQueuedAt = null;
     const offlineAt = t => ev.offline.some(([a, b]) => t >= a && t < b);
     let closingAt = Infinity;
     const stages = [];
@@ -1106,16 +1120,24 @@ async function runFree(evening, opts = {}) {
         s.recordStage(upcoming.sel, clock.now);
         stages.push(current); upcoming = null;
       }
+      while (outside.length && outside[0].t <= clock.now) outsideDue.push(outside.shift());
+      const battleFirst = battle === 'queued' && (!outsideDue.length || battleQueuedAt <= outsideDue[0].t);
+      if (!current && !upcoming && outsideDue.length && !battleFirst && clock.now >= lastEnd + GAP_MS) {
+        const o = outsideDue.shift();
+        current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? 200) };
+        stages.push(current);
+      }
       if (battle === 'none' && battleQueue.length) { battleNow = battleQueue.shift(); battle = 'waiting'; }
       // Envoi de la Battle (server.js) : application en marche, pas après
       // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
-      if (battle === 'waiting' && !upcoming && !(s.reservedNext && current) && !closingBlocks() && !over() &&
-        !offlineAt(clock.now)) battle = 'queued';
-      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + battleNow.preGapMs && !over()) {
+      if (battle === 'waiting' && !upcoming && !outsideDue.length && !(s.reservedNext && current) && !closingBlocks() && !over() &&
+        !offlineAt(clock.now)) { battle = 'queued'; battleQueuedAt = clock.now; }
+      if (!current && !upcoming && battle === 'queued' && (!outsideDue.length || battleQueuedAt <= outsideDue[0].t) &&
+        clock.now >= lastEnd + battleNow.preGapMs && !over()) {
         current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? 260) };
         stages.push(current); battle = 'playing';
       }
-      const hold = ['queued', 'playing'].includes(battle) || offlineAt(clock.now);
+      const hold = ['queued', 'playing'].includes(battle) || offlineAt(clock.now) || outsideDue.length > 0;
       if (!upcoming && !hold && current?.kind === 'song' && !s.reservedNext && !over()) {
         await ensurePlan(ctx);
         const state = explain(ctx);
@@ -1210,6 +1232,8 @@ async function runFree(evening, opts = {}) {
         if (current) next.push(current.end, current.start + pushMs);
         if (!current && upcoming) next.push(startAt());
         if (!current && !upcoming && battle === 'queued') next.push(lastEnd + battleNow.preGapMs);
+        if (outside.length) next.push(outside[0].t);
+        if (!current && !upcoming && outsideDue.length) next.push(lastEnd + GAP_MS);
         for (const [, b] of ev.offline) if (Number.isFinite(b)) next.push(b);
         const future = next.filter(t => t > clock.now);
         if (!future.length) break;
@@ -1224,7 +1248,7 @@ async function runFree(evening, opts = {}) {
       entryId: ctx.rep2real.get(st.sel.song.entryId) || st.sel.song.entryId, ids: st.sel.ids.map(pid => keyOf(ctx, pid)),
       start: st.start, end: st.end, sentAt: st.sentAt, source: 'queue', title: st.sel.song.title,
       newRound: !!st.decision?.pick.newRound, borrowedIds: st.decision?.pick.borrowedIds || [] } :
-      { entryId: null, ids: [], start: st.start, end: st.end, source: st.kind, title: st.kind });
+      { entryId: null, ids: [], start: st.start, end: st.end, source: st.source || st.kind, title: st.source || st.kind });
     const journal = replayJournal(ev, replayPassages, ctx.unapplied, ctx.aliases, ctx.added);
     const passages = computeWaits(replayPassages, ev, journal).map(w => ({ ...w, borrowedIds: w.borrowedIds || [] }));
     return finish(ctx, 'libre', passages, compareOrders(ev, passages), journal);
