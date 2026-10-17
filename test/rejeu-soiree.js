@@ -13,8 +13,10 @@
  *   --libre                rejeu LIBRE : l'ordonnanceur choisit qui chante. Inscriptions,
  *                          demandes, duos, retraits, réordres et départs à leurs heures
  *                          réelles ; durées jouées réelles ; délais de lancement réels du
- *                          k-ième titre ; Battle à son heure réelle ; envoi à +pushDelaySec ;
- *                          rien n'est envoyé pendant un arrêt de l'application.
+ *                          k-ième titre ; chaque Battle jouée en réel envoyée après sa
+ *                          décision à la première case libre, avec son délai et sa durée
+ *                          réels ; envoi à +pushDelaySec ; rien n'est envoyé pendant un
+ *                          arrêt de l'application ni après la fin du karaoké.
  *   --solveur [jar]        avec le plan Timefold (solver/bridge.js), attendu à chaque
  *                          décision. Jar par défaut : solver/target/karafun-solver.jar,
  *                          sinon solver/karafun-solver.jar.
@@ -765,7 +767,8 @@ function applyExternal(ctx, e, upcoming) {
         const replaced = new Set((e.replacedEntryIds || []).map(id => ctx.real2rep.get(id)).filter(Boolean));
         const kept = e.mode === 'replace' ? s.songsOf(p).filter(x => !replaced.has(x.entryId)) : [];
         // Même chanson redemandée et encore à chanter dans le rejeu : le nouveau
-        // titre la remplace aussi, dans le rejeu et dans son journal.
+        // titre la remplace dans le rejeu ; le journal rejoué garde l'ancien
+        // titre (plus bas).
         const same = kept.find(x => x.songId === Number(song.songId));
         const keptCount = kept.length - (same ? 1 : 0);
         // Duo de cette même chanson : le nouveau titre le reprend avec son
