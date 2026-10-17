@@ -2549,9 +2549,10 @@ test('Timefold : chaque calcul fait deux fois pour un solveur qui pouvait couper
   const jar = path.join(dir, 'faux.jar');
   fs.writeFileSync(jar, '');
   const main = fs.readFileSync(path.join(repo, 'solver/src/main/java/fr/karafun/plus/solver/Main.java'), 'utf8');
-  // Ancien fil de lecture : la ligne déposée avant de lire la recherche en cours.
-  const racy = main.replace(/Solver<QueuePlan> running = active\.get\(\);\n(\s*)inbox\.put\(line\);/,
-    'inbox.put(line);\n$1Solver<QueuePlan> running = active.get();');
+  // Ancien fil de lecture : la ligne déposée avant de lire la recherche en cours
+  // (fins de ligne CRLF sous Windows, git y convertit les sources).
+  const racy = main.replace(/Solver<QueuePlan> running = active\.get\(\);(\r?\n\s*)inbox\.put\(line\);/,
+    'inbox.put(line);$1Solver<QueuePlan> running = active.get();');
   assert.notEqual(racy, main);
   const xml = fs.readFileSync(path.join(repo, 'solver/src/main/resources/solverConfig.xml'), 'utf8');
   const version = (name, mainSource, config) => {
