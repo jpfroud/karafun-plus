@@ -61,13 +61,11 @@
  * dans les notes et les avertissements. Comparées aux attentes enregistrées dans
  * l'export (une version plus ancienne de l'application peut en différer).
  *
- * Limites connues du rejeu libre (les deux côtés d'un bilan les partagent,
- * mais l'écart peut ne tomber que d'un côté) : à l'heure de fermeture, il
- * envoie et lance encore un titre que le bar aurait retenu (la règle du
- * serveur, au moins la moitié du titre avant l'heure, n'est pas reprise) ;
- * une chanson redemandée en « ajouter » alors qu'elle reste à chanter dans le
- * rejeu (déjà chantée au bar) est refusée comme doublon : la demande est
- * signalée et sort du journal rejoué.
+ * Rejeu libre et serveur : comme server.js, l'heure de fermeture retient
+ * ou retire un titre qui ne tiendrait plus avant l'heure ; un titre envoyé
+ * suit les départs notés par le bar et les duos quittés ; une chanson
+ * redemandée en « ajouter » alors qu'elle reste à chanter dans le rejeu
+ * attend qu'elle quitte la liste.
  *
  * Seul effet de bord : Date.now est remplacé par l'horloge de la soirée
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
@@ -107,6 +105,7 @@ const MUST_MATCH = new Set(['song.requested', 'song.removed', 'song.reordered', 
 // « Pas prêt ») : hors du journal rejoué.
 const NOT_IN_JOURNAL = new Set(['staff.queueCleared', 'defer.requested', 'defer.ended']);
 const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export ne dit rien
+const SONG_GAP_MS = 20000; // temps moyen entre deux titres compté par la fermeture (server.js)
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
 
 // ------------------------------------------------------------------ horloge
@@ -149,7 +148,9 @@ function loadEvening(input) {
       seen.add(key);
       return true;
     })
-    .sort((a, b) => (Number.isFinite(a.e.seq) && Number.isFinite(b.e.seq) ? a.e.seq - b.e.seq : a.e.t - b.e.t) || a.i - b.i)
+    // Ordre des heures, puis des numéros d'ordre, comme evening-stats.js (une
+    // horloge qui recule ne mélange pas les gestes du rejeu).
+    .sort((a, b) => a.e.t - b.e.t || (Number.isFinite(a.e.seq) && Number.isFinite(b.e.seq) ? a.e.seq - b.e.seq : 0) || a.i - b.i)
     .map(({ e }) => e);
   const people = new Map();
   for (const p of raw.people || []) if (p?.key) people.set(p.key, { key: p.key, table: p.table, name: p.name || p.key });
@@ -230,10 +231,13 @@ const STAGE_EVENTS = new Set(['stage.started', 'stage.ended', 'stage.restarted',
 // réels que le rejeu n'a pas pu faire (retrait d'un titre déjà chanté dans le
 // rejeu, demande refusée) ; `patches` : champs d'un geste que le rejeu a fait
 // autrement (« remplacer » qui retire aussi la même chanson encore à chanter).
-// Les gestes non rejoués de NOT_IN_JOURNAL n'y sont pas non plus.
-function replayJournal(ev, passages, skip = new Set(), patches = new Map()) {
+// Les gestes non rejoués de NOT_IN_JOURNAL n'y sont pas non plus. `added` :
+// gestes que le rejeu a faits en plus, juste après celui qui les a causés
+// (duo repris par un « remplacer »).
+function replayJournal(ev, passages, skip = new Set(), patches = new Map(), added = new Map()) {
   const merged = ev.events.filter(e => !STAGE_EVENTS.has(e.ev) && !NOT_IN_JOURNAL.has(e.ev) && !skip.has(e))
-    .map((e, order) => ({ e: patches.has(e) ? { ...e, ...patches.get(e) } : e, order }));
+    .flatMap(e => [patches.has(e) ? { ...e, ...patches.get(e) } : e, ...(added.get(e) || [])])
+    .map((e, order) => ({ e, order }));
   passages.forEach((st, k) => {
     const queueId = `rejeu-${k}`;
     if (st.sentAt != null && st.source === 'queue') {
@@ -303,26 +307,32 @@ function cacheRoot() {
     if (!common) throw new UsageError('--avant <révision> : dépôt git introuvable ; donner plutôt un dossier de sources.');
     root = path.join(path.resolve(ROOT, common), 'karafun-rejeu');
   }
-  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  // Le code extrait ici est exécuté : dossier à soi, que nul autre ne peut modifier.
-  const st = fs.lstatSync(root);
   const unsafe = message => new UsageError(`Cache des versions extraites non sûr (${root}) : ${message} ; ` +
     'donner un dossier à soi avec KARAFUN_REJEU_CACHE.');
-  if (st.isSymbolicLink() || (process.getuid && (st.uid !== process.getuid() || (st.mode & 0o022)))) {
-    throw unsafe('il doit être à l\'utilisateur, sans droit d\'écriture pour les autres');
-  }
-  const real = fs.realpathSync(root);
   // Parents : un dossier modifiable par d'autres sans sticky bit laisserait
   // remplacer le cache après ce contrôle (règle de StrictModes d'OpenSSH).
-  if (process.getuid) {
-    for (let dir = path.dirname(real); ; dir = path.dirname(dir)) {
+  // Vérifiés avant de créer quoi que ce soit, puis sur le chemin réel.
+  const checkParents = from => {
+    if (!process.getuid) return;
+    for (let dir = from; ; dir = path.dirname(dir)) {
       const p = fs.statSync(dir);
       if ((p.uid !== process.getuid() && p.uid !== 0) || ((p.mode & 0o022) && !(p.mode & 0o1000))) {
         throw unsafe(`le dossier ${dir} peut être modifié par d'autres`);
       }
       if (dir === path.dirname(dir)) break;
     }
+  };
+  let existing = path.dirname(root);
+  while (!fs.existsSync(existing)) existing = path.dirname(existing);
+  checkParents(fs.realpathSync(existing));
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  // Le code extrait ici est exécuté : dossier à soi, que nul autre ne peut modifier.
+  const st = fs.lstatSync(root);
+  if (st.isSymbolicLink() || (process.getuid && (st.uid !== process.getuid() || (st.mode & 0o022)))) {
+    throw unsafe('il doit être à l\'utilisateur, sans droit d\'écriture pour les autres');
   }
+  const real = fs.realpathSync(root);
+  checkParents(path.dirname(real));
   return real;
 }
 const EXTRACTED_OK = '.rejeu-ok';
@@ -410,6 +420,30 @@ function staleJar(jar, dir) {
   return walk(src) || (fs.existsSync(pom) && fs.statSync(pom).mtimeMs > built);
 }
 
+// Construction du jar d'une autre version : au plus MVN_TIMEOUT_MS (premier
+// téléchargement des dépendances compris) ; un verrou plus vieux que
+// LOCK_STALE_MS (toujours plus long) a été laissé par une construction
+// interrompue.
+const MVN_TIMEOUT_MS = 20 * 60_000;
+const LOCK_STALE_MS = 25 * 60_000;
+// Reprise d'un verrou abandonné : un seul rejeu à la fois (fichier de reprise
+// créé d'un coup), qui revérifie l'âge du verrou avant de le prendre. Une
+// reprise interrompue (plus d'une minute) est effacée : relancer.
+function takeOverLock(lock) {
+  const claim = `${lock}.reprise`;
+  try { fs.closeSync(fs.openSync(claim, 'wx')); } catch (err) {
+    if (err.code === 'EEXIST' && ageMs(claim) > 60_000) fs.rmSync(claim, { force: true });
+    return false;
+  }
+  try {
+    let age;
+    try { age = ageMs(lock); } catch (_) { return false; } // rendu entre-temps : relancer
+    if (age < LOCK_STALE_MS) return false;
+    fs.writeFileSync(lock, '');
+    return true;
+  } finally { fs.rmSync(claim, { force: true }); }
+}
+
 function resolveJar(solver, code = CURRENT) {
   if (!solver) return null;
   if (typeof solver === 'string') {
@@ -422,18 +456,16 @@ function resolveJar(solver, code = CURRENT) {
   let jar = code.extracted && !fs.existsSync(built) ? null : jarsIn(code.dir).find(fs.existsSync);
   if (!jar && code.extracted) {
     const lock = path.join(code.dir, 'solver', '.rejeu-mvn.lock');
+    const busy = () => new UsageError(`Jar Timefold de ${code.label} : construction déjà en cours (${lock}) ; relancer ensuite.`);
     try {
       try { fs.closeSync(fs.openSync(lock, 'wx')); } catch (err) {
-        if (err.code !== 'EEXIST' || ageMs(lock) < 15 * 60_000) {
-          throw new UsageError(`Jar Timefold de ${code.label} : construction déjà en cours (${lock}) ; relancer ensuite.`);
-        }
-        fs.writeFileSync(lock, ''); // verrou abandonné
+        if (err.code !== 'EEXIST' || !takeOverLock(lock)) throw busy();
       }
       // Windows : mvn.cmd passe par le shell, chemin entre guillemets (espaces).
       const pom = path.join(code.dir, 'solver', 'pom.xml');
       const win = process.platform === 'win32';
       execFileSync('mvn', ['-q', '-B', '-DskipTests', 'package', '-f', win ? `"${pom}"` : pom],
-        { stdio: ['ignore', 'ignore', 'pipe'], shell: win, timeout: 10 * 60_000 });
+        { stdio: ['ignore', 'ignore', 'pipe'], shell: win, timeout: MVN_TIMEOUT_MS });
       fs.writeFileSync(built, '');
     } catch (err) {
       if (err instanceof UsageError) throw err;
@@ -477,7 +509,7 @@ function makeContext(ev, opts) {
   s.solverBridge = null;
   const ctx = { ev, s, rules, overrides, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
     notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || 3000, solver: null, jar: null,
-    code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null }, unapplied: new Set(), patches: new Map() };
+    code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null }, unapplied: new Set(), patches: new Map(), added: new Map() };
   const jar = resolveJar(opts.solver, code);
   if (jar) {
     const { TimefoldBridge } = require(path.join(code.dir, 'solver', 'bridge'));
@@ -576,17 +608,21 @@ const notReplayedNote = (e, why) => `${e.ev} non rejoué : ` +
 // (keepSentDuosOfLeavers) ; le titre d'un auteur parti est retiré de KaraFun
 // et son passage rendu (removeLeaversTracks, puis rollbackUnplayed). Invitée
 // qui quitte le duo, ou auteur qui le chante seul : en solo (leaveSentDuo).
-// « Je pars » tapé par la personne ne touche pas aux titres envoyés.
+// En réel, avant l'envoi, ce dernier geste est un duo.cancelled de l'auteur
+// (« Chanter seul » ou « Annuler duo ») : sur un duo envoyé, le serveur n'a
+// que « Chanter seul ». « Je pars » tapé par la personne ne touche pas aux
+// titres envoyés.
 // Rend { handled } (geste fait ici) et { cancel } (titre retiré).
 function sentGesture(ctx, e, sel) {
   const none = { handled: false, cancel: false };
   if (!sel) return none;
   const s = ctx.s;
   const pid = k => ctx.key2pid.get(k);
-  if (e.ev === 'duo.left') {
-    const gid = pid(e.guestId || e.personId);
+  const byOwner = e.ev === 'duo.cancelled' && e.personId && e.personId === e.ownerId;
+  if (e.ev === 'duo.left' || byOwner) {
+    const gid = pid(byOwner ? e.partnerId : e.guestId || e.personId);
     if (!gid || sel.song?.entryId !== ctx.real2rep.get(e.entryId) || sel.ids.indexOf(gid) < 1) return none;
-    s.leaveSentDuet(sel, gid, { by: ['owner', 'staff'].includes(e.by) ? e.by : 'guest' });
+    s.leaveSentDuet(sel, gid, { by: byOwner ? 'owner' : ['owner', 'staff'].includes(e.by) ? e.by : 'guest' });
     return { handled: true, cancel: false };
   }
   const ids = e.ev === 'table.left' ? s.tableSingers(e.tableId).map(p => p.id) :
@@ -658,28 +694,34 @@ function applyExternal(ctx, e, upcoming) {
         const keptCount = kept.length - (same ? 1 : 0);
         // Duo de cette même chanson : le nouveau titre le reprend avec son
         // invitée (qui l'a chanté en réel), accepté comme avant.
-        const sameGuest = same?.duet && s.people.get(same.duet.partnerId);
+        const sameGuest = same?.duet?.state === 'accepted' && s.people.get(same.duet.partnerId);
         const carry = sameGuest && !sameGuest.withdrawnAt ? sameGuest : null;
-        const add = () => carry ? s.inviteDuet(p, carry.id, song) : s.chooseSong(p, song, 'append');
         const dropReplaced = () => { for (const x of s.songsOf(p).filter(x => replaced.has(x.entryId))) s.removeSong(p, x.entryId); };
-        if (keptCount || carry) {
+        if (keptCount) {
           if (same) s.removeSong(p, same.entryId);
-          try { add(); } catch (err) {
+          try { s.chooseSong(p, song, 'append'); } catch (err) {
             // Refus que le « remplacer » du bar n'a pas (même chanson qu'un titre
             // remplacé, liste pleine avec eux) : les retirer d'abord, puis ajouter.
             if (!['ALREADY_LISTED', 'LIST_FULL'].includes(err.code)) throw err;
             dropReplaced();
-            add();
+            s.chooseSong(p, song, 'append');
           }
           dropReplaced();
-          const added = s.songsOf(p).find(x => !before.has(x.entryId));
-          if (carry && same.duet.state === 'accepted' && added?.duet?.state === 'pending') s.answerDuet(carry, true, added.entryId);
         } else if (duo && partner && !partner.withdrawnAt) s.inviteDuet(p, partner.id, song);
         else s.chooseSong(p, song, e.mode === 'replace' ? 'replace' : 'append');
         const sameReal = same && ctx.rep2real.get(same.entryId);
         if (sameReal) ctx.patches.set(e, { replacedEntryIds: [...(e.replacedEntryIds || []), sameReal] });
         const fresh = s.songsOf(p).find(x => !before.has(x.entryId));
         if (fresh) { ctx.real2rep.set(e.entryId, fresh.entryId); ctx.rep2real.set(fresh.entryId, e.entryId); }
+        // Duo accepté de cette même chanson : son invitée (qui l'a chanté en
+        // réel) rejoint le nouveau titre, et le journal rejoué le note (titre
+        // déjà enregistré : un refus ici ne retire pas la demande du journal).
+        if (carry && fresh) {
+          const { direct } = s.requestDuetJoin(carry, p.id, fresh.entryId);
+          if (!direct) s.answerDuetJoin(p, fresh.entryId, carry.id, true);
+          const keys = { requesterId: keyOf(ctx, carry.id), ownerId: e.personId, entryId: e.entryId };
+          ctx.added.set(e, [{ v: 1, t: e.t, ev: 'duo.joinRequested', ...keys, direct: true }]);
+        }
         if (keptCount) note(ctx, `remplacement de ${e.personId} : ${keptCount} titre(s) pas encore chanté(s) dans le rejeu gardé(s)`);
         if (same) note(ctx, `remplacement de ${e.personId} : « ${same.title} » redemandé avant d'être chanté dans le rejeu, chanté une fois`);
         return true;
@@ -760,6 +802,13 @@ function applyExternal(ctx, e, upcoming) {
       default: return false;
     }
   } catch (err) {
+    // Chanson redemandée en « ajouter » (chantée au bar, encore à chanter dans
+    // le rejeu) : la demande attend qu'elle quitte la liste (rejeu libre).
+    if (e.ev === 'song.requested' && err.code === 'ALREADY_LISTED' && ctx.deferred && !ctx.real2rep.has(e.entryId)) {
+      ctx.deferred.push({ e, upcoming });
+      note(ctx, `demande de ${e.personId} « ${e.title || e.songId} » différée : la même chanson reste à chanter dans le rejeu`);
+      return false;
+    }
     // Geste refusé par l'ordonnanceur rejoué (titre déjà chanté, duo parti…) :
     // hors du journal, sauf une demande déjà faite avant l'erreur.
     if (MUST_MATCH.has(e.ev) && !(e.ev === 'song.requested' && ctx.real2rep.has(e.entryId))) ctx.unapplied.add(e);
@@ -780,6 +829,7 @@ async function runForced(evening, opts = {}) {
     const ctx = makeContext(ev, opts);
     const { s } = ctx;
     const sels = new Map(); // entryId réel → passage engagé
+    const started = new Set(); // passages engagés déjà lancés
     let current = null, upcoming = null, hold = false, reservation = null;
     const reserveIfDue = async why => {
       if (current?.kind !== 'song' || upcoming || hold || s.reservedNext) return;
@@ -794,7 +844,20 @@ async function runForced(evening, opts = {}) {
         clock.now = e.t;
         countIgnored(ctx, e);
         const soon = ev.events.slice(i + 1, i + 6).filter(x => x.t - e.t < 1000);
-        if (applyExternal(ctx, e, soon)) { await reserveIfDue(e.ev); continue; }
+        // Passage engagé, pas encore lancé, que le geste touche (comme le serveur).
+        const target = e.ev === 'duo.left' || e.ev === 'duo.cancelled' ? sels.get(e.entryId) : upcoming;
+        let sent = { handled: false, cancel: false };
+        if (target && !started.has(target)) {
+          try { sent = sentGesture(ctx, e, target); } catch (err) { note(ctx, `${e.ev} sur le titre envoyé : ${err.message}`); }
+        }
+        if (sent.handled) { await reserveIfDue(e.ev); continue; }
+        const applied = applyExternal(ctx, e, soon);
+        if (sent.cancel) {
+          if (target.turnCredit) s.rollbackUnplayed(target);
+          note(ctx, `titre envoyé retiré au départ de ${keyOf(ctx, target.ids[0])} : « ${target.song?.title || ''} »`);
+          if (upcoming === target) upcoming = null;
+        }
+        if (applied) { await reserveIfDue(e.ev); continue; }
         switch (e.ev) {
           case 'turn.sent': {
             const owner = ctx.key2pid.get(e.ownerId || e.ids?.[0]);
@@ -850,6 +913,7 @@ async function runForced(evening, opts = {}) {
           case 'stage.started': {
             const sel = e.entryId ? sels.get(e.entryId) : null;
             if (sel) {
+              started.add(sel);
               s.recordStage(sel, clock.now);
               current = { kind: 'song', sel, start: clock.now };
               if (upcoming === sel) upcoming = null;
@@ -918,11 +982,23 @@ async function runFree(evening, opts = {}) {
       if (!g) return Math.max(lastEnd, upcoming.sentAt) + GAP_MS;
       return Math.max(lastEnd + g.endGap, upcoming.sentAt + Math.min(g.sendGap, g.endGap > 60000 ? g.sendGap : 15000));
     };
+    // Fermeture du bar (server.js, closingBlocksStart) : un titre ne part ni
+    // ne démarre que si au moins sa moitié (créneau moyen) passe avant l'heure,
+    // la scène se libérant à la fin du titre en cours plus SONG_GAP_MS.
+    const closingBlocks = () => Number.isFinite(closingAt) &&
+      (current ? Math.max(current.end + SONG_GAP_MS, clock.now) : clock.now) + s.avgSlotSec() * 500 > closingAt;
     const stepServer = async () => {
       if (current && clock.now >= current.end) {
         if (current.kind === 'song') { s.recordSlot((current.end - current.start) / 1000); s.songEnded(current.sel.ids); s.endStage(current.sel); }
         if (current.kind === 'battle') battle = 'done';
         lastEnd = current.end; current = null;
+      }
+      // Titre envoyé qui ne tiendrait plus avant l'heure : retiré de KaraFun,
+      // il revient dans la liste de son auteur (pullFromKaraFun, restorePulled).
+      if (upcoming && closingBlocks()) {
+        s.requeueUnplayed(upcoming.sel);
+        note(ctx, `titre envoyé retiré à la fermeture : « ${upcoming.sel.song?.title || ''} »`);
+        upcoming = null;
       }
       if (!current && upcoming && clock.now >= startAt()) {
         current = { kind: 'song', sel: upcoming.sel, start: clock.now, end: clock.now + durOf(upcoming.sel), sentAt: upcoming.sentAt,
@@ -931,7 +1007,7 @@ async function runFree(evening, opts = {}) {
         stages.push(current); upcoming = null;
       }
       if (battle === 'waiting' && !upcoming && !(s.reservedNext && current)) battle = 'queued';
-      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + battlePreGap) {
+      if (!current && !upcoming && battle === 'queued' && clock.now >= lastEnd + battlePreGap && !closingBlocks()) {
         current = { kind: 'battle', start: clock.now, end: clock.now + battleMs }; stages.push(current); battle = 'playing';
       }
       const hold = ['queued', 'playing'].includes(battle) || offlineAt(clock.now);
@@ -942,7 +1018,7 @@ async function runFree(evening, opts = {}) {
         if (sel) ctx.decisions.push({ kind: 'reserve', at: clock.now, time: timeOf(clock.now, ev.timezone), pick: pickOf(ctx, sel), state });
       }
       const canPush = !current || clock.now - current.start >= pushMs;
-      if (!upcoming && !hold && canPush && clock.now < closingAt) {
+      if (!upcoming && !hold && canPush && !closingBlocks()) {
         await ensurePlan(ctx);
         const state = explain(ctx);
         const sel = s.select({ stageFree: !current });
@@ -952,6 +1028,17 @@ async function runFree(evening, opts = {}) {
           ctx.decisions.push(decision);
           upcoming = { sel, sentAt: clock.now + ACK_MS, decision };
         }
+      }
+    };
+    // Demandes différées (même chanson encore dans la liste) : faites dès
+    // qu'elle en est sortie (envoyée, retirée).
+    ctx.deferred = [];
+    const retryDeferred = () => {
+      for (const d of [...ctx.deferred]) {
+        const p = s.people.get(ctx.key2pid.get(d.e.personId));
+        if (p && s.songsOf(p).some(x => x.songId === Number(d.e.songId))) continue;
+        ctx.deferred.splice(ctx.deferred.indexOf(d), 1);
+        applyExternal(ctx, d.e, d.upcoming);
       }
     };
     let i = 0;
@@ -974,8 +1061,10 @@ async function runFree(evening, opts = {}) {
             upcoming = null;
           }
         }
+        retryDeferred();
         // Plusieurs passages du serveur au même instant (fin → début → envoi).
         for (let k = 0; k < 4; k++) await stepServer();
+        retryDeferred();
         const next = [];
         if (i < ext.length) next.push(ext[i].t);
         if (current) next.push(current.end, current.start + pushMs);
@@ -989,13 +1078,17 @@ async function runFree(evening, opts = {}) {
     } finally {
       if (ctx.solver) ctx.solver.close();
     }
+    for (const d of ctx.deferred) {
+      ctx.unapplied.add(d.e);
+      note(ctx, notReplayedNote(d.e, 'même chanson restée à chanter jusqu\'à la fin'));
+    }
     if (steps >= maxSteps) ctx.warnings.push(`rejeu arrêté à ${timeOf(clock.now, ev.timezone)} après ${maxSteps} étapes : la fin de la soirée manque`);
     const replayPassages = stages.map(st => st.kind === 'song' ? {
       entryId: ctx.rep2real.get(st.sel.song.entryId) || st.sel.song.entryId, ids: st.sel.ids.map(pid => keyOf(ctx, pid)),
       start: st.start, end: st.end, sentAt: st.sentAt, source: 'queue', title: st.sel.song.title,
       newRound: !!st.decision?.pick.newRound, borrowedIds: st.decision?.pick.borrowedIds || [] } :
       { entryId: null, ids: [], start: st.start, end: st.end, source: st.kind, title: st.kind });
-    const journal = replayJournal(ev, replayPassages, ctx.unapplied, ctx.patches);
+    const journal = replayJournal(ev, replayPassages, ctx.unapplied, ctx.patches, ctx.added);
     const passages = computeWaits(replayPassages, ev, journal).map(w => ({ ...w, borrowedIds: w.borrowedIds || [] }));
     return finish(ctx, 'libre', passages, compareOrders(ev, passages), journal);
   });

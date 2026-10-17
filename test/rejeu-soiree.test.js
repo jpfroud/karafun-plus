@@ -294,6 +294,8 @@ test('rejeu libre : « remplacer » garde un duo à sa place ; même chanson red
   // a1 était un duo : c1, la même chanson, le reprend (l'invitée a chanté en réel).
   assert.deepEqual(same.passages.find(p => p.entryId === 'c1').ids, ['S01', 'S03']);
   assert.equal(same.balance.replay.people.S03?.guestTurns, 1);
+  // Le journal rejoué le sait aussi : attente sans scène de l'invitée mesurée.
+  assert.ok(same.balance.replay.people.S03.stageMaxSec > 0, JSON.stringify(same.balance.replay.people.S03));
   assert.ok(same.passages.find(p => p.entryId === 'c1').waitSec > 0);
   assert.ok(same.notes.some(n => /remplacement de S01 : « a1 » redemandé avant d'être chanté dans le rejeu, chanté une fois/.test(n)));
   assert.deepEqual(same.warnings, ['le rejeu chante 2 titres de la file, la soirée 3']);
@@ -421,14 +423,114 @@ test('rejeu libre : départ ou duo quitté pendant qu’un titre est envoyé dan
     b.stage(400, 'a1', ['S01'], 'q3');
     return rejeu.runFree(rejeu.loadEvening(b.done()));
   };
+  // « Chanter seul » ou « Annuler duo » de l'auteur sur un duo encore en
+  // liste en réel (duo.cancelled) : le duo envoyé dans le rejeu part en solo.
   for (const res of [await guestLeaves('duo.left', { guestId: 'S03', ownerId: 'S01', entryId: 'a1', sent: false }),
-    await guestLeaves('person.left', { personId: 'S03', by: 'staff', songsDropped: 0 })]) {
+    await guestLeaves('person.left', { personId: 'S03', by: 'staff', songsDropped: 0 }),
+    await guestLeaves('duo.cancelled', { personId: 'S01', ownerId: 'S01', partnerId: 'S03', entryId: 'a1' })]) {
     const a1 = res.passages.find(p => p.entryId === 'a1');
     assert.ok(a1.sentAt < T0 + 120000 && a1.start > T0 + 120000, 'duo envoyé dans le rejeu avant le geste réel');
     assert.deepEqual(a1.ids, ['S01']);
     assert.ok(!res.balance.replay.people.S03?.guestTurns);
     assert.ok(!res.notes.some(n => /non rejoué/.test(n)), res.notes.join(' | '));
   }
+});
+
+test('rejeu forcé : invitée qui quitte un duo déjà dans KaraFun ; export lu dans l’ordre des heures', async () => {
+  // Duo a1 de S01 avec S03 (autre table, accepté), envoyé à 21:03:15 ; S03 se
+  // retire à 21:03:17 (sent: true), a1 chanté en solo, puis z1 de S03. Comme
+  // au serveur (leaveSentDuo), S03 ne compte pas dans le tour : z1 est le choix
+  // de l'ordonnanceur, sans passage forcé.
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const events = [];
+  const e = (t, name, f = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + t * 1000, ev: name, ...f });
+  e(0, 'evening.started', { rules: {} });
+  for (const t of ['T1', 'T2', 'T3']) e(0, 'table.opened', { tableId: t });
+  for (const [k, t] of [['S01', 'T1'], ['S02', 'T2'], ['S03', 'T3'], ['S04', 'T2']]) e(0, 'person.joined', { personId: k, tableId: t });
+  e(1, 'song.requested', { personId: 'S02', entryId: 'x1', songId: 3, title: 'x1', mode: 'append' });
+  e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+  e(2, 'duo.invited', { personId: 'S01', ownerId: 'S01', partnerId: 'S03', entryId: 'a1', sameGroup: false });
+  e(2.5, 'duo.answered', { personId: 'S03', partnerId: 'S03', ownerId: 'S01', entryId: 'a1', accepted: true });
+  e(3, 'song.requested', { personId: 'S02', entryId: 'x2', songId: 2, title: 'x2', mode: 'append' });
+  e(3, 'song.requested', { personId: 'S01', entryId: 'a2', songId: 5, title: 'a2', mode: 'append' });
+  e(4, 'song.requested', { personId: 'S03', entryId: 'z1', songId: 4, title: 'z1', mode: 'append' });
+  const stage = (t, id, ids, q) => {
+    e(t - 5, 'turn.sent', { entryId: id, ownerId: ids[0], ids, queueId: q });
+    e(t, 'stage.started', { entryId: id, ids, queueId: q, source: 'queue', title: id });
+    e(t + 180, 'stage.ended', { queueId: q, playedSec: 180 });
+  };
+  stage(10, 'x1', ['S02'], 'q1');
+  e(195, 'turn.sent', { entryId: 'a1', ownerId: 'S01', ids: ['S01', 'S03'], queueId: 'q2' });
+  e(197, 'duo.left', { ownerId: 'S01', guestId: 'S03', entryId: 'a1', sent: true, by: 'guest' });
+  e(200, 'stage.started', { entryId: 'a1', ids: ['S01'], queueId: 'q2', source: 'queue', title: 'a1' });
+  e(380, 'stage.ended', { queueId: 'q2', playedSec: 180 });
+  stage(400, 'z1', ['S03'], 'q3');
+  stage(600, 'x2', ['S02'], 'q4');
+  stage(800, 'a2', ['S01'], 'q5');
+  const raw = { people: ['S01', 'S02', 'S03', 'S04'].map(key => ({ key })), tables: [{ key: 'T1' }, { key: 'T2' }, { key: 'T3' }], events };
+  const res = await rejeu.runForced(rejeu.loadEvening(raw));
+  assert.ok(!res.notes.some(n => /non rejoué/.test(n)), res.notes.join(' | '));
+  const z1 = res.decisions.find(d => d.real.entryId === 'z1');
+  assert.equal(z1.match, true, JSON.stringify(z1.pick));
+  // Horloge du PC qui recule : les numéros d'ordre ne suivent plus les heures.
+  // L'export est lu dans l'ordre des heures, comme evening-stats.js.
+  const jumped = structuredClone(raw);
+  const late = jumped.events.find(x => x.ev === 'song.requested' && x.entryId === 'z1');
+  late.seq = 1000;
+  const order = rejeu.loadEvening(jumped).events.map(x => x.t);
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+});
+
+test('rejeu libre : heure de fermeture comme le serveur ; chanson redemandée en « ajouter » avant d’être chantée dans le rejeu', async () => {
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const build = (fill, sort = true) => {
+    const events = [];
+    const e = (t, name, f = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + t * 1000, ev: name, ...f });
+    e(0, 'evening.started', { rules: {} });
+    e(0, 'table.opened', { tableId: 'T1' }); e(0, 'table.opened', { tableId: 'T2' });
+    e(0, 'person.joined', { personId: 'S01', tableId: 'T1' });
+    e(0, 'person.joined', { personId: 'S02', tableId: 'T2' });
+    const stage = (t, id, ids, q) => {
+      e(t - 5, 'turn.sent', { entryId: id, ownerId: ids[0], ids, queueId: q });
+      e(t, 'stage.started', { entryId: id, ids, queueId: q, source: 'queue', title: id });
+      e(t + 180, 'stage.ended', { queueId: q, playedSec: 180 });
+    };
+    fill(e, stage);
+    if (sort) events.sort((a, b) => a.t - b.t || a.seq - b.seq).forEach((x, i) => { x.seq = i + 1; });
+    return { people: [{ key: 'S01', table: 'T1' }, { key: 'S02', table: 'T2' }], tables: [{ key: 'T1' }, { key: 'T2' }], events };
+  };
+  // x1 puis y1 chantés ; x2 demandé, jamais chanté : la fermeture (à 400 s)
+  // tombe avant la moitié de x2. Le serveur ne l'envoie pas.
+  const closing = (setAt, closingAt) => build((e, stage) => {
+    e(1, 'song.requested', { personId: 'S01', entryId: 'x1', songId: 1, title: 'x1', mode: 'append' });
+    e(2, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(3, 'song.requested', { personId: 'S01', entryId: 'x2', songId: 3, title: 'x2', mode: 'append' });
+    e(setAt, 'closing.set', { closingAt: T0 + closingAt * 1000 });
+    stage(10, 'x1', ['S01'], 'q1');
+    stage(200, 'y1', ['S02'], 'q2');
+  });
+  const held = await rejeu.runFree(rejeu.loadEvening(closing(5, 400)));
+  assert.deepEqual(held.passages.map(p => p.entryId), ['x1', 'y1']);
+  // Fermeture notée après l'envoi de x2 dans le rejeu : retiré de KaraFun,
+  // il revient dans la liste de son auteur et n'est pas chanté.
+  const pulled = await rejeu.runFree(rejeu.loadEvening(closing(250, 420)));
+  assert.deepEqual(pulled.passages.map(p => p.entryId), ['x1', 'y1']);
+  assert.ok(pulled.notes.some(n => /titre envoyé retiré à la fermeture : « x2 »/.test(n)), pulled.notes.join(' | '));
+  // En réel, a1 de S01 passe en premier ; pendant a1, S01 redemande la même
+  // chanson en « ajouter » (a2). Le rejeu fait passer y1 d'abord : à cette
+  // heure, a1 est encore dans la liste. La demande attend que a1 parte.
+  const again = build((e, stage) => {
+    e(1, 'song.requested', { personId: 'S02', entryId: 'y1', songId: 2, title: 'y1', mode: 'append' });
+    e(2, 'song.requested', { personId: 'S01', entryId: 'a1', songId: 1, title: 'a1', mode: 'append' });
+    stage(10, 'a1', ['S01'], 'q1');
+    e(30, 'song.requested', { personId: 'S01', entryId: 'a2', songId: 1, title: 'a1', mode: 'append' });
+    stage(200, 'y1', ['S02'], 'q2');
+    stage(400, 'a2', ['S01'], 'q3');
+  });
+  const res = await rejeu.runFree(rejeu.loadEvening(again));
+  assert.deepEqual(res.passages.map(p => p.entryId).sort(), ['a1', 'a2', 'y1']);
+  assert.deepEqual(res.warnings, []);
+  assert.ok(res.notes.some(n => /demande de S01 « a1 » différée/.test(n)), res.notes.join(' | '));
 });
 
 test('bilan avant/après : un seul côté sans Timefold, note pour le même code, alerte sinon', async () => {
@@ -507,6 +609,7 @@ test('cache des versions extraites : dossier ou parent modifiable par d’autres
     assert.equal(await rejeu.main([FIXTURE, '--avant', 'HEAD', '--court'], () => {}, l => err.push(l)), 1, dir);
     assert.match(err.join('\n'), /^Cache des versions extraites non sûr/);
     if (empty) assert.deepEqual(fs.readdirSync(empty), [], 'rien extrait');
+    else assert.ok(!fs.existsSync(dir), 'cache pas créé sous un parent non sûr');
   }
 });
 
@@ -765,6 +868,14 @@ test('jar d’une révision extraite : verrou Maven abandonné repris, jar const
     process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
     const fake = path.join(tmp, 'faux.jar');
     fs.writeFileSync(fake, 'faux');
+    // Un autre rejeu reprend ce même verrou à l'instant : pas de seconde construction.
+    const claim = `${lock}.reprise`;
+    fs.writeFileSync(claim, '');
+    const busy = [];
+    assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--solveur', fake, '--budget', '200', '--court'], l => busy.push(l), l => busy.push(l)), 1);
+    assert.match(busy.join('\n'), /construction déjà en cours/);
+    assert.ok(!fs.existsSync(path.join(solver, 'target', 'karafun-solver.jar')), 'aucune construction pendant la reprise');
+    fs.rmSync(claim);
     const out = [];
     assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--solveur', fake, '--budget', '200', '--court'], l => out.push(l), l => out.push(l)), 0);
     assert.ok(fs.existsSync(path.join(solver, 'target', 'karafun-solver.jar')), 'faux mvn lancé malgré le vieux verrou');
