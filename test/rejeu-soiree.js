@@ -22,8 +22,9 @@
  *                          jamais démarrée est signalée ; titre ou Battle joué directement
  *                          dans KaraFun, sans suivi, rejoué à son heure ; envoi à
  *                          +pushDelaySec ; rien n'est envoyé pendant un arrêt de
- *                          l'application, rien ne part ni ne démarre après la fin
- *                          du karaoké.
+ *                          l'application, KaraFun déconnecté ou sans droit d'ajout, ni
+ *                          envoi automatique coupé ; rien ne part ni ne démarre après
+ *                          la fin du karaoké.
  *   --solveur [jar]        avec le plan Timefold (solver/bridge.js), attendu à chaque
  *                          décision. Jar par défaut : solver/target/karafun-solver.jar,
  *                          sinon solver/karafun-solver.jar.
@@ -88,8 +89,10 @@
  * encore envoyé que remplace une Battle ajoutée dans KaraFun (syncBattle) ;
  * un titre ou une Battle joué directement dans KaraFun occupe la scène ; une
  * scène réelle que le rejeu ne démarre jamais est signalée (alerte).
- * Rien ne part pendant un arrêt de l'application ni après la fin du
- * karaoké de la soirée réelle (evening-stats.js).
+ * Rien ne part pendant un arrêt de l'application, KaraFun déconnecté ou
+ * sans droit d'ajout, ni envoi automatique coupé (karaoke.phase,
+ * settings.changed), ni après la fin du karaoké de la soirée réelle
+ * (evening-stats.js).
  *
  * Seul effet de bord : Date.now est remplacé par l'horloge de la soirée
  * pendant un rejeu, puis rendu. Ne parle jamais à KaraFun.
@@ -325,12 +328,30 @@ function loadEvening(input) {
       }
     }
     if (stoppedAt != null) offline.push([stoppedAt, Infinity]); }
+  // Envois impossibles (rejeu libre) : application arrêtée, KaraFun
+  // déconnecté ou sans droit d'ajout (bloqueur noté par karaoke.phase,
+  // jusqu'à la phase suivante), envoi automatique coupé (règle de la soirée,
+  // réglage changé par le bar). KaraFun joue encore ce qu'il a déjà.
+  const noSend = [...offline];
+  { let down = null, autoOff = rules.auto === false ? events[0]?.t ?? 0 : null;
+    for (const e of events) {
+      if (e.ev === 'karaoke.phase') {
+        const blocked = e.blocker === 'offline' || e.blocker === 'permission';
+        if (blocked && down == null) down = e.t;
+        else if (!blocked && down != null) { noSend.push([down, e.t]); down = null; }
+      } else if (e.ev === 'settings.changed' && e.setting === 'auto') {
+        if (e.to === false && autoOff == null) autoOff = e.t;
+        else if (e.to === true && autoOff != null) { noSend.push([autoOff, e.t]); autoOff = null; }
+      }
+    }
+    if (down != null) noSend.push([down, Infinity]);
+    if (autoOff != null) noSend.push([autoOff, Infinity]); }
   const timezone = raw.evening?.timezone || 'Europe/Paris';
   const realPassages = passagesFromEvents(events);
   // Attentes de evening-stats.js présentes dans l'export (vérification de la définition).
   const exportWaits = new Map();
   for (const st of raw.stats?.timeline?.stages || []) if (st.entryId && st.waitSec != null) exportWaits.set(st.entryId, st.waitSec);
-  return { raw, events, people, tables, rules, played, startGaps, battles, outside, offline,
+  return { raw, events, people, tables, rules, played, startGaps, battles, outside, offline, noSend,
     timezone, realPassages, exportWaits, skipped };
 }
 
@@ -750,7 +771,9 @@ function scoreBelow(a, b) {
 const keyOf = (ctx, pid) => ctx.pid2key.get(pid) || pid;
 const nameOf = (ctx, key) => ctx.ev.people.get(key)?.name || key;
 const who = (ctx, keys) => keys.map(k => nameOf(ctx, k)).join(' & ');
-const note = (ctx, msg) => ctx.notes.push(`${timeOf(clock.now, ctx.ev.timezone)} ${msg}`);
+// Après la boucle du rejeu, « à la fin » plutôt que l'heure de l'horloge,
+// qui diffère d'une version à l'autre (même note des deux côtés du bilan).
+const note = (ctx, msg) => ctx.notes.push(`${ctx.done ? 'à la fin,' : timeOf(clock.now, ctx.ev.timezone)} ${msg}`);
 
 // Plan Timefold à jour pour l'état courant, attendu avant la décision.
 async function ensurePlan(ctx) {
@@ -1277,15 +1300,33 @@ async function runFree(evening, opts = {}) {
     const outside = [...ev.outside];
     const outsideDue = [];
     let battleQueuedAt = null;
-    const offlineAt = t => ev.offline.some(([a, b]) => t >= a && t < b);
+    const noSendAt = t => ev.noSend.some(([a, b]) => t >= a && t < b);
     let closingAt = Infinity;
     const stages = [];
     let current = null, upcoming = null, lastEnd = 0;
     let battle = 'none', battleNow = null, afterUntil = null;
     const releaseAfter = () => { battle = 'none'; battleNow = null; afterUntil = null; };
-    // Prochaine Battle de la file : celle déjà dans KaraFun d'abord.
-    const nextQueued = () => Math.max(0, battleQueue.findIndex(b => b.external));
+    // Prochaine Battle de la file : une Battle du bar d'abord, dans l'ordre
+    // réel (celle qui lève « after » est celle qui part), puis les votes.
+    const nextQueued = () => Math.max(0, battleQueue.findIndex(b => b.external || b.decision.ev === 'battle.staffLaunch'));
     let replaced = 0;
+    // Premier titre de la file envoyé mais pas encore à son heure réelle :
+    // la scène reste libre pour un titre lancé par le bar.
+    const firstWaiting = () => !!upcoming && !stages.some(x => x.kind === 'song') && startAt() > clock.now;
+    // Battle de KaraFun en file pendant qu'une Battle de l'application ou du
+    // bar attend son envoi : le suivi du serveur la prend à sa place dès qu'il
+    // la voit (syncBattle : observeExternalBattle, ou confirmAutomation sur le
+    // même titre), une seule des deux passe ; la Battle réelle remplacée
+    // manque au rejeu (note, alerte).
+    const takeOver = () => {
+      const k = battle === 'waiting' ? battleQueue.findIndex(b => b.external) : -1;
+      if (k < 0) return;
+      const [external] = battleQueue.splice(k, 1);
+      replaced++;
+      note(ctx, `Battle décidée à ${timeOf(battleNow.decision.t, ev.timezone)} remplacée par la Battle ajoutée dans KaraFun ` +
+        `à ${timeOf(external.decision.t, ev.timezone)} (suivi du serveur) : une seule rejouée`);
+      battleNow = external; battle = 'queued'; battleQueuedAt = clock.now;
+    };
     const durOf = sel => 1000 * (ev.played.get(ctx.rep2real.get(sel.song.entryId)) ?? (Number(sel.song.duration) || DEFAULT_SONG_SEC));
     // Début du prochain titre : délais réels du titre de même rang.
     const startAt = () => {
@@ -1333,28 +1374,17 @@ async function runFree(evening, opts = {}) {
         stages.push(current); upcoming = null;
       }
       while (outside.length && outside[0].t <= clock.now) outsideDue.push(outside.shift());
-      // Battle ajoutée dans KaraFun pendant qu'une Battle de l'application
-      // attend son envoi : le suivi du serveur la prend à sa place (syncBattle :
-      // observeExternalBattle, ou confirmAutomation sur le même titre), une
-      // seule des deux passe ; la Battle réelle du vote manque au rejeu.
-      const takeover = battle === 'waiting' ? battleQueue.findIndex(b => b.external) : -1;
-      if (takeover >= 0) {
-        const [external] = battleQueue.splice(takeover, 1);
-        replaced++;
-        note(ctx, `Battle décidée à ${timeOf(battleNow.decision.t, ev.timezone)} remplacée par la Battle ajoutée dans KaraFun ` +
-          `à ${timeOf(external.decision.t, ev.timezone)} (suivi du serveur) : une seule rejouée`);
-        battleNow = external; battle = 'queued'; battleQueuedAt = clock.now;
-      }
+      takeOver();
       // Passage hors file et prochaine Battle (en attente d'envoi, en file, ou
       // décidée pendant « after ») : dans l'ordre de leurs débuts réels
       // (l'heure d'entrée d'un titre dans KaraFun n'est pas notée). Un passage
       // venu après elle en réel ne la devance ni ne lève sa retenue, sauf si
-      // son envoi est retenu (heure de fermeture, application arrêtée :
+      // son envoi est retenu (heure de fermeture, envoi impossible :
       // KaraFun joue sans elle). Après la fin du karaoké, rien ne démarre.
-      const stuck = battle === 'waiting' && (closingBlocks() || offlineAt(clock.now));
+      const stuck = battle === 'waiting' && (closingBlocks() || noSendAt(clock.now));
       const nextBattle = ['waiting', 'queued'].includes(battle) ? (stuck ? null : battleNow) : battleQueue[nextQueued()];
       const outsideFirst = outsideDue.length > 0 && !(nextBattle && nextBattle.realStart <= outsideDue[0].t);
-      if (!current && !upcoming && outsideFirst && clock.now >= lastEnd + GAP_MS && !over()) {
+      if (!current && (!upcoming || firstWaiting()) && outsideFirst && clock.now >= lastEnd + GAP_MS && !over()) {
         const o = outsideDue.shift();
         current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? DEFAULT_SONG_SEC) };
         stages.push(current);
@@ -1366,29 +1396,32 @@ async function runFree(evening, opts = {}) {
       // exige « released ») ou une Battle ajoutée dans KaraFun (syncBattle)
       // attend la fin de « after », même rejouée pendant celle-ci.
       if (battle === 'after' && battleQueue.some(b => b.decision.ev === 'battle.staffLaunch')) releaseAfter();
-      // Battle ajoutée par le bar dans KaraFun : en file dès son arrivée, et
-      // suivie avant les votes en attente (syncBattle la voit dès que la
-      // précédente est libérée, avant tout nouveau vote).
+      // Battle ajoutée par le bar dans KaraFun : en file dès son arrivée.
+      // Les Battles du bar (ajoutée dans KaraFun, « sans vote ») passent avant
+      // les votes en attente : un vote ne se propose qu'une fois la précédente
+      // libérée, et syncBattle suit alors d'abord ce qui est dans KaraFun ;
+      // une Battle de KaraFun déjà en file remplace aussitôt celle qui attend.
       if (battle === 'none' && battleQueue.length) {
         battleNow = battleQueue.splice(nextQueued(), 1)[0];
         if (battleNow.external) { battle = 'queued'; battleQueuedAt = clock.now; } else battle = 'waiting';
+        takeOver();
       }
-      // Envoi de la Battle (server.js) : application en marche, pas après
-      // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
+      // Envoi de la Battle (server.js) : envoi possible, pas après l'heure
+      // de fermeture ; une Battle envoyée n'est jamais retirée.
       if (battle === 'waiting' && !upcoming && !outsideFirst && !s.reservedNext && !closingBlocks() && !over() &&
-        !offlineAt(clock.now)) { battle = 'queued'; battleQueuedAt = clock.now; }
+        !noSendAt(clock.now)) { battle = 'queued'; battleQueuedAt = clock.now; }
       if (!current && !upcoming && battle === 'queued' && !outsideFirst && clock.now >= Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs && !over()) {
         current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? DEFAULT_BATTLE_SEC) };
         stages.push(current); battle = 'playing';
       }
       // Battle (de l'application ou faite dans KaraFun) qui retient la file,
       // titre déjà dans KaraFun qui passe avant la prochaine Battle,
-      // application arrêtée : ni réservation ni envoi. Un titre hors file venu
+      // envoi impossible : ni réservation ni envoi. Un titre hors file venu
       // après une Battle en attente d'envoi ne retient pas le passage déjà
       // réservé, qui part avant elle (server.js : passage réservé, Battle,
       // titre).
       const hold = ['queued', 'playing', 'after'].includes(battle) || (battle === 'waiting' && !s.reservedNext) ||
-        offlineAt(clock.now) || outsideFirst ||
+        noSendAt(clock.now) || outsideFirst ||
         current?.source === 'battle';
       if (!upcoming && !hold && current && !s.reservedNext && !over()) {
         await ensurePlan(ctx);
@@ -1486,8 +1519,8 @@ async function runFree(evening, opts = {}) {
         if (!current && !upcoming && battle === 'queued') next.push(Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs);
         if (battle === 'after' && Number.isFinite(afterUntil)) next.push(afterUntil);
         if (outside.length) next.push(outside[0].t);
-        if (!current && !upcoming && outsideDue.length) next.push(lastEnd + GAP_MS);
-        for (const [, b] of ev.offline) if (Number.isFinite(b)) next.push(b);
+        if (!current && (!upcoming || firstWaiting()) && outsideDue.length) next.push(lastEnd + GAP_MS);
+        for (const [, b] of ev.noSend) if (Number.isFinite(b)) next.push(b);
         const future = next.filter(t => t > clock.now);
         if (!future.length) break;
         clock.now = Math.min(...future);
@@ -1495,14 +1528,15 @@ async function runFree(evening, opts = {}) {
     } finally {
       closeSolver(ctx);
     }
+    ctx.done = true;
     for (const d of [...ctx.deferred]) dropDeferred(d, 'même chanson restée à chanter jusqu\'à la fin');
     // Scènes de la soirée réelle que le rejeu n'a jamais démarrées (fin du
     // karaoké, application arrêtée, heure de fermeture), chacune avec son
     // heure réelle, et Battles de vote remplacées (note à part) : signalées.
-    const at = t => timeOf(t, ev.timezone);
-    const left = [...outsideDue, ...outside].map(o => `${o.source === 'battle' ? 'Battle faite' : 'titre lancé'} dans KaraFun à ${at(o.t)}`);
-    for (const b of [...(['waiting', 'queued'].includes(battle) ? [battleNow] : []), ...battleQueue]) left.push(`Battle jouée à ${at(b.realStart)}`);
-    if (left.length) note(ctx, `scènes réelles jamais démarrées dans le rejeu : ${left.join(', ')}`);
+    const left = [...outsideDue, ...outside].map(o => [o.t, `${o.source === 'battle' ? 'Battle faite' : 'titre lancé'} dans KaraFun`]);
+    for (const b of [...(['waiting', 'queued'].includes(battle) ? [battleNow] : []), ...battleQueue]) left.push([b.realStart, 'Battle jouée']);
+    left.sort((x, y) => x[0] - y[0]);
+    if (left.length) note(ctx, `scènes réelles jamais démarrées dans le rejeu : ${left.map(([t, what]) => `${what} à ${timeOf(t, ev.timezone)}`).join(', ')}`);
     const missing = left.length + replaced;
     if (missing) ctx.warnings.push(`${missing} scène${missing > 1 ? 's réelles jamais démarrées' : ' réelle jamais démarrée'} dans le rejeu (voir les notes)`);
     if (steps >= maxSteps) ctx.warnings.push(`rejeu arrêté à ${timeOf(clock.now, ev.timezone)} après ${maxSteps} étapes : la fin de la soirée manque`);
