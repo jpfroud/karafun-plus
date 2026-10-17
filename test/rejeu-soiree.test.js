@@ -762,6 +762,19 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
       [['recordStage', 10], ['recordSlot', 220, 180 - dt], ['songEnded', 220]], `relance à +${dt} s`);
     assert.equal(late.decisions.find(d => d.real.entryId === 'y1')?.reservation?.at, T0 + 100000);
   }
+  // Entre la fin et la relance, la scène est libre pour le serveur : y1,
+  // demandé alors, n'est réservé qu'au départ de la copie (60 s).
+  const gap = await spied(build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1);
+    e(5, 'turn.sent', { entryId: 'x1', ownerId: 'S01', ids: ['S01'], queueId: 'q1' });
+    e(10, 'stage.started', { entryId: 'x1', ids: ['S01'], queueId: 'q1', source: 'queue', title: 'x1' });
+    e(40, 'stage.ended', { queueId: 'q1', playedSec: 30 });
+    ask(50, 'S02', 'y1', 2);
+    e(60, 'stage.restarted', { queueId: 'q1b', entryId: 'x1' });
+    e(240, 'stage.ended', { queueId: 'q1b', playedSec: 180 });
+    stage(250, 'y1', ['S02'], 'q2');
+  }));
+  assert.equal(gap.decisions.find(d => d.real.entryId === 'y1')?.reservation?.at, T0 + 60000);
   // Même titre revenu sous sa file après une fin notée (pause, reconnexion) :
   // un seul passage, comme evening-stats.js.
   await spied(build((e, stage, ask) => {

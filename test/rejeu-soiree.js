@@ -943,8 +943,11 @@ async function runForced(evening, opts = {}) {
     let battleState = null;
     const holding = () => !!battleState && !['released', 'resuming'].includes(battleState) &&
       !(battleState === 'waiting' && s.reservedNext);
+    // Titre sur scène, hors de l'intervalle entre sa fin et sa relance ou sa
+    // reprise (scène libre pour le serveur, passage pas encore clos).
+    const onStage = () => !!current && !current.paused;
     const reserveIfDue = async why => {
-      if (!current || current.kind === 'battle' || upcoming || holding() || s.reservedNext) return;
+      if (!onStage() || current.kind === 'battle' || upcoming || holding() || s.reservedNext) return;
       await ensurePlan(ctx);
       const sel = s.reserveNext();
       if (sel) reservation = { at: clock.now, time: timeOf(clock.now, ev.timezone), why, pick: pickOf(ctx, sel), state: explain(ctx) };
@@ -978,12 +981,12 @@ async function runForced(evening, opts = {}) {
             await ensurePlan(ctx);
             const state = explain(ctx);
             const held = s.reservedNext ? { ...s.reservedNext } : null;
-            const sel = s.select({ stageFree: !current });
+            const sel = s.select({ stageFree: !onStage() });
             // Choix sans la réservation, pour comparaison (réservation rendue ensuite).
             let freeAtSend = null;
             if (held) {
               s.reservedNext = null;
-              freeAtSend = pickOf(ctx, s.select({ stageFree: !current }));
+              freeAtSend = pickOf(ctx, s.select({ stageFree: !onStage() }));
               s.reservedNext = held;
             }
             const match = !!sel && sel.ids[0] === owner && sel.song.entryId === entry;
@@ -999,7 +1002,7 @@ async function runForced(evening, opts = {}) {
               const isSolo = !(p?.song?.duet?.state === 'accepted');
               const borrowable = isSolo && s.roundPeople.has(owner);
               s.reservedNext = { personId: owner, reservedAt: clock.now, ...(borrowable ? { borrowable: true } : {}) };
-              committed = s.select({ stageFree: !current });
+              committed = s.select({ stageFree: !onStage() });
               if (!committed || committed.ids[0] !== owner || committed.song.entryId !== entry) {
                 note(ctx, `impossible d'engager le passage réel ${e.ownerId} ${e.entryId} : l'état peut dériver`);
                 s.reservedNext = held;
@@ -1026,7 +1029,11 @@ async function runForced(evening, opts = {}) {
             const sel = e.entryId ? sels.get(e.entryId) : null;
             // Même titre repris sous sa file (redémarrage, reconnexion) : le
             // passage continue, son début reste celui noté (server.js).
-            if (current && e.queueId != null && String(e.queueId) === current.queueId) break;
+            if (current && e.queueId != null && String(e.queueId) === current.queueId) {
+              current.paused = false;
+              await reserveIfDue('stage.started');
+              break;
+            }
             const queueId = e.queueId == null ? null : String(e.queueId);
             if (sel) {
               started.add(sel);
@@ -1046,7 +1053,10 @@ async function runForced(evening, opts = {}) {
             while (k < ev.events.length && !STAGE_SEQ.has(ev.events[k].ev)) k++;
             const next = ev.events[k];
             if (current && (next?.ev === 'stage.restarted' ||
-              (next?.ev === 'stage.started' && next.queueId != null && String(next.queueId) === current.queueId))) break;
+              (next?.ev === 'stage.started' && next.queueId != null && String(next.queueId) === current.queueId))) {
+              current.paused = true;
+              break;
+            }
             if (current?.kind === 'song' && current.sel) {
               s.recordSlot((clock.now - (current.restartedAt ?? current.start)) / 1000);
               s.songEnded(current.sel.ids);
@@ -1060,7 +1070,9 @@ async function runForced(evening, opts = {}) {
             // (server.js).
             if (current) {
               current.restartedAt = clock.now;
+              current.paused = false;
               if (e.queueId != null) current.queueId = String(e.queueId);
+              await reserveIfDue('stage.restarted');
             }
             break;
           }
