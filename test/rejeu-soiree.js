@@ -115,6 +115,8 @@ const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export 
 const SONG_GAP_MS = 20000; // temps moyen entre deux titres compté par la fermeture (server.js)
 const BATTLE_PRE_GAP_MS = 132000; // scène libre → début d'une Battle (téléphones qui rejoignent), sans mesure
 const BATTLE_STAGE_WINDOW_MS = 60000; // écart toléré entre le « playing » d'une Battle et sa scène
+const DEFAULT_SONG_SEC = 200;   // titre ou passage hors file sans durée connue
+const DEFAULT_BATTLE_SEC = 260; // Battle sans fin notée
 const ACK_MS = 100;      // accusé de KaraFun après un envoi
 
 // ------------------------------------------------------------------ horloge
@@ -229,8 +231,11 @@ function loadEvening(input) {
   {
     for (const d of events.filter(e => (e.ev === 'battle.decided' && e.outcome === 'approved') || e.ev === 'battle.staffLaunch')) {
       const mine = e => e.ev === 'battle.automation' && e.t >= d.t && (d.ballotId == null || e.ballotId === d.ballotId);
+      // Envoi automatique, ou Battle faite à la main par le bar après un échec
+      // (pas d'envoi : la file est retenue dès la décision, server.js).
       const sending = events.find(e => mine(e) && e.status === 'sending');
-      const playing = sending && events.find(e => mine(e) && e.status === 'playing' && e.t >= sending.t);
+      const from = sending?.t ?? d.t;
+      const playing = events.find(e => mine(e) && e.status === 'playing' && e.t >= from);
       if (!playing) {
         const dismissed = events.some(e => e.ev === 'battle.resolved' && e.outcome === 'dismissed' && e.ballotId === d.ballotId);
         const stage = battleStages.find(st => !used.has(st) && st.e.t >= d.t);
@@ -245,8 +250,8 @@ function loadEvening(input) {
         Math.abs(st.e.t - playing.t) <= BATTLE_STAGE_WINDOW_MS)
         .sort((a, b) => Math.abs(a.e.t - playing.t) - Math.abs(b.e.t - playing.t))[0];
       if (stage) used.add(stage);
-      const freed = events.filter(e => e.ev === 'stage.ended' && e.t > sending.t && e.t <= playing.t).at(-1)?.t ?? sending.t;
-      battles.push({ decision: d, preGapMs: Math.max(0, playing.t - Math.max(sending.t, freed)), sec: stage?.sec ?? null });
+      const freed = events.filter(e => e.ev === 'stage.ended' && e.t > from && e.t <= playing.t).at(-1)?.t ?? from;
+      battles.push({ decision: d, preGapMs: Math.max(0, playing.t - Math.max(from, freed)), sec: stage?.sec ?? null });
     }
   }
   // Passages hors file joués en réel (titre ou Battle ajoutés directement
@@ -1092,7 +1097,7 @@ async function runFree(evening, opts = {}) {
     const stages = [];
     let current = null, upcoming = null, lastEnd = 0;
     let battle = 'none', battleNow = null;
-    const durOf = sel => 1000 * (ev.played.get(ctx.rep2real.get(sel.song.entryId)) ?? (Number(sel.song.duration) || 200));
+    const durOf = sel => 1000 * (ev.played.get(ctx.rep2real.get(sel.song.entryId)) ?? (Number(sel.song.duration) || DEFAULT_SONG_SEC));
     // Début du prochain titre : délais réels du titre de même rang.
     const startAt = () => {
       const g = ev.startGaps[stages.filter(x => x.kind === 'song').length];
@@ -1131,10 +1136,10 @@ async function runFree(evening, opts = {}) {
         stages.push(current); upcoming = null;
       }
       while (outside.length && outside[0].t <= clock.now) outsideDue.push(outside.shift());
-      const battleFirst = battle === 'queued' && (!outsideDue.length || battleQueuedAt <= outsideDue[0].t);
-      if (!current && !upcoming && outsideDue.length && !battleFirst && clock.now >= lastEnd + GAP_MS) {
+      // Une Battle déjà en file (envoyée avant leur entrée) passe d'abord.
+      if (!current && !upcoming && outsideDue.length && battle !== 'queued' && clock.now >= lastEnd + GAP_MS) {
         const o = outsideDue.shift();
-        current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? 200) };
+        current = { kind: 'outside', source: o.source, start: clock.now, end: clock.now + 1000 * (o.sec ?? DEFAULT_SONG_SEC) };
         stages.push(current);
       }
       if (battle === 'none' && battleQueue.length) { battleNow = battleQueue.shift(); battle = 'waiting'; }
@@ -1142,9 +1147,8 @@ async function runFree(evening, opts = {}) {
       // l'heure de fermeture ; une Battle envoyée n'est jamais retirée.
       if (battle === 'waiting' && !upcoming && !outsideDue.length && !(s.reservedNext && current) && !closingBlocks() && !over() &&
         !offlineAt(clock.now)) { battle = 'queued'; battleQueuedAt = clock.now; }
-      if (!current && !upcoming && battle === 'queued' && (!outsideDue.length || battleQueuedAt <= outsideDue[0].t) &&
-        clock.now >= Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs && !over()) {
-        current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? 260) };
+      if (!current && !upcoming && battle === 'queued' && clock.now >= Math.max(lastEnd, battleQueuedAt) + battleNow.preGapMs && !over()) {
+        current = { kind: 'battle', start: clock.now, end: clock.now + 1000 * (battleNow.sec ?? DEFAULT_BATTLE_SEC) };
         stages.push(current); battle = 'playing';
       }
       // Battle (de l'application ou faite dans KaraFun) qui retient la file,

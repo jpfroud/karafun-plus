@@ -847,6 +847,22 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
     })));
   } finally { es.computeStats = original; }
   assert.deepEqual(journal.filter(x => x.ev === 'stage.started').map(x => x.source), ['queue', 'queue', 'battle', 'native']);
+  // Envoi automatique en échec, Battle faite à la main par le bar : c'est la
+  // Battle du scrutin, et la file est retenue dès la décision (server.js) :
+  // y1, demandé ensuite, passe après elle.
+  const manualRaw = build((e, stage, ask) => {
+    ask(1, 'S01', 'x1', 1); ask(40, 'S02', 'y1', 2);
+    stage(10, 'x1', ['S01'], 'q1');
+    e(20, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
+    e(25, 'battle.automation', { ballotId: 'v1', status: 'failed' });
+    e(30, 'battle.automation', { ballotId: 'v1', status: 'manual' });
+    e(300, 'battle.automation', { ballotId: 'v1', status: 'playing' });
+    stage(300, null, null, 'b1', 200);
+    stage(510, 'y1', ['S02'], 'q2');
+  });
+  assert.deepEqual(rejeu.loadEvening(manualRaw).battles.map(b => [b.preGapMs, b.sec]), [[110000, 200]]);
+  const manual = await rejeu.runFree(rejeu.loadEvening(manualRaw));
+  assert.ok(manual.passages.find(p => p.entryId === 'y1').sentAt >= T0 + 490000, JSON.stringify(manual.passages));
   // Battle approuvée puis écartée, export sans suivi de l'envoi : la Battle
   // faite ensuite dans KaraFun n'est pas la sienne.
   const dismissed = rejeu.loadEvening(build((e, stage) => {
