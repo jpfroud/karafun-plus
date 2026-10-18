@@ -719,11 +719,15 @@ function resolveJar(solver, code = CURRENT) {
     } catch (err) {
       if (err instanceof UsageError) throw err;
       fs.rmSync(lock, { force: true });
-      // Maven écrit ses [ERROR] sur sa sortie standard (Java met sur l'erreur
-      // « Picked up JAVA_TOOL_OPTIONS » ou ses WARNING) ; sans elles, la
-      // commande en échec ou mvn introuvable.
-      const cause = `${err.stderr || ''}\n${err.stdout || ''}`.split(/\r?\n/).map(l => l.trim())
-        .find(l => l.startsWith('[ERROR]')) || err.message.split('\n')[0];
+      // Cause : la première ligne [ERROR] de Maven qui dit quelque chose (sur
+      // sa sortie standard ; « COMPILATION ERROR : » annonce la suivante), sinon
+      // la première ligne de l'erreur qui ne vient pas de Java (« Picked up
+      // JAVA_TOOL_OPTIONS », WARNING) : JAVA_HOME faux, mvn introuvable sous
+      // Windows (cmd.exe) ; sinon la commande en échec ou mvn introuvable.
+      const lines = out => String(out || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const cause = lines(err.stdout).concat(lines(err.stderr))
+        .find(l => l.startsWith('[ERROR]') && !/^\[ERROR\]\s*COMPILATION ERROR\b/.test(l)) ||
+        lines(err.stderr).find(l => !/^(Picked up |WARNING:)/.test(l)) || err.message.split('\n')[0];
       throw new UsageError(`Jar Timefold de ${code.label} : construction par Maven impossible (${cause}) ; ` +
         'donner --solveur-avant <jar> ou retirer --solveur.');
     }

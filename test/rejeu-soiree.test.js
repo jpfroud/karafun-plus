@@ -2492,14 +2492,21 @@ test('jar d’une révision extraite : verrou Maven abandonné repris, jar const
     process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
     const fake = path.join(tmp, 'faux.jar');
     fs.writeFileSync(fake, 'faux');
-    // Construction en échec : la cause donnée par Maven (sur sa sortie
-    // standard), pas les lignes de Java sur l'erreur ; verrou rendu.
-    mvn('echo "Picked up JAVA_TOOL_OPTIONS: -Dx=y" >&2\necho "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called" >&2\n' +
-      'echo "[ERROR] Failed to execute goal: pom illisible"\nexit 1\n');
-    const failed = [];
-    assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--solveur', fake, '--budget', '200', '--court'], l => failed.push(l), l => failed.push(l)), 1);
-    assert.match(failed.join('\n'), /construction par Maven impossible \(\[ERROR\] Failed to execute goal: pom illisible\)/);
-    assert.ok(!fs.existsSync(lock));
+    // Construction en échec, verrou rendu ; cause dite : la ligne [ERROR] de
+    // Maven (sur sa sortie standard) qui dit quelque chose, sinon la première
+    // ligne de l'erreur qui ne vient pas de Java, sinon la commande.
+    const java = 'echo "Picked up JAVA_TOOL_OPTIONS: -Dx=y" >&2\necho "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called" >&2\n';
+    for (const [script, cause] of [
+      [`${java}echo "[ERROR] COMPILATION ERROR : "\necho "[ERROR] /x/Main.java:[1,1] erreur"\necho "[ERROR] Failed to execute goal: Compilation failure"\n`,
+        '[ERROR] /x/Main.java:[1,1] erreur'],
+      [`${java}echo "The JAVA_HOME environment variable is not defined correctly," >&2\n`, 'The JAVA_HOME environment variable is not defined correctly,'],
+      ['', 'Command failed: mvn -q -B -DskipTests package -f ']]) {
+      mvn(`${script}exit 1\n`);
+      const failed = [];
+      assert.equal(await rejeu.main([FIXTURE, '--avant', sha, '--solveur', fake, '--budget', '200', '--court'], l => failed.push(l), l => failed.push(l)), 1);
+      assert.ok(failed.join('\n').includes(`construction par Maven impossible (${cause}`), failed.join('\n'));
+      assert.ok(!fs.existsSync(lock));
+    }
     fs.writeFileSync(lock, '');
     const old = new Date(Date.now() - 3 * 3600_000);
     fs.utimesSync(lock, old, old);
