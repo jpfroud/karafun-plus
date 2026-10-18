@@ -694,6 +694,85 @@ test('QueueScore : un ordre qui fait voir un double coûte au moins 4 000 en med
   } finally { bridge.close(); }
 });
 
+// Soirée du 15 octobre : la dette de l'invitée d'un duo (passage pris en
+// avance) ne vaut que pour son propre titre. Le score Java suit la règle
+// locale : le duo de l'autrice, qui ne doit rien, garde sa place dans le tour
+// au lieu de passer derrière tout le monde.
+test('QueueScore : la dette de l’invitée d’un duo ne retarde pas le duo de l’autrice', { skip: !fs.existsSync(JAR) }, async () => {
+  const s = new Scheduler();
+  let n = 9400;
+  const song = () => ({ songId: n++, title: `T${n}`, artist: 'x' });
+  const join = (tableId, name) => s.join({ tableId, name, headcount: 4 });
+  const ana = join('T4', 'Ana'), bea = join('T4', 'Bea');
+  const others = [['T1', 'Chris'], ['T2', 'Dina'], ['T3', 'Eli'], ['T5', 'Fred'], ['T6', 'Gus']]
+    .map(([tableId, name]) => join(tableId, name));
+  for (const p of [ana, bea, ...others]) s.chooseSong(p, song(), 'append');
+  for (let i = 0; i < 7; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  s.inviteDuet(ana, bea.id, song());
+  for (const p of others) s.chooseSong(p, song(), 'append');
+  s.roundUse.set(bea.id, 2); // passage de Bea pris sur le tour suivant
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  const nameOf = row => row.singers.map(pid => s.people.get(pid).name).join(' & ');
+  const local = request.performances;
+  const duo = local.findIndex(row => row.singers.length === 2);
+  assert.ok(duo >= 0 && duo < local.length - 2, `duo avant la fin du tour : ${local.map(nameOf).join(', ')}`);
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge();
+  try {
+    const { seedScore } = await bridge.solve({ ...request, requestId: 'guest-debt', budgetMs: 100,
+      performances: local.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true });
+    // Avant la correction, le score Java comptait Bea comme déjà passée et
+    // sanctionnait ce duo comme hors des choix équitables (-5 000).
+    assert.equal(medium(seedScore), 0, `ordre de la règle locale : ${local.map(nameOf).join(', ')}`);
+  } finally { bridge.close(); }
+});
+
+// Même règle, auteur déjà compté dans le tour (passage réel ou dette) : la
+// dette de son invitée compte encore, son duo ne devient pas un passage neuf.
+// Y & Z, qui présente Z, doit passer d'abord, avec ou sans le repli de
+// l'espacement (Y vient de chanter).
+test('QueueScore : auteur déjà compté dans le tour, la dette de son invitée compte encore', { skip: !fs.existsSync(JAR) }, async () => {
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge();
+  try {
+    for (const ownerDebt of [false, true]) for (const yJustSang of [false, true]) {
+      let n = 9450;
+      const song = () => ({ songId: n++, title: `T${n}`, artist: 'x' });
+      const s = new Scheduler();
+      s._maybeRequestSolver = () => {};
+      const join = (tableId, name) => s.join({ tableId, name, headcount: 2 });
+      const X = join('TX', 'X'), G = join('TG', 'G'), Y = join('TY', 'Y'), Z = join('TZ', 'Z'), W = join('TW', 'W');
+      for (const p of [X, G, Y, Z, W]) s.chooseSong(p, song(), 'append');
+      for (let i = 0; i < 5; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+      s.inviteDuet(X, G.id, song()); s.answerDuet(G, true);
+      s.inviteDuet(Y, Z.id, song()); s.answerDuet(Z, true);
+      s.roundPeople = new Set([X.id, G.id, Y.id, W.id]);
+      s.roundApps = new Map(ownerDebt ? [[Y.id, 1], [W.id, 1]] : [[X.id, 1], [Y.id, 1], [W.id, 1]]);
+      s.roundUse = new Map(ownerDebt ? [[X.id, 1], [G.id, 1]] : [[G.id, 1]]);
+      s.roundOwed = new Set();
+      s.appearanceSerial = 40;
+      for (const p of [X, G, Y, Z]) p.lastAppearanceTurn = 10;
+      W.lastAppearanceTurn = 40;
+      if (yJustSang) Y.lastAppearanceTurn = 39;
+      s.lastGroup = W.group;
+      s.recentGroups = [];
+      let request;
+      s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+      s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+      const nameOf = row => row.singers.map(pid => s.people.get(pid).name).join(' & ');
+      const local = request.performances;
+      const label = JSON.stringify({ ownerDebt, yJustSang });
+      assert.deepEqual(local.map(nameOf), ['Y & Z', 'X & G'], label);
+      const seed = async (rows, id) => medium((await bridge.solve({ ...request, requestId: id, budgetMs: 100,
+        performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+      const kept = await seed(local, `owner-counted-${label}`), swapped = await seed([local[1], local[0]], `owner-counted-swap-${label}`);
+      assert.ok(kept > swapped, `${label} : Y & Z d'abord ${kept}, X & G d'abord ${swapped}`);
+    }
+  } finally { bridge.close(); }
+});
+
 // « Compromis » : la taille d'une table envoyée à Timefold (groupSizes) compte
 // ses chanteurs inscrits, titre prêt ou non, et change bien le score.
 function compromiseRequest() {
@@ -731,3 +810,95 @@ test('compromis : Timefold utilise la taille des tables (inscrits)',
     assert.ok(withSizes < withoutSizes, `${withSizes} contre ${withoutSizes}`);
   } finally { bridge.close(); }
 });
+
+test('Timefold : une demande arrivée pendant la préparation de la précédente ne l’attend pas',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const bridge = new TimefoldBridge({ jar: JAR, settleMs: 0 });
+    const performances = [];
+    for (let i = 0; i < 60; i++) {
+      for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
+        id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
+        singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
+      });
+    }
+    const request = (requestId, budgetMs) => ({ requestId, budgetMs, performances, pastAppearance: {}, physicalCount: {},
+      pinnedUntil: 0, roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false });
+    try {
+      await bridge.solve(request('chauffe', 100));
+      // La seconde ligne arrive pendant que Java prépare la première (90
+      // titres) : la première ne doit pas chercher ses 5 s avant elle.
+      for (let k = 0; k < 5; k++) {
+        const stale = bridge.solve(request(`ancienne-${k}`, 5000)).catch(() => null);
+        await new Promise(resolve => setTimeout(resolve, 2));
+        const start = Date.now();
+        const fresh = await bridge.solve(request(`nouvelle-${k}`, 200));
+        assert.equal(fresh.requestId, `nouvelle-${k}`);
+        // gstack-timing-ok: réponse en 0,2 à 0,7 s ; une recherche périmée non coupée la retarde de 5 s.
+        assert.ok(Date.now() - start < 3000, `réponse en ${Date.now() - start} ms (essai ${k + 1})`);
+        await stale;
+      }
+    } finally { bridge.close(); }
+  });
+
+// Classe Java lancée sur le jar (java en mode fichier source, JDK 11 et plus) :
+// appelle Main.solve avec une « demande plus récente » qui n'apparaît qu'après
+// le début de la recherche, sans arrêt du fil de lecture. Seule la veille de
+// Main peut alors couper la recherche (Timefold efface au démarrage de solve()
+// un arrêt reçu juste avant).
+const WATCH_PROBE = `import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Method;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+
+public class WatchProbe {
+    public static void main(String[] args) throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        JsonNode request = json.readTree(System.in);
+        Method solve = Class.forName("fr.karafun.plus.solver.Main")
+            .getDeclaredMethod("solve", JsonNode.class, AtomicReference.class, BooleanSupplier.class);
+        solve.setAccessible(true);
+        // Faux au contrôle qui précède la recherche, vrai 50 ms plus tard.
+        AtomicLong first = new AtomicLong();
+        BooleanSupplier later = () -> {
+            long now = System.nanoTime();
+            first.compareAndSet(0, now);
+            return now - first.get() > 50_000_000L;
+        };
+        Object response = solve.invoke(null, request, new AtomicReference<>(), later);
+        System.out.println(json.writeValueAsString(response));
+        // Durée de la recherche seule, depuis le contrôle qui la précède
+        // (sans la préparation de la demande, longue sur une JVM froide).
+        System.out.println((System.nanoTime() - first.get()) / 1_000_000);
+    }
+}
+`;
+
+test('Timefold : une demande plus récente arrête la recherche même après son démarrage',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, t => {
+    const { spawnSync } = require('node:child_process');
+    const os = require('node:os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-watch-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(dir, 'WatchProbe.java'), WATCH_PROBE);
+    const performances = [];
+    for (let i = 0; i < 60; i++) {
+      for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
+        id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
+        singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
+      });
+    }
+    const request = { requestId: 'veille', budgetMs: 5000, performances, pastAppearance: {}, physicalCount: {},
+      pinnedUntil: 0, roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false };
+    const run = spawnSync('java', ['-cp', JAR, path.join(dir, 'WatchProbe.java')], {
+      input: JSON.stringify(request), encoding: 'utf8', timeout: 60000,
+      env: { ...process.env, JAVA_TOOL_OPTIONS: '-Dorg.slf4j.simpleLogger.defaultLogLevel=warn' },
+    });
+    if (run.error?.code === 'ENOENT') return t.skip('java absent du PATH');
+    assert.equal(run.status, 0, run.stderr || String(run.error));
+    const [line, searchMs] = run.stdout.trim().split('\n').slice(-2);
+    assert.equal(JSON.parse(line).requestId, 'veille');
+    // gstack-timing-ok: arrêt redemandé toutes les 5 ms dès 50 ms ; sans veille, la recherche court son budget de 5 s.
+    assert.ok(Number(searchMs) < 2500, `recherche arrêtée après ${searchMs} ms`);
+  });

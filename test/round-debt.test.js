@@ -318,3 +318,139 @@ test('ordre du bar en fin de tour, annoncé premier du tour suivant puis rattrap
   assert.equal(sel.ids[0], first.ids[0]);
   assert.equal(sel.borrowedIds, undefined, 'l’ordre du bar ne crée pas de dette, même rattrapé par une arrivée');
 });
+
+// Soirée du 15 octobre : une autrice attend 72 min son duo. Son invitée avait
+// chanté en avance au tour précédent (passage emprunté par la règle
+// anti-série) ; le tour suivant la comptait comme déjà passée, et le duo de
+// l'autrice, qui ne devait rien, passait derrière tout le monde. La dette ne
+// vaut que pour le ticket de l'invitée : invitée d'un duo, elle ne compte dans
+// le tour qu'une fois montée sur scène.
+function guestDebtEvening({ debt, guestSolo }) {
+  let n = 1;
+  const song = () => ({ songId: n++, title: `Titre ${n}`, artist: 'Essai' });
+  const s = new Scheduler();
+  s._maybeRequestSolver = () => {};
+  const join = (tableId, name) => s.join({ tableId, name, headcount: 4 });
+  const ana = join('T4', 'Ana'), bea = join('T4', 'Bea');
+  const others = [['T1', 'Chris'], ['T2', 'Dina'], ['T3', 'Eli'], ['T5', 'Fred'], ['T6', 'Gus']]
+    .map(([tableId, name]) => join(tableId, name));
+  for (const p of [ana, bea, ...others]) s.chooseSong(p, song(), 'append');
+  const send = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel; };
+  for (let i = 0; i < 7; i++) send();
+  // Liste suivante d'Ana : le duo avec Bea en tête, puis un solo.
+  s.inviteDuet(ana, bea.id, song());
+  s.chooseSong(ana, song(), 'append');
+  if (guestSolo) s.chooseSong(bea, song(), 'append');
+  for (const p of others) s.chooseSong(p, song(), 'append');
+  // Second passage de Bea pris sur le tour suivant (dette, voir _useRound).
+  if (debt) s.roundUse.set(bea.id, 2);
+  const played = [];
+  for (let i = 0; i < 9; i++) {
+    const sel = s.select();
+    if (!sel) break;
+    s.commit(sel); s.songEnded(sel.ids);
+    played.push(sel);
+  }
+  const names = played.map(sel => sel.names.join(' & '));
+  return { names, duo: names.indexOf('Ana & Bea') };
+}
+
+test('dette de l’invitée d’un duo : le duo de l’autrice garde sa place dans le tour', () => {
+  const free = guestDebtEvening({ debt: false, guestSolo: false });
+  const owed = guestDebtEvening({ debt: true, guestSolo: false });
+  assert.ok(free.duo >= 0 && owed.duo >= 0, `${free.names.join(' ')} / ${owed.names.join(' ')}`);
+  assert.equal(owed.duo, free.duo,
+    `sans dette : ${free.names.join(', ')} ; avec dette : ${owed.names.join(', ')}`);
+});
+
+test('dette de l’invitée d’un duo : son propre titre reste après le tour', () => {
+  const { names, duo } = guestDebtEvening({ debt: true, guestSolo: true });
+  const solo = names.indexOf('Bea');
+  assert.ok(duo >= 0 && solo > duo, names.join(', '));
+  // Le duo d'Ana garde sa place : il ne passe pas après tous les autres titres.
+  const others = ['Chris', 'Dina', 'Eli', 'Fred', 'Gus'];
+  assert.ok(names.slice(duo + 1).some(name => others.includes(name)), names.join(', '));
+  // Tous les autres titres du tour passent avant le titre de Bea.
+  for (const name of ['Chris', 'Dina', 'Eli', 'Fred', 'Gus']) {
+    assert.ok(names.indexOf(name) < solo, `${name} avant Bea : ${names.join(', ')}`);
+  }
+});
+
+// Relecture du correctif : la dette de l'invitée n'est levée que pour un
+// auteur encore neuf dans le tour. Un auteur déjà compté (passage ou dette)
+// ne doit pas obtenir un passage gratuit, ni perdre sa dette, grâce à elle.
+// X : auteur ; G : son invitée, dans le tour par sa seule dette ; Y & Z
+// présente Z, vraiment neuve dans le tour.
+function ownerCountedEvening({ ownerDebt, yJustSang }) {
+  let n = 1;
+  const song = () => ({ songId: n++, title: `Titre ${n}`, artist: 'Essai' });
+  const s = new Scheduler();
+  s._maybeRequestSolver = () => {};
+  const join = (tableId, name) => s.join({ tableId, name, headcount: 2 });
+  const X = join('TX', 'X'), G = join('TG', 'G'), Y = join('TY', 'Y'), Z = join('TZ', 'Z'), W = join('TW', 'W');
+  for (const p of [X, G, Y, Z, W]) s.chooseSong(p, song(), 'append');
+  for (let i = 0; i < 5; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  s.inviteDuet(X, G.id, song()); s.answerDuet(G, true);
+  s.inviteDuet(Y, Z.id, song()); s.answerDuet(Z, true);
+  s.roundPeople = new Set([X.id, G.id, Y.id, W.id]);
+  s.roundApps = new Map(ownerDebt ? [[Y.id, 1], [W.id, 1]] : [[X.id, 1], [Y.id, 1], [W.id, 1]]);
+  s.roundUse = new Map(ownerDebt ? [[X.id, 1], [G.id, 1]] : [[G.id, 1]]);
+  s.roundOwed = new Set();
+  s.appearanceSerial = 40;
+  for (const p of [X, G, Y, Z]) p.lastAppearanceTurn = 10;
+  W.lastAppearanceTurn = 40;
+  if (yJustSang) Y.lastAppearanceTurn = 39; // Y & Z pas encore espacé (repli de l'espacement)
+  s.lastGroup = W.group;
+  s.recentGroups = [];
+  return s;
+}
+
+test('dette de l’invitée, auteur déjà compté dans le tour : le duo qui présente une nouvelle passe d’abord', () => {
+  for (const ownerDebt of [false, true]) for (const yJustSang of [false, true]) {
+    const sel = ownerCountedEvening({ ownerDebt, yJustSang }).select();
+    assert.equal(sel.names.join(' & '), 'Y & Z', JSON.stringify({ ownerDebt, yJustSang }));
+  }
+});
+
+test('dette de l’invitée, auteur déjà monté dans le tour : son duo reste un emprunt', () => {
+  let n = 1;
+  const song = () => ({ songId: n++, title: `Titre ${n}`, artist: 'Essai' });
+  const s = new Scheduler();
+  s._maybeRequestSolver = () => {};
+  const join = (tableId, name) => s.join({ tableId, name, headcount: 4 });
+  const P = {};
+  for (const [tableId, name] of [['T1', 'X'], ['T2', 'G'], ['T3', 'Y'], ['T5', 'A'], ['T6', 'B']]) P[name] = join(tableId, name);
+  const send = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel; };
+  for (const name of ['X', 'G', 'Y', 'A', 'B']) s.chooseSong(P[name], song(), 'append');
+  for (let i = 0; i < 5; i++) send();
+  // Dette réelle de G : annoncée en fin de tour, puis rattrapée par une arrivée.
+  P.N = join('T7', 'N');
+  s.chooseSong(P.G, song(), 'append');
+  s.reserveNext();
+  s.chooseSong(P.N, song(), 'append');
+  assert.deepEqual(send().borrowedIds, [P.G.id], 'G chante en avance');
+  send();
+  assert.equal(s.roundUse.get(P.G.id), 2);
+  P.Z = join('T8', 'Z');
+  s.chooseSong(P.X, song(), 'append');
+  // Duos entre tables : acceptés par l'invité.
+  const duet = (owner, guest) => {
+    const d = s.inviteDuet(owner, guest.id, song());
+    if (d.duet.state !== 'accepted') s.answerDuet(guest, true, d.entryId);
+  };
+  duet(P.X, P.G);
+  for (const name of ['Y', 'A', 'B', 'G', 'N']) s.chooseSong(P[name], song(), 'append');
+  duet(P.N, P.Z);
+  for (const name of ['X', 'Y', 'A', 'B', 'N']) s.chooseSong(P[name], song(), 'append');
+  const played = [];
+  for (let i = 0; i < 18; i++) { const sel = s.select(); if (!sel) break; s.commit(sel); s.songEnded(sel.ids); played.push(sel); }
+  const duo = played.find(sel => sel.ids.join() === [P.X.id, P.G.id].join());
+  assert.ok(duo, played.map(sel => sel.names.join('&')).join(' '));
+  assert.equal(duo.newPersonRound, false, 'X a déjà chanté dans ce tour');
+  assert.deepEqual(duo.borrowedIds, [P.X.id], 'second passage de X dans le tour : emprunté');
+  // Au tour suivant, X laisse passer les autres (sa dette tient).
+  const next = played.slice(played.indexOf(duo) + 1);
+  const start = next.findIndex(sel => sel.newPersonRound);
+  const round = next.slice(start, start + 4).map(sel => sel.names[0]);
+  assert.ok(start >= 0 && !round.includes('X'), played.map(sel => sel.names.join('&')).join(' '));
+});

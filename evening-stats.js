@@ -71,7 +71,8 @@ const DEFINITIONS = {
   turns: 'Passages sur scène de ses propres titres (le titre a réellement été lancé). Les titres retirés avant d’être chantés et les relances ne comptent pas.',
   guestTurns: 'Passages comme invité d’un duo, y compris les duos notés par le bar.',
   turnsPerHour: 'Passages de ses titres par heure de présence.',
-  wait: 'Du moment où le titre pouvait passer (sa demande, ou la fin du passage précédent de la personne, au plus tôt la connexion de KaraFun) au début de son passage.',
+  wait: 'Attente d’un titre, comme la rotation la voit : du moment où la personne attendait son tour (fin de son passage précédent avec un de ses titres, ou début de la période où elle avait un titre en liste, au plus tôt la connexion de KaraFun) au début du passage, sans le temps passé sans aucun titre en liste. Changer, remplacer ou remonter un titre sans qu’un passage de la file soit parti entre-temps ne relance pas l’attente ; un départ, « Vider toutes les chansons » ou un titre retiré faute de « Je suis là » la relancent. Chanter en invité d’un duo ne la remet pas à zéro (la rotation ne compte pas ce passage comme son tour). Attente nette (fichier téléchargé) : sans les « Pas prêt » de la personne pendant ce temps.',
+  stageWait: 'Sans monter sur scène : pour chaque passage de la personne, invité compris, depuis sa montée sur scène précédente (quel que soit son rôle), ou depuis qu’elle attendait (un de ses titres en liste, ou un duo accepté), au plus tôt la connexion de KaraFun. Temps sans titre ni duo et coupures : comme l’attente par titre. Un invité noté par le bar au moment du passage n’attendait rien.',
   requestDelay: 'De la demande du titre (au plus tôt la connexion de KaraFun) à son passage sur scène, même s’il était loin dans la liste de la personne.',
   fairShare: 'Rythme attendu si chaque chanteur passait au même rythme par heure de présence, multiplié par son bonus ou malus moyen (pondéré par le temps où il était actif pendant sa présence).',
   jain: 'Indice de Jain sur les passages par heure de présence : 1 = tout le monde au même rythme, 1/n = une seule personne chante. Calculé sur les chanteurs présents au moins 30 min qui ont chanté ou avaient un titre en attente pendant leur présence au karaoké, avant l’heure de fermeture.',
@@ -81,6 +82,131 @@ const DEFINITIONS = {
   songsPerHour: 'Chansons terminées par heure, du début de la première à la fin de la dernière (titre en cours et arrêts de l’application exclus).',
   firstTurn: 'Depuis la première demande de titre encore en attente lors de la connexion de KaraFun, ou faite après (comptée au plus tôt depuis cette connexion), jusqu’au premier passage de la personne.',
 };
+
+// Périodes d'attente d'une personne, comme la rotation les voit : ses
+// périodes avec un titre en liste, triées puis fusionnées. Retirer un titre
+// puis en choisir un autre sans qu'aucun passage de la file ne soit parti
+// entre-temps est un échange : l'attente continue, mais le temps passé sans
+// titre (un trou) n'est pas de l'attente. Une coupure (départ de la personne,
+// « Vider toutes les chansons », titre retiré faute de « Je suis là ») relance
+// l'attente, même au milieu d'une période. `sends` : envois des passages de
+// la file (la rotation compte un passage à l'envoi), `cuts` : coupures.
+// Rend des périodes { start, end, holes }.
+function readyRuns(spans, sends, cuts) {
+  const pieces = [];
+  for (const [a, b] of spans) {
+    if (!(b >= a)) continue;
+    let from = a;
+    for (const c of [...cuts].sort((x, y) => x - y)) if (c > from && c < b) { pieces.push([from, c]); from = c; }
+    pieces.push([from, b]);
+  }
+  pieces.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const runs = [];
+  for (const [a, b] of pieces) {
+    const last = runs.at(-1);
+    // Chaque morceau est d'un seul côté de chaque coupure : seul un morceau
+    // qui commence à la fin de la période, ou après, peut en être séparé.
+    const joined = last && (a < last.end ||
+      (!cuts.some(c => c >= last.end && c <= a) && !sends.some(t => t >= last.end && t < a)));
+    if (!joined) { runs.push({ start: a, end: b, holes: [] }); continue; }
+    if (a > last.end) last.holes.push([last.end, a]);
+    last.end = Math.max(last.end, b);
+  }
+  return runs;
+}
+// Période d'attente qui mène au passage de l'instant `at`.
+const runAt = (runs, at) => runs.find(r => r.start < at && at <= r.end) || null;
+
+// Attentes, à partir des passages reconstruits par computeStats. Deux lectures :
+// - `waits`, par titre, comme la rotation : du moment où la personne
+//   attendait son tour (fin de son dernier passage avec un de ses titres, ou
+//   début de la période où elle avait un titre en liste ; un titre changé,
+//   remplacé ou remonté en tête ne relance rien) au passage, sans le temps
+//   passé sans aucun titre en liste. Chanter en invitée d'un duo ne remet pas
+//   l'attente de ses titres à zéro : la rotation ne le lui compte pas comme
+//   son tour (soirée du 15 octobre : « L'aventurier » 81 min, affiché 31 min
+//   avant). Attente nette : sans les « Pas prêt » de la personne pendant
+//   cette attente (titre remplacé ensuite compris) ;
+// - `stageWaits`, par personne, sans monter sur scène : chaque montée sur
+//   scène, invitée comprise, depuis la précédente ou depuis qu'elle
+//   attendait (un de ses titres en liste, ou un duo accepté). Un invité
+//   seulement invité a ainsi son attente (59 min le 15 octobre).
+// Comme la présence, une attente ne compte que pendant le karaoké.
+function passageWaits({ ours, songs, people, openedAt, queueClears = [] }) {
+  // La rotation compte un passage à son envoi (titre sans envoi noté : son début).
+  const sends = ours.map(st => (st.entryId && songs.get(st.entryId)?.sentAt) ?? st.start);
+  const runsOf = new Map(), stageRunsOf = new Map();
+  const guestSpans = new Map(); // personne → [acceptation du duo, passage du duo]
+  for (const st of ours) {
+    const s = st.entryId ? songs.get(st.entryId) : null;
+    for (const gid of st.ids.slice(1)) {
+      const since = s?.guestSince?.get(gid);
+      if (since != null && since < st.start) {
+        if (!guestSpans.has(gid)) guestSpans.set(gid, []);
+        guestSpans.get(gid).push([since, st.start]);
+      }
+    }
+  }
+  const cutsOf = pid => {
+    const p = people.get(pid);
+    return [...queueClears, ...(p?.leaves || []), ...(p?.presenceCuts || [])];
+  };
+  const lastCut = (pid, at) => Math.max(-Infinity, ...cutsOf(pid).filter(c => c < at));
+  const ownRuns = pid => {
+    if (!runsOf.has(pid)) runsOf.set(pid, readyRuns(people.get(pid)?.demandSpans || [], sends, cutsOf(pid)));
+    return runsOf.get(pid);
+  };
+  const anyRuns = pid => {
+    if (!stageRunsOf.has(pid)) {
+      stageRunsOf.set(pid, readyRuns([...(people.get(pid)?.demandSpans || []), ...(guestSpans.get(pid) || [])],
+        sends, cutsOf(pid)));
+    }
+    return stageRunsOf.get(pid);
+  };
+  const lastOwnEnd = new Map(), lastStageEnd = new Map();
+  const guestAt = new Map(); // personne → débuts de ses passages en invitée
+  for (const st of ours) for (const pid of st.ids.slice(1)) {
+    if (!guestAt.has(pid)) guestAt.set(pid, []);
+    guestAt.get(pid).push(st.start);
+  }
+  const waits = [], stageWaits = [];
+  for (const st of ours) {
+    const s = st.entryId ? songs.get(st.entryId) : null;
+    if (s && st.ownerId) {
+      // Titre en liste sans interruption depuis sa demande : la période qui
+      // mène au passage commence au plus tard à cette demande, et jamais
+      // avant la dernière coupure (titre déjà envoyé, chanté malgré elle).
+      const run = runAt(ownRuns(st.ownerId), st.start);
+      const ready = Math.max(Math.min(run?.start ?? s.requestedAt, s.requestedAt), lastCut(st.ownerId, st.start));
+      const readySince = Math.max(ready, openedAt, lastOwnEnd.get(st.ownerId) ?? -Infinity);
+      const holesMs = run ? overlapMs(readySince, st.start, run.holes) : 0;
+      const deferMs = overlapMs(readySince, st.start, people.get(st.ownerId)?.deferSpans || []);
+      st.requestedAt = s.requestedAt;
+      st.requestDelaySec = sec(st.start - Math.max(s.requestedAt, openedAt));
+      st.readySince = readySince;
+      st.waitSec = sec(Math.max(0, st.start - readySince - holesMs));
+      st.deferSec = sec(s.deferMs);
+      st.netWaitSec = Math.max(0, st.waitSec - sec(deferMs));
+      st.presenceSkips = s.presenceSkips;
+      // Passages en invitée pendant cette attente (montée sur scène quand même).
+      const guestStages = guestAt.get(st.ownerId)?.filter(t => t > readySince && t < st.start).length || 0;
+      waits.push({ personId: st.ownerId, sec: st.waitSec, requestDelaySec: st.requestDelaySec, netSec: st.netWaitSec,
+        title: st.title, at: st.start, entryId: st.entryId, guestStages });
+    }
+    for (const pid of st.ids) {
+      // Invité noté par le bar au moment du passage, sans titre en liste :
+      // il n'attendait rien, aucune attente.
+      const run = runAt(anyRuns(pid), st.start);
+      if (!run) continue;
+      const since = Math.max(run.start, openedAt, lastStageEnd.get(pid) ?? -Infinity);
+      stageWaits.push({ personId: pid, sec: sec(Math.max(0, st.start - since - overlapMs(since, st.start, run.holes))),
+        guest: pid !== st.ownerId, title: st.title, at: st.start, entryId: st.entryId });
+    }
+    if (st.ownerId) lastOwnEnd.set(st.ownerId, st.endAt);
+    for (const pid of st.ids) lastStageEnd.set(pid, st.endAt);
+  }
+  return { waits, stageWaits };
+}
 
 const sum = list => list.reduce((a, b) => a + b, 0);
 const mean = list => list.length ? sum(list) / list.length : null;
@@ -106,10 +232,14 @@ const round = (value, digits = 0) => value == null || !Number.isFinite(value) ? 
   Math.round(value * 10 ** digits) / 10 ** digits;
 const sec = ms => ms == null ? null : Math.round(ms / 1000);
 
-// Chevauchement d'un intervalle avec une liste d'intervalles.
+// Chevauchement d'un intervalle avec une liste d'intervalles (qui peuvent se
+// chevaucher entre eux : deux « Pas prêt » ne comptent qu'une fois).
 function overlapMs(start, end, spans) {
-  let total = 0;
-  for (const [a, b] of spans) total += Math.max(0, Math.min(end, b) - Math.max(start, a));
+  let total = 0, upTo = start;
+  for (const [a, b] of [...spans].sort((x, y) => x[0] - y[0])) {
+    const lo = Math.max(a, upTo), hi = Math.min(end, b);
+    if (hi > lo) { total += hi - lo; upTo = hi; }
+  }
   return total;
 }
 
@@ -191,7 +321,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     if (!id) return null;
     if (!people.has(id)) {
       people.set(id, { id, tableId: roster[id]?.tableId ?? null, joinedAt: t, intervals: [], openSince: t,
-        lastActivity: t, explicitLeft: null, bonus: 0, bonusLog: [], active: new Set(), demandSince: null, demandSpans: [],
+        lastActivity: t, explicitLeft: null, bonus: 0, bonusLog: [], active: new Set(), demandSince: null, demandSpans: [], leaves: [], presenceCuts: [], deferSpans: [],
         requests: 0, removed: 0, removedBy: {}, deferrals: 0, deferSongs: 0, deferMs: 0,
         presenceAsks: 0, presenceLatencies: [], presenceSkips: 0, presenceRemoved: 0, absences: 0,
         battleProposals: 0, battleVotes: 0, invitesSent: 0, invitesReceived: 0, joinRequests: 0,
@@ -216,7 +346,17 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     if (!s || s.stageAt || s.removedAt) return;
     const p = people.get(s.personId);
     s.removedAt = t; s.removedBy = by; s.implicitRemoval = true;
+    endDefer(s, t, false);
     if (p) { p.removed++; p.removedBy[by] = (p.removedBy[by] || 0) + 1; }
+  };
+  // Fin d'un « Pas prêt » : comptée pour le titre s'il part (fin du report,
+  // envoi, scène), gardée pour la personne dans tous les cas (attente nette,
+  // titre retiré pendant son report compris).
+  const endDefer = (s, t, counted = true) => {
+    if (s?.deferSince == null) return;
+    if (counted) s.deferMs += t - s.deferSince;
+    people.get(s.personId)?.deferSpans.push([s.deferSince, t]);
+    s.deferSince = null;
   };
   const unretire = s => {
     if (!s?.implicitRemoval) return;
@@ -228,6 +368,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     if (!p) return;
     if (p.openSince != null) { p.intervals.push([p.openSince, t, false]); p.openSince = null; }
     p.explicitLeft = t;
+    p.leaves.push(t);
     for (const entryId of p.active) retire(songs.get(entryId), t, by);
     p.active.clear();
     stopDemand(p, t);
@@ -265,6 +406,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const other = {};
   const settingsChanges = [];
   let queueClearedAt = null;
+  const queueClears = []; // « Vider toutes les chansons » : coupe les attentes
   let lastClosingReached = null;
   // [heure du changement, heure de fermeture ou null, retrait d'« Options par défaut »]
   const closingChanges = [];
@@ -316,7 +458,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         for (const old of Array.isArray(e.replacedEntryIds) ? e.replacedEntryIds : []) { dropEntry(p.id, old, t); retire(songs.get(old), t, 'self'); }
         songs.set(e.entryId, { entryId: e.entryId, personId: p.id, requestedAt: t, songId: e.songId ?? null,
           title: e.title || '', artist: e.artist || '', durationSec: Number(e.durationSec) || null,
-          mode: e.mode || null, partnerId: null, removedAt: null, removedBy: null, sentAt: null, stageAt: null,
+          mode: e.mode || null, partnerId: null, guestSince: new Map(), removedAt: null, removedBy: null, sentAt: null, stageAt: null,
           deferSince: null, deferMs: 0, deferrals: 0, presenceSkips: 0 });
         p.active.add(e.entryId);
         startDemand(p, t);
@@ -324,9 +466,12 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       }
       case 'song.removed': {
         const s = songs.get(e.entryId);
-        if (s) { s.removedAt = t; s.removedBy = e.by || 'self'; }
+        if (s) { s.removedAt = t; s.removedBy = e.by || 'self'; endDefer(s, t, false); }
         const p = people.get(e.personId) || (s && people.get(s.personId));
         if (p) { p.removed++; p.removedBy[e.by || 'self'] = (p.removedBy[e.by || 'self'] || 0) + 1; dropEntry(p.id, e.entryId, t); }
+        // « Je suis là » manqué trop souvent : la rotation relance l'attente de
+        // la personne (titre suivant ou rechoisi, jamais un échange).
+        if (p && e.by === 'presence-max') p.presenceCuts.push(t);
         if (e.by === 'staff') staff.removedSongs++;
         break;
       }
@@ -334,25 +479,27 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         const s = songs.get(e.entryId);
         if (s) s.partnerId = e.partnerId || null;
         duos.invites++;
-        if (e.sameGroup) duos.accepted++;
+        // Même table : accepté d'office, l'invité attend le duo dès maintenant.
+        if (e.sameGroup) { duos.accepted++; if (s && e.partnerId) s.guestSince.set(e.partnerId, t); }
         const owner = people.get(e.ownerId); if (owner) owner.invitesSent++;
         const partner = e.partnerId && personOf(e.partnerId, t); if (partner) partner.invitesReceived++;
         break;
       }
       case 'duo.answered': {
         const s = songs.get(e.entryId);
-        if (e.accepted) duos.accepted++; else { duos.declined++; if (s) s.partnerId = null; }
+        if (e.accepted) { duos.accepted++; const guest = e.partnerId || s?.partnerId; if (s && guest) s.guestSince.set(guest, t); }
+        else { duos.declined++; if (s) { s.guestSince.delete(e.partnerId || s.partnerId); s.partnerId = null; } }
         break;
       }
-      case 'duo.cancelled': { const s = songs.get(e.entryId); if (s) s.partnerId = null; duos.cancelled++; break; }
+      case 'duo.cancelled': { const s = songs.get(e.entryId); if (s) { s.guestSince.delete(e.partnerId || s.partnerId); s.partnerId = null; } duos.cancelled++; break; }
       case 'duo.joinRequested': {
         duos.joinRequests++;
         const r = personOf(e.requesterId, t); if (r) r.joinRequests++;
-        if (e.direct) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) s.partnerId = e.requesterId; rejoin(e.entryId, e.requesterId); }
+        if (e.direct) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) { s.partnerId = e.requesterId; s.guestSince.set(e.requesterId, t); } rejoin(e.entryId, e.requesterId); }
         break;
       }
       case 'duo.joinAnswered': {
-        if (e.accepted) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) s.partnerId = e.requesterId; rejoin(e.entryId, e.requesterId); }
+        if (e.accepted) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) { s.partnerId = e.requesterId; s.guestSince.set(e.requesterId, t); } rejoin(e.entryId, e.requesterId); }
         else duos.joinDeclined++;
         break;
       }
@@ -360,11 +507,12 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'duo.joinExpired': duos.joinExpired++; break;
       // Invitation sans réponse au départ du titre : il est parti en solo. Ni
       // refusée ni annulée, elle n'est comptée qu'ici.
-      case 'duo.inviteExpired': { const s = songs.get(e.entryId); if (s) s.partnerId = null; duos.inviteExpired++; break; }
+      case 'duo.inviteExpired': { const s = songs.get(e.entryId); if (s) { s.guestSince.delete(e.partnerId || s.partnerId); s.partnerId = null; } duos.inviteExpired++; break; }
       case 'duo.left': {
         duos.left++;
         const guest = e.personId || e.partnerId || e.guestId;
         const s = songs.get(e.entryId); if (s && s.partnerId === guest) s.partnerId = null;
+        s?.guestSince.delete(guest);
         if (e.entryId && guest) {
           const stage = stages.find(st => st.entryId === e.entryId);
           if (stage && !stage.ended) stage.ids = stage.ids.filter(id => id !== guest);
@@ -445,15 +593,13 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       }
       case 'defer.ended': {
         const s = songs.get(e.entryId);
-        if (s?.deferSince != null) {
-          s.deferMs += t - s.deferSince; s.deferSince = null;
-        }
+        endDefer(s, t);
         break;
       }
       case 'turn.sent': {
         const s = songs.get(e.entryId);
         if (s) { s.sentAt = t; s.queueId = e.queueId ?? null; }
-        if (s?.deferSince != null) { s.deferMs += t - s.deferSince; s.deferSince = null; }
+        endDefer(s, t);
         break;
       }
       case 'turn.unsent': {
@@ -493,7 +639,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         if (s) {
           unretire(s);
           s.stageAt = t;
-          if (s.deferSince != null) { s.deferMs += t - s.deferSince; s.deferSince = null; }
+          endDefer(s, t);
           dropEntry(s.personId, s.entryId, t);
         }
         break;
@@ -546,6 +692,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'staff.queueCleared': {
         staff.queueCleared++;
         queueClearedAt = t;
+        queueClears.push(t);
         // Le serveur ne note pas un song.removed par titre : chaque titre
         // encore en attente est retiré par le bar à cet instant (le compteur
         // staff.removedSongs reste réservé aux retraits titre par titre).
@@ -553,7 +700,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
           for (const entryId of p.active) {
             const s = songs.get(entryId);
             if (!s || s.stageAt || s.removedAt) continue;
-            s.removedAt = t; s.removedBy = 'staff';
+            s.removedAt = t; s.removedBy = 'staff'; endDefer(s, t, false);
             p.removed++; p.removedBy.staff = (p.removedBy.staff || 0) + 1;
           }
           p.active.clear(); stopDemand(p, t);
@@ -766,31 +913,15 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
 
   // ------------------------------------------------ attentes par passage
   const ours = stages.filter(st => st.source === 'queue');
-  const lastAppearanceEnd = new Map();
-  const waits = [];
-  for (const st of ours) {
-    const s = st.entryId ? songs.get(st.entryId) : null;
-    if (s && st.ownerId) {
-      // Comme la présence, l'attente ne compte que pendant le karaoké : un
-      // titre choisi avant la connexion de KaraFun attend depuis celle-ci.
-      const readySince = Math.max(s.requestedAt, openedAt, lastAppearanceEnd.get(st.ownerId) ?? -Infinity);
-      st.requestedAt = s.requestedAt;
-      st.requestDelaySec = sec(st.start - Math.max(s.requestedAt, openedAt));
-      st.waitSec = sec(Math.max(0, st.start - readySince));
-      st.deferSec = sec(s.deferMs);
-      st.netWaitSec = Math.max(0, st.waitSec - st.deferSec);
-      st.presenceSkips = s.presenceSkips;
-      waits.push({ personId: st.ownerId, sec: st.waitSec, requestDelaySec: st.requestDelaySec, netSec: st.netWaitSec,
-        title: st.title, at: st.start, entryId: st.entryId });
-    }
-    for (const pid of st.ids) lastAppearanceEnd.set(pid, st.endAt);
-  }
+  const { waits, stageWaits } = passageWaits({ ours, songs, people, openedAt, queueClears });
 
   // ------------------------------------------------ chanteurs
   const singers = [...people.values()].map(p => {
     const own = ours.filter(st => st.ownerId === p.id);
     const guest = ours.filter(st => st.ids.slice(1).includes(p.id));
     const myWaits = waits.filter(w => w.personId === p.id).map(w => w.sec);
+    const myStageWaits = stageWaits.filter(w => w.personId === p.id);
+    const stageSecs = myStageWaits.map(w => w.sec);
     const hours = p.presenceMs / 3600000;
     const firstStage = own[0]?.start ?? null;
     // Premier passage : depuis la première demande encore en attente à
@@ -819,6 +950,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       bonus: p.bonus, weight: round(p.weight, 3), bonusSec: sec(p.bonusMs),
       waits: { n: myWaits.length, avgSec: round(mean(myWaits)), medianSec: round(median(myWaits)),
         maxSec: myWaits.length ? Math.max(...myWaits) : null, minSec: myWaits.length ? Math.min(...myWaits) : null },
+      // Sans monter sur scène, comme invitée aussi (définition stageWait).
+      stageWaits: { n: stageSecs.length, guestN: myStageWaits.filter(w => w.guest).length, avgSec: round(mean(stageSecs)),
+        medianSec: round(median(stageSecs)), maxSec: stageSecs.length ? Math.max(...stageSecs) : null },
       requestDelayAvgSec: round(mean(waits.filter(w => w.personId === p.id).map(w => w.requestDelaySec))),
       firstTurnSec: firstStage != null && askedFrom != null ? sec(firstStage - askedFrom) : null,
       deferrals: p.deferrals, deferSongs: p.deferSongs,
@@ -981,7 +1115,8 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     netWaitAvgSec: round(mean(waits.map(w => w.netSec))),
     requestDelayAvgSec: round(mean(waits.map(w => w.requestDelaySec))),
     waitHistogram: histogram,
-    longestWait: longest ? { sec: longest.sec, personId: longest.personId, title: longest.title, at: longest.at } : null,
+    longestWait: longest ? { sec: longest.sec, personId: longest.personId, title: longest.title, at: longest.at,
+      guestStages: longest.guestStages } : null,
     firstTurnAvgSec: round(mean(firstTurns)), firstTurnMedianSec: round(median(firstTurns)),
     songsPerHour: doneWindowMs > 0 ? round(done.length / (doneWindowMs / 3600000), 1) : null,
     avgSongSec: round(mean(stages.filter(st => st.endKnown).map(st => st.playedSec))),
@@ -1026,7 +1161,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       stages: stages.map((st, i) => ({ i, start: st.start, end: st.endAt, ongoing: !!st.ongoing, endKnown: st.endKnown,
         playedSec: st.playedSec, durationSec: st.durationSec, title: st.title, artist: st.artist, ids: st.ids,
         ownerId: st.ownerId, kind: st.kind, source: st.source, improvised: st.improvised, entryId: st.entryId,
-        queueId: st.queueId, requestedAt: st.requestedAt ?? null, waitSec: st.waitSec ?? null,
+        queueId: st.queueId, requestedAt: st.requestedAt ?? null, readySince: st.readySince ?? null, waitSec: st.waitSec ?? null,
         requestDelaySec: st.requestDelaySec ?? null, deferSec: st.deferSec ?? null, presenceSkips: st.presenceSkips ?? 0 })),
       gaps,
       phases: phaseSpans.map(([start, end, blocker], i) => ({ start, end, phase: phases[i].phase, blocker })),
@@ -1075,7 +1210,9 @@ function insights(stats, { nameOf = id => id, tableName = id => id } = {}) {
     }
   }
   if (g.longestWait && g.longestWait.sec >= 60) {
-    add('longest-wait', `Plus longue attente : ${duration(g.longestWait.sec)} (${nameOf(g.longestWait.personId)}, « ${g.longestWait.title} »).`,
+    const n = g.longestWait.guestStages;
+    const guest = n ? ` ; entre-temps, ${n} passage${n > 1 ? 's' : ''} sur scène comme invité d’un duo` : '';
+    add('longest-wait', `Plus longue attente : ${duration(g.longestWait.sec)} (${nameOf(g.longestWait.personId)}, « ${g.longestWait.title} »${guest}).`,
       g.waitAvgSec && g.longestWait.sec > 3 * g.waitAvgSec ? 'warn' : 'info');
   }
   if (g.firstTurnAvgSec != null && g.sang >= 2) add('first-turn', `Premier passage en ${duration(g.firstTurnAvgSec)} en moyenne après la première demande du karaoké.`);
