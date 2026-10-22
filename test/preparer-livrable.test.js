@@ -19,7 +19,7 @@ const SCRIPT = 'scripts/preparer-livrable.js';
 const USAGE = 'Usage : node scripts/preparer-livrable.js <dossier de destination>';
 const LISTS_ERROR = 'livrable.json : listes « commun » et « windows » attendues.';
 const invalid = entry => `livrable.json : entrée invalide « ${entry} »`;
-const manifest = JSON.parse(fs.readFileSync(path.join(root, 'livrable.json'), 'utf8'));
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'livrable.json'), 'utf8').replace(/^\uFEFF/, ''));
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'livrable-'));
@@ -132,6 +132,26 @@ test('P3 refus de la ligne de commande', t => {
   assert.equal(late.stdout, '');
   assert.equal(fs.existsSync(fresh), false, 'dossier créé malgré le refus');
   assert.deepEqual(fs.readdirSync(base), ['plein']);
+
+  // Destination dans la source (dossier listé, autre dossier, racine elle-même,
+  // chemin passant par un lien vers la racine) : refus, rien d'écrit.
+  const source = path.join(base, 'source');
+  fs.mkdirSync(path.join(source, 'public'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'public', 'a.html'), '<p>a</p>\n');
+  fs.writeFileSync(path.join(source, 'package.json'), '{"version":"1.0.0"}\n');
+  fs.writeFileSync(path.join(source, 'livrable.json'), JSON.stringify({ commun: ['public', 'package.json'], windows: [] }));
+  const inside = [path.join(source, 'public', 'build'), path.join(source, 'sortie'), source];
+  try {
+    fs.symlinkSync(source, path.join(base, 'lien-source'), 'dir');
+    inside.push(path.join(base, 'lien-source', 'sortie'));
+  } catch (error) {
+    if (process.platform !== 'win32') throw error;
+  }
+  for (const dest of inside) {
+    assert.throws(() => prepare({ root: source, dest, env: {}, now: () => new Date(0) }),
+      { message: `Dossier de destination dans la source : ${dest}` });
+  }
+  assert.deepEqual(filesUnder(source).sort(), ['livrable.json', 'package.json', 'public/a.html']);
 });
 
 test('P4 manifeste invalide', t => {
@@ -157,6 +177,19 @@ test('P4 manifeste invalide', t => {
   refuse({ commun: ['a.js', 'a.js'], windows: [] }, invalid('a.js'));
   refuse({ commun: [], windows: ['x.bat', 'x.bat'] }, invalid('x.bat'));
   refuse({ commun: ['a.js'], windows: ['a.js'] }, invalid('a.js'));
+  // Recouvrement, dans une liste ou d'une liste à l'autre, dans les deux sens ;
+  // entrée invalide dans « windows ».
+  refuse({ commun: ['dossier', 'dossier/b.js'], windows: [] }, invalid('dossier/b.js'));
+  refuse({ commun: ['dossier/b.js', 'dossier'], windows: [] }, invalid('dossier'));
+  refuse({ commun: ['dossier/b.js'], windows: ['dossier'] }, invalid('dossier'));
+  refuse({ commun: [], windows: ['../x'] }, invalid('../x'));
+  // Dossiers privés, de test ou de construction, et produits de la construction.
+  for (const entry of ['data', 'data/staff-key', 'journal', 'test/x.js', 'node', 'node_modules/qrcode', 'solver-runtime',
+    'LICENCES-JAVA', 'deploy/.env', 'scripts/preparer-livrable.js', '.github', 'KaraFun Plus.exe', 'build-info.json',
+    'solver/karafun-solver.jar', 'solver']) {
+    refuse({ commun: [entry], windows: [] }, invalid(entry));
+  }
+  refuse({ commun: [], windows: ['data'] }, invalid('data'));
   refuse({ commun: ['absent.js'], windows: [] }, 'Fichier du manifeste absent : absent.js');
   refuse({ commun: ['dossier/absent.js'], windows: [] }, 'Fichier du manifeste absent : dossier/absent.js');
 
@@ -164,10 +197,14 @@ test('P4 manifeste invalide', t => {
   write({ commun: ['a.js', 'dossier'], windows: ['lanceur.bat'] });
   const witness = path.join(base, 'temoin');
   assert.deepEqual(prepare({ root: fake, dest: witness, env: {}, now: () => new Date(0) }), { files: 2 });
+  // Manifeste enregistré avec un BOM (éditeur Windows) : lu comme sans BOM.
+  fs.writeFileSync(path.join(fake, 'livrable.json'), `\uFEFF${JSON.stringify({ commun: ['a.js'], windows: [] })}`);
+  assert.deepEqual(prepare({ root: fake, dest: path.join(base, 'bom'), env: {}, now: () => new Date(0) }), { files: 1 });
 
   try {
     fs.symlinkSync('a.js', path.join(fake, 'lien.js'));
     fs.symlinkSync(path.join('..', 'a.js'), path.join(fake, 'dossier', 'lien.js'));
+    fs.symlinkSync('dossier', path.join(fake, 'lienrep'), 'dir');
   } catch (error) {
     if (process.platform !== 'win32') throw error;
     t.skip(`liens symboliques impossibles à créer sur ce Windows (${error.code})`);
@@ -175,4 +212,6 @@ test('P4 manifeste invalide', t => {
   }
   refuse({ commun: ['lien.js'], windows: [] }, 'Lien symbolique refusé dans le livrable : lien.js');
   refuse({ commun: ['a.js', 'dossier'], windows: [] }, 'Lien symbolique refusé dans le livrable : dossier/lien.js');
+  // Lien sur un segment intermédiaire de l'entrée.
+  refuse({ commun: ['lienrep/b.js'], windows: [] }, 'Lien symbolique refusé dans le livrable : lienrep');
 });

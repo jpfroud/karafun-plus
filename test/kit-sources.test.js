@@ -172,6 +172,15 @@ test('K1 livrable.json bien formé', t => {
   }
   const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', ...entries], { cwd: root, encoding: 'utf8' });
   assert.equal(tracked.status, 0, `entrée non versionnée : ${tracked.stderr}`);
+  // Un dossier est copié tel qu'il est sur le disque : il ne doit contenir que
+  // des fichiers versionnés (un fichier non suivi ou ignoré, .DS_Store par
+  // exemple, partirait dans le kit et dans l'image).
+  for (const entry of entries.filter(entry => fs.statSync(path.join(root, ...entry.split('/'))).isDirectory())) {
+    const listed = spawnSync('git', ['ls-files', '-z', '--', entry], { cwd: root, encoding: 'utf8' });
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(expand(entry).sort(), listed.stdout.split('\0').filter(Boolean).sort(),
+      `${entry} : fichiers du disque différents des fichiers versionnés`);
+  }
 });
 
 test('K2 graphe des require dans le manifeste', () => {
