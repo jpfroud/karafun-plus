@@ -1145,29 +1145,40 @@ test('catalogue KaraFun en démo : indisponible avec un message, pas d’erreur 
   }
 });
 
-test('retour de connexion Spotify : réservé au PC du bar, message lisible et échappé', async () => {
+test('retour de connexion Spotify : réservé au PC du bar, message lisible et échappé, page sans clé', async () => {
   const f = harness();
   let r = await get(f, '/spotify/callback?code=c&state=s', { remote: '192.168.1.50' });
   assert.equal(r.status, 403);
   assert.equal(r.text, 'Connecte Spotify depuis le PC du bar.');
   r = await get(f, '/spotify/callback?code=c&state=s', { port: f.PUBLIC_PORT });
   assert.equal(r.status, 403, 'jamais par le tunnel public');
-  const back = `<a href="/staff?key=${encodeURIComponent(f.STAFF_KEY)}">Revenir à la page du bar</a>`;
+  assert.equal(r.text, 'Connecte Spotify depuis le PC du bar.');
+  // (#27) La page de retour ne porte jamais la clé du bar : son lien mène à « / »,
+  // qui redirige le PC du bar vers sa page (test/startup-port.test.js).
+  const back = '<a href="/">Revenir à la page du bar</a>';
+  const page = (res, where) => {
+    assert.equal(res.status, 200, where);
+    assert.equal(res.headers['content-type'], 'text/html; charset=utf-8', where);
+    assert.ok(res.text.includes(back), `${where} : lien de retour vers la page du bar`);
+    assert.equal(res.text.includes(f.STAFF_KEY), false, `${where} : jamais la clé du bar`);
+    assert.equal(res.text.includes('key='), false, `${where} : aucun paramètre key`);
+  };
   r = await get(f, '/spotify/callback?error=access_denied');
-  assert.equal(r.status, 200);
-  assert.match(r.headers['content-type'], /text\/html/);
+  page(r, 'refus dans Spotify');
   assert.ok(r.text.includes('<p>Connexion Spotify annulée.</p>'));
-  assert.ok(r.text.includes(back), 'lien de retour vers la page du bar');
   r = await get(f, '/spotify/callback?code=c&state=s');
+  page(r, 'state inconnu');
   assert.ok(r.text.includes('Connexion Spotify expirée : relance-la depuis la page du bar.'), 'connexion jamais demandée');
   const received = [];
   f.spotify.finishAuth = async args => { received.push({ ...args }); };
   r = await get(f, '/spotify/callback?code=abc&state=xyz');
+  page(r, 'réussite');
   assert.deepEqual(received, [{ code: 'abc', state: 'xyz' }]);
   assert.ok(r.text.includes('Spotify est connecté. Choisis l’appareil qui joue la musique dans la page du bar.'));
   assert.ok(f.sched.log.some(l => l.msg === 'Spotify connecté à la file karaoké.'));
   f.spotify.finishAuth = async () => { throw new Error('Refus <b>"invalide"</b> & fin'); };
   r = await get(f, '/spotify/callback?code=abc&state=xyz');
+  page(r, 'erreur à échapper');
   assert.ok(r.text.includes('Refus &lt;b&gt;&quot;invalide&quot;&lt;/b&gt; &amp; fin'));
   assert.ok(!r.text.includes('<b>'), 'aucune balise reçue n’est interprétée');
 });

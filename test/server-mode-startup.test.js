@@ -7,6 +7,8 @@
 //
 // Ports de ces tests : P, P+1 et P+1001 (faux KaraFun de la démo), P de 3230
 // à 3238 (3240 sert à priority-undo-api.test.js).
+// SP7 (#27, retour Spotify réel du serveur) : 3260, 3261 et 4261, réservés par
+// l'épopée.
 //
 // Les aides exportées (portFree, choosePort, serverEnv, sandboxCopy, launch,
 // waitLine) servent aux autres tests du mode serveur : les tests de ce fichier
@@ -412,5 +414,43 @@ if (require.main === module) {
     });
     assert.equal(second, first, 'même clé au redémarrage');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  });
+
+  // Bar, clients et faux KaraFun de la démo (PORT + 1001).
+  const SPOTIFY_PORTS = [3260, 3261, 4261];
+  test('SP7 retour Spotify réel du serveur : adresse de boucle locale, seul le state protège, page sans clé', async () => {
+    for (const port of SPOTIFY_PORTS) {
+      if (!await portFree(port)) assert.fail(`Port ${port} occupé : SP7 réserve 3260, 3261 et 4261.`);
+    }
+    const [port, publicPort] = SPOTIFY_PORTS;
+    const env = serverEnv();
+    const key = await staffKey(`http://127.0.0.1:${port}`, { keyFile: env.KARAOKE_STAFF_KEY_FILE });
+    const child = launch(['--demo', '--port', String(port), '--no-open'], { env });
+    try {
+      await waitLine(child, 'Adresse des téléphones');
+      const base = `http://127.0.0.1:${port}`;
+      const spotify = body => fetch(`${base}/api/staff/spotify?key=${encodeURIComponent(key)}`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      assert.equal((await spotify({ action: 'client', clientId: '0123456789abcdef0123456789abcdef' })).status, 200);
+      const auth = await spotify({ action: 'auth-url' });
+      assert.equal(auth.status, 200);
+      assert.equal(new URL((await auth.json()).url).searchParams.get('redirect_uri'), `http://127.0.0.1:${port}/spotify/callback`);
+
+      const callback = await fetch(`${base}/spotify/callback?code=x&state=faux`);
+      assert.equal(callback.status, 200, 'retour accepté sur le port du bar');
+      const page = await callback.text();
+      assert.match(page, /Connexion Spotify expirée : relance-la depuis la page du bar\./);
+      assert.ok(page.includes('<a href="/staff">Revenir à la page du bar</a>'));
+      assert.equal(page.includes(key), false, 'la clé du fichier n’est pas dans la page');
+      const refused = await fetch(`http://127.0.0.1:${publicPort}/spotify/callback?code=x&state=faux`);
+      assert.equal(refused.status, 403, 'port clients refusé');
+      assert.equal(await refused.text(), 'Réservé au bar');
+
+      const shell = await fetch(`${base}/staff`);
+      assert.equal(shell.status, 200, 'page du bar sans clé');
+      assert.equal(shell.headers.get('content-type'), 'text/html; charset=utf-8');
+      assert.equal((await shell.text()).includes(key), false);
+      assert.equal((await fetch(`${base}/api/staff/state`)).status, 403, 'API sans clé fermée');
+    } finally { await child.stop(); }
   });
 }

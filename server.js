@@ -2500,6 +2500,14 @@ function isStaff(req, u) {
   return candidate.length === actual.length && crypto.timingSafeEqual(candidate, actual);
 }
 
+// Page du bar seule (pas l'API, ni /print, /stats ou /qr) : en mode serveur, /staff sans
+// paramètre key sert la coquille sans secret, qui relit la clé gardée par l'onglet.
+// Une clé fausse ou vide reste refusée, et le port clients aussi.
+function staffPageAllowed(req, u) {
+  if (isStaff(req, u)) return true;
+  return !!SERVER && req.socket.localPort !== PUBLIC_PORT && !u.searchParams.has('key');
+}
+
 function decodePhoto(dataUrl) {
   const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
   if (!m) return null;
@@ -4958,7 +4966,7 @@ const server = http.createServer(async (req, res) => {
         return sendFile(res, 'client.html', 'text/html; charset=utf-8');
       }
       if (/^\/t\/[^/]+\/?$/.test(p)) return send(res, 403, 'Scanne le QR code de ta table.', 'text/plain; charset=utf-8');
-      if (p === '/staff') { if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); return sendFile(res, 'staff.html', 'text/html; charset=utf-8'); }
+      if (p === '/staff') { if (!staffPageAllowed(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); return sendFile(res, 'staff.html', 'text/html; charset=utf-8'); }
       if (p === '/print') { if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); return sendFile(res, 'print.html', 'text/html; charset=utf-8'); }
       if (p === '/app.css') return sendFile(res, 'app.css', 'text/css; charset=utf-8');
       // Traductions de la page des chanteurs, publiques comme elle.
@@ -5028,15 +5036,18 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { lines: found.lines, url: found.url, exact: found.exact, unavailable: !!found.unavailable });
       }
       if (p === '/spotify/callback') {
-        // Retour de la connexion Spotify, ouverte depuis la page du bar sur ce PC.
-        if (!isLocal(req)) return send(res, 403, 'Connecte Spotify depuis le PC du bar.', 'text/plain; charset=utf-8');
+        // Retour de la connexion Spotify, sur http://127.0.0.1:<port>/spotify/callback dans les deux modes. Mode PC : navigateur de ce PC seulement. Mode serveur : port du bar, atteint par un tunnel SSH ; protégé par le seul state PKCE (usage unique, 10 min).
+        if (SERVER) { if (req.socket.localPort === PUBLIC_PORT) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); }
+        else if (!isLocal(req)) return send(res, 403, 'Connecte Spotify depuis le PC du bar.', 'text/plain; charset=utf-8');
         let message = 'Spotify est connecté. Choisis l’appareil qui joue la musique dans la page du bar.';
         try {
           if (u.searchParams.get('error')) throw new Error('Connexion Spotify annulée.');
           await spotify.finishAuth({ code: u.searchParams.get('code'), state: u.searchParams.get('state') });
           sched.note('Spotify connecté à la file karaoké.', 'staff');
         } catch (error) { message = error.message; }
-        const back = `/staff?key=${encodeURIComponent(STAFF_KEY)}`;
+        // Jamais la clé du bar dans cette page (deux modes) : en mode PC, un relais HTTPS
+        // sur la même machine ferait paraître locale n'importe quelle requête.
+        const back = SERVER ? '/staff' : '/';
         return send(res, 200, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Spotify</title><body style="font-family:system-ui;padding:24px"><p>${message.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</p><p><a href="${back}">Revenir à la page du bar</a></p></body>`, 'text/html; charset=utf-8');
       }
       if (p === '/api/duo/partners') {
