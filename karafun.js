@@ -289,6 +289,38 @@ function retryAfterAt(value, now) {
   return Number.isFinite(at) && at > now && at - now <= RETRY_AFTER_MAX_MS ? at : null;
 }
 
+// Classe une réponse de la page de découverte, sans réseau ni état :
+// _discover et tools/diag-karafun.js jugent ainsi la même page de la même
+// façon. Ne garde que l'état HTTP, les hôtes et la présence des clés
+// attendues : jamais le HTML ni l'URL KCS, qui contiennent un jeton.
+function classifyDiscovery(host, response, html) {
+  const info = { host };
+  info.status = response.status;
+  try {
+    const finalHost = response.url ? new URL(response.url).hostname : null;
+    if (finalHost && finalHost !== info.host) info.finalHost = finalHost;
+  } catch { /* adresse finale illisible */ }
+  const hasSettings = /\bSettings\s*=/.test(html);
+  info.keys = { Settings: hasSettings, kcs_url: /["']?kcs_url["']?\s*:/.test(html) };
+  if ([401, 403, 429].includes(response.status) || (!hasSettings && CHALLENGE.test(html))) {
+    let retryAfter = null;
+    try { retryAfter = response.headers?.get?.('retry-after') ?? null; } catch { /* en-têtes illisibles */ }
+    return { ...info, kind: 'refused', retryAfter };
+  }
+  if ([404, 410].includes(response.status)) return { ...info, kind: 'unknown-code' };
+  if (!response.ok) return { ...info, kind: 'http' };
+  let settings;
+  try { settings = readSettings(html); } catch { return { ...info, kind: 'bad-page' }; }
+  if (!settings) return { ...info, kind: 'unknown-code' };
+  if (settings.kcs_url) {
+    let protocol = null;
+    try { protocol = new URL(settings.kcs_url).protocol; } catch { /* adresse illisible */ }
+    // Un fragment (#…) est refusé par le WebSocket de Node.
+    if (protocol !== 'wss:' || String(settings.kcs_url).includes('#')) return { ...info, kind: 'bad-page' };
+  }
+  return { ...info, settings };
+}
+
 // Pages lues dans l'heure pleine, limite de KaraFun et heure du dernier arrêt
 // des essais, gardées dans data/ (sans code ni URL) : relancer la file ne
 // remet ni le compteur à zéro ni une nouvelle série de relances rapides.
@@ -836,30 +868,7 @@ class KaraFunBridge extends EventEmitter {
     } catch (error) {
       return { ...info, kind: ['TimeoutError', 'AbortError'].includes(error?.name) ? 'timeout' : 'network' };
     }
-    info.status = response.status;
-    try {
-      const finalHost = response.url ? new URL(response.url).hostname : null;
-      if (finalHost && finalHost !== info.host) info.finalHost = finalHost;
-    } catch { /* adresse finale illisible */ }
-    const hasSettings = /\bSettings\s*=/.test(html);
-    info.keys = { Settings: hasSettings, kcs_url: /["']?kcs_url["']?\s*:/.test(html) };
-    if ([401, 403, 429].includes(response.status) || (!hasSettings && CHALLENGE.test(html))) {
-      let retryAfter = null;
-      try { retryAfter = response.headers?.get?.('retry-after') ?? null; } catch { /* en-têtes illisibles */ }
-      return { ...info, kind: 'refused', retryAfter };
-    }
-    if ([404, 410].includes(response.status)) return { ...info, kind: 'unknown-code' };
-    if (!response.ok) return { ...info, kind: 'http' };
-    let settings;
-    try { settings = readSettings(html); } catch { return { ...info, kind: 'bad-page' }; }
-    if (!settings) return { ...info, kind: 'unknown-code' };
-    if (settings.kcs_url) {
-      let protocol = null;
-      try { protocol = new URL(settings.kcs_url).protocol; } catch { /* adresse illisible */ }
-      // Un fragment (#…) est refusé par le WebSocket de Node.
-      if (protocol !== 'wss:' || String(settings.kcs_url).includes('#')) return { ...info, kind: 'bad-page' };
-    }
-    return { ...info, settings };
+    return classifyDiscovery(info.host, response, html);
   }
 
   // `mode` : 'socket' quand une URL gardée reste à réessayer (réseau coupé).
@@ -1655,4 +1664,5 @@ function normalizeResults(data) {
 }
 
 module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, BATTLE_MODS_MAX, isBattleItem, battleModFor,
-  maskCode, lockIdentity, unknownSettingsSupport: freshSupport };
+  maskCode, lockIdentity, unknownSettingsSupport: freshSupport,
+  CHALLENGE, DISCOVERY_HEADERS, classifyDiscovery, retryAfterAt };
