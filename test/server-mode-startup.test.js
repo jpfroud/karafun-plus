@@ -397,12 +397,12 @@ if (require.main === module) {
         return content;
       } finally { await child.stop(); }
     };
-    // Une autre adresse envoyée par la page du bar est gardée dans la soirée
-    // sauvegardée ; la soirée restaurée reprend KARAOKE_PUBLIC_URL.
+    // Une autre adresse envoyée par la page du bar est refusée depuis #25 ; la
+    // soirée restaurée reprend KARAOKE_PUBLIC_URL (soirée d'une autre adresse : R10).
     const first = await start('data/staff-key, créée à ce démarrage', async (base, key) => {
       const sent = await fetch(`${base}/api/staff/settings?key=${encodeURIComponent(key)}`, { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://autre.exemple.fr' }) });
-      assert.equal(sent.status, 200);
+      assert.equal(sent.status, 400);
     });
     const second = await start('data/staff-key', async (base, key, child) => {
       await waitLine(child, 'Soirée restaurée');
@@ -411,6 +411,171 @@ if (require.main === module) {
       assert.ok(state.tables.every(table => !table.url || table.url.startsWith('https://clients.exemple.fr/t/')));
     });
     assert.equal(second, first, 'même clé au redémarrage');
+    assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  });
+
+  // -------------------------------------------------------------- issue #25
+  // Faux KaraFun de la démo (R5), commandes de clé (R6, R7, R9) et
+  // avertissement sur l'ancienne adresse de data/tables.json (R10). R5 à R7
+  // depuis la racine (démo, ou sortie avant main()) ; R9 et R10 dans une copie
+  // sans data/last-karafun-code.json ni --code.
+  const pcEnv = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith('KARAOKE_')));
+  const copyArgs = port => ['--port', String(port), '--public-port', String(port + 1), '--no-open'];
+  // Fin d'une commande ponctuelle (tuée si elle ne sort pas d'elle-même).
+  const finished = async child => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    const result = await child.exited;
+    clearTimeout(timer);
+    return result;
+  };
+  const rotatedLine = key => `Nouvelle clé du bar écrite dans data/staff-key (empreinte ${fingerprint(key)}). ` +
+    'Redémarre la file pour l’appliquer, puis donne aux gérants le lien de --print-staff-url : l’ancien lien ne marche plus.\n';
+
+  test('R5 faux KaraFun de la démo : boucle locale seulement, la démo se connecte (mode PC)', async t => {
+    const port = await choosePort();
+    const child = launch(demoArgs(port), { env: pcEnv() });
+    try {
+      assert.equal(await waitLine(child, 'Mode démo'), `Mode démo : faux KaraFun sur http://127.0.0.1:${port + 1001} (chansons de 4 s)`);
+      const base = `http://127.0.0.1:${port}`;
+      let ready = false;
+      for (let i = 0; i < 100 && !ready; i++) {
+        try {
+          const state = await (await fetch(`${base}/api/staff/state?key=${encodeURIComponent(await staffKey(base))}`)).json();
+          ready = state.kf?.ready === true;
+        } catch (_) { /* serveur pas encore prêt */ }
+        if (!ready) await sleep(100);
+      }
+      assert.equal(ready, true, `démo prête (kf.ready)\n${outputs(child)}`);
+      assert.equal(await reachable('127.0.0.1', port + 1001), 'ok', `127.0.0.1:${port + 1001}`);
+      const lan = lanIPv4();
+      if (!lan) {
+        t.skip('machine sans IPv4 hors boucle locale : partie réseau ignorée');
+        return;
+      }
+      assert.equal(await reachable(lan, port + 1001), 'ECONNREFUSED', `${lan}:${port + 1001} (réseau)`);
+    } finally { await child.stop(); }
+  });
+
+  test('R6 --print-staff-url réel : le lien du bar seul sur stdout, ni journal ni port', async () => {
+    const port = await choosePort();
+    const env = serverEnv();
+    const expected = `https://bar.exemple.fr/staff?key=${fs.readFileSync(env.KARAOKE_STAFF_KEY_FILE, 'utf8').trim()}\n`;
+    for (const args of [['--port', String(port), '--print-staff-url'], ['--print-staff-url', '--port', String(port)]]) {
+      const label = args.join(' ');
+      const before = footprint(root);
+      const child = launch(args, { env });
+      try {
+        const { code } = await finished(child);
+        assert.equal(code, 0, `${label} : code de sortie\n${outputs(child)}`);
+        // Comparaison sans afficher la clé en cas d'échec.
+        assert.ok(child.stdoutText === expected, `${label} : stdout exact\n${outputs(child)}`);
+        assert.equal(child.stderrText, '', label);
+        assert.deepEqual(footprint(root), before, `${label} : journal/ et data/ inchangés`);
+        assert.equal(await reachable('127.0.0.1', port), 'ECONNREFUSED', `${label} : port ${port} fermé`);
+        assert.equal(await reachable('127.0.0.1', port + 1), 'ECONNREFUSED', `${label} : port ${port + 1} fermé`);
+      } finally { await child.stop(); }
+    }
+  });
+
+  test('R7 --rotate-staff-key refusé avec KARAOKE_STAFF_KEY_FILE : fichier de clé intact', async () => {
+    const env = serverEnv();
+    const keyBytes = fs.readFileSync(env.KARAOKE_STAFF_KEY_FILE);
+    const before = footprint(root);
+    const child = launch(['--rotate-staff-key'], { env });
+    try {
+      const { code } = await finished(child);
+      assert.equal(code, 1, outputs(child));
+      assert.equal(child.stderrText,
+        'Commande impossible : la clé du bar vient de KARAOKE_STAFF_KEY_FILE ; change ce fichier, puis redémarre la file.\n');
+      assert.equal(child.stdoutText, '');
+      assert.ok(fs.readFileSync(env.KARAOKE_STAFF_KEY_FILE).equals(keyBytes), 'clé du fichier identique octet pour octet');
+      assert.deepEqual(footprint(root), before, 'journal/ et data/ inchangés');
+    } finally { await child.stop(); }
+  });
+
+  test('R9 --rotate-staff-key réel : data/ créé, clé en 0600, seule la dernière clé ouvre la page du bar', async () => {
+    const dir = sandboxCopy();
+    assert.equal(fs.existsSync(path.join(dir, 'data')), false, 'copie sans data/');
+    const env = serverEnv({ KARAOKE_STAFF_KEY_FILE: undefined });
+    const keyPath = path.join(dir, 'data', 'staff-key');
+    const rotate = async () => {
+      const child = launch(['--server', '--rotate-staff-key'], { env, cwd: dir });
+      try {
+        const { code } = await finished(child);
+        assert.equal(code, 0, outputs(child));
+        const content = fs.readFileSync(keyPath, 'utf8');
+        assert.match(content, /^[A-Za-z0-9_-]{22}\n$/);
+        assert.equal(child.stdoutText, rotatedLine(content.trim()), 'empreinte du contenu écrit');
+        assert.equal(child.stderrText, '');
+        if (process.platform !== 'win32') assert.equal(fs.statSync(keyPath).mode & 0o777, 0o600, 'droits 0600');
+        assert.deepEqual(fs.readdirSync(path.join(dir, 'data')), ['staff-key'], 'aucun fichier temporaire laissé');
+        assert.equal(fs.existsSync(path.join(dir, 'journal')), false, 'sortie avant journal/ : rien au journal');
+        return content.trim();
+      } finally { await child.stop(); }
+    };
+    const first = await rotate();
+    const second = await rotate();
+    assert.notEqual(second, first, 'seconde rotation : autre clé');
+    const port = await choosePort();
+    const child = launch(copyArgs(port), { env, cwd: dir });
+    try {
+      assert.equal(await waitLine(child, 'Clé du bar'), `Clé du bar                     : empreinte ${fingerprint(second)} (data/staff-key)`);
+      await waitLine(child, 'Adresse des téléphones');
+      const base = `http://127.0.0.1:${port}`;
+      assert.equal((await fetch(`${base}/api/staff/state?key=${encodeURIComponent(first)}`)).status, 403, 'avant-dernière clé refusée');
+      assert.equal((await fetch(`${base}/api/staff/state?key=${encodeURIComponent(second)}`)).status, 200, 'dernière clé acceptée');
+    } finally { await child.stop(); }
+    assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  });
+
+  test('R10 ancienne adresse de data/tables.json : avertissement une fois, soirée restaurée sur KARAOKE_PUBLIC_URL', async () => {
+    const dir = sandboxCopy();
+    const tablesPath = path.join(dir, 'data', 'tables.json');
+    fs.mkdirSync(path.dirname(tablesPath));
+    fs.writeFileSync(tablesPath, JSON.stringify({ version: 1, baseUrl: 'https://ancien.exemple.fr',
+      tables: [{ id: '1', name: null, headcount: null, individual: false, secret: crypto.randomBytes(16).toString('base64url') }] }));
+    const warning = 'Attention : data/tables.json indiquait https://ancien.exemple.fr pour les QR. ' +
+      'Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. QR désormais créés pour https://clients.exemple.fr.';
+    const warnings = child => completeLines(child).filter(line => line.startsWith('Attention : data/tables.json'));
+    // 1. Mode PC, sans --demo : la soirée est sauvegardée avec l'ancienne adresse.
+    let child = launch(copyArgs(await choosePort()), { env: pcEnv(), cwd: dir });
+    try { await waitLine(child, 'Laisse cette fenêtre ouverte'); } finally { await child.stop(); }
+    assert.equal(JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl, 'https://ancien.exemple.fr', 'mode PC : adresse gardée');
+    // 2. Mode serveur : soirée restaurée, avertissement exact, QR sur KARAOKE_PUBLIC_URL.
+    const env = serverEnv();
+    let port = await choosePort();
+    child = launch(copyArgs(port), { env, cwd: dir });
+    try {
+      await waitLine(child, 'Soirée restaurée');
+      assert.equal(await waitLine(child, 'Attention : data/tables.json'), warning);
+      const base = `http://127.0.0.1:${port}`;
+      const response = await fetch(`${base}/api/staff/state?key=${encodeURIComponent(await staffKey(base, { keyFile: env.KARAOKE_STAFF_KEY_FILE }))}`);
+      assert.equal(response.status, 200);
+      const state = await response.json();
+      assert.equal(state.phoneBase, 'https://clients.exemple.fr');
+      assert.ok(state.tables.some(table => table.id === '1'), 'table 1 restaurée');
+      for (const table of state.tables) assert.ok(String(table.url).startsWith('https://clients.exemple.fr/t/'), `${table.id} : ${table.url}`);
+      assert.equal(JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl, 'https://clients.exemple.fr', 'data/tables.json réécrit');
+    } finally { await child.stop(); }
+    assert.equal(warnings(child).length, 1, 'une seule ligne d’avertissement');
+    const logged = fs.readdirSync(path.join(dir, 'journal')).filter(name => /^serveur-.*\.log$/.test(name))
+      .map(name => fs.readFileSync(path.join(dir, 'journal', name), 'utf8')).join('');
+    assert.ok(logged.includes(` ${warning}\n`), 'avertissement gardé dans journal/serveur-<date>.log');
+    // 3. Démarrage suivant : plus d'écart, plus d'avertissement.
+    port = await choosePort();
+    child = launch(copyArgs(port), { env, cwd: dir });
+    try {
+      const runtimePath = path.join(dir, 'data', `runtime-${port}.json`);
+      let runtime = null;
+      for (let i = 0; i < 300 && runtime?.pid !== child.pid; i++) {
+        try { runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8')); } catch (_) { runtime = null; }
+        if (runtime?.pid !== child.pid) await sleep(50);
+      }
+      assert.equal(runtime?.pid, child.pid, `data/runtime-${port}.json écrit\n${outputs(child)}`);
+      assert.deepEqual(warnings(child), [], 'aucun avertissement une fois data/runtime-<P>.json écrit');
+    } finally { await child.stop(); }
+    assert.deepEqual(warnings(child), [], 'aucun avertissement dans toute la sortie');
+    assert.ok(completeLines(child).some(line => line.startsWith('Soirée restaurée')), 'démarrage complet');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   });
 }

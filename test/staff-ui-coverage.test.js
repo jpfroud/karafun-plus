@@ -4316,3 +4316,34 @@ test('Plus : « Duos uniquement » s’enregistre seul ; « Options par défaut 
   await page.click(page.$('resetSettings'));
   assert.deepEqual(page.toast(), { text: 'Sauvegarde indisponible.', bad: true });
 });
+
+// Issue #25 (U1) : en mode serveur, l'adresse des QR vient de KARAOKE_PUBLIC_URL.
+test('adresse des QR en mode serveur : champ en lecture seule, bouton caché, aucun envoi', async () => {
+  const world = baseWorld();
+  world.app = { mode: 'server', version: 'v0.0.0' };
+  world.ips = [];
+  world.phoneBase = 'https://clients.exemple.fr';
+  const page = await openPage({ world });
+  assert.equal(page.$('customBase').readOnly, true, 'champ en lecture seule');
+  assert.equal(page.$('customBase').value, 'https://clients.exemple.fr', 'adresse du serveur affichée');
+  assert.equal(page.$('saveBase').hidden, true, 'bouton « Utiliser » caché');
+  page.$('customBase').value = 'https://autre.exemple.fr';
+  await page.click(page.$('saveBase'));
+  assert.equal(page.postsTo('/api/staff/settings').length, 0, 'aucun POST /api/staff/settings');
+  await page.poll();
+  assert.equal(page.$('customBase').readOnly, true, 'toujours en lecture seule après un rafraîchissement');
+  assert.equal(page.$('saveBase').hidden, true);
+  // Mode PC : champ et bouton utilisables, comme avant.
+  await page.update({ app: { mode: 'pc', version: 'v0.0.0' } });
+  assert.equal(page.$('customBase').readOnly, false, 'mode PC : champ modifiable');
+  assert.equal(page.$('saveBase').hidden, false, 'mode PC : bouton visible');
+  page.$('customBase').value = 'https://autre.exemple.fr';
+  await page.click(page.$('saveBase'));
+  assert.deepEqual(page.lastPost('/api/staff/settings').body, { baseUrl: 'https://autre.exemple.fr' });
+  const pc = await openPage({ world: { ...baseWorld(), app: { mode: 'pc', version: 'v0.0.0' } } });
+  assert.equal(pc.$('customBase').readOnly, false, 'app.mode pc : champ modifiable');
+  assert.equal(pc.$('saveBase').hidden, false, 'app.mode pc : bouton visible');
+  const older = await openPage();
+  assert.equal(older.$('customBase').readOnly, false, 'état sans app.mode : champ modifiable');
+  assert.equal(older.$('saveBase').hidden, false);
+});
