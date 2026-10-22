@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
-const { prepare } = require('../scripts/preparer-livrable');
+const { prepare, listFiles } = require('../scripts/preparer-livrable');
 
 const root = path.join(__dirname, '..');
 const SCRIPT = 'scripts/preparer-livrable.js';
@@ -224,6 +224,20 @@ test('P4 manifeste invalide', t => {
   // Manifeste enregistré avec un BOM (éditeur Windows) : lu comme sans BOM.
   fs.writeFileSync(path.join(fake, 'livrable.json'), `\uFEFF${JSON.stringify({ commun: ['a.js'], windows: [] })}`);
   assert.deepEqual(prepare({ root: fake, dest: path.join(base, 'bom'), env: {}, now: () => new Date(0) }), { files: 1 });
+
+  // Fichier spécial (tube nommé) dans un dossier listé : refusé avant toute
+  // écriture. listFiles d'abord : sans ce refus, il échoue tout de suite, là où
+  // prepare() resterait bloqué dans la copie du tube.
+  if (process.platform !== 'win32') {
+    const tube = path.join(fake, 'dossier', 'tube');
+    const made = spawnSync('mkfifo', [tube]);
+    if (made.error || made.status !== 0) t.diagnostic('mkfifo indisponible : cas du tube nommé sauté');
+    else {
+      assert.throws(() => listFiles(fake, ['dossier']), { message: 'Ni fichier ni dossier dans le livrable : dossier/tube' });
+      refuse({ commun: ['dossier'], windows: [] }, 'Ni fichier ni dossier dans le livrable : dossier/tube');
+      fs.rmSync(tube);
+    }
+  }
 
   try {
     fs.symlinkSync('a.js', path.join(fake, 'lien.js'));
