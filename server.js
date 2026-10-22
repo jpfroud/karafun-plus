@@ -12,6 +12,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const net = require('net');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { spawn, execFileSync } = require('child_process');
@@ -66,6 +67,133 @@ const PORT = parseInt(arg('port', process.env.PORT || 3000), 10);
 const PUBLIC_PORT = parseInt(arg('public-port', process.env.PUBLIC_PORT || PORT + 1), 10);
 const DEMO = !!arg('demo', false);
 const NO_OPEN = !!arg('no-open', false);
+
+// ------------------------------------------------------------------ mode serveur
+// Serveur Linux derrière un relais HTTPS (--server ou KARAOKE_MODE=server) :
+// configuration et clé du bar vérifiées avant tout effet de bord (journal/,
+// data/), adresses HTTPS des QR fixées par l'environnement, aucun droit pour
+// la boucle locale (le relais y arrive aussi). Sans lui : mode PC inchangé.
+const SERVER_MODE = !!arg('server', false) || String(process.env.KARAOKE_MODE || '').trim() === 'server';
+const DEFAULT_TRUSTED_PROXIES = '127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7';
+const STAFF_KEY_FORMAT = /^[A-Za-z0-9_-]{22,}$/;
+
+// Configuration du mode serveur lue dans `env`, sans lecture de fichier.
+// Une variable vide ou faite d'espaces est absente. Lève la raison du premier
+// contrôle en échec, dans l'ordre des contrôles.
+function readServerConfig(env) {
+  const value = name => String(env[name] ?? '').trim() || null;
+  const quoted = text => text.slice(0, 80);
+  const mode = value('KARAOKE_MODE');
+  if (mode !== null && mode !== 'server') {
+    throw new Error(`KARAOKE_MODE vaut « ${quoted(mode)} » : seule la valeur server est reconnue (retire la variable pour le mode PC).`);
+  }
+  const origin = (name, purpose, example) => {
+    const text = value(name);
+    if (text === null) throw new Error(`${name} manque : indique l’adresse HTTPS ${purpose}, par exemple ${example}.`);
+    let url;
+    try { url = normalizeBaseUrl(text); } catch (error) { throw new Error(`${name} invalide : ${error.message}`); }
+    if (!url.startsWith('https://')) throw new Error(`${name} doit commencer par https://.`);
+    return url;
+  };
+  const publicUrl = origin('KARAOKE_PUBLIC_URL', 'des QR clients', 'https://chant.exemple.fr');
+  const staffUrl = origin('KARAOKE_STAFF_URL', 'de la page du bar', 'https://bar.exemple.fr');
+  if (publicUrl === staffUrl) {
+    throw new Error('KARAOKE_STAFF_URL doit différer de KARAOKE_PUBLIC_URL : la page du bar n’est jamais servie par l’adresse des clients.');
+  }
+  const address = name => {
+    const text = value(name);
+    if (text === null) return '127.0.0.1';
+    if (!net.isIP(text)) throw new Error(`${name} invalide (« ${quoted(text)} ») : indique une adresse IP, par exemple 127.0.0.1 ou 0.0.0.0.`);
+    return text;
+  };
+  const bind = address('KARAOKE_BIND');
+  const publicBind = address('KARAOKE_PUBLIC_BIND');
+  const header = value('KARAOKE_CLIENT_IP_HEADER');
+  if (header !== null && !/^[A-Za-z0-9-]{1,64}$/.test(header)) {
+    throw new Error(`KARAOKE_CLIENT_IP_HEADER invalide (« ${quoted(header)} ») : indique un nom d’en-tête HTTP, par exemple x-real-ip.`);
+  }
+  const proxies = value('KARAOKE_TRUSTED_PROXIES') || DEFAULT_TRUSTED_PROXIES;
+  const proxiesError = text => new Error(`KARAOKE_TRUSTED_PROXIES invalide (« ${quoted(text)} ») : indique des blocs CIDR séparés par des virgules, par exemple 172.16.0.0/12.`);
+  const trustedProxies = new net.BlockList();
+  const kept = proxies.split(',').map(entry => entry.trim()).filter(Boolean);
+  if (!kept.length) throw proxiesError(proxies);
+  for (const entry of kept) {
+    const slash = entry.lastIndexOf('/');
+    const ip = slash > 0 ? entry.slice(0, slash) : '';
+    const prefix = entry.slice(slash + 1);
+    const family = net.isIP(ip);
+    if (!family || !/^\d{1,3}$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128)) throw proxiesError(entry);
+    trustedProxies.addSubnet(ip, Number(prefix), family === 4 ? 'ipv4' : 'ipv6');
+  }
+  const keyFile = value('KARAOKE_STAFF_KEY_FILE');
+  return { bind, publicBind, publicUrl, staffUrl, staffKeyFile: keyFile === null ? null : path.resolve(keyFile),
+    clientIpHeader: header === null ? null : header.toLowerCase(), trustedProxies, trustedProxiesText: kept.join(',') };
+}
+
+// Clé du bar du mode serveur : celle de KARAOKE_STAFF_KEY_FILE, sinon
+// <dataDir>/staff-key, créée une seule fois (0600) puis réutilisée. Le
+// contenu d'un fichier de clé n'est jamais cité dans une raison de refus.
+function loadStaffKey(config, dataDir) {
+  const reason = error => error.code || error.message;
+  const keyOf = text => String(text).replace(/^\uFEFF/, '').trim();
+  if (config.staffKeyFile) {
+    let text;
+    try { text = fs.readFileSync(config.staffKeyFile, 'utf8'); }
+    catch (error) { throw new Error(`KARAOKE_STAFF_KEY_FILE illisible (${config.staffKeyFile} : ${reason(error)}).`); }
+    const key = keyOf(text);
+    if (!STAFF_KEY_FORMAT.test(key)) {
+      throw new Error('La clé de KARAOKE_STAFF_KEY_FILE doit compter au moins 22 caractères parmi A-Z, a-z, 0-9, - et _.');
+    }
+    return { key, source: 'KARAOKE_STAFF_KEY_FILE' };
+  }
+  const file = path.join(dataDir, 'staff-key');
+  const read = missingAllowed => {
+    try { return fs.readFileSync(file, 'utf8'); } catch (error) {
+      if (missingAllowed && error.code === 'ENOENT') return null;
+      throw new Error(`data/staff-key illisible (${reason(error)}).`);
+    }
+  };
+  let text = read(true);
+  if (text === null) {
+    const key = crypto.randomBytes(16).toString('base64url');
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(file, key + '\n', { mode: 0o600, flag: 'wx' });
+      return { key, source: 'data/staff-key, créée à ce démarrage' };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw new Error(`data/staff-key impossible à créer (${reason(error)}).`);
+    }
+    // Deux démarrages simultanés : la clé écrite par l'autre est gardée.
+    text = read(false);
+  }
+  const key = keyOf(text);
+  if (!STAFF_KEY_FORMAT.test(key)) {
+    throw new Error('data/staff-key ne contient pas une clé valable (au moins 22 caractères parmi A-Z, a-z, 0-9, - et _) : remplace-la avec node server.js --rotate-staff-key.');
+  }
+  return { key, source: 'data/staff-key' };
+}
+
+// Seule l'empreinte de la clé du bar est écrite au journal.
+function staffKeyFingerprint(key) {
+  return crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
+}
+
+function serverSetup(env, dataDir) {
+  try {
+    const config = readServerConfig(env);
+    return { config, keyInfo: loadStaffKey(config, dataDir) };
+  } catch (error) { return { error }; }
+}
+// Une valeur inconnue de KARAOKE_MODE refuse le démarrage dans les deux modes.
+const SETUP = String(process.env.KARAOKE_MODE || '').trim() || SERVER_MODE ?
+  serverSetup(process.env, path.join(__dirname, 'data')) : { config: null, keyInfo: null };
+if (SETUP.error) {
+  fs.writeSync(2, `Impossible de démarrer : ${SETUP.error.message}\n`);
+  process.exit(1);
+}
+const SERVER = SETUP.config;
+const STAFF_KEY_INFO = SETUP.keyInfo;
+
 const CODE_FILE = path.join(__dirname, 'data', 'last-karafun-code.json');
 function rememberedCode() {
   try { return String(JSON.parse(fs.readFileSync(CODE_FILE, 'utf8')).code || '').replace(/\D/g, ''); }
@@ -74,7 +202,8 @@ function rememberedCode() {
 let CODE = String(arg('code', '') || rememberedCode()).replace(/\D/g, '');
 const LOG_DIR = path.join(__dirname, 'journal');
 fs.mkdirSync(LOG_DIR, { recursive: true });
-const STAFF_KEY = crypto.randomBytes(16).toString('base64url');
+// Mode serveur : clé persistante (lien du bar stable). Mode PC : tirée à chaque démarrage.
+const STAFF_KEY = SERVER ? STAFF_KEY_INFO.key : crypto.randomBytes(16).toString('base64url');
 const TABLE_FILE = path.join(__dirname, 'data', 'tables.json');
 const BATTLE_FILE = path.join(__dirname, 'data', 'battle-vote.json');
 const PHOTO_DIR = path.join(__dirname, 'data', 'photos');
@@ -302,7 +431,7 @@ const DEFAULT_SETTINGS = Object.freeze({ auto: true, autoPlay: false,
   // Duos uniquement : les clients n'ajoutent que des duos (soirée chargée,
   // plus de monde sur scène par heure). Les titres déjà choisis restent.
   duoOnly: false });
-const settings = { ...DEFAULT_SETTINGS, baseUrl: null,
+const settings = { ...DEFAULT_SETTINGS, baseUrl: SERVER ? SERVER.publicUrl : null,
   // Heure de fermeture du bar (horodatage), annoncée aux clients. L'ajout de
   // titres reste toujours possible ; à l'heure, plus d'envoi ni de
   // lancement, titres chargés retirés, Spotify relancé (closingBlocksStart).
@@ -403,7 +532,9 @@ function loadTables() {
   }
   const data = JSON.parse(fs.readFileSync(TABLE_FILE, 'utf8'));
   if (data.version !== 1 || !Array.isArray(data.tables)) throw new Error('Fichier des tables invalide');
-  settings.baseUrl = normalizeBaseUrl(data.baseUrl);
+  // Mode serveur : l'adresse vient de KARAOKE_PUBLIC_URL ; une ancienne
+  // valeur du fichier, même refusée aujourd'hui, ne bloque pas le démarrage.
+  settings.baseUrl = SERVER ? SERVER.publicUrl : normalizeBaseUrl(data.baseUrl);
   for (const row of data.tables) {
     const id = TableAccess.key(row.id);
     if (row.headcount !== null && (!Number.isInteger(row.headcount) || row.headcount < 1 || row.headcount > 40)) {
@@ -2111,7 +2242,8 @@ function staffState() {
   const presence = presenceCandidate();
   const presenceIds = new Set(presenceMissing(presence));
   const presencePending = [...presenceIds].map(pid => sched.people.get(pid)?.name).filter(Boolean);
-  const ips = lanAddresses();
+  // Mode serveur : aucune adresse du Wi-Fi n'est proposée au bar.
+  const ips = SERVER ? [] : lanAddresses();
   const canUndoManual = sched.canUndoManualChange(priorityNativeFingerprint());
   const latestManual = sched.manualChanges.at(-1);
   const repeats = queueRepeats(pub.queue, sched.playedSongs, Date.now(), repeatWindowMs());
@@ -2180,7 +2312,7 @@ function staffState() {
       battleRejectedCooldownMin: battleVote.rejectedCooldownMs / 60000,
       battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters },
     solver: sched.solverStatus(),
-    app: BUILD, bootId: BOOT_ID,
+    app: { ...BUILD, mode: SERVER ? 'server' : 'pc' }, bootId: BOOT_ID,
     stageHistory: stageHistoryView(),
     spotify: spotify.view(spotifyRedirect()),
     restarting: !!restartOp,
@@ -2266,6 +2398,7 @@ function lanAddresses() {
   return out.sort((a, b) => score(a.address) - score(b.address));
 }
 function phoneBase() {
+  if (SERVER) return SERVER.publicUrl;
   if (settings.baseUrl) return settings.baseUrl.replace(/\/$/, '');
   const ip = (lanAddresses()[0] || {}).address || 'localhost';
   return `http://${ip}:${PORT}`;
@@ -2335,6 +2468,8 @@ function readBody(req, limit = 900 * 1024) {
 }
 
 function isLocal(req) {
+  // Mode serveur : le relais HTTPS arrive par la boucle locale, qui ne donne aucun droit.
+  if (SERVER) return false;
   const a = req.socket.remoteAddress || '';
   return req.socket.localPort === PORT && (a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1');
 }
@@ -4926,7 +5061,8 @@ const server = http.createServer(async (req, res) => {
       if (m) { const pp = sched.people.get(m[1]); if (!pp || !pp.photo) return send(res, 404, ''); return send(res, 200, pp.photo.buf, pp.photo.type, { 'Cache-Control': 'max-age=60' }); }
       if (p === '/qr/staff.svg') {
         if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8');
-        const target = `${phoneBase()}/staff?key=${STAFF_KEY}`;
+        // Mode serveur : le QR des gérants vise l'adresse HTTPS de la page du bar.
+        const target = `${SERVER ? SERVER.staffUrl : phoneBase()}/staff?key=${STAFF_KEY}`;
         const svg = await QRCode.toString(target, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
         return send(res, 200, svg, 'image/svg+xml');
       }
@@ -4955,6 +5091,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST') {
       if (p === '/internal/shutdown') {
+        // Mode serveur : l'arrêt passe par le signal du système, cette route n'existe pas.
+        if (SERVER) return send(res, 404, { error: 'Introuvable' });
         if (!isLocal(req) || req.socket.localPort === PUBLIC_PORT || req.headers['x-helper-stop'] !== STOP_KEY) return send(res, 403, { error: 'Arrêt réservé à ce PC.' });
         send(res, 200, { ok: true }); setTimeout(stopHelper, 150); return;
       }
@@ -5048,6 +5186,25 @@ function connectionAnswer(result) {
     { ok: true, kept: false };
 }
 
+// Lignes de démarrage du mode serveur ([] en mode PC) : adresses, fuseau,
+// empreinte de la clé du bar, jamais la clé ni un lien qui la porte.
+function serverStartupLines(zone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
+  if (!SERVER) return [];
+  return ['',
+    `=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`,
+    'Mode                           : serveur',
+    `Adresse des clients (QR)       : ${SERVER.publicUrl}  (port ${PUBLIC_PORT} sur ${SERVER.publicBind})`,
+    `Adresse de la page du bar      : ${SERVER.staffUrl}  (port ${PORT} sur ${SERVER.bind})`,
+    `Fuseau horaire                 : ${zone}`,
+    ...(zone === 'UTC' || zone === 'Etc/UTC' ?
+      ['Attention : fuseau horaire UTC. L’heure de fermeture et les heures du journal seront décalées : fixe TZ=Europe/Paris.'] : []),
+    `Clé du bar                     : empreinte ${staffKeyFingerprint(STAFF_KEY)} (${STAFF_KEY_INFO.source})`,
+    'Lien du bar                    : node server.js --print-staff-url',
+    SERVER.clientIpHeader ? `Adresse des téléphones         : en-tête ${SERVER.clientIpHeader} des proxys ${SERVER.trustedProxiesText}` :
+      'Adresse des téléphones         : adresse de la connexion (KARAOKE_CLIENT_IP_HEADER non fixée)',
+    ''];
+}
+
 async function main() {
   if (PUBLIC_PORT === PORT || !Number.isInteger(PUBLIC_PORT) || PUBLIC_PORT < 1 || PUBLIC_PORT > 65535) {
     throw new Error('Le port public doit être valide et différent de celui du bar.');
@@ -5058,6 +5215,8 @@ async function main() {
   if (previousNight) {
     const recovered = restoreNight(previousNight, { scheduler: sched, access, settings,
       photoDir: PHOTO_DIR });
+    // Mode serveur : l'adresse des QR reste celle de KARAOKE_PUBLIC_URL.
+    if (SERVER) settings.baseUrl = SERVER.publicUrl;
     pending = recovered.pending;
     tracked = recovered.tracked;
     soloInvitations.restore(recovered.soloInvitations);
@@ -5090,26 +5249,32 @@ async function main() {
     CODE = fake.code;
     appLog(`Mode démo : faux KaraFun sur ${fake.base} (chansons de ${SONG_SECONDS} s)`);
   }
-  server.listen(PORT, '0.0.0.0', () => {
-    publicServer.listen(PUBLIC_PORT, '127.0.0.1', () => {
+  server.listen(PORT, SERVER ? SERVER.bind : '0.0.0.0', () => {
+    publicServer.listen(PUBLIC_PORT, SERVER ? SERVER.publicBind : '127.0.0.1', () => {
       // Ouverte dans le navigateur de ce PC, jamais écrite au journal : la clé
       // n'y figure que sur la ligne « Clé du bar » (GUIDE-BAR.md). Depuis ce
       // PC, l'adresse sans clé mène à la page du bar (GET /).
       const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
       const localUrl = `http://localhost:${PORT}/`;
-      appLog('');
-      appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
-      appLog(`Page du bar (sur ce PC)        : ${localUrl}`);
-      appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${localUrl}`);
-      appLog(`QR codes à imprimer            : http://localhost:${PORT}/print`);
-      appLog(`Tunnel HTTPS (clients seulement) : http://127.0.0.1:${PUBLIC_PORT}`);
-      appLog(`Clé du bar (autre appareil)    : ${STAFF_KEY}  (ex. ${phoneBase()}/staff?key=${STAFF_KEY})`);
+      // Mode serveur : ni la clé ni un lien qui la porte (empreinte seulement).
+      if (SERVER) for (const line of serverStartupLines()) appLog(line);
+      else {
+        appLog('');
+        appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
+        appLog(`Page du bar (sur ce PC)        : ${localUrl}`);
+        appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${localUrl}`);
+        appLog(`QR codes à imprimer            : http://localhost:${PORT}/print`);
+        appLog(`Tunnel HTTPS (clients seulement) : http://127.0.0.1:${PUBLIC_PORT}`);
+        appLog(`Clé du bar (autre appareil)    : ${STAFF_KEY}  (ex. ${phoneBase()}/staff?key=${STAFF_KEY})`);
+      }
       fs.mkdirSync(path.dirname(RUNTIME_FILE), { recursive: true });
       fs.writeFileSync(RUNTIME_FILE, JSON.stringify({ pid: process.pid, port: PORT, secret: STOP_KEY }));
-      appLog('Laisse cette fenêtre ouverte pendant la soirée. Ctrl+C pour arrêter.');
-      appLog('');
+      if (!SERVER) {
+        appLog('Laisse cette fenêtre ouverte pendant la soirée. Ctrl+C pour arrêter.');
+        appLog('');
+      }
       if (CODE) connectKaraFun();
-      if (!NO_OPEN && process.platform === 'win32') spawn('cmd', ['/c', 'start', '', staffUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      if (!SERVER && !NO_OPEN && process.platform === 'win32') spawn('cmd', ['/c', 'start', '', staffUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
       setInterval(sync, 2000);
       setInterval(() => battleVote.tick(), 2000);
       setInterval(() => { spotifyTick().catch(() => {}); }, 3000);
