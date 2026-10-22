@@ -2,9 +2,10 @@
 // Diagnostic KaraFun (tools/diag-karafun.js, issue #20) : classement de la
 // page de découverte partagé par la file et l'outil (classifyDiscovery), sortie
 // de l'outil contre un faux site sur 127.0.0.1, puis lancement dans un vrai
-// processus. Aucun test ne joint KaraFun : la garde ci-dessous rejette toute
-// requête vers karafun.com ou karafun.fr, et le dernier test vérifie qu'aucune
-// n'a été tentée.
+// processus. Aucun test ne joint KaraFun : dans ce processus, la garde
+// ci-dessous rejette toute requête vers karafun.com ou karafun.fr, et le
+// dernier test vérifie qu'aucune n'a été tentée ; le processus enfant de F2 lit
+// le faux fetch préchargé, ce que F2 vérifie sur sa sortie.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -338,9 +339,10 @@ test('D10 kcs_url illisible : page inattendue, code 2', async t => {
   assert.equal(code, 2);
 });
 
-test('D11 en-tête server avec tabulation et 302 caractères, via fait d\'espaces : nettoyé, coupé à 120 ou absent, code 0', async t => {
+test('D11 page valide qui cite captcha, en-tête server avec tabulation et 302 caractères, via fait d\'espaces : défi non, nettoyé, coupé à 120 ou absent, code 0', async t => {
   // Via ne contient que des espaces : valeur vide une fois lue, affichée absent (point 5 de l'issue).
-  const site = await fakeSite(t, serve(200, { Server: 'a\tb' + 'x'.repeat(300), Via: '   ' }, VALID));
+  // Le mot captcha dans une page qui a Settings n'est pas un défi (point 3, comme A7 pour la file).
+  const site = await fakeSite(t, serve(200, { Server: 'a\tb' + 'x'.repeat(300), Via: '   ' }, VALID + '<p>captcha</p>'));
   const { code, out } = await diag(t, site);
   assertOneRead(site);
   const server = 'a?b' + 'x'.repeat(117);
