@@ -2404,6 +2404,9 @@ function phoneBase() {
   return `http://${ip}:${PORT}`;
 }
 
+// Appelée aussi pendant le chargement du module, par readServerConfig (section
+// « mode serveur ») : elle ne lit que son argument, car une const ou un let de
+// module déclaré après cette section n'est pas encore initialisé à ce moment-là.
 function normalizeBaseUrl(value) {
   if (value == null || String(value).trim() === '') return null;
   let url;
@@ -5252,9 +5255,10 @@ async function main() {
   }
   server.listen(PORT, SERVER ? SERVER.bind : '0.0.0.0', () => {
     publicServer.listen(PUBLIC_PORT, SERVER ? SERVER.publicBind : '127.0.0.1', () => {
-      // Ouverte dans le navigateur de ce PC, jamais écrite au journal : la clé
-      // n'y figure que sur la ligne « Clé du bar » (GUIDE-BAR.md). Depuis ce
-      // PC, l'adresse sans clé mène à la page du bar (GET /).
+      // Mode PC seulement : ouverte dans le navigateur de ce PC, jamais écrite
+      // au journal ; la clé n'y figure que sur la ligne « Clé du bar »
+      // (GUIDE-BAR.md) et, depuis ce PC, l'adresse sans clé mène à la page du
+      // bar (GET /). Mode serveur : aucune des deux ne sert (GET / répond 403).
       const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
       const localUrl = `http://localhost:${PORT}/`;
       // Mode serveur : ni la clé ni un lien qui la porte (empreinte seulement).
