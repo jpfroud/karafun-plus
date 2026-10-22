@@ -336,7 +336,7 @@ if (require.main === module) {
     assert.equal(fs.existsSync(path.join(dir, 'data')), false, 'copie sans data/');
     const env = serverEnv({ KARAOKE_STAFF_KEY_FILE: undefined });
     const keyPath = path.join(dir, 'data', 'staff-key');
-    const start = async expectedSource => {
+    const start = async (expectedSource, during) => {
       const port = await choosePort();
       const child = launch(['--port', String(port), '--public-port', String(port + 1), '--no-open'], { env, cwd: dir });
       try {
@@ -347,14 +347,27 @@ if (require.main === module) {
         if (process.platform !== 'win32') assert.equal(fs.statSync(keyPath).mode & 0o777, 0o600, 'droits 0600');
         assert.equal(line, `Clé du bar                     : empreinte ${fingerprint(content.trim())} (${expectedSource})`);
         const base = `http://127.0.0.1:${port}`;
-        const state = await fetch(`${base}/api/staff/state?key=${encodeURIComponent(await staffKey(base, { keyFile: keyPath }))}`);
+        const key = await staffKey(base, { keyFile: keyPath });
+        const state = await fetch(`${base}/api/staff/state?key=${encodeURIComponent(key)}`);
         assert.equal(state.status, 200, 'clé de data/staff-key acceptée');
         assert.equal(child.stdoutText.includes(content.trim()), false, 'la clé n’apparaît pas sur stdout');
+        await during(base, key, child);
         return content;
       } finally { await child.stop(); }
     };
-    const first = await start('data/staff-key, créée à ce démarrage');
-    const second = await start('data/staff-key');
+    // Une autre adresse envoyée par la page du bar est gardée dans la soirée
+    // sauvegardée ; la soirée restaurée reprend KARAOKE_PUBLIC_URL.
+    const first = await start('data/staff-key, créée à ce démarrage', async (base, key) => {
+      const sent = await fetch(`${base}/api/staff/settings?key=${encodeURIComponent(key)}`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://autre.exemple.fr' }) });
+      assert.equal(sent.status, 200);
+    });
+    const second = await start('data/staff-key', async (base, key, child) => {
+      await waitLine(child, 'Soirée restaurée');
+      const state = await (await fetch(`${base}/api/staff/state?key=${encodeURIComponent(key)}`)).json();
+      assert.equal(state.settings.baseUrl, 'https://clients.exemple.fr', 'soirée restaurée : adresse de KARAOKE_PUBLIC_URL');
+      assert.ok(state.tables.every(table => !table.url || table.url.startsWith('https://clients.exemple.fr/t/')));
+    });
     assert.equal(second, first, 'même clé au redémarrage');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   });
