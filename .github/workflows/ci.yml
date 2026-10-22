@@ -69,10 +69,17 @@ jobs:
           retention-days: 14
 
   linux:
-    runs-on: ubuntu-latest
+    # Version fixe : Playwright 1.56.1 n'a pas de Chromium pour une Ubuntu
+    # plus récente que 24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # En premier : un workflow invalide se voit même quand les tests échouent.
+      - name: Verifier les workflows
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
@@ -111,5 +118,3 @@ jobs:
         run: |
           bash test/gstack-session-hook.test.sh
           node test/gstack-gate.test.js
-      - name: Verifier les workflows
-        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
