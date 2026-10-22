@@ -227,12 +227,23 @@ test('K4 lectures par __dirname classées', () => {
   }
   assert.throws(() => classify(readsOf('exemple.js', "fs.readFileSync(path.join(__dirname, 'secret.txt'));\n")[0]),
     { message: 'Lecture par path.join(__dirname, …) non classée : exemple.js:1 → secret.txt' });
-  // Produits : écrits par les constructeurs du kit et de l'image.
+  // Produits : écrits par les constructeurs du kit et de l'image, et mis dans
+  // le ZIP par le kit. Ancré sur les écritures et sur la liste $produits, pas
+  // sur la seule présence du nom, que PRODUCTS ou $produits suffiraient à
+  // fournir (sans $ final : le PS1 peut être extrait en CRLF sous Windows).
   const kit = read('PREPARER-KIT-BAR.ps1');
   const image = read('scripts/preparer-livrable.js');
-  assert.ok(kit.includes("'build-info.json'"), 'build-info.json non produit par PREPARER-KIT-BAR.ps1');
-  assert.ok(image.includes("'build-info.json'"), 'build-info.json non produit par scripts/preparer-livrable.js');
-  assert.ok(kit.includes("'solver\\karafun-solver.jar'"), 'solver/karafun-solver.jar non produit par PREPARER-KIT-BAR.ps1');
+  const produits = /^\$produits = @\(([^)]*)\)/m.exec(kit);
+  assert.ok(produits, '$produits introuvable dans PREPARER-KIT-BAR.ps1');
+  assert.equal(produits[1].replace(/'[^']*'/g, '').replace(/[\s,]/g, ''), '', '$produits : chaînes littérales attendues');
+  assert.deepEqual([...produits[1].matchAll(/'([^']*)'/g)].map(match => match[1]),
+    PRODUCTS.map(product => product.replace('/', '\\')), 'produits mis dans le kit par PREPARER-KIT-BAR.ps1');
+  assert.ok(kit.includes('foreach ($nom in $produits) { $fichiers.Add($nom) }'), 'produits non ajoutés au kit par PREPARER-KIT-BAR.ps1');
+  assert.ok(kit.includes("WriteAllText((Join-Path $racine 'build-info.json')"), 'build-info.json non écrit par PREPARER-KIT-BAR.ps1');
+  assert.ok(kit.includes("$jarPortable = Join-Path $racine 'solver\\karafun-solver.jar'")
+    && kit.includes('Copy-Item -LiteralPath $jarConstruit -Destination $jarPortable'),
+  'solver/karafun-solver.jar non produit par PREPARER-KIT-BAR.ps1');
+  assert.ok(image.includes("fs.writeFileSync(path.join(dest, 'build-info.json')"), 'build-info.json non écrit par scripts/preparer-livrable.js');
 });
 
 test('K5 planificateur livré, mesuré, chargé', () => {

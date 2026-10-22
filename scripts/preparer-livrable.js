@@ -34,13 +34,21 @@ const invalidEntry = entry => new Error(`livrable.json : entrée invalide « ${e
 // Texte UTF-8, BOM éventuel retiré (fichier enregistré par un éditeur Windows).
 const readText = file => fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
 
-// Chemin relatif en « / », sans segment vide, « . » ni « .. », hors des
-// dossiers interdits, ni produit ni dossier qui contient un produit.
+// Clé de comparaison des entrées : sans casse, comme sur un disque Windows ou
+// macOS, où « Data » et « DATA/x » désignent data/.
+const keyOf = entry => entry.toLowerCase();
+
+// Chemin relatif en « / », sans segment vide, « . » ni « .. », ni segment que
+// Windows lit autrement (point ou espace final retiré, « : » de flux NTFS ou de
+// lecteur), hors des dossiers interdits (sans casse), ni produit ni dossier qui
+// contient un produit.
 function validEntry(entry) {
   if (entry === '' || entry.includes('\\') || path.posix.isAbsolute(entry) || path.win32.isAbsolute(entry)) return false;
-  if (!entry.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..')) return false;
-  return !FORBIDDEN.some(dir => entry === dir || entry.startsWith(`${dir}/`))
-    && !PRODUCTS.some(product => product === entry || product.startsWith(`${entry}/`));
+  if (!entry.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..'
+    && !/[.\s]$/.test(segment) && !segment.includes(':'))) return false;
+  const key = keyOf(entry);
+  return !FORBIDDEN.map(keyOf).some(dir => key === dir || key.startsWith(`${dir}/`))
+    && !PRODUCTS.map(keyOf).some(product => product === key || product.startsWith(`${key}/`));
 }
 
 // Lit et valide <root>/livrable.json, sans toucher au reste du disque.
@@ -57,12 +65,14 @@ function readManifest(root) {
     for (const entry of manifest[key]) {
       // Doublon dans une liste, entrée présente dans les deux, ou entrée qui
       // contient une entrée déjà vue ou y est contenue, dans l'une ou l'autre
-      // liste (fichier compté deux fois).
-      if (!validEntry(entry) || seen.has(entry)) throw invalidEntry(entry);
+      // liste (fichier compté deux fois), sans casse : deux noms qui ne
+      // diffèrent que par elle se recouvrent dans le kit extrait sous Windows.
+      const folded = keyOf(entry);
+      if (!validEntry(entry) || seen.has(folded)) throw invalidEntry(entry);
       for (const other of seen) {
-        if (entry.startsWith(`${other}/`) || other.startsWith(`${entry}/`)) throw invalidEntry(entry);
+        if (folded.startsWith(`${other}/`) || other.startsWith(`${folded}/`)) throw invalidEntry(entry);
       }
-      seen.add(entry);
+      seen.add(folded);
     }
   }
   return { commun: [...manifest.commun], windows: [...manifest.windows] };

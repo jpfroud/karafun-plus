@@ -133,6 +133,16 @@ test('P3 refus de la ligne de commande', t => {
   assert.equal(fs.existsSync(fresh), false, 'dossier créé malgré le refus');
   assert.deepEqual(fs.readdirSync(base), ['plein']);
 
+  // Destination qui est un fichier ordinaire : refusée comme non vide, fichier
+  // inchangé.
+  const file = path.join(base, 'fichier.txt');
+  fs.writeFileSync(file, 'à garder\n');
+  const onFile = cli([file]);
+  assert.equal(onFile.status, 1);
+  assert.equal(onFile.stderr, `Dossier de destination non vide : ${file}\n`);
+  assert.equal(onFile.stdout, '');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'à garder\n');
+
   // Destination dans la source (dossier listé, autre dossier, racine elle-même,
   // chemin passant par un lien vers la racine) : refus, rien d'écrit.
   const source = path.join(base, 'source');
@@ -190,8 +200,22 @@ test('P4 manifeste invalide', t => {
     refuse({ commun: [entry], windows: [] }, invalid(entry));
   }
   refuse({ commun: [], windows: ['data'] }, invalid('data'));
+  // Sans casse (disque Windows ou macOS : « Data » désigne data/), et segments
+  // que Windows lit autrement : point ou espace final retiré, « : » de flux
+  // NTFS ou de lecteur.
+  for (const entry of ['Data', 'DATA/x', 'Node_Modules', 'licences-java', 'Build-Info.json', 'Solver', 'data.', 'data ',
+    'a.js.', 'dossier /b.js', 'C:data', 'a.js:flux']) {
+    refuse({ commun: [entry], windows: [] }, invalid(entry));
+  }
+  refuse({ commun: ['a.js', 'A.js'], windows: [] }, invalid('A.js'));
+  refuse({ commun: ['dossier'], windows: ['Dossier/b.js'] }, invalid('Dossier/b.js'));
   refuse({ commun: ['absent.js'], windows: [] }, 'Fichier du manifeste absent : absent.js');
   refuse({ commun: ['dossier/absent.js'], windows: [] }, 'Fichier du manifeste absent : dossier/absent.js');
+  // JSON illisible : message du script, rien d'écrit.
+  fs.writeFileSync(path.join(fake, 'livrable.json'), '{');
+  assert.throws(() => prepare({ root: fake, dest, env: {}, now: () => new Date(0) }),
+    { message: /^livrable\.json : JSON illisible \(/ });
+  assert.equal(fs.existsSync(dest), false, 'écriture malgré le JSON illisible');
 
   // Témoin : la même racine, avec un manifeste valide, se prépare.
   write({ commun: ['a.js', 'dossier'], windows: ['lanceur.bat'] });
