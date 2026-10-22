@@ -5145,7 +5145,8 @@ const server = http.createServer(async (req, res) => {
       ...(typeof e.recoverable === 'boolean' ? { recoverable: e.recoverable } : {}) });
   }
 });
-// Point d'entrée réservé au tunnel HTTPS. Lié uniquement à la boucle locale et
+// Point d'entrée réservé au tunnel HTTPS (mode serveur : au relais HTTPS des
+// clients). Lié à la boucle locale (mode serveur : KARAOKE_PUBLIC_BIND) et
 // privé de tous les droits du bar, même si le proxy vient de 127.0.0.1.
 const publicServer = http.createServer(server.listeners('request')[0]);
 

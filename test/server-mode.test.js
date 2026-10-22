@@ -247,6 +247,13 @@ test('T4 clé du fichier KARAOKE_STAFF_KEY_FILE, rien dans data/', async () => {
     assert.notEqual(pc.STAFF_KEY, FILE_KEY, 'mode PC : clé tirée à ce démarrage');
     assert.equal(pc.phoneBase().startsWith('https://clients.exemple.fr'), false, 'mode PC : KARAOKE_PUBLIC_URL ignorée');
   }
+  // Fichier de clé écrit sous Windows (BOM, fin de ligne CRLF) : BOM et
+  // espaces retirés, la clé est acceptée telle quelle.
+  const bomKey = crypto.randomBytes(18).toString('base64url');
+  const bomFile = path.join(keyDir, 'avec-bom');
+  fs.writeFileSync(bomFile, `\uFEFF${bomKey}\r\n`);
+  assert.deepEqual(plain(byOption.loadStaffKey({ ...byOption.SERVER, staffKeyFile: bomFile }, DATA)),
+    { key: bomKey, source: 'KARAOKE_STAFF_KEY_FILE' }, 'BOM et CRLF retirés');
 });
 
 test('T5 data/staff-key créée une fois (0600, wx) puis réutilisée ; course au démarrage', () => {
@@ -287,6 +294,14 @@ test('T5 data/staff-key créée une fois (0600, wx) puis réutilisée ; course a
   assert.equal(raced.source, 'data/staff-key');
   assert.equal(g.memory.disk.get(STAFF_KEY_FILE_IN_DATA), `${theirs}\n`, 'clé de l’autre démarrage gardée');
   assert.equal(g.memory.writes.some(w => w.file === STAFF_KEY_FILE_IN_DATA), false);
+
+  // data/staff-key réenregistré avec BOM et CRLF : même clé, fichier jamais réécrit.
+  const bomKey = crypto.randomBytes(18).toString('base64url');
+  const w = harness({ files: { 'data/staff-key': `\uFEFF${bomKey}\r\n` } });
+  const kept = w.loadStaffKey({ ...w.SERVER, staffKeyFile: null }, DATA);
+  assert.equal(kept.key, bomKey, 'BOM et CRLF retirés');
+  assert.equal(kept.source, 'data/staff-key');
+  assert.equal(w.memory.writes.some(x => x.file === STAFF_KEY_FILE_IN_DATA), false, 'fichier avec BOM jamais réécrit');
 
   // Le harnais sans KARAOKE_STAFF_KEY_FILE charge data/staff-key au démarrage.
   const h = harness({ env: { KARAOKE_STAFF_KEY_FILE: undefined } });
