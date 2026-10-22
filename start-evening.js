@@ -4,7 +4,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 
-const BAR_URL = 'http://localhost:3000/';
+// Port du bar lu comme server.js (--port, sinon PORT, sinon 3000) : la valeur
+// qui suit --port (absente ou en -- : invalide), par parseInt. Un port que
+// server.js ne pourrait pas ouvrir est refusé avant tout lancement.
+function barPort(argv = process.argv.slice(2), env = process.env) {
+  const at = argv.indexOf('--port');
+  const text = at >= 0 ? (argv[at + 1] && !argv[at + 1].startsWith('--') ? argv[at + 1] : '') : (env.PORT || '3000');
+  const port = parseInt(text, 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Port invalide.');
+  return port;
+}
+
+function barUrl(port = barPort()) {
+  return `http://localhost:${port}/`;
+}
 
 function locateKaraFun(env = process.env) {
   const candidates = [
@@ -28,36 +41,54 @@ function karafunRunning() {
   });
 }
 
-function openBar() {
-  spawn('cmd.exe', ['/c', 'start', '', BAR_URL],
-    { detached: true, windowsHide: true, stdio: 'ignore' }).unref();
+// Page du bar dans le navigateur de ce PC (Windows seulement). Un échec du
+// lancement (cmd.exe absent) est expliqué, sans trace de pile.
+function openBar(url) {
+  const child = spawn('cmd.exe', ['/c', 'start', '', url],
+    { detached: true, windowsHide: true, stdio: 'ignore' });
+  child.on('error', error => {
+    console.error(`Ouverture de la page du bar impossible (${error.code || error.message}) : ouvre ${url} dans ton navigateur.`);
+  });
+  child.unref();
 }
 
-async function helperRunning() {
+async function helperRunning(port = barPort()) {
   try {
-    const response = await fetch(BAR_URL, { redirect: 'manual', signal: AbortSignal.timeout(2000) });
+    const response = await fetch(barUrl(port), { redirect: 'manual', signal: AbortSignal.timeout(2000) });
     if (response.status === 302 && /^\/staff\?key=/.test(response.headers.get('location') || '')) return true;
-    throw new Error('Le port 3000 est utilisé par un autre programme.');
+    throw Object.assign(new Error(`Le port ${port} est utilisé par un autre programme.`), { code: 'PORT_TAKEN' });
   } catch (error) {
-    if (error.message === 'Le port 3000 est utilisé par un autre programme.') throw error;
+    if (error.code === 'PORT_TAKEN') throw error;
     return false;
   }
 }
 
 async function main() {
+  const port = barPort();
+  const BAR_URL = barUrl(port);
   if (process.platform === 'win32') {
     const running = await karafunRunning();
     const karaFun = locateKaraFun();
     if (running === false && karaFun) {
-      spawn(karaFun, [], { detached: true, windowsHide: false, stdio: 'ignore' }).unref();
+      const child = spawn(karaFun, [], { detached: true, windowsHide: false, stdio: 'ignore' });
+      // KaraFun impossible à lancer : le bar l'ouvre lui-même, la file démarre quand même.
+      child.on('error', error => {
+        console.error(`KaraFun n’a pas pu être lancé (${error.code || error.message}) : ouvre-le manuellement, puis active sa télécommande.`);
+      });
+      child.unref();
       console.log('KaraFun démarre. Active sa télécommande si elle ne l’est pas déjà.');
     } else if (running === false && !karaFun) {
       console.log('KaraFun introuvable aux emplacements habituels : ouvre-le manuellement, puis active sa télécommande.');
     } else if (running === null) console.log('Ouvre KaraFun manuellement si sa fenêtre ne s’affiche pas.');
   }
-  if (await helperRunning()) {
-    console.log('La file karaoké tourne déjà : ouverture de la page du bar. Si elle affiche « essais arrêtés », clique sur « Reconnecter » une fois la Télécommande de KaraFun activée.');
-    openBar();
+  if (await helperRunning(port)) {
+    if (process.platform === 'win32') {
+      console.log('La file karaoké tourne déjà : ouverture de la page du bar. Si elle affiche « essais arrêtés », clique sur « Reconnecter » une fois la Télécommande de KaraFun activée.');
+      openBar(BAR_URL);
+    } else {
+      // Hors de Windows (copie du dépôt sous Linux) : aucun programme lancé.
+      console.log(`La file karaoké tourne déjà : ouvre la page du bar à l’adresse ${BAR_URL}. Si elle affiche « essais arrêtés », clique sur « Reconnecter » une fois la Télécommande de KaraFun activée.`);
+    }
     return;
   }
   console.log('La file karaoké démarre. Si le code KaraFun a changé, saisis-le sur la page du bar.');
@@ -69,4 +100,4 @@ if (require.main === module) main().catch(error => {
   process.exitCode = 1;
 });
 
-module.exports = { karafunRunning, helperRunning, locateKaraFun };
+module.exports = { karafunRunning, helperRunning, locateKaraFun, barPort, barUrl };

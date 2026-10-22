@@ -902,3 +902,108 @@ test('Timefold : une demande plus récente arrête la recherche même après son
     // gstack-timing-ok: arrêt redemandé toutes les 5 ms dès 50 ms ; sans veille, la recherche court son budget de 5 s.
     assert.ok(Number(searchMs) < 2500, `recherche arrêtée après ${searchMs} ms`);
   });
+
+// ---------------------------------------------------------------- options JVM
+// Issue #26 (deux modes) : KARAOKE_SOLVER_JVM_ARGS avant -jar, JAVA_TOOL_OPTIONS
+// complétée et non écrasée, environnement pris dans l'option `env` du pont.
+const { jvmArgsFrom, javaToolOptions } = require('../solver/bridge');
+const LOG_OPTION = '-Dorg.slf4j.simpleLogger.defaultLogLevel=warn';
+
+// Lance le faux processus Java d'un pont réglé par `env` et rend son appel.
+async function spawnedWith(env) {
+  const calls = [];
+  const fakeSpawn = (file, args, options) => {
+    calls.push({ file, args, options });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.write = () => {};
+    child.kill = () => {};
+    return child;
+  };
+  const bridge = new TimefoldBridge({ jar: 'faux.jar', java: 'faux', spawn: fakeSpawn, settleMs: 0, env });
+  const pending = bridge.solve({ requestId: 'J' }, { immediate: true }).catch(error => error);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  bridge.close();
+  assert.match((await pending).message, /Solveur fermé/);
+  assert.equal(calls.length, 1);
+  return calls[0];
+}
+
+test('B1 pont Timefold : KARAOKE_SOLVER_JVM_ARGS passe avant -jar, dans l’ordre, sans jeton vide', async () => {
+  const call = await spawnedWith({ KARAOKE_SOLVER_JVM_ARGS: '  -Xmx256m   -XX:+UseSerialGC ' });
+  assert.equal(call.file, 'faux');
+  assert.deepEqual(call.args, ['-Xmx256m', '-XX:+UseSerialGC', '-jar', 'faux.jar']);
+  assert.deepEqual(jvmArgsFrom('  -Xmx256m   -XX:+UseSerialGC '), ['-Xmx256m', '-XX:+UseSerialGC']);
+});
+
+test('B2 pont Timefold : sans réglage, exactement -jar et le jar (forme du rejeu)', async () => {
+  for (const env of [{}, { KARAOKE_SOLVER_JVM_ARGS: '' }, { KARAOKE_SOLVER_JVM_ARGS: '   ' }]) {
+    assert.deepEqual((await spawnedWith(env)).args, ['-jar', 'faux.jar'], JSON.stringify(env));
+  }
+  for (const value of [undefined, null, '', '   ']) assert.deepEqual(jvmArgsFrom(value), [], String(value));
+});
+
+test('B3 pont Timefold : JAVA_TOOL_OPTIONS complétée après l’option de journal, environnement de l’option env', async () => {
+  const call = await spawnedWith({ JAVA_TOOL_OPTIONS: ' -Dessai=1 ', PATH: '/x' });
+  assert.deepEqual(call.options.env, { JAVA_TOOL_OPTIONS: `${LOG_OPTION} -Dessai=1`, PATH: '/x' },
+    'la valeur de l’exploitant suit l’option de journal ; rien d’autre que l’option env');
+  assert.equal(call.options.cwd, path.join(__dirname, '..'));
+  assert.equal(call.options.windowsHide, true);
+  assert.deepEqual(call.options.stdio, ['pipe', 'pipe', 'pipe']);
+  for (const env of [{}, { JAVA_TOOL_OPTIONS: '  ' }]) {
+    assert.equal((await spawnedWith(env)).options.env.JAVA_TOOL_OPTIONS, LOG_OPTION, JSON.stringify(env));
+  }
+  assert.equal(javaToolOptions(' -Dessai=1 '), `${LOG_OPTION} -Dessai=1`);
+  for (const value of [undefined, '', '  ']) assert.equal(javaToolOptions(value), LOG_OPTION, String(value));
+  // Sans option env : l'environnement du processus.
+  const bridge = new TimefoldBridge({ jar: 'faux.jar', java: 'faux' });
+  assert.equal(bridge.env, process.env);
+  assert.deepEqual(bridge.jvmArgs, jvmArgsFrom(process.env.KARAOKE_SOLVER_JVM_ARGS));
+  assert.equal(bridge.javaToolOptions, javaToolOptions(process.env.JAVA_TOOL_OPTIONS));
+});
+
+test('B4 vraie JVM : options de l’exploitant acceptées, 60 titres résolus',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const bridge = new TimefoldBridge({ jar: JAR, settleMs: 0, env: { ...process.env,
+      KARAOKE_SOLVER_JVM_ARGS: '-Xmx256m -XX:+UseSerialGC', JAVA_TOOL_OPTIONS: '-Dkarafun.essai=1' } });
+    const performances = [];
+    for (let i = 0; i < 60; i++) {
+      for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
+        id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
+        singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
+      });
+    }
+    try {
+      const response = await bridge.solve({ requestId: 'options-jvm', budgetMs: 200, performances, pastAppearance: {},
+        physicalCount: {}, pinnedUntil: 0, roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false });
+      assert.equal(response.requestId, 'options-jvm');
+      assert.equal(bridge.lastError, null);
+      assert.deepEqual(bridge.child.spawnargs.slice(1), ['-Xmx256m', '-XX:+UseSerialGC', '-jar', JAR]);
+      assert.equal(bridge.javaToolOptions, `${LOG_OPTION} -Dkarafun.essai=1`);
+    } finally { bridge.close(); }
+  });
+
+test('B5 vraie JVM : option refusée, repli local en quelques secondes, sans plantage',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const uncaught = [];
+    const onUncaught = error => uncaught.push(error);
+    process.on('uncaughtException', onUncaught);
+    const bridge = new TimefoldBridge({ jar: JAR, settleMs: 0,
+      env: { ...process.env, KARAOKE_SOLVER_JVM_ARGS: '-XX:+OptionInconnueKaraoke' } });
+    try {
+      const start = Date.now();
+      const error = await bridge.solve({ requestId: 'refus', budgetMs: 200, performances: [] }).then(
+        () => assert.fail('la JVM a accepté une option inconnue'), failure => failure);
+      // gstack-timing-ok: la JVM refuse l'option en quelques dizaines de ms ; sans repli, le pont attendrait 30 s.
+      assert.ok(Date.now() - start < 5000, `refus après ${Date.now() - start} ms`);
+      assert.match(error.message, /s’est arrêté|EPIPE/);
+      assert.equal(bridge.available, false, 'pause de 30 s : rotation locale de secours');
+      // Erreurs tardives des flux (EPIPE) : ignorées par la garde d'identité.
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.deepEqual(uncaught, []);
+    } finally {
+      bridge.close();
+      process.off('uncaughtException', onUncaught);
+    }
+  });
