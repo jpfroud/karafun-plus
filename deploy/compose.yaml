@@ -1,0 +1,59 @@
+# karafun-plus sur un VPS : Caddy (HTTPS, Let's Encrypt) devant l'application.
+# Depuis ce dossier : cp .env.example .env && chmod 600 .env, remplir .env, puis
+#   docker compose up -d
+# Lien de la page du bar : docker compose exec app node server.js --print-staff-url
+# Nouvelle clé du bar : docker compose exec app node server.js --rotate-staff-key
+#   puis docker compose restart app
+# Diagnostic KaraFun : docker run --rm ghcr.io/jpfroud/karafun-plus:<version> node tools/diag-karafun.js <code>
+# Arrêt (la soirée est enregistrée) : docker compose stop app
+# Jamais « docker compose run app » sans commande : ce serait un second serveur.
+name: karafun-plus
+
+x-journaux: &journaux
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?à renseigner dans deploy/.env}
+      HOTE_CLIENTS: ${HOTE_CLIENTS:?à renseigner dans deploy/.env}
+      HOTE_BAR: ${HOTE_BAR:?à renseigner dans deploy/.env}
+      BAR_USER: ${BAR_USER:?à renseigner dans deploy/.env}
+      BAR_PASSWORD_HASH: ${BAR_PASSWORD_HASH:?à renseigner dans deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging: *journaux
+
+  app:
+    image: ghcr.io/jpfroud/karafun-plus:${KARAFUN_PLUS_VERSION:?à renseigner dans deploy/.env}
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    ports:
+      - "127.0.0.1:3000:3000" # tunnel SSH seulement ; Docker contourne ufw
+    environment:
+      KARAOKE_PUBLIC_URL: ${KARAOKE_PUBLIC_URL:?à renseigner dans deploy/.env}
+      KARAOKE_STAFF_URL: ${KARAOKE_STAFF_URL:?à renseigner dans deploy/.env}
+    volumes:
+      - karafun-data:/app/data
+      - karafun-journal:/app/journal
+    logging: *journaux
+
+volumes:
+  karafun-data:
+  karafun-journal:
+  caddy_data:
+  caddy_config:
