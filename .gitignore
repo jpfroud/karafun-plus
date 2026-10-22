@@ -18,6 +18,7 @@
 *.sha256
 /dist/
 /release/
+/deploy/sauvegardes/
 
 # Configuration privée et fichiers temporaires.
 .env

@@ -2,3 +2,7 @@
 *.sh text eol=lf
 # Hooks de .claude/hooks, dont le hook git pre-push, sans extension et lancé par sh.
 .claude/hooks/* text eol=lf
+# Fichiers lus sous Linux (image Docker, VPS) : LF même depuis un poste Windows.
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+deploy/* text eol=lf
