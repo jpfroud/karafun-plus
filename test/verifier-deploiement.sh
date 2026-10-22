@@ -138,9 +138,9 @@ chmod 600 .env
 
 # État du projet karafun-plus (conteneurs, volumes) avant tout contrôle.
 etat_karafun_plus() {
-  local ids
-  ids=$(docker ps -aq --filter label=com.docker.compose.project=karafun-plus)
-  [ -z "$ids" ] || docker inspect -f '{{.Id}} {{.State.Status}} {{.State.StartedAt}}' $ids | sort
+  local ids=()
+  mapfile -t ids < <(docker ps -aq --filter label=com.docker.compose.project=karafun-plus)
+  [ "${#ids[@]}" = 0 ] || docker inspect -f '{{.Id}} {{.State.Status}} {{.State.StartedAt}}' "${ids[@]}" | sort
   docker volume ls -q --filter label=com.docker.compose.project=karafun-plus | sort
 }
 AVANT_KARAFUN_PLUS=$(etat_karafun_plus)
@@ -148,7 +148,7 @@ AVANT_KARAFUN_PLUS=$(etat_karafun_plus)
 # ---------------------------------------------------------------- V1
 controle V1 'compose rendu'
 CONFIG=$(docker compose config --format json 2>> "$JOURNAL") || echec "docker compose config en échec"
-verifier_json '
+verifier_json "$(cat <<'JS'
 const c = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const projet = process.argv[1];
 const faute = texte => { console.log(texte); process.exit(1); };
@@ -169,7 +169,8 @@ const volumes = (app.volumes || []).map(v => `${v.type}:${v.source}:${v.target}`
 if (!same(volumes, ["volume:karafun-data:/app/data", "volume:karafun-journal:/app/journal"])) faute(`volumes de app : ${volumes.join(", ")}`);
 const publies = (caddy.ports || []).map(p => `${p.host_ip || ""}|${p.published}|${p.target}/${p.protocol}`).sort();
 if (!same(publies, ["|443|443/tcp", "|443|443/udp", "|80|80/tcp"])) faute(`ports de caddy : ${publies.join(", ")}`);
-' "$COMPOSE_PROJECT_NAME" <<< "$CONFIG"
+JS
+)" "$COMPOSE_PROJECT_NAME" <<< "$CONFIG"
 reussi
 
 # ---------------------------------------------------------------- V2
@@ -189,7 +190,7 @@ docker compose run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Ca
 grep -qx 'Valid configuration' "$TMP/v3.txt" || echec "« Valid configuration » absent : $(tail -n 3 "$TMP/v3.txt")"
 docker compose run --rm --no-deps -T caddy caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile > "$TMP/v3.json" 2>> "$JOURNAL" \
   || echec "caddy adapt en échec"
-verifier_json '
+verifier_json "$(cat <<'JS'
 const c = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const faute = texte => { console.log(texte); process.exit(1); };
 const handlers = noeud => {
@@ -220,7 +221,8 @@ if (clients.some(h => h.handler === "authentication")) faute("mot de passe sur l
 const auth = toutes.filter(h => h.handler === "authentication");
 if (auth.length !== 1 || !bar.includes(auth[0])) faute(`authentication attendue dans la seule route de bar.exemple.fr (${auth.length} trouvée(s))`);
 if (auth[0].providers?.http_basic?.accounts?.[0]?.username !== "bar") faute("compte basic_auth « bar » absent");
-' < "$TMP/v3.json"
+JS
+)" < "$TMP/v3.json"
 reussi
 
 # ---------------------------------------------------------------- V4
@@ -232,14 +234,15 @@ pret() { [ "$(statut -H 'Host: clients.exemple.fr' "http://$P/x")" = 200 ]; }
 attendre 30 pret || echec "pas de réponse 200 de Caddy en 30 s"
 ECHO=$(requete -sS --max-time 10 -H 'Host: clients.exemple.fr' -H 'X-Real-IP: 203.0.113.9' "http://$P/x") \
   || echec "requête vers clients.exemple.fr en échec"
-verifier_json '
+verifier_json "$(cat <<'JS'
 const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const faute = texte => { console.log(texte); process.exit(1); };
 if (r.port !== 3001) faute(`requête reçue sur le port ${r.port}, attendu 3001`);
 const ip = r.headers["x-real-ip"];
 if (!ip || ip === "203.0.113.9") faute(`x-real-ip reçu : ${ip}`);
 if (ip !== r.headers["x-forwarded-for"]) faute(`x-real-ip ${ip} différent de x-forwarded-for ${r.headers["x-forwarded-for"]}`);
-' <<< "$ECHO"
+JS
+)" <<< "$ECHO"
 reussi
 
 # ---------------------------------------------------------------- V5
@@ -251,12 +254,13 @@ s=$(statut -u bar:faux -H 'Host: bar.exemple.fr' "http://$P/x")
 ECHO=$(requete -sS --max-time 10 -w '\n%{http_code}' -u "bar:$MOT" -H 'Host: bar.exemple.fr' "http://$P/x") \
   || echec "requête vers bar.exemple.fr en échec"
 [ "${ECHO##*$'\n'}" = 200 ] || echec "avec le bon mot de passe : HTTP ${ECHO##*$'\n'}, attendu 200"
-verifier_json '
+verifier_json "$(cat <<'JS'
 const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const faute = texte => { console.log(texte); process.exit(1); };
 if (r.port !== 3000) faute(`requête reçue sur le port ${r.port}, attendu 3000`);
 if ("authorization" in r.headers) faute("en-tête authorization transmis à l’application");
-' <<< "${ECHO%$'\n'*}"
+JS
+)" <<< "${ECHO%$'\n'*}"
 reussi
 
 # ---------------------------------------------------------------- V6
@@ -360,7 +364,10 @@ OBTENU=$(docker compose exec -T app sha256sum /app/data/staff-key 2>> "$JOURNAL"
 DROITS=$(docker compose exec -T app stat -c '%a %U %n' /app/data /app/journal /app/data/staff-key 2>> "$JOURNAL") || echec "stat après restauration en échec"
 [[ $DROITS =~ ^700\ node\ /app/data$'\n'700\ node\ /app/journal$'\n'[0-7]+\ node\ /app/data/staff-key$ ]] \
   || echec "droits après restauration : $(tr '\n' ';' <<< "$DROITS")"
-mapfile -t ARCHIVES < <(ls -A sauvegardes | grep '^karafun-plus-' | sort)
+ARCHIVES=()
+for archive in sauvegardes/karafun-plus-*; do
+  if [ -e "$archive" ]; then ARCHIVES+=("${archive#sauvegardes/}"); fi
+done
 [ "${#ARCHIVES[@]}" = 2 ] || echec "${#ARCHIVES[@]} archive(s) karafun-plus-* dans sauvegardes/, attendu 2"
 LISTE=$(tar -tzf "sauvegardes/${ARCHIVES[1]}") || echec "sauvegardes/${ARCHIVES[1]} illisible"
 grep -qxF 'data/marqueur-essai' <<< "$LISTE" || echec "la sauvegarde de sécurité ${ARCHIVES[1]} ne contient pas data/marqueur-essai"
@@ -374,7 +381,7 @@ VUE=$(docker run --rm "$IMAGE" sh -c 'ls -A /app; stat -c "%a %U %n" /app/data /
 ECRIVABLE=$(docker run --rm "$IMAGE" find /app -mindepth 1 '(' -path /app/data -o -path /app/journal ')' -prune -o ! -type l '(' -user node -o -perm -0002 ')' -print 2>> "$JOURNAL") \
   || echec "find dans l'image en échec"
 [ -z "$ECRIVABLE" ] || echec "code modifiable par node : $(head -n 5 <<< "$ECRIVABLE" | tr '\n' ' ')"
-verifier_json '
+verifier_json "$(cat <<'JS'
 const fs = require("fs");
 const faute = texte => { console.log(texte); process.exit(1); };
 const lignes = fs.readFileSync(0, "utf8").replace(/\n$/, "").split("\n");
@@ -390,7 +397,8 @@ if (data !== "700 node /app/data" || journal !== "700 node /app/journal") faute(
 const m = /^(\d+) (\S+) \/app\/server\.js$/.exec(server || "");
 if (!m || m[2] !== "root" || (parseInt(m[1], 8) & 0o022)) faute(`server.js : ${server}`);
 if (JSON.stringify(reste) !== JSON.stringify(["/app/data:", "", "/app/journal:"])) faute(`data/ ou journal/ non vide : ${reste.join("|")}`);
-' "$RACINE/livrable.json" <<< "$VUE"
+JS
+)" "$RACINE/livrable.json" <<< "$VUE"
 reussi
 
 # ---------------------------------------------------------------- V10
