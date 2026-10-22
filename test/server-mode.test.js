@@ -235,6 +235,18 @@ test('T4 clé du fichier KARAOKE_STAFF_KEY_FILE, rien dans data/', async () => {
     assert.equal(f.memory.disk.has(STAFF_KEY_FILE_IN_DATA), false, `${label} : data/staff-key absent`);
     assert.equal(f.memory.writes.some(w => w.file === STAFF_KEY_FILE_IN_DATA), false, `${label} : data/staff-key jamais écrit`);
   }
+  // Activation : --server seul suffit ; sans lui ni KARAOKE_MODE=server, les
+  // autres variables laissent le mode PC et sa clé tirée à chaque démarrage.
+  const byOption = harness({ env: { KARAOKE_MODE: undefined }, args: ['--server'] });
+  assert.ok(byOption.SERVER, '--server active le mode serveur');
+  assert.equal(byOption.STAFF_KEY, FILE_KEY);
+  for (const mode of [undefined, '', '   ']) {
+    const pc = harness({ env: { KARAOKE_MODE: mode } });
+    assert.equal(pc.SERVER, null, `KARAOKE_MODE ${JSON.stringify(mode)} sans --server : mode PC`);
+    assert.equal(pc.STAFF_KEY_INFO, null);
+    assert.notEqual(pc.STAFF_KEY, FILE_KEY, 'mode PC : clé tirée à ce démarrage');
+    assert.equal(pc.phoneBase().startsWith('https://clients.exemple.fr'), false, 'mode PC : KARAOKE_PUBLIC_URL ignorée');
+  }
 });
 
 test('T5 data/staff-key créée une fois (0600, wx) puis réutilisée ; course au démarrage', () => {
