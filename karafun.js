@@ -264,6 +264,13 @@ const DISCOVERY_ERRORS = {
   timeout: ['KaraFun trop lent', () => 'Le site KaraFun ne répond pas à temps (10 s) : réseau lent ou coupé.'],
   'no-websocket': ['WebSocket indisponible', () => 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 22.'],
 };
+// Mode serveur : messages des échecs qui parlent de « ce PC » ou du kit. Motif
+// court, délais et nature de l'échec restent ceux de DISCOVERY_ERRORS.
+const SERVER_DISCOVERY_MESSAGES = {
+  refused: status => `Le site KaraFun refuse le serveur de la file (HTTP ${status || '?'}) : KaraFun limite les essais depuis sa connexion, la file réessaiera seule.`,
+  network: () => 'Réseau coupé ou site KaraFun injoignable depuis le serveur de la file : vérifie sa connexion Internet.',
+  'no-websocket': () => 'WebSocket indisponible sur le serveur de la file : il faut Node 22.',
+};
 
 function duration(ms) {
   const seconds = Math.max(0, Math.ceil(ms / 1000)), minutes = Math.floor(seconds / 60), rest = seconds % 60;
@@ -334,16 +341,19 @@ function readPages(file) {
   } catch { return null; }
 }
 
-const limitMessage = until => `KaraFun limite les essais depuis cette connexion jusqu’à ${clock(until, true)} : inutile de cliquer, la file réessaiera seule. Un téléphone sur un autre réseau (4G/5G) n’est pas concerné.`;
+const limitMessage = (until, appMode = 'pc') => appMode === 'server' ?
+  `KaraFun limite les essais depuis le serveur de la file jusqu’à ${clock(until, true)} : inutile de cliquer, la file réessaiera seule. Un téléphone, en Wi-Fi ou en 4G/5G, n’est pas concerné.` :
+  `KaraFun limite les essais depuis cette connexion jusqu’à ${clock(until, true)} : inutile de cliquer, la file réessaiera seule. Un téléphone sur un autre réseau (4G/5G) n’est pas concerné.`;
 const BUSY_REASON = 'Trop d’essais auprès de KaraFun cette heure-ci';
 
 class KaraFunBridge extends EventEmitter {
-  constructor({ logDir, bases, identityFile = null, log = null, lockOwner = null, budgetFile = null } = {}) {
+  constructor({ logDir, bases, identityFile = null, log = null, lockOwner = null, budgetFile = null, appMode = 'pc' } = {}) {
     super();
     this.bases = bases || ['https://www.karafun.com', 'https://www.karafun.fr'];
     this.baseIdx = 0;
     this.logDir = logDir;
     this.log = log;
+    this.appMode = appMode === 'server' ? 'server' : 'pc';
     this.code = null;
     this.socket = null;
     this.connected = false;
@@ -725,7 +735,7 @@ class KaraFunBridge extends EventEmitter {
           if (!sameCode) this._restart(code, false);
           this._retry(DISCOVERY_ERRORS.refused[0], { mode: 'page', kind: 'limited' });
         }
-        return { ok: false, reason: 'limited', message: limitMessage(limit.until) };
+        return { ok: false, reason: 'limited', message: limitMessage(limit.until, this.appMode) };
       }
       if (!this._canReadPage(true, now)) {
         // Budget épuisé : un autre code (faute de frappe probable) ne coupe
@@ -874,7 +884,7 @@ class KaraFunBridge extends EventEmitter {
   // `mode` : 'socket' quand une URL gardée reste à réessayer (réseau coupé).
   _discoveryFailed(found, mode = 'discovery') {
     const [reason, message] = DISCOVERY_ERRORS[found.kind];
-    this.lastError = message(found.status);
+    this.lastError = (this.appMode === 'server' && Object.hasOwn(SERVER_DISCOVERY_MESSAGES, found.kind) ? SERVER_DISCOVERY_MESSAGES[found.kind] : message)(found.status);
     this.unreachable = true;
     const { kind, status, host, finalHost, keys } = found;
     if (kind === 'refused') this._setLimit(found.retryAfter, Date.now(), found.sentAt ?? Date.now());
@@ -1308,7 +1318,7 @@ class KaraFunBridge extends EventEmitter {
       // Alerte que le bar ne peut pas fermer : conflit de nom ou limite de
       // KaraFun. Essais arrêtés : KaraFun absent, rien d'autre à signaler.
       alert: phase !== 'stopped' && conflict ? `KaraFun garde encore l’ancienne connexion de ${conflict.holder} (KaraFun relancé trop vite, ou une autre File karaoké ouverte avec le même nom). La file redemande ce nom toutes les 4 s pour garder ses droits d’administrateur et en prendra un autre ${later}. Tu peux aussi prendre un autre nom maintenant, puis lui redonner les droits dans KaraFun.` :
-        limited ? limitMessage(limit.until) : null,
+        limited ? limitMessage(limit.until, this.appMode) : null,
       // Pages de découverte de l'heure pleine en cours (sans secret).
       discovery: { used: pages.used, limit: PAGE_LIMIT, hourEndsAt: (pages.hour + 1) * HOUR_MS, limitedUntil: limit ? limit.until : null },
     };

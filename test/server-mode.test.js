@@ -135,7 +135,7 @@ function harness({ persistent = false, files = {}, modules = {}, serverEnv = tru
         setPending: value => { pending = value; },
         spotify, loadTables, normalizeBaseUrl, SERVER, STAFF_KEY_INFO, STOP_KEY, server, publicServer,
         isShuttingDown: () => shuttingDown, readServerConfig, loadStaffKey, staffKeyFingerprint, serverStartupLines,
-        phoneBase, BUILD, rotateStaffKey, staffKeyCommand, printedBaseUrlWarning, serverClientAddress };
+        phoneBase, BUILD, rotateStaffKey, staffKeyCommand, printedBaseUrlWarning, serverClientAddress, karafunBridgeOptions, portInUseMessage };
     `, context, { filename: 'server.js' });
   } catch (error) {
     // Refus de démarrer : le disque en mémoire (raison sur stderr) reste lisible.
@@ -1108,4 +1108,25 @@ test('T16 délais keep-alive au-dessus du keepalive du relais HTTPS, sur les deu
     assert.equal(listener.keepAliveTimeout, 5000, `PC ${name}`);
     assert.equal(listener.headersTimeout, 60000, `PC ${name}`);
   }
+});
+
+// ---------------------------------------------------------------- textes (#28)
+test('TX3 options du pont KaraFun selon le mode', () => {
+  for (const [label, f, appMode] of [['mode PC', harness({ persistent: true, serverEnv: false }), 'pc'],
+    ['mode serveur', harness({ persistent: true }), 'server']]) {
+    const options = f.karafunBridgeOptions();
+    assert.deepEqual(plain(options), { logDir: path.join(root, 'journal'), identityFile: path.join(DATA, 'karafun-login.json'),
+      budgetFile: path.join(DATA, 'karafun-pages.json'), lockOwner: { port: f.PORT }, appMode }, label);
+    assert.equal('bases' in options, true, `${label} : bases présent`);
+    assert.equal(options.bases, undefined, `${label} : sites KaraFun par défaut`);
+    assert.equal(typeof options.log, 'function', `${label} : journal du serveur`);
+  }
+});
+
+test('TX4 port du bar occupé : message selon le mode', () => {
+  const pc = harness({ serverEnv: false });
+  assert.equal(pc.portInUseMessage(), `Le port ${pc.PORT} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre.`);
+  const f = harness();
+  assert.equal(f.portInUseMessage(), `Le port ${f.PORT} est déjà utilisé : une autre instance de la file tourne peut-être déjà sur ce serveur.`);
+  assert.doesNotMatch(f.portInUseMessage(), /fenêtre/);
 });
