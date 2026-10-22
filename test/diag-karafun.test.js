@@ -486,6 +486,10 @@ test('F2 processus avec un fetch 403 préchargé : neuf lignes, code de sortie 1
   const lines = run.stdout.slice(0, -1).split('\n');
   assert.equal(lines.length, 9, run.stdout);
   assert.ok(lines.includes('Statut HTTP : 403'), run.stdout);
+  // Lignes que seul le faux fetch préchargé donne (Retry-After 120, aucun en-tête server) :
+  // un vrai refus de KaraFun, lu si le préchargement ne s'appliquait plus, échouerait ici.
+  assert.ok(lines.includes('Retry-After : 120 (la file attendrait 120 s avant de relire la page)'), run.stdout);
+  assert.ok(lines.includes('En-tête server : absent'), run.stdout);
   assert.equal(lines[8], `Verdict : ${refusedVerdict(403, 'non')}`);
   assert.equal(run.stderr, '');
 });
