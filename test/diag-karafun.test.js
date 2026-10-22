@@ -304,6 +304,7 @@ test('D7 site muet : délai dépassé, non concluant en moins de 5 s, code 2', a
   const site = await fakeSite(t, () => { /* jamais de réponse */ });
   const started = Date.now();
   const { code, out } = await diag(t, site, { timeoutMs: 300 });
+  // gstack-timing-ok: la borne de 5 s est le contrat de D7 (issue #20), pour un délai de 300 ms.
   assert.ok(Date.now() - started < 5000, `${Date.now() - started} ms`);
   assertOneRead(site);
   assert.deepEqual(out, expected(site, { status: 'aucune réponse (délai dépassé)', retryAfter: 'aucune réponse',
@@ -337,8 +338,9 @@ test('D10 kcs_url illisible : page inattendue, code 2', async t => {
   assert.equal(code, 2);
 });
 
-test('D11 en-tête server avec tabulation et 302 caractères : nettoyé et coupé à 120, code 0', async t => {
-  const site = await fakeSite(t, serve(200, { Server: 'a\tb' + 'x'.repeat(300) }, VALID));
+test('D11 en-tête server avec tabulation et 302 caractères, via fait d\'espaces : nettoyé, coupé à 120 ou absent, code 0', async t => {
+  // Via ne contient que des espaces : valeur vide une fois lue, affichée absent (point 5 de l'issue).
+  const site = await fakeSite(t, serve(200, { Server: 'a\tb' + 'x'.repeat(300), Via: '   ' }, VALID));
   const { code, out } = await diag(t, site);
   assertOneRead(site);
   const server = 'a?b' + 'x'.repeat(117);
@@ -467,6 +469,7 @@ function runTool(args) {
 test('F1 processus sans code : usage sur stderr, code de sortie 2', async () => {
   const run = await runTool(['tools/diag-karafun.js']);
   assertClean(run.stdout, run.stderr);
+  // gstack-timing-ok: la borne de 15 s est le contrat de F1 (issue #20) ; au-delà, runTool arrête l'outil.
   assert.ok(run.ms < 15000);
   assert.equal(run.code, 2);
   assert.equal(run.stderr, USAGE.map(line => `${line}\n`).join(''));
@@ -476,6 +479,7 @@ test('F1 processus sans code : usage sur stderr, code de sortie 2', async () => 
 test('F2 processus avec un fetch 403 préchargé : neuf lignes, code de sortie 1', async () => {
   const run = await runTool(['--require', path.join(root, 'test', 'fixtures', 'diag-fetch-403.js'), 'tools/diag-karafun.js', '123456']);
   assertClean(run.stdout, run.stderr);
+  // gstack-timing-ok: la borne de 15 s est le contrat de F2 (issue #20) ; au-delà, runTool arrête l'outil.
   assert.ok(run.ms < 15000);
   assert.equal(run.code, 1);
   assert.ok(run.stdout.endsWith('\n'));
