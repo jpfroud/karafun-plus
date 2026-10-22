@@ -1,9 +1,9 @@
 'use strict';
 // Mode serveur, socle (issue #24), dans de vrais processus : refus de démarrer
-// (R1), démarrage avec fichier de clé (R2), fuseau horaire (R3), adresses
-// d'écoute (R4) et data/staff-key réelle dans une copie (R8). Jamais de
-// KaraFun réel : faux KaraFun de la démo (R2 à R4), arrêt avant main() (R1),
-// copie sans data/ ni code de télécommande (R8).
+// (R1, et R1b dans une copie), démarrage avec fichier de clé (R2), fuseau
+// horaire (R3), adresses d'écoute (R4) et data/staff-key réelle dans une copie
+// (R8). Jamais de KaraFun réel : faux KaraFun de la démo (R2 à R4), arrêt
+// avant main() (R1, R1b), copie sans data/ ni code de télécommande (R1b, R8).
 //
 // Ports de ces tests : P, P+1 et P+1001 (faux KaraFun de la démo), P de 3230
 // à 3238 (3240 sert à priority-undo-api.test.js).
@@ -91,14 +91,16 @@ function sandboxCopy() {
   return dir;
 }
 
+// Port du serveur lancé, comme server.js : --port, sinon PORT, sinon 3000.
 function runtimeFile(child) {
   const i = child.spawnargs.indexOf('--port');
-  return i >= 0 ? path.join(child.cwd, 'data', `runtime-${child.spawnargs[i + 1]}.json`) : null;
+  const port = i >= 0 ? child.spawnargs[i + 1] : (child.launchEnv.PORT || '3000');
+  return path.join(child.cwd, 'data', `runtime-${port}.json`);
 }
 // Fichier d'arrêt laissé par un serveur tué : supprimé s'il est le sien.
 function removeRuntime(child) {
   const file = runtimeFile(child);
-  try { if (file && JSON.parse(fs.readFileSync(file, 'utf8')).pid === child.pid) fs.unlinkSync(file); }
+  try { if (JSON.parse(fs.readFileSync(file, 'utf8')).pid === child.pid) fs.unlinkSync(file); }
   catch (_) { /* absent ou d'un autre serveur */ }
 }
 const running = child => child.exitCode === null && child.signalCode === null;
@@ -114,6 +116,7 @@ function launch(args, { env, cwd = root } = {}) {
   const child = spawn(process.execPath, ['server.js', ...args], { cwd, env: childEnv, windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'] });
   child.cwd = cwd;
+  child.launchEnv = childEnv;
   child.stdoutText = '';
   child.stderrText = '';
   child.stdout.setEncoding('utf8');
@@ -170,6 +173,10 @@ if (require.main === module) {
   const demoArgs = port => ['--demo', '--song-seconds', '4', '--port', String(port), '--no-open'];
   const fingerprint = key => crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
   const WARNING = 'Attention : fuseau horaire UTC. L’heure de fermeture et les heures du journal seront décalées : fixe TZ=Europe/Paris.';
+  const STRAY = 'KARAOKE_PUBLIC_URL est fixée sans le mode serveur : ajoute KARAOKE_MODE=server (ou --server), ou retire les variables KARAOKE_* pour le mode PC.';
+  // Variables changées d'un cas, pour les messages d'échec (une variable retirée y figure).
+  const variables = overrides => Object.entries(overrides)
+    .map(([name, value]) => `${name}=${value === undefined ? '(retirée)' : value}`).join(' ');
   // Fichiers de data/ et journal/ (nom, taille, contenu de data/staff-key) d'un dossier.
   const footprint = dir => {
     const listing = {};
@@ -229,9 +236,13 @@ if (require.main === module) {
       [{ KARAOKE_CLIENT_IP_HEADER: 'x real ip' }, [],
         'KARAOKE_CLIENT_IP_HEADER invalide (« x real ip ») : indique un nom d’en-tête HTTP, par exemple x-real-ip.'],
       [{ KARAOKE_STAFF_KEY_FILE: absent }, [], `KARAOKE_STAFF_KEY_FILE illisible (${absent} : ENOENT).`],
+      // KARAOKE_MODE oubliée (ou --server=1, qui n'est pas --server) avec les
+      // autres variables : refus, jamais le mode PC en silence.
+      [{ KARAOKE_MODE: undefined }, [], STRAY],
+      [{ KARAOKE_MODE: undefined }, ['--server=1'], STRAY],
     ];
     for (const [overrides, extra, reason] of cases) {
-      const label = `${JSON.stringify(overrides)} ${extra.join(' ')}`;
+      const label = `${variables(overrides)} ${extra.join(' ')}`;
       const before = footprint(root);
       const child = launch([...demoArgs(port), ...extra], { env: serverEnv(overrides) });
       try {
@@ -244,6 +255,32 @@ if (require.main === module) {
         assert.equal(await portFree(port), true, `${label} : port ${port}`);
         assert.equal(await portFree(port + 1), true, `${label} : port ${port + 1}`);
         assert.deepEqual(footprint(root), before, `${label} : data/ et journal/ inchangés`);
+      } finally { await child.stop(); }
+    }
+  });
+
+  test('R1b refus dans une copie sans data/ : ni data/ ni journal/ créés', async () => {
+    const port = await choosePort();
+    const cases = [
+      // Mode serveur sans fichier de clé fourni : refus avant tout contact avec data/staff-key.
+      [{ KARAOKE_STAFF_KEY_FILE: undefined, KARAOKE_PUBLIC_URL: 'http://clients.exemple.fr' },
+        'KARAOKE_PUBLIC_URL invalide : Une adresse accessible depuis Internet doit utiliser HTTPS.'],
+      // Variables du mode serveur sans KARAOKE_MODE : refus avant journal/ et data/.
+      [{ KARAOKE_STAFF_KEY_FILE: undefined, KARAOKE_MODE: undefined }, STRAY],
+    ];
+    for (const [overrides, reason] of cases) {
+      const dir = sandboxCopy();
+      const label = variables(overrides);
+      const child = launch(['--port', String(port), '--public-port', String(port + 1), '--no-open'],
+        { env: serverEnv(overrides), cwd: dir });
+      try {
+        const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+        const { code } = await child.exited;
+        clearTimeout(timer);
+        assert.equal(code, 1, `${label} : code de sortie\n${outputs(child)}`);
+        assert.equal(child.stderrText, `Impossible de démarrer : ${reason}\n`, label);
+        assert.equal(fs.existsSync(path.join(dir, 'data')), false, `${label} : data/ jamais créé`);
+        assert.equal(fs.existsSync(path.join(dir, 'journal')), false, `${label} : journal/ jamais créé`);
       } finally { await child.stop(); }
     }
   });
@@ -319,7 +356,9 @@ if (require.main === module) {
         await waitLine(child, 'Adresse des téléphones');
         for (const p of [port, port + 1]) {
           assert.equal(await reachable('127.0.0.1', p), 'ok', `127.0.0.1:${p}`);
-          if (lan) assert.equal(await reachable(lan, p), bind === '0.0.0.0' ? 'ok' : 'ECONNREFUSED', `${lan}:${p} (réseau)`);
+          // Chaque port suit sa variable : P (bar) KARAOKE_BIND, P+1 (clients) KARAOKE_PUBLIC_BIND.
+          const listening = p === port ? bind : publicBind;
+          if (lan) assert.equal(await reachable(lan, p), listening === '0.0.0.0' ? 'ok' : 'ECONNREFUSED', `${lan}:${p} (réseau)`);
         }
       } finally { await child.stop(); }
     };
@@ -329,6 +368,9 @@ if (require.main === module) {
       return;
     }
     await check('0.0.0.0', '0.0.0.0', serverEnv({ KARAOKE_BIND: '0.0.0.0', KARAOKE_PUBLIC_BIND: '0.0.0.0' }));
+    // Écoute asymétrique, dans les deux sens : une adresse échangée entre les deux ports se voit.
+    await check('127.0.0.1', '0.0.0.0', serverEnv({ KARAOKE_PUBLIC_BIND: '0.0.0.0' }));
+    await check('0.0.0.0', '127.0.0.1', serverEnv({ KARAOKE_BIND: '0.0.0.0' }));
   });
 
   test('R8 data/staff-key réelle : créée en 0600 au premier démarrage, gardée ensuite', async () => {

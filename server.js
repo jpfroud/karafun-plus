@@ -4,6 +4,7 @@
  *
  *   node server.js --code 123456        (KaraFun réel, code de la télécommande)
  *   node server.js --demo               (faux KaraFun intégré, pour essayer)
+ *   KARAOKE_MODE=server node server.js  (mode serveur : Linux derrière un relais HTTPS)
  *
  * Les clients scannent le QR de leur table et voient tout sur leur téléphone.
  * Le programme décide de l'ordre et n'envoie à KaraFun que la chanson suivante.
@@ -63,7 +64,8 @@ const stageProgress = require('./stage-progress');
 const argv = process.argv.slice(2);
 const arg = (name, def) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? (argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true) : def; };
 const PORT = parseInt(arg('port', process.env.PORT || 3000), 10);
-// Les tunnels HTTPS doivent pointer ici, jamais vers le port du bar.
+// Le tunnel ou le relais HTTPS des clients pointe ici, jamais vers le port du
+// bar ; en mode serveur, seul le relais de KARAOKE_STAFF_URL vise PORT.
 const PUBLIC_PORT = parseInt(arg('public-port', process.env.PUBLIC_PORT || PORT + 1), 10);
 const DEMO = !!arg('demo', false);
 const NO_OPEN = !!arg('no-open', false);
@@ -72,7 +74,8 @@ const NO_OPEN = !!arg('no-open', false);
 // Serveur Linux derrière un relais HTTPS (--server ou KARAOKE_MODE=server) :
 // configuration et clé du bar vérifiées avant tout effet de bord (journal/,
 // data/), adresses HTTPS des QR fixées par l'environnement, aucun droit pour
-// la boucle locale (le relais y arrive aussi). Sans lui : mode PC inchangé.
+// la boucle locale (le relais y arrive aussi). Sans lui : mode PC inchangé, mais
+// une variable du mode serveur fixée sans lui refuse le démarrage (pcSetup).
 const SERVER_MODE = !!arg('server', false) || String(process.env.KARAOKE_MODE || '').trim() === 'server';
 const DEFAULT_TRUSTED_PROXIES = '127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7';
 const STAFF_KEY_FORMAT = /^[A-Za-z0-9_-]{22,}$/;
@@ -184,9 +187,20 @@ function serverSetup(env, dataDir) {
     return { config, keyInfo: loadStaffKey(config, dataDir) };
   } catch (error) { return { error }; }
 }
+// Variables propres au mode serveur, dans l'ordre des contrôles de readServerConfig.
+const SERVER_VARIABLES = ['KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL', 'KARAOKE_BIND', 'KARAOKE_PUBLIC_BIND',
+  'KARAOKE_CLIENT_IP_HEADER', 'KARAOKE_TRUSTED_PROXIES', 'KARAOKE_STAFF_KEY_FILE'];
+// Mode PC : une variable du mode serveur fixée sans lui (KARAOKE_MODE oubliée
+// ou mal écrite, --server=1) refuse le démarrage. Sinon le serveur partirait
+// en silence en mode PC : clé du bar au journal, droits de la boucle locale.
+function pcSetup(env) {
+  const stray = SERVER_VARIABLES.find(name => String(env[name] ?? '').trim());
+  if (!stray) return { config: null, keyInfo: null };
+  return { error: new Error(`${stray} est fixée sans le mode serveur : ajoute KARAOKE_MODE=server (ou --server), ou retire les variables KARAOKE_* pour le mode PC.`) };
+}
 // Une valeur inconnue de KARAOKE_MODE refuse le démarrage dans les deux modes.
-const SETUP = String(process.env.KARAOKE_MODE || '').trim() || SERVER_MODE ?
-  serverSetup(process.env, path.join(__dirname, 'data')) : { config: null, keyInfo: null };
+const SETUP = (String(process.env.KARAOKE_MODE || '').trim() || SERVER_MODE) ?
+  serverSetup(process.env, path.join(__dirname, 'data')) : pcSetup(process.env);
 if (SETUP.error) {
   fs.writeSync(2, `Impossible de démarrer : ${SETUP.error.message}\n`);
   process.exit(1);

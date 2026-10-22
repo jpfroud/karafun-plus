@@ -43,15 +43,17 @@ const withoutKaraoke = env => Object.fromEntries(Object.entries(env).filter(([na
 // Disque en mémoire pour data/ et journal/ ; le reste (pages, package.json,
 // fichier de clé du test) est lu sur le vrai disque, jamais écrit.
 // `writes` : écritures faites, dans l'ordre ; une écriture `flag: 'wx'` sur un
-// fichier présent lève EEXIST. `mkdirs` : dossiers demandés. `beforeWrite` :
-// crochet appelé au début de chaque écriture (course simulée, panne).
+// fichier présent lève EEXIST. `mkdirs` : dossiers demandés. `beforeWrite` et
+// `beforeMkdir` : crochets appelés au début de chaque écriture ou création de
+// dossier (course simulée, panne). `stderr` : texte écrit par fs.writeSync(2, …)
+// (raison d'un refus de démarrer).
 function memoryDisk(files = {}) {
   const disk = new Map(Object.entries(files).map(([rel, value]) =>
     [path.join(root, rel), typeof value === 'string' ? value : JSON.stringify(value)]));
   const inMemory = file => [DATA, path.join(root, 'journal')]
     .some(dir => file === dir || String(file).startsWith(dir + path.sep));
   const missing = file => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
-  const memory = { disk, writes: [], mkdirs: [], beforeWrite: null };
+  const memory = { disk, writes: [], mkdirs: [], beforeWrite: null, beforeMkdir: null, stderr: '' };
   let order = 0;
   memory.memFs = { ...fs,
     existsSync: file => inMemory(file) ? disk.has(file) : fs.existsSync(file),
@@ -69,7 +71,15 @@ function memoryDisk(files = {}) {
     appendFileSync(file, data) { disk.set(file, (disk.get(file) || '') + data); },
     renameSync(from, to) { if (!disk.has(from)) throw missing(from); disk.set(to, disk.get(from)); disk.delete(from); },
     unlinkSync(file) { disk.delete(file); },
-    mkdirSync(dir, options) { memory.mkdirs.push({ dir, options, order: ++order }); },
+    mkdirSync(dir, options) {
+      if (memory.beforeMkdir) memory.beforeMkdir(dir, options);
+      memory.mkdirs.push({ dir, options, order: ++order });
+    },
+    writeSync(fd, data, ...rest) {
+      if (fd !== 2) return fs.writeSync(fd, data, ...rest);
+      memory.stderr += String(data);
+      return Buffer.byteLength(String(data));
+    },
     readdirSync() { return []; } };
   memory.read = rel => disk.get(path.join(root, rel));
   return memory;
@@ -117,15 +127,20 @@ function harness({ persistent = false, files = {}, modules = {}, serverEnv = tru
   const context = { require: name => name === 'fs' ? memory.memFs : overrides[name] || fromServer(name),
     __dirname: root, process: fixtureProcess, console: { ...console, log() {} }, Buffer, URL, setTimeout, clearTimeout,
     setImmediate, AbortSignal };
-  vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, settings, access, soloInvitations, privateEvent, battleVote, staffState, journal,
-      ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, journalSample, publicState, transferSnapshot, personShareCodes,
-      STAFF_KEY, PORT, PUBLIC_PORT, handle: server.listeners('request')[0], setTracked: value => { tracked = value; },
-      setPending: value => { pending = value; },
-      spotify, loadTables, normalizeBaseUrl, SERVER, STAFF_KEY_INFO, STOP_KEY, server, publicServer,
-      isShuttingDown: () => shuttingDown, readServerConfig, loadStaffKey, staffKeyFingerprint, serverStartupLines,
-      phoneBase, BUILD };
-  `, context, { filename: 'server.js' });
+  try {
+    vm.runInNewContext(source.slice(0, entry) + `
+      globalThis.fixture = { sched, settings, access, soloInvitations, privateEvent, battleVote, staffState, journal,
+        ensureSoloGroup, clearEvening, battleElectorate, saveNight, journalRoster, journalSample, publicState, transferSnapshot, personShareCodes,
+        STAFF_KEY, PORT, PUBLIC_PORT, handle: server.listeners('request')[0], setTracked: value => { tracked = value; },
+        setPending: value => { pending = value; },
+        spotify, loadTables, normalizeBaseUrl, SERVER, STAFF_KEY_INFO, STOP_KEY, server, publicServer,
+        isShuttingDown: () => shuttingDown, readServerConfig, loadStaffKey, staffKeyFingerprint, serverStartupLines,
+        phoneBase, BUILD };
+    `, context, { filename: 'server.js' });
+  } catch (error) {
+    // Refus de démarrer : le disque en mémoire (raison sur stderr) reste lisible.
+    throw Object.assign(error, { memory });
+  }
   const f = context.fixture;
   f.settings.auto = false;
   f.settings.autoPlay = false;
@@ -235,18 +250,34 @@ test('T4 clé du fichier KARAOKE_STAFF_KEY_FILE, rien dans data/', async () => {
     assert.equal(f.memory.disk.has(STAFF_KEY_FILE_IN_DATA), false, `${label} : data/staff-key absent`);
     assert.equal(f.memory.writes.some(w => w.file === STAFF_KEY_FILE_IN_DATA), false, `${label} : data/staff-key jamais écrit`);
   }
-  // Activation : --server seul suffit ; sans lui ni KARAOKE_MODE=server, les
-  // autres variables laissent le mode PC et sa clé tirée à chaque démarrage.
+  // Activation : --server seul suffit. Sans lui ni KARAOKE_MODE=server, une
+  // variable du mode serveur refuse le démarrage : jamais de mode PC en silence
+  // (clé au journal, droits de la boucle locale), même avec --server=1.
   const byOption = harness({ env: { KARAOKE_MODE: undefined }, args: ['--server'] });
   assert.ok(byOption.SERVER, '--server active le mode serveur');
   assert.equal(byOption.STAFF_KEY, FILE_KEY);
+  const strayReason = name => `Impossible de démarrer : ${name} est fixée sans le mode serveur : ajoute KARAOKE_MODE=server (ou --server), ou retire les variables KARAOKE_* pour le mode PC.\n`;
+  const refusedLoad = options => {
+    const error = raised(() => harness(options));
+    assert.equal(error.message, 'process.exit(1) pendant le chargement du bac à sable');
+    assert.deepEqual([error.memory.writes.length, error.memory.mkdirs.length], [0, 0], 'ni data/ ni journal/');
+    return error.memory.stderr;
+  };
   for (const mode of [undefined, '', '   ']) {
-    const pc = harness({ env: { KARAOKE_MODE: mode } });
-    assert.equal(pc.SERVER, null, `KARAOKE_MODE ${JSON.stringify(mode)} sans --server : mode PC`);
-    assert.equal(pc.STAFF_KEY_INFO, null);
-    assert.notEqual(pc.STAFF_KEY, FILE_KEY, 'mode PC : clé tirée à ce démarrage');
-    assert.equal(pc.phoneBase().startsWith('https://clients.exemple.fr'), false, 'mode PC : KARAOKE_PUBLIC_URL ignorée');
+    assert.equal(refusedLoad({ env: { KARAOKE_MODE: mode } }), strayReason('KARAOKE_PUBLIC_URL'),
+      `KARAOKE_MODE ${JSON.stringify(mode)} sans --server`);
   }
+  assert.equal(refusedLoad({ env: { KARAOKE_MODE: undefined }, args: ['--server=1'] }), strayReason('KARAOKE_PUBLIC_URL'), '--server=1');
+  for (const name of ['KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL', 'KARAOKE_BIND', 'KARAOKE_PUBLIC_BIND',
+    'KARAOKE_CLIENT_IP_HEADER', 'KARAOKE_TRUSTED_PROXIES', 'KARAOKE_STAFF_KEY_FILE']) {
+    assert.equal(refusedLoad({ serverEnv: false, env: { [name]: 'x' } }), strayReason(name), `${name} seule`);
+  }
+  // Mode PC : variable du mode serveur vide ou faite d'espaces = absente ; clé tirée à chaque démarrage.
+  const pc = harness({ serverEnv: false, env: { KARAOKE_PUBLIC_URL: '   ', KARAOKE_STAFF_URL: '' } });
+  assert.equal(pc.SERVER, null, 'mode PC');
+  assert.equal(pc.STAFF_KEY_INFO, null);
+  assert.notEqual(pc.STAFF_KEY, FILE_KEY, 'mode PC : clé tirée à ce démarrage');
+  assert.equal(pc.memory.stderr, '', 'mode PC : aucun refus');
   // Fichier de clé écrit sous Windows (BOM, fin de ligne CRLF) : BOM et
   // espaces retirés, la clé est acceptée telle quelle.
   const bomKey = crypto.randomBytes(18).toString('base64url');
@@ -340,6 +371,27 @@ test('T6 clés refusées : raison exacte, aucune clé de remplacement, contenu j
   const denied = raised(() => h.loadStaffKey({ ...h.SERVER, staffKeyFile: null }, DATA));
   assert.equal(denied.message, 'data/staff-key impossible à créer (EACCES).');
   assert.equal(h.memory.disk.has(STAFF_KEY_FILE_IN_DATA), false);
+
+  // Dossier data/ impossible à créer (volume en lecture seule) : même raison, rien d'écrit.
+  const m = harness();
+  m.memory.beforeMkdir = () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); };
+  const noDir = raised(() => m.loadStaffKey({ ...m.SERVER, staffKeyFile: null }, DATA));
+  assert.equal(noDir.message, 'data/staff-key impossible à créer (EACCES).');
+  nothingCreated(m, 'mkdirSync en échec');
+
+  // Assez longue mais hors de A-Z, a-z, 0-9, - et _ (base64 classique, espace
+  // intérieure, lettre accentuée) : refusée dans les deux sources, jamais citée.
+  for (const bad of [`${'A'.repeat(20)}+/==`, `${'B'.repeat(11)} ${'C'.repeat(11)}`, 'é'.repeat(22)]) {
+    const file = path.join(keyDir, 'hors-format');
+    fs.writeFileSync(file, `${bad}\n`);
+    const fromFile = raised(() => f.loadStaffKey({ ...f.SERVER, staffKeyFile: file }, DATA));
+    assert.equal(fromFile.message, 'La clé de KARAOKE_STAFF_KEY_FILE doit compter au moins 22 caractères parmi A-Z, a-z, 0-9, - et _.', bad);
+    const d = harness({ files: { 'data/staff-key': `${bad}\n` } });
+    const fromData = raised(() => d.loadStaffKey({ ...d.SERVER, staffKeyFile: null }, DATA));
+    assert.equal(fromData.message, 'data/staff-key ne contient pas une clé valable (au moins 22 caractères parmi A-Z, a-z, 0-9, - et _) : remplace-la avec node server.js --rotate-staff-key.', bad);
+    for (const error of [fromFile, fromData]) assert.equal(error.message.includes(bad), false, `${bad} jamais cité`);
+    nothingCreated(d, bad);
+  }
 
   // data/staff-key illisible (ici un dossier, sur le vrai disque du test).
   const blocked = path.join(keyDir, 'data-bloque');
