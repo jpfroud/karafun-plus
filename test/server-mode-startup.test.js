@@ -439,7 +439,7 @@ if (require.main === module) {
     fs.mkdirSync(path.dirname(tablesPath));
     fs.writeFileSync(tablesPath, JSON.stringify({ version: 1, baseUrl: 'https://ancien.exemple.fr',
       tables: [{ id: '1', name: null, headcount: null, individual: false, secret: crypto.randomBytes(16).toString('base64url') }] }));
-    return { dir, tablesPath, tablesBaseUrl: () => JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl };
+    return { dir, tablesBaseUrl: () => JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl };
   };
   const baseUrlWarnings = child => completeLines(child).filter(line => line.startsWith('Attention : data/tables.json'));
   // Lignes d'avertissement dans les journal/serveur-<date>.log de la copie.

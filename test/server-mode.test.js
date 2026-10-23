@@ -956,6 +956,10 @@ test('T15 en-tête cru seulement d’un proxy de confiance, et seulement s’il 
     ['liste 10.1.0.0/16, socket 172.18.0.5', { env: { KARAOKE_TRUSTED_PROXIES: '10.1.0.0/16' }, remote: '172.18.0.5', headers: varying }, counted],
     ['liste 10.1.0.0/16, socket 10.1.2.3', { env: { KARAOKE_TRUSTED_PROXIES: '10.1.0.0/16' }, remote: '10.1.2.3', headers: varying }, believed],
     ['liste par défaut, socket ::ffff:172.18.0.5', { remote: '::ffff:172.18.0.5', headers: varying }, believed],
+    // Proxy en IPv6 pur (::1/128 et fc00::/7 de la liste par défaut), contrôlé en ipv6.
+    ['liste par défaut, socket ::1', { remote: '::1', headers: varying }, believed],
+    ['liste par défaut, socket fd00::5', { remote: 'fd00::5', headers: varying }, believed],
+    ['socket 2001:db8::7 hors liste', { remote: '2001:db8::7', headers: varying }, counted],
     ['KARAOKE_CLIENT_IP_HEADER=CF-Connecting-IP, socket 127.0.0.1', { env: { KARAOKE_CLIENT_IP_HEADER: 'CF-Connecting-IP' },
       remote: '127.0.0.1', headers: i => ({ 'cf-connecting-ip': `2001:db8:${i}::1` }) }, believed],
   ];
