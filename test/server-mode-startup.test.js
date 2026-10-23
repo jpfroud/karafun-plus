@@ -435,6 +435,7 @@ if (require.main === module) {
         clearTimeout(timer);
       } finally { await child.stop(); }
       assert.deepEqual(exit, { code: 1, signal: null }, outputs(child));
+      // gstack-timing-ok: borne fixée par TX5 (issue #28), égale au chien de garde SIGKILL ci-dessus ; sortie observée en moins d'une seconde.
       assert.ok(Date.now() - started < 15000, 'sortie en moins de 15 s');
       const lines = completeLines(child);
       assert.ok(lines.includes('Le port 3250 est déjà utilisé : une autre instance de la file tourne peut-être déjà sur ce serveur.'),
@@ -730,7 +731,7 @@ if (require.main === module) {
 
   test('R10b ancienne adresse gardée au journal quand le port du bar est pris au premier démarrage du mode serveur', () =>
     failedFirstStart({ busy: port => port,
-      lastLine: port => new RegExp(`^Le port ${port} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre\\.$`) }));
+      lastLine: port => new RegExp(`^Le port ${port} est déjà utilisé : une autre instance de la file tourne peut-être déjà sur ce serveur\\.$`) }));
 
   test('R10c ancienne adresse gardée au journal quand le port clients est pris au premier démarrage du mode serveur', () =>
     failedFirstStart({ busy: port => port + 1, lastLine: port => new RegExp(`^Port public ${port + 1} indisponible : `) }));
