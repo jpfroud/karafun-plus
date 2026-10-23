@@ -16,7 +16,8 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 IMAGE=$1
-RACINE=$(cd "$(dirname "$0")/.." && pwd)
+# realpath, pas cd && pwd : avec CDPATH exporté, cd écrit le dossier trouvé.
+RACINE=$(realpath -- "$(dirname -- "$0")/..")
 SOURCE=https://github.com/jpfroud/karafun-plus
 SOIREE=test/fixtures/soiree-2026-10-15-anonyme.json
 
@@ -52,7 +53,7 @@ nettoyer() {
   set +e
   # Commande en échec hors d'un contrôle (set -e) : signalée, code 1.
   if [ "$code" != 0 ] && [ "$SIGNALE" = 0 ] && [ "$code" != 130 ] && [ "$code" != 143 ]; then
-    echo "ÉCHEC ${ID:-préparation} $LIBELLE : commande en échec (code $code), voir les journaux ci-dessous" >&2
+    echo "ÉCHEC ${ID:-préparation} $LIBELLE : commande en échec (code $code)" >&2
     code=1
   fi
   while IFS= read -r nom; do
@@ -118,6 +119,11 @@ verifier_json() {
 }
 # Sortie de docker logs (stdout et stderr) dans un fichier.
 journaux() { docker logs "$1" > "$2" 2>&1; }
+# sans_cle <fichier de journaux> : ni la clé du bar ni un lien staff?key=.
+sans_cle() {
+  ! grep -qF -- "$KEY" "$1" || echec "la clé du bar apparaît dans docker logs"
+  ! grep -qF 'staff?key=' "$1" || echec "un lien staff?key= apparaît dans docker logs"
+}
 # empreinte <clé> : début du SHA-256, comme le journal du serveur.
 empreinte() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 8))' "$1"; }
 ligne_au_journal() { journaux "$1" "$TMP/attente.log" && grep -qE "$2" "$TMP/attente.log"; }
@@ -395,6 +401,9 @@ read -r IP _ <<< "$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPA
 [[ $IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || echec "adresse IP du conteneur introuvable"
 REPONSE=$(requete --max-time 3 -w '\n%{http_code}' "http://$IP:3000/healthz") || echec "http://$IP:3000/healthz en échec"
 [ "$REPONSE" = $'ok\n200' ] || echec "http://$IP:3000/healthz : $(tr '\n' ' ' <<< "$REPONSE")"
+# Le refus ci-dessous ne prouve quelque chose que si le faux KaraFun écoute bien sur 127.0.0.1:4001.
+docker exec "$DEMO" node -e 'fetch("http://127.0.0.1:4001/").then(() => process.exit(0), () => process.exit(1))' \
+  || echec "faux KaraFun absent de 127.0.0.1:4001 dans le conteneur : le refus sur $IP:4001 ne prouverait rien"
 code=0
 requete --max-time 3 -o /dev/null "http://$IP:4001/" 2> /dev/null || code=$?
 [ "$code" = 7 ] || echec "http://$IP:4001/ : curl code $code, attendu 7 (connexion refusée : faux KaraFun sur 127.0.0.1 seulement)"
@@ -409,8 +418,7 @@ ok
 # ---------------------------------------------------------------- V25
 controle V25 'journaux sans clé'
 journaux "$DEMO" "$TMP/demo.log"
-! grep -qF -- "$KEY" "$TMP/demo.log" || echec "la clé du bar apparaît dans docker logs"
-! grep -qF 'staff?key=' "$TMP/demo.log" || echec "un lien staff?key= apparaît dans docker logs"
+sans_cle "$TMP/demo.log"
 ! grep -qF 'Laisse cette fenêtre ouverte' "$TMP/demo.log" || echec "texte du mode PC « Laisse cette fenêtre ouverte » dans docker logs"
 grep -qE '^Mode +: serveur$' "$TMP/demo.log" || echec "ligne « Mode : serveur » absente"
 grep -qE '^Fuseau horaire +: Europe/Paris$' "$TMP/demo.log" || echec "ligne « Fuseau horaire : Europe/Paris » absente"
@@ -506,7 +514,13 @@ ok
 
 # ---------------------------------------------------------------- V31
 controle V31 'arrêt par SIGTERM journalisé'
+# Son absence après l'arrêt ne prouve quelque chose que s'il existe pendant la marche.
+docker exec "$SOIREE1" test -f /app/data/runtime-3000.json \
+  || echec "data/runtime-3000.json absent pendant la marche : son absence après l'arrêt ne prouverait rien"
 arreter "$SOIREE1"
+# Clé créée dans data/staff-key (chemin du serveur) : absente de docker logs.
+journaux "$SOIREE1" "$TMP/soiree.log"
+sans_cle "$TMP/soiree.log"
 COPIE=$TMP/copie
 mkdir "$COPIE"
 docker cp -q "$SOIREE1:/app/data" "$COPIE/data" || echec "docker cp de /app/data en échec"
@@ -569,6 +583,8 @@ ok
 # ---------------------------------------------------------------- V35
 controle V35 'second arrêt'
 arreter "$SOIREE2"
+journaux "$SOIREE2" "$TMP/soiree2.log"
+sans_cle "$TMP/soiree2.log"
 ok
 
 # ---------------------------------------------------------------- V36

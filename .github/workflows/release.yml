@@ -137,6 +137,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           overwrite: true
+          # ZIP déjà compressé : ne pas le recompresser.
+          compression-level: 0
 
   image:
     needs: tests
@@ -230,6 +232,11 @@ jobs:
     needs: [kit-windows, image]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Une publication à la fois, toutes versions confondues : latest est lu puis
+    # posé sans course. Un troisième publier en attente annule le précédent : le relancer.
+    concurrency:
+      group: release-publier
+      cancel-in-progress: false
     permissions:
       contents: write
       packages: write
@@ -302,20 +309,37 @@ jobs:
             fi
             SOURCES+=("$IMAGE@sha256:${fichier##*/}")
           done
+          # lire_index <image:étiquette> : index publié dans INDEX (stdout seul) ;
+          # code 1 si l'étiquette n'existe pas encore, arrêt sur toute autre erreur.
+          lire_index() {
+            if INDEX=$(docker buildx imagetools inspect --raw "$1" 2> "$RUNNER_TEMP/inspect.err"); then
+              return 0
+            fi
+            if grep -qiE 'not found|manifest unknown' "$RUNNER_TEMP/inspect.err"; then
+              return 1
+            fi
+            echo "Lecture de ${1##*:} impossible : $(sed -n 1p "$RUNNER_TEMP/inspect.err")" >&2
+            exit 1
+          }
+          # Étiquette déjà publiée pour un autre commit (tag déplacé ou recréé) : jamais remplacée.
+          if lire_index "$IMAGE:$RELEASE_TAG"; then
+            REVISION=$(jq -r '.annotations["org.opencontainers.image.revision"] // ""' <<< "$INDEX")
+            if [ "$REVISION" != "$GITHUB_SHA" ]; then
+              echo "Cette version désigne déjà un autre commit (image $RELEASE_TAG : ${REVISION:-sans révision})." >&2
+              exit 1
+            fi
+          fi
           ETIQUETTES=(-t "$IMAGE:$RELEASE_TAG")
           LATEST=0
           # latest : la plus haute version sans suffixe, jamais en recul.
           if [[ $RELEASE_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             ACTUELLE=''
-            if INDEX=$(docker buildx imagetools inspect --raw "$IMAGE:latest" 2>&1); then
+            if lire_index "$IMAGE:latest"; then
               ACTUELLE=$(jq -r '.annotations["org.opencontainers.image.version"] // ""' <<< "$INDEX")
-            elif ! grep -qiE 'not found|manifest unknown' <<< "$INDEX"; then
-              echo "Lecture de latest impossible : $(sed -n 1p <<< "$INDEX")" >&2
-              exit 1
             fi
             PREMIERE=$(printf '%s\n' "$RELEASE_TAG" "$ACTUELLE" | sort -V | sed -n 1p)
             if [ -n "$ACTUELLE" ] && [ "$ACTUELLE" != "$RELEASE_TAG" ] && [ "$PREMIERE" = "$RELEASE_TAG" ]; then
-              echo "latest reste sur $ACTUELLE, plus récente que $RELEASE_TAG."
+              echo "::warning::latest reste sur $ACTUELLE, plus récente que $RELEASE_TAG."
             else
               ETIQUETTES+=(-t "$IMAGE:latest")
               LATEST=1
