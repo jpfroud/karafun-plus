@@ -1,0 +1,40 @@
+# Entrée HTTPS de karafun-plus, valeurs lues dans deploy/.env.
+{
+	email {$ACME_EMAIL}
+	# Erreurs sans adresse ni en-têtes : ils portent la clé du bar et les accès.
+	log default {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>uri delete
+				request>headers delete
+			}
+		}
+	}
+}
+
+# Téléphones des clients (QR imprimés).
+{$HOTE_CLIENTS} {
+	reverse_proxy app:3001 {
+		header_up X-Real-IP {remote_host}
+		transport http {
+			keepalive 50s
+		}
+	}
+}
+
+# Page du bar : mot de passe Caddy en plus de la clé du bar.
+{$HOTE_BAR} {
+	basic_auth {
+		{$BAR_USER} {$BAR_PASSWORD_HASH}
+	}
+	reverse_proxy app:3000 {
+		header_up X-Real-IP {remote_host}
+		# Le mot de passe ne va pas à l'application.
+		header_up -Authorization
+		transport http {
+			keepalive 50s
+		}
+	}
+}

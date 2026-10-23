@@ -1,0 +1,10 @@
+# Essai de deploy/compose.yaml : Caddy sur un port éphémère, app remplacée par un écho.
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1::80"
+  app:
+    image: node:22-bookworm-slim
+    entrypoint: ["node", "-e", "const h=require('http');for(const p of [3000,3001])h.createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({port:p,url:q.url,headers:q.headers}))}).listen(p,'0.0.0.0')"]
+    command: []
+    volumes: !reset []
