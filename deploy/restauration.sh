@@ -5,6 +5,9 @@
 # relancée à la fin, même en cas d'échec.
 #   ./restauration.sh sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz
 set -euo pipefail
+# Sans CDPATH : lancé en deploy/restauration.sh, « cd deploy » pourrait suivre
+# un autre dossier deploy trouvé par CDPATH.
+unset CDPATH
 
 if [ "$#" -ne 1 ]; then
   echo "Usage : ./restauration.sh sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz" >&2
@@ -57,9 +60,11 @@ relancer() {
   fi
   exit "$code"
 }
-# Une application en boucle de redémarrage (restarting) compte comme en
-# marche : sinon Docker la relancerait sur des données à moitié remplacées.
-etat=$(docker compose ps --status running --status restarting --quiet app)
+# Une application en boucle de redémarrage (restarting) ou en pause (paused)
+# compte comme en marche : Docker relancerait la première sur des données à
+# moitié remplacées ; la seconde reprendrait plus tard et écrirait son ancien
+# état par-dessus la soirée restaurée.
+etat=$(docker compose ps --status running --status restarting --status paused --quiet app)
 trap relancer EXIT
 if [ -n "$etat" ]; then
   echo "Arrêt de la file karaoké."

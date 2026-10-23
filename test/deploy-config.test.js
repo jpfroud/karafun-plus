@@ -422,7 +422,9 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
   // Lance un script dans un état neuf : app (data/ et journal/ en 0755,
   // data/staff-key « ancienne »), sauvegardes/ vide, service app dans l'état
   // donné ; before() prépare le reste juste avant le lancement.
-  const run = (script, { state, args = [], input = '', env = {}, before }) => {
+  // relative : lancé depuis le dossier parent en deploy/<script>, comme
+  // « deploy/sauvegarde.sh » depuis ~/karafun-plus.
+  const run = (script, { state, args = [], input = '', env = {}, before, relative = false }) => {
     fs.rmSync(at('app'), { recursive: true, force: true });
     fs.rmSync(at('deploy', 'sauvegardes'), { recursive: true, force: true });
     fs.mkdirSync(at('app', 'data'), { recursive: true });
@@ -432,8 +434,8 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
     fs.writeFileSync(at('state'), `${state}\n`);
     fs.writeFileSync(at('calls.log'), '');
     if (before) before();
-    const r = spawnSync('bash', [at('deploy', script), ...args], {
-      cwd: at('deploy'), input, encoding: 'utf8',
+    const r = spawnSync('bash', [relative ? `deploy/${script}` : at('deploy', script), ...args], {
+      cwd: relative ? dir : at('deploy'), input, encoding: 'utf8',
       env: { ...process.env, PATH: `${at('bin')}${path.delimiter}${process.env.PATH}`,
         FAKE_STATE: at('state'), FAKE_LOG: at('calls.log'), FAKE_APP: at('app'), ...env },
     });
@@ -471,6 +473,33 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
   assert.equal(r.state, 'running', 'app relancée');
   // Dossiers 0755 de l'archive refermés par le chmod 700 final.
   assert.deepEqual([mode('app', 'data'), mode('app', 'journal')], ['700', '700'], 'droits de data/ et journal/ après restauration');
+
+  // App en pause (paused) : elle reprendrait plus tard avec l'ancien état. Arrêtée
+  // avant la copie et avant le remplacement, puis relancée.
+  r = run('sauvegarde.sh', { state: 'paused' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.calls.map(c => `${c.command} (${c.during})`),
+    ['compose ps (paused)', 'compose stop (paused)', 'compose run (exited)', 'compose start (exited)'], 'sauvegarde, app en pause');
+  assert.equal(lines(r.stdout)[0], 'Arrêt de la file karaoké le temps de la copie.');
+  r = run('restauration.sh', { state: 'paused', args: [archive], input: 'RESTAURER\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.calls[1] && `${r.calls[1].command} (${r.calls[1].during})`, 'compose stop (paused)', 'restauration, app en pause non arrêtée');
+  assert.deepEqual(r.calls.filter(c => c.command === 'compose run').map(c => c.during), ['exited', 'exited'], 'données copiées ou remplacées pendant que app est en pause');
+  assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'restauree\n', 'données restaurées (app en pause)');
+  assert.equal(r.state, 'running', 'app relancée après une pause');
+
+  // Scripts lancés en deploy/<script> avec CDPATH exporté vers un autre dossier
+  // deploy : ils travaillent quand même à côté d'eux.
+  fs.mkdirSync(at('autre', 'deploy'), { recursive: true });
+  r = run('sauvegarde.sh', { state: 'running', relative: true, env: { CDPATH: at('autre') } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(backups().length, 1, 'sauvegarde écrite ailleurs qu\'à côté du script (CDPATH)');
+  assert.deepEqual(fs.readdirSync(at('autre', 'deploy')), [], 'autre dossier deploy touché (CDPATH)');
+  r = run('restauration.sh', { state: 'running', relative: true, args: [archive], input: 'RESTAURER\n', env: { CDPATH: at('autre') } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(backups().length, 1, 'sauvegarde de sécurité écrite ailleurs qu\'à côté du script (CDPATH)');
+  assert.deepEqual(fs.readdirSync(at('autre', 'deploy')), [], 'autre dossier deploy touché par la restauration (CDPATH)');
+  assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'restauree\n', 'données restaurées (script en deploy/, CDPATH)');
 
   // Chemin relatif avec CDPATH exporté : « cd » y écrit le dossier trouvé, qui
   // ne doit pas entrer dans le chemin absolu de l'archive.

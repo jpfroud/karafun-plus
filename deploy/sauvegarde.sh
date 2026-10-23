@@ -4,6 +4,9 @@
 # de la copie (état de soirée cohérent), puis relancée, même en cas d'échec.
 #   ./sauvegarde.sh
 set -euo pipefail
+# Sans CDPATH : lancé en deploy/sauvegarde.sh, « cd deploy » pourrait suivre
+# un autre dossier deploy trouvé par CDPATH.
+unset CDPATH
 
 cd "$(dirname "$0")"
 umask 077
@@ -31,9 +34,10 @@ fin() {
 }
 trap fin EXIT
 
-# Une application en boucle de redémarrage (restarting) compte comme en
-# marche : sinon Docker la relancerait pendant la copie.
-etat=$(docker compose ps --status running --status restarting --quiet app)
+# Une application en boucle de redémarrage (restarting) ou en pause (paused)
+# compte comme en marche : Docker relancerait la première pendant la copie ; la
+# seconde a pu être figée au milieu d'une écriture.
+etat=$(docker compose ps --status running --status restarting --status paused --quiet app)
 if [ -n "$etat" ]; then
   echo "Arrêt de la file karaoké le temps de la copie."
   arretee=1
