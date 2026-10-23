@@ -109,16 +109,34 @@ function graph(entries) {
 }
 
 // Lectures path.join(__dirname, '<littéral>', …) : dossier du fichier plus
-// premier littéral, rapporté à la racine.
+// premier littéral, rapporté à la racine. Si ce premier littéral ramène à la
+// racine (« .. » depuis tools/ ou solver/), « racine » ne vaut que pour l'appel
+// qui s'y arrête (ROOT de solver/bridge.js:11) : suivi d'autres littéraux, le
+// chemin entier est classé ; d'un argument non littéral ou d'une suite sur une
+// autre ligne, la lecture n'est pas classée.
 function readsOf(file, text) {
   const reads = [];
+  const fromFile = (...parts) => path.posix.normalize(path.posix.join(path.posix.dirname(file), ...parts));
   text.split(/\r?\n/).forEach((line, index) => {
     if (comment(line)) return;
     for (const match of line.matchAll(/path\.join\(\s*__dirname\s*([,)])/g)) {
-      const rest = line.slice(match.index + match[0].length);
-      const first = match[1] === ')' ? '' : /^\s*(['"])([^'"\\]*)\1/.exec(rest)?.[2];
-      const target = first === undefined ? '<non littéral>'
-        : path.posix.normalize(path.posix.join(path.posix.dirname(file), first));
+      // Littéraux qui suivent __dirname sur la ligne ; closed : l'appel se ferme
+      // juste après le dernier.
+      const parts = [];
+      let closed = match[1] === ')';
+      let rest = line.slice(match.index + match[0].length);
+      while (!closed) {
+        const next = /^\s*(['"])([^'"\\]*)\1\s*([,)]?)/.exec(rest);
+        if (!next) break;
+        parts.push(next[2]);
+        closed = next[3] === ')';
+        if (next[3] !== ',') break;
+        rest = rest.slice(next[0].length);
+      }
+      let target = closed || parts.length ? fromFile(...parts.slice(0, 1)) : '<non littéral>';
+      if (target === '.' && parts.length && !(closed && parts.length === 1)) {
+        target = closed ? fromFile(...parts) : '<non littéral>';
+      }
       reads.push({ where: `${file}:${index + 1}`, target });
     }
   });
@@ -227,6 +245,15 @@ test('K4 lectures par __dirname classées', () => {
   }
   assert.throws(() => classify(readsOf('exemple.js', "fs.readFileSync(path.join(__dirname, 'secret.txt'));\n")[0]),
     { message: 'Lecture par path.join(__dirname, …) non classée : exemple.js:1 → secret.txt' });
+  // Premier littéral qui ramène à la racine (« .. » depuis tools/) : la suite
+  // du chemin est classée ; seul l'appel qui s'y arrête (ROOT de
+  // solver/bridge.js:11) est « racine ».
+  assert.throws(() => classify(readsOf('tools/x.js', "fs.readFileSync(path.join(__dirname, '..', 'GUIDE-BAR.md'));\n")[0]),
+    { message: 'Lecture par path.join(__dirname, …) non classée : tools/x.js:1 → GUIDE-BAR.md' });
+  assert.throws(() => classify(readsOf('tools/x.js', "fs.readFileSync(path.join(__dirname, '..', nom));\n")[0]),
+    { message: 'Lecture par path.join(__dirname, …) non classée : tools/x.js:1 → <non littéral>' });
+  assert.equal(classify(readsOf('tools/x.js', "const dir = path.join(__dirname, '..', 'data');\n")[0]), 'exécution');
+  assert.equal(classify(readsOf('solver/bridge.js', "const ROOT = path.join(__dirname, '..');\n")[0]), 'racine');
   // Produits : écrits par les constructeurs du kit et de l'image, et mis dans
   // le ZIP par le kit. Ancré sur les écritures et sur la liste $produits, pas
   // sur la seule présence du nom, que PRODUCTS ou $produits suffiraient à
