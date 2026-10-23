@@ -5,7 +5,9 @@
 // sont recopiées de la spécification, jamais lues dans les fichiers vérifiés.
 // Aucun Docker ici : la construction et le déploiement réels sont vérifiés par
 // test/verifier-deploiement.sh (Linux). Les contrôles git (attributs, modes,
-// fichiers ignorés) sont sautés sans dépôt.
+// fichiers ignorés) sont sautés sans dépôt. D6 lance les deux scripts de
+// deploy/ (bash, hors Windows) avec un faux docker qui simule l'état du
+// service app.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -263,15 +265,40 @@ test('D4 .env.example et mot de passe', () => {
     'commande d’empreinte au clavier');
 
   // Variables : celles de .env.example, ni plus ni moins, dans compose.yaml ;
-  // celles du Caddyfile passées à caddy par compose.yaml.
+  // environnement de chaque service exactement celui de la section 3 (celles
+  // du Caddyfile à caddy, les deux origines à app, aucune valeur en clair).
   const compose = read('deploy/compose.yaml');
   const composeVars = [...compose.matchAll(/\$\{([A-Z_]+):\?à renseigner dans deploy\/\.env\}/g)].map(m => m[1]);
   assert.equal([...compose.matchAll(/\$\{/g)].length, composeVars.length, 'variable de compose.yaml sans « :?à renseigner »');
   assert.deepEqual([...new Set(composeVars)].sort(), Object.keys(values).sort(), 'variables de compose.yaml');
+  const composeLines = compose.split('\n');
+  const environment = service => {
+    const start = composeLines.indexOf(`  ${service}:`);
+    assert.ok(start >= 0, `service ${service} absent de deploy/compose.yaml`);
+    const end = composeLines.findIndex((line, n) => n > start && /^ {0,2}\S/.test(line));
+    const block = composeLines.slice(start + 1, end < 0 ? undefined : end);
+    const from = block.indexOf('    environment:');
+    assert.ok(from >= 0, `environment absent du service ${service}`);
+    const entries = [];
+    for (const line of block.slice(from + 1)) {
+      if (!line.startsWith('      ')) break;
+      entries.push(line.trim());
+    }
+    return entries;
+  };
+  const required = name => `${name}: \${${name}:?à renseigner dans deploy/.env}`;
   const caddyVars = [...new Set([...read('deploy/Caddyfile').matchAll(/\{\$([A-Z_]+)\}/g)].map(m => m[1]))].sort();
   assert.deepEqual(caddyVars, ['ACME_EMAIL', 'BAR_PASSWORD_HASH', 'BAR_USER', 'HOTE_BAR', 'HOTE_CLIENTS']);
-  for (const name of caddyVars) {
-    assert.match(compose, new RegExp(`^      ${name}: \\$\\{${name}:\\?`, 'm'), `${name} non passé à caddy`);
+  assert.deepEqual(environment('caddy'), ['ACME_EMAIL', 'HOTE_CLIENTS', 'HOTE_BAR', 'BAR_USER', 'BAR_PASSWORD_HASH'].map(required),
+    'environnement de caddy');
+  assert.deepEqual(environment('app'), ['KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL'].map(required), 'environnement de app');
+  // Le vérificateur retire de son environnement chaque réglage de .env.example
+  // (sinon une valeur du shell primerait sur son .env d'essai).
+  const unset = /^unset ((?:[^\n]*\\\n)*[^\n]*)$/m.exec(read(VERIFIER));
+  assert.ok(unset, `ligne unset absente de ${VERIFIER}`);
+  const unsetNames = unset[1].split(/[\s\\]+/).filter(Boolean);
+  for (const key of Object.keys(values)) {
+    assert.ok(unsetNames.includes(key), `${key} non retiré de l’environnement par ${VERIFIER}`);
   }
 
   for (const file of [...COMMAND_FILES, FIXTURE, 'Dockerfile']) {
@@ -311,7 +338,129 @@ test('D5 attributs git et modes', t => {
     [VERIFIER]: '100644',
   }, 'fichiers versionnés et modes');
 
-  for (const [file, status] of [['deploy/.env', 0], ['deploy/sauvegardes/x.tar.gz', 0], ['deploy/.env.example', 1]]) {
-    assert.equal(git(['check-ignore', '-q', file]).status, status, `git check-ignore -q ${file}`);
+  // deploy/.env.example est suivi : sans --no-index, git ne le compare pas aux
+  // règles et répond 1 même sans « !.env.example » dans .gitignore.
+  for (const args of [['deploy/.env'], ['deploy/sauvegardes/x.tar.gz']]) {
+    assert.equal(git(['check-ignore', '-q', ...args]).status, 0, `git check-ignore -q ${args.join(' ')}`);
+  }
+  const example = ['--no-index', 'deploy/.env.example'];
+  assert.equal(git(['check-ignore', '-q', ...example]).status, 1, `git check-ignore -q ${example.join(' ')}`);
+});
+
+// Faux docker des scripts de deploy/ : état du service app dans $FAKE_STATE
+// (running, restarting ou exited), chaque appel noté dans $FAKE_LOG avec l'état
+// du moment, « compose run » rejoué sur $FAKE_APP à la place de /app.
+const FAKE_DOCKER = [
+  '#!/usr/bin/env bash',
+  'set -u',
+  'etat=$(cat "$FAKE_STATE")',
+  'printf \'%s|%s\\n\' "$etat" "$*" >> "$FAKE_LOG"',
+  '[ "$1" = compose ] || exit 99',
+  'shift',
+  'case $1 in',
+  '  ps)',
+  '    while [ "$#" -gt 0 ]; do',
+  '      if [ "$1" = --status ] && [ "${2:-}" = "$etat" ]; then echo 0123456789ab; break; fi',
+  '      shift',
+  '    done ;;',
+  '  stop) echo exited > "$FAKE_STATE" ;;',
+  '  start | up) echo running > "$FAKE_STATE" ;;',
+  '  run)',
+  '    [ "${FAKE_RUN_FAIL:-}" = 1 ] && exit 1',
+  '    shift 5 # run --rm --no-deps -T app',
+  '    if [ "$1" = sh ] && [ "$2" = -c ]; then exec sh -c "${3//\\/app/$FAKE_APP}"; fi',
+  '    args=()',
+  '    for a in "$@"; do args+=("${a//\\/app/$FAKE_APP}"); done',
+  '    exec "${args[@]}" ;;',
+  '  *) exit 99 ;;',
+  'esac',
+  '',
+].join('\n');
+
+test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32' && 'scripts bash du VPS (Linux)' }, t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-scripts-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const at = (...parts) => path.join(dir, ...parts);
+  for (const sub of ['bin', 'deploy', 'archives', 'src/data', 'src/journal']) fs.mkdirSync(at(sub), { recursive: true });
+  fs.writeFileSync(at('bin', 'docker'), FAKE_DOCKER, { mode: 0o755 });
+  for (const script of ['sauvegarde.sh', 'restauration.sh']) {
+    fs.copyFileSync(path.join(root, 'deploy', script), at('deploy', script));
+    fs.chmodSync(at('deploy', script), 0o755);
+  }
+  fs.writeFileSync(at('src', 'data', 'staff-key'), 'restauree\n');
+  fs.writeFileSync(at('src', 'journal', 'j.log'), 'ligne\n');
+  fs.writeFileSync(at('src', 'LICENSE'), 'licence\n');
+  const tar = (archive, ...entries) => {
+    const r = spawnSync('tar', ['-czf', at('archives', archive), '-C', at('src'), ...entries], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return at('archives', archive);
+  };
+  const archive = tar('a.tar.gz', 'data', 'journal');
+  const lines = text => text.split('\n').filter(Boolean);
+  // Lance un script dans un état neuf : app (data/staff-key « ancienne »),
+  // sauvegardes/ vide, service app dans l'état donné.
+  const run = (script, { state, args = [], input = '', env = {} }) => {
+    fs.rmSync(at('app'), { recursive: true, force: true });
+    fs.rmSync(at('deploy', 'sauvegardes'), { recursive: true, force: true });
+    fs.mkdirSync(at('app', 'data'), { recursive: true });
+    fs.mkdirSync(at('app', 'journal'));
+    fs.writeFileSync(at('app', 'data', 'staff-key'), 'ancienne\n');
+    fs.writeFileSync(at('state'), `${state}\n`);
+    fs.writeFileSync(at('calls.log'), '');
+    const r = spawnSync('bash', [at('deploy', script), ...args], {
+      cwd: at('deploy'), input, encoding: 'utf8',
+      env: { ...process.env, PATH: `${at('bin')}${path.delimiter}${process.env.PATH}`,
+        FAKE_STATE: at('state'), FAKE_LOG: at('calls.log'), FAKE_APP: at('app'), ...env },
+    });
+    const calls = lines(fs.readFileSync(at('calls.log'), 'utf8')).map(line => {
+      const [during, command] = line.split('|');
+      return { during, command: command.split(' ').slice(0, 2).join(' ') };
+    });
+    return { ...r, calls, state: fs.readFileSync(at('state'), 'utf8').trim() };
+  };
+  const backups = () => (fs.existsSync(at('deploy', 'sauvegardes')) ? fs.readdirSync(at('deploy', 'sauvegardes')) : []);
+  const written = /^Sauvegarde écrite : sauvegardes\/karafun-plus-[0-9]{8}-[0-9]{6}Z\.tar\.gz \(.+\)$/;
+
+  // App en boucle de redémarrage (restarting) : Docker la relancerait pendant
+  // la copie ou le remplacement des données. Elle compte comme en marche.
+  let r = run('sauvegarde.sh', { state: 'restarting' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.calls.map(c => `${c.command} (${c.during})`),
+    ['compose ps (restarting)', 'compose stop (restarting)', 'compose run (exited)', 'compose start (exited)'], 'sauvegarde, app en redémarrage');
+  assert.equal(lines(r.stdout).length, 3);
+  assert.equal(lines(r.stdout)[0], 'Arrêt de la file karaoké le temps de la copie.');
+  assert.match(lines(r.stdout)[1], written);
+  assert.equal(lines(r.stdout)[2], 'File karaoké relancée.');
+
+  r = run('restauration.sh', { state: 'restarting', args: [archive], input: 'RESTAURER\n' });
+  assert.equal(r.status, 0, r.stderr);
+  const firstRun = r.calls.findIndex(c => c.command === 'compose run');
+  assert.ok(firstRun > 0 && r.calls.slice(0, firstRun).some(c => c.command === 'compose stop'), 'restauration, app en redémarrage non arrêtée');
+  assert.deepEqual(r.calls.filter(c => c.command === 'compose run').map(c => c.during), ['exited', 'exited'], 'données copiées ou remplacées pendant que app tourne');
+  const out = lines(r.stdout);
+  assert.deepEqual([out.length, ...out.slice(0, 4), ...out.slice(5)], [7, `Les données actuelles seront remplacées par ${archive}.`,
+    'Tape RESTAURER pour confirmer : ', 'Arrêt de la file karaoké.', 'Sauvegarde de l\'état actuel avant restauration :',
+    `Restauration terminée depuis ${archive}.`, 'File karaoké relancée.']);
+  assert.match(out[4], written);
+  assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'restauree\n', 'données restaurées');
+  assert.equal(r.state, 'running', 'app relancée');
+
+  // Copie en échec : rien de partiel gardé, app relancée, code non nul.
+  r = run('sauvegarde.sh', { state: 'running', env: { FAKE_RUN_FAIL: '1' } });
+  assert.notEqual(r.status, 0);
+  assert.deepEqual(backups(), [], 'archive partielle gardée');
+  assert.deepEqual(r.calls.map(c => c.command), ['compose ps', 'compose stop', 'compose run', 'compose start']);
+  assert.equal(lines(r.stdout).at(-1), 'File karaoké relancée.');
+  assert.equal(r.state, 'running');
+
+  // Archives refusées avant toute question : aucun appel à docker.
+  const refused = 'Archive refusée : elle doit contenir data/ et seulement data/ et journal/.';
+  const unreadable = at('archives', 'illisible.tar.gz');
+  fs.writeFileSync(unreadable, 'pas une archive\n');
+  for (const [file, message] of [[tar('journal.tar.gz', 'journal'), refused], [tar('hors.tar.gz', 'data', 'journal', 'LICENSE'), refused],
+    [unreadable, `Archive illisible : ${unreadable}`]]) {
+    r = run('restauration.sh', { state: 'running', args: [file] });
+    assert.deepEqual([r.status, lines(r.stderr).at(-1), r.stdout, r.calls], [1, message, '', []], `refus de ${path.basename(file)}`);
+    assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'ancienne\n');
   }
 });

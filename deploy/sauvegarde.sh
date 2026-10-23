@@ -31,7 +31,9 @@ fin() {
 }
 trap fin EXIT
 
-etat=$(docker compose ps --status running --quiet app)
+# Une application en boucle de redémarrage (restarting) compte comme en
+# marche : sinon Docker la relancerait pendant la copie.
+etat=$(docker compose ps --status running --status restarting --quiet app)
 if [ -n "$etat" ]; then
   echo "Arrêt de la file karaoké le temps de la copie."
   arretee=1

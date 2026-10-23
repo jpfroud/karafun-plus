@@ -56,7 +56,9 @@ relancer() {
   fi
   exit "$code"
 }
-etat=$(docker compose ps --status running --quiet app)
+# Une application en boucle de redémarrage (restarting) compte comme en
+# marche : sinon Docker la relancerait sur des données à moitié remplacées.
+etat=$(docker compose ps --status running --status restarting --quiet app)
 trap relancer EXIT
 if [ -n "$etat" ]; then
   echo "Arrêt de la file karaoké."
