@@ -60,9 +60,14 @@ nettoyer() {
   if [ "$code" != 0 ] && [ "$SIGNALE" = 0 ] && [ -n "$ID" ] && [ "$code" != 130 ] && [ "$code" != 143 ]; then
     echo "ÉCHEC $ID $LIBELLE : commande en échec (code $code), voir les journaux ci-dessous" >&2
   fi
+  # Journal des commandes montré même avant .env (échec de caddy hash-password) :
+  # il est effacé avec $TMP.
+  if [ "$code" != 0 ] && [ -s "$JOURNAL" ]; then
+    echo "--- commandes (50 dernières lignes) ---" >&2
+    tail -n 50 "$JOURNAL" >&2
+  fi
   if [ -f "$DEPLOI/.env" ]; then
     if [ "$code" != 0 ]; then
-      [ -s "$JOURNAL" ] && { echo "--- commandes (50 dernières lignes) ---" >&2; tail -n 50 "$JOURNAL" >&2; }
       for service in caddy app; do
         echo "--- journaux de $service (200 dernières lignes) ---" >&2
         (cd "$DEPLOI" && docker compose logs --no-log-prefix --tail 200 "$service") >&2

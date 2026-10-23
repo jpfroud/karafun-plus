@@ -7,7 +7,8 @@
 // test/verifier-deploiement.sh (Linux). Les contrôles git (attributs, modes,
 // fichiers ignorés) sont sautés sans dépôt. D6 lance les deux scripts de
 // deploy/ (bash, hors Windows) avec un faux docker qui simule l'état du
-// service app.
+// service app ; D7 lance le vérificateur avec de faux docker, curl et ip
+// jusqu'à un échec de préparation.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -17,7 +18,7 @@ const { test } = require('node:test');
 
 const root = path.join(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, ...file.split('/')), 'utf8');
-const manifest = JSON.parse(read('livrable.json').replace(/^﻿/, ''));
+const manifest = JSON.parse(read('livrable.json').replace(/^\uFEFF/, ''));
 const DEPLOY = ['deploy/compose.yaml', 'deploy/Caddyfile', 'deploy/.env.example', 'deploy/sauvegarde.sh', 'deploy/restauration.sh'];
 const VERIFIER = 'test/verifier-deploiement.sh';
 const FIXTURE = 'test/fixtures/compose.essai-caddy.yaml';
@@ -120,6 +121,12 @@ test('D1 Dockerfile et contrat', () => {
 
   for (const file of ['Dockerfile', '.dockerignore', ...COMMAND_FILES, FIXTURE]) {
     assert.ok(!read(file).includes('<propriétaire>'), `« <propriétaire> » laissé dans ${file}`);
+  }
+  // Aucun caractère invisible (BOM, espace insécable ou de largeur nulle) :
+  // un éditeur peut l'effacer sans le montrer. Écrire \uFEFF, jamais le caractère.
+  for (const file of ['Dockerfile', '.dockerignore', ...COMMAND_FILES, FIXTURE, 'test/deploy-config.test.js']) {
+    const line = read(file).split('\n').findIndex(l => /[\uFEFF\u00A0\u202F\u200B-\u200D\u2060]/.test(l));
+    assert.equal(line, -1, `caractère invisible dans ${file}, ligne ${line + 1}`);
   }
 
   // Formes uniques des commandes ponctuelles (en-tête de deploy/compose.yaml).
@@ -350,6 +357,8 @@ test('D5 attributs git et modes', t => {
 // Faux docker des scripts de deploy/ : état du service app dans $FAKE_STATE
 // (running, restarting ou exited), chaque appel noté dans $FAKE_LOG avec l'état
 // du moment, « compose run » rejoué sur $FAKE_APP à la place de /app.
+// FAKE_RUN_FAIL=1 fait échouer tout « compose run » ; tar ou sh, seulement
+// celui de cette commande (copie de sauvegarde.sh ou remplacement).
 const FAKE_DOCKER = [
   '#!/usr/bin/env bash',
   'set -u',
@@ -366,7 +375,7 @@ const FAKE_DOCKER = [
   '  stop) echo exited > "$FAKE_STATE" ;;',
   '  start | up) echo running > "$FAKE_STATE" ;;',
   '  run)',
-  '    [ "${FAKE_RUN_FAIL:-}" = 1 ] && exit 1',
+  '    case ${FAKE_RUN_FAIL:-} in 1 | "$6") exit 1 ;; esac',
   '    shift 5 # run --rm --no-deps -T app',
   '    if [ "$1" = sh ] && [ "$2" = -c ]; then exec sh -c "${3//\\/app/$FAKE_APP}"; fi',
   '    args=()',
@@ -453,6 +462,22 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
   assert.equal(lines(r.stdout).at(-1), 'File karaoké relancée.');
   assert.equal(r.state, 'running');
 
+  // Sauvegarde de sécurité en échec : rien n'est remplacé, app relancée.
+  r = run('restauration.sh', { state: 'running', args: [archive], input: 'RESTAURER\n', env: { FAKE_RUN_FAIL: 'tar' } });
+  assert.notEqual(r.status, 0);
+  assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'ancienne\n', 'données remplacées sans sauvegarde de sécurité');
+  assert.equal(r.calls.filter(c => c.command === 'compose run').length, 1, 'remplacement lancé après une sauvegarde en échec');
+  assert.ok(!r.stdout.includes('Restauration terminée'), 'succès annoncé sans sauvegarde de sécurité');
+  assert.equal(lines(r.stdout).at(-1), 'File karaoké relancée.');
+  assert.equal(r.state, 'running');
+
+  // Remplacement en échec : code non nul, aucun succès annoncé, sauvegarde de
+  // sécurité gardée.
+  r = run('restauration.sh', { state: 'running', args: [archive], input: 'RESTAURER\n', env: { FAKE_RUN_FAIL: 'sh' } });
+  assert.notEqual(r.status, 0);
+  assert.ok(!r.stdout.includes('Restauration terminée'), 'succès annoncé après un remplacement en échec');
+  assert.equal(backups().filter(f => /^karafun-plus-[0-9]{8}-[0-9]{6}Z\.tar\.gz$/.test(f)).length, 1, 'sauvegarde de sécurité absente');
+
   // Archives refusées avant toute question : aucun appel à docker.
   const refused = 'Archive refusée : elle doit contenir data/ et seulement data/ et journal/.';
   const unreadable = at('archives', 'illisible.tar.gz');
@@ -463,4 +488,51 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
     assert.deepEqual([r.status, lines(r.stderr).at(-1), r.stdout, r.calls], [1, message, '', []], `refus de ${path.basename(file)}`);
     assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'ancienne\n');
   }
+
+  // Sans confirmation (stdin fermé, autre réponse, ligne non terminée) : rien
+  // ne change, aucun appel à docker.
+  for (const input of ['', 'non\n', 'RESTAURER']) {
+    r = run('restauration.sh', { state: 'running', args: [archive], input });
+    assert.deepEqual([r.status, lines(r.stdout).at(-1), r.calls], [1, 'Restauration annulée : rien n\'a changé.', []], `réponse ${JSON.stringify(input)}`);
+    assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'ancienne\n');
+  }
+});
+
+// Faux outils du vérificateur : prérequis satisfaits (ports libres, adresse
+// externe), « docker run » de caddy hash-password en échec comme une limite de
+// Docker Hub. Appels à docker notés dans $FAKE_LOG.
+const VERIFIER_TOOLS = {
+  docker: [
+    '#!/usr/bin/env bash',
+    'printf \'%s\\n\' "$*" >> "$FAKE_LOG"',
+    'case "$1 ${2:-}" in',
+    '  "compose version" | "info "* | "image inspect" | "tag "* | "image rm") exit 0 ;;',
+    '  "run "*) echo "docker: toomanyrequests: You have reached your pull rate limit." >&2; exit 125 ;;',
+    '  *) exit 99 ;;',
+    'esac',
+  ],
+  curl: ['#!/usr/bin/env bash', 'exit 7'],
+  ip: ['#!/usr/bin/env bash', 'echo "192.0.2.1 via 192.0.2.254 dev eth0 src 192.0.2.2 uid 0"'],
+};
+
+test('D7 vérificateur : cause d’un échec de préparation visible (faux docker)', { skip: process.platform === 'win32' && 'vérificateur bash (Linux)' }, t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verifier-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  for (const [name, body] of Object.entries(VERIFIER_TOOLS)) fs.writeFileSync(path.join(bin, name), `${body.join('\n')}\n`, { mode: 0o755 });
+  const log = path.join(dir, 'calls.log');
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: log };
+  delete env.NODE_TEST_CONTEXT;
+  const r = spawnSync('bash', [path.join(root, ...VERIFIER.split('/')), 'karafun-plus:essai'], { encoding: 'utf8', env });
+  assert.equal(r.status, 1, r.stderr);
+  assert.ok(r.stderr.split('\n').includes('ÉCHEC préparation : empreinte de caddy hash-password illisible'), r.stderr);
+  // Le journal des commandes est effacé avec le dossier temporaire : sa fin
+  // doit être montrée, sinon la cause (ici Docker Hub) est perdue.
+  assert.match(r.stderr, /toomanyrequests/, 'cause de l’échec absente de stderr');
+  // Étiquette d'essai retirée en dernier.
+  const calls = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean);
+  const tag = calls.find(c => c.startsWith(`tag karafun-plus:essai ${IMAGE}:essai-`));
+  assert.ok(tag, `étiquette d’essai absente : ${calls.join(' ; ')}`);
+  assert.equal(calls.at(-1), `image rm ${tag.split(' ').at(-1)}`, 'étiquette d’essai non retirée');
 });
