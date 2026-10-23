@@ -267,7 +267,11 @@ test('D4 .env.example et mot de passe', () => {
   assert.equal(values.HOTE_BAR, 'bar.exemple.fr');
   assert.equal(values.KARAOKE_PUBLIC_URL, `https://${values.HOTE_CLIENTS}`);
   assert.equal(values.KARAOKE_STAFF_URL, `https://${values.HOTE_BAR}`);
-  assert.equal(values.BAR_PASSWORD_HASH, '\'$2a$14$remplacer.par.l.empreinte.produite.par.caddy.hash.password\'');
+  assert.equal(values.BAR_PASSWORD_HASH, '\'$2a$10$remplacer.par.l.empreinte.produite.par.caddy.hash.password\'');
+  // Coût bcrypt 10 : avec le coût 14 par défaut, chaque essai refusé du mot
+  // de passe du bar coûte environ une seconde de calcul au VPS.
+  assert.ok(read('deploy/.env.example').split('\n').some(l => l.startsWith('#') && l.includes('caddy hash-password --bcrypt-cost 10')),
+    'deploy/.env.example : empreinte au coût bcrypt 10');
   assert.ok(read('deploy/.env.example').split('\n').some(l => l.startsWith('#') && l.includes('docker run --rm -it caddy:2 caddy hash-password')),
     'commande d’empreinte au clavier');
 

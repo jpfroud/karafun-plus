@@ -119,8 +119,8 @@ cd "$DEPLOI"
 docker tag "$IMAGE" "$DEPOT_IMAGE:$TAG"
 ETIQUETTE=1
 MOT=$(node -e 'process.stdout.write(require("crypto").randomBytes(18).toString("base64url"))')
-EMPREINTE=$(printf '%s\n' "$MOT" | docker run --rm -i caddy:2 caddy hash-password 2>> "$JOURNAL") || EMPREINTE=''
-if ! [[ $EMPREINTE =~ ^\$2a\$14\$[./A-Za-z0-9]{53}$ ]]; then
+EMPREINTE=$(printf '%s\n' "$MOT" | docker run --rm -i caddy:2 caddy hash-password --bcrypt-cost 10 2>> "$JOURNAL") || EMPREINTE=''
+if ! [[ $EMPREINTE =~ ^\$2a\$10\$[./A-Za-z0-9]{53}$ ]]; then
   echo "ÉCHEC préparation : empreinte de caddy hash-password illisible" >&2
   exit 1
 fi
