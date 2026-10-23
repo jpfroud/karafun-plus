@@ -1,6 +1,7 @@
 {
   "commun": [
     "LICENSE",
+    "DEPLOIEMENT-SERVEUR.md",
     "package.json",
     "package-lock.json",
     "server.js",

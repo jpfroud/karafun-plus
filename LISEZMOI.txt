@@ -1,8 +1,9 @@
 FILE KARAOKÉ — démarrage et mode d'emploi
 ================================================
 
-Ce programme tourne sur le PC qui fait tourner KaraFun. C'est lui qui décide
-de l'ordre de passage et qui envoie à KaraFun uniquement la chanson suivante.
+Ce programme tourne sur le PC qui fait tourner KaraFun (kit Windows), ou
+sur un serveur Linux. C'est lui qui décide de l'ordre de passage et qui
+envoie à KaraFun uniquement la chanson suivante.
 Un téléphone peut inscrire plusieurs personnes d'une table et préparer
 plusieurs chansons pour chacune. Plusieurs téléphones peuvent se partager la
 table : chacun ne modifie que les personnes qu'il gère. Il affiche la file réelle, les positions et
@@ -13,9 +14,10 @@ change la langue. La page du bar reste en français.
 
 Pour préparer le bar, les QR utilisables en 4G/5G et le déroulement du jour J,
 lis GUIDE-BAR.md. Les étapes ci-dessous servent aussi à un essai sur le Wi-Fi.
+Pour une file sur un serveur Linux, lis DEPLOIEMENT-SERVEUR.md.
 
 
-DÉMARRAGE AU BAR
+DÉMARRAGE AVEC LE KIT WINDOWS
 ----------------------------------
 1. Sur le PC du bar, décompresse KIT-BAR-KARAFUN.zip entièrement, puis ouvre
    le dossier karaoke-bar. Rien à installer pour la file : Node.js et ses
@@ -107,7 +109,18 @@ DÉMARRAGE AU BAR
 
 5. S'il y a un souci, envoie-moi les fichiers du dossier « journal »
    (karafun-AAAA-MM-JJ.jsonl et serveur-AAAA-MM-JJ.log) : ils contiennent
-   tout ce que KaraFun a répondu.
+   tout ce que KaraFun a répondu. Sur un serveur, suis plutôt la section 18
+   de DEPLOIEMENT-SERVEUR.md : ces journaux contiennent des prénoms.
+
+
+SUR UN SERVEUR LINUX
+--------------------
+Si la file tourne sur un serveur (DEPLOIEMENT-SERVEUR.md), rien n'est à
+lancer : elle reste allumée. KaraFun et sa Télécommande restent sur le PC
+du bar. À chaque ouverture, ouvre la page du bar par son lien, puis clique
+une fois sur « Reconnecter ». Le lien s'obtient sur le serveur par
+  docker compose exec app node server.js --print-staff-url
+et ne change pas au redémarrage. Arrêt : docker compose stop app.
 
 
 ESSAYER SANS KARAFUN
@@ -125,13 +138,17 @@ BON À SAVOIR
 - Avec une adresse locale, les téléphones doivent être sur le même réseau que
   le PC (certains Wi-Fi « invités » isolent les appareils). Pour des QR qui
   marchent sans Wi-Fi, configure un domaine HTTPS et un tunnel vers le port
-  client 3001 selon GUIDE-BAR.md. Le port 3000 du bar ne doit pas être publié.
+  client 3001 selon GUIDE-BAR.md. Avec le kit, le port 3000 du bar ne doit
+  pas être publié ; sur un serveur, depuis Internet, la page du bar ne
+  passe que par Caddy (HTTPS et mot de passe du bar) ; l'administrateur
+  garde le tunnel SSH (DEPLOIEMENT-SERVEUR.md).
 - La soirée réelle est sauvegardée automatiquement sur deux générations,
-  data\soiree-a.json et data\soiree-b.json : tables, chanteurs, listes de
+  data/soiree-a.json et data/soiree-b.json : tables, chanteurs, listes de
   chansons, file et réglages sont repris après un redémarrage. Les tables,
   leurs effectifs, leurs liens QR secrets et l'adresse des QR sont aussi
-  conservés dans data\tables.json. Pour sauvegarder ou changer de PC,
-  arrête la file puis copie le dossier data ; protège cette copie, car elle
+  conservés dans data/tables.json. Pour sauvegarder ou changer de PC,
+  arrête la file puis copie le dossier data (sur un serveur :
+  ./sauvegarde.sh) ; protège cette copie, car elle
   contient des accès privés. Après un crash, vérifie la file réelle dans
   KaraFun avant de continuer. Si un envoi était interrompu, l'automatique
   reste suspendu jusqu'au bouton « J'ai vérifié la file KaraFun : reprendre »
@@ -181,13 +198,16 @@ BON À SAVOIR
   retrouve-la sur ce PC via
   http://localhost:3000/. Depuis un téléphone de gérant sur le Wi-Fi local,
   utilise le lien complet sous « Accès du bar depuis un téléphone ».
+  Sur un serveur Linux, l'arrêt se fait par docker compose stop app, et la
+  clé du bar ne change pas au redémarrage (DEPLOIEMENT-SERVEUR.md).
 
 ESSAIS SANS TOUCHER À UNE SOIRÉE RÉELLE
 ---------------------------------------
 Utilise DEMO.bat et la suite hors ligne node test/run-offline.js. Ne lance pas
-test\verif-karafun.js sur une session KaraFun réelle : ce parcours crée des
+test/verif-karafun.js sur une session KaraFun réelle : ce parcours crée des
 tables et modifie la file. Vérifie ensuite les pages du bar et des clients
 dans la simulation locale. Pour une recette sur place, suis GUIDE-BAR.md.
-Contexte complet pour un agent qui reprend le projet : CONTEXTE-REPRISE.md
-Résultats des essais sur ce PC et consignes réseau : RAPPORT-TEST.md
+Absents du kit : CONTEXTE-REPRISE.md (contexte pour un agent, dans le
+dépôt) et RAPPORT-TEST.md (essais, sur le poste de développement).
+Déploiement sur un serveur Linux : DEPLOIEMENT-SERVEUR.md
 Mode d'emploi du jour J et accès Internet : GUIDE-BAR.md

@@ -6,6 +6,7 @@
 !solver/src/
 # livrable.json « commun »
 !LICENSE
+!DEPLOIEMENT-SERVEUR.md
 !package.json
 !package-lock.json
 !server.js
