@@ -561,6 +561,79 @@ test('découverte : WebSocket indisponible sur ce PC', async t => {
   assert.equal(bridge.protocol, null);
 });
 
+// Mode serveur (issue #28) : la file tourne sur un serveur, pas sur « ce PC ».
+// Seul le message change ; motif court, délai, libellé et nature de l'échec
+// restent ceux du mode PC.
+const SERVER_DISCOVERY_TEXTS = {
+  refused: 'Le site KaraFun refuse le serveur de la file (HTTP 403) : KaraFun limite les essais depuis sa connexion, la file réessaiera seule.',
+  network: 'Réseau coupé ou site KaraFun injoignable depuis le serveur de la file : vérifie sa connexion Internet.',
+  'no-websocket': 'WebSocket indisponible sur le serveur de la file : il faut Node 22.',
+};
+const PC_DISCOVERY_TEXTS = {
+  refused: 'Le site KaraFun refuse ce PC (HTTP 403) : KaraFun limite les essais depuis cette connexion, la file réessaiera seule.',
+  network: 'Réseau coupé ou site KaraFun injoignable depuis ce PC : vérifie la connexion Internet.',
+  'no-websocket': 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 22.',
+};
+// Échec de chaque nature : [réponse de la page, WebSocket absent, délai, libellé].
+const DISCOVERY_FAILURES = {
+  refused: [() => ({ ok: false, status: 403, text: async () => 'Forbidden' }), false, 3632500, null],
+  network: [() => { throw new TypeError('fetch failed'); }, false, 5000, 'Réseau coupé : nouvel essai dans 5 s'],
+  'no-websocket': [() => ok(page()), true, 5000, 'WebSocket indisponible : nouvel essai dans 5 s'],
+};
+
+test('découverte en mode serveur : messages sans « ce PC », mêmes délais et mêmes motifs', async t => {
+  for (const kind of Object.keys(DISCOVERY_FAILURES)) {
+    const [respond, noSocket, delay, label] = DISCOVERY_FAILURES[kind];
+    await t.test(kind, async st => {
+      // Horloge arrêtée à 0 et faux réseau communs : chaque pont essaie une
+      // fois, dans les mêmes conditions.
+      mockTime(st);
+      const env = fakes(st, respond);
+      if (noSocket) globalThis.WebSocket = undefined;
+      // Un échec avec ces options du pont : ce que voient le bar et le journal.
+      const failWith = async options => {
+        const { bridge, lines } = bridgeFor(st, options);
+        const before = env.calls.length;
+        bridge.connect(CODE);
+        await flush();
+        const state = bridge.connectionState();
+        const failure = bridge.events.find(e => e.name === 'discovery-error').data;
+        return { lastError: bridge.lastError, lines, failure, delay: bridge.retryAt - Date.now(), calls: env.calls.length - before,
+          phase: state.phase, level: state.level, label: state.label };
+      };
+      const server = await failWith({ appMode: 'server' });
+      const text = SERVER_DISCOVERY_TEXTS[kind];
+      assert.equal(server.lastError, text);
+      assert.doesNotMatch(server.lastError, /ce PC|le kit/);
+      assert.equal(server.lines.length, 1);
+      assert.ok(server.lines[0].startsWith(`KaraFun : ${text} [${kind}`), `journal du serveur : ${server.lines[0]}`);
+      assert.doesNotMatch(server.lines[0], /ce PC|le kit/);
+      assert.equal(server.failure.kind, kind);
+      assert.equal(server.failure.message, text, 'événement discovery-error avec le texte du serveur');
+      assert.equal(server.delay, delay);
+      assert.equal(server.calls, 1, 'une seule page lue');
+      if (label) assert.equal(server.label, label);
+      // Mode PC, mode inconnu et pont sans option : textes du mode PC, mêmes motifs.
+      for (const [name, options] of [['pc', { appMode: 'pc' }], ['autre', { appMode: 'autre' }], ['sans option', {}]]) {
+        const pc = await failWith(options);
+        assert.equal(pc.lastError, PC_DISCOVERY_TEXTS[kind], name);
+        assert.ok(pc.lines[0].startsWith(`KaraFun : ${PC_DISCOVERY_TEXTS[kind]} [${kind}`), name);
+        assert.deepEqual({ ...pc, lastError: null, lines: null, failure: { ...pc.failure, message: null } },
+          { ...server, lastError: null, lines: null, failure: { ...server.failure, message: null } }, `${name} : seul le message change`);
+      }
+    });
+  }
+  // Échec qui ne parle pas du PC : même texte dans les deux modes.
+  await t.test('http', async st => {
+    mockTime(st);
+    fakes(st, () => ({ ok: false, status: 502, text: async () => '' }));
+    const { bridge } = bridgeFor(st, { appMode: 'server' });
+    bridge.connect(CODE);
+    await flush();
+    assert.equal(bridge.lastError, 'Le site KaraFun répond mal (HTTP 502) : nouvel essai automatique.');
+  });
+});
+
 test('maskCode : seuls les deux derniers chiffres restent', () => {
   assert.equal(maskCode('123456'), '••••56');
   assert.equal(maskCode('12 34 35'), '••••35');

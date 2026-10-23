@@ -481,6 +481,36 @@ test('page refusée (429) : plus aucune page avant l’heure pleine, clic refus�
   assert.ok(lines.some(line => line.includes('[refused, HTTP 429')), 'limite au journal du serveur');
 });
 
+// Mode serveur (issue #28) : même limite, sans « cette connexion » ni « autre
+// réseau » : la limite vise le serveur de la file, tout téléphone y échappe.
+const SERVER_LIMIT_ALERT = until => `KaraFun limite les essais depuis le serveur de la file jusqu’à ${until} : inutile de cliquer, la file réessaiera seule. Un téléphone, en Wi-Fi ou en 4G/5G, n’est pas concerné.`;
+
+test('limite de KaraFun en mode serveur : alerte et clic refusé sans « cette connexion »', async t => {
+  // 19:46:10 au bar (UTC+2), comme « page refusée (429) ».
+  const start = Date.parse('2026-10-02T17:46:10Z');
+  mockTime(t, start);
+  const env = fakes(t, () => refused());
+  const { bridge, lines } = bridgeFor(t, { appMode: 'server' });
+  bridge.connect(CODE);
+  await flush();
+  const state = bridge.connectionState();
+  const hour = Date.parse('2026-10-02T18:00:00Z');
+  const alert = SERVER_LIMIT_ALERT('20:00');
+  assert.equal(state.phase, 'retry');
+  assert.equal(state.label, 'KaraFun limite les essais jusqu’à 20:00');
+  assert.equal(state.alert, alert);
+  assert.doesNotMatch(state.alert, /cette connexion|autre réseau/);
+  assert.deepEqual(state.discovery, { used: 1, limit: 12, hourEndsAt: hour, limitedUntil: hour });
+  assert.equal(bridge.retryAt, hour + 32500, 'même essai prévu qu’en mode PC');
+  for (let i = 0; i < 5; i++) {
+    assert.deepEqual(bridge.connect(CODE), { ok: false, reason: 'limited', message: alert });
+  }
+  assert.equal(env.calls.length, 1, 'aucune page lue en plus');
+  assert.equal(bridge.retryAt, hour + 32500, 'le clic ne déplace pas l’essai prévu');
+  const refusal = 'Le site KaraFun refuse le serveur de la file (HTTP 429) : KaraFun limite les essais depuis sa connexion, la file réessaiera seule.';
+  assert.ok(lines.some(line => line.includes('[refused, HTTP 429') && line.includes(refusal)), `journal du serveur :\n${lines.join('\n')}`);
+});
+
 test('KaraFun limite les essais toute la nuit (429) : un essai à chaque heure pleine, jamais arrêté', async t => {
   const start = Date.parse('2026-10-01T22:10:00Z');
   mockTime(t, start);

@@ -135,7 +135,7 @@ function harness({ persistent = false, files = {}, modules = {}, serverEnv = tru
         setPending: value => { pending = value; },
         spotify, loadTables, normalizeBaseUrl, SERVER, STAFF_KEY_INFO, STOP_KEY, server, publicServer,
         isShuttingDown: () => shuttingDown, readServerConfig, loadStaffKey, staffKeyFingerprint, serverStartupLines,
-        phoneBase, BUILD, rotateStaffKey, staffKeyCommand, printedBaseUrlWarning, serverClientAddress };
+        phoneBase, BUILD, rotateStaffKey, staffKeyCommand, printedBaseUrlWarning, serverClientAddress, karafunBridgeOptions, portInUseMessage };
     `, context, { filename: 'server.js' });
   } catch (error) {
     // Refus de démarrer : le disque en mémoire (raison sur stderr) reste lisible.
@@ -1107,5 +1107,53 @@ test('T16 délais keep-alive au-dessus du keepalive du relais HTTPS, sur les deu
   for (const [name, listener] of [['server', pc.server], ['publicServer', pc.publicServer]]) {
     assert.equal(listener.keepAliveTimeout, 5000, `PC ${name}`);
     assert.equal(listener.headersTimeout, 60000, `PC ${name}`);
+  }
+});
+
+// ---------------------------------------------------------------- textes (#28)
+test('TX3 options du pont KaraFun selon le mode', () => {
+  for (const [label, f, appMode] of [['mode PC', harness({ persistent: true, serverEnv: false }), 'pc'],
+    ['mode serveur', harness({ persistent: true }), 'server']]) {
+    const options = f.karafunBridgeOptions();
+    assert.deepEqual(plain(options), { logDir: path.join(root, 'journal'), identityFile: path.join(DATA, 'karafun-login.json'),
+      budgetFile: path.join(DATA, 'karafun-pages.json'), lockOwner: { port: f.PORT }, appMode }, label);
+    assert.equal('bases' in options, true, `${label} : bases présent`);
+    assert.equal(options.bases, undefined, `${label} : sites KaraFun par défaut`);
+    assert.equal(typeof options.log, 'function', `${label} : journal du serveur`);
+  }
+});
+
+test('TX4 port du bar occupé : message selon le mode', () => {
+  const pc = harness({ serverEnv: false });
+  assert.equal(pc.portInUseMessage(), `Le port ${pc.PORT} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre.`);
+  const f = harness();
+  assert.equal(f.portInUseMessage(), `Le port ${f.PORT} est déjà utilisé : une autre instance de la file tourne peut-être déjà sur ce serveur.`);
+  assert.doesNotMatch(f.portInUseMessage(), /fenêtre/);
+});
+
+// TX3 prouve karafunBridgeOptions() seule : ici, « Connecter » du bar crée le
+// pont avec ces options (appMode compris), une seule fois. Pont espion sans
+// réseau ni fichier : connect() ne contacte rien.
+test('TX3b « Connecter » crée le pont KaraFun avec karafunBridgeOptions()', async () => {
+  const karafun = fromServer('./karafun');
+  for (const [label, serverEnv, appMode] of [['mode PC', false, 'pc'], ['mode serveur', true, 'server']]) {
+    const seen = [];
+    class SpyBridge extends karafun.KaraFunBridge {
+      constructor(options) {
+        seen.push(options);
+        super({ ...options, bases: ['https://kf.exemple.invalid'], logDir: null, identityFile: null, budgetFile: null, lockOwner: null });
+      }
+      connect() { return undefined; }
+    }
+    const f = harness({ persistent: true, serverEnv, modules: { './karafun': { ...karafun, KaraFunBridge: SpyBridge } } });
+    for (const code of ['123456', '654321']) {
+      const r = await post(f, withKey('/api/staff/connect', f.STAFF_KEY), { code });
+      assert.equal(r.status, 200, `${label} : ${r.text}`);
+      assert.deepEqual(r.body, { ok: true, kept: false }, label);
+    }
+    assert.equal(seen.length, 1, `${label} : un seul pont`);
+    assert.deepEqual(plain(seen[0]), plain(f.karafunBridgeOptions()), `${label} : options de karafunBridgeOptions()`);
+    assert.equal(seen[0].appMode, appMode, `${label} : mode transmis au pont`);
+    assert.equal(typeof seen[0].log, 'function', `${label} : journal du serveur`);
   }
 });

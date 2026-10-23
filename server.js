@@ -5314,13 +5314,24 @@ if (SERVER) {
 // télécommande n'y paraît que masqué (deux derniers chiffres). Les pages de
 // KaraFun lues dans l'heure (sans code ni URL) sont gardées dans data/ pour
 // qu'un redémarrage de la file ne remette pas leur compteur à zéro.
+// `appMode` : textes du pont (diagnostics, limite de KaraFun) selon le mode.
+function karafunBridgeOptions() {
+  return { logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined, log: appLog,
+    identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json'),
+    budgetFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-pages.json'),
+    lockOwner: DEMO ? null : { port: PORT }, appMode: SERVER ? 'server' : 'pc' };
+}
+
+// Port du bar déjà pris : une autre fenêtre sur le PC, une autre instance sur le serveur.
+function portInUseMessage() {
+  return SERVER ? `Le port ${PORT} est déjà utilisé : une autre instance de la file tourne peut-être déjà sur ce serveur.` :
+    `Le port ${PORT} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre.`;
+}
+
 function connectKaraFun(code = CODE) {
   if (!code) { appLog('Pas de code KaraFun : saisis-le sur la page du bar.'); return 'no-code'; }
   if (!bridge) {
-    bridge = new KaraFunBridge({ logDir: LOG_DIR, bases: DEMO ? [fake.base] : undefined, log: appLog,
-      identityFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-login.json'),
-      budgetFile: DEMO ? null : path.join(__dirname, 'data', 'karafun-pages.json'),
-      lockOwner: DEMO ? null : { port: PORT } });
+    bridge = new KaraFunBridge(karafunBridgeOptions());
     wireBridge(bridge);
   }
   const result = bridge.connect(code);
@@ -5476,7 +5487,7 @@ async function main() {
   });
   server.on('error', (e) => {
     logBaseUrlWarning();
-    if (e.code === 'EADDRINUSE') appLog(`Le port ${PORT} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre.`);
+    if (e.code === 'EADDRINUSE') appLog(portInUseMessage());
     else appLog(`Erreur serveur : ${e.message}`);
     process.exit(1);
   });

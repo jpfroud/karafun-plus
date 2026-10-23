@@ -4493,3 +4493,80 @@ test('adresse des QR en mode serveur : champ en lecture seule, bouton caché, au
   assert.equal(older.$('customBase').readOnly, false, 'état sans app.mode : champ modifiable');
   assert.equal(older.$('saveBase').hidden, false);
 });
+
+// ------------------------------------------------------------------ textes selon le mode (#28)
+// Texte qu'un gérant voit dans un élément du DOM simulé : rien d'un élément
+// caché ni de ses enfants.
+function visibleText(el) {
+  if (el.hidden) return '';
+  if (el._text !== undefined) return el._text;
+  return el.children.map(child => typeof child === 'string' ? decode(child) : visibleText(child)).join('');
+}
+const SERVER_MODE_TEXTS = {
+  baseSummary: 'Adresse des QR',
+  customBaseHint: 'Adresse fixée par KARAOKE_PUBLIC_URL au démarrage du serveur : elle ne se change pas ici. Teste un QR en 4G/5G avant impression.',
+  staffQrIntro: 'Réservé aux gérants. Scanne ce QR depuis ton téléphone, en Wi-Fi ou en 4G/5G. Il ouvre la page du bar par son adresse HTTPS. Ne le montre pas aux clients\u00a0: il donne accès aux commandes de la soirée.',
+  staffQrHint: 'Ce QR reste le même d’un démarrage à l’autre. Il change seulement si la clé du bar est renouvelée sur le serveur.',
+  stopHint: 'Sur le serveur, la file reste allumée : rien à arrêter en fin de soirée, la soirée est enregistrée en continu.',
+};
+const SERVER_ACCESS_TEXT = 'Accès Internet actif si cette adresse mène bien à ce serveur. Vérifie-la en données mobiles.';
+// Consignes du PC du bar, fausses sur le serveur.
+const PC_ONLY_TEXT = /ce PC|PC du bar|ARRETER|Wi-Fi local|Wi-Fi du bar|réseau local|localhost|change à chaque démarrage|fenêtre noire|Arrêter la soirée/;
+
+test('page du bar en mode serveur : adresse des QR, QR des gérants, arrêt et version', async () => {
+  const world = baseWorld();
+  world.app = { version: 'v3.0.2', mode: 'server' };
+  world.phoneBase = 'https://clients.exemple.fr';
+  world.ips = [];
+  world.tables[0].url = 'https://clients.exemple.fr/t/1/abc';
+  const page = await openPage({ world });
+  const check = label => {
+    for (const [id, text] of Object.entries(SERVER_MODE_TEXTS)) assert.equal(page.$(id).textContent, text, `${label} : #${id}`);
+    assert.equal(page.$('accessMode').textContent, SERVER_ACCESS_TEXT, `${label} : #accessMode`);
+    assert.equal(page.$('accessMode').style.color, 'var(--ok, #167348)', label);
+    assert.equal(page.$('localBaseLabel').hidden, true, `${label} : libellé du Wi-Fi local caché`);
+    assert.equal(page.$('localBaseRow').hidden, true, `${label} : choix d’une adresse locale caché`);
+    assert.equal(page.$('appVersion').title, 'Version en service sur le serveur', label);
+  };
+  check('premier rendu');
+  await page.poll();
+  check('second rendu');
+  const sent = page.postsTo('/api/staff/settings').length;
+  await page.click(page.$('useLocal'));
+  assert.equal(page.postsTo('/api/staff/settings').length, sent, 'aucune adresse locale envoyée');
+  const access = visibleText(page.doc.body.querySelector('section.access-panel'));
+  const end = visibleText(page.doc.body.querySelector('section.end-panel'));
+  assert.ok(access.includes(SERVER_ACCESS_TEXT), access);
+  assert.ok(end.includes(SERVER_MODE_TEXTS.stopHint), end);
+  assert.doesNotMatch(access, PC_ONLY_TEXT);
+  assert.doesNotMatch(end, PC_ONLY_TEXT);
+  // Image construite (builtAt) : son titre, le même dans les deux modes.
+  await page.update({ app: { version: 'v3.0.2', mode: 'server', builtAt: '2026-10-01T12:00:00.000Z' } });
+  assert.match(page.$('appVersion').title, /^Version installée, construite le /);
+});
+
+test('page du bar en mode PC : textes inchangés au caractère près', async () => {
+  const PC_TEXTS = {
+    baseSummary: 'Configurer l’adresse des QR',
+    localBaseLabel: 'Wi-Fi local uniquement',
+    customBaseHint: 'Cette adresse doit déjà ouvrir l’espace clients de cette application. Teste un QR en 4G/5G avant impression.',
+    staffQrIntro: 'Réservé aux gérants. Sur le Wi-Fi du bar, scanne ce QR depuis ton téléphone. Ne le montre pas aux clients\u00a0: il donne accès aux commandes de la soirée.',
+    staffQrHint: 'Le téléphone doit pouvoir joindre ce PC sur le réseau local. Ce QR change à chaque démarrage de l’application.',
+    stopHint: 'Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.',
+  };
+  const page = await openPage();
+  const check = label => {
+    for (const [id, text] of Object.entries(PC_TEXTS)) assert.equal(page.$(id).textContent, text, `${label} : #${id}`);
+    assert.equal(page.$('localBaseLabel').hidden, false, label);
+    assert.equal(page.$('localBaseRow').hidden, false, label);
+    assert.equal(page.$('accessMode').textContent, 'Mode Wi-Fi local : les QR codes ne fonctionneront que sur le réseau local du PC. ' +
+      'Les téléphones sans Wi-Fi ne pourront pas les ouvrir.', label);
+    assert.equal(page.$('appVersion').title, 'Version installée sur ce PC', label);
+  };
+  check('sans app');
+  await page.update({ app: { version: 'v3.0.2', mode: 'pc' } });
+  check('app.mode pc');
+  // Adresse publique en mode PC : le texte du PC, pas celui du serveur.
+  await page.update({ phoneBase: 'https://chant.exemple.fr' });
+  assert.equal(page.$('accessMode').textContent, 'Accès Internet actif si cette adresse redirige bien vers ce PC. Vérifie-la en données mobiles.');
+});

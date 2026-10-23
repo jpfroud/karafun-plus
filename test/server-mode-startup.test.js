@@ -9,6 +9,7 @@
 // à 3238 (3240 sert à priority-undo-api.test.js).
 // SP7 (#27, retour Spotify réel du serveur) : 3260, 3261 et 4261, réservés par
 // l'épopée.
+// TX5 (#28, port du bar occupé) : 3250, 3251 et 4251, réservés par l'épopée.
 //
 // Les aides exportées (portFree, choosePort, serverEnv, sandboxCopy, launch,
 // waitLine) servent aux autres tests du mode serveur : les tests de ce fichier
@@ -414,6 +415,36 @@ if (require.main === module) {
     } finally { await child.stop(); }
   });
 
+  // Port du bar pris par un autre programme : bar, clients et faux KaraFun de
+  // la démo (PORT + 1001), libres au départ.
+  const TEXTES_PORTS = [3250, 3251, 4251];
+  test('TX5 port du bar occupé en mode serveur (processus réel)', async () => {
+    for (const port of TEXTES_PORTS) {
+      if (!await portFree(port)) assert.fail(`Port ${port} occupé : le test du port pris réserve 3250, 3251 et 4251.`);
+    }
+    const [port] = TEXTES_PORTS;
+    const holder = net.createServer(socket => socket.destroy());
+    await new Promise((resolve, reject) => { holder.once('error', reject); holder.listen(port, '127.0.0.1', resolve); });
+    try {
+      const started = Date.now();
+      const child = launch(['--demo', '--port', String(port), '--no-open'], { env: serverEnv() });
+      let exit;
+      try {
+        const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+        exit = await child.exited;
+        clearTimeout(timer);
+      } finally { await child.stop(); }
+      assert.deepEqual(exit, { code: 1, signal: null }, outputs(child));
+      // gstack-timing-ok: borne fixée par TX5 (issue #28), égale au chien de garde SIGKILL ci-dessus ; sortie observée en moins d'une seconde.
+      assert.ok(Date.now() - started < 15000, 'sortie en moins de 15 s');
+      const lines = completeLines(child);
+      assert.ok(lines.includes('Le port 3250 est déjà utilisé : une autre instance de la file tourne peut-être déjà sur ce serveur.'),
+        outputs(child));
+      assert.equal(lines.some(line => line.includes('autre fenêtre')), false, 'aucun texte du mode PC');
+      assert.equal(await reachable('127.0.0.1', port), 'ok', 'le programme du test garde son port');
+    } finally { await new Promise(resolve => holder.close(resolve)); }
+  });
+
   test('R8 data/staff-key réelle : créée en 0600 au premier démarrage, gardée ensuite', async () => {
     const dir = sandboxCopy();
     assert.equal(fs.existsSync(path.join(dir, 'data')), false, 'copie sans data/');
@@ -700,7 +731,7 @@ if (require.main === module) {
 
   test('R10b ancienne adresse gardée au journal quand le port du bar est pris au premier démarrage du mode serveur', () =>
     failedFirstStart({ busy: port => port,
-      lastLine: port => new RegExp(`^Le port ${port} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre\\.$`) }));
+      lastLine: port => new RegExp(`^Le port ${port} est déjà utilisé : une autre instance de la file tourne peut-être déjà sur ce serveur\\.$`) }));
 
   test('R10c ancienne adresse gardée au journal quand le port clients est pris au premier démarrage du mode serveur', () =>
     failedFirstStart({ busy: port => port + 1, lastLine: port => new RegExp(`^Port public ${port + 1} indisponible : `) }));

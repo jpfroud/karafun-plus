@@ -243,17 +243,17 @@
     <div class="access-address"><div class="small muted" id="phoneLabel">Adresse utilisée pour les QR codes</div><div id="phoneBase" class="address"></div><p class="small" id="accessMode" role="status"></p></div>
     <p class="small muted">Aux tables ordinaires, un téléphone peut inscrire plusieurs personnes. Dans « En solo », chaque personne utilise son propre téléphone et gère seulement ses chansons.</p>
     <a class="btn small print-link" href="/print" target="_blank" id="printLink">Vérifier et imprimer les QR</a>
-    <details class="disclosure"><summary>Configurer l’adresse des QR</summary>
-      <label class="field" for="ipSel">Wi-Fi local uniquement</label>
-      <div class="row wrap"><select id="ipSel" aria-label="Adresse locale pour les QR codes"></select><button class="btn small" id="useLocal">Utiliser</button></div>
+    <details class="disclosure"><summary id="baseSummary">Configurer l’adresse des QR</summary>
+      <label class="field" for="ipSel" id="localBaseLabel">Wi-Fi local uniquement</label>
+      <div class="row wrap" id="localBaseRow"><select id="ipSel" aria-label="Adresse locale pour les QR codes"></select><button class="btn small" id="useLocal">Utiliser</button></div>
       <label class="field" for="customBase">Adresse publique HTTPS</label>
       <div class="row wrap"><input id="customBase" type="url" inputmode="url" autocomplete="url" placeholder="https://chant.exemple.fr"><button class="btn small" id="saveBase">Utiliser</button></div>
-      <p class="tiny muted">Cette adresse doit déjà ouvrir l’espace clients de cette application. Teste un QR en 4G/5G avant impression.</p>
+      <p class="tiny muted" id="customBaseHint">Cette adresse doit déjà ouvrir l’espace clients de cette application. Teste un QR en 4G/5G avant impression.</p>
     </details>
     <details class="disclosure staff-access"><summary>Accès du bar depuis un téléphone</summary>
-      <p class="small muted">Réservé aux gérants. Sur le Wi-Fi du bar, scanne ce QR depuis ton téléphone. Ne le montre pas aux clients&nbsp;: il donne accès aux commandes de la soirée.</p>
+      <p class="small muted" id="staffQrIntro">Réservé aux gérants. Sur le Wi-Fi du bar, scanne ce QR depuis ton téléphone. Ne le montre pas aux clients&nbsp;: il donne accès aux commandes de la soirée.</p>
       <div class="staff-access-inner"><div class="staff-qr"><img id="staffQr" alt="QR code privé pour ouvrir la page du bar sur un téléphone" width="192" height="192"><span id="staffQrError" class="staff-qr-error" hidden>QR indisponible. Redémarre la file karaoké, puis rouvre cette page.</span></div>
-        <div class="small muted">Le téléphone doit pouvoir joindre ce PC sur le réseau local. Ce QR change à chaque démarrage de l’application.</div></div>
+        <div class="small muted" id="staffQrHint">Le téléphone doit pouvoir joindre ce PC sur le réseau local. Ce QR change à chaque démarrage de l’application.</div></div>
     </details>
   </section>
 
@@ -266,7 +266,7 @@
 
   <section class="card end-panel" data-tab="plus">
     <div class="section-heading"><div><div class="eyebrow">Attention</div><h2>Fin de soirée</h2></div></div>
-    <p class="small muted">Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.</p>
+    <p class="small muted" id="stopHint">Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.</p>
     <div class="table-reset"><button class="btn small danger" id="clearQueue">Vider toutes les chansons</button><span class="small muted">Conserve les tables, les chanteurs, leurs accès et l’historique. La chanson sur scène continue ; les autres retraits doivent être confirmés par KaraFun.</span></div>
     <div class="table-reset"><button class="btn small danger" id="clearTables">Supprimer toutes les tables</button><span class="small muted">Nouvelle soirée : efface les chanteurs, leurs titres et les anciens QR. Le titre déjà sur scène continue.</span></div>
     <div class="table-reset"><button class="btn small danger" id="resetSettings">Remettre les options par défaut</button><span class="small muted">Remet toutes les options à leur valeur d’origine (délais, cases cochées, règles de rotation, Battle, « Je suis là », duos uniquement, durée des titres, heure de fermeture, Spotify automatique) : l’envoi automatique à KaraFun est rallumé si rien ne l’interdit (sauvegarde impossible, envoi interrompu à vérifier, droits KaraFun), la lecture automatique coupée. Garde le code KaraFun, la connexion Spotify, l’adresse des QR, les tables et la file.</span></div>
@@ -368,6 +368,26 @@
     rendered.set(container, html);
     restoreFields(container);
     return true;
+  }
+  // Mode serveur (S.app.mode 'server') : textes de « Accès et QR » et de « Fin
+  // de soirée » qui parlent du PC du bar ou du Wi-Fi local, par identifiant.
+  // Le mode PC garde ceux du balisage, jamais réécrits.
+  const SERVER_TEXTS = {
+    baseSummary: 'Adresse des QR',
+    customBaseHint: 'Adresse fixée par KARAOKE_PUBLIC_URL au démarrage du serveur : elle ne se change pas ici. Teste un QR en 4G/5G avant impression.',
+    staffQrIntro: 'Réservé aux gérants. Scanne ce QR depuis ton téléphone, en Wi-Fi ou en 4G/5G. Il ouvre la page du bar par son adresse HTTPS. Ne le montre pas aux clients\u00a0: il donne accès aux commandes de la soirée.',
+    staffQrHint: 'Ce QR reste le même d’un démarrage à l’autre. Il change seulement si la clé du bar est renouvelée sur le serveur.',
+    stopHint: 'Sur le serveur, la file reste allumée : rien à arrêter en fin de soirée, la soirée est enregistrée en continu.',
+  };
+  const SERVER_ACCESS_OK = 'Accès Internet actif si cette adresse mène bien à ce serveur. Vérifie-la en données mobiles.';
+  const SERVER_VERSION_TITLE = 'Version en service sur le serveur';
+  // Ligne du Wi-Fi local cachée sur le serveur (aucune adresse locale à y choisir).
+  function renderModeTexts() {
+    const server = S.app?.mode === 'server';
+    $('localBaseLabel').hidden = server;
+    $('localBaseRow').hidden = server;
+    if (!server) return;
+    for (const [id, text] of Object.entries(SERVER_TEXTS)) if ($(id).textContent !== text) $(id).textContent = text;
   }
   function isPublicHttps(value) {
     let url;
@@ -1818,7 +1838,9 @@
     renderAlerts();
     const app = S.app || {};
     $('appVersion').textContent = app.version ? `${app.version}${app.commit ? ` · ${app.commit}` : ''}` : '';
-    $('appVersion').title = app.builtAt ? `Version installée, construite le ${new Date(app.builtAt).toLocaleString('fr-FR')}` : 'Version installée sur ce PC';
+    $('appVersion').title = app.builtAt ? `Version installée, construite le ${new Date(app.builtAt).toLocaleString('fr-FR')}` :
+      app.mode === 'server' ? SERVER_VERSION_TITLE : 'Version installée sur ce PC';
+    renderModeTexts();
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     for (const id of ['battleCooldownMin', 'battleRejectedCooldownMin', 'battleVoteMin', 'battleMinVoters', 'requirePresence',
@@ -1871,7 +1893,7 @@
     $('phoneLabel').textContent = readyQrCount ? `${readyQrCount} QR code${readyQrCount > 1 ? 's' : ''} disponible${readyQrCount > 1 ? 's' : ''} · adresse utilisée` : 'Adresse utilisée pour les QR codes';
     $('phoneBase').textContent = readyQrCount ? S.phoneBase : 'Ajoute une table pour créer son QR code.';
     $('accessMode').textContent = publicHttps
-      ? 'Accès Internet actif si cette adresse redirige bien vers ce PC. Vérifie-la en données mobiles.'
+      ? app.mode === 'server' ? SERVER_ACCESS_OK : 'Accès Internet actif si cette adresse redirige bien vers ce PC. Vérifie-la en données mobiles.'
       : 'Mode Wi-Fi local : les QR codes ne fonctionneront que sur le réseau local du PC. Les téléphones sans Wi-Fi ne pourront pas les ouvrir.';
     $('accessMode').style.color = publicHttps ? 'var(--ok, #167348)' : 'var(--warn, #a35b00)';
     const staffQrSource = '/qr/staff.svg' + kq;
