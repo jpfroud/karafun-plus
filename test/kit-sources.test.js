@@ -24,7 +24,8 @@ const ENTRIES = ['server.js', ...LAUNCHERS, 'fake-karafun.js', 'tools/diag-karaf
 const IMAGE_ENTRIES = ENTRIES.filter(file => !LAUNCHERS.includes(file));
 const PRODUCTS = ['KaraFun Plus.exe', 'build-info.json', 'solver/karafun-solver.jar'];
 const FORBIDDEN = ['data', 'journal', 'test', 'node', 'node_modules', 'solver-runtime', 'LICENCES-JAVA', 'deploy', 'scripts', '.github'];
-// Lectures par path.join(__dirname, '<littéral>', …), rapportées à la racine.
+// Lectures par path.join(__dirname, '<littéral>', …), rapportées à la racine :
+// chaque chemin est classé avec ce qu'il contient (data/soirees : exécution).
 const READS = {
   livré: ['package.json', 'public'],
   produit: ['build-info.json', 'solver/karafun-solver.jar', 'solver/target'],
@@ -108,18 +109,23 @@ function graph(entries) {
   return { files, packages };
 }
 
-// Lectures path.join(__dirname, '<littéral>', …) : dossier du fichier plus
-// premier littéral, rapporté à la racine. Si ce premier littéral ramène à la
-// racine (« .. » depuis tools/ ou solver/), « racine » ne vaut que pour l'appel
-// qui s'y arrête (ROOT de solver/bridge.js:11) : suivi d'autres littéraux, le
-// chemin entier est classé ; d'un argument non littéral ou d'une suite sur une
-// autre ligne, la lecture n'est pas classée.
+// Lectures par __dirname : path.join(__dirname, '<littéral>', …), et
+// cwd: __dirname (racine). Chemin = dossier du fichier joint aux littéraux qui
+// suivent __dirname sur la ligne, normalisé et rapporté à la racine : la même
+// lecture donne le même chemin depuis la racine ou après un « .. » (tools/,
+// solver/), et un « .. » plus loin est suivi. Un argument non littéral arrête
+// la jonction ; juste après la racine, la lecture n'est pas classée. Tout autre
+// emploi de __dirname (path.resolve, concaténation, gabarit, appel coupé sur
+// deux lignes) échoue, comme un require non littéral.
 function readsOf(file, text) {
   const reads = [];
   const fromFile = (...parts) => path.posix.normalize(path.posix.join(path.posix.dirname(file), ...parts));
   text.split(/\r?\n/).forEach((line, index) => {
     if (comment(line)) return;
+    const where = `${file}:${index + 1}`;
+    let known = 0;
     for (const match of line.matchAll(/path\.join\(\s*__dirname\s*([,)])/g)) {
+      known++;
       // Littéraux qui suivent __dirname sur la ligne ; closed : l'appel se ferme
       // juste après le dernier.
       const parts = [];
@@ -133,18 +139,24 @@ function readsOf(file, text) {
         if (next[3] !== ',') break;
         rest = rest.slice(next[0].length);
       }
-      let target = closed || parts.length ? fromFile(...parts.slice(0, 1)) : '<non littéral>';
-      if (target === '.' && parts.length && !(closed && parts.length === 1)) {
-        target = closed ? fromFile(...parts) : '<non littéral>';
-      }
-      reads.push({ where: `${file}:${index + 1}`, target });
+      const target = fromFile(...parts);
+      reads.push({ where, target: closed || (parts.length && target !== '.') ? target : '<non littéral>' });
+    }
+    for (let cwd = (line.match(/\bcwd:\s*__dirname\b/g) || []).length; cwd > 0; cwd--) {
+      known++;
+      reads.push({ where, target: '.' });
+    }
+    if ((line.match(/(?<![\w$])__dirname(?![\w$])/g) || []).length > known) {
+      throw new Error(`Lecture par __dirname non reconnue : ${where}`);
     }
   });
   return reads;
 }
 
+// Classe le chemin par le dossier ou le fichier de READS qui le contient
+// (« . » seulement pour la racine elle-même).
 function classify({ where, target }) {
-  const kind = Object.keys(READS).find(key => READS[key].includes(target));
+  const kind = Object.keys(READS).find(key => under(target, READS[key]));
   if (!kind) throw new Error(`Lecture par path.join(__dirname, …) non classée : ${where} → ${target}`);
   return kind;
 }
@@ -213,6 +225,15 @@ test('K2 graphe des require dans le manifeste', () => {
   for (const file of image.files) {
     assert.ok(commun.has(file), `${file} : chargé par le serveur, absent de « commun » (donc de l'image)`);
   }
+  // Sens inverse : chaque .js de « commun » (hors public/, scripts du
+  // navigateur) est atteint depuis les points d'entrée de l'image, donc ses
+  // require sont vérifiés ici. Un outil lancé dans l'image (node tools/<outil>.js)
+  // est un point d'entrée.
+  for (const file of commun) {
+    if (file.endsWith('.js') && !file.startsWith('public/')) {
+      assert.ok(image.files.has(file), `${file} : .js de « commun » hors des points d'entrée de l'image (IMAGE_ENTRIES)`);
+    }
+  }
   const dependencies = Object.keys(JSON.parse(read('package.json')).dependencies).sort();
   assert.deepEqual([...all.packages].sort(), dependencies);
   // Le parcours refuse ce qu'il ne sait pas lire : un require non littéral.
@@ -254,6 +275,26 @@ test('K4 lectures par __dirname classées', () => {
     { message: 'Lecture par path.join(__dirname, …) non classée : tools/x.js:1 → <non littéral>' });
   assert.equal(classify(readsOf('tools/x.js', "const dir = path.join(__dirname, '..', 'data');\n")[0]), 'exécution');
   assert.equal(classify(readsOf('solver/bridge.js', "const ROOT = path.join(__dirname, '..');\n")[0]), 'racine');
+  // Même règle depuis la racine et depuis un sous-dossier : le chemin normalisé
+  // est classé avec le dossier qui le contient, un « .. » plus loin compris.
+  for (const [file, text, kind] of [
+    ['tools/x.js', "const f = path.join(__dirname, '..', 'data', 'last-karafun-code.json');\n", 'exécution'],
+    ['tools/x.js', "const f = path.join(__dirname, '..', 'data', `runtime-${port}.json`);\n", 'exécution'],
+    ['server.js', "const f = path.join(__dirname, 'data', 'last-karafun-code.json');\n", 'exécution'],
+    ['server.js', "execFileSync('git', [], { cwd: __dirname });\n", 'racine'],
+  ]) assert.equal(classify(readsOf(file, text)[0]), kind, text);
+  for (const [text, target] of [["path.join(__dirname, 'public', '..', 'GUIDE-BAR.md');\n", 'GUIDE-BAR.md'],
+    ["path.join(__dirname, 'data', '..', 'stop.js');\n", 'stop.js']]) {
+    assert.throws(() => classify(readsOf('server.js', text)[0]),
+      { message: `Lecture par path.join(__dirname, …) non classée : server.js:1 → ${target}` });
+  }
+  // Toute autre forme échoue, comme un require non littéral.
+  for (const [text, line] of [["const g = path.join(\n  __dirname, 'GUIDE-BAR.md');\n", 2],
+    ["const g = path.resolve(__dirname, 'GUIDE-BAR.md');\n", 1], ["const g = __dirname + '/GUIDE-BAR.md';\n", 1],
+    ['const g = `${__dirname}/GUIDE-BAR.md`;\n', 1], ["const g = path.join(__dirname /* c */, 'GUIDE-BAR.md');\n", 1],
+    ["const g = join(__dirname, 'GUIDE-BAR.md');\n", 1]]) {
+    assert.throws(() => readsOf('server.js', text), { message: `Lecture par __dirname non reconnue : server.js:${line}` }, text);
+  }
   // Produits : écrits par les constructeurs du kit et de l'image, et mis dans
   // le ZIP par le kit. Ancré sur les écritures et sur la liste $produits, pas
   // sur la seule présence du nom, que PRODUCTS ou $produits suffiraient à
