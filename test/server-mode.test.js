@@ -216,24 +216,142 @@ test('T2 arrêt interne 404 : même le secret de data/runtime-<port>.json n’ar
   assert.equal(f.isShuttingDown(), false, 'aucun arrêt programmé');
 });
 
-test('T3 retour Spotify refusé à la boucle locale, sans finishAuth', async () => {
+// ---------------------------------------------------------------- Spotify (#27)
+// Valeurs factices : Client ID et adresse du réseau Docker.
+const SPOTIFY_CLIENT_ID = '0123456789abcdef0123456789abcdef';
+const DOCKER_REMOTE = '172.18.0.3';
+// Faux Spotify : garde chaque requête, répond un jeton à /api/token.
+function fakeSpotifyFetch(f) {
+  const requests = [];
+  f.spotify.fetchImpl = async (url, options = {}) => {
+    requests.push({ url: String(url), body: String(options.body || '') });
+    if (String(url) !== 'https://accounts.spotify.com/api/token') throw new Error(`requête inattendue : ${url}`);
+    return { ok: true, status: 200, json: async () => ({ access_token: 'jeton', refresh_token: 'rt', expires_in: 3600 }) };
+  };
+  return requests;
+}
+// Client ID enregistré puis adresse de connexion demandée par la page du bar.
+async function spotifyAuthUrl(f, remote = DOCKER_REMOTE) {
+  const client = await post(f, withKey('/api/staff/spotify', f.STAFF_KEY), { action: 'client', clientId: SPOTIFY_CLIENT_ID }, { remote });
+  assert.equal(client.status, 200, 'Client ID enregistré');
+  const auth = await post(f, withKey('/api/staff/spotify', f.STAFF_KEY), { action: 'auth-url' }, { remote });
+  assert.equal(auth.status, 200, 'adresse de connexion rendue');
+  return new URL(auth.body.url);
+}
+
+test('SP3 adresse de retour du serveur : http://127.0.0.1:<port>/spotify/callback, jamais les adresses publiques', async () => {
   const f = harness();
+  assert.ok(f.SERVER, 'mode serveur actif dans le harnais');
+  const url = await spotifyAuthUrl(f);
+  assert.equal(url.origin, 'https://accounts.spotify.com');
+  const expected = `http://127.0.0.1:${f.PORT}/spotify/callback`;
+  assert.equal(url.searchParams.get('redirect_uri'), expected);
+  const view = f.staffState().spotify;
+  assert.equal(view.redirectUri, expected, 'même adresse affichée dans la page du bar');
+  const text = JSON.stringify(view);
+  assert.equal(text.includes('bar.exemple.fr'), false, 'pas l’adresse de KARAOKE_STAFF_URL');
+  assert.equal(text.includes('clients.exemple.fr'), false, 'pas l’adresse de KARAOKE_PUBLIC_URL');
+});
+
+// Remplace T3 de #24 : en mode serveur, le retour arrive par le réseau Docker
+// (tunnel SSH), jamais par la boucle locale du conteneur ; seul le state PKCE
+// le protège, et le port clients ne le voit jamais.
+test('SP4 retour Spotify du serveur protégé par le seul state, port clients refusé, page sans clé', async () => {
+  const f = harness();
+  const requests = fakeSpotifyFetch(f);
+  const realFinish = f.spotify.finishAuth.bind(f.spotify);
   let finished = 0;
-  f.spotify.finishAuth = async () => { finished += 1; };
-  for (const remote of LOOPBACKS) {
-    const r = await get(f, '/spotify/callback?code=abc&state=def', { remote, port: f.PORT });
+  f.spotify.finishAuth = (...args) => { finished += 1; return realFinish(...args); };
+  const url = await spotifyAuthUrl(f);
+  const state = url.searchParams.get('state');
+  assert.ok(state && state === f.spotify.pendingAuth.state, 'state de la demande en cours');
+  const page = (r, message, where) => {
+    assert.equal(r.status, 200, where);
+    assert.equal(r.headers['content-type'], 'text/html; charset=utf-8', where);
+    assert.ok(r.text.includes(`<p>${message}</p>`), `${where} : ${message}`);
+    assert.ok(r.text.includes('<a href="/staff">Revenir à la page du bar</a>'), `${where} : lien vers /staff`);
+    assert.equal(r.text.includes(f.STAFF_KEY), false, `${where} : jamais la clé du bar`);
+    assert.equal(r.text.includes('key='), false, `${where} : aucun paramètre key`);
+  };
+
+  // Port clients : refusé avant tout traitement, même avec le bon state.
+  for (const remote of [...LOOPBACKS, DOCKER_REMOTE]) {
+    const r = await get(f, `/spotify/callback?code=c&state=${encodeURIComponent(state)}`, { remote, port: f.PUBLIC_PORT });
     assert.equal(r.status, 403, remote);
-    assert.equal(r.text, 'Connecte Spotify depuis le PC du bar.', remote);
-    assert.equal(r.text.includes('/staff'), false, `${remote} : aucun lien de retour`);
+    assert.equal(r.headers['content-type'], 'text/plain; charset=utf-8', remote);
+    assert.equal(r.text, 'Réservé au bar', remote);
   }
-  assert.equal(finished, 0, 'finishAuth jamais appelé');
-  // Témoin : en mode PC, le même retour depuis ce PC finit la connexion.
-  const pc = harness({ serverEnv: false });
-  let pcFinished = 0;
-  pc.spotify.finishAuth = async () => { pcFinished += 1; };
-  const done = await get(pc, '/spotify/callback?code=abc&state=def', { remote: '127.0.0.1', port: pc.PORT });
-  assert.equal(done.status, 200);
-  assert.equal(pcFinished, 1);
+  assert.equal(finished, 0, 'le port clients n’appelle jamais finishAuth');
+  assert.equal(f.spotify.pendingAuth?.state, state, 'le port clients ne consomme pas la demande');
+
+  // Port du bar, toute adresse : même réponse, protégée par le seul state.
+  const expired = 'Connexion Spotify expirée : relance-la depuis la page du bar.';
+  for (const remote of [...LOOPBACKS, DOCKER_REMOTE]) {
+    page(await get(f, '/spotify/callback?code=c&state=invente', { remote, port: f.PORT }), expired, `${remote}, state inventé`);
+    const before = finished;
+    page(await get(f, '/spotify/callback?error=access_denied&state=invente', { remote, port: f.PORT }),
+      'Connexion Spotify annulée.', `${remote}, refus dans Spotify`);
+    assert.equal(finished, before, `${remote} : refus dans Spotify sans finishAuth`);
+  }
+  // Retour sans state, ou avec un state vide : même refus, la demande reste en cours.
+  for (const route of ['/spotify/callback?code=c', '/spotify/callback?code=c&state=']) {
+    for (const remote of [...LOOPBACKS, DOCKER_REMOTE]) {
+      page(await get(f, route, { remote, port: f.PORT }), expired, `${remote}, ${route}`);
+    }
+  }
+  assert.equal(requests.length, 0, 'aucun state inventé, absent ou vide ne joint Spotify');
+  assert.equal(f.spotify.pendingAuth?.state, state, 'demande toujours en cours');
+  assert.equal(f.spotify.connected, false);
+
+  // Bon state, depuis le réseau Docker : connexion faite.
+  page(await get(f, `/spotify/callback?code=c&state=${encodeURIComponent(state)}`, { remote: DOCKER_REMOTE, port: f.PORT }),
+    'Spotify est connecté. Choisis l’appareil qui joue la musique dans la page du bar.', 'bon state');
+  assert.equal(f.spotify.connected, true);
+  assert.equal(requests.length, 1, 'une seule requête à Spotify');
+  assert.equal(requests[0].url, 'https://accounts.spotify.com/api/token');
+  const form = new URLSearchParams(requests[0].body);
+  assert.equal(form.get('grant_type'), 'authorization_code');
+  assert.equal(form.get('redirect_uri'), `http://127.0.0.1:${f.PORT}/spotify/callback`);
+  assert.ok(f.sched.log.some(line => line.msg === 'Spotify connecté à la file karaoké.' && line.kind === 'staff'), 'note au journal du bar');
+
+  // Rejeu du même state : refusé, sans nouvelle requête.
+  page(await get(f, `/spotify/callback?code=c&state=${encodeURIComponent(state)}`, { remote: DOCKER_REMOTE, port: f.PORT }),
+    expired, 'rejeu');
+  assert.equal(requests.length, 1, 'le rejeu ne joint pas Spotify');
+});
+
+test('SP5 page du bar sans clé en mode serveur : la coquille seulement, API, impression, statistiques et QR fermés', async () => {
+  const f = harness();
+  const shell = fs.readFileSync(path.join(root, 'public', 'staff.html'), 'utf8');
+  const r = await get(f, '/staff', { remote: DOCKER_REMOTE, port: f.PORT });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers['content-type'], 'text/html; charset=utf-8');
+  assert.equal(r.text, shell, 'la page du bar telle quelle, sans secret ajouté');
+  assert.equal(r.text.includes(f.STAFF_KEY), false);
+  const refused = (res, where) => {
+    assert.equal(res.status, 403, where);
+    assert.equal(res.text.includes(f.STAFF_KEY), false, where);
+  };
+  for (const route of ['/staff?key=faux', '/staff?key=']) {
+    const denied = await get(f, route, { remote: DOCKER_REMOTE, port: f.PORT });
+    refused(denied, route);
+    assert.equal(denied.text, 'Réservé au bar', `${route} : une clé fausse ou vide reste refusée`);
+  }
+  for (const remote of [...LOOPBACKS, DOCKER_REMOTE]) {
+    const denied = await get(f, '/staff', { remote, port: f.PUBLIC_PORT });
+    refused(denied, `port clients depuis ${remote}`);
+    assert.equal(denied.text, 'Réservé au bar');
+  }
+  for (const route of ['/print', '/stats', '/qr/staff.svg', '/api/staff/state']) {
+    refused(await get(f, route, { remote: DOCKER_REMOTE, port: f.PORT }), `${route} sans clé`);
+  }
+  // Témoin : avec la clé, l'API répond.
+  assert.equal((await get(f, withKey('/api/staff/state', f.STAFF_KEY), { remote: DOCKER_REMOTE, port: f.PORT })).status, 200);
+  // Lien du bar (--print-staff-url) : la page avec sa clé reste servie.
+  const keyed = await get(f, withKey('/staff', f.STAFF_KEY), { remote: DOCKER_REMOTE, port: f.PORT });
+  assert.equal(keyed.status, 200, 'lien du bar avec clé : page servie');
+  assert.equal(keyed.headers['content-type'], 'text/html; charset=utf-8');
+  assert.equal(keyed.text, shell);
 });
 
 // ---------------------------------------------------------------- 2. clé persistante

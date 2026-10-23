@@ -243,14 +243,26 @@ function baseWorld() {
 
 const json = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
 
+// Mémoire de l'onglet (sessionStorage), comme dans test/client-ui-coverage.test.js ;
+// `throws` : mémoire bloquée, getItem et setItem lèvent.
+function sessionMap(entries = {}, { throws = false } = {}) {
+  const map = new Map(Object.entries(entries));
+  const blocked = () => { if (throws) throw new Error('stockage bloqué'); };
+  return { map, getItem: key => { blocked(); return map.has(key) ? map.get(key) : null; },
+    setItem: (key, value) => { blocked(); map.set(key, String(value)); } };
+}
+
 // Ouvre la page du bar avec un faux serveur. `replies` donne la réponse d'un
 // POST par chemin (objet, ou fonction du corps) ; { status, error } = refus.
+// `session` : mémoire de l'onglet (sessionMap()), absente par défaut ; `origin` :
+// location.origin ; page.assigned : adresses ouvertes dans le même onglet.
 async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash = '', world = baseWorld(), storage = {},
-  storageThrows = false, secure = true, permission = 'granted', audioThrows = false, notifyThrows = false, dialogFocus = false } = {}) {
+  storageThrows = false, secure = true, permission = 'granted', audioThrows = false, notifyThrows = false, dialogFocus = false,
+  session = null, origin = 'http://127.0.0.1:3000' } = {}) {
   const doc = makeDocument();
   doc.dialogFocus = dialogFocus;
   const page = { doc, world, posts: [], fetches: [], replies: {}, confirmAnswer: true, confirms: [], prompts: [],
-    promptAnswer: null, opened: [], notifications: [], permissionRequests: 0, rings: 0, clipboard: [], clipboardWorks: true,
+    promptAnswer: null, opened: [], assigned: [], notifications: [], permissionRequests: 0, rings: 0, clipboard: [], clipboardWorks: true,
     stateStatus: 200, searches: [], stored: new Map(Object.entries(storage)) };
   page.$ = id => {
     const el = doc.getElementById(id);
@@ -303,7 +315,7 @@ async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash =
     setItem: (key, value) => { if (storageThrows) throw new Error('stockage plein'); page.stored.set(key, String(value)); },
   };
   // Historique du navigateur : chaque onglet ajoute une étape ; page.back() la retire.
-  const location = { search, hostname, hash, pathname: '/staff' };
+  const location = { search, hostname, hash, pathname: '/staff', origin, assign: url => page.assigned.push(url) };
   page.history = [];
   page.windowListeners = {};
   const history = {
@@ -322,7 +334,8 @@ async function openPage({ search = `?key=${KEY}`, hostname = '127.0.0.1', hash =
   };
   const context = { document: doc, fetch, location, URL, URLSearchParams, localStorage,
     window: { open: (...args) => page.opened.push(args), AudioContext, Notification, isSecureContext: secure, history,
-      addEventListener: (type, listener) => (page.windowListeners[type] ||= []).push(listener), scrollTo() {} },
+      addEventListener: (type, listener) => (page.windowListeners[type] ||= []).push(listener), scrollTo() {},
+      ...(session ? { sessionStorage: session } : {}) },
     Notification, navigator: page.navigator = { clipboard: { writeText: async text => {
       if (!page.clipboardWorks) throw new Error('presse-papiers refusé');
       page.clipboard.push(text);
@@ -2099,6 +2112,139 @@ test('Spotify : configuration, connexion, appareils et commandes', async () => {
   await page.poll();
   assert.equal(page.$('spotifyDelay').value, '7');
   page.doc.activeElement = null;
+});
+
+// ------------------------------------------------------------------ mode serveur (#27)
+// Sur le serveur, /staff s'ouvre aussi sans clé (retour de Spotify) : la page
+// garde la clé de l'adresse pour l'onglet et la relit. Jamais en mode PC.
+const serverWorld = (extra = {}) => ({ ...baseWorld(), app: { version: '1.0.0', mode: 'server' }, ...extra });
+
+test('SP8 clé gardée pour l’onglet : mode serveur seulement, mémoire bloquée sans dommage', async () => {
+  const session = sessionMap();
+  await openPage({ world: serverWorld(), session });
+  assert.equal(session.map.get('bar-key'), KEY, 'clé de l’adresse gardée pour l’onglet');
+  for (const [label, world] of [['mode PC', { ...baseWorld(), app: { version: '1.0.0', mode: 'pc' } }], ['sans app', baseWorld()]]) {
+    const kept = sessionMap();
+    await openPage({ world, session: kept });
+    assert.equal(kept.map.size, 0, `${label} : rien n’est gardé`);
+  }
+  // Mémoire de l'onglet bloquée : aucune exception, la page marche comme avant.
+  const blocked = await openPage({ world: serverWorld(), session: sessionMap({}, { throws: true }) });
+  assert.equal(blocked.fetches[0].url, `/api/staff/state?key=${KEY}`);
+  assert.equal(blocked.fetches[0].options.headers['x-staff-key'], KEY);
+  const normal = await openPage({ world: serverWorld(), session: sessionMap() });
+  assert.equal(blocked.$('kfPill').textContent, normal.$('kfPill').textContent);
+  assert.equal(blocked.$('kfPill').className, normal.$('kfPill').className);
+  assert.equal(normal.$('kfPill').textContent, 'KaraFun connecté (démo)');
+});
+
+test('SP9 relecture sans ?key= : la clé gardée sert, celle de l’adresse l’emporte, pastille sans clé', async () => {
+  const kept = await openPage({ search: '', world: serverWorld(), session: sessionMap({ 'bar-key': KEY }) });
+  assert.equal(kept.fetches[0].url, `/api/staff/state?key=${KEY}`, 'clé relue dans la mémoire de l’onglet');
+  assert.equal(kept.fetches[0].options.headers['x-staff-key'], KEY);
+  assert.equal(kept.$('printLink').href, `/print?key=${KEY}`);
+  assert.equal(kept.$('statsLink').href, `/stats?key=${KEY}`);
+  assert.equal(kept.$('staffQr').src, `/qr/staff.svg?key=${KEY}`);
+  // La clé de l'adresse l'emporte, puis remplace celle de l'onglet.
+  const session = sessionMap({ 'bar-key': KEY });
+  const other = await openPage({ search: '?key=654321', world: serverWorld(), session });
+  assert.equal(other.fetches[0].url, '/api/staff/state?key=654321');
+  assert.equal(other.fetches[0].options.headers['x-staff-key'], '654321');
+  assert.equal(other.$('printLink').href, '/print?key=654321');
+  assert.equal(session.map.get('bar-key'), '654321');
+  // Sans clé ni mémoire : la pastille dit ce qui manque.
+  for (const [label, memory] of [['sans mémoire', null], ['mémoire vide', sessionMap()]]) {
+    const anonymous = await openPage({ search: '', world: serverWorld(), session: memory });
+    assert.equal(anonymous.fetches[0].url, '/api/staff/state', label);
+    anonymous.stateStatus = 403;
+    await anonymous.poll();
+    assert.equal(anonymous.$('kfPill').textContent, 'Clé du bar manquante', label);
+    assert.equal(anonymous.$('kfPill').className, 'pill bad', label);
+  }
+  // Avec une clé refusée : le message d'avant.
+  kept.stateStatus = 403;
+  await kept.poll();
+  assert.equal(kept.$('kfPill').textContent, 'Programme arrêté ?');
+  assert.equal(kept.$('kfPill').className, 'pill bad');
+});
+
+test('SP10 connexion Spotify du mode serveur : même onglet, origine du retour, textes du tunnel SSH', async () => {
+  const redirectUri = 'http://127.0.0.1:3000/spotify/callback';
+  const spotify = { configured: true, connected: false, redirectUri, clientId: '0123456789abcdef',
+    health: { state: 'disconnected', device: null, checkedAt: 0, retryAt: 0 } };
+  const url = 'https://accounts.spotify.com/authorize?client_id=fake';
+  const open = async (options = {}) => {
+    const page = await openPage({ world: serverWorld({ spotify: { ...spotify, ...options.spotify } }), session: sessionMap(), ...options });
+    page.replies['/api/staff/spotify'] = body => body.action === 'auth-url' ? { url } : { ok: true };
+    return page;
+  };
+  const pcWarning = 'Fais cette connexion depuis le PC du bar : Spotify revient sur son adresse locale.';
+  const tunnel = 'depuis un PC relié au serveur par un tunnel SSH (voir DEPLOIEMENT-SERVEUR.md)';
+
+  // Page ouverte par le tunnel, sur l'origine du retour : Spotify dans le même onglet.
+  const page = await open();
+  await page.click(page.$('spotifyLogin'));
+  assert.deepEqual(page.postsTo('/api/staff/spotify').map(post => post.body), [{ action: 'auth-url' }]);
+  assert.deepEqual(page.assigned, [url], 'même onglet : le retour retrouve la clé de l’onglet');
+  assert.deepEqual(page.opened, [], 'aucun nouvel onglet');
+  assert.notEqual(page.toast().text, pcWarning, 'pas d’avertissement du mode PC');
+  await page.click(page.$('spotifyReconnect'));
+  assert.deepEqual(page.assigned, [url, url], '« Reconnecter Spotify » : même parcours');
+  assert.deepEqual(page.opened, []);
+  // Relecture sans ?key= : même onglet aussi.
+  const reread = await open({ search: '', session: sessionMap({ 'bar-key': KEY }) });
+  await reread.click(reread.$('spotifyLogin'));
+  assert.deepEqual(reread.assigned, [url]);
+
+  // Page ouverte par une autre origine : le retour ne l'atteindrait pas.
+  // 127.0.0.1:3001 : tunnel ouvert sur un autre port local (kit Windows sur 3000).
+  for (const [origin, hostname] of [['https://bar.exemple.fr', 'bar.exemple.fr'], ['http://localhost:3000', 'localhost'],
+    ['http://127.0.0.1:3001', '127.0.0.1']]) {
+    const elsewhere = await open({ origin, hostname });
+    await elsewhere.click(elsewhere.$('spotifyLogin'));
+    assert.deepEqual(elsewhere.toast(), { text: `Connecte Spotify ${tunnel} : ouvre la page du bar par http://127.0.0.1:3000.`, bad: true }, origin);
+    assert.equal(elsewhere.postsTo('/api/staff/spotify').length, 0, `${origin} : aucune demande`);
+    assert.deepEqual(elsewhere.assigned, [], origin);
+    assert.deepEqual(elsewhere.opened, [], origin);
+  }
+  // Adresse de retour illisible : texte court.
+  const unknown = await open({ spotify: { redirectUri: '' } });
+  await unknown.click(unknown.$('spotifyLogin'));
+  assert.deepEqual(unknown.toast(), { text: `Connecte Spotify ${tunnel}.`, bad: true });
+  assert.equal(unknown.postsTo('/api/staff/spotify').length, 0);
+  assert.deepEqual([unknown.assigned, unknown.opened], [[], []]);
+  // Mémoire de l'onglet bloquée : le retour ne retrouverait pas la clé, nouvel onglet.
+  const blocked = await open({ session: sessionMap({}, { throws: true }) });
+  await blocked.click(blocked.$('spotifyLogin'));
+  assert.deepEqual(blocked.opened, [[url, '_blank', 'noopener']]);
+  assert.deepEqual(blocked.assigned, []);
+  assert.deepEqual(blocked.toast(), { text: 'Spotify s’ouvre dans un nouvel onglet : une fois connecté, ferme-le et reviens sur cette page.', bad: false });
+  // Refus du serveur : message rouge, rien d'ouvert.
+  const refused = await open();
+  refused.replies['/api/staff/spotify'] = { status: 400, error: 'Client ID Spotify manquant.' };
+  await refused.click(refused.$('spotifyLogin'));
+  assert.deepEqual(refused.toast(), { text: 'Client ID Spotify manquant.', bad: true });
+  assert.deepEqual([refused.assigned, refused.opened], [[], []]);
+
+  // Textes du mode serveur.
+  assert.equal(page.$('spotifyDevicesHint').textContent, 'le PC de KaraFun, un téléphone, une enceinte');
+  assert.equal(page.$('spotifyReconnectHint').textContent, `${tunnel}.`);
+  assert.equal(page.$('spotifyLoginWhere').textContent, tunnel);
+  const connected = await open({ spotify: { connected: true, health: { state: 'unknown', device: null, checkedAt: 0 } } });
+  connected.confirmAnswer = false;
+  await connected.type(connected.$('spotifyClientId'), 'fedcba98765432100');
+  await connected.change(connected.$('spotifyClientId'));
+  assert.equal(connected.confirms.at(-1), `Changer le Client ID déconnecte Spotify : il faudra se reconnecter ${tunnel}. Continuer ?`);
+  // Mode PC : textes inchangés, jamais touchés par le script.
+  const pc = await openPage({ world: { ...baseWorld(), app: { version: '1.0.0', mode: 'pc' }, spotify: { ...spotify, connected: true,
+    health: { state: 'unknown', device: null, checkedAt: 0 } } } });
+  assert.equal(pc.$('spotifyDevicesHint').textContent, 'ce PC, celui de KaraFun, une enceinte');
+  assert.equal(pc.$('spotifyReconnectHint').textContent, 'depuis ce PC : Spotify revient sur son adresse locale.');
+  assert.equal(pc.$('spotifyLoginWhere').textContent, 'depuis ce PC');
+  pc.confirmAnswer = false;
+  await pc.type(pc.$('spotifyClientId'), 'fedcba98765432100');
+  await pc.change(pc.$('spotifyClientId'));
+  assert.equal(pc.confirms.at(-1), 'Changer le Client ID déconnecte Spotify : il faudra se reconnecter depuis ce PC. Continuer ?');
 });
 
 test('diagnostic KaraFun : recherche de test et ajout d’essai', async () => {

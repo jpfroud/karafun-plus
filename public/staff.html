@@ -199,13 +199,13 @@
   <section class="card spotify-panel" data-tab="plus" id="spotifyPanel">
     <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
     <p class="small" id="spotifyText" role="status"></p>
-    <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (ce PC, celui de KaraFun, une enceinte) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
-    <div class="row wrap" id="spotifyReconnectRow" hidden><button class="btn small primary" id="spotifyReconnect">Reconnecter Spotify</button><span class="small muted">depuis ce PC : Spotify revient sur son adresse locale.</span></div>
+    <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (<span id="spotifyDevicesHint">ce PC, celui de KaraFun, une enceinte</span>) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
+    <div class="row wrap" id="spotifyReconnectRow" hidden><button class="btn small primary" id="spotifyReconnect">Reconnecter Spotify</button><span class="small muted" id="spotifyReconnectHint">depuis ce PC : Spotify revient sur son adresse locale.</span></div>
     <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
       <ol class="small">
         <li>Sur <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com</a>, connecte-toi avec le compte Spotify du bar et crée une application (cocher « Web API »).</li>
         <li>Dans ses réglages, ajoute l’adresse de retour : <code id="spotifyRedirect">http://127.0.0.1:3000/spotify/callback</code></li>
-        <li>Colle son « Client ID » ici (il s’enregistre en quittant le champ), puis clique sur « Se connecter à Spotify » <b>depuis ce PC</b>.</li>
+        <li>Colle son « Client ID » ici (il s’enregistre en quittant le champ), puis clique sur « Se connecter à Spotify » <b id="spotifyLoginWhere">depuis ce PC</b>.</li>
       </ol>
       <div class="row wrap"><input id="spotifyClientId" type="text" autocomplete="off" placeholder="Client ID de l’application Spotify" aria-label="Client ID Spotify"><span class="save-status" data-save-status="spotifyClientId" aria-live="polite"></span><button class="btn small primary" id="spotifyLogin">Se connecter à Spotify</button></div>
     </details>
@@ -305,8 +305,16 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const key = new URLSearchParams(location.search).get('key') || '';
+  // Clé du bar : celle de l'adresse l'emporte toujours. En mode serveur, /staff s'ouvre
+  // aussi sans clé (retour de Spotify) : la page relit alors celle gardée par l'onglet.
+  const sessionStore = () => { try { return window.sessionStorage || null; } catch (_) { return null; } };
+  const urlKey = new URLSearchParams(location.search).get('key') || '';
+  let keptKey = ''; try { keptKey = sessionStore()?.getItem('bar-key') || ''; } catch (_) { /* onglet sans mémoire */ }
+  const key = urlKey || keptKey;
   const kq = key ? `?key=${encodeURIComponent(key)}` : '';
+  const SPOTIFY_TUNNEL = 'depuis un PC relié au serveur par un tunnel SSH (voir DEPLOIEMENT-SERVEUR.md)';
+  // Vrai si l'onglet garde cette clé : le retour de Spotify la retrouvera.
+  const keyKept = () => { try { return sessionStore()?.getItem('bar-key') === key; } catch (_) { return false; } };
   let S = null; let dragging = null; let moveArmed = null; let renderedOnce = false;
   let openNote = null; // repère ouvert d'un appui, conservé entre deux rafraîchissements
   let openRowMenu = null; // menu ⋯ d'une ligne de la file, gardé ouvert au rafraîchissement
@@ -556,7 +564,7 @@
     spotifyClientId: { text: true, delay: null,
       validate: value => /^[A-Za-z0-9]{16,64}$/.test(value) ? null : 'colle le « Client ID » de ton application Spotify (16 à 64 lettres et chiffres)',
       confirm: value => !S.spotify?.connected || value === S.spotify.clientId ||
-        confirm('Changer le Client ID déconnecte Spotify : il faudra se reconnecter depuis ce PC. Continuer ?'),
+        confirm(`Changer le Client ID déconnecte Spotify : il faudra se reconnecter ${S.app?.mode === 'server' ? SPOTIFY_TUNNEL : 'depuis ce PC'}. Continuer ?`),
       send: value => post('/api/staff/spotify', { action: 'client', clientId: value }), server: () => S.spotify?.clientId || '' },
     note: { text: true, delay: 1000, validate: value => value.length > 140 ? 'au plus 140 caractères' : null,
       send: (value, id) => post('/api/staff/person/identify', { personId: id, note: value }), server: id => personOf(id)?.privateNote || '' },
@@ -1007,6 +1015,8 @@
       if (!r.ok) throw new Error(r.status === 403 ? 'Accès réservé aux gérants.' : 'Serveur indisponible');
       const previousBattle = S?.battle?.id === undefined ? null : `${S.battle.id}:${S.battle.phase}`;
       S = await r.json();
+      // Mode serveur seulement : la clé de l'adresse est gardée pour cet onglet.
+      if (urlKey && S.app?.mode === 'server') { try { sessionStore()?.setItem('bar-key', urlKey); } catch (_) { /* onglet sans mémoire */ } }
       // Écart entre l'horloge du serveur et celle de cet appareil (barre de lecture).
       clockSkew = Number.isFinite(S.now) ? S.now - Date.now() : 0;
       shownLoad = Math.max(shownLoad, number);
@@ -1022,7 +1032,7 @@
           }); } catch (_) { /* Le panneau reste visible dans la page. */ }
         }
       }
-    } catch (e) { $('kfPill').textContent = 'Programme arrêté ?'; $('kfPill').className = 'pill bad'; }
+    } catch (e) { $('kfPill').textContent = key ? 'Programme arrêté ?' : 'Clé du bar manquante'; $('kfPill').className = 'pill bad'; }
   }
 
   function renderSolver() {
@@ -1369,6 +1379,12 @@
   function renderSpotify() {
     const sp = S.spotify;
     $('spotifyChip').hidden = !sp?.configured;
+    // Mode serveur : Spotify se reconnecte par un tunnel SSH, pas depuis « ce PC ».
+    if (S.app?.mode === 'server') {
+      $('spotifyDevicesHint').textContent = 'le PC de KaraFun, un téléphone, une enceinte';
+      $('spotifyReconnectHint').textContent = `${SPOTIFY_TUNNEL}.`;
+      $('spotifyLoginWhere').textContent = SPOTIFY_TUNNEL;
+    }
     if (!sp) return;
     $('spotifyRedirect').textContent = sp.redirectUri || '';
     syncField($('spotifyClientId'));
@@ -2289,7 +2305,27 @@
     if (clear) clear.hidden = !input.value;
   });
   const spotifyAction = (body, message) => act('/api/staff/spotify', body, message);
+  // Mode serveur : Spotify revient sur http://127.0.0.1:<port>, par le tunnel SSH. La
+  // connexion part seulement de cette origine, et dans le même onglet : la page de
+  // retour mène à /staff, qui relit la clé gardée par l'onglet.
+  async function connectSpotifyServer() {
+    let returnOrigin = '';
+    try { returnOrigin = new URL(S.spotify.redirectUri).origin; } catch (_) { /* adresse illisible */ }
+    if (returnOrigin !== location.origin) {
+      toast(returnOrigin ? `Connecte Spotify ${SPOTIFY_TUNNEL} : ouvre la page du bar par ${returnOrigin}.` : `Connecte Spotify ${SPOTIFY_TUNNEL}.`, true);
+      return;
+    }
+    try {
+      const { url } = await post('/api/staff/spotify', { action: 'auth-url' });
+      if (keyKept()) location.assign(url);
+      else {
+        window.open(url, '_blank', 'noopener');
+        toast('Spotify s’ouvre dans un nouvel onglet : une fois connecté, ferme-le et reviens sur cette page.');
+      }
+    } catch (e) { toast(e.message, true); }
+  }
   $('spotifyLogin').onclick = $('spotifyReconnect').onclick = async () => {
+    if (S?.app?.mode === 'server') return connectSpotifyServer();
     try {
       const { url } = await post('/api/staff/spotify', { action: 'auth-url' });
       // Spotify revient sur 127.0.0.1 : la connexion doit se faire sur ce PC.

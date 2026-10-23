@@ -6,6 +6,7 @@
 // Battle refusée, paroles et connexion Spotify.
 const assert = require('node:assert/strict');
 const { staffRoute } = require('./staff-auth');
+const { staffKey } = require('./staff-auth');
 const BASE = process.env.BASE || 'http://127.0.0.1:3113';
 
 async function request(route, body) {
@@ -135,6 +136,10 @@ const clock = at => { const d = new Date(at); return `${pad(d.getHours())}:${pad
   assert.doesNotMatch(JSON.stringify(state.spotify), /refresh/i, 'aucun jeton dans la page du bar');
   const callback = await fetch(BASE + '/spotify/callback?code=x&state=faux');
   assert.match(await callback.text(), /expirée/, 'un retour Spotify sans demande valable est refusé');
+  // (#27) Page de retour sans la clé du bar : son lien mène à « / », qui redirige ce PC vers sa page.
+  const callbackPage = await (await fetch(BASE + '/spotify/callback?code=x&state=faux')).text();
+  assert.ok(callbackPage.includes('<a href="/">Revenir à la page du bar</a>'), 'lien de retour sans clé');
+  assert.equal(callbackPage.includes(await staffKey(BASE)), false, 'la clé du bar n’est jamais dans la page de retour');
 
   // ---------------------------------------------------------- en direct avec le faux KaraFun
   await ok('/api/staff/settings', { auto: true, autoPlay: true, playDelaySec: 0, pushDelaySec: 0 });

@@ -486,3 +486,76 @@ test('Spotify : relance refusée (403, 503) ou réseau coupé : échec avec ce c
     assert.equal(link.health.state, reply === 403 ? 'ready' : 'error', `${why} : injoignable seulement pour le réseau et les 5xx`);
   }
 });
+
+// SP1 (#27) : en mode serveur, le retour Spotify n'est protégé que par le state
+// PKCE. Il doit rester à usage unique, limité à 10 min, et un state faux ne
+// doit ni joindre Spotify ni effacer la demande en cours.
+test('Spotify : state à usage unique, 10 min au plus, un state faux ne consomme rien', async () => {
+  const requests = [];
+  let refuseToken = false; // Spotify refuse l'échange (code périmé, déjà servi)
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, body: String(options.body || '') });
+    if (refuseToken) return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
+    return { ok: true, status: 200, json: async () => ({ access_token: 'jeton', refresh_token: 'rt', expires_in: 3600 }) };
+  };
+  let now = 5_000_000;
+  const link = new SpotifyLink({ fetchImpl, now: () => now });
+  link.setClientId('0123456789abcdef0123456789abcdef');
+  const redirect = 'http://127.0.0.1:3000/spotify/callback';
+  const url = new URL(link.authUrl(redirect));
+  const { state, at } = link.pendingAuth;
+  assert.equal(url.searchParams.get('state'), state);
+  const tokenRequests = () => requests.filter(request => request.url === 'https://accounts.spotify.com/api/token');
+  const expired = 'Connexion Spotify expirée : relance-la depuis la page du bar.';
+
+  await assert.rejects(link.finishAuth({ code: 'c', state: 'faux' }), { message: expired });
+  assert.equal(tokenRequests().length, 0, 'un state faux ne joint pas Spotify');
+  assert.equal(link.pendingAuth?.state, state, 'un state faux ne consomme pas la demande');
+  // State absent ou vide : même refus, sans requête ni consommation.
+  for (const missing of [{ code: 'c' }, { code: 'c', state: '' }, { code: 'c', state: null }]) {
+    await assert.rejects(link.finishAuth(missing), { message: expired }, JSON.stringify(missing));
+  }
+  assert.equal(tokenRequests().length, 0, 'un state absent ne joint pas Spotify');
+  assert.equal(link.pendingAuth?.state, state, 'un state absent ne consomme pas la demande');
+
+  now = at + 600_000; // limite des 10 min, encore acceptée
+  await link.finishAuth({ code: 'c', state });
+  assert.equal(link.connected, true);
+  assert.equal(tokenRequests().length, 1);
+  const form = new URLSearchParams(tokenRequests()[0].body);
+  assert.equal(form.get('grant_type'), 'authorization_code');
+  assert.equal(form.get('code'), 'c');
+  assert.equal(form.get('redirect_uri'), redirect);
+  assert.equal(form.get('code_verifier').length, 64);
+  assert.equal(link.pendingAuth, null);
+
+  await assert.rejects(link.finishAuth({ code: 'c', state }), { message: expired }, 'rejeu refusé');
+  assert.equal(tokenRequests().length, 1, 'le rejeu ne joint pas Spotify');
+
+  link.authUrl(redirect);
+  const second = link.pendingAuth;
+  now = second.at + 600_001; // une milliseconde de trop
+  await assert.rejects(link.finishAuth({ code: 'c', state: second.state }), { message: expired });
+  assert.equal(tokenRequests().length, 1, 'demande trop vieille : aucune requête');
+  assert.equal(requests.length, 1, 'aucune autre requête vers Spotify');
+
+  // Échange refusé par Spotify : la demande est consommée quand même, son state ne repart pas.
+  refuseToken = true;
+  link.authUrl(redirect);
+  const refused = link.pendingAuth.state;
+  await assert.rejects(link.finishAuth({ code: 'c', state: refused }),
+    { message: 'Connexion Spotify refusée ou expirée : reconnecte Spotify.' });
+  assert.equal(tokenRequests().length, 2, 'un seul essai pour l’échange refusé');
+  await assert.rejects(link.finishAuth({ code: 'c', state: refused }), { message: expired }, 'state d’un échange refusé rejoué');
+  assert.equal(tokenRequests().length, 2, 'le rejeu après refus ne joint pas Spotify');
+  refuseToken = false;
+
+  // Deux retours simultanés avec le même state : un seul passe, une seule requête.
+  link.authUrl(redirect);
+  const racing = link.pendingAuth.state;
+  const results = await Promise.allSettled([link.finishAuth({ code: 'c', state: racing }), link.finishAuth({ code: 'c', state: racing })]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1, 'un seul retour simultané passe');
+  assert.equal(results.find(result => result.status === 'rejected').reason.message, expired);
+  assert.equal(tokenRequests().length, 3, 'une seule requête pour deux retours simultanés');
+  assert.equal(link.connected, true);
+});
