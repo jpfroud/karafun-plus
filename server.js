@@ -511,12 +511,14 @@ function appLog(msg) {
   try { fs.appendFileSync(path.join(LOG_DIR, `serveur-${line.slice(0, 10)}.log`), line + '\n'); } catch (e) { /* */ }
 }
 
-function stopHelper() {
+// Arrêt propre : ARRETER.bat (`'stop'`) ou signal du système (`'SIGTERM'`,
+// `'SIGINT'`, `'SIGHUP'`, deux modes). Un second appel ne fait rien.
+function stopHelper(reason = 'stop') {
   if (shuttingDown) return;
   shuttingDown = true;
-  journalEvent('app.stopped', { reason: 'stop' });
+  journalEvent('app.stopped', { reason });
   saveNight();
-  appLog('Arrêt de la file karaoké demandé par le bar.');
+  appLog(reason === 'stop' ? 'Arrêt de la file karaoké demandé par le bar.' : `Arrêt de la file karaoké (signal ${reason}).`);
   sched.closeSolver();
   try { bridge?.disconnect(); bridge?.releaseIdentity(); } catch (_) { /* arrêt en cours */ }
   try { fake?.close(); } catch (_) { /* arrêt en cours */ }
@@ -527,6 +529,21 @@ function stopHelper() {
   server.close();
   publicServer.close();
   setTimeout(() => process.exit(0), 500).unref();
+}
+
+// État de GET /readyz (deux modes), lu dans les variables du module sans
+// demander de calcul au solveur : jamais de texte d'erreur, de code KaraFun, de
+// clé, de prénom ni de nom de table. Le solveur n'entre pas dans `ok` (rotation
+// locale de secours). Phases KaraFun rendues telles quelles : retry, stopped,
+// idle ; toute autre phase sans données (discovering, opening, waiting-*,
+// ready, ou une phase inconnue) devient 'connecting'.
+const KARAFUN_PHASES_AS_IS = new Set(['retry', 'stopped', 'idle']);
+function readiness() {
+  const phase = bridge && !bridge.ready ? bridge.connectionState().phase : null;
+  const karafun = !bridge ? 'no-code' : bridge.ready ? 'connected' : KARAFUN_PHASES_AS_IS.has(phase) ? phase : 'connecting';
+  const solver = !sched.solverBridge ? 'off' : sched.solverBridge.available ? 'available' : 'unavailable';
+  const persistence = !nightStore ? 'off' : persistenceError !== null ? 'error' : 'ok';
+  return { ok: karafun === 'connected' && persistence !== 'error', mode: SERVER ? 'server' : 'pc', karafun, solver, persistence };
 }
 
 function saveTables() {
@@ -4944,13 +4961,26 @@ const handlers = {
 };
 
 const server = http.createServer(async (req, res) => {
-  const u = new URL(req.url, 'http://x');
+  // Cible de requête que URL ne sait pas lire (//x:99999/, http://[), deux
+  // ports, sans clé : 400. Levée hors du try, l'exception deviendrait un rejet
+  // non géré qui arrêterait la file.
+  let u;
+  try { u = new URL(req.url, 'http://x'); }
+  catch (_) { return send(res, 400, 'Requête invalide', 'text/plain; charset=utf-8'); }
   const p = u.pathname;
   try {
+    // Sonde de vie (deux modes) : deux ports, toute adresse, aucun secret.
+    if (p === '/healthz' && (req.method === 'GET' || req.method === 'HEAD')) return send(res, 200, 'ok', 'text/plain; charset=utf-8');
     if (req.method === 'GET') {
       if (p === '/' ) {
         if (!isLocal(req) || req.socket.localPort === PUBLIC_PORT) return send(res, 403, 'Scanne le QR code de ta table.', 'text/plain; charset=utf-8');
         res.writeHead(302, { Location: `/staff?key=${STAFF_KEY}`, 'Referrer-Policy': 'no-referrer' }); return res.end();
+      }
+      // Sonde de disponibilité (deux modes) : port du bar seulement, sans clé.
+      if (p === '/readyz') {
+        if (req.socket.localPort === PUBLIC_PORT) return send(res, 404, 'Introuvable', 'text/plain; charset=utf-8');
+        const state = readiness();
+        return send(res, state.ok ? 200 : 503, state);
       }
       let m = /^\/t\/([^/]+)\/([A-Za-z0-9_-]{22})\/?$/.exec(p);
       if (m) {
@@ -5111,7 +5141,7 @@ const server = http.createServer(async (req, res) => {
         // Mode serveur : l'arrêt passe par le signal du système, cette route n'existe pas.
         if (SERVER) return send(res, 404, { error: 'Introuvable' });
         if (!isLocal(req) || req.socket.localPort === PUBLIC_PORT || req.headers['x-helper-stop'] !== STOP_KEY) return send(res, 403, { error: 'Arrêt réservé à ce PC.' });
-        send(res, 200, { ok: true }); setTimeout(stopHelper, 150); return;
+        send(res, 200, { ok: true }); setTimeout(() => stopHelper('stop'), 150); return;
       }
       const key = `POST ${p}`;
       const h = handlers[key];
@@ -5311,6 +5341,10 @@ async function main() {
 }
 
 main().catch(e => { appLog(`Impossible de démarrer : ${e.message}`); process.exitCode = 1; });
+// Arrêt par le système (deux modes) : docker compose stop, Ctrl+C, fenêtre
+// fermée. Même routine qu'ARRETER.bat, sortie en 0 ; un second signal est
+// absorbé par stopHelper. Hors des bacs à sable `vm` des tests.
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => stopHelper(signal));
 
 // Mesure de couverture des tests (NODE_V8_COVERAGE, voir test/coverage.js) :
 // relevé chaque seconde, pour qu'un serveur arrêté brutalement par un test

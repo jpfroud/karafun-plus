@@ -14,12 +14,32 @@ const ROOT = path.join(__dirname, '..');
 const JARS = [path.join(__dirname, 'target', 'karafun-solver.jar'),
   path.join(__dirname, 'karafun-solver.jar')];
 const BUNDLED_JAVA = path.join(ROOT, 'solver-runtime', 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+// Journal de Timefold réduit aux avertissements. Placée en tête de
+// JAVA_TOOL_OPTIONS : un même -D de l'exploitant, écrit après, l'emporte.
+const LOG_OPTION = '-Dorg.slf4j.simpleLogger.defaultLogLevel=warn';
+
+// Options JVM de KARAOKE_SOLVER_JVM_ARGS (deux modes), passées avant -jar :
+// séparées par des espaces, sans guillemets ni jeton vide.
+function jvmArgsFrom(value) {
+  return String(value || '').split(/\s+/).filter(Boolean);
+}
+
+// JAVA_TOOL_OPTIONS de l'enfant : l'option de journal, puis celles déjà
+// fixées par l'exploitant (complétées, jamais écrasées).
+function javaToolOptions(existing) {
+  const text = String(existing || '').trim();
+  return text ? `${LOG_OPTION} ${text}` : LOG_OPTION;
+}
 
 class TimefoldBridge {
   constructor(options = {}) {
     this.jar = options.jar || JARS.find(fs.existsSync) || null;
     this.java = options.java || (fs.existsSync(BUNDLED_JAVA) ? BUNDLED_JAVA : 'java');
     this.spawn = options.spawn || spawn;
+    // Environnement de la JVM : celui du processus, sauf option `env` (tests).
+    this.env = options.env || process.env;
+    this.jvmArgs = jvmArgsFrom(this.env.KARAOKE_SOLVER_JVM_ARGS);
+    this.javaToolOptions = javaToolOptions(this.env.JAVA_TOOL_OPTIONS);
     // Garde minimale ; chaque calcul reçoit en plus son propre budget.
     this.timeoutMs = options.timeoutMs || 30000;
     this.settleMs = options.settleMs ?? 1000;
@@ -37,9 +57,11 @@ class TimefoldBridge {
   _start() {
     if (this.child) return;
     if (!this.available) throw new Error('Optimiseur de file indisponible.');
-    const child = this.spawn(this.java, ['-jar', this.jar], {
+    // Sans réglage : exactement ['-jar', jar]. Option refusée par la JVM :
+    // arrêt du processus, puis repli local (_failed).
+    const child = this.spawn(this.java, [...this.jvmArgs, '-jar', this.jar], {
       cwd: ROOT, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, JAVA_TOOL_OPTIONS: '-Dorg.slf4j.simpleLogger.defaultLogLevel=warn' },
+      env: { ...this.env, JAVA_TOOL_OPTIONS: this.javaToolOptions },
     });
     this.child = child;
     child.stdout.setEncoding('utf8');
@@ -93,6 +115,10 @@ class TimefoldBridge {
       const line = this.buffer.slice(0, at).trim();
       this.buffer = this.buffer.slice(at + 1);
       if (!line) continue;
+      // Le jar n'écrit sur stdout que des objets JSON ; les autres lignes
+      // viennent de la JVM (options de KARAOKE_SOLVER_JVM_ARGS ou de
+      // JAVA_TOOL_OPTIONS : -Xlog:gc, -verbose:gc…) et sont ignorées.
+      if (!line.startsWith('{')) continue;
       const active = this.active;
       if (!active) continue;
       let response;
@@ -159,4 +185,4 @@ class TimefoldBridge {
   }
 }
 
-module.exports = { TimefoldBridge, BUNDLED_JAVA };
+module.exports = { TimefoldBridge, BUNDLED_JAVA, jvmArgsFrom, javaToolOptions };

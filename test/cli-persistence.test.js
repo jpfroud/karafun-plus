@@ -21,6 +21,9 @@ const { TableAccess } = require('../table-access');
 const { NightStateStore, snapshotNight, restoreNight } = require('../night-state');
 
 const root = path.join(__dirname, '..');
+// start-evening.js lit PORT (issue #26) : les tests de DEMARRER faits dans ce
+// processus supposent PORT absent, comme les enfants (childEnv).
+delete process.env.PORT;
 const FAKE_SECRET = '123456-faux-secret';
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'karaoke-cli-persistance-'));
 process.on('exit', () => {
@@ -38,7 +41,7 @@ function childEnv(extra) {
   const env = { ...process.env };
   for (const name of Object.keys(env)) {
     if (/^(https?_proxy|no_proxy|all_proxy|node_use_env_proxy)$/i.test(name) ||
-      ['KARAFUN_EXE', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'NODE_TEST_CONTEXT'].includes(name)) delete env[name];
+      ['KARAFUN_EXE', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'NODE_TEST_CONTEXT', 'PORT'].includes(name)) delete env[name];
   }
   return { ...env, ...extra };
 }
@@ -67,9 +70,9 @@ for (const name of ['existsSync', 'readFileSync']) {
 }
 `);
 
-function runStop(dataDir, args = []) {
+function runStop(dataDir, args = [], env = {}) {
   return runNode(['--require', stopPreload, path.join(root, 'stop.js'), ...args],
-    { STOP_ROOT: root, STOP_DATA: dataDir });
+    { STOP_ROOT: root, STOP_DATA: dataDir, ...env });
 }
 
 // Faux serveur de la file : n'écoute que sur 127.0.0.1, port choisi par le système.
@@ -166,6 +169,53 @@ test('ARRETER : un port invalide est refusé avant toute lecture', async () => {
   }
 });
 
+// Issue #26 : sans --port, ARRETER suit PORT comme server.js ; --port prime ;
+// lecture stricte par Number, jamais de port deviné.
+test('ARRETER C1 : PORT choisit le fichier de session sans --port', async () => {
+  const server = await shutdownServer(200);
+  try {
+    const data = freshDir('arret-env-port');
+    fs.writeFileSync(path.join(data, 'runtime-3000.json'), JSON.stringify({ port: 1, secret: 'mauvaise-file' }));
+    fs.writeFileSync(path.join(data, 'runtime-3456.json'), JSON.stringify({ port: server.port, secret: FAKE_SECRET }));
+    const result = await runStop(data, [], { PORT: '3456' });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /La file karaoké s’arrête\./);
+    assert.deepEqual(server.requests, [{ method: 'POST', url: '/internal/shutdown', key: FAKE_SECRET, body: '' }]);
+  } finally { await server.close(); }
+});
+
+test('ARRETER C2 : --port prime sur PORT', async () => {
+  const server = await shutdownServer(200);
+  try {
+    const data = freshDir('arret-port-prime');
+    fs.writeFileSync(path.join(data, 'runtime-3000.json'), JSON.stringify({ port: 1, secret: 'mauvaise-file' }));
+    fs.writeFileSync(path.join(data, 'runtime-3456.json'), JSON.stringify({ port: server.port, secret: FAKE_SECRET }));
+    const result = await runStop(data, ['--port', '3456'], { PORT: '3000' });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(server.requests.length, 1);
+    assert.equal(server.requests[0].key, FAKE_SECRET);
+  } finally { await server.close(); }
+});
+
+test('ARRETER C3 : PORT et --port mal formés refusés, aucune demande envoyée', async () => {
+  const server = await shutdownServer(200);
+  try {
+    const data = freshDir('arret-port-strict');
+    for (const port of [3, 3000, 3456]) {
+      fs.writeFileSync(path.join(data, `runtime-${port}.json`), JSON.stringify({ port: server.port, secret: FAKE_SECRET }));
+    }
+    const cases = [[[], { PORT: 'abc' }], [[], { PORT: '3456abc' }], [[], { PORT: '3.5' }],
+      [['--port', '3000abc'], {}], [['--port', '3.5'], {}]];
+    for (const [args, env] of cases) {
+      const label = JSON.stringify({ args, env });
+      const result = await runStop(data, args, env);
+      assert.notEqual(result.code, 0, label);
+      assert.match(result.stderr, /Port invalide\./, label);
+    }
+    assert.equal(server.requests.length, 0, 'aucun port deviné (parseInt aurait lu 3, 3000 ou 3456)');
+  } finally { await server.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // start-evening.js : fonctions exportées testées dans ce processus, puis
 // main() exécuté dans un enfant avec un Windows simulé.
@@ -225,6 +275,7 @@ const eveningPreload = path.join(work, 'evening-preload.js');
 fs.writeFileSync(eveningPreload, `'use strict';
 const fs = require('node:fs');
 const Module = require('node:module');
+const { EventEmitter } = require('node:events');
 const cp = require('node:child_process');
 const scenario = JSON.parse(process.env.EVENING_SCENARIO);
 const log = event => fs.appendFileSync(process.env.EVENING_EVENTS, JSON.stringify(event) + '\\n');
@@ -235,7 +286,13 @@ cp.execFile = (file, args, options, callback) => {
 };
 cp.spawn = (file, args, options) => {
   log({ type: 'spawn', file, args, detached: options.detached });
-  return { unref() { log({ type: 'unref', file }); } };
+  const child = new EventEmitter();
+  child.unref = () => { log({ type: 'unref', file }); };
+  // Programme absent (scenario.spawnError) : erreur asynchrone, comme le vrai spawn.
+  if (scenario.spawnError === file) {
+    setImmediate(() => child.emit('error', Object.assign(new Error('spawn ' + file + ' ENOENT'), { code: 'ENOENT' })));
+  }
+  return child;
 };
 globalThis.fetch = async (url, init) => {
   log({ type: 'fetch', url, redirect: init.redirect });
@@ -253,10 +310,10 @@ Module._load = function (request, parent) {
 };
 `);
 
-async function runEvening(scenario, env = {}) {
+async function runEvening(scenario, env = {}, args = []) {
   const events = path.join(freshDir('demarrer'), 'events.jsonl');
   fs.writeFileSync(events, '');
-  const result = await runNode(['--require', eveningPreload, path.join(root, 'start-evening.js')],
+  const result = await runNode(['--require', eveningPreload, path.join(root, 'start-evening.js'), ...args],
     { EVENING_SCENARIO: JSON.stringify(scenario), EVENING_EVENTS: events, ...env });
   result.events = fs.readFileSync(events, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
   return result;
@@ -310,6 +367,85 @@ test('DEMARRER hors Windows : pas de PowerShell ; port 3000 pris par un autre pr
   assert.match(result.stderr, /Démarrage impossible : Le port 3000 est utilisé par un autre programme\./);
   assert.ok(!result.events.some(event => event.type === 'execFile'), 'Get-Process n’est appelé que sous Windows');
   assert.ok(!result.events.some(event => event.type === 'server'));
+});
+
+// Issue #26 : page du bar ouverte seulement sous Windows, échecs de lancement
+// expliqués sans trace de pile, port suivi comme server.js.
+const stackLine = /^\s+at /m;
+
+test('DEMARRER C4 hors Windows : file déjà ouverte, l’adresse est donnée, rien n’est lancé', async () => {
+  const result = await runEvening({ platform: 'linux', helper: 'file' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(result.stdout.includes('La file karaoké tourne déjà : ouvre la page du bar à l’adresse http://localhost:3000/.'), result.stdout);
+  assert.ok(!result.events.some(event => event.type === 'spawn'), 'ni cmd.exe ni autre programme');
+  assert.ok(!result.events.some(event => event.type === 'server'));
+});
+
+test('DEMARRER C5 : cmd.exe absent, le bar ouvre l’adresse lui-même', async () => {
+  const result = await runEvening({ platform: 'win32', running: 1, helper: 'file', spawnError: 'cmd.exe' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, 'Ouverture de la page du bar impossible (ENOENT) : ouvre http://localhost:3000/ dans ton navigateur.\n');
+  assert.doesNotMatch(result.stderr, stackLine);
+  assert.match(result.stdout, /La file karaoké tourne déjà : ouverture de la page du bar\./);
+});
+
+test('DEMARRER C6 : KaraFun impossible à lancer, la file démarre quand même', async () => {
+  const result = await runEvening({ platform: 'win32', running: 0, helper: 'absent', spawnError: process.execPath },
+    { KARAFUN_EXE: process.execPath });
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(result.stderr.includes('KaraFun n’a pas pu être lancé (ENOENT) : ouvre-le manuellement, puis active sa télécommande.'), result.stderr);
+  assert.doesNotMatch(result.stderr, stackLine);
+  assert.equal(result.events.filter(event => event.type === 'server').length, 1);
+});
+
+test('DEMARRER C7 : port du bar suivi depuis PORT, --port prime', async () => {
+  let result = await runEvening({ platform: 'linux', helper: 'absent' }, { PORT: '3456' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.events.filter(event => event.type === 'fetch').map(event => event.url), ['http://localhost:3456/']);
+  result = await runEvening({ platform: 'linux', helper: 'absent' }, { PORT: '3456' }, ['--port', '3457']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.events.filter(event => event.type === 'fetch').map(event => event.url), ['http://localhost:3457/']);
+  result = await runEvening({ platform: 'linux', helper: 'autre' }, { PORT: '3456' });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Démarrage impossible : Le port 3456 est utilisé par un autre programme\./);
+  assert.ok(!result.events.some(event => event.type === 'server'));
+});
+
+test('DEMARRER C8 : port invalide refusé avant toute détection ni lancement', async () => {
+  const result = await runEvening({ platform: 'win32', running: 0, helper: 'absent' },
+    { KARAFUN_EXE: process.execPath }, ['--port', 'abc']);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Démarrage impossible : Port invalide\./);
+  assert.doesNotMatch(result.stderr, stackLine);
+  assert.deepEqual(result.events.filter(event => ['execFile', 'fetch', 'spawn', 'server'].includes(event.type)), []);
+});
+
+const fetchOnlyPreload = path.join(work, 'fetch-only-preload.js');
+fs.writeFileSync(fetchOnlyPreload, `'use strict';
+globalThis.fetch = async () => ({ status: 302, headers: new Headers({ location: '/staff?key=123456' }) });
+`);
+
+test('DEMARRER C9 hors Windows : vrai spawn, file déjà ouverte, sortie propre',
+  { skip: process.platform === 'win32' && 'le vrai cmd.exe ouvrirait un navigateur sur la machine de CI' }, async () => {
+    const result = await runNode(['--require', fetchOnlyPreload, path.join(root, 'start-evening.js')], {});
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    assert.match(result.stdout, /La file karaoké tourne déjà : ouvre la page du bar à l’adresse http:\/\/localhost:3000\//);
+  });
+
+// Relecture de #26 : bornes de barPort, PORT mal formé, et --port sans valeur
+// (ou suivi d'une autre option) refusé même quand PORT est fixé.
+test('DEMARRER barPort : bornes 1 à 65535, PORT mal formé, --port sans valeur', () => {
+  const { barPort, barUrl } = loadStartEvening(() => {});
+  for (const [argv, env] of [[['--port', '0'], {}], [['--port', '65536'], {}], [['--port', '-1'], {}],
+    [[], { PORT: 'abc' }], [[], { PORT: '0' }], [['--port'], { PORT: '3456' }], [['--port', '--demo'], { PORT: '3456' }]]) {
+    assert.throws(() => barPort(argv, env), /^Error: Port invalide\.$/, JSON.stringify({ argv, env }));
+  }
+  assert.equal(barPort([], {}), 3000);
+  assert.equal(barPort([], { PORT: '' }), 3000);
+  assert.equal(barPort(['--port', '65535'], {}), 65535);
+  assert.equal(barPort(['--port', '1'], { PORT: '3456' }), 1);
+  assert.equal(barUrl(3457), 'http://localhost:3457/');
 });
 
 // ---------------------------------------------------------------------------

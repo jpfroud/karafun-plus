@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const portArg = process.argv.indexOf('--port');
-const port = portArg >= 0 ? Number(process.argv[portArg + 1]) : 3000;
+const port = Number(portArg >= 0 ? process.argv[portArg + 1] : process.env.PORT || '3000');
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Port invalide.');
 const file = path.join(__dirname, 'data', `runtime-${port}.json`);
 

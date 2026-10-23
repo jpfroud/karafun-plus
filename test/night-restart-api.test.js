@@ -10,6 +10,7 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..');
 const { NightStateStore } = require('../night-state');
+const { parseLines } = require('../evening-journal');
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-api-restart-'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -119,7 +120,7 @@ NightStateStore.prototype.save = function(snapshot, options) {
   };
   const stop = async (session, crash = false) => {
     if (session.child.exitCode !== null || session.child.signalCode !== null) return;
-    if (crash) session.child.kill();
+    if (crash) session.child.kill('SIGKILL');
     else {
       const runtime = JSON.parse(fs.readFileSync(path.join(sandbox, 'data', `runtime-${port}.json`), 'utf8'));
       assert.equal(runtime.pid, session.child.pid, 'Le fichier d’arrêt doit désigner notre serveur.');
@@ -133,9 +134,24 @@ NightStateStore.prototype.save = function(snapshot, options) {
     for (let i = 0; i < 30 && !(await portFree(port)); i++) await sleep(100);
     assert.ok(await portFree(port), 'Le port temporaire doit être libéré avant le redémarrage.');
   };
+  // Issue #26 : journaux de soirée de la copie (data/soirees/<soirée>/journal.jsonl).
+  const journalFiles = () => {
+    const dir = path.join(sandbox, 'data', 'soirees');
+    return fs.existsSync(dir) ? fs.readdirSync(dir).map(name => path.join(dir, name, 'journal.jsonl'))
+      .filter(file => fs.existsSync(file)) : [];
+  };
+  const journalEvents = file => parseLines(fs.readFileSync(file, 'utf8')).events;
+  const stoppedCount = () => journalFiles().reduce((sum, file) =>
+    sum + journalEvents(file).filter(event => event.ev === 'app.stopped').length, 0);
 
   try {
     const first = await launch();
+    // N3 (issue #26) : vrai serveur sans code KaraFun ni jar Timefold.
+    const readyz = await fetch(base + '/readyz', { signal: AbortSignal.timeout(3000) });
+    assert.equal(readyz.status, 503);
+    assert.equal(await readyz.text(), '{"ok":false,"mode":"pc","karafun":"no-code","solver":"unavailable","persistence":"ok"}');
+    assert.equal((await fetch(`http://127.0.0.1:${port + 1}/readyz`, { signal: AbortSignal.timeout(3000) })).status, 404,
+      '/readyz absent du port clients');
     let state = await first.staff();
     assert.equal(state.karafun.demo, false);
     assert.equal(state.karafun.connected, false);
@@ -193,7 +209,11 @@ NightStateStore.prototype.save = function(snapshot, options) {
     const pendingSolo = await first.ok('/api/staff/solo-invite', { tableId: 'Comptoir' });
     const pendingSoloToken = new URL(pendingSolo.url).searchParams.get('invitation');
     assert.ok(pendingSoloToken);
+    const stoppedBeforeCrash = stoppedCount();
     await stop(first, true); // Coupure abrupte après sauvegarde, sans routine d’arrêt.
+    // N2 (issue #26) : SIGKILL reste un crash, sans ligne app.stopped.
+    assert.equal(first.child.signalCode, 'SIGKILL');
+    assert.equal(stoppedCount(), stoppedBeforeCrash, 'un crash n’ajoute aucune ligne app.stopped');
 
     let second = await launch();
     state = await second.staff();
@@ -392,6 +412,68 @@ NightStateStore.prototype.save = function(snapshot, options) {
       'nouvelle soirée : valeur provisoire oubliée dans la sauvegarde');
     await stop(third);
     console.log(`ok - reset persistant après crash, anciens QR révoqués sur les ports ${port}/${port + 1}`);
+
+    // N1 (issue #26) : SIGTERM, SIGINT et SIGHUP passent par la routine
+    // d'ARRETER.bat (sauvegarde, app.stopped, fichier d'arrêt retiré), sortie 0.
+    if (process.platform === 'win32') console.log('skip - arrêt par signal : non testable sous Windows');
+    else {
+      const runtimeFile = path.join(sandbox, 'data', `runtime-${port}.json`);
+      const latestJournal = () => journalFiles().sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+      const serverLog = () => fs.readdirSync(path.join(sandbox, 'journal')).filter(name => name.startsWith('serveur-'))
+        .map(name => fs.readFileSync(path.join(sandbox, 'journal', name), 'utf8')).join('');
+      const exitOf = child => new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal, at: Date.now() })));
+      // Fichier d'arrêt écrit (fin du démarrage) avant d'envoyer le signal.
+      const started = async child => {
+        for (let i = 0; i < 50; i++) {
+          try { if (JSON.parse(fs.readFileSync(runtimeFile, 'utf8')).pid === child.pid) return; } catch (_) { /* pas encore écrit */ }
+          await sleep(100);
+        }
+        assert.fail('fichier d’arrêt du serveur temporaire absent');
+      };
+      const portReleased = async () => {
+        for (let i = 0; i < 30 && !(await portFree(port)); i++) await sleep(100);
+        assert.ok(await portFree(port), 'port libéré après l’arrêt par signal');
+      };
+      let session = await launch();
+      await session.ok('/api/staff/table', { id: 'T1', headcount: 1 });
+      const t1Url = (await session.staff()).tables.find(table => table.id === 'T1').url;
+      for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+        await started(session.child);
+        const exit = exitOf(session.child);
+        const sentAt = Date.now();
+        session.child.kill(signal);
+        const result = await exit;
+        assert.deepEqual({ code: result.code, signal: result.signal }, { code: 0, signal: null }, `${signal} : sortie en code 0`);
+        // gstack-timing-ok: sortie prévue 500 ms après le signal ; 3 s restent sous les 20 s de stop_grace_period.
+        assert.ok(result.at - sentAt < 3000, `${signal} : sortie après ${result.at - sentAt} ms`);
+        assert.ok(!fs.existsSync(runtimeFile), `${signal} : fichier d’arrêt retiré`);
+        const file = latestJournal();
+        const last = journalEvents(file).at(-1);
+        assert.equal(last.ev, 'app.stopped', `${signal} : dernière ligne du journal de soirée`);
+        assert.equal(last.reason, signal);
+        assert.ok(serverLog().includes(`Arrêt de la file karaoké (signal ${signal}).`), `${signal} : ligne du journal du serveur`);
+        await portReleased();
+        session = await launch();
+        assert.equal((await session.staff()).tables.find(table => table.id === 'T1').url, t1Url,
+          `${signal} : T1 garde l’adresse de son QR`);
+        const resumed = journalEvents(file);
+        const at = resumed.findIndex(event => event.seq === last.seq && event.ev === 'app.stopped');
+        assert.ok(at >= 0, `${signal} : même journal de soirée après le redémarrage`);
+        assert.equal(resumed[at + 1]?.ev, 'app.started', `${signal} : reprise notée juste après l’arrêt`);
+        assert.equal(resumed[at + 1].restored, true);
+      }
+      await started(session.child);
+      const before = stoppedCount();
+      const exit = exitOf(session.child);
+      session.child.kill('SIGTERM');
+      await sleep(20);
+      session.child.kill('SIGTERM');
+      const result = await exit;
+      assert.deepEqual({ code: result.code, signal: result.signal }, { code: 0, signal: null }, 'deux SIGTERM : sortie en code 0');
+      assert.equal(stoppedCount(), before + 1, 'le second SIGTERM n’ajoute aucun app.stopped');
+      assert.ok(!fs.existsSync(runtimeFile));
+      console.log('ok - arrêt par SIGTERM, SIGINT et SIGHUP : code 0, app.stopped noté, soirée et QR repris');
+    }
   } finally {
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited(child); }
