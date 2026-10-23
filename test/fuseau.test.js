@@ -45,7 +45,10 @@ function inZone(zone, run) {
     assert.equal(Intl.DateTimeFormat().resolvedOptions().timeZone, zone, `fuseau ${zone} pris en compte`);
     return run();
   } finally {
-    if (ORIGINAL_TZ === undefined) delete process.env.TZ;
+    // Sous Windows, Node ne suit TZ que quand elle reçoit une valeur : la
+    // retirer seule laisserait le dernier fuseau essayé. Le fuseau d'origine
+    // est donc redonné avant le retrait (sans effet ailleurs).
+    if (ORIGINAL_TZ === undefined) { process.env.TZ = ORIGINAL_ZONE; delete process.env.TZ; }
     else process.env.TZ = ORIGINAL_TZ;
   }
 }

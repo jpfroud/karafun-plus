@@ -21,6 +21,9 @@ const { TableAccess } = require('../table-access');
 const { NightStateStore, snapshotNight, restoreNight } = require('../night-state');
 
 const root = path.join(__dirname, '..');
+// start-evening.js lit PORT (issue #26) : les tests de DEMARRER faits dans ce
+// processus supposent PORT absent, comme les enfants (childEnv).
+delete process.env.PORT;
 const FAKE_SECRET = '123456-faux-secret';
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'karaoke-cli-persistance-'));
 process.on('exit', () => {

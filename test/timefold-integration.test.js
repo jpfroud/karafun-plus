@@ -930,6 +930,20 @@ async function spawnedWith(env) {
   return calls[0];
 }
 
+// Demande de 60 titres de « une demande arrivée pendant la préparation… »
+// (plus haut), budget de 200 ms, pour B4 et B7.
+function sixtyTitles(requestId) {
+  const performances = [];
+  for (let i = 0; i < 60; i++) {
+    for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
+      id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
+      singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
+    });
+  }
+  return { requestId, budgetMs: 200, performances, pastAppearance: {}, physicalCount: {}, pinnedUntil: 0,
+    roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false };
+}
+
 test('B1 pont Timefold : KARAOKE_SOLVER_JVM_ARGS passe avant -jar, dans l’ordre, sans jeton vide', async () => {
   const call = await spawnedWith({ KARAOKE_SOLVER_JVM_ARGS: '  -Xmx256m   -XX:+UseSerialGC ' });
   assert.equal(call.file, 'faux');
@@ -967,16 +981,8 @@ test('B4 vraie JVM : options de l’exploitant acceptées, 60 titres résolus',
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
     const bridge = new TimefoldBridge({ jar: JAR, settleMs: 0, env: { ...process.env,
       KARAOKE_SOLVER_JVM_ARGS: '-Xmx256m -XX:+UseSerialGC', JAVA_TOOL_OPTIONS: '-Dkarafun.essai=1' } });
-    const performances = [];
-    for (let i = 0; i < 60; i++) {
-      for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
-        id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
-        singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
-      });
-    }
     try {
-      const response = await bridge.solve({ requestId: 'options-jvm', budgetMs: 200, performances, pastAppearance: {},
-        physicalCount: {}, pinnedUntil: 0, roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false });
+      const response = await bridge.solve(sixtyTitles('options-jvm'));
       assert.equal(response.requestId, 'options-jvm');
       assert.equal(bridge.lastError, null);
       assert.deepEqual(bridge.child.spawnargs.slice(1), ['-Xmx256m', '-XX:+UseSerialGC', '-jar', JAR]);
@@ -1049,17 +1055,8 @@ test('B7 vraie JVM : -Xlog:gc (journal sur stdout) laisse Timefold répondre',
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
     const bridge = new TimefoldBridge({ jar: JAR, settleMs: 0,
       env: { ...process.env, KARAOKE_SOLVER_JVM_ARGS: '-Xmx256m -Xlog:gc' } });
-    const performances = [];
-    for (let i = 0; i < 60; i++) {
-      for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
-        id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
-        singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
-      });
-    }
     try {
-      const response = await bridge.solve({ requestId: 'xlog-gc', budgetMs: 200, performances, pastAppearance: {},
-        physicalCount: {}, pinnedUntil: 0, roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false },
-      { immediate: true });
+      const response = await bridge.solve(sixtyTitles('xlog-gc'), { immediate: true });
       assert.equal(response.requestId, 'xlog-gc');
       assert.equal(bridge.lastError, null);
       assert.equal(bridge.available, true);
