@@ -341,6 +341,11 @@ test('SP5 page du bar sans clé en mode serveur : la coquille seulement, API, im
   }
   // Témoin : avec la clé, l'API répond.
   assert.equal((await get(f, withKey('/api/staff/state', f.STAFF_KEY), { remote: DOCKER_REMOTE, port: f.PORT })).status, 200);
+  // Lien du bar (--print-staff-url) : la page avec sa clé reste servie.
+  const keyed = await get(f, withKey('/staff', f.STAFF_KEY), { remote: DOCKER_REMOTE, port: f.PORT });
+  assert.equal(keyed.status, 200, 'lien du bar avec clé : page servie');
+  assert.equal(keyed.headers['content-type'], 'text/html; charset=utf-8');
+  assert.equal(keyed.text, shell);
 });
 
 // ---------------------------------------------------------------- 2. clé persistante

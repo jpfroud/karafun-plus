@@ -410,6 +410,7 @@ if (require.main === module) {
       assert.equal(shell.headers.get('content-type'), 'text/html; charset=utf-8');
       assert.equal((await shell.text()).includes(key), false);
       assert.equal((await fetch(`${base}/api/staff/state`)).status, 403, 'API sans clé fermée');
+      assert.equal((await fetch(`${base}/staff?key=${encodeURIComponent(key)}`)).status, 200, 'lien du bar avec clé');
     } finally { await child.stop(); }
   });
 

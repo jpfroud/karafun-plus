@@ -5045,8 +5045,9 @@ const server = http.createServer(async (req, res) => {
           await spotify.finishAuth({ code: u.searchParams.get('code'), state: u.searchParams.get('state') });
           sched.note('Spotify connecté à la file karaoké.', 'staff');
         } catch (error) { message = error.message; }
-        // Jamais la clé du bar dans cette page (deux modes) : en mode PC, un relais HTTPS
-        // sur la même machine ferait paraître locale n'importe quelle requête.
+        // Jamais la clé du bar dans cette page (deux modes). En mode PC, son lien « / »
+        // redirige toute requête jugée locale vers /staff?key=<clé> : un relais HTTPS
+        // branché sur PORT obtient encore la clé par là, cette page seule ne l'en protège pas.
         const back = SERVER ? '/staff' : '/';
         return send(res, 200, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Spotify</title><body style="font-family:system-ui;padding:24px"><p>${message.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</p><p><a href="${back}">Revenir à la page du bar</a></p></body>`, 'text/html; charset=utf-8');
       }

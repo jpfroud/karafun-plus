@@ -2197,7 +2197,9 @@ test('SP10 connexion Spotify du mode serveur : même onglet, origine du retour, 
   assert.deepEqual(reread.assigned, [url]);
 
   // Page ouverte par une autre origine : le retour ne l'atteindrait pas.
-  for (const [origin, hostname] of [['https://bar.exemple.fr', 'bar.exemple.fr'], ['http://localhost:3000', 'localhost']]) {
+  // 127.0.0.1:3001 : tunnel ouvert sur un autre port local (kit Windows sur 3000).
+  for (const [origin, hostname] of [['https://bar.exemple.fr', 'bar.exemple.fr'], ['http://localhost:3000', 'localhost'],
+    ['http://127.0.0.1:3001', '127.0.0.1']]) {
     const elsewhere = await open({ origin, hostname });
     await elsewhere.click(elsewhere.$('spotifyLogin'));
     assert.deepEqual(elsewhere.toast(), { text: `Connecte Spotify ${tunnel} : ouvre la page du bar par http://127.0.0.1:3000.`, bad: true }, origin);
