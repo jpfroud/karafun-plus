@@ -125,7 +125,8 @@ sans_cle() {
   ! grep -qF 'staff?key=' "$1" || echec "un lien staff?key= apparaît dans docker logs"
 }
 # empreinte <clé> : début du SHA-256, comme le journal du serveur.
-empreinte() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 8))' "$1"; }
+# « -- » : une clé base64url peut commencer par « - », que node lirait comme une option.
+empreinte() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 8))' -- "$1"; }
 ligne_au_journal() { journaux "$1" "$TMP/attente.log" && grep -qE "$2" "$TMP/attente.log"; }
 # arreter <conteneur> : docker stop -t 20, puis code de sortie 0 exigé.
 arreter() {
@@ -507,7 +508,7 @@ PERSONNE=$(champ_json 'd.id' < "$TMP/personne.json")
 JETON=$(champ_json 'd.token' < "$TMP/personne.json")
 CORPS=$(node -e 'const [access, personId, token] = process.argv.slice(1);
 process.stdout.write(JSON.stringify({ table: "T1", access, personId, token, song: { songId: 801, title: "Titre essai", artist: "Essai" } }));' \
-  "$ACCES" "$PERSONNE" "$JETON")
+  -- "$ACCES" "$PERSONNE" "$JETON")
 poster "http://$CLI/api/table/song" "$CORPS" "$TMP/titre.json"
 # soiree_presente <adresse de T1> <id de S01> : S01 dans people, son titre dans queue.
 soiree_presente() {
