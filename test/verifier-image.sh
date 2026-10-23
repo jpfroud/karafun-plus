@@ -346,6 +346,17 @@ for cible in "$BAR" "$CLI"; do
   [ "$(cat "$TMP/v17.b")" = 'Scanne le QR code de ta table.' ] || echec "GET http://$cible/ : « $(head -c 200 "$TMP/v17.b") »"
   ! grep -qi '^location:' "$TMP/v17.h" || echec "GET http://$cible/ : en-tête Location présent"
 done
+# Par les ports publiés, le conteneur voit la passerelle du réseau Docker, jamais
+# 127.0.0.1 : la boucle locale du conteneur est essayée de l'intérieur.
+VUE=$(docker exec "$DEMO" node -e '
+fetch("http://127.0.0.1:3000/", { redirect: "manual" }).then(async r => {
+  const corps = await r.text();
+  if (r.status !== 403 || r.headers.has("location") || corps !== "Scanne le QR code de ta table.") {
+    console.log("HTTP " + r.status + (r.headers.has("location") ? ", en-tête Location présent" : "") + (corps ? ", « " + corps.slice(0, 100) + " »" : ""));
+    process.exit(1);
+  }
+}, e => { console.log(e.message); process.exit(1); });' 2>&1) \
+  || echec "GET http://127.0.0.1:3000/ dans le conteneur : ${VUE:-sans réponse} (la boucle locale ne doit donner aucun droit)"
 ok
 
 # ---------------------------------------------------------------- V18
