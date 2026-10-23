@@ -215,7 +215,7 @@ Bascule depuis le PC Windows :
 1. Tout de suite : crée les entrées A des noms d'essai, `essai` et `essai-bar`.
 2. Au moins 24 heures avant la bascule : sur l'entrée actuelle du nom des QR, « Modifier l'entrée », puis « TTL » « Personnalisé » à 300.
 3. À l'étape 6 de la section 12 : change la cible du nom des QR pour `<IPv4 du VPS>`, et crée l'entrée A de `HOTE_BAR` si elle manque.
-4. Au même moment, retire pour ces noms toute entrée AAAA ou CNAME, et tout DynHost. Ces libellés de suppression et le menu « DynHost » n'ont pas été vérifiés : cherche-les sur la ligne de l'entrée.
+4. Au même moment, retire pour ces noms toute entrée AAAA ou CNAME, et tout DynHost. La file ne reçoit les téléphones qu'en IPv4 : le réseau Docker du compose n'a pas d'IPv6, et un téléphone venu en IPv6 arriverait avec l'adresse de la passerelle Docker. Tous ces téléphones partageraient alors la même limite d'inscriptions par adresse. Ces libellés de suppression et le menu « DynHost » n'ont pas été vérifiés : cherche-les sur la ligne de l'entrée.
 5. Une fois les noms en place, ajoute pour chacun une entrée CAA : drapeau `0`, étiquette `issue`, valeur `letsencrypt.org`. Seul Let's Encrypt pourra alors leur délivrer un certificat.
 6. Sept jours après la bascule : remets le « TTL » de ces entrées à 3600.
 
@@ -236,12 +236,12 @@ git checkout vX.Y.Z
 cd deploy
 cp .env.example .env
 chmod 600 .env
-docker run --rm -it caddy:2 caddy hash-password
+docker run --rm -it caddy:2 caddy hash-password --bcrypt-cost 10
 nano .env
 docker compose config --quiet
 ```
 
-`caddy hash-password` demande deux fois le mot de passe du bar : tape-le, il ne s'affiche pas. Ne le passe jamais en argument : il resterait dans l'historique. La commande affiche une empreinte qui commence par `$2a$14$`. Colle-la dans `BAR_PASSWORD_HASH`, entre apostrophes.
+`caddy hash-password` demande deux fois le mot de passe du bar : tape-le, il ne s'affiche pas. Ne le passe jamais en argument : il resterait dans l'historique. La commande affiche une empreinte qui commence par `$2a$10$`. Colle-la dans `BAR_PASSWORD_HASH`, entre apostrophes. Le coût 10 limite le calcul fait pour chaque essai sur `BAR_USER` : environ 80 ms au lieu d'une seconde avec le coût 14 de `caddy hash-password` sans option. Un essai sous un autre nom coûte toujours environ une seconde au serveur : des essais répétés peuvent encore occuper le VPS.
 
 Remplis les huit réglages de `.env` avant le premier démarrage :
 

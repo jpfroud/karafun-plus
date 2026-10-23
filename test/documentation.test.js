@@ -45,7 +45,7 @@ const COMMANDES = [
   `docker run --rm ${IMAGE}:vX.Y.Z node tools/diag-karafun.js <code>`,
   'git checkout vX.Y.Z',
   'chmod 600 .env',
-  'docker run --rm -it caddy:2 caddy hash-password',
+  'docker run --rm -it caddy:2 caddy hash-password --bcrypt-cost 10',
   'docker compose up -d',
   'docker compose exec app node -e "fetch(\'http://127.0.0.1:3000/readyz\').then(r => r.text()).then(t => console.log(t))"',
   'tar.exe -czf karafun-plus-pc-AAAAMMJJ.tar.gz data',
@@ -214,7 +214,7 @@ test('J8 variantes serveur des documents', () => {
   assert.equal(bar.split('\n').filter(line => line === heading).length, 1, `GUIDE-BAR.md : variante serveur absente : ${heading}`);
   for (const needed of [
     'Avec le kit Windows, la clé privée',
-    'Sur un serveur Linux, l\'arrêt se fait par `docker compose stop app` et la clé ne change pas (DEPLOIEMENT-SERVEUR.md, sections 13 et 18).',
+    'Sur un serveur Linux, la file reste allumée : rien à arrêter en fin de soirée. Pour l\'arrêter quand même, `docker compose stop app` ; la clé ne change pas (DEPLOIEMENT-SERVEUR.md, sections 13 et 18).',
     'tandis que le serveur 3001 refuse les pages et commandes du bar',
     'Avec le kit Windows, le port 3001 écoute sur `127.0.0.1`, et le domaine et le tunnel publics restent à configurer :',
     'Sur un serveur Linux, Caddy sert le domaine (voir « Sur un serveur Linux (VPS) » plus bas).',

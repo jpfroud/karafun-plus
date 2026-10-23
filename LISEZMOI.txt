@@ -198,8 +198,9 @@ BON À SAVOIR
   retrouve-la sur ce PC via
   http://localhost:3000/. Depuis un téléphone de gérant sur le Wi-Fi local,
   utilise le lien complet sous « Accès du bar depuis un téléphone ».
-  Sur un serveur Linux, l'arrêt se fait par docker compose stop app, et la
-  clé du bar ne change pas au redémarrage (DEPLOIEMENT-SERVEUR.md).
+  Sur un serveur Linux, la file reste allumée : rien à arrêter en fin de
+  soirée. Pour l'arrêter quand même : docker compose stop app ; la clé du
+  bar ne change pas au redémarrage (DEPLOIEMENT-SERVEUR.md).
 
 ESSAIS SANS TOUCHER À UNE SOIRÉE RÉELLE
 ---------------------------------------
