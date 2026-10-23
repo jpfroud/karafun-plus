@@ -192,7 +192,8 @@ jobs:
             BUILT_AT=${{ steps.date.outputs.built_at }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true
           cache-from: type=gha,scope=image-linux-${{ matrix.suffixe }}
-          cache-to: type=gha,scope=image-linux-${{ matrix.suffixe }},mode=max
+          # Le cache ne fait qu’accélérer : une panne de son service ne fait pas échouer la construction.
+          cache-to: type=gha,scope=image-linux-${{ matrix.suffixe }},mode=max,ignore-error=true
       # Image vérifiée = image publiée : celle du registre, tirée par son empreinte.
       - name: Recuperer l'image poussee
         shell: bash
@@ -262,6 +263,21 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Avant le tag : une version déjà publiée pour un autre commit (tag déplacé, ou
+      # supprimé puis recréé) est refusée sans que rien soit créé ni poussé.
+      - name: Refuser une version deja publiee pour un autre commit
+        shell: bash
+        run: |
+          if INDEX=$(docker buildx imagetools inspect --raw "$IMAGE:$RELEASE_VERSION" 2> "$RUNNER_TEMP/inspect.err"); then
+            REVISION=$(jq -r '.annotations["org.opencontainers.image.revision"] // ""' <<< "$INDEX")
+            if [ "$REVISION" != "$GITHUB_SHA" ]; then
+              echo "Cette version désigne déjà un autre commit (image $RELEASE_VERSION : ${REVISION:-sans révision})." >&2
+              exit 1
+            fi
+          elif ! grep -qiE 'not found|manifest unknown' "$RUNNER_TEMP/inspect.err"; then
+            echo "Lecture de $RELEASE_VERSION impossible : $(sed -n 1p "$RUNNER_TEMP/inspect.err")" >&2
+            exit 1
+          fi
       - name: Creer le tag apres validation, si publication manuelle
         shell: pwsh
         env:
@@ -321,14 +337,6 @@ jobs:
             echo "Lecture de ${1##*:} impossible : $(sed -n 1p "$RUNNER_TEMP/inspect.err")" >&2
             exit 1
           }
-          # Étiquette déjà publiée pour un autre commit (tag déplacé ou recréé) : jamais remplacée.
-          if lire_index "$IMAGE:$RELEASE_TAG"; then
-            REVISION=$(jq -r '.annotations["org.opencontainers.image.revision"] // ""' <<< "$INDEX")
-            if [ "$REVISION" != "$GITHUB_SHA" ]; then
-              echo "Cette version désigne déjà un autre commit (image $RELEASE_TAG : ${REVISION:-sans révision})." >&2
-              exit 1
-            fi
-          fi
           ETIQUETTES=(-t "$IMAGE:$RELEASE_TAG")
           LATEST=0
           # latest : la plus haute version sans suffixe, jamais en recul.

@@ -158,7 +158,8 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILT_AT=${{ steps.version.outputs.built_at }}
           cache-from: type=gha,scope=image-linux-amd64
-          cache-to: type=gha,scope=image-linux-amd64,mode=max
+          # Le cache ne fait qu’accélérer : une panne de son service ne fait pas échouer la construction.
+          cache-to: type=gha,scope=image-linux-amd64,mode=max,ignore-error=true
       - name: Verifier l'image
         run: bash test/verifier-image.sh karafun-plus:verif
       - name: Verifier le deploiement
