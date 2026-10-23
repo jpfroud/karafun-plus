@@ -293,7 +293,13 @@ test('SP4 retour Spotify du serveur protégé par le seul state, port clients re
       'Connexion Spotify annulée.', `${remote}, refus dans Spotify`);
     assert.equal(finished, before, `${remote} : refus dans Spotify sans finishAuth`);
   }
-  assert.equal(requests.length, 0, 'aucun state inventé ne joint Spotify');
+  // Retour sans state, ou avec un state vide : même refus, la demande reste en cours.
+  for (const route of ['/spotify/callback?code=c', '/spotify/callback?code=c&state=']) {
+    for (const remote of [...LOOPBACKS, DOCKER_REMOTE]) {
+      page(await get(f, route, { remote, port: f.PORT }), expired, `${remote}, ${route}`);
+    }
+  }
+  assert.equal(requests.length, 0, 'aucun state inventé, absent ou vide ne joint Spotify');
   assert.equal(f.spotify.pendingAuth?.state, state, 'demande toujours en cours');
   assert.equal(f.spotify.connected, false);
 
