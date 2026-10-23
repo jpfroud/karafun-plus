@@ -4507,7 +4507,7 @@ const SERVER_MODE_TEXTS = {
   customBaseHint: 'Adresse fixée par KARAOKE_PUBLIC_URL au démarrage du serveur : elle ne se change pas ici. Teste un QR en 4G/5G avant impression.',
   staffQrIntro: 'Réservé aux gérants. Scanne ce QR depuis ton téléphone, en Wi-Fi ou en 4G/5G. Il ouvre la page du bar par son adresse HTTPS. Ne le montre pas aux clients\u00a0: il donne accès aux commandes de la soirée.',
   staffQrHint: 'Ce QR reste le même d’un démarrage à l’autre. Il change seulement si la clé du bar est renouvelée sur le serveur.',
-  stopHint: 'Pour arrêter l’application, utilise « docker compose stop app » sur le serveur : la soirée est enregistrée en continu.',
+  stopHint: 'Sur le serveur, la file reste allumée : rien à arrêter en fin de soirée, la soirée est enregistrée en continu.',
 };
 const SERVER_ACCESS_TEXT = 'Accès Internet actif si cette adresse mène bien à ce serveur. Vérifie-la en données mobiles.';
 // Consignes du PC du bar, fausses sur le serveur.
