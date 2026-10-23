@@ -135,7 +135,7 @@ function harness({ persistent = false, files = {}, modules = {}, serverEnv = tru
         setPending: value => { pending = value; },
         spotify, loadTables, normalizeBaseUrl, SERVER, STAFF_KEY_INFO, STOP_KEY, server, publicServer,
         isShuttingDown: () => shuttingDown, readServerConfig, loadStaffKey, staffKeyFingerprint, serverStartupLines,
-        phoneBase, BUILD };
+        phoneBase, BUILD, rotateStaffKey, staffKeyCommand, printedBaseUrlWarning, serverClientAddress };
     `, context, { filename: 'server.js' });
   } catch (error) {
     // Refus de démarrer : le disque en mémoire (raison sur stderr) reste lisible.
@@ -545,10 +545,11 @@ test('T9 QR des deux origines : clients sur KARAOKE_PUBLIC_URL, gérants sur KAR
   assert.equal(targets.length, 2);
   assert.ok(targets.every(target => target.startsWith('https://')), 'aucune adresse http ni du Wi-Fi');
 
-  // Adresse envoyée par la page du bar : enregistrée (route inchangée ici), sans effet sur les QR.
+  // Adresse envoyée par la page du bar : refusée depuis #25 (T10) ; une autre
+  // valeur de settings.baseUrl reste sans effet sur les QR.
   const sent = await post(f, withKey('/api/staff/settings', FILE_KEY), { baseUrl: 'https://autre.exemple.fr' });
-  assert.equal(sent.status, 200, sent.text);
-  assert.equal(f.settings.baseUrl, 'https://autre.exemple.fr');
+  assert.equal(sent.status, 400, sent.text);
+  f.settings.baseUrl = 'https://autre.exemple.fr';
   assert.equal(f.phoneBase(), 'https://clients.exemple.fr');
   for (const table of f.staffState().tables) assert.ok(table.url.startsWith('https://clients.exemple.fr/t/'), table.url);
   await get(f, withKey('/qr/1.svg', FILE_KEY));
@@ -618,4 +619,375 @@ test('T17 lignes de démarrage : adresses, fuseau, empreinte, jamais la clé', (
   }
   // Harnais PC : aucune ligne du mode serveur.
   assert.deepEqual(lines(harness({ serverEnv: false }), 'UTC'), []);
+});
+
+// ================================================================ issue #25
+// Commandes de clé, adresse des QR fixée, adresse des téléphones, cookies,
+// en-têtes et délais du mode serveur.
+const COMMAND_ENV = { KARAOKE_MODE: 'server', KARAOKE_PUBLIC_URL: 'https://clients.exemple.fr',
+  KARAOKE_STAFF_URL: 'https://bar.exemple.fr', KARAOKE_STAFF_KEY_FILE: KEY_FILE };
+const without = (env, ...names) => Object.fromEntries(Object.entries(env).filter(([name]) => !names.includes(name)));
+const sha8 = key => crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
+const refusal = reason => ({ code: 1, stdout: '', stderr: `Commande impossible : ${reason}\n` });
+const ROTATED = key => ({ code: 0, stderr: '', stdout: `Nouvelle clé du bar écrite dans data/staff-key (empreinte ${sha8(key)}). ` +
+  'Redémarre la file pour l’appliquer, puis donne aux gérants le lien de --print-staff-url : l’ancien lien ne marche plus.\n' });
+const TEMPORARY_KEY = path.join(DATA, `staff-key.${process.pid}.tmp`);
+const SECURITY_HEADERS = { 'strict-transport-security': 'max-age=31536000', 'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY', 'content-security-policy': 'frame-ancestors \'none\'' };
+
+// État complet du disque en mémoire (data/ et journal/) et du fichier de clé du test.
+const diskState = g => ({ writes: g.memory.writes.length, mkdirs: g.memory.mkdirs.length,
+  disk: [...g.memory.disk.entries()].map(([file, data]) => `${file}=${data}`).sort(), keyFile: fs.readFileSync(KEY_FILE, 'utf8') });
+// Opérations de fichier faites par le bac à sable, dans l'ordre ; unlinkSync
+// d'un fichier absent lève ENOENT, comme le vrai disque.
+function traceDisk(g) {
+  const ops = [];
+  const memFs = g.memory.memFs;
+  for (const name of ['mkdirSync', 'writeFileSync', 'renameSync', 'unlinkSync']) {
+    const real = memFs[name];
+    memFs[name] = (...args) => {
+      ops.push([name, ...args.map(value => value && typeof value === 'object' ? plain(value) : value)]);
+      if (name === 'unlinkSync' && !g.memory.disk.has(args[0])) throw Object.assign(new Error(`ENOENT: ${args[0]}`), { code: 'ENOENT' });
+      return real(...args);
+    };
+  }
+  return ops;
+}
+
+// ---------------------------------------------------------------- 6. commandes ponctuelles
+test('T7 commandes ponctuelles (harnais) : sorties exactes, clé écrite à côté puis renommée', () => {
+  const f = harness();
+  const run = (argv, env, g = f) => plain(g.staffKeyCommand(argv, env, DATA));
+  for (const argv of [[], ['--server'], ['--port', '3230', '--demo'], ['--print-staff-urls'], ['print-staff-url']]) {
+    assert.equal(f.staffKeyCommand(argv, COMMAND_ENV, DATA), null, `sans option : ${argv.join(' ')}`);
+  }
+
+  // Refus, dans l'ordre du tableau : rien n'est écrit, ni data/ ni journal/ ni le fichier de clé.
+  const both = 'choisis --print-staff-url ou --rotate-staff-key, pas les deux.';
+  const unknownMode = 'KARAOKE_MODE vaut « serveur » : seule la valeur server est reconnue (retire la variable pour le mode PC).';
+  const pcMode = '--print-staff-url et --rotate-staff-key ne servent qu’en mode serveur (--server ou KARAOKE_MODE=server).';
+  const absent = path.join(keyDir, 'absente-commande');
+  const pc = without(COMMAND_ENV, 'KARAOKE_MODE');
+  const fileKey = 'la clé du bar vient de KARAOKE_STAFF_KEY_FILE ; change ce fichier, puis redémarre la file.';
+  const refused = [
+    [['--print-staff-url', '--rotate-staff-key'], COMMAND_ENV, both],
+    [['--rotate-staff-key', '--server', '--print-staff-url'], {}, both],
+    // « Pas les deux » passe avant une valeur inconnue de KARAOKE_MODE.
+    [['--print-staff-url', '--rotate-staff-key'], { ...COMMAND_ENV, KARAOKE_MODE: 'serveur' }, both],
+    [['--print-staff-url'], { ...COMMAND_ENV, KARAOKE_MODE: 'serveur' }, unknownMode],
+    [['--server', '--rotate-staff-key'], { ...COMMAND_ENV, KARAOKE_MODE: 'serveur' }, unknownMode],
+    [['--print-staff-url'], pc, pcMode],
+    [['--rotate-staff-key'], { ...COMMAND_ENV, KARAOKE_MODE: '   ' }, pcMode],
+    [['--port', '3230', '--print-staff-url'], {}, pcMode],
+    [['--print-staff-url'], without(COMMAND_ENV, 'KARAOKE_PUBLIC_URL'),
+      'KARAOKE_PUBLIC_URL manque : indique l’adresse HTTPS des QR clients, par exemple https://chant.exemple.fr.'],
+    [['--server', '--rotate-staff-key'], { ...pc, KARAOKE_STAFF_URL: 'https://clients.exemple.fr' },
+      'KARAOKE_STAFF_URL doit différer de KARAOKE_PUBLIC_URL : la page du bar n’est jamais servie par l’adresse des clients.'],
+    [['--print-staff-url'], { ...COMMAND_ENV, KARAOKE_STAFF_KEY_FILE: absent }, `KARAOKE_STAFF_KEY_FILE illisible (${absent} : ENOENT).`],
+    [['--rotate-staff-key'], COMMAND_ENV, fileKey],
+    [['--server', '--rotate-staff-key'], pc, fileKey],
+  ];
+  for (const [argv, env, reason] of refused) {
+    const before = diskState(f);
+    assert.deepEqual(run(argv, env), refusal(reason), argv.join(' '));
+    assert.deepEqual(diskState(f), before, `${argv.join(' ')} : rien n’est touché`);
+  }
+  // data/staff-key abîmée : --print-staff-url refuse sans la remplacer.
+  const damaged = harness({ files: { 'data/staff-key': 'abc\n' } });
+  const damagedBefore = diskState(damaged);
+  assert.deepEqual(run(['--print-staff-url'], without(COMMAND_ENV, 'KARAOKE_STAFF_KEY_FILE'), damaged), refusal(
+    'data/staff-key ne contient pas une clé valable (au moins 22 caractères parmi A-Z, a-z, 0-9, - et _) : remplace-la avec node server.js --rotate-staff-key.'));
+  assert.deepEqual(diskState(damaged), damagedBefore);
+
+  // --print-staff-url : lien du bar sur l'origine de KARAOKE_STAFF_URL, quelle que soit la place de l'option.
+  for (const [argv, env] of [[['--print-staff-url'], COMMAND_ENV], [['--port', '3230', '--print-staff-url'], COMMAND_ENV],
+    [['--server', '--print-staff-url'], pc], [['--print-staff-url'], { ...COMMAND_ENV, KARAOKE_MODE: ' server ' }],
+    [['--print-staff-url'], { ...COMMAND_ENV, KARAOKE_STAFF_URL: 'https://Bar.Exemple.fr/' }]]) {
+    const before = diskState(f);
+    assert.deepEqual(run(argv, env), { code: 0, stdout: `https://bar.exemple.fr/staff?key=${FILE_KEY}\n`, stderr: '' }, argv.join(' '));
+    assert.deepEqual(diskState(f), before, `${argv.join(' ')} : rien n’est écrit`);
+  }
+  // Sans fichier de clé : data/staff-key créée au premier appel, puis la même clé.
+  const fresh = harness();
+  const noFile = without(COMMAND_ENV, 'KARAOKE_STAFF_KEY_FILE');
+  const printed = run(['--print-staff-url'], noFile, fresh);
+  const created = fresh.memory.disk.get(STAFF_KEY_FILE_IN_DATA);
+  assert.match(created, /^[A-Za-z0-9_-]{22}\n$/);
+  assert.deepEqual(printed, { code: 0, stdout: `https://bar.exemple.fr/staff?key=${created.trim()}\n`, stderr: '' });
+  assert.deepEqual(plain(fresh.memory.mkdirs.at(-1)).options, { recursive: true });
+  const writes = fresh.memory.writes.length;
+  assert.deepEqual(run(['--print-staff-url'], noFile, fresh), printed, 'même lien ensuite');
+  assert.equal(fresh.memory.writes.length, writes, 'aucune écriture de plus');
+
+  // --rotate-staff-key sur un disque sans data/staff-key : dossier, fichier temporaire 0600 en wx, renommage.
+  const r = harness();
+  assert.equal(r.memory.disk.has(STAFF_KEY_FILE_IN_DATA), false);
+  const ops = traceDisk(r);
+  const rotated = run(['--rotate-staff-key'], noFile, r);
+  const written = r.memory.disk.get(STAFF_KEY_FILE_IN_DATA);
+  assert.match(written, /^[A-Za-z0-9_-]{22}\n$/);
+  assert.deepEqual(rotated, ROTATED(written.trim()), 'empreinte de la clé écrite');
+  assert.deepEqual(ops, [
+    ['mkdirSync', DATA, { recursive: true }],
+    ['unlinkSync', TEMPORARY_KEY],
+    ['writeFileSync', TEMPORARY_KEY, written, { mode: 0o600, flag: 'wx' }],
+    ['renameSync', TEMPORARY_KEY, STAFF_KEY_FILE_IN_DATA],
+  ]);
+  assert.equal(r.memory.disk.has(TEMPORARY_KEY), false, 'aucun fichier temporaire laissé');
+  assert.equal(rotated.stdout.includes(written.trim()), false, 'la clé n’est pas affichée');
+  const loaded = r.loadStaffKey({ ...r.SERVER, staffKeyFile: null }, DATA);
+  assert.deepEqual([loaded.key, loaded.source], [written.trim(), 'data/staff-key'], 'relue par loadStaffKey au démarrage suivant');
+  // Seconde rotation : autre clé ; l'ancienne n'est pas lue (abîmée ici), un
+  // temporaire du même numéro de processus (conteneur relancé) est retiré.
+  const again = harness({ files: { 'data/staff-key': 'abc\n', [`data/staff-key.${process.pid}.tmp`]: 'reste\n' } });
+  const againOut = run(['--server', '--rotate-staff-key'], without(noFile, 'KARAOKE_MODE'), again);
+  const next = again.memory.disk.get(STAFF_KEY_FILE_IN_DATA);
+  assert.match(next, /^[A-Za-z0-9_-]{22}\n$/);
+  assert.notEqual(next, written);
+  assert.deepEqual(againOut, ROTATED(next.trim()));
+  assert.equal(again.memory.disk.has(TEMPORARY_KEY), false);
+  assert.equal(again.rotateStaffKey(DATA), again.memory.disk.get(STAFF_KEY_FILE_IN_DATA).trim(), 'rotateStaffKey rend la clé écrite');
+
+  // Écriture impossible : raison exacte (code, sinon message), data/staff-key intacte, rien de temporaire.
+  for (const [failure, reason] of [[Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }), 'EACCES'],
+    [new Error('disque en panne'), 'disque en panne']]) {
+    const g = harness({ files: { 'data/staff-key': `${FILE_KEY}\n` } });
+    g.memory.beforeWrite = () => { throw failure; };
+    assert.deepEqual(run(['--rotate-staff-key'], noFile, g), refusal(`data/staff-key impossible à écrire (${reason}).`));
+    assert.equal(g.memory.disk.get(STAFF_KEY_FILE_IN_DATA), `${FILE_KEY}\n`, `${reason} : ancienne clé intacte`);
+    assert.equal(g.memory.disk.has(TEMPORARY_KEY), false);
+  }
+  const blocked = harness();
+  traceDisk(blocked);
+  blocked.memory.memFs.renameSync = () => { throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' }); };
+  assert.deepEqual(run(['--rotate-staff-key'], noFile, blocked), refusal('data/staff-key impossible à écrire (EBUSY).'));
+  assert.equal(blocked.memory.disk.has(TEMPORARY_KEY), false, 'temporaire retiré après un renommage impossible');
+  assert.equal(blocked.memory.disk.has(STAFF_KEY_FILE_IN_DATA), false);
+  const locked = harness();
+  const lockedWrites = locked.memory.writes.length;
+  locked.memory.memFs.unlinkSync = () => { throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }); };
+  assert.deepEqual(run(['--rotate-staff-key'], noFile, locked), refusal('data/staff-key impossible à écrire (EPERM).'));
+  assert.equal(locked.memory.writes.length, lockedWrites, 'rien d’écrit si l’ancien temporaire reste');
+});
+
+// ---------------------------------------------------------------- 7. adresse des QR fixée
+test('T10 adresse des QR non modifiable depuis la page du bar, autres réglages non appliqués', async () => {
+  const f = harness();
+  const message = 'L’adresse des QR vient de KARAOKE_PUBLIC_URL sur ce serveur : elle ne se change pas depuis la page du bar.';
+  const settingsUrl = withKey('/api/staff/settings', FILE_KEY);
+  const gap = f.sched.opts.gap;
+  assert.notEqual(gap, 9);
+  for (const baseUrl of ['https://autre.exemple.fr', null, '', 'http://clients.exemple.fr', '   ', 'https://clients.exemple.fr/x', 42]) {
+    const label = JSON.stringify(baseUrl);
+    const r = await post(f, settingsUrl, { baseUrl, gap: 9 });
+    assert.equal(r.status, 400, label);
+    assert.deepEqual(r.body, { error: message, code: null }, label);
+    assert.equal(f.settings.baseUrl, 'https://clients.exemple.fr', `${label} : adresse inchangée`);
+    assert.equal(f.sched.opts.gap, gap, `${label} : gap: 9 non appliqué`);
+  }
+  // La même adresse est acceptée et ne change rien ; le reste de la requête s'applique.
+  for (const baseUrl of ['https://clients.exemple.fr', 'https://clients.exemple.fr/', ' HTTPS://Clients.Exemple.fr ']) {
+    const r = await post(f, settingsUrl, { baseUrl });
+    assert.equal(r.status, 200, `${baseUrl} : ${r.text}`);
+    assert.equal(f.settings.baseUrl, 'https://clients.exemple.fr');
+  }
+  assert.equal((await post(f, settingsUrl, { baseUrl: 'https://clients.exemple.fr', gap: 9 })).status, 200);
+  assert.equal(f.sched.opts.gap, 9);
+  assert.equal((await post(f, settingsUrl, { gap: 5 })).status, 200, 'réglage sans adresse');
+  assert.equal(f.sched.opts.gap, 5);
+  // Options par défaut : l'adresse des QR reste celle du serveur.
+  const reset = await post(f, withKey('/api/staff/settings-reset', FILE_KEY), { confirmation: 'OPTIONS PAR DÉFAUT' });
+  assert.equal(reset.status, 200, reset.text);
+  assert.equal(f.settings.baseUrl, 'https://clients.exemple.fr');
+  // Témoin : le harnais PC change toujours d'adresse.
+  const pc = harness({ serverEnv: false });
+  const changed = await post(pc, withKey('/api/staff/settings', pc.STAFF_KEY), { baseUrl: 'https://autre.exemple.fr' });
+  assert.equal(changed.status, 200);
+  assert.equal(pc.settings.baseUrl, 'https://autre.exemple.fr');
+});
+
+test('T11 avertissement data/tables.json : texte exact, null sans écart', () => {
+  const tables = baseUrl => ({ version: 1, ...(baseUrl === undefined ? {} : { baseUrl }), tables: [] });
+  const warning = (files, options = {}) => harness({ persistent: true, files, ...options }).printedBaseUrlWarning();
+  const now = 'QR désormais créés pour https://clients.exemple.fr.';
+  const other = old => `Attention : data/tables.json indiquait ${old} pour les QR. Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. ${now}`;
+  const none = `Attention : data/tables.json n’indiquait aucune adresse publique (QR du Wi-Fi local). Les QR déjà imprimés ne mènent pas à ce serveur. ${now}`;
+  const longRefused = `http://${'a'.repeat(300)}.exemple.fr`;
+  for (const [baseUrl, expected] of [
+    ['https://ancien.exemple.fr', other('https://ancien.exemple.fr')],
+    ['https://Ancien.Exemple.fr/', other('https://ancien.exemple.fr')],
+    ['http://192.168.1.20:3000', other('http://192.168.1.20:3000')],
+    ['http://ancien.exemple.fr', other('http://ancien.exemple.fr')],
+    [longRefused, other(longRefused.slice(0, 200))],
+    [null, none], [undefined, none], ['', none],
+    ['https://clients.exemple.fr', null], ['https://clients.exemple.fr/', null],
+  ]) {
+    assert.equal(warning({ 'data/tables.json': tables(baseUrl) }), expected, JSON.stringify(baseUrl));
+  }
+  assert.equal(warning({}), null, 'fichier absent');
+  assert.equal(warning({ 'data/tables.json': '{ pas du json' }), null, 'JSON invalide');
+  const old = { 'data/tables.json': tables('https://ancien.exemple.fr') };
+  assert.equal(harness({ files: old }).printedBaseUrlWarning(), null, 'démo');
+  assert.equal(warning(old, { serverEnv: false }), null, 'harnais PC');
+});
+
+// ---------------------------------------------------------------- 8. cookies, en-têtes, délais
+test('T12 cookie « En solo » Secure sur les deux ports', async () => {
+  const format = /^karaoke_solo_device=[A-Za-z0-9_-]{32}; Path=\/; Max-Age=7776000; HttpOnly; SameSite=Lax; Secure$/;
+  const f = harness();
+  f.ensureSoloGroup();
+  const tb = { table: 'Comptoir', access: f.access.get('Comptoir') };
+  for (const [port, name] of [[f.PORT, 'Testeur'], [f.PUBLIC_PORT, 'Testeuse']]) {
+    const invitation = f.soloInvitations.issue('Comptoir').token;
+    const r = await post(f, '/api/table/person', { ...tb, name, invitation }, { port, remote: '172.18.0.5' });
+    assert.equal(r.status, 200, r.text);
+    assert.match(r.headers['set-cookie'], format, port === f.PORT ? 'PORT' : 'PUBLIC_PORT');
+  }
+  // Témoin : en mode PC, le port du Wi-Fi garde un cookie sans Secure.
+  const pc = harness({ serverEnv: false });
+  pc.ensureSoloGroup();
+  const pcTb = { table: 'Comptoir', access: pc.access.get('Comptoir') };
+  const lan = await post(pc, '/api/table/person', { ...pcTb, name: 'Testeur', invitation: pc.soloInvitations.issue('Comptoir').token },
+    { remote: '192.168.1.30' });
+  assert.equal(lan.status, 200, lan.text);
+  assert.match(lan.headers['set-cookie'], /; HttpOnly; SameSite=Lax$/);
+});
+
+// Requête qui accepte gzip (le faux `res` de call() n'a pas de `req`).
+function callGzip(f, url) {
+  return new Promise(resolve => {
+    const req = new EventEmitter();
+    Object.assign(req, { method: 'GET', url, headers: { 'accept-encoding': 'gzip' },
+      socket: { remoteAddress: '172.18.0.5', localPort: f.PORT }, destroy() {} });
+    const out = { status: null, headers: {} };
+    const res = { req, setHeader(name, value) { out.headers[name.toLowerCase()] = value; },
+      getHeader(name) { return out.headers[name.toLowerCase()]; }, hasHeader(name) { return name.toLowerCase() in out.headers; },
+      removeHeader(name) { delete out.headers[name.toLowerCase()]; },
+      writeHead(status, headers = {}) {
+        out.status = status;
+        for (const [name, value] of Object.entries(headers)) out.headers[name.toLowerCase()] = value;
+      },
+      end(data) { out.data = data; resolve(out); } };
+    f.handle(req, res);
+    setImmediate(() => req.emit('end'));
+  });
+}
+
+test('T13 en-têtes de sécurité sur toutes les réponses du mode serveur, aucun en mode PC', async () => {
+  const routes = (g, key) => {
+    g.sched.table('1').headcount = 4;
+    const secret = g.access.issue('1');
+    return [['GET', '/', 403], ['GET', `/t/1/${secret}`, 200], ['GET', withKey('/staff', key), 200],
+      ['GET', withKey('/api/staff/state', key), 200], ['GET', '/api/state?table=1&access=faux', 403], ['GET', '/app.css', 200],
+      ['GET', '/inconnu', 404], ['POST', '/api/inconnu', 404], ['PUT', '/', 405]];
+  };
+  const f = harness();
+  for (const [method, url, status] of routes(f, FILE_KEY)) {
+    const label = `${method} ${url.replace(/key=[^&]+/, 'key=…')}`;
+    const r = await call(f, method, url, { remote: '172.18.0.5' });
+    assert.equal(r.status, status, label);
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) assert.equal(r.headers[name], value, `${label} : ${name}`);
+    assert.equal(r.headers['referrer-policy'], 'no-referrer', `${label} : en-têtes habituels gardés`);
+    const viaClients = await call(f, method, url, { remote: '172.18.0.5', port: f.PUBLIC_PORT });
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) assert.equal(viaClients.headers[name], value, `${label} sur PUBLIC_PORT : ${name}`);
+  }
+  // Réponse compressée : les mêmes en-têtes.
+  const zipped = await callGzip(f, withKey('/api/staff/state', FILE_KEY));
+  assert.equal(zipped.status, 200);
+  assert.equal(zipped.headers['content-encoding'], 'gzip');
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) assert.equal(zipped.headers[name], value, `gzip : ${name}`);
+  // Harnais PC : aucun des quatre.
+  const pc = harness({ serverEnv: false });
+  for (const [method, url, status] of routes(pc, pc.STAFF_KEY)) {
+    const label = `PC ${method} ${url.replace(/key=[^&]+/, 'key=…')}`;
+    const r = await call(pc, method, url, { remote: '172.18.0.5' });
+    assert.equal(r.status, status, label);
+    for (const name of Object.keys(SECURITY_HEADERS)) assert.equal(name in r.headers, false, `${label} : ${name}`);
+  }
+});
+
+test('T14 proxy de confiance : chaque téléphone compté par x-real-ip, sur les deux ports', async () => {
+  const f = harness();
+  f.ensureSoloGroup();
+  const tb = { table: 'Comptoir', access: f.access.get('Comptoir') };
+  const secret = f.privateEvent.enable();
+  const enter = (ip, port) => post(f, '/api/table/enter', { ...tb, event: secret },
+    { port, remote: '172.18.0.5', headers: { 'x-real-ip': ip } });
+  for (let i = 1; i <= 8; i++) assert.equal((await enter(`203.0.113.${i}`, f.PUBLIC_PORT)).status, 200, `invité ${i}`);
+  for (let i = 1; i <= 30; i++) assert.equal((await enter('198.51.100.7', f.PUBLIC_PORT)).status, 200, `entrée ${i} du même téléphone`);
+  const busy = await enter('198.51.100.7', f.PUBLIC_PORT);
+  assert.equal(busy.status, 429);
+  assert.equal(busy.body.code, 'PRIVATE_EVENT_BUSY');
+  assert.ok(Number(busy.headers['retry-after']) >= 1);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) assert.equal(busy.headers[name], value, `429 : ${name}`);
+  const sameOnBar = await enter('198.51.100.7', f.PORT);
+  assert.equal(sameOnBar.status, 429, 'même téléphone par le port du bar');
+  assert.equal(sameOnBar.body.code, 'PRIVATE_EVENT_BUSY');
+  assert.equal((await enter('203.0.113.9', f.PORT)).status, 200, 'un autre téléphone entre toujours');
+});
+
+test('T15 en-tête cru seulement d’un proxy de confiance, et seulement s’il porte une adresse IP', async () => {
+  // Un harnais neuf par cas (120 créations par minute pour tout le bar) ;
+  // entrées alternées entre PUBLIC_PORT et PORT.
+  const statuses = async ({ env = {}, remote, headers }) => {
+    const f = harness({ env });
+    f.ensureSoloGroup();
+    const tb = { table: 'Comptoir', access: f.access.get('Comptoir') };
+    const secret = f.privateEvent.enable();
+    const out = [];
+    for (let i = 1; i <= 31; i++) {
+      const r = await post(f, '/api/table/enter', { ...tb, event: secret },
+        { port: i % 2 ? f.PUBLIC_PORT : f.PORT, remote, headers: headers(i) });
+      out.push(r.status === 429 ? r.body.code : r.status);
+    }
+    return out;
+  };
+  const counted = [...Array(30).fill(200), 'PRIVATE_EVENT_BUSY'];
+  const believed = Array(31).fill(200);
+  const varying = i => ({ 'x-real-ip': `203.0.113.${i}` });
+  const cases = [
+    ['socket 198.51.100.20 hors liste', { remote: '198.51.100.20', headers: varying }, counted],
+    ['socket 127.0.0.1, seulement cf-connecting-ip', { remote: '127.0.0.1', headers: i => ({ 'cf-connecting-ip': `203.0.113.${i}` }) }, counted],
+    ['x-real-ip « abc »', { remote: '172.18.0.5', headers: () => ({ 'x-real-ip': 'abc' }) }, counted],
+    ['x-real-ip « abc<n> »', { remote: '172.18.0.5', headers: i => ({ 'x-real-ip': `abc${i}` }) }, counted],
+    ['x-real-ip « 203.0.113.9, 10.0.0.1 »', { remote: '172.18.0.5', headers: () => ({ 'x-real-ip': '203.0.113.9, 10.0.0.1' }) }, counted],
+    ['x-real-ip « 203.0.113.<n>, 10.0.0.1 »', { remote: '172.18.0.5', headers: i => ({ 'x-real-ip': `203.0.113.${i}, 10.0.0.1` }) }, counted],
+    ['KARAOKE_CLIENT_IP_HEADER retirée', { env: { KARAOKE_CLIENT_IP_HEADER: undefined }, remote: '172.18.0.5', headers: varying }, counted],
+    ['liste 10.1.0.0/16, socket 172.18.0.5', { env: { KARAOKE_TRUSTED_PROXIES: '10.1.0.0/16' }, remote: '172.18.0.5', headers: varying }, counted],
+    ['liste 10.1.0.0/16, socket 10.1.2.3', { env: { KARAOKE_TRUSTED_PROXIES: '10.1.0.0/16' }, remote: '10.1.2.3', headers: varying }, believed],
+    ['liste par défaut, socket ::ffff:172.18.0.5', { remote: '::ffff:172.18.0.5', headers: varying }, believed],
+    // Proxy en IPv6 pur (::1/128 et fc00::/7 de la liste par défaut), contrôlé en ipv6.
+    ['liste par défaut, socket ::1', { remote: '::1', headers: varying }, believed],
+    ['liste par défaut, socket fd00::5', { remote: 'fd00::5', headers: varying }, believed],
+    ['socket 2001:db8::7 hors liste', { remote: '2001:db8::7', headers: varying }, counted],
+    ['KARAOKE_CLIENT_IP_HEADER=CF-Connecting-IP, socket 127.0.0.1', { env: { KARAOKE_CLIENT_IP_HEADER: 'CF-Connecting-IP' },
+      remote: '127.0.0.1', headers: i => ({ 'cf-connecting-ip': `2001:db8:${i}::1` }) }, believed],
+  ];
+  for (const [label, options, expected] of cases) assert.deepEqual(await statuses(options), expected, label);
+
+  // L'adresse rendue elle-même.
+  const f = harness();
+  const address = (remote, headers = {}) => f.serverClientAddress({ socket: { remoteAddress: remote }, headers });
+  assert.equal(address('172.18.0.5', { 'x-real-ip': ' 203.0.113.5 ' }), '203.0.113.5', 'espaces retirés');
+  assert.equal(address('172.18.0.5', { 'x-real-ip': '2001:db8::5' }), '2001:db8::5');
+  const zone = `fe80::1%${'a'.repeat(100)}`;
+  assert.equal(address('172.18.0.5', { 'x-real-ip': zone }), zone.slice(0, 64), 'coupée à 64 caractères');
+  assert.equal(address('172.18.0.5'), '172.18.0.5', 'en-tête absent');
+  assert.equal(address('203.0.113.200', { 'x-real-ip': '198.51.100.1' }), '203.0.113.200', 'proxy hors liste');
+  assert.equal(address('pas-une-adresse', { 'x-real-ip': '198.51.100.1' }), 'pas-une-adresse');
+  assert.equal(address(undefined, { 'x-real-ip': '198.51.100.1' }), '');
+  assert.equal(f.serverClientAddress({ headers: { 'x-real-ip': '198.51.100.1' } }), '', 'sans socket');
+});
+
+test('T16 délais keep-alive au-dessus du keepalive du relais HTTPS, sur les deux serveurs', () => {
+  const f = harness();
+  for (const [name, listener] of [['server', f.server], ['publicServer', f.publicServer]]) {
+    assert.equal(listener.keepAliveTimeout, 65000, name);
+    assert.equal(listener.headersTimeout, 66000, name);
+  }
+  const pc = harness({ serverEnv: false });
+  for (const [name, listener] of [['server', pc.server], ['publicServer', pc.publicServer]]) {
+    assert.equal(listener.keepAliveTimeout, 5000, `PC ${name}`);
+    assert.equal(listener.headersTimeout, 60000, `PC ${name}`);
+  }
 });

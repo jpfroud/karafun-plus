@@ -153,8 +153,9 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     socket.on('play', () => { if (state !== 'playing') playFirst(true); });
   });
 
-  return new Promise((resolve) => server.listen(port, () => resolve({
-    base: `http://localhost:${port}`, code, close: () => { clearTimeout(timer); io.close(); server.close(); },
+  // Boucle locale seulement (deux modes) : ses commandes ne sont pas authentifiées.
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({
+    base: `http://127.0.0.1:${port}`, code, close: () => { clearTimeout(timer); io.close(); server.close(); },
     // pour les tests : ajouter une chanson « à la main » comme le ferait le bar dans KaraFun
     manualAdd: (songId, singer) => { const s = CATALOG.find(x => x.songId === songId) || CATALOG[0]; queue.push({ queueId: qid++, songId: s.songId, title: s.title, artist: s.artist, singer, status: 'ready', songTracks: songTracksFor(s.songId) }); broadcast(); },
     skip: () => { if (state === 'playing') {

@@ -5,6 +5,8 @@
  *   node server.js --code 123456        (KaraFun réel, code de la télécommande)
  *   node server.js --demo               (faux KaraFun intégré, pour essayer)
  *   KARAOKE_MODE=server node server.js  (mode serveur : Linux derrière un relais HTTPS)
+ *   KARAOKE_MODE=server node server.js --print-staff-url   (lien du bar, puis sortie)
+ *   KARAOKE_MODE=server node server.js --rotate-staff-key  (nouvelle clé, appliquée au redémarrage)
  *
  * Les clients scannent le QR de leur table et voient tout sur leur téléphone.
  * Le programme décide de l'ordre et n'envoie à KaraFun que la chanson suivante.
@@ -181,6 +183,59 @@ function staffKeyFingerprint(key) {
   return crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
 }
 
+// Nouvelle clé du bar dans <dataDir>/staff-key (0600), écrite à côté puis
+// renommée : un lecteur voit l'ancienne clé ou la nouvelle, jamais un morceau.
+// L'ancienne clé n'est pas lue (elle peut être abîmée). Lève la raison.
+function rotateStaffKey(dataDir) {
+  const key = crypto.randomBytes(16).toString('base64url');
+  // Dans un conteneur, le numéro de processus se répète d'un lancement à l'autre.
+  const temporary = path.join(dataDir, `staff-key.${process.pid}.tmp`);
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    fs.writeFileSync(temporary, key + '\n', { mode: 0o600, flag: 'wx' });
+    fs.renameSync(temporary, path.join(dataDir, 'staff-key'));
+  } catch (error) {
+    try { fs.unlinkSync(temporary); } catch (_) { /* rien à retirer */ }
+    throw new Error(`data/staff-key impossible à écrire (${error.code || error.message}).`);
+  }
+  return key;
+}
+
+// Commandes ponctuelles du mode serveur : null sans --print-staff-url ni
+// --rotate-staff-key, sinon { code, stdout, stderr } à écrire avant de sortir.
+// Ne sort jamais du processus et n'écrit rien au journal.
+function staffKeyCommand(argv, env, dataDir) {
+  const print = argv.includes('--print-staff-url');
+  const rotate = argv.includes('--rotate-staff-key');
+  if (!print && !rotate) return null;
+  const refuse = reason => ({ code: 1, stdout: '', stderr: `Commande impossible : ${reason}\n` });
+  const done = text => ({ code: 0, stdout: `${text}\n`, stderr: '' });
+  if (print && rotate) return refuse('choisis --print-staff-url ou --rotate-staff-key, pas les deux.');
+  const mode = String(env.KARAOKE_MODE ?? '').trim();
+  let config;
+  try {
+    // Valeur inconnue, même avec --server : refusée d'abord par readServerConfig (son premier contrôle).
+    if (mode && mode !== 'server') readServerConfig(env);
+    if (!argv.includes('--server') && mode !== 'server') {
+      return refuse('--print-staff-url et --rotate-staff-key ne servent qu’en mode serveur (--server ou KARAOKE_MODE=server).');
+    }
+    config = readServerConfig(env);
+  } catch (error) { return refuse(error.message); }
+  if (print) {
+    let keyInfo;
+    try { keyInfo = loadStaffKey(config, dataDir); } catch (error) { return refuse(error.message); }
+    return done(`${config.staffUrl}/staff?key=${keyInfo.key}`);
+  }
+  if (config.staffKeyFile) {
+    return refuse('la clé du bar vient de KARAOKE_STAFF_KEY_FILE ; change ce fichier, puis redémarre la file.');
+  }
+  let key;
+  try { key = rotateStaffKey(dataDir); } catch (error) { return refuse(error.message); }
+  return done(`Nouvelle clé du bar écrite dans data/staff-key (empreinte ${staffKeyFingerprint(key)}). ` +
+    'Redémarre la file pour l’appliquer, puis donne aux gérants le lien de --print-staff-url : l’ancien lien ne marche plus.');
+}
+
 function serverSetup(env, dataDir) {
   try {
     const config = readServerConfig(env);
@@ -198,6 +253,14 @@ function pcSetup(env) {
   if (!stray) return { config: null, keyInfo: null };
   return { error: new Error(`${stray} est fixée sans le mode serveur : ajoute KARAOKE_MODE=server (ou --server), ou retire les variables KARAOKE_* pour le mode PC.`) };
 }
+// Commande ponctuelle : réponse puis sortie, avant journal/ et sans port ouvert
+// (écritures synchrones, aussi vers un tube sous Windows).
+const command = staffKeyCommand(argv, process.env, path.join(__dirname, 'data'));
+if (command) {
+  if (command.stdout) fs.writeSync(1, command.stdout);
+  if (command.stderr) fs.writeSync(2, command.stderr);
+  process.exit(command.code);
+}
 // Une valeur inconnue de KARAOKE_MODE refuse le démarrage dans les deux modes.
 const SETUP = (String(process.env.KARAOKE_MODE || '').trim() || SERVER_MODE) ?
   serverSetup(process.env, path.join(__dirname, 'data')) : pcSetup(process.env);
@@ -207,6 +270,10 @@ if (SETUP.error) {
 }
 const SERVER = SETUP.config;
 const STAFF_KEY_INFO = SETUP.keyInfo;
+// Mode serveur : en-têtes de sécurité de toutes les réponses (send), jamais
+// écrasés par un appel. Aucune page du bar n'en encadre une autre : DENY.
+const SERVER_HEADERS = Object.freeze(SERVER ? { 'Strict-Transport-Security': 'max-age=31536000',
+  'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': 'frame-ancestors \'none\'' } : {});
 
 const CODE_FILE = path.join(__dirname, 'data', 'last-karafun-code.json');
 function rememberedCode() {
@@ -2479,7 +2546,7 @@ function acceptsGzip(req) {
   });
 }
 const send = (res, code, body, type = 'application/json; charset=utf-8', extra = {}) => {
-  const headers = { 'Content-Type': type, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...extra };
+  const headers = { 'Content-Type': type, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...extra, ...SERVER_HEADERS };
   const data = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
   if (!type.startsWith('application/json') || data.length < GZIP_MIN_LENGTH || !acceptsGzip(res.req)) {
     res.writeHead(code, headers);
@@ -2645,7 +2712,7 @@ function bindSoloDevice(req, res, person) {
   const value = crypto.randomBytes(24).toString('base64url');
   const hash = crypto.createHash('sha256').update(value).digest('hex');
   person.soloDeviceHashes = [...new Set([...(person.soloDeviceHashes || []), hash])].slice(-SOLO_DEVICE_HISTORY);
-  res.setHeader('Set-Cookie', `${SOLO_COOKIE}=${value}; Path=/; Max-Age=7776000; HttpOnly; SameSite=Lax${req.socket.localPort === PUBLIC_PORT ? '; Secure' : ''}`);
+  res.setHeader('Set-Cookie', `${SOLO_COOKIE}=${value}; Path=/; Max-Age=7776000; HttpOnly; SameSite=Lax${SERVER || req.socket.localPort === PUBLIC_PORT ? '; Secure' : ''}`);
 }
 
 // Téléphone actuel d'un solo : le dernier associé (une reprise en ajoute un).
@@ -2718,13 +2785,29 @@ function placeholderName(tableId) {
   return `Solo ${n}`;
 }
 
+// Mode serveur : adresse du téléphone. L'en-tête KARAOKE_CLIENT_IP_HEADER (posé
+// par le relais HTTPS) n'est cru que d'une connexion venue d'un proxy de
+// KARAOKE_TRUSTED_PROXIES et seulement s'il porte une seule adresse IP ;
+// sinon, l'adresse de la connexion. cf-connecting-ip n'a rien de particulier.
+function serverClientAddress(req) {
+  const socket = req.socket?.remoteAddress || '';
+  if (SERVER.clientIpHeader && net.isIP(socket) &&
+      SERVER.trustedProxies.check(socket, net.isIPv6(socket) ? 'ipv6' : 'ipv4')) {
+    const value = String(req.headers?.[SERVER.clientIpHeader] ?? '').trim().slice(0, 64);
+    if (net.isIP(value)) return value;
+  }
+  return socket;
+}
+
 // Appareil qui scanne le QR de l'événement. Sur le Wi-Fi : l'adresse de la
 // connexion, jamais X-Forwarded-For (un en-tête que n'importe quel script peut
 // inventer). Par le tunnel, tout arrive de 127.0.0.1 : l'adresse que
 // Cloudflare réécrit (CF-Connecting-IP) ; sans elle, null = pas de limite par
 // appareil, celle du bar seulement. L'adresse IPv4, ou le préfixe /64 d'une
 // adresse IPv6 (clientKey, dans private-event.js).
+// Mode serveur : même règle sur les deux ports (serverClientAddress).
 function eventClient(req) {
+  if (SERVER) return clientKey(serverClientAddress(req));
   if (req.socket?.localPort !== PUBLIC_PORT) return clientKey(req.socket?.remoteAddress);
   const edge = req.headers['cf-connecting-ip'];
   return typeof edge === 'string' && edge.trim() ? `cf:${clientKey(edge.slice(0, 64))}` : null;
@@ -4210,6 +4293,15 @@ const handlers = {
     return connectionAnswer(connectKaraFun(code));
   },
   'POST /api/staff/settings': async (req, res, body) => {
+    // Mode serveur : l'adresse des QR vient de l'environnement. Seule la même
+    // adresse est acceptée (sans effet) ; sinon rien de la requête n'est appliqué.
+    if (SERVER && 'baseUrl' in body) {
+      let sent = null;
+      try { sent = normalizeBaseUrl(body.baseUrl); } catch (_) { /* même refus qu'une autre adresse */ }
+      if (sent !== SERVER.publicUrl) {
+        throw new Error('L’adresse des QR vient de KARAOKE_PUBLIC_URL sur ce serveur : elle ne se change pas depuis la page du bar.');
+      }
+    }
     const settingsBefore = journalSettingsState();
     const nextTableRotation = 'tableRotation' in body ? !!body.tableRotation : sched.opts.tableRotation;
     const nextWeighted = 'weightedTables' in body ? !!body.weightedTables : sched.opts.weightedTables;
@@ -5196,6 +5288,14 @@ const server = http.createServer(async (req, res) => {
 // clients). Lié à la boucle locale (mode serveur : KARAOKE_PUBLIC_BIND) et
 // privé de tous les droits du bar, même si le proxy vient de 127.0.0.1.
 const publicServer = http.createServer(server.listeners('request')[0]);
+// Mode serveur : connexions gardées plus longtemps que le keepalive (50 s) du
+// relais HTTPS, pour qu'il ne réutilise jamais une connexion que Node ferme.
+if (SERVER) {
+  for (const listener of [server, publicServer]) {
+    listener.keepAliveTimeout = 65000;
+    listener.headersTimeout = 66000;
+  }
+}
 
 // ------------------------------------------------------------------ démarrage
 // Les transitions de la connexion vont au journal du serveur ; le code de
@@ -5253,10 +5353,41 @@ function serverStartupLines(zone = Intl.DateTimeFormat().resolvedOptions().timeZ
     ''];
 }
 
+// Mode serveur : avertissement quand data/tables.json gardait une autre adresse
+// pour les QR (ceux déjà imprimés ne mènent pas ici), sinon null. Lu avant que
+// ensureSoloGroup() réécrive le fichier avec KARAOKE_PUBLIC_URL : l'écart ne se
+// voit alors qu'une fois, même si le démarrage échoue ensuite (logBaseUrlWarning).
+// Tant que le fichier n'est pas réécrit (démarrage refusé avant, ou « Comptoir »
+// table ordinaire d'une ancienne soirée, que ensureSoloGroup() laisse), il revient.
+function printedBaseUrlWarning() {
+  if (!SERVER || DEMO) return null;
+  let data;
+  try { data = JSON.parse(fs.readFileSync(TABLE_FILE, 'utf8')); } catch (_) { return null; }
+  let old;
+  try { old = normalizeBaseUrl(data?.baseUrl); } catch (_) { old = String(data.baseUrl).slice(0, 200); }
+  if (old === SERVER.publicUrl) return null;
+  if (old === null) {
+    return 'Attention : data/tables.json n’indiquait aucune adresse publique (QR du Wi-Fi local). ' +
+      `Les QR déjà imprimés ne mènent pas à ce serveur. QR désormais créés pour ${SERVER.publicUrl}.`;
+  }
+  return `Attention : data/tables.json indiquait ${old} pour les QR. ` +
+    `Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. QR désormais créés pour ${SERVER.publicUrl}.`;
+}
+// Avertissement lu par main() et pas encore écrit : après les lignes de
+// démarrage, ou juste avant de sortir si le démarrage échoue, car le fichier
+// peut déjà être réécrit (l'ancienne adresse ne resterait alors nulle part).
+let pendingBaseUrlWarning = null;
+function logBaseUrlWarning() {
+  if (pendingBaseUrlWarning) appLog(pendingBaseUrlWarning);
+  pendingBaseUrlWarning = null;
+}
+
 async function main() {
   if (PUBLIC_PORT === PORT || !Number.isInteger(PUBLIC_PORT) || PUBLIC_PORT < 1 || PUBLIC_PORT > 65535) {
     throw new Error('Le port public doit être valide et différent de celui du bar.');
   }
+  // Avant la soirée et ensureSoloGroup(), qui réécrit en général data/tables.json.
+  pendingBaseUrlWarning = printedBaseUrlWarning();
   const previousNight = nightStore?.load();
   // Même soirée après un redémarrage : son journal continue.
   const resumed = journal.open({ resume: previousNight?.evening || null, rules: journalRules() });
@@ -5306,8 +5437,10 @@ async function main() {
       const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
       const localUrl = `http://localhost:${PORT}/`;
       // Mode serveur : ni la clé ni un lien qui la porte (empreinte seulement).
-      if (SERVER) for (const line of serverStartupLines()) appLog(line);
-      else {
+      if (SERVER) {
+        for (const line of serverStartupLines()) appLog(line);
+        logBaseUrlWarning();
+      } else {
         appLog('');
         appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
         appLog(`Page du bar (sur ce PC)        : ${localUrl}`);
@@ -5330,17 +5463,19 @@ async function main() {
     });
   });
   server.on('error', (e) => {
+    logBaseUrlWarning();
     if (e.code === 'EADDRINUSE') appLog(`Le port ${PORT} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre.`);
     else appLog(`Erreur serveur : ${e.message}`);
     process.exit(1);
   });
   publicServer.on('error', (e) => {
+    logBaseUrlWarning();
     appLog(`Port public ${PUBLIC_PORT} indisponible : ${e.message}`);
     process.exit(1);
   });
 }
 
-main().catch(e => { appLog(`Impossible de démarrer : ${e.message}`); process.exitCode = 1; });
+main().catch(e => { logBaseUrlWarning(); appLog(`Impossible de démarrer : ${e.message}`); process.exitCode = 1; });
 // Arrêt par le système (deux modes) : docker compose stop, Ctrl+C, fenêtre
 // fermée. Même routine qu'ARRETER.bat, sortie en 0 ; un second signal est
 // absorbé par stopHelper. Hors des bacs à sable `vm` des tests.

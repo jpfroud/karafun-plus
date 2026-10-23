@@ -397,12 +397,12 @@ if (require.main === module) {
         return content;
       } finally { await child.stop(); }
     };
-    // Une autre adresse envoyée par la page du bar est gardée dans la soirée
-    // sauvegardée ; la soirée restaurée reprend KARAOKE_PUBLIC_URL.
+    // Une autre adresse envoyée par la page du bar est refusée depuis #25 ; la
+    // soirée restaurée reprend KARAOKE_PUBLIC_URL (soirée d'une autre adresse : R10).
     const first = await start('data/staff-key, créée à ce démarrage', async (base, key) => {
       const sent = await fetch(`${base}/api/staff/settings?key=${encodeURIComponent(key)}`, { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://autre.exemple.fr' }) });
-      assert.equal(sent.status, 200);
+      assert.equal(sent.status, 400);
     });
     const second = await start('data/staff-key', async (base, key, child) => {
       await waitLine(child, 'Soirée restaurée');
@@ -411,6 +411,284 @@ if (require.main === module) {
       assert.ok(state.tables.every(table => !table.url || table.url.startsWith('https://clients.exemple.fr/t/')));
     });
     assert.equal(second, first, 'même clé au redémarrage');
+    assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  });
+
+  // -------------------------------------------------------------- issue #25
+  // Faux KaraFun de la démo (R5), commandes de clé (R6, R7, R9, R9b) et
+  // avertissement sur l'ancienne adresse de data/tables.json (R10 à R10d). R5
+  // à R7 depuis la racine (démo, ou sortie avant main()) ; R9 à R10d dans une
+  // copie sans data/last-karafun-code.json ni --code.
+  const pcEnv = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith('KARAOKE_')));
+  const copyArgs = port => ['--port', String(port), '--public-port', String(port + 1), '--no-open'];
+  // Fin d'une commande ponctuelle (tuée si elle ne sort pas d'elle-même).
+  const finished = async child => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    const result = await child.exited;
+    clearTimeout(timer);
+    return result;
+  };
+  const rotatedLine = key => `Nouvelle clé du bar écrite dans data/staff-key (empreinte ${fingerprint(key)}). ` +
+    'Redémarre la file pour l’appliquer, puis donne aux gérants le lien de --print-staff-url : l’ancien lien ne marche plus.\n';
+  // R10 à R10d : copie dont data/tables.json garde https://ancien.exemple.fr.
+  const OLD_WARNING = 'Attention : data/tables.json indiquait https://ancien.exemple.fr pour les QR. ' +
+    'Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. QR désormais créés pour https://clients.exemple.fr.';
+  const oldTablesCopy = () => {
+    const dir = sandboxCopy();
+    const tablesPath = path.join(dir, 'data', 'tables.json');
+    fs.mkdirSync(path.dirname(tablesPath));
+    fs.writeFileSync(tablesPath, JSON.stringify({ version: 1, baseUrl: 'https://ancien.exemple.fr',
+      tables: [{ id: '1', name: null, headcount: null, individual: false, secret: crypto.randomBytes(16).toString('base64url') }] }));
+    return { dir, tablesBaseUrl: () => JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl };
+  };
+  const baseUrlWarnings = child => completeLines(child).filter(line => line.startsWith('Attention : data/tables.json'));
+  // Lignes d'avertissement dans les journal/serveur-<date>.log de la copie.
+  const loggedWarnings = dir => fs.readdirSync(path.join(dir, 'journal')).filter(name => /^serveur-.*\.log$/.test(name))
+    .map(name => fs.readFileSync(path.join(dir, 'journal', name), 'utf8')).join('').split(` ${OLD_WARNING}\n`).length - 1;
+  // data/runtime-<P>.json écrit par ce serveur, après ses lignes de démarrage.
+  const waitRuntime = async child => {
+    const file = runtimeFile(child);
+    let runtime = null;
+    for (let i = 0; i < 300 && runtime?.pid !== child.pid; i++) {
+      try { runtime = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { runtime = null; }
+      if (runtime?.pid !== child.pid) await sleep(50);
+    }
+    assert.equal(runtime?.pid, child.pid, `data/${path.basename(file)} écrit\n${outputs(child)}`);
+  };
+
+  test('R5 faux KaraFun de la démo : boucle locale seulement, la démo se connecte (mode PC)', async t => {
+    const port = await choosePort();
+    const child = launch(demoArgs(port), { env: pcEnv() });
+    try {
+      assert.equal(await waitLine(child, 'Mode démo'), `Mode démo : faux KaraFun sur http://127.0.0.1:${port + 1001} (chansons de 4 s)`);
+      const base = `http://127.0.0.1:${port}`;
+      let ready = false;
+      for (let i = 0; i < 100 && !ready; i++) {
+        try {
+          const state = await (await fetch(`${base}/api/staff/state?key=${encodeURIComponent(await staffKey(base))}`)).json();
+          ready = state.kf?.ready === true;
+        } catch (_) { /* serveur pas encore prêt */ }
+        if (!ready) await sleep(100);
+      }
+      assert.equal(ready, true, `démo prête (kf.ready)\n${outputs(child)}`);
+      assert.equal(await reachable('127.0.0.1', port + 1001), 'ok', `127.0.0.1:${port + 1001}`);
+      const lan = lanIPv4();
+      if (!lan) {
+        t.skip('machine sans IPv4 hors boucle locale : partie réseau ignorée');
+        return;
+      }
+      assert.equal(await reachable(lan, port + 1001), 'ECONNREFUSED', `${lan}:${port + 1001} (réseau)`);
+    } finally { await child.stop(); }
+  });
+
+  test('R6 --print-staff-url réel : le lien du bar seul sur stdout, ni journal ni port', async () => {
+    const port = await choosePort();
+    const env = serverEnv();
+    const expected = `https://bar.exemple.fr/staff?key=${fs.readFileSync(env.KARAOKE_STAFF_KEY_FILE, 'utf8').trim()}\n`;
+    for (const args of [['--port', String(port), '--print-staff-url'], ['--print-staff-url', '--port', String(port)]]) {
+      const label = args.join(' ');
+      const before = footprint(root);
+      const child = launch(args, { env });
+      try {
+        const { code } = await finished(child);
+        assert.equal(code, 0, `${label} : code de sortie\n${outputs(child)}`);
+        // Comparaison sans afficher la clé en cas d'échec.
+        assert.ok(child.stdoutText === expected, `${label} : stdout exact\n${outputs(child)}`);
+        assert.equal(child.stderrText, '', label);
+        assert.deepEqual(footprint(root), before, `${label} : journal/ et data/ inchangés`);
+        assert.equal(await reachable('127.0.0.1', port), 'ECONNREFUSED', `${label} : port ${port} fermé`);
+        assert.equal(await reachable('127.0.0.1', port + 1), 'ECONNREFUSED', `${label} : port ${port + 1} fermé`);
+      } finally { await child.stop(); }
+    }
+  });
+
+  test('R7 --rotate-staff-key refusé avec KARAOKE_STAFF_KEY_FILE : fichier de clé intact', async () => {
+    const env = serverEnv();
+    const keyBytes = fs.readFileSync(env.KARAOKE_STAFF_KEY_FILE);
+    const before = footprint(root);
+    const child = launch(['--rotate-staff-key'], { env });
+    try {
+      const { code } = await finished(child);
+      assert.equal(code, 1, outputs(child));
+      assert.equal(child.stderrText,
+        'Commande impossible : la clé du bar vient de KARAOKE_STAFF_KEY_FILE ; change ce fichier, puis redémarre la file.\n');
+      assert.equal(child.stdoutText, '');
+      assert.ok(fs.readFileSync(env.KARAOKE_STAFF_KEY_FILE).equals(keyBytes), 'clé du fichier identique octet pour octet');
+      assert.deepEqual(footprint(root), before, 'journal/ et data/ inchangés');
+    } finally { await child.stop(); }
+  });
+
+  test('R9 --rotate-staff-key réel : data/ créé, clé en 0600, seule la dernière clé ouvre la page du bar', async () => {
+    const dir = sandboxCopy();
+    assert.equal(fs.existsSync(path.join(dir, 'data')), false, 'copie sans data/');
+    const env = serverEnv({ KARAOKE_STAFF_KEY_FILE: undefined });
+    const keyPath = path.join(dir, 'data', 'staff-key');
+    const rotate = async () => {
+      const child = launch(['--server', '--rotate-staff-key'], { env, cwd: dir });
+      try {
+        const { code } = await finished(child);
+        assert.equal(code, 0, outputs(child));
+        const content = fs.readFileSync(keyPath, 'utf8');
+        assert.match(content, /^[A-Za-z0-9_-]{22}\n$/);
+        assert.equal(child.stdoutText, rotatedLine(content.trim()), 'empreinte du contenu écrit');
+        assert.equal(child.stderrText, '');
+        if (process.platform !== 'win32') assert.equal(fs.statSync(keyPath).mode & 0o777, 0o600, 'droits 0600');
+        assert.deepEqual(fs.readdirSync(path.join(dir, 'data')), ['staff-key'], 'aucun fichier temporaire laissé');
+        assert.equal(fs.existsSync(path.join(dir, 'journal')), false, 'sortie avant journal/ : rien au journal');
+        return content.trim();
+      } finally { await child.stop(); }
+    };
+    const first = await rotate();
+    const second = await rotate();
+    assert.notEqual(second, first, 'seconde rotation : autre clé');
+    const port = await choosePort();
+    const child = launch(copyArgs(port), { env, cwd: dir });
+    try {
+      assert.equal(await waitLine(child, 'Clé du bar'), `Clé du bar                     : empreinte ${fingerprint(second)} (data/staff-key)`);
+      await waitLine(child, 'Adresse des téléphones');
+      const base = `http://127.0.0.1:${port}`;
+      assert.equal((await fetch(`${base}/api/staff/state?key=${encodeURIComponent(first)}`)).status, 403, 'avant-dernière clé refusée');
+      assert.equal((await fetch(`${base}/api/staff/state?key=${encodeURIComponent(second)}`)).status, 200, 'dernière clé acceptée');
+    } finally { await child.stop(); }
+    assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  });
+
+  // La commande passe avant le contrôle de démarrage (serverSetup) : une
+  // data/staff-key abîmée se répare par --rotate-staff-key, comme le dit le refus.
+  test('R9b data/staff-key abîmée : « Commande impossible », puis réparée par --rotate-staff-key', async () => {
+    const dir = sandboxCopy();
+    const keyPath = path.join(dir, 'data', 'staff-key');
+    fs.mkdirSync(path.dirname(keyPath));
+    fs.writeFileSync(keyPath, 'abc\n');
+    const env = serverEnv({ KARAOKE_STAFF_KEY_FILE: undefined });
+    const run = async args => {
+      const child = launch(args, { env, cwd: dir });
+      try {
+        const { code } = await finished(child);
+        return { code, stdout: child.stdoutText, stderr: child.stderrText, outputs: outputs(child) };
+      } finally { await child.stop(); }
+    };
+    // Formes de docker compose exec : KARAOKE_MODE=server, sans --server.
+    const refused = await run(['--print-staff-url']);
+    assert.equal(refused.code, 1, refused.outputs);
+    assert.equal(refused.stderr, 'Commande impossible : data/staff-key ne contient pas une clé valable (au moins 22 caractères ' +
+      'parmi A-Z, a-z, 0-9, - et _) : remplace-la avec node server.js --rotate-staff-key.\n');
+    assert.equal(refused.stdout, '');
+    assert.equal(fs.readFileSync(keyPath, 'utf8'), 'abc\n', 'clé abîmée laissée telle quelle');
+    const rotated = await run(['--rotate-staff-key']);
+    assert.equal(rotated.code, 0, rotated.outputs);
+    const content = fs.readFileSync(keyPath, 'utf8');
+    assert.match(content, /^[A-Za-z0-9_-]{22}\n$/);
+    assert.equal(rotated.stdout, rotatedLine(content.trim()), 'empreinte de la nouvelle clé');
+    assert.equal(rotated.stderr, '');
+    if (process.platform !== 'win32') assert.equal(fs.statSync(keyPath).mode & 0o777, 0o600, 'droits 0600');
+    const printed = await run(['--print-staff-url']);
+    assert.equal(printed.code, 0, printed.outputs);
+    assert.ok(printed.stdout === `https://bar.exemple.fr/staff?key=${content.trim()}\n`, `lien de la nouvelle clé\n${printed.outputs}`);
+    assert.equal(printed.stderr, '');
+    assert.deepEqual(fs.readdirSync(path.join(dir, 'data')), ['staff-key'], 'aucun fichier temporaire laissé');
+    assert.equal(fs.existsSync(path.join(dir, 'journal')), false, 'sortie avant journal/ : rien au journal');
+  });
+
+  test('R10 ancienne adresse de data/tables.json : avertissement une fois, soirée restaurée sur KARAOKE_PUBLIC_URL', async () => {
+    const { dir, tablesBaseUrl } = oldTablesCopy();
+    // 1. Mode PC, sans --demo : la soirée est sauvegardée avec l'ancienne adresse.
+    let child = launch(copyArgs(await choosePort()), { env: pcEnv(), cwd: dir });
+    try { await waitLine(child, 'Laisse cette fenêtre ouverte'); } finally { await child.stop(); }
+    assert.equal(tablesBaseUrl(), 'https://ancien.exemple.fr', 'mode PC : adresse gardée');
+    // 2. Mode serveur : soirée restaurée, avertissement exact, QR sur KARAOKE_PUBLIC_URL.
+    const env = serverEnv();
+    const port = await choosePort();
+    child = launch(copyArgs(port), { env, cwd: dir });
+    try {
+      await waitLine(child, 'Soirée restaurée');
+      assert.equal(await waitLine(child, 'Attention : data/tables.json'), OLD_WARNING);
+      const base = `http://127.0.0.1:${port}`;
+      const response = await fetch(`${base}/api/staff/state?key=${encodeURIComponent(await staffKey(base, { keyFile: env.KARAOKE_STAFF_KEY_FILE }))}`);
+      assert.equal(response.status, 200);
+      const state = await response.json();
+      assert.equal(state.phoneBase, 'https://clients.exemple.fr');
+      assert.ok(state.tables.some(table => table.id === '1'), 'table 1 restaurée');
+      for (const table of state.tables) assert.ok(String(table.url).startsWith('https://clients.exemple.fr/t/'), `${table.id} : ${table.url}`);
+      assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'data/tables.json réécrit');
+    } finally { await child.stop(); }
+    assert.equal(baseUrlWarnings(child).length, 1, 'une seule ligne d’avertissement');
+    assert.equal(loggedWarnings(dir), 1, 'avertissement gardé dans journal/serveur-<date>.log');
+    // 3. Démarrage suivant : plus d'écart, plus d'avertissement.
+    child = launch(copyArgs(await choosePort()), { env, cwd: dir });
+    try {
+      await waitRuntime(child);
+      assert.deepEqual(baseUrlWarnings(child), [], 'aucun avertissement une fois data/runtime-<P>.json écrit');
+    } finally { await child.stop(); }
+    assert.deepEqual(baseUrlWarnings(child), [], 'aucun avertissement dans toute la sortie');
+    assert.ok(completeLines(child).some(line => line.startsWith('Soirée restaurée')), 'démarrage complet');
+    assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  });
+
+  // Démarrage qui échoue après la réécriture de data/tables.json (port du bar
+  // ou port clients déjà pris) : l'ancienne adresse reste à l'écran et au
+  // journal, une seule fois, et le démarrage suivant ne voit plus d'écart.
+  const failedFirstStart = async ({ busy, lastLine }) => {
+    const { dir, tablesBaseUrl } = oldTablesCopy();
+    const env = serverEnv();
+    const port = await choosePort();
+    const blocker = net.createServer();
+    await new Promise(resolve => blocker.listen(busy(port), '127.0.0.1', resolve));
+    let child = launch(copyArgs(port), { env, cwd: dir });
+    try {
+      const { code } = await finished(child);
+      assert.equal(code, 1, outputs(child));
+    } finally {
+      await child.stop();
+      await new Promise(resolve => blocker.close(resolve));
+    }
+    assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'échec après la réécriture');
+    assert.deepEqual(baseUrlWarnings(child), [OLD_WARNING], `avertissement à l’écran\n${outputs(child)}`);
+    assert.match(completeLines(child).at(-1), lastLine(port), 'raison de l’échec en dernière ligne');
+    assert.equal(loggedWarnings(dir), 1, 'avertissement gardé dans journal/serveur-<date>.log');
+    // Démarrage suivant : plus d'écart, plus d'avertissement ; le journal garde l'ancienne adresse.
+    child = launch(copyArgs(await choosePort()), { env, cwd: dir });
+    try {
+      await waitLine(child, 'Adresse des téléphones');
+      await waitRuntime(child);
+    } finally { await child.stop(); }
+    assert.deepEqual(baseUrlWarnings(child), [], 'aucun avertissement au démarrage suivant');
+    assert.equal(loggedWarnings(dir), 1, 'une seule ligne au journal');
+    assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  };
+
+  test('R10b ancienne adresse gardée au journal quand le port du bar est pris au premier démarrage du mode serveur', () =>
+    failedFirstStart({ busy: port => port,
+      lastLine: port => new RegExp(`^Le port ${port} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre\\.$`) }));
+
+  test('R10c ancienne adresse gardée au journal quand le port clients est pris au premier démarrage du mode serveur', () =>
+    failedFirstStart({ busy: port => port + 1, lastLine: port => new RegExp(`^Port public ${port + 1} indisponible : `) }));
+
+  // Démarrage refusé par main() avant la réécriture (sauvegarde de soirée
+  // illisible) : l'avertissement passe avant la raison, et data/tables.json
+  // garde l'ancienne adresse, donc le démarrage suivant la signale encore.
+  test('R10d démarrage refusé avant la réécriture de data/tables.json : avertissement écrit, puis repris au démarrage suivant', async () => {
+    const { dir, tablesBaseUrl } = oldTablesCopy();
+    const night = path.join(dir, 'data', 'soiree-a.json');
+    fs.mkdirSync(night); // un dossier à la place de la sauvegarde : nightStore.load() lève
+    const env = serverEnv();
+    let child = launch(copyArgs(await choosePort()), { env, cwd: dir });
+    try {
+      const { code } = await finished(child);
+      assert.equal(code, 1, outputs(child));
+    } finally { await child.stop(); }
+    assert.deepEqual(baseUrlWarnings(child), [OLD_WARNING], `avertissement à l’écran\n${outputs(child)}`);
+    assert.equal(completeLines(child).at(-1), 'Impossible de démarrer : Sauvegarde de soirée invalide : les deux générations sont illisibles',
+      'raison de l’échec en dernière ligne');
+    assert.equal(loggedWarnings(dir), 1, 'avertissement gardé dans journal/serveur-<date>.log');
+    assert.equal(tablesBaseUrl(), 'https://ancien.exemple.fr', 'data/tables.json laissé tel quel');
+    // Sauvegarde retirée : démarrage complet, l'écart est encore vu une fois.
+    fs.rmdirSync(night);
+    child = launch(copyArgs(await choosePort()), { env, cwd: dir });
+    try { await waitRuntime(child); } finally { await child.stop(); }
+    assert.deepEqual(baseUrlWarnings(child), [OLD_WARNING], 'avertissement repris au démarrage suivant');
+    assert.equal(loggedWarnings(dir), 2, 'une ligne de plus au journal');
+    assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'data/tables.json réécrit');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   });
 }

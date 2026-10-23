@@ -1870,6 +1870,9 @@
       if ($('ipSel').dataset.touched && opts.includes(previous)) $('ipSel').value = previous;
     }
     if (document.activeElement !== $('customBase') && !$('customBase').dataset.touched) $('customBase').value = publicHttps ? S.phoneBase : '';
+    // Mode serveur : l'adresse des QR vient du serveur, elle ne se change pas ici.
+    $('customBase').readOnly = S.app?.mode === 'server';
+    $('saveBase').hidden = S.app?.mode === 'server';
 
     $('qn').textContent = S.queue.length;
     $('queueEmpty').hidden = S.queue.length > 0;
@@ -2407,6 +2410,7 @@
     act('/api/staff/settings', { baseUrl: $('ipSel').value }, 'QR configurés pour le Wi-Fi local');
   };
   $('saveBase').onclick = () => {
+    if (S?.app?.mode === 'server') return;
     const value = $('customBase').value.trim().replace(/\/$/, '');
     let url;
     try { url = new URL(value); } catch (_) { return toast('Saisis une adresse HTTPS valide.', true); }
