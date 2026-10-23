@@ -531,13 +531,16 @@ function stopHelper(reason = 'stop') {
   setTimeout(() => process.exit(0), 500).unref();
 }
 
-// État de GET /readyz (deux modes), lu dans les variables du module sans rien
-// calculer : jamais de texte d'erreur, de code KaraFun, de clé, de prénom ni
-// de nom de table. Le solveur n'entre pas dans `ok` (rotation locale de secours).
-const KARAFUN_WAITING = new Set(['retry', 'stopped', 'idle']);
+// État de GET /readyz (deux modes), lu dans les variables du module sans
+// demander de calcul au solveur : jamais de texte d'erreur, de code KaraFun, de
+// clé, de prénom ni de nom de table. Le solveur n'entre pas dans `ok` (rotation
+// locale de secours). Phases KaraFun rendues telles quelles : retry, stopped,
+// idle ; toute autre phase sans données (discovering, opening, waiting-*,
+// ready, ou une phase inconnue) devient 'connecting'.
+const KARAFUN_PHASES_AS_IS = new Set(['retry', 'stopped', 'idle']);
 function readiness() {
   const phase = bridge && !bridge.ready ? bridge.connectionState().phase : null;
-  const karafun = !bridge ? 'no-code' : bridge.ready ? 'connected' : KARAFUN_WAITING.has(phase) ? phase : 'connecting';
+  const karafun = !bridge ? 'no-code' : bridge.ready ? 'connected' : KARAFUN_PHASES_AS_IS.has(phase) ? phase : 'connecting';
   const solver = !sched.solverBridge ? 'off' : sched.solverBridge.available ? 'available' : 'unavailable';
   const persistence = !nightStore ? 'off' : persistenceError !== null ? 'error' : 'ok';
   return { ok: karafun === 'connected' && persistence !== 'error', mode: SERVER ? 'server' : 'pc', karafun, solver, persistence };

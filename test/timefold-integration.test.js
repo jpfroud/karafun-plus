@@ -970,11 +970,27 @@ test('B3 pont Timefold : JAVA_TOOL_OPTIONS complétée après l’option de jour
   }
   assert.equal(javaToolOptions(' -Dessai=1 '), `${LOG_OPTION} -Dessai=1`);
   for (const value of [undefined, '', '  ']) assert.equal(javaToolOptions(value), LOG_OPTION, String(value));
-  // Sans option env : l'environnement du processus.
+  // Sans option env : l'environnement du processus (suivi jusqu'à la JVM par B3 bis).
   const bridge = new TimefoldBridge({ jar: 'faux.jar', java: 'faux' });
   assert.equal(bridge.env, process.env);
-  assert.deepEqual(bridge.jvmArgs, jvmArgsFrom(process.env.KARAOKE_SOLVER_JVM_ARGS));
-  assert.equal(bridge.javaToolOptions, javaToolOptions(process.env.JAVA_TOOL_OPTIONS));
+});
+
+// Relecture de #26 : chemin de scheduler.js:80 (`new TimefoldBridge()` sans
+// option env), les réglages de l'exploitant viennent de process.env.
+test('B3 bis pont Timefold : sans option env, KARAOKE_SOLVER_JVM_ARGS et JAVA_TOOL_OPTIONS lus dans process.env', async () => {
+  const saved = { KARAOKE_SOLVER_JVM_ARGS: process.env.KARAOKE_SOLVER_JVM_ARGS, JAVA_TOOL_OPTIONS: process.env.JAVA_TOOL_OPTIONS };
+  process.env.KARAOKE_SOLVER_JVM_ARGS = '-Xmx64m';
+  process.env.JAVA_TOOL_OPTIONS = '-Dessai=2';
+  try {
+    const call = await spawnedWith(undefined);
+    assert.deepEqual(call.args, ['-Xmx64m', '-jar', 'faux.jar']);
+    assert.equal(call.options.env.JAVA_TOOL_OPTIONS, `${LOG_OPTION} -Dessai=2`);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });
 
 test('B4 vraie JVM : options de l’exploitant acceptées, 60 titres résolus',

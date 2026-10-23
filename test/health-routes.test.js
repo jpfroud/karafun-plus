@@ -246,7 +246,8 @@ test('H5 /readyz sauvegarde : panne signalée sans son message, puis rétablie',
 });
 
 test('H6 /readyz sans secret : 404 sur le port clients, ni clé, code, prénom ni table', async () => {
-  for (const f of [harness(), harness({ persistent: true })]) {
+  // Mode serveur compris : c'est là que Caddy publie le port clients.
+  for (const f of [harness(), harness({ persistent: true }), harness({ server: true })]) {
     const pub = await readyz(f, { port: f.PUBLIC_PORT });
     assert.equal(pub.status, 404);
     assert.equal(pub.text, 'Introuvable');
