@@ -161,6 +161,25 @@ test('P3 refus de la ligne de commande', t => {
     assert.throws(() => prepare({ root: source, dest, env: {}, now: () => new Date(0) }),
       { message: `Dossier de destination dans la source : ${dest}` });
   }
+  // Destination « <lien vers public/sous>/../x » passée à prepare() : lue comme
+  // texte (x à côté du lien, hors source), jamais par le noyau, qui suivrait le
+  // lien avant le « .. » et créerait public/x dans la source.
+  fs.mkdirSync(path.join(source, 'public', 'sous'));
+  const outside = path.join(base, 'dehors');
+  fs.mkdirSync(outside);
+  let linked = true;
+  try {
+    fs.symlinkSync(path.join(source, 'public', 'sous'), path.join(outside, 'lien'), 'dir');
+  } catch (error) {
+    if (process.platform !== 'win32') throw error;
+    linked = false;
+  }
+  if (linked) {
+    const viaLink = [outside, 'lien', '..', 'x'].join(path.sep);
+    assert.deepEqual(prepare({ root: source, dest: viaLink, env: {}, now: () => new Date(0) }), { files: 2 });
+    assert.deepEqual(fs.readdirSync(path.join(source, 'public')).sort(), ['a.html', 'sous'], 'dossier créé dans la source');
+    assert.deepEqual(filesUnder(path.join(outside, 'x')).sort(), ['build-info.json', 'package.json', 'public/a.html']);
+  }
   assert.deepEqual(filesUnder(source).sort(), ['livrable.json', 'package.json', 'public/a.html']);
 });
 

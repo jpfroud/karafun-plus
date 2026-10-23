@@ -138,6 +138,10 @@ function insideRoot(root, dest) {
 
 // Copie « commun » dans dest et écrit dest/build-info.json.
 function prepare({ root, dest, env = process.env, now = () => new Date() }) {
+  // Chemin absolu normalisé une fois : contrôles et écritures visent le même
+  // dossier (le noyau suivrait un lien avant un « .. » que path.resolve, dans
+  // insideRoot, retire comme texte).
+  dest = path.resolve(dest);
   const manifest = readManifest(root);
   if (insideRoot(root, dest)) throw new Error(`Dossier de destination dans la source : ${dest}`);
   if (!destinationEmpty(dest)) throw new Error(`Dossier de destination non vide : ${dest}`);
