@@ -46,8 +46,9 @@ function run(file, env = {}) {
       });
     }
   }
-  // D1 (issue #26) : hors Windows (arrêt brutal), SIGTERM passe par la
-  // routine d'arrêt : code 0, aucun signal, fichier d'arrêt retiré.
+  // D1 (issue #26) : hors Windows (où demo.kill() coupe le processus sans
+  // routine d'arrêt), SIGTERM passe par la routine d'arrêt : code 0, aucun
+  // signal, fichier d'arrêt retiré.
   if (stopped && process.platform !== 'win32') {
     const runtime = fs.existsSync(path.join(root, 'data', `runtime-${port}.json`));
     if (stopped.code !== 0 || stopped.signal !== null || runtime) {

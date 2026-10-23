@@ -430,6 +430,21 @@ test('DEMARRER C9 hors Windows : vrai spawn, file déjà ouverte, sortie propre'
     assert.match(result.stdout, /La file karaoké tourne déjà : ouvre la page du bar à l’adresse http:\/\/localhost:3000\//);
   });
 
+// Relecture de #26 : bornes de barPort, PORT mal formé, et --port sans valeur
+// (ou suivi d'une autre option) refusé même quand PORT est fixé.
+test('DEMARRER barPort : bornes 1 à 65535, PORT mal formé, --port sans valeur', () => {
+  const { barPort, barUrl } = loadStartEvening(() => {});
+  for (const [argv, env] of [[['--port', '0'], {}], [['--port', '65536'], {}], [['--port', '-1'], {}],
+    [[], { PORT: 'abc' }], [[], { PORT: '0' }], [['--port'], { PORT: '3456' }], [['--port', '--demo'], { PORT: '3456' }]]) {
+    assert.throws(() => barPort(argv, env), /^Error: Port invalide\.$/, JSON.stringify({ argv, env }));
+  }
+  assert.equal(barPort([], {}), 3000);
+  assert.equal(barPort([], { PORT: '' }), 3000);
+  assert.equal(barPort(['--port', '65535'], {}), 65535);
+  assert.equal(barPort(['--port', '1'], { PORT: '3456' }), 1);
+  assert.equal(barUrl(3457), 'http://localhost:3457/');
+});
+
 // ---------------------------------------------------------------------------
 // night-state.js
 // ---------------------------------------------------------------------------

@@ -4958,7 +4958,12 @@ const handlers = {
 };
 
 const server = http.createServer(async (req, res) => {
-  const u = new URL(req.url, 'http://x');
+  // Cible de requête que URL ne sait pas lire (//x:99999/, http://[), deux
+  // ports, sans clé : 400. Levée hors du try, l'exception deviendrait un rejet
+  // non géré qui arrêterait la file.
+  let u;
+  try { u = new URL(req.url, 'http://x'); }
+  catch (_) { return send(res, 400, 'Requête invalide', 'text/plain; charset=utf-8'); }
   const p = u.pathname;
   try {
     // Sonde de vie (deux modes) : deux ports, toute adresse, aucun secret.

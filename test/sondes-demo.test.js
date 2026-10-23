@@ -53,5 +53,12 @@ function raw(base, method, route) {
   const hidden = await fetch(`${PUBLIC}/readyz`);
   assert.equal(hidden.status, 404, '/readyz absent du port clients');
   assert.equal(await hidden.text(), 'Introuvable');
+  // Relecture de #26 : cible de requête illisible, sans clé, sur les deux
+  // ports : 400, et la démo répond encore.
+  for (const base of [BASE, PUBLIC]) {
+    const bad = await raw(base, 'GET', '//x:99999/');
+    assert.equal(bad.status, 400, `GET //x:99999/ sur ${base}`);
+    assert.equal((await fetch(`${base}/healthz`)).status, 200, `${base} répond encore`);
+  }
   console.log(`ok - sondes de la démo : /healthz sur ${local.port} et ${Number(local.port) + 1}, /readyz prêt sur le port du bar seulement`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

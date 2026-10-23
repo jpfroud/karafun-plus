@@ -59,6 +59,7 @@ function fakeNightStore() {
     load() { return null; }
     save(snapshot) {
       if (control.fail) throw new Error(control.fail);
+      control.onSave?.();
       control.saves.push(JSON.parse(JSON.stringify(snapshot)));
       return true;
     }
@@ -127,7 +128,8 @@ function call(f, method, url, { body, headers = {}, port = f.PORT, remote = '127
         resolve(out);
       },
     };
-    f.handle(req, res);
+    // Exception sortie du gestionnaire (en vrai : rejet non géré, la file s'arrête).
+    Promise.resolve(f.handle(req, res)).catch(error => resolve({ ...out, error }));
     setImmediate(() => {
       if (body !== undefined) req.emit('data', Buffer.from(JSON.stringify(body)));
       req.emit('end');
@@ -304,6 +306,39 @@ test('H8 stopHelper(raison) : un seul app.stopped, message du signal, pont ferm�
   assert.equal(byBar[0].reason, 'stop');
   assert.ok(bar.lines.includes('Arrêt de la file karaoké demandé par le bar.'), bar.lines.join('\n'));
   assert.ok(!bar.lines.some(line => line.includes('(signal')));
+});
+
+// Relecture de #26 : la sauvegarde faite par stopHelper, la seule qui garde les
+// changements des minuteurs depuis le dernier POST, suit la ligne app.stopped.
+test('H8 bis stopHelper(signal) : soirée sauvegardée une fois à l’arrêt, après app.stopped', async () => {
+  const f = harness({ persistent: true });
+  const before = f.night.saves.length;
+  const stoppedAtSave = [];
+  f.night.onSave = () => stoppedAtSave.push(events(f, 'app.stopped').length);
+  f.stopHelper('SIGTERM');
+  assert.equal(f.night.saves.length, before + 1, 'une sauvegarde à l’arrêt par signal');
+  assert.deepEqual(stoppedAtSave, [1], 'sauvegarde faite après la ligne app.stopped');
+  // gstack-timing-ok: le minuteur de sortie (500 ms) est armé avant cette attente de 600 ms et part toujours avant elle.
+  await sleep(600);
+  assert.deepEqual(f.exits.map(exit => exit.code), [0]);
+});
+
+// Relecture de #26 : une cible de requête que URL ne sait pas lire, envoyée
+// sans clé à l'un ou l'autre port, ne doit pas arrêter la file.
+test('H10 cible de requête illisible : 400 sur les deux ports, sans exception', async () => {
+  for (const f of [harness(), harness({ server: true })]) {
+    for (const port of [f.PORT, f.PUBLIC_PORT]) {
+      for (const url of ['//x:99999/', 'http://[']) {
+        const where = `${url} sur le port ${port}`;
+        const r = await call(f, 'GET', url, { port, remote: '203.0.113.7' });
+        assert.equal(r.error, undefined, `${where} : ${r.error?.message}`);
+        assert.equal(r.status, 400, where);
+        assert.equal(r.text, 'Requête invalide', where);
+        assert.equal(r.headers['content-type'], TEXT, where);
+      }
+      assert.equal((await call(f, 'GET', '/healthz', { port })).status, 200);
+    }
+  }
 });
 
 test('H9 ARRETER.bat : réponse d’abord, puis un seul app.stopped « stop » après 150 ms', async () => {

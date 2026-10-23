@@ -1007,3 +1007,61 @@ test('B5 vraie JVM : option refusée, repli local en quelques secondes, sans pla
       process.off('uncaughtException', onUncaught);
     }
   });
+
+// Relecture de #26 : une option JVM qui journalise sur stdout (-Xlog:gc,
+// -verbose:gc, -XX:+PrintCommandLineFlags) ne coupe pas Timefold ; une ligne
+// qui commence comme un objet JSON et ne se lit pas reste refusée.
+function talkingSpawn(noise) {
+  return () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.kill = () => {};
+    child.stdin.write = line => {
+      const { requestId } = JSON.parse(line);
+      setImmediate(() => {
+        child.stdout.emit('data', noise);
+        child.stdout.emit('data', `${JSON.stringify({ requestId, order: ['A'] })}\n`);
+      });
+      return true;
+    };
+    return child;
+  };
+}
+
+test('B6 pont Timefold : lignes de la JVM sur stdout ignorées, ligne JSON abîmée refusée', async () => {
+  const bridge = new TimefoldBridge({ jar: 'faux.jar', java: 'faux', settleMs: 0,
+    spawn: talkingSpawn('[0.004s][info][gc] Using Serial\n-XX:InitialHeapSize=16777216 -XX:+UseSerialGC\n') });
+  try {
+    const response = await bridge.solve({ requestId: 'journal-jvm' }, { immediate: true });
+    assert.deepEqual(response.order, ['A']);
+    assert.equal(bridge.lastError, null);
+    assert.equal(bridge.available, true);
+  } finally { bridge.close(); }
+  const broken = new TimefoldBridge({ jar: 'faux.jar', java: 'faux', settleMs: 0, spawn: talkingSpawn('{"requestId":\n') });
+  try {
+    await assert.rejects(broken.solve({ requestId: 'abimee' }, { immediate: true }), /Réponse de l’optimiseur illisible\./);
+    assert.equal(broken.available, false, 'pause de 30 s : rotation locale de secours');
+  } finally { broken.close(); }
+});
+
+test('B7 vraie JVM : -Xlog:gc (journal sur stdout) laisse Timefold répondre',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const bridge = new TimefoldBridge({ jar: JAR, settleMs: 0,
+      env: { ...process.env, KARAOKE_SOLVER_JVM_ARGS: '-Xmx256m -Xlog:gc' } });
+    const performances = [];
+    for (let i = 0; i < 60; i++) {
+      for (let k = 0; k < (i % 2 ? 1 : 2); k++) performances.push({
+        id: `P${i}-${k}`, owner: `P${i}`, ownerSongIndex: k,
+        singers: [`P${i}`], groups: [`T${Math.floor(i / 10)}`], previousIndex: performances.length,
+      });
+    }
+    try {
+      const response = await bridge.solve({ requestId: 'xlog-gc', budgetMs: 200, performances, pastAppearance: {},
+        physicalCount: {}, pinnedUntil: 0, roundPeople: [], lastGroups: [], tableRotation: true, weightedTables: false },
+      { immediate: true });
+      assert.equal(response.requestId, 'xlog-gc');
+      assert.equal(bridge.lastError, null);
+      assert.equal(bridge.available, true);
+    } finally { bridge.close(); }
+  });

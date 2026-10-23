@@ -115,6 +115,10 @@ class TimefoldBridge {
       const line = this.buffer.slice(0, at).trim();
       this.buffer = this.buffer.slice(at + 1);
       if (!line) continue;
+      // Le jar n'écrit sur stdout que des objets JSON ; les autres lignes
+      // viennent de la JVM (options de KARAOKE_SOLVER_JVM_ARGS ou de
+      // JAVA_TOOL_OPTIONS : -Xlog:gc, -verbose:gc…) et sont ignorées.
+      if (!line.startsWith('{')) continue;
       const active = this.active;
       if (!active) continue;
       let response;
