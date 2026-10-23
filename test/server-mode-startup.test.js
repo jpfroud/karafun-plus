@@ -528,6 +528,43 @@ if (require.main === module) {
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   });
 
+  // La commande passe avant le contrôle de démarrage (serverSetup) : une
+  // data/staff-key abîmée se répare par --rotate-staff-key, comme le dit le refus.
+  test('R9b data/staff-key abîmée : « Commande impossible », puis réparée par --rotate-staff-key', async () => {
+    const dir = sandboxCopy();
+    const keyPath = path.join(dir, 'data', 'staff-key');
+    fs.mkdirSync(path.dirname(keyPath));
+    fs.writeFileSync(keyPath, 'abc\n');
+    const env = serverEnv({ KARAOKE_STAFF_KEY_FILE: undefined });
+    const run = async args => {
+      const child = launch(args, { env, cwd: dir });
+      try {
+        const { code } = await finished(child);
+        return { code, stdout: child.stdoutText, stderr: child.stderrText, outputs: outputs(child) };
+      } finally { await child.stop(); }
+    };
+    // Formes de docker compose exec : KARAOKE_MODE=server, sans --server.
+    const refused = await run(['--print-staff-url']);
+    assert.equal(refused.code, 1, refused.outputs);
+    assert.equal(refused.stderr, 'Commande impossible : data/staff-key ne contient pas une clé valable (au moins 22 caractères ' +
+      'parmi A-Z, a-z, 0-9, - et _) : remplace-la avec node server.js --rotate-staff-key.\n');
+    assert.equal(refused.stdout, '');
+    assert.equal(fs.readFileSync(keyPath, 'utf8'), 'abc\n', 'clé abîmée laissée telle quelle');
+    const rotated = await run(['--rotate-staff-key']);
+    assert.equal(rotated.code, 0, rotated.outputs);
+    const content = fs.readFileSync(keyPath, 'utf8');
+    assert.match(content, /^[A-Za-z0-9_-]{22}\n$/);
+    assert.equal(rotated.stdout, rotatedLine(content.trim()), 'empreinte de la nouvelle clé');
+    assert.equal(rotated.stderr, '');
+    if (process.platform !== 'win32') assert.equal(fs.statSync(keyPath).mode & 0o777, 0o600, 'droits 0600');
+    const printed = await run(['--print-staff-url']);
+    assert.equal(printed.code, 0, printed.outputs);
+    assert.ok(printed.stdout === `https://bar.exemple.fr/staff?key=${content.trim()}\n`, `lien de la nouvelle clé\n${printed.outputs}`);
+    assert.equal(printed.stderr, '');
+    assert.deepEqual(fs.readdirSync(path.join(dir, 'data')), ['staff-key'], 'aucun fichier temporaire laissé');
+    assert.equal(fs.existsSync(path.join(dir, 'journal')), false, 'sortie avant journal/ : rien au journal');
+  });
+
   test('R10 ancienne adresse de data/tables.json : avertissement une fois, soirée restaurée sur KARAOKE_PUBLIC_URL', async () => {
     const dir = sandboxCopy();
     const tablesPath = path.join(dir, 'data', 'tables.json');
@@ -576,6 +613,54 @@ if (require.main === module) {
     } finally { await child.stop(); }
     assert.deepEqual(warnings(child), [], 'aucun avertissement dans toute la sortie');
     assert.ok(completeLines(child).some(line => line.startsWith('Soirée restaurée')), 'démarrage complet');
+    assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  });
+
+  // Démarrage qui échoue après la réécriture de data/tables.json (port du bar
+  // déjà pris) : l'ancienne adresse reste à l'écran et au journal.
+  test('R10b ancienne adresse gardée au journal quand le premier démarrage du mode serveur échoue', async () => {
+    const dir = sandboxCopy();
+    const tablesPath = path.join(dir, 'data', 'tables.json');
+    fs.mkdirSync(path.dirname(tablesPath));
+    fs.writeFileSync(tablesPath, JSON.stringify({ version: 1, baseUrl: 'https://ancien.exemple.fr',
+      tables: [{ id: '1', name: null, headcount: null, individual: false, secret: crypto.randomBytes(16).toString('base64url') }] }));
+    const warning = 'Attention : data/tables.json indiquait https://ancien.exemple.fr pour les QR. ' +
+      'Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. QR désormais créés pour https://clients.exemple.fr.';
+    const warnings = child => completeLines(child).filter(line => line.startsWith('Attention : data/tables.json'));
+    const logged = () => fs.readdirSync(path.join(dir, 'journal')).filter(name => /^serveur-.*\.log$/.test(name))
+      .map(name => fs.readFileSync(path.join(dir, 'journal', name), 'utf8')).join('').split(` ${warning}\n`).length - 1;
+    const env = serverEnv();
+    let port = await choosePort();
+    const blocker = net.createServer();
+    await new Promise(resolve => blocker.listen(port, '127.0.0.1', resolve));
+    let child = launch(copyArgs(port), { env, cwd: dir });
+    try {
+      const { code } = await finished(child);
+      assert.equal(code, 1, outputs(child));
+    } finally {
+      await child.stop();
+      await new Promise(resolve => blocker.close(resolve));
+    }
+    assert.equal(JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl, 'https://clients.exemple.fr', 'échec après la réécriture');
+    assert.deepEqual(warnings(child), [warning], `avertissement à l’écran\n${outputs(child)}`);
+    assert.equal(completeLines(child).at(-1), `Le port ${port} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre.`,
+      'raison de l’échec en dernière ligne');
+    assert.equal(logged(), 1, 'avertissement gardé dans journal/serveur-<date>.log');
+    // Démarrage suivant : plus d'écart, plus d'avertissement ; le journal garde l'ancienne adresse.
+    port = await choosePort();
+    child = launch(copyArgs(port), { env, cwd: dir });
+    try {
+      await waitLine(child, 'Adresse des téléphones');
+      const runtimePath = path.join(dir, 'data', `runtime-${port}.json`);
+      let runtime = null;
+      for (let i = 0; i < 300 && runtime?.pid !== child.pid; i++) {
+        try { runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8')); } catch (_) { runtime = null; }
+        if (runtime?.pid !== child.pid) await sleep(50);
+      }
+      assert.equal(runtime?.pid, child.pid, `data/runtime-${port}.json écrit\n${outputs(child)}`);
+    } finally { await child.stop(); }
+    assert.deepEqual(warnings(child), [], 'aucun avertissement au démarrage suivant');
+    assert.equal(logged(), 1, 'une seule ligne au journal');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   });
 }

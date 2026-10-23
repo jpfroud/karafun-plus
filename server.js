@@ -5,6 +5,8 @@
  *   node server.js --code 123456        (KaraFun réel, code de la télécommande)
  *   node server.js --demo               (faux KaraFun intégré, pour essayer)
  *   KARAOKE_MODE=server node server.js  (mode serveur : Linux derrière un relais HTTPS)
+ *   KARAOKE_MODE=server node server.js --print-staff-url   (lien du bar, puis sortie)
+ *   KARAOKE_MODE=server node server.js --rotate-staff-key  (nouvelle clé, appliquée au redémarrage)
  *
  * Les clients scannent le QR de leur table et voient tout sur leur téléphone.
  * Le programme décide de l'ordre et n'envoie à KaraFun que la chanson suivante.
@@ -5352,7 +5354,8 @@ function serverStartupLines(zone = Intl.DateTimeFormat().resolvedOptions().timeZ
 
 // Mode serveur : avertissement quand data/tables.json gardait une autre adresse
 // pour les QR (ceux déjà imprimés ne mènent pas ici), sinon null. Lu avant que
-// ensureSoloGroup() réécrive le fichier : il ne paraît qu'une fois.
+// ensureSoloGroup() réécrive le fichier : il paraît au plus une fois, même si
+// le démarrage échoue ensuite (logBaseUrlWarning).
 function printedBaseUrlWarning() {
   if (!SERVER || DEMO) return null;
   let data;
@@ -5367,13 +5370,21 @@ function printedBaseUrlWarning() {
   return `Attention : data/tables.json indiquait ${old} pour les QR. ` +
     `Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. QR désormais créés pour ${SERVER.publicUrl}.`;
 }
+// Avertissement lu par main() et pas encore écrit : après les lignes de
+// démarrage, ou juste avant de sortir si le démarrage échoue, car le fichier
+// est déjà réécrit et le démarrage suivant ne verrait plus l'ancienne adresse.
+let pendingBaseUrlWarning = null;
+function logBaseUrlWarning() {
+  if (pendingBaseUrlWarning) appLog(pendingBaseUrlWarning);
+  pendingBaseUrlWarning = null;
+}
 
 async function main() {
   if (PUBLIC_PORT === PORT || !Number.isInteger(PUBLIC_PORT) || PUBLIC_PORT < 1 || PUBLIC_PORT > 65535) {
     throw new Error('Le port public doit être valide et différent de celui du bar.');
   }
   // Avant la soirée et ensureSoloGroup(), qui réécrit data/tables.json.
-  const baseUrlWarning = printedBaseUrlWarning();
+  pendingBaseUrlWarning = printedBaseUrlWarning();
   const previousNight = nightStore?.load();
   // Même soirée après un redémarrage : son journal continue.
   const resumed = journal.open({ resume: previousNight?.evening || null, rules: journalRules() });
@@ -5425,7 +5436,7 @@ async function main() {
       // Mode serveur : ni la clé ni un lien qui la porte (empreinte seulement).
       if (SERVER) {
         for (const line of serverStartupLines()) appLog(line);
-        if (baseUrlWarning) appLog(baseUrlWarning);
+        logBaseUrlWarning();
       } else {
         appLog('');
         appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
@@ -5449,17 +5460,19 @@ async function main() {
     });
   });
   server.on('error', (e) => {
+    logBaseUrlWarning();
     if (e.code === 'EADDRINUSE') appLog(`Le port ${PORT} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre.`);
     else appLog(`Erreur serveur : ${e.message}`);
     process.exit(1);
   });
   publicServer.on('error', (e) => {
+    logBaseUrlWarning();
     appLog(`Port public ${PUBLIC_PORT} indisponible : ${e.message}`);
     process.exit(1);
   });
 }
 
-main().catch(e => { appLog(`Impossible de démarrer : ${e.message}`); process.exitCode = 1; });
+main().catch(e => { logBaseUrlWarning(); appLog(`Impossible de démarrer : ${e.message}`); process.exitCode = 1; });
 // Arrêt par le système (deux modes) : docker compose stop, Ctrl+C, fenêtre
 // fermée. Même routine qu'ARRETER.bat, sortie en 0 ; un second signal est
 // absorbé par stopHelper. Hors des bacs à sable `vm` des tests.

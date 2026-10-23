@@ -672,6 +672,8 @@ test('T7 commandes ponctuelles (harnais) : sorties exactes, clé écrite à côt
   const refused = [
     [['--print-staff-url', '--rotate-staff-key'], COMMAND_ENV, both],
     [['--rotate-staff-key', '--server', '--print-staff-url'], {}, both],
+    // « Pas les deux » passe avant une valeur inconnue de KARAOKE_MODE.
+    [['--print-staff-url', '--rotate-staff-key'], { ...COMMAND_ENV, KARAOKE_MODE: 'serveur' }, both],
     [['--print-staff-url'], { ...COMMAND_ENV, KARAOKE_MODE: 'serveur' }, unknownMode],
     [['--server', '--rotate-staff-key'], { ...COMMAND_ENV, KARAOKE_MODE: 'serveur' }, unknownMode],
     [['--print-staff-url'], pc, pcMode],
