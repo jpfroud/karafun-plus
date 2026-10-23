@@ -15,7 +15,8 @@ if [ ! -f "$demande" ]; then
   echo "Archive introuvable : $demande" >&2
   exit 1
 fi
-archive="$(cd "$(dirname "$demande")" && pwd)/$(basename "$demande")"
+# realpath, pas cd && pwd : avec CDPATH exporté, cd écrit le dossier trouvé.
+archive=$(realpath -- "$demande")
 cd "$(dirname "$0")"
 umask 077
 

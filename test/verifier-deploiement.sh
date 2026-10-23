@@ -12,7 +12,8 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 IMAGE=$1
-RACINE=$(cd "$(dirname "$0")/.." && pwd)
+# realpath, pas cd && pwd : avec CDPATH exporté, cd écrit le dossier trouvé.
+RACINE=$(realpath -- "$(dirname -- "$0")/..")
 FIXTURE=$RACINE/test/fixtures/compose.essai-caddy.yaml
 DEPOT_IMAGE=ghcr.io/jpfroud/karafun-plus
 

@@ -359,6 +359,9 @@ test('D5 attributs git et modes', t => {
 // du moment, « compose run » rejoué sur $FAKE_APP à la place de /app.
 // FAKE_RUN_FAIL=1 fait échouer tout « compose run » ; tar ou sh, seulement
 // celui de cette commande (copie de sauvegarde.sh ou remplacement).
+// FAKE_RUN_OUT=journal : la copie de sauvegarde.sh ne contient que journal/.
+// FAKE_START_FAIL=1 : start et up échouent sans changer l'état. « compose
+// run » tourne sous umask 022, comme dans un conteneur.
 const FAKE_DOCKER = [
   '#!/usr/bin/env bash',
   'set -u',
@@ -373,9 +376,11 @@ const FAKE_DOCKER = [
   '      shift',
   '    done ;;',
   '  stop) echo exited > "$FAKE_STATE" ;;',
-  '  start | up) echo running > "$FAKE_STATE" ;;',
+  '  start | up) [ -z "${FAKE_START_FAIL:-}" ] || exit 1; echo running > "$FAKE_STATE" ;;',
   '  run)',
   '    case ${FAKE_RUN_FAIL:-} in 1 | "$6") exit 1 ;; esac',
+  '    umask 022',
+  '    if [ "${FAKE_RUN_OUT:-}" = journal ] && [ "$6" = tar ]; then exec tar -czf - -C "$FAKE_APP" journal; fi',
   '    shift 5 # run --rm --no-deps -T app',
   '    if [ "$1" = sh ] && [ "$2" = -c ]; then exec sh -c "${3//\\/app/$FAKE_APP}"; fi',
   '    args=()',
@@ -399,23 +404,30 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
   fs.writeFileSync(at('src', 'data', 'staff-key'), 'restauree\n');
   fs.writeFileSync(at('src', 'journal', 'j.log'), 'ligne\n');
   fs.writeFileSync(at('src', 'LICENSE'), 'licence\n');
+  // Dossiers 0755, comme dans une archive faite sous Windows.
+  for (const sub of ['data', 'journal']) fs.chmodSync(at('src', sub), 0o755);
+  // -P garde « data/../LICENSE » dans le nom (archive piégée).
   const tar = (archive, ...entries) => {
-    const r = spawnSync('tar', ['-czf', at('archives', archive), '-C', at('src'), ...entries], { encoding: 'utf8' });
+    const r = spawnSync('tar', ['-czPf', at('archives', archive), '-C', at('src'), ...entries], { encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
     return at('archives', archive);
   };
   const archive = tar('a.tar.gz', 'data', 'journal');
   const lines = text => text.split('\n').filter(Boolean);
-  // Lance un script dans un état neuf : app (data/staff-key « ancienne »),
-  // sauvegardes/ vide, service app dans l'état donné.
-  const run = (script, { state, args = [], input = '', env = {} }) => {
+  const mode = (...parts) => (fs.statSync(at(...parts)).mode & 0o777).toString(8);
+  // Lance un script dans un état neuf : app (data/ et journal/ en 0755,
+  // data/staff-key « ancienne »), sauvegardes/ vide, service app dans l'état
+  // donné ; before() prépare le reste juste avant le lancement.
+  const run = (script, { state, args = [], input = '', env = {}, before }) => {
     fs.rmSync(at('app'), { recursive: true, force: true });
     fs.rmSync(at('deploy', 'sauvegardes'), { recursive: true, force: true });
     fs.mkdirSync(at('app', 'data'), { recursive: true });
     fs.mkdirSync(at('app', 'journal'));
+    for (const sub of ['data', 'journal']) fs.chmodSync(at('app', sub), 0o755);
     fs.writeFileSync(at('app', 'data', 'staff-key'), 'ancienne\n');
     fs.writeFileSync(at('state'), `${state}\n`);
     fs.writeFileSync(at('calls.log'), '');
+    if (before) before();
     const r = spawnSync('bash', [at('deploy', script), ...args], {
       cwd: at('deploy'), input, encoding: 'utf8',
       env: { ...process.env, PATH: `${at('bin')}${path.delimiter}${process.env.PATH}`,
@@ -453,6 +465,28 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
   assert.match(out[4], written);
   assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'restauree\n', 'données restaurées');
   assert.equal(r.state, 'running', 'app relancée');
+  // Dossiers 0755 de l'archive refermés par le chmod 700 final.
+  assert.deepEqual([mode('app', 'data'), mode('app', 'journal')], ['700', '700'], 'droits de data/ et journal/ après restauration');
+
+  // Chemin relatif avec CDPATH exporté : « cd » y écrit le dossier trouvé, qui
+  // ne doit pas entrer dans le chemin absolu de l'archive.
+  fs.mkdirSync(at('deploy', 'arch'), { recursive: true });
+  fs.copyFileSync(archive, at('deploy', 'arch', 'a.tar.gz'));
+  r = run('restauration.sh', { state: 'running', args: ['arch/a.tar.gz'], input: 'RESTAURER\n', env: { CDPATH: '.' } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(lines(r.stdout).includes('Restauration terminée depuis arch/a.tar.gz.'), r.stdout);
+  assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'restauree\n', 'données restaurées (CDPATH)');
+
+  // App arrêtée ou jamais créée (VPS neuf, bascule) : aucun arrêt, sauvegarde
+  // imbriquée sans relance, puis up -d (section 7, étape 5 : « Dès ici, trap »).
+  r = run('restauration.sh', { state: 'exited', args: [archive], input: 'RESTAURER\n' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.calls.map(c => c.command), ['compose ps', 'compose ps', 'compose run', 'compose run', 'compose up'], 'restauration, app arrêtée');
+  assert.equal(lines(r.stdout).length, 6, r.stdout);
+  assert.ok(!r.stdout.includes('Arrêt de la file karaoké'), r.stdout);
+  assert.equal(lines(r.stdout).at(-1), 'File karaoké relancée.');
+  assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'restauree\n', 'données restaurées (app arrêtée)');
+  assert.equal(r.state, 'running', 'app non lancée après une restauration sur VPS neuf');
 
   // Copie en échec : rien de partiel gardé, app relancée, code non nul.
   r = run('sauvegarde.sh', { state: 'running', env: { FAKE_RUN_FAIL: '1' } });
@@ -461,6 +495,40 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
   assert.deepEqual(r.calls.map(c => c.command), ['compose ps', 'compose stop', 'compose run', 'compose start']);
   assert.equal(lines(r.stdout).at(-1), 'File karaoké relancée.');
   assert.equal(r.state, 'running');
+
+  // Copie sans data/ : refus, rien de gardé, app relancée.
+  r = run('sauvegarde.sh', { state: 'running', env: { FAKE_RUN_OUT: 'journal' } });
+  assert.equal(r.status, 1);
+  assert.equal(lines(r.stderr).at(-1), 'Sauvegarde refusée : l\'archive ne contient pas data/.');
+  assert.deepEqual(backups(), [], 'archive sans data/ ou partielle gardée');
+  assert.equal(lines(r.stdout).at(-1), 'File karaoké relancée.');
+  assert.equal(r.state, 'running');
+
+  // Archive du même horodatage déjà là : refus avant tout appel à docker,
+  // archive existante intacte (faux date).
+  const stamp = '20261023-120000Z';
+  fs.mkdirSync(at('bin-date'));
+  fs.writeFileSync(at('bin-date', 'date'), `#!/usr/bin/env bash\necho ${stamp}\n`, { mode: 0o755 });
+  const existing = `sauvegardes/karafun-plus-${stamp}.tar.gz`;
+  r = run('sauvegarde.sh', {
+    state: 'running',
+    env: { PATH: [at('bin-date'), at('bin'), process.env.PATH].join(path.delimiter) },
+    before: () => { fs.mkdirSync(at('deploy', 'sauvegardes')); fs.writeFileSync(at('deploy', existing), 'ancienne archive\n'); },
+  });
+  assert.deepEqual([r.status, r.stderr.trim(), r.stdout, r.calls], [1, `Sauvegarde refusée : ${existing} existe déjà.`, '', []]);
+  assert.equal(fs.readFileSync(at('deploy', existing), 'utf8'), 'ancienne archive\n', 'archive existante remplacée');
+  assert.deepEqual(backups(), [path.basename(existing)]);
+
+  // Relance en échec : code 1, jamais « File karaoké relancée. ».
+  r = run('sauvegarde.sh', { state: 'running', env: { FAKE_START_FAIL: '1' } });
+  assert.equal(r.status, 1, 'sauvegarde : code 0 alors que la file reste arrêtée');
+  assert.ok(!r.stdout.includes('File karaoké relancée.'), r.stdout);
+  assert.equal(r.state, 'exited');
+  r = run('restauration.sh', { state: 'running', args: [archive], input: 'RESTAURER\n', env: { FAKE_START_FAIL: '1' } });
+  assert.equal(r.status, 1, 'restauration : code 0 alors que la file reste arrêtée');
+  assert.ok(!r.stdout.includes('File karaoké relancée.'), r.stdout);
+  assert.ok(lines(r.stdout).includes(`Restauration terminée depuis ${archive}.`), r.stdout);
+  assert.equal(r.state, 'exited');
 
   // Sauvegarde de sécurité en échec : rien n'est remplacé, app relancée.
   r = run('restauration.sh', { state: 'running', args: [archive], input: 'RESTAURER\n', env: { FAKE_RUN_FAIL: 'tar' } });
@@ -482,12 +550,21 @@ test('D6 scripts de deploy/ (faux docker)', { skip: process.platform === 'win32'
   const refused = 'Archive refusée : elle doit contenir data/ et seulement data/ et journal/.';
   const unreadable = at('archives', 'illisible.tar.gz');
   fs.writeFileSync(unreadable, 'pas une archive\n');
+  const piege = tar('piege.tar.gz', 'data', 'data/../LICENSE');
+  assert.ok(lines(spawnSync('tar', ['-tzf', piege], { encoding: 'utf8' }).stdout).includes('data/../LICENSE'), 'archive piégée sans data/../LICENSE');
   for (const [file, message] of [[tar('journal.tar.gz', 'journal'), refused], [tar('hors.tar.gz', 'data', 'journal', 'LICENSE'), refused],
-    [unreadable, `Archive illisible : ${unreadable}`]]) {
+    [piege, refused], [unreadable, `Archive illisible : ${unreadable}`]]) {
     r = run('restauration.sh', { state: 'running', args: [file] });
     assert.deepEqual([r.status, lines(r.stderr).at(-1), r.stdout, r.calls], [1, message, '', []], `refus de ${path.basename(file)}`);
     assert.equal(fs.readFileSync(at('app', 'data', 'staff-key'), 'utf8'), 'ancienne\n');
   }
+  // Nombre d'arguments et archive absente (section 7, étapes 1 et 2).
+  r = run('restauration.sh', { state: 'running' });
+  assert.deepEqual([r.status, r.stderr.trim(), r.stdout, r.calls],
+    [2, 'Usage : ./restauration.sh sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz', '', []], 'sans argument');
+  const absent = at('archives', 'absente.tar.gz');
+  r = run('restauration.sh', { state: 'running', args: [absent] });
+  assert.deepEqual([r.status, r.stderr.trim(), r.stdout, r.calls], [1, `Archive introuvable : ${absent}`, '', []], 'archive absente');
 
   // Sans confirmation (stdin fermé, autre réponse, ligne non terminée) : rien
   // ne change, aucun appel à docker.
