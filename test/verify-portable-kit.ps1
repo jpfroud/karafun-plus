@@ -15,6 +15,40 @@ try {
   if ($names | Where-Object { $_ -match '^karaoke-bar/(data|journal|test)/' }) {
     throw 'Le kit contient des données ou tests privés du projet.'
   }
+  # Entrées strictes : chaque fichier du ZIP vient de livrable.json (développé
+  # comme dans PREPARER-KIT-BAR.ps1) ou des produits de la construction, et
+  # chaque fichier du manifeste est dans le ZIP.
+  $manifeste = Get-Content -LiteralPath (Join-Path $root 'livrable.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  foreach ($liste in @('commun', 'windows')) {
+    $propriete = $null
+    if ($null -ne $manifeste) { $propriete = $manifeste.PSObject.Properties[$liste] }
+    if ($null -eq $propriete -or $propriete.Value -isnot [array]) {
+      throw 'livrable.json : listes « commun » et « windows » attendues.'
+    }
+  }
+  $livres = [System.Collections.Generic.List[string]]::new()
+  foreach ($nom in @($manifeste.commun) + @($manifeste.windows)) {
+    $chemin = Join-Path $root ($nom.Replace('/', '\'))
+    if (Test-Path -LiteralPath $chemin -PathType Container) {
+      Get-ChildItem -LiteralPath $chemin -File -Recurse -Force |
+        ForEach-Object { $livres.Add($_.FullName.Substring($root.Length + 1).Replace('\', '/')) }
+    } else { $livres.Add($nom) }
+  }
+  $admis = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  foreach ($nom in $livres) { [void]$admis.Add("karaoke-bar/$nom") }
+  foreach ($produit in @('karaoke-bar/KaraFun Plus.exe', 'karaoke-bar/build-info.json',
+      'karaoke-bar/solver/karafun-solver.jar')) { [void]$admis.Add($produit) }
+  foreach ($name in $names) {
+    if (-not $admis.Contains($name) -and
+        $name -cnotmatch '^karaoke-bar/(node|node_modules|solver-runtime|LICENCES-JAVA)/') {
+      throw "Entrée du kit hors de livrable.json : $name"
+    }
+  }
+  $presentes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  foreach ($name in $names) { [void]$presentes.Add($name) }
+  foreach ($nom in $livres) {
+    if (-not $presentes.Contains("karaoke-bar/$nom")) { throw "Fichier absent du kit : karaoke-bar/$nom" }
+  }
   foreach ($required in @('karaoke-bar/node/node.exe', 'karaoke-bar/node/LICENSE', 'karaoke-bar/server.js',
       'karaoke-bar/build-info.json',
       'karaoke-bar/public/client.html', 'karaoke-bar/public/client-i18n.js', 'karaoke-bar/DEMARRER.bat',

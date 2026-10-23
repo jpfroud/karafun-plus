@@ -35,20 +35,33 @@ if (-not $commitKit -and (Get-Command git -ErrorAction SilentlyContinue)) {
 $infoKit = [ordered]@{ version = $versionKit; commit = "$commitKit"; builtAt = (Get-Date).ToUniversalTime().ToString('o') }
 # WriteAllText écrit l'UTF-8 sans BOM, lisible directement par JSON.parse.
 [System.IO.File]::WriteAllText((Join-Path $racine 'build-info.json'), ($infoKit | ConvertTo-Json))
-$fichiers = @(
-  'KaraFun Plus.exe', 'build-info.json',
-  'DEMARRER.bat', 'ARRETER.bat', 'DEMO.bat',
-  'LICENSE',
-  'KIT-BAR-LISEZMOI.txt', 'GUIDE-BAR.md', 'LISEZMOI.txt',
-  'package.json', 'package-lock.json',
-  'battle-vote.js', 'catalog.js', 'fake-karafun.js', 'karafun-state.js',
-  'karafun.js', 'kcs-transport.js', 'night-state.js', 'scheduler.js',
-  'server.js', 'start-evening.js', 'stop.js', 'table-access.js', 'solo-invitations.js', 'private-event.js', 'song-repeats.js', 'song-settings.js', 'stage-progress.js',
-  'lyrics.js', 'spotify.js', 'evening-journal.js', 'evening-stats.js',
-  # Planificateur réparti par thème (scheduler.js charge ces parties).
-  'lib\scheduler\common.js', 'lib\scheduler\duets.js', 'lib\scheduler\presence.js', 'lib\scheduler\staff.js', 'lib\scheduler\solver.js', 'lib\scheduler\rotation.js', 'lib\scheduler\passages.js',
-  'solver\bridge.js', 'solver\karafun-solver.jar'
-)
+# Fichiers de l'application : manifeste unique livrable.json, lu aussi par
+# scripts/preparer-livrable.js pour l'image Docker. Liste « commun » (image et
+# kit) puis « windows » (kit seulement) ; un dossier est copié en entier,
+# fichiers cachés compris. Les produits de la construction n'y sont pas.
+$produits = @('KaraFun Plus.exe', 'build-info.json', 'solver\karafun-solver.jar')
+$manifeste = Get-Content -LiteralPath (Join-Path $racine 'livrable.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+foreach ($liste in @('commun', 'windows')) {
+  $propriete = $null
+  if ($null -ne $manifeste) { $propriete = $manifeste.PSObject.Properties[$liste] }
+  if ($null -eq $propriete -or $propriete.Value -isnot [array]) {
+    throw 'livrable.json : listes « commun » et « windows » attendues.'
+  }
+}
+$fichiers = [System.Collections.Generic.List[string]]::new()
+foreach ($nom in $produits) { $fichiers.Add($nom) }
+foreach ($nom in @($manifeste.commun) + @($manifeste.windows)) {
+  $chemin = Join-Path $racine ($nom.Replace('/', '\'))
+  if (Test-Path -LiteralPath $chemin -PathType Leaf) {
+    $fichiers.Add($nom.Replace('/', '\'))
+  } elseif (Test-Path -LiteralPath $chemin -PathType Container) {
+    # Même nom d'entrée dans le ZIP que l'ancienne copie du dossier entier.
+    Get-ChildItem -LiteralPath $chemin -File -Recurse -Force |
+      ForEach-Object { $fichiers.Add($_.FullName.Substring($racine.Length + 1)) }
+  } else {
+    throw "Fichier indispensable absent : $nom"
+  }
+}
 foreach ($nom in $fichiers) {
   if (-not (Test-Path -LiteralPath (Join-Path $racine $nom) -PathType Leaf)) {
     throw "Fichier indispensable absent : $nom"
@@ -66,7 +79,7 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $entrees = [System.Collections.Generic.List[string]]::new()
 foreach ($nom in $fichiers) { $entrees.Add((Join-Path $racine $nom)) }
-foreach ($dossier in @('node', 'node_modules', 'public', 'solver-runtime')) {
+foreach ($dossier in @('node', 'node_modules', 'solver-runtime')) {
   Get-ChildItem -LiteralPath (Join-Path $racine $dossier) -File -Recurse -Force |
     ForEach-Object { $entrees.Add($_.FullName) }
 }
