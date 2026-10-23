@@ -415,10 +415,10 @@ if (require.main === module) {
   });
 
   // -------------------------------------------------------------- issue #25
-  // Faux KaraFun de la démo (R5), commandes de clé (R6, R7, R9) et
-  // avertissement sur l'ancienne adresse de data/tables.json (R10). R5 à R7
-  // depuis la racine (démo, ou sortie avant main()) ; R9 et R10 dans une copie
-  // sans data/last-karafun-code.json ni --code.
+  // Faux KaraFun de la démo (R5), commandes de clé (R6, R7, R9, R9b) et
+  // avertissement sur l'ancienne adresse de data/tables.json (R10 à R10d). R5
+  // à R7 depuis la racine (démo, ou sortie avant main()) ; R9 à R10d dans une
+  // copie sans data/last-karafun-code.json ni --code.
   const pcEnv = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith('KARAOKE_')));
   const copyArgs = port => ['--port', String(port), '--public-port', String(port + 1), '--no-open'];
   // Fin d'une commande ponctuelle (tuée si elle ne sort pas d'elle-même).
@@ -430,6 +430,31 @@ if (require.main === module) {
   };
   const rotatedLine = key => `Nouvelle clé du bar écrite dans data/staff-key (empreinte ${fingerprint(key)}). ` +
     'Redémarre la file pour l’appliquer, puis donne aux gérants le lien de --print-staff-url : l’ancien lien ne marche plus.\n';
+  // R10 à R10d : copie dont data/tables.json garde https://ancien.exemple.fr.
+  const OLD_WARNING = 'Attention : data/tables.json indiquait https://ancien.exemple.fr pour les QR. ' +
+    'Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. QR désormais créés pour https://clients.exemple.fr.';
+  const oldTablesCopy = () => {
+    const dir = sandboxCopy();
+    const tablesPath = path.join(dir, 'data', 'tables.json');
+    fs.mkdirSync(path.dirname(tablesPath));
+    fs.writeFileSync(tablesPath, JSON.stringify({ version: 1, baseUrl: 'https://ancien.exemple.fr',
+      tables: [{ id: '1', name: null, headcount: null, individual: false, secret: crypto.randomBytes(16).toString('base64url') }] }));
+    return { dir, tablesPath, tablesBaseUrl: () => JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl };
+  };
+  const baseUrlWarnings = child => completeLines(child).filter(line => line.startsWith('Attention : data/tables.json'));
+  // Lignes d'avertissement dans les journal/serveur-<date>.log de la copie.
+  const loggedWarnings = dir => fs.readdirSync(path.join(dir, 'journal')).filter(name => /^serveur-.*\.log$/.test(name))
+    .map(name => fs.readFileSync(path.join(dir, 'journal', name), 'utf8')).join('').split(` ${OLD_WARNING}\n`).length - 1;
+  // data/runtime-<P>.json écrit par ce serveur, après ses lignes de démarrage.
+  const waitRuntime = async child => {
+    const file = runtimeFile(child);
+    let runtime = null;
+    for (let i = 0; i < 300 && runtime?.pid !== child.pid; i++) {
+      try { runtime = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { runtime = null; }
+      if (runtime?.pid !== child.pid) await sleep(50);
+    }
+    assert.equal(runtime?.pid, child.pid, `data/${path.basename(file)} écrit\n${outputs(child)}`);
+  };
 
   test('R5 faux KaraFun de la démo : boucle locale seulement, la démo se connecte (mode PC)', async t => {
     const port = await choosePort();
@@ -566,25 +591,18 @@ if (require.main === module) {
   });
 
   test('R10 ancienne adresse de data/tables.json : avertissement une fois, soirée restaurée sur KARAOKE_PUBLIC_URL', async () => {
-    const dir = sandboxCopy();
-    const tablesPath = path.join(dir, 'data', 'tables.json');
-    fs.mkdirSync(path.dirname(tablesPath));
-    fs.writeFileSync(tablesPath, JSON.stringify({ version: 1, baseUrl: 'https://ancien.exemple.fr',
-      tables: [{ id: '1', name: null, headcount: null, individual: false, secret: crypto.randomBytes(16).toString('base64url') }] }));
-    const warning = 'Attention : data/tables.json indiquait https://ancien.exemple.fr pour les QR. ' +
-      'Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. QR désormais créés pour https://clients.exemple.fr.';
-    const warnings = child => completeLines(child).filter(line => line.startsWith('Attention : data/tables.json'));
+    const { dir, tablesBaseUrl } = oldTablesCopy();
     // 1. Mode PC, sans --demo : la soirée est sauvegardée avec l'ancienne adresse.
     let child = launch(copyArgs(await choosePort()), { env: pcEnv(), cwd: dir });
     try { await waitLine(child, 'Laisse cette fenêtre ouverte'); } finally { await child.stop(); }
-    assert.equal(JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl, 'https://ancien.exemple.fr', 'mode PC : adresse gardée');
+    assert.equal(tablesBaseUrl(), 'https://ancien.exemple.fr', 'mode PC : adresse gardée');
     // 2. Mode serveur : soirée restaurée, avertissement exact, QR sur KARAOKE_PUBLIC_URL.
     const env = serverEnv();
-    let port = await choosePort();
+    const port = await choosePort();
     child = launch(copyArgs(port), { env, cwd: dir });
     try {
       await waitLine(child, 'Soirée restaurée');
-      assert.equal(await waitLine(child, 'Attention : data/tables.json'), warning);
+      assert.equal(await waitLine(child, 'Attention : data/tables.json'), OLD_WARNING);
       const base = `http://127.0.0.1:${port}`;
       const response = await fetch(`${base}/api/staff/state?key=${encodeURIComponent(await staffKey(base, { keyFile: env.KARAOKE_STAFF_KEY_FILE }))}`);
       assert.equal(response.status, 200);
@@ -592,47 +610,30 @@ if (require.main === module) {
       assert.equal(state.phoneBase, 'https://clients.exemple.fr');
       assert.ok(state.tables.some(table => table.id === '1'), 'table 1 restaurée');
       for (const table of state.tables) assert.ok(String(table.url).startsWith('https://clients.exemple.fr/t/'), `${table.id} : ${table.url}`);
-      assert.equal(JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl, 'https://clients.exemple.fr', 'data/tables.json réécrit');
+      assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'data/tables.json réécrit');
     } finally { await child.stop(); }
-    assert.equal(warnings(child).length, 1, 'une seule ligne d’avertissement');
-    const logged = fs.readdirSync(path.join(dir, 'journal')).filter(name => /^serveur-.*\.log$/.test(name))
-      .map(name => fs.readFileSync(path.join(dir, 'journal', name), 'utf8')).join('');
-    assert.ok(logged.includes(` ${warning}\n`), 'avertissement gardé dans journal/serveur-<date>.log');
+    assert.equal(baseUrlWarnings(child).length, 1, 'une seule ligne d’avertissement');
+    assert.equal(loggedWarnings(dir), 1, 'avertissement gardé dans journal/serveur-<date>.log');
     // 3. Démarrage suivant : plus d'écart, plus d'avertissement.
-    port = await choosePort();
-    child = launch(copyArgs(port), { env, cwd: dir });
+    child = launch(copyArgs(await choosePort()), { env, cwd: dir });
     try {
-      const runtimePath = path.join(dir, 'data', `runtime-${port}.json`);
-      let runtime = null;
-      for (let i = 0; i < 300 && runtime?.pid !== child.pid; i++) {
-        try { runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8')); } catch (_) { runtime = null; }
-        if (runtime?.pid !== child.pid) await sleep(50);
-      }
-      assert.equal(runtime?.pid, child.pid, `data/runtime-${port}.json écrit\n${outputs(child)}`);
-      assert.deepEqual(warnings(child), [], 'aucun avertissement une fois data/runtime-<P>.json écrit');
+      await waitRuntime(child);
+      assert.deepEqual(baseUrlWarnings(child), [], 'aucun avertissement une fois data/runtime-<P>.json écrit');
     } finally { await child.stop(); }
-    assert.deepEqual(warnings(child), [], 'aucun avertissement dans toute la sortie');
+    assert.deepEqual(baseUrlWarnings(child), [], 'aucun avertissement dans toute la sortie');
     assert.ok(completeLines(child).some(line => line.startsWith('Soirée restaurée')), 'démarrage complet');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   });
 
   // Démarrage qui échoue après la réécriture de data/tables.json (port du bar
-  // déjà pris) : l'ancienne adresse reste à l'écran et au journal.
-  test('R10b ancienne adresse gardée au journal quand le premier démarrage du mode serveur échoue', async () => {
-    const dir = sandboxCopy();
-    const tablesPath = path.join(dir, 'data', 'tables.json');
-    fs.mkdirSync(path.dirname(tablesPath));
-    fs.writeFileSync(tablesPath, JSON.stringify({ version: 1, baseUrl: 'https://ancien.exemple.fr',
-      tables: [{ id: '1', name: null, headcount: null, individual: false, secret: crypto.randomBytes(16).toString('base64url') }] }));
-    const warning = 'Attention : data/tables.json indiquait https://ancien.exemple.fr pour les QR. ' +
-      'Les QR déjà imprimés avec cette adresse ne mènent pas à ce serveur. QR désormais créés pour https://clients.exemple.fr.';
-    const warnings = child => completeLines(child).filter(line => line.startsWith('Attention : data/tables.json'));
-    const logged = () => fs.readdirSync(path.join(dir, 'journal')).filter(name => /^serveur-.*\.log$/.test(name))
-      .map(name => fs.readFileSync(path.join(dir, 'journal', name), 'utf8')).join('').split(` ${warning}\n`).length - 1;
+  // ou port clients déjà pris) : l'ancienne adresse reste à l'écran et au
+  // journal, une seule fois, et le démarrage suivant ne voit plus d'écart.
+  const failedFirstStart = async ({ busy, lastLine }) => {
+    const { dir, tablesBaseUrl } = oldTablesCopy();
     const env = serverEnv();
-    let port = await choosePort();
+    const port = await choosePort();
     const blocker = net.createServer();
-    await new Promise(resolve => blocker.listen(port, '127.0.0.1', resolve));
+    await new Promise(resolve => blocker.listen(busy(port), '127.0.0.1', resolve));
     let child = launch(copyArgs(port), { env, cwd: dir });
     try {
       const { code } = await finished(child);
@@ -641,26 +642,53 @@ if (require.main === module) {
       await child.stop();
       await new Promise(resolve => blocker.close(resolve));
     }
-    assert.equal(JSON.parse(fs.readFileSync(tablesPath, 'utf8')).baseUrl, 'https://clients.exemple.fr', 'échec après la réécriture');
-    assert.deepEqual(warnings(child), [warning], `avertissement à l’écran\n${outputs(child)}`);
-    assert.equal(completeLines(child).at(-1), `Le port ${port} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre.`,
-      'raison de l’échec en dernière ligne');
-    assert.equal(logged(), 1, 'avertissement gardé dans journal/serveur-<date>.log');
+    assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'échec après la réécriture');
+    assert.deepEqual(baseUrlWarnings(child), [OLD_WARNING], `avertissement à l’écran\n${outputs(child)}`);
+    assert.match(completeLines(child).at(-1), lastLine(port), 'raison de l’échec en dernière ligne');
+    assert.equal(loggedWarnings(dir), 1, 'avertissement gardé dans journal/serveur-<date>.log');
     // Démarrage suivant : plus d'écart, plus d'avertissement ; le journal garde l'ancienne adresse.
-    port = await choosePort();
-    child = launch(copyArgs(port), { env, cwd: dir });
+    child = launch(copyArgs(await choosePort()), { env, cwd: dir });
     try {
       await waitLine(child, 'Adresse des téléphones');
-      const runtimePath = path.join(dir, 'data', `runtime-${port}.json`);
-      let runtime = null;
-      for (let i = 0; i < 300 && runtime?.pid !== child.pid; i++) {
-        try { runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8')); } catch (_) { runtime = null; }
-        if (runtime?.pid !== child.pid) await sleep(50);
-      }
-      assert.equal(runtime?.pid, child.pid, `data/runtime-${port}.json écrit\n${outputs(child)}`);
+      await waitRuntime(child);
     } finally { await child.stop(); }
-    assert.deepEqual(warnings(child), [], 'aucun avertissement au démarrage suivant');
-    assert.equal(logged(), 1, 'une seule ligne au journal');
+    assert.deepEqual(baseUrlWarnings(child), [], 'aucun avertissement au démarrage suivant');
+    assert.equal(loggedWarnings(dir), 1, 'une seule ligne au journal');
+    assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  };
+
+  test('R10b ancienne adresse gardée au journal quand le port du bar est pris au premier démarrage du mode serveur', () =>
+    failedFirstStart({ busy: port => port,
+      lastLine: port => new RegExp(`^Le port ${port} est déjà utilisé : le programme tourne peut-être déjà dans une autre fenêtre\\.$`) }));
+
+  test('R10c ancienne adresse gardée au journal quand le port clients est pris au premier démarrage du mode serveur', () =>
+    failedFirstStart({ busy: port => port + 1, lastLine: port => new RegExp(`^Port public ${port + 1} indisponible : `) }));
+
+  // Démarrage refusé par main() avant la réécriture (sauvegarde de soirée
+  // illisible) : l'avertissement passe avant la raison, et data/tables.json
+  // garde l'ancienne adresse, donc le démarrage suivant la signale encore.
+  test('R10d démarrage refusé avant la réécriture de data/tables.json : avertissement écrit, puis repris au démarrage suivant', async () => {
+    const { dir, tablesBaseUrl } = oldTablesCopy();
+    const night = path.join(dir, 'data', 'soiree-a.json');
+    fs.mkdirSync(night); // un dossier à la place de la sauvegarde : nightStore.load() lève
+    const env = serverEnv();
+    let child = launch(copyArgs(await choosePort()), { env, cwd: dir });
+    try {
+      const { code } = await finished(child);
+      assert.equal(code, 1, outputs(child));
+    } finally { await child.stop(); }
+    assert.deepEqual(baseUrlWarnings(child), [OLD_WARNING], `avertissement à l’écran\n${outputs(child)}`);
+    assert.equal(completeLines(child).at(-1), 'Impossible de démarrer : Sauvegarde de soirée invalide : les deux générations sont illisibles',
+      'raison de l’échec en dernière ligne');
+    assert.equal(loggedWarnings(dir), 1, 'avertissement gardé dans journal/serveur-<date>.log');
+    assert.equal(tablesBaseUrl(), 'https://ancien.exemple.fr', 'data/tables.json laissé tel quel');
+    // Sauvegarde retirée : démarrage complet, l'écart est encore vu une fois.
+    fs.rmdirSync(night);
+    child = launch(copyArgs(await choosePort()), { env, cwd: dir });
+    try { await waitRuntime(child); } finally { await child.stop(); }
+    assert.deepEqual(baseUrlWarnings(child), [OLD_WARNING], 'avertissement repris au démarrage suivant');
+    assert.equal(loggedWarnings(dir), 2, 'une ligne de plus au journal');
+    assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'data/tables.json réécrit');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   });
 }

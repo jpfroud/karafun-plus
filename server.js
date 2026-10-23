@@ -215,6 +215,7 @@ function staffKeyCommand(argv, env, dataDir) {
   const mode = String(env.KARAOKE_MODE ?? '').trim();
   let config;
   try {
+    // Valeur inconnue, même avec --server : refusée d'abord par readServerConfig (son premier contrôle).
     if (mode && mode !== 'server') readServerConfig(env);
     if (!argv.includes('--server') && mode !== 'server') {
       return refuse('--print-staff-url et --rotate-staff-key ne servent qu’en mode serveur (--server ou KARAOKE_MODE=server).');
@@ -5354,8 +5355,10 @@ function serverStartupLines(zone = Intl.DateTimeFormat().resolvedOptions().timeZ
 
 // Mode serveur : avertissement quand data/tables.json gardait une autre adresse
 // pour les QR (ceux déjà imprimés ne mènent pas ici), sinon null. Lu avant que
-// ensureSoloGroup() réécrive le fichier : il paraît au plus une fois, même si
-// le démarrage échoue ensuite (logBaseUrlWarning).
+// ensureSoloGroup() réécrive le fichier avec KARAOKE_PUBLIC_URL : l'écart ne se
+// voit alors qu'une fois, même si le démarrage échoue ensuite (logBaseUrlWarning).
+// Tant que le fichier n'est pas réécrit (démarrage refusé avant, ou « Comptoir »
+// table ordinaire d'une ancienne soirée, que ensureSoloGroup() laisse), il revient.
 function printedBaseUrlWarning() {
   if (!SERVER || DEMO) return null;
   let data;
@@ -5372,7 +5375,7 @@ function printedBaseUrlWarning() {
 }
 // Avertissement lu par main() et pas encore écrit : après les lignes de
 // démarrage, ou juste avant de sortir si le démarrage échoue, car le fichier
-// est déjà réécrit et le démarrage suivant ne verrait plus l'ancienne adresse.
+// peut déjà être réécrit (l'ancienne adresse ne resterait alors nulle part).
 let pendingBaseUrlWarning = null;
 function logBaseUrlWarning() {
   if (pendingBaseUrlWarning) appLog(pendingBaseUrlWarning);
@@ -5383,7 +5386,7 @@ async function main() {
   if (PUBLIC_PORT === PORT || !Number.isInteger(PUBLIC_PORT) || PUBLIC_PORT < 1 || PUBLIC_PORT > 65535) {
     throw new Error('Le port public doit être valide et différent de celui du bar.');
   }
-  // Avant la soirée et ensureSoloGroup(), qui réécrit data/tables.json.
+  // Avant la soirée et ensureSoloGroup(), qui réécrit en général data/tables.json.
   pendingBaseUrlWarning = printedBaseUrlWarning();
   const previousNight = nightStore?.load();
   // Même soirée après un redémarrage : son journal continue.
