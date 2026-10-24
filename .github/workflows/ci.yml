@@ -1,10 +1,10 @@
-name: Tests Windows
+name: Tests
 
 on:
   push:
     branches: [main]
   pull_request:
-  # Version de test d'une branche : Actions → Tests Windows → Run workflow.
+  # Version de test d'une branche : Actions → Tests → Run workflow.
   workflow_dispatch:
 
 permissions:
@@ -118,3 +118,49 @@ jobs:
         run: |
           bash test/gstack-session-hook.test.sh
           node test/gstack-gate.test.js
+
+  image:
+    # Image linux/amd64 construite et vérifiée à chaque PR, rien n'est poussé
+    # (PR de fork comprise) ; linux/arm64 est vérifiée à la publication.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Même image que « Verifier les workflows » du job linux (shellcheck inclus).
+      - name: Analyser les scripts bash
+        run: docker run --rm --entrypoint shellcheck -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 test/verifier-image.sh test/verifier-deploiement.sh deploy/sauvegarde.sh deploy/restauration.sh
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      # Java de référence du rejeu Timefold (V36), comparé au runtime de l'image.
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Version et date de construction
+        id: version
+        run: |
+          echo "version=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - name: Construire l'image amd64
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: karafun-plus:verif
+          provenance: false
+          sbom: false
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILT_AT=${{ steps.version.outputs.built_at }}
+          cache-from: type=gha,scope=image-linux-amd64
+          # Le cache ne fait qu’accélérer : une panne de son service ne fait pas échouer la construction.
+          cache-to: type=gha,scope=image-linux-amd64,mode=max,ignore-error=true
+      - name: Verifier l'image
+        run: bash test/verifier-image.sh karafun-plus:verif
+      - name: Verifier le deploiement
+        run: bash test/verifier-deploiement.sh karafun-plus:verif
