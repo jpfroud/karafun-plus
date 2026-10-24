@@ -240,7 +240,7 @@ Bascule depuis le PC Windows :
 2. Au moins 24 heures avant la bascule, et plus tôt si l'ancien « TTL » dépasse 24 heures : note d'abord par écrit chaque entrée du nom des QR (type A, AAAA, CNAME ou DynHost, et sa cible). Note aussi l'IPv4 que ce nom donne (`Resolve-DnsName clients.exemple.fr -Type A`) : c'est `<ancienne IPv4>`. L'étape 10 de la section 12 et le retour arrière (section 19) en ont besoin. Puis, sur l'entrée actuelle, « Modifier l'entrée », et « TTL » « Personnalisé » à 300.
 3. À l'étape 6 de la section 12 : change la cible du nom des QR pour `<IPv4 du VPS>`, et crée l'entrée A de `HOTE_BAR` si elle manque.
 4. Au même moment, retire pour ces noms toute entrée AAAA ou CNAME, et tout DynHost. La file ne reçoit les téléphones qu'en IPv4 : le réseau Docker du compose n'a pas d'IPv6, et un téléphone venu en IPv6 arriverait avec l'adresse de la passerelle Docker. Tous ces téléphones partageraient alors la même limite d'inscriptions par adresse. Ces libellés de suppression et le menu « DynHost » n'ont pas été vérifiés : cherche-les sur la ligne de l'entrée.
-5. Une fois les noms en place, ajoute pour chacun une entrée CAA : drapeau `0`, étiquette `issue`, valeur `letsencrypt.org`. Seul Let's Encrypt pourra alors leur délivrer un certificat. Un retour arrière vers un CNAME demande de retirer d'abord ces entrées CAA (section 19).
+5. Une fois les noms en place, ajoute pour chacun une entrée CAA : drapeau `0`, étiquette `issue`, valeur `letsencrypt.org`. Seul Let's Encrypt pourra alors leur délivrer un certificat. Si le nom des QR est le domaine lui-même, sans sous-domaine, ne lui ajoute pas de CAA : elle vaudrait aussi pour chacun de ses sous-domaines sans CAA propre, et leurs certificats d'une autre autorité seraient refusés. Un retour arrière vers un CNAME demande de retirer d'abord ces entrées CAA (section 19).
 6. Une fois la bascule vérifiée (section 12) : retire les entrées A et CAA des noms d'essai, `essai` et `essai-bar`.
 7. Sept jours après la bascule : remets le « TTL » de ces entrées à 3600.
 
@@ -426,6 +426,8 @@ Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'
 **Contrôle** : le QR imprimé ouvre sa table en 4G/5G, et l'étape 10 affiche un code de sortie différent de `0`, sans ligne `bash:` avant lui. Le lendemain, `Resolve-DnsName clients.exemple.fr -Type A` donne encore `<IPv4 du VPS>`.
 
 ## 13. Lien de la page du bar
+
+Serveur en retrait, aux conteneurs arrêtés ou retirés (section 19, ou bascule abandonnée en section 12) : n'y lance ni `docker compose restart`, ni `docker compose up -d`, ici comme en section 18. `restart` démarre aussi un conteneur arrêté, et la file du serveur se reconnecterait à KaraFun pendant une soirée du kit. La bascule suivante lui donne une clé neuve. Pour un mot de passe divulgué, remplace seulement `BAR_PASSWORD_HASH`, comme plus bas, sans démarrer la file.
 
 Sur le serveur, dans `~/karafun-plus/deploy` :
 
@@ -648,7 +650,7 @@ Avec le kit Windows, ne relaie jamais le port du bar (3000) par un proxy HTTPS :
 
 ## 20. Données personnelles et accès
 
-La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de données français. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Docker garde aussi les journaux des conteneurs, jusqu'à 50 Mo chacun : celui de `app` cite les mêmes prénoms, celui de `caddy` des adresses IP de téléphones. La purge de la section 18 n'y touche pas : ils disparaissent quand le conteneur est recréé, à la mise à jour suivante ou, hors soirée, par `docker compose up -d --force-recreate`. Les PC Windows en gardent aussi : `data-avant-serveur-AAAAMMJJ`, les archives `karafun-plus-pc-AAAAMMJJ.tar.gz` et celles copiées par `scp`, et l'ancien dossier `journal` du kit. Range-les sur le disque protégé de la section 16, et efface-les quand le retour au kit n'est plus utile. Informe les clients par une affiche, comme avec le kit.
+La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de données français. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Docker garde aussi les journaux des conteneurs, jusqu'à 50 Mo chacun : celui de `app` cite les mêmes prénoms, celui de `caddy` des adresses IP de téléphones. La purge de la section 18 n'y touche pas : ils disparaissent quand le conteneur est recréé, à la mise à jour suivante ou, hors soirée, par `docker compose up -d --force-recreate`. Sur un serveur en retrait, qui ne doit pas démarrer (section 13), retire-les plutôt par `docker compose down`. Les PC Windows en gardent aussi : `data-avant-serveur-AAAAMMJJ`, les archives `karafun-plus-pc-AAAAMMJJ.tar.gz` et celles copiées par `scp`, et l'ancien dossier `journal` du kit. Range-les sur le disque protégé de la section 16, et efface-les quand le retour au kit n'est plus utile. Informe les clients par une affiche, comme avec le kit.
 
 | Qui | Accès |
 |---|---|
