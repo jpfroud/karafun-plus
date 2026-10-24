@@ -295,7 +295,7 @@ Les secrets du déploiement :
 
 ## 11. Premier démarrage
 
-Pour un nouvel essai, après une bascule ou un retour arrière, prépare d'abord le serveur. Si les noms d'essai ont été retirés (section 9, point 6), recrée leurs entrées A, puis CAA (section 9, points 1 et 5). Remets ensuite dans `.env`, par `nano .env`, les noms d'essai de `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL` : l'étape 7 de la section 12 y a mis les noms définitifs. Restaure enfin l'archive de départ notée lors d'un essai précédent, par `./restauration.sh sauvegardes/<nom de l'archive>` (section 16).
+Pour un nouvel essai, après une bascule ou un retour arrière, prépare d'abord le serveur. Si les noms d'essai ont été retirés (section 9, point 6), recrée leurs entrées A, puis CAA (section 9, points 1 et 5). Remets ensuite dans `.env`, par `nano .env`, les noms d'essai de `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL` : l'étape 7 de la section 12 y a mis les noms définitifs. Restaure enfin l'archive de départ notée lors d'un essai précédent, par `./restauration.sh sauvegardes/<nom de l'archive>` (section 16). Ne continue qu'après sa ligne « Restauration terminée depuis … ». Sans elle, lance `docker compose stop app` : le script a pu relancer la file, qui garde le code KaraFun. Corrige la cause, puis refais la restauration.
 
 En bascule, `.env` porte ainsi les noms d'essai : remplace alors ci-dessous `clients.exemple.fr` et `bar.exemple.fr` par ces noms (`essai.exemple.fr` et `essai-bar.exemple.fr` dans ce guide). Dans `~/karafun-plus/deploy`, démarre la file :
 
@@ -339,7 +339,7 @@ Attendus, dans l'ordre : `200` (clients) ; `403` (`/staff` refusé aux clients) 
 
 Aucun lien du bar aux gérants avant la bascule ; aucun code KaraFun sur le serveur avant la bascule, sauf pendant la démo de répétition, bar fermé, file du PC Windows arrêtée.
 
-Après cette démo, avant de relancer le kit, efface le code KaraFun du serveur : restaure l'archive de départ notée plus haut, par `./restauration.sh sauvegardes/<nom de l'archive>` (section 16). Sinon, la file du serveur resterait connectée à KaraFun, ou s'y reconnecterait à son prochain démarrage, pendant une soirée du kit. `/readyz` doit ensuite répondre de nouveau `"karafun":"no-code"`.
+Après cette démo, avant de relancer le kit, efface le code KaraFun du serveur : restaure l'archive de départ notée plus haut, par `./restauration.sh sauvegardes/<nom de l'archive>` (section 16). Sinon, la file du serveur resterait connectée à KaraFun, ou s'y reconnecterait à son prochain démarrage, pendant une soirée du kit. `/readyz` doit ensuite répondre de nouveau `"karafun":"no-code"`. Sans la ligne « Restauration terminée depuis … », ou sans ce `"karafun":"no-code"`, lance `docker compose stop app` avant de relancer le kit : la file du serveur garde le code KaraFun, et le script relance la file même quand il échoue après la confirmation.
 
 **Contrôle** : `app` est `(healthy)`, les deux comptes donnent `2` (moins pour des noms déjà servis) et `0`, et les sept `curl.exe` donnent `200`, `403`, `401`, `200`, `308`, `000`, `000`.
 
