@@ -30,8 +30,12 @@ const PLAN = [
 const PROPRIETAIRE = 'jpfroud';
 const IMAGE = `ghcr.io/${PROPRIETAIRE}/karafun-plus`;
 const RUN_EXCEPTION = 'docker compose run --rm app node server.js --rotate-staff-key';
-// Formes uniques des commandes du guide (J9 de l'issue #30, J9-14 avec
-// --bcrypt-cost 10 depuis #29), dans l'ordre.
+// Formes uniques des commandes ponctuelles (décision T3 de l'épopée #18).
+const DIAGNOSTIC = `docker run --rm ${IMAGE}:vX.Y.Z node tools/diag-karafun.js <code>`;
+const LIEN = 'docker compose exec app node server.js --print-staff-url';
+const ROTATION = 'docker compose exec app node server.js --rotate-staff-key';
+// Commandes du guide (J9 de l'issue #30, J9-14 avec --bcrypt-cost 10 depuis
+// #29), dans l'ordre.
 const COMMANDES = [
   'sudo apt full-upgrade -y',
   'Get-Content "$env:USERPROFILE\\.ssh\\id_ed25519.pub" | ssh <utilisateur OVH>@<IPv4 du VPS> "umask 077; mkdir -p ~/.ssh; tr -d \'\\r\' >> ~/.ssh/authorized_keys"',
@@ -43,7 +47,7 @@ const COMMANDES = [
   'sudo ufw enable',
   'URIs: https://download.docker.com/linux/$ID',
   'sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin',
-  `docker run --rm ${IMAGE}:vX.Y.Z node tools/diag-karafun.js <code>`,
+  DIAGNOSTIC,
   'git checkout vX.Y.Z',
   'chmod 600 .env',
   'docker run --rm -it caddy:2 caddy hash-password --bcrypt-cost 10',
@@ -51,8 +55,8 @@ const COMMANDES = [
   'docker compose exec app node -e "fetch(\'http://127.0.0.1:3000/readyz\').then(r => r.text()).then(t => console.log(t))"',
   'tar.exe -czf karafun-plus-pc-AAAAMMJJ.tar.gz data',
   './restauration.sh sauvegardes/karafun-plus-pc-AAAAMMJJ.tar.gz',
-  'docker compose exec app node server.js --print-staff-url',
-  'docker compose exec app node server.js --rotate-staff-key',
+  LIEN,
+  ROTATION,
   './sauvegarde.sh',
   './restauration.sh sauvegardes/<nom de l\'archive>',
   'docker compose restart app',
@@ -71,11 +75,15 @@ const TESTS_DEUX_MODES = ['test/startup-port.test.js', 'test/staff-ui-coverage.t
 // des bases des blocs CIDR du contrat (DEFAULT_TRUSTED_PROXIES de server.js).
 const HOTES = ['exemple.fr', 'github.com', 'ghcr.io', 'karafun.com', 'karafun.fr', 'spotify.com', 'docker.com',
   'letsencrypt.org', 'ovhcloud.com', 'containerd.io'];
-// Domaines de premier niveau repérés hors URL : courants, et ceux d'un bar
-// ou d'une ville (un vrai nom en .paris ou .bar ne doit pas passer).
-const TLD = ['fr', 'com', 'org', 'net', 'io', 'eu', 'be', 'ch', 'de', 'uk', 'lu', 'it', 'es', 'nl', 'ca', 'us', 'info',
-  'biz', 'app', 'dev', 'cloud', 'ovh', 'me', 'co', 'xyz', 'site', 'online', 'tech', 'bar', 'pub', 'fun', 'club', 'paris',
-  'bzh', 'live', 'events', 'music', 'pro', 'shop', 'store', 'top'];
+// Domaines de premier niveau repérés hors URL : tous ceux de deux lettres
+// (pays), sauf les extensions de fichier du guide, et les génériques courants
+// ou ceux d'un bar et d'une ville (un vrai nom en .paris ou .bar ne doit pas passer).
+const TLD = ['[a-z]{2}', 'com', 'org', 'net', 'info', 'biz', 'app', 'dev', 'cloud', 'ovh', 'xyz', 'site', 'online', 'tech',
+  'bar', 'pub', 'fun', 'club', 'paris', 'bzh', 'live', 'events', 'music', 'pro', 'shop', 'store', 'top', 'cafe',
+  'restaurant', 'party', 'karaoke', 'space', 'world'];
+const EXTENSIONS = new Set(['md', 'js', 'sh', 'gz']);
+// Chemins du dépôt repérés dans une commande citée entre accents graves.
+const CHEMIN_DEPOT = /^(?:test|tools|scripts|deploy|solver|public|launcher|\.claude|\.github)\/[\w./-]+$/;
 const IPV4 = ['127.0.0.1', '0.0.0.0', '1.1.1.1', '8.8.8.8'];
 // Premiers segments qui ne sont pas des chemins du dépôt : données, journaux,
 // produits de construction, état local.
@@ -151,6 +159,10 @@ test('J3 noms du contrat', () => {
     if (chemin_exempte(target)) continue;
     assert.ok(exists(target), `${GUIDE} : chemin absent ${target}`);
   }
+  // Les commandes du guide se tapent dans ~/karafun-plus/deploy : ./<script> y est.
+  for (const [, name] of split(guide).code.join('\n').matchAll(/(?<![\w./])\.\/([\w.-]+)/g)) {
+    assert.ok(exists(`deploy/${name}`), `${GUIDE} : chemin absent deploy/${name}`);
+  }
 });
 
 test('J4 commandes dangereuses', () => {
@@ -159,7 +171,7 @@ test('J4 commandes dangereuses', () => {
   guide.split('\n').forEach((line, index) => {
     const message = `${GUIDE} : commande dangereuse ligne ${index + 1} : ${line.trim()}`;
     if (/down -v|docker compose run/.test(line) && line.trim() !== RUN_EXCEPTION) {
-      assert.match(line, /\bjamais\b/i, message);
+      assert.match(line, /\bJamais\b/, message);
     }
     for (const pattern of forbidden) assert.doesNotMatch(line, pattern, message);
   });
@@ -174,7 +186,9 @@ test('J5 aucune donnée privée', () => {
   const fail = excerpt => `${GUIDE} : donnée privée possible : ${excerpt}`;
   const hosts = [];
   for (const [, host] of guide.matchAll(/\b[a-z][a-z0-9+.-]*:\/\/([^\s/:?#`'"<>)\]]+)/gi)) hosts.push(host);
-  for (const [host] of guide.matchAll(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?:${TLD.join('|')})\\b`, 'gi'))) hosts.push(host);
+  for (const [host] of guide.matchAll(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?:${TLD.join('|')})\\b`, 'gi'))) {
+    if (!EXTENSIONS.has(host.split('.').pop().toLowerCase())) hosts.push(host);
+  }
   for (const host of hosts) {
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) continue;
     assert.ok(allowedHost(host.toLowerCase()), fail(host));
@@ -198,7 +212,14 @@ test('J6 liens et chemins cités', () => {
       assert.ok(exists(target), message(target));
     }
     for (const [, span] of text.matchAll(/`([^`\n]+)`/g)) {
-      if (!span.includes('/') || /[\s<>*…${}|]/.test(span) || /^(\/|~|\.\.?\/|[a-z][a-z0-9+.-]*:)/i.test(span)) continue;
+      // Commande citée : chacun de ses mots en forme de chemin du dépôt existe.
+      if (/\s/.test(span)) {
+        for (const word of span.split(/\s+/)) {
+          if (CHEMIN_DEPOT.test(word) && !chemin_exempte(word)) assert.ok(exists(word.replace(/:\d+(-\d+)?$/, '')), message(word));
+        }
+        continue;
+      }
+      if (!span.includes('/') || /[<>*…${}|]/.test(span) || /^(\/|~|\.\.?\/|[a-z][a-z0-9+.-]*:)/i.test(span)) continue;
       const target = span.replace(/#.*$/, '').replace(/:\d+(-\d+)?$/, '');
       const first = target.split('/')[0];
       if (HORS_DEPOT.has(first) || chemin_exempte(target) || NON_CHEMIN.some(pattern => pattern.test(target))) continue;
@@ -245,8 +266,10 @@ test('J8 variantes serveur des documents', () => {
     'Avec le kit, le port 3000 du bar ne doit pas être publié ; sur un serveur, depuis Internet, la page du bar ne passe que par Caddy (HTTPS et mot de passe du bar) ; l\'administrateur garde le tunnel SSH (DEPLOIEMENT-SERVEUR.md).',
   ]) expect('LISEZMOI.txt', lisezmoi, needed);
   const contexte = read('CONTEXTE-REPRISE.md');
+  const final = '## Déploiement serveur Linux (octobre 2026)';
+  assert.equal(contexte.split('\n').filter(line => /^## /.test(line)).at(-1), final,
+    `CONTEXTE-REPRISE.md : variante serveur absente : ${final}`);
   for (const needed of [
-    '## Déploiement serveur Linux (octobre 2026)',
     'Avec le kit Windows, pour la 4G/5G, il faut un **domaine HTTPS stable et un tunnel nommé** vers `http://127.0.0.1:3001` uniquement.',
     'sur un serveur Linux, depuis Internet, la page du bar ne passe que par Caddy, en HTTPS et derrière le mot de passe du bar ; l\'administrateur garde le tunnel SSH vers `127.0.0.1:3000` (`DEPLOIEMENT-SERVEUR.md`).',
   ]) expect('CONTEXTE-REPRISE.md', contexte, needed);
@@ -257,8 +280,19 @@ test('J9 commandes clés du guide', () => {
   const lines = new Set(code.map(line => line.trim()));
   for (const command of COMMANDES) assert.ok(lines.has(command), `${GUIDE} : commande attendue absente : ${command}`);
   // J9-11 garde son espace en tête : le code KaraFun reste hors de l'historique de bash.
-  const diagnostic = ` ${COMMANDES[10]}`;
+  const diagnostic = ` ${DIAGNOSTIC}`;
   assert.ok(code.includes(diagnostic), `${GUIDE} : commande attendue absente : ${diagnostic}`);
+  // Formes uniques : toute commande ponctuelle d'un bloc du guide, d'une
+  // ligne de LISEZMOI.txt ou citée dans un document a la forme attendue.
+  const ponctuelle = /--print-staff-url|--rotate-staff-key|diag-karafun\.js/;
+  const formes = new Set([DIAGNOSTIC, LIEN, ROTATION, RUN_EXCEPTION]);
+  const lignes = [...code.map(line => [GUIDE, line]), ...read('LISEZMOI.txt').split('\n').map(line => ['LISEZMOI.txt', line])];
+  for (const file of DOCS) {
+    for (const [, span] of read(file).matchAll(/`([^`\n]+)`/g)) if (/^docker /.test(span)) lignes.push([file, span]);
+  }
+  for (const [file, line] of lignes) {
+    if (ponctuelle.test(line)) assert.ok(formes.has(line.trim()), `${file} : commande attendue absente : ${line.trim()}`);
+  }
 });
 
 test('J10 phrases du guide', () => {

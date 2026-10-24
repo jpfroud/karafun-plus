@@ -109,9 +109,10 @@ DÉMARRAGE AVEC LE KIT WINDOWS
 
 5. S'il y a un souci, envoie-moi les fichiers du dossier « journal »
    (karafun-AAAA-MM-JJ.jsonl et serveur-AAAA-MM-JJ.log) : ils contiennent
-   tout ce que KaraFun a répondu. Ils citent aussi des prénoms, et la ligne
-   « Clé du bar » ouvre la page du bar : retire-la avant l'envoi. Sur un
-   serveur, suis plutôt la section 18 de DEPLOIEMENT-SERVEUR.md.
+   tout ce que KaraFun a répondu. Ils citent aussi des prénoms : n'en
+   envoie que les lignes de connexion à KaraFun, sans prénom ni la ligne
+   « Clé du bar », qui ouvre la page du bar. Sur un serveur, suis plutôt
+   la section 18 de DEPLOIEMENT-SERVEUR.md.
 
 
 SUR UN SERVEUR LINUX

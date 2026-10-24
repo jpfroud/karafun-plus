@@ -70,7 +70,7 @@ Accepte le fichier proposé et choisis une phrase de passe. Si `ssh-keygen` dema
 
 ## 3. Créer le VPS chez OVHcloud
 
-Commande un VPS « VPS-1 » sur `www.ovhcloud.com` (2 vCores, 4 Go de mémoire, 40 Go de disque). Choisis une localisation en France, et le système Debian 12 ou Ubuntu 24.04. Ne prends aucune option.
+Commande un VPS « VPS-1 » sur `www.ovhcloud.com`. Choisis une localisation en France, et le système Debian 12 ou Ubuntu 24.04. Ne prends aucune option.
 
 Après la livraison, l'espace client d'OVHcloud liste le serveur dans « Serveurs Privés Virtuels », avec son adresse IPv4 : c'est `<IPv4 du VPS>`. L'e-mail de livraison donne le compte de connexion, `<utilisateur OVH>` (souvent `debian` ou `ubuntu`), et son mot de passe.
 
@@ -200,14 +200,23 @@ Le groupe `docker` vaut un accès administrateur au serveur : seul `karaoke` doi
 
 ## 8. Diagnostic KaraFun depuis le serveur
 
-Avant tout le reste, puis le jour de la bascule, vérifie que KaraFun accepte l'adresse du serveur. Active la Télécommande de KaraFun sur le PC du bar et lis son code. Puis, sur le serveur :
+Avant tout le reste, puis le jour de la bascule, vérifie que KaraFun accepte l'adresse du serveur. Récupère d'abord l'image de la release, puis lis son empreinte :
+
+```bash
+docker pull ghcr.io/jpfroud/karafun-plus:vX.Y.Z
+docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/jpfroud/karafun-plus:vX.Y.Z
+```
+
+Elle doit être identique à la ligne « Empreinte » des notes de la release (`ghcr.io/jpfroud/karafun-plus@sha256:…`). Sinon, ne lance pas l'image : retire-la par `docker image rm ghcr.io/jpfroud/karafun-plus:vX.Y.Z`, puis signale l'écart au mainteneur du dépôt. Si Docker répond `unauthorized`, l'image n'est pas encore publique : voir « Une seule fois » dans `.github/RELEASE.md`.
+
+Active ensuite la Télécommande de KaraFun sur le PC du bar et lis son code. Puis, sur le serveur :
 
 ```bash
  docker run --rm ghcr.io/jpfroud/karafun-plus:vX.Y.Z node tools/diag-karafun.js <code>
 echo "Code de sortie : $?"
 ```
 
-L'espace en tête de la première ligne la garde hors de l'historique de `bash` (réglage `HISTCONTROL=ignoreboth` des comptes Debian et Ubuntu) : le code n'y reste pas. L'outil lit une seule fois la page de la Télécommande, n'écrit rien et finit par une ligne `Verdict`. Si Docker répond `unauthorized`, l'image n'est pas encore publique : voir « Une seule fois » dans `.github/RELEASE.md`.
+L'espace en tête de la première ligne la garde hors de l'historique de `bash` (réglage `HISTCONTROL=ignoreboth` des comptes Debian et Ubuntu) : le code n'y reste pas. L'outil lit une seule fois la page de la Télécommande, n'écrit rien et finit par une ligne `Verdict`.
 
 | Code de sortie | Que faire |
 |---|---|
@@ -217,7 +226,7 @@ L'espace en tête de la première ligne la garde hors de l'historique de `bash` 
 
 Ne lance jamais l'outil en boucle : chaque lecture compte dans la limite horaire que KaraFun applique à l'adresse du serveur.
 
-**Contrôle** : `Code de sortie : 0`, après la ligne `Verdict : KaraFun répond normalement à ce serveur. La migration peut continuer.`
+**Contrôle** : l'empreinte de l'image est celle des notes de la release, et le diagnostic affiche `Code de sortie : 0`, après la ligne `Verdict : KaraFun répond normalement à ce serveur. La migration peut continuer.`
 
 ## 9. Noms d'hôtes chez OVHcloud
 
@@ -307,10 +316,10 @@ Résultats attendus, commande par commande :
 
 - `docker compose ps` : `app` est `(healthy)` ; la seule flèche de sa ligne est `127.0.0.1:3000->3000/tcp`.
 - Le journal de `app` contient les lignes `Mode` (`serveur`), `Fuseau horaire` (`Europe/Paris`) et `Clé du bar` (une empreinte, jamais la clé). Les lignes `Adresse des clients (QR)` et `Adresse de la page du bar` montrent les noms de `.env`, jamais un nom en `exemple.fr`.
-- Caddy a obtenu les certificats des deux hôtes : `2`. Si le compte donne `0` ou `1`, attends encore une minute et relance cette commande.
+- Caddy a obtenu les certificats des deux hôtes : `2`. Si le compte donne `0` ou `1`, attends encore une minute et relance cette commande ; après deux relances, `docker compose logs caddy | grep -i error` en donne la cause. Pour des noms que ce serveur a déjà servis (nouvel essai), Caddy reprend ses certificats sans écrire cette ligne : le compte reste plus bas, et les `curl.exe` en HTTPS ci-dessous suffisent.
 - Aucun lien du bar au journal : `0`.
 - `/readyz` répond `{"ok":false,"mode":"server","karafun":"no-code","solver":"available","persistence":"ok"}`. C'est normal : aucun code KaraFun n'est encore donné.
-- `./sauvegarde.sh` arrête la file le temps de la copie, écrit `Sauvegarde écrite : sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz (…)`, puis relance la file.
+- `./sauvegarde.sh` arrête la file le temps de la copie, écrit `Sauvegarde écrite : sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz (…)`, puis relance la file. Note le nom de cette archive : elle garde l'état de départ, sans code KaraFun.
 
 Depuis le PC Windows, dans PowerShell (`curl.exe`, pas l'alias `curl`) :
 
@@ -328,7 +337,9 @@ Attendus, dans l'ordre : `200` (clients) ; `403` (`/staff` refusé aux clients) 
 
 Aucun lien du bar aux gérants avant la bascule ; aucun code KaraFun sur le serveur avant la bascule, sauf pendant la démo de répétition, bar fermé, file du PC Windows arrêtée.
 
-**Contrôle** : `app` est `(healthy)`, les deux comptes donnent `2` et `0`, et les sept `curl.exe` donnent `200`, `403`, `401`, `200`, `308`, `000`, `000`.
+Après cette démo, avant de relancer le kit, efface le code KaraFun du serveur : restaure l'archive de départ notée plus haut, par `./restauration.sh sauvegardes/<nom de l'archive>` (section 16). Sinon, la file du serveur resterait connectée à KaraFun, ou s'y reconnecterait à son prochain démarrage, pendant une soirée du kit. `/readyz` doit ensuite répondre de nouveau `"karafun":"no-code"`.
+
+**Contrôle** : `app` est `(healthy)`, les deux comptes donnent `2` (moins pour des noms déjà servis) et `0`, et les sept `curl.exe` donnent `200`, `403`, `401`, `200`, `308`, `000`, `000`.
 
 ## 12. Bascule depuis un PC Windows
 
@@ -344,7 +355,7 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    ```
 
    La réponse doit être `<n> tables, adresse https://clients.exemple.fr`. Note `<n>`. Si l'adresse diffère, arrête-toi : les QR imprimés ne mèneraient pas au serveur.
-3. **Arrêt du kit.** Double-clique sur `ARRETER.bat`, et attends que la fenêtre de la file se ferme.
+3. **Arrêt du kit.** Double-clique sur `ARRETER.bat` : sa fenêtre doit afficher « La file karaoké s’arrête. ». Sur « Impossible d’arrêter la file karaoké », arrête-toi : la file du PC tournerait encore.
 4. **Archive des données.** Toujours dans `<dossier karaoke-bar du kit>` :
 
    ```powershell
@@ -356,14 +367,16 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    Note l'empreinte SHA-256. L'archive ne contient que `data` : `journal`, avec ses prénoms, reste sur le PC.
 
    `scp` demande la clé SSH du PC d'administration. Si le PC du kit n'est pas celui-là, ne lance pas `scp` ici. Porte l'archive sur le PC d'administration (clé USB), refais son `Get-FileHash`, puis lance `scp` depuis lui. Ne copie jamais `id_ed25519` sur le PC du bar.
+
+   Vérifie l'archive sur le serveur tout de suite, avant de toucher aux DNS. Dans `~/karafun-plus/deploy`, `sha256sum sauvegardes/karafun-plus-pc-AAAAMMJJ.tar.gz` doit donner l'empreinte notée, en minuscules. Sinon, refais `scp`.
 5. **Ancienne file hors service.** Toujours dans le même dossier :
 
    ```powershell
    Rename-Item data "data-avant-serveur-AAAAMMJJ"
    ```
 
-   Arrête aussi le tunnel ou le relais HTTPS du PC, et empêche-le de repartir au démarrage. Pour le service `cloudflared` du guide du bar, dans un PowerShell administrateur : `Stop-Service cloudflared`, puis `Set-Service cloudflared -StartupType Disabled`. Si le nom des QR passe par DynHost, arrête aussi son client (box ou logiciel du PC) : il pourrait remettre l'adresse du domicile.
-6. **DNS.** Change les cibles comme le disent les points 3 et 4 de la bascule, en section 9. Compte cinq minutes (TTL 300) : Caddy réessaie seul si le DNS n'a pas encore suivi.
+   Arrête aussi le tunnel ou le relais HTTPS du PC, et empêche-le de repartir au démarrage. Pour le service `cloudflared` du guide du bar, dans un PowerShell administrateur : `Stop-Service cloudflared`, puis `Set-Service cloudflared -StartupType Disabled`. Si le nom des QR passe par DynHost, arrête aussi son client (box ou logiciel du PC) : il pourrait remettre l'adresse du domicile. Retire enfin du bureau et de la barre des tâches les raccourcis de `KaraFun Plus.exe`, et garde celui de KaraFun : relancé par habitude, le kit ouvrirait une seconde file.
+6. **DNS.** Change les cibles comme le disent les points 3 et 4 de la bascule, en section 9. Compte cinq minutes (TTL 300). Puis, dans PowerShell, `Resolve-DnsName clients.exemple.fr -Type A` et `Resolve-DnsName bar.exemple.fr -Type A` doivent donner `<IPv4 du VPS>`. Sinon, attends avant l'étape 7 : Caddy demande les certificats dès son démarrage.
 7. **Restauration sur le serveur.** Dans `~/karafun-plus/deploy` :
 
    ```bash
@@ -383,7 +396,7 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    docker compose logs --no-log-prefix app | grep -E 'Soirée restaurée|Attention : data/tables.json|Impossible de démarrer'
    ```
 
-   Attendus : `2`, pour les certificats des noms définitifs ; s'il donne moins, attends une minute et relance cette commande. Puis deux fois `700 node` : ne corrige jamais ces droits à la main. Enfin une seule ligne, `Soirée restaurée : <n> tables, …`, avec le même `<n>` qu'à l'étape 2. Une ligne `Attention : data/tables.json` ou `Impossible de démarrer` arrête la bascule : section 19.
+   Attendus : `2`, pour les certificats des noms définitifs ; s'il donne moins, attends une minute et relance cette commande. Après deux relances, `docker compose logs caddy | grep -i error` en donne la cause. Pour des noms déjà servis par ce serveur (nouvel essai), le compte reste plus bas : l'étape 9 vérifie alors le certificat. Puis deux fois `700 node` : ne corrige jamais ces droits à la main. Enfin une seule ligne, `Soirée restaurée : <n> tables, …`, avec le même `<n>` qu'à l'étape 2. Une ligne `Attention : data/tables.json` ou `Impossible de démarrer` arrête la bascule : suis « En cas d'échec » ci-dessous.
 9. **QR imprimé.** Wi-Fi coupé, en 4G/5G, scanne un QR **imprimé** : la page de sa table doit s'ouvrir.
 10. **Ancien chemin fermé.** Sur le serveur :
 
@@ -392,11 +405,13 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
     echo "Code de sortie : $?"
     ```
 
-    Cette requête vers l'ancienne adresse doit échouer : code de sortie différent de `0`.
+    Cette requête vers l'ancienne adresse doit échouer : code de sortie différent de `0`. Avec `0`, une file ou un relais répond encore à l'ancienne adresse : retourne sur le PC, arrête-les comme à l'étape 5, puis refais cette étape.
 
 La restauration a remplacé `data/`, clé du bar d'essai comprise : donne maintenant le lien du bar aux gérants (section 13). KaraFun fermé, la page du bar finit sur « KaraFun fermé ou code changé : essais arrêtés ». C'est normal : à l'ouverture, suis la section 14. Retire ensuite les noms d'essai (section 9, point 6).
 
-En cas d'échec avant l'étape 6, remets `data` à son nom s'il le faut (`Rename-Item "data-avant-serveur-AAAAMMJJ" data`), relance le tunnel du PC, puis `DEMARRER.bat`. Le tunnel `cloudflared` se relance dans un PowerShell administrateur : `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`. Après l'étape 6 : section 19.
+**En cas d'échec.** Avant l'étape 6, remets `data` à son nom s'il le faut (`Rename-Item "data-avant-serveur-AAAAMMJJ" data`) et les raccourcis de `KaraFun Plus.exe`. Relance le tunnel du PC ou le client DynHost, puis `DEMARRER.bat`. Le tunnel `cloudflared` se relance dans un PowerShell administrateur : `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`.
+
+Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'abord le serveur par `docker compose stop`. Remets ensuite les noms des QR comme le dit le point 3 de la section 19, puis fais comme avant l'étape 6. N'utilise pas l'archive du serveur : `data-avant-serveur-AAAAMMJJ` garde les données du PC, intactes, alors que le serveur a pu réécrire l'adresse des QR. Après une soirée sur le serveur, suis la section 19.
 
 **Contrôle** : le QR imprimé ouvre sa table en 4G/5G, et l'étape 10 affiche un code de sortie différent de `0`. Le lendemain, `Resolve-DnsName clients.exemple.fr -Type A` donne encore `<IPv4 du VPS>`.
 
@@ -425,9 +440,9 @@ La file reprend sa soirée en quelques secondes. Redonne ensuite le nouveau lien
 
 Sur le serveur, rien à lancer : la file reste allumée, nuit comprise. La file ne lance jamais KaraFun : il s'ouvre au PC du bar.
 
-1. Sur le PC du bar, lance KaraFun et active sa Télécommande.
+1. Sur le PC du bar, lance KaraFun lui-même, jamais `KaraFun Plus.exe`, qui ouvrirait une seconde file. Active ensuite sa Télécommande.
 2. Ouvre la page du bar par son lien (section 13).
-3. Si elle affiche « KaraFun fermé ou code changé : essais arrêtés », clique **une** fois sur « Reconnecter ». Si le code a changé, saisis-le dans « Plus » → « KaraFun », puis clique sur « Changer le code ».
+3. Si elle affiche « KaraFun fermé ou code changé : essais arrêtés », clique **une** fois sur « Reconnecter ». Si le code a changé, clique plutôt sur « Saisir le code », tape le nouveau code, puis clique sur « Connecter ».
 4. Si elle affiche « KaraFun limite les essais jusqu’à … », attends sans cliquer : la file réessaie seule après l'heure indiquée.
 
 **Contrôle** : `/readyz` (commande de la section 11) répond `"karafun":"connected"`, et la page du bar affiche « KaraFun connecté ».
@@ -474,11 +489,16 @@ Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, re
 
 ## 17. Mise à jour et retour à la version précédente
 
-Hors soirée, quand une release `vX.Y.Z` paraît, prépare la nouvelle version sans la démarrer. Si une commande échoue, sauvegarde comprise, arrête-toi là :
+Hors soirée, quand une release `vX.Y.Z` paraît, sauvegarde d'abord la soirée :
 
 ```bash
 cd ~/karafun-plus/deploy
 ./sauvegarde.sh
+```
+
+Ne continue que si le script a écrit sa ligne `Sauvegarde écrite : …`. Prépare ensuite la nouvelle version sans la démarrer. Si une commande échoue, arrête-toi là :
+
+```bash
 git fetch --tags
 git checkout vX.Y.Z
 diff <(grep -o '^[A-Z_]*=' .env | sort) <(grep -o '^[A-Z_]*=' .env.example | sort)
@@ -577,7 +597,7 @@ docker compose stop app
 docker compose stop
 ```
 
-La sauvegarde ne relance pas la file, déjà arrêtée. Note `<nom de l'archive>`. Puis, sur le PC Windows :
+La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archive>` depuis sa ligne `Sauvegarde écrite : …`. Sans cette ligne, arrête-toi : l'archive de la dernière soirée manquerait. Puis, sur le PC Windows :
 
 1. Télécharge le kit `vX.Y.Z` neuf, de la même version que le serveur, avec le fichier `KIT-BAR-KARAFUN.zip.sha256` de la release. `(Get-FileHash KIT-BAR-KARAFUN.zip -Algorithm SHA256).Hash.ToLower()` doit donner le premier mot de ce fichier. Sinon, ne décompresse pas le kit ; s'ils sont égaux, décompresse-le entièrement.
 2. Récupère l'archive, et n'en extrais que `data`. `scp` se lance depuis le PC d'administration : si le kit est sur un autre PC, porte-y ensuite l'archive (clé USB), puis fais-y `tar.exe`.
@@ -588,10 +608,10 @@ La sauvegarde ne relance pas la file, déjà arrêtée. Note `<nom de l'archive>
    tar.exe -xzf <nom de l'archive> data
    ```
 
-3. Chez OVHcloud, retire d'abord les entrées CAA du nom des QR. Remets ensuite sa cible sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Si son « TTL » est revenu à 3600, compte jusqu'à une heure. Relance ensuite le tunnel ou le relais du PC : pour `cloudflared`, dans un PowerShell administrateur, `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`.
+3. Chez OVHcloud, retire d'abord les entrées CAA du nom des QR. Remets ensuite sa cible sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Si son « TTL » est revenu à 3600, compte jusqu'à une heure. Relance ensuite le tunnel ou le relais du PC : pour `cloudflared`, dans un PowerShell administrateur, `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`. Relance aussi le client DynHost arrêté à l'étape 5 de la section 12, et remets les entrées AAAA retirées, s'il y en avait.
 4. Double-clique sur `KaraFun Plus.exe`.
 
-Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface.
+Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface. Ils gardent aussi le code KaraFun, et la file du serveur s'y reconnecterait à son prochain démarrage. Pour un nouvel essai, restaure donc d'abord l'archive de départ notée en section 11 (`./restauration.sh`), avant tout `docker compose up -d`.
 
 ```bash
 docker compose down
@@ -605,7 +625,7 @@ Avec le kit Windows, ne relaie jamais le port du bar (3000) par un proxy HTTPS :
 
 ## 20. Données personnelles et accès
 
-La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de données français. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Les PC Windows en gardent aussi : `data-avant-serveur-AAAAMMJJ`, les archives `karafun-plus-pc-AAAAMMJJ.tar.gz` et celles copiées par `scp`, et l'ancien dossier `journal` du kit. Range-les sur le disque protégé de la section 16, et efface-les quand le retour au kit n'est plus utile. Informe les clients par une affiche, comme avec le kit.
+La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de données français. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Docker garde aussi les journaux des conteneurs, jusqu'à 50 Mo chacun : celui de `app` cite les mêmes prénoms, celui de `caddy` des adresses IP de téléphones. La purge de la section 18 n'y touche pas : ils disparaissent quand le conteneur est recréé, à la mise à jour suivante ou, hors soirée, par `docker compose up -d --force-recreate`. Les PC Windows en gardent aussi : `data-avant-serveur-AAAAMMJJ`, les archives `karafun-plus-pc-AAAAMMJJ.tar.gz` et celles copiées par `scp`, et l'ancien dossier `journal` du kit. Range-les sur le disque protégé de la section 16, et efface-les quand le retour au kit n'est plus utile. Informe les clients par une affiche, comme avec le kit.
 
 | Qui | Accès |
 |---|---|
@@ -614,4 +634,4 @@ La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de
 | Administrateur (`karaoke`) | tout le serveur par sa clé SSH : `.env`, volumes, journaux, archives |
 | OVHcloud | le disque du serveur, comme tout hébergeur |
 
-Garde ces accès au plus juste. Quand un gérant s'en va, renouvelle la clé et le mot de passe du bar (section 13). Les journaux de plus de 90 jours se retirent par la commande de la section 18.
+Garde ces accès au plus juste. Quand un gérant s'en va, renouvelle la clé et le mot de passe du bar (section 13). Les fichiers de `journal/` de plus de 90 jours se retirent par la commande de la section 18, les journaux de Docker par la recréation des conteneurs.
