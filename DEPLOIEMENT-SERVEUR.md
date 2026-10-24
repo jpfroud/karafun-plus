@@ -427,7 +427,7 @@ Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'
 
 ## 13. Lien de la page du bar
 
-Serveur en retrait, aux conteneurs arrêtés ou retirés (section 19, ou bascule abandonnée en section 12) : n'y lance ni `docker compose restart`, ni `docker compose up -d`, ici comme en section 18. `restart` démarre aussi un conteneur arrêté, et la file du serveur se reconnecterait à KaraFun pendant une soirée du kit. La bascule suivante lui donne une clé neuve. Pour un mot de passe divulgué, remplace seulement `BAR_PASSWORD_HASH`, comme plus bas, sans démarrer la file.
+Serveur en retrait, aux conteneurs arrêtés ou retirés (section 19, ou bascule abandonnée en section 12) : n'y lance ni `docker compose restart`, ni `docker compose up -d` (même garde en tête de la section 18). `restart` démarre aussi un conteneur arrêté, et la file du serveur se reconnecterait à KaraFun pendant une soirée du kit. La bascule suivante lui donne une clé neuve. Pour un mot de passe divulgué, remplace seulement `BAR_PASSWORD_HASH`, comme plus bas, sans démarrer la file.
 
 Sur le serveur, dans `~/karafun-plus/deploy` :
 
@@ -544,6 +544,8 @@ Retour à la version précédente : les mêmes commandes, avec `vA.B.C` à la pl
 
 ## 18. Vérifications et dépannage
 
+Serveur en retrait, aux conteneurs arrêtés ou retirés (section 19, ou bascule abandonnée en section 12) : ne démarre la file par aucune commande, ni `docker compose restart`, ni `docker compose start`, ni `docker compose up -d`. Sa file se reconnecterait à KaraFun pendant une soirée du kit. Seuls `docker compose ps`, `df -h /` et la mise à jour du système s'y appliquent : `app` y reste arrêté ou absent, même après `sudo reboot`, et c'est normal. La purge du journal, qui demande la file démarrée, attend le prochain essai (section 11).
+
 Dans `~/karafun-plus/deploy`, les contrôles de tous les jours, sans effet sur la file. `docker compose ps` donne l'état des conteneurs, `app` en `(healthy)`, et `df -h /` la place libre sur le disque. `/readyz` (commande de la section 11) donne l'état de KaraFun, du solveur et de la sauvegarde, sans secret.
 
 ```bash
@@ -601,7 +603,7 @@ Redonne-le ensuite aux gérants (section 13). Une autre ligne `Impossible de dé
 
 Jamais : `docker compose down -v` (il efface les volumes, donc la soirée et la clé), `docker compose run` hors de l'exception ci-dessus (seconde file), `node server.js` lancé en SSH (seconde file), publier `journal/` (il contient des prénoms).
 
-**Contrôle** : `docker compose ps` montre `caddy` et `app` en marche, `app` en `(healthy)`, et `/readyz` répond.
+**Contrôle** : `docker compose ps` montre `caddy` et `app` en marche, `app` en `(healthy)`, et `/readyz` répond ; sur un serveur en retrait, aucun des deux n'est en marche.
 
 ## 19. Retour arrière vers le kit Windows
 
