@@ -493,11 +493,13 @@ Pour remettre une archive en place :
 ./restauration.sh sauvegardes/<nom de l'archive>
 ```
 
-Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, remplace `data/` et `journal/`, puis relance la file. L'archive remet aussi sa clé du bar : après la restauration d'une archive plus ancienne qu'un renouvellement de la clé, renouvelle-la de nouveau et redonne le lien (section 13). Spotify peut alors demander une reconnexion (section 15). L'archive est privée : elle contient les prénoms, les QR secrets, la clé du bar et les jetons. Garde-la sur un disque protégé, jamais dans un message.
+Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, remplace `data/` et `journal/`, puis relance la file. Il la relance même sur un serveur en retrait, aux conteneurs arrêtés ou retirés (section 19) : n'y restaure alors qu'une archive sans code KaraFun, vérifiée comme le dit le début de la section 11. L'archive remet aussi sa clé du bar : après la restauration d'une archive plus ancienne qu'un renouvellement de la clé, renouvelle-la de nouveau et redonne le lien (section 13). Spotify peut alors demander une reconnexion (section 15). L'archive est privée : elle contient les prénoms, les QR secrets, la clé du bar et les jetons. Garde-la sur un disque protégé, jamais dans un message.
 
 **Contrôle** : `ls -l sauvegardes/` montre l'archive en `-rw-------`, et sa copie est sur le PC.
 
 ## 17. Mise à jour et retour à la version précédente
+
+Serveur en retrait, après un retour au kit (section 19) ou une bascule abandonnée après l'étape 7 de la section 12 : ses volumes gardent le code KaraFun. Prépare-le d'abord comme le dit le début de la section 11, sinon le `docker compose up -d` ci-dessous reconnecterait sa file à KaraFun pendant une soirée du kit.
 
 Hors soirée, quand une release `vX.Y.Z` paraît, sauvegarde d'abord la soirée :
 
@@ -632,7 +634,7 @@ La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archi
 3. Chez OVHcloud, retire d'abord les entrées CAA du nom des QR. Remets ensuite sa cible sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Si son « TTL » est revenu à 3600, compte jusqu'à une heure. Relance ensuite le tunnel ou le relais du PC : pour `cloudflared`, dans un PowerShell administrateur, `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`. Relance aussi le client DynHost arrêté à l'étape 5 de la section 12, et remets les entrées AAAA retirées, s'il y en avait.
 4. Dans `<dossier karaoke-bar du kit>`, crée les raccourcis de `KaraFun Plus.exe` sur le bureau et dans la barre des tâches, à la place de ceux retirés à l'étape 5 de la section 12. Double-clique ensuite sur l'un d'eux. Préviens les gérants : chaque soir, ils lancent de nouveau la file par ce raccourci, comme avant la bascule, et non plus KaraFun seul.
 
-Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface. Ils gardent aussi le code KaraFun, et la file du serveur s'y reconnecterait à son prochain démarrage. Pour un nouvel essai, prépare donc d'abord le serveur comme le dit le début de la section 11 (noms d'essai, archive de départ), avant tout `docker compose up -d`.
+Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface. Ils gardent aussi le code KaraFun, et la file du serveur s'y reconnecterait à son prochain démarrage. Pour un nouvel essai ou une mise à jour (section 17), prépare donc d'abord le serveur comme le dit le début de la section 11 (noms d'essai, archive de départ), avant tout `docker compose up -d`.
 
 ```bash
 docker compose down
