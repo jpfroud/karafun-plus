@@ -75,16 +75,21 @@ const TESTS_DEUX_MODES = ['test/startup-port.test.js', 'test/staff-ui-coverage.t
 // des bases des blocs CIDR du contrat (DEFAULT_TRUSTED_PROXIES de server.js).
 const HOTES = ['exemple.fr', 'github.com', 'ghcr.io', 'karafun.com', 'karafun.fr', 'spotify.com', 'docker.com',
   'letsencrypt.org', 'ovhcloud.com', 'containerd.io'];
+const IPV4 = ['127.0.0.1', '0.0.0.0', '1.1.1.1', '8.8.8.8'];
 // Domaines de premier niveau repérés hors URL : tous ceux de deux lettres
 // (pays), sauf les extensions de fichier du guide, et les génériques courants
 // ou ceux d'un bar et d'une ville (un vrai nom en .paris ou .bar ne doit pas passer).
 const TLD = ['[a-z]{2}', 'com', 'org', 'net', 'info', 'biz', 'app', 'dev', 'cloud', 'ovh', 'xyz', 'site', 'online', 'tech',
   'bar', 'pub', 'fun', 'club', 'paris', 'bzh', 'live', 'events', 'music', 'pro', 'shop', 'store', 'top', 'cafe',
   'restaurant', 'party', 'karaoke', 'space', 'world'];
-const EXTENSIONS = new Set(['md', 'js', 'sh', 'gz']);
+// Extensions des fichiers cités par les documents : jamais un domaine visé.
+const EXTENSIONS = new Set(['md', 'js', 'sh', 'gz', 'conf', 'exe', 'bat', 'zip', 'json', 'yaml', 'txt', 'tar', 'log', 'html']);
+// Tout autre mot pointé, quel que soit son dernier niveau (.studio), accents
+// compris, sauf un membre de code : après « . », « / », « \ » ou « $ », ou
+// suivi de « ( ».
+const MOT_POINTE = /(?<![\p{L}\p{N}_.\/\\$-])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+\p{L}{2,}(?![\p{L}\p{N}_(-])/gu;
 // Chemins du dépôt repérés dans une commande citée entre accents graves.
 const CHEMIN_DEPOT = /^(?:test|tools|scripts|deploy|solver|public|launcher|\.claude|\.github)\/[\w./-]+$/;
-const IPV4 = ['127.0.0.1', '0.0.0.0', '1.1.1.1', '8.8.8.8'];
 // Premiers segments qui ne sont pas des chemins du dépôt : données, journaux,
 // produits de construction, état local.
 const HORS_DEPOT = new Set(['data', 'journal', 'node_modules', 'coverage', '.git', '.gstack', 'node', 'solver-runtime',
@@ -186,8 +191,10 @@ test('J5 aucune donnée privée', () => {
   const fail = excerpt => `${GUIDE} : donnée privée possible : ${excerpt}`;
   const hosts = [];
   for (const [, host] of guide.matchAll(/\b[a-z][a-z0-9+.-]*:\/\/([^\s/:?#`'"<>)\]]+)/gi)) hosts.push(host);
-  for (const [host] of guide.matchAll(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?:${TLD.join('|')})\\b`, 'gi'))) {
-    if (!EXTENSIONS.has(host.split('.').pop().toLowerCase())) hosts.push(host);
+  for (const pattern of [new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?:${TLD.join('|')})\\b`, 'gi'), MOT_POINTE]) {
+    for (const [host] of guide.matchAll(pattern)) {
+      if (!EXTENSIONS.has(host.split('.').pop().toLowerCase())) hosts.push(host);
+    }
   }
   for (const host of hosts) {
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) continue;
@@ -291,7 +298,9 @@ test('J9 commandes clés du guide', () => {
     for (const [, span] of read(file).matchAll(/`([^`\n]+)`/g)) if (/^docker /.test(span)) lignes.push([file, span]);
   }
   for (const [file, line] of lignes) {
-    if (ponctuelle.test(line)) assert.ok(formes.has(line.trim()), `${file} : commande attendue absente : ${line.trim()}`);
+    if (ponctuelle.test(line)) {
+      assert.ok(formes.has(line.trim()), `${file} : forme de commande non unique : ${line.trim()} (formes permises : ${[...formes].join(' | ')})`);
+    }
   }
 });
 

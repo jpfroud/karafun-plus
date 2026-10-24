@@ -9,7 +9,7 @@ Valeurs à remplacer dans les commandes :
 | Valeur | Sens |
 |---|---|
 | `<IPv4 du VPS>` | adresse IPv4 du serveur (section 3) |
-| `<ancienne IPv4>` | adresse IPv4 que donnait le nom des QR avant la bascule |
+| `<ancienne IPv4>` | adresse IPv4 que donnait le nom des QR avant la bascule (notée en section 9, point 2) |
 | `<utilisateur OVH>` | compte de connexion donné par OVHcloud à la livraison du VPS |
 | `<code>` | code affiché par la Télécommande de KaraFun |
 | `vX.Y.Z` | version à installer (tag de la release) |
@@ -237,7 +237,7 @@ Nouvelle installation : crée les entrées A de `HOTE_CLIENTS` et de `HOTE_BAR` 
 Bascule depuis le PC Windows :
 
 1. Tout de suite : crée les entrées A des noms d'essai, `essai` et `essai-bar`.
-2. Au moins 24 heures avant la bascule : sur l'entrée actuelle du nom des QR, « Modifier l'entrée », puis « TTL » « Personnalisé » à 300.
+2. Au moins 24 heures avant la bascule, et plus tôt si l'ancien « TTL » dépasse 24 heures : note d'abord par écrit chaque entrée du nom des QR (type A, AAAA, CNAME ou DynHost, et sa cible). Note aussi l'IPv4 que ce nom donne (`Resolve-DnsName clients.exemple.fr -Type A`) : c'est `<ancienne IPv4>`. L'étape 10 de la section 12 et le retour arrière (section 19) en ont besoin. Puis, sur l'entrée actuelle, « Modifier l'entrée », et « TTL » « Personnalisé » à 300.
 3. À l'étape 6 de la section 12 : change la cible du nom des QR pour `<IPv4 du VPS>`, et crée l'entrée A de `HOTE_BAR` si elle manque.
 4. Au même moment, retire pour ces noms toute entrée AAAA ou CNAME, et tout DynHost. La file ne reçoit les téléphones qu'en IPv4 : le réseau Docker du compose n'a pas d'IPv6, et un téléphone venu en IPv6 arriverait avec l'adresse de la passerelle Docker. Tous ces téléphones partageraient alors la même limite d'inscriptions par adresse. Ces libellés de suppression et le menu « DynHost » n'ont pas été vérifiés : cherche-les sur la ligne de l'entrée.
 5. Une fois les noms en place, ajoute pour chacun une entrée CAA : drapeau `0`, étiquette `issue`, valeur `letsencrypt.org`. Seul Let's Encrypt pourra alors leur délivrer un certificat. Un retour arrière vers un CNAME demande de retirer d'abord ces entrées CAA (section 19).
@@ -278,7 +278,7 @@ Remplis tous les réglages de `.env` avant le premier démarrage :
 | `KARAOKE_PUBLIC_URL` | `https://` suivi de `HOTE_CLIENTS`, sans `/` final |
 | `KARAOKE_STAFF_URL` | `https://` suivi de `HOTE_BAR`, sans `/` final |
 | `ACME_EMAIL` | ton adresse e-mail, pour Let's Encrypt, en un seul mot : avec le texte d'exemple, Caddy refuse sa configuration (`wrong argument count`) |
-| `BAR_USER` | le nom que le navigateur demande avant la page du bar, `bar` par défaut |
+| `BAR_USER` | le nom que le navigateur demande avant la page du bar, `bar` par défaut ; si tu en changes, remplace `bar` dans `curl.exe -u bar` (section 11) |
 | `BAR_PASSWORD_HASH` | l'empreinte de `caddy hash-password`, entre apostrophes (elle contient des `$`) |
 
 Les secrets du déploiement :
@@ -295,7 +295,7 @@ Les secrets du déploiement :
 
 ## 11. Premier démarrage
 
-En bascule, `.env` porte encore les noms d'essai. Remplace alors ci-dessous `clients.exemple.fr` par `essai.exemple.fr`, et `bar.exemple.fr` par `essai-bar.exemple.fr`. Dans `~/karafun-plus/deploy`, démarre la file :
+Pour un nouvel essai, après une bascule ou un retour arrière, restaure d'abord l'archive de départ d'un essai précédent (section 19, fin). En bascule, `.env` porte encore les noms d'essai. Remplace alors ci-dessous `clients.exemple.fr` et `bar.exemple.fr` par tes noms d'essai (`essai.exemple.fr` et `essai-bar.exemple.fr` dans ce guide). Dans `~/karafun-plus/deploy`, démarre la file :
 
 ```bash
 docker compose up -d
@@ -321,7 +321,7 @@ Résultats attendus, commande par commande :
 - `/readyz` répond `{"ok":false,"mode":"server","karafun":"no-code","solver":"available","persistence":"ok"}`. C'est normal : aucun code KaraFun n'est encore donné.
 - `./sauvegarde.sh` arrête la file le temps de la copie, écrit `Sauvegarde écrite : sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz (…)`, puis relance la file. Note le nom de cette archive : elle garde l'état de départ, sans code KaraFun.
 
-Depuis le PC Windows, dans PowerShell (`curl.exe`, pas l'alias `curl`) :
+Depuis le PC Windows, dans PowerShell (`curl.exe`, pas l'alias `curl`). Remplace d'abord `exemple.fr` par ton domaine dans chaque ligne : la quatrième envoie le mot de passe du bar à l'hôte qu'elle nomme, et un nom d'exemple joindrait un serveur tiers.
 
 ```powershell
 curl.exe -s -o NUL -w "%{http_code}\n" https://clients.exemple.fr/healthz
@@ -355,7 +355,7 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    ```
 
    La réponse doit être `<n> tables, adresse https://clients.exemple.fr`. Note `<n>`. Si l'adresse diffère, arrête-toi : les QR imprimés ne mèneraient pas au serveur.
-3. **Arrêt du kit.** Double-clique sur `ARRETER.bat` : sa fenêtre doit afficher « La file karaoké s’arrête. ». Sur « Impossible d’arrêter la file karaoké », arrête-toi : la file du PC tournerait encore.
+3. **Arrêt du kit.** Double-clique sur `ARRETER.bat` : sa fenêtre doit afficher « La file karaoké s’arrête. ». « Impossible d’arrêter la file karaoké » s'affiche aussi pour une file déjà arrêtée. Vérifie alors dans PowerShell : `curl.exe -s -o NUL -w "%{http_code}\n" --max-time 5 http://127.0.0.1:3000/healthz` doit donner `000`. Avec `200`, arrête-toi : la file du PC tourne encore.
 4. **Archive des données.** Toujours dans `<dossier karaoke-bar du kit>` :
 
    ```powershell
@@ -383,11 +383,19 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    chmod 600 sauvegardes/karafun-plus-pc-AAAAMMJJ.tar.gz
    sha256sum sauvegardes/karafun-plus-pc-AAAAMMJJ.tar.gz
    nano .env
-   ./restauration.sh sauvegardes/karafun-plus-pc-AAAAMMJJ.tar.gz
-   docker compose up -d
    ```
 
-   L'empreinte doit être celle de l'étape 4, en minuscules. Dans `.env`, mets les noms définitifs dans `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL`. `restauration.sh` demande de taper `RESTAURER`. Il sauvegarde l'état d'essai, remplace `data/` et `journal/`, puis relance la file.
+   L'empreinte doit être celle de l'étape 4, en minuscules. Dans `.env`, mets les noms définitifs dans `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL`. Puis restaure l'archive du PC :
+
+   ```bash
+   ./restauration.sh sauvegardes/karafun-plus-pc-AAAAMMJJ.tar.gz
+   ```
+
+   `restauration.sh` demande de taper `RESTAURER`. Il sauvegarde l'état d'essai, remplace `data/` et `journal/`, puis relance la file. Sur « Restauration annulée : rien n'a changé. », relance la même commande. Pour toute autre erreur, sans la ligne « Restauration terminée depuis … », suis « En cas d'échec » ci-dessous. Après cette ligne seulement, recrée Caddy sous les noms définitifs :
+
+   ```bash
+   docker compose up -d
+   ```
 8. **Vérifications.** Toujours sur le serveur :
 
    ```bash
@@ -411,7 +419,7 @@ La restauration a remplacé `data/`, clé du bar d'essai comprise : donne mainte
 
 **En cas d'échec.** Avant l'étape 6, remets `data` à son nom s'il le faut (`Rename-Item "data-avant-serveur-AAAAMMJJ" data`) et les raccourcis de `KaraFun Plus.exe`. Relance le tunnel du PC ou le client DynHost, puis `DEMARRER.bat`. Le tunnel `cloudflared` se relance dans un PowerShell administrateur : `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`.
 
-Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'abord le serveur par `docker compose stop`. Remets ensuite les noms des QR comme le dit le point 3 de la section 19, puis fais comme avant l'étape 6. N'utilise pas l'archive du serveur : `data-avant-serveur-AAAAMMJJ` garde les données du PC, intactes, alors que le serveur a pu réécrire l'adresse des QR. Après une soirée sur le serveur, suis la section 19.
+Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'abord le serveur par `docker compose stop`. Remets ensuite les noms des QR comme le dit le point 3 de la section 19, puis fais comme avant l'étape 6. N'utilise pas l'archive du serveur : `data-avant-serveur-AAAAMMJJ` garde les données du PC, intactes, alors que le serveur a pu réécrire l'adresse des QR. Si l'étape 7 a eu lieu, les volumes du serveur gardent le code KaraFun du PC : avant tout nouveau `docker compose up -d`, restaure l'archive de départ de la section 11 (section 19, fin). Spotify peut aussi demander une reconnexion sur le PC (« Reconnecter Spotify ») : le serveur a pu renouveler son jeton. Après une soirée sur le serveur, suis la section 19.
 
 **Contrôle** : le QR imprimé ouvre sa table en 4G/5G, et l'étape 10 affiche un code de sortie différent de `0`. Le lendemain, `Resolve-DnsName clients.exemple.fr -Type A` donne encore `<IPv4 du VPS>`.
 
@@ -423,9 +431,9 @@ Sur le serveur, dans `~/karafun-plus/deploy` :
 docker compose exec app node server.js --print-staff-url
 ```
 
-La commande affiche `https://bar.exemple.fr/staff?key=<clé>`. Donne aux gérants le lien et le mot de passe du bar par deux canaux différents : par exemple le lien par message, le mot de passe de vive voix. Le navigateur demande d'abord `bar` et le mot de passe, puis la page s'ouvre. Le lien ne change pas au redémarrage.
+La commande affiche `https://bar.exemple.fr/staff?key=<clé>`. Donne aux gérants le lien et le mot de passe du bar par deux canaux différents : par exemple le lien par message, le mot de passe de vive voix. Le navigateur demande d'abord le nom `BAR_USER` (`bar`) et le mot de passe, puis la page s'ouvre. Le lien ne change pas au redémarrage.
 
-Lien ou mot de passe divulgué : renouvelle la clé, puis redémarre la file, de préférence hors soirée.
+Lien ou mot de passe divulgué : renouvelle la clé, puis redémarre la file. Si le lien et le mot de passe ont fui ensemble, fais-le tout de suite, même en soirée : la page du bar est ouverte à qui les détient. Sinon, de préférence hors soirée.
 
 ```bash
 docker compose exec app node server.js --rotate-staff-key
@@ -483,7 +491,7 @@ Pour remettre une archive en place :
 ./restauration.sh sauvegardes/<nom de l'archive>
 ```
 
-Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, remplace `data/` et `journal/`, puis relance la file. L'archive remet aussi sa clé du bar : après la restauration d'une archive plus ancienne qu'un renouvellement de la clé, renouvelle-la de nouveau et redonne le lien (section 13). L'archive est privée : elle contient les prénoms, les QR secrets, la clé du bar et les jetons. Garde-la sur un disque protégé, jamais dans un message.
+Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, remplace `data/` et `journal/`, puis relance la file. L'archive remet aussi sa clé du bar : après la restauration d'une archive plus ancienne qu'un renouvellement de la clé, renouvelle-la de nouveau et redonne le lien (section 13). Spotify peut alors demander une reconnexion (section 15). L'archive est privée : elle contient les prénoms, les QR secrets, la clé du bar et les jetons. Garde-la sur un disque protégé, jamais dans un message.
 
 **Contrôle** : `ls -l sauvegardes/` montre l'archive en `-rw-------`, et sa copie est sur le PC.
 
@@ -496,7 +504,7 @@ cd ~/karafun-plus/deploy
 ./sauvegarde.sh
 ```
 
-Ne continue que si le script a écrit sa ligne `Sauvegarde écrite : …`. Prépare ensuite la nouvelle version sans la démarrer. Si une commande échoue, arrête-toi là :
+Ne continue que si le script a écrit sa ligne `Sauvegarde écrite : …`. Prépare ensuite la nouvelle version sans la démarrer :
 
 ```bash
 git fetch --tags
@@ -507,7 +515,7 @@ docker compose pull
 docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/jpfroud/karafun-plus:vX.Y.Z
 ```
 
-`diff` compare les clés de `.env` et de `.env.example` et ne doit rien afficher. Sinon, ajoute à `.env` le réglage nouveau, décrit par les notes de la release. Ne modifie que `.env` : les autres fichiers de `deploy/` suivent la version.
+`diff` compare les clés de `.env` et de `.env.example` et ne doit rien afficher. Sinon, ajoute à `.env` le réglage nouveau, décrit par les notes de la release. Ne modifie que `.env` : les autres fichiers de `deploy/` suivent la version. Si une autre commande de ce bloc affiche une erreur, ne démarre rien : les lignes suivantes ont tourné quand même. Remets alors la version actuelle, comme plus bas quand les empreintes diffèrent.
 
 Compare l'empreinte affichée par `docker image inspect` à la ligne « Empreinte » des notes de la release (`ghcr.io/jpfroud/karafun-plus@sha256:…`). Si elles sont identiques, démarre la nouvelle version. Caddy est recréé pour relire son `Caddyfile`, que `git checkout` a pu changer :
 
@@ -530,7 +538,7 @@ Retour à la version précédente : les mêmes commandes, avec `vA.B.C` à la pl
 
 ## 18. Vérifications et dépannage
 
-Dans `~/karafun-plus/deploy`, les contrôles de tous les jours, sans effet sur la file :
+Dans `~/karafun-plus/deploy`, les contrôles de tous les jours, sans effet sur la file. `docker compose ps` donne l'état des conteneurs, `app` en `(healthy)`, et `df -h /` la place libre sur le disque. `/readyz` (commande de la section 11) donne l'état de KaraFun, du solveur et de la sauvegarde, sans secret.
 
 ```bash
 docker compose ps
@@ -549,20 +557,22 @@ L'arrêter, jamais en soirée ; la soirée est enregistrée :
 docker compose stop app
 ```
 
-| Commande | Rôle |
-|---|---|
-| `docker compose ps` | état des conteneurs : `app` doit être `(healthy)` |
-| `/readyz` (commande de la section 11) | état de KaraFun, du solveur et de la sauvegarde, sans secret |
-| `docker compose restart app` | redémarre la file ; la soirée reprend |
-| `docker compose stop app` | arrête la file ; la soirée est enregistrée |
-| `df -h /` | place libre sur le disque |
-
 Chaque mois, mesure le journal. Après une sauvegarde (section 16), retire ses fichiers de plus de 90 jours :
 
 ```bash
 docker compose exec -T app du -sh /app/journal
 docker compose exec -T app find /app/journal -maxdepth 1 -type f -mtime +90 -print -delete
 ```
+
+Chaque mois aussi, hors soirée, mets le système à jour. Les mises à jour automatiques de la section 4 ne suivent pas le dépôt de Docker : sans cela, Docker et containerd ne recevraient jamais leurs correctifs. La mise à jour de Docker redémarre les conteneurs, et la soirée reprend :
+
+```bash
+sudo apt update
+sudo apt full-upgrade -y
+docker compose ps
+```
+
+Si le fichier `/var/run/reboot-required` existe, redémarre par `sudo reboot` : la file repart seule. Vérifie ensuite que `docker compose ps` montre `app` en `(healthy)`.
 
 **Caddy en panne** (pages injoignables, `caddy` arrêté dans `docker compose ps`) : la page du bar reste joignable par le tunnel de la section 15. `docker compose logs caddy` en donne la cause : `wrong argument count` y signale un `ACME_EMAIL` resté au texte d'exemple (section 10).
 
