@@ -423,7 +423,7 @@ La restauration a remplacé `data/`, clé du bar d'essai comprise : donne mainte
 
 Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'abord le serveur par `docker compose stop`. Remets ensuite les noms des QR comme le dit le point 3 de la section 19, puis fais comme avant l'étape 6. N'utilise pas l'archive du serveur : `data-avant-serveur-AAAAMMJJ` garde les données du PC, intactes, alors que le serveur a pu réécrire l'adresse des QR. Si l'étape 7 a eu lieu, les volumes du serveur gardent le code KaraFun du PC : avant tout nouveau `docker compose up -d`, prépare le serveur comme le dit le début de la section 11 (noms d'essai, archive de départ). Spotify peut aussi demander une reconnexion sur le PC (« Reconnecter Spotify ») : le serveur a pu renouveler son jeton. Après une soirée sur le serveur, suis la section 19.
 
-**Contrôle** : le QR imprimé ouvre sa table en 4G/5G, et l'étape 10 affiche un code de sortie différent de `0`. Le lendemain, `Resolve-DnsName clients.exemple.fr -Type A` donne encore `<IPv4 du VPS>`.
+**Contrôle** : le QR imprimé ouvre sa table en 4G/5G, et l'étape 10 affiche un code de sortie différent de `0`, sans ligne `bash:` avant lui. Le lendemain, `Resolve-DnsName clients.exemple.fr -Type A` donne encore `<IPv4 du VPS>`.
 
 ## 13. Lien de la page du bar
 
@@ -609,14 +609,20 @@ docker compose stop app
 docker compose stop
 ```
 
-La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archive>` depuis sa ligne `Sauvegarde écrite : …`. Sans cette ligne, arrête-toi : l'archive de la dernière soirée manquerait. Puis, sur le PC Windows :
+La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archive>` depuis sa ligne `Sauvegarde écrite : …`. Sans cette ligne, arrête-toi : l'archive de la dernière soirée manquerait. Note aussi son empreinte, donnée par `sha256sum sauvegardes/<nom de l'archive>`. Puis, sur le PC Windows :
 
 1. Télécharge le kit `vX.Y.Z` neuf, de la même version que le serveur, avec le fichier `KIT-BAR-KARAFUN.zip.sha256` de la release. `(Get-FileHash KIT-BAR-KARAFUN.zip -Algorithm SHA256).Hash.ToLower()` doit donner le premier mot de ce fichier. Sinon, ne décompresse pas le kit ; s'ils sont égaux, décompresse-le entièrement, dans un dossier neuf. Dans la suite, `<dossier karaoke-bar du kit>` est son dossier `karaoke-bar`, jamais celui de l'ancien kit.
-2. Récupère l'archive, et n'en extrais que `data`. `scp` se lance depuis le PC d'administration : si le kit est sur un autre PC, porte-y ensuite l'archive (clé USB), puis fais-y `tar.exe`.
+2. Récupère l'archive, et n'en extrais que `data`. `scp` se lance depuis le PC d'administration : si le kit est sur un autre PC, porte-y ensuite l'archive (clé USB), dans `<dossier karaoke-bar du kit>`, puis fais-y `Get-FileHash` et `tar.exe`.
 
    ```powershell
    Set-Location "<dossier karaoke-bar du kit>"
    scp karaoke@<IPv4 du VPS>:karafun-plus/deploy/sauvegardes/<nom de l'archive> .
+   (Get-FileHash <nom de l'archive> -Algorithm SHA256).Hash.ToLower()
+   ```
+
+   L'empreinte doit être celle notée sur le serveur. Sinon, la copie est abîmée : refais-la, et n'en extrais rien, car une archive tronquée donnerait un `data` incomplet. Puis :
+
+   ```powershell
    tar.exe -xzf <nom de l'archive> data
    Remove-Item data\staff-key -ErrorAction SilentlyContinue
    ```
