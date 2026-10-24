@@ -56,7 +56,7 @@ Il te faut :
 
 **Noms d'essai.** Pour une bascule depuis le PC Windows, le serveur tourne d'abord sous deux noms d'essai : `essai.exemple.fr` (clients) et `essai-bar.exemple.fr` (bar). Les vrais noms ne changent de cible qu'à l'étape 6 de la section 12.
 
-**Zone DNS.** Dans PowerShell, `Resolve-DnsName exemple.fr -Type NS` doit donner des serveurs d'OVHcloud (leur nom contient `ovh`). Sinon, par exemple pour une zone chez Cloudflare, arrête-toi : ce guide ne couvre que la zone d'OVHcloud.
+**Zone DNS.** Dans PowerShell, `Resolve-DnsName exemple.fr -Type NS` doit donner des serveurs d'OVHcloud (leur nom contient `ovh`, ou `anycast` avec l'option DNS Anycast d'OVHcloud). Sinon, par exemple pour une zone chez Cloudflare, arrête-toi : ce guide ne couvre que la zone d'OVHcloud.
 
 **Clé SSH.** Sur le PC d'administration, dans PowerShell :
 
@@ -408,14 +408,14 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
 
    Attendus : `2`, pour les certificats des noms définitifs ; s'il donne moins, attends une minute et relance cette commande. Après deux relances, `docker compose logs caddy | grep -i error` en donne la cause. Pour des noms déjà servis par ce serveur (nouvel essai), le compte reste plus bas : l'étape 9 vérifie alors le certificat. Puis deux fois `700 node` : ne corrige jamais ces droits à la main. Enfin une seule ligne, `Soirée restaurée : <n> tables, …`, avec le même `<n>` qu'à l'étape 2. Une ligne `Attention : data/tables.json` ou `Impossible de démarrer` arrête la bascule : suis « En cas d'échec » ci-dessous.
 9. **QR imprimé.** Wi-Fi coupé, en 4G/5G, scanne un QR **imprimé** : la page de sa table doit s'ouvrir.
-10. **Ancien chemin fermé.** Sur le serveur :
+10. **Ancien chemin fermé.** Sur le serveur, remplace d'abord `<ancienne IPv4>` et les deux `clients.exemple.fr` :
 
     ```bash
     curl -fsS -o /dev/null --max-time 10 --resolve clients.exemple.fr:443:<ancienne IPv4> https://clients.exemple.fr/app.css
     echo "Code de sortie : $?"
     ```
 
-    Cette requête vers l'ancienne adresse doit échouer : code de sortie différent de `0`. Toutes les versions du kit servent `/app.css`, alors que `/healthz` manque aux plus anciennes. Avec `0`, une file ou un relais répond encore à l'ancienne adresse : retourne sur le PC, arrête-les comme à l'étape 5, puis refais cette étape.
+    Cette requête vers l'ancienne adresse doit échouer : code de sortie différent de `0`. Toutes les versions du kit servent `/app.css`, alors que `/healthz` manque aux plus anciennes. Avec `0`, une file ou un relais répond encore à l'ancienne adresse : retourne sur le PC, arrête-les comme à l'étape 5, puis refais cette étape. Une ligne `bash:` avant ce code veut dire que la commande n'a pas tourné : remplace les valeurs, puis refais cette étape.
 
 La restauration a remplacé `data/`, clé du bar d'essai comprise : donne maintenant le lien du bar aux gérants (section 13). KaraFun fermé, la page du bar finit sur « KaraFun fermé ou code changé : essais arrêtés ». C'est normal : à l'ouverture, suis la section 14. Retire ensuite les noms d'essai (section 9, point 6).
 
@@ -611,7 +611,7 @@ docker compose stop
 
 La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archive>` depuis sa ligne `Sauvegarde écrite : …`. Sans cette ligne, arrête-toi : l'archive de la dernière soirée manquerait. Puis, sur le PC Windows :
 
-1. Télécharge le kit `vX.Y.Z` neuf, de la même version que le serveur, avec le fichier `KIT-BAR-KARAFUN.zip.sha256` de la release. `(Get-FileHash KIT-BAR-KARAFUN.zip -Algorithm SHA256).Hash.ToLower()` doit donner le premier mot de ce fichier. Sinon, ne décompresse pas le kit ; s'ils sont égaux, décompresse-le entièrement.
+1. Télécharge le kit `vX.Y.Z` neuf, de la même version que le serveur, avec le fichier `KIT-BAR-KARAFUN.zip.sha256` de la release. `(Get-FileHash KIT-BAR-KARAFUN.zip -Algorithm SHA256).Hash.ToLower()` doit donner le premier mot de ce fichier. Sinon, ne décompresse pas le kit ; s'ils sont égaux, décompresse-le entièrement, dans un dossier neuf. Dans la suite, `<dossier karaoke-bar du kit>` est son dossier `karaoke-bar`, jamais celui de l'ancien kit.
 2. Récupère l'archive, et n'en extrais que `data`. `scp` se lance depuis le PC d'administration : si le kit est sur un autre PC, porte-y ensuite l'archive (clé USB), puis fais-y `tar.exe`.
 
    ```powershell
@@ -624,7 +624,7 @@ La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archi
    La dernière ligne retire la clé du bar du serveur. Le kit ne s'en sert pas, et une bascule suivante la remettrait en service, avec l'ancien lien des gérants.
 
 3. Chez OVHcloud, retire d'abord les entrées CAA du nom des QR. Remets ensuite sa cible sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Si son « TTL » est revenu à 3600, compte jusqu'à une heure. Relance ensuite le tunnel ou le relais du PC : pour `cloudflared`, dans un PowerShell administrateur, `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`. Relance aussi le client DynHost arrêté à l'étape 5 de la section 12, et remets les entrées AAAA retirées, s'il y en avait.
-4. Double-clique sur `KaraFun Plus.exe`.
+4. Dans `<dossier karaoke-bar du kit>`, crée les raccourcis de `KaraFun Plus.exe` sur le bureau et dans la barre des tâches, à la place de ceux retirés à l'étape 5 de la section 12. Double-clique ensuite sur l'un d'eux. Préviens les gérants : chaque soir, ils lancent de nouveau la file par ce raccourci, comme avant la bascule, et non plus KaraFun seul.
 
 Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface. Ils gardent aussi le code KaraFun, et la file du serveur s'y reconnecterait à son prochain démarrage. Pour un nouvel essai, prépare donc d'abord le serveur comme le dit le début de la section 11 (noms d'essai, archive de départ), avant tout `docker compose up -d`.
 
@@ -636,7 +636,7 @@ Avant de résilier le VPS, retire chez OVHcloud toute entrée qui vise `<IPv4 du
 
 Avec le kit Windows, ne relaie jamais le port du bar (3000) par un proxy HTTPS : en mode PC, un relais HTTPS installé sur la même machine fait paraître locale toute requête, et n'importe qui ouvrirait la page du bar.
 
-**Contrôle** : un QR imprimé ouvre sa table en 4G/5G par le PC, et la page du bar du kit montre les tables de la soirée. Avec `cloudflared`, `Get-Service cloudflared | Select-Object Status, StartType` affiche `Running` et `Automatic`.
+**Contrôle** : un QR imprimé ouvre sa table en 4G/5G par le PC, et le raccourci de `KaraFun Plus.exe` ouvre la page du bar du kit neuf, avec les tables de la soirée. Avec `cloudflared`, `Get-Service cloudflared | Select-Object Status, StartType` affiche `Running` et `Automatic`.
 
 ## 20. Données personnelles et accès
 
