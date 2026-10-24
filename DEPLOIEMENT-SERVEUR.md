@@ -295,7 +295,9 @@ Les secrets du déploiement :
 
 ## 11. Premier démarrage
 
-Pour un nouvel essai, après une bascule ou un retour arrière, restaure d'abord l'archive de départ d'un essai précédent (section 19, fin). En bascule, `.env` porte encore les noms d'essai. Remplace alors ci-dessous `clients.exemple.fr` et `bar.exemple.fr` par tes noms d'essai (`essai.exemple.fr` et `essai-bar.exemple.fr` dans ce guide). Dans `~/karafun-plus/deploy`, démarre la file :
+Pour un nouvel essai, après une bascule ou un retour arrière, prépare d'abord le serveur. Si les noms d'essai ont été retirés (section 9, point 6), recrée leurs entrées A, puis CAA (section 9, points 1 et 5). Remets ensuite dans `.env`, par `nano .env`, les noms d'essai de `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL` : l'étape 7 de la section 12 y a mis les noms définitifs. Restaure enfin l'archive de départ notée lors d'un essai précédent, par `./restauration.sh sauvegardes/<nom de l'archive>` (section 16).
+
+En bascule, `.env` porte ainsi les noms d'essai : remplace alors ci-dessous `clients.exemple.fr` et `bar.exemple.fr` par ces noms (`essai.exemple.fr` et `essai-bar.exemple.fr` dans ce guide). Dans `~/karafun-plus/deploy`, démarre la file :
 
 ```bash
 docker compose up -d
@@ -355,7 +357,7 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    ```
 
    La réponse doit être `<n> tables, adresse https://clients.exemple.fr`. Note `<n>`. Si l'adresse diffère, arrête-toi : les QR imprimés ne mèneraient pas au serveur.
-3. **Arrêt du kit.** Double-clique sur `ARRETER.bat` : sa fenêtre doit afficher « La file karaoké s’arrête. ». « Impossible d’arrêter la file karaoké » s'affiche aussi pour une file déjà arrêtée. Vérifie alors dans PowerShell : `curl.exe -s -o NUL -w "%{http_code}\n" --max-time 5 http://127.0.0.1:3000/healthz` doit donner `000`. Avec `200`, arrête-toi : la file du PC tourne encore.
+3. **Arrêt du kit.** Double-clique sur `ARRETER.bat` : sa fenêtre doit afficher « La file karaoké s’arrête. ». « Impossible d’arrêter la file karaoké » s'affiche aussi pour une file déjà arrêtée. Vérifie alors dans PowerShell : `curl.exe -s -o NUL -w "%{http_code}\n" --max-time 5 http://127.0.0.1:3000/healthz` doit donner `000`. Avec tout autre code, arrête-toi : la file du PC tourne encore (un kit sans `/healthz` répond `404`).
 4. **Archive des données.** Toujours dans `<dossier karaoke-bar du kit>` :
 
    ```powershell
@@ -409,17 +411,17 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
 10. **Ancien chemin fermé.** Sur le serveur :
 
     ```bash
-    curl -fsS --max-time 10 --resolve clients.exemple.fr:443:<ancienne IPv4> https://clients.exemple.fr/healthz
+    curl -fsS -o /dev/null --max-time 10 --resolve clients.exemple.fr:443:<ancienne IPv4> https://clients.exemple.fr/app.css
     echo "Code de sortie : $?"
     ```
 
-    Cette requête vers l'ancienne adresse doit échouer : code de sortie différent de `0`. Avec `0`, une file ou un relais répond encore à l'ancienne adresse : retourne sur le PC, arrête-les comme à l'étape 5, puis refais cette étape.
+    Cette requête vers l'ancienne adresse doit échouer : code de sortie différent de `0`. Toutes les versions du kit servent `/app.css`, alors que `/healthz` manque aux plus anciennes. Avec `0`, une file ou un relais répond encore à l'ancienne adresse : retourne sur le PC, arrête-les comme à l'étape 5, puis refais cette étape.
 
 La restauration a remplacé `data/`, clé du bar d'essai comprise : donne maintenant le lien du bar aux gérants (section 13). KaraFun fermé, la page du bar finit sur « KaraFun fermé ou code changé : essais arrêtés ». C'est normal : à l'ouverture, suis la section 14. Retire ensuite les noms d'essai (section 9, point 6).
 
 **En cas d'échec.** Avant l'étape 6, remets `data` à son nom s'il le faut (`Rename-Item "data-avant-serveur-AAAAMMJJ" data`) et les raccourcis de `KaraFun Plus.exe`. Relance le tunnel du PC ou le client DynHost, puis `DEMARRER.bat`. Le tunnel `cloudflared` se relance dans un PowerShell administrateur : `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`.
 
-Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'abord le serveur par `docker compose stop`. Remets ensuite les noms des QR comme le dit le point 3 de la section 19, puis fais comme avant l'étape 6. N'utilise pas l'archive du serveur : `data-avant-serveur-AAAAMMJJ` garde les données du PC, intactes, alors que le serveur a pu réécrire l'adresse des QR. Si l'étape 7 a eu lieu, les volumes du serveur gardent le code KaraFun du PC : avant tout nouveau `docker compose up -d`, restaure l'archive de départ de la section 11 (section 19, fin). Spotify peut aussi demander une reconnexion sur le PC (« Reconnecter Spotify ») : le serveur a pu renouveler son jeton. Après une soirée sur le serveur, suis la section 19.
+Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'abord le serveur par `docker compose stop`. Remets ensuite les noms des QR comme le dit le point 3 de la section 19, puis fais comme avant l'étape 6. N'utilise pas l'archive du serveur : `data-avant-serveur-AAAAMMJJ` garde les données du PC, intactes, alors que le serveur a pu réécrire l'adresse des QR. Si l'étape 7 a eu lieu, les volumes du serveur gardent le code KaraFun du PC : avant tout nouveau `docker compose up -d`, prépare le serveur comme le dit le début de la section 11 (noms d'essai, archive de départ). Spotify peut aussi demander une reconnexion sur le PC (« Reconnecter Spotify ») : le serveur a pu renouveler son jeton. Après une soirée sur le serveur, suis la section 19.
 
 **Contrôle** : le QR imprimé ouvre sa table en 4G/5G, et l'étape 10 affiche un code de sortie différent de `0`. Le lendemain, `Resolve-DnsName clients.exemple.fr -Type A` donne encore `<IPv4 du VPS>`.
 
@@ -440,7 +442,7 @@ docker compose exec app node server.js --rotate-staff-key
 docker compose restart app
 ```
 
-La file reprend sa soirée en quelques secondes. Redonne ensuite le nouveau lien, obtenu par la première commande de cette section : l'ancien répond « Réservé au bar ». Pour un mot de passe divulgué, refais aussi l'empreinte (section 10), remplace `BAR_PASSWORD_HASH` dans `.env`, puis lance `docker compose up -d`.
+La file reprend sa soirée en quelques secondes. Redonne ensuite le nouveau lien, obtenu par la première commande de cette section : l'ancien répond « Réservé au bar ». Pour un mot de passe divulgué, refais aussi l'empreinte par la seule commande `docker run --rm -it caddy:2 caddy hash-password --bcrypt-cost 10` (section 10), jamais par tout le bloc de la section 10 : son `cp .env.example .env` écraserait `.env`. Remplace ensuite `BAR_PASSWORD_HASH` dans `.env`, par `nano .env`, puis lance `docker compose up -d`.
 
 **Contrôle** : le lien ouvre la page du bar après le mot de passe ; après un renouvellement, l'ancien lien affiche « Réservé au bar ».
 
@@ -616,12 +618,15 @@ La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archi
    Set-Location "<dossier karaoke-bar du kit>"
    scp karaoke@<IPv4 du VPS>:karafun-plus/deploy/sauvegardes/<nom de l'archive> .
    tar.exe -xzf <nom de l'archive> data
+   Remove-Item data\staff-key -ErrorAction SilentlyContinue
    ```
+
+   La dernière ligne retire la clé du bar du serveur. Le kit ne s'en sert pas, et une bascule suivante la remettrait en service, avec l'ancien lien des gérants.
 
 3. Chez OVHcloud, retire d'abord les entrées CAA du nom des QR. Remets ensuite sa cible sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Si son « TTL » est revenu à 3600, compte jusqu'à une heure. Relance ensuite le tunnel ou le relais du PC : pour `cloudflared`, dans un PowerShell administrateur, `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`. Relance aussi le client DynHost arrêté à l'étape 5 de la section 12, et remets les entrées AAAA retirées, s'il y en avait.
 4. Double-clique sur `KaraFun Plus.exe`.
 
-Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface. Ils gardent aussi le code KaraFun, et la file du serveur s'y reconnecterait à son prochain démarrage. Pour un nouvel essai, restaure donc d'abord l'archive de départ notée en section 11 (`./restauration.sh`), avant tout `docker compose up -d`.
+Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface. Ils gardent aussi le code KaraFun, et la file du serveur s'y reconnecterait à son prochain démarrage. Pour un nouvel essai, prépare donc d'abord le serveur comme le dit le début de la section 11 (noms d'essai, archive de départ), avant tout `docker compose up -d`.
 
 ```bash
 docker compose down
