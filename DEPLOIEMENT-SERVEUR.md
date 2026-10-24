@@ -17,6 +17,12 @@ Valeurs à remplacer dans les commandes :
 | `AAAAMMJJ` | date du jour, dans le nom d'une archive |
 | `<nom de l'archive>` | nom d'un fichier de `deploy/sauvegardes/` |
 | `<dossier karaoke-bar du kit>` | dossier `karaoke-bar` du kit Windows décompressé |
+| `exemple.fr` | ton domaine (section 2) |
+| `clients.exemple.fr` | hôte des QR imprimés, `HOTE_CLIENTS` (section 2) |
+| `bar.exemple.fr` | hôte de la page du bar, `HOTE_BAR` (section 2) |
+| `essai.exemple.fr`, `essai-bar.exemple.fr` | noms d'essai d'une bascule (section 2) |
+
+`exemple.fr` est un vrai domaine, qui n'est pas le tien : il répond pour tous ses sous-domaines. Une commande lancée avec un nom d'exemple joindrait donc son serveur, mot de passe du bar compris.
 
 ## 1. Vue d'ensemble
 
@@ -50,15 +56,17 @@ Il te faut :
 
 **Noms d'essai.** Pour une bascule depuis le PC Windows, le serveur tourne d'abord sous deux noms d'essai : `essai.exemple.fr` (clients) et `essai-bar.exemple.fr` (bar). Les vrais noms ne changent de cible qu'à l'étape 6 de la section 12.
 
+**Zone DNS.** Dans PowerShell, `Resolve-DnsName exemple.fr -Type NS` doit donner des serveurs d'OVHcloud (leur nom contient `ovh`). Sinon, par exemple pour une zone chez Cloudflare, arrête-toi : ce guide ne couvre que la zone d'OVHcloud.
+
 **Clé SSH.** Sur le PC d'administration, dans PowerShell :
 
 ```powershell
 ssh-keygen -t ed25519 -C "karafun-plus-vps"
 ```
 
-Accepte le fichier proposé et choisis une phrase de passe. La clé privée `id_ed25519` ne quitte jamais ce PC.
+Accepte le fichier proposé et choisis une phrase de passe. Si `ssh-keygen` demande `Overwrite (y/n)?`, une clé existe déjà : réponds `n` et garde-la, elle sert telle quelle. La clé privée `id_ed25519` ne quitte jamais ce PC.
 
-**Contrôle** : `Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub"` affiche une seule ligne, qui commence par `ssh-ed25519` et finit par `karafun-plus-vps`.
+**Contrôle** : `Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub"` affiche une seule ligne, qui commence par `ssh-ed25519` et finit par `karafun-plus-vps` (ou par le commentaire de ta clé existante).
 
 ## 3. Créer le VPS chez OVHcloud
 
@@ -77,7 +85,7 @@ Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub" | ssh <utilisateur OVH>@<IPv4
 ssh <utilisateur OVH>@<IPv4 du VPS>
 ```
 
-La seconde commande ouvre une session sans le mot de passe de l'e-mail : seule la phrase de passe de la clé est demandée. Si le serveur exige un nouveau mot de passe, choisis-le.
+La seconde commande ouvre une session sans le mot de passe de l'e-mail : seule la phrase de passe de la clé est demandée. Si le serveur exige un nouveau mot de passe, choisis-le. Si la première commande répond `Password change required but no TTY available`, lance d'abord la seconde, change le mot de passe, tape `exit`, puis relance la première.
 
 Sur le serveur, mets le système à jour, installe les mises à jour de sécurité automatiques et règle le fuseau horaire :
 
@@ -130,9 +138,16 @@ Ferme cette session, puis essaie l'ancien compte : SSH doit répondre `Permissio
 ssh <utilisateur OVH>@<IPv4 du VPS>
 ```
 
-Seulement alors, ferme la première session. Toutes les commandes suivantes se tapent dans une session `karaoke`.
+Seulement alors, dans la première session, verrouille l'ancien compte et retire son `sudo` sans mot de passe, posé par cloud-init :
 
-**Contrôle** : `sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication|allowusers) '` affiche `permitrootlogin no`, `passwordauthentication no`, `kbdinteractiveauthentication no` et `allowusers karaoke`.
+```bash
+sudo passwd -l <utilisateur OVH>
+sudo rm -f /etc/sudoers.d/90-cloud-init-users
+```
+
+Ferme ensuite la première session. Toutes les commandes suivantes se tapent dans une session `karaoke`.
+
+**Contrôle** : `sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication|allowusers) '` affiche `permitrootlogin no`, `passwordauthentication no`, `kbdinteractiveauthentication no` et `allowusers karaoke`, et `sudo passwd -S <utilisateur OVH>` montre `L` en deuxième colonne.
 
 ## 6. Pare-feu
 
@@ -208,7 +223,7 @@ Ne lance jamais l'outil en boucle : chaque lecture compte dans la limite horaire
 
 Dans l'espace client d'OVHcloud, ouvre ton domaine, onglet « Zone DNS ». Chaque nom de la file y est une entrée de type A, créée par « Ajouter une entrée ». Choisis le sous-domaine, la cible `<IPv4 du VPS>`, et un « TTL » « Personnalisé » de 300 secondes.
 
-Nouvelle installation : crée les entrées A de `HOTE_CLIENTS` et de `HOTE_BAR` (sous-domaines `clients` et `bar` de ce guide).
+Nouvelle installation : crée les entrées A de `HOTE_CLIENTS` et de `HOTE_BAR` (sous-domaines `clients` et `bar` de ce guide). Applique ensuite les points 4 et 5 ci-dessous, et le point 7 sept jours plus tard.
 
 Bascule depuis le PC Windows :
 
@@ -216,8 +231,9 @@ Bascule depuis le PC Windows :
 2. Au moins 24 heures avant la bascule : sur l'entrée actuelle du nom des QR, « Modifier l'entrée », puis « TTL » « Personnalisé » à 300.
 3. À l'étape 6 de la section 12 : change la cible du nom des QR pour `<IPv4 du VPS>`, et crée l'entrée A de `HOTE_BAR` si elle manque.
 4. Au même moment, retire pour ces noms toute entrée AAAA ou CNAME, et tout DynHost. La file ne reçoit les téléphones qu'en IPv4 : le réseau Docker du compose n'a pas d'IPv6, et un téléphone venu en IPv6 arriverait avec l'adresse de la passerelle Docker. Tous ces téléphones partageraient alors la même limite d'inscriptions par adresse. Ces libellés de suppression et le menu « DynHost » n'ont pas été vérifiés : cherche-les sur la ligne de l'entrée.
-5. Une fois les noms en place, ajoute pour chacun une entrée CAA : drapeau `0`, étiquette `issue`, valeur `letsencrypt.org`. Seul Let's Encrypt pourra alors leur délivrer un certificat.
-6. Sept jours après la bascule : remets le « TTL » de ces entrées à 3600.
+5. Une fois les noms en place, ajoute pour chacun une entrée CAA : drapeau `0`, étiquette `issue`, valeur `letsencrypt.org`. Seul Let's Encrypt pourra alors leur délivrer un certificat. Un retour arrière vers un CNAME demande de retirer d'abord ces entrées CAA (section 19).
+6. Une fois la bascule vérifiée (section 12) : retire les entrées A et CAA des noms d'essai, `essai` et `essai-bar`.
+7. Sept jours après la bascule : remets le « TTL » de ces entrées à 3600.
 
 N'interroge jamais un nom avant de l'avoir créé, ni par un navigateur, ni par `ping` ou `nslookup`. La réponse « nom absent » resterait en mémoire chez les résolveurs DNS, parfois plusieurs heures.
 
@@ -241,9 +257,9 @@ nano .env
 docker compose config --quiet
 ```
 
-`caddy hash-password` demande deux fois le mot de passe du bar : tape-le, il ne s'affiche pas. Ne le passe jamais en argument : il resterait dans l'historique. La commande affiche une empreinte qui commence par `$2a$10$`. Colle-la dans `BAR_PASSWORD_HASH`, entre apostrophes. Le coût 10 limite le calcul fait pour chaque essai sur `BAR_USER` : environ 80 ms au lieu d'une seconde avec le coût 14 de `caddy hash-password` sans option. Un essai sous un autre nom coûte toujours environ une seconde au serveur : des essais répétés peuvent encore occuper le VPS.
+Choisis un mot de passe du bar long et aléatoire, d'au moins 16 caractères, créé par le gestionnaire de mots de passe et jamais réutilisé : c'est la seule protection si le lien du bar fuit. `caddy hash-password` le demande deux fois : tape-le, il ne s'affiche pas. Ne le passe jamais en argument : il resterait dans l'historique. La commande affiche une empreinte qui commence par `$2a$10$`. Colle-la dans `BAR_PASSWORD_HASH`, entre apostrophes. Le coût 10 limite le calcul fait pour chaque essai sur `BAR_USER` : environ 80 ms au lieu d'une seconde avec le coût 14 de `caddy hash-password` sans option. Un essai sous un autre nom coûte toujours environ une seconde au serveur : des essais répétés peuvent encore occuper le VPS.
 
-Remplis les huit réglages de `.env` avant le premier démarrage :
+Remplis tous les réglages de `.env` avant le premier démarrage :
 
 | Réglage | Valeur |
 |---|---|
@@ -266,14 +282,19 @@ Les secrets du déploiement :
 | Clé SSH privée | PC d'administration (`id_ed25519`) | protégée par sa phrase de passe |
 | `data/`, `journal/`, archives | volumes du serveur et `deploy/sauvegardes/` | prénoms, QR secrets, jetons, code KaraFun et jeton Spotify : privés |
 
-**Contrôle** : `docker compose config --quiet` n'affiche rien, `stat -c '%a' .env` affiche `600`, et `grep -c -e '<' -e remplacer .env` affiche `0`.
+**Contrôle** : `docker compose config --quiet` n'affiche rien, `stat -c '%a' .env` affiche `600`, et `grep -c -e '<' -e remplacer -e 'X\.Y\.Z' -e 'exemple\.fr' .env`, tapé tel quel, affiche `0` : aucune valeur d'exemple ne reste.
 
 ## 11. Premier démarrage
 
-En bascule, `.env` porte encore les noms d'essai. Remplace alors ci-dessous `clients.exemple.fr` par `essai.exemple.fr`, et `bar.exemple.fr` par `essai-bar.exemple.fr`. Dans `~/karafun-plus/deploy` :
+En bascule, `.env` porte encore les noms d'essai. Remplace alors ci-dessous `clients.exemple.fr` par `essai.exemple.fr`, et `bar.exemple.fr` par `essai-bar.exemple.fr`. Dans `~/karafun-plus/deploy`, démarre la file :
 
 ```bash
 docker compose up -d
+```
+
+Attends une minute, le temps que `app` passe à `(healthy)`, puis contrôle :
+
+```bash
 docker compose ps
 docker compose logs --no-log-prefix app
 docker compose logs caddy | grep -c 'certificate obtained successfully'
@@ -284,9 +305,9 @@ docker compose exec app node -e "fetch('http://127.0.0.1:3000/readyz').then(r =>
 
 Résultats attendus, commande par commande :
 
-- `docker compose ps` : `app` passe à `(healthy)` en une minute ; la seule flèche de sa ligne est `127.0.0.1:3000->3000/tcp`.
-- Le journal de `app` contient les lignes `Mode` (`serveur`), `Fuseau horaire` (`Europe/Paris`) et `Clé du bar` (une empreinte, jamais la clé).
-- Caddy a obtenu les certificats des deux hôtes : `2`.
+- `docker compose ps` : `app` est `(healthy)` ; la seule flèche de sa ligne est `127.0.0.1:3000->3000/tcp`.
+- Le journal de `app` contient les lignes `Mode` (`serveur`), `Fuseau horaire` (`Europe/Paris`) et `Clé du bar` (une empreinte, jamais la clé). Les lignes `Adresse des clients (QR)` et `Adresse de la page du bar` montrent les noms de `.env`, jamais un nom en `exemple.fr`.
+- Caddy a obtenu les certificats des deux hôtes : `2`. Si le compte donne `0` ou `1`, attends encore une minute et relance cette commande.
 - Aucun lien du bar au journal : `0`.
 - `/readyz` répond `{"ok":false,"mode":"server","karafun":"no-code","solver":"available","persistence":"ok"}`. C'est normal : aucun code KaraFun n'est encore donné.
 - `./sauvegarde.sh` arrête la file le temps de la copie, écrit `Sauvegarde écrite : sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz (…)`, puis relance la file.
@@ -333,13 +354,15 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    ```
 
    Note l'empreinte SHA-256. L'archive ne contient que `data` : `journal`, avec ses prénoms, reste sur le PC.
+
+   `scp` demande la clé SSH du PC d'administration. Si le PC du kit n'est pas celui-là, ne lance pas `scp` ici. Porte l'archive sur le PC d'administration (clé USB), refais son `Get-FileHash`, puis lance `scp` depuis lui. Ne copie jamais `id_ed25519` sur le PC du bar.
 5. **Ancienne file hors service.** Toujours dans le même dossier :
 
    ```powershell
    Rename-Item data "data-avant-serveur-AAAAMMJJ"
    ```
 
-   Arrête aussi le tunnel ou le relais HTTPS du PC, et empêche-le de repartir au démarrage. Pour le service `cloudflared` du guide du bar, dans un PowerShell administrateur : `Stop-Service cloudflared`, puis `Set-Service cloudflared -StartupType Disabled`.
+   Arrête aussi le tunnel ou le relais HTTPS du PC, et empêche-le de repartir au démarrage. Pour le service `cloudflared` du guide du bar, dans un PowerShell administrateur : `Stop-Service cloudflared`, puis `Set-Service cloudflared -StartupType Disabled`. Si le nom des QR passe par DynHost, arrête aussi son client (box ou logiciel du PC) : il pourrait remettre l'adresse du domicile.
 6. **DNS.** Change les cibles comme le disent les points 3 et 4 de la bascule, en section 9. Compte cinq minutes (TTL 300) : Caddy réessaie seul si le DNS n'a pas encore suivi.
 7. **Restauration sur le serveur.** Dans `~/karafun-plus/deploy` :
 
@@ -360,7 +383,7 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    docker compose logs --no-log-prefix app | grep -E 'Soirée restaurée|Attention : data/tables.json|Impossible de démarrer'
    ```
 
-   Attendus : `2`, pour les certificats des noms définitifs. Puis deux fois `700 node` : ne corrige jamais ces droits à la main. Enfin une seule ligne, `Soirée restaurée : <n> tables, …`, avec le même `<n>` qu'à l'étape 2. Une ligne `Attention : data/tables.json` ou `Impossible de démarrer` arrête la bascule : section 19.
+   Attendus : `2`, pour les certificats des noms définitifs ; s'il donne moins, attends une minute et relance cette commande. Puis deux fois `700 node` : ne corrige jamais ces droits à la main. Enfin une seule ligne, `Soirée restaurée : <n> tables, …`, avec le même `<n>` qu'à l'étape 2. Une ligne `Attention : data/tables.json` ou `Impossible de démarrer` arrête la bascule : section 19.
 9. **QR imprimé.** Wi-Fi coupé, en 4G/5G, scanne un QR **imprimé** : la page de sa table doit s'ouvrir.
 10. **Ancien chemin fermé.** Sur le serveur :
 
@@ -371,11 +394,11 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
 
     Cette requête vers l'ancienne adresse doit échouer : code de sortie différent de `0`.
 
-La restauration a remplacé `data/`, clé du bar d'essai comprise : donne maintenant le lien du bar aux gérants (section 13). KaraFun fermé, la page du bar finit sur « KaraFun fermé ou code changé : essais arrêtés ». C'est normal : à l'ouverture, suis la section 14.
+La restauration a remplacé `data/`, clé du bar d'essai comprise : donne maintenant le lien du bar aux gérants (section 13). KaraFun fermé, la page du bar finit sur « KaraFun fermé ou code changé : essais arrêtés ». C'est normal : à l'ouverture, suis la section 14. Retire ensuite les noms d'essai (section 9, point 6).
 
-En cas d'échec avant l'étape 6, remets `data` à son nom s'il le faut (`Rename-Item "data-avant-serveur-AAAAMMJJ" data`), relance le tunnel du PC, puis `DEMARRER.bat`. Après l'étape 6 : section 19.
+En cas d'échec avant l'étape 6, remets `data` à son nom s'il le faut (`Rename-Item "data-avant-serveur-AAAAMMJJ" data`), relance le tunnel du PC, puis `DEMARRER.bat`. Le tunnel `cloudflared` se relance dans un PowerShell administrateur : `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`. Après l'étape 6 : section 19.
 
-**Contrôle** : le QR imprimé ouvre sa table en 4G/5G, et l'étape 10 affiche un code de sortie différent de `0`.
+**Contrôle** : le QR imprimé ouvre sa table en 4G/5G, et l'étape 10 affiche un code de sortie différent de `0`. Le lendemain, `Resolve-DnsName clients.exemple.fr -Type A` donne encore `<IPv4 du VPS>`.
 
 ## 13. Lien de la page du bar
 
@@ -419,7 +442,7 @@ Reconnexion, rare (pastille « Spotify non connecté ») : depuis le PC d'admini
 ssh -N -L 3000:127.0.0.1:3000 karaoke@<IPv4 du VPS>
 ```
 
-Laisse cette fenêtre ouverte. Dans le navigateur de ce PC, ouvre `http://127.0.0.1:3000/staff?key=<clé>`, avec la clé du lien de la section 13. Puis « Plus », « Reconnecter Spotify ». Après le retour de Spotify, Ctrl+C dans la fenêtre PowerShell ferme le tunnel.
+Laisse cette fenêtre ouverte. Dans le navigateur de ce PC, ouvre d'abord `http://127.0.0.1:3000/readyz`, sans clé : la réponse doit contenir `"mode":"server"`. Sinon, un autre programme tient le port 3000 de ce PC : ferme le tunnel et n'envoie pas la clé. Ouvre ensuite `http://127.0.0.1:3000/staff?key=<clé>`, avec la clé du lien de la section 13. Puis « Plus », « Reconnecter Spotify ». Après le retour de Spotify, Ctrl+C dans la fenêtre PowerShell ferme le tunnel.
 
 Sur un serveur neuf, sans soirée reprise d'un PC, la première connexion à Spotify passe par le même tunnel, avec le panneau Spotify décrit dans GUIDE-BAR.md.
 
@@ -433,7 +456,7 @@ Jamais en soirée : la sauvegarde arrête la file le temps de la copie. Dans `~/
 ./sauvegarde.sh
 ```
 
-Le script écrit `Sauvegarde écrite : sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz (…)`, puis relance la file. Copie l'archive hors du serveur, depuis PowerShell :
+Le script écrit `Sauvegarde écrite : sauvegardes/karafun-plus-AAAAMMJJ-HHMMSSZ.tar.gz (…)`, puis relance la file. Copie l'archive hors du serveur, depuis le PowerShell du PC d'administration :
 
 ```powershell
 scp karaoke@<IPv4 du VPS>:karafun-plus/deploy/sauvegardes/<nom de l'archive> .
@@ -445,13 +468,13 @@ Pour remettre une archive en place :
 ./restauration.sh sauvegardes/<nom de l'archive>
 ```
 
-Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, remplace `data/` et `journal/`, puis relance la file. L'archive est privée : elle contient les prénoms, les QR secrets, la clé du bar et les jetons. Garde-la sur un disque protégé, jamais dans un message.
+Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, remplace `data/` et `journal/`, puis relance la file. L'archive remet aussi sa clé du bar : après la restauration d'une archive plus ancienne qu'un renouvellement de la clé, renouvelle-la de nouveau et redonne le lien (section 13). L'archive est privée : elle contient les prénoms, les QR secrets, la clé du bar et les jetons. Garde-la sur un disque protégé, jamais dans un message.
 
 **Contrôle** : `ls -l sauvegardes/` montre l'archive en `-rw-------`, et sa copie est sur le PC.
 
 ## 17. Mise à jour et retour à la version précédente
 
-Hors soirée, quand une release `vX.Y.Z` paraît :
+Hors soirée, quand une release `vX.Y.Z` paraît, prépare la nouvelle version sans la démarrer. Si une commande échoue, sauvegarde comprise, arrête-toi là :
 
 ```bash
 cd ~/karafun-plus/deploy
@@ -462,12 +485,24 @@ diff <(grep -o '^[A-Z_]*=' .env | sort) <(grep -o '^[A-Z_]*=' .env.example | sor
 sed -i 's/^KARAFUN_PLUS_VERSION=.*/KARAFUN_PLUS_VERSION=vX.Y.Z/' .env
 docker compose pull
 docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/jpfroud/karafun-plus:vX.Y.Z
-docker compose up -d
 ```
 
 `diff` compare les clés de `.env` et de `.env.example` et ne doit rien afficher. Sinon, ajoute à `.env` le réglage nouveau, décrit par les notes de la release. Ne modifie que `.env` : les autres fichiers de `deploy/` suivent la version.
 
-Compare l'empreinte affichée par `docker image inspect` à la ligne « Empreinte » des notes de la release (`ghcr.io/jpfroud/karafun-plus@sha256:…`). Si elles diffèrent, ne lance pas `docker compose up -d`.
+Compare l'empreinte affichée par `docker image inspect` à la ligne « Empreinte » des notes de la release (`ghcr.io/jpfroud/karafun-plus@sha256:…`). Si elles sont identiques, démarre la nouvelle version. Caddy est recréé pour relire son `Caddyfile`, que `git checkout` a pu changer :
+
+```bash
+docker compose up -d
+docker compose up -d --force-recreate caddy
+```
+
+Si elles diffèrent, ne lance pas `docker compose up -d` : la version actuelle tourne toujours. Remets `.env` et `deploy/` sur elle, retire l'image refusée, puis signale l'écart au mainteneur du dépôt :
+
+```bash
+sed -i 's/^KARAFUN_PLUS_VERSION=.*/KARAFUN_PLUS_VERSION=vA.B.C/' .env
+git checkout vA.B.C
+docker image rm ghcr.io/jpfroud/karafun-plus:vX.Y.Z
+```
 
 Retour à la version précédente : les mêmes commandes, avec `vA.B.C` à la place de `vX.Y.Z`. Si la file refuse ensuite de démarrer, restaure l'archive faite juste avant la mise à jour (section 16).
 
@@ -475,13 +510,23 @@ Retour à la version précédente : les mêmes commandes, avec `vA.B.C` à la pl
 
 ## 18. Vérifications et dépannage
 
-Dans `~/karafun-plus/deploy`, les commandes de tous les jours :
+Dans `~/karafun-plus/deploy`, les contrôles de tous les jours, sans effet sur la file :
 
 ```bash
 docker compose ps
-docker compose restart app
-docker compose stop app
 df -h /
+```
+
+Redémarrer la file, la soirée reprend :
+
+```bash
+docker compose restart app
+```
+
+L'arrêter, jamais en soirée ; la soirée est enregistrée :
+
+```bash
+docker compose stop app
 ```
 
 | Commande | Rôle |
@@ -506,10 +551,17 @@ docker compose exec -T app find /app/journal -maxdepth 1 -type f -mtime +90 -pri
 ```bash
 docker compose run --rm app node server.js --rotate-staff-key
 docker compose up -d
+```
+
+Attends que `docker compose ps` montre `app` en `(healthy)`, puis lis le nouveau lien :
+
+```bash
 docker compose exec app node server.js --print-staff-url
 ```
 
-Redonne ensuite le nouveau lien aux gérants (section 13). Une autre ligne `Impossible de démarrer : …` donne sa cause, le plus souvent un réglage de `.env` : corrige-le, puis lance `docker compose up -d`.
+Redonne-le ensuite aux gérants (section 13). Une autre ligne `Impossible de démarrer : …` donne sa cause, le plus souvent un réglage de `.env` : corrige-le, puis lance `docker compose up -d`.
+
+**Journal pour un diagnostic.** Le journal cite des prénoms : n'envoie jamais un fichier entier. Relis-le, par `docker compose logs --no-log-prefix app`, et copie seulement les lignes de connexion à KaraFun, sans aucun prénom.
 
 Jamais : `docker compose down -v` (il efface les volumes, donc la soirée et la clé), `docker compose run` hors de l'exception ci-dessus (seconde file), `node server.js` lancé en SSH (seconde file), publier `journal/` (il contient des prénoms).
 
@@ -527,8 +579,8 @@ docker compose stop
 
 La sauvegarde ne relance pas la file, déjà arrêtée. Note `<nom de l'archive>`. Puis, sur le PC Windows :
 
-1. Télécharge le kit `vX.Y.Z` neuf, de la même version que le serveur. Vérifie son SHA-256 avec `Get-FileHash KIT-BAR-KARAFUN.zip -Algorithm SHA256`, puis décompresse-le entièrement.
-2. Récupère l'archive, et n'en extrais que `data` :
+1. Télécharge le kit `vX.Y.Z` neuf, de la même version que le serveur, avec le fichier `KIT-BAR-KARAFUN.zip.sha256` de la release. `(Get-FileHash KIT-BAR-KARAFUN.zip -Algorithm SHA256).Hash.ToLower()` doit donner le premier mot de ce fichier. Sinon, ne décompresse pas le kit ; s'ils sont égaux, décompresse-le entièrement.
+2. Récupère l'archive, et n'en extrais que `data`. `scp` se lance depuis le PC d'administration : si le kit est sur un autre PC, porte-y ensuite l'archive (clé USB), puis fais-y `tar.exe`.
 
    ```powershell
    Set-Location "<dossier karaoke-bar du kit>"
@@ -536,7 +588,7 @@ La sauvegarde ne relance pas la file, déjà arrêtée. Note `<nom de l'archive>
    tar.exe -xzf <nom de l'archive> data
    ```
 
-3. Remets la cible DNS du nom des QR sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Relance ensuite le tunnel ou le relais du PC.
+3. Chez OVHcloud, retire d'abord les entrées CAA du nom des QR. Remets ensuite sa cible sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Si son « TTL » est revenu à 3600, compte jusqu'à une heure. Relance ensuite le tunnel ou le relais du PC : pour `cloudflared`, dans un PowerShell administrateur, `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`.
 4. Double-clique sur `KaraFun Plus.exe`.
 
 Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface.
@@ -545,13 +597,15 @@ Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel
 docker compose down
 ```
 
+Avant de résilier le VPS, retire chez OVHcloud toute entrée qui vise `<IPv4 du VPS>`, celle de `HOTE_BAR` comprise : un autre client d'OVHcloud pourrait recevoir cette adresse.
+
 Avec le kit Windows, ne relaie jamais le port du bar (3000) par un proxy HTTPS : en mode PC, un relais HTTPS installé sur la même machine fait paraître locale toute requête, et n'importe qui ouvrirait la page du bar.
 
-**Contrôle** : un QR imprimé ouvre sa table en 4G/5G par le PC, et la page du bar du kit montre les tables de la soirée.
+**Contrôle** : un QR imprimé ouvre sa table en 4G/5G par le PC, et la page du bar du kit montre les tables de la soirée. Avec `cloudflared`, `Get-Service cloudflared | Select-Object Status, StartType` affiche `Running` et `Automatic`.
 
 ## 20. Données personnelles et accès
 
-La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de données français. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Informe les clients par une affiche, comme avec le kit.
+La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de données français. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Les PC Windows en gardent aussi : `data-avant-serveur-AAAAMMJJ`, les archives `karafun-plus-pc-AAAAMMJJ.tar.gz` et celles copiées par `scp`, et l'ancien dossier `journal` du kit. Range-les sur le disque protégé de la section 16, et efface-les quand le retour au kit n'est plus utile. Informe les clients par une affiche, comme avec le kit.
 
 | Qui | Accès |
 |---|---|

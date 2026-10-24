@@ -30,7 +30,8 @@ const PLAN = [
 const PROPRIETAIRE = 'jpfroud';
 const IMAGE = `ghcr.io/${PROPRIETAIRE}/karafun-plus`;
 const RUN_EXCEPTION = 'docker compose run --rm app node server.js --rotate-staff-key';
-// Formes uniques des commandes du guide (J9 de l'issue #30), dans l'ordre.
+// Formes uniques des commandes du guide (J9 de l'issue #30, J9-14 avec
+// --bcrypt-cost 10 depuis #29), dans l'ordre.
 const COMMANDES = [
   'sudo apt full-upgrade -y',
   'Get-Content "$env:USERPROFILE\\.ssh\\id_ed25519.pub" | ssh <utilisateur OVH>@<IPv4 du VPS> "umask 077; mkdir -p ~/.ssh; tr -d \'\\r\' >> ~/.ssh/authorized_keys"',
@@ -70,34 +71,42 @@ const TESTS_DEUX_MODES = ['test/startup-port.test.js', 'test/staff-ui-coverage.t
 // des bases des blocs CIDR du contrat (DEFAULT_TRUSTED_PROXIES de server.js).
 const HOTES = ['exemple.fr', 'github.com', 'ghcr.io', 'karafun.com', 'karafun.fr', 'spotify.com', 'docker.com',
   'letsencrypt.org', 'ovhcloud.com', 'containerd.io'];
+// Domaines de premier niveau repérés hors URL : courants, et ceux d'un bar
+// ou d'une ville (un vrai nom en .paris ou .bar ne doit pas passer).
+const TLD = ['fr', 'com', 'org', 'net', 'io', 'eu', 'be', 'ch', 'de', 'uk', 'lu', 'it', 'es', 'nl', 'ca', 'us', 'info',
+  'biz', 'app', 'dev', 'cloud', 'ovh', 'me', 'co', 'xyz', 'site', 'online', 'tech', 'bar', 'pub', 'fun', 'club', 'paris',
+  'bzh', 'live', 'events', 'music', 'pro', 'shop', 'store', 'top'];
 const IPV4 = ['127.0.0.1', '0.0.0.0', '1.1.1.1', '8.8.8.8'];
 // Premiers segments qui ne sont pas des chemins du dépôt : données, journaux,
 // produits de construction, état local.
 const HORS_DEPOT = new Set(['data', 'journal', 'node_modules', 'coverage', '.git', '.gstack', 'node', 'solver-runtime',
   'LICENCES-JAVA', 'karaoke-bar', 'sauvegardes']);
 const chemin_exempte = target => target === 'deploy/.env' || /^deploy\/sauvegardes(\/|$)/.test(target);
+// Textes avec « / » qui ne sont pas des chemins : ports du pare-feu, fuseau,
+// image d'un registre (premier segment en forme d'hôte), branche git.
+const NON_CHEMIN = [/^\d+\/(tcp|udp)$/, /^Europe\//, /^[a-z0-9-]+(\.[a-z0-9-]+)+\//i, /^fix\//];
 
 // Lignes des blocs de code (``` éventuellement indentés) et texte sans eux.
 function split(text) {
   const code = [];
   const rest = [];
   let inside = false;
-  text.split('\n').forEach((line, index) => {
-    if (/^\s*```/.test(line)) { inside = !inside; return; }
-    (inside ? code : rest).push({ line, number: index + 1 });
-  });
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) { inside = !inside; continue; }
+    (inside ? code : rest).push(line);
+  }
   return { code, rest };
 }
 // Texte courant : sans blocs de code ni lignes de tableau.
 function prose(text) {
-  return split(text).rest.map(entry => entry.line).filter(line => !line.trim().startsWith('|')).join('\n');
+  return split(text).rest.filter(line => !line.trim().startsWith('|')).join('\n');
 }
 
 const guide = read(GUIDE);
 const manifest = JSON.parse(read('livrable.json'));
 
 test('J1 plan du guide serveur', () => {
-  const lines = split(guide).rest.map(entry => entry.line);
+  const lines = split(guide).rest;
   const first = lines.find(line => line.trim() !== '');
   const titles = lines.filter(line => /^## /.test(line));
   const message = `${GUIDE} : sections attendues dans cet ordre`;
@@ -114,14 +123,20 @@ test('J2 guide livré dans l\'image et le kit', () => {
 });
 
 test('J3 noms du contrat', () => {
+  // Contrat encore lu par le code : une variable renommée dans server.js (ou
+  // solver/bridge.js) sort du contrat des documents qui la citent.
+  const code = read('server.js') + read('solver/bridge.js');
+  const lue = CONTRAT.filter(name => new RegExp(`\\b${name}\\b`).test(code));
   for (const file of DOCS) {
     for (const [name] of read(file).matchAll(/\bKARAOKE_[A-Z0-9_]*[A-Z0-9]\b/g)) {
-      assert.ok(CONTRAT.includes(name), `${file} : variable hors contrat ${name}`);
+      assert.ok(lue.includes(name), `${file} : variable hors contrat ${name}`);
     }
   }
+  // Chaque réglage a sa propre ligne : son nom en première cellule.
   const tableRows = guide.split('\n').filter(line => line.trim().startsWith('|'));
   for (const [, key] of read('deploy/.env.example').matchAll(/^([A-Z][A-Z0-9_]*)=/gm)) {
-    assert.ok(tableRows.some(row => row.includes(`\`${key}\``)), `${GUIDE} : réglage ${key} de deploy/.env.example non décrit`);
+    const own = new RegExp(`^\\|\\s*\`${key}\`\\s*\\|`);
+    assert.ok(tableRows.some(row => own.test(row.trim())), `${GUIDE} : réglage ${key} de deploy/.env.example non décrit`);
   }
   const server = read('server.js');
   const options = new Set([...server.matchAll(/--([a-z][a-z0-9-]*)/g), ...server.matchAll(/\barg\('([a-z][a-z0-9-]*)'/g)]
@@ -152,19 +167,21 @@ test('J4 commandes dangereuses', () => {
 
 test('J5 aucune donnée privée', () => {
   const allowedHost = host => HOTES.some(name => host === name || host.endsWith(`.${name}`));
-  const bases = [...read('server.js').match(/DEFAULT_TRUSTED_PROXIES = '([^']+)'/)[1].split(',')]
-    .map(entry => entry.split('/')[0]);
-  const allowedIp = ip => IPV4.includes(ip) || bases.includes(ip);
+  const declared = read('server.js').match(/DEFAULT_TRUSTED_PROXIES\s*=\s*['"`]([^'"`]+)['"`]/);
+  assert.ok(declared, 'server.js : déclaration DEFAULT_TRUSTED_PROXIES introuvable (J5 du guide)');
+  const bases = declared[1].split(',').map(entry => entry.trim().split('/')[0].toLowerCase());
+  const allowedIp = ip => IPV4.includes(ip) || bases.includes(ip.toLowerCase());
   const fail = excerpt => `${GUIDE} : donnée privée possible : ${excerpt}`;
   const hosts = [];
   for (const [, host] of guide.matchAll(/\b[a-z][a-z0-9+.-]*:\/\/([^\s/:?#`'"<>)\]]+)/gi)) hosts.push(host);
-  const tld = 'fr|com|org|net|io|eu|be|ch|de|uk|lu|it|es|nl|ca|us|info|biz|app|dev|cloud|ovh|me|co|xyz|site|online|tech';
-  for (const [host] of guide.matchAll(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?:${tld})\\b`, 'gi'))) hosts.push(host);
+  for (const [host] of guide.matchAll(new RegExp(`\\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?:${TLD.join('|')})\\b`, 'gi'))) hosts.push(host);
   for (const host of hosts) {
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) continue;
     assert.ok(allowedHost(host.toLowerCase()), fail(host));
   }
   for (const [ip] of guide.matchAll(/(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?!\d|\.\d)/g)) assert.ok(allowedIp(ip), fail(ip));
+  // IPv6 : groupes hexadécimaux séparés par « : », hors port (127.0.0.1:3000:3000).
+  for (const [ip] of guide.matchAll(/(?<![\w:.])[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7}(?![\w:.])/gi)) assert.ok(allowedIp(ip), fail(ip));
   for (const pattern of [/key=[A-Za-z0-9_-]{16,}/, /\$2[aby]?\$\d\d\$[./A-Za-z0-9]{53}/, /(?<![\w.])\d{5,}(?!\w)/]) {
     const found = guide.match(pattern);
     assert.equal(found, null, fail(found && found[0]));
@@ -184,7 +201,7 @@ test('J6 liens et chemins cités', () => {
       if (!span.includes('/') || /[\s<>*…${}|]/.test(span) || /^(\/|~|\.\.?\/|[a-z][a-z0-9+.-]*:)/i.test(span)) continue;
       const target = span.replace(/#.*$/, '').replace(/:\d+(-\d+)?$/, '');
       const first = target.split('/')[0];
-      if (HORS_DEPOT.has(first) || !exists(first) || chemin_exempte(target)) continue;
+      if (HORS_DEPOT.has(first) || chemin_exempte(target) || NON_CHEMIN.some(pattern => pattern.test(target))) continue;
       assert.ok(exists(target), message(target));
     }
   }
@@ -202,11 +219,11 @@ test('J7 règle des deux modes', () => {
 
 test('J8 variantes serveur des documents', () => {
   const expect = (file, text, needed) => assert.ok(flat(text).includes(flat(needed)), `${file} : variante serveur absente : ${needed}`);
-  for (const file of DOCS.filter(name => name !== GUIDE)) {
+  for (const file of DOCS) {
     const text = read(file);
-    expect(file, text, GUIDE);
+    if (file !== GUIDE) expect(file, text, GUIDE);
     for (const name of ['Tests Windows', 'Release Windows']) {
-      assert.ok(!text.includes(name), `${file} : ancien nom de workflow : ${name}`);
+      assert.ok(!flat(text).includes(name), `${file} : ancien nom de workflow : ${name}`);
     }
   }
   const bar = read('GUIDE-BAR.md');
@@ -236,8 +253,12 @@ test('J8 variantes serveur des documents', () => {
 });
 
 test('J9 commandes clés du guide', () => {
-  const lines = new Set(split(guide).code.map(entry => entry.line.trim()));
+  const code = split(guide).code;
+  const lines = new Set(code.map(line => line.trim()));
   for (const command of COMMANDES) assert.ok(lines.has(command), `${GUIDE} : commande attendue absente : ${command}`);
+  // J9-11 garde son espace en tête : le code KaraFun reste hors de l'historique de bash.
+  const diagnostic = ` ${COMMANDES[10]}`;
+  assert.ok(code.includes(diagnostic), `${GUIDE} : commande attendue absente : ${diagnostic}`);
 });
 
 test('J10 phrases du guide', () => {
