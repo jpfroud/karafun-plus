@@ -97,7 +97,7 @@ sudo dpkg-reconfigure -plow unattended-upgrades
 sudo timedatectl set-timezone Europe/Paris
 ```
 
-À la question de `dpkg-reconfigure`, réponds oui (« Yes »). Si le fichier `/var/run/reboot-required` existe, redémarre par `sudo reboot`, puis reconnecte-toi.
+À la question de `dpkg-reconfigure`, réponds oui (« Yes »). Redémarre ensuite par `sudo reboot`, puis reconnecte-toi : un noyau mis à jour ne sert qu'après un redémarrage, et Debian ne crée pas le fichier `/var/run/reboot-required` qui le signale sous Ubuntu.
 
 **Contrôle** : `timedatectl` affiche `Time zone: Europe/Paris`, et `apt-config dump APT::Periodic::Unattended-Upgrade` affiche `APT::Periodic::Unattended-Upgrade "1";`.
 
@@ -266,6 +266,8 @@ nano .env
 docker compose config --quiet
 ```
 
+Si `git checkout vX.Y.Z` affiche une erreur (`pathspec … did not match`), ne continue pas : les lignes suivantes ont tourné quand même, et `deploy/` est resté sur `main`, une autre version que l'image. Corrige le tag, relance `git checkout vX.Y.Z`, puis reprends le bloc à `cp .env.example .env`.
+
 Choisis un mot de passe du bar long et aléatoire, d'au moins 16 caractères, créé par le gestionnaire de mots de passe et jamais réutilisé : c'est la seule protection si le lien du bar fuit. `caddy hash-password` le demande deux fois : tape-le, il ne s'affiche pas. Ne le passe jamais en argument : il resterait dans l'historique. La commande affiche une empreinte qui commence par `$2a$10$`. Colle-la dans `BAR_PASSWORD_HASH`, entre apostrophes. Le coût 10 limite le calcul fait pour chaque essai sur `BAR_USER` : environ 80 ms au lieu d'une seconde avec le coût 14 de `caddy hash-password` sans option. Un essai sous un autre nom coûte toujours environ une seconde au serveur : des essais répétés peuvent encore occuper le VPS.
 
 Remplis tous les réglages de `.env` avant le premier démarrage :
@@ -291,7 +293,7 @@ Les secrets du déploiement :
 | Clé SSH privée | PC d'administration (`id_ed25519`) | protégée par sa phrase de passe |
 | `data/`, `journal/`, archives | volumes du serveur et `deploy/sauvegardes/` | prénoms, QR secrets, jetons, code KaraFun et jeton Spotify : privés |
 
-**Contrôle** : `docker compose config --quiet` n'affiche rien, `stat -c '%a' .env` affiche `600`, et `grep -c -e '<' -e remplacer -e 'X\.Y\.Z' -e 'exemple\.fr' .env`, tapé tel quel, affiche `0` : aucune valeur d'exemple ne reste.
+**Contrôle** : `git describe --tags --exact-match` affiche `vX.Y.Z`. `docker compose config --quiet` n'affiche rien, `stat -c '%a' .env` affiche `600`, et `grep -c -e '<' -e remplacer -e 'X\.Y\.Z' -e 'exemple\.fr' .env`, tapé tel quel, affiche `0` : aucune valeur d'exemple ne reste.
 
 ## 11. Premier démarrage
 
@@ -368,7 +370,7 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
 
    Note l'empreinte SHA-256. L'archive ne contient que `data` : `journal`, avec ses prénoms, reste sur le PC.
 
-   `scp` demande la clé SSH du PC d'administration. Si le PC du kit n'est pas celui-là, ne lance pas `scp` ici. Porte l'archive sur le PC d'administration (clé USB), refais son `Get-FileHash`, puis lance `scp` depuis lui. Ne copie jamais `id_ed25519` sur le PC du bar.
+   `scp` demande la clé SSH du PC d'administration. Si le PC du kit n'est pas celui-là, ne lance pas `scp` ici. Porte l'archive sur le PC d'administration (clé USB), refais son `Get-FileHash`, puis lance `scp` depuis lui. Efface ensuite l'archive de la clé USB (section 20). Ne copie jamais `id_ed25519` sur le PC du bar.
 
    Vérifie l'archive sur le serveur tout de suite, avant de toucher aux DNS. Dans `~/karafun-plus/deploy`, `sha256sum sauvegardes/karafun-plus-pc-AAAAMMJJ.tar.gz` doit donner l'empreinte notée, en minuscules. Sinon, refais `scp`.
 5. **Ancienne file hors service.** Toujours dans le même dossier :
@@ -495,9 +497,9 @@ Pour remettre une archive en place :
 ./restauration.sh sauvegardes/<nom de l'archive>
 ```
 
-Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, remplace `data/` et `journal/`, puis relance la file. Il la relance même sur un serveur en retrait, aux conteneurs arrêtés ou retirés (section 19) : n'y restaure alors qu'une archive sans code KaraFun, vérifiée comme le dit le début de la section 11. L'archive remet aussi sa clé du bar : après la restauration d'une archive plus ancienne qu'un renouvellement de la clé, renouvelle-la de nouveau et redonne le lien (section 13). Spotify peut alors demander une reconnexion (section 15). L'archive est privée : elle contient les prénoms, les QR secrets, la clé du bar et les jetons. Garde-la sur un disque protégé, jamais dans un message.
+Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, remplace `data/` et `journal/`, puis relance la file. Il la relance même sur un serveur en retrait, aux conteneurs arrêtés ou retirés (section 19) : n'y restaure alors qu'une archive sans code KaraFun, vérifiée comme le dit le début de la section 11. Sans sa ligne « Restauration terminée depuis … » (disque plein, connexion coupée), lance tout de suite `docker compose stop app` : le script a relancé la file sur des données incomplètes. Corrige la cause (`df -h /`), puis restaure l'archive « Sauvegarde écrite : … » que le script a produite juste avant : c'est l'état d'avant la restauration. L'archive remet aussi sa clé du bar : après la restauration d'une archive plus ancienne qu'un renouvellement de la clé, renouvelle-la de nouveau et redonne le lien (section 13). Spotify peut alors demander une reconnexion (section 15). L'archive est privée : elle contient les prénoms, les QR secrets, la clé du bar et les jetons. Garde-la sur un disque protégé, jamais dans un message.
 
-**Contrôle** : `ls -l sauvegardes/` montre l'archive en `-rw-------`, et sa copie est sur le PC.
+**Contrôle** : `ls -l sauvegardes/` montre l'archive en `-rw-------`, sa copie est sur le PC, et une restauration finit par « Restauration terminée depuis … ».
 
 ## 17. Mise à jour et retour à la version précédente
 
@@ -540,7 +542,7 @@ docker image rm ghcr.io/jpfroud/karafun-plus:vX.Y.Z
 
 Retour à la version précédente : les mêmes commandes, avec `vA.B.C` à la place de `vX.Y.Z`. Si la file refuse ensuite de démarrer, restaure l'archive faite juste avant la mise à jour (section 16).
 
-**Contrôle** : `docker compose ps` montre `app` en `(healthy)`, et `docker compose logs --no-log-prefix app | grep '=== File karaoké'` affiche la version voulue.
+**Contrôle** : `docker compose ps` montre `app` en `(healthy)`, et `git describe --tags --exact-match` comme `docker compose logs --no-log-prefix app | grep '=== File karaoké'` affichent la version voulue.
 
 ## 18. Vérifications et dépannage
 
@@ -578,9 +580,10 @@ Chaque mois aussi, hors soirée, mets le système à jour. Les mises à jour aut
 sudo apt update
 sudo apt full-upgrade -y
 docker compose ps
+[ "/boot/vmlinuz-$(uname -r)" = "$(ls -1 /boot/vmlinuz-* | sort -V | tail -1)" ] || echo "Redémarrage nécessaire : nouveau noyau installé"
 ```
 
-Si le fichier `/var/run/reboot-required` existe, redémarre par `sudo reboot` : la file repart seule. Vérifie ensuite que `docker compose ps` montre `app` en `(healthy)`.
+La dernière commande compare le noyau en marche au plus récent installé. Si elle affiche `Redémarrage nécessaire`, ou si le fichier `/var/run/reboot-required` existe (Ubuntu seulement : Debian ne le crée pas), redémarre par `sudo reboot` : la file repart seule. Vérifie ensuite que `docker compose ps` montre `app` en `(healthy)`.
 
 **Caddy en panne** (pages injoignables, `caddy` arrêté dans `docker compose ps`) : la page du bar reste joignable par le tunnel de la section 15. `docker compose logs caddy` en donne la cause : `wrong argument count` y signale un `ACME_EMAIL` resté au texte d'exemple (section 10).
 
@@ -618,7 +621,7 @@ docker compose stop
 La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archive>` depuis sa ligne `Sauvegarde écrite : …`. Sans cette ligne, arrête-toi : l'archive de la dernière soirée manquerait. Note aussi son empreinte, donnée par `sha256sum sauvegardes/<nom de l'archive>`. Puis, sur le PC Windows :
 
 1. Télécharge le kit `vX.Y.Z` neuf, de la même version que le serveur, avec le fichier `KIT-BAR-KARAFUN.zip.sha256` de la release. `(Get-FileHash KIT-BAR-KARAFUN.zip -Algorithm SHA256).Hash.ToLower()` doit donner le premier mot de ce fichier. Sinon, ne décompresse pas le kit ; s'ils sont égaux, décompresse-le entièrement, dans un dossier neuf. Dans la suite, `<dossier karaoke-bar du kit>` est son dossier `karaoke-bar`, jamais celui de l'ancien kit.
-2. Récupère l'archive, et n'en extrais que `data`. `scp` se lance depuis le PC d'administration : si le kit est sur un autre PC, porte-y ensuite l'archive (clé USB), dans `<dossier karaoke-bar du kit>`, puis fais-y `Get-FileHash` et `tar.exe`.
+2. Récupère l'archive, et n'en extrais que `data`. `scp` se lance depuis le PC d'administration : si le kit est sur un autre PC, porte-y ensuite l'archive (clé USB), dans `<dossier karaoke-bar du kit>`, puis fais-y `Get-FileHash` et `tar.exe`. Efface ensuite l'archive de la clé USB (section 20).
 
    ```powershell
    Set-Location "<dossier karaoke-bar du kit>"
@@ -652,7 +655,7 @@ Avec le kit Windows, ne relaie jamais le port du bar (3000) par un proxy HTTPS :
 
 ## 20. Données personnelles et accès
 
-La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de données français. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Docker garde aussi les journaux des conteneurs, jusqu'à 50 Mo chacun : celui de `app` cite les mêmes prénoms, celui de `caddy` des adresses IP de téléphones. La purge de la section 18 n'y touche pas : ils disparaissent quand le conteneur est recréé, à la mise à jour suivante ou, hors soirée, par `docker compose up -d --force-recreate`. Sur un serveur en retrait, qui ne doit pas démarrer (section 13), retire-les plutôt par `docker compose down`. Les PC Windows en gardent aussi : `data-avant-serveur-AAAAMMJJ`, les archives `karafun-plus-pc-AAAAMMJJ.tar.gz` et celles copiées par `scp`, et l'ancien dossier `journal` du kit. Range-les sur le disque protégé de la section 16, et efface-les quand le retour au kit n'est plus utile. Informe les clients par une affiche, comme avec le kit.
+La file est hébergée en France, sur un VPS d'OVHcloud situé dans un centre de données français. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Docker garde aussi les journaux des conteneurs, jusqu'à 50 Mo chacun : celui de `app` cite les mêmes prénoms, celui de `caddy` des adresses IP de téléphones. La purge de la section 18 n'y touche pas : ils disparaissent quand le conteneur est recréé, à la mise à jour suivante ou, hors soirée, par `docker compose up -d --force-recreate`. Sur un serveur en retrait, qui ne doit pas démarrer (section 13), retire-les plutôt par `docker compose down`. Les PC Windows en gardent aussi : `data-avant-serveur-AAAAMMJJ`, les archives `karafun-plus-pc-AAAAMMJJ.tar.gz` et celles copiées par `scp`, l'ancien dossier `journal` du kit, et la clé USB qui a porté une archive entre deux PC (sections 12 et 19). Range-les sur le disque protégé de la section 16, et efface-les quand le retour au kit n'est plus utile. Informe les clients par une affiche, comme avec le kit.
 
 | Qui | Accès |
 |---|---|
