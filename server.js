@@ -764,15 +764,15 @@ function restore(tr, reason) {
 // lui) : son passage n'a pas eu lieu, le titre revient en tête de la liste de
 // son chanteur et son ticket reprend sa place. Un report « Pas prêt »
 // s'applique ensuite ; après une priorité, il repasse juste après elle
-// (Scheduler#yieldToPriority).
+// (Scheduler#yieldToPriority), ou reprend sa place si elle ne tient plus.
 function restorePulled(tr) {
   sched.requeueUnplayed(tr.sel);
   if (tr.pulled?.reason === 'priority') {
-    sched.yieldToPriority(tr.sel);
     const forP = sched.people.get(tr.pulled.forId || '');
-    const still = !!forP && !!sched.reservedNext?.byStaff && sched.reservedNext.personId === forP.id;
-    sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : il repasse juste après ` +
-      `${still ? `${forP.name} (priorité du bar)` : 'le prochain passage'}, sans perdre son tour`, 'skip');
+    const still = !!sched.yieldToPriority(tr.sel, forP?.id || null);
+    sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (still ?
+      `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` :
+      `la priorité ${forP ? `de ${forP.name} ` : ''}ne tient plus, il reprend sa place sans perdre son tour`), 'skip');
     return;
   }
   if (!tr.pulled) {
@@ -2486,8 +2486,10 @@ function staffState() {
     }),
     // « Priorité » : titre déjà chargé dans KaraFun que la page propose de
     // retirer pour faire passer la personne prioritaire avant lui.
+    // `stageIds` : chanteurs du titre en cours, qui chanteraient deux fois de
+    // suite (priorityPullFor) ; la page ne propose pas le retrait pour eux.
     priorityPull: (tr => tr ? { queueId: tr.queueId, title: tr.sel.song.title, name: passageNames(tr.sel),
-      ids: [...tr.sel.ids] } : null)(priorityPullTarget()),
+      ids: [...tr.sel.ids], stageIds: stageSingers() } : null)(priorityPullTarget()),
     // Durée maximale : titres de la file qu'un retrait groupé enlèverait.
     tooLong: { limitSec: maxSongLimit(), count: tooLongEntries().length },
     battle: { ...battleVote.view(), registered: battleElectorate().length },
@@ -3638,6 +3640,14 @@ function priorityPullCheck(queueId, { current, upcoming } = analyze(), now = Dat
   const refuse = refusal => ({ tr, refusal });
   if (tr && (tr.startedAt || isOnStage(tr, current))) return refuse('started');
   if (!bridge?.ready) return refuse('KaraFun est déconnecté : rien n’a été retiré ni avancé. Réessaie une fois KaraFun reconnecté.');
+  // Déjà sur le lecteur de KaraFun (titre précédent fini, chargé ou en cours
+  // de chargement, pas encore lancé) : KaraFun pourrait le garder comme titre
+  // en cours après son retrait, et plus rien ne repartirait.
+  const statusId = bridge?.status && (bridge.status.current || bridge.status.songPlaying || {}).queueId;
+  if (tr && statusId != null && String(statusId) === String(tr.queueId)) {
+    return refuse(`« ${tr.sel.song.title} » est déjà sur le lecteur de KaraFun : rien n’a été retiré ni avancé. ` +
+      '« Priorité » sans retrait fait passer la personne juste après lui.');
+  }
   if (isBattleItem(item)) return refuse('Une Battle chargée dans KaraFun ne sort jamais pour une priorité : rien n’a été retiré ni avancé.');
   if (pending) return refuse('Un titre part vers KaraFun en ce moment : rien n’a été retiré ni avancé. Réessaie dans un instant.');
   if (restartOp) return refuse('Le titre en cours est en train d’être relancé : rien n’a été retiré ni avancé. Réessaie dans un instant.');
@@ -3679,7 +3689,20 @@ function priorityPullFor(line, queueId) {
   if (shared) {
     throw new Error(`${sched.people.get(shared)?.name || 'Cette personne'} chante déjà dans « ${tr.sel.song.title} » : rien n’a été retiré ni avancé.`);
   }
+  // Une personne du titre en cours aussi : le titre chargé entre les deux
+  // passages est le seul qui la sépare de son prochain.
+  const singing = line.ids.find(pid => stageSingers().includes(pid));
+  if (singing) {
+    throw new Error(`${sched.people.get(singing)?.name || 'Cette personne'} est sur scène en ce moment : « ${tr.sel.song.title} » reste dans KaraFun, ` +
+      `rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer ${name} juste après lui.`);
+  }
   return tr;
+}
+
+// Chanteurs du titre suivi sur scène (aucun pour une Battle ou un titre
+// ajouté directement dans KaraFun).
+function stageSingers({ current } = analyze()) {
+  return [...(tracked.find(tr => isOnStage(tr, current))?.sel.ids || [])];
 }
 
 // « Pas prêt » : le prochain passage de cette personne laisse passer une ou

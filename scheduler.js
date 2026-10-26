@@ -306,17 +306,20 @@ class Scheduler {
   // Sinon la sauvegarde de la soirée ne se reprenait plus (« changement
   // manuel mal formé », relecture de la correction du 26 octobre).
   _forgetManual(pid) {
-    for (const change of this.manualChanges) {
-      const before = change.before;
-      if (!before || typeof before !== 'object') continue;
-      if (Array.isArray(before.manualOrder)) before.manualOrder = before.manualOrder.filter(other => other !== pid);
-      if (before.reservedNext?.personId === pid) before.reservedNext = null;
-      if (!Array.isArray(before.deferrals)) continue;
-      before.deferrals = before.deferrals.filter(row => row?.[0] !== pid).map(([owner, deferral]) => {
-        const ids = Array.isArray(deferral?.ids) ? deferral.ids.filter(other => other !== pid) : [owner];
-        return [owner, { ...deferral, ids: ids.length ? ids : [owner] }];
-      });
-    }
+    for (const change of this.manualChanges) this._forgetIn(change, other => other === pid);
+  }
+
+  // `gone(pid)` : personne à oublier dans l'état d'avant de ce geste.
+  _forgetIn(change, gone) {
+    const before = change?.before;
+    if (!before || typeof before !== 'object') return;
+    if (Array.isArray(before.manualOrder)) before.manualOrder = before.manualOrder.filter(other => !gone(other));
+    if (before.reservedNext && gone(before.reservedNext.personId)) before.reservedNext = null;
+    if (!Array.isArray(before.deferrals)) return;
+    before.deferrals = before.deferrals.filter(row => !gone(row?.[0])).map(([owner, deferral]) => {
+      const ids = Array.isArray(deferral?.ids) ? deferral.ids.filter(other => !gone(other)) : [owner];
+      return [owner, { ...deferral, ids: ids.length ? ids : [owner] }];
+    });
   }
 
   // `pid` chante sur la ligne fixée de `line` : c'est sa propre ligne, ou
@@ -331,14 +334,17 @@ class Scheduler {
   // fixé où elles chantent encore retrouvent le calcul (espacement, premiers
   // passages des autres). Sinon une personne gardée devant un geste
   // rechantait deux chansons plus tard. Une ligne placée par le bar
-  // elle-même aussi (_endPlaced) : sa personne chante avant elle.
+  // elle-même aussi (_endPlaced) : sa personne chante avant elle. Rend les
+  // gestes terminés, à garder dans le reçu du passage ou du duo noté : si la
+  // personne n'a finalement pas chanté, ils reviennent (_restorePlaced).
   _unpinSingers(ids) {
-    for (const pid of ids) this._endPlaced(pid);
-    if (!this.manualOrder.length || !ids.length) return;
+    const ended = ids.map(pid => this._endPlaced(pid)).filter(Boolean);
+    if (!this.manualOrder.length || !ids.length) return ended;
     const anchors = this._manualAnchors();
     for (const line of [...this.manualOrder]) {
       if (!anchors.has(line) && ids.some(pid => this._singsOnLine(line, pid))) this._unpinManual(line);
     }
+    return ended;
   }
 
   // Décision du gérant du 26 octobre : « si je place quelqu'un, mais que pour
@@ -353,11 +359,17 @@ class Scheduler {
   // place du geste : il est abandonné (_carryPlanAcross ne le reporte pas),
   // le calcul et Timefold repartent de l'ordre fixé qui reste. L'invitée d'un
   // duo placé qui chante ailleurs avant lui ne met pas fin au geste : il
-  // appartient à l'auteur du titre.
+  // appartient à l'auteur du titre. Rend de quoi le rétablir (_restorePlaced),
+  // sérialisable (reçu du passage, sauvegardé avec la soirée), ou null.
   _endPlaced(pid) {
     const changes = this.manualChanges.filter(change => change.personId === pid);
     const priority = !!this.reservedNext?.byStaff && this.reservedNext.personId === pid;
-    if (!changes.length || !this._unpinManual(pid)) return false;
+    if (!changes.length) return null;
+    // `changeIds` : tous les gestes à ce moment, pour les rendre à leur rang.
+    const record = { personId: pid, changes: JSON.parse(JSON.stringify(changes)), order: [...this.manualOrder],
+      changeIds: this.manualChanges.map(change => change.id),
+      reserved: priority ? { ...this.reservedNext } : null, serial: this.appearanceSerial, at: Date.now() };
+    if (!this._unpinManual(pid)) return null;
     if (priority) this.releaseNext();
     this.solverPlan = null;
     this._planDropped = true;
@@ -365,7 +377,62 @@ class Scheduler {
     const what = changes.some(change => change.kind === 'priority') && priority ? 'sa priorité' : 'la place donnée par le bar';
     this.note(`${p?.name || 'Cette personne'} chante avant ${what} : sa ligne retrouve le calcul`, 'staff');
     this.version++;
-    return true;
+    return record;
+  }
+
+  // La personne d'un geste terminé par _endPlaced n'est finalement pas montée
+  // sur scène : le duo où elle était invitée est sorti de KaraFun sans être
+  // chanté (« Pas prêt », priorité du bar avant lui, absent à « Je suis là »,
+  // fermeture, passé dans KaraFun : rollbackUnplayed), ou le bar annule ou
+  // corrige le duo improvisé noté avec elle (staffUncountPartner). Le geste
+  // revient, avec sa place parmi les lignes fixées qui attendent encore et les
+  // lignes gardées devant elle ; jamais devant une priorité du bar donnée
+  // depuis. Sa priorité revient si personne n'est annoncé entre-temps. Rien ne
+  // revient si elle est remontée sur scène depuis (passage compté après
+  // `serial`), si sa ligne n'a plus de titre, ou si le bar l'a replacée.
+  _restorePlaced(records) {
+    let restored = 0;
+    for (const record of Array.isArray(records) ? records : []) {
+      const p = this.people.get(record?.personId);
+      const changes = Array.isArray(record?.changes) ? record.changes.filter(change => change && change.personId === p?.id) : [];
+      if (!p || p.withdrawnAt || !p.song || !changes.length || !Number.isSafeInteger(record.serial) ||
+        (p.lastAppearanceTurn || 0) >= record.serial || this.manualChanges.some(change => change.personId === p.id)) continue;
+      const waiting = pid => {
+        const q = this.people.get(pid);
+        return !!q && !q.withdrawnAt && !!q.song && (q.lastAppearanceTurn || 0) < record.serial;
+      };
+      const order = this.manualOrder.filter(pid => pid !== p.id);
+      const kept = new Set(order);
+      const at = Array.isArray(record.order) ? record.order.indexOf(p.id) : -1;
+      const ahead = at < 0 ? [] : record.order.slice(0, at).filter(pid => kept.has(pid) || waiting(pid));
+      const reserved = record.reserved && !this.reservedNext ? { personId: p.id,
+        reservedAt: Number.isFinite(record.reserved.reservedAt) ? record.reserved.reservedAt : Date.now(), byStaff: true } : null;
+      let index = 0;
+      if (!reserved) {
+        for (const pid of ahead) if (kept.has(pid)) index = Math.max(index, order.indexOf(pid) + 1);
+        if (this.reservedNext?.byStaff) index = Math.max(index, order.indexOf(this.reservedNext.personId) + 1);
+      }
+      order.splice(index, 0, ...(reserved ? [] : ahead.filter(pid => !kept.has(pid))), p.id);
+      this.manualOrder = order;
+      this.manualOrderActive = true;
+      if (reserved) this.reservedNext = reserved;
+      // Chaque geste revient après ceux qui le précédaient encore, avant ceux
+      // faits depuis.
+      const ids = Array.isArray(record.changeIds) ? record.changeIds : [];
+      for (const change of changes) {
+        this._forgetIn(change, pid => typeof pid === 'string' && !this.people.has(pid));
+        const prior = new Set(ids.slice(0, Math.max(0, ids.indexOf(change.id))));
+        let rank = 0;
+        this.manualChanges.forEach((other, index) => { if (prior.has(other.id)) rank = index + 1; });
+        this.manualChanges.splice(rank, 0, change);
+      }
+      this.solverPlan = null;
+      this._planDropped = true;
+      this.note(`${p.name} n’a finalement pas chanté : ${reserved ? 'sa priorité' : 'la place donnée par le bar'} revient`, 'staff');
+      this.version++;
+      restored++;
+    }
+    return restored;
   }
 
   // Le titre en cours d'une ligne fixée devient un duo (invitation ou demande
@@ -377,9 +444,10 @@ class Scheduler {
   // prochain annoncé (answerDuet). Sinon le duo garde la place, et la propre
   // ligne de l'invitée (ou un autre duo plus loin avec elle) retrouve le
   // calcul : elle monte sur scène avec ce duo. Une ligne placée par le bar
-  // garde sa place jusqu'à ce que sa personne monte vraiment sur scène avant
-  // elle (_unpinSingers, au départ du duo vers KaraFun) : le duo peut encore
-  // être annulé d'ici là.
+  // garde sa place jusqu'à ce que sa personne monte sur scène avant elle
+  // (_unpinSingers, au départ du duo vers KaraFun) : le duo peut encore être
+  // annulé d'ici là ; retiré de KaraFun sans être chanté, il rend la place
+  // (_restorePlaced).
   _guestJoined(owner) {
     const duet = owner?.song?.duet;
     const at = this.manualOrder.indexOf(owner?.id);

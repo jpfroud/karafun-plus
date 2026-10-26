@@ -943,6 +943,16 @@ test('file du bar : « Priorité » avec un titre déjà chargé dans KaraFun pr
   await page.click(urgent(3));
   assert.deepEqual(page.toast(), { text: '« Titre chargé » a commencé pendant ta confirmation : rien n’a été retiré de KaraFun ni avancé. Touche de nouveau « Priorité » pour faire passer Dora juste après.', bad: true });
 
+  // Dora chante le titre en cours : pas de question, elle ne chanterait pas
+  // deux fois de suite (relecture de la correction).
+  delete page.replies['/api/staff/move'];
+  await page.update({ priorityPull: { ...world.priorityPull, stageIds: ['dora'] } });
+  const before = page.confirms.length;
+  assert.equal(urgent(3).title, 'Faire passer dès que possible, après les titres déjà chargés dans KaraFun');
+  await page.click(urgent(3));
+  assert.equal(page.confirms.length, before);
+  assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true });
+
   // Pendant le retrait, puis titre revenu juste après la priorité.
   await page.update({ priorityPull: null, queue: [
     { ...world.queue[0], leaving: 'priority' },
@@ -952,7 +962,7 @@ test('file du bar : « Priorité » avec un titre déjà chargé dans KaraFun pr
   assert.deepEqual(badges(line(0)), ['Sort de KaraFun']);
   assert.deepEqual(badges(line(2)), ['À venir', 'Après la priorité']);
   assert.equal(line(2).querySelector('.queue-tags .badge.wait').title,
-    'Retiré de KaraFun pour une priorité donnée par le bar : ce titre passe juste après le prochain passage, sans perdre son tour');
+    'Retiré de KaraFun pour une priorité donnée par le bar : ce titre passe juste après elle, sans perdre son tour ; si elle ne tient plus, il reprend sa place');
   assert.equal(urgent(1), null, 'plus de question une fois le titre sorti : le premier passage libre n’a plus de « Priorité »');
 });
 

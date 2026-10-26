@@ -89,10 +89,12 @@ function boundDurations(snapshot) {
 // `remaining` peut compter un envoi déjà en route en plus du report. Un
 // titre retiré de KaraFun pour une priorité du bar (`afterPriority`,
 // Scheduler#yieldToPriority) n'a pas forcément été repoussé par ses
-// chanteurs : son total peut être nul.
+// chanteurs : son total peut être nul ; `forId` et `forAt` nomment cette
+// priorité (Scheduler#_priorityHolds).
 const validDeferral = d => !!(d && typeof d === 'object' && typeof d.entryId === 'string' &&
   Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= DEFER_MAX + 1 &&
   (d.afterPriority === undefined || d.afterPriority === true) &&
+  (d.forId === undefined || (d.afterPriority === true && typeof d.forId === 'string' && Number.isFinite(d.forAt))) &&
   Number.isInteger(d.total) && d.total >= (d.afterPriority ? 0 : 1) && d.total <= DEFER_MAX && Number.isFinite(d.until) &&
   Array.isArray(d.ids) && d.ids.length >= 1 && d.ids.every(id => typeof id === 'string'));
 const selectionValid = sel => sel && typeof sel === 'object' &&
