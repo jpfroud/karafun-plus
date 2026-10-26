@@ -44,7 +44,7 @@ function readBuildInfo() {
 const BUILD = readBuildInfo();
 // Identifie ce démarrage : une alerte fermée au bar revient après un redémarrage.
 const BOOT_ID = crypto.randomBytes(6).toString('hex');
-const { Scheduler, DEFER_MAX, DEFAULTS: SCHED_DEFAULTS } = require('./scheduler');
+const { Scheduler, DEFER_MAX, SONG_GAP_MIN_SAMPLES, DEFAULTS: SCHED_DEFAULTS } = require('./scheduler');
 const { KaraFunBridge, BATTLE_MOD, isBattleItem, maskCode, unknownSettingsSupport } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
@@ -487,7 +487,11 @@ function journalBattle(event) {
       ...(status === 'failed' ? { failure: automation?.failure || null } : {}) });
   }
 }
-if (DEMO) sched.opts.defaultSlotSec = parseInt(arg('song-seconds', 45), 10) + 1;
+if (DEMO) {
+  sched.opts.defaultSlotSec = parseInt(arg('song-seconds', 45), 10) + 1;
+  // Le faux KaraFun enchaîne ses titres sans écart.
+  sched.opts.defaultSongGapSec = 0;
+}
 let bridge = null;
 let fake = null;
 const SONG_SECONDS = parseInt(arg('song-seconds', 45), 10);
@@ -542,6 +546,8 @@ let persistenceError = null;
 // il reprend seul dès que les droits reviennent, sauf décision du bar.
 let permissionPause = false;
 let curQueueId = null;      // titre en cours noté dans le journal (stage.started)
+let curBattle = false;      // la scène en cours est une Battle
+let songGap = null;         // { since, clean } : écart entre deux titres en cours de mesure (measureSongGap)
 let phaseKey = null;        // dernier état karaoke.phase noté
 let presenceAskKey = null;  // dernière demande « Je suis là » notée
 let lastSampleAt = 0;       // dernier relevé queue.sample
@@ -1486,7 +1492,11 @@ function restoreKaraFunDefaults() {
 
 // ------------------------------------------------------------------ synchronisation avec KaraFun
 function sync() {
-  if (!bridge || !bridge.ready) { notePhase('unknown', 'offline'); return; }
+  if (!bridge || !bridge.ready) {
+    notePhase('unknown', 'offline');
+    if (songGap) songGap.clean = false;
+    return;
+  }
   rememberKaraFunDefaults();
   if (settings.auto && bridge.permissions?.addToQueue === false) {
     settings.auto = false;
@@ -1695,8 +1705,10 @@ function sync() {
   const key = stageKey(current);
   if (key !== curKey) {
     if (curKey !== null) journalEvent('stage.ended', { queueId: curQueueId, playedSec: Math.round((now - curSince) / 1000) });
+    measureSongGap(curKey !== null && !curBattle, current, now);
     curKey = key; curSince = Date.now();
     curQueueId = current?.queueId ?? null;
+    curBattle = !!current && isBattleItem(current);
     // Une relance n'est pas un nouveau passage du titre.
     if (current && String(current.queueId) !== lastRestartCopy) {
       sched.recordPlayed(current, curSince);
@@ -1788,9 +1800,30 @@ function sync() {
       }
     }
   } else { idleSince = null; idleQueueId = null; }
-  journalOutlook({ current, upcoming, awaitingPresence }, now);
+  const blocker = journalOutlook({ current, upcoming, awaitingPresence }, now);
+  if (songGap && !SONG_GAP_BLOCKERS.has(blocker)) songGap.clean = false;
   saveNight();
 }
+
+// Écart entre deux titres (heures estimées, heure de fermeture) : de la fin
+// d'un titre au début du suivant, quand un titre attendait. Il commence quand
+// un titre (pas une Battle) quitte la scène et finit au début du suivant (ni
+// une Battle ni la copie d'une relance). Il n'est pas gardé si autre chose
+// que le lancement du titre suivant a retenu la scène entre-temps (file vide,
+// fermeture, Battle, envoi coupé, vidage, relance : SONG_GAP_BLOCKERS), si
+// KaraFun s'est déconnecté, ou s'il dépasse une minute (Scheduler#recordSongGap).
+// Il n'est pas sauvegardé : un arrêt de l'application l'oublie. Un titre qui
+// en remplace un autre sans scène libre vue entre les deux n'est pas mesuré.
+function measureSongGap(songEnded, current, now) {
+  if (songGap?.clean && current && !isBattleItem(current) && String(current.queueId) !== lastRestartCopy) {
+    sched.recordSongGap((now - songGap.since) / 1000);
+  }
+  songGap = songEnded && !current ? { since: now, clean: true } : null;
+}
+// Causes d'une scène libre (journalOutlook) qui laissent mesurer l'écart :
+// lancement du titre suivant, « Je suis là » attendu, envoi à KaraFun,
+// lecture lancée par le bar ou par KaraFun lui-même.
+const SONG_GAP_BLOCKERS = new Set(['loading', 'awaiting-presence', 'sending', 'push-delay', 'autoplay-off']);
 
 // ------------------------------------------------------------------ barre de lecture
 const stageKey = current => current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
@@ -1884,6 +1917,7 @@ function journalOutlook({ current, upcoming, awaitingPresence }, now) {
   }
   notePhase(current ? 'singing' : blocker === 'empty' ? 'silent' : 'between', blocker);
   if (now - lastSampleAt >= 5 * 60000) journalSample(now);
+  return blocker;
 }
 
 // Relevé de la file : titres prêts, demandes et personnes présentes.
@@ -2149,16 +2183,18 @@ function publicState(person, tableId, managed = null) {
   const presence = presenceCandidate({ current, upcoming });
   const presenceMissingIds = new Set(presenceMissing(presence));
   const byQid = new Map(tracked.map(tr => [tr.queueId, tr]));
-  const slot = sched.avgSlotSec() * 1000;
+  // Durée moyenne d'un titre, et d'un début de titre au suivant (écart
+  // mesuré entre deux titres compris) : chaque passage prévu en tient compte.
+  const slot = sched.avgSlotSec() * 1000, gap = sched.songGapSec() * 1000, step = slot + gap;
   const curTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
   // Heure de fermeture fixée : heures affichées, repère et arrêt partent de la
-  // même fin de scène (stageFreeAt) ; sinon, le passage moyen.
+  // même fin de scène (stageFreeAt) ; sinon, le passage moyen. Écart compris.
   const firstFreeAt = !current ? Date.now() : closingAt() != null ? stageFreeAt(current)
-    : (curTr && curTr.startedAt) ? curTr.startedAt + slot : Date.now() + slot / 2;
+    : (curTr && curTr.startedAt) ? curTr.startedAt + step : Date.now() + slot / 2 + gap;
   const stage = current ? describe(current, byQid) : null;
   if (stage) stage.progress = stageProgressView(current, stage.kind, Date.now());
   const queue = upcoming.map((it, i) => ({ ...describe(it, byQid),
-    source: 'karafun', pos: i + 1, eta: firstFreeAt + i * slot,
+    source: 'karafun', pos: i + 1, eta: firstFreeAt + i * step,
     waitingPresence: i === 0 && presence?.source === 'karafun' && presenceMissingIds.size > 0,
     name: byQid.has(it.queueId) ? passageNames(byQid.get(it.queueId).sel) :
       withoutSoloGroup(it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
@@ -2167,7 +2203,7 @@ function publicState(person, tableId, managed = null) {
     tracks: songTracksOf(it),
   }));
   if (pending) queue.push({ source: 'envoi', ours: true, queueId: null,
-    pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
+    pos: queue.length + 1, eta: firstFreeAt + queue.length * step,
     singer: shownLabel(pending.sel), name: passageNames(pending.sel),
     title: pending.sel.song.title, artist: pending.sel.song.artist,
     ids: pending.sel.ids, kind: pending.sel.kind, song: fmtSong(pending.sel.song), singers: singersOf(pending.sel.ids),
@@ -2176,7 +2212,7 @@ function publicState(person, tableId, managed = null) {
   // plus tard. Seul le prochain reçoit l'alerte et bloque l'envoi réel.
   const ready = sched.presenceView(pending ? (pending.sel.consumedIds || pending.sel.ids) : [], pending ? pending.sel : null);
   for (const v of ready) queue.push({ source: 'helper', ours: true, queueId: null,
-    pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
+    pos: queue.length + 1, eta: firstFreeAt + queue.length * step,
     singer: v.label, name: v.name, title: v.song.title, artist: v.song.artist,
     id: v.ids[0], ids: v.ids, kind: v.kind, song: fmtSong(v.song), table: v.table, tableId: v.tableId,
     singers: singersOf(v.ids),
@@ -2187,8 +2223,9 @@ function publicState(person, tableId, managed = null) {
       (sched.people.get(v.ids[0])?.duetGuestCount || 0)) === 0,
     guaranteed: !v.future && sched.reservedNext?.personId === v.ids[0],
     deferred: !v.future && sched.isDeferred(sched.people.get(v.ids[0])) });
-  // Heure de fermeture : titres qui passeront encore avant elle.
-  const closing = closingView(queue, firstFreeAt, slot);
+  // Heure de fermeture : titres qui passeront encore avant elle (la moitié
+  // d'un titre moyen avant l'heure).
+  const closing = closingView(queue, firstFreeAt, slot, step);
   if (closing) for (const item of queue) item.afterClosing = !(Number.isFinite(item.eta) && item.eta + slot / 2 <= closing.at);
   // « Pas prêt » : un titre déjà chargé dans KaraFun, ou le prochain passage
   // encore à envoyer, peut être repoussé par ses chanteurs.
@@ -2240,6 +2277,8 @@ function publicState(person, tableId, managed = null) {
     catalogAvailable: !!(CODE && bridge?.ready && !DEMO),
     guaranteed: sched.reservedNext ? 1 : 0,
     avgSlotMin: Math.round(sched.avgSlotSec() / 6) / 10,
+    // Temps entre deux titres compté dans les heures estimées (diagnostic du bar).
+    songGapSec: Math.round(sched.songGapSec()), songGapMeasured: sched.songGapSamples.length >= SONG_GAP_MIN_SAMPLES,
     rules: { gap: sched.opts.gap, cap: sched.opts.cap, protectTop: sched.opts.protectTop,
       requirePresence: sched.opts.requirePresence, tableRotation: sched.opts.tableRotation,
       weightedTables: sched.opts.weightedTables,
@@ -3659,40 +3698,44 @@ function clearClosing(reason = null) {
 // (les titres suivants de chacun viennent après) : la file est complète
 // quand ce tour ne peut plus accueillir un titre de plus. Simple repère : les
 // ajouts restent possibles et la rotation décide qui passe avant l'heure.
-function closingView(queue, firstFreeAt, slot) {
+// `slot` : durée moyenne d'un titre ; `step` : d'un début de titre au suivant.
+function closingView(queue, firstFreeAt, slot, step = slot) {
   const now = Date.now();
   const at = closingAt(now);
   if (at == null) return null;
   const fits = item => Number.isFinite(item.eta) && item.eta + slot / 2 <= at;
   const fitCount = queue.filter(fits).length;
-  const roundEnd = Math.max(now, firstFreeAt) + queue.filter(item => !item.future).length * slot;
+  const roundEnd = Math.max(now, firstFreeAt) + queue.filter(item => !item.future).length * step;
   return { at, passed: now >= at, full: now >= at || roundEnd + slot / 2 > at, fitCount,
     afterCount: queue.length - fitCount };
 }
 
 // Heure où la scène se libère : fin du titre en cours, sa durée moins la
-// position de lecture, en temps réel selon le tempo, plus le temps moyen entre
-// deux titres. Sinon un passage moyen (notre titre vient de monter sur scène
-// si son début n'est pas encore noté). La durée envoyée par un téléphone peut
+// position de lecture, en temps réel selon le tempo, plus l'écart mesuré entre
+// deux titres (Scheduler#songGapSec). Sinon un titre moyen (notre titre vient
+// de monter sur scène si son début n'est pas encore noté), écart compris ; un
+// titre qui dure plus longtemps libère la scène au plus tôt maintenant plus
+// l'écart. La durée envoyée par un téléphone peut
 // seulement avancer cette estimation : elle ne fait jamais retirer le titre
 // d'un autre. Soirée du 10 octobre : à la fin d'un titre, « début + passage
 // moyen » plaçait encore 1 min 30 de chanson devant « Hello » ; retiré pour la
 // fermeture, sa chanteuse prévenue, puis renvoyé une seconde plus tard.
 function stageFreeAt(current, now = Date.now()) {
   if (!current) return now;
-  const slot = sched.avgSlotSec() * 1000;
+  const slot = sched.avgSlotSec() * 1000, gap = sched.songGapSec() * 1000;
   const live = tracked.find(tr => isOnStage(tr, current));
   const kind = isBattleItem(current) ? 'battle' : null;
   const sure = stageProgressView(current, kind, now, { trustedOnly: true, fromStart: true });
   const told = !sure?.durationSec ? stageProgressView(current, kind, now, { fromStart: true }) : null;
-  const endsAt = view => now + Math.max(0, view.durationSec - view.elapsedSec) * 1000 / (view.rate > 0 ? view.rate : 1) + SONG_GAP_MS;
-  const estimate = live ? Math.max(now, (live.startedAt || now) + slot) : now + slot / 2;
+  const endsAt = view => now + Math.max(0, view.durationSec - view.elapsedSec) * 1000 / (view.rate > 0 ? view.rate : 1) + gap;
+  const estimate = (live ? Math.max(now, (live.startedAt || now) + slot) : now + slot / 2) + gap;
   return sure?.durationSec ? endsAt(sure) : told?.durationSec ? Math.min(estimate, endsAt(told)) : estimate;
 }
 
-// Fermeture du bar : un titre qui démarrerait dans `ahead` passages ne part
-// vers KaraFun et ne démarre que si au moins sa moitié passe avant l'heure,
-// avec la même fin de scène que le repère des téléphones (closingView). Un
+// Fermeture du bar : un titre qui démarrerait dans `ahead` passages (titre
+// moyen et écart entre deux titres chacun) ne part vers KaraFun et ne démarre
+// que si au moins la moitié d'un titre moyen passe avant l'heure, avec la même
+// fin de scène que le repère des téléphones (closingView). Un
 // titre en cours qui déborde repousse l'estimation ; un titre écarté revient
 // s'il tient de nouveau avant l'heure (heure décalée, chanson plus courte).
 // Le bar peut toujours lancer un titre lui-même.
@@ -3700,9 +3743,8 @@ function closingBlocksStart(current, ahead = 0, now = Date.now()) {
   const at = closingAt(now);
   if (at == null) return false;
   const slot = sched.avgSlotSec() * 1000;
-  return stageFreeAt(current, now) + ahead * slot + slot / 2 > at;
+  return stageFreeAt(current, now) + ahead * sched.passageSec() * 1000 + slot / 2 > at;
 }
-const SONG_GAP_MS = 20000; // temps moyen entre deux titres (18 s mesurées le 10 octobre)
 let closingNoted = null;
 function noteClosingStop() {
   if (closingNoted === settings.closingAt) return;
@@ -4206,6 +4248,8 @@ function clearEvening() {
   sched.duetCooldowns.clear();
   sched.releaseNext();
   sched.slotSamples = [];
+  sched.songGapSamples = [];
+  songGap = null;
   sched.log = [];
   sched.playedSongs = [];
   // Rien de la soirée précédente ne reste : historique de scène (prénoms),

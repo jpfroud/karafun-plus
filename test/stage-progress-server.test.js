@@ -49,6 +49,7 @@ function harness({ persistent = false } = {}) {
     setTimeout: () => ({ unref() {} }), clearTimeout() {}, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, access, settings, handlers, sync, staffState, publicState, rememberBattleSongs, saveNight,
+      closingBlocksStart, clearEvening,
       tracked: () => tracked, setBridge: b => { bridge = b; },
       stageClock: () => stageClock, setStageClock: c => { stageClock = c; } };
   `, context, { filename: 'server.js' });
@@ -283,4 +284,135 @@ test('reprise d’une soirée sauvegardée avant la borne : durées des titres b
   assert.deepEqual([a.song, ...a.backlog, b.song].map(song => song.duration).sort(), [1200, 215, null].sort());
   assert.equal(restored.tracked[0].sel.song.duration, 30);
   assert.equal(restored.pending.sel.song.duration, null);
+});
+
+// Retour du gérant après les soirées des 23 et 24 octobre : « ce calcul-là ne
+// tient pas compte du temps entre deux chansons ». La durée moyenne mesurée
+// va du début à la fin d'un titre ; le temps de lancer le suivant (9 s en
+// médiane) n'était compté qu'après le titre en cours. Il est mesuré de la fin
+// d'un titre au début du suivant, puis compté à chaque passage prévu.
+function songsInKaraFun(f, count, firstQueueId = 1) {
+  f.sched.table('1').headcount = 40;
+  return [...Array(count)].map((_, i) => f.ours(firstQueueId + i, 300 + firstQueueId + i).item);
+}
+// Fin du titre sur scène : KaraFun garde `waiting` dans sa file, rien ne joue.
+function endSong(f, waiting) {
+  f.bridge.queue = [...waiting];
+  f.bridge.status = { state: 'idle' };
+  f.sync();
+}
+function playNext(f, item, waiting) {
+  f.bridge.queue = [item, ...waiting];
+  f.bridge.status = { state: 'playing', songPlaying: item, pitch: 0, tempo: 0 };
+  f.sync();
+}
+
+test('fermeture : l’écart mesuré entre deux titres compte à chaque passage prévu', () => {
+  const f = harness({ persistent: true });
+  // Quatre titres de 200 s, 10 s entre deux : la file mesure les deux.
+  const [a, b, c, d] = songsInKaraFun(f, 4);
+  playNext(f, a, [b, c, d]);
+  f.at(200); endSong(f, [b, c, d]);
+  f.at(210); playNext(f, b, [c, d]);
+  f.at(410); endSong(f, [c, d]);
+  f.at(420); playNext(f, c, [d]);
+  f.at(620); endSong(f, [d]);
+  f.at(630); playNext(f, d, []);
+  f.at(830); endSong(f, []);
+  // Seize titres attendent, scène libre. Fermeture dans 52 min 10 s : sans
+  // l'écart, la moitié du seizième finirait à 51 min 40 s ; avec, à 54 min 10 s.
+  for (let i = 0; i < 16; i++) {
+    const p = f.sched.join({ tableId: '1', name: `Client ${i + 1}` });
+    f.sched.chooseSong(p, { songId: 500 + i, title: `Titre ${i + 1}`, artist: 'Artiste' });
+  }
+  const now = T0 + 830000;
+  f.settings.closingAt = now + 3130000;
+  const state = f.staffState();
+  assert.equal(state.queue.length, 16);
+  assert.deepEqual(state.queue.map(row => (row.eta - now) / 1000), [...Array(16)].map((_, i) => i * 210),
+    'heures estimées : 200 s de titre et 10 s d’écart par passage');
+  assert.deepEqual(state.queue.map(row => row.afterClosing), [...Array(15).fill(false), true],
+    'le seizième titre est marqué « Après la fermeture »');
+  assert.equal(state.closing.fitCount, 15);
+  assert.equal(state.closing.afterCount, 1);
+  const phone = f.publicState(f.sched.people.get(state.queue[15].ids[0]), '1');
+  assert.equal(phone.queue[15].afterClosing, true, 'le téléphone voit le même repère');
+  assert.equal(f.closingBlocksStart(null, 14), false);
+  assert.equal(f.closingBlocksStart(null, 15), true, 'le seizième titre ne partira pas vers KaraFun');
+  assert.deepEqual(f.sched.slotSamples, [200, 200, 200, 200], 'durée d’un titre : sans l’écart');
+  assert.deepEqual(f.sched.songGapSamples, [10, 10, 10]);
+  assert.equal(state.songGapSec, 10);
+  assert.equal(state.songGapMeasured, true);
+  // Sans écart entre deux titres, les seize tiendraient : c'est l'écart qui recule le repère.
+  f.sched.songGapSamples = [0, 0, 0];
+  assert.equal(f.staffState().closing.fitCount, 16);
+  assert.equal(f.closingBlocksStart(null, 15), false);
+});
+
+test('écart entre deux titres : mesuré seulement quand un titre attendait, sans Battle, coupure ni pause', () => {
+  const f = harness({ persistent: true });
+  assert.equal(f.staffState().songGapMeasured, false, 'valeur par défaut avant mesure');
+  const [a, b, c, d] = songsInKaraFun(f, 4);
+  playNext(f, a, [b, c, d]);
+  f.at(200); endSong(f, [b, c, d]);
+  f.at(208); playNext(f, b, [c, d]);
+  f.at(408); endSong(f, [c, d]);
+  f.at(417); playNext(f, c, [d]);
+  f.at(617); endSong(f, [d]);
+  f.at(647); playNext(f, d, []);
+  assert.deepEqual(f.sched.songGapSamples, [8, 9, 30]);
+  assert.equal(f.sched.songGapSec(), 9, 'médiane');
+  // File vide à la fin du titre : le bar lance un titre 20 s plus tard.
+  f.at(847); endSong(f, []);
+  const native = { queueId: 'n-1', songId: 555, title: 'Natif', artist: 'X', singer: 'Quelqu’un' };
+  f.at(867); playNext(f, native, []);
+  // Plus d'une minute avant le titre suivant (pause du bar).
+  const [e] = songsInKaraFun(f, 1, 10);
+  f.at(1067); endSong(f, [e]);
+  f.at(1157); playNext(f, e, []);
+  // KaraFun déconnecté entre deux titres.
+  const [g] = songsInKaraFun(f, 1, 11);
+  f.at(1357); endSong(f, [g]);
+  f.at(1360); f.bridge.ready = false; f.sync();
+  f.at(1365); f.bridge.ready = true; f.sync();
+  f.at(1370); playNext(f, g, []);
+  // Battle avant et après.
+  const battle = { queueId: 'b-1', songId: 5091, title: 'Battle', artist: 'X', singer: 'Battle collective', options: { mod: BATTLE_MOD } };
+  f.at(1570); endSong(f, [battle]);
+  f.at(1575); playNext(f, battle, []);
+  const [h] = songsInKaraFun(f, 1, 12);
+  f.at(1775); endSong(f, [h]);
+  f.at(1785); playNext(f, h, []);
+  assert.deepEqual(f.sched.songGapSamples, [8, 9, 30], 'aucun de ces écarts n’est gardé');
+  // De nouveau un écart ordinaire.
+  const [k] = songsInKaraFun(f, 1, 13);
+  f.at(1985); endSong(f, [k]);
+  f.at(1995); playNext(f, k, []);
+  assert.deepEqual(f.sched.songGapSamples, [8, 9, 30, 10]);
+  assert.equal(f.staffState().songGapSec, 10, 'médiane de 9 et 10 arrondie pour le bar');
+  assert.deepEqual(f.saves.at(-1).scheduler.songGapSamples, [8, 9, 30, 10], 'gardés dans la sauvegarde de soirée');
+  // « Nouvelle soirée » : rien de la soirée précédente ne reste.
+  f.clearEvening();
+  assert.deepEqual(plain(f.sched.songGapSamples), []);
+  assert.deepEqual(plain(f.sched.slotSamples), []);
+});
+
+test('sauvegarde : écarts entre deux titres repris, bornés, absents d’une version précédente', () => {
+  const scheduler = new Scheduler({ solverEnabled: false });
+  const access = new TableAccess();
+  const settings = { auto: true, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 };
+  for (const seconds of [8, 9, 30]) scheduler.recordSongGap(seconds);
+  const snapshot = plain(snapshotNight({ scheduler, access, settings }));
+  assert.deepEqual(snapshot.scheduler.songGapSamples, [8, 9, 30]);
+  const target = new Scheduler({ solverEnabled: false });
+  restoreNight(snapshot, { scheduler: target, access: new TableAccess(), settings: {} });
+  assert.deepEqual(target.songGapSamples, [8, 9, 30]);
+  assert.equal(target.songGapSec(), 9);
+  snapshot.scheduler.songGapSamples = [12, -5, 600, 'x', null, ...Array(25).fill(11)];
+  restoreNight(snapshot, { scheduler: target, access: new TableAccess(), settings: {} });
+  assert.deepEqual(target.songGapSamples, Array(20).fill(11), 'mêmes bornes et même nombre qu’en direct');
+  delete snapshot.scheduler.songGapSamples;
+  restoreNight(snapshot, { scheduler: target, access: new TableAccess(), settings: {} });
+  assert.deepEqual(target.songGapSamples, [], 'sauvegarde d’une version précédente');
+  assert.equal(target.songGapSec(), 10, 'valeur par défaut');
 });

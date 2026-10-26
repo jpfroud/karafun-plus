@@ -49,7 +49,8 @@
  *   ou à une personne : il change la fréquence de passage, jamais la priorité
  *   des premiers passages. Les clients ne le voient pas.
  */
-const { crypto, TimefoldBridge, DEFAULTS, bonusWeight, HISTORY_LIMIT, DEFER_MAX, INBOX_MAX, INBOX_TTL_MS, EPS, id, token } = require('./lib/scheduler/common');
+const { crypto, TimefoldBridge, DEFAULTS, bonusWeight, HISTORY_LIMIT, DEFER_MAX, INBOX_MAX, INBOX_TTL_MS, EPS, id, token,
+  SONG_GAP_MAX_SEC, SONG_GAP_SAMPLES, SONG_GAP_MIN_SAMPLES } = require('./lib/scheduler/common');
 
 class Scheduler {
   // Prénom : 24 caractères au plus ; deux prénoms sont les mêmes à la casse
@@ -80,6 +81,7 @@ class Scheduler {
     this.playedSongs = [];    // titres lancés dans KaraFun, y compris hors file, pour les doublons
     this.log = [];            // journal visible par tous
     this.slotSamples = [];    // durées réelles mesurées (s)
+    this.songGapSamples = []; // écarts mesurés entre la fin d'un titre et le début du suivant (s)
     this._views = new Map();  // prévisions déjà calculées pour l'état courant (readyView)
     this.version = 0;
     this.appearanceSerial = 0; // passages physiques, invités de duo compris
@@ -947,6 +949,31 @@ class Scheduler {
     return this.slotSamples.reduce((a, b) => a + b, 0) / this.slotSamples.length;
   }
 
+  // Écart entre la fin d'un titre et le début du suivant, mesuré par le
+  // serveur quand un titre attendait (délai avant la lecture, chargement par
+  // KaraFun) : la durée d'un titre (recordSlot) ne le contient pas. Médiane
+  // des derniers écarts, valeur par défaut tant qu'il y en a trop peu ; un
+  // écart de plus d'une minute (pause, panne) n'est pas gardé.
+  recordSongGap(seconds) {
+    if (Number.isFinite(seconds) && seconds >= 0 && seconds <= SONG_GAP_MAX_SEC) {
+      this.songGapSamples.push(seconds);
+      if (this.songGapSamples.length > SONG_GAP_SAMPLES) this.songGapSamples.shift();
+    }
+  }
+
+  songGapSec() {
+    if (this.songGapSamples.length < SONG_GAP_MIN_SAMPLES) return this.opts.defaultSongGapSec;
+    const sorted = [...this.songGapSamples].sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  // Du début d'un titre au début du suivant : durée moyenne d'un titre plus
+  // l'écart entre deux titres (heures estimées, heure de fermeture).
+  passageSec() {
+    return this.avgSlotSec() + this.songGapSec();
+  }
+
   // Nombre de places en tête où aucun nouveau ne peut s'insérer : la 1re moitié de la file, plus
   // les N prochains qui attendent déjà depuis au moins une chanson (pas ceux qui viennent de chanter).
   guaranteedCount() {
@@ -964,13 +991,13 @@ class Scheduler {
   // `songsBefore` = chansons déjà dans KaraFun avant la file ; `firstFreeAt` = fin estimée de la chanson en cours.
   view(songsBefore = 0, firstFreeAt = null) {
     const now = Date.now();
-    const slot = this.avgSlotSec() * 1000;
+    const step = this.passageSec() * 1000;
     const base = firstFreeAt ? Math.max(now, firstFreeAt) : now;
     const g = this.guaranteedCount();
     const qIndex = new Map(this.Q.map((pid, i) => [pid, i]));
     const out = [];
     this.predict().forEach((sl, k) => {
-      const eta = base + (songsBefore + k) * slot;
+      const eta = base + (songsBefore + k) * step;
       for (const pid of sl.ids) {
         const p = this.people.get(pid);
         if (!p) continue;
@@ -1004,4 +1031,4 @@ for (const part of ['duets', 'presence', 'staff', 'solver', 'rotation', 'passage
   }
 }
 
-module.exports = { DEFER_MAX, Scheduler, DEFAULTS };
+module.exports = { DEFER_MAX, SONG_GAP_MIN_SAMPLES, Scheduler, DEFAULTS };

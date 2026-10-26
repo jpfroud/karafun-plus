@@ -2158,6 +2158,8 @@
       ['Dernier message', kf.lastEventAt ? hhmm(kf.lastEventAt) : '—'], ['Erreur', esc(kf.lastError || '—')],
       ['Nom du chanteur demandé', p ? (p.askSingerName ? 'oui' : 'non (active « Demander le nom du chanteur » dans la télécommande KaraFun)') : '—'],
       ['Droits reçus', perm ? esc(JSON.stringify(perm)) : '—'], ['Durée moyenne mesurée', `${String(S.avgSlotMin).replace('.', ',')} min`],
+      // Compté après chaque titre dans les heures estimées et à la fermeture.
+      ['Temps entre deux titres', S.songGapSec == null ? '—' : `${S.songGapSec} s${S.songGapMeasured ? ' (mesuré)' : ' (par défaut, pas encore mesuré)'}`],
       ['Ordonnancement', !S.solver?.configured ? 'Simulation locale' : S.solver.available ?
         (S.solver.pending ? 'Optimisation : calcul en cours' : S.solver.refining ? 'Optimisation continue en cours' : 'Optimisation prête') :
         `Rotation locale de secours : ${esc(S.solver.fallbackLastError || 'solveur indisponible')}`],

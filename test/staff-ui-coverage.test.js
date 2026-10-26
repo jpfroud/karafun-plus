@@ -2312,6 +2312,12 @@ test('diagnostic KaraFun : recherche de test et ajout d’essai', async () => {
   field.value = 'Panne';
   await page.click(page.$('testSearch'));
   assert.equal(page.$('testRes').textContent, 'Catalogue KaraFun indisponible.', 'la raison de l’échec est affichée');
+  // Temps entre deux titres compté dans les heures estimées : mesuré, ou valeur par défaut.
+  assert.match(page.$('diag').textContent, /Temps entre deux titres—/);
+  await page.update({ songGapSec: 10, songGapMeasured: false });
+  assert.match(page.$('diag').textContent, /Temps entre deux titres10 s \(par défaut, pas encore mesuré\)/);
+  await page.update({ songGapSec: 9, songGapMeasured: true });
+  assert.match(page.$('diag').textContent, /Temps entre deux titres9 s \(mesuré\)/);
   // Sans connexion KaraFun : invitation à saisir le code.
   await page.update({ kf: null });
   assert.equal(page.$('kfPill').textContent, 'KaraFun : pas de code');

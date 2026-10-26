@@ -146,7 +146,7 @@ const MUST_MATCH = new Set(['song.requested', 'song.removed', 'song.reordered', 
 // « Pas prêt ») : hors du journal rejoué.
 const NOT_IN_JOURNAL = new Set(['staff.queueCleared', 'defer.requested', 'defer.ended']);
 const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export ne dit rien
-const SONG_GAP_MS = 20000; // temps moyen entre deux titres compté par la fermeture (server.js)
+const SONG_GAP_MS = 20000; // temps entre deux titres compté par la fermeture avant sa mesure (server.js d'avant)
 const BATTLE_PRE_GAP_MS = 132000; // scène libre → début d'une Battle (téléphones qui rejoignent), sans mesure
 const BATTLE_STAGE_WINDOW_MS = 60000; // écart toléré entre le « playing » d'une Battle et sa scène
 const UNCONFIRMED_MS = 15000;  // tentative d'envoi → send.unconfirmed (server.js)
@@ -1497,9 +1497,13 @@ async function runFree(evening, opts = {}) {
     };
     // Fermeture du bar (server.js, closingBlocksStart) : un titre ne part ni
     // ne démarre que si au moins sa moitié (créneau moyen) passe avant l'heure,
-    // la scène se libérant à la fin du titre en cours plus SONG_GAP_MS.
+    // la scène se libérant à la fin du titre en cours plus l'écart entre deux
+    // titres : celui de l'ordonnanceur rejoué (Scheduler#songGapSec, sa valeur
+    // par défaut : le rejeu ne le mesure pas), SONG_GAP_MS pour une version
+    // qui ne le connaît pas.
+    const songGapMs = typeof s.songGapSec === 'function' ? () => s.songGapSec() * 1000 : () => SONG_GAP_MS;
     const closingBlocks = () => Number.isFinite(closingAt) &&
-      (current ? Math.max(current.end + SONG_GAP_MS, clock.now) : clock.now) + s.avgSlotSec() * 500 > closingAt;
+      (current ? Math.max(current.end, clock.now) + songGapMs() : clock.now) + s.avgSlotSec() * 500 > closingAt;
     // Fin du karaoké de la soirée réelle (evening-stats.js : fermeture du bar,
     // KaraFun ou l'application arrêtés après le dernier titre) : plus rien ne
     // part ni ne démarre ensuite, titres hors file compris, dans les deux

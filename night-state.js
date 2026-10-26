@@ -172,6 +172,7 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       stageHistory: clone(scheduler.stageHistory || []),
       playedSongs: clone(scheduler.playedSongs || []),
       log: clone(scheduler.log), slotSamples: [...scheduler.slotSamples],
+      songGapSamples: [...(scheduler.songGapSamples || [])],
       version: scheduler.version,
     },
     settings: clone(settings),
@@ -429,6 +430,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   tmp.log = clone(list(data.log, 'journal')).slice(-300);
   for (const [from, to] of renamed) tmp.note(`${from} s’appelle maintenant ${to} (même prénom qu’un autre soliste)`);
   tmp.slotSamples = [...list(data.slotSamples, 'durées mesurées')].slice(-20);
+  // Écarts mesurés entre deux titres (absents des sauvegardes plus anciennes) :
+  // repris par recordSongGap, mêmes bornes et même nombre qu'en direct.
+  for (const seconds of list(data.songGapSamples ?? [], 'écarts entre deux titres')) tmp.recordSongGap(seconds);
   tmp.version = Number.isSafeInteger(data.version) ? data.version : 0;
   tmp._refreshDuetViews();
 
@@ -499,7 +503,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
-    'slotSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
+    'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
   scheduler.solverPlan = null;
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

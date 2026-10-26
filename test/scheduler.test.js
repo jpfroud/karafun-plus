@@ -187,4 +187,29 @@ t('heures estimées croissantes et place garantie en tête', () => {
   assert.ok(v[0].guaranteed && v[4].guaranteed && !v[7].guaranteed);
 });
 
+// Retour du gérant (soirées des 23 et 24 octobre) : la durée moyenne mesurée
+// va du début à la fin d'un titre ; le temps de lancer le suivant (9 s en
+// médiane) n'était compté nulle part.
+t('écart entre deux titres : médiane des mesures, compté à chaque passage prévu', () => {
+  const s = new Scheduler();
+  s.slotSamples = [200, 200];
+  assert.strictEqual(s.songGapSec(), 10, 'valeur par défaut avant mesure');
+  s.recordSongGap(8); s.recordSongGap(30);
+  assert.strictEqual(s.songGapSec(), 10, 'deux mesures ne suffisent pas');
+  for (const seconds of [-1, 61, NaN, Infinity, '9']) s.recordSongGap(seconds);
+  assert.deepStrictEqual(s.songGapSamples, [8, 30], 'écart négatif, de plus d’une minute ou illisible ignoré');
+  s.recordSongGap(9);
+  assert.strictEqual(s.songGapSec(), 9, 'médiane : un écart de 30 s ne tire pas l’estimation');
+  s.recordSongGap(11);
+  assert.strictEqual(s.songGapSec(), 10, 'nombre pair : moyenne des deux du milieu');
+  for (let i = 0; i < 30; i++) s.recordSongGap(12);
+  assert.strictEqual(s.songGapSamples.length, 20, 'vingt dernières mesures');
+  assert.strictEqual(s.songGapSec(), 12);
+  assert.strictEqual(s.passageSec(), 212, 'titre moyen plus écart');
+  for (let i = 0; i < 3; i++) { const p = singerAt(s, `g${i}`, `G${i}`, 1); s.chooseSong(p, song(100 + i)); }
+  const base = Date.now() + 60000;
+  const v = s.view(0, base);
+  assert.deepStrictEqual(v.map(row => row.eta - base), [0, 212e3, 424e3], 'heures estimées : écart compris');
+});
+
 console.log(`\n${n} tests OK`);
