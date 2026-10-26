@@ -119,9 +119,10 @@ test('premier volontaire : duo accepté quelle que soit sa table, le second est 
   // L'invité garde son titre et son tour : un seul ticket chacun.
   assert.equal(max.song.title, 'Cinq');
   assert.deepEqual(s.guestDuetsOf(max).map(row => row.entryId), [open.entryId]);
+  // Premier ajouté, premier servi : Max a ajouté « Cinq » avant le duo de Léa.
   const view = s.readyView();
   assert.deepEqual(view.map(line => [names(s, line.ids), line.song.title, line.kind || 'solo']),
-    [['Léa & Max', 'Titre', 'duo'], ['Max', 'Cinq', 'solo']]);
+    [['Max', 'Cinq', 'solo'], ['Léa & Max', 'Titre', 'duo']]);
   // Hors événement privé, une personne n'a jamais deux places dans la rotation.
   const zoeDuet = s.openDuet(max, { entryId: max.song.entryId });
   s.acceptOpenDuet(zoe, max.id, zoeDuet.entryId);
@@ -187,6 +188,9 @@ test('critère 4 : en « Duos uniquement », sans partenaire, le titre ne part p
   s.duoOnlyRule = () => duoOnly;
   s.chooseSong(lea, song(1, 'Titre'));
   s.Q = [lea.id, max.id];
+  // Léa passe la première : son titre compte comme ajouté avant celui de Max
+  // (premier ajouté, premier servi).
+  lea.readySince = max.readySince - 1;
   const open = s.openDuet(lea, { entryId: lea.song.entryId });
   assert.deepEqual(s.reserveNext().ids, [lea.id], 'annoncée avant que le bar passe en « Duos uniquement »');
   const before = s.solverContextFingerprint();
