@@ -40,7 +40,7 @@ EXT=$(ip -4 route get 192.0.2.1 2> /dev/null | sed -n 's/.* src \([0-9.]*\).*/\1
 [ -n "$EXT" ] || prerequis "adresse externe introuvable."
 
 # Réglages de compose venus de l'environnement : ils primeraient sur le .env d'essai.
-unset KARAFUN_PLUS_VERSION HOTE_CLIENTS HOTE_BAR KARAOKE_PUBLIC_URL KARAOKE_STAFF_URL ACME_EMAIL BAR_USER \
+unset KARAFUN_PLUS_VERSION HOTE_CLIENTS HOTE_BAR KARAOKE_PUBLIC_URL KARAOKE_STAFF_URL KARAOKE_UPDATE_DIR ACME_EMAIL BAR_USER \
   BAR_PASSWORD_HASH COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES COMPOSE_PROJECT_DIRECTORY
 # Exporté : sauvegarde.sh, restauration.sh et down -v visent ce projet, jamais karafun-plus.
 export COMPOSE_PROJECT_NAME=karafun-essai-$$

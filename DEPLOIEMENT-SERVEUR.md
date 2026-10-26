@@ -279,6 +279,7 @@ Remplis tous les réglages de `.env` avant le premier démarrage :
 | `HOTE_BAR` | l'hôte de la page du bar, `bar.exemple.fr` ; en bascule, d'abord `essai-bar.exemple.fr` |
 | `KARAOKE_PUBLIC_URL` | `https://` suivi de `HOTE_CLIENTS`, sans `/` final |
 | `KARAOKE_STAFF_URL` | `https://` suivi de `HOTE_BAR`, sans `/` final |
+| `KARAOKE_UPDATE_DIR` | vide sans agent de mise à jour ; l'installateur la fixe à `/app/maintenance`, répertoire d'échange des demandes et états avec le VPS |
 | `ACME_EMAIL` | ton adresse e-mail, pour Let's Encrypt, en un seul mot : avec le texte d'exemple, Caddy refuse sa configuration (`wrong argument count`) |
 | `BAR_USER` | le nom que le navigateur demande avant la page du bar, `bar` par défaut ; si tu en changes, remplace `bar` dans `curl.exe -u bar` (section 11) |
 | `BAR_PASSWORD_HASH` | l'empreinte de `caddy hash-password`, entre apostrophes (elle contient des `$`) |
@@ -510,6 +511,52 @@ Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, re
 **Contrôle** : `ls -l sauvegardes/` montre l'archive en `-rw-------`, sa copie est sur le PC, et une restauration finit par « Restauration terminée depuis … ».
 
 ## 17. Mise à jour et retour à la version précédente
+
+### Un clic depuis la page du bar
+
+Après installation de l'agent ci-dessous, ouvrir **Plus → Mise à jour**, puis toucher
+**Vérifier et mettre à jour**. Ce seul clic cherche la dernière release stable,
+vérifie son image publiée, sauvegarde les données, installe et contrôle le démarrage.
+La page indique les étapes et revient automatiquement. Les QR, les accès et les
+réglages sont conservés ; rien à télécharger sur le PC du bar ou les téléphones.
+Si l'application est déjà à jour, elle n'est pas redémarrée.
+
+Le bouton est réservé aux gérants, avec la même protection que leurs autres commandes.
+Il est bloqué tant qu'une personne est inscrite comme présente ou qu'un titre reste
+sur scène ou dans la file : faire cette opération après la soirée. Une fois la demande
+acceptée, les nouvelles actions sont suspendues jusqu'à la fin de la vérification.
+L'application candidate ne se connecte pas à KaraFun avant sa validation.
+
+Une panne après remplacement déclenche le retour à l'ancienne image, configuration et
+sauvegarde des données. Le journal de transaction privé permet aussi de reprendre
+après une coupure du VPS. Si cette récupération échoue, l'application reste verrouillée :
+un administrateur doit lire le service, plutôt que de relancer la soirée sur un état incertain.
+Une release qui nécessite une nouvelle variable de configuration est refusée avant
+remplacement ; l'administrateur prépare ce réglage une seule fois.
+
+Installation initiale par l'administrateur, hors soirée, dans le dépôt appartenant au
+compte `karaoke` (Python standard et Docker sont nécessaires sur le VPS uniquement) :
+
+```bash
+sudo bash deploy/install-update-agent.sh --repo /home/karaoke/karafun-plus
+cd deploy
+docker compose up -d app
+```
+
+Le service et son minuteur `karafun-plus-update` tournent sur l'hôte. Le code de l'agent
+et son journal de transaction restent hors du dépôt remplacé ; son état privé est dans
+`~/.local/state/karafun-plus-update`. Seul le dossier d'échange `maintenance` est monté
+dans le conteneur. L'application n'obtient ni socket Docker, ni clé SSH, ni accès sudo.
+La demande ne contient qu'un identifiant et une date : aucune commande, adresse de
+registre, version ou option n'est fournie par le navigateur. Le dépôt de publication
+et le registre sont fixés dans l'agent. Le minuteur traite les demandes toutes les dix
+secondes, sans installer de version à l'insu du gérant.
+
+Cette fonction concerne l'application du VPS. Le mode PC reste sans bouton de mise
+à jour serveur ; sa mise à jour se fait en remplaçant le kit. Les correctifs du système
+Ubuntu et de Docker restent la maintenance de la section 18.
+
+### Procédure manuelle de maintenance
 
 Serveur en retrait, après un retour au kit (section 19) ou une bascule abandonnée après l'étape 7 de la section 12 : ses volumes gardent le code KaraFun. Prépare-le d'abord comme le dit le début de la section 11, sinon le `docker compose up -d` ci-dessous reconnecterait sa file à KaraFun pendant une soirée du kit.
 

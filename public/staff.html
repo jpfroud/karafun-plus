@@ -264,6 +264,13 @@
     <details class="disclosure"><summary>Journal de la soirée</summary><ul class="log" id="log"></ul></details>
   </section>
 
+  <section class="card" data-tab="plus" id="serverUpdatePanel" hidden>
+    <div class="section-heading"><div><div class="eyebrow">Application</div><h2>Mise à jour</h2></div></div>
+    <p class="small muted">À faire hors soirée. La sauvegarde, l’installation et les vérifications sont automatiques. Si l’installation échoue, la version précédente est remise en place.</p>
+    <p class="small" id="serverUpdateStatus" role="status" aria-live="polite"></p>
+    <button type="button" class="btn primary" id="serverUpdateButton">Vérifier et mettre à jour</button>
+  </section>
+
   <section class="card end-panel" data-tab="plus">
     <div class="section-heading"><div><div class="eyebrow">Attention</div><h2>Fin de soirée</h2></div></div>
     <p class="small muted" id="stopHint">Pour arrêter l’application, utilise « Arrêter » (ARRETER.bat) sur le PC du bar : la soirée est enregistrée en continu.</p>
@@ -316,6 +323,7 @@
   // Vrai si l'onglet garde cette clé : le retour de Spotify la retrouvera.
   const keyKept = () => { try { return sessionStore()?.getItem('bar-key') === key; } catch (_) { return false; } };
   let S = null; let dragging = null; let moveArmed = null; let renderedOnce = false;
+  let updateSending = false, updateWatchVersion = null, updateReloading = false;
   let openNote = null; // repère ouvert d'un appui, conservé entre deux rafraîchissements
   let openRowMenu = null; // menu ⋯ d'une ligne de la file, gardé ouvert au rafraîchissement
   const selectedLines = new Set();
@@ -422,6 +430,52 @@
       load();
     } catch (e) { toast(e.message, true); }
   }
+
+  // Le service de mise à jour tourne sur le serveur, même lorsque cette page
+  // perd brièvement sa connexion. Un seul clic lui suffit ; aucun nouvel envoi
+  // n'est fait par le rafraîchissement automatique de la page.
+  function renderServerUpdate() {
+    const update = S?.update;
+    const visible = S?.app?.mode === 'server' && !!update?.enabled;
+    $('serverUpdatePanel').hidden = !visible;
+    if (!visible) return;
+    if (update.busy && !updateWatchVersion) updateWatchVersion = S.app.version || null;
+    const labels = { requested: 'Demande reçue…', checking: 'Recherche de la dernière version…',
+      downloading: 'Téléchargement de la mise à jour…', 'backing-up': 'Sauvegarde de la soirée…',
+      installing: 'Installation… La page revient automatiquement.', verifying: 'Vérification de la nouvelle version…',
+      succeeded: 'L’application est à jour.', failed: 'La mise à jour n’a pas pu être effectuée.',
+      'rolled-back': 'La version précédente a été remise en place.' };
+    $('serverUpdateStatus').textContent = update.blockedReason && !update.busy ? update.blockedReason :
+      update.message || labels[update.phase] || `Version installée : ${S.app.version || update.currentVersion || 'inconnue'}.`;
+    $('serverUpdateButton').disabled = updateSending || !!update.busy || !!update.blockedReason;
+    $('serverUpdateButton').textContent = updateSending || update.busy ? 'Mise à jour en cours…' : 'Vérifier et mettre à jour';
+    // L'ancien script est encore en mémoire après un redémarrage. Attendre la
+    // validation de l'installation avant de charger les nouveaux fichiers.
+    if (!update.busy && update.phase === 'succeeded' && updateWatchVersion && S.app.version &&
+        S.app.version !== updateWatchVersion && !updateReloading) {
+      updateReloading = true;
+      location.reload?.();
+    }
+  }
+  $('serverUpdateButton').onclick = async () => {
+    if (updateSending || S?.app?.mode !== 'server' || !S?.update?.enabled || S.update.busy || S.update.blockedReason) return;
+    updateSending = true;
+    updateWatchVersion = S.app.version || null;
+    renderServerUpdate();
+    $('serverUpdateStatus').textContent = 'Envoi de la demande…';
+    try {
+      const result = await post('/api/staff/update', {});
+      if (result.update) S.update = result.update;
+    } catch (error) {
+      $('serverUpdateStatus').textContent = error.message || 'Connexion interrompue. La page vérifie automatiquement si la demande a été reçue.';
+      toast(error.message || 'Connexion interrompue.', true);
+    } finally {
+      updateSending = false;
+      // Même si la réponse s'est perdue, lire l'état avant de proposer un
+      // nouvel essai : l'installation a pu commencer sur le serveur.
+      await load();
+    }
+  };
   // Copie d'un lien affiché. Sans API presse-papiers (page du bar ouverte en
   // http depuis un téléphone : contexte non sécurisé), copie de secours du
   // navigateur sur le champ lui-même, qui est dans la fenêtre ouverte (le
@@ -1052,7 +1106,12 @@
           }); } catch (_) { /* Le panneau reste visible dans la page. */ }
         }
       }
-    } catch (e) { $('kfPill').textContent = key ? 'Programme arrêté ?' : 'Clé du bar manquante'; $('kfPill').className = 'pill bad'; }
+    } catch (e) {
+      const updating = updateSending || !!S?.update?.busy;
+      $('kfPill').textContent = updating ? 'Mise à jour…' : key ? 'Programme arrêté ?' : 'Clé du bar manquante';
+      $('kfPill').className = updating ? 'pill warn' : 'pill bad';
+      if (updating) $('serverUpdateStatus').textContent = 'Mise à jour en cours : reconnexion automatique…';
+    }
   }
 
   function renderSolver() {
@@ -1841,6 +1900,7 @@
     $('appVersion').title = app.builtAt ? `Version installée, construite le ${new Date(app.builtAt).toLocaleString('fr-FR')}` :
       app.mode === 'server' ? SERVER_VERSION_TITLE : 'Version installée sur ce PC';
     renderModeTexts();
+    renderServerUpdate();
     $('recoveryBox').hidden = !S.recoveredPending;
     $('helperLogin').textContent = S.kf?.username || 'FileKaraoke';
     for (const id of ['battleCooldownMin', 'battleRejectedCooldownMin', 'battleVoteMin', 'battleMinVoters', 'requirePresence',

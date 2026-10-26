@@ -16,7 +16,7 @@ const GUIDE = 'DEPLOIEMENT-SERVEUR.md';
 const DOCS = ['README.md', 'GUIDE-BAR.md', 'LISEZMOI.txt', 'CONTEXTE-REPRISE.md', '.github/RELEASE.md', 'AGENTS.md', GUIDE];
 // Variables du mode serveur et de l'exploitation (épopée #18).
 const CONTRAT = ['KARAOKE_MODE', 'KARAOKE_BIND', 'KARAOKE_PUBLIC_BIND', 'KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL',
-  'KARAOKE_STAFF_KEY_FILE', 'KARAOKE_CLIENT_IP_HEADER', 'KARAOKE_TRUSTED_PROXIES', 'KARAOKE_SOLVER_JVM_ARGS'];
+  'KARAOKE_STAFF_KEY_FILE', 'KARAOKE_CLIENT_IP_HEADER', 'KARAOKE_TRUSTED_PROXIES', 'KARAOKE_SOLVER_JVM_ARGS', 'KARAOKE_UPDATE_DIR'];
 const TITRE = '# Déployer la file karaoké sur un serveur Linux';
 const PLAN = [
   'Vue d\'ensemble', 'Avant de commencer', 'Créer le VPS chez OVHcloud', 'Première connexion, clé SSH et mises à jour',
