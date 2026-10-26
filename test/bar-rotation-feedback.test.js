@@ -968,41 +968,110 @@ test('bonus étalé : bonus retiré en cours de tour, retour au rythme des autre
   }
 });
 
-// Duo avec une personne à bonus : Bea (+3) est l'invitée de chaque titre de
-// Gus (même table, duo direct). Ses passages, seule ou invitée, suivent le
-// même rythme étalé ; les autres chantent autant qu'avant.
-test('bonus étalé : duo dont l’invitée a un bonus', () => {
-  const s = new Scheduler();
-  s.setHeadcount('T', 2);
-  const bea = s.join({ tableId: 'T', name: 'Bea' }), gus = s.join({ tableId: 'T', name: 'Gus' });
-  const solos = [];
-  for (let i = 1; i <= 8; i++) { s.setHeadcount(`S${i}`, 1); solos.push(s.join({ tableId: `S${i}`, name: `X${i}` })); }
-  let n = 1;
+// Duo avec une personne à bonus. Gus (sans bonus) invite Bea : un titre sur
+// deux (`every` 2) ou tous (`every` 1), à une autre table (invitation
+// acceptée) ou à la sienne (duo direct). `levels` : bonus de Bea et de Gus.
+// Rend les rangs de chacun sur scène (titre ou invitée).
+function duoNight(options, { beaLevel = 0, gusLevel = 0, every = 2, sameTable = false, solos = 8, passages = 240 } = {}) {
+  const s = new Scheduler(options);
+  s.setHeadcount('T', sameTable ? 2 : 1);
+  const bea = s.join({ tableId: 'T', name: 'Bea' });
+  if (!sameTable) s.setHeadcount('G', 1);
+  const gus = s.join({ tableId: sameTable ? 'T' : 'G', name: 'Gus' });
+  const others = [];
+  for (let i = 1; i <= solos; i++) { s.setHeadcount(`S${i}`, 1); others.push(s.join({ tableId: `S${i}`, name: `X${i}` })); }
+  let n = 1, turn = 0;
   const refill = () => {
-    for (const p of [bea, ...solos]) if (!s.songsOf(p).length) s.chooseSong(p, song(n++));
-    if (!s.songsOf(gus).length) s.inviteDuet(gus, bea.id, song(n++));
+    for (const p of [bea, ...others]) if (!s.songsOf(p).length) s.chooseSong(p, song(n++));
+    if (s.songsOf(gus).length) return;
+    if (turn++ % every === every - 1) {
+      const duo = s.inviteDuet(gus, bea.id, song(n++));
+      if (duo.duet.state === 'pending') s.answerDuet(bea, true, duo.entryId);
+    } else s.chooseSong(gus, song(n++));
   };
   refill();
-  s.setPersonBonus(bea.id, 3);
-  const beaAt = [], gusAt = [], count = new Map();
-  for (let i = 0; i < 200; i++) {
+  if (beaLevel) s.setPersonBonus(bea.id, beaLevel);
+  if (gusLevel) s.setPersonBonus(gus.id, gusLevel);
+  const at = new Map([['Bea', []], ['Gus', []], ...others.map(p => [p.name, []])]);
+  for (let i = 0; i < passages; i++) {
     const sel = s.select();
+    if (!sel) break;
     s.commit(sel); s.songEnded(sel.ids);
-    if (i >= 10) {
-      if (sel.ids.includes(bea.id)) beaAt.push(i);
-      if (sel.ids[0] === gus.id) { assert.deepEqual(sel.ids, [gus.id, bea.id]); gusAt.push(i); }
-      count.set(sel.ids[0], (count.get(sel.ids[0]) || 0) + 1);
-    }
+    for (const pid of sel.ids) at.get(s.people.get(pid).name).push(i);
     refill();
   }
-  const gaps = gapsOf(beaAt);
-  // Avant : 20 écarts de 4 chansons sur 37. Il en reste quelques-uns quand le
-  // tour n'a plus la place de ses deux passages (son duo et son titre).
-  assert.ok(Math.min(...gaps) >= 4 && gaps.filter(gap => gap === 4).length <= 4, `Bea : écarts ${gaps.join(' ')}`);
-  const soloCounts = solos.map(p => count.get(p.id) || 0);
-  assert.ok(beaAt.length >= 2 * Math.min(...soloCounts), `Bea ${beaAt.length} passages contre ${soloCounts.join(',')}`);
-  assert.ok(Math.max(...soloCounts) - Math.min(...soloCounts) <= 1, soloCounts.join(','));
-  assert.ok(Math.max(...gapsOf(gusAt)) <= 21, `Gus : ${gapsOf(gusAt).join(' ')}`);
+  return at;
+}
+
+// Relecture du bonus étalé : un bonus ne retient que les titres de la
+// personne. Invitée d'un duo, elle ne retarde pas la personne qui l'invite
+// (comme un malus) ; avant, le duo de Gus attendait le rythme étalé de Bea
+// (« Chacun son tour », 20 solistes : premier duo au rang 44 au lieu de 30 ;
+// 12 solistes : 3 passages de Gus au lieu de 4 avant la 60e chanson ;
+// « Tables à tour de rôle » : chaque passage 7 chansons plus tard).
+test('bonus étalé : l’invitée à bonus ne retarde pas la personne qui l’invite, trois modes', () => {
+  for (const [mode, options] of modes) {
+    for (const level of [3, 2]) {
+      const without = duoNight(options, { solos: 20, passages: 180 }).get('Gus');
+      const withBonus = duoNight(options, { beaLevel: level, solos: 20, passages: 180 }).get('Gus');
+      const label = `${mode}, Bea +${level} : Gus aux rangs ${withBonus.join(' ')} (sans bonus : ${without.join(' ')})`;
+      assert.ok(withBonus.length >= without.length, label);
+      withBonus.forEach((rank, i) => assert.ok(i >= without.length || rank <= without[i], label));
+    }
+    const gus = duoNight(options, { beaLevel: 3, solos: 12, passages: 61 }).get('Gus');
+    assert.ok(gus.length >= 4, `${mode}, 12 solistes : Gus aux rangs ${gus.join(' ')}`);
+  }
+});
+
+// Bea (+1 ou +2) invitée sur chaque titre de Gus : ses propres titres se
+// placent entre ses duos sans les serrer. Avant, retenu pour le rythme étalé,
+// son titre passait juste avant le duo de fin de tour (13 écarts de 2 ou 3
+// chansons avec +2 sur 240). Avec +3, seulement en « Chacun son tour » : dans
+// les modes par table, la table de Bea a plus de passages que sa part et les
+// serre déjà en fin de tour, avec ou sans étalement (écarts de 2, inchangés).
+test('bonus étalé : invitée à bonus sur chaque titre, l’espacement est gardé, trois modes', () => {
+  for (const [mode, options] of modes) {
+    for (const level of options.tableRotation ? [1, 2] : [1, 2, 3]) {
+      for (const sameTable of [false, true]) {
+        const at = duoNight(options, { beaLevel: level, every: 1, sameTable });
+        const gaps = gapsOf(at.get('Bea'));
+        const label = `${mode}, Bea +${level}${sameTable ? ', même table' : ''} : écarts ${gaps.join(' ')}`;
+        assert.ok(Math.min(...gaps) >= 4, label);
+        const solo = [...at.keys()].filter(name => name.startsWith('X')).map(name => at.get(name).length);
+        assert.ok(Math.max(...solo) - Math.min(...solo) <= 1, `${label} ; solistes ${solo.join(',')}`);
+        assert.ok(at.get('Gus').length >= Math.min(...solo) / 2, `${label} ; Gus ${at.get('Gus').length}, solistes ${solo.join(',')}`);
+      }
+    }
+  }
+});
+
+// Gus (+3) invite Bea (sans bonus) un titre sur deux, 20 solistes : Bea ne
+// chante pas plus que les autres (avant, en « Tables à tour de rôle », le duo
+// retenu en fin de tour laissait passer son titre juste avant : 19 passages
+// contre 11). En « Chacun son tour », les passages de Gus sont étalés.
+test('bonus étalé : l’auteur du duo a le bonus, l’invitée garde son rythme', () => {
+  for (const [mode, options] of modes) {
+    const at = duoNight(options, { gusLevel: 3, solos: 20 });
+    const solo = [...at.keys()].filter(name => name.startsWith('X')).map(name => at.get(name).length);
+    const mean = solo.reduce((a, b) => a + b, 0) / solo.length;
+    const label = `${mode} : Gus ${at.get('Gus').length}, Bea ${at.get('Bea').length}, solistes ${solo.join(',')}`;
+    assert.ok(at.get('Gus').length >= 1.8 * mean, label);
+    assert.ok(Math.abs(at.get('Bea').length - mean) <= 1.5, label);
+    if (!options.tableRotation) assert.ok(Math.min(...gapsOf(at.get('Gus'))) >= 6, `${label} ; écarts de Gus ${gapsOf(at.get('Gus')).join(' ')}`);
+  }
+});
+
+// Espacement réglé à 0 ou 1 (option de l'ordonnanceur, pas de la page du
+// bar) : un bonus garde au moins trois chansons de place en fin de tour.
+// Avant : +1 en « Tables à tour de rôle », cinq écarts de 2 chansons.
+test('bonus étalé : espacement réglé bas, pas de passages serrés en fin de tour', () => {
+  for (const spacingSongs of [0, 1]) {
+    for (const [mode, options] of modes) {
+      const { at } = steadyTen({ ...options, spacingSongs }, (s, p) => s.setPersonBonus(p.A1.id, 1));
+      const gaps = gapsOf(at.get('A1'));
+      assert.ok(Math.min(...gaps) >= 4, `${mode}, espacement ${spacingSongs}, A1 +1 : écarts ${gaps.join(' ')}`);
+    }
+  }
 });
 
 // La règle ne retient jamais la scène : si plus personne d'autre ne peut

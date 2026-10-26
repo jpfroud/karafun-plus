@@ -4,6 +4,7 @@ import ai.timefold.solver.core.api.score.HardMediumSoftScore;
 import ai.timefold.solver.core.api.score.calculator.EasyScoreCalculator;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,6 +30,9 @@ import java.util.function.Predicate;
 public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoftScore> {
     private static final double EPS = 1e-9;
     private static final int UNKNOWN = -1000;
+    // Usual spacing (DEFAULTS.spacingSongs in lib/scheduler/common.js): room a
+    // spread-out bonus keeps between its last passages of a round.
+    private static final int USUAL_SPACING = 3;
 
     @Override
     public HardMediumSoftScore calculateScore(QueuePlan plan) {
@@ -82,33 +86,39 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             for (Performance c : candidates) if (!capped(c, apps, cap)) open.add(c);
             if (open.isEmpty()) open.addAll(candidates);
 
-            // Bonus spread out (lib/scheduler/rotation.js#_pick, `early`): a
-            // singer weighing w > 1 whose round is not over comes back only
-            // about n/w passages after their last one (n: people of the
-            // current round, a title ready or already on stage in it), unless
-            // the round no longer has room for the passages their credit
-            // still gives (one: no other new passage left; k >= 2: at most
-            // k * spacing left). Spacing still wins (fallback below). Only
-            // computed when someone in the plan has a bonus.
+            // Bonus spread out (lib/scheduler/rotation.js#_pick, `early`): the
+            // owner of a title, weighing w > 1, whose round is not over comes
+            // back only about n/w passages after their last one (n: people of
+            // the current round, a title ready or already on stage in it),
+            // unless the round no longer has room for the passages they still
+            // owe it (their credit, plus the new duos they are invited to; one:
+            // no other new passage left; k >= 2: at most k * max(3, spacing)
+            // left). Room only counts new passages sharing nobody with the
+            // held one. A guest's bonus never holds the duo of the person who
+            // invites them. Spacing still wins (fallback below). Only computed
+            // when someone in the plan has a bonus.
             final int at = pos;
             Predicate<Performance> early = null;
             if (anyBonus) {
-                int fresh = 0;
-                for (Performance c : open) if (repeats(c, round, apps) == 0) fresh++;
+                List<Performance> fresh = new ArrayList<>();
+                for (Performance c : open) if (repeats(c, round, apps) == 0) fresh.add(c);
                 Set<String> people = new HashSet<>(owners);
                 people.addAll(apps.keySet());
-                final int roundSize = people.size(), freshCount = fresh;
+                final int roundSize = people.size();
                 early = c -> {
-                    for (String singer : c.getSingers()) {
-                        double w = weight(plan, singer);
-                        int last = lastSeen.getOrDefault(singer, UNKNOWN);
-                        if (w <= 1 + EPS || last <= UNKNOWN || round.contains(singer)) continue;
-                        if (at - last >= roundSize / w - EPS) continue;
-                        int left = (int) Math.ceil((1 - roundUse.getOrDefault(singer, 0.0)) * w - EPS);
-                        int others = freshCount - (repeats(c, round, apps) == 0 ? 1 : 0);
-                        if (others > (left > 1 ? left * Math.max(1, spacing) : 0)) return true;
+                    String singer = c.getOwner();
+                    double w = weight(plan, singer);
+                    int last = lastSeen.getOrDefault(singer, UNKNOWN);
+                    if (w <= 1 + EPS || last <= UNKNOWN || round.contains(singer)) return false;
+                    if (at - last >= roundSize / w - EPS) return false;
+                    int others = 0, invited = 0;
+                    for (Performance other : fresh) {
+                        if (other == c) continue;
+                        if (Collections.disjoint(other.getSingers(), c.getSingers())) others++;
+                        else if (other.getSingers().contains(singer) && !singer.equals(other.getOwner())) invited++;
                     }
-                    return false;
+                    int left = (int) Math.ceil((1 - roundUse.getOrDefault(singer, 0.0)) * w - EPS) + invited;
+                    return others > (left > 1 ? left * Math.max(USUAL_SPACING, spacing) : 0);
                 };
             }
             List<Performance> tier = firstAppearances(open, appeared);

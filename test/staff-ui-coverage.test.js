@@ -559,9 +559,26 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   page.world.people[1].bonus = 3;
   await page.poll();
   assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
-    '+3 : passe environ deux fois plus souvent, à intervalles réguliers ; les premiers passages des nouveaux restent prioritaires.');
+    '+3 : passe environ deux fois plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  // Le bonus de la table se multiplie à celui de la personne : +3 à une table
+  // à −3 revient à passer comme les autres ; sans bonus personnel, la ligne
+  // dit ce que fait celui de la table.
+  page.world.tables[0].bonus = -3;
+  await page.poll();
+  assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
+    '+3, avec le bonus de la table (−3) : passe une fois par tour, comme les autres.');
+  assert.match(row('bruno').querySelector('[data-person-bonus]').title, /\(−3\) : passe une fois par tour/);
+  page.world.people[1].bonus = 1;
+  page.world.tables[0].bonus = 2;
+  await page.poll();
+  assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
+    '+1, avec le bonus de la table (+2) : passe environ 1,9 fois plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  assert.equal(row('alice').querySelector('[data-person-bonus-help]').textContent,
+    'Aucun, avec le bonus de la table (+2) : passe environ une fois et demie plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  delete page.world.tables[0].bonus;
   page.world.people[1].bonus = -2;
   await page.poll();
+  assert.equal(row('alice').querySelector('[data-person-bonus-help]'), null, 'ni bonus ni bonus de table, pas de phrase');
   // Repère enregistré tout seul : après la pause de frappe, sur Entrée ou en
   // quittant le champ. Seul le texte part.
   const note = id => row(id).querySelector('[data-identity-note]');
@@ -1425,10 +1442,10 @@ test('tables : tuiles, QR en grand, création, détails enregistrés seuls, bonu
   assert.deepEqual(page.lastPost('/api/staff/bonus').body, { tableId: '2', level: -1 });
   assert.equal(page.toast().text, 'Bonus de table enregistré (invisible des clients)');
   assert.equal(page.$('tableSheetBonusHelp').textContent,
-    '−1 : passe un peu moins souvent (environ 4 passages pour 5) ; le premier passage de la soirée n’est pas retardé.');
+    '−1 : chaque personne de la table passe un peu moins souvent (environ 4 passages pour 5) ; le premier passage de la soirée n’est pas retardé.');
   await page.change(page.$('tableSheetBonus'), '2');
   assert.equal(page.$('tableSheetBonusHelp').textContent,
-    '+2 : passe environ une fois et demie plus souvent, à intervalles réguliers ; les premiers passages des nouveaux restent prioritaires.');
+    '+2 : chaque personne de la table passe environ une fois et demie plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
   await page.change(page.$('tableSheetBonus'), '0');
   assert.equal(page.toast().text, 'Bonus de table retiré');
   assert.equal(page.$('tableSheetBonusHelp').textContent, 'Aucun : passe une fois par tour, comme les autres.');

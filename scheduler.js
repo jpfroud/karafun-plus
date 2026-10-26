@@ -54,6 +54,8 @@
  *   des premiers passages. Les clients ne le voient pas. Les passages en plus
  *   d'un bonus sont étalés : environ n/poids chansons entre deux passages (n :
  *   personnes du tour), et non deux passages rapprochés puis un tour d'attente.
+ *   Seuls les titres de la personne sont retenus : invitée d'un duo, elle ne
+ *   retarde pas la personne qui l'invite.
  */
 const { crypto, TimefoldBridge, DEFAULTS, bonusWeight, HISTORY_LIMIT, DEFER_MAX, INBOX_MAX, INBOX_TTL_MS, EPS, id, token,
   SONG_GAP_MAX_SEC, SONG_GAP_SAMPLES, SONG_GAP_MIN_SAMPLES } = require('./lib/scheduler/common');

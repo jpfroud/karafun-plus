@@ -822,6 +822,53 @@ test('QueueScore : un bonus ne repasse pas avant son rythme étalé', { skip: !f
   } finally { bridge.close(); }
 });
 
+// Bonus étalé, relecture : le bonus d'une invitée ne retient que ses propres
+// titres. Bea (+3) vient de chanter son titre ; le duo de Gus (sans bonus),
+// où elle est invitée, part dès que l'espacement le permet (rang 3) dans la
+// prévision locale, et Java ne le pénalise pas (l'ancienne règle retenait ce
+// duo jusqu'au rythme étalé de Bea : -10 000).
+// KARAFUN_TEST_SOLVER_JAR : jar d'une autre version (solveur de 4ad7f62 : échoue).
+test('QueueScore : l’invitée à bonus ne retarde pas le duo de la personne qui l’invite', { skip: !fs.existsSync(JAR) }, async () => {
+  const s = new Scheduler();
+  s._maybeRequestSolver = () => {};
+  s.setHeadcount('T', 1); const bea = s.join({ tableId: 'T', name: 'Bea' });
+  s.setHeadcount('G', 1); const gus = s.join({ tableId: 'G', name: 'Gus' });
+  const solos = [];
+  for (let i = 1; i <= 8; i++) { s.setHeadcount(`S${i}`, 1); solos.push(s.join({ tableId: `S${i}`, name: `X${i}` })); }
+  let n = 9600;
+  const next = () => ({ songId: n++, title: `T${n}`, artist: 'x' });
+  const refill = () => {
+    for (const p of [bea, ...solos]) while (s.songsOf(p).length < 2) s.chooseSong(p, next(), 'append');
+    while (s.songsOf(gus).length < 2) {
+      const duo = s.inviteDuet(gus, bea.id, next());
+      if (duo.duet.state === 'pending') s.answerDuet(bea, true, duo.entryId);
+    }
+  };
+  refill();
+  s.setPersonBonus(bea.id, 3);
+  let last = null;
+  for (let i = 0; i < 120 && !(i > 20 && last.length === 1 && last[0] === bea.id &&
+      !s.roundPeople.has(gus.id) && !s.roundPeople.has(bea.id)); i++) {
+    const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); refill();
+    last = sel.ids;
+  }
+  assert.deepEqual(last, [bea.id], 'Bea vient de chanter son titre, crédit ouvert');
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  const local = request.performances;
+  const duo = local.findIndex(row => row.owner === gus.id);
+  assert.equal(duo, 3, `duo de Gus au rang ${duo}`);
+  assert.deepEqual(local[duo].singers, [gus.id, bea.id]);
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge(process.env.KARAFUN_TEST_SOLVER_JAR ? { jar: process.env.KARAFUN_TEST_SOLVER_JAR } : {});
+  try {
+    const score = (await bridge.solve({ ...request, requestId: 'guest-bonus', budgetMs: 100,
+      performances: local.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore;
+    assert.ok(medium(score) > -4500, `ordre local ${score}`);
+  } finally { bridge.close(); }
+});
+
 // « Compromis » : la taille d'une table envoyée à Timefold (groupSizes) compte
 // ses chanteurs inscrits, titre prêt ou non, et change bien le score.
 function compromiseRequest() {
