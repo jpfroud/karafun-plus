@@ -46,6 +46,12 @@ public class QueuePlan {
      * no such rule.
      */
     private Map<String, Integer> addedOrder = Map.of();
+    /**
+     * Tables (groups) that already had a first appearance in the current cycle of first appearances
+     * (Node firstCycle, rotation.js#_pick): each table brings one person per cycle. Empty from an
+     * older client: the cycle starts empty.
+     */
+    private Set<String> firstCycle = Set.of();
     private List<List<String>> history;
     private Rotation rotation;
     private boolean interleaveArrivals;
@@ -110,6 +116,8 @@ public class QueuePlan {
     public void setGroupSizes(Map<String, Double> groupSizes) { this.groupSizes = groupSizes == null ? Map.of() : groupSizes; }
     public Map<String, Integer> getAddedOrder() { return addedOrder; }
     public void setAddedOrder(Map<String, Integer> addedOrder) { this.addedOrder = addedOrder == null ? Map.of() : addedOrder; }
+    public Set<String> getFirstCycle() { return firstCycle; }
+    public void setFirstCycle(Set<String> firstCycle) { this.firstCycle = firstCycle == null ? Set.of() : firstCycle; }
     public List<List<String>> getHistory() { return history; }
     public Rotation getRotation() { return rotation; }
     public boolean isInterleaveArrivals() { return interleaveArrivals; }

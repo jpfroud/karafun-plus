@@ -686,7 +686,9 @@ test('QueueScore : un ordre qui fait voir un double coûte au moins 4 000 en med
   s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
   const nameOf = row => s.people.get(row.owner).name;
   const node = request.performances;
-  const i = node.findIndex((row, k) => k > 8 && nameOf(row) === 'B2');
+  // Premier tour A1 B1 S A2… (cycle des tables) : au 2e tour, S avant B1
+  // fait voir S deux fois pendant l'attente de B1.
+  const i = node.findIndex((row, k) => k > 8 && nameOf(row) === 'B1');
   const broken = node.slice(); [broken[i], broken[i + 1]] = [broken[i + 1], broken[i]];
   assert.equal(nameOf(broken[i]), 'S');
   const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
@@ -712,8 +714,14 @@ test('QueueScore : la dette de l’invitée d’un duo ne retarde pas le duo de 
   const ana = join('T4', 'Ana'), bea = join('T4', 'Bea');
   const others = [['T1', 'Chris'], ['T2', 'Dina'], ['T3', 'Eli'], ['T5', 'Fred'], ['T6', 'Gus']]
     .map(([tableId, name]) => join(tableId, name));
-  for (const p of [ana, bea, ...others]) s.chooseSong(p, song(), 'append');
-  for (let i = 0; i < 7; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  // Premier tour Ana Bea Chris Dina Eli Fred Gus : les autres tables ajoutent
+  // après le passage d'Ana et Bea (sinon le cycle des tables ferait passer
+  // Bea, deuxième de sa table, en dernier).
+  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); };
+  for (const p of [ana, bea]) s.chooseSong(p, song(), 'append');
+  for (let i = 0; i < 2; i++) play();
+  for (const p of others) s.chooseSong(p, song(), 'append');
+  for (let i = 0; i < 5; i++) play();
   s.inviteDuet(ana, bea.id, song());
   for (const p of others) s.chooseSong(p, song(), 'append');
   s.roundUse.set(bea.id, 2); // passage de Bea pris sur le tour suivant
@@ -1178,10 +1186,11 @@ test('B7 vraie JVM : -Xlog:gc (journal sur stdout) laisse Timefold répondre',
     } finally { bridge.close(); }
   });
 
-// Premiers passages, premier ajouté premier servi (constat du gérant du
-// 25 octobre) : 12 personnes ajoutent leur premier titre l'une après l'autre.
-// Timefold reçoit l'ordre d'ajout et ne le contredit pas : en « Chacun son
-// tour » avant la règle des tables, dans les modes de tables à part égale.
+// Premiers passages (constats du gérant des 25 et 26 octobre) : 12 personnes
+// ajoutent leur premier titre l'une après l'autre. Timefold reçoit l'ordre
+// d'ajout et le cycle des tables et ne les contredit pas : en « Chacun son
+// tour » le cycle puis l'ordre d'ajout, avant la règle des tables ; dans les
+// modes de tables, l'ordre d'ajout à part égale.
 const FIRST_ARRIVALS = [['Comptoir', 'S1'], ['A', 'A1'], ['B', 'B1'], ['A', 'A2'], ['C', 'C1'], ['A', 'A3'],
   ['B', 'B2'], ['A', 'A4'], ['C', 'C2'], ['B', 'B3'], ['C', 'C3'], ['Comptoir', 'S2']];
 function firstArrivals(options = {}) {
@@ -1201,11 +1210,22 @@ function firstArrivalsRequest(options = {}) {
   return { s, people, request };
 }
 
-test('premiers passages : Timefold reçoit l’ordre d’ajout des auteurs', () => {
-  const { people, request } = firstArrivalsRequest();
+// Ordre attendu en « Chacun son tour » : cycle des tables (premier de chaque
+// table, les tables dans l'ordre d'ajout de leur candidat), décision du
+// gérant du 26 octobre.
+const FIRST_CYCLES = ['S1', 'A1', 'B1', 'C1', 'S2', 'A2', 'B2', 'C2', 'A3', 'B3', 'C3', 'A4'];
+
+test('premiers passages : Timefold reçoit l’ordre d’ajout des auteurs et le cycle des tables', () => {
+  const { s, people, request } = firstArrivalsRequest();
   assert.deepEqual(people.map(p => request.addedOrder[p.id]), people.map((_, k) => k));
-  assert.deepEqual(request.performances.map(row => row.owner), people.map(p => p.id),
-    'l’ordre de départ suit déjà l’ordre d’ajout');
+  assert.deepEqual(request.firstCycle, [], 'aucune table encore passée');
+  assert.deepEqual(request.performances.map(row => s.people.get(row.owner).name), FIRST_CYCLES,
+    'l’ordre de départ suit déjà le cycle des tables');
+  const sel = s.select(); s.commit(sel);
+  let next;
+  s.solverBridge = { available: true, solve: req => { next = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  assert.deepEqual(next.firstCycle, [people[0].group], 'la table de S1 est passée dans ce cycle');
 });
 
 test('QueueScore : un premier passage servi avant un autre ajouté plus tôt coûte',
@@ -1216,6 +1236,8 @@ test('QueueScore : un premier passage servi avant un autre ajouté plus tôt co�
       for (const [mode, options, moved] of [
         // Ordre de l'ancien ordonnanceur : S1 dépassé par les grandes tables.
         ['chacun son tour', {}, ['A1', 'B1', 'C1', 'S1', 'A2', 'S2', 'B2', 'A3', 'C2', 'A4', 'B3', 'C3']],
+        // Premier ajouté, premier servi sans le cycle des tables : A2 avant C1.
+        ['chacun son tour', {}, ['S1', 'A1', 'B1', 'A2', 'C1', 'A3', 'B2', 'A4', 'C2', 'B3', 'C3', 'S2']],
         // Même part pour toutes les tables au départ : S2, ajoutée la dernière, passe avant A1.
         ['tables à tour de rôle', { tableRotation: true }, ['S1', 'S2', 'A1', 'B1', 'C1', 'A2', 'B2', 'A3', 'C2', 'B3', 'A4', 'C3']],
       ]) {

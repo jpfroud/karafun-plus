@@ -95,35 +95,47 @@ for (const [mode, options] of modes) {
   });
 }
 
-// Constat du gérant du 25 octobre : en « Chacun son tour », le tour des solos,
-// tous des premiers passages, suit l'ordre d'ajout (premier ajouté, premier
-// servi). La grande table n'y reprend le micro que si ses chanteurs ont
-// ajouté leurs titres à la suite : autant de reprises que dans l'ordre
-// d'ajout (avant ce constat, l'alternance des tables passait avant, 9
-// reprises sur ces 25 soirées contre 143 dans l'ordre d'ajout). Ensuite,
+// Constats du gérant des 25 et 26 octobre : en « Chacun son tour », le tour
+// des solos, tous des premiers passages, fait tourner les tables (premier de
+// chaque table : un cycle où chaque table fait passer une personne, les tables
+// dans l'ordre d'ajout de leur candidat, dans une table ses personnes dans
+// l'ordre d'ajout). Tout le monde a ajouté avant le premier passage : le
+// cycle k fait passer le k-ième ajouté de chaque table. La grande table n'y
+// reprend le micro qu'en fin de tour, quand il ne reste qu'elle (premier
+// ajouté, premier servi pur : 143 reprises sur ces 25 soirées). Ensuite,
 // duos compris, elle ne garde plus le micro. Les modes de tables gardent
 // l'alternance dès le premier tour.
-test('essai au bar (chacun son tour) : premiers passages dans l’ordre d’ajout, puis la grande table ne garde plus le micro', () => {
-  let rest = 0, longest = 0;
+test('essai au bar (chacun son tour) : premiers passages par cycle des tables, puis la grande table ne garde plus le micro', () => {
+  let rest = 0, longest = 0, firstRuns = 0;
   for (let seed = 1; seed <= 25; seed++) {
     const s = barEvening({}, seed);
-    const added = [...s.people.values()].sort((a, b) => a.readySince - b.readySince);
+    const rank = new Map();
+    const cycles = [...s.people.values()].sort((a, b) => a.readySince - b.readySince)
+      .map(p => { const k = rank.get(p.group) || 0; rank.set(p.group, k + 1); return { p, k }; })
+      .sort((a, b) => a.k - b.k || a.p.readySince - b.p.readySince).map(({ p }) => p);
     const { played } = playAll(s);
-    assert.deepEqual(played.slice(0, 20).map(item => item.ids[0]), added.map(p => p.id),
-      `graine ${seed} : le tour des solos suit l'ordre d'ajout`);
+    assert.deepEqual(played.slice(0, 20).map(item => item.ids[0]), cycles.map(p => p.id),
+      `graine ${seed} : le tour des solos suit le cycle des tables`);
     const round = tableRuns(played.slice(0, 20));
-    assert.equal(round.same, tableRuns(added.map(p => ({ groups: [p.group] }))).same,
-      `graine ${seed} : pas d'autre reprise de table que celles de l'ordre d'ajout`);
+    assert.equal(round.same, tableRuns(cycles.map(p => ({ groups: [p.group] }))).same,
+      `graine ${seed} : pas d'autre reprise de table que celles du cycle`);
+    firstRuns += round.same;
     rest += tableRuns(played).same - round.same;
     longest = Math.max(longest, tableRuns(played.slice(19)).longest);
   }
+  // Tour des solos : la table de 10 enchaîne ses derniers chanteurs quand il
+  // ne reste qu'elle : 100 reprises sur ces 25 soirées, quatre par soirée.
+  assert.ok(firstRuns <= 100, `tour des solos : ${firstRuns} reprises`);
   // Mesures de l'ancien ordonnanceur sur la suite de ces 25 soirées : 69
   // reprises (63 avec l'ordre d'ajout), séries de 6 au plus.
   assert.ok(rest <= 75, `après le tour des solos, duos compris : ${rest} reprises`);
   assert.ok(longest <= 6, `série la plus longue après le tour des solos (duos entre tables en fin de liste compris) : ${longest}`);
 });
 
-test('les trois modes donnent réellement des parts différentes aux tables', () => {
+// Premiers passages : « Chacun son tour » fait tourner les tables comme
+// « Tables à tour de rôle » (cycle des tables, décision du gérant du
+// 26 octobre) ; « Compromis » donne à la grande table une part plus grande.
+test('les modes donnent des parts différentes aux tables ; chacun son tour fait tourner les tables aux premiers passages', () => {
   const shareOfA = options => {
     let a = 0, total = 0;
     for (let seed = 1; seed <= 10; seed++) {
@@ -137,9 +149,9 @@ test('les trois modes donnent réellement des parts différentes aux tables', ()
   };
   const people = shareOfA({}), tables = shareOfA({ tableRotation: true }),
     compromise = shareOfA({ tableRotation: true, weightedTables: true });
-  assert.ok(people > compromise && compromise > tables,
+  assert.ok(compromise > tables && compromise > people,
     `part de la table de 10 dans les 10 premiers passages : chacun ${people}, compromis ${compromise}, tables ${tables}`);
-  assert.ok(people >= 0.45, 'chacun son tour : la table de 10 a environ la moitié des passages');
+  assert.ok(people <= 0.35, `chacun son tour : un premier de chaque table par cycle (${people})`);
   assert.ok(tables <= 0.35, 'tables à tour de rôle : parts égales, les petites tables passent tôt');
 });
 
@@ -369,6 +381,27 @@ function twoTablesAndSolo() {
   return { s, more: () => song(1000 + n++) };
 }
 
+// Même soirée, mais la personne seule ajoute ses titres après les deux
+// premiers passages : le premier tour reste A1 B1 A2 B2 S A3 B3 A4 B4 (cycle
+// des tables : S rejoint le deuxième cycle, après A2 et B2). Joue `count`
+// passages en tout.
+function twoTablesAndLateSolo(count) {
+  const s = new Scheduler();
+  s.setHeadcount('A', 6);
+  s.setHeadcount('B', 6);
+  const solo = s.join({ tableId: 'Comptoir', name: 'S' });
+  const people = ['A1', 'B1', 'A2', 'B2', 'A3', 'B3', 'A4', 'B4'].map(name => s.join({ tableId: name[0], name }));
+  let n = 1;
+  for (const p of people) for (let k = 0; k < 2; k++) s.chooseSong(p, song(n++), 'append');
+  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel.names.join(' & '); };
+  const played = [];
+  for (let i = 0; i < count; i++) {
+    if (i === 2) for (let k = 0; k < 2; k++) s.chooseSong(solo, song(n++), 'append');
+    played.push(play());
+  }
+  return { s, play, played, more: () => song(1000 + n++) };
+}
+
 // Pour chaque passage, personnes vues deux fois depuis le passage précédent
 // du même chanteur.
 function doublesDuringWait(played) {
@@ -424,19 +457,20 @@ test('chacun rajoute un titre après avoir chanté : personne ne voit quelqu’u
 
 test('un plan adopté ne contourne pas la règle de patience', () => {
   const { s } = twoTablesAndSolo();
-  for (let i = 0; i < 12; i++) {
+  // Premier tour : A1 B1 S A2 B2 A3 B3 A4 B4 (cycle des tables), puis A1.
+  for (let i = 0; i < 10; i++) {
     const selected = s.select();
     s.commit(selected); s.songEnded(selected.ids);
   }
   const view = s.readyView();
-  assert.equal(view[0].name, 'B2', view.map(item => item.name).join(' '));
+  assert.equal(view[0].name, 'B1', view.map(item => item.name).join(' '));
   const solo = view.find(item => item.name === 'S');
   // Le plan met la personne seule en tête : elle chanterait une deuxième fois
-  // pendant l'attente de B2, passé avant elle au premier tour.
+  // pendant l'attente de B1, passé avant elle au premier tour.
   s.solverPlan = { version: s.version, ranks: new Map([
     [solo.entryId, 0], ...view.filter(item => item !== solo).map((item, index) => [item.entryId, index + 1]),
   ]) };
-  assert.deepEqual(s.select().names, ['B2']);
+  assert.deepEqual(s.select().names, ['B1']);
 });
 
 // Le bar retire le dernier titre d'une personne puis en ajoute un autre,
@@ -645,8 +679,8 @@ for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }]
 // Un malus n'est pas protégé par la patience : la personne seule, passée
 // pendant l'attente de B2, peut repasser devant elle.
 test('malus : la personne n’est pas protégée par la patience', () => {
-  const { s } = twoTablesAndSolo();
-  for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  const { s, played } = twoTablesAndLateSolo(9);
+  assert.deepEqual(played, ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4']);
   const order = () => s.readyView().map(x => x.name);
   assert.ok(order().indexOf('B2') < order().indexOf('S'), order().join(' '));
   const b2 = [...s.people.values()].find(p => p.name === 'B2');
@@ -657,9 +691,7 @@ test('malus : la personne n’est pas protégée par la patience', () => {
 // Retrait du dernier titre, un passage, puis ajout : ce n'est pas un échange,
 // l'attente recommence et la personne seule passe devant.
 test('retrait du dernier titre, un passage, puis ajout : l’attente recommence', () => {
-  const { s, more } = twoTablesAndSolo();
-  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); };
-  for (let i = 0; i < 9; i++) play();
+  const { s, more, play } = twoTablesAndLateSolo(9);
   const b2 = [...s.people.values()].find(p => p.name === 'B2');
   const swapped = s.readyView().map(x => x.name);
   assert.ok(swapped.indexOf('B2') < swapped.indexOf('S'), swapped.join(' '));
@@ -826,9 +858,12 @@ test('bonus : pas deux titres de suite de la même personne tant qu’un autre p
     const chloe = s.join({ tableId: '1', name: 'Chloé' });
     const sam = s.join({ tableId: 'Comptoir', name: 'Sam' });
     let n = 1;
+    // Chloé ajoute d'abord : premier tour Chloé Sam Alice Bruno (cycle des
+    // tables). Dernière du cycle, il ne resterait qu'elle dans le tour pour
+    // son passage en plus (fin de tour, voir plus haut).
+    for (let k = 0; k < 3; k++) s.chooseSong(chloe, song(n++), 'append');
     for (let k = 0; k < 4; k++) s.chooseSong(alice, song(n++), 'append');
     for (let k = 0; k < 4; k++) s.chooseSong(bruno, song(n++), 'append');
-    for (let k = 0; k < 3; k++) s.chooseSong(chloe, song(n++), 'append');
     s.chooseSong(sam, song(n++), 'append');
     const duo = s.inviteDuet(sam, chloe.id, song(n++));
     s.answerDuet(chloe, true, duo.entryId);
@@ -1218,16 +1253,16 @@ test('échange de titre autour d’un passage annulé : l’attente continue', (
   for (const removeFirst of [true, false]) {
     const { s, more } = twoTablesAndSolo();
     for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
-    const b2 = [...s.people.values()].find(p => p.name === 'B2');
-    const before = b2.readySerial;
+    const b1 = [...s.people.values()].find(p => p.name === 'B1');
+    const before = b1.readySerial;
     let sent;
-    if (removeFirst) { s.removeSong(b2, s.songsOf(b2)[0].entryId, 'self'); sent = s.select(); s.commit(sent); }
-    else { sent = s.select(); s.commit(sent); s.removeSong(b2, s.songsOf(b2)[0].entryId, 'self'); }
+    if (removeFirst) { s.removeSong(b1, s.songsOf(b1)[0].entryId, 'self'); sent = s.select(); s.commit(sent); }
+    else { sent = s.select(); s.commit(sent); s.removeSong(b1, s.songsOf(b1)[0].entryId, 'self'); }
     s.rollbackUnplayed(sent, { requeue: true });
-    s.chooseSong(b2, more(), 'append');
-    assert.equal(b2.readySerial, before, `removeFirst=${removeFirst}`);
+    s.chooseSong(b1, more(), 'append');
+    assert.equal(b1.readySerial, before, `removeFirst=${removeFirst}`);
     const order = s.readyView().map(x => x.name);
-    assert.ok(order.indexOf('B2') < order.indexOf('S'), `removeFirst=${removeFirst}: ${order.join(' ')}`);
+    assert.ok(order.indexOf('B1') < order.indexOf('S'), `removeFirst=${removeFirst}: ${order.join(' ')}`);
   }
 });
 

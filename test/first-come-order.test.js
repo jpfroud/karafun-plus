@@ -1,10 +1,15 @@
 'use strict';
-// Premiers passages, premier ajouté premier servi (constat du gérant du
-// 25 octobre) : au démarrage d'une soirée, 12 personnes ajoutent leur premier
-// titre l'une après l'autre. La première se voyait prochaine, puis reculait à
-// chaque ajout (jusqu'à la 5e place) : la part des tables passait avant l'heure
-// de la demande. Tout le monde chante pour la première fois : la première
-// arrivée passe la première.
+// Premiers passages : les tables tournent, premier de chaque table (décision
+// du gérant du 26 octobre, qui remplace « premier ajouté, premier servi » pur
+// du 25 octobre). Au démarrage d'une soirée, 12 personnes ajoutent leur
+// premier titre l'une après l'autre. La première se voyait prochaine, puis
+// reculait à chaque ajout (jusqu'à la 5e place) : la part des tables passait
+// avant l'heure de la demande. Premier ajouté, premier servi a réglé ce recul,
+// mais une table dont les chanteurs ajoutent à la suite les faisait chanter à
+// la suite. Maintenant, en « Chacun son tour », un cycle où chaque table
+// (chaque soliste « En solo » est la sienne) fait passer une personne : les
+// tables dans l'ordre d'ajout de leur prochain titre, dans une table ses
+// personnes dans l'ordre d'ajout ; une table qui arrive rejoint le cycle en cours.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { Scheduler } = require('../scheduler');
@@ -18,6 +23,9 @@ const ARRIVALS = [['Comptoir', 'S1'], ['A', 'A1'], ['B', 'B1'], ['A', 'A2'], ['C
   ['B', 'B2'], ['A', 'A4'], ['C', 'C2'], ['B', 'B3'], ['C', 'C3'], ['Comptoir', 'S2']];
 const HEADCOUNT = { A: 4, B: 3, C: 3 };
 const NAMES = ARRIVALS.map(([, name]) => name);
+// Ordre attendu (exemple de référence du gérant) : un premier de chaque table
+// par cycle, les tables dans l'ordre d'ajout de leur candidat.
+const CYCLES = ['S1', 'A1', 'B1', 'C1', 'S2', 'A2', 'B2', 'C2', 'A3', 'B3', 'C3', 'A4'];
 const settings = () => ({ auto: true, autoPlay: false, baseUrl: 'https://chant.example.test',
   pushDelaySec: 45, playDelaySec: 8 });
 
@@ -27,14 +35,10 @@ function evening(options = {}) {
   return { s, people };
 }
 const order = s => s.readyView().map(item => item.name);
+const sing = s => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel.names.join(' & '); };
 const playAll = s => {
   const sung = [];
-  for (let guard = 0; guard < 50; guard++) {
-    const sel = s.select();
-    if (!sel) break;
-    s.commit(sel); s.songEnded(sel.ids);
-    sung.push(sel.names.join(' & '));
-  }
+  for (let guard = 0; guard < 50 && s.select(); guard++) sung.push(sing(s));
   return sung;
 };
 // Horloge réglée par le test : chaque ajout a lieu une seconde après le précédent.
@@ -44,23 +48,102 @@ function withClock(run) {
   Date.now = () => clock;
   try { return run(() => { clock += 1000; }); } finally { Date.now = realNow; }
 }
+// Ordre de référence quand tout le monde a ajouté avant le premier passage :
+// le cycle k fait passer le k-ième ajouté de chaque table, dans l'ordre
+// d'ajout de ces k-ièmes. Chaque soliste du Comptoir est sa propre table.
+function reference(arrivals) {
+  const seen = new Map();
+  return arrivals.map(([table, name], at) => {
+    const group = table === 'Comptoir' ? name : table;
+    const rank = seen.get(group) || 0;
+    seen.set(group, rank + 1);
+    return { name, rank, at };
+  }).sort((a, b) => a.rank - b.rank || a.at - b.at).map(item => item.name);
+}
 
-test('chacun son tour : la première personne à ajouter reste première, la file suit l’ordre d’ajout', () => {
+test('chacun son tour : les tables tournent, la première personne à ajouter reste première', () => {
   const { s, people } = evening();
+  const steps = [];
   people.forEach((p, k) => {
     s.chooseSong(p, song(k + 1));
-    assert.deepEqual(order(s), NAMES.slice(0, k + 1), `après l’ajout de ${p.name}`);
+    steps.push(order(s));
+    assert.equal(order(s)[0], 'S1', `après l’ajout de ${p.name} : ${order(s).join(' ')}`);
+    assert.deepEqual(order(s), reference(ARRIVALS.slice(0, k + 1)), `après l’ajout de ${p.name}`);
   });
-  assert.deepEqual(playAll(s), NAMES, 'les passages suivent l’ordre annoncé');
+  assert.deepEqual(steps.at(-1), CYCLES, 'exemple de référence du gérant');
+  // C1 rejoint le cycle en cours avant A2, ajouté plus tôt mais d'une table déjà passée.
+  assert.deepEqual(steps[4], ['S1', 'A1', 'B1', 'C1', 'A2']);
+  assert.deepEqual(playAll(s), CYCLES, 'les passages suivent l’ordre annoncé');
+});
+
+test('chacun son tour : tables et solistes mêlés au hasard, toujours le cycle puis l’ordre d’ajout', () => {
+  let x = 7;
+  const random = () => ((x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+  for (let round = 0; round < 20; round++) {
+    const s = new Scheduler();
+    const tables = { A: 1 + Math.floor(random() * 6), B: 1 + Math.floor(random() * 4), C: 1 + Math.floor(random() * 3) };
+    const pool = [];
+    for (const [table, count] of Object.entries(tables)) for (let k = 0; k < count; k++) pool.push([table, `${table}${k + 1}`]);
+    for (let k = 0; k < 3; k++) pool.push(['Comptoir', `S${k + 1}`]);
+    // Ordre d'ajout au hasard, mais dans une table les personnes gardent leur numéro.
+    const arrivals = [];
+    while (pool.length) {
+      const [table] = pool[Math.floor(random() * pool.length)];
+      const next = pool.findIndex(([t]) => t === table);
+      arrivals.push(pool.splice(next, 1)[0]);
+    }
+    const people = arrivals.map(([tableId, name]) => s.join({ tableId, name, headcount: tables[tableId] }));
+    people.forEach((p, k) => s.chooseSong(p, song(k + 1)));
+    const expected = reference(arrivals);
+    assert.deepEqual(order(s), expected, `essai ${round} : ${arrivals.map(([, n]) => n).join(' ')}`);
+    assert.deepEqual(playAll(s), expected, `essai ${round} : passages`);
+  }
 });
 
 test('chacun son tour : deux ajouts dans la même milliseconde gardent leur ordre', () => {
   withClock(() => {
     const { s, people } = evening();
     people.forEach((p, k) => s.chooseSong(p, song(k + 1)));
-    assert.deepEqual(order(s), NAMES);
+    assert.deepEqual(order(s), CYCLES);
     const stamps = people.map(p => p.readySince);
     assert.ok(stamps.every((at, k) => !k || at > stamps[k - 1]), 'heures strictement croissantes');
+  });
+});
+
+test('chacun son tour : une table qui arrive rejoint le cycle en cours, sans dépasser qui a ajouté avant elle', () => {
+  withClock(tick => {
+    const s = new Scheduler();
+    s.setHeadcount('A', 3); s.setHeadcount('B', 2); s.setHeadcount('D', 2);
+    const [a1, a2, a3] = ['A1', 'A2', 'A3'].map(name => s.join({ tableId: 'A', name }));
+    const [b1, b2] = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+    for (const [k, p] of [a1, b1, a2, b2, a3].entries()) { tick(); s.chooseSong(p, song(k + 1)); }
+    assert.deepEqual(order(s), ['A1', 'B1', 'A2', 'B2', 'A3']);
+    assert.deepEqual([sing(s), sing(s), sing(s)], ['A1', 'B1', 'A2']);
+    assert.deepEqual([...s.firstCycle], [a2.group], 'deuxième cycle : la table A y est passée');
+    // La table D arrive pendant le deuxième cycle : D1 y passe, après B2,
+    // ajouté avant lui ; D2 passe au cycle suivant, avec A3.
+    const [d1, d2] = ['D1', 'D2'].map(name => s.join({ tableId: 'D', name }));
+    tick(); s.chooseSong(d1, song(6));
+    tick(); s.chooseSong(d2, song(7));
+    assert.deepEqual(order(s), ['B2', 'D1', 'A3', 'D2'], 'D1 dans le cycle en cours, sans enchaîner D2');
+    assert.deepEqual(playAll(s), ['B2', 'D1', 'A3', 'D2']);
+  });
+});
+
+test('premiers passages : un duo entre deux tables fait passer les deux tables dans le cycle', () => {
+  withClock(tick => {
+    const s = new Scheduler();
+    s.setHeadcount('A', 2); s.setHeadcount('B', 2); s.setHeadcount('C', 1);
+    const [a1, a2] = ['A1', 'A2'].map(name => s.join({ tableId: 'A', name }));
+    const [b1, b2] = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+    const c1 = s.join({ tableId: 'C', name: 'C1' });
+    tick(); const duo = s.inviteDuet(a1, b1.id, song(1));
+    s.answerDuet(b1, true, duo.entryId);
+    for (const [k, p] of [b2, c1, a2].entries()) { tick(); s.chooseSong(p, song(k + 2)); }
+    // B1 monte sur scène avec A1 : la table B est passée dans ce cycle, C1
+    // passe avant B2, ajouté plus tôt ; le cycle suivant reprend l'ordre d'ajout.
+    assert.deepEqual(order(s), ['A1 & B1', 'C1', 'B2', 'A2']);
+    assert.deepEqual(playAll(s), ['A1 & B1', 'C1', 'B2', 'A2']);
   });
 });
 
@@ -102,6 +185,8 @@ test('tables à tour de rôle : la part des tables d’abord, l’ordre d’ajou
     assert.equal(order(s)[0], 'S1', `après l’ajout de ${p.name} : ${order(s).join(' ')}`);
   });
   const view = order(s);
+  // La part fait déjà tourner les tables ; le cycle de « Chacun son tour »
+  // n'y joue pas (à part égale, A3, ajouté avant C2, passe d'abord).
   assert.deepEqual(view, ['S1', 'A1', 'B1', 'C1', 'S2', 'A2', 'B2', 'A3', 'C2', 'B3', 'A4', 'C3']);
   for (const table of ['A', 'B', 'C']) {
     const members = view.filter(name => name[0] === table);
@@ -122,77 +207,86 @@ test('compromis : la grande table garde sa part, ses chanteurs passent dans l’
   assert.equal(view[0], 'A4', 'la part de la grande table reste prioritaire');
 });
 
-test('déplacement du bar : il passe toujours avant l’ordre d’ajout', () => {
+test('déplacement du bar : il passe toujours avant le cycle des tables', () => {
   const { s, people } = evening();
   people.forEach((p, k) => s.chooseSong(p, song(k + 1)));
   const last = people.at(-1);
   s.staffMove(last.id, 0);
   assert.equal(order(s)[0], 'S2', 'la priorité du bar passe devant');
-  assert.deepEqual(order(s).slice(1), NAMES.slice(0, -1), 'les autres gardent l’ordre d’ajout');
+  assert.deepEqual(order(s).slice(1), CYCLES.filter(name => name !== 'S2'), 'les autres gardent le cycle');
 });
 
-test('reprise après redémarrage : l’ordre d’ajout est gardé, sauvegarde d’avant ce champ comprise', () => {
+test('reprise après redémarrage : le cycle et l’ordre d’ajout sont gardés, sauvegarde d’avant ces champs comprise', () => {
   withClock(tick => {
     const { s, people } = evening();
     const access = new TableAccess();
     for (const id of s.tables.keys()) access.issue(id);
     people.slice(0, 6).forEach((p, k) => { tick(); s.chooseSong(p, song(k + 1)); });
-    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings: settings() })));
+    const save = () => JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings: settings() })));
+    const saved = save();
     assert.ok(saved.scheduler.people.every(p => !p.song || Number.isFinite(p.readySince)), 'heure sauvegardée');
-    const resume = snapshot => {
+    const resume = (snapshot, arrivals = ARRIVALS.slice(6), first = 7) => {
       const back = new Scheduler();
       restoreNight(JSON.parse(JSON.stringify(snapshot)), { scheduler: back, access: new TableAccess(), settings: settings() });
-      ARRIVALS.slice(6).forEach(([, name], k) => {
+      arrivals.forEach(([, name], k) => {
         tick();
-        back.chooseSong([...back.people.values()].find(p => p.name === name), song(7 + k));
+        back.chooseSong([...back.people.values()].find(p => p.name === name), song(first + k));
       });
       return back;
     };
-    assert.deepEqual(order(resume(saved)), NAMES, 'reprise : même ordre, les nouveaux à la suite');
+    assert.deepEqual(order(resume(saved)), CYCLES, 'reprise : même ordre, les nouveaux à leur place');
     // Sauvegarde d'avant ce champ : l'heure d'entrée dans la file en tient lieu.
     const legacy = JSON.parse(JSON.stringify(saved));
     for (const p of legacy.scheduler.people) delete p.readySince;
+    delete legacy.scheduler.firstCycle;
     legacy.scheduler.people[1].readySince = 'abîmé';
-    assert.deepEqual(order(resume(legacy)), NAMES, 'ancienne sauvegarde : lisible, même ordre');
+    assert.deepEqual(order(resume(legacy)), CYCLES, 'ancienne sauvegarde : lisible, même ordre');
+    // En plein cycle : S1 et A1 ont chanté, B1, C1 et S2 restent à passer dans ce cycle.
+    people.slice(6).forEach((p, k) => { tick(); s.chooseSong(p, song(7 + k)); });
+    assert.deepEqual([sing(s), sing(s)], ['S1', 'A1']);
+    const mid = save();
+    assert.deepEqual(mid.scheduler.firstCycle, [people[0].group, people[1].group], 'cycle sauvegardé');
+    assert.deepEqual(order(resume(mid, [])), CYCLES.slice(2), 'reprise en plein cycle : il continue');
   });
 });
 
-test('passage annulé : la personne retrouve l’heure de son attente', () => {
+test('passage annulé : la personne retrouve l’heure de son attente et le cycle d’avant', () => {
   const { s, people } = evening();
   people.slice(0, 3).forEach((p, k) => s.chooseSong(p, song(k + 1)));
   const sel = s.select();
   assert.equal(sel.names[0], 'S1');
   const before = people[0].readySince;
   s.commit(sel);
+  assert.deepEqual([...s.firstCycle], [people[0].group], 'la table de S1 est passée dans le cycle');
   s.chooseSong(people[0], song(20)); // titre rechoisi pendant l'envoi
   assert.ok(people[0].readySince > before);
   s.rollbackUnplayed(sel, { requeue: true });
   assert.equal(people[0].readySince, before, 'heure d’avant l’envoi rendue');
+  assert.deepEqual([...s.firstCycle], [], 'cycle d’avant le passage rendu');
   assert.equal(order(s)[0], 'S1', 'S1 reste la première arrivée');
 });
 
-test('grande table arrivée tard puis un nouveau d’une autre table : ordre d’ajout, sans habitué intercalé', () => {
+test('grande table arrivée tard puis un nouveau d’une autre table : les tables tournent, les habitués s’intercalent ensuite', () => {
   withClock(tick => {
     // Relecture du 26 octobre : quatre habitués ont chanté, une table de six
     // ajoute ses premiers titres, puis X1, d'une autre table, le sien. Seule,
-    // la table T est intercalée d'habitués (anti-série). Dès que X1 attend
-    // aussi, les premiers passages partent dans l'ordre d'ajout : T enchaîne
-    // ses six titres, ajoutés avant celui de X1, et les habitués repassent
-    // derrière eux. Choix à soumettre au gérant : trancher l'anti-série sur
-    // le seul premier ajouté garderait R1 2e, mais les premiers passages
-    // attendraient nettement plus (1re chanson de sim-night : 18 → 27 min).
+    // la table T est intercalée d'habitués (anti-série). Avec premier ajouté,
+    // premier servi pur, T enchaînait ses six titres avant X1 et les habitués
+    // repassaient derrière. Le cycle des tables fait passer X1 juste après T1 ;
+    // ensuite, seule T a encore des premiers passages : les habitués
+    // s'intercalent de nouveau.
     const s = new Scheduler();
     const habitues = ['R1', 'R2', 'R3', 'R4'].map((name, k) => s.join({ tableId: `H${k}`, name, headcount: 1 }));
     let n = 0;
     for (const p of habitues) { tick(); s.chooseSong(p, song(++n)); s.chooseSong(p, song(++n), 'append'); }
-    for (let k = 0; k < 4; k++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); tick(); }
+    for (let k = 0; k < 4; k++) { sing(s); tick(); }
     const table = Array.from({ length: 6 }, (_, k) => s.join({ tableId: 'T', name: `T${k + 1}`, headcount: 6 }));
     for (const p of table) { tick(); s.chooseSong(p, song(++n)); }
     assert.deepEqual(order(s), ['T1', 'R1', 'T2', 'R2', 'T3', 'R3', 'T4', 'R4', 'T5', 'T6'], 'T seule : intercalée');
     const x1 = s.join({ tableId: 'X', name: 'X1', headcount: 1 });
     tick(); s.chooseSong(x1, song(++n));
     const after = order(s);
-    assert.deepEqual(after, ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'X1', 'R1', 'R2', 'R3', 'R4'], after.join(' '));
+    assert.deepEqual(after, ['T1', 'X1', 'T2', 'R1', 'T3', 'R2', 'T4', 'R3', 'T5', 'R4', 'T6'], after.join(' '));
     assert.deepEqual(playAll(s), after, 'les passages suivent l’ordre annoncé');
   });
 });
@@ -222,9 +316,9 @@ test('céder sa place : deux premiers passages d’une même table suivent l’o
   const [a1, a2] = ['A1', 'A2'].map(name => s.join({ tableId: 'A', name }));
   const b1 = s.join({ tableId: 'B', name: 'B1', headcount: 1 });
   for (const [k, p] of [a1, a2, b1].entries()) s.chooseSong(p, song(k + 1));
-  assert.deepEqual(order(s), ['A1', 'A2', 'B1']);
+  assert.deepEqual(order(s), ['A1', 'B1', 'A2']);
   assert.throws(() => s.giveSpot(a2, a1.id), /A1 est déjà devant toi/);
   s.giveSpot(a1, a2.id);
-  assert.deepEqual(order(s), ['A2', 'A1', 'B1'], 'A2 prend la place de A1');
+  assert.deepEqual(order(s), ['A2', 'B1', 'A1'], 'A2 prend la place de A1');
   assert.throws(() => s.giveSpot(a1, a2.id), /A2 est déjà devant toi/);
 });

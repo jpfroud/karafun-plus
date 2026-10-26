@@ -38,10 +38,14 @@
  *   « Chacun son tour », sauf pour respecter la patience). En compromis, la
  *   taille d'une table est son nombre de chanteurs inscrits (titre en attente
  *   ou déjà chanté ce soir).
- * - Premiers passages : premier ajouté, premier servi (heure où l'attente a
- *   commencé, celle de l'auteur pour un duo). En « Chacun son tour », avant la
- *   règle des tables, qui ne fait plus que départager ; dans les modes de
- *   tables, il départage les passages de même part.
+ * - Premiers passages : les tables tournent, premier de chaque table (décision
+ *   du gérant du 26 octobre). En « Chacun son tour », un cycle où chaque table
+ *   (chaque soliste « En solo » est la sienne) fait passer une personne : les
+ *   tables dans l'ordre d'ajout de leur prochain titre, dans une table ses
+ *   personnes dans l'ordre d'ajout (heure où l'attente a commencé, celle de
+ *   l'auteur pour un duo) ; avant la règle des tables, qui ne fait plus que
+ *   départager. Dans les modes de tables, l'ordre d'ajout départage les
+ *   passages de même part.
  * - Patience : personne ne voit quelqu'un chanter deux fois pendant sa propre
  *   attente quand un autre passage permis l'évite. Selon le mode (choix du
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
@@ -83,6 +87,7 @@ class Scheduler {
     this.roundUse = new Map(); // crédit de tour consommé par les personnes avec bonus/malus
     this.roundApps = new Map(); // passages sur scène de chaque personne dans le tour, invitées comprises
     this.roundOwed = new Set(); // privées de passage par le plafond au tour précédent : en tête du tour
+    this.firstCycle = new Set(); // tables déjà passées dans le cycle en cours des premiers passages
     this.duetCooldowns = new Map(); // invité : nombre d'autres chansons à laisser passer
     this.reservedNext = null; // personne annoncée comme prochain passage, hors KaraFun
     this.stageHistory = [];   // derniers passages sur scène (bar uniquement)
@@ -507,7 +512,7 @@ class Scheduler {
         (p.backlog || []).map(song => [song.entryId, this._duetKey(song)])] : [pid];
     });
     const context = { people, Q: this.Q, lastGroup: this.lastGroup,
-      roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
+      roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople], firstCycle: [...this.firstCycle],
       roundUse: [...this.roundUse], roundApps: [...this.roundApps], roundOwed: [...this.roundOwed],
       recentGroups: this.recentGroups.slice(-40),
       tableServeCounts: [...this.tableServeCounts], duetCooldowns: [...this.duetCooldowns],
@@ -557,7 +562,7 @@ class Scheduler {
     // Tailles envoyées au solveur (groupSizes) : tables des passages prévus.
     const sized = new Set([...relevant].map(pid => this.people.get(pid)?.group));
     const context = { entries, physical, lastGroup: this.lastGroup,
-      roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
+      roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople], firstCycle: [...this.firstCycle],
       roundUse: [...this.roundUse], roundApps: [...this.roundApps], roundOwed: [...this.roundOwed],
       recentGroups: this.recentGroups.slice(-HISTORY_LIMIT),
       duetCooldowns: [...this.duetCooldowns],

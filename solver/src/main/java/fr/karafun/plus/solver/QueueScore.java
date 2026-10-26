@@ -21,8 +21,9 @@ import java.util.function.Predicate;
  * a bonus's extra passages spread out over the round),
  * nobody sees someone sing twice during their own wait when another allowed
  * passage avoids it (after the table rule in EQUAL and SQRT), first
- * appearances first come, first served (before the table rule in PEOPLE, a
- * tie-break of the table share in EQUAL and SQRT), no table twice in a row
+ * appearances by a cycle of the tables, then first come, first served (before
+ * the table rule in PEOPLE; in EQUAL and SQRT, first come, first served only
+ * breaks ties of the table share), no table twice in a row
  * when another can sing, spacing of a returning person, and each table's
  * share of the round. Soft: stability versus the order proposed by the Node
  * process.
@@ -55,6 +56,8 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         List<String> previous = plan.getLastGroups();
         boolean anyBonus = false;
         for (double w : plan.getPersonWeights().values()) anyBonus |= w > 1 + EPS;
+        // Tables that already had a first appearance in the current cycle.
+        Set<String> cycle = new HashSet<>(plan.getFirstCycle());
 
         for (int pos = 0; pos < n; pos++) {
             Performance current = order.get(pos);
@@ -82,6 +85,14 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 do { resetRound(round, roundUse); apps.clear(); resets++; }
                 while (resets < 4 && candidates.stream().allMatch(c -> capped(c, apps, cap) || allIn(c, round)));
             }
+            // Cycle of first appearances (rotation.js#_pick): each table (each
+            // solo singer is their own) brings one person per cycle; a new
+            // cycle starts when every table with a first appearance still
+            // waiting already had one in it. A passage counts for its owner's
+            // table (groups[0]); a duet also brings its guest's table.
+            List<Performance> waitingFirst = new ArrayList<>();
+            for (Performance c : candidates) if (freshCount(c, appeared) == c.getSingers().size()) waitingFirst.add(c);
+            if (waitingFirst.stream().allMatch(c -> cycle.contains(c.getGroups().get(0)))) cycle.clear();
             List<Performance> open = new ArrayList<>();
             for (Performance c : candidates) if (!capped(c, apps, cap)) open.add(c);
             if (open.isEmpty()) open.addAll(candidates);
@@ -216,21 +227,25 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                     }
                 }
             }
-            // First appearances, first come, first served (rotation.js#_pick):
-            // among passages that only bring people never on stage yet, the
-            // owner whose wait started first (addedOrder; a duet counts by its
-            // owner). PEOPLE: right after patience, before the table rule,
-            // which then only breaks ties among the earliest; EQUAL and SQRT:
-            // it only breaks ties of the table share (below).
+            // First appearances (rotation.js#_pick): among passages that only
+            // bring people never on stage yet, the tables not yet in the cycle,
+            // then the owner whose wait started first (addedOrder; a duet
+            // counts by its owner). PEOPLE: right after patience, before the
+            // table rule, which then only breaks ties among the earliest;
+            // EQUAL and SQRT: first come, first served only breaks ties of the
+            // table share (below), without the cycle.
             boolean firstTurn = patient.size() > 1 && !plan.getAddedOrder().isEmpty() &&
                     patient.stream().allMatch(c -> freshCount(c, appeared) == c.getSingers().size());
             boolean byTables = plan.getRotation() != QueuePlan.Rotation.PEOPLE;
             List<Performance> fair = patient;
             if (firstTurn && !byTables) {
+                List<Performance> turn = new ArrayList<>();
+                for (Performance c : patient) if (!cycle.contains(c.getGroups().get(0))) turn.add(c);
+                if (turn.isEmpty()) turn = patient;
                 int first = Integer.MAX_VALUE;
-                for (Performance c : patient) first = Math.min(first, added(plan, c));
+                for (Performance c : turn) first = Math.min(first, added(plan, c));
                 fair = new ArrayList<>();
-                for (Performance c : patient) if (added(plan, c) == first) fair.add(c);
+                for (Performance c : turn) if (added(plan, c) == first) fair.add(c);
             }
             boolean earliest = fair.contains(current);
             if (!pinned && !allowedNow.contains(current)) {
@@ -244,8 +259,8 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 medium -= 4_000L + Math.min(900L, 100L * Math.max(0, extra - 1));
             } else if (!pinned && !earliest) {
                 // Below patience, above the table rule and the share it
-                // overrides in PEOPLE: a plan never serves a later first
-                // appearance before an earlier one.
+                // overrides in PEOPLE: a plan never serves a first appearance
+                // out of the cycle, or a later one before an earlier one.
                 medium -= 3_000;
             }
 
@@ -305,6 +320,18 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // that pinned head is not simulated here, and the local rule still
             // decides whether a plan is adopted.
             boolean borrowed = alternates.contains(current);
+            // The cycle after this passage: its tables had their turn; once no
+            // table with a first appearance still waiting is left out of it,
+            // the cycle is over and the next one starts empty.
+            if (freshCount(current, appeared) == current.getSingers().size()) {
+                cycle.addAll(current.getGroups());
+                boolean over = true;
+                for (Performance c : waitingFirst) {
+                    if (c == current || c.getSingers().stream().anyMatch(current.getSingers()::contains)) continue;
+                    if (!cycle.contains(c.getGroups().get(0))) { over = false; break; }
+                }
+                if (over) cycle.clear();
+            }
             for (String singer : current.getSingers()) {
                 lastSeen.put(singer, pos);
                 appeared.merge(singer, 1, Integer::sum);

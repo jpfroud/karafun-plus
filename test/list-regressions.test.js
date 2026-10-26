@@ -135,12 +135,13 @@ test('la prévision et la file provisoire suivent la sélection réelle', () => 
   [jp, t2, marine, t3].forEach((p, i) => s.chooseSong(p, song(200 + i)));
   s.Q = [jp.id, t2.id, marine.id, t3.id];
   const names = slots => slots.map(x => s.people.get(x.ids[0]).name);
-  // Premiers passages dans l'ordre d'ajout (« Chacun son tour »).
-  assert.deepEqual(names(s.predict()), ['JP', 'Table 2', 'Marine', 'Table 3']);
-  assert.deepEqual(s.readyView().map(x => x.name), ['JP', 'Table 2', 'Marine', 'Table 3']);
+  // Premiers passages (« Chacun son tour ») : les tables tournent, Marine,
+  // deuxième de la table 1, au cycle suivant.
+  assert.deepEqual(names(s.predict()), ['JP', 'Table 2', 'Table 3', 'Marine']);
+  assert.deepEqual(s.readyView().map(x => x.name), ['JP', 'Table 2', 'Table 3', 'Marine']);
   const pending = s.select();
   assert.equal(pending.names[0], 'JP');
-  assert.deepEqual(s.readyView(pending.ids, pending).map(x => x.name), ['Table 2', 'Marine', 'Table 3']);
+  assert.deepEqual(s.readyView(pending.ids, pending).map(x => x.name), ['Table 2', 'Table 3', 'Marine']);
 });
 
 test('quarante chansons continues gardent dix passages par personne', () => {

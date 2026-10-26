@@ -691,13 +691,23 @@ test('36 soirées variées : premier passage physique, invités, arrivées, dép
         const p = s.people.get(pid);
         return (p.sung || 0) + (p.duetGuestCount || 0);
       };
-      const freshReady = s.Q.some(pid => {
+      const freshReady = s.Q.filter(pid => {
         const p = s.people.get(pid);
         if (!p || p.withdrawnAt || !p.song || p.song.duet?.state === 'pending') return false;
         const guest = p.song.duet?.state === 'accepted' ? s.people.get(p.song.duet.partnerId) : null;
         return !appearance(pid) && (!guest || (!guest.withdrawnAt && !appearance(guest.id)));
       });
-      if (freshReady) assert.ok(selected.ids.every(pid => appearance(pid) === 0),
+      // Anti-série (« Intercaler une table qui arrive en nombre ») : quand
+      // tous les premiers passages prêts sont de la table qui vient de
+      // chanter, un habitué peut s'intercaler (le cycle des tables fait
+      // passer les autres tables avant : il ne reste parfois que celle-là).
+      const lastTable = new Set([].concat(s.lastGroup || []));
+      const streak = freshReady.every(pid => {
+        const p = s.people.get(pid);
+        const guest = p.song.duet?.state === 'accepted' ? s.people.get(p.song.duet.partnerId) : null;
+        return [p.group, guest?.group].some(group => group && lastTable.has(group));
+      });
+      if (freshReady.length && !streak) assert.ok(selected.ids.every(pid => appearance(pid) === 0),
         `graine ${seed} : retour sur scène avant un premier passage`);
       assert.ok(!played.has(selected.song.entryId), `graine ${seed} : titre répété`);
       played.add(selected.song.entryId);

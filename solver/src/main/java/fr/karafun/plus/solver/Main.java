@@ -180,6 +180,8 @@ public final class Main {
         plan.setGroupSizes(doubles(input.path("groupSizes"), 0, 1000));
         // Absent chez un ancien client : les premiers passages n'ont pas d'ordre d'ajout.
         plan.setAddedOrder(integers(input.path("addedOrder")));
+        // Absent chez un ancien client : le cycle des premiers passages part vide.
+        plan.setFirstCycle(new HashSet<>(strings(input.path("firstCycle"))));
         SolverFactory<QueuePlan> factory = factoryFor(budgetMs, randomSeed);
         SolutionManager<QueuePlan, HardMediumSoftScore> manager = SolutionManager.create(factory);
         HardMediumSoftScore seedScore = manager.update(plan);

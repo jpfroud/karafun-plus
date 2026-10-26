@@ -4227,6 +4227,7 @@ function clearQueue() {
   sched._refreshDuetViews();
   sched.Q = [];
   sched.roundGroups.clear();
+  sched.firstCycle.clear();
   // Le tour en cours se termine comme un tour normal : une dette (passage
   // emprunté, malus) reste due au tour suivant, sans compter deux fois le
   // passage que le vidage efface du tour. Les reçus des titres encore en
@@ -4354,6 +4355,7 @@ function clearEvening() {
   sched.Q = [];
   sched.lastGroup = null;
   sched.roundGroups.clear();
+  sched.firstCycle.clear();
   sched.roundPeople.clear();
   sched.roundApps.clear();
   sched.roundOwed.clear();
