@@ -238,7 +238,7 @@ Bascule depuis le PC Windows :
 
 1. Tout de suite : crée les entrées A des noms d'essai, `essai` et `essai-bar`.
 2. Au moins 24 heures avant la bascule, et plus tôt si l'ancien « TTL » dépasse 24 heures : note d'abord par écrit chaque entrée du nom des QR (type A, AAAA, CNAME ou DynHost, et sa cible). Note aussi l'IPv4 que ce nom donne (`Resolve-DnsName clients.exemple.fr -Type A`) : c'est `<ancienne IPv4>`. L'étape 10 de la section 12 et le retour arrière (section 19) en ont besoin. Puis, sur l'entrée actuelle, « Modifier l'entrée », et « TTL » « Personnalisé » à 300.
-3. À l'étape 6 de la section 12 : change la cible du nom des QR pour `<IPv4 du VPS>`, et crée l'entrée A de `HOTE_BAR` si elle manque.
+3. À l'étape 6 de la section 12 : change la cible du nom des QR pour `<IPv4 du VPS>`, et crée l'entrée A de `HOTE_BAR` si elle manque. Si l'entrée actuelle du nom des QR est un CNAME, supprime-la d'abord, puis crée son entrée A par « Ajouter une entrée » : un CNAME ne coexiste avec aucune autre entrée du même nom.
 4. Au même moment, retire pour ces noms toute entrée AAAA ou CNAME, et tout DynHost. La file ne reçoit les téléphones qu'en IPv4 : le réseau Docker du compose n'a pas d'IPv6, et un téléphone venu en IPv6 arriverait avec l'adresse de la passerelle Docker. Tous ces téléphones partageraient alors la même limite d'inscriptions par adresse. Ces libellés de suppression et le menu « DynHost » n'ont pas été vérifiés : cherche-les sur la ligne de l'entrée.
 5. Une fois les noms en place, ajoute pour chacun une entrée CAA : drapeau `0`, étiquette `issue`, valeur `letsencrypt.org`. Seul Let's Encrypt pourra alors leur délivrer un certificat. Si le nom des QR est le domaine lui-même, sans sous-domaine, ne lui ajoute pas de CAA : elle vaudrait aussi pour chacun de ses sous-domaines sans CAA propre, et leurs certificats d'une autre autorité seraient refusés. Un retour arrière vers un CNAME demande de retirer d'abord ces entrées CAA (section 19).
 6. Une fois la bascule vérifiée (section 12) : retire les entrées A et CAA des noms d'essai, `essai` et `essai-bar`.
@@ -540,7 +540,7 @@ git checkout vA.B.C
 docker image rm ghcr.io/jpfroud/karafun-plus:vX.Y.Z
 ```
 
-Retour à la version précédente : les mêmes commandes, avec `vA.B.C` à la place de `vX.Y.Z`. Si la file refuse ensuite de démarrer, restaure l'archive faite juste avant la mise à jour (section 16).
+Retour à la version précédente : les mêmes commandes, en échangeant `vX.Y.Z` et `vA.B.C` partout, bloc « si elles diffèrent » compris : `vA.B.C` devient la version à installer, et `vX.Y.Z` la version en service, à remettre par `sed` et `git checkout` ; l'empreinte se compare aux notes de la release `vA.B.C`. Si la file refuse ensuite de démarrer, restaure l'archive faite juste avant la mise à jour (section 16).
 
 **Contrôle** : `docker compose ps` montre `app` en `(healthy)`, et `git describe --tags --exact-match` comme `docker compose logs --no-log-prefix app | grep '=== File karaoké'` affichent la version voulue.
 
@@ -638,7 +638,7 @@ La sauvegarde ne relance pas la file, déjà arrêtée. Recopie `<nom de l'archi
 
    La dernière ligne retire la clé du bar du serveur. Le kit ne s'en sert pas, et une bascule suivante la remettrait en service, avec l'ancien lien des gérants.
 
-3. Chez OVHcloud, retire d'abord les entrées CAA du nom des QR. Remets ensuite sa cible sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Si son « TTL » est revenu à 3600, compte jusqu'à une heure. Relance ensuite le tunnel ou le relais du PC : pour `cloudflared`, dans un PowerShell administrateur, `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`. Relance aussi le client DynHost arrêté à l'étape 5 de la section 12, et remets les entrées AAAA retirées, s'il y en avait.
+3. Chez OVHcloud, retire d'abord les entrées CAA du nom des QR. Remets ensuite sa cible sur `<ancienne IPv4>`, ou l'ancien CNAME ou DynHost. Pour remettre un CNAME, supprime aussi l'entrée A posée à l'étape 6 de la section 12 : un CNAME ne coexiste avec aucune autre entrée du même nom. Si son « TTL » est revenu à 3600, compte jusqu'à une heure. Relance ensuite le tunnel ou le relais du PC : pour `cloudflared`, dans un PowerShell administrateur, `Set-Service cloudflared -StartupType Automatic`, puis `Start-Service cloudflared`. Relance aussi le client DynHost arrêté à l'étape 5 de la section 12, et remets les entrées AAAA retirées, s'il y en avait.
 4. Dans `<dossier karaoke-bar du kit>`, crée les raccourcis de `KaraFun Plus.exe` sur le bureau et dans la barre des tâches, à la place de ceux retirés à l'étape 5 de la section 12. Double-clique ensuite sur l'un d'eux. Préviens les gérants : chaque soir, ils lancent de nouveau la file par ce raccourci, comme avant la bascule, et non plus KaraFun seul.
 
 Sur le serveur enfin, retire les conteneurs. Les volumes restent, pour un nouvel essai : jamais l'option qui les efface. Ils gardent aussi le code KaraFun, et la file du serveur s'y reconnecterait à son prochain démarrage. Pour un nouvel essai ou une mise à jour (section 17), prépare donc d'abord le serveur comme le dit le début de la section 11 (noms d'essai, archive de départ), avant tout `docker compose up -d`.
