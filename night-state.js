@@ -510,6 +510,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
     'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
+  // Un ajout après la reprise part après toutes les heures sauvegardées,
+  // même si l'horloge du serveur a reculé (Scheduler#_readyStamp).
+  scheduler._readyClock = [...tmp.people.values()].reduce((max, p) => Math.max(max, p.readySince || 0),
+    scheduler._readyClock || 0);
   scheduler.solverPlan = null;
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

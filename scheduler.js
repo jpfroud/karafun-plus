@@ -913,8 +913,14 @@ class Scheduler {
   // gardent leur ordre : l'heure ne recule jamais d'un ajout au suivant.
   _startWait(p) {
     p.readySerial = this.appearanceSerial;
+    p.readySince = this._readyStamp();
+  }
+
+  // Heure d'un début d'attente, strictement après la précédente (et après
+  // toutes celles d'une sauvegarde reprise, même si l'horloge a reculé).
+  _readyStamp() {
     this._readyClock = Math.max(Date.now(), (this._readyClock || 0) + 1);
-    p.readySince = this._readyClock;
+    return this._readyClock;
   }
 
   // Liste vidée par un retrait : un titre rechoisi avant le passage suivant

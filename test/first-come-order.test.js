@@ -170,3 +170,61 @@ test('passage annulé : la personne retrouve l’heure de son attente', () => {
   assert.equal(people[0].readySince, before, 'heure d’avant l’envoi rendue');
   assert.equal(order(s)[0], 'S1', 'S1 reste la première arrivée');
 });
+
+test('grande table arrivée tard puis un nouveau d’une autre table : ordre d’ajout, sans habitué intercalé', () => {
+  withClock(tick => {
+    // Relecture du 26 octobre : quatre habitués ont chanté, une table de six
+    // ajoute ses premiers titres, puis X1, d'une autre table, le sien. Seule,
+    // la table T est intercalée d'habitués (anti-série). Dès que X1 attend
+    // aussi, les premiers passages partent dans l'ordre d'ajout : T enchaîne
+    // ses six titres, ajoutés avant celui de X1, et les habitués repassent
+    // derrière eux. Choix à soumettre au gérant : trancher l'anti-série sur
+    // le seul premier ajouté garderait R1 2e, mais les premiers passages
+    // attendraient nettement plus (1re chanson de sim-night : 18 → 27 min).
+    const s = new Scheduler();
+    const habitues = ['R1', 'R2', 'R3', 'R4'].map((name, k) => s.join({ tableId: `H${k}`, name, headcount: 1 }));
+    let n = 0;
+    for (const p of habitues) { tick(); s.chooseSong(p, song(++n)); s.chooseSong(p, song(++n), 'append'); }
+    for (let k = 0; k < 4; k++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); tick(); }
+    const table = Array.from({ length: 6 }, (_, k) => s.join({ tableId: 'T', name: `T${k + 1}`, headcount: 6 }));
+    for (const p of table) { tick(); s.chooseSong(p, song(++n)); }
+    assert.deepEqual(order(s), ['T1', 'R1', 'T2', 'R2', 'T3', 'R3', 'T4', 'R4', 'T5', 'T6'], 'T seule : intercalée');
+    const x1 = s.join({ tableId: 'X', name: 'X1', headcount: 1 });
+    tick(); s.chooseSong(x1, song(++n));
+    const after = order(s);
+    assert.deepEqual(after, ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'X1', 'R1', 'R2', 'R3', 'R4'], after.join(' '));
+    assert.deepEqual(playAll(s), after, 'les passages suivent l’ordre annoncé');
+  });
+});
+
+test('reprise après redémarrage : un ajout part après les heures sauvegardées, même si l’horloge a reculé', () => {
+  withClock(tick => {
+    const { s, people } = evening();
+    const access = new TableAccess();
+    for (const id of s.tables.keys()) access.issue(id);
+    people.slice(0, 3).forEach((p, k) => { tick(); s.chooseSong(p, song(k + 1)); });
+    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings: settings() })));
+    const realNow = Date.now;
+    const back = new Scheduler();
+    restoreNight(saved, { scheduler: back, access: new TableAccess(), settings: settings() });
+    Date.now = () => Date.UTC(2026, 9, 25, 19, 0, 0); // une heure plus tôt
+    try {
+      const next = [...back.people.values()].find(p => p.name === NAMES[3]);
+      back.chooseSong(next, song(4));
+    } finally { Date.now = realNow; }
+    assert.deepEqual(order(back), NAMES.slice(0, 4));
+  });
+});
+
+test('céder sa place : deux premiers passages d’une même table suivent l’ordre affiché', () => {
+  const s = new Scheduler();
+  s.setHeadcount('A', 2);
+  const [a1, a2] = ['A1', 'A2'].map(name => s.join({ tableId: 'A', name }));
+  const b1 = s.join({ tableId: 'B', name: 'B1', headcount: 1 });
+  for (const [k, p] of [a1, a2, b1].entries()) s.chooseSong(p, song(k + 1));
+  assert.deepEqual(order(s), ['A1', 'A2', 'B1']);
+  assert.throws(() => s.giveSpot(a2, a1.id), /A1 est déjà devant toi/);
+  s.giveSpot(a1, a2.id);
+  assert.deepEqual(order(s), ['A2', 'A1', 'B1'], 'A2 prend la place de A1');
+  assert.throws(() => s.giveSpot(a1, a2.id), /A2 est déjà devant toi/);
+});
