@@ -108,30 +108,37 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // left). Room only counts new passages sharing nobody with the
             // held one. A guest's bonus never holds the duo of the person who
             // invites them. Spacing still wins (fallback below). Only computed
-            // when someone in the plan has a bonus.
+            // when someone in the plan has a bonus. Released for lack of room
+            // before their rhythm, the owner is pressed: their wait counts as a
+            // whole round (waitKey).
             final int at = pos;
-            Predicate<Performance> early = null;
+            Predicate<Performance> early = null, pressed = null;
+            int roundSize = 0;
             if (anyBonus) {
                 List<Performance> fresh = new ArrayList<>();
                 for (Performance c : open) if (repeats(c, round, apps) == 0) fresh.add(c);
                 Set<String> people = new HashSet<>(owners);
                 people.addAll(apps.keySet());
-                final int roundSize = people.size();
-                early = c -> {
-                    String singer = c.getOwner();
+                final int size = people.size();
+                roundSize = size;
+                Map<Performance, Integer> spread = new HashMap<>();
+                java.util.function.Function<Performance, Integer> spreadOf = c -> spread.computeIfAbsent(c, held -> {
+                    String singer = held.getOwner();
                     double w = weight(plan, singer);
                     int last = lastSeen.getOrDefault(singer, UNKNOWN);
-                    if (w <= 1 + EPS || last <= UNKNOWN || round.contains(singer)) return false;
-                    if (at - last >= roundSize / w - EPS) return false;
+                    if (w <= 1 + EPS || last <= UNKNOWN || round.contains(singer)) return 0;
+                    if (at - last >= size / w - EPS) return 0;
                     int others = 0, invited = 0;
                     for (Performance other : fresh) {
-                        if (other == c) continue;
-                        if (Collections.disjoint(other.getSingers(), c.getSingers())) others++;
+                        if (other == held) continue;
+                        if (Collections.disjoint(other.getSingers(), held.getSingers())) others++;
                         else if (other.getSingers().contains(singer) && !singer.equals(other.getOwner())) invited++;
                     }
                     int left = (int) Math.ceil((1 - roundUse.getOrDefault(singer, 0.0)) * w - EPS) + invited;
-                    return others > (left > 1 ? left * Math.max(USUAL_SPACING, spacing) : 0);
-                };
+                    return others > (left > 1 ? left * Math.max(USUAL_SPACING, spacing) : 0) ? 1 : 2;
+                });
+                early = c -> spreadOf.apply(c) == 1;
+                pressed = c -> spreadOf.apply(c) == 2;
             }
             List<Performance> tier = firstAppearances(open, appeared);
             List<Performance> choices = unhurried(oncePerRound(preferOwed(tier, owed, round), round, apps), early);
@@ -254,12 +261,12 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 // in: they may sing more often, as for patience.
                 long[] oldest = null;
                 for (Performance c : patient) {
-                    long[] key = waitKey(c, lastSeen, plan);
+                    long[] key = waitKey(c, pos, lastSeen, plan, pressed, roundSize);
                     if (oldest == null || compareWait(key, oldest) < 0) oldest = key;
                 }
                 fair = new ArrayList<>();
                 for (Performance c : patient) {
-                    if (compareWait(waitKey(c, lastSeen, plan), oldest) == 0 || restedBonus(c, pos, lastSeen, plan)) fair.add(c);
+                    if (compareWait(waitKey(c, pos, lastSeen, plan, pressed, roundSize), oldest) == 0 || restedBonus(c, pos, lastSeen, plan)) fair.add(c);
                 }
             }
             boolean earliest = fair.contains(current);
@@ -320,9 +327,9 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // rule, the first appearance added first goes first, and among
             // returns the oldest wait.
             if (ordered && byTables && !pinned && patient.contains(current)) {
-                long[] mine = firstTurn ? new long[] { 0, 0, added(plan, current) } : waitKey(current, lastSeen, plan);
+                long[] mine = firstTurn ? new long[] { 0, 0, -1000, added(plan, current) } : waitKey(current, pos, lastSeen, plan, pressed, roundSize);
                 for (Performance c : patient) {
-                    long[] theirs = firstTurn ? new long[] { 0, 0, added(plan, c) } : waitKey(c, lastSeen, plan);
+                    long[] theirs = firstTurn ? new long[] { 0, 0, -1000, added(plan, c) } : waitKey(c, pos, lastSeen, plan, pressed, roundSize);
                     if (compareWait(theirs, mine) < 0 && Math.abs(need(c, deficits) - picked) <= EPS &&
                             (overlapsPrevious || !overlaps(c.getGroups(), prior))) {
                         medium -= 200;
@@ -454,14 +461,18 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
     }
 
     // Last appearance of a singer of `c` who already sang, or UNKNOWN. A bonus
-    // singer counts only until rested (two other passages since), as in Node.
+    // singer counts only until rested (two other passages since), as in Node;
+    // so does the guest of a rested bonus owner's duet.
     private static int lastSung(Performance c, int pos, Map<String, Integer> lastSeen, Map<String, Integer> appeared,
                                 QueuePlan plan) {
         int seen = UNKNOWN;
+        String owner = c.getOwner();
+        boolean carried = c.getSingers().size() > 1 && weight(plan, owner) > 1 + EPS &&
+                pos - lastSeen.getOrDefault(owner, UNKNOWN) >= 3;
         for (String singer : c.getSingers()) {
             if (appeared.getOrDefault(singer, 0) == 0) continue;
             int last = lastSeen.getOrDefault(singer, UNKNOWN);
-            if (weight(plan, singer) > 1 + EPS && pos - last >= 3) continue;
+            if ((weight(plan, singer) > 1 + EPS || (carried && !singer.equals(owner))) && pos - last >= 3) continue;
             seen = Math.max(seen, last);
         }
         return seen;
@@ -494,15 +505,29 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
 
     // When the wait of the owner of `c` started (rotation.js#_pick, waitKey):
     // a malus owner after the others (not protected, as for patience), then
-    // max(last appearance, readyAt), then, at the same count, by time
-    // (addedOrder: the rank of the end of Node's last passage, or of its
-    // readySince, a request made during a passage coming before its singer).
-    // A passage of this plan has not ended yet: after every request.
-    private static long[] waitKey(Performance c, Map<String, Integer> lastSeen, QueuePlan plan) {
+    // max(last appearance, readyAt), then, at the same count, the strongest
+    // bonus among the singers, then by time (addedOrder: the rank of the end
+    // of Node's last passage, or of its readySince, a request made during a
+    // passage coming before its singer). A passage of this plan has not ended
+    // yet: after every request. A bonus owner (w > 1) who already sang waits
+    // w times faster (pos - (pos - start) * w), a pressed one at least a whole
+    // round (pos - roundSize). Thousandths: the weights are exact in binary.
+    private static long[] waitKey(Performance c, int pos, Map<String, Integer> lastSeen, QueuePlan plan,
+                                  Predicate<Performance> pressed, int roundSize) {
         String owner = c.getOwner();
         int last = lastSeen.getOrDefault(owner, UNKNOWN);
         int ready = plan.getReadyAt().getOrDefault(owner, UNKNOWN);
-        return new long[] { weight(plan, owner) < 1 - EPS ? 1 : 0, Math.max(last, ready),
+        double w = weight(plan, owner);
+        int start = Math.max(last, ready);
+        long since = start * 1000L;
+        if (w > 1 + EPS && last > UNKNOWN) {
+            double weighted = pos - (pos - start) * w;
+            if (pressed != null && pressed.test(c)) weighted = Math.min(weighted, pos - roundSize);
+            since = Math.round(weighted * 1000);
+        }
+        double top = 1;
+        for (String singer : c.getSingers()) top = Math.max(top, weight(plan, singer));
+        return new long[] { w < 1 - EPS ? 1 : 0, since, -Math.round(top * 1000),
                 last >= 0 ? Long.MAX_VALUE : added(plan, c) };
     }
 

@@ -1043,15 +1043,23 @@ function duoNight(options, { beaLevel = 0, gusLevel = 0, every = 2, sameTable = 
 // (comme un malus) ; avant, le duo de Gus attendait le rythme étalé de Bea
 // (« Chacun son tour », 20 solistes : premier duo au rang 44 au lieu de 30 ;
 // 12 solistes : 3 passages de Gus au lieu de 4 avant la 60e chanson ;
-// « Tables à tour de rôle » : chaque passage 7 chansons plus tard).
+// « Tables à tour de rôle » : chaque passage 7 chansons plus tard). Les
+// passages en plus de Bea allongent chaque tour d'une chanson pour tout le
+// monde : Gus garde le rythme des solistes (même nombre de passages, écart
+// moyen au plus d'une demi-chanson de plus), sans retard de plus qu'eux.
+// Avant, à égalité d'attente, le propre titre de Bea passait devant son duo,
+// que l'espacement repoussait de trois chansons : un passage de moins.
 test('bonus étalé : l’invitée à bonus ne retarde pas la personne qui l’invite, trois modes', () => {
+  const meanGap = list => (list[list.length - 1] - list[0]) / (list.length - 1);
   for (const [mode, options] of modes) {
     for (const level of [3, 2]) {
-      const without = duoNight(options, { solos: 20, passages: 180 }).get('Gus');
-      const withBonus = duoNight(options, { beaLevel: level, solos: 20, passages: 180 }).get('Gus');
-      const label = `${mode}, Bea +${level} : Gus aux rangs ${withBonus.join(' ')} (sans bonus : ${without.join(' ')})`;
-      assert.ok(withBonus.length >= without.length, label);
-      withBonus.forEach((rank, i) => assert.ok(i >= without.length || rank <= without[i], label));
+      const at = duoNight(options, { beaLevel: level, solos: 20, passages: 180 });
+      const gus = at.get('Gus');
+      const solos = [...at.keys()].filter(name => name.startsWith('X')).map(name => at.get(name));
+      const soloGap = solos.reduce((sum, list) => sum + meanGap(list), 0) / solos.length;
+      const label = `${mode}, Bea +${level} : Gus aux rangs ${gus.join(' ')} (écart moyen ${meanGap(gus).toFixed(1)}, solistes ${soloGap.toFixed(1)})`;
+      assert.ok(gus.length >= Math.min(...solos.map(list => list.length)), label);
+      assert.ok(meanGap(gus) <= soloGap + 0.5, label);
     }
     const gus = duoNight(options, { beaLevel: 3, solos: 12, passages: 61 }).get('Gus');
     assert.ok(gus.length >= 4, `${mode}, 12 solistes : Gus aux rangs ${gus.join(' ')}`);
@@ -1083,16 +1091,26 @@ test('bonus étalé : invitée à bonus sur chaque titre, l’espacement est gar
 // Gus (+3) invite Bea (sans bonus) un titre sur deux, 20 solistes : Bea ne
 // chante pas plus que les autres (avant, en « Tables à tour de rôle », le duo
 // retenu en fin de tour laissait passer son titre juste avant : 19 passages
-// contre 11). En « Chacun son tour », les passages de Gus sont étalés.
+// contre 11). Les passages de Gus sont étalés : l'invitée reposée d'un bonus
+// reposé ne retient plus son duo par la patience (avant, le duo attendait la
+// fin de chaque tour et le titre suivant de Gus passait deux chansons après
+// lui, puis vingt), en « Chacun son tour ». Gus est dernier du premier tour (premier ajouté, premier
+// servi) : ses passages s'étalent à partir du quatrième tour ; avant, dans
+// les deux premiers tours, Bea chante son titre et le duo (l'invitée garde
+// son titre), deux passages de plus que les solistes, puis plus aucun.
 test('bonus étalé : l’auteur du duo a le bonus, l’invitée garde son rythme', () => {
   for (const [mode, options] of modes) {
     const at = duoNight(options, { gusLevel: 3, solos: 20 });
     const solo = [...at.keys()].filter(name => name.startsWith('X')).map(name => at.get(name).length);
     const mean = solo.reduce((a, b) => a + b, 0) / solo.length;
-    const label = `${mode} : Gus ${at.get('Gus').length}, Bea ${at.get('Bea').length}, solistes ${solo.join(',')}`;
+    const late = name => at.get(name).filter(rank => rank >= 70);
+    const lateSolo = [...at.keys()].filter(name => name.startsWith('X')).map(name => late(name).length);
+    const label = `${mode} : Gus ${at.get('Gus').length}, Bea ${at.get('Bea').length}, solistes ${solo.join(',')} ; ` +
+      `à partir du 70e : Gus ${late('Gus').length}, Bea ${late('Bea').length}, solistes ${lateSolo.join(',')}`;
     assert.ok(at.get('Gus').length >= 1.8 * mean, label);
-    assert.ok(Math.abs(at.get('Bea').length - mean) <= 1.5, label);
-    if (!options.tableRotation) assert.ok(Math.min(...gapsOf(at.get('Gus'))) >= 6, `${label} ; écarts de Gus ${gapsOf(at.get('Gus')).join(' ')}`);
+    assert.ok(at.get('Bea').length - mean <= 2.5, label);
+    assert.ok(late('Bea').length <= Math.max(...lateSolo), label);
+    if (!options.tableRotation) assert.ok(Math.min(...gapsOf(late('Gus'))) >= 6, `${label} ; écarts de Gus ${gapsOf(late('Gus')).join(' ')}`);
   }
 });
 
