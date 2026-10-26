@@ -684,7 +684,7 @@ test('soirée sauvegardée : une « Priorité » du bar le reste après un redé
   assert.equal(loose.reservedNext?.byStaff, undefined, 'valeur non booléenne ignorée');
 });
 
-test('« Recalculer » quand seule une « Priorité » reste active : le bar sait qu’elle est abandonnée', () => {
+test('« Recalculer » après une « Priorité » et une nouvelle table : le bar sait qu’elle est abandonnée', () => {
   const { Scheduler } = require('../scheduler');
   const s = new Scheduler();
   const people = ['Alice', 'Bruno', 'Chloé'].map((name, i) => {
@@ -693,14 +693,17 @@ test('« Recalculer » quand seule une « Priorité » reste active : le bar sai
     return p;
   });
   s.staffMove(people[2].id, 0);
-  // Une nouvelle table efface l'ordre manuel, pas la priorité.
+  // Une nouvelle table ne touche ni à la priorité ni à l'ordre fixé par le
+  // bar (retours du 23 octobre) ; seul l'ordre figé des autres est recalculé.
   s.chooseSong(s.join({ tableId: '4', name: 'Dan', headcount: 1 }), { songId: 950, title: 'Titre Dan' });
   s.presenceView();
-  assert.equal(s.manualOrderActive, false);
+  assert.equal(s.manualOrderActive, true);
+  assert.deepEqual(s.manualOrder, [people[2].id]);
   assert.notEqual(s.solverPlan?.source, 'manual');
   assert.equal(s.reservedNext?.byStaff, true);
   s.forceReplan();
   assert.equal(s.reservedNext, null);
+  assert.equal(s.manualOrderActive, false);
   assert.match(s.log.at(-1).msg, /déplacements manuels sont abandonnés/);
 });
 

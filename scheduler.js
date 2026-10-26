@@ -15,6 +15,10 @@
  *   (un invité de duo compte comme déjà entendu mais garde son ticket).
  * - Le prochain chanteur annoncé peut être réservé : seul le bar, son retrait
  *   ou son indisponibilité peuvent changer cette annonce.
+ * - Un geste du bar (déplacement, « Priorité ») passe avant le calcul : la
+ *   ligne placée et celles devant elle gardent leur ordre jusqu'au départ de
+ *   leur titre vers KaraFun ; titres ajoutés, arrivées et Timefold ne
+ *   passent jamais devant (staffMove, _unpinManual).
  * - Pas de chanson prête à son tour : on garde sa place, les suivants passent ; dès qu'on
  *   choisit, on passe au prochain tour. Jamais de cumul (un seul ticket).
  * - Duo : le partenaire accepte l'invitation ; seul l'initiateur dépense son
@@ -62,9 +66,9 @@ class Scheduler {
     this.lastGroup = null;    // groupe (table) de la dernière chanson envoyée
     this.roundGroups = new Set(); // groupes déjà servis dans le tour courant
     this.roundPeople = new Set(); // personnes déjà montées sur scène dans le tour, invitées comprises
-    this.manualOrder = [];    // ordre explicite du bar pour les chansons encore dans le helper
-    this.manualOrderActive = false; // préfixe déplacé volontairement, valable jusqu'au prochain changement de titres
-    this.manualChanges = [];  // interventions du bar encore annulables, de la plus ancienne à la plus récente
+    this.manualOrder = [];    // ordre fixé par le bar : jusqu'à la dernière ligne qu'il a placée, celle-ci comprise
+    this.manualOrderActive = false; // ordre fixé en vigueur, jusqu'au départ de ses lignes vers KaraFun
+    this.manualChanges = [];  // gestes du bar encore valables et annulables, du plus ancien au plus récent
     this.tableServeCounts = new Map(); // passages par groupe (historique, affichage)
     this.recentGroups = [];   // groupes des derniers passages, pour le partage entre tables
     this.roundUse = new Map(); // crédit de tour consommé par les personnes avec bonus/malus
@@ -244,10 +248,47 @@ class Scheduler {
     return before.length - p.inbox.length;
   }
 
+  // Tous les gestes du bar tombent : « Recalculer la file », « Vider toutes
+  // les chansons », nouvelle soirée. Rien d'autre ne les efface d'un coup.
   invalidateManualOrder() {
     this.manualOrder = [];
     this.manualOrderActive = false;
     this.manualChanges = [];
+  }
+
+  // Lignes placées par le bar (déplacement, priorité) : celles de ses gestes
+  // encore valables. Un ordre fixé sans geste noté (ancienne sauvegarde) vaut
+  // pour toutes ses lignes.
+  _manualAnchors() {
+    const anchors = new Set(this.manualChanges.map(change => change.personId));
+    return anchors.size ? anchors : new Set(this.manualOrder);
+  }
+
+  // L'ordre fixé s'arrête à la dernière ligne placée par le bar : les lignes
+  // gardées devant un geste disparu retrouvent le calcul.
+  _trimManualOrder() {
+    const anchors = new Set(this.manualChanges.map(change => change.personId));
+    let last = -1;
+    this.manualOrder.forEach((pid, index) => { if (anchors.has(pid)) last = index; });
+    this.manualOrder = this.manualOrder.slice(0, last + 1);
+    this.manualOrderActive = this.manualOrderActive && this.manualOrder.length > 0;
+  }
+
+  // Une ligne de l'ordre fixé prend fin : son titre part vers KaraFun, sa
+  // liste est vide, la personne part. Elle quitte l'ordre fixé et ses gestes
+  // ne s'annulent plus ; les lignes derrière elle avancent d'une place, les
+  // autres gestes restent en vigueur (retours du 23 octobre : chaque titre
+  // ajouté par quelqu'un d'autre effaçait les déplacements du bar).
+  _unpinManual(pid) {
+    const anchored = this.manualChanges.some(change => change.personId === pid);
+    if (!anchored && !this.manualOrder.includes(pid)) return false;
+    this.manualOrder = this.manualOrder.filter(other => other !== pid);
+    if (anchored) {
+      this.manualChanges = this.manualChanges.filter(change => change.personId !== pid);
+      this._trimManualOrder();
+    }
+    this.manualOrderActive = this.manualOrderActive && this.manualOrder.length > 0;
+    return true;
   }
 
   // `deferrals` : pour une intervention du bar, les reports « Pas prêt »
@@ -345,15 +386,22 @@ class Scheduler {
     return crypto.createHash('sha256').update(JSON.stringify(context)).digest('hex');
   }
 
+  // Rien n'a changé depuis le dernier geste (file du helper et KaraFun) :
+  // l'annuler rend exactement l'ordre affiché avant lui. Sinon l'annulation
+  // reste possible et ne rend au calcul que la ligne de ce geste
+  // (_undoRebased).
   canUndoManualChange(nativeFingerprint) {
     const latest = this.manualChanges.at(-1);
     return !!latest && latest.native === nativeFingerprint &&
       latest.after === this.manualContextFingerprint();
   }
 
+  // `serial` : passages déjà comptés au moment du geste, pour rendre un
+  // report « Pas prêt » levé par lui, moins les chansons passées depuis.
   recordManualChange({ kind, personId, name, from, to, before, native, planBefore = this._planBeforeManual }) {
     const change = { id: id(), kind, personId, name, from, to, at: Date.now(),
-      before, after: this.manualContextFingerprint(), native, planBefore: planBefore || null };
+      before, after: this.manualContextFingerprint(), native, planBefore: planBefore || null,
+      serial: this.appearanceSerial };
     this._planBeforeManual = null;
     this.manualChanges.push(change);
     return change;
@@ -373,34 +421,74 @@ class Scheduler {
       ranks: new Map(snapshot.order.map((entry, index) => [entry, index])) } : null;
   }
 
-  undoLastManualChange(changeId, nativeFingerprint) {
+  // Annule le geste le plus récent. `excludeIds` : passage en cours d'envoi à
+  // KaraFun, dont la réservation d'avant le geste ne peut plus être rendue.
+  _undoLatest(nativeFingerprint, excludeIds = []) {
+    const latest = this.manualChanges.at(-1);
+    if (this.canUndoManualChange(nativeFingerprint)) {
+      this.restoreManualOverride(latest.before, { deferrals: true });
+      this._restorePlan(latest.planBefore);
+      this.manualChanges.pop();
+    } else this._undoRebased(latest, excludeIds);
+    this.version++;
+    return latest;
+  }
+
+  // Annulation après d'autres changements de la file (titres ajoutés,
+  // arrivées, passages partis) : la ligne du geste revient au calcul ; les
+  // lignes placées par les gestes plus anciens retrouvent leur place d'avant
+  // ce geste (une ligne redéplacée, sa place précédente), moins les passages
+  // partis depuis ; le prochain annoncé d'avant le geste est rendu s'il
+  // attend encore. Les titres déjà dans KaraFun ne bougent jamais.
+  _undoRebased(change, excludeIds = []) {
+    const before = change.before || {};
+    const pinned = new Set(this.manualOrder);
+    // Ligne encore en attente : toujours fixée, ou encore là avec un titre,
+    // sans passage parti vers KaraFun depuis le geste (son envoi date
+    // `lastSungAt` et compte un passage après `serial`).
+    const sentSince = p => (p.lastSungAt || 0) >= change.at &&
+      (!Number.isSafeInteger(change.serial) || (p.lastAppearanceTurn || 0) > change.serial);
+    const waiting = pid => {
+      if (pinned.has(pid)) return true;
+      const p = this.people.get(pid);
+      return !!p && !p.withdrawnAt && !!p.song && !excludeIds.includes(pid) && !sentSince(p);
+    };
+    this.manualChanges = this.manualChanges.filter(other => other !== change);
+    this.manualOrder = (Array.isArray(before.manualOrder) ? before.manualOrder : []).filter(waiting);
+    this.manualOrderActive = this.manualOrder.length > 0;
+    this._trimManualOrder();
+    if (change.to === 1 && this.reservedNext?.personId === change.personId) this.reservedNext = null;
+    const old = before.reservedNext;
+    if (!this.reservedNext && old && waiting(old.personId) &&
+        (!old.byStaff || this.manualOrder.includes(old.personId))) this.reservedNext = { ...old };
+    // Seul le report levé par ce geste revient, moins les chansons passées.
+    const passed = Number.isSafeInteger(change.serial) ? Math.max(0, this.appearanceSerial - change.serial) : 0;
+    for (const [pid, deferral] of Array.isArray(before.deferrals) ? before.deferrals : []) {
+      const p = this.people.get(pid);
+      if (pid !== change.personId || !p || p.withdrawnAt || p.song?.entryId !== deferral.entryId || p.deferral) continue;
+      p.deferral = { ...deferral, remaining: Math.max(0, deferral.remaining - passed) };
+    }
+    this._restorePlan(change.planBefore);
+  }
+
+  undoLastManualChange(changeId, nativeFingerprint, { excludeIds = [] } = {}) {
     const latest = this.manualChanges.at(-1);
     if (!latest) throw new Error('Aucun changement manuel à annuler.');
     if (changeId && latest.id !== changeId) {
       throw new Error('Annule d’abord le changement manuel le plus récent.');
     }
-    if (!this.canUndoManualChange(nativeFingerprint)) {
-      this.manualChanges = [];
-      throw new Error('La file a changé depuis cette intervention ; elle ne peut plus être annulée sans déplacer d’autres titres.');
-    }
-    this.restoreManualOverride(latest.before, { deferrals: true });
-    this._restorePlan(latest.planBefore);
-    this.manualChanges.pop();
+    this._undoLatest(nativeFingerprint, excludeIds);
     this._event('staff.undo', { changeId: latest.id || null, kind: latest.kind, personId: latest.personId || null });
     this.note(`Le bar a annulé ${latest.kind === 'priority' ? 'la priorité' : 'le déplacement'} de ${latest.name}`, 'staff');
     return latest;
   }
 
-  undoAllManualChanges(nativeFingerprint) {
+  // Tous les gestes, du plus récent au plus ancien : leurs lignes reviennent
+  // au calcul, sans relancer Timefold (voir forceReplan).
+  undoAllManualChanges(nativeFingerprint, { excludeIds = [] } = {}) {
     if (!this.manualChanges.length) throw new Error('Aucun changement manuel à annuler.');
-    if (!this.canUndoManualChange(nativeFingerprint)) {
-      this.manualChanges = [];
-      throw new Error('La file a changé depuis ces interventions ; leur annulation globale n’est plus possible.');
-    }
     const count = this.manualChanges.length;
-    this.restoreManualOverride(this.manualChanges[0].before, { deferrals: true });
-    this._restorePlan(this.manualChanges[0].planBefore);
-    this.manualChanges = [];
+    while (this.manualChanges.length) this._undoLatest(nativeFingerprint, excludeIds);
     this._event('staff.recalculate', { count });
     this.note(`Le bar a annulé ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} dans la file`, 'staff');
     return count;
@@ -625,7 +713,7 @@ class Scheduler {
     if (p.soloKeyHash) p.soloKeyRevoked = true;
     this._removeFromQ(p.id);
     if (this.reservedNext?.personId === p.id) this.releaseNext();
-    this.invalidateManualOrder();
+    this._unpinManual(p.id);
     this._event('person.left', { personId: p.id, by, songsDropped });
     this.note(`${p.name} a retiré ses chansons ; son identité reste inscrite à la table`);
   }
@@ -641,7 +729,7 @@ class Scheduler {
     this.roundApps.delete(p.id);
     this.roundOwed.delete(p.id);
     this.duetCooldowns.delete(p.id);
-    this.invalidateManualOrder();
+    this._unpinManual(p.id);
     if (![...this.people.values()].some(q => q.group === p.group)) this.roundGroups.delete(p.group);
     this.version++;
   }
@@ -663,7 +751,8 @@ class Scheduler {
     if (mode === 'append' && this.songsOf(p).length >= 20) {
       const e = new Error('La liste est limitée à 20 chansons par chanteur.'); e.code = 'LIST_FULL'; throw e;
     }
-    this.invalidateManualOrder();
+    // Un titre ajouté, remplacé ou une arrivée ne touchent pas aux lignes
+    // placées par le bar : elles gardent leur place (_pick, ordre fixé).
     const replaced = mode === 'replace' ? this.songsOf(p).map(s => s.entryId) : [];
     // Début de l'attente pour ce titre : ceux qui ont chanté avant ne sont pas
     // passés « devant » cette personne (voir l'anti-série et la patience de
@@ -717,7 +806,9 @@ class Scheduler {
       if (i < 0) throw new Error('Chanson introuvable dans la liste.');
       this._songsGone(p, p.backlog.splice(i, 1));
     }
-    this.invalidateManualOrder();
+    // Liste vidée, ou titre retiré faute de « Je suis là » : la place donnée
+    // par le bar tombe. Sinon le titre suivant de la liste la garde.
+    if (!p.song || by === 'presence-max') this._unpinManual(p.id);
     this._refreshDuetViews();
     if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
     this._event('song.removed', { personId: p.id, entryId: key, by });
@@ -737,7 +828,6 @@ class Scheduler {
     if (from < 0) throw new Error('Chanson introuvable dans cette liste.');
     if (!Number.isInteger(to) || to < 0 || to >= songs.length) throw new Error('Position invalide dans la liste.');
     if (from === to) return;
-    this.invalidateManualOrder();
     const [moved] = songs.splice(from, 1);
     songs.splice(to, 0, moved);
     p.song = songs.shift() || null;

@@ -195,7 +195,7 @@ for (const options of [
   });
 }
 
-test('le glisser-déposer du bar atteint la deuxième place puis expire à un nouveau choix', () => {
+test('le glisser-déposer du bar atteint la deuxième place et tient après un nouveau choix', () => {
   for (const options of [
     { tableRotation: false }, { tableRotation: true },
     { tableRotation: true, weightedTables: true },
@@ -210,10 +210,15 @@ test('le glisser-déposer du bar atteint la deuxième place puis expire à un no
     s.staffMove(moved, 1);
     assert.equal(s.readyView()[1].ids[0], moved, 'la deuxième place demandée doit être visible');
     assert.equal(play(s).ids[0], before[0]);
-    assert.equal(s.select().ids[0], moved, 'le titre déplacé doit vraiment partir en deuxième');
+    // Un nouveau titre ne rend plus le déplacement périmé (retours du 23
+    // octobre) : la ligne placée part en tête après le passage d'avant.
     const newcomer = person(s, '5', 'Nouvelle personne');
     s.chooseSong(newcomer, song(5));
-    assert.equal(s.manualOrderActive, false, 'un nouveau titre rend le déplacement manuel périmé');
+    assert.equal(s.manualOrderActive, true, 'un nouveau titre garde le déplacement du bar');
+    assert.deepEqual(s.manualOrder, [moved]);
+    assert.equal(s.select().ids[0], moved, 'le titre déplacé doit vraiment partir en deuxième');
+    play(s);
+    assert.equal(s.manualOrderActive, false, 'parti vers KaraFun, le titre n’est plus dans l’ordre fixé');
     assert.deepEqual(s.manualOrder, []);
   }
 });

@@ -59,7 +59,7 @@
     <div id="qBody" class="queue-rows"></div>
     <p id="queueEmpty" class="empty-state" hidden>Aucune chanson en attente pour le moment.</p>
     <details id="manualHistory" class="manual-history" hidden><summary>Changements manuels de la file <span class="count" id="manualCount">0</span></summary>
-      <p class="small muted">Annule les changements du plus récent au plus ancien. Les titres déjà chargés dans KaraFun ne changent pas de place.</p>
+      <p class="small muted">Une ligne placée par le bar garde sa place jusqu’à son envoi à KaraFun, même quand d’autres titres arrivent. Annule les changements du plus récent au plus ancien : la ligne retrouve le calcul, les autres gardent leur place. Les titres déjà chargés dans KaraFun ne changent pas de place.</p>
       <div id="manualHistoryList" class="manual-history-list"></div>
       <button class="btn small" id="recalculateQueue">Annuler tous les changements manuels</button>
     </details>
@@ -1086,10 +1086,18 @@
       const nextText = solver.refining ?
         'La file ne change pas : la recherche continue et n’affiche un nouvel ordre que s’il est meilleur.' :
         solver.nextRefineAt ? `Prochaine recherche dans ${Math.max(1, Math.round((solver.nextRefineAt - Date.now()) / 1000))} s.` :
-        solver.plan === 'manual' ? 'Ordre du bar conservé ; « Recalculer la file » le remplace.' : '';
+        solver.plan === 'manual' ? 'Ordre du bar conservé ; les lignes placées gardent leur place jusqu’à leur envoi.' : '';
       $('solverText').textContent = [lastText, gainText, nextText].filter(Boolean).join(' ');
     }
     $('optimizeQueue').disabled = !!solver.pending && !!solver.forced;
+    // « Recalculer la file » annule aussi les gestes du bar : le bouton le dit,
+    // avec leur nombre (un gérant le touchait pour rafraîchir la file).
+    const gestures = (S.manualChanges || []).length;
+    $('optimizeQueue').textContent = !gestures ? 'Recalculer la file' : gestures === 1 ?
+      'Annuler mon déplacement et recalculer' : `Annuler mes ${gestures} déplacements et recalculer`;
+    $('optimizeQueue').title = gestures ?
+      'Annule les déplacements et priorités donnés par le bar, puis recalcule tout l’ordre avec les règles de la soirée ; les titres déjà dans KaraFun ne bougent pas' :
+      'Recalcule tout l’ordre avec les règles de la soirée ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas';
   }
 
   // Titre en double : déjà chanté récemment ou prévu plusieurs fois.
@@ -1990,7 +1998,7 @@
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.placed ? '<span class="badge lock" title="Place donnée par le bar : ni un titre ajouté, ni une arrivée, ni le calcul ne passent devant. Elle avance quand les passages au-dessus partent, jusqu’à son envoi à KaraFun ; « Changements manuels de la file » l’annule.">Placé par le bar</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
         <div class="song-cell${marks ? ' has-marks' : ''}" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${marks ? `${marks}<span class="song-main">${songMain}</span>` : songMain}${songArtist}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
@@ -2569,8 +2577,12 @@
     await act('/api/staff/remove-many', { items, queueIds });
   };
   $('optimizeQueue').onclick = () => {
-    const manual = (S?.manualChanges || []).length || S?.solver?.plan === 'manual';
-    if (manual && !confirm('Recalculer toute la file ? Les déplacements manuels seront abandonnés ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas.')) return;
+    const changes = S?.manualChanges || [];
+    const manual = changes.length || S?.solver?.plan === 'manual';
+    const list = changes.map(change => `${change.kind === 'priority' ? 'priorité' : 'déplacement'} ${ofName(change.name)}`).join(', ');
+    const question = !changes.length ? 'Recalculer toute la file ? Les déplacements manuels seront abandonnés ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas.' :
+      `Recalculer toute la file ? ${changes.length === 1 ? 'Ton changement manuel sera annulé' : `Tes ${changes.length} changements manuels seront annulés`} (${list}) : ${changes.length === 1 ? 'cette ligne retrouve' : 'ces lignes retrouvent'} le calcul. Les titres déjà dans KaraFun ne bougent pas.`;
+    if (manual && !confirm(question)) return;
     act('/api/staff/queue-optimize', {});
   };
   for (const id of ['rotationPeople', 'rotationTables', 'rotationCompromise']) {

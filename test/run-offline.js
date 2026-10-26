@@ -18,7 +18,7 @@ function run(file, env = {}) {
 }
 (async () => {
   for (const f of ['check-inline.js','scheduler.test.js','scheduler-race.test.js','first-turn-fairness.test.js',
-    'rotation-recent-physical.test.js','round-debt.test.js','rejeu-soiree.test.js','kit-sources.test.js','preparer-livrable.test.js','deploy-config.test.js','documentation.test.js','forecast-cache.test.js','timefold-integration.test.js','appearance-persistence.test.js','solo-capacity.test.js','solo-invitations.test.js','private-event.test.js',
+    'rotation-recent-physical.test.js','round-debt.test.js','bar-gestures.test.js','rejeu-soiree.test.js','kit-sources.test.js','preparer-livrable.test.js','deploy-config.test.js','documentation.test.js','forecast-cache.test.js','timefold-integration.test.js','appearance-persistence.test.js','solo-capacity.test.js','solo-invitations.test.js','private-event.test.js',
     'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','client-i18n.test.js','client-v04-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js','health-routes.test.js','fuseau.test.js',
     'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','staff-duo-tracked-api.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js','staff-layout.regression-1.test.js','staff-layout.regression-2.test.js','playwright-skip.test.js',
@@ -76,6 +76,7 @@ function run(file, env = {}) {
   await demoTest(3127, 10, 'test/battle-late-joiner-api.test.js');
   await run('test/evening-controls-api.test.js');
   await run('test/priority-undo-api.test.js');
+  await run('test/bar-gestures-api.test.js');
   await run('test/night-restart-api.test.js');
   console.log('T1 et recette approfondie hors ligne OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});

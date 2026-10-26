@@ -725,7 +725,7 @@ function queueWorld() {
     { source: 'karafun', ours: true, queueId: 'kf-2', pos: 2, singer: 'Dora', table: 'En solo', ids: ['dora'],
       title: 'Prochain', eta: now + 240000, guaranteed: true },
     { source: 'envoi', pos: 3, singer: 'Bruno', title: 'En route' },
-    { source: 'helper', id: 'bruno', pos: 4, name: 'Bruno', table: 'Table 1', ids: ['bruno'],
+    { source: 'helper', id: 'bruno', pos: 4, name: 'Bruno', table: 'Table 1', ids: ['bruno'], placed: true,
       song: { title: 'Chanson A', artist: 'Groupe', entryId: 'e1' }, isNew: true, eta: now + 480000 },
     { source: 'helper', id: 'duo1', pos: 5, name: 'Alice & Dora', table: 'Table 1', ids: ['alice', 'dora'], kind: 'duo',
       presenceSkips: 2, repeat: { playedAt: now - 1800000 }, song: { title: 'Duo', artist: 'Deux', entryId: 'e2' }, eta: now + 720000 },
@@ -752,7 +752,9 @@ test('file du bar : statuts, badges, doublons, repères et séparateur de fermet
   assert.deepEqual(badges(lines[0]), ['Dans KaraFun · Je suis là attendu']);
   assert.deepEqual(badges(lines[1]), ['Dans KaraFun', 'Prochain confirmé']);
   assert.deepEqual(badges(lines[2]), ['Envoi']);
-  assert.deepEqual(badges(lines[3]), ['À venir', 'Premier passage']);
+  assert.deepEqual(badges(lines[3]), ['À venir', 'Placé par le bar', 'Premier passage']);
+  assert.match(lines[3].querySelectorAll('.queue-tags .badge')[1].title, /ni un titre ajouté, ni une arrivée, ni le calcul ne passent devant/,
+    'la ligne placée par le bar dit qu’elle garde sa place');
   assert.deepEqual(badges(lines[4]), ['À venir', 'Duo', 'Absent ×2']);
   assert.deepEqual(badges(lines[5]), ['Je suis là attendu', 'Pas prêt']);
   assert.deepEqual(badges(lines[6]), ['Titre suivant']);
@@ -1541,7 +1543,8 @@ test('optimisation de la file : état affiché et recalcul', async () => {
   assert.match(diag(), /Optimisation prête/);
   await page.update({ solver: { configured: true, available: true, plan: 'manual', lastRun: { at, improved: false }, refineImprovements: 1 } });
   assert.equal(pill().textContent, 'Ordre modifié par le bar');
-  assert.equal(text(), `Dernier calcul à ${hhmm(at)} : rien de mieux. 1 amélioration depuis le dernier changement de la file. Ordre du bar conservé ; « Recalculer la file » le remplace.`);
+  assert.equal(text(), `Dernier calcul à ${hhmm(at)} : rien de mieux. 1 amélioration depuis le dernier changement de la file. Ordre du bar conservé ; les lignes placées gardent leur place jusqu’à leur envoi.`);
+  assert.equal(page.$('optimizeQueue').textContent, 'Recalculer la file');
   // Recalcul : confirmation seulement si des choix du bar seraient perdus.
   page.confirmAnswer = false;
   await page.click(page.$('optimizeQueue'));
@@ -1550,6 +1553,23 @@ test('optimisation de la file : état affiché et recalcul', async () => {
   page.confirmAnswer = true;
   await page.click(page.$('optimizeQueue'));
   assert.deepEqual(page.lastPost('/api/staff/queue-optimize').body, {});
+  // Avec des gestes du bar, le bouton dit qu'il les annule, et combien
+  // (un gérant le touchait pour rafraîchir la file sans le savoir).
+  await page.update({ manualChanges: [
+    { id: 'b', kind: 'priority', name: 'Marine', from: 4, to: 1, at: Date.now(), canUndo: true },
+    { id: 'a', kind: 'move', name: 'Ali', from: 7, to: 4, at: Date.now(), canUndo: false }] });
+  assert.equal(page.$('optimizeQueue').textContent, 'Annuler mes 2 déplacements et recalculer');
+  assert.match(page.$('optimizeQueue').title, /^Annule les déplacements et priorités donnés par le bar/);
+  page.confirmAnswer = false;
+  await page.click(page.$('optimizeQueue'));
+  assert.equal(page.confirms.at(-1), 'Recalculer toute la file ? Tes 2 changements manuels seront annulés (priorité de Marine, déplacement d’Ali) : ces lignes retrouvent le calcul. Les titres déjà dans KaraFun ne bougent pas.');
+  assert.equal(page.postsTo('/api/staff/queue-optimize').length, 1);
+  await page.update({ manualChanges: [{ id: 'a', kind: 'move', name: 'Ali', from: 7, to: 4, at: Date.now(), canUndo: true }] });
+  assert.equal(page.$('optimizeQueue').textContent, 'Annuler mon déplacement et recalculer');
+  await page.click(page.$('optimizeQueue'));
+  assert.equal(page.confirms.at(-1), 'Recalculer toute la file ? Ton changement manuel sera annulé (déplacement d’Ali) : cette ligne retrouve le calcul. Les titres déjà dans KaraFun ne bougent pas.');
+  page.confirmAnswer = true;
+  await page.update({ manualChanges: [] });
   await page.update({ solver: { configured: true, available: true, plan: 'mystere' } });
   assert.equal(pill().textContent, 'Ordre calculé localement');
   assert.equal(text(), '');

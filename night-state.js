@@ -362,6 +362,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // garde l'ordre sans les rendre.
     if ('deferrals' in before && !(Array.isArray(before.deferrals) && before.deferrals.every(row =>
       Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && validDeferral(row[1])))) delete before.deferrals;
+    // Passages comptés au moment du geste (report rendu par une annulation
+    // après d'autres passages) : abîmé, le report est rendu sans décompte.
+    if ('serial' in change && (!Number.isSafeInteger(change.serial) || change.serial < 0)) delete change.serial;
     if (typeof change.id !== 'string' || !/^[a-f0-9]{12}$/.test(change.id) ||
       !['priority', 'move'].includes(change.kind) ||
       typeof change.personId !== 'string' || !tmp.people.has(change.personId) ||

@@ -694,6 +694,9 @@ function presenceCandidate({ current, upcoming } = analyze()) {
   if (closingBlocksStart(current)) return null;
   const onStage = tracked.find(tr => isOnStage(tr, current));
   const excluded = onStage?.sel.ids || [];
+  // Priorité du bar pour une personne encore sur scène : elle passe juste
+  // après (reservePresenceNext) ; sa présence sera demandée à sa sortie.
+  if (sched.reservedNext?.byStaff && excluded.includes(sched.reservedNext.personId)) return null;
   // L'ordre local est immédiat et Timefold ne déplace jamais le prochain
   // réservé : la notification « Je suis là » vise donc la bonne personne.
   const planned = sched.presenceView(excluded).find(turn => !turn.future && turn.song);
@@ -2386,8 +2389,9 @@ function staffState() {
   const presencePending = [...presenceIds].map(pid => sched.people.get(pid)?.name).filter(Boolean);
   // Mode serveur : aucune adresse du Wi-Fi n'est proposée au bar.
   const ips = SERVER ? [] : lanAddresses();
-  const canUndoManual = sched.canUndoManualChange(priorityNativeFingerprint());
   const latestManual = sched.manualChanges.at(-1);
+  // Lignes placées par le bar (gestes encore valables) : repère dans la file.
+  const placed = new Set(sched.manualChanges.map(change => change.personId));
   const repeats = queueRepeats(pub.queue, sched.playedSongs, Date.now(), repeatWindowMs());
   const { current } = analyze();
   const stageTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
@@ -2412,8 +2416,10 @@ function staffState() {
       const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
       const skips = owner && owner.song?.entryId === line.song?.entryId ? sched.presenceSkipsOf(owner) : 0;
       const tooLong = owner ? tooLongSec(line.song) : null;
-      return repeats[index] || skips || tooLong ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
-        ...(skips ? { presenceSkips: skips } : {}), ...(tooLong ? { tooLongSec: tooLong } : {}) } : line;
+      const placedByBar = !!owner && !line.future && placed.has(owner.id) && sched.manualOrder.includes(owner.id);
+      return repeats[index] || skips || tooLong || placedByBar ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
+        ...(skips ? { presenceSkips: skips } : {}), ...(tooLong ? { tooLongSec: tooLong } : {}),
+        ...(placedByBar ? { placed: true } : {}) } : line;
     }),
     // Durée maximale : titres de la file qu'un retrait groupé enlèverait.
     tooLong: { limitSec: maxSongLimit(), count: tooLongEntries().length },
@@ -2435,15 +2441,15 @@ function staffState() {
     openDuets: sched.openDuets().filter(open => open.entryId !== sendingEntryId()).map(open => ({ ownerId: open.owner.id, ownerName: open.owner.name,
       table: sched.passageTables([open.owner.id]).join(' + '), entryId: open.entryId, title: open.song.title,
       openedAt: open.openedAt, held: sched._openHeld(open.song) })),
+    // Gestes encore valables, du plus récent au plus ancien : le plus récent
+    // s'annule toujours, même après d'autres changements de la file.
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
       from: change.from, to: change.to, at: change.at,
-      canUndo: index === 0 && canUndoManual,
-      unavailableReason: index > 0 ? 'Annule d’abord les interventions plus récentes.' :
-        canUndoManual ? null : 'La file a changé depuis cette intervention.',
+      canUndo: index === 0,
+      unavailableReason: index > 0 ? 'Annule d’abord les interventions plus récentes.' : null,
     })),
-    priorityUndo: latestManual?.kind === 'priority' && canUndoManual ?
-      { available: true, name: latestManual.name } : null,
+    priorityUndo: latestManual?.kind === 'priority' ? { available: true, name: latestManual.name } : null,
     presencePending,
     // « Je suis là » manqué plusieurs fois : titre retiré, le bar vérifie.
     maybeGone: [...sched.people.values()].filter(p => p.maybeGone && !p.withdrawnAt).map(p => ({
@@ -3719,6 +3725,15 @@ function assertNotSending(entryId) {
 function sendingEntryId() {
   return pending && !pending.cancelled ? pending.sel.song.entryId : null;
 }
+
+// Personnes d'un passage déjà parti vers KaraFun (envoi en cours, titre
+// chargé pas encore commencé) : annuler un geste du bar ne leur rend pas la
+// réservation d'avant ce geste, qui viserait leur titre suivant.
+function sendingIds() {
+  const ids = pending && !pending.cancelled ? [...(pending.sel.consumedIds || pending.sel.ids)] : [];
+  for (const tr of tracked) if (!tr.cancelled && !tr.startedAt) ids.push(...(tr.sel.consumedIds || tr.sel.ids.slice(0, 1)));
+  return ids;
+}
 function assertInviteNotSending(guest, entryId) {
   const sending = sendingEntryId();
   if (!sending) return;
@@ -4612,12 +4627,12 @@ const handlers = {
       sched.opts.weightedTables = nextWeighted;
       // Le tour des personnes est conservé : changer de mode ne doit jamais
       // permettre à quelqu'un de rechanter avant ceux qui attendent ce tour.
-      sched.invalidateManualOrder();
+      // Les lignes placées par le bar gardent leur place ; les autres sont
+      // recalculées selon le nouveau mode.
       sched.note(`Rotation : ${nextWeighted ? 'compromis, grandes tables un peu plus tôt dans le tour' : nextTableRotation ? 'tables à tour de rôle' : 'chacun son tour, la patience d’abord'}`, 'staff');
     }
     if ('interleaveArrivals' in body && !!body.interleaveArrivals !== (sched.opts.interleaveArrivals !== false)) {
       sched.opts.interleaveArrivals = !!body.interleaveArrivals;
-      sched.invalidateManualOrder();
       sched.note(`Grande table qui arrive : ${sched.opts.interleaveArrivals ? 'intercalée avec la rotation' : 'passe d’abord en entier'}`, 'staff');
     }
     if ('auto' in body) {
@@ -4833,26 +4848,25 @@ const handlers = {
     if (from >= 0 && from === toIndex) {
       return { ok: true, changed: false, message: 'Ce titre est déjà à cette place.' };
     }
-    const nativeBefore = priorityNativeFingerprint();
-    if (sched.manualChanges.length && !sched.canUndoManualChange(nativeBefore)) sched.manualChanges = [];
+    // Le geste est noté avant sync() : un passage confirmé par KaraFun
+    // pendant ce balayage fait avancer la ligne placée sans l'effacer. Il
+    // reste annulable après tout autre changement de la file.
     const before = sched.manualOverrideState({ deferrals: true });
     sched.staffMove(personId, toIndex, excluded, provisional);
-    sync();
-    const nativeAfter = priorityNativeFingerprint();
-    journalEvent('staff.move', { personId, kind: priority ? 'priority' : 'move', from: from + 1, to: toIndex + 1 });
-    if (nativeBefore === nativeAfter) sched.recordManualChange({
+    sched.recordManualChange({
       kind: priority ? 'priority' : 'move', personId,
       name: visible[from]?.name || sched.people.get(personId)?.name || 'ce chanteur',
-      from: from + 1, to: toIndex + 1, before, native: nativeAfter,
+      from: from + 1, to: toIndex + 1, before, native: priorityNativeFingerprint(),
     });
-    else sched.manualChanges = [];
+    sync();
+    journalEvent('staff.move', { personId, kind: priority ? 'priority' : 'move', from: from + 1, to: toIndex + 1 });
     return { ok: true, firstFreePosition: nativeAhead + 1,
       message: priority && nativeAhead ?
         `Passage avancé à la première place libre, après ${nativeAhead} titre${nativeAhead > 1 ? 's' : ''} déjà chargé${nativeAhead > 1 ? 's' : ''} dans KaraFun.` : null };
   },
   'POST /api/staff/manual-change-undo': async (req, res, body) => {
     if (!body.id) throw new Error('Indique le changement manuel à annuler.');
-    sched.undoLastManualChange(String(body.id), priorityNativeFingerprint());
+    sched.undoLastManualChange(String(body.id), priorityNativeFingerprint(), { excludeIds: sendingIds() });
     sync();
     return { ok: true };
   },
@@ -4860,12 +4874,12 @@ const handlers = {
     if (sched.manualChanges.at(-1)?.kind !== 'priority') {
       throw new Error('La dernière intervention du bar n’est pas une priorité.');
     }
-    sched.undoLastManualChange(null, priorityNativeFingerprint());
+    sched.undoLastManualChange(null, priorityNativeFingerprint(), { excludeIds: sendingIds() });
     sync();
     return { ok: true };
   },
   'POST /api/staff/queue-recalculate': async () => {
-    const count = sched.undoAllManualChanges(priorityNativeFingerprint());
+    const count = sched.undoAllManualChanges(priorityNativeFingerprint(), { excludeIds: sendingIds() });
     sync();
     return { ok: true, undone: count };
   },

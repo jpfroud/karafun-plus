@@ -104,6 +104,26 @@ try {
   assert.deepEqual(resumed.manualOverrideState(), beforeManual,
     'après redémarrage, annuler restitue précisément l’état avant déplacement');
 
+  // Retours du 23 octobre : après la reprise, un titre ajouté par quelqu'un
+  // d'autre ne défait pas les gestes du bar, qui restent annulables.
+  const placedAgain = new Scheduler();
+  restoreNight(JSON.parse(JSON.stringify(newest)), { scheduler: placedAgain, access: new TableAccess(), settings: settings() });
+  const shown = () => placedAgain.presenceView().filter(turn => !turn.future).map(turn => turn.ids[0]);
+  const placedOrder = shown();
+  assert.equal(placedOrder[1], movableAgain.at(-1).ids[0]);
+  assert.ok(placedAgain.manualChanges.every(change => Number.isSafeInteger(change.serial)), 'le décompte des reports survit');
+  placedAgain.chooseSong(placedAgain.people.get(clara.id), song(107, 'Encore Clara'), 'append');
+  assert.deepEqual(shown().slice(0, 3), placedOrder.slice(0, 3), 'après la reprise, un ajout ne défait pas les gestes du bar');
+  assert.equal(placedAgain.manualChanges.length, 2);
+  placedAgain.undoLastManualChange(null, nativeFingerprint);
+  assert.equal(placedAgain.manualChanges.length, 1, 'le dernier geste s’annule encore après l’ajout');
+  assert.equal(shown().indexOf(movable.at(-1).ids[0]), 1, 'le geste plus ancien garde sa place');
+  const brokenSerial = JSON.parse(JSON.stringify(newest));
+  brokenSerial.scheduler.manualChanges[0].serial = 'x';
+  const loose = new Scheduler();
+  restoreNight(brokenSerial, { scheduler: loose, access: new TableAccess(), settings: settings() });
+  assert.equal('serial' in loose.manualChanges[0], false, 'décompte abîmé oublié, geste gardé');
+
   // Regression: quatrième relecture finale (performance) — chaque sauvegarde
   // (toutes les 2 s et après chaque action acceptée) recalculait l'empreinte
   // de chaque photo gardée : 800 photos de 400 Ko, près d'une seconde.
