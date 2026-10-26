@@ -49,6 +49,15 @@ Pour tout changement qui touche la file, les duos, les présences ou les tables 
 - Un changement qui déséquilibre les passages (Jain en baisse, des gens qui passent plus que d'autres, quelqu'un qui perd un passage ou attend nettement plus) n'est pas bon, même si une autre attente baisse : le dire, et ne le livrer qu'avec l'accord explicite de l'utilisateur.
 - Reporter le bilan dans `RAPPORT-TEST.md` et dans la PR avec les clés S01… et T1… (option `--cles` de l'outil) : jamais de prénom ni de nom de table dans le dépôt, public. La sortie avec prénoms reste hors du dépôt.
 
+**Cohérence des deux modes** : la file tourne en mode PC (kit Windows, lanceurs `.bat`) ou en mode serveur (`--server` ou `KARAOKE_MODE=server`, image Docker derrière Caddy).
+
+- Un texte qui parle du PC, des `.bat`, du Wi-Fi local, de `localhost` ou d'une clé qui change à chaque démarrage a sa variante serveur : `app.mode === 'server'` dans la page, `SERVER` dans `server.js`, `DEPLOIEMENT-SERVEUR.md` dans les documents.
+- Un texte du mode PC ne change qu'avec son test, et ce changement est signalé dans le résumé : `test/startup-port.test.js`, `test/staff-ui-coverage.test.js`, `test/server-table-routes.test.js`, `test/kcs-connection.test.js`, `test/kcs-protocol.test.js`, `test/kcs-ratelimit.test.js`, `test/cli-persistence.test.js`, `test/server-mode.test.js`, `test/server-mode-startup.test.js`.
+- Une règle « deux modes » a un test dans chaque mode.
+- Toucher une variable `KARAOKE_*`, une option de `server.js`, `deploy/`, le `Dockerfile` ou `livrable.json` met à jour `DEPLOIEMENT-SERVEUR.md` (`test/documentation.test.js` le vérifie en partie).
+- Aucun nom d'hôte ni adresse réels dans le dépôt : `exemple.fr` et les adresses de documentation.
+- CI Windows et Linux vertes, job `image` compris, avant toute fusion.
+
 ## Health Stack
 
 - test: node test/run-offline.js
