@@ -147,6 +147,9 @@
   .client .qlist .queue-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
   .client .qlist .queue-actions .btn { min-height: 40px; padding: 6px 12px; font-size: 13px; white-space: nowrap; }
   .client .battle-pick { margin: 10px 0 0; position: sticky; top: 62px; z-index: 3; box-shadow: 0 8px 28px rgba(0,0,0,.25); }
+  .client .battle-join { margin-top: 12px; }
+  .client .battle-join .btn { display: flex; align-items: center; justify-content: center; text-decoration: none; color: #fff; }
+  .client .battle-join p { margin: 6px 0 0; text-align: center; }
   .client .lyrics-lines { max-height: 58dvh; overflow: auto; margin: 10px 0 0; padding: 4px 2px; font-size: 16px; line-height: 1.55; }
   .client .lyrics-lines p { margin: 0; }
   .client .lyrics-lines p.gap { height: .9em; }
@@ -264,6 +267,10 @@
       <span class="label" data-i18n>Ensuite</span>
       <span class="grow" id="nextTxt"></span>
       <span class="small muted" id="nextEta"></span>
+    </div>
+    <div id="battleJoin" class="battle-join" hidden>
+      <a id="battleJoinLink" class="btn primary wide" target="_blank" rel="noopener" data-i18n>Rejoindre la Battle</a>
+      <p class="tiny muted" data-i18n>À la fin de la Battle, appuie sur ← Retour pour revenir ici.</p>
     </div>
   </section>
 </div>
@@ -1601,6 +1608,7 @@
     renderPeople(individual ? owned : people.filter(person => manages(person.id)), queue);
     renderTune();
     renderBattle(individual ? owned : people);
+    renderBattleJoin();
     renderQueue(queue, waiting);
     renderClosing();
     renderBattlePick();
@@ -2351,6 +2359,26 @@
         : `<div class="battle-voter"><b>${esc(person.name)}</b><div class="battle-vote-actions"><button type="button" class="btn small primary" data-battle-vote="${esc(person.id)}" data-choice="yes">${esc(t('Oui'))}</button><button type="button" class="btn small" data-battle-vote="${esc(person.id)}" data-choice="no">${esc(t('Non'))}</button></div></div>`).join('')}${saved > 0 ? `<p class="tiny muted">${esc(tp(saved, '{n} vote déjà enregistré sur ce téléphone.', '{n} votes déjà enregistrés sur ce téléphone.'))}</p>` : ''}`
         : battle.phase === 'requested' ? choices : '';
   }
+
+  // « Rejoindre la Battle » : la télécommande KaraFun du bar s'ouvre dans un
+  // nouvel onglet, cette page reste ouverte dessous (← Retour y ramène). Le
+  // serveur n'envoie le lien que tant que la Battle est en tête de KaraFun ou
+  // sur scène. Page cachée pendant la Battle (`battleAway`) : à sa fin, une
+  // notification ramène ici (page encore cachée), puis « Te revoilà ! » au
+  // retour. Revenue avant la fin : rien à dire.
+  let battleJoinUrl = '';
+  let battleAway = false;
+  function renderBattleJoin() {
+    const url = String(state?.battle?.joinUrl || '');
+    if (url) $('battleJoinLink').setAttribute('href', url);
+    else if (battleJoinUrl) systemNotice(t('Battle terminée'), t('Touche ici pour revenir à ta page karaoké.'), 'battle-end');
+    $('battleJoin').hidden = !url;
+    battleJoinUrl = url;
+    if (document.hidden) { if (url) battleAway = true; return; }
+    if (battleAway && !url) toast(t('Te revoilà !'));
+    battleAway = false;
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden && battleJoinUrl) battleAway = true; });
 
   async function perform(button, work) {
     if (button) button.disabled = true;

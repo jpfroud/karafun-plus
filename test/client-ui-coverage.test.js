@@ -1776,6 +1776,69 @@ test('Battle : proposition à plusieurs, recherche sans résultat, retrait, limi
   assertInvalidLink(page);
 });
 
+// Demande du gérant du 26 octobre 2026 : rejoindre la Battle depuis la page,
+// puis revenir. Pas de « rescanne le QR de ta table » : l'onglet d'origine
+// reste ouvert et la notification y ramène.
+test('Battle : « Rejoindre la Battle » ouvre la télécommande KaraFun dans un nouvel onglet ; à la fin, notification puis « Te revoilà ! »', async () => {
+  const LINK = 'https://www.karafun.fr/123456';
+  const alerts = { secure: true, notification: { permission: 'granted' }, storage: { 'kfAlerts:1:secret': '1' } };
+  const hide = async (page, hidden) => { page.document.hidden = hidden; page.dispatch(page.document, 'visibilitychange'); await page.settle(); };
+  const page = await open(alerts);
+  assert.equal(page.node('battleJoin').hidden, true, 'pas de Battle en tête de KaraFun : pas de bouton');
+  page.state.battle = { ...page.state.battle, phase: 'cooldown', joinUrl: LINK };
+  await page.poll();
+  const link = page.node('battleJoinLink');
+  assert.equal(page.node('battleJoin').hidden, false);
+  assert.equal(link.tag, 'a');
+  assert.equal(link.textContent, 'Rejoindre la Battle');
+  assert.equal(link.getAttribute('href'), LINK);
+  assert.equal(link.getAttribute('target'), '_blank', 'nouvel onglet : la page d’origine reste ouverte');
+  assert.equal(link.getAttribute('rel'), 'noopener');
+  assert.match(page.node('battleJoin').textContent, /À la fin de la Battle, appuie sur ← Retour pour revenir ici\./);
+  assert.doesNotMatch(page.node('battleJoin').textContent, /rescanne/i);
+
+  // Le bouton touché, la page passe en arrière-plan ; la Battle se termine.
+  await hide(page, true);
+  page.state.battle = { ...page.state.battle, joinUrl: null };
+  await page.poll();
+  assert.equal(page.node('battleJoin').hidden, true, 'Battle finie : plus de bouton');
+  const [notice] = page.notifications;
+  assert.deepEqual([notice?.title, notice?.body, notice?.tag], ['Battle terminée', 'Touche ici pour revenir à ta page karaoké.', 'battle-end-1']);
+  notice.onclick();
+  assert.equal(page.focusWindow, 1, 'la notification ramène sur la page');
+  await page.poll();
+  assert.equal(page.notifications.length, 1, 'une seule notification');
+  await hide(page, false);
+  assert.deepEqual([page.toast().text, page.toast().hidden], ['Te revoilà\u00a0!', false], 'espace insécable du français');
+  await page.runTimers(4000);
+  await page.poll();
+  assert.equal(page.toast().hidden, true, 'message bref, une seule fois');
+
+  // Revenue pendant la Battle, page visible à sa fin : ni notification ni message.
+  const back = await open(alerts);
+  back.state.battle = { ...back.state.battle, phase: 'cooldown', joinUrl: LINK };
+  await back.poll();
+  await hide(back, true);
+  await hide(back, false);
+  back.state.battle = { ...back.state.battle, joinUrl: null };
+  await back.poll();
+  assert.equal(back.notifications.length, 0);
+  assert.doesNotMatch(back.toast().text, /revoilà/);
+
+  // Page déjà en arrière-plan quand la Battle arrive, sans notification
+  // autorisée : rien d'affiché à sa fin, « Te revoilà ! » au retour. En anglais.
+  const english = await open({ languages: ['en-US'], hidden: true });
+  english.state.battle = { ...english.state.battle, phase: 'cooldown', joinUrl: LINK };
+  await english.poll();
+  assert.equal(english.node('battleJoinLink').textContent, 'Join the Battle');
+  assert.match(english.node('battleJoin').textContent, /When the Battle is over, tap ← Back to come back here\./);
+  english.state.battle = { ...english.state.battle, joinUrl: null };
+  await english.poll();
+  assert.equal(english.notifications.length, 0, 'notifications non autorisées');
+  await hide(english, false);
+  assert.equal(english.toast().text, 'Welcome back!');
+});
+
 // ================================================================ catalogue en erreur
 test('catalogue : chaque lecture apporte le QR de table sans changer les URL', async () => {
   const page = await open();

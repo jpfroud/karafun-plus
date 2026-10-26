@@ -396,6 +396,12 @@ window.CLIENT_TRANSLATIONS = {
       'Toute la salle chante ensemble. Propose de 1 à 3 titres du catalogue ; chaque personne votera pour un titre ou « Pas de Battle ». Le bar organise ensuite la Battle dans KaraFun.':
         'The whole room sings together. Suggest 1 to 3 songs from the catalogue; everyone will vote for a song or “No Battle”. The bar then sets up the Battle in KaraFun.',
       'Qui propose la Battle ?': 'Who is suggesting the Battle?',
+      // Rejoindre la Battle (télécommande KaraFun dans un nouvel onglet) et retour
+      'Rejoindre la Battle': 'Join the Battle',
+      'À la fin de la Battle, appuie sur ← Retour pour revenir ici.': 'When the Battle is over, tap ← Back to come back here.',
+      'Battle terminée': 'Battle over',
+      'Touche ici pour revenir à ta page karaoké.': 'Tap here to get back to your karaoke page.',
+      'Te revoilà !': 'Welcome back!',
       'Chercher un titre ou un artiste': 'Search for a song or an artist',
       'Ex. Queen': 'e.g. Queen',
       'Titres proposés (3 maximum)': 'Suggested songs (3 max)',
