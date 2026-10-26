@@ -150,11 +150,11 @@ test('mode PC : le lien de la télécommande n’arrive aux téléphones que pen
   const kf = (queue, playing) => { f.setBridge(fakeBridge(queue, playing)); f.sync(); };
   kf([plainItem(40), battleItem(), plainItem(60, 701)], 40);
   assert.equal(f.battleVote.automation.status, 'queued', 'Battle suivie, reconnue dans KaraFun');
-  assert.equal(await joinUrl(), LINK, 'Battle en tête de KaraFun : lien');
-  assert.equal(await joinUrl(f.PUBLIC_PORT), LINK, 'même réponse sur le port des clients');
-  // Titre d'avant fini : la Battle attend le bar.
+  assert.equal(await joinUrl(), null, 'Battle en tête de KaraFun, titre d’avant sur scène : pas encore de lien');
+  // Titre d'avant fini : la Battle attend le bar, KaraFun montre son QR.
   kf([battleItem(), plainItem(60, 701)]);
-  assert.equal(await joinUrl(), LINK);
+  assert.equal(await joinUrl(), LINK, 'Battle en tête de KaraFun, scène libre : lien');
+  assert.equal(await joinUrl(f.PUBLIC_PORT), LINK, 'même réponse sur le port des clients');
   // Lancée : KaraFun la retire de sa file un instant avant d'annoncer sa lecture.
   kf([plainItem(60, 701)]);
   assert.equal(f.battleVote.automation.status, 'queued', 'la file patiente');

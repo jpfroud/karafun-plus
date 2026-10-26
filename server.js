@@ -2111,7 +2111,9 @@ function sentDuo(tr, p, current) {
 
 // Lien « Rejoindre la Battle » des téléphones : la télécommande KaraFun du
 // bar (le code saisi au bar), seulement tant qu'une Battle, suivie par
-// l'application ou ajoutée dans KaraFun, est en tête de KaraFun ou sur scène.
+// l'application ou ajoutée dans KaraFun, est en tête de KaraFun une fois la
+// scène libre (KaraFun montre alors son QR) ou sur scène : pas pendant le
+// titre d'avant, qui garde les clients sur la page jusqu'au QR.
 // Jamais avant (vote, envoi), ni après, ni en démo ou sans code. Au départ de
 // la Battle (`battleStarting`), et KaraFun déconnecté pendant qu'elle passe,
 // le suivi garde le lien, sans quoi un téléphone croirait la Battle finie.
@@ -2119,7 +2121,7 @@ function sentDuo(tr, p, current) {
 function battleJoinUrl() {
   if (DEMO || !CODE) return null;
   const { current, upcoming } = analyze();
-  return isBattleItem(current) || isBattleItem(upcoming[0]) || battleStarting() ? `https://www.karafun.fr/${CODE}` : null;
+  return isBattleItem(current) || (!current && isBattleItem(upcoming[0])) || battleStarting() ? `https://www.karafun.fr/${CODE}` : null;
 }
 
 // Vue Battle d'un téléphone (état et réponses des routes de la table) : sans
