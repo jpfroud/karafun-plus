@@ -355,9 +355,24 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   tmp.manualOrderActive = !!data.manualOrderActive && tmp.manualOrder.length > 0;
   tmp.manualChanges = clone(list(data.manualChanges ?? [], 'changements manuels'));
   unique(tmp.manualChanges.map(change => change?.id), 'Les changements manuels');
+  let forgotten = 0;
   for (const change of tmp.manualChanges) {
     object(change, 'changement manuel');
     const before = object(change.before, 'état précédent du changement manuel');
+    // Personne supprimée depuis le geste (table partie) encore nommée dans
+    // l'état d'avant : sauvegarde d'une version qui ne l'y effaçait pas
+    // (scheduler._forgetManual). Oubliée comme à la suppression, avec un
+    // avertissement, au lieu de refuser toute la soirée au démarrage.
+    const gone = pid => typeof pid === 'string' && !tmp.people.has(pid);
+    if (Array.isArray(before.manualOrder) && before.manualOrder.some(gone)) {
+      before.manualOrder = before.manualOrder.filter(pid => !gone(pid));
+      forgotten++;
+    }
+    if (before.reservedNext && gone(before.reservedNext.personId)) {
+      before.reservedNext = null;
+      forgotten++;
+    }
+    if (Array.isArray(before.deferrals)) before.deferrals = before.deferrals.filter(row => !Array.isArray(row) || !gone(row[0]));
     // Reports « Pas prêt » levés par un déplacement : abîmés, l'annulation
     // garde l'ordre sans les rendre.
     if ('deferrals' in before && !(Array.isArray(before.deferrals) && before.deferrals.every(row =>
@@ -382,6 +397,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
           !Number.isFinite(before.reservedNext.reservedAt)))) {
       fail('changement manuel mal formé');
     }
+  }
+  if (forgotten) {
+    warnings.push(`${forgotten} mention${forgotten > 1 ? 's' : ''} d’une personne supprimée oubliée${forgotten > 1 ? 's' : ''} ` +
+      'dans les changements manuels du bar');
   }
   tmp.tableServeCounts = new Map(list(data.tableServeCounts, 'compteurs des tables'));
   tmp.duetCooldowns = new Map(list(data.duetCooldowns, 'répit des duos'));

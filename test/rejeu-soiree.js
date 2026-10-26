@@ -44,6 +44,11 @@
  *   --option clé=valeur    remplace une règle de la soirée (répétable), par exemple
  *                          spacingSongs=2, roundAppearanceCap=0, interleaveArrivals=false,
  *                          pushDelaySec=30 (rejeu libre) : compare les réglages du bar.
+ *   --gestes               refait aussi les déplacements et « Priorité » du bar (staff.move)
+ *                          à leurs heures réelles, à la même place de la file rejouée
+ *                          (comme POST /api/staff/move), et leurs annulations (staff.undo,
+ *                          staff.recalculate) : pour juger un changement des gestes du bar.
+ *                          Sans elle, ces gestes ne sont pas rejoués (signalés).
  *   --court                résumé seulement (sans la liste des décisions ni des attentes)
  *   --cles                 clés S01… à la place des prénoms (texte et JSON) : sortie
  *                          à reporter dans le dépôt ou une PR
@@ -127,6 +132,10 @@ const NOT_REPLAYED = new Set(['staff.move', 'staff.undo', 'staff.recalculate', '
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced', 'presence.skipped',
   'turn.unsent', 'staff.queueCleared',
   'staff.absent']);
+// Gestes du bar sur l'ordre de la file : rejoués seulement avec --gestes.
+const STAFF_GESTURES = new Set(['staff.move', 'staff.undo', 'staff.recalculate']);
+// File KaraFun du rejeu : son empreinte ne change jamais (annulation des gestes).
+const REPLAY_NATIVE = '0'.repeat(64);
 // Gestes sur les titres et les duos : un geste réel que le rejeu n'a pas pu
 // faire (titre déjà chanté ou absent dans le rejeu) sort aussi du journal
 // rejoué, sinon evening-stats.js le compterait comme fait.
@@ -770,7 +779,8 @@ function makeContext(ev, opts) {
   // lue par l'ordonnanceur ; une version d'avant le duo ouvert l'ignore).
   s.duoOnlyRule = () => !!ctx.duoOnly;
   const ctx = { ev, s, rules, overrides, duoOnly: !!rules.duoOnly, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
-    notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || SOLVER_TIME_MS, moves: 0, solver: null, jar: null,
+    notes: [], ignored: {}, notReplayed: {}, gestures: opts.gestures ? {} : null,
+    decisions: [], budget: opts.budget || SOLVER_TIME_MS, moves: 0, solver: null, jar: null,
     solverDir: null, code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null, ceiling: 0, retried: 0 }, unapplied: new Set(), aliases: new Map(), added: new Map(),
     requestedAt: new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t])) };
   const jar = resolveJar(opts.solver, code);
@@ -979,6 +989,26 @@ function sentGesture(ctx, e, sel) {
   return none;
 }
 
+// Geste du bar (--gestes) : déplacement ou « Priorité » vers la même place
+// de la file rejouée qu'au bar (rang parmi les passages déplaçables, comme
+// POST /api/staff/move), noté comme par la route ; annulations comme les
+// routes du bar. L'ancienne version refuse ce que son code refusait.
+function replayGesture(ctx, e) {
+  const s = ctx.s;
+  if (e.ev === 'staff.undo') return s.undoLastManualChange(null, REPLAY_NATIVE);
+  if (e.ev === 'staff.recalculate') return s.undoAllManualChanges(REPLAY_NATIVE);
+  const pid = ctx.key2pid.get(e.personId);
+  const visible = s.presenceView().filter(v => !v.future);
+  const from = visible.findIndex(v => v.ids[0] === pid);
+  if (from < 0) throw new Error('titre déjà parti ou absent dans le rejeu');
+  const to = e.kind === 'priority' ? 0 : Math.min(Math.max(0, (Number(e.to) || 1) - 1), visible.length - 1);
+  if (to === from) throw new Error('titre déjà à cette place dans le rejeu');
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(pid, to);
+  s.recordManualChange({ kind: e.kind === 'priority' ? 'priority' : 'move', personId: pid,
+    name: s.people.get(pid)?.name || keyOf(ctx, pid), from: from + 1, to: to + 1, before, native: REPLAY_NATIVE });
+}
+
 function applyExternal(ctx, e, upcoming) {
   const s = ctx.s;
   const pid = k => ctx.key2pid.get(k);
@@ -990,6 +1020,11 @@ function applyExternal(ctx, e, upcoming) {
     note(ctx, notReplayedNote(e, why));
     return false;
   };
+  if (ctx.gestures && STAFF_GESTURES.has(e.ev)) {
+    try { replayGesture(ctx, e); } catch (err) { return skip(err.message); }
+    ctx.gestures[e.ev] = (ctx.gestures[e.ev] || 0) + 1;
+    return true;
+  }
   if (NOT_REPLAYED.has(e.ev)) {
     ctx.notReplayed[e.ev] = (ctx.notReplayed[e.ev] || 0) + 1;
     const cleared = '« Vider toutes les chansons » du bar non rejoué : les titres vidés restent à chanter dans le rejeu';
@@ -1810,7 +1845,7 @@ function finish(ctx, mode, passages, order, journal = null) {
     stageWaits: { real: stageWaitsOf(ev.events), replay: replayStageWaits },
     balance: { real: balanceOf(statsOf(ev.events)), replay: journal ? balanceOf(statsOf(journal)) : null },
     analysis: analyse(passages, groupOf(ev)), realAnalysis: analyse(real, groupOf(ev)), notes: ctx.notes, warnings,
-    ignored: ctx.ignored, notReplayed: ctx.notReplayed, unreadable: ev.skipped };
+    ignored: ctx.ignored, notReplayed: ctx.notReplayed, gestures: ctx.gestures, unreadable: ev.skipped };
 }
 
 // ------------------------------------------------------------------ bilan avant / après
@@ -1819,7 +1854,7 @@ function finish(ctx, mode, passages, order, journal = null) {
 // mesurée par la même définition (evening-stats.js de la version de travail).
 async function runCompare(evening, opts = {}) {
   const ev = asEvening(evening);
-  const side = s => ({ budget: opts.budget, moves: opts.moves, options: opts.options, ...(s || {}) });
+  const side = s => ({ budget: opts.budget, moves: opts.moves, options: opts.options, gestures: opts.gestures, ...(s || {}) });
   // Version « avant » chargée (et extraite) avant tout rejeu : une erreur de
   // version arrête tout de suite.
   const beforeOpts = side(opts.before);
@@ -2037,7 +2072,10 @@ function compareReport(cmp, { short = false } = {}) {
     .map(l => inBefore.has(l) && inAfter.has(l) ? l : `(${inBefore.has(l) ? 'avant' : 'après'}) ${l}`);
   const extra = Object.entries(after.notReplayed).map(([k, n]) => `${k}×${n}`);
   const unreadable = Object.entries(cmp.unreadable || {}).map(([k, n]) => `${k}×${n}`);
-  if (extra.length || unreadable.length || notes.length) out.push('');
+  const done = res => Object.entries(res.gestures || {}).map(([k, n]) => `${k}×${n}`).join(', ') || 'aucun';
+  const gestures = after.gestures ? `gestes du bar rejoués (--gestes) : avant ${done(before)} ; après ${done(after)}` : null;
+  if (extra.length || unreadable.length || notes.length || gestures) out.push('');
+  if (gestures) out.push(gestures);
   if (extra.length) out.push('gestes non rejoués : ' + extra.join(', '));
   if (unreadable.length) out.push('événements illisibles ou d’une autre version : ' + unreadable.join(', '));
   for (const l of notes) out.push('note : ' + l);
@@ -2115,6 +2153,7 @@ function report(res, { traces = [], short = false } = {}) {
   out.push(`  dettes de tour créées : ${a.debts.length ? '' : 'aucune'}`);
   for (const x of a.debts) out.push(`    ${T(x.start)} ${W(x.ids)} «${x.title}» : ${W(x.borrowedIds)}`);
   const extra = [];
+  if (res.gestures) extra.push('gestes du bar rejoués (--gestes) : ' + (Object.entries(res.gestures).map(([k, n]) => `${k}×${n}`).join(', ') || 'aucun'));
   if (Object.keys(res.notReplayed).length) extra.push('gestes non rejoués : ' + Object.entries(res.notReplayed).map(([k, n]) => `${k}×${n}`).join(', '));
   if (Object.keys(res.unreadable).length) extra.push('événements illisibles ou d’une autre version : ' + Object.entries(res.unreadable).map(([k, n]) => `${k}×${n}`).join(', '));
   if (extra.length || res.notes.length) out.push('');
@@ -2150,7 +2189,7 @@ function traceLines(res, d) {
 // ------------------------------------------------------------------ CLI
 function parseArgs(argv) {
   const o = { file: null, free: false, solver: false, budget: null, moves: null, traces: [], json: null, options: {}, short: false,
-    before: null, solverBefore: null, keys: false };
+    before: null, solverBefore: null, keys: false, gestures: false };
   const value = (k, name) => {
     if (argv[k] == null || argv[k].startsWith('--')) throw new Error(`${name} attend une valeur`);
     return argv[k];
@@ -2167,6 +2206,7 @@ function parseArgs(argv) {
     else if (a === '--json') o.json = value(++k, '--json');
     else if (a === '--court') o.short = true;
     else if (a === '--cles') o.keys = true;
+    else if (a === '--gestes') o.gestures = true;
     else if (a === '--option') {
       const [key, ...rest] = String(argv[++k] || '').split('=');
       const raw = rest.join('=');
@@ -2206,14 +2246,15 @@ async function main(argv = process.argv.slice(2), print = console.log, printErro
     if (o.keys) for (const p of ev.people.values()) p.name = p.key;
     let res, text;
     if (o.before) {
-      res = await runCompare(ev, { budget: o.budget, moves: o.moves, options: o.options,
+      res = await runCompare(ev, { budget: o.budget, moves: o.moves, options: o.options, gestures: o.gestures,
         // Timefold des deux côtés : le jar de chaque version (un jar donné pour
         // la version de travail ne vaut pas pour l'autre).
         before: { code: o.before, solver: o.solverBefore === 'sans' ? false : o.solverBefore || !!o.solver },
         after: { solver: o.solver } });
       text = compareReport(res, { short: o.short });
     } else {
-      res = await (o.free ? runFree : runForced)(ev, { solver: o.solver, budget: o.budget, moves: o.moves, options: o.options });
+      res = await (o.free ? runFree : runForced)(ev, { solver: o.solver, budget: o.budget, moves: o.moves, options: o.options,
+        gestures: o.gestures });
       text = report(res, { traces: o.traces, short: o.short });
     }
     print(text);

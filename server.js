@@ -4866,9 +4866,16 @@ const handlers = {
   },
   'POST /api/staff/manual-change-undo': async (req, res, body) => {
     if (!body.id) throw new Error('Indique le changement manuel à annuler.');
-    sched.undoLastManualChange(String(body.id), priorityNativeFingerprint(), { excludeIds: sendingIds() });
+    // Sans autre changement depuis le geste, l'ordre d'avant revient ; sinon
+    // seule sa ligne retrouve le calcul, ou la place d'un geste plus ancien.
+    const native = priorityNativeFingerprint();
+    const exact = sched.canUndoManualChange(native);
+    const change = sched.undoLastManualChange(String(body.id), native, { excludeIds: sendingIds() });
+    const older = sched.manualChanges.some(other => other.personId === change.personId);
     sync();
-    return { ok: true };
+    return { ok: true, exact, message: exact ? 'Dernier changement annulé ; ordre précédent retrouvé' : older ?
+      `Dernier changement annulé : ${change.name} retrouve la place de son changement précédent` :
+      `Dernier changement annulé : la file a changé depuis, ${change.name} retrouve sa place calculée` };
   },
   'POST /api/staff/priority-undo': async () => {
     if (sched.manualChanges.at(-1)?.kind !== 'priority') {

@@ -76,6 +76,17 @@ const planned = state => state.queue.filter(row => row.source === 'helper' && !r
     const before = planned(state);
     assert.equal(before.length, 6);
     const elsa = before[5];
+    const elsaName = state.queue.find(row => row.id === elsa && !row.future).name;
+
+    // Annulé tout de suite, sans autre changement : l'ordre d'avant revient,
+    // et le message le dit.
+    await ok('/api/staff/move', { personId: elsa, toIndex: 2 });
+    state = await ok('/api/staff/state');
+    const exact = await ok('/api/staff/manual-change-undo', { id: state.manualChanges[0].id });
+    assert.equal(exact.exact, true);
+    assert.equal(exact.message, 'Dernier changement annulé ; ordre précédent retrouvé');
+    assert.deepEqual(planned(await ok('/api/staff/state')), before);
+    console.log('ok - annulation sans autre changement : ordre d’avant, message exact');
 
     // Déplacé de la 6e à la 3e place, comme Elsa de 7 à 4 le 23 octobre.
     await ok('/api/staff/move', { personId: elsa, toIndex: 2 });
@@ -106,7 +117,10 @@ const planned = state => state.queue.filter(row => row.source === 'helper' && !r
     assert.ok(native.length > nativeBefore, 'la file native simulée devait accepter un titre externe');
     state = await ok('/api/staff/state');
     assert.equal(state.manualChanges[0].canUndo, true, 'un changement dans KaraFun n’empêche plus l’annulation');
-    await ok('/api/staff/manual-change-undo', { id: state.manualChanges[0].id });
+    const undone = await ok('/api/staff/manual-change-undo', { id: state.manualChanges[0].id });
+    assert.equal(undone.exact, false);
+    assert.equal(undone.message, `Dernier changement annulé : la file a changé depuis, ${elsaName} retrouve sa place calculée`,
+      'le message ne promet plus l’ordre d’avant');
     state = await ok('/api/staff/state');
     assert.deepEqual(state.manualChanges, []);
     assert.ok(planned(state).indexOf(elsa) > 2, 'annulée, la ligne retrouve sa place calculée');

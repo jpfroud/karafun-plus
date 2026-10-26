@@ -2346,6 +2346,39 @@ test('rejeu libre : demande pour rejoindre, fermeture retirée, « Je suis là �
   assert.equal(res2.warnings.filter(w => /« Je suis là » obligatoire non rejoué/.test(w)).length, 1);
 });
 
+// Bilan d'un changement des gestes du bar (relecture de la correction du 26
+// octobre) : sans --gestes, un déplacement n'est pas rejoué et le bilan ne
+// peut rien en dire.
+test('rejeu libre --gestes : un déplacement du bar refait à son heure, à la même place ; sans l’option, signalé', async () => {
+  const plain = await rejeu.runFree(ev);
+  // Le titre qui a le plus attendu dans le rejeu : le bar l'avance en 2e
+  // place 10 minutes après qu'il est prêt.
+  const target = plain.passages.slice().sort((a, b) => b.waitSec - a.waitSec)[0];
+  const t = target.readyAt + 10 * 60000;
+  const raw = structuredClone(ev.raw);
+  adder(raw.events)(t, 'staff.move', { personId: target.owner, kind: 'move', from: 9, to: 2 });
+  const without = await rejeu.runFree(rejeu.loadEvening(raw));
+  assert.equal(without.notReplayed['staff.move'], 1);
+  assert.equal(without.gestures, null);
+  const moved = await rejeu.runFree(rejeu.loadEvening(raw), { gestures: true });
+  assert.equal(moved.notReplayed['staff.move'], undefined);
+  assert.deepEqual(moved.gestures, { 'staff.move': 1 });
+  const sentAfter = moved.passages.filter(p => p.sentAt > t).sort((a, b) => a.sentAt - b.sentAt);
+  assert.equal(sentAfter[1]?.entryId, target.entryId, 'deuxième titre envoyé après le geste');
+  assert.ok(moved.passages.find(p => p.entryId === target.entryId).waitSec < target.waitSec - 600);
+  assert.match(rejeu.report(moved, { short: true }), /gestes du bar rejoués \(--gestes\) : staff\.move×1/);
+  // Un geste que le rejeu ne peut pas refaire (personne pas encore inscrite,
+  // pas de titre dans la file rejouée) : noté.
+  const late = structuredClone(ev.raw);
+  const joined = late.events.find(e => e.ev === 'person.joined' && e.personId === target.owner).t;
+  adder(late.events)(joined - 1000, 'staff.move', { personId: target.owner, kind: 'priority', from: 3, to: 1 });
+  const gone = await rejeu.runFree(rejeu.loadEvening(late), { gestures: true });
+  assert.deepEqual(gone.gestures, {});
+  assert.ok(gone.notes.some(n => / staff\.move non rejoué : titre déjà parti ou absent dans le rejeu S\d+$/.test(n)),
+    gone.notes.join(' | '));
+  assert.deepEqual(rejeu.parseArgs(['x.json', '--gestes']).gestures, true);
+});
+
 test('rejeu libre : demande acceptée d’une autre table, demande annulée, place cédée', async () => {
   const raw = structuredClone(ev.raw);
   const events = raw.events;

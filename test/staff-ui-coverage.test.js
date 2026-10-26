@@ -1270,26 +1270,34 @@ test('changements manuels : annuler le dernier ou tous', async () => {
   assert.match(page.$('manualHistoryList').textContent, /Annule d’abord le changement plus récent/);
   await page.click(page.in('manualHistoryList', '[data-manual-undo="second"]'));
   assert.deepEqual(page.lastPost('/api/staff/manual-change-undo').body, { id: 'second' });
-  assert.equal(page.toast().text, 'Dernier changement annulé ; ordre précédent retrouvé');
+  assert.equal(page.toast().text, 'Dernier changement annulé', 'sans message du serveur');
+  // Le serveur dit ce que l'annulation a rendu : l'ordre d'avant, ou le
+  // calcul pour cette ligne quand la file a changé depuis le geste.
+  const rebased = 'Dernier changement annulé : la file a changé depuis, Marine retrouve sa place calculée';
+  page.replies['/api/staff/manual-change-undo'] = { ok: true, exact: false, message: rebased };
+  await page.click(page.in('manualHistoryList', '[data-manual-undo="second"]'));
+  assert.equal(page.toast().text, rebased);
   page.confirmAnswer = false;
   await page.click(page.$('recalculateQueue'));
-  assert.equal(page.confirms.at(-1), 'Annuler les 2 changements manuels et retrouver l’ordre d’avant ces interventions ?');
+  assert.equal(page.confirms.at(-1), 'Annuler les 2 changements manuels ? Leurs lignes retrouvent le calcul ; les titres déjà dans KaraFun ne bougent pas.');
   assert.equal(recalcs(), 0);
   page.confirmAnswer = true;
   await page.click(page.$('recalculateQueue'));
   assert.deepEqual(page.lastPost('/api/staff/queue-recalculate').body, {});
   assert.equal(page.toast().text, 'Tous les changements manuels ont été annulés');
-  await page.update({ manualChanges: [{ id: 'seul', kind: 'move', name: 'JP', from: 5, to: 2, at: Date.now(), canUndo: false }] });
-  assert.match(page.$('manualHistoryList').textContent, /La file a changé depuis : annulation indisponible/);
-  assert.equal(page.$('recalculateQueue').disabled, true, 'historique dépassé : annulation globale impossible');
-  const asked = page.confirms.length;
-  await page.click(page.$('recalculateQueue'));
-  assert.equal(page.confirms.length, asked);
+  // Le geste le plus récent s'annule toujours (retours du 23 octobre) :
+  // plus de « La file a changé depuis : annulation indisponible ».
   await page.update({ manualChanges: [{ id: 'seul', kind: 'move', name: 'JP', from: 5, to: 2, at: Date.now(), canUndo: true }] });
+  assert.ok(page.in('manualHistoryList', '[data-manual-undo="seul"]'));
+  assert.doesNotMatch(page.$('manualHistoryList').textContent, /indisponible/);
+  assert.equal(page.$('recalculateQueue').disabled, false);
   page.confirmAnswer = false;
   await page.click(page.$('recalculateQueue'));
-  assert.match(page.confirms.at(-1), /1 changement manuel et retrouver l’ordre/, 'singulier pour un seul changement');
+  assert.equal(page.confirms.at(-1), 'Annuler le changement manuel ? Sa ligne retrouve le calcul ; les titres déjà dans KaraFun ne bougent pas.',
+    'singulier pour un seul changement');
   assert.equal(recalcs(), 1);
+  await page.update({ manualChanges: [] });
+  assert.equal(page.$('recalculateQueue').disabled, true, 'rien à annuler');
 });
 
 test('tables : tuiles, QR en grand, création, détails enregistrés seuls, bonus et départ', async () => {
@@ -1558,14 +1566,16 @@ test('optimisation de la file : état affiché et recalcul', async () => {
   await page.update({ manualChanges: [
     { id: 'b', kind: 'priority', name: 'Marine', from: 4, to: 1, at: Date.now(), canUndo: true },
     { id: 'a', kind: 'move', name: 'Ali', from: 7, to: 4, at: Date.now(), canUndo: false }] });
-  assert.equal(page.$('optimizeQueue').textContent, 'Annuler mes 2 déplacements et recalculer');
+  // « changements » : une priorité et chaque redéplacement comptent, comme
+  // dans « Changements manuels de la file ».
+  assert.equal(page.$('optimizeQueue').textContent, 'Annuler mes 2 changements et recalculer');
   assert.match(page.$('optimizeQueue').title, /^Annule les déplacements et priorités donnés par le bar/);
   page.confirmAnswer = false;
   await page.click(page.$('optimizeQueue'));
   assert.equal(page.confirms.at(-1), 'Recalculer toute la file ? Tes 2 changements manuels seront annulés (priorité de Marine, déplacement d’Ali) : ces lignes retrouvent le calcul. Les titres déjà dans KaraFun ne bougent pas.');
   assert.equal(page.postsTo('/api/staff/queue-optimize').length, 1);
   await page.update({ manualChanges: [{ id: 'a', kind: 'move', name: 'Ali', from: 7, to: 4, at: Date.now(), canUndo: true }] });
-  assert.equal(page.$('optimizeQueue').textContent, 'Annuler mon déplacement et recalculer');
+  assert.equal(page.$('optimizeQueue').textContent, 'Annuler mon changement et recalculer');
   await page.click(page.$('optimizeQueue'));
   assert.equal(page.confirms.at(-1), 'Recalculer toute la file ? Ton changement manuel sera annulé (déplacement d’Ali) : cette ligne retrouve le calcul. Les titres déjà dans KaraFun ne bougent pas.');
   page.confirmAnswer = true;

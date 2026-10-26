@@ -1094,7 +1094,7 @@
     // avec leur nombre (un gérant le touchait pour rafraîchir la file).
     const gestures = (S.manualChanges || []).length;
     $('optimizeQueue').textContent = !gestures ? 'Recalculer la file' : gestures === 1 ?
-      'Annuler mon déplacement et recalculer' : `Annuler mes ${gestures} déplacements et recalculer`;
+      'Annuler mon changement et recalculer' : `Annuler mes ${gestures} changements et recalculer`;
     $('optimizeQueue').title = gestures ?
       'Annule les déplacements et priorités donnés par le bar, puis recalcule tout l’ordre avec les règles de la soirée ; les titres déjà dans KaraFun ne bougent pas' :
       'Recalcule tout l’ordre avec les règles de la soirée ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas';
@@ -1932,14 +1932,17 @@
     const manualChanges = S.manualChanges || [];
     $('manualHistory').hidden = manualChanges.length === 0;
     $('manualCount').textContent = manualChanges.length;
-    $('manualHistoryList').innerHTML = manualChanges.map((change, index) => {
+    $('manualHistoryList').innerHTML = manualChanges.map(change => {
       const action = change.kind === 'priority' ? 'Priorité' : 'Déplacement';
       const time = new Date(change.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-      return `<div class="manual-history-item"><span><b>${esc(action)} : ${esc(change.name)}</b> · ${esc(time)} · place ${esc(change.from)} → ${esc(change.to)}</span>${change.canUndo ? `<button class="btn small" data-manual-undo="${esc(change.id)}">Annuler ce changement</button>` : `<span class="small muted">${index ? 'Annule d’abord le changement plus récent' : 'La file a changé depuis : annulation indisponible'}</span>`}</div>`;
+      return `<div class="manual-history-item"><span><b>${esc(action)} : ${esc(change.name)}</b> · ${esc(time)} · place ${esc(change.from)} → ${esc(change.to)}</span>${change.canUndo ? `<button class="btn small" data-manual-undo="${esc(change.id)}">Annuler ce changement</button>` : '<span class="small muted">Annule d’abord le changement plus récent</span>'}</div>`;
     }).join('');
-    $('recalculateQueue').disabled = !manualChanges[0]?.canUndo;
+    // Le geste le plus récent s'annule toujours, même après un changement de
+    // la file : le serveur dit si l'ordre d'avant revient ou si la ligne
+    // retrouve le calcul.
+    $('recalculateQueue').disabled = !manualChanges.length;
     $('manualHistoryList').querySelectorAll('[data-manual-undo]').forEach(button => button.onclick = () =>
-      act('/api/staff/manual-change-undo', { id: button.dataset.manualUndo }, 'Dernier changement annulé ; ordre précédent retrouvé'));
+      act('/api/staff/manual-change-undo', { id: button.dataset.manualUndo }, 'Dernier changement annulé'));
     let plannedIndex = 0;
     const lineKey = q => q.source === 'helper' && q.id ? `p:${q.id}|${q.song?.entryId || ''}` :
       q.source === 'karafun' && q.ours && q.queueId ? `k:${q.queueId}` : null;
@@ -2234,7 +2237,7 @@
   };
   $('recalculateQueue').onclick = () => {
     const count = S?.manualChanges?.length || 0;
-    if (!count || !confirm(`Annuler les ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} et retrouver l’ordre d’avant ces interventions ?`)) return;
+    if (!count || !confirm(`Annuler ${count > 1 ? `les ${count} changements manuels` : 'le changement manuel'} ? ${count > 1 ? 'Leurs lignes retrouvent' : 'Sa ligne retrouve'} le calcul ; les titres déjà dans KaraFun ne bougent pas.`)) return;
     act('/api/staff/queue-recalculate', {}, 'Tous les changements manuels ont été annulés');
   };
   $('playBtn').onclick = () => act('/api/staff/kf', { action: 'play' });

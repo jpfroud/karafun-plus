@@ -291,6 +291,81 @@ class Scheduler {
     return true;
   }
 
+  // Personne supprimée (table partie) : les gestes qui restent l'oublient
+  // aussi dans leur état d'avant (ordre fixé, prochain annoncé, reports).
+  // Sinon la sauvegarde de la soirée ne se reprenait plus (« changement
+  // manuel mal formé », relecture de la correction du 26 octobre).
+  _forgetManual(pid) {
+    for (const change of this.manualChanges) {
+      const before = change.before;
+      if (!before || typeof before !== 'object') continue;
+      if (Array.isArray(before.manualOrder)) before.manualOrder = before.manualOrder.filter(other => other !== pid);
+      if (before.reservedNext?.personId === pid) before.reservedNext = null;
+      if (!Array.isArray(before.deferrals)) continue;
+      before.deferrals = before.deferrals.filter(row => row?.[0] !== pid).map(([owner, deferral]) => {
+        const ids = Array.isArray(deferral?.ids) ? deferral.ids.filter(other => other !== pid) : [owner];
+        return [owner, { ...deferral, ids: ids.length ? ids : [owner] }];
+      });
+    }
+  }
+
+  // `pid` chante sur la ligne fixée de `line` : c'est sa propre ligne, ou
+  // l'invitée acceptée du titre en cours de cette ligne.
+  _singsOnLine(line, pid) {
+    const duet = this.people.get(line)?.song?.duet;
+    return line === pid || (duet?.state === 'accepted' && duet.partnerId === pid);
+  }
+
+  // Personnes montées sur scène hors de leur propre ligne (invitée d'un duo
+  // parti vers KaraFun, duo improvisé noté au bar) : les lignes de l'ordre
+  // fixé où elles chantent encore retrouvent le calcul (espacement, premiers
+  // passages des autres), sauf celles que le bar a placées lui-même. Sinon
+  // une personne gardée devant un geste rechantait deux chansons plus tard.
+  _unpinSingers(ids) {
+    if (!this.manualOrder.length || !ids.length) return;
+    const anchors = this._manualAnchors();
+    for (const line of [...this.manualOrder]) {
+      if (!anchors.has(line) && ids.some(pid => this._singsOnLine(line, pid))) this._unpinManual(line);
+    }
+  }
+
+  // Le titre en cours d'une ligne fixée devient un duo (invitation ou demande
+  // acceptée, titre suivant de sa liste). Sur une ligne que le bar n'a pas
+  // placée, un duo que les règles de la file ne laisseraient pas passer à
+  // cette place (invitée déjà entendue alors que l'auteur passait pour la
+  // première fois, déjà montée dans ce tour, trop récemment sur scène, ou qui
+  // chante plus tôt dans l'ordre fixé) repasse par le calcul, comme un
+  // prochain annoncé (answerDuet). Sinon le duo garde la place, et la propre
+  // ligne de l'invitée (ou un autre duo plus loin avec elle) retrouve le
+  // calcul : elle monte sur scène avec ce duo. Une ligne placée par le bar
+  // garde toujours sa place, même quand elle chante aussi en duo ailleurs (à
+  // faire valider par le gérant, CONTEXTE-REPRISE.md).
+  _guestJoined(owner) {
+    const duet = owner?.song?.duet;
+    const at = this.manualOrder.indexOf(owner?.id);
+    const guest = duet?.state === 'accepted' ? this.people.get(duet.partnerId) : null;
+    if (!guest || at < 0) return;
+    const anchors = this._manualAnchors(), reserved = this.reservedNext?.personId;
+    // Sa propre ligne plus tôt ne compte que si elle reste : placée par le
+    // bar, ou prochain annoncé.
+    const stays = line => line !== guest.id || anchors.has(line) || line === reserved;
+    const heard = p => (p.sung || 0) + (p.duetGuestCount || 0) > 0;
+    // `at` passages partent avant cette ligne : espacement compté comme _pick.
+    const last = guest.lastAppearanceTurn || 0;
+    const early = (heard(guest) && !heard(owner)) ||
+      (this.roundPeople.has(guest.id) && !this.roundPeople.has(owner.id)) ||
+      (last > 0 && last > this.appearanceSerial + at - this._spacing()) ||
+      this.manualOrder.slice(0, at).some(line => this._singsOnLine(line, guest.id) && stays(line));
+    if (!anchors.has(owner.id) && early) {
+      this._unpinManual(owner.id);
+      return;
+    }
+    [...this.manualOrder].forEach((line, index) => {
+      if (line === owner.id || anchors.has(line) || !this._singsOnLine(line, guest.id)) return;
+      if (line === guest.id ? line !== reserved : index > at) this._unpinManual(line);
+    });
+  }
+
   // `deferrals` : pour une intervention du bar, les reports « Pas prêt »
   // qu'un déplacement lève et qu'une annulation doit rendre.
   manualOverrideState({ deferrals = false } = {}) {
@@ -444,17 +519,22 @@ class Scheduler {
     const before = change.before || {};
     const pinned = new Set(this.manualOrder);
     // Ligne encore en attente : toujours fixée, ou encore là avec un titre,
-    // sans passage parti vers KaraFun depuis le geste (son envoi date
-    // `lastSungAt` et compte un passage après `serial`).
-    const sentSince = p => (p.lastSungAt || 0) >= change.at &&
-      (!Number.isSafeInteger(change.serial) || (p.lastAppearanceTurn || 0) > change.serial);
+    // sans être montée sur scène depuis le geste (son titre parti, ou en
+    // invitée d'un duo : un passage compté après `serial` ; sans ce décompte,
+    // ancienne sauvegarde, son envoi daté `lastSungAt`).
+    const sentSince = p => Number.isSafeInteger(change.serial) ?
+      (p.lastAppearanceTurn || 0) > change.serial : (p.lastSungAt || 0) >= change.at;
     const waiting = pid => {
       if (pinned.has(pid)) return true;
       const p = this.people.get(pid);
       return !!p && !p.withdrawnAt && !!p.song && !excludeIds.includes(pid) && !sentSince(p);
     };
     this.manualChanges = this.manualChanges.filter(other => other !== change);
-    this.manualOrder = (Array.isArray(before.manualOrder) ? before.manualOrder : []).filter(waiting);
+    const order = (Array.isArray(before.manualOrder) ? before.manualOrder : []).filter(waiting);
+    // Invitée d'un duo d'une autre ligne fixée : sa propre ligne, sortie de
+    // l'ordre fixé pour ce duo (_guestJoined), n'y revient pas.
+    this.manualOrder = order.filter(pid => pinned.has(pid) ||
+      !order.some(line => line !== pid && this._singsOnLine(line, pid)));
     this.manualOrderActive = this.manualOrder.length > 0;
     this._trimManualOrder();
     if (change.to === 1 && this.reservedNext?.personId === change.personId) this.reservedNext = null;
@@ -730,6 +810,7 @@ class Scheduler {
     this.roundOwed.delete(p.id);
     this.duetCooldowns.delete(p.id);
     this._unpinManual(p.id);
+    this._forgetManual(p.id);
     if (![...this.people.values()].some(q => q.group === p.group)) this.roundGroups.delete(p.group);
     this.version++;
   }
@@ -791,6 +872,7 @@ class Scheduler {
   // `by` : « self », ou « presence-max » (« Je suis là » manqué trop souvent).
   removeSong(p, entryId, by = 'self') {
     const key = String(entryId || '');
+    const current = p.song;
     if (p.song && p.song.entryId === key) {
       this._songsGone(p, [p.song]);
       p.song = (p.backlog || []).shift() || null;
@@ -807,8 +889,10 @@ class Scheduler {
       this._songsGone(p, p.backlog.splice(i, 1));
     }
     // Liste vidée, ou titre retiré faute de « Je suis là » : la place donnée
-    // par le bar tombe. Sinon le titre suivant de la liste la garde.
+    // par le bar tombe. Sinon le titre suivant de la liste la garde (un duo :
+    // voir _guestJoined).
     if (!p.song || by === 'presence-max') this._unpinManual(p.id);
+    else if (p.song !== current) this._guestJoined(p);
     this._refreshDuetViews();
     if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
     this._event('song.removed', { personId: p.id, entryId: key, by });
@@ -830,8 +914,11 @@ class Scheduler {
     if (from === to) return;
     const [moved] = songs.splice(from, 1);
     songs.splice(to, 0, moved);
+    const current = p.song;
     p.song = songs.shift() || null;
     p.backlog = songs;
+    // Un duo devenu le titre en cours d'une ligne fixée : voir _guestJoined.
+    if (p.song !== current) this._guestJoined(p);
     this._refreshDuetViews();
     this._event('song.reordered', { personId: p.id, entryId: moved.entryId, fromIndex: from, toIndex: to });
     this.note(`${p.name} a réordonné sa liste de chansons`);
