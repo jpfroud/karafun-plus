@@ -440,6 +440,7 @@ window.CLIENT_TRANSLATIONS = {
       'Le catalogue est momentanément indisponible. Réessaie dans un instant.': 'The catalogue is temporarily unavailable. Try again in a moment.',
       'Catalogue indisponible.': 'Catalogue unavailable.',
       'Réessayer': 'Try again',
+      'Réessayer dans {n} s': 'Try again in {n} s',
       '← Sélections': '← Selections',
       'Aucune chanson trouvée.': 'No songs found.',
       'Voir plus': 'Show more',
@@ -637,6 +638,8 @@ window.CLIENT_TRANSLATIONS = {
 
     // Messages renvoyés par le serveur aux téléphones des chanteurs.
     errors: {
+      'Scanne le QR code de ta table pour consulter le catalogue.': 'Scan your table’s QR code to browse the catalogue.',
+      'Beaucoup de recherches en ce moment. Réessaie dans quelques secondes.': 'Many people are searching right now. Try again in a few seconds.',
       'Ce soir, le bar ne prend que des duos : choisis un titre puis « Chanter en duo ».': 'Tonight the bar only takes duets: pick a song, then “Sing a duet”.',
       'Ce soir, le bar ne prend que des duos : garde ton duo ou retire ce titre.': 'Tonight the bar only takes duets: keep your duet or remove this song.',
       'Ce soir, le bar ne prend que des duos : l’auteur du titre peut le retirer.': 'Tonight the bar only takes duets: the person who chose this song can remove it.',

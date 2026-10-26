@@ -2613,6 +2613,124 @@ function tableByAccess(id, secret) {
   return t;
 }
 
+// Le code KaraFun reste sur le serveur. Seules les pages venues d'un QR de
+// table peuvent demander une recherche ou un catalogue ; le bar utilise sa
+// clé. Sur le PC, la boucle locale du port du bar garde son accès historique.
+function catalogReader(req, u) {
+  if (isStaff(req, u)) return { kind: 'staff' };
+  if (isLocal(req)) return { kind: 'pc-local' };
+  const id = req.headers['x-table-id'], secret = req.headers['x-table-access'];
+  if (typeof id !== 'string' || !id || typeof secret !== 'string' || !secret) {
+    const e = new Error('Scanne le QR code de ta table pour consulter le catalogue.');
+    e.code = 'TABLE_ACCESS';
+    throw e;
+  }
+  const table = tableByAccess(id, secret);
+  if (!table.individual) return { kind: 'table', id: table.id };
+  const owner = soloDeviceOwner(req);
+  if (owner?.tableId === table.id && !owner.withdrawnAt && currentSoloDevice(req, owner)) {
+    return { kind: 'solo', id: owner.soloKeyHash || owner.id };
+  }
+  const invitation = req.headers['x-solo-invitation'];
+  requireSoloInvitation(table, invitation);
+  return { kind: 'solo', id: SoloInvitations.digest(invitation) };
+}
+
+// Un QR divulgué ne peut pas envoyer des recherches sans fin vers KaraFun.
+// Le budget est par table (ou par téléphone solo), avec un plafond commun :
+// 60 téléphones peuvent lancer chacun quelques recherches dans la même minute,
+// y compris derrière une unique adresse IP de Wi-Fi. Les sélections identiques
+// sont partagées brièvement entre téléphones après vérification du QR.
+const CATALOG_READ_WINDOW_MS = 60 * 1000;
+const CATALOG_GLOBAL_PER_MINUTE = 180;
+const CATALOG_TABLE_PER_MINUTE = 90;
+const CATALOG_SOLO_PER_MINUTE = 30;
+const CATALOG_MAX_ACTIVE = 6;
+const CATALOG_MAX_QUEUED = 60;
+const catalogGlobalBudget = { tokens: CATALOG_GLOBAL_PER_MINUTE, at: Date.now() };
+const catalogActorBudgets = new Map();
+const catalogReadCache = new Map();
+const catalogQueue = [];
+let catalogActive = 0;
+function catalogBusyError(retryAfter = 1) {
+  const e = new Error('Beaucoup de recherches en ce moment. Réessaie dans quelques secondes.');
+  e.code = 'CATALOG_BUSY';
+  e.retryAfter = retryAfter;
+  return e;
+}
+function refillCatalogBudget(budget, maximum, now) {
+  budget.tokens = Math.min(maximum, budget.tokens + Math.max(0, now - budget.at) * maximum / CATALOG_READ_WINDOW_MS);
+  budget.at = now;
+}
+function reserveCatalogRead(reader) {
+  if (reader.kind === 'staff' || reader.kind === 'pc-local') return;
+  const now = Date.now();
+  const key = `${reader.kind}:${reader.id}`;
+  const maximum = reader.kind === 'solo' ? CATALOG_SOLO_PER_MINUTE : CATALOG_TABLE_PER_MINUTE;
+  if (!catalogActorBudgets.has(key)) catalogActorBudgets.set(key, { tokens: maximum, at: now });
+  const actor = catalogActorBudgets.get(key);
+  refillCatalogBudget(catalogGlobalBudget, CATALOG_GLOBAL_PER_MINUTE, now);
+  refillCatalogBudget(actor, maximum, now);
+  if (catalogGlobalBudget.tokens < 1 || actor.tokens < 1) {
+    throw catalogBusyError(Math.max(1, Math.ceil(Math.max(
+      (1 - catalogGlobalBudget.tokens) * CATALOG_READ_WINDOW_MS / CATALOG_GLOBAL_PER_MINUTE,
+      (1 - actor.tokens) * CATALOG_READ_WINDOW_MS / maximum) / 1000)));
+  }
+  catalogGlobalBudget.tokens -= 1;
+  actor.tokens -= 1;
+  if (catalogActorBudgets.size > 512) {
+    for (const [id, value] of catalogActorBudgets) if (now - value.at > CATALOG_READ_WINDOW_MS) catalogActorBudgets.delete(id);
+  }
+}
+function runCatalogWork(load) {
+  if (catalogActive >= CATALOG_MAX_ACTIVE && catalogQueue.length >= CATALOG_MAX_QUEUED) {
+    throw catalogBusyError(5);
+  }
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      catalogActive++;
+      Promise.resolve().then(load).then(resolve, reject).finally(() => {
+        catalogActive--;
+        const next = catalogQueue.shift();
+        if (next) { clearTimeout(next.timer); next.run(); }
+      });
+    };
+    if (catalogActive < CATALOG_MAX_ACTIVE) run();
+    else {
+      const ticket = { run, timer: null };
+      ticket.timer = setTimeout(() => {
+        const at = catalogQueue.indexOf(ticket);
+        if (at >= 0) { catalogQueue.splice(at, 1); reject(catalogBusyError(5)); }
+      }, 15000);
+      catalogQueue.push(ticket);
+    }
+  });
+}
+async function readCatalog(reader, key, ttlMs, load) {
+  // Le bar garde toujours sa recherche même si les clients remplissent la file.
+  if (reader.kind === 'staff' || reader.kind === 'pc-local') return load();
+  const now = Date.now();
+  const cacheKey = `${CODE}|${key}`;
+  const cached = catalogReadCache.get(cacheKey);
+  if (cached && now < cached.until) return cached.promise;
+  if (catalogActive >= CATALOG_MAX_ACTIVE && catalogQueue.length >= CATALOG_MAX_QUEUED) throw catalogBusyError(5);
+  reserveCatalogRead(reader);
+  const item = { until: Infinity, promise: null };
+  item.promise = runCatalogWork(load).then(value => { item.until = Date.now() + ttlMs; return value; });
+  catalogReadCache.delete(cacheKey);
+  catalogReadCache.set(cacheKey, item);
+  item.promise.catch(() => { if (catalogReadCache.get(cacheKey) === item) catalogReadCache.delete(cacheKey); });
+  if (catalogReadCache.size > 512) catalogReadCache.delete(catalogReadCache.keys().next().value);
+  return item.promise;
+}
+
+function catalogBusy(res, error) {
+  if (error.code !== 'CATALOG_BUSY') return false;
+  send(res, 429, { error: error.message, code: error.code }, undefined,
+    { 'Retry-After': String(error.retryAfter) });
+  return true;
+}
+
 function soloCookieHash(req) {
   const raw = String(req.headers.cookie || '').split(';').map(part => part.trim())
     .find(part => part.startsWith(`${SOLO_COOKIE}=`))?.slice(SOLO_COOKIE.length + 1);
@@ -5189,24 +5307,34 @@ const server = http.createServer(async (req, res) => {
             sameTable: person.tableId === table.id, guestDuos: guestDuos.get(person.id) || 0 })));
       }
       if (p === '/api/search') {
+        const reader = catalogReader(req, u);
         const q = String(u.searchParams.get('q') || '').trim();
         if (q.length < 2) return send(res, 200, []);
         if (!bridge) return send(res, 503, { error: 'KaraFun non connecté' });
-        try { return send(res, 200, rememberBattleSongs(await bridge.search(q))); }
-        catch (e) { return send(res, 502, { error: `Recherche KaraFun impossible : ${e.message}` }); }
+        try { return send(res, 200, await readCatalog(reader, `search:${q.toLowerCase()}`, 15000,
+          () => bridge.search(q).then(rememberBattleSongs))); }
+        catch (e) { if (catalogBusy(res, e)) return; return send(res, 502, { error: `Recherche KaraFun impossible : ${e.message}` }); }
       }
       if (p === '/api/catalog/categories' || p === '/api/catalog/highlights' || p === '/api/catalog/songs') {
+        const reader = catalogReader(req, u);
         try {
           const c = catalog();
           if (p.endsWith('/categories')) {
-            const categories = await c.categories(u.searchParams.get('type'));
+            const type = u.searchParams.get('type');
+            const categories = await readCatalog(reader, `categories:${type}`, 120000, () => c.categories(type));
             return send(res, 200, (Array.isArray(categories) ? categories : []).map(cat => ({ ...cat, img: coverUrl(cat?.img) })));
           }
-          if (p.endsWith('/highlights')) return send(res, 200, rememberBattleSongs(await c.highlights(u.searchParams.get('type'))));
-          const page = await c.songs(u.searchParams.get('filter'), Number(u.searchParams.get('offset') || 0));
+          if (p.endsWith('/highlights')) {
+            const type = u.searchParams.get('type');
+            return send(res, 200, await readCatalog(reader, `highlights:${type}`, 60000,
+              () => c.highlights(type).then(rememberBattleSongs)));
+          }
+          const filter = u.searchParams.get('filter');
+          const offset = Number(u.searchParams.get('offset') || 0);
+          const page = await readCatalog(reader, `songs:${filter}:${offset}`, 60000, () => c.songs(filter, offset));
           rememberBattleSongs(page.songs);
           return send(res, 200, page);
-        } catch (e) { return send(res, 502, { error: catalogPhoneError(e) }); }
+        } catch (e) { if (catalogBusy(res, e)) return; return send(res, 502, { error: catalogPhoneError(e) }); }
       }
       m = /^\/photo\/([a-f0-9]+)$/.exec(p);
       if (m) { const pp = sched.people.get(m[1]); if (!pp || !pp.photo) return send(res, 404, ''); return send(res, 200, pp.photo.buf, pp.photo.type, { 'Cache-Control': 'max-age=60' }); }

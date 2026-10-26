@@ -1216,7 +1216,17 @@
     // Chaque erreur sait se redire dans la langue courante (`localized`) :
     // un message resté affiché suit le changement de langue.
     const failure = localized => Object.assign(new Error(localized()), { localized });
-    try { response = await fetch(path, { cache: 'no-store', ...options }); }
+    const catalogRead = /^\/api\/(?:search(?:\?|$)|catalog\/)/.test(path);
+    if (catalogRead && Date.now() < catalogReadRetryUntil) {
+      const error = failure(() => serverText(catalogReadRetryMessage));
+      error.status = 429;
+      error.code = 'CATALOG_BUSY';
+      error.retryAfter = Math.ceil((catalogReadRetryUntil - Date.now()) / 1000);
+      throw error;
+    }
+    const headers = catalogRead ? { 'x-table-id': tableId, 'x-table-access': access,
+      ...(soloInvitation ? { 'x-solo-invitation': soloInvitation } : {}), ...options.headers } : options.headers;
+    try { response = await fetch(path, { cache: 'no-store', ...options, ...(headers ? { headers } : {}) }); }
     catch (_) { throw failure(() => t('Connexion perdue : réessaie dans un instant.')); }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -1227,6 +1237,10 @@
       error.recoverable = data.recoverable === true;
       // Délai annoncé par le serveur avant un nouvel essai (429), en secondes.
       error.retryAfter = Number(response.headers?.get?.('Retry-After')) || null;
+      if (catalogRead && response.status === 429) {
+        catalogReadRetryUntil = Math.max(catalogReadRetryUntil, Date.now() + Math.max(1, Math.ceil(error.retryAfter || 1)) * 1000);
+        catalogReadRetryMessage = typeof data.error === 'string' ? data.error : catalogReadRetryMessage;
+      }
       throw error;
     }
     return data;
@@ -2966,6 +2980,7 @@
   function setTab(name) {
     const changed = name !== activeTab;
     activeTab = name;
+    if (changed && name !== 'catalog') stopCatalogRetryTimer();
     if (name !== 'catalog') duetMode = false;
     document.querySelectorAll('.tabs button').forEach(button => {
       const selected = button.dataset.tab === name;
@@ -2973,7 +2988,8 @@
       button.setAttribute('aria-selected', String(selected));
     });
     for (const tab of ['table', 'queue', 'catalog']) $('tab-' + tab).hidden = tab !== name;
-    if (name === 'catalog' && !categories.length && catalogMode === 'categories') showCategories(catalogType);
+    if (name === 'catalog' && !categories.length && catalogMode === 'categories' && !catalogRetryView) showCategories(catalogType);
+    if (name === 'catalog') scheduleCatalogRetry();
     // Catalogue retrouvé sur un sous-écran : l'étape d'avant n'est pas ses sélections.
     if (changed && name === 'catalog') catDepth = subScreen(catalogMode) ? null : 0;
     if (changed) pushNav();
@@ -3074,9 +3090,37 @@
   // Contenu affiché du catalogue, refait à l'identique lors d'un changement de
   // langue : `catalogView` est la fonction qui l'a dessiné en dernier.
   let catalogView = null;
-  function showCatalogView(view) {
+  let catalogReadRetryUntil = 0;
+  let catalogReadRetryMessage = 'Beaucoup de recherches en ce moment. Réessaie dans quelques secondes.';
+  let catalogRetryView = null;
+  let catalogRetryUntil = 0;
+  let catalogRetryTimer = null;
+  function stopCatalogRetryTimer() {
+    clearTimeout(catalogRetryTimer);
+    catalogRetryTimer = null;
+  }
+  function scheduleCatalogRetry() {
+    if (!catalogRetryView || catalogView !== catalogRetryView || activeTab !== 'catalog') return;
+    stopCatalogRetryTimer();
+    const remaining = catalogRetryUntil - Date.now();
+    if (remaining <= 0) {
+      catalogRetryUntil = 0;
+      $('catalogContent').innerHTML = catalogRetryView();
+      return;
+    }
+    catalogRetryTimer = setTimeout(() => {
+      catalogRetryTimer = null;
+      catalogRetryUntil = 0;
+      if (catalogView === catalogRetryView && activeTab === 'catalog') $('catalogContent').innerHTML = catalogRetryView();
+    }, remaining);
+  }
+  function showCatalogView(view, retryUntil = 0) {
+    stopCatalogRetryTimer();
     catalogView = view;
+    catalogRetryView = retryUntil ? view : null;
+    catalogRetryUntil = retryUntil;
     $('catalogContent').innerHTML = view();
+    if (retryUntil) scheduleCatalogRetry();
   }
   const catalogMessage = text => () => `<p class="empty-copy">${esc(text())}</p>`;
 
@@ -3126,7 +3170,8 @@
   }
 
   function catalogError(error) {
-    showCatalogView(() => `<p class="empty-copy">${esc(error.message || t('Catalogue indisponible.'))}</p><button type="button" class="btn small" data-retry style="margin-top:10px">${esc(t('Réessayer'))}</button>`);
+    const retryUntil = error.status === 429 ? catalogReadRetryUntil || Date.now() + Math.max(1, Math.ceil(error.retryAfter || 1)) * 1000 : 0;
+    showCatalogView(() => `<p class="empty-copy">${esc(error.message || t('Catalogue indisponible.'))}</p><button type="button" class="btn small" data-retry style="margin-top:10px"${catalogRetryUntil > Date.now() ? ' disabled' : ''}>${esc(catalogRetryUntil > Date.now() ? t('Réessayer dans {n} s', { n: Math.max(1, Math.ceil((catalogRetryUntil - Date.now()) / 1000)) }) : t('Réessayer'))}</button>`, retryUntil);
   }
 
   async function showCategory(index, append = false) {
@@ -3227,7 +3272,7 @@
   $('catalogContent').addEventListener('click', event => {
     const button = event.target.closest('button');
     if (!button) return;
-    if (button.hasAttribute('data-retry')) reloadCatalog();
+    if (button.hasAttribute('data-retry')) { if (catalogRetryUntil <= Date.now()) reloadCatalog(); }
     else if (button.hasAttribute('data-back')) backToSelections();
     else if (button.hasAttribute('data-category-index')) showCategory(Number(button.dataset.categoryIndex));
     else if (button.hasAttribute('data-song-index')) chooseSong(songs[Number(button.dataset.songIndex)]);

@@ -2482,7 +2482,7 @@
     const q = $('testQ').value.trim(); if (q.length < 2) return;
     $('testRes').innerHTML = '<li class="muted">Recherche…</li>';
     try {
-      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
+      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { headers: { 'x-staff-key': key } }); const j = await r.json();
       if (!r.ok) throw new Error(j.error);
       $('testRes').innerHTML = j.length ? j.map(s => `<li><div class="grow"><b>${esc(s.title)}</b> <span class="muted">${esc(s.artist)} · id ${s.songId}</span></div><button class="btn small" data-add="${s.songId}">Ajouter à KaraFun (test)</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';
       $('testRes').querySelectorAll('[data-add]').forEach(b => b.onclick = () => act('/api/staff/kf', { action: 'test-add', songId: +b.dataset.add }, 'Envoyé à KaraFun : regarde sa file'));
@@ -2581,7 +2581,7 @@
   const searchBattleLaunch = async (q, number) => {
     $('battleLaunchResults').innerHTML = '<li class="muted">Recherche…</li>';
     try {
-      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const j = await r.json();
+      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { headers: { 'x-staff-key': key } }); const j = await r.json();
       if (number !== battleLaunchNumber) return;
       if (!r.ok) throw new Error(j.error);
       $('battleLaunchResults').innerHTML = j.length ? j.slice(0, 12).map((song, index) => `<li><div class="grow"><b>${esc(song.title)}</b> <span class="muted">${esc(song.artist || '')}</span></div><button class="btn small primary" data-battle-launch="${index}">Lancer en Battle</button></li>`).join('') : '<li class="muted">Aucun résultat</li>';

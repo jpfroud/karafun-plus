@@ -1717,6 +1717,8 @@ test('Battle : lancement par le bar depuis la recherche de titres', async () => 
   const field = page.$('battleLaunchSearch');
   field.value = 'Queen';
   await page.key(field, 'Enter');
+  assert.equal(page.fetches.find(request => request.url.startsWith('/api/search?')).options.headers['x-staff-key'], KEY,
+    'la recherche de Battle garde la clé du bar');
   const buttons = page.all('battleLaunchResults', '[data-battle-launch]');
   assert.deepEqual(texts(page.all('battleLaunchResults', 'b')), ['Bohemian Rhapsody', 'Dancing Queen']);
   page.confirmAnswer = false;
@@ -2260,6 +2262,8 @@ test('diagnostic KaraFun : recherche de test et ajout d’essai', async () => {
   field.value = ' Queen ';
   await page.key(field, 'Enter');
   assert.deepEqual(page.searches, ['Queen'], 'Entrée lance la recherche, texte nettoyé');
+  assert.equal(page.fetches.find(request => request.url.startsWith('/api/search?')).options.headers['x-staff-key'], KEY,
+    'le diagnostic garde la clé du bar en mode serveur');
   assert.deepEqual(texts(page.all('testRes', 'li .muted')), ['Queen · id 42', 'ABBA · id 7']);
   await page.click(page.in('testRes', '[data-add="42"]'));
   assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'test-add', songId: 42 }, 'l’identifiant part en nombre');
