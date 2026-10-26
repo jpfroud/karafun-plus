@@ -11,7 +11,7 @@ while [ "$#" -gt 0 ]; do
     *) echo 'Usage : sudo bash deploy/install-update-agent.sh [--repo /chemin/karafun-plus]' >&2; exit 2 ;;
   esac
 done
-[ "$(id -u)" = 0 ] || { echo 'L’installation du service demande sudo.' >&2; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "L'installation du service demande sudo." >&2; exit 1; }
 repo=$(realpath -- "$repo")
 # Paths go into systemd unit fields, never into a shell expression.
 [[ $repo =~ ^/[a-zA-Z0-9_./-]+$ ]] || { echo 'Chemin du dépôt non pris en charge.' >&2; exit 1; }
@@ -20,7 +20,7 @@ repo=$(realpath -- "$repo")
 }
 operator=$(stat -c '%U' -- "$repo")
 [[ $operator =~ ^[a-z_][a-z0-9_-]*$ ]] && [ "$operator" != root ] || {
-  echo 'Le dépôt doit appartenir au compte d’exploitation non root.' >&2; exit 1;
+  echo "Le dépôt doit appartenir au compte d'exploitation non root." >&2; exit 1;
 }
 operator_home=$(getent passwd "$operator" | cut -d: -f6)
 [[ $operator_home =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
