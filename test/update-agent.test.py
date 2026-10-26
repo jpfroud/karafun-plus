@@ -1,8 +1,10 @@
 """Host updater regressions. No Docker, GitHub, SSH or real evening is used."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import urllib.error
 import unittest
@@ -131,6 +133,77 @@ class FakeAgent(MODULE.Agent):
 
     def result(self):
         return MODULE.read_json(self.ipc / "status.json")
+
+
+class EveningAgent(FakeAgent):
+    """Real temporary volume/archive bytes, with Docker and networking mocked."""
+    def __init__(self, directory):
+        super().__init__(directory)
+        self.volume = Path(directory) / "volume"
+        for name, content in {
+                "data/soiree-a.json": json.dumps({"tables": ["T1", "T2"],
+                    "order": ["S03", "S01", "S02"], "next": "S03",
+                    "songs": {"S01": [11, 12], "S02": [21], "S03": [31]},
+                    "duet": ["S01", "S02"], "onStage": 7}).encode(),
+                "data/staff-key": b"private staff key",
+                "data/photos/portrait.bin": bytes(range(256)),
+                "data/soirees/2026-01-01_2000_abcd/events.jsonl": b'{"ev":"stage.started","queueId":7}\n',
+                "journal/serveur-2026-01-01.log": b"existing journal\n"}.items():
+            file = self.volume / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(content)
+        self.flush_at_stop = None
+        self.change_candidate = False
+        self.old_starts = []
+        self.terminal_trees = []
+
+    def tree(self):
+        return {file.relative_to(self.volume).as_posix(): file.read_bytes()
+                for file in self.volume.rglob("*") if file.is_file()}
+
+    def status(self, phase, message):
+        if phase in MODULE.TERMINAL:
+            self.terminal_trees.append(self.tree())
+        super().status(phase, message)
+
+    def command(self, arguments, timeout=120, data=None):
+        compose = arguments[:2] == ["docker", "compose"]
+        if compose and "stop" in arguments and self.flush_at_stop:
+            flush, self.flush_at_stop = self.flush_at_stop, None
+            flush()
+        if arguments[0] == "bash" and self.fail != "backup":
+            self.commands.append(list(arguments))
+            (self.deploy / "sauvegardes").mkdir(exist_ok=True)
+            with tarfile.open(self.deploy / ARCHIVE, "w:gz") as archive:
+                for directory in ["data", "journal"]:
+                    archive.add(self.volume / directory, arcname=directory)
+            return "Sauvegarde écrite : " + ARCHIVE + " (12K)"
+        if compose and "run" in arguments:
+            self.commands.append(list(arguments))
+            if not hasattr(data, "read"):
+                raise AssertionError("Recovery must stream its archive")
+            with tarfile.open(fileobj=io.BytesIO(data.read()), mode="r:gz") as archive:
+                files = {item.name: archive.extractfile(item).read()
+                         for item in archive.getmembers() if item.isfile()}
+            for file in self.volume.rglob("*"):
+                if file.is_file():
+                    file.unlink()
+            for name, content in files.items():
+                file = self.volume / name
+                if not file.resolve().is_relative_to(self.volume.resolve()):
+                    raise AssertionError("Unexpected path in test archive")
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(content)
+            return ""
+        output = super().command(arguments, timeout, data)
+        if compose and "up" in arguments and arguments[-1] == "app":
+            if str(self.private / "new-image.json") in arguments:
+                if self.change_candidate:
+                    (self.volume / "data/soiree-a.json").write_bytes(b"candidate incompatible state")
+                    (self.volume / "data/candidate-only.json").write_bytes(b"candidate migration")
+            else:
+                self.old_starts.append(self.tree())
+        return output
 
 
 class ReleaseValidation(unittest.TestCase):
@@ -306,6 +379,86 @@ class UpdateLifecycle(unittest.TestCase):
         with self.assertRaises(MODULE.UpdateError):
             self.agent.execute()
         self.assertEqual(self.agent.commands, [])
+
+
+class EveningPreservation(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.agent = EveningAgent(self.temporary.name)
+        sleeper = patch.object(MODULE.time, "sleep")
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+    def test_success_preserves_all_evening_files_including_final_stop_flush(self):
+        initial = self.agent.tree()
+        final = dict(initial)
+        final["data/soiree-a.json"] = initial["data/soiree-a.json"].replace(b'"onStage": 7', b'"onStage": 8')
+        final["journal/serveur-2026-01-01.log"] += b"graceful stop\n"
+
+        def flush():
+            for name in ["data/soiree-a.json", "journal/serveur-2026-01-01.log"]:
+                (self.agent.volume / name).write_bytes(final[name])
+
+        self.agent.flush_at_stop = flush
+        self.agent.execute()
+        self.assertEqual(self.agent.result()["phase"], "succeeded")
+        self.assertEqual(self.agent.tree(), final)
+        with tarfile.open(self.agent.deploy / ARCHIVE, "r:gz") as archive:
+            saved = {item.name: archive.extractfile(item).read()
+                     for item in archive.getmembers() if item.isfile()}
+        self.assertEqual(saved, final, "Snapshot must include the last graceful-stop write")
+        self.assertEqual(self.agent.terminal_trees, [final])
+        self.assertFalse(any("run" in command for command in self.agent.commands),
+                         "A successful update must not restore an older snapshot")
+
+    def test_failed_candidate_restores_every_byte_before_old_app_and_unlock(self):
+        before = self.agent.tree()
+        self.agent.change_candidate = True
+        self.agent.fail = "health"
+        self.agent.execute()
+        self.assertEqual(self.agent.result()["phase"], "rolled-back")
+        self.assertEqual(self.agent.tree(), before)
+        self.assertEqual(self.agent.old_starts, [before],
+                         "Old app must see all original data before it starts")
+        self.assertEqual(self.agent.terminal_trees, [before],
+                         "Writes unlock only once the evening is fully restored")
+
+    def test_interrupted_install_restores_the_same_evening_before_recovery_unlock(self):
+        before = self.agent.tree()
+        self.agent.private.mkdir()
+        self.agent.current, self.agent.target = "v1.0.0", "v1.1.0"
+        self.agent.request_id = self.agent.receipt
+        transaction = self.agent.begin(NEW, MODULE.IMAGE + "@" + HASH)
+        self.agent.backup(transaction)
+        self.agent.change_candidate = True
+        self.agent.install(transaction)
+        self.assertNotEqual(self.agent.tree(), before, "Candidate changed its volume before interruption")
+        self.agent.commands.clear()
+        self.agent.execute()
+        self.assertEqual(self.agent.result()["phase"], "rolled-back")
+        self.assertEqual(self.agent.tree(), before)
+        self.assertEqual(self.agent.old_starts, [before])
+        self.assertEqual(self.agent.terminal_trees, [before])
+        self.assertFalse(any(command[:2] == ["docker", "pull"] for command in self.agent.commands))
+
+    def test_committed_outcome_recovery_never_overwrites_new_evening_activity(self):
+        self.agent.private.mkdir()
+        self.agent.current, self.agent.target = "v1.0.0", "v1.1.0"
+        self.agent.request_id = self.agent.receipt
+        transaction = self.agent.begin(NEW, MODULE.IMAGE + "@" + HASH)
+        self.agent.backup(transaction)
+        self.agent.install(transaction)
+        transaction["outcome"] = {"phase": "succeeded", "message": "Installée.", "currentVersion": "v1.1.0"}
+        MODULE.atomic_json(self.agent.transaction_file, transaction)
+        (self.agent.volume / "data/new-activity.json").write_bytes(b"new songs accepted after success")
+        after_success = self.agent.tree()
+        self.agent.commands.clear()
+        self.agent.execute()
+        self.assertEqual(self.agent.result()["phase"], "succeeded")
+        self.assertEqual(self.agent.tree(), after_success)
+        self.assertEqual(self.agent.commands, [])
+        self.assertEqual(self.agent.terminal_trees, [after_success])
 
 
 class SystemBoundaries(unittest.TestCase):

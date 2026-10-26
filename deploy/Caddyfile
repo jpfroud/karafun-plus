@@ -18,6 +18,8 @@
 {$HOTE_CLIENTS} {
 	reverse_proxy app:3001 {
 		header_up X-Real-IP {remote_host}
+		# Un téléphone ne peut pas se présenter comme l'entrée authentifiée du bar.
+		header_up -X-Karaoke-Staff-Entry
 		transport http {
 			keepalive 50s
 		}
@@ -31,6 +33,8 @@
 	}
 	reverse_proxy app:3000 {
 		header_up X-Real-IP {remote_host}
+		# Remplacé après basic_auth ; seule l'application crée son lien avec clé.
+		header_up X-Karaoke-Staff-Entry 1
 		# Le mot de passe ne va pas à l'application.
 		header_up -Authorization
 		transport http {

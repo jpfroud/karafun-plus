@@ -294,6 +294,7 @@ const nightStore = DEMO ? null : new NightStateStore(path.join(__dirname, 'data'
 const RUNTIME_FILE = path.join(__dirname, 'data', `runtime-${PORT}.json`);
 const STOP_KEY = crypto.randomBytes(24).toString('base64url');
 let shuttingDown = false;
+let activeMutations = 0; // requêtes déjà commencées, y compris leurs attentes réseau
 const personShareCodes = new Map();
 const SOLO_COOKIE = 'karaoke_solo_device';
 // Les titres proposés pour une Battle doivent avoir été reçus du catalogue
@@ -346,6 +347,7 @@ function certifiedBattleSongs(songs) {
 }
 
 const sched = new Scheduler({ solverEnabled: !DEMO || argv.includes('--solver') });
+sched.solverPaused = () => serverUpdate.isBusy();
 // Journal de soirée (data/soirees/<id>/), en mémoire en démo. Écriture au
 // mieux : un disque plein est signalé mais n'arrête jamais la file.
 const journal = new EveningJournal({ dir: DEMO ? null : path.join(__dirname, 'data', 'soirees'), fs, app: BUILD, boot: BOOT_ID,
@@ -617,12 +619,20 @@ function readiness() {
 
 function updateBlockedReason() {
   if (persistenceError !== null) return 'La sauvegarde de la soirée doit être réparée avant la mise à jour.';
-  const { current, q } = analyze();
-  if (current || q.length || pending || restartOp || playStarting || spotifyBusy || spotifyWork || sched.Q.length ||
-      [...sched.people.values()].some(person => !person.withdrawnAt)) {
-    return 'Disponible après la soirée : termine les titres et marque les personnes parties ou supprime les tables.';
+  if (activeMutations || pending || restartOp || playStarting || spotifyBusy || spotifyWork ||
+      (restartSweep && Date.now() <= restartSweep.until) || battleVote.automation?.status === 'sending') {
+    return 'Une action KaraFun ou Spotify est en cours. Réessaie dans un instant.';
   }
   return null;
+}
+
+function updateRequiresConfirmation() {
+  const { current, q } = analyze();
+  return !!(current || q.length || sched.Q.length || [...sched.people.values()].some(person => !person.withdrawnAt));
+}
+
+function updateState() {
+  return { ...serverUpdate.view(updateBlockedReason()), requiresConfirmation: updateRequiresConfirmation() };
 }
 
 function saveTables() {
@@ -2426,7 +2436,7 @@ function staffState() {
       battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters },
     solver: sched.solverStatus(),
     app: { ...BUILD, mode: SERVER ? 'server' : 'pc' }, bootId: BOOT_ID,
-    update: serverUpdate.view(updateBlockedReason()),
+    update: updateState(),
     stageHistory: stageHistoryView(),
     spotify: spotify.view(spotifyRedirect()),
     restarting: !!restartOp,
@@ -2598,6 +2608,20 @@ function isStaff(req, u) {
   if (typeof supplied !== 'string') return false;
   const actual = Buffer.from(STAFF_KEY), candidate = Buffer.from(supplied);
   return candidate.length === actual.length && crypto.timingSafeEqual(candidate, actual);
+}
+
+// Caddy pose ce marqueur uniquement après le mot de passe des gérants et
+// l'efface sur le domaine clients. Il ouvre la session de la page, jamais
+// directement l'API. Un hôte ou un relais non prévu ne reçoit aucun secret.
+function authenticatedStaffEntry(req) {
+  if (!SERVER || req.socket.localPort !== PORT || req.headers['x-karaoke-staff-entry'] !== '1' ||
+      req.headers.host !== new URL(SERVER.staffUrl).host) return false;
+  const remote = req.socket.remoteAddress || '';
+  return !!net.isIP(remote) && SERVER.trustedProxies.check(remote, net.isIPv6(remote) ? 'ipv6' : 'ipv4');
+}
+
+function redirectStaffEntry(res) {
+  return send(res, 303, '', 'text/plain; charset=utf-8', { Location: `/staff?key=${encodeURIComponent(STAFF_KEY)}` });
 }
 
 // Page du bar seule (pas l'API, ni /print, /stats ou /qr) : en mode serveur, /staff sans
@@ -4434,11 +4458,23 @@ const handlers = {
   // ---------------- bar
   // Un code vide est refusé : il effaçait le code retenu sans rien connecter.
   'POST /api/staff/update': async (req, res, body) => {
-    if (!body || Array.isArray(body) || Object.keys(body).length) throw new Error('La mise à jour ne prend aucun paramètre.');
+    if (!body || Array.isArray(body) || Object.keys(body).some(key => key !== 'confirmActive') ||
+        ('confirmActive' in body && typeof body.confirmActive !== 'boolean')) {
+      throw new Error('Seule la confirmation de la soirée est acceptée pour la mise à jour.');
+    }
+    // Le refus technique prime sur la confirmation ; aucune action KaraFun
+    // ou Spotify déjà lancée ne doit finir après notre instantané.
+    const blockedReason = updateBlockedReason();
+    const available = serverUpdate.view(blockedReason);
+    if (available.enabled && !available.busy && !blockedReason && updateRequiresConfirmation() && body.confirmActive !== true) {
+      const error = new Error('Une soirée est en cours. Confirme la brève interruption pour mettre à jour en conservant les tables, les chansons et l’ordre de passage.');
+      error.status = 409;
+      throw error;
+    }
     saveNight({ required: true });
-    const update = serverUpdate.request(updateBlockedReason());
+    serverUpdate.request(blockedReason);
     res.nightAlreadySaved = true;
-    return { ok: true, update };
+    return { ok: true, update: updateState() };
   },
   'POST /api/staff/connect': async (req, res, body) => {
     const code = String(body.code || '').replace(/\D/g, '');
@@ -5218,6 +5254,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/healthz' && (req.method === 'GET' || req.method === 'HEAD')) return send(res, 200, 'ok', 'text/plain; charset=utf-8');
     if (req.method === 'GET') {
       if (p === '/' ) {
+        if (authenticatedStaffEntry(req)) return redirectStaffEntry(res);
         if (!isLocal(req) || req.socket.localPort === PUBLIC_PORT) return send(res, 403, 'Scanne le QR code de ta table.', 'text/plain; charset=utf-8');
         res.writeHead(302, { Location: `/staff?key=${STAFF_KEY}`, 'Referrer-Policy': 'no-referrer' }); return res.end();
       }
@@ -5233,7 +5270,11 @@ const server = http.createServer(async (req, res) => {
         return sendFile(res, 'client.html', 'text/html; charset=utf-8');
       }
       if (/^\/t\/[^/]+\/?$/.test(p)) return send(res, 403, 'Scanne le QR code de ta table.', 'text/plain; charset=utf-8');
-      if (p === '/staff') { if (!staffPageAllowed(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); return sendFile(res, 'staff.html', 'text/html; charset=utf-8'); }
+      if (p === '/staff') {
+        if (!u.searchParams.has('key') && !isStaff(req, u) && authenticatedStaffEntry(req)) return redirectStaffEntry(res);
+        if (!staffPageAllowed(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8');
+        return sendFile(res, 'staff.html', 'text/html; charset=utf-8');
+      }
       if (p === '/print') { if (!isStaff(req, u)) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); return sendFile(res, 'print.html', 'text/html; charset=utf-8'); }
       if (p === '/app.css') return sendFile(res, 'app.css', 'text/css; charset=utf-8');
       // Traductions de la page des chanteurs, publiques comme elle.
@@ -5306,6 +5347,10 @@ const server = http.createServer(async (req, res) => {
         // Retour de la connexion Spotify, sur http://127.0.0.1:<port>/spotify/callback dans les deux modes. Mode PC : navigateur de ce PC seulement. Mode serveur : port du bar, atteint par un tunnel SSH ; protégé par le seul state PKCE (usage unique, 10 min).
         if (SERVER) { if (req.socket.localPort === PUBLIC_PORT) return send(res, 403, 'Réservé au bar', 'text/plain; charset=utf-8'); }
         else if (!isLocal(req)) return send(res, 403, 'Connecte Spotify depuis le PC du bar.', 'text/plain; charset=utf-8');
+        if (serverUpdate.isBusy()) return send(res, 503, 'Mise à jour en cours. Actualise cette page dans quelques instants pour terminer la connexion Spotify.',
+          'text/plain; charset=utf-8', { 'Retry-After': '10' });
+        activeMutations++;
+        try {
         let message = 'Spotify est connecté. Choisis l’appareil qui joue la musique dans la page du bar.';
         try {
           if (u.searchParams.get('error')) throw new Error('Connexion Spotify annulée.');
@@ -5317,6 +5362,7 @@ const server = http.createServer(async (req, res) => {
         // branché sur PORT obtient encore la clé par là, cette page seule ne l'en protège pas.
         const back = SERVER ? '/staff' : '/';
         return send(res, 200, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Spotify</title><body style="font-family:system-ui;padding:24px"><p>${message.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</p><p><a href="${back}">Revenir à la page du bar</a></p></body>`, 'text/html; charset=utf-8');
+        } finally { activeMutations--; }
       }
       if (p === '/api/duo/partners') {
         const table = tableByAccess(u.searchParams.get('table'), u.searchParams.get('access'));
@@ -5431,6 +5477,9 @@ const server = http.createServer(async (req, res) => {
         }
       }
       let out;
+      const mutation = p !== '/api/staff/update';
+      if (mutation) activeMutations++;
+      try {
       // Toute action peut ajouter ou nommer une personne : un vote Battle
       // ouvert l'accueille aussitôt, même si l'action échoue ensuite.
       try { out = await h(req, res, body, me); }
@@ -5445,6 +5494,7 @@ const server = http.createServer(async (req, res) => {
       creditActivity(body);
       if (p !== '/api/table/person/claim' && !res.nightAlreadySaved) saveNight({ required: true });
       return send(res, 200, out || { ok: true });
+      } finally { if (mutation) activeMutations--; }
     }
     send(res, 405, 'Méthode non gérée', 'text/plain');
   } catch (e) {

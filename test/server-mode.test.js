@@ -136,6 +136,7 @@ function harness({ persistent = false, files = {}, modules = {}, serverEnv = tru
         spotify, loadTables, normalizeBaseUrl, SERVER, STAFF_KEY_INFO, STOP_KEY, server, publicServer,
         isShuttingDown: () => shuttingDown, readServerConfig, loadStaffKey, staffKeyFingerprint, serverStartupLines,
         phoneBase, BUILD, rotateStaffKey, staffKeyCommand, printedBaseUrlWarning, serverClientAddress, karafunBridgeOptions, portInUseMessage,
+        setRestartSweep: value => { restartSweep = value; },
         setBridge: value => { bridge = value; } };
     `, context, { filename: 'server.js' });
   } catch (error) {
@@ -528,6 +529,68 @@ test('SP5 page du bar sans clé en mode serveur : la coquille seulement, API, im
   assert.equal(keyed.status, 200, 'lien du bar avec clé : page servie');
   assert.equal(keyed.headers['content-type'], 'text/html; charset=utf-8');
   assert.equal(keyed.text, shell);
+});
+
+test('mise à jour : les copies tardives de relance et les accusés Battle restent protégés', async t => {
+  for (const operation of ['restart-sweep', 'battle-sending']) await t.test(operation, async () => {
+    let requests = 0;
+    const f = harness({ modules: { './server-update': { createServerUpdate: () => ({
+      isBusy: () => false,
+      view: blockedReason => ({ enabled: true, busy: false, blockedReason }),
+      request(blockedReason) {
+        if (blockedReason) throw Object.assign(new Error(blockedReason), { status: 409 });
+        requests++;
+      },
+    }) } } });
+    if (operation === 'restart-sweep') {
+      f.setRestartSweep({ songId: 123, singer: 'S01', title: 'T1', before: [], until: Date.now() + 60000 });
+    } else f.battleVote.automation = { status: 'sending' };
+    const route = withKey('/api/staff/update', f.STAFF_KEY);
+    const denied = await post(f, route, { confirmActive: true });
+    assert.equal(denied.status, 409, 'la confirmation ne contourne pas une commande KaraFun à rapprocher');
+    assert.match(denied.body.error, /action.*en cours/i);
+    assert.equal(requests, 0, 'aucune demande hôte pendant le rapprochement');
+    if (operation === 'restart-sweep') {
+      f.setRestartSweep({ songId: 123, singer: 'S01', title: 'T1', before: [], until: Date.now() - 1 });
+    } else f.battleVote.automation = { status: 'queued' };
+    const accepted = await post(f, route, { confirmActive: true });
+    assert.equal(accepted.status, 200, 'le verrou technique se libère après le délai ou l’accusé');
+    assert.equal(requests, 1);
+  });
+});
+
+test('entrée des gérants : seul le proxy privé authentifié fournit le lien de session', async () => {
+  const f = harness();
+  const headers = { host: 'bar.exemple.fr', 'x-karaoke-staff-entry': '1' };
+  for (const route of ['/', '/staff']) {
+    const r = await get(f, route, { headers, remote: DOCKER_REMOTE, port: f.PORT });
+    assert.equal(r.status, 303, route);
+    assert.equal(r.headers.location, withKey('/staff', f.STAFF_KEY));
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.equal(r.headers['referrer-policy'], 'no-referrer');
+    const page = await get(f, r.headers.location, { headers, remote: DOCKER_REMOTE, port: f.PORT });
+    assert.equal(page.status, 200, 'le lien reçu ouvre la page sans boucle');
+  }
+  for (const options of [
+    { headers, remote: DOCKER_REMOTE, port: f.PUBLIC_PORT },
+    { headers, remote: '203.0.113.42', port: f.PORT },
+    { headers: { ...headers, host: 'clients.exemple.fr' }, remote: DOCKER_REMOTE, port: f.PORT },
+    { headers: { ...headers, 'x-karaoke-staff-entry': '1, 1' }, remote: DOCKER_REMOTE, port: f.PORT },
+    { headers: { host: 'bar.exemple.fr' }, remote: DOCKER_REMOTE, port: f.PORT },
+  ]) {
+    for (const route of ['/', '/staff']) {
+      const r = await get(f, route, options);
+      assert.equal(r.headers.location, undefined, 'aucun secret redirigé hors du proxy privé');
+      assert.equal(r.text.includes(f.STAFF_KEY), false);
+    }
+  }
+  assert.equal((await get(f, '/api/staff/state', { headers, remote: DOCKER_REMOTE, port: f.PORT })).status, 403,
+    'le marqueur ne donne pas directement accès à l’API');
+  assert.equal((await get(f, '/staff?key=faux', { headers, remote: DOCKER_REMOTE, port: f.PORT })).status, 403,
+    'une clé explicitement fausse reste refusée');
+  const pc = harness({ serverEnv: false });
+  const remote = await get(pc, '/', { headers, remote: DOCKER_REMOTE, port: pc.PORT });
+  assert.equal(remote.status, 403, 'aucun droit supplémentaire en mode PC');
 });
 
 // ---------------------------------------------------------------- 2. clé persistante

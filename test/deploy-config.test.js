@@ -326,6 +326,27 @@ test('D4 .env.example et mot de passe', () => {
   }
 });
 
+test('D4b entrée du bar réservée au relais authentifié', () => {
+  const caddy = read('deploy/Caddyfile');
+  const clientsStart = caddy.indexOf('{$HOTE_CLIENTS} {');
+  const barStart = caddy.indexOf('{$HOTE_BAR} {');
+  assert.ok(clientsStart >= 0 && barStart > clientsStart, 'deux domaines distincts');
+  const clients = caddy.slice(clientsStart, barStart);
+  const bar = caddy.slice(barStart);
+  assert.match(clients, /^\s*header_up -X-Karaoke-Staff-Entry\s*$/m,
+    'le domaine clients retire toute indication d’entrée du bar envoyée par un téléphone');
+  assert.doesNotMatch(clients, /^\s*header_up X-Karaoke-Staff-Entry\b/m,
+    'le domaine clients ne donne jamais l’entrée du bar');
+  assert.match(bar, /^\s*header_up X-Karaoke-Staff-Entry 1\s*$/m,
+    'le domaine bar remplace l’en-tête fourni par le navigateur');
+  assert.match(bar, /basic_auth\s*\{[^}]*\{\$BAR_USER\} \{\$BAR_PASSWORD_HASH\}/,
+    'l’entrée du bar reste derrière le mot de passe Caddy');
+  assert.match(bar, /^\s*header_up -Authorization\s*$/m,
+    'le mot de passe ne parvient pas à l’application');
+  assert.doesNotMatch(caddy, /header_up (?:X-Staff-Key|X-Karaoke-Staff-Entry) \{http\./i,
+    'aucune identité du bar copiée depuis un en-tête client');
+});
+
 test('D5 attributs git et modes', t => {
   const git = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
   const top = git(['rev-parse', '--show-toplevel']);

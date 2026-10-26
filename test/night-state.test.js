@@ -104,6 +104,71 @@ try {
   assert.deepEqual(resumed.manualOverrideState(), beforeManual,
     'après redémarrage, annuler restitue précisément l’état avant déplacement');
 
+  {
+    // Une mise à jour en soirée redémarre le serveur : l'ordre adopté par
+    // Timefold doit survivre aussi, sans devenir une intervention du bar.
+    const planned = new Scheduler();
+    const plannedAccess = new TableAccess();
+    const singers = ['1', '2', '3', '4'].map((tableId, index) => {
+      planned.table(tableId); plannedAccess.issue(tableId);
+      const person = planned.join({ tableId, name: `S0${index + 1}`, headcount: 1 });
+      planned.chooseSong(person, song(201 + index, `T${index + 1}`));
+      return person;
+    });
+    const local = planned.readyView().map(row => row.entryId);
+    const desired = [local[2], local[0], local[3], local[1]];
+    planned.solverPlan = { version: planned.version, fingerprint: planned.solverContextFingerprint(),
+      ranks: new Map(desired.map((entryId, index) => [entryId, index])), source: 'timefold' };
+    assert.deepEqual(planned.readyView().map(row => row.entryId), desired,
+      'la recette part bien d’un ordre différent du repli local');
+    const announced = planned.reserveNext();
+    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: planned,
+      access: plannedAccess, settings: settings() })));
+    const resume = snapshot => {
+      const scheduler = new Scheduler();
+      restoreNight(snapshot, { scheduler, access: new TableAccess(), settings: settings() });
+      return scheduler;
+    };
+    const restoredPlan = resume(saved);
+    assert.deepEqual(restoredPlan.readyView().map(row => row.entryId), desired,
+      'tous les passages gardent leur ordre après une mise à jour');
+    assert.equal(restoredPlan.reservedNext.personId, announced.ids[0]);
+    assert.equal(restoredPlan.solverPlan.source, 'timefold');
+    assert.equal(restoredPlan.manualOrderActive, false, 'le plan repris ne verrouille pas la file comme un geste du bar');
+    assert.deepEqual(restoredPlan.manualOrder, []);
+    restoredPlan.chooseSong(restoredPlan.people.get(singers[1].id), song(210, 'Nouveau titre'), 'append');
+    restoredPlan.readyView();
+    assert.equal(restoredPlan.solverPlan, null, 'un vrai changement de titres permet le prochain calcul normal');
+
+    // Le plan conserve les rangs des titres déjà chantés. La sauvegarde ne
+    // garde que les titres encore en liste et reprend leur ordre relatif.
+    const played = planned.select();
+    planned.commit(played);
+    planned.songEnded(played.ids);
+    const afterPassage = JSON.parse(JSON.stringify(snapshotNight({ scheduler: planned,
+      access: plannedAccess, settings: settings() })));
+    assert.equal(afterPassage.scheduler.solverPlan.order.includes(played.song.entryId), false);
+    assert.deepEqual(resume(afterPassage).readyView().map(row => row.entryId),
+      planned.readyView().map(row => row.entryId), 'un plan réalisé en partie survit au redémarrage');
+
+    for (const badPlan of [undefined, null, [], 'invalide', {},
+      { ...saved.scheduler.solverPlan, source: 'inconnu' },
+      { ...saved.scheduler.solverPlan, fingerprint: 'a'.repeat(64) },
+      { ...saved.scheduler.solverPlan, order: [desired[0], desired[0], ...desired.slice(2)] },
+      { ...saved.scheduler.solverPlan, order: [...desired.slice(0, -1), 'titre-inconnu'] },
+      { ...saved.scheduler.solverPlan, order: desired.slice(1) },
+      { ...saved.scheduler.solverPlan, order: [null, ...desired.slice(1)] }]) {
+      const damaged = structuredClone(saved);
+      if (badPlan === undefined) delete damaged.scheduler.solverPlan;
+      else damaged.scheduler.solverPlan = badPlan;
+      const repaired = resume(damaged);
+      assert.equal(repaired.solverPlan, null, `plan absent, périmé ou abîmé ignoré : ${JSON.stringify(badPlan)}`);
+      assert.equal(repaired.people.size, singers.length, 'les personnes restent inscrites');
+      assert.equal(repaired.readyView().length, singers.length, 'aucun titre perdu avec un plan ignoré');
+      assert.equal(repaired.reservedNext.personId, announced.ids[0], 'le prochain annoncé reste garanti');
+    }
+  }
+
   // Regression: quatrième relecture finale (performance) — chaque sauvegarde
   // (toutes les 2 s et après chaque action acceptée) recalculait l'empreinte
   // de chaque photo gardée : 800 photos de 400 Ko, près d'une seconde.
