@@ -23,7 +23,10 @@ function evening(opts = {}) {
   s.setHeadcount('T1', 12);
   const people = ['Solo1', 'Attente', 'Amie', 'Solo2'].map(name =>
     s.join({ tableId: ['Solo1', 'Solo2'].includes(name) ? 'Comptoir' : 'T1', name }));
-  for (const p of people) for (let k = 0; k < 6; k++) s.chooseSong(p, song(), 'append');
+  // Les premiers passages suivent l'ordre d'ajout (« Chacun son tour ») :
+  // Amie, Solo1, Solo2, Attente, comme la part des tables les rangeait.
+  const added = ['Amie', 'Solo1', 'Solo2', 'Attente'].map(name => people.find(p => p.name === name));
+  for (const p of added) for (let k = 0; k < 6; k++) s.chooseSong(p, song(), 'append');
   const played = [];
   const send = () => {
     const sel = s.select();

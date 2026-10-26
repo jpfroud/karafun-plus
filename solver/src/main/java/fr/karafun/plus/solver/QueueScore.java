@@ -17,10 +17,12 @@ import java.util.Set;
  * round, and `spacing` other songs before a person returns when another
  * passage of the round allows it. Medium: once per round (with bonus/malus credits),
  * nobody sees someone sing twice during their own wait when another allowed
- * passage avoids it (after the table rule in EQUAL and SQRT),
- * no table twice in a row when another can sing, spacing
- * of a returning person, and each table's share of the round. Soft: stability
- * versus the order proposed by the Node process.
+ * passage avoids it (after the table rule in EQUAL and SQRT), first
+ * appearances first come, first served (before the table rule in PEOPLE, a
+ * tie-break of the table share in EQUAL and SQRT), no table twice in a row
+ * when another can sing, spacing of a returning person, and each table's
+ * share of the round. Soft: stability versus the order proposed by the Node
+ * process.
  */
 public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoftScore> {
     private static final double EPS = 1e-9;
@@ -172,6 +174,23 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                     }
                 }
             }
+            // First appearances, first come, first served (rotation.js#_pick):
+            // among passages that only bring people never on stage yet, the
+            // owner whose wait started first (addedOrder; a duet counts by its
+            // owner). PEOPLE: right after patience, before the table rule,
+            // which then only breaks ties among the earliest; EQUAL and SQRT:
+            // it only breaks ties of the table share (below).
+            boolean firstTurn = patient.size() > 1 && !plan.getAddedOrder().isEmpty() &&
+                    patient.stream().allMatch(c -> freshCount(c, appeared) == c.getSingers().size());
+            boolean byTables = plan.getRotation() != QueuePlan.Rotation.PEOPLE;
+            List<Performance> fair = patient;
+            if (firstTurn && !byTables) {
+                int first = Integer.MAX_VALUE;
+                for (Performance c : patient) first = Math.min(first, added(plan, c));
+                fair = new ArrayList<>();
+                for (Performance c : patient) if (added(plan, c) == first) fair.add(c);
+            }
+            boolean earliest = fair.contains(current);
             if (!pinned && !allowedNow.contains(current)) {
                 if (!tier.contains(current)) hard -= 1;
                 else if (!choices.contains(current)) medium -= 5_000;
@@ -181,10 +200,18 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 // a little more, never as much as breaking « once per round ».
                 int extra = doubles[allowedNow.indexOf(current)] - least;
                 medium -= 4_000L + Math.min(900L, 100L * Math.max(0, extra - 1));
+            } else if (!pinned && !earliest) {
+                // Below patience, above the table rule and the share it
+                // overrides in PEOPLE: a plan never serves a later first
+                // appearance before an earlier one.
+                medium -= 3_000;
             }
 
+            // PEOPLE serving the earliest first appearance: the table rule and
+            // the table share below only compare it with the other earliest.
+            final List<Performance> tableChoices = earliest && fair != patient ? fair : candidates;
             boolean overlapsPrevious = !prior.isEmpty() && overlaps(current.getGroups(), prior);
-            if (overlapsPrevious && candidates.stream().anyMatch(c -> !overlaps(c.getGroups(), prior))) {
+            if (overlapsPrevious && tableChoices.stream().anyMatch(c -> !overlaps(c.getGroups(), prior))) {
                 medium -= 1_500;
             }
 
@@ -211,10 +238,22 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                         (recent.size() + 1) * entry.getValue() / total - served : -served);
             }
             double best = Double.NEGATIVE_INFINITY;
-            for (Performance c : patient) best = Math.max(best, need(c, deficits));
+            for (Performance c : earliest ? fair : patient) best = Math.max(best, need(c, deficits));
             double picked = need(current, deficits);
             if (best > picked + EPS && best != Double.NEGATIVE_INFINITY) {
                 medium -= Math.round((best - picked) * 150);
+            }
+            // EQUAL and SQRT: at the same share, and no worse for the table
+            // rule, the first appearance added first goes first.
+            if (firstTurn && byTables && !pinned && patient.contains(current)) {
+                int mine = added(plan, current);
+                for (Performance c : patient) {
+                    if (added(plan, c) < mine && Math.abs(need(c, deficits) - picked) <= EPS &&
+                            (overlapsPrevious || !overlaps(c.getGroups(), prior))) {
+                        medium -= 200;
+                        break;
+                    }
+                }
             }
 
             // A passage granted by the interleave rule to someone who already
@@ -351,6 +390,11 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             if (wait < seen && owners.contains(singer)) lo--;
         }
         return lo;
+    }
+
+    // Rank of the time the owner's wait started (first come, first served).
+    private static int added(QueuePlan plan, Performance c) {
+        return plan.getAddedOrder().getOrDefault(c.getOwner(), 0);
     }
 
     private static double weight(QueuePlan plan, String person) {

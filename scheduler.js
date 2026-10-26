@@ -38,6 +38,10 @@
  *   « Chacun son tour », sauf pour respecter la patience). En compromis, la
  *   taille d'une table est son nombre de chanteurs inscrits (titre en attente
  *   ou déjà chanté ce soir).
+ * - Premiers passages : premier ajouté, premier servi (heure où l'attente a
+ *   commencé, celle de l'auteur pour un duo). En « Chacun son tour », avant la
+ *   règle des tables, qui ne fait plus que départager ; dans les modes de
+ *   tables, il départage les passages de même part.
  * - Patience : personne ne voit quelqu'un chanter deux fois pendant sa propre
  *   attente quand un autre passage permis l'évite. Selon le mode (choix du
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
@@ -438,7 +442,7 @@ class Scheduler {
         if (song.duet?.state === 'accepted') relevant.add(song.duet.partnerId);
       }
       return [pid, p.group, p.sung, p.duetGuestCount || 0,
-        p.lastAppearanceTurn || 0, p.readySerial || 0,
+        p.lastAppearanceTurn || 0, p.readySerial || 0, p.readySince || 0,
         songs.map(song => [song.entryId, this._duetKey(song)])];
     });
     // Un invité sans ticket reste pertinent : son dernier passage physique
@@ -843,8 +847,10 @@ class Scheduler {
     // passage entre les deux) garde l'attente en cours.
     // Échange seulement si le ticket est resté dans la file : « Je pars » et
     // « Vider toutes les chansons » la vident, et l'attente recommence.
+    // `readySince` : heure de ce même début d'attente, qui range les premiers
+    // passages dans l'ordre d'ajout (_pick).
     const swapped = p.emptiedAt === this.appearanceSerial && this.Q.includes(p.id) && !p.withdrawnAt;
-    if (!this.songsOf(p).length && !swapped) p.readySerial = this.appearanceSerial;
+    if (!this.songsOf(p).length && !swapped) this._startWait(p);
     delete p.emptiedAt;
     if (mode === 'append' && p.song) p.backlog.push(next);
     else {
@@ -883,7 +889,7 @@ class Scheduler {
       // suivant de la liste, ou un titre rechoisi, commence une nouvelle attente.
       if (by === 'presence-max') {
         delete p.emptiedAt;
-        if (p.song) p.readySerial = this.appearanceSerial;
+        if (p.song) this._startWait(p);
       } else this._noteEmptied(p);
     } else {
       const i = (p.backlog || []).findIndex(s => s.entryId === key);
@@ -899,6 +905,16 @@ class Scheduler {
     if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
     this._event('song.removed', { personId: p.id, entryId: key, by });
     this.note(`${p.name} a retiré une chanson de sa liste`);
+  }
+
+  // Nouvelle attente : `readySerial` (compteur des passages, patience et
+  // anti-série) et `readySince` (heure, premier ajouté premier servi parmi
+  // les premiers passages). Deux attentes ouvertes dans la même milliseconde
+  // gardent leur ordre : l'heure ne recule jamais d'un ajout au suivant.
+  _startWait(p) {
+    p.readySerial = this.appearanceSerial;
+    this._readyClock = Math.max(Date.now(), (this._readyClock || 0) + 1);
+    p.readySince = this._readyClock;
   }
 
   // Liste vidée par un retrait : un titre rechoisi avant le passage suivant

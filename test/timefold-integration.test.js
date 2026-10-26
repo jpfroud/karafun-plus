@@ -9,8 +9,12 @@ const { TimefoldBridge } = require('../solver/bridge');
 
 const JAR = path.join(__dirname, '..', 'solver', 'target', 'karafun-solver.jar');
 
+// En « Chacun son tour », deux premiers passages partent dans l'ordre d'ajout,
+// avant tout plan (constat du 25 octobre) : les essais de plan qui suivent
+// tournent en « Tables à tour de rôle », où deux tables à part égale sont
+// départagées par le plan.
 test('un plan Timefold admissible décide réellement avant le repli historique', () => {
-  const s = new Scheduler();
+  const s = new Scheduler({ tableRotation: true });
   const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
   const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
   s.chooseSong(a, { songId: 1001, title: 'Titre A', artist: 'Test' });
@@ -67,7 +71,7 @@ test('la présence du prochain est annoncée tout de suite et le plan Timefold n
 });
 
 test('une note pendant le calcul ne relance pas Timefold et son résultat est publié une seule fois', async () => {
-  const s = new Scheduler();
+  const s = new Scheduler({ tableRotation: true });
   const a = s.join({ tableId: '1', name: 'A', headcount: 1 });
   const b = s.join({ tableId: '2', name: 'B', headcount: 1 });
   s.chooseSong(a, { songId: 1011, title: 'A', artist: 'Test' });
@@ -511,9 +515,11 @@ test('avec Timefold actif, JP attend bien Table 2 puis Table 3 avant de revenir'
       const marine = s.join({ tableId: '1', name: 'Marine' });
       const t2 = s.join({ tableId: '2', name: 'Table 2', headcount: 1 });
       const t3 = s.join({ tableId: '3', name: 'Table 3', headcount: 1 });
-      s.chooseSong(marine, { songId: 202, title: 'Marine 1', artist: 'Test' });
+      // Premiers passages dans l'ordre d'ajout : les tables 2 et 3 ajoutent
+      // avant Marine (ajoutée avant elles, elle passerait la première).
       s.chooseSong(t2, { songId: 203, title: 'T2 1', artist: 'Test' });
       s.chooseSong(t3, { songId: 204, title: 'T3 1', artist: 'Test' });
+      s.chooseSong(marine, { songId: 202, title: 'Marine 1', artist: 'Test' });
       await s.whenPlanReady();
       assert.deepEqual(s.readyView().map(x => x.name), ['Table 2', 'Table 3', 'Marine']);
       assert.deepEqual([await send(), await send(), await send()], ['Table 2', 'Table 3', 'Marine']);
@@ -806,7 +812,10 @@ test('compromis : Timefold utilise la taille des tables (inscrits)',
     const seed = async (req, id) => medium((await bridge.solve({ ...req, requestId: id, budgetMs: 100,
       performances: req.performances.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
     const bFirst = { ...request, performances: [request.performances[1], request.performances[0], ...request.performances.slice(2)] };
-    const withSizes = await seed(bFirst, 'sizes-with'), withoutSizes = await seed({ ...bFirst, groupSizes: {} }, 'sizes-without');
+    // Sans l'ordre d'ajout des premiers passages : il départage les parts
+    // égales, qui ne sont pas les mêmes avec et sans les tailles.
+    const plain = { ...bFirst, addedOrder: {} };
+    const withSizes = await seed(plain, 'sizes-with'), withoutSizes = await seed({ ...plain, groupSizes: {} }, 'sizes-without');
     assert.ok(withSizes < withoutSizes, `${withSizes} contre ${withoutSizes}`);
   } finally { bridge.close(); }
 });
@@ -1077,4 +1086,79 @@ test('B7 vraie JVM : -Xlog:gc (journal sur stdout) laisse Timefold répondre',
       assert.equal(bridge.lastError, null);
       assert.equal(bridge.available, true);
     } finally { bridge.close(); }
+  });
+
+// Premiers passages, premier ajouté premier servi (constat du gérant du
+// 25 octobre) : 12 personnes ajoutent leur premier titre l'une après l'autre.
+// Timefold reçoit l'ordre d'ajout et ne le contredit pas : en « Chacun son
+// tour » avant la règle des tables, dans les modes de tables à part égale.
+const FIRST_ARRIVALS = [['Comptoir', 'S1'], ['A', 'A1'], ['B', 'B1'], ['A', 'A2'], ['C', 'C1'], ['A', 'A3'],
+  ['B', 'B2'], ['A', 'A4'], ['C', 'C2'], ['B', 'B3'], ['C', 'C3'], ['Comptoir', 'S2']];
+function firstArrivals(options = {}) {
+  const s = new Scheduler(options);
+  const people = FIRST_ARRIVALS.map(([tableId, name], k) => {
+    const p = s.join({ tableId, name, headcount: { A: 4, B: 3, C: 3 }[tableId] });
+    s.chooseSong(p, { songId: 9700 + k, title: `Premier ${name}`, artist: 'Test' });
+    return p;
+  });
+  return { s, people };
+}
+function firstArrivalsRequest(options = {}) {
+  const { s, people } = firstArrivals(options);
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  return { s, people, request };
+}
+
+test('premiers passages : Timefold reçoit l’ordre d’ajout des auteurs', () => {
+  const { people, request } = firstArrivalsRequest();
+  assert.deepEqual(people.map(p => request.addedOrder[p.id]), people.map((_, k) => k));
+  assert.deepEqual(request.performances.map(row => row.owner), people.map(p => p.id),
+    'l’ordre de départ suit déjà l’ordre d’ajout');
+});
+
+test('QueueScore : un premier passage servi avant un autre ajouté plus tôt coûte',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+    const bridge = new TimefoldBridge({ jar: JAR });
+    try {
+      for (const [mode, options, moved] of [
+        // Ordre de l'ancien ordonnanceur : S1 dépassé par les grandes tables.
+        ['chacun son tour', {}, ['A1', 'B1', 'C1', 'S1', 'A2', 'S2', 'B2', 'A3', 'C2', 'A4', 'B3', 'C3']],
+        // Même part pour toutes les tables au départ : S2, ajoutée la dernière, passe avant A1.
+        ['tables à tour de rôle', { tableRotation: true }, ['S1', 'S2', 'A1', 'B1', 'C1', 'A2', 'B2', 'A3', 'C2', 'B3', 'A4', 'C3']],
+      ]) {
+        const { s, request } = firstArrivalsRequest(options);
+        const byName = new Map(request.performances.map(row => [s.people.get(row.owner).name, row]));
+        const seed = async (rows, id, extra = {}) => medium((await bridge.solve({ ...request, ...extra, requestId: id, budgetMs: 100,
+          performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+        const local = request.performances, other = moved.map(name => byName.get(name));
+        const kept = await seed(local, `fifo-${mode}`), swapped = await seed(other, `fifo-swap-${mode}`);
+        assert.ok(kept > swapped, `${mode} : ordre d’ajout ${kept}, ancien ordre ${swapped}`);
+        // Sans l'ordre d'ajout (ancien client), l'écart est moindre ou s'inverse.
+        const keptOld = await seed(local, `fifo-old-${mode}`, { addedOrder: {} });
+        const swappedOld = await seed(other, `fifo-old-swap-${mode}`, { addedOrder: {} });
+        assert.ok(kept - swapped > keptOld - swappedOld, `${mode} : la règle pèse (${kept - swapped} contre ${keptOld - swappedOld})`);
+      }
+    } finally { bridge.close(); }
+  });
+
+test('premiers passages : le plan Timefold garde l’ordre d’ajout dans les trois modes',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    for (const [mode, options] of [['chacun son tour', {}], ['tables à tour de rôle', { tableRotation: true }],
+      ['compromis', { tableRotation: true, weightedTables: true }]]) {
+      const local = firstArrivals(options).s.readyView().map(item => item.name);
+      const { s } = firstArrivals({ solverEnabled: true, solverBudgetMs: 1000, ...options });
+      try {
+        assert.equal(await s.whenPlanReady(), true, `${mode} : vrai plan Java`);
+        const view = s.readyView().map(item => item.name);
+        assert.deepEqual(view, local, `${mode} : Timefold ${view.join(' ')} ; règle locale ${local.join(' ')}`);
+        if (!options.weightedTables) assert.equal(view[0], 'S1', `${mode} : la première arrivée passe la première`);
+        for (const table of ['A', 'B', 'C']) {
+          const members = view.filter(name => name[0] === table);
+          assert.deepEqual(members, [...members].sort(), `${mode} : table ${table} dans l’ordre d’ajout`);
+        }
+      } finally { s.closeSolver(); }
+    }
   });

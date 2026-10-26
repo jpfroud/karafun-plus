@@ -95,27 +95,32 @@ for (const [mode, options] of modes) {
   });
 }
 
-test('essai au bar (chacun son tour) : la grande table ne garde plus le micro', () => {
-  let same = 0, longest = 0, firstRound = 0, firstRoundLongest = 0;
+// Constat du gérant du 25 octobre : en « Chacun son tour », le tour des solos,
+// tous des premiers passages, suit l'ordre d'ajout (premier ajouté, premier
+// servi). La grande table n'y reprend le micro que si ses chanteurs ont
+// ajouté leurs titres à la suite : autant de reprises que dans l'ordre
+// d'ajout (avant ce constat, l'alternance des tables passait avant, 9
+// reprises sur ces 25 soirées contre 143 dans l'ordre d'ajout). Ensuite,
+// duos compris, elle ne garde plus le micro. Les modes de tables gardent
+// l'alternance dès le premier tour.
+test('essai au bar (chacun son tour) : premiers passages dans l’ordre d’ajout, puis la grande table ne garde plus le micro', () => {
+  let rest = 0, longest = 0;
   for (let seed = 1; seed <= 25; seed++) {
     const s = barEvening({}, seed);
+    const added = [...s.people.values()].sort((a, b) => a.readySince - b.readySince);
     const { played } = playAll(s);
-    const runs = tableRuns(played);
-    same += runs.same;
-    longest = Math.max(longest, runs.longest);
-    // Tour des 20 solos : 10 chanteurs de A pour 10 autres, une alternance
-    // parfaite est possible.
+    assert.deepEqual(played.slice(0, 20).map(item => item.ids[0]), added.map(p => p.id),
+      `graine ${seed} : le tour des solos suit l'ordre d'ajout`);
     const round = tableRuns(played.slice(0, 20));
-    firstRound += round.same;
-    firstRoundLongest = Math.max(firstRoundLongest, round.longest);
+    assert.equal(round.same, tableRuns(added.map(p => ({ groups: [p.group] }))).same,
+      `graine ${seed} : pas d'autre reprise de table que celles de l'ordre d'ajout`);
+    rest += tableRuns(played).same - round.same;
+    longest = Math.max(longest, tableRuns(played.slice(19)).longest);
   }
-  // Mesures de l'ancien ordonnanceur sur ces 25 soirées : 100 reprises de
-  // table dans le tour des solos (séries de 5) et 165 sur toute la soirée
-  // (séries de 9), identiques en mode personnes et en rotation des tables.
-  assert.ok(firstRound <= 15, `tour des solos : ${firstRound} reprises de table sur 25 soirées`);
-  assert.ok(firstRoundLongest <= 2, `tour des solos : série la plus longue ${firstRoundLongest}`);
-  assert.ok(same <= 90, `soirée complète, duos compris : ${same} reprises`);
-  assert.ok(longest <= 6, `série la plus longue (duos entre tables en fin de liste compris) : ${longest}`);
+  // Mesures de l'ancien ordonnanceur sur la suite de ces 25 soirées : 69
+  // reprises (63 avec l'ordre d'ajout), séries de 6 au plus.
+  assert.ok(rest <= 75, `après le tour des solos, duos compris : ${rest} reprises`);
+  assert.ok(longest <= 6, `série la plus longue après le tour des solos (duos entre tables en fin de liste compris) : ${longest}`);
 });
 
 test('les trois modes donnent réellement des parts différentes aux tables', () => {
@@ -231,18 +236,25 @@ test('bonus et malus : fréquence réglable, premiers passages protégés', () =
   assert.throws(() => s.setTableBonus('inconnue', 1), /Table inconnue/);
 });
 
+// En « Chacun son tour », les premiers passages suivent l'ordre d'ajout
+// (constat du gérant du 25 octobre) : le bonus n'y change rien, il joue dès le
+// tour suivant. Les tables ajoutent leurs titres mêlées (A1, B1, C1, A2…).
 test('bonus de table : la table favorisée passe plus tôt dans le tour, sans reprendre le micro', () => {
   const build = bonus => {
     const s = new Scheduler();
+    for (const tableId of ['A', 'B', 'C']) s.setHeadcount(tableId, 4);
+    const people = [];
+    for (let i = 0; i < 4; i++) for (const tableId of ['A', 'B', 'C']) people.push(s.join({ tableId, name: `${tableId}${i + 1}` }));
     let n = 1;
-    for (const [tableId, count] of [['A', 4], ['B', 4], ['C', 4]]) {
-      s.setHeadcount(tableId, count);
-      for (let i = 0; i < count; i++) s.chooseSong(s.join({ tableId, name: `${tableId}${i + 1}` }), song(n++));
-    }
+    for (const p of people) s.chooseSong(p, song(n++));
+    for (const p of people) s.chooseSong(p, song(n++), 'append');
     if (bonus) s.setTableBonus('C', bonus);
     return s;
   };
-  const rank = s => s.readyView().map((item, index) => item.tableId === 'C' ? index : null).filter(x => x !== null);
+  const names = s => s.readyView().map(item => item.name);
+  const added = names(build(0)).slice(0, 12);
+  for (const bonus of [3, -3]) assert.deepEqual(names(build(bonus)).slice(0, 12), added, `bonus ${bonus} : premier tour`);
+  const rank = s => s.readyView().slice(12).map((item, index) => item.tableId === 'C' ? index : null).filter(x => x !== null);
   const neutral = rank(build(0)), favoured = rank(build(3)), penalised = rank(build(-3));
   const mean = list => list.reduce((a, b) => a + b, 0) / list.length;
   assert.ok(mean(favoured) < mean(neutral), `bonus : places ${favoured} contre ${neutral}`);
@@ -664,7 +676,8 @@ test('duo : ses propres chanteurs ne comptent pas comme doublés', () => {
   for (const t of ['A', 'B', 'C']) s.setHeadcount(t, 6);
   const [b0, c1, c2, b3] = [['B', 'B0'], ['C', 'C1'], ['C', 'C2'], ['B', 'B3']].map(([tableId, name]) => s.join({ tableId, name }));
   let n = 1;
-  for (const p of [b0, c1, c2, b3]) s.chooseSong(p, song(n++));
+  // Ordre d'ajout = ordre des premiers passages (« Chacun son tour »).
+  for (const p of [b0, c2, b3, c1]) s.chooseSong(p, song(n++));
   const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel.names; };
   assert.deepEqual(play(), ['B0']);
   s.inviteDuet(b0, b3.id, song(n++));

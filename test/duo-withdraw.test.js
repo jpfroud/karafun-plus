@@ -75,9 +75,11 @@ test('duo déjà dans KaraFun : l’invitée récupère exactement sa part du to
   const sel = s.select();
   assert.deepEqual(sel.ids, [chloe.id]);
   s.commit(sel);
-  s.chooseSong(bruno, song(10, 'Titre de Bruno'));
+  // Duo d'Alice ajouté avant le titre de Bruno : premiers passages dans
+  // l'ordre d'ajout, il part d'abord.
   const duo = s.inviteDuet(alice, bruno.id, song(1, 'Un'));
   s.answerDuet(bruno, true, duo.entryId);
+  s.chooseSong(bruno, song(10, 'Titre de Bruno'));
   s.Q = [alice.id, bruno.id, chloe.id];
   const brunoBefore = guestState(s, bruno);
   const duoSel = s.select();
@@ -230,9 +232,10 @@ test('messages : gardés 30 minutes, dix au plus, effacés par le téléphone', 
 
 test('duo déjà dans KaraFun : un passage de l’invitée envoyé depuis n’est pas effacé par son retrait', () => {
   const { s, alice, bruno } = trio({ roundAppearanceCap: 0, spacingSongs: 0 });
-  s.chooseSong(bruno, song(10, 'Titre de Bruno'));
+  // Duo ajouté avant le titre de Bruno : il part d'abord (ordre d'ajout).
   const duo = s.inviteDuet(alice, bruno.id, song(1, 'Un'));
   s.answerDuet(bruno, true, duo.entryId);
+  s.chooseSong(bruno, song(10, 'Titre de Bruno'));
   s.Q = [alice.id, bruno.id];
   const duoSel = s.select();
   assert.deepEqual(duoSel.ids, [alice.id, bruno.id]);

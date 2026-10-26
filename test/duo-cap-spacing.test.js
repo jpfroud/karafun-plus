@@ -119,7 +119,7 @@ test('un nouveau venu seul n’attend jamais pour l’espacement ; un duo avec q
   const dueWithStar = s.inviteDuet(late, star.id, song());
   s.answerDuet(star, true, dueWithStar.entryId);
   const order = [];
-  for (let k = 0; k < 6; k++) {
+  for (let k = 0; k < 10; k++) {
     for (const p of people) refill(p);
     const sel = s.select();
     s.commit(sel); s.songEnded(sel.ids);
@@ -127,7 +127,13 @@ test('un nouveau venu seul n’attend jamais pour l’espacement ; un duo avec q
     if (sel.ids.includes(late.id)) break;
   }
   const wait = order.findIndex(ids => ids.includes(late.id));
-  assert.ok(wait >= 0 && wait <= 3, `le premier passage de Tard arrive dans les quatre chansons suivantes (${wait})`);
+  // Compté depuis le dernier passage de Y1 : un duo avec Y1 plus ancien, dû
+  // au tour précédent (plafond de deux passages), peut passer d'abord. Les
+  // titres de départ ajoutés table par table (premiers passages dans l'ordre
+  // d'ajout) laissent ici le duo de Y4 dans ce cas.
+  const starBefore = order.slice(0, Math.max(0, wait)).map(ids => ids.includes(star.id)).lastIndexOf(true);
+  assert.ok(wait >= 0 && wait - starBefore - 1 <= 3,
+    `le premier passage de Tard arrive dans les quatre chansons suivantes, ou trois après le dernier passage de Y1 (${wait}, ${starBefore})`);
 });
 
 test('la prévision affichée est exactement l’ordre réellement chanté', () => {

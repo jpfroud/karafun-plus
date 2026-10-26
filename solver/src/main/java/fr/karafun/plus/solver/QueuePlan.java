@@ -40,6 +40,12 @@ public class QueuePlan {
      * does not count as singing one of their own titles.
      */
     private Map<String, Double> groupSizes = Map.of();
+    /**
+     * Rank of the time each owner's wait started (Node readySince): first appearances are served
+     * first come, first served (rotation.js#_pick). Same rank, same time. Empty from an older client:
+     * no such rule.
+     */
+    private Map<String, Integer> addedOrder = Map.of();
     private List<List<String>> history;
     private Rotation rotation;
     private boolean interleaveArrivals;
@@ -102,6 +108,8 @@ public class QueuePlan {
     public Map<String, Double> getTableWeights() { return tableWeights; }
     public Map<String, Double> getGroupSizes() { return groupSizes; }
     public void setGroupSizes(Map<String, Double> groupSizes) { this.groupSizes = groupSizes == null ? Map.of() : groupSizes; }
+    public Map<String, Integer> getAddedOrder() { return addedOrder; }
+    public void setAddedOrder(Map<String, Integer> addedOrder) { this.addedOrder = addedOrder == null ? Map.of() : addedOrder; }
     public List<List<String>> getHistory() { return history; }
     public Rotation getRotation() { return rotation; }
     public boolean isInterleaveArrivals() { return interleaveArrivals; }

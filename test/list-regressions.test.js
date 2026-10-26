@@ -77,7 +77,11 @@ function send(s) {
   return selection.names[0];
 }
 
-test('JP, table 2, table 3, Marine : les trois tables passent avant le second chanteur de la table 1', () => {
+// Constat du gérant du 25 octobre : en « Chacun son tour », les premiers
+// passages suivent l'ordre d'ajout. Marine, qui a choisi avant les tables 2
+// et 3, chante juste après JP, de sa table (avant ce constat, les deux tables
+// passaient d'abord) ; les retours, eux, gardent la règle des tables.
+test('JP, Marine, table 2, table 3 : premiers passages dans l’ordre d’ajout, puis les autres tables avant le retour de la table 1', () => {
   const s = new Scheduler();
   const jp = s.join({ tableId: '1', name: 'JP', headcount: 2 });
   s.chooseSong(jp, song(101));
@@ -89,20 +93,37 @@ test('JP, table 2, table 3, Marine : les trois tables passent avant le second ch
   s.chooseSong(t2, song(103));
   s.chooseSong(t3, song(104));
 
-  assert.deepEqual(s.readyView().map(x => x.name), ['Table 2', 'Table 3', 'Marine']);
+  assert.deepEqual(s.readyView().map(x => x.name), ['Marine', 'Table 2', 'Table 3']);
   for (let i = 0; i < 3; i++) played.push(send(s));
-  assert.deepEqual(played, ['JP', 'Table 2', 'Table 3', 'Marine']);
+  assert.deepEqual(played, ['JP', 'Marine', 'Table 2', 'Table 3']);
 
   // Marine est envoyée dès son nouveau choix, avant que les trois autres
-  // personnes ne choisissent à nouveau : JP reste, mais après les autres tables.
+  // personnes ne choisissent à nouveau : JP ne reprend pas le micro juste
+  // après elle ; la table 3, qui vient de chanter, attend trois chansons.
   s.chooseSong(marine, song(105));
   const second = [send(s)];
   s.chooseSong(jp, song(106));
   s.chooseSong(t2, song(107));
   s.chooseSong(t3, song(108));
-  assert.deepEqual(s.readyView().map(x => x.name), ['Table 2', 'Table 3', 'JP']);
+  assert.deepEqual(s.readyView().map(x => x.name), ['Table 2', 'JP', 'Table 3']);
   for (let i = 0; i < 3; i++) second.push(send(s));
-  assert.deepEqual(second, ['Marine', 'Table 2', 'Table 3', 'JP']);
+  assert.deepEqual(second, ['Marine', 'Table 2', 'JP', 'Table 3']);
+});
+
+test('JP, table 2, table 3, Marine : ajoutés avant elle, les titres des autres tables passent d’abord', () => {
+  const s = new Scheduler();
+  const jp = s.join({ tableId: '1', name: 'JP', headcount: 2 });
+  s.chooseSong(jp, song(111));
+  const played = [send(s)];
+  const marine = s.join({ tableId: '1', name: 'Marine' });
+  const t2 = s.join({ tableId: '2', name: 'Table 2', headcount: 1 });
+  const t3 = s.join({ tableId: '3', name: 'Table 3', headcount: 1 });
+  s.chooseSong(t2, song(112));
+  s.chooseSong(t3, song(113));
+  s.chooseSong(marine, song(114));
+  assert.deepEqual(s.readyView().map(x => x.name), ['Table 2', 'Table 3', 'Marine']);
+  for (let i = 0; i < 3; i++) played.push(send(s));
+  assert.deepEqual(played, ['JP', 'Table 2', 'Table 3', 'Marine']);
 });
 
 test('la prévision et la file provisoire suivent la sélection réelle', () => {
@@ -114,11 +135,12 @@ test('la prévision et la file provisoire suivent la sélection réelle', () => 
   [jp, t2, marine, t3].forEach((p, i) => s.chooseSong(p, song(200 + i)));
   s.Q = [jp.id, t2.id, marine.id, t3.id];
   const names = slots => slots.map(x => s.people.get(x.ids[0]).name);
-  assert.deepEqual(names(s.predict()), ['JP', 'Table 2', 'Table 3', 'Marine']);
-  assert.deepEqual(s.readyView().map(x => x.name), ['JP', 'Table 2', 'Table 3', 'Marine']);
+  // Premiers passages dans l'ordre d'ajout (« Chacun son tour »).
+  assert.deepEqual(names(s.predict()), ['JP', 'Table 2', 'Marine', 'Table 3']);
+  assert.deepEqual(s.readyView().map(x => x.name), ['JP', 'Table 2', 'Marine', 'Table 3']);
   const pending = s.select();
   assert.equal(pending.names[0], 'JP');
-  assert.deepEqual(s.readyView(pending.ids, pending).map(x => x.name), ['Table 2', 'Table 3', 'Marine']);
+  assert.deepEqual(s.readyView(pending.ids, pending).map(x => x.name), ['Table 2', 'Marine', 'Table 3']);
 });
 
 test('quarante chansons continues gardent dix passages par personne', () => {

@@ -14,6 +14,8 @@ const ev = rejeu.loadEvening(FIXTURE);
 let forced = null;
 const forcedRun = async () => forced ||= await rejeu.runForced(ev);
 const ids = d => d?.ids.join('+');
+// Envois réels du 15 octobre servis avant un premier passage demandé plus tôt.
+const FIRST_COME_MISSES = ['21:02:29', '21:09:20', '21:17:43', '21:21:38'];
 // Configurations Timefold écrites par les rejeux (limite de mouvements) :
 // chacune est effacée en fin de rejeu. Dossier temporaire propre à ce fichier
 // de tests : un rejeu lancé à côté n'y écrit pas.
@@ -75,16 +77,25 @@ test('rejeu libre : le journal rejoué garde les demandes réelles et remplace l
   assert.deepEqual(withSends.map(e => [e.entryId, e.t]), sent.filter(p => p.source === 'queue').map(p => [p.entryId, p.sentAt]));
 });
 
-test('rejeu forcé sans Timefold : chaque envoi réel jusqu’au nouveau tour de 21:49:51, sauf l’égalité de 21:06:30', async () => {
+// Premiers passages dans l'ordre d'ajout (constat du gérant du 25 octobre) :
+// ce soir-là, quatre premiers passages sont partis avant un premier passage
+// demandé plus tôt (part des tables), l'ordonnanceur sert maintenant le
+// premier ajouté. L'égalité de 21:06:30 entre S05 et S07, départagée en réel
+// par le plan Timefold, l'est de la même façon par l'ordre d'ajout.
+test('rejeu forcé sans Timefold : chaque envoi réel jusqu’au nouveau tour de 21:49:51, sauf quatre premiers passages hors de l’ordre d’ajout', async () => {
   const res = await forcedRun();
   const sends = res.decisions.filter(d => d.kind === 'send');
   assert.equal(sends.length, 56);
   const reset = sends.findIndex(d => d.time === '21:49:51');
   assert.ok(reset > 0, 'envoi de 21:49:51 retrouvé');
   assert.equal(sends[reset].real.newRound, true);
-  const misses = sends.slice(0, reset + 1).filter(d => !d.match).map(d => d.time);
-  // 21:06:30 : égalité entre S05 et S07 départagée par le plan Timefold en réel.
-  assert.deepEqual(misses, ['21:06:30']);
+  const misses = sends.slice(0, reset + 1).filter(d => !d.match);
+  assert.deepEqual(misses.map(d => d.time), FIRST_COME_MISSES);
+  const asked = new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t]));
+  for (const d of misses) {
+    assert.ok(asked.get(d.pick.entryId) < asked.get(d.real.entryId), `${d.time} : ${ids(d.pick)} demandé avant ${ids(d.real)}`);
+  }
+  assert.equal(sends.find(d => d.time === '21:06:30').match, true);
   // L'état suit la soirée : le nouveau tour tombe aux mêmes envois.
   assert.equal(sends.filter(d => d.committed.newRound === d.real.newRound).length, 56);
 });
@@ -1271,8 +1282,10 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
   // Vote en attente d'envoi derrière z1, réservé, et titre lancé dans KaraFun
   // après la Battle en réel (O2, 270 s) déjà dû : z1 part, puis la Battle,
   // puis O2 (server.js), au lieu de tout bloquer jusqu'au bout.
+  // (titres demandés dans l'ordre où ils passent : premiers passages dans
+  // l'ordre d'ajout)
   const behindReserved = await scenesOf(build((e, stage, ask) => {
-    ask(1, 'S02', 'y1', 2); ask(2, 'S03', 'z1', 3); ask(3, 'S01', 'x1', 1);
+    ask(1, 'S02', 'y1', 2); ask(2, 'S01', 'x1', 1); ask(3, 'S03', 'z1', 3);
     stage(10, 'z1', ['S03'], 'q1', 95);
     e(90, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
     e(110, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
@@ -2594,7 +2607,9 @@ test('rejeu forcé avec Timefold : l’égalité de 21:06:30 est départagée co
     assert.equal(sends.at(-1).time, '21:49:51');
     const tie = sends.find(d => d.time === '21:06:30');
     assert.equal(tie.match, true, `rejeu : ${ids(tie.pick)}`);
-    assert.deepEqual(sends.filter(d => !d.match).map(d => d.time), []);
+    // Seuls diffèrent les premiers passages servis ce soir-là avant un premier
+    // passage demandé plus tôt : Timefold ne contredit pas l'ordre d'ajout.
+    assert.deepEqual(sends.filter(d => !d.match).map(d => d.time), FIRST_COME_MISSES);
   });
 
 test('rejeu avec Timefold : effort compté en mouvements, plafond de temps atteint signalé',

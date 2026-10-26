@@ -215,6 +215,11 @@ test('titre retiré faute de présence en cours de soirée : suivant annoncé au
   assert.equal(s.skipUnconfirmed(alice.id, 3).removed, true, 'troisième manque : titre retiré');
   assert.ok(s.appearanceSerial >= 2, 'des passages ont eu lieu entre-temps');
   assert.equal(s.songsOf(alice).length, 1);
+  // Son titre suivant ouvre une nouvelle attente : elle garde la priorité
+  // des premiers passages, derrière Driss, qui attendait avant elle (premier
+  // ajouté, premier servi, constat du 25 octobre), et avant tout retour.
+  assert.equal(s.reservePresenceNext().ids[0], people.Driss.id, 'Driss attendait avant sa nouvelle attente');
+  next();
   assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
   const view = JSON.stringify(s.presenceView().map(v => v.ids));
   const state = JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]);
@@ -259,8 +264,10 @@ test('« Toujours là » : prochain passage de la file, duo d’invitée, prése
   const zoe = s.join({ tableId: '1', name: 'Zoé', headcount: 3 });
   const alice = s.join({ tableId: '1', name: 'Alice', headcount: 3 });
   const olga = s.join({ tableId: '1', name: 'Olga', headcount: 3 });
-  s.chooseSong(alice, song());
+  // Le duo d'Olga est ajouté avant le titre d'Alice : premiers passages dans
+  // l'ordre d'ajout, il passe d'abord.
   s.inviteDuet(olga, alice.id, song()); // même table : duo accepté d'office
+  s.chooseSong(alice, song());
   s.chooseSong(zoe, song()); s.chooseSong(zoe, song(), 'append');
   s.inviteDuet(zoe, alice.id, song());
   alice.maybeGone = { at: Date.now(), title: 'x', skips: 3 };

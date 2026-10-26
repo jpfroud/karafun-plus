@@ -312,6 +312,12 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     if (p.readySerial != null && (!Number.isSafeInteger(p.readySerial) || p.readySerial < 0)) p.readySerial = 0;
     if ((p.readySerial || 0) > tmp.appearanceSerial) p.readySerial = tmp.appearanceSerial;
     if (p.emptiedAt != null && (!Number.isSafeInteger(p.emptiedAt) || p.emptiedAt > tmp.appearanceSerial)) delete p.emptiedAt;
+    // Heure du même début d'attente (premiers passages dans l'ordre d'ajout) :
+    // abîmée, ou absente d'une sauvegarde d'avant ce champ, l'heure d'entrée
+    // dans la file en tient lieu (premier titre d'une personne qui n'a pas
+    // encore chanté) ; sans elle, la personne passe pour arrivée la première.
+    if (p.readySince != null && (!Number.isFinite(p.readySince) || p.readySince < 0)) delete p.readySince;
+    if (p.readySince == null && Number.isFinite(p.waitingSince) && p.waitingSince >= 0) p.readySince = p.waitingSince;
     if ((p.lastAppearanceTurn || 0) <= tmp.appearanceSerial) continue;
     warnings.push(`dernier passage ${p.lastAppearanceTurn} de la personne ${p.id} au-delà du compteur des passages ` +
       `${tmp.appearanceSerial} : ramené à ${tmp.appearanceSerial}`);
