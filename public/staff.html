@@ -298,7 +298,8 @@
 <dialog id="tableSheet" class="staff-dialog" aria-labelledby="tableSheetTitle"><h2 id="tableSheetTitle">Table</h2><p class="small muted" id="tableSheetInfo"></p>
   <label class="field" for="tableSheetName">Nom affiché (1 à 40 caractères)</label><div class="row wrap"><input id="tableSheetName" type="text" maxlength="40" data-autosave="tableRename"><span class="save-status" id="tableSheetNameStatus" aria-live="polite"></span></div>
   <div id="tableSheetHcRow"><label class="field" for="tableSheetHc">Places (1 à 40)</label><div class="row wrap"><input id="tableSheetHc" type="number" inputmode="numeric" min="1" max="40" data-autosave="tableHc"><span class="save-status" id="tableSheetHcStatus" aria-live="polite"></span></div></div>
-  <label class="field" for="tableSheetBonus">Bonus table (réservé au bar, jamais montré aux clients)</label><select id="tableSheetBonus"></select>
+  <label class="field" for="tableSheetBonus">Bonus table (réservé au bar, jamais montré aux clients)</label><select id="tableSheetBonus" aria-describedby="tableSheetBonusHelp"></select>
+  <p class="tiny muted" id="tableSheetBonusHelp"></p>
   <div class="row wrap sheet-actions"><button type="button" class="btn small" id="tableSheetQr">Montrer le QR</button><a class="btn small" id="tableSheetPage" href="#" target="_blank" rel="noopener">Page</a><button type="button" class="btn small danger" id="tableSheetLeft">Table partie</button></div>
   <button type="button" class="btn small primary" id="tableSheetClose">Fermer</button></dialog>
 
@@ -323,6 +324,18 @@
     0: 'Aucun', 1: '+1 : un peu plus souvent', 2: '+2 : une fois et demie plus', 3: '+3 : deux fois plus' };
   const bonusOptions = level => [-3, -2, -1, 0, 1, 2, 3].map(value =>
     `<option value="${value}" ${Number(level || 0) === value ? 'selected' : ''}>${BONUS_LABELS[value]}</option>`).join('');
+  // Ce que fait le niveau choisi (page du bar seulement) : un bonus espace
+  // régulièrement les passages en plus, sans passer devant un premier passage.
+  const BONUS_HELP = { '-3': 'passe un tour sur deux', '-2': 'passe environ deux tours sur trois',
+    '-1': 'passe un peu moins souvent (environ 4 passages pour 5)', 0: 'passe une fois par tour, comme les autres',
+    1: 'passe un peu plus souvent (environ 5 passages pour 4)', 2: 'passe environ une fois et demie plus souvent',
+    3: 'passe environ deux fois plus souvent' };
+  const bonusHelp = level => {
+    const value = Number(level) || 0;
+    const sign = value > 0 ? `+${value}` : value < 0 ? `−${-value}` : 'Aucun';
+    return `${sign} : ${BONUS_HELP[value] || BONUS_HELP[0]}${value > 0 ? ', à intervalles réguliers ; les premiers passages des nouveaux restent prioritaires' :
+      value < 0 ? ' ; le premier passage de la soirée n’est pas retardé' : ''}.`;
+  };
   const store = { get(name) { try { return localStorage.getItem(name); } catch (_) { return null; } },
     set(name, value) { try { localStorage.setItem(name, value); } catch (_) { /* mémoire du navigateur indisponible */ } } };
   let alertsEnabled = store.get('bar-alerts') === 'yes';
@@ -902,9 +915,9 @@
     // Une ligne compacte par personne, regroupée par table.
     const row = p => `<div class="identity-row${p.active ? '' : ' gone'}" data-identity-person="${esc(p.id)}">
       ${photoHtml(p, p.name)}
-      <div class="identity-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}<span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${activityHtml(activityOf(p))}</div>
+      <div class="identity-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}<span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${p.bonus ? `<span class="tiny muted" data-person-bonus-help>${esc(bonusHelp(p.bonus))}</span>` : ''}${activityHtml(activityOf(p))}</div>
       <span class="identity-note"><input data-identity-note data-autosave="note" data-autosave-id="${esc(p.id)}" type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}"><span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span></span>
-      <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
+      <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar. ${esc(bonusHelp(p.bonus))}" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
     </div>`;
     const groups = [];
     for (const p of people) {
@@ -1520,6 +1533,7 @@
       $('tableSheetBonus').innerHTML = bonus;
       rendered.set($('tableSheetBonus'), bonus);
     }
+    $('tableSheetBonusHelp').textContent = bonusHelp($('tableSheetBonus').value);
     $('tableSheetQr').hidden = $('tableSheetPage').hidden = !!t.individual || !t.url;
     $('tableSheetPage').href = t.url || '#';
     $('tableSheetLeft').hidden = t.id === 'Comptoir' && !!t.individual;
@@ -1541,8 +1555,11 @@
     try { $('tableSheet').close(); } finally { keepStep = false; }
     showTableQr(id);
   };
-  $('tableSheetBonus').onchange = () => act('/api/staff/bonus', { tableId: $('tableSheet').dataset.tableId, level: Number($('tableSheetBonus').value) },
-    Number($('tableSheetBonus').value) ? 'Bonus de table enregistré (invisible des clients)' : 'Bonus de table retiré');
+  $('tableSheetBonus').onchange = () => {
+    $('tableSheetBonusHelp').textContent = bonusHelp($('tableSheetBonus').value);
+    return act('/api/staff/bonus', { tableId: $('tableSheet').dataset.tableId, level: Number($('tableSheetBonus').value) },
+      Number($('tableSheetBonus').value) ? 'Bonus de table enregistré (invisible des clients)' : 'Bonus de table retiré');
+  };
   $('tableSheetLeft').onclick = () => {
     const t = tableOf($('tableSheet').dataset.tableId);
     if (t && confirm(`${t.name} est partie ? Ses tickets seront retirés.`)) {

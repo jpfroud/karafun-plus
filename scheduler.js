@@ -51,7 +51,9 @@
  *   passage entre les deux, ticket resté dans la file) garde l'attente en cours.
  * - Le bar peut accorder un bonus ou un malus (niveaux -3 à +3) à une table
  *   ou à une personne : il change la fréquence de passage, jamais la priorité
- *   des premiers passages. Les clients ne le voient pas.
+ *   des premiers passages. Les clients ne le voient pas. Les passages en plus
+ *   d'un bonus sont étalés : environ n/poids chansons entre deux passages (n :
+ *   personnes du tour), et non deux passages rapprochés puis un tour d'attente.
  */
 const { crypto, TimefoldBridge, DEFAULTS, bonusWeight, HISTORY_LIMIT, DEFER_MAX, INBOX_MAX, INBOX_TTL_MS, EPS, id, token,
   SONG_GAP_MAX_SEC, SONG_GAP_SAMPLES, SONG_GAP_MIN_SAMPLES } = require('./lib/scheduler/common');

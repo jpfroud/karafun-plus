@@ -549,9 +549,19 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   await page.change(row('bruno').querySelector('[data-person-bonus]'), '0');
   assert.deepEqual(page.lastPost('/api/staff/bonus').body, { personId: 'bruno', level: 0 });
   assert.equal(page.toast().text, 'Bonus retiré');
+  assert.equal(row('bruno').querySelector('[data-person-bonus-help]'), null, 'sans bonus, pas de phrase');
   page.world.people[1].bonus = -2;
   await page.poll();
   assert.equal(row('bruno').querySelector('[data-person-bonus]').value, '-2', 'le bonus enregistré est présélectionné');
+  // Ce que fait le niveau choisi, sur la ligne (page du bar seulement).
+  assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
+    '−2 : passe environ deux tours sur trois ; le premier passage de la soirée n’est pas retardé.');
+  page.world.people[1].bonus = 3;
+  await page.poll();
+  assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
+    '+3 : passe environ deux fois plus souvent, à intervalles réguliers ; les premiers passages des nouveaux restent prioritaires.');
+  page.world.people[1].bonus = -2;
+  await page.poll();
   // Repère enregistré tout seul : après la pause de frappe, sur Entrée ou en
   // quittant le champ. Seul le texte part.
   const note = id => row(id).querySelector('[data-identity-note]');
@@ -1409,12 +1419,19 @@ test('tables : tuiles, QR en grand, création, détails enregistrés seuls, bonu
   page.runTimers(1000);
   await page.flush();
   assert.equal(page.$('tableSheetNameStatus').textContent, 'Enregistré ✓', 'nom revenu à celui du serveur : rien à envoyer');
-  // Bonus de table.
+  // Bonus de table, avec ce que fait le niveau choisi.
+  assert.equal(page.$('tableSheetBonusHelp').textContent, 'Aucun : passe une fois par tour, comme les autres.');
   await page.change(page.$('tableSheetBonus'), '-1');
   assert.deepEqual(page.lastPost('/api/staff/bonus').body, { tableId: '2', level: -1 });
   assert.equal(page.toast().text, 'Bonus de table enregistré (invisible des clients)');
+  assert.equal(page.$('tableSheetBonusHelp').textContent,
+    '−1 : passe un peu moins souvent (environ 4 passages pour 5) ; le premier passage de la soirée n’est pas retardé.');
+  await page.change(page.$('tableSheetBonus'), '2');
+  assert.equal(page.$('tableSheetBonusHelp').textContent,
+    '+2 : passe environ une fois et demie plus souvent, à intervalles réguliers ; les premiers passages des nouveaux restent prioritaires.');
   await page.change(page.$('tableSheetBonus'), '0');
   assert.equal(page.toast().text, 'Bonus de table retiré');
+  assert.equal(page.$('tableSheetBonusHelp').textContent, 'Aucun : passe une fois par tour, comme les autres.');
   // Table partie.
   page.confirmAnswer = false;
   await page.click(page.$('tableSheetLeft'));

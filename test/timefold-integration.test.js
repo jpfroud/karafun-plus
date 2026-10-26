@@ -779,6 +779,49 @@ test('QueueScore : auteur déjà compté dans le tour, la dette de son invitée 
   } finally { bridge.close(); }
 });
 
+// Bonus étalé (lib/scheduler/rotation.js#_pick) : juste après le premier
+// passage d'un tour de S1 (+3, dix personnes), son passage en plus vient
+// environ 10/2 chansons plus tard. Le score Java suit la règle locale : le
+// ramener dès que l'espacement le permet (quatre chansons) sort des choix
+// équitables (-5 000), au lieu d'un simple écart de part.
+// KARAFUN_TEST_SOLVER_JAR : jar d'une autre version (ancien solveur : échoue).
+test('QueueScore : un bonus ne repasse pas avant son rythme étalé', { skip: !fs.existsSync(JAR) }, async () => {
+  const s = new Scheduler();
+  s._maybeRequestSolver = () => {};
+  const people = {};
+  for (const [tableId, count] of [['A', 3], ['B', 3], ['C', 2], ['S1', 1], ['S2', 1]]) {
+    s.setHeadcount(tableId, count);
+    for (let i = 1; i <= count; i++) people[count > 1 ? `${tableId}${i}` : tableId] = s.join({ tableId, name: count > 1 ? `${tableId}${i}` : tableId });
+  }
+  let n = 9600;
+  const refill = () => {
+    for (const p of Object.values(people)) while (s.songsOf(p).length < 2) s.chooseSong(p, { songId: n++, title: `T${n}`, artist: 'x' }, 'append');
+  };
+  refill();
+  s.setPersonBonus(people.S1.id, 3);
+  const s1 = s.people.get(people.S1.id);
+  for (let i = 0; i < 80 && !(i > 30 && s1.lastAppearanceTurn === s.appearanceSerial && !s.roundPeople.has(s1.id)); i++) {
+    const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); refill();
+  }
+  assert.ok(s1.lastAppearanceTurn === s.appearanceSerial && !s.roundPeople.has(s1.id), 'S1 vient de chanter, crédit ouvert');
+  let request;
+  s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+  s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+  const local = request.performances;
+  const next = local.findIndex(row => row.owner === s1.id);
+  assert.ok(next >= 4, `passage en plus de S1 au rang ${next}`);
+  const tight = local.slice();
+  tight.splice(3, 0, ...tight.splice(next, 1));
+  const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+  const bridge = new TimefoldBridge(process.env.KARAFUN_TEST_SOLVER_JAR ? { jar: process.env.KARAFUN_TEST_SOLVER_JAR } : {});
+  try {
+    const seed = async (rows, id) => medium((await bridge.solve({ ...request, requestId: id, budgetMs: 100,
+      performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+    const kept = await seed(local, 'bonus-spread'), hurried = await seed(tight, 'bonus-hurried');
+    assert.ok(hurried <= kept - 4500, `rythme étalé ${kept}, passage resserré ${hurried}`);
+  } finally { bridge.close(); }
+});
+
 // « Compromis » : la taille d'une table envoyée à Timefold (groupSizes) compte
 // ses chanteurs inscrits, titre prêt ou non, et change bien le score.
 function compromiseRequest() {

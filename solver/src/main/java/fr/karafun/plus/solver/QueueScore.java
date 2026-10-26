@@ -9,13 +9,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Same bar policy as lib/scheduler/rotation.js#_pick, evaluated on a whole planned queue.
  * Hard: the singer's own playlist order, first appearances of the evening
  * before anyone's return, at most roundCap stage appearances per person in a
  * round, and `spacing` other songs before a person returns when another
- * passage of the round allows it. Medium: once per round (with bonus/malus credits),
+ * passage of the round allows it. Medium: once per round (with bonus/malus credits,
+ * a bonus's extra passages spread out over the round),
  * nobody sees someone sing twice during their own wait when another allowed
  * passage avoids it (after the table rule in EQUAL and SQRT), first
  * appearances first come, first served (before the table rule in PEOPLE, a
@@ -47,6 +49,8 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         final int cap = plan.getRoundCap(), spacing = plan.getSpacing();
         List<List<String>> history = new ArrayList<>(plan.getHistory());
         List<String> previous = plan.getLastGroups();
+        boolean anyBonus = false;
+        for (double w : plan.getPersonWeights().values()) anyBonus |= w > 1 + EPS;
 
         for (int pos = 0; pos < n; pos++) {
             Performance current = order.get(pos);
@@ -78,14 +82,42 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             for (Performance c : candidates) if (!capped(c, apps, cap)) open.add(c);
             if (open.isEmpty()) open.addAll(candidates);
 
+            // Bonus spread out (lib/scheduler/rotation.js#_pick, `early`): a
+            // singer weighing w > 1 whose round is not over comes back only
+            // about n/w passages after their last one (n: people of the
+            // current round, a title ready or already on stage in it), unless
+            // the round no longer has room for the passages their credit
+            // still gives (one: no other new passage left; k >= 2: at most
+            // k * spacing left). Spacing still wins (fallback below). Only
+            // computed when someone in the plan has a bonus.
+            final int at = pos;
+            Predicate<Performance> early = null;
+            if (anyBonus) {
+                int fresh = 0;
+                for (Performance c : open) if (repeats(c, round, apps) == 0) fresh++;
+                Set<String> people = new HashSet<>(owners);
+                people.addAll(apps.keySet());
+                final int roundSize = people.size(), freshCount = fresh;
+                early = c -> {
+                    for (String singer : c.getSingers()) {
+                        double w = weight(plan, singer);
+                        int last = lastSeen.getOrDefault(singer, UNKNOWN);
+                        if (w <= 1 + EPS || last <= UNKNOWN || round.contains(singer)) continue;
+                        if (at - last >= roundSize / w - EPS) continue;
+                        int left = (int) Math.ceil((1 - roundUse.getOrDefault(singer, 0.0)) * w - EPS);
+                        int others = freshCount - (repeats(c, round, apps) == 0 ? 1 : 0);
+                        if (others > (left > 1 ? left * Math.max(1, spacing) : 0)) return true;
+                    }
+                    return false;
+                };
+            }
             List<Performance> tier = firstAppearances(open, appeared);
-            List<Performance> choices = oncePerRound(preferOwed(tier, owed, round), round, apps);
+            List<Performance> choices = unhurried(oncePerRound(preferOwed(tier, owed, round), round, apps), early);
             // Spacing: when every fair passage brings back someone who sang
             // in the last `spacing` songs, another passage of the round goes
             // first, never someone who already sang in this round. The table
             // rule wins: spacing never hands the mic back to the last table.
             if (spacing > 0) {
-                final int at = pos;
                 List<Performance> wellSpaced = new ArrayList<>();
                 for (Performance c : choices) if (spaced(c, lastSeen, at, spacing)) wellSpaced.add(c);
                 List<Performance> spacedTier = tier;
@@ -94,7 +126,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                     for (Performance c : open) if (spaced(c, lastSeen, at, spacing) && repeats(c, round, apps) < c.getSingers().size()) others.add(c);
                     if (!others.isEmpty()) {
                         spacedTier = firstAppearances(others, appeared);
-                        wellSpaced = oncePerRound(preferOwed(spacedTier, owed, round), round, apps);
+                        wellSpaced = unhurried(oncePerRound(preferOwed(spacedTier, owed, round), round, apps), early);
                     }
                 }
                 if (!wellSpaced.isEmpty() && (offTable(wellSpaced, prior) || !offTable(choices, prior))) {
@@ -292,6 +324,14 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         }
         if (tier.isEmpty()) tier.addAll(candidates);
         return tier;
+    }
+
+    // Without the passages held back by the bonus spread, unless none is left.
+    private static List<Performance> unhurried(List<Performance> list, Predicate<Performance> early) {
+        if (early == null) return list;
+        List<Performance> due = new ArrayList<>();
+        for (Performance c : list) if (!early.test(c)) due.add(c);
+        return due.isEmpty() ? list : due;
     }
 
     private static List<Performance> oncePerRound(List<Performance> tier, Set<String> round, Map<String, Integer> apps) {
