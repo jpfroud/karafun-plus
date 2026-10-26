@@ -49,7 +49,10 @@
  * - Patience : personne ne voit quelqu'un chanter deux fois pendant sa propre
  *   attente quand un autre passage permis l'évite. Selon le mode (choix du
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
- *   règle des tables ; « Tables à tour de rôle » et « Compromis » après. Un
+ *   règle des tables, puis, à patience égale, la plus ancienne attente
+ *   (dernier passage, ou demande après une liste vide ; une demande faite
+ *   pendant l'envoi d'un passage compte d'avant lui) ; « Tables à tour de
+ *   rôle » et « Compromis » après la règle des tables. Un
  *   bonus peut doubler, mais pas juste après sa chanson ; un malus n'est pas
  *   protégé. Un titre échangé (retrait du dernier titre puis ajout, sans
  *   passage entre les deux, ticket resté dans la file) garde l'attente en cours.
@@ -88,6 +91,7 @@ class Scheduler {
     this.roundApps = new Map(); // passages sur scène de chaque personne dans le tour, invitées comprises
     this.roundOwed = new Set(); // privées de passage par le plafond au tour précédent : en tête du tour
     this.firstCycle = new Set(); // tables déjà passées dans le cycle en cours des premiers passages
+    this.unstartedTurn = 0;   // tour du passage envoyé à KaraFun pas encore commencé sur scène (0 : aucun)
     this.duetCooldowns = new Map(); // invité : nombre d'autres chansons à laisser passer
     this.reservedNext = null; // personne annoncée comme prochain passage, hors KaraFun
     this.stageHistory = [];   // derniers passages sur scène (bar uniquement)
@@ -1016,11 +1020,25 @@ class Scheduler {
 
   // Nouvelle attente : `readySerial` (compteur des passages, patience et
   // anti-série) et `readySince` (heure, premier ajouté premier servi parmi
-  // les premiers passages). Deux attentes ouvertes dans la même milliseconde
-  // gardent leur ordre : l'heure ne recule jamais d'un ajout au suivant.
+  // les premiers passages, puis la plus ancienne attente d'abord). Deux
+  // attentes ouvertes dans la même milliseconde gardent leur ordre : l'heure
+  // ne recule jamais d'un ajout au suivant.
   _startWait(p) {
-    p.readySerial = this.appearanceSerial;
+    p.readySerial = this._waitSerial();
     p.readySince = this._readyStamp();
+  }
+
+  // Compteur d'un début d'attente : les passages déjà commencés sur scène.
+  // Un passage compte à son envoi vers KaraFun (`_commit`, 45 s après le
+  // début du titre en cours) ; une demande faite pendant cet envoi, avant
+  // que son titre commence, prend le début d'attente d'avant lui : il compte
+  // comme venu après elle (soirée du 23 octobre : une demande de 23:13:38,
+  // pendant l'envoi d'un passage de 23:12:12 chanté à 23:15:05, ne la
+  // protégeait plus de ce chanteur). L'heure `readySince` de la demande est
+  // déjà avant le début de ce passage.
+  _waitSerial() {
+    const sent = this.unstartedTurn;
+    return sent > 0 && sent <= this.appearanceSerial ? sent - 1 : this.appearanceSerial;
   }
 
   // Heure d'un début d'attente, strictement après la précédente (et après

@@ -525,9 +525,11 @@ test('avec Timefold actif, JP attend bien Table 2 puis Table 3 avant de revenir'
       assert.deepEqual([await send(), await send(), await send()], ['Table 2', 'Table 3', 'Marine']);
       s.chooseSong(marine, { songId: 205, title: 'Marine 2', artist: 'Test' });
       assert.equal(await send(), 'Marine');
-      s.chooseSong(jp, { songId: 206, title: 'JP 2', artist: 'Test' });
+      // JP redemande après les tables 2 et 3 : à patience égale, la plus
+      // ancienne attente d'abord (avant, la règle des tables seule).
       s.chooseSong(t2, { songId: 207, title: 'T2 2', artist: 'Test' });
       s.chooseSong(t3, { songId: 208, title: 'T3 2', artist: 'Test' });
+      s.chooseSong(jp, { songId: 206, title: 'JP 2', artist: 'Test' });
       await s.whenPlanReady();
       assert.deepEqual(s.readyView().map(x => x.name), ['Table 2', 'Table 3', 'JP']);
     } finally { s.closeSolver(); }
@@ -1273,4 +1275,68 @@ test('premiers passages : le plan Timefold garde l’ordre d’ajout dans les tr
         }
       } finally { s.closeSolver(); }
     }
+  });
+
+// À patience égale, la plus ancienne attente d'abord (soirée du 24 octobre :
+// un retour qui redemandait un titre tard chantait devant onze personnes qui
+// attendaient depuis 16 à 88 min). Timefold applique la même règle : un plan
+// qui fait passer Kilian, qui vient de redemander, devant les autres coûte,
+// en « Chacun son tour » autant qu'un premier passage hors de son ordre ;
+// le plan réel la garde.
+function kilianEvening(options = {}) {
+  const realNow = Date.now;
+  let clock = Date.UTC(2026, 9, 24, 23, 0, 0);
+  Date.now = () => clock;
+  try {
+    const s = new Scheduler(options);
+    s.setHeadcount('K', 5);
+    let n = 9800;
+    const song = () => ({ songId: n++, title: `T${n}`, artist: 'x' });
+    const [kilian, ...table] = ['Kilian', 'K2', 'K3', 'K4'].map(name => s.join({ tableId: 'K', name }));
+    const others = ['O1', 'O2', 'O3'].map((name, k) => s.join({ tableId: `O${k}`, name, headcount: 1 }));
+    for (const p of [kilian, ...others, ...table]) { clock += 5000; s.chooseSong(p, song()); }
+    for (const p of [...others, ...table]) { clock += 5000; s.chooseSong(p, song(), 'append'); }
+    for (let k = 0; k < 8; k++) {
+      clock += 45000;
+      const sel = s.select(); s.commit(sel);
+      clock += 180000;
+      s.recordStage(sel); s.songEnded(sel.ids);
+    }
+    clock += 600000;
+    s.chooseSong(kilian, song());
+    return { s, kilian };
+  } finally { Date.now = realNow; }
+}
+
+test('QueueScore : un retour servi avant une attente plus ancienne coûte',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+    const bridge = new TimefoldBridge({ jar: JAR });
+    try {
+      for (const [mode, options, least] of [['chacun son tour', {}, 3000], ['tables à tour de rôle', { tableRotation: true }, 1]]) {
+        const { s } = kilianEvening(options);
+        let request;
+        s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+        s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+        const nameOf = row => s.people.get(row.owner).name;
+        const local = request.performances;
+        assert.equal(nameOf(local.at(-1)), 'Kilian', `${mode} : ${local.map(nameOf).join(' ')}`);
+        const seed = async (rows, id) => medium((await bridge.solve({ ...request, requestId: id, budgetMs: 100,
+          performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+        const moved = [local.at(-1), ...local.slice(0, -1)];
+        const kept = await seed(local, `oldest-${mode}`), early = await seed(moved, `oldest-early-${mode}`);
+        assert.ok(kept - early >= least, `${mode} : plus ancienne attente d’abord ${kept}, Kilian d’abord ${early}`);
+      }
+    } finally { bridge.close(); }
+  });
+
+test('à patience égale : le plan Timefold garde la plus ancienne attente d’abord',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const local = kilianEvening().s.readyView().map(item => item.name);
+    assert.equal(local.at(-1), 'Kilian', local.join(' '));
+    const { s } = kilianEvening({ solverEnabled: true, solverBudgetMs: 1000 });
+    try {
+      assert.equal(await s.whenPlanReady(), true, 'vrai plan Java');
+      assert.deepEqual(s.readyView().map(item => item.name), local);
+    } finally { s.closeSolver(); }
   });

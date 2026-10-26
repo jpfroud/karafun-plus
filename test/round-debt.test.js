@@ -442,7 +442,10 @@ test('dette de l’invitée, auteur déjà monté dans le tour : son duo reste u
     if (d.duet.state !== 'accepted') s.answerDuet(guest, true, d.entryId);
   };
   duet(P.X, P.G);
-  for (const name of ['Y', 'A', 'B', 'G', 'N']) s.chooseSong(P[name], song(), 'append');
+  // G n'a pas d'autre titre : le sien, qui attend depuis plus longtemps que
+  // X, passerait sinon en avance à la place du duo (à patience égale, la plus
+  // ancienne attente d'abord).
+  for (const name of ['Y', 'A', 'B', 'N']) s.chooseSong(P[name], song(), 'append');
   duet(P.N, P.Z);
   for (const name of ['X', 'Y', 'A', 'B', 'N']) s.chooseSong(P[name], song(), 'append');
   const played = [];

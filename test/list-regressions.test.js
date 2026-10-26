@@ -98,16 +98,19 @@ test('JP, Marine, table 2, table 3 : premiers passages dans l’ordre d’ajout,
   assert.deepEqual(played, ['JP', 'Marine', 'Table 2', 'Table 3']);
 
   // Marine est envoyée dès son nouveau choix, avant que les trois autres
-  // personnes ne choisissent à nouveau : JP ne reprend pas le micro juste
-  // après elle ; la table 3, qui vient de chanter, attend trois chansons.
+  // personnes ne choisissent à nouveau. JP redemande avant les tables 2 et 3 :
+  // à patience égale, la plus ancienne attente d'abord, même juste après
+  // Marine, de sa table (la règle des tables ne départage qu'ensuite, retours
+  // des 23 et 24 octobre) ; la table 3, qui vient de chanter, attend trois
+  // chansons.
   s.chooseSong(marine, song(105));
   const second = [send(s)];
   s.chooseSong(jp, song(106));
   s.chooseSong(t2, song(107));
   s.chooseSong(t3, song(108));
-  assert.deepEqual(s.readyView().map(x => x.name), ['Table 2', 'JP', 'Table 3']);
+  assert.deepEqual(s.readyView().map(x => x.name), ['JP', 'Table 2', 'Table 3']);
   for (let i = 0; i < 3; i++) second.push(send(s));
-  assert.deepEqual(second, ['Marine', 'Table 2', 'JP', 'Table 3']);
+  assert.deepEqual(second, ['Marine', 'JP', 'Table 2', 'Table 3']);
 });
 
 test('JP, table 2, table 3, Marine : ajoutés avant elle, les titres des autres tables passent d’abord', () => {

@@ -17,7 +17,7 @@ function run(file, env = {}) {
   });
 }
 (async () => {
-  for (const f of ['check-inline.js','scheduler.test.js','scheduler-race.test.js','first-turn-fairness.test.js','first-come-order.test.js',
+  for (const f of ['check-inline.js','scheduler.test.js','scheduler-race.test.js','first-turn-fairness.test.js','first-come-order.test.js','oldest-wait.test.js',
     'rotation-recent-physical.test.js','round-debt.test.js','bar-gestures.test.js','rejeu-soiree.test.js','kit-sources.test.js','preparer-livrable.test.js','deploy-config.test.js','documentation.test.js','forecast-cache.test.js','timefold-integration.test.js','appearance-persistence.test.js','solo-capacity.test.js','solo-invitations.test.js','private-event.test.js',
     'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','client-i18n.test.js','client-v04-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js','health-routes.test.js','fuseau.test.js',

@@ -21,9 +21,10 @@ import java.util.function.Predicate;
  * a bonus's extra passages spread out over the round),
  * nobody sees someone sing twice during their own wait when another allowed
  * passage avoids it (after the table rule in EQUAL and SQRT), first
- * appearances by a cycle of the tables, then first come, first served (before
- * the table rule in PEOPLE; in EQUAL and SQRT, first come, first served only
- * breaks ties of the table share), no table twice in a row
+ * appearances by a cycle of the tables, then first come, first served, and
+ * returns by the oldest wait (before the table rule in PEOPLE; in EQUAL and
+ * SQRT, first come, first served and the oldest wait only break ties of the
+ * table share), no table twice in a row
  * when another can sing, spacing of a returning person, and each table's
  * share of the round. Soft: stability versus the order proposed by the Node
  * process.
@@ -230,11 +231,13 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // First appearances (rotation.js#_pick): among passages that only
             // bring people never on stage yet, the tables not yet in the cycle,
             // then the owner whose wait started first (addedOrder; a duet
-            // counts by its owner). PEOPLE: right after patience, before the
-            // table rule, which then only breaks ties among the earliest;
-            // EQUAL and SQRT: first come, first served only breaks ties of the
-            // table share (below), without the cycle.
-            boolean firstTurn = patient.size() > 1 && !plan.getAddedOrder().isEmpty() &&
+            // counts by its owner). Returns: the oldest wait first (waitKey).
+            // PEOPLE: right after patience, before the table rule, which then
+            // only breaks ties among the earliest; EQUAL and SQRT: first come,
+            // first served and the oldest wait only break ties of the table
+            // share (below), without the cycle.
+            boolean ordered = patient.size() > 1 && !plan.getAddedOrder().isEmpty();
+            boolean firstTurn = ordered &&
                     patient.stream().allMatch(c -> freshCount(c, appeared) == c.getSingers().size());
             boolean byTables = plan.getRotation() != QueuePlan.Rotation.PEOPLE;
             List<Performance> fair = patient;
@@ -246,6 +249,18 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 for (Performance c : turn) first = Math.min(first, added(plan, c));
                 fair = new ArrayList<>();
                 for (Performance c : turn) if (added(plan, c) == first) fair.add(c);
+            } else if (ordered && !byTables) {
+                // A rested bonus singer (two passages since their own) stays
+                // in: they may sing more often, as for patience.
+                long[] oldest = null;
+                for (Performance c : patient) {
+                    long[] key = waitKey(c, lastSeen, plan);
+                    if (oldest == null || compareWait(key, oldest) < 0) oldest = key;
+                }
+                fair = new ArrayList<>();
+                for (Performance c : patient) {
+                    if (compareWait(waitKey(c, lastSeen, plan), oldest) == 0 || restedBonus(c, pos, lastSeen, plan)) fair.add(c);
+                }
             }
             boolean earliest = fair.contains(current);
             if (!pinned && !allowedNow.contains(current)) {
@@ -260,7 +275,8 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             } else if (!pinned && !earliest) {
                 // Below patience, above the table rule and the share it
                 // overrides in PEOPLE: a plan never serves a first appearance
-                // out of the cycle, or a later one before an earlier one.
+                // out of the cycle, or a later one before an earlier one, nor
+                // a return before an older wait.
                 medium -= 3_000;
             }
 
@@ -301,11 +317,13 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 medium -= Math.round((best - picked) * 150);
             }
             // EQUAL and SQRT: at the same share, and no worse for the table
-            // rule, the first appearance added first goes first.
-            if (firstTurn && byTables && !pinned && patient.contains(current)) {
-                int mine = added(plan, current);
+            // rule, the first appearance added first goes first, and among
+            // returns the oldest wait.
+            if (ordered && byTables && !pinned && patient.contains(current)) {
+                long[] mine = firstTurn ? new long[] { 0, 0, added(plan, current) } : waitKey(current, lastSeen, plan);
                 for (Performance c : patient) {
-                    if (added(plan, c) < mine && Math.abs(need(c, deficits) - picked) <= EPS &&
+                    long[] theirs = firstTurn ? new long[] { 0, 0, added(plan, c) } : waitKey(c, lastSeen, plan);
+                    if (compareWait(theirs, mine) < 0 && Math.abs(need(c, deficits) - picked) <= EPS &&
                             (overlapsPrevious || !overlaps(c.getGroups(), prior))) {
                         medium -= 200;
                         break;
@@ -472,6 +490,34 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
     // Rank of the time the owner's wait started (first come, first served).
     private static int added(QueuePlan plan, Performance c) {
         return plan.getAddedOrder().getOrDefault(c.getOwner(), 0);
+    }
+
+    // When the wait of the owner of `c` started (rotation.js#_pick, waitKey):
+    // a malus owner after the others (not protected, as for patience), then
+    // max(last appearance, readyAt), then, at the same count, their stage
+    // passage before the requests made during or after it, by request time
+    // (addedOrder: the rank of Node's readySince).
+    private static long[] waitKey(Performance c, Map<String, Integer> lastSeen, QueuePlan plan) {
+        String owner = c.getOwner();
+        int last = lastSeen.getOrDefault(owner, UNKNOWN);
+        int ready = plan.getReadyAt().getOrDefault(owner, UNKNOWN);
+        return new long[] { weight(plan, owner) < 1 - EPS ? 1 : 0, Math.max(last, ready),
+                last > ready ? -1 : added(plan, c) };
+    }
+
+    private static int compareWait(long[] a, long[] b) {
+        for (int k = 0; k < a.length; k++) {
+            int order = Long.compare(a[k], b[k]);
+            if (order != 0) return order;
+        }
+        return 0;
+    }
+
+    // A bonus owner two passages after their own: free to sing before older waits.
+    private static boolean restedBonus(Performance c, int pos, Map<String, Integer> lastSeen, QueuePlan plan) {
+        String owner = c.getOwner();
+        Integer last = lastSeen.get(owner);
+        return weight(plan, owner) > 1 + EPS && (last == null || last <= UNKNOWN || pos - last >= 3);
     }
 
     private static double weight(QueuePlan plan, String person) {
