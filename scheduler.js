@@ -329,14 +329,43 @@ class Scheduler {
   // Personnes montées sur scène hors de leur propre ligne (invitée d'un duo
   // parti vers KaraFun, duo improvisé noté au bar) : les lignes de l'ordre
   // fixé où elles chantent encore retrouvent le calcul (espacement, premiers
-  // passages des autres), sauf celles que le bar a placées lui-même. Sinon
-  // une personne gardée devant un geste rechantait deux chansons plus tard.
+  // passages des autres). Sinon une personne gardée devant un geste
+  // rechantait deux chansons plus tard. Une ligne placée par le bar
+  // elle-même aussi (_endPlaced) : sa personne chante avant elle.
   _unpinSingers(ids) {
+    for (const pid of ids) this._endPlaced(pid);
     if (!this.manualOrder.length || !ids.length) return;
     const anchors = this._manualAnchors();
     for (const line of [...this.manualOrder]) {
       if (!anchors.has(line) && ids.some(pid => this._singsOnLine(line, pid))) this._unpinManual(line);
     }
+  }
+
+  // Décision du gérant du 26 octobre : « si je place quelqu'un, mais que pour
+  // une raison ou une autre il passe devant son propre passage que j'ai
+  // positionné, alors il faut le recalculer ». La personne d'une ligne placée
+  // par le bar (déplacement, « Priorité ») monte sur scène avant elle, quel
+  // que soit son rôle (invitée d'un duo parti vers KaraFun, duo improvisé noté
+  // au bar) : le geste prend fin. Sa ligne quitte l'ordre fixé et retourne au
+  // calcul (_unpinManual), sa priorité ne la garde plus en tête, le geste
+  // n'est plus annulable et le journal du bar le dit ; les autres gestes
+  // restent. Le plan affiché (ordre du bar, Timefold) la plaçait encore à la
+  // place du geste : il est abandonné (_carryPlanAcross ne le reporte pas),
+  // le calcul et Timefold repartent de l'ordre fixé qui reste. L'invitée d'un
+  // duo placé qui chante ailleurs avant lui ne met pas fin au geste : il
+  // appartient à l'auteur du titre.
+  _endPlaced(pid) {
+    const changes = this.manualChanges.filter(change => change.personId === pid);
+    const priority = !!this.reservedNext?.byStaff && this.reservedNext.personId === pid;
+    if (!changes.length || !this._unpinManual(pid)) return false;
+    if (priority) this.releaseNext();
+    this.solverPlan = null;
+    this._planDropped = true;
+    const p = this.people.get(pid);
+    const what = changes.some(change => change.kind === 'priority') && priority ? 'sa priorité' : 'la place donnée par le bar';
+    this.note(`${p?.name || 'Cette personne'} chante avant ${what} : sa ligne retrouve le calcul`, 'staff');
+    this.version++;
+    return true;
   }
 
   // Le titre en cours d'une ligne fixée devient un duo (invitation ou demande
@@ -348,8 +377,9 @@ class Scheduler {
   // prochain annoncé (answerDuet). Sinon le duo garde la place, et la propre
   // ligne de l'invitée (ou un autre duo plus loin avec elle) retrouve le
   // calcul : elle monte sur scène avec ce duo. Une ligne placée par le bar
-  // garde toujours sa place, même quand elle chante aussi en duo ailleurs (à
-  // faire valider par le gérant, CONTEXTE-REPRISE.md).
+  // garde sa place jusqu'à ce que sa personne monte vraiment sur scène avant
+  // elle (_unpinSingers, au départ du duo vers KaraFun) : le duo peut encore
+  // être annulé d'ici là.
   _guestJoined(owner) {
     const duet = owner?.song?.duet;
     const at = this.manualOrder.indexOf(owner?.id);

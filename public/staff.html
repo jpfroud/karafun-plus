@@ -59,7 +59,7 @@
     <div id="qBody" class="queue-rows"></div>
     <p id="queueEmpty" class="empty-state" hidden>Aucune chanson en attente pour le moment.</p>
     <details id="manualHistory" class="manual-history" hidden><summary>Changements manuels de la file <span class="count" id="manualCount">0</span></summary>
-      <p class="small muted">Une ligne placée par le bar garde sa place jusqu’à son envoi à KaraFun, même quand d’autres titres arrivent. Annule les changements du plus récent au plus ancien : la ligne retrouve le calcul, les autres gardent leur place. Les titres déjà chargés dans KaraFun ne changent pas de place.</p>
+      <p class="small muted">Une ligne placée par le bar garde sa place jusqu’à son envoi à KaraFun, même quand d’autres titres arrivent ; si sa personne chante avant elle (en duo), elle retrouve le calcul. Annule les changements du plus récent au plus ancien : la ligne retrouve le calcul, les autres gardent leur place. Les titres déjà chargés dans KaraFun ne changent pas de place.</p>
       <div id="manualHistoryList" class="manual-history-list"></div>
       <button class="btn small" id="recalculateQueue">Annuler tous les changements manuels</button>
     </details>
@@ -449,6 +449,32 @@
       else if (result?.message || ok) toast(result?.message || ok);
       load();
     } catch (e) { toast(e.message, true); }
+  }
+  // « Priorité » avec un titre de la file déjà chargé dans KaraFun (pas sur
+  // scène) : le bar choisit de faire passer la personne avant lui (le titre
+  // sort de KaraFun et repasse juste après elle) ou juste après lui, comme
+  // avant. Jamais quand une même personne chante dans les deux passages.
+  function pullOffer(q) {
+    const loaded = S?.priorityPull;
+    return !!loaded && !(q.ids || [q.id]).some(pid => (loaded.ids || []).includes(pid));
+  }
+  function giveUrgent(personId) {
+    const line = S.queue.find(q => q.source === 'helper' && q.id === personId && !q.future);
+    const loaded = S.priorityPull;
+    if (!line || !pullOffer(line)) {
+      act('/api/staff/move', { personId, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun');
+      return;
+    }
+    const name = line.name || 'ce chanteur';
+    if (confirm(`Faire passer ${name} avant « ${loaded.title} » ?\n\nOK : « ${loaded.title} » sort de KaraFun et repasse juste après ${name}, sans perdre son tour.\nAnnuler : ${name} passe juste après « ${loaded.title} ».`)) {
+      act('/api/staff/move', { personId, toIndex: 0, priority: true, pullLoaded: true, queueId: loaded.queueId },
+        `« ${loaded.title} » sort de KaraFun : ${name} passe d’abord`);
+      return;
+    }
+    // Déjà le premier passage libre : il passe déjà juste après ce titre.
+    const first = S.queue.find(q => q.source === 'helper' && !q.future);
+    if (first?.id === personId) { toast(`${name} passe déjà juste après « ${loaded.title} », chargé dans KaraFun`); return; }
+    act('/api/staff/move', { personId, toIndex: 0, priority: true }, `${name} passe juste après « ${loaded.title} », déjà chargé dans KaraFun`);
   }
   // Copie d'un lien affiché. Sans API presse-papiers (page du bar ouverte en
   // http depuis un téléphone : contexte non sécurisé), copie de secours du
@@ -1999,7 +2025,7 @@
       const key = lineKey(q);
       const title = q.song?.title || q.title || '—';
       const artist = q.song?.artist || q.artist || '';
-      const status = q.waitingPresence ? (q.source === 'karafun' ? 'Dans KaraFun · Je suis là attendu' : 'Je suis là attendu') : q.source === 'karafun' ? (q.ours ? 'Dans KaraFun' : 'Ajouté dans KaraFun') : q.source === 'envoi' ? 'Envoi' : q.future ? 'Titre suivant' : 'À venir';
+      const status = q.leaving ? 'Sort de KaraFun' : q.waitingPresence ? (q.source === 'karafun' ? 'Dans KaraFun · Je suis là attendu' : 'Je suis là attendu') : q.source === 'karafun' ? (q.ours ? 'Dans KaraFun' : 'Ajouté dans KaraFun') : q.source === 'envoi' ? 'Envoi' : q.future ? 'Titre suivant' : 'À venir';
       // Repères privés du bar, visibles au survol ou en touchant le nom.
       const notes = (q.ids || []).map(pid => S.people.find(p => p.id === pid)).filter(p => p?.privateNote)
         .map(p => (q.ids.length > 1 ? `${p.name} : ` : '') + p.privateNote);
@@ -2029,11 +2055,14 @@
       // Titre suivant d'un chanteur : retiré seul, sans toucher à son titre en cours.
       const removeEntry = q.source === 'helper' && q.future && q.id && q.song?.entryId ?
         `<button class="btn small danger" data-rm-entry="${esc(q.song.entryId)}" data-person-id="${esc(q.id)}" data-title="${esc(title)}" data-name="${esc(q.name || q.singer || 'ce chanteur')}" aria-label="Retirer « ${esc(title)} » de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : '';
-      const actions = movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}${tune}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `${tune}<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : tune + removeEntry;
+      // Un titre de la file déjà chargé dans KaraFun : « Priorité » propose de
+      // passer avant lui, même pour le premier passage libre.
+      const pullable = movable && pullOffer(q);
+      const actions = movable ? `${index > 0 || pullable ? `<button class="btn small" data-urgent="${esc(q.id)}" title="${pullable ? `Faire passer dès que possible ; propose de passer avant « ${esc(S.priorityPull.title)} », déjà chargé dans KaraFun` : 'Faire passer dès que possible, après les titres déjà chargés dans KaraFun'}">Priorité</button>` : ''}${tune}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `${tune}<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : tune + removeEntry;
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.placed ? '<span class="badge lock" title="Place donnée par le bar : ni un titre ajouté, ni une arrivée, ni le calcul ne passent devant. Elle avance quand les passages au-dessus partent, jusqu’à son envoi à KaraFun ; « Changements manuels de la file » l’annule.">Placé par le bar</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.placed ? '<span class="badge lock" title="Place donnée par le bar : ni un titre ajouté, ni une arrivée, ni le calcul ne passent devant. Elle avance quand les passages au-dessus partent, jusqu’à son envoi à KaraFun, et retrouve le calcul si la personne chante avant elle (en duo) ; « Changements manuels de la file » l’annule.">Placé par le bar</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${q.afterPriority ? '<span class="badge wait" title="Retiré de KaraFun pour une priorité donnée par le bar : ce titre passe juste après le prochain passage, sans perdre son tour">Après la priorité</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
         <div class="song-cell${marks ? ' has-marks' : ''}" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${marks ? `${marks}<span class="song-main">${songMain}</span>` : songMain}${songArtist}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
@@ -2091,7 +2120,7 @@
         act('/api/staff/remove-many', { items: [{ personId: b.dataset.personId, entryId: b.dataset.rmEntry }] }, 'Chanson retirée');
       }
     });
-    $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => act('/api/staff/move', { personId: b.dataset.urgent, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun'));
+    $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => giveUrgent(b.dataset.urgent));
     $('qBody').querySelectorAll('[data-kfrm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson de KaraFun ?')) act('/api/staff/kf', { action: 'remove', queueId: b.dataset.kfrm }, 'Chanson retirée de KaraFun'); });
     $('qBody').querySelectorAll('[data-song-settings]').forEach(b => b.onclick = () => { if (window.history?.state?.rowMenu) { try { window.history.replaceState({ barTab: activeTab }, '', tabUrl()); } catch (_) { /* */ } } openRowMenu = null; openSongSheet(b.dataset.songSettings, b.dataset.personId); render(); });
     renderSongSheet();

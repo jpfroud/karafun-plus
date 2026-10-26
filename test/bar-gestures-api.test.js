@@ -145,6 +145,40 @@ const planned = state => state.queue.filter(row => row.source === 'helper' && !r
     assert.ok(!state.queue.some(row => row.placed), 'plus aucune ligne placée');
     assert.match(state.log.find(line => /relance le calcul/.test(line.msg)).msg, /déplacements manuels sont abandonnés/);
     console.log('ok - priorité tenue après un ajout ; « Recalculer la file » annule les gestes');
+
+    // Décision du gérant du 26 octobre : « Priorité » avant un titre déjà
+    // chargé dans le faux KaraFun (envoi automatique, titre suivant envoyé
+    // dès le début du titre en cours). Confirmée, le titre en sort, la
+    // priorité part une fois le retrait vu dans la file de KaraFun, et le
+    // titre retiré est le prochain annoncé juste après elle.
+    await ok('/api/staff/settings', { auto: true, autoPlay: true, pushDelaySec: 0 });
+    let offer = null;
+    for (let i = 0; i < 80 && !offer; i++) {
+      state = await ok('/api/staff/state');
+      offer = state.priorityPull;
+      if (!offer) await sleep(100);
+    }
+    assert.ok(offer, 'un titre de la file attend dans KaraFun : la page propose de passer avant lui');
+    const loadedOwner = offer.ids[0];
+    const prioritized = planned(state).find(pid => !offer.ids.includes(pid) && pid !== planned(state)[0]);
+    const pulled = await ok('/api/staff/move', { personId: prioritized, toIndex: 0, priority: true, pullLoaded: true, queueId: offer.queueId });
+    assert.match(pulled.message, new RegExp(`^« ${offer.title} » sort de KaraFun : .+ passe d’abord, « ${offer.title} » juste après\\.$`));
+    let sentFirst = null;
+    for (let i = 0; i < 80 && !sentFirst; i++) {
+      state = await ok('/api/staff/state');
+      sentFirst = state.queue.find(row => row.source === 'karafun' && row.ids?.[0] === prioritized);
+      if (!sentFirst) await sleep(100);
+    }
+    assert.ok(sentFirst, 'la priorité part vers KaraFun après le retrait');
+    assert.ok(!state.kf.queue.some(item => String(item.queueId) === String(offer.queueId)), 'le titre est sorti de la file de KaraFun');
+    const back = state.queue.find(row => row.source === 'helper' && !row.future && row.id === loadedOwner);
+    assert.equal(back?.song.title, offer.title, 'le titre retiré revient dans la liste de son chanteur');
+    assert.equal(planned(state)[0], loadedOwner, 'il passe juste après la priorité');
+    assert.equal(back.guaranteed, true, 'prochain annoncé, sans perdre son tour');
+    assert.equal(back.deferred, false, 'ce n’est pas un « Pas prêt »');
+    assert.ok(state.log.some(line => line.msg.startsWith(`« ${offer.title} »`) && /retiré de KaraFun : il repasse juste après .+ \(priorité du bar\), sans perdre son tour$/.test(line.msg)));
+    await ok('/api/staff/settings', { auto: false, autoPlay: false });
+    console.log('ok - priorité avant un titre chargé : retiré de KaraFun, il repasse juste après');
   } finally {
     if (demo.exitCode === null) {
       demo.kill();

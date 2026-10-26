@@ -260,16 +260,28 @@ test('« Je suis là » : une priorité du bar pour la personne encore sur scèn
   assert.equal(s.select().ids[0], people.Paulo.id);
 });
 
-test('duo noté au bar avec la personne prioritaire : sa priorité tient', () => {
+// Décision du gérant du 26 octobre : « si je place quelqu'un, mais que pour
+// une raison ou une autre il passe devant son propre passage que j'ai
+// positionné, alors il faut le recalculer ». Avant, la priorité tenait et
+// Karim rechantait juste après son duo improvisé.
+test('duo noté au bar avec la personne prioritaire : sa priorité prend fin, les autres gestes restent', () => {
   const { s, people } = evening();
   const sent = s.select();
-  s.commit(sent);
+  s.commit(sent); // Paulo sur scène
+  gesture(s, people.Elsa, 3); // Maud, Gil, Hugo, Elsa
   gesture(s, people.Karim, 0);
-  s.staffCountPartner(sent.ids[0], people.Karim.id, sent);
-  assert.equal(s.reservedNext?.personId, people.Karim.id, 'le geste du bar passe avant l’espacement');
-  assert.match(s.log.at(-1).msg, /Karim garde son titre et la place donnée par le bar$/,
-    'le journal du bar ne dit plus qu’elle attend deux autres chansons');
-  assert.equal(s.select().ids[0], people.Karim.id);
+  s.staffCountPartner(sent.ids[0], people.Karim.id, sent); // Karim chante avec Paulo
+  assert.equal(s.reservedNext, null, 'Karim n’est plus annoncé juste après son duo');
+  assert.deepEqual(s.manualChanges.map(change => change.name), ['Elsa'],
+    'la priorité de Karim n’est plus annulable ; le déplacement de Elsa reste');
+  assert.ok(!s.manualOrder.includes(people.Karim.id));
+  const ended = s.log.find(line => line.msg === 'Karim chante avant sa priorité : sa ligne retrouve le calcul');
+  assert.equal(ended?.kind, 'staff', 'le journal du bar le dit');
+  assert.match(s.log.at(-1).msg, /Karim garde son titre mais attend deux autres chansons si possible$/);
+  s.songEnded(sent.ids);
+  assert.deepEqual(names(s), ['Maud', 'Gil', 'Hugo', 'Elsa', 'Ines', 'Jade', 'Karim'],
+    'Elsa garde sa place ; Karim attend les premiers passages des autres');
+  assert.notEqual(s.select().ids[0], people.Karim.id);
 });
 
 // Relecture de la correction : une table partie pendant des gestes du bar
@@ -379,16 +391,53 @@ test('duo improvisé noté au bar avec une personne d’une ligne gardée : elle
   }
 });
 
-// Choix à faire valider par le gérant (CONTEXTE-REPRISE.md) : la place
-// donnée par le bar tient même quand la personne est invitée dans un duo
-// plus haut ; elle chante alors deux fois à peu d'intervalle.
-test('ligne placée par le bar invitée dans un duo plus haut : elle garde sa place', () => {
+// Décision du gérant du 26 octobre (ci-dessus) : avant, la place donnée par
+// le bar tenait quand la personne était invitée dans un duo plus haut, et
+// elle chantait deux fois à trois chansons d'intervalle.
+test('ligne placée par le bar invitée dans un duo plus haut : son geste prend fin au départ du duo', () => {
   const { s, people } = evening();
   gesture(s, people.Elsa, 3);
+  gesture(s, people.Karim, 6);
   const duo = s.inviteDuet(people.Paulo, people.Elsa.id, song());
   s.reorderSongs(people.Paulo, duo.entryId, 0);
   s.answerDuet(people.Elsa, true, duo.entryId);
-  assert.deepEqual(playNames(s, 4), ['Paulo & Elsa', 'Maud', 'Gil', 'Elsa']);
+  assert.equal(names(s).indexOf('Elsa'), 3, 'tant que le duo n’est pas parti (il peut être annulé), la place tient');
+  assert.equal(label(s, play(s)), 'Paulo & Elsa');
+  assert.deepEqual(s.manualChanges.map(change => change.name), ['Karim'], 'seul le geste de Elsa prend fin');
+  assert.equal(s.log.find(line => /^Elsa chante avant/.test(line.msg))?.msg,
+    'Elsa chante avant la place donnée par le bar : sa ligne retrouve le calcul');
+  assert.deepEqual(playNames(s, 8), ['Maud', 'Gil', 'Hugo', 'Ines', 'Karim', 'Jade', 'Paulo', 'Elsa'],
+    'Elsa attend les premiers passages des autres ; Karim avance d’une place et la garde');
+});
+
+// Le plan adopté (Timefold) fixait la ligne placée (pinnedUntil) : le geste
+// terminé, il ne la garde plus à la place du geste.
+test('geste terminé par un duo : le plan qui fixait sa ligne est abandonné', async () => {
+  const { s, people } = evening({ solverEnabled: true, solverBudgetMs: 100, continuousSolver: false });
+  const requests = [];
+  s.solverBridge = { available: true, lastError: null, close() {},
+    solve: async request => {
+      requests.push(request);
+      const ids = request.performances.map(row => row.id);
+      return { requestId: request.requestId, order: ids, seedScore: '0hard/-100medium/0soft', score: '0hard/-100medium/0soft', elapsedMs: 5 };
+    } };
+  try {
+    gesture(s, people.Elsa, 3);
+    const duo = s.inviteDuet(people.Paulo, people.Elsa.id, song());
+    s.reorderSongs(people.Paulo, duo.entryId, 0);
+    s.answerDuet(people.Elsa, true, duo.entryId);
+    s.solverStatus();
+    await s.solverPromise;
+    assert.ok(s._activePlanRanks(), 'un plan Timefold est adopté avec la ligne de Elsa fixée');
+    assert.ok(requests.at(-1).pinnedUntil >= 4);
+    s.commit(s.select()); // le duo part vers KaraFun
+    assert.equal(s._activePlanRanks(), null, 'le plan qui fixait la ligne de Elsa ne vaut plus');
+    s.solverStatus();
+    await s.solverPromise;
+    const last = requests.at(-1);
+    assert.equal(last.pinnedUntil, 0, 'le nouveau calcul ne fixe plus rien');
+    assert.ok(!last.performances.slice(0, 3).some(row => row.owner === people.Elsa.id));
+  } finally { s.closeSolver(); }
 });
 
 test('annuler un geste ne remet pas dans l’ordre fixé une ligne sortie pour un duo', () => {
@@ -459,3 +508,115 @@ test('vrai Timefold : la ligne placée garde sa place après le calcul',
       assert.equal(s.select().ids[0], s.people.get(s.manualOrder[0]).id);
     } finally { s.closeSolver(); }
   });
+
+// Décision du gérant du 26 octobre : « Priorité » quand un titre est déjà
+// chargé dans KaraFun (envoyé pushDelaySec après le début du titre en cours,
+// pas encore commencé). Confirmé par le bar, le titre sort de KaraFun
+// (server.js, pullFromKaraFun) ; une fois le retrait confirmé, il revient en
+// tête de la liste de son chanteur (requeueUnplayed) et repasse juste après
+// la priorité (yieldToPriority), sans perdre son tour ni compter comme un
+// « Pas prêt » de sa personne.
+function loadedEvening(options = {}) {
+  const ctx = evening(options);
+  const { s } = ctx;
+  const stage = s.select();
+  s.commit(stage); // Paulo sur scène
+  const loaded = s.select();
+  s.commit(loaded); // Maud chargée dans KaraFun
+  return { ...ctx, stage, loaded };
+}
+// KaraFun a retiré le titre : comme restorePulled (server.js).
+function pulledBack(s, sel) {
+  s.requeueUnplayed(sel);
+  return s.yieldToPriority(sel);
+}
+
+test('priorité avant un titre chargé : le titre retiré repasse juste après, sans compter comme « Pas prêt »', () => {
+  const { s, people, stage, loaded } = loadedEvening();
+  const events = [];
+  s.onEvent = (type, fields) => events.push({ type, ...fields });
+  const maud = people.Maud;
+  const qIndex = loaded.turnCredit.before.qIndex;
+  gesture(s, people.Karim, 0, stage.ids);
+  const yielded = pulledBack(s, loaded);
+  assert.equal(yielded.afterPriority, true);
+  assert.equal(maud.song.entryId, loaded.song.entryId, 'le titre retiré revient en tête de sa liste');
+  assert.equal(s.Q.indexOf(maud.id), qIndex, 'son ticket reprend sa place (son attente continue)');
+  assert.equal(maud.sung, 0, 'son passage n’a pas eu lieu');
+  assert.deepEqual(names(s, stage.ids).slice(0, 3), ['Karim', 'Maud', 'Gil'], 'Karim d’abord, Maud juste après');
+  assert.equal(s.deferralFor(maud.id), null, 'pas un « Pas prêt » pour son téléphone');
+  assert.equal(s.deferredSongsOf(maud.song), 0, 'rien n’est décompté des cinq reports du titre');
+  assert.throws(() => s.cancelDeferral(maud.id), /Aucun passage repoussé/);
+  s.songEnded(stage.ids);
+  assert.equal(label(s, play(s)), 'Karim');
+  assert.equal(s.reservedNext?.personId, maud.id, 'Maud est la prochaine annoncée, comme après un « Pas prêt »');
+  assert.equal(maud.deferral, null);
+  const next = s.select();
+  assert.equal(next.song.entryId, loaded.song.entryId, 'son titre retiré part ensuite');
+  assert.deepEqual(events.filter(e => /^defer\./.test(e.type)), [], 'aucun « Pas prêt » au journal de soirée');
+});
+
+test('priorité avant un titre chargé, puis annulée : le titre retiré garde sa place juste après le prochain passage', () => {
+  for (const when of ['avant le retrait', 'après le retrait']) {
+    const { s, people, stage, loaded } = loadedEvening();
+    gesture(s, people.Karim, 0, stage.ids);
+    if (when === 'après le retrait') pulledBack(s, loaded);
+    s.undoLastManualChange(null, 'd'.repeat(64));
+    if (when === 'avant le retrait') pulledBack(s, loaded);
+    const order = names(s, stage.ids);
+    assert.notEqual(order[0], 'Karim', `${when} : Karim retrouve le calcul`);
+    assert.equal(order[1], 'Maud', `${when} : Maud passe juste après le prochain passage`);
+    s.songEnded(stage.ids);
+    const first = play(s);
+    assert.equal(s.reservedNext?.personId, people.Maud.id, `${when} : ${label(s, first)} chante, puis Maud`);
+  }
+});
+
+test('priorité avant un titre chargé : « Je suis là » déjà donné tient, pas d’absence comptée', () => {
+  const { s, people } = evening({ requirePresence: true });
+  for (const p of Object.values(people)) s.confirm(p);
+  const stage = s.select(); s.commit(stage);
+  const loaded = s.select(); s.commit(loaded);
+  const maud = people.Maud;
+  assert.equal(maud.confirmedAt, 0, 'l’envoi efface la confirmation');
+  gesture(s, people.Karim, 0, stage.ids);
+  pulledBack(s, loaded);
+  assert.ok(maud.confirmedAt > 0, 'la confirmation donnée pour ce titre tient');
+  s.songEnded(stage.ids);
+  s.confirm(people.Karim);
+  s.commit(s.select()); // Karim
+  assert.equal(maud.held, 0, 'pas compté absent pendant la priorité');
+  assert.equal(s.reservedNext?.personId, maud.id);
+  assert.equal(s.select()?.song.entryId, loaded.song.entryId, 'sa confirmation suffit pour partir');
+});
+
+test('priorité avant un duo chargé : le duo revient entier, juste après', () => {
+  const { s, people } = evening();
+  const duo = s.inviteDuet(people.Maud, people.Gil.id, song());
+  s.reorderSongs(people.Maud, duo.entryId, 0);
+  s.answerDuet(people.Gil, true, duo.entryId);
+  const stage = s.select(); s.commit(stage); // Paulo
+  const loaded = s.select(); s.commit(loaded);
+  assert.equal(label(s, loaded), 'Maud & Gil');
+  assert.equal(people.Gil.duetGuestCount, 1);
+  gesture(s, people.Karim, 0, stage.ids);
+  pulledBack(s, loaded);
+  assert.equal(people.Gil.duetGuestCount, 0, 'le passage de l’invitée n’a pas eu lieu');
+  assert.deepEqual(names(s, stage.ids).slice(0, 2), ['Karim', 'Maud & Gil']);
+  s.songEnded(stage.ids);
+  play(s);
+  assert.deepEqual(s.select().ids, [people.Maud.id, people.Gil.id]);
+});
+
+test('priorité avant un titre chargé : le report survit à un redémarrage', () => {
+  const { s, access, people, stage, loaded } = loadedEvening();
+  gesture(s, people.Karim, 0, stage.ids);
+  pulledBack(s, loaded);
+  const resumed = restart(s, access);
+  assert.deepEqual(resumed.warnings, []);
+  assert.equal(resumed.people.get(people.Maud.id).deferral?.afterPriority, true);
+  assert.deepEqual(names(resumed, stage.ids).slice(0, 2), ['Karim', 'Maud']);
+  resumed.songEnded(stage.ids);
+  resumed.commit(resumed.select());
+  assert.equal(resumed.reservedNext?.personId, people.Maud.id);
+});
