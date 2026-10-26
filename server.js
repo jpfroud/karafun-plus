@@ -2404,8 +2404,9 @@ function staffState() {
         partnerId: song.duet.partnerId, partnerName: sched.people.get(song.duet.partnerId)?.name || '',
         entryId: song.entryId, title: song.title, seenAt: song.duet.seenAt || null }))),
     // Duos ouverts encore sans partenaire ; `held` : « Duos uniquement », le
-    // titre ne part pas tant que personne ne l'a rejoint.
-    openDuets: sched.openDuets().map(open => ({ ownerId: open.owner.id, ownerName: open.owner.name,
+    // titre ne part pas tant que personne ne l'a rejoint. Celui dont le titre
+    // part déjà dans KaraFun (en solo) n'est plus à pourvoir, comme chez les clients.
+    openDuets: sched.openDuets().filter(open => open.entryId !== sendingEntryId()).map(open => ({ ownerId: open.owner.id, ownerName: open.owner.name,
       table: sched.passageTables([open.owner.id]).join(' + '), entryId: open.entryId, title: open.song.title,
       openedAt: open.openedAt, held: sched._openHeld(open.song) })),
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
@@ -4333,6 +4334,11 @@ const handlers = {
   'POST /api/table/duet/open/accept': async (req, res, body) => {
     const p = personAtTable(body);
     requireNamed(p);
+    // Second appui de celui qui l'a déjà rejoint (réponse perdue) : c'est
+    // fait, même si le duo part déjà dans KaraFun.
+    const owner = sched.people.get(String(body.ownerId || ''));
+    const song = owner && sched.songsOf(owner).find(item => item.entryId === String(body.entryId || ''));
+    if (sched._joinedOpenDuet(p, song)) return { ok: true };
     assertNotSending(body.entryId);
     sched.acceptOpenDuet(p, body.ownerId, body.entryId); sync(); return { ok: true };
   },

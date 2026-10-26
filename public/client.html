@@ -1143,7 +1143,11 @@
     return infos.filter(info => !memory.dismissed.includes(info.key));
   }
 
-  // Renvoie vrai si une info vient d'apparaître.
+  // Dernier signal d'un duo ouvert, par auteur (voir renderInfos).
+  const OPEN_SIGNAL_MS = 5 * 60000;
+  const openSignalAt = new Map();
+
+  // Renvoie vrai si une info à signaler vient d'apparaître.
   function renderInfos() {
     const infos = collectInfos();
     // Duos ouverts (trois au plus) toujours affichés, puis deux messages au plus.
@@ -1162,11 +1166,22 @@
     infoItems = infos;
     const fresh = infos.filter(info => !memory.seen.includes(info.key));
     if (!fresh.length) return false;
-    // Nouveau duo ouvert, page cachée : notification du navigateur (si permise).
-    for (const info of fresh) if (info.open) systemNotice(t('Karaoké : duo ouvert'), info.text, info.key);
     memory.seen.push(...fresh.map(info => info.key));
     saveMemory();
-    return true;
+    // Nouveau duo ouvert : vibration, son et, page cachée, notification du
+    // navigateur (si permise). Rien pour un duo ouvert sur ce même téléphone
+    // (il gère aussi son auteur), ni deux fois en cinq minutes pour le même
+    // auteur : un titre retiré puis reproposé ne fait pas sonner toute la
+    // salle à chaque fois. Le bandeau, lui, s'affiche toujours.
+    const now = Date.now();
+    return fresh.filter(info => {
+      if (!info.open) return true;
+      const owner = String(info.open.ownerId);
+      if (manages(owner) || now - (openSignalAt.get(owner) || 0) < OPEN_SIGNAL_MS) return false;
+      openSignalAt.set(owner, now);
+      systemNotice(t('Karaoké : duo ouvert'), info.text, info.key);
+      return true;
+    }).length > 0;
   }
 
   $('infoBar').addEventListener('click', event => {
@@ -1200,18 +1215,28 @@
     if (!volunteers.length) return;
     const who = open.ownerName || t('cette personne');
     const title = open.song?.title || t('ce titre');
+    // Déjà invité d'autres duos : comme au choix du partenaire, ce duo pourra
+    // attendre le tour suivant (deux passages au plus par tour).
+    const capHint = person => {
+      const planned = list(person.guestDuos).length;
+      return planned ? tp(planned, '{name} a déjà {n} duo prévu. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.',
+        '{name} a déjà {n} duos prévus. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.', { name: person.name }) : '';
+    };
     const send = (node, person) => perform(node, async () => {
+      const hint = capHint(person);
       // Déjà rejoint ou fermé : le refus s'affiche et le bandeau disparaît.
       try { await post('/api/table/duet/open/accept', { personId: person.id, ownerId: open.ownerId, entryId: open.entryId }); }
       catch (error) { refresh(); throw error; }
       if (volunteers.length > 1) closeSheet();
       await refresh();
-      toast(volunteers.length === 1 ? t('Duo ajouté avec {name}.', { name: who })
-        : t('Duo ajouté : {from} chante avec {name}.', { from: person.name, name: who }));
+      toast([volunteers.length === 1 ? t('Duo ajouté avec {name}.', { name: who })
+        : t('Duo ajouté : {from} chante avec {name}.', { from: person.name, name: who }), hint].filter(Boolean).join(' '));
     });
     if (volunteers.length === 1) { send(button, volunteers[0]); return; }
+    const hints = volunteers.map(capHint).filter(Boolean);
     openSheet(`<div class="row"><h3 class="grow">${esc(t('Qui chante « {title} » avec {name} ?', { title, name: who }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
-      <p class="small muted">${esc(t('Le premier qui se propose chante avec {name}. Tes propres chansons restent dans ta liste.', { name: who }))}</p>
+      <p class="small muted">${esc(t('Le premier qui se propose chante avec {name}. Ses propres chansons restent dans sa liste.', { name: who }))}</p>
+      ${hints.map(hint => `<p class="notice warn small" role="status">${esc(hint)}</p>`).join('')}
       <div class="sheet-actions">${volunteers.map(person => `<button type="button" class="btn" data-open-as="${esc(person.id)}">${esc(person.name)}</button>`).join('')}</div>`);
     for (const node of $('sheetPanel').querySelectorAll('[data-open-as]')) {
       node.addEventListener('click', () => send(node, volunteers.find(person => String(person.id) === node.dataset.openAs)));
@@ -2745,10 +2770,21 @@
     const openSong = event.target.closest('[data-duet-open]');
     if (openSong) {
       const person = personById(openSong.dataset.personId);
+      const body = { personId: openSong.dataset.personId, entryId: openSong.dataset.duetOpen };
+      const done = () => t('Duo ouvert : toute la salle peut se proposer pour chanter avec {name}.', { name: person?.name || '' });
+      // « Duos uniquement » : le titre attendra un partenaire et ne pourra plus
+      // repasser en solo (seulement être retiré). Dit avant le geste.
+      if (duoOnly() && person) {
+        const song = list(person.songs).find(item => String(item.entryId) === body.entryId);
+        askConfirm(person, t('Chercher un duo pour « {title} » ?', { title: song?.title || t('ce titre') }),
+          t('Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Il ne pourra plus repasser en solo, seulement être retiré.'),
+          t('Oui, chercher un duo'), async () => { await post('/api/table/duet/open', body); return done(); });
+        return;
+      }
       perform(openSong, async () => {
-        await post('/api/table/duet/open', { personId: openSong.dataset.personId, entryId: openSong.dataset.duetOpen });
+        await post('/api/table/duet/open', body);
         await refresh();
-        toast(t('Duo ouvert : toute la salle peut se proposer pour chanter avec {name}.', { name: person?.name || '' }));
+        toast(done());
       });
       return;
     }
@@ -3564,7 +3600,19 @@
       seen.add(id);
       return true;
     });
-    if (!partners.length) return toast(t('Aucun partenaire disponible pour un duo.'), true);
+    const hasOpen = list(owner.songs).some(item => item.duet?.state === 'open');
+    if (!partners.length) {
+      toast(t('Aucun partenaire disponible pour un duo.'), true);
+      if (hasOpen) return;
+      // Personne d'autre pour l'instant (début de soirée) : le titre peut
+      // encore chercher un partenaire parmi les suivants, en duo ouvert.
+      openSheet(`<div class="row"><h3 class="grow">${esc(t('Duo sur « {title} »', { title: song.title }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+        <p class="muted small">${esc(duoOnly() ? t('Ce soir, le bar ne prend que des duos : ce titre attend un partenaire pour passer.')
+          : state?.table?.individual ? t('Sans partenaire avant ton tour, tu chanteras seul.') : t('Sans partenaire avant son tour, {name} chantera seul.', { name: owner.name }))}</p>
+        <div class="sheet-actions"><button type="button" id="openDuetInstead" class="btn primary">${esc(t('Qui veut chanter en duo avec moi ?'))}</button></div>`);
+      $('openDuetInstead').addEventListener('click', () => openDuetFromCatalog($('openDuetInstead'), song, personId));
+      return;
+    }
     // Téléphone d'un soliste : les autres solistes ne sont pas « à sa table »,
     // chaque duo est une invitation. Un soliste est proposé sous son prénom.
     const soloPhone = !!state?.table?.individual;
@@ -3578,7 +3626,7 @@
       <label class="field" for="duoPartner">${esc(t('Avec qui ?'))}</label>
       <select id="duoPartner">${ownTable.length ? `<optgroup label="${esc(t('À ma table'))}">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="${esc(otherLabel)}">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
       <p id="duoPartnerHint" class="notice warn small" role="status" hidden></p>
-      <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">${esc(t('Ajouter le duo'))}</button>${list(owner.songs).some(item => item.duet?.state === 'open') ? ''
+      <div class="sheet-actions"><button type="button" id="sendDuo" class="btn primary">${esc(t('Ajouter le duo'))}</button>${hasOpen ? ''
         : `<button type="button" id="openDuetInstead" class="btn">${esc(t('Qui veut chanter en duo avec moi ?'))}</button>`}</div>`);
     // Sans partenaire choisi : la demande part à toute la salle.
     $('openDuetInstead')?.addEventListener('click', () => openDuetFromCatalog($('openDuetInstead'), song, personId));

@@ -582,7 +582,7 @@ window.CLIENT_TRANSLATIONS = {
       'Je chante avec {name}': 'I’ll sing with {name}',
       'Karaoké : duo ouvert': 'Karaoke: open duet',
       'Qui chante « {title} » avec {name} ?': 'Who sings “{title}” with {name}?',
-      'Le premier qui se propose chante avec {name}. Tes propres chansons restent dans ta liste.': 'The first person to volunteer sings with {name}. Your own songs stay on your list.',
+      'Le premier qui se propose chante avec {name}. Ses propres chansons restent dans sa liste.': 'The first person to volunteer sings with {name}. Their own songs stay on their list.',
       'Duo ouvert : toute la salle peut se proposer pour chanter avec {name}.': 'Open duet: anyone in the room can volunteer to sing with {name}.',
       'duo ouvert, en attente d’un partenaire': 'open duet, waiting for a partner',
       'duo ouvert': 'open duet',
@@ -594,6 +594,10 @@ window.CLIENT_TRANSLATIONS = {
       'Fermer la demande': 'Close the request',
       'Ne plus chercher de partenaire pour {title}': 'Stop looking for a partner for {title}',
       'Demande fermée : le titre reste en solo.': 'Request closed: the song stays solo.',
+      'Chercher un duo pour « {title} » ?': 'Find a duet partner for “{title}”?',
+      'Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Il ne pourra plus repasser en solo, seulement être retiré.':
+        'Tonight the bar only takes duets: this song will wait for a partner before it goes up. It can’t go back to solo, only be removed.',
+      'Oui, chercher un duo': 'Yes, find a duet',
       '{name} rejoint {person} en duo sur « {title} ».': '{name} joins {person} for a duet on “{title}”.',
       'Personne n’a rejoint le duo de {person} sur « {title} » : {person} le chante en solo.': 'Nobody joined {person}’s duet on “{title}”: {person} sings it solo.',
 
