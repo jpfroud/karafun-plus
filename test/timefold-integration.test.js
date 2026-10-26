@@ -1204,6 +1204,17 @@ function firstArrivals(options = {}) {
   });
   return { s, people };
 }
+// Ordre que Timefold lui-même propose pour la demande de Node, avant que
+// Node ne le relise : la règle locale filtre avant le plan, et la file
+// affichée ne montre donc pas ce que le score Java préfère.
+async function javaOrder(s, request, id) {
+  const bridge = new TimefoldBridge({ jar: JAR });
+  try {
+    const response = await bridge.solve({ ...request, requestId: id, budgetMs: 1000 }, { immediate: true });
+    const owner = new Map(request.performances.map(row => [row.id, s.people.get(row.owner).name]));
+    return response.order.map(entryId => owner.get(entryId));
+  } finally { bridge.close(); }
+}
 function firstArrivalsRequest(options = {}) {
   const { s, people } = firstArrivals(options);
   let request;
@@ -1263,6 +1274,9 @@ test('premiers passages : le plan Timefold garde l’ordre d’ajout dans les tr
     for (const [mode, options] of [['chacun son tour', {}], ['tables à tour de rôle', { tableRotation: true }],
       ['compromis', { tableRotation: true, weightedTables: true }]]) {
       const local = firstArrivals(options).s.readyView().map(item => item.name);
+      const asked = firstArrivalsRequest(options);
+      assert.deepEqual(await javaOrder(asked.s, asked.request, `fifo-plan-${mode}`), local,
+        `${mode} : l’ordre optimisé par Timefold lui-même`);
       const { s } = firstArrivals({ solverEnabled: true, solverBudgetMs: 1000, ...options });
       try {
         assert.equal(await s.whenPlanReady(), true, `${mode} : vrai plan Java`);
@@ -1330,10 +1344,75 @@ test('QueueScore : un retour servi avant une attente plus ancienne coûte',
     } finally { bridge.close(); }
   });
 
+// À compteur égal, à l'heure (soirée du 24 octobre à 01:55) : Tess redemande
+// pendant la chanson de Yves (`pendant`) ou après sa fin (`après`) ; Timefold
+// classe comme Node, par la fin du passage et l'heure de la demande.
+function yvesEvening(moment, options = {}) {
+  const realNow = Date.now;
+  let clock = Date.UTC(2026, 9, 25, 0, 0, 0);
+  Date.now = () => clock;
+  try {
+    const s = new Scheduler(options);
+    let n = 9900;
+    const song = () => ({ songId: n++, title: `T${n}`, artist: 'x' });
+    const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+    for (const p of [o, o, tess, yves, yves]) { clock += 5000; s.chooseSong(p, song(), 'append'); }
+    let onStage = null;
+    for (let k = 0; k < 3; k++) {
+      clock += 45000;
+      const sel = s.select(); s.commit(sel);
+      clock += 180000;
+      if (onStage) { s.songEnded(onStage.ids); s.endStage(onStage); }
+      s.recordStage(sel);
+      onStage = sel;
+    }
+    const end = () => { s.songEnded(onStage.ids); s.endStage(onStage); };
+    if (moment === 'pendant') { clock += 60000; s.chooseSong(tess, song()); clock += 60000; end(); }
+    else { clock += 120000; end(); clock += 60000; s.chooseSong(tess, song()); }
+    return { s };
+  } finally { Date.now = realNow; }
+}
+
+test('QueueScore : à compteur égal, la fin du passage d’un chanteur et une demande se départagent à l’heure',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+    const bridge = new TimefoldBridge({ jar: JAR });
+    try {
+      for (const [moment, expected] of [['pendant', ['O', 'Tess', 'Yves']], ['après', ['O', 'Yves', 'Tess']]]) {
+        const { s } = yvesEvening(moment);
+        let request;
+        s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+        s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+        const nameOf = row => s.people.get(row.owner).name;
+        const local = request.performances;
+        assert.deepEqual(local.map(nameOf), expected, moment);
+        const seed = async (rows, id, extra = {}) => medium((await bridge.solve({ ...request, ...extra, requestId: id, budgetMs: 100,
+          performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+        const swapped = [local[0], local[2], local[1]];
+        const kept = await seed(local, `tie-${moment}`), other = await seed(swapped, `tie-swap-${moment}`);
+        assert.ok(kept > other, `${moment} : ordre à l’heure ${kept}, inversé ${other}`);
+        // Sans la règle (ancien client, sans addedOrder) : l'écart tient au
+        // reste du score ; la règle y ajoute 3 000.
+        const keptOld = await seed(local, `tie-old-${moment}`, { addedOrder: {} });
+        const otherOld = await seed(swapped, `tie-old-swap-${moment}`, { addedOrder: {} });
+        assert.equal((kept - other) - (keptOld - otherOld), 3000, `${moment} : ${kept - other} contre ${keptOld - otherOld}`);
+      }
+    } finally { bridge.close(); }
+  });
+
 test('à patience égale : le plan Timefold garde la plus ancienne attente d’abord',
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
     const local = kilianEvening().s.readyView().map(item => item.name);
     assert.equal(local.at(-1), 'Kilian', local.join(' '));
+    for (const moment of ['kilian', 'pendant', 'après']) {
+      const asked = moment === 'kilian' ? kilianEvening().s : yvesEvening(moment).s;
+      let request;
+      asked.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+      asked._requestSolver(asked.solverContextFingerprint(), { budgetMs: 100 });
+      const expected = asked.readyView().map(item => item.name);
+      assert.deepEqual(await javaOrder(asked, request, `oldest-plan-${moment}`), expected,
+        `${moment} : l’ordre optimisé par Timefold lui-même`);
+    }
     const { s } = kilianEvening({ solverEnabled: true, solverBudgetMs: 1000 });
     try {
       assert.equal(await s.whenPlanReady(), true, 'vrai plan Java');

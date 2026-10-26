@@ -130,6 +130,41 @@ test('chacun son tour : une table qui arrive rejoint le cycle en cours, sans dé
   });
 });
 
+test('chacun son tour : une table qui arrive pendant l’envoi du passage qui ferme un cycle le rejoint encore', () => {
+  withClock(tick => {
+    const s = new Scheduler();
+    s.setHeadcount('A', 3); s.setHeadcount('B', 2); s.setHeadcount('D', 1);
+    const [a1, a2, a3] = ['A1', 'A2', 'A3'].map(name => s.join({ tableId: 'A', name }));
+    const [b1, b2] = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+    for (const [k, p] of [a1, b1, a2, b2, a3].entries()) { tick(); s.chooseSong(p, song(k + 1)); }
+    assert.deepEqual([sing(s), sing(s), sing(s)], ['A1', 'B1', 'A2']);
+    // B2 ferme le deuxième cycle au moment de son choix ; la table D arrive
+    // avant l'accusé de KaraFun : D1 passe dans ce cycle, avant A3.
+    tick();
+    const sel = s.select();
+    assert.deepEqual(sel.names, ['B2']);
+    assert.deepEqual(sel.firstCycle, [], 'cycle fermé au choix');
+    const d1 = s.join({ tableId: 'D', name: 'D1' });
+    tick(); s.chooseSong(d1, song(6));
+    s.commit(sel); s.songEnded(sel.ids);
+    assert.deepEqual([...s.firstCycle].sort(), [a1.group, b1.group].sort(), 'le cycle reste ouvert pour D');
+    assert.deepEqual(order(s), ['D1', 'A3']);
+    assert.deepEqual(playAll(s), ['D1', 'A3']);
+    // Sans arrivée pendant l'envoi, le cycle se ferme au même moment.
+    const t = new Scheduler();
+    t.setHeadcount('A', 2);
+    const [x1, x2] = ['X1', 'X2'].map(name => t.join({ tableId: 'A', name }));
+    const y1 = t.join({ tableId: 'B', name: 'Y1', headcount: 1 });
+    for (const [k, p] of [x1, y1, x2].entries()) { tick(); t.chooseSong(p, song(k + 10)); }
+    assert.equal(sing(t), 'X1');
+    tick();
+    const late = t.select();
+    assert.deepEqual(late.names, ['Y1']);
+    t.commit(late);
+    assert.deepEqual([...t.firstCycle], [], 'nouveau cycle');
+  });
+});
+
 test('premiers passages : un duo entre deux tables fait passer les deux tables dans le cycle', () => {
   withClock(tick => {
     const s = new Scheduler();

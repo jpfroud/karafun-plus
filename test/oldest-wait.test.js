@@ -15,7 +15,11 @@
 // liste vide), à l'heure près) ; la part et la règle des tables ne départagent
 // qu'ensuite. Dans les modes de tables, la part d'abord, puis la même règle.
 // Une demande faite pendant qu'un passage est envoyé mais pas encore commencé
-// prend le début d'attente d'avant ce passage.
+// prend le début d'attente d'avant ce passage. À compteur égal, à l'heure,
+// comme dans les statistiques : l'attente d'un chanteur commence à la fin de
+// sa chanson, une demande faite pendant elle passe avant son titre suivant
+// (le 24 à 01:55, le dernier titre de la soirée allait au deuxième d'un
+// arrivant de 01:25 plutôt qu'à une demande faite pendant son premier).
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { Scheduler } = require('../scheduler');
@@ -26,7 +30,8 @@ const settings = () => ({ auto: true, autoPlay: false, baseUrl: 'https://chant.e
   pushDelaySec: 45, playDelaySec: 8 });
 // Horloge du test, et une scène comme celle du bar : chaque passage est
 // envoyé 45 s après le début du titre en cours et commence quand celui-ci
-// finit, trois minutes plus tard. `onSent(sel)` : geste pendant l'envoi.
+// finit, trois minutes plus tard (fin notée comme par le serveur :
+// songEnded puis endStage). `onSent(sel)` : geste pendant l'envoi.
 function evening(options = {}) {
   const realNow = Date.now;
   let clock = Date.UTC(2026, 9, 23, 21, 0, 0);
@@ -44,7 +49,7 @@ function evening(options = {}) {
     s.commit(sel);
     onSent?.(sel);
     tick(180);
-    if (onStage) s.songEnded(onStage.ids);
+    if (onStage) { s.songEnded(onStage.ids); s.endStage(onStage); }
     s.recordStage(sel);
     onStage = sel;
     passages.push(sel.names.join(' & '));
@@ -52,7 +57,30 @@ function evening(options = {}) {
   };
   const add = (p, mode = 'append') => { tick(); s.chooseSong(p, song(), mode); };
   const view = () => s.readyView().map(item => item.name);
-  return { s, tick, song, add, step, passages, view, done: () => { Date.now = realNow; } };
+  // Fin du titre sur scène sans début du suivant (pause du bar).
+  const endSong = () => {
+    if (!onStage) return;
+    s.songEnded(onStage.ids); s.endStage(onStage);
+    onStage = null;
+  };
+  return { s, tick, song, add, step, endSong, passages, view, done: () => { Date.now = realNow; } };
+}
+
+// Cas du 24 octobre à 01:55 : Yves, arrivé avec deux titres, chante le
+// premier (dernier passage) ; Tess, liste vide depuis le sien, redemande
+// pendant cette chanson (`pendant`), ou après sa fin, pendant une pause du
+// bar (`après`) ; O, qui attend depuis plus longtemps, passe d'abord.
+function yvesEvening(moment, options = {}) {
+  const e = evening(options);
+  const { s, tick, add, step, endSong } = e;
+  const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+  add(o); add(o); add(tess); add(yves); add(yves);
+  for (let k = 0; k < 3; k++) step();
+  assert.deepEqual(e.passages, ['O', 'Tess', 'Yves']);
+  let endedAt;
+  if (moment === 'pendant') { tick(60); add(tess); tick(60); endSong(); endedAt = Date.now(); }
+  else { tick(120); endSong(); endedAt = Date.now(); tick(60); add(tess); }
+  return { ...e, o, tess, yves, endedAt };
 }
 
 // Graine de la recherche faite pour cette correction : table T de trois
@@ -125,6 +153,55 @@ test('cas Kilian : un retour qui redemande un titre tard prend sa place selon sa
     assert.deepEqual(order, ['O2', 'O3', 'K2', 'K3', 'K4', 'Kilian'], `sa table ne passe plus devant : ${order.join(' ')}`);
     for (let k = 0; k < 6; k++) step();
     assert.deepEqual(passages.slice(8), order);
+  } finally { e.done(); }
+});
+
+test('à compteur égal, à l’heure : une demande faite pendant une chanson passe avant le titre suivant de son chanteur', () => {
+  for (const [moment, expected] of [['pendant', ['O', 'Tess', 'Yves']], ['après', ['O', 'Yves', 'Tess']]]) {
+    const e = yvesEvening(moment);
+    try {
+      const { s, tess, yves, view, endedAt } = e;
+      assert.equal(tess.readySerial, yves.lastAppearanceTurn, `${moment} : même compteur`);
+      assert.equal(s._stageEnd(yves.lastAppearanceTurn), endedAt);
+      assert.equal(tess.readySince < endedAt, moment === 'pendant');
+      assert.deepEqual(view(), expected, `${moment} : ${view().join(' ')}`);
+      // Reprise après un redémarrage : la fin du passage est sauvegardée ;
+      // une sauvegarde d'avant ce champ la reprend de l'historique de scène.
+      const access = new TableAccess();
+      for (const id of s.tables.keys()) access.issue(id);
+      const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings: settings() })));
+      assert.ok(saved.scheduler.stageEnds.some(([turn]) => turn === yves.lastAppearanceTurn));
+      const legacy = JSON.parse(JSON.stringify(saved));
+      delete legacy.scheduler.stageEnds;
+      for (const data of [saved, legacy]) {
+        const back = new Scheduler();
+        restoreNight(JSON.parse(JSON.stringify(data)), { scheduler: back, access: new TableAccess(), settings: settings() });
+        assert.equal(back._stageEnd(yves.lastAppearanceTurn), s._stageEnd(yves.lastAppearanceTurn));
+        assert.deepEqual(back.readyView().map(item => item.name), expected, `${moment}, reprise`);
+      }
+      // Le bar vide l'historique de scène : l'ordre ne change pas.
+      s.clearStageHistory([]);
+      assert.deepEqual(view(), expected, `${moment}, historique vidé`);
+      e.step(); e.step(); e.step();
+      assert.deepEqual(e.passages.slice(3), expected, `${moment} : les passages suivent l’ordre annoncé`);
+    } finally { e.done(); }
+  }
+});
+
+test('à compteur égal : chanson pas encore finie, toute demande déjà faite passe avant son chanteur', () => {
+  const e = evening();
+  try {
+    const { s, tick, add, step, view } = e;
+    const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+    add(o); add(o); add(tess); add(yves); add(yves);
+    for (let k = 0; k < 3; k++) step();
+    tick(60);
+    add(tess); // Yves est encore sur scène
+    assert.equal(s._stageEnd(yves.lastAppearanceTurn), Infinity);
+    assert.deepEqual(view(), ['O', 'Tess', 'Yves']);
+    // Un passage plus ancien, sans fin connue (titre jamais fini dans
+    // l'application) : de même, après les demandes faites à son compteur.
+    assert.equal(s._stageEnd(0), Infinity);
   } finally { e.done(); }
 });
 

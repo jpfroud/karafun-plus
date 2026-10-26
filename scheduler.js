@@ -51,8 +51,9 @@
  *   bar après le 12 octobre) : « Chacun son tour » la fait passer avant la
  *   règle des tables, puis, à patience égale, la plus ancienne attente
  *   (dernier passage, ou demande après une liste vide ; une demande faite
- *   pendant l'envoi d'un passage compte d'avant lui) ; « Tables à tour de
- *   rôle » et « Compromis » après la règle des tables. Un
+ *   pendant l'envoi d'un passage compte d'avant lui ; à compteur égal, à
+ *   l'heure : la fin du passage, les demandes à leur heure) ; « Tables à
+ *   tour de rôle » et « Compromis » après la règle des tables. Un
  *   bonus peut doubler, mais pas juste après sa chanson ; un malus n'est pas
  *   protégé. Un titre échangé (retrait du dernier titre puis ajout, sans
  *   passage entre les deux, ticket resté dans la file) garde l'attente en cours.
@@ -92,6 +93,7 @@ class Scheduler {
     this.roundOwed = new Set(); // privées de passage par le plafond au tour précédent : en tête du tour
     this.firstCycle = new Set(); // tables déjà passées dans le cycle en cours des premiers passages
     this.unstartedTurn = 0;   // tour du passage envoyé à KaraFun pas encore commencé sur scène (0 : aucun)
+    this.stageEnds = new Map(); // tour d'un passage fini sur scène → heure de sa fin (début d'attente de ses chanteurs)
     this.duetCooldowns = new Map(); // invité : nombre d'autres chansons à laisser passer
     this.reservedNext = null; // personne annoncée comme prochain passage, hors KaraFun
     this.stageHistory = [];   // derniers passages sur scène (bar uniquement)
@@ -1039,6 +1041,17 @@ class Scheduler {
   _waitSerial() {
     const sent = this.unstartedTurn;
     return sent > 0 && sent <= this.appearanceSerial ? sent - 1 : this.appearanceSerial;
+  }
+
+  // Heure où l'attente commence pour les chanteurs du passage `turn` : la fin
+  // de ce passage sur scène (endStage), comme dans les statistiques, où
+  // l'attente d'un titre commence au plus tôt à la fin du précédent. Passage
+  // pas encore fini (sur scène, envoyé, ou prévu par _forecast) : après
+  // toute demande déjà faite. Sert à départager, à compteur égal, ce passage
+  // et les demandes faites pendant lui (avant sa fin) ou juste après.
+  _stageEnd(turn) {
+    if (!turn || turn > this.appearanceSerial) return Infinity;
+    return this.stageEnds.get(turn) ?? Infinity;
   }
 
   // Heure d'un début d'attente, strictement après la précédente (et après

@@ -4357,6 +4357,7 @@ function clearEvening() {
   sched.roundGroups.clear();
   sched.firstCycle.clear();
   sched.unstartedTurn = 0;
+  sched.stageEnds.clear();
   sched.roundPeople.clear();
   sched.roundApps.clear();
   sched.roundOwed.clear();

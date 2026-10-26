@@ -177,6 +177,7 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       roundOwed: [...(scheduler.roundOwed || new Set())],
       firstCycle: [...(scheduler.firstCycle || new Set())],
       unstartedTurn: scheduler.unstartedTurn || 0,
+      stageEnds: [...(scheduler.stageEnds || new Map())],
       stageHistory: clone(scheduler.stageHistory || []),
       playedSongs: clone(scheduler.playedSongs || []),
       log: clone(scheduler.log), slotSamples: [...scheduler.slotSamples],
@@ -436,6 +437,13 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     data.unstartedTurn <= tmp.appearanceSerial ? data.unstartedTurn : 0;
   tmp.stageHistory = clone(list(data.stageHistory ?? [], 'historique de scène')).filter(item =>
     item && typeof item === 'object' && Array.isArray(item.ids) && Number.isFinite(item.at)).slice(-60);
+  // Fin de chaque passage récent (Scheduler#_stageEnd) : absente d'une
+  // sauvegarde d'avant ce champ, reprise des passages finis de l'historique
+  // de scène ; une ligne abîmée est ignorée (fin inconnue : après toute demande).
+  const stageEnd = row => Array.isArray(row) && Number.isSafeInteger(row[0]) && row[0] > 0 &&
+    row[0] <= tmp.appearanceSerial && Number.isFinite(row[1]) && row[1] >= 0;
+  tmp.stageEnds = new Map(Array.isArray(data.stageEnds) ? data.stageEnds.filter(stageEnd).slice(-200) :
+    tmp.stageHistory.map(item => [item.turn, item.endedAt]).filter(stageEnd));
   tmp.playedSongs = clone(list(data.playedSongs ?? [], 'titres chantés')).filter(item =>
     item && typeof item === 'object' && Number.isFinite(item.at) &&
     typeof item.title === 'string' && item.title.length > 0).slice(-PLAYED_LIMIT);
@@ -524,7 +532,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
-    'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'firstCycle', 'unstartedTurn', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
+    'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'firstCycle', 'unstartedTurn', 'stageEnds', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
   // Un ajout après la reprise part après toutes les heures sauvegardées,
   // même si l'horloge du serveur a reculé (Scheduler#_readyStamp).
   scheduler._readyClock = [...tmp.people.values()].reduce((max, p) => Math.max(max, p.readySince || 0),

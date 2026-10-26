@@ -494,15 +494,16 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
 
     // When the wait of the owner of `c` started (rotation.js#_pick, waitKey):
     // a malus owner after the others (not protected, as for patience), then
-    // max(last appearance, readyAt), then, at the same count, their stage
-    // passage before the requests made during or after it, by request time
-    // (addedOrder: the rank of Node's readySince).
+    // max(last appearance, readyAt), then, at the same count, by time
+    // (addedOrder: the rank of the end of Node's last passage, or of its
+    // readySince, a request made during a passage coming before its singer).
+    // A passage of this plan has not ended yet: after every request.
     private static long[] waitKey(Performance c, Map<String, Integer> lastSeen, QueuePlan plan) {
         String owner = c.getOwner();
         int last = lastSeen.getOrDefault(owner, UNKNOWN);
         int ready = plan.getReadyAt().getOrDefault(owner, UNKNOWN);
         return new long[] { weight(plan, owner) < 1 - EPS ? 1 : 0, Math.max(last, ready),
-                last > ready ? -1 : added(plan, c) };
+                last >= 0 ? Long.MAX_VALUE : added(plan, c) };
     }
 
     private static int compareWait(long[] a, long[] b) {
