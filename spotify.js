@@ -497,11 +497,12 @@ class SpotifyAutomation {
     this.recoveredAt = -Infinity;
   }
 
-  // Le bar a lui-même lancé ou coupé Spotify, ou l'application lance un
-  // titre : plus d'action automatique jusqu'au prochain changement (titre qui
-  // démarre, ou nouveau silence). `karaoke` : la période en cours, que
-  // l'automate n'a peut-être pas encore vue (geste juste après la fin d'un
-  // titre) ; sans elle, le choix vaudrait pour la période finie.
+  // Le bar a lui-même lancé ou coupé Spotify, ou l'application lance la
+  // Battle ou le titre d'après : plus d'action automatique jusqu'au prochain
+  // changement (titre qui démarre, ou nouveau silence). `karaoke` : la période
+  // en cours, que l'automate n'a peut-être pas encore vue (geste juste après
+  // la fin d'un titre ; le serveur ne la donne que pour l'attente de la
+  // Battle) ; sans elle, le choix vaut pour la dernière période vue.
   handled(karaoke = this.phase) {
     this._enter(karaoke);
     this.done = true;

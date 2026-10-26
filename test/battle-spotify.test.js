@@ -181,8 +181,8 @@ test('Battle suivie par la file : Spotify reprend après le titre d’avant, « 
   assert.equal(f.settings.autoPlay, true, 'lecture automatique gardée');
   assert.equal(f.settings.autoPlayHeld, false);
   assert.ok(!order.slice(3).includes('karafun-play'), 'le titre suivant attend toujours le bar');
-  // Deux appuis rapprochés : un seul lancement, sans erreur (chacun a pu
-  // demander la pause, sans effet de plus).
+  // Deux appuis rapprochés : un seul lancement, sans erreur (le second
+  // attend le premier).
   const taps = await Promise.all([f.handlers['POST /api/staff/kf'](null, null, { action: 'play' }),
     f.handlers['POST /api/staff/kf'](null, null, { action: 'play' })]);
   assert.deepEqual(taps.map(answer => answer.ok), [true, true]);
@@ -266,6 +266,88 @@ test('« Lecture » de la Battle dès la fin du titre d’avant : Spotify ne rep
   f.setBridge(fakeBridge(order, [battleItem()], 50));
   f.sync();
   assert.equal(f.battleVote.automation.status, 'playing');
+});
+
+// Remarque de relecture : si KaraFun retire la Battle de sa file avant
+// d'annoncer sa lecture et que rien ne suit, la période passait à « silent » :
+// Spotify repartait par-dessus le lancement et la lecture automatique était
+// suspendue. Le départ de la Battle (`queued` qui patiente, puis `after` après
+// 1,5 s) reste l'attente de la Battle.
+test('« Lancer la Battle », rien derrière : KaraFun la retire de sa file avant de l’annoncer, Spotify ne repart pas', async () => {
+  const { f, clock, order } = setup();
+  f.battleVote.staffLaunch({ song: BATTLE_SONG });
+  f.setBridge(fakeBridge(order, [plainItem(40), battleItem()], 40));
+  f.sync();
+  await f.spotifyTick();
+  f.setBridge(fakeBridge(order, [battleItem()]));
+  f.sync();
+  await ticks(f, clock, 2);
+  assert.deepEqual(order, ['spotify-play'], 'Spotify reprend pendant l’attente');
+  await f.handlers['POST /api/staff/kf'](null, null, { action: 'play' });
+  assert.deepEqual(order, ['spotify-play', 'spotify-pause', 'karafun-play']);
+  f.setBridge(fakeBridge(order, []));
+  f.sync();
+  assert.ok(f.battleVote.automation.missingSince, 'la file patiente');
+  assert.equal(f.karaokeOutlook(), 'battle', 'toujours l’attente de la Battle');
+  await ticks(f, clock, 3);
+  // Au-delà de 1,5 s sans nouvelle, le suivi conclut « after » : même période.
+  await new Promise(resolve => setTimeout(resolve, 1600));
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'after');
+  assert.equal(f.karaokeOutlook(), 'battle');
+  await ticks(f, clock, 3);
+  assert.deepEqual(order, ['spotify-play', 'spotify-pause', 'karafun-play'], 'pas de relance par-dessus le lancement');
+  assert.equal(f.settings.autoPlayHeld, false, 'lecture automatique pas suspendue');
+});
+
+// Remarque de relecture : un second appui sur « Lancer le prochain titre »
+// pendant le court silence d'avant-titre trouvait Spotify déjà coupé et
+// lançait aussitôt (517 ms au lieu de 2 s). Il attend désormais le premier.
+test('« Lancer le prochain titre » touché deux fois pendant le court silence : un seul lancement, silence gardé', async () => {
+  const { f, clock, order } = setup({ spotify: { pauseLeadSec: 1 } });
+  const t0 = Date.now();
+  let playedAt = null;
+  const bridge = (queue, playing) => {
+    const b = fakeBridge(order, queue, playing);
+    b.play = () => { playedAt = Date.now() - t0; order.push('karafun-play'); };
+    return b;
+  };
+  f.setBridge(bridge([battleItem(77), plainItem(78)])); f.sync();
+  f.setBridge(bridge([battleItem(77), plainItem(78)], 77)); f.sync();
+  f.setBridge(bridge([plainItem(78)])); f.sync();
+  assert.equal(f.battleVote.automation.status, 'after');
+  await ticks(f, clock, 2);
+  assert.deepEqual(order, ['spotify-play']);
+  const first = f.handlers['POST /api/staff/kf'](null, null, { action: 'play' });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const second = f.handlers['POST /api/staff/kf'](null, null, { action: 'play' });
+  const answers = await Promise.all([first, second]);
+  assert.deepEqual(answers.map(answer => answer.ok), [true, true]);
+  assert.deepEqual(order, ['spotify-play', 'spotify-pause', 'karafun-play'], 'une pause, un lancement');
+  assert.ok(playedAt >= 950, `lancé après le silence de 1 s, pas au second appui (${playedAt} ms)`);
+  assert.equal(f.battleVote.automation.status, 'resuming');
+});
+
+// F2, critère 4 : aucun changement hors Battle. Geste « ⏸/▶ Spotify » du bar
+// juste après la fin du dernier titre, avant le passage de l'automate : il
+// vaut, comme avant, pour la période que l'automate a vue (le titre fini) ;
+// la fin de file relance alors Spotify et suspend la lecture automatique.
+test('hors Battle : geste Spotify du bar juste après le dernier titre, comportement d’avant', async () => {
+  for (const gesture of ['pause', 'play']) {
+    const { f, clock, order, player } = setup();
+    if (gesture === 'pause') player.playing = true;
+    f.setBridge(fakeBridge(order, [plainItem(40)], 40));
+    f.sync();
+    await f.spotifyTick();
+    f.setBridge(fakeBridge(order, []));
+    f.sync();
+    assert.equal(f.karaokeOutlook(), 'silent');
+    await f.handlers['POST /api/staff/spotify'](null, null, { action: gesture });
+    await ticks(f, clock, 3);
+    assert.deepEqual(order, gesture === 'pause' ? ['spotify-pause', 'spotify-play'] : ['spotify-play'], gesture);
+    assert.equal(player.playing, true, gesture);
+    assert.equal(f.settings.autoPlayHeld, true, `${gesture} : fin de file, lecture automatique suspendue`);
+  }
 });
 
 test('hors Battle : file vide, Spotify reprend et la lecture automatique attend toujours le bar', async () => {

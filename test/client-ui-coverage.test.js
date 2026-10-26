@@ -1785,7 +1785,7 @@ test('Battle : « Rejoindre la Battle » ouvre la télécommande KaraFun dans un
   const hide = async (page, hidden) => { page.document.hidden = hidden; page.dispatch(page.document, 'visibilitychange'); await page.settle(); };
   const page = await open(alerts);
   assert.equal(page.node('battleJoin').hidden, true, 'pas de Battle en tête de KaraFun : pas de bouton');
-  page.state.battle = { ...page.state.battle, phase: 'cooldown', joinUrl: LINK };
+  page.state.battle = { ...page.state.battle, id: 'b7', phase: 'cooldown', joinUrl: LINK };
   await page.poll();
   const link = page.node('battleJoinLink');
   assert.equal(page.node('battleJoin').hidden, false);
@@ -1797,13 +1797,31 @@ test('Battle : « Rejoindre la Battle » ouvre la télécommande KaraFun dans un
   assert.match(page.node('battleJoin').textContent, /À la fin de la Battle, appuie sur ← Retour pour revenir ici\./);
   assert.doesNotMatch(page.node('battleJoin').textContent, /rescanne/i);
 
-  // Le bouton touché, la page passe en arrière-plan ; la Battle se termine.
+  // Le bouton touché, la page passe en arrière-plan ; la Battle passe sur
+  // scène. KaraFun se déconnecte un instant : le serveur ne lit plus sa file,
+  // la page garde le bouton sans conclure à la fin de la Battle.
   await hide(page, true);
+  page.state.stage = { ours: false, kind: 'battle', singer: 'Battle collective', title: 'Tube collectif', artist: 'Groupe' };
+  await page.poll();
+  page.state.karafun = { connected: false, ready: false, demo: false };
+  page.state.stage = null;
+  page.state.battle = { ...page.state.battle, joinUrl: null };
+  await page.poll();
+  assert.equal(page.node('battleJoin').hidden, false, 'coupure de KaraFun : le bouton reste');
+  assert.equal(page.node('battleJoinLink').getAttribute('href'), LINK);
+  assert.equal(page.notifications.length, 0, 'pas de « Battle terminée » pendant la coupure');
+  page.state.karafun = { connected: true, ready: true, demo: false };
+  page.state.stage = { ours: false, kind: 'battle', singer: 'Battle collective', title: 'Tube collectif', artist: 'Groupe' };
+  page.state.battle = { ...page.state.battle, joinUrl: LINK };
+  await page.poll();
+  assert.equal(page.notifications.length, 0);
+  // La Battle se termine.
+  page.state.stage = null;
   page.state.battle = { ...page.state.battle, joinUrl: null };
   await page.poll();
   assert.equal(page.node('battleJoin').hidden, true, 'Battle finie : plus de bouton');
   const [notice] = page.notifications;
-  assert.deepEqual([notice?.title, notice?.body, notice?.tag], ['Battle terminée', 'Touche ici pour revenir à ta page karaoké.', 'battle-end-1']);
+  assert.deepEqual([notice?.title, notice?.body, notice?.tag], ['Battle terminée', 'Touche ici pour revenir à ta page karaoké.', 'battle-end-b7-1']);
   notice.onclick();
   assert.equal(page.focusWindow, 1, 'la notification ramène sur la page');
   await page.poll();
@@ -1814,9 +1832,28 @@ test('Battle : « Rejoindre la Battle » ouvre la télécommande KaraFun dans un
   await page.poll();
   assert.equal(page.toast().hidden, true, 'message bref, une seule fois');
 
+  // Battle suivante : sa propre notification. Une Battle retirée de KaraFun
+  // avant son lancement (jamais sur scène) n'est pas « terminée ».
+  await hide(page, true);
+  page.state.battle = { ...page.state.battle, id: 'b8', joinUrl: LINK };
+  await page.poll();
+  page.state.battle = { ...page.state.battle, joinUrl: null };
+  await page.poll();
+  assert.equal(page.node('battleJoin').hidden, true, 'Battle retirée : plus de bouton');
+  assert.equal(page.notifications.length, 1, 'Battle retirée avant son lancement : pas de « Battle terminée »');
+  page.state.battle = { ...page.state.battle, id: 'b9', joinUrl: LINK };
+  page.state.stage = { ours: false, kind: 'battle', singer: 'Battle collective', title: 'Tube collectif', artist: 'Groupe' };
+  await page.poll();
+  page.state.stage = null;
+  page.state.battle = { ...page.state.battle, joinUrl: null };
+  await page.poll();
+  assert.deepEqual(page.notifications.map(item => item.tag), ['battle-end-b7-1', 'battle-end-b9-1'], 'une notification par Battle');
+  await hide(page, false);
+
   // Revenue pendant la Battle, page visible à sa fin : ni notification ni message.
   const back = await open(alerts);
   back.state.battle = { ...back.state.battle, phase: 'cooldown', joinUrl: LINK };
+  back.state.stage = { ours: false, kind: 'battle', singer: 'Battle collective', title: 'Tube collectif', artist: 'Groupe' };
   await back.poll();
   await hide(back, true);
   await hide(back, false);

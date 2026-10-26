@@ -186,6 +186,51 @@ test('mode PC : le lien de la télécommande n’arrive aux téléphones que pen
   assert.equal(await joinUrl(), null, 'sans code télécommande');
 });
 
+// Remarque de relecture : KaraFun déconnecté en pleine Battle (coupure du
+// socket, nouvel essai dans 3 à 30 s), le lien disparaissait et la page
+// annonçait « Battle terminée ». Le suivi garde son dernier état pendant la
+// coupure : Battle sur scène (`playing`) ou en train de partir, le lien reste.
+test('mode PC : KaraFun déconnecté pendant la Battle, le lien reste ; la fin se voit à la reconnexion', async () => {
+  const f = harness();
+  const joinUrl = await phone(f);
+  const kf = (queue, playing, options) => { f.setBridge(fakeBridge(queue, playing, options)); f.sync(); };
+  f.battleVote.staffLaunch({ song: { songId: 900, title: 'Tube collectif', artist: 'Groupe' } });
+  kf([plainItem(40), battleItem(), plainItem(60, 701)], 40);
+  kf([battleItem(), plainItem(60, 701)], 50);
+  assert.equal(f.battleVote.automation.status, 'playing');
+  assert.equal(await joinUrl(), LINK);
+  kf([battleItem(), plainItem(60, 701)], 50, { ready: false });
+  assert.equal(f.battleVote.automation.status, 'playing', 'suivi inchangé pendant la coupure');
+  assert.equal(await joinUrl(), LINK, 'Battle sur scène, KaraFun déconnecté : le lien reste');
+  assert.equal(await joinUrl(f.PUBLIC_PORT), LINK);
+  // Reconnecté, toujours sur scène ; puis finie pendant une seconde coupure.
+  kf([battleItem(), plainItem(60, 701)], 50);
+  assert.equal(await joinUrl(), LINK);
+  kf([plainItem(60, 701)], null, { ready: false });
+  assert.equal(await joinUrl(), LINK, 'fin pas encore lue');
+  kf([plainItem(60, 701)]);
+  assert.equal(f.battleVote.automation.status, 'after');
+  assert.equal(await joinUrl(), null, 'fin lue à la reconnexion : plus de lien');
+  kf([plainItem(60, 701)], null, { ready: false });
+  assert.equal(await joinUrl(), null, 'Battle finie, KaraFun déconnecté : toujours rien');
+
+  // Battle qui attend le bar en tête de KaraFun : sans KaraFun, sa place
+  // n'est plus connue, pas de lien (la page ouverte garde son bouton, voir
+  // client-ui-coverage). Lancée, retirée de la file avant d'être annoncée
+  // (`queued` qui patiente) : le lien reste pendant la coupure.
+  const g = harness();
+  const other = await phone(g);
+  g.setBridge(fakeBridge([battleItem(77)])); g.sync();
+  assert.equal(g.battleVote.automation.status, 'queued', 'Battle de KaraFun reconnue');
+  assert.equal(await other(), LINK);
+  g.setBridge(fakeBridge([battleItem(77)], null, { ready: false }));
+  assert.equal(await other(), null);
+  g.setBridge(fakeBridge([])); g.sync();
+  assert.ok(g.battleVote.automation.missingSince, 'la file patiente');
+  g.setBridge(fakeBridge([], null, { ready: false }));
+  assert.equal(await other(), LINK, 'départ de la Battle, KaraFun déconnecté : le lien reste');
+});
+
 test('démo : jamais de lien, même avec une Battle en tête du faux KaraFun', async () => {
   const f = harness({ demo: true });
   assert.equal(f.DEMO, true);
@@ -210,5 +255,14 @@ test('mode serveur : même règle que le mode PC', async () => {
   f.setBridge(fakeBridge([battleItem()], 50));
   assert.equal(joinUrl(), LINK);
   f.setBridge(fakeBridge([]));
+  assert.equal(joinUrl(), null);
+  // KaraFun déconnecté pendant la Battle suivie : le lien reste.
+  f.setBridge(fakeBridge([battleItem(51)])); f.sync();
+  f.setBridge(fakeBridge([battleItem(51)], 51)); f.sync();
+  assert.equal(f.battleVote.automation.status, 'playing');
+  f.setBridge(fakeBridge([battleItem(51)], 51, { ready: false }));
+  assert.equal(joinUrl(), LINK);
+  f.setBridge(fakeBridge([])); f.sync();
+  assert.equal(f.battleVote.automation.status, 'after');
   assert.equal(joinUrl(), null);
 });

@@ -783,6 +783,16 @@ const BATTLE_ACK_MS = 15000; // attente de l'accusé d'un ajout Battle ; aucun s
 const BATTLE_SETTLE_MS = 1500; // état de la file KaraFun confirmé sur cette durée (trames arrivées en deux temps)
 const PULL_LATE_MS = 20000; // un retrait envoyé (renvoyé toutes les 20 s) peut encore aboutir
 
+// Départ de la Battle selon le suivi : sur scène (`playing`), ou retirée un
+// instant de la file de KaraFun avant qu'il annonce sa lecture (`queued` qui
+// patiente). Elle compte encore comme en tête de KaraFun pour le lien des
+// téléphones et pour Spotify, y compris KaraFun déconnecté (coupure,
+// redémarrage de l'application) : le suivi garde alors son dernier état.
+function battleStarting() {
+  const state = battleVote.automation;
+  return state?.status === 'playing' || (state?.status === 'queued' && !!state.missingSince);
+}
+
 function battleHoldsQueue() {
   const state = battleVote.automation?.status;
   return !!state && !['released', 'resuming'].includes(state) &&
@@ -2103,15 +2113,13 @@ function sentDuo(tr, p, current) {
 // bar (le code saisi au bar), seulement tant qu'une Battle, suivie par
 // l'application ou ajoutée dans KaraFun, est en tête de KaraFun ou sur scène.
 // Jamais avant (vote, envoi), ni après, ni en démo ou sans code. Au départ de
-// la Battle, KaraFun peut la retirer de sa file un instant avant d'annoncer
-// sa lecture : le suivi (`playing`, ou `queued` qui patiente) garde le lien,
-// sans quoi un téléphone croirait la Battle finie.
+// la Battle (`battleStarting`), et KaraFun déconnecté pendant qu'elle passe,
+// le suivi garde le lien, sans quoi un téléphone croirait la Battle finie.
+// KaraFun déconnecté, sa file n'est plus lue (`analyze` la rend vide).
 function battleJoinUrl() {
-  if (DEMO || !CODE || !bridge?.ready) return null;
+  if (DEMO || !CODE) return null;
   const { current, upcoming } = analyze();
-  const state = battleVote.automation;
-  const starting = state?.status === 'playing' || (state?.status === 'queued' && !!state.missingSince);
-  return isBattleItem(current) || isBattleItem(upcoming[0]) || starting ? `https://www.karafun.fr/${CODE}` : null;
+  return isBattleItem(current) || isBattleItem(upcoming[0]) || battleStarting() ? `https://www.karafun.fr/${CODE}` : null;
 }
 
 // Vue Battle d'un téléphone (état et réponses des routes de la table) : sans
@@ -3839,7 +3847,8 @@ let spotifyWork = null;
 // l'envoi automatique) : Spotify ne reprend pas entre deux chansons.
 // « silent » : file vide, ou fermeture du bar (plus rien ne sera lancé).
 // « battle » : rien sur scène et la Battle attend le bar, qui la lance à la
-// main (prête en tête de KaraFun, suivie ou ajoutée dans KaraFun), puis
+// main (prête en tête de KaraFun, suivie ou ajoutée dans KaraFun ; ou déjà
+// lancée, que KaraFun retire de sa file avant d'annoncer sa lecture), puis
 // relance à la main le titre suivant (Battle finie) : Spotify comble
 // l'attente, comme en silence ; chaque lancement le coupe.
 function karaokeOutlook() {
@@ -3847,7 +3856,7 @@ function karaokeOutlook() {
   const { current, upcoming } = analyze();
   if (current) return 'singing';
   if (closingBlocksStart(null)) return 'silent';
-  if (isBattleItem(upcoming[0]) || battleVote.automation?.status === 'after') return 'battle';
+  if (isBattleItem(upcoming[0]) || battleStarting() || battleVote.automation?.status === 'after') return 'battle';
   if (upcoming.length || (pending && !pending.cancelled)) return 'between';
   // presenceView compte aussi les chanteurs qui doivent encore confirmer
   // « Je suis là » : la file n'est pas vide pour autant.
@@ -3882,13 +3891,17 @@ function releaseAutoPlay() {
 // KaraFun a reçu la commande.
 const SPOTIFY_PAUSE_WAIT_MS = 4000; // au-delà, KaraFun démarre sans attendre Spotify
 let playStarting = null;
+// « Lancer le prochain titre » après la Battle : coupure de Spotify et court
+// silence en cours, qu'un second appui attend au lieu de les écourter.
+let afterBattleStarting = null;
 // Coupure de Spotify avant un lancement depuis l'application (« Lecture »,
 // lecture automatique, titre suivant après la Battle), puis le court silence.
-// L'automate ne relance plus Spotify dans la période en cours : la reprise de
-// l'attente de la Battle ne recouvre pas le titre que KaraFun met quelques
-// secondes à annoncer. Rien à couper : null, et le lancement part aussitôt.
+// Attente de la Battle : l'automate ne relance plus Spotify jusqu'au titre
+// lancé, que KaraFun met quelques secondes à annoncer. Hors Battle, rien ne
+// change (il ne relance jamais entre deux chansons). Rien à couper : null, et
+// le lancement part aussitôt.
 function pauseSpotifyBeforeStart() {
-  spotifyAutomation.handled(karaokeOutlook());
+  if (karaokeOutlook() === 'battle') spotifyAutomation.handled('battle');
   return spotify.connected && spotify.config.autoPause && !spotify.blocked ? pauseSpotifyThenWait() : null;
 }
 async function pauseSpotifyThenWait() {
@@ -5046,10 +5059,13 @@ const handlers = {
       ...('resumeDelaySec' in body ? { resumeDelaySec: Number(body.resumeDelaySec) } : {}),
       ...('pauseLeadSec' in body ? { pauseLeadSec: Number(body.pauseLeadSec) } : {}) });
     else if (action === 'play' || action === 'pause') {
-      // Choix du bar : l'automate ne le défait pas pendant ce silence (attente
-      // de la Battle comprise) ou ce titre, même tout juste commencé.
+      // Choix du bar : l'automate ne le défait pas pendant ce silence ou ce
+      // titre. Attente de la Battle : le choix vaut pour elle, même fait juste
+      // après la fin du titre d'avant, avant que l'automate l'ait vue ; hors
+      // Battle, comme avant, pour la période que l'automate a vue.
       const result = action === 'play' ? await spotify.resume() : await spotify.pause();
-      spotifyAutomation.handled(karaokeOutlook());
+      if (karaokeOutlook() === 'battle') spotifyAutomation.handled('battle');
+      else spotifyAutomation.handled();
       journalEvent('spotify', { action: action === 'play' ? 'resume' : 'pause', result: String(result || ''), trigger: 'staff' });
       return { ok: true, result };
     }
@@ -5208,6 +5224,7 @@ const handlers = {
     if (body.action === 'play') {
       const status = battleVote.automation?.status;
       if (status === 'after') {
+        if (afterBattleStarting) { await afterBattleStarting; return { ok: true }; }
         if (!bridge.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de reprendre après la Battle.');
         const upcoming = analyze().upcoming;
         const nextNative = !!upcoming[0] && !isBattleItem(upcoming[0]);
@@ -5222,10 +5239,15 @@ const handlers = {
         if (!nextNative && !nextPending && (recoveredPending || bridge.permissions?.addToQueue === false)) {
           throw new Error('KaraFun ne peut pas recevoir ce titre. Vérifie l’envoi interrompu et ses droits avant de reprendre.');
         }
-        // Spotify a repris pendant l'attente : coupé d'abord, comme avant
-        // tout lancement. Un second appui pendant ce temps ne relance rien.
+        // Spotify a repris pendant l'attente : coupé d'abord, puis le court
+        // silence, comme avant tout lancement. Un second appui pendant ce
+        // temps attend ce premier, qui lance seul. Titre lancé dans KaraFun
+        // entre-temps : la file a déjà repris.
         const pausing = pauseSpotifyBeforeStart();
-        if (pausing) await pausing;
+        if (pausing) {
+          afterBattleStarting = pausing;
+          try { await pausing; } finally { afterBattleStarting = null; }
+        }
         if (battleVote.automation?.status !== 'after') return { ok: true };
         battleVote.updateAutomation('resuming');
         sched.note('Le bar lance manuellement le premier titre après la Battle.', 'battle');

@@ -2100,7 +2100,9 @@
       // Copie sans mode Battle : la consigne du serveur dit déjà quoi faire.
       : battleStep === 'failed' && /^KaraFun a (ajouté|lancé)/.test(battleFailure) ? `${battleFailure}.`
       : battleStep === 'failed' ? `${battleFailure.startsWith('Permission Battle refusée') ? 'Ajout automatique impossible' : 'Ajout automatique non confirmé'} : ${battleFailure}. Organise la Battle manuellement ou ferme la demande.`
-      : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
+      // Hors démo, les téléphones ont le lien de la télécommande dès que la
+      // Battle est en tête de KaraFun : les permissions se vérifient avant.
+      : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. ${S.karafun?.demo ? 'Montre son QR après avoir vérifié les permissions' : 'Les téléphones voient « Rejoindre la Battle » (la télécommande KaraFun) dès qu’elle est en tête de KaraFun : vérifie d’abord les permissions des invités, montre son QR'}, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'
       : battleStep === 'manual' ? 'Battle organisée manuellement : laisse les téléphones rejoindre, lance-la dans KaraFun, annonce les résultats, puis indique ici qu’elle est terminée. La file reste en pause.'
       : battleStep === 'after' ? `Battle terminée. Félicite les gagnants, puis clique sur « ▶ Lancer le prochain titre » dans « Sur scène ».${battle.cooldownUntil ? ` Prochaine Battle possible dans ${countdown(battle.cooldownUntil)}.` : ''}`
