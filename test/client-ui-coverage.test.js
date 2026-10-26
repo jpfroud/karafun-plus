@@ -331,7 +331,7 @@ function boot(options = {}) {
   };
   let poll = null;
   const context = {
-    document, window, navigator, localStorage, fetch, URLSearchParams, queueMicrotask, console, Date,
+    document, window, navigator, localStorage, fetch, URLSearchParams, queueMicrotask, console, Date: options.clock || Date,
     location: { pathname: options.path || '/t/1/secret', search: options.search || '' },
     setInterval: fn => { poll = fn; return 1; },
     setTimeout: (fn, ms) => { const id = Symbol('minuteur'); page.timers.set(id, { fn, ms }); return id; },
@@ -1777,6 +1777,80 @@ test('Battle : proposition à plusieurs, recherche sans résultat, retrait, limi
 });
 
 // ================================================================ catalogue en erreur
+test('catalogue : chaque lecture apporte le QR de table sans changer les URL', async () => {
+  const page = await open();
+  await page.click(page.node('nav-catalog'));
+  const read = page.requests.find(request => request.url.startsWith('/api/catalog/'));
+  assert.ok(read, 'le catalogue est demandé');
+  assert.equal(read.headers['x-table-id'], '1');
+  assert.equal(read.headers['x-table-access'], 'secret');
+  const solo = await open({ path: '/t/Comptoir/secret', search: '?invitation=qr-personnel',
+    state: baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true, count: 1 } }) });
+  await solo.click(solo.node('nav-catalog'));
+  const soloRead = solo.requests.find(request => request.url.startsWith('/api/catalog/'));
+  assert.equal(soloRead.headers['x-table-id'], 'Comptoir');
+  assert.equal(soloRead.headers['x-solo-invitation'], 'qr-personnel');
+});
+
+test('catalogue saturé : Réessayer attend Retry-After, même après un changement d’onglet', async () => {
+  let attempts = 0;
+  let now = Date.now();
+  class Clock extends Date { static now() { return now; } }
+  const page = await open({ clock: Clock, respond: url => {
+    if (!url.startsWith('/api/catalog/categories?')) return undefined;
+    return attempts++ === 0
+      ? reply(429, { error: 'Beaucoup de recherches en ce moment. Réessaie dans quelques secondes.' }, { 'Retry-After': '5' })
+      : [{ name: 'Années 80', filter: 'pl_1' }];
+  } });
+  await page.click(page.node('nav-catalog'));
+  const retry = page.find('catalogContent', '[data-retry]');
+  assert.equal(retry.disabled, true);
+  assert.match(retry.textContent, /Réessayer dans 5 s/);
+  page.dispatch(retry, 'click');
+  await page.settle();
+  assert.equal(attempts, 1, 'un clic forcé ne relance pas la demande pendant le délai');
+  await page.tap(page.body, '[data-catalog="styles"]');
+  assert.equal(attempts, 1, 'changer de sélection ne contourne pas non plus le délai');
+  const timer = [...page.timers.values()].find(value => value.ms > 4000 && value.ms <= 5000);
+  assert.ok(timer, 'le délai du serveur programme le déblocage');
+  await page.click(page.node('nav-table'));
+  assert.ok(![...page.timers.values()].some(value => value.fn === timer.fn), 'le minuteur est retiré hors du catalogue');
+  await page.click(page.node('nav-catalog'));
+  assert.equal(attempts, 1, 'revenir au catalogue ne contourne pas le délai');
+  assert.equal(page.find('catalogContent', '[data-retry]').disabled, true);
+  const resumed = [...page.timers.values()].find(value => value.ms > 4000 && value.ms <= 5000);
+  assert.ok(resumed, 'le temps restant est reprogrammé au retour');
+  now += 5000;
+  await page.runTimers(resumed.ms);
+  assert.equal(page.find('catalogContent', '[data-retry]').disabled, false);
+  await page.tap('catalogContent', '[data-retry]');
+  assert.equal(attempts, 2);
+  assert.match(page.node('catalogContent').textContent, /Années 80/);
+});
+
+test('recherche Battle saturée : la saisie suivante attend aussi Retry-After', async () => {
+  let attempts = 0;
+  let now = Date.now();
+  class Clock extends Date { static now() { return now; } }
+  const page = await open({ clock: Clock, respond: url => {
+    if (!url.startsWith('/api/search?')) return undefined;
+    return attempts++ === 0
+      ? reply(429, { error: 'Beaucoup de recherches en ce moment. Réessaie dans quelques secondes.' }, { 'Retry-After': '4' })
+      : [{ songId: 42, title: 'La chanson', artist: 'Groupe' }];
+  } });
+  await page.tap('battleVotes', '[data-battle-propose]');
+  page.node('battleSearch').value = 'Queen';
+  await page.submit('battleSearchForm');
+  assert.match(page.node('battleSearchResults').textContent, /Beaucoup de recherches/);
+  page.node('battleSearch').value = 'ABBA';
+  await page.submit('battleSearchForm');
+  assert.equal(attempts, 1, 'aucun appel réseau pendant le délai KaraFun');
+  now += 4000;
+  await page.submit('battleSearchForm');
+  assert.equal(attempts, 2);
+  assert.match(page.node('battleSearchResults').textContent, /La chanson/);
+});
+
 test('catalogue : Nouveautés, À découvrir, sélections vides, « Voir plus » et « Réessayer »', async () => {
   const failures = { categories: 1, songs: 1, search: 1, highlights: 1 };
   let categoriesEmpty = false;

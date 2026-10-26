@@ -135,7 +135,8 @@ function harness({ persistent = false, files = {}, modules = {}, serverEnv = tru
         setPending: value => { pending = value; },
         spotify, loadTables, normalizeBaseUrl, SERVER, STAFF_KEY_INFO, STOP_KEY, server, publicServer,
         isShuttingDown: () => shuttingDown, readServerConfig, loadStaffKey, staffKeyFingerprint, serverStartupLines,
-        phoneBase, BUILD, rotateStaffKey, staffKeyCommand, printedBaseUrlWarning, serverClientAddress, karafunBridgeOptions, portInUseMessage };
+        phoneBase, BUILD, rotateStaffKey, staffKeyCommand, printedBaseUrlWarning, serverClientAddress, karafunBridgeOptions, portInUseMessage,
+        setBridge: value => { bridge = value; } };
     `, context, { filename: 'server.js' });
   } catch (error) {
     // Refus de démarrer : le disque en mémoire (raison sur stderr) reste lisible.
@@ -204,6 +205,181 @@ test('T1 GET / sans Location : la boucle locale ne reçoit pas la clé du bar', 
   const home = await get(pc, '/', { remote: '127.0.0.1', port: pc.PORT });
   assert.equal(home.status, 302);
   assert.equal(home.headers.location, `/staff?key=${pc.STAFF_KEY}`);
+});
+
+test('catalogue en mode serveur : ni recherche ni listes sans QR ou clé du bar', async () => {
+  const f = harness();
+  const routes = ['/api/search?q=abba', '/api/catalog/categories?type=styles',
+    '/api/catalog/highlights?type=news', '/api/catalog/songs?filter=pl_1&offset=0'];
+  for (const route of routes) {
+    const anonymous = await get(f, route, { port: f.PUBLIC_PORT });
+    assert.equal(anonymous.status, 403, route);
+    const wrongStaffPort = await get(f, route,
+      { port: f.PUBLIC_PORT, headers: { 'x-staff-key': f.STAFF_KEY } });
+    assert.equal(wrongStaffPort.status, 403, `clé du bar sur le port clients : ${route}`);
+  }
+  f.sched.table('1').headcount = 4;
+  const access = f.access.issue('1');
+  const qrHeaders = { 'x-table-id': '1', 'x-table-access': access };
+  assert.equal((await get(f, '/api/search?q=abba', { port: f.PUBLIC_PORT, headers: qrHeaders })).status, 503,
+    'QR valide : la demande passe le contrôle et atteint KaraFun absent');
+  assert.equal((await get(f, '/api/search?q=abba', { port: f.PORT,
+    headers: { 'x-staff-key': f.STAFF_KEY } })).status, 503, 'bar autorisé par sa clé');
+  assert.equal((await get(f, '/api/search?q=abba', { port: f.PUBLIC_PORT,
+    headers: { ...qrHeaders, 'x-table-access': 'faux' } })).status, 403, 'QR invalide');
+  const pc = harness({ serverEnv: false });
+  for (const route of routes) {
+    assert.equal((await get(pc, route, { port: pc.PUBLIC_PORT })).status, 403,
+      `le tunnel clients du kit PC exige aussi un QR : ${route}`);
+    assert.equal((await get(pc, route, { port: pc.PORT, remote: '192.0.2.20' })).status, 403,
+      `le port du bar accessible en Wi-Fi exige aussi un QR : ${route}`);
+  }
+  assert.equal((await get(pc, '/api/search?q=abba', { port: pc.PUBLIC_PORT,
+    headers: { 'x-staff-key': pc.STAFF_KEY } })).status, 403,
+    'la clé du bar ne fonctionne pas sur le tunnel clients du kit PC');
+  assert.equal((await get(pc, '/api/search?q=abba', { port: pc.PORT, remote: '192.0.2.20',
+    headers: { 'x-staff-key': pc.STAFF_KEY } })).status, 503,
+    'le bar peut chercher avec sa clé depuis le Wi-Fi');
+  pc.sched.table('1').headcount = 2;
+  const pcQr = { 'x-table-id': '1', 'x-table-access': pc.access.issue('1') };
+  assert.equal((await get(pc, '/api/search?q=abba', { port: pc.PUBLIC_PORT, headers: pcQr })).status, 503,
+    'QR valide sur le tunnel clients du kit PC');
+  assert.equal((await get(pc, '/api/search?q=abba', { port: pc.PORT, remote: '192.0.2.20', headers: pcQr })).status, 503,
+    'QR valide depuis le Wi-Fi sur le port du bar du kit PC');
+  assert.equal((await get(pc, '/api/search?q=abba', { port: pc.PORT })).status, 503,
+    'la boucle locale du PC garde sa recherche historique');
+});
+
+test('catalogue solo : QR personnel ou téléphone inscrit requis', async () => {
+  const f = harness();
+  f.ensureSoloGroup();
+  const headers = { 'x-table-id': 'Comptoir', 'x-table-access': f.access.get('Comptoir') };
+  const route = '/api/search?q=abba';
+  assert.equal((await get(f, route, { port: f.PUBLIC_PORT, headers })).status, 403);
+  const invitation = f.soloInvitations.issue('Comptoir').token;
+  assert.equal((await get(f, route, { port: f.PUBLIC_PORT,
+    headers: { ...headers, 'x-solo-invitation': invitation } })).status, 503,
+  'le QR personnel permet de découvrir des titres avant inscription');
+  const joined = await post(f, '/api/table/person',
+    { table: 'Comptoir', access: headers['x-table-access'], invitation, name: 'Soliste' },
+    { port: f.PUBLIC_PORT });
+  assert.equal(joined.status, 200, joined.text);
+  const cookie = String(joined.headers['set-cookie']).split(';')[0];
+  assert.equal((await get(f, route, { port: f.PUBLIC_PORT, headers, cookie })).status, 503,
+    'le téléphone inscrit garde l’accès après consommation de son invitation');
+  const person = f.sched.people.get(joined.body.id);
+  assert.ok(person, 'la personne inscrite existe');
+  person.withdrawnAt = Date.now();
+  assert.equal((await get(f, route, { port: f.PUBLIC_PORT, headers, cookie })).status, 403,
+    'un téléphone associé à une personne partie ne lit plus le catalogue');
+  person.withdrawnAt = null;
+  person.soloDeviceHashes.push(crypto.randomBytes(32).toString('hex'));
+  assert.equal((await get(f, route, { port: f.PUBLIC_PORT, headers, cookie })).status, 403,
+    'le téléphone précédent ne lit plus après transfert de la place solo');
+});
+
+test('catalogue solo : le budget de son QR suit le téléphone après inscription', async () => {
+  const f = harness();
+  f.ensureSoloGroup();
+  f.setBridge({ search: async q => [{ songId: 1, title: q, artist: 'Test' }] });
+  const headers = { 'x-table-id': 'Comptoir', 'x-table-access': f.access.get('Comptoir') };
+  const invitation = f.soloInvitations.issue('Comptoir').token;
+  const route = i => `/api/search?q=unique${i}`;
+  for (let i = 0; i < 29; i++) assert.equal((await get(f, route(i), { port: f.PUBLIC_PORT,
+    headers: { ...headers, 'x-solo-invitation': invitation } })).status, 200);
+  const joined = await post(f, '/api/table/person',
+    { table: 'Comptoir', access: headers['x-table-access'], invitation, name: 'Soliste' },
+    { port: f.PUBLIC_PORT });
+  assert.equal(joined.status, 200, joined.text);
+  const cookie = String(joined.headers['set-cookie']).split(';')[0];
+  assert.equal((await get(f, route(29), { port: f.PUBLIC_PORT, headers, cookie })).status, 200);
+  assert.equal((await get(f, route(30), { port: f.PUBLIC_PORT, headers, cookie })).status, 429,
+    'l’inscription ne remet pas à zéro la limite de 30 recherches du QR');
+});
+
+test('catalogue en mode serveur : les trois listes restent lisibles avec un QR valide', async () => {
+  const calls = [];
+  class FakeCatalog {
+    async categories(type) { calls.push(`categories:${type}`); return [{ id: 1, name: 'Sélection', filter: 'pl_1' }]; }
+    async highlights(type) { calls.push(`highlights:${type}`); return [{ songId: 1, title: 'Titre', artist: 'Artiste' }]; }
+    async songs(filter, offset) { calls.push(`songs:${filter}:${offset}`); return { songs: [{ songId: 1, title: 'Titre', artist: 'Artiste' }], total: 1 }; }
+  }
+  const f = harness({ persistent: true, args: ['--code', '123456'], modules: { './catalog': { Catalog: FakeCatalog } } });
+  f.sched.table('1').headcount = 2;
+  const headers = { 'x-table-id': '1', 'x-table-access': f.access.issue('1') };
+  const options = { port: f.PUBLIC_PORT, headers };
+  const categories = await get(f, '/api/catalog/categories?type=playlist', options);
+  const highlights = await get(f, '/api/catalog/highlights?type=news', options);
+  const songs = await get(f, '/api/catalog/songs?filter=pl_1&offset=0', options);
+  assert.equal(categories.status, 200, categories.text);
+  assert.equal(highlights.status, 200, highlights.text);
+  assert.equal(songs.status, 200, songs.text);
+  assert.equal(categories.body[0].name, 'Sélection');
+  assert.equal(highlights.body[0].title, 'Titre');
+  assert.equal(songs.body.songs[0].title, 'Titre');
+  assert.deepEqual(calls, ['categories:playlist', 'highlights:news', 'songs:pl_1:0']);
+});
+
+test('catalogue public : requêtes identiques partagées, budget commun sans pénalité par IP', async () => {
+  const f = harness();
+  let sent = 0;
+  f.setBridge({ search: async q => { sent++; return [{ songId: sent, title: q, artist: 'Test' }]; } });
+  const headers = [];
+  for (const id of ['1', '2', '3']) {
+    f.sched.table(id).headcount = 40;
+    headers.push({ 'x-table-id': id, 'x-table-access': f.access.issue(id) });
+  }
+  const ask = (q, i) => get(f, `/api/search?q=${q}`, { port: f.PUBLIC_PORT,
+    remote: '198.51.100.12', headers: headers[i % headers.length] });
+  assert.equal((await ask('identique', 0)).status, 200);
+  assert.equal((await ask('identique', 1)).status, 200);
+  assert.equal(sent, 1, 'une requête KaraFun pour deux téléphones autorisés');
+  for (let i = 0; i < 60; i++) assert.equal((await ask(`titre${i}`, i)).status, 200,
+    '60 téléphones derrière une adresse peuvent faire une recherche chacun');
+  let limited = null;
+  for (let i = 60; i < 300; i++) {
+    const r = await ask(`titre${i}`, i);
+    if (r.status === 429) { limited = r; break; }
+    assert.equal(r.status, 200);
+  }
+  assert.ok(limited, 'un QR connu ne donne pas des appels KaraFun illimités');
+  assert.equal(limited.body.code, 'CATALOG_BUSY');
+  assert.ok(Number(limited.headers['retry-after']) >= 1);
+  assert.equal((await get(f, '/api/search?q=secours', { port: f.PORT,
+    headers: { 'x-staff-key': f.STAFF_KEY } })).status, 200,
+  'le bar peut chercher malgré le trafic public');
+});
+
+test('catalogue public : six appels KaraFun actifs au plus, 60 téléphones attendent sans rafale', async () => {
+  const f = harness();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let active = 0, maximum = 0, sent = 0;
+  f.setBridge({ search: async q => {
+    if (q === 'secours') return [{ songId: 99, title: q, artist: 'Test' }];
+    active++; sent++; maximum = Math.max(maximum, active);
+    await gate;
+    active--;
+    return [{ songId: sent, title: q, artist: 'Test' }];
+  } });
+  const headers = [];
+  for (const id of ['1', '2', '3']) {
+    f.sched.table(id).headcount = 40;
+    headers.push({ 'x-table-id': id, 'x-table-access': f.access.issue(id) });
+  }
+  const jobs = Array.from({ length: 70 }, (_, i) => get(f, `/api/search?q=unique${i}`,
+    { port: f.PUBLIC_PORT, remote: '198.51.100.12', headers: headers[i % 3] }));
+  await sleep(20);
+  assert.equal(sent, 6, 'la rafale reste à six appels externes');
+  const staff = await get(f, '/api/search?q=secours', { port: f.PORT,
+    headers: { 'x-staff-key': f.STAFF_KEY } });
+  assert.equal(staff.status, 200, 'la recherche du bar ne dépend pas de la file publique pleine');
+  release();
+  const results = await Promise.all(jobs);
+  assert.ok(results.filter(r => r.status === 200).length >= 60,
+    '60 recherches distinctes depuis une seule adresse sont acceptées');
+  assert.ok(results.some(r => r.status === 429), 'une file saturée répond vite avec Retry-After');
+  assert.equal(maximum, 6, 'aucun dépassement de la simultanéité');
 });
 
 test('T2 arrêt interne 404 : même le secret de data/runtime-<port>.json n’arrête rien', async () => {

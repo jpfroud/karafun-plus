@@ -278,6 +278,15 @@ const Module = require('node:module');
 const { EventEmitter } = require('node:events');
 const cp = require('node:child_process');
 const scenario = JSON.parse(process.env.EVENING_SCENARIO);
+// Windows may restore ProgramFiles when a child starts, even when its env
+// overrides it. Reapply the empty paths inside this simulated scenario.
+if (scenario.noKaraFunInstalled) {
+  const empty = require('node:path').dirname(process.env.EVENING_EVENTS);
+  process.env.ProgramFiles = empty;
+  process.env['ProgramFiles(x86)'] = empty;
+  process.env.LOCALAPPDATA = empty;
+  delete process.env.KARAFUN_EXE;
+}
 const log = event => fs.appendFileSync(process.env.EVENING_EVENTS, JSON.stringify(event) + '\\n');
 if (scenario.platform) Object.defineProperty(process, 'platform', { value: scenario.platform });
 cp.execFile = (file, args, options, callback) => {
@@ -334,7 +343,7 @@ test('DEMARRER sous Windows : KaraFun fermé et installé est lancé, puis la fi
 
 test('DEMARRER sous Windows : KaraFun introuvable, le bar est invité à l’ouvrir', async () => {
   const empty = freshDir('sans-karafun');
-  const result = await runEvening({ platform: 'win32', running: 0, helper: 'absent' },
+  const result = await runEvening({ platform: 'win32', running: 0, helper: 'absent', noKaraFunInstalled: true },
     { ProgramFiles: empty, LOCALAPPDATA: empty });
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /KaraFun introuvable aux emplacements habituels : ouvre-le manuellement, puis active sa télécommande\./);

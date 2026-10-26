@@ -78,6 +78,10 @@ const serverText = message => {
   }
   return null;
 };
+assert.equal(serverText('Scanne le QR code de ta table pour consulter le catalogue.'),
+  'Scan your table’s QR code to browse the catalogue.');
+assert.equal(serverText('Beaucoup de recherches en ce moment. Réessaie dans quelques secondes.'),
+  'Many people are searching right now. Try again in a few seconds.');
 // Regression: relecture PR #11 — l'inverse aussi : chaque message levé
 // directement par une route des téléphones (/api/table/…) a sa traduction.
 const serverJs = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
