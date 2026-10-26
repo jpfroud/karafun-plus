@@ -48,6 +48,147 @@ function smallEvening(options = {}) {
   return { s, people };
 }
 
+test('maintenance : aucun calcul ni minuteur ne part pendant la pause, puis le calcul reprend', async () => {
+  const { s } = smallEvening();
+  const solver = fakeSolver(s);
+  let paused = true;
+  s.solverPaused = () => paused;
+  try {
+    const fingerprint = s.solverContextFingerprint();
+    assert.equal(s._maybeRequestSolver(), false);
+    assert.equal(s._requestSolver(fingerprint), false, 'même un appel direct respecte la pause');
+    assert.equal(await s.whenPlanReady(), false);
+    assert.equal(s.solverRequestedFingerprint, null);
+    assert.equal(solver.requests.length, 0);
+    assert.equal(s._scheduleRefine(), false);
+    assert.equal(s.solverRefineTimer, null);
+    paused = false;
+    const ready = s.whenPlanReady();
+    assert.equal(solver.requests.length, 1, 'le même état peut être calculé après la pause');
+    solver.answer(0);
+    assert.equal(await ready, true);
+  } finally { s.closeSolver(); }
+});
+
+test('maintenance : une première réponse tardive est écartée sans déplacer la file, puis réessayée', async () => {
+  const { s } = smallEvening();
+  const solver = fakeSolver(s);
+  let paused = false;
+  s.solverPaused = () => paused;
+  try {
+    const before = s.readyView().map(item => item.entryId);
+    const lastRun = s.solverLastRun;
+    const preferred = before[1];
+    s._planMetric = slots => slots[0]?.entryId === preferred ? 0 : 1000;
+    paused = true;
+    solver.answer(0, { order: [preferred, ...before.filter(entry => entry !== preferred)] });
+    assert.equal(await s.solverPromise, false);
+    assert.equal(s.solverPendingFingerprint, null);
+    assert.equal(s.solverPendingRequestId, null);
+    assert.equal(s.solverForced, null);
+    assert.equal(s.solverRequestedFingerprint, null, 'le résultat ignoré ne condamne pas les essais suivants');
+    assert.equal(s.solverPlan, null);
+    assert.equal(s.solverLastRun, lastRun);
+    assert.deepEqual(s.readyView().map(item => item.entryId), before);
+    assert.equal(solver.requests.length, 1);
+    assert.equal(s.solverRefineTimer, null);
+    paused = false;
+    const retry = s.whenPlanReady();
+    assert.equal(solver.requests.length, 2);
+    solver.answer(1);
+    assert.equal(await retry, true);
+  } finally { s.closeSolver(); }
+});
+
+test('maintenance : une passe continue tardive garde exactement le plan adopté et reprend après la pause', async () => {
+  const { s } = smallEvening();
+  const solver = fakeSolver(s);
+  let paused = false;
+  s.solverPaused = () => paused;
+  try {
+    s.solverStatus();
+    solver.answer(0);
+    await s.solverPromise;
+    await until(() => solver.requests.length === 2, 'passe à suspendre');
+    const plan = s.solverPlan;
+    const before = s.readyView().map(item => item.entryId);
+    const lastRun = s.solverLastRun;
+    const stats = { ...s.solverRefineStats };
+    paused = true;
+    solver.answer(1, { seedScore: '0hard/-300medium/0soft', score: '0hard/-200medium/-4soft' });
+    assert.equal(await s.solverRefinePromise, false, 'même une amélioration attend la fin de la maintenance');
+    assert.equal(s.solverRefine, null);
+    assert.equal(s.solverRequestedFingerprint, null);
+    assert.equal(s.solverPlan, plan, 'le plan adopté reste le même objet');
+    assert.equal(s.solverLastRun, lastRun);
+    assert.deepEqual(s.solverRefineStats, stats);
+    assert.deepEqual(s.readyView().map(item => item.entryId), before);
+    assert.equal(s._refineAllowed(), false);
+    assert.equal(s._refineNow(), false);
+    assert.equal(s._scheduleRefine(), false);
+    assert.equal(s.solverRefineTimer, null);
+    assert.equal(solver.requests.length, 2);
+    paused = false;
+    s.solverStatus();
+    await until(() => solver.requests.length === 3, 'reprise de la passe continue');
+    assert.equal(solver.requests[2].request.randomSeed, 1, 'une réponse écartée ne compte pas comme une passe');
+  } finally { s.closeSolver(); }
+});
+
+test('maintenance : un minuteur déjà prévu ne démarre pas de passe pendant la pause', async () => {
+  const { s } = smallEvening();
+  const solver = fakeSolver(s);
+  let paused = false;
+  s.solverPaused = () => paused;
+  try {
+    s.solverStatus();
+    solver.answer(0);
+    await s.solverPromise;
+    assert.ok(s.solverRefineTimer);
+    paused = true;
+    await sleep(40);
+    assert.equal(solver.requests.length, 1);
+    assert.equal(s.solverRefineTimer, null);
+    assert.equal(s.solverRefineAt, null);
+    s.solverStatus();
+    assert.equal(s.solverRefineTimer, null, 'lire l’état ne recrée pas de minuteur pendant la pause');
+    paused = false;
+    s.solverStatus();
+    await until(() => solver.requests.length === 2, 'reprise du minuteur');
+  } finally { s.closeSolver(); }
+});
+
+test('maintenance : un échec en vol libère aussi le calcul sans perdre le plan ni empêcher la reprise', async t => {
+  for (const refine of [false, true]) await t.test(refine ? 'passe continue' : 'premier calcul', async () => {
+    const { s } = smallEvening();
+    const solver = fakeSolver(s);
+    let paused = false;
+    s.solverPaused = () => paused;
+    try {
+      s.solverStatus();
+      if (refine) {
+        solver.answer(0);
+        await s.solverPromise;
+        await until(() => solver.requests.length === 2, 'passe à faire échouer');
+      }
+      const plan = s.solverPlan;
+      const count = solver.requests.length;
+      paused = true;
+      solver.requests.at(-1).reject(new Error('Solveur arrêté pendant la maintenance.'));
+      assert.equal(await (refine ? s.solverRefinePromise : s.solverPromise), false);
+      assert.equal(s.solverRefine, null);
+      assert.equal(s.solverPendingFingerprint, null);
+      assert.equal(s.solverPendingRequestId, null);
+      assert.equal(s.solverRequestedFingerprint, null);
+      assert.equal(s.solverRefineTimer, null);
+      assert.equal(s.solverPlan, plan);
+      paused = false;
+      s.solverStatus();
+      await until(() => solver.requests.length === count + 1, 'reprise après échec pendant la pause');
+    } finally { s.closeSolver(); }
+  });
+});
+
 test('file inchangée : passes successives depuis le meilleur ordre, plus longues et avec une autre graine', async () => {
   const { s } = smallEvening();
   const solver = fakeSolver(s);

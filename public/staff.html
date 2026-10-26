@@ -266,7 +266,7 @@
 
   <section class="card update-panel" data-tab="plus" id="serverUpdatePanel" hidden>
     <div class="section-heading"><div><div class="eyebrow">Application</div><h2>Mise à jour</h2></div></div>
-    <p class="small muted">À faire hors soirée. La sauvegarde, l’installation et les vérifications sont automatiques. Si l’installation échoue, la version précédente est remise en place.</p>
+    <p class="small muted">Pendant une soirée, une confirmation est demandée avant une brève interruption. Les tables, les chansons et leur ordre sont conservés. La sauvegarde, l’installation et les vérifications sont automatiques. Si l’installation échoue, la version précédente est remise en place.</p>
     <p class="small" id="serverUpdateStatus" role="status" aria-live="polite"></p>
     <button type="button" class="btn primary" id="serverUpdateButton">Vérifier et mettre à jour</button>
   </section>
@@ -432,8 +432,8 @@
   }
 
   // Le service de mise à jour tourne sur le serveur, même lorsque cette page
-  // perd brièvement sa connexion. Un seul clic lui suffit ; aucun nouvel envoi
-  // n'est fait par le rafraîchissement automatique de la page.
+  // perd brièvement sa connexion. Une soirée active demande confirmation ;
+  // aucun nouvel envoi n'est fait par le rafraîchissement automatique de la page.
   function renderServerUpdate() {
     const update = S?.update;
     const visible = S?.app?.mode === 'server' && !!update?.enabled;
@@ -459,12 +459,14 @@
   }
   $('serverUpdateButton').onclick = async () => {
     if (updateSending || S?.app?.mode !== 'server' || !S?.update?.enabled || S.update.busy || S.update.blockedReason) return;
+    const confirmActive = !!S.update.requiresConfirmation;
+    if (confirmActive && !confirm('Une soirée est en cours. Mettre à jour maintenant entraîne une brève interruption. Les tables, les chansons et leur ordre sont conservés. Continuer ?')) return;
     updateSending = true;
     updateWatchVersion = S.app.version || null;
     renderServerUpdate();
     $('serverUpdateStatus').textContent = 'Envoi de la demande…';
     try {
-      const result = await post('/api/staff/update', {});
+      const result = await post('/api/staff/update', confirmActive ? { confirmActive: true } : {});
       if (result.update) S.update = result.update;
     } catch (error) {
       $('serverUpdateStatus').textContent = error.message || 'Connexion interrompue. La page vérifie automatiquement si la demande a été reçue.';

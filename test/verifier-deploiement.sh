@@ -221,9 +221,12 @@ const proxy = (liste, hote, dial) => {
   if (JSON.stringify(p[0].headers?.request?.set?.["X-Real-Ip"]) !== JSON.stringify(["{http.request.remote.host}"])) faute(`${hote} : X-Real-Ip = {http.request.remote.host} absent`);
   return p[0];
 };
-proxy(clients, "clients.exemple.fr", "app:3001");
+const versClients = proxy(clients, "clients.exemple.fr", "app:3001");
+if (!(versClients.headers.request.delete || []).includes("X-Karaoke-Staff-Entry")) faute("entrée du bar non supprimée vers app:3001");
+if (versClients.headers.request.set?.["X-Karaoke-Staff-Entry"]) faute("entrée du bar donnée aux clients");
 const versBar = proxy(bar, "bar.exemple.fr", "app:3000");
 if (!(versBar.headers.request.delete || []).includes("Authorization")) faute("Authorization non supprimé vers app:3000");
+if (JSON.stringify(versBar.headers.request.set?.["X-Karaoke-Staff-Entry"]) !== JSON.stringify(["1"])) faute("entrée du bar non remplacée par Caddy vers app:3000");
 if (clients.some(h => h.handler === "authentication")) faute("mot de passe sur l’hôte des clients");
 const auth = toutes.filter(h => h.handler === "authentication");
 if (auth.length !== 1 || !bar.includes(auth[0])) faute(`authentication attendue dans la seule route de bar.exemple.fr (${auth.length} trouvée(s))`);
@@ -239,12 +242,13 @@ P=$(C port caddy 80 2>> "$JOURNAL") || echec "port de caddy introuvable"
 statut() { requete -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
 pret() { [ "$(statut -H 'Host: clients.exemple.fr' "http://$P/x")" = 200 ]; }
 attendre 30 pret || echec "pas de réponse 200 de Caddy en 30 s"
-ECHO=$(requete -sS --max-time 10 -H 'Host: clients.exemple.fr' -H 'X-Real-IP: 203.0.113.9' "http://$P/x") \
+ECHO=$(requete -sS --max-time 10 -H 'Host: clients.exemple.fr' -H 'X-Real-IP: 203.0.113.9' -H 'X-Karaoke-Staff-Entry: 1' "http://$P/x") \
   || echec "requête vers clients.exemple.fr en échec"
 verifier_json "$(cat <<'JS'
 const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const faute = texte => { console.log(texte); process.exit(1); };
 if (r.port !== 3001) faute(`requête reçue sur le port ${r.port}, attendu 3001`);
+if ("x-karaoke-staff-entry" in r.headers) faute("entrée du bar forgée transmise par le domaine clients");
 const ip = r.headers["x-real-ip"];
 if (!ip || ip === "203.0.113.9") faute(`x-real-ip reçu : ${ip}`);
 if (ip !== r.headers["x-forwarded-for"]) faute(`x-real-ip ${ip} différent de x-forwarded-for ${r.headers["x-forwarded-for"]}`);
@@ -254,17 +258,19 @@ reussi
 
 # ---------------------------------------------------------------- V5
 controle V5 'mot de passe du bar'
-s=$(statut -H 'Host: bar.exemple.fr' "http://$P/x")
+s=$(statut -H 'Host: bar.exemple.fr' -H 'X-Karaoke-Staff-Entry: 1' "http://$P/")
 [ "$s" = 401 ] || echec "sans identifiants : HTTP $s, attendu 401"
-s=$(statut -u bar:faux -H 'Host: bar.exemple.fr' "http://$P/x")
+s=$(statut -u bar:faux -H 'Host: bar.exemple.fr' "http://$P/")
 [ "$s" = 401 ] || echec "avec un faux mot de passe : HTTP $s, attendu 401"
-ECHO=$(requete -sS --max-time 10 -w '\n%{http_code}' -u "bar:$MOT" -H 'Host: bar.exemple.fr' "http://$P/x") \
+ECHO=$(requete -sS --max-time 10 -w '\n%{http_code}' -u "bar:$MOT" -H 'Host: bar.exemple.fr' -H 'X-Karaoke-Staff-Entry: faux' "http://$P/") \
   || echec "requête vers bar.exemple.fr en échec"
 [ "${ECHO##*$'\n'}" = 200 ] || echec "avec le bon mot de passe : HTTP ${ECHO##*$'\n'}, attendu 200"
 verifier_json "$(cat <<'JS'
 const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const faute = texte => { console.log(texte); process.exit(1); };
 if (r.port !== 3000) faute(`requête reçue sur le port ${r.port}, attendu 3000`);
+if (r.url !== "/") faute(`entrée du bar reçue sur ${r.url}, attendu /`);
+if (r.headers["x-karaoke-staff-entry"] !== "1") faute("entrée du bar absente ou non remplacée après authentification");
 if ("authorization" in r.headers) faute("en-tête authorization transmis à l’application");
 JS
 )" <<< "${ECHO%$'\n'*}"

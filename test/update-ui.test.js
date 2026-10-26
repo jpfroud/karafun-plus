@@ -24,7 +24,8 @@ const { openPage, baseWorld, sessionMap } = fixtureModule.exports;
 
 function serverWorld(update = {}) {
   return { ...baseWorld(), app: { mode: 'server', version: 'v1.0.0' }, update: {
-    enabled: true, busy: false, blockedReason: null, phase: 'idle', currentVersion: 'v1.0.0', message: '', ...update,
+    enabled: true, busy: false, blockedReason: null, requiresConfirmation: false,
+    phase: 'idle', currentVersion: 'v1.0.0', message: '', ...update,
   } };
 }
 
@@ -43,7 +44,7 @@ test('mise à jour : réservée au mode serveur avec son agent installé', async
   assert.equal(installed.$('serverUpdateButton').disabled, false);
 });
 
-test('mise à jour : un clic authentifié suffit, le double clic ne soumet pas deux demandes', async () => {
+test('mise à jour : hors soirée, un clic authentifié suffit et le double clic ne soumet pas deux demandes', async () => {
   const page = await openPage({ world: serverWorld() });
   page.replies['/api/staff/update'] = () => {
     Object.assign(page.world.update, { busy: true, phase: 'checking', requestId: 'request-1' });
@@ -62,18 +63,52 @@ test('mise à jour : un clic authentifié suffit, le double clic ne soumet pas d
   assert.match(page.$('serverUpdateStatus').textContent, /dernière version/);
 });
 
-test('mise à jour : une soirée active bloque le bouton avec une explication', async () => {
-  const blockedReason = 'Attends la fin de la soirée pour mettre à jour.';
-  const page = await openPage({ world: serverWorld({ blockedReason }) });
+test('mise à jour : une soirée active demande confirmation, annuler ne soumet rien', async () => {
+  const page = await openPage({ world: serverWorld({ requiresConfirmation: true }) });
+  page.confirmAnswer = false;
+  const fetches = page.fetches.length;
+  assert.equal(page.$('serverUpdateButton').disabled, false);
+  await page.$('serverUpdateButton').onclick();
+  assert.equal(page.confirms.length, 1);
+  assert.match(page.confirms[0], /soirée.*en cours/i);
+  assert.match(page.confirms[0], /interruption.*brève|brève.*interruption/i);
+  assert.match(page.confirms[0], /tables.*chansons.*ordre.*conservés/i);
+  assert.equal(page.postsTo('/api/staff/update').length, 0);
+  assert.equal(page.fetches.length, fetches, 'annuler ne fait aucune requête');
+  assert.equal(page.$('serverUpdateButton').disabled, false);
+});
+
+test('mise à jour : confirmer la soirée active envoie seulement confirmActive une fois', async () => {
+  const page = await openPage({ world: serverWorld({ requiresConfirmation: true }) });
+  page.replies['/api/staff/update'] = () => {
+    Object.assign(page.world.update, { busy: true, phase: 'checking', requestId: 'request-live' });
+    return { ok: true, update: page.world.update };
+  };
+  const first = page.$('serverUpdateButton').onclick();
+  const second = page.$('serverUpdateButton').onclick();
+  await Promise.all([first, second]);
+  await page.flush();
+  assert.equal(page.confirms.length, 1);
+  assert.equal(page.postsTo('/api/staff/update').length, 1);
+  const request = page.lastPost('/api/staff/update');
+  assert.equal(request.headers['x-staff-key'], '123456');
+  assert.deepEqual(request.body, { confirmActive: true });
+  assert.equal(page.$('serverUpdateButton').disabled, true);
+});
+
+test('mise à jour : un blocage technique garde le bouton verrouillé même pendant une soirée', async () => {
+  const blockedReason = 'Un envoi à KaraFun est en cours.';
+  const page = await openPage({ world: serverWorld({ blockedReason, requiresConfirmation: true }) });
   assert.equal(page.$('serverUpdateButton').disabled, true);
   assert.equal(page.$('serverUpdateStatus').textContent, blockedReason);
   await page.$('serverUpdateButton').onclick();
   assert.equal(page.postsTo('/api/staff/update').length, 0);
+  assert.equal(page.confirms.length, 0);
 });
 
 test('mise à jour : l’interruption prévue garde le suivi puis recharge une seule fois la version validée', async () => {
   const session = sessionMap();
-  const page = await openPage({ world: serverWorld({ busy: true, phase: 'installing' }), session });
+  const page = await openPage({ world: serverWorld({ busy: true, phase: 'installing', requiresConfirmation: true }), session });
   assert.equal(session.map.get('bar-key'), '123456', 'la clé du bar reste dans l’onglet pendant le redémarrage');
   page.stateStatus = 503;
   await page.poll();
@@ -90,6 +125,41 @@ test('mise à jour : l’interruption prévue garde le suivi puis recharge une s
   assert.equal(page.reloads, 1);
   await page.poll();
   assert.equal(page.reloads, 1, 'pas de boucle de rechargement');
+  assert.equal(page.postsTo('/api/staff/update').length, 0, 'la reconnexion ne relance pas la mise à jour');
+  assert.equal(page.confirms.length, 0, 'la reconnexion ne redemande pas confirmation');
+});
+
+test('mise à jour : réponse perdue après confirmation, le suivi retrouve la demande sans la renvoyer', async () => {
+  const page = await openPage({ world: serverWorld({ requiresConfirmation: true }) });
+  page.replies['/api/staff/update'] = () => {
+    Object.assign(page.world.update, { busy: true, phase: 'checking' });
+    throw new Error('Connexion interrompue.');
+  };
+  await page.$('serverUpdateButton').onclick();
+  assert.equal(page.$('serverUpdateButton').disabled, true);
+  assert.deepEqual(page.toast(), { text: 'Connexion interrompue.', bad: true });
+  await page.$('serverUpdateButton').onclick();
+  await page.poll();
+  assert.equal(page.confirms.length, 1);
+  assert.equal(page.postsTo('/api/staff/update').length, 1);
+  assert.deepEqual(page.lastPost('/api/staff/update').body, { confirmActive: true });
+});
+
+test('mise à jour : une soirée commencée depuis le dernier état impose une nouvelle confirmation après le refus API', async () => {
+  const page = await openPage({ world: serverWorld() });
+  page.replies['/api/staff/update'] = () => {
+    page.world.update.requiresConfirmation = true;
+    return { status: 409, error: 'Confirme la mise à jour pendant la soirée.' };
+  };
+  await page.$('serverUpdateButton').onclick();
+  assert.deepEqual(page.lastPost('/api/staff/update').body, {});
+  assert.equal(page.confirms.length, 0);
+  assert.equal(page.$('serverUpdateButton').disabled, false);
+  assert.deepEqual(page.toast(), { text: 'Confirme la mise à jour pendant la soirée.', bad: true });
+  page.confirmAnswer = false;
+  await page.$('serverUpdateButton').onclick();
+  assert.equal(page.confirms.length, 1);
+  assert.equal(page.postsTo('/api/staff/update').length, 1, 'le refus ne déclenche aucun nouvel envoi automatique');
 });
 
 test('mise à jour : aucun rechargement pour un simple contrôle ou un retour arrière', async () => {
