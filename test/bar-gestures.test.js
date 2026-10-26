@@ -214,6 +214,20 @@ test('mode de rotation, duo, « Pas prêt » d’un autre et titre retiré : la 
   }
 });
 
+test('duo ouvert proposé puis rejoint : la ligne placée tient, en « Duos uniquement » aussi', () => {
+  for (const duoOnly of [false, true]) {
+    const { s, people } = evening();
+    s.duoOnlyRule = () => duoOnly;
+    gesture(s, people.Elsa, 3);
+    const at = () => names(s).indexOf('Elsa');
+    const open = s.openDuet(people.Karim, { song: song() });
+    assert.equal(at(), 3, 'un autre propose un duo ouvert');
+    s.acceptOpenDuet(people.Paulo, people.Karim.id, open.entryId);
+    assert.equal(at(), 3, 'quelqu’un rejoint ce duo ouvert');
+    assert.equal(s.manualChanges.length, 1, 'le geste reste annulable');
+  }
+});
+
 test('la place donnée par le bar suit la personne : titre remplacé ou réordonné, liste vidée', () => {
   const { s, people } = evening();
   gesture(s, people.Maud, 3);
