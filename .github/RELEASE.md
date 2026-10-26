@@ -6,6 +6,11 @@ Après fusion : **Actions → Release → Run workflow**, branche `main`, versio
 
 **Image Docker.** `ghcr.io/jpfroud/karafun-plus:vX.Y.Z`. `latest` suit la plus haute version sans suffixe ; le serveur fixe `KARAFUN_PLUS_VERSION` dans `deploy/.env` (voir `DEPLOIEMENT-SERVEUR.md`).
 
+Avec l'agent hôte installé, les gérants utilisent **Plus → Mise à jour → Vérifier et mettre à jour**,
+hors soirée. L'agent ne traite qu'une release stable entièrement publiée avec son empreinte d'image ;
+il sauvegarde, vérifie le démarrage et remet l'état précédent si l'installation échoue.
+Les instructions de première installation et la procédure manuelle restent dans le guide serveur.
+
 **Une seule fois :**
 
 1. https://github.com/users/jpfroud/packages/container/karafun-plus/settings : « Change visibility » → « Public » (irréversible) ; « Manage Actions access » : `karafun-plus` en « Write ».

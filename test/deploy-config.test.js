@@ -262,7 +262,7 @@ test('D4 .env.example et mot de passe', () => {
   const env = lines.map(l => /^([A-Z_]+)=(.*)$/.exec(l)).map(m => (assert.ok(m, 'ligne KEY=valeur'), [m[1], m[2]]));
   const values = Object.fromEntries(env);
   assert.deepEqual(env.map(([key]) => key), ['KARAFUN_PLUS_VERSION', 'HOTE_CLIENTS', 'HOTE_BAR', 'KARAOKE_PUBLIC_URL',
-    'KARAOKE_STAFF_URL', 'ACME_EMAIL', 'BAR_USER', 'BAR_PASSWORD_HASH'], 'clés de deploy/.env.example');
+    'KARAOKE_STAFF_URL', 'KARAOKE_UPDATE_DIR', 'ACME_EMAIL', 'BAR_USER', 'BAR_PASSWORD_HASH'], 'clés de deploy/.env.example');
   assert.equal(values.HOTE_CLIENTS, 'clients.exemple.fr');
   assert.equal(values.HOTE_BAR, 'bar.exemple.fr');
   assert.equal(values.KARAOKE_PUBLIC_URL, `https://${values.HOTE_CLIENTS}`);
@@ -280,8 +280,9 @@ test('D4 .env.example et mot de passe', () => {
   // du Caddyfile à caddy, les deux origines à app, aucune valeur en clair).
   const compose = read('deploy/compose.yaml');
   const composeVars = [...compose.matchAll(/\$\{([A-Z_]+):\?à renseigner dans deploy\/\.env\}/g)].map(m => m[1]);
-  assert.equal([...compose.matchAll(/\$\{/g)].length, composeVars.length, 'variable de compose.yaml sans « :?à renseigner »');
-  assert.deepEqual([...new Set(composeVars)].sort(), Object.keys(values).sort(), 'variables de compose.yaml');
+  assert.equal([...compose.matchAll(/\$\{/g)].length, composeVars.length + 1, 'seul le service de mise à jour est facultatif');
+  assert.deepEqual([...new Set([...composeVars, 'KARAOKE_UPDATE_DIR'])].sort(), Object.keys(values).sort(), 'variables de compose.yaml');
+  assert.equal(values.KARAOKE_UPDATE_DIR, '', 'mise à jour désactivée avant installation de son agent');
   const composeLines = compose.split('\n');
   const environment = service => {
     const start = composeLines.indexOf(`  ${service}:`);
@@ -302,7 +303,7 @@ test('D4 .env.example et mot de passe', () => {
   assert.deepEqual(caddyVars, ['ACME_EMAIL', 'BAR_PASSWORD_HASH', 'BAR_USER', 'HOTE_BAR', 'HOTE_CLIENTS']);
   assert.deepEqual(environment('caddy'), ['ACME_EMAIL', 'HOTE_CLIENTS', 'HOTE_BAR', 'BAR_USER', 'BAR_PASSWORD_HASH'].map(required),
     'environnement de caddy');
-  assert.deepEqual(environment('app'), ['KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL'].map(required), 'environnement de app');
+  assert.deepEqual(environment('app'), [...['KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL'].map(required), 'KARAOKE_UPDATE_DIR: ${KARAOKE_UPDATE_DIR:-}'], 'environnement de app');
   // Le vérificateur retire de son environnement chaque réglage de .env.example
   // (sinon une valeur du shell primerait sur son .env d'essai).
   const unset = /^unset ((?:[^\n]*\\\n)*[^\n]*)$/m.exec(read(VERIFIER));
@@ -344,8 +345,10 @@ test('D5 attributs git et modes', t => {
     'deploy/.env.example': '100644',
     'deploy/Caddyfile': '100644',
     'deploy/compose.yaml': '100644',
+    'deploy/install-update-agent.sh': '100755',
     'deploy/restauration.sh': '100755',
     'deploy/sauvegarde.sh': '100755',
+    'deploy/update-agent.py': '100644',
     [VERIFIER]: '100644',
   }, 'fichiers versionnés et modes');
 

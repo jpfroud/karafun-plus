@@ -17,6 +17,7 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 const crypto = require('crypto');
+const { createServerUpdate } = require('./server-update');
 const zlib = require('zlib');
 const { spawn, execFileSync } = require('child_process');
 const QRCode = require('qrcode');
@@ -244,7 +245,7 @@ function serverSetup(env, dataDir) {
 }
 // Variables propres au mode serveur, dans l'ordre des contrôles de readServerConfig.
 const SERVER_VARIABLES = ['KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL', 'KARAOKE_BIND', 'KARAOKE_PUBLIC_BIND',
-  'KARAOKE_CLIENT_IP_HEADER', 'KARAOKE_TRUSTED_PROXIES', 'KARAOKE_STAFF_KEY_FILE'];
+  'KARAOKE_CLIENT_IP_HEADER', 'KARAOKE_TRUSTED_PROXIES', 'KARAOKE_STAFF_KEY_FILE', 'KARAOKE_UPDATE_DIR'];
 // Mode PC : une variable du mode serveur fixée sans lui (KARAOKE_MODE oubliée
 // ou mal écrite, --server=1) refuse le démarrage. Sinon le serveur partirait
 // en silence en mode PC : clé du bar au journal, droits de la boucle locale.
@@ -269,6 +270,7 @@ if (SETUP.error) {
   process.exit(1);
 }
 const SERVER = SETUP.config;
+const serverUpdate = createServerUpdate({ directory: SERVER ? process.env.KARAOKE_UPDATE_DIR : null, version: BUILD.version });
 const STAFF_KEY_INFO = SETUP.keyInfo;
 // Mode serveur : en-têtes de sécurité de toutes les réponses (send), jamais
 // écrasés par un appel. Aucune page du bar n'en encadre une autre : DENY.
@@ -611,6 +613,16 @@ function readiness() {
   const solver = !sched.solverBridge ? 'off' : sched.solverBridge.available ? 'available' : 'unavailable';
   const persistence = !nightStore ? 'off' : persistenceError !== null ? 'error' : 'ok';
   return { ok: karafun === 'connected' && persistence !== 'error', mode: SERVER ? 'server' : 'pc', karafun, solver, persistence };
+}
+
+function updateBlockedReason() {
+  if (persistenceError !== null) return 'La sauvegarde de la soirée doit être réparée avant la mise à jour.';
+  const { current, q } = analyze();
+  if (current || q.length || pending || restartOp || playStarting || spotifyBusy || spotifyWork || sched.Q.length ||
+      [...sched.people.values()].some(person => !person.withdrawnAt)) {
+    return 'Disponible après la soirée : termine les titres et marque les personnes parties ou supprime les tables.';
+  }
+  return null;
 }
 
 function saveTables() {
@@ -1471,6 +1483,9 @@ function restoreKaraFunDefaults() {
 
 // ------------------------------------------------------------------ synchronisation avec KaraFun
 function sync() {
+  // Une installation ne commande jamais KaraFun, même lors du contrôle de la
+  // nouvelle image. L'agent hôte libère ce verrou après validation ou retour arrière.
+  if (serverUpdate.isBusy()) return;
   if (!bridge || !bridge.ready) { notePhase('unknown', 'offline'); return; }
   rememberKaraFunDefaults();
   if (settings.auto && bridge.permissions?.addToQueue === false) {
@@ -2411,6 +2426,7 @@ function staffState() {
       battleVoteMin: battleVote.voteDurationMs / 60000, battleMinVoters: battleVote.minVoters },
     solver: sched.solverStatus(),
     app: { ...BUILD, mode: SERVER ? 'server' : 'pc' }, bootId: BOOT_ID,
+    update: serverUpdate.view(updateBlockedReason()),
     stageHistory: stageHistoryView(),
     spotify: spotify.view(spotifyRedirect()),
     restarting: !!restartOp,
@@ -3836,6 +3852,7 @@ function releaseAutoPlay() {
 const SPOTIFY_PAUSE_WAIT_MS = 4000; // au-delà, KaraFun démarre sans attendre Spotify
 let playStarting = null;
 async function playKaraFun({ queueId = null } = {}) {
+  if (serverUpdate.isBusy()) return false;
   // Un appel pendant un lancement en prend le résultat. Si un lancement
   // automatique renonce, un seul « Lecture » du bar en attente lance.
   while (playStarting) {
@@ -3861,6 +3878,9 @@ async function playKaraFun({ queueId = null } = {}) {
       const lead = Number(spotify.config.pauseLeadSec) || 0;
       if (paused === 'done' && lead > 0) await new Promise(resolve => setTimeout(resolve, lead * 1000));
     }
+    // Une pause Spotify peut avoir attendu le réseau pendant plusieurs
+    // secondes : revérifier le verrou juste avant toute commande de lecture.
+    if (serverUpdate.isBusy()) return false;
     if (!bridge?.ready) throw new Error('KaraFun est déconnecté.');
     if (queueId != null) {
       const { current, upcoming } = analyze();
@@ -4413,6 +4433,13 @@ const handlers = {
 
   // ---------------- bar
   // Un code vide est refusé : il effaçait le code retenu sans rien connecter.
+  'POST /api/staff/update': async (req, res, body) => {
+    if (!body || Array.isArray(body) || Object.keys(body).length) throw new Error('La mise à jour ne prend aucun paramètre.');
+    saveNight({ required: true });
+    const update = serverUpdate.request(updateBlockedReason());
+    res.nightAlreadySaved = true;
+    return { ok: true, update };
+  },
   'POST /api/staff/connect': async (req, res, body) => {
     const code = String(body.code || '').replace(/\D/g, '');
     if (!code) throw new Error('Code KaraFun manquant : recopie les chiffres affichés dans la télécommande de KaraFun.');
@@ -5380,6 +5407,12 @@ const server = http.createServer(async (req, res) => {
       if (!h) return send(res, 404, { error: 'Introuvable' });
       if (p.startsWith('/api/staff/') && !isStaff(req, u)) return send(res, 403, { error: 'Réservé au bar' });
       const body = await readBody(req);
+      // Contrôle après readBody (qui attend le réseau) : une autre requête
+      // peut avoir accepté une mise à jour entre-temps. Les lectures restent disponibles.
+      if (p !== '/api/staff/update' && serverUpdate.isBusy()) {
+        return send(res, 503, { error: 'Mise à jour en cours. Réessaie dans quelques instants.', code: 'SERVER_UPDATING' },
+          undefined, { 'Retry-After': '10' });
+      }
       let me = null;
       if (!p.startsWith('/api/staff/') && p !== '/api/join' && !p.startsWith('/api/table/')) {
         me = sched.person(body.token || '');
@@ -5420,7 +5453,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 429, { error: e.message, code: e.code }, undefined, { 'Retry-After': String(Math.max(1, e.retryAfter || 1)) });
     }
     send(res, ['TABLE_ACCESS', 'PERSON_ACCESS', 'PERSON_LEFT', 'SOLO_DEVICE_USED', 'SOLO_DEVICE_ACCESS', 'SOLO_INVITATION', 'SOLO_KEY_REVOKED',
-      'PRIVATE_EVENT', 'PRIVATE_EVENT_FULL'].includes(e.code) ? 403 : 400, { error: e.message, code: e.code || null,
+      'PRIVATE_EVENT', 'PRIVATE_EVENT_FULL'].includes(e.code) ? 403 : [409, 503].includes(e.status) ? e.status : 400, { error: e.message, code: e.code || null,
       ...(typeof e.recoverable === 'boolean' ? { recoverable: e.recoverable } : {}) });
   }
 });
@@ -5606,11 +5639,16 @@ async function main() {
         appLog('Laisse cette fenêtre ouverte pendant la soirée. Ctrl+C pour arrêter.');
         appLog('');
       }
-      if (CODE) connectKaraFun();
+      if (CODE && !serverUpdate.isBusy()) connectKaraFun();
       if (!SERVER && !NO_OPEN && process.platform === 'win32') spawn('cmd', ['/c', 'start', '', staffUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      setInterval(sync, 2000);
-      setInterval(() => battleVote.tick(), 2000);
-      setInterval(() => { spotifyTick().catch(() => {}); }, 3000);
+      setInterval(() => {
+        // La version candidate attend le contrôle de santé de l'agent hôte
+        // avant de retrouver la télécommande et ses automatismes.
+        if (SERVER && !serverUpdate.isBusy() && CODE && !bridge) connectKaraFun();
+        sync();
+      }, 2000);
+      setInterval(() => { if (!serverUpdate.isBusy()) battleVote.tick(); }, 2000);
+      setInterval(() => { if (!serverUpdate.isBusy()) spotifyTick().catch(() => {}); }, 3000);
     });
   });
   server.on('error', (e) => {

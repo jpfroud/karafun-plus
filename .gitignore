@@ -19,6 +19,9 @@
 /dist/
 /release/
 /deploy/sauvegardes/
+/deploy/maintenance/
+/deploy/update-state/
+__pycache__/
 
 # Configuration privée et fichiers temporaires.
 .env
