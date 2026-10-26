@@ -283,6 +283,14 @@ Remplis tous les réglages de `.env` avant le premier démarrage :
 | `BAR_USER` | le nom que le navigateur demande avant la page du bar, `bar` par défaut ; si tu en changes, remplace `bar` dans `curl.exe -u bar` (section 11) |
 | `BAR_PASSWORD_HASH` | l'empreinte de `caddy hash-password`, entre apostrophes (elle contient des `$`) |
 
+Vérifie ensuite que les quatre noms concordent, par cette commande tapée telle quelle :
+
+```bash
+awk -F= '/^HOTE_CLIENTS=/ {c=$2} /^HOTE_BAR=/ {b=$2} /^KARAOKE_PUBLIC_URL=/ {p=$2} /^KARAOKE_STAFF_URL=/ {s=$2} END {if (p == "https://" c && s == "https://" b) print "noms concordants"; else print "noms discordants"}' .env
+```
+
+Elle doit afficher `noms concordants`. Sinon, corrige `.env` avant de continuer : une faute dans `KARAOKE_STAFF_URL` enverrait le lien du bar, clé comprise, vers un hôte qui n'est pas le tien (section 13).
+
 Les secrets du déploiement :
 
 | Secret | Où il est | Règle |
@@ -293,11 +301,11 @@ Les secrets du déploiement :
 | Clé SSH privée | PC d'administration (`id_ed25519`) | protégée par sa phrase de passe |
 | `data/`, `journal/`, archives | volumes du serveur et `deploy/sauvegardes/` | prénoms, QR secrets, jetons, code KaraFun et jeton Spotify : privés |
 
-**Contrôle** : `git describe --tags --exact-match` affiche `vX.Y.Z`. `docker compose config --quiet` n'affiche rien, `stat -c '%a' .env` affiche `600`, et `grep -c -e '<' -e remplacer -e 'X\.Y\.Z' -e 'exemple\.fr' .env`, tapé tel quel, affiche `0` : aucune valeur d'exemple ne reste.
+**Contrôle** : `git describe --tags --exact-match` affiche `vX.Y.Z`. `docker compose config --quiet` n'affiche rien, `stat -c '%a' .env` affiche `600`, et `grep -c -e '<' -e remplacer -e 'X\.Y\.Z' -e 'exemple\.fr' .env`, tapé tel quel, affiche `0` : aucune valeur d'exemple ne reste. La commande `awk` affiche `noms concordants`.
 
 ## 11. Premier démarrage
 
-Pour un nouvel essai, après une bascule ou un retour arrière, prépare d'abord le serveur. Si les noms d'essai ont été retirés (section 9, point 6), recrée leurs entrées A, puis CAA (section 9, points 1 et 5). Remets ensuite dans `.env`, par `nano .env`, les noms d'essai de `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL` : l'étape 7 de la section 12 y a mis les noms définitifs. Restaure enfin l'archive de départ notée lors d'un essai précédent. Vérifie-la d'abord : `tar -tzf sauvegardes/<nom de l'archive> | grep -c last-karafun-code` doit afficher `0`. Sinon, elle garde un code KaraFun, et la file relancée par le script s'y reconnecterait : prends une autre archive, sans ce fichier. Restaure-la ensuite par `./restauration.sh sauvegardes/<nom de l'archive>` (section 16). Ne continue qu'après sa ligne « Restauration terminée depuis … ». Sans elle, lance `docker compose stop app` : le script a pu relancer la file, qui garde le code KaraFun. Corrige la cause, puis refais la restauration.
+Pour un nouvel essai, après une bascule ou un retour arrière, prépare d'abord le serveur. Si les noms d'essai ont été retirés (section 9, point 6), recrée leurs entrées A, puis CAA (section 9, points 1 et 5). Remets ensuite dans `.env`, par `nano .env`, les noms d'essai de `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL` : l'étape 7 de la section 12 y a mis les noms définitifs. Relance ensuite la commande `awk` de la section 10 : elle doit afficher `noms concordants`. Restaure enfin l'archive de départ notée lors d'un essai précédent. Vérifie-la d'abord : `tar -tzf sauvegardes/<nom de l'archive> | grep -c last-karafun-code` doit afficher `0`. Sinon, elle garde un code KaraFun, et la file relancée par le script s'y reconnecterait : prends une autre archive, sans ce fichier. Restaure-la ensuite par `./restauration.sh sauvegardes/<nom de l'archive>` (section 16). Ne continue qu'après sa ligne « Restauration terminée depuis … ». Sans elle, lance `docker compose stop app` : le script a pu relancer la file, qui garde le code KaraFun. Corrige la cause, puis refais la restauration.
 
 En bascule, `.env` porte ainsi les noms d'essai : remplace alors ci-dessous `clients.exemple.fr` et `bar.exemple.fr` par ces noms (`essai.exemple.fr` et `essai-bar.exemple.fr` dans ce guide). Dans `~/karafun-plus/deploy`, démarre la file :
 
@@ -389,7 +397,7 @@ Bar fermé, une fois les sections 2 à 11 faites avec les noms d'essai. Compte u
    nano .env
    ```
 
-   L'empreinte doit être celle de l'étape 4, en minuscules. Dans `.env`, mets les noms définitifs dans `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL`. Puis restaure l'archive du PC :
+   L'empreinte doit être celle de l'étape 4, en minuscules. Dans `.env`, mets les noms définitifs dans `HOTE_CLIENTS`, `HOTE_BAR`, `KARAOKE_PUBLIC_URL` et `KARAOKE_STAFF_URL`. Relance la commande `awk` de la section 10 : elle doit afficher `noms concordants`. Puis restaure l'archive du PC :
 
    ```bash
    ./restauration.sh sauvegardes/karafun-plus-pc-AAAAMMJJ.tar.gz
@@ -437,7 +445,7 @@ Sur le serveur, dans `~/karafun-plus/deploy` :
 docker compose exec app node server.js --print-staff-url
 ```
 
-La commande affiche `https://bar.exemple.fr/staff?key=<clé>`. Donne aux gérants le lien et le mot de passe du bar par deux canaux différents : par exemple le lien par message, le mot de passe de vive voix. Le navigateur demande d'abord le nom `BAR_USER` (`bar`) et le mot de passe, puis la page s'ouvre. Le lien ne change pas au redémarrage.
+La commande affiche `https://bar.exemple.fr/staff?key=<clé>`. Son hôte doit être exactement `HOTE_BAR` de `.env`, lettre pour lettre ; sinon, corrige `.env` (section 10), relance `docker compose up -d`, puis relis le lien. Donne aux gérants le lien et le mot de passe du bar par deux canaux différents : par exemple le lien par message, le mot de passe de vive voix. Le navigateur demande d'abord le nom `BAR_USER` (`bar`) et le mot de passe, puis la page s'ouvre. Le lien ne change pas au redémarrage.
 
 Lien ou mot de passe divulgué : renouvelle la clé, puis redémarre la file. Si le lien et le mot de passe ont fui ensemble, fais-le tout de suite, même en soirée : la page du bar est ouverte à qui les détient. Sinon, de préférence hors soirée.
 
