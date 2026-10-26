@@ -145,7 +145,7 @@
       <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>
     <div class="row wrap"><label class="switch duo-only-switch"><input id="duoOnly" type="checkbox"> Duos uniquement</label><span class="save-status" data-save-status="duoOnly" aria-live="polite"></span></div>
-    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent. Un duo accepté ne redevient pas un solo par son auteur ni par une invitée de la même table (le titre peut être retiré). Comme d’habitude, une invitation sans réponse, refusée ou quittée par une autre table part en solo, et un duo déjà chargé dans KaraFun peut finir en solo si l’un des deux manque. Se décoche à la nouvelle soirée (« Supprimer toutes les tables »).</p>
+    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent. Un duo accepté ne redevient pas un solo par son auteur ni par une invitée de la même table (le titre peut être retiré). Comme d’habitude, une invitation sans réponse, refusée ou quittée par une autre table part en solo, et un duo déjà chargé dans KaraFun peut finir en solo si l’un des deux manque. Un duo ouvert (« Qui veut chanter en duo avec moi ? ») ne part pas sans partenaire : il attend qu’on le rejoigne. Se décoche à la nouvelle soirée (« Supprimer toutes les tables »).</p>
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
@@ -1221,7 +1221,12 @@
   // Invitation de duo sans réponse sur un titre encore prévu : il garde sa
   // place et part en solo si personne n'a répondu à son tour (à l'envoi,
   // l'invitation expire).
+  // Duo ouvert (« Qui veut chanter en duo avec moi ? ») : même règle tant
+  // que personne ne l'a rejoint.
   function pendingInviteBadge(item) {
+    if (item.source === 'helper' && item.song?.duet?.state === 'open') {
+      return '<span class="badge wait invite open-duo" title="Cherche un partenaire dans toute la salle : sans volontaire à son tour, le titre part en solo dans KaraFun.">Duo ouvert</span>';
+    }
     const invite = item.source === 'helper' && item.song?.duet?.state === 'pending' ? item.song.duet : null;
     return invite ? `<span class="badge wait invite" title="Duo proposé à ${esc(invite.partnerName || 'un chanteur')}${invite.seen === false ? ' (pas encore vue)' : ''} : sans réponse à son tour, le titre part en solo dans KaraFun.">Invitation en attente</span>` : '';
   }
@@ -1880,13 +1885,15 @@
     renderDuoBox();
     // Demandes de duo sur un titre de la file (page des chanteurs) : le bar les voit.
     // Invitations envoyées par l'auteur du titre : même encadré, même état.
-    const requests = S.joinRequests || [], invites = S.duoInvites || [];
-    $('joinRequestsBox').hidden = !requests.length && !invites.length;
+    // Duos ouverts sans partenaire : en « Duos uniquement », ils attendent hors de la file.
+    const requests = S.joinRequests || [], invites = S.duoInvites || [], opens = S.openDuets || [];
+    $('joinRequestsBox').hidden = !requests.length && !invites.length && !opens.length;
     // « Pas encore vue » : le téléphone qui doit répondre ne l'a pas affichée ;
     // le bar peut aller prévenir la personne.
     const seenText = (seenAt, who) => seenAt ? ' · vue' : seenAt === null ? ` · <span class="unseen">pas encore vue par ${esc(who)}</span>` : '';
     $('joinRequestsList').innerHTML = requests.map(r => `<div class="join-request small"><b>${esc(r.requesterName)}</b> demande à chanter « ${esc(r.title)} » avec <b>${esc(r.ownerName)}</b>${r.at ? ` · ${hhmm(r.at)}` : ''}${seenText(r.seenAt, r.ownerName)}</div>`).join('') +
-      invites.map(r => `<div class="join-request small"><b>${esc(r.ownerName)}</b> invite <b>${esc(r.partnerName)}</b> à chanter « ${esc(r.title)} » en duo${seenText(r.seenAt, r.partnerName)}</div>`).join('');
+      invites.map(r => `<div class="join-request small"><b>${esc(r.ownerName)}</b> invite <b>${esc(r.partnerName)}</b> à chanter « ${esc(r.title)} » en duo${seenText(r.seenAt, r.partnerName)}</div>`).join('') +
+      opens.map(r => `<div class="join-request small"><span class="badge wait invite open-duo">Duo ouvert</span> <b>${esc(r.ownerName)}</b>${r.table ? ` (${esc(r.table)})` : ''} cherche un partenaire pour « ${esc(r.title)} »${r.openedAt ? ` · ${hhmm(r.openedAt)}` : ''}${r.held ? ' · Duos uniquement : le titre attend un volontaire hors de la file' : ''}</div>`).join('');
 
     const publicHttps = isPublicHttps(S.phoneBase || '');
     const readyQrCount = S.tables.filter(t => t.url && t.qrUrl && !t.individual).length;

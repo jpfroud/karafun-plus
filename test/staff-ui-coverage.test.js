@@ -3477,6 +3477,36 @@ test('scène : les invitations de duo en attente sont listées avec leur état v
   assert.equal(page.$('joinRequestsBox').hidden, true);
 });
 
+// Duo ouvert (« Qui veut chanter en duo avec moi ? », spec du 26 octobre 2026) :
+// la ligne porte « Duo ouvert » tant que personne ne l'a rejoint ; en « Duos
+// uniquement », le titre attend hors de la file et l'encadré le dit.
+test('file du bar : duo ouvert repéré sur sa ligne et dans les demandes de duo, « Duos uniquement » expliqué', async () => {
+  const world = baseWorld();
+  world.queue = [{ source: 'helper', id: 'alice', pos: 1, name: 'Alice', table: 'Table 1', ids: ['alice'],
+    song: { title: 'Valse', artist: 'Strauss', entryId: 'e1', duet: { state: 'open', kind: 'duo' } } },
+  { source: 'helper', id: 'bruno', pos: 2, name: 'Bruno', table: 'Table 2', ids: ['bruno'], song: { title: 'Rock', entryId: 'e2' } }];
+  world.next = world.queue[0];
+  const openedAt = new Date(2026, 9, 26, 21, 5).getTime();
+  world.openDuets = [{ ownerId: 'alice', ownerName: 'Alice', table: 'Table 1', entryId: 'e1', title: 'Valse', openedAt, held: false }];
+  const page = await openPage({ world });
+  assert.deepEqual(badges(rows(page)[0]), ['À venir', 'Duo ouvert']);
+  assert.equal(rows(page)[0].querySelector('.badge.open-duo').title,
+    'Cherche un partenaire dans toute la salle : sans volontaire à son tour, le titre part en solo dans KaraFun.');
+  assert.deepEqual(badges(rows(page)[1]), ['À venir']);
+  assert.match(page.$('next').textContent, /Duo ouvert.*Valse/s, 'Scène : « Ensuite » porte le repère');
+  assert.equal(page.$('joinRequestsBox').hidden, false, 'un duo ouvert suffit à montrer l’encadré');
+  assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')), ['Duo ouvert Alice (Table 1) cherche un partenaire pour « Valse » · 21:05']);
+  // « Duos uniquement » : hors de la file, l'encadré dit pourquoi.
+  await page.update({ queue: [world.queue[1]], next: world.queue[1], openDuets: [{ ...world.openDuets[0], held: true }] });
+  assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')),
+    ['Duo ouvert Alice (Table 1) cherche un partenaire pour « Valse » · 21:05 · Duos uniquement : le titre attend un volontaire hors de la file']);
+  // Rejoint : un duo comme les autres, plus de repère.
+  await page.update({ queue: [{ ...world.queue[0], kind: 'duo', ids: ['alice', 'bruno'],
+    song: { ...world.queue[0].song, duet: { partnerName: 'Bruno', state: 'accepted', kind: 'duo' } } }], openDuets: [] });
+  assert.deepEqual(badges(rows(page)[0]), ['À venir', 'Duo']);
+  assert.equal(page.$('joinRequestsBox').hidden, true);
+});
+
 // Regression: relecture PR #11 — deux envois du même champ pouvaient être en
 // route ensemble : arrivés dans le désordre, la dernière valeur était perdue.
 test('enregistrement automatique : un envoi à la fois par champ, le suivant part après la réponse avec la dernière valeur', async () => {

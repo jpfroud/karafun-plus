@@ -119,7 +119,7 @@ const SCHED_RULES = ['tableRotation', 'weightedTables', 'interleaveArrivals', 'r
 // Événements du journal que le rejeu sait refaire (les autres sont ignorés).
 const REPLAYED = new Set(['table.opened', 'table.headcount', 'person.joined', 'song.requested',
   'duo.invited', 'duo.answered', 'duo.cancelled', 'duo.left', 'duo.joinRequested', 'duo.joinAnswered',
-  'duo.joinCancelled', 'song.removed', 'song.reordered', 'person.gaveSpot',
+  'duo.joinCancelled', 'duo.openRequested', 'duo.openAccepted', 'duo.openClosed', 'song.removed', 'song.reordered', 'person.gaveSpot',
   'table.left', 'person.left', 'person.reactivated', 'person.bonus', 'table.bonus', 'person.transferred',
   'settings.changed']);
 // Gestes qui changent la file mais que le rejeu ne refait pas : signalés.
@@ -131,7 +131,8 @@ const NOT_REPLAYED = new Set(['staff.move', 'staff.undo', 'staff.recalculate', '
 // faire (titre déjà chanté ou absent dans le rejeu) sort aussi du journal
 // rejoué, sinon evening-stats.js le compterait comme fait.
 const MUST_MATCH = new Set(['song.requested', 'song.removed', 'song.reordered', 'duo.answered', 'duo.cancelled',
-  'duo.left', 'duo.joinRequested', 'duo.joinAnswered', 'duo.joinCancelled', 'person.gaveSpot']);
+  'duo.left', 'duo.joinRequested', 'duo.joinAnswered', 'duo.joinCancelled', 'duo.openRequested', 'duo.openAccepted',
+  'duo.openClosed', 'person.gaveSpot']);
 // Gestes non rejoués dont evening-stats.js tiendrait compte (titres vidés,
 // « Pas prêt ») : hors du journal rejoué.
 const NOT_IN_JOURNAL = new Set(['staff.queueCleared', 'defer.requested', 'defer.ended']);
@@ -765,7 +766,10 @@ function makeContext(ev, opts) {
   s._maybeRequestSolver = () => false;
   s._scheduleRefine = () => {};
   s.solverBridge = null;
-  const ctx = { ev, s, rules, overrides, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
+  // « Duos uniquement » : un duo ouvert sans partenaire ne part pas (règle
+  // lue par l'ordonnanceur ; une version d'avant le duo ouvert l'ignore).
+  s.duoOnlyRule = () => !!ctx.duoOnly;
+  const ctx = { ev, s, rules, overrides, duoOnly: !!rules.duoOnly, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
     notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || SOLVER_TIME_MS, moves: 0, solver: null, jar: null,
     solverDir: null, code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null, ceiling: 0, retried: 0 }, unapplied: new Set(), aliases: new Map(), added: new Map(),
     requestedAt: new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t])) };
@@ -1137,9 +1141,32 @@ function applyExternal(ctx, e, upcoming) {
         s.cancelDuetJoin(requester, pid(e.ownerId), entry(e.entryId));
         return true;
       }
+      // Duo ouvert (« Qui veut chanter en duo avec moi ? ») : demandé, rejoint,
+      // ou fermé par son auteur ; titre retiré, départ et expiration à l'envoi
+      // suivent les gestes rejoués.
+      case 'duo.openRequested': {
+        const owner = P(e.personId);
+        if (!owner || !entry(e.entryId)) return skip('titre inconnu');
+        s.openDuet(owner, { entryId: entry(e.entryId) });
+        return true;
+      }
+      case 'duo.openAccepted': {
+        const guest = P(e.partnerId || e.personId);
+        if (!guest || !entry(e.entryId)) return skip('duo inconnu');
+        s.acceptOpenDuet(guest, pid(e.ownerId), entry(e.entryId));
+        return true;
+      }
+      case 'duo.openClosed': {
+        if (e.reason !== 'self') return false;
+        const owner = P(e.ownerId || e.personId);
+        if (!owner || !entry(e.entryId)) return skip('duo inconnu');
+        s.closeOpenDuet(owner, entry(e.entryId));
+        return true;
+      }
       case 'person.gaveSpot': { const p = P(e.personId); if (!p) return skip('personne inconnue'); s.giveSpot(p, pid(e.toId)); return true; }
       case 'settings.changed': {
         // Une règle remplacée par --option garde la valeur demandée.
+        if (e.setting === 'duoOnly' && !(e.setting in ctx.overrides)) { ctx.duoOnly = !!e.to; return true; }
         if (!SCHED_RULES.includes(e.setting) || e.setting in ctx.overrides) return false;
         if (e.setting === 'requirePresence') {
           const warning = '« Je suis là » obligatoire non rejoué (confirmations, passages laissés faute de réponse) : rejeu fait sans';

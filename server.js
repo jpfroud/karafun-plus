@@ -374,6 +374,8 @@ function journalEvent(type, fields = {}) {
   return journal.append(type, fields);
 }
 sched.onEvent = journalEvent;
+// « Duos uniquement » : un duo ouvert sans partenaire ne part pas (lib/scheduler/duets.js, _openHeld).
+sched.duoOnlyRule = () => !!settings.duoOnly;
 // Règles en vigueur, notées au début de chaque soirée.
 function journalRules() {
   return { tableRotation: !!sched.opts.tableRotation, weightedTables: !!sched.opts.weightedTables,
@@ -2013,7 +2015,9 @@ function staffDuoView(record) {
 // ------------------------------------------------------------------ vues
 const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: coverUrl(s.img), duration: s.duration || null,
   settings: s.settings || null,
-  duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo',
+  // Duo ouvert (« Qui veut chanter en duo avec moi ? ») : pas encore de partenaire.
+  duet: s.duet?.state === 'open' ? { state: 'open', kind: 'duo' } :
+    s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo',
     // Invitation en attente : vue ou non sur le téléphone de l'invité.
     ...(s.duet.state === 'pending' ? { seen: !!s.duet.seenAt } : {}) } : null } : null;
 
@@ -2223,6 +2227,20 @@ function publicState(person, tableId, managed = null) {
       ranges: songRanges(), defaults: songDefaults() },
   };
 
+  // Duos ouverts des autres (« Qui veut chanter en duo avec moi ? ») : seules
+  // les personnes présentes et nommées gérées par ce téléphone peuvent les
+  // rejoindre, jamais leur auteur ; sans elles, rien n'est envoyé. Les trois
+  // plus récents, sauf celui dont le titre part déjà dans KaraFun (en solo).
+  const volunteers = [...(managed || [])].map(pid => sched.people.get(pid)).filter(p => p && !p.withdrawnAt && !p.nameRequired);
+  if (volunteers.length) {
+    out.openDuets = sched.openDuets().filter(open => open.entryId !== sending).map(open => ({
+      ownerId: open.owner.id, ownerName: open.owner.name, ownerLabel: sched.passageLabel([open.owner.id]),
+      entryId: open.entryId, openedAt: open.openedAt,
+      song: { songId: open.song.songId, title: open.song.title, artist: open.song.artist, img: coverUrl(open.song.img), duration: open.song.duration || null },
+      volunteerIds: volunteers.filter(p => p.id !== open.owner.id).map(p => p.id) }))
+      .filter(open => open.volunteerIds.length).slice(0, 3);
+  }
+
   const guestDuosOf = person => {
     const duos = [];
     for (const owner of sched.people.values()) for (const song of sched.songsOf(owner)) {
@@ -2284,7 +2302,7 @@ function publicState(person, tableId, managed = null) {
         entryId: r.entryId, song: fmtSong(r.song), seen: !!r.seenAt })),
       ...(deferral => ({ deferral, canDefer: !p.withdrawnAt && deferrable.has(p.id) && !deferral,
         deferAlone: !p.withdrawnAt && !deferral && deferAlone.has(p.id) }))(deferralOf(p.id)),
-      duet: p.duet ? { partnerName: sched.people.get(p.duet.partnerId)?.name || 'Un chanteur',
+      duet: p.duet?.state === 'open' ? { state: 'open' } : p.duet ? { partnerName: sched.people.get(p.duet.partnerId)?.name || 'Un chanteur',
         state: p.duet.state } : p.duetOf ? { partnerName: sched.people.get(p.duetOf)?.name || 'Un chanteur',
         state: 'accepted', asPartner: true } : null,
       ...(managed?.has(p.id) ? { inbox: sched.inboxOf(p).map(n => ({ id: n.id, kind: n.kind, params: n.params, at: n.at })) } : {}),
@@ -2385,6 +2403,11 @@ function staffState() {
       .filter(song => song.duet?.state === 'pending').map(song => ({ ownerId: owner.id, ownerName: owner.name,
         partnerId: song.duet.partnerId, partnerName: sched.people.get(song.duet.partnerId)?.name || '',
         entryId: song.entryId, title: song.title, seenAt: song.duet.seenAt || null }))),
+    // Duos ouverts encore sans partenaire ; `held` : « Duos uniquement », le
+    // titre ne part pas tant que personne ne l'a rejoint.
+    openDuets: sched.openDuets().map(open => ({ ownerId: open.owner.id, ownerName: open.owner.name,
+      table: sched.passageTables([open.owner.id]).join(' + '), entryId: open.entryId, title: open.song.title,
+      openedAt: open.openedAt, held: sched._openHeld(open.song) })),
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
       from: change.from, to: change.to, at: change.at,
@@ -3469,10 +3492,12 @@ function assertDuoAllowed() {
 // son auteur, ni par l'invitée de la même table (duo accepté d'office). Le
 // titre peut être retiré ; une invitation en attente peut être annulée, et
 // une invitation d'une autre table déclinée, expirée ou quittée part en solo.
+// Un duo ouvert, qui ne part pas sans partenaire dans ce mode, ne se ferme
+// pas non plus en solo.
 function assertDuoKept(p, entryId) {
   if (!settings.duoOnly) return;
   const key = entryId ? String(entryId) : null;
-  const own = sched.songsOf(p).some(song => song.duet?.state === 'accepted' && (!key || song.entryId === key));
+  const own = sched.songsOf(p).some(song => ['accepted', 'open'].includes(song.duet?.state) && (!key || song.entryId === key));
   const guest = !own && sched.guestDuetsOf(p).find(duo => !key || duo.entryId === key);
   if (!own && !(guest && sched.people.get(guest.ownerId)?.group === p.group)) return;
   const error = new Error(own ? 'Ce soir, le bar ne prend que des duos : garde ton duo ou retire ce titre.'
@@ -4286,6 +4311,30 @@ const handlers = {
     assertSongLength(p, [body.song], 'duet');
     const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
+  },
+  // « Qui veut chanter en duo avec moi ? » : un titre du catalogue (`song`)
+  // ou de sa liste pas encore envoyé (`entryId`) cherche un partenaire dans
+  // toute la salle. Sans volontaire à son tour, il part en solo.
+  'POST /api/table/duet/open': async (req, res, body) => {
+    const p = personAtTable(body);
+    requireNamed(p);
+    if (body.song) assertSongLength(p, [body.song], 'duet');
+    else assertNotSending(body.entryId);
+    const song = sched.openDuet(p, body.song ? { song: withCover(body.song) } : { entryId: body.entryId }); sync();
+    return { ok: true, entryId: song.entryId, ...(body.song ? { notice: repeatNotice(song, p.tableId, song.entryId) } : {}) };
+  },
+  'POST /api/table/duet/open/close': async (req, res, body) => {
+    const p = personAtTable(body);
+    assertDuoKept(p, body.entryId);
+    sched.closeOpenDuet(p, body.entryId); sync(); return { ok: true };
+  },
+  // « Je chante avec … » : le premier volontaire devient l'invité du duo, les
+  // suivants reçoivent le refus. Titre en route vers KaraFun : il part en solo.
+  'POST /api/table/duet/open/accept': async (req, res, body) => {
+    const p = personAtTable(body);
+    requireNamed(p);
+    assertNotSending(body.entryId);
+    sched.acceptOpenDuet(p, body.ownerId, body.entryId); sync(); return { ok: true };
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
     const p = personAtTable(body);

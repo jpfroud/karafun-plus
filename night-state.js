@@ -37,6 +37,16 @@ function cleanSongSettings(song) {
   if (settings) song.settings = settings;
   else delete song.settings;
 }
+// Duo ouvert (« Qui veut chanter en duo avec moi ? ») : repris tel quel, sans
+// partenaire ; une heure d'ouverture abîmée devient celle de la reprise. Une
+// version d'avant le duo ouvert le lit comme un duo dont le partenaire est
+// inconnu et l'efface sans erreur (Scheduler#_refreshDuetViews) : le titre
+// reste en solo.
+function cleanOpenDuet(song) {
+  const d = song?.duet;
+  if (!d || typeof d !== 'object' || d.state !== 'open') return;
+  song.duet = { state: 'open', openedAt: Number.isFinite(d.openedAt) && d.openedAt > 0 ? d.openedAt : Date.now() };
+}
 // Sauvegarde d'avant les voix guides réglées une à une (`guideVoicesSaved`
 // absent) : dans un duo, la voix 2 suivait la voix 1. Elle reçoit donc le
 // même réglage (`guideVoices["6"]`), pour rien perdre.
@@ -219,6 +229,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     delete person.verifiedAt; // ancienne vérification des repères, retirée : le repère seul reste
     cleanSongSettings(person.song);
     person.backlog.forEach(cleanSongSettings);
+    for (const song of [person.song, ...person.backlog]) cleanOpenDuet(song);
     if (legacyVoices) for (const song of [person.song, ...person.backlog]) legacyDuoVoice(song, !!song?.duet);
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.
     if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;

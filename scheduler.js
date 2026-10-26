@@ -20,7 +20,9 @@
  * - Duo : le partenaire accepte l'invitation ; seul l'initiateur dépense son
  *   ticket. Le partenaire garde son titre, avec deux passages de répit si possible.
  *   Une invitation sans réponse ne retient jamais le titre : il garde sa place
- *   et, à son tour, part en solo ; l'invitation expire alors.
+ *   et, à son tour, part en solo ; l'invitation expire alors. Un duo ouvert
+ *   (sans partenaire, proposé à toute la salle) fait de même, sauf en « Duos
+ *   uniquement », où il attend ; le premier volontaire devient l'invité.
  * - Présence sur scène : au plus deux passages par personne et par tour, quel
  *   que soit son rôle (son titre ou invitée d'un duo) ; au-delà, le duo attend
  *   le tour suivant. Au moins trois autres chansons entre deux passages d'une
@@ -98,6 +100,8 @@ class Scheduler {
     this.solverRefineStats = { fingerprint: null, runs: 0, improvements: 0, fruitless: 0 };
     // Journal de soirée : branché par le serveur (voir evening-journal.js).
     this.onEvent = null;
+    // « Duos uniquement » du bar (settings.duoOnly) : branché par le serveur.
+    this.duoOnlyRule = null;
   }
 
   // Événement du journal de soirée : identifiants seulement, jamais de prénom.
@@ -275,8 +279,8 @@ class Scheduler {
       const p = this.people.get(pid);
       return p ? [pid, p.group, p.withdrawnAt, p.sung, p.duetGuestCount || 0,
         p.lastAppearanceTurn || 0, this._isPresenceRetry(p), this._deferralKey(p),
-        p.over, p.held, p.song?.entryId || null, p.song?.duet || null,
-        (p.backlog || []).map(song => [song.entryId, song.duet || null])] : [pid];
+        p.over, p.held, p.song?.entryId || null, this._duetKey(p.song),
+        (p.backlog || []).map(song => [song.entryId, this._duetKey(song)])] : [pid];
     });
     const context = { people, Q: this.Q, lastGroup: this.lastGroup,
       roundGroups: [...this.roundGroups], roundPeople: [...this.roundPeople],
@@ -317,7 +321,7 @@ class Scheduler {
       }
       return [pid, p.group, p.sung, p.duetGuestCount || 0,
         p.lastAppearanceTurn || 0, p.readySerial || 0,
-        songs.map(song => [song.entryId, song.duet || null])];
+        songs.map(song => [song.entryId, this._duetKey(song)])];
     });
     // Un invité sans ticket reste pertinent : son dernier passage physique
     // influence directement le score et la distance de son prochain duo.

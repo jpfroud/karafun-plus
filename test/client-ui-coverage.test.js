@@ -4303,3 +4303,160 @@ test('duos uniquement : pas de « ＋ Chanson », la fiche d’un titre ne propo
   assert.equal(free.$('appendSong').hidden, false);
   assert.doesNotMatch(free.sheetHtml(), /que des duos/);
 });
+
+// ================================================================ duo ouvert
+// « Qui veut chanter en duo avec moi ? » (spec du 26 octobre 2026, F1) : un
+// bandeau non bloquant en haut de la page pour chaque duo ouvert des autres
+// (trois au plus, les plus récents), « Je chante avec … », une vibration et un
+// son à l'arrivée, une notification si la page est cachée.
+const openDuet = (entryId, name, title, extra = {}) => ({ ownerId: `o-${entryId}`, ownerName: name, ownerLabel: `${name} · Table 2`,
+  entryId, openedAt: 1000, song: { songId: 50, title, artist: 'Artiste' }, volunteerIds: ['alice'], ...extra });
+
+test('duo ouvert : bandeau « Je chante avec … », une vibration et un son, notification page cachée, trois au plus', async () => {
+  let refusal = null;
+  const page = await open({ state: baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre'), openDuet('o2', 'Max', 'Rock'),
+    openDuet('o3', 'Zoé', 'Slow'), openDuet('o4', 'Ugo', 'Trop')] }), hidden: true, secure: true, audio: {},
+    notification: { permission: 'granted' }, storage: { 'kfAlerts:1:secret': '1' }, session: sessionMap(),
+    respond: url => url === '/api/table/duet/open/accept' && refusal ? reply(409, { error: refusal }) : undefined });
+  const banners = () => page.node('infoBar').querySelectorAll('.info-item');
+  assert.equal(page.node('infoBar').hidden, false);
+  assert.deepEqual(banners().map(item => item.querySelector('p').textContent), ['Léa · Table 2 cherche un partenaire pour « Titre »',
+    'Max · Table 2 cherche un partenaire pour « Rock »', 'Zoé · Table 2 cherche un partenaire pour « Slow »'], 'trois bandeaux au plus');
+  assert.deepEqual(banners().map(item => item.querySelector('[data-open-join]').textContent), ['Je chante avec Léa', 'Je chante avec Max', 'Je chante avec Zoé']);
+  assert.equal(page.node('attention').hidden, true, 'rien ne bloque la page');
+  assert.deepEqual(page.vibrations, [[120]], 'une seule vibration');
+  assert.equal(page.audio.oscillators.length, 2, 'un son');
+  assert.deepEqual(page.notifications.map(n => [n.title, n.body]), [['Karaoké : duo ouvert', 'Léa · Table 2 cherche un partenaire pour « Titre »'],
+    ['Karaoké : duo ouvert', 'Max · Table 2 cherche un partenaire pour « Rock »'], ['Karaoké : duo ouvert', 'Zoé · Table 2 cherche un partenaire pour « Slow »']]);
+  // Critère 1 : un téléphone relit la file toutes les 4 s, donc voit le bandeau en moins de 5 s.
+  assert.match(script, /setInterval\(\(\) => \{ if \(!invalidAccess\) refresh\(\); \}, 4000\)/);
+  await page.poll();
+  assert.deepEqual(page.vibrations, [[120]], 'déjà signalés : rien de plus');
+  page.state.openDuets = [openDuet('o5', 'Nina', 'Neuf'), ...page.state.openDuets.slice(0, 2)];
+  await page.poll();
+  assert.deepEqual(page.vibrations, [[120], [120]], 'un nouveau duo ouvert : une vibration de plus');
+  assert.equal(page.notifications.length, 4);
+  // « Je chante avec Léa » : une seule personne sur ce téléphone, envoyé tout de suite.
+  await page.tap('infoBar', '[data-open-join="o1"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open/accept', { table: '1', access: 'secret', personId: 'alice', ownerId: 'o-o1', entryId: 'o1' }]);
+  assert.deepEqual(page.toast(), { text: 'Duo ajouté avec Léa.', bad: false, warn: false, hidden: false });
+  // Quelqu'un est passé avant : le refus prévu, et la page se met à jour.
+  refusal = 'Quelqu’un a déjà rejoint ce duo.';
+  const reads = page.stateRequests().length;
+  await page.tap('infoBar', '[data-open-join="o2"]');
+  assert.deepEqual(page.toast(), { text: 'Quelqu’un a déjà rejoint ce duo.', bad: true, warn: false, hidden: false });
+  assert.ok(page.stateRequests().length > reads, 'état relu aussitôt');
+  // × : le bandeau disparaît pour cet onglet.
+  await page.tap('infoBar', '[data-info-dismiss="open:o5"]');
+  assert.ok(!banners().some(item => /Nina/.test(item.textContent)));
+  // Plus de duo ouvert : plus de bandeau.
+  page.state.openDuets = [];
+  await page.poll();
+  assert.equal(page.node('infoBar').hidden, true);
+  // En anglais, refus du serveur compris.
+  const english = await open({ languages: ['en'], state: baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre')] }),
+    respond: url => url === '/api/table/duet/open/accept' ? reply(409, { error: 'Quelqu’un a déjà rejoint ce duo.' }) : undefined });
+  assert.equal(english.node('infoBar').querySelector('p').textContent, 'Léa · Table 2 is looking for a duet partner for “Titre”');
+  assert.equal(english.node('infoBar').querySelector('[data-open-join]').textContent, 'I’ll sing with Léa');
+  await english.tap('infoBar', '[data-open-join="o1"]');
+  assert.equal(english.toast().text, 'Someone has already joined this duet.');
+});
+
+test('duo ouvert : un téléphone qui gère plusieurs personnes choisit qui chante, jamais par défaut ; l’auteur ne voit rien', async () => {
+  const state = baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre', { volunteerIds: ['alice', 'bob'] })] });
+  state.tablePeople.push(person('bob', 'Bob'));
+  state.managedIds = ['alice', 'bob'];
+  const page = await open({ state });
+  await page.tap('infoBar', '[data-open-join="o1"]');
+  assert.equal(page.posts.filter(([url]) => url === '/api/table/duet/open/accept').length, 0, 'rien n’est envoyé avant le choix');
+  assert.equal(page.sheetOpen(), true);
+  assert.equal(page.node('sheetPanel').querySelector('h3').textContent, 'Qui chante « Titre » avec Léa ?');
+  assert.match(page.sheetHtml(), /Le premier qui se propose chante avec Léa\. Tes propres chansons restent dans ta liste\./);
+  assert.deepEqual(page.node('sheetPanel').querySelectorAll('[data-open-as]').map(button => button.textContent), ['Alice', 'Bob']);
+  await page.tap('sheetPanel', '[data-open-as="bob"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open/accept', { table: '1', access: 'secret', personId: 'bob', ownerId: 'o-o1', entryId: 'o1' }]);
+  assert.equal(page.sheetOpen(), false);
+  assert.equal(page.toast().text, 'Duo ajouté : Bob chante avec Léa.');
+  // Seul l'auteur sur ce téléphone (ou une place sans prénom) : pas de bandeau.
+  const author = await open({ state: baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre', { volunteerIds: ['lea'] })] }) });
+  assert.equal(author.node('infoBar').hidden, true);
+  const unnamed = baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre')] });
+  unnamed.tablePeople[0].nameRequired = true;
+  assert.equal((await open({ state: unnamed })).node('infoBar').querySelector('[data-open-join]'), null);
+});
+
+test('duo ouvert : proposé depuis le catalogue ou la liste, fermé par son auteur, repéré dans la file, avis à l’auteur', async () => {
+  const page = await open({ respond: url => url === '/api/table/duet/open' ? { ok: true, entryId: 'e9' } : undefined });
+  await page.click(page.node('nav-catalog'));
+  await pickCatalogSong(page);
+  assert.equal(page.node('openDuetChoice').textContent, 'Qui veut chanter en duo avec moi ?');
+  assert.equal(page.node('openDuetChoice').hidden, false);
+  await page.click(page.node('openDuetChoice'));
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open', { table: '1', access: 'secret', personId: 'alice',
+    song: { songId: 9, title: 'Tube', artist: 'Groupe' } }]);
+  assert.equal(page.sheetOpen(), false);
+  assert.equal(page.tabShown(), 'table');
+  assert.equal(page.toast().text, 'Duo ouvert : toute la salle peut se proposer pour chanter avec Alice.');
+  // Titre de la liste, sans duo : « Chercher un duo ».
+  await page.tap('peopleList', '[data-duet-open="e1"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open', { table: '1', access: 'secret', personId: 'alice', entryId: 'e1' }]);
+  // Demande ouverte : repère, conséquence à son tour, « Fermer la demande », pas d'autre duo ouvert.
+  page.state.tablePeople[0].songs = [{ entryId: 'e1', songId: 1, title: 'Mon titre', duet: { state: 'open', kind: 'duo' } },
+    { entryId: 'e2', songId: 2, title: 'Second' }];
+  await page.poll();
+  const card = page.node('peopleList').innerHTML;
+  assert.match(card, /duo ouvert, en attente d’un partenaire/);
+  assert.match(card, /Sans partenaire avant son tour, Alice chantera seul\./);
+  assert.doesNotMatch(card, /data-duet-open=/, 'un seul duo ouvert à la fois');
+  assert.doesNotMatch(card, /data-duet-cancel="e1"/, 'pas « Annuler duo » : « Fermer la demande »');
+  await page.tap('peopleList', '[data-duet-close="e1"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open/close', { table: '1', access: 'secret', personId: 'alice', entryId: 'e1' }]);
+  assert.equal(page.toast().text, 'Demande fermée : le titre reste en solo.');
+  await page.click(page.node('nav-catalog'));
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.equal(page.node('openDuetChoice').hidden, true, 'catalogue : pas de second duo ouvert');
+  // « Duos uniquement » : le titre attend un partenaire, la demande ne se ferme pas.
+  page.state.rules = { duoOnly: true };
+  await page.poll();
+  assert.match(page.node('peopleList').innerHTML, /Ce soir, le bar ne prend que des duos : ce titre attend un partenaire pour passer\./);
+  assert.doesNotMatch(page.node('peopleList').innerHTML, /data-duet-close=/);
+  // File : le duo ouvert d'un autre porte son repère et « Je chante avec », jamais « Duo ? ».
+  page.state.rules = {};
+  page.state.queue = [{ source: 'helper', id: 'lea', ids: ['lea'], name: 'Léa', pos: 1, title: 'Titre',
+    song: { entryId: 'o1', songId: 50, title: 'Titre', duet: { state: 'open', kind: 'duo' } } }];
+  page.state.openDuets = [openDuet('o1', 'Léa', 'Titre')];
+  await page.poll();
+  const line = page.node('queueList').innerHTML;
+  assert.match(line, /duo ouvert/);
+  assert.match(line, /data-open-join="o1"[^>]*>Je chante avec Léa</);
+  assert.doesNotMatch(line, /data-join-request/);
+  // Avis à l'auteur : rejoint, ou parti en solo faute de volontaire.
+  page.state.tablePeople[0].inbox = [{ id: 'n1', kind: 'openAccepted', params: { name: 'Max', title: 'Mon titre' }, at: Date.now() },
+    { id: 'n2', kind: 'openUnanswered', params: { title: 'Second' }, at: Date.now() }];
+  page.state.openDuets = [];
+  await page.poll();
+  if (page.node('infoBar').querySelector('[data-info-more]')) await page.tap('infoBar', '[data-info-more]');
+  const texts = page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent);
+  assert.ok(texts.includes('Max rejoint Alice en duo sur « Mon titre ».'), texts.join(' | '));
+  assert.ok(texts.includes('Personne n’a rejoint le duo d’Alice sur « Second » : Alice le chante en solo.'), texts.join(' | '));
+});
+
+test('duo ouvert : proposé aussi depuis le choix du partenaire (« Duos uniquement »), en anglais', async () => {
+  const page = await open({ state: baseState({ rules: { duoOnly: true } }), languages: ['en'],
+    respond: url => url.startsWith('/api/duo/partners?') ? partners : url === '/api/table/duet/open' ? { ok: true } : undefined });
+  await page.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(page);
+  assert.equal(page.node('openDuetInstead').textContent, 'Who wants to sing a duet with me?');
+  await page.click(page.node('openDuetInstead'));
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open', { table: '1', access: 'secret', personId: 'alice',
+    song: { songId: 9, title: 'Tube', artist: 'Groupe' } }]);
+  assert.equal(page.toast().text, 'Open duet: anyone in the room can volunteer to sing with Alice.');
+  // Demande déjà ouverte pour Alice : pas de second duo ouvert depuis cette fiche.
+  page.state.tablePeople[0].songs = [{ entryId: 'e1', songId: 1, title: 'Mon titre', duet: { state: 'open', kind: 'duo' } }];
+  await page.poll();
+  assert.match(page.node('peopleList').innerHTML, /open duet, waiting for a partner/);
+  assert.match(page.node('peopleList').innerHTML, /Tonight the bar only takes duets: this song waits for a partner before it goes up\./);
+  await page.tap('peopleList', '[data-duet-song="alice"]');
+  await page.tap('catalogContent', '[data-song-index="0"]');
+  assert.equal(page.$('openDuetInstead'), null);
+});

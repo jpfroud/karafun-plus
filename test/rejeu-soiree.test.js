@@ -2375,6 +2375,30 @@ test('rejeu libre : demande acceptée d’une autre table, demande annulée, pla
   assert.deepEqual(res.notes.filter(n => /joinRequested|joinAnswered|joinCancelled|gaveSpot/.test(n)), [], 'tout rejoué sans erreur');
 });
 
+// Duo ouvert (« Qui veut chanter en duo avec moi ? », spec du 26 octobre 2026) :
+// une soirée exportée qui en contient se rejoue comme elle a été vécue.
+test('rejeu libre : duo ouvert rejoint par une autre table, duo ouvert fermé par son auteur', async () => {
+  const raw = structuredClone(ev.raw);
+  const events = raw.events;
+  const at = adder(events);
+  const startOf = new Map(events.filter(e => e.ev === 'stage.started' && e.entryId).map(e => [e.entryId, e.t]));
+  const tableOf = new Map(events.filter(e => e.ev === 'person.joined').map(e => [e.personId, e.tableId]));
+  const joinedAt = new Map(events.filter(e => e.ev === 'person.joined').map(e => [e.personId, e.t]));
+  const solos = events.filter(e => e.ev === 'song.requested' && startOf.get(e.entryId) > e.t + 20 * 60000 &&
+    !events.some(x => x.entryId === e.entryId && /^duo\./.test(x.ev)));
+  const a = solos.find(e => [...tableOf].some(([pid, tid]) => tid !== tableOf.get(e.personId) && joinedAt.get(pid) < e.t));
+  const other = [...tableOf].find(([pid, tid]) => tid !== tableOf.get(a.personId) && joinedAt.get(pid) < a.t)[0];
+  at(a.t + 1000, 'duo.openRequested', { personId: a.personId, entryId: a.entryId, fromCatalog: true });
+  at(a.t + 120000, 'duo.openAccepted', { personId: other, ownerId: a.personId, partnerId: other, entryId: a.entryId });
+  const b = solos.find(e => e !== a && e.personId !== a.personId);
+  at(b.t + 1000, 'duo.openRequested', { personId: b.personId, entryId: b.entryId, fromCatalog: false });
+  at(b.t + 60000, 'duo.openClosed', { personId: b.personId, ownerId: b.personId, entryId: b.entryId, reason: 'self' });
+  const res = await rejeu.runFree(rejeu.loadEvening(raw));
+  assert.deepEqual(res.passages.find(p => p.entryId === a.entryId)?.ids, [a.personId, other], 'rejoint : duo');
+  assert.deepEqual(res.passages.find(p => p.entryId === b.entryId)?.ids, [b.personId], 'fermé : solo');
+  assert.deepEqual(res.notes.filter(n => /duo\.open/.test(n)), [], 'tout rejoué sans erreur');
+});
+
 test('rejeu libre : retrait réel d’un titre déjà chanté dans le rejeu, et demandes refusées, hors du journal', async () => {
   const base = await rejeu.runFree(ev);
   const raw = structuredClone(ev.raw);
