@@ -380,6 +380,47 @@ try {
   }
 
   {
+    // Relecture : en « Duos uniquement », un duo ouvert sans partenaire ne
+    // part pas (_openHeld) : ni lui ni les titres suivants de son auteur ne
+    // sont dans le plan de Timefold. Le plan doit quand même être sauvegardé
+    // et repris, sous la même règle qu'à la sauvegarde.
+    const rules = { duoOnly: true };
+    const planned = new Scheduler({ tableRotation: true });
+    planned.duoOnlyRule = () => !!rules.duoOnly;
+    const plannedAccess = new TableAccess();
+    const singers = ['1', '2', '3', '4'].map((tableId, index) => {
+      planned.table(tableId); plannedAccess.issue(tableId);
+      const person = planned.join({ tableId, name: `S0${index + 1}`, headcount: 1 });
+      planned.chooseSong(person, song(301 + index, `T${index + 1}`));
+      return person;
+    });
+    // S02 cherche un partenaire pour son second titre, S05 pour son premier.
+    planned.chooseSong(singers[1], song(311, 'Second'), 'append');
+    planned.openDuet(singers[1], { entryId: planned.songsOf(singers[1])[1].entryId });
+    planned.table('5'); plannedAccess.issue('5');
+    const held = planned.join({ tableId: '5', name: 'S05', headcount: 1 });
+    planned.openDuet(held, { song: song(321, 'Ouvert') });
+    planned.chooseSong(held, song(322, 'Après'), 'append');
+    const local = planned.readyView().map(row => row.entryId);
+    assert.equal(local.length, 4, 'les titres retenus sont hors de la file');
+    const desired = [local[2], local[0], local[3], local[1]];
+    planned.solverPlan = { version: planned.version, fingerprint: planned.solverContextFingerprint(),
+      ranks: new Map(desired.map((entryId, index) => [entryId, index])), source: 'timefold' };
+    assert.deepEqual(planned.readyView().map(row => row.entryId), desired);
+    const base = { ...settings(), duoOnly: true };
+    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: planned, access: plannedAccess, settings: base })));
+    assert.deepEqual(saved.scheduler.solverPlan?.order, desired, 'plan sauvegardé sans les titres retenus');
+    // Le serveur redémarre avec « Duos uniquement » coupé : la sauvegarde le rallume.
+    const target = { ...settings(), duoOnly: false };
+    const resumed = new Scheduler();
+    resumed.duoOnlyRule = () => !!target.duoOnly;
+    restoreNight(saved, { scheduler: resumed, access: new TableAccess(), settings: target });
+    assert.equal(resumed.solverPlan?.source, 'timefold', 'plan repris');
+    assert.deepEqual(resumed.readyView().map(row => row.entryId), desired, 'même ordre après le redémarrage');
+    assert.equal(resumed.manualOrderActive, false);
+  }
+
+  {
     // Relecture : une sauvegarde prise entre un passage annulé et le suivant
     // peut porter un début d'attente ou une marque d'échange au-delà du
     // compteur ; la reprise les ramène, sinon la personne perdrait la

@@ -140,10 +140,16 @@ function savePhoto(photo, directory) {
   return { type: photo.type, file: filename };
 }
 
+// Titres que le plan range. En « Duos uniquement », un duo ouvert sans
+// partenaire ne part pas (_openHeld) : _pick le saute avec les titres
+// suivants de son auteur, la prévision et la graine de Timefold aussi.
 function queuedEntries(scheduler) {
   return new Set(scheduler.Q.flatMap(pid => {
     const person = scheduler.people.get(pid);
-    return person && !person.withdrawnAt ? scheduler.songsOf(person).map(song => song.entryId) : [];
+    if (!person || person.withdrawnAt) return [];
+    const songs = scheduler.songsOf(person);
+    const held = songs.findIndex(song => scheduler._openHeld(song));
+    return (held < 0 ? songs : songs.slice(0, held)).map(song => song.entryId);
   }));
 }
 
@@ -571,6 +577,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     { id: snapshot.evening.id, startedAt: Number.isFinite(snapshot.evening.startedAt) ? snapshot.evening.startedAt : null } : null;
   const restoredTracked = clone(tracked);
   for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder, legacyVoices);
+  // Le plan se vérifie sous la règle « Duos uniquement » qui sera en vigueur
+  // (empreinte d'un duo ouvert, titres retenus), comme à la sauvegarde.
+  const duoOnly = !!('duoOnly' in restoredSettings ? restoredSettings.duoOnly : settings.duoOnly);
+  tmp.duoOnlyRule = () => duoOnly;
   const restoredPlan = usableSolverPlan(data.solverPlan, tmp);
   // Débuts d'attente (`readySince`) et fins de passage (`stageEnds`), comparés
   // entre eux à compteur égal (rotation.js#_waitSince) : une sauvegarde faite
