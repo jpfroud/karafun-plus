@@ -386,6 +386,47 @@ test('priorité avant un titre chargé qui ne tient plus : le titre retiré repr
   }
 });
 
+// Relecture : Bruno, prochain, dit « Pas prêt » ; l'envoi du titre de Chloé
+// lève son report et l'annonce. Le bar lui donne la priorité avec retrait de
+// ce titre : une fois retiré de KaraFun, le report revenait, la priorité était
+// libérée et le titre de Chloé repartait le premier, à l'inverse de ce que le
+// bar venait de confirmer.
+test('priorité avec retrait pour la personne dont le « Pas prêt » a été levé par le titre chargé : elle passe d’abord', async () => {
+  const f = harness();
+  const join = (tableId, name) => f.sched.join({ tableId, name, headcount: 2 });
+  const alice = join('1', 'Alice'), bruno = join('2', 'Bruno'), chloe = join('3', 'Chloé'), driss = join('4', 'Driss');
+  [[alice, 801], [bruno, 802], [chloe, 803], [driss, 804]].forEach(([p, songId]) =>
+    f.sched.chooseSong(p, { songId, title: `Titre ${p.name}` }));
+  const stage = f.sched.select(); f.sched.commit(stage);
+  f.tracked().push({ queueId: 1, sel: stage, startedAt: Date.now() - 50000, addedAt: Date.now() - 60000 });
+  f.sched.deferPassage(bruno.id, { entryId: bruno.song.entryId, ids: [bruno.id] }, 1);
+  const next = f.sched.select(); f.sched.commit(next);
+  assert.equal(next.ids[0], chloe.id, 'le titre de Chloé est chargé');
+  assert.equal(f.sched.reservedNext?.personId, bruno.id, 'son envoi lève le report de Bruno, annoncé ensuite');
+  const tr = { queueId: 2, sel: next, startedAt: null, addedAt: Date.now() - 5000 };
+  f.tracked().push(tr);
+  const queue = [{ queueId: 1, songId: 801, title: 'Titre Alice', singer: stage.label, status: 'playing' },
+    { queueId: 2, songId: 803, title: 'Titre Chloé', singer: next.label }];
+  const ctx = { queue, tr, bridge: fakeBridge(queue, 1) };
+  f.setBridge(ctx.bridge);
+  f.sync();
+  assert.equal(f.staffState().priorityPull?.queueId, 2, 'le retrait est proposé pour Bruno');
+  await pullFor(f, bruno);
+  karafunRemoves(f, ctx);
+  assert.ok(notes(f).includes('« Titre Chloé » (Chloé · Table 3) retiré de KaraFun : il repasse juste après Bruno (priorité du bar), sans perdre son tour'));
+  assert.equal(f.sched.reservedNext?.personId, bruno.id, 'la priorité tient');
+  assert.equal(f.sched.reservedNext?.byStaff, true);
+  assert.equal(f.sched.isDeferred(bruno), false, 'son « Pas prêt » levé ne revient pas');
+  const order = planned(f);
+  assert.deepEqual(order.slice(0, 2).map(line => line.id), [bruno.id, chloe.id]);
+  assert.equal(order[1].afterPriority, true);
+  f.settings.auto = true;
+  f.settings.pushDelaySec = 0;
+  f.sync();
+  assert.equal(f.getPending()?.sel.ids[0], bruno.id, 'Bruno part vers KaraFun, pas Chloé');
+  assert.ok(driss);
+});
+
 // Relecture de la correction : un titre déjà sur le lecteur de KaraFun (le
 // précédent fini, chargé ou en cours de chargement, pas lancé) n'était pas
 // « commencé » : il sortait de KaraFun, qui pouvait le garder comme titre en

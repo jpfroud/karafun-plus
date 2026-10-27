@@ -961,6 +961,39 @@ test('priorité avant un duo chargé : le duo revient entier, juste après', () 
   assert.deepEqual(s.select().ids, [people.Maud.id, people.Gil.id]);
 });
 
+// Relecture : le titre chargé dont l'envoi avait levé le « Pas prêt » de la
+// personne prioritaire (annoncée ensuite) défaisait la priorité une fois
+// retiré de KaraFun : le report revenait, la priorité du bar était libérée,
+// et le titre retiré repartait le premier, à l'inverse de ce que le bar
+// venait de confirmer.
+test('priorité avant un titre chargé qui avait levé le « Pas prêt » de la personne : elle passe d’abord', () => {
+  for (const whose of ['son propre titre', 'le duo où elle est invitée']) {
+    const { s, people } = evening();
+    const { Maud, Hugo } = people;
+    let deferred = Maud;
+    if (whose !== 'son propre titre') {
+      const duo = s.inviteDuet(Maud, Hugo.id, song());
+      s.reorderSongs(Maud, duo.entryId, 0);
+      s.answerDuet(Hugo, true, duo.entryId);
+    }
+    const stage = s.select(); s.commit(stage); // Paulo sur scène
+    s.deferPassage(Maud.id, { entryId: Maud.song.entryId, ids: whose === 'son propre titre' ? [Maud.id] : [Maud.id, Hugo.id] }, 1);
+    const loaded = s.select(); s.commit(loaded);
+    assert.equal(label(s, loaded), 'Gil', `${whose} : Gil chargé dans KaraFun`);
+    assert.equal(s.reservedNext?.personId, Maud.id, `${whose} : l’envoi de Gil lève le report, Maud est annoncée`);
+    const prioritized = whose === 'son propre titre' ? Maud : Hugo;
+    gesture(s, prioritized, 0, stage.ids);
+    const yielded = pulledBack(s, loaded, prioritized.id);
+    assert.equal(yielded?.afterPriority, true, `${whose} : le titre retiré attend la priorité`);
+    assert.equal(s.reservedNext?.personId, prioritized.id, `${whose} : la priorité du bar tient`);
+    assert.equal(s.reservedNext?.byStaff, true, whose);
+    assert.equal(s.isDeferred(deferred), false, `${whose} : le report levé ne revient pas`);
+    s.songEnded(stage.ids);
+    assert.equal(label(s, play(s)), prioritized.name, `${whose} : ${prioritized.name} passe d’abord`);
+    assert.equal(label(s, play(s)), 'Gil', `${whose} : Gil, retiré pour elle, juste après`);
+  }
+});
+
 test('priorité avant un titre chargé : le report survit à un redémarrage', () => {
   const { s, access, people, stage, loaded } = loadedEvening();
   gesture(s, people.Karim, 0, stage.ids);
