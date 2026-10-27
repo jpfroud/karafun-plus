@@ -167,6 +167,25 @@ function usableSolverPlan(plan, scheduler, entries = queuedEntries(scheduler)) {
   return { source: plan.source, fingerprint: plan.fingerprint, order: [...plan.order] };
 }
 
+// Empreintes de la file sous l'état d'avant chaque geste du bar, comme ses
+// annulations exactes la remettent, du plus récent au plus ancien
+// (Scheduler#_undoLatest) : celle que doit porter le plan gardé avec ce
+// geste (`planBefore`) pour être encore valable à son annulation. Rendues
+// dans l'ordre des gestes ; la file revient ensuite telle quelle.
+function gesturePrints(scheduler) {
+  if (!scheduler.manualChanges.length) return [];
+  const override = scheduler.manualOverrideState();
+  const deferrals = [...scheduler.people.values()].map(p => [p, 'deferral' in p, p.deferral]);
+  const prints = [];
+  for (const change of [...scheduler.manualChanges].reverse()) {
+    scheduler.restoreManualOverride(change.before, { deferrals: true });
+    prints.unshift(scheduler.solverContextFingerprint());
+  }
+  scheduler.restoreManualOverride(override);
+  for (const [p, had, deferral] of deferrals) if (had) p.deferral = deferral; else delete p.deferral;
+  return prints;
+}
+
 function snapshotSolverPlan(scheduler) {
   const plan = scheduler._planSnapshot();
   if (!plan) return null;
@@ -591,28 +610,55 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // fins de passage notées ensuite : une demande faite pendant une chanson
   // passerait après le titre suivant de son chanteur. Elles reculent
   // ensemble, du même écart, la plus tardive à l'heure de la reprise : leur
-  // ordre et leurs écarts ne changent pas. L'heure du choix d'un passage
-  // envoyé (`pickedAt`, comparée aux débuts d'attente par _commit) aussi,
-  // comme les heures de demande gardées par son reçu (`turnCredit`), qu'un
-  // retrait sans chanter rend à ses chanteurs (rollbackUnplayed).
-  // Moins d'une seconde : des ajouts de la même milliseconde, qui prennent
-  // chacun la suivante (_readyStamp), rien à corriger. Le plan Timefold
-  // repris reste valable (mêmes rangs d'ajout, `addedOrder`) : il prend
-  // l'empreinte de la file aux heures corrigées.
-  const latest = Math.max(0, ...[...tmp.people.values()].map(p => p.readySince || 0), ...tmp.stageEnds.values());
+  // ordre et leurs écarts ne changent pas. Leurs copies aussi : l'attente
+  // d'une place cédée à quelqu'un encore sans titre (`givenWait`, giveSpot),
+  // l'heure du choix d'un passage envoyé (`pickedAt`, comparée aux débuts
+  // d'attente par _commit), les heures de demande gardées par son reçu
+  // (`turnCredit`), qu'un retrait sans chanter rend à ses chanteurs
+  // (rollbackUnplayed), et celles des reçus d'avant un duo noté par le bar
+  // (`staffDuo`), que son annulation rend aux titres encore suivis
+  // (staffUncountPartner). Moins d'une seconde : des ajouts de la même
+  // milliseconde, qui prennent chacun la suivante (_readyStamp), rien à
+  // corriger. Le plan Timefold repris reste valable (mêmes rangs d'ajout,
+  // `addedOrder`) : il prend l'empreinte de la file aux heures corrigées,
+  // comme les plans gardés avec les gestes du bar (gesturePrints).
+  const givenSince = p => Number.isFinite(p.givenWait?.readySince) ? p.givenWait.readySince : 0;
+  const latest = Math.max(0, ...[...tmp.people.values()].flatMap(p => [p.readySince || 0, givenSince(p)]),
+    ...tmp.stageEnds.values());
   if (latest - restoredAt >= 1000) {
     const ahead = latest - restoredAt;
-    for (const p of tmp.people.values()) if (p.readySince) p.readySince -= ahead;
+    const printsBefore = gesturePrints(tmp);
+    for (const p of tmp.people.values()) {
+      if (p.readySince) p.readySince -= ahead;
+      if (givenSince(p)) p.givenWait.readySince -= ahead;
+    }
     for (const [turn, at] of tmp.stageEnds) tmp.stageEnds.set(turn, at - ahead);
-    for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) {
-      if (Number.isFinite(holder.sel?.pickedAt)) holder.sel.pickedAt -= ahead;
+    const shifted = new Set();
+    const shiftCredit = credit => {
+      if (!credit || typeof credit !== 'object' || shifted.has(credit)) return;
+      shifted.add(credit);
       for (const side of ['before', 'after']) {
-        for (const row of holder.sel?.turnCredit?.[side]?.people || []) {
+        const rows = credit[side]?.people;
+        for (const row of Array.isArray(rows) ? rows : []) {
           if (Number.isFinite(row?.readySince) && row.readySince) row.readySince -= ahead;
         }
       }
+    };
+    const holders = [...restoredTracked, restoredPending].filter(Boolean);
+    for (const holder of holders) {
+      if (Number.isFinite(holder.sel?.pickedAt)) holder.sel.pickedAt -= ahead;
+      shiftCredit(holder.sel?.turnCredit);
+    }
+    for (const record of [...holders.map(holder => holder.sel?.staffDuo), ...tmp.stageHistory.map(item => item.staffDuo)]) {
+      if (!record || typeof record !== 'object') continue;
+      shiftCredit(record.creditBefore);
+      for (const row of Array.isArray(record.inFlight) ? record.inFlight : []) shiftCredit(row?.creditBefore);
     }
     if (restoredPlan) restoredPlan.fingerprint = tmp.solverContextFingerprint();
+    const printsAfter = gesturePrints(tmp);
+    tmp.manualChanges.forEach((change, index) => {
+      if (change.planBefore?.fingerprint === printsBefore[index]) change.planBefore.fingerprint = printsAfter[index];
+    });
     warnings.push(`heures de la sauvegarde en avance de ${Math.round(ahead / 1000)} s sur l’horloge : ramenées à la reprise`);
   }
 
@@ -626,7 +672,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // même si l'horloge du serveur recule ensuite (Scheduler#_readyStamp) ;
   // elles ne dépassent pas l'heure de la reprise (plus haut) : il est daté à
   // son heure, sur la même horloge que les fins de passage.
-  scheduler._readyClock = [...tmp.people.values()].reduce((max, p) => Math.max(max, p.readySince || 0), 0);
+  scheduler._readyClock = [...tmp.people.values()].reduce((max, p) => Math.max(max, p.readySince || 0, givenSince(p)), 0);
   scheduler._restorePlan(restoredPlan);
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

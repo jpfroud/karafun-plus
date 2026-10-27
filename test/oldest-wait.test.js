@@ -475,6 +475,123 @@ test('reprise sur une horloge en retard : un titre chargé puis retiré rend une
   } finally { e.done(); }
 });
 
+// Relecture : les autres copies des heures sauvegardées restaient à l'heure
+// de l'horloge en avance. La place cédée à quelqu'un encore sans titre
+// (`givenWait`, giveSpot) le datait dans le futur à son premier titre : il
+// passait derrière la personne qui la lui avait cédée et derrière les
+// demandes faites après la reprise.
+test('reprise sur une horloge en retard : une place cédée à quelqu’un encore sans titre recule avec les autres heures', () => {
+  const e = evening();
+  try {
+    const { s, tick, add, song } = e;
+    const lea = s.join({ tableId: '1', name: 'Léa', headcount: 2 }), max = s.join({ tableId: '1', name: 'Max' });
+    const zoe = s.join({ tableId: '2', name: 'Zoé', headcount: 1 }), gus = s.join({ tableId: '3', name: 'Gus', headcount: 1 });
+    add(lea); add(zoe); add(gus);
+    tick(); s.giveSpot(lea, max.id);
+    const saved = save(s);
+    tick(-300);
+    const { back, byName, warnings, view } = restart(s, saved);
+    assert.ok(warnings.some(text => /en avance de 300 s/.test(text)), warnings.join(' ; '));
+    assert.ok(byName('Max').givenWait.readySince <= Date.now(), 'place cédée pas dans le futur');
+    assert.equal(byName('Max').givenWait.readySince, byName('Zoé').readySince - 5000, 'heure de la demande de Léa');
+    tick(10); back.chooseSong(back.join({ tableId: '4', name: 'Inès', headcount: 1 }), song());
+    tick(10); back.chooseSong(byName('Max'), song());
+    assert.ok(byName('Max').readySince <= Date.now());
+    assert.deepEqual(view(), ['Max', 'Zoé', 'Gus', 'Inès', 'Léa']);
+  } finally { e.done(); }
+});
+
+// Même reprise : un duo noté par le bar garde les reçus d'avant lui
+// (`staffDuo.creditBefore`, `inFlight[].creditBefore`). Annulé après la
+// reprise, il les rend aux titres encore chargés dans KaraFun ; un titre
+// retiré ensuite sans être chanté rendait alors à son chanteur l'heure
+// d'avant, non reculée : Tess, qui avait demandé la première, passait après
+// O et Yves.
+test('reprise sur une horloge en retard : un duo noté puis annulé rend des reçus aux heures reculées', () => {
+  const e = evening();
+  try {
+    const { s, tick, add, step, endSong } = e;
+    const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+    add(o); add(tess); add(yves);
+    for (let k = 0; k < 3; k++) step();
+    tick(10); endSong(); // pause du bar, listes vides
+    tick(10); add(tess); // Tess redemande la première
+    tick(60); add(o);
+    tick(60); add(yves);
+    tick(5); const loaded = s.select(); s.commit(loaded); // chargé dans KaraFun, pas commencé
+    assert.deepEqual(loaded.names, ['Tess']);
+    tick(400); add(tess); // son titre suivant
+    // Le bar note Tess en duo sur le dernier passage, celui de Yves, déjà fini.
+    const entry = s.stageHistory.at(-1);
+    assert.deepEqual(entry.names, ['Yves']);
+    const sel = { song: { entryId: entry.entryId }, turn: entry.turn };
+    s.staffCountPartner(yves.id, tess.id, sel, [loaded]);
+    entry.staffDuo = sel.staffDuo;
+    assert.equal(entry.staffDuo.inFlight.length, 1, 'le titre chargé de Tess garde son reçu d’avant le duo');
+    // Le même reçu sur un titre suivi (duo noté pendant sa chanson).
+    const sending = { ...loaded, staffDuo: JSON.parse(JSON.stringify(entry.staffDuo)) };
+    const saved = save(s, { tracked: [{ sel: loaded, queueId: 7 }, { sel: sending, queueId: 8 }] });
+    tick(-300);
+    const { back, recovered, warnings, view } = restart(s, saved);
+    assert.ok(warnings.some(text => /en avance de 300 s/.test(text)), warnings.join(' ; '));
+    const times = record => [record.creditBefore, ...record.inFlight.map(row => row.creditBefore)]
+      .flatMap(credit => ['before', 'after'].flatMap(side => credit?.[side]?.people || [])).map(row => row.readySince);
+    const pairs = [[back.stageHistory.at(-1).staffDuo, saved.scheduler.stageHistory.at(-1).staffDuo],
+      [recovered.tracked[1].sel.staffDuo, saved.tracked[1].sel.staffDuo]];
+    for (const [record, before] of pairs) {
+      assert.ok(times(before).some(Boolean));
+      assert.deepEqual(times(record), times(before).map(at => at && at - 300000), 'reçus du duo reculés comme les autres heures');
+    }
+    const live = recovered.tracked[0].sel;
+    back.staffUncountPartner(back.stageHistory.at(-1).staffDuo, null, [live]); // duo annulé
+    back.rollbackUnplayed(live, { requeue: true }); // KaraFun retire le titre de Tess
+    assert.deepEqual(view(), ['Tess', 'O', 'Yves'], 'Tess avait demandé la première');
+  } finally { e.done(); }
+});
+
+// Même reprise : chaque geste du bar garde le plan Timefold affiché avant
+// lui (`planBefore`), avec son empreinte, qui contient les heures. Seul le
+// plan en cours prenait l'empreinte aux heures reculées : l'annulation
+// exacte d'un geste disait « ordre précédent retrouvé » mais montrait
+// l'ordre local.
+test('reprise sur une horloge en retard : annuler les gestes du bar rend les plans Timefold d’avant eux', () => {
+  const e = evening({ tableRotation: true });
+  try {
+    const { s, add } = e;
+    const people = ['Léa', 'Max', 'Zoé', 'Inès'].map((name, k) => s.join({ tableId: `T${k}`, name, headcount: 1 }));
+    for (const p of people) add(p);
+    const local = s.readyView().map(row => row.entryId);
+    const desired = [local[2], local[0], local[3], local[1]];
+    s.solverPlan = { version: s.version, fingerprint: s.solverContextFingerprint(), source: 'timefold',
+      ranks: new Map(desired.map((entryId, index) => [entryId, index])) };
+    const shown = sch => sch.readyView().map(row => row.name);
+    assert.deepEqual(shown(s), ['Zoé', 'Léa', 'Inès', 'Max']);
+    const native = 'a'.repeat(64);
+    const gesture = (name, to) => {
+      const p = [...s.people.values()].find(q => q.name === name);
+      const before = s.manualOverrideState({ deferrals: true });
+      const from = s.readyView().findIndex(row => row.ids[0] === p.id);
+      s.staffMove(p.id, to);
+      s.recordManualChange({ kind: 'move', personId: p.id, name, from: from + 1, to: to + 1, before, native });
+    };
+    gesture('Inès', 0);
+    const afterFirst = shown(s);
+    gesture('Max', 1);
+    const saved = save(s);
+    e.tick(-300);
+    const { back, warnings } = restart(s, saved);
+    assert.ok(warnings.some(text => /en avance de 300 s/.test(text)), warnings.join(' ; '));
+    assert.ok(back.canUndoManualChange(native));
+    back.undoLastManualChange(null, native);
+    assert.deepEqual(shown(back), afterFirst, 'ordre d’après le premier geste');
+    assert.ok(back.canUndoManualChange(native));
+    back.undoLastManualChange(null, native);
+    assert.equal(back.solverPlan?.source, 'timefold', 'plan Timefold d’avant les gestes');
+    assert.equal(back.solverPlan.fingerprint, back.solverContextFingerprint(), 'encore valable');
+    assert.deepEqual(shown(back), ['Zoé', 'Léa', 'Inès', 'Max']);
+  } finally { e.done(); }
+});
+
 // Reprise dans la même milliseconde que des ajouts (relance immédiate, ou
 // essai) : ces ajouts ont pris chacun la milliseconde suivante (_readyStamp),
 // un peu après l'heure de l'horloge. Rien n'est corrigé : les heures et le
