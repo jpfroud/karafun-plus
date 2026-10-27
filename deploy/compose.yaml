@@ -47,9 +47,11 @@ services:
     environment:
       KARAOKE_PUBLIC_URL: ${KARAOKE_PUBLIC_URL:?à renseigner dans deploy/.env}
       KARAOKE_STAFF_URL: ${KARAOKE_STAFF_URL:?à renseigner dans deploy/.env}
+      KARAOKE_UPDATE_DIR: ${KARAOKE_UPDATE_DIR:-}
     volumes:
       - karafun-data:/app/data
       - karafun-journal:/app/journal
+      - ./maintenance:/app/maintenance
     logging: *journaux
 
 volumes:

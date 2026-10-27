@@ -5,6 +5,7 @@
     "package.json",
     "package-lock.json",
     "server.js",
+    "server-update.js",
     "battle-vote.js",
     "catalog.js",
     "evening-journal.js",

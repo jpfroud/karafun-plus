@@ -279,6 +279,7 @@ Remplis tous les réglages de `.env` avant le premier démarrage :
 | `HOTE_BAR` | l'hôte de la page du bar, `bar.exemple.fr` ; en bascule, d'abord `essai-bar.exemple.fr` |
 | `KARAOKE_PUBLIC_URL` | `https://` suivi de `HOTE_CLIENTS`, sans `/` final |
 | `KARAOKE_STAFF_URL` | `https://` suivi de `HOTE_BAR`, sans `/` final |
+| `KARAOKE_UPDATE_DIR` | vide sans agent de mise à jour ; l'installateur la fixe à `/app/maintenance`, répertoire d'échange des demandes et états avec le VPS |
 | `ACME_EMAIL` | ton adresse e-mail, pour Let's Encrypt, en un seul mot : avec le texte d'exemple, Caddy refuse sa configuration (`wrong argument count`) |
 | `BAR_USER` | le nom que le navigateur demande avant la page du bar, `bar` par défaut ; si tu en changes, remplace `bar` dans `curl.exe -u bar` (section 11) |
 | `BAR_PASSWORD_HASH` | l'empreinte de `caddy hash-password`, entre apostrophes (elle contient des `$`) |
@@ -437,6 +438,15 @@ Après l'étape 6, tant qu'aucune soirée n'a eu lieu sur le serveur, arrête d'
 
 ## 13. Lien de la page du bar
 
+Pour ouvrir la page des gérants, saisir directement `https://bar.exemple.fr/`
+(le nom défini par `HOTE_BAR`). Le navigateur demande l'identifiant `bar` et le
+mot de passe, puis ouvre l'administration. Aucun QR de table n'est nécessaire.
+Caddy pose un marqueur d'entrée après cette authentification ; l'application
+ne l'accepte que sur son port privé, depuis un proxy autorisé et pour son hôte
+configuré. Le domaine clients efface ce marqueur, même envoyé par un téléphone.
+Le marqueur ne donne pas directement accès aux API ; la page reçoit sa clé de
+session par une redirection privée non mise en cache et sans référent.
+
 Serveur en retrait, aux conteneurs arrêtés ou retirés (section 19, ou bascule abandonnée en section 12) : n'y lance ni `docker compose restart`, ni `docker compose up -d` (même garde en tête de la section 18). `restart` démarre aussi un conteneur arrêté, et la file du serveur se reconnecterait à KaraFun pendant une soirée du kit. La bascule suivante lui donne une clé neuve. Pour un mot de passe divulgué, remplace seulement `BAR_PASSWORD_HASH`, comme plus bas, sans démarrer la file.
 
 Sur le serveur, dans `~/karafun-plus/deploy` :
@@ -445,9 +455,9 @@ Sur le serveur, dans `~/karafun-plus/deploy` :
 docker compose exec app node server.js --print-staff-url
 ```
 
-La commande affiche `https://bar.exemple.fr/staff?key=<clé>`. Son hôte doit être exactement `HOTE_BAR` de `.env`, lettre pour lettre ; sinon, corrige `.env` (section 10), relance `docker compose up -d`, puis relis le lien. Donne aux gérants le lien et le mot de passe du bar par deux canaux différents : par exemple le lien par message, le mot de passe de vive voix. Le navigateur demande d'abord le nom `BAR_USER` (`bar`) et le mot de passe, puis la page s'ouvre. Le lien ne change pas au redémarrage.
+La commande affiche `https://bar.exemple.fr/staff?key=<clé>`. Son hôte doit être exactement `HOTE_BAR` de `.env`, lettre pour lettre ; sinon, corrige `.env` (section 10), relance `docker compose up -d`, puis relis le lien. Ce lien et le QR privé restent utilisables, notamment pour le tunnel Spotify ; l'adresse simple ci-dessus suffit pour l'ouverture habituelle. Garde les liens signés et le mot de passe privés, et transmets-les par deux canaux différents. Le navigateur demande d'abord le nom `BAR_USER` (`bar`) et le mot de passe, puis la page s'ouvre. Le lien ne change pas au redémarrage.
 
-Lien ou mot de passe divulgué : renouvelle la clé, puis redémarre la file. Si le lien et le mot de passe ont fui ensemble, fais-le tout de suite, même en soirée : la page du bar est ouverte à qui les détient. Sinon, de préférence hors soirée.
+Un mot de passe divulgué permet d'ouvrir l'administration depuis l'adresse simple : remplace immédiatement `BAR_PASSWORD_HASH` comme ci-dessous. Renouvelle aussi la clé pour invalider les anciennes sessions et liens signés, puis redémarre la file. Si seul un lien signé a fui, renouvelle la clé de préférence hors soirée ; Caddy exige toujours le mot de passe.
 
 ```bash
 docker compose exec app node server.js --rotate-staff-key
@@ -510,6 +520,63 @@ Tape `RESTAURER` pour confirmer. Le script sauvegarde d'abord l'état actuel, re
 **Contrôle** : `ls -l sauvegardes/` montre l'archive en `-rw-------`, sa copie est sur le PC, et une restauration finit par « Restauration terminée depuis … ».
 
 ## 17. Mise à jour et retour à la version précédente
+
+### Un clic depuis la page du bar
+
+Après installation de l'agent ci-dessous, ouvrir **Plus → Mise à jour**, puis toucher
+**Vérifier et mettre à jour**. Ce seul clic cherche la dernière release stable,
+vérifie son image publiée, sauvegarde les données, installe et contrôle le démarrage.
+La page indique les étapes et revient automatiquement. Les QR, les accès et les
+réglages sont conservés ; rien à télécharger sur le PC du bar ou les téléphones.
+Si l'application est déjà à jour, elle n'est pas redémarrée.
+
+Le bouton est réservé aux gérants, avec la même protection que leurs autres commandes.
+Hors soirée, aucun second clic n'est demandé. Pendant une soirée, le bouton reste
+disponible : une confirmation prévient de l'interruption temporaire. L'annuler ne
+lance aucune opération. Il n'est pas nécessaire de supprimer les tables ni de
+déclarer les clients partis. La confirmation ne permet pas de passer outre une
+sauvegarde en erreur ou une action KaraFun/Spotify encore en cours : attendre la
+fin de cette action puis réessayer.
+
+Une fois la demande acceptée, les nouvelles actions et l'adoption de nouveaux
+plans du solveur sont suspendues jusqu'à la fin de la vérification. La sauvegarde
+conserve tables, accès, listes de chansons, duos, déplacements manuels, prochain
+annoncé et ordre optimisé déjà adopté. L'application candidate ne se connecte
+pas à KaraFun avant sa validation. KaraFun peut continuer le titre en cours ; à
+la reconnexion, sa situation réelle est rapprochée de la sauvegarde. Ensuite,
+les automatismes et l'optimisation habituels reprennent selon les réglages gardés.
+Préférer une pause entre les titres pour limiter la gêne des clients.
+
+Une panne après remplacement déclenche le retour à l'ancienne image, configuration et
+sauvegarde des données. Le journal de transaction privé permet aussi de reprendre
+après une coupure du VPS. Si cette récupération échoue, l'application reste verrouillée :
+un administrateur doit lire le service, plutôt que de relancer la soirée sur un état incertain.
+Une release qui nécessite une nouvelle variable de configuration est refusée avant
+remplacement ; l'administrateur prépare ce réglage une seule fois.
+
+Installation initiale par l'administrateur, hors soirée, dans le dépôt appartenant au
+compte `karaoke` (Python standard et Docker sont nécessaires sur le VPS uniquement) :
+
+```bash
+sudo bash deploy/install-update-agent.sh --repo /home/karaoke/karafun-plus
+cd deploy
+docker compose up -d app
+```
+
+Le service et son minuteur `karafun-plus-update` tournent sur l'hôte. Le code de l'agent
+et son journal de transaction restent hors du dépôt remplacé ; son état privé est dans
+`~/.local/state/karafun-plus-update`. Seul le dossier d'échange `maintenance` est monté
+dans le conteneur. L'application n'obtient ni socket Docker, ni clé SSH, ni accès sudo.
+La demande ne contient qu'un identifiant et une date : aucune commande, adresse de
+registre, version ou option n'est fournie par le navigateur. Le dépôt de publication
+et le registre sont fixés dans l'agent. Le minuteur traite les demandes toutes les dix
+secondes, sans installer de version à l'insu du gérant.
+
+Cette fonction concerne l'application du VPS. Le mode PC reste sans bouton de mise
+à jour serveur ; sa mise à jour se fait en remplaçant le kit. Les correctifs du système
+Ubuntu et de Docker restent la maintenance de la section 18.
+
+### Procédure manuelle de maintenance
 
 Serveur en retrait, après un retour au kit (section 19) ou une bascule abandonnée après l'étape 7 de la section 12 : ses volumes gardent le code KaraFun. Prépare-le d'abord comme le dit le début de la section 11, sinon le `docker compose up -d` ci-dessous reconnecterait sa file à KaraFun pendant une soirée du kit.
 
@@ -674,7 +741,7 @@ Ces limites réduisent l'abus d'un QR divulgué dans les deux modes, sans garant
 | Qui | Accès |
 |---|---|
 | Clients | la page de leur table, par son QR ; jamais la page du bar |
-| Gérants | la page du bar, par son lien et le mot de passe du bar |
+| Gérants | la page du bar, par son adresse privée et le mot de passe du bar |
 | Administrateur (`karaoke`) | tout le serveur par sa clé SSH : `.env`, volumes, journaux, archives |
 | OVHcloud | le disque du serveur, comme tout hébergeur |
 

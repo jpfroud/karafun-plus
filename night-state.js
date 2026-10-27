@@ -140,6 +140,37 @@ function savePhoto(photo, directory) {
   return { type: photo.type, file: filename };
 }
 
+function queuedEntries(scheduler) {
+  return new Set(scheduler.Q.flatMap(pid => {
+    const person = scheduler.people.get(pid);
+    return person && !person.withdrawnAt ? scheduler.songsOf(person).map(song => song.entryId) : [];
+  }));
+}
+
+// Le plan est dérivé de la file : absent, périmé ou abîmé, il est oublié sans
+// perdre la soirée. Un plan valide reprend sa source et peut donc continuer
+// à être amélioré normalement, sans devenir un déplacement manuel du bar.
+function usableSolverPlan(plan, scheduler, entries = queuedEntries(scheduler)) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan) ||
+      !['timefold', 'confirmed', 'manual'].includes(plan.source) ||
+      typeof plan.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(plan.fingerprint) ||
+      !Array.isArray(plan.order) || plan.order.length !== entries.size ||
+      new Set(plan.order).size !== plan.order.length ||
+      plan.order.some(entry => typeof entry !== 'string' || !entries.has(entry)) ||
+      plan.fingerprint !== scheduler.solverContextFingerprint()) return null;
+  return { source: plan.source, fingerprint: plan.fingerprint, order: [...plan.order] };
+}
+
+function snapshotSolverPlan(scheduler) {
+  const plan = scheduler._planSnapshot();
+  if (!plan) return null;
+  const entries = queuedEntries(scheduler);
+  // Un plan adopté survit aux passages qu'il prévoyait : ses rangs peuvent
+  // encore contenir les titres déjà envoyés ou chantés, inutiles à la reprise.
+  plan.order = plan.order.filter(entry => entries.has(entry));
+  return usableSolverPlan(plan, scheduler, entries);
+}
+
 function snapshotNight({ scheduler, access, settings, pending = null, tracked = [], photoDir = null,
   soloInvitations = null, privateEvent = null, transfers = [], evening = null, stageClock = null }) {
   if (!scheduler || !access || !settings) throw new Error('État de soirée incomplet.');
@@ -170,6 +201,7 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       manualOrder: [...scheduler.manualOrder],
       manualOrderActive: !!scheduler.manualOrderActive,
       manualChanges: clone(scheduler.manualChanges),
+      solverPlan: snapshotSolverPlan(scheduler),
       tableServeCounts: [...scheduler.tableServeCounts],
       duetCooldowns: [...scheduler.duetCooldowns],
       recentGroups: clone(scheduler.recentGroups || []), roundUse: [...(scheduler.roundUse || new Map())],
@@ -526,6 +558,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     { id: snapshot.evening.id, startedAt: Number.isFinite(snapshot.evening.startedAt) ? snapshot.evening.startedAt : null } : null;
   const restoredTracked = clone(tracked);
   for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder, legacyVoices);
+  const restoredPlan = usableSolverPlan(data.solverPlan, tmp);
 
   // Aucun effet sur les objets fournis avant ce point.
   for (const id of scheduler.tables.keys()) access.revoke(id);
@@ -537,7 +570,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // même si l'horloge du serveur a reculé (Scheduler#_readyStamp).
   scheduler._readyClock = [...tmp.people.values()].reduce((max, p) => Math.max(max, p.readySince || 0),
     scheduler._readyClock || 0);
-  scheduler.solverPlan = null;
+  scheduler._restorePlan(restoredPlan);
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);
   // Un AddToQueueRequest sans confirmation est ambigu après un crash. Le bar
