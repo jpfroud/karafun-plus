@@ -86,6 +86,7 @@ class Scheduler {
     this.manualOrder = [];    // ordre fixé par le bar : jusqu'à la dernière ligne qu'il a placée, celle-ci comprise
     this.manualOrderActive = false; // ordre fixé en vigueur, jusqu'au départ de ses lignes vers KaraFun
     this.manualChanges = [];  // gestes du bar encore valables et annulables, du plus ancien au plus récent
+    this.manualEpoch = 0;     // abandons de tous les gestes par le bar (« Recalculer la file »…), voir _restorePlaced
     this.tableServeCounts = new Map(); // passages par groupe (historique, affichage)
     this.recentGroups = [];   // groupes des derniers passages, pour le partage entre tables
     this.roundUse = new Map(); // crédit de tour consommé par les personnes avec bonus/malus
@@ -271,10 +272,13 @@ class Scheduler {
 
   // Tous les gestes du bar tombent : « Recalculer la file », « Vider toutes
   // les chansons », nouvelle soirée. Rien d'autre ne les efface d'un coup.
+  // Ceux qu'un duo avait terminés aussi : gardés dans un reçu, ils ne
+  // reviennent plus (`manualEpoch`, _restorePlaced).
   invalidateManualOrder() {
     this.manualOrder = [];
     this.manualOrderActive = false;
     this.manualChanges = [];
+    this.manualEpoch = (this.manualEpoch || 0) + 1;
   }
 
   // Lignes placées par le bar (déplacement, priorité) : celles de ses gestes
@@ -348,12 +352,28 @@ class Scheduler {
   // elle-même aussi (_endPlaced) : sa personne chante avant elle. Rend les
   // gestes terminés, à garder dans le reçu du passage ou du duo noté : si la
   // personne n'a finalement pas chanté, ils reviennent (_restorePlaced).
+  // Les gestes qui restent oublient aussi ces lignes, et l'annonce de ces
+  // chanteurs comme prochain, dans leur état d'avant : un duo improvisé noté
+  // au tour même de ces gestes ne se voit pas dans le compteur des passages
+  // (_undoRebased), et annuler l'un d'eux faisait rechanter la personne
+  // juste après son duo (relecture de la correction).
   _unpinSingers(ids) {
     const ended = ids.map(pid => this._endPlaced(pid)).filter(Boolean);
-    if (!this.manualOrder.length || !ids.length) return ended;
-    const anchors = this._manualAnchors();
-    for (const line of [...this.manualOrder]) {
-      if (!anchors.has(line) && ids.some(pid => this._singsOnLine(line, pid))) this._unpinManual(line);
+    if (!ids.length) return ended;
+    const gone = new Set(ended.map(record => record.personId));
+    if (this.manualOrder.length) {
+      const anchors = this._manualAnchors();
+      for (const line of [...this.manualOrder]) {
+        if (!anchors.has(line) && ids.some(pid => this._singsOnLine(line, pid)) && this._unpinManual(line)) gone.add(line);
+      }
+    }
+    const anchors = new Set(this.manualChanges.map(change => change.personId));
+    const sang = pid => !anchors.has(pid) && (gone.has(pid) || ids.some(other => this._singsOnLine(pid, other)));
+    for (const change of this.manualChanges) {
+      const before = change?.before;
+      if (!before || typeof before !== 'object') continue;
+      if (Array.isArray(before.manualOrder)) before.manualOrder = before.manualOrder.filter(pid => !sang(pid));
+      if (before.reservedNext && sang(before.reservedNext.personId)) before.reservedNext = null;
     }
     return ended;
   }
@@ -377,9 +397,11 @@ class Scheduler {
     const priority = !!this.reservedNext?.byStaff && this.reservedNext.personId === pid;
     if (!changes.length) return null;
     // `changeIds` : tous les gestes à ce moment, pour les rendre à leur rang.
+    // `epoch` : abandons des gestes déjà faits par le bar (voir _restorePlaced).
     const record = { personId: pid, changes: JSON.parse(JSON.stringify(changes)), order: [...this.manualOrder],
       changeIds: this.manualChanges.map(change => change.id),
-      reserved: priority ? { ...this.reservedNext } : null, serial: this.appearanceSerial, at: Date.now() };
+      reserved: priority ? { ...this.reservedNext } : null, serial: this.appearanceSerial, at: Date.now(),
+      epoch: this.manualEpoch || 0 };
     if (!this._unpinManual(pid)) return null;
     if (priority) this.releaseNext();
     this.solverPlan = null;
@@ -400,31 +422,41 @@ class Scheduler {
   // lignes gardées devant elle ; jamais devant une priorité du bar donnée
   // depuis. Sa priorité revient si personne n'est annoncé entre-temps. Rien ne
   // revient si elle est remontée sur scène depuis (passage compté après
-  // `serial`), si sa ligne n'a plus de titre, ou si le bar l'a replacée.
+  // `serial`), si sa ligne n'a plus de titre, si le bar l'a replacée, ou si
+  // le bar a abandonné tous les gestes depuis (« Recalculer la file »,
+  // « Annuler tous les changements manuels », « Vider toutes les chansons » :
+  // `epoch` dépassé). Un reçu sans `epoch` (sauvegarde d'avant ce champ)
+  // revient comme avant.
   _restorePlaced(records) {
     let restored = 0;
     for (const record of Array.isArray(records) ? records : []) {
       const p = this.people.get(record?.personId);
       const changes = Array.isArray(record?.changes) ? record.changes.filter(change => change && change.personId === p?.id) : [];
-      if (!p || p.withdrawnAt || !p.song || !changes.length || !Number.isSafeInteger(record.serial) ||
+      const dropped = record?.epoch !== undefined && record.epoch !== (this.manualEpoch || 0);
+      if (!p || p.withdrawnAt || !p.song || !changes.length || !Number.isSafeInteger(record.serial) || dropped ||
         (p.lastAppearanceTurn || 0) >= record.serial || this.manualChanges.some(change => change.personId === p.id)) continue;
       const waiting = pid => {
         const q = this.people.get(pid);
         return !!q && !q.withdrawnAt && !!q.song && (q.lastAppearanceTurn || 0) < record.serial;
       };
-      const order = this.manualOrder.filter(pid => pid !== p.id);
-      const kept = new Set(order);
       const at = Array.isArray(record.order) ? record.order.indexOf(p.id) : -1;
-      const ahead = at < 0 ? [] : record.order.slice(0, at).filter(pid => kept.has(pid) || waiting(pid));
+      const ahead = at < 0 ? [] : record.order.slice(0, at).filter(pid => this.manualOrder.includes(pid) || waiting(pid));
       const reserved = record.reserved && !this.reservedNext ? { personId: p.id,
         reservedAt: Number.isFinite(record.reserved.reservedAt) ? record.reserved.reservedAt : Date.now(), byStaff: true } : null;
-      let index = 0;
-      if (!reserved) {
-        for (const pid of ahead) if (kept.has(pid)) index = Math.max(index, order.indexOf(pid) + 1);
-        if (this.reservedNext?.byStaff) index = Math.max(index, order.indexOf(this.reservedNext.personId) + 1);
-      }
-      order.splice(index, 0, ...(reserved ? [] : ahead.filter(pid => !kept.has(pid))), p.id);
-      this.manualOrder = order;
+      // Sa ligne dans `list` (l'ordre fixé, ou celui d'avant un geste), avec
+      // les lignes gardées devant elle ; derrière la priorité `staff`.
+      const place = (list, staff) => {
+        const order = list.filter(pid => pid !== p.id);
+        const kept = new Set(order);
+        let index = 0;
+        if (!reserved) {
+          for (const pid of ahead) if (kept.has(pid)) index = Math.max(index, order.indexOf(pid) + 1);
+          if (staff?.byStaff) index = Math.max(index, order.indexOf(staff.personId) + 1);
+        }
+        order.splice(index, 0, ...(reserved ? [] : ahead.filter(pid => !kept.has(pid))), p.id);
+        return order;
+      };
+      this.manualOrder = place(this.manualOrder, this.reservedNext);
       this.manualOrderActive = true;
       if (reserved) this.reservedNext = reserved;
       // Chaque geste revient après ceux qui le précédaient encore, avant ceux
@@ -436,6 +468,16 @@ class Scheduler {
         let rank = 0;
         this.manualChanges.forEach((other, index) => { if (prior.has(other.id)) rank = index + 1; });
         this.manualChanges.splice(rank, 0, change);
+      }
+      // Les gestes rangés après lui la comptent aussi dans leur état d'avant,
+      // à la même place : annuler l'un d'eux ne retire plus sa ligne
+      // (relecture de la correction : le geste restait annulable, sa ligne
+      // retournait au calcul).
+      const first = Math.min(...changes.map(change => this.manualChanges.indexOf(change)));
+      for (const change of this.manualChanges.slice(first + 1)) {
+        const before = change.before;
+        if (changes.includes(change) || !Array.isArray(before?.manualOrder) || before.manualOrder.includes(p.id)) continue;
+        before.manualOrder = place(before.manualOrder, before.reservedNext);
       }
       this.solverPlan = null;
       this._planDropped = true;
@@ -683,11 +725,13 @@ class Scheduler {
   }
 
   // Tous les gestes, du plus récent au plus ancien : leurs lignes reviennent
-  // au calcul, sans relancer Timefold (voir forceReplan).
+  // au calcul, sans relancer Timefold (voir forceReplan). Ceux qu'un duo
+  // avait terminés ne reviennent plus (`manualEpoch`, _restorePlaced).
   undoAllManualChanges(nativeFingerprint, { excludeIds = [] } = {}) {
     if (!this.manualChanges.length) throw new Error('Aucun changement manuel à annuler.');
     const count = this.manualChanges.length;
     while (this.manualChanges.length) this._undoLatest(nativeFingerprint, excludeIds);
+    this.manualEpoch = (this.manualEpoch || 0) + 1;
     this._event('staff.recalculate', { count });
     this.note(`Le bar a annulé ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} dans la file`, 'staff');
     return count;

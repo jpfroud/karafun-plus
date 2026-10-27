@@ -531,6 +531,71 @@ test('duo improvisé noté par erreur avec une personne placée par le bar, puis
   }
 });
 
+// Relecture de la correction : « Recalculer la file », « Annuler tous les
+// changements manuels » et « Vider toutes les chansons » abandonnent tous les
+// gestes du bar. Un geste terminé par un duo, gardé dans le reçu du passage
+// ou du duo noté, revenait pourtant quand ce duo ressortait de KaraFun sans
+// être chanté, ou quand le bar annulait le duo noté.
+test('gestes abandonnés par le bar : un geste terminé par un duo ne revient plus ensuite', () => {
+  const resets = {
+    'Recalculer la file': s => s.forceReplan(),
+    'Annuler tous les changements manuels': s => s.undoAllManualChanges(NATIVE),
+    // Comme clearQueue (server.js) ; la personne rechoisit un titre avant
+    // que KaraFun confirme le retrait du duo.
+    'Vider toutes les chansons': s => s.invalidateManualOrder(),
+  };
+  const settings = { auto: false, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 };
+  for (const [how, reset] of Object.entries(resets)) {
+    for (const restarted of [false, true]) {
+      const label = `${how}${restarted ? ', puis redémarrage' : ''}`;
+      { // Duo envoyé à KaraFun, puis retiré sans être chanté.
+        const { s, access, people } = evening();
+        gesture(s, people.Elsa, 3);
+        gesture(s, people.Karim, 6);
+        const duo = s.inviteDuet(people.Paulo, people.Elsa.id, song());
+        s.reorderSongs(people.Paulo, duo.entryId, 0);
+        s.answerDuet(people.Elsa, true, duo.entryId);
+        let sel = s.select();
+        s.commit(sel);
+        assert.ok(sel.placedUndo, `${label} : le reçu garde le geste de Elsa`);
+        reset(s);
+        let t = s;
+        if (restarted) {
+          for (const tableId of s.tables.keys()) if (!access.get(tableId)) access.issue(tableId);
+          const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings,
+            tracked: [{ queueId: 5, sel, startedAt: null, addedAt: Date.now() }] })));
+          t = new Scheduler(s.opts);
+          const recovered = restoreNight(snapshot, { scheduler: t, access: new TableAccess(), settings: {} });
+          assert.deepEqual(recovered.warnings, []);
+          sel = recovered.tracked[0].sel;
+        }
+        t.rollbackUnplayed(sel, { requeue: true });
+        assert.deepEqual(t.manualChanges, [], `${label} : aucun geste ne revient`);
+        assert.deepEqual(t.manualOrder, []);
+        assert.equal(t.manualOrderActive, false);
+        assert.ok(!t.log.some(line => /n’a finalement pas chanté/.test(line.msg)), `${label} : rien à annoncer au bar`);
+      }
+      { // Duo improvisé noté au bar, puis annulé.
+        const { s, access, people } = evening();
+        const sent = s.select();
+        s.commit(sent); // Paulo sur scène
+        gesture(s, people.Elsa, 3, sent.ids);
+        gesture(s, people.Karim, 0, sent.ids);
+        s.staffCountPartner(sent.ids[0], people.Karim.id, sent);
+        assert.ok(sent.staffDuo?.placed, `${label} : le duo noté garde la priorité de Karim`);
+        reset(s);
+        const t = restarted ? restart(s, access) : s;
+        const tracked = restarted ? { ...sent, staffDuo: JSON.parse(JSON.stringify(sent.staffDuo)) } : sent;
+        t.staffUncountPartner(tracked.staffDuo, tracked, [tracked]);
+        assert.deepEqual(t.manualChanges, [], `${label} : la priorité de Karim ne revient pas`);
+        assert.deepEqual(t.manualOrder, []);
+        assert.notEqual(t.reservedNext?.byStaff, true, `${label} : personne n’est annoncé par le bar`);
+        assert.ok(!t.log.some(line => /n’a finalement pas chanté/.test(line.msg)));
+      }
+    }
+  }
+});
+
 // Relecture de la correction : un « Pas prêt » arrivé au bout de son report au
 // même passage que le titre retiré pour une priorité passait avant lui, dans
 // l'ordre de la file : le titre retiré passait une chanson plus tard.
@@ -573,6 +638,67 @@ test('annuler un geste ne remet pas dans l’ordre fixé une ligne sortie pour u
     s.undoLastManualChange(null, NATIVE); // Karim
     assert.deepEqual(s.manualOrder.map(pid => s.people.get(pid).name), ['Maud', 'Elsa'],
       'Gil, monté sur scène depuis le geste, ne revient pas dans l’ordre fixé');
+  }
+});
+
+const fixed = s => s.manualOrder.map(pid => s.people.get(pid).name);
+
+// Relecture de la correction : un geste rendu par _restorePlaced (duo sorti
+// de KaraFun sans être chanté) perdait sa ligne dès que le bar annulait un
+// geste fait après lui, alors qu'il restait dans la liste des changements :
+// Elsa passait de la 4e place à la dernière.
+test('geste rendu après un duo non chanté : annuler un geste plus récent ne lui retire pas sa place', () => {
+  for (const later of ['priorité de Hugo', 'déplacement de Ines']) {
+    const { s, people } = evening();
+    gesture(s, people.Elsa, 3); // Paulo, Maud, Gil, Elsa
+    gesture(s, people.Karim, 6); // fait avant l'envoi du duo
+    const duo = s.inviteDuet(people.Paulo, people.Elsa.id, song());
+    s.reorderSongs(people.Paulo, duo.entryId, 0);
+    s.answerDuet(people.Elsa, true, duo.entryId);
+    const sel = s.select();
+    s.commit(sel); // le geste de Elsa prend fin
+    if (later === 'priorité de Hugo') gesture(s, people.Hugo, 0, sel.ids);
+    else gesture(s, people.Ines, 4, sel.ids);
+    s.requeueUnplayed(sel); // « Pas prêt » : le duo n'a pas été chanté
+    s.deferPassage(people.Paulo.id, { entryId: sel.song.entryId, ids: sel.ids }, 1);
+    assert.deepEqual(s.manualChanges.map(change => change.name), ['Elsa', 'Karim', later.split(' ').at(-1)]);
+    s.undoLastManualChange(null, NATIVE); // le geste fait depuis
+    assert.deepEqual(s.manualChanges.map(change => change.name), ['Elsa', 'Karim'], later);
+    // L'ordre fixé d'avant l'envoi du duo, moins Paulo dont le titre est reporté.
+    assert.deepEqual(fixed(s), ['Maud', 'Gil', 'Elsa', 'Hugo', 'Ines', 'Karim'], `${later} : Elsa garde sa place derrière Maud et Gil`);
+    assert.equal(names(s).indexOf('Elsa'), 3, `${later} : derrière Maud, le duo reporté et Gil`);
+    s.undoLastManualChange(null, NATIVE); // Karim, geste fait avant l'envoi
+    assert.deepEqual(fixed(s), ['Maud', 'Gil', 'Elsa'], `${later} : la place de Elsa tient encore`);
+    s.undoLastManualChange(null, NATIVE);
+    assert.deepEqual(s.manualOrder, []);
+  }
+});
+
+// Relecture de la correction : gestes faits pendant le titre de Paulo, puis
+// duo improvisé noté avec lui. Annuler un autre de ces gestes rendait ce que
+// le duo avait terminé (sa priorité, la ligne gardée où il chantait, son
+// annonce comme prochain) : la personne rechantait juste après son duo.
+test('duo noté au bar pendant le titre des gestes : annuler un autre geste ne refait pas passer la personne', () => {
+  const cases = {
+    'priorité': { partner: 'Karim', order: ['Maud', 'Gil', 'Hugo', 'Ines', 'Elsa'], plays: ['Maud', 'Gil', 'Hugo', 'Ines'] },
+    'ligne gardée': { partner: 'Gil', order: ['Maud', 'Hugo', 'Ines', 'Elsa'], plays: ['Maud', 'Hugo', 'Ines', 'Elsa'] },
+    'prochain annoncé': { partner: 'Maud', order: ['Gil', 'Hugo', 'Ines', 'Elsa'], plays: ['Gil', 'Hugo', 'Ines', 'Elsa'] },
+  };
+  for (const [kind, { partner, order, plays }] of Object.entries(cases)) {
+    const { s, people } = evening();
+    const sent = s.select();
+    s.commit(sent); // Paulo sur scène
+    if (kind === 'prochain annoncé') s.reserveNext();
+    gesture(s, people.Elsa, 4, sent.ids); // Maud, Gil, Hugo, Ines, Elsa
+    if (kind === 'priorité') gesture(s, people.Karim, 0, sent.ids);
+    gesture(s, people.Jade, 6, sent.ids);
+    s.staffCountPartner(people.Paulo.id, people[partner].id, sent);
+    s.undoLastManualChange(null, NATIVE); // Jade
+    assert.deepEqual(s.manualChanges.map(change => change.name), ['Elsa'], kind);
+    assert.deepEqual(fixed(s), order, `${kind} : ${partner} reste hors de l’ordre fixé`);
+    assert.notEqual(s.reservedNext?.personId, people[partner].id, `${kind} : ${partner} n’est pas annoncé de nouveau`);
+    s.songEnded(sent.ids);
+    assert.deepEqual(playNames(s, 4), plays, `${kind} : ${partner} ne rechante pas tout de suite`);
   }
 });
 

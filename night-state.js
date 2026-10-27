@@ -201,6 +201,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       manualOrder: [...scheduler.manualOrder],
       manualOrderActive: !!scheduler.manualOrderActive,
       manualChanges: clone(scheduler.manualChanges),
+      // Abandons de tous les gestes : un geste gardé dans un reçu d'avant ne revient plus.
+      manualEpoch: scheduler.manualEpoch || 0,
       solverPlan: snapshotSolverPlan(scheduler),
       tableServeCounts: [...scheduler.tableServeCounts],
       duetCooldowns: [...scheduler.duetCooldowns],
@@ -408,6 +410,12 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   tmp.manualOrderActive = !!data.manualOrderActive && tmp.manualOrder.length > 0;
   tmp.manualChanges = clone(list(data.manualChanges ?? [], 'changements manuels'));
   unique(tmp.manualChanges.map(change => change?.id), 'Les changements manuels');
+  // Champ ajouté avec les reçus des gestes terminés (Scheduler#_restorePlaced) :
+  // absent, aucun abandon compté.
+  if (data.manualEpoch != null && (!Number.isSafeInteger(data.manualEpoch) || data.manualEpoch < 0)) {
+    fail('abandons des changements manuels mal formés');
+  }
+  tmp.manualEpoch = data.manualEpoch ?? 0;
   let forgotten = 0;
   for (const change of tmp.manualChanges) {
     object(change, 'changement manuel');
@@ -595,7 +603,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   for (const id of scheduler.tables.keys()) access.revoke(id);
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
-    'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
+    'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'manualEpoch', 'tableServeCounts', 'duetCooldowns', 'log',
     'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'firstCycle', 'unstartedTurn', 'stageEnds', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
   // Un ajout après la reprise part après toutes les heures sauvegardées,
   // même si l'horloge du serveur recule ensuite (Scheduler#_readyStamp) ;
