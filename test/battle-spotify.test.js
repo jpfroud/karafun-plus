@@ -20,18 +20,56 @@ const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const fromServer = createRequire(path.join(root, 'server.js'));
 
+// Promesses en cours menées à leur terme : rien n'attend une vraie horloge
+// quand le serveur a la sienne (serverClock).
+async function settle() {
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+}
+
+// Horloge du serveur réglée par le test (Date.now et setTimeout du bac à
+// sable) : un délai se franchit sans l'attendre (advance), et rien ne part
+// avant son heure, quelle que soit la charge de la machine.
+function serverClock() {
+  let now = Date.now();
+  const timers = [];
+  return {
+    now: () => now,
+    setTimeout(fn, ms = 0, ...args) {
+      const timer = { fn, args, at: now + Math.max(0, Number(ms) || 0), unref: () => timer, ref: () => timer };
+      timers.push(timer);
+      return timer;
+    },
+    async advance(ms) {
+      const until = now + ms;
+      for (let due; (due = timers.filter(timer => timer.at <= until).sort((a, b) => a.at - b.at)[0]);) {
+        timers.splice(timers.indexOf(due), 1);
+        now = due.at;
+        due.fn(...due.args);
+        await settle();
+      }
+      now = until;
+      await settle();
+    },
+  };
+}
+
 // Même harnais que spotify-fermeture.test.js, avec le vote Battle exposé.
-function harness({ logs = null } = {}) {
+function harness({ logs = null, clock = null } = {}) {
   const entry = source.lastIndexOf('main().catch(');
   assert.ok(entry > 0, 'point d’entrée du serveur introuvable');
   const quietFs = { ...fs, mkdirSync() {}, appendFileSync() {}, writeFileSync() {}, renameSync() {},
     readdirSync() { return []; }, unlinkSync() {} };
   const fixtureProcess = Object.create(process);
   fixtureProcess.argv = [...process.argv, '--demo'];
-  const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
+  const context = vm.createContext({ require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, Buffer,
-    console: logs ? { ...console, log: (...parts) => logs.push(parts.join(' ')) } : console, URL, setTimeout, setImmediate, AbortSignal };
-  vm.runInNewContext(source.slice(0, entry) + `
+    console: logs ? { ...console, log: (...parts) => logs.push(parts.join(' ')) } : console, URL,
+    setTimeout: clock ? clock.setTimeout : setTimeout, setImmediate, AbortSignal });
+  if (clock) {
+    context.clockNow = clock.now;
+    vm.runInContext('Date.now = () => clockNow();', context);
+  }
+  vm.runInContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, tracked, settings, handlers, spotify, spotifyAutomation, spotifyTick, sync,
       karaokeOutlook, battleVote, setBridge: b => { bridge = b; } };
   `, context, { filename: 'server.js' });
@@ -77,8 +115,9 @@ const plainItem = (queueId, songId = 700) => ({ queueId, songId, title: `Titre $
 async function ticks(f, clock, count) {
   for (let i = 0; i < count; i++) { clock.now += 3000; await f.spotifyTick(); }
 }
-function setup({ logs = null, spotify = {} } = {}) {
-  const f = harness({ logs });
+// `serverTime` : horloge du serveur réglée par le test (serverClock).
+function setup({ logs = null, spotify = {}, serverTime = null } = {}) {
+  const f = harness({ logs, clock: serverTime });
   const clock = { now: Date.now() };
   f.spotifyAutomation.now = () => clock.now;
   const order = [];
@@ -272,9 +311,11 @@ test('« Lecture » de la Battle dès la fin du titre d’avant : Spotify ne rep
 // d'annoncer sa lecture et que rien ne suit, la période passait à « silent » :
 // Spotify repartait par-dessus le lancement et la lecture automatique était
 // suspendue. Le départ de la Battle (`queued` qui patiente, puis `after` après
-// 1,5 s) reste l'attente de la Battle.
+// 1,5 s) reste l'attente de la Battle. Horloge du serveur réglée : la borne
+// de 1,5 s est vérifiée des deux côtés sans attendre.
 test('« Lancer la Battle », rien derrière : KaraFun la retire de sa file avant de l’annoncer, Spotify ne repart pas', async () => {
-  const { f, clock, order } = setup();
+  const serverTime = serverClock();
+  const { f, clock, order } = setup({ serverTime });
   f.battleVote.staffLaunch({ song: BATTLE_SONG });
   f.setBridge(fakeBridge(order, [plainItem(40), battleItem()], 40));
   f.sync();
@@ -290,8 +331,11 @@ test('« Lancer la Battle », rien derrière : KaraFun la retire de sa file avan
   assert.ok(f.battleVote.automation.missingSince, 'la file patiente');
   assert.equal(f.karaokeOutlook(), 'battle', 'toujours l’attente de la Battle');
   await ticks(f, clock, 3);
-  // Au-delà de 1,5 s sans nouvelle, le suivi conclut « after » : même période.
-  await new Promise(resolve => setTimeout(resolve, 1600));
+  // Au bout de 1,5 s sans nouvelle, le suivi conclut « after » : même période.
+  await serverTime.advance(1499);
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'queued', 'encore 1 ms : la file patiente');
+  await serverTime.advance(1);
   f.sync();
   assert.equal(f.battleVote.automation.status, 'after');
   assert.equal(f.karaokeOutlook(), 'battle');
@@ -303,28 +347,28 @@ test('« Lancer la Battle », rien derrière : KaraFun la retire de sa file avan
 // Remarque de relecture : un second appui sur « Lancer le prochain titre »
 // pendant le court silence d'avant-titre trouvait Spotify déjà coupé et
 // lançait aussitôt (517 ms au lieu de 2 s). Il attend désormais le premier.
+// Horloge du serveur réglée : rien n'est lancé avant la fin du silence.
 test('« Lancer le prochain titre » touché deux fois pendant le court silence : un seul lancement, silence gardé', async () => {
-  const { f, clock, order } = setup({ spotify: { pauseLeadSec: 1 } });
-  const t0 = Date.now();
-  let playedAt = null;
-  const bridge = (queue, playing) => {
-    const b = fakeBridge(order, queue, playing);
-    b.play = () => { playedAt = Date.now() - t0; order.push('karafun-play'); };
-    return b;
-  };
-  f.setBridge(bridge([battleItem(77), plainItem(78)])); f.sync();
-  f.setBridge(bridge([battleItem(77), plainItem(78)], 77)); f.sync();
-  f.setBridge(bridge([plainItem(78)])); f.sync();
+  const serverTime = serverClock();
+  const { f, clock, order } = setup({ spotify: { pauseLeadSec: 1 }, serverTime });
+  f.setBridge(fakeBridge(order, [battleItem(77), plainItem(78)])); f.sync();
+  f.setBridge(fakeBridge(order, [battleItem(77), plainItem(78)], 77)); f.sync();
+  f.setBridge(fakeBridge(order, [plainItem(78)])); f.sync();
   assert.equal(f.battleVote.automation.status, 'after');
   await ticks(f, clock, 2);
   assert.deepEqual(order, ['spotify-play']);
   const first = f.handlers['POST /api/staff/kf'](null, null, { action: 'play' });
-  await new Promise(resolve => setTimeout(resolve, 300));
+  await settle();
+  assert.deepEqual(order, ['spotify-play', 'spotify-pause'], 'Spotify coupé, le silence commence');
+  await serverTime.advance(300);
   const second = f.handlers['POST /api/staff/kf'](null, null, { action: 'play' });
+  await settle();
+  await serverTime.advance(699);
+  assert.deepEqual(order, ['spotify-play', 'spotify-pause'], 'second appui à 300 ms : rien de lancé pendant le silence');
+  await serverTime.advance(1);
   const answers = await Promise.all([first, second]);
   assert.deepEqual(answers.map(answer => answer.ok), [true, true]);
-  assert.deepEqual(order, ['spotify-play', 'spotify-pause', 'karafun-play'], 'une pause, un lancement');
-  assert.ok(playedAt >= 950, `lancé après le silence de 1 s, pas au second appui (${playedAt} ms)`);
+  assert.deepEqual(order, ['spotify-play', 'spotify-pause', 'karafun-play'], 'une pause, un lancement, au bout du silence de 1 s');
   assert.equal(f.battleVote.automation.status, 'resuming');
 });
 
