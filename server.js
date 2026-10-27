@@ -2344,8 +2344,11 @@ function publicState(person, tableId, managed = null) {
 
   // Duos ouverts des autres (« Qui veut chanter en duo avec moi ? ») : seules
   // les personnes présentes et nommées gérées par ce téléphone peuvent les
-  // rejoindre, jamais leur auteur ; sans elles, rien n'est envoyé. Les trois
-  // plus récents, sauf celui dont le titre part déjà dans KaraFun (en solo).
+  // rejoindre, jamais leur auteur ; sans elles, rien n'est envoyé. Tous, du
+  // plus récent au plus ancien, sauf celui dont le titre part déjà dans
+  // KaraFun (en solo) : c'est le seul moyen de les rejoindre, et en « Duos
+  // uniquement » un duo retenu n'est pas dans la file. La page replie
+  // l'affichage (client.html, renderInfos).
   const volunteers = [...(managed || [])].map(pid => sched.people.get(pid)).filter(p => p && !p.withdrawnAt && !p.nameRequired);
   if (volunteers.length) {
     out.openDuets = sched.openDuets().filter(open => open.entryId !== sending).map(open => ({
@@ -2353,7 +2356,7 @@ function publicState(person, tableId, managed = null) {
       entryId: open.entryId, openedAt: open.openedAt,
       song: { songId: open.song.songId, title: open.song.title, artist: open.song.artist, img: coverUrl(open.song.img), duration: open.song.duration || null },
       volunteerIds: volunteers.filter(p => p.id !== open.owner.id).map(p => p.id) }))
-      .filter(open => open.volunteerIds.length).slice(0, 3);
+      .filter(open => open.volunteerIds.length);
   }
 
   const guestDuosOf = person => {

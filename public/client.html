@@ -44,13 +44,15 @@
   .client .info-bar.expanded { max-height: 45vh; overflow-y: auto; overscroll-behavior: contain; }
   .client .info-bar.expanded [data-info-less] { position: sticky; bottom: 0; background: var(--surface-2); }
   @media (min-width: 592px) { .client .info-bar { margin-left: auto; margin-right: auto; } }
-  .client .info-item { display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 14px; border-radius: 12px;
+  /* Boutons trop larges pour tenir à côté du texte (« Je chante avec … ») : ils passent dessous et le texte garde
+     toute la ligne ; plus étroite que le bouton, la ligne fait passer son libellé à la ligne, « × » reste à côté. */
+  .client .info-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 10px 10px 14px; border-radius: 12px;
     background: #ffd166; color: #1b1300; font-weight: 700; box-shadow: 0 8px 28px rgba(0,0,0,.4); }
   .client .info-item.hot { background: #ff4fa3; color: #fff; }
-  .client .info-item p { margin: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 15px; }
-  .client .info-actions { display: flex; gap: 6px; align-items: center; flex: none; flex-wrap: wrap; justify-content: flex-end; }
-  .client .info-actions .btn { min-height: 38px; background: rgba(0,0,0,.18); border-color: rgba(0,0,0,.25); color: inherit; }
-  .client .info-close { appearance: none; border: 0; background: rgba(0,0,0,.18); color: inherit; width: 40px; height: 40px; border-radius: 10px; font-size: 22px; line-height: 1; cursor: pointer; }
+  .client .info-item p { margin: 0; flex: 1 1 10em; min-width: 0; overflow-wrap: anywhere; font-size: 15px; }
+  .client .info-actions { display: flex; gap: 6px; align-items: center; flex: 0 1 auto; min-width: 0; max-width: 100%; margin-left: auto; justify-content: flex-end; }
+  .client .info-actions .btn { min-height: 38px; min-width: 0; background: rgba(0,0,0,.18); border-color: rgba(0,0,0,.25); color: inherit; white-space: normal; }
+  .client .info-close { appearance: none; border: 0; background: rgba(0,0,0,.18); color: inherit; flex: none; width: 40px; height: 40px; border-radius: 10px; font-size: 22px; line-height: 1; cursor: pointer; }
   .client .info-more { justify-self: end; background: var(--surface-2); }
   @media (prefers-reduced-motion: no-preference) { .client .info-item.hot { animation: info-pulse 1.6s ease-in-out 3; } }
   @keyframes info-pulse { 50% { box-shadow: 0 0 0 6px rgba(255,79,163,.35), 0 8px 28px rgba(0,0,0,.4); } }
@@ -146,6 +148,10 @@
   .client .qlist .invite-tag { color: var(--warn); }
   .client .qlist .queue-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
   .client .qlist .queue-actions .btn { min-height: 40px; padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+  /* « Je chante avec {name} » d'un duo ouvert : sous la ligne, à droite, pour ne pas écraser le nom et le titre. */
+  .client .qlist li.open-offer { flex-wrap: wrap; }
+  .client .qlist .queue-open { flex: 1 1 100%; display: flex; justify-content: flex-end; min-width: 0; }
+  .client .qlist .queue-open .btn { min-height: 40px; max-width: 100%; padding: 6px 12px; font-size: 13px; }
   .client .battle-pick { margin: 10px 0 0; position: sticky; top: 62px; z-index: 3; box-shadow: 0 8px 28px rgba(0,0,0,.25); }
   .client .battle-join { margin-top: 12px; }
   .client .battle-join .btn { display: flex; align-items: center; justify-content: center; text-decoration: none; color: #fff; }
@@ -1035,9 +1041,10 @@
   }
 
   // ---------------------------------------------------------- infos à ne pas rater
-  // Battle lancée ou écartée, passage imminent ou sur scène, fermeture, et
-  // messages du serveur (duo refusé, demande expirée…). Deux au plus, puis
-  // « +N ». Un message fermé ne revient pas, même après un rechargement.
+  // Battle lancée ou écartée, passage imminent ou sur scène, fermeture,
+  // messages du serveur (duo refusé, demande expirée…) et duos ouverts des
+  // autres. Deux au plus (voir renderInfos), puis « +N ». Un message fermé ne
+  // revient pas, même après un rechargement.
   let infoShown = '';
   let infoExpanded = false;
   let infoItems = [];
@@ -1087,9 +1094,9 @@
     const infos = [];
     const people = managedPeople();
     // Duos ouverts des autres (« Qui veut chanter en duo avec moi ? ») : un
-    // bandeau chacun, les trois plus récents choisis par le serveur, pour les
-    // personnes de ce téléphone qui peuvent s'y proposer.
-    for (const open of list(state?.openDuets).slice(0, 3)) {
+    // bandeau chacun, du plus récent au plus ancien comme le serveur les
+    // envoie (tous), pour les personnes de ce téléphone qui peuvent s'y proposer.
+    for (const open of list(state?.openDuets)) {
       if (!openVolunteers(open).length) continue;
       infos.push({ key: `open:${open.entryId}`, tone: 'open', open,
         text: t('{name} cherche un partenaire pour « {title} »', { name: open.ownerLabel || open.ownerName || t('Quelqu’un'), title: open.song?.title || t('ce titre') }) });
@@ -1157,19 +1164,29 @@
   // Renvoie vrai si une info à signaler vient d'apparaître.
   function renderInfos() {
     const infos = collectInfos();
-    // Duos ouverts (trois au plus) toujours affichés, puis deux messages au plus.
-    const opens = infos.filter(info => info.open), others = infos.filter(info => !info.open);
-    const shown = [...opens, ...(infoExpanded ? others : others.slice(0, 2))];
-    const more = infos.length - shown.length;
+    // Deux messages au plus, puis « +N » : ceux de ce téléphone qui pressent
+    // (passage imminent, Battle lancée) d'abord, puis un seul duo ouvert de la
+    // salle (le plus récent) et les autres messages ; les autres duos ouverts
+    // ne viennent que dépliés. Dépliés, tous défilent dans une hauteur bornée :
+    // aucun duo ouvert n'est hors d'atteinte (seul moyen de rejoindre un duo
+    // retenu en « Duos uniquement »).
+    const opens = infos.filter(info => info.open);
+    const head = [...infos.filter(info => info.tone === 'hot'), ...opens.slice(0, 1),
+      ...infos.filter(info => !info.open && info.tone !== 'hot')];
+    const ordered = [...head, ...opens.slice(1)];
+    // Repliés, ce qui reste caché : « +N », ou « Replier » une fois dépliés.
+    const folded = ordered.length - Math.min(head.length, 2);
+    const shown = infoExpanded ? ordered : head.slice(0, 2);
+    const more = ordered.length - shown.length;
     const html = shown.map(info => `<div class="info-item ${info.tone || ''}"><p>${esc(info.text)}</p><div class="info-actions">${info.open
       ? `<button type="button" class="btn small" data-open-join="${esc(info.open.entryId)}">${esc(t('Je chante avec {name}', { name: info.open.ownerName || t('cette personne') }))}</button>` : ''}${info.defer
       ? `<button type="button" class="btn small" data-info-defer="${esc(info.defer)}">${esc(t('Pas prêt'))}</button>` : ''}${info.leave
       ? `<button type="button" class="btn small" data-info-leave="${esc(info.key)}">${esc(t('Je ne chante pas ce duo'))}</button>` : ''}<button type="button" class="info-close" data-info-dismiss="${esc(info.key)}" aria-label="${esc(t('Masquer ce message'))}">×</button></div></div>`).join('')
       + (more > 0 ? `<button type="button" class="btn small ghost info-more" data-info-more>${esc(tp(more, '+{n} autre message', '+{n} autres messages'))}</button>`
-        : infoExpanded && others.length > 2 ? `<button type="button" class="btn small ghost info-more" data-info-less>${esc(t('Replier les messages'))}</button>` : '');
+        : infoExpanded && folded > 0 ? `<button type="button" class="btn small ghost info-more" data-info-less>${esc(t('Replier les messages'))}</button>` : '');
     if (html !== infoShown) { $('infoBar').innerHTML = html; infoShown = html; }
     $('infoBar').hidden = !infos.length;
-    $('infoBar').classList.toggle('expanded', infoExpanded && others.length > 2);
+    $('infoBar').classList.toggle('expanded', infoExpanded && folded > 0);
     infoItems = infos;
     const fresh = infos.filter(info => !memory.seen.includes(info.key));
     if (!fresh.length) return false;
@@ -1179,7 +1196,8 @@
     // navigateur (si permise). Rien pour un duo ouvert sur ce même téléphone
     // (il gère aussi son auteur), ni deux fois en cinq minutes pour le même
     // auteur : un titre retiré puis reproposé ne fait pas sonner toute la
-    // salle à chaque fois. Le bandeau, lui, s'affiche toujours.
+    // salle à chaque fois. Le bandeau, lui, s'affiche toujours (le plus
+    // récent devant, les autres derrière « +N »).
     const now = Date.now();
     return fresh.filter(info => {
       if (!info.open) return true;
@@ -2281,12 +2299,15 @@
         : openDuet ? ` · <span class="invite-tag">${esc(t('duo ouvert'))}</span>` : '';
       // Un titre qui plaît : proposer à son auteur de le chanter ensemble.
       const entryId = item.song?.entryId;
+      // Duo ouvert : cherché dans la liste complète du serveur (les bandeaux
+      // en replient l'affichage) ; « Je chante avec … » passe sous la ligne,
+      // pour ne pas écraser le nom et le titre.
       const offer = openDuet && list(state?.openDuets).find(open => String(open.entryId) === String(entryId) && openVolunteers(open).length);
       const joinable = canAsk && !mine && item.source === 'helper' && item.kind !== 'duo' && !invitePending && !openDuet && item.id && entryId && list(item.ids).length === 1;
-      const join = offer ? `<button type="button" class="btn small" data-open-join="${esc(entryId)}">${esc(t('Je chante avec {name}', { name: offer.ownerName || t('cette personne') }))}</button>`
-        : !joinable ? '' : requested.has(String(entryId)) ? `<span class="badge">${esc(t('Duo demandé'))}</span>`
+      const openJoin = offer ? `<div class="queue-open"><button type="button" class="btn small" data-open-join="${esc(entryId)}">${esc(t('Je chante avec {name}', { name: offer.ownerName || t('cette personne') }))}</button></div>` : '';
+      const join = !joinable ? '' : requested.has(String(entryId)) ? `<span class="badge">${esc(t('Duo demandé'))}</span>`
         : `<button type="button" class="btn small" data-join-request="${esc(item.id)}" data-join-entry="${esc(entryId)}" data-join-name="${esc(item.name || '')}" data-join-title="${esc(item.title || item.song?.title || '')}" aria-label="${esc(t('Proposer un duo à {name} sur {title}', { name: item.name || t('cette personne'), title: item.title || t('ce titre') }))}">${esc(t('Duo ?'))}</button>${item === nextHelper ? `<span class="tiny muted">${esc(t('réponse avant l’envoi'))}</span>` : ''}`;
-      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}"><span class="num">${esc(item.pos || index + 1)}</span>${cover(item.song || item, 'sm')}<div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}${inviteTag}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div></li>`;
+      return `<li class="${mine ? 'me' : ''}${item.afterClosing ? ' after-closing' : ''}${offer ? ' open-offer' : ''}"><span class="num">${esc(item.pos || index + 1)}</span>${cover(item.song || item, 'sm')}<div class="grow"><div class="name">${esc(name)}${mine ? ` <span class="badge">${esc(state?.table?.individual ? t('ta chanson') : t('ta table'))}</span>` : ''}</div><div class="song">${esc(fullSong(item))}${source ? ` · ${esc(source)}` : ''}${inviteTag}${closing}</div></div><div class="queue-actions"><span class="eta">${when ? esc(when) : '—'}</span>${join}</div>${openJoin}</li>`;
     }).join('');
     const localWaiting = waiting.filter(person => ids.has(String(person.id)));
     $('waitingEmpty').hidden = localWaiting.length > 0;

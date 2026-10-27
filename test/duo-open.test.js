@@ -449,7 +449,10 @@ test('critère 1 : Léa propose un titre en duo ouvert ; Max et Zoé voient le b
   await assert.rejects(f.call('POST /api/table/duet/open/accept', { ...placeholder.body, ownerId: lea.p.id, entryId }), { code: 'NAME_REQUIRED' });
 });
 
-test('au plus trois bandeaux, les plus récents ; un titre de la liste s’ouvre aussi', async () => {
+// Relecture : seuls les trois plus récents partaient vers les téléphones, seul
+// moyen de les rejoindre ; en « Duos uniquement », le plus ancien, hors de la
+// file, attendait sans fin. Tous partent ; la page en replie l'affichage.
+test('tous les duos ouverts, du plus récent au plus ancien ; le plus ancien de quatre se rejoint, même en « Duos uniquement »', async () => {
   const { f, lea, max, zoe } = serverNight();
   const others = ['Ana', 'Ben', 'Cléo'].map((name, i) => person(f, String(10 + i), name));
   for (const [index, singer] of [lea, ...others].entries()) {
@@ -457,8 +460,28 @@ test('au plus trois bandeaux, les plus récents ; un titre de la liste s’ouvre
     await f.call('POST /api/table/duet/open', { ...singer.body, entryId: singer.p.song.entryId });
     singer.p.song.duet.openedAt = 1000 + index;
   }
-  assert.deepEqual(plain(f.view('3', [max.p.id]).openDuets.map(row => row.ownerName)), ['Cléo', 'Ben', 'Ana']);
-  assert.equal(f.view('Comptoir', [zoe.p.id]).openDuets.length, 3);
+  assert.deepEqual(plain(f.view('3', [max.p.id]).openDuets.map(row => row.ownerName)), ['Cléo', 'Ben', 'Ana', 'Léa']);
+  assert.equal(f.view('Comptoir', [zoe.p.id]).openDuets.length, 4);
+  // « Duos uniquement » : les quatre attendent hors de la file ; le plus ancien
+  // reste proposé aux téléphones, Zoé le rejoint et il repasse dans la file.
+  f.settings.duoOnly = true;
+  f.sched.version++;
+  const oldest = lea.p.song.entryId;
+  assert.deepEqual(plain(f.view('Comptoir', [zoe.p.id]).queue.filter(item => item.source === 'helper')), [], 'tous retenus');
+  assert.ok(f.view('Comptoir', [zoe.p.id]).openDuets.some(row => row.entryId === oldest), 'le plus ancien est proposé');
+  await f.call('POST /api/table/duet/open/accept', { ...zoe.body, ownerId: lea.p.id, entryId: oldest });
+  assert.deepEqual(plain(f.view('3', [max.p.id]).queue.map(item => item.name)), ['Léa & Zoé']);
+  // Son auteur, lui, garde toujours la main : hors « Duos uniquement », il
+  // ferme sa demande ; dans ce mode, il retire le titre.
+  const [ana, ben] = others;
+  await f.call('POST /api/table/duet/open/close', { ...ana.body, entryId: ana.p.song.entryId }).then(
+    () => assert.fail('fermeture refusée en « Duos uniquement »'), error => assert.equal(error.code, 'DUO_ONLY'));
+  await f.call('POST /api/table/song/remove', { ...ana.body, entryId: ana.p.song.entryId });
+  assert.equal(f.sched.songsOf(ana.p).length, 0, 'titre retiré');
+  f.settings.duoOnly = false;
+  await f.call('POST /api/table/duet/open/close', { ...ben.body, entryId: ben.p.song.entryId });
+  assert.equal(ben.p.song.duet, undefined, 'demande fermée, le titre reste en solo');
+  assert.deepEqual(plain(f.view('3', [max.p.id]).openDuets.map(row => row.ownerName)), ['Cléo']);
 });
 
 test('critère 2 et la course : deux « Je chante » en même temps, un seul gagne, l’autre reçoit le refus', async () => {

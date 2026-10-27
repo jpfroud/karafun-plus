@@ -1181,14 +1181,15 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
   const page = await open({ state, session });
   const items = () => page.node('infoBar').querySelectorAll('.info-item').map(item => item.querySelector('p').textContent);
   assert.equal(page.node('infoBar').hidden, false);
+  // Ce qui presse pour ce téléphone (Battle lancée, passage imminent) d'abord.
   assert.deepEqual(items(), ['Le bar lance une Battle\u00a0! Tube — Groupe. Scanne le QR code affiché par KaraFun : ton téléphone sert de micro.',
-    'Pas de Battle cette fois : la salle a voté contre.']);
+    'Alice passe juste après la chanson en cours : prépare-toi\u00a0!']);
   assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+4 autres messages');
   assert.deepEqual(page.vibrations, [[120]], 'courte vibration pour les infos');
   assert.deepEqual(page.posts.filter(([url]) => url === '/api/table/notice/ack').map(([, body]) => [body.personId, body.ids]), [['carla', ['n4']]],
     'duo ajouté depuis ce même téléphone : effacé sans être montré');
   await page.tap('infoBar', '[data-info-more]');
-  assert.deepEqual(items().slice(2), ['Alice passe juste après la chanson en cours : prépare-toi\u00a0!',
+  assert.deepEqual(items().slice(2), ['Pas de Battle cette fois : la salle a voté contre.',
     'Fermeture du bar à ' + timeOf(now + 3600000) + '. La file est complète jusqu’à cette heure. Tu peux encore ajouter un titre : la rotation décide s’il passe avant.',
     'La demande de duo d’Alice à Zoé a expiré : « Hit » est parti dans KaraFun.', 'Bob chantera « Slow » en duo avec Alice.']);
   // « Pas prêt » depuis l'info du passage imminent.
@@ -4406,28 +4407,39 @@ test('duos uniquement : pas de « ＋ Chanson », la fiche d’un titre ne propo
 
 // ================================================================ duo ouvert
 // « Qui veut chanter en duo avec moi ? » (spec du 26 octobre 2026, F1) : un
-// bandeau non bloquant en haut de la page pour chaque duo ouvert des autres
-// (trois au plus, les plus récents), « Je chante avec … », une vibration et un
-// son à l'arrivée, une notification si la page est cachée.
+// bandeau non bloquant en haut de la page pour chaque duo ouvert des autres,
+// « Je chante avec … », une vibration et un son à l'arrivée, une notification
+// si la page est cachée. Relecture : le serveur les envoie tous ; replié, un
+// seul s'affiche (le plus récent), après ce qui presse pour ce téléphone, les
+// autres derrière « +N », toujours atteignables (mise en page en vrai
+// navigateur : client-open-duo-layout.test.js).
 const openDuet = (entryId, name, title, extra = {}) => ({ ownerId: `o-${entryId}`, ownerName: name, ownerLabel: `${name} · Table 2`,
   entryId, openedAt: 1000, song: { songId: 50, title, artist: 'Artiste' }, volunteerIds: ['alice'], ...extra });
 
-test('duo ouvert : bandeau « Je chante avec … », une vibration et un son, notification page cachée, trois au plus', async () => {
+test('duo ouvert : bandeau « Je chante avec … », une vibration et un son, notification page cachée, un seul replié, tous atteignables', async () => {
   let refusal = null;
   const page = await open({ state: baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre'), openDuet('o2', 'Max', 'Rock'),
     openDuet('o3', 'Zoé', 'Slow'), openDuet('o4', 'Ugo', 'Trop')] }), hidden: true, secure: true, audio: {},
     notification: { permission: 'granted' }, storage: { 'kfAlerts:1:secret': '1' }, session: sessionMap(),
     respond: url => url === '/api/table/duet/open/accept' && refusal ? reply(409, { error: refusal }) : undefined });
   const banners = () => page.node('infoBar').querySelectorAll('.info-item');
+  const texts = () => banners().map(item => item.querySelector('p').textContent);
   assert.equal(page.node('infoBar').hidden, false);
-  assert.deepEqual(banners().map(item => item.querySelector('p').textContent), ['Léa · Table 2 cherche un partenaire pour « Titre »',
-    'Max · Table 2 cherche un partenaire pour « Rock »', 'Zoé · Table 2 cherche un partenaire pour « Slow »'], 'trois bandeaux au plus');
-  assert.deepEqual(banners().map(item => item.querySelector('[data-open-join]').textContent), ['Je chante avec Léa', 'Je chante avec Max', 'Je chante avec Zoé']);
+  assert.deepEqual(texts(), ['Léa · Table 2 cherche un partenaire pour « Titre »'], 'replié : un seul duo ouvert, le plus récent');
+  assert.deepEqual(banners().map(item => item.querySelector('[data-open-join]').textContent), ['Je chante avec Léa']);
+  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+3 autres messages');
   assert.equal(page.node('attention').hidden, true, 'rien ne bloque la page');
   assert.deepEqual(page.vibrations, [[120]], 'une seule vibration');
   assert.equal(page.audio.oscillators.length, 2, 'un son');
   assert.deepEqual(page.notifications.map(n => [n.title, n.body]), [['Karaoké : duo ouvert', 'Léa · Table 2 cherche un partenaire pour « Titre »'],
-    ['Karaoké : duo ouvert', 'Max · Table 2 cherche un partenaire pour « Rock »'], ['Karaoké : duo ouvert', 'Zoé · Table 2 cherche un partenaire pour « Slow »']]);
+    ['Karaoké : duo ouvert', 'Max · Table 2 cherche un partenaire pour « Rock »'], ['Karaoké : duo ouvert', 'Zoé · Table 2 cherche un partenaire pour « Slow »'],
+    ['Karaoké : duo ouvert', 'Ugo · Table 2 cherche un partenaire pour « Trop »']], 'chacun signalé, même replié');
+  // Dépliés : les quatre, chacun avec son bouton.
+  await page.tap('infoBar', '[data-info-more]');
+  assert.deepEqual(banners().map(item => item.querySelector('[data-open-join]').textContent),
+    ['Je chante avec Léa', 'Je chante avec Max', 'Je chante avec Zoé', 'Je chante avec Ugo']);
+  assert.equal(page.node('infoBar').classList.contains('expanded'), true, 'hauteur bornée, défilement');
+  await page.tap('infoBar', '[data-info-less]');
   // Critère 1 : un téléphone relit la file toutes les 4 s, donc voit le bandeau en moins de 5 s.
   assert.match(script, /setInterval\(\(\) => \{ if \(!invalidAccess\) refresh\(\); \}, 4000\)/);
   await page.poll();
@@ -4435,8 +4447,10 @@ test('duo ouvert : bandeau « Je chante avec … », une vibration et un son, no
   page.state.openDuets = [openDuet('o5', 'Nina', 'Neuf'), ...page.state.openDuets.slice(0, 2)];
   await page.poll();
   assert.deepEqual(page.vibrations, [[120], [120]], 'un nouveau duo ouvert : une vibration de plus');
-  assert.equal(page.notifications.length, 4);
-  // « Je chante avec Léa » : une seule personne sur ce téléphone, envoyé tout de suite.
+  assert.equal(page.notifications.length, 5);
+  assert.deepEqual(texts(), ['Nina · Table 2 cherche un partenaire pour « Neuf »'], 'le plus récent devant');
+  // « Je chante avec Léa », replié derrière « +N » : une seule personne sur ce téléphone, envoyé tout de suite.
+  await page.tap('infoBar', '[data-info-more]');
   await page.tap('infoBar', '[data-open-join="o1"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open/accept', { table: '1', access: 'secret', personId: 'alice', ownerId: 'o-o1', entryId: 'o1' }]);
   assert.deepEqual(page.toast(), { text: 'Duo ajouté avec Léa.', bad: false, warn: false, hidden: false });
@@ -4460,6 +4474,38 @@ test('duo ouvert : bandeau « Je chante avec … », une vibration et un son, no
   assert.equal(english.node('infoBar').querySelector('[data-open-join]').textContent, 'I’ll sing with Léa');
   await english.tap('infoBar', '[data-open-join="o1"]');
   assert.equal(english.toast().text, 'Someone has already joined this duet.');
+});
+
+// Relecture : trois duos ouverts s'affichaient toujours, avant l'annonce du
+// passage de ce téléphone, qui sortait de l'écran.
+test('duo ouvert : l’annonce du passage de ce téléphone passe avant les duos ouverts de la salle, un seul duo replié', async () => {
+  const now = Date.now();
+  const page = await open({ state: baseState({ next: { ours: true, ids: ['alice'], song: { entryId: 'e1' }, title: 'Mon titre' },
+    closing: { at: now + 3600000, full: false, passed: false },
+    openDuets: [openDuet('o1', 'Léa', 'Titre'), openDuet('o2', 'Max', 'Rock'), openDuet('o3', 'Zoé', 'Slow')] }) });
+  const texts = () => page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent);
+  assert.deepEqual(texts(), ['Alice passe juste après la chanson en cours : prépare-toi !',
+    'Léa · Table 2 cherche un partenaire pour « Titre »']);
+  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+3 autres messages');
+  await page.tap('infoBar', '[data-info-more]');
+  assert.deepEqual(texts().slice(2), [`Fermeture du bar à ${timeOf(now + 3600000)}`,
+    'Max · Table 2 cherche un partenaire pour « Rock »', 'Zoé · Table 2 cherche un partenaire pour « Slow »'],
+    'dépliés : les messages, puis les autres duos ouverts');
+  // Le premier fermé (×), le suivant prend sa place.
+  await page.tap('infoBar', '[data-info-less]');
+  await page.tap('infoBar', '[data-info-dismiss="open:o1"]');
+  assert.deepEqual(texts(), ['Alice passe juste après la chanson en cours : prépare-toi !',
+    'Max · Table 2 cherche un partenaire pour « Rock »']);
+  // Deux duos ouverts seulement : replié, un seul ; dépliés, « Replier » revient.
+  page.state.next = null;
+  page.state.closing = null;
+  await page.poll();
+  assert.deepEqual(texts(), ['Max · Table 2 cherche un partenaire pour « Rock »']);
+  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+1 autre message');
+  await page.tap('infoBar', '[data-info-more]');
+  assert.equal(texts().length, 2);
+  assert.equal(page.find('infoBar', '[data-info-less]').textContent, 'Replier les messages');
+  assert.equal(page.node('infoBar').classList.contains('expanded'), true);
 });
 
 test('duo ouvert : un téléphone qui gère plusieurs personnes choisit qui chante, jamais par défaut ; l’auteur ne voit rien', async () => {
