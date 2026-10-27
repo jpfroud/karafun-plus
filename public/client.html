@@ -1114,9 +1114,14 @@
     // Duos ouverts des autres (« Qui veut chanter en duo avec moi ? ») : un
     // bandeau chacun, du plus récent au plus ancien comme le serveur les
     // envoie (tous), pour les personnes de ce téléphone qui peuvent s'y proposer.
+    // × le masque pour l'onglet s'il se rejoint depuis sa ligne de « La file ».
+    // Absent de la file (retenu en « Duos uniquement »), le bandeau est le seul
+    // moyen de le rejoindre : × le range derrière « +N » (`stowed`), sans le perdre.
     for (const open of list(state?.openDuets)) {
       if (!openVolunteers(open).length) continue;
-      infos.push({ key: `open:${open.entryId}`, tone: 'open', open,
+      const key = `open:${open.entryId}`;
+      const inQueue = list(state?.queue).some(line => String(line.song?.entryId) === String(open.entryId));
+      infos.push({ key, tone: 'open', open, stowed: !inQueue && memory.dismissed.includes(key),
         text: t('{name} cherche un partenaire pour « {title} »', { name: open.ownerLabel || open.ownerName || t('Quelqu’un'), title: open.song?.title || t('ce titre') }) });
     }
     const battle = state?.battle || {};
@@ -1172,7 +1177,7 @@
     if (duoOnly() && people.length) {
       infos.push({ key: 'duo-only', text: t('Ce soir, le bar ne prend que des duos : chante à deux pour faire monter plus de monde sur scène.') });
     }
-    return infos.filter(info => !memory.dismissed.includes(info.key));
+    return infos.filter(info => info.stowed || !memory.dismissed.includes(info.key));
   }
 
   // Dernier signal d'un duo ouvert, par auteur (voir renderInfos).
@@ -1185,13 +1190,14 @@
     // Deux messages au plus, puis « +N » : ceux de ce téléphone qui pressent
     // (passage imminent, Battle lancée) d'abord, puis un seul duo ouvert de la
     // salle (le plus récent) et les autres messages ; les autres duos ouverts
-    // ne viennent que dépliés. Dépliés, tous défilent dans une hauteur bornée :
-    // aucun duo ouvert n'est hors d'atteinte (seul moyen de rejoindre un duo
-    // retenu en « Duos uniquement »).
-    const opens = infos.filter(info => info.open);
+    // ne viennent que dépliés, ceux rangés par × en dernier. Dépliés, tous
+    // défilent dans une hauteur bornée : aucun duo ouvert n'est hors d'atteinte
+    // (seul moyen de rejoindre un duo retenu en « Duos uniquement »), et un
+    // duo déjà rangé n'a plus de ×.
+    const opens = infos.filter(info => info.open && !info.stowed);
     const head = [...infos.filter(info => info.tone === 'hot'), ...opens.slice(0, 1),
       ...infos.filter(info => !info.open && info.tone !== 'hot')];
-    const ordered = [...head, ...opens.slice(1)];
+    const ordered = [...head, ...opens.slice(1), ...infos.filter(info => info.stowed)];
     // Repliés, ce qui reste caché : « +N », ou « Replier » une fois dépliés.
     const folded = ordered.length - Math.min(head.length, 2);
     const shown = infoExpanded ? ordered : head.slice(0, 2);
@@ -1199,7 +1205,8 @@
     const html = shown.map(info => `<div class="info-item ${info.tone || ''}"><p>${esc(info.text)}</p><div class="info-actions">${info.open
       ? `<button type="button" class="btn small" data-open-join="${esc(info.open.entryId)}">${esc(t('Je chante avec {name}', { name: info.open.ownerName || t('cette personne') }))}</button>` : ''}${info.defer
       ? `<button type="button" class="btn small" data-info-defer="${esc(info.defer)}">${esc(t('Pas prêt'))}</button>` : ''}${info.leave
-      ? `<button type="button" class="btn small" data-info-leave="${esc(info.key)}">${esc(t('Je ne chante pas ce duo'))}</button>` : ''}<button type="button" class="info-close" data-info-dismiss="${esc(info.key)}" aria-label="${esc(t('Masquer ce message'))}">×</button></div></div>`).join('')
+      ? `<button type="button" class="btn small" data-info-leave="${esc(info.key)}">${esc(t('Je ne chante pas ce duo'))}</button>` : ''}${info.stowed ? ''
+      : `<button type="button" class="info-close" data-info-dismiss="${esc(info.key)}" aria-label="${esc(t('Masquer ce message'))}">×</button>`}</div></div>`).join('')
       + (more > 0 ? `<button type="button" class="btn small ghost info-more" data-info-more>${esc(tp(more, '+{n} autre message', '+{n} autres messages'))}</button>`
         : infoExpanded && folded > 0 ? `<button type="button" class="btn small ghost info-more" data-info-less>${esc(t('Replier les messages'))}</button>` : '');
     if (html !== infoShown) { $('infoBar').innerHTML = html; infoShown = html; }

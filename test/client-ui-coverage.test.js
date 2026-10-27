@@ -4460,9 +4460,13 @@ test('duo ouvert : bandeau « Je chante avec … », une vibration et un son, no
   await page.tap('infoBar', '[data-open-join="o2"]');
   assert.deepEqual(page.toast(), { text: 'Quelqu’un a déjà rejoint ce duo.', bad: true, warn: false, hidden: false });
   assert.ok(page.stateRequests().length > reads, 'état relu aussitôt');
-  // × : le bandeau disparaît pour cet onglet.
+  // × : le bandeau quitte la tête. Absent de « La file » (ici), il passe
+  // derrière « +N », en dernier et sans × (test « × range derrière « +N » »).
   await page.tap('infoBar', '[data-info-dismiss="open:o5"]');
-  assert.ok(!banners().some(item => /Nina/.test(item.textContent)));
+  assert.match(texts().at(-1), /Nina/, 'déplié : en dernier');
+  assert.equal(banners().at(-1).querySelector('[data-info-dismiss]'), null);
+  await page.tap('infoBar', '[data-info-less]');
+  assert.ok(!banners().some(item => /Nina/.test(item.textContent)), 'replié : plus en tête');
   // Plus de duo ouvert : plus de bandeau.
   page.state.openDuets = [];
   await page.poll();
@@ -4491,19 +4495,21 @@ test('duo ouvert : l’annonce du passage de ce téléphone passe avant les duos
   assert.deepEqual(texts().slice(2), [`Fermeture du bar à ${timeOf(now + 3600000)}`,
     'Max · Table 2 cherche un partenaire pour « Rock »', 'Zoé · Table 2 cherche un partenaire pour « Slow »'],
     'dépliés : les messages, puis les autres duos ouverts');
-  // Le premier fermé (×), le suivant prend sa place.
+  // Le premier fermé (×), le suivant prend sa place ; absent de « La file »,
+  // le premier reste derrière « +N ».
   await page.tap('infoBar', '[data-info-less]');
   await page.tap('infoBar', '[data-info-dismiss="open:o1"]');
   assert.deepEqual(texts(), ['Alice passe juste après la chanson en cours : prépare-toi !',
     'Max · Table 2 cherche un partenaire pour « Rock »']);
-  // Deux duos ouverts seulement : replié, un seul ; dépliés, « Replier » revient.
+  // Duos ouverts seulement : replié, un seul ; dépliés, le duo rangé par ×
+  // en dernier, et « Replier » revient.
   page.state.next = null;
   page.state.closing = null;
   await page.poll();
   assert.deepEqual(texts(), ['Max · Table 2 cherche un partenaire pour « Rock »']);
-  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+1 autre message');
+  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+2 autres messages');
   await page.tap('infoBar', '[data-info-more]');
-  assert.equal(texts().length, 2);
+  assert.deepEqual(texts().slice(1), ['Zoé · Table 2 cherche un partenaire pour « Slow »', 'Léa · Table 2 cherche un partenaire pour « Titre »']);
   assert.equal(page.find('infoBar', '[data-info-less]').textContent, 'Replier les messages');
   assert.equal(page.node('infoBar').classList.contains('expanded'), true);
 });
@@ -4585,6 +4591,44 @@ test('duo ouvert : proposé depuis le catalogue ou la liste, fermé par son aute
   const texts = page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent);
   assert.ok(texts.includes('Max rejoint Alice en duo sur « Mon titre ».'), texts.join(' | '));
   assert.ok(texts.includes('Personne n’a rejoint le duo d’Alice sur « Second » : Alice le chante en solo.'), texts.join(' | '));
+});
+
+// Seconde relecture : en « Duos uniquement », un duo ouvert retenu n'est pas
+// dans « La file » ; son bandeau est le seul moyen de le rejoindre, et × le
+// faisait disparaître pour tout l'onglet, rechargements compris.
+test('duo ouvert : × range derrière « +N » un duo absent de « La file », qui se rejoint encore ; présent dans la file, il se masque', async () => {
+  const session = sessionMap();
+  const held = () => baseState({ rules: { duoOnly: true }, queue: [], openDuets: [openDuet('o1', 'Léa', 'Titre')] });
+  const page = await open({ state: held(), session });
+  const texts = () => page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent);
+  assert.deepEqual(texts(), ['Léa · Table 2 cherche un partenaire pour « Titre »',
+    'Ce soir, le bar ne prend que des duos : chante à deux pour faire monter plus de monde sur scène.']);
+  await page.tap('infoBar', '[data-info-dismiss="open:o1"]');
+  assert.deepEqual(texts(), ['Ce soir, le bar ne prend que des duos : chante à deux pour faire monter plus de monde sur scène.'], 'plus en tête');
+  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+1 autre message', 'rangé derrière « +N »');
+  // Plus tard (relectures de l'état, onglet rechargé) : toujours là, et il se rejoint.
+  await page.poll();
+  const later = await open({ state: held(), session, respond: url => url === '/api/table/duet/open/accept' ? { ok: true } : undefined });
+  assert.equal(later.find('infoBar', '[data-info-more]').textContent, '+1 autre message');
+  assert.equal(later.node('infoBar').querySelector('[data-open-join]'), null, 'replié : rien en tête');
+  await later.tap('infoBar', '[data-info-more]');
+  const item = later.find('infoBar', '[data-open-join="o1"]').closest('.info-item');
+  assert.equal(item.querySelector('[data-info-dismiss]'), null, 'déjà rangé : pas de second ×');
+  await later.tap('infoBar', '[data-open-join="o1"]');
+  assert.deepEqual(later.posts.at(-1), ['/api/table/duet/open/accept', { table: '1', access: 'secret', personId: 'alice', ownerId: 'o-o1', entryId: 'o1' }]);
+  // Seul le bandeau rangé : la barre reste, réduite à « +1 autre message ».
+  later.state.rules = {};
+  await later.poll();
+  await later.tap('infoBar', '[data-info-less]');
+  assert.equal(later.node('infoBar').hidden, false);
+  assert.deepEqual(later.node('infoBar').querySelectorAll('.info-item').length, 0);
+  assert.equal(later.find('infoBar', '[data-info-more]').textContent, '+1 autre message');
+  // Le même duo dans « La file » (« Je chante avec » sur sa ligne) : × le masque.
+  later.state.queue = [{ source: 'helper', id: 'o-o1', ids: ['o-o1'], name: 'Léa', pos: 1, title: 'Titre',
+    song: { entryId: 'o1', songId: 50, title: 'Titre', duet: { state: 'open', kind: 'duo' } } }];
+  await later.poll();
+  assert.equal(later.node('infoBar').hidden, true, 'joignable depuis la file : plus de bandeau');
+  assert.match(later.node('queueList').innerHTML, /data-open-join="o1"[^>]*>Je chante avec Léa</);
 });
 
 // Seconde relecture : un titre du catalogue que quelqu'un a ouvert en duo
