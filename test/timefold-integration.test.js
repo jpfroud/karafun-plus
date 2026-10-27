@@ -1438,7 +1438,10 @@ test('QueueScore : un retour servi avant une attente plus ancienne coûte',
 
 // À compteur égal, à l'heure (soirée du 24 octobre à 01:55) : Tess redemande
 // pendant la chanson de Yves (`pendant`) ou après sa fin (`après`) ; Timefold
-// classe comme Node, par la fin du passage et l'heure de la demande.
+// classe comme Node, par la fin du passage et l'heure de la demande. Yves
+// arrivé avec un seul titre peut aussi le redemander pendant sa chanson,
+// avant Tess (`redemandé`) : son attente commence quand même à la fin de
+// celle-ci (rotation.js#_waitSince), Tess passe d'abord.
 function yvesEvening(moment, options = {}) {
   const realNow = Date.now;
   let clock = Date.UTC(2026, 9, 25, 0, 0, 0);
@@ -1448,7 +1451,7 @@ function yvesEvening(moment, options = {}) {
     let n = 9900;
     const song = () => ({ songId: n++, title: `T${n}`, artist: 'x' });
     const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
-    for (const p of [o, o, tess, yves, yves]) { clock += 5000; s.chooseSong(p, song(), 'append'); }
+    for (const p of [o, o, tess, yves, ...(moment === 'redemandé' ? [] : [yves])]) { clock += 5000; s.chooseSong(p, song(), 'append'); }
     let onStage = null;
     for (let k = 0; k < 3; k++) {
       clock += 45000;
@@ -1460,7 +1463,9 @@ function yvesEvening(moment, options = {}) {
     }
     const end = () => { s.songEnded(onStage.ids); s.endStage(onStage); };
     if (moment === 'pendant') { clock += 60000; s.chooseSong(tess, song()); clock += 60000; end(); }
-    else { clock += 120000; end(); clock += 60000; s.chooseSong(tess, song()); }
+    else if (moment === 'redemandé') {
+      clock += 30000; s.chooseSong(yves, song()); clock += 30000; s.chooseSong(tess, song()); clock += 60000; end();
+    } else { clock += 120000; end(); clock += 60000; s.chooseSong(tess, song()); }
     return { s };
   } finally { Date.now = realNow; }
 }
@@ -1470,7 +1475,8 @@ test('QueueScore : à compteur égal, la fin du passage d’un chanteur et une d
     const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
     const bridge = new TimefoldBridge({ jar: JAR });
     try {
-      for (const [moment, expected] of [['pendant', ['O', 'Tess', 'Yves']], ['après', ['O', 'Yves', 'Tess']]]) {
+      for (const [moment, expected] of [['pendant', ['O', 'Tess', 'Yves']], ['après', ['O', 'Yves', 'Tess']],
+        ['redemandé', ['O', 'Tess', 'Yves']]]) {
         const { s } = yvesEvening(moment);
         let request;
         s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
@@ -1496,7 +1502,7 @@ test('à patience égale : le plan Timefold garde la plus ancienne attente d’a
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
     const local = kilianEvening().s.readyView().map(item => item.name);
     assert.equal(local.at(-1), 'Kilian', local.join(' '));
-    for (const moment of ['kilian', 'pendant', 'après']) {
+    for (const moment of ['kilian', 'pendant', 'après', 'redemandé']) {
       const asked = moment === 'kilian' ? kilianEvening().s : yvesEvening(moment).s;
       let request;
       asked.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };

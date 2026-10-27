@@ -205,6 +205,38 @@ test('à compteur égal : chanson pas encore finie, toute demande déjà faite p
   } finally { e.done(); }
 });
 
+// Yves n'a qu'un titre : sa liste se vide à l'envoi, et il redemande pendant
+// sa propre chanson (un téléphone de table ajoute le titre suivant dès que
+// son chanteur monte sur scène). Sa demande prend le compteur de son propre
+// passage (`readySerial` = `lastAppearanceTurn`) : son attente commence quand
+// même à la fin de sa chanson, comme dans les statistiques, et Tess, qui
+// redemande après lui mais pendant cette chanson, passe d'abord.
+test('à compteur égal : un titre redemandé pendant sa propre chanson attend la fin de celle-ci', () => {
+  const e = evening();
+  try {
+    const { s, tick, add, step, endSong, view } = e;
+    const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+    add(o); add(o); add(tess); add(yves);
+    for (let k = 0; k < 3; k++) step();
+    assert.deepEqual(e.passages, ['O', 'Tess', 'Yves']);
+    tick(30); add(yves); // redemande pendant sa propre chanson
+    tick(30); add(tess); // Tess redemande pendant la chanson d'Yves
+    assert.equal(yves.readySerial, yves.lastAppearanceTurn);
+    assert.equal(tess.readySerial, yves.lastAppearanceTurn);
+    assert.ok(yves.readySince < tess.readySince, 'Yves a redemandé le premier');
+    assert.deepEqual(view(), ['O', 'Tess', 'Yves'], 'Yves encore sur scène : toute demande déjà faite passe avant lui');
+    tick(60); endSong();
+    assert.deepEqual(view(), ['O', 'Tess', 'Yves'], 'son attente commence à la fin de sa chanson, comme dans les statistiques');
+    let req;
+    s.solverBridge = { available: true, solve: r => { req = r; return new Promise(() => {}); } };
+    s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+    assert.ok(req.addedOrder[tess.id] < req.addedOrder[yves.id], 'Timefold reçoit le même ordre');
+    s.solverBridge = null;
+    for (let k = 0; k < 3; k++) step();
+    assert.deepEqual(e.passages.slice(3), ['O', 'Tess', 'Yves'], 'les passages suivent l’ordre annoncé');
+  } finally { e.done(); }
+});
+
 test('demande pendant un envoi : le début d’attente suit la scène, envoi annulé et reprise compris', () => {
   const e = evening();
   try {

@@ -1006,7 +1006,9 @@ test('bonus étalé : bonus retiré en cours de tour, retour au rythme des autre
 // Duo avec une personne à bonus. Gus (sans bonus) invite Bea : un titre sur
 // deux (`every` 2) ou tous (`every` 1), à une autre table (invitation
 // acceptée) ou à la sienne (duo direct). `levels` : bonus de Bea et de Gus.
-// Rend les rangs de chacun sur scène (titre ou invitée).
+// Rend les rangs de chacun sur scène (titre ou invitée). Fin de chaque
+// passage notée comme par le serveur (songEnded puis endStage) : un titre
+// redemandé ensuite compte de cette fin, pas d'une chanson encore en cours.
 function duoNight(options, { beaLevel = 0, gusLevel = 0, every = 2, sameTable = false, solos = 8, passages = 240 } = {}) {
   const s = new Scheduler(options);
   s.setHeadcount('T', sameTable ? 2 : 1);
@@ -1031,7 +1033,7 @@ function duoNight(options, { beaLevel = 0, gusLevel = 0, every = 2, sameTable = 
   for (let i = 0; i < passages; i++) {
     const sel = s.select();
     if (!sel) break;
-    s.commit(sel); s.songEnded(sel.ids);
+    s.commit(sel); s.songEnded(sel.ids); s.endStage(sel);
     for (const pid of sel.ids) at.get(s.people.get(pid).name).push(i);
     refill();
   }
