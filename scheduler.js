@@ -1021,7 +1021,13 @@ class Scheduler {
     this.duetCooldowns.delete(p.id);
     this._unpinManual(p.id);
     this._forgetManual(p.id);
-    if (![...this.people.values()].some(q => q.group === p.group)) this.roundGroups.delete(p.group);
+    // Dernière personne de sa table : la table quitte le tour et le cycle des
+    // premiers passages. Rouverte avec le même numéro, sa nouvelle tablée
+    // rejoint le cycle en cours comme toute table qui arrive (relecture).
+    if (![...this.people.values()].some(q => q.group === p.group)) {
+      this.roundGroups.delete(p.group);
+      this.firstCycle.delete(p.group);
+    }
     this.version++;
   }
 

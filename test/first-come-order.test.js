@@ -130,6 +130,29 @@ test('chacun son tour : une table qui arrive rejoint le cycle en cours, sans dé
   });
 });
 
+// Relecture : une table partie restait dans le cycle des premiers passages,
+// contrairement au tour des tables (`roundGroups`). Rouverte avec le même
+// numéro dans le même cycle, sa nouvelle tablée passait pour déjà servie et
+// attendait tout le cycle suivant.
+test('chacun son tour : une table partie puis rouverte rejoint le cycle des premiers passages en cours', () => {
+  withClock(tick => {
+    const s = new Scheduler();
+    let n = 1;
+    const add = (tableId, name) => {
+      const p = s.join({ tableId, name, headcount: 3 });
+      tick(); s.chooseSong(p, song(n++));
+      return p;
+    };
+    for (const [tableId, name] of [['1', 'A1'], ['2', 'B1'], ['3', 'C1'], ['2', 'B2'], ['3', 'C2'], ['4', 'D1'], ['4', 'D2']]) add(tableId, name);
+    assert.equal(sing(s), 'A1');
+    s.tableLeft('1');
+    assert.deepEqual([...s.firstCycle], [], 'la table partie quitte le cycle');
+    add('1', 'N1');
+    assert.deepEqual(order(s), ['B1', 'C1', 'D1', 'N1', 'B2', 'C2', 'D2'], 'la nouvelle tablée passe dans le cycle en cours');
+    assert.deepEqual(playAll(s), ['B1', 'C1', 'D1', 'N1', 'B2', 'C2', 'D2']);
+  });
+});
+
 test('chacun son tour : une table qui arrive pendant l’envoi du passage qui ferme un cycle le rejoint encore', () => {
   withClock(tick => {
     const s = new Scheduler();
