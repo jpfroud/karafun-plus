@@ -500,12 +500,21 @@ class Scheduler {
   // garde sa place jusqu'à ce que sa personne monte sur scène avant elle
   // (_unpinSingers, au départ du duo vers KaraFun) : le duo peut encore être
   // annulé d'ici là ; retiré de KaraFun sans être chanté, il rend la place
-  // (_restorePlaced).
+  // (_restorePlaced). Les lignes rendues au calcul sont notées sur le duo
+  // (`unpinned`, sauvegardé avec le titre) : défait avant son envoi, il les
+  // remet (_guestLeft).
   _guestJoined(owner) {
     const duet = owner?.song?.duet;
     const at = this.manualOrder.indexOf(owner?.id);
     const guest = duet?.state === 'accepted' ? this.people.get(duet.partnerId) : null;
     if (!guest || at < 0) return;
+    const changeIds = this.manualChanges.map(change => change.id);
+    const unpin = line => {
+      const ahead = this.manualOrder.slice(0, Math.max(0, this.manualOrder.indexOf(line)));
+      if (!this._unpinManual(line)) return;
+      duet.unpinned = [...(Array.isArray(duet.unpinned) ? duet.unpinned : []),
+        { pid: line, ahead, changeIds, serial: this.appearanceSerial, epoch: this.manualEpoch || 0 }];
+    };
     const anchors = this._manualAnchors(), reserved = this.reservedNext?.personId;
     // Sa propre ligne plus tôt ne compte que si elle reste : placée par le
     // bar, ou prochain annoncé.
@@ -518,13 +527,51 @@ class Scheduler {
       (last > 0 && last > this.appearanceSerial + at - this._spacing()) ||
       this.manualOrder.slice(0, at).some(line => this._singsOnLine(line, guest.id) && stays(line));
     if (!anchors.has(owner.id) && early) {
-      this._unpinManual(owner.id);
+      unpin(owner.id);
       return;
     }
     [...this.manualOrder].forEach((line, index) => {
       if (line === owner.id || anchors.has(line) || !this._singsOnLine(line, guest.id)) return;
-      if (line === guest.id ? line !== reserved : index > at) this._unpinManual(line);
+      if (line === guest.id ? line !== reserved : index > at) unpin(line);
     });
+  }
+
+  // Duo défait avant son envoi (invitée qui se retire, duo annulé, titre
+  // retiré, départ de l'un des deux) : les lignes que _guestJoined avait
+  // rendues au calcul pour lui reviennent dans l'ordre fixé, derrière les
+  // lignes qui les précédaient, jamais devant une priorité du bar ; les gestes
+  // notés depuis les comptent aussi dans leur état d'avant, comme
+  // _restorePlaced. Rien ne revient pour une personne montée sur scène depuis,
+  // sans titre, replacée par le bar, une ligne qui ne serait plus devant
+  // aucune ligne placée, ou si le bar a abandonné tous ses gestes depuis
+  // (`epoch`). Sinon la personne gardée devant un geste passait derrière lui
+  // (relecture).
+  _guestLeft(duet) {
+    const records = Array.isArray(duet?.unpinned) ? duet.unpinned : [];
+    if (duet) delete duet.unpinned;
+    for (const record of records) {
+      const p = this.people.get(record?.pid);
+      if (!p || p.withdrawnAt || !p.song || this.manualOrder.includes(p.id) || !Array.isArray(record.ahead) ||
+        record.epoch !== (this.manualEpoch || 0) || (p.lastAppearanceTurn || 0) > record.serial) continue;
+      const place = (list, staff) => {
+        let index = 0;
+        for (const pid of record.ahead) if (list.includes(pid)) index = Math.max(index, list.indexOf(pid) + 1);
+        if (staff?.byStaff) index = Math.max(index, list.indexOf(staff.personId) + 1);
+        return index;
+      };
+      const at = place(this.manualOrder, this.reservedNext);
+      const anchors = this._manualAnchors();
+      if (!this.manualOrder.slice(at).some(pid => anchors.has(pid))) continue;
+      this.manualOrder.splice(at, 0, p.id);
+      this.manualOrderActive = true;
+      const known = new Set(Array.isArray(record.changeIds) ? record.changeIds : []);
+      for (const change of this.manualChanges) {
+        const before = change?.before;
+        if (known.has(change.id) || !Array.isArray(before?.manualOrder) || before.manualOrder.includes(p.id)) continue;
+        before.manualOrder.splice(place(before.manualOrder, before.reservedNext), 0, p.id);
+      }
+      this.version++;
+    }
   }
 
   // `deferrals` : pour une intervention du bar, les reports « Pas prêt »

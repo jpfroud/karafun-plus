@@ -757,6 +757,45 @@ test('annuler un geste ne remet pas dans l’ordre fixé une ligne sortie pour u
 
 const fixed = s => s.manualOrder.map(pid => s.people.get(pid).name);
 
+// Relecture : un duo formé sur une ligne de l'ordre fixé en sort la propre
+// ligne de l'invitée (_guestJoined), ou celle de l'auteur si le duo ne peut
+// pas passer à cette place. Défait avant son envoi, rien ne la remettait :
+// Gil, gardé devant Elsa, passait derrière elle, et Elsa montait au-dessus
+// de la place donnée par le bar.
+test('duo formé sur une ligne gardée puis défait avant son envoi : la ligne qu’il avait sortie de l’ordre fixé revient', () => {
+  for (const how of ['l’invitée se retire', 'l’auteur annule le duo', 'l’auteur retire le titre', 'redémarrage, puis l’invitée se retire']) {
+    const ctx = evening();
+    const { people } = ctx;
+    gesture(ctx.s, people.Elsa, 3); // Paulo, Maud, Gil, Elsa
+    ctx.s.chooseSong(people.Paulo, song(), 'append'); // titre suivant de Paulo
+    const duo = ctx.s.inviteDuet(people.Paulo, people.Gil.id, song());
+    ctx.s.reorderSongs(people.Paulo, duo.entryId, 0);
+    ctx.s.answerDuet(people.Gil, true, duo.entryId);
+    assert.deepEqual(fixed(ctx.s), ['Paulo', 'Maud', 'Elsa'], `${how} : Gil chante avec Paulo, sa ligne quitte l’ordre fixé`);
+    const s = how.startsWith('redémarrage') ? restart(ctx.s, ctx.access) : ctx.s;
+    if (s !== ctx.s) assert.deepEqual(s.warnings, [], 'la soirée se reprend sans avertissement');
+    const [paulo, gil]= [people.Paulo, people.Gil].map(p => s.people.get(p.id));
+    if (how.endsWith('l’invitée se retire')) s.leaveDuet(gil, paulo.id, duo.entryId);
+    else if (how === 'l’auteur annule le duo') s.cancelDuet(paulo, duo.entryId);
+    else s.removeSong(paulo, duo.entryId);
+    assert.deepEqual(fixed(s), ['Paulo', 'Maud', 'Gil', 'Elsa'], `${how} : Gil reprend sa place devant Elsa`);
+    assert.deepEqual(names(s).slice(0, 4), ['Paulo', 'Maud', 'Gil', 'Elsa'], how);
+    assert.deepEqual(s.manualChanges.map(change => change.name), ['Elsa'], `${how} : les gestes ne changent pas`);
+  }
+  // Duo qui ne pouvait pas passer sur la ligne gardée de son auteur (Paulo
+  // vient de chanter) : Paulo se retire, le solo de Maud reprend sa place.
+  const { s, people } = evening();
+  assert.equal(label(s, play(s)), 'Paulo');
+  gesture(s, people.Elsa, 3); // Maud, Gil, Hugo, Elsa
+  const duo = s.inviteDuet(people.Maud, people.Paulo.id, song());
+  s.reorderSongs(people.Maud, duo.entryId, 0);
+  s.answerDuet(people.Paulo, true, duo.entryId);
+  assert.deepEqual(fixed(s), ['Gil', 'Hugo', 'Elsa']);
+  s.leaveDuet(people.Paulo, people.Maud.id, duo.entryId);
+  assert.deepEqual(fixed(s), ['Maud', 'Gil', 'Hugo', 'Elsa'], 'le solo de Maud reprend sa place devant Elsa');
+  assert.deepEqual(playNames(s, 4), ['Maud', 'Gil', 'Hugo', 'Elsa']);
+});
+
 // Relecture de la correction : un geste rendu par _restorePlaced (duo sorti
 // de KaraFun sans être chanté) perdait sa ligne dès que le bar annulait un
 // geste fait après lui, alors qu'il restait dans la liste des changements :
