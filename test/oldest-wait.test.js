@@ -421,10 +421,16 @@ test('reprise sur une horloge en retard sur celle de la sauvegarde : les heures 
       // Un envoi en cours, choisi juste avant la sauvegarde : l'heure de son
       // choix (`pickedAt`, cycle des premiers passages) recule avec les autres.
       const sending = { ...s.select(), pickedAt: Date.now() };
+      // Plan Timefold adopté (ici l'ordre local) : il survit à la reprise.
+      s.solverPlan = { version: s.version, fingerprint: s.solverContextFingerprint(), source: 'timefold',
+        ranks: new Map(s.readyView().map((row, index) => [row.entryId, index])) };
       const saved = save(s, { pending: { sel: sending, before: [], at: Date.now(), attempts: 1 } });
+      assert.ok(saved.scheduler.solverPlan, `${moment} : plan sauvegardé`);
       tick(-300);
       const { back, byName, endSong, recovered, warnings, view } = restart(s, saved);
       assert.equal(recovered.pending.sel.pickedAt, sending.pickedAt - (moment === 'pendant' ? 300000 : 295000));
+      assert.equal(back.solverPlan?.source, 'timefold', `${moment} : plan repris`);
+      assert.equal(back.solverPlan.fingerprint, back.solverContextFingerprint(), `${moment} : plan encore valable`);
       assert.ok(warnings.some(text => /en avance de (295|300) s/.test(text)), `${moment} : ${warnings.join(' ; ')}`);
       const now = Date.now();
       for (const p of back.people.values()) assert.ok(p.readySince <= now, `${moment}, ${p.name} : début d’attente pas dans le futur`);
@@ -438,4 +444,27 @@ test('reprise sur une horloge en retard sur celle de la sauvegarde : les heures 
       assert.deepEqual(view(), expected, `${moment} : ${view().join(' ')}`);
     } finally { e.done(); }
   }
+});
+
+// Reprise dans la même milliseconde que des ajouts (relance immédiate, ou
+// essai) : ces ajouts ont pris chacun la milliseconde suivante (_readyStamp),
+// un peu après l'heure de l'horloge. Rien n'est corrigé : les heures et le
+// plan Timefold repris restent tels quels (night-state.test.js perdait son
+// plan quand la reprise tombait dans cette milliseconde).
+test('reprise dans la milliseconde des derniers ajouts : heures et plan Timefold inchangés', () => {
+  const e = evening({ tableRotation: true });
+  try {
+    const { s, song } = e;
+    const people = ['Léa', 'Max', 'Zoé', 'Inès'].map((name, k) => s.join({ tableId: `T${k}`, name, headcount: 1 }));
+    for (const p of people) s.chooseSong(p, song()); // même milliseconde
+    assert.ok(people.at(-1).readySince > Date.now(), 'les derniers ajouts prennent les millisecondes suivantes');
+    const local = s.readyView().map(row => row.entryId);
+    const desired = [local[2], local[0], local[3], local[1]];
+    s.solverPlan = { version: s.version, fingerprint: s.solverContextFingerprint(), source: 'timefold',
+      ranks: new Map(desired.map((entryId, index) => [entryId, index])) };
+    const { back, warnings, view } = restart(s, save(s));
+    assert.deepEqual(warnings, []);
+    assert.deepEqual([...back.people.values()].map(p => p.readySince), people.map(p => p.readySince));
+    assert.deepEqual(back.readyView().map(row => row.entryId), desired, `plan repris : ${view().join(' ')}`);
+  } finally { e.done(); }
 });

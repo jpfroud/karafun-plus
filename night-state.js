@@ -575,16 +575,20 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // ensemble, du même écart, la plus tardive à l'heure de la reprise : leur
   // ordre et leurs écarts ne changent pas. L'heure du choix d'un passage
   // envoyé (`pickedAt`, comparée aux débuts d'attente par _commit) aussi.
+  // Moins d'une seconde : des ajouts de la même milliseconde, qui prennent
+  // chacun la suivante (_readyStamp), rien à corriger. Le plan Timefold
+  // repris reste valable (mêmes rangs d'ajout, `addedOrder`) : il prend
+  // l'empreinte de la file aux heures corrigées.
   const latest = Math.max(0, ...[...tmp.people.values()].map(p => p.readySince || 0), ...tmp.stageEnds.values());
-  if (latest > restoredAt) {
+  if (latest - restoredAt >= 1000) {
     const ahead = latest - restoredAt;
     for (const p of tmp.people.values()) if (p.readySince) p.readySince -= ahead;
     for (const [turn, at] of tmp.stageEnds) tmp.stageEnds.set(turn, at - ahead);
     for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) {
       if (Number.isFinite(holder.sel?.pickedAt)) holder.sel.pickedAt -= ahead;
     }
-    // Quelques millisecondes : des ajouts de la même milliseconde (_readyStamp), rien à signaler.
-    if (ahead >= 1000) warnings.push(`heures de la sauvegarde en avance de ${Math.round(ahead / 1000)} s sur l’horloge : ramenées à la reprise`);
+    if (restoredPlan) restoredPlan.fingerprint = tmp.solverContextFingerprint();
+    warnings.push(`heures de la sauvegarde en avance de ${Math.round(ahead / 1000)} s sur l’horloge : ramenées à la reprise`);
   }
 
   // Aucun effet sur les objets fournis avant ce point.
