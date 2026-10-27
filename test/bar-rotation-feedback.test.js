@@ -102,10 +102,13 @@ for (const [mode, options] of modes) {
 // l'ordre d'ajout). Tout le monde a ajouté avant le premier passage : le
 // cycle k fait passer le k-ième ajouté de chaque table. La grande table n'y
 // reprend le micro qu'en fin de tour, quand il ne reste qu'elle (premier
-// ajouté, premier servi pur : 143 reprises sur ces 25 soirées). Ensuite,
-// duos compris, elle ne garde plus le micro. Les modes de tables gardent
-// l'alternance dès le premier tour.
-test('essai au bar (chacun son tour) : premiers passages par cycle des tables, puis la grande table ne garde plus le micro', () => {
+// ajouté, premier servi pur : 143 reprises sur ces 25 soirées). Elle garde
+// alors le micro tant que seuls ses passages sont permis : ses derniers
+// premiers passages, puis des duos où elle chante, qui présentent encore une
+// personne ou parce qu'il ne reste qu'eux (graine 3 : A10 A4 A3 A5 A8, puis
+// C5&A9 A10&B1 A3&C3 A5&A10, neuf passages de suite). Les modes de tables
+// gardent l'alternance dès le premier tour.
+test('essai au bar (chacun son tour) : premiers passages par cycle des tables, puis la grande table ne garde le micro que quand seuls ses passages sont permis', () => {
   let rest = 0, longest = 0, firstRuns = 0;
   for (let seed = 1; seed <= 25; seed++) {
     const s = barEvening({}, seed);
@@ -121,7 +124,7 @@ test('essai au bar (chacun son tour) : premiers passages par cycle des tables, p
       `graine ${seed} : pas d'autre reprise de table que celles du cycle`);
     firstRuns += round.same;
     rest += tableRuns(played).same - round.same;
-    longest = Math.max(longest, tableRuns(played.slice(19)).longest);
+    longest = Math.max(longest, tableRuns(played).longest);
   }
   // Tour des solos : la table de 10 enchaîne ses derniers chanteurs quand il
   // ne reste qu'elle : 100 reprises sur ces 25 soirées, quatre par soirée.
@@ -129,7 +132,11 @@ test('essai au bar (chacun son tour) : premiers passages par cycle des tables, p
   // Mesures de l'ancien ordonnanceur sur la suite de ces 25 soirées : 69
   // reprises (63 avec l'ordre d'ajout), séries de 6 au plus.
   assert.ok(rest <= 75, `après le tour des solos, duos compris : ${rest} reprises`);
-  assert.ok(longest <= 6, `série la plus longue après le tour des solos (duos entre tables en fin de liste compris) : ${longest}`);
+  // Série la plus longue sur toute la soirée : avec le cycle des tables, la
+  // fin du tour des solos, quand il ne reste que les passages de la grande
+  // table (ses premiers passages, puis des duos où elle chante) : 9 au plus
+  // sur ces 25 soirées (6 avant le cycle des tables).
+  assert.ok(longest <= 9, `série la plus longue de la soirée (fin du tour des solos et duos de la grande table compris) : ${longest}`);
 });
 
 // Premiers passages : « Chacun son tour » fait tourner les tables comme

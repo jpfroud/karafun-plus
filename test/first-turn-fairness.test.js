@@ -701,14 +701,22 @@ test('36 soirées variées : premier passage physique, invités, arrivées, dép
       // tous les premiers passages prêts sont de la table qui vient de
       // chanter, un habitué peut s'intercaler (le cycle des tables fait
       // passer les autres tables avant : il ne reste parfois que celle-là).
+      // C'est la seule exception (GUIDE-BAR.md) : un habitué d'une autre
+      // table, dont le passage est pris sur le tour suivant (`borrowedIds`) ;
+      // jamais un retour de la même table, ni un retour ordinaire.
       const lastTable = new Set([].concat(s.lastGroup || []));
       const streak = freshReady.every(pid => {
         const p = s.people.get(pid);
         const guest = p.song.duet?.state === 'accepted' ? s.people.get(p.song.duet.partnerId) : null;
         return [p.group, guest?.group].some(group => group && lastTable.has(group));
       });
-      if (freshReady.length && !streak) assert.ok(selected.ids.every(pid => appearance(pid) === 0),
-        `graine ${seed} : retour sur scène avant un premier passage`);
+      const first = selected.ids.every(pid => appearance(pid) === 0);
+      if (freshReady.length && !streak) assert.ok(first, `graine ${seed} : retour sur scène avant un premier passage`);
+      if (freshReady.length && streak) {
+        assert.ok(first || (selected.borrowedIds?.length > 0 &&
+          (selected.groups || [selected.group]).every(group => !lastTable.has(group))),
+        `graine ${seed} : seul un habitué d’une autre table, intercalé, passe avant les premiers passages de la table qui vient de chanter`);
+      }
       assert.ok(!played.has(selected.song.entryId), `graine ${seed} : titre répété`);
       played.add(selected.song.entryId);
       const guest = selected.ids[1] && s.people.get(selected.ids[1]);
