@@ -710,6 +710,17 @@ test('gestes abandonnés par le bar : un geste terminé par un duo ne revient pl
   }
 });
 
+// Relecture : `restoreToHead`, sans appelant, effaçait encore tous les gestes
+// du bar. Contrat (scheduler.js, invalidateManualOrder) : seuls « Recalculer
+// la file » (forceReplan) et, côté serveur, « Vider toutes les chansons » et
+// la nouvelle soirée les abandonnent d'un coup ; aucune autre méthode du
+// planificateur.
+test('seuls les abandons du bar effacent tous ses gestes : aucune autre méthode du planificateur', () => {
+  const callers = Object.getOwnPropertyNames(Scheduler.prototype).filter(name => name !== 'constructor' &&
+    typeof Scheduler.prototype[name] === 'function' && /\.invalidateManualOrder\(/.test(String(Scheduler.prototype[name])));
+  assert.deepEqual(callers, ['forceReplan']);
+});
+
 // Relecture de la correction : un « Pas prêt » arrivé au bout de son report au
 // même passage que le titre retiré pour une priorité passait avant lui, dans
 // l'ordre de la file : le titre retiré passait une chanson plus tard.
