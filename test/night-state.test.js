@@ -126,7 +126,10 @@ try {
   {
     // Une mise à jour en soirée redémarre le serveur : l'ordre adopté par
     // Timefold doit survivre aussi, sans devenir une intervention du bar.
-    const planned = new Scheduler();
+    // « Tables à tour de rôle » : quatre premiers passages de même part, que
+    // le plan départage (en « Chacun son tour », le cycle des tables puis
+    // premier ajouté, premier servi les range avant le plan).
+    const planned = new Scheduler({ tableRotation: true });
     const plannedAccess = new TableAccess();
     const singers = ['1', '2', '3', '4'].map((tableId, index) => {
       planned.table(tableId); plannedAccess.issue(tableId);
