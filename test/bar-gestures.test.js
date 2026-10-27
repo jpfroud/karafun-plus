@@ -530,6 +530,30 @@ test('ligne placée invitée dans un duo chargé qu’elle ne chante plus : sa p
   }
 });
 
+// Invitée marquée partie par le bar (keepSentDuosOfLeavers, avant son
+// départ) : elle quitte la soirée, sa place ne revient pas. Avant, le journal
+// du bar annonçait son retour juste avant son départ et le plan Timefold
+// était abandonné pour rien.
+test('ligne placée invitée dans un duo chargé, invitée marquée partie : sa place ne revient pas', () => {
+  const { s, people } = evening();
+  gesture(s, people.Elsa, 3);
+  gesture(s, people.Karim, 6);
+  const duo = s.inviteDuet(people.Paulo, people.Elsa.id, song());
+  s.reorderSongs(people.Paulo, duo.entryId, 0);
+  s.answerDuet(people.Elsa, true, duo.entryId);
+  const sel = s.select();
+  s.commit(sel);
+  const plan = { version: s.version, fingerprint: s.solverContextFingerprint(), source: 'timefold', ranks: new Map() };
+  s.solverPlan = plan;
+  s.leaveSentDuet(sel, people.Elsa.id, { by: 'staff' });
+  assert.deepEqual(s.manualChanges.map(change => change.name), ['Karim'], 'son geste ne revient pas');
+  assert.ok(!s.log.some(entry => /n’a finalement pas chanté/.test(entry.msg)), s.log.map(entry => entry.msg).join(' | '));
+  assert.equal(s.solverPlan, plan, 'le plan n’est pas abandonné pour elle');
+  assert.equal(sel.placedUndo, undefined, 'le reçu ne la rendra pas plus tard');
+  s.leave(people.Elsa, 'staff');
+  assert.ok(!s.manualOrder.includes(people.Elsa.id));
+});
+
 // Relecture de la correction : un duo improvisé noté par erreur, puis annulé
 // ou corrigé, laissait la place ou la priorité de cette personne terminée.
 test('duo improvisé noté par erreur avec une personne placée par le bar, puis annulé : son geste revient', () => {

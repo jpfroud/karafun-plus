@@ -592,7 +592,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // passerait après le titre suivant de son chanteur. Elles reculent
   // ensemble, du même écart, la plus tardive à l'heure de la reprise : leur
   // ordre et leurs écarts ne changent pas. L'heure du choix d'un passage
-  // envoyé (`pickedAt`, comparée aux débuts d'attente par _commit) aussi.
+  // envoyé (`pickedAt`, comparée aux débuts d'attente par _commit) aussi,
+  // comme les heures de demande gardées par son reçu (`turnCredit`), qu'un
+  // retrait sans chanter rend à ses chanteurs (rollbackUnplayed).
   // Moins d'une seconde : des ajouts de la même milliseconde, qui prennent
   // chacun la suivante (_readyStamp), rien à corriger. Le plan Timefold
   // repris reste valable (mêmes rangs d'ajout, `addedOrder`) : il prend
@@ -604,6 +606,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     for (const [turn, at] of tmp.stageEnds) tmp.stageEnds.set(turn, at - ahead);
     for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) {
       if (Number.isFinite(holder.sel?.pickedAt)) holder.sel.pickedAt -= ahead;
+      for (const side of ['before', 'after']) {
+        for (const row of holder.sel?.turnCredit?.[side]?.people || []) {
+          if (Number.isFinite(row?.readySince) && row.readySince) row.readySince -= ahead;
+        }
+      }
     }
     if (restoredPlan) restoredPlan.fingerprint = tmp.solverContextFingerprint();
     warnings.push(`heures de la sauvegarde en avance de ${Math.round(ahead / 1000)} s sur l’horloge : ramenées à la reprise`);

@@ -446,6 +446,35 @@ test('reprise sur une horloge en retard sur celle de la sauvegarde : les heures 
   }
 });
 
+// Même reprise, avec un titre chargé dans KaraFun au moment de la sauvegarde,
+// retiré ensuite sans avoir été chanté : son reçu (`turnCredit`) rend à son
+// chanteur l'heure de sa demande, reculée comme les autres. Sinon il perdait
+// jusqu'à l'écart des horloges et passait après des demandes plus récentes.
+test('reprise sur une horloge en retard : un titre chargé puis retiré rend une heure reculée comme les autres', () => {
+  const e = evening();
+  try {
+    const { s, tick, add, step, endSong } = e;
+    const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+    add(o); add(tess); add(yves);
+    for (let k = 0; k < 3; k++) step();
+    tick(10); endSong(); // pause du bar, listes vides
+    tick(10); add(yves); // Yves redemande le premier
+    tick(60); add(o);
+    tick(60); add(tess);
+    tick(5); const loaded = s.select(); s.commit(loaded); // chargé dans KaraFun, pas commencé
+    assert.deepEqual(loaded.names, ['Yves']);
+    tick(400); add(yves); // son titre suivant
+    const saved = save(s, { tracked: [{ sel: loaded, queueId: 7 }] });
+    tick(-300);
+    const { back, recovered, warnings, view } = restart(s, saved);
+    assert.ok(warnings.some(text => /en avance de 300 s/.test(text)), warnings.join(' ; '));
+    back.rollbackUnplayed(recovered.tracked[0].sel, { requeue: true }); // KaraFun le retire
+    assert.deepEqual(view(), ['Yves', 'O', 'Tess'], 'Yves avait demandé le premier');
+    const byStart = list => list.map(p => [p.name, p.readySince]).sort((a, b) => a[1] - b[1]).map(([name]) => name);
+    assert.deepEqual(byStart([...back.people.values()]), ['Yves', 'O', 'Tess']);
+  } finally { e.done(); }
+});
+
 // Reprise dans la même milliseconde que des ajouts (relance immédiate, ou
 // essai) : ces ajouts ont pris chacun la milliseconde suivante (_readyStamp),
 // un peu après l'heure de l'horloge. Rien n'est corrigé : les heures et le

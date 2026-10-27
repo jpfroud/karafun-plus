@@ -108,7 +108,7 @@ for (const [mode, options] of modes) {
 // personne ou parce qu'il ne reste qu'eux (graine 3 : A10 A4 A3 A5 A8, puis
 // C5&A9 A10&B1 A3&C3 A5&A10, neuf passages de suite). Les modes de tables
 // gardent l'alternance dès le premier tour.
-test('essai au bar (chacun son tour) : premiers passages par cycle des tables, puis la grande table ne garde le micro que quand seuls ses passages sont permis', () => {
+test('essai au bar (chacun son tour) : premiers passages par cycle des tables, séries de la grande table bornées sur toute la soirée', () => {
   let rest = 0, longest = 0, firstRuns = 0;
   for (let seed = 1; seed <= 25; seed++) {
     const s = barEvening({}, seed);
