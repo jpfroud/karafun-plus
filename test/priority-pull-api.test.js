@@ -34,7 +34,7 @@ function harness() {
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, handlers, access, journal, staffState, publicState, sync, analyze, closingBlocksStart,
       tracked: () => tracked, setTracked: list => { tracked = list; }, setBridge: b => { bridge = b; },
-      setPending: p => { pending = p; }, getPending: () => pending, deferTurn };
+      setPending: p => { pending = p; }, getPending: () => pending, setRestartOp: op => { restartOp = op; }, deferTurn };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
   f.settings.auto = false;
@@ -247,6 +247,49 @@ test('priorité pendant un envoi, avec une Battle ou d’autres titres dans Kara
     assert.equal(f.staffState().priorityPull, null);
     await assert.rejects(pullFor(f, ctx.people.driss), { message: 'D’autres titres attendent dans KaraFun : rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer la personne après eux.' });
     nothingChanged(f, ctx);
+  }
+  // Relecture : trois refus de priorityPullCheck n'avaient pas de test.
+  {
+    // « Relancer depuis le début » en cours sur le titre d'Alice.
+    const f = harness();
+    const ctx = loaded(f);
+    f.setRestartOp({ songId: 801, singer: ctx.stage.label, title: 'Titre Alice', before: ['1', '2'], at: Date.now(),
+      phase: 'adding', originalQueueId: 1, trackedQueueId: 1 });
+    assert.equal(f.staffState().priorityPull, null, 'pas de question pendant la relance');
+    await assert.rejects(pullFor(f, ctx.people.driss), { message: 'Le titre en cours est en train d’être relancé : rien n’a été retiré ni avancé. Réessaie dans un instant.' });
+    nothingChanged(f, ctx);
+  }
+  {
+    // « Vider toutes les chansons » attend la confirmation de KaraFun.
+    const f = harness();
+    const ctx = loaded(f);
+    f.settings.queueClearPending = true;
+    assert.equal(f.staffState().priorityPull, null, 'pas de question pendant le vidage');
+    await assert.rejects(pullFor(f, ctx.people.driss), { message: 'La file est en train d’être vidée : rien n’a été retiré ni avancé.' });
+    nothingChanged(f, ctx);
+  }
+  {
+    // Seconde confirmation pendant que le premier retrait est en route : le
+    // titre est déjà en train de sortir, rien n'est retiré ni avancé deux fois.
+    const f = harness();
+    const ctx = loaded(f);
+    await pullFor(f, ctx.people.driss);
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]]);
+    assert.ok(ctx.tr.pulled, 'premier retrait en route');
+    const gestures = f.sched.manualChanges.length;
+    const message = 'Le titre chargé dans KaraFun a changé : rien n’a été retiré ni avancé. Touche de nouveau « Priorité ».';
+    await assert.rejects(pullFor(f, ctx.people.chloe), { message });
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]], 'un seul retrait envoyé');
+    assert.equal(f.sched.manualChanges.length, gestures, 'aucun second geste');
+    assert.equal(f.sched.reservedNext?.personId, ctx.people.driss.id, 'la première priorité tient');
+    // Titre marqué absent par le bar (« Absent ») : même refus.
+    const g = harness();
+    const other = loaded(g);
+    other.tr.absent = true;
+    await assert.rejects(pullFor(g, other.people.driss), { message });
+    assert.deepEqual(removals(other.bridge), []);
+    assert.deepEqual(g.sched.manualChanges, []);
+    assert.notEqual(g.sched.reservedNext?.byStaff, true);
   }
 });
 
