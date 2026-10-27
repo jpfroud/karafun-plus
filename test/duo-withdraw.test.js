@@ -249,3 +249,36 @@ test('duo déjà dans KaraFun : un passage de l’invitée envoyé depuis n’es
   assert.equal(s.roundApps.get(bruno.id), apps, 'son propre passage reste compté');
   assert.ok(s.roundPeople.has(bruno.id), 'et Bruno reste servi dans ce tour');
 });
+
+// Relecture : l'invitée d'un duo déjà chargé, qui s'en retire, sort aussi du
+// cycle des premiers passages où ce duo avait fait passer sa table. Le cas
+// où ce duo fermait le cycle n'était pas défait : le cycle repartait vide, et
+// une deuxième personne de la table de l'auteur passait avant la table de
+// l'invitée, qui n'avait pas eu son tour.
+test('premiers passages : l’invitée se retire d’un duo chargé, sa table garde son tour dans le cycle', () => {
+  for (const closes of [true, false]) {
+    let n = 1;
+    const tune = () => song(n, `Titre ${n++}`);
+    const s = new Scheduler();
+    s.setHeadcount('A', 2); s.setHeadcount('B', 1);
+    const lea = s.join({ tableId: 'A', name: 'Léa' }), max = s.join({ tableId: 'A', name: 'Max' });
+    const zoe = s.join({ tableId: 'B', name: 'Zoé' });
+    // Sans fermeture : une troisième table attend encore son premier passage.
+    const gus = closes ? null : s.join({ tableId: 'C', name: 'Gus', headcount: 1 });
+    const duo = s.inviteDuet(lea, zoe.id, tune());
+    s.chooseSong(max, tune()); s.chooseSong(zoe, tune());
+    if (gus) s.chooseSong(gus, tune());
+    s.answerDuet(zoe, true, duo.entryId);
+    const sel = s.select();
+    assert.deepEqual(sel.names, ['Léa', 'Zoé']);
+    s.commit(sel);
+    assert.deepEqual([...s.firstCycle].sort(), closes ? [] : ['A', 'B'], closes ? 'le duo ferme le cycle' : 'le cycle reste ouvert');
+    s.leaveSentDuet(sel, zoe.id);
+    assert.deepEqual([...s.firstCycle], ['A'], `fermeture ${closes} : seule la table A est passée dans ce cycle`);
+    assert.deepEqual(s.readyView().map(v => v.name), closes ? ['Zoé', 'Max'] : ['Zoé', 'Gus', 'Max'],
+      `fermeture ${closes} : comme si Léa avait chanté seule`);
+    // KaraFun retire ensuite le titre sans qu'il soit chanté : le cycle d'avant revient.
+    s.rollbackUnplayed(sel, { requeue: true });
+    assert.deepEqual([...s.firstCycle], [], `fermeture ${closes} : cycle d’avant le passage rendu`);
+  }
+});
