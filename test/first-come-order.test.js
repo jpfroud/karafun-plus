@@ -357,3 +357,70 @@ test('céder sa place : deux premiers passages d’une même table suivent l’o
   assert.deepEqual(order(s), ['A2', 'B1', 'A1'], 'A2 prend la place de A1');
   assert.throws(() => s.giveSpot(a1, a2.id), /A2 est déjà devant toi/);
 });
+
+// « Je suis là » obligatoire (relecture du 27 octobre) : seul le prochain
+// annoncé peut confirmer sa présence, et select() ne voyait que lui parmi les
+// premiers passages en attente. Le cycle des tables semblait donc fini à
+// chaque choix et repartait vide après chaque passage : premier ajouté,
+// premier servi pur (S1 A1 B1 A2 C1 A3 B2 A4 C2 B3 C3 S2, S2 de la 5e à la
+// dernière place), et l'ordre annoncé aux téléphones changeait à chaque
+// passage. Boucle du serveur : réserver le prochain, le confirmer, l'envoyer.
+test('« Je suis là » obligatoire : le cycle des tables tient d’un passage à l’autre', () => withClock(tick => {
+  const s = new Scheduler({ requirePresence: true });
+  const people = ARRIVALS.map(([tableId, name]) => s.join({ tableId, name, headcount: HEADCOUNT[tableId] }));
+  people.forEach((p, k) => { tick(); s.chooseSong(p, song(k + 1)); });
+  assert.deepEqual(s.presenceView().map(item => item.name), CYCLES, 'ordre annoncé au départ');
+  const sung = [];
+  for (let guard = 0; guard < 30; guard++) {
+    tick();
+    s.reservePresenceNext();
+    if (s.reservedNext) s.confirm(s.people.get(s.reservedNext.personId));
+    const sel = s.select();
+    if (!sel) break;
+    s.commit(sel); s.songEnded(sel.ids);
+    sung.push(sel.names.join(' & '));
+    assert.deepEqual(s.presenceView().map(item => item.name), CYCLES.slice(sung.length),
+      `ordre annoncé après ${sung.join(' ')}`);
+  }
+  assert.deepEqual(sung, CYCLES);
+}));
+
+// Même cause pour les tours : un habitué intercalé entre les premiers passages
+// d'une grande table, annoncé comme passage pris sur le tour suivant (dette),
+// était noté à l'envoi comme le début d'un tour neuf (tour remis à zéro, sans
+// dette), puisque select() ne voyait que lui. Chaque passage envoyé note
+// maintenant le même état que le passage annoncé, et la soirée reste celle
+// d'un bar sans « Je suis là » obligatoire.
+test('« Je suis là » obligatoire : un habitué intercalé reste une dette, comme annoncé', () => {
+  const night = requirePresence => withClock(tick => {
+    const s = new Scheduler({ requirePresence });
+    const habitues = ['R1', 'R2', 'R3', 'R4'].map((name, k) => s.join({ tableId: `H${k}`, name, headcount: 1 }));
+    let n = 0;
+    for (const p of habitues) { tick(); s.chooseSong(p, song(++n)); s.chooseSong(p, song(++n), 'append'); }
+    const table = Array.from({ length: 6 }, (_, k) => s.join({ tableId: 'T', name: `T${k + 1}`, headcount: 6 }));
+    const steps = [];
+    for (let guard = 0; guard < 20; guard++) {
+      tick();
+      if (guard === 4) for (const p of table) { tick(); s.chooseSong(p, song(++n)); }
+      // Passage annoncé, tel que la prévision des téléphones le simule.
+      let announced = null;
+      if (requirePresence) {
+        s.reservePresenceNext();
+        if (s.reservedNext) s.confirm(s.people.get(s.reservedNext.personId));
+        announced = s._forecast(false, [], null, true)[0];
+      }
+      const sel = s.select();
+      if (!sel) break;
+      const state = c => ({ ids: c.ids, roundResets: c.roundResets || 0, borrowedIds: c.borrowedIds || [],
+        owed: c.owed || null, firstCycle: c.firstCycle ?? null });
+      if (announced) assert.deepEqual(state(sel), state(announced), `passage ${guard + 1} (${sel.names.join(' & ')}) : envoyé comme annoncé`);
+      s.commit(sel); s.songEnded(sel.ids);
+      steps.push({ name: sel.names.join(' & '), roundPeople: [...s.roundPeople].map(pid => s.people.get(pid).name).sort(),
+        roundUse: [...s.roundUse].map(([pid, use]) => `${s.people.get(pid).name}:${use}`).sort() });
+    }
+    return steps;
+  });
+  const free = night(false), presence = night(true);
+  assert.ok(free.some((step, k) => k > 4 && step.name.startsWith('R')), 'des habitués s’intercalent');
+  assert.deepEqual(presence, free);
+});
