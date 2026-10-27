@@ -282,3 +282,46 @@ test('premiers passages : l’invitée se retire d’un duo chargé, sa table ga
     assert.deepEqual([...s.firstCycle], [], `fermeture ${closes} : cycle d’avant le passage rendu`);
   }
 });
+
+// Relecture : la correction ci-dessus ne valait que pour un duo déjà chargé.
+// Marquée partie par le bar pendant l'envoi du duo (pas encore d'accusé de
+// KaraFun, ou envoi interrompu par une mise à jour), l'invitée laissait sa
+// table dans le cycle noté au choix du passage, que l'accusé appliquait tel
+// quel : Bob, de sa table, perdait sa place, et un duo qui fermait le cycle
+// le fermait sans elle. Le même geste du bar donne maintenant le même ordre,
+// que KaraFun ait accusé l'envoi ou non.
+test('premiers passages : invitée marquée partie pendant l’envoi du duo, sa table garde son tour dans le cycle', () => {
+  const realNow = Date.now;
+  let clock = Date.UTC(2026, 9, 25, 20, 0, 0);
+  Date.now = () => clock;
+  try {
+    for (const closes of [false, true]) {
+      for (const when of ['chargé', 'pendant l’envoi']) {
+        let n = 1;
+        const tune = () => song(n, `Titre ${n++}`);
+        const s = new Scheduler();
+        s.setHeadcount('A', 2); s.setHeadcount('B', 2);
+        const alice = s.join({ tableId: 'A', name: 'Alice' }), ann = s.join({ tableId: 'A', name: 'Ann' });
+        const bea = s.join({ tableId: 'B', name: 'Bea' }), bob = s.join({ tableId: 'B', name: 'Bob' });
+        // Sans fermeture : une troisième table attend encore son premier passage.
+        const cid = closes ? null : s.join({ tableId: 'C', name: 'Cid', headcount: 1 });
+        clock += 1000; const duo = s.inviteDuet(alice, bea.id, tune());
+        s.answerDuet(bea, true, duo.entryId);
+        for (const p of [bob, cid, ann].filter(Boolean)) { clock += 1000; s.chooseSong(p, tune()); }
+        clock += 45000;
+        const sel = s.select();
+        assert.deepEqual(sel.names, ['Alice', 'Bea']);
+        if (when === 'chargé') {
+          s.commit(sel);
+          s.leaveSentDuet(sel, bea.id, { by: 'staff' });
+        } else s.leaveSentDuet(sel, bea.id, { by: 'staff', keepLabel: true }); // keepSentDuosOfLeavers
+        s.leave(bea, 'staff');
+        if (when !== 'chargé') s.commit(sel);
+        const label = `fermeture ${closes}, ${when}`;
+        assert.deepEqual([...s.firstCycle], ['A'], `${label} : seule la table A est passée dans ce cycle`);
+        assert.deepEqual(s.readyView().map(v => v.name), closes ? ['Bob', 'Ann'] : ['Bob', 'Cid', 'Ann'],
+          `${label} : comme si Alice avait chanté seule`);
+      }
+    }
+  } finally { Date.now = realNow; }
+});
