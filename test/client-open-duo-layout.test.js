@@ -11,6 +11,14 @@
 // un seul duo ouvert), puis « +N » ; dépliés, chaque duo ouvert reste
 // atteignable.
 //
+// Seconde relecture : dans « Ma table », « Chercher un duo » (ou « Fermer la
+// demande ») ajouté à chaque titre poussait la rangée d'actions hors de la
+// ligne (rangée en flex: none, jamais à la ligne) : page plus large que
+// l'écran à 320 px, ✕ hors de la carte à 360 et 375 px. Le contrôle « pas de
+// défilement horizontal » ne pouvait pas le voir : en isMobile, Chromium
+// élargit innerWidth à la largeur du contenu ; il compare désormais avec la
+// largeur fixée pour la page, et chaque bouton doit tenir dans l'écran.
+//
 // Le DOM simulé de client-ui-coverage.test.js ne calcule pas la mise en page :
 // seul un vrai navigateur mesure ces tailles. Aucun serveur ni port : la vraie
 // page (client.html, app.css, client-i18n.js) est servie par Playwright.
@@ -37,7 +45,7 @@ const stateOf = (extra = {}) => ({
   catalogAvailable: true, stage: null, next: null, rules: {}, ...extra,
 });
 
-async function openPage(browser, { width, height, locale = 'fr-FR', state }) {
+async function openPage(browser, { width, height, locale = 'fr-FR', state, ready = '#infoBar:not([hidden]) .info-item' }) {
   const context = await browser.newContext({ viewport: { width, height }, isMobile: true, hasTouch: true, locale });
   // Son et vibration déjà réglés : pas de fenêtre de bienvenue par-dessus.
   await context.addInitScript(() => { try { localStorage.setItem('kfAlerts:1:secret', '1'); } catch (_) { /* privé */ } });
@@ -52,9 +60,24 @@ async function openPage(browser, { width, height, locale = 'fr-FR', state }) {
     return route.fulfill({ json: { ok: true } });
   });
   await page.goto(`${ORIGIN}/t/1/secret`);
-  await page.waitForSelector('#infoBar:not([hidden]) .info-item');
+  await page.waitForSelector(ready);
   return { page, context, accepted };
 }
+
+// Débordement horizontal, mesuré contre la largeur fixée pour la page (pas
+// innerWidth, qui suit le contenu en isMobile) : largeur de la page, et
+// boutons affichés de `scope` qui sortent de l'écran.
+const overflowX = (page, width, scope) => page.evaluate(([width, scope]) => ({
+  scroll: document.documentElement.scrollWidth,
+  outside: [...document.querySelectorAll(`${scope} button`)].map(button => [button, button.getBoundingClientRect()])
+    .filter(([, box]) => box.width && (box.left < -0.5 || box.right > width + 0.5))
+    .map(([button, box]) => `${button.textContent.trim()} [${Math.round(box.left)}, ${Math.round(box.right)}]`),
+}), [width, scope]);
+const assertNoOverflowX = async (page, width, scope, at) => {
+  const box = await overflowX(page, width, scope);
+  assert.ok(box.scroll <= width, `${at} : pas de défilement horizontal (page de ${box.scroll} px pour ${width})`);
+  assert.deepEqual(box.outside, [], `${at} : aucun bouton hors de l'écran`);
+};
 
 const barBox = page => page.evaluate(() => {
   const bar = document.getElementById('infoBar').getBoundingClientRect();
@@ -65,8 +88,7 @@ const barBox = page => page.evaluate(() => {
   });
   return { top: Math.round(bar.top), bottom: Math.round(bar.bottom), items,
     nav: Math.round(document.getElementById('tabsNav').getBoundingClientRect().top),
-    more: document.querySelector('#infoBar [data-info-more]')?.textContent || null,
-    scrollX: document.documentElement.scrollWidth > innerWidth };
+    more: document.querySelector('#infoBar [data-info-more]')?.textContent || null };
 });
 
 (async () => {
@@ -84,7 +106,7 @@ const barBox = page => page.evaluate(() => {
         assert.equal(box.items.length, 1, at);
         assert.ok(box.items[0].text >= 200, `${at} : texte du bandeau lisible (${JSON.stringify(box)})`);
         assert.ok(box.items[0].h <= 150, `${at} : bandeau compact (${JSON.stringify(box)})`);
-        assert.equal(box.scrollX, false, `${at} : pas de défilement horizontal`);
+        await assertNoOverflowX(page, width, '#infoBar', at);
         await context.close();
       }
     }
@@ -131,16 +153,55 @@ const barBox = page => page.evaluate(() => {
         const row = await page.evaluate(() => {
           const li = document.querySelector('#queueList li');
           return { grow: Math.round(li.querySelector('.grow').getBoundingClientRect().width),
-            h: Math.round(li.getBoundingClientRect().height), scrollX: document.documentElement.scrollWidth > innerWidth };
+            h: Math.round(li.getBoundingClientRect().height) };
         });
         assert.ok(row.grow >= 110, `${at} : nom et titre lisibles (${JSON.stringify(row)})`);
         assert.ok(row.h <= 140, `${at} : ligne compacte (${JSON.stringify(row)})`);
-        assert.equal(row.scrollX, false, `${at} : pas de défilement horizontal`);
+        await assertNoOverflowX(page, width, '#queueList', at);
         await context.close();
+      }
+    }
+
+    // « Ma table » : trois titres prêts (♪, Réglages, ⇅, « Chercher un duo »,
+    // ✕), ou le premier en duo ouvert (« Fermer la demande »), ou en duo
+    // proposé (« Annuler duo ») ; les actions passent à la ligne dans la
+    // ligne du titre, rien ne sort de la carte ni de l'écran.
+    const songs = duet => [{ entryId: 'e1', songId: 1, title: 'Je veux te voir', artist: 'Artiste', ...(duet ? { duet } : {}) },
+      { entryId: 'e2', songId: 2, title: 'Bohemian Rhapsody', artist: 'Queen' }, { entryId: 'e3', songId: 3, title: 'Tube', artist: 'Groupe' }];
+    const duets = { aucun: null, ouvert: { state: 'open', kind: 'duo' }, proposé: { state: 'pending', kind: 'duo', partnerName: 'Max', seen: true } };
+    for (const [width, height] of [[320, 568], [360, 640], [375, 667]]) {
+      for (const locale of ['fr-FR', 'en-GB']) {
+        for (const [label, duet] of Object.entries(duets)) {
+          const at = `${width}x${height}, Ma table, duo ${label}, ${locale}`;
+          const { page, context } = await openPage(browser, { width, height, locale, ready: '#peopleList .song-stack li',
+            state: stateOf({ tablePeople: [person('alice', 'Alice', { songs: songs(duet) })] }) });
+          const rows = await page.evaluate(() => [...document.querySelectorAll('#peopleList .song-stack li')].map(li => {
+            const row = li.getBoundingClientRect(), card = li.closest('.card').getBoundingClientRect();
+            return { row: [Math.round(row.left), Math.round(row.right)], card: [Math.round(card.left), Math.round(card.right)],
+              buttons: [...li.querySelectorAll('button')].map(button => {
+                const box = button.getBoundingClientRect();
+                return { text: button.textContent.trim(), left: Math.round(box.left), right: Math.round(box.right) };
+              }) };
+          }));
+          assert.equal(rows.length, 3, at);
+          for (const row of rows) {
+            for (const button of row.buttons) {
+              assert.ok(button.left >= row.row[0] && button.right <= row.row[1],
+                `${at} : « ${button.text} » dans la ligne du titre (${JSON.stringify(row)})`);
+            }
+            assert.ok(row.row[1] <= row.card[1], `${at} : ligne dans la carte (${JSON.stringify(row)})`);
+          }
+          const labels = rows.flatMap(row => row.buttons.map(button => button.text));
+          if (label === 'aucun') assert.equal(labels.filter(text => /^(Chercher un duo|Find a duet)$/.test(text)).length, 3, `${at} : « Chercher un duo » sur chaque titre`);
+          if (label === 'ouvert') assert.ok(labels.some(text => /^(Fermer la demande|Close the request)$/.test(text)), `${at} : « Fermer la demande »`);
+          if (label === 'proposé') assert.ok(labels.some(text => /^(Annuler duo|Cancel duet)$/.test(text)), `${at} : « Annuler duo »`);
+          await assertNoOverflowX(page, width, '#peopleList', at);
+          await context.close();
+        }
       }
     }
   } finally {
     await browser.close();
   }
-  console.log('Bandeau du duo ouvert en navigateur : texte lisible et bandeau compact à 320, 360 et 375 px, passage de ce téléphone d’abord, un duo ouvert puis « +N », tous atteignables, ligne de la file lisible OK');
+  console.log('Bandeau du duo ouvert en navigateur : texte lisible et bandeau compact à 320, 360 et 375 px, passage de ce téléphone d’abord, un duo ouvert puis « +N », tous atteignables, ligne de la file lisible, actions des titres de « Ma table » dans leur ligne, sans défilement horizontal OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

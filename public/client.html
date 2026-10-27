@@ -207,7 +207,11 @@
   .client .song-stack li { align-items: center; flex-wrap: wrap; }
   .client .song-stack li .grow { flex: 1 1 130px; }
   .client .song-stack .song-title { overflow-wrap: break-word; }
-  .client .song-stack .song-actions { max-width: none; margin-left: auto; }
+  /* Actions d'un titre : sous le titre quand elles ne tiennent pas à côté, et
+     jamais plus larges que la ligne. Rangée en flex: none, ♪, Réglages, ⇅,
+     « Chercher un duo » et ✕ sortaient de la carte (et de l'écran à 320 px) :
+     elle peut rétrécir, ses boutons passent à la ligne. */
+  .client .song-stack .song-actions { flex: 0 1 auto; min-width: 0; max-width: 100%; margin-left: auto; }
   .client .song-stack .song-actions .btn.icon { width: 40px; min-height: 40px; padding: 0; font-size: 17px; }
   .client .person-actions .btn.primary, .client .person-actions .btn.add-duo { flex: 1 1 140px; }
   .client .person-actions .btn.share { flex: 1 1 100%; }
