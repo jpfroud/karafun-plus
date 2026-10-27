@@ -228,6 +228,47 @@ test('duo ouvert proposé puis rejoint : la ligne placée tient, en « Duos uniq
   }
 });
 
+// Chaque personne d'un geste noté garde une ligne dans l'ordre fixé.
+const gesturesHold = s => s.manualChanges.every(change => s.manualOrder.includes(change.personId));
+
+// Relecture : un geste du bar reconstruisait l'ordre fixé à partir des seules
+// lignes affichées. En « Duos uniquement », la ligne placée d'une personne
+// dont le titre devient un duo ouvert (retenu hors de la file) en sortait,
+// alors que son geste restait noté et annulable : rejoint, le duo passait en
+// fin de file au lieu de reprendre la place donnée par le bar.
+test('duo ouvert retenu en « Duos uniquement » : un autre geste du bar ne fait pas perdre sa place à la ligne placée', () => {
+  for (const [kind, to, shown] of [['déplacement', 3, ['Paulo', 'Elsa & Gil', 'Maud', 'Karim']],
+    ['priorité', 0, ['Karim', 'Paulo', 'Elsa & Gil', 'Maud']]]) {
+    const { s, people } = evening();
+    s.duoOnlyRule = () => true;
+    gesture(s, people.Elsa, 1); // Paulo, Elsa
+    s.openDuet(people.Elsa, { entryId: people.Elsa.song.entryId });
+    assert.ok(!names(s).includes('Elsa'), 'son duo ouvert attend un volontaire hors de la file');
+    gesture(s, people.Karim, to);
+    assert.ok(s.manualOrder.includes(people.Elsa.id), `${kind} : sa ligne reste dans l’ordre fixé`);
+    assert.ok(gesturesHold(s), `${kind} : chaque geste noté garde sa ligne`);
+    s.acceptOpenDuet(people.Gil, people.Elsa.id, people.Elsa.song.entryId);
+    assert.deepEqual(names(s).slice(0, 4), shown, `${kind} : rejoint, le duo reprend la place donnée par le bar`);
+    assert.deepEqual(playNames(s, shown.indexOf('Elsa & Gil') + 1), shown.slice(0, shown.indexOf('Elsa & Gil') + 1), kind);
+  }
+});
+
+// Relecture : la ligne placée d'une personne sous « Pas prêt » était rangée à
+// la place où son report l'affiche, et la ligne non placée devant laquelle
+// elle s'y trouvait devenait fixée : prête, elle passait après elle.
+test('ligne placée sous « Pas prêt » : un autre geste du bar la garde à son rang', () => {
+  const { s, people } = evening();
+  gesture(s, people.Elsa, 1); // Paulo, Elsa
+  const line = s.presenceView().find(v => v.ids[0] === people.Elsa.id);
+  s.deferPassage(people.Elsa.id, line, 2);
+  gesture(s, people.Jade, 0);
+  assert.deepEqual(s.manualOrder.map(pid => s.people.get(pid).name), ['Jade', 'Paulo', 'Elsa'],
+    'Maud, que le bar n’a pas placée, ne devient pas fixée');
+  assert.deepEqual(names(s).slice(0, 4), ['Jade', 'Paulo', 'Elsa', 'Maud'], 'reportée de deux chansons : Jade, Paulo, puis Elsa');
+  s.cancelDeferral(people.Elsa.id);
+  assert.deepEqual(names(s).slice(0, 4), ['Jade', 'Paulo', 'Elsa', 'Maud'], 'prête : juste derrière Paulo, comme le bar l’a placée');
+});
+
 test('la place donnée par le bar suit la personne : titre remplacé ou réordonné, liste vidée', () => {
   const { s, people } = evening();
   gesture(s, people.Maud, 3);
