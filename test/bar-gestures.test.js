@@ -785,7 +785,7 @@ test('duo formé sur une ligne gardée puis défait avant son envoi : la ligne q
     assert.deepEqual(fixed(ctx.s), ['Paulo', 'Maud', 'Elsa'], `${how} : Gil chante avec Paulo, sa ligne quitte l’ordre fixé`);
     const s = how.startsWith('redémarrage') ? restart(ctx.s, ctx.access) : ctx.s;
     if (s !== ctx.s) assert.deepEqual(s.warnings, [], 'la soirée se reprend sans avertissement');
-    const [paulo, gil]= [people.Paulo, people.Gil].map(p => s.people.get(p.id));
+    const [paulo, gil] = [people.Paulo, people.Gil].map(p => s.people.get(p.id));
     if (how.endsWith('l’invitée se retire')) s.leaveDuet(gil, paulo.id, duo.entryId);
     else if (how === 'l’auteur annule le duo') s.cancelDuet(paulo, duo.entryId);
     else s.removeSong(paulo, duo.entryId);
