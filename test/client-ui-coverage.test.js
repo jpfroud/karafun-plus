@@ -4587,6 +4587,57 @@ test('duo ouvert : proposé depuis le catalogue ou la liste, fermé par son aute
   assert.ok(texts.includes('Personne n’a rejoint le duo d’Alice sur « Second » : Alice le chante en solo.'), texts.join(' | '));
 });
 
+// Seconde relecture : un titre du catalogue que quelqu'un a ouvert en duo
+// proposait « Proposer un duo à Léa », toujours refusé par le serveur (« Ce
+// titre cherche déjà un partenaire… »), avec une fiche qui promettait « Léa
+// accepte ou refuse ta demande ».
+test('duo ouvert : choisi dans le catalogue, il propose « Je chante avec … », jamais « Proposer un duo »', async () => {
+  const openLine = { source: 'helper', id: 'o-o1', ids: ['o-o1'], name: 'Léa', pos: 1, title: 'Tube',
+    song: { entryId: 'o1', songId: 9, title: 'Tube', artist: 'Groupe', duet: { state: 'open', kind: 'duo' } } };
+  const notice = { playedAt: null, queued: [{ pos: 1, name: 'Léa', ownerId: 'o-o1', entryId: 'o1' }] };
+  const respond = url => url.startsWith('/api/song/notice?') ? { notice } : undefined;
+  const page = await open({ state: baseState({ queue: [openLine], openDuets: [openDuet('o1', 'Léa', 'Tube')] }), respond });
+  await page.click(page.node('nav-catalog'));
+  await pickCatalogSong(page);
+  assert.equal(page.node('songNotice').textContent,
+    '⚠ Il est déjà prévu dans la file (n°1, Léa). Ce titre cherche un partenaire de duo : tu peux chanter avec Léa, l’ajouter quand même ou choisir un autre titre.');
+  assert.equal(page.node('songJoinOffer').hidden, false);
+  assert.equal(page.find('songJoinOffer', '[data-open-join="o1"]').textContent, 'Je chante avec Léa');
+  assert.equal(page.node('songJoinOffer').querySelector('[data-join-request]'), null, 'pas de demande, toujours refusée');
+  // Une seule personne sur ce téléphone : le duo est rejoint tout de suite, la fiche se ferme.
+  await page.tap('songJoinOffer', '[data-open-join="o1"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open/accept', { table: '1', access: 'secret', personId: 'alice', ownerId: 'o-o1', entryId: 'o1' }]);
+  assert.equal(page.sheetOpen(), false);
+  assert.equal(page.toast().text, 'Duo ajouté avec Léa.');
+  assert.ok(!page.posts.some(([url]) => url === '/api/table/duet/join'), 'aucune demande de duo');
+  // Personne de ce téléphone ne peut s'y proposer (ici, place sans prénom) : aucune action de duo.
+  const unnamed = baseState({ queue: [openLine], openDuets: [openDuet('o1', 'Léa', 'Tube')] });
+  unnamed.tablePeople[0].nameRequired = true;
+  const none = await open({ state: unnamed, respond });
+  await none.click(none.node('nav-catalog'));
+  await pickCatalogSong(none);
+  assert.equal(none.node('songNotice').textContent, '⚠ Il est déjà prévu dans la file (n°1, Léa). Tu peux l’ajouter quand même ou choisir un autre titre.');
+  assert.equal(none.node('songJoinOffer').hidden, true);
+  // Duo ouvert en cours d'envoi à KaraFun (absent de la liste des duos
+  // ouverts, encore ouvert dans la file) : pas de demande non plus. Un autre
+  // titre identique, sans duo ouvert, garde « Proposer un duo ».
+  const both = { ...notice, queued: [...notice.queued, { pos: 2, name: 'Gus', ownerId: 'gus', entryId: 'g1' }] };
+  const sending = await open({ state: baseState({ queue: [openLine, { source: 'helper', id: 'gus', ids: ['gus'], name: 'Gus', pos: 2, title: 'Tube',
+    song: { entryId: 'g1', songId: 9, title: 'Tube', artist: 'Groupe' } }], openDuets: [] }),
+  respond: url => url.startsWith('/api/song/notice?') ? { notice: both } : undefined });
+  await sending.click(sending.node('nav-catalog'));
+  await pickCatalogSong(sending);
+  assert.equal(sending.node('songJoinOffer').querySelector('[data-open-join]'), null);
+  assert.equal(sending.find('songJoinOffer', '[data-join-request]').dataset.joinRequest, 'gus');
+  assert.equal(sending.find('songJoinOffer', '[data-join-request]').textContent, 'Proposer un duo à Gus');
+  // En anglais.
+  const english = await open({ languages: ['en'], state: baseState({ queue: [openLine], openDuets: [openDuet('o1', 'Léa', 'Tube')] }), respond });
+  await english.click(english.node('nav-catalog'));
+  await pickCatalogSong(english);
+  assert.match(english.node('songNotice').textContent, /This song is looking for a duet partner: you can sing with Léa, add it anyway or choose another song\.$/);
+  assert.equal(english.find('songJoinOffer', '[data-open-join="o1"]').textContent, 'I’ll sing with Léa');
+});
+
 test('duo ouvert : proposé aussi depuis le choix du partenaire (« Duos uniquement »), en anglais', async () => {
   const page = await open({ state: baseState({ rules: { duoOnly: true } }), languages: ['en'],
     respond: url => url.startsWith('/api/duo/partners?') ? partners : url === '/api/table/duet/open' ? { ok: true } : undefined });

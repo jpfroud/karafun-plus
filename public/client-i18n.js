@@ -586,6 +586,8 @@ window.CLIENT_TRANSLATIONS = {
       'Qui veut chanter en duo avec moi ?': 'Who wants to sing a duet with me?',
       '{name} cherche un partenaire pour « {title} »': '{name} is looking for a duet partner for “{title}”',
       'Je chante avec {name}': 'I’ll sing with {name}',
+      'Ce titre cherche un partenaire de duo : tu peux chanter avec {name}, l’ajouter quand même ou choisir un autre titre.':
+        'This song is looking for a duet partner: you can sing with {name}, add it anyway or choose another song.',
       'Karaoké : duo ouvert': 'Karaoke: open duet',
       'Qui chante « {title} » avec {name} ?': 'Who sings “{title}” with {name}?',
       'Le premier qui se propose chante avec {name}. Ses propres chansons restent dans sa liste.': 'The first person to volunteer sings with {name}. Their own songs stay on their list.',

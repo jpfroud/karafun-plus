@@ -711,13 +711,27 @@
       const { notice } = await request(`/api/song/notice?${params}`);
       const node = $(nodeId);
       if (ticket !== noticeRequest || !node || !notice) return;
-      // Titre déjà prévu par quelqu'un d'autre : lui proposer de le chanter ensemble.
-      const owner = list(notice.queued).find(item => item.ownerId && item.entryId && !manages(item.ownerId));
-      node.textContent = `⚠ ${songNoticeText(notice)} ${owner ? t('Tu peux l’ajouter quand même, choisir un autre titre ou proposer un duo.')
-        : t('Tu peux l’ajouter quand même ou choisir un autre titre.')}`;
+      // Titre déjà prévu par quelqu'un d'autre : lui proposer de le chanter
+      // ensemble. Un duo ouvert ne prend pas de demande (le serveur la
+      // refuse) : « Je chante avec … », comme son bandeau, si une personne de
+      // ce téléphone peut s'y proposer ; sinon, aucune action de duo. En cours
+      // d'envoi, il n'est plus dans la liste des duos ouverts mais reste
+      // ouvert dans la file.
+      const others = list(notice.queued).filter(item => item.ownerId && item.entryId && !manages(item.ownerId));
+      const openOf = item => list(state?.openDuets).find(open => String(open.entryId) === String(item.entryId));
+      const isOpen = item => !!openOf(item) || list(state?.queue).some(line =>
+        String(line.song?.entryId) === String(item.entryId) && line.song?.duet?.state === 'open');
+      const joinable = others.map(openOf).find(open => open && openVolunteers(open).length);
+      const owner = joinable ? null : others.find(item => !isOpen(item));
+      node.textContent = `⚠ ${songNoticeText(notice)} ${joinable ? t('Ce titre cherche un partenaire de duo : tu peux chanter avec {name}, l’ajouter quand même ou choisir un autre titre.', { name: joinable.ownerName || t('cette personne') })
+        : owner ? t('Tu peux l’ajouter quand même, choisir un autre titre ou proposer un duo.')
+          : t('Tu peux l’ajouter quand même ou choisir un autre titre.')}`;
       node.hidden = false;
       const offer = joinNodeId && $(joinNodeId);
-      if (offer && owner) {
+      if (offer && joinable) {
+        offer.innerHTML = `<button type="button" class="btn" data-open-join="${esc(joinable.entryId)}">${esc(t('Je chante avec {name}', { name: joinable.ownerName || t('cette personne') }))}</button>`;
+        offer.hidden = false;
+      } else if (offer && owner) {
         offer.innerHTML = `<button type="button" class="btn" data-join-request="${esc(owner.ownerId)}" data-join-entry="${esc(owner.entryId)}" data-join-name="${esc(owner.name || '')}" data-join-title="${esc(song.title || '')}">${esc(t('Proposer un duo à {name}', { name: owner.name || t('cette personne') }))}</button>`;
         offer.hidden = false;
       }
@@ -1237,8 +1251,9 @@
     return managedPeople().filter(person => !person.nameRequired && ids.has(String(person.id)));
   }
 
-  // « Je chante avec … » : la seule personne de ce téléphone qui peut se
-  // proposer, sinon un bouton par personne, jamais de choix par défaut.
+  // « Je chante avec … » (bandeau, ligne de la file ou fiche d'un titre du
+  // catalogue) : la seule personne de ce téléphone qui peut se proposer,
+  // sinon un bouton par personne, jamais de choix par défaut.
   function joinOpenDuet(button, open) {
     const volunteers = openVolunteers(open);
     if (!volunteers.length) return;
@@ -1256,7 +1271,8 @@
       // Déjà rejoint ou fermé : le refus s'affiche et le bandeau disparaît.
       try { await post('/api/table/duet/open/accept', { personId: person.id, ownerId: open.ownerId, entryId: open.entryId }); }
       catch (error) { refresh(); throw error; }
-      if (volunteers.length > 1) closeSheet();
+      // Fiche du choix de la personne, ou du titre choisi dans le catalogue.
+      if (!$('sheet').hidden) closeSheet();
       await refresh();
       toast([volunteers.length === 1 ? t('Duo ajouté avec {name}.', { name: who })
         : t('Duo ajouté : {from} chante avec {name}.', { from: person.name, name: who }), hint].filter(Boolean).join(' '));
