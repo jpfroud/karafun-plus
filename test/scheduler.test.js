@@ -169,6 +169,28 @@ t('céder sa place à quelqu\'un de sa table qui est derrière', () => {
   assert.throws(() => s.giveSpot(a, b.id), /déjà devant/);
 });
 
+// Relecture : les premiers passages suivent l'ordre d'ajout (`readySince`).
+// Une place cédée à quelqu'un de sa table encore sans titre le faisait
+// passer en dernier, derrière celle qui la lui avait cédée.
+t('céder sa place à quelqu\'un de sa table encore sans titre : il passe à sa place, dans l\'ordre d\'ajout aussi', () => {
+  const s = new Scheduler();
+  const lea = singerAt(s, '1', 'Léa', 2), max = singerAt(s, '1', 'Max');
+  const zoe = singerAt(s, '2', 'Zoé', 1), gus = singerAt(s, '3', 'Gus', 1);
+  s.chooseSong(lea, song(1)); s.chooseSong(zoe, song(2)); s.chooseSong(gus, song(3));
+  s.giveSpot(lea, max.id);
+  s.chooseSong(max, song(4)); // Max choisit son titre ensuite
+  assert.deepStrictEqual(s.readyView().map(v => v.name), ['Max', 'Zoé', 'Gus', 'Léa']);
+  assert.deepStrictEqual(s.select().ids, [max.id]);
+  // La place cédée part avec le ticket : revenu après un départ, Max attend de nouveau.
+  const t = new Scheduler();
+  const tea = singerAt(t, '1', 'Léa', 2), tmax = singerAt(t, '1', 'Max'), tzoe = singerAt(t, '2', 'Zoé', 1);
+  t.chooseSong(tea, song(5)); t.chooseSong(tzoe, song(6));
+  t.giveSpot(tea, tmax.id);
+  t.leave(tmax);
+  t.chooseSong(tmax, song(7));
+  assert.deepStrictEqual(t.readyView().map(v => v.name), ['Zoé', 'Léa', 'Max']);
+});
+
 t('table partie : tickets retirés', () => {
   const s = new Scheduler();
   const a = singerAt(s, '4', 'A', 2), b = singerAt(s, '4', 'B');

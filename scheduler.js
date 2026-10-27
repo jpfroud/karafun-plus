@@ -1068,10 +1068,15 @@ class Scheduler {
   // anti-série) et `readySince` (heure, premier ajouté premier servi parmi
   // les premiers passages, puis la plus ancienne attente d'abord). Deux
   // attentes ouvertes dans la même milliseconde gardent leur ordre : l'heure
-  // ne recule jamais d'un ajout au suivant.
+  // ne recule jamais d'un ajout au suivant. Place cédée par quelqu'un de sa
+  // table avant son premier titre (`givenWait`, giveSpot) : l'attente de
+  // cette place, tant que son ticket est encore dans la file (un départ ou
+  // « Vider toutes les chansons » l'ont retiré).
   _startWait(p) {
-    p.readySerial = this._waitSerial();
-    p.readySince = this._readyStamp();
+    const given = this.Q.includes(p.id) ? p.givenWait : null;
+    delete p.givenWait;
+    p.readySerial = Number.isSafeInteger(given?.readySerial) ? Math.min(given.readySerial, this._waitSerial()) : this._waitSerial();
+    p.readySince = Number.isFinite(given?.readySince) ? given.readySince : this._readyStamp();
   }
 
   // Compteur d'un début d'attente : les passages déjà commencés sur scène.
