@@ -505,6 +505,31 @@ test('ligne placée invitée dans un duo envoyé puis retiré, mais remontée su
   assert.ok(!s.manualOrder.includes(people.Elsa.id));
 });
 
+// Relecture de la correction : l'invitée placée par le bar qui ne chante plus
+// un duo déjà chargé dans KaraFun (« Je ne chante plus ce duo », ou « Chanter
+// seul » de l'auteur) ne monte pas sur scène, mais sa place ne revenait pas ;
+// le reçu du passage la rendait plus tard, au hasard d'un « Pas prêt ».
+test('ligne placée invitée dans un duo chargé qu’elle ne chante plus : sa place revient aussitôt', () => {
+  for (const by of ['guest', 'owner']) {
+    const { s, people } = evening();
+    gesture(s, people.Elsa, 3); // Paulo, Maud, Gil, Elsa
+    gesture(s, people.Karim, 6);
+    const duo = s.inviteDuet(people.Paulo, people.Elsa.id, song());
+    s.reorderSongs(people.Paulo, duo.entryId, 0);
+    s.answerDuet(people.Elsa, true, duo.entryId);
+    const sel = s.select();
+    s.commit(sel); // le duo est chargé dans KaraFun, le geste de Elsa prend fin
+    assert.deepEqual(s.manualChanges.map(change => change.name), ['Karim']);
+    s.leaveSentDuet(sel, people.Elsa.id, { by });
+    assert.deepEqual(s.manualChanges.map(change => change.name), ['Elsa', 'Karim'], `${by} : son geste revient, à son rang`);
+    assert.equal(s.manualOrder.indexOf(people.Elsa.id), 2, `${by} : Elsa reprend sa place derrière Maud et Gil`);
+    assert.equal(s.log.at(-1).msg, 'Elsa n’a finalement pas chanté : la place donnée par le bar revient', by);
+    assert.equal(sel.placedUndo, undefined, `${by} : le reçu ne la rendra pas une seconde fois`);
+    s.songEnded(sel.ids); // Paulo a chanté seul
+    assert.deepEqual(playNames(s, 3), ['Maud', 'Gil', 'Elsa'], by);
+  }
+});
+
 // Relecture de la correction : un duo improvisé noté par erreur, puis annulé
 // ou corrigé, laissait la place ou la priorité de cette personne terminée.
 test('duo improvisé noté par erreur avec une personne placée par le bar, puis annulé : son geste revient', () => {
