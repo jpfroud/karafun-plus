@@ -253,6 +253,30 @@ test('duo ouvert retenu en « Duos uniquement » : un autre geste du bar ne fait
   }
 });
 
+// Relecture : la priorité du bar sur un duo ouvert retenu en « Duos
+// uniquement » était annoncée « levée » au bar, alors que seule l'annonce du
+// prochain l'était : le geste restait noté et annulable, sa ligne en tête de
+// l'ordre fixé, et le duo passait le premier une fois rejoint. Le journal dit
+// maintenant ce qui reste.
+test('priorité du bar sur un duo ouvert retenu en « Duos uniquement » : en attente, elle reprend au volontaire', () => {
+  const { s, people } = evening();
+  const { Elsa, Gil } = people;
+  let duoOnly = false;
+  s.duoOnlyRule = () => duoOnly;
+  s.openDuet(Elsa, { entryId: Elsa.song.entryId });
+  gesture(s, Elsa, 0);
+  duoOnly = true;
+  assert.equal(label(s, play(s)), 'Paulo', 'le duo ouvert sans partenaire ne part pas');
+  assert.notEqual(s.reservedNext?.personId, Elsa.id, 'Elsa n’est plus annoncée');
+  assert.equal(s.log.find(line => line.kind === 'staff' && /^Priorité (de|levée pour) Elsa/.test(line.msg))?.msg,
+    `Priorité de Elsa en attente : en « Duos uniquement », son duo ouvert « ${Elsa.song.title} » attend un volontaire hors de la file et repasse en tête dès que quelqu’un le rejoint`);
+  assert.deepEqual(s.manualChanges.map(change => `${change.kind} ${change.name}`), ['priority Elsa'], 'le geste reste noté et annulable');
+  assert.equal(s.manualOrder[0], Elsa.id, 'sa ligne reste en tête de l’ordre fixé');
+  s.acceptOpenDuet(Gil, Elsa.id, Elsa.song.entryId);
+  assert.equal(names(s)[0], 'Elsa & Gil');
+  assert.equal(label(s, play(s)), 'Elsa & Gil', 'rejoint, le duo passe le premier, comme le journal l’a dit');
+});
+
 // Relecture : la ligne placée d'une personne sous « Pas prêt » était rangée à
 // la place où son report l'affiche, et la ligne non placée devant laquelle
 // elle s'y trouvait devenait fixée : prête, elle passait après elle.

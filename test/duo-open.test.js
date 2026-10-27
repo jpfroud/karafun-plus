@@ -242,7 +242,7 @@ test('« Je suis là » obligatoire et « Duos uniquement » : l’auteur d’un
   assert.equal(recul(), 1, 'pouvant partir sans confirmer, elle recule de 3 places au 2e passage devant elle');
 });
 
-test('priorité du bar sur un duo ouvert, puis « Duos uniquement » : levée et notée au journal du bar', () => {
+test('priorité du bar sur un duo ouvert, puis « Duos uniquement » : en attente et notée au journal du bar', () => {
   const { s, lea, max } = night();
   let duoOnly = false;
   s.duoOnlyRule = () => duoOnly;
@@ -255,7 +255,8 @@ test('priorité du bar sur un duo ouvert, puis « Duos uniquement » : levée et
   assert.deepEqual(s.select().ids, [max.id], 'le duo ouvert sans partenaire ne part pas');
   assert.equal(s.reservedNext, null);
   assert.ok(s.log.some(line => line.kind === 'staff' &&
-    line.msg === 'Priorité levée pour Léa : en « Duos uniquement », son duo ouvert « Titre » attend un volontaire hors de la file'));
+    line.msg === 'Priorité de Léa en attente : en « Duos uniquement », son duo ouvert « Titre » attend un volontaire hors de la file et repasse en tête dès que quelqu’un le rejoint'));
+  assert.deepEqual(s.manualOrder, [lea.id], 'sa ligne reste en tête de l’ordre fixé');
 });
 
 test('second « Je chante » du même volontaire : c’est fait, sans rien refaire ; titre retiré : la demande est close', () => {
