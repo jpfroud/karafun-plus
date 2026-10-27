@@ -346,6 +346,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // crédits de tour. Chaque réparation est rendue (warnings), pour le journal
   // du serveur.
   const warnings = [];
+  const restoredAt = Date.now();
   for (const p of tmp.people.values()) {
     // Début d'attente au-delà du compteur (sauvegarde entre un passage annulé
     // et le suivant) : la personne attend depuis maintenant ; une marque
@@ -357,8 +358,12 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // abîmée, ou absente d'une sauvegarde d'avant ce champ, l'heure d'entrée
     // dans la file en tient lieu (premier titre d'une personne qui n'a pas
     // encore chanté) ; sans elle, la personne passe pour arrivée la première.
+    // Un titre envoyé à KaraFun a une heure d'entrée provisoire, à venir
+    // (fin prévue de sa chanson) : au plus l'heure de la reprise.
     if (p.readySince != null && (!Number.isFinite(p.readySince) || p.readySince < 0)) delete p.readySince;
-    if (p.readySince == null && Number.isFinite(p.waitingSince) && p.waitingSince >= 0) p.readySince = p.waitingSince;
+    if (p.readySince == null && Number.isFinite(p.waitingSince) && p.waitingSince >= 0) {
+      p.readySince = Math.min(p.waitingSince, restoredAt);
+    }
     if ((p.lastAppearanceTurn || 0) <= tmp.appearanceSerial) continue;
     warnings.push(`dernier passage ${p.lastAppearanceTurn} de la personne ${p.id} au-delà du compteur des passages ` +
       `${tmp.appearanceSerial} : ramené à ${tmp.appearanceSerial}`);
@@ -559,6 +564,24 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   const restoredTracked = clone(tracked);
   for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder, legacyVoices);
   const restoredPlan = usableSolverPlan(data.solverPlan, tmp);
+  // Débuts d'attente (`readySince`) et fins de passage (`stageEnds`), comparés
+  // entre eux à compteur égal (rotation.js#_waitSince) : une sauvegarde faite
+  // sur une horloge en avance sur celle de la reprise (autre PC, horloge
+  // reculée entre-temps) les daterait dans le futur. Chaque demande faite
+  // après la reprise prendrait alors la suite de la plus tardive
+  // (Scheduler#_readyStamp), des minutes après sa vraie heure et après les
+  // fins de passage notées ensuite : une demande faite pendant une chanson
+  // passerait après le titre suivant de son chanteur. Elles reculent
+  // ensemble, du même écart, la plus tardive à l'heure de la reprise : leur
+  // ordre et leurs écarts ne changent pas.
+  const latest = Math.max(0, ...[...tmp.people.values()].map(p => p.readySince || 0), ...tmp.stageEnds.values());
+  if (latest > restoredAt) {
+    const ahead = latest - restoredAt;
+    for (const p of tmp.people.values()) if (p.readySince) p.readySince -= ahead;
+    for (const [turn, at] of tmp.stageEnds) tmp.stageEnds.set(turn, at - ahead);
+    // Quelques millisecondes : des ajouts de la même milliseconde (_readyStamp), rien à signaler.
+    if (ahead >= 1000) warnings.push(`heures de la sauvegarde en avance de ${Math.round(ahead / 1000)} s sur l’horloge : ramenées à la reprise`);
+  }
 
   // Aucun effet sur les objets fournis avant ce point.
   for (const id of scheduler.tables.keys()) access.revoke(id);
@@ -567,9 +590,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
     'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'firstCycle', 'unstartedTurn', 'stageEnds', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
   // Un ajout après la reprise part après toutes les heures sauvegardées,
-  // même si l'horloge du serveur a reculé (Scheduler#_readyStamp).
-  scheduler._readyClock = [...tmp.people.values()].reduce((max, p) => Math.max(max, p.readySince || 0),
-    scheduler._readyClock || 0);
+  // même si l'horloge du serveur recule ensuite (Scheduler#_readyStamp) ;
+  // elles ne dépassent pas l'heure de la reprise (plus haut) : il est daté à
+  // son heure, sur la même horloge que les fins de passage.
+  scheduler._readyClock = [...tmp.people.values()].reduce((max, p) => Math.max(max, p.readySince || 0), 0);
   scheduler._restorePlan(restoredPlan);
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

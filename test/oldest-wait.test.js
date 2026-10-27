@@ -356,3 +356,82 @@ test('malus : pas protégé par l’ancienneté non plus ; bonus reposé : peut 
     assert.ok(round.indexOf('A', 1) < 6, `deuxième passage avant la fin du tour : ${round.join(' ')}`);
   } finally { e.done(); }
 });
+
+// Reprise après un redémarrage, pendant la chanson de Yves (relecture du
+// 27 octobre) : les demandes faites ensuite sont datées à leur vraie heure,
+// sur la même horloge que les fins de passage. Une demande faite pendant la
+// chanson de Yves passe donc avant son titre suivant, une demande faite
+// après sa fin après lui. `restart(saved)` : reprise sur un autre ordonnanceur.
+function restart(s, saved) {
+  const back = new Scheduler();
+  const { warnings } = restoreNight(JSON.parse(JSON.stringify(saved)), { scheduler: back, access: new TableAccess(), settings: settings() });
+  const byName = name => [...back.people.values()].find(p => p.name === name);
+  // Fin de la chanson sur scène, notée comme par le serveur.
+  const endSong = () => {
+    const entry = back.stageHistory.at(-1);
+    back.songEnded(entry.ids); back.endStage({ ids: entry.ids, song: { entryId: entry.entryId } });
+  };
+  return { back, byName, endSong, warnings, view: () => back.readyView().map(item => item.name) };
+}
+const save = s => {
+  const access = new TableAccess();
+  for (const id of s.tables.keys()) access.issue(id);
+  return JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings: settings() })));
+};
+
+test('reprise d’une sauvegarde d’avant readySince : une attente provisoire ne date pas les demandes dans le futur', () => {
+  const e = evening();
+  try {
+    const { s, tick, add, step, song } = e;
+    const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+    add(o); add(o); add(tess); add(yves); add(yves);
+    for (let k = 0; k < 3; k++) step();
+    // Yves est sur scène : son attente provisoire finit dans plusieurs minutes.
+    assert.ok(yves.waitingSince > Date.now() + 60000);
+    const saved = save(s);
+    for (const p of saved.scheduler.people) delete p.readySince; // format d'avant readySince
+    const { back, byName, endSong, warnings, view } = restart(s, saved);
+    assert.ok(!warnings.some(text => /en avance/.test(text)), warnings.join(' ; '));
+    for (const p of back.people.values()) assert.ok(p.readySince <= Date.now(), `${p.name} : début d’attente pas dans le futur`);
+    assert.ok(back._readyClock <= Date.now());
+    tick(60); back.chooseSong(byName('Tess'), song()); // pendant la chanson de Yves
+    assert.equal(byName('Tess').readySince, Date.now(), 'demande datée à son heure');
+    tick(60); endSong();
+    assert.deepEqual(view(), ['O', 'Tess', 'Yves']);
+  } finally { e.done(); }
+});
+
+test('reprise sur une horloge en retard sur celle de la sauvegarde : les heures reculent ensemble, dans le même ordre', () => {
+  // Sauvegarde faite sur un PC en avance de cinq minutes, reprise sur un PC
+  // à l'heure (ou l'horloge a reculé entre les deux). `pendant` : O, liste
+  // vide depuis son passage, redemande pendant la chanson de Yves, juste
+  // avant la sauvegarde (heure sauvegardée la plus tardive) ; Tess redemande
+  // après la reprise, toujours pendant cette chanson. `après` : la chanson de
+  // Yves finit avant la sauvegarde (fin sauvegardée la plus tardive), Tess
+  // redemande après la reprise.
+  for (const [moment, expected] of [['pendant', ['O', 'Tess', 'Yves']], ['après', ['O', 'Yves', 'Tess']]]) {
+    const e = evening();
+    try {
+      const { s, tick, add, step, endSong: endOnStage, song } = e;
+      const [o, tess, yves] = ['O', 'Tess', 'Yves'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+      add(o); if (moment === 'après') add(o);
+      add(tess); add(yves); add(yves);
+      for (let k = 0; k < 3; k++) step();
+      if (moment === 'pendant') { tick(30); add(o); } else { tick(120); endOnStage(); tick(5); }
+      const saved = save(s);
+      tick(-300);
+      const { back, byName, endSong, warnings, view } = restart(s, saved);
+      assert.ok(warnings.some(text => /en avance de (295|300) s/.test(text)), `${moment} : ${warnings.join(' ; ')}`);
+      const now = Date.now();
+      for (const p of back.people.values()) assert.ok(p.readySince <= now, `${moment}, ${p.name} : début d’attente pas dans le futur`);
+      for (const [turn, at] of back.stageEnds) assert.ok(at <= now, `${moment} : fin du passage ${turn} pas dans le futur`);
+      assert.ok(back._readyClock <= now);
+      const byStart = list => list.map(p => [p.name, p.readySince]).sort((a, b) => a[1] - b[1]).map(([name]) => name);
+      assert.deepEqual(byStart([...back.people.values()]), byStart([...s.people.values()]), `${moment} : même ordre des débuts d’attente`);
+      tick(60); back.chooseSong(byName('Tess'), song());
+      assert.equal(byName('Tess').readySince, Date.now(), `${moment} : demande datée à son heure`);
+      if (moment === 'pendant') { tick(60); endSong(); }
+      assert.deepEqual(view(), expected, `${moment} : ${view().join(' ')}`);
+    } finally { e.done(); }
+  }
+});
