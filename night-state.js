@@ -573,12 +573,16 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // fins de passage notées ensuite : une demande faite pendant une chanson
   // passerait après le titre suivant de son chanteur. Elles reculent
   // ensemble, du même écart, la plus tardive à l'heure de la reprise : leur
-  // ordre et leurs écarts ne changent pas.
+  // ordre et leurs écarts ne changent pas. L'heure du choix d'un passage
+  // envoyé (`pickedAt`, comparée aux débuts d'attente par _commit) aussi.
   const latest = Math.max(0, ...[...tmp.people.values()].map(p => p.readySince || 0), ...tmp.stageEnds.values());
   if (latest > restoredAt) {
     const ahead = latest - restoredAt;
     for (const p of tmp.people.values()) if (p.readySince) p.readySince -= ahead;
     for (const [turn, at] of tmp.stageEnds) tmp.stageEnds.set(turn, at - ahead);
+    for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) {
+      if (Number.isFinite(holder.sel?.pickedAt)) holder.sel.pickedAt -= ahead;
+    }
     // Quelques millisecondes : des ajouts de la même milliseconde (_readyStamp), rien à signaler.
     if (ahead >= 1000) warnings.push(`heures de la sauvegarde en avance de ${Math.round(ahead / 1000)} s sur l’horloge : ramenées à la reprise`);
   }

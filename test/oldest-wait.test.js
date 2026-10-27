@@ -364,19 +364,19 @@ test('malus : pas protégé par l’ancienneté non plus ; bonus reposé : peut 
 // après sa fin après lui. `restart(saved)` : reprise sur un autre ordonnanceur.
 function restart(s, saved) {
   const back = new Scheduler();
-  const { warnings } = restoreNight(JSON.parse(JSON.stringify(saved)), { scheduler: back, access: new TableAccess(), settings: settings() });
+  const recovered = restoreNight(JSON.parse(JSON.stringify(saved)), { scheduler: back, access: new TableAccess(), settings: settings() });
   const byName = name => [...back.people.values()].find(p => p.name === name);
   // Fin de la chanson sur scène, notée comme par le serveur.
   const endSong = () => {
     const entry = back.stageHistory.at(-1);
     back.songEnded(entry.ids); back.endStage({ ids: entry.ids, song: { entryId: entry.entryId } });
   };
-  return { back, byName, endSong, warnings, view: () => back.readyView().map(item => item.name) };
+  return { back, byName, endSong, recovered, warnings: recovered.warnings, view: () => back.readyView().map(item => item.name) };
 }
-const save = s => {
+const save = (s, extra = {}) => {
   const access = new TableAccess();
   for (const id of s.tables.keys()) access.issue(id);
-  return JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings: settings() })));
+  return JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings: settings(), ...extra })));
 };
 
 test('reprise d’une sauvegarde d’avant readySince : une attente provisoire ne date pas les demandes dans le futur', () => {
@@ -418,9 +418,13 @@ test('reprise sur une horloge en retard sur celle de la sauvegarde : les heures 
       add(tess); add(yves); add(yves);
       for (let k = 0; k < 3; k++) step();
       if (moment === 'pendant') { tick(30); add(o); } else { tick(120); endOnStage(); tick(5); }
-      const saved = save(s);
+      // Un envoi en cours, choisi juste avant la sauvegarde : l'heure de son
+      // choix (`pickedAt`, cycle des premiers passages) recule avec les autres.
+      const sending = { ...s.select(), pickedAt: Date.now() };
+      const saved = save(s, { pending: { sel: sending, before: [], at: Date.now(), attempts: 1 } });
       tick(-300);
-      const { back, byName, endSong, warnings, view } = restart(s, saved);
+      const { back, byName, endSong, recovered, warnings, view } = restart(s, saved);
+      assert.equal(recovered.pending.sel.pickedAt, sending.pickedAt - (moment === 'pendant' ? 300000 : 295000));
       assert.ok(warnings.some(text => /en avance de (295|300) s/.test(text)), `${moment} : ${warnings.join(' ; ')}`);
       const now = Date.now();
       for (const p of back.people.values()) assert.ok(p.readySince <= now, `${moment}, ${p.name} : début d’attente pas dans le futur`);
