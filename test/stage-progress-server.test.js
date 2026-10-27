@@ -397,6 +397,21 @@ test('écart entre deux titres : mesuré seulement quand un titre attendait, san
   assert.deepEqual(plain(f.sched.slotSamples), []);
 });
 
+// Relecture : le commentaire de measureSongGap et le nom de la liste
+// (SONG_GAP_BLOCKERS) disaient l'inverse de son rôle. Elle ne contient que
+// les causes d'une scène libre qui laissent mesurer l'écart ; y ajouter une
+// cause qui l'écarte (« auto-off », envoi coupé par le bar) compterait des
+// minutes de scène libre dans l'écart, et dans toutes les heures estimées.
+test('écart entre deux titres : la liste des causes nomme celles qui laissent mesurer l’écart', () => {
+  const found = /const SONG_GAP_KEEPERS = new Set\(\[([^\]]*)\]\);/.exec(source);
+  assert.ok(found, 'SONG_GAP_KEEPERS introuvable dans server.js');
+  const causes = found[1].split(',').map(text => text.trim().replace(/'/g, ''));
+  assert.deepEqual(causes, ['loading', 'awaiting-presence', 'sending', 'push-delay', 'autoplay-off']);
+  for (const dropped of ['empty', 'closing', 'battle-hold', 'queue-clear', 'restart', 'auto-off', 'autoplay-held',
+    'recovered-pending', 'permission']) assert.ok(!causes.includes(dropped), `${dropped} écarte la mesure`);
+  assert.doesNotMatch(source, /SONG_GAP_BLOCKERS/, 'plus d’ancien nom ni de renvoi vers lui');
+});
+
 test('sauvegarde : écarts entre deux titres repris, bornés, absents d’une version précédente', () => {
   const scheduler = new Scheduler({ solverEnabled: false });
   const access = new TableAccess();

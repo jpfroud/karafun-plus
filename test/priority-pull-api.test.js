@@ -460,6 +460,47 @@ test('priorité avec retrait pour une personne sur scène : refusée, elle ne ch
   nothingChanged(f, ctx);
 });
 
+// Relecture : le retrait sortait le titre chargé de KaraFun pour une personne
+// qui ne pouvait pas passer ensuite (invitée d'un duo repoussé par « Pas
+// prêt », titre passé faute de « Je suis là ») : quelqu'un d'autre partait,
+// et le titre retiré attendait derrière une priorité qui ne partait pas.
+test('priorité avec retrait pour une personne qui ne peut pas passer ensuite : refusée, rien retiré', async () => {
+  {
+    // Eve est l'invitée du duo de Chloé, repoussé ; elle a aussi son titre.
+    const f = harness();
+    const ctx = loaded(f);
+    const { chloe, driss } = ctx.people;
+    const eve = f.sched.join({ tableId: '3', name: 'Eve' });
+    f.sched.removeSong(chloe, chloe.song.entryId);
+    f.sched.inviteDuet(chloe, eve.id, { songId: 811, title: 'Duo Chloé' });
+    f.sched.chooseSong(eve, { songId: 812, title: 'Titre Eve' });
+    f.sync();
+    f.deferTurn(f.sched.people.get(chloe.id), 2);
+    assert.deepEqual(planned(f).map(line => line.name), ['Driss', 'Chloé & Eve', 'Eve']);
+    await assert.rejects(pullFor(f, eve), { message: 'Eve attend la fin du « Pas prêt » de Chloé & Eve : ' +
+      '« Titre Bruno » reste dans KaraFun, rien n’a été retiré ni avancé.' });
+    nothingChanged(f, ctx);
+    assert.equal(f.sched.select().ids[0], driss.id, 'la file reste comme avant');
+    // Chloé, elle, peut passer : le geste du bar lève son propre « Pas prêt ».
+    await pullFor(f, chloe);
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]]);
+    karafunRemoves(f, ctx);
+    assert.deepEqual(f.sched.select().ids, [chloe.id, eve.id]);
+  }
+  {
+    // Driss n'a pas confirmé « Je suis là » : son titre laisse passer le suivant.
+    const f = harness();
+    const ctx = loaded(f, { presence: true });
+    const { chloe, driss } = ctx.people;
+    f.sched.skipUnconfirmed(driss.id, 3);
+    f.sync();
+    await assert.rejects(pullFor(f, driss), { message: 'Driss n’a pas confirmé sa présence : son titre laisse passer le suivant. ' +
+      '« Titre Bruno » reste dans KaraFun, rien n’a été retiré ni avancé.' });
+    nothingChanged(f, ctx);
+    assert.equal(planned(f)[0].id, chloe.id, 'la file reste comme avant');
+  }
+});
+
 // Relecture de la correction : une place donnée par le bar à l'invitée d'un
 // duo prenait fin à l'envoi du duo, et ne revenait pas quand ce duo sortait
 // de KaraFun sans avoir été chanté. Soirée du 24 octobre : « Pas prêt »

@@ -1845,7 +1845,7 @@ function sync() {
     }
   } else { idleSince = null; idleQueueId = null; }
   const blocker = journalOutlook({ current, upcoming, awaitingPresence }, now);
-  if (songGap && !SONG_GAP_BLOCKERS.has(blocker)) songGap.clean = false;
+  if (songGap && !SONG_GAP_KEEPERS.has(blocker)) songGap.clean = false;
   saveNight();
 }
 
@@ -1853,9 +1853,10 @@ function sync() {
 // d'un titre au début du suivant, quand un titre attendait. Il commence quand
 // un titre (pas une Battle) quitte la scène et finit au début du suivant (ni
 // une Battle ni la copie d'une relance). Il n'est pas gardé si autre chose
-// que le lancement du titre suivant a retenu la scène entre-temps (file vide,
-// fermeture, Battle, envoi coupé, vidage, relance : SONG_GAP_BLOCKERS), si
-// KaraFun s'est déconnecté, ou s'il dépasse une minute (Scheduler#recordSongGap).
+// que le lancement du titre suivant a retenu la scène entre-temps : toute
+// cause hors de SONG_GAP_KEEPERS (file vide, fermeture, Battle, envoi coupé
+// par le bar, vidage, relance…), une déconnexion de KaraFun, ou plus d'une
+// minute (Scheduler#recordSongGap).
 // Il n'est pas sauvegardé : un arrêt de l'application l'oublie. Un titre qui
 // en remplace un autre sans scène libre vue entre les deux n'est pas mesuré.
 function measureSongGap(songEnded, current, now) {
@@ -1864,10 +1865,10 @@ function measureSongGap(songEnded, current, now) {
   }
   songGap = songEnded && !current ? { since: now, clean: true } : null;
 }
-// Causes d'une scène libre (journalOutlook) qui laissent mesurer l'écart :
-// lancement du titre suivant, « Je suis là » attendu, envoi à KaraFun,
-// lecture lancée par le bar ou par KaraFun lui-même.
-const SONG_GAP_BLOCKERS = new Set(['loading', 'awaiting-presence', 'sending', 'push-delay', 'autoplay-off']);
+// Seules causes d'une scène libre (journalOutlook) qui laissent mesurer
+// l'écart : lancement du titre suivant, « Je suis là » attendu, envoi à
+// KaraFun, lecture lancée par le bar ou par KaraFun lui-même.
+const SONG_GAP_KEEPERS = new Set(['loading', 'awaiting-presence', 'sending', 'push-delay', 'autoplay-off']);
 
 // ------------------------------------------------------------------ barre de lecture
 const stageKey = current => current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
@@ -3721,7 +3722,8 @@ function priorityPullTarget(analysis = analyze()) {
 
 // Vérifie le retrait demandé par le bar pour la priorité de `line` (passage
 // visible de la file) : le titre que la page a nommé (`queueId`) attend
-// toujours dans KaraFun. Sinon rien n'est retiré ni avancé.
+// toujours dans KaraFun, et `line` pourra partir juste après lui. Sinon rien
+// n'est retiré ni avancé.
 function priorityPullFor(line, queueId) {
   const { tr, refusal } = priorityPullCheck(queueId);
   const name = line?.name || 'ce chanteur';
@@ -3742,6 +3744,26 @@ function priorityPullFor(line, queueId) {
   if (singing) {
     throw new Error(`${sched.people.get(singing)?.name || 'Cette personne'} est sur scène en ce moment : « ${tr.sel.song.title} » reste dans KaraFun, ` +
       `rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer ${name} juste après lui.`);
+  }
+  // La priorité doit pouvoir partir juste après le retrait : sinon quelqu'un
+  // d'autre partirait, et le titre retiré attendrait derrière une priorité
+  // qui ne part pas. Le geste lève le « Pas prêt » de la personne placée
+  // (staffMove) et celui d'un titre retiré pour une priorité d'avant
+  // (_priorityHolds), pas celui du duo d'un autre où elle est l'invitée ;
+  // un titre passé faute de « Je suis là » laisse passer le suivant.
+  const owner = sched.people.get(line.ids[0]);
+  if (sched._isPresenceRetry(owner)) {
+    throw new Error(`${owner.name} n’a pas confirmé sa présence : son titre laisse passer le suivant. ` +
+      `« ${tr.sel.song.title} » reste dans KaraFun, rien n’a été retiré ni avancé.`);
+  }
+  const owners = sched._deferredOwners().filter(pid => pid !== line.ids[0] && !sched.people.get(pid).deferral.afterPriority);
+  const deferred = sched._deferredPeople(owners);
+  const waiting = line.ids.find(pid => deferred.has(pid));
+  if (waiting) {
+    const host = owners.map(pid => sched.people.get(pid)).find(p => (p.deferral.ids || [p.id]).includes(waiting));
+    const passage = (host.deferral.ids || [host.id]).map(pid => sched.people.get(pid)?.name).filter(Boolean).join(' & ');
+    throw new Error(`${sched.people.get(waiting)?.name || 'Cette personne'} attend la fin du « Pas prêt » de ${passage} : ` +
+      `« ${tr.sel.song.title} » reste dans KaraFun, rien n’a été retiré ni avancé.`);
   }
   return tr;
 }

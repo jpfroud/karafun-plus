@@ -80,8 +80,10 @@ function send(s) {
 // Constat du gérant du 25 octobre : en « Chacun son tour », les premiers
 // passages suivent l'ordre d'ajout. Marine, qui a choisi avant les tables 2
 // et 3, chante juste après JP, de sa table (avant ce constat, les deux tables
-// passaient d'abord) ; les retours, eux, gardent la règle des tables.
-test('JP, Marine, table 2, table 3 : premiers passages dans l’ordre d’ajout, puis les autres tables avant le retour de la table 1', () => {
+// passaient d'abord) ; aux retours, à patience égale, la plus ancienne
+// attente passe d'abord, avant la règle des tables : JP, qui redemande avant
+// les tables 2 et 3, repasse avant elles, même juste après Marine.
+test('JP, Marine, table 2, table 3 : premiers passages dans l’ordre d’ajout, puis à patience égale la plus ancienne attente avant la règle des tables', () => {
   const s = new Scheduler();
   const jp = s.join({ tableId: '1', name: 'JP', headcount: 2 });
   s.chooseSong(jp, song(101));
