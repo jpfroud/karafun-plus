@@ -1779,6 +1779,11 @@ function sync() {
       else if (tr.pulled || (tr.unpulled && now - tr.unpulled.at < PULL_LATE_MS)) restorePulled(tr);
       else {
         sched.rollbackUnplayed(tr.sel, { requeue: true });
+        // Le titre n'est pas renvoyé : un duo sort de la liste de son auteur
+        // et rend les lignes qu'il avait sorties de l'ordre fixé, comme un duo
+        // défait avant l'envoi (Scheduler#_guestLeft). Sinon l'invitée,
+        // gardée devant un geste, passait derrière lui (relecture, passe 7).
+        sched._guestLeft(tr.sel.song?.duet);
         sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) a été passée dans KaraFun avant la lecture : elle ne sera pas renvoyée automatiquement`, 'skip');
       }
       tracked = tracked.filter(x => x !== tr);

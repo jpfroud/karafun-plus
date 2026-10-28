@@ -865,6 +865,53 @@ test('absent à l’appel devant un duo formé sur une ligne placée : la ligne 
   assert.ok(lea && hugo);
 });
 
+// Relecture (passe 7) : un duo formé sur une ligne placée, chargé dans KaraFun
+// puis passé là-bas avant la lecture (ou retiré par « Retirer » du bar), n'est
+// pas renvoyé et sort de la liste de son auteur, resté là. Les lignes qu'il
+// avait sorties de l'ordre fixé ne revenaient pas, contrairement au duo défait
+// avant l'envoi : Gil, gardée devant Paulo, passait derrière lui.
+test('duo formé sur une ligne placée, passé dans KaraFun avant la lecture : la ligne de l’invitée revient', async () => {
+  const f = harness();
+  const s = f.sched;
+  const join = (tableId, name) => s.join({ tableId, name, headcount: 1 });
+  const maud = join('1', 'Maud'), paulo = join('2', 'Paulo'), gil = join('3', 'Gil'), hugo = join('4', 'Hugo'), nina = join('5', 'Nina');
+  [[maud, 801], [paulo, 802], [gil, 803], [hugo, 804], [nina, 805]].forEach(([p, songId]) =>
+    s.chooseSong(p, { songId, title: `Titre ${p.name}` }));
+  s.chooseSong(paulo, { songId: 806, title: 'Encore Paulo' }, 'append');
+  // Rien sur scène ni dans KaraFun : Gil n'est pas le prochain annoncé.
+  await move(f, { personId: paulo.id, toIndex: 2 });
+  await move(f, { personId: nina.id, toIndex: 3 });
+  assert.deepEqual(shown(f).slice(0, 4), ['Maud', 'Gil', 'Paulo*', 'Nina*']);
+  s.openDuet(paulo, { entryId: paulo.song.entryId });
+  s.acceptOpenDuet(gil, paulo.id, paulo.song.entryId);
+  const fixed = () => s.manualOrder.map(pid => s.people.get(pid).name);
+  assert.deepEqual(fixed(), ['Maud', 'Paulo', 'Nina'], 'Gil chante avec Paulo, sa ligne quitte l’ordre fixé');
+  const duo = paulo.song;
+  assert.ok(duo.duet.unpinned?.length, 'le duo note la ligne de Gil');
+  const stage = s.select(); s.commit(stage);
+  assert.equal(stage.ids[0], maud.id);
+  f.tracked().push({ queueId: 1, sel: stage, startedAt: Date.now() - 50000, addedAt: Date.now() - 60000 });
+  const queue = [{ queueId: 1, songId: 801, title: 'Titre Maud', singer: stage.label, status: 'playing' }];
+  const ctx = { queue, bridge: fakeBridge(queue, 1) };
+  f.setBridge(ctx.bridge);
+  f.sync();
+  assert.deepEqual(fixed(), ['Paulo', 'Nina']);
+  const sel = s.select();
+  assert.deepEqual(sel.ids, [paulo.id, gil.id], 'le duo part vers KaraFun');
+  s.commit(sel);
+  f.tracked().push({ queueId: 2, sel, startedAt: null, addedAt: Date.now() - 5000 });
+  queue.push({ queueId: 2, songId: 802, title: 'Titre Paulo', singer: sel.label });
+  f.sync();
+  assert.deepEqual(fixed(), ['Nina'], 'le duo part : la place de Paulo est faite');
+  karafunRemoves(f, ctx);
+  assert.ok(notes(f).some(msg => /Titre Paulo.*passée dans KaraFun avant la lecture/.test(msg)));
+  assert.equal(paulo.song.title, 'Encore Paulo', 'le duo n’est pas renvoyé');
+  assert.equal(duo.duet.unpinned, undefined, 'le duo ne garde plus la ligne de Gil');
+  assert.deepEqual(fixed(), ['Gil', 'Nina'], 'Gil reprend sa place devant Nina');
+  assert.deepEqual(shown(f).slice(0, 2), ['Gil', 'Nina*']);
+  assert.ok(hugo);
+});
+
 test('redémarrage pendant le retrait : le titre revient juste après la priorité une fois retiré', async () => {
   const f = harness();
   const ctx = loaded(f);
