@@ -506,11 +506,13 @@ test('duo ouvert : seul le texte du catalogue reçu par le serveur part vers les
   assert.deepEqual(banners(), [[2, 'Deux', 'Artiste']], 'le texte du catalogue');
   assert.equal(ines.p.song.title, 'Deux', 'dans sa liste aussi');
   await f.call('POST /api/table/song/remove', { ...ines.body, entryId: ines.p.song.entryId });
-  // Depuis sa liste : un titre ajouté avec un texte inventé reprend celui du
-  // catalogue avant d'être annoncé ; un titre inconnu du catalogue est refusé.
+  // Depuis sa liste : un titre ajouté avec un texte inventé prend celui du
+  // catalogue dès l'ajout, et part avec lui ; un titre inconnu du catalogue
+  // est refusé.
   await f.call('POST /api/table/song', { ...ines.body, song: { songId: 3, title: 'Offre : scanne ce QR', artist: 'x' } });
   await f.call('POST /api/table/song', { ...ines.body, song: { songId: 888888, title: 'Inventé', artist: 'x' } });
   const [known, unknown] = f.sched.songsOf(ines.p);
+  assert.deepEqual([known.title, known.artist, unknown.title], ['Trois', 'Artiste', 'Inventé'], 'texte du catalogue dès l’ajout');
   await assert.rejects(f.call('POST /api/table/duet/open', { ...ines.body, entryId: unknown.entryId }), refused);
   assert.equal(unknown.duet, undefined, 'il reste en solo');
   assert.deepEqual(banners(), []);
@@ -523,6 +525,67 @@ test('duo ouvert : seul le texte du catalogue reçu par le serveur part vers les
   await f.call('POST /api/table/song/remove', { ...ines.body, entryId: known.entryId });
   await f.call('POST /api/table/duet/open', { ...ines.body, song: song(70000, 'Toxic') });
   assert.deepEqual(banners(), [[70000, 'Toxic', 'Artiste']]);
+});
+
+// Relecture, passe 5 : openDuetSong réécrivait le titre de la liste au texte
+// du catalogue, et comptait une version, avant les contrôles de
+// Scheduler#openDuet : une demande refusée changeait quand même le titre.
+test('duo ouvert refusé : le titre de la liste reste tel quel, rien n’est compté', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const ines = person(f, '1', 'Inès');
+  // Ajouté quand ce serveur ne connaissait pas ce numéro, que le catalogue
+  // sert ensuite sous un autre texte.
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 4, title: 'Texte du téléphone', artist: 'x' } });
+  f.rememberBattleSongs([song(4, 'Quatre')]);
+  await f.call('POST /api/table/song', { ...ines.body, song: song(3, 'Trois') });
+  await f.call('POST /api/table/duet/open', { ...ines.body, song: song(1, 'Titre') });
+  const [phoneText, fromCatalog] = f.sched.songsOf(ines.p);
+  const before = plain(f.sched.songsOf(ines.p)), version = f.sched.version;
+  for (const [entryId, message] of [[phoneText.entryId, 'Retrouve ce titre dans le catalogue avant de chercher un duo.'],
+    [fromCatalog.entryId, 'Un seul duo ouvert à la fois : ferme d’abord ta demande en cours.']]) {
+    const refusal = await f.call('POST /api/table/duet/open', { ...ines.body, entryId })
+      .then(() => assert.fail('demande refusée attendue'), error => error.message);
+    assert.deepEqual(plain(f.sched.songsOf(ines.p)), before, 'titres de la liste inchangés');
+    assert.equal(f.sched.version, version, 'aucune version comptée');
+    assert.equal(refusal, message);
+  }
+  assert.equal(phoneText.title, 'Texte du téléphone');
+});
+
+// Relecture, passe 5 : la certification du texte reposait sur le seul
+// catalogue gardé en mémoire (battleCatalogSongs), vidé à chaque redémarrage,
+// mises à jour comprises : « Chercher un duo » sur un titre déjà dans la liste
+// était refusé tant que la personne ne l'avait pas recherché de nouveau.
+test('redémarrage : un titre ajouté depuis le catalogue cherche encore un duo depuis la liste, avec le texte du catalogue', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const ines = person(f, '1', 'Inès'), maud = person(f, '3', 'Maud');
+  // Titre servi par ce serveur, texte changé par la requête ; numéro jamais servi.
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 3, title: 'Offre : scanne ce QR', artist: 'x' } });
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 888888, title: 'Inventé', artist: 'x' } });
+  // Invitation de duo depuis le catalogue, refusée : le titre reste son solo.
+  await f.call('POST /api/table/duet', { ...ines.body, partnerId: maud.p.id, song: { songId: 2, title: 'Offre', artist: 'x' } });
+  await f.call('POST /api/table/duet/answer', { ...maud.body, accept: false });
+  const [known, unknown, invited] = f.sched.songsOf(ines.p);
+  assert.deepEqual([invited.songId, invited.title, invited.duet], [2, 'Deux', undefined], 'texte du catalogue, invitation refusée');
+  // Sauvegarde puis reprise dans un nouveau serveur, au catalogue encore vide.
+  const snapshot = plain(snapshotNight({ scheduler: f.sched, access: f.access, settings: f.settings }));
+  const g = harness();
+  restoreNight(snapshot, { scheduler: g.sched, access: g.access, settings: g.settings });
+  await g.call('POST /api/table/duet/open', { ...ines.body, entryId: known.entryId });
+  const banners = () => plain(g.view('3', [maud.p.id]).openDuets.map(open => [open.song.songId, open.song.title, open.song.artist]));
+  assert.deepEqual(banners(), [[3, 'Trois', 'Artiste']], 'le texte du catalogue, gardé avec la soirée');
+  assert.equal(g.staffState().openDuets[0].title, 'Trois');
+  await g.call('POST /api/table/duet/open/close', { ...ines.body, entryId: known.entryId });
+  await g.call('POST /api/table/duet/open', { ...ines.body, entryId: invited.entryId });
+  assert.deepEqual(banners(), [[2, 'Deux', 'Artiste']], 'le titre de l’invitation aussi');
+  await g.call('POST /api/table/duet/open/close', { ...ines.body, entryId: invited.entryId });
+  // Un numéro que le serveur n'a jamais servi reste refusé.
+  await assert.rejects(g.call('POST /api/table/duet/open', { ...ines.body, entryId: unknown.entryId }),
+    { message: 'Retrouve ce titre dans le catalogue avant de chercher un duo.' });
+  assert.equal(g.sched.people.get(ines.p.id).backlog[0].duet, undefined, 'il reste en solo');
+  assert.deepEqual(banners(), []);
 });
 
 // Relecture : seuls les trois plus récents partaient vers les téléphones, seul

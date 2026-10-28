@@ -299,7 +299,7 @@ const personShareCodes = new Map();
 const SOLO_COOKIE = 'karaoke_solo_device';
 // Les titres annoncés à toute la salle (Battle, duo ouvert) doivent avoir été
 // reçus du catalogue KaraFun par ce serveur, et non inventés dans une requête
-// cliente : leur texte est celui du catalogue (catalogSong). Il en va
+// cliente : leur texte est celui du catalogue (catalogSong, catalogChoice). Il en va
 // de même des vignettes : seule une image https reçue du catalogue est
 // montrée aux téléphones, jamais une adresse envoyée par l'un d'eux.
 const battleCatalogSongs = new Map();
@@ -342,6 +342,27 @@ function catalogSong(song, message) {
   const seen = battleCatalogSongs.get(Number(song?.songId));
   if (!seen) throw new Error(message);
   return { ...seen };
+}
+// Titre choisi par un téléphone (sa liste, une invitation, un duo ouvert) :
+// un numéro que ce serveur a reçu du catalogue prend le texte du catalogue,
+// borné ensuite par Scheduler#chooseSong comme tout titre ; inconnu, il garde
+// celui de la requête, ou il est refusé avec `refusal`. `certify` marque le
+// titre rangé par l'ordonnanceur (`catalogText`) : gardée avec la soirée
+// (snapshotNight copie les titres tels quels), la marque laisse annoncer ce
+// titre à toute la salle après un redémarrage, catalogue en mémoire vide.
+function catalogChoice(song, refusal = null) {
+  const seen = battleCatalogSongs.get(Number(song?.songId));
+  if (!seen && refusal) throw new Error(refusal);
+  return { song: withCover(seen ? { ...song, ...seen } : song),
+    certify: stored => { if (seen && stored) stored.catalogText = true; return stored; } };
+}
+// Titre de la liste au texte du catalogue : marqué à l'ajout (catalogChoice),
+// ou identique à celui que le catalogue a donné à ce serveur (ajouté avant
+// que ce serveur ne le reçoive, ou par une version d'avant la marque).
+function catalogText(song) {
+  if (song?.catalogText === true) return true;
+  const seen = battleCatalogSongs.get(Number(song?.songId));
+  return !!seen && seen.title === song.title && seen.artist === song.artist;
 }
 function certifiedBattleSongs(songs) {
   if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {
@@ -3651,7 +3672,9 @@ function chooseFor(p, song, mode) {
   if (mode === 'replace' && pending && !pending.cancelled && pending.sel.ids.length > 1 && pending.sel.ids[0] === p.id) {
     throw new Error('Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
   }
-  sched.chooseSong(p, withCover(song), mode);
+  const choice = catalogChoice(song);
+  sched.chooseSong(p, choice.song, mode);
+  choice.certify(sched.songsOf(p).find(item => item.songId === songId));
   sync();
   const added = sched.songsOf(p).find(item => item.songId === songId);
   return added ? repeatNotice(added, p.tableId, added.entryId) : null;
@@ -4010,23 +4033,23 @@ function assertNotSending(entryId) {
 
 // Duo ouvert annoncé à toute la salle (bandeau et notification de chaque
 // téléphone) : comme pour une Battle, son titre et son artiste sont ceux du
-// catalogue reçu par ce serveur (catalogSong), jamais le texte d'une requête.
-// Un titre du catalogue (`song`) prend ce texte ; un titre de sa liste
-// (`entryId`), ajouté avec le texte de la requête, le reprend avant d'être
-// annoncé. Un titre que ce serveur n'a pas reçu du catalogue est refusé :
-// inventé, ou catalogue renouvelé au redémarrage (le client le retrouve
-// dans le catalogue, comme pour une Battle). Rend l'argument de Scheduler#openDuet.
+// catalogue reçu par ce serveur, jamais le texte d'une requête. Un titre du
+// catalogue (`song`) prend ce texte (catalogChoice) ; un titre de sa liste
+// (`entryId`) doit déjà l'avoir (catalogText : marque gardée avec la soirée,
+// redémarrages compris). Sinon la demande est refusée sans rien changer :
+// titre inventé, texte différent du catalogue, ou ajouté avant que ce serveur
+// ne le reçoive (le client le retrouve dans le catalogue, comme pour une
+// Battle). Rend l'argument de Scheduler#openDuet (`request`) et `certify`, à
+// appliquer au titre que Scheduler#openDuet rend, une fois ses contrôles passés.
 function openDuetSong(p, body) {
   const message = 'Retrouve ce titre dans le catalogue avant de chercher un duo.';
-  if (body.song) return { song: withCover({ ...body.song, ...catalogSong(body.song, message) }) };
-  const listed = sched.songsOf(p).find(item => item.entryId === String(body.entryId || ''));
-  if (listed) {
-    const seen = catalogSong(listed, message);
-    // Mêmes bornes que Scheduler#chooseSong.
-    const text = { title: seen.title.slice(0, 80), artist: seen.artist.slice(0, 60) };
-    if (listed.title !== text.title || listed.artist !== text.artist) { Object.assign(listed, text); sched.version++; }
+  if (body.song) {
+    const { song, certify } = catalogChoice(body.song, message);
+    return { request: { song }, certify };
   }
-  return { entryId: body.entryId };
+  const listed = sched.songsOf(p).find(item => item.entryId === String(body.entryId || ''));
+  if (listed && !catalogText(listed)) throw new Error(message);
+  return { request: { entryId: body.entryId }, certify: stored => stored };
 }
 
 // Titre d'une invitation de duo en route vers KaraFun : il part en solo et
@@ -4697,7 +4720,8 @@ const handlers = {
     const p = personAtTable(body);
     requireNamed(p);
     assertSongLength(p, [body.song], 'duet');
-    const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
+    const choice = catalogChoice(body.song);
+    const duet = choice.certify(sched.inviteDuet(p, String(body.partnerId || ''), choice.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
   },
   // « Qui veut chanter en duo avec moi ? » : un titre du catalogue (`song`)
@@ -4709,7 +4733,8 @@ const handlers = {
     requireNamed(p);
     if (body.song) assertSongLength(p, [body.song], 'duet');
     else assertNotSending(body.entryId);
-    const song = sched.openDuet(p, openDuetSong(p, body)); sync();
+    const { request, certify } = openDuetSong(p, body);
+    const song = certify(sched.openDuet(p, request)); sync();
     return { ok: true, entryId: song.entryId, ...(body.song ? { notice: repeatNotice(song, p.tableId, song.entryId) } : {}) };
   },
   'POST /api/table/duet/open/close': async (req, res, body) => {
@@ -4826,7 +4851,8 @@ const handlers = {
   'POST /api/duet': async (req, res, body, me) => {
     requireNamed(me);
     assertSongLength(me, [body.song], 'duet');
-    sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
+    const choice = catalogChoice(body.song);
+    choice.certify(sched.inviteDuet(me, body.partnerId, choice.song)); sync(); return { ok: true };
   },
   'POST /api/duet/answer': async (req, res, body, me) => {
     if (body.accept) requireNamed(me);
