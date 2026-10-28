@@ -127,6 +127,70 @@ test('duo chargé repoussé par « Pas prêt » en train de sortir de KaraFun : 
   assert.deepEqual(elsa.deferral.ids, [elsa.id]);
 });
 
+// Relecture (passe 6) : un report « Pas prêt » remis depuis un état gardé ne
+// passait pas par _dropDeferredGuest. L'annulation d'un déplacement du bar
+// qui l'avait levé (_undoRebased, ou restoreManualOverride quand rien n'a
+// changé depuis), et le retour d'un passage non chanté dont l'envoi l'avait
+// levé (rollbackUnplayed), rendaient ses personnes d'avant le duo défait :
+// l'ex-invité y revenait, son titre attendait derrière ce report, et son
+// téléphone pouvait de nouveau le lever ou le prolonger.
+test('report « Pas prêt » remis par une annulation du bar ou un passage non chanté : l’ex-invité du duo défait n’y revient pas', async t => {
+  for (const path of ['annulation du déplacement', 'état d’avant le geste', 'passage non chanté']) {
+    for (const how of ['Annuler duo', 'se retire', 'marqué parti']) await t.test(`${path}, ${how}`, () => {
+      const label = `${path}, ${how}`;
+      const s = new Scheduler();
+      s._event = () => {};
+      const names = ids => ids.map(pid => s.people.get(pid).name);
+      const order = () => s.presenceView().filter(v => !v.future).map(v => names(v.ids).join(' & '));
+      const join = (table, name) => s.join({ tableId: table, name, headcount: 1 });
+      const ines = join('1', 'Inès'), gil = join('2', 'Gil'), maud = join('3', 'Maud'), hugo = join('4', 'Hugo');
+      const duo = s.inviteDuet(ines, gil.id, song(1, 'Un'));
+      s.answerDuet(gil, true, duo.entryId);
+      [gil, maud, hugo].forEach((p, i) => s.chooseSong(p, song(10 + i, `Titre de ${p.name}`)));
+      const rollback = path === 'passage non chanté';
+      s.deferPassage(ines.id, s.presenceView().find(v => v.ids[0] === ines.id), rollback ? 1 : 2);
+      assert.deepEqual(names(ines.deferral.ids), ['Inès', 'Gil'], `${label} : le report attend aussi Gil`);
+      let restore;
+      if (rollback) {
+        // Le passage de Maud lève le report d'une chanson d'Inès, puis sort
+        // de KaraFun sans avoir été chanté.
+        const sel = s.select();
+        assert.deepEqual(sel.ids, [maud.id], `${label} : Maud passe d’abord`);
+        s.commit(sel);
+        assert.equal(ines.deferral, null, `${label} : l’envoi de Maud lève le report`);
+        restore = () => s.requeueUnplayed(sel);
+      } else {
+        const before = s.manualOverrideState({ deferrals: true });
+        s.staffMove(ines.id, 1);
+        assert.equal(ines.deferral, null, `${label} : le déplacement lève le report`);
+        const change = s.recordManualChange({ kind: 'move', personId: ines.id, name: 'Inès', from: 3, to: 2, before, native: 'n' });
+        // Annulation après le duo défait : la file a changé, _undoRebased.
+        // Sans changement, l'annulation exacte remet l'état d'avant le geste.
+        restore = path === 'annulation du déplacement' ? () => {
+          assert.equal(s.canUndoManualChange('n'), false);
+          s.undoLastManualChange(change.id, 'n');
+        } : () => s.restoreManualOverride(before, { deferrals: true });
+      }
+      if (how === 'Annuler duo') s.cancelDuet(ines, duo.entryId);
+      else if (how === 'se retire') s.leaveDuet(gil, ines.id, duo.entryId);
+      else s.leave(gil, 'staff');
+      assert.equal(duo.duet, undefined, `${label} : solo d’Inès`);
+      restore();
+      assert.ok(s.isDeferred(ines), `${label} : le report d’Inès revient`);
+      assert.deepEqual(names(ines.deferral.ids), ['Inès'], `${label} : le report revenu n’attend plus Gil`);
+      assert.equal(s.deferralFor(gil.id), null, `${label} : rien à lever ni à prolonger pour Gil`);
+      if (gil.withdrawnAt) return;
+      // Le titre de Gil n'attend plus derrière le report d'Inès, qui laisse
+      // passer ses chansons (avant le correctif : Maud, Hugo, Inès, Gil après
+      // l'annulation ; Maud, Inès, Gil, Hugo après le passage non chanté).
+      if (path === 'annulation du déplacement') assert.deepEqual(order(), ['Gil', 'Maud', 'Inès', 'Hugo'], label);
+      if (rollback) assert.deepEqual(order(), ['Gil', 'Inès', 'Maud', 'Hugo'], label);
+      assert.throws(() => s.cancelDeferral(gil.id), { message: 'Aucun passage repoussé pour cette personne.' });
+      assert.ok(s.isDeferred(ines), `${label} : « Je suis prêt » de Gil ne lève pas le report d’Inès`);
+    });
+  }
+});
+
 // État de l'invitée tel que le duo l'a touché.
 function guestState(s, p) {
   return JSON.stringify({ apps: s.roundApps.get(p.id) || 0, round: s.roundPeople.has(p.id),

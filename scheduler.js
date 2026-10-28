@@ -344,6 +344,23 @@ class Scheduler {
     return line === pid || (duet?.state === 'accepted' && duet.partnerId === pid);
   }
 
+  // Report « Pas prêt » remis depuis un état gardé : annulation d'un geste du
+  // bar (restoreManualOverride, _undoRebased) ou passage non chanté dont
+  // l'envoi l'avait levé ou rapproché (rollbackUnplayed). Le titre reporté
+  // est le titre en cours de son auteur (les appelants le vérifient). Le
+  // report n'attend que les personnes qui le chantent encore (_singsOnLine) :
+  // l'invitée d'un duo défait depuis (« Annuler duo », « Chanter seul », « Je
+  // ne chante plus ce duo », départ) en sort par la règle qui l'a retirée du
+  // report en cours (_dropDeferredGuest). Sinon son titre attendait de
+  // nouveau derrière ce report, et son téléphone pouvait le lever ou le
+  // prolonger (relecture, passe 6).
+  _restoreDeferral(owner, deferral) {
+    owner.deferral = { ...deferral };
+    for (const pid of Array.isArray(deferral.ids) ? deferral.ids : []) {
+      if (!this._singsOnLine(owner.id, pid)) this._dropDeferredGuest(owner, pid, deferral.entryId);
+    }
+  }
+
   // Personnes montées sur scène hors de leur propre ligne (invitée d'un duo
   // parti vers KaraFun, duo improvisé noté au bar) : les lignes de l'ordre
   // fixé où elles chantent encore retrouvent le calcul (espacement, premiers
@@ -614,7 +631,7 @@ class Scheduler {
     if (!deferrals || !Array.isArray(state.deferrals)) return;
     for (const [pid, deferral] of state.deferrals) {
       const p = this.people.get(pid);
-      if (p && !p.withdrawnAt && p.song?.entryId === deferral.entryId && !p.deferral) p.deferral = { ...deferral };
+      if (p && !p.withdrawnAt && p.song?.entryId === deferral.entryId && !p.deferral) this._restoreDeferral(p, deferral);
     }
   }
 
@@ -776,7 +793,7 @@ class Scheduler {
     for (const [pid, deferral] of Array.isArray(before.deferrals) ? before.deferrals : []) {
       const p = this.people.get(pid);
       if (pid !== change.personId || !p || p.withdrawnAt || p.song?.entryId !== deferral.entryId || p.deferral) continue;
-      p.deferral = { ...deferral, remaining: Math.max(0, deferral.remaining - passed) };
+      this._restoreDeferral(p, { ...deferral, remaining: Math.max(0, deferral.remaining - passed) });
     }
     this._restorePlan(change.planBefore);
   }
