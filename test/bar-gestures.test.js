@@ -1172,6 +1172,53 @@ test('duo formé sur une ligne gardée, puis départ de l’auteur ou de l’inv
   }
 });
 
+// Relecture (passe 7) : même départ de l'auteur, duo déjà chargé dans
+// KaraFun. Le serveur le retire sans qu'il soit chanté (keepSentDuosOfLeavers
+// le range parmi les titres à retirer, removeLeaversTracks l'annule, puis
+// sync appelle rollbackUnplayed quand KaraFun confirme le retrait, au besoin
+// après un redémarrage : le titre suivi est sauvegardé avec son duo). La
+// ligne de Gil, sortie de l'ordre fixé pour ce duo, ne revenait pas : Gil,
+// gardé devant Elsa, passait derrière elle, alors que le même départ avant
+// l'envoi la rend.
+test('duo formé sur une ligne gardée, chargé dans KaraFun, puis départ de l’auteur : retiré sans être chanté, les lignes qui restent reprennent leur place', () => {
+  const cases = {
+    'l’auteur est marqué parti': (s, people) => s.leave(people.Paulo, 'staff'),
+    'la table de l’auteur part': s => s.tableLeft('1'),
+  };
+  for (const [how, leave] of Object.entries(cases)) {
+    for (const stage of ['avant l’envoi', 'duo chargé', 'duo chargé, redémarrage avant le retrait']) {
+      const when = `${how}, ${stage}`;
+      const { s, access, people } = evening();
+      gesture(s, people.Elsa, 3); // Paulo, Maud, Gil, Elsa
+      s.openDuet(people.Paulo, { entryId: people.Paulo.song.entryId });
+      s.acceptOpenDuet(people.Gil, people.Paulo.id, people.Paulo.song.entryId);
+      assert.deepEqual(fixed(s), ['Paulo', 'Maud', 'Elsa'], `${when} : Gil chante avec Paulo, sa ligne quitte l’ordre fixé`);
+      let sel = stage === 'avant l’envoi' ? null : s.select();
+      if (sel) {
+        assert.equal(label(s, sel), 'Paulo & Gil', when);
+        s.commit(sel);
+      }
+      leave(s, people);
+      let t = s;
+      if (stage.includes('redémarrage')) {
+        for (const tableId of s.tables.keys()) if (!access.get(tableId)) access.issue(tableId);
+        const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access,
+          settings: { auto: false, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 },
+          tracked: [{ queueId: 5, sel, startedAt: null, addedAt: Date.now(), cancelled: true }] })));
+        t = new Scheduler(s.opts);
+        const recovered = restoreNight(snapshot, { scheduler: t, access: new TableAccess(), settings: {} });
+        assert.deepEqual(recovered.warnings, [], when);
+        sel = recovered.tracked[0].sel;
+      }
+      if (sel) t.rollbackUnplayed(sel); // retrait confirmé par KaraFun
+      assert.equal(t.people.get(people.Gil.id).duetGuestCount || 0, 0, `${when} : Gil n’a pas chanté`);
+      assert.deepEqual(fixed(t), ['Maud', 'Gil', 'Elsa'], `${when} : Gil reprend sa place devant Elsa`);
+      assert.deepEqual(t.manualChanges.map(change => change.name), ['Elsa'], `${when} : les gestes ne changent pas`);
+      assert.deepEqual(playNames(t, 3), ['Maud', 'Gil', 'Elsa'], when);
+    }
+  }
+});
+
 // Relecture (passe 3, cellule sans test) : un duo déjà accepté que son
 // auteur remet en tête de sa liste, sur une ligne gardée, passe aussi par
 // _guestJoined : le duo garde la ligne, celle de l'invitée quitte l'ordre fixé.
