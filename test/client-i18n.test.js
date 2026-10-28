@@ -84,7 +84,9 @@ assert.equal(serverText('Beaucoup de recherches en ce moment. Réessaie dans que
   'Many people are searching right now. Try again in a few seconds.');
 // Regression: relecture PR #11 — l'inverse aussi : chaque message levé
 // directement par une route des téléphones (/api/table/…) a sa traduction.
-const serverJs = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+// Fins de ligne ramenées à \n : la CI sous Windows extrait les fichiers en
+// CRLF, et le découpage des fonctions ci-dessous cherche « \n}\n ».
+const serverJs = fs.readFileSync(path.join(root, 'server.js'), 'utf8').replace(/\r\n/g, '\n');
 const tableRoutes = serverJs.match(/\n  '(?:POST|GET) \/api\/table\/[^']*': async[\s\S]*?(?=\n  '(?:POST|GET) |\n  \/\/ -{3})/g) || [];
 assert.ok(tableRoutes.length > 20, `routes des téléphones repérées : ${tableRoutes.length}`);
 const routeMessages = tableRoutes.flatMap(block => [...block.matchAll(/(?:new Error|songSettingsError)\(\s*'((?:[^'\\]|\\.)*)'/g)].map(m => m[1]));
