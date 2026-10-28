@@ -713,8 +713,11 @@ test('priorité avec retrait sur une ligne dont une personne attend un « Pas pr
 // Relecture : le retrait sortait le titre chargé de KaraFun pour une personne
 // qui ne pouvait pas passer ensuite (titre passé faute de « Je suis là ») :
 // quelqu'un d'autre partait, et le titre retiré attendait derrière une
-// priorité qui ne partait pas.
-test('priorité avec retrait pour une personne qui ne peut pas passer ensuite : refusée, rien retiré', async () => {
+// priorité qui ne partait pas. Depuis la passe 7, une priorité du bar lève
+// cette retenue (_isPresenceRetry) : seule compte sa confirmation de « Je suis
+// là ». Passé puis revenu confirmer, Driss peut passer avant le titre chargé
+// (relecture, passe 8 : il en était exclu).
+test('priorité avec retrait pour un titre passé faute de « Je suis là » : refusée sans confirmation, possible après', async () => {
   {
     // Driss n'a pas confirmé « Je suis là » : son titre laisse passer le suivant.
     const f = harness();
@@ -724,10 +727,26 @@ test('priorité avec retrait pour une personne qui ne peut pas passer ensuite : 
     f.sync();
     assert.ok(planned(f).some(line => line.id === driss.id));
     assert.deepEqual(plain(f.staffState().priorityPull.lineIds), [chloe.id], 'pas de retrait proposé à Driss');
-    await assert.rejects(pullFor(f, driss), { message: 'Driss n’a pas confirmé sa présence : son titre laisse passer le suivant. ' +
-      '« Titre Bruno » reste dans KaraFun, rien n’a été retiré ni avancé.' });
+    await assert.rejects(pullFor(f, driss), { message: 'Driss n’a pas encore confirmé « Je suis là » : « Titre Bruno » reste dans KaraFun, ' +
+      'rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer Driss juste après lui.' });
     nothingChanged(f, ctx);
     assert.equal(planned(f)[0].id, chloe.id, 'la file reste comme avant');
+  }
+  {
+    // Il revient et confirme : le retrait lui est proposé et il part avant le titre chargé.
+    const f = harness();
+    const ctx = loaded(f, { presence: true });
+    const { bruno, chloe, driss } = ctx.people;
+    f.sched.skipUnconfirmed(driss.id, 3);
+    f.sched.confirm(driss);
+    f.sync();
+    assert.deepEqual(plain(f.staffState().priorityPull.lineIds).sort(), [chloe.id, driss.id].sort(), 'retrait proposé à Driss, confirmé');
+    await pullFor(f, driss);
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]]);
+    assert.equal(f.sched.reservedNext?.personId, driss.id);
+    assert.equal(f.sched.reservedNext.byStaff, true);
+    karafunRemoves(f, ctx);
+    assert.deepEqual(planned(f).slice(0, 2).map(line => line.id), [driss.id, bruno.id], 'Driss d’abord, le titre retiré juste après');
   }
 });
 
@@ -935,4 +954,31 @@ test('redémarrage pendant le retrait : le titre revient juste après la priorit
   const order = planned(g);
   assert.deepEqual(order.slice(0, 2).map(line => line.id), [driss.id, bruno.id]);
   assert.equal(order[1].afterPriority, true);
+});
+
+// Relecture (passe 8, équipe rouge) : « Annuler mon changement et recalculer »
+// (POST /api/staff/queue-optimize) abandonnait les gestes sans les annuler :
+// le « Pas prêt » qu'un déplacement avait levé ne revenait pas, alors que
+// « Annuler tous les changements manuels » le rend. Les deux « Annuler » du
+// bar laissent maintenant la file dans le même état, puis le calcul repart.
+test('« Annuler mon changement et recalculer » : les gestes sont annulés comme « Annuler tous les changements », puis le calcul repart', async () => {
+  const f = harness();
+  const ctx = loaded(f);
+  const { chloe, driss } = ctx.people;
+  const eve = f.sched.join({ tableId: '5', name: 'Eve', headcount: 1 });
+  f.sched.chooseSong(eve, { songId: 809, title: 'Titre Eve' });
+  const line = f.sched.presenceView([ctx.tr.sel.ids[0]]).find(v => !v.future && v.ids[0] === chloe.id);
+  f.sched.deferPassage(chloe.id, line, 2);
+  assert.equal(f.sched.isDeferred(chloe), true);
+  assert.deepEqual(shown(f), ['Driss', 'Eve', 'Chloé']);
+  await move(f, { personId: chloe.id, toIndex: 1 });
+  assert.deepEqual(shown(f), ['Driss', 'Chloé*', 'Eve']);
+  assert.equal(f.sched.isDeferred(chloe), false, 'le déplacement lève son « Pas prêt »');
+  assert.equal(f.sched.manualChanges.length, 1);
+  const result = plain(await f.call('POST /api/staff/queue-optimize'));
+  assert.equal(result.ok, true);
+  assert.deepEqual(f.sched.manualChanges, [], 'le geste est annulé');
+  assert.equal(f.sched.isDeferred(chloe), true, 'son « Pas prêt » revient, comme avec « Annuler tous les changements »');
+  assert.ok(notes(f).some(msg => /Le bar a annulé 1 changement manuel/.test(msg)), 'le journal du bar le dit');
+  assert.ok(driss);
 });

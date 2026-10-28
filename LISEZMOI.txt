@@ -189,8 +189,9 @@ BON À SAVOIR
   s'il est meilleur, sans jamais toucher au prochain annoncé.
 - « Recalculer la file » relance le calcul complet (30 s au plus) et annule
   les déplacements et priorités du bar (le bouton devient alors « Annuler mes
-  N changements et recalculer ») ; l'indicateur au-dessus de la file montre
-  quand un calcul est en cours.
+  N changements et recalculer »), comme « Annuler tous les changements
+  manuels » : un « Pas prêt » levé par un déplacement revient ; l'indicateur
+  au-dessus de la file montre quand un calcul est en cours.
 - Des cases à cocher permettent de retirer plusieurs titres d'un coup.
 - Bonus/malus (cartes des tables, repères chanteurs) : réservé au bar,
   invisible des clients, de -3 (un tour sur deux) à +3 (deux fois plus).

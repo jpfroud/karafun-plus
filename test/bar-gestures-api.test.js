@@ -143,7 +143,11 @@ const planned = state => state.queue.filter(row => row.source === 'helper' && !r
     state = await ok('/api/staff/state');
     assert.deepEqual(state.manualChanges, [], '« Recalculer la file » annule tous les gestes');
     assert.ok(!state.queue.some(row => row.placed), 'plus aucune ligne placée');
-    assert.match(state.log.find(line => /relance le calcul/.test(line.msg)).msg, /déplacements manuels sont abandonnés/);
+    // Annulés comme par « Annuler tous les changements manuels », puis le
+    // calcul repart (relecture, passe 8).
+    assert.equal(state.log.find(line => /a annulé .* changements? manuels? dans la file/.test(line.msg))?.msg,
+      'Le bar a annulé 2 changements manuels dans la file');
+    assert.ok(state.log.some(line => line.msg === 'Le bar relance le calcul de la file'));
     console.log('ok - priorité tenue après un ajout ; « Recalculer la file » annule les gestes');
 
     // Décision du gérant du 26 octobre : « Priorité » avant un titre déjà

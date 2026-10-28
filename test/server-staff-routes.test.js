@@ -215,7 +215,10 @@ test('optimisation forcée sans optimiseur : la règle locale reprend et les dé
   const result = plain(await f.call('POST /api/staff/queue-optimize'));
   assert.deepEqual(result, { ok: true, started: false,
     message: 'Optimisation indisponible : la file a été recalculée par la règle locale.' });
-  assert.equal(lastNote(f).msg, 'Le bar relance le calcul de la file ; les déplacements manuels sont abandonnés');
+  // Les gestes sont d'abord annulés comme par « Annuler tous les changements
+  // manuels » (relecture, passe 8), puis le calcul repart.
+  assert.deepEqual(f.sched.log.slice(-2).map(line => line.msg),
+    ['Le bar a annulé 1 changement manuel dans la file', 'Le bar relance le calcul de la file']);
   assert.equal(f.sched.manualChanges.length, 0);
   assert.deepEqual(plain(order(f)), ['Alice', 'Bruno', 'Chloé']);
   assert.equal(f.staffState().solver.plan, 'local');

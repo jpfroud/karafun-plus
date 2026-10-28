@@ -55,6 +55,7 @@ window.CLIENT_TRANSLATIONS = {
       'Je ne chante pas ce duo': 'I’m not singing this duet',
       'Masquer ce message': 'Hide this message',
       '+{n} autre message': ['+{n} more message', '+{n} more messages'],
+      '{n} message masqué': ['{n} hidden message', '{n} hidden messages'],
       '{name} ne chante plus ce duo ?': '{name} no longer sings this duet?',
       '{owner} chantera « {title} » en solo. {name} garde ses propres chansons.': '{owner} will sing “{title}” solo. {name} keeps their own songs.',
       'Oui, je me retire': 'Yes, I’m out',

@@ -3876,13 +3876,9 @@ function priorityPullRefusal(line, tr, stage = stageSingers()) {
   // titre retiré pour une priorité d'avant (_priorityHolds), et
   // Scheduler#_heldFor ne laisse ni celui de l'invitée d'un duo sur son
   // propre titre, ni celui du duo d'un autre où chante l'une des deux,
-  // retenir une priorité du bar. Un titre passé faute de « Je suis là »,
-  // lui, laisse passer le suivant.
-  const owner = sched.people.get(line.ids[0]);
-  if (sched._isPresenceRetry(owner)) {
-    return `${owner.name} n’a pas confirmé sa présence : son titre laisse passer le suivant. ` +
-      `« ${tr.sel.song.title} » reste dans KaraFun, rien n’a été retiré ni avancé.`;
-  }
+  // retenir une priorité du bar. Un titre passé faute de « Je suis là » ne la
+  // retient pas non plus (Scheduler#_isPresenceRetry) : seule compte sa
+  // confirmation, ci-dessous (relecture, passe 8).
   // « Je suis là » obligatoire : l'envoi (sync(), Scheduler#select) attend
   // la réponse de la priorité, qui ne lui est demandée qu'après le retrait ;
   // sans réponse, elle serait sautée et le titre retiré rejoué après un
@@ -5398,7 +5394,14 @@ const handlers = {
     return { ok: true, removed, skipped: skipped.length,
       message: `${removed} titre${removed > 1 ? 's' : ''} trop long${removed > 1 ? 's' : ''} retiré${removed > 1 ? 's' : ''}${skipped.length ? ` ; ${skipped.length} ignoré${skipped.length > 1 ? 's' : ''} (${[...new Set(skipped)].join(', ')})` : ''}.` };
   },
+  // « Recalculer la file » ; avec des gestes du bar, « Annuler mon changement
+  // et recalculer » : ils sont d'abord annulés comme par « Annuler tous les
+  // changements manuels » (un « Pas prêt » levé par un déplacement, le
+  // prochain annoncé d'avant une priorité reviennent), puis le calcul repart.
+  // Sinon les deux « Annuler » du bar laissaient la file dans des états
+  // différents (relecture, passe 8).
   'POST /api/staff/queue-optimize': async () => {
+    if (sched.manualChanges.length) sched.undoAllManualChanges(priorityNativeFingerprint(), { excludeIds: sendingIds() });
     const started = sched.forceReplan(30000);
     sync();
     return { ok: true, started, message: started ?

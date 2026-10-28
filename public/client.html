@@ -1211,7 +1211,10 @@
       ? `<button type="button" class="btn small" data-info-defer="${esc(info.defer)}">${esc(t('Pas prêt'))}</button>` : ''}${info.leave
       ? `<button type="button" class="btn small" data-info-leave="${esc(info.key)}">${esc(t('Je ne chante pas ce duo'))}</button>` : ''}${info.stowed ? ''
       : `<button type="button" class="info-close" data-info-dismiss="${esc(info.key)}" aria-label="${esc(t('Masquer ce message'))}">×</button>`}</div></div>`).join('')
-      + (more > 0 ? `<button type="button" class="btn small ghost info-more" data-info-more>${esc(tp(more, '+{n} autre message', '+{n} autres messages'))}</button>`
+      // Rien d'affiché (seulement des duos ouverts rangés par ×) : la pastille
+      // dit ce qu'elle replie, il n'y a pas de message dont ce serait « l'autre ».
+      + (more > 0 ? `<button type="button" class="btn small ghost info-more" data-info-more>${esc(shown.length
+        ? tp(more, '+{n} autre message', '+{n} autres messages') : tp(more, '{n} message masqué', '{n} messages masqués'))}</button>`
         : infoExpanded && folded > 0 ? `<button type="button" class="btn small ghost info-more" data-info-less>${esc(t('Replier les messages'))}</button>` : '');
     if (html !== infoShown) { $('infoBar').innerHTML = html; infoShown = html; }
     $('infoBar').hidden = !infos.length;

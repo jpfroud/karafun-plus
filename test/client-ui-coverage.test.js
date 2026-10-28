@@ -4520,6 +4520,20 @@ test('duo ouvert : l’annonce du passage de ce téléphone passe avant les duos
   assert.equal(page.node('infoBar').classList.contains('expanded'), true);
 });
 
+// Relecture (passe 8, design) : seul message, un duo ouvert rangé par × :
+// la barre ne montrait qu'une pastille « +1 autre message », sans message
+// dont il serait « l'autre ». Elle dit ce qu'elle replie.
+test('duo ouvert rangé par ×, plus rien d’autre : la pastille dit « 1 message masqué »', async () => {
+  for (const [languages, label] of [[undefined, '1 message masqué'], [['en'], '1 hidden message']]) {
+    const page = await open({ ...(languages ? { languages } : {}), state: baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre')] }) });
+    await page.tap('infoBar', '[data-info-dismiss="open:o1"]');
+    assert.equal(page.node('infoBar').querySelectorAll('.info-item').length, 0, 'replié : aucun message affiché');
+    assert.equal(page.find('infoBar', '[data-info-more]').textContent, label);
+    await page.tap('infoBar', '[data-info-more]');
+    assert.equal(page.node('infoBar').querySelectorAll('.info-item').length, 1, 'déplié : le duo rangé');
+  }
+});
+
 // Relecture (passe 3) : le duo ouvert d'une autre table avait une place
 // garantie devant les messages de ce téléphone ; « titre retiré : présence
 // non confirmée » ou « X rejoint ton duo » passaient derrière « +N » dès qu'un
@@ -4653,13 +4667,15 @@ test('duo ouvert : × range derrière « +N » un duo absent de « La file », q
   assert.equal(item.querySelector('[data-info-dismiss]'), null, 'déjà rangé : pas de second ×');
   await later.tap('infoBar', '[data-open-join="o1"]');
   assert.deepEqual(later.posts.at(-1), ['/api/table/duet/open/accept', { table: '1', access: 'secret', personId: 'alice', ownerId: 'o-o1', entryId: 'o1' }]);
-  // Seul le bandeau rangé : la barre reste, réduite à « +1 autre message ».
+  // Seul le bandeau rangé : la barre reste, réduite à une pastille qui dit
+  // ce qu'elle replie (relecture, passe 8 : « +1 autre message », sans
+  // message dont il serait l'autre).
   later.state.rules = {};
   await later.poll();
   await later.tap('infoBar', '[data-info-less]');
   assert.equal(later.node('infoBar').hidden, false);
   assert.deepEqual(later.node('infoBar').querySelectorAll('.info-item').length, 0);
-  assert.equal(later.find('infoBar', '[data-info-more]').textContent, '+1 autre message');
+  assert.equal(later.find('infoBar', '[data-info-more]').textContent, '1 message masqué');
   // Le même duo dans « La file » (« Je chante avec » sur sa ligne) : × le masque.
   later.state.queue = [{ source: 'helper', id: 'o-o1', ids: ['o-o1'], name: 'Léa', pos: 1, title: 'Titre',
     song: { entryId: 'o1', songId: 50, title: 'Titre', duet: { state: 'open', kind: 'duo' } } }];
