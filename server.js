@@ -767,11 +767,10 @@ function restore(tr, reason) {
   const owner = sched.people.get(tr.sel.ids[0]);
   if (!owner) return;
   // Une autre chanson peut avoir été ajoutée pendant que la première était
-  // déjà chez KaraFun : ne jamais écraser cette liste.
-  if (!owner.song || owner.song.entryId !== tr.sel.song.entryId) {
-    if (owner.song) owner.backlog.unshift(owner.song);
-    owner.song = tr.sel.song;
-  }
+  // déjà chez KaraFun : ne jamais écraser cette liste. Même retour en tête
+  // que « Pas prêt » (Scheduler#putBackFirst) ; seule la place du ticket
+  // diffère (4e place, ci-dessous).
+  sched.putBackFirst(owner, tr.sel.song);
   for (const pid of (tr.sel.consumedIds || tr.sel.ids)) {
     const p = sched.people.get(pid);
     if (!p) continue;

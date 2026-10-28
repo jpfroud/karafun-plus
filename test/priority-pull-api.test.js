@@ -668,6 +668,53 @@ test('duo improvisé noté par erreur avec une personne placée par le bar, annu
   }
 });
 
+// Relecture : le titre chargé retiré de KaraFun parce que son chanteur est
+// absent à l'appel (« Absent » du bar, restore de server.js) revenait en tête
+// de sa liste sans que le duo formé entre-temps sur sa ligne placée rende la
+// ligne qu'il en avait sortie, contrairement au retour de « Pas prêt »
+// (requeueUnplayed, _currentChanged). Gil, gardé devant Paulo, passait
+// derrière lui.
+test('absent à l’appel devant un duo formé sur une ligne placée : la ligne de l’invitée revient', async () => {
+  const f = harness();
+  const s = f.sched;
+  const join = (tableId, name) => s.join({ tableId, name, headcount: 1 });
+  const lea = join('1', 'Léa'), paulo = join('2', 'Paulo'), maud = join('3', 'Maud'), gil = join('4', 'Gil'), hugo = join('5', 'Hugo');
+  [[lea, 801], [paulo, 802], [maud, 803], [gil, 804], [hugo, 805]].forEach(([p, songId]) =>
+    s.chooseSong(p, { songId, title: `Titre ${p.name}` }));
+  const stage = s.select(); s.commit(stage);
+  f.tracked().push({ queueId: 1, sel: stage, startedAt: Date.now() - 50000, addedAt: Date.now() - 60000 });
+  const next = s.select(); s.commit(next);
+  assert.equal(next.ids[0], paulo.id, 'le premier titre de Paulo est chargé dans KaraFun');
+  f.tracked().push({ queueId: 2, sel: next, startedAt: null, addedAt: Date.now() - 5000 });
+  const queue = [{ queueId: 1, songId: 801, title: 'Titre Léa', singer: stage.label, status: 'playing' },
+    { queueId: 2, songId: 802, title: 'Titre Paulo', singer: next.label }];
+  const ctx = { queue, bridge: fakeBridge(queue, 1) };
+  f.setBridge(ctx.bridge);
+  s.chooseSong(paulo, { songId: 806, title: 'Duo Paulo' }, 'append');
+  f.sync();
+  await move(f, { personId: paulo.id, toIndex: 2 });
+  assert.deepEqual(shown(f).slice(0, 3), ['Maud', 'Gil', 'Paulo*']);
+  s.openDuet(paulo, { entryId: paulo.song.entryId });
+  s.acceptOpenDuet(gil, paulo.id, paulo.song.entryId);
+  f.sync();
+  const fixed = () => s.manualOrder.map(pid => s.people.get(pid).name);
+  assert.deepEqual(fixed(), ['Maud', 'Paulo'], 'Gil chante avec Paulo, sa ligne quitte l’ordre fixé');
+  const duo = paulo.song;
+  await f.call('POST /api/staff/kf', { action: 'absent', queueId: 2 });
+  assert.deepEqual(removals(ctx.bridge), [['remove', 2]]);
+  karafunRemoves(f, ctx);
+  assert.ok(notes(f).includes('« Titre Paulo » (Paulo · Table 2) retirée (absent à l\'appel) : garde sa chanson et reprend la 4e place'));
+  assert.equal(paulo.song.entryId, next.song.entryId, 'le titre retiré revient en tête de sa liste');
+  assert.equal(paulo.backlog[0], duo, 'le duo passe dans la suite de sa liste');
+  assert.equal(duo.duet.unpinned, undefined, 'le duo ne garde plus la ligne de Gil');
+  assert.deepEqual(fixed(), ['Maud', 'Gil', 'Paulo'], 'le duo n’est plus le titre en cours : Gil reprend sa place');
+  assert.deepEqual(shown(f).slice(0, 3), ['Maud', 'Gil', 'Paulo*']);
+  assert.deepEqual(s.manualChanges.map(change => change.name), ['Paulo']);
+  assert.equal(f.publicState(null, '2').tablePeople.find(p => p.id === paulo.id).duet, null,
+    'son téléphone ne montre plus le duo sur le titre en cours');
+  assert.ok(lea && hugo);
+});
+
 test('redémarrage pendant le retrait : le titre revient juste après la priorité une fois retiré', async () => {
   const f = harness();
   const ctx = loaded(f);
