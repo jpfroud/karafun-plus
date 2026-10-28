@@ -121,7 +121,7 @@ test('priorité confirmée : le titre chargé sort de KaraFun, la priorité part
   const ctx = loaded(f);
   const { bruno, driss } = ctx.people;
   assert.deepEqual(plain(f.staffState().priorityPull), { queueId: 2, title: 'Titre Bruno', name: 'Bruno', ids: [bruno.id],
-    stageIds: [ctx.people.alice.id] }, 'la page du bar sait quel titre proposer de retirer, et pour qui pas');
+    lineIds: [ctx.people.chloe.id, driss.id] }, 'la page du bar sait quel titre proposer de retirer, et pour quelles lignes');
   const result = plain(await pullFor(f, driss));
   assert.equal(result.message, '« Titre Bruno » sort de KaraFun : Driss passe d’abord, « Titre Bruno » juste après.');
   assert.deepEqual(result.pulled, { queueId: 2, title: 'Titre Bruno' });
@@ -391,6 +391,7 @@ test('priorité avant un duo chargé : il revient entier juste après ; son invi
   const { bruno, zoe, driss } = ctx.people;
   assert.equal(ctx.next.ids[1], zoe.id, 'le duo de Bruno et Zoé est chargé');
   assert.deepEqual(plain(f.staffState().priorityPull.ids), [bruno.id, zoe.id]);
+  assert.ok(!f.staffState().priorityPull.lineIds.includes(zoe.id), 'la page ne propose pas le retrait à Zoé');
   await assert.rejects(pullFor(f, zoe), { message: 'Zoé chante déjà dans « Duo Bruno » : rien n’a été retiré ni avancé.' });
   assert.deepEqual(removals(ctx.bridge), []);
   assert.equal(zoe.duetGuestCount, 1);
@@ -527,7 +528,8 @@ test('priorité avec retrait pour une personne sur scène : refusée, elle ne ch
   const { alice } = ctx.people;
   f.sched.chooseSong(alice, { songId: 809, title: 'Encore Alice' });
   f.sync();
-  assert.deepEqual(plain(f.staffState().priorityPull.stageIds), [alice.id], 'la page ne lui propose pas le retrait');
+  assert.ok(planned(f).some(line => line.id === alice.id), 'Alice a une ligne dans la file');
+  assert.ok(!f.staffState().priorityPull.lineIds.includes(alice.id), 'la page ne lui propose pas le retrait');
   await assert.rejects(pullFor(f, alice), { message: 'Alice est sur scène en ce moment : « Titre Bruno » reste dans KaraFun, ' +
     'rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer Alice juste après lui.' });
   nothingChanged(f, ctx);
@@ -550,6 +552,9 @@ test('priorité avec retrait pour une personne qui ne peut pas passer ensuite : 
     f.sync();
     f.deferTurn(f.sched.people.get(chloe.id), 2);
     assert.deepEqual(planned(f).map(line => line.name), ['Driss', 'Chloé & Eve', 'Eve']);
+    // Relecture : la page proposait le retrait à Eve d'après sa propre copie
+    // de la règle ; la liste du serveur suit les refus de priorityPullFor.
+    assert.deepEqual(plain(f.staffState().priorityPull.lineIds), [driss.id, chloe.id], 'pas de retrait proposé à Eve');
     await assert.rejects(pullFor(f, eve), { message: 'Eve attend la fin du « Pas prêt » de Chloé & Eve : ' +
       '« Titre Bruno » reste dans KaraFun, rien n’a été retiré ni avancé.' });
     nothingChanged(f, ctx);
@@ -567,6 +572,8 @@ test('priorité avec retrait pour une personne qui ne peut pas passer ensuite : 
     const { chloe, driss } = ctx.people;
     f.sched.skipUnconfirmed(driss.id, 3);
     f.sync();
+    assert.ok(planned(f).some(line => line.id === driss.id));
+    assert.deepEqual(plain(f.staffState().priorityPull.lineIds), [chloe.id], 'pas de retrait proposé à Driss');
     await assert.rejects(pullFor(f, driss), { message: 'Driss n’a pas confirmé sa présence : son titre laisse passer le suivant. ' +
       '« Titre Bruno » reste dans KaraFun, rien n’a été retiré ni avancé.' });
     nothingChanged(f, ctx);

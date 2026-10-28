@@ -309,6 +309,9 @@
   <p class="tiny muted" id="tableSheetBonusHelp"></p>
   <div class="row wrap sheet-actions"><button type="button" class="btn small" id="tableSheetQr">Montrer le QR</button><a class="btn small" id="tableSheetPage" href="#" target="_blank" rel="noopener">Page</a><button type="button" class="btn small danger" id="tableSheetLeft">Table partie</button></div>
   <button type="button" class="btn small primary" id="tableSheetClose">Fermer</button></dialog>
+<!-- « Priorité » avant un titre déjà chargé dans KaraFun : trois choix, Annuler ne change rien. Textes posés par askPriority. -->
+<dialog id="priorityDialog" class="staff-dialog" aria-labelledby="priorityTitle" aria-describedby="priorityHelp"><h2 id="priorityTitle" tabindex="-1" autofocus>Priorité</h2><p class="small" id="priorityHelp"></p>
+  <div class="row wrap sheet-actions"><button type="button" class="btn wide primary" id="priorityBefore">Avant le titre chargé</button><button type="button" class="btn wide" id="priorityAfter">Juste après le titre chargé</button><button type="button" class="btn wide" id="priorityCancel">Annuler</button></div></dialog>
 
 <script>
 (() => {
@@ -461,30 +464,57 @@
   // « Priorité » avec un titre de la file déjà chargé dans KaraFun (pas sur
   // scène) : le bar choisit de faire passer la personne avant lui (le titre
   // sort de KaraFun et repasse juste après elle) ou juste après lui, comme
-  // avant. Jamais quand une même personne chante dans les deux passages, ni
-  // pour quelqu'un du titre en cours (elle chanterait deux fois de suite).
+  // avant. Seulement pour les lignes que le serveur accepterait
+  // (`priorityPull.lineIds`, priorityPullRefusal) : pas de copie de sa règle ici.
   function pullOffer(q) {
-    const loaded = S?.priorityPull;
-    return !!loaded && !(q.ids || [q.id]).some(pid => (loaded.ids || []).includes(pid) || (loaded.stageIds || []).includes(pid));
+    return !!S?.priorityPull && (S.priorityPull.lineIds || []).includes(q.id);
   }
   function giveUrgent(personId) {
     const line = S.queue.find(q => q.source === 'helper' && q.id === personId && !q.future);
-    const loaded = S.priorityPull;
     if (!line || !pullOffer(line)) {
       act('/api/staff/move', { personId, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun');
       return;
     }
-    const name = line.name || 'ce chanteur';
-    if (confirm(`Faire passer ${name} avant « ${loaded.title} » ?\n\nOK : « ${loaded.title} » sort de KaraFun et repasse juste après ${name}, sans perdre son tour.\nAnnuler : ${name} passe juste après « ${loaded.title} ».`)) {
-      act('/api/staff/move', { personId, toIndex: 0, priority: true, pullLoaded: true, queueId: loaded.queueId },
-        `« ${loaded.title} » sort de KaraFun : ${name} passe d’abord`);
-      return;
-    }
-    // Déjà le premier passage libre : il passe déjà juste après ce titre.
-    const first = S.queue.find(q => q.source === 'helper' && !q.future);
-    if (first?.id === personId) { toast(`${name} passe déjà juste après « ${loaded.title} », chargé dans KaraFun`); return; }
-    act('/api/staff/move', { personId, toIndex: 0, priority: true }, `${name} passe juste après « ${loaded.title} », déjà chargé dans KaraFun`);
+    askPriority(line, S.priorityPull);
   }
+  // Question posée dans une fenêtre de la page, pas un confirm() du
+  // navigateur (son « Annuler » valait « juste après ») : avant le titre
+  // chargé (il sort de KaraFun), juste après lui (rien n'en sort ; pas
+  // proposé au premier passage libre, qui y est déjà), ou Annuler. Annuler,
+  // Échap et Retour ferment la fenêtre sans rien envoyer.
+  let priorityAsk = null; // { personId, name, queueId, title, first } de la question ouverte
+  function askPriority(line, loaded) {
+    const name = line.name || 'ce chanteur';
+    const first = S.queue.find(q => q.source === 'helper' && !q.future)?.id === line.id;
+    priorityAsk = { personId: line.id, name, queueId: loaded.queueId, title: loaded.title, first };
+    $('priorityTitle').textContent = `Faire passer ${name} avant « ${loaded.title} » ?`;
+    $('priorityHelp').textContent = `« ${loaded.title} » est déjà chargé dans KaraFun. Avant lui : il sort de KaraFun et repasse juste après ${name}, sans perdre son tour. ` +
+      (first ? `Sans retrait, ${name} passe déjà juste après lui.` : `Juste après lui : rien ne sort de KaraFun.`);
+    $('priorityBefore').textContent = `Avant « ${loaded.title} »`;
+    $('priorityAfter').textContent = `Juste après « ${loaded.title} »`;
+    $('priorityAfter').hidden = first;
+    // Le menu ⋯ de la ligne se ferme ; son étape d'historique devient celle de la fenêtre.
+    if (window.history?.state?.rowMenu) { try { window.history.replaceState({ barTab: activeTab, dialog: 'priorityDialog' }, '', tabUrl()); } catch (_) { /* */ } }
+    openRowMenu = null;
+    openDialog('priorityDialog');
+    render();
+  }
+  function answerPriority(choice) {
+    const ask = priorityAsk;
+    priorityAsk = null;
+    $('priorityDialog').close();
+    if (!ask || choice === 'cancel') return;
+    if (choice === 'before') {
+      act('/api/staff/move', { personId: ask.personId, toIndex: 0, priority: true, pullLoaded: true, queueId: ask.queueId },
+        `« ${ask.title} » sort de KaraFun : ${ask.name} passe d’abord`);
+    } else if (!ask.first) {
+      act('/api/staff/move', { personId: ask.personId, toIndex: 0, priority: true }, `${ask.name} passe juste après « ${ask.title} », déjà chargé dans KaraFun`);
+    }
+  }
+  $('priorityBefore').onclick = () => answerPriority('before');
+  $('priorityAfter').onclick = () => answerPriority('after');
+  $('priorityCancel').onclick = () => answerPriority('cancel');
+  $('priorityDialog').addEventListener('close', () => { priorityAsk = null; });
 
   // Le service de mise à jour tourne sur le serveur, même lorsque cette page
   // perd brièvement sa connexion. Une soirée active demande confirmation ;
@@ -584,9 +614,9 @@
   }
   setTab(activeTab, false);
   try { window.history?.replaceState?.({ barTab: activeTab }, '', `${location.pathname || ''}${location.search || ''}#${activeTab}`); } catch (_) { /* */ }
-  // Une fenêtre ouverte (QR, détails d'une table, transfert) a sa propre étape :
-  // Retour la ferme sans changer d'onglet. Fermée d'un bouton, son étape est retirée.
-  const DIALOGS = ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog', 'songSheet'];
+  // Une fenêtre ouverte (QR, détails d'une table, transfert, question « Priorité ») a sa
+  // propre étape : Retour la ferme sans changer d'onglet. Fermée d'un bouton, son étape est retirée.
+  const DIALOGS = ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog', 'songSheet', 'priorityDialog'];
   let poppingDialog = false, keepStep = false;
   const tabUrl = () => `${location.pathname || ''}${location.search || ''}#${activeTab}`;
   function openDialog(id) {

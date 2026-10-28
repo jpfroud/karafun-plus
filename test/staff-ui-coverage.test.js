@@ -893,8 +893,8 @@ test('file du bar : invitation de duo en attente marquée, plus de liste des duo
 
 // Décision du gérant du 26 octobre : un titre de la file déjà chargé dans
 // KaraFun (pas sur scène) ; « Priorité » demande s'il faut faire passer la
-// personne avant lui. Oui : il sort de KaraFun et repasse juste après elle.
-// Non : elle passe juste après lui, comme avant, et la page le dit.
+// personne avant lui. Avant : il sort de KaraFun et repasse juste après elle.
+// Juste après : comme avant, et la page le dit. Annuler : rien ne change.
 test('file du bar : « Priorité » avec un titre déjà chargé dans KaraFun propose de passer avant lui', async () => {
   const world = baseWorld();
   world.queue = [
@@ -903,54 +903,71 @@ test('file du bar : « Priorité » avec un titre déjà chargé dans KaraFun pr
     { source: 'helper', id: 'duo1', pos: 3, name: 'Alice & Bruno', table: 'Table 1', ids: ['alice', 'bruno'], kind: 'duo', song: { title: 'Duo', entryId: 'e2' } },
     { source: 'helper', id: 'dora', pos: 4, name: 'Dora', table: 'En solo', ids: ['dora'], song: { title: 'Rock', entryId: 'e3' } },
   ];
-  world.priorityPull = { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'] };
-  const page = await openPage({ world });
+  // Bruno chante dans les deux passages : le serveur ne propose pas le retrait au duo.
+  world.priorityPull = { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'], lineIds: ['chloe', 'dora'] };
+  const page = await openPage({ world, dialogFocus: true });
   const line = index => rows(page)[index];
   const urgent = index => line(index).querySelector('[data-urgent]');
+  const dialog = page.$('priorityDialog');
   assert.ok(urgent(1), 'le premier passage libre peut aussi passer avant le titre chargé');
   assert.equal(urgent(1).title, 'Faire passer dès que possible ; propose de passer avant « Titre chargé », déjà chargé dans KaraFun');
 
-  // Confirmé : le titre chargé sort de KaraFun.
-  page.replies['/api/staff/move'] = { ok: true, message: '« Titre chargé » sort de KaraFun : Dora passe d’abord, « Titre chargé » juste après.' };
+  // La question : trois choix, le focus sur son titre (rien n'est choisi d'avance).
   await page.click(urgent(3));
-  assert.equal(page.confirms.at(-1), 'Faire passer Dora avant « Titre chargé » ?\n\nOK : « Titre chargé » sort de KaraFun et repasse juste après Dora, sans perdre son tour.\nAnnuler : Dora passe juste après « Titre chargé ».');
+  assert.equal(dialog.open, true);
+  assert.equal(page.doc.activeElement, page.$('priorityTitle'), 'le focus va au titre de la question, pas à un bouton');
+  assert.equal(page.$('priorityTitle').textContent, 'Faire passer Dora avant « Titre chargé » ?');
+  assert.equal(page.$('priorityHelp').textContent, '« Titre chargé » est déjà chargé dans KaraFun. Avant lui : il sort de KaraFun et repasse juste après Dora, ' +
+    'sans perdre son tour. Juste après lui : rien ne sort de KaraFun.');
+  assert.deepEqual(texts([page.$('priorityBefore'), page.$('priorityAfter'), page.$('priorityCancel')]),
+    ['Avant « Titre chargé »', 'Juste après « Titre chargé »', 'Annuler']);
+  assert.equal(page.$('priorityAfter').hidden, false);
+  assert.deepEqual(page.confirms, [], 'plus de confirm() du navigateur');
+
+  // Avant : le titre chargé sort de KaraFun.
+  page.replies['/api/staff/move'] = { ok: true, message: '« Titre chargé » sort de KaraFun : Dora passe d’abord, « Titre chargé » juste après.' };
+  await page.click(page.$('priorityBefore'));
+  assert.equal(dialog.open, false);
   assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true, pullLoaded: true, queueId: 'kf-9' });
   assert.equal(page.toast().text, '« Titre chargé » sort de KaraFun : Dora passe d’abord, « Titre chargé » juste après.');
 
-  // Non confirmé : priorité juste après le titre chargé, comme avant.
+  // Juste après : priorité juste après le titre chargé, comme avant.
   delete page.replies['/api/staff/move'];
-  page.confirmAnswer = false;
   await page.click(urgent(3));
+  await page.click(page.$('priorityAfter'));
+  assert.equal(dialog.open, false);
   assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true });
   assert.equal(page.toast().text, 'Dora passe juste après « Titre chargé », déjà chargé dans KaraFun');
-  // Le premier passage libre, non confirmé : rien à changer, la page le dit.
+  // Le premier passage libre y est déjà : seulement Avant ou Annuler.
   const posts = page.posts.length;
   await page.click(urgent(1));
+  assert.equal(page.$('priorityHelp').textContent, '« Titre chargé » est déjà chargé dans KaraFun. Avant lui : il sort de KaraFun et repasse juste après Chloé, ' +
+    'sans perdre son tour. Sans retrait, Chloé passe déjà juste après lui.');
+  assert.equal(page.$('priorityAfter').hidden, true, 'rien à changer sans retrait');
+  await page.click(page.$('priorityCancel'));
   assert.equal(page.posts.length, posts, 'rien n’est envoyé');
-  assert.equal(page.toast().text, 'Chloé passe déjà juste après « Titre chargé », chargé dans KaraFun');
-  page.confirmAnswer = true;
   await page.click(urgent(1));
+  await page.click(page.$('priorityBefore'));
   assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'chloe', toIndex: 0, priority: true, pullLoaded: true, queueId: 'kf-9' });
 
   // Bruno chante dans les deux passages : pas de question, priorité ordinaire.
-  const asked = page.confirms.length;
   await page.click(urgent(2));
-  assert.equal(page.confirms.length, asked);
+  assert.equal(dialog.open, false);
   assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'duo1', toIndex: 0, priority: true });
 
   // Le titre a commencé pendant la question : le refus du serveur s'affiche.
   page.replies['/api/staff/move'] = { status: 400, error: '« Titre chargé » a commencé pendant ta confirmation : rien n’a été retiré de KaraFun ni avancé. Touche de nouveau « Priorité » pour faire passer Dora juste après.' };
   await page.click(urgent(3));
+  await page.click(page.$('priorityBefore'));
   assert.deepEqual(page.toast(), { text: '« Titre chargé » a commencé pendant ta confirmation : rien n’a été retiré de KaraFun ni avancé. Touche de nouveau « Priorité » pour faire passer Dora juste après.', bad: true });
 
-  // Dora chante le titre en cours : pas de question, elle ne chanterait pas
-  // deux fois de suite (relecture de la correction).
+  // Dora chante le titre en cours : le serveur ne propose plus le retrait pour
+  // elle (elle chanterait deux fois de suite) ; pas de question.
   delete page.replies['/api/staff/move'];
-  await page.update({ priorityPull: { ...world.priorityPull, stageIds: ['dora'] } });
-  const before = page.confirms.length;
+  await page.update({ priorityPull: { ...world.priorityPull, lineIds: ['chloe'] } });
   assert.equal(urgent(3).title, 'Faire passer dès que possible, après les titres déjà chargés dans KaraFun');
   await page.click(urgent(3));
-  assert.equal(page.confirms.length, before);
+  assert.equal(dialog.open, false);
   assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true });
 
   // Pendant le retrait, puis titre revenu juste après la priorité.
@@ -964,6 +981,93 @@ test('file du bar : « Priorité » avec un titre déjà chargé dans KaraFun pr
   assert.equal(line(2).querySelector('.queue-tags .badge.wait').title,
     'Retiré de KaraFun pour une priorité donnée par le bar : ce titre passe juste après elle, sans perdre son tour ; si elle ne tient plus, il reprend sa place');
   assert.equal(urgent(1), null, 'plus de question une fois le titre sorti : le premier passage libre n’a plus de « Priorité »');
+});
+
+// Relecture : la question était un confirm() du navigateur dont « Annuler »
+// (et Échap) faisait passer la personne juste après le titre chargé : le bar
+// ne pouvait pas renoncer. Trois choix dans une fenêtre de la page ; Annuler,
+// Échap et Retour n'envoient rien.
+test('file du bar : « Priorité » avant un titre chargé, Annuler, Échap et Retour ne changent rien', async () => {
+  const world = baseWorld();
+  world.queue = [
+    { source: 'karafun', ours: true, queueId: 'kf-9', pos: 1, singer: 'Bruno', ids: ['bruno'], title: 'Titre chargé' },
+    { source: 'helper', id: 'chloe', pos: 2, name: 'Chloé', table: 'Table 2', ids: ['chloe'], song: { title: 'Valse', entryId: 'e1' } },
+    { source: 'helper', id: 'dora', pos: 3, name: 'Dora', table: 'En solo', ids: ['dora'], song: { title: 'Rock', entryId: 'e3' } },
+  ];
+  world.priorityPull = { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'], lineIds: ['chloe', 'dora'] };
+  const page = await openPage({ world });
+  const urgent = index => rows(page)[index].querySelector('[data-urgent]');
+  page.confirmAnswer = false; // l'ancienne question du navigateur : « Annuler »
+  await page.click(urgent(2));
+  const dialog = page.doc.getElementById('priorityDialog');
+  if (dialog?.open) await page.click(page.$('priorityCancel'));
+  assert.deepEqual(page.postsTo('/api/staff/move'), [], 'Annuler n’envoie aucun déplacement');
+  assert.ok(dialog, 'la question est une fenêtre de la page');
+  assert.equal(dialog.open, false, 'Annuler ferme la question');
+  assert.deepEqual(page.confirms, [], 'plus de confirm() du navigateur');
+  // Échap (la fenêtre se ferme d'elle-même) et Retour du téléphone : rien non plus.
+  await page.click(urgent(2));
+  assert.equal(dialog.open, true);
+  dialog.close();
+  await page.flush();
+  await page.click(urgent(2));
+  assert.equal(dialog.open, true);
+  await page.back();
+  assert.equal(dialog.open, false, 'Retour ferme la question');
+  // Le premier passage libre aussi : Annuler ne change rien.
+  await page.click(urgent(1));
+  await page.click(page.$('priorityCancel'));
+  assert.deepEqual(page.postsTo('/api/staff/move'), [], 'aucune priorité envoyée');
+  // Une réponse donnée après Annuler ne repart pas : seul un nouveau « Priorité » compte.
+  page.$('priorityBefore').click();
+  await page.flush();
+  assert.deepEqual(page.postsTo('/api/staff/move'), []);
+
+  // Au téléphone, depuis le menu ⋯ : le menu se ferme, la question prend son
+  // étape d'historique, et Retour la ferme sans quitter l'onglet File.
+  await page.click(page.doc.body.querySelector('[data-tab-btn="file"]'));
+  const steps = page.history.length;
+  await page.click(rows(page)[2].querySelector('[data-row-menu]'));
+  assert.equal(page.history.length, steps + 1);
+  await page.click(urgent(2));
+  assert.equal(dialog.open, true);
+  assert.equal(page.all('qBody', '.row-actions.open').length, 0, 'le menu ⋯ se ferme');
+  assert.equal(page.history.length, steps + 1, 'une seule étape : celle de la question');
+  await page.back();
+  assert.equal(dialog.open, false);
+  assert.equal(page.doc.body.dataset.tab, 'file', 'Retour ne quitte pas l’onglet');
+  assert.equal(page.history.length, steps);
+  assert.deepEqual(page.postsTo('/api/staff/move'), [], 'toujours rien d’envoyé');
+});
+
+// Relecture : la page avait sa propre copie de la règle du retrait, sans deux
+// refus du serveur (titre passé faute de « Je suis là », invitée du duo d'un
+// autre repoussé par « Pas prêt ») ; elle proposait un retrait sûr d'être
+// refusé. Elle suit maintenant la liste du serveur (priorityPull.lineIds).
+test('file du bar : « Priorité » ne propose le retrait qu’aux lignes que le serveur accepte', async () => {
+  const world = baseWorld();
+  world.queue = [
+    { source: 'karafun', ours: true, queueId: 'kf-9', pos: 1, singer: 'Bruno', ids: ['bruno'], title: 'Titre chargé' },
+    { source: 'helper', id: 'chloe', pos: 2, name: 'Chloé', table: 'Table 2', ids: ['chloe'], song: { title: 'Valse', entryId: 'e1' } },
+    { source: 'helper', id: 'dora', pos: 3, name: 'Dora', table: 'En solo', ids: ['dora'], presenceSkips: 1, song: { title: 'Rock', entryId: 'e3' } },
+  ];
+  // Dora a manqué « Je suis là » : le serveur refuserait le retrait pour elle.
+  world.priorityPull = { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'], lineIds: ['chloe'] };
+  const page = await openPage({ world });
+  const urgent = index => rows(page)[index].querySelector('[data-urgent]');
+  assert.equal(urgent(2).title, 'Faire passer dès que possible, après les titres déjà chargés dans KaraFun');
+  await page.click(urgent(2));
+  assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true },
+    'priorité sans retrait, sans question');
+  assert.equal(page.confirms.length, 0);
+  assert.equal(page.doc.getElementById('priorityDialog')?.open ?? false, false, 'aucune question à Dora');
+  // Le premier passage libre refusé par le serveur : pas de « Priorité » du tout.
+  assert.ok(urgent(1), 'Chloé peut passer avant le titre chargé');
+  await page.update({ priorityPull: { ...world.priorityPull, lineIds: [] } });
+  assert.equal(urgent(1), null, 'Chloé passe déjà juste après le titre chargé, rien d’autre à proposer');
+  // Ancien serveur sans liste : aucune ligne ne se voit proposer le retrait.
+  await page.update({ priorityPull: { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'] } });
+  assert.equal(urgent(1), null);
 });
 
 test('file du bar : retirer, priorité, sélection multiple et retrait groupé', async () => {
