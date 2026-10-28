@@ -528,8 +528,12 @@ test('reprise sur une horloge en retard : une place cédée à quelqu’un encor
 // reprise, il les rend aux titres encore chargés dans KaraFun ; un titre
 // retiré ensuite sans être chanté rendait alors à son chanteur l'heure
 // d'avant, non reculée : Tess, qui avait demandé la première, passait après
-// O et Yves.
+// O et Yves. Relecture (passe 4) : le duo n'était noté que sur un passage
+// fini, sans reçu à lui (`creditBefore` vide) ; le second cas le note sur un
+// titre chargé, dont le reçu revient au titre quand le duo est annulé.
 test('reprise sur une horloge en retard : un duo noté puis annulé rend des reçus aux heures reculées', () => {
+  const times = record => [record.creditBefore, ...record.inFlight.map(row => row.creditBefore)]
+    .flatMap(credit => ['before', 'after'].flatMap(side => credit?.[side]?.people || [])).map(row => row.readySince);
   const e = evening();
   try {
     const { s, tick, add, step, endSong } = e;
@@ -556,8 +560,6 @@ test('reprise sur une horloge en retard : un duo noté puis annulé rend des re�
     tick(-300);
     const { back, recovered, warnings, view } = restart(s, saved);
     assert.ok(warnings.some(text => /en avance de 300 s/.test(text)), warnings.join(' ; '));
-    const times = record => [record.creditBefore, ...record.inFlight.map(row => row.creditBefore)]
-      .flatMap(credit => ['before', 'after'].flatMap(side => credit?.[side]?.people || [])).map(row => row.readySince);
     const pairs = [[back.stageHistory.at(-1).staffDuo, saved.scheduler.stageHistory.at(-1).staffDuo],
       [recovered.tracked[1].sel.staffDuo, saved.tracked[1].sel.staffDuo]];
     for (const [record, before] of pairs) {
@@ -569,6 +571,37 @@ test('reprise sur une horloge en retard : un duo noté puis annulé rend des re�
     back.rollbackUnplayed(live, { requeue: true }); // KaraFun retire le titre de Tess
     assert.deepEqual(view(), ['Tess', 'O', 'Yves'], 'Tess avait demandé la première');
   } finally { e.done(); }
+  // Duo noté sur le titre de Zoé, chargé dans KaraFun : le reçu d'avant le
+  // duo est celui de ce titre (`creditBefore`). Annulé après la reprise, il
+  // lui revient ; KaraFun retire ensuite le titre sans qu'il soit chanté.
+  // Reçu non reculé : Zoé, qui avait demandé la première, passait en dernier.
+  const f = evening();
+  try {
+    const { s, tick, add, step, endSong } = f;
+    const [ines, maud, zoe] = ['Inès', 'Maud', 'Zoé'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+    add(ines); add(maud); add(zoe);
+    for (let k = 0; k < 3; k++) step();
+    tick(10); endSong(); // pause du bar, listes vides
+    tick(10); add(zoe); // Zoé redemande la première
+    tick(60); add(ines);
+    tick(60); add(maud);
+    tick(5); const loaded = s.select(); s.commit(loaded); // chargé dans KaraFun
+    assert.deepEqual(loaded.names, ['Zoé']);
+    tick(400); add(zoe); // son titre suivant
+    s.staffCountPartner(zoe.id, maud.id, loaded); // Maud notée en duo sur ce titre
+    assert.ok(loaded.staffDuo.creditBefore?.before?.people?.length, 'le duo garde le reçu du titre chargé');
+    const saved = save(s, { tracked: [{ sel: loaded, queueId: 7 }] });
+    tick(-300);
+    const { back, recovered, warnings, view } = restart(s, saved);
+    assert.ok(warnings.some(text => /en avance de 300 s/.test(text)), warnings.join(' ; '));
+    const live = recovered.tracked[0].sel;
+    const before = saved.tracked[0].sel.staffDuo;
+    assert.ok(times(before).some(Boolean));
+    assert.deepEqual(times(live.staffDuo), times(before).map(at => at && at - 300000), 'reçu du titre reculé comme les autres heures');
+    back.staffUncountPartner(live.staffDuo, live, [live]); // duo annulé
+    back.rollbackUnplayed(live, { requeue: true }); // KaraFun retire le titre de Zoé
+    assert.deepEqual(view(), ['Zoé', 'Inès', 'Maud'], 'Zoé avait demandé la première');
+  } finally { f.done(); }
 });
 
 // Même reprise : chaque geste du bar garde le plan Timefold affiché avant
