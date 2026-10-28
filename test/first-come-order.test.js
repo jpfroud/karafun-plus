@@ -272,11 +272,12 @@ test('chacun son tour : pendant l’envoi du passage qui ferme un cycle, la pré
       if (arrives) { d1 = s.join({ tableId: 'D', name: 'D1' }); tick(); s.chooseSong(d1, song(6)); }
       const during = view();
       if (d1) {
-        // Prévision gardée (_viewKey) : la même sélection choisie après la
-        // demande de D1 n'est pas une arrivée pendant l'envoi.
+        // Prévision gardée (_viewKey) : la même sélection, choisie pas avant
+        // la demande de D1 (au même instant : la règle compte une arrivée
+        // seulement après le choix), ne voit pas D1 arriver pendant l'envoi.
         const later = { ...sel, pickedAt: d1.readySince };
         assert.deepEqual(s.presenceView(sel.consumedIds, later).filter(v => !v.future).map(v => v.name), ['A3', 'D1'],
-          'choix daté après la demande de D1 : le cycle se ferme sans elle');
+          'choix daté pas avant la demande de D1 : le cycle se ferme sans elle');
       }
       s.commit(sel); s.songEnded(sel.ids);
       const label = arrives ? 'D arrive pendant l’envoi' : 'sans arrivée';
