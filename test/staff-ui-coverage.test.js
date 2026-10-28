@@ -1877,10 +1877,11 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   assert.equal(pill().textContent, 'Prête dans KaraFun');
   assert.match(status(), /^Battle prête dans KaraFun : Africa — Toto\. Montre son QR après avoir vérifié les permissions, laisse/,
     'démo : les téléphones n’ont pas le lien');
-  // Hors démo, les téléphones ont « Rejoindre la Battle » dès qu'elle est en
-  // tête de KaraFun : le bar vérifie les permissions des invités avant.
+  // Hors démo, les téléphones ont « Rejoindre la Battle » une fois le titre
+  // d'avant terminé, jamais pendant (battleJoinUrl, depuis cc571e5) : le bar
+  // vérifie les permissions des invités avant.
   await page.update({ karafun: { demo: false } });
-  assert.match(status(), /^Battle prête dans KaraFun : Africa — Toto\. Les téléphones voient « Rejoindre la Battle » \(la télécommande KaraFun\) dès qu’elle est en tête de KaraFun : vérifie d’abord les permissions des invités, montre son QR, laisse les téléphones rejoindre/);
+  assert.match(status(), /^Battle prête dans KaraFun : Africa — Toto\. Les téléphones voient « Rejoindre la Battle » \(la télécommande KaraFun\) une fois le titre d’avant terminé : vérifie d’abord les permissions des invités, montre son QR, laisse les téléphones rejoindre/);
   await page.update({ karafun: { demo: true } });
   assert.equal(page.$('playBtn').textContent, '▶ Lancer la Battle');
   await step('playing');
