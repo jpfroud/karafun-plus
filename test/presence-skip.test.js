@@ -298,3 +298,40 @@ test('« Toujours là » : prochain passage de la file, duo d’invitée, prése
   s.opts.requirePresence = false;
   assert.equal(s.presenceFollowUp(alice), `${duo}${own}`);
 });
+
+// Relecture (passe 7) : « Priorité » du bar sur un titre passé faute de « Je
+// suis là ». Le geste du bar passe avant : la personne était encore retenue
+// comme un titre passé (choix du passage, prévision) alors que sa priorité
+// bloquait tout autre envoi ; la demande « Je suis là » allait au suivant,
+// elle ne pouvait plus confirmer et rien ne partait.
+test('« Priorité » sur un titre passé faute de « Je suis là » : annoncé, la demande lui revient, il part', () => {
+  const { s, people, names, sing } = evening();
+  s.reservePresenceNext();
+  s.skipUnconfirmed(people.Alice.id, 3);
+  assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Bruno', 'Alice']);
+  s.staffMove(people.Alice.id, 0);
+  assert.equal(s.reservedNext?.personId, people.Alice.id);
+  assert.equal(s.reservedNext.byStaff, true);
+  assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Alice', 'Bruno'], 'Alice d’abord, comme le geste');
+  assert.equal(s.reservePresenceNext().ids[0], people.Alice.id, 'la demande « Je suis là » va à Alice');
+  s.confirm(people.Bruno);
+  assert.equal(s.select(), null, 'Alice n’a pas confirmé : Bruno ne part pas devant la priorité');
+  s.confirm(people.Alice);
+  const sel = s.select();
+  assert.deepEqual(sel.ids, [people.Alice.id], 'Alice part');
+  sing(sel);
+  assert.equal(people.Alice.presenceRetry, false);
+  assert.equal(s.reservedNext, null);
+});
+
+test('« Priorité » sur un titre passé faute de « Je suis là », toujours sans réponse : la priorité prend fin', () => {
+  const { s, people, names } = evening();
+  s.reservePresenceNext();
+  s.skipUnconfirmed(people.Alice.id, 3);
+  s.staffMove(people.Alice.id, 0);
+  const skip = s.skipUnconfirmed(people.Alice.id, 3);
+  assert.deepEqual([skip.removed, skip.skips], [false, 2]);
+  assert.equal(s.reservedNext, null, 'sans réponse, la priorité prend fin');
+  assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Bruno', 'Alice'], 'Alice laisse passer le suivant');
+  assert.equal(s.reservePresenceNext().ids[0], people.Bruno.id);
+});
