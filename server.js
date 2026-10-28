@@ -768,8 +768,10 @@ function restore(tr, reason) {
   if (!owner) return;
   // Une autre chanson peut avoir été ajoutée pendant que la première était
   // déjà chez KaraFun : ne jamais écraser cette liste. Même retour en tête
-  // que « Pas prêt » (Scheduler#putBackFirst) ; seule la place du ticket
-  // diffère (4e place, ci-dessous).
+  // que « Pas prêt » (Scheduler#putBackFirst) ; à la différence de
+  // requeueUnplayed, le ticket prend la 4e place (ci-dessous) et le titre
+  // revient aussi à une personne marquée partie, qui le retrouve si le bar
+  // la réactive.
   sched.putBackFirst(owner, tr.sel.song);
   for (const pid of (tr.sel.consumedIds || tr.sel.ids)) {
     const p = sched.people.get(pid);
