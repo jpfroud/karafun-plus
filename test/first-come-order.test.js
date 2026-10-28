@@ -254,10 +254,11 @@ test('chacun son tour : une table qui arrive pendant l’envoi du passage qui fe
 // après le choix de B2 : la table D, arrivée pendant l'envoi, était datée
 // avant ce choix et le cycle se fermait sans elle (A3 avant D1). Dans
 // l'autre sens, en « Duos uniquement », le duo ouvert de Gus (table G),
-// demandé avant le choix de B1, l'horloge reculant ensuite, comptait comme
-// une arrivée : le cycle fermé restait ouvert pour lui, et son duo passait
-// devant A2, qui avait demandé avant lui.
-test('horloge du PC reculée juste après le choix qui ferme un cycle : arrivée pendant l’envoi ou demande d’avant, chacune à sa place', () => {
+// demandé avant le choix de B1, l'horloge reculant entre sa demande et ce
+// choix, comptait comme une arrivée : le cycle fermé restait ouvert pour
+// lui, et son duo passait devant A2, qui avait demandé avant lui. Un recul
+// après le choix ne faisait pas ce faux arrivant.
+test('horloge du PC reculée après le choix qui ferme un cycle, ou avant lui après une demande : arrivée pendant l’envoi ou demande d’avant, chacune à sa place', () => {
   withClock((tick, back) => {
     const s = new Scheduler();
     s.setHeadcount('A', 3); s.setHeadcount('B', 2); s.setHeadcount('D', 1);
