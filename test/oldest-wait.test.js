@@ -188,6 +188,33 @@ test('à compteur égal, à l’heure : une demande faite pendant une chanson pa
   }
 });
 
+// Relecture (passe 4) : la fin d'un passage est datée sur l'horloge des
+// débuts d'attente (Scheduler#_readyStamp), qui ne recule jamais. L'horloge
+// du PC recule (synchronisation de l'heure) pendant la chanson de Hugo,
+// après la demande d'Inès : avant, la fin de Hugo était datée avant cette
+// demande, et son titre suivant passait devant Inès (Zoé Hugo Inès).
+test('horloge du PC reculée pendant une chanson : une demande faite pendant elle passe encore avant le titre suivant de son chanteur', () => {
+  for (const back of [120, 300]) {
+    const e = evening();
+    try {
+      const { s, tick, add, step, endSong, view } = e;
+      const [zoe, ines, hugo] = ['Zoé', 'Inès', 'Hugo'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+      add(zoe); add(zoe); add(ines); add(hugo); add(hugo);
+      for (let k = 0; k < 3; k++) step();
+      assert.deepEqual(e.passages, ['Zoé', 'Inès', 'Hugo']);
+      tick(60); add(ines); // Hugo est sur scène
+      tick(-back); tick(60); endSong();
+      const label = `horloge reculée de ${back} s`;
+      assert.ok(s._stageEnd(hugo.lastAppearanceTurn) > ines.readySince, label);
+      assert.deepEqual(view(), ['Zoé', 'Inès', 'Hugo'], `${label} : ${view().join(' ')}`);
+      // Une demande faite après la fin, toujours sur l'horloge reculée, vient après elle.
+      const gil = s.join({ tableId: 'T-Gil', name: 'Gil', headcount: 1 });
+      add(gil);
+      assert.ok(gil.readySince > s._stageEnd(hugo.lastAppearanceTurn), label);
+    } finally { e.done(); }
+  }
+});
+
 test('à compteur égal : chanson pas encore finie, toute demande déjà faite passe avant son chanteur', () => {
   const e = evening();
   try {
