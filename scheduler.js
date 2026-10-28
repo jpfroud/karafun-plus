@@ -501,8 +501,10 @@ class Scheduler {
   // (_unpinSingers, au départ du duo vers KaraFun) : le duo peut encore être
   // annulé d'ici là ; retiré de KaraFun sans être chanté, il rend la place
   // (_restorePlaced). Les lignes rendues au calcul sont notées sur le duo
-  // (`unpinned`, sauvegardé avec le titre) : défait avant son envoi, il les
-  // remet (_guestLeft).
+  // (`unpinned`, sauvegardé avec le titre) : défait avant son envoi, ou
+  // chargé dans KaraFun puis laissé par l'invitée (leaveSentDuet), il les
+  // remet (_guestLeft). `kept` : gestes dont l'état d'avant comptait la
+  // ligne, que l'envoi du duo leur retire (_unpinSingers).
   _guestJoined(owner) {
     const duet = owner?.song?.duet;
     const at = this.manualOrder.indexOf(owner?.id);
@@ -511,9 +513,11 @@ class Scheduler {
     const changeIds = this.manualChanges.map(change => change.id);
     const unpin = line => {
       const ahead = this.manualOrder.slice(0, Math.max(0, this.manualOrder.indexOf(line)));
+      const kept = this.manualChanges.filter(change => Array.isArray(change.before?.manualOrder) &&
+        change.before.manualOrder.includes(line)).map(change => change.id);
       if (!this._unpinManual(line)) return;
       duet.unpinned = [...(Array.isArray(duet.unpinned) ? duet.unpinned : []),
-        { pid: line, ahead, changeIds, serial: this.appearanceSerial, epoch: this.manualEpoch || 0 }];
+        { pid: line, ahead, changeIds, kept, serial: this.appearanceSerial, epoch: this.manualEpoch || 0 }];
     };
     const anchors = this._manualAnchors(), reserved = this.reservedNext?.personId;
     // Sa propre ligne plus tôt ne compte que si elle reste : placée par le
@@ -537,15 +541,18 @@ class Scheduler {
   }
 
   // Duo défait avant son envoi (invitée qui se retire, duo annulé, titre
-  // retiré, départ de l'un des deux) : les lignes que _guestJoined avait
-  // rendues au calcul pour lui reviennent dans l'ordre fixé, derrière les
-  // lignes qui les précédaient, jamais devant une priorité du bar ; les gestes
-  // notés depuis les comptent aussi dans leur état d'avant, comme
-  // _restorePlaced. Rien ne revient pour une personne montée sur scène depuis,
-  // sans titre, replacée par le bar, une ligne qui ne serait plus devant
-  // aucune ligne placée, ou si le bar a abandonné tous ses gestes depuis
-  // (`epoch`). Sinon la personne gardée devant un geste passait derrière lui
-  // (relecture).
+  // retiré, départ de l'un des deux), qui n'est plus le titre en cours de sa
+  // ligne (_currentChanged), ou chargé dans KaraFun et laissé par l'invitée
+  // (leaveSentDuet) : les lignes que _guestJoined avait rendues au calcul pour
+  // lui reviennent dans l'ordre fixé, derrière les lignes qui les
+  // précédaient, jamais devant une priorité du bar ; les gestes notés depuis
+  // les comptent aussi dans leur état d'avant, comme _restorePlaced, et ceux
+  // d'avant qui les comptaient (`kept`) les retrouvent si l'envoi du duo les
+  // en avait retirées. Rien ne revient pour une personne montée sur scène
+  // depuis, sans titre, replacée par le bar, une ligne qui ne serait plus
+  // devant aucune ligne placée, ou si le bar a abandonné tous ses gestes
+  // depuis (`epoch`). Sinon la personne gardée devant un geste passait
+  // derrière lui (relecture).
   _guestLeft(duet) {
     const records = Array.isArray(duet?.unpinned) ? duet.unpinned : [];
     if (duet) delete duet.unpinned;
@@ -565,13 +572,28 @@ class Scheduler {
       this.manualOrder.splice(at, 0, p.id);
       this.manualOrderActive = true;
       const known = new Set(Array.isArray(record.changeIds) ? record.changeIds : []);
+      const kept = new Set(Array.isArray(record.kept) ? record.kept : []);
       for (const change of this.manualChanges) {
         const before = change?.before;
-        if (known.has(change.id) || !Array.isArray(before?.manualOrder) || before.manualOrder.includes(p.id)) continue;
+        if ((known.has(change.id) && !kept.has(change.id)) || !Array.isArray(before?.manualOrder) ||
+          before.manualOrder.includes(p.id)) continue;
         before.manualOrder.splice(place(before.manualOrder, before.reservedNext), 0, p.id);
       }
       this.version++;
     }
+  }
+
+  // Le titre en cours de `p` change sans que `previous` quitte sa liste
+  // (liste réordonnée, titre revenu de KaraFun en tête de liste). Un duo qui
+  // n'est plus le titre en cours ne chante plus à cette place : comme un duo
+  // défait avant son envoi, il rend les lignes qu'il avait sorties de l'ordre
+  // fixé (_guestLeft) ; remis en tête, il les ressort (_guestJoined). Sinon
+  // la personne gardée devant un geste passait derrière lui (relecture,
+  // passe 3).
+  _currentChanged(p, previous) {
+    if (!p || p.song === previous) return;
+    this._guestLeft(previous?.duet);
+    this._guestJoined(p);
   }
 
   // `deferrals` : pour une intervention du bar, les reports « Pas prêt »
@@ -1181,8 +1203,9 @@ class Scheduler {
     const current = p.song;
     p.song = songs.shift() || null;
     p.backlog = songs;
-    // Un duo devenu le titre en cours d'une ligne fixée : voir _guestJoined.
-    if (p.song !== current) this._guestJoined(p);
+    // Duo qui quitte ou prend le titre en cours d'une ligne fixée : voir
+    // _currentChanged.
+    this._currentChanged(p, current);
     this._refreshDuetViews();
     this._event('song.reordered', { personId: p.id, entryId: moved.entryId, fromIndex: from, toIndex: to });
     this.note(`${p.name} a réordonné sa liste de chansons`);

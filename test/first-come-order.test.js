@@ -153,6 +153,34 @@ test('chacun son tour : une table partie puis rouverte rejoint le cycle des prem
   });
 });
 
+// Relecture (passe 3) : un passage annulé (sorti de KaraFun sans être
+// chanté) rendait le cycle d'avant lui tel que noté dans son reçu, table
+// partie depuis comprise. Rouverte avec le même numéro, sa nouvelle tablée
+// passait pour déjà servie : N1, qui a ajouté avant E1, passait après lui.
+test('chacun son tour : un passage annulé ne remet pas dans le cycle une table partie depuis', () => {
+  withClock(tick => {
+    const s = new Scheduler();
+    let n = 1;
+    const add = (tableId, name) => {
+      const p = s.join({ tableId, name, headcount: 1 });
+      tick(); s.chooseSong(p, song(n++));
+      return p;
+    };
+    for (const [tableId, name] of [['1', 'A1'], ['2', 'B1'], ['3', 'C1']]) add(tableId, name);
+    assert.deepEqual([sing(s), sing(s)], ['A1', 'B1']);
+    const sel = s.select();
+    assert.deepEqual(sel.names, ['C1']);
+    s.commit(sel); // C1 ferme le cycle
+    assert.deepEqual([...s.firstCycle], []);
+    s.tableLeft('1');
+    s.requeueUnplayed(sel); // « Pas prêt » : C1 n'a pas chanté
+    assert.deepEqual([...s.firstCycle], ['2'], 'le cycle d’avant C1, sans la table partie');
+    add('1', 'N1');
+    add('4', 'E1');
+    assert.deepEqual(order(s), ['C1', 'N1', 'E1'], 'la table rouverte passe dans le cycle en cours, dans l’ordre d’ajout');
+  });
+});
+
 test('chacun son tour : une table qui arrive pendant l’envoi du passage qui ferme un cycle le rejoint encore', () => {
   withClock(tick => {
     const s = new Scheduler();
