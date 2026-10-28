@@ -656,36 +656,65 @@ test('priorité avec retrait pour une personne sur scène : refusée, elle ne ch
   nothingChanged(f, ctx);
 });
 
-// Relecture : le retrait sortait le titre chargé de KaraFun pour une personne
-// qui ne pouvait pas passer ensuite (invitée d'un duo repoussé par « Pas
-// prêt », titre passé faute de « Je suis là ») : quelqu'un d'autre partait,
-// et le titre retiré attendait derrière une priorité qui ne partait pas.
-test('priorité avec retrait pour une personne qui ne peut pas passer ensuite : refusée, rien retiré', async () => {
-  {
-    // Eve est l'invitée du duo de Chloé, repoussé ; elle a aussi son titre.
+// Relecture de la passe 8 : depuis Scheduler#_heldFor, une priorité du bar
+// n'est retenue par aucun « Pas prêt » de ses chanteurs : ni celui du duo
+// d'un autre où l'une d'elles est l'invitée, ni celui de l'invitée de son duo
+// sur son propre titre. Le retrait restait pourtant refusé pour elles
+// (« Inès attend la fin du « Pas prêt » de Chloé & Inès »), alors que la
+// priorité pouvait partir juste après. Le duo repoussé lui-même passe
+// aussi : le geste du bar lève le « Pas prêt » de la personne placée.
+test('priorité avec retrait sur une ligne dont une personne attend un « Pas prêt » : proposée, la priorité part, le titre retiré juste après', async () => {
+  for (const who of ['Inès', 'Chloé & Inès', 'Driss & Chloé']) {
     const f = harness();
     const ctx = loaded(f);
-    const { chloe, driss } = ctx.people;
-    const eve = f.sched.join({ tableId: '3', name: 'Eve' });
-    f.sched.removeSong(chloe, chloe.song.entryId);
-    f.sched.inviteDuet(chloe, eve.id, { songId: 811, title: 'Duo Chloé' });
-    f.sched.chooseSong(eve, { songId: 812, title: 'Titre Eve' });
-    f.sync();
-    f.deferTurn(f.sched.people.get(chloe.id), 2);
-    assert.deepEqual(planned(f).map(line => line.name), ['Driss', 'Chloé & Eve', 'Eve']);
-    // Relecture : la page proposait le retrait à Eve d'après sa propre copie
-    // de la règle ; la liste du serveur suit les refus de priorityPullFor.
-    assert.deepEqual(plain(f.staffState().priorityPull.lineIds), [driss.id, chloe.id], 'pas de retrait proposé à Eve');
-    await assert.rejects(pullFor(f, eve), { message: 'Eve attend la fin du « Pas prêt » de Chloé & Eve : ' +
-      '« Titre Bruno » reste dans KaraFun, rien n’a été retiré ni avancé.' });
-    nothingChanged(f, ctx);
-    assert.equal(f.sched.select().ids[0], driss.id, 'la file reste comme avant');
-    // Chloé, elle, peut passer : le geste du bar lève son propre « Pas prêt ».
-    await pullFor(f, chloe);
-    assert.deepEqual(removals(ctx.bridge), [['remove', 2]]);
+    const { bruno, chloe, driss } = ctx.people;
+    if (who === 'Driss & Chloé') {
+      // Chloé, prochaine, dit « Pas prêt » sur son propre titre ; Driss
+      // l'invite ensuite en duo.
+      f.deferTurn(f.sched.people.get(chloe.id), 2);
+      f.sched.removeSong(driss, driss.song.entryId);
+      const duo = f.sched.inviteDuet(driss, chloe.id, { songId: 813, title: 'Duo Driss' });
+      f.sched.answerDuet(chloe, true, duo.entryId);
+      f.sync();
+    } else {
+      // Inès est l'invitée du duo de Chloé, repoussé ; elle a aussi son titre.
+      const ines = f.sched.join({ tableId: '3', name: 'Inès' });
+      f.sched.removeSong(chloe, chloe.song.entryId);
+      f.sched.inviteDuet(chloe, ines.id, { songId: 811, title: 'Duo Chloé' });
+      f.sched.chooseSong(ines, { songId: 812, title: 'Titre Inès' });
+      f.sync();
+      f.deferTurn(f.sched.people.get(chloe.id), 2);
+      assert.deepEqual(planned(f).map(line => line.name), ['Driss', 'Chloé & Inès', 'Inès']);
+      assert.deepEqual(plain(f.staffState().priorityPull.lineIds), [driss.id, chloe.id, ines.id], `${who} : retrait proposé à Inès aussi`);
+    }
+    const line = planned(f).find(row => row.name === who);
+    assert.ok(f.staffState().priorityPull.lineIds.includes(line.id), `${who} : retrait proposé`);
+    const result = plain(await pullFor(f, f.sched.people.get(line.id)));
+    assert.equal(result.message, `« Titre Bruno » sort de KaraFun : ${who} passe d’abord, « Titre Bruno » juste après.`);
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]], who);
     karafunRemoves(f, ctx);
-    assert.deepEqual(f.sched.select().ids, [chloe.id, eve.id]);
+    assert.deepEqual(planned(f).slice(0, 2).map(row => row.name), [who, 'Bruno'], `${who} : la priorité d’abord, le titre retiré juste après`);
+    assert.equal(planned(f)[1].afterPriority, true, who);
+    assert.equal(f.sched.isDeferred(chloe), who !== 'Chloé & Inès', `${who} : seul le « Pas prêt » de la ligne placée est levé`);
+    f.settings.pushDelaySec = 0;
+    f.sync();
+    assert.deepEqual(f.getPending()?.sel.ids, line.ids, `${who} part vers KaraFun`);
+    // KaraFun accuse l'envoi : le titre retiré est le prochain annoncé.
+    ctx.queue.push({ queueId: 3, songId: f.getPending().sel.song.songId, title: f.getPending().sel.song.title, singer: f.getPending().sel.label });
+    f.sync();
+    assert.equal(f.sched.reservedNext?.personId, bruno.id, who);
+    assert.equal(f.sched.select().song.title, 'Titre Bruno', who);
+    // Le report du duo de Chloé tient ; celui de son propre titre prend fin
+    // quand elle monte sur scène.
+    assert.equal(f.sched.isDeferred(chloe), who === 'Inès', `${who} : report après l’envoi`);
   }
+});
+
+// Relecture : le retrait sortait le titre chargé de KaraFun pour une personne
+// qui ne pouvait pas passer ensuite (titre passé faute de « Je suis là ») :
+// quelqu'un d'autre partait, et le titre retiré attendait derrière une
+// priorité qui ne partait pas.
+test('priorité avec retrait pour une personne qui ne peut pas passer ensuite : refusée, rien retiré', async () => {
   {
     // Driss n'a pas confirmé « Je suis là » : son titre laisse passer le suivant.
     const f = harness();

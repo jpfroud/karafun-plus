@@ -3857,10 +3857,12 @@ function priorityPullRefusal(line, tr, stage = stageSingers()) {
   }
   // La priorité doit pouvoir partir juste après le retrait : sinon quelqu'un
   // d'autre partirait, et le titre retiré attendrait derrière une priorité
-  // qui ne part pas. Le geste lève le « Pas prêt » de la personne placée
-  // (staffMove) et celui d'un titre retiré pour une priorité d'avant
-  // (_priorityHolds), pas celui du duo d'un autre où elle est l'invitée ;
-  // un titre passé faute de « Je suis là » laisse passer le suivant.
+  // qui ne part pas. Aucun « Pas prêt » de ses chanteurs ne la retient : le
+  // geste lève celui de la personne placée (staffMove), et ni celui de
+  // l'invitée d'un duo sur son propre titre, ni celui du duo d'un autre où
+  // chante l'une des deux, ne retient une priorité du bar
+  // (Scheduler#_heldFor). Un titre passé faute de « Je suis là », lui,
+  // laisse passer le suivant.
   const owner = sched.people.get(line.ids[0]);
   if (sched._isPresenceRetry(owner)) {
     return `${owner.name} n’a pas confirmé sa présence : son titre laisse passer le suivant. ` +
@@ -3874,15 +3876,6 @@ function priorityPullRefusal(line, tr, stage = stageSingers()) {
   if (sched.opts.requirePresence && !sched.confirmedForTurn(line.ids)) {
     return `${name} ${line.ids.length > 1 ? 'n’ont' : 'n’a'} pas encore confirmé « Je suis là » : « ${tr.sel.song.title} » reste dans KaraFun, ` +
       `rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer ${name} juste après lui.`;
-  }
-  const owners = sched._deferredOwners().filter(pid => pid !== line.ids[0] && !sched.people.get(pid).deferral.afterPriority);
-  const deferred = sched._deferredPeople(owners);
-  const waiting = line.ids.find(pid => deferred.has(pid));
-  if (waiting) {
-    const host = owners.map(pid => sched.people.get(pid)).find(p => (p.deferral.ids || [p.id]).includes(waiting));
-    const passage = (host.deferral.ids || [host.id]).map(pid => sched.people.get(pid)?.name).filter(Boolean).join(' & ');
-    return `${sched.people.get(waiting)?.name || 'Cette personne'} attend la fin du « Pas prêt » de ${passage} : ` +
-      `« ${tr.sel.song.title} » reste dans KaraFun, rien n’a été retiré ni avancé.`;
   }
   return null;
 }
