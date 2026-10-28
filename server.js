@@ -3857,12 +3857,13 @@ function priorityPullRefusal(line, tr, stage = stageSingers()) {
   }
   // La priorité doit pouvoir partir juste après le retrait : sinon quelqu'un
   // d'autre partirait, et le titre retiré attendrait derrière une priorité
-  // qui ne part pas. Aucun « Pas prêt » de ses chanteurs ne la retient : le
-  // geste lève celui de la personne placée (staffMove), et ni celui de
-  // l'invitée d'un duo sur son propre titre, ni celui du duo d'un autre où
-  // chante l'une des deux, ne retient une priorité du bar
-  // (Scheduler#_heldFor). Un titre passé faute de « Je suis là », lui,
-  // laisse passer le suivant.
+  // qui ne part pas. Aucun report de ses chanteurs ne la retient : le geste
+  // lève le « Pas prêt » de la personne placée (staffMove) et celui d'un
+  // titre retiré pour une priorité d'avant (_priorityHolds), et
+  // Scheduler#_heldFor ne laisse ni celui de l'invitée d'un duo sur son
+  // propre titre, ni celui du duo d'un autre où chante l'une des deux,
+  // retenir une priorité du bar. Un titre passé faute de « Je suis là »,
+  // lui, laisse passer le suivant.
   const owner = sched.people.get(line.ids[0]);
   if (sched._isPresenceRetry(owner)) {
     return `${owner.name} n’a pas confirmé sa présence : son titre laisse passer le suivant. ` +
