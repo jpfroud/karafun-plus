@@ -314,6 +314,39 @@ test('demande pendant un envoi : le début d’attente suit la scène, envoi ann
   } finally { e.done(); }
 });
 
+// Relecture (passe 5) : la fin d'une chanson faisait commencer le titre déjà
+// envoyé dès que son chanteur y était aussi (« Priorité » du bar pour la
+// personne sur scène : elle passe juste après). songEnded devinait le passage
+// fini par le dernier passage du chanteur, déjà relevé par cet envoi : une
+// demande faite dans le blanc entre les deux titres comptait d'après le
+// suivant, qui ne venait plus après elle (patience, plus ancienne attente).
+test('priorité pour la personne sur scène : la fin de sa chanson ne fait pas commencer son titre suivant déjà envoyé', () => {
+  const e = evening();
+  try {
+    const { s, tick, add, step, endSong } = e;
+    const [zoe, ines, hugo, gil] = ['Zoé', 'Inès', 'Hugo', 'Gil'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+    add(zoe); add(zoe); add(ines); add(hugo); add(hugo); add(hugo); add(gil); add(gil);
+    for (let k = 0; k < 4; k++) step();
+    assert.deepEqual(e.passages, ['Zoé', 'Inès', 'Hugo', 'Gil']);
+    const onStage = s.appearanceSerial; // Gil chante
+    s.staffMove(gil.id, 0); // « Priorité » pour son titre suivant
+    tick(45);
+    const next = s.select();
+    assert.deepEqual(next.names, ['Gil']);
+    s.commit(next); // chargé dans KaraFun pendant sa chanson
+    assert.equal(s.unstartedTurn, onStage + 1);
+    tick(180); endSong(); // fin de sa chanson, le titre suivant pas encore commencé
+    assert.equal(s.unstartedTurn, onStage + 1, 'la fin de sa chanson ne fait pas commencer le titre suivant');
+    tick(5); add(ines); // Inès redemande dans le blanc entre les deux titres
+    assert.equal(ines.readySerial, onStage, 'le titre suivant de Gil vient après sa demande');
+    s.recordStage(next); // il commence
+    assert.equal(s.unstartedTurn, 0);
+    const nina = s.join({ tableId: 'T-Nina', name: 'Nina', headcount: 1 });
+    add(nina);
+    assert.equal(nina.readySerial, onStage + 1, 'une demande compte désormais d’après lui');
+  } finally { e.done(); }
+});
+
 test('duo : l’attente qui compte est celle de son auteur', () => {
   const e = evening();
   try {
