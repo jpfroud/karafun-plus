@@ -2413,15 +2413,16 @@
 
   // « Rejoindre la Battle » : la télécommande KaraFun du bar s'ouvre dans un
   // nouvel onglet, cette page reste ouverte dessous (← Retour y ramène). Le
-  // serveur n'envoie le lien que tant que la Battle est en tête de KaraFun ou
-  // sur scène. Page cachée pendant la Battle (`battleAway`) : à sa fin, une
-  // notification ramène ici (page encore cachée), puis « Te revoilà ! » au
-  // retour. Revenue avant la fin : rien à dire. La notification suppose la
-  // Battle vue sur scène (`battleStaged`) : retirée avant son lancement, elle
-  // n'est pas « terminée » ; une par Battle (`battleJoinId`), la suivante
-  // alerte de nouveau. KaraFun déconnecté (coupure, redémarrage de
-  // l'application) : le serveur ne lit plus sa file, le bouton reste tel quel
-  // sans conclure à la fin de la Battle.
+  // serveur n'envoie le lien que tant que la Battle est en tête de KaraFun une
+  // fois le titre d'avant terminé (jamais pendant), ou sur scène. Page cachée
+  // pendant la Battle (`battleAway`) : à sa fin, une notification ramène ici
+  // (page encore cachée), puis « Te revoilà ! » au retour. Revenue avant la
+  // fin : rien à dire. La notification suppose la Battle vue sur scène
+  // (`battleStaged`) : retirée avant son lancement, elle n'est pas
+  // « terminée » ; une par Battle (`battleJoinId`), la suivante alerte de
+  // nouveau. KaraFun déconnecté (coupure, redémarrage de l'application) : le
+  // serveur ne lit plus sa file, le bouton reste tel quel sans conclure à la
+  // fin de la Battle.
   let battleJoinUrl = '';
   let battleJoinId = '';
   let battleStaged = false;
