@@ -251,19 +251,23 @@ const barBox = page => page.evaluate(() => {
           const labels = rows.flatMap(row => row.buttons.map(button => button.text));
           if (label === 'ouvert') assert.ok(labels.some(text => /^(Fermer la demande|Close the request)$/.test(text)), `${at} : « Fermer la demande »`);
           if (label === 'proposé') assert.ok(labels.some(text => /^(Annuler duo|Cancel duet)$/.test(text)), `${at} : « Annuler duo »`);
-          // L'icône est nommée sous la liste, dans la carte, sur deux lignes au
-          // plus ; pendant un duo ouvert (plus d'icône), la ligne disparaît.
+          // L'icône est nommée sous la liste, dans la carte, sur trois lignes de
+          // texte au plus (comptées en lignes : la hauteur en pixels dépend des
+          // polices de la machine, 50 px avec celles de la CI à 320 px) ;
+          // pendant un duo ouvert (plus d'icône), la ligne disparaît.
           const hint = await page.evaluate(() => {
             const node = document.querySelector('#peopleList .duo-hint');
             if (!node) return null;
             const box = node.getBoundingClientRect(), card = node.closest('.card').getBoundingClientRect();
+            const lineHeight = parseFloat(getComputedStyle(node).lineHeight);
             return { text: node.textContent.trim(), left: Math.round(box.left), right: Math.round(box.right), h: Math.round(box.height),
-              card: [Math.round(card.left), Math.round(card.right)] };
+              lines: Math.round(box.height / lineHeight), card: [Math.round(card.left), Math.round(card.right)] };
           });
           if (label === 'ouvert') assert.equal(hint, null, `${at} : pas de ligne sans icône`);
           else {
             assert.match(hint?.text || '', /^(Chercher un duo : |Find a duet: )/, `${at} : ligne qui nomme l'icône (${JSON.stringify(hint)})`);
-            assert.ok(hint.left >= hint.card[0] && hint.right <= hint.card[1] && hint.h <= 36, `${at} : ligne dans la carte, compacte (${JSON.stringify(hint)})`);
+            assert.ok(hint.left >= hint.card[0] && hint.right <= hint.card[1] && hint.lines >= 1 && hint.lines <= 3,
+              `${at} : ligne dans la carte, compacte (${JSON.stringify(hint)})`);
           }
           await assertNoOverflowX(page, width, '#peopleList', at);
           // Un appui sur l'icône ne prévient pas la salle : une confirmation

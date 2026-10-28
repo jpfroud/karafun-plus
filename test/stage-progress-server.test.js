@@ -28,7 +28,17 @@ function harness({ persistent = false } = {}) {
   const quietFs = { ...fs, mkdirSync() {}, appendFileSync() {}, writeFileSync() {}, renameSync() {},
     readdirSync() { return []; }, unlinkSync() {} };
   const saves = [];
+  // Verrou de mise à jour du serveur, levé ou posé par un test (`update.busy`).
+  const update = { busy: false };
   const overrides = persistent ? {
+    './server-update': (() => {
+      const real = fromServer('./server-update');
+      return { ...real, createServerUpdate: o => {
+        const made = real.createServerUpdate(o), isBusy = made.isBusy;
+        made.isBusy = (...args) => update.busy || isBusy.apply(made, args);
+        return made;
+      } };
+    })(),
     './night-state': { ...fromServer('./night-state'), NightStateStore: class {
       load() { return null; }
       save(snapshot) { saves.push(plain(snapshot)); return true; }
@@ -64,7 +74,7 @@ function harness({ persistent = false } = {}) {
     play() {}, next() {}, remove() {}, snapshot() { return {}; },
   };
   f.setBridge(bridge);
-  return Object.assign(f, { clock, bridge, saves,
+  return Object.assign(f, { clock, bridge, saves, update,
     at(seconds) { clock.now = T0 + seconds * 1000; },
     progress() { return plain(f.publicState()?.stage?.progress); },
     // Nos chansons : choisie sur un téléphone, envoyée et suivie sous `queueId`.
@@ -395,6 +405,22 @@ test('écart entre deux titres : mesuré seulement quand un titre attendait, san
   f.clearEvening();
   assert.deepEqual(plain(f.sched.songGapSamples), []);
   assert.deepEqual(plain(f.sched.slotSamples), []);
+});
+
+// Relecture (passe 7, test manquant) : un écart entre deux titres qui
+// chevauche le verrou de mise à jour du serveur n'est pas gardé : il
+// compterait l'attente de la mise à jour.
+test('écart entre deux titres : pas gardé pendant le verrou de mise à jour du serveur', () => {
+  const f = harness({ persistent: true });
+  const [a, b, c] = songsInKaraFun(f, 3);
+  playNext(f, a, [b, c]);
+  f.at(200); endSong(f, [b, c]);
+  f.at(208); playNext(f, b, [c]);
+  assert.deepEqual(f.sched.songGapSamples, [8]);
+  f.at(408); endSong(f, [c]);
+  f.update.busy = true; f.at(410); f.sync();
+  f.at(430); f.update.busy = false; playNext(f, c, []);
+  assert.deepEqual(f.sched.songGapSamples, [8], 'verrou de mise à jour : écart écarté');
 });
 
 // Relecture : le commentaire de measureSongGap et le nom de la liste

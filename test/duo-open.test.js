@@ -789,3 +789,28 @@ test('faux KaraFun : sans volontaire, le titre part en solo dans KaraFun et la d
   await assert.rejects(f.call('POST /api/table/duet/open/accept', { ...max.body, ownerId: lea.p.id, entryId }),
     { message: 'Cette demande de duo n’est plus ouverte.' });
 });
+
+// Relecture (passe 7, équipe rouge) : « Qui veut chanter en duo avec moi ? »
+// et l'invitation en duo ajoutaient un titre du catalogue déjà envoyé à
+// KaraFun pour cette personne, ce que « Ajouter à sa liste » refuse : le
+// titre chargé revenu de KaraFun (« Pas prêt », priorité, fermeture), sa
+// liste le contenait deux fois.
+test('duo ouvert ou invitation sur un titre déjà envoyé à KaraFun pour soi : refusé comme un ajout', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const ines = person(f, '1', 'Inès'), max = person(f, '3', 'Max');
+  await f.call('POST /api/table/song', { ...ines.body, song: song(1, 'Titre') });
+  const sel = f.sched.select(); f.sched.commit(sel);
+  f.tracked().push({ queueId: 1, sel, startedAt: null, addedAt: Date.now() });
+  const refused = { code: 'ALREADY_IN_KARAFUN' };
+  await assert.rejects(f.call('POST /api/table/song', { ...ines.body, song: song(1, 'Titre') }), refused, 'ajout : déjà refusé');
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...ines.body, song: song(1, 'Titre') }), refused, 'duo ouvert');
+  await assert.rejects(f.call('POST /api/table/duet', { ...ines.body, partnerId: max.p.id, song: song(1, 'Titre') }), refused,
+    'invitation depuis la table');
+  await assert.rejects(f.handlers['POST /api/duet']({}, {}, { partnerId: max.p.id, song: song(1, 'Titre') }, ines.p), refused,
+    'invitation depuis la page personnelle');
+  assert.deepEqual(f.sched.songsOf(ines.p), [], 'rien n’est ajouté');
+  // Un autre titre du catalogue reste possible.
+  await f.call('POST /api/table/duet/open', { ...ines.body, song: song(2, 'Deux') });
+  assert.equal(ines.p.song.duet.state, 'open');
+});

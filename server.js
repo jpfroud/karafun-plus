@@ -3693,9 +3693,11 @@ function repeatNotice(song, tableId, entryId = null) {
     played: sched.playedSongs, now: Date.now(), windowMs: repeatWindowMs() });
 }
 
-function chooseFor(p, song, mode) {
-  assertDuoAllowed();
-  assertSongLength(p, [song], 'song');
+// Titre du catalogue déjà envoyé à KaraFun (ou en route) pour cette
+// personne : l'ajouter à sa liste, en solo, en duo ouvert ou en invitation,
+// le ferait chanter deux fois ; revenu de KaraFun (« Pas prêt », priorité,
+// fermeture), il serait deux fois dans sa liste (relecture, passe 7).
+function assertNotInKaraFun(p, song) {
   const songId = Number(song?.songId);
   if ([...(pending && pending.sel.ids.includes(p.id) ? [pending.sel.song] : []),
     ...tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => tr.sel.song)]
@@ -3703,6 +3705,13 @@ function chooseFor(p, song, mode) {
     const e = new Error('Cette chanson est déjà envoyée à KaraFun pour ce chanteur.');
     e.code = 'ALREADY_IN_KARAFUN'; throw e;
   }
+}
+
+function chooseFor(p, song, mode) {
+  assertDuoAllowed();
+  assertSongLength(p, [song], 'song');
+  assertNotInKaraFun(p, song);
+  const songId = Number(song?.songId);
   // Duo en route vers KaraFun : remplacer la liste de son auteur annoncerait
   // l'annulation du duo, qui partirait pourtant à deux (voir /song/remove).
   if (mode === 'replace' && pending && !pending.cancelled && pending.sel.ids.length > 1 && pending.sel.ids[0] === p.id) {
@@ -4774,6 +4783,7 @@ const handlers = {
     const p = personAtTable(body);
     requireNamed(p);
     assertSongLength(p, [body.song], 'duet');
+    assertNotInKaraFun(p, body.song);
     const choice = catalogChoice(body.song);
     const duet = choice.certify(sched.inviteDuet(p, String(body.partnerId || ''), choice.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
@@ -4785,7 +4795,7 @@ const handlers = {
   'POST /api/table/duet/open': async (req, res, body) => {
     const p = personAtTable(body);
     requireNamed(p);
-    if (body.song) assertSongLength(p, [body.song], 'duet');
+    if (body.song) { assertSongLength(p, [body.song], 'duet'); assertNotInKaraFun(p, body.song); }
     else assertNotSending(body.entryId);
     const { request, certify } = openDuetSong(p, body);
     const song = certify(sched.openDuet(p, request)); sync();
@@ -4905,6 +4915,7 @@ const handlers = {
   'POST /api/duet': async (req, res, body, me) => {
     requireNamed(me);
     assertSongLength(me, [body.song], 'duet');
+    assertNotInKaraFun(me, body.song);
     const choice = catalogChoice(body.song);
     choice.certify(sched.inviteDuet(me, body.partnerId, choice.song)); sync(); return { ok: true };
   },

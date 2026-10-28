@@ -605,3 +605,33 @@ test('premiers passages : invitée marquée partie pendant l’envoi du duo, sa 
     }
   } finally { Date.now = realNow; }
 });
+
+// Relecture (passe 7, test manquant) : un report levé par un passage non
+// chanté ne revient pas quand le bar a placé depuis l'invité accepté
+// pendant qu'il était levé (rollbackUnplayed, actedOn avec l'invité du duo) :
+// le geste du bar tient, déplacement comme priorité.
+test('report levé par un passage non chanté, invité accepté puis placé par le bar : le report ne revient pas, le geste tient', async t => {
+  for (const kind of ['move', 'priority']) for (const path of ['requeue', 'absent']) await t.test(`${kind}, ${path}`, () => {
+    const s = new Scheduler(); s._event = () => {};
+    const names = ids => ids.map(pid => s.people.get(pid).name).join(' & ');
+    const join = (table, name) => s.join({ tableId: table, name, headcount: 1 });
+    const ines = join('1', 'Inès'), gil = join('2', 'Gil'), maud = join('3', 'Maud'), hugo = join('4', 'Hugo'), zoe = join('5', 'Zoé');
+    const duo = s.openDuet(ines, { song: song(1, 'Un') });
+    [gil, maud, hugo, zoe].forEach((p, i) => s.chooseSong(p, song(10 + i, `Titre ${p.name}`)));
+    s.deferPassage(ines.id, s.presenceView().find(v => v.ids[0] === ines.id), 1);
+    const sel = s.select(); s.commit(sel); // Gil : son envoi lève le report d'Inès
+    s.chooseSong(gil, song(30, 'Gil 2'), 'append');
+    s.acceptOpenDuet(gil, ines.id, duo.entryId);
+    const to = kind === 'priority' ? 0 : 2;
+    const from = s.presenceView().filter(v => !v.future).findIndex(v => v.ids[0] === gil.id);
+    const before = s.manualOverrideState({ deferrals: true });
+    s.staffMove(gil.id, to);
+    s.recordManualChange({ kind, personId: gil.id, name: 'Gil', from: from + 1, to: to + 1, before, native: 'n' });
+    const placed = s.presenceView().filter(v => !v.future).map(v => names(v.ids));
+    if (path === 'requeue') s.requeueUnplayed(sel); else { s.rollbackUnplayed(sel); s.putBackFirst(gil, sel.song); }
+    assert.equal(s.isDeferred(ines), false);
+    const sends = [];
+    for (let i = 0; i < placed.length; i++) { const c = s.select(); sends.push(names(c.ids)); s.commit(c); s.songEnded(c.ids); }
+    assert.deepEqual(sends, placed);
+  });
+});
