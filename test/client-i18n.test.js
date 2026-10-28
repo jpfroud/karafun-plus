@@ -90,7 +90,28 @@ assert.ok(tableRoutes.length > 20, `routes des téléphones repérées : ${table
 const routeMessages = tableRoutes.flatMap(block => [...block.matchAll(/(?:new Error|songSettingsError)\(\s*'((?:[^'\\]|\\.)*)'/g)].map(m => m[1]));
 assert.ok(routeMessages.includes('Cette ancienne télécommande KaraFun ne connaît pas les réglages de titre : ils ne seraient pas appliqués.'));
 for (const message of routeMessages) assert.ok(serverText(message), `message d’une route des téléphones sans traduction : « ${message} »`);
-const thrown = work => { try { work(); } catch (error) { return error.message; } assert.fail('erreur attendue'); };
+// Regression: relecture, passe 5 — un refus écrit dans une fonction de
+// server.js qu'une route des téléphones appelle (openDuetSong), ou rangé dans
+// une variable avant d'être levé (`const message = '…'`, message passé à
+// catalogSong), échappait au contrôle des seules routes : « Retrouve ce titre
+// dans le catalogue avant de chercher un duo. » arrivait en français sur un
+// téléphone en anglais. Les fonctions appelées directement par les routes
+// sont lues ; plus loin, des refus jamais renvoyés aux téléphones (lecture
+// KaraFun lancée par sync() sans l'attendre) fausseraient le contrôle.
+const helperBody = name => new RegExp(`\\n(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`).exec(serverJs)?.[0] || null;
+const helpers = new Map([...new Set(tableRoutes.flatMap(block => [...block.matchAll(/(?<![.\w])([A-Za-z_]\w*)\(/g)].map(m => m[1])))]
+  .map(name => [name, helperBody(name)]).filter(([, body]) => body));
+assert.ok(helpers.size > 20, `fonctions appelées par les routes des téléphones : ${helpers.size}`);
+const helperMessages = [...helpers].flatMap(([name, body]) =>
+  [...body.matchAll(/(?:new Error\(\s*|const message = |catalogSong\([^,()]+,\s*)'((?:[^'\\]|\\.)*)'/g)].map(m => [name, m[1]]));
+assert.ok(helperMessages.some(([name, message]) => name === 'openDuetSong' &&
+  message === 'Retrouve ce titre dans le catalogue avant de chercher un duo.'), 'refus du duo ouvert repéré dans openDuetSong');
+assert.ok(helperMessages.some(([name, message]) => name === 'certifiedBattleSongs' &&
+  message === 'Retrouve ce titre dans le catalogue avant de proposer la Battle.'), 'message passé à catalogSong repéré');
+for (const [name, message] of helperMessages) {
+  assert.ok(serverText(message), `message de ${name} (appelée par une route des téléphones) sans traduction : « ${message} »`);
+}
+const thrown =work => { try { work(); } catch (error) { return error.message; } assert.fail('erreur attendue'); };
 const ballot = new BattleVote({ minVoters: 5 });
 assert.equal(serverText(thrown(() => ballot.propose({ personId: 'a', personName: 'Ana', eligiblePersonIds: ['a', 'b'],
   songs: [{ songId: 1, title: 'Titre' }], proposerChoice: 1 }))), 'A Battle can be suggested once 5 people are signed up.');

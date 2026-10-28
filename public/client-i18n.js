@@ -771,6 +771,7 @@ window.CLIENT_TRANSLATIONS = {
       'Cette demande de duo n’est plus ouverte.': 'This duet request is no longer open.',
       'Quelqu’un a déjà rejoint ce duo.': 'Someone has already joined this duet.',
       'Ce titre cherche déjà un partenaire : appuie sur « Je chante avec » pour le rejoindre.': 'This song is already looking for a partner: tap “I’ll sing with” to join it.',
+      'Retrouve ce titre dans le catalogue avant de chercher un duo.': 'Find this song in the catalogue before looking for a duet partner.',
       'Titre manquant.': 'Missing song title.',
       // Réglages de titre (v1.4)
       'Le bar a désactivé les réglages de titre depuis les téléphones.': 'The bar has turned off song settings from phones.',
