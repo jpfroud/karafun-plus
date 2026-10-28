@@ -854,9 +854,20 @@ test('patience et compromis : pas de calcul inutile pendant une prévision', () 
 
 // Relecture : une personne avec bonus peut chanter plus souvent, sans
 // enchaîner deux de ses titres tant qu'un autre passage du tour est possible.
-// (En fin de tour, il peut ne rester qu'elle : invitée d'un duo puis son
-// propre titre, ou ses deux passages du tour, comme avant la patience.)
+// En fin de tour, il peut ne rester qu'elle : ses deux passages du tour, ou
+// invitée d'un duo puis son propre titre. Montage d'origine (Chloé ajoute en
+// dernier) rétabli à la relecture de la passe 4 : le cycle des tables la fait
+// passer la dernière du premier tour, et son passage en plus de ce tour ne
+// peut venir qu'après (Alice, Sam et Bruno y ont déjà chanté). Une règle qui
+// avançait le titre suivant d'un autre a été écartée : elle faisait perdre
+// des titres au bonus et creusait les écarts dans les petits groupes. Ordre
+// figé pour voir toute dérive.
 test('bonus : pas deux titres de suite de la même personne tant qu’un autre passage du tour est possible', () => {
+  const expected = {
+    1: 'Alice Sam Bruno Chloé Chloé Alice Bruno Sam&Chloé Alice Bruno Chloé Alice Bruno',
+    2: 'Alice Sam Bruno Chloé Chloé Alice Bruno Sam&Chloé Alice Bruno Chloé Alice Bruno',
+    3: 'Alice Sam Bruno Chloé Chloé Alice Bruno Sam&Chloé Chloé Alice Bruno Alice Bruno',
+  };
   for (const level of [1, 2, 3]) {
     const s = new Scheduler();
     s.setHeadcount('1', 5);
@@ -865,12 +876,9 @@ test('bonus : pas deux titres de suite de la même personne tant qu’un autre p
     const chloe = s.join({ tableId: '1', name: 'Chloé' });
     const sam = s.join({ tableId: 'Comptoir', name: 'Sam' });
     let n = 1;
-    // Chloé ajoute d'abord : premier tour Chloé Sam Alice Bruno (cycle des
-    // tables). Dernière du cycle, il ne resterait qu'elle dans le tour pour
-    // son passage en plus (fin de tour, voir plus haut).
-    for (let k = 0; k < 3; k++) s.chooseSong(chloe, song(n++), 'append');
     for (let k = 0; k < 4; k++) s.chooseSong(alice, song(n++), 'append');
     for (let k = 0; k < 4; k++) s.chooseSong(bruno, song(n++), 'append');
+    for (let k = 0; k < 3; k++) s.chooseSong(chloe, song(n++), 'append');
     s.chooseSong(sam, song(n++), 'append');
     const duo = s.inviteDuet(sam, chloe.id, song(n++));
     s.answerDuet(chloe, true, duo.entryId);
@@ -882,10 +890,7 @@ test('bonus : pas deux titres de suite de la même personne tant qu’un autre p
       s.commit(sel); s.songEnded(sel.ids);
       played.push(sel);
     }
-    const names = played.map(sel => sel.names.join(' & '));
-    played.forEach((sel, i) => {
-      if (i) assert.notEqual(sel.ids[0], played[i - 1].ids[0], `bonus ${level} : ${names.join(' ')}`);
-    });
+    assert.equal(played.map(sel => sel.names.join('&')).join(' '), expected[level], `bonus ${level}`);
   }
 });
 
