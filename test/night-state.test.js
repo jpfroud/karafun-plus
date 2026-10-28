@@ -467,8 +467,11 @@ try {
     saved.scheduler.stageEnds = rows;
     const resumed = new Scheduler();
     restoreNight(saved, { scheduler: resumed, access: new TableAccess(), settings: settings() });
-    const byTurn = map => [...map].sort((a, b) => a[0] - b[0]);
-    assert.deepEqual(byTurn(resumed.stageEnds), byTurn(live.stageEnds), 'mêmes fins de passage qu’en direct');
+    // En direct, endStage date la fin sur l'horloge des débuts d'attente :
+    // on compare les tours gardés, et les heures à celles de la sauvegarde.
+    const turns = map => [...map.keys()].sort((a, b) => a - b);
+    assert.deepEqual(turns(resumed.stageEnds), turns(live.stageEnds), 'mêmes tours gardés qu’en direct');
+    for (const [turn, at] of resumed.stageEnds) assert.equal(at, 1000 * turn, `heure de la sauvegarde gardée (tour ${turn})`);
     assert.equal(Math.min(...resumed.stageEnds.keys()), total - STAGE_ENDS_LIMIT + 1, 'les plus petits tours partent d’abord');
   }
 

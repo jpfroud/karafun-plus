@@ -1186,7 +1186,8 @@ test('QueueScore : attente pondérée égale avec un poids composé, même ordre
       const hugo = join('TH', 'Hugo'), paulo = join('TP', 'Paulo');
       const all = [zoe, ines, maud, gil, hugo, paulo];
       let n = 9990;
-      for (let k = 0; k < 3; k++) for (const p of all) { clock += 5000; s.chooseSong(p, { songId: n, title: `T${n++}`, artist: 'x' }, 'append'); }
+      // Un titre chacun : le reste du plan ne coûte rien, seule l'égalité compte.
+      for (const p of all) { clock += 5000; s.chooseSong(p, { songId: n, title: `T${n++}`, artist: 'x' }, 'append'); }
       s.tables.get(zoe.tableId).bonus = -1; zoe.bonus = 2; maud.bonus = 2; gil.bonus = -3;
       s.appearanceSerial = 10;
       const last = new Map([[zoe, 6], [maud, 7], [ines, 8], [gil, 9], [hugo, 10], [paulo, 5]]);
