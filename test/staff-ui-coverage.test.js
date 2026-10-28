@@ -485,6 +485,19 @@ test('adresse des QR : le choix fait reste affiché jusqu’à « Utiliser », m
   assert.equal(page.$('customBase').value, '', 'le serveur garde l’adresse locale : le champ la suit');
 });
 
+// Regression: relecture (passe 5) — la page du bar garde sa copie des poids
+// des bonus (BONUS_WEIGHT) pour écrire la phrase de chaque niveau, et aucun
+// test ne la reliait à BONUS_WEIGHTS de lib/scheduler/common.js : un poids
+// changé côté serveur laissait « Repères » et la fiche d'une table décrire un
+// rythme que la rotation ne suit plus, tous les tests au vert.
+test('page du bar : poids des bonus identiques à BONUS_WEIGHTS de l’ordonnanceur', () => {
+  const literal = html.match(/const BONUS_WEIGHT = (\{[^}]+\});/)?.[1];
+  assert.ok(literal, 'copie des poids des bonus dans staff.html');
+  const copy = vm.runInNewContext(`(${literal})`);
+  const { BONUS_WEIGHTS } = require('../lib/scheduler/common');
+  assert.deepEqual({ ...copy }, { ...BONUS_WEIGHTS });
+});
+
 test('repères chanteurs : recherche, filtre de table, bonus, départ et retour', async () => {
   const page = await openPage();
   assert.equal(page.$('identityCount').textContent, '4');
@@ -549,9 +562,48 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   await page.change(row('bruno').querySelector('[data-person-bonus]'), '0');
   assert.deepEqual(page.lastPost('/api/staff/bonus').body, { personId: 'bruno', level: 0 });
   assert.equal(page.toast().text, 'Bonus retiré');
+  assert.equal(row('bruno').querySelector('[data-person-bonus-help]'), null, 'sans bonus, pas de phrase');
   page.world.people[1].bonus = -2;
   await page.poll();
   assert.equal(row('bruno').querySelector('[data-person-bonus]').value, '-2', 'le bonus enregistré est présélectionné');
+  // Ce que fait le niveau choisi, sur la ligne (page du bar seulement) : une
+  // étiquette courte, la phrase entière au survol et dans le menu du bonus.
+  // Regression: relecture (passe 4) — la phrase entière sous chaque nom
+  // rendait les lignes deux à trois fois plus hautes (staff-layout-bonus.test.js).
+  const help = id => row(id).querySelector('[data-person-bonus-help]');
+  const tableHelp = () => page.$('identityBody').querySelectorAll('[data-table-bonus-help]').map(node => node.textContent);
+  assert.equal(help('bruno').textContent, 'Malus −2');
+  assert.equal(help('bruno').title, '−2 : passe environ deux tours sur trois ; le premier passage de la soirée n’est pas retardé.');
+  page.world.people[1].bonus = 3;
+  await page.poll();
+  assert.equal(help('bruno').textContent, 'Bonus +3');
+  assert.equal(help('bruno').title,
+    '+3 : passe environ deux fois plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  assert.deepEqual(tableHelp(), [], 'sans bonus de table, pas de phrase sous la table');
+  // Le bonus de la table se multiplie à celui de la personne : +3 à une table
+  // à −3 revient à passer comme les autres. La phrase du bonus de la table
+  // s'écrit une fois, sous son nom, pas sous chacun de ses chanteurs.
+  page.world.tables[0].bonus = -3;
+  await page.poll();
+  assert.equal(help('bruno').textContent, 'Bonus +3 · table −3');
+  assert.equal(help('bruno').title, '+3, avec le bonus de la table (−3) : passe une fois par tour, comme les autres.');
+  assert.match(row('bruno').querySelector('[data-person-bonus]').title, /\(−3\) : passe une fois par tour/);
+  assert.deepEqual(tableHelp(), ['Bonus de la table −3 : chaque personne de la table passe un tour sur deux ; le premier passage de la soirée n’est pas retardé.']);
+  page.world.people[1].bonus = 1;
+  page.world.tables[0].bonus = 2;
+  await page.poll();
+  assert.equal(help('bruno').textContent, 'Bonus +1 · table +2');
+  assert.equal(help('bruno').title,
+    '+1, avec le bonus de la table (+2) : passe environ 1,9 fois plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  assert.equal(help('alice'), null, 'bonus de la table seul : rien de plus sur la ligne');
+  assert.equal(row('alice').querySelector('[data-person-bonus]').title,
+    'Bonus ou malus, réservé au bar. Aucun, avec le bonus de la table (+2) : passe environ une fois et demie plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  assert.deepEqual(tableHelp(), ['Bonus de la table +2 : chaque personne de la table passe environ une fois et demie plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.']);
+  delete page.world.tables[0].bonus;
+  page.world.people[1].bonus = -2;
+  await page.poll();
+  assert.equal(help('alice'), null, 'ni bonus ni bonus de table, pas de phrase');
+  assert.deepEqual(tableHelp(), []);
   // Repère enregistré tout seul : après la pause de frappe, sur Entrée ou en
   // quittant le champ. Seul le texte part.
   const note = id => row(id).querySelector('[data-identity-note]');
@@ -725,7 +777,7 @@ function queueWorld() {
     { source: 'karafun', ours: true, queueId: 'kf-2', pos: 2, singer: 'Dora', table: 'En solo', ids: ['dora'],
       title: 'Prochain', eta: now + 240000, guaranteed: true },
     { source: 'envoi', pos: 3, singer: 'Bruno', title: 'En route' },
-    { source: 'helper', id: 'bruno', pos: 4, name: 'Bruno', table: 'Table 1', ids: ['bruno'],
+    { source: 'helper', id: 'bruno', pos: 4, name: 'Bruno', table: 'Table 1', ids: ['bruno'], placed: true,
       song: { title: 'Chanson A', artist: 'Groupe', entryId: 'e1' }, isNew: true, eta: now + 480000 },
     { source: 'helper', id: 'duo1', pos: 5, name: 'Alice & Dora', table: 'Table 1', ids: ['alice', 'dora'], kind: 'duo',
       presenceSkips: 2, repeat: { playedAt: now - 1800000 }, song: { title: 'Duo', artist: 'Deux', entryId: 'e2' }, eta: now + 720000 },
@@ -752,7 +804,9 @@ test('file du bar : statuts, badges, doublons, repères et séparateur de fermet
   assert.deepEqual(badges(lines[0]), ['Dans KaraFun · Je suis là attendu']);
   assert.deepEqual(badges(lines[1]), ['Dans KaraFun', 'Prochain confirmé']);
   assert.deepEqual(badges(lines[2]), ['Envoi']);
-  assert.deepEqual(badges(lines[3]), ['À venir', 'Premier passage']);
+  assert.deepEqual(badges(lines[3]), ['À venir', 'Placé par le bar', 'Premier passage']);
+  assert.match(lines[3].querySelectorAll('.queue-tags .badge')[1].title, /ni un titre ajouté, ni une arrivée, ni le calcul ne passent devant/,
+    'la ligne placée par le bar dit qu’elle garde sa place');
   assert.deepEqual(badges(lines[4]), ['À venir', 'Duo', 'Absent ×2']);
   assert.deepEqual(badges(lines[5]), ['Je suis là attendu', 'Pas prêt']);
   assert.deepEqual(badges(lines[6]), ['Titre suivant']);
@@ -862,6 +916,185 @@ test('file du bar : invitation de duo en attente marquée, plus de liste des duo
   assert.ok(!/blockedBox|Duos en attente d’accord/.test(html), 'plus de liste « Duos en attente d’accord »');
 });
 
+// Décision du gérant du 26 octobre : un titre de la file déjà chargé dans
+// KaraFun (pas sur scène) ; « Priorité » demande s'il faut faire passer la
+// personne avant lui. Avant : il sort de KaraFun et repasse juste après elle.
+// Juste après : comme avant, et la page le dit. Annuler : rien ne change.
+test('file du bar : « Priorité » avec un titre déjà chargé dans KaraFun propose de passer avant lui', async () => {
+  const world = baseWorld();
+  world.queue = [
+    { source: 'karafun', ours: true, queueId: 'kf-9', pos: 1, singer: 'Bruno', ids: ['bruno'], title: 'Titre chargé' },
+    { source: 'helper', id: 'chloe', pos: 2, name: 'Chloé', table: 'Table 2', ids: ['chloe'], song: { title: 'Valse', entryId: 'e1' } },
+    { source: 'helper', id: 'duo1', pos: 3, name: 'Alice & Bruno', table: 'Table 1', ids: ['alice', 'bruno'], kind: 'duo', song: { title: 'Duo', entryId: 'e2' } },
+    { source: 'helper', id: 'dora', pos: 4, name: 'Dora', table: 'En solo', ids: ['dora'], song: { title: 'Rock', entryId: 'e3' } },
+  ];
+  // Bruno chante dans les deux passages : le serveur ne propose pas le retrait au duo.
+  world.priorityPull = { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'], lineIds: ['chloe', 'dora'] };
+  const page = await openPage({ world, dialogFocus: true });
+  const line = index => rows(page)[index];
+  const urgent = index => line(index).querySelector('[data-urgent]');
+  const dialog = page.$('priorityDialog');
+  assert.ok(urgent(1), 'le premier passage libre peut aussi passer avant le titre chargé');
+  assert.equal(urgent(1).title, 'Faire passer dès que possible ; propose de passer avant « Titre chargé », déjà chargé dans KaraFun');
+
+  // La question : trois choix, le focus sur son titre (rien n'est choisi d'avance).
+  await page.click(urgent(3));
+  assert.equal(dialog.open, true);
+  assert.equal(page.doc.activeElement, page.$('priorityTitle'), 'le focus va au titre de la question, pas à un bouton');
+  assert.equal(page.$('priorityTitle').textContent, 'Faire passer Dora avant « Titre chargé » ?');
+  assert.equal(page.$('priorityHelp').textContent, '« Titre chargé » est déjà chargé dans KaraFun. Avant lui : il sort de KaraFun et repasse juste après Dora, ' +
+    'sans perdre son tour. Juste après lui : rien ne sort de KaraFun.');
+  assert.deepEqual(texts([page.$('priorityBefore'), page.$('priorityAfter'), page.$('priorityCancel')]),
+    ['Avant « Titre chargé »', 'Juste après « Titre chargé »', 'Annuler']);
+  assert.equal(page.$('priorityAfter').hidden, false);
+  assert.deepEqual(page.confirms, [], 'plus de confirm() du navigateur');
+
+  // Avant : le titre chargé sort de KaraFun.
+  page.replies['/api/staff/move'] = { ok: true, message: '« Titre chargé » sort de KaraFun : Dora passe d’abord, « Titre chargé » juste après.' };
+  await page.click(page.$('priorityBefore'));
+  assert.equal(dialog.open, false);
+  assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true, pullLoaded: true, queueId: 'kf-9' });
+  assert.equal(page.toast().text, '« Titre chargé » sort de KaraFun : Dora passe d’abord, « Titre chargé » juste après.');
+
+  // Juste après : priorité juste après le titre chargé, comme avant.
+  delete page.replies['/api/staff/move'];
+  await page.click(urgent(3));
+  await page.click(page.$('priorityAfter'));
+  assert.equal(dialog.open, false);
+  assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true });
+  assert.equal(page.toast().text, 'Dora passe juste après « Titre chargé », déjà chargé dans KaraFun');
+  // Le premier passage libre y est déjà : seulement Avant ou Annuler.
+  const posts = page.posts.length;
+  await page.click(urgent(1));
+  assert.equal(page.$('priorityHelp').textContent, '« Titre chargé » est déjà chargé dans KaraFun. Avant lui : il sort de KaraFun et repasse juste après Chloé, ' +
+    'sans perdre son tour. Sans retrait, Chloé passe déjà juste après lui.');
+  assert.equal(page.$('priorityAfter').hidden, true, 'rien à changer sans retrait');
+  await page.click(page.$('priorityCancel'));
+  assert.equal(page.posts.length, posts, 'rien n’est envoyé');
+  await page.click(urgent(1));
+  await page.click(page.$('priorityBefore'));
+  assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'chloe', toIndex: 0, priority: true, pullLoaded: true, queueId: 'kf-9' });
+
+  // Bruno chante dans les deux passages : pas de question, priorité ordinaire.
+  await page.click(urgent(2));
+  assert.equal(dialog.open, false);
+  assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'duo1', toIndex: 0, priority: true });
+
+  // Le titre a commencé pendant la question : le refus du serveur s'affiche.
+  page.replies['/api/staff/move'] = { status: 400, error: '« Titre chargé » a commencé pendant ta confirmation : rien n’a été retiré de KaraFun ni avancé. Touche de nouveau « Priorité » pour faire passer Dora juste après.' };
+  await page.click(urgent(3));
+  await page.click(page.$('priorityBefore'));
+  assert.deepEqual(page.toast(), { text: '« Titre chargé » a commencé pendant ta confirmation : rien n’a été retiré de KaraFun ni avancé. Touche de nouveau « Priorité » pour faire passer Dora juste après.', bad: true });
+
+  // Dora chante le titre en cours : le serveur ne propose plus le retrait pour
+  // elle (elle chanterait deux fois de suite) ; pas de question.
+  delete page.replies['/api/staff/move'];
+  await page.update({ priorityPull: { ...world.priorityPull, lineIds: ['chloe'] } });
+  assert.equal(urgent(3).title, 'Faire passer dès que possible, après les titres déjà chargés dans KaraFun');
+  await page.click(urgent(3));
+  assert.equal(dialog.open, false);
+  assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true });
+
+  // Pendant le retrait, puis titre revenu juste après la priorité.
+  await page.update({ priorityPull: null, queue: [
+    { ...world.queue[0], leaving: 'priority' },
+    { source: 'helper', id: 'dora', pos: 2, name: 'Dora', ids: ['dora'], guaranteed: true, song: { title: 'Rock', entryId: 'e3' } },
+    { source: 'helper', id: 'bruno', pos: 3, name: 'Bruno', ids: ['bruno'], afterPriority: true, song: { title: 'Titre chargé', entryId: 'e4' } },
+  ] });
+  assert.deepEqual(badges(line(0)), ['Sort de KaraFun']);
+  assert.deepEqual(badges(line(2)), ['À venir', 'Après la priorité']);
+  assert.equal(line(2).querySelector('.queue-tags .badge.wait').title,
+    'Retiré de KaraFun pour une priorité donnée par le bar : ce titre passe juste après elle, sans perdre son tour ; si elle ne tient plus, il reprend sa place');
+  assert.equal(urgent(1), null, 'plus de question une fois le titre sorti : le premier passage libre n’a plus de « Priorité »');
+});
+
+// Relecture : la question était un confirm() du navigateur dont « Annuler »
+// (et Échap) faisait passer la personne juste après le titre chargé : le bar
+// ne pouvait pas renoncer. Trois choix dans une fenêtre de la page ; Annuler,
+// Échap et Retour n'envoient rien.
+test('file du bar : « Priorité » avant un titre chargé, Annuler, Échap et Retour ne changent rien', async () => {
+  const world = baseWorld();
+  world.queue = [
+    { source: 'karafun', ours: true, queueId: 'kf-9', pos: 1, singer: 'Bruno', ids: ['bruno'], title: 'Titre chargé' },
+    { source: 'helper', id: 'chloe', pos: 2, name: 'Chloé', table: 'Table 2', ids: ['chloe'], song: { title: 'Valse', entryId: 'e1' } },
+    { source: 'helper', id: 'dora', pos: 3, name: 'Dora', table: 'En solo', ids: ['dora'], song: { title: 'Rock', entryId: 'e3' } },
+  ];
+  world.priorityPull = { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'], lineIds: ['chloe', 'dora'] };
+  const page = await openPage({ world });
+  const urgent = index => rows(page)[index].querySelector('[data-urgent]');
+  page.confirmAnswer = false; // l'ancienne question du navigateur : « Annuler »
+  await page.click(urgent(2));
+  const dialog = page.doc.getElementById('priorityDialog');
+  if (dialog?.open) await page.click(page.$('priorityCancel'));
+  assert.deepEqual(page.postsTo('/api/staff/move'), [], 'Annuler n’envoie aucun déplacement');
+  assert.ok(dialog, 'la question est une fenêtre de la page');
+  assert.equal(dialog.open, false, 'Annuler ferme la question');
+  assert.deepEqual(page.confirms, [], 'plus de confirm() du navigateur');
+  // Échap (la fenêtre se ferme d'elle-même) et Retour du téléphone : rien non plus.
+  await page.click(urgent(2));
+  assert.equal(dialog.open, true);
+  dialog.close();
+  await page.flush();
+  await page.click(urgent(2));
+  assert.equal(dialog.open, true);
+  await page.back();
+  assert.equal(dialog.open, false, 'Retour ferme la question');
+  // Le premier passage libre aussi : Annuler ne change rien.
+  await page.click(urgent(1));
+  await page.click(page.$('priorityCancel'));
+  assert.deepEqual(page.postsTo('/api/staff/move'), [], 'aucune priorité envoyée');
+  // Une réponse donnée après Annuler ne repart pas : seul un nouveau « Priorité » compte.
+  page.$('priorityBefore').click();
+  await page.flush();
+  assert.deepEqual(page.postsTo('/api/staff/move'), []);
+
+  // Au téléphone, depuis le menu ⋯ : le menu se ferme, la question prend son
+  // étape d'historique, et Retour la ferme sans quitter l'onglet File.
+  await page.click(page.doc.body.querySelector('[data-tab-btn="file"]'));
+  const steps = page.history.length;
+  await page.click(rows(page)[2].querySelector('[data-row-menu]'));
+  assert.equal(page.history.length, steps + 1);
+  await page.click(urgent(2));
+  assert.equal(dialog.open, true);
+  assert.equal(page.all('qBody', '.row-actions.open').length, 0, 'le menu ⋯ se ferme');
+  assert.equal(page.history.length, steps + 1, 'une seule étape : celle de la question');
+  await page.back();
+  assert.equal(dialog.open, false);
+  assert.equal(page.doc.body.dataset.tab, 'file', 'Retour ne quitte pas l’onglet');
+  assert.equal(page.history.length, steps);
+  assert.deepEqual(page.postsTo('/api/staff/move'), [], 'toujours rien d’envoyé');
+});
+
+// Relecture : la page avait sa propre copie de la règle du retrait, sans deux
+// refus du serveur (titre passé faute de « Je suis là », invitée du duo d'un
+// autre repoussé par « Pas prêt ») ; elle proposait un retrait sûr d'être
+// refusé. Elle suit maintenant la liste du serveur (priorityPull.lineIds).
+test('file du bar : « Priorité » ne propose le retrait qu’aux lignes que le serveur accepte', async () => {
+  const world = baseWorld();
+  world.queue = [
+    { source: 'karafun', ours: true, queueId: 'kf-9', pos: 1, singer: 'Bruno', ids: ['bruno'], title: 'Titre chargé' },
+    { source: 'helper', id: 'chloe', pos: 2, name: 'Chloé', table: 'Table 2', ids: ['chloe'], song: { title: 'Valse', entryId: 'e1' } },
+    { source: 'helper', id: 'dora', pos: 3, name: 'Dora', table: 'En solo', ids: ['dora'], presenceSkips: 1, song: { title: 'Rock', entryId: 'e3' } },
+  ];
+  // Dora a manqué « Je suis là » : le serveur refuserait le retrait pour elle.
+  world.priorityPull = { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'], lineIds: ['chloe'] };
+  const page = await openPage({ world });
+  const urgent = index => rows(page)[index].querySelector('[data-urgent]');
+  assert.equal(urgent(2).title, 'Faire passer dès que possible, après les titres déjà chargés dans KaraFun');
+  await page.click(urgent(2));
+  assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'dora', toIndex: 0, priority: true },
+    'priorité sans retrait, sans question');
+  assert.equal(page.confirms.length, 0);
+  assert.equal(page.doc.getElementById('priorityDialog')?.open ?? false, false, 'aucune question à Dora');
+  // Le premier passage libre refusé par le serveur : pas de « Priorité » du tout.
+  assert.ok(urgent(1), 'Chloé peut passer avant le titre chargé');
+  await page.update({ priorityPull: { ...world.priorityPull, lineIds: [] } });
+  assert.equal(urgent(1), null, 'Chloé passe déjà juste après le titre chargé, rien d’autre à proposer');
+  // Ancien serveur sans liste : aucune ligne ne se voit proposer le retrait.
+  await page.update({ priorityPull: { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'] } });
+  assert.equal(urgent(1), null);
+});
+
 test('file du bar : retirer, priorité, sélection multiple et retrait groupé', async () => {
   const page = await openPage({ world: queueWorld() });
   const line = index => rows(page)[index];
@@ -879,6 +1112,7 @@ test('file du bar : retirer, priorité, sélection multiple et retrait groupé',
   await page.click(line(4).querySelector('[data-urgent]'));
   assert.deepEqual(page.lastPost('/api/staff/move').body, { personId: 'duo1', toIndex: 0, priority: true });
   assert.equal(page.toast().text, 'Passage avancé au plus tôt après les titres déjà dans KaraFun');
+  assert.ok(!page.confirms.some(text => /^Faire passer/.test(text)), 'sans titre à retirer, aucune question');
 
   // Sélection d'une ligne, puis de toutes.
   assert.equal(page.$('removeSelected').disabled, true);
@@ -1268,26 +1502,34 @@ test('changements manuels : annuler le dernier ou tous', async () => {
   assert.match(page.$('manualHistoryList').textContent, /Annule d’abord le changement plus récent/);
   await page.click(page.in('manualHistoryList', '[data-manual-undo="second"]'));
   assert.deepEqual(page.lastPost('/api/staff/manual-change-undo').body, { id: 'second' });
-  assert.equal(page.toast().text, 'Dernier changement annulé ; ordre précédent retrouvé');
+  assert.equal(page.toast().text, 'Dernier changement annulé', 'sans message du serveur');
+  // Le serveur dit ce que l'annulation a rendu : l'ordre d'avant, ou le
+  // calcul pour cette ligne quand la file a changé depuis le geste.
+  const rebased = 'Dernier changement annulé : la file a changé depuis, Marine retrouve sa place calculée';
+  page.replies['/api/staff/manual-change-undo'] = { ok: true, exact: false, message: rebased };
+  await page.click(page.in('manualHistoryList', '[data-manual-undo="second"]'));
+  assert.equal(page.toast().text, rebased);
   page.confirmAnswer = false;
   await page.click(page.$('recalculateQueue'));
-  assert.equal(page.confirms.at(-1), 'Annuler les 2 changements manuels et retrouver l’ordre d’avant ces interventions ?');
+  assert.equal(page.confirms.at(-1), 'Annuler les 2 changements manuels ? Leurs lignes retrouvent le calcul ; les titres déjà dans KaraFun ne bougent pas.');
   assert.equal(recalcs(), 0);
   page.confirmAnswer = true;
   await page.click(page.$('recalculateQueue'));
   assert.deepEqual(page.lastPost('/api/staff/queue-recalculate').body, {});
   assert.equal(page.toast().text, 'Tous les changements manuels ont été annulés');
-  await page.update({ manualChanges: [{ id: 'seul', kind: 'move', name: 'JP', from: 5, to: 2, at: Date.now(), canUndo: false }] });
-  assert.match(page.$('manualHistoryList').textContent, /La file a changé depuis : annulation indisponible/);
-  assert.equal(page.$('recalculateQueue').disabled, true, 'historique dépassé : annulation globale impossible');
-  const asked = page.confirms.length;
-  await page.click(page.$('recalculateQueue'));
-  assert.equal(page.confirms.length, asked);
+  // Le geste le plus récent s'annule toujours (retours du 23 octobre) :
+  // plus de « La file a changé depuis : annulation indisponible ».
   await page.update({ manualChanges: [{ id: 'seul', kind: 'move', name: 'JP', from: 5, to: 2, at: Date.now(), canUndo: true }] });
+  assert.ok(page.in('manualHistoryList', '[data-manual-undo="seul"]'));
+  assert.doesNotMatch(page.$('manualHistoryList').textContent, /indisponible/);
+  assert.equal(page.$('recalculateQueue').disabled, false);
   page.confirmAnswer = false;
   await page.click(page.$('recalculateQueue'));
-  assert.match(page.confirms.at(-1), /1 changement manuel et retrouver l’ordre/, 'singulier pour un seul changement');
+  assert.equal(page.confirms.at(-1), 'Annuler le changement manuel ? Sa ligne retrouve le calcul ; les titres déjà dans KaraFun ne bougent pas.',
+    'singulier pour un seul changement');
   assert.equal(recalcs(), 1);
+  await page.update({ manualChanges: [] });
+  assert.equal(page.$('recalculateQueue').disabled, true, 'rien à annuler');
 });
 
 test('tables : tuiles, QR en grand, création, détails enregistrés seuls, bonus et départ', async () => {
@@ -1399,12 +1641,19 @@ test('tables : tuiles, QR en grand, création, détails enregistrés seuls, bonu
   page.runTimers(1000);
   await page.flush();
   assert.equal(page.$('tableSheetNameStatus').textContent, 'Enregistré ✓', 'nom revenu à celui du serveur : rien à envoyer');
-  // Bonus de table.
+  // Bonus de table, avec ce que fait le niveau choisi.
+  assert.equal(page.$('tableSheetBonusHelp').textContent, 'Aucun : passe une fois par tour, comme les autres.');
   await page.change(page.$('tableSheetBonus'), '-1');
   assert.deepEqual(page.lastPost('/api/staff/bonus').body, { tableId: '2', level: -1 });
   assert.equal(page.toast().text, 'Bonus de table enregistré (invisible des clients)');
+  assert.equal(page.$('tableSheetBonusHelp').textContent,
+    '−1 : chaque personne de la table passe un peu moins souvent (environ 4 passages pour 5) ; le premier passage de la soirée n’est pas retardé.');
+  await page.change(page.$('tableSheetBonus'), '2');
+  assert.equal(page.$('tableSheetBonusHelp').textContent,
+    '+2 : chaque personne de la table passe environ une fois et demie plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
   await page.change(page.$('tableSheetBonus'), '0');
   assert.equal(page.toast().text, 'Bonus de table retiré');
+  assert.equal(page.$('tableSheetBonusHelp').textContent, 'Aucun : passe une fois par tour, comme les autres.');
   // Table partie.
   page.confirmAnswer = false;
   await page.click(page.$('tableSheetLeft'));
@@ -1541,7 +1790,8 @@ test('optimisation de la file : état affiché et recalcul', async () => {
   assert.match(diag(), /Optimisation prête/);
   await page.update({ solver: { configured: true, available: true, plan: 'manual', lastRun: { at, improved: false }, refineImprovements: 1 } });
   assert.equal(pill().textContent, 'Ordre modifié par le bar');
-  assert.equal(text(), `Dernier calcul à ${hhmm(at)} : rien de mieux. 1 amélioration depuis le dernier changement de la file. Ordre du bar conservé ; « Recalculer la file » le remplace.`);
+  assert.equal(text(), `Dernier calcul à ${hhmm(at)} : rien de mieux. 1 amélioration depuis le dernier changement de la file. Ordre du bar conservé ; les lignes placées gardent leur place jusqu’à leur envoi.`);
+  assert.equal(page.$('optimizeQueue').textContent, 'Recalculer la file');
   // Recalcul : confirmation seulement si des choix du bar seraient perdus.
   page.confirmAnswer = false;
   await page.click(page.$('optimizeQueue'));
@@ -1550,6 +1800,25 @@ test('optimisation de la file : état affiché et recalcul', async () => {
   page.confirmAnswer = true;
   await page.click(page.$('optimizeQueue'));
   assert.deepEqual(page.lastPost('/api/staff/queue-optimize').body, {});
+  // Avec des gestes du bar, le bouton dit qu'il les annule, et combien
+  // (un gérant le touchait pour rafraîchir la file sans le savoir).
+  await page.update({ manualChanges: [
+    { id: 'b', kind: 'priority', name: 'Marine', from: 4, to: 1, at: Date.now(), canUndo: true },
+    { id: 'a', kind: 'move', name: 'Ali', from: 7, to: 4, at: Date.now(), canUndo: false }] });
+  // « changements » : une priorité et chaque redéplacement comptent, comme
+  // dans « Changements manuels de la file ».
+  assert.equal(page.$('optimizeQueue').textContent, 'Annuler mes 2 changements et recalculer');
+  assert.match(page.$('optimizeQueue').title, /^Annule les déplacements et priorités donnés par le bar/);
+  page.confirmAnswer = false;
+  await page.click(page.$('optimizeQueue'));
+  assert.equal(page.confirms.at(-1), 'Recalculer toute la file ? Tes 2 changements manuels seront annulés (priorité de Marine, déplacement d’Ali) : ces lignes retrouvent le calcul. Les titres déjà dans KaraFun ne bougent pas.');
+  assert.equal(page.postsTo('/api/staff/queue-optimize').length, 1);
+  await page.update({ manualChanges: [{ id: 'a', kind: 'move', name: 'Ali', from: 7, to: 4, at: Date.now(), canUndo: true }] });
+  assert.equal(page.$('optimizeQueue').textContent, 'Annuler mon changement et recalculer');
+  await page.click(page.$('optimizeQueue'));
+  assert.equal(page.confirms.at(-1), 'Recalculer toute la file ? Ton changement manuel sera annulé (déplacement d’Ali) : cette ligne retrouve le calcul. Les titres déjà dans KaraFun ne bougent pas.');
+  page.confirmAnswer = true;
+  await page.update({ manualChanges: [] });
   await page.update({ solver: { configured: true, available: true, plan: 'mystere' } });
   assert.equal(pill().textContent, 'Ordre calculé localement');
   assert.equal(text(), '');
@@ -1631,7 +1900,14 @@ test('Battle : vote en direct, clôture, demande, refus et étapes de l’ajout 
   page.world.queue = [{ source: 'karafun', ours: true, queueId: 'b1', pos: 1, kind: 'battle', title: 'Africa' }];
   await step('queued');
   assert.equal(pill().textContent, 'Prête dans KaraFun');
-  assert.match(status(), /^Battle prête dans KaraFun : Africa — Toto\./);
+  assert.match(status(), /^Battle prête dans KaraFun : Africa — Toto\. Montre son QR après avoir vérifié les permissions, laisse/,
+    'démo : les téléphones n’ont pas le lien');
+  // Hors démo, les téléphones ont « Rejoindre la Battle » une fois le titre
+  // d'avant terminé, jamais pendant (battleJoinUrl, depuis cc571e5) : le bar
+  // vérifie les permissions des invités avant.
+  await page.update({ karafun: { demo: false } });
+  assert.match(status(), /^Battle prête dans KaraFun : Africa — Toto\. Les téléphones voient « Rejoindre la Battle » \(la télécommande KaraFun\) une fois le titre d’avant terminé : vérifie d’abord les permissions des invités, montre son QR, laisse les téléphones rejoindre/);
+  await page.update({ karafun: { demo: true } });
   assert.equal(page.$('playBtn').textContent, '▶ Lancer la Battle');
   await step('playing');
   assert.equal(pill().textContent, 'En cours');
@@ -2276,6 +2552,12 @@ test('diagnostic KaraFun : recherche de test et ajout d’essai', async () => {
   field.value = 'Panne';
   await page.click(page.$('testSearch'));
   assert.equal(page.$('testRes').textContent, 'Catalogue KaraFun indisponible.', 'la raison de l’échec est affichée');
+  // Temps entre deux titres compté dans les heures estimées : mesuré, ou valeur par défaut.
+  assert.match(page.$('diag').textContent, /Temps entre deux titres—/);
+  await page.update({ songGapSec: 10, songGapMeasured: false });
+  assert.match(page.$('diag').textContent, /Temps entre deux titres10 s \(par défaut, pas encore mesuré\)/);
+  await page.update({ songGapSec: 9, songGapMeasured: true });
+  assert.match(page.$('diag').textContent, /Temps entre deux titres9 s \(mesuré\)/);
   // Sans connexion KaraFun : invitation à saisir le code.
   await page.update({ kf: null });
   assert.equal(page.$('kfPill').textContent, 'KaraFun : pas de code');
@@ -3474,6 +3756,36 @@ test('scène : les invitations de duo en attente sont listées avec leur état v
   assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')),
     ['Chloé invite Dora à chanter « Hotel California » en duo · pas encore vue par Dora', 'Alice invite Bruno à chanter « Mamma Mia » en duo · vue']);
   await page.update({ duoInvites: [] });
+  assert.equal(page.$('joinRequestsBox').hidden, true);
+});
+
+// Duo ouvert (« Qui veut chanter en duo avec moi ? », spec du 26 octobre 2026) :
+// la ligne porte « Duo ouvert » tant que personne ne l'a rejoint ; en « Duos
+// uniquement », le titre attend hors de la file et l'encadré le dit.
+test('file du bar : duo ouvert repéré sur sa ligne et dans les demandes de duo, « Duos uniquement » expliqué', async () => {
+  const world = baseWorld();
+  world.queue = [{ source: 'helper', id: 'alice', pos: 1, name: 'Alice', table: 'Table 1', ids: ['alice'],
+    song: { title: 'Valse', artist: 'Strauss', entryId: 'e1', duet: { state: 'open', kind: 'duo' } } },
+  { source: 'helper', id: 'bruno', pos: 2, name: 'Bruno', table: 'Table 2', ids: ['bruno'], song: { title: 'Rock', entryId: 'e2' } }];
+  world.next = world.queue[0];
+  const openedAt = new Date(2026, 9, 26, 21, 5).getTime();
+  world.openDuets = [{ ownerId: 'alice', ownerName: 'Alice', table: 'Table 1', entryId: 'e1', title: 'Valse', openedAt, held: false }];
+  const page = await openPage({ world });
+  assert.deepEqual(badges(rows(page)[0]), ['À venir', 'Duo ouvert']);
+  assert.equal(rows(page)[0].querySelector('.badge.open-duo').title,
+    'Cherche un partenaire dans toute la salle : sans volontaire à son tour, le titre part en solo dans KaraFun.');
+  assert.deepEqual(badges(rows(page)[1]), ['À venir']);
+  assert.match(page.$('next').textContent, /Duo ouvert.*Valse/s, 'Scène : « Ensuite » porte le repère');
+  assert.equal(page.$('joinRequestsBox').hidden, false, 'un duo ouvert suffit à montrer l’encadré');
+  assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')), ['Duo ouvert Alice (Table 1) cherche un partenaire pour « Valse » · 21:05']);
+  // « Duos uniquement » : hors de la file, l'encadré dit pourquoi.
+  await page.update({ queue: [world.queue[1]], next: world.queue[1], openDuets: [{ ...world.openDuets[0], held: true }] });
+  assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')),
+    ['Duo ouvert Alice (Table 1) cherche un partenaire pour « Valse » · 21:05 · Duos uniquement : le titre attend un volontaire hors de la file']);
+  // Rejoint : un duo comme les autres, plus de repère.
+  await page.update({ queue: [{ ...world.queue[0], kind: 'duo', ids: ['alice', 'bruno'],
+    song: { ...world.queue[0].song, duet: { partnerName: 'Bruno', state: 'accepted', kind: 'duo' } } }], openDuets: [] });
+  assert.deepEqual(badges(rows(page)[0]), ['À venir', 'Duo']);
   assert.equal(page.$('joinRequestsBox').hidden, true);
 });
 

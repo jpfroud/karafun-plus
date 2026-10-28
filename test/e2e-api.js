@@ -21,7 +21,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   // stricte reste alors mathématiquement possible avec les autres tables.
   for (const n of ['D1', 'D2']) T[n] = await join('3', n);
   let k = 0;
-  for (const tok of Object.values(T)) await post('/api/song', { token: tok, song: songs[k++ % songs.length] });
+  // Premiers passages dans l'ordre d'ajout (« Chacun son tour ») : les titres
+  // sont ajoutés tables mêlées, l'alternance suit cet ordre.
+  for (const n of ['alice', 'chloe', 'D1', 'bob', 'D2']) await post('/api/song', { token: T[n], song: songs[k++ % songs.length] });
   await sleep(1500);
   let st = await get('/api/staff/state');
   assert.ok(st.stage || st.next, 'une chanson est partie vers KaraFun');

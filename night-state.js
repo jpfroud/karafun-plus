@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Scheduler, DEFER_MAX } = require('./scheduler');
+const { STAGE_ENDS_LIMIT } = require('./lib/scheduler/passages');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
 const { PrivateEvent } = require('./private-event');
@@ -36,6 +37,16 @@ function cleanSongSettings(song) {
   const settings = sanitizeSettings(song.settings);
   if (settings) song.settings = settings;
   else delete song.settings;
+}
+// Duo ouvert (« Qui veut chanter en duo avec moi ? ») : repris tel quel, sans
+// partenaire ; une heure d'ouverture abîmée devient celle de la reprise. Une
+// version d'avant le duo ouvert le lit comme un duo dont le partenaire est
+// inconnu et l'efface sans erreur (Scheduler#_refreshDuetViews) : le titre
+// reste en solo.
+function cleanOpenDuet(song) {
+  const d = song?.duet;
+  if (!d || typeof d !== 'object' || d.state !== 'open') return;
+  song.duet = { state: 'open', openedAt: Number.isFinite(d.openedAt) && d.openedAt > 0 ? d.openedAt : Date.now() };
 }
 // Sauvegarde d'avant les voix guides réglées une à une (`guideVoicesSaved`
 // absent) : dans un duo, la voix 2 suivait la voix 1. Elle reçoit donc le
@@ -76,10 +87,16 @@ function boundDurations(snapshot) {
   for (const song of savedSongs(snapshot)) if ('duration' in song) song.duration = clientDuration(Number(song.duration));
 }
 
-// `remaining` peut compter un envoi déjà en route en plus du report.
+// `remaining` peut compter un envoi déjà en route en plus du report. Un
+// titre retiré de KaraFun pour une priorité du bar (`afterPriority`,
+// Scheduler#yieldToPriority) n'a pas forcément été repoussé par ses
+// chanteurs : son total peut être nul ; `forId` et `forAt` nomment cette
+// priorité (Scheduler#_priorityHolds).
 const validDeferral = d => !!(d && typeof d === 'object' && typeof d.entryId === 'string' &&
   Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= DEFER_MAX + 1 &&
-  Number.isInteger(d.total) && d.total >= 1 && d.total <= DEFER_MAX && Number.isFinite(d.until) &&
+  (d.afterPriority === undefined || d.afterPriority === true) &&
+  (d.forId === undefined || (d.afterPriority === true && typeof d.forId === 'string' && Number.isFinite(d.forAt))) &&
+  Number.isInteger(d.total) && d.total >= (d.afterPriority ? 0 : 1) && d.total <= DEFER_MAX && Number.isFinite(d.until) &&
   Array.isArray(d.ids) && d.ids.length >= 1 && d.ids.every(id => typeof id === 'string'));
 const selectionValid = sel => sel && typeof sel === 'object' &&
   Array.isArray(sel.ids) && sel.ids.length > 0 &&
@@ -124,10 +141,16 @@ function savePhoto(photo, directory) {
   return { type: photo.type, file: filename };
 }
 
+// Titres que le plan range. En « Duos uniquement », un duo ouvert sans
+// partenaire ne part pas (_openHeld) : _pick le saute avec les titres
+// suivants de son auteur, la prévision et la graine de Timefold aussi.
 function queuedEntries(scheduler) {
   return new Set(scheduler.Q.flatMap(pid => {
     const person = scheduler.people.get(pid);
-    return person && !person.withdrawnAt ? scheduler.songsOf(person).map(song => song.entryId) : [];
+    if (!person || person.withdrawnAt) return [];
+    const songs = scheduler.songsOf(person);
+    const held = songs.findIndex(song => scheduler._openHeld(song));
+    return (held < 0 ? songs : songs.slice(0, held)).map(song => song.entryId);
   }));
 }
 
@@ -143,6 +166,25 @@ function usableSolverPlan(plan, scheduler, entries = queuedEntries(scheduler)) {
       plan.order.some(entry => typeof entry !== 'string' || !entries.has(entry)) ||
       plan.fingerprint !== scheduler.solverContextFingerprint()) return null;
   return { source: plan.source, fingerprint: plan.fingerprint, order: [...plan.order] };
+}
+
+// Empreintes de la file sous l'état d'avant chaque geste du bar, comme ses
+// annulations exactes la remettent, du plus récent au plus ancien
+// (Scheduler#_undoLatest) : celle que doit porter le plan gardé avec ce
+// geste (`planBefore`) pour être encore valable à son annulation. Rendues
+// dans l'ordre des gestes ; la file revient ensuite telle quelle.
+function gesturePrints(scheduler) {
+  if (!scheduler.manualChanges.length) return [];
+  const override = scheduler.manualOverrideState();
+  const deferrals = [...scheduler.people.values()].map(p => [p, 'deferral' in p, p.deferral]);
+  const prints = [];
+  for (const change of [...scheduler.manualChanges].reverse()) {
+    scheduler.restoreManualOverride(change.before, { deferrals: true });
+    prints.unshift(scheduler.solverContextFingerprint());
+  }
+  scheduler.restoreManualOverride(override);
+  for (const [p, had, deferral] of deferrals) if (had) p.deferral = deferral; else delete p.deferral;
+  return prints;
 }
 
 function snapshotSolverPlan(scheduler) {
@@ -185,15 +227,21 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       manualOrder: [...scheduler.manualOrder],
       manualOrderActive: !!scheduler.manualOrderActive,
       manualChanges: clone(scheduler.manualChanges),
+      // Abandons de tous les gestes : un geste gardé dans un reçu d'avant ne revient plus.
+      manualEpoch: scheduler.manualEpoch || 0,
       solverPlan: snapshotSolverPlan(scheduler),
       tableServeCounts: [...scheduler.tableServeCounts],
       duetCooldowns: [...scheduler.duetCooldowns],
       recentGroups: clone(scheduler.recentGroups || []), roundUse: [...(scheduler.roundUse || new Map())],
       roundApps: [...(scheduler.roundApps || new Map())],
       roundOwed: [...(scheduler.roundOwed || new Set())],
+      firstCycle: [...(scheduler.firstCycle || new Set())],
+      unstartedTurn: scheduler.unstartedTurn || 0,
+      stageEnds: [...(scheduler.stageEnds || new Map())],
       stageHistory: clone(scheduler.stageHistory || []),
       playedSongs: clone(scheduler.playedSongs || []),
       log: clone(scheduler.log), slotSamples: [...scheduler.slotSamples],
+      songGapSamples: [...(scheduler.songGapSamples || [])],
       version: scheduler.version,
     },
     settings: clone(settings),
@@ -251,6 +299,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     delete person.verifiedAt; // ancienne vérification des repères, retirée : le repère seul reste
     cleanSongSettings(person.song);
     person.backlog.forEach(cleanSongSettings);
+    for (const song of [person.song, ...person.backlog]) cleanOpenDuet(song);
     if (legacyVoices) for (const song of [person.song, ...person.backlog]) legacyDuoVoice(song, !!song?.duet);
     // Report « Pas prêt » abîmé : la personne garde simplement sa place.
     if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
@@ -325,6 +374,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // crédits de tour. Chaque réparation est rendue (warnings), pour le journal
   // du serveur.
   const warnings = [];
+  const restoredAt = Date.now();
   for (const p of tmp.people.values()) {
     // Début d'attente au-delà du compteur (sauvegarde entre un passage annulé
     // et le suivant) : la personne attend depuis maintenant ; une marque
@@ -332,6 +382,16 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     if (p.readySerial != null && (!Number.isSafeInteger(p.readySerial) || p.readySerial < 0)) p.readySerial = 0;
     if ((p.readySerial || 0) > tmp.appearanceSerial) p.readySerial = tmp.appearanceSerial;
     if (p.emptiedAt != null && (!Number.isSafeInteger(p.emptiedAt) || p.emptiedAt > tmp.appearanceSerial)) delete p.emptiedAt;
+    // Heure du même début d'attente (premiers passages dans l'ordre d'ajout) :
+    // abîmée, ou absente d'une sauvegarde d'avant ce champ, l'heure d'entrée
+    // dans la file en tient lieu (premier titre d'une personne qui n'a pas
+    // encore chanté) ; sans elle, la personne passe pour arrivée la première.
+    // Un titre envoyé à KaraFun a une heure d'entrée provisoire, à venir
+    // (fin prévue de sa chanson) : au plus l'heure de la reprise.
+    if (p.readySince != null && (!Number.isFinite(p.readySince) || p.readySince < 0)) delete p.readySince;
+    if (p.readySince == null && Number.isFinite(p.waitingSince) && p.waitingSince >= 0) {
+      p.readySince = Math.min(p.waitingSince, restoredAt);
+    }
     if ((p.lastAppearanceTurn || 0) <= tmp.appearanceSerial) continue;
     warnings.push(`dernier passage ${p.lastAppearanceTurn} de la personne ${p.id} au-delà du compteur des passages ` +
       `${tmp.appearanceSerial} : ramené à ${tmp.appearanceSerial}`);
@@ -376,13 +436,37 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   tmp.manualOrderActive = !!data.manualOrderActive && tmp.manualOrder.length > 0;
   tmp.manualChanges = clone(list(data.manualChanges ?? [], 'changements manuels'));
   unique(tmp.manualChanges.map(change => change?.id), 'Les changements manuels');
+  // Champ ajouté avec les reçus des gestes terminés (Scheduler#_restorePlaced) :
+  // absent, aucun abandon compté.
+  if (data.manualEpoch != null && (!Number.isSafeInteger(data.manualEpoch) || data.manualEpoch < 0)) {
+    fail('abandons des changements manuels mal formés');
+  }
+  tmp.manualEpoch = data.manualEpoch ?? 0;
+  let forgotten = 0;
   for (const change of tmp.manualChanges) {
     object(change, 'changement manuel');
     const before = object(change.before, 'état précédent du changement manuel');
+    // Personne supprimée depuis le geste (table partie) encore nommée dans
+    // l'état d'avant : sauvegarde d'une version qui ne l'y effaçait pas
+    // (scheduler._forgetManual). Oubliée comme à la suppression, avec un
+    // avertissement, au lieu de refuser toute la soirée au démarrage.
+    const gone = pid => typeof pid === 'string' && !tmp.people.has(pid);
+    if (Array.isArray(before.manualOrder) && before.manualOrder.some(gone)) {
+      before.manualOrder = before.manualOrder.filter(pid => !gone(pid));
+      forgotten++;
+    }
+    if (before.reservedNext && gone(before.reservedNext.personId)) {
+      before.reservedNext = null;
+      forgotten++;
+    }
+    if (Array.isArray(before.deferrals)) before.deferrals = before.deferrals.filter(row => !Array.isArray(row) || !gone(row[0]));
     // Reports « Pas prêt » levés par un déplacement : abîmés, l'annulation
     // garde l'ordre sans les rendre.
     if ('deferrals' in before && !(Array.isArray(before.deferrals) && before.deferrals.every(row =>
       Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && validDeferral(row[1])))) delete before.deferrals;
+    // Passages comptés au moment du geste (report rendu par une annulation
+    // après d'autres passages) : abîmé, le report est rendu sans décompte.
+    if ('serial' in change && (!Number.isSafeInteger(change.serial) || change.serial < 0)) delete change.serial;
     if (typeof change.id !== 'string' || !/^[a-f0-9]{12}$/.test(change.id) ||
       !['priority', 'move'].includes(change.kind) ||
       typeof change.personId !== 'string' || !tmp.people.has(change.personId) ||
@@ -401,6 +485,10 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       fail('changement manuel mal formé');
     }
   }
+  if (forgotten) {
+    warnings.push(`${forgotten} mention${forgotten > 1 ? 's' : ''} d’une personne supprimée oubliée${forgotten > 1 ? 's' : ''} ` +
+      'dans les changements manuels du bar');
+  }
   tmp.tableServeCounts = new Map(list(data.tableServeCounts, 'compteurs des tables'));
   tmp.duetCooldowns = new Map(list(data.duetCooldowns, 'répit des duos'));
   // Champs ajoutés après la v0.1.1 : absents des anciennes sauvegardes.
@@ -411,8 +499,27 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   tmp.roundApps = new Map(list(data.roundApps ?? [], 'passages du tour').filter(row =>
     Array.isArray(row) && tmp.people.has(row[0]) && Number.isInteger(row[1]) && row[1] >= 1 && row[1] <= 20));
   tmp.roundOwed = new Set(list(data.roundOwed ?? [], 'passages dus du tour').filter(pid => tmp.people.has(pid)));
+  // Tables déjà passées dans le cycle des premiers passages (absent d'une
+  // sauvegarde d'avant ce champ : le cycle repart vide).
+  tmp.firstCycle = new Set(list(data.firstCycle ?? [], 'cycle des premiers passages').filter(group => typeof group === 'string'));
+  // Tour du passage envoyé à KaraFun, pas encore commencé (Scheduler#_waitSerial) :
+  // absent d'une ancienne sauvegarde, ou abîmé, aucun.
+  tmp.unstartedTurn = Number.isSafeInteger(data.unstartedTurn) && data.unstartedTurn > 0 &&
+    data.unstartedTurn <= tmp.appearanceSerial ? data.unstartedTurn : 0;
   tmp.stageHistory = clone(list(data.stageHistory ?? [], 'historique de scène')).filter(item =>
     item && typeof item === 'object' && Array.isArray(item.ids) && Number.isFinite(item.at)).slice(-60);
+  // Fin de chaque passage récent (Scheduler#_stageEnd) : absente d'une
+  // sauvegarde d'avant ce champ, reprise des passages finis de l'historique
+  // de scène ; une ligne abîmée est ignorée (fin inconnue : après toute demande).
+  // Comme en direct (endStage), au plus STAGE_ENDS_LIMIT fins, celles des plus
+  // grands tours : les plus petits partent d'abord, quel que soit l'ordre des
+  // lignes sauvegardées.
+  const stageEnd = row => Array.isArray(row) && Number.isSafeInteger(row[0]) && row[0] > 0 &&
+    row[0] <= tmp.appearanceSerial && Number.isFinite(row[1]) && row[1] >= 0;
+  const ends = new Map(Array.isArray(data.stageEnds) ? data.stageEnds.filter(stageEnd) :
+    tmp.stageHistory.map(item => [item.turn, item.endedAt]).filter(stageEnd));
+  const lowestKept = [...ends.keys()].sort((a, b) => b - a)[STAGE_ENDS_LIMIT - 1] || 0;
+  tmp.stageEnds = new Map([...ends].filter(([turn]) => turn >= lowestKept));
   tmp.playedSongs = clone(list(data.playedSongs ?? [], 'titres chantés')).filter(item =>
     item && typeof item === 'object' && Number.isFinite(item.at) &&
     typeof item.title === 'string' && item.title.length > 0).slice(-PLAYED_LIMIT);
@@ -428,6 +535,9 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   tmp.log = clone(list(data.log, 'journal')).slice(-300);
   for (const [from, to] of renamed) tmp.note(`${from} s’appelle maintenant ${to} (même prénom qu’un autre soliste)`);
   tmp.slotSamples = [...list(data.slotSamples, 'durées mesurées')].slice(-20);
+  // Écarts mesurés entre deux titres (absents des sauvegardes plus anciennes) :
+  // repris par recordSongGap, mêmes bornes et même nombre qu'en direct.
+  for (const seconds of list(data.songGapSamples ?? [], 'écarts entre deux titres')) tmp.recordSongGap(seconds);
   tmp.version = Number.isSafeInteger(data.version) ? data.version : 0;
   tmp._refreshDuetViews();
 
@@ -492,14 +602,90 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     { id: snapshot.evening.id, startedAt: Number.isFinite(snapshot.evening.startedAt) ? snapshot.evening.startedAt : null } : null;
   const restoredTracked = clone(tracked);
   for (const holder of [...restoredTracked, restoredPending].filter(Boolean)) cleanSentSettings(holder, legacyVoices);
+  // Le plan se vérifie sous la règle « Duos uniquement » qui sera en vigueur
+  // (empreinte d'un duo ouvert, titres retenus), comme à la sauvegarde.
+  const duoOnly = !!('duoOnly' in restoredSettings ? restoredSettings.duoOnly : settings.duoOnly);
+  tmp.duoOnlyRule = () => duoOnly;
   const restoredPlan = usableSolverPlan(data.solverPlan, tmp);
+  // Débuts d'attente (`readySince`), fins de passage (`stageEnds`) et heure
+  // du choix d'un passage envoyé (`pickedAt`), datés sur la même horloge
+  // (Scheduler#_readyStamp) et comparés entre eux (rotation.js#_waitSince,
+  // _commit) : une sauvegarde faite sur une horloge en avance sur celle de la
+  // reprise (autre PC, horloge reculée entre-temps) les daterait dans le
+  // futur. Chaque demande faite après la reprise prendrait alors la suite de
+  // la plus tardive (Scheduler#_readyStamp), des minutes après sa vraie heure
+  // et après les fins de passage notées ensuite : une demande faite pendant
+  // une chanson passerait après le titre suivant de son chanteur. Elles
+  // reculent ensemble, du même écart, la plus tardive à l'heure de la
+  // reprise : leur ordre et leurs écarts ne changent pas. Leurs copies aussi :
+  // l'attente d'une place cédée à quelqu'un encore sans titre (`givenWait`,
+  // giveSpot), les heures de demande gardées par son reçu (`turnCredit`),
+  // qu'un retrait sans chanter rend à ses chanteurs (rollbackUnplayed), et
+  // celles des reçus d'avant un duo noté par le bar (`staffDuo`), que son
+  // annulation rend aux titres encore suivis (staffUncountPartner). Moins
+  // d'une seconde : des ajouts de la même milliseconde, qui prennent chacun
+  // la suivante (_readyStamp), rien à corriger. Le plan Timefold repris reste
+  // valable (mêmes rangs d'ajout, `addedOrder`) : il prend l'empreinte de la
+  // file aux heures corrigées, comme les plans gardés avec les gestes du bar
+  // (gesturePrints).
+  const givenSince = p => Number.isFinite(p.givenWait?.readySince) ? p.givenWait.readySince : 0;
+  const holders = [...restoredTracked, restoredPending].filter(Boolean);
+  // Heures de la sauvegarde sur cette horloge, places cédées comprises : la
+  // plus tardive se ramène à l'heure de la reprise, l'horloge repart d'elle.
+  const clockTimes = () => [...[...tmp.people.values()].flatMap(p => [p.readySince || 0, givenSince(p)]),
+    ...tmp.stageEnds.values(), ...holders.map(holder => Number.isFinite(holder.sel?.pickedAt) ? holder.sel.pickedAt : 0)];
+  const latest = Math.max(0, ...clockTimes());
+  if (latest - restoredAt >= 1000) {
+    const ahead = latest - restoredAt;
+    const printsBefore = gesturePrints(tmp);
+    for (const p of tmp.people.values()) {
+      if (p.readySince) p.readySince -= ahead;
+      if (givenSince(p)) p.givenWait.readySince -= ahead;
+    }
+    for (const [turn, at] of tmp.stageEnds) tmp.stageEnds.set(turn, at - ahead);
+    const shifted = new Set();
+    const shiftCredit = credit => {
+      if (!credit || typeof credit !== 'object' || shifted.has(credit)) return;
+      shifted.add(credit);
+      for (const side of ['before', 'after']) {
+        const rows = credit[side]?.people;
+        for (const row of Array.isArray(rows) ? rows : []) {
+          if (Number.isFinite(row?.readySince) && row.readySince) row.readySince -= ahead;
+        }
+      }
+    };
+    for (const holder of holders) {
+      if (Number.isFinite(holder.sel?.pickedAt)) holder.sel.pickedAt -= ahead;
+      shiftCredit(holder.sel?.turnCredit);
+    }
+    for (const record of [...holders.map(holder => holder.sel?.staffDuo), ...tmp.stageHistory.map(item => item.staffDuo)]) {
+      if (!record || typeof record !== 'object') continue;
+      shiftCredit(record.creditBefore);
+      for (const row of Array.isArray(record.inFlight) ? record.inFlight : []) shiftCredit(row?.creditBefore);
+    }
+    if (restoredPlan) restoredPlan.fingerprint = tmp.solverContextFingerprint();
+    const printsAfter = gesturePrints(tmp);
+    tmp.manualChanges.forEach((change, index) => {
+      if (change.planBefore?.fingerprint === printsBefore[index]) change.planBefore.fingerprint = printsAfter[index];
+    });
+    warnings.push(`heures de la sauvegarde en avance de ${Math.round(ahead / 1000)} s sur l’horloge : ramenées à la reprise`);
+  }
 
   // Aucun effet sur les objets fournis avant ce point.
   for (const id of scheduler.tables.keys()) access.revoke(id);
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
-    'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'tableServeCounts', 'duetCooldowns', 'log',
-    'slotSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
+    'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'manualEpoch', 'tableServeCounts', 'duetCooldowns', 'log',
+    'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'firstCycle', 'unstartedTurn', 'stageEnds', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
+  // Un ajout après la reprise part après toutes les heures sauvegardées sur
+  // cette horloge (clockTimes), même si l'horloge du serveur recule ensuite
+  // (Scheduler#_readyStamp) ; elles ne dépassent pas l'heure de la reprise
+  // (plus haut) : il est daté à son heure. Les fins de passage et les choix
+  // des passages envoyés en font partie (relecture de la passe 5) : sinon une
+  // demande faite après la fin d'un titre, l'horloge du PC reculée depuis la
+  // reprise, était datée avant elle et passait devant le titre suivant de son
+  // chanteur ; une table arrivée pendant un envoi, avant son choix.
+  scheduler._readyClock = Math.max(0, ...clockTimes());
   scheduler._restorePlan(restoredPlan);
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

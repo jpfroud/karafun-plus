@@ -175,6 +175,25 @@ test('priorité avec des titres déjà chargés dans KaraFun : première place l
     { message: 'Ce titre est déjà le prochain passage libre. 1 titre est déjà chargé dans KaraFun devant lui.' });
 });
 
+// Une priorité donnée à la personne encore sur scène (son titre suivant)
+// était remplacée au balayage suivant quand « Je suis là » est obligatoire :
+// quelqu'un d'autre était annoncé et passait devant.
+test('priorité pour la personne sur scène : elle reste la prochaine, « Je suis là » ne vise personne d’autre', async () => {
+  const f = harness();
+  const [alice] = singers(f, ['Alice', 'Bruno', 'Chloé']);
+  f.sched.chooseSong(alice, { songId: 990, title: 'Encore Alice' }, 'append');
+  f.sched.opts.requirePresence = true;
+  f.sched.confirm(alice);
+  const live = sendNext(f, 11, { startedAt: Date.now() - 20000 });
+  assert.equal(live.sel.ids[0], alice.id);
+  f.setBridge(fakeBridge([{ queueId: 11, songId: live.sel.song.songId, title: live.sel.song.title, status: 'playing' }], 11));
+  await f.call('POST /api/staff/move', { personId: alice.id, toIndex: 0, priority: true });
+  assert.equal(f.sched.reservedNext?.personId, alice.id, 'la priorité tient pendant sa chanson');
+  assert.equal(f.sched.reservedNext?.byStaff, true);
+  assert.deepEqual(plain(f.staffState().presencePending), [], '« Je suis là » n’est demandé à personne d’autre');
+  assert.deepEqual(plain(order(f)), ['Alice', 'Bruno', 'Chloé']);
+});
+
 test('recalcul de la file : toutes les interventions du bar sont défaites d’un coup', async () => {
   const f = harness();
   const [alice, , chloe] = singers(f, ['Alice', 'Bruno', 'Chloé']);
@@ -582,13 +601,15 @@ test('réglages : valeurs enregistrées et visibles dans l’état du bar', asyn
   assert.equal(f.settings.baseUrl, null);
 });
 
-test('réglages de rotation : chaque mode est annoncé et les déplacements manuels tombent', async () => {
+test('réglages de rotation : chaque mode est annoncé et les déplacements manuels tiennent', async () => {
   const f = harness();
   const [, , chloe] = singers(f, ['Alice', 'Bruno', 'Chloé']);
   await f.call('POST /api/staff/move', { personId: chloe.id, toIndex: 0, priority: true });
   await f.call('POST /api/staff/settings', { tableRotation: true, weightedTables: false });
   assert.equal(lastNote(f).msg, 'Rotation : tables à tour de rôle');
-  assert.equal(f.sched.manualChanges.length, 0, 'l’intervention du bar n’est plus annulable');
+  // Le geste du bar passe avant le calcul, quel que soit le mode.
+  assert.equal(f.sched.manualChanges.length, 1, 'l’intervention du bar reste annulable');
+  assert.equal(plain(order(f))[0], 'Chloé', 'la priorité reste la prochaine');
   assert.equal(f.staffState().settings.tableRotation, true);
   await f.call('POST /api/staff/settings', { weightedTables: true });
   assert.equal(lastNote(f).msg, 'Rotation : compromis, grandes tables un peu plus tôt dans le tour');
@@ -747,21 +768,28 @@ test('état du bar : titre en double et « Je suis là » manqués signalés sur
   assert.ok(!pub.some(line => 'presenceSkips' in line || 'repeat' in line));
 });
 
-test('état du bar : une intervention devient non annulable quand KaraFun change', async () => {
+// Retours du 23 octobre : « La file a changé depuis cette intervention »
+// refusait l'annulation après n'importe quel changement de la file.
+test('état du bar : une intervention reste annulable quand KaraFun change, sans toucher à KaraFun', async () => {
   const f = harness();
   const [, , chloe] = singers(f, ['Alice', 'Bruno', 'Chloé']);
   const bridge = fakeBridge([]);
   f.setBridge(bridge);
   await f.call('POST /api/staff/move', { personId: chloe.id, toIndex: 0, priority: true });
   assert.equal(f.staffState().manualChanges[0].canUndo, true);
+  const placed = f.staffState().queue.find(line => line.source === 'helper' && line.name === 'Chloé');
+  assert.equal(placed.placed, true, 'la page du bar montre la ligne placée');
+  assert.ok(!f.publicState(null, null).queue.some(line => 'placed' in line), 'repère réservé au bar');
   bridge.queue.push({ queueId: 71, songId: 3, title: 'Ajout natif', singer: 'Zoé' });
   const [change] = plain(f.staffState().manualChanges);
-  assert.equal(change.canUndo, false);
-  assert.equal(change.unavailableReason, 'La file a changé depuis cette intervention.');
-  assert.equal(f.staffState().priorityUndo, null);
-  await assert.rejects(f.call('POST /api/staff/manual-change-undo', { id: change.id }),
-    { message: 'La file a changé depuis cette intervention ; elle ne peut plus être annulée sans déplacer d’autres titres.' });
+  assert.equal(change.canUndo, true);
+  assert.equal(change.unavailableReason, null);
+  assert.deepEqual(plain(f.staffState().priorityUndo), { available: true, name: 'Chloé' });
+  await f.call('POST /api/staff/manual-change-undo', { id: change.id });
   assert.equal(f.sched.manualChanges.length, 0);
+  assert.equal(f.sched.reservedNext?.byStaff, undefined, 'la priorité est rendue au calcul');
+  assert.deepEqual(plain(order(f)), ['Alice', 'Bruno', 'Chloé']);
+  assert.deepEqual(bridge.calls, [], 'KaraFun ne reçoit aucune commande');
 });
 
 // ---------------------------------------------------------------- Spotify

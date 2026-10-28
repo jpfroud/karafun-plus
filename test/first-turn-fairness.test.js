@@ -195,7 +195,7 @@ for (const options of [
   });
 }
 
-test('le glisser-déposer du bar atteint la deuxième place puis expire à un nouveau choix', () => {
+test('le glisser-déposer du bar atteint la deuxième place et tient après un nouveau choix', () => {
   for (const options of [
     { tableRotation: false }, { tableRotation: true },
     { tableRotation: true, weightedTables: true },
@@ -210,10 +210,15 @@ test('le glisser-déposer du bar atteint la deuxième place puis expire à un no
     s.staffMove(moved, 1);
     assert.equal(s.readyView()[1].ids[0], moved, 'la deuxième place demandée doit être visible');
     assert.equal(play(s).ids[0], before[0]);
-    assert.equal(s.select().ids[0], moved, 'le titre déplacé doit vraiment partir en deuxième');
+    // Un nouveau titre ne rend plus le déplacement périmé (retours du 23
+    // octobre) : la ligne placée part en tête après le passage d'avant.
     const newcomer = person(s, '5', 'Nouvelle personne');
     s.chooseSong(newcomer, song(5));
-    assert.equal(s.manualOrderActive, false, 'un nouveau titre rend le déplacement manuel périmé');
+    assert.equal(s.manualOrderActive, true, 'un nouveau titre garde le déplacement du bar');
+    assert.deepEqual(s.manualOrder, [moved]);
+    assert.equal(s.select().ids[0], moved, 'le titre déplacé doit vraiment partir en deuxième');
+    play(s);
+    assert.equal(s.manualOrderActive, false, 'parti vers KaraFun, le titre n’est plus dans l’ordre fixé');
     assert.deepEqual(s.manualOrder, []);
   }
 });
@@ -686,14 +691,32 @@ test('36 soirées variées : premier passage physique, invités, arrivées, dép
         const p = s.people.get(pid);
         return (p.sung || 0) + (p.duetGuestCount || 0);
       };
-      const freshReady = s.Q.some(pid => {
+      const freshReady = s.Q.filter(pid => {
         const p = s.people.get(pid);
         if (!p || p.withdrawnAt || !p.song || p.song.duet?.state === 'pending') return false;
         const guest = p.song.duet?.state === 'accepted' ? s.people.get(p.song.duet.partnerId) : null;
         return !appearance(pid) && (!guest || (!guest.withdrawnAt && !appearance(guest.id)));
       });
-      if (freshReady) assert.ok(selected.ids.every(pid => appearance(pid) === 0),
-        `graine ${seed} : retour sur scène avant un premier passage`);
+      // Anti-série (« Intercaler une table qui arrive en nombre ») : quand
+      // tous les premiers passages prêts sont de la table qui vient de
+      // chanter, un habitué peut s'intercaler (le cycle des tables fait
+      // passer les autres tables avant : il ne reste parfois que celle-là).
+      // C'est la seule exception (GUIDE-BAR.md) : un habitué d'une autre
+      // table, dont le passage est pris sur le tour suivant (`borrowedIds`) ;
+      // jamais un retour de la même table, ni un retour ordinaire.
+      const lastTable = new Set([].concat(s.lastGroup || []));
+      const streak = freshReady.every(pid => {
+        const p = s.people.get(pid);
+        const guest = p.song.duet?.state === 'accepted' ? s.people.get(p.song.duet.partnerId) : null;
+        return [p.group, guest?.group].some(group => group && lastTable.has(group));
+      });
+      const first = selected.ids.every(pid => appearance(pid) === 0);
+      if (freshReady.length && !streak) assert.ok(first, `graine ${seed} : retour sur scène avant un premier passage`);
+      if (freshReady.length && streak) {
+        assert.ok(first || (selected.borrowedIds?.length > 0 &&
+          (selected.groups || [selected.group]).every(group => !lastTable.has(group))),
+        `graine ${seed} : seul un habitué d’une autre table, intercalé, passe avant les premiers passages de la table qui vient de chanter`);
+      }
       assert.ok(!played.has(selected.song.entryId), `graine ${seed} : titre répété`);
       played.add(selected.song.entryId);
       const guest = selected.ids[1] && s.people.get(selected.ids[1]);

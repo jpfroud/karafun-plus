@@ -139,12 +139,18 @@ function planned(state) {
       await sleep(100);
     }
     assert.ok(nativeChanged, 'La file native simulée devait accepter un titre externe');
+    // Retours du 23 octobre : un changement de la file (ici dans KaraFun)
+    // n'empêche plus l'annulation, qui ne touche jamais à KaraFun.
     state = await ok('/api/staff/state');
-    assert.equal(state.manualChanges[0].canUndo, false);
-    assert.match(state.manualChanges[0].unavailableReason, /file a changé/);
-    assert.equal((await call('/api/staff/priority-undo', {})).status, 400,
-      'La file KaraFun modifiée interdit de rétablir un ancien ordre');
-    console.log('ok - changement dans KaraFun invalide l’annulation');
+    assert.equal(state.manualChanges[0].canUndo, true);
+    assert.equal(state.manualChanges[0].unavailableReason, null);
+    const nativeBeforeUndo = state.kf.queue;
+    await ok('/api/staff/priority-undo', {});
+    state = await ok('/api/staff/state');
+    assert.deepEqual(state.manualChanges, []);
+    assert.deepEqual(state.kf.queue, nativeBeforeUndo, 'annuler la priorité ne touche pas à KaraFun');
+    assert.ok(!state.queue.some(q => q.placed), 'la ligne retrouve le calcul');
+    console.log('ok - changement dans KaraFun : l’annulation reste possible et ne touche pas à KaraFun');
     await ok('/api/staff/kf', { action: 'test-add', songId: 898 });
     for (let i = 0; i < 40; i++) {
       if ((await ok('/api/staff/state')).queue.some(q => q.source === 'karafun')) break;
@@ -152,7 +158,7 @@ function planned(state) {
     }
     const nativeQueue = (await ok('/api/staff/state')).kf.queue;
     assert.equal((await call('/api/staff/queue-recalculate', {})).status, 400,
-      'Une ancienne annulation globale ne doit pas écraser une file devenue différente');
+      'Rien à annuler : aucune intervention en cours');
     state = await ok('/api/staff/state');
     const firstHelper = planned(state)[0];
     assert.equal(state.queue.filter(q => q.source === 'karafun').length, 1,
@@ -238,8 +244,8 @@ function planned(state) {
     state = await ok('/api/staff/state');
     assert.deepEqual(planned(state), beforeNoBacklog.filter(id => id !== owner.id),
       'retirer un titre sans remplaçant ne réordonne pas les autres chanteurs');
-    assert.equal(state.manualChanges[0].canUndo, true,
-      'le déplacement restant peut encore être annulé');
+    assert.deepEqual(state.manualChanges, [],
+      'les gestes de la ligne retirée tombent avec elle');
     console.log('ok - retrait sans rechange : les autres rangs restent stables');
     console.log('ok - retrait du titre prioritaire : remplaçant à la même place et historique conservé');
     assert.equal((await fetch(base + '/api/staff/priority-undo', { method: 'POST',

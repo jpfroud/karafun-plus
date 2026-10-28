@@ -44,6 +44,11 @@
  *   --option clé=valeur    remplace une règle de la soirée (répétable), par exemple
  *                          spacingSongs=2, roundAppearanceCap=0, interleaveArrivals=false,
  *                          pushDelaySec=30 (rejeu libre) : compare les réglages du bar.
+ *   --gestes               refait aussi les déplacements et « Priorité » du bar (staff.move)
+ *                          à leurs heures réelles, à la même place de la file rejouée
+ *                          (comme POST /api/staff/move), et leurs annulations (staff.undo,
+ *                          staff.recalculate) : pour juger un changement des gestes du bar.
+ *                          Sans elle, ces gestes ne sont pas rejoués (signalés).
  *   --court                résumé seulement (sans la liste des décisions ni des attentes)
  *   --cles                 clés S01… à la place des prénoms (texte et JSON) : sortie
  *                          à reporter dans le dépôt ou une PR
@@ -119,7 +124,7 @@ const SCHED_RULES = ['tableRotation', 'weightedTables', 'interleaveArrivals', 'r
 // Événements du journal que le rejeu sait refaire (les autres sont ignorés).
 const REPLAYED = new Set(['table.opened', 'table.headcount', 'person.joined', 'song.requested',
   'duo.invited', 'duo.answered', 'duo.cancelled', 'duo.left', 'duo.joinRequested', 'duo.joinAnswered',
-  'duo.joinCancelled', 'song.removed', 'song.reordered', 'person.gaveSpot',
+  'duo.joinCancelled', 'duo.openRequested', 'duo.openAccepted', 'duo.openClosed', 'song.removed', 'song.reordered', 'person.gaveSpot',
   'table.left', 'person.left', 'person.reactivated', 'person.bonus', 'table.bonus', 'person.transferred',
   'settings.changed']);
 // Gestes qui changent la file mais que le rejeu ne refait pas : signalés.
@@ -127,16 +132,21 @@ const NOT_REPLAYED = new Set(['staff.move', 'staff.undo', 'staff.recalculate', '
   'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced', 'presence.skipped',
   'turn.unsent', 'staff.queueCleared',
   'staff.absent']);
+// Gestes du bar sur l'ordre de la file : rejoués seulement avec --gestes.
+const STAFF_GESTURES = new Set(['staff.move', 'staff.undo', 'staff.recalculate']);
+// File KaraFun du rejeu : son empreinte ne change jamais (annulation des gestes).
+const REPLAY_NATIVE = '0'.repeat(64);
 // Gestes sur les titres et les duos : un geste réel que le rejeu n'a pas pu
 // faire (titre déjà chanté ou absent dans le rejeu) sort aussi du journal
 // rejoué, sinon evening-stats.js le compterait comme fait.
 const MUST_MATCH = new Set(['song.requested', 'song.removed', 'song.reordered', 'duo.answered', 'duo.cancelled',
-  'duo.left', 'duo.joinRequested', 'duo.joinAnswered', 'duo.joinCancelled', 'person.gaveSpot']);
+  'duo.left', 'duo.joinRequested', 'duo.joinAnswered', 'duo.joinCancelled', 'duo.openRequested', 'duo.openAccepted',
+  'duo.openClosed', 'person.gaveSpot']);
 // Gestes non rejoués dont evening-stats.js tiendrait compte (titres vidés,
 // « Pas prêt ») : hors du journal rejoué.
 const NOT_IN_JOURNAL = new Set(['staff.queueCleared', 'defer.requested', 'defer.ended']);
 const GAP_MS = 9500;     // fin d'un titre → début du suivant quand l'export ne dit rien
-const SONG_GAP_MS = 20000; // temps moyen entre deux titres compté par la fermeture (server.js)
+const SONG_GAP_MS = 20000; // temps entre deux titres compté par la fermeture avant sa mesure (server.js d'avant)
 const BATTLE_PRE_GAP_MS = 132000; // scène libre → début d'une Battle (téléphones qui rejoignent), sans mesure
 const BATTLE_STAGE_WINDOW_MS = 60000; // écart toléré entre le « playing » d'une Battle et sa scène
 const UNCONFIRMED_MS = 15000;  // tentative d'envoi → send.unconfirmed (server.js)
@@ -765,8 +775,12 @@ function makeContext(ev, opts) {
   s._maybeRequestSolver = () => false;
   s._scheduleRefine = () => {};
   s.solverBridge = null;
-  const ctx = { ev, s, rules, overrides, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
-    notes: [], ignored: {}, notReplayed: {}, decisions: [], budget: opts.budget || SOLVER_TIME_MS, moves: 0, solver: null, jar: null,
+  // « Duos uniquement » : un duo ouvert sans partenaire ne part pas (règle
+  // lue par l'ordonnanceur ; une version d'avant le duo ouvert l'ignore).
+  s.duoOnlyRule = () => !!ctx.duoOnly;
+  const ctx = { ev, s, rules, overrides, duoOnly: !!rules.duoOnly, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
+    notes: [], ignored: {}, notReplayed: {}, gestures: opts.gestures ? {} : null, barGestures: [],
+    decisions: [], budget: opts.budget || SOLVER_TIME_MS, moves: 0, solver: null, jar: null,
     solverDir: null, code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null, ceiling: 0, retried: 0 }, unapplied: new Set(), aliases: new Map(), added: new Map(),
     requestedAt: new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t])) };
   const jar = resolveJar(opts.solver, code);
@@ -975,6 +989,51 @@ function sentGesture(ctx, e, sel) {
   return none;
 }
 
+// Geste du bar (--gestes) : déplacement ou « Priorité » vers la même place
+// de la file rejouée qu'au bar (rang parmi les passages déplaçables, comme
+// POST /api/staff/move), noté comme par la route ; annulations comme les
+// routes du bar. L'ancienne version refuse ce que son code refusait.
+function replayGesture(ctx, e) {
+  const s = ctx.s;
+  if (e.ev === 'staff.undo') return undoGesture(ctx, e);
+  if (e.ev === 'staff.recalculate') {
+    ctx.barGestures.length = 0;
+    return s.undoAllManualChanges(REPLAY_NATIVE);
+  }
+  const pid = ctx.key2pid.get(e.personId);
+  const kind = e.kind === 'priority' ? 'priority' : 'move';
+  // Noté même s'il n'est pas rejoué : son annulation ne doit pas en défaire un autre.
+  const gesture = { pid, kind, change: null };
+  ctx.barGestures.push(gesture);
+  const visible = s.presenceView().filter(v => !v.future);
+  const from = visible.findIndex(v => v.ids[0] === pid);
+  if (from < 0) throw new Error('titre déjà parti ou absent dans le rejeu');
+  const to = kind === 'priority' ? 0 : Math.min(Math.max(0, (Number(e.to) || 1) - 1), visible.length - 1);
+  if (to === from) throw new Error('titre déjà à cette place dans le rejeu');
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(pid, to);
+  gesture.change = s.recordManualChange({ kind, personId: pid,
+    name: s.people.get(pid)?.name || keyOf(ctx, pid), from: from + 1, to: to + 1, before, native: REPLAY_NATIVE });
+}
+
+// « Annuler » du bar : il vise le geste réel le plus récent encore en place,
+// de la personne et de la sorte que le journal donne ; les gestes réels plus
+// récents étaient donc déjà finis. Rejoué seulement si ce geste l'a été et
+// reste le plus récent du rejeu, sinon un autre geste serait défait.
+function undoGesture(ctx, e) {
+  const s = ctx.s;
+  const pid = e.personId == null ? undefined : ctx.key2pid.get(e.personId);
+  const kind = e.kind === 'priority' || e.kind === 'move' ? e.kind : null;
+  let at = ctx.barGestures.length - 1;
+  while (at >= 0 && ((pid !== undefined && ctx.barGestures[at].pid !== pid) || (kind && ctx.barGestures[at].kind !== kind))) at--;
+  if (at < 0) throw new Error('geste annulé absent du rejeu');
+  const { change } = ctx.barGestures[at];
+  ctx.barGestures.length = at;
+  if (!change) throw new Error('geste annulé non rejoué');
+  if (s.manualChanges?.at(-1) !== change) throw new Error('geste annulé déjà fini ou suivi d’un autre dans le rejeu');
+  return s.undoLastManualChange(change.id, REPLAY_NATIVE);
+}
+
 function applyExternal(ctx, e, upcoming) {
   const s = ctx.s;
   const pid = k => ctx.key2pid.get(k);
@@ -986,6 +1045,11 @@ function applyExternal(ctx, e, upcoming) {
     note(ctx, notReplayedNote(e, why));
     return false;
   };
+  if (ctx.gestures && STAFF_GESTURES.has(e.ev)) {
+    try { replayGesture(ctx, e); } catch (err) { return skip(err.message); }
+    ctx.gestures[e.ev] = (ctx.gestures[e.ev] || 0) + 1;
+    return true;
+  }
   if (NOT_REPLAYED.has(e.ev)) {
     ctx.notReplayed[e.ev] = (ctx.notReplayed[e.ev] || 0) + 1;
     const cleared = '« Vider toutes les chansons » du bar non rejoué : les titres vidés restent à chanter dans le rejeu';
@@ -1137,9 +1201,32 @@ function applyExternal(ctx, e, upcoming) {
         s.cancelDuetJoin(requester, pid(e.ownerId), entry(e.entryId));
         return true;
       }
+      // Duo ouvert (« Qui veut chanter en duo avec moi ? ») : demandé, rejoint,
+      // ou fermé par son auteur ; titre retiré, départ et expiration à l'envoi
+      // suivent les gestes rejoués.
+      case 'duo.openRequested': {
+        const owner = P(e.personId);
+        if (!owner || !entry(e.entryId)) return skip('titre inconnu');
+        s.openDuet(owner, { entryId: entry(e.entryId) });
+        return true;
+      }
+      case 'duo.openAccepted': {
+        const guest = P(e.partnerId || e.personId);
+        if (!guest || !entry(e.entryId)) return skip('duo inconnu');
+        s.acceptOpenDuet(guest, pid(e.ownerId), entry(e.entryId));
+        return true;
+      }
+      case 'duo.openClosed': {
+        if (e.reason !== 'self') return false;
+        const owner = P(e.ownerId || e.personId);
+        if (!owner || !entry(e.entryId)) return skip('duo inconnu');
+        s.closeOpenDuet(owner, entry(e.entryId));
+        return true;
+      }
       case 'person.gaveSpot': { const p = P(e.personId); if (!p) return skip('personne inconnue'); s.giveSpot(p, pid(e.toId)); return true; }
       case 'settings.changed': {
         // Une règle remplacée par --option garde la valeur demandée.
+        if (e.setting === 'duoOnly' && !(e.setting in ctx.overrides)) { ctx.duoOnly = !!e.to; return true; }
         if (!SCHED_RULES.includes(e.setting) || e.setting in ctx.overrides) return false;
         if (e.setting === 'requirePresence') {
           const warning = '« Je suis là » obligatoire non rejoué (confirmations, passages laissés faute de réponse) : rejeu fait sans';
@@ -1435,9 +1522,13 @@ async function runFree(evening, opts = {}) {
     };
     // Fermeture du bar (server.js, closingBlocksStart) : un titre ne part ni
     // ne démarre que si au moins sa moitié (créneau moyen) passe avant l'heure,
-    // la scène se libérant à la fin du titre en cours plus SONG_GAP_MS.
+    // la scène se libérant à la fin du titre en cours plus l'écart entre deux
+    // titres : celui de l'ordonnanceur rejoué (Scheduler#songGapSec, sa valeur
+    // par défaut : le rejeu ne le mesure pas), SONG_GAP_MS pour une version
+    // qui ne le connaît pas.
+    const songGapMs = typeof s.songGapSec === 'function' ? () => s.songGapSec() * 1000 : () => SONG_GAP_MS;
     const closingBlocks = () => Number.isFinite(closingAt) &&
-      (current ? Math.max(current.end + SONG_GAP_MS, clock.now) : clock.now) + s.avgSlotSec() * 500 > closingAt;
+      (current ? Math.max(current.end, clock.now) + songGapMs() : clock.now) + s.avgSlotSec() * 500 > closingAt;
     // Fin du karaoké de la soirée réelle (evening-stats.js : fermeture du bar,
     // KaraFun ou l'application arrêtés après le dernier titre) : plus rien ne
     // part ni ne démarre ensuite, titres hors file compris, dans les deux
@@ -1783,7 +1874,7 @@ function finish(ctx, mode, passages, order, journal = null) {
     stageWaits: { real: stageWaitsOf(ev.events), replay: replayStageWaits },
     balance: { real: balanceOf(statsOf(ev.events)), replay: journal ? balanceOf(statsOf(journal)) : null },
     analysis: analyse(passages, groupOf(ev)), realAnalysis: analyse(real, groupOf(ev)), notes: ctx.notes, warnings,
-    ignored: ctx.ignored, notReplayed: ctx.notReplayed, unreadable: ev.skipped };
+    ignored: ctx.ignored, notReplayed: ctx.notReplayed, gestures: ctx.gestures, unreadable: ev.skipped };
 }
 
 // ------------------------------------------------------------------ bilan avant / après
@@ -1792,7 +1883,7 @@ function finish(ctx, mode, passages, order, journal = null) {
 // mesurée par la même définition (evening-stats.js de la version de travail).
 async function runCompare(evening, opts = {}) {
   const ev = asEvening(evening);
-  const side = s => ({ budget: opts.budget, moves: opts.moves, options: opts.options, ...(s || {}) });
+  const side = s => ({ budget: opts.budget, moves: opts.moves, options: opts.options, gestures: opts.gestures, ...(s || {}) });
   // Version « avant » chargée (et extraite) avant tout rejeu : une erreur de
   // version arrête tout de suite.
   const beforeOpts = side(opts.before);
@@ -2010,7 +2101,10 @@ function compareReport(cmp, { short = false } = {}) {
     .map(l => inBefore.has(l) && inAfter.has(l) ? l : `(${inBefore.has(l) ? 'avant' : 'après'}) ${l}`);
   const extra = Object.entries(after.notReplayed).map(([k, n]) => `${k}×${n}`);
   const unreadable = Object.entries(cmp.unreadable || {}).map(([k, n]) => `${k}×${n}`);
-  if (extra.length || unreadable.length || notes.length) out.push('');
+  const done = res => Object.entries(res.gestures || {}).map(([k, n]) => `${k}×${n}`).join(', ') || 'aucun';
+  const gestures = after.gestures ? `gestes du bar rejoués (--gestes) : avant ${done(before)} ; après ${done(after)}` : null;
+  if (extra.length || unreadable.length || notes.length || gestures) out.push('');
+  if (gestures) out.push(gestures);
   if (extra.length) out.push('gestes non rejoués : ' + extra.join(', '));
   if (unreadable.length) out.push('événements illisibles ou d’une autre version : ' + unreadable.join(', '));
   for (const l of notes) out.push('note : ' + l);
@@ -2088,6 +2182,7 @@ function report(res, { traces = [], short = false } = {}) {
   out.push(`  dettes de tour créées : ${a.debts.length ? '' : 'aucune'}`);
   for (const x of a.debts) out.push(`    ${T(x.start)} ${W(x.ids)} «${x.title}» : ${W(x.borrowedIds)}`);
   const extra = [];
+  if (res.gestures) extra.push('gestes du bar rejoués (--gestes) : ' + (Object.entries(res.gestures).map(([k, n]) => `${k}×${n}`).join(', ') || 'aucun'));
   if (Object.keys(res.notReplayed).length) extra.push('gestes non rejoués : ' + Object.entries(res.notReplayed).map(([k, n]) => `${k}×${n}`).join(', '));
   if (Object.keys(res.unreadable).length) extra.push('événements illisibles ou d’une autre version : ' + Object.entries(res.unreadable).map(([k, n]) => `${k}×${n}`).join(', '));
   if (extra.length || res.notes.length) out.push('');
@@ -2123,7 +2218,7 @@ function traceLines(res, d) {
 // ------------------------------------------------------------------ CLI
 function parseArgs(argv) {
   const o = { file: null, free: false, solver: false, budget: null, moves: null, traces: [], json: null, options: {}, short: false,
-    before: null, solverBefore: null, keys: false };
+    before: null, solverBefore: null, keys: false, gestures: false };
   const value = (k, name) => {
     if (argv[k] == null || argv[k].startsWith('--')) throw new Error(`${name} attend une valeur`);
     return argv[k];
@@ -2140,6 +2235,7 @@ function parseArgs(argv) {
     else if (a === '--json') o.json = value(++k, '--json');
     else if (a === '--court') o.short = true;
     else if (a === '--cles') o.keys = true;
+    else if (a === '--gestes') o.gestures = true;
     else if (a === '--option') {
       const [key, ...rest] = String(argv[++k] || '').split('=');
       const raw = rest.join('=');
@@ -2179,14 +2275,15 @@ async function main(argv = process.argv.slice(2), print = console.log, printErro
     if (o.keys) for (const p of ev.people.values()) p.name = p.key;
     let res, text;
     if (o.before) {
-      res = await runCompare(ev, { budget: o.budget, moves: o.moves, options: o.options,
+      res = await runCompare(ev, { budget: o.budget, moves: o.moves, options: o.options, gestures: o.gestures,
         // Timefold des deux côtés : le jar de chaque version (un jar donné pour
         // la version de travail ne vaut pas pour l'autre).
         before: { code: o.before, solver: o.solverBefore === 'sans' ? false : o.solverBefore || !!o.solver },
         after: { solver: o.solver } });
       text = compareReport(res, { short: o.short });
     } else {
-      res = await (o.free ? runFree : runForced)(ev, { solver: o.solver, budget: o.budget, moves: o.moves, options: o.options });
+      res = await (o.free ? runFree : runForced)(ev, { solver: o.solver, budget: o.budget, moves: o.moves, options: o.options,
+        gestures: o.gestures });
       text = report(res, { traces: o.traces, short: o.short });
     }
     print(text);

@@ -45,7 +45,7 @@ function readBuildInfo() {
 const BUILD = readBuildInfo();
 // Identifie ce démarrage : une alerte fermée au bar revient après un redémarrage.
 const BOOT_ID = crypto.randomBytes(6).toString('hex');
-const { Scheduler, DEFER_MAX, DEFAULTS: SCHED_DEFAULTS } = require('./scheduler');
+const { Scheduler, DEFER_MAX, SONG_GAP_MIN_SAMPLES, DEFAULTS: SCHED_DEFAULTS } = require('./scheduler');
 const { KaraFunBridge, BATTLE_MOD, isBattleItem, maskCode, unknownSettingsSupport } = require('./karafun');
 const { analyzeState } = require('./karafun-state');
 const { TableAccess } = require('./table-access');
@@ -297,8 +297,9 @@ let shuttingDown = false;
 let activeMutations = 0; // requêtes déjà commencées, y compris leurs attentes réseau
 const personShareCodes = new Map();
 const SOLO_COOKIE = 'karaoke_solo_device';
-// Les titres proposés pour une Battle doivent avoir été reçus du catalogue
-// KaraFun par ce serveur, et non inventés dans une requête cliente. Il en va
+// Les titres annoncés à toute la salle (Battle, duo ouvert) doivent avoir été
+// reçus du catalogue KaraFun par ce serveur, et non inventés dans une requête
+// cliente : leur texte est celui du catalogue (catalogSong, catalogChoice). Il en va
 // de même des vignettes : seule une image https reçue du catalogue est
 // montrée aux téléphones, jamais une adresse envoyée par l'un d'eux.
 const battleCatalogSongs = new Map();
@@ -335,15 +336,46 @@ function rememberBattleSongs(songs) {
 // non vérifiée, n'est gardée que bornée comme pour la barre de lecture.
 const withCover = song => song && typeof song === 'object' ?
   { ...song, img: catalogCovers.get(Number(song.songId)) || null, duration: stageProgress.clientDuration(Number(song.duration)) } : song;
+// Titre `song` tel que le catalogue l'a donné à ce serveur (numéro, titre,
+// artiste), quel que soit le texte de la requête ; inconnu : erreur `message`.
+function catalogSong(song, message) {
+  const seen = battleCatalogSongs.get(Number(song?.songId));
+  if (!seen) throw new Error(message);
+  return { ...seen };
+}
+// Titre choisi par un téléphone (sa liste, une invitation, un duo ouvert) :
+// un numéro que ce serveur a reçu du catalogue prend le texte du catalogue,
+// borné ensuite par Scheduler#chooseSong comme tout titre ; inconnu, il garde
+// celui de la requête, ou il est refusé avec `refusal`. `certify` marque le
+// titre rangé par l'ordonnanceur (`catalogText`) : gardée avec la soirée
+// (snapshotNight copie les titres tels quels), la marque laisse annoncer ce
+// titre à toute la salle après un redémarrage, catalogue en mémoire vide.
+function catalogChoice(song, refusal = null) {
+  const seen = battleCatalogSongs.get(Number(song?.songId));
+  if (!seen && refusal) throw new Error(refusal);
+  return { song: withCover(seen ? { ...song, ...seen } : song),
+    certify: stored => { if (seen && stored) stored.catalogText = true; return stored; } };
+}
+// Titre de la liste au texte du catalogue : marqué à l'ajout (catalogChoice),
+// ou identique à celui que le catalogue a donné à ce serveur (ajouté avant
+// que ce serveur ne le reçoive, ou par une version d'avant la marque) une
+// fois rangé dans une liste : rememberBattleSongs garde des titres et des
+// artistes plus longs que Scheduler#chooseSong. Pour les mêmes bornes, un
+// ordonnanceur à part, vide, range le texte du catalogue comme tout titre.
+function catalogText(song) {
+  if (song?.catalogText === true) return true;
+  const seen = battleCatalogSongs.get(Number(song?.songId));
+  if (!seen) return false;
+  const probe = new Scheduler({ solverEnabled: false });
+  const listed = probe.join({ tableId: 'Comptoir', name: 'Catalogue' });
+  probe.chooseSong(listed, seen);
+  return listed.song.title === song.title && listed.song.artist === song.artist;
+}
 function certifiedBattleSongs(songs) {
   if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {
     throw new Error('Propose entre un et trois titres du catalogue pour la Battle.');
   }
-  return songs.map(song => {
-    const seen = battleCatalogSongs.get(Number(song?.songId));
-    if (!seen) throw new Error('Retrouve ce titre dans le catalogue avant de proposer la Battle.');
-    return { ...seen };
-  });
+  return songs.map(song => catalogSong(song, 'Retrouve ce titre dans le catalogue avant de proposer la Battle.'));
 }
 
 const sched = new Scheduler({ solverEnabled: !DEMO || argv.includes('--solver') });
@@ -378,6 +410,8 @@ function journalEvent(type, fields = {}) {
   return journal.append(type, fields);
 }
 sched.onEvent = journalEvent;
+// « Duos uniquement » : un duo ouvert sans partenaire ne part pas (lib/scheduler/duets.js, _openHeld).
+sched.duoOnlyRule = () => !!settings.duoOnly;
 // Règles en vigueur, notées au début de chaque soirée.
 function journalRules() {
   return { tableRotation: !!sched.opts.tableRotation, weightedTables: !!sched.opts.weightedTables,
@@ -489,7 +523,11 @@ function journalBattle(event) {
       ...(status === 'failed' ? { failure: automation?.failure || null } : {}) });
   }
 }
-if (DEMO) sched.opts.defaultSlotSec = parseInt(arg('song-seconds', 45), 10) + 1;
+if (DEMO) {
+  sched.opts.defaultSlotSec = parseInt(arg('song-seconds', 45), 10) + 1;
+  // Le faux KaraFun enchaîne ses titres sans écart.
+  sched.opts.defaultSongGapSec = 0;
+}
 let bridge = null;
 let fake = null;
 const SONG_SECONDS = parseInt(arg('song-seconds', 45), 10);
@@ -544,6 +582,8 @@ let persistenceError = null;
 // il reprend seul dès que les droits reviennent, sauf décision du bar.
 let permissionPause = false;
 let curQueueId = null;      // titre en cours noté dans le journal (stage.started)
+let curBattle = false;      // la scène en cours est une Battle
+let songGap = null;         // { since, clean } : écart entre deux titres en cours de mesure (measureSongGap)
 let phaseKey = null;        // dernier état karaoke.phase noté
 let presenceAskKey = null;  // dernière demande « Je suis là » notée
 let lastSampleAt = 0;       // dernier relevé queue.sample
@@ -714,6 +754,9 @@ function presenceCandidate({ current, upcoming } = analyze()) {
   if (closingBlocksStart(current)) return null;
   const onStage = tracked.find(tr => isOnStage(tr, current));
   const excluded = onStage?.sel.ids || [];
+  // Priorité du bar pour une personne encore sur scène : elle passe juste
+  // après (reservePresenceNext) ; sa présence sera demandée à sa sortie.
+  if (sched.reservedNext?.byStaff && excluded.includes(sched.reservedNext.personId)) return null;
   // L'ordre local est immédiat et Timefold ne déplace jamais le prochain
   // réservé : la notification « Je suis là » vise donc la bonne personne.
   const planned = sched.presenceView(excluded).find(turn => !turn.future && turn.song);
@@ -756,11 +799,12 @@ function restore(tr, reason) {
   const owner = sched.people.get(tr.sel.ids[0]);
   if (!owner) return;
   // Une autre chanson peut avoir été ajoutée pendant que la première était
-  // déjà chez KaraFun : ne jamais écraser cette liste.
-  if (!owner.song || owner.song.entryId !== tr.sel.song.entryId) {
-    if (owner.song) owner.backlog.unshift(owner.song);
-    owner.song = tr.sel.song;
-  }
+  // déjà chez KaraFun : ne jamais écraser cette liste. Même retour en tête
+  // que « Pas prêt » (Scheduler#putBackFirst) ; à la différence de
+  // requeueUnplayed, le ticket prend la 4e place (ci-dessous) et le titre
+  // revient aussi à une personne marquée partie, qui le retrouve si le bar
+  // la réactive.
+  sched.putBackFirst(owner, tr.sel.song);
   for (const pid of (tr.sel.consumedIds || tr.sel.ids)) {
     const p = sched.people.get(pid);
     if (!p) continue;
@@ -770,12 +814,22 @@ function restore(tr, reason) {
   sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) ${reason} : garde sa chanson et reprend la 4e place`, 'staff');
 }
 
-// Titre retiré de KaraFun pour être chanté plus tard (« Pas prêt », ou
-// partenaire d'un duo improvisé qui vient de monter sur scène) : son passage
-// n'a pas eu lieu, le titre revient en tête de la liste de son chanteur et
-// son ticket reprend sa place. Un report « Pas prêt » s'applique ensuite.
+// Titre retiré de KaraFun pour être chanté plus tard (« Pas prêt », partenaire
+// d'un duo improvisé qui vient de monter sur scène, « Priorité » du bar avant
+// lui) : son passage n'a pas eu lieu, le titre revient en tête de la liste de
+// son chanteur et son ticket reprend sa place. Un report « Pas prêt »
+// s'applique ensuite ; après une priorité, il repasse juste après elle
+// (Scheduler#yieldToPriority), ou reprend sa place si elle ne tient plus.
 function restorePulled(tr) {
   sched.requeueUnplayed(tr.sel);
+  if (tr.pulled?.reason === 'priority') {
+    const forP = sched.people.get(tr.pulled.forId || '');
+    const still = !!sched.yieldToPriority(tr.sel, forP?.id || null);
+    sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (still ?
+      `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` :
+      `la priorité ${forP ? `de ${forP.name} ` : ''}ne tient plus, il reprend sa place sans perdre son tour`), 'skip');
+    return;
+  }
   if (!tr.pulled) {
     sched.note(tr.unpulled?.reason === 'duo' ?
       `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun malgré l’annulation du duo : il revient en tête de la liste de son chanteur.` :
@@ -791,11 +845,12 @@ function restorePulled(tr) {
 }
 
 // Retire de KaraFun un titre pas encore chanté pour le rechanter plus tard.
+// `extra` : `forId`, personne de la priorité du bar qui passe avant lui.
 const pullDisconnected = () => new Error('KaraFun est déconnecté : réessaie dans un instant ou demande au bar.');
-function pullFromKaraFun(tr, reason) {
+function pullFromKaraFun(tr, reason, extra = {}) {
   if (!bridge?.ready) throw pullDisconnected();
   bridge.remove(tr.queueId);
-  tr.pulled = { reason, at: Date.now() };
+  tr.pulled = { reason, at: Date.now(), ...extra };
   tr.removeRequestedAt = Date.now();
 }
 const PULL_ALERT_MS = 45000; // KaraFun garde un titre à retirer : le bar est prévenu
@@ -803,10 +858,40 @@ const BATTLE_ACK_MS = 15000; // attente de l'accusé d'un ajout Battle ; aucun s
 const BATTLE_SETTLE_MS = 1500; // état de la file KaraFun confirmé sur cette durée (trames arrivées en deux temps)
 const PULL_LATE_MS = 20000; // un retrait envoyé (renvoyé toutes les 20 s) peut encore aboutir
 
-function battleHoldsQueue() {
+// Départ de la Battle selon le suivi : sur scène (`playing`), ou retirée un
+// instant de la file de KaraFun avant qu'il annonce sa lecture (`queued` qui
+// patiente). Elle compte encore comme en tête de KaraFun pour le lien des
+// téléphones et pour Spotify, y compris KaraFun déconnecté (coupure,
+// redémarrage de l'application) : le suivi garde alors son dernier état.
+function battleStarting() {
+  const state = battleVote.automation;
+  return state?.status === 'playing' || (state?.status === 'queued' && !!state.missingSince);
+}
+
+// `reserved` : un passage est déjà annoncé (une priorité du bar l'est) ; une
+// Battle en attente d'une place le laisse partir d'abord.
+function battleHoldsQueue(reserved = !!sched.reservedNext) {
   const state = battleVote.automation?.status;
   return !!state && !['released', 'resuming'].includes(state) &&
-    !(state === 'waiting' && sched.reservedNext);
+    !(state === 'waiting' && reserved);
+}
+
+// Ce qui retient l'envoi du prochain titre de la file vers KaraFun (sync()),
+// en dehors de la file de KaraFun elle-même et des délais, ou null :
+// KaraFun déconnecté, relance, vidage, envoi interrompu à vérifier, Battle
+// qui garde la file, droit d'ajout retiré par KaraFun, envoi automatique
+// coupé (par le bar, après une sauvegarde impossible ou un envoi en échec).
+// Le retrait d'un titre chargé pour une priorité (priorityPullCheck) suit la
+// même règle avec `reserved` : sans envoi ensuite, KaraFun resterait vide.
+function sendStop(reserved = !!sched.reservedNext) {
+  if (!bridge?.ready) return 'offline';
+  if (restartOp) return 'restart';
+  if (settings.queueClearPending) return 'clear';
+  if (recoveredPending) return 'unconfirmed';
+  if (battleHoldsQueue(reserved)) return 'battle';
+  if (bridge.permissions?.addToQueue === false) return 'refused';
+  if (!settings.auto) return persistenceError !== null ? 'save' : 'auto';
+  return null;
 }
 
 // KaraFun a ajouté le titre de la Battle en chanson normale : le mode demandé
@@ -1495,8 +1580,16 @@ function restoreKaraFunDefaults() {
 function sync() {
   // Une installation ne commande jamais KaraFun, même lors du contrôle de la
   // nouvelle image. L'agent hôte libère ce verrou après validation ou retour arrière.
-  if (serverUpdate.isBusy()) return;
-  if (!bridge || !bridge.ready) { notePhase('unknown', 'offline'); return; }
+  // L'écart entre deux titres en cours de mesure compterait cette attente.
+  if (serverUpdate.isBusy()) {
+    if (songGap) songGap.clean = false;
+    return;
+  }
+  if (!bridge || !bridge.ready) {
+    notePhase('unknown', 'offline');
+    if (songGap) songGap.clean = false;
+    return;
+  }
   rememberKaraFunDefaults();
   if (settings.auto && bridge.permissions?.addToQueue === false) {
     settings.auto = false;
@@ -1636,14 +1729,18 @@ function sync() {
     }
     if (onStage && tr.pulled) {
       // KaraFun a lancé le titre avant de le retirer : il est chanté maintenant.
+      // Une priorité du bar passe alors juste après lui, comme sans retrait.
       sched.dropDeferral(tr.sel.ids[0], tr.sel.song.entryId);
-      sched.note(`« ${tr.sel.song.title} » a commencé avant son retrait de KaraFun ; il continue.`, 'stage');
+      const forP = tr.pulled.reason === 'priority' ? sched.people.get(tr.pulled.forId || '') : null;
+      sched.note(`« ${tr.sel.song.title} » a commencé avant son retrait de KaraFun ; il continue${forP ? `, ${forP.name} passe juste après` : ''}.`, 'stage');
       tr.pulled = null;
     } else if (tr.pulled && qids.has(tr.queueId) && !tr.pulled.alerted && now - tr.pulled.at >= PULL_ALERT_MS) {
       // Retrait ignoré : rien d'autre ne part tant que ce titre attend en tête.
       tr.pulled.alerted = true;
+      const forP = tr.pulled.reason === 'priority' ? sched.people.get(tr.pulled.forId || '') : null;
       sched.note(tr.pulled.reason === 'closing' ?
         `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}), qui passerait après la fermeture : retire-le dans KaraFun. Il ne sera pas lancé automatiquement tant qu’il passerait après l’heure.` :
+        forP ? `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}) pour la priorité de ${forP.name} : retire-le dans KaraFun, ou lance-le ; ${forP.name} passera juste après lui.` :
         `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}) : retire-le dans KaraFun, ou lance-le si ${passageNames(tr.sel)} est prêt.`, 'error');
     }
     if (onStage && !tr.startedAt) {
@@ -1705,8 +1802,10 @@ function sync() {
   const key = stageKey(current);
   if (key !== curKey) {
     if (curKey !== null) journalEvent('stage.ended', { queueId: curQueueId, playedSec: Math.round((now - curSince) / 1000) });
+    measureSongGap(curKey !== null && !curBattle, current, now);
     curKey = key; curSince = Date.now();
     curQueueId = current?.queueId ?? null;
+    curBattle = !!current && isBattleItem(current);
     // Une relance n'est pas un nouveau passage du titre.
     if (current && String(current.queueId) !== lastRestartCopy) {
       sched.recordPlayed(current, curSince);
@@ -1757,8 +1856,7 @@ function sync() {
   if (closingHold && settings.auto && !pending && sched.readyView().some(turn => turn.song)) noteClosingStop();
   const staleTracked = tracked.some(tr => !qids.has(tr.queueId));
   const emptySettled = emptySince === null || now - emptySince >= 1000;
-  if (settings.auto && !settings.queueClearPending && !battleHoldsQueue() && !recoveredPending && !awaitingPresence &&
-      !restartOp && bridge.ready && !staleTracked && upcoming.length === 0 && canPush && emptySettled && !closingHold) {
+  if (!sendStop() && !awaitingPresence && !staleTracked && upcoming.length === 0 && canPush && emptySettled && !closingHold) {
     if (!pending) {
       // Après un échec, la chanson du chanteur peut avoir changé : le choix
       // actuel de l'ordonnanceur prévaut au moment de la nouvelle tentative.
@@ -1798,9 +1896,31 @@ function sync() {
       }
     }
   } else { idleSince = null; idleQueueId = null; }
-  journalOutlook({ current, upcoming, awaitingPresence }, now);
+  const blocker = journalOutlook({ current, upcoming, awaitingPresence }, now);
+  if (songGap && !SONG_GAP_KEEPERS.has(blocker)) songGap.clean = false;
   saveNight();
 }
+
+// Écart entre deux titres (heures estimées, heure de fermeture) : de la fin
+// d'un titre au début du suivant, quand un titre attendait. Il commence quand
+// un titre (pas une Battle) quitte la scène et finit au début du suivant (ni
+// une Battle ni la copie d'une relance). Il n'est pas gardé si autre chose
+// que le lancement du titre suivant a retenu la scène entre-temps : toute
+// cause hors de SONG_GAP_KEEPERS (file vide, fermeture, Battle, envoi coupé
+// par le bar, vidage, relance…), une déconnexion de KaraFun, ou plus d'une
+// minute (Scheduler#recordSongGap).
+// Il n'est pas sauvegardé : un arrêt de l'application l'oublie. Un titre qui
+// en remplace un autre sans scène libre vue entre les deux n'est pas mesuré.
+function measureSongGap(songEnded, current, now) {
+  if (songGap?.clean && current && !isBattleItem(current) && String(current.queueId) !== lastRestartCopy) {
+    sched.recordSongGap((now - songGap.since) / 1000);
+  }
+  songGap = songEnded && !current ? { since: now, clean: true } : null;
+}
+// Seules causes d'une scène libre (journalOutlook) qui laissent mesurer
+// l'écart : lancement du titre suivant, « Je suis là » attendu, envoi à
+// KaraFun, lecture lancée par le bar ou par KaraFun lui-même.
+const SONG_GAP_KEEPERS = new Set(['loading', 'awaiting-presence', 'sending', 'push-delay', 'autoplay-off']);
 
 // ------------------------------------------------------------------ barre de lecture
 const stageKey = current => current ? String(current.queueId != null ? current.queueId : `${current.songId}|${current.title}`) : null;
@@ -1894,6 +2014,7 @@ function journalOutlook({ current, upcoming, awaitingPresence }, now) {
   }
   notePhase(current ? 'singing' : blocker === 'empty' ? 'silent' : 'between', blocker);
   if (now - lastSampleAt >= 5 * 60000) journalSample(now);
+  return blocker;
 }
 
 // Relevé de la file : titres prêts, demandes et personnes présentes.
@@ -1904,7 +2025,8 @@ function journalSample(now = Date.now()) {
   journalEvent('queue.sample', { ready: readyTurns().length,
     songsListed: active.reduce((n, p) => n + sched.songsOf(p).length, 0),
     demanding: active.filter(p => sched.songsOf(p).length).length,
-    deferred: sched._deferredOwners().length, present: active.length, inKaraFun: tracked.filter(tr => !tr.startedAt).length });
+    // « Pas prêt » seulement, pas un titre retiré pour une priorité du bar.
+    deferred: sched._deferredOwners().filter(pid => !sched.people.get(pid).deferral.afterPriority).length, present: active.length, inKaraFun: tracked.filter(tr => !tr.startedAt).length });
 }
 
 // Personne présente pour les comptes (relevé du journal, tuile du bar, effectif
@@ -2038,7 +2160,9 @@ function staffDuoView(record) {
 // ------------------------------------------------------------------ vues
 const fmtSong = (s) => s ? { entryId: s.entryId || null, songId: s.songId, title: s.title, artist: s.artist, img: coverUrl(s.img), duration: s.duration || null,
   settings: s.settings || null,
-  duet: s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo',
+  // Duo ouvert (« Qui veut chanter en duo avec moi ? ») : pas encore de partenaire.
+  duet: s.duet?.state === 'open' ? { state: 'open', kind: 'duo' } :
+    s.duet ? { partnerName: sched.people.get(s.duet.partnerId)?.name || 'Un chanteur', state: s.duet.state, kind: s.duet.kind || 'duo',
     // Invitation en attente : vue ou non sur le téléphone de l'invité.
     ...(s.duet.state === 'pending' ? { seen: !!s.duet.seenAt } : {}) } : null } : null;
 
@@ -2120,13 +2244,39 @@ function sentDuo(tr, p, current) {
   canLeave: !tr.cancelled && !tr.pulled && !tr.absent && !tr.startedAt && !isOnStage(tr, current) };
 }
 
+// Lien « Rejoindre la Battle » des téléphones : la télécommande KaraFun du
+// bar (le code saisi au bar), seulement tant qu'une Battle, suivie par
+// l'application ou ajoutée dans KaraFun, est en tête de KaraFun une fois la
+// scène libre (KaraFun montre alors son QR) ou sur scène : pas pendant le
+// titre d'avant, qui garde les clients sur la page jusqu'au QR.
+// Jamais avant (vote, envoi), ni après, ni en démo ou sans code. Au départ de
+// la Battle (`battleStarting`), et KaraFun déconnecté pendant qu'elle passe,
+// le suivi garde le lien, sans quoi un téléphone croirait la Battle finie.
+// KaraFun déconnecté, sa file n'est plus lue (`analyze` la rend vide).
+function battleJoinUrl() {
+  if (DEMO || !CODE) return null;
+  const { current, upcoming } = analyze();
+  return isBattleItem(current) || (!current && isBattleItem(upcoming[0])) || battleStarting() ? `https://www.karafun.fr/${CODE}` : null;
+}
+
+// Personnes présentes et nommées parmi celles que gère le téléphone qui
+// demande (`managed`) : seules elles rejoignent un duo ouvert ou la Battle.
+function presentManaged(managed) {
+  return [...(managed || [])].map(pid => sched.people.get(pid)).filter(p => p && !p.withdrawnAt && !p.nameRequired);
+}
+
 // Vue Battle d'un téléphone (état et réponses des routes de la table) : sans
 // le suivi de l'ajout à KaraFun ni ses consignes, que seule la page du bar
 // lit ; électeurs et votants de sa table, ou de la personne seule sur un
-// groupe individuel (« En solo »).
-function battleForPhone(battle, tableId, person) {
+// groupe individuel (« En solo »). `joinUrl` : « Rejoindre la Battle ». Il
+// porte le code de la télécommande KaraFun du bar : seul un téléphone qui
+// gère une personne présente et nommée (`managed`, presentManaged) le reçoit,
+// jamais une lecture de la table avec le seul secret de son QR, qui reste le
+// même d'une soirée à l'autre (et s'ouvre de partout en mode serveur).
+function battleForPhone(battle, tableId, person, managed) {
   const out = { ...battle };
   delete out.automation;
+  out.joinUrl = presentManaged(managed).length ? battleJoinUrl() : null;
   const individual = !!sched.table(tableId, false)?.individual;
   const shown = id => individual ? id === person?.id : sched.people.get(id)?.tableId === tableId;
   out.eligiblePersonIds = (battle.eligiblePersonIds || []).filter(shown);
@@ -2141,16 +2291,18 @@ function publicState(person, tableId, managed = null) {
   const presence = presenceCandidate({ current, upcoming });
   const presenceMissingIds = new Set(presenceMissing(presence));
   const byQid = new Map(tracked.map(tr => [tr.queueId, tr]));
-  const slot = sched.avgSlotSec() * 1000;
+  // Durée moyenne d'un titre, et d'un début de titre au suivant (écart
+  // mesuré entre deux titres compris) : chaque passage prévu en tient compte.
+  const slot = sched.avgSlotSec() * 1000, gap = sched.songGapSec() * 1000, step = slot + gap;
   const curTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
   // Heure de fermeture fixée : heures affichées, repère et arrêt partent de la
-  // même fin de scène (stageFreeAt) ; sinon, le passage moyen.
+  // même fin de scène (stageFreeAt) ; sinon, le passage moyen. Écart compris.
   const firstFreeAt = !current ? Date.now() : closingAt() != null ? stageFreeAt(current)
-    : (curTr && curTr.startedAt) ? curTr.startedAt + slot : Date.now() + slot / 2;
+    : (curTr && curTr.startedAt) ? curTr.startedAt + step : Date.now() + slot / 2 + gap;
   const stage = current ? describe(current, byQid) : null;
   if (stage) stage.progress = stageProgressView(current, stage.kind, Date.now());
   const queue = upcoming.map((it, i) => ({ ...describe(it, byQid),
-    source: 'karafun', pos: i + 1, eta: firstFreeAt + i * slot,
+    source: 'karafun', pos: i + 1, eta: firstFreeAt + i * step,
     waitingPresence: i === 0 && presence?.source === 'karafun' && presenceMissingIds.size > 0,
     name: byQid.has(it.queueId) ? passageNames(byQid.get(it.queueId).sel) :
       withoutSoloGroup(it.singer || (isBattleItem(it) ? 'Battle collective' : 'KaraFun')),
@@ -2159,7 +2311,7 @@ function publicState(person, tableId, managed = null) {
     tracks: songTracksOf(it),
   }));
   if (pending) queue.push({ source: 'envoi', ours: true, queueId: null,
-    pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
+    pos: queue.length + 1, eta: firstFreeAt + queue.length * step,
     singer: shownLabel(pending.sel), name: passageNames(pending.sel),
     title: pending.sel.song.title, artist: pending.sel.song.artist,
     ids: pending.sel.ids, kind: pending.sel.kind, song: fmtSong(pending.sel.song), singers: singersOf(pending.sel.ids),
@@ -2168,7 +2320,7 @@ function publicState(person, tableId, managed = null) {
   // plus tard. Seul le prochain reçoit l'alerte et bloque l'envoi réel.
   const ready = sched.presenceView(pending ? (pending.sel.consumedIds || pending.sel.ids) : [], pending ? pending.sel : null);
   for (const v of ready) queue.push({ source: 'helper', ours: true, queueId: null,
-    pos: queue.length + 1, eta: firstFreeAt + queue.length * slot,
+    pos: queue.length + 1, eta: firstFreeAt + queue.length * step,
     singer: v.label, name: v.name, title: v.song.title, artist: v.song.artist,
     id: v.ids[0], ids: v.ids, kind: v.kind, song: fmtSong(v.song), table: v.table, tableId: v.tableId,
     singers: singersOf(v.ids),
@@ -2178,9 +2330,12 @@ function publicState(person, tableId, managed = null) {
     isNew: !v.future && ((sched.people.get(v.ids[0])?.sung || 0) +
       (sched.people.get(v.ids[0])?.duetGuestCount || 0)) === 0,
     guaranteed: !v.future && sched.reservedNext?.personId === v.ids[0],
-    deferred: !v.future && sched.isDeferred(sched.people.get(v.ids[0])) });
-  // Heure de fermeture : titres qui passeront encore avant elle.
-  const closing = closingView(queue, firstFreeAt, slot);
+    // Titre retiré de KaraFun pour une priorité du bar : pas un « Pas prêt ».
+    deferred: !v.future && sched.isDeferred(sched.people.get(v.ids[0])) &&
+      !sched.people.get(v.ids[0]).deferral.afterPriority });
+  // Heure de fermeture : titres qui passeront encore avant elle (la moitié
+  // d'un titre moyen avant l'heure).
+  const closing = closingView(queue, firstFreeAt, slot, step);
   if (closing) for (const item of queue) item.afterClosing = !(Number.isFinite(item.eta) && item.eta + slot / 2 <= closing.at);
   // « Pas prêt » : un titre déjà chargé dans KaraFun, ou le prochain passage
   // encore à envoyer, peut être repoussé par ses chanteurs.
@@ -2232,6 +2387,8 @@ function publicState(person, tableId, managed = null) {
     catalogAvailable: !!(CODE && bridge?.ready && !DEMO),
     guaranteed: sched.reservedNext ? 1 : 0,
     avgSlotMin: Math.round(sched.avgSlotSec() / 6) / 10,
+    // Temps entre deux titres compté dans les heures estimées (diagnostic du bar).
+    songGapSec: Math.round(sched.songGapSec()), songGapMeasured: sched.songGapSamples.length >= SONG_GAP_MIN_SAMPLES,
     rules: { gap: sched.opts.gap, cap: sched.opts.cap, protectTop: sched.opts.protectTop,
       requirePresence: sched.opts.requirePresence, tableRotation: sched.opts.tableRotation,
       weightedTables: sched.opts.weightedTables,
@@ -2247,6 +2404,23 @@ function publicState(person, tableId, managed = null) {
     songSettings: { enabled: settings.singerSongSettings !== false && bridge?.songSettingsAvailable?.() !== false,
       ranges: songRanges(), defaults: songDefaults() },
   };
+
+  // Duos ouverts des autres (« Qui veut chanter en duo avec moi ? ») : seules
+  // les personnes présentes et nommées gérées par ce téléphone peuvent les
+  // rejoindre, jamais leur auteur ; sans elles, rien n'est envoyé. Tous, du
+  // plus récent au plus ancien, sauf celui dont le titre part déjà dans
+  // KaraFun (en solo) : c'est le seul moyen de les rejoindre, et en « Duos
+  // uniquement » un duo retenu n'est pas dans la file. La page replie
+  // l'affichage (client.html, renderInfos).
+  const volunteers = presentManaged(managed);
+  if (volunteers.length) {
+    out.openDuets = sched.openDuets().filter(open => open.entryId !== sending).map(open => ({
+      ownerId: open.owner.id, ownerName: open.owner.name, ownerLabel: sched.passageLabel([open.owner.id]),
+      entryId: open.entryId, openedAt: open.openedAt,
+      song: { songId: open.song.songId, title: open.song.title, artist: open.song.artist, img: coverUrl(open.song.img), duration: open.song.duration || null },
+      volunteerIds: volunteers.filter(p => p.id !== open.owner.id).map(p => p.id) }))
+      .filter(open => open.volunteerIds.length);
+  }
 
   const guestDuosOf = person => {
     const duos = [];
@@ -2269,7 +2443,7 @@ function publicState(person, tableId, managed = null) {
     // journal des actions des autres tables ne concernent pas ce téléphone.
     out.waiting = out.waiting.filter(item => sched.people.get(item.id)?.tableId === tid);
     delete out.log;
-    out.battle = battleForPhone(out.battle, tid, person);
+    out.battle = battleForPhone(out.battle, tid, person, managed);
   }
   if (tid) {
     const t = sched.table(tid, false);
@@ -2309,7 +2483,7 @@ function publicState(person, tableId, managed = null) {
         entryId: r.entryId, song: fmtSong(r.song), seen: !!r.seenAt })),
       ...(deferral => ({ deferral, canDefer: !p.withdrawnAt && deferrable.has(p.id) && !deferral,
         deferAlone: !p.withdrawnAt && !deferral && deferAlone.has(p.id) }))(deferralOf(p.id)),
-      duet: p.duet ? { partnerName: sched.people.get(p.duet.partnerId)?.name || 'Un chanteur',
+      duet: p.duet?.state === 'open' ? { state: 'open' } : p.duet ? { partnerName: sched.people.get(p.duet.partnerId)?.name || 'Un chanteur',
         state: p.duet.state } : p.duetOf ? { partnerName: sched.people.get(p.duetOf)?.name || 'Un chanteur',
         state: 'accepted', asPartner: true } : null,
       ...(managed?.has(p.id) ? { inbox: sched.inboxOf(p).map(n => ({ id: n.id, kind: n.kind, params: n.params, at: n.at })) } : {}),
@@ -2367,12 +2541,16 @@ function staffState() {
   const presencePending = [...presenceIds].map(pid => sched.people.get(pid)?.name).filter(Boolean);
   // Mode serveur : aucune adresse du Wi-Fi n'est proposée au bar.
   const ips = SERVER ? [] : lanAddresses();
-  const canUndoManual = sched.canUndoManualChange(priorityNativeFingerprint());
   const latestManual = sched.manualChanges.at(-1);
+  // Lignes placées par le bar (gestes encore valables) : repère dans la file.
+  const placed = new Set(sched.manualChanges.map(change => change.personId));
   const repeats = queueRepeats(pub.queue, sched.playedSongs, Date.now(), repeatWindowMs());
   const { current } = analyze();
   const stageTr = current ? tracked.find(tr => isOnStage(tr, current)) : null;
   const kfSettings = bridge?.songSettingsState?.() || null;
+  // « Priorité » : titre chargé que le retrait sortirait de KaraFun, et chanteurs du titre en cours.
+  const pullTr = priorityPullTarget();
+  const pullStage = pullTr ? stageSingers({ current }) : [];
   return {
     ...pub,
     // Réglages de titre pour le bar : droits et fonctions confirmées par
@@ -2389,13 +2567,29 @@ function staffState() {
     stage: pub.stage && stageTr?.sel.staffDuo ? { ...pub.stage, staffDuo: staffDuoView(stageTr.sel.staffDuo) } : pub.stage,
     // Repères réservés au bar : titres en double, « Je suis là » manqués.
     // « trop long » (tooLongSec) : titre pas encore envoyé, au-delà de la durée maximale.
+    // `afterPriority` : titre retiré de KaraFun pour une priorité, qui repasse
+    // juste après elle ; `leaving` : titre de la file qui sort de KaraFun.
     queue: pub.queue.map((line, index) => {
       const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
       const skips = owner && owner.song?.entryId === line.song?.entryId ? sched.presenceSkipsOf(owner) : 0;
       const tooLong = owner ? tooLongSec(line.song) : null;
-      return repeats[index] || skips || tooLong ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
-        ...(skips ? { presenceSkips: skips } : {}), ...(tooLong ? { tooLongSec: tooLong } : {}) } : line;
+      const placedByBar = !!owner && !line.future && placed.has(owner.id) && sched.manualOrder.includes(owner.id);
+      const afterPriority = !!owner && !line.future && sched.isDeferred(owner) && !!owner.deferral.afterPriority;
+      const leaving = line.source === 'karafun' && line.ours ?
+        tracked.find(tr => String(tr.queueId) === String(line.queueId) && tr.pulled)?.pulled.reason || null : null;
+      return repeats[index] || skips || tooLong || placedByBar || afterPriority || leaving ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),
+        ...(skips ? { presenceSkips: skips } : {}), ...(tooLong ? { tooLongSec: tooLong } : {}),
+        ...(placedByBar ? { placed: true } : {}), ...(afterPriority ? { afterPriority: true } : {}),
+        ...(leaving ? { leaving } : {}) } : line;
     }),
+    // « Priorité » : titre déjà chargé dans KaraFun que la page propose de
+    // retirer pour faire passer la personne prioritaire avant lui.
+    // `lineIds` : lignes de la file (personne de la ligne) pour qui le serveur
+    // accepterait ce retrait (priorityPullRefusal) ; la page ne pose la
+    // question qu'à elles.
+    priorityPull: pullTr ? { queueId: pullTr.queueId, title: pullTr.sel.song.title, name: passageNames(pullTr.sel), ids: [...pullTr.sel.ids],
+      lineIds: pub.queue.filter(line => line.source === 'helper' && !line.future && !priorityPullRefusal(line, pullTr, pullStage))
+        .map(line => line.id) } : null,
     // Durée maximale : titres de la file qu'un retrait groupé enlèverait.
     tooLong: { limitSec: maxSongLimit(), count: tooLongEntries().length },
     battle: { ...battleVote.view(), registered: battleElectorate().length },
@@ -2410,15 +2604,21 @@ function staffState() {
       .filter(song => song.duet?.state === 'pending').map(song => ({ ownerId: owner.id, ownerName: owner.name,
         partnerId: song.duet.partnerId, partnerName: sched.people.get(song.duet.partnerId)?.name || '',
         entryId: song.entryId, title: song.title, seenAt: song.duet.seenAt || null }))),
+    // Duos ouverts encore sans partenaire ; `held` : « Duos uniquement », le
+    // titre ne part pas tant que personne ne l'a rejoint. Celui dont le titre
+    // part déjà dans KaraFun (en solo) n'est plus à pourvoir, comme chez les clients.
+    openDuets: sched.openDuets().filter(open => open.entryId !== sendingEntryId()).map(open => ({ ownerId: open.owner.id, ownerName: open.owner.name,
+      table: sched.passageTables([open.owner.id]).join(' + '), entryId: open.entryId, title: open.song.title,
+      openedAt: open.openedAt, held: sched._openHeld(open.song) })),
+    // Gestes encore valables, du plus récent au plus ancien : le plus récent
+    // s'annule toujours, même après d'autres changements de la file.
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
       id: change.id, kind: change.kind, name: change.name,
       from: change.from, to: change.to, at: change.at,
-      canUndo: index === 0 && canUndoManual,
-      unavailableReason: index > 0 ? 'Annule d’abord les interventions plus récentes.' :
-        canUndoManual ? null : 'La file a changé depuis cette intervention.',
+      canUndo: index === 0,
+      unavailableReason: index > 0 ? 'Annule d’abord les interventions plus récentes.' : null,
     })),
-    priorityUndo: latestManual?.kind === 'priority' && canUndoManual ?
-      { available: true, name: latestManual.name } : null,
+    priorityUndo: latestManual?.kind === 'priority' ? { available: true, name: latestManual.name } : null,
     presencePending,
     // « Je suis là » manqué plusieurs fois : titre retiré, le bar vérifie.
     maybeGone: [...sched.people.values()].filter(p => p.maybeGone && !p.withdrawnAt).map(p => ({
@@ -2653,9 +2853,12 @@ function tableByAccess(id, secret) {
   return t;
 }
 
-// Le code KaraFun reste sur le serveur. Seules les pages venues d'un QR de
-// table peuvent demander une recherche ou un catalogue ; le bar utilise sa
-// clé. Sur le PC, la boucle locale du port du bar garde son accès historique.
+// Le code KaraFun reste sur le serveur, sauf pendant une Battle : le lien
+// « Rejoindre la Battle » le donne aux téléphones qui gèrent une personne
+// présente et nommée (battleForPhone), et les droits des invités de la
+// télécommande KaraFun limitent seuls ce qu'il ouvre. Seules les pages venues
+// d'un QR de table peuvent demander une recherche ou un catalogue ; le bar
+// utilise sa clé. Sur le PC, la boucle locale du port du bar garde son accès historique.
 function catalogReader(req, u) {
   if (isStaff(req, u)) return { kind: 'staff' };
   if (isLocal(req)) return { kind: 'pc-local' };
@@ -3489,7 +3692,9 @@ function chooseFor(p, song, mode) {
   if (mode === 'replace' && pending && !pending.cancelled && pending.sel.ids.length > 1 && pending.sel.ids[0] === p.id) {
     throw new Error('Ce titre est en cours d’envoi à KaraFun. Réessaie dans un instant.');
   }
-  sched.chooseSong(p, withCover(song), mode);
+  const choice = catalogChoice(song);
+  sched.chooseSong(p, choice.song, mode);
+  choice.certify(sched.songsOf(p).find(item => item.songId === songId));
   sync();
   const added = sched.songsOf(p).find(item => item.songId === songId);
   return added ? repeatNotice(added, p.tableId, added.entryId) : null;
@@ -3509,10 +3714,12 @@ function assertDuoAllowed() {
 // son auteur, ni par l'invitée de la même table (duo accepté d'office). Le
 // titre peut être retiré ; une invitation en attente peut être annulée, et
 // une invitation d'une autre table déclinée, expirée ou quittée part en solo.
+// Un duo ouvert, qui ne part pas sans partenaire dans ce mode, ne se ferme
+// pas non plus en solo.
 function assertDuoKept(p, entryId) {
   if (!settings.duoOnly) return;
   const key = entryId ? String(entryId) : null;
-  const own = sched.songsOf(p).some(song => song.duet?.state === 'accepted' && (!key || song.entryId === key));
+  const own = sched.songsOf(p).some(song => ['accepted', 'open'].includes(song.duet?.state) && (!key || song.entryId === key));
   const guest = !own && sched.guestDuetsOf(p).find(duo => !key || duo.entryId === key);
   if (!own && !(guest && sched.people.get(guest.ownerId)?.group === p.group)) return;
   const error = new Error(own ? 'Ce soir, le bar ne prend que des duos : garde ton duo ou retire ce titre.'
@@ -3532,6 +3739,147 @@ function confirmPresence(p) {
   }
   sched.confirm(p);
   sync();
+}
+
+// « Priorité » avant un titre déjà chargé dans KaraFun (envoyé pushDelaySec
+// après le début du titre en cours, pas encore commencé). Sans retrait, la
+// priorité passe juste après lui ; confirmé par le bar (« Faire passer X avant
+// « titre » ? », `pullLoaded`), le titre sort de KaraFun par le même chemin
+// que « Pas prêt » (pullFromKaraFun, retrait confirmé par la file réelle de
+// KaraFun avant de reprendre les envois) et repasse juste après la priorité
+// (restorePulled, Scheduler#yieldToPriority). Seul un titre de la file, seul
+// dans la file de KaraFun, ni sur scène ni en train d'en sortir, s'y prête :
+// jamais une Battle ni un titre ajouté directement dans KaraFun ; pas pendant
+// un envoi, ni quand rien ne partirait ensuite vers KaraFun (sendStop, la
+// règle de sync() : KaraFun déconnecté, relance, vidage, envoi automatique
+// coupé…), ni si la fermeture l'empêchait ensuite de repasser. Rend le titre
+// suivi `tr` et la raison d'un refus (`started` : il vient de commencer), ou null.
+const PULL_KEEPS = ' : rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer la personne juste après lui.';
+const PULL_STOPS = {
+  offline: 'KaraFun est déconnecté : rien n’a été retiré ni avancé. Réessaie une fois KaraFun reconnecté.',
+  restart: 'Le titre en cours est en train d’être relancé : rien n’a été retiré ni avancé. Réessaie dans un instant.',
+  clear: 'La file est en train d’être vidée : rien n’a été retiré ni avancé.',
+  unconfirmed: `Un envoi interrompu est à vérifier dans KaraFun${PULL_KEEPS}`,
+  battle: `La Battle retient les envois vers KaraFun${PULL_KEEPS}`,
+  refused: `KaraFun refuse l’ajout de titres${PULL_KEEPS}`,
+  save: `La sauvegarde de la soirée est impossible, l’envoi automatique est suspendu${PULL_KEEPS}`,
+  auto: `L’envoi automatique vers KaraFun est coupé${PULL_KEEPS}`,
+};
+function priorityPullCheck(queueId, { current, upcoming } = analyze(), now = Date.now()) {
+  const same = item => queueId != null && String(item.queueId) === String(queueId);
+  const tr = tracked.find(same) || null;
+  const item = upcoming.find(same) || null;
+  const refuse = refusal => ({ tr, refusal });
+  if (tr && (tr.startedAt || isOnStage(tr, current))) return refuse('started');
+  // La priorité, annoncée par le geste, doit pouvoir partir juste après le retrait.
+  const stop = sendStop(true);
+  if (stop === 'offline') return refuse(PULL_STOPS.offline);
+  // Déjà sur le lecteur de KaraFun (titre précédent fini, chargé ou en cours
+  // de chargement, pas encore lancé) : KaraFun pourrait le garder comme titre
+  // en cours après son retrait, et plus rien ne repartirait.
+  const statusId = bridge?.status && (bridge.status.current || bridge.status.songPlaying || {}).queueId;
+  if (tr && statusId != null && String(statusId) === String(tr.queueId)) {
+    return refuse(`« ${tr.sel.song.title} » est déjà sur le lecteur de KaraFun : rien n’a été retiré ni avancé. ` +
+      '« Priorité » sans retrait fait passer la personne juste après lui.');
+  }
+  if (isBattleItem(item)) return refuse('Une Battle chargée dans KaraFun ne sort jamais pour une priorité : rien n’a été retiré ni avancé.');
+  if (pending) return refuse('Un titre part vers KaraFun en ce moment : rien n’a été retiré ni avancé. Réessaie dans un instant.');
+  // Une raison de sendStop sans message ici refuse quand même : un refus
+  // vide laisserait partir le retrait alors que rien ne repartirait ensuite.
+  if (stop) return refuse(PULL_STOPS[stop] || `Les envois vers KaraFun sont retenus${PULL_KEEPS}`);
+  if (!tr || !item || tr.cancelled || tr.pulled || tr.absent) {
+    return refuse('Le titre chargé dans KaraFun a changé : rien n’a été retiré ni avancé. Touche de nouveau « Priorité ».');
+  }
+  if (upcoming.length > 1) {
+    return refuse('D’autres titres attendent dans KaraFun : rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer la personne après eux.');
+  }
+  if (closingBlocksStart(current, 1, now)) {
+    return refuse(`Fermeture à ${hhmm(closingAt(now))} : « ${tr.sel.song.title} » ne passerait plus après la priorité. ` +
+      'Rien n’a été retiré ni avancé ; « Priorité » sans retrait fait passer la personne juste après lui.');
+  }
+  return { tr, refusal: null };
+}
+
+// Titre que la page du bar propose de retirer pour une priorité, ou null.
+function priorityPullTarget(analysis = analyze()) {
+  if (analysis.upcoming.length !== 1) return null;
+  const { tr, refusal } = priorityPullCheck(analysis.upcoming[0].queueId, analysis);
+  return refusal ? null : tr;
+}
+
+// Vérifie le retrait demandé par le bar pour la priorité de `line` (passage
+// visible de la file) : le titre que la page a nommé (`queueId`) attend
+// toujours dans KaraFun, et `line` pourra partir juste après lui. Sinon rien
+// n'est retiré ni avancé.
+function priorityPullFor(line, queueId) {
+  const { tr, refusal } = priorityPullCheck(queueId);
+  const name = line?.name || 'ce chanteur';
+  if (refusal === 'started') {
+    throw new Error(`« ${tr.sel.song.title} » a commencé pendant ta confirmation : rien n’a été retiré de KaraFun ni avancé. ` +
+      `Touche de nouveau « Priorité » pour faire passer ${name} juste après.`);
+  }
+  if (!line) { const e = new Error('Cette chanson n’est plus dans la file du helper.'); e.code = 'SONG_SENT'; throw e; }
+  if (refusal) throw new Error(refusal);
+  const refused = priorityPullRefusal(line, tr);
+  if (refused) throw new Error(refused);
+  return tr;
+}
+
+// Pourquoi `line` (passage visible de la file) ne peut pas passer avant le
+// titre chargé `tr` en le retirant de KaraFun, ou null. Seule règle de ligne
+// du retrait : priorityPullFor refuse avec ce message, et staffState n'offre
+// la question qu'aux lignes sans refus (`priorityPull.lineIds`).
+// `stage` : chanteurs du titre en cours.
+function priorityPullRefusal(line, tr, stage = stageSingers()) {
+  const name = line.name || 'ce chanteur';
+  // Une personne des deux passages chanterait deux fois de suite.
+  const shared = line.ids.find(pid => tr.sel.ids.includes(pid));
+  if (shared) {
+    return `${sched.people.get(shared)?.name || 'Cette personne'} chante déjà dans « ${tr.sel.song.title} » : rien n’a été retiré ni avancé.`;
+  }
+  // Une personne du titre en cours aussi : le titre chargé entre les deux
+  // passages est le seul qui la sépare de son prochain.
+  const singing = line.ids.find(pid => stage.includes(pid));
+  if (singing) {
+    return `${sched.people.get(singing)?.name || 'Cette personne'} est sur scène en ce moment : « ${tr.sel.song.title} » reste dans KaraFun, ` +
+      `rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer ${name} juste après lui.`;
+  }
+  // La priorité doit pouvoir partir juste après le retrait : sinon quelqu'un
+  // d'autre partirait, et le titre retiré attendrait derrière une priorité
+  // qui ne part pas. Le geste lève le « Pas prêt » de la personne placée
+  // (staffMove) et celui d'un titre retiré pour une priorité d'avant
+  // (_priorityHolds), pas celui du duo d'un autre où elle est l'invitée ;
+  // un titre passé faute de « Je suis là » laisse passer le suivant.
+  const owner = sched.people.get(line.ids[0]);
+  if (sched._isPresenceRetry(owner)) {
+    return `${owner.name} n’a pas confirmé sa présence : son titre laisse passer le suivant. ` +
+      `« ${tr.sel.song.title} » reste dans KaraFun, rien n’a été retiré ni avancé.`;
+  }
+  // « Je suis là » obligatoire : l'envoi (sync(), Scheduler#select) attend
+  // la réponse de la priorité, qui ne lui est demandée qu'après le retrait ;
+  // sans réponse, elle serait sautée et le titre retiré rejoué après un
+  // silence. Sans retrait, elle a tout le titre chargé pour répondre. Pour
+  // un duo, la réponse de l'un des deux suffit (confirmedForTurn).
+  if (sched.opts.requirePresence && !sched.confirmedForTurn(line.ids)) {
+    return `${name} ${line.ids.length > 1 ? 'n’ont' : 'n’a'} pas encore confirmé « Je suis là » : « ${tr.sel.song.title} » reste dans KaraFun, ` +
+      `rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer ${name} juste après lui.`;
+  }
+  const owners = sched._deferredOwners().filter(pid => pid !== line.ids[0] && !sched.people.get(pid).deferral.afterPriority);
+  const deferred = sched._deferredPeople(owners);
+  const waiting = line.ids.find(pid => deferred.has(pid));
+  if (waiting) {
+    const host = owners.map(pid => sched.people.get(pid)).find(p => (p.deferral.ids || [p.id]).includes(waiting));
+    const passage = (host.deferral.ids || [host.id]).map(pid => sched.people.get(pid)?.name).filter(Boolean).join(' & ');
+    return `${sched.people.get(waiting)?.name || 'Cette personne'} attend la fin du « Pas prêt » de ${passage} : ` +
+      `« ${tr.sel.song.title} » reste dans KaraFun, rien n’a été retiré ni avancé.`;
+  }
+  return null;
+}
+
+// Chanteurs du titre suivi sur scène (aucun pour une Battle ou un titre
+// ajouté directement dans KaraFun).
+function stageSingers({ current } = analyze()) {
+  return [...(tracked.find(tr => isOnStage(tr, current))?.sel.ids || [])];
 }
 
 // « Pas prêt » : le prochain passage de cette personne laisse passer une ou
@@ -3641,40 +3989,44 @@ function clearClosing(reason = null) {
 // (les titres suivants de chacun viennent après) : la file est complète
 // quand ce tour ne peut plus accueillir un titre de plus. Simple repère : les
 // ajouts restent possibles et la rotation décide qui passe avant l'heure.
-function closingView(queue, firstFreeAt, slot) {
+// `slot` : durée moyenne d'un titre ; `step` : d'un début de titre au suivant.
+function closingView(queue, firstFreeAt, slot, step = slot) {
   const now = Date.now();
   const at = closingAt(now);
   if (at == null) return null;
   const fits = item => Number.isFinite(item.eta) && item.eta + slot / 2 <= at;
   const fitCount = queue.filter(fits).length;
-  const roundEnd = Math.max(now, firstFreeAt) + queue.filter(item => !item.future).length * slot;
+  const roundEnd = Math.max(now, firstFreeAt) + queue.filter(item => !item.future).length * step;
   return { at, passed: now >= at, full: now >= at || roundEnd + slot / 2 > at, fitCount,
     afterCount: queue.length - fitCount };
 }
 
 // Heure où la scène se libère : fin du titre en cours, sa durée moins la
-// position de lecture, en temps réel selon le tempo, plus le temps moyen entre
-// deux titres. Sinon un passage moyen (notre titre vient de monter sur scène
-// si son début n'est pas encore noté). La durée envoyée par un téléphone peut
+// position de lecture, en temps réel selon le tempo, plus l'écart mesuré entre
+// deux titres (Scheduler#songGapSec). Sinon un titre moyen (notre titre vient
+// de monter sur scène si son début n'est pas encore noté), écart compris ; un
+// titre qui dure plus longtemps libère la scène au plus tôt maintenant plus
+// l'écart. La durée envoyée par un téléphone peut
 // seulement avancer cette estimation : elle ne fait jamais retirer le titre
 // d'un autre. Soirée du 10 octobre : à la fin d'un titre, « début + passage
 // moyen » plaçait encore 1 min 30 de chanson devant « Hello » ; retiré pour la
 // fermeture, sa chanteuse prévenue, puis renvoyé une seconde plus tard.
 function stageFreeAt(current, now = Date.now()) {
   if (!current) return now;
-  const slot = sched.avgSlotSec() * 1000;
+  const slot = sched.avgSlotSec() * 1000, gap = sched.songGapSec() * 1000;
   const live = tracked.find(tr => isOnStage(tr, current));
   const kind = isBattleItem(current) ? 'battle' : null;
   const sure = stageProgressView(current, kind, now, { trustedOnly: true, fromStart: true });
   const told = !sure?.durationSec ? stageProgressView(current, kind, now, { fromStart: true }) : null;
-  const endsAt = view => now + Math.max(0, view.durationSec - view.elapsedSec) * 1000 / (view.rate > 0 ? view.rate : 1) + SONG_GAP_MS;
-  const estimate = live ? Math.max(now, (live.startedAt || now) + slot) : now + slot / 2;
+  const endsAt = view => now + Math.max(0, view.durationSec - view.elapsedSec) * 1000 / (view.rate > 0 ? view.rate : 1) + gap;
+  const estimate = (live ? Math.max(now, (live.startedAt || now) + slot) : now + slot / 2) + gap;
   return sure?.durationSec ? endsAt(sure) : told?.durationSec ? Math.min(estimate, endsAt(told)) : estimate;
 }
 
-// Fermeture du bar : un titre qui démarrerait dans `ahead` passages ne part
-// vers KaraFun et ne démarre que si au moins sa moitié passe avant l'heure,
-// avec la même fin de scène que le repère des téléphones (closingView). Un
+// Fermeture du bar : un titre qui démarrerait dans `ahead` passages (titre
+// moyen et écart entre deux titres chacun) ne part vers KaraFun et ne démarre
+// que si au moins la moitié d'un titre moyen passe avant l'heure, avec la même
+// fin de scène que le repère des téléphones (closingView). Un
 // titre en cours qui déborde repousse l'estimation ; un titre écarté revient
 // s'il tient de nouveau avant l'heure (heure décalée, chanson plus courte).
 // Le bar peut toujours lancer un titre lui-même.
@@ -3682,9 +4034,8 @@ function closingBlocksStart(current, ahead = 0, now = Date.now()) {
   const at = closingAt(now);
   if (at == null) return false;
   const slot = sched.avgSlotSec() * 1000;
-  return stageFreeAt(current, now) + ahead * slot + slot / 2 > at;
+  return stageFreeAt(current, now) + ahead * sched.passageSec() * 1000 + slot / 2 > at;
 }
-const SONG_GAP_MS = 20000; // temps moyen entre deux titres (18 s mesurées le 10 octobre)
 let closingNoted = null;
 function noteClosingStop() {
   if (closingNoted === settings.closingAt) return;
@@ -3700,12 +4051,42 @@ function assertNotSending(entryId) {
   }
 }
 
+// Duo ouvert annoncé à toute la salle (bandeau et notification de chaque
+// téléphone) : comme pour une Battle, son titre et son artiste sont ceux du
+// catalogue reçu par ce serveur, jamais le texte d'une requête. Un titre du
+// catalogue (`song`) prend ce texte (catalogChoice) ; un titre de sa liste
+// (`entryId`) doit déjà l'avoir (catalogText : marque gardée avec la soirée,
+// redémarrages compris). Sinon la demande est refusée sans rien changer :
+// titre inventé, texte différent du catalogue, ou ajouté avant que ce serveur
+// ne le reçoive (le client le retrouve dans le catalogue, comme pour une
+// Battle). Rend l'argument de Scheduler#openDuet (`request`) et `certify`, à
+// appliquer au titre que Scheduler#openDuet rend, une fois ses contrôles passés.
+function openDuetSong(p, body) {
+  const message = 'Retrouve ce titre dans le catalogue avant de chercher un duo.';
+  if (body.song) {
+    const { song, certify } = catalogChoice(body.song, message);
+    return { request: { song }, certify };
+  }
+  const listed = sched.songsOf(p).find(item => item.entryId === String(body.entryId || ''));
+  if (listed && !catalogText(listed)) throw new Error(message);
+  return { request: { entryId: body.entryId }, certify: stored => stored };
+}
+
 // Titre d'une invitation de duo en route vers KaraFun : il part en solo et
 // l'invitation expire à l'accusé (Scheduler#_expireInvite). L'accepter n'est
 // plus possible ; la refuser ne change rien au titre. Sans titre précis, la
 // seule invitation reçue est visée (comme Scheduler#answerDuet).
 function sendingEntryId() {
   return pending && !pending.cancelled ? pending.sel.song.entryId : null;
+}
+
+// Personnes d'un passage déjà parti vers KaraFun (envoi en cours, titre
+// chargé pas encore commencé) : annuler un geste du bar ne leur rend pas la
+// réservation d'avant ce geste, qui viserait leur titre suivant.
+function sendingIds() {
+  const ids = pending && !pending.cancelled ? [...(pending.sel.consumedIds || pending.sel.ids)] : [];
+  for (const tr of tracked) if (!tr.cancelled && !tr.startedAt) ids.push(...(tr.sel.consumedIds || tr.sel.ids.slice(0, 1)));
+  return ids;
 }
 function assertInviteNotSending(guest, entryId) {
   const sending = sendingEntryId();
@@ -3738,21 +4119,45 @@ function leaveSentDuo(tr, guestId, by) {
   return sched.leaveSentDuet(tr.sel, guestId, { by });
 }
 
+// Titre en train de sortir de KaraFun (« Priorité », « Pas prêt », fermeture,
+// absent à l'appel) dont le bar marque l'invitée partie : Scheduler#leaveSentDuet
+// le rend à son auteur comme un duo chargé, mais sa note au bar et son avis à
+// l'auteur sont ceux d'un titre qui reste dans KaraFun (« KaraFun affiche
+// encore les deux noms »). Ce sont ses dernières écritures : la note dit ici
+// que le titre revient à son auteur en solo, et l'avis devient celui d'un duo
+// quitté avant l'envoi.
+function leaveLeavingDuo(sel, gid) {
+  const guestName = sched.people.get(gid)?.name || sel.names?.[sel.ids.indexOf(gid)] || '?';
+  const before = sched.log.at(-1);
+  const { owner } = sched.leaveSentDuet(sel, gid, { by: 'staff' });
+  const note = sched.log.at(-1);
+  if (note && note !== before) note.msg = `${guestName} est parti : « ${sel.song?.title || ''} », en train de sortir de KaraFun, revient à ${owner.name} en solo`;
+  const notice = owner.inbox?.at(-1);
+  if (notice?.kind === 'duoLeft') notice.params.sent = false;
+}
+
 // Le bar marque partis une personne ou toute une table (`ids`). Un duo déjà
 // chargé dont seuls des invités partent reste dans KaraFun, au nom de son
-// auteur seul (un titre en train de sortir revient à son auteur) ; un envoi
-// sans accusé garde son nom d'origine pour que KaraFun le reconnaisse. À
-// appeler avant le départ, pour que les invités récupèrent leur part de
-// tour. Rend les titres suivis à retirer de KaraFun (ceux dont l'auteur part).
+// auteur seul ; un titre en train de sortir de KaraFun (« Priorité », « Pas
+// prêt », fermeture, absent à l'appel) perd aussi ces invités, puis revient
+// en solo à son auteur. Un envoi sans accusé garde son nom d'origine pour que
+// KaraFun le reconnaisse. À appeler avant le départ, pour que les invités
+// récupèrent leur part de tour (Scheduler#leave ne voit que les listes, pas
+// ces titres suivis). Rend les titres suivis à retirer de KaraFun (ceux dont
+// l'auteur part) et le nombre de duos gardés dans KaraFun en solo.
 function keepSentDuosOfLeavers(ids) {
   const { current } = analyze();
   const upcoming = tracked.filter(tr => !isOnStage(tr, current) && tr.sel.ids.some(id => ids.has(id)));
   const asGuest = upcoming.filter(tr => !ids.has(tr.sel.ids[0]));
   let keptAsSolo = 0;
   for (const tr of asGuest) {
-    if (tr.cancelled || tr.pulled || tr.absent || tr.startedAt) continue;
-    for (const gid of tr.sel.ids.slice(1).filter(id => ids.has(id))) sched.leaveSentDuet(tr.sel, gid, { by: 'staff' });
-    keptAsSolo++;
+    if (tr.cancelled || tr.startedAt) continue;
+    const leaving = !!(tr.pulled || tr.absent);
+    for (const gid of tr.sel.ids.slice(1).filter(id => ids.has(id))) {
+      if (leaving) leaveLeavingDuo(tr.sel, gid);
+      else sched.leaveSentDuet(tr.sel, gid, { by: 'staff' });
+    }
+    if (!leaving) keptAsSolo++;
   }
   if (pending && !pending.cancelled && !ids.has(pending.sel.ids[0])) {
     const guests = pending.sel.ids.slice(1).filter(id => ids.has(id));
@@ -3836,11 +4241,17 @@ let spotifyWork = null;
 // arrive (chargé dans KaraFun, en cours d'envoi, ou prêt dans la file avec
 // l'envoi automatique) : Spotify ne reprend pas entre deux chansons.
 // « silent » : file vide, ou fermeture du bar (plus rien ne sera lancé).
+// « battle » : rien sur scène et la Battle attend le bar, qui la lance à la
+// main (prête en tête de KaraFun, suivie ou ajoutée dans KaraFun ; ou déjà
+// lancée, que KaraFun retire de sa file avant d'annoncer sa lecture), puis
+// relance à la main le titre suivant (Battle finie) : Spotify comble
+// l'attente, comme en silence ; chaque lancement le coupe.
 function karaokeOutlook() {
   if (!bridge?.ready) return 'unknown';
   const { current, upcoming } = analyze();
   if (current) return 'singing';
   if (closingBlocksStart(null)) return 'silent';
+  if (isBattleItem(upcoming[0]) || battleStarting() || battleVote.automation?.status === 'after') return 'battle';
   if (upcoming.length || (pending && !pending.cancelled)) return 'between';
   // presenceView compte aussi les chanteurs qui doivent encore confirmer
   // « Je suis là » : la file n'est pas vide pour autant.
@@ -3875,6 +4286,35 @@ function releaseAutoPlay() {
 // KaraFun a reçu la commande.
 const SPOTIFY_PAUSE_WAIT_MS = 4000; // au-delà, KaraFun démarre sans attendre Spotify
 let playStarting = null;
+// « Lancer le prochain titre » après la Battle : coupure de Spotify et court
+// silence en cours, qu'un second appui attend au lieu de les écourter.
+let afterBattleStarting = null;
+// Coupure de Spotify avant un lancement depuis l'application (« Lecture »,
+// lecture automatique, titre suivant après la Battle), puis le court silence.
+// Attente de la Battle : l'automate ne relance plus Spotify jusqu'au titre
+// lancé, que KaraFun met quelques secondes à annoncer. Hors Battle, rien ne
+// change (il ne relance jamais entre deux chansons). Rien à couper : null, et
+// le lancement part aussitôt.
+function pauseSpotifyBeforeStart() {
+  if (karaokeOutlook() === 'battle') spotifyAutomation.handled('battle');
+  return spotify.connected && spotify.config.autoPause && !spotify.blocked ? pauseSpotifyThenWait() : null;
+}
+async function pauseSpotifyThenWait() {
+  // Une vérification ou une relance de l'automate en cours ne fait plus
+  // sauter la pause : elle part juste après, dans le même délai.
+  const running = spotifyWork;
+  spotifyBusy++;
+  let paused = null;
+  try {
+    paused = await Promise.race([running ? running.then(() => spotify.pause()) : spotify.pause(),
+      new Promise(resolve => setTimeout(resolve, SPOTIFY_PAUSE_WAIT_MS, 'timeout'))]);
+  } catch (error) { spotify.lastError = error.message; }
+  // Une pause encore en route après le délai peut croiser le prochain
+  // passage de l'automate : sans effet, Spotify est déjà en pause.
+  finally { spotifyBusy--; }
+  const lead = Number(spotify.config.pauseLeadSec) || 0;
+  if (paused === 'done' && lead > 0) await new Promise(resolve => setTimeout(resolve, lead * 1000));
+}
 async function playKaraFun({ queueId = null } = {}) {
   if (serverUpdate.isBusy()) return false;
   // Un appel pendant un lancement en prend le résultat. Si un lancement
@@ -3886,22 +4326,8 @@ async function playKaraFun({ queueId = null } = {}) {
     if (playStarting === running) playStarting = null;
   }
   const mine = (async () => {
-    if (spotify.connected && spotify.config.autoPause && !spotify.blocked) {
-      // Une vérification ou une relance de l'automate en cours ne fait plus
-      // sauter la pause : elle part juste après, dans le même délai.
-      const running = spotifyWork;
-      spotifyBusy++;
-      let paused = null;
-      try {
-        paused = await Promise.race([running ? running.then(() => spotify.pause()) : spotify.pause(),
-          new Promise(resolve => setTimeout(resolve, SPOTIFY_PAUSE_WAIT_MS, 'timeout'))]);
-      } catch (error) { spotify.lastError = error.message; }
-      // Une pause encore en route après le délai peut croiser le prochain
-      // passage de l'automate : sans effet, Spotify est déjà en pause.
-      finally { spotifyBusy--; }
-      const lead = Number(spotify.config.pauseLeadSec) || 0;
-      if (paused === 'done' && lead > 0) await new Promise(resolve => setTimeout(resolve, lead * 1000));
-    }
+    const pausing = pauseSpotifyBeforeStart();
+    if (pausing) await pausing;
     // Une pause Spotify peut avoir attendu le réseau pendant plusieurs
     // secondes : revérifier le verrou juste avant toute commande de lecture.
     if (serverUpdate.isBusy()) return false;
@@ -3945,6 +4371,7 @@ async function spotifyTick() {
   // Fermeture atteinte, scène libre : la musique du bar revient, même si la
   // reprise automatique est coupée (une pause faite au bar reste respectée).
   const closed = karaoke === 'silent' && closingBlocksStart(null);
+  const trigger = closed ? 'closing' : karaoke === 'battle' ? 'battle' : 'auto';
   const action = spotifyAutomation.step(karaoke, closed ? { ...spotify.config, autoResume: true } : spotify.config);
   // Après un échec, Spotify n'est pas rappelé avant le délai ; seule la pause
   // d'un titre qui démarre passe outre (sauf si Spotify demande d'attendre).
@@ -3957,16 +4384,19 @@ async function spotifyTick() {
     if (!action) { await spotifyCheck(); return; }
     const result = action === 'resume' ? await spotify.resume() : await spotify.pause();
     spotifyAutomation.settle(true);
-    journalEvent('spotify', { action, result: String(result || ''), trigger: closed ? 'closing' : 'auto' });
+    journalEvent('spotify', { action, result: String(result || ''), trigger });
     if (result === 'done') appLog(action === 'pause' ? 'Spotify en pause : un titre démarre dans KaraFun.' :
-      closed ? 'Spotify relancé : heure de fermeture.' : 'Spotify relancé : la file est vide.');
+      closed ? 'Spotify relancé : heure de fermeture.' : trigger === 'battle' ? 'Spotify relancé : la Battle attend le bar.' :
+        'Spotify relancé : la file est vide.');
     // Fin de file (Spotify relancé, ou déjà en lecture) : le bar redonne le
     // micro avant le titre suivant. À la fermeture, « +10 min » relance seul.
-    // Un titre lancé pendant la relance : rien à suspendre.
-    if (action === 'resume' && !closed && karaokeOutlook() !== 'singing') holdAutoPlay();
+    // Un titre lancé pendant la relance : rien à suspendre. Attente de la
+    // Battle : la lecture automatique n'y lance rien (le bar lance la Battle
+    // et le titre d'après), et une suspension survivrait à la Battle.
+    if (action === 'resume' && !closed && trigger !== 'battle' && karaokeOutlook() !== 'singing') holdAutoPlay();
   } catch (error) {
     spotifyAutomation.settle(false, error);
-    journalEvent('spotify', { action, result: 'error', trigger: closed ? 'closing' : 'auto' });
+    journalEvent('spotify', { action, result: 'error', trigger });
     spotify.lastError = error.message;
   } finally { spotifyBusy--; spotifyWork = null; release(); }
 }
@@ -4023,6 +4453,7 @@ function clearQueue() {
   sched._refreshDuetViews();
   sched.Q = [];
   sched.roundGroups.clear();
+  sched.firstCycle.clear();
   // Le tour en cours se termine comme un tour normal : une dette (passage
   // emprunté, malus) reste due au tour suivant, sans compter deux fois le
   // passage que le vidage efface du tour. Les reçus des titres encore en
@@ -4150,6 +4581,9 @@ function clearEvening() {
   sched.Q = [];
   sched.lastGroup = null;
   sched.roundGroups.clear();
+  sched.firstCycle.clear();
+  sched.unstartedTurn = 0;
+  sched.stageEnds.clear();
   sched.roundPeople.clear();
   sched.roundApps.clear();
   sched.roundOwed.clear();
@@ -4158,6 +4592,8 @@ function clearEvening() {
   sched.duetCooldowns.clear();
   sched.releaseNext();
   sched.slotSamples = [];
+  sched.songGapSamples = [];
+  songGap = null;
   sched.log = [];
   sched.playedSongs = [];
   // Rien de la soirée précédente ne reste : historique de scène (prénoms),
@@ -4328,8 +4764,40 @@ const handlers = {
     const p = personAtTable(body);
     requireNamed(p);
     assertSongLength(p, [body.song], 'duet');
-    const duet = sched.inviteDuet(p, String(body.partnerId || ''), withCover(body.song)); sync();
+    const choice = catalogChoice(body.song);
+    const duet = choice.certify(sched.inviteDuet(p, String(body.partnerId || ''), choice.song)); sync();
     return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
+  },
+  // « Qui veut chanter en duo avec moi ? » : un titre du catalogue (`song`)
+  // ou de sa liste pas encore envoyé (`entryId`) cherche un partenaire dans
+  // toute la salle, avec le texte du catalogue (openDuetSong). Sans
+  // volontaire à son tour, il part en solo.
+  'POST /api/table/duet/open': async (req, res, body) => {
+    const p = personAtTable(body);
+    requireNamed(p);
+    if (body.song) assertSongLength(p, [body.song], 'duet');
+    else assertNotSending(body.entryId);
+    const { request, certify } = openDuetSong(p, body);
+    const song = certify(sched.openDuet(p, request)); sync();
+    return { ok: true, entryId: song.entryId, ...(body.song ? { notice: repeatNotice(song, p.tableId, song.entryId) } : {}) };
+  },
+  'POST /api/table/duet/open/close': async (req, res, body) => {
+    const p = personAtTable(body);
+    assertDuoKept(p, body.entryId);
+    sched.closeOpenDuet(p, body.entryId); sync(); return { ok: true };
+  },
+  // « Je chante avec … » : le premier volontaire devient l'invité du duo, les
+  // suivants reçoivent le refus. Titre en route vers KaraFun : il part en solo.
+  'POST /api/table/duet/open/accept': async (req, res, body) => {
+    const p = personAtTable(body);
+    requireNamed(p);
+    // Second appui de celui qui l'a déjà rejoint (réponse perdue) : c'est
+    // fait, même si le duo part déjà dans KaraFun.
+    const owner = sched.people.get(String(body.ownerId || ''));
+    const song = owner && sched.songsOf(owner).find(item => item.entryId === String(body.entryId || ''));
+    if (sched._joinedOpenDuet(p, song)) return { ok: true };
+    assertNotSending(body.entryId);
+    sched.acceptOpenDuet(p, body.ownerId, body.entryId); sync(); return { ok: true };
   },
   'POST /api/table/duet/answer': async (req, res, body) => {
     const p = personAtTable(body);
@@ -4415,19 +4883,20 @@ const handlers = {
     assertSongLength(p, songs, 'battle');
     const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds: battleElectorate(),
       songs, proposerChoice: body.proposerChoice });
-    return { ok: true, battle: battleForPhone(battle, p.tableId, p) };
+    return { ok: true, battle: battleForPhone(battle, p.tableId, p, new Set([p.id])) };
   },
   'POST /api/table/battle/vote': async (req, res, body) => {
     const p = personAtTable(body);
     requireNamed(p);
     syncBattleElectorate();
     const battle = battleVote.vote({ personId: p.id, choice: body.choice });
-    return { ok: true, battle: battleForPhone(battle, p.tableId, p) };
+    return { ok: true, battle: battleForPhone(battle, p.tableId, p, new Set([p.id])) };
   },
   'POST /api/duet': async (req, res, body, me) => {
     requireNamed(me);
     assertSongLength(me, [body.song], 'duet');
-    sched.inviteDuet(me, body.partnerId, withCover(body.song)); sync(); return { ok: true };
+    const choice = catalogChoice(body.song);
+    choice.certify(sched.inviteDuet(me, body.partnerId, choice.song)); sync(); return { ok: true };
   },
   'POST /api/duet/answer': async (req, res, body, me) => {
     if (body.accept) requireNamed(me);
@@ -4569,12 +5038,12 @@ const handlers = {
       sched.opts.weightedTables = nextWeighted;
       // Le tour des personnes est conservé : changer de mode ne doit jamais
       // permettre à quelqu'un de rechanter avant ceux qui attendent ce tour.
-      sched.invalidateManualOrder();
+      // Les lignes placées par le bar gardent leur place ; les autres sont
+      // recalculées selon le nouveau mode.
       sched.note(`Rotation : ${nextWeighted ? 'compromis, grandes tables un peu plus tôt dans le tour' : nextTableRotation ? 'tables à tour de rôle' : 'chacun son tour, la patience d’abord'}`, 'staff');
     }
     if ('interleaveArrivals' in body && !!body.interleaveArrivals !== (sched.opts.interleaveArrivals !== false)) {
       sched.opts.interleaveArrivals = !!body.interleaveArrivals;
-      sched.invalidateManualOrder();
       sched.note(`Grande table qui arrive : ${sched.opts.interleaveArrivals ? 'intercalée avec la rotation' : 'passe d’abord en entier'}`, 'staff');
     }
     if ('auto' in body) {
@@ -4782,47 +5251,76 @@ const handlers = {
     const visible = sched.presenceView(excluded, provisional).filter(v => !v.future);
     const nativeAhead = analyze().upcoming.length + (pending ? 1 : 0);
     const from = visible.findIndex(v => v.ids[0] === personId);
-    if (priority && from === 0) {
+    // « Faire passer X avant « titre chargé » ? » confirmé par le bar : rien
+    // ne change si ce titre n'attend plus dans KaraFun (commencé entre-temps,
+    // envoi en cours…). Le premier passage libre peut aussi passer avant lui.
+    const pull = priority && body.pullLoaded === true ? priorityPullFor(visible[from], body.queueId) : null;
+    if (priority && from === 0 && !pull) {
       throw new Error(nativeAhead ?
         `Ce titre est déjà le prochain passage libre. ${nativeAhead} titre${nativeAhead > 1 ? 's sont' : ' est'} déjà chargé${nativeAhead > 1 ? 's' : ''} dans KaraFun devant lui.` :
         'Ce titre est déjà le prochain passage libre.');
     }
-    if (from >= 0 && from === toIndex) {
+    if (from >= 0 && from === toIndex && !pull) {
       return { ok: true, changed: false, message: 'Ce titre est déjà à cette place.' };
     }
-    const nativeBefore = priorityNativeFingerprint();
-    if (sched.manualChanges.length && !sched.canUndoManualChange(nativeBefore)) sched.manualChanges = [];
+    const name = visible[from]?.name || sched.people.get(personId)?.name || 'ce chanteur';
+    // Le geste est noté avant sync() : un passage confirmé par KaraFun
+    // pendant ce balayage fait avancer la ligne placée sans l'effacer. Il
+    // reste annulable après tout autre changement de la file.
     const before = sched.manualOverrideState({ deferrals: true });
+    if (pull) {
+      // KaraFun refuse la commande : rien n'a changé, ni dans KaraFun ni dans la file.
+      try { pullFromKaraFun(pull, 'priority', { forId: personId }); }
+      catch (error) {
+        throw new Error(`KaraFun n’a pas pu retirer « ${pull.sel.song.title} » (${String(error.message).replace(/[.!?\s]+$/, '')}) : rien n’a changé.`);
+      }
+    }
     sched.staffMove(personId, toIndex, excluded, provisional);
-    sync();
-    const nativeAfter = priorityNativeFingerprint();
-    journalEvent('staff.move', { personId, kind: priority ? 'priority' : 'move', from: from + 1, to: toIndex + 1 });
-    if (nativeBefore === nativeAfter) sched.recordManualChange({
-      kind: priority ? 'priority' : 'move', personId,
-      name: visible[from]?.name || sched.people.get(personId)?.name || 'ce chanteur',
-      from: from + 1, to: toIndex + 1, before, native: nativeAfter,
+    sched.recordManualChange({
+      kind: priority ? 'priority' : 'move', personId, name,
+      from: from + 1, to: toIndex + 1, before, native: priorityNativeFingerprint(),
     });
-    else sched.manualChanges = [];
+    if (pull) {
+      sched.note(`Le bar fait passer ${name} avant « ${pull.sel.song.title} » (${shownLabel(pull.sel)}) : ce titre sort de KaraFun et repasse juste après, sans perdre son tour`, 'staff');
+    }
+    sync();
+    journalEvent('staff.move', { personId, kind: priority ? 'priority' : 'move', from: from + 1, to: toIndex + 1,
+      ...(pull ? { pulledEntryId: pull.sel.song.entryId || null } : {}) });
+    if (pull) {
+      return { ok: true, firstFreePosition: 1, pulled: { queueId: pull.queueId, title: pull.sel.song.title },
+        message: `« ${pull.sel.song.title} » sort de KaraFun : ${name} passe d’abord, « ${pull.sel.song.title} » juste après.` };
+    }
+    // Sans retrait, la priorité passe juste après notre titre déjà chargé.
+    const loaded = priority && nativeAhead === 1 && !pending ? tracked.find(tr => !tr.startedAt && !tr.pulled && !tr.cancelled &&
+      String(tr.queueId) === String(analyze().upcoming[0]?.queueId)) : null;
     return { ok: true, firstFreePosition: nativeAhead + 1,
-      message: priority && nativeAhead ?
+      message: loaded ? `${name} passe juste après « ${loaded.sel.song.title} », déjà chargé dans KaraFun.` :
+        priority && nativeAhead ?
         `Passage avancé à la première place libre, après ${nativeAhead} titre${nativeAhead > 1 ? 's' : ''} déjà chargé${nativeAhead > 1 ? 's' : ''} dans KaraFun.` : null };
   },
   'POST /api/staff/manual-change-undo': async (req, res, body) => {
     if (!body.id) throw new Error('Indique le changement manuel à annuler.');
-    sched.undoLastManualChange(String(body.id), priorityNativeFingerprint());
+    // Sans autre changement depuis le geste, l'ordre d'avant revient ; sinon
+    // seule sa ligne retrouve le calcul, ou la place d'un geste plus ancien.
+    const native = priorityNativeFingerprint();
+    const exact = sched.canUndoManualChange(native);
+    const change = sched.undoLastManualChange(String(body.id), native, { excludeIds: sendingIds() });
+    const older = sched.manualChanges.some(other => other.personId === change.personId);
     sync();
-    return { ok: true };
+    return { ok: true, exact, message: exact ? 'Dernier changement annulé ; ordre précédent retrouvé' : older ?
+      `Dernier changement annulé : ${change.name} retrouve la place de son changement précédent` :
+      `Dernier changement annulé : la file a changé depuis, ${change.name} retrouve sa place calculée` };
   },
   'POST /api/staff/priority-undo': async () => {
     if (sched.manualChanges.at(-1)?.kind !== 'priority') {
       throw new Error('La dernière intervention du bar n’est pas une priorité.');
     }
-    sched.undoLastManualChange(null, priorityNativeFingerprint());
+    sched.undoLastManualChange(null, priorityNativeFingerprint(), { excludeIds: sendingIds() });
     sync();
     return { ok: true };
   },
   'POST /api/staff/queue-recalculate': async () => {
-    const count = sched.undoAllManualChanges(priorityNativeFingerprint());
+    const count = sched.undoAllManualChanges(priorityNativeFingerprint(), { excludeIds: sendingIds() });
     sync();
     return { ok: true, undone: count };
   },
@@ -5018,9 +5516,13 @@ const handlers = {
       ...('resumeDelaySec' in body ? { resumeDelaySec: Number(body.resumeDelaySec) } : {}),
       ...('pauseLeadSec' in body ? { pauseLeadSec: Number(body.pauseLeadSec) } : {}) });
     else if (action === 'play' || action === 'pause') {
-      // Choix du bar : l'automate ne le défait pas pendant ce silence ou ce titre.
+      // Choix du bar : l'automate ne le défait pas pendant ce silence ou ce
+      // titre. Attente de la Battle : le choix vaut pour elle, même fait juste
+      // après la fin du titre d'avant, avant que l'automate l'ait vue ; hors
+      // Battle, comme avant, pour la période que l'automate a vue.
       const result = action === 'play' ? await spotify.resume() : await spotify.pause();
-      spotifyAutomation.handled();
+      if (karaokeOutlook() === 'battle') spotifyAutomation.handled('battle');
+      else spotifyAutomation.handled();
       journalEvent('spotify', { action: action === 'play' ? 'resume' : 'pause', result: String(result || ''), trigger: 'staff' });
       return { ok: true, result };
     }
@@ -5179,6 +5681,7 @@ const handlers = {
     if (body.action === 'play') {
       const status = battleVote.automation?.status;
       if (status === 'after') {
+        if (afterBattleStarting) { await afterBattleStarting; return { ok: true }; }
         if (!bridge.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de reprendre après la Battle.');
         const upcoming = analyze().upcoming;
         const nextNative = !!upcoming[0] && !isBattleItem(upcoming[0]);
@@ -5193,6 +5696,16 @@ const handlers = {
         if (!nextNative && !nextPending && (recoveredPending || bridge.permissions?.addToQueue === false)) {
           throw new Error('KaraFun ne peut pas recevoir ce titre. Vérifie l’envoi interrompu et ses droits avant de reprendre.');
         }
+        // Spotify a repris pendant l'attente : coupé d'abord, puis le court
+        // silence, comme avant tout lancement. Un second appui pendant ce
+        // temps attend ce premier, qui lance seul. Titre lancé dans KaraFun
+        // entre-temps : la file a déjà repris.
+        const pausing = pauseSpotifyBeforeStart();
+        if (pausing) {
+          afterBattleStarting = pausing;
+          try { await pausing; } finally { afterBattleStarting = null; }
+        }
+        if (battleVote.automation?.status !== 'after') return { ok: true };
         battleVote.updateAutomation('resuming');
         sched.note('Le bar lance manuellement le premier titre après la Battle.', 'battle');
         sync();

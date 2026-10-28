@@ -1,0 +1,791 @@
+'use strict';
+// Duo ouvert, « Qui veut chanter en duo avec moi ? » (spec du 26 octobre
+// 2026, F1) : un titre cherche un partenaire dans toute la salle. Comme une
+// invitation sans réponse, il passe comme un solo et, sans volontaire à son
+// tour, part en solo à l'accusé de KaraFun ; en « Duos uniquement », il
+// attend. Le premier volontaire devient l'invité, quelle que soit sa table ;
+// les suivants sont refusés.
+// server.js est chargé dans un bac à sable `vm` (--demo), sans port ouvert,
+// sauf le faux KaraFun (fake-karafun.js) sur un port libre.
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const vm = require('node:vm');
+const { createRequire } = require('node:module');
+const { Scheduler } = require('../scheduler');
+const { TableAccess } = require('../table-access');
+const { snapshotNight, restoreNight } = require('../night-state');
+const { computeStats } = require('../evening-stats');
+const { startFakeKaraFun } = require('../fake-karafun');
+
+const root = path.join(__dirname, '..');
+const song = (songId, title) => ({ songId, title, artist: 'Artiste' });
+const plain = value => JSON.parse(JSON.stringify(value));
+const inbox = p => (p.inbox || []).map(n => [n.kind, n.params]);
+const names = (s, ids) => ids.map(pid => s.people.get(pid).name).join(' & ');
+
+// Léa (table 1), Max (table 3) avec son propre titre, Zoé seule (« En solo »).
+function night() {
+  const s = new Scheduler();
+  const events = [];
+  s._event = (type, fields) => events.push([type, fields]);
+  const lea = s.join({ tableId: '1', name: 'Léa', headcount: 2 });
+  const max = s.join({ tableId: '3', name: 'Max', headcount: 2 });
+  const zoe = s.join({ tableId: 'Comptoir', name: 'Zoé' });
+  s.chooseSong(max, song(5, 'Cinq'));
+  return { s, events, lea, max, zoe };
+}
+const of = (events, type) => events.filter(([kind]) => kind === type).map(([, fields]) => fields);
+
+// ---------------------------------------------------------------- ordonnanceur
+test('ouvrir : titre du catalogue ou de la liste, un seul à la fois, jamais sans prénom', () => {
+  const { s, events, lea, max, zoe } = night();
+  const open = s.openDuet(lea, { song: song(1, 'Titre') });
+  assert.equal(lea.song, open, 'ajouté à la liste de Léa');
+  assert.deepEqual(Object.keys(open.duet).sort(), ['openedAt', 'state']);
+  assert.equal(open.duet.state, 'open');
+  assert.ok(Number.isFinite(open.duet.openedAt));
+  assert.equal(open.duet.partnerId, undefined, 'pas de partenaire');
+  assert.deepEqual(of(events, 'duo.openRequested'), [{ personId: lea.id, entryId: open.entryId, fromCatalog: true }]);
+  assert.ok(s.log.some(line => line.msg === 'Léa (Table 1) cherche un partenaire pour chanter « Titre » en duo'));
+  assert.deepEqual(s.openDuets().map(row => [row.owner.id, row.entryId]), [[lea.id, open.entryId]]);
+  // Critère 5 : un second duo ouvert de Léa est refusé tant que le premier est ouvert.
+  const message = 'Un seul duo ouvert à la fois : ferme d’abord ta demande en cours.';
+  assert.throws(() => s.openDuet(lea, { song: song(2, 'Deux') }), { message });
+  s.chooseSong(lea, song(3, 'Trois'), 'append');
+  assert.throws(() => s.openDuet(lea, { entryId: lea.backlog[0].entryId }), { message });
+  assert.deepEqual(s.songsOf(lea).map(item => item.title), ['Titre', 'Trois'], 'rien d’ajouté par le refus');
+  // Titre déjà dans la liste : Max.
+  const listed = s.openDuet(max, { entryId: max.song.entryId });
+  assert.equal(listed, max.song);
+  assert.equal(listed.duet.state, 'open');
+  assert.equal(of(events, 'duo.openRequested')[1].fromCatalog, false);
+  // Place sans prénom : refusée, ni titre ni volontaire.
+  const placeholder = s.join({ tableId: 'Comptoir', name: 'Solo 1', nameRequired: true });
+  assert.throws(() => s.openDuet(placeholder, { song: song(4, 'Quatre') }), { message: 'Indique d’abord ton prénom.' });
+  assert.deepEqual(s.songsOf(placeholder), []);
+  assert.throws(() => s.acceptOpenDuet(placeholder, lea.id, open.entryId), { message: 'Indique d’abord ton prénom.' });
+  assert.equal(open.duet.state, 'open');
+  // Un titre déjà en duo, ou que d'autres demandent à chanter, ne s'ouvre pas.
+  const invite = s.inviteDuet(zoe, max.id, song(6, 'Six'));
+  assert.throws(() => s.openDuet(zoe, { entryId: invite.entryId }), { message: 'Ce titre est déjà prévu en duo.' });
+  s.chooseSong(zoe, song(7, 'Sept'), 'append');
+  const asked = zoe.backlog[0];
+  s.requestDuetJoin(lea, zoe.id, asked.entryId);
+  assert.throws(() => s.openDuet(zoe, { entryId: asked.entryId }),
+    { message: 'Des personnes demandent déjà à chanter ce titre avec toi : réponds-leur d’abord.' });
+  // « Duo ? » sur un duo ouvert : renvoyé vers « Je chante avec ».
+  assert.throws(() => s.requestDuetJoin(zoe, lea.id, open.entryId),
+    { message: 'Ce titre cherche déjà un partenaire : appuie sur « Je chante avec » pour le rejoindre.' });
+});
+
+test('sans volontaire, il passe comme un solo : place, présence de l’auteur seul, ni Timefold ni ordre du bar relancés', () => {
+  const { s, lea, max } = night();
+  s.chooseSong(lea, song(1, 'Titre'));
+  const fingerprints = () => [s.solverContextFingerprint(), s.manualContextFingerprint()];
+  const before = fingerprints();
+  const open = s.openDuet(lea, { entryId: lea.song.entryId });
+  assert.deepEqual(fingerprints(), before, 'il passe comme avant : le plan et l’ordre du bar restent');
+  const lines = s.readyView();
+  assert.deepEqual(lines.map(line => [names(s, line.ids), line.song.title]).sort(), [['Léa', 'Titre'], ['Max', 'Cinq']]);
+  const mine = lines.find(line => line.ids[0] === lea.id);
+  assert.equal(mine.kind, undefined, 'pas un duo');
+  assert.equal(mine.song.duet.state, 'open', 'la ligne garde la demande pour l’affichage');
+  if (s.select().ids[0] !== lea.id) s.commit(s.select()); // Max d'abord, s'il passe avant
+  const sel = s.select();
+  assert.deepEqual(sel.ids, [lea.id]);
+  assert.equal(sel.label, 'Léa · Table 1', 'KaraFun reçoit le nom de Léa seule');
+  assert.equal(open.duet.state, 'open', 'rien n’expire avant l’envoi');
+  assert.equal(max.duetGuestCount || 0, 0);
+});
+
+test('premier volontaire : duo accepté quelle que soit sa table, le second est refusé, jamais deux places', () => {
+  const { s, events, lea, max, zoe } = night();
+  const open = s.openDuet(lea, { song: song(1, 'Titre') });
+  assert.throws(() => s.acceptOpenDuet(lea, lea.id, open.entryId), { message: 'C’est déjà ton titre.' });
+  const accepted = s.acceptOpenDuet(max, lea.id, open.entryId);
+  assert.equal(accepted, open);
+  assert.deepEqual(open.duet, { partnerId: max.id, state: 'accepted' });
+  assert.deepEqual(s.openDuets(), [], 'plus aucun bandeau');
+  // Critère 2 : un second « Je chante » reçoit le refus prévu.
+  assert.throws(() => s.acceptOpenDuet(zoe, lea.id, open.entryId), { message: 'Quelqu’un a déjà rejoint ce duo.' });
+  assert.deepEqual(open.duet, { partnerId: max.id, state: 'accepted' }, 'Max reste l’invité');
+  assert.deepEqual(inbox(lea), [['openAccepted', { name: 'Max', title: 'Titre' }]], 'Léa est prévenue');
+  assert.deepEqual(inbox(zoe), []);
+  assert.deepEqual(of(events, 'duo.openAccepted'), [{ personId: max.id, ownerId: lea.id, partnerId: max.id, entryId: open.entryId }]);
+  assert.ok(s.log.some(line => line.msg === 'Max (Table 3) rejoint Léa en duo sur « Titre » : seul Léa dépense son tour'));
+  // L'invité garde son titre et son tour : un seul ticket chacun.
+  assert.equal(max.song.title, 'Cinq');
+  assert.deepEqual(s.guestDuetsOf(max).map(row => row.entryId), [open.entryId]);
+  // Premier ajouté, premier servi : Max a ajouté « Cinq » avant le duo de Léa.
+  const view = s.readyView();
+  assert.deepEqual(view.map(line => [names(s, line.ids), line.song.title, line.kind || 'solo']),
+    [['Max', 'Cinq', 'solo'], ['Léa & Max', 'Titre', 'duo']]);
+  // Hors événement privé, une personne n'a jamais deux places dans la rotation.
+  const zoeDuet = s.openDuet(max, { entryId: max.song.entryId });
+  s.acceptOpenDuet(zoe, max.id, zoeDuet.entryId);
+  assert.ok(!s.Q.includes(zoe.id), 'Zoé, sans titre, n’entre pas dans la file en rejoignant un duo');
+  assert.equal(new Set(s.Q).size, s.Q.length, 'aucun ticket en double');
+  assert.deepEqual(s.Q.filter(pid => pid === max.id), [max.id], 'Max : un seul ticket, invité ou pas');
+  // Demande fermée par son auteur : plus ouverte.
+  const later = s.openDuet(zoe, { song: song(9, 'Neuf') });
+  s.closeOpenDuet(zoe, later.entryId);
+  assert.throws(() => s.acceptOpenDuet(lea, zoe.id, later.entryId), { message: 'Cette demande de duo n’est plus ouverte.' });
+});
+
+test('rejoint pendant une annonce ou un « Pas prêt » : comme une invitation acceptée', () => {
+  const { s, lea, max, zoe } = night();
+  s.commit(s.select()); // Max vient de chanter
+  const open = s.openDuet(lea, { song: song(1, 'Titre') });
+  s.chooseSong(zoe, song(2, 'Deux'));
+  assert.deepEqual(s.reserveNext().ids, [lea.id], 'Léa annoncée, seule');
+  s.acceptOpenDuet(max, lea.id, open.entryId);
+  assert.equal(s.reservedNext, null, 'l’annonce faite pour un solo est libérée');
+  assert.deepEqual(s.select().ids, [zoe.id], 'Max vient de chanter : Zoé, jamais montée sur scène, passe avant le duo');
+  // « Pas prêt » en cours : le passage repoussé attend aussi l'invité.
+  const other = night();
+  other.s.chooseSong(other.zoe, song(2, 'Deux'));
+  const titre = other.s.openDuet(other.lea, { song: song(1, 'Titre') });
+  const first = other.s.presenceView().find(line => line.ids[0] === other.lea.id);
+  other.s.deferPassage(other.lea.id, first, 1);
+  assert.deepEqual(other.lea.deferral.ids, [other.lea.id]);
+  other.s.acceptOpenDuet(other.zoe, other.lea.id, titre.entryId);
+  assert.deepEqual(other.lea.deferral.ids, [other.lea.id, other.zoe.id]);
+  assert.equal(other.s.deferralFor(other.zoe.id)?.ownerId, other.lea.id);
+});
+
+test('critère 3 : sans volontaire, le titre part en solo à l’accusé, Léa est prévenue, la demande se ferme partout', () => {
+  for (const saved of [false, true]) {
+    const { s, events, lea, max } = night();
+    const open = s.openDuet(lea, { song: song(1, 'Titre') });
+    if (s.select().ids[0] !== lea.id) s.commit(s.select()); // Max d'abord, s'il passe avant
+    const selected = s.select();
+    assert.deepEqual(selected.ids, [lea.id]);
+    const sel = saved ? plain(selected) : selected;
+    s.commit(sel);
+    assert.equal(open.duet, undefined, 'demande close');
+    assert.equal(sel.song.duet, undefined, 'le passage envoyé reste un solo');
+    assert.deepEqual(s.openDuets(), []);
+    assert.deepEqual(inbox(lea), [['openUnanswered', { title: 'Titre' }]]);
+    assert.deepEqual(inbox(max), []);
+    assert.deepEqual(of(events, 'duo.openExpired'), [{ ownerId: lea.id, entryId: open.entryId }], 'une seule expiration');
+    assert.ok(s.log.some(line => line.kind === 'staff' &&
+      line.msg === 'Personne n’a rejoint le duo ouvert de Léa : « Titre » est parti dans KaraFun, Léa le chante en solo'));
+    assert.throws(() => s.acceptOpenDuet(max, lea.id, open.entryId),
+      { message: 'Cette demande de duo n’est plus ouverte.' });
+    // Retiré de KaraFun sans être chanté : il revient en solo, sans demande.
+    s.requeueUnplayed(selected);
+    assert.equal(lea.song.entryId, open.entryId);
+    assert.equal(lea.song.duet, undefined);
+  }
+});
+
+test('critère 4 : en « Duos uniquement », sans partenaire, le titre ne part pas ; rejoint, il repasse dans la file', () => {
+  const { s, lea, max, zoe } = night();
+  let duoOnly = false;
+  s.duoOnlyRule = () => duoOnly;
+  s.chooseSong(lea, song(1, 'Titre'));
+  s.Q = [lea.id, max.id];
+  // Léa passe la première : son titre compte comme ajouté avant celui de Max
+  // (premier ajouté, premier servi).
+  lea.readySince = max.readySince - 1;
+  const open = s.openDuet(lea, { entryId: lea.song.entryId });
+  assert.deepEqual(s.reserveNext().ids, [lea.id], 'annoncée avant que le bar passe en « Duos uniquement »');
+  const before = s.solverContextFingerprint();
+  duoOnly = true;
+  assert.notEqual(s.solverContextFingerprint(), before, 'l’optimiseur reprend la file sans ce titre');
+  assert.deepEqual(s.readyView().map(line => names(s, line.ids)), ['Max'], 'le titre de Léa attend hors de la file affichée');
+  assert.deepEqual(s.select().ids, [max.id], 'il ne part pas : Max chante');
+  assert.equal(s.reservedNext, null, 'l’annonce de Léa est libérée');
+  assert.deepEqual(s._forecast(false, [], null, true).map(line => line.entryId), [max.song.entryId], 'ni dans la graine de Timefold');
+  s.commit(s.select());
+  assert.equal(open.duet.state, 'open', 'rien n’expire : il n’est pas parti');
+  assert.equal(s.Q.indexOf(lea.id), 0, 'Léa garde sa place');
+  assert.equal(s.select(), null, 'rien d’autre à envoyer');
+  s.acceptOpenDuet(zoe, lea.id, open.entryId);
+  assert.deepEqual(s.readyView().map(line => names(s, line.ids)), ['Léa & Zoé'], 'rejoint : il repasse dans la file');
+  assert.deepEqual(s.select().ids, [lea.id, zoe.id]);
+});
+
+test('« Je suis là » obligatoire et « Duos uniquement » : l’auteur d’un duo ouvert retenu n’est pas compté absent', () => {
+  const s = new Scheduler({ requirePresence: true });
+  s._event = () => {};
+  let duoOnly = false;
+  s.duoOnlyRule = () => duoOnly;
+  const people = ['Léa', 'Max', 'Zoé', 'Tom', 'Ann'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 2 }));
+  const [lea, ...others] = people;
+  people.forEach((p, i) => s.chooseSong(p, song(100 + i, `${p.name} 0`)));
+  // Tout le monde a chanté une fois : chaque confirmation est retombée à l'envoi.
+  for (let k = 0; k < people.length; k++) { people.filter(p => !p.sung).forEach(p => s.confirm(p)); s.commit(s.select()); }
+  assert.equal(lea.confirmedAt, 0, 'Léa n’a pas reconfirmé sa présence');
+  const open = s.openDuet(lea, { song: song(1, 'Duo de Léa') });
+  duoOnly = true;
+  others.forEach((p, i) => { for (let j = 1; j <= 3; j++) s.chooseSong(p, song(200 + 10 * i + j, `${p.name} ${j}`), 'append'); });
+  assert.equal(s.Q[0], lea.id, 'Léa en tête de la file, son titre retenu');
+  const recul = () => s.log.filter(line => line.msg === 'Léa n\'a pas confirmé sa présence : recule de 3 places').length;
+  for (let k = 0; k < 8; k++) {
+    others.forEach(p => s.confirm(p));
+    const sel = s.select();
+    assert.ok(sel && !sel.ids.includes(lea.id), 'les autres chantent, pas Léa');
+    s.commit(sel);
+    assert.equal(lea.held, 0, 'jamais comptée absente : elle ne pouvait pas partir');
+  }
+  assert.equal(recul(), 0, 'aucune fausse note de présence au journal du bar');
+  assert.equal(s.Q[0], lea.id, 'elle garde sa place sans partir');
+  assert.equal(open.duet.state, 'open');
+  // Témoin : hors « Duos uniquement », son titre pourrait partir ; sans sa
+  // confirmation, la règle « Je suis là » la compte comme tout le monde.
+  duoOnly = false;
+  for (let k = 0; k < 2; k++) { others.forEach(p => s.confirm(p)); s.commit(s.select()); }
+  assert.equal(recul(), 1, 'pouvant partir sans confirmer, elle recule de 3 places au 2e passage devant elle');
+});
+
+test('priorité du bar sur un duo ouvert, puis « Duos uniquement » : en attente et notée au journal du bar', () => {
+  const { s, lea, max } = night();
+  let duoOnly = false;
+  s.duoOnlyRule = () => duoOnly;
+  s.chooseSong(lea, song(1, 'Titre'));
+  s.Q = [max.id, lea.id];
+  s.openDuet(lea, { entryId: lea.song.entryId });
+  s.staffMove(lea.id, 0);
+  assert.equal(s.reservedNext?.personId, lea.id);
+  duoOnly = true;
+  assert.deepEqual(s.select().ids, [max.id], 'le duo ouvert sans partenaire ne part pas');
+  assert.equal(s.reservedNext, null);
+  assert.ok(s.log.some(line => line.kind === 'staff' &&
+    line.msg === 'Priorité de Léa en attente : en « Duos uniquement », son duo ouvert « Titre » attend un volontaire hors de la file et repasse en tête dès que quelqu’un le rejoint'));
+  assert.deepEqual(s.manualOrder, [lea.id], 'sa ligne reste en tête de l’ordre fixé');
+});
+
+test('second « Je chante » du même volontaire : c’est fait, sans rien refaire ; titre retiré : la demande est close', () => {
+  const { s, events, lea, max } = night();
+  const open = s.openDuet(lea, { song: song(1, 'Titre') });
+  s.acceptOpenDuet(max, lea.id, open.entryId);
+  const version = s.version;
+  assert.equal(s.acceptOpenDuet(max, lea.id, open.entryId), open, 'réponse perdue puis nouvel essai : accepté');
+  assert.equal(s.version, version, 'rien ne change');
+  assert.equal(of(events, 'duo.openAccepted').length, 1);
+  assert.deepEqual(inbox(lea), [['openAccepted', { name: 'Max', title: 'Titre' }]], 'Léa n’est prévenue qu’une fois');
+  // L'auteur retire son titre pendant qu'un « Je chante » est en route.
+  const later = s.openDuet(max, { entryId: max.song.entryId });
+  s.removeSong(max, later.entryId);
+  assert.throws(() => s.acceptOpenDuet(lea, max.id, later.entryId), { message: 'Cette demande de duo n’est plus ouverte.' });
+});
+
+test('fermer, retirer, partir : la demande se ferme, le titre reste ou disparaît, tout est noté', () => {
+  const { s, events, lea, max, zoe } = night();
+  const open = s.openDuet(lea, { song: song(1, 'Titre') });
+  s.cancelDuet(lea, open.entryId); // « Annuler duo » sur un duo ouvert : la demande se ferme
+  assert.equal(lea.song, open, 'le titre reste dans la liste');
+  assert.equal(open.duet, undefined, 'en solo');
+  s.openDuet(lea, { entryId: open.entryId });
+  s.closeOpenDuet(lea, open.entryId);
+  assert.throws(() => s.closeOpenDuet(lea, open.entryId), { message: 'Cette demande de duo n’est plus ouverte.' });
+  s.openDuet(lea, { entryId: open.entryId });
+  s.removeSong(lea, open.entryId);
+  const fromZoe = s.openDuet(zoe, { song: song(2, 'Deux') });
+  s.leave(zoe);
+  const fromMax = s.openDuet(max, { entryId: max.song.entryId });
+  s.tableLeft('3');
+  assert.deepEqual(of(events, 'duo.openClosed'), [
+    { personId: lea.id, ownerId: lea.id, entryId: open.entryId, reason: 'self' },
+    { personId: lea.id, ownerId: lea.id, entryId: open.entryId, reason: 'self' },
+    { ownerId: lea.id, entryId: open.entryId, reason: 'removed' },
+    { ownerId: zoe.id, entryId: fromZoe.entryId, reason: 'left' },
+    { ownerId: max.id, entryId: fromMax.entryId, reason: 'left' }]);
+  assert.deepEqual(s.openDuets(), []);
+  assert.ok(!s.log.some(line => /duo annulé/i.test(line.msg)), 'pas de « duo annulé » : personne n’y chantait');
+});
+
+// Relecture (passe 5, cellules sans test) : en « Duos uniquement », le duo
+// ouvert rejoint par une personne d'une autre table, qui le quitte ou qui
+// part (marquée partie, table partie), redevient le solo de son auteur et
+// passe, comme une invitation acceptée puis quittée (GUIDE-BAR.md) : la
+// demande ne se rouvre pas, le titre n'attend pas un nouveau volontaire.
+test('« Duos uniquement » : duo ouvert rejoint puis quitté ou laissé par un départ, solo de son auteur qui passe, sans nouvelle demande', () => {
+  for (const how of ['se retire', 'marqué parti', 'table partie']) {
+    const s = new Scheduler();
+    s._event = () => {};
+    s.duoOnlyRule = () => true;
+    const elsa = s.join({ tableId: '1', name: 'Elsa', headcount: 2 });
+    const max = s.join({ tableId: '3', name: 'Max', headcount: 2 });
+    const nina = s.join({ tableId: '4', name: 'Nina', headcount: 2 });
+    s.chooseSong(max, song(2, 'Deux'));
+    const open = s.openDuet(elsa, { song: song(1, 'Ouvert') });
+    assert.equal(s._openHeld(open), true, 'sans partenaire, il attend hors de la file');
+    s.acceptOpenDuet(nina, elsa.id, open.entryId);
+    assert.deepEqual(s.readyView().map(line => names(s, line.ids)), ['Max', 'Elsa & Nina']);
+    if (how === 'se retire') s.leaveDuet(nina, elsa.id, open.entryId);
+    else if (how === 'marqué parti') s.leave(nina, 'staff');
+    else s.tableLeft('4');
+    assert.equal(open.duet, undefined, `${how} : solo d’Elsa, la demande ne se rouvre pas`);
+    assert.equal(s._openHeld(open), false, `${how} : il ne cherche plus de partenaire`);
+    assert.deepEqual(s.openDuets(), [], `${how} : aucun bandeau`);
+    assert.deepEqual(s.readyView().map(line => names(s, line.ids)), ['Max', 'Elsa'], `${how} : il passe en solo`);
+    s.commit(s.select());
+    assert.deepEqual(s.select().ids, [elsa.id], `${how} : Elsa chante seule après Max`);
+  }
+});
+
+// ---------------------------------------------------------------- sauvegarde
+test('critère 6 : redémarrage, la demande ouverte est reprise et visible ; une heure abîmée est réparée', () => {
+  const { s, lea, max } = night();
+  const access = new TableAccess();
+  for (const t of s.tables.keys()) access.issue(t);
+  const open = s.openDuet(lea, { song: song(1, 'Titre') });
+  const settings = { auto: false, autoPlay: false, pushDelaySec: 0, playDelaySec: 0 };
+  const snapshot = plain(snapshotNight({ scheduler: s, access, settings }));
+  const restore = data => {
+    const target = new Scheduler();
+    restoreNight(plain(data), { scheduler: target, access: new TableAccess(), settings: { ...settings } });
+    return target;
+  };
+  const back = restore(snapshot);
+  const owner = back.people.get(lea.id);
+  assert.deepEqual(owner.song.duet, { state: 'open', openedAt: open.duet.openedAt });
+  assert.deepEqual(back.openDuets().map(row => [row.owner.id, row.entryId]), [[lea.id, open.entryId]]);
+  assert.deepEqual(back.readyView().map(line => names(back, line.ids)), s.readyView().map(line => names(s, line.ids)),
+    'même file qu’avant le redémarrage, Léa en solo');
+  assert.equal(back.readyView().find(line => line.ids[0] === lea.id).ids.length, 1);
+  back.acceptOpenDuet(back.people.get(max.id), lea.id, open.entryId);
+  assert.deepEqual(owner.song.duet, { partnerId: max.id, state: 'accepted' });
+  // Heure abîmée, champ en trop : l'état ouvert reste, seul l'abîmé disparaît.
+  const broken = plain(snapshot);
+  broken.scheduler.people.find(p => p.id === lea.id).song.duet = { state: 'open', openedAt: 'hier', partnerId: max.id };
+  const repaired = restore(broken).people.get(lea.id).song.duet;
+  assert.deepEqual(Object.keys(repaired).sort(), ['openedAt', 'state']);
+  assert.ok(Number.isFinite(repaired.openedAt));
+});
+
+// ---------------------------------------------------------------- statistiques
+test('statistiques : duos ouverts comptés, le volontaire attend le duo dès qu’il le rejoint (comme un duo accepté)', () => {
+  const T0 = Date.UTC(2026, 9, 24, 20, 0);
+  const T = minutes => T0 + minutes * 60000;
+  const evening = joinEvents => {
+    const events = [];
+    const e = (minutes, ev, fields = {}) => events.push({ v: 1, seq: 0, t: T(minutes), ev, ...fields });
+    e(0, 'app.started', { restored: false, offlineMs: 0 });
+    for (const pid of ['p', 'q', 'g']) e(0, 'person.joined', { personId: pid, tableId: pid });
+    e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+    joinEvents(e);
+    e(10, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['p', 'g'], ownerId: 'p', source: 'queue', title: 'a1' });
+    e(14, 'stage.ended', { queueId: 1, playedSec: 240 });
+    e(15, 'song.requested', { personId: 'q', entryId: 'b1', title: 'b1' });
+    e(15, 'duo.openRequested', { personId: 'q', entryId: 'b1', fromCatalog: true });
+    e(20, 'duo.openExpired', { ownerId: 'q', entryId: 'b1' });
+    e(20, 'stage.started', { queueId: 2, entryId: 'b1', ids: ['q'], ownerId: 'q', source: 'queue', title: 'b1' });
+    e(24, 'stage.ended', { queueId: 2, playedSec: 240 });
+    e(25, 'song.requested', { personId: 'q', entryId: 'b2', title: 'b2' });
+    e(25, 'duo.openRequested', { personId: 'q', entryId: 'b2', fromCatalog: true });
+    e(26, 'duo.openClosed', { personId: 'q', ownerId: 'q', entryId: 'b2', reason: 'self' });
+    events.sort((a, b) => a.t - b.t).forEach((x, i) => { x.seq = i + 1; });
+    return computeStats({ meta: {}, events, now: T(60) });
+  };
+  const open = evening(e => {
+    e(0, 'duo.openRequested', { personId: 'p', entryId: 'a1', fromCatalog: true });
+    e(4, 'duo.openAccepted', { personId: 'g', ownerId: 'p', partnerId: 'g', entryId: 'a1' });
+  });
+  const joined = evening(e => {
+    e(2, 'duo.joinRequested', { requesterId: 'g', ownerId: 'p', entryId: 'a1', direct: false });
+    e(4, 'duo.joinAnswered', { personId: 'p', ownerId: 'p', requesterId: 'g', entryId: 'a1', accepted: true });
+  });
+  const d = open.global.duos;
+  assert.deepEqual([d.openRequests, d.openAccepted, d.openExpired, d.openClosed], [3, 1, 1, 1]);
+  assert.deepEqual([d.invites, d.accepted, d.joinRequests, d.joinAccepted], [0, 0, 0, 0], 'comptés à part');
+  const guest = stats => stats.singers.find(row => row.id === 'g');
+  assert.deepEqual(guest(open).stageWaits, { n: 1, guestN: 1, avgSec: 6 * 60, medianSec: 6 * 60, maxSec: 6 * 60 },
+    'g attend son duo depuis qu’il l’a rejoint (4 → 10)');
+  assert.deepEqual(guest(open).stageWaits, guest(joined).stageWaits, 'comme un duo accepté par son auteur');
+  assert.equal(guest(open).guestTurns, guest(joined).guestTurns);
+  assert.deepEqual(open.timeline.stages.map(st => [st.ids, st.kind]), joined.timeline.stages.map(st => [st.ids, st.kind]));
+});
+
+// ---------------------------------------------------------------- serveur
+const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const fromServer = createRequire(path.join(root, 'server.js'));
+
+function harness() {
+  const entry = source.lastIndexOf('main().catch(');
+  assert.ok(entry > 0, 'point d’entrée du serveur introuvable');
+  const quietFs = { ...fs, mkdirSync() {}, appendFileSync() {}, writeFileSync() {}, renameSync() {},
+    readdirSync() { return []; }, unlinkSync() {} };
+  const fixtureProcess = Object.create(process);
+  fixtureProcess.argv = [...process.argv, '--demo'];
+  const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
+    __dirname: root, process: fixtureProcess, console: { ...console, log() {} }, Buffer, URL, setTimeout, clearTimeout,
+    setImmediate, AbortSignal };
+  vm.runInNewContext(source.slice(0, entry) + `
+    globalThis.fixture = { sched, settings, handlers, access, staffState, publicState, sync, connectKaraFun, rememberBattleSongs,
+      tracked: () => tracked, setBridge: b => { bridge = b; }, getBridge: () => bridge, setFake: x => { fake = x; },
+      setPending: p => { pending = p; }, getPending: () => pending };
+  `, context, { filename: 'server.js' });
+  const f = context.fixture;
+  f.settings.auto = false;
+  f.settings.autoPlay = false;
+  f.call = (route, body = {}) => f.handlers[route]({}, {}, body);
+  f.view = (tableId, ids) => f.publicState(null, tableId, new Set(ids));
+  return f;
+}
+
+function person(f, table, name, extra = {}) {
+  if (!f.sched.table(table).individual) f.sched.table(table).headcount = 4;
+  const p = f.sched.join({ tableId: table, name, ...extra });
+  return { p, body: { table, access: f.access.get(table) || f.access.issue(table), personId: p.id, token: p.token } };
+}
+
+// Titres reçus du catalogue KaraFun par le serveur (recherche, sélections),
+// comme pour une Battle : seuls eux peuvent être annoncés à toute la salle.
+const CATALOG = [song(1, 'Titre'), song(2, 'Deux'), song(3, 'Trois'), song(70000, 'Toxic')];
+
+function serverNight() {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const lea = person(f, '1', 'Léa'), max = person(f, '3', 'Max'), zoe = person(f, 'Comptoir', 'Zoé');
+  return { f, lea, max, zoe };
+}
+
+test('critère 1 : Léa propose un titre en duo ouvert ; Max et Zoé voient le bandeau, Léa non, ni un téléphone sans prénom', async () => {
+  const { f, lea, max, zoe } = serverNight();
+  const result = plain(await f.call('POST /api/table/duet/open', { ...lea.body, song: song(1, 'Titre') }));
+  assert.equal(result.ok, true);
+  const entryId = lea.p.song.entryId;
+  assert.equal(result.entryId, entryId);
+  const banner = { ownerId: lea.p.id, ownerName: 'Léa', ownerLabel: 'Léa · Table 1', entryId, openedAt: lea.p.song.duet.openedAt,
+    song: { songId: 1, title: 'Titre', artist: 'Artiste', img: null, duration: null } };
+  assert.deepEqual(plain(f.view('3', [max.p.id]).openDuets), [{ ...banner, volunteerIds: [max.p.id] }], 'Max (table 3)');
+  assert.deepEqual(plain(f.view('Comptoir', [zoe.p.id]).openDuets), [{ ...banner, volunteerIds: [zoe.p.id] }], 'Zoé (en solo)');
+  assert.deepEqual(plain(f.publicState(zoe.p, zoe.p.tableId, new Set([zoe.p.id])).openDuets.map(row => row.entryId)), [entryId],
+    'lecture par la clé personnelle');
+  assert.deepEqual(plain(f.view('1', [lea.p.id]).openDuets), [], 'Léa ne voit pas son propre bandeau');
+  assert.equal(f.view('3', []).openDuets, undefined, 'téléphone qui ne gère personne : rien n’est envoyé');
+  const placeholder = person(f, 'Comptoir', 'Solo 2', { nameRequired: true });
+  assert.equal(f.view('Comptoir', [placeholder.p.id]).openDuets, undefined, 'place sans prénom : rien');
+  f.sched.leave(max.p);
+  assert.equal(f.view('3', [max.p.id]).openDuets, undefined, 'personne partie : rien');
+  // Téléphone de la table de Léa qui gère aussi Bob : Bob seul peut se proposer.
+  const bob = person(f, '1', 'Bob');
+  assert.deepEqual(plain(f.view('1', [lea.p.id, bob.p.id]).openDuets.map(row => row.volunteerIds)), [[bob.p.id]]);
+  // Chez Léa : le titre porte la demande, sans partenaire.
+  const own = f.view('1', [lea.p.id]).tablePeople.find(row => row.id === lea.p.id);
+  assert.deepEqual(plain(own.songs[0].duet), { state: 'open', kind: 'duo' });
+  assert.deepEqual(plain(own.duet), { state: 'open' });
+  const line = f.view('Comptoir', [zoe.p.id]).queue.find(item => item.song?.entryId === entryId);
+  assert.deepEqual(plain(line.song.duet), { state: 'open', kind: 'duo' }, 'file : repère du duo ouvert');
+  // Bar : la ligne et la liste des demandes.
+  const staff = f.staffState();
+  assert.equal(staff.queue.find(item => item.song?.entryId === entryId).song.duet.state, 'open');
+  assert.deepEqual(plain(staff.openDuets), [{ ownerId: lea.p.id, ownerName: 'Léa', table: 'Table 1', entryId,
+    title: 'Titre', openedAt: banner.openedAt, held: false }]);
+  // Refus clairs : second duo ouvert, place sans prénom.
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...lea.body, song: song(2, 'Deux') }),
+    { message: 'Un seul duo ouvert à la fois : ferme d’abord ta demande en cours.' });
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...placeholder.body, song: song(3, 'Trois') }), { code: 'NAME_REQUIRED' });
+  await assert.rejects(f.call('POST /api/table/duet/open/accept', { ...placeholder.body, ownerId: lea.p.id, entryId }), { code: 'NAME_REQUIRED' });
+});
+
+// Relecture : le titre d'un duo ouvert, annoncé sur tous les téléphones
+// (bandeau, notification du navigateur), était le texte de la requête du
+// client ; la Battle, seule autre annonce d'un titre à toute la salle,
+// n'accepte que les titres reçus du catalogue KaraFun par le serveur.
+test('duo ouvert : seul le texte du catalogue reçu par le serveur part vers les autres téléphones', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const ines = person(f, '1', 'Inès'), max = person(f, '3', 'Max');
+  const refused = { message: 'Retrouve ce titre dans le catalogue avant de chercher un duo.' };
+  const banners = () => plain(f.view('3', [max.p.id]).openDuets.map(open => [open.song.songId, open.song.title, open.song.artist]));
+  // Depuis le catalogue : un titre que le serveur n'a jamais servi est refusé,
+  // rien n'est ajouté ni annoncé.
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...ines.body,
+    song: { songId: 999999, title: 'Offre : scanne ce QR', artist: 'x' } }), refused);
+  assert.deepEqual(f.sched.songsOf(ines.p), []);
+  assert.deepEqual(banners(), []);
+  // Un titre du catalogue au texte changé par la requête part avec celui du catalogue.
+  await f.call('POST /api/table/duet/open', { ...ines.body, song: { songId: 2, title: 'Offre : scanne ce QR', artist: 'x' } });
+  assert.deepEqual(banners(), [[2, 'Deux', 'Artiste']], 'le texte du catalogue');
+  assert.equal(ines.p.song.title, 'Deux', 'dans sa liste aussi');
+  await f.call('POST /api/table/song/remove', { ...ines.body, entryId: ines.p.song.entryId });
+  // Depuis sa liste : un titre ajouté avec un texte inventé prend celui du
+  // catalogue dès l'ajout, et part avec lui ; un titre inconnu du catalogue
+  // est refusé.
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 3, title: 'Offre : scanne ce QR', artist: 'x' } });
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 888888, title: 'Inventé', artist: 'x' } });
+  const [known, unknown] = f.sched.songsOf(ines.p);
+  assert.deepEqual([known.title, known.artist, unknown.title], ['Trois', 'Artiste', 'Inventé'], 'texte du catalogue dès l’ajout');
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...ines.body, entryId: unknown.entryId }), refused);
+  assert.equal(unknown.duet, undefined, 'il reste en solo');
+  assert.deepEqual(banners(), []);
+  await f.call('POST /api/table/duet/open', { ...ines.body, entryId: known.entryId });
+  assert.deepEqual(banners(), [[3, 'Trois', 'Artiste']]);
+  assert.equal(f.staffState().openDuets[0].title, 'Trois', 'le bar voit le même titre');
+  assert.equal(f.view('3', [max.p.id]).queue.find(line => line.song?.entryId === known.entryId).song.title, 'Trois', 'et la file');
+  // Un titre du catalogue part tel quel.
+  await f.call('POST /api/table/duet/open/close', { ...ines.body, entryId: known.entryId });
+  await f.call('POST /api/table/song/remove', { ...ines.body, entryId: known.entryId });
+  await f.call('POST /api/table/duet/open', { ...ines.body, song: song(70000, 'Toxic') });
+  assert.deepEqual(banners(), [[70000, 'Toxic', 'Artiste']]);
+});
+
+// Relecture, passe 5 : openDuetSong réécrivait le titre de la liste au texte
+// du catalogue, et comptait une version, avant les contrôles de
+// Scheduler#openDuet : une demande refusée changeait quand même le titre.
+test('duo ouvert refusé : le titre de la liste reste tel quel, rien n’est compté', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const ines = person(f, '1', 'Inès');
+  // Ajouté quand ce serveur ne connaissait pas ce numéro, que le catalogue
+  // sert ensuite sous un autre texte.
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 4, title: 'Texte du téléphone', artist: 'x' } });
+  f.rememberBattleSongs([song(4, 'Quatre')]);
+  await f.call('POST /api/table/song', { ...ines.body, song: song(3, 'Trois') });
+  await f.call('POST /api/table/duet/open', { ...ines.body, song: song(1, 'Titre') });
+  const [phoneText, fromCatalog] = f.sched.songsOf(ines.p);
+  const before = plain(f.sched.songsOf(ines.p)), version = f.sched.version;
+  for (const [entryId, message] of [[phoneText.entryId, 'Retrouve ce titre dans le catalogue avant de chercher un duo.'],
+    [fromCatalog.entryId, 'Un seul duo ouvert à la fois : ferme d’abord ta demande en cours.']]) {
+    const refusal = await f.call('POST /api/table/duet/open', { ...ines.body, entryId })
+      .then(() => assert.fail('demande refusée attendue'), error => error.message);
+    assert.deepEqual(plain(f.sched.songsOf(ines.p)), before, 'titres de la liste inchangés');
+    assert.equal(f.sched.version, version, 'aucune version comptée');
+    assert.equal(refusal, message);
+  }
+  assert.equal(phoneText.title, 'Texte du téléphone');
+});
+
+// Relecture, passe 6 : le titre de la liste sans marque n'était comparé au
+// catalogue qu'à l'identique. Un titre de plus de 80 caractères (le catalogue
+// en garde 100, Scheduler#chooseSong 80) ou un artiste de plus de 60, ajouté
+// avant que ce serveur ne connaisse son numéro, ne cherchait plus de duo,
+// même après une nouvelle recherche ; l'ajouter depuis le catalogue était
+// refusé (déjà dans la liste).
+test('titre long ajouté avant le catalogue : après la recherche, il cherche un duo depuis la liste, tel que la liste le garde', async () => {
+  const f = harness();
+  const ines = person(f, '1', 'Inès'), maud = person(f, '3', 'Maud');
+  const long = { songId: 9, title: `Medley ${'x'.repeat(85)}`, artist: `Artiste ${'y'.repeat(62)}` };
+  const cut = { songId: 10, title: `Pot-pourri ${'z'.repeat(85)}`, artist: 'Artiste' };
+  await f.call('POST /api/table/song', { ...ines.body, song: long });
+  // Même numéro, texte coupé par le téléphone : ce n'est pas celui que la
+  // liste garderait du catalogue.
+  await f.call('POST /api/table/song', { ...ines.body, song: { ...cut, title: cut.title.slice(0, 40) } });
+  const [listed, shortened] = f.sched.songsOf(ines.p);
+  assert.deepEqual([listed.title.length, listed.artist.length], [80, 60], 'gardé aux bornes de la liste');
+  f.rememberBattleSongs(plain([long, cut]));
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...ines.body, entryId: shortened.entryId }),
+    { message: 'Retrouve ce titre dans le catalogue avant de chercher un duo.' });
+  await f.call('POST /api/table/duet/open', { ...ines.body, entryId: listed.entryId });
+  assert.deepEqual(plain(f.view('3', [maud.p.id]).openDuets.map(open => [open.song.songId, open.song.title, open.song.artist])),
+    [[9, long.title.slice(0, 80), long.artist.slice(0, 60)]], 'le texte du catalogue, tel que la liste le garde');
+  assert.equal(f.staffState().openDuets[0].title, long.title.slice(0, 80));
+});
+
+// Relecture, passe 5 : la certification du texte reposait sur le seul
+// catalogue gardé en mémoire (battleCatalogSongs), vidé à chaque redémarrage,
+// mises à jour comprises : « Chercher un duo » sur un titre déjà dans la liste
+// était refusé tant que la personne ne l'avait pas recherché de nouveau.
+test('redémarrage : un titre ajouté depuis le catalogue cherche encore un duo depuis la liste, avec le texte du catalogue', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const ines = person(f, '1', 'Inès'), maud = person(f, '3', 'Maud');
+  // Titre servi par ce serveur, texte changé par la requête ; numéro jamais servi.
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 3, title: 'Offre : scanne ce QR', artist: 'x' } });
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 888888, title: 'Inventé', artist: 'x' } });
+  // Invitation de duo depuis le catalogue, refusée : le titre reste son solo.
+  await f.call('POST /api/table/duet', { ...ines.body, partnerId: maud.p.id, song: { songId: 2, title: 'Offre', artist: 'x' } });
+  await f.call('POST /api/table/duet/answer', { ...maud.body, accept: false });
+  const [known, unknown, invited] = f.sched.songsOf(ines.p);
+  assert.deepEqual([invited.songId, invited.title, invited.duet], [2, 'Deux', undefined], 'texte du catalogue, invitation refusée');
+  // Sauvegarde puis reprise dans un nouveau serveur, au catalogue encore vide.
+  const snapshot = plain(snapshotNight({ scheduler: f.sched, access: f.access, settings: f.settings }));
+  const g = harness();
+  restoreNight(snapshot, { scheduler: g.sched, access: g.access, settings: g.settings });
+  await g.call('POST /api/table/duet/open', { ...ines.body, entryId: known.entryId });
+  const banners = () => plain(g.view('3', [maud.p.id]).openDuets.map(open => [open.song.songId, open.song.title, open.song.artist]));
+  assert.deepEqual(banners(), [[3, 'Trois', 'Artiste']], 'le texte du catalogue, gardé avec la soirée');
+  assert.equal(g.staffState().openDuets[0].title, 'Trois');
+  await g.call('POST /api/table/duet/open/close', { ...ines.body, entryId: known.entryId });
+  await g.call('POST /api/table/duet/open', { ...ines.body, entryId: invited.entryId });
+  assert.deepEqual(banners(), [[2, 'Deux', 'Artiste']], 'le titre de l’invitation aussi');
+  await g.call('POST /api/table/duet/open/close', { ...ines.body, entryId: invited.entryId });
+  // Un numéro que le serveur n'a jamais servi reste refusé.
+  await assert.rejects(g.call('POST /api/table/duet/open', { ...ines.body, entryId: unknown.entryId }),
+    { message: 'Retrouve ce titre dans le catalogue avant de chercher un duo.' });
+  assert.equal(g.sched.people.get(ines.p.id).backlog[0].duet, undefined, 'il reste en solo');
+  assert.deepEqual(banners(), []);
+});
+
+// Relecture : seuls les trois plus récents partaient vers les téléphones, seul
+// moyen de les rejoindre ; en « Duos uniquement », le plus ancien, hors de la
+// file, attendait sans fin. Tous partent ; la page en replie l'affichage.
+test('tous les duos ouverts, du plus récent au plus ancien ; le plus ancien de quatre se rejoint, même en « Duos uniquement »', async () => {
+  const { f, lea, max, zoe } = serverNight();
+  const others = ['Ana', 'Ben', 'Cléo'].map((name, i) => person(f, String(10 + i), name));
+  f.rememberBattleSongs([lea, ...others].map((singer, index) => song(20 + index, `Titre ${singer.p.name}`)));
+  for (const [index, singer] of [lea, ...others].entries()) {
+    f.sched.chooseSong(singer.p, song(20 + index, `Titre ${singer.p.name}`));
+    await f.call('POST /api/table/duet/open', { ...singer.body, entryId: singer.p.song.entryId });
+    singer.p.song.duet.openedAt = 1000 + index;
+  }
+  assert.deepEqual(plain(f.view('3', [max.p.id]).openDuets.map(row => row.ownerName)), ['Cléo', 'Ben', 'Ana', 'Léa']);
+  assert.equal(f.view('Comptoir', [zoe.p.id]).openDuets.length, 4);
+  // « Duos uniquement » : les quatre attendent hors de la file ; le plus ancien
+  // reste proposé aux téléphones, Zoé le rejoint et il repasse dans la file.
+  f.settings.duoOnly = true;
+  f.sched.version++;
+  const oldest = lea.p.song.entryId;
+  assert.deepEqual(plain(f.view('Comptoir', [zoe.p.id]).queue.filter(item => item.source === 'helper')), [], 'tous retenus');
+  assert.ok(f.view('Comptoir', [zoe.p.id]).openDuets.some(row => row.entryId === oldest), 'le plus ancien est proposé');
+  await f.call('POST /api/table/duet/open/accept', { ...zoe.body, ownerId: lea.p.id, entryId: oldest });
+  assert.deepEqual(plain(f.view('3', [max.p.id]).queue.map(item => item.name)), ['Léa & Zoé']);
+  // Son auteur, lui, garde toujours la main : hors « Duos uniquement », il
+  // ferme sa demande ; dans ce mode, il retire le titre.
+  const [ana, ben] = others;
+  await f.call('POST /api/table/duet/open/close', { ...ana.body, entryId: ana.p.song.entryId }).then(
+    () => assert.fail('fermeture refusée en « Duos uniquement »'), error => assert.equal(error.code, 'DUO_ONLY'));
+  await f.call('POST /api/table/song/remove', { ...ana.body, entryId: ana.p.song.entryId });
+  assert.equal(f.sched.songsOf(ana.p).length, 0, 'titre retiré');
+  f.settings.duoOnly = false;
+  await f.call('POST /api/table/duet/open/close', { ...ben.body, entryId: ben.p.song.entryId });
+  assert.equal(ben.p.song.duet, undefined, 'demande fermée, le titre reste en solo');
+  assert.deepEqual(plain(f.view('3', [max.p.id]).openDuets.map(row => row.ownerName)), ['Cléo']);
+});
+
+test('critère 2 et la course : deux « Je chante » en même temps, un seul gagne, l’autre reçoit le refus', async () => {
+  const { f, lea, max, zoe } = serverNight();
+  await f.call('POST /api/table/duet/open', { ...lea.body, song: song(1, 'Titre') });
+  const entryId = lea.p.song.entryId;
+  const [first, second] = await Promise.allSettled([
+    f.call('POST /api/table/duet/open/accept', { ...max.body, ownerId: lea.p.id, entryId }),
+    f.call('POST /api/table/duet/open/accept', { ...zoe.body, ownerId: lea.p.id, entryId })]);
+  assert.equal(first.status, 'fulfilled');
+  assert.deepEqual(plain(first.value), { ok: true });
+  assert.equal(second.status, 'rejected');
+  assert.equal(second.reason.message, 'Quelqu’un a déjà rejoint ce duo.');
+  assert.deepEqual(plain(lea.p.song.duet), { partnerId: max.p.id, state: 'accepted' }, 'Léa & Max');
+  // Max renvoie son « Je chante » (réponse perdue), même pendant l'envoi du duo : c'est fait.
+  f.setPending({ sel: f.sched.select(), before: new Set(), at: Date.now(), attempts: 1, retryAt: null });
+  assert.deepEqual(plain(await f.call('POST /api/table/duet/open/accept', { ...max.body, ownerId: lea.p.id, entryId })), { ok: true });
+  f.setPending(null);
+  assert.deepEqual(plain(f.view('Comptoir', [zoe.p.id]).openDuets), [], 'Zoé ne voit plus le bandeau');
+  const pub = f.view('3', [max.p.id]);
+  assert.deepEqual(plain(pub.tablePeople[0].guestDuos.map(duo => duo.fromName)), ['Léa'], 'Max voit son duo');
+  assert.deepEqual(plain(pub.queue.filter(item => item.source === 'helper').map(item => item.name)), ['Léa & Max']);
+  assert.deepEqual(plain(f.view('1', [lea.p.id]).tablePeople[0].inbox.map(n => [n.kind, n.params])),
+    [['openAccepted', { name: 'Max', title: 'Titre' }]]);
+});
+
+test('serveur : titre en route vers KaraFun, ni ouverture ni « Je chante », bandeau retiré ; « Duos uniquement » garde la demande', async () => {
+  const { f, lea, max } = serverNight();
+  f.sched.chooseSong(lea.p, song(1, 'Titre'));
+  await f.call('POST /api/table/duet/open', { ...lea.body, entryId: lea.p.song.entryId });
+  const entryId = lea.p.song.entryId;
+  f.setPending({ sel: f.sched.select(), before: new Set(), at: Date.now(), attempts: 1, retryAt: null });
+  const message = 'Ce titre est en cours d’envoi à KaraFun : le duo n’est plus possible.';
+  await assert.rejects(f.call('POST /api/table/duet/open/accept', { ...max.body, ownerId: lea.p.id, entryId }), { message });
+  assert.deepEqual(plain(f.view('3', [max.p.id]).openDuets), [], 'il partira en solo : plus de bandeau');
+  assert.deepEqual(plain(f.staffState().openDuets), [], 'le bar non plus ne le voit plus chercher un partenaire');
+  await f.call('POST /api/table/duet/open/close', { ...lea.body, entryId });
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...lea.body, entryId }), { message });
+  f.setPending(null);
+  // « Duos uniquement » : la demande ne se ferme pas en solo, le titre attend.
+  await f.call('POST /api/table/duet/open', { ...lea.body, entryId });
+  f.settings.duoOnly = true;
+  f.sched.version++;
+  await assert.rejects(f.call('POST /api/table/duet/open/close', { ...lea.body, entryId }), { code: 'DUO_ONLY' });
+  await assert.rejects(f.call('POST /api/table/duet/cancel', { ...lea.body, entryId }), { code: 'DUO_ONLY' });
+  assert.ok(!f.view('3', [max.p.id]).queue.some(item => item.song?.entryId === entryId), 'hors de la file');
+  assert.equal(f.staffState().openDuets[0].held, true, 'le bar sait pourquoi');
+  assert.equal(f.sched.select(), null, 'il ne part pas');
+  await f.call('POST /api/table/duet/open/accept', { ...max.body, ownerId: lea.p.id, entryId });
+  assert.deepEqual(plain(f.view('3', [max.p.id]).queue.map(item => item.name)), ['Léa & Max'], 'rejoint : de nouveau dans la file');
+  // « Nouvelle soirée » coupe le mode : la règle suit le réglage du bar.
+  f.settings.duoOnly = false;
+  assert.equal(f.sched._duoOnly(), false);
+});
+
+// Relecture (passe 5, cellule sans test) : un duo ouvert rejoint suit la
+// règle d'une invitation acceptée (assertDuoKept). En « Duos uniquement »,
+// un volontaire de la même table, duo accepté d'office, ne peut pas s'en
+// retirer lui-même ; marqué parti par le bar, il laisse le titre en solo.
+// Un volontaire d'une autre table s'en retire, et le titre passe en solo.
+test('serveur, « Duos uniquement » : volontaire de la même table refusé DUO_ONLY à « Je ne chante plus ce duo », celui d’une autre table accepté', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const elsa = person(f, '1', 'Elsa'), gus = person(f, '1', 'Gus'), max = person(f, '3', 'Max'), nina = person(f, '4', 'Nina');
+  f.settings.duoOnly = true;
+  f.sched.version++;
+  await f.call('POST /api/table/duet/open', { ...elsa.body, song: song(1, 'Titre') });
+  const mine = elsa.p.song.entryId;
+  await f.call('POST /api/table/duet/open/accept', { ...gus.body, ownerId: elsa.p.id, entryId: mine });
+  await assert.rejects(f.call('POST /api/table/duet/leave', { ...gus.body, ownerId: elsa.p.id, entryId: mine }), { code: 'DUO_ONLY' });
+  assert.deepEqual(plain(elsa.p.song.duet), { partnerId: gus.p.id, state: 'accepted' }, 'le duo reste');
+  await f.call('POST /api/staff/person/leave', { personId: gus.p.id });
+  assert.equal(elsa.p.song.duet, undefined, 'Gus marqué parti : solo d’Elsa, sans nouvelle demande');
+  await f.call('POST /api/table/duet/open', { ...max.body, song: song(2, 'Deux') });
+  const his = max.p.song.entryId;
+  await f.call('POST /api/table/duet/open/accept', { ...nina.body, ownerId: max.p.id, entryId: his });
+  assert.deepEqual(plain(await f.call('POST /api/table/duet/leave', { ...nina.body, ownerId: max.p.id, entryId: his })),
+    { ok: true, stage: 'planned' });
+  assert.equal(max.p.song.duet, undefined, 'solo de Max, sans nouvelle demande');
+  assert.deepEqual(plain(f.view('4', [nina.p.id]).openDuets), []);
+  assert.deepEqual(plain(f.view('4', [nina.p.id]).queue.filter(item => item.source === 'helper').map(item => item.name)).sort(),
+    ['Elsa', 'Max'], 'les deux titres passent en solo');
+});
+
+test('critère 6 par le serveur : après un redémarrage, le bandeau est toujours là et le duo peut être rejoint', async () => {
+  const { f, lea, max, zoe } = serverNight();
+  await f.call('POST /api/table/duet/open', { ...lea.body, song: song(1, 'Titre') });
+  const entryId = lea.p.song.entryId;
+  const banner = plain(f.view('3', [max.p.id]).openDuets);
+  assert.equal(banner.length, 1);
+  // Sauvegarde puis reprise dans un nouveau serveur, comme main() au démarrage.
+  const snapshot = plain(snapshotNight({ scheduler: f.sched, access: f.access, settings: f.settings }));
+  const g = harness();
+  restoreNight(snapshot, { scheduler: g.sched, access: g.access, settings: g.settings });
+  assert.deepEqual(plain(g.view('3', [max.p.id]).openDuets), banner, 'Max voit toujours le bandeau');
+  assert.deepEqual(plain(g.view('1', [lea.p.id]).openDuets), [], 'Léa toujours pas');
+  assert.deepEqual(plain(g.staffState().openDuets.map(row => [row.ownerName, row.entryId])), [['Léa', entryId]], 'le bar aussi');
+  assert.deepEqual(plain(await g.call('POST /api/table/duet/open/accept', { ...max.body, ownerId: lea.p.id, entryId })), { ok: true });
+  assert.deepEqual(plain(g.sched.people.get(lea.p.id).song.duet), { partnerId: max.p.id, state: 'accepted' });
+  await assert.rejects(g.call('POST /api/table/duet/open/accept', { ...zoe.body, ownerId: lea.p.id, entryId }),
+    { message: 'Quelqu’un a déjà rejoint ce duo.' });
+});
+
+const freePort = () => new Promise(resolve => {
+  const probe = net.createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+});
+async function until(check, what, ms = 10000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (check()) return;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.fail(`attente trop longue : ${what}`);
+}
+
+test('faux KaraFun : sans volontaire, le titre part en solo dans KaraFun et la demande expire à l’accusé', async t => {
+  const { f, lea, max } = serverNight();
+  const fake = await startFakeKaraFun({ port: await freePort(), code: '123456', songSeconds: 60, autoplay: false });
+  t.after(() => fake.close());
+  f.setFake(fake);
+  f.connectKaraFun('123456');
+  t.after(() => { f.settings.auto = false; f.getBridge()?.disconnect(); });
+  await until(() => f.getBridge()?.ready, 'connexion au faux KaraFun');
+  const events = [];
+  const journal = f.sched.onEvent;
+  f.sched.onEvent = (type, fields) => { events.push([type, fields]); journal?.(type, fields); };
+  await f.call('POST /api/table/duet/open', { ...lea.body, song: song(70000, 'Toxic') });
+  const entryId = lea.p.song.entryId;
+  assert.equal(f.view('3', [max.p.id]).openDuets.length, 1, 'Max voit le bandeau');
+  f.settings.auto = true;
+  f.sync();
+  await until(() => !f.getPending() && f.tracked().some(tr => tr.sel.song.entryId === entryId), 'accusé de KaraFun');
+  assert.deepEqual(fake.state().queue.map(item => [item.songId, item.singer]), [[70000, 'Léa · Table 1']],
+    'KaraFun reçoit le titre au nom de Léa seule');
+  assert.deepEqual(plain(inbox(lea.p)), [['openUnanswered', { title: 'Toxic' }]], 'Léa est prévenue');
+  assert.deepEqual(plain(f.view('3', [max.p.id]).openDuets), [], 'le bandeau disparaît partout');
+  assert.equal(f.tracked().find(tr => tr.sel.song.entryId === entryId).sel.ids.length, 1);
+  assert.deepEqual(events.filter(([type]) => type === 'duo.openExpired').map(([, fields]) => plain(fields)), [{ ownerId: lea.p.id, entryId }]);
+  await assert.rejects(f.call('POST /api/table/duet/open/accept', { ...max.body, ownerId: lea.p.id, entryId }),
+    { message: 'Cette demande de duo n’est plus ouverte.' });
+});

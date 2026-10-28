@@ -225,7 +225,7 @@ window.CLIENT_TRANSLATIONS = {
       'cette chanson': 'this song',
       'Changer l’ordre de {title}': 'Change the order of {title}',
       'Ordre': 'Order',
-      'Annuler le duo sur {title}': 'Cancel the duet on {title}',
+      'Annuler duo sur {title}': 'Cancel duet on {title}',
       'Annuler duo': 'Cancel duet',
       'Retirer {title}': 'Remove {title}',
       'Retirer': 'Remove',
@@ -396,6 +396,12 @@ window.CLIENT_TRANSLATIONS = {
       'Toute la salle chante ensemble. Propose de 1 à 3 titres du catalogue ; chaque personne votera pour un titre ou « Pas de Battle ». Le bar organise ensuite la Battle dans KaraFun.':
         'The whole room sings together. Suggest 1 to 3 songs from the catalogue; everyone will vote for a song or “No Battle”. The bar then sets up the Battle in KaraFun.',
       'Qui propose la Battle ?': 'Who is suggesting the Battle?',
+      // Rejoindre la Battle (télécommande KaraFun dans un nouvel onglet) et retour
+      'Rejoindre la Battle': 'Join the Battle',
+      'À la fin de la Battle, appuie sur ← Retour pour revenir ici.': 'When the Battle is over, tap ← Back to come back here.',
+      'Battle terminée': 'Battle over',
+      'Touche ici pour revenir à ta page karaoké.': 'Tap here to get back to your karaoke page.',
+      'Te revoilà !': 'Welcome back!',
       'Chercher un titre ou un artiste': 'Search for a song or an artist',
       'Ex. Queen': 'e.g. Queen',
       'Titres proposés (3 maximum)': 'Suggested songs (3 max)',
@@ -463,6 +469,7 @@ window.CLIENT_TRANSLATIONS = {
 
       // Duos
       'Aucun partenaire disponible pour un duo.': 'No one available for a duet.',
+      'Aucun partenaire disponible pour l’instant.': 'No one is available for a duet yet.',
       'Duo sur « {title} »': 'Duet on “{title}”',
       '{name} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour.':
         '{name} uses their turn; their partner keeps their own songs for a later turn. Nobody goes on stage more than twice per round.',
@@ -576,6 +583,32 @@ window.CLIENT_TRANSLATIONS = {
       'L’invitation de duo de {name} sur « {title} » a expiré : son tour est arrivé avant la réponse de {person}. {name} le chante en solo.':
         '{name}’s duet invitation for “{title}” has expired: their turn came before {person} answered. {name} sings it solo.',
       '{name} n’a pas répondu à temps : {person} chante « {title} » en solo.': '{name} didn’t answer in time: {person} sings “{title}” solo.',
+      // Duo ouvert : « Qui veut chanter en duo avec moi ? »
+      'Qui veut chanter en duo avec moi ?': 'Who wants to sing a duet with me?',
+      '{name} cherche un partenaire pour « {title} »': '{name} is looking for a duet partner for “{title}”',
+      'Je chante avec {name}': 'I’ll sing with {name}',
+      'Ce titre cherche un partenaire de duo : tu peux chanter avec {name}, l’ajouter quand même ou choisir un autre titre.':
+        'This song is looking for a duet partner: you can sing with {name}, add it anyway or choose another song.',
+      'Karaoké : duo ouvert': 'Karaoke: open duet',
+      'Qui chante « {title} » avec {name} ?': 'Who sings “{title}” with {name}?',
+      'Le premier qui se propose chante avec {name}. Ses propres chansons restent dans sa liste.': 'The first person to volunteer sings with {name}. Their own songs stay on their list.',
+      'Duo ouvert : toute la salle peut se proposer pour chanter avec {name}.': 'Open duet: anyone in the room can volunteer to sing with {name}.',
+      'duo ouvert, en attente d’un partenaire': 'open duet, waiting for a partner',
+      'duo ouvert': 'open duet',
+      'Ce soir, le bar ne prend que des duos : ce titre attend un partenaire pour passer.': 'Tonight the bar only takes duets: this song waits for a partner before it goes up.',
+      'Sans partenaire avant ton tour, tu chanteras seul.': 'Without a partner before your turn, you’ll sing solo.',
+      'Sans partenaire avant son tour, {name} chantera seul.': 'Without a partner before their turn, {name} will sing solo.',
+      'Chercher un duo': 'Find a duet',
+      'Chercher un duo pour {title}': 'Find a duet for {title}',
+      'Fermer la demande': 'Close the request',
+      'Fermer la demande de duo pour {title}': 'Close the request for {title}',
+      'Demande fermée : le titre reste en solo.': 'Request closed: the song stays solo.',
+      'Chercher un duo pour « {title} » ?': 'Find a duet partner for “{title}”?',
+      'Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Ce téléphone ne pourra plus le repasser en solo, seulement le retirer ; si un partenaire le rejoint puis le quitte, il partira en solo.':
+        'Tonight the bar only takes duets: this song will wait for a partner before it goes up. This phone can no longer switch it back to solo, only remove it; if a partner joins and then leaves, it will go up solo.',
+      'Oui, chercher un duo': 'Yes, find a duet',
+      '{name} rejoint {person} en duo sur « {title} ».': '{name} joins {person} for a duet on “{title}”.',
+      'Personne n’a rejoint le duo de {person} sur « {title} » : {person} le chante en solo.': 'Nobody joined {person}’s duet on “{title}”: {person} sings it solo.',
 
       // Réglages de titre : tonalité, tempo, voix guide et chœurs (v1.4)
       'Réglages': 'Settings',
@@ -732,6 +765,13 @@ window.CLIENT_TRANSLATIONS = {
       'Plusieurs personnes ont déjà demandé ce duo. Attends la réponse.': 'Several people have already asked for this duet. Wait for the answer.',
       'Cette demande de duo n’est plus valable.': 'This duet request is no longer valid.',
       'Demande de duo introuvable.': 'Duet request not found.',
+      // Duo ouvert
+      'Un seul duo ouvert à la fois : ferme d’abord ta demande en cours.': 'One open duet at a time: close your current request first.',
+      'Des personnes demandent déjà à chanter ce titre avec toi : réponds-leur d’abord.': 'People are already asking to sing this song with you: answer them first.',
+      'Cette demande de duo n’est plus ouverte.': 'This duet request is no longer open.',
+      'Quelqu’un a déjà rejoint ce duo.': 'Someone has already joined this duet.',
+      'Ce titre cherche déjà un partenaire : appuie sur « Je chante avec » pour le rejoindre.': 'This song is already looking for a partner: tap “I’ll sing with” to join it.',
+      'Retrouve ce titre dans le catalogue avant de chercher un duo.': 'Find this song in the catalogue before looking for a duet partner.',
       'Titre manquant.': 'Missing song title.',
       // Réglages de titre (v1.4)
       'Le bar a désactivé les réglages de titre depuis les téléphones.': 'The bar has turned off song settings from phones.',

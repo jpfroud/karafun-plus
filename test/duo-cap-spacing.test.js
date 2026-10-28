@@ -106,7 +106,7 @@ test('duos croisés d’une table de deux et groupe de dix en duos : répartitio
   for (const p of xs) assert.ok(count(groupPlayed, p.name) <= count(groupPlayed, 'B1') + 2, `${p.name} reste proche des autres`);
 });
 
-test('un nouveau venu seul n’attend jamais pour l’espacement ; un duo avec quelqu’un qui vient de chanter attend trois chansons au plus', () => {
+test('un nouveau venu seul n’attend jamais pour l’espacement ; un duo avec quelqu’un qui vient de chanter attend trois chansons au plus après son dernier passage', () => {
   const { s, people, star, refill } = starEvening();
   play(s, people, refill, 30);
   const newcomer = s.join({ tableId: 'Comptoir', name: 'Neuf' });
@@ -119,7 +119,7 @@ test('un nouveau venu seul n’attend jamais pour l’espacement ; un duo avec q
   const dueWithStar = s.inviteDuet(late, star.id, song());
   s.answerDuet(star, true, dueWithStar.entryId);
   const order = [];
-  for (let k = 0; k < 6; k++) {
+  for (let k = 0; k < 10; k++) {
     for (const p of people) refill(p);
     const sel = s.select();
     s.commit(sel); s.songEnded(sel.ids);
@@ -127,7 +127,21 @@ test('un nouveau venu seul n’attend jamais pour l’espacement ; un duo avec q
     if (sel.ids.includes(late.id)) break;
   }
   const wait = order.findIndex(ids => ids.includes(late.id));
-  assert.ok(wait >= 0 && wait <= 3, `le premier passage de Tard arrive dans les quatre chansons suivantes (${wait})`);
+  // Ordre exact, pour que toute dérive se voie (relecture, passe 3 : la borne
+  // comptée depuis le dernier passage de Y1 aurait accepté n'importe quelle
+  // attente plus longue finie par un passage de Y1). Avec le cycle des tables,
+  // le propre titre de Y1 part le premier de la soirée et prend l'une de ses
+  // deux places du premier tour (plafond de deux passages) : le duo de Y5, le
+  // dernier de sa table à passer avec lui, glisse plus loin et devient dû
+  // juste avant celui de Tard (premier passage de Y5 au 34e passage de la
+  // soirée, contre le 20e avant le cycle des tables). Tard attend alors
+  // l'espacement après ce passage de Y1 : six chansons en tout, contre deux
+  // avant le cycle.
+  const label = ids => ids.map(id => s.people.get(id).name).join('&');
+  assert.deepEqual(order.map(label), ['D4', 'D5', 'Y5&Y1', 'B1', 'C1', 'D1', 'Tard&Y1']);
+  const starBefore = order.slice(0, Math.max(0, wait)).map(ids => ids.includes(star.id)).lastIndexOf(true);
+  assert.ok(wait >= 0 && wait - starBefore - 1 <= 3,
+    `le premier passage de Tard arrive trois chansons au plus après le dernier passage de Y1 (${wait}, ${starBefore})`);
 });
 
 test('la prévision affichée est exactement l’ordre réellement chanté', () => {

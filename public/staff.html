@@ -59,7 +59,7 @@
     <div id="qBody" class="queue-rows"></div>
     <p id="queueEmpty" class="empty-state" hidden>Aucune chanson en attente pour le moment.</p>
     <details id="manualHistory" class="manual-history" hidden><summary>Changements manuels de la file <span class="count" id="manualCount">0</span></summary>
-      <p class="small muted">Annule les changements du plus récent au plus ancien. Les titres déjà chargés dans KaraFun ne changent pas de place.</p>
+      <p class="small muted">Une ligne placée par le bar garde sa place jusqu’à son envoi à KaraFun, même quand d’autres titres arrivent ; si sa personne chante avant elle (en duo), elle retrouve le calcul. Annule les changements du plus récent au plus ancien : la ligne retrouve le calcul, les autres gardent leur place. Les titres déjà chargés dans KaraFun ne changent pas de place.</p>
       <div id="manualHistoryList" class="manual-history-list"></div>
       <button class="btn small" id="recalculateQueue">Annuler tous les changements manuels</button>
     </details>
@@ -136,16 +136,16 @@
     <div class="rotation-options" role="radiogroup" aria-label="Ordre de passage dans le tour">
       <p class="small">Dans tous les modes, personne ne rechante avant les premiers passages et chacun chante une fois par tour (bonus et malus à part) : le mode ne change que l’ordre dans le tour. Deux règles s’ajoutent quand c’est évitable : la patience (personne ne voit quelqu’un chanter deux fois pendant sa propre attente) et la rotation des tables (la même table ne reprend pas le micro). Le mode choisit laquelle des deux l’emporte, et à quel moment du tour passent les grandes tables.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationPeople" value="people"> Chacun son tour (recommandé)</label>
-      <p class="small muted">Priorité : la patience. Au premier tour, les tables sont entremêlées au prorata de leurs chanteurs prêts ; ensuite, chacun repasse dans l’ordre du tour précédent, et la même table peut enchaîner au changement de tour quand les tables n’ont pas autant de titres prêts.</p>
+      <p class="small muted">Priorité : la patience, puis la personne qui attend depuis le plus longtemps. Pour les premiers passages, les tables tournent : un premier de chaque table, les tables et leurs chanteurs dans l’ordre d’ajout des titres ; ensuite, chacun repasse dans l’ordre du tour précédent, et la même table peut enchaîner au changement de tour quand les tables n’ont pas autant de titres prêts.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationTables" value="tables"> Tables à tour de rôle</label>
-      <p class="small muted">Priorité : la rotation des tables, puis la patience. Les tables passent à tour de rôle quel que soit leur nombre de chanteurs : les petites tables chantent tôt dans le tour, la grande table enchaîne ses chanteurs restants en fin de tour.</p>
+      <p class="small muted">Priorité : la rotation des tables, puis la patience ; à part égale, la personne qui attend depuis le plus longtemps. Les tables passent à tour de rôle quel que soit leur nombre de chanteurs : les petites tables chantent tôt dans le tour, la grande table enchaîne ses chanteurs restants en fin de tour.</p>
       <label class="switch"><input type="radio" name="rotationMode" id="rotationCompromise" value="compromise"> Compromis</label>
       <p class="small muted">Priorité : la rotation des tables, puis la patience, comme « Tables à tour de rôle », mais une grande table passe un peu plus tôt dans le tour : une table de 4 compte comme 2 solistes, une table de 9 comme 3. Taille d’une table : les inscrits que le bar n’a pas marqués « Parti » qui ont un titre, prêt ou non, ou ont déjà chanté un de leurs titres ce soir (pas seulement en invité d’un duo) ; pas les places déclarées.</p>
       <label class="switch"><input id="interleaveArrivals" type="checkbox"> Intercaler une table qui arrive en nombre</label>
       <p class="small muted">Recommandé. Quand une nouvelle table inscrit plusieurs chanteurs d’un coup, les habitués peuvent chanter une fois entre eux au lieu d’attendre toute la table. Personne ne chante deux fois pendant l’attente d’un nouveau.</p>
     </div>
     <div class="row wrap"><label class="switch duo-only-switch"><input id="duoOnly" type="checkbox"> Duos uniquement</label><span class="save-status" data-save-status="duoOnly" aria-live="polite"></span></div>
-    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent. Un duo accepté ne redevient pas un solo par son auteur ni par une invitée de la même table (le titre peut être retiré). Comme d’habitude, une invitation sans réponse, refusée ou quittée par une autre table part en solo, et un duo déjà chargé dans KaraFun peut finir en solo si l’un des deux manque. Se décoche à la nouvelle soirée (« Supprimer toutes les tables »).</p>
+    <p class="small muted">Soirée chargée : les clients ne peuvent ajouter que des duos, pour faire monter plus de monde sur scène par heure. Les titres déjà choisis restent. Un duo accepté ne redevient pas un solo par son auteur ni par une invitée de la même table (le titre peut être retiré). Comme d’habitude, une invitation sans réponse, refusée ou quittée par une autre table part en solo, et un duo déjà chargé dans KaraFun peut finir en solo si l’un des deux manque. Un duo ouvert (« Qui veut chanter en duo avec moi ? ») ne part pas sans partenaire : il attend qu’on le rejoigne. Se décoche à la nouvelle soirée (« Supprimer toutes les tables »).</p>
     <div class="row wrap"><label class="switch tune-switch"><input id="singerSongSettings" type="checkbox"> Les chanteurs peuvent régler leurs titres (tonalité, tempo, guide, chœurs)</label><span class="save-status" data-save-status="singerSongSettings" aria-live="polite"></span></div>
     <p class="small muted">Depuis leur téléphone, tant que leur titre n’a pas commencé ; pour un duo, seul l’auteur du titre. Coupé : le bouton « Réglages » disparaît des téléphones et les réglages déjà faits restent appliqués. Le bar règle toujours le titre en cours (Scène) et les titres à venir (File, menu ⋯ → Réglages).</p>
     <p class="small" id="songSettingsInfo" role="status"></p>
@@ -166,7 +166,7 @@
     </div>
     <details class="disclosure"><summary>Équité : réglages avancés</summary>
       <div class="rule-fields">
-        <label for="gap">Écart à l’inscription entre deux chanteurs d’une même table (1 à 10) <span class="hint">Quand un nouveau chanteur ajoute son premier titre, on essaie de l’éloigner des chanteurs déjà inscrits à sa table. La rotation peut ensuite recalculer l’ordre.</span><span class="field-number"><input id="gap" type="number" inputmode="numeric" min="1" max="10"> places</span><span class="save-status" data-save-status="gap" aria-live="polite"></span></label>
+        <label for="gap">Écart à l’inscription entre deux chanteurs d’une même table (1 à 10) <span class="hint">Quand un nouveau chanteur ajoute son premier titre, on essaie de l’éloigner des chanteurs déjà inscrits à sa table. Les premiers passages suivent toutefois le cycle des tables et l’ordre d’ajout des titres : cet écart ne change plus leur ordre, sauf pour un duo avec quelqu’un qui a déjà chanté.</span><span class="field-number"><input id="gap" type="number" inputmode="numeric" min="1" max="10"> places</span><span class="save-status" data-save-status="gap" aria-live="polite"></span></label>
         <label for="cap">Recul maximal d’un chanteur pendant une attente (1 à 50) <span class="hint">Les nouveaux arrivants ne peuvent pas repousser indéfiniment quelqu’un.</span><span class="field-number"><input id="cap" type="number" inputmode="numeric" min="1" max="50"> places</span><span class="save-status" data-save-status="cap" aria-live="polite"></span></label>
       </div>
     </details>
@@ -199,7 +199,7 @@
   <section class="card spotify-panel" data-tab="plus" id="spotifyPanel">
     <div class="section-heading"><div><div class="eyebrow">Musique d’ambiance</div><h2>Spotify pendant les silences</h2></div><span class="pill" id="spotifyPill">Non connecté</span></div>
     <p class="small" id="spotifyText" role="status"></p>
-    <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (<span id="spotifyDevicesHint">ce PC, celui de KaraFun, une enceinte</span>) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
+    <p class="small muted">Quand la file est vide (ou à l’heure de fermeture), l’application relance Spotify, jamais entre deux chansons ; la lecture automatique attend alors « Lecture », le temps de redonner le micro. Pendant une Battle, Spotify reprend aussi quand elle attend dans KaraFun que tu la lances, puis après elle jusqu’au lancement du titre suivant, sans suspendre la lecture automatique. Avant un titre, elle coupe Spotify puis laisse un court silence. Elle lit d’abord l’état réel de Spotify : elle ne relance pas une musique déjà en cours et n’agit qu’une fois par silence (si tu coupes la musique toi-même, elle ne la relance pas). Spotify peut jouer sur n’importe quel appareil (<span id="spotifyDevicesHint">ce PC, celui de KaraFun, une enceinte</span>) : il est piloté par Internet. Un abonnement Spotify Premium est nécessaire.</p>
     <div class="row wrap" id="spotifyReconnectRow" hidden><button class="btn small primary" id="spotifyReconnect">Reconnecter Spotify</button><span class="small muted" id="spotifyReconnectHint">depuis ce PC : Spotify revient sur son adresse locale.</span></div>
     <details class="disclosure" id="spotifySetup"><summary>Connecter Spotify (une seule fois)</summary>
       <ol class="small">
@@ -305,9 +305,13 @@
 <dialog id="tableSheet" class="staff-dialog" aria-labelledby="tableSheetTitle"><h2 id="tableSheetTitle">Table</h2><p class="small muted" id="tableSheetInfo"></p>
   <label class="field" for="tableSheetName">Nom affiché (1 à 40 caractères)</label><div class="row wrap"><input id="tableSheetName" type="text" maxlength="40" data-autosave="tableRename"><span class="save-status" id="tableSheetNameStatus" aria-live="polite"></span></div>
   <div id="tableSheetHcRow"><label class="field" for="tableSheetHc">Places (1 à 40)</label><div class="row wrap"><input id="tableSheetHc" type="number" inputmode="numeric" min="1" max="40" data-autosave="tableHc"><span class="save-status" id="tableSheetHcStatus" aria-live="polite"></span></div></div>
-  <label class="field" for="tableSheetBonus">Bonus table (réservé au bar, jamais montré aux clients)</label><select id="tableSheetBonus"></select>
+  <label class="field" for="tableSheetBonus">Bonus table (réservé au bar, jamais montré aux clients)</label><select id="tableSheetBonus" aria-describedby="tableSheetBonusHelp"></select>
+  <p class="tiny muted" id="tableSheetBonusHelp"></p>
   <div class="row wrap sheet-actions"><button type="button" class="btn small" id="tableSheetQr">Montrer le QR</button><a class="btn small" id="tableSheetPage" href="#" target="_blank" rel="noopener">Page</a><button type="button" class="btn small danger" id="tableSheetLeft">Table partie</button></div>
   <button type="button" class="btn small primary" id="tableSheetClose">Fermer</button></dialog>
+<!-- « Priorité » avant un titre déjà chargé dans KaraFun : trois choix, Annuler ne change rien. Textes posés par askPriority. -->
+<dialog id="priorityDialog" class="staff-dialog" aria-labelledby="priorityTitle" aria-describedby="priorityHelp"><h2 id="priorityTitle" tabindex="-1" autofocus>Priorité</h2><p class="small" id="priorityHelp"></p>
+  <div class="row wrap sheet-actions"><button type="button" class="btn wide primary" id="priorityBefore">Avant le titre chargé</button><button type="button" class="btn wide" id="priorityAfter">Juste après le titre chargé</button><button type="button" class="btn wide" id="priorityCancel">Annuler</button></div></dialog>
 
 <script>
 (() => {
@@ -331,6 +335,41 @@
     0: 'Aucun', 1: '+1 : un peu plus souvent', 2: '+2 : une fois et demie plus', 3: '+3 : deux fois plus' };
   const bonusOptions = level => [-3, -2, -1, 0, 1, 2, 3].map(value =>
     `<option value="${value}" ${Number(level || 0) === value ? 'selected' : ''}>${BONUS_LABELS[value]}</option>`).join('');
+  // Ce que fait le niveau choisi (page du bar seulement). Une personne passe
+  // selon son bonus multiplié par celui de sa table (BONUS_WEIGHTS de
+  // lib/scheduler/common.js), au plus deux fois par tour ; les passages en
+  // plus sont répartis dans le tour, après les premiers passages des nouveaux.
+  // Copie de BONUS_WEIGHTS : staff-ui-coverage.test.js échoue si elles diffèrent.
+  const BONUS_WEIGHT = { '-3': 0.5, '-2': 2 / 3, '-1': 0.8, 0: 1, 1: 1.25, 2: 1.5, 3: 2 };
+  const rhythmOf = weight => {
+    const near = value => Math.abs(weight - value) < 0.01;
+    if (near(1)) return 'passe une fois par tour, comme les autres';
+    if (weight > 1) {
+      if (weight > 2.01) return 'passe environ deux fois plus souvent (pas plus de deux passages par tour)';
+      return near(2) ? 'passe environ deux fois plus souvent' : near(1.5) ? 'passe environ une fois et demie plus souvent' :
+        near(1.25) ? 'passe un peu plus souvent (environ 5 passages pour 4)' :
+        `passe environ ${String(Math.round(weight * 10) / 10).replace('.', ',')} fois plus souvent`;
+    }
+    return near(0.8) ? 'passe un peu moins souvent (environ 4 passages pour 5)' : near(2 / 3) ? 'passe environ deux tours sur trois' :
+      near(0.5) ? 'passe un tour sur deux' : `passe environ ${Math.round(weight * 10)} tours sur 10`;
+  };
+  // `tableLevel` : bonus de la table de la personne ; `table` : phrase du
+  // réglage d'une table (elle vaut pour chacun de ses chanteurs).
+  const bonusSign = v => v > 0 ? `+${v}` : v < 0 ? `−${-v}` : 'Aucun';
+  const bonusHelp = (level, tableLevel = 0, table = false) => {
+    const value = Number(level) || 0, atTable = table ? 0 : Number(tableLevel) || 0;
+    const weight = (BONUS_WEIGHT[value] || 1) * (BONUS_WEIGHT[atTable] || 1);
+    return `${bonusSign(value)}${atTable ? `, avec le bonus de la table (${bonusSign(atTable)})` : ''} : ${table && value ? 'chaque personne de la table ' : ''}${rhythmOf(weight)}${
+      weight > 1.01 ? ' ; passages en plus répartis dans le tour, après les premiers passages des nouveaux' :
+      weight < 0.99 ? ' ; le premier passage de la soirée n’est pas retardé' : ''}.`;
+  };
+  // Étiquette courte d'une ligne de « Repères » (la phrase de bonusHelp au
+  // survol) : écrite en entier sous chaque nom, elle rendait les lignes deux à
+  // trois fois plus hautes et répétait la même phrase pour toute une table.
+  const bonusTag = (level, tableLevel = 0) => {
+    const value = Number(level) || 0, atTable = Number(tableLevel) || 0;
+    return `${value < 0 ? 'Malus' : 'Bonus'} ${bonusSign(value)}${atTable ? ` · table ${bonusSign(atTable)}` : ''}`;
+  };
   const store = { get(name) { try { return localStorage.getItem(name); } catch (_) { return null; } },
     set(name, value) { try { localStorage.setItem(name, value); } catch (_) { /* mémoire du navigateur indisponible */ } } };
   let alertsEnabled = store.get('bar-alerts') === 'yes';
@@ -430,6 +469,60 @@
       load();
     } catch (e) { toast(e.message, true); }
   }
+  // « Priorité » avec un titre de la file déjà chargé dans KaraFun (pas sur
+  // scène) : le bar choisit de faire passer la personne avant lui (le titre
+  // sort de KaraFun et repasse juste après elle) ou juste après lui, comme
+  // avant. Seulement pour les lignes que le serveur accepterait
+  // (`priorityPull.lineIds`, priorityPullRefusal) : pas de copie de sa règle ici.
+  function pullOffer(q) {
+    return !!S?.priorityPull && (S.priorityPull.lineIds || []).includes(q.id);
+  }
+  function giveUrgent(personId) {
+    const line = S.queue.find(q => q.source === 'helper' && q.id === personId && !q.future);
+    if (!line || !pullOffer(line)) {
+      act('/api/staff/move', { personId, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun');
+      return;
+    }
+    askPriority(line, S.priorityPull);
+  }
+  // Question posée dans une fenêtre de la page, pas un confirm() du
+  // navigateur (son « Annuler » valait « juste après ») : avant le titre
+  // chargé (il sort de KaraFun), juste après lui (rien n'en sort ; pas
+  // proposé au premier passage libre, qui y est déjà), ou Annuler. Annuler,
+  // Échap et Retour ferment la fenêtre sans rien envoyer.
+  let priorityAsk = null; // { personId, name, queueId, title, first } de la question ouverte
+  function askPriority(line, loaded) {
+    const name = line.name || 'ce chanteur';
+    const first = S.queue.find(q => q.source === 'helper' && !q.future)?.id === line.id;
+    priorityAsk = { personId: line.id, name, queueId: loaded.queueId, title: loaded.title, first };
+    $('priorityTitle').textContent = `Faire passer ${name} avant « ${loaded.title} » ?`;
+    $('priorityHelp').textContent = `« ${loaded.title} » est déjà chargé dans KaraFun. Avant lui : il sort de KaraFun et repasse juste après ${name}, sans perdre son tour. ` +
+      (first ? `Sans retrait, ${name} passe déjà juste après lui.` : `Juste après lui : rien ne sort de KaraFun.`);
+    $('priorityBefore').textContent = `Avant « ${loaded.title} »`;
+    $('priorityAfter').textContent = `Juste après « ${loaded.title} »`;
+    $('priorityAfter').hidden = first;
+    // Le menu ⋯ de la ligne se ferme ; son étape d'historique devient celle de la fenêtre.
+    if (window.history?.state?.rowMenu) { try { window.history.replaceState({ barTab: activeTab, dialog: 'priorityDialog' }, '', tabUrl()); } catch (_) { /* */ } }
+    openRowMenu = null;
+    openDialog('priorityDialog');
+    render();
+  }
+  function answerPriority(choice) {
+    const ask = priorityAsk;
+    priorityAsk = null;
+    $('priorityDialog').close();
+    if (!ask || choice === 'cancel') return;
+    if (choice === 'before') {
+      act('/api/staff/move', { personId: ask.personId, toIndex: 0, priority: true, pullLoaded: true, queueId: ask.queueId },
+        `« ${ask.title} » sort de KaraFun : ${ask.name} passe d’abord`);
+    } else if (!ask.first) {
+      act('/api/staff/move', { personId: ask.personId, toIndex: 0, priority: true }, `${ask.name} passe juste après « ${ask.title} », déjà chargé dans KaraFun`);
+    }
+  }
+  $('priorityBefore').onclick = () => answerPriority('before');
+  $('priorityAfter').onclick = () => answerPriority('after');
+  $('priorityCancel').onclick = () => answerPriority('cancel');
+  $('priorityDialog').addEventListener('close', () => { priorityAsk = null; });
 
   // Le service de mise à jour tourne sur le serveur, même lorsque cette page
   // perd brièvement sa connexion. Une soirée active demande confirmation ;
@@ -529,9 +622,9 @@
   }
   setTab(activeTab, false);
   try { window.history?.replaceState?.({ barTab: activeTab }, '', `${location.pathname || ''}${location.search || ''}#${activeTab}`); } catch (_) { /* */ }
-  // Une fenêtre ouverte (QR, détails d'une table, transfert) a sa propre étape :
-  // Retour la ferme sans changer d'onglet. Fermée d'un bouton, son étape est retirée.
-  const DIALOGS = ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog', 'songSheet'];
+  // Une fenêtre ouverte (QR, détails d'une table, transfert, question « Priorité ») a sa
+  // propre étape : Retour la ferme sans changer d'onglet. Fermée d'un bouton, son étape est retirée.
+  const DIALOGS = ['tableQrDialog', 'tableSheet', 'shareDialog', 'soloInviteDialog', 'songSheet', 'priorityDialog'];
   let poppingDialog = false, keepStep = false;
   const tabUrl = () => `${location.pathname || ''}${location.search || ''}#${activeTab}`;
   function openDialog(id) {
@@ -955,12 +1048,14 @@
       return (select.value === 'all' || p.tableId === select.value) &&
         (!filter || `${p.name} ${table?.name || ''} ${p.privateNote || ''}`.toLocaleLowerCase('fr').includes(filter));
     }).sort((a, b) => S.tables.findIndex(t => t.id === a.tableId) - S.tables.findIndex(t => t.id === b.tableId) || a.name.localeCompare(b.name, 'fr'));
-    // Une ligne compacte par personne, regroupée par table.
+    // Une ligne compacte par personne, regroupée par table. Un bonus
+    // personnel tient en une étiquette (bonusTag) ; la phrase du bonus d'une
+    // table s'écrit une fois, sous son nom, pas sous chacun de ses chanteurs.
     const row = p => `<div class="identity-row${p.active ? '' : ' gone'}" data-identity-person="${esc(p.id)}">
       ${photoHtml(p, p.name)}
-      <div class="identity-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}<span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${activityHtml(activityOf(p))}</div>
+      <div class="identity-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}<span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${p.bonus ? `<span class="tiny muted" data-person-bonus-help title="${esc(bonusHelp(p.bonus, tableOf(p.tableId)?.bonus))}">${esc(bonusTag(p.bonus, tableOf(p.tableId)?.bonus))}</span>` : ''}${activityHtml(activityOf(p))}</div>
       <span class="identity-note"><input data-identity-note data-autosave="note" data-autosave-id="${esc(p.id)}" type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}"><span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span></span>
-      <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
+      <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar. ${esc(bonusHelp(p.bonus, tableOf(p.tableId)?.bonus))}" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
     </div>`;
     const groups = [];
     for (const p of people) {
@@ -972,6 +1067,7 @@
     // garde le focus (« Parti », « Réactiver ») n'empêche pas la ligne de suivre.
     patch(container, people.length ? groups.map(group => `<section class="identity-group">
       <h4>${esc(tables.get(group.tableId)?.name || group.tableId)} <span class="tiny muted">${group.people.length} personne${group.people.length > 1 ? 's' : ''}</span></h4>
+      ${Number(tables.get(group.tableId)?.bonus) ? `<div class="tiny muted" data-table-bonus-help>Bonus de la table ${esc(bonusHelp(tables.get(group.tableId).bonus, 0, true))}</div>` : ''}
       ${group.people.map(row).join('')}</section>`).join('') : '<p class="small muted">Aucun chanteur pour ce filtre.</p>', force);
   }
 
@@ -1147,10 +1243,18 @@
       const nextText = solver.refining ?
         'La file ne change pas : la recherche continue et n’affiche un nouvel ordre que s’il est meilleur.' :
         solver.nextRefineAt ? `Prochaine recherche dans ${Math.max(1, Math.round((solver.nextRefineAt - Date.now()) / 1000))} s.` :
-        solver.plan === 'manual' ? 'Ordre du bar conservé ; « Recalculer la file » le remplace.' : '';
+        solver.plan === 'manual' ? 'Ordre du bar conservé ; les lignes placées gardent leur place jusqu’à leur envoi.' : '';
       $('solverText').textContent = [lastText, gainText, nextText].filter(Boolean).join(' ');
     }
     $('optimizeQueue').disabled = !!solver.pending && !!solver.forced;
+    // « Recalculer la file » annule aussi les gestes du bar : le bouton le dit,
+    // avec leur nombre (un gérant le touchait pour rafraîchir la file).
+    const gestures = (S.manualChanges || []).length;
+    $('optimizeQueue').textContent = !gestures ? 'Recalculer la file' : gestures === 1 ?
+      'Annuler mon changement et recalculer' : `Annuler mes ${gestures} changements et recalculer`;
+    $('optimizeQueue').title = gestures ?
+      'Annule les déplacements et priorités donnés par le bar, puis recalcule tout l’ordre avec les règles de la soirée ; les titres déjà dans KaraFun ne bougent pas' :
+      'Recalcule tout l’ordre avec les règles de la soirée ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas';
   }
 
   // Titre en double : déjà chanté récemment ou prévu plusieurs fois.
@@ -1282,7 +1386,12 @@
   // Invitation de duo sans réponse sur un titre encore prévu : il garde sa
   // place et part en solo si personne n'a répondu à son tour (à l'envoi,
   // l'invitation expire).
+  // Duo ouvert (« Qui veut chanter en duo avec moi ? ») : même règle tant
+  // que personne ne l'a rejoint.
   function pendingInviteBadge(item) {
+    if (item.source === 'helper' && item.song?.duet?.state === 'open') {
+      return '<span class="badge wait invite open-duo" title="Cherche un partenaire dans toute la salle : sans volontaire à son tour, le titre part en solo dans KaraFun.">Duo ouvert</span>';
+    }
     const invite = item.source === 'helper' && item.song?.duet?.state === 'pending' ? item.song.duet : null;
     return invite ? `<span class="badge wait invite" title="Duo proposé à ${esc(invite.partnerName || 'un chanteur')}${invite.seen === false ? ' (pas encore vue)' : ''} : sans réponse à son tour, le titre part en solo dans KaraFun.">Invitation en attente</span>` : '';
   }
@@ -1568,6 +1677,7 @@
       $('tableSheetBonus').innerHTML = bonus;
       rendered.set($('tableSheetBonus'), bonus);
     }
+    $('tableSheetBonusHelp').textContent = bonusHelp($('tableSheetBonus').value, 0, true);
     $('tableSheetQr').hidden = $('tableSheetPage').hidden = !!t.individual || !t.url;
     $('tableSheetPage').href = t.url || '#';
     $('tableSheetLeft').hidden = t.id === 'Comptoir' && !!t.individual;
@@ -1589,8 +1699,11 @@
     try { $('tableSheet').close(); } finally { keepStep = false; }
     showTableQr(id);
   };
-  $('tableSheetBonus').onchange = () => act('/api/staff/bonus', { tableId: $('tableSheet').dataset.tableId, level: Number($('tableSheetBonus').value) },
-    Number($('tableSheetBonus').value) ? 'Bonus de table enregistré (invisible des clients)' : 'Bonus de table retiré');
+  $('tableSheetBonus').onchange = () => {
+    $('tableSheetBonusHelp').textContent = bonusHelp($('tableSheetBonus').value, 0, true);
+    return act('/api/staff/bonus', { tableId: $('tableSheet').dataset.tableId, level: Number($('tableSheetBonus').value) },
+      Number($('tableSheetBonus').value) ? 'Bonus de table enregistré (invisible des clients)' : 'Bonus de table retiré');
+  };
   $('tableSheetLeft').onclick = () => {
     const t = tableOf($('tableSheet').dataset.tableId);
     if (t && confirm(`${t.name} est partie ? Ses tickets seront retirés.`)) {
@@ -1942,13 +2055,15 @@
     renderDuoBox();
     // Demandes de duo sur un titre de la file (page des chanteurs) : le bar les voit.
     // Invitations envoyées par l'auteur du titre : même encadré, même état.
-    const requests = S.joinRequests || [], invites = S.duoInvites || [];
-    $('joinRequestsBox').hidden = !requests.length && !invites.length;
+    // Duos ouverts sans partenaire : en « Duos uniquement », ils attendent hors de la file.
+    const requests = S.joinRequests || [], invites = S.duoInvites || [], opens = S.openDuets || [];
+    $('joinRequestsBox').hidden = !requests.length && !invites.length && !opens.length;
     // « Pas encore vue » : le téléphone qui doit répondre ne l'a pas affichée ;
     // le bar peut aller prévenir la personne.
     const seenText = (seenAt, who) => seenAt ? ' · vue' : seenAt === null ? ` · <span class="unseen">pas encore vue par ${esc(who)}</span>` : '';
     $('joinRequestsList').innerHTML = requests.map(r => `<div class="join-request small"><b>${esc(r.requesterName)}</b> demande à chanter « ${esc(r.title)} » avec <b>${esc(r.ownerName)}</b>${r.at ? ` · ${hhmm(r.at)}` : ''}${seenText(r.seenAt, r.ownerName)}</div>`).join('') +
-      invites.map(r => `<div class="join-request small"><b>${esc(r.ownerName)}</b> invite <b>${esc(r.partnerName)}</b> à chanter « ${esc(r.title)} » en duo${seenText(r.seenAt, r.partnerName)}</div>`).join('');
+      invites.map(r => `<div class="join-request small"><b>${esc(r.ownerName)}</b> invite <b>${esc(r.partnerName)}</b> à chanter « ${esc(r.title)} » en duo${seenText(r.seenAt, r.partnerName)}</div>`).join('') +
+      opens.map(r => `<div class="join-request small"><span class="badge wait invite open-duo">Duo ouvert</span> <b>${esc(r.ownerName)}</b>${r.table ? ` (${esc(r.table)})` : ''} cherche un partenaire pour « ${esc(r.title)} »${r.openedAt ? ` · ${hhmm(r.openedAt)}` : ''}${r.held ? ' · Duos uniquement : le titre attend un volontaire hors de la file' : ''}</div>`).join('');
 
     const publicHttps = isPublicHttps(S.phoneBase || '');
     const readyQrCount = S.tables.filter(t => t.url && t.qrUrl && !t.individual).length;
@@ -1979,14 +2094,17 @@
     const manualChanges = S.manualChanges || [];
     $('manualHistory').hidden = manualChanges.length === 0;
     $('manualCount').textContent = manualChanges.length;
-    $('manualHistoryList').innerHTML = manualChanges.map((change, index) => {
+    $('manualHistoryList').innerHTML = manualChanges.map(change => {
       const action = change.kind === 'priority' ? 'Priorité' : 'Déplacement';
       const time = new Date(change.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-      return `<div class="manual-history-item"><span><b>${esc(action)} : ${esc(change.name)}</b> · ${esc(time)} · place ${esc(change.from)} → ${esc(change.to)}</span>${change.canUndo ? `<button class="btn small" data-manual-undo="${esc(change.id)}">Annuler ce changement</button>` : `<span class="small muted">${index ? 'Annule d’abord le changement plus récent' : 'La file a changé depuis : annulation indisponible'}</span>`}</div>`;
+      return `<div class="manual-history-item"><span><b>${esc(action)} : ${esc(change.name)}</b> · ${esc(time)} · place ${esc(change.from)} → ${esc(change.to)}</span>${change.canUndo ? `<button class="btn small" data-manual-undo="${esc(change.id)}">Annuler ce changement</button>` : '<span class="small muted">Annule d’abord le changement plus récent</span>'}</div>`;
     }).join('');
-    $('recalculateQueue').disabled = !manualChanges[0]?.canUndo;
+    // Le geste le plus récent s'annule toujours, même après un changement de
+    // la file : le serveur dit si l'ordre d'avant revient ou si la ligne
+    // retrouve le calcul.
+    $('recalculateQueue').disabled = !manualChanges.length;
     $('manualHistoryList').querySelectorAll('[data-manual-undo]').forEach(button => button.onclick = () =>
-      act('/api/staff/manual-change-undo', { id: button.dataset.manualUndo }, 'Dernier changement annulé ; ordre précédent retrouvé'));
+      act('/api/staff/manual-change-undo', { id: button.dataset.manualUndo }, 'Dernier changement annulé'));
     let plannedIndex = 0;
     const lineKey = q => q.source === 'helper' && q.id ? `p:${q.id}|${q.song?.entryId || ''}` :
       q.source === 'karafun' && q.ours && q.queueId ? `k:${q.queueId}` : null;
@@ -2011,7 +2129,7 @@
       const key = lineKey(q);
       const title = q.song?.title || q.title || '—';
       const artist = q.song?.artist || q.artist || '';
-      const status = q.waitingPresence ? (q.source === 'karafun' ? 'Dans KaraFun · Je suis là attendu' : 'Je suis là attendu') : q.source === 'karafun' ? (q.ours ? 'Dans KaraFun' : 'Ajouté dans KaraFun') : q.source === 'envoi' ? 'Envoi' : q.future ? 'Titre suivant' : 'À venir';
+      const status = q.leaving ? 'Sort de KaraFun' : q.waitingPresence ? (q.source === 'karafun' ? 'Dans KaraFun · Je suis là attendu' : 'Je suis là attendu') : q.source === 'karafun' ? (q.ours ? 'Dans KaraFun' : 'Ajouté dans KaraFun') : q.source === 'envoi' ? 'Envoi' : q.future ? 'Titre suivant' : 'À venir';
       // Repères privés du bar, visibles au survol ou en touchant le nom.
       const notes = (q.ids || []).map(pid => S.people.find(p => p.id === pid)).filter(p => p?.privateNote)
         .map(p => (q.ids.length > 1 ? `${p.name} : ` : '') + p.privateNote);
@@ -2041,11 +2159,14 @@
       // Titre suivant d'un chanteur : retiré seul, sans toucher à son titre en cours.
       const removeEntry = q.source === 'helper' && q.future && q.id && q.song?.entryId ?
         `<button class="btn small danger" data-rm-entry="${esc(q.song.entryId)}" data-person-id="${esc(q.id)}" data-title="${esc(title)}" data-name="${esc(q.name || q.singer || 'ce chanteur')}" aria-label="Retirer « ${esc(title)} » de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : '';
-      const actions = movable ? `${index > 0 ? `<button class="btn small" data-urgent="${esc(q.id)}" title="Faire passer dès que possible, après les titres déjà chargés dans KaraFun">Priorité</button>` : ''}${tune}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `${tune}<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : tune + removeEntry;
+      // Un titre de la file déjà chargé dans KaraFun : « Priorité » propose de
+      // passer avant lui, même pour le premier passage libre.
+      const pullable = movable && pullOffer(q);
+      const actions = movable ? `${index > 0 || pullable ? `<button class="btn small" data-urgent="${esc(q.id)}" title="${pullable ? `Faire passer dès que possible ; propose de passer avant « ${esc(S.priorityPull.title)} », déjà chargé dans KaraFun` : 'Faire passer dès que possible, après les titres déjà chargés dans KaraFun'}">Priorité</button>` : ''}${tune}<button class="btn small danger" data-rm="${esc(q.id)}" aria-label="Retirer la chanson de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : q.source === 'karafun' && q.ours && q.queueId ? `${tune}<button class="btn small danger" data-kfrm="${esc(q.queueId)}" aria-label="Retirer cette chanson de KaraFun">Retirer</button>` : tune + removeEntry;
       return `<div class="queue-item${moveArmed === q.id ? ' move-selected' : ''}${key && selectedLines.has(key) ? ' picked' : ''}" ${movable ? `data-drag-id="${esc(q.id)}" data-visible-index="${index}"` : ''}>
         <span class="row-pick">${key ? `<input type="checkbox" data-pick="${esc(key)}" ${selectedLines.has(key) ? 'checked' : ''} aria-label="Sélectionner ${esc(q.name || q.singer || 'ce titre')}">` : '<span></span>'}<button class="drag-handle" type="button" ${movable ? `draggable="true" data-handle="${esc(q.id)}" aria-label="Déplacer ${esc(q.name || q.singer || 'ce passage')}"` : 'disabled aria-hidden="true"'}>⠿</button></span>
         <strong>${q.pos}</strong>
-        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
+        <div class="person-cell${notes.length ? ' has-note' : ''}${notes.length && openNote === key ? ' show-note' : ''}">${notes.length ? `<button type="button" class="person" data-note-toggle="${esc(key || '')}" aria-expanded="${openNote === key}" aria-label="${esc(q.name || q.singer || '—')} : afficher le repère">${esc(q.name || q.singer || '—')} <span class="note-mark" aria-hidden="true">✎</span></button><span class="note-pop" role="tooltip">${esc(notes.join(' · '))}</span>` : `<span class="person" title="${esc(q.name || q.singer || '—')}">${esc(q.name || q.singer || '—')}</span>`}<span class="table-tag" title="${esc(q.table || '')}">${esc(q.table || '')}</span>${idleTags}<span class="queue-tags"><span class="badge" title="${q.source === 'karafun' ? 'Déjà dans KaraFun' : q.source === 'envoi' ? 'Envoi en cours' : q.future ? 'Titre supplémentaire du même chanteur, pas encore envoyable' : 'Prévu dans la file'}">${status}</span>${q.guaranteed ? '<span class="badge lock" title="Prochain chanteur annoncé : sa place reste fixe sauf action du bar ou indisponibilité.">Prochain confirmé</span>' : ''}${q.placed ? '<span class="badge lock" title="Place donnée par le bar : ni un titre ajouté, ni une arrivée, ni le calcul ne passent devant. Elle avance quand les passages au-dessus partent, jusqu’à son envoi à KaraFun, et retrouve le calcul si la personne chante avant elle (en duo) ; « Changements manuels de la file » l’annule.">Placé par le bar</span>' : ''}${q.isNew ? '<span class="badge new">Premier passage</span>' : ''}${q.kind === 'duo' ? '<span class="badge duo">Duo</span>' : ''}${inviteBadge}${q.presenceSkips ? `<span class="badge wait" title="« Je suis là » sans réponse : ce titre a laissé passer le suivant">Absent ×${esc(q.presenceSkips)}</span>` : ''}${q.deferred ? '<span class="badge wait" title="La personne a indiqué qu’elle n’était pas prête : son passage laisse passer d’autres titres et garde son tour">Pas prêt</span>' : ''}${q.afterPriority ? '<span class="badge wait" title="Retiré de KaraFun pour une priorité donnée par le bar : ce titre passe juste après elle, sans perdre son tour ; si elle ne tient plus, il reprend sa place">Après la priorité</span>' : ''}${tuneFailed(q.song?.entryId) ? '<span class="badge bad" title="Réglages refusés : « ⋯ » → « Réglages » pour voir pourquoi et réessayer">réglages non enregistrés</span>' : ''}</span></div>
         <div class="song-cell${marks ? ' has-marks' : ''}" title="${esc(title)}${artist ? ` — ${esc(artist)}` : ''}">${marks ? `${marks}<span class="song-main">${songMain}</span>` : songMain}${songArtist}</div>
         <div class="eta">${q.eta ? hhmm(q.eta) : '—'}</div>
         <div class="row-actions${actions && openRowMenu === key ? ' open' : ''}${up ? ' up' : ''}">${actions ? `<button type="button" class="row-menu-toggle" data-row-menu="${esc(key || '')}" aria-expanded="${openRowMenu === key}" aria-label="Actions pour ${esc(q.name || q.singer || 'ce titre')}">⋯</button>` : ''}<div class="queue-actions">${actions}</div></div>
@@ -2103,7 +2224,7 @@
         act('/api/staff/remove-many', { items: [{ personId: b.dataset.personId, entryId: b.dataset.rmEntry }] }, 'Chanson retirée');
       }
     });
-    $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => act('/api/staff/move', { personId: b.dataset.urgent, toIndex: 0, priority: true }, 'Passage avancé au plus tôt après les titres déjà dans KaraFun'));
+    $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => giveUrgent(b.dataset.urgent));
     $('qBody').querySelectorAll('[data-kfrm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson de KaraFun ?')) act('/api/staff/kf', { action: 'remove', queueId: b.dataset.kfrm }, 'Chanson retirée de KaraFun'); });
     $('qBody').querySelectorAll('[data-song-settings]').forEach(b => b.onclick = () => { if (window.history?.state?.rowMenu) { try { window.history.replaceState({ barTab: activeTab }, '', tabUrl()); } catch (_) { /* */ } } openRowMenu = null; openSongSheet(b.dataset.songSettings, b.dataset.personId); render(); });
     renderSongSheet();
@@ -2155,7 +2276,11 @@
       // Copie sans mode Battle : la consigne du serveur dit déjà quoi faire.
       : battleStep === 'failed' && /^KaraFun a (ajouté|lancé)/.test(battleFailure) ? `${battleFailure}.`
       : battleStep === 'failed' ? `${battleFailure.startsWith('Permission Battle refusée') ? 'Ajout automatique impossible' : 'Ajout automatique non confirmé'} : ${battleFailure}. Organise la Battle manuellement ou ferme la demande.`
-      : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. Montre son QR après avoir vérifié les permissions, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
+      // Hors démo, les téléphones ont le lien de la télécommande une fois le
+      // titre d'avant terminé (Battle en tête de KaraFun, scène libre), sur
+      // scène ou à son départ, jamais pendant le titre d'avant (battleJoinUrl
+      // du serveur) : les permissions se vérifient avant.
+      : battleStep === 'queued' ? `Battle prête dans KaraFun : ${selectedSong}. ${S.karafun?.demo ? 'Montre son QR après avoir vérifié les permissions' : 'Les téléphones voient « Rejoindre la Battle » (la télécommande KaraFun) une fois le titre d’avant terminé : vérifie d’abord les permissions des invités, montre son QR'}, laisse les téléphones rejoindre, puis clique sur « ▶ Lancer la Battle » (ou lance-la dans KaraFun). Le titre suivant attendra le bar.`
       : battleStep === 'playing' ? 'Battle en cours. Après les résultats, le titre suivant attendra ton clic.'
       : battleStep === 'manual' ? 'Battle organisée manuellement : laisse les téléphones rejoindre, lance-la dans KaraFun, annonce les résultats, puis indique ici qu’elle est terminée. La file reste en pause.'
       : battleStep === 'after' ? `Battle terminée. Félicite les gagnants, puis clique sur « ▶ Lancer le prochain titre » dans « Sur scène ».${battle.cooldownUntil ? ` Prochaine Battle possible dans ${countdown(battle.cooldownUntil)}.` : ''}`
@@ -2200,6 +2325,8 @@
       ['Dernier message', kf.lastEventAt ? hhmm(kf.lastEventAt) : '—'], ['Erreur', esc(kf.lastError || '—')],
       ['Nom du chanteur demandé', p ? (p.askSingerName ? 'oui' : 'non (active « Demander le nom du chanteur » dans la télécommande KaraFun)') : '—'],
       ['Droits reçus', perm ? esc(JSON.stringify(perm)) : '—'], ['Durée moyenne mesurée', `${String(S.avgSlotMin).replace('.', ',')} min`],
+      // Compté après chaque titre dans les heures estimées et à la fermeture.
+      ['Temps entre deux titres', S.songGapSec == null ? '—' : `${S.songGapSec} s${S.songGapMeasured ? ' (mesuré)' : ' (par défaut, pas encore mesuré)'}`],
       ['Ordonnancement', !S.solver?.configured ? 'Simulation locale' : S.solver.available ?
         (S.solver.pending ? 'Optimisation : calcul en cours' : S.solver.refining ? 'Optimisation continue en cours' : 'Optimisation prête') :
         `Rotation locale de secours : ${esc(S.solver.fallbackLastError || 'solveur indisponible')}`],
@@ -2279,7 +2406,7 @@
   };
   $('recalculateQueue').onclick = () => {
     const count = S?.manualChanges?.length || 0;
-    if (!count || !confirm(`Annuler les ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} et retrouver l’ordre d’avant ces interventions ?`)) return;
+    if (!count || !confirm(`Annuler ${count > 1 ? `les ${count} changements manuels` : 'le changement manuel'} ? ${count > 1 ? 'Leurs lignes retrouvent' : 'Sa ligne retrouve'} le calcul ; les titres déjà dans KaraFun ne bougent pas.`)) return;
     act('/api/staff/queue-recalculate', {}, 'Tous les changements manuels ont été annulés');
   };
   $('playBtn').onclick = () => act('/api/staff/kf', { action: 'play' });
@@ -2622,8 +2749,12 @@
     await act('/api/staff/remove-many', { items, queueIds });
   };
   $('optimizeQueue').onclick = () => {
-    const manual = (S?.manualChanges || []).length || S?.solver?.plan === 'manual';
-    if (manual && !confirm('Recalculer toute la file ? Les déplacements manuels seront abandonnés ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas.')) return;
+    const changes = S?.manualChanges || [];
+    const manual = changes.length || S?.solver?.plan === 'manual';
+    const list = changes.map(change => `${change.kind === 'priority' ? 'priorité' : 'déplacement'} ${ofName(change.name)}`).join(', ');
+    const question = !changes.length ? 'Recalculer toute la file ? Les déplacements manuels seront abandonnés ; le prochain annoncé et les titres déjà dans KaraFun ne bougent pas.' :
+      `Recalculer toute la file ? ${changes.length === 1 ? 'Ton changement manuel sera annulé' : `Tes ${changes.length} changements manuels seront annulés`} (${list}) : ${changes.length === 1 ? 'cette ligne retrouve' : 'ces lignes retrouvent'} le calcul. Les titres déjà dans KaraFun ne bougent pas.`;
+    if (manual && !confirm(question)) return;
     act('/api/staff/queue-optimize', {});
   };
   for (const id of ['rotationPeople', 'rotationTables', 'rotationCompromise']) {

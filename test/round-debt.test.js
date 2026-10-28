@@ -23,7 +23,10 @@ function evening(opts = {}) {
   s.setHeadcount('T1', 12);
   const people = ['Solo1', 'Attente', 'Amie', 'Solo2'].map(name =>
     s.join({ tableId: ['Solo1', 'Solo2'].includes(name) ? 'Comptoir' : 'T1', name }));
-  for (const p of people) for (let k = 0; k < 6; k++) s.chooseSong(p, song(), 'append');
+  // Les premiers passages suivent l'ordre d'ajout (« Chacun son tour ») :
+  // Amie, Solo1, Solo2, Attente, comme la part des tables les rangeait.
+  const added = ['Amie', 'Solo1', 'Solo2', 'Attente'].map(name => people.find(p => p.name === name));
+  for (const p of added) for (let k = 0; k < 6; k++) s.chooseSong(p, song(), 'append');
   const played = [];
   const send = () => {
     const sel = s.select();
@@ -439,7 +442,10 @@ test('dette de l’invitée, auteur déjà monté dans le tour : son duo reste u
     if (d.duet.state !== 'accepted') s.answerDuet(guest, true, d.entryId);
   };
   duet(P.X, P.G);
-  for (const name of ['Y', 'A', 'B', 'G', 'N']) s.chooseSong(P[name], song(), 'append');
+  // G n'a pas d'autre titre : le sien, qui attend depuis plus longtemps que
+  // X, passerait sinon en avance à la place du duo (à patience égale, la plus
+  // ancienne attente d'abord).
+  for (const name of ['Y', 'A', 'B', 'N']) s.chooseSong(P[name], song(), 'append');
   duet(P.N, P.Z);
   for (const name of ['X', 'Y', 'A', 'B', 'N']) s.chooseSong(P[name], song(), 'append');
   const played = [];

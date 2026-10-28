@@ -167,14 +167,30 @@ BON À SAVOIR
   KaraFun confirme le retrait des suivants. Vérifie sa file si cela tarde.
 - « Priorité » avance un passage devant les autres titres encore prévus,
   y compris après un duo. Seule cette ligne bouge : les autres gardent leur
-  ordre. Les titres déjà chargés dans KaraFun restent devant.
-  Le bouton n'est plus proposé sur le premier passage déplaçable. « Annuler
-  la priorité » rétablit l'ordre précédent si la file n'a pas changé entretemps.
+  ordre. Les titres déjà chargés dans KaraFun ou en cours d'envoi restent
+  devant, et le bouton n'est plus proposé sur le premier passage
+  déplaçable. Exception : quand un seul titre de la file attend dans
+  KaraFun, pas encore commencé, « Priorité » (même sur le premier passage)
+  ouvre la question « Faire passer Léa avant « titre » ? », avec trois
+  choix. « Avant « titre » » : le titre sort de KaraFun, Léa part dès qu'il
+  est retiré et il repasse juste après elle, sans perdre son tour.
+  « Juste après « titre » » : rien ne sort de KaraFun, Léa passe juste
+  après lui (pas proposé sur le premier passage, qui y est déjà).
+  « Annuler » (ou Échap, ou Retour) : rien ne change. Si le retrait n'est
+  pas possible pour cette ligne, pas de question : Léa passe juste après
+  le titre chargé. Une ligne
+  placée par le bar (priorité, glisser-déposer) garde sa place jusqu'à son
+  envoi à KaraFun, même si d'autres ajoutent des titres ou arrivent. Une
+  personne d'une ligne au-dessus qui chante en duo entre-temps repasse par
+  le calcul pour son propre titre. « Annuler ce changement » la rend au
+  calcul, même si la file a changé.
 - Tant que la file ne change pas, l'optimisation continue cherche un meilleur
   ordre (« 🔄 Optimisation continue ») ; un nouvel ordre n'est affiché que
   s'il est meilleur, sans jamais toucher au prochain annoncé.
-- « Recalculer la file » relance le calcul complet (30 s au plus) ;
-  l'indicateur au-dessus de la file montre quand un calcul est en cours.
+- « Recalculer la file » relance le calcul complet (30 s au plus) et annule
+  les déplacements et priorités du bar (le bouton devient alors « Annuler mes
+  N changements et recalculer ») ; l'indicateur au-dessus de la file montre
+  quand un calcul est en cours.
 - Des cases à cocher permettent de retirer plusieurs titres d'un coup.
 - Bonus/malus (cartes des tables, repères chanteurs) : réservé au bar,
   invisible des clients, de -3 (un tour sur deux) à +3 (deux fois plus).
@@ -193,7 +209,15 @@ BON À SAVOIR
   droits sur un abonnement Pro : invités empêchés d'ajouter des titres, de
   gérer la file et la lecture ; compte FileKaraoke indiqué au bar conservant
   les droits d'administrateur. Teste avec un téléphone invité. Un essai avec
-  Premium à la maison ne vérifie pas cette protection. Lis GUIDE-BAR.md.
+  Premium à la maison ne vérifie pas cette protection. Fais ce contrôle
+  avant qu'une Battle arrive dans KaraFun (un vote réussi l'y ajoute seul) :
+  dès qu'elle est en tête de la file de KaraFun, une fois le titre d'avant
+  terminé, puis pendant qu'elle passe sur scène, chaque téléphone qui gère
+  une personne inscrite, pas marquée partie, affiche « Rejoindre la
+  Battle », le lien de la télécommande KaraFun (https://www.karafun.fr/
+  suivi du code saisi au bar), sans que le bar montre quoi que ce soit. Une
+  page ouverte avec le seul QR d'une table, sans personne inscrite, ne le
+  reçoit jamais. Lis GUIDE-BAR.md.
 - Pour arrêter : double-clique sur ARRETER.bat sur ce PC (la page du bar
   n'a plus de bouton d'arrêt). Tu peux aussi fermer la fenêtre noire.
   La soirée est sauvegardée et la clé du bar change à chaque démarrage ;

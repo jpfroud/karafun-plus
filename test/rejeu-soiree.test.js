@@ -14,6 +14,8 @@ const ev = rejeu.loadEvening(FIXTURE);
 let forced = null;
 const forcedRun = async () => forced ||= await rejeu.runForced(ev);
 const ids = d => d?.ids.join('+');
+// Envois réels du 15 octobre servis avant un premier passage demandé plus tôt.
+const FIRST_COME_MISSES = ['21:02:29', '21:09:20', '21:17:43', '21:21:38'];
 // Configurations Timefold écrites par les rejeux (limite de mouvements) :
 // chacune est effacée en fin de rejeu. Dossier temporaire propre à ce fichier
 // de tests : un rejeu lancé à côté n'y écrit pas.
@@ -75,16 +77,25 @@ test('rejeu libre : le journal rejoué garde les demandes réelles et remplace l
   assert.deepEqual(withSends.map(e => [e.entryId, e.t]), sent.filter(p => p.source === 'queue').map(p => [p.entryId, p.sentAt]));
 });
 
-test('rejeu forcé sans Timefold : chaque envoi réel jusqu’au nouveau tour de 21:49:51, sauf l’égalité de 21:06:30', async () => {
+// Premiers passages dans l'ordre d'ajout (constat du gérant du 25 octobre) :
+// ce soir-là, quatre premiers passages sont partis avant un premier passage
+// demandé plus tôt (part des tables), l'ordonnanceur sert maintenant le
+// premier ajouté. L'égalité de 21:06:30 entre S05 et S07, départagée en réel
+// par le plan Timefold, l'est de la même façon par l'ordre d'ajout.
+test('rejeu forcé sans Timefold : chaque envoi réel jusqu’au nouveau tour de 21:49:51, sauf quatre premiers passages hors de l’ordre d’ajout', async () => {
   const res = await forcedRun();
   const sends = res.decisions.filter(d => d.kind === 'send');
   assert.equal(sends.length, 56);
   const reset = sends.findIndex(d => d.time === '21:49:51');
   assert.ok(reset > 0, 'envoi de 21:49:51 retrouvé');
   assert.equal(sends[reset].real.newRound, true);
-  const misses = sends.slice(0, reset + 1).filter(d => !d.match).map(d => d.time);
-  // 21:06:30 : égalité entre S05 et S07 départagée par le plan Timefold en réel.
-  assert.deepEqual(misses, ['21:06:30']);
+  const misses = sends.slice(0, reset + 1).filter(d => !d.match);
+  assert.deepEqual(misses.map(d => d.time), FIRST_COME_MISSES);
+  const asked = new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t]));
+  for (const d of misses) {
+    assert.ok(asked.get(d.pick.entryId) < asked.get(d.real.entryId), `${d.time} : ${ids(d.pick)} demandé avant ${ids(d.real)}`);
+  }
+  assert.equal(sends.find(d => d.time === '21:06:30').match, true);
   // L'état suit la soirée : le nouveau tour tombe aux mêmes envois.
   assert.equal(sends.filter(d => d.committed.newRound === d.real.newRound).length, 56);
 });
@@ -1271,8 +1282,10 @@ test('rejeu libre : coupure de l’application, passage repris, plusieurs Battle
   // Vote en attente d'envoi derrière z1, réservé, et titre lancé dans KaraFun
   // après la Battle en réel (O2, 270 s) déjà dû : z1 part, puis la Battle,
   // puis O2 (server.js), au lieu de tout bloquer jusqu'au bout.
+  // (titres demandés dans l'ordre où ils passent : premiers passages dans
+  // l'ordre d'ajout)
   const behindReserved = await scenesOf(build((e, stage, ask) => {
-    ask(1, 'S02', 'y1', 2); ask(2, 'S03', 'z1', 3); ask(3, 'S01', 'x1', 1);
+    ask(1, 'S02', 'y1', 2); ask(2, 'S01', 'x1', 1); ask(3, 'S03', 'z1', 3);
     stage(10, 'z1', ['S03'], 'q1', 95);
     e(90, 'battle.decided', { ballotId: 'v1', outcome: 'approved' });
     e(110, 'stage.started', { queueId: 'n1', source: 'native', ids: [] });
@@ -2346,6 +2359,68 @@ test('rejeu libre : demande pour rejoindre, fermeture retirée, « Je suis là �
   assert.equal(res2.warnings.filter(w => /« Je suis là » obligatoire non rejoué/.test(w)).length, 1);
 });
 
+// Bilan d'un changement des gestes du bar (relecture de la correction du 26
+// octobre) : sans --gestes, un déplacement n'est pas rejoué et le bilan ne
+// peut rien en dire.
+test('rejeu libre --gestes : un déplacement du bar refait à son heure, à la même place ; sans l’option, signalé', async () => {
+  const plain = await rejeu.runFree(ev);
+  // Le titre qui a le plus attendu dans le rejeu : le bar l'avance en 2e
+  // place 10 minutes après qu'il est prêt.
+  const target = plain.passages.slice().sort((a, b) => b.waitSec - a.waitSec)[0];
+  const t = target.readyAt + 10 * 60000;
+  const raw = structuredClone(ev.raw);
+  adder(raw.events)(t, 'staff.move', { personId: target.owner, kind: 'move', from: 9, to: 2 });
+  const without = await rejeu.runFree(rejeu.loadEvening(raw));
+  assert.equal(without.notReplayed['staff.move'], 1);
+  assert.equal(without.gestures, null);
+  const moved = await rejeu.runFree(rejeu.loadEvening(raw), { gestures: true });
+  assert.equal(moved.notReplayed['staff.move'], undefined);
+  assert.deepEqual(moved.gestures, { 'staff.move': 1 });
+  const sentAfter = moved.passages.filter(p => p.sentAt > t).sort((a, b) => a.sentAt - b.sentAt);
+  assert.equal(sentAfter[1]?.entryId, target.entryId, 'deuxième titre envoyé après le geste');
+  assert.ok(moved.passages.find(p => p.entryId === target.entryId).waitSec < target.waitSec - 600);
+  assert.match(rejeu.report(moved, { short: true }), /gestes du bar rejoués \(--gestes\) : staff\.move×1/);
+  // Un geste que le rejeu ne peut pas refaire (personne pas encore inscrite,
+  // pas de titre dans la file rejouée) : noté.
+  const late = structuredClone(ev.raw);
+  const joined = late.events.find(e => e.ev === 'person.joined' && e.personId === target.owner).t;
+  adder(late.events)(joined - 1000, 'staff.move', { personId: target.owner, kind: 'priority', from: 3, to: 1 });
+  const gone = await rejeu.runFree(rejeu.loadEvening(late), { gestures: true });
+  assert.deepEqual(gone.gestures, {});
+  assert.ok(gone.notes.some(n => / staff\.move non rejoué : titre déjà parti ou absent dans le rejeu S\d+$/.test(n)),
+    gone.notes.join(' | '));
+  assert.deepEqual(rejeu.parseArgs(['x.json', '--gestes']).gestures, true);
+});
+
+// Relecture Codex du 28 octobre : un « Annuler » du bar dont le geste n'a pas
+// pu être rejoué défaisait le dernier geste rejoué, celui de quelqu'un d'autre.
+test('rejeu libre --gestes : « Annuler » ne défait que le geste qu’il vise, s’il a été rejoué', async () => {
+  const plain = await rejeu.runFree(ev);
+  const target = plain.passages.slice().sort((a, b) => b.waitSec - a.waitSec)[0];
+  const t = target.readyAt + 10 * 60000;
+  // Quelqu'un qui n'est pas encore inscrit à l'heure du geste : sa « Priorité » n'est pas rejouée.
+  const latecomer = ev.raw.events.find(e => e.ev === 'person.joined' && e.t > t + 60000 && e.personId !== target.owner);
+  assert.ok(latecomer, 'une inscription après le geste');
+  const raw = structuredClone(ev.raw);
+  const at = adder(raw.events);
+  at(t, 'staff.move', { personId: target.owner, kind: 'move', from: 9, to: 2 });
+  at(t + 2000, 'staff.move', { personId: latecomer.personId, kind: 'priority', from: 3, to: 1 });
+  at(t + 4000, 'staff.undo', { changeId: 'reel-2', kind: 'priority', personId: latecomer.personId });
+  const kept = await rejeu.runFree(rejeu.loadEvening(raw), { gestures: true });
+  assert.deepEqual(kept.gestures, { 'staff.move': 1 }, 'ni la priorité ni son annulation ne sont rejouées');
+  assert.ok(kept.notes.some(n => / staff\.undo non rejoué : geste annulé non rejoué /.test(n + ' ')), kept.notes.join(' | '));
+  const sentAfter = kept.passages.filter(p => p.sentAt > t).sort((a, b) => a.sentAt - b.sentAt);
+  assert.equal(sentAfter[1]?.entryId, target.entryId, 'le déplacement rejoué reste en place');
+  // L'annulation de son propre geste, elle, est rejouée.
+  const own = structuredClone(ev.raw);
+  const at2 = adder(own.events);
+  at2(t, 'staff.move', { personId: target.owner, kind: 'move', from: 9, to: 2 });
+  at2(t + 4000, 'staff.undo', { changeId: 'reel-1', kind: 'move', personId: target.owner });
+  const undone = await rejeu.runFree(rejeu.loadEvening(own), { gestures: true });
+  assert.deepEqual(undone.gestures, { 'staff.move': 1, 'staff.undo': 1 });
+  assert.equal(undone.passages.find(p => p.entryId === target.entryId)?.waitSec, target.waitSec, 'attente d’avant le geste');
+});
+
 test('rejeu libre : demande acceptée d’une autre table, demande annulée, place cédée', async () => {
   const raw = structuredClone(ev.raw);
   const events = raw.events;
@@ -2373,6 +2448,30 @@ test('rejeu libre : demande acceptée d’une autre table, demande annulée, pla
   assert.deepEqual(res.passages.find(p => p.entryId === a.entryId)?.ids, [a.personId, other], 'demande acceptée : duo');
   assert.deepEqual(res.passages.find(p => p.entryId === b.entryId)?.ids, [b.personId], 'demande annulée : solo');
   assert.deepEqual(res.notes.filter(n => /joinRequested|joinAnswered|joinCancelled|gaveSpot/.test(n)), [], 'tout rejoué sans erreur');
+});
+
+// Duo ouvert (« Qui veut chanter en duo avec moi ? », spec du 26 octobre 2026) :
+// une soirée exportée qui en contient se rejoue comme elle a été vécue.
+test('rejeu libre : duo ouvert rejoint par une autre table, duo ouvert fermé par son auteur', async () => {
+  const raw = structuredClone(ev.raw);
+  const events = raw.events;
+  const at = adder(events);
+  const startOf = new Map(events.filter(e => e.ev === 'stage.started' && e.entryId).map(e => [e.entryId, e.t]));
+  const tableOf = new Map(events.filter(e => e.ev === 'person.joined').map(e => [e.personId, e.tableId]));
+  const joinedAt = new Map(events.filter(e => e.ev === 'person.joined').map(e => [e.personId, e.t]));
+  const solos = events.filter(e => e.ev === 'song.requested' && startOf.get(e.entryId) > e.t + 20 * 60000 &&
+    !events.some(x => x.entryId === e.entryId && /^duo\./.test(x.ev)));
+  const a = solos.find(e => [...tableOf].some(([pid, tid]) => tid !== tableOf.get(e.personId) && joinedAt.get(pid) < e.t));
+  const other = [...tableOf].find(([pid, tid]) => tid !== tableOf.get(a.personId) && joinedAt.get(pid) < a.t)[0];
+  at(a.t + 1000, 'duo.openRequested', { personId: a.personId, entryId: a.entryId, fromCatalog: true });
+  at(a.t + 120000, 'duo.openAccepted', { personId: other, ownerId: a.personId, partnerId: other, entryId: a.entryId });
+  const b = solos.find(e => e !== a && e.personId !== a.personId);
+  at(b.t + 1000, 'duo.openRequested', { personId: b.personId, entryId: b.entryId, fromCatalog: false });
+  at(b.t + 60000, 'duo.openClosed', { personId: b.personId, ownerId: b.personId, entryId: b.entryId, reason: 'self' });
+  const res = await rejeu.runFree(rejeu.loadEvening(raw));
+  assert.deepEqual(res.passages.find(p => p.entryId === a.entryId)?.ids, [a.personId, other], 'rejoint : duo');
+  assert.deepEqual(res.passages.find(p => p.entryId === b.entryId)?.ids, [b.personId], 'fermé : solo');
+  assert.deepEqual(res.notes.filter(n => /duo\.open/.test(n)), [], 'tout rejoué sans erreur');
 });
 
 test('rejeu libre : retrait réel d’un titre déjà chanté dans le rejeu, et demandes refusées, hors du journal', async () => {
@@ -2537,7 +2636,19 @@ test('rejeu forcé avec Timefold : l’égalité de 21:06:30 est départagée co
     assert.equal(sends.at(-1).time, '21:49:51');
     const tie = sends.find(d => d.time === '21:06:30');
     assert.equal(tie.match, true, `rejeu : ${ids(tie.pick)}`);
-    assert.deepEqual(sends.filter(d => !d.match).map(d => d.time), []);
+    // Seuls diffèrent les premiers passages servis ce soir-là avant un premier
+    // passage demandé plus tôt : Timefold ne contredit pas l'ordre d'ajout.
+    const misses = sends.filter(d => !d.match);
+    assert.deepEqual(misses.map(d => d.time), FIRST_COME_MISSES);
+    // Relecture (passe 5) : à ces quatre envois, Timefold sert bien le premier
+    // passage demandé plus tôt, celui que sert le rejeu sans Timefold.
+    const asked = new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t]));
+    const local = (await forcedRun()).decisions.filter(d => d.kind === 'send');
+    for (const d of misses) {
+      assert.ok(asked.get(d.pick.entryId) < asked.get(d.real.entryId), `${d.time} : ${ids(d.pick)} demandé avant ${ids(d.real)}`);
+      const twin = local.find(x => x.time === d.time);
+      assert.equal(d.pick.entryId, twin.pick.entryId, `${d.time} : Timefold ${ids(d.pick)}, sans Timefold ${ids(twin.pick)}`);
+    }
   });
 
 test('rejeu avec Timefold : effort compté en mouvements, plafond de temps atteint signalé',

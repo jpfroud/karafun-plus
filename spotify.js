@@ -457,9 +457,11 @@ const RECOVER_EVERY_MS = 10 * 60000;
 // Décide quand agir, à partir de l'état de KaraFun : « singing » (un titre
 // joue ou est en pause), « between » (rien ne joue mais un titre suivant
 // arrive : Spotify n'est pas relancé entre deux chansons), « silent » (file
-// vide ou bar fermé : plus rien ne sera lancé), « unknown » (KaraFun
-// déconnecté : on ne touche à rien). Une seule action par période : si le bar
-// coupe lui-même Spotify pendant un silence, l'application ne le relance pas.
+// vide ou bar fermé : plus rien ne sera lancé), « battle » (rien ne joue et la
+// Battle attend le bar : prête en tête de KaraFun, ou finie avant le titre
+// suivant ; relance comme en silence), « unknown » (KaraFun déconnecté : on ne
+// touche à rien). Une seule action par période : si le bar coupe lui-même
+// Spotify pendant un silence, l'application ne le relance pas.
 class SpotifyAutomation {
   constructor({ now = Date.now } = {}) {
     this.now = now;
@@ -476,24 +478,33 @@ class SpotifyAutomation {
   step(karaoke, { autoResume = DEFAULTS.autoResume, autoPause = DEFAULTS.autoPause,
     resumeDelaySec = DEFAULTS.resumeDelaySec } = {}) {
     const now = this.now();
-    if (karaoke !== this.phase) {
-      this.phase = karaoke;
-      this.since = now;
-      this.done = false;
-      this.attempts = 0;
-      this.retryAt = 0;
-      this.failure = null;
-      this.recoveredAt = -Infinity;
-    }
+    this._enter(karaoke, now);
     if (this.done || karaoke === 'unknown' || now < this.retryAt) return null;
     if (karaoke === 'singing') return autoPause ? 'pause' : null;
-    if (karaoke === 'silent' && autoResume && now - this.since >= resumeDelaySec * 1000) return 'resume';
+    if ((karaoke === 'silent' || karaoke === 'battle') && autoResume && now - this.since >= resumeDelaySec * 1000) return 'resume';
     return null;
   }
 
-  // Le bar a lui-même lancé ou coupé Spotify : plus d'action automatique
-  // jusqu'au prochain changement (titre qui démarre, ou nouveau silence).
-  handled() {
+  // Nouvelle période : une action de plus permise.
+  _enter(karaoke, now = this.now()) {
+    if (karaoke === this.phase) return;
+    this.phase = karaoke;
+    this.since = now;
+    this.done = false;
+    this.attempts = 0;
+    this.retryAt = 0;
+    this.failure = null;
+    this.recoveredAt = -Infinity;
+  }
+
+  // Le bar a lui-même lancé ou coupé Spotify, ou l'application lance la
+  // Battle ou le titre d'après : plus d'action automatique jusqu'au prochain
+  // changement (titre qui démarre, ou nouveau silence). `karaoke` : la période
+  // en cours, que l'automate n'a peut-être pas encore vue (geste juste après
+  // la fin d'un titre ; le serveur ne la donne que pour l'attente de la
+  // Battle) ; sans elle, le choix vaut pour la dernière période vue.
+  handled(karaoke = this.phase) {
+    this._enter(karaoke);
     this.done = true;
     this.failure = null;
   }
