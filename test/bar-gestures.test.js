@@ -193,6 +193,83 @@ test('annuler après d’autres changements, « Pas prêt » déjà écoulé : l
   assert.deepEqual(playNames(s, 2), ['Ines', 'Maud'], 'Ines repasse aussitôt');
 });
 
+// Relecture (passe 8) : la même annulation quand la personne est déjà
+// l'annoncée (le serveur annonce la ligne du geste pendant le titre suivant) :
+// son report écoulé ne revient pas, elle reste annoncée. Il revenait à 0,
+// select() libérait son annonce et une chanson de plus passait.
+test('annuler après d’autres changements, « Pas prêt » écoulé et personne déjà annoncée : elle le reste', () => {
+  const { s, people } = evening();
+  const line = s.presenceView().find(v => v.ids[0] === people.Ines.id);
+  s.deferPassage(people.Ines.id, line, 1);
+  gesture(s, people.Ines, 1);
+  assert.equal(label(s, play(s)), 'Paulo');
+  assert.deepEqual(s.reserveNext().ids, [people.Ines.id], 'Ines annoncée pendant le titre suivant');
+  s.chooseSong(people.Paulo, song(), 'append');
+  s.undoLastManualChange(null, NATIVE);
+  assert.equal(s.deferralFor(people.Ines.id), null);
+  assert.equal(s.reservedNext?.personId, people.Ines.id, 'elle reste annoncée');
+  assert.deepEqual(playNames(s, 1), ['Ines']);
+});
+
+// Relecture (passe 8) : quelqu'un d'autre est déjà annoncé : le report écoulé
+// revient à 0 et l'envoi suivant libère la personne, juste après lui.
+test('annuler après d’autres changements, « Pas prêt » écoulé et quelqu’un d’autre annoncé : elle passe juste après', () => {
+  const { s, people } = evening();
+  const line = s.presenceView().find(v => v.ids[0] === people.Ines.id);
+  s.deferPassage(people.Ines.id, line, 1);
+  gesture(s, people.Ines, 2);
+  assert.equal(label(s, play(s)), 'Paulo');
+  assert.deepEqual(s.reserveNext().ids, [people.Maud.id], 'Maud annoncée');
+  s.chooseSong(people.Paulo, song(), 'append');
+  s.undoLastManualChange(null, NATIVE);
+  assert.equal(s.reservedNext?.personId, people.Maud.id, 'l’annonce de Maud tient');
+  assert.equal(s.deferralFor(people.Ines.id)?.remaining, 0);
+  assert.deepEqual(playNames(s, 2), ['Maud', 'Ines']);
+});
+
+// Relecture (passe 8) : l'annulation recalculée ne fait jamais repasser
+// aussitôt quelqu'un qui vient de chanter. Le report écoulé d'Ines, dont le
+// duo a été rejoint par Paulo juste après son titre, attend l'envoi suivant ;
+// l'annonce d'avant une priorité, celle de Bob dont le titre est devenu un duo
+// avec Ana qui vient de chanter, n'est pas rendue. Comme _commit et
+// _duetOnAnnounced, la règle vaut pour la personne de la ligne et l'invitée de
+// son duo.
+test('annulation recalculée : personne ne repasse juste après avoir chanté, invitée d’un duo comprise', async t => {
+  await t.test('report écoulé, duo rejoint par celui qui vient de chanter', () => {
+    const { s, people } = evening();
+    const { Ines, Paulo } = people;
+    s.chooseSong(Paulo, song(), 'append');
+    s.deferPassage(Ines.id, s.presenceView().find(v => v.ids[0] === Ines.id), 1);
+    gesture(s, Ines, 2);
+    const stage = play(s);
+    assert.equal(label(s, stage), 'Paulo');
+    s.openDuet(Ines, { entryId: Ines.song.entryId });
+    s.acceptOpenDuet(Paulo, Ines.id, Ines.song.entryId);
+    s.undoLastManualChange(null, NATIVE);
+    assert.notEqual(s.reservedNext?.personId, Ines.id, 'le duo avec Paulo n’est pas annoncé juste après lui');
+    const next = s.select();
+    assert.ok(!next.ids.includes(Paulo.id), `Paulo ne rechante pas aussitôt (${label(s, next)})`);
+  });
+  await t.test('annonce d’avant une priorité, devenue un duo avec celle qui vient de chanter', () => {
+    const s = new Scheduler(); s._event = () => {};
+    const join = (table, name) => s.join({ tableId: table, name, headcount: 1 });
+    const ana = join('1', 'Ana'), bob = join('2', 'Bob'), cid = join('3', 'Cid'), dan = join('4', 'Dan');
+    [ana, bob, cid, dan].forEach(p => s.chooseSong(p, song()));
+    const stage = s.select(); s.commit(stage);
+    assert.deepEqual(stage.ids, [ana.id]);
+    assert.deepEqual(s.reserveNext().ids, [bob.id], 'Bob annoncé, en solo');
+    gesture(s, cid, 0, stage.ids);
+    const duo = s.inviteDuet(bob, ana.id, song());
+    s.answerDuet(ana, true, duo.entryId);
+    s.reorderSongs(bob, duo.entryId, 0);
+    s.undoLastManualChange(null, NATIVE, { excludeIds: stage.ids });
+    assert.notEqual(s.reservedNext?.personId, bob.id, 'l’annonce de Bob, devenue un duo avec Ana, n’est pas rendue');
+    s.songEnded(stage.ids);
+    const next = s.select();
+    assert.ok(!next.ids.includes(ana.id), `Ana ne rechante pas aussitôt (${label(s, next)})`);
+  });
+});
+
 test('annuler tout après d’autres changements rend toutes les lignes au calcul', () => {
   const { s, people } = evening();
   gesture(s, people.Elsa, 3);

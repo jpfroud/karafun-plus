@@ -294,3 +294,103 @@ test('titre annoncé devenu un duo retenu par le « Pas prêt » de son invitée
   assert.notEqual(s.reservedNext?.personId, Dan.id, 'l’annonce du duo retenu est libérée');
   assert.deepEqual(s.reserveNext().ids, sel.ids, 'la nouvelle annonce est ce passage');
 });
+
+// Relecture (passe 8) : même règle quand le titre annoncé devient un duo par
+// la liste de son auteur, sans nouvelle acceptation : duo accepté remonté en
+// tête (⇅, reorderSongs), titre en cours retiré par elle (removeSong) ou par
+// le bar (« Retirer », staffRemove). L'annonce restait, et l'invitée qui
+// venait de chanter remontait aussitôt sur scène.
+test('titre annoncé devenu un duo par sa liste (réordonnée, titre retiré) : l’annonce est libérée', async t => {
+  for (const how of ['reorder', 'remove', 'staffRemove']) await t.test(how, () => {
+    const s = new Scheduler();
+    const ana = s.join({ tableId: '1', name: 'Ana', headcount: 1 });
+    const bea = s.join({ tableId: '2', name: 'Bea', headcount: 1 });
+    const cid = s.join({ tableId: '3', name: 'Cid', headcount: 1 });
+    [ana, bea, cid].forEach(p => s.chooseSong(p, song()));
+    const duo = s.inviteDuet(bea, ana.id, song());
+    s.answerDuet(ana, true, duo.entryId);
+    const stage = s.select(); s.commit(stage);
+    assert.deepEqual(stage.ids, [ana.id], 'Ana sur scène');
+    assert.deepEqual(s.reserveNext().ids, [bea.id], 'Bea annoncée, en solo');
+    if (how === 'reorder') s.reorderSongs(bea, duo.entryId, 0);
+    else if (how === 'remove') s.removeSong(bea, bea.song.entryId);
+    else s.staffRemove(bea.id);
+    assert.equal(bea.song.duet?.state, 'accepted', 'son titre en cours est le duo avec Ana');
+    assert.equal(s.reservedNext, null, 'le titre annoncé en solo devient un duo : l’annonce est libérée');
+    s.songEnded(stage.ids);
+    assert.deepEqual(s.select().ids, [cid.id], 'Ana ne remonte pas aussitôt sur scène');
+  });
+});
+
+test('titre annoncé réordonné entre deux solos : l’annonce tient', () => {
+  const s = new Scheduler();
+  const ana = s.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  const bea = s.join({ tableId: '2', name: 'Bea', headcount: 1 });
+  s.join({ tableId: '3', name: 'Cid', headcount: 1 });
+  [ana, bea].forEach(p => s.chooseSong(p, song()));
+  s.chooseSong(bea, song(), 'append');
+  s.select(); s.commit(s.select());
+  assert.deepEqual(s.reserveNext().ids, [bea.id]);
+  s.reorderSongs(bea, bea.backlog[0].entryId, 0);
+  assert.equal(s.reservedNext?.personId, bea.id, '⇅ entre deux solos : sa place annoncée est gardée');
+});
+
+// Relecture (passe 8) : scène libre et plus aucun autre passage possible.
+// select() levait le report du premier titre de la file, même s'il devait
+// encore laisser passer une chanson, alors que la prévision affichée sur les
+// téléphones (release) annonçait un report déjà au bout : le serveur envoyait
+// un autre passage que celui annoncé. Comme la prévision, le report au bout
+// part d'abord, et il devient le prochain annoncé.
+test('scène libre, plus d’autre passage : le report qui part est celui que la file annonçait', () => {
+  const s = new Scheduler();
+  const join = (table, name) => s.join({ tableId: table, name, headcount: 1 });
+  const ana = join('1', 'Ana'), bob = join('2', 'Bob'), cid = join('3', 'Cid'), xia = join('4', 'Xia'), yun = join('5', 'Yun');
+  [ana, bob, cid, xia, yun].forEach(p => s.chooseSong(p, song(), 'append'));
+  const play = () => { const sel = s.select({ stageFree: true }); s.commit(sel); s.songEnded(sel.ids); return sel; };
+  for (let i = 0; i < 5; i++) play();
+  s.chooseSong(yun, song(), 'append');
+  const withAna = s.inviteDuet(bob, ana.id, song()); s.answerDuet(ana, true, withAna.entryId);
+  const withXia = s.inviteDuet(cid, xia.id, song()); s.answerDuet(xia, true, withXia.entryId);
+  for (const count of [2, 1]) {
+    const line = s.presenceView().find(v => !v.future && !s.isDeferred(s.people.get(v.ids[0])));
+    s.deferPassage(line.ids[0], line, count);
+  }
+  s.removeSong(yun, yun.song.entryId);
+  s.chooseSong(xia, song(), 'append');
+  s.staffMove(xia.id, 0);
+  assert.deepEqual(play().ids, [xia.id], 'le solo de Xia part (priorité du bar)');
+  assert.equal(bob.deferral?.remaining, 1, 'Bob & Ana : encore une chanson à laisser passer');
+  assert.equal(cid.deferral?.remaining, 0, 'Cid & Xia : au bout, retenu parce que Xia vient de chanter');
+  const shown = s.presenceView().find(v => !v.future);
+  assert.deepEqual(shown.ids, [cid.id, xia.id], 'la file annonce Cid & Xia');
+  const sent = s.select({ stageFree: true });
+  assert.deepEqual(sent.ids, shown.ids, 'le serveur envoie le passage annoncé');
+  assert.equal(s.isDeferred(bob), true, 'le report de Bob & Ana continue');
+  assert.equal(s.reservedNext?.personId, cid.id, 'il devient le prochain annoncé');
+});
+
+// Relecture (passe 8) : même duo retenu, « Je suis là » obligatoire. La
+// demande de présence (reservePresenceNext) gardait l'annonce du duo retenu,
+// seul select() la libérait : la demande partait vers Dan et Bob pendant que
+// la file annonçait quelqu'un d'autre.
+test('« Je suis là » obligatoire, titre annoncé devenu un duo retenu : la demande va au passage que la file annonce', () => {
+  const { s, people, names } = evening([['1', 'Ana'], ['2', 'Bob'], ['3', 'Cid'], ['4', 'Dan'], ['5', 'Eve']], { requirePresence: true });
+  const { Ana, Bob, Dan } = people;
+  s.confirm(Ana);
+  const stage = s.select(); s.commit(stage); s.songEnded(stage.ids);
+  const visible = s.presenceView().filter(v => !v.future);
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(Dan.id, 1);
+  s.recordManualChange({ kind: 'move', personId: Dan.id, name: 'Dan', from: visible.findIndex(v => v.ids[0] === Dan.id) + 1, to: 2,
+    before, native: 'a'.repeat(64) });
+  const bob = s.presenceView().find(v => !v.future && v.ids[0] === Bob.id);
+  s.deferPassage(Bob.id, { ids: bob.ids, entryId: bob.entryId }, 2);
+  assert.deepEqual(s.reservePresenceNext().ids, [Dan.id], 'Dan annoncé, la demande va à Dan');
+  const duo = s.inviteDuet(Dan, Bob.id, song());
+  s.reorderSongs(Dan, duo.entryId, 0);
+  s.answerDuet(Bob, true, duo.entryId);
+  const shown = s.presenceView().find(v => !v.future);
+  const asked = s.reservePresenceNext();
+  assert.deepEqual(asked.ids, shown.ids, `la demande va au passage annoncé (${names([shown])})`);
+  assert.notEqual(s.reservedNext?.personId, Dan.id);
+});

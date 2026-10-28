@@ -619,6 +619,7 @@ class Scheduler {
     if (!p || p.song === previous) return;
     this._guestLeft(previous?.duet);
     this._guestJoined(p);
+    this._duetOnAnnounced(p, p.song);
   }
 
   // `deferrals` : pour une intervention du bar, les reports « Pas prêt »
@@ -793,21 +794,38 @@ class Scheduler {
     this.manualOrderActive = this.manualOrder.length > 0;
     this._trimManualOrder();
     if (change.to === 1 && this.reservedNext?.personId === change.personId) this.reservedNext = null;
+    // Ligne qui peut redevenir la prochaine annoncée : personne n'y chante qui
+    // vient de chanter (dernier passage envoyé, ou depuis le geste) ni qui part
+    // vers KaraFun (`excludeIds`), la personne de la ligne comme l'invitée de
+    // son duo (_singsOnLine). Comme _commit, qui n'annonce pas un report juste
+    // après un passage où chante l'une de ses personnes, et _duetOnAnnounced.
+    // Sinon l'annonce rendue faisait repasser aussitôt quelqu'un qui venait de
+    // chanter (relecture, passe 8).
+    const fresh = pid => {
+      const q = this.people.get(pid);
+      return !!q && !q.withdrawnAt && !excludeIds.includes(pid) && !sentSince(q) &&
+        !((q.lastAppearanceTurn || 0) > 0 && q.lastAppearanceTurn >= this.appearanceSerial);
+    };
+    const lineFree = pid => {
+      const duet = this.people.get(pid)?.song?.duet;
+      return waiting(pid) && [pid, ...(duet?.state === 'accepted' ? [duet.partnerId] : [])].every(fresh);
+    };
     const old = before.reservedNext;
-    if (!this.reservedNext && old && waiting(old.personId) &&
+    if (!this.reservedNext && old && lineFree(old.personId) &&
         (!old.byStaff || this.manualOrder.includes(old.personId))) this.reservedNext = { ...old };
     // Seul le report levé par ce geste revient, moins les chansons passées.
-    // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : la
-    // personne devient la prochaine annoncée, si personne ne l'est et qu'elle
-    // n'est pas sur scène ou en route vers KaraFun (`waiting`) ; sinon il
-    // revient à 0 et le prochain envoi la libère. Sinon elle laissait passer
-    // une chanson de plus que demandé (relecture, passe 7).
+    // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : déjà
+    // annoncée, la personne le reste ; sinon elle devient la prochaine
+    // annoncée si personne ne l'est et que sa ligne le peut (`lineFree`) ;
+    // sinon il revient à 0 et le prochain envoi la libère. Sinon elle laissait
+    // passer une chanson de plus que demandé (relecture, passes 7 et 8).
     const passed = Number.isSafeInteger(change.serial) ? Math.max(0, this.appearanceSerial - change.serial) : 0;
     for (const [pid, deferral] of Array.isArray(before.deferrals) ? before.deferrals : []) {
       const p = this.people.get(pid);
       if (pid !== change.personId || !p || p.withdrawnAt || p.song?.entryId !== deferral.entryId || p.deferral) continue;
       const remaining = Math.max(0, deferral.remaining - passed);
-      if (remaining > 0 || this.reservedNext || !waiting(p.id)) this._restoreDeferral(p, { ...deferral, remaining });
+      if (remaining === 0 && this.reservedNext?.personId === p.id) continue;
+      if (remaining > 0 || this.reservedNext || !lineFree(p.id)) this._restoreDeferral(p, { ...deferral, remaining });
       else this.reservedNext = { personId: p.id, reservedAt: Date.now() };
     }
     this._restorePlan(change.planBefore);
@@ -1164,7 +1182,7 @@ class Scheduler {
     // par le bar tombe. Sinon le titre suivant de la liste la garde (un duo :
     // voir _guestJoined).
     if (!p.song || by === 'presence-max') this._unpinManual(p.id);
-    else if (p.song !== current) this._guestJoined(p);
+    else if (p.song !== current) { this._guestJoined(p); this._duetOnAnnounced(p, p.song); }
     this._refreshDuetViews();
     if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
     this._event('song.removed', { personId: p.id, entryId: key, by });
