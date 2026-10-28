@@ -4114,19 +4114,22 @@ function leaveSentDuo(tr, guestId, by) {
 
 // Le bar marque partis une personne ou toute une table (`ids`). Un duo déjà
 // chargé dont seuls des invités partent reste dans KaraFun, au nom de son
-// auteur seul (un titre en train de sortir revient à son auteur) ; un envoi
-// sans accusé garde son nom d'origine pour que KaraFun le reconnaisse. À
-// appeler avant le départ, pour que les invités récupèrent leur part de
-// tour. Rend les titres suivis à retirer de KaraFun (ceux dont l'auteur part).
+// auteur seul ; un titre en train de sortir de KaraFun (« Priorité », « Pas
+// prêt », fermeture, absent à l'appel) perd aussi ces invités, puis revient
+// en solo à son auteur. Un envoi sans accusé garde son nom d'origine pour que
+// KaraFun le reconnaisse. À appeler avant le départ, pour que les invités
+// récupèrent leur part de tour (Scheduler#leave ne voit que les listes, pas
+// ces titres suivis). Rend les titres suivis à retirer de KaraFun (ceux dont
+// l'auteur part) et le nombre de duos gardés dans KaraFun en solo.
 function keepSentDuosOfLeavers(ids) {
   const { current } = analyze();
   const upcoming = tracked.filter(tr => !isOnStage(tr, current) && tr.sel.ids.some(id => ids.has(id)));
   const asGuest = upcoming.filter(tr => !ids.has(tr.sel.ids[0]));
   let keptAsSolo = 0;
   for (const tr of asGuest) {
-    if (tr.cancelled || tr.pulled || tr.absent || tr.startedAt) continue;
+    if (tr.cancelled || tr.startedAt) continue;
     for (const gid of tr.sel.ids.slice(1).filter(id => ids.has(id))) sched.leaveSentDuet(tr.sel, gid, { by: 'staff' });
-    keptAsSolo++;
+    if (!tr.pulled && !tr.absent) keptAsSolo++;
   }
   if (pending && !pending.cancelled && !ids.has(pending.sel.ids[0])) {
     const guests = pending.sel.ids.slice(1).filter(id => ids.has(id));

@@ -436,6 +436,36 @@ test('priorité avant un duo chargé : il revient entier juste après ; son invi
   assert.equal(order[1].afterPriority, true);
 });
 
+// Relecture, passe 5 (équipe rouge) : l'invitée marquée « Parti » pendant que
+// le duo sortait de KaraFun restait sur le titre (keepSentDuosOfLeavers
+// sautait les titres en train de sortir, Scheduler#leave ne voit que les
+// listes). Revenu en tête de la liste de son auteur, il restait un duo avec
+// une personne partie, et la place « juste après la priorité » tombait.
+test('duo chargé qui sort de KaraFun, invitée marquée partie pendant le retrait : le titre revient au nom de son auteur seul', async () => {
+  for (const how of ['priorité avant le duo', 'Pas prêt de Bruno', 'absent à l’appel']) {
+    const f = harness();
+    const ctx = loaded(f, { duo: true });
+    const { bruno, zoe, driss } = ctx.people;
+    if (how === 'priorité avant le duo') await pullFor(f, driss);
+    else if (how === 'Pas prêt de Bruno') f.deferTurn(bruno, 1);
+    else await f.call('POST /api/staff/kf', { action: 'absent', queueId: 2 });
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]], `${how} : le duo sort de KaraFun`);
+    await f.call('POST /api/staff/person/leave', { personId: zoe.id });
+    karafunRemoves(f, ctx);
+    assert.equal(bruno.song.entryId, ctx.next.song.entryId, `${how} : le titre revient en tête de la liste de Bruno`);
+    assert.equal(bruno.song.duet, undefined, `${how} : plus de duo avec Zoé, partie`);
+    const phone = f.publicState(null, '2', new Set([bruno.id])).tablePeople.find(p => p.id === bruno.id);
+    assert.equal(phone.duet, null, `${how} : son téléphone ne montre plus le duo`);
+    const order = planned(f);
+    assert.ok(order.some(line => line.name === 'Bruno') && !order.some(line => line.ids.includes(zoe.id)), `${how} : ${order.map(line => line.name)}`);
+    if (how === 'priorité avant le duo') {
+      assert.deepEqual(order.slice(0, 2).map(line => line.name), ['Driss', 'Bruno'], 'il repasse juste après la priorité');
+      assert.equal(order[1].afterPriority, true);
+    }
+    if (how === 'Pas prêt de Bruno') assert.equal(f.sched.isDeferred(bruno), true, 'son « Pas prêt » tient toujours');
+  }
+});
+
 test('priorité avant un titre chargé avec « Je suis là » : la priorité déjà confirmée part, le titre retiré garde sa confirmation', async () => {
   const f = harness();
   const ctx = loaded(f, { presence: true });
