@@ -971,6 +971,58 @@ test('QueueScore : l’invitée reposée d’un bonus ne retient pas son duo par
     } finally { bridge.close(); }
   });
 
+// Relecture (passe 3) : « Chacun son tour », un bonus reposé (deux passages
+// depuis le sien) reste en lice face à la plus ancienne attente, en Node
+// (rotation.js, `rested`) comme en Java (QueueScore#restedBonus). A1 et B1
+// (+1) ont chanté aux passages 1 et 2 : au 6e, la prévision locale fait passer
+// B1 avant A1, qui attend depuis plus longtemps, et Java ne le compte pas comme
+// une sortie des choix équitables (-3 000). Sans la règle en Node, A1 passe
+// d'abord ; sans elle en Java, l'ordre local coûte -6 207 (oldest-wait.test.js
+// tient l'ordre des passages).
+test('QueueScore : un bonus reposé reste en lice face à la plus ancienne attente',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const realNow = Date.now;
+    let clock = Date.UTC(2026, 9, 23, 21, 0, 0);
+    Date.now = () => clock;
+    let request;
+    const s = new Scheduler();
+    try {
+      s._maybeRequestSolver = () => {};
+      let n = 9950, onStage = null;
+      const add = p => { clock += 5000; s.chooseSong(p, { songId: n++, title: `T${n}`, artist: 'x' }, 'append'); };
+      s.setHeadcount('A', 3);
+      const [a1, a2, a3] = ['A1', 'A2', 'A3'].map(name => s.join({ tableId: 'A', name }));
+      const b1 = s.join({ tableId: 'B', name: 'B1', headcount: 1 });
+      const c1 = s.join({ tableId: 'C', name: 'C1', headcount: 1 });
+      s.setPersonBonus(a1.id, 1);
+      s.setPersonBonus(b1.id, 1);
+      for (const p of [a1, a2, a3, b1, c1]) for (let k = 0; k < 4; k++) add(p);
+      const passages = [];
+      for (let k = 0; k < 5; k++) { // envoi 45 s après le début du titre en cours, trois minutes de chanson
+        clock += 45000;
+        const sel = s.select(); s.commit(sel);
+        clock += 180000;
+        if (onStage) { s.songEnded(onStage.ids); s.endStage(onStage); }
+        s.recordStage(sel);
+        onStage = sel;
+        passages.push(sel.names.join(' & '));
+      }
+      assert.deepEqual(passages, ['A1', 'B1', 'C1', 'A2', 'A3']);
+      s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+      s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+    } finally { Date.now = realNow; }
+    const nameOf = row => row.singers.map(pid => s.people.get(pid).name).join('&');
+    const local = request.performances;
+    assert.deepEqual(local.slice(0, 2).map(nameOf), ['B1', 'A1'], 'Node : B1, bonus reposé, avant A1');
+    const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+    const bridge = new TimefoldBridge({ jar: JAR });
+    try {
+      const score = (await bridge.solve({ ...request, requestId: 'rested-bonus', budgetMs: 100,
+        performances: local.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore;
+      assert.ok(medium(score) > -4500, `ordre local ${score}`);
+    } finally { bridge.close(); }
+  });
+
 // « Compromis » : la taille d'une table envoyée à Timefold (groupSizes) compte
 // ses chanteurs inscrits, titre prêt ou non, et change bien le score.
 function compromiseRequest() {

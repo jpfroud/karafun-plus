@@ -357,6 +357,28 @@ test('malus : pas protégé par l’ancienneté non plus ; bonus reposé : peut 
   } finally { e.done(); }
 });
 
+// Relecture (passe 3) : l'exception « bonus reposé » du filtre de la plus
+// ancienne attente (rotation.js, `rested`) n'était tenue par aucun test : sans
+// elle, A1 rechantait avant B1 au 6e passage et les passages en plus des
+// bonus changeaient de main. Son pendant Timefold (QueueScore#restedBonus) a
+// son test dans timefold-integration.test.js.
+test('chacun son tour : un bonus reposé reste en lice face à la plus ancienne attente', () => {
+  const e = evening();
+  try {
+    const { s, add, step, passages } = e;
+    s.setHeadcount('A', 3);
+    const [a1, a2, a3] = ['A1', 'A2', 'A3'].map(name => s.join({ tableId: 'A', name }));
+    const b1 = s.join({ tableId: 'B', name: 'B1', headcount: 1 });
+    const c1 = s.join({ tableId: 'C', name: 'C1', headcount: 1 });
+    s.setPersonBonus(a1.id, 1);
+    s.setPersonBonus(b1.id, 1);
+    for (const p of [a1, a2, a3, b1, c1]) for (let k = 0; k < 4; k++) add(p);
+    for (let k = 0; k < 10; k++) step();
+    // Sans l'exception : A1 B1 C1 A2 A3 A1 B1 C1 A2 A1.
+    assert.deepEqual(passages, ['A1', 'B1', 'C1', 'A2', 'A3', 'B1', 'A1', 'C1', 'A2', 'B1']);
+  } finally { e.done(); }
+});
+
 // Reprise après un redémarrage, pendant la chanson de Yves (relecture du
 // 27 octobre) : les demandes faites ensuite sont datées à leur vraie heure,
 // sur la même horloge que les fins de passage. Une demande faite pendant la
