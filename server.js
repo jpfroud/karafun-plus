@@ -835,10 +835,30 @@ function battleStarting() {
   return state?.status === 'playing' || (state?.status === 'queued' && !!state.missingSince);
 }
 
-function battleHoldsQueue() {
+// `reserved` : un passage est déjà annoncé (une priorité du bar l'est) ; une
+// Battle en attente d'une place le laisse partir d'abord.
+function battleHoldsQueue(reserved = !!sched.reservedNext) {
   const state = battleVote.automation?.status;
   return !!state && !['released', 'resuming'].includes(state) &&
-    !(state === 'waiting' && sched.reservedNext);
+    !(state === 'waiting' && reserved);
+}
+
+// Ce qui retient l'envoi du prochain titre de la file vers KaraFun (sync()),
+// en dehors de la file de KaraFun elle-même et des délais, ou null :
+// KaraFun déconnecté, relance, vidage, envoi interrompu à vérifier, Battle
+// qui garde la file, droit d'ajout retiré par KaraFun, envoi automatique
+// coupé (par le bar, après une sauvegarde impossible ou un envoi en échec).
+// Le retrait d'un titre chargé pour une priorité (priorityPullCheck) suit la
+// même règle avec `reserved` : sans envoi ensuite, KaraFun resterait vide.
+function sendStop(reserved = !!sched.reservedNext) {
+  if (!bridge?.ready) return 'offline';
+  if (restartOp) return 'restart';
+  if (settings.queueClearPending) return 'clear';
+  if (recoveredPending) return 'unconfirmed';
+  if (battleHoldsQueue(reserved)) return 'battle';
+  if (bridge.permissions?.addToQueue === false) return 'refused';
+  if (!settings.auto) return persistenceError !== null ? 'save' : 'auto';
+  return null;
 }
 
 // KaraFun a ajouté le titre de la Battle en chanson normale : le mode demandé
@@ -1803,8 +1823,7 @@ function sync() {
   if (closingHold && settings.auto && !pending && sched.readyView().some(turn => turn.song)) noteClosingStop();
   const staleTracked = tracked.some(tr => !qids.has(tr.queueId));
   const emptySettled = emptySince === null || now - emptySince >= 1000;
-  if (settings.auto && !settings.queueClearPending && !battleHoldsQueue() && !recoveredPending && !awaitingPresence &&
-      !restartOp && bridge.ready && !staleTracked && upcoming.length === 0 && canPush && emptySettled && !closingHold) {
+  if (!sendStop() && !awaitingPresence && !staleTracked && upcoming.length === 0 && canPush && emptySettled && !closingHold) {
     if (!pending) {
       // Après un échec, la chanson du chanteur peut avoir changé : le choix
       // actuel de l'ordonnanceur prévaut au moment de la nouvelle tentative.
@@ -3678,16 +3697,30 @@ function confirmPresence(p) {
 // (restorePulled, Scheduler#yieldToPriority). Seul un titre de la file, seul
 // dans la file de KaraFun, ni sur scène ni en train d'en sortir, s'y prête :
 // jamais une Battle ni un titre ajouté directement dans KaraFun ; pas pendant
-// un envoi, une relance ou un vidage, ni KaraFun déconnecté, ni si la
-// fermeture l'empêchait ensuite de repasser. Rend le titre suivi `tr` et la
-// raison d'un refus (`started` : il vient de commencer), ou null.
+// un envoi, ni quand rien ne partirait ensuite vers KaraFun (sendStop, la
+// règle de sync() : KaraFun déconnecté, relance, vidage, envoi automatique
+// coupé…), ni si la fermeture l'empêchait ensuite de repasser. Rend le titre
+// suivi `tr` et la raison d'un refus (`started` : il vient de commencer), ou null.
+const PULL_KEEPS = ' : rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer la personne juste après lui.';
+const PULL_STOPS = {
+  offline: 'KaraFun est déconnecté : rien n’a été retiré ni avancé. Réessaie une fois KaraFun reconnecté.',
+  restart: 'Le titre en cours est en train d’être relancé : rien n’a été retiré ni avancé. Réessaie dans un instant.',
+  clear: 'La file est en train d’être vidée : rien n’a été retiré ni avancé.',
+  unconfirmed: `Un envoi interrompu est à vérifier dans KaraFun${PULL_KEEPS}`,
+  battle: `La Battle retient les envois vers KaraFun${PULL_KEEPS}`,
+  refused: `KaraFun refuse l’ajout de titres${PULL_KEEPS}`,
+  save: `La sauvegarde de la soirée est impossible, l’envoi automatique est suspendu${PULL_KEEPS}`,
+  auto: `L’envoi automatique vers KaraFun est coupé${PULL_KEEPS}`,
+};
 function priorityPullCheck(queueId, { current, upcoming } = analyze(), now = Date.now()) {
   const same = item => queueId != null && String(item.queueId) === String(queueId);
   const tr = tracked.find(same) || null;
   const item = upcoming.find(same) || null;
   const refuse = refusal => ({ tr, refusal });
   if (tr && (tr.startedAt || isOnStage(tr, current))) return refuse('started');
-  if (!bridge?.ready) return refuse('KaraFun est déconnecté : rien n’a été retiré ni avancé. Réessaie une fois KaraFun reconnecté.');
+  // La priorité, annoncée par le geste, doit pouvoir partir juste après le retrait.
+  const stop = sendStop(true);
+  if (stop === 'offline') return refuse(PULL_STOPS.offline);
   // Déjà sur le lecteur de KaraFun (titre précédent fini, chargé ou en cours
   // de chargement, pas encore lancé) : KaraFun pourrait le garder comme titre
   // en cours après son retrait, et plus rien ne repartirait.
@@ -3698,8 +3731,7 @@ function priorityPullCheck(queueId, { current, upcoming } = analyze(), now = Dat
   }
   if (isBattleItem(item)) return refuse('Une Battle chargée dans KaraFun ne sort jamais pour une priorité : rien n’a été retiré ni avancé.');
   if (pending) return refuse('Un titre part vers KaraFun en ce moment : rien n’a été retiré ni avancé. Réessaie dans un instant.');
-  if (restartOp) return refuse('Le titre en cours est en train d’être relancé : rien n’a été retiré ni avancé. Réessaie dans un instant.');
-  if (settings.queueClearPending) return refuse('La file est en train d’être vidée : rien n’a été retiré ni avancé.');
+  if (stop) return refuse(PULL_STOPS[stop]);
   if (!tr || !item || tr.cancelled || tr.pulled || tr.absent) {
     return refuse('Le titre chargé dans KaraFun a changé : rien n’a été retiré ni avancé. Touche de nouveau « Priorité ».');
   }

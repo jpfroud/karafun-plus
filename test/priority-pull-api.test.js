@@ -34,10 +34,17 @@ function harness() {
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, handlers, access, journal, staffState, publicState, sync, analyze, closingBlocksStart,
       tracked: () => tracked, setTracked: list => { tracked = list; }, setBridge: b => { bridge = b; },
-      setPending: p => { pending = p; }, getPending: () => pending, setRestartOp: op => { restartOp = op; }, deferTurn };
+      setPending: p => { pending = p; }, getPending: () => pending, setRestartOp: op => { restartOp = op; }, deferTurn, battleVote,
+      // Écriture de la soirée en échec, comme le catch de saveNight (la démo ne sauvegarde rien).
+      failSave: message => { persistenceError = message; settings.auto = false; } };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
-  f.settings.auto = false;
+  // Envoi automatique actif, comme au bar : sans lui, rien ne repartirait
+  // après un retrait, qui est alors refusé. Délai d'envoi le plus long que le
+  // bar peut régler (trois minutes après le début du titre en cours) : rien ne
+  // part vers KaraFun tant qu'un test ne le demande pas (pushDelaySec = 0).
+  f.settings.auto = true;
+  f.settings.pushDelaySec = 180;
   f.settings.autoPlay = false;
   f.events = [];
   const append = f.journal.append.bind(f.journal);
@@ -188,6 +195,72 @@ test('priorité confirmée : KaraFun déconnecté ou qui refuse le retrait, rien
   await assert.rejects(pullFor(f, driss), { message: 'KaraFun n’a pas pu retirer « Titre Bruno » (socket fermée) : rien n’a changé.' });
   nothingChanged(f, ctx);
   assert.equal(planned(f)[0].id, ctx.people.chloe.id, 'la file reste comme avant');
+});
+
+// Relecture : le retrait sortait le seul titre chargé de KaraFun alors que
+// l'application n'enverrait plus rien ensuite (envoi automatique coupé par le
+// bar, après une sauvegarde impossible, ou quand KaraFun retire le droit
+// d'ajout) : ni la priorité ni le titre retiré ne partaient, et la scène
+// restait vide après le titre en cours.
+test('priorité avec retrait, envoi automatique coupé (bar, sauvegarde, droits KaraFun) : rien n’est retiré, la priorité sans retrait reste possible', async () => {
+  const after = ' : rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer la personne juste après lui.';
+  const cases = [
+    ['coupé par le bar', f => f.call('POST /api/staff/settings', { auto: false }), `L’envoi automatique vers KaraFun est coupé${after}`],
+    ['sauvegarde impossible', f => f.failSave('disque plein'), `La sauvegarde de la soirée est impossible, l’envoi automatique est suspendu${after}`],
+    ['droit d’ajout retiré, avant le balayage', (f, ctx) => { ctx.bridge.permissions.addToQueue = false; }, `KaraFun refuse l’ajout de titres${after}`],
+    ['droit d’ajout retiré, envoi coupé par le balayage', (f, ctx) => {
+      ctx.bridge.permissions.addToQueue = false;
+      f.sync();
+      assert.equal(f.settings.auto, false);
+    }, `KaraFun refuse l’ajout de titres${after}`],
+  ];
+  for (const [how, cut, message] of cases) {
+    const f = harness();
+    const ctx = loaded(f);
+    const { driss } = ctx.people;
+    assert.equal(f.staffState().priorityPull?.queueId, 2, `${how} : envoi actif, le retrait est proposé`);
+    await cut(f, ctx);
+    assert.equal(f.staffState().priorityPull, null, `${how} : la page ne propose plus le retrait`);
+    await assert.rejects(pullFor(f, driss), { message }, how);
+    nothingChanged(f, ctx);
+    assert.ok(ctx.queue.some(item => item.queueId === 2), `${how} : le titre de Bruno reste dans KaraFun`);
+    // La priorité sans retrait reste celle d'avant.
+    const result = plain(await move(f, { personId: driss.id, toIndex: 0, priority: true }));
+    assert.equal(result.message, 'Driss passe juste après « Titre Bruno », déjà chargé dans KaraFun.', how);
+    assert.deepEqual(removals(ctx.bridge), [], how);
+    assert.equal(f.sched.reservedNext?.personId, driss.id, how);
+  }
+});
+
+// Même règle que l'envoi (sendStop) : une Battle en attente d'une place laisse
+// partir un passage annoncé, donc la priorité ; une Battle que le bar organise
+// à la main retient les envois, et le retrait viderait KaraFun.
+test('priorité avec retrait et Battle demandée : permise si la Battle attend une place, refusée si elle retient les envois', async () => {
+  {
+    const f = harness();
+    const ctx = loaded(f);
+    f.battleVote.staffLaunch({ song: { songId: 990, title: 'Battle du bar', artist: 'Groupe' } });
+    assert.equal(f.battleVote.automation.status, 'waiting');
+    f.sync();
+    assert.equal(f.staffState().priorityPull?.queueId, 2, 'Battle en attente : le retrait est proposé');
+    await pullFor(f, ctx.people.driss);
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]]);
+    f.settings.pushDelaySec = 0;
+    karafunRemoves(f, ctx);
+    assert.equal(f.getPending()?.sel.ids[0], ctx.people.driss.id, 'la priorité part avant la Battle');
+  }
+  {
+    const f = harness();
+    const ctx = loaded(f);
+    f.battleVote.staffLaunch({ song: { songId: 990, title: 'Battle du bar', artist: 'Groupe' } });
+    f.battleVote.resolve({ outcome: 'done' });
+    assert.equal(f.battleVote.automation.status, 'manual', 'le bar lance la Battle lui-même');
+    f.sync();
+    assert.equal(f.staffState().priorityPull, null);
+    await assert.rejects(pullFor(f, ctx.people.driss), { message: 'La Battle retient les envois vers KaraFun : rien n’a été retiré ni avancé. ' +
+      '« Priorité » sans retrait fait passer la personne juste après lui.' });
+    nothingChanged(f, ctx);
+  }
 });
 
 test('priorité confirmée : KaraFun garde le titre, le bar est prévenu ; lancé quand même, la priorité passe juste après', async () => {
