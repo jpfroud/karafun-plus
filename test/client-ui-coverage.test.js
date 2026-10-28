@@ -4813,7 +4813,10 @@ test('duo ouvert : un volontaire déjà invité d’un duo apprend que celui-ci 
   const one = baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre')] });
   one.tablePeople[0].guestDuos = [guestDuo];
   const page = await open({ state: one });
+  // Seule sur ce téléphone : dit d'abord dans la fiche (test « seule volontaire »), redit après.
   await page.tap('infoBar', '[data-open-join="o1"]');
+  assert.match(page.sheetHtml(), /Alice a déjà 1 duo prévu\./);
+  await page.tap('sheetPanel', '[data-open-as="alice"]');
   assert.equal(page.toast().text, 'Duo ajouté avec Léa. Alice a déjà 1 duo prévu. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.');
   // Plusieurs personnes sur ce téléphone : dit avant de choisir, pour chacune.
   const several = baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre', { volunteerIds: ['alice', 'bob'] })] });
@@ -4826,7 +4829,52 @@ test('duo ouvert : un volontaire déjà invité d’un duo apprend que celui-ci 
   // En anglais.
   const english = await open({ state: one, languages: ['en'] });
   await english.tap('infoBar', '[data-open-join="o1"]');
+  await english.tap('sheetPanel', '[data-open-as="alice"]');
   assert.equal(english.toast().text, 'Duet added with Léa. Alice already has 1 duet planned. Nobody goes on stage more than twice per round: this duet may wait for the next round.');
+});
+
+// Regression: relecture (passe 5) — seule personne de ce téléphone à pouvoir
+// se proposer, « Je chante avec … » rejoignait le duo au premier appui : la
+// mise en garde (déjà invitée d'autres duos, ce duo pourra attendre le tour
+// suivant) n'arrivait qu'après, dans un toast neutre de 4 s. Le choix du
+// partenaire et la fiche à plusieurs personnes la disent avant le choix.
+test('duo ouvert : seule volontaire déjà invitée d’un duo, la mise en garde s’affiche dans la fiche avant de rejoindre', async () => {
+  const planned = [{ entryId: 'g1', ownerId: 'gil', fromName: 'Gil', song: { entryId: 'g1', title: 'Hit' } },
+    { entryId: 'g2', ownerId: 'max', fromName: 'Max', song: { entryId: 'g2', title: 'Rock' } }];
+  const stateWith = guestDuos => {
+    const state = baseState({ openDuets: [openDuet('o1', 'Zoé', 'Titre')] });
+    state.tablePeople[0].guestDuos = guestDuos;
+    return state;
+  };
+  const accepts = page => page.posts.filter(([url]) => url === '/api/table/duet/open/accept');
+  const page = await open({ state: stateWith(planned) });
+  await page.tap('infoBar', '[data-open-join="o1"]');
+  assert.deepEqual(accepts(page), [], 'rien n’est envoyé avant le choix');
+  assert.equal(page.sheetOpen(), true, 'la fiche « Qui chante … » s’ouvre');
+  assert.equal(page.find('sheetPanel', '.notice.warn').textContent,
+    'Alice a déjà 2 duos prévus. Personne ne monte sur scène plus de deux fois par tour : ce duo pourra attendre le tour suivant.');
+  // Fermée sans choisir : rien n'est envoyé.
+  await page.tap('sheetPanel', '[data-close-sheet]');
+  assert.equal(page.sheetOpen(), false);
+  assert.deepEqual(accepts(page), []);
+  // Choisie dans la fiche : le duo est rejoint.
+  await page.tap('infoBar', '[data-open-join="o1"]');
+  await page.tap('sheetPanel', '[data-open-as="alice"]');
+  assert.deepEqual(accepts(page), [['/api/table/duet/open/accept', { table: '1', access: 'secret', personId: 'alice', ownerId: 'o-o1', entryId: 'o1' }]]);
+  assert.equal(page.sheetOpen(), false);
+  assert.match(page.toast().text, /^Duo ajouté avec Zoé\. Alice a déjà 2 duos prévus\./);
+  // Aucun autre duo prévu : rien à dire, rejoint au premier appui.
+  const free = await open({ state: stateWith([]) });
+  await free.tap('infoBar', '[data-open-join="o1"]');
+  assert.equal(accepts(free).length, 1);
+  assert.equal(free.sheetOpen(), false);
+  assert.equal(free.toast().text, 'Duo ajouté avec Zoé.');
+  // En anglais.
+  const english = await open({ state: stateWith(planned.slice(0, 1)), languages: ['en'] });
+  await english.tap('infoBar', '[data-open-join="o1"]');
+  assert.deepEqual(accepts(english), []);
+  assert.equal(english.find('sheetPanel', '.notice.warn').textContent,
+    'Alice already has 1 duet planned. Nobody goes on stage more than twice per round: this duet may wait for the next round.');
 });
 
 // Regression: relecture (passe 4) — « Chercher un duo » et « Fermer la
@@ -4835,6 +4883,8 @@ test('duo ouvert : un volontaire déjà invité d’un duo apprend que celui-ci 
 // « Touchez Chercher un duo » de la commande vocale ne trouvait rien (WCAG
 // 2.5.3, l'étiquette visible dans le nom accessible). Chaque bouton à texte
 // d'un titre de « Ma table » a un nom accessible qui commence par ce texte.
+// Passe 5 : « Chercher un duo » est une icône de la rangée ; son étiquette
+// est son infobulle, au début de son nom accessible.
 test('Ma table : le nom accessible des boutons à texte d’un titre commence par leur texte visible, en français et en anglais', async () => {
   const state = baseState();
   state.tablePeople[0].songs = [{ entryId: 'e1', songId: 1, title: 'Mon titre', artist: 'Moi', duet: { state: 'open', kind: 'duo' } },
@@ -4846,8 +4896,9 @@ test('Ma table : le nom accessible des boutons à texte d’un titre commence pa
     for (const one of [state, other]) {
       const page = await open({ state: structuredClone(one), languages });
       for (const button of page.node('peopleList').querySelectorAll('.song-actions button')) {
-        const text = button.textContent.trim();
-        if (!/\p{L}/u.test(text)) continue;
+        const text = /\p{L}/u.test(button.textContent) ? button.textContent.trim()
+          : button.hasAttribute('data-duet-open') ? button.getAttribute('title') || '' : '';
+        if (!text) continue;
         const name = button.getAttribute('aria-label') ?? text;
         seen.push(text);
         assert.ok(name.toLocaleLowerCase().startsWith(text.toLocaleLowerCase()), `${languages[0]} : « ${text} » au début de « ${name} »`);

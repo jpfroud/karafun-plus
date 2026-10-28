@@ -23,6 +23,13 @@
 // sur … » s'ouvrait sous un toast d'erreur qui cachait son titre et son
 // explication pendant 4 s ; la fiche le dit désormais elle-même.
 //
+// Relecture (passe 5) : « Chercher un duo », en toutes lettres sur chaque
+// titre sans duo, ne tenait plus avec ♪, Réglages et ⇅ à 320, 360 et 375 px
+// (et à 320 px en anglais) : la rangée passait sur deux lignes, le ✕ seul
+// sur la troisième, chaque ligne de 106 à 151 px. C'est désormais une icône
+// de la rangée ; chaque titre sans texte d'action garde ses actions sur une
+// seule ligne, ✕ compris.
+//
 // Le DOM simulé de client-ui-coverage.test.js ne calcule pas la mise en page :
 // seul un vrai navigateur mesure ces tailles. Aucun serveur ni port : la vraie
 // page (client.html, app.css, client-i18n.js) est servie par Playwright.
@@ -171,7 +178,10 @@ const barBox = page => page.evaluate(() => {
     // « Ma table » : trois titres prêts (♪, Réglages, ⇅, « Chercher un duo »,
     // ✕), ou le premier en duo ouvert (« Fermer la demande »), ou en duo
     // proposé (« Annuler duo ») ; les actions passent à la ligne dans la
-    // ligne du titre, rien ne sort de la carte ni de l'écran.
+    // ligne du titre, rien ne sort de la carte ni de l'écran. Un titre sans
+    // texte d'action (« Chercher un duo » est une icône) garde toutes ses
+    // actions sur la ligne du ✕, et sa ligne reste compacte (106 px avant
+    // l'ajout de « Chercher un duo »).
     const songs = duet => [{ entryId: 'e1', songId: 1, title: 'Je veux te voir', artist: 'Artiste', ...(duet ? { duet } : {}) },
       { entryId: 'e2', songId: 2, title: 'Bohemian Rhapsody', artist: 'Queen' }, { entryId: 'e3', songId: 3, title: 'Tube', artist: 'Groupe' }];
     const duets = { aucun: null, ouvert: { state: 'open', kind: 'duo' }, proposé: { state: 'pending', kind: 'duo', partnerName: 'Max', seen: true } };
@@ -184,9 +194,16 @@ const barBox = page => page.evaluate(() => {
           const rows = await page.evaluate(() => [...document.querySelectorAll('#peopleList .song-stack li')].map(li => {
             const row = li.getBoundingClientRect(), card = li.closest('.card').getBoundingClientRect();
             return { row: [Math.round(row.left), Math.round(row.right)], card: [Math.round(card.left), Math.round(card.right)],
+              h: Math.round(row.height),
               buttons: [...li.querySelectorAll('button')].map(button => {
                 const box = button.getBoundingClientRect();
-                return { text: button.textContent.trim(), left: Math.round(box.left), right: Math.round(box.right) };
+                return { text: button.textContent.trim(), left: Math.round(box.left), right: Math.round(box.right), top: Math.round(box.top),
+                  // Texte d'action d'un duo en cours (« Fermer la demande »,
+                  // « Annuler duo ») : un bouton de la rangée qui n'est pas une
+                  // icône, hors « Chercher un duo », toujours vérifié.
+                  worded: !!button.closest('.song-actions') && !button.classList.contains('icon') && !button.hasAttribute('data-duet-open'),
+                  remove: button.hasAttribute('data-remove-song'), duo: button.hasAttribute('data-duet-open'),
+                  label: button.getAttribute('aria-label'), title: button.getAttribute('title') };
               }) };
           }));
           assert.equal(rows.length, 3, at);
@@ -196,9 +213,24 @@ const barBox = page => page.evaluate(() => {
                 `${at} : « ${button.text} » dans la ligne du titre (${JSON.stringify(row)})`);
             }
             assert.ok(row.row[1] <= row.card[1], `${at} : ligne dans la carte (${JSON.stringify(row)})`);
+            if (row.buttons.some(button => button.worded)) continue;
+            const remove = row.buttons.find(button => button.remove);
+            for (const button of row.buttons) {
+              assert.ok(Math.abs(button.top - remove.top) < 20, `${at} : « ${button.title || button.text} » sur la ligne du ✕ (${JSON.stringify(row)})`);
+            }
+            assert.ok(row.h <= 120, `${at} : ligne du titre compacte (${row.h} px, ${JSON.stringify(row)})`);
+          }
+          const duos = rows.flatMap(row => row.buttons.filter(button => button.duo));
+          if (label === 'aucun') {
+            assert.equal(duos.length, 3, `${at} : « Chercher un duo » sur chaque titre`);
+            for (const duo of duos) {
+              // Nom accessible : il commence par l'étiquette affichée (texte, sinon infobulle).
+              const shown = /\p{L}/u.test(duo.text) ? duo.text : duo.title;
+              assert.match(shown || '', /^(Chercher un duo|Find a duet)$/, `${at} : étiquette de « Chercher un duo » (${JSON.stringify(duo)})`);
+              assert.ok(duo.label.startsWith(shown), `${at} : « ${shown} » au début de « ${duo.label} »`);
+            }
           }
           const labels = rows.flatMap(row => row.buttons.map(button => button.text));
-          if (label === 'aucun') assert.equal(labels.filter(text => /^(Chercher un duo|Find a duet)$/.test(text)).length, 3, `${at} : « Chercher un duo » sur chaque titre`);
           if (label === 'ouvert') assert.ok(labels.some(text => /^(Fermer la demande|Close the request)$/.test(text)), `${at} : « Fermer la demande »`);
           if (label === 'proposé') assert.ok(labels.some(text => /^(Annuler duo|Cancel duet)$/.test(text)), `${at} : « Annuler duo »`);
           await assertNoOverflowX(page, width, '#peopleList', at);
