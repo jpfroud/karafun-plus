@@ -485,6 +485,19 @@ test('adresse des QR : le choix fait reste affiché jusqu’à « Utiliser », m
   assert.equal(page.$('customBase').value, '', 'le serveur garde l’adresse locale : le champ la suit');
 });
 
+// Regression: relecture (passe 5) — la page du bar garde sa copie des poids
+// des bonus (BONUS_WEIGHT) pour écrire la phrase de chaque niveau, et aucun
+// test ne la reliait à BONUS_WEIGHTS de lib/scheduler/common.js : un poids
+// changé côté serveur laissait « Repères » et la fiche d'une table décrire un
+// rythme que la rotation ne suit plus, tous les tests au vert.
+test('page du bar : poids des bonus identiques à BONUS_WEIGHTS de l’ordonnanceur', () => {
+  const literal = html.match(/const BONUS_WEIGHT = (\{[^}]+\});/)?.[1];
+  assert.ok(literal, 'copie des poids des bonus dans staff.html');
+  const copy = vm.runInNewContext(`(${literal})`);
+  const { BONUS_WEIGHTS } = require('../lib/scheduler/common');
+  assert.deepEqual({ ...copy }, { ...BONUS_WEIGHTS });
+});
+
 test('repères chanteurs : recherche, filtre de table, bonus, départ et retour', async () => {
   const page = await openPage();
   assert.equal(page.$('identityCount').textContent, '4');

@@ -339,6 +339,7 @@
   // selon son bonus multiplié par celui de sa table (BONUS_WEIGHTS de
   // lib/scheduler/common.js), au plus deux fois par tour ; les passages en
   // plus sont répartis dans le tour, après les premiers passages des nouveaux.
+  // Copie de BONUS_WEIGHTS : staff-ui-coverage.test.js échoue si elles diffèrent.
   const BONUS_WEIGHT = { '-3': 0.5, '-2': 2 / 3, '-1': 0.8, 0: 1, 1: 1.25, 2: 1.5, 3: 2 };
   const rhythmOf = weight => {
     const near = value => Math.abs(weight - value) < 0.01;
