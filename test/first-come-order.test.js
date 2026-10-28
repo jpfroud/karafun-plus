@@ -248,6 +248,44 @@ test('chacun son tour : une table qui arrive pendant l’envoi du passage qui fe
   });
 });
 
+// Relecture (passe 6) : pendant l'envoi, la prévision (publicState :
+// presenceView(sel.consumedIds, sel), téléphones et bar) appliquait le cycle
+// noté au choix tel quel, sans la règle d'arrivée de _commit : D1, arrivée
+// pendant l'envoi du passage qui ferme le cycle, s'affichait derrière A3
+// jusqu'à l'accusé, puis passait devant sans que la file change.
+test('chacun son tour : pendant l’envoi du passage qui ferme un cycle, la prévision place la table arrivée comme l’accusé', () => {
+  withClock(tick => {
+    for (const arrives of [true, false]) {
+      const s = new Scheduler();
+      s.setHeadcount('A', 3); s.setHeadcount('B', 2); s.setHeadcount('D', 1);
+      const [a1, a2, a3] = ['A1', 'A2', 'A3'].map(name => s.join({ tableId: 'A', name }));
+      const [b1, b2] = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+      for (const [k, p] of [a1, b1, a2, b2, a3].entries()) { tick(); s.chooseSong(p, song(k + 1)); }
+      assert.deepEqual([sing(s), sing(s), sing(s)], ['A1', 'B1', 'A2']);
+      tick();
+      const sel = s.select(); // B2 ferme le cycle au choix
+      assert.deepEqual(sel.firstCycle, [], 'cycle fermé au choix');
+      const view = () => [s.presenceView(sel.consumedIds, sel), s.readyView(sel.consumedIds, sel)]
+        .map(list => list.filter(v => !v.future).map(v => v.name));
+      assert.deepEqual(view(), [['A3'], ['A3']], 'avant l’arrivée');
+      let d1 = null;
+      if (arrives) { d1 = s.join({ tableId: 'D', name: 'D1' }); tick(); s.chooseSong(d1, song(6)); }
+      const during = view();
+      if (d1) {
+        // Prévision gardée (_viewKey) : la même sélection choisie après la
+        // demande de D1 n'est pas une arrivée pendant l'envoi.
+        const later = { ...sel, pickedAt: d1.readySince };
+        assert.deepEqual(s.presenceView(sel.consumedIds, later).filter(v => !v.future).map(v => v.name), ['A3', 'D1'],
+          'choix daté après la demande de D1 : le cycle se ferme sans elle');
+      }
+      s.commit(sel); s.songEnded(sel.ids);
+      const label = arrives ? 'D arrive pendant l’envoi' : 'sans arrivée';
+      assert.deepEqual(order(s), arrives ? ['D1', 'A3'] : ['A3'], label);
+      assert.deepEqual(during, [order(s), order(s)], `${label} : la prévision pendant l’envoi est l’ordre après l’accusé`);
+    }
+  });
+});
+
 // Relecture (passe 5) : l'heure du choix (`pickedAt`) était prise sur
 // l'horloge du PC, les débuts d'attente sur celle qui ne recule jamais
 // (Scheduler#_readyStamp). L'horloge du PC recule de deux minutes juste
