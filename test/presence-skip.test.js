@@ -196,10 +196,15 @@ test('titre passé dont la personne chante en invitée juste devant : présence 
 
 // Relecture : le guide dit qu'un titre retiré faute de « Je suis là »
 // n'envoie pas la personne en fin de tour (son titre suivant est annoncé
-// aussitôt, avec une nouvelle demande), que « Toujours là » ferme seulement
-// l'alerte, et que « Marquer parti » retire ses titres et arrête ces annonces.
-test('titre retiré faute de présence en cours de soirée : suivant annoncé aussitôt, « Toujours là » ne confirme rien, « Marquer parti » arrête', () => {
-  const { s, people, sing } = evening();
+// aussitôt, avec une nouvelle demande ; si elle n'a encore jamais chanté,
+// après les premiers passages qui attendaient déjà), que « Toujours là »
+// ferme seulement l'alerte, et que « Marquer parti » retire ses titres et
+// arrête ces annonces. Relecture (passe 5) : Bruno et Chloé ont déjà chanté
+// dans le tour, Driss est le dernier premier passage, donc « juste après
+// Driss » était aussi la fin du tour ; Emma, premier passage demandé après
+// le retrait, montre qu'Alice n'y est pas renvoyée.
+test('titre retiré faute de présence en cours de soirée : pas renvoyée en fin de tour, suivant annoncé après les premiers passages qui attendaient déjà, « Toujours là » ne confirme rien, « Marquer parti » arrête', () => {
+  const { s, people, names, sing } = evening();
   const alice = people.Alice;
   const next = () => {
     const r = s.reservePresenceNext();
@@ -217,10 +222,15 @@ test('titre retiré faute de présence en cours de soirée : suivant annoncé au
   assert.equal(s.songsOf(alice).length, 1);
   // Son titre suivant ouvre une nouvelle attente : elle garde la priorité
   // des premiers passages, derrière Driss, qui attendait avant elle (premier
-  // ajouté, premier servi, constat du 25 octobre), et avant tout retour.
+  // ajouté, premier servi, constat du 25 octobre), devant Emma, arrivée
+  // après le retrait, et avant tout retour.
+  const emma = s.join({ tableId: '5', name: 'Emma', headcount: 1 });
+  s.chooseSong(emma, song());
   assert.equal(s.reservePresenceNext().ids[0], people.Driss.id, 'Driss attendait avant sa nouvelle attente');
+  assert.deepEqual(names(s.presenceView()).slice(0, 3), ['Driss', 'Alice', 'Emma']);
   next();
   assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
+  assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Alice', 'Emma'], 'Emma, arrivée après le retrait, passe après elle');
   const view = JSON.stringify(s.presenceView().map(v => v.ids));
   const state = JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]);
   assert.equal(s.dismissMaybeGone(alice),
@@ -236,6 +246,7 @@ test('titre retiré faute de présence en cours de soirée : suivant annoncé au
   assert.equal(s.reservedNext, null);
   const after = s.reservePresenceNext();
   assert.ok(after && after.ids[0] !== alice.id, 'et arrête les annonces : la suite part sans elle');
+  assert.equal(after.ids[0], emma.id);
 });
 
 // Relecture : avec un seul titre, le retrait faute de « Je suis là » vide sa

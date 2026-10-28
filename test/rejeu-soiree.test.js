@@ -2638,7 +2638,17 @@ test('rejeu forcé avec Timefold : l’égalité de 21:06:30 est départagée co
     assert.equal(tie.match, true, `rejeu : ${ids(tie.pick)}`);
     // Seuls diffèrent les premiers passages servis ce soir-là avant un premier
     // passage demandé plus tôt : Timefold ne contredit pas l'ordre d'ajout.
-    assert.deepEqual(sends.filter(d => !d.match).map(d => d.time), FIRST_COME_MISSES);
+    const misses = sends.filter(d => !d.match);
+    assert.deepEqual(misses.map(d => d.time), FIRST_COME_MISSES);
+    // Relecture (passe 5) : à ces quatre envois, Timefold sert bien le premier
+    // passage demandé plus tôt, celui que sert le rejeu sans Timefold.
+    const asked = new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t]));
+    const local = (await forcedRun()).decisions.filter(d => d.kind === 'send');
+    for (const d of misses) {
+      assert.ok(asked.get(d.pick.entryId) < asked.get(d.real.entryId), `${d.time} : ${ids(d.pick)} demandé avant ${ids(d.real)}`);
+      const twin = local.find(x => x.time === d.time);
+      assert.equal(d.pick.entryId, twin.pick.entryId, `${d.time} : Timefold ${ids(d.pick)}, sans Timefold ${ids(twin.pick)}`);
+    }
   });
 
 test('rejeu avec Timefold : effort compté en mouvements, plafond de temps atteint signalé',
