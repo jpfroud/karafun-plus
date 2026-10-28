@@ -144,9 +144,11 @@ const barBox = page => page.evaluate(() => {
       const expanded = await barBox(page);
       assert.ok(expanded.bottom <= expanded.nav, `${at} : dépliés, hauteur bornée (${JSON.stringify(expanded)})`);
       // Chaque « Je chante avec … » se touche (Playwright fait défiler la barre
-      // et vérifie que rien ne le recouvre), et la demande part.
+      // et vérifie que rien ne le recouvre), et la demande part. On attend sa
+      // réponse, pas son départ : l'événement de départ pouvait arriver avant
+      // que la route simulée ait noté le duo, et le dernier manquait (o4).
       for (const open of opens) {
-        await Promise.all([page.waitForRequest(request => request.url().endsWith('/api/table/duet/open/accept')),
+        await Promise.all([page.waitForResponse(response => response.url().endsWith('/api/table/duet/open/accept')),
           page.locator(`#infoBar [data-open-join="${open.entryId}"]`).click()]);
       }
       assert.deepEqual(accepted, opens.map(open => open.entryId), `${at} : chaque duo ouvert se rejoint`);
