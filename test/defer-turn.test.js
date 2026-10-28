@@ -229,3 +229,68 @@ test('demande de duo expirée à l’envoi : l’auteur du titre est prévenu, c
   s.staffRemoveEntry(alice.id, next.entryId);
   assert.equal(s.inboxOf(alice).filter(n => n.kind === 'joinMissed').length, 1, 'retrait : pas d’avis à l’auteur');
 });
+
+// Relecture (passe 7) : une demande de duo acceptée sur le titre annoncé
+// (answerDuetJoin, ou duo direct de la même table : requestDuetJoin) gardait
+// l'annonce : le duo partait juste après le passage de la personne qui venait
+// de chanter, sans les règles de la file. Comme une invitation acceptée
+// (answerDuet) ou un duo ouvert rejoint (acceptOpenDuet), l'annonce d'un
+// titre qui partait en solo est libérée ; une priorité du bar tient.
+test('demande de duo acceptée sur le titre annoncé : l’annonce est libérée, comme pour une invitation', async t => {
+  for (const how of ['accord', 'même table', 'priorité du bar']) await t.test(how, () => {
+    const s = new Scheduler();
+    const ana = s.join({ tableId: '1', name: 'Ana', headcount: 1 });
+    const bea = s.join({ tableId: '2', name: 'Bea', headcount: 2 });
+    const cid = s.join({ tableId: '3', name: 'Cid', headcount: 1 });
+    const dan = s.join({ tableId: '2', name: 'Dan' });
+    [ana, bea, cid].forEach(p => s.chooseSong(p, song()));
+    const stage = s.select(); s.commit(stage);
+    assert.deepEqual(stage.ids, [ana.id], 'Ana sur scène');
+    if (how === 'priorité du bar') s.staffMove(bea.id, 0);
+    else assert.deepEqual(s.reserveNext().ids, [bea.id], 'Bea annoncée');
+    const requester = how === 'même table' ? dan : ana;
+    const asked = s.requestDuetJoin(requester, bea.id, bea.song.entryId);
+    assert.equal(asked.direct, how === 'même table');
+    if (!asked.direct) s.answerDuetJoin(bea, bea.song.entryId, requester.id, true);
+    assert.deepEqual(bea.song.duet, { partnerId: requester.id, state: 'accepted' });
+    if (how === 'priorité du bar') {
+      assert.equal(s.reservedNext?.personId, bea.id, 'la priorité du bar tient');
+      return;
+    }
+    assert.equal(s.reservedNext, null, 'le titre annoncé en solo devient un duo : l’annonce est libérée');
+    if (how === 'accord') {
+      s.songEnded(stage.ids);
+      assert.deepEqual(s.select().ids, [cid.id], 'Ana ne remonte pas aussitôt sur scène');
+    }
+  });
+});
+
+// Relecture (passe 7) : titre annoncé (pas par le bar) sur une ligne que le
+// bar a fixée, devenu un duo dont l'invitée a un « Pas prêt » en cours sur son
+// propre titre. Ce duo ne pouvait plus partir (_heldFor) et l'annonce restait :
+// les téléphones annonçaient Dan pendant que d'autres partaient. Comme celle
+// d'un titre reporté, l'annonce d'un passage retenu par un report est
+// libérée : la file affichée et l'envoi disent la même chose.
+test('titre annoncé devenu un duo retenu par le « Pas prêt » de son invitée : l’annonce est libérée, la file dit vrai', () => {
+  const { s, people, names, sing } = evening([['1', 'Ana'], ['2', 'Bob'], ['3', 'Cid'], ['4', 'Dan'], ['5', 'Eve']]);
+  const { Bob, Dan } = people;
+  sing(s.select());
+  const visible = s.presenceView().filter(v => !v.future);
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(Dan.id, 1);
+  s.recordManualChange({ kind: 'move', personId: Dan.id, name: 'Dan', from: visible.findIndex(v => v.ids[0] === Dan.id) + 1, to: 2,
+    before, native: 'a'.repeat(64) });
+  assert.deepEqual(names(s.presenceView().filter(v => !v.future)), ['Bob', 'Dan', 'Cid', 'Eve']);
+  const bob = s.presenceView().find(v => !v.future && v.ids[0] === Bob.id);
+  s.deferPassage(Bob.id, { ids: bob.ids, entryId: bob.entryId }, 2);
+  assert.deepEqual(s.reserveNext().ids, [Dan.id], 'Dan annoncé');
+  const duo = s.inviteDuet(Dan, Bob.id, song());
+  s.reorderSongs(Dan, duo.entryId, 0);
+  s.answerDuet(Bob, true, duo.entryId);
+  assert.equal(Dan.song.duet?.partnerId, Bob.id);
+  const shown = s.presenceView().find(v => !v.future);
+  const sel = s.select();
+  assert.deepEqual(sel.ids, shown.ids, 'le passage envoyé est celui que la file montre en premier');
+  assert.notEqual(s.reservedNext?.personId, Dan.id, 'l’annonce du duo retenu est libérée');
+  assert.deepEqual(s.reserveNext().ids, sel.ids, 'la nouvelle annonce est ce passage');
+});
