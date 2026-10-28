@@ -451,6 +451,13 @@ test('duo chargé qui sort de KaraFun, invitée marquée partie pendant le retra
     else await f.call('POST /api/staff/kf', { action: 'absent', queueId: 2 });
     assert.deepEqual(removals(ctx.bridge), [['remove', 2]], `${how} : le duo sort de KaraFun`);
     await f.call('POST /api/staff/person/leave', { personId: zoe.id });
+    // Passe 6 : le bar et Bruno lisaient la note d'un duo qui reste chargé
+    // (« KaraFun affiche encore les deux noms »), pour un titre que KaraFun retire.
+    assert.deepEqual(notes(f).filter(msg => msg.includes('KaraFun affiche encore')), [], `${how} : journal du bar`);
+    assert.ok(notes(f).includes('Zoé est parti : « Duo Bruno », en train de sortir de KaraFun, revient à Bruno en solo'),
+      `${how} : ${notes(f).slice(-3).join(' | ')}`);
+    assert.deepEqual(plain(bruno.inbox.filter(n => n.kind === 'duoLeft').map(n => n.params)),
+      [{ name: 'Zoé', title: 'Duo Bruno', sent: false }], `${how} : le téléphone de Bruno ne parle pas des deux noms dans KaraFun`);
     karafunRemoves(f, ctx);
     assert.equal(bruno.song.entryId, ctx.next.song.entryId, `${how} : le titre revient en tête de la liste de Bruno`);
     assert.equal(bruno.song.duet, undefined, `${how} : plus de duo avec Zoé, partie`);

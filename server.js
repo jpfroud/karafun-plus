@@ -4119,6 +4119,23 @@ function leaveSentDuo(tr, guestId, by) {
   return sched.leaveSentDuet(tr.sel, guestId, { by });
 }
 
+// Titre en train de sortir de KaraFun (« Priorité », « Pas prêt », fermeture,
+// absent à l'appel) dont le bar marque l'invitée partie : Scheduler#leaveSentDuet
+// le rend à son auteur comme un duo chargé, mais sa note au bar et son avis à
+// l'auteur sont ceux d'un titre qui reste dans KaraFun (« KaraFun affiche
+// encore les deux noms »). Ce sont ses dernières écritures : la note dit ici
+// que le titre revient à son auteur en solo, et l'avis devient celui d'un duo
+// quitté avant l'envoi.
+function leaveLeavingDuo(sel, gid) {
+  const guestName = sched.people.get(gid)?.name || sel.names?.[sel.ids.indexOf(gid)] || '?';
+  const before = sched.log.at(-1);
+  const { owner } = sched.leaveSentDuet(sel, gid, { by: 'staff' });
+  const note = sched.log.at(-1);
+  if (note && note !== before) note.msg = `${guestName} est parti : « ${sel.song?.title || ''} », en train de sortir de KaraFun, revient à ${owner.name} en solo`;
+  const notice = owner.inbox?.at(-1);
+  if (notice?.kind === 'duoLeft') notice.params.sent = false;
+}
+
 // Le bar marque partis une personne ou toute une table (`ids`). Un duo déjà
 // chargé dont seuls des invités partent reste dans KaraFun, au nom de son
 // auteur seul ; un titre en train de sortir de KaraFun (« Priorité », « Pas
@@ -4135,8 +4152,12 @@ function keepSentDuosOfLeavers(ids) {
   let keptAsSolo = 0;
   for (const tr of asGuest) {
     if (tr.cancelled || tr.startedAt) continue;
-    for (const gid of tr.sel.ids.slice(1).filter(id => ids.has(id))) sched.leaveSentDuet(tr.sel, gid, { by: 'staff' });
-    if (!tr.pulled && !tr.absent) keptAsSolo++;
+    const leaving = !!(tr.pulled || tr.absent);
+    for (const gid of tr.sel.ids.slice(1).filter(id => ids.has(id))) {
+      if (leaving) leaveLeavingDuo(tr.sel, gid);
+      else sched.leaveSentDuet(tr.sel, gid, { by: 'staff' });
+    }
+    if (!leaving) keptAsSolo++;
   }
   if (pending && !pending.cancelled && !ids.has(pending.sel.ids[0])) {
     const guests = pending.sel.ids.slice(1).filter(id => ids.has(id));
