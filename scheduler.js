@@ -1180,9 +1180,20 @@ class Scheduler {
 
   // Heure d'un début d'attente, strictement après la précédente (et après
   // toutes celles d'une sauvegarde reprise, même si l'horloge a reculé).
+  // Même horloge pour les fins de passage (endStage) : _waitSince les compare.
   _readyStamp() {
     this._readyClock = Math.max(Date.now(), (this._readyClock || 0) + 1);
     return this._readyClock;
+  }
+
+  // Repère sur cette horloge, sans la faire avancer : la dernière heure
+  // donnée par _readyStamp (0 : aucune). Une attente déjà commencée ne le
+  // dépasse pas ; toute attente commencée ensuite vient strictement après,
+  // même si l'horloge du PC recule entre-temps. Heure du choix d'un passage
+  // (`pickedAt`, rotation.js#_pick), comparée aux débuts d'attente par
+  // _commit : lue sans rien changer, car _pick sert aussi aux prévisions.
+  _readyMark() {
+    return this._readyClock || 0;
   }
 
   // Liste vidée par un retrait : un titre rechoisi avant le passage suivant

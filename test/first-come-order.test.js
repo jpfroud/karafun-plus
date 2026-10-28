@@ -41,12 +41,13 @@ const playAll = s => {
   for (let guard = 0; guard < 50 && s.select(); guard++) sung.push(sing(s));
   return sung;
 };
-// Horloge réglée par le test : chaque ajout a lieu une seconde après le précédent.
+// Horloge réglée par le test : chaque ajout a lieu une seconde après le
+// précédent ; `back(sec)` la fait reculer (synchronisation de l'heure du PC).
 function withClock(run) {
   const realNow = Date.now;
   let clock = Date.UTC(2026, 9, 25, 20, 0, 0);
   Date.now = () => clock;
-  try { return run(() => { clock += 1000; }); } finally { Date.now = realNow; }
+  try { return run(() => { clock += 1000; }, sec => { clock -= sec * 1000; }); } finally { Date.now = realNow; }
 }
 // Ordre de référence quand tout le monde a ajouté avant le premier passage :
 // le cycle k fait passer le k-ième ajouté de chaque table, dans l'ordre
@@ -244,6 +245,59 @@ test('chacun son tour : une table qui arrive pendant l’envoi du passage qui fe
     assert.deepEqual(late.names, ['Y1']);
     t.commit(late);
     assert.deepEqual([...t.firstCycle], [], 'nouveau cycle');
+  });
+});
+
+// Relecture (passe 5) : l'heure du choix (`pickedAt`) était prise sur
+// l'horloge du PC, les débuts d'attente sur celle qui ne recule jamais
+// (Scheduler#_readyStamp). L'horloge du PC recule de deux minutes juste
+// après le choix de B2 : la table D, arrivée pendant l'envoi, était datée
+// avant ce choix et le cycle se fermait sans elle (A3 avant D1). Dans
+// l'autre sens, en « Duos uniquement », le duo ouvert de Gus (table G),
+// demandé avant le choix de B1, l'horloge reculant ensuite, comptait comme
+// une arrivée : le cycle fermé restait ouvert pour lui, et son duo passait
+// devant A2, qui avait demandé avant lui.
+test('horloge du PC reculée juste après le choix qui ferme un cycle : arrivée pendant l’envoi ou demande d’avant, chacune à sa place', () => {
+  withClock((tick, back) => {
+    const s = new Scheduler();
+    s.setHeadcount('A', 3); s.setHeadcount('B', 2); s.setHeadcount('D', 1);
+    const [a1, a2, a3] = ['A1', 'A2', 'A3'].map(name => s.join({ tableId: 'A', name }));
+    const [b1, b2] = ['B1', 'B2'].map(name => s.join({ tableId: 'B', name }));
+    for (const [k, p] of [a1, b1, a2, b2, a3].entries()) { tick(); s.chooseSong(p, song(k + 1)); }
+    assert.deepEqual([sing(s), sing(s), sing(s)], ['A1', 'B1', 'A2']);
+    tick();
+    const sel = s.select();
+    assert.deepEqual(sel.names, ['B2']);
+    assert.deepEqual(sel.firstCycle, [], 'cycle fermé au choix');
+    back(120);
+    const d1 = s.join({ tableId: 'D', name: 'D1' });
+    tick(); s.chooseSong(d1, song(6));
+    assert.ok(d1.readySince > sel.pickedAt, 'demande datée après le choix');
+    s.commit(sel); s.songEnded(sel.ids);
+    assert.deepEqual([...s.firstCycle].sort(), [a1.group, b1.group].sort(), 'le cycle reste ouvert pour D');
+    assert.deepEqual(order(s), ['D1', 'A3']);
+  });
+  withClock((tick, back) => {
+    const s = new Scheduler();
+    let duoOnly = false;
+    s.duoOnlyRule = () => duoOnly;
+    const [a1, b1, a2] = [['A', 'A1'], ['B', 'B1'], ['A', 'A2']]
+      .map(([tableId, name]) => s.join({ tableId, name, headcount: 2 }));
+    const gus = s.join({ tableId: 'G', name: 'Gus', headcount: 2 }), nina = s.join({ tableId: 'N', name: 'Nina', headcount: 2 });
+    for (const [k, p] of [a1, b1, a2].entries()) { tick(); s.chooseSong(p, song(k + 1)); }
+    assert.equal(sing(s), 'A1');
+    duoOnly = true;
+    tick(); s.openDuet(gus, { song: song(4) }); // retenu tant que personne ne le rejoint
+    back(120);
+    const sel = s.select();
+    assert.deepEqual(sel.names, ['B1']);
+    assert.deepEqual(sel.firstCycle, [], 'cycle fermé au choix');
+    assert.ok(gus.readySince <= sel.pickedAt, 'le duo de Gus était demandé avant le choix');
+    s.commit(sel); s.songEnded(sel.ids);
+    assert.deepEqual([...s.firstCycle], [], 'nouveau cycle : personne n’est arrivé pendant l’envoi');
+    s.acceptOpenDuet(nina, gus.id, gus.song.entryId);
+    duoOnly = false;
+    assert.deepEqual(order(s), ['A2', 'Gus & Nina']);
   });
 });
 

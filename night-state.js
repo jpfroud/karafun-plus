@@ -607,30 +607,34 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   const duoOnly = !!('duoOnly' in restoredSettings ? restoredSettings.duoOnly : settings.duoOnly);
   tmp.duoOnlyRule = () => duoOnly;
   const restoredPlan = usableSolverPlan(data.solverPlan, tmp);
-  // Débuts d'attente (`readySince`) et fins de passage (`stageEnds`), comparés
-  // entre eux à compteur égal (rotation.js#_waitSince) : une sauvegarde faite
-  // sur une horloge en avance sur celle de la reprise (autre PC, horloge
-  // reculée entre-temps) les daterait dans le futur. Chaque demande faite
-  // après la reprise prendrait alors la suite de la plus tardive
-  // (Scheduler#_readyStamp), des minutes après sa vraie heure et après les
-  // fins de passage notées ensuite : une demande faite pendant une chanson
-  // passerait après le titre suivant de son chanteur. Elles reculent
-  // ensemble, du même écart, la plus tardive à l'heure de la reprise : leur
-  // ordre et leurs écarts ne changent pas. Leurs copies aussi : l'attente
-  // d'une place cédée à quelqu'un encore sans titre (`givenWait`, giveSpot),
-  // l'heure du choix d'un passage envoyé (`pickedAt`, comparée aux débuts
-  // d'attente par _commit), les heures de demande gardées par son reçu
-  // (`turnCredit`), qu'un retrait sans chanter rend à ses chanteurs
-  // (rollbackUnplayed), et celles des reçus d'avant un duo noté par le bar
-  // (`staffDuo`), que son annulation rend aux titres encore suivis
-  // (staffUncountPartner). Moins d'une seconde : des ajouts de la même
-  // milliseconde, qui prennent chacun la suivante (_readyStamp), rien à
-  // corriger. Le plan Timefold repris reste valable (mêmes rangs d'ajout,
-  // `addedOrder`) : il prend l'empreinte de la file aux heures corrigées,
-  // comme les plans gardés avec les gestes du bar (gesturePrints).
+  // Débuts d'attente (`readySince`), fins de passage (`stageEnds`) et heure
+  // du choix d'un passage envoyé (`pickedAt`), datés sur la même horloge
+  // (Scheduler#_readyStamp) et comparés entre eux (rotation.js#_waitSince,
+  // _commit) : une sauvegarde faite sur une horloge en avance sur celle de la
+  // reprise (autre PC, horloge reculée entre-temps) les daterait dans le
+  // futur. Chaque demande faite après la reprise prendrait alors la suite de
+  // la plus tardive (Scheduler#_readyStamp), des minutes après sa vraie heure
+  // et après les fins de passage notées ensuite : une demande faite pendant
+  // une chanson passerait après le titre suivant de son chanteur. Elles
+  // reculent ensemble, du même écart, la plus tardive à l'heure de la
+  // reprise : leur ordre et leurs écarts ne changent pas. Leurs copies aussi :
+  // l'attente d'une place cédée à quelqu'un encore sans titre (`givenWait`,
+  // giveSpot), les heures de demande gardées par son reçu (`turnCredit`),
+  // qu'un retrait sans chanter rend à ses chanteurs (rollbackUnplayed), et
+  // celles des reçus d'avant un duo noté par le bar (`staffDuo`), que son
+  // annulation rend aux titres encore suivis (staffUncountPartner). Moins
+  // d'une seconde : des ajouts de la même milliseconde, qui prennent chacun
+  // la suivante (_readyStamp), rien à corriger. Le plan Timefold repris reste
+  // valable (mêmes rangs d'ajout, `addedOrder`) : il prend l'empreinte de la
+  // file aux heures corrigées, comme les plans gardés avec les gestes du bar
+  // (gesturePrints).
   const givenSince = p => Number.isFinite(p.givenWait?.readySince) ? p.givenWait.readySince : 0;
-  const latest = Math.max(0, ...[...tmp.people.values()].flatMap(p => [p.readySince || 0, givenSince(p)]),
-    ...tmp.stageEnds.values());
+  const holders = [...restoredTracked, restoredPending].filter(Boolean);
+  // Heures de la sauvegarde sur cette horloge, places cédées comprises : la
+  // plus tardive se ramène à l'heure de la reprise, l'horloge repart d'elle.
+  const clockTimes = () => [...[...tmp.people.values()].flatMap(p => [p.readySince || 0, givenSince(p)]),
+    ...tmp.stageEnds.values(), ...holders.map(holder => Number.isFinite(holder.sel?.pickedAt) ? holder.sel.pickedAt : 0)];
+  const latest = Math.max(0, ...clockTimes());
   if (latest - restoredAt >= 1000) {
     const ahead = latest - restoredAt;
     const printsBefore = gesturePrints(tmp);
@@ -650,7 +654,6 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
         }
       }
     };
-    const holders = [...restoredTracked, restoredPending].filter(Boolean);
     for (const holder of holders) {
       if (Number.isFinite(holder.sel?.pickedAt)) holder.sel.pickedAt -= ahead;
       shiftCredit(holder.sel?.turnCredit);
@@ -674,11 +677,15 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'manualEpoch', 'tableServeCounts', 'duetCooldowns', 'log',
     'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'firstCycle', 'unstartedTurn', 'stageEnds', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
-  // Un ajout après la reprise part après toutes les heures sauvegardées,
-  // même si l'horloge du serveur recule ensuite (Scheduler#_readyStamp) ;
-  // elles ne dépassent pas l'heure de la reprise (plus haut) : il est daté à
-  // son heure, sur la même horloge que les fins de passage.
-  scheduler._readyClock = [...tmp.people.values()].reduce((max, p) => Math.max(max, p.readySince || 0, givenSince(p)), 0);
+  // Un ajout après la reprise part après toutes les heures sauvegardées sur
+  // cette horloge (clockTimes), même si l'horloge du serveur recule ensuite
+  // (Scheduler#_readyStamp) ; elles ne dépassent pas l'heure de la reprise
+  // (plus haut) : il est daté à son heure. Les fins de passage et les choix
+  // des passages envoyés en font partie (relecture de la passe 5) : sinon une
+  // demande faite après la fin d'un titre, l'horloge du PC reculée depuis la
+  // reprise, était datée avant elle et passait devant le titre suivant de son
+  // chanteur ; une table arrivée pendant un envoi, avant son choix.
+  scheduler._readyClock = Math.max(0, ...clockTimes());
   scheduler._restorePlan(restoredPlan);
   for (const t of tmp.tables.values()) access.restore(t.id, tmpAccess.get(t.id));
   Object.assign(settings, restoredSettings);

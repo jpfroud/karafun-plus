@@ -503,8 +503,9 @@ test('reprise sur une horloge en retard sur celle de la sauvegarde : les heures 
       for (let k = 0; k < 3; k++) step();
       if (moment === 'pendant') { tick(30); add(o); } else { tick(120); endOnStage(); tick(5); }
       // Un envoi en cours, choisi juste avant la sauvegarde : l'heure de son
-      // choix (`pickedAt`, cycle des premiers passages) recule avec les autres.
-      const sending = { ...s.select(), pickedAt: Date.now() };
+      // choix (`pickedAt`, cycle des premiers passages), prise comme _pick
+      // sur l'horloge des débuts d'attente, recule avec les autres.
+      const sending = { ...s.select(), pickedAt: s._readyMark() };
       // Plan Timefold adopté (ici l'ordre local) : il survit à la reprise.
       s.solverPlan = { version: s.version, fingerprint: s.solverContextFingerprint(), source: 'timefold',
         ranks: new Map(s.readyView().map((row, index) => [row.entryId, index])) };
@@ -526,6 +527,39 @@ test('reprise sur une horloge en retard sur celle de la sauvegarde : les heures 
       assert.equal(byName('Tess').readySince, Date.now(), `${moment} : demande datée à son heure`);
       if (moment === 'pendant') { tick(60); endSong(); }
       assert.deepEqual(view(), expected, `${moment} : ${view().join(' ')}`);
+    } finally { e.done(); }
+  }
+});
+
+// Relecture (passe 5) : la reprise repartait de la plus tardive des demandes
+// sauvegardées, pas des fins de passage, datées sur la même horloge depuis la
+// passe 4. La chanson de Hugo finit, le serveur redémarre (mise à jour), puis
+// l'horloge du PC recule de deux minutes : Inès, qui redemande après cette
+// fin, était datée avant elle et passait devant le titre suivant de Hugo
+// (Zoé Inès Hugo). Sans redémarrage, la même demande vient après lui. Reprise
+// sur la même horloge, ou sur une horloge en retard de cinq minutes (heures
+// ramenées à la reprise).
+test('reprise puis horloge du PC reculée : une demande faite après la fin d’un passage sauvegardé vient après elle', () => {
+  for (const late of [0, 300]) {
+    const e = evening();
+    try {
+      const { s, tick, add, step, endSong, song } = e;
+      const [zoe, ines, hugo] = ['Zoé', 'Inès', 'Hugo'].map(name => s.join({ tableId: `T-${name}`, name, headcount: 1 }));
+      add(zoe); add(zoe); add(ines); add(hugo); add(hugo);
+      for (let k = 0; k < 3; k++) step();
+      assert.deepEqual(e.passages, ['Zoé', 'Inès', 'Hugo']);
+      tick(120); endSong(); tick(5); // fin de Hugo : l'heure sauvegardée la plus tardive
+      const saved = save(s);
+      tick(-late);
+      const { back, byName, view } = restart(s, saved);
+      const label = `reprise ${late ? `en retard de ${late} s` : 'à la même heure'}`;
+      const end = back._stageEnd(byName('Hugo').lastAppearanceTurn);
+      assert.ok(Number.isFinite(end) && end <= Date.now(), `${label} : fin de Hugo reprise`);
+      assert.ok(back._readyClock >= end, `${label} : l’horloge reprend après la fin de Hugo`);
+      tick(-120); tick(10); // l'horloge du PC recule après la reprise
+      back.chooseSong(byName('Inès'), song());
+      assert.ok(byName('Inès').readySince > end, `${label} : demande datée après la fin de Hugo`);
+      assert.deepEqual(view(), ['Zoé', 'Hugo', 'Inès'], `${label} : ${view().join(' ')}`);
     } finally { e.done(); }
   }
 });
