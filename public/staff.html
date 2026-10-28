@@ -354,13 +354,20 @@
   };
   // `tableLevel` : bonus de la table de la personne ; `table` : phrase du
   // réglage d'une table (elle vaut pour chacun de ses chanteurs).
+  const bonusSign = v => v > 0 ? `+${v}` : v < 0 ? `−${-v}` : 'Aucun';
   const bonusHelp = (level, tableLevel = 0, table = false) => {
     const value = Number(level) || 0, atTable = table ? 0 : Number(tableLevel) || 0;
-    const sign = v => v > 0 ? `+${v}` : v < 0 ? `−${-v}` : 'Aucun';
     const weight = (BONUS_WEIGHT[value] || 1) * (BONUS_WEIGHT[atTable] || 1);
-    return `${sign(value)}${atTable ? `, avec le bonus de la table (${sign(atTable)})` : ''} : ${table && value ? 'chaque personne de la table ' : ''}${rhythmOf(weight)}${
+    return `${bonusSign(value)}${atTable ? `, avec le bonus de la table (${bonusSign(atTable)})` : ''} : ${table && value ? 'chaque personne de la table ' : ''}${rhythmOf(weight)}${
       weight > 1.01 ? ' ; passages en plus répartis dans le tour, après les premiers passages des nouveaux' :
       weight < 0.99 ? ' ; le premier passage de la soirée n’est pas retardé' : ''}.`;
+  };
+  // Étiquette courte d'une ligne de « Repères » (la phrase de bonusHelp au
+  // survol) : écrite en entier sous chaque nom, elle rendait les lignes deux à
+  // trois fois plus hautes et répétait la même phrase pour toute une table.
+  const bonusTag = (level, tableLevel = 0) => {
+    const value = Number(level) || 0, atTable = Number(tableLevel) || 0;
+    return `${value < 0 ? 'Malus' : 'Bonus'} ${bonusSign(value)}${atTable ? ` · table ${bonusSign(atTable)}` : ''}`;
   };
   const store = { get(name) { try { return localStorage.getItem(name); } catch (_) { return null; } },
     set(name, value) { try { localStorage.setItem(name, value); } catch (_) { /* mémoire du navigateur indisponible */ } } };
@@ -1040,10 +1047,12 @@
       return (select.value === 'all' || p.tableId === select.value) &&
         (!filter || `${p.name} ${table?.name || ''} ${p.privateNote || ''}`.toLocaleLowerCase('fr').includes(filter));
     }).sort((a, b) => S.tables.findIndex(t => t.id === a.tableId) - S.tables.findIndex(t => t.id === b.tableId) || a.name.localeCompare(b.name, 'fr'));
-    // Une ligne compacte par personne, regroupée par table.
+    // Une ligne compacte par personne, regroupée par table. Un bonus
+    // personnel tient en une étiquette (bonusTag) ; la phrase du bonus d'une
+    // table s'écrit une fois, sous son nom, pas sous chacun de ses chanteurs.
     const row = p => `<div class="identity-row${p.active ? '' : ' gone'}" data-identity-person="${esc(p.id)}">
       ${photoHtml(p, p.name)}
-      <div class="identity-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}<span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${p.bonus || tableOf(p.tableId)?.bonus ? `<span class="tiny muted" data-person-bonus-help>${esc(bonusHelp(p.bonus, tableOf(p.tableId)?.bonus))}</span>` : ''}${activityHtml(activityOf(p))}</div>
+      <div class="identity-who"><strong>${esc(p.name)}</strong>${nameBadge(p)}<span class="tiny muted">${p.active ? `${p.songCount} titre${p.songCount > 1 ? 's' : ''} · ${p.sung} passage${p.sung > 1 ? 's' : ''}` : 'parti, fiche conservée'}</span>${p.bonus ? `<span class="tiny muted" data-person-bonus-help title="${esc(bonusHelp(p.bonus, tableOf(p.tableId)?.bonus))}">${esc(bonusTag(p.bonus, tableOf(p.tableId)?.bonus))}</span>` : ''}${activityHtml(activityOf(p))}</div>
       <span class="identity-note"><input data-identity-note data-autosave="note" data-autosave-id="${esc(p.id)}" type="text" maxlength="140" value="${esc(p.privateNote || '')}" placeholder="Repère, ex. t-shirt rouge" aria-label="Repère privé de ${esc(p.name)}"><span class="save-status" data-save-status="note:${esc(p.id)}" aria-live="polite"></span></span>
       <div class="identity-actions"><select data-person-bonus class="identity-bonus" title="Bonus ou malus, réservé au bar. ${esc(bonusHelp(p.bonus, tableOf(p.tableId)?.bonus))}" aria-label="Bonus ou malus de ${esc(p.name)}">${bonusOptions(p.bonus)}</select><button type="button" class="btn small" data-identity-share ${p.active ? '' : 'disabled'} title="Donner ce chanteur à un autre téléphone">Transférer</button>${p.active ? '<button type="button" class="btn small danger" data-identity-leave title="Marquer parti">Parti</button>' : '<button type="button" class="btn small" data-identity-reactivate>Réactiver</button>'}</div>
     </div>`;
@@ -1057,6 +1066,7 @@
     // garde le focus (« Parti », « Réactiver ») n'empêche pas la ligne de suivre.
     patch(container, people.length ? groups.map(group => `<section class="identity-group">
       <h4>${esc(tables.get(group.tableId)?.name || group.tableId)} <span class="tiny muted">${group.people.length} personne${group.people.length > 1 ? 's' : ''}</span></h4>
+      ${Number(tables.get(group.tableId)?.bonus) ? `<div class="tiny muted" data-table-bonus-help>Bonus de la table ${esc(bonusHelp(tables.get(group.tableId).bonus, 0, true))}</div>` : ''}
       ${group.people.map(row).join('')}</section>`).join('') : '<p class="small muted">Aucun chanteur pour ce filtre.</p>', force);
   }
 

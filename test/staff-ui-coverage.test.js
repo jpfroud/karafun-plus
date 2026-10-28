@@ -553,32 +553,44 @@ test('repères chanteurs : recherche, filtre de table, bonus, départ et retour'
   page.world.people[1].bonus = -2;
   await page.poll();
   assert.equal(row('bruno').querySelector('[data-person-bonus]').value, '-2', 'le bonus enregistré est présélectionné');
-  // Ce que fait le niveau choisi, sur la ligne (page du bar seulement).
-  assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
-    '−2 : passe environ deux tours sur trois ; le premier passage de la soirée n’est pas retardé.');
+  // Ce que fait le niveau choisi, sur la ligne (page du bar seulement) : une
+  // étiquette courte, la phrase entière au survol et dans le menu du bonus.
+  // Regression: relecture (passe 4) — la phrase entière sous chaque nom
+  // rendait les lignes deux à trois fois plus hautes (staff-layout-bonus.test.js).
+  const help = id => row(id).querySelector('[data-person-bonus-help]');
+  const tableHelp = () => page.$('identityBody').querySelectorAll('[data-table-bonus-help]').map(node => node.textContent);
+  assert.equal(help('bruno').textContent, 'Malus −2');
+  assert.equal(help('bruno').title, '−2 : passe environ deux tours sur trois ; le premier passage de la soirée n’est pas retardé.');
   page.world.people[1].bonus = 3;
   await page.poll();
-  assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
+  assert.equal(help('bruno').textContent, 'Bonus +3');
+  assert.equal(help('bruno').title,
     '+3 : passe environ deux fois plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  assert.deepEqual(tableHelp(), [], 'sans bonus de table, pas de phrase sous la table');
   // Le bonus de la table se multiplie à celui de la personne : +3 à une table
-  // à −3 revient à passer comme les autres ; sans bonus personnel, la ligne
-  // dit ce que fait celui de la table.
+  // à −3 revient à passer comme les autres. La phrase du bonus de la table
+  // s'écrit une fois, sous son nom, pas sous chacun de ses chanteurs.
   page.world.tables[0].bonus = -3;
   await page.poll();
-  assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
-    '+3, avec le bonus de la table (−3) : passe une fois par tour, comme les autres.');
+  assert.equal(help('bruno').textContent, 'Bonus +3 · table −3');
+  assert.equal(help('bruno').title, '+3, avec le bonus de la table (−3) : passe une fois par tour, comme les autres.');
   assert.match(row('bruno').querySelector('[data-person-bonus]').title, /\(−3\) : passe une fois par tour/);
+  assert.deepEqual(tableHelp(), ['Bonus de la table −3 : chaque personne de la table passe un tour sur deux ; le premier passage de la soirée n’est pas retardé.']);
   page.world.people[1].bonus = 1;
   page.world.tables[0].bonus = 2;
   await page.poll();
-  assert.equal(row('bruno').querySelector('[data-person-bonus-help]').textContent,
+  assert.equal(help('bruno').textContent, 'Bonus +1 · table +2');
+  assert.equal(help('bruno').title,
     '+1, avec le bonus de la table (+2) : passe environ 1,9 fois plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
-  assert.equal(row('alice').querySelector('[data-person-bonus-help]').textContent,
-    'Aucun, avec le bonus de la table (+2) : passe environ une fois et demie plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  assert.equal(help('alice'), null, 'bonus de la table seul : rien de plus sur la ligne');
+  assert.equal(row('alice').querySelector('[data-person-bonus]').title,
+    'Bonus ou malus, réservé au bar. Aucun, avec le bonus de la table (+2) : passe environ une fois et demie plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.');
+  assert.deepEqual(tableHelp(), ['Bonus de la table +2 : chaque personne de la table passe environ une fois et demie plus souvent ; passages en plus répartis dans le tour, après les premiers passages des nouveaux.']);
   delete page.world.tables[0].bonus;
   page.world.people[1].bonus = -2;
   await page.poll();
-  assert.equal(row('alice').querySelector('[data-person-bonus-help]'), null, 'ni bonus ni bonus de table, pas de phrase');
+  assert.equal(help('alice'), null, 'ni bonus ni bonus de table, pas de phrase');
+  assert.deepEqual(tableHelp(), []);
   // Repère enregistré tout seul : après la pause de frappe, sur Entrée ou en
   // quittant le champ. Seul le texte part.
   const note = id => row(id).querySelector('[data-identity-note]');
