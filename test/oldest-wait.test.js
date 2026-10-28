@@ -379,6 +379,41 @@ test('chacun son tour : un bonus reposé reste en lice face à la plus ancienne 
   } finally { e.done(); }
 });
 
+// Relecture (passe 4) : l'attente pondérée d'un bonus se compare au millième
+// près, comme dans QueueScore.java. Zoé a +2 à une table à −1 (poids
+// 1,5 × 0,8, 1,2000000000000002 en virgule flottante) et a chanté il y a cinq
+// passages ; Maud a +2 à une table neutre (1,5), il y a quatre. 5 × 1,2 =
+// 4 × 1,5 : même attente pondérée, le plus fort bonus (Maud) d'abord. Avant,
+// Node comparait 4,999999999999999 à 5 et faisait passer Zoé, Java l'inverse.
+test('attente pondérée égale : le plus fort bonus d’abord, même avec un poids composé (1,5 × 0,8)', () => {
+  const realNow = Date.now;
+  let clock = Date.UTC(2026, 9, 23, 21);
+  Date.now = () => clock;
+  try {
+    const s = new Scheduler({});
+    const join = (tableId, name) => s.join({ tableId, name, headcount: 2 });
+    const zoe = join('TZ', 'Zoé'), ines = join('TZ', 'Inès'), maud = join('TM', 'Maud'), gil = join('TM', 'Gil');
+    const hugo = join('TH', 'Hugo'), paulo = join('TP', 'Paulo');
+    const all = [zoe, ines, maud, gil, hugo, paulo];
+    let n = 1;
+    for (let k = 0; k < 3; k++) for (const p of all) { clock += 5000; s.chooseSong(p, { songId: n, title: `T${n++}`, artist: 'x' }, 'append'); }
+    // Parts des tables égales (2 et 2) : seule l'attente départage.
+    s.tables.get(zoe.tableId).bonus = -1; zoe.bonus = 2; maud.bonus = 2; gil.bonus = -3;
+    assert.equal(s.personWeight(zoe.id), 1.5 * 0.8);
+    assert.notEqual(s.personWeight(zoe.id), 1.2);
+    s.appearanceSerial = 10;
+    const last = new Map([[zoe, 6], [maud, 7], [ines, 8], [gil, 9], [hugo, 10], [paulo, 5]]);
+    for (const [p, turn] of last) {
+      p.sung = 1; p.lastAppearanceTurn = turn; p.readySerial = 0;
+      s.stageEnds.set(turn, clock - (11 - turn) * 200000);
+    }
+    s.roundPeople = new Set([ines.id, gil.id, hugo.id, paulo.id]);
+    s.lastGroup = hugo.group;
+    s.recentGroups = [[paulo.group], [zoe.group], [maud.group], [ines.group], [gil.group], [hugo.group]];
+    assert.deepEqual(s.select().names, ['Maud']);
+  } finally { Date.now = realNow; }
+});
+
 // Reprise après un redémarrage, pendant la chanson de Yves (relecture du
 // 27 octobre) : les demandes faites ensuite sont datées à leur vraie heure,
 // sur la même horloge que les fins de passage. Une demande faite pendant la

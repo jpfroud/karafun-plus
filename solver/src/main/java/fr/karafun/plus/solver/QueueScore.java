@@ -32,9 +32,11 @@ import java.util.function.Predicate;
 public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoftScore> {
     private static final double EPS = 1e-9;
     private static final int UNKNOWN = -1000;
-    // Usual spacing (DEFAULTS.spacingSongs in lib/scheduler/common.js): room a
-    // spread-out bonus keeps between its last passages of a round.
-    private static final int USUAL_SPACING = 3;
+    // Room, in songs, a spread-out bonus keeps between its last passages of a
+    // round, even when the spacing option is lower: a fixed rule, mirror of
+    // BONUS_SPREAD_MIN_SPACING in lib/scheduler/common.js (not the option's
+    // default value).
+    private static final int BONUS_SPREAD_MIN_SPACING = 3;
 
     @Override
     public HardMediumSoftScore calculateScore(QueuePlan plan) {
@@ -104,8 +106,9 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // the current round, a title ready or already on stage in it),
             // unless the round no longer has room for the passages they still
             // owe it (their credit, plus the new duos they are invited to; one:
-            // no other new passage left; k >= 2: at most k * max(3, spacing)
-            // left). Room only counts new passages sharing nobody with the
+            // no other new passage left; k >= 2: at most
+            // k * max(BONUS_SPREAD_MIN_SPACING, spacing) left, three songs at
+            // least). Room only counts new passages sharing nobody with the
             // held one. A guest's bonus never holds the duo of the person who
             // invites them. Spacing still wins (fallback below). Only computed
             // when someone in the plan has a bonus. Released for lack of room
@@ -135,7 +138,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                         else if (other.getSingers().contains(singer) && !singer.equals(other.getOwner())) invited++;
                     }
                     int left = (int) Math.ceil((1 - roundUse.getOrDefault(singer, 0.0)) * w - EPS) + invited;
-                    return others > (left > 1 ? left * Math.max(USUAL_SPACING, spacing) : 0) ? 1 : 2;
+                    return others > (left > 1 ? left * Math.max(BONUS_SPREAD_MIN_SPACING, spacing) : 0) ? 1 : 2;
                 });
                 early = c -> spreadOf.apply(c) == 1;
                 pressed = c -> spreadOf.apply(c) == 2;
@@ -262,11 +265,11 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 long[] oldest = null;
                 for (Performance c : patient) {
                     long[] key = waitKey(c, pos, lastSeen, plan, pressed, roundSize);
-                    if (oldest == null || compareWait(key, oldest) < 0) oldest = key;
+                    if (oldest == null || Arrays.compare(key, oldest) < 0) oldest = key;
                 }
                 fair = new ArrayList<>();
                 for (Performance c : patient) {
-                    if (compareWait(waitKey(c, pos, lastSeen, plan, pressed, roundSize), oldest) == 0 || restedBonus(c, pos, lastSeen, plan)) fair.add(c);
+                    if (Arrays.compare(waitKey(c, pos, lastSeen, plan, pressed, roundSize), oldest) == 0 || restedBonus(c, pos, lastSeen, plan)) fair.add(c);
                 }
             }
             boolean earliest = fair.contains(current);
@@ -330,7 +333,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 long[] mine = firstTurn ? new long[] { 0, 0, -1000, added(plan, current) } : waitKey(current, pos, lastSeen, plan, pressed, roundSize);
                 for (Performance c : patient) {
                     long[] theirs = firstTurn ? new long[] { 0, 0, -1000, added(plan, c) } : waitKey(c, pos, lastSeen, plan, pressed, roundSize);
-                    if (compareWait(theirs, mine) < 0 && Math.abs(need(c, deficits) - picked) <= EPS &&
+                    if (Arrays.compare(theirs, mine) < 0 && Math.abs(need(c, deficits) - picked) <= EPS &&
                             (overlapsPrevious || !overlaps(c.getGroups(), prior))) {
                         medium -= 200;
                         break;
@@ -511,7 +514,10 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
     // passage coming before its singer). A passage of this plan has not ended
     // yet: after every request. A bonus owner (w > 1) who already sang waits
     // w times faster (pos - (pos - start) * w), a pressed one at least a whole
-    // round (pos - roundSize). Thousandths: the weights are exact in binary.
+    // round (pos - roundSize). Weighted wait and bonus compared in thousandths,
+    // as rotation.js does: a product of weights is not exact in binary
+    // (1.5 * 0.8 = 1.2000000000000002, 2/3), and that noise must not break a
+    // tie that is exact on paper. Keys compare with Arrays.compare.
     private static long[] waitKey(Performance c, int pos, Map<String, Integer> lastSeen, QueuePlan plan,
                                   Predicate<Performance> pressed, int roundSize) {
         String owner = c.getOwner();
@@ -529,14 +535,6 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         for (String singer : c.getSingers()) top = Math.max(top, weight(plan, singer));
         return new long[] { w < 1 - EPS ? 1 : 0, since, -Math.round(top * 1000),
                 last >= 0 ? Long.MAX_VALUE : added(plan, c) };
-    }
-
-    private static int compareWait(long[] a, long[] b) {
-        for (int k = 0; k < a.length; k++) {
-            int order = Long.compare(a[k], b[k]);
-            if (order != 0) return order;
-        }
-        return 0;
     }
 
     // A bonus owner two passages after their own: free to sing before older waits.

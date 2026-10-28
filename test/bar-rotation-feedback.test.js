@@ -1123,15 +1123,18 @@ test('bonus étalé : l’auteur du duo a le bonus, l’invitée garde son rythm
   }
 });
 
-// Espacement réglé à 0 ou 1 (option de l'ordonnanceur, pas de la page du
-// bar) : un bonus garde au moins trois chansons de place en fin de tour.
-// Avant : +1 en « Tables à tour de rôle », cinq écarts de 2 chansons.
+// Espacement réglé à 0, 1 ou 2 (option de l'ordonnanceur, pas de la page du
+// bar) : un bonus garde au moins trois chansons de place en fin de tour
+// (BONUS_SPREAD_MIN_SPACING, lib/scheduler/common.js). Avant : +1 en « Tables
+// à tour de rôle », cinq écarts de 2 chansons ; sans ce plancher, cinq écarts
+// de 4 dans les modes de tables (relecture de la passe 4 : la borne de 4 ne
+// le voyait plus ; 7 au moins avec lui).
 test('bonus étalé : espacement réglé bas, pas de passages serrés en fin de tour', () => {
-  for (const spacingSongs of [0, 1]) {
+  for (const spacingSongs of [0, 1, 2]) {
     for (const [mode, options] of modes) {
       const { at } = steadyTen({ ...options, spacingSongs }, (s, p) => s.setPersonBonus(p.A1.id, 1));
       const gaps = gapsOf(at.get('A1'));
-      assert.ok(Math.min(...gaps) >= 4, `${mode}, espacement ${spacingSongs}, A1 +1 : écarts ${gaps.join(' ')}`);
+      assert.ok(Math.min(...gaps) >= 6, `${mode}, espacement ${spacingSongs}, A1 +1 : écarts ${gaps.join(' ')}`);
     }
   }
 });

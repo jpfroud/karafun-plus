@@ -832,6 +832,49 @@ test('QueueScore : un bonus ne repasse pas avant son rythme étalé', { skip: !f
   } finally { bridge.close(); }
 });
 
+// Relecture (passe 4) : plancher du bonus étalé côté Java
+// (QueueScore.BONUS_SPREAD_MIN_SPACING, pendant de celui de common.js). Dix
+// personnes, A1 à +1, espacement réglé à 0 ou 1, « Tables à tour de rôle » ou
+// « Compromis » : Node rend le passage d'A1 dès que le tour n'a plus que
+// 2 × 3 autres passages neufs (bar-rotation-feedback.test.js tient ses
+// écarts) ; Java le suit. Sans le plancher, Java le retenait jusqu'à la fin du
+// tour et l'ordre local sortait des choix équitables (−5 000, du 41e au 55e
+// passage).
+// KARAFUN_TEST_SOLVER_JAR : jar d'une autre version.
+test('QueueScore : espacement réglé bas, le bonus étalé garde son plancher de trois chansons',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+    const bridge = new TimefoldBridge({ jar: process.env.KARAFUN_TEST_SOLVER_JAR || JAR });
+    try {
+      for (const [mode, options] of [['tables', { tableRotation: true }], ['compromis', { tableRotation: true, weightedTables: true }]]) {
+        for (const spacingSongs of [0, 1]) {
+          const s = new Scheduler({ ...options, spacingSongs });
+          s._maybeRequestSolver = () => {};
+          const people = {};
+          for (const [tableId, count] of [['A', 3], ['B', 3], ['C', 2], ['S1', 1], ['S2', 1]]) {
+            s.setHeadcount(tableId, count);
+            for (let i = 1; i <= count; i++) people[count > 1 ? `${tableId}${i}` : tableId] = s.join({ tableId, name: count > 1 ? `${tableId}${i}` : tableId });
+          }
+          let n = 9600;
+          const refill = () => {
+            for (const p of Object.values(people)) while (s.songsOf(p).length < 2) s.chooseSong(p, { songId: n++, title: `T${n}`, artist: 'x' }, 'append');
+          };
+          refill();
+          for (let i = 0; i < 46; i++) {
+            if (i === 10) s.setPersonBonus(people.A1.id, 1);
+            const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); refill();
+          }
+          let request;
+          s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+          s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+          const { seedScore } = await bridge.solve({ ...request, requestId: `spread-floor-${mode}-${spacingSongs}`, budgetMs: 100,
+            performances: request.performances.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true });
+          assert.ok(medium(seedScore) > -4500, `${mode}, espacement ${spacingSongs} : ordre local ${seedScore}`);
+        }
+      }
+    } finally { bridge.close(); }
+  });
+
 // Bonus étalé, relecture : le bonus d'une invitée ne retient que ses propres
 // titres. Bea (+3) vient de chanter son titre ; le duo de Gus (sans bonus),
 // où elle est invitée, part dès que l'espacement le permet (rang 3) dans la
@@ -1020,6 +1063,150 @@ test('QueueScore : un bonus reposé reste en lice face à la plus ancienne atten
       const score = (await bridge.solve({ ...request, requestId: 'rested-bonus', budgetMs: 100,
         performances: local.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore;
       assert.ok(medium(score) > -4500, `ordre local ${score}`);
+    } finally { bridge.close(); }
+  });
+
+// Relecture (passe 4) : chaque élément de la clé de la plus ancienne attente
+// de QueueScore (waitKey) a son test Java, comme son pendant Node
+// (rotation.js#_pick). Plans faits à la main : chacun ne départage que par
+// l'élément visé ; on compare le score de deux ordres. `people` : nom →
+// { last (dernier passage, en rangs avant le plan), ready, weight, count } ;
+// `rows` : [auteur, chanteurs, rang du titre dans sa liste]. Chacun est sa
+// propre table (g + nom). KARAFUN_TEST_SOLVER_JAR : jar d'une autre version.
+function handPlan({ rotation = 'people', people, rows, history = [], lastGroups = [], roundPeople = [], roundApps = {},
+  addedOrder = {} }) {
+  const pastAppearance = {}, physicalCount = {}, readyAt = {}, personWeights = {};
+  for (const [name, p] of Object.entries(people)) {
+    pastAppearance[name] = p.last; physicalCount[name] = p.count ?? 1; readyAt[name] = p.ready ?? -100;
+    if (p.weight) personWeights[name] = p.weight;
+  }
+  return { budgetMs: 100, pastAppearance, physicalCount, readyAt, pinnedUntil: 0, roundPeople, roundUse: {}, roundApps,
+    roundOwed: [], roundCap: 2, spacing: 3, personWeights, tableWeights: {}, groupSizes: {}, addedOrder, firstCycle: [],
+    history, rotation, interleaveArrivals: true, lastGroups,
+    rows: rows.map(([owner, singers, index = 0]) => ({ id: `${owner}-${index}`, owner, ownerSongIndex: index,
+      singers, groups: singers.map(name => `g${name}`) })) };
+}
+async function handScores(plan, orders, id) {
+  const { rows, ...request } = plan;
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const bridge = new TimefoldBridge({ jar: process.env.KARAFUN_TEST_SOLVER_JAR || JAR });
+  try {
+    const out = [];
+    for (const [k, order] of orders.entries()) {
+      const { seedScore } = await bridge.solve({ ...request, requestId: `${id}-${k}`,
+        performances: order.map((rowId, previousIndex) => ({ ...byId.get(rowId), previousIndex })) }, { immediate: true });
+      out.push(Number(/(-?\d+)medium/.exec(seedScore)[1]));
+    }
+    return out;
+  } finally { bridge.close(); }
+}
+
+// Malus (`w < 1`, premier élément) : il n'est pas protégé par la plus
+// ancienne attente. Maud (−1) attend depuis plus longtemps que Hugo et Paulo :
+// la servir en dernier ne coûte rien, la servir d'abord fait passer Hugo
+// après une attente plus ancienne que la sienne (−3 000). Sans l'élément :
+// l'inverse.
+test('QueueScore : un malus n’est pas protégé par la plus ancienne attente',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const plan = handPlan({ people: { Maud: { last: -6, weight: 0.8 }, Hugo: { last: -5 }, Paulo: { last: -4 } },
+      rows: [['Maud', ['Maud']], ['Hugo', ['Hugo']], ['Paulo', ['Paulo']]], addedOrder: { Maud: 0, Hugo: 1, Paulo: 2 } });
+    const [last, first] = await handScores(plan, [['Hugo-0', 'Paulo-0', 'Maud-0'], ['Maud-0', 'Hugo-0', 'Paulo-0']], 'malus');
+    assert.ok(last > first, `malus en dernier ${last}, d'abord ${first}`);
+  });
+
+// À attente égale, le plus fort bonus d'abord (troisième élément), celui de
+// l'invitée comptant pour son duo. « Compromis » ou « Tables à tour de rôle »
+// (−200 pour une attente plus ancienne servie après, à part égale) : Inès
+// invite Zoé (+3) ; Gus a chanté au même rang qu'Inès et attend depuis plus
+// tôt à l'heure. Le duo d'abord ne coûte rien, Gus d'abord −200. Sans
+// l'élément, l'heure départage : l'inverse.
+test('QueueScore : à attente égale, le plus fort bonus d’abord, celui de l’invitée pour son duo',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const plan = handPlan({ rotation: 'equal', people: { 'Inès': { last: -5 }, 'Zoé': { last: -6, weight: 2 }, Gus: { last: -5 } },
+      rows: [['Inès', ['Inès', 'Zoé']], ['Gus', ['Gus']]], addedOrder: { Gus: 0, 'Inès': 1 } });
+    const [duo, gus] = await handScores(plan, [['Inès-0', 'Gus-0'], ['Gus-0', 'Inès-0']], 'top');
+    assert.ok(duo > gus, `duo de Zoé d'abord ${duo}, Gus d'abord ${gus}`);
+  });
+
+// Auteur déjà passé dans ce plan (dernier élément) : son passage n'est pas
+// fini, il attend après toute demande. Max (+3) chante en tête du plan, puis
+// trois autres ; au cinquième rang, son attente pondérée (5 − 4 × 2) égale
+// celle de Gil, dont le duo avec Zoé (+3) a le même bonus. Gil d'abord ne
+// coûte que l'écart de part ; sans l'élément, l'heure de Max (plus ancienne)
+// le fait passer d'abord et Gil coûte −3 000.
+test('QueueScore : un auteur déjà passé dans le plan attend après toute demande, à attente égale',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const plan = handPlan({ people: { Max: { last: -10, weight: 2 }, Elsa: { last: -9 }, Nina: { last: -8 }, Bea: { last: -7 },
+      Gil: { last: -4 }, 'Zoé': { last: -6, weight: 2 } },
+      rows: [['Max', ['Max'], 0], ['Max', ['Max'], 1], ['Elsa', ['Elsa']], ['Nina', ['Nina']], ['Bea', ['Bea']], ['Gil', ['Gil', 'Zoé']]],
+      addedOrder: { Max: 0, Gil: 1, Elsa: 2, Nina: 3, Bea: 4 } });
+    const head = ['Max-0', 'Elsa-0', 'Nina-0', 'Bea-0'];
+    const [gil, max] = await handScores(plan, [[...head, 'Gil-0', 'Max-1'], [...head, 'Max-1', 'Gil-0']], 'later');
+    assert.ok(gil > max - 3000, `Gil d'abord ${gil}, Max d'abord ${max}`);
+  });
+
+// Bonus pressé (rendu faute de place avant son rythme étalé) : son attente
+// compte au moins un tour (pos − n). « Tables à tour de rôle », neuf
+// personnes : Nina, Elsa et Gus ont chanté dans ce tour ; Max (+3), il y a
+// quatre chansons (rythme 9/2), ne doit plus que deux passages dans un tour
+// qui n'a que cinq autres passages neufs. Pressé, il attend comme Hugo, le
+// plus ancien (9) ; à égalité, son bonus d'abord : Max puis Hugo ne coûte
+// rien, Hugo puis Max −200. Sans le plancher : 4 × 2 = 8 seulement, l'inverse.
+test('QueueScore : un bonus pressé compte au moins un tour d’attente',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const people = { Max: { last: -4, weight: 2 }, Nina: { last: -3 }, Elsa: { last: -2 }, Gus: { last: -1 },
+      Hugo: { last: -9 }, Paulo: { last: -8 }, 'Inès': { last: -7 }, Maud: { last: -6 }, Bea: { last: -5 } };
+    const sung = ['Hugo', 'Paulo', 'Inès', 'Maud', 'Bea', 'Max', 'Nina', 'Elsa', 'Gus'];
+    const plan = handPlan({ rotation: 'equal', people, rows: Object.keys(people).map(name => [name, [name]]),
+      history: sung.map(name => [`g${name}`]), lastGroups: ['gGus'],
+      roundPeople: ['Nina', 'Elsa', 'Gus'], roundApps: { Nina: 1, Elsa: 1, Gus: 1 },
+      addedOrder: Object.fromEntries(sung.map((name, k) => [name, k])) });
+    const rest = ['Paulo-0', 'Inès-0', 'Maud-0', 'Bea-0', 'Nina-0', 'Elsa-0', 'Gus-0'];
+    const [max, hugo] = await handScores(plan, [['Max-0', 'Hugo-0', ...rest], ['Hugo-0', 'Max-0', ...rest]], 'pressed');
+    assert.ok(max > hugo, `Max d'abord ${max}, Hugo d'abord ${hugo}`);
+  });
+
+// Relecture (passe 4) : poids composé, attente pondérée au millième dans les
+// deux copies (oldest-wait.test.js tient l'ordre de Node). Zoé : +2 à une
+// table à −1 (1,5 × 0,8), chanté il y a cinq passages ; Maud : +2 (1,5), il y
+// a quatre. « Compromis », parts égales : Node fait passer Maud (plus fort
+// bonus) et Java ne compte pas cet ordre comme une attente plus ancienne
+// servie après (−200), arrondi compris.
+test('QueueScore : attente pondérée égale avec un poids composé, même ordre que Node',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const realNow = Date.now;
+    let clock = Date.UTC(2026, 9, 23, 21);
+    Date.now = () => clock;
+    let request, s;
+    try {
+      s = new Scheduler({ tableRotation: true, weightedTables: true });
+      s._maybeRequestSolver = () => {};
+      const join = (tableId, name) => s.join({ tableId, name, headcount: 2 });
+      const zoe = join('TZ', 'Zoé'), ines = join('TZ', 'Inès'), maud = join('TM', 'Maud'), gil = join('TM', 'Gil');
+      const hugo = join('TH', 'Hugo'), paulo = join('TP', 'Paulo');
+      const all = [zoe, ines, maud, gil, hugo, paulo];
+      let n = 9990;
+      for (let k = 0; k < 3; k++) for (const p of all) { clock += 5000; s.chooseSong(p, { songId: n, title: `T${n++}`, artist: 'x' }, 'append'); }
+      s.tables.get(zoe.tableId).bonus = -1; zoe.bonus = 2; maud.bonus = 2; gil.bonus = -3;
+      s.appearanceSerial = 10;
+      const last = new Map([[zoe, 6], [maud, 7], [ines, 8], [gil, 9], [hugo, 10], [paulo, 5]]);
+      for (const [p, turn] of last) {
+        p.sung = 1; p.lastAppearanceTurn = turn; p.readySerial = 0;
+        s.stageEnds.set(turn, clock - (11 - turn) * 200000);
+      }
+      s.roundPeople = new Set([ines.id, gil.id, hugo.id, paulo.id]);
+      s.lastGroup = hugo.group;
+      s.recentGroups = [[paulo.group], [zoe.group], [maud.group], [ines.group], [gil.group], [hugo.group]];
+      s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+      s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+    } finally { Date.now = realNow; }
+    const local = request.performances;
+    assert.equal(s.people.get(local[0].owner).name, 'Maud');
+    const bridge = new TimefoldBridge({ jar: process.env.KARAFUN_TEST_SOLVER_JAR || JAR });
+    try {
+      const { seedScore } = await bridge.solve({ ...request, requestId: 'compound-weight', budgetMs: 100,
+        performances: local.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true });
+      assert.ok(Number(/(-?\d+)medium/.exec(seedScore)[1]) > -200, `ordre local ${seedScore}`);
     } finally { bridge.close(); }
   });
 
