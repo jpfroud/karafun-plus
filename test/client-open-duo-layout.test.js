@@ -188,8 +188,11 @@ const barBox = page => page.evaluate(() => {
     // proposé (« Annuler duo ») ; les actions passent à la ligne dans la
     // ligne du titre, rien ne sort de la carte ni de l'écran. Un titre sans
     // texte d'action (« Chercher un duo » est une icône) garde toutes ses
-    // actions sur la ligne du ✕, et sa ligne reste compacte (106 px avant
-    // l'ajout de « Chercher un duo »).
+    // actions sur la ligne du ✕, et « Chercher un duo » ne l'allonge pas :
+    // la ligne n'est pas plus haute (à 2 px près) que la même ligne sans lui,
+    // mesurée sur la même page. Une borne en pixels (120) dépendait des
+    // polices du navigateur : 129 px avec le Chromium de la CI, alors que
+    // chaque bouton restait sur la ligne du ✕.
     const songs = duet => [{ entryId: 'e1', songId: 1, title: 'Je veux te voir', artist: 'Artiste', ...(duet ? { duet } : {}) },
       { entryId: 'e2', songId: 2, title: 'Bohemian Rhapsody', artist: 'Queen' }, { entryId: 'e3', songId: 3, title: 'Tube', artist: 'Groupe' }];
     const duets = { aucun: null, ouvert: { state: 'open', kind: 'duo' }, proposé: { state: 'pending', kind: 'duo', partnerName: 'Max', seen: true } };
@@ -201,8 +204,14 @@ const barBox = page => page.evaluate(() => {
             state: stateOf({ tablePeople: [person('alice', 'Alice', { songs: songs(duet) })] }) });
           const rows = await page.evaluate(() => [...document.querySelectorAll('#peopleList .song-stack li')].map(li => {
             const row = li.getBoundingClientRect(), card = li.closest('.card').getBoundingClientRect();
+            // La même ligne sans « Chercher un duo » (caché le temps de la
+            // mesurer) : même largeur, mêmes polices.
+            const duo = [...li.querySelectorAll('[data-duet-open]')];
+            duo.forEach(button => { button.style.display = 'none'; });
+            const bare = li.getBoundingClientRect().height;
+            duo.forEach(button => { button.style.display = ''; });
             return { row: [Math.round(row.left), Math.round(row.right)], card: [Math.round(card.left), Math.round(card.right)],
-              h: Math.round(row.height),
+              h: Math.round(row.height), bare: Math.round(bare),
               buttons: [...li.querySelectorAll('button')].map(button => {
                 const box = button.getBoundingClientRect();
                 return { text: button.textContent.trim(), left: Math.round(box.left), right: Math.round(box.right), top: Math.round(box.top),
@@ -226,7 +235,8 @@ const barBox = page => page.evaluate(() => {
             for (const button of row.buttons) {
               assert.ok(Math.abs(button.top - remove.top) < 20, `${at} : « ${button.title || button.text} » sur la ligne du ✕ (${JSON.stringify(row)})`);
             }
-            assert.ok(row.h <= 120, `${at} : ligne du titre compacte (${row.h} px, ${JSON.stringify(row)})`);
+            assert.ok(row.h <= row.bare + 2,
+              `${at} : « Chercher un duo » n'allonge pas la ligne du titre (${row.h} px, ${row.bare} px sans lui, ${JSON.stringify(row)})`);
           }
           const duos = rows.flatMap(row => row.buttons.filter(button => button.duo));
           if (label === 'aucun') {
