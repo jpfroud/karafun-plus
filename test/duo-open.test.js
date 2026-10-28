@@ -299,6 +299,36 @@ test('fermer, retirer, partir : la demande se ferme, le titre reste ou disparaî
   assert.ok(!s.log.some(line => /duo annulé/i.test(line.msg)), 'pas de « duo annulé » : personne n’y chantait');
 });
 
+// Relecture (passe 5, cellules sans test) : en « Duos uniquement », le duo
+// ouvert rejoint par une personne d'une autre table, qui le quitte ou qui
+// part (marquée partie, table partie), redevient le solo de son auteur et
+// passe, comme une invitation acceptée puis quittée (GUIDE-BAR.md) : la
+// demande ne se rouvre pas, le titre n'attend pas un nouveau volontaire.
+test('« Duos uniquement » : duo ouvert rejoint puis quitté ou laissé par un départ, solo de son auteur qui passe, sans nouvelle demande', () => {
+  for (const how of ['se retire', 'marqué parti', 'table partie']) {
+    const s = new Scheduler();
+    s._event = () => {};
+    s.duoOnlyRule = () => true;
+    const elsa = s.join({ tableId: '1', name: 'Elsa', headcount: 2 });
+    const max = s.join({ tableId: '3', name: 'Max', headcount: 2 });
+    const nina = s.join({ tableId: '4', name: 'Nina', headcount: 2 });
+    s.chooseSong(max, song(2, 'Deux'));
+    const open = s.openDuet(elsa, { song: song(1, 'Ouvert') });
+    assert.equal(s._openHeld(open), true, 'sans partenaire, il attend hors de la file');
+    s.acceptOpenDuet(nina, elsa.id, open.entryId);
+    assert.deepEqual(s.readyView().map(line => names(s, line.ids)), ['Max', 'Elsa & Nina']);
+    if (how === 'se retire') s.leaveDuet(nina, elsa.id, open.entryId);
+    else if (how === 'marqué parti') s.leave(nina, 'staff');
+    else s.tableLeft('4');
+    assert.equal(open.duet, undefined, `${how} : solo d’Elsa, la demande ne se rouvre pas`);
+    assert.equal(s._openHeld(open), false, `${how} : il ne cherche plus de partenaire`);
+    assert.deepEqual(s.openDuets(), [], `${how} : aucun bandeau`);
+    assert.deepEqual(s.readyView().map(line => names(s, line.ids)), ['Max', 'Elsa'], `${how} : il passe en solo`);
+    s.commit(s.select());
+    assert.deepEqual(s.select().ids, [elsa.id], `${how} : Elsa chante seule après Max`);
+  }
+});
+
 // ---------------------------------------------------------------- sauvegarde
 test('critère 6 : redémarrage, la demande ouverte est reprise et visible ; une heure abîmée est réparée', () => {
   const { s, lea, max } = night();
@@ -582,6 +612,35 @@ test('serveur : titre en route vers KaraFun, ni ouverture ni « Je chante », ba
   // « Nouvelle soirée » coupe le mode : la règle suit le réglage du bar.
   f.settings.duoOnly = false;
   assert.equal(f.sched._duoOnly(), false);
+});
+
+// Relecture (passe 5, cellule sans test) : un duo ouvert rejoint suit la
+// règle d'une invitation acceptée (assertDuoKept). En « Duos uniquement »,
+// un volontaire de la même table, duo accepté d'office, ne peut pas s'en
+// retirer lui-même ; marqué parti par le bar, il laisse le titre en solo.
+// Un volontaire d'une autre table s'en retire, et le titre passe en solo.
+test('serveur, « Duos uniquement » : volontaire de la même table refusé DUO_ONLY à « Je ne chante plus ce duo », celui d’une autre table accepté', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const elsa = person(f, '1', 'Elsa'), gus = person(f, '1', 'Gus'), max = person(f, '3', 'Max'), nina = person(f, '4', 'Nina');
+  f.settings.duoOnly = true;
+  f.sched.version++;
+  await f.call('POST /api/table/duet/open', { ...elsa.body, song: song(1, 'Titre') });
+  const mine = elsa.p.song.entryId;
+  await f.call('POST /api/table/duet/open/accept', { ...gus.body, ownerId: elsa.p.id, entryId: mine });
+  await assert.rejects(f.call('POST /api/table/duet/leave', { ...gus.body, ownerId: elsa.p.id, entryId: mine }), { code: 'DUO_ONLY' });
+  assert.deepEqual(plain(elsa.p.song.duet), { partnerId: gus.p.id, state: 'accepted' }, 'le duo reste');
+  await f.call('POST /api/staff/person/leave', { personId: gus.p.id });
+  assert.equal(elsa.p.song.duet, undefined, 'Gus marqué parti : solo d’Elsa, sans nouvelle demande');
+  await f.call('POST /api/table/duet/open', { ...max.body, song: song(2, 'Deux') });
+  const his = max.p.song.entryId;
+  await f.call('POST /api/table/duet/open/accept', { ...nina.body, ownerId: max.p.id, entryId: his });
+  assert.deepEqual(plain(await f.call('POST /api/table/duet/leave', { ...nina.body, ownerId: max.p.id, entryId: his })),
+    { ok: true, stage: 'planned' });
+  assert.equal(max.p.song.duet, undefined, 'solo de Max, sans nouvelle demande');
+  assert.deepEqual(plain(f.view('4', [nina.p.id]).openDuets), []);
+  assert.deepEqual(plain(f.view('4', [nina.p.id]).queue.filter(item => item.source === 'helper').map(item => item.name)).sort(),
+    ['Elsa', 'Max'], 'les deux titres passent en solo');
 });
 
 test('critère 6 par le serveur : après un redémarrage, le bandeau est toujours là et le duo peut être rejoint', async () => {
