@@ -387,7 +387,7 @@ function harness() {
     __dirname: root, process: fixtureProcess, console: { ...console, log() {} }, Buffer, URL, setTimeout, clearTimeout,
     setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
-    globalThis.fixture = { sched, settings, handlers, access, staffState, publicState, sync, connectKaraFun,
+    globalThis.fixture = { sched, settings, handlers, access, staffState, publicState, sync, connectKaraFun, rememberBattleSongs,
       tracked: () => tracked, setBridge: b => { bridge = b; }, getBridge: () => bridge, setFake: x => { fake = x; },
       setPending: p => { pending = p; }, getPending: () => pending };
   `, context, { filename: 'server.js' });
@@ -405,8 +405,13 @@ function person(f, table, name, extra = {}) {
   return { p, body: { table, access: f.access.get(table) || f.access.issue(table), personId: p.id, token: p.token } };
 }
 
+// Titres reçus du catalogue KaraFun par le serveur (recherche, sélections),
+// comme pour une Battle : seuls eux peuvent être annoncés à toute la salle.
+const CATALOG = [song(1, 'Titre'), song(2, 'Deux'), song(3, 'Trois'), song(70000, 'Toxic')];
+
 function serverNight() {
   const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
   const lea = person(f, '1', 'Léa'), max = person(f, '3', 'Max'), zoe = person(f, 'Comptoir', 'Zoé');
   return { f, lea, max, zoe };
 }
@@ -450,12 +455,53 @@ test('critère 1 : Léa propose un titre en duo ouvert ; Max et Zoé voient le b
   await assert.rejects(f.call('POST /api/table/duet/open/accept', { ...placeholder.body, ownerId: lea.p.id, entryId }), { code: 'NAME_REQUIRED' });
 });
 
+// Relecture : le titre d'un duo ouvert, annoncé sur tous les téléphones
+// (bandeau, notification du navigateur), était le texte de la requête du
+// client ; la Battle, seule autre annonce d'un titre à toute la salle,
+// n'accepte que les titres reçus du catalogue KaraFun par le serveur.
+test('duo ouvert : seul le texte du catalogue reçu par le serveur part vers les autres téléphones', async () => {
+  const f = harness();
+  f.rememberBattleSongs(plain(CATALOG));
+  const ines = person(f, '1', 'Inès'), max = person(f, '3', 'Max');
+  const refused = { message: 'Retrouve ce titre dans le catalogue avant de chercher un duo.' };
+  const banners = () => plain(f.view('3', [max.p.id]).openDuets.map(open => [open.song.songId, open.song.title, open.song.artist]));
+  // Depuis le catalogue : un titre que le serveur n'a jamais servi est refusé,
+  // rien n'est ajouté ni annoncé.
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...ines.body,
+    song: { songId: 999999, title: 'Offre : scanne ce QR', artist: 'x' } }), refused);
+  assert.deepEqual(f.sched.songsOf(ines.p), []);
+  assert.deepEqual(banners(), []);
+  // Un titre du catalogue au texte changé par la requête part avec celui du catalogue.
+  await f.call('POST /api/table/duet/open', { ...ines.body, song: { songId: 2, title: 'Offre : scanne ce QR', artist: 'x' } });
+  assert.deepEqual(banners(), [[2, 'Deux', 'Artiste']], 'le texte du catalogue');
+  assert.equal(ines.p.song.title, 'Deux', 'dans sa liste aussi');
+  await f.call('POST /api/table/song/remove', { ...ines.body, entryId: ines.p.song.entryId });
+  // Depuis sa liste : un titre ajouté avec un texte inventé reprend celui du
+  // catalogue avant d'être annoncé ; un titre inconnu du catalogue est refusé.
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 3, title: 'Offre : scanne ce QR', artist: 'x' } });
+  await f.call('POST /api/table/song', { ...ines.body, song: { songId: 888888, title: 'Inventé', artist: 'x' } });
+  const [known, unknown] = f.sched.songsOf(ines.p);
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...ines.body, entryId: unknown.entryId }), refused);
+  assert.equal(unknown.duet, undefined, 'il reste en solo');
+  assert.deepEqual(banners(), []);
+  await f.call('POST /api/table/duet/open', { ...ines.body, entryId: known.entryId });
+  assert.deepEqual(banners(), [[3, 'Trois', 'Artiste']]);
+  assert.equal(f.staffState().openDuets[0].title, 'Trois', 'le bar voit le même titre');
+  assert.equal(f.view('3', [max.p.id]).queue.find(line => line.song?.entryId === known.entryId).song.title, 'Trois', 'et la file');
+  // Un titre du catalogue part tel quel.
+  await f.call('POST /api/table/duet/open/close', { ...ines.body, entryId: known.entryId });
+  await f.call('POST /api/table/song/remove', { ...ines.body, entryId: known.entryId });
+  await f.call('POST /api/table/duet/open', { ...ines.body, song: song(70000, 'Toxic') });
+  assert.deepEqual(banners(), [[70000, 'Toxic', 'Artiste']]);
+});
+
 // Relecture : seuls les trois plus récents partaient vers les téléphones, seul
 // moyen de les rejoindre ; en « Duos uniquement », le plus ancien, hors de la
 // file, attendait sans fin. Tous partent ; la page en replie l'affichage.
 test('tous les duos ouverts, du plus récent au plus ancien ; le plus ancien de quatre se rejoint, même en « Duos uniquement »', async () => {
   const { f, lea, max, zoe } = serverNight();
   const others = ['Ana', 'Ben', 'Cléo'].map((name, i) => person(f, String(10 + i), name));
+  f.rememberBattleSongs([lea, ...others].map((singer, index) => song(20 + index, `Titre ${singer.p.name}`)));
   for (const [index, singer] of [lea, ...others].entries()) {
     f.sched.chooseSong(singer.p, song(20 + index, `Titre ${singer.p.name}`));
     await f.call('POST /api/table/duet/open', { ...singer.body, entryId: singer.p.song.entryId });

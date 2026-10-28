@@ -297,8 +297,9 @@ let shuttingDown = false;
 let activeMutations = 0; // requêtes déjà commencées, y compris leurs attentes réseau
 const personShareCodes = new Map();
 const SOLO_COOKIE = 'karaoke_solo_device';
-// Les titres proposés pour une Battle doivent avoir été reçus du catalogue
-// KaraFun par ce serveur, et non inventés dans une requête cliente. Il en va
+// Les titres annoncés à toute la salle (Battle, duo ouvert) doivent avoir été
+// reçus du catalogue KaraFun par ce serveur, et non inventés dans une requête
+// cliente : leur texte est celui du catalogue (catalogSong). Il en va
 // de même des vignettes : seule une image https reçue du catalogue est
 // montrée aux téléphones, jamais une adresse envoyée par l'un d'eux.
 const battleCatalogSongs = new Map();
@@ -335,15 +336,18 @@ function rememberBattleSongs(songs) {
 // non vérifiée, n'est gardée que bornée comme pour la barre de lecture.
 const withCover = song => song && typeof song === 'object' ?
   { ...song, img: catalogCovers.get(Number(song.songId)) || null, duration: stageProgress.clientDuration(Number(song.duration)) } : song;
+// Titre `song` tel que le catalogue l'a donné à ce serveur (numéro, titre,
+// artiste), quel que soit le texte de la requête ; inconnu : erreur `message`.
+function catalogSong(song, message) {
+  const seen = battleCatalogSongs.get(Number(song?.songId));
+  if (!seen) throw new Error(message);
+  return { ...seen };
+}
 function certifiedBattleSongs(songs) {
   if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {
     throw new Error('Propose entre un et trois titres du catalogue pour la Battle.');
   }
-  return songs.map(song => {
-    const seen = battleCatalogSongs.get(Number(song?.songId));
-    if (!seen) throw new Error('Retrouve ce titre dans le catalogue avant de proposer la Battle.');
-    return { ...seen };
-  });
+  return songs.map(song => catalogSong(song, 'Retrouve ce titre dans le catalogue avant de proposer la Battle.'));
 }
 
 const sched = new Scheduler({ solverEnabled: !DEMO || argv.includes('--solver') });
@@ -4004,6 +4008,27 @@ function assertNotSending(entryId) {
   }
 }
 
+// Duo ouvert annoncé à toute la salle (bandeau et notification de chaque
+// téléphone) : comme pour une Battle, son titre et son artiste sont ceux du
+// catalogue reçu par ce serveur (catalogSong), jamais le texte d'une requête.
+// Un titre du catalogue (`song`) prend ce texte ; un titre de sa liste
+// (`entryId`), ajouté avec le texte de la requête, le reprend avant d'être
+// annoncé. Un titre que ce serveur n'a pas reçu du catalogue est refusé :
+// inventé, ou catalogue renouvelé au redémarrage (le client le retrouve
+// dans le catalogue, comme pour une Battle). Rend l'argument de Scheduler#openDuet.
+function openDuetSong(p, body) {
+  const message = 'Retrouve ce titre dans le catalogue avant de chercher un duo.';
+  if (body.song) return { song: withCover({ ...body.song, ...catalogSong(body.song, message) }) };
+  const listed = sched.songsOf(p).find(item => item.entryId === String(body.entryId || ''));
+  if (listed) {
+    const seen = catalogSong(listed, message);
+    // Mêmes bornes que Scheduler#chooseSong.
+    const text = { title: seen.title.slice(0, 80), artist: seen.artist.slice(0, 60) };
+    if (listed.title !== text.title || listed.artist !== text.artist) { Object.assign(listed, text); sched.version++; }
+  }
+  return { entryId: body.entryId };
+}
+
 // Titre d'une invitation de duo en route vers KaraFun : il part en solo et
 // l'invitation expire à l'accusé (Scheduler#_expireInvite). L'accepter n'est
 // plus possible ; la refuser ne change rien au titre. Sans titre précis, la
@@ -4677,13 +4702,14 @@ const handlers = {
   },
   // « Qui veut chanter en duo avec moi ? » : un titre du catalogue (`song`)
   // ou de sa liste pas encore envoyé (`entryId`) cherche un partenaire dans
-  // toute la salle. Sans volontaire à son tour, il part en solo.
+  // toute la salle, avec le texte du catalogue (openDuetSong). Sans
+  // volontaire à son tour, il part en solo.
   'POST /api/table/duet/open': async (req, res, body) => {
     const p = personAtTable(body);
     requireNamed(p);
     if (body.song) assertSongLength(p, [body.song], 'duet');
     else assertNotSending(body.entryId);
-    const song = sched.openDuet(p, body.song ? { song: withCover(body.song) } : { entryId: body.entryId }); sync();
+    const song = sched.openDuet(p, openDuetSong(p, body)); sync();
     return { ok: true, entryId: song.entryId, ...(body.song ? { notice: repeatNotice(song, p.tableId, song.entryId) } : {}) };
   },
   'POST /api/table/duet/open/close': async (req, res, body) => {
