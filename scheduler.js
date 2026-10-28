@@ -523,8 +523,9 @@ class Scheduler {
   // annulé d'ici là ; retiré de KaraFun sans être chanté, il rend la place
   // (_restorePlaced). Les lignes rendues au calcul sont notées sur le duo
   // (`unpinned`, sauvegardé avec le titre) : défait avant son envoi, ou
-  // chargé dans KaraFun puis laissé par l'invitée (leaveSentDuet), il les
-  // remet (_guestLeft). `kept` : gestes dont l'état d'avant comptait la
+  // chargé dans KaraFun puis laissé par l'invitée (leaveSentDuet) ou retiré
+  // sans être chanté après le départ de son auteur (rollbackUnplayed), il
+  // les remet (_guestLeft). `kept` : gestes dont l'état d'avant comptait la
   // ligne, que l'envoi du duo leur retire (_unpinSingers).
   _guestJoined(owner) {
     const duet = owner?.song?.duet;
@@ -564,7 +565,8 @@ class Scheduler {
   // Duo défait avant son envoi (invitée qui se retire, duo annulé, titre
   // retiré, départ de l'un des deux), qui n'est plus le titre en cours de sa
   // ligne (_currentChanged), ou chargé dans KaraFun et laissé par l'invitée
-  // (leaveSentDuet) : les lignes que _guestJoined avait rendues au calcul pour
+  // (leaveSentDuet) ou retiré sans être chanté après le départ de son auteur
+  // (rollbackUnplayed) : les lignes que _guestJoined avait rendues au calcul pour
   // lui reviennent dans l'ordre fixé, derrière les lignes qui les
   // précédaient, jamais devant une priorité du bar ; les gestes notés depuis
   // les comptent aussi dans leur état d'avant, comme _restorePlaced, et ceux
