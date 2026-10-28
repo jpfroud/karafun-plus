@@ -111,7 +111,7 @@ assert.ok(helperMessages.some(([name, message]) => name === 'certifiedBattleSong
 for (const [name, message] of helperMessages) {
   assert.ok(serverText(message), `message de ${name} (appelée par une route des téléphones) sans traduction : « ${message} »`);
 }
-const thrown =work => { try { work(); } catch (error) { return error.message; } assert.fail('erreur attendue'); };
+const thrown = work => { try { work(); } catch (error) { return error.message; } assert.fail('erreur attendue'); };
 const ballot = new BattleVote({ minVoters: 5 });
 assert.equal(serverText(thrown(() => ballot.propose({ personId: 'a', personName: 'Ana', eligiblePersonIds: ['a', 'b'],
   songs: [{ songId: 1, title: 'Titre' }], proposerChoice: 1 }))), 'A Battle can be suggested once 5 people are signed up.');
