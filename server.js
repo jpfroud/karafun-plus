@@ -3737,7 +3737,9 @@ function priorityPullCheck(queueId, { current, upcoming } = analyze(), now = Dat
   }
   if (isBattleItem(item)) return refuse('Une Battle chargée dans KaraFun ne sort jamais pour une priorité : rien n’a été retiré ni avancé.');
   if (pending) return refuse('Un titre part vers KaraFun en ce moment : rien n’a été retiré ni avancé. Réessaie dans un instant.');
-  if (stop) return refuse(PULL_STOPS[stop]);
+  // Une raison de sendStop sans message ici refuse quand même : un refus
+  // vide laisserait partir le retrait alors que rien ne repartirait ensuite.
+  if (stop) return refuse(PULL_STOPS[stop] || `Les envois vers KaraFun sont retenus${PULL_KEEPS}`);
   if (!tr || !item || tr.cancelled || tr.pulled || tr.absent) {
     return refuse('Le titre chargé dans KaraFun a changé : rien n’a été retiré ni avancé. Touche de nouveau « Priorité ».');
   }
@@ -3805,6 +3807,15 @@ function priorityPullRefusal(line, tr, stage = stageSingers()) {
   if (sched._isPresenceRetry(owner)) {
     return `${owner.name} n’a pas confirmé sa présence : son titre laisse passer le suivant. ` +
       `« ${tr.sel.song.title} » reste dans KaraFun, rien n’a été retiré ni avancé.`;
+  }
+  // « Je suis là » obligatoire : l'envoi (sync(), Scheduler#select) attend
+  // la réponse de la priorité, qui ne lui est demandée qu'après le retrait ;
+  // sans réponse, elle serait sautée et le titre retiré rejoué après un
+  // silence. Sans retrait, elle a tout le titre chargé pour répondre. Pour
+  // un duo, la réponse de l'un des deux suffit (confirmedForTurn).
+  if (sched.opts.requirePresence && !sched.confirmedForTurn(line.ids)) {
+    return `${name} ${line.ids.length > 1 ? 'n’ont' : 'n’a'} pas encore confirmé « Je suis là » : « ${tr.sel.song.title} » reste dans KaraFun, ` +
+      `rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer ${name} juste après lui.`;
   }
   const owners = sched._deferredOwners().filter(pid => pid !== line.ids[0] && !sched.people.get(pid).deferral.afterPriority);
   const deferred = sched._deferredPeople(owners);

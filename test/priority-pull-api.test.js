@@ -35,6 +35,10 @@ function harness() {
     globalThis.fixture = { sched, settings, handlers, access, journal, staffState, publicState, sync, analyze, closingBlocksStart,
       tracked: () => tracked, setTracked: list => { tracked = list; }, setBridge: b => { bridge = b; },
       setPending: p => { pending = p; }, getPending: () => pending, setRestartOp: op => { restartOp = op; }, deferTurn, battleVote,
+      // Envoi interrompu par un redémarrage, à vérifier par le bar (restoreNight).
+      setRecovered: value => { recoveredPending = value; },
+      // Règle d'envoi remplacée, pour un code de sendStop encore inconnu.
+      setSendStop: rule => { sendStop = rule; },
       // Écriture de la soirée en échec, comme le catch de saveNight (la démo ne sauvegarde rien).
       failSave: message => { persistenceError = message; settings.auto = false; } };
   `, context, { filename: 'server.js' });
@@ -263,6 +267,35 @@ test('priorité avec retrait et Battle demandée : permise si la Battle attend u
   }
 });
 
+// Relecture : le refus d'un envoi interrompu à vérifier (recoveredPending,
+// après un redémarrage) n'avait pas de test, et un code de sendStop sans
+// message dans PULL_STOPS donnait un refus vide : le retrait partait alors
+// que rien ne repartirait ensuite vers KaraFun, et la scène restait vide.
+test('priorité avec retrait, envoi interrompu à vérifier ou envoi retenu pour une raison sans message : rien n’est retiré', async () => {
+  const after = ' : rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer la personne juste après lui.';
+  {
+    const f = harness();
+    const ctx = loaded(f);
+    const { driss } = ctx.people;
+    f.setRecovered(true);
+    assert.equal(f.staffState().priorityPull, null, 'pas de question tant que l’envoi interrompu attend le bar');
+    await assert.rejects(pullFor(f, driss), { message: `Un envoi interrompu est à vérifier dans KaraFun${after}` });
+    nothingChanged(f, ctx);
+    const result = plain(await move(f, { personId: driss.id, toIndex: 0, priority: true }));
+    assert.equal(result.message, 'Driss passe juste après « Titre Bruno », déjà chargé dans KaraFun.');
+    assert.deepEqual(removals(ctx.bridge), []);
+  }
+  {
+    // Une raison ajoutée à sendStop sans message ici : refusé quand même.
+    const f = harness();
+    const ctx = loaded(f);
+    f.setSendStop(() => 'raison-nouvelle');
+    assert.equal(f.staffState().priorityPull, null, 'pas de question');
+    await assert.rejects(pullFor(f, ctx.people.driss), { message: `Les envois vers KaraFun sont retenus${after}` });
+    nothingChanged(f, ctx);
+  }
+});
+
 test('priorité confirmée : KaraFun garde le titre, le bar est prévenu ; lancé quand même, la priorité passe juste après', async () => {
   const f = harness();
   const ctx = loaded(f);
@@ -403,19 +436,70 @@ test('priorité avant un duo chargé : il revient entier juste après ; son invi
   assert.equal(order[1].afterPriority, true);
 });
 
-test('priorité avant un titre chargé avec « Je suis là » : la priorité confirme, le titre retiré garde sa confirmation', async () => {
+test('priorité avant un titre chargé avec « Je suis là » : la priorité déjà confirmée part, le titre retiré garde sa confirmation', async () => {
   const f = harness();
   const ctx = loaded(f, { presence: true });
   const { bruno, driss } = ctx.people;
+  // Driss a répondu « Je suis là » il y a peu (il était le prochain avant
+  // l'envoi du titre de Bruno, par exemple) : il peut partir juste après le retrait.
+  f.sched.confirm(driss);
+  f.sync();
+  assert.ok(plain(f.staffState().priorityPull.lineIds).includes(driss.id), 'le retrait est proposé pour Driss');
   await pullFor(f, driss);
   assert.deepEqual(plain(f.staffState().presencePending), [], 'pendant le retrait, personne n’est appelé');
   karafunRemoves(f, ctx);
-  assert.deepEqual(plain(f.staffState().presencePending), ['Driss'], 'la priorité confirme sa présence');
-  f.sched.confirm(driss);
+  assert.deepEqual(plain(f.staffState().presencePending), [], 'sa présence est déjà confirmée : rien ne retient la priorité');
+  assert.deepEqual(f.sched.select().ids, [driss.id]);
   f.sched.commit(f.sched.select());
   assert.equal(f.sched.reservedNext?.personId, bruno.id);
   assert.equal(bruno.held, 0, 'pas compté absent');
   assert.ok(f.sched.confirmedForTurn([bruno.id]), 'son « Je suis là » donné pour ce titre tient');
+});
+
+// Relecture : avec « Je suis là » obligatoire, le retrait était accepté pour
+// une personne qui n'avait pas encore confirmé (priorityPullCheck reprenait
+// la règle d'envoi de sync(), sendStop, mais pas son attente de la présence).
+// Le titre chargé, confirmé, sortait de KaraFun ; la scène attendait la
+// réponse de la priorité, la sautait après presenceGraceSec et rejouait le
+// titre retiré après un silence, avec un « Absent ×1 » pour elle.
+test('priorité avec retrait, « Je suis là » obligatoire, priorité pas encore confirmée : rien n’est retiré, la priorité sans retrait reste possible', async () => {
+  {
+    const f = harness();
+    const ctx = loaded(f, { presence: true });
+    const { chloe, driss } = ctx.people;
+    assert.equal(f.sched.confirmedForTurn([driss.id]), false, 'Driss n’a pas répondu');
+    assert.deepEqual(plain(f.staffState().priorityPull.lineIds), [chloe.id], 'pas de retrait proposé à Driss');
+    await assert.rejects(pullFor(f, driss), { message: 'Driss n’a pas encore confirmé « Je suis là » : « Titre Bruno » reste dans KaraFun, ' +
+      'rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer Driss juste après lui.' });
+    nothingChanged(f, ctx);
+    // La priorité sans retrait : Driss passe juste après le titre de Bruno, et
+    // sa présence lui est demandée pendant toute la durée de ce titre.
+    const result = plain(await move(f, { personId: driss.id, toIndex: 0, priority: true }));
+    assert.equal(result.message, 'Driss passe juste après « Titre Bruno », déjà chargé dans KaraFun.');
+    assert.deepEqual(removals(ctx.bridge), []);
+    assert.equal(f.sched.reservedNext?.personId, driss.id);
+    ctx.queue.shift(); // Alice a fini, KaraFun lance le titre de Bruno
+    ctx.queue[0].status = 'playing';
+    ctx.bridge.status = { state: 'playing', songPlaying: { queueId: 2 } };
+    f.sync();
+    assert.deepEqual(plain(f.staffState().presencePending), ['Driss'], 'Driss est appelé pendant « Titre Bruno »');
+  }
+  {
+    // Duo : la réponse de l'un des deux suffit, comme pour « Je suis là ».
+    const f = harness();
+    const ctx = loaded(f, { presence: true });
+    const { driss } = ctx.people;
+    const gus = f.sched.join({ tableId: '4', name: 'Gus' });
+    f.sched.removeSong(driss, driss.song.entryId);
+    const song = f.sched.inviteDuet(driss, gus.id, { songId: 813, title: 'Duo Driss' });
+    if (song.duet?.state !== 'accepted') f.sched.answerDuet(gus, true, song.entryId);
+    f.sched.confirm(gus);
+    f.sync();
+    assert.deepEqual(planned(f).find(line => line.id === driss.id)?.ids, [driss.id, gus.id], 'la ligne est le duo de Driss et Gus');
+    assert.ok(plain(f.staffState().priorityPull.lineIds).includes(driss.id), 'Gus a confirmé : le retrait est proposé');
+    await pullFor(f, driss);
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]]);
+  }
 });
 
 test('priorité avant un titre chargé, puis fermeture : refus si le titre retiré ne passerait plus', async () => {
