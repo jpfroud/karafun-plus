@@ -30,6 +30,11 @@
 // de la rangée ; chaque titre sans texte d'action garde ses actions sur une
 // seule ligne, ✕ compris.
 //
+// Relecture (passe 6) : l'icône seule ne disait pas ce qu'elle faisait (pas
+// d'infobulle au toucher) et, hors « Duos uniquement », un appui prévenait
+// aussitôt toute la salle. Une ligne sous la liste la nomme, dans la carte,
+// et un appui ouvre d'abord une confirmation qui tient dans l'écran.
+//
 // Le DOM simulé de client-ui-coverage.test.js ne calcule pas la mise en page :
 // seul un vrai navigateur mesure ces tailles. Aucun serveur ni port : la vraie
 // page (client.html, app.css, client-i18n.js) est servie par Playwright.
@@ -62,7 +67,7 @@ async function openPage(browser, { width, height, locale = 'fr-FR', state, ready
   // Son et vibration déjà réglés : pas de fenêtre de bienvenue par-dessus.
   await context.addInitScript(() => { try { localStorage.setItem('kfAlerts:1:secret', '1'); } catch (_) { /* privé */ } });
   const page = await context.newPage();
-  const accepted = [];
+  const accepted = [], opened = [];
   await page.route(`${ORIGIN}/**`, route => {
     const url = new URL(route.request().url());
     const file = FILES[url.pathname];
@@ -70,11 +75,12 @@ async function openPage(browser, { width, height, locale = 'fr-FR', state, ready
     if (url.pathname === '/api/state') return route.fulfill({ json: state });
     if (url.pathname in replies) return route.fulfill({ json: replies[url.pathname] });
     if (url.pathname === '/api/table/duet/open/accept') accepted.push(JSON.parse(route.request().postData() || '{}').entryId);
+    if (url.pathname === '/api/table/duet/open') opened.push(JSON.parse(route.request().postData() || '{}').entryId);
     return route.fulfill({ json: { ok: true } });
   });
   await page.goto(`${ORIGIN}/t/1/secret`);
   await page.waitForSelector(ready);
-  return { page, context, accepted };
+  return { page, context, accepted, opened };
 }
 
 // Débordement horizontal, mesuré contre la largeur fixée pour la page (pas
@@ -191,7 +197,7 @@ const barBox = page => page.evaluate(() => {
       for (const locale of ['fr-FR', 'en-GB']) {
         for (const [label, duet] of Object.entries(duets)) {
           const at = `${width}x${height}, Ma table, duo ${label}, ${locale}`;
-          const { page, context } = await openPage(browser, { width, height, locale, ready: '#peopleList .song-stack li',
+          const { page, context, opened } = await openPage(browser, { width, height, locale, ready: '#peopleList .song-stack li',
             state: stateOf({ tablePeople: [person('alice', 'Alice', { songs: songs(duet) })] }) });
           const rows = await page.evaluate(() => [...document.querySelectorAll('#peopleList .song-stack li')].map(li => {
             const row = li.getBoundingClientRect(), card = li.closest('.card').getBoundingClientRect();
@@ -235,7 +241,38 @@ const barBox = page => page.evaluate(() => {
           const labels = rows.flatMap(row => row.buttons.map(button => button.text));
           if (label === 'ouvert') assert.ok(labels.some(text => /^(Fermer la demande|Close the request)$/.test(text)), `${at} : « Fermer la demande »`);
           if (label === 'proposé') assert.ok(labels.some(text => /^(Annuler duo|Cancel duet)$/.test(text)), `${at} : « Annuler duo »`);
+          // L'icône est nommée sous la liste, dans la carte, sur deux lignes au
+          // plus ; pendant un duo ouvert (plus d'icône), la ligne disparaît.
+          const hint = await page.evaluate(() => {
+            const node = document.querySelector('#peopleList .duo-hint');
+            if (!node) return null;
+            const box = node.getBoundingClientRect(), card = node.closest('.card').getBoundingClientRect();
+            return { text: node.textContent.trim(), left: Math.round(box.left), right: Math.round(box.right), h: Math.round(box.height),
+              card: [Math.round(card.left), Math.round(card.right)] };
+          });
+          if (label === 'ouvert') assert.equal(hint, null, `${at} : pas de ligne sans icône`);
+          else {
+            assert.match(hint?.text || '', /^(Chercher un duo : |Find a duet: )/, `${at} : ligne qui nomme l'icône (${JSON.stringify(hint)})`);
+            assert.ok(hint.left >= hint.card[0] && hint.right <= hint.card[1] && hint.h <= 36, `${at} : ligne dans la carte, compacte (${JSON.stringify(hint)})`);
+          }
           await assertNoOverflowX(page, width, '#peopleList', at);
+          // Un appui sur l'icône ne prévient pas la salle : une confirmation
+          // s'ouvre, ses boutons tiennent dans l'écran ; « Annuler » n'envoie
+          // rien, « Oui, chercher un duo » envoie la demande.
+          if (label === 'aucun') {
+            await page.locator('#peopleList [data-duet-open="e2"]').click();
+            await page.waitForSelector('#attention:not([hidden]) [data-attn="yes"]');
+            assert.deepEqual(opened, [], `${at} : rien d'envoyé avant la confirmation`);
+            assert.match(await page.locator('#attentionText').textContent(), /toute la salle|whole room/, `${at} : la salle sera prévenue`);
+            await assertNoOverflowX(page, width, '#attention', `${at}, confirmation`);
+            await page.locator('#attentionChoices [data-attn="cancel"]').click();
+            await page.waitForSelector('#attention', { state: 'hidden' });
+            assert.deepEqual(opened, [], `${at} : annulé, rien d'envoyé`);
+            await page.locator('#peopleList [data-duet-open="e2"]').click();
+            await Promise.all([page.waitForResponse(response => response.url().endsWith('/api/table/duet/open')),
+              page.locator('#attentionChoices [data-attn="yes"]').click()]);
+            assert.deepEqual(opened, ['e2'], `${at} : envoyé après « Oui »`);
+          }
           await context.close();
         }
       }
@@ -278,5 +315,5 @@ const barBox = page => page.evaluate(() => {
   } finally {
     await browser.close();
   }
-  console.log('Bandeau du duo ouvert en navigateur : texte lisible et bandeau compact à 320, 360 et 375 px, passage de ce téléphone d’abord, un duo ouvert puis « +N », tous atteignables, ligne de la file lisible, actions des titres de « Ma table » dans leur ligne, fiche « personne pour un duo » sans toast par-dessus, sans défilement horizontal OK');
+  console.log('Bandeau du duo ouvert en navigateur : texte lisible et bandeau compact à 320, 360 et 375 px, passage de ce téléphone d’abord, un duo ouvert puis « +N », tous atteignables, ligne de la file lisible, actions des titres de « Ma table » dans leur ligne, « Chercher un duo » nommé sous la liste et confirmé avant l’envoi, fiche « personne pour un duo » sans toast par-dessus, sans défilement horizontal OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

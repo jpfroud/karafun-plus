@@ -607,6 +607,11 @@ window.CLIENT_TRANSLATIONS = {
       'Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Ce téléphone ne pourra plus le repasser en solo, seulement le retirer ; si un partenaire le rejoint puis le quitte, il partira en solo.':
         'Tonight the bar only takes duets: this song will wait for a partner before it goes up. This phone can no longer switch it back to solo, only remove it; if a partner joins and then leaves, it will go up solo.',
       'Oui, chercher un duo': 'Yes, find a duet',
+      'Les téléphones de toute la salle seront prévenus : le premier qui se propose chante avec toi. Sans partenaire avant ton tour, tu chanteras seul.':
+        'Phones across the whole room will be alerted: the first person to volunteer sings with you. Without a partner before your turn, you’ll sing solo.',
+      'Les téléphones de toute la salle seront prévenus : le premier qui se propose chante avec {name}. Sans partenaire avant son tour, {name} chantera seul.':
+        'Phones across the whole room will be alerted: the first person to volunteer sings with {name}. Without a partner before their turn, {name} will sing solo.',
+      'Chercher un duo : propose le titre à toute la salle, après ta confirmation.': 'Find a duet: offers the song to the whole room, once you confirm.',
       '{name} rejoint {person} en duo sur « {title} ».': '{name} joins {person} for a duet on “{title}”.',
       'Personne n’a rejoint le duo de {person} sur « {title} » : {person} le chante en solo.': 'Nobody joined {person}’s duet on “{title}”: {person} sings it solo.',
 

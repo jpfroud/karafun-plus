@@ -4585,8 +4585,9 @@ test('duo ouvert : proposé depuis le catalogue ou la liste, fermé par son aute
   assert.equal(page.sheetOpen(), false);
   assert.equal(page.tabShown(), 'table');
   assert.equal(page.toast().text, 'Duo ouvert : toute la salle peut se proposer pour chanter avec Alice.');
-  // Titre de la liste, sans duo : « Chercher un duo ».
+  // Titre de la liste, sans duo : « Chercher un duo », après confirmation (test plus bas).
   await page.tap('peopleList', '[data-duet-open="e1"]');
+  await page.tap('attentionChoices', '[data-attn="yes"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open', { table: '1', access: 'secret', personId: 'alice', entryId: 'e1' }]);
   // Demande ouverte : repère, conséquence à son tour, « Fermer la demande », pas d'autre duo ouvert.
   page.state.tablePeople[0].songs = [{ entryId: 'e1', songId: 1, title: 'Mon titre', duet: { state: 'open', kind: 'duo' } },
@@ -4937,12 +4938,77 @@ test('duo ouvert : en « Duos uniquement », « Chercher un duo » prévient d�
   await page.tap('attentionChoices', '[data-attn="yes"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open', { table: '1', access: 'secret', personId: 'alice', entryId: 'e1' }]);
   assert.equal(page.toast().text, 'Duo ouvert : toute la salle peut se proposer pour chanter avec Alice.');
-  // Hors « Duos uniquement » : envoyé tout de suite (test plus haut). En anglais, la mise en garde est traduite.
+  // Hors « Duos uniquement », la confirmation dit que toute la salle est prévenue (test suivant). En anglais, la mise en garde est traduite.
   const english = await open({ state: baseState({ rules: { duoOnly: true } }), languages: ['en'] });
   await english.tap('peopleList', '[data-duet-open="e1"]');
   assert.equal(english.node('attentionTitle').textContent, 'Find a duet partner for “Mon titre”?');
   assert.equal(english.node('attentionText').textContent,
     'Tonight the bar only takes duets: this song will wait for a partner before it goes up. This phone can no longer switch it back to solo, only remove it; if a partner joins and then leaves, it will go up solo.');
+});
+
+// Regression: relecture (passe 6) — « Chercher un duo » n'était plus qu'une
+// icône à deux personnes dans « Ma table » : hors « Duos uniquement », un
+// seul appui, fait pour voir ce que fait l'icône, ouvrait le duo à toute la
+// salle (bandeau, vibration et son sur les autres téléphones) sans rien
+// demander, et rien sur la carte ne nommait l'icône (son infobulle ne
+// s'affiche pas au toucher ; ⇅ a sa ligne d'explication). Chaque appui
+// demande d'abord une confirmation qui dit que toute la salle sera prévenue.
+test('Chercher un duo (icône) : rien ne part vers la salle avant la confirmation, hors Duos uniquement aussi', async () => {
+  const page = await open({ respond: url => url === '/api/table/duet/open' ? { ok: true } : undefined });
+  await page.tap('peopleList', '[data-duet-open="e1"]');
+  assert.ok(!page.posts.some(([url]) => url === '/api/table/duet/open'), 'un appui sur l’icône ne prévient pas encore la salle');
+  assert.equal(page.node('attentionTitle').textContent, 'Chercher un duo pour « Mon titre » ?');
+  assert.equal(page.node('attentionText').textContent,
+    'Les téléphones de toute la salle seront prévenus : le premier qui se propose chante avec Alice. Sans partenaire avant son tour, Alice chantera seul.');
+  await page.tap('attentionChoices', '[data-attn="cancel"]');
+  assert.ok(!page.posts.some(([url]) => url === '/api/table/duet/open'), 'annulé : rien d’envoyé');
+  await page.tap('peopleList', '[data-duet-open="e1"]');
+  assert.equal(page.find('attentionChoices', '[data-attn="yes"]').textContent, 'Oui, chercher un duo');
+  await page.tap('attentionChoices', '[data-attn="yes"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open', { table: '1', access: 'secret', personId: 'alice', entryId: 'e1' }]);
+  assert.equal(page.toast().text, 'Duo ouvert : toute la salle peut se proposer pour chanter avec Alice.');
+  // QR individuel : la personne lit « avec toi » ; en anglais, le texte est traduit.
+  const solo = baseState({ table: { id: 'Comptoir', name: 'En solo', individual: true, count: 2 } });
+  const mine = await open({ state: solo });
+  await mine.tap('peopleList', '[data-duet-open="e1"]');
+  assert.equal(mine.node('attentionText').textContent,
+    'Les téléphones de toute la salle seront prévenus : le premier qui se propose chante avec toi. Sans partenaire avant ton tour, tu chanteras seul.');
+  const english = await open({ languages: ['en'] });
+  await english.tap('peopleList', '[data-duet-open="e1"]');
+  assert.ok(!english.posts.some(([url]) => url === '/api/table/duet/open'));
+  assert.equal(english.node('attentionTitle').textContent, 'Find a duet partner for “Mon titre”?');
+  assert.equal(english.node('attentionText').textContent,
+    'Phones across the whole room will be alerted: the first person to volunteer sings with Alice. Without a partner before their turn, Alice will sing solo.');
+  const englishSolo = await open({ state: structuredClone(solo), languages: ['en'] });
+  await englishSolo.tap('peopleList', '[data-duet-open="e1"]');
+  assert.equal(englishSolo.node('attentionText').textContent,
+    'Phones across the whole room will be alerted: the first person to volunteer sings with you. Without a partner before your turn, you’ll sing solo.');
+  assert.equal(englishSolo.find('attentionChoices', '[data-attn="yes"]').textContent, 'Yes, find a duet');
+});
+
+// Même relecture : l'icône est nommée sur la carte, comme ⇅, par une ligne
+// sous la liste, tant qu'un titre la porte (pas pendant un duo ouvert : un
+// seul à la fois, ni pour un titre déjà en duo).
+test('Chercher un duo (icône) : une ligne sous la liste dit ce qu’elle fait, en français et en anglais', async () => {
+  const hint = page => page.node('peopleList').querySelector('.duo-hint');
+  const page = await open();
+  assert.ok(hint(page), 'ligne d’explication sous la liste');
+  assert.equal(hint(page).textContent.trim(), 'Chercher un duo : propose le titre à toute la salle, après ta confirmation.');
+  assert.equal(hint(page).querySelector('svg')?.getAttribute('aria-hidden'), 'true', 'la ligne montre l’icône elle-même');
+  const english = await open({ languages: ['en'] });
+  assert.equal(hint(english).textContent.trim(), 'Find a duet: offers the song to the whole room, once you confirm.');
+  // Plus d'icône, plus de ligne : demande déjà ouverte, ou titre déjà en duo.
+  const opened = baseState();
+  opened.tablePeople[0].songs = [{ entryId: 'e1', songId: 1, title: 'Mon titre', duet: { state: 'open', kind: 'duo' } },
+    { entryId: 'e2', songId: 2, title: 'Second' }];
+  assert.equal(hint(await open({ state: opened })), null, 'un seul duo ouvert à la fois : pas d’icône, pas de ligne');
+  const paired = baseState();
+  paired.tablePeople[0].songs[0].duet = { state: 'accepted', kind: 'duo', partnerName: 'Max' };
+  assert.equal(hint(await open({ state: paired })), null, 'titre déjà en duo : pas d’icône, pas de ligne');
+  // La personne gérée par un autre téléphone : ni icône, ni ligne.
+  const other = baseState({ managedIds: [] });
+  assert.equal(other.tablePeople[0].songs.length, 1);
+  assert.equal(hint(await open({ state: other })), null, 'pas gérée ici : pas de ligne');
 });
 
 test('duo ouvert : personne d’autre pour un duo (début de soirée), le titre peut quand même chercher un partenaire', async () => {
