@@ -1188,15 +1188,17 @@
   function renderInfos() {
     const infos = collectInfos();
     // Deux messages au plus, puis « +N » : ceux de ce téléphone qui pressent
-    // (passage imminent, Battle lancée) d'abord, puis un seul duo ouvert de la
-    // salle (le plus récent) et les autres messages ; les autres duos ouverts
-    // ne viennent que dépliés, ceux rangés par × en dernier. Dépliés, tous
+    // (passage imminent, Battle lancée) d'abord, puis les messages du serveur
+    // pour ses personnes (titre retiré, duo rejoint, invitation expirée…),
+    // puis un seul duo ouvert de la salle (le plus récent) et les autres
+    // messages (fermeture, règle de la soirée) ; les autres duos ouverts ne
+    // viennent que dépliés, ceux rangés par × en dernier. Dépliés, tous
     // défilent dans une hauteur bornée : aucun duo ouvert n'est hors d'atteinte
     // (seul moyen de rejoindre un duo retenu en « Duos uniquement »), et un
     // duo déjà rangé n'a plus de ×.
     const opens = infos.filter(info => info.open && !info.stowed);
-    const head = [...infos.filter(info => info.tone === 'hot'), ...opens.slice(0, 1),
-      ...infos.filter(info => !info.open && info.tone !== 'hot')];
+    const head = [...infos.filter(info => info.tone === 'hot'), ...infos.filter(info => info.notice), ...opens.slice(0, 1),
+      ...infos.filter(info => !info.open && !info.notice && info.tone !== 'hot')];
     const ordered = [...head, ...opens.slice(1), ...infos.filter(info => info.stowed)];
     // Repliés, ce qui reste caché : « +N », ou « Replier » une fois dépliés.
     const folded = ordered.length - Math.min(head.length, 2);
@@ -1258,9 +1260,10 @@
     return managedPeople().filter(person => !person.nameRequired && ids.has(String(person.id)));
   }
 
-  // « Je chante avec … » (bandeau, ligne de la file ou fiche d'un titre du
-  // catalogue) : la seule personne de ce téléphone qui peut se proposer,
-  // sinon un bouton par personne, jamais de choix par défaut.
+  // « Je chante avec … » (bandeau, ligne de la file, fiche d'un titre du
+  // catalogue ou du choix d'un partenaire de duo) : la seule personne de ce
+  // téléphone qui peut se proposer, sinon un bouton par personne, jamais de
+  // choix par défaut.
   function joinOpenDuet(button, open) {
     const volunteers = openVolunteers(open);
     if (!volunteers.length) return;
@@ -1278,7 +1281,7 @@
       // Déjà rejoint ou fermé : le refus s'affiche et le bandeau disparaît.
       try { await post('/api/table/duet/open/accept', { personId: person.id, ownerId: open.ownerId, entryId: open.entryId }); }
       catch (error) { refresh(); throw error; }
-      // Fiche du choix de la personne, ou du titre choisi dans le catalogue.
+      // Fiche du choix de la personne, du titre choisi dans le catalogue ou du partenaire de duo.
       if (!$('sheet').hidden) closeSheet();
       await refresh();
       toast([volunteers.length === 1 ? t('Duo ajouté avec {name}.', { name: who })
@@ -3713,6 +3716,7 @@
     openSheet(`<div class="row"><h3 class="grow">${esc(t('Duo sur « {title} »', { title: song.title }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
       <p class="muted small">${esc(t('{name} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour.', { name: owner.name }))} <span id="duoConsent"></span></p>
       <p id="duoNotice" class="notice warn small song-notice" role="status" hidden></p>
+      <div id="duoJoinOffer" class="sheet-actions" hidden></div>
       <label class="field" for="duoPartner">${esc(t('Avec qui ?'))}</label>
       <select id="duoPartner">${ownTable.length ? `<optgroup label="${esc(t('À ma table'))}">${ownTable.map(person => partnerOption(person)).join('')}</optgroup>` : ''}${otherTables.length ? `<optgroup label="${esc(otherLabel)}">${otherTables.map(person => partnerOption(person, true)).join('')}</optgroup>` : ''}</select>
       <p id="duoPartnerHint" class="notice warn small" role="status" hidden></p>
@@ -3735,7 +3739,9 @@
     };
     $('duoPartner').addEventListener('change', updateDuoAction);
     updateDuoAction();
-    showSongNotice(song, 'duoNotice');
+    // Titre déjà prévu : l'action que l'avis annonce (« Je chante avec … »
+    // pour un duo ouvert, sinon « Proposer un duo à … »), comme la fiche du titre.
+    showSongNotice(song, 'duoNotice', 'duoJoinOffer');
     $('sendDuo').addEventListener('click', () => {
       perform($('sendDuo'), async () => {
         const partnerId = $('duoPartner').value;

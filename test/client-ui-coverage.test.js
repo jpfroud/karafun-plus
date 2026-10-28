@@ -1189,9 +1189,10 @@ test('infos : Battle, résultat, passage imminent, fermeture et messages ; deux 
   assert.deepEqual(page.posts.filter(([url]) => url === '/api/table/notice/ack').map(([, body]) => [body.personId, body.ids]), [['carla', ['n4']]],
     'duo ajouté depuis ce même téléphone : effacé sans être montré');
   await page.tap('infoBar', '[data-info-more]');
-  assert.deepEqual(items().slice(2), ['Pas de Battle cette fois : la salle a voté contre.',
-    'Fermeture du bar à ' + timeOf(now + 3600000) + '. La file est complète jusqu’à cette heure. Tu peux encore ajouter un titre : la rotation décide s’il passe avant.',
-    'La demande de duo d’Alice à Zoé a expiré : « Hit » est parti dans KaraFun.', 'Bob chantera « Slow » en duo avec Alice.']);
+  // Puis les messages de ce téléphone, avant ceux de la salle.
+  assert.deepEqual(items().slice(2), ['La demande de duo d’Alice à Zoé a expiré : « Hit » est parti dans KaraFun.', 'Bob chantera « Slow » en duo avec Alice.',
+    'Pas de Battle cette fois : la salle a voté contre.',
+    'Fermeture du bar à ' + timeOf(now + 3600000) + '. La file est complète jusqu’à cette heure. Tu peux encore ajouter un titre : la rotation décide s’il passe avant.']);
   // « Pas prêt » depuis l'info du passage imminent.
   await page.tap('infoBar', '[data-info-defer="alice"]');
   assert.deepEqual(page.posts.at(-1), ['/api/table/defer', { table: '1', access: 'secret', personId: 'alice', songs: 1 }]);
@@ -1256,7 +1257,8 @@ test('infos : chaque message du serveur a son texte, et la fermeture annoncée o
   const page = await open({ state });
   await page.tap('infoBar', '[data-info-more]');
   assert.deepEqual(page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent),
-    ['Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.', ...notices.map(row => row[2])]);
+    [...notices.map(row => row[2]), 'Fermeture du bar atteinte : plus de titre lancé, sauf si le bar décale l’heure.'],
+    'les messages de ce téléphone, puis ceux de la salle');
   const english = await open({ state, languages: ['en'] });
   await english.tap('infoBar', '[data-info-more]');
   assert.ok(english.node('infoBar').querySelectorAll('.info-item p').some(p => p.textContent === '“T” was removed from Alice’s list: presence not confirmed 3 times. Check with the bar if needed.'));
@@ -4514,6 +4516,36 @@ test('duo ouvert : l’annonce du passage de ce téléphone passe avant les duos
   assert.equal(page.node('infoBar').classList.contains('expanded'), true);
 });
 
+// Relecture (passe 3) : le duo ouvert d'une autre table avait une place
+// garantie devant les messages de ce téléphone ; « titre retiré : présence
+// non confirmée » ou « X rejoint ton duo » passaient derrière « +N » dès qu'un
+// duo ouvert existait dans la salle, alors que le téléphone vibrait pour eux.
+test('infos : les messages de ce téléphone passent avant le duo ouvert d’une autre table, qui reste derrière « +N »', async () => {
+  const now = Date.now();
+  const closing = { at: now + 3600000, full: false, passed: false, fitCount: 10 };
+  const state = baseState({ closing, openDuets: [openDuet('x1', 'Max', 'Rock')] });
+  state.tablePeople[0].inbox = [{ id: 'n1', kind: 'openAccepted', params: { name: 'Léa', title: 'Mon titre' }, at: now },
+    { id: 'n2', kind: 'presenceRemoved', params: { title: 'Autre titre', skips: 2 }, at: now }];
+  const page = await open({ state });
+  const texts = () => page.node('infoBar').querySelectorAll('.info-item p').map(p => p.textContent);
+  assert.deepEqual(texts(), ['Léa rejoint Alice en duo sur « Mon titre ».',
+    '« Autre titre » est retiré de la liste d’Alice : présence non confirmée 2 fois. Vois avec le bar si besoin.'],
+  'repliés : les deux messages de ce téléphone');
+  assert.equal(page.find('infoBar', '[data-info-more]').textContent, '+2 autres messages');
+  await page.tap('infoBar', '[data-info-more]');
+  assert.deepEqual(texts().slice(2), ['Max · Table 2 cherche un partenaire pour « Rock »', `Fermeture du bar à ${timeOf(now + 3600000)}`],
+    'dépliés : le duo ouvert, toujours joignable, puis les messages de la salle');
+  assert.ok(page.node('infoBar').querySelector('[data-open-join="x1"]'), '« Je chante avec Max » atteignable');
+  // Un seul message de ce téléphone : le duo ouvert garde la seconde place, devant la fermeture.
+  await page.tap('infoBar', '[data-info-less]');
+  await page.tap('infoBar', '[data-info-dismiss="notice:n2"]');
+  assert.deepEqual(texts(), ['Léa rejoint Alice en duo sur « Mon titre ».', 'Max · Table 2 cherche un partenaire pour « Rock »']);
+  // Ce qui presse (passage imminent) reste devant tout.
+  page.state.next = { ours: true, ids: ['alice'], song: { entryId: 'e1' }, title: 'Mon titre' };
+  await page.poll();
+  assert.deepEqual(texts(), ['Alice passe juste après la chanson en cours : prépare-toi !', 'Léa rejoint Alice en duo sur « Mon titre ».']);
+});
+
 test('duo ouvert : un téléphone qui gère plusieurs personnes choisit qui chante, jamais par défaut ; l’auteur ne voit rien', async () => {
   const state = baseState({ openDuets: [openDuet('o1', 'Léa', 'Titre', { volunteerIds: ['alice', 'bob'] })] });
   state.tablePeople.push(person('bob', 'Bob'));
@@ -4680,6 +4712,45 @@ test('duo ouvert : choisi dans le catalogue, il propose « Je chante avec … »
   await pickCatalogSong(english);
   assert.match(english.node('songNotice').textContent, /This song is looking for a duet partner: you can sing with Léa, add it anyway or choose another song\.$/);
   assert.equal(english.find('songJoinOffer', '[data-open-join="o1"]').textContent, 'I’ll sing with Léa');
+});
+
+// Relecture (passe 3) : la fiche « Duo sur … » (« ＋ Duo », « Chanter en duo »,
+// seul moyen d'ajouter en « Duos uniquement ») disait « tu peux chanter avec
+// Léa » sans aucun bouton pour le faire : le geste évident ouvrait un second
+// duo ouvert sur le même titre au lieu de rejoindre celui de Léa.
+test('duo ouvert : la fiche du choix du partenaire propose « Je chante avec … » qu’elle annonce, en français et en anglais', async () => {
+  const openLine = { source: 'helper', id: 'o-o1', ids: ['o-o1'], name: 'Léa', pos: 1, title: 'Tube',
+    song: { entryId: 'o1', songId: 9, title: 'Tube', artist: 'Groupe', duet: { state: 'open', kind: 'duo' } } };
+  const notice = { playedAt: null, queued: [{ pos: 1, name: 'Léa', ownerId: 'o-o1', entryId: 'o1' }] };
+  const respond = url => url.startsWith('/api/song/notice?') ? { notice }
+    : url.startsWith('/api/duo/partners?') ? partners : undefined;
+  const stateWith = () => baseState({ rules: { duoOnly: true }, queue: [openLine], openDuets: [openDuet('o1', 'Léa', 'Tube')] });
+  const page = await open({ state: stateWith(), respond });
+  await page.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(page);
+  assert.match(page.sheetHtml(), /Duo sur « Tube »/);
+  assert.equal(page.node('duoNotice').textContent,
+    '⚠ Il est déjà prévu dans la file (n°1, Léa). Ce titre cherche un partenaire de duo : tu peux chanter avec Léa, l’ajouter quand même ou choisir un autre titre.');
+  assert.equal(page.node('duoJoinOffer').hidden, false, 'l’action promise par le texte est dans la fiche');
+  assert.equal(page.find('duoJoinOffer', '[data-open-join="o1"]').textContent, 'Je chante avec Léa');
+  // Une seule personne sur ce téléphone : le duo de Léa est rejoint, la fiche se ferme.
+  await page.tap('duoJoinOffer', '[data-open-join="o1"]');
+  assert.deepEqual(page.posts.at(-1), ['/api/table/duet/open/accept', { table: '1', access: 'secret', personId: 'alice', ownerId: 'o-o1', entryId: 'o1' }]);
+  assert.equal(page.sheetOpen(), false);
+  assert.equal(page.toast().text, 'Duo ajouté avec Léa.');
+  assert.ok(!page.posts.some(([url]) => url === '/api/table/duet/open' || url === '/api/table/duet'), 'ni second duo ouvert, ni autre duo');
+  // Titre que personne d'autre n'a prévu : ni avis, ni action.
+  const free = await open({ respond: url => url.startsWith('/api/duo/partners?') ? partners : undefined });
+  await free.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(free);
+  assert.equal(free.node('duoNotice').hidden, true);
+  assert.equal(free.node('duoJoinOffer').hidden, true);
+  // En anglais.
+  const english = await open({ languages: ['en'], state: stateWith(), respond });
+  await english.tap('peopleList', '[data-duet-song="alice"]');
+  await pickCatalogSong(english);
+  assert.match(english.node('duoNotice').textContent, /This song is looking for a duet partner: you can sing with Léa, add it anyway or choose another song\.$/);
+  assert.equal(english.find('duoJoinOffer', '[data-open-join="o1"]').textContent, 'I’ll sing with Léa');
 });
 
 test('duo ouvert : proposé aussi depuis le choix du partenaire (« Duos uniquement »), en anglais', async () => {
