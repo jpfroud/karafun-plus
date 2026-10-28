@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { Scheduler } = require('../scheduler');
 const { TableAccess } = require('../table-access');
 const { NightStateStore, snapshotNight, restoreNight, inspectRecoveredPending } = require('../night-state');
+const { STAGE_ENDS_LIMIT } = require('../lib/scheduler/passages');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-night-test-'));
 const song = (songId, title) => ({ songId, title, artist: 'Artiste' });
@@ -444,6 +445,31 @@ try {
     assert.equal(back.readySerial, resumed.appearanceSerial, 'début d’attente ramené au compteur');
     assert.equal(back.emptiedAt, undefined, 'marque d’échange future abandonnée');
     assert.equal(resumed.people.get(ana.id).readySerial, 0, 'début d’attente invalide remis à zéro');
+  }
+
+  {
+    // Relecture (passe 4) : la reprise gardait les 200 dernières fins de
+    // passage (`stageEnds`) dans l'ordre de la sauvegarde, avec sa propre
+    // copie de la limite. Comme endStage, elle garde les STAGE_ENDS_LIMIT
+    // plus grands tours : les plus petits partent d'abord, quel que soit
+    // l'ordre des lignes (ici les plus grands tours d'abord).
+    const total = STAGE_ENDS_LIMIT + 50;
+    const rows = Array.from({ length: total }, (_, k) => [total - k, 1000 * (total - k)]);
+    const live = new Scheduler();
+    live.appearanceSerial = total;
+    for (const [turn, at] of rows) live.endStage({ turn }, at);
+    assert.equal(live.stageEnds.size, STAGE_ENDS_LIMIT);
+    const sched = new Scheduler();
+    const access = new TableAccess();
+    sched.table('1'); access.issue('1');
+    sched.appearanceSerial = total;
+    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: sched, access, settings: settings() })));
+    saved.scheduler.stageEnds = rows;
+    const resumed = new Scheduler();
+    restoreNight(saved, { scheduler: resumed, access: new TableAccess(), settings: settings() });
+    const byTurn = map => [...map].sort((a, b) => a[0] - b[0]);
+    assert.deepEqual(byTurn(resumed.stageEnds), byTurn(live.stageEnds), 'mêmes fins de passage qu’en direct');
+    assert.equal(Math.min(...resumed.stageEnds.keys()), total - STAGE_ENDS_LIMIT + 1, 'les plus petits tours partent d’abord');
   }
 
   console.log('ok - reprise après crash : file, titres, duos, téléphones, QR, écritures atomiques et envoi ambigu');

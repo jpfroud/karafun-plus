@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Scheduler, DEFER_MAX } = require('./scheduler');
+const { STAGE_ENDS_LIMIT } = require('./lib/scheduler/passages');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
 const { PrivateEvent } = require('./private-event');
@@ -510,10 +511,15 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // Fin de chaque passage récent (Scheduler#_stageEnd) : absente d'une
   // sauvegarde d'avant ce champ, reprise des passages finis de l'historique
   // de scène ; une ligne abîmée est ignorée (fin inconnue : après toute demande).
+  // Comme en direct (endStage), au plus STAGE_ENDS_LIMIT fins, celles des plus
+  // grands tours : les plus petits partent d'abord, quel que soit l'ordre des
+  // lignes sauvegardées.
   const stageEnd = row => Array.isArray(row) && Number.isSafeInteger(row[0]) && row[0] > 0 &&
     row[0] <= tmp.appearanceSerial && Number.isFinite(row[1]) && row[1] >= 0;
-  tmp.stageEnds = new Map(Array.isArray(data.stageEnds) ? data.stageEnds.filter(stageEnd).slice(-200) :
+  const ends = new Map(Array.isArray(data.stageEnds) ? data.stageEnds.filter(stageEnd) :
     tmp.stageHistory.map(item => [item.turn, item.endedAt]).filter(stageEnd));
+  const lowestKept = [...ends.keys()].sort((a, b) => b - a)[STAGE_ENDS_LIMIT - 1] || 0;
+  tmp.stageEnds = new Map([...ends].filter(([turn]) => turn >= lowestKept));
   tmp.playedSongs = clone(list(data.playedSongs ?? [], 'titres chantés')).filter(item =>
     item && typeof item === 'object' && Number.isFinite(item.at) &&
     typeof item.title === 'string' && item.title.length > 0).slice(-PLAYED_LIMIT);
