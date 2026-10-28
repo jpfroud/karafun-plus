@@ -41,9 +41,14 @@ public class QueuePlan {
      */
     private Map<String, Double> groupSizes = Map.of();
     /**
-     * Rank of the time each owner's wait started (Node readySince): first appearances are served
-     * first come, first served (rotation.js#_pick). Same rank, same time. Empty from an older client:
-     * no such rule.
+     * Rank of the time each owner's wait started (Node rotation.js#_waitSince, sent by
+     * lib/scheduler/solver.js): the later of the end of their last stage passage and their request
+     * time (readySince), so a title asked again during their own song still waits for its end; while
+     * that passage has no known end (not ended yet), a request made up to it ranks its owner after
+     * every request. Same rank, same time. It orders first appearances first come, first served
+     * and breaks ties among returns by the oldest wait (rotation.js#_pick, QueueScore.waitKey; an
+     * owner already placed earlier in this plan comes after every rank). Empty from an older
+     * client: neither rule applies.
      */
     private Map<String, Integer> addedOrder = Map.of();
     /**
