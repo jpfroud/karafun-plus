@@ -3780,13 +3780,65 @@ test('file du bar : duo ouvert repéré sur sa ligne et dans les demandes de duo
   assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')), ['Duo ouvert Alice (Table 1) cherche un partenaire pour « Valse » · 21:05']);
   // « Duos uniquement » : hors de la file, l'encadré dit pourquoi.
   await page.update({ queue: [world.queue[1]], next: world.queue[1], openDuets: [{ ...world.openDuets[0], held: true }] });
-  assert.deepEqual(texts(page.all('joinRequestsList', '.join-request')),
+  assert.deepEqual(texts(page.all('joinRequestsList', '.join-request .grow')),
     ['Duo ouvert Alice (Table 1) cherche un partenaire pour « Valse » · 21:05 · Duos uniquement : le titre attend un volontaire hors de la file']);
+  assert.ok(page.$('joinRequestsList').querySelector('[data-rm-entry="e1"]'), 'et « Retirer » (test suivant)');
   // Rejoint : un duo comme les autres, plus de repère.
   await page.update({ queue: [{ ...world.queue[0], kind: 'duo', ids: ['alice', 'bruno'],
     song: { ...world.queue[0].song, duet: { partnerName: 'Bruno', state: 'accepted', kind: 'duo' } } }], openDuets: [] });
   assert.deepEqual(badges(rows(page)[0]), ['À venir', 'Duo']);
   assert.equal(page.$('joinRequestsBox').hidden, true);
+});
+
+// Regression: relecture (passe 6) — en « Duos uniquement », le duo ouvert
+// retenu hors de la file n'était qu'un texte dans « Demandes de duo en
+// attente », sans bouton, et les titres suivants de son auteur, qui
+// attendent derrière lui (duos acceptés compris), n'apparaissaient nulle
+// part : le bar ne pouvait ni les retirer ni libérer le titre suivant. La
+// ligne porte « Retirer » (même question et même route que « Retirer » d'un
+// titre suivant dans la file), liste les titres en attente avec le leur, et
+// dit que retirer le duo ouvert remet le titre suivant dans la file.
+test('demandes de duo : un duo ouvert retenu en « Duos uniquement » se retire, et les titres qui attendent derrière lui aussi', async () => {
+  const world = baseWorld();
+  const openedAt = new Date(2026, 9, 28, 21, 5).getTime();
+  world.openDuets = [{ ownerId: 'zoe', ownerName: 'Zoé', table: 'Table 1', entryId: 'z1', title: 'Valse', openedAt, held: true,
+    waiting: [{ entryId: 'z2', title: 'Tango', artist: 'Piazzolla', duo: 'accepted', partnerName: 'Inès' },
+      { entryId: 'z3', title: 'Rock', artist: 'Groupe', duo: 'pending', partnerName: 'Gil' },
+      { entryId: 'z4', title: 'Slow', artist: '', duo: null, partnerName: '' }] },
+  { ownerId: 'gus', ownerName: 'Gus', table: 'Table 2', entryId: 'g1', title: 'Tube', openedAt, held: true, waiting: [] }];
+  const page = await openPage({ world });
+  const [held, alone] = page.all('joinRequestsList', '.join-request');
+  const remove = held.querySelector('.open-head [data-rm-entry]');
+  assert.ok(remove, 'le duo ouvert retenu porte « Retirer »');
+  assert.equal(remove.textContent, 'Retirer');
+  assert.equal(remove.getAttribute('aria-label'), 'Retirer « Valse » de Zoé');
+  assert.deepEqual(texts(held.querySelectorAll('.open-waiting-item .grow')),
+    ['« Tango » · duo avec Inès', '« Rock » · invitation à Gil', '« Slow »']);
+  assert.deepEqual(held.querySelectorAll('.open-waiting-item [data-rm-entry]').map(button => button.getAttribute('aria-label')),
+    ['Retirer « Tango » de Zoé', 'Retirer « Rock » de Zoé', 'Retirer « Slow » de Zoé']);
+  assert.match(held.textContent, /Attendent derrière lui, hors de la file :/);
+  assert.match(held.textContent, /Retirer « Valse » remet le titre suivant de Zoé dans la file, où « Priorité » et les déplacements s’appliquent\./);
+  assert.ok(alone.querySelector('.open-head [data-rm-entry="g1"]'), 'sans titre derrière lui, il se retire aussi');
+  assert.equal(alone.querySelector('.open-waiting-item'), null);
+  assert.doesNotMatch(alone.textContent, /remet le titre suivant/, 'rien à remettre dans la file');
+  // Même question que « Retirer » d'un titre suivant dans la file ; « Annuler » n'envoie rien.
+  page.confirmAnswer = false;
+  await page.click(remove);
+  assert.match(page.confirms.at(-1), /^Retirer « Valse » de la liste de Zoé \? Ses autres titres et sa place restent\./);
+  assert.equal(page.postsTo('/api/staff/remove-many').length, 0);
+  page.confirmAnswer = true;
+  page.replies['/api/staff/remove-many'] = { ok: true, removed: 1, message: '1 titre retiré.' };
+  await page.click(remove);
+  assert.deepEqual(page.lastPost('/api/staff/remove-many').body, { items: [{ personId: 'zoe', entryId: 'z1' }] });
+  assert.equal(page.toast().text, '1 titre retiré.');
+  await page.click(page.all('joinRequestsList', '.open-waiting-item')[0].querySelector('[data-rm-entry]'));
+  assert.match(page.confirms.at(-1), /^Retirer « Tango » de la liste de Zoé \?/);
+  assert.deepEqual(page.lastPost('/api/staff/remove-many').body, { items: [{ personId: 'zoe', entryId: 'z2' }] });
+  // Hors « Duos uniquement », le duo ouvert est une ligne de la file, qui a déjà « Retirer » : rien de plus ici.
+  const { waiting, ...free } = world.openDuets[0];
+  assert.equal(waiting.length, 3);
+  await page.update({ openDuets: [{ ...free, held: false }] });
+  assert.equal(page.$('joinRequestsList').querySelector('[data-rm-entry]'), null);
 });
 
 // Regression: relecture PR #11 — deux envois du même champ pouvaient être en

@@ -469,6 +469,18 @@
       load();
     } catch (e) { toast(e.message, true); }
   }
+  // « Retirer » un titre précis de la liste d'une personne, sans toucher à ses
+  // autres titres ni à sa place : titre suivant dans la file, ou titres d'un
+  // duo ouvert retenu hors de la file (« Demandes de duo en attente »).
+  const removeEntryButton = (personId, entryId, title, name) =>
+    `<button class="btn small danger" data-rm-entry="${esc(entryId)}" data-person-id="${esc(personId)}" data-title="${esc(title)}" data-name="${esc(name)}" aria-label="Retirer « ${esc(title)} » de ${esc(name)}">Retirer</button>`;
+  function bindRemoveEntry(container) {
+    container.querySelectorAll('[data-rm-entry]').forEach(b => b.onclick = () => {
+      if (confirm(`Retirer « ${b.dataset.title} » de la liste ${ofName(b.dataset.name)} ? Ses autres titres et sa place restent.`)) {
+        act('/api/staff/remove-many', { items: [{ personId: b.dataset.personId, entryId: b.dataset.rmEntry }] }, 'Chanson retirée');
+      }
+    });
+  }
   // « Priorité » avec un titre de la file déjà chargé dans KaraFun (pas sur
   // scène) : le bar choisit de faire passer la personne avant lui (le titre
   // sort de KaraFun et repasse juste après elle) ou juste après lui, comme
@@ -2055,7 +2067,11 @@
     renderDuoBox();
     // Demandes de duo sur un titre de la file (page des chanteurs) : le bar les voit.
     // Invitations envoyées par l'auteur du titre : même encadré, même état.
-    // Duos ouverts sans partenaire : en « Duos uniquement », ils attendent hors de la file.
+    // Duos ouverts sans partenaire : en « Duos uniquement », ils attendent hors
+    // de la file, avec les titres suivants de leur auteur (`waiting`, duos
+    // compris). Le bar les retire ici, comme un titre suivant de la file ;
+    // retirer le duo ouvert remet le titre suivant dans la file, où
+    // « Priorité » et les déplacements s'appliquent.
     const requests = S.joinRequests || [], invites = S.duoInvites || [], opens = S.openDuets || [];
     $('joinRequestsBox').hidden = !requests.length && !invites.length && !opens.length;
     // « Pas encore vue » : le téléphone qui doit répondre ne l'a pas affichée ;
@@ -2063,7 +2079,15 @@
     const seenText = (seenAt, who) => seenAt ? ' · vue' : seenAt === null ? ` · <span class="unseen">pas encore vue par ${esc(who)}</span>` : '';
     $('joinRequestsList').innerHTML = requests.map(r => `<div class="join-request small"><b>${esc(r.requesterName)}</b> demande à chanter « ${esc(r.title)} » avec <b>${esc(r.ownerName)}</b>${r.at ? ` · ${hhmm(r.at)}` : ''}${seenText(r.seenAt, r.ownerName)}</div>`).join('') +
       invites.map(r => `<div class="join-request small"><b>${esc(r.ownerName)}</b> invite <b>${esc(r.partnerName)}</b> à chanter « ${esc(r.title)} » en duo${seenText(r.seenAt, r.partnerName)}</div>`).join('') +
-      opens.map(r => `<div class="join-request small"><span class="badge wait invite open-duo">Duo ouvert</span> <b>${esc(r.ownerName)}</b>${r.table ? ` (${esc(r.table)})` : ''} cherche un partenaire pour « ${esc(r.title)} »${r.openedAt ? ` · ${hhmm(r.openedAt)}` : ''}${r.held ? ' · Duos uniquement : le titre attend un volontaire hors de la file' : ''}</div>`).join('');
+      opens.map(r => {
+        const text = `<span class="badge wait invite open-duo">Duo ouvert</span> <b>${esc(r.ownerName)}</b>${r.table ? ` (${esc(r.table)})` : ''} cherche un partenaire pour « ${esc(r.title)} »${r.openedAt ? ` · ${hhmm(r.openedAt)}` : ''}${r.held ? ' · Duos uniquement : le titre attend un volontaire hors de la file' : ''}`;
+        if (!r.held) return `<div class="join-request small">${text}</div>`;
+        const waiting = r.waiting || [];
+        const partner = w => w.duo === 'accepted' ? ` · duo avec ${esc(w.partnerName)}` : w.duo === 'pending' ? ` · invitation à ${esc(w.partnerName)}` : '';
+        return `<div class="join-request small"><div class="row open-head"><span class="grow">${text}</span>${removeEntryButton(r.ownerId, r.entryId, r.title, r.ownerName)}</div>${waiting.length ? `<div class="muted">Attendent derrière lui, hors de la file :</div>${waiting.map(w =>
+          `<div class="row open-waiting-item"><span class="grow">« ${esc(w.title)} »${partner(w)}</span>${removeEntryButton(r.ownerId, w.entryId, w.title, r.ownerName)}</div>`).join('')}<div class="muted">Retirer « ${esc(r.title)} » remet le titre suivant ${esc(ofName(r.ownerName))} dans la file, où « Priorité » et les déplacements s’appliquent.</div>` : ''}</div>`;
+      }).join('');
+    bindRemoveEntry($('joinRequestsList'));
 
     const publicHttps = isPublicHttps(S.phoneBase || '');
     const readyQrCount = S.tables.filter(t => t.url && t.qrUrl && !t.individual).length;
@@ -2158,7 +2182,7 @@
       const tune = tunable ? `<button class="btn small" data-song-settings="${esc(q.song.entryId)}" data-person-id="${esc(q.ids?.[0] ?? q.id ?? '')}" aria-label="Réglages de « ${esc(title)} » : tonalité, tempo, voix">Réglages</button>` : '';
       // Titre suivant d'un chanteur : retiré seul, sans toucher à son titre en cours.
       const removeEntry = q.source === 'helper' && q.future && q.id && q.song?.entryId ?
-        `<button class="btn small danger" data-rm-entry="${esc(q.song.entryId)}" data-person-id="${esc(q.id)}" data-title="${esc(title)}" data-name="${esc(q.name || q.singer || 'ce chanteur')}" aria-label="Retirer « ${esc(title)} » de ${esc(q.name || q.singer || 'ce chanteur')}">Retirer</button>` : '';
+        removeEntryButton(q.id, q.song.entryId, title, q.name || q.singer || 'ce chanteur') : '';
       // Un titre de la file déjà chargé dans KaraFun : « Priorité » propose de
       // passer avant lui, même pour le premier passage libre.
       const pullable = movable && pullOffer(q);
@@ -2219,11 +2243,7 @@
       render();
     });
     $('qBody').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson ? Le chanteur reste inscrit à sa table.')) act('/api/staff/remove', { personId: b.dataset.rm }, 'Chanson retirée'); });
-    $('qBody').querySelectorAll('[data-rm-entry]').forEach(b => b.onclick = () => {
-      if (confirm(`Retirer « ${b.dataset.title} » de la liste ${ofName(b.dataset.name)} ? Ses autres titres et sa place restent.`)) {
-        act('/api/staff/remove-many', { items: [{ personId: b.dataset.personId, entryId: b.dataset.rmEntry }] }, 'Chanson retirée');
-      }
-    });
+    bindRemoveEntry($('qBody'));
     $('qBody').querySelectorAll('[data-urgent]').forEach(b => b.onclick = () => giveUrgent(b.dataset.urgent));
     $('qBody').querySelectorAll('[data-kfrm]').forEach(b => b.onclick = () => { if (confirm('Retirer cette chanson de KaraFun ?')) act('/api/staff/kf', { action: 'remove', queueId: b.dataset.kfrm }, 'Chanson retirée de KaraFun'); });
     $('qBody').querySelectorAll('[data-song-settings]').forEach(b => b.onclick = () => { if (window.history?.state?.rowMenu) { try { window.history.replaceState({ barTab: activeTab }, '', tabUrl()); } catch (_) { /* */ } } openRowMenu = null; openSongSheet(b.dataset.songSettings, b.dataset.personId); render(); });

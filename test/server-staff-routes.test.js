@@ -1112,6 +1112,52 @@ test('duos uniquement : le blocage vise le duo nommé, pas un autre duo de la pe
     error => error.code === 'DUO_ONLY', 'duo de sa table : refusé');
 });
 
+// Regression: relecture (passe 6) — en « Duos uniquement », un duo ouvert
+// sans volontaire attend hors de la file, et les titres suivants de son
+// auteur avec lui (_openHeld) : un duo accepté avec une personne de sa table
+// n'apparaissait nulle part sur la page du bar, qui ne pouvait ni le retirer
+// ni le faire passer. L'état du bar donne ces titres (`waiting`) sur la ligne
+// du duo ouvert ; « Retirer » (remove-many) enlève l'un ou l'autre, et le
+// titre suivant reprend la place de son auteur dans la file.
+test('duos uniquement : duo ouvert retenu, titres de son auteur qui attendent derrière lui listés pour le bar et retirables', async () => {
+  const f = harness();
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  const zoe = f.sched.join({ tableId: '1', name: 'Zoé', headcount: 2 });
+  const ines = f.sched.join({ tableId: '1', name: 'Inès', headcount: 2 });
+  const gil = f.sched.join({ tableId: '2', name: 'Gil', headcount: 1 });
+  f.sched.chooseSong(gil, { songId: 4200, title: 'Titre Gil' });
+  const open = f.sched.openDuet(zoe, { song: { songId: 4201, title: 'Valse', artist: 'Strauss' } });
+  const tango = f.sched.inviteDuet(zoe, ines.id, { songId: 4202, title: 'Tango', artist: 'Piazzolla' });
+  const rock = f.sched.inviteDuet(zoe, gil.id, { songId: 4203, title: 'Rock', artist: 'Groupe' });
+  assert.equal(tango.duet?.state, 'accepted', 'même table : duo accepté d’office');
+  assert.equal(rock.duet?.state, 'pending', 'autre table : invitation en attente');
+  let state = plain(f.staffState());
+  assert.deepEqual(state.queue.map(line => line.name), ['Gil'], 'Zoé, son duo avec Inès et son invitation hors de la file');
+  let row = state.openDuets.find(item => item.entryId === open.entryId);
+  assert.equal(row.held, true);
+  assert.deepEqual(row.waiting, [
+    { entryId: tango.entryId, title: 'Tango', artist: 'Piazzolla', duo: 'accepted', partnerName: 'Inès' },
+    { entryId: rock.entryId, title: 'Rock', artist: 'Groupe', duo: 'pending', partnerName: 'Gil' }]);
+  // Le bar retire un titre en attente : les autres restent derrière le duo ouvert.
+  await f.call('POST /api/staff/remove-many', { items: [{ personId: zoe.id, entryId: rock.entryId }] });
+  row = plain(f.staffState()).openDuets.find(item => item.entryId === open.entryId);
+  assert.deepEqual(row.waiting.map(item => item.title), ['Tango']);
+  // Puis le duo ouvert : « Tango » reprend la place de Zoé dans la file, où
+  // « Priorité » et les déplacements s'appliquent.
+  await f.call('POST /api/staff/remove-many', { items: [{ personId: zoe.id, entryId: open.entryId }] });
+  state = plain(f.staffState());
+  assert.deepEqual(state.openDuets, []);
+  assert.deepEqual(state.queue.map(line => line.name).sort(), ['Gil', 'Zoé & Inès']);
+  await f.call('POST /api/staff/move', { personId: zoe.id, toIndex: 0, priority: true });
+  assert.deepEqual(order(f), ['Zoé & Inès', 'Gil'], 'priorité donnée au titre suivant');
+  // Hors « Duos uniquement », un duo ouvert passe comme un solo : rien n'attend derrière lui.
+  await f.call('POST /api/staff/settings', { duoOnly: false });
+  const free = f.sched.openDuet(zoe, { song: { songId: 4204, title: 'Slow', artist: 'Groupe' } });
+  row = plain(f.staffState()).openDuets.find(item => item.entryId === free.entryId);
+  assert.equal(row.held, false);
+  assert.equal(row.waiting, undefined);
+});
+
 // Retours du 11 octobre : remettre le système prêt pour une nouvelle soirée
 // quand quelqu'un a changé des réglages, sans toucher aux connexions.
 test('options par défaut : réglages d’origine, connexions, adresse des QR, tables et file gardées', async () => {

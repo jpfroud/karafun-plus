@@ -2607,9 +2607,20 @@ function staffState() {
     // Duos ouverts encore sans partenaire ; `held` : « Duos uniquement », le
     // titre ne part pas tant que personne ne l'a rejoint. Celui dont le titre
     // part déjà dans KaraFun (en solo) n'est plus à pourvoir, comme chez les clients.
-    openDuets: sched.openDuets().filter(open => open.entryId !== sendingEntryId()).map(open => ({ ownerId: open.owner.id, ownerName: open.owner.name,
-      table: sched.passageTables([open.owner.id]).join(' + '), entryId: open.entryId, title: open.song.title,
-      openedAt: open.openedAt, held: sched._openHeld(open.song) })),
+    // `waiting` (duo retenu seulement) : titres suivants de son auteur, qui
+    // attendent derrière lui (_openHeld) et ne sont donc pas dans la file
+    // affichée, duos compris ; la page du bar les montre sur cette ligne pour
+    // les retirer.
+    openDuets: sched.openDuets().filter(open => open.entryId !== sendingEntryId()).map(open => {
+      const held = sched._openHeld(open.song);
+      const songs = sched.songsOf(open.owner);
+      return { ownerId: open.owner.id, ownerName: open.owner.name,
+        table: sched.passageTables([open.owner.id]).join(' + '), entryId: open.entryId, title: open.song.title,
+        openedAt: open.openedAt, held,
+        ...(held ? { waiting: songs.slice(songs.indexOf(open.song) + 1).map(song => ({ entryId: song.entryId, title: song.title,
+          artist: song.artist || '', duo: song.duet?.state || null,
+          partnerName: song.duet?.partnerId ? sched.people.get(song.duet.partnerId)?.name || '' : '' })) } : {}) };
+    }),
     // Gestes encore valables, du plus récent au plus ancien : le plus récent
     // s'annule toujours, même après d'autres changements de la file.
     manualChanges: sched.manualChanges.slice().reverse().map((change, index) => ({
