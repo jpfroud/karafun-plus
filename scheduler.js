@@ -797,11 +797,18 @@ class Scheduler {
     if (!this.reservedNext && old && waiting(old.personId) &&
         (!old.byStaff || this.manualOrder.includes(old.personId))) this.reservedNext = { ...old };
     // Seul le report levé par ce geste revient, moins les chansons passées.
+    // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : la
+    // personne devient la prochaine annoncée, si personne ne l'est et qu'elle
+    // n'est pas sur scène ou en route vers KaraFun (`waiting`) ; sinon il
+    // revient à 0 et le prochain envoi la libère. Sinon elle laissait passer
+    // une chanson de plus que demandé (relecture, passe 7).
     const passed = Number.isSafeInteger(change.serial) ? Math.max(0, this.appearanceSerial - change.serial) : 0;
     for (const [pid, deferral] of Array.isArray(before.deferrals) ? before.deferrals : []) {
       const p = this.people.get(pid);
       if (pid !== change.personId || !p || p.withdrawnAt || p.song?.entryId !== deferral.entryId || p.deferral) continue;
-      this._restoreDeferral(p, { ...deferral, remaining: Math.max(0, deferral.remaining - passed) });
+      const remaining = Math.max(0, deferral.remaining - passed);
+      if (remaining > 0 || this.reservedNext || !waiting(p.id)) this._restoreDeferral(p, { ...deferral, remaining });
+      else this.reservedNext = { personId: p.id, reservedAt: Date.now() };
     }
     this._restorePlan(change.planBefore);
   }

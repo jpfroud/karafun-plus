@@ -175,6 +175,24 @@ test('annuler après d’autres changements rend le « Pas prêt » levé, moins
   assert.deepEqual(playNames(s, 3), ['Maud', 'Gil', 'Ines'], 'Ines laisse passer les deux chansons qui restent');
 });
 
+// Relecture (passe 7) : même annulation, report déjà écoulé. Le « Pas prêt »
+// revenait à 0 et seul l'envoi suivant le libérait : Ines laissait passer une
+// chanson de plus que demandé. Comme _commit au bout d'un report, elle devient
+// la prochaine annoncée ; si quelqu'un l'est déjà, le report reste à 0 et le
+// prochain envoi la libère.
+test('annuler après d’autres changements, « Pas prêt » déjà écoulé : la personne est la prochaine', () => {
+  const { s, people } = evening();
+  const line = s.presenceView().find(v => v.ids[0] === people.Ines.id);
+  s.deferPassage(people.Ines.id, line, 1);
+  gesture(s, people.Ines, 2); // le geste lève le report
+  assert.equal(label(s, play(s)), 'Paulo'); // la chanson demandée passe
+  s.chooseSong(people.Paulo, song(), 'append'); // la file change : annulation recalculée
+  s.undoLastManualChange(null, NATIVE);
+  assert.equal(s.deferralFor(people.Ines.id), null, 'une chanson demandée, une passée : le report est fini');
+  assert.equal(s.reservedNext?.personId, people.Ines.id);
+  assert.deepEqual(playNames(s, 2), ['Ines', 'Maud'], 'Ines repasse aussitôt');
+});
+
 test('annuler tout après d’autres changements rend toutes les lignes au calcul', () => {
   const { s, people } = evening();
   gesture(s, people.Elsa, 3);
@@ -1728,4 +1746,54 @@ test('priorité avant un titre chargé : le report survit à un redémarrage', (
   resumed.songEnded(stage.ids);
   resumed.commit(resumed.select());
   assert.equal(resumed.reservedNext?.personId, people.Maud.id);
+});
+
+// Relecture (passe 7, test manquant) : pendant l'envoi d'un duo prioritaire
+// dont l'invitée a son propre report (« Pas prêt », ou titre retiré pour la
+// priorité), la prévision lève ce report comme l'accusé de KaraFun le fera
+// (_commit) : la file vue pendant l'envoi ne bouge pas à l'accusé.
+test('priorité sur un duo dont l’invitée est retenue par un report : pendant l’envoi, la prévision est celle d’après l’accusé', async t => {
+  for (const how of ['« Pas prêt »', 'titre retiré']) await t.test(how, () => {
+    const { s, people } = evening();
+    const { Karim, Maud } = people;
+    const stage = s.select(); s.commit(stage); // Paulo sur scène
+    if (how === '« Pas prêt »') {
+      s.deferPassage(Maud.id, { entryId: Maud.song.entryId, ids: [Maud.id] }, 2);
+      gesture(s, Karim, 0, stage.ids);
+    } else {
+      const loaded = s.select(); s.commit(loaded);
+      gesture(s, Karim, 0, stage.ids);
+      assert.equal(pulledBack(s, loaded, Karim.id)?.afterPriority, true);
+    }
+    s.openDuet(Karim, { entryId: Karim.song.entryId });
+    s.acceptOpenDuet(Maud, Karim.id, Karim.song.entryId);
+    s.songEnded(stage.ids);
+    const sel = s.select();
+    assert.equal(label(s, sel), 'Karim & Maud');
+    const during = names(s, sel.consumedIds, sel);
+    s.commit(sel);
+    assert.deepEqual(during, names(s), `${how} : la file vue pendant l’envoi ne bouge pas à l’accusé`);
+  });
+});
+
+// Relecture (passe 7, test manquant) : « Retirer » du bar sur la ligne d'une
+// personne sans titre suivant, gestes en vigueur : les autres lignes gardent
+// leur place (staffRemove passe par _carryPlanAcross).
+test('« Retirer » du bar sur une ligne sans titre suivant, gestes en vigueur : les autres lignes ne bougent pas', () => {
+  const s = new Scheduler(); s._event = () => {};
+  let n = 1; const people = {};
+  for (const [table, counts] of [['1', [1, 3, 1]], ['2', [1, 3, 1]], ['3', [3, 1, 2]]]) {
+    s.setHeadcount(table, 3);
+    counts.forEach((count, i) => {
+      const p = s.join({ tableId: table, name: `P${table}${i}` }); people[p.name] = p;
+      for (let k = 0; k < count; k++) s.chooseSong(p, { songId: n++, title: `T${n}` }, 'append');
+    });
+  }
+  const view = () => s.presenceView().filter(v => !v.future).map(v => v.name);
+  const sing = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); };
+  sing(); gesture(s, people.P11, 4); sing(); sing(); gesture(s, people.P22, 0); sing();
+  const before = view();
+  assert.deepEqual(before, ['P21', 'P31', 'P11', 'P12', 'P32', 'P30']);
+  s.staffRemove(people.P31.id);
+  assert.deepEqual(view(), before.filter(name => name !== 'P31'));
 });
