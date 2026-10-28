@@ -212,10 +212,12 @@ BON À SAVOIR
   Premium à la maison ne vérifie pas cette protection. Fais ce contrôle
   avant qu'une Battle arrive dans KaraFun (un vote réussi l'y ajoute seul) :
   dès qu'elle est en tête de la file de KaraFun, une fois le titre d'avant
-  terminé, puis pendant qu'elle passe sur scène, chaque téléphone affiche
-  « Rejoindre la Battle », le lien de la télécommande KaraFun
-  (https://www.karafun.fr/ suivi du code saisi au bar), sans que le bar
-  montre quoi que ce soit. Lis GUIDE-BAR.md.
+  terminé, puis pendant qu'elle passe sur scène, chaque téléphone qui gère
+  une personne inscrite, pas marquée partie, affiche « Rejoindre la
+  Battle », le lien de la télécommande KaraFun (https://www.karafun.fr/
+  suivi du code saisi au bar), sans que le bar montre quoi que ce soit. Une
+  page ouverte avec le seul QR d'une table, sans personne inscrite, ne le
+  reçoit jamais. Lis GUIDE-BAR.md.
 - Pour arrêter : double-clique sur ARRETER.bat sur ce PC (la page du bar
   n'a plus de bouton d'arrêt). Tu peux aussi fermer la fenêtre noire.
   La soirée est sauvegardée et la clé du bar change à chaque démarrage ;

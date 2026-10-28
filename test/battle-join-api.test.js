@@ -231,6 +231,41 @@ test('mode PC : KaraFun déconnecté pendant la Battle, le lien reste ; la fin s
   assert.equal(await other(), LINK, 'départ de la Battle, KaraFun déconnecté : le lien reste');
 });
 
+// Relecture, passe 5 (sécurité) : le lien porte le code de la télécommande
+// KaraFun du bar. Il partait dans toute lecture de l'état d'une table, même
+// sans personne, avec le seul secret du QR de la table : ce QR reste le même
+// d'une soirée à l'autre et, en mode serveur, s'ouvre de n'importe où.
+test('mode PC : le lien de la Battle ne part qu’aux téléphones qui gèrent une personne nommée encore là', async () => {
+  const f = harness();
+  f.sched.table('1').headcount = 4;
+  const tb = { table: '1', access: f.access.issue('1') };
+  const join = async name => {
+    const joined = await call(f, 'POST', '/api/table/person', { body: { ...tb, name } });
+    assert.equal(joined.status, 200, joined.text);
+    return joined.body;
+  };
+  const zoe = await join('Zoé'), gil = await join('Gil');
+  const read = async (tokens, port = f.PORT) => {
+    const r = await call(f, 'GET', `/api/state?${new URLSearchParams(tb)}`,
+      { headers: { ...(tokens ? { 'x-person-tokens': JSON.stringify(tokens) } : {}), 'x-page-visible': '1' }, port });
+    assert.equal(r.status, 200, r.text);
+    return r.body.battle.joinUrl ?? null;
+  };
+  f.setBridge(fakeBridge([battleItem()])); f.sync();
+  assert.equal(await read(), null, 'lecture de la table sans personne : pas de code');
+  assert.equal(await read(null, f.PUBLIC_PORT), null, 'pas plus sur le port des clients');
+  assert.equal(await read(['0'.repeat(32)]), null, 'clé inconnue : pas de code');
+  assert.equal(await read([zoe.token]), LINK, 'Zoé, inscrite : le lien');
+  // Marquée partie par le bar : son téléphone ne gère plus personne de présent.
+  f.sched.leave(f.sched.person(zoe.token), 'staff');
+  assert.equal(await read([zoe.token]), null, 'Zoé partie : plus de code');
+  assert.equal(await read([zoe.token, gil.token]), LINK, 'un téléphone qui gère aussi Gil, encore là : le lien');
+  // Mêmes règles par la vue de l'état (place sans prénom comprise).
+  assert.equal(f.publicState(null, '1', new Set()).battle.joinUrl, null);
+  const placeholder = f.sched.join({ tableId: 'Comptoir', name: 'Solo 1', nameRequired: true });
+  assert.equal(f.publicState(placeholder, 'Comptoir', new Set([placeholder.id])).battle.joinUrl, null, 'place sans prénom : pas de code');
+});
+
 test('démo : jamais de lien, même avec une Battle en tête du faux KaraFun', async () => {
   const f = harness({ demo: true });
   assert.equal(f.DEMO, true);
@@ -252,6 +287,8 @@ test('mode serveur : même règle que le mode PC', async () => {
   assert.equal(joinUrl(), null);
   f.setBridge(fakeBridge([battleItem()]));
   assert.equal(joinUrl(), LINK);
+  // Lecture de la table sans personne (le seul QR, ouvert de n'importe où) : pas de code.
+  assert.equal(f.publicState(null, '1', new Set()).battle.joinUrl, null);
   f.setBridge(fakeBridge([battleItem()], 50));
   assert.equal(joinUrl(), LINK);
   f.setBridge(fakeBridge([]));

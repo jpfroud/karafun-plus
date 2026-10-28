@@ -2252,14 +2252,24 @@ function battleJoinUrl() {
   return isBattleItem(current) || (!current && isBattleItem(upcoming[0])) || battleStarting() ? `https://www.karafun.fr/${CODE}` : null;
 }
 
+// Personnes présentes et nommées parmi celles que gère le téléphone qui
+// demande (`managed`) : seules elles rejoignent un duo ouvert ou la Battle.
+function presentManaged(managed) {
+  return [...(managed || [])].map(pid => sched.people.get(pid)).filter(p => p && !p.withdrawnAt && !p.nameRequired);
+}
+
 // Vue Battle d'un téléphone (état et réponses des routes de la table) : sans
 // le suivi de l'ajout à KaraFun ni ses consignes, que seule la page du bar
 // lit ; électeurs et votants de sa table, ou de la personne seule sur un
-// groupe individuel (« En solo »). `joinUrl` : « Rejoindre la Battle ».
-function battleForPhone(battle, tableId, person) {
+// groupe individuel (« En solo »). `joinUrl` : « Rejoindre la Battle ». Il
+// porte le code de la télécommande KaraFun du bar : seul un téléphone qui
+// gère une personne présente et nommée (`managed`, presentManaged) le reçoit,
+// jamais une lecture de la table avec le seul secret de son QR, qui reste le
+// même d'une soirée à l'autre (et s'ouvre de partout en mode serveur).
+function battleForPhone(battle, tableId, person, managed) {
   const out = { ...battle };
   delete out.automation;
-  out.joinUrl = battleJoinUrl();
+  out.joinUrl = presentManaged(managed).length ? battleJoinUrl() : null;
   const individual = !!sched.table(tableId, false)?.individual;
   const shown = id => individual ? id === person?.id : sched.people.get(id)?.tableId === tableId;
   out.eligiblePersonIds = (battle.eligiblePersonIds || []).filter(shown);
@@ -2395,7 +2405,7 @@ function publicState(person, tableId, managed = null) {
   // KaraFun (en solo) : c'est le seul moyen de les rejoindre, et en « Duos
   // uniquement » un duo retenu n'est pas dans la file. La page replie
   // l'affichage (client.html, renderInfos).
-  const volunteers = [...(managed || [])].map(pid => sched.people.get(pid)).filter(p => p && !p.withdrawnAt && !p.nameRequired);
+  const volunteers = presentManaged(managed);
   if (volunteers.length) {
     out.openDuets = sched.openDuets().filter(open => open.entryId !== sending).map(open => ({
       ownerId: open.owner.id, ownerName: open.owner.name, ownerLabel: sched.passageLabel([open.owner.id]),
@@ -2426,7 +2436,7 @@ function publicState(person, tableId, managed = null) {
     // journal des actions des autres tables ne concernent pas ce téléphone.
     out.waiting = out.waiting.filter(item => sched.people.get(item.id)?.tableId === tid);
     delete out.log;
-    out.battle = battleForPhone(out.battle, tid, person);
+    out.battle = battleForPhone(out.battle, tid, person, managed);
   }
   if (tid) {
     const t = sched.table(tid, false);
@@ -2836,9 +2846,12 @@ function tableByAccess(id, secret) {
   return t;
 }
 
-// Le code KaraFun reste sur le serveur. Seules les pages venues d'un QR de
-// table peuvent demander une recherche ou un catalogue ; le bar utilise sa
-// clé. Sur le PC, la boucle locale du port du bar garde son accès historique.
+// Le code KaraFun reste sur le serveur, sauf pendant une Battle : le lien
+// « Rejoindre la Battle » le donne aux téléphones qui gèrent une personne
+// présente et nommée (battleForPhone), et les droits des invités de la
+// télécommande KaraFun limitent seuls ce qu'il ouvre. Seules les pages venues
+// d'un QR de table peuvent demander une recherche ou un catalogue ; le bar
+// utilise sa clé. Sur le PC, la boucle locale du port du bar garde son accès historique.
 function catalogReader(req, u) {
   if (isStaff(req, u)) return { kind: 'staff' };
   if (isLocal(req)) return { kind: 'pc-local' };
@@ -4839,14 +4852,14 @@ const handlers = {
     assertSongLength(p, songs, 'battle');
     const battle = battleVote.propose({ personId: p.id, personName: p.name, eligiblePersonIds: battleElectorate(),
       songs, proposerChoice: body.proposerChoice });
-    return { ok: true, battle: battleForPhone(battle, p.tableId, p) };
+    return { ok: true, battle: battleForPhone(battle, p.tableId, p, new Set([p.id])) };
   },
   'POST /api/table/battle/vote': async (req, res, body) => {
     const p = personAtTable(body);
     requireNamed(p);
     syncBattleElectorate();
     const battle = battleVote.vote({ personId: p.id, choice: body.choice });
-    return { ok: true, battle: battleForPhone(battle, p.tableId, p) };
+    return { ok: true, battle: battleForPhone(battle, p.tableId, p, new Set([p.id])) };
   },
   'POST /api/duet': async (req, res, body, me) => {
     requireNamed(me);
