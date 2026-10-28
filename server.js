@@ -358,11 +358,18 @@ function catalogChoice(song, refusal = null) {
 }
 // Titre de la liste au texte du catalogue : marqué à l'ajout (catalogChoice),
 // ou identique à celui que le catalogue a donné à ce serveur (ajouté avant
-// que ce serveur ne le reçoive, ou par une version d'avant la marque).
+// que ce serveur ne le reçoive, ou par une version d'avant la marque) une
+// fois rangé dans une liste : rememberBattleSongs garde des titres et des
+// artistes plus longs que Scheduler#chooseSong. Pour les mêmes bornes, un
+// ordonnanceur à part, vide, range le texte du catalogue comme tout titre.
 function catalogText(song) {
   if (song?.catalogText === true) return true;
   const seen = battleCatalogSongs.get(Number(song?.songId));
-  return !!seen && seen.title === song.title && seen.artist === song.artist;
+  if (!seen) return false;
+  const probe = new Scheduler({ solverEnabled: false });
+  const listed = probe.join({ tableId: 'Comptoir', name: 'Catalogue' });
+  probe.chooseSong(listed, seen);
+  return listed.song.title === song.title && listed.song.artist === song.artist;
 }
 function certifiedBattleSongs(songs) {
   if (!Array.isArray(songs) || songs.length < 1 || songs.length > 3) {

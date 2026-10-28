@@ -553,6 +553,32 @@ test('duo ouvert refusé : le titre de la liste reste tel quel, rien n’est com
   assert.equal(phoneText.title, 'Texte du téléphone');
 });
 
+// Relecture, passe 6 : le titre de la liste sans marque n'était comparé au
+// catalogue qu'à l'identique. Un titre de plus de 80 caractères (le catalogue
+// en garde 100, Scheduler#chooseSong 80) ou un artiste de plus de 60, ajouté
+// avant que ce serveur ne connaisse son numéro, ne cherchait plus de duo,
+// même après une nouvelle recherche ; l'ajouter depuis le catalogue était
+// refusé (déjà dans la liste).
+test('titre long ajouté avant le catalogue : après la recherche, il cherche un duo depuis la liste, tel que la liste le garde', async () => {
+  const f = harness();
+  const ines = person(f, '1', 'Inès'), maud = person(f, '3', 'Maud');
+  const long = { songId: 9, title: `Medley ${'x'.repeat(85)}`, artist: `Artiste ${'y'.repeat(62)}` };
+  const cut = { songId: 10, title: `Pot-pourri ${'z'.repeat(85)}`, artist: 'Artiste' };
+  await f.call('POST /api/table/song', { ...ines.body, song: long });
+  // Même numéro, texte coupé par le téléphone : ce n'est pas celui que la
+  // liste garderait du catalogue.
+  await f.call('POST /api/table/song', { ...ines.body, song: { ...cut, title: cut.title.slice(0, 40) } });
+  const [listed, shortened] = f.sched.songsOf(ines.p);
+  assert.deepEqual([listed.title.length, listed.artist.length], [80, 60], 'gardé aux bornes de la liste');
+  f.rememberBattleSongs(plain([long, cut]));
+  await assert.rejects(f.call('POST /api/table/duet/open', { ...ines.body, entryId: shortened.entryId }),
+    { message: 'Retrouve ce titre dans le catalogue avant de chercher un duo.' });
+  await f.call('POST /api/table/duet/open', { ...ines.body, entryId: listed.entryId });
+  assert.deepEqual(plain(f.view('3', [maud.p.id]).openDuets.map(open => [open.song.songId, open.song.title, open.song.artist])),
+    [[9, long.title.slice(0, 80), long.artist.slice(0, 60)]], 'le texte du catalogue, tel que la liste le garde');
+  assert.equal(f.staffState().openDuets[0].title, long.title.slice(0, 80));
+});
+
 // Relecture, passe 5 : la certification du texte reposait sur le seul
 // catalogue gardé en mémoire (battleCatalogSongs), vidé à chaque redémarrage,
 // mises à jour comprises : « Chercher un duo » sur un titre déjà dans la liste
