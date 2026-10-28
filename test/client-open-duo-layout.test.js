@@ -19,6 +19,10 @@
 // élargit innerWidth à la largeur du contenu ; il compare désormais avec la
 // largeur fixée pour la page, et chaque bouton doit tenir dans l'écran.
 //
+// Relecture (passe 4) : sans personne d'autre pour un duo, la fiche « Duo
+// sur … » s'ouvrait sous un toast d'erreur qui cachait son titre et son
+// explication pendant 4 s ; la fiche le dit désormais elle-même.
+//
 // Le DOM simulé de client-ui-coverage.test.js ne calcule pas la mise en page :
 // seul un vrai navigateur mesure ces tailles. Aucun serveur ni port : la vraie
 // page (client.html, app.css, client-i18n.js) est servie par Playwright.
@@ -45,7 +49,8 @@ const stateOf = (extra = {}) => ({
   catalogAvailable: true, stage: null, next: null, rules: {}, ...extra,
 });
 
-async function openPage(browser, { width, height, locale = 'fr-FR', state, ready = '#infoBar:not([hidden]) .info-item' }) {
+// `replies` : réponses simulées d'autres routes (chemin → JSON).
+async function openPage(browser, { width, height, locale = 'fr-FR', state, ready = '#infoBar:not([hidden]) .info-item', replies = {} }) {
   const context = await browser.newContext({ viewport: { width, height }, isMobile: true, hasTouch: true, locale });
   // Son et vibration déjà réglés : pas de fenêtre de bienvenue par-dessus.
   await context.addInitScript(() => { try { localStorage.setItem('kfAlerts:1:secret', '1'); } catch (_) { /* privé */ } });
@@ -56,6 +61,7 @@ async function openPage(browser, { width, height, locale = 'fr-FR', state, ready
     const file = FILES[url.pathname];
     if (file) return route.fulfill({ contentType: `${file[1]}; charset=utf-8`, body: fs.readFileSync(path.join(root, 'public', file[0])) });
     if (url.pathname === '/api/state') return route.fulfill({ json: state });
+    if (url.pathname in replies) return route.fulfill({ json: replies[url.pathname] });
     if (url.pathname === '/api/table/duet/open/accept') accepted.push(JSON.parse(route.request().postData() || '{}').entryId);
     return route.fulfill({ json: { ok: true } });
   });
@@ -200,8 +206,43 @@ const barBox = page => page.evaluate(() => {
         }
       }
     }
+
+    // Personne d'autre pour un duo (début de soirée, « Duos uniquement ») :
+    // la fiche « Duo sur … » s'ouvre. Un toast d'erreur rouge (z-index 30, à
+    // 88 px du bas) se posait dessus 4 s : il cachait le titre et
+    // l'explication de la fiche, et à 320 px le haut de son seul bouton. La
+    // fiche dit elle-même qu'il n'y a personne, sans toast.
+    const tube = { songId: 50, title: 'Je veux te voir', artist: 'Artiste' };
+    const replies = { '/api/catalog/categories': [{ name: 'Tubes', filter: 'tubes' }], '/api/catalog/highlights': [tube],
+      '/api/catalog/songs': { songs: [tube], total: 1 }, '/api/search': [tube],
+      '/api/duo/partners': [{ id: 'alice', name: 'Alice', tableId: '1', table: 'Table 1' }] };
+    for (const [width, height] of [[320, 568], [360, 640], [375, 667]]) {
+      for (const [rules, locale, alone] of [[{ duoOnly: true }, 'fr-FR', /^Aucun partenaire disponible pour l’instant\.$/],
+        [{}, 'fr-FR', /^Aucun partenaire disponible pour l’instant\.$/], [{ duoOnly: true }, 'en-GB', /^No one is available for a duet yet\.$/]]) {
+        const at = `${width}x${height}, personne pour un duo${rules.duoOnly ? ', Duos uniquement' : ''}, ${locale}`;
+        const { page, context } = await openPage(browser, { width, height, locale, ready: '#peopleList [data-duet-song="alice"]', replies,
+          state: stateOf({ rules, tablePeople: [person('alice', 'Alice')] }) });
+        await page.locator('#peopleList [data-duet-song="alice"]').click();
+        await page.waitForSelector('#catalogContent [data-song-index="0"], #catalogContent [data-category-index="0"]');
+        if (await page.locator('#catalogContent [data-category-index="0"]').count()) await page.locator('#catalogContent [data-category-index="0"]').click();
+        await page.locator('#catalogContent [data-song-index="0"]').click();
+        await page.waitForSelector('#openDuetInstead');
+        const box = await page.evaluate(() => {
+          const toast = document.getElementById('toast'), sheet = document.getElementById('sheetPanel');
+          const rect = el => { const r = el.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; };
+          return { toast: toast.hidden ? null : { text: toast.textContent, at: rect(toast) }, sheet: rect(sheet),
+            alone: sheet.querySelector('[data-duo-alone]')?.textContent || null };
+        });
+        assert.equal(box.toast, null, `${at} : aucun toast par-dessus la fiche (${JSON.stringify(box)})`);
+        assert.match(box.alone || '', alone, `${at} : la fiche dit qu'il n'y a personne (${JSON.stringify(box)})`);
+        // Le seul bouton de la fiche se touche (Playwright vérifie que rien ne le recouvre).
+        await page.locator('#openDuetInstead').click({ trial: true, timeout: 2000 });
+        await assertNoOverflowX(page, width, '#sheetPanel', at);
+        await context.close();
+      }
+    }
   } finally {
     await browser.close();
   }
-  console.log('Bandeau du duo ouvert en navigateur : texte lisible et bandeau compact à 320, 360 et 375 px, passage de ce téléphone d’abord, un duo ouvert puis « +N », tous atteignables, ligne de la file lisible, actions des titres de « Ma table » dans leur ligne, sans défilement horizontal OK');
+  console.log('Bandeau du duo ouvert en navigateur : texte lisible et bandeau compact à 320, 360 et 375 px, passage de ce téléphone d’abord, un duo ouvert puis « +N », tous atteignables, ligne de la file lisible, actions des titres de « Ma table » dans leur ligne, fiche « personne pour un duo » sans toast par-dessus, sans défilement horizontal OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

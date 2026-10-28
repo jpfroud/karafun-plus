@@ -2018,9 +2018,9 @@
           // Duo ouvert : sans volontaire, il part en solo ; en « Duos uniquement », il attend.
           : duet?.state === 'open' ? `<div class="tiny muted invite-solo">${esc(duoOnly() ? t('Ce soir, le bar ne prend que des duos : ce titre attend un partenaire pour passer.')
             : individual ? t('Sans partenaire avant ton tour, tu chanteras seul.') : t('Sans partenaire avant son tour, {name} chantera seul.', { name: person.name }))}</div>` : '';
-        const openButton = duet?.state === 'open' ? (duoOnly() ? '' : `<button type="button" class="btn small ghost" data-duet-close="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Ne plus chercher de partenaire pour {title}', { title: songName(song) }))}">${esc(t('Fermer la demande'))}</button>`)
-          : !duet && !hasOpen ? `<button type="button" class="btn small ghost" data-duet-open="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Chercher un partenaire de duo pour {title}', { title: songName(song) }))}">${esc(t('Chercher un duo'))}</button>` : '';
-        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(withLength(song.artist || '', song))} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${openButton}${duet && duet.state !== 'open' && !(duoOnly() && duet.state !== 'pending') ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler le duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
+        const openButton = duet?.state === 'open' ? (duoOnly() ? '' : `<button type="button" class="btn small ghost" data-duet-close="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Fermer la demande de duo pour {title}', { title: songName(song) }))}">${esc(t('Fermer la demande'))}</button>`)
+          : !duet && !hasOpen ? `<button type="button" class="btn small ghost" data-duet-open="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Chercher un duo pour {title}', { title: songName(song) }))}">${esc(t('Chercher un duo'))}</button>` : '';
+        return `<li>${cover(song, 'sm')}<div class="grow"><div class="song-title">${esc(song.title || t('Chanson'))}</div><div class="song-detail">${esc(withLength(song.artist || '', song))} · ${esc(index === 0 ? t('prochain titre') : t('à suivre'))}${duetDetail}${tuneBadge(song)}</div>${soloHint}</div>${!(canEdit && song.entryId != null) ? `<div class="song-actions">${lyricsButton(song)}</div>` : ''}${canEdit && song.entryId != null ? `<div class="song-actions">${lyricsButton(song)}${tuneEnabled() ? tuneButton(song, person.id) : ''}${ready.length > 1 ? `<button type="button" class="btn small ghost song-order icon" data-reorder-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Changer l’ordre de {title}', { title: songName(song) }))}" title="${esc(t('Ordre'))}">⇅</button>` : ''}${openButton}${duet && duet.state !== 'open' && !(duoOnly() && duet.state !== 'pending') ? `<button type="button" class="btn small ghost" data-duet-cancel="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Annuler duo sur {title}', { title: songName(song) }))}">${esc(t('Annuler duo'))}</button>` : ''}<button type="button" class="btn small ghost danger icon" data-remove-song="${esc(song.entryId)}" data-person-id="${esc(person.id)}" aria-label="${esc(t('Retirer {title}', { title: songName(song) }))}" title="${esc(t('Retirer'))}">✕</button></div>` : ''}</li>`;
       }).join('')}</ul>${canEdit && ready.length > 1 ? `<p class="tiny muted order-hint">${esc(individual
         ? t('⇅ change l’ordre de tes titres sans perdre ta place dans la file.') : t('⇅ change l’ordre de ses titres sans perdre sa place dans la file.'))}</p>` : ''}`
         : canEdit ? `<p class="empty-copy">${esc(t('Aucune chanson préparée.'))}</p>` : '';
@@ -2869,12 +2869,16 @@
       const person = personById(openSong.dataset.personId);
       const body = { personId: openSong.dataset.personId, entryId: openSong.dataset.duetOpen };
       const done = () => t('Duo ouvert : toute la salle peut se proposer pour chanter avec {name}.', { name: person?.name || '' });
-      // « Duos uniquement » : le titre attendra un partenaire et ne pourra plus
-      // repasser en solo (seulement être retiré). Dit avant le geste.
+      // « Duos uniquement » : le titre attendra un partenaire et ce téléphone
+      // ne pourra plus le repasser en solo (seulement le retirer, assertDuoKept
+      // du serveur). Un partenaire qui le rejoint puis le quitte (volontaire
+      // d'une autre table qui s'en retire, personne marquée partie) le fait
+      // partir en solo, comme le veut la spec du duo ouvert (leaveDuet). Dit
+      // avant le geste.
       if (duoOnly() && person) {
         const song = list(person.songs).find(item => String(item.entryId) === body.entryId);
         askConfirm(person, t('Chercher un duo pour « {title} » ?', { title: song?.title || t('ce titre') }),
-          t('Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Il ne pourra plus repasser en solo, seulement être retiré.'),
+          t('Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Ce téléphone ne pourra plus le repasser en solo, seulement le retirer ; si un partenaire le rejoint puis le quitte, il partira en solo.'),
           t('Oui, chercher un duo'), async () => { await post('/api/table/duet/open', body); return done(); });
         return;
       }
@@ -3699,11 +3703,13 @@
     });
     const hasOpen = list(owner.songs).some(item => item.duet?.state === 'open');
     if (!partners.length) {
-      toast(t('Aucun partenaire disponible pour un duo.'), true);
-      if (hasOpen) return;
+      if (hasOpen) return toast(t('Aucun partenaire disponible pour un duo.'), true);
       // Personne d'autre pour l'instant (début de soirée) : le titre peut
-      // encore chercher un partenaire parmi les suivants, en duo ouvert.
+      // encore chercher un partenaire parmi les suivants, en duo ouvert. La
+      // fiche le dit elle-même : un toast d'erreur cacherait son titre et
+      // son explication (et, à 320 px, le haut de son bouton).
       openSheet(`<div class="row"><h3 class="grow">${esc(t('Duo sur « {title} »', { title: song.title }))}</h3><button type="button" class="btn small ghost" data-close-sheet aria-label="${esc(t('Fermer'))}">✕</button></div>
+        <p class="small" data-duo-alone>${esc(t('Aucun partenaire disponible pour l’instant.'))}</p>
         <p class="muted small">${esc(duoOnly() ? t('Ce soir, le bar ne prend que des duos : ce titre attend un partenaire pour passer.')
           : state?.table?.individual ? t('Sans partenaire avant ton tour, tu chanteras seul.') : t('Sans partenaire avant son tour, {name} chantera seul.', { name: owner.name }))}</p>
         <div class="sheet-actions"><button type="button" id="openDuetInstead" class="btn primary">${esc(t('Qui veut chanter en duo avec moi ?'))}</button></div>`);

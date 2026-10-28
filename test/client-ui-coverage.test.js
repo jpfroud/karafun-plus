@@ -17,6 +17,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { Scheduler } = require('../scheduler');
 
 const root = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'public', 'client.html'), 'utf8');
@@ -733,7 +734,9 @@ test('duo : refus, liste vide, erreur réseau et erreur du serveur à l’envoi'
   assert.equal(page.sheetOpen(), false);
   mode = 'alone';
   await page.tap('catalogContent', '[data-song-index="0"]');
-  assert.deepEqual(page.toast(), { text: 'Aucun partenaire disponible pour un duo.', bad: true, warn: false, hidden: false });
+  // Personne d'autre : la fiche le dit elle-même, sans toast d'erreur par-dessus.
+  assert.notEqual(page.toast().text, 'Aucun partenaire disponible pour un duo.');
+  assert.equal(page.find('sheetPanel', '[data-duo-alone]').textContent, 'Aucun partenaire disponible pour l’instant.');
   mode = 'ok';
   await page.tap('catalogContent', '[data-song-index="0"]');
   await page.change('duoPartner', 'zoe');
@@ -745,7 +748,8 @@ test('duo : refus, liste vide, erreur réseau et erreur du serveur à l’envoi'
   const english = await open({ languages: ['en'], respond: url => url.startsWith('/api/duo/partners?') ? [partners[0]] : undefined });
   await english.tap('peopleList', '[data-duet-song="alice"]');
   await pickCatalogSong(english);
-  assert.equal(english.toast().text, 'No one available for a duet.');
+  assert.equal(english.toast().hidden, true);
+  assert.equal(english.find('sheetPanel', '[data-duo-alone]').textContent, 'No one is available for a duet yet.');
 });
 
 test('duo depuis la fiche du titre : chanteur choisi parmi plusieurs, « Chanter en duo »', async () => {
@@ -4825,13 +4829,56 @@ test('duo ouvert : un volontaire déjà invité d’un duo apprend que celui-ci 
   assert.equal(english.toast().text, 'Duet added with Léa. Alice already has 1 duet planned. Nobody goes on stage more than twice per round: this duet may wait for the next round.');
 });
 
-test('duo ouvert : en « Duos uniquement », « Chercher un duo » prévient d’abord que le titre ne repassera pas en solo', async () => {
+// Regression: relecture (passe 4) — « Chercher un duo » et « Fermer la
+// demande » portaient un aria-label aux mots différents (« Chercher un
+// partenaire de duo pour … », « Ne plus chercher de partenaire pour … ») :
+// « Touchez Chercher un duo » de la commande vocale ne trouvait rien (WCAG
+// 2.5.3, l'étiquette visible dans le nom accessible). Chaque bouton à texte
+// d'un titre de « Ma table » a un nom accessible qui commence par ce texte.
+test('Ma table : le nom accessible des boutons à texte d’un titre commence par leur texte visible, en français et en anglais', async () => {
+  const state = baseState();
+  state.tablePeople[0].songs = [{ entryId: 'e1', songId: 1, title: 'Mon titre', artist: 'Moi', duet: { state: 'open', kind: 'duo' } },
+    { entryId: 'e2', songId: 2, title: 'Second', artist: 'Moi', duet: { state: 'pending', kind: 'duo', partnerName: 'Max', seen: true } }];
+  const other = baseState();
+  other.tablePeople[0].songs.push({ entryId: 'e2', songId: 2, title: 'Second', artist: 'Moi' });
+  for (const languages of [['fr'], ['en']]) {
+    const seen = [];
+    for (const one of [state, other]) {
+      const page = await open({ state: structuredClone(one), languages });
+      for (const button of page.node('peopleList').querySelectorAll('.song-actions button')) {
+        const text = button.textContent.trim();
+        if (!/\p{L}/u.test(text)) continue;
+        const name = button.getAttribute('aria-label') ?? text;
+        seen.push(text);
+        assert.ok(name.toLocaleLowerCase().startsWith(text.toLocaleLowerCase()), `${languages[0]} : « ${text} » au début de « ${name} »`);
+      }
+    }
+    assert.deepEqual([...new Set(seen)].sort(), languages[0] === 'fr' ? ['Annuler duo', 'Chercher un duo', 'Fermer la demande']
+      : ['Cancel duet', 'Close the request', 'Find a duet'], `${languages[0]} : boutons vérifiés`);
+  }
+});
+
+// Regression: relecture (passe 4) — la mise en garde disait « Il ne pourra
+// plus repasser en solo, seulement être retiré » ; or un volontaire d'une
+// autre table qui rejoint le duo puis s'en retire le fait partir en solo
+// (comportement voulu par la spec du duo ouvert, leaveDuet). Le texte dit
+// les deux, et l'ordonnanceur fait bien ce qu'il annonce.
+test('duo ouvert : en « Duos uniquement », « Chercher un duo » prévient d’abord : ce téléphone ne le repasse plus en solo, un partenaire qui le quitte le fait partir en solo', async () => {
+  const sched = new Scheduler();
+  sched.duoOnlyRule = () => true;
+  const zoe = sched.join({ tableId: '1', name: 'Zoé', headcount: 1 });
+  const gil = sched.join({ tableId: '2', name: 'Gil', headcount: 1 });
+  const song = sched.openDuet(zoe, { song: { songId: 1001, title: 'Tube', artist: 'Groupe' } });
+  assert.equal(sched.select(), null, 'sans partenaire, le titre attend');
+  sched.acceptOpenDuet(gil, zoe.id, song.entryId);
+  sched.leaveDuet(gil, zoe.id, song.entryId);
+  assert.deepEqual(sched.select()?.ids, [zoe.id], 'rejoint puis quitté par une autre table : il part en solo');
   const page = await open({ state: baseState({ rules: { duoOnly: true } }), respond: url => url === '/api/table/duet/open' ? { ok: true } : undefined });
   await page.tap('peopleList', '[data-duet-open="e1"]');
   assert.ok(!page.posts.some(([url]) => url === '/api/table/duet/open'), 'rien n’est envoyé avant la réponse');
   assert.equal(page.node('attentionTitle').textContent, 'Chercher un duo pour « Mon titre »\u00a0?');
   assert.equal(page.node('attentionText').textContent,
-    'Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Il ne pourra plus repasser en solo, seulement être retiré.');
+    'Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Ce téléphone ne pourra plus le repasser en solo, seulement le retirer ; si un partenaire le rejoint puis le quitte, il partira en solo.');
   await page.tap('attentionChoices', '[data-attn="cancel"]');
   assert.ok(!page.posts.some(([url]) => url === '/api/table/duet/open'), 'annulé : rien d’envoyé');
   await page.tap('peopleList', '[data-duet-open="e1"]');
@@ -4843,7 +4890,8 @@ test('duo ouvert : en « Duos uniquement », « Chercher un duo » prévient d�
   const english = await open({ state: baseState({ rules: { duoOnly: true } }), languages: ['en'] });
   await english.tap('peopleList', '[data-duet-open="e1"]');
   assert.equal(english.node('attentionTitle').textContent, 'Find a duet partner for “Mon titre”?');
-  assert.match(english.node('attentionText').textContent, /can’t go back to solo, only be removed\./);
+  assert.equal(english.node('attentionText').textContent,
+    'Tonight the bar only takes duets: this song will wait for a partner before it goes up. This phone can no longer switch it back to solo, only remove it; if a partner joins and then leaves, it will go up solo.');
 });
 
 test('duo ouvert : personne d’autre pour un duo (début de soirée), le titre peut quand même chercher un partenaire', async () => {
@@ -4852,8 +4900,12 @@ test('duo ouvert : personne d’autre pour un duo (début de soirée), le titre 
       : url === '/api/table/duet/open' ? { ok: true } : undefined });
   await page.tap('peopleList', '[data-duet-song="alice"]');
   await pickCatalogSong(page);
-  assert.deepEqual(page.toast(), { text: 'Aucun partenaire disponible pour un duo.', bad: true, warn: false, hidden: false });
+  // Regression: relecture (passe 4) — un toast d'erreur rouge se posait sur la
+  // fiche et cachait son titre et son explication pendant 4 s : la fiche dit
+  // elle-même qu'il n'y a personne (client-open-duo-layout.test.js mesure).
+  assert.equal(page.toast().hidden, true, 'pas de toast d’erreur par-dessus la fiche');
   assert.equal(page.sheetOpen(), true, 'et une fiche plutôt qu’un simple refus');
+  assert.equal(page.find('sheetPanel', '[data-duo-alone]').textContent, 'Aucun partenaire disponible pour l’instant.');
   assert.match(page.sheetHtml(), /Ce soir, le bar ne prend que des duos : ce titre attend un partenaire pour passer\./);
   assert.equal(page.node('openDuetInstead').textContent, 'Qui veut chanter en duo avec moi\u00a0?');
   await page.click(page.node('openDuetInstead'));

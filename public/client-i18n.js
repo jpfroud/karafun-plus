@@ -225,7 +225,7 @@ window.CLIENT_TRANSLATIONS = {
       'cette chanson': 'this song',
       'Changer l’ordre de {title}': 'Change the order of {title}',
       'Ordre': 'Order',
-      'Annuler le duo sur {title}': 'Cancel the duet on {title}',
+      'Annuler duo sur {title}': 'Cancel duet on {title}',
       'Annuler duo': 'Cancel duet',
       'Retirer {title}': 'Remove {title}',
       'Retirer': 'Remove',
@@ -469,6 +469,7 @@ window.CLIENT_TRANSLATIONS = {
 
       // Duos
       'Aucun partenaire disponible pour un duo.': 'No one available for a duet.',
+      'Aucun partenaire disponible pour l’instant.': 'No one is available for a duet yet.',
       'Duo sur « {title} »': 'Duet on “{title}”',
       '{name} utilise son tour ; son partenaire garde ses propres chansons pour un prochain passage. Personne ne monte sur scène plus de deux fois par tour.':
         '{name} uses their turn; their partner keeps their own songs for a later turn. Nobody goes on stage more than twice per round.',
@@ -598,13 +599,13 @@ window.CLIENT_TRANSLATIONS = {
       'Sans partenaire avant ton tour, tu chanteras seul.': 'Without a partner before your turn, you’ll sing solo.',
       'Sans partenaire avant son tour, {name} chantera seul.': 'Without a partner before their turn, {name} will sing solo.',
       'Chercher un duo': 'Find a duet',
-      'Chercher un partenaire de duo pour {title}': 'Find a duet partner for {title}',
+      'Chercher un duo pour {title}': 'Find a duet for {title}',
       'Fermer la demande': 'Close the request',
-      'Ne plus chercher de partenaire pour {title}': 'Stop looking for a partner for {title}',
+      'Fermer la demande de duo pour {title}': 'Close the request for {title}',
       'Demande fermée : le titre reste en solo.': 'Request closed: the song stays solo.',
       'Chercher un duo pour « {title} » ?': 'Find a duet partner for “{title}”?',
-      'Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Il ne pourra plus repasser en solo, seulement être retiré.':
-        'Tonight the bar only takes duets: this song will wait for a partner before it goes up. It can’t go back to solo, only be removed.',
+      'Ce soir, le bar ne prend que des duos : ce titre attendra un partenaire pour passer. Ce téléphone ne pourra plus le repasser en solo, seulement le retirer ; si un partenaire le rejoint puis le quitte, il partira en solo.':
+        'Tonight the bar only takes duets: this song will wait for a partner before it goes up. This phone can no longer switch it back to solo, only remove it; if a partner joins and then leaves, it will go up solo.',
       'Oui, chercher un duo': 'Yes, find a duet',
       '{name} rejoint {person} en duo sur « {title} ».': '{name} joins {person} for a duet on “{title}”.',
       'Personne n’a rejoint le duo de {person} sur « {title} » : {person} le chante en solo.': 'Nobody joined {person}’s duet on “{title}”: {person} sings it solo.',
