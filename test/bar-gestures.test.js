@@ -748,7 +748,8 @@ test('seul geste du bar, invitée d’un duo chargé qui n’a pas chanté : sa 
 // qui ne le chante plus (« Je ne chante plus ce duo », ou « Chanter seul » de
 // l'auteur) ne monte pas sur scène : sa propre ligne gardée, sortie de
 // l'ordre fixé pour ce duo, revient. Gil, gardé devant Elsa, passait derrière
-// elle. Marquée partie par le bar, rien ne revient.
+// elle. Marquée partie par le bar, sa ligne ne revient pas (celles des autres
+// personnes sorties pour ce duo, si : test suivant).
 test('duo formé sur une ligne gardée, chargé dans KaraFun, que l’invitée ne chante plus : sa ligne revient', () => {
   for (const by of ['guest', 'owner', 'staff']) {
     const { s, people } = evening();
@@ -789,6 +790,40 @@ test('duo formé sur une ligne gardée, chargé dans KaraFun, que l’invitée n
     assert.deepEqual(s.manualChanges.map(change => change.name), ['Elsa']);
     assert.deepEqual(fixed(s), sent ? ['Maud', 'Gil', 'Elsa'] : ['Paulo', 'Maud', 'Gil', 'Elsa'],
       `${sent ? 'duo chargé' : 'avant l’envoi'} : Gil garde sa place devant Elsa`);
+  }
+});
+
+// Relecture (passe 6) : le reçu `unpinned` d'un duo tient aussi les lignes
+// d'autres personnes, sorties de l'ordre fixé seulement parce que l'invitée y
+// chantait. Gil, invité de Hugo (ligne gardée devant Elsa) puis du duo ouvert
+// de Paulo : la ligne de Hugo sort pour le duo de Paulo. Le bar marque Gil
+// parti : avant l'envoi, la ligne de Hugo revient ; duo chargé, en train de
+// sortir de KaraFun ou envoi sans accusé (keepSentDuosOfLeavers), elle était
+// perdue et Hugo passait derrière Elsa. Seule la ligne de Gil, qui part, ne
+// revient pas.
+test('invitée marquée partie, duo chargé ou en cours d’envoi : la ligne gardée d’une autre personne, sortie pour ce duo, revient', () => {
+  for (const when of ['avant l’envoi', 'chargé', 'pendant l’envoi']) {
+    const { s, people } = evening();
+    gesture(s, people.Elsa, 4); // Paulo, Maud, Gil, Hugo, Elsa
+    const hugoDuo = s.inviteDuet(people.Hugo, people.Gil.id, song());
+    s.reorderSongs(people.Hugo, hugoDuo.entryId, 0);
+    s.answerDuet(people.Gil, true, hugoDuo.entryId);
+    assert.deepEqual(fixed(s), ['Paulo', 'Maud', 'Hugo', 'Elsa'], `${when} : Gil monte sur scène avec Hugo`);
+    s.openDuet(people.Paulo, { entryId: people.Paulo.song.entryId });
+    s.acceptOpenDuet(people.Gil, people.Paulo.id, people.Paulo.song.entryId);
+    assert.deepEqual(fixed(s), ['Paulo', 'Maud', 'Elsa'], `${when} : Gil chante d’abord avec Paulo`);
+    const sel = when === 'avant l’envoi' ? null : s.select();
+    if (sel) assert.equal(label(s, sel), 'Paulo & Gil', when);
+    if (when === 'chargé') {
+      s.commit(sel);
+      s.leaveSentDuet(sel, people.Gil.id, { by: 'staff' });
+    } else if (sel) s.leaveSentDuet(sel, people.Gil.id, { by: 'staff', keepLabel: true });
+    s.leave(people.Gil, 'staff');
+    if (when === 'pendant l’envoi') s.commit(sel);
+    assert.deepEqual(fixed(s).filter(name => name !== 'Paulo'), ['Maud', 'Hugo', 'Elsa'], `${when} : Hugo reprend sa place devant Elsa`);
+    assert.ok(!s.manualOrder.includes(people.Gil.id), `${when} : la ligne de Gil, partie, ne revient pas`);
+    if (sel) s.songEnded(sel.ids); // Paulo a chanté seul
+    assert.deepEqual(playNames(s, 3), when === 'avant l’envoi' ? ['Paulo', 'Maud', 'Hugo'] : ['Maud', 'Hugo', 'Elsa'], when);
   }
 });
 
