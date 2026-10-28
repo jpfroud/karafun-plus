@@ -191,6 +191,155 @@ test('report « Pas prêt » remis par une annulation du bar ou un passage non c
   }
 });
 
+// Relecture (passe 6, sens inverse) : un report « Pas prêt » remis depuis un
+// état gardé n'attendait pas l'invité qui avait rejoint le duo pendant qu'il
+// était levé, alors qu'une acceptation pendant le report l'y ajoute
+// (answerDuet, acceptOpenDuet). Son propre titre passait juste avant le duo
+// (Gil chantait deux fois de suite), et son téléphone ne pouvait ni lever ni
+// prolonger le report du duo qu'il chante. Après une « Priorité » avec
+// retrait, le titre retiré de Gil, annoncé juste après elle, attendait ensuite
+// derrière ce report : quelqu'un d'autre partait à sa place.
+test('report « Pas prêt » remis après un duo formé pendant qu’il était levé : il attend l’invité, qui ne chante pas deux fois de suite', async t => {
+  for (const origin of ['duo ouvert', 'invitation']) {
+    for (const path of ['priorité avant le titre chargé', 'absent à l’appel', 'annulation du bar']) await t.test(`${origin}, ${path}`, () => {
+      const label = `${origin}, ${path}`;
+      const s = new Scheduler();
+      s._event = () => {};
+      const names = ids => ids.map(pid => s.people.get(pid).name);
+      const shown = () => s.presenceView().filter(v => !v.future).map(v => names(v.ids).join(' & '));
+      const join = (table, name) => s.join({ tableId: table, name, headcount: 1 });
+      const ines = join('1', 'Inès'), gil = join('2', 'Gil'), maud = join('3', 'Maud'), hugo = join('4', 'Hugo');
+      const duo = origin === 'duo ouvert' ? s.openDuet(ines, { song: song(1, 'Un') }) : s.inviteDuet(ines, gil.id, song(1, 'Un'));
+      [gil, maud, hugo].forEach((p, i) => s.chooseSong(p, song(10 + i, `Titre de ${p.name}`)));
+      s.deferPassage(ines.id, s.presenceView().find(v => v.ids[0] === ines.id), 1);
+      let restore;
+      if (path === 'annulation du bar') {
+        const before = s.manualOverrideState({ deferrals: true });
+        s.staffMove(ines.id, 2);
+        const change = s.recordManualChange({ kind: 'move', personId: ines.id, name: 'Inès', from: 2, to: 3, before, native: 'n' });
+        restore = () => s.undoLastManualChange(change.id, 'n');
+      } else {
+        // Le titre de Gil part vers KaraFun : son envoi lève le report d'Inès.
+        const sel = s.select();
+        assert.deepEqual(names(sel.ids), ['Gil'], `${label} : Gil passe d’abord`);
+        s.commit(sel);
+        restore = path === 'absent à l’appel' ? () => {
+          // Comme restore() de server.js : le titre revient, le ticket prend la 4e place.
+          s.rollbackUnplayed(sel);
+          s.putBackFirst(gil, sel.song);
+          s.Q.splice(s.Q.indexOf(gil.id), 1);
+          s.Q.splice(Math.min(3, s.Q.length), 0, gil.id);
+        } : () => {
+          // « Priorité » de Hugo avant le titre chargé (restorePulled).
+          const before = s.manualOverrideState({ deferrals: true });
+          s.staffMove(hugo.id, 0);
+          s.recordManualChange({ kind: 'priority', personId: hugo.id, name: 'Hugo', from: 3, to: 1, before, native: 'n' });
+          s.requeueUnplayed(sel);
+          assert.equal(s.yieldToPriority(sel, hugo.id)?.afterPriority, true, `${label} : le titre de Gil attend la priorité`);
+        };
+      }
+      assert.equal(ines.deferral, null, `${label} : le report d’Inès est levé`);
+      if (origin === 'duo ouvert') s.acceptOpenDuet(gil, ines.id, duo.entryId);
+      else s.answerDuet(gil, true, duo.entryId);
+      restore();
+      assert.ok(s.isDeferred(ines), `${label} : le report d’Inès revient`);
+      assert.deepEqual(names(ines.deferral.ids), ['Inès', 'Gil'], `${label} : le report revenu attend aussi Gil`);
+      assert.equal(s.deferralFor(gil.id)?.ownerId, ines.id, `${label} : le téléphone de Gil voit le report du duo`);
+      const announced = shown();
+      const sends = [];
+      for (let i = 0; i < 4; i++) {
+        const sel = s.select();
+        assert.ok(sel, `${label} : un passage part (${JSON.stringify(sends)})`);
+        sends.push(names(sel.ids).join(' & '));
+        s.commit(sel);
+        s.songEnded(sel.ids);
+      }
+      assert.deepEqual(sends, announced.slice(0, 4), `${label} : les passages suivent la file annoncée`);
+      for (let i = 1; i < sends.length; i++) {
+        const twice = sends[i].split(' & ').find(name => sends[i - 1].split(' & ').includes(name));
+        assert.equal(twice, undefined, `${label} : personne ne chante deux fois de suite (${sends.join(', ')})`);
+      }
+      if (path === 'priorité avant le titre chargé') assert.deepEqual(sends.slice(0, 2), ['Hugo', 'Gil'], `${label} : la priorité, puis le titre retiré pour elle`);
+    });
+  }
+});
+
+// Même règle pour une demande de duo acceptée pendant le report (relecture,
+// passe 6) : seules l'invitation et le duo ouvert y ajoutaient l'invité ; le
+// solo du demandeur passait juste avant le duo, et son téléphone ne voyait
+// pas le report.
+test('demande de duo acceptée pendant un « Pas prêt » : le report attend aussi le demandeur', async t => {
+  for (const how of ['autre table', 'même table']) await t.test(how, () => {
+    const s = new Scheduler();
+    s._event = () => {};
+    s.setHeadcount('1', 2);
+    const names = ids => ids.map(pid => s.people.get(pid).name).join(' & ');
+    const zoe = s.join({ tableId: '1', name: 'Zoé' }), max = s.join({ tableId: '1', name: 'Max' });
+    const nina = s.join({ tableId: '2', name: 'Nina', headcount: 1 }), gus = s.join({ tableId: '3', name: 'Gus', headcount: 1 });
+    s.chooseSong(zoe, song(1, 'Un'));
+    [max, nina, gus].forEach((p, i) => s.chooseSong(p, song(10 + i, `Titre de ${p.name}`)));
+    s.deferPassage(zoe.id, s.presenceView().find(v => v.ids[0] === zoe.id), 1);
+    const guest = how === 'même table' ? max : nina;
+    const asked = s.requestDuetJoin(guest, zoe.id, zoe.song.entryId);
+    assert.equal(asked.direct, how === 'même table', how);
+    if (!asked.direct) s.answerDuetJoin(zoe, zoe.song.entryId, guest.id, true);
+    assert.deepEqual(zoe.deferral.ids, [zoe.id, guest.id], `${how} : le report attend aussi ${guest.name}`);
+    assert.equal(s.deferralFor(guest.id)?.ownerId, zoe.id, `${how} : son téléphone voit le report du duo`);
+    const sends = [];
+    for (let i = 0; i < 4; i++) {
+      const sel = s.select({ stageFree: true });
+      sends.push(names(sel.ids));
+      s.commit(sel);
+      s.songEnded(sel.ids);
+    }
+    const duo = sends.indexOf(`Zoé & ${guest.name}`);
+    assert.ok(duo > 0, `${how} : le duo passe après le report (${sends.join(', ')})`);
+    assert.notEqual(sends[duo - 1], guest.name, `${how} : ${guest.name} ne chante pas son titre juste avant le duo (${sends.join(', ')})`);
+  });
+});
+
+// Même cellule, plus petite (relecture, passe 6) : trois tables, le report
+// remis après l'annulation du déplacement ou le passage non chanté attend
+// l'invité accepté pendant qu'il était levé, comme une acceptation pendant
+// le report (duo-invite-expiry.test.js) : Nina, puis le duo, puis Max.
+test('report remis par une annulation du bar ou un passage non chanté : il attend l’invité accepté pendant qu’il était levé', async t => {
+  for (const origin of ['invitation', 'duo ouvert']) {
+    for (const path of ['annulation du déplacement', 'passage non chanté']) await t.test(`${origin}, ${path}`, () => {
+      const s = new Scheduler();
+      s._event = () => {};
+      const join = (table, name) => s.join({ tableId: table, name, headcount: 2 });
+      const zoe = join('1', 'Zoé'), max = join('2', 'Max'), nina = join('3', 'Nina');
+      const duo = origin === 'invitation' ? s.inviteDuet(zoe, max.id, song(1, 'Un')) : s.openDuet(zoe, { song: song(1, 'Un') });
+      s.chooseSong(max, song(2, 'Solo de Max'));
+      s.chooseSong(nina, song(3, 'Solo de Nina'));
+      s.deferPassage(zoe.id, s.presenceView()[0], 1);
+      let restore;
+      if (path === 'passage non chanté') {
+        const sel = s.select();
+        s.commit(sel);
+        restore = () => s.requeueUnplayed(sel);
+      } else {
+        const before = s.manualOverrideState({ deferrals: true });
+        s.staffMove(zoe.id, 1);
+        const change = s.recordManualChange({ kind: 'move', personId: zoe.id, name: 'Zoé', from: 1, to: 2, before, native: 'n' });
+        restore = () => s.undoLastManualChange(change.id, 'n');
+      }
+      assert.equal(zoe.deferral, null);
+      if (origin === 'invitation') s.answerDuet(max, true, duo.entryId);
+      else s.acceptOpenDuet(max, zoe.id, duo.entryId);
+      restore();
+      assert.deepEqual(zoe.deferral.ids, [zoe.id, max.id]);
+      const order = [];
+      for (let i = 0; i < 3; i++) {
+        const sel = s.select();
+        order.push(sel.ids.map(pid => s.people.get(pid).name).join(' & '));
+        s.commit(sel);
+      }
+      assert.deepEqual(order, ['Nina', 'Zoé & Max', 'Max']);
+    });
+  }
+});
+
 // État de l'invitée tel que le duo l'a touché.
 function guestState(s, p) {
   return JSON.stringify({ apps: s.roundApps.get(p.id) || 0, round: s.roundPeople.has(p.id),

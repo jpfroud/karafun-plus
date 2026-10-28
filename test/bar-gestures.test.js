@@ -1534,6 +1534,86 @@ test('priorité avant un titre chargé qui avait levé le « Pas prêt » de la 
   }
 });
 
+// Relecture (passe 6) : même cas quand la personne sortie d'un « Pas prêt »
+// est l'invitée du duo que le bar met en priorité. Le report de son propre
+// titre revenait (seule la personne de la ligne placée comptait) : il
+// retenait le duo prioritaire, quelqu'un d'autre partait pendant que la
+// priorité restait annoncée, et le titre retiré pour elle perdait sa place.
+// Sans retrait aussi, quand le titre chargé revient (absente à l'appel).
+test('priorité sur un duo dont l’invité sortait d’un « Pas prêt » : le duo passe d’abord, le titre retiré juste après', async t => {
+  for (const how of ['retiré pour la priorité', 'absente à l’appel']) await t.test(how, () => {
+    const { s, people } = evening();
+    const { Karim, Hugo } = people;
+    const duo = s.inviteDuet(Karim, Hugo.id, song());
+    s.reorderSongs(Karim, duo.entryId, 0);
+    s.answerDuet(Hugo, true, duo.entryId);
+    const stage = s.select(); s.commit(stage); // Paulo sur scène
+    s.deferPassage(Hugo.id, { entryId: Hugo.song.entryId, ids: [Hugo.id] }, 1);
+    const loaded = s.select(); s.commit(loaded);
+    assert.equal(label(s, loaded), 'Maud', `${how} : Maud chargée dans KaraFun`);
+    assert.equal(s.reservedNext?.personId, Hugo.id, `${how} : l’envoi de Maud lève le report de Hugo`);
+    gesture(s, Karim, 0, stage.ids);
+    if (how === 'retiré pour la priorité') assert.equal(pulledBack(s, loaded, Karim.id)?.afterPriority, true, how);
+    else { s.rollbackUnplayed(loaded); s.putBackFirst(people.Maud, loaded.song); }
+    assert.equal(s.isDeferred(Hugo), false, `${how} : le report levé de l’invité ne revient pas`);
+    assert.equal(s.deferralFor(Hugo.id), null, how);
+    assert.deepEqual(names(s, stage.ids).slice(0, 2), ['Karim & Hugo', 'Maud'], `${how} : annonce`);
+    s.songEnded(stage.ids);
+    assert.deepEqual(playNames(s, 2), ['Karim & Hugo', 'Maud'], how);
+  });
+});
+
+// Relecture (passe 6, équipe rouge) : une « Priorité » du bar sur un duo
+// dont l'invitée est retenue par un report ne partait jamais. Son titre
+// retiré de KaraFun pour cette priorité (elle la rejoint ensuite en duo), ou
+// son propre « Pas prêt » : quelqu'un d'autre partait à chaque passage
+// pendant que toute la salle voyait la priorité comme prochain confirmé,
+// jusqu'à l'échéance de sécurité du report. Le geste du bar l'emporte, comme
+// sur le « Pas prêt » de la personne placée (staffMove) : le duo prioritaire
+// part, et la file annoncée le dit.
+test('priorité sur un duo dont l’invitée est retenue par un report : le duo part d’abord, comme annoncé', async t => {
+  const cases = ['titre retiré, duo ouvert rejoint', 'titre retiré, demande de duo acceptée', '« Pas prêt », duo ouvert rejoint',
+    '« Pas prêt », présence obligatoire'];
+  for (const how of cases) await t.test(how, () => {
+    const presence = how.endsWith('présence obligatoire');
+    const ctx = presence ? evening({ requirePresence: true }) : evening();
+    const { s, people } = ctx;
+    const { Karim, Maud } = people;
+    const confirmAll = () => { if (presence) for (const p of Object.values(people)) s.confirm(p); };
+    confirmAll();
+    const stage = s.select(); s.commit(stage); // Paulo sur scène
+    if (how.startsWith('titre retiré')) {
+      const loaded = s.select(); s.commit(loaded); // Maud chargée dans KaraFun
+      gesture(s, Karim, 0, stage.ids);
+      assert.equal(pulledBack(s, loaded, Karim.id)?.afterPriority, true, how);
+    } else {
+      s.deferPassage(Maud.id, { entryId: Maud.song.entryId, ids: [Maud.id] }, 2);
+      gesture(s, Karim, 0, stage.ids);
+    }
+    assert.ok(s.isDeferred(Maud), `${how} : Maud est retenue par un report`);
+    if (how.includes('demande de duo')) {
+      s.requestDuetJoin(Maud, Karim.id, Karim.song.entryId);
+      s.answerDuetJoin(Karim, Karim.song.entryId, Maud.id, true);
+    } else {
+      s.openDuet(Karim, { entryId: Karim.song.entryId });
+      s.acceptOpenDuet(Maud, Karim.id, Karim.song.entryId);
+    }
+    assert.equal(s.reservedNext?.byStaff, true, `${how} : la priorité du bar tient`);
+    const announced = names(s, stage.ids).slice(0, 3);
+    assert.equal(announced[0], 'Karim & Maud', `${how} : la file annonce le duo prioritaire en premier`);
+    s.songEnded(stage.ids);
+    confirmAll();
+    const sends = [];
+    for (let k = 0; k < 3; k++) {
+      sends.push(label(s, play(s)));
+      confirmAll();
+    }
+    assert.deepEqual(sends, announced, `${how} : les passages suivent la file annoncée`);
+    assert.equal(sends[0], 'Karim & Maud', `${how} : le duo prioritaire part d’abord`);
+    assert.ok(!sends[1].split(' & ').includes('Maud'), `${how} : Maud ne rechante pas aussitôt (${sends.join(', ')})`);
+  });
+});
+
 // Relecture (passe 3, cellule sans test) : le bar déplace lui-même le titre
 // retiré pour une priorité. Son report prend fin (staffMove) sans compter
 // comme un « Pas prêt » au journal de soirée, et une annulation exacte du

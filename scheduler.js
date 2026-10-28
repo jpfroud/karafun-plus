@@ -348,17 +348,21 @@ class Scheduler {
   // bar (restoreManualOverride, _undoRebased) ou passage non chanté dont
   // l'envoi l'avait levé ou rapproché (rollbackUnplayed). Le titre reporté
   // est le titre en cours de son auteur (les appelants le vérifient). Le
-  // report n'attend que les personnes qui le chantent encore (_singsOnLine) :
-  // l'invitée d'un duo défait depuis (« Annuler duo », « Chanter seul », « Je
-  // ne chante plus ce duo », départ) en sort par la règle qui l'a retirée du
-  // report en cours (_dropDeferredGuest). Sinon son titre attendait de
-  // nouveau derrière ce report, et son téléphone pouvait le lever ou le
-  // prolonger (relecture, passe 6).
+  // report attend les personnes qui chantent ce titre maintenant
+  // (_singsOnLine), par les règles du report en cours : l'invitée d'un duo
+  // défait depuis (« Annuler duo », « Chanter seul », « Je ne chante plus ce
+  // duo », départ) en sort (_dropDeferredGuest), et celle qui a rejoint le
+  // duo pendant qu'il était levé y entre (_deferralWaitsFor). Sinon le titre
+  // de l'ex-invitée attendait de nouveau derrière ce report, que son
+  // téléphone pouvait lever ou prolonger ; celui de la nouvelle passait juste
+  // avant le duo, et son téléphone ne voyait pas le report (relecture,
+  // passe 6).
   _restoreDeferral(owner, deferral) {
     owner.deferral = { ...deferral };
     for (const pid of Array.isArray(deferral.ids) ? deferral.ids : []) {
       if (!this._singsOnLine(owner.id, pid)) this._dropDeferredGuest(owner, pid, deferral.entryId);
     }
+    this._deferralWaitsFor(owner, owner.song);
   }
 
   // Personnes montées sur scène hors de leur propre ligne (invitée d'un duo
