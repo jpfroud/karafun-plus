@@ -181,6 +181,37 @@ test('chacun son tour : un passage annulé ne remet pas dans le cycle une table 
   });
 });
 
+// Relecture (passe 4) : même règle quand l'invitée quitte un duo chargé qui
+// fermait le cycle (_dropPartnerCredit). Le cycle rouvert sans sa table
+// reprenait toutes les tables notées à la fermeture, table partie depuis
+// comprise : rouverte avec Nina, elle passait pour déjà servie, et Max, la
+// deuxième personne de la table A, chantait avant Nina.
+test('invitée qui quitte un duo chargé qui fermait le cycle : une table partie depuis n’y revient pas', () => withClock(tick => {
+  let n = 1;
+  const s = new Scheduler();
+  s.setHeadcount('A', 2); s.setHeadcount('B', 1); s.setHeadcount('C', 1);
+  const gus = s.join({ tableId: 'C', name: 'Gus' });
+  const ines = s.join({ tableId: 'A', name: 'Inès' }), max = s.join({ tableId: 'A', name: 'Max' });
+  const zoe = s.join({ tableId: 'B', name: 'Zoé' });
+  tick(); s.chooseSong(gus, song(n++));
+  tick(); const duo = s.inviteDuet(ines, zoe.id, song(n++));
+  tick(); s.chooseSong(max, song(n++));
+  tick(); s.chooseSong(zoe, song(n++));
+  s.answerDuet(zoe, true, duo.entryId);
+  assert.equal(sing(s), 'Gus');
+  tick();
+  const sel = s.select();
+  assert.deepEqual(sel.cycleClosing, ['C', 'A', 'B']);
+  s.commit(sel); // le duo Inès & Zoé ferme le cycle, chargé dans KaraFun
+  s.tableLeft('C');
+  s.leaveSentDuet(sel, zoe.id); // « Je ne chante plus ce duo »
+  assert.deepEqual([...s.firstCycle], ['A'], 'le cycle reste ouvert sans la table de Zoé ni la table partie');
+  const nina = s.join({ tableId: 'C', name: 'Nina', headcount: 1 });
+  tick(); s.chooseSong(nina, song(n++));
+  s.songEnded(sel.ids);
+  assert.deepEqual(order(s), ['Zoé', 'Nina', 'Max'], 'la table rouverte passe dans le cycle en cours');
+}));
+
 test('chacun son tour : une table qui arrive pendant l’envoi du passage qui ferme un cycle le rejoint encore', () => {
   withClock(tick => {
     const s = new Scheduler();

@@ -385,6 +385,26 @@ test('place cédée par la personne prioritaire : sa priorité tombe avec son ge
   assert.equal(s.reservedNext, null, '« Recalculer la file » ne laisse aucune priorité');
 });
 
+// Relecture (passe 4) : même règle quand le bar annule ensuite un geste plus
+// ancien hors de l'état exact (_undoRebased). Son état d'avant annonce la
+// personne prioritaire ; une priorité du bar n'en revient que si sa ligne est
+// encore fixée. Sinon Ines, qui a cédé sa place, repartait la prochaine, sans
+// geste à annuler.
+test('priorité puis déplacement, place cédée par la personne prioritaire, annulation du déplacement : aucune priorité sans geste', () => {
+  const { s, people } = evening();
+  s.setHeadcount('5', 2);
+  const bea = s.join({ tableId: '5', name: 'Bea' });
+  gesture(s, people.Ines, 0);
+  gesture(s, people.Elsa, 3); // son état d'avant annonce Ines, priorité du bar
+  s.giveSpot(people.Ines, bea.id);
+  assert.deepEqual(s.manualChanges.map(change => change.name), ['Elsa']);
+  s.chooseSong(people.Maud, song(), 'append'); // annulation hors de l'état exact
+  s.undoLastManualChange(null, NATIVE);
+  assert.deepEqual(s.manualChanges, []);
+  assert.notEqual(s.reservedNext?.byStaff, true, 'Ines a cédé sa place : sa priorité ne revient pas');
+  assert.notEqual(s.select().ids[0], people.Ines.id);
+});
+
 // Relecture (passe 3, cellule sans test) : giveSpot ne met fin qu'aux gestes
 // des deux personnes qui échangent leur place ; les autres gestes du bar restent.
 test('place cédée par une personne placée par le bar : son geste prend fin, les autres restent', () => {
@@ -860,6 +880,35 @@ test('gestes abandonnés par le bar : un geste terminé par un duo ne revient pl
         assert.ok(!t.log.some(line => /n’a finalement pas chanté/.test(line.msg)));
       }
     }
+  }
+});
+
+// Relecture (passe 4) : même règle pour les lignes qu'un duo a sorties de
+// l'ordre fixé (_guestLeft, `epoch`). Abandonnées avec tous les gestes, elles
+// ne reviennent pas quand l'invitée quitte ensuite le duo, avant son envoi ou
+// une fois chargé : sinon Gil, gardé par un geste abandonné, se plaçait
+// devant Hugo et Karim, placés par le bar depuis.
+test('duo sur une ligne gardée, « Recalculer la file » puis un nouveau geste : la ligne de l’invitée ne revient pas', () => {
+  for (const how of ['avant l’envoi', 'chargé dans KaraFun']) {
+    const { s, people } = evening();
+    gesture(s, people.Elsa, 3); // Paulo, Maud, Gil, Elsa
+    s.openDuet(people.Paulo, { entryId: people.Paulo.song.entryId });
+    s.acceptOpenDuet(people.Gil, people.Paulo.id, people.Paulo.song.entryId);
+    s.undoAllManualChanges(NATIVE);
+    gesture(s, people.Karim, 3);
+    assert.deepEqual(fixed(s), ['Paulo', 'Maud', 'Hugo', 'Karim'], how);
+    if (how === 'avant l’envoi') {
+      s.leaveDuet(people.Gil, people.Paulo.id, people.Paulo.song.entryId);
+      assert.deepEqual(fixed(s), ['Paulo', 'Maud', 'Hugo', 'Karim'], `${how} : abandonnée avec les gestes, Gil retrouve le calcul`);
+    } else {
+      const sel = s.select();
+      assert.equal(label(s, sel), 'Paulo & Gil');
+      s.commit(sel);
+      assert.deepEqual(fixed(s), ['Maud', 'Hugo', 'Karim'], how);
+      s.leaveSentDuet(sel, people.Gil.id, { by: 'guest' });
+      assert.deepEqual(fixed(s), ['Maud', 'Hugo', 'Karim'], `${how} : abandonnée avec les gestes, Gil retrouve le calcul`);
+    }
+    assert.deepEqual(s.manualChanges.map(change => change.name), ['Karim'], `${how} : les gestes ne changent pas`);
   }
 });
 
