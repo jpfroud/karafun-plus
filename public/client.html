@@ -1223,8 +1223,11 @@
     // navigateur (si permise). Rien pour un duo ouvert sur ce même téléphone
     // (il gère aussi son auteur), ni deux fois en cinq minutes pour le même
     // auteur : un titre retiré puis reproposé ne fait pas sonner toute la
-    // salle à chaque fois. Le bandeau, lui, s'affiche toujours (le plus
-    // récent devant, les autres derrière « +N »).
+    // salle à chaque fois. Le signal part même quand son bandeau reste replié
+    // derrière « +N » : deux messages passent avant lui (ce qui presse, puis
+    // ceux de ce téléphone), ou ce n'est pas le duo ouvert le plus récent.
+    // Premier arrivé, premier servi : le signal dit de regarder, et « +N »
+    // déplie le bandeau.
     const now = Date.now();
     return fresh.filter(info => {
       if (!info.open) return true;
