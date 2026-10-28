@@ -2392,6 +2392,35 @@ test('rejeu libre --gestes : un déplacement du bar refait à son heure, à la m
   assert.deepEqual(rejeu.parseArgs(['x.json', '--gestes']).gestures, true);
 });
 
+// Relecture Codex du 28 octobre : un « Annuler » du bar dont le geste n'a pas
+// pu être rejoué défaisait le dernier geste rejoué, celui de quelqu'un d'autre.
+test('rejeu libre --gestes : « Annuler » ne défait que le geste qu’il vise, s’il a été rejoué', async () => {
+  const plain = await rejeu.runFree(ev);
+  const target = plain.passages.slice().sort((a, b) => b.waitSec - a.waitSec)[0];
+  const t = target.readyAt + 10 * 60000;
+  // Quelqu'un qui n'est pas encore inscrit à l'heure du geste : sa « Priorité » n'est pas rejouée.
+  const latecomer = ev.raw.events.find(e => e.ev === 'person.joined' && e.t > t + 60000 && e.personId !== target.owner);
+  assert.ok(latecomer, 'une inscription après le geste');
+  const raw = structuredClone(ev.raw);
+  const at = adder(raw.events);
+  at(t, 'staff.move', { personId: target.owner, kind: 'move', from: 9, to: 2 });
+  at(t + 2000, 'staff.move', { personId: latecomer.personId, kind: 'priority', from: 3, to: 1 });
+  at(t + 4000, 'staff.undo', { changeId: 'reel-2', kind: 'priority', personId: latecomer.personId });
+  const kept = await rejeu.runFree(rejeu.loadEvening(raw), { gestures: true });
+  assert.deepEqual(kept.gestures, { 'staff.move': 1 }, 'ni la priorité ni son annulation ne sont rejouées');
+  assert.ok(kept.notes.some(n => / staff\.undo non rejoué : geste annulé non rejoué /.test(n + ' ')), kept.notes.join(' | '));
+  const sentAfter = kept.passages.filter(p => p.sentAt > t).sort((a, b) => a.sentAt - b.sentAt);
+  assert.equal(sentAfter[1]?.entryId, target.entryId, 'le déplacement rejoué reste en place');
+  // L'annulation de son propre geste, elle, est rejouée.
+  const own = structuredClone(ev.raw);
+  const at2 = adder(own.events);
+  at2(t, 'staff.move', { personId: target.owner, kind: 'move', from: 9, to: 2 });
+  at2(t + 4000, 'staff.undo', { changeId: 'reel-1', kind: 'move', personId: target.owner });
+  const undone = await rejeu.runFree(rejeu.loadEvening(own), { gestures: true });
+  assert.deepEqual(undone.gestures, { 'staff.move': 1, 'staff.undo': 1 });
+  assert.equal(undone.passages.find(p => p.entryId === target.entryId)?.waitSec, target.waitSec, 'attente d’avant le geste');
+});
+
 test('rejeu libre : demande acceptée d’une autre table, demande annulée, place cédée', async () => {
   const raw = structuredClone(ev.raw);
   const events = raw.events;

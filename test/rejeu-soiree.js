@@ -779,7 +779,7 @@ function makeContext(ev, opts) {
   // lue par l'ordonnanceur ; une version d'avant le duo ouvert l'ignore).
   s.duoOnlyRule = () => !!ctx.duoOnly;
   const ctx = { ev, s, rules, overrides, duoOnly: !!rules.duoOnly, key2pid: new Map(), pid2key: new Map(), real2rep: new Map(), rep2real: new Map(),
-    notes: [], ignored: {}, notReplayed: {}, gestures: opts.gestures ? {} : null,
+    notes: [], ignored: {}, notReplayed: {}, gestures: opts.gestures ? {} : null, barGestures: [],
     decisions: [], budget: opts.budget || SOLVER_TIME_MS, moves: 0, solver: null, jar: null,
     solverDir: null, code, warnings, plans: { asked: 0, ok: 0, failed: 0, lastError: null, ceiling: 0, retried: 0 }, unapplied: new Set(), aliases: new Map(), added: new Map(),
     requestedAt: new Map(ev.events.filter(e => e.ev === 'song.requested').map(e => [e.entryId, e.t])) };
@@ -995,18 +995,43 @@ function sentGesture(ctx, e, sel) {
 // routes du bar. L'ancienne version refuse ce que son code refusait.
 function replayGesture(ctx, e) {
   const s = ctx.s;
-  if (e.ev === 'staff.undo') return s.undoLastManualChange(null, REPLAY_NATIVE);
-  if (e.ev === 'staff.recalculate') return s.undoAllManualChanges(REPLAY_NATIVE);
+  if (e.ev === 'staff.undo') return undoGesture(ctx, e);
+  if (e.ev === 'staff.recalculate') {
+    ctx.barGestures.length = 0;
+    return s.undoAllManualChanges(REPLAY_NATIVE);
+  }
   const pid = ctx.key2pid.get(e.personId);
+  const kind = e.kind === 'priority' ? 'priority' : 'move';
+  // Noté même s'il n'est pas rejoué : son annulation ne doit pas en défaire un autre.
+  const gesture = { pid, kind, change: null };
+  ctx.barGestures.push(gesture);
   const visible = s.presenceView().filter(v => !v.future);
   const from = visible.findIndex(v => v.ids[0] === pid);
   if (from < 0) throw new Error('titre déjà parti ou absent dans le rejeu');
-  const to = e.kind === 'priority' ? 0 : Math.min(Math.max(0, (Number(e.to) || 1) - 1), visible.length - 1);
+  const to = kind === 'priority' ? 0 : Math.min(Math.max(0, (Number(e.to) || 1) - 1), visible.length - 1);
   if (to === from) throw new Error('titre déjà à cette place dans le rejeu');
   const before = s.manualOverrideState({ deferrals: true });
   s.staffMove(pid, to);
-  s.recordManualChange({ kind: e.kind === 'priority' ? 'priority' : 'move', personId: pid,
+  gesture.change = s.recordManualChange({ kind, personId: pid,
     name: s.people.get(pid)?.name || keyOf(ctx, pid), from: from + 1, to: to + 1, before, native: REPLAY_NATIVE });
+}
+
+// « Annuler » du bar : il vise le geste réel le plus récent encore en place,
+// de la personne et de la sorte que le journal donne ; les gestes réels plus
+// récents étaient donc déjà finis. Rejoué seulement si ce geste l'a été et
+// reste le plus récent du rejeu, sinon un autre geste serait défait.
+function undoGesture(ctx, e) {
+  const s = ctx.s;
+  const pid = e.personId == null ? undefined : ctx.key2pid.get(e.personId);
+  const kind = e.kind === 'priority' || e.kind === 'move' ? e.kind : null;
+  let at = ctx.barGestures.length - 1;
+  while (at >= 0 && ((pid !== undefined && ctx.barGestures[at].pid !== pid) || (kind && ctx.barGestures[at].kind !== kind))) at--;
+  if (at < 0) throw new Error('geste annulé absent du rejeu');
+  const { change } = ctx.barGestures[at];
+  ctx.barGestures.length = at;
+  if (!change) throw new Error('geste annulé non rejoué');
+  if (s.manualChanges?.at(-1) !== change) throw new Error('geste annulé déjà fini ou suivi d’un autre dans le rejeu');
+  return s.undoLastManualChange(change.id, REPLAY_NATIVE);
 }
 
 function applyExternal(ctx, e, upcoming) {
