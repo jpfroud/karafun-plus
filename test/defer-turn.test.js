@@ -548,4 +548,39 @@ test('scène libre, duo en tête retenu par un titre sauté et le « Pas prêt �
   const sel = s.select({ stageFree: true });
   assert.deepEqual(sel?.ids, shown.ids, 'le passage envoyé est celui que la file montre');
   assert.equal(dan.deferral?.remaining, 2, 'le « Pas prêt » de Dan tient');
+  assert.ok(s.log.some(l => l.msg === 'Personne d’autre ne peut chanter : Ana & Bob passent maintenant'), 'le journal du bar le dit, verbe au pluriel');
+});
+
+// Rien ne retient le passage en tête : le repli n'annonce personne et ne note
+// rien (sinon select() le rappelait sans fin).
+test('scène libre, passage en tête que rien ne retient : le repli ne lève rien et n’annonce personne', () => {
+  const s = new Scheduler({ requirePresence: true, solverEnabled: false });
+  const [ana, bob] = ['Ana', 'Bob'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  s.chooseSong(ana, song()); s.chooseSong(bob, song());
+  const logLen = s.log.length, version = s.version;
+  assert.equal(s.releaseAloneDeferral(), null);
+  assert.equal(s.reservedNext, null, 'personne n’est annoncé');
+  assert.equal(s.log.length, logLen, 'rien au journal');
+  assert.equal(s.version, version);
+});
+
+// Relecture (passe 12, rejeu aléatoire) : le « Pas prêt » suit son titre. Bob
+// a réordonné sa liste après son « Pas prêt », puis le bar retire le titre
+// qu'il avait mis devant : le titre reporté redevient son titre en cours, et
+// son report avec. Annoncé et retenu à la fois, il restait le prochain
+// annoncé pour la file et les téléphones jusqu'au balayage suivant.
+test('titre reporté redevenu le titre en cours de la personne annoncée : l’annonce est libérée', () => {
+  const s = new Scheduler({ solverEnabled: false });
+  const [ana, bob, cid] = ['Ana', 'Bob', 'Cid'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  s.chooseSong(ana, song()); s.chooseSong(bob, song()); s.chooseSong(cid, song());
+  s.chooseSong(bob, song(), 'append');
+  const stage = s.select(); s.commit(stage);
+  s.deferPassage(bob.id, s.presenceView(stage.ids).find(v => !v.future && v.ids[0] === bob.id), 1);
+  s.reorderSongs(bob, bob.backlog[0].entryId, 0);
+  assert.equal(s.isDeferred(bob), false, 'son titre en cours n’est plus celui du report');
+  s.reserveNext();
+  assert.equal(s.reservedNext?.personId, bob.id);
+  s.staffRemove(bob.id);
+  assert.equal(s.isDeferred(bob), true, 'le titre reporté redevient son titre en cours');
+  assert.notEqual(s.reservedNext?.personId, bob.id, 'retenu par son report, Bob n’est plus annoncé');
 });

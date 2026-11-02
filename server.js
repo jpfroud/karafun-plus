@@ -4486,10 +4486,18 @@ function clearQueue() {
   // avoir été chanté rend alors sa part (rollbackUnplayed compare à ce reçu).
   // Leur roundOwed reste tel quel : un passage dû, retiré sans être chanté,
   // redevient dû malgré le vidage.
+  // Le cycle des premiers passages repart de zéro, lui aussi dans ces reçus
+  // et dans le cycle noté au choix de ces titres : sinon un titre qui
+  // fermait le cycle, retiré sans être chanté, rendait le cycle d'avant le
+  // vidage, et sa table passait devant les autres (relecture, passe 12).
   for (const sel of [...tracked.map(tr => tr.sel), pending?.sel]) {
-    const credit = sel?.turnCredit;
+    if (!sel) continue;
+    if (Array.isArray(sel.firstCycle)) sel.firstCycle = [];
+    if (Array.isArray(sel.cycleClosing)) sel.cycleClosing = [];
+    const credit = sel.turnCredit;
     if (!credit || credit.rolledBack) continue;
     for (const state of [credit.before, credit.after]) {
+      if (Array.isArray(state?.firstCycle)) state.firstCycle = [];
       if (!Array.isArray(state?.roundPeople) || !Array.isArray(state.roundUse)) continue;
       const people = new Set(state.roundPeople), use = new Map(state.roundUse), apps = new Map(state.roundApps || []);
       sched._resetRound(people, use, apps);
@@ -5291,6 +5299,7 @@ const handlers = {
       return { ok: true, changed: false, message: 'Ce titre est déjà à cette place.' };
     }
     const name = visible[from]?.name || sched.people.get(personId)?.name || 'ce chanteur';
+    const passes = (visible[from]?.ids?.length || 1) > 1 ? 'passent' : 'passe'; // un duo : « Ana & Bob passent »
     // Le geste est noté avant sync() : un passage confirmé par KaraFun
     // pendant ce balayage fait avancer la ligne placée sans l'effacer. Il
     // reste annulable après tout autre changement de la file.
@@ -5315,13 +5324,13 @@ const handlers = {
       ...(pull ? { pulledEntryId: pull.sel.song.entryId || null } : {}) });
     if (pull) {
       return { ok: true, firstFreePosition: 1, pulled: { queueId: pull.queueId, title: pull.sel.song.title },
-        message: `« ${pull.sel.song.title} » sort de KaraFun : ${name} passe d’abord, « ${pull.sel.song.title} » juste après.` };
+        message: `« ${pull.sel.song.title} » sort de KaraFun : ${name} ${passes} d’abord, « ${pull.sel.song.title} » juste après.` };
     }
     // Sans retrait, la priorité passe juste après notre titre déjà chargé.
     const loaded = priority && nativeAhead === 1 && !pending ? tracked.find(tr => !tr.startedAt && !tr.pulled && !tr.cancelled &&
       String(tr.queueId) === String(analyze().upcoming[0]?.queueId)) : null;
     return { ok: true, firstFreePosition: nativeAhead + 1,
-      message: loaded ? `${name} passe juste après « ${loaded.sel.song.title} », déjà chargé dans KaraFun.` :
+      message: loaded ? `${name} ${passes} juste après « ${loaded.sel.song.title} », déjà chargé dans KaraFun.` :
         priority && nativeAhead ?
         `Passage avancé à la première place libre, après ${nativeAhead} titre${nativeAhead > 1 ? 's' : ''} déjà chargé${nativeAhead > 1 ? 's' : ''} dans KaraFun.` : null };
   },

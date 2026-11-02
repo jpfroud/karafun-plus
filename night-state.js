@@ -241,6 +241,8 @@ function snapshotNight({ scheduler, access, settings, pending = null, tracked = 
       roundApps: [...(scheduler.roundApps || new Map())],
       roundOwed: [...(scheduler.roundOwed || new Set())],
       firstCycle: [...(scheduler.firstCycle || new Set())],
+      departureSerial: scheduler.departureSerial || 0,
+      groupDepartures: [...(scheduler.groupDepartures || new Map())],
       unstartedTurn: scheduler.unstartedTurn || 0,
       stageEnds: [...(scheduler.stageEnds || new Map())],
       stageHistory: clone(scheduler.stageHistory || []),
@@ -507,6 +509,12 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   // Tables déjà passées dans le cycle des premiers passages (absent d'une
   // sauvegarde d'avant ce champ : le cycle repart vide).
   tmp.firstCycle = new Set(list(data.firstCycle ?? [], 'cycle des premiers passages').filter(group => typeof group === 'string'));
+  // Départs de tables numérotés, que les reçus des passages comparent
+  // (_presentGroups) : absents d'une ancienne sauvegarde, aucun (ses reçus
+  // n'ont pas de numéro non plus, seules les tables présentes comptent).
+  tmp.departureSerial = Number.isSafeInteger(data.departureSerial) && data.departureSerial >= 0 ? data.departureSerial : 0;
+  tmp.groupDepartures = new Map(list(data.groupDepartures ?? [], 'départs de tables').filter(row => Array.isArray(row) &&
+    typeof row[0] === 'string' && Number.isSafeInteger(row[1]) && row[1] > 0 && row[1] <= tmp.departureSerial));
   // Tour du passage envoyé à KaraFun, pas encore commencé (Scheduler#_waitSerial) :
   // absent d'une ancienne sauvegarde, ou abîmé, aucun.
   tmp.unstartedTurn = Number.isSafeInteger(data.unstartedTurn) && data.unstartedTurn > 0 &&
@@ -681,7 +689,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
   scheduler.opts = tmp.opts;
   for (const field of ['tables', 'people', 'byToken', 'Q', 'lastGroup', 'reservedNext', 'roundGroups',
     'roundPeople', 'appearanceSerial', 'manualOrder', 'manualOrderActive', 'manualChanges', 'manualEpoch', 'tableServeCounts', 'duetCooldowns', 'log',
-    'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'firstCycle', 'unstartedTurn', 'stageEnds', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
+    'slotSamples', 'songGapSamples', 'version', 'recentGroups', 'roundUse', 'roundApps', 'roundOwed', 'firstCycle', 'departureSerial', 'groupDepartures', 'unstartedTurn', 'stageEnds', 'stageHistory', 'playedSongs']) scheduler[field] = tmp[field];
   // Un ajout après la reprise part après toutes les heures sauvegardées sur
   // cette horloge (clockTimes), même si l'horloge du serveur recule ensuite
   // (Scheduler#_readyStamp) ; elles ne dépassent pas l'heure de la reprise

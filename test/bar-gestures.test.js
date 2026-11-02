@@ -381,6 +381,60 @@ test('annulation recalculée d’une priorité, titre passé deux fois faute de 
   assert.deepEqual(s.select({ stageFree: true })?.ids, shown.ids);
 });
 
+// Relecture (passe 12) : l'annulation recalculée rendait l'annonce d'avant
+// le geste, une priorité du bar comprise, à une personne dont le « Pas prêt »
+// a commencé depuis. Annoncée et retenue à la fois : un titre retiré de
+// KaraFun pour cette priorité attendait derrière elle, et le journal le
+// disait, jusqu'au balayage suivant qui la libérait.
+test('annulation recalculée après le « Pas prêt » de la personne de la priorité : la priorité ne lui revient pas', () => {
+  const s = new Scheduler({ solverEnabled: false });
+  const [ana, bob, cid, dan] = ['Ana', 'Bob', 'Cid', 'Dan'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  [ana, bob, cid, dan].forEach(p => s.chooseSong(p, song()));
+  gesture(s, dan, 0);
+  gesture(s, cid, 2);
+  assert.equal(s.reservedNext?.byStaff, true);
+  s.deferPassage(dan.id, s.presenceView().find(v => !v.future && v.ids[0] === dan.id), 1);
+  assert.equal(s.canUndoManualChange(NATIVE), false, 'le « Pas prêt » a changé la file');
+  s.undoLastManualChange(null, NATIVE);
+  assert.ok(s.isDeferred(dan), 'son « Pas prêt » tient');
+  assert.notEqual(s.reservedNext?.personId, dan.id, 'la priorité d’avant le geste ne revient pas à une personne pas prête');
+});
+
+// Hors priorité du bar, même règle pour un duo dont l'invitée a son propre
+// « Pas prêt » (_announcedGuestHeld).
+test('annulation recalculée : l’annonce d’avant le geste ne revient pas à un duo dont l’invitée n’est pas prête', () => {
+  const s = new Scheduler({ solverEnabled: false }); s._event = () => {};
+  const [ana, bob, cid, dan] = ['Ana', 'Bob', 'Cid', 'Dan'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  [ana, bob, cid, dan].forEach(p => s.chooseSong(p, song()));
+  const stage = s.select(); s.commit(stage);
+  assert.deepEqual(s.reserveNext().ids, [bob.id], 'Bob annoncé, en solo');
+  gesture(s, dan, 0, stage.ids);
+  const duo = s.inviteDuet(bob, cid.id, song()); s.answerDuet(cid, true, duo.entryId);
+  s.reorderSongs(bob, duo.entryId, 0);
+  s.deferPassage(cid.id, s.presenceView(stage.ids).find(v => !v.future && v.ids[0] === cid.id), 1);
+  s.undoLastManualChange(null, NATIVE, { excludeIds: stage.ids });
+  assert.notEqual(s.reservedNext?.personId, bob.id, 'le duo de Bob, retenu par le « Pas prêt » de Cid, n’est pas annoncé');
+});
+
+// Même famille : le report levé par le geste revient à une personne devenue
+// entre-temps la prochaine annoncée ; l'annonce est libérée, comme pour un
+// « Pas prêt » (deferPassage), au lieu de rester affichée jusqu'à l'envoi.
+test('annulation recalculée qui rend un « Pas prêt » à la personne annoncée depuis : l’annonce est libérée', () => {
+  const s = new Scheduler({ solverEnabled: false });
+  const [ana, bob, cid, dan] = ['Ana', 'Bob', 'Cid', 'Dan'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  [ana, bob, cid, dan].forEach(p => s.chooseSong(p, song()));
+  s.deferPassage(cid.id, s.presenceView().find(v => !v.future && v.ids[0] === cid.id), 2);
+  gesture(s, cid, 1);
+  assert.equal(label(s, play(s)), 'Ana');
+  s.reserveNext();
+  assert.equal(s.reservedNext?.personId, cid.id, 'Cid annoncé après Ana');
+  s.undoLastManualChange(null, NATIVE);
+  assert.equal(cid.deferral?.remaining, 1, 'son report revient, moins la chanson passée');
+  assert.notEqual(s.reservedNext?.personId, cid.id, 'retenu par son report, Cid n’est plus annoncé');
+  const shown = s.presenceView().find(v => !v.future);
+  assert.deepEqual(s.select().ids, shown.ids);
+});
+
 // Relecture (passe 9, cellule sans test) : une priorité du bar avait levé un
 // « Pas prêt » ; sans réponse à « Je suis là » la priorité a pris fin, un
 // passage est parti et la file annonce de nouveau la personne. L'annulation

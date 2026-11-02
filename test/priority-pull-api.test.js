@@ -690,7 +690,7 @@ test('priorité avec retrait sur une ligne dont une personne attend un « Pas pr
     const line = planned(f).find(row => row.name === who);
     assert.ok(f.staffState().priorityPull.lineIds.includes(line.id), `${who} : retrait proposé`);
     const result = plain(await pullFor(f, f.sched.people.get(line.id)));
-    assert.equal(result.message, `« Titre Bruno » sort de KaraFun : ${who} passe d’abord, « Titre Bruno » juste après.`);
+    assert.equal(result.message, `« Titre Bruno » sort de KaraFun : ${who} ${who.includes(' & ') ? 'passent' : 'passe'} d’abord, « Titre Bruno » juste après.`);
     assert.deepEqual(removals(ctx.bridge), [['remove', 2]], who);
     karafunRemoves(f, ctx);
     assert.deepEqual(planned(f).slice(0, 2).map(row => row.name), [who, 'Bruno'], `${who} : la priorité d’abord, le titre retiré juste après`);

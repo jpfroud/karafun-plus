@@ -105,6 +105,12 @@ class Scheduler {
     this._views = new Map();  // prévisions déjà calculées pour l'état courant (readyView)
     this.version = 0;
     this.appearanceSerial = 0; // passages physiques, invités de duo compris
+    // Départs de tables (dernière personne partie), numérotés : un reçu de
+    // passage note le dernier numéro (`departures`) ; une table partie après
+    // lui ne revient pas dans le tour qu'il rend, rouverte ou non
+    // (_presentGroups).
+    this.departureSerial = 0;
+    this.groupDepartures = new Map(); // table -> numéro de son dernier départ
     this.solverBridge = this.opts.solverEnabled ? new TimefoldBridge() : null;
     // Plan adopté (Timefold ou ordre manuel du bar) : un classement des titres
     // prêts, valable tant que l'état de la file n'a pas changé autrement que
@@ -819,9 +825,20 @@ class Scheduler {
     // le geste. Sinon elle redevenait la prochaine annoncée en restant
     // retenue (select, prévision) : la file montrait l'un, l'envoi un autre
     // (relecture, passe 10).
+    // Ni une personne dont le « Pas prêt » a commencé depuis le geste, ni, hors
+    // priorité du bar, un duo dont l'invitée a le sien (_announcedGuestHeld) :
+    // select() et reservePresenceNext libéraient aussitôt cette annonce, mais
+    // d'ici là un titre retiré de KaraFun pour cette priorité attendait
+    // derrière elle (yieldToPriority) et le journal le disait (relecture,
+    // passe 12).
     const skipped = pid => this._isPresenceRetry(this.people.get(pid));
+    const notReady = (pid, byStaff) => {
+      const q = this.people.get(pid), duet = q?.song?.duet;
+      const guest = duet?.state === 'accepted' ? this.people.get(duet.partnerId) : null;
+      return !q || this._isDeferred(q) || (!byStaff && !!guest && this._isDeferred(guest));
+    };
     const old = before.reservedNext;
-    if (!this.reservedNext && old && lineFree(old.personId) && !skipped(old.personId) &&
+    if (!this.reservedNext && old && lineFree(old.personId) && !skipped(old.personId) && !notReady(old.personId, old.byStaff) &&
         (!old.byStaff || this.manualOrder.includes(old.personId))) this.reservedNext = { ...old };
     // Seul le report levé par ce geste revient, moins les chansons passées.
     // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : déjà
@@ -835,8 +852,13 @@ class Scheduler {
       if (pid !== change.personId || !p || p.withdrawnAt || p.song?.entryId !== deferral.entryId || p.deferral) continue;
       const remaining = Math.max(0, deferral.remaining - passed);
       if (remaining === 0 && this.reservedNext?.personId === p.id) continue;
-      if (remaining > 0 || this.reservedNext || !lineFree(p.id) || skipped(p.id)) this._restoreDeferral(p, { ...deferral, remaining });
-      else this.reservedNext = { personId: p.id, reservedAt: Date.now() };
+      if (remaining > 0 || this.reservedNext || !lineFree(p.id) || skipped(p.id)) {
+        this._restoreDeferral(p, { ...deferral, remaining });
+        // Devenue entre-temps la prochaine annoncée (hors priorité du bar) :
+        // son report rendu la retient, l'annonce est libérée, comme
+        // deferPassage le fait (relecture, passe 12).
+        if (this.reservedNext?.personId === p.id && !this.reservedNext.byStaff) this.releaseNext();
+      } else this.reservedNext = { personId: p.id, reservedAt: Date.now() };
     }
     this._restorePlan(change.planBefore);
   }
@@ -1109,6 +1131,7 @@ class Scheduler {
     if (![...this.people.values()].some(q => q.group === p.group)) {
       this.roundGroups.delete(p.group);
       this.firstCycle.delete(p.group);
+      this.groupDepartures.set(p.group, ++this.departureSerial);
     }
     this.version++;
   }
