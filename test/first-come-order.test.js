@@ -406,6 +406,20 @@ test('tables à tour de rôle : la part des tables d’abord, l’ordre d’ajou
   assert.deepEqual(playAll(s), view);
 });
 
+// Relecture (passe 9, test manquant) : à part égale, les premiers passages
+// suivent l'ordre d'ajout sans tenir compte d'un bonus ni d'un malus (clé
+// [0, 0, -1, addedAt] en Node, {0, 0, -1000, added} dans QueueScore.java) ;
+// la clé des retours, elle, les pondère.
+test('tables à tour de rôle : premiers passages dans l’ordre d’ajout, bonus ou malus compris', () => withClock(tick => {
+  for (const [who, level] of [['A1', -3], ['C1', 3]]) {
+    const s = new Scheduler({ tableRotation: true });
+    const people = ['A', 'B', 'C'].map(table => s.join({ tableId: table, name: `${table}1`, headcount: 1 }));
+    s.setPersonBonus(people.find(p => p.name === who).id, level);
+    people.forEach((p, k) => { tick(); s.chooseSong(p, song(k + 1)); });
+    assert.deepEqual(order(s), ['A1', 'B1', 'C1'], `${who} à ${level > 0 ? '+' : ''}${level} : l’ordre d’ajout`);
+  }
+}));
+
 test('compromis : la grande table garde sa part, ses chanteurs passent dans l’ordre d’ajout', () => {
   const s = new Scheduler({ tableRotation: true, weightedTables: true });
   s.setHeadcount('A', 4); s.setHeadcount('B', 1);

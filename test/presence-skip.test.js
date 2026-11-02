@@ -335,3 +335,27 @@ test('« Priorité » sur un titre passé faute de « Je suis là », toujours s
   assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Bruno', 'Alice'], 'Alice laisse passer le suivant');
   assert.equal(s.reservePresenceNext().ids[0], people.Bruno.id);
 });
+
+// Relecture (passe 9, cellule sans test) : la « Priorité » donnée à un titre
+// passé faute de « Je suis là », puis annulée (exactement ou après un autre
+// changement) : l'annonce d'avant revient et le titre laisse de nouveau
+// passer le suivant ; la demande « Je suis là » repart vers lui.
+test('« Priorité » annulée sur un titre passé faute de « Je suis là » : il laisse de nouveau passer le suivant', () => {
+  const NATIVE = 'a'.repeat(64);
+  for (const mode of ['exact', 'recalculée']) {
+    const { s, people, names } = evening();
+    s.reservePresenceNext();
+    s.skipUnconfirmed(people.Alice.id, 3);
+    const visible = s.presenceView().filter(v => !v.future);
+    const before = s.manualOverrideState({ deferrals: true });
+    s.staffMove(people.Alice.id, 0);
+    s.recordManualChange({ kind: 'priority', personId: people.Alice.id, name: 'Alice',
+      from: visible.findIndex(v => v.ids[0] === people.Alice.id) + 1, to: 1, before, native: NATIVE });
+    assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Alice', 'Bruno'], `${mode} : la priorité tient`);
+    if (mode === 'recalculée') s.chooseSong(people.Bruno, song(), 'append');
+    s.undoLastManualChange(null, NATIVE);
+    assert.equal(s.reservedNext?.byStaff, undefined, `${mode} : plus de priorité`);
+    assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Bruno', 'Alice'], `${mode} : Alice laisse passer le suivant`);
+    assert.equal(s.reservePresenceNext().ids[0], people.Bruno.id, `${mode} : la demande va à Bruno`);
+  }
+});

@@ -1601,6 +1601,34 @@ test('QueueScore : un premier passage servi avant un autre ajouté plus tôt co�
     } finally { bridge.close(); }
   });
 
+// Relecture (passe 9, test manquant) : en « tables à tour de rôle », à part
+// égale, un premier passage suit l'ordre d'ajout même avec un bonus ou un
+// malus (clé {0, 0, -1000, added} de QueueScore.java, comme Node) : servir
+// d'abord la personne pondérée coûte plus que l'ordre d'ajout.
+test('QueueScore : tables à tour de rôle, un bonus ou un malus ne change pas l’ordre d’ajout des premiers passages',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+    const bridge = new TimefoldBridge({ jar: JAR });
+    try {
+      for (const [who, level, moved] of [['A1', -3, ['B1', 'C1', 'A1']], ['C1', 3, ['C1', 'A1', 'B1']]]) {
+        const s = new Scheduler({ tableRotation: true });
+        const people = ['A', 'B', 'C'].map(table => s.join({ tableId: table, name: `${table}1`, headcount: 1 }));
+        s.setPersonBonus(people.find(p => p.name === who).id, level);
+        people.forEach((p, k) => s.chooseSong(p, { songId: 9800 + k, title: `Premier ${p.name}`, artist: 'Test' }));
+        let request;
+        s.solverBridge = { available: true, solve: req => { request = req; return new Promise(() => {}); } };
+        s._requestSolver(s.solverContextFingerprint(), { budgetMs: 100 });
+        const byName = new Map(request.performances.map(row => [s.people.get(row.owner).name, row]));
+        assert.deepEqual(request.performances.map(row => s.people.get(row.owner).name), ['A1', 'B1', 'C1'], `${who} : ordre de départ`);
+        const seed = async (rows, id) => medium((await bridge.solve({ ...request, requestId: id, budgetMs: 100,
+          performances: rows.map((row, previousIndex) => ({ ...row, previousIndex })) }, { immediate: true })).seedScore);
+        const kept = await seed(request.performances, `bonus-fifo-${who}`);
+        const swapped = await seed(moved.map(name => byName.get(name)), `bonus-fifo-swap-${who}`);
+        assert.ok(kept > swapped, `${who} à ${level} : ordre d’ajout ${kept}, ${moved.join(' ')} ${swapped}`);
+      }
+    } finally { bridge.close(); }
+  });
+
 test('premiers passages : le plan Timefold garde l’ordre d’ajout dans les trois modes',
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
     for (const [mode, options] of [['chacun son tour', {}], ['tables à tour de rôle', { tableRotation: true }],

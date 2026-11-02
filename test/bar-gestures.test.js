@@ -268,6 +268,71 @@ test('annulation recalculée : personne ne repasse juste après avoir chanté, i
     const next = s.select();
     assert.ok(!next.ids.includes(ana.id), `Ana ne rechante pas aussitôt (${label(s, next)})`);
   });
+  // Relecture (passe 9) : chaque garde tient seule, dans l'état du serveur où
+  // elle est la seule à jouer. Titre d'Ana commencé : sendingIds() est vide,
+  // seul son dernier passage la retient.
+  const fourTables = () => {
+    const s = new Scheduler(); s._event = () => {};
+    const join = (table, name) => s.join({ tableId: table, name, headcount: 1 });
+    const people = [['1', 'Ana'], ['2', 'Bob'], ['3', 'Cid'], ['4', 'Dan']].map(([table, name]) => join(table, name));
+    people.forEach(p => s.chooseSong(p, song()));
+    return { s, ana: people[0], bob: people[1], cid: people[2] };
+  };
+  const duoWithAna = (s, bob, ana) => {
+    const duo = s.inviteDuet(bob, ana.id, song());
+    s.answerDuet(ana, true, duo.entryId);
+    s.reorderSongs(bob, duo.entryId, 0);
+  };
+  await t.test('titre de celle qui vient de chanter commencé : aucun envoi en cours', () => {
+    const { s, ana, bob, cid } = fourTables();
+    const stage = s.select(); s.commit(stage);
+    assert.deepEqual(s.reserveNext().ids, [bob.id]);
+    gesture(s, cid, 0, stage.ids);
+    duoWithAna(s, bob, ana);
+    s.undoLastManualChange(null, NATIVE);
+    assert.notEqual(s.reservedNext?.personId, bob.id, 'l’annonce de Bob & Ana n’est pas rendue');
+    s.songEnded(stage.ids);
+    const next = s.select();
+    assert.ok(!next.ids.includes(ana.id), `Ana ne rechante pas aussitôt (${label(s, next)})`);
+  });
+  // Titre d'Ana en cours d'envoi, pas encore accusé par KaraFun : rien n'est
+  // compté, seul excludeIds la retient.
+  await t.test('titre de l’invitée en cours d’envoi, pas encore accusé', () => {
+    const { s, ana, bob, cid } = fourTables();
+    const sending = s.select();
+    assert.deepEqual(sending.ids, [ana.id]);
+    s.reservedNext = { personId: bob.id, reservedAt: Date.now() };
+    gesture(s, cid, 0, sending.ids);
+    duoWithAna(s, bob, ana);
+    s.undoLastManualChange(null, NATIVE, { excludeIds: sending.ids });
+    assert.notEqual(s.reservedNext?.personId, bob.id, 'l’annonce de Bob & Ana n’est pas rendue');
+  });
+});
+
+// Relecture (passe 9, cellule sans test) : une priorité du bar avait levé un
+// « Pas prêt » ; sans réponse à « Je suis là » la priorité a pris fin, un
+// passage est parti et la file annonce de nouveau la personne. L'annulation
+// recalculée ne lui rend ni report à 0 ni chanson de plus : elle reste la
+// prochaine.
+test('annulation recalculée d’une priorité qui avait levé un « Pas prêt » écoulé : la personne reste la prochaine', () => {
+  const { s, people } = evening({ requirePresence: true });
+  const { Ines } = people;
+  const line = s.presenceView().find(v => v.ids[0] === Ines.id);
+  s.deferPassage(Ines.id, line, 1);
+  gesture(s, Ines, 0);
+  assert.equal(s.reservedNext?.personId, Ines.id);
+  s.reservePresenceNext();
+  s.skipUnconfirmed(Ines.id, 3);
+  assert.equal(s.reservedNext, null, 'sans réponse, la priorité prend fin');
+  const asked = s.reservePresenceNext();
+  s.confirm(s.people.get(asked.ids[0]));
+  const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+  s.reservePresenceNext();
+  assert.equal(s.reservedNext?.personId, Ines.id, 'la file l’annonce de nouveau');
+  s.chooseSong(people.Paulo, song(), 'append');
+  s.undoLastManualChange(null, NATIVE);
+  assert.equal(s.reservedNext?.personId, Ines.id, 'elle reste la prochaine');
+  assert.equal(s.deferralFor(Ines.id), null, 'aucun report ne revient');
 });
 
 test('annuler tout après d’autres changements rend toutes les lignes au calcul', () => {
