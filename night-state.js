@@ -172,18 +172,23 @@ function usableSolverPlan(plan, scheduler, entries = queuedEntries(scheduler)) {
 // annulations exactes la remettent, du plus récent au plus ancien
 // (Scheduler#_undoLatest) : celle que doit porter le plan gardé avec ce
 // geste (`planBefore`) pour être encore valable à son annulation. Rendues
-// dans l'ordre des gestes ; la file revient ensuite telle quelle.
+// dans l'ordre des gestes ; la file revient ensuite telle quelle, reports
+// et titres sautés faute de « Je suis là » compris (un report rendu efface
+// le titre sauté, _restoreDeferral ; relecture, passe 10).
 function gesturePrints(scheduler) {
   if (!scheduler.manualChanges.length) return [];
   const override = scheduler.manualOverrideState();
-  const deferrals = [...scheduler.people.values()].map(p => [p, 'deferral' in p, p.deferral]);
+  const kept = [...scheduler.people.values()].map(p => [p, 'deferral' in p, p.deferral, 'presenceRetry' in p, p.presenceRetry]);
   const prints = [];
   for (const change of [...scheduler.manualChanges].reverse()) {
     scheduler.restoreManualOverride(change.before, { deferrals: true });
     prints.unshift(scheduler.solverContextFingerprint());
   }
   scheduler.restoreManualOverride(override);
-  for (const [p, had, deferral] of deferrals) if (had) p.deferral = deferral; else delete p.deferral;
+  for (const [p, had, deferral, hadRetry, retry] of kept) {
+    if (had) p.deferral = deferral; else delete p.deferral;
+    if (hadRetry) p.presenceRetry = retry; else delete p.presenceRetry;
+  }
   return prints;
 }
 

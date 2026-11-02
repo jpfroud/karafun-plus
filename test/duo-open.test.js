@@ -402,6 +402,28 @@ test('statistiques : duos ouverts comptés, le volontaire attend le duo dès qu�
   assert.deepEqual(open.timeline.stages.map(st => [st.ids, st.kind]), joined.timeline.stages.map(st => [st.ids, st.kind]));
 });
 
+// Relecture (passe 10) : le volontaire quitte le duo ouvert avant la scène
+// (« Je ne chante plus ce duo »), l'auteur rouvre la demande sur le même
+// titre et il la rejoint de nouveau : le passage reste un duo et son attente
+// compte.
+test('statistiques : volontaire parti puis revenu sur le même duo ouvert, le passage reste un duo', () => {
+  const T0 = Date.UTC(2026, 9, 24, 20, 0), T = m => T0 + m * 60000;
+  const events = []; const e = (m, ev, f = {}) => events.push({ v: 1, seq: events.length + 1, t: T(m), ev, ...f });
+  e(0, 'app.started', { restored: false, offlineMs: 0 });
+  for (const pid of ['p', 'g']) e(0, 'person.joined', { personId: pid, tableId: pid });
+  e(0, 'song.requested', { personId: 'p', entryId: 'a1', title: 'a1' });
+  e(0, 'duo.openRequested', { personId: 'p', entryId: 'a1', fromCatalog: true });
+  e(2, 'duo.openAccepted', { personId: 'g', ownerId: 'p', partnerId: 'g', entryId: 'a1' });
+  e(3, 'duo.left', { ownerId: 'p', guestId: 'g', entryId: 'a1', sent: false });
+  e(4, 'duo.openRequested', { personId: 'p', entryId: 'a1', fromCatalog: false });
+  e(5, 'duo.openAccepted', { personId: 'g', ownerId: 'p', partnerId: 'g', entryId: 'a1' });
+  e(10, 'stage.started', { queueId: 1, entryId: 'a1', ids: ['p', 'g'], ownerId: 'p', source: 'queue', title: 'a1' });
+  e(14, 'stage.ended', { queueId: 1, playedSec: 240 });
+  const st = computeStats({ meta: {}, events, now: T(60) });
+  assert.deepEqual(st.timeline.stages.map(s => [s.ids, s.kind]), [[['p', 'g'], 'duo']]);
+  assert.equal(st.singers.find(r => r.id === 'g').stageWaits.n, 1);
+});
+
 // ---------------------------------------------------------------- serveur
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const fromServer = createRequire(path.join(root, 'server.js'));

@@ -427,7 +427,7 @@ test('« Je suis là » obligatoire : report levé faute d’autre passage aprè
 // aussitôt (premier passage visible) : à chaque balayage une nouvelle annonce,
 // le plan Timefold perdu et la prévision recalculée. Un passage retenu par un
 // report n'est pas annoncé, comme un titre reporté.
-test('duo retenu par le report de son invitée, seul passage visible : l’annonce ne change pas à chaque balayage', async () => {
+test('duo retenu par le report de son invitée, seul passage visible : l’annonce ne change pas à chaque balayage', () => {
   const s = new Scheduler({ requirePresence: true });
   const gina = s.join({ tableId: '1', name: 'Gina', headcount: 1 });
   const xavi = s.join({ tableId: '2', name: 'Xavi', headcount: 1 });
@@ -442,8 +442,85 @@ test('duo retenu par le report de son invitée, seul passage visible : l’annon
   s.reservePresenceNext(sel.ids);
   assert.notEqual(s.reservedNext?.personId, omar.id, 'le duo retenu n’est pas annoncé');
   const fingerprint = s.solverContextFingerprint(), version = s.version;
-  await new Promise(resolve => setTimeout(resolve, 5));
   s.reservePresenceNext(sel.ids);
   assert.equal(s.solverContextFingerprint(), fingerprint, 'même annonce, même plan');
   assert.equal(s.version, version, 'rien ne change');
+});
+
+// Relecture (passe 10) : l'annulation d'une priorité du bar après d'autres
+// changements de la file (_undoRebased) rendait le « Pas prêt » levé par ce
+// geste en gardant le titre sauté faute de « Je suis là » (presenceRetry).
+// La prévision ne voyait que le titre sauté, select() que le report : la
+// file et la demande « Je suis là » montraient Cid, la scène libre envoyait
+// Bob en mettant fin à son report. Comme deferPassage, le report rendu
+// remplace le titre sauté.
+test('« Pas prêt » levé par une priorité, titre sauté, priorité annulée : la file et l’envoi s’accordent', () => {
+  const NATIVE = 'a'.repeat(64);
+  const s = new Scheduler({ requirePresence: true, solverEnabled: false });
+  const ana = s.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  const bob = s.join({ tableId: '2', name: 'Bob', headcount: 1 });
+  const cid = s.join({ tableId: '3', name: 'Cid', headcount: 1 });
+  s.chooseSong(ana, song()); s.chooseSong(bob, song()); s.chooseSong(cid, song()); s.chooseSong(ana, song(), 'append');
+  s.confirm(ana); s.reservePresenceNext([]);
+  let sel = s.select({ stageFree: true }); s.commit(sel); s.songEnded(sel.ids);
+  s.confirm(bob);
+  const row = p => s.presenceView().find(v => !v.future && v.ids[0] === p.id);
+  s.deferPassage(bob.id, row(bob), 2); s.deferPassage(cid.id, row(cid), 2);
+  const visible = s.presenceView().filter(v => !v.future);
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(cid.id, 0);
+  s.recordManualChange({ kind: 'priority', personId: cid.id, name: 'Cid', from: visible.findIndex(v => v.ids[0] === cid.id) + 1, to: 1, before, native: NATIVE });
+  s.reservePresenceNext([]); s.skipUnconfirmed(cid.id, 3);
+  s.confirm(cid);
+  assert.equal(s.canUndoManualChange(NATIVE), false, 'la file a changé depuis le geste');
+  s.undoLastManualChange(null, NATIVE);
+  assert.equal(cid.deferral?.remaining, 2, 'le report levé par la priorité revient');
+  assert.equal(cid.presenceRetry, false, 'le report rendu remplace le titre sauté');
+  assert.deepEqual(s.presenceView().filter(v => !v.future).map(v => v.ids[0]), [ana.id, bob.id, cid.id]);
+  s.leave(ana, 'staff');
+  s.reservePresenceNext([]);
+  const shown = s.presenceView().find(v => !v.future);
+  sel = s.select({ stageFree: true });
+  assert.deepEqual(sel?.ids, shown.ids, 'le passage envoyé est celui que la file montre');
+});
+
+// Le même titre sauté, la priorité toujours notée, puis une reprise sur une
+// horloge en retard sur la sauvegarde : restoreNight rejoue les annulations
+// exactes pour recalculer leurs empreintes (gesturePrints) puis rend la file
+// telle quelle. Le titre sauté aussi : sinon la reprise l'effaçait et Cid
+// passait devant (relecture, passe 10).
+test('« Pas prêt » levé par une priorité, titre sauté, reprise sur une horloge en retard : le titre sauté tient', () => {
+  const realNow = Date.now;
+  try {
+    const NATIVE = 'a'.repeat(64);
+    const s = new Scheduler({ requirePresence: true, solverEnabled: false });
+    const ana = s.join({ tableId: '1', name: 'Ana', headcount: 1 });
+    const bob = s.join({ tableId: '2', name: 'Bob', headcount: 1 });
+    const cid = s.join({ tableId: '3', name: 'Cid', headcount: 1 });
+    s.chooseSong(ana, song()); s.chooseSong(bob, song()); s.chooseSong(cid, song()); s.chooseSong(ana, song(), 'append');
+    s.confirm(ana); s.reservePresenceNext([]);
+    const sel = s.select({ stageFree: true }); s.commit(sel); s.songEnded(sel.ids);
+    const row = p => s.presenceView().find(v => !v.future && v.ids[0] === p.id);
+    s.deferPassage(bob.id, row(bob), 2); s.deferPassage(cid.id, row(cid), 2);
+    const visible = s.presenceView().filter(v => !v.future);
+    const before = s.manualOverrideState({ deferrals: true });
+    s.staffMove(cid.id, 0);
+    s.recordManualChange({ kind: 'priority', personId: cid.id, name: 'Cid', from: visible.findIndex(v => v.ids[0] === cid.id) + 1, to: 1, before, native: NATIVE });
+    s.reservePresenceNext([]); s.skipUnconfirmed(cid.id, 3);
+    assert.equal(cid.presenceRetry, true);
+    const order = s.presenceView().filter(v => !v.future).map(v => v.ids[0]);
+    const access = new TableAccess();
+    for (const id of s.tables.keys()) access.issue(id);
+    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access,
+      settings: { auto: true, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 } })));
+    const t0 = realNow();
+    Date.now = () => t0 - 300000;
+    const back = new Scheduler({ requirePresence: true, solverEnabled: false });
+    const { warnings } = restoreNight(saved, { scheduler: back, access: new TableAccess(), settings: {} });
+    assert.ok(warnings.some(text => /en avance/.test(text)), warnings.join(' ; '));
+    const again = back.people.get(cid.id);
+    assert.equal(again.presenceRetry, true, 'la reprise garde le titre sauté');
+    assert.equal(again.deferral ?? null, null, 'sans rendre le report levé par la priorité');
+    assert.deepEqual(back.presenceView().filter(v => !v.future).map(v => v.ids[0]), order, 'la file ne change pas');
+  } finally { Date.now = realNow; }
 });

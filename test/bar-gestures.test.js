@@ -307,6 +307,27 @@ test('annulation recalculée : personne ne repasse juste après avoir chanté, i
     s.undoLastManualChange(null, NATIVE, { excludeIds: sending.ids });
     assert.notEqual(s.reservedNext?.personId, bob.id, 'l’annonce de Bob & Ana n’est pas rendue');
   });
+  // Relecture (passe 10) : l'invitée a chanté depuis le geste, puis un autre
+  // passage est parti : seul le décompte depuis le geste (sentSince) la
+  // retient.
+  await t.test('invitée montée sur scène depuis le geste, un autre passage depuis : l’annonce d’avant n’est pas rendue', () => {
+    const s = new Scheduler(); s._event = () => {};
+    const join = (table, name) => s.join({ tableId: table, name, headcount: 1 });
+    const [dan, bob, ana, cid, eve, fay] = ['Dan', 'Bob', 'Ana', 'Cid', 'Eve', 'Fay'].map((x, i) => join(String(i + 1), x));
+    [dan, bob, ana, cid, eve, fay].forEach(p => s.chooseSong(p, song()));
+    const stage = s.select(); s.commit(stage);
+    assert.deepEqual(s.reserveNext().ids, [bob.id]);
+    gesture(s, fay, 4, stage.ids);
+    s.removeSong(bob, bob.song.entryId);
+    s.songEnded(stage.ids);
+    assert.equal(label(s, play(s)), 'Ana');
+    assert.equal(label(s, play(s)), 'Cid');
+    const duo = s.inviteDuet(bob, ana.id, song()); s.answerDuet(ana, true, duo.entryId);
+    s.undoLastManualChange(null, NATIVE);
+    assert.notEqual(s.reservedNext?.personId, bob.id, 'Ana a chanté depuis le geste');
+    const next = s.select();
+    assert.ok(!next.ids.includes(ana.id), `Ana ne rechante pas aussitôt (${label(s, next)})`);
+  });
 });
 
 // Relecture (passe 9, cellule sans test) : une priorité du bar avait levé un
@@ -1840,10 +1861,16 @@ test('priorité sur un duo dont l’invitée est retenue par un report : le duo 
       s.openDuet(Karim, { entryId: Karim.song.entryId });
       s.acceptOpenDuet(Maud, Karim.id, Karim.song.entryId);
     }
+    // Comme sync() à chaque balayage, pendant le titre de Paulo puis scène
+    // libre (relecture, passe 10) : la priorité du bar tient malgré le
+    // « Pas prêt » de l'invitée.
+    if (presence) s.reservePresenceNext(stage.ids);
     assert.equal(s.reservedNext?.byStaff, true, `${how} : la priorité du bar tient`);
     const announced = names(s, stage.ids).slice(0, 3);
     assert.equal(announced[0], 'Karim & Maud', `${how} : la file annonce le duo prioritaire en premier`);
     s.songEnded(stage.ids);
+    if (presence) s.reservePresenceNext([]);
+    assert.equal(s.reservedNext?.byStaff, true, `${how} : la priorité du bar tient, scène libre`);
     confirmAll();
     const sends = [];
     for (let k = 0; k < 3; k++) {

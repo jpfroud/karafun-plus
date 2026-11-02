@@ -356,9 +356,13 @@ class Scheduler {
   // de l'ex-invitée attendait de nouveau derrière ce report, que son
   // téléphone pouvait lever ou prolonger ; celui de la nouvelle passait juste
   // avant le duo, et son téléphone ne voyait pas le report (relecture,
-  // passe 6).
+  // passe 6). Comme deferPassage, le report rendu remplace un titre sauté
+  // faute de « Je suis là » (presenceRetry) : la prévision ne voyait que le
+  // titre sauté, select() que le report, et la scène libre envoyait un
+  // autre passage que celui de la file (relecture, passe 10).
   _restoreDeferral(owner, deferral) {
     owner.deferral = { ...deferral };
+    owner.presenceRetry = false;
     for (const pid of Array.isArray(deferral.ids) ? deferral.ids : []) {
       if (!this._singsOnLine(owner.id, pid)) this._dropDeferredGuest(owner, pid, deferral.entryId);
     }
