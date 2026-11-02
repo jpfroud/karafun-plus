@@ -502,14 +502,15 @@
   // chargé (il sort de KaraFun), juste après lui (rien n'en sort ; pas
   // proposé au premier passage libre, qui y est déjà), ou Annuler. Annuler,
   // Échap et Retour ferment la fenêtre sans rien envoyer.
-  let priorityAsk = null; // { personId, name, queueId, title, first } de la question ouverte
+  let priorityAsk = null; // { personId, name, passes, queueId, title, first } de la question ouverte
   function askPriority(line, loaded) {
     const name = line.name || 'ce chanteur';
+    const passes = (line.ids?.length || 1) > 1 ? 'passent' : 'passe'; // un duo : « Ana & Bob passent », comme le serveur
     const first = S.queue.find(q => q.source === 'helper' && !q.future)?.id === line.id;
-    priorityAsk = { personId: line.id, name, queueId: loaded.queueId, title: loaded.title, first };
+    priorityAsk = { personId: line.id, name, passes, queueId: loaded.queueId, title: loaded.title, first };
     $('priorityTitle').textContent = `Faire passer ${name} avant « ${loaded.title} » ?`;
     $('priorityHelp').textContent = `« ${loaded.title} » est déjà chargé dans KaraFun. Avant lui : il sort de KaraFun et repasse juste après ${name}, sans perdre son tour. ` +
-      (first ? `Sans retrait, ${name} passe déjà juste après lui.` : `Juste après lui : rien ne sort de KaraFun.`);
+      (first ? `Sans retrait, ${name} ${passes} déjà juste après lui.` : `Juste après lui : rien ne sort de KaraFun.`);
     $('priorityBefore').textContent = `Avant « ${loaded.title} »`;
     $('priorityAfter').textContent = `Juste après « ${loaded.title} »`;
     $('priorityAfter').hidden = first;
@@ -526,9 +527,9 @@
     if (!ask || choice === 'cancel') return;
     if (choice === 'before') {
       act('/api/staff/move', { personId: ask.personId, toIndex: 0, priority: true, pullLoaded: true, queueId: ask.queueId },
-        `« ${ask.title} » sort de KaraFun : ${ask.name} passe d’abord`);
+        `« ${ask.title} » sort de KaraFun : ${ask.name} ${ask.passes} d’abord`);
     } else if (!ask.first) {
-      act('/api/staff/move', { personId: ask.personId, toIndex: 0, priority: true }, `${ask.name} passe juste après « ${ask.title} », déjà chargé dans KaraFun`);
+      act('/api/staff/move', { personId: ask.personId, toIndex: 0, priority: true }, `${ask.name} ${ask.passes} juste après « ${ask.title} », déjà chargé dans KaraFun`);
     }
   }
   $('priorityBefore').onclick = () => answerPriority('before');

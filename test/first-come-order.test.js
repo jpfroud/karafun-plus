@@ -269,6 +269,116 @@ test('chacun son tour : table partie et rouverte avant une reprise, le titre qui
   });
 });
 
+// Relecture (passe 13) : un titre du milieu du cycle est chargé, puis une
+// table déjà passée dans ce cycle part (_drop la retire du cycle). Le reçu ne
+// rendait le cycle que s'il n'avait pas bougé depuis : la table du titre
+// ressorti restait comptée servie, et C1 passait derrière trois demandes plus
+// récentes. Le cycle se compare maintenant à celui du reçu sans les tables
+// parties depuis.
+test('chacun son tour : titre du milieu du cycle chargé, une table déjà passée part, il ressort : sa table n’est pas comptée servie', () => withClock(tick => {
+  const s = new Scheduler();
+  let n = 1;
+  const add = (tableId, name) => { const p = s.join({ tableId, name, headcount: 2 }); tick(); s.chooseSong(p, song(n++)); return p; };
+  add('1', 'A1'); add('3', 'C1'); add('2', 'B1'); add('4', 'D1'); add('1', 'A2');
+  assert.equal(sing(s), 'A1');
+  const sel = s.select();
+  assert.deepEqual(sel.names, ['C1']);
+  s.commit(sel); // C1 chargé dans KaraFun, cycle {1, 3}
+  s.tableLeft('1');
+  s.requeueUnplayed(sel); // absent à l'appel, « Pas prêt », titre passé dans KaraFun
+  assert.deepEqual([...s.firstCycle], [], 'le cycle d’avant C1, sans la table partie');
+  assert.deepEqual(order(s), ['C1', 'B1', 'D1']);
+}));
+
+test('chacun son tour : la table de l’auteur d’un duo chargé part, le duo ressort : la table de l’invitée n’est pas comptée servie', () => withClock(tick => {
+  const s = new Scheduler();
+  let n = 1;
+  const [ana, bob, cid] = [['1', 'Ana'], ['2', 'Bob'], ['3', 'Cid']].map(([tableId, name]) => s.join({ tableId, name, headcount: 2 }));
+  tick(); const duo = s.inviteDuet(ana, bob.id, song(n++)); s.answerDuet(bob, true, duo.entryId);
+  tick(); s.chooseSong(bob, song(n++));
+  tick(); s.chooseSong(cid, song(n++));
+  const sel = s.select();
+  assert.deepEqual(sel.names, ['Ana', 'Bob']);
+  s.commit(sel); // Ana & Bob chargé, cycle {1, 2}
+  s.tableLeft('1');
+  s.rollbackUnplayed(sel); // retrait confirmé par KaraFun (removeLeaversTracks puis sync)
+  assert.deepEqual([...s.firstCycle], [], 'la table de Bob n’a pas été servie');
+  assert.deepEqual(order(s), ['Bob', 'Cid'], 'Bob a ajouté avant Cid');
+}));
+
+// Relecture (passe 13, cellules sans test) : branche où rien de comparé n'a
+// bougé depuis le reçu (un passage qui commence un tour neuf, la table partie
+// n'était plus dans le cycle de ce tour) ; et limite du numéro de départ : une
+// table partie et rouverte avant le reçu, déjà passée dans le cycle, y reste.
+test('chacun son tour : titre du tour neuf chargé, table du cycle partie et rouverte, il ressort : elle n’est pas comptée servie', () => withClock(tick => {
+  const s = new Scheduler({ solverEnabled: false });
+  let n = 1;
+  const add = (tableId, name) => { const p = s.join({ tableId, name, headcount: 1 }); tick(); s.chooseSong(p, song(n++)); return p; };
+  const more = p => { tick(); s.chooseSong(p, song(n++), 'append'); };
+  const [a1, b1, c1] = [['1', 'A1'], ['2', 'B1'], ['3', 'C1']].map(([tableId, name]) => add(tableId, name));
+  assert.deepEqual([sing(s), sing(s)], ['A1', 'B1']);
+  s.deferPassage(c1.id, s.presenceView().find(v => !v.future && v.ids[0] === c1.id), 3);
+  more(a1); more(b1);
+  const sel = s.select();
+  s.commit(sel);
+  assert.deepEqual(sel.turnCredit.before.firstCycle, ['1', '2']);
+  s.tableLeft('2');
+  add('2', 'N2'); add('4', 'E4');
+  s.requeueUnplayed(sel);
+  assert.deepEqual([...s.firstCycle], ['1']);
+  assert.deepEqual([...s.roundGroups], ['1'], 'le tour d’avant ce passage, sans la table partie depuis');
+  assert.deepEqual(order(s).slice(0, 2), ['N2', 'E4']);
+}));
+
+test('chacun son tour : titre qui ferme le cycle, ou duo de deux tables, ressorti sans départ : le cycle d’avant lui revient', () => withClock(tick => {
+  {
+    const s = new Scheduler();
+    let n = 1;
+    const add = (tableId, name) => { const p = s.join({ tableId, name, headcount: 1 }); tick(); s.chooseSong(p, song(n++)); return p; };
+    add('1', 'A1'); add('2', 'B1'); add('3', 'C1');
+    assert.deepEqual([sing(s), sing(s)], ['A1', 'B1']);
+    const sel = s.select();
+    s.commit(sel);
+    assert.deepEqual([...s.firstCycle], [], 'C1 ferme le cycle');
+    add('4', 'D1');
+    s.requeueUnplayed(sel);
+    assert.deepEqual([...s.firstCycle], ['1', '2']);
+    assert.deepEqual(order(s), ['C1', 'D1']);
+  }
+  {
+    const s = new Scheduler();
+    let n = 1;
+    const [ana, bob, cid] = [['1', 'Ana'], ['2', 'Bob'], ['3', 'Cid']].map(([tableId, name]) => s.join({ tableId, name, headcount: 2 }));
+    tick(); const duo = s.inviteDuet(ana, bob.id, song(n++)); s.answerDuet(bob, true, duo.entryId);
+    tick(); s.chooseSong(bob, song(n++));
+    tick(); s.chooseSong(cid, song(n++));
+    const sel = s.select();
+    s.commit(sel);
+    assert.deepEqual([...s.firstCycle], ['1', '2'], 'le duo sert ses deux tables');
+    s.requeueUnplayed(sel);
+    assert.deepEqual([...s.firstCycle], []);
+    assert.deepEqual(order(s), ['Ana & Bob', 'Cid', 'Bob']);
+  }
+}));
+
+test('chacun son tour : table partie et rouverte avant le reçu, déjà passée dans le cycle : elle y reste quand le titre ressort', () => withClock(tick => {
+  const s = new Scheduler();
+  let n = 1;
+  const add = (tableId, name, headcount = 1) => { const p = s.join({ tableId, name, headcount }); tick(); s.chooseSong(p, song(n++)); return p; };
+  add('1', 'A1'); add('2', 'B1');
+  assert.equal(sing(s), 'A1');
+  s.tableLeft('1');
+  add('1', 'N1', 2); add('1', 'N2', 2); add('3', 'C1');
+  assert.deepEqual([sing(s), sing(s)], ['B1', 'N1']);
+  const sel = s.select();
+  assert.deepEqual(sel.names, ['C1']);
+  s.commit(sel); // C1 ferme le cycle
+  add('4', 'E1');
+  s.requeueUnplayed(sel);
+  assert.deepEqual([...s.firstCycle], ['2', '1'], 'la table 1 est passée dans ce cycle, après sa réouverture');
+  assert.deepEqual(order(s), ['C1', 'E1', 'N2']);
+}));
+
 // Même interleaving pour l'invitée qui quitte un duo chargé qui fermait le
 // cycle (_dropPartnerCredit) : Nina rejoint la table C avant le départ de Zoé.
 test('invitée qui quitte un duo chargé qui fermait le cycle, table partie et rouverte avant : elle n’y revient pas', () => withClock(tick => {

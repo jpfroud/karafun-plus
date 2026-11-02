@@ -1008,6 +1008,25 @@ test('file du bar : « Priorité » avec un titre déjà chargé dans KaraFun pr
   assert.equal(urgent(1), null, 'plus de question une fois le titre sorti : le premier passage libre n’a plus de « Priorité »');
 });
 
+// Relecture (passe 13) : un duo à qui le retrait est proposé. La question et
+// ses messages de repli disent « passent », comme le serveur.
+test('file du bar : « Priorité » d’un duo avant un titre chargé, au pluriel', async () => {
+  const world = baseWorld();
+  world.queue = [
+    { source: 'karafun', ours: true, queueId: 'kf-9', pos: 1, singer: 'Bruno', ids: ['bruno'], title: 'Titre chargé' },
+    { source: 'helper', id: 'duo1', pos: 2, name: 'Alice & Chloé', table: 'Table 1', ids: ['alice', 'chloe'], kind: 'duo', song: { title: 'Duo', entryId: 'e2' } },
+    { source: 'helper', id: 'dora', pos: 3, name: 'Dora', table: 'En solo', ids: ['dora'], song: { title: 'Rock', entryId: 'e3' } },
+  ];
+  world.priorityPull = { queueId: 'kf-9', title: 'Titre chargé', name: 'Bruno', ids: ['bruno'], lineIds: ['duo1', 'dora'] };
+  const page = await openPage({ world, dialogFocus: true });
+  const urgent = index => rows(page)[index].querySelector('[data-urgent]');
+  await page.click(urgent(1));
+  assert.equal(page.$('priorityHelp').textContent, '« Titre chargé » est déjà chargé dans KaraFun. Avant lui : il sort de KaraFun et repasse juste après Alice & Chloé, ' +
+    'sans perdre son tour. Sans retrait, Alice & Chloé passent déjà juste après lui.');
+  await page.click(page.$('priorityBefore'));
+  assert.equal(page.toast().text, '« Titre chargé » sort de KaraFun : Alice & Chloé passent d’abord');
+});
+
 // Relecture : la question était un confirm() du navigateur dont « Annuler »
 // (et Échap) faisait passer la personne juste après le titre chargé : le bar
 // ne pouvait pas renoncer. Trois choix dans une fenêtre de la page ; Annuler,

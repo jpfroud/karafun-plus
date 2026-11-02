@@ -4604,6 +4604,13 @@ function clearEvening() {
   // passage de la soirée close ne compte pas dans la nouvelle.
   if (pending) { pending.cancelled = true; pending.previousEvening = true; }
   tracked = tracked.filter(tr => tr.cancelled || tr.startedAt || isOnStage(tr, current));
+  // Les reçus de ces titres n'ont plus rien à rendre : retiré plus tard sans
+  // être chanté, un titre de la soirée close rendait son tour et son cycle
+  // des premiers passages aux tables rouvertes avec les mêmes numéros, qui
+  // passaient pour déjà servies (relecture, passe 13).
+  for (const sel of [...tracked.map(tr => tr.sel), pending?.sel]) {
+    if (sel?.turnCredit) sel.turnCredit.rolledBack = true;
+  }
   for (const tr of tracked) delete tr.uncommitted;
   for (const tableId of sched.tables.keys()) access.revoke(tableId);
   soloInvitations.clear();
@@ -4615,6 +4622,9 @@ function clearEvening() {
   sched.lastGroup = null;
   sched.roundGroups.clear();
   sched.firstCycle.clear();
+  // Départs de tables de la soirée close. Le compteur, lui, continue :
+  // aucun reçu de la nouvelle soirée ne peut dater d'avant un départ noté.
+  sched.groupDepartures.clear();
   sched.unstartedTurn = 0;
   sched.stageEnds.clear();
   sched.roundPeople.clear();

@@ -832,13 +832,12 @@ class Scheduler {
     // derrière elle (yieldToPriority) et le journal le disait (relecture,
     // passe 12).
     const skipped = pid => this._isPresenceRetry(this.people.get(pid));
-    const notReady = (pid, byStaff) => {
-      const q = this.people.get(pid), duet = q?.song?.duet;
-      const guest = duet?.state === 'accepted' ? this.people.get(duet.partnerId) : null;
-      return !q || this._isDeferred(q) || (!byStaff && !!guest && this._isDeferred(guest));
+    const notReady = reserved => {
+      const q = this.people.get(reserved.personId);
+      return !q || this._isDeferred(q) || this._announcedGuestHeld(reserved);
     };
     const old = before.reservedNext;
-    if (!this.reservedNext && old && lineFree(old.personId) && !skipped(old.personId) && !notReady(old.personId, old.byStaff) &&
+    if (!this.reservedNext && old && lineFree(old.personId) && !skipped(old.personId) && !notReady(old) &&
         (!old.byStaff || this.manualOrder.includes(old.personId))) this.reservedNext = { ...old };
     // Seul le report levé par ce geste revient, moins les chansons passées.
     // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : déjà
