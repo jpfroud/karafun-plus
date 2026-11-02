@@ -394,3 +394,56 @@ test('« Je suis là » obligatoire, titre annoncé devenu un duo retenu : la de
   assert.deepEqual(asked.ids, shown.ids, `la demande va au passage annoncé (${names([shown])})`);
   assert.notEqual(s.reservedNext?.personId, Dan.id);
 });
+
+// Relecture (passe 9) : « Je suis là » obligatoire. Le report levé faute
+// d'autre passage (repli de select) annonçait sa personne sans effacer son
+// titre passé faute de présence (presenceRetry) : confirmée, elle restait
+// retenue et la scène restait vide. Comme reservePresenceNext, l'annonce
+// efface ce manque.
+test('« Je suis là » obligatoire : report levé faute d’autre passage après un titre sauté, puis confirmé : il part', () => {
+  const s = new Scheduler({ requirePresence: true });
+  const ana = s.join({ tableId: '1', name: 'Ana', headcount: 1 });
+  const bob = s.join({ tableId: '2', name: 'Bob', headcount: 1 });
+  s.chooseSong(ana, song()); s.chooseSong(bob, song());
+  const line = s.presenceView().find(v => !v.future && v.ids[0] === ana.id);
+  s.deferPassage(ana.id, line, 2);
+  s.reservePresenceNext([]); s.confirm(bob);
+  const sel = s.select({ stageFree: true });
+  assert.deepEqual(sel.ids, [bob.id]);
+  s.commit(sel); s.songEnded(sel.ids);
+  s.reservePresenceNext([]);
+  s.skipUnconfirmed(ana.id, 3);
+  s.reservePresenceNext([]);
+  s.confirm(ana);
+  s.reservePresenceNext([]);
+  const first = s.select({ stageFree: true });
+  s.reservePresenceNext([]);
+  const sent = first || s.select({ stageFree: true });
+  assert.deepEqual(sent?.ids, [ana.id], 'la scène ne reste pas vide');
+});
+
+// Relecture (passe 9) : reservePresenceNext libérait l'annonce d'un duo
+// retenu par le « Pas prêt » de son invitée, puis l'annonçait de nouveau
+// aussitôt (premier passage visible) : à chaque balayage une nouvelle annonce,
+// le plan Timefold perdu et la prévision recalculée. Un passage retenu par un
+// report n'est pas annoncé, comme un titre reporté.
+test('duo retenu par le report de son invitée, seul passage visible : l’annonce ne change pas à chaque balayage', async () => {
+  const s = new Scheduler({ requirePresence: true });
+  const gina = s.join({ tableId: '1', name: 'Gina', headcount: 1 });
+  const xavi = s.join({ tableId: '2', name: 'Xavi', headcount: 1 });
+  const omar = s.join({ tableId: '3', name: 'Omar', headcount: 1 });
+  s.chooseSong(gina, song()); s.chooseSong(xavi, song());
+  const duo = s.inviteDuet(omar, gina.id, song()); s.answerDuet(gina, true, duo.entryId);
+  s.deferPassage(gina.id, s.presenceView().find(v => !v.future && v.ids[0] === gina.id), 2);
+  s.reservePresenceNext([]); s.confirm(xavi);
+  const sel = s.select({ stageFree: true });
+  assert.deepEqual(sel.ids, [xavi.id]);
+  s.commit(sel);
+  s.reservePresenceNext(sel.ids);
+  assert.notEqual(s.reservedNext?.personId, omar.id, 'le duo retenu n’est pas annoncé');
+  const fingerprint = s.solverContextFingerprint(), version = s.version;
+  await new Promise(resolve => setTimeout(resolve, 5));
+  s.reservePresenceNext(sel.ids);
+  assert.equal(s.solverContextFingerprint(), fingerprint, 'même annonce, même plan');
+  assert.equal(s.version, version, 'rien ne change');
+});

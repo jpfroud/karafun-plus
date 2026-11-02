@@ -785,6 +785,16 @@ function skipAbsentIfDue({ current, upcoming }, presence, missing, now) {
   if (current || upcoming.length || pending) { presenceWait.freeSince = null; return false; }
   presenceWait.freeSince ??= now;
   if (!settings.auto || settings.queueClearPending || battleHoldsQueue() || recoveredPending || !bridge?.ready) return false;
+  // Passage repoussé (« Pas prêt ») en tête de la file, scène libre : plus
+  // personne d'autre ne peut chanter (la prévision ne le met devant qu'ainsi).
+  // Ce n'est pas une absence : comme le repli de Scheduler#select, son report
+  // prend fin et il devient le prochain annoncé ; la demande « Je suis là »
+  // commence alors. Sinon il était compté absent pendant son report, et son
+  // titre retiré au bout de trois manques (relecture, passe 9 ; déjà sur main).
+  if (sched.isDeferred(sched.people.get(presence.ids[0]))) {
+    presenceWait = null;
+    return !!sched.releaseAloneDeferral(presence.ids[0]);
+  }
   if (now - Math.max(presenceWait.askedAt, presenceWait.freeSince) < settings.presenceGraceSec * 1000) return false;
   presenceWait = null;
   const result = sched.skipUnconfirmed(presence.ids[0], settings.presenceMaxSkips);

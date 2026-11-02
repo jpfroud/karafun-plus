@@ -982,3 +982,34 @@ test('« Annuler mon changement et recalculer » : les gestes sont annulés comm
   assert.ok(notes(f).some(msg => /Le bar a annulé 1 changement manuel/.test(msg)), 'le journal du bar le dit');
   assert.ok(driss);
 });
+
+// Relecture (passe 9, équipe rouge ; déjà sur main) : « Je suis là »
+// obligatoire, scène libre, plus personne d'autre ne peut chanter. La file
+// montrait le passage repoussé en premier, la présence lui était demandée et
+// skipAbsentIfDue le comptait absent alors que son « Pas prêt » courait
+// encore : au bout de trois manques son titre était retiré. Comme le repli de
+// select(), le report prend fin (« Personne d’autre ne peut chanter »), le
+// passage devient le prochain annoncé, et la demande « Je suis là » commence
+// alors seulement.
+test('« Je suis là » obligatoire, scène libre, seul un « Pas prêt » attend : il n’est pas compté absent, il part', async () => {
+  const f = harness();
+  const s = f.sched;
+  s.opts.requirePresence = true;
+  f.settings.requirePresence = true;
+  f.settings.presenceGraceSec = 0;
+  const bob = s.join({ tableId: '2', name: 'Bob', headcount: 1 });
+  const cid = s.join({ tableId: '3', name: 'Cid', headcount: 1 });
+  s.chooseSong(bob, { songId: 802, title: 'Titre Bob' });
+  s.chooseSong(cid, { songId: 803, title: 'Titre Cid' });
+  s.deferPassage(bob.id, s.presenceView().find(v => !v.future && v.ids[0] === bob.id), 1);
+  s.removeSong(cid, cid.song.entryId);
+  f.setBridge(fakeBridge([], null));
+  f.sync();
+  assert.equal(s.presenceSkipsOf(bob), 0, 'Bob n’est pas compté absent pendant son « Pas prêt »');
+  assert.equal(s.isDeferred(bob), false, 'personne d’autre ne peut chanter : son report prend fin');
+  assert.equal(s.reservedNext?.personId, bob.id, 'il est le prochain annoncé');
+  assert.ok(notes(f).some(msg => /Personne d’autre ne peut chanter : le passage repoussé de Bob part maintenant/.test(msg)));
+  s.confirm(bob);
+  f.sync();
+  assert.deepEqual(f.getPending()?.sel.ids, [bob.id], 'confirmé, il part vers KaraFun');
+});
