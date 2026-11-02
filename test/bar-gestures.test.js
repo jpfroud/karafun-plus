@@ -330,6 +330,57 @@ test('annulation recalculée : personne ne repasse juste après avoir chanté, i
   });
 });
 
+// Relecture (passe 10, rejeu aléatoire) : la personne annoncée avant un
+// geste du bar ne répond pas à « Je suis là » ; son titre passe et laisse
+// passer le suivant. L'annulation recalculée du geste lui rendait l'annonce
+// en gardant son titre passé : les téléphones l'annonçaient, la demande
+// « Je suis là » et l'envoi allaient à quelqu'un d'autre.
+test('annulation recalculée après un titre passé faute de « Je suis là » : l’annonce d’avant le geste n’est pas rendue', () => {
+  const s = new Scheduler({ requirePresence: true, solverEnabled: false });
+  const [ana, bob, cid, dan] = ['Ana', 'Bob', 'Cid', 'Dan'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  [ana, bob, cid, dan].forEach(p => s.chooseSong(p, song()));
+  s.reservePresenceNext([]);
+  assert.equal(s.reservedNext?.personId, ana.id);
+  gesture(s, dan, 1);
+  s.skipUnconfirmed(ana.id, 3);
+  for (const p of [ana, bob, dan]) s.confirm(p);
+  assert.equal(s.canUndoManualChange(NATIVE), false, 'le titre passé a changé la file');
+  s.undoLastManualChange(null, NATIVE);
+  assert.notEqual(s.reservedNext?.personId, ana.id, 'son titre passé laisse passer le suivant, comme sans le geste');
+  s.reservePresenceNext([]);
+  const shown = s.presenceView().find(v => !v.future && v.song);
+  assert.equal(s.reservedNext?.personId, shown.ids[0], 'l’annonce suit la file');
+  assert.deepEqual(s.select({ stageFree: true })?.ids, shown.ids, 'le passage envoyé est celui que la file montre');
+});
+
+// Même règle au bout d'un « Pas prêt » levé par une priorité : Cid, sauté
+// une première fois (la priorité prend fin), redevient le prochain annoncé
+// après le passage d'Ana et ne répond toujours pas. L'annulation recalculée
+// le faisait de nouveau annoncer, titre passé gardé ; son report revient à
+// 0 et le prochain envoi le libère.
+test('annulation recalculée d’une priorité, titre passé deux fois faute de « Je suis là » : la file et l’annonce s’accordent', () => {
+  const s = new Scheduler({ requirePresence: true, solverEnabled: false });
+  const [ana, bob, cid] = ['Ana', 'Bob', 'Cid'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  [ana, bob, cid].forEach(p => s.chooseSong(p, song()));
+  s.deferPassage(cid.id, s.presenceView().find(v => !v.future && v.ids[0] === cid.id), 1);
+  gesture(s, cid, 0);
+  s.reservePresenceNext([]); s.skipUnconfirmed(cid.id, 3);
+  s.confirm(ana); s.reservePresenceNext([]);
+  const sent = s.select({ stageFree: true });
+  assert.deepEqual(sent.ids, [ana.id]);
+  s.commit(sent); s.songEnded(sent.ids);
+  assert.equal(s.reservedNext?.personId, cid.id, 'son titre passé revient juste après');
+  s.reservePresenceNext([]); s.skipUnconfirmed(cid.id, 3);
+  s.confirm(cid); s.confirm(bob);
+  s.undoLastManualChange(null, NATIVE);
+  assert.notEqual(s.reservedNext?.personId, cid.id, 'Cid n’est pas annoncé avec son titre passé');
+  assert.equal(cid.deferral?.remaining, 0, 'le report levé par la priorité revient à 0');
+  s.reservePresenceNext([]);
+  const shown = s.presenceView().find(v => !v.future && v.song);
+  assert.equal(s.reservedNext?.personId, shown.ids[0], 'l’annonce suit la file');
+  assert.deepEqual(s.select({ stageFree: true })?.ids, shown.ids);
+});
+
 // Relecture (passe 9, cellule sans test) : une priorité du bar avait levé un
 // « Pas prêt » ; sans réponse à « Je suis là » la priorité a pris fin, un
 // passage est parti et la file annonce de nouveau la personne. L'annulation

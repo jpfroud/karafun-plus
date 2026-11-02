@@ -814,8 +814,14 @@ class Scheduler {
       const duet = this.people.get(pid)?.song?.duet;
       return waiting(pid) && [pid, ...(duet?.state === 'accepted' ? [duet.partnerId] : [])].every(fresh);
     };
+    // Ni une personne dont le titre est passé depuis faute de « Je suis là »
+    // (presenceRetry) : son manque laisse passer le titre suivant, comme sans
+    // le geste. Sinon elle redevenait la prochaine annoncée en restant
+    // retenue (select, prévision) : la file montrait l'un, l'envoi un autre
+    // (relecture, passe 10).
+    const skipped = pid => this._isPresenceRetry(this.people.get(pid));
     const old = before.reservedNext;
-    if (!this.reservedNext && old && lineFree(old.personId) &&
+    if (!this.reservedNext && old && lineFree(old.personId) && !skipped(old.personId) &&
         (!old.byStaff || this.manualOrder.includes(old.personId))) this.reservedNext = { ...old };
     // Seul le report levé par ce geste revient, moins les chansons passées.
     // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : déjà
@@ -829,7 +835,7 @@ class Scheduler {
       if (pid !== change.personId || !p || p.withdrawnAt || p.song?.entryId !== deferral.entryId || p.deferral) continue;
       const remaining = Math.max(0, deferral.remaining - passed);
       if (remaining === 0 && this.reservedNext?.personId === p.id) continue;
-      if (remaining > 0 || this.reservedNext || !lineFree(p.id)) this._restoreDeferral(p, { ...deferral, remaining });
+      if (remaining > 0 || this.reservedNext || !lineFree(p.id) || skipped(p.id)) this._restoreDeferral(p, { ...deferral, remaining });
       else this.reservedNext = { personId: p.id, reservedAt: Date.now() };
     }
     this._restorePlan(change.planBefore);

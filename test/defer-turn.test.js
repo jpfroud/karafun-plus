@@ -524,3 +524,28 @@ test('« Pas prêt » levé par une priorité, titre sauté, reprise sur une hor
     assert.deepEqual(back.presenceView().filter(v => !v.future).map(v => v.ids[0]), order, 'la file ne change pas');
   } finally { Date.now = realNow; }
 });
+
+// Relecture (passe 10, rejeu aléatoire) : scène libre, chaque passage
+// retenu. La file montre en tête le duo d'Ana avec Bob (titre d'Ana passé
+// faute de « Je suis là », Bob avec son propre « Pas prêt ») ; le repli
+// levait le report de Bob, annonçait le duo de Bob avec Dan, retenu par
+// celui de Dan, levait aussi ce dernier et annonçait Dan : rien ne partait et
+// deux « Pas prêt » prenaient fin. Part le passage que la file montre.
+test('scène libre, duo en tête retenu par un titre sauté et le « Pas prêt » de son invitée : il part, comme la file le montre', () => {
+  const s = new Scheduler({ requirePresence: true, solverEnabled: false });
+  const [bob, dan, ana] = ['Bob', 'Dan', 'Ana'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  const duoBob = s.inviteDuet(bob, dan.id, song()); s.answerDuet(dan, true, duoBob.entryId);
+  s.chooseSong(dan, song());
+  const duoAna = s.inviteDuet(ana, bob.id, song()); s.answerDuet(bob, true, duoAna.entryId);
+  const row = p => s.presenceView().find(v => !v.future && v.ids[0] === p.id);
+  s.deferPassage(bob.id, row(bob), 1);
+  s.deferPassage(dan.id, row(dan), 2);
+  s.reservePresenceNext([]);
+  s.skipUnconfirmed(ana.id, 3); s.confirm(ana);
+  s.reservePresenceNext([]);
+  const shown = s.presenceView().find(v => !v.future && v.song);
+  assert.deepEqual(shown.ids, [ana.id, bob.id], 'la file montre le duo d’Ana en tête');
+  const sel = s.select({ stageFree: true });
+  assert.deepEqual(sel?.ids, shown.ids, 'le passage envoyé est celui que la file montre');
+  assert.equal(dan.deferral?.remaining, 2, 'le « Pas prêt » de Dan tient');
+});

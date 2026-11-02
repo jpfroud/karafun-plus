@@ -793,7 +793,7 @@ function skipAbsentIfDue({ current, upcoming }, presence, missing, now) {
   // titre retiré au bout de trois manques (relecture, passe 9 ; déjà sur main).
   if (sched.isDeferred(sched.people.get(presence.ids[0]))) {
     presenceWait = null;
-    return !!sched.releaseAloneDeferral(presence.ids[0]);
+    return !!sched.releaseAloneDeferral();
   }
   if (now - Math.max(presenceWait.askedAt, presenceWait.freeSince) < settings.presenceGraceSec * 1000) return false;
   presenceWait = null;
