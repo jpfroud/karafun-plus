@@ -433,6 +433,33 @@ test('« Vider toutes les chansons » pendant que le titre qui ferme le cycle at
   } finally { Date.now = realNow; }
 });
 
+// Relecture (passe 13, cellule sans test) : même vidage avec un titre du
+// milieu du cycle chargé : le cycle reste vide quand il ressort.
+test('« Vider toutes les chansons » pendant qu’un titre du milieu du cycle attend dans KaraFun : le cycle reste vide', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const tick = () => { clock += 1000; };
+    const join = (tableId, name) => f.sched.join({ tableId, name, headcount: 2 });
+    const [w1, y1, x1] = [['1', 'W1'], ['2', 'Y1'], ['3', 'X1']].map(([tableId, name]) => join(tableId, name));
+    for (const p of [w1, y1, x1]) { tick(); f.sched.chooseSong(p, { songId: 9800 + clock % 97, title: `Titre ${p.name}` }, 'append'); }
+    const first = f.sched.select(); f.sched.commit(first); f.sched.songEnded(first.ids);
+    assert.deepEqual(first.names, ['W1']);
+    const sel = f.sched.select();
+    assert.deepEqual(sel.names, ['Y1']);
+    f.sched.commit(sel); // Y1 chargé dans KaraFun, cycle {1, 2}
+    f.getTracked().push({ queueId: 'q-milieu', sel, startedAt: null, addedAt: clock });
+    const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+    assert.equal(r.status, 200);
+    f.sched.rollbackUnplayed(sel); // KaraFun confirme le retrait
+    assert.deepEqual([...f.sched.firstCycle], [], 'le cycle reste vidé');
+  } finally { Date.now = realNow; }
+});
+
 // Relecture (passe 13) : même chose pour « Nouvelle soirée ». Le titre de la
 // soirée close reste suivi pour être retiré de KaraFun ; son retrait,
 // confirmé après la réouverture des tables (mêmes numéros), rendait le cycle

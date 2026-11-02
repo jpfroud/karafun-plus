@@ -361,6 +361,26 @@ test('chacun son tour : titre qui ferme le cycle, ou duo de deux tables, ressort
   }
 }));
 
+test('chacun son tour : titre du milieu du cycle chargé, reprise de soirée, il ressort : le cycle d’avant lui revient', () => withClock(tick => {
+  let n = 1;
+  const add = (sched, tableId, name) => { const p = sched.join({ tableId, name, headcount: 1 }); tick(); sched.chooseSong(p, song(n++)); return p; };
+  const s = new Scheduler();
+  add(s, '1', 'A1'); add(s, '2', 'B1'); add(s, '3', 'C1');
+  assert.equal(sing(s), 'A1');
+  const sel = s.select();
+  s.commit(sel); // B1 chargé, cycle {1, 2}
+  const access = new TableAccess();
+  for (const id of s.tables.keys()) access.issue(id);
+  const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings: settings(), tracked: [{ sel, queueId: 7 }] })));
+  const back = new Scheduler();
+  const recovered = restoreNight(saved, { scheduler: back, access: new TableAccess(), settings: settings() });
+  assert.deepEqual([...back.firstCycle], ['1', '2']);
+  add(back, '4', 'D1');
+  back.requeueUnplayed(recovered.tracked[0].sel);
+  assert.deepEqual([...back.firstCycle], ['1']);
+  assert.deepEqual(order(back), ['B1', 'C1', 'D1']);
+}));
+
 test('chacun son tour : table partie et rouverte avant le reçu, déjà passée dans le cycle : elle y reste quand le titre ressort', () => withClock(tick => {
   const s = new Scheduler();
   let n = 1;
