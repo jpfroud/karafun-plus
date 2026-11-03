@@ -839,10 +839,12 @@ function restorePulled(tr) {
       changeId: typeof tr.pulled.changeId === 'string' ? tr.pulled.changeId : null,
       cutoff: forAt ?? tr.pulled.at, busyIds: sendingSingers() });
     // Une priorité donnée pendant le retrait passe d'abord : le titre attend
-    // celle de son geste, juste derrière elle (report « après la priorité »).
-    const owner = sched.people.get(tr.sel.ids[0]);
-    const waits = !still && !!forP && !!owner?.deferral?.afterPriority && owner.deferral.forId === forP.id &&
-      owner.deferral.entryId === tr.sel.song.entryId;
+    // celle de son geste, juste derrière elle dans la chaîne des annonces
+    // (Scheduler#yieldToPriority, `dormant`).
+    let waits = false;
+    for (let link = sched.reservedNext?.then; link && !still && forP && !waits; link = link.then) {
+      waits = !!link.pulled && link.personId === tr.sel.ids[0] && link.forId === forP.id;
+    }
     sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (still ?
       `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` : waits ?
       `il repasse juste après ${forP.name} (priorité du bar), qui passe après la priorité donnée depuis, sans perdre son tour` :
@@ -2598,10 +2600,16 @@ function staffState() {
     // juste après elle ; `leaving` : titre de la file qui sort de KaraFun.
     queue: pub.queue.map((line, index) => {
       const owner = line.source === 'helper' ? sched.people.get(line.id) : null;
+      // Le titre attend sa priorité en report (elle est en tête) ou dans la
+      // chaîne des annonces (une priorité plus récente passe devant elle).
+      let pulledLink = false;
+      for (let link = sched.reservedNext?.then; link && owner && !pulledLink; link = link.then) {
+        pulledLink = !!link.pulled && link.personId === owner.id && owner.song?.entryId === line.song?.entryId;
+      }
       const skips = owner && owner.song?.entryId === line.song?.entryId ? sched.presenceSkipsOf(owner) : 0;
       const tooLong = owner ? tooLongSec(line.song) : null;
       const placedByBar = !!owner && !line.future && placed.has(owner.id) && sched.manualOrder.includes(owner.id);
-      const afterPriority = !!owner && !line.future && sched.isDeferred(owner) && !!owner.deferral.afterPriority;
+      const afterPriority = !!owner && !line.future && ((sched.isDeferred(owner) && !!owner.deferral.afterPriority) || pulledLink);
       const leaving = line.source === 'karafun' && line.ours ?
         tracked.find(tr => String(tr.queueId) === String(line.queueId) && tr.pulled)?.pulled.reason || null : null;
       return repeats[index] || skips || tooLong || placedByBar || afterPriority || leaving ? { ...line, ...(repeats[index] ? { repeat: repeats[index] } : {}),

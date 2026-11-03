@@ -309,8 +309,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     person.backlog.forEach(cleanSongSettings);
     for (const song of [person.song, ...person.backlog]) cleanOpenDuet(song);
     if (legacyVoices) for (const song of [person.song, ...person.backlog]) legacyDuoVoice(song, !!song?.duet);
-    // Report « Pas prêt » abîmé : la personne garde simplement sa place.
+    // Report « Pas prêt » abîmé : la personne garde simplement sa place. Les
+    // annonces qu'un report gardait (`then`, sauvegarde d'avant la passe 19)
+    // ne valent plus : elles restent dans la chaîne des annonces.
     if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
+    if (person.deferral) delete person.deferral.then;
     // Champs facultatifs de l'accès solo et de l'activité : abîmés, ils sont
     // ignorés (prénom libre, pas de clé personnelle, activité inconnue).
     if (person.nameRequired !== undefined && person.nameRequired !== true) delete person.nameRequired;
@@ -365,10 +368,12 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // Titre revenu de KaraFun pour une priorité annulée (Scheduler#_backFirst) :
     // l'annonce gardée derrière lui (`then`) et l'heure de la priorité du geste
     // (`pulledBack`). Abîmée, ou sa personne oubliée, l'annonce gardée tombe.
-    // `pulled` : titre retiré pour une priorité, annoncé après elle ; `retry` :
+    // `pulled` : titre retiré pour une priorité, annoncé après elle ou qui
+    // l'attend dans la chaîne (`forId`, `forAt` : cette priorité) ; `retry` :
     // personne sautée faute de « Je suis là » (Scheduler#staffMove les garde).
     const flags = row => ({ ...(row.byStaff === true ? { byStaff: true } : {}), ...(row.borrowable === true ? { borrowable: true } : {}),
-      ...(row.pulled === true ? { pulled: true } : {}), ...(row.retry === true ? { retry: true } : {}) });
+      ...(row.pulled === true ? { pulled: true } : {}), ...(row.retry === true ? { retry: true } : {}),
+      ...(row.pulled === true && typeof row.forId === 'string' && Number.isFinite(row.forAt) ? { forId: row.forId, forAt: row.forAt } : {}) });
     // Chaîne des annonces gardées (au plus BEHIND_MAX) : un maillon abîmé,
     // oublié ou répété tombe (la première place d'une personne reste), les
     // suivants restent.

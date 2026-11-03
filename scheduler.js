@@ -296,25 +296,13 @@ class Scheduler {
   }
 
   // L'ordre fixé s'arrête à la dernière ligne placée par le bar : les lignes
-  // gardées devant un geste disparu retrouvent le calcul. Le titre retiré de
-  // KaraFun qui attend une priorité placée devant lui (returnFromKaraFun,
-  // staffMove) garde sa place derrière elle : sinon la file le montrait
-  // derrière une nouvelle table, puis _commit l'annonçait juste après cette
-  // priorité (relecture, passe 18).
+  // gardées devant un geste disparu retrouvent le calcul.
   _trimManualOrder() {
     const anchors = new Set(this.manualChanges.map(change => change.personId));
     let last = -1;
-    this.manualOrder.forEach((pid, index) => { if (anchors.has(pid) || this._waitsInOrder(pid, index)) last = index; });
+    this.manualOrder.forEach((pid, index) => { if (anchors.has(pid)) last = index; });
     this.manualOrder = this.manualOrder.slice(0, last + 1);
     this.manualOrderActive = this.manualOrderActive && this.manualOrder.length > 0;
-  }
-
-  // `pid`, à la place `index` de l'ordre fixé, est un titre retiré de KaraFun
-  // qui attend une priorité placée devant lui.
-  _waitsInOrder(pid, index) {
-    const p = this.people.get(pid), d = p?.deferral;
-    const at = typeof d?.forId === 'string' ? this.manualOrder.indexOf(d.forId) : -1;
-    return !!d?.afterPriority && !!p.song && d.entryId === p.song.entryId && at >= 0 && at < index;
   }
 
   // Une ligne de l'ordre fixé prend fin : son titre part vers KaraFun, sa
@@ -536,8 +524,14 @@ class Scheduler {
       };
       this.manualOrder = place(this.manualOrder, this.reservedNext);
       this.manualOrderActive = true;
+      // Reprenant la tête au titre retiré, elle garde derrière elle ce qu'il
+      // gardait (son report l'attend de nouveau, sans chaîne à lui) ; sinon
+      // une personne sautée qui suivait le titre perdait sa place (relecture,
+      // passe 19).
+      const backThen = backFor ? this.reservedNext.then : null;
       if (reserved) this.reservedNext = asBehind ? { ...this.reservedNext,
-        then: this.reservedNext.then ? { ...reserved, then: this.reservedNext.then } : reserved } : reserved;
+        then: this.reservedNext.then ? { ...reserved, then: this.reservedNext.then } : reserved } :
+        backThen ? { ...reserved, then: backThen } : reserved;
       // Chaque geste revient après ceux qui le précédaient encore, avant ceux
       // faits depuis.
       const ids = Array.isArray(record.changeIds) ? record.changeIds : [];
@@ -678,6 +672,15 @@ class Scheduler {
     this._guestLeft(previous?.duet);
     this._guestJoined(p);
     this._duetOnAnnounced(p, p.song);
+    // Titre retiré de KaraFun qui attendait sa priorité, réordonné par son
+    // chanteur : le titre mis en tête de sa liste garde cette place, comme
+    // son téléphone le promet (« sans changer la place »), et comme quand il
+    // l'attend dans la chaîne des annonces (relecture, passe 19).
+    const d = p.deferral;
+    if (d?.afterPriority && p.song && previous?.entryId === d.entryId) {
+      d.entryId = p.song.entryId;
+      d.ids = this._lineOf(p.id);
+    }
   }
 
   // `deferrals` : pour une intervention du bar, les reports « Pas prêt »
@@ -826,10 +829,14 @@ class Scheduler {
   // là » comprise (relecture, passes 16 et 17). `busyIds` : personnes des
   // passages en route vers KaraFun, invitée d'un duo comprise (le titre ne
   // repasse pas juste après elles). Titre pas encore revenu : à son retour
-  // (returnFromKaraFun).
+  // (returnFromKaraFun). De même pour un titre qui attendait sa priorité dans
+  // la chaîne des annonces (`pulled`, staffMove, _insertPulled), si ni la
+  // chaîne ni son report ne le gardent après l'annulation (relecture, passe 19).
   _undoLatest(nativeFingerprint, excludeIds = [], busyIds = []) {
     const latest = this.manualChanges.at(-1);
     const yielded = this._deferredOwners().map(pid => this.people.get(pid)).filter(p => p.deferral.afterPriority);
+    const linked = [];
+    for (let link = this.reservedNext?.then; link; link = link.then) if (link.pulled && this.people.has(link.personId)) linked.push(link);
     if (this.canUndoManualChange(nativeFingerprint)) {
       this.restoreManualOverride(latest.before, { deferrals: true });
       this._restorePlan(latest.planBefore);
@@ -839,6 +846,12 @@ class Scheduler {
       if (!this._isDeferred(p) && p.deferral) {
         this._backFirst(p, p.deferral.entryId, { cutoff: p.deferral.forAt, busyIds: [...excludeIds, ...busyIds] });
       }
+    }
+    const inChain = pid => { for (let link = this.reservedNext; link; link = link.then) if (link.personId === pid) return true; return false; };
+    for (const link of linked) {
+      const p = this.people.get(link.personId);
+      if (!p?.song || inChain(p.id) || this._isDeferred(p)) continue;
+      this._waitAgain(p, link.forId, link.forAt, [...excludeIds, ...busyIds]);
     }
     this.version++;
     return latest;
@@ -852,6 +865,10 @@ class Scheduler {
   // attend encore. Les titres déjà dans KaraFun ne bougent jamais.
   _undoRebased(change, excludeIds = []) {
     const before = change.before || {};
+    // Titre retiré de KaraFun pour la priorité de ce geste, qui l'attend dans
+    // la chaîne des annonces (`pulled`, avant que celle-ci ne change).
+    let pulledFor = false;
+    for (let link = this.reservedNext; link && !pulledFor; link = link.then) pulledFor = !!link.pulled && link.forId === change.personId;
     const pinned = new Set(this.manualOrder);
     // Ligne encore en attente : toujours fixée, ou encore là avec un titre,
     // sans être montée sur scène depuis le geste (son titre parti, ou en
@@ -939,7 +956,7 @@ class Scheduler {
     // report rendu de la personne de ce geste, au bout, derrière lui ; sinon
     // elle passait devant lui, et devant une personne dont son envoi lèvera
     // le report (relecture, passe 17).
-    const yielding = [...this.people.values()].some(q => q.deferral?.afterPriority && q.deferral.forId === change.personId &&
+    const yielding = pulledFor || [...this.people.values()].some(q => q.deferral?.afterPriority && q.deferral.forId === change.personId &&
       q.song?.entryId === q.deferral.entryId);
     for (const [pid, deferral] of Array.isArray(before.deferrals) ? before.deferrals : []) {
       const p = this.people.get(pid);
