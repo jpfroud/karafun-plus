@@ -529,9 +529,14 @@ class Scheduler {
       // une personne sautée qui suivait le titre perdait sa place (relecture,
       // passe 19).
       const backThen = backFor ? this.reservedNext.then : null;
+      // Remise derrière la tête, dans la limite de BEHIND_MAX comme partout où
+      // la chaîne grandit (_behindCopy, _dropBehind) : sinon un redémarrage
+      // gardait une autre chaîne que la soirée (relecture, passe 21).
+      const cut = [];
       if (reserved) this.reservedNext = asBehind ? { ...this.reservedNext,
-        then: this.reservedNext.then ? { ...reserved, then: this.reservedNext.then } : reserved } :
+        then: this._behindCopy(this.reservedNext.then ? { ...reserved, then: this.reservedNext.then } : reserved, 0, cut) } :
         backThen ? { ...reserved, then: backThen } : reserved;
+      for (const link of cut) this._dropBehind(link);
       // Chaque geste revient après ceux qui le précédaient encore, avant ceux
       // faits depuis.
       const ids = Array.isArray(record.changeIds) ? record.changeIds : [];
@@ -873,6 +878,14 @@ class Scheduler {
       const p = this.people.get(link.personId);
       if (!p?.song || this._inChain(p.id) || this._isDeferred(p)) continue;
       this._waitAgain(p, link.forId, link.forAt, [...excludeIds, ...busyIds]);
+    }
+    // Ligne placée par un déplacement au milieu de la chaîne (`moved`) dont le
+    // geste vient d'être annulé : elle sort de la chaîne et retrouve le calcul
+    // (_behindStands ne la laissait déjà plus partir ; relecture, passe 21).
+    if (this.reservedNext?.then) {
+      const { then, ...head } = this.reservedNext;
+      const rest = this._pruneBehind(then, link => !!link.moved && !this.manualOrder.includes(link.personId));
+      this.reservedNext = rest ? { ...head, then: rest } : head;
     }
     this.version++;
     return latest;
@@ -1328,11 +1341,16 @@ class Scheduler {
     delete p.emptiedAt;
     if (mode === 'append' && p.song) p.backlog.push(next);
     else {
+      const previous = p.song;
       if (mode === 'replace') {
         this._songsGone(p, this.songsOf(p));
         p.backlog = [];
       }
       p.song = next;
+      // « Remplacer ma prochaine chanson » sur un titre retiré de KaraFun qui
+      // attend sa priorité : le nouveau titre garde sa place, comme un titre
+      // suivant qui le remplace (relecture, passe 21).
+      this._keepWaitingSlot(p, previous);
     }
     p.withdrawnAt = null;
     this._refreshDuetViews();

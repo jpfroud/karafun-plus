@@ -656,6 +656,24 @@ test('priorité avec retrait, puis nouvelle priorité pendant le retrait : la no
   assert.deepEqual(planned(f).slice(0, 4).map(line => line.id), [gus.id, driss.id, bruno.id, eve.id]);
 });
 
+// Passe 21 : pendant le retrait, le bar donne « Priorité » au titre suivant du
+// chanteur du titre retiré : celui-ci part à la place de cette priorité, et le
+// journal le dit (il disait que la priorité du geste ne tenait plus).
+test('priorité avec retrait, puis « Priorité » au titre suivant du même chanteur pendant le retrait : le journal le dit', async () => {
+  const f = harness();
+  const ctx = loaded(f);
+  const { bruno, driss } = ctx.people;
+  f.sched.chooseSong(bruno, { songId: 812, title: 'Autre titre Bruno' }, 'append');
+  f.sync();
+  await pullFor(f, driss);
+  await move(f, { personId: bruno.id, toIndex: 0, priority: true });
+  karafunRemoves(f, ctx);
+  assert.ok(notes(f).includes('« Titre Bruno » (Bruno · Table 2) retiré de KaraFun : il passe à la place de la priorité donnée depuis à Bruno, sans perdre son tour'),
+    notes(f).filter(line => line.includes('retiré de KaraFun')).join(' | '));
+  assert.equal(planned(f)[0].id, bruno.id);
+  assert.equal(f.sched.select().song.title, 'Titre Bruno');
+});
+
 // Passe 20 : la priorité du geste a pris fin pendant le retrait (« Pas prêt »
 // de Driss) ; le titre repasse juste derrière la priorité donnée depuis, et
 // le journal du bar le dit ainsi (il nommait Driss).

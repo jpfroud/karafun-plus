@@ -3212,6 +3212,9 @@ test('passe 20 : duo retiré de KaraFun dont l’invitée rejoint ensuite le duo
   s.requestDuetJoin(G, X.id, X.song.entryId);
   s.answerDuetJoin(X, X.song.entryId, G.id, true);
   const shown = names(s, stage.ids).slice(0, 5);
+  // Le duo retiré passe dès que son invitée le peut : juste après le passage
+  // qui suit celui où elle chante avec la priorité.
+  assert.equal(shown.indexOf(`${O.name} & ${G.name}`), 2, shown.join(', '));
   s.songEnded(stage.ids);
   assert.deepEqual(sends18(s, 5), shown, `file montrée et envois d’accord (${shown.join(', ')})`);
 });
@@ -3326,4 +3329,200 @@ test('passe 20 : duo improvisé noté puis annulé sur la priorité du retrait :
   assert.deepEqual(names(s, stage.ids).slice(0, 4), want);
   s.songEnded(stage.ids);
   assert.deepEqual(sends18(s, 4), want);
+});
+
+// ------------------------------------------------------------------ passe 21
+// Relecture, invocation 5, passe 3 : la reconstruction de la chaîne par un
+// déplacement du bar, les annulations d'un tel déplacement, le titre retiré
+// qui reprend la tête, « Remplacer ma prochaine chanson » et le titre retiré
+// qui attend la priorité partante devant un simple report.
+
+test('passe 21 : déplacer une ligne derrière le titre retiré qui attend la priorité en tête : la chaîne gardée reste derrière lui', () => {
+  for (const at of [1, 2, 3, 4]) {
+    const { s, people } = secondRound18({ requirePresence: true });
+    for (const p of Object.values(people)) if (p !== people.Maud) s.confirm(p);
+    const stage = s.select(); s.commit(stage);
+    s.skipUnconfirmed(people.Maud.id, 3);
+    const loaded = s.select(); s.commit(loaded);
+    const T = s.people.get(loaded.ids[0]);
+    const tr = { sel: loaded };
+    pullFor18(s, tr, people.Karim, stage.ids);
+    back18(s, tr);
+    newcomer18(s, 'Zoe');
+    const before = names(s, stage.ids);
+    assert.deepEqual(before.slice(0, 3), ['Karim', T.name, 'Maud']);
+    const Z = [...s.people.values()].find(p => p.name === before[6]);
+    gesture(s, Z, at, stage.ids);
+    const want = before.filter(n => n !== Z.name); want.splice(at, 0, Z.name);
+    assert.deepEqual(names(s, stage.ids).slice(0, 6), want.slice(0, 6), `place ${at + 1}`);
+    s.songEnded(stage.ids);
+    assert.deepEqual(sends18(s, 6), want.slice(0, 6), `place ${at + 1} : envois`);
+  }
+});
+
+test('passe 21 : « Annuler » recalculé, puis « Annuler tous les changements », du déplacement qui a placé une ligne dans la chaîne : elle revient au calcul', () => {
+  const { s, people } = secondRound18({ requirePresence: true });
+  for (const p of Object.values(people)) if (p !== people.Maud) s.confirm(p);
+  const stage = s.select(); s.commit(stage);
+  s.skipUnconfirmed(people.Maud.id, 3);
+  const loaded = s.select(); s.commit(loaded);
+  s.songEnded(stage.ids);
+  const order = names(s, loaded.ids).filter(n => n !== 'Maud');
+  const W = people[order[0]], Z = people[order[4]];
+  gesture(s, W, 0, loaded.ids);
+  gesture(s, Z, 1, loaded.ids);
+  assert.deepEqual(names(s, loaded.ids).slice(0, 3), [W.name, Z.name, 'Maud']);
+  newcomer18(s, 'Nina'); // la file a changé : annulation recalculée
+  assert.equal(s.canUndoManualChange(NATIVE), false);
+  s.undoLastManualChange(null, NATIVE, { busyIds: loaded.ids });
+  const shown = names(s, loaded.ids);
+  assert.deepEqual(shown.slice(0, 2), [W.name, 'Maud'], shown.join(', '));
+  assert.ok(shown.indexOf(Z.name) > shown.indexOf('Nina'), shown.join(', '));
+  s.undoAllManualChanges(NATIVE, { busyIds: loaded.ids });
+  const all = names(s, loaded.ids);
+  assert.ok(all.indexOf(Z.name) > all.indexOf('Nina'), `après « Annuler tous » : ${all.join(', ')}`);
+  s.songEnded(loaded.ids);
+  assert.deepEqual(sends18(s, 6), all.slice(0, 6));
+});
+
+test('passe 21 : le bar place à la 2e place le titre suivant de la personne sur scène, une personne sautée gardée derrière la priorité : la place donnée tient', () => {
+  const { s, people } = secondRound18({ requirePresence: true });
+  for (const p of Object.values(people)) if (p !== people.Maud) s.confirm(p);
+  const stage = s.select(); s.commit(stage);
+  s.skipUnconfirmed(people.Maud.id, 3);
+  const loaded = s.select(); s.commit(loaded);
+  s.songEnded(stage.ids);
+  const onStage = s.people.get(loaded.ids[0]);
+  s.chooseSong(onStage, song(), 'append');
+  gesture(s, people[names(s).filter(n => n !== 'Maud' && n !== onStage.name)[0]], 0);
+  newcomer18(s, 'Nina');
+  gesture(s, onStage, 1);
+  const shown = names(s);
+  assert.equal(shown[1], onStage.name, shown.join(', '));
+  assert.equal(shown[2], 'Maud', shown.join(', '));
+  s.songEnded(loaded.ids);
+  assert.deepEqual(sends18(s, 4), shown.slice(0, 4));
+});
+
+test('passe 21 : cinq priorités dont la dernière avec retrait, puis « Annuler » avant ou après le retour du titre : la personne sautée reste devant la nouvelle table', () => {
+  for (const order of ['annuler puis retour', 'retour puis annuler']) {
+    const { s, people } = secondRound18({ requirePresence: true });
+    for (const p of Object.values(people)) if (p !== people.Maud) s.confirm(p);
+    const stage = s.select(); s.commit(stage);
+    s.skipUnconfirmed(people.Maud.id, 3);
+    const loaded = s.select(); s.commit(loaded);
+    assert.equal(s.reservedNext?.personId, people.Maud.id);
+    const stack = [people.Hugo, people.Ines, people.Jade, people.Elsa, people.Karim]
+      .filter(p => !loaded.ids.includes(p.id) && !stage.ids.includes(p.id));
+    assert.equal(stack.length, 5);
+    for (const p of stack.slice(0, 4)) gesture(s, p, 0, [...stage.ids, ...loaded.ids]);
+    const tr = { sel: loaded };
+    pullFor18(s, tr, stack[4], stage.ids);
+    newcomer18(s, 'Nina');
+    if (order === 'annuler puis retour') { s.undoLastManualChange(null, NATIVE, { busyIds: stage.ids }); back18(s, tr, stage.ids); }
+    else { back18(s, tr, stage.ids); s.undoLastManualChange(null, NATIVE, { busyIds: stage.ids }); }
+    const shown = names(s, stage.ids);
+    assert.ok(shown.indexOf('Maud') >= 0 && shown.indexOf('Maud') < shown.indexOf('Nina'), `${order} : ${shown.join(', ')}`);
+    s.songEnded(stage.ids);
+    assert.deepEqual(sends18(s, 8), shown.slice(0, 8), order);
+  }
+});
+
+test('passe 21 : « Remplacer ma prochaine chanson » sur le titre retiré qui attend sa priorité : le nouveau titre garde sa place, en report comme dans la chaîne', () => {
+  for (const newer of [false, true]) {
+    const { s, people } = secondRound18();
+    const stage = s.select(); s.commit(stage);
+    const loaded = s.select(); s.commit(loaded);
+    const T = s.people.get(loaded.ids[0]);
+    const tr = { sel: loaded };
+    pullFor18(s, tr, people.Karim, stage.ids);
+    back18(s, tr);
+    if (newer) gesture(s, people.Hugo, 0, stage.ids);
+    newcomer18(s, 'Zoe'); newcomer18(s, 'Yann');
+    const lead = newer ? ['Hugo', 'Karim'] : ['Karim'];
+    assert.deepEqual(names(s, stage.ids).slice(0, lead.length + 1), [...lead, T.name]);
+    s.chooseSong(T, song(), 'replace');
+    const shown = names(s, stage.ids);
+    assert.deepEqual(shown.slice(0, lead.length + 1), [...lead, T.name], `${newer ? 'chaîne' : 'report'} : ${shown.join(', ')}`);
+    s.songEnded(stage.ids);
+    assert.deepEqual(sends18(s, 5), shown.slice(0, 5), newer ? 'chaîne' : 'report');
+  }
+});
+
+test('passe 21 : un duo retiré qui attend en simple report, puis un autre titre retiré pour la priorité suivante : celui-ci passe juste après elle, comme montré', () => {
+  const { s, people } = secondRound18();
+  const stage = s.select(); s.commit(stage);
+  const order = names(s, stage.ids).map(n => people[n]).filter(Boolean);
+  const O = order[0];
+  const G = order.find(p => p !== O && p !== order[1] && p !== order[2]);
+  s.requestDuetJoin(G, O.id, O.song.entryId);
+  s.answerDuetJoin(O, O.song.entryId, G.id, true);
+  const loaded = s.select(); s.commit(loaded);
+  assert.deepEqual(loaded.ids, [O.id, G.id]);
+  const rest = names(s, stage.ids).map(n => people[n]).filter(p => p && p !== G && !loaded.ids.includes(p.id) && !stage.ids.includes(p.id));
+  const X = rest[0];
+  const tr = { sel: loaded };
+  pullFor18(s, tr, X, stage.ids);
+  back18(s, tr);
+  s.requestDuetJoin(G, X.id, X.song.entryId);
+  s.answerDuetJoin(X, X.song.entryId, G.id, true);
+  s.songEnded(stage.ids);
+  for (const p of s.people.values()) s.confirm(p);
+  const xs = s.select(); s.commit(xs); // X & G part, le duo d'O ne peut pas les suivre
+  assert.deepEqual(xs.ids, [X.id, G.id]);
+  tick20();
+  const Y = names(s, xs.ids).map(n => people[n]).filter(p => p && !xs.ids.includes(p.id) && p !== O)[1];
+  const tr2 = { sel: xs };
+  pullFor18(s, tr2, Y, []);
+  back18(s, tr2);
+  const shown = names(s).slice(0, 5);
+  assert.deepEqual(shown.slice(0, 2), [Y.name, `${X.name} & ${G.name}`], shown.join(', '));
+  assert.deepEqual(sends18(s, 5), shown);
+});
+
+test('passe 21 : « Annuler » recalculé d’une cinquième priorité qui avait fait tomber la personne sautée : elle est de nouveau gardée, sans être aussi sautée', () => {
+  const { s, people } = secondRound18({ requirePresence: true });
+  for (const p of Object.values(people)) if (p !== people.Maud) s.confirm(p);
+  const stage = s.select(); s.commit(stage);
+  s.skipUnconfirmed(people.Maud.id, 3);
+  const loaded = s.select(); s.commit(loaded);
+  const stack = [people.Hugo, people.Ines, people.Jade, people.Elsa, people.Karim]
+    .filter(p => !loaded.ids.includes(p.id) && !stage.ids.includes(p.id));
+  for (const p of stack) gesture(s, p, 0, [...stage.ids, ...loaded.ids]);
+  newcomer18(s, 'Nina');
+  assert.equal(s.canUndoManualChange(NATIVE), false, 'annulation recalculée');
+  s.undoLastManualChange(null, NATIVE, { busyIds: [...stage.ids, ...loaded.ids] });
+  assert.equal(s._isPresenceRetry(people.Maud), false);
+  s.songEnded(stage.ids); s.songEnded(loaded.ids);
+  for (let k = 0; k < 6; k++) {
+    for (const p of s.people.values()) if (!p.withdrawnAt) s.confirm(p);
+    const first = names(s)[0];
+    const sel = s.select();
+    assert.ok(sel, `passage ${k + 1} envoyé`);
+    assert.equal(label(s, sel), first, `passage ${k + 1} : la tête montrée est envoyée`);
+    s.commit(sel); s.songEnded(sel.ids);
+  }
+});
+
+test('passe 21 : le bar déplace dans la chaîne une priorité qu’elle gardait : elle y reste priorité du bar, à la place donnée', () => {
+  const { s, people } = secondRound18({ requirePresence: true });
+  for (const p of Object.values(people)) if (p !== people.Maud) s.confirm(p);
+  const stage = s.select(); s.commit(stage);
+  s.skipUnconfirmed(people.Maud.id, 3);
+  const loaded = s.select(); s.commit(loaded);
+  s.songEnded(stage.ids);
+  const order = names(s, loaded.ids).filter(n => n !== 'Maud');
+  const W = people[order[0]], X = people[order[1]];
+  gesture(s, W, 0, loaded.ids);
+  gesture(s, X, 0, loaded.ids); // X > W > Maud
+  newcomer18(s, 'Nina');
+  assert.deepEqual(names(s, loaded.ids).slice(0, 3), [X.name, W.name, 'Maud']);
+  gesture(s, W, 2, loaded.ids); // W derrière Maud
+  const shown = names(s, loaded.ids);
+  assert.deepEqual(shown.slice(0, 3), [X.name, 'Maud', W.name], shown.join(', '));
+  let link = s.reservedNext;
+  while (link && link.personId !== W.id) link = link.then;
+  assert.equal(link?.byStaff, true, 'toujours priorité du bar');
+  s.songEnded(loaded.ids);
+  assert.deepEqual(sends18(s, 5), shown.slice(0, 5));
 });

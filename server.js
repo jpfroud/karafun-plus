@@ -848,7 +848,16 @@ function restorePulled(tr) {
       if (link.pulled && link.personId === tr.sel.ids[0] && link.forId === forP.id) ahead = prev;
     }
     const aheadP = ahead && sched.people.get(ahead.personId);
-    sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (still ?
+    // Le bar a donné « Priorité » au titre suivant de son chanteur pendant le
+    // retrait : le titre revenu part à la place de cette priorité (Scheduler#
+    // _insertPulled ne le compte pas deux fois ; relecture, passe 21).
+    let ownLine = null;
+    for (let link = sched.reservedNext; link && !still && !ahead && !ownLine; link = link.then) {
+      if (link.byStaff && link.personId === tr.sel.ids[0]) ownLine = link;
+    }
+    const owner = ownLine && sched.people.get(ownLine.personId);
+    sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (owner ?
+      `il passe à la place de la priorité donnée depuis à ${owner.name}, sans perdre son tour` : still ?
       `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` : aheadP?.id === forP?.id && aheadP ?
       `il repasse juste après ${forP.name} (priorité du bar), qui passe après la priorité donnée depuis, sans perdre son tour` : aheadP ?
       `la priorité de ${forP.name} a pris fin, il repasse juste après ${aheadP.name}${ahead.byStaff ? ' (priorité du bar)' : ''}, sans perdre son tour` :

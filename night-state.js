@@ -370,9 +370,11 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // (`pulledBack`). Abîmée, ou sa personne oubliée, l'annonce gardée tombe.
     // `pulled` : titre retiré pour une priorité, annoncé après elle ou qui
     // l'attend dans la chaîne (`forId`, `forAt` : cette priorité) ; `retry` :
-    // personne sautée faute de « Je suis là » (Scheduler#staffMove les garde).
+    // personne sautée faute de « Je suis là » (Scheduler#staffMove les garde) ;
+    // `moved` : ligne placée par le bar au milieu de la chaîne (staffMove).
     const flags = row => ({ ...(row.byStaff === true ? { byStaff: true } : {}), ...(row.borrowable === true ? { borrowable: true } : {}),
       ...(row.pulled === true ? { pulled: true } : {}), ...(row.retry === true ? { retry: true } : {}),
+      ...(row.moved === true ? { moved: true } : {}),
       ...(row.pulled === true && typeof row.forId === 'string' && Number.isFinite(row.forAt) ? { forId: row.forId, forAt: row.forAt } : {}) });
     // Chaîne des annonces gardées : un maillon abîmé, oublié ou répété tombe
     // (la première place d'une personne reste), les suivants restent. Au plus
