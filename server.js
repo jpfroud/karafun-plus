@@ -840,14 +840,18 @@ function restorePulled(tr) {
       cutoff: forAt ?? tr.pulled.at, busyIds: sendingSingers() });
     // Une priorité donnée pendant le retrait passe d'abord : le titre attend
     // celle de son geste, juste derrière elle dans la chaîne des annonces
-    // (Scheduler#yieldToPriority, `dormant`).
-    let waits = false;
-    for (let link = sched.reservedNext?.then; link && !still && forP && !waits; link = link.then) {
-      waits = !!link.pulled && link.personId === tr.sel.ids[0] && link.forId === forP.id;
+    // (Scheduler#yieldToPriority, `dormant`) ; si elle a pris fin pendant le
+    // retrait (« Pas prêt »), juste derrière la priorité donnée depuis. Le
+    // journal nomme l'annonce qui le précède vraiment (relecture, passe 20).
+    let ahead = null;
+    for (let prev = sched.reservedNext, link = prev?.then; link && !still && forP && !ahead; prev = link, link = link.then) {
+      if (link.pulled && link.personId === tr.sel.ids[0] && link.forId === forP.id) ahead = prev;
     }
+    const aheadP = ahead && sched.people.get(ahead.personId);
     sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (still ?
-      `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` : waits ?
-      `il repasse juste après ${forP.name} (priorité du bar), qui passe après la priorité donnée depuis, sans perdre son tour` :
+      `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` : aheadP?.id === forP?.id && aheadP ?
+      `il repasse juste après ${forP.name} (priorité du bar), qui passe après la priorité donnée depuis, sans perdre son tour` : aheadP ?
+      `la priorité de ${forP.name} a pris fin, il repasse juste après ${aheadP.name}${ahead.byStaff ? ' (priorité du bar)' : ''}, sans perdre son tour` :
       `la priorité ${forP ? `de ${forP.name} ` : ''}ne tient plus, il reprend sa place sans perdre son tour`), 'skip');
     return;
   }

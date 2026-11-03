@@ -374,19 +374,23 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     const flags = row => ({ ...(row.byStaff === true ? { byStaff: true } : {}), ...(row.borrowable === true ? { borrowable: true } : {}),
       ...(row.pulled === true ? { pulled: true } : {}), ...(row.retry === true ? { retry: true } : {}),
       ...(row.pulled === true && typeof row.forId === 'string' && Number.isFinite(row.forAt) ? { forId: row.forId, forAt: row.forAt } : {}) });
-    // Chaîne des annonces gardées (au plus BEHIND_MAX) : un maillon abîmé,
-    // oublié ou répété tombe (la première place d'une personne reste), les
-    // suivants restent.
+    // Chaîne des annonces gardées : un maillon abîmé, oublié ou répété tombe
+    // (la première place d'une personne reste), les suivants restent. Au plus
+    // BEHIND_MAX annonces, sans compter les titres retirés de KaraFun
+    // (`pulled`), comme pendant la soirée (Scheduler#_behindCopy) : au-delà,
+    // les plus anciennes tombent. Sinon un redémarrage coupait une chaîne que
+    // la soirée gardait entière (relecture, passe 20).
     const seen = new Set([reserved.personId]);
-    const chain = (link, depth = 0) => {
-      if (!link || typeof link !== 'object' || depth >= BEHIND_MAX) return null;
-      const ok = typeof link.personId === 'string' && tmp.people.has(link.personId) && !seen.has(link.personId) &&
-        Number.isFinite(link.reservedAt);
-      if (ok) seen.add(link.personId);
-      const rest = chain(link.then, depth + 1);
-      return ok ? { personId: link.personId, reservedAt: link.reservedAt, ...flags(link), ...(rest ? { then: rest } : {}) } : rest;
-    };
-    const keptThen = chain(reserved.then);
+    const links = [];
+    for (let link = reserved.then, k = 0; link && typeof link === 'object' && k < 4 * BEHIND_MAX; link = link.then, k++) {
+      if (typeof link.personId !== 'string' || !tmp.people.has(link.personId) || seen.has(link.personId) ||
+        !Number.isFinite(link.reservedAt)) continue;
+      seen.add(link.personId);
+      links.push({ personId: link.personId, reservedAt: link.reservedAt, ...flags(link) });
+    }
+    let counted = 0;
+    const keptThen = links.filter(link => link.pulled || ++counted <= BEHIND_MAX)
+      .reduceRight((then, link) => ({ ...link, ...(then ? { then } : {}) }), null);
     tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt, ...flags(reserved),
       ...(Number.isFinite(reserved.pulledBack) ? { pulledBack: reserved.pulledBack } : {}),
       ...(keptThen ? { then: keptThen } : {}) };
@@ -492,10 +496,13 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // Annonces gardées derrière (`then`) : un maillon d'une personne
     // supprimée tombe, le suivant prend sa place ; un maillon abîmé derrière
     // tombe aussi. L'annonce elle-même abîmée reste, et le geste est refusé
-    // ci-dessous.
-    const prune = (link, depth = 0) => {
-      if (!link || typeof link !== 'object' || depth > BEHIND_MAX) return depth ? null : link;
-      const rest = prune(link.then, depth + 1);
+    // ci-dessous. Au plus BEHIND_MAX annonces derrière elle, les titres
+    // retirés de KaraFun (`pulled`) non comptés, comme la chaîne en cours.
+    const prune = (link, counted = 0, depth = 0) => {
+      if (!link || typeof link !== 'object' || depth > 4 * BEHIND_MAX) return depth ? null : link;
+      const counts = depth > 0 && link.pulled !== true;
+      const rest = prune(link.then, counted + (counts ? 1 : 0), depth + 1);
+      if (counts && counted >= BEHIND_MAX) return rest;
       if (typeof link.personId !== 'string' || !Number.isFinite(link.reservedAt)) return depth ? rest : link;
       if (gone(link.personId)) { forgotten++; return rest; }
       const { then, ...self } = link;

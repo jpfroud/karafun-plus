@@ -672,14 +672,21 @@ class Scheduler {
     this._guestLeft(previous?.duet);
     this._guestJoined(p);
     this._duetOnAnnounced(p, p.song);
-    // Titre retiré de KaraFun qui attendait sa priorité, réordonné par son
-    // chanteur : le titre mis en tête de sa liste garde cette place, comme
-    // son téléphone le promet (« sans changer la place »), et comme quand il
-    // l'attend dans la chaîne des annonces (relecture, passe 19).
-    const d = p.deferral;
-    if (d?.afterPriority && p.song && previous?.entryId === d.entryId) {
+    this._keepWaitingSlot(p, previous);
+  }
+
+  // Titre retiré de KaraFun qui attendait sa priorité, réordonné ou remplacé
+  // par le titre suivant de sa liste (retiré par son chanteur ou par le bar) :
+  // le titre désormais en tête de sa liste garde cette place, comme son
+  // téléphone le promet (« sans changer la place ») et comme quand il l'attend
+  // dans la chaîne des annonces, où sa personne garde sa place (relecture,
+  // passes 19 et 20).
+  _keepWaitingSlot(p, previous) {
+    const d = p?.deferral;
+    if (d?.afterPriority && p.song && previous?.entryId === d.entryId && p.song.entryId !== d.entryId) {
       d.entryId = p.song.entryId;
       d.ids = this._lineOf(p.id);
+      this.version++;
     }
   }
 
@@ -698,10 +705,25 @@ class Scheduler {
     this.manualOrder = [...state.manualOrder];
     this.manualOrderActive = !!state.manualOrderActive && this.manualOrder.length > 0;
     this.reservedNext = this._copyReservation(state.reservedNext);
+    this._chainAnnounced();
     if (!deferrals || !Array.isArray(state.deferrals)) return;
     for (const [pid, deferral] of state.deferrals) {
       const p = this.people.get(pid);
       if (p && !p.withdrawnAt && p.song?.entryId === deferral.entryId && !p.deferral) this._restoreDeferral(p, deferral);
+    }
+  }
+
+  // Les personnes de la chaîne des annonces rendue par une annulation y sont
+  // de nouveau annoncées : une personne sautée faute de « Je suis là » que le
+  // geste annulé avait coupée de la chaîne (au-delà de BEHIND_MAX,
+  // _dropBehind) n'attend plus aussi comme sautée. Sinon elle était à la fois
+  // annoncée et retenue : la file montrait quelqu'un d'autre en tête, la
+  // scène attendait son « Je suis là », puis un autre partait (relecture,
+  // passe 20). Une priorité du bar n'est pas une annonce de ce genre.
+  _chainAnnounced() {
+    for (let link = this.reservedNext; link; link = link.then) {
+      const p = link.byStaff ? null : this.people.get(link.personId);
+      if (p?.presenceRetry) { p.presenceRetry = false; this.version++; }
     }
   }
 
@@ -847,10 +869,9 @@ class Scheduler {
         this._backFirst(p, p.deferral.entryId, { cutoff: p.deferral.forAt, busyIds: [...excludeIds, ...busyIds] });
       }
     }
-    const inChain = pid => { for (let link = this.reservedNext; link; link = link.then) if (link.personId === pid) return true; return false; };
     for (const link of linked) {
       const p = this.people.get(link.personId);
-      if (!p?.song || inChain(p.id) || this._isDeferred(p)) continue;
+      if (!p?.song || this._inChain(p.id) || this._isDeferred(p)) continue;
       this._waitAgain(p, link.forId, link.forAt, [...excludeIds, ...busyIds]);
     }
     this.version++;
@@ -889,7 +910,16 @@ class Scheduler {
       !order.some(line => line !== pid && this._singsOnLine(line, pid)));
     this.manualOrderActive = this.manualOrder.length > 0;
     this._trimManualOrder();
-    if (change.to === 1 && this.reservedNext?.personId === change.personId) this.reservedNext = null;
+    // Priorité annulée en tête : les annonces qu'elle gardait derrière elle
+    // (`then`) sont rendues ci-dessous, comme quand elle prend fin autrement
+    // (_passNext). Sinon une personne sautée faute de « Je suis là » gardée là
+    // perdait sa place quand l'annonce d'avant le geste ne pouvait plus
+    // revenir (relecture, passe 20).
+    let heldChain = null;
+    if (change.to === 1 && this.reservedNext?.personId === change.personId) {
+      heldChain = this.reservedNext.then || null;
+      this.reservedNext = null;
+    }
     // Priorité annulée de l'annonce gardée derrière un titre revenu de
     // KaraFun : elle ne lui est plus rendue.
     if (change.to === 1 && this.reservedNext?.then) {
@@ -934,7 +964,23 @@ class Scheduler {
       (!old.byStaff || this.manualOrder.includes(old.personId));
     const back = this.reservedNext;
     const restoredOld = !back && restorable;
-    if (restoredOld) this.reservedNext = this._copyReservation(old);
+    if (restoredOld) {
+      // L'annonce d'avant le geste revient telle qu'elle était, avec ce qu'elle
+      // gardait ; les annonces que la priorité annulée a gardées depuis le
+      // geste la suivent (un titre retiré de KaraFun attend de nouveau sa
+      // priorité : _undoLatest).
+      this.reservedNext = this._copyReservation(old);
+      const since = heldChain ? this._pruneBehind(heldChain, link => !!link.pulled || this._inChain(link.personId)) : null;
+      if (since) this._appendChain(since);
+      this._chainAnnounced();
+    } else if (!back && heldChain) {
+      // Elle ne peut plus revenir : la première des annonces que gardait la
+      // priorité annulée qui peut encore partir devient la prochaine, avec
+      // celles qu'elle garde ; celles d'avant qui ne le peuvent pas tombent
+      // (_dropBehind).
+      const promoted = this._nextBehind(heldChain, [...this._justSang(), ...excludeIds]);
+      if (promoted) this.reservedNext = promoted;
+    }
     // Titre revenu de KaraFun en tête sans annonce derrière lui (_backFirst) :
     // l'annonce d'avant ce geste, plus ancienne que le retrait, le suivait dans
     // KaraFun ; elle le suit de nouveau. Sinon « Recalculer la file » une fois
@@ -1328,7 +1374,7 @@ class Scheduler {
     // par le bar tombe. Sinon le titre suivant de la liste la garde (un duo :
     // voir _guestJoined).
     if (!p.song || by === 'presence-max') this._unpinManual(p.id);
-    else if (p.song !== current) { this._guestJoined(p); this._duetOnAnnounced(p, p.song); }
+    else if (p.song !== current) { this._guestJoined(p); this._duetOnAnnounced(p, p.song); this._keepWaitingSlot(p, current); }
     this._refreshDuetViews();
     if (!p.song) this._endLine(p.id);
     this._event('song.removed', { personId: p.id, entryId: key, by });
