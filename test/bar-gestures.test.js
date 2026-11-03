@@ -2205,15 +2205,93 @@ test('duo en priorité malgré le « Pas prêt » de l’invitée, priorité ann
   s.answerDuet(fay, true, duo.entryId);
   s.reorderSongs(bob, duo.entryId, 0);
   s.deferPassage(fay.id, s.presenceView([], null).find(v => !v.future && !s.isDeferred(s.people.get(v.ids[0]))), 2);
-  gesture(s, bob, 0, stage.ids);
+  const priority = gesture(s, bob, 0, stage.ids);
   const loaded = s.select({ stageFree: false });
   assert.equal(label(s, loaded), 'Bob & Fay');
-  assert.equal(loaded.staffPick, true, 'choisi comme priorité du bar');
+  assert.equal(loaded.staffPick, priority.id, 'choisi sous le geste de priorité du bar');
   s.undoLastManualChange(null, NATIVE, { excludeIds: [...stage.ids, ...loaded.ids] }); // le bar annule pendant l'envoi
   s.commit(loaded);
   assert.equal(s.isDeferred(fay), false, 'l’envoi du duo finit le report de Fay');
   s.requeueUnplayed(loaded); // absent à l'appel, titre passé dans KaraFun
   assert.equal(s.isDeferred(fay), true, 'la priorité annulée, le report de Fay revient');
+});
+
+// Relecture (passe 15) : même cas quand le bar avait d'abord déplacé le duo.
+// Ce déplacement reste noté après l'annulation de la priorité : il ne fait pas
+// du duo une priorité du bar, le « Pas prêt » de Fay revient quand même.
+test('duo déplacé puis mis en priorité malgré le « Pas prêt » de l’invitée, priorité annulée pendant son envoi, ressorti : le report revient', () => {
+  const s = new Scheduler();
+  const join = (tableId, name) => { const p = s.join({ tableId, name, headcount: 1 }); s.chooseSong(p, song()); return p; };
+  const [fay, , bob] = ['Fay', 'Ana', 'Bob', 'Cy', 'Dan', 'Eve'].map((name, i) => join(String(i + 1), name));
+  let stage = null;
+  for (let i = 0; i < 6; i++) {
+    const sel = s.select({ stageFree: true });
+    s.commit(sel); s.recordStage(sel);
+    s.chooseSong(s.people.get(sel.ids[0]), song(), 'append');
+    if (i < 5) { s.songEnded(sel.ids); s.endStage(sel); } else stage = sel;
+  }
+  const duo = s.inviteDuet(bob, fay.id, song());
+  s.answerDuet(fay, true, duo.entryId);
+  s.reorderSongs(bob, duo.entryId, 0);
+  s.deferPassage(fay.id, s.presenceView([], null).find(v => !v.future && !s.isDeferred(s.people.get(v.ids[0]))), 2);
+  assert.deepEqual(names(s, stage.ids), ['Ana', 'Cy', 'Fay', 'Dan', 'Bob & Fay']);
+  gesture(s, bob, 3, stage.ids); // d'abord un déplacement d'une place
+  const priority = gesture(s, bob, 0, stage.ids); // puis « Priorité »
+  const loaded = s.select({ stageFree: false });
+  assert.equal(label(s, loaded), 'Bob & Fay');
+  assert.equal(loaded.staffPick, priority.id);
+  s.undoLastManualChange(null, NATIVE, { excludeIds: [...stage.ids, ...loaded.ids] }); // le bar annule la priorité pendant l'envoi
+  assert.deepEqual(s.manualChanges.map(change => change.kind), ['move'], 'le déplacement reste noté');
+  s.commit(loaded);
+  assert.equal(loaded.staffSent, undefined, 'la priorité annulée : pas parti comme priorité du bar');
+  assert.equal(s.isDeferred(fay), false, 'l’envoi du duo finit le report de Fay');
+  s.requeueUnplayed(loaded); // absent à l'appel, titre passé dans KaraFun
+  assert.equal(s.isDeferred(fay), true, 'le « Pas prêt » de Fay revient malgré le déplacement resté noté');
+  assert.notEqual(names(s, stage.ids)[0], 'Fay', 'son titre ne passe pas en tête');
+});
+
+// Relecture (passe 15, cellules sans test) : seul compte le geste de priorité
+// sous lequel le duo est parti. Un autre geste du bar pendant l'envoi ne le
+// remplace pas ; « Recalculer la file » pendant l'envoi l'annule, le « Pas
+// prêt » de Fay revient.
+test('duo en priorité malgré le « Pas prêt » de l’invitée : autre ligne déplacée pendant son envoi, priorité tenue ; « Recalculer la file » pendant son envoi, report rendu', () => {
+  for (const [during, staffSent] of [['autre ligne déplacée', true], ['Recalculer la file', undefined]]) {
+    const s = new Scheduler();
+    const join = (tableId, name) => { const p = s.join({ tableId, name, headcount: 1 }); s.chooseSong(p, song()); return p; };
+    const [fay, , bob, , dan] = ['Fay', 'Ana', 'Bob', 'Cy', 'Dan', 'Eve'].map((name, i) => join(String(i + 1), name));
+    let stage = null;
+    for (let i = 0; i < 6; i++) {
+      const sel = s.select({ stageFree: true });
+      s.commit(sel); s.recordStage(sel);
+      s.chooseSong(s.people.get(sel.ids[0]), song(), 'append');
+      if (i < 5) { s.songEnded(sel.ids); s.endStage(sel); } else stage = sel;
+    }
+    const duo = s.inviteDuet(bob, fay.id, song());
+    s.answerDuet(fay, true, duo.entryId);
+    s.reorderSongs(bob, duo.entryId, 0);
+    s.deferPassage(fay.id, s.presenceView([], null).find(v => !v.future && !s.isDeferred(s.people.get(v.ids[0]))), 2);
+    const priority = gesture(s, bob, 0, stage.ids);
+    const loaded = s.select({ stageFree: false });
+    assert.equal(loaded.staffPick, priority.id, during);
+    const sending = [...stage.ids, ...loaded.ids];
+    if (staffSent) {
+      // Route du bar : passage en cours d'envoi exclu, prévision avec lui.
+      const visible = s.presenceView(sending, loaded).filter(v => !v.future);
+      const before = s.manualOverrideState({ deferrals: true });
+      s.staffMove(dan.id, 1, sending, loaded);
+      s.recordManualChange({ kind: 'move', personId: dan.id, name: 'Dan', from: visible.findIndex(v => v.ids[0] === dan.id) + 1,
+        to: 2, before, native: NATIVE });
+      assert.deepEqual(s.manualChanges.map(change => change.kind), ['priority', 'move'], during);
+    } else {
+      s.undoAllManualChanges(NATIVE, { excludeIds: sending });
+      assert.equal(s.manualChanges.length, 0, during);
+    }
+    s.commit(loaded);
+    assert.equal(loaded.staffSent, staffSent, during);
+    assert.equal(s.isDeferred(fay), false, `${during} : l’envoi du duo finit le report de Fay`);
+    s.requeueUnplayed(loaded); // absent à l'appel, titre passé dans KaraFun
+    assert.equal(s.isDeferred(fay), !staffSent, `${during} : le report de Fay ${staffSent ? 'ne revient pas' : 'revient'}`);
+  }
 });
 
 test('duo parti hors priorité du bar, « Pas prêt » de l’invité rendu pendant l’envoi et fini par l’accusé, duo ressorti : le report revient', () => {
