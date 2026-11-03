@@ -7,6 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { Scheduler, DEFER_MAX } = require('./scheduler');
 const { STAGE_ENDS_LIMIT } = require('./lib/scheduler/passages');
+const { BEHIND_MAX } = require('./lib/scheduler/common');
 const { TableAccess } = require('./table-access');
 const { SoloInvitations } = require('./solo-invitations');
 const { PrivateEvent } = require('./private-event');
@@ -364,17 +365,21 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // Titre revenu de KaraFun pour une priorité annulée (Scheduler#_backFirst) :
     // l'annonce gardée derrière lui (`then`) et l'heure de la priorité du geste
     // (`pulledBack`). Abîmée, ou sa personne oubliée, l'annonce gardée tombe.
-    const flags = row => ({ ...(row.byStaff === true ? { byStaff: true } : {}), ...(row.borrowable === true ? { borrowable: true } : {}) });
-    // Chaîne des annonces gardées (au plus 4) : un maillon abîmé, oublié ou
-    // répété tombe, les suivants restent.
+    // `pulled` : titre retiré pour une priorité, annoncé après elle ; `retry` :
+    // personne sautée faute de « Je suis là » (Scheduler#staffMove les garde).
+    const flags = row => ({ ...(row.byStaff === true ? { byStaff: true } : {}), ...(row.borrowable === true ? { borrowable: true } : {}),
+      ...(row.pulled === true ? { pulled: true } : {}), ...(row.retry === true ? { retry: true } : {}) });
+    // Chaîne des annonces gardées (au plus BEHIND_MAX) : un maillon abîmé,
+    // oublié ou répété tombe (la première place d'une personne reste), les
+    // suivants restent.
     const seen = new Set([reserved.personId]);
     const chain = (link, depth = 0) => {
-      if (!link || typeof link !== 'object' || depth >= 4) return null;
+      if (!link || typeof link !== 'object' || depth >= BEHIND_MAX) return null;
+      const ok = typeof link.personId === 'string' && tmp.people.has(link.personId) && !seen.has(link.personId) &&
+        Number.isFinite(link.reservedAt);
+      if (ok) seen.add(link.personId);
       const rest = chain(link.then, depth + 1);
-      if (typeof link.personId !== 'string' || !tmp.people.has(link.personId) || seen.has(link.personId) ||
-        !Number.isFinite(link.reservedAt)) return rest;
-      seen.add(link.personId);
-      return { personId: link.personId, reservedAt: link.reservedAt, ...flags(link), ...(rest ? { then: rest } : {}) };
+      return ok ? { personId: link.personId, reservedAt: link.reservedAt, ...flags(link), ...(rest ? { then: rest } : {}) } : rest;
     };
     const keptThen = chain(reserved.then);
     tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt, ...flags(reserved),
@@ -484,7 +489,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // tombe aussi. L'annonce elle-même abîmée reste, et le geste est refusé
     // ci-dessous.
     const prune = (link, depth = 0) => {
-      if (!link || typeof link !== 'object' || depth >= 5) return depth ? null : link;
+      if (!link || typeof link !== 'object' || depth > BEHIND_MAX) return depth ? null : link;
       const rest = prune(link.then, depth + 1);
       if (typeof link.personId !== 'string' || !Number.isFinite(link.reservedAt)) return depth ? rest : link;
       if (gone(link.personId)) { forgotten++; return rest; }

@@ -647,11 +647,13 @@ test('priorité avec retrait, puis nouvelle priorité pendant le retrait : la no
   assert.ok(f.sched.reservedNext.reservedAt > ctx.tr.pulled.forAt, 'la priorité de Gus est plus récente que le geste');
   assert.equal(f.sched.reservedNext?.personId, gus.id);
   karafunRemoves(f, ctx);
-  assert.ok(notes(f).includes('« Titre Bruno » (Bruno · Table 2) retiré de KaraFun : la priorité de Driss ne tient plus, il reprend sa place sans perdre son tour'));
+  assert.ok(notes(f).includes('« Titre Bruno » (Bruno · Table 2) retiré de KaraFun : il repasse juste après Driss (priorité du bar), qui passe après la priorité donnée depuis, sans perdre son tour'));
   assert.equal(f.sched.reservedNext?.personId, gus.id, 'la priorité donnée pendant le retrait tient');
   assert.equal(planned(f)[0].id, gus.id);
   assert.equal(f.sched.select().ids[0], gus.id);
-  assert.ok(bruno);
+  // Passe 18 : la nouvelle, la priorité du geste, le titre retiré, puis Eve,
+  // que Driss gardait derrière lui (elle suivait le titre dans KaraFun).
+  assert.deepEqual(planned(f).slice(0, 4).map(line => line.id), [gus.id, driss.id, bruno.id, eve.id]);
 });
 
 // Le titre revenu attend juste après la priorité de Driss ; le bar déplace

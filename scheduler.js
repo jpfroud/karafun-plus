@@ -296,13 +296,25 @@ class Scheduler {
   }
 
   // L'ordre fixé s'arrête à la dernière ligne placée par le bar : les lignes
-  // gardées devant un geste disparu retrouvent le calcul.
+  // gardées devant un geste disparu retrouvent le calcul. Le titre retiré de
+  // KaraFun qui attend une priorité placée devant lui (returnFromKaraFun,
+  // staffMove) garde sa place derrière elle : sinon la file le montrait
+  // derrière une nouvelle table, puis _commit l'annonçait juste après cette
+  // priorité (relecture, passe 18).
   _trimManualOrder() {
     const anchors = new Set(this.manualChanges.map(change => change.personId));
     let last = -1;
-    this.manualOrder.forEach((pid, index) => { if (anchors.has(pid)) last = index; });
+    this.manualOrder.forEach((pid, index) => { if (anchors.has(pid) || this._waitsInOrder(pid, index)) last = index; });
     this.manualOrder = this.manualOrder.slice(0, last + 1);
     this.manualOrderActive = this.manualOrderActive && this.manualOrder.length > 0;
+  }
+
+  // `pid`, à la place `index` de l'ordre fixé, est un titre retiré de KaraFun
+  // qui attend une priorité placée devant lui.
+  _waitsInOrder(pid, index) {
+    const p = this.people.get(pid), d = p?.deferral;
+    const at = typeof d?.forId === 'string' ? this.manualOrder.indexOf(d.forId) : -1;
+    return !!d?.afterPriority && !!p.song && d.entryId === p.song.entryId && at >= 0 && at < index;
   }
 
   // Une ligne de l'ordre fixé prend fin : son titre part vers KaraFun, sa
@@ -439,7 +451,8 @@ class Scheduler {
     // (`behindOf`, _restorePlaced).
     let found = null;
     for (let link = this.reservedNext?.then; link && !found; link = link.then) if (link.byStaff && link.personId === pid) found = link;
-    const behind = !priority && found ? { ...this._plainReservation(found), behindOf: this.reservedNext.personId } : null;
+    const behind = !priority && found ? { ...this._plainReservation(found), behindOf: this.reservedNext.personId,
+      behindAt: this.reservedNext.reservedAt } : null;
     if (!changes.length) return null;
     // `changeIds` : tous les gestes à ce moment, pour les rendre à leur rang.
     // `epoch` : abandons des gestes déjà faits par le bar (voir _restorePlaced).
@@ -449,11 +462,9 @@ class Scheduler {
       epoch: this.manualEpoch || 0 };
     if (!this._unpinManual(pid)) return null;
     if (priority) this._passNext();
-    else if (behind) {
-      const { then, ...head } = this.reservedNext;
-      const kept = this._pruneBehind(then, link => !!link.byStaff && link.personId === pid);
-      this.reservedNext = kept ? { ...head, then: kept } : head;
-    }
+    // Gardée derrière l'annonce en cours : son maillon tombe, le titre retiré
+    // de KaraFun pour elle prend sa place (_endLine).
+    else if (behind) this._endLine(pid);
     this.solverPlan = null;
     this._planDropped = true;
     const p = this.people.get(pid);
@@ -470,7 +481,10 @@ class Scheduler {
   // corrige le duo improvisé noté avec elle (staffUncountPartner). Le geste
   // revient, avec sa place parmi les lignes fixées qui attendent encore et les
   // lignes gardées devant elle ; jamais devant une priorité du bar donnée
-  // depuis. Sa priorité revient si personne n'est annoncé entre-temps. Rien ne
+  // depuis. Sa priorité revient : en tête si personne n'est annoncé
+  // entre-temps ; juste derrière l'annonce devant laquelle elle était gardée,
+  // si c'est encore la même (`behindOf`) ; ou elle reprend la tête au titre
+  // retiré de KaraFun que sa fin lui avait rendue (`backFor`). Rien ne
   // revient si elle est remontée sur scène depuis (passage compté après
   // `serial`), si sa ligne n'a plus de titre, si le bar l'a replacée, ou si
   // le bar a abandonné tous les gestes depuis (« Recalculer la file »,
@@ -491,10 +505,15 @@ class Scheduler {
       };
       const at = Array.isArray(record.order) ? record.order.indexOf(p.id) : -1;
       const ahead = at < 0 ? [] : record.order.slice(0, at).filter(pid => this.manualOrder.includes(pid) || waiting(pid));
-      // Priorité gardée derrière un titre revenu de KaraFun : elle y revient
-      // s'il est encore le prochain annoncé sans autre annonce derrière lui.
+      // Priorité gardée derrière un titre revenu de KaraFun, ou derrière une
+      // priorité plus récente du bar : elle revient juste derrière lui, devant
+      // les annonces qu'il garde, s'il est encore le prochain annoncé (la même
+      // annonce, `behindAt`). Sinon la priorité plus ancienne perdait son
+      // passe-droit sur le « Pas prêt » de l'invitée de son duo (relecture,
+      // passe 18).
       const behindOf = record.reserved?.behindOf;
-      const asBehind = !!behindOf && this.reservedNext?.personId === behindOf && !!this.reservedNext.pulledBack;
+      const asBehind = !!behindOf && this.reservedNext?.personId === behindOf && (!!this.reservedNext.pulledBack ||
+        (Number.isFinite(record.reserved.behindAt) && this.reservedNext.reservedAt === record.reserved.behindAt));
       // Sa priorité avait rendu la tête au titre retiré de KaraFun pour elle
       // (_backFirst, `pulledBack` : son heure d'annonce) : elle la reprend, et
       // le titre l'attend de nouveau (son report « après la priorité »).
@@ -1183,7 +1202,7 @@ class Scheduler {
     // révoque pour de bon, « Réactiver » ne la ranime pas (décision du gérant).
     if (p.soloKeyHash) p.soloKeyRevoked = true;
     this._removeFromQ(p.id);
-    if (this.reservedNext?.personId === p.id) this._passNext();
+    this._endLine(p.id);
     this._unpinManual(p.id);
     this._event('person.left', { personId: p.id, by, songsDropped });
     this.note(`${p.name} a retiré ses chansons ; son identité reste inscrite à la table`);
@@ -1193,7 +1212,7 @@ class Scheduler {
     // annule les duos liés
     this._removeDuetsForPerson(p, notify);
     this._removeFromQ(p.id);
-    if (this.reservedNext?.personId === p.id) this._passNext();
+    this._endLine(p.id);
     this.people.delete(p.id);
     this.byToken.delete(p.token);
     this.roundPeople.delete(p.id);
@@ -1294,7 +1313,7 @@ class Scheduler {
     if (!p.song || by === 'presence-max') this._unpinManual(p.id);
     else if (p.song !== current) { this._guestJoined(p); this._duetOnAnnounced(p, p.song); }
     this._refreshDuetViews();
-    if (this.reservedNext?.personId === p.id && !p.song) this._passNext();
+    if (!p.song) this._endLine(p.id);
     this._event('song.removed', { personId: p.id, entryId: key, by });
     this.note(`${p.name} a retiré une chanson de sa liste`);
   }

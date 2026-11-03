@@ -838,8 +838,14 @@ function restorePulled(tr) {
     const still = !!sched.returnFromKaraFun(tr.sel, { forId: forP?.id || null, forAt,
       changeId: typeof tr.pulled.changeId === 'string' ? tr.pulled.changeId : null,
       cutoff: forAt ?? tr.pulled.at, busyIds: sendingSingers() });
+    // Une priorité donnée pendant le retrait passe d'abord : le titre attend
+    // celle de son geste, juste derrière elle (report « après la priorité »).
+    const owner = sched.people.get(tr.sel.ids[0]);
+    const waits = !still && !!forP && !!owner?.deferral?.afterPriority && owner.deferral.forId === forP.id &&
+      owner.deferral.entryId === tr.sel.song.entryId;
     sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (still ?
-      `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` :
+      `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` : waits ?
+      `il repasse juste après ${forP.name} (priorité du bar), qui passe après la priorité donnée depuis, sans perdre son tour` :
       `la priorité ${forP ? `de ${forP.name} ` : ''}ne tient plus, il reprend sa place sans perdre son tour`), 'skip');
     return;
   }
