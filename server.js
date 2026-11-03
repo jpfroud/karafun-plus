@@ -835,6 +835,9 @@ function restorePulled(tr) {
   if (tr.pulled?.reason === 'priority') {
     const forP = sched.people.get(tr.pulled.forId || '');
     const still = !!sched.yieldToPriority(tr.sel, forP?.id || null);
+    // Priorité annulée pendant le retrait : l'annonce rendue, qui le suivait
+    // dans KaraFun (`after`), ne passe pas devant lui.
+    if (!still) sched.pulledBack(tr.sel, tr.pulled.after);
     sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (still ?
       `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` :
       `la priorité ${forP ? `de ${forP.name} ` : ''}ne tient plus, il reprend sa place sans perdre son tour`), 'skip');
@@ -5316,7 +5319,10 @@ const handlers = {
     const before = sched.manualOverrideState({ deferrals: true });
     if (pull) {
       // KaraFun refuse la commande : rien n'a changé, ni dans KaraFun ni dans la file.
-      try { pullFromKaraFun(pull, 'priority', { forId: personId }); }
+      // `after` : l'annonce qui suit ce titre dans KaraFun ; rendue par
+      // l'annulation de ce geste, elle ne passera pas devant lui (pulledBack).
+      const after = before.reservedNext ? { personId: before.reservedNext.personId, reservedAt: before.reservedNext.reservedAt } : null;
+      try { pullFromKaraFun(pull, 'priority', { forId: personId, ...(after ? { after } : {}) }); }
       catch (error) {
         throw new Error(`KaraFun n’a pas pu retirer « ${pull.sel.song.title} » (${String(error.message).replace(/[.!?\s]+$/, '')}) : rien n’a changé.`);
       }

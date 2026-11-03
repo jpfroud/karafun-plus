@@ -764,13 +764,23 @@ class Scheduler {
 
   // Annule le geste le plus récent. `excludeIds` : passage en cours d'envoi à
   // KaraFun, dont la réservation d'avant le geste ne peut plus être rendue.
+  // Un titre retiré de KaraFun pour la priorité de ce geste et déjà revenu
+  // (yieldToPriority) reprend l'annonce que l'annulation rend : avant le
+  // geste, elle le suivait dans KaraFun (_aheadOfAnnounced). Sinon elle
+  // passait devant lui, une personne sautée faute de « Je suis là » comprise
+  // (relecture, passe 16). Titre pas encore revenu : server.js, au retour
+  // (pulledBack).
   _undoLatest(nativeFingerprint, excludeIds = []) {
     const latest = this.manualChanges.at(-1);
+    const yielded = this._deferredOwners().map(pid => this.people.get(pid)).filter(p => p.deferral.afterPriority);
     if (this.canUndoManualChange(nativeFingerprint)) {
       this.restoreManualOverride(latest.before, { deferrals: true });
       this._restorePlan(latest.planBefore);
       this.manualChanges.pop();
     } else this._undoRebased(latest, excludeIds);
+    for (const p of yielded) {
+      if (!this._isDeferred(p) && p.deferral) this._aheadOfAnnounced(p.id, p.deferral.entryId, p.deferral.ids || [p.id]);
+    }
     this.version++;
     return latest;
   }

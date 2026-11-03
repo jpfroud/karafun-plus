@@ -581,6 +581,150 @@ test('priorité avant un titre chargé qui ne tient plus : le titre retiré repr
   }
 });
 
+// Relecture (passe 16, équipe rouge) : le bar donne « Priorité » à Eve, qui
+// passe juste après « Titre Bruno », chargé dans KaraFun, puis à Driss avec
+// retrait de ce titre, et annule ce dernier geste. L'annonce d'Eve revenait,
+// et Eve passait devant « Titre Bruno » revenu de KaraFun, alors que la
+// réponse disait « ordre précédent retrouvé » : avant le geste, Bruno passait
+// avant elle. Annulé pendant l'envoi de la priorité, Driss part d'abord
+// (déjà envoyé), puis Bruno, puis Eve, comme sans l'annulation.
+test('priorité avec retrait annulée, une priorité plus ancienne annoncée après le titre chargé : le titre retiré repasse devant elle', async () => {
+  for (const how of ['annulée pendant le retrait', 'annulée après le retrait', 'annulée pendant l’envoi de la priorité']) {
+    const f = harness();
+    const ctx = loaded(f);
+    const { bruno, driss } = ctx.people;
+    const eve = f.sched.join({ tableId: '5', name: 'Eve', headcount: 2 });
+    f.sched.chooseSong(eve, { songId: 809, title: 'Titre Eve' });
+    f.sync();
+    const first = plain(await move(f, { personId: eve.id, toIndex: 0, priority: true }));
+    assert.equal(first.message, 'Eve passe juste après « Titre Bruno », déjà chargé dans KaraFun.', how);
+    await pullFor(f, driss);
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]], how);
+    if (how !== 'annulée pendant le retrait') karafunRemoves(f, ctx);
+    if (how === 'annulée pendant l’envoi de la priorité') {
+      f.settings.pushDelaySec = 0;
+      f.sync();
+      assert.equal(f.getPending()?.sel.ids[0], driss.id, `${how} : la priorité part vers KaraFun`);
+    }
+    await f.call('POST /api/staff/priority-undo');
+    if (how === 'annulée pendant le retrait') karafunRemoves(f, ctx);
+    if (how === 'annulée pendant l’envoi de la priorité') {
+      ctx.queue.push({ queueId: 3, songId: 804, title: 'Titre Driss', singer: f.getPending().sel.label });
+      f.sync();
+      assert.equal(driss.sung, 1, `${how} : Driss, déjà envoyé, chante d’abord`);
+    }
+    const order = planned(f);
+    assert.deepEqual(order.slice(0, 2).map(line => line.id), [bruno.id, eve.id], `${how} : Bruno reprend sa place devant Eve`);
+    assert.equal(order[0].guaranteed, true, `${how} : il est le prochain annoncé`);
+    assert.equal(f.sched.select().ids[0], bruno.id, how);
+  }
+});
+
+// Pendant le retrait, le bar donne une nouvelle priorité, à Gus : la sienne
+// tient au retour du titre. Seule l'annonce qui suivait le titre dans KaraFun
+// (Eve), rendue par une annulation, cède sa place au titre retiré.
+test('priorité avec retrait, puis nouvelle priorité pendant le retrait : la nouvelle tient au retour du titre', async () => {
+  const f = harness();
+  const ctx = loaded(f);
+  const { bruno, driss } = ctx.people;
+  const eve = f.sched.join({ tableId: '5', name: 'Eve', headcount: 2 });
+  const gus = f.sched.join({ tableId: '6', name: 'Gus', headcount: 2 });
+  f.sched.chooseSong(eve, { songId: 809, title: 'Titre Eve' });
+  f.sched.chooseSong(gus, { songId: 810, title: 'Titre Gus' });
+  f.sync();
+  await move(f, { personId: eve.id, toIndex: 0, priority: true });
+  await pullFor(f, driss);
+  assert.equal(ctx.tr.pulled.after?.personId, eve.id, 'le retrait note l’annonce qui suivait le titre');
+  await move(f, { personId: gus.id, toIndex: 0, priority: true });
+  assert.equal(f.sched.reservedNext?.personId, gus.id);
+  karafunRemoves(f, ctx);
+  assert.ok(notes(f).includes('« Titre Bruno » (Bruno · Table 2) retiré de KaraFun : la priorité de Driss ne tient plus, il reprend sa place sans perdre son tour'));
+  assert.equal(f.sched.reservedNext?.personId, gus.id, 'la priorité donnée pendant le retrait tient');
+  assert.equal(planned(f)[0].id, gus.id);
+  assert.equal(f.sched.select().ids[0], gus.id);
+  assert.ok(bruno);
+});
+
+// Le titre revenu attend juste après la priorité de Driss ; le bar déplace
+// Eve puis annule ce déplacement : la priorité tient, le titre ne lui prend
+// pas l'annonce.
+test('priorité avec retrait, titre revenu, puis un autre geste annulé : la priorité tient, le titre reste juste après', async () => {
+  for (const undo of ['exacte', 'recalculée']) {
+    const f = harness();
+    const ctx = loaded(f);
+    const { bruno, chloe, driss } = ctx.people;
+    const eve = f.sched.join({ tableId: '5', name: 'Eve', headcount: 2 });
+    f.sched.chooseSong(eve, { songId: 809, title: 'Titre Eve' });
+    f.sync();
+    await pullFor(f, driss);
+    karafunRemoves(f, ctx);
+    assert.deepEqual(planned(f).slice(0, 2).map(line => line.id), [driss.id, bruno.id]);
+    const moved = plain(await move(f, { personId: eve.id, toIndex: 2 }));
+    assert.equal(moved.ok, true);
+    // Annulation recalculée : la file a changé depuis le geste.
+    if (undo === 'recalculée') f.sched.chooseSong(chloe, { songId: 811, title: 'Autre titre Chloé' });
+    const result = plain(await f.call('POST /api/staff/manual-change-undo', { id: f.sched.manualChanges.at(-1).id }));
+    assert.equal(result.exact, undo === 'exacte', undo);
+    assert.equal(f.sched.reservedNext?.personId, driss.id, `${undo} : la priorité de Driss tient`);
+    const order = planned(f);
+    assert.deepEqual(order.slice(0, 2).map(line => line.id), [driss.id, bruno.id], undo);
+    assert.equal(order[1].afterPriority, true, undo);
+  }
+});
+
+// Relecture (passe 16) : Rita n'a pas répondu « Je suis là » ; l'envoi de
+// « Titre Bruno » l'annonce ensuite. Le bar donne la priorité à Chloé avec
+// retrait de ce titre, puis l'annule une fois le titre revenu (annulation
+// recalculée, « Recalculer la file »), ou pendant l'envoi de Chloé. L'annonce
+// de Rita revenait, devant « Titre Bruno » : la scène attendait sa réponse,
+// puis la sautait une deuxième fois. Le titre retiré repasse d'abord, comme
+// avec l'annulation faite avant le retrait.
+test('priorité avec retrait annulée après le retrait, une personne sautée faute de « Je suis là » annoncée après le titre chargé : le titre retiré repasse devant elle', async () => {
+  for (const how of ['annulée après le retrait', 'Recalculer la file', 'annulée pendant l’envoi de la priorité']) {
+    const f = harness();
+    f.sched.opts.requirePresence = true;
+    const join = (tableId, name) => f.sched.join({ tableId, name, headcount: 2 });
+    const alice = join('1', 'Alice'), rita = join('2', 'Rita'), bruno = join('3', 'Bruno'), chloe = join('4', 'Chloé'), driss = join('5', 'Driss');
+    [[alice, 801], [rita, 806], [bruno, 802], [chloe, 803], [driss, 804]].forEach(([p, songId]) =>
+      f.sched.chooseSong(p, { songId, title: `Titre ${p.name}` }));
+    for (const p of [alice, bruno, chloe]) f.sched.confirm(p);
+    const stage = f.sched.select(); f.sched.commit(stage);
+    assert.equal(stage.ids[0], alice.id);
+    f.tracked().push({ queueId: 1, sel: stage, startedAt: Date.now() - 50000, addedAt: Date.now() - 60000 });
+    f.sched.skipUnconfirmed(rita.id, 3);
+    const next = f.sched.select(); f.sched.commit(next);
+    assert.equal(next.ids[0], bruno.id, 'Rita, sautée, laisse passer Bruno');
+    assert.equal(f.sched.reservedNext?.personId, rita.id, 'l’envoi de Bruno annonce Rita ensuite');
+    const tr = { queueId: 2, sel: next, startedAt: null, addedAt: Date.now() - 5000 };
+    f.tracked().push(tr);
+    const queue = [{ queueId: 1, songId: 801, title: 'Titre Alice', singer: stage.label, status: 'playing' },
+      { queueId: 2, songId: 802, title: 'Titre Bruno', singer: next.label }];
+    const ctx = { queue, tr, bridge: fakeBridge(queue, 1) };
+    f.setBridge(ctx.bridge);
+    f.sync();
+    await pullFor(f, chloe);
+    assert.deepEqual(removals(ctx.bridge), [['remove', 2]], how);
+    karafunRemoves(f, ctx);
+    if (how === 'annulée pendant l’envoi de la priorité') {
+      f.settings.pushDelaySec = 0;
+      f.sync();
+      assert.equal(f.getPending()?.sel.ids[0], chloe.id, `${how} : la priorité part vers KaraFun`);
+    }
+    if (how === 'Recalculer la file') await f.call('POST /api/staff/queue-recalculate');
+    else await f.call('POST /api/staff/priority-undo');
+    if (how === 'annulée pendant l’envoi de la priorité') {
+      queue.push({ queueId: 3, songId: 803, title: 'Titre Chloé', singer: f.getPending().sel.label });
+      f.sync();
+      assert.equal(chloe.sung, 1, `${how} : Chloé, déjà envoyée, chante d’abord`);
+    }
+    const order = planned(f);
+    assert.equal(order[0].id, bruno.id, `${how} : Bruno reprend sa place, en tête`);
+    assert.equal(f.sched.select()?.ids[0], bruno.id, `${how} : son titre part ensuite, sans attendre Rita`);
+    assert.equal(rita.presenceSkips, 1, `${how} : Rita n’est pas sautée une deuxième fois`);
+    assert.ok(driss);
+  }
+});
+
 // Relecture : Bruno, prochain, dit « Pas prêt » ; l'envoi du titre de Chloé
 // lève son report et l'annonce. Le bar lui donne la priorité avec retrait de
 // ce titre : une fois retiré de KaraFun, le report revenait, la priorité était
@@ -954,6 +1098,37 @@ test('redémarrage pendant le retrait : le titre revient juste après la priorit
   const order = planned(g);
   assert.deepEqual(order.slice(0, 2).map(line => line.id), [driss.id, bruno.id]);
   assert.equal(order[1].afterPriority, true);
+});
+
+// Passe 16 : l'annonce qui suivait le titre retiré (`after`) est gardée par
+// la sauvegarde ; annulée après la reprise, la priorité rend Eve, qui ne
+// passe pas devant le titre revenu.
+test('redémarrage pendant le retrait, priorité annulée ensuite : le titre retiré repasse devant l’annonce qui le suivait', async () => {
+  const f = harness();
+  const ctx = loaded(f);
+  const { bruno, driss } = ctx.people;
+  const eve = f.sched.join({ tableId: '5', name: 'Eve', headcount: 2 });
+  f.sched.chooseSong(eve, { songId: 809, title: 'Titre Eve' });
+  f.sync();
+  await move(f, { personId: eve.id, toIndex: 0, priority: true });
+  await pullFor(f, driss);
+  for (const tableId of f.sched.tables.keys()) if (!f.access.get(tableId)) f.access.issue(tableId);
+  const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: f.sched, access: f.access, settings: f.settings,
+    tracked: f.tracked(), pending: null })));
+  const g = harness();
+  const recovered = restoreNight(snapshot, { scheduler: g.sched, access: g.access, settings: g.settings });
+  g.setTracked(recovered.tracked);
+  g.settings.auto = false;
+  const queue = ctx.queue.map(item => ({ ...item }));
+  g.setBridge(fakeBridge(queue, 1));
+  g.sync();
+  assert.equal(g.tracked().find(item => item.queueId === 2).pulled.after?.personId, eve.id, 'l’annonce notée au retrait est reprise');
+  await g.call('POST /api/staff/priority-undo');
+  assert.equal(g.sched.reservedNext?.personId, eve.id, 'l’annulation rend la priorité d’Eve');
+  queue.splice(1, 1);
+  g.sync();
+  assert.deepEqual(planned(g).slice(0, 2).map(line => line.id), [bruno.id, eve.id], 'Bruno d’abord, Eve juste après');
+  assert.ok(driss);
 });
 
 // Relecture (passe 8, équipe rouge) : « Annuler mon changement et recalculer »

@@ -1198,6 +1198,47 @@ test('duo improvisé noté par erreur avec une personne placée par le bar, puis
   }
 });
 
+// Relecture (passe 16, tests) : règles de _restorePlaced et de _guestLeft
+// décrites dans leurs commentaires, qu'aucun test ne gardait.
+test('geste terminé par un duo, le bar replace la personne : le duo ressorti ne rend pas l’ancienne place', () => {
+  const { s, people } = evening();
+  gesture(s, people.Elsa, 3);
+  const duo = s.inviteDuet(people.Paulo, people.Elsa.id, song());
+  s.reorderSongs(people.Paulo, duo.entryId, 0);
+  s.answerDuet(people.Elsa, true, duo.entryId);
+  const sel = s.select(); s.commit(sel); // le geste d'Elsa prend fin (_endPlaced)
+  gesture(s, people.Elsa, 1, [people.Paulo.id]); // le bar la replace 2e
+  s.rollbackUnplayed(sel, { requeue: true }); // duo retiré de KaraFun sans être chanté
+  assert.deepEqual(s.manualChanges.map(c => [c.name, c.to]), [['Elsa', 2]], 'seul le geste le plus récent reste');
+  assert.equal(names(s)[1], 'Elsa', 'sa nouvelle place tient');
+});
+
+test('priorité terminée par un duo noté, autre priorité donnée depuis, duo noté annulé : la priorité donnée depuis tient', () => {
+  const { s, people } = evening();
+  const sent = s.select(); s.commit(sent); // Paulo sur scène
+  gesture(s, people.Karim, 0, sent.ids);
+  s.staffCountPartner(sent.ids[0], people.Karim.id, sent); // sa priorité prend fin
+  gesture(s, people.Elsa, 0, sent.ids);
+  s.staffUncountPartner(sent.staffDuo, sent, [sent]);
+  assert.equal(s.reservedNext?.personId, people.Elsa.id, 'la priorité d’Elsa n’est pas remplacée');
+  assert.deepEqual(names(s, sent.ids).slice(0, 2), ['Elsa', 'Karim']);
+  assert.ok(s.log.some(line => line.msg === 'Karim n’a finalement pas chanté : la place donnée par le bar revient'));
+});
+
+test('duo formé sur une ligne gardée, geste du bar annulé ou ligne retirée, puis l’invitée quitte le duo : sa ligne n’est pas refixée seule', () => {
+  for (const how of ['annulé', 'retiré']) {
+    const { s, people } = evening();
+    gesture(s, people.Elsa, 3); // Paulo, Maud, Gil gardés devant Elsa
+    const duo = s.inviteDuet(people.Paulo, people.Gil.id, song());
+    s.reorderSongs(people.Paulo, duo.entryId, 0);
+    s.answerDuet(people.Gil, true, duo.entryId);
+    if (how === 'annulé') s.undoLastManualChange(null, NATIVE); else s.staffRemove(people.Elsa.id);
+    s.leaveDuet(people.Gil, people.Paulo.id, duo.entryId);
+    assert.deepEqual(s.manualOrder, [], how);
+    assert.equal(names(s)[0], 'Paulo', `${how} : Gil ne passe pas devant tout le monde`);
+  }
+});
+
 // Relecture de la correction : « Recalculer la file », « Annuler tous les
 // changements manuels » et « Vider toutes les chansons » abandonnent tous les
 // gestes du bar. Un geste terminé par un duo, gardé dans le reçu du passage
