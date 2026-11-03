@@ -290,6 +290,42 @@ test('chacun son tour : titre du milieu du cycle chargé, une table déjà pass�
   assert.deepEqual(order(s), ['C1', 'B1', 'D1']);
 }));
 
+// Relecture (passe 14, cellules sans test) : même départ, la table rouvre
+// avec le même numéro avant le retour du titre (numéro du départ, `since`) ;
+// et un duo de deux tables chargé quand une troisième table déjà passée part.
+test('chacun son tour : titre du milieu du cycle chargé, une table déjà passée part et rouvre, il ressort : sa table n’est pas comptée servie', () => withClock(tick => {
+  const s = new Scheduler();
+  let n = 1;
+  const add = (tableId, name, headcount = 2) => { const p = s.join({ tableId, name, headcount }); tick(); s.chooseSong(p, song(n++)); return p; };
+  add('1', 'A1'); add('3', 'C1'); add('2', 'B1'); add('4', 'D1'); add('1', 'A2');
+  assert.equal(sing(s), 'A1');
+  const sel = s.select();
+  assert.deepEqual(sel.names, ['C1']);
+  s.commit(sel); // C1 chargé, cycle {1, 3}
+  s.tableLeft('1');
+  add('1', 'N1', 1); // table 1 rouverte avec le même numéro
+  s.requeueUnplayed(sel);
+  assert.deepEqual([...s.firstCycle], []);
+  assert.deepEqual(order(s), ['C1', 'B1', 'D1', 'N1']);
+}));
+
+test('chacun son tour : duo de deux tables chargé, une table déjà passée part, il ressort : aucune des deux tables n’est servie', () => withClock(tick => {
+  const s = new Scheduler();
+  let n = 1;
+  const zed = s.join({ tableId: '9', name: 'Zed', headcount: 1 }); tick(); s.chooseSong(zed, song(n++));
+  const [ana, bob, cid] = [['1', 'Ana'], ['2', 'Bob'], ['3', 'Cid']].map(([tableId, name]) => s.join({ tableId, name, headcount: 2 }));
+  tick(); const duo = s.inviteDuet(ana, bob.id, song(n++)); s.answerDuet(bob, true, duo.entryId);
+  tick(); s.chooseSong(bob, song(n++));
+  tick(); s.chooseSong(cid, song(n++));
+  assert.equal(sing(s), 'Zed');
+  const sel = s.select();
+  s.commit(sel);
+  s.tableLeft('9');
+  s.requeueUnplayed(sel);
+  assert.deepEqual([...s.firstCycle], []);
+  assert.deepEqual(order(s), ['Ana & Bob', 'Cid', 'Bob']);
+}));
+
 test('chacun son tour : la table de l’auteur d’un duo chargé part, le duo ressort : la table de l’invitée n’est pas comptée servie', () => withClock(tick => {
   const s = new Scheduler();
   let n = 1;

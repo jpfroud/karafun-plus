@@ -2148,6 +2148,95 @@ test('duo en priorité malgré le « Pas prêt » de l’invitée, chargé puis 
   assert.deepEqual(playNames(s, 2), ['Dan', 'Bob & Fay']);
 });
 
+// Relecture (passe 14) : même cas quand le bar donne la priorité à Dan pendant
+// l'envoi du duo (avant l'accusé de KaraFun). À l'accusé, l'annonce était
+// déjà celle de Dan : le passage n'était pas noté parti comme priorité du
+// bar, et son retour rendait le report de Fay.
+test('duo en priorité malgré le « Pas prêt » de l’invitée, autre priorité pendant son envoi, puis retiré pour elle : il repasse juste après', () => {
+  const s = new Scheduler();
+  const join = (tableId, name) => { const p = s.join({ tableId, name, headcount: 1 }); s.chooseSong(p, song()); return p; };
+  const [fay, , bob, , dan] = ['Fay', 'Ana', 'Bob', 'Cy', 'Dan', 'Eve'].map((name, i) => join(String(i + 1), name));
+  let stage = null;
+  for (let i = 0; i < 6; i++) {
+    const sel = s.select({ stageFree: true });
+    s.commit(sel); s.recordStage(sel);
+    s.chooseSong(s.people.get(sel.ids[0]), song(), 'append');
+    if (i < 5) { s.songEnded(sel.ids); s.endStage(sel); } else stage = sel;
+  }
+  const duo = s.inviteDuet(bob, fay.id, song());
+  s.answerDuet(fay, true, duo.entryId);
+  s.reorderSongs(bob, duo.entryId, 0);
+  s.deferPassage(fay.id, s.presenceView([], null).find(v => !v.future && !s.isDeferred(s.people.get(v.ids[0]))), 2);
+  gesture(s, bob, 0, stage.ids);
+  const loaded = s.select({ stageFree: false }); // envoi du duo en cours
+  assert.equal(label(s, loaded), 'Bob & Fay');
+  // Priorité de Dan pendant l'envoi (route du bar : passage en cours d'envoi exclu, prévision avec lui).
+  const visible = s.presenceView([...stage.ids, ...loaded.ids], loaded).filter(v => !v.future);
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(dan.id, 0, [...stage.ids, ...loaded.ids], loaded);
+  s.recordManualChange({ kind: 'priority', personId: dan.id, name: 'Dan', from: visible.findIndex(v => v.ids[0] === dan.id) + 1,
+    to: 1, before, native: NATIVE });
+  s.commit(loaded); // KaraFun accuse l'envoi : le duo est chargé
+  gesture(s, dan, 0, stage.ids);
+  assert.equal(pulledBack(s, loaded, dan.id)?.afterPriority, true, 'le duo sort de KaraFun pour Dan');
+  assert.equal(s.isDeferred(fay), false, 'le report de Fay, passé outre par la priorité du duo, ne revient pas');
+  assert.deepEqual(names(s, stage.ids).slice(0, 2), ['Dan', 'Bob & Fay']);
+  s.songEnded(stage.ids); s.endStage(stage);
+  assert.deepEqual(playNames(s, 2), ['Dan', 'Bob & Fay']);
+});
+
+// Contrepartie : priorité du duo annulée par le bar pendant son envoi. Le duo
+// n'est plus parti comme priorité du bar ; ressorti sans être chanté, il rend
+// le « Pas prêt » de Fay que son envoi avait fini. Et un duo parti hors
+// priorité du bar rend, lui aussi, le report fini par son envoi (relecture,
+// passe 14, cellule sans test).
+test('duo en priorité malgré le « Pas prêt » de l’invitée, priorité annulée pendant son envoi, ressorti : le report revient', () => {
+  const s = new Scheduler();
+  const join = (tableId, name) => { const p = s.join({ tableId, name, headcount: 1 }); s.chooseSong(p, song()); return p; };
+  const [fay, , bob] = ['Fay', 'Ana', 'Bob', 'Cy', 'Dan', 'Eve'].map((name, i) => join(String(i + 1), name));
+  let stage = null;
+  for (let i = 0; i < 6; i++) {
+    const sel = s.select({ stageFree: true });
+    s.commit(sel); s.recordStage(sel);
+    s.chooseSong(s.people.get(sel.ids[0]), song(), 'append');
+    if (i < 5) { s.songEnded(sel.ids); s.endStage(sel); } else stage = sel;
+  }
+  const duo = s.inviteDuet(bob, fay.id, song());
+  s.answerDuet(fay, true, duo.entryId);
+  s.reorderSongs(bob, duo.entryId, 0);
+  s.deferPassage(fay.id, s.presenceView([], null).find(v => !v.future && !s.isDeferred(s.people.get(v.ids[0]))), 2);
+  gesture(s, bob, 0, stage.ids);
+  const loaded = s.select({ stageFree: false });
+  assert.equal(label(s, loaded), 'Bob & Fay');
+  assert.equal(loaded.staffPick, true, 'choisi comme priorité du bar');
+  s.undoLastManualChange(null, NATIVE, { excludeIds: [...stage.ids, ...loaded.ids] }); // le bar annule pendant l'envoi
+  s.commit(loaded);
+  assert.equal(s.isDeferred(fay), false, 'l’envoi du duo finit le report de Fay');
+  s.requeueUnplayed(loaded); // absent à l'appel, titre passé dans KaraFun
+  assert.equal(s.isDeferred(fay), true, 'la priorité annulée, le report de Fay revient');
+});
+
+test('duo parti hors priorité du bar, « Pas prêt » de l’invité rendu pendant l’envoi et fini par l’accusé, duo ressorti : le report revient', () => {
+  const s = new Scheduler({ solverEnabled: false });
+  const [cid, ana, bob, dan] = ['Cid', 'Ana', 'Bob', 'Dan'].map((name, i) => s.join({ tableId: String(i + 1), name, headcount: 1 }));
+  s.chooseSong(cid, song());
+  const duo = s.inviteDuet(ana, bob.id, song()); s.answerDuet(bob, true, duo.entryId);
+  [bob, dan].forEach(p => s.chooseSong(p, song()));
+  s.deferPassage(bob.id, s.presenceView().find(v => !v.future && v.ids[0] === bob.id), 3);
+  gesture(s, bob, s.presenceView().filter(v => !v.future).length - 1);
+  const sing = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return label(s, sel); };
+  assert.deepEqual([sing(), sing()], ['Cid', 'Dan']);
+  const sending = s.select();
+  assert.equal(label(s, sending), 'Ana & Bob');
+  assert.equal(sending.staffPick, undefined, 'pas une priorité du bar');
+  s.undoLastManualChange(null, NATIVE, { excludeIds: sending.consumedIds || sending.ids.slice(0, 1) });
+  assert.equal(s.isDeferred(bob), true);
+  s.commit(sending);
+  assert.equal(s.isDeferred(bob), false);
+  s.requeueUnplayed(sending);
+  assert.equal(s.isDeferred(bob), true, 'le duo n’a pas eu lieu : le « Pas prêt » de Bob revient');
+});
+
 // Relecture (passe 3, cellule sans test) : le bar déplace lui-même le titre
 // retiré pour une priorité. Son report prend fin (staffMove) sans compter
 // comme un « Pas prêt » au journal de soirée, et une annulation exacte du

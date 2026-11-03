@@ -1629,6 +1629,28 @@ test('QueueScore : tables à tour de rôle, un bonus ou un malus ne change pas l
     } finally { bridge.close(); }
   });
 
+// Relecture (passe 14, test manquant) : en « tables à tour de rôle », la table
+// qui vient de chanter laisse passer l'autre sans coût, même si sa personne a
+// ajouté la première (garde de la règle des tables dans le départage par
+// l'ordre d'ajout de QueueScore.java, comme le filtre otherTable de Node).
+test('QueueScore : tables à tour de rôle, la table qui vient de chanter laisse passer l’autre sans coût, même ajoutée la première',
+  { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
+    const medium = score => Number(/(-?\d+)medium/.exec(score)[1]);
+    const bridge = new TimefoldBridge({ jar: process.env.KARAFUN_TEST_SOLVER_JAR || JAR });
+    try {
+      const base = { budgetMs: 100, pastAppearance: { A0: -1, B0: -2 }, physicalCount: { A0: 1, B0: 1, A1: 0, B1: 0 },
+        readyAt: { A1: -100, B1: -100 }, pinnedUntil: 0, roundPeople: [], roundUse: {}, roundApps: {}, roundOwed: [],
+        roundCap: 2, spacing: 3, personWeights: {}, tableWeights: {}, groupSizes: {}, firstCycle: [],
+        history: [['gB'], ['gA']], rotation: 'equal', interleaveArrivals: true, lastGroups: ['gA'] };
+      const rows = { A1: { id: 'A1-0', owner: 'A1', ownerSongIndex: 0, singers: ['A1'], groups: ['gA'] },
+        B1: { id: 'B1-0', owner: 'B1', ownerSongIndex: 0, singers: ['B1'], groups: ['gB'] } };
+      const seed = async (addedOrder, id) => medium((await bridge.solve({ ...base, addedOrder, requestId: id,
+        performances: ['B1', 'A1'].map((name, previousIndex) => ({ ...rows[name], previousIndex })) }, { immediate: true })).seedScore);
+      // La table A vient de chanter : B1 d'abord (règle des tables), sans coût même si A1 a été ajouté avant.
+      assert.equal(await seed({ A1: 0, B1: 1 }, 'table-a-first'), await seed({ B1: 0, A1: 1 }, 'table-b-first'));
+    } finally { bridge.close(); }
+  });
+
 test('premiers passages : le plan Timefold garde l’ordre d’ajout dans les trois modes',
   { skip: !fs.existsSync(JAR) && 'jar Timefold absent' }, async () => {
     for (const [mode, options] of [['chacun son tour', {}], ['tables à tour de rôle', { tableRotation: true }],
