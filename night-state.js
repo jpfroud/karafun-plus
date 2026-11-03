@@ -361,8 +361,25 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     const reserved = object(data.reservedNext, 'prochain passage garanti');
     if (typeof reserved.personId !== 'string' || !tmp.people.has(reserved.personId) ||
       !Number.isFinite(reserved.reservedAt)) fail('prochain passage garanti mal formé');
-    tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt, ...(reserved.byStaff === true ? { byStaff: true } : {}),
-      ...(reserved.borrowable === true ? { borrowable: true } : {}) };
+    // Titre revenu de KaraFun pour une priorité annulée (Scheduler#_backFirst) :
+    // l'annonce gardée derrière lui (`then`) et l'heure de la priorité du geste
+    // (`pulledBack`). Abîmée, ou sa personne oubliée, l'annonce gardée tombe.
+    const flags = row => ({ ...(row.byStaff === true ? { byStaff: true } : {}), ...(row.borrowable === true ? { borrowable: true } : {}) });
+    // Chaîne des annonces gardées (au plus 4) : un maillon abîmé, oublié ou
+    // répété tombe, les suivants restent.
+    const seen = new Set([reserved.personId]);
+    const chain = (link, depth = 0) => {
+      if (!link || typeof link !== 'object' || depth >= 4) return null;
+      const rest = chain(link.then, depth + 1);
+      if (typeof link.personId !== 'string' || !tmp.people.has(link.personId) || seen.has(link.personId) ||
+        !Number.isFinite(link.reservedAt)) return rest;
+      seen.add(link.personId);
+      return { personId: link.personId, reservedAt: link.reservedAt, ...flags(link), ...(rest ? { then: rest } : {}) };
+    };
+    const keptThen = chain(reserved.then);
+    tmp.reservedNext = { personId: reserved.personId, reservedAt: reserved.reservedAt, ...flags(reserved),
+      ...(Number.isFinite(reserved.pulledBack) ? { pulledBack: reserved.pulledBack } : {}),
+      ...(keptThen ? { then: keptThen } : {}) };
   }
   tmp.roundGroups = new Set(list(data.roundGroups, 'tables du tour'));
   tmp.roundPeople = new Set(list(data.roundPeople, 'personnes du tour'));
@@ -462,10 +479,19 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
       before.manualOrder = before.manualOrder.filter(pid => !gone(pid));
       forgotten++;
     }
-    if (before.reservedNext && gone(before.reservedNext.personId)) {
-      before.reservedNext = null;
-      forgotten++;
-    }
+    // Annonces gardées derrière (`then`) : un maillon d'une personne
+    // supprimée tombe, le suivant prend sa place ; un maillon abîmé derrière
+    // tombe aussi. L'annonce elle-même abîmée reste, et le geste est refusé
+    // ci-dessous.
+    const prune = (link, depth = 0) => {
+      if (!link || typeof link !== 'object' || depth >= 5) return depth ? null : link;
+      const rest = prune(link.then, depth + 1);
+      if (typeof link.personId !== 'string' || !Number.isFinite(link.reservedAt)) return depth ? rest : link;
+      if (gone(link.personId)) { forgotten++; return rest; }
+      const { then, ...self } = link;
+      return rest ? { ...self, then: rest } : self;
+    };
+    if (before.reservedNext) before.reservedNext = prune(before.reservedNext);
     if (Array.isArray(before.deferrals)) before.deferrals = before.deferrals.filter(row => !Array.isArray(row) || !gone(row[0]));
     // Reports « Pas prêt » levés par un déplacement : abîmés, l'annulation
     // garde l'ordre sans les rendre.

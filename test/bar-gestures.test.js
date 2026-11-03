@@ -1824,12 +1824,74 @@ function loadedEvening(options = {}) {
   s.commit(loaded); // Maud chargée dans KaraFun
   return { ...ctx, stage, loaded };
 }
-// KaraFun a retiré le titre : comme restorePulled (server.js). `forId` :
-// personne de la priorité pour laquelle il est sorti.
+// KaraFun a retiré le titre : comme restorePulled (server.js), par le même
+// Scheduler#returnFromKaraFun. `forId` : personne de la priorité pour
+// laquelle il est sorti. Rend le report, ou null (la priorité ne tient plus :
+// le titre reprend la tête).
 function pulledBack(s, sel, forId) {
-  s.requeueUnplayed(sel);
-  return s.yieldToPriority(sel, forId);
+  return s.returnFromKaraFun(sel, { forId });
 }
+
+// Passe 17 : un titre retiré de KaraFun pour une priorité annulée reprend la
+// tête, l'annonce qui le suivait juste derrière lui (`then`) : un plan
+// Timefold adopté ne passe pas entre les deux. Faux solveur qui renverse tout
+// ce qui n'est pas fixé.
+test('passe 17 : plan Timefold, l’annonce gardée derrière le titre revenu de KaraFun reste juste derrière lui', async () => {
+  const { s, people } = evening({ solverEnabled: true, solverBudgetMs: 100, continuousSolver: false, requirePresence: true });
+  const requests = [];
+  s.solverBridge = { available: true, lastError: null, close() {},
+    solve: async request => {
+      requests.push(request);
+      const ids = request.performances.map(row => row.id);
+      const order = [...ids.slice(0, request.pinnedUntil), ...ids.slice(request.pinnedUntil).reverse()];
+      return { requestId: request.requestId, order, seedScore: '0hard/-100medium/0soft', score: '0hard/-100medium/0soft', elapsedMs: 5 };
+    } };
+  try {
+    for (const p of Object.values(people)) s.confirm(p);
+    const stage = s.select(); s.commit(stage); // Paulo sur scène
+    s.skipUnconfirmed(people.Maud.id, 3); // Maud, la suivante, manque « Je suis là »
+    const loaded = s.select(); s.commit(loaded); // Gil chargé dans KaraFun, Maud annoncée ensuite
+    assert.equal(loaded.ids[0], people.Gil.id);
+    assert.equal(s.reservedNext?.personId, people.Maud.id);
+    const change = gesture(s, people.Karim, 0, stage.ids);
+    s.returnFromKaraFun(loaded, { forId: people.Karim.id, forAt: s.reservedNext.reservedAt, changeId: change.id });
+    s.undoLastManualChange(null, 'd'.repeat(64));
+    assert.equal(s.reservedNext?.personId, people.Gil.id);
+    assert.equal(s.reservedNext?.then?.personId, people.Maud.id);
+    s.chooseSong(people.Hugo, song(), 'append'); // changement réel : nouveau calcul
+    s.solverStatus();
+    await s.solverPromise;
+    assert.ok(requests.at(-1).pinnedUntil >= 2, `Gil et Maud sont fixés (${requests.at(-1).pinnedUntil})`);
+    assert.deepEqual(names(s, stage.ids).slice(0, 2), ['Gil', 'Maud']);
+  } finally { s.closeSolver(); }
+});
+
+// Passe 17 : deux priorités du bar l'une derrière l'autre (Jade, puis Karim
+// gardé derrière elle) ; pendant l'envoi de Jade, Karim dit « Pas prêt », puis
+// le bar le déplace et annule ce déplacement une fois Jade chargée. Karim ne
+// redevient pas le prochain annoncé pendant son « Pas prêt ».
+test('passe 17 : priorité gardée derrière une autre, sa personne dit « Pas prêt » : une annulation ne la rend pas annoncée', () => {
+  const { s, people } = evening();
+  const move = (person, toIndex, pending) => {
+    const before = s.manualOverrideState({ deferrals: true });
+    s.staffMove(person.id, toIndex, pending ? pending.ids : [], pending);
+    s.recordManualChange({ kind: toIndex === 0 ? 'priority' : 'move', personId: person.id, name: person.name,
+      from: 1, to: toIndex + 1, before, native: NATIVE });
+  };
+  move(people.Karim, 0);
+  move(people.Jade, 0);
+  assert.equal(s.reservedNext?.then?.personId, people.Karim.id, 'Karim est gardé derrière Jade');
+  const pending = s.select();
+  assert.equal(pending.ids[0], people.Jade.id);
+  const line = s.presenceView(pending.ids, pending).find(v => v.ids[0] === people.Karim.id);
+  s.deferPassage(people.Karim.id, line, 3, { extra: 1 });
+  assert.notEqual(s.reservedNext?.then?.personId, people.Karim.id, 'son « Pas prêt » le retire de la place gardée');
+  move(people.Karim, 3, pending);
+  s.commit(pending);
+  s.undoLastManualChange(null, 'd'.repeat(64));
+  assert.equal(s.isDeferred(people.Karim), true, 'son « Pas prêt » revient avec l’annulation');
+  assert.notEqual(s.reservedNext?.personId, people.Karim.id, 'Karim n’est pas annoncé pendant son « Pas prêt »');
+});
 
 test('priorité avant un titre chargé : le titre retiré repasse juste après, sans compter comme « Pas prêt »', () => {
   const { s, people, stage, loaded } = loadedEvening();
@@ -1898,7 +1960,9 @@ test('priorité avant un titre chargé : sa personne chante d’abord en duo not
   pulledBack(s, loaded, people.Karim.id);
   assert.equal(s.isDeferred(people.Maud), true);
   s.staffCountPartner(stage.ids[0], people.Karim.id, stage);
-  assert.equal(s.reservedNext, null, 'la priorité de Karim prend fin');
+  assert.notEqual(s.reservedNext?.personId, people.Karim.id, 'la priorité de Karim prend fin');
+  // Passe 17 : le titre retiré, chargé avant elle, redevient le prochain annoncé.
+  assert.equal(s.reservedNext?.personId, people.Maud.id, 'le titre retiré est le prochain annoncé');
   assert.equal(names(s, stage.ids)[0], 'Maud');
   assert.equal(s.isDeferred(people.Maud), false, 'plus rien ne retient le titre retiré');
   s.songEnded(stage.ids);

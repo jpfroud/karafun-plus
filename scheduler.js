@@ -335,7 +335,9 @@ class Scheduler {
     const before = change?.before;
     if (!before || typeof before !== 'object') return;
     if (Array.isArray(before.manualOrder)) before.manualOrder = before.manualOrder.filter(other => !gone(other));
-    if (before.reservedNext && gone(before.reservedNext.personId)) before.reservedNext = null;
+    // Les annonces gardées derrière (`then`) aussi : la suivante prend la
+    // place de celle qu'on oublie.
+    if (before.reservedNext) before.reservedNext = this._pruneBehind(before.reservedNext, link => gone(link.personId));
     if (!Array.isArray(before.deferrals)) return;
     before.deferrals = before.deferrals.filter(row => !gone(row?.[0])).map(([owner, deferral]) => {
       const ids = Array.isArray(deferral?.ids) ? deferral.ids.filter(other => !gone(other)) : [owner];
@@ -348,6 +350,12 @@ class Scheduler {
   _singsOnLine(line, pid) {
     const duet = this.people.get(line)?.song?.duet;
     return line === pid || (duet?.state === 'accepted' && duet.partnerId === pid);
+  }
+
+  // Personnes qui chantent sur la ligne de `line` (_singsOnLine).
+  _lineOf(line) {
+    const duet = this.people.get(line)?.song?.duet;
+    return [line, ...(duet?.state === 'accepted' ? [duet.partnerId] : [])];
   }
 
   // Report « Pas prêt » remis depuis un état gardé : annulation d'un geste du
@@ -404,7 +412,7 @@ class Scheduler {
       const before = change?.before;
       if (!before || typeof before !== 'object') continue;
       if (Array.isArray(before.manualOrder)) before.manualOrder = before.manualOrder.filter(pid => !sang(pid));
-      if (before.reservedNext && sang(before.reservedNext.personId)) before.reservedNext = null;
+      if (before.reservedNext) before.reservedNext = this._pruneBehind(before.reservedNext, link => sang(link.personId));
     }
     return ended;
   }
@@ -426,15 +434,26 @@ class Scheduler {
   _endPlaced(pid) {
     const changes = this.manualChanges.filter(change => change.personId === pid);
     const priority = !!this.reservedNext?.byStaff && this.reservedNext.personId === pid;
+    // Priorité gardée derrière un titre revenu de KaraFun (`then`) : elle prend
+    // fin aussi, et revient derrière lui si la personne n'a pas chanté
+    // (`behindOf`, _restorePlaced).
+    let found = null;
+    for (let link = this.reservedNext?.then; link && !found; link = link.then) if (link.byStaff && link.personId === pid) found = link;
+    const behind = !priority && found ? { ...this._plainReservation(found), behindOf: this.reservedNext.personId } : null;
     if (!changes.length) return null;
     // `changeIds` : tous les gestes à ce moment, pour les rendre à leur rang.
     // `epoch` : abandons des gestes déjà faits par le bar (voir _restorePlaced).
     const record = { personId: pid, changes: JSON.parse(JSON.stringify(changes)), order: [...this.manualOrder],
       changeIds: this.manualChanges.map(change => change.id),
-      reserved: priority ? { ...this.reservedNext } : null, serial: this.appearanceSerial, at: Date.now(),
+      reserved: priority ? this._plainReservation(this.reservedNext) : behind, serial: this.appearanceSerial, at: Date.now(),
       epoch: this.manualEpoch || 0 };
     if (!this._unpinManual(pid)) return null;
-    if (priority) this.releaseNext();
+    if (priority) this._passNext();
+    else if (behind) {
+      const { then, ...head } = this.reservedNext;
+      const kept = this._pruneBehind(then, link => !!link.byStaff && link.personId === pid);
+      this.reservedNext = kept ? { ...head, then: kept } : head;
+    }
     this.solverPlan = null;
     this._planDropped = true;
     const p = this.people.get(pid);
@@ -472,7 +491,16 @@ class Scheduler {
       };
       const at = Array.isArray(record.order) ? record.order.indexOf(p.id) : -1;
       const ahead = at < 0 ? [] : record.order.slice(0, at).filter(pid => this.manualOrder.includes(pid) || waiting(pid));
-      const reserved = record.reserved && !this.reservedNext ? { personId: p.id,
+      // Priorité gardée derrière un titre revenu de KaraFun : elle y revient
+      // s'il est encore le prochain annoncé sans autre annonce derrière lui.
+      const behindOf = record.reserved?.behindOf;
+      const asBehind = !!behindOf && this.reservedNext?.personId === behindOf && !!this.reservedNext.pulledBack;
+      // Sa priorité avait rendu la tête au titre retiré de KaraFun pour elle
+      // (_backFirst, `pulledBack` : son heure d'annonce) : elle la reprend, et
+      // le titre l'attend de nouveau (son report « après la priorité »).
+      const backFor = !behindOf && !!record.reserved && Number.isFinite(record.reserved.reservedAt) &&
+        this.reservedNext?.pulledBack === record.reserved.reservedAt;
+      const reserved = record.reserved && (asBehind || backFor || !this.reservedNext) ? { personId: p.id,
         reservedAt: Number.isFinite(record.reserved.reservedAt) ? record.reserved.reservedAt : Date.now(), byStaff: true } : null;
       // Sa ligne dans `list` (l'ordre fixé, ou celui d'avant un geste), avec
       // les lignes gardées devant elle ; derrière la priorité `staff`.
@@ -489,7 +517,8 @@ class Scheduler {
       };
       this.manualOrder = place(this.manualOrder, this.reservedNext);
       this.manualOrderActive = true;
-      if (reserved) this.reservedNext = reserved;
+      if (reserved) this.reservedNext = asBehind ? { ...this.reservedNext,
+        then: this.reservedNext.then ? { ...reserved, then: this.reservedNext.then } : reserved } : reserved;
       // Chaque geste revient après ceux qui le précédaient encore, avant ceux
       // faits depuis.
       const ids = Array.isArray(record.changeIds) ? record.changeIds : [];
@@ -636,7 +665,7 @@ class Scheduler {
   // qu'un déplacement lève et qu'une annulation doit rendre.
   manualOverrideState({ deferrals = false } = {}) {
     const state = { manualOrder: [...this.manualOrder], manualOrderActive: this.manualOrderActive,
-      reservedNext: this.reservedNext ? { ...this.reservedNext } : null };
+      reservedNext: this._copyReservation(this.reservedNext) };
     if (deferrals) state.deferrals = this._deferredOwners().map(pid => [pid, { ...this.people.get(pid).deferral }]);
     return state;
   }
@@ -646,12 +675,19 @@ class Scheduler {
   restoreManualOverride(state, { deferrals = false } = {}) {
     this.manualOrder = [...state.manualOrder];
     this.manualOrderActive = !!state.manualOrderActive && this.manualOrder.length > 0;
-    this.reservedNext = state.reservedNext ? { ...state.reservedNext } : null;
+    this.reservedNext = this._copyReservation(state.reservedNext);
     if (!deferrals || !Array.isArray(state.deferrals)) return;
     for (const [pid, deferral] of state.deferrals) {
       const p = this.people.get(pid);
       if (p && !p.withdrawnAt && p.song?.entryId === deferral.entryId && !p.deferral) this._restoreDeferral(p, deferral);
     }
+  }
+
+  // Copie d'une annonce, celle qu'un titre revenu de KaraFun garde derrière
+  // lui comprise (`then`) : un état gardé ne partage rien avec l'annonce en
+  // cours.
+  _copyReservation(reserved) {
+    return reserved ? structuredClone(reserved) : null;
   }
 
   // Les notes, photos et noms peuvent changer sans modifier la file. Cette
@@ -765,21 +801,25 @@ class Scheduler {
   // Annule le geste le plus récent. `excludeIds` : passage en cours d'envoi à
   // KaraFun, dont la réservation d'avant le geste ne peut plus être rendue.
   // Un titre retiré de KaraFun pour la priorité de ce geste et déjà revenu
-  // (yieldToPriority) reprend l'annonce que l'annulation rend : avant le
-  // geste, elle le suivait dans KaraFun (_aheadOfAnnounced). Sinon elle
-  // passait devant lui, une personne sautée faute de « Je suis là » comprise
-  // (relecture, passe 16). Titre pas encore revenu : server.js, au retour
-  // (pulledBack).
-  _undoLatest(nativeFingerprint, excludeIds = []) {
+  // (yieldToPriority) reprend la tête, l'annonce que l'annulation rend juste
+  // derrière lui : avant le geste, elle le suivait dans KaraFun (_backFirst).
+  // Sinon elle passait devant lui, une personne sautée faute de « Je suis
+  // là » comprise (relecture, passes 16 et 17). `busyIds` : personnes des
+  // passages en route vers KaraFun, invitée d'un duo comprise (le titre ne
+  // repasse pas juste après elles). Titre pas encore revenu : à son retour
+  // (returnFromKaraFun).
+  _undoLatest(nativeFingerprint, excludeIds = [], busyIds = []) {
     const latest = this.manualChanges.at(-1);
     const yielded = this._deferredOwners().map(pid => this.people.get(pid)).filter(p => p.deferral.afterPriority);
     if (this.canUndoManualChange(nativeFingerprint)) {
       this.restoreManualOverride(latest.before, { deferrals: true });
       this._restorePlan(latest.planBefore);
       this.manualChanges.pop();
-    } else this._undoRebased(latest, excludeIds);
+    } else this._undoRebased(latest, [...excludeIds, ...busyIds]);
     for (const p of yielded) {
-      if (!this._isDeferred(p) && p.deferral) this._aheadOfAnnounced(p.id, p.deferral.entryId, p.deferral.ids || [p.id]);
+      if (!this._isDeferred(p) && p.deferral) {
+        this._backFirst(p, p.deferral.entryId, { cutoff: p.deferral.forAt, busyIds: [...excludeIds, ...busyIds] });
+      }
     }
     this.version++;
     return latest;
@@ -814,6 +854,13 @@ class Scheduler {
     this.manualOrderActive = this.manualOrder.length > 0;
     this._trimManualOrder();
     if (change.to === 1 && this.reservedNext?.personId === change.personId) this.reservedNext = null;
+    // Priorité annulée de l'annonce gardée derrière un titre revenu de
+    // KaraFun : elle ne lui est plus rendue.
+    if (change.to === 1 && this.reservedNext?.then) {
+      const { then, ...head } = this.reservedNext;
+      const kept = this._pruneBehind(then, link => !!link.byStaff && link.personId === change.personId);
+      this.reservedNext = kept ? { ...head, then: kept } : head;
+    }
     // Ligne qui peut redevenir la prochaine annoncée : personne n'y chante qui
     // vient de chanter (dernier passage envoyé, ou depuis le geste) ni qui part
     // vers KaraFun (`excludeIds`), la personne de la ligne comme l'invitée de
@@ -847,8 +894,20 @@ class Scheduler {
       return !q || this._isDeferred(q) || this._announcedGuestHeld(reserved);
     };
     const old = before.reservedNext;
-    if (!this.reservedNext && old && lineFree(old.personId) && !skipped(old.personId) && !notReady(old) &&
-        (!old.byStaff || this.manualOrder.includes(old.personId))) this.reservedNext = { ...old };
+    const restorable = old && lineFree(old.personId) && !skipped(old.personId) && !notReady(old) &&
+      (!old.byStaff || this.manualOrder.includes(old.personId));
+    const back = this.reservedNext;
+    const restoredOld = !back && restorable;
+    if (restoredOld) this.reservedNext = this._copyReservation(old);
+    // Titre revenu de KaraFun en tête sans annonce derrière lui (_backFirst) :
+    // l'annonce d'avant ce geste, plus ancienne que le retrait, le suivait dans
+    // KaraFun ; elle le suit de nouveau. Sinon « Recalculer la file » une fois
+    // le titre revenu perdait la personne sautée faute de « Je suis là » que la
+    // priorité annulée avait remplacée (relecture, passe 17).
+    else if (restorable && back?.pulledBack && !back.then && old.personId !== back.personId &&
+        old.reservedAt < back.pulledBack && !this._lineOf(back.personId).some(pid => this._singsOnLine(old.personId, pid))) {
+      this.reservedNext = { ...back, then: this._plainReservation(old) };
+    }
     // Seul le report levé par ce geste revient, moins les chansons passées.
     // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : déjà
     // annoncée, la personne le reste ; sinon elle devient la prochaine
@@ -856,29 +915,38 @@ class Scheduler {
     // sinon il revient à 0 et le prochain envoi la libère. Sinon elle laissait
     // passer une chanson de plus que demandé (relecture, passes 7 et 8).
     const passed = Number.isSafeInteger(change.serial) ? Math.max(0, this.appearanceSerial - change.serial) : 0;
+    // Un titre retiré de KaraFun pour la priorité de ce geste reprend la tête
+    // (_undoLatest, _backFirst) : comme une annonce en cours, il garde le
+    // report rendu de la personne de ce geste, au bout, derrière lui ; sinon
+    // elle passait devant lui, et devant une personne dont son envoi lèvera
+    // le report (relecture, passe 17).
+    const yielding = [...this.people.values()].some(q => q.deferral?.afterPriority && q.deferral.forId === change.personId &&
+      q.song?.entryId === q.deferral.entryId);
     for (const [pid, deferral] of Array.isArray(before.deferrals) ? before.deferrals : []) {
       const p = this.people.get(pid);
       if (pid !== change.personId || !p || p.withdrawnAt || p.song?.entryId !== deferral.entryId || p.deferral) continue;
       const remaining = Math.max(0, deferral.remaining - passed);
       if (remaining === 0 && this.reservedNext?.personId === p.id) continue;
-      if (remaining > 0 || this.reservedNext || !lineFree(p.id) || skipped(p.id)) {
+      if (remaining > 0 || this.reservedNext || yielding || !lineFree(p.id) || skipped(p.id)) {
         this._restoreDeferral(p, { ...deferral, remaining });
-        // Devenue entre-temps la prochaine annoncée (hors priorité du bar) :
-        // son report rendu la retient, l'annonce est libérée, comme
-        // deferPassage le fait (relecture, passe 12).
-        if (this.reservedNext?.personId === p.id && !this.reservedNext.byStaff) this.releaseNext();
+        // Devenue entre-temps la prochaine annoncée (hors priorité du bar), ou
+        // rendue telle par cette annulation (priorité du bar gardée derrière
+        // une autre dans l'état d'avant le geste, passe 17) : son report rendu
+        // la retient, l'annonce est libérée, comme deferPassage le fait
+        // (relecture, passe 12).
+        if (this.reservedNext?.personId === p.id && (!this.reservedNext.byStaff || restoredOld)) this._passNext();
       } else this.reservedNext = { personId: p.id, reservedAt: Date.now() };
     }
     this._restorePlan(change.planBefore);
   }
 
-  undoLastManualChange(changeId, nativeFingerprint, { excludeIds = [] } = {}) {
+  undoLastManualChange(changeId, nativeFingerprint, { excludeIds = [], busyIds = [] } = {}) {
     const latest = this.manualChanges.at(-1);
     if (!latest) throw new Error('Aucun changement manuel à annuler.');
     if (changeId && latest.id !== changeId) {
       throw new Error('Annule d’abord le changement manuel le plus récent.');
     }
-    this._undoLatest(nativeFingerprint, excludeIds);
+    this._undoLatest(nativeFingerprint, excludeIds, busyIds);
     this._event('staff.undo', { changeId: latest.id || null, kind: latest.kind, personId: latest.personId || null });
     this.note(`Le bar a annulé ${latest.kind === 'priority' ? 'la priorité' : 'le déplacement'} de ${latest.name}`, 'staff');
     return latest;
@@ -887,10 +955,10 @@ class Scheduler {
   // Tous les gestes, du plus récent au plus ancien : leurs lignes reviennent
   // au calcul, sans relancer Timefold (voir forceReplan). Ceux qu'un duo
   // avait terminés ne reviennent plus (`manualEpoch`, _restorePlaced).
-  undoAllManualChanges(nativeFingerprint, { excludeIds = [] } = {}) {
+  undoAllManualChanges(nativeFingerprint, { excludeIds = [], busyIds = [] } = {}) {
     if (!this.manualChanges.length) throw new Error('Aucun changement manuel à annuler.');
     const count = this.manualChanges.length;
-    while (this.manualChanges.length) this._undoLatest(nativeFingerprint, excludeIds);
+    while (this.manualChanges.length) this._undoLatest(nativeFingerprint, excludeIds, busyIds);
     this.manualEpoch = (this.manualEpoch || 0) + 1;
     this._event('staff.recalculate', { count });
     this.note(`Le bar a annulé ${count} changement${count > 1 ? 's' : ''} manuel${count > 1 ? 's' : ''} dans la file`, 'staff');
@@ -1115,7 +1183,7 @@ class Scheduler {
     // révoque pour de bon, « Réactiver » ne la ranime pas (décision du gérant).
     if (p.soloKeyHash) p.soloKeyRevoked = true;
     this._removeFromQ(p.id);
-    if (this.reservedNext?.personId === p.id) this.releaseNext();
+    if (this.reservedNext?.personId === p.id) this._passNext();
     this._unpinManual(p.id);
     this._event('person.left', { personId: p.id, by, songsDropped });
     this.note(`${p.name} a retiré ses chansons ; son identité reste inscrite à la table`);
@@ -1125,7 +1193,7 @@ class Scheduler {
     // annule les duos liés
     this._removeDuetsForPerson(p, notify);
     this._removeFromQ(p.id);
-    if (this.reservedNext?.personId === p.id) this.releaseNext();
+    if (this.reservedNext?.personId === p.id) this._passNext();
     this.people.delete(p.id);
     this.byToken.delete(p.token);
     this.roundPeople.delete(p.id);
@@ -1226,7 +1294,7 @@ class Scheduler {
     if (!p.song || by === 'presence-max') this._unpinManual(p.id);
     else if (p.song !== current) { this._guestJoined(p); this._duetOnAnnounced(p, p.song); }
     this._refreshDuetViews();
-    if (this.reservedNext?.personId === p.id && !p.song) this.releaseNext();
+    if (this.reservedNext?.personId === p.id && !p.song) this._passNext();
     this._event('song.removed', { personId: p.id, entryId: key, by });
     this.note(`${p.name} a retiré une chanson de sa liste`);
   }

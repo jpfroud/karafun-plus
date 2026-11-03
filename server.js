@@ -828,21 +828,22 @@ function restore(tr, reason) {
 // d'un duo improvisé qui vient de monter sur scène, « Priorité » du bar avant
 // lui) : son passage n'a pas eu lieu, le titre revient en tête de la liste de
 // son chanteur et son ticket reprend sa place. Un report « Pas prêt »
-// s'applique ensuite ; après une priorité, il repasse juste après elle
-// (Scheduler#yieldToPriority), ou reprend sa place si elle ne tient plus.
+// s'applique ensuite ; après une priorité, il repasse juste après elle, ou
+// reprend la tête si elle ne tient plus, l'annonce qui le suivait juste
+// derrière lui (Scheduler#returnFromKaraFun).
 function restorePulled(tr) {
-  sched.requeueUnplayed(tr.sel);
   if (tr.pulled?.reason === 'priority') {
     const forP = sched.people.get(tr.pulled.forId || '');
-    const still = !!sched.yieldToPriority(tr.sel, forP?.id || null);
-    // Priorité annulée pendant le retrait : l'annonce rendue, qui le suivait
-    // dans KaraFun (`after`), ne passe pas devant lui.
-    if (!still) sched.pulledBack(tr.sel, tr.pulled.after);
+    const forAt = Number.isFinite(tr.pulled.forAt) ? tr.pulled.forAt : null;
+    const still = !!sched.returnFromKaraFun(tr.sel, { forId: forP?.id || null, forAt,
+      changeId: typeof tr.pulled.changeId === 'string' ? tr.pulled.changeId : null,
+      cutoff: forAt ?? tr.pulled.at, busyIds: sendingSingers() });
     sched.note(`« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun : ` + (still ?
       `il repasse juste après ${forP.name} (priorité du bar), sans perdre son tour` :
       `la priorité ${forP ? `de ${forP.name} ` : ''}ne tient plus, il reprend sa place sans perdre son tour`), 'skip');
     return;
   }
+  sched.requeueUnplayed(tr.sel);
   if (!tr.pulled) {
     sched.note(tr.unpulled?.reason === 'duo' ?
       `« ${tr.sel.song.title} » (${shownLabel(tr.sel)}) retiré de KaraFun malgré l’annulation du duo : il revient en tête de la liste de son chanteur.` :
@@ -858,7 +859,9 @@ function restorePulled(tr) {
 }
 
 // Retire de KaraFun un titre pas encore chanté pour le rechanter plus tard.
-// `extra` : `forId`, personne de la priorité du bar qui passe avant lui.
+// `extra` : `forId`, personne de la priorité du bar qui passe avant lui ; la
+// route note ensuite `forAt`, l'heure d'annonce de cette priorité, et
+// `changeId`, son geste (Scheduler#returnFromKaraFun).
 const pullDisconnected = () => new Error('KaraFun est déconnecté : réessaie dans un instant ou demande au bar.');
 function pullFromKaraFun(tr, reason, extra = {}) {
   if (!bridge?.ready) throw pullDisconnected();
@@ -4116,6 +4119,17 @@ function sendingIds() {
   for (const tr of tracked) if (!tr.cancelled && !tr.startedAt) ids.push(...(tr.sel.consumedIds || tr.sel.ids.slice(0, 1)));
   return ids;
 }
+
+// Tous les chanteurs de ces passages, invitée d'un duo comprise, sauf un
+// titre qui sort de KaraFun : un titre retiré pour une priorité annulée ne
+// repasse pas en tête juste après un passage où l'une de ses personnes chante
+// (Scheduler#_backFirst). Sinon elle chantait deux fois de suite (relecture,
+// passe 17).
+function sendingSingers() {
+  const ids = pending && !pending.cancelled ? [...pending.sel.ids] : [];
+  for (const tr of tracked) if (!tr.cancelled && !tr.pulled && !tr.absent && !tr.startedAt) ids.push(...tr.sel.ids);
+  return ids;
+}
 function assertInviteNotSending(guest, entryId) {
   const sending = sendingEntryId();
   if (!sending) return;
@@ -5319,19 +5333,23 @@ const handlers = {
     const before = sched.manualOverrideState({ deferrals: true });
     if (pull) {
       // KaraFun refuse la commande : rien n'a changé, ni dans KaraFun ni dans la file.
-      // `after` : l'annonce qui suit ce titre dans KaraFun ; rendue par
-      // l'annulation de ce geste, elle ne passera pas devant lui (pulledBack).
-      const after = before.reservedNext ? { personId: before.reservedNext.personId, reservedAt: before.reservedNext.reservedAt } : null;
-      try { pullFromKaraFun(pull, 'priority', { forId: personId, ...(after ? { after } : {}) }); }
+      try { pullFromKaraFun(pull, 'priority', { forId: personId }); }
       catch (error) {
         throw new Error(`KaraFun n’a pas pu retirer « ${pull.sel.song.title} » (${String(error.message).replace(/[.!?\s]+$/, '')}) : rien n’a changé.`);
       }
     }
     sched.staffMove(personId, toIndex, excluded, provisional);
-    sched.recordManualChange({
+    // La priorité de ce geste (son heure d'annonce) : seule elle retient le
+    // titre retiré ; une annonce plus ancienne le suivait dans KaraFun
+    // (Scheduler#returnFromKaraFun, relecture, passe 17).
+    if (pull && sched.reservedNext?.byStaff && sched.reservedNext.personId === personId) pull.pulled.forAt = sched.reservedNext.reservedAt;
+    const change = sched.recordManualChange({
       kind: priority ? 'priority' : 'move', personId, name,
       from: from + 1, to: toIndex + 1, before, native: priorityNativeFingerprint(),
     });
+    // Le geste lui-même : annulé ou tombé, le titre retiré reprend la tête à
+    // son retour (Scheduler#returnFromKaraFun).
+    if (pull) pull.pulled.changeId = change.id;
     if (pull) {
       sched.note(`Le bar fait passer ${name} avant « ${pull.sel.song.title} » (${shownLabel(pull.sel)}) : ce titre sort de KaraFun et repasse juste après, sans perdre son tour`, 'staff');
     }
@@ -5356,7 +5374,7 @@ const handlers = {
     // seule sa ligne retrouve le calcul, ou la place d'un geste plus ancien.
     const native = priorityNativeFingerprint();
     const exact = sched.canUndoManualChange(native);
-    const change = sched.undoLastManualChange(String(body.id), native, { excludeIds: sendingIds() });
+    const change = sched.undoLastManualChange(String(body.id), native, { excludeIds: sendingIds(), busyIds: sendingSingers() });
     const older = sched.manualChanges.some(other => other.personId === change.personId);
     sync();
     return { ok: true, exact, message: exact ? 'Dernier changement annulé ; ordre précédent retrouvé' : older ?
@@ -5367,12 +5385,12 @@ const handlers = {
     if (sched.manualChanges.at(-1)?.kind !== 'priority') {
       throw new Error('La dernière intervention du bar n’est pas une priorité.');
     }
-    sched.undoLastManualChange(null, priorityNativeFingerprint(), { excludeIds: sendingIds() });
+    sched.undoLastManualChange(null, priorityNativeFingerprint(), { excludeIds: sendingIds(), busyIds: sendingSingers() });
     sync();
     return { ok: true };
   },
   'POST /api/staff/queue-recalculate': async () => {
-    const count = sched.undoAllManualChanges(priorityNativeFingerprint(), { excludeIds: sendingIds() });
+    const count = sched.undoAllManualChanges(priorityNativeFingerprint(), { excludeIds: sendingIds(), busyIds: sendingSingers() });
     sync();
     return { ok: true, undone: count };
   },
@@ -5436,7 +5454,7 @@ const handlers = {
   // Sinon les deux « Annuler » du bar laissaient la file dans des états
   // différents (relecture, passe 8).
   'POST /api/staff/queue-optimize': async () => {
-    if (sched.manualChanges.length) sched.undoAllManualChanges(priorityNativeFingerprint(), { excludeIds: sendingIds() });
+    if (sched.manualChanges.length) sched.undoAllManualChanges(priorityNativeFingerprint(), { excludeIds: sendingIds(), busyIds: sendingSingers() });
     const started = sched.forceReplan(30000);
     sync();
     return { ok: true, started, message: started ?
