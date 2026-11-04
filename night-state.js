@@ -94,6 +94,19 @@ function boundDurations(snapshot) {
 // chanteurs : son total peut être nul ; `forId` et `forAt` nomment cette
 // priorité (Scheduler#_priorityHolds) ; `endedFor` et `endedAt`, celle dont
 // la fin l'a mis en simple report (Scheduler#_plainReport).
+// Trace abîmée de cette priorité finie (`endedFor`, `endedAt`) : seule elle
+// est oubliée, le simple report reste (il passe juste après les annonces
+// gardées, sans qu'une annulation puisse lui rendre sa priorité). Sinon une
+// sauvegarde abîmée lui faisait perdre sa place (contre-relecture de la
+// passe 26).
+function cleanEnded(d) {
+  if (!d || typeof d !== 'object' || (d.endedFor === undefined && d.endedAt === undefined)) return d;
+  if (d.afterPriority !== true || d.forId !== undefined || typeof d.endedFor !== 'string' || !Number.isFinite(d.endedAt)) {
+    delete d.endedFor;
+    delete d.endedAt;
+  }
+  return d;
+}
 const validDeferral = d => !!(d && typeof d === 'object' && typeof d.entryId === 'string' &&
   Number.isInteger(d.remaining) && d.remaining >= 0 && d.remaining <= DEFER_MAX + 1 &&
   (d.afterPriority === undefined || d.afterPriority === true) &&
@@ -315,7 +328,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // Report « Pas prêt » abîmé : la personne garde simplement sa place. Les
     // annonces qu'un report gardait (`then`, sauvegarde d'avant la passe 19)
     // ne valent plus : elles restent dans la chaîne des annonces.
-    if (person.deferral != null && !validDeferral(person.deferral)) person.deferral = null;
+    if (person.deferral != null && !validDeferral(cleanEnded(person.deferral))) person.deferral = null;
     if (person.deferral) delete person.deferral.then;
     // Champs facultatifs de l'accès solo et de l'activité : abîmés, ils sont
     // ignorés (prénom libre, pas de clé personnelle, activité inconnue).
@@ -518,7 +531,7 @@ function restoreNight(snapshot, { scheduler, access, settings, photoDir = null }
     // Reports « Pas prêt » levés par un déplacement : abîmés, l'annulation
     // garde l'ordre sans les rendre.
     if ('deferrals' in before && !(Array.isArray(before.deferrals) && before.deferrals.every(row =>
-      Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && validDeferral(row[1])))) delete before.deferrals;
+      Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && validDeferral(cleanEnded(row[1]))))) delete before.deferrals;
     // Passages comptés au moment du geste (report rendu par une annulation
     // après d'autres passages) : abîmé, le report est rendu sans décompte.
     if ('serial' in change && (!Number.isSafeInteger(change.serial) || change.serial < 0)) delete change.serial;

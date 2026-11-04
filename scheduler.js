@@ -1068,6 +1068,12 @@ class Scheduler {
       this.reservedNext = behind ? { ...top, then: behind } : top;
       for (const link of cut) this._dropBehind(link);
     }
+    // Quelle que soit la branche qui a rendu la chaîne (annonce d'avant,
+    // annonce gardée remise à sa place), le titre retiré dont la priorité
+    // revient telle quelle l'attend de nouveau (_rewaitEnded, passe 26).
+    // Sinon il passait derrière ce qu'elle gardait (contre-relecture de la
+    // passe 26).
+    this._rewaitEnded();
     // Seul le report levé par ce geste revient, moins les chansons passées.
     // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : déjà
     // annoncée, la personne le reste ; sinon elle devient la prochaine
@@ -1087,6 +1093,16 @@ class Scheduler {
       if (pid !== change.personId || !p || p.withdrawnAt || p.song?.entryId !== deferral.entryId || p.deferral) continue;
       const remaining = Math.max(0, deferral.remaining - passed);
       if (remaining === 0 && this.reservedNext?.personId === p.id) continue;
+      // Titre retiré de KaraFun dont la priorité a pris fin depuis le geste
+      // (« Pas prêt », départ, titre retiré) : son report ne vaudrait plus
+      // rien. Il attend cette priorité là où elle est encore gardée, sinon il
+      // reprend la tête ou attend en simple report (_waitAgain), comme si le
+      // geste n'avait pas eu lieu. Sinon de nouvelles tables passaient devant
+      // lui (contre-relecture de la passe 26).
+      if (deferral.afterPriority && typeof deferral.forId === 'string' && !this._priorityHolds(deferral)) {
+        this._waitAgain(p, deferral.forId, deferral.forAt, excludeIds);
+        continue;
+      }
       if (remaining > 0 || this.reservedNext || yielding || !lineFree(p.id) || skipped(p.id)) {
         this._restoreDeferral(p, { ...deferral, remaining });
         // Devenue entre-temps la prochaine annoncée (hors priorité du bar), ou

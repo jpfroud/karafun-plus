@@ -2746,3 +2746,71 @@ module.exports = { TimefoldBridge };
   assert.ok(phases.res.warnings.some(w => /^limite de 20 000 mouvements non appliquée \(configuration du solveur non reconnue dans /.test(w)), phases.res.warnings.join(' | '));
   assert.deepEqual(solverDirs(), dirsBefore);
 });
+
+
+// Relecture, passe 26 : comme la route (POST /api/staff/move), le rejeu
+// --gestes ne note pas un glissement que les annonces gardées laissent à sa
+// place, et note la place prise par un glissement qu'elles bornent (passes
+// 22 et 23) ; « Annuler » rejoué rend la place d'avant ce geste.
+test('passe 26 : rejeu libre --gestes : glissement laissé en place par les annonces gardées non noté, glissement borné noté à la place prise, puis annulé', async () => {
+  const T0 = Date.UTC(2026, 9, 15, 19, 0);
+  const keys = ['S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07'];
+  // Une personne par table, un titre chacune, chantés dans l'ordre en réel.
+  const build = fill => {
+    const events = [];
+    const e = (t, name, f = {}) => events.push({ v: 1, seq: events.length + 1, t: T0 + t * 1000, ev: name, ...f });
+    e(0, 'evening.started', { rules: {} });
+    e(0, 'app.started', { restored: false, offlineMs: 0 });
+    keys.forEach((k, n) => { e(0, 'table.opened', { tableId: `T${n + 1}` }); e(0, 'person.joined', { personId: k, tableId: `T${n + 1}` }); });
+    keys.forEach((k, n) => e(1 + n, 'song.requested', { personId: k, entryId: `x${n + 1}`, songId: n + 1, title: `x${n + 1}`, mode: 'append' }));
+    keys.forEach((k, n) => {
+      const t = 10 + 200 * n;
+      e(t - 5, 'turn.sent', { entryId: `x${n + 1}`, ownerId: k, ids: [k], queueId: `q${n + 1}` });
+      e(t, 'stage.started', { entryId: `x${n + 1}`, ids: [k], queueId: `q${n + 1}`, source: 'queue', title: `x${n + 1}` });
+      e(t + 180, 'stage.ended', { queueId: `q${n + 1}`, playedSec: 180 });
+    });
+    fill(e);
+    events.sort((a, b) => a.t - b.t || a.seq - b.seq).forEach((x, i) => { x.seq = i + 1; });
+    return { people: keys.map((key, n) => ({ key, table: `T${n + 1}` })), tables: keys.map((k, n) => ({ key: `T${n + 1}` })), events };
+  };
+  // Pendant le titre de S01 (S02 annoncé) : « Priorité » à S06 puis à S07,
+  // gardées en tête (S07, S06) ; S02, juste après elles, glissé à la 2e place
+  // (il y reste) ; S05 glissé à la 2e place (il prend la 3e) ; puis
+  // « Annuler » de ce dernier geste.
+  const gestures = undo => build(e => {
+    e(20, 'staff.move', { personId: 'S06', kind: 'priority', from: 5, to: 1 });
+    e(20, 'staff.move', { personId: 'S07', kind: 'priority', from: 6, to: 1 });
+    e(20, 'staff.move', { personId: 'S02', kind: 'move', from: 3, to: 2 });
+    e(20, 'staff.move', { personId: 'S05', kind: 'move', from: 6, to: 2 });
+    if (undo) e(21, 'staff.undo', { changeId: 'reel-4', kind: 'move', personId: 'S05' });
+  });
+  const order = res => res.passages.map(p => p.ids.join('+'));
+  // Gestes notés par le rejeu, avec la place que la file rejouée montre alors.
+  const { Scheduler } = require('../scheduler');
+  let P = Scheduler.prototype;
+  while (P && !Object.prototype.hasOwnProperty.call(P, 'recordManualChange')) P = Object.getPrototypeOf(P);
+  const orig = P.recordManualChange;
+  const noted = [];
+  P.recordManualChange = function (...a) {
+    const change = orig.apply(this, a);
+    const shown = this.presenceView().filter(v => !v.future).map(v => v.ids[0]);
+    noted.push([change.name, change.to, shown.indexOf(change.personId) + 1]);
+    return change;
+  };
+  try {
+    assert.deepEqual(order(await rejeu.runFree(rejeu.loadEvening(build(() => {})))), keys);
+    const kept = await rejeu.runFree(rejeu.loadEvening(gestures(false)), { gestures: true });
+    assert.deepEqual(kept.gestures, { 'staff.move': 3 }, 'le glissement laissé en place n’est pas rejoué');
+    assert.ok(kept.notes.some(n => / staff\.move non rejoué : titre déjà juste après les passages annoncés dans le rejeu S02$/.test(n)),
+      kept.notes.join(' | '));
+    assert.deepEqual(noted, [['S06', 1, 1], ['S07', 1, 1], ['S05', 3, 3]], 'place notée : celle prise, montrée dans la file');
+    assert.deepEqual(order(kept), ['S01', 'S07', 'S06', 'S05', 'S02', 'S03', 'S04']);
+    noted.length = 0;
+    const undone = await rejeu.runFree(rejeu.loadEvening(gestures(true)), { gestures: true });
+    assert.deepEqual(undone.gestures, { 'staff.move': 3, 'staff.undo': 1 });
+    assert.deepEqual(noted.at(-1), ['S05', 3, 3]);
+    assert.deepEqual(order(undone), ['S01', 'S07', 'S06', 'S02', 'S03', 'S04', 'S05'], 'annulé : S05 retrouve sa place d’avant le geste');
+  } finally {
+    P.recordManualChange = orig;
+  }
+});

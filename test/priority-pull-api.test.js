@@ -2111,3 +2111,76 @@ test('« Je suis là » obligatoire, scène libre, seul un « Pas prêt » atten
   f.sync();
   assert.deepEqual(f.getPending()?.sel.ids, [bob.id], 'confirmé, il part vers KaraFun');
 });
+
+
+// Relecture, passe 26 : la réponse de « Annuler » recalculé (POST
+// /api/staff/manual-change-undo) dit « parmi les passages déjà annoncés »
+// seulement à une ligne rendue parmi les annonces gardées, où elle était
+// juste avant le geste (Scheduler#keptAgain) : le titre retiré qui attend de
+// nouveau la priorité en tête, oui ; une ligne que le calcul a annoncée de
+// lui-même après le geste, non.
+test('passe 26 : « Annuler » recalculé du glissement du titre retiré qui attendait sa priorité : la réponse dit qu’il retrouve sa place parmi les passages déjà annoncés', async () => {
+  const f = harness();
+  const ctx = loaded(f);
+  const { bruno, driss } = ctx.people;
+  const eve = f.sched.join({ tableId: '5', name: 'Eve', headcount: 2 });
+  const fred = f.sched.join({ tableId: '6', name: 'Fred', headcount: 2 });
+  f.sched.chooseSong(eve, { songId: 809, title: 'Titre Eve' });
+  f.sched.chooseSong(fred, { songId: 810, title: 'Titre Fred' });
+  f.sync();
+  await pullFor(f, driss);
+  karafunRemoves(f, ctx);
+  const title = f.sched.people.get(bruno.id);
+  assert.equal(title.deferral?.forId, driss.id, 'le titre revenu attend la priorité de Driss, en report');
+  assert.equal(f.sched._inChain(bruno.id), false, 'pas un maillon de la chaîne');
+  assert.deepEqual(planned(f).slice(0, 2).map(line => line.id), [driss.id, bruno.id]);
+  const moved = plain(await move(f, { personId: bruno.id, toIndex: 3 }));
+  assert.equal(moved.ok, true);
+  assert.equal(planned(f)[3].id, bruno.id, 'le bar le glisse à la 4e place');
+  const gus = f.sched.join({ tableId: '7', name: 'Gus', headcount: 2 });
+  f.sched.chooseSong(gus, { songId: 811, title: 'Titre Gus' }); // la file change : annulation recalculée
+  f.sync();
+  const result = plain(await f.call('POST /api/staff/manual-change-undo', { id: f.sched.manualChanges.at(-1).id }));
+  assert.equal(result.exact, false);
+  assert.equal(result.message, 'Dernier changement annulé : la file a changé depuis, Bruno retrouve sa place parmi les passages déjà annoncés');
+  assert.deepEqual(planned(f).slice(0, 2).map(line => line.id), [driss.id, bruno.id], 'il attend de nouveau la priorité de Driss');
+  assert.equal(f.sched._titleWaitingFor(f.sched.reservedNext)?.id, bruno.id);
+  assert.ok(planned(f).findIndex(line => line.id === gus.id) > 1, 'la nouvelle table passe après');
+});
+
+
+// Relecture, passe 26 : une ligne que le calcul a annoncée de lui-même après
+// le geste n'était pas parmi les passages déjà annoncés avant lui : la
+// réponse de « Annuler » recalculé dit « sa place calculée »
+// (Scheduler#keptAgain).
+test('passe 26 : « Annuler » recalculé d’un déplacement dont la ligne a été annoncée par le calcul depuis : la réponse dit qu’elle retrouve sa place calculée', async () => {
+  const f = harness();
+  const ctx = loaded(f);
+  for (const [tableId, name, songId] of [['5', 'Eve', 809], ['6', 'Fred', 810], ['7', 'Gus', 811], ['8', 'Hugo', 812], ['9', 'Ines', 813]]) {
+    ctx.people[name.toLowerCase()] = f.sched.join({ tableId, name, headcount: 2 });
+    f.sched.chooseSong(ctx.people[name.toLowerCase()], { songId, title: `Titre ${name}` });
+  }
+  f.sync();
+  const { ines } = ctx.people;
+  const before = planned(f).map(line => line.id);
+  assert.equal(before.length, 7);
+  assert.equal(before[6], ines.id, 'Ines est 7e');
+  assert.equal(f.sched._inChain(ines.id), false);
+  assert.equal(plain(await move(f, { personId: ines.id, toIndex: 2 })).ok, true); // de 7 à 3
+  assert.equal(f.sched.manualChanges.at(-1).to, 3);
+  assert.equal(planned(f)[2].id, ines.id);
+  // La file avance : les deux lignes devant elle partent, puis le calcul
+  // l'annonce de lui-même (reserveNext, comme sync() pendant un titre en
+  // cours).
+  for (let k = 0; k < 2; k++) { const sel = sendNext(f); f.sched.songEnded(sel.ids); }
+  f.sched.reserveNext();
+  assert.equal(f.sched.reservedNext?.personId, ines.id, 'le calcul annonce Ines');
+  assert.notEqual(f.sched.reservedNext?.byStaff, true, 'annonce du calcul, pas une priorité du bar');
+  assert.equal(f.sched.manualChanges.at(-1).personId, ines.id, 'son geste est encore noté');
+  const result = plain(await f.call('POST /api/staff/manual-change-undo', { id: f.sched.manualChanges.at(-1).id }));
+  assert.equal(result.exact, false);
+  assert.equal(result.message, 'Dernier changement annulé : la file a changé depuis, Ines retrouve sa place calculée',
+    'elle n’était pas parmi les passages déjà annoncés juste avant le geste');
+  assert.equal(f.sched.reservedNext?.personId, ines.id, 'l’annonce faite par le calcul tient');
+  assert.deepEqual(f.sched.manualChanges, []);
+});

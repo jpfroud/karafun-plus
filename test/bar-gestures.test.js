@@ -4312,3 +4312,653 @@ test('passe 26 : duo placé juste après le passage de son invitée, retiré pou
     }
   }
 });
+
+// Relecture, passe 26 : tests des constats mineurs (titre ou personne sautée
+// devenus l’annonce en tête pendant un envoi, refus de _backOrWait, priorité
+// donnée pendant un envoi, place notée d’un glissement borné).
+
+
+test('passe 26 : priorité donnée pendant un envoi puis glissée plus bas (ou « Pas prêt »), la personne sautée gardée sans « Je suis là » dont l’invitée part dans cet envoi : à l’accusé elle attend de nouveau un passage, juste après le suivant, comme montré', () => {
+  for (const variant of ['drag', 'defer']) {
+    const { s, people } = secondRound18({ requirePresence: true });
+    for (const p of Object.values(people)) s.confirm(p);
+    play(s);
+    const [, L, , G, , O, Y] = names(s).map(n => people[n]);
+    s.requestDuetJoin(G, L.id, L.song.entryId); s.answerDuetJoin(L, L.song.entryId, G.id, true);
+    s.requestDuetJoin(G, O.id, O.song.entryId); s.answerDuetJoin(O, O.song.entryId, G.id, true);
+    for (const p of Object.values(people)) s.confirm(p);
+    let sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+    L.confirmedAt = 0; G.confirmedAt = 0; s.reservePresenceNext([]); s.skipUnconfirmed(L.id, 3);
+    for (const p of Object.values(people)) if (p !== L) s.confirm(p);
+    sel = s.select(); s.commit(sel); s.songEnded(sel.ids); // L annoncée, sautée
+    gesture(s, O, 0); // O & G devant, L gardée derrière
+    for (const p of Object.values(people)) if (p !== L) s.confirm(p); // L ne confirme toujours pas
+    const P = s.select(); const excl = P.consumedIds || P.ids;
+    assert.equal(label(s, P), `${O.name} & ${G.name}`);
+    // Pendant l'envoi, comme la route du bar : « Priorité » à Y (L gardée
+    // derrière elle), puis Y glissée plus bas ou « Pas prêt » : L devient
+    // l'annonce en tête alors que son invitée part dans ce passage.
+    gesture(s, Y, 0, excl, P);
+    if (variant === 'drag') gesture(s, Y, 3, excl, P);
+    else s.deferPassage(Y.id, s.presenceView(excl, P).find(v => v.ids[0] === Y.id), 1, { extra: 1 });
+    assert.equal(s.reservedNext?.personId, L.id, `${variant} : L en tête pendant l’envoi`);
+    const during = names(s, excl, P);
+    const duo = `${L.name} & ${G.name}`;
+    s.commit(P);
+    assert.equal(L.presenceRetry, true, `${variant} : ${L.name} attend de nouveau un passage devant elle`);
+    assert.notEqual(s.reservedNext?.personId, L.id, `${variant} : ${L.name} n’est pas la prochaine`);
+    s.songEnded(P.ids);
+    const after = names(s);
+    assert.equal(after.indexOf(duo), 1, `${variant} : après l’accusé ${after.join(', ')}`);
+    // Glissée plus bas, la ligne de L reste fixée par le bar pendant l'envoi
+    // (sa place ne prend fin qu'à l'accusé, _unpinSingers, que la prévision
+    // ne simule pas : décision du 26 octobre) : la file montrée pendant
+    // l'envoi ne se compare qu'après le « Pas prêt ».
+    if (variant === 'defer') {
+      assert.deepEqual(after, during, `${variant} : pendant l’envoi ${during.join(', ')} | après l’accusé ${after.join(', ')}`);
+    }
+    const sent = sends18(s, 4);
+    assert.deepEqual(sent, after.slice(0, 4), `${variant} : ${after.join(', ')}`);
+    assert.ok(noBackToBack24([label(s, P), ...sent]), `${variant} : ${[label(s, P), ...sent].join(', ')}`);
+  }
+});
+
+
+test('passe 26 : titre retiré devenu l’annonce en tête pendant l’envoi du duo de son invité (priorité donnée puis glissée plus bas, ou « Pas prêt ») : simple report à l’accusé, il passe un passage plus tard, comme montré', () => {
+  for (const variant of ['drag', 'defer']) {
+    const { s, people } = secondRound18();
+    const { Paulo, Gil, Hugo, Ines } = people;
+    const stage = s.select(); s.commit(stage);
+    assert.equal(label(s, stage), 'Maud');
+    const loaded = s.select(); s.commit(loaded);
+    assert.equal(label(s, loaded), 'Paulo');
+    const tr = { sel: loaded };
+    pullFor18(s, tr, Gil, stage.ids); back18(s, tr); // le titre de Paulo attend la priorité de Gil
+    s.requestDuetJoin(Hugo, Paulo.id, Paulo.song.entryId); s.answerDuetJoin(Paulo, Paulo.song.entryId, Hugo.id, true);
+    s.requestDuetJoin(Hugo, Gil.id, Gil.song.entryId); s.answerDuetJoin(Gil, Gil.song.entryId, Hugo.id, true);
+    for (const n of ['Nina', 'Nora', 'Noe']) newcomer18(s, n);
+    s.songEnded(stage.ids);
+    const P = s.select(); const excl = P.consumedIds || P.ids;
+    assert.equal(label(s, P), 'Gil & Hugo');
+    // Pendant l'envoi, comme la route du bar : « Priorité » à Ines, le titre
+    // de Paulo la suit en maillon `pulled` ; Ines glissée plus bas ou « Pas
+    // prêt » : il devient l'annonce en tête alors que Hugo chante dans ce passage.
+    gesture(s, Ines, 0, excl, P);
+    assert.equal(s.reservedNext.then?.personId, Paulo.id);
+    assert.equal(s.reservedNext.then?.pulled, true);
+    if (variant === 'drag') gesture(s, Ines, 4, excl, P);
+    else s.deferPassage(Ines.id, s.presenceView(excl, P).find(v => v.ids[0] === Ines.id), 1, { extra: 1 });
+    assert.equal(s.reservedNext?.personId, Paulo.id, `${variant} : le titre de Paulo en tête pendant l’envoi`);
+    assert.equal(s.reservedNext?.pulled, true);
+    const during = names(s, excl, P);
+    s.commit(P);
+    assert.notEqual(s.reservedNext?.personId, Paulo.id, `${variant} : Paulo & Hugo n’est pas la prochaine`);
+    assert.equal(Paulo.deferral?.afterPriority, true, `${variant} : simple report`);
+    assert.equal(Paulo.deferral?.remaining, 0);
+    // Trace de la priorité finie : celle de Gil, pour laquelle le titre avait été retiré.
+    assert.deepEqual([Paulo.deferral?.endedFor, Paulo.deferral?.endedAt], [Gil.id, tr.pulled.forAt], variant);
+    s.songEnded(P.ids);
+    const after = names(s);
+    // « Pas prêt » : le report d'Ines arrive au bout au même passage que le
+    // simple report du titre retiré, qui passe d'abord.
+    assert.deepEqual(after.slice(0, 3), ['Nina', 'Paulo & Hugo', variant === 'drag' ? 'Nora' : 'Ines'],
+      `${variant} : après l’accusé ${after.join(', ')}`);
+    // Glissée plus bas, Ines fixe la ligne de Paulo devant elle pendant
+    // l'envoi (sa place ne prend fin qu'à l'accusé, _unpinSingers, que la
+    // prévision ne simule pas : décision du 26 octobre) : la file montrée
+    // pendant l'envoi ne se compare qu'après le « Pas prêt ».
+    if (variant === 'defer') {
+      assert.deepEqual(after, during, `${variant} : pendant l’envoi ${during.join(', ')} | après l’accusé ${after.join(', ')}`);
+    }
+    const sent = sends18(s, 4);
+    assert.deepEqual(sent, after.slice(0, 4), `${variant} : ${after.join(', ')}`);
+    assert.ok(noBackToBack24([label(s, P), ...sent]), `${variant} : ${[label(s, P), ...sent].join(', ')}`);
+  }
+});
+
+
+test('passe 26 : pendant un envoi, la personne sautée devenue l’annonce en tête ne peut pas suivre ce passage (son invitée y chante) : la priorité du bar gardée derrière elle devient la prochaine à l’accusé, comme montré', () => {
+  const { s, people } = secondRound18({ requirePresence: true });
+  const { Maud, Karim } = people;
+  for (const p of Object.values(people)) s.confirm(p);
+  play(s);
+  const [, L, , G, , O] = names(s).map(n => people[n]);
+  s.requestDuetJoin(G, L.id, L.song.entryId); s.answerDuetJoin(L, L.song.entryId, G.id, true);
+  s.requestDuetJoin(G, O.id, O.song.entryId); s.answerDuetJoin(O, O.song.entryId, G.id, true);
+  for (const p of Object.values(people)) s.confirm(p);
+  let sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+  L.confirmedAt = 0; G.confirmedAt = 0; s.reservePresenceNext([]); s.skipUnconfirmed(L.id, 3);
+  for (const p of Object.values(people)) if (p !== L) s.confirm(p);
+  sel = s.select(); s.commit(sel); s.songEnded(sel.ids); // L annoncée, sautée
+  gesture(s, O, 0); // O & G devant, L gardée derrière
+  for (const p of Object.values(people)) s.confirm(p);
+  const P = s.select(); const excl = P.consumedIds || P.ids;
+  assert.equal(label(s, P), `${O.name} & ${G.name}`);
+  // Pendant l'envoi, comme la route du bar : « Priorité » à Maud puis à
+  // Karim, Maud glissée au bout des annonces gardées, puis « Pas prêt » de
+  // Karim : L, qui ne peut pas suivre ce passage, est l'annonce en tête,
+  // la priorité de Maud gardée derrière elle.
+  gesture(s, Maud, 0, excl, P);
+  gesture(s, Karim, 0, excl, P);
+  assert.deepEqual(chain20(s), ['Karim', 'Maud', L.name]);
+  gesture(s, Maud, 2, excl, P);
+  assert.deepEqual(chain20(s), ['Karim', L.name, 'Maud']);
+  s.deferPassage(Karim.id, s.presenceView(excl, P).find(v => v.ids[0] === Karim.id), 1, { extra: 1 });
+  assert.deepEqual(chain20(s), [L.name, 'Maud']);
+  const expected = ['Maud', 'Karim', 'Jade', `${L.name} & ${G.name}`];
+  const during = names(s, excl, P);
+  assert.deepEqual(during.slice(0, 4), expected, `pendant l’envoi : ${during.join(', ')}`);
+  s.commit(P);
+  assert.deepEqual(chain20(s), ['Maud'], 'la priorité de Maud devient la prochaine');
+  assert.equal(s.reservedNext.byStaff, true);
+  s.songEnded(P.ids);
+  const after = names(s);
+  assert.deepEqual(after, during, `pendant l’envoi ${during.join(', ')} | après l’accusé ${after.join(', ')}`);
+  const sent = sends18(s, 4);
+  assert.deepEqual(sent, expected, sent.join(', '));
+  assert.ok(noBackToBack24([label(s, P), ...sent]), [label(s, P), ...sent].join(', '));
+});
+
+
+test('passe 26 : titre retiré dont le chanteur vient de chanter en invité du duo sur scène, sa priorité prend fin (« Pas prêt », « Annuler », « Recalculer la file ») : il reprend le calcul, sans simple report', () => {
+  for (const variant of ['pasPret', 'undo', 'recalc']) {
+    for (const when of ['after', 'during']) {
+      const { s, people } = secondRound18();
+      const S = people.Maud, T = people.Gil, J = people.Jade;
+      s.requestDuetJoin(T, S.id, S.song.entryId); s.answerDuetJoin(S, S.song.entryId, T.id, true);
+      const stage = s.select(); s.commit(stage); // Maud & Gil sur scène
+      assert.deepEqual(stage.ids, [S.id, T.id]);
+      const ex = stage.consumedIds; // comme la route (sendingIds) : la ligne de Gil reste dans la file
+      gesture(s, T, 0, ex); // le bar fait passer le titre de Gil juste après
+      const loaded = s.select(); s.commit(loaded);
+      assert.deepEqual(loaded.ids, [T.id]);
+      const tr = { sel: loaded };
+      pullFor18(s, tr, J, ex); // « Priorité » de Jade avec retrait du titre de Gil
+      for (const n of ['Nina', 'Nora', 'Noe']) newcomer18(s, n);
+      const end = () => variant === 'pasPret' ? s.deferPassage(J.id, s.presenceView(ex).find(v => v.ids[0] === J.id), 1) :
+        variant === 'undo' ? s.undoLastManualChange(null, NATIVE, {}) : s.undoAllManualChanges(NATIVE);
+      if (when === 'during') { end(); back18(s, tr); } else { back18(s, tr); end(); }
+      const tag = `${variant} ${when}`;
+      assert.equal(s._isDeferred(T), false, `${tag} : pas de simple report pour Gil`);
+      const shown = names(s, ex);
+      s.songEnded(stage.ids);
+      const sent = sends18(s, 6);
+      assert.deepEqual(sent, shown.slice(0, 6), `${tag} : ${shown.join(', ')}`);
+      assert.ok(!sent.slice(0, 2).includes(T.name), `${tag} : Gil ne rechante pas deux passages après le duo (${sent.join(', ')})`);
+    }
+  }
+});
+
+
+test('passe 26 : « Priorité » donnée pendant le retrait au chanteur du titre retiré, puis la priorité du retrait tombe (titre retiré, départ) : au retour du titre, sa priorité reste la prochaine, sans simple report', () => {
+  for (const variant of ['removeSong', 'leave']) {
+    const { s, people } = secondRound18();
+    const stage = s.select(); s.commit(stage);
+    const loaded = s.select(); s.commit(loaded);
+    const T = s.people.get(loaded.ids[0]);
+    const J = people.Jade === T ? people.Karim : people.Jade;
+    s.chooseSong(T, song(), 'append'); // un titre suivant, que le bar met en priorité
+    const tr = { sel: loaded };
+    pullFor18(s, tr, J, stage.ids);
+    gesture(s, T, 0, stage.ids); // pendant le retrait : T* devant J*
+    for (const n of ['Nina', 'Nora']) newcomer18(s, n);
+    if (variant === 'removeSong') s.removeSong(J, J.song.entryId); else s.leave(J);
+    back18(s, tr); // le titre revient : la priorité de J ne tient plus
+    const shown = names(s, stage.ids);
+    assert.equal(s.reservedNext?.personId, T.id, `${variant} : la priorité de ${T.name} reste annoncée`);
+    assert.equal(s.reservedNext?.byStaff, true, variant);
+    assert.equal(s._isDeferred(T), false, `${variant} : pas de simple report pour ${T.name}`);
+    assert.equal(shown[0], T.name, `${variant} : ${shown.join(', ')}`);
+    s.songEnded(stage.ids);
+    assert.deepEqual(sends18(s, 4), shown.slice(0, 4), variant);
+  }
+});
+
+
+test('passe 26 : « Priorité » donnée pendant l’envoi d’un duo à un autre duo de la même invitée : à l’accusé, elle reste la prochaine annoncée, et la file pendant l’envoi est celle d’après', () => {
+  for (const kept of [false, true]) {
+    const { s, people } = secondRound18({ requirePresence: true });
+    for (const p of Object.values(people)) s.confirm(p);
+    play(s);
+    const [, T, , G, R, H] = names(s).map(n => people[n]);
+    s.requestDuetJoin(G, T.id, T.song.entryId); s.answerDuetJoin(T, T.song.entryId, G.id, true);
+    s.requestDuetJoin(G, H.id, H.song.entryId); s.answerDuetJoin(H, H.song.entryId, G.id, true);
+    if (kept) { // R sautée faute de « Je suis là », annoncée, puis gardée derrière la priorité de T
+      for (const p of Object.values(people)) s.confirm(p);
+      R.confirmedAt = 0; s.reservePresenceNext([]); s.skipUnconfirmed(R.id, 3);
+      for (const p of Object.values(people)) if (p !== R) s.confirm(p);
+      const sel = s.select(); s.commit(sel); s.songEnded(sel.ids);
+      assert.equal(s.reservedNext?.personId, R.id);
+    }
+    gesture(s, T, 0);
+    for (const p of Object.values(people)) if (!kept || p !== R) s.confirm(p);
+    const P = s.select();
+    assert.equal(label(s, P), `${T.name} & ${G.name}`);
+    const excl = P.consumedIds || P.ids;
+    gesture(s, H, 0, excl, P); // « Priorité » de H & G pendant l’envoi de T & G
+    const during = names(s, excl, P);
+    s.commit(P);
+    const tag = kept ? 'personne sautée gardée' : 'seule';
+    assert.equal(s.reservedNext?.personId, H.id, `${tag} : la priorité reste annoncée`);
+    assert.equal(s.reservedNext?.byStaff, true, tag);
+    s.songEnded(P.ids);
+    const after = names(s);
+    assert.equal(after[0], `${H.name} & ${G.name}`, `${tag} : ${after.join(', ')}`);
+    assert.deepEqual(after.slice(0, 3), during.slice(0, 3), `${tag} : pendant l’envoi ${during.join(', ')} | après ${after.join(', ')}`);
+    assert.deepEqual(sends18(s, 3), after.slice(0, 3), tag);
+  }
+});
+
+
+test('passe 26 : annonce faite pendant un envoi qui ne peut pas le suivre, la personne sautée gardée derrière elle est annoncée à l’accusé : si ce passage revient sans être chanté, elle attend de nouveau un passage devant elle', () => {
+  for (const variant of ['requeue', 'skippedInKaraFun']) {
+    const { s, people } = secondRound18({ requirePresence: true });
+    for (const p of Object.values(people)) s.confirm(p);
+    const stage = s.select(); s.commit(stage);
+    const R = people[names(s, stage.ids)[0]];
+    R.confirmedAt = 0; s.reservePresenceNext(stage.ids); s.skipUnconfirmed(R.id, 3);
+    const loaded = s.select(); s.commit(loaded); // R annoncée juste après le titre chargé
+    assert.equal(s.reservedNext?.personId, R.id);
+    const A = s.people.get(loaded.ids[0]);
+    const X = [people.Jade, people.Karim].find(p => p !== A && p !== R && !stage.ids.includes(p.id));
+    const tr = { sel: loaded };
+    pullFor18(s, tr, X, stage.ids); back18(s, tr); // A attend la priorité de X, R gardée derrière elle
+    const B = [...s.people.values()].find(p => p !== A && p !== X && p !== R && !stage.ids.includes(p.id) && p.song && p.name !== 'Maud');
+    s.requestDuetJoin(B, A.id, A.song.entryId); s.answerDuetJoin(A, A.song.entryId, B.id, true);
+    for (const n of ['Nina', 'Nora']) newcomer18(s, n);
+    gesture(s, B, 0, stage.ids);
+    s.songEnded(stage.ids);
+    for (const p of s.people.values()) if (p !== R) s.confirm(p);
+    const P = s.select(); // le titre de B part vers KaraFun
+    assert.deepEqual(P.ids, [B.id]);
+    const excl = P.consumedIds || P.ids;
+    s.undoLastManualChange(null, NATIVE, { excludeIds: excl, busyIds: P.ids }); // la priorité de X revient
+    s.deferPassage(X.id, s.presenceView(excl, P).find(v => v.ids[0] === X.id), 1, { extra: 1 }); // puis prend fin
+    assert.equal(s.reservedNext?.personId, A.id, 'A & B annoncé pendant l’envoi, R gardée derrière');
+    s.commit(P);
+    assert.equal(s.reservedNext?.personId, R.id, 'à l’accusé, R est annoncée comme personne sautée');
+    if (variant === 'requeue') s.requeueUnplayed(P); else s.rollbackUnplayed(P, { requeue: true });
+    assert.notEqual(s.reservedNext?.personId, R.id, `${variant} : R n’est plus annoncée`);
+    assert.equal(R.presenceRetry, true, `${variant} : R attend de nouveau un passage devant elle`);
+    const shown = names(s);
+    assert.equal(shown.indexOf(R.name), 1, `${variant} : ${shown.join(', ')}`);
+    assert.deepEqual(sends18(s, 3), shown.slice(0, 3), variant);
+  }
+});
+
+
+// Relecture, passe 26 : un glissement que les annonces gardées bornent note
+// la place prise (de 1), celle que la file montre ensuite, pas celle
+// demandée (staffMove, comme la route : passes 22 et 23).
+test('passe 26 : glissement borné par les annonces gardées (ligne de la file, ou priorité en tête) : la place notée est celle prise, montrée dans la file', () => {
+  for (const [who, at] of [['ligne', 1], ['ligne', 2], ['priorité', 1]]) {
+    const { s, people } = secondRound18({ requirePresence: true });
+    for (const p of Object.values(people)) if (who === 'priorité' || p !== people.Maud) s.confirm(p);
+    const stage = s.select(); s.commit(stage);
+    if (who === 'ligne') s.skipUnconfirmed(people.Maud.id, 3);
+    const loaded = s.select(); s.commit(loaded);
+    const T = s.people.get(loaded.ids[0]);
+    const tr = { sel: loaded };
+    pullFor18(s, tr, people.Karim, stage.ids);
+    back18(s, tr);
+    newcomer18(s, 'Zoe');
+    let moved = people.Karim, taken = 2, R = people.Maud;
+    if (who === 'priorité') {
+      // Priorité de Karim en tête, son titre retiré, une personne sautée au
+      // bout de son attente : glissée à la 2e place, elle passe après eux,
+      // à la 3e (passe 23).
+      R = people[names(s, stage.ids).find(n => n !== 'Karim' && n !== T.name && people[n])];
+      R.confirmedAt = 0;
+      s.skipUnconfirmed(R.id, 3);
+    } else {
+      // Priorité, titre retiré qui l'attend, personne sautée : une ligne de
+      // la file glissée à la 2e ou la 3e place se place à la 4e (passe 21).
+      const before = names(s, stage.ids);
+      assert.deepEqual(before.slice(0, 3), ['Karim', T.name, 'Maud']);
+      moved = [...s.people.values()].find(p => p.name === before[6]);
+      taken = 3;
+    }
+    const change = gesture(s, moved, at, stage.ids);
+    const shown = names(s, stage.ids);
+    assert.equal(shown.indexOf(moved.name), taken, `${who} glissée à la place ${at + 1} : ${shown.join(', ')}`);
+    assert.ok(shown.slice(0, taken).includes(T.name) && shown.slice(0, taken).includes(R.name), shown.join(', '));
+    assert.equal(change.to, taken + 1, `${who} glissée à la place ${at + 1} : place notée`);
+    assert.equal(s.manualChanges.at(-1).to, shown.indexOf(moved.name) + 1, `${who} : notée comme montrée`);
+  }
+});
+
+// ------------------------------------------------------------------ contre-relecture 26
+// Contre-relecture de la passe 26 : un titre revenu de KaraFun gardé dans la
+// chaîne (`back`) est un titre retiré comme un autre ; un report « après la
+// priorité » n'est pas un « Pas prêt » de sa personne ; la prévision suit
+// select quand l'annonce ne peut pas partir et quand plus rien d'autre ne
+// peut chanter ; une annulation ou un passage pas chanté rendent au titre
+// retiré la place qu'il avait.
+
+test('contre-relecture 26 : titre revenu de KaraFun gardé derrière une priorité où chante l’invitée de son duo : il passe dès le passage suivant, pas derrière les nouvelles tables', () => {
+  for (const order of ['duoFirst', 'prioFirst']) {
+    const { s, people } = secondRound18();
+    const stage = s.select(); s.commit(stage);
+    const S = s.people.get(stage.ids[0]);
+    const T = s.people.get(s.presenceView(stage.ids).filter(v => !v.future)[0].ids[0]);
+    const X = [people.Jade, people.Karim, people.Elsa].find(p => p !== T && p !== S);
+    const [G, O] = Object.values(people).filter(p => ![S, T, X].includes(p) && p.song && p.name !== 'Maud');
+    s.requestDuetJoin(G, T.id, T.song.entryId); s.answerDuetJoin(T, T.song.entryId, G.id, true);
+    const loaded = s.select(); s.commit(loaded);
+    const tr = { sel: loaded };
+    pullFor18(s, tr, X, stage.ids);
+    s.undoLastManualChange(null, NATIVE, {}); // « Annuler » pendant le retrait
+    back18(s, tr); // revenu, il reprend la tête
+    const duo = label(s, loaded);
+    newcomer18(s, 'Nina'); newcomer18(s, 'Nora');
+    const join = () => { s.requestDuetJoin(G, O.id, O.song.entryId); s.answerDuetJoin(O, O.song.entryId, G.id, true); };
+    if (order === 'duoFirst') join();
+    gesture(s, O, 0, stage.ids);
+    if (order !== 'duoFirst') join();
+    const shown = names(s, stage.ids);
+    s.songEnded(stage.ids);
+    const sent = sends18(s, 4);
+    assert.deepEqual(sent, shown.slice(0, 4), `${order} : ${shown.join(', ')}`);
+    assert.equal(sent.indexOf(duo), 2, `${order} : ${sent.join(', ')}`);
+    assert.ok(sent.indexOf('Nora') > sent.indexOf(duo), `${order} : ${sent.join(', ')}`);
+  }
+});
+
+test('contre-relecture 26 : duo revenu de KaraFun en tête dont l’invitée a son propre titre en simple report : il garde la tête, la file le montre', () => {
+  for (const presence of [false, true]) {
+    const { s, people } = secondRound18({ requirePresence: presence });
+    for (const p of Object.values(people)) s.confirm(p);
+    let stage = null, loaded = null, pending = null;
+    const pulls = [];
+    const excl = () => pending ? (pending.consumedIds || pending.ids) : [];
+    const singers = () => [...(pending ? pending.ids : []), ...(loaded ? loaded.ids : [])];
+    const sendingIds = () => [...excl(), ...(loaded ? (loaded.consumedIds || loaded.ids.slice(0, 1)) : []),
+      ...pulls.flatMap(tr => tr.sel.consumedIds || tr.sel.ids.slice(0, 1))];
+    const send = () => { // comme le serveur : annonce, présence de la tête, envoi
+      if (presence) s.reservePresenceNext(stage ? stage.ids : []); else if (stage) s.reserveNext();
+      const head = s.reservedNext && s.people.get(s.reservedNext.personId);
+      if (head) { s.confirm(head); if (head.song?.duet?.state === 'accepted') s.confirm(s.people.get(head.song.duet.partnerId)); }
+      pending = s.select({ stageFree: !stage });
+    };
+    const ack = () => { s.commit(pending); loaded = pending; pending = null; };
+    const duo = (o, g) => { s.requestDuetJoin(g, o.id, o.song.entryId); s.answerDuetJoin(o, o.song.entryId, g.id, true); };
+    const priority = p => { // comme POST /api/staff/move ; avec retrait du titre chargé s'il y en a un
+      const from = s.presenceView(excl(), pending).filter(v => !v.future).findIndex(v => v.ids[0] === p.id);
+      const before = s.manualOverrideState({ deferrals: true });
+      const tr = loaded && !pending ? { sel: loaded, pulled: { forId: p.id } } : null;
+      if (tr) { loaded = null; pulls.push(tr); }
+      s.staffMove(p.id, 0, excl(), pending);
+      const change = s.recordManualChange({ kind: 'priority', personId: p.id, name: p.name, from: from + 1, to: 1, before, native: NATIVE });
+      if (tr) Object.assign(tr.pulled, { forAt: s.reservedNext.reservedAt, changeId: change.id });
+    };
+    const back = () => { // KaraFun a retiré le titre (restorePulled)
+      const tr = pulls.shift();
+      s.returnFromKaraFun(tr.sel, { forId: tr.pulled.forId, forAt: tr.pulled.forAt, changeId: tr.pulled.changeId, cutoff: tr.pulled.forAt, busyIds: singers() });
+    };
+    const undoArgs = () => ({ excludeIds: sendingIds(), busyIds: singers() });
+    send(); ack(); stage = loaded; loaded = null;
+    const S = s.people.get(stage.ids[0]);
+    send(); ack();
+    const T = s.people.get(loaded.ids[0]);
+    priority(people.Jade); back(); // le titre de T attend la priorité de Jade
+    duo(T, S); // S, sur scène, rejoint le duo de T
+    send(); // Jade part vers KaraFun
+    s.undoAllManualChanges(NATIVE, undoArgs()); // « Recalculer la file » pendant l'envoi : T & S en simple report
+    ack();
+    priority(people.Hugo); // retrait du titre de Jade
+    duo(people.Hugo, T);
+    priority(people.Ines); s.undoLastManualChange(null, NATIVE, undoArgs());
+    send(); ack(); // Hugo & T part et se charge
+    priority(people.Ines); // retrait de Hugo & T
+    back(); back(); // Jade, puis Hugo & T reviennent : Hugo & T en tête
+    const duoName = `${people.Hugo.name} & ${T.name}`;
+    assert.ok(s.isDeferred(T) && T.deferral.afterPriority && T.deferral.forId === undefined, `${presence} : simple report de T`);
+    const shown = names(s, stage.ids);
+    assert.equal(shown[0], duoName, `${presence} : ${shown.join(', ')}`);
+    const sent = [];
+    for (let k = 0; k < 4; k++) {
+      if (presence) s.reservePresenceNext(stage ? stage.ids : []); else if (stage) s.reserveNext();
+      for (const p of s.people.values()) if (!p.withdrawnAt) s.confirm(p);
+      const sel = s.select({ stageFree: !stage });
+      sent.push(label(s, sel)); s.commit(sel); if (stage) s.songEnded(stage.ids); stage = sel;
+    }
+    assert.deepEqual(sent, shown.slice(0, 4), `${presence} : ${shown.join(', ')}`);
+  }
+});
+
+test('contre-relecture 26 : annonce revenue de KaraFun en tête dont l’invitée dit « Pas prêt » sur son propre titre : la file montre en tête l’annonce qu’elle gardait, comme l’envoi', () => {
+  const { s, people } = secondRound18();
+  const stage = s.select(); s.commit(stage);
+  const S = s.people.get(stage.ids[0]);
+  const T = s.people.get(s.presenceView(stage.ids).filter(v => !v.future)[0].ids[0]);
+  const X = [people.Jade, people.Karim, people.Elsa].find(p => p !== T && p !== S);
+  const G = Object.values(people).find(p => ![S, T, X].includes(p) && p.song && p.name !== 'Maud');
+  s.requestDuetJoin(G, T.id, T.song.entryId); s.answerDuetJoin(T, T.song.entryId, G.id, true);
+  const loaded = s.select(); s.commit(loaded);
+  s.reserveNext(); // l'annonce suivante, faite pendant le titre chargé
+  const A = s.people.get(s.reservedNext.personId);
+  const tr = { sel: loaded };
+  pullFor18(s, tr, X, stage.ids);
+  s.undoLastManualChange(null, NATIVE, {}); // « Annuler » pendant le retrait
+  back18(s, tr); // revenu en tête, l'annonce d'avant gardée derrière lui
+  assert.equal(s.reservedNext.personId, T.id);
+  assert.equal(s.reservedNext.then?.personId, A.id);
+  for (const n of ['Nina', 'Nora']) newcomer18(s, n); // le calcul les ferait passer d'abord
+  s.deferPassage(G.id, s.presenceView(stage.ids).find(v => v.ids[0] === G.id), 1);
+  const shown = names(s, stage.ids);
+  s.songEnded(stage.ids);
+  const sent = sends18(s, 3);
+  assert.equal(sent[0], A.name, `${shown.join(', ')} | ${sent.join(', ')}`);
+  assert.deepEqual(sent, shown.slice(0, 3));
+});
+
+test('contre-relecture 26 : fin de soirée, toutes les lignes retenues, titre revenu de KaraFun en simple report : la file montre en tête la personne annoncée, comme l’envoi', () => {
+  const { s, people } = secondRound18({ requirePresence: true });
+  for (const p of Object.values(people)) s.confirm(p);
+  let stage = null, loaded = null;
+  const view = () => s.presenceView([], null);
+  const defer = p => s.deferPassage(p.id, view().find(v => v.ids[0] === p.id), 1);
+  const skipNow = p => { p.confirmedAt = 0; s.reservePresenceNext([]); s.skipUnconfirmed(p.id, 3); s.reservePresenceNext([]); };
+  skipNow(people.Maud); skipNow(people.Hugo);
+  defer(people.Ines);
+  s.reservePresenceNext([]);
+  let sel = s.select({ stageFree: true }); s.commit(sel); loaded = sel;
+  defer(people.Maud); defer(people.Karim);
+  stage = loaded; loaded = null;
+  defer(people.Gil); defer(people.Jade);
+  s.requestDuetJoin(people.Paulo, people.Elsa.id, people.Elsa.song.entryId);
+  s.answerDuetJoin(people.Elsa, people.Elsa.song.entryId, people.Paulo.id, true);
+  s.reservePresenceNext(stage.ids);
+  const head = s.people.get(s.reservedNext.personId);
+  s.confirm(head); if (head.song?.duet?.state === 'accepted') s.confirm(s.people.get(head.song.duet.partnerId));
+  sel = s.select({ stageFree: false }); s.commit(sel); loaded = sel;
+  const tr = { sel: loaded };
+  const from = view().filter(v => !v.future).findIndex(v => v.ids[0] === people.Hugo.id);
+  const before = s.manualOverrideState({ deferrals: true });
+  s.staffMove(people.Hugo.id, 0, [], null);
+  tr.pulled = { forId: people.Hugo.id, forAt: s.reservedNext.reservedAt };
+  tr.pulled.changeId = s.recordManualChange({ kind: 'priority', personId: people.Hugo.id, name: 'Hugo', from: from + 1, to: 1, before, native: NATIVE }).id;
+  loaded = null;
+  s.undoLastManualChange(null, 'z', { excludeIds: tr.sel.consumedIds || tr.sel.ids.slice(0, 1), busyIds: [] });
+  s.returnFromKaraFun(tr.sel, { forId: tr.pulled.forId, forAt: tr.pulled.forAt, changeId: tr.pulled.changeId, cutoff: tr.pulled.forAt, busyIds: [] });
+  const shown = names(s);
+  s.songEnded(stage.ids); stage = null;
+  s.reservePresenceNext([]);
+  const announced = s.people.get(s.reservedNext?.personId)?.name;
+  for (const p of s.people.values()) if (!p.withdrawnAt) s.confirm(p);
+  const first = s.select({ stageFree: true });
+  assert.equal(announced, shown[0], `montrée : ${shown.join(', ')} | annoncée : ${announced}`);
+  assert.equal(label(s, first), shown[0]);
+});
+
+test('contre-relecture 26 : titre retiré glissé plus bas par le bar, sa priorité prend fin, puis « Annuler » recalculé : il reprend la tête, pas derrière les nouvelles tables', () => {
+  for (const end of ['pasPret', 'leave', 'remove']) {
+    const { s, people } = secondRound18();
+    const stage = s.select(); s.commit(stage);
+    const loaded = s.select(); s.commit(loaded);
+    const T = s.people.get(loaded.ids[0]);
+    const X = people.Jade;
+    const tr = { sel: loaded };
+    pullFor18(s, tr, X, stage.ids); back18(s, tr);
+    for (const n of ['Nina', 'Nora']) newcomer18(s, n);
+    const shownBefore = names(s, stage.ids);
+    assert.deepEqual(shownBefore.slice(0, 2), [X.name, T.name]);
+    const change = gesture(s, T, shownBefore.length - 1, stage.ids);
+    if (end === 'pasPret') s.deferPassage(X.id, s.presenceView(stage.ids).find(v => v.ids[0] === X.id), 1);
+    else if (end === 'leave') s.leave(X);
+    else s.staffRemove(X.id);
+    assert.equal(s.canUndoManualChange(NATIVE), false);
+    s.undoLastManualChange(change.id, NATIVE, {});
+    const now = names(s, stage.ids);
+    assert.equal(now[0], T.name, `${end} : ${now.join(', ')}`);
+    assert.equal(s.keptAgain(change), true, end);
+    s.songEnded(stage.ids);
+    assert.deepEqual(sends18(s, 3), now.slice(0, 3), end);
+  }
+});
+
+test('contre-relecture 26 : titre revenu en tête mis en simple report à l’accusé du duo de son invitée, puis ce passage n’est pas chanté : il reprend la tête', () => {
+  for (const variant of ['drag', 'defer']) for (const viaRestart of [false, true]) {
+    const { s: s0, access, people } = secondRound18();
+    let s = s0;
+    const stage = s.select(); s.commit(stage);
+    const loaded = s.select(); s.commit(loaded);
+    const A = s.people.get(loaded.ids[0]);
+    const X = people.Jade === A || stage.ids.includes(people.Jade.id) ? people.Karim : people.Jade;
+    const tr = { sel: loaded };
+    pullFor18(s, tr, X, stage.ids); back18(s, tr);
+    const B = [...s.people.values()].find(p => p !== A && p !== X && !stage.ids.includes(p.id) && p.song && p.name !== 'Maud');
+    s.requestDuetJoin(B, A.id, A.song.entryId); s.answerDuetJoin(A, A.song.entryId, B.id, true);
+    for (const n of ['Nina', 'Nora', 'Noe']) newcomer18(s, n);
+    gesture(s, B, 0, stage.ids);
+    s.songEnded(stage.ids);
+    let P = s.select(); // le titre de B part vers KaraFun
+    const excl = P.consumedIds || P.ids;
+    s.undoLastManualChange(null, NATIVE, { excludeIds: excl, busyIds: P.ids });
+    if (variant === 'drag') gesture(s, X, 4, excl, P);
+    else s.deferPassage(X.id, s.presenceView(excl, P).find(v => v.ids[0] === X.id), 1, { extra: 1 });
+    const duo = `${A.name} & ${B.name}`;
+    assert.equal(s.reservedNext?.personId, A.id, 'en tête avant l’accusé');
+    s.commit(P);
+    if (viaRestart) { // redémarrage avec le titre suivi dans KaraFun (comme server.js)
+      for (const tableId of s.tables.keys()) if (!access.get(tableId)) access.issue(tableId);
+      const settings = { auto: false, autoPlay: false, pushDelaySec: 45, playDelaySec: 8 };
+      const snapshot = JSON.parse(JSON.stringify(snapshotNight({ scheduler: s, access, settings, tracked: [{ queueId: 7, sel: P }] })));
+      s = new Scheduler(s.opts);
+      P = restoreNight(snapshot, { scheduler: s, access: new TableAccess(), settings: {} }).tracked[0].sel;
+    }
+    s.rollbackUnplayed(P, { requeue: true }); // passé dans KaraFun avant la lecture
+    const after = names(s);
+    const tag = `${variant}${viaRestart ? ' redémarré' : ''}`;
+    assert.equal(after[0], duo, `${tag} : ${after.join(', ')}`);
+    assert.deepEqual(sends18(s, 3), after.slice(0, 3), tag);
+  }
+});
+
+test('contre-relecture 26 : « Annuler » recalculé du glissement d’un titre en simple report : la réponse dit qu’il retrouve sa place parmi les passages déjà annoncés', () => {
+  for (const variant of ['pasPret', 'drag']) {
+    const { s, people } = secondRound18();
+    const stage = s.select(); s.commit(stage);
+    const G = s.people.get(stage.ids[0]);
+    const loaded = s.select(); s.commit(loaded);
+    const T = s.people.get(loaded.ids[0]);
+    const tr = { sel: loaded };
+    pullFor18(s, tr, people.Jade, stage.ids); back18(s, tr);
+    s.requestDuetJoin(G, T.id, T.song.entryId); s.answerDuetJoin(T, T.song.entryId, G.id, true);
+    for (const n of ['Nina', 'Nora', 'Noe']) newcomer18(s, n);
+    if (variant === 'pasPret') s.deferPassage(people.Jade.id, s.presenceView(stage.ids).find(v => v.ids[0] === people.Jade.id), 1);
+    else gesture(s, people.Jade, names(s, stage.ids).length - 1, stage.ids);
+    const withReport = names(s, stage.ids);
+    const duo = `${T.name} & ${G.name}`;
+    assert.equal(withReport.indexOf(duo), 1, `${variant} : ${withReport.join(', ')}`);
+    const change = gesture(s, T, withReport.length - 1, stage.ids);
+    newcomer18(s, 'Zoe');
+    assert.equal(s.canUndoManualChange(NATIVE), false);
+    s.undoLastManualChange(change.id, NATIVE, {});
+    assert.equal(names(s, stage.ids).indexOf(duo), 1, variant);
+    assert.equal(s.keptAgain(change), true, variant);
+  }
+});
+
+test('contre-relecture 26 : « Annuler » recalculé du glissement d’une priorité gardée dans la chaîne, son titre retiré tombé entre-temps en simple report : il l’attend de nouveau juste derrière elle', () => {
+  const { s, people } = secondRound18();
+  const stage = s.select(); s.commit(stage);
+  const G = s.people.get(stage.ids[0]);
+  const loaded = s.select(); s.commit(loaded);
+  const T = s.people.get(loaded.ids[0]);
+  const [Y, K, J, M] = Object.values(people).filter(p => p !== G && p !== T && p.name !== 'Maud');
+  gesture(s, Y, 0, stage.ids);
+  gesture(s, K, 0, stage.ids);
+  const tr = { sel: loaded };
+  pullFor18(s, tr, J, stage.ids); back18(s, tr);
+  s.requestDuetJoin(G, T.id, T.song.entryId); s.answerDuetJoin(T, T.song.entryId, G.id, true);
+  gesture(s, M, 0, stage.ids);
+  const duo = `${T.name} & ${G.name}`;
+  const before = names(s, stage.ids);
+  assert.equal(before.indexOf(duo), before.indexOf(J.name) + 1, before.join(', '));
+  gesture(s, J, before.length - 1, stage.ids);
+  s.deferPassage(M.id, s.presenceView(stage.ids).find(v => v.ids[0] === M.id), 1);
+  newcomer18(s, 'Nina');
+  s.undoLastManualChange(null, NATIVE, {});
+  const undone = names(s, stage.ids);
+  assert.equal(undone.indexOf(duo), undone.indexOf(J.name) + 1, undone.join(', '));
+  s.songEnded(stage.ids);
+  assert.deepEqual(sends18(s, 5), undone.slice(0, 5));
+});
+
+test('contre-relecture 26 : priorité rendue telle quelle avec son titre retiré dans la chaîne : le titre n’y est qu’une fois, sans report en plus', () => {
+  const { s, people } = secondRound18();
+  for (const p of Object.values(people)) s.confirm(p);
+  let stage = s.select(); s.commit(stage);
+  const G = s.people.get(stage.ids[0]);
+  const loaded = s.select(); s.commit(loaded);
+  const T = s.people.get(loaded.ids[0]);
+  const byName = n => [...s.people.values()].find(p => p.name === n);
+  const K = [people.Karim, people.Jade].find(p => p !== T && p !== G);
+  const I = [people.Ines, people.Elsa].find(p => p !== T && p !== G && p !== K);
+  const tr = { sel: loaded };
+  pullFor18(s, tr, K, stage.ids); back18(s, tr);
+  s.requestDuetJoin(G, T.id, T.song.entryId); s.answerDuetJoin(T, T.song.entryId, G.id, true);
+  gesture(s, I, 0, stage.ids);
+  s.songEnded(stage.ids); stage = null;
+  gesture(s, T, 0);
+  s.undoLastManualChange(null, NATIVE, {}); // exact
+  gesture(s, I, 3);
+  gesture(s, T, 0);
+  const H2 = [people.Gil, people.Hugo].find(p => p !== T && p !== G && p !== K && p !== I);
+  s.requestDuetJoin(H2, K.id, K.song.entryId); s.answerDuetJoin(K, K.song.entryId, H2.id, true);
+  newcomer18(s, 'N0');
+  s.undoLastManualChange(null, NATIVE, {});
+  gesture(s, K, names(s).length - 1);
+  newcomer18(s, 'N1');
+  s.undoLastManualChange(null, NATIVE, {});
+  let inChain = false;
+  for (let link = s.reservedNext; link; link = link.then) inChain = inChain || link.personId === T.id;
+  assert.ok(!(inChain && s.isDeferred(T)), `maillon et report à la fois : ${JSON.stringify(T.deferral)}`);
+  const shown = names(s);
+  assert.deepEqual(sends18(s, 5), shown.slice(0, 5));
+});
+
+test('contre-relecture 26 : sauvegarde dont la trace de la priorité finie est abîmée : le simple report reste, sans elle', () => {
+  const { s, access, people } = secondRound18();
+  const stage = s.select(); s.commit(stage);
+  const G = s.people.get(stage.ids[0]);
+  const loaded = s.select(); s.commit(loaded);
+  const T = s.people.get(loaded.ids[0]);
+  const tr = { sel: loaded };
+  pullFor18(s, tr, people.Jade, stage.ids); back18(s, tr);
+  s.requestDuetJoin(G, T.id, T.song.entryId); s.answerDuetJoin(T, T.song.entryId, G.id, true);
+  s.undoLastManualChange(null, NATIVE, {});
+  assert.equal(typeof T.deferral?.endedFor, 'string');
+  const shown = names(s, stage.ids);
+  for (const damage of [d => { d.endedAt = 'x'; }, d => { delete d.endedAt; }, d => { d.endedFor = 7; }, d => { d.forId = d.endedFor; d.forAt = d.endedAt; }]) {
+    const snap = saved(s, access);
+    const person = snap.scheduler.people.find(p => p.id === T.id);
+    damage(person.deferral);
+    const r = restart(s, access, snap);
+    const t = r.people.get(T.id);
+    assert.ok(t.deferral?.afterPriority, `report gardé : ${JSON.stringify(person.deferral)}`);
+    assert.equal(t.deferral.endedFor === undefined || typeof t.deferral.forId === 'string', true);
+    if (typeof t.deferral.forId !== 'string') assert.deepEqual(names(r, stage.ids).slice(0, 3), shown.slice(0, 3));
+  }
+});
