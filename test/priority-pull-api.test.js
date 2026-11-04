@@ -1516,21 +1516,32 @@ test('passe 17 : titre retiré revenu en tête, redémarrage : la priorité gard
   assert.equal(g.sched.reservedNext?.byStaff, true);
 });
 
-test('passe 17, revu passe 22 : titre retiré revenu en tête, le bar glisse une autre ligne juste derrière lui : elle se place après la priorité gardée, qui part d’abord, comme montré', async () => {
+test('passe 17, revu passes 22 et 23 : titre retiré revenu en tête, le bar glisse une autre ligne juste derrière lui : elle se place après la priorité gardée, qui part d’abord, comme montré', async () => {
   const f = harness();
   const ctx = loaded(f);
   const { bruno, chloe } = ctx.people;
   const eve = await backWithEve(f, ctx);
-  const reply = plain(await move(f, { personId: chloe.id, toIndex: 1 }));
+  const shownBefore = planned(f).map(line => line.id);
+  assert.deepEqual(shownBefore.slice(0, 3), [bruno.id, eve.id, chloe.id]);
+  // Déjà juste après les passages annoncés : rien ne change, aucun geste noté.
+  const changes = f.sched.manualChanges.length;
+  const already = plain(await move(f, { personId: chloe.id, toIndex: 1 }));
+  assert.equal(already.changed, false);
+  assert.match(already.message, /déjà juste après les passages déjà annoncés/);
+  assert.equal(f.sched.manualChanges.length, changes, 'aucun déplacement noté');
+  assert.deepEqual(planned(f).map(line => line.id), shownBefore);
+  // Plus bas : elle se place juste après eux, et la place notée est celle prise.
+  const lower = f.sched.people.get(shownBefore[3]);
+  const reply = plain(await move(f, { personId: lower.id, toIndex: 1 }));
   assert.equal(reply.ok, true);
-  assert.match(reply.message, /à la place 3, juste après les passages déjà annoncés/, 'le bar sait où la ligne est allée');
+  assert.match(reply.message, new RegExp(`${lower.name} passe juste après les passages déjà annoncés`), 'le bar sait où la ligne est allée');
   assert.equal(f.sched.manualChanges.at(-1).to, 3, 'le changement noté dit la place prise');
-  assert.deepEqual(planned(f).slice(0, 3).map(line => line.id), [bruno.id, eve.id, chloe.id], 'Bruno, Eve gardée, puis Chloé placée par le bar');
+  assert.deepEqual(planned(f).slice(0, 4).map(line => line.id), [bruno.id, eve.id, lower.id, chloe.id], 'Bruno, Eve gardée, puis la ligne placée par le bar');
   assert.equal(sendNext(f).ids[0], bruno.id);
   assert.equal(f.sched.reservedNext?.personId, eve.id, 'Eve, gardée derrière le titre revenu, reste annoncée');
   assert.equal(f.sched.reservedNext?.byStaff, true, 'toujours priorité du bar');
   assert.equal(sendNext(f).ids[0], eve.id);
-  assert.equal(f.sched.select()?.ids[0], chloe.id);
+  assert.equal(f.sched.select()?.ids[0], lower.id);
 });
 
 test('passe 17 : titre retiré revenu en tête, son titre devient un duo ouvert en « Duos uniquement » : l’annonce gardée derrière lui passe', async () => {

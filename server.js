@@ -5352,6 +5352,12 @@ const handlers = {
     if (from >= 0 && from === toIndex && !pull) {
       return { ok: true, changed: false, message: 'Ce titre est déjà à cette place.' };
     }
+    // Glissée parmi les passages déjà annoncés, la ligne se place juste après
+    // eux (Scheduler#staffMove) : déjà là, rien ne change ni n'est noté
+    // (relecture, passe 23).
+    if (from >= 0 && toIndex > 0 && !pull && sched.staffMoveTarget(personId, toIndex, excluded, provisional) === from) {
+      return { ok: true, changed: false, message: 'Ce titre est déjà juste après les passages déjà annoncés : seule « Priorité » passe devant eux.' };
+    }
     const name = visible[from]?.name || sched.people.get(personId)?.name || 'ce chanteur';
     const passes = (visible[from]?.ids?.length || 1) > 1 ? 'passent' : 'passe'; // un duo : « Ana & Bob passent »
     // Le geste est noté avant sync() : un passage confirmé par KaraFun
@@ -5393,7 +5399,7 @@ const handlers = {
     const loaded = priority && nativeAhead === 1 && !pending ? tracked.find(tr => !tr.startedAt && !tr.pulled && !tr.cancelled &&
       String(tr.queueId) === String(analyze().upcoming[0]?.queueId)) : null;
     return { ok: true, firstFreePosition: nativeAhead + 1,
-      message: placed > toIndex ? `${name} ${passes} à la place ${placed + 1}, juste après les passages déjà annoncés : seule « Priorité » passe devant eux.` :
+      message: placed > toIndex ? `${name} ${passes} juste après les passages déjà annoncés : seule « Priorité » passe devant eux.` :
         loaded ? `${name} ${passes} juste après « ${loaded.sel.song.title} », déjà chargé dans KaraFun.` :
         priority && nativeAhead ?
         `Passage avancé à la première place libre, après ${nativeAhead} titre${nativeAhead > 1 ? 's' : ''} déjà chargé${nativeAhead > 1 ? 's' : ''} dans KaraFun.` : null };

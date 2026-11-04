@@ -969,6 +969,21 @@ class Scheduler {
       (!old.byStaff || this.manualOrder.includes(old.personId));
     const back = this.reservedNext;
     const restoredOld = !back && restorable;
+    // Place de la personne du geste dans la chaîne d'avant lui (0 : elle était
+    // l'annonce en cours).
+    const links = [];
+    for (let link = old; link && typeof link === 'object' && links.length <= 4 * BEHIND_MAX; link = link.then) links.push(link);
+    const at = links.findIndex(link => link.personId === change.personId);
+    // Déplacement plus bas de l'annonce en cours elle-même (staffMove : elle
+    // cède la tête, _moveKept) : comme le prochain annoncé d'avant une
+    // priorité annulée, elle est rendue en tête si elle peut revenir, devant
+    // l'annonce qui l'a remplacée et ce que celle-ci garde ; un titre retiré
+    // de KaraFun qui l'attendait l'attend de nouveau (son report « après la
+    // priorité » tient de nouveau : il sort de la chaîne). Sinon elle restait
+    // derrière la ligne qui avait pris la tête, alors que la réponse disait
+    // qu'elle retrouvait sa place (relecture, passe 23).
+    const headMoved = change.to !== 1 && at === 0 && restorable && !!back && back.personId !== change.personId &&
+      !(back.byStaff && back.reservedAt > (change.at || 0));
     if (restoredOld) {
       // L'annonce d'avant le geste revient telle qu'elle était, avec ce qu'elle
       // gardait ; les annonces que la priorité annulée a gardées depuis le
@@ -977,6 +992,19 @@ class Scheduler {
       this.reservedNext = this._copyReservation(old);
       const since = heldChain ? this._pruneBehind(heldChain, link => !!link.pulled || this._inChain(link.personId)) : null;
       if (since) this._appendChain(since);
+      this._chainAnnounced();
+    } else if (headMoved) {
+      const { then, ...top } = this._copyReservation(old);
+      this.reservedNext = top;
+      const waiting = this._titleWaitingFor(top);
+      const chain = [];
+      for (let link = back; link; link = link.then) {
+        if (link.personId !== change.personId && link.personId !== waiting?.id) chain.push(this._plainReservation(link));
+      }
+      const cut = [];
+      const behind = this._behindCopy(chain.reduceRight((rest, link) => ({ ...link, ...(rest ? { then: rest } : {}) }), null), 0, cut);
+      if (behind) this.reservedNext = { ...top, then: behind };
+      for (const link of cut) this._dropBehind(link);
       this._chainAnnounced();
     } else if (!back && heldChain) {
       // Elle ne peut plus revenir : la première des annonces que gardait la
@@ -1003,9 +1031,6 @@ class Scheduler {
     // suis là » passait derrière une nouvelle table, ou une ligne gardait la
     // place annulée alors que la réponse disait le contraire (relecture,
     // passe 22).
-    const links = [];
-    for (let link = old; link && typeof link === 'object' && links.length <= 4 * BEHIND_MAX; link = link.then) links.push(link);
-    const at = links.findIndex(link => link.personId === change.personId);
     const self = at > 0 ? this._plainReservation(links[at]) : null;
     if (change.to !== 1 && self && this.reservedNext && this.reservedNext.personId !== change.personId &&
         lineFree(change.personId) && this._behindStands(self, [])) {
