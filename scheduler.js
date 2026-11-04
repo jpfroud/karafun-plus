@@ -537,6 +537,7 @@ class Scheduler {
         then: this._behindCopy(this.reservedNext.then ? { ...reserved, then: this.reservedNext.then } : reserved, 0, cut) } :
         backThen ? { ...reserved, then: backThen } : reserved;
       for (const link of cut) this._dropBehind(link);
+      if (reserved) this._rewaitEnded();
       // Chaque geste revient après ceux qui le précédaient encore, avant ceux
       // faits depuis.
       const ids = Array.isArray(record.changeIds) ? record.changeIds : [];
@@ -712,9 +713,24 @@ class Scheduler {
     this.reservedNext = this._copyReservation(state.reservedNext);
     this._chainAnnounced();
     if (!deferrals || !Array.isArray(state.deferrals)) return;
+    // Simple report « après la priorité » né du geste annulé (titre retiré qui
+    // ne pouvait pas reprendre la tête à la fin de sa priorité, _plainReport) :
+    // il n'existait pas avant lui. Le report d'avant le geste remplace aussi
+    // celui « après la priorité » que le geste a changé. Sinon le titre ne
+    // l'attendait plus et passait derrière ce qu'elle gardait (relecture,
+    // passe 26).
+    const saved = new Set(state.deferrals.map(([pid]) => pid));
+    for (const p of this.people.values()) {
+      const d = p.deferral;
+      if (d?.afterPriority && typeof d.forId !== 'string' && !saved.has(p.id) && this._isDeferred(p)) {
+        p.deferral = null;
+        this.version++;
+      }
+    }
     for (const [pid, deferral] of state.deferrals) {
       const p = this.people.get(pid);
-      if (p && !p.withdrawnAt && p.song?.entryId === deferral.entryId && !p.deferral) this._restoreDeferral(p, deferral);
+      if (!p || p.withdrawnAt || p.song?.entryId !== deferral.entryId) continue;
+      if (!p.deferral || (p.deferral.afterPriority && p.deferral.entryId === deferral.entryId)) this._restoreDeferral(p, deferral);
     }
   }
 
@@ -871,7 +887,8 @@ class Scheduler {
     } else this._undoRebased(latest, [...excludeIds, ...busyIds]);
     for (const p of yielded) {
       if (!this._isDeferred(p) && p.deferral) {
-        this._backFirst(p, p.deferral.entryId, { cutoff: p.deferral.forAt, busyIds: [...excludeIds, ...busyIds] });
+        const { entryId, forId, forAt } = p.deferral;
+        this._backOrWait(p, entryId, { cutoff: forAt, busyIds: [...excludeIds, ...busyIds], forId, forAt });
       }
     }
     for (const link of linked) {
@@ -992,14 +1009,18 @@ class Scheduler {
       // geste la suivent (un titre retiré de KaraFun attend de nouveau sa
       // priorité : _undoLatest).
       this.reservedNext = this._copyReservation(old);
+      this._rewaitEnded();
       const since = heldChain ? this._pruneBehind(heldChain, link => !!link.pulled || this._inChain(link.personId)) : null;
       if (since) this._appendChain(since);
       this._chainAnnounced();
     } else if (headMoved) {
       // Ce qu'elle gardait derrière elle avant le geste y reste, même une
-      // annonce de la file (relecture, passe 25).
+      // annonce de la file (relecture, passe 25). Le titre retiré qui ne
+      // pouvait pas reprendre la tête à son glissement l'attend de nouveau
+      // (_rewaitEnded, passe 26).
       const { then, ...top } = this._copyReservation(old);
       this._placeAhead(top, excludeIds, undefined, new Set(links.slice(1).map(link => link.personId)));
+      this._rewaitEnded();
       const title = this._titleWaitingFor(this.reservedNext);
       if (title) {
         title.presenceRetry = false;
