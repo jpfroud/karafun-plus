@@ -996,8 +996,10 @@ class Scheduler {
       if (since) this._appendChain(since);
       this._chainAnnounced();
     } else if (headMoved) {
+      // Ce qu'elle gardait derrière elle avant le geste y reste, même une
+      // annonce de la file (relecture, passe 25).
       const { then, ...top } = this._copyReservation(old);
-      this._placeAhead(top, excludeIds);
+      this._placeAhead(top, excludeIds, undefined, new Set(links.slice(1).map(link => link.personId)));
       const title = this._titleWaitingFor(this.reservedNext);
       if (title) {
         title.presenceRetry = false;

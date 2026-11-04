@@ -1010,10 +1010,17 @@ function replayGesture(ctx, e) {
   if (from < 0) throw new Error('titre déjà parti ou absent dans le rejeu');
   const to = kind === 'priority' ? 0 : Math.min(Math.max(0, (Number(e.to) || 1) - 1), visible.length - 1);
   if (to === from) throw new Error('titre déjà à cette place dans le rejeu');
+  // Comme la route : un glissement que la règle des annonces gardées ramène à
+  // la place de la ligne ne change rien et n'est pas noté ; la place notée est
+  // celle prise (passes 22 et 23 ; une version plus ancienne n'a ni l'un ni
+  // l'autre).
+  if (to > 0 && typeof s.staffMoveTarget === 'function' && s.staffMoveTarget(pid, to) === from) {
+    throw new Error('titre déjà juste après les passages annoncés dans le rejeu');
+  }
   const before = s.manualOverrideState({ deferrals: true });
-  s.staffMove(pid, to);
+  const placed = s.staffMove(pid, to);
   gesture.change = s.recordManualChange({ kind, personId: pid,
-    name: s.people.get(pid)?.name || keyOf(ctx, pid), from: from + 1, to: to + 1, before, native: REPLAY_NATIVE });
+    name: s.people.get(pid)?.name || keyOf(ctx, pid), from: from + 1, to: (Number.isInteger(placed) ? placed : to) + 1, before, native: REPLAY_NATIVE });
 }
 
 // « Annuler » du bar : il vise le geste réel le plus récent encore en place,

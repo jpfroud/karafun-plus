@@ -5412,9 +5412,13 @@ const handlers = {
     const exact = sched.canUndoManualChange(native);
     const change = sched.undoLastManualChange(String(body.id), native, { excludeIds: sendingIds(), busyIds: sendingSingers() });
     const older = sched.manualChanges.some(other => other.personId === change.personId);
+    // Rendue parmi les passages déjà annoncés (sa place d'avant le geste,
+    // Scheduler#_undoRebased, passes 22 à 25) : la réponse le dit.
+    const kept = !exact && !older && sched._inChain(change.personId);
     sync();
     return { ok: true, exact, message: exact ? 'Dernier changement annulé ; ordre précédent retrouvé' : older ?
-      `Dernier changement annulé : ${change.name} retrouve la place de son changement précédent` :
+      `Dernier changement annulé : ${change.name} retrouve la place de son changement précédent` : kept ?
+      `Dernier changement annulé : la file a changé depuis, ${change.name} retrouve sa place parmi les passages déjà annoncés` :
       `Dernier changement annulé : la file a changé depuis, ${change.name} retrouve sa place calculée` };
   },
   'POST /api/staff/priority-undo': async () => {
