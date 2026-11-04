@@ -5365,14 +5365,16 @@ const handlers = {
         throw new Error(`KaraFun n’a pas pu retirer « ${pull.sel.song.title} » (${String(error.message).replace(/[.!?\s]+$/, '')}) : rien n’a changé.`);
       }
     }
-    sched.staffMove(personId, toIndex, excluded, provisional);
+    // Place prise : une ligne glissée parmi les annonces gardées se place
+    // juste après elles (Scheduler#staffMove, relecture, passe 22).
+    const placed = sched.staffMove(personId, toIndex, excluded, provisional);
     // La priorité de ce geste (son heure d'annonce) : seule elle retient le
     // titre retiré ; une annonce plus ancienne le suivait dans KaraFun
     // (Scheduler#returnFromKaraFun, relecture, passe 17).
     if (pull && sched.reservedNext?.byStaff && sched.reservedNext.personId === personId) pull.pulled.forAt = sched.reservedNext.reservedAt;
     const change = sched.recordManualChange({
       kind: priority ? 'priority' : 'move', personId, name,
-      from: from + 1, to: toIndex + 1, before, native: priorityNativeFingerprint(),
+      from: from + 1, to: placed + 1, before, native: priorityNativeFingerprint(),
     });
     // Le geste lui-même : annulé ou tombé, le titre retiré reprend la tête à
     // son retour (Scheduler#returnFromKaraFun).
@@ -5381,7 +5383,7 @@ const handlers = {
       sched.note(`Le bar fait passer ${name} avant « ${pull.sel.song.title} » (${shownLabel(pull.sel)}) : ce titre sort de KaraFun et repasse juste après, sans perdre son tour`, 'staff');
     }
     sync();
-    journalEvent('staff.move', { personId, kind: priority ? 'priority' : 'move', from: from + 1, to: toIndex + 1,
+    journalEvent('staff.move', { personId, kind: priority ? 'priority' : 'move', from: from + 1, to: placed + 1,
       ...(pull ? { pulledEntryId: pull.sel.song.entryId || null } : {}) });
     if (pull) {
       return { ok: true, firstFreePosition: 1, pulled: { queueId: pull.queueId, title: pull.sel.song.title },
@@ -5391,7 +5393,8 @@ const handlers = {
     const loaded = priority && nativeAhead === 1 && !pending ? tracked.find(tr => !tr.startedAt && !tr.pulled && !tr.cancelled &&
       String(tr.queueId) === String(analyze().upcoming[0]?.queueId)) : null;
     return { ok: true, firstFreePosition: nativeAhead + 1,
-      message: loaded ? `${name} ${passes} juste après « ${loaded.sel.song.title} », déjà chargé dans KaraFun.` :
+      message: placed > toIndex ? `${name} ${passes} à la place ${placed + 1}, juste après les passages déjà annoncés : seule « Priorité » passe devant eux.` :
+        loaded ? `${name} ${passes} juste après « ${loaded.sel.song.title} », déjà chargé dans KaraFun.` :
         priority && nativeAhead ?
         `Passage avancé à la première place libre, après ${nativeAhead} titre${nativeAhead > 1 ? 's' : ''} déjà chargé${nativeAhead > 1 ? 's' : ''} dans KaraFun.` : null };
   },

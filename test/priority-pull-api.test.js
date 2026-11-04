@@ -1516,15 +1516,20 @@ test('passe 17 : titre retiré revenu en tête, redémarrage : la priorité gard
   assert.equal(g.sched.reservedNext?.byStaff, true);
 });
 
-test('passe 17 : titre retiré revenu en tête, le bar place une autre ligne juste derrière lui : elle passe avant la priorité gardée', async () => {
+test('passe 17, revu passe 22 : titre retiré revenu en tête, le bar glisse une autre ligne juste derrière lui : elle se place après la priorité gardée, qui part d’abord, comme montré', async () => {
   const f = harness();
   const ctx = loaded(f);
   const { bruno, chloe } = ctx.people;
   const eve = await backWithEve(f, ctx);
-  assert.equal(plain(await move(f, { personId: chloe.id, toIndex: 1 })).ok, true);
-  assert.deepEqual(planned(f).slice(0, 3).map(line => line.id), [bruno.id, chloe.id, eve.id], 'Bruno, Chloé placée par le bar, puis Eve');
+  const reply = plain(await move(f, { personId: chloe.id, toIndex: 1 }));
+  assert.equal(reply.ok, true);
+  assert.match(reply.message, /à la place 3, juste après les passages déjà annoncés/, 'le bar sait où la ligne est allée');
+  assert.equal(f.sched.manualChanges.at(-1).to, 3, 'le changement noté dit la place prise');
+  assert.deepEqual(planned(f).slice(0, 3).map(line => line.id), [bruno.id, eve.id, chloe.id], 'Bruno, Eve gardée, puis Chloé placée par le bar');
   assert.equal(sendNext(f).ids[0], bruno.id);
-  assert.notEqual(f.sched.reservedNext?.personId, eve.id, 'Eve ne repasse pas devant Chloé');
+  assert.equal(f.sched.reservedNext?.personId, eve.id, 'Eve, gardée derrière le titre revenu, reste annoncée');
+  assert.equal(f.sched.reservedNext?.byStaff, true, 'toujours priorité du bar');
+  assert.equal(sendNext(f).ids[0], eve.id);
   assert.equal(f.sched.select()?.ids[0], chloe.id);
 });
 

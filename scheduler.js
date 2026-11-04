@@ -66,7 +66,7 @@
  *   retarde pas la personne qui l'invite.
  */
 const { crypto, TimefoldBridge, DEFAULTS, bonusWeight, HISTORY_LIMIT, DEFER_MAX, INBOX_MAX, INBOX_TTL_MS, EPS, id, token,
-  SONG_GAP_MAX_SEC, SONG_GAP_SAMPLES, SONG_GAP_MIN_SAMPLES } = require('./lib/scheduler/common');
+  SONG_GAP_MAX_SEC, SONG_GAP_SAMPLES, SONG_GAP_MIN_SAMPLES, BEHIND_MAX } = require('./lib/scheduler/common');
 
 class Scheduler {
   // Prénom : 24 caractères au plus ; deux prénoms sont les mêmes à la casse
@@ -879,14 +879,6 @@ class Scheduler {
       if (!p?.song || this._inChain(p.id) || this._isDeferred(p)) continue;
       this._waitAgain(p, link.forId, link.forAt, [...excludeIds, ...busyIds]);
     }
-    // Ligne placée par un déplacement au milieu de la chaîne (`moved`) dont le
-    // geste vient d'être annulé : elle sort de la chaîne et retrouve le calcul
-    // (_behindStands ne la laissait déjà plus partir ; relecture, passe 21).
-    if (this.reservedNext?.then) {
-      const { then, ...head } = this.reservedNext;
-      const rest = this._pruneBehind(then, link => !!link.moved && !this.manualOrder.includes(link.personId));
-      this.reservedNext = rest ? { ...head, then: rest } : head;
-    }
     this.version++;
     return latest;
   }
@@ -1002,6 +994,31 @@ class Scheduler {
     else if (restorable && back?.pulledBack && !back.then && old.personId !== back.personId &&
         old.reservedAt < back.pulledBack && !this._lineOf(back.personId).some(pid => this._singsOnLine(old.personId, pid))) {
       this.reservedNext = { ...back, then: this._plainReservation(old) };
+    }
+    // Déplacement annulé d'une annonce gardée dans la chaîne (staffMove l'en
+    // sortait, ou la mettait au bout des annonces gardées) : elle y retrouve
+    // sa place d'avant le geste, juste derrière l'annonce qui la précédait,
+    // telle qu'elle était (personne sautée, titre retiré, priorité du bar),
+    // si elle peut encore partir. Sinon une personne sautée faute de « Je
+    // suis là » passait derrière une nouvelle table, ou une ligne gardait la
+    // place annulée alors que la réponse disait le contraire (relecture,
+    // passe 22).
+    const links = [];
+    for (let link = old; link && typeof link === 'object' && links.length <= 4 * BEHIND_MAX; link = link.then) links.push(link);
+    const at = links.findIndex(link => link.personId === change.personId);
+    const self = at > 0 ? this._plainReservation(links[at]) : null;
+    if (change.to !== 1 && self && this.reservedNext && this.reservedNext.personId !== change.personId &&
+        lineFree(change.personId) && this._behindStands(self, [])) {
+      const { then, ...top } = this.reservedNext;
+      const chain = [];
+      for (let link = then; link; link = link.then) if (link.personId !== change.personId) chain.push(this._plainReservation(link));
+      let pos = 0;
+      for (let j = at - 1; j > 0 && !pos; j--) pos = chain.findIndex(link => link.personId === links[j].personId) + 1;
+      chain.splice(pos, 0, self);
+      const cut = [];
+      const behind = this._behindCopy(chain.reduceRight((rest, link) => ({ ...link, ...(rest ? { then: rest } : {}) }), null), 0, cut);
+      this.reservedNext = behind ? { ...top, then: behind } : top;
+      for (const link of cut) this._dropBehind(link);
     }
     // Seul le report levé par ce geste revient, moins les chansons passées.
     // Déjà écoulé, il prend fin comme dans _commit au bout d'un report : déjà
