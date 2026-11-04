@@ -101,7 +101,12 @@ function boundDurations(snapshot) {
 // passe 26).
 function cleanEnded(d) {
   if (!d || typeof d !== 'object' || (d.endedFor === undefined && d.endedAt === undefined)) return d;
-  if (d.afterPriority !== true || d.forId !== undefined || typeof d.endedFor !== 'string' || !Number.isFinite(d.endedAt)) {
+  // Les deux à la fois (jamais écrits ainsi) : le simple report reste, sans
+  // la priorité qu'il attendait (relecture, passe 27). Il passe juste après
+  // le prochain passage : après cette priorité si elle est en tête, comme
+  // avant ; sinon il perdait sa place.
+  if (d.afterPriority === true && d.forId !== undefined) { delete d.forId; delete d.forAt; }
+  if (d.afterPriority !== true || typeof d.endedFor !== 'string' || !Number.isFinite(d.endedAt)) {
     delete d.endedFor;
     delete d.endedAt;
   }

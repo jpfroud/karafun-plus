@@ -449,7 +449,15 @@ class Scheduler {
       reserved: priority ? this._plainReservation(this.reservedNext) : behind, serial: this.appearanceSerial, at: Date.now(),
       epoch: this.manualEpoch || 0 };
     if (!this._unpinManual(pid)) return null;
-    if (priority) this._passNext();
+    // `promoted` : l'annonce que sa fin fait passer en tête (celle qu'elle
+    // gardait derrière elle, _passNext), pour lui rendre la tête devant elle
+    // (_restorePlaced).
+    if (priority) {
+      this._passNext();
+      const head = this.reservedNext;
+      if (head && !Number.isFinite(head.pulledBack)) record.promoted = { personId: head.personId,
+        ...(Number.isFinite(head.reservedAt) ? { reservedAt: head.reservedAt } : {}) };
+    }
     // Gardée derrière l'annonce en cours : son maillon tombe, le titre retiré
     // de KaraFun pour elle prend sa place (_endLine).
     else if (behind) this._endLine(pid);
@@ -507,7 +515,16 @@ class Scheduler {
       // le titre l'attend de nouveau (son report « après la priorité »).
       const backFor = !behindOf && !!record.reserved && Number.isFinite(record.reserved.reservedAt) &&
         this.reservedNext?.pulledBack === record.reserved.reservedAt;
-      const reserved = record.reserved && (asBehind || backFor || !this.reservedNext) ? { personId: p.id,
+      // Sa fin avait fait passer en tête l'annonce qu'elle gardait derrière
+      // elle (`promoted` : une priorité plus ancienne du bar, une personne
+      // sautée), encore la prochaine : elle reprend la tête, cette annonce et
+      // ce qu'elle garde juste derrière elle. Sinon les deux priorités du bar
+      // revenaient dans l'ordre inverse (relecture, passe 27).
+      const promoted = record.promoted;
+      const promotedBack = !behindOf && !backFor && !!record.reserved && !!promoted && typeof promoted === 'object' &&
+        this.reservedNext?.personId === promoted.personId && this.reservedNext.pulledBack == null &&
+        (Number.isFinite(promoted.reservedAt) ? this.reservedNext.reservedAt === promoted.reservedAt : !Number.isFinite(this.reservedNext.reservedAt));
+      const reserved = record.reserved && (asBehind || backFor || promotedBack || !this.reservedNext) ? { personId: p.id,
         reservedAt: Number.isFinite(record.reserved.reservedAt) ? record.reserved.reservedAt : Date.now(), byStaff: true } : null;
       // Sa ligne dans `list` (l'ordre fixé, ou celui d'avant un geste), avec
       // les lignes gardées devant elle ; derrière la priorité `staff`.
@@ -535,7 +552,8 @@ class Scheduler {
       const cut = [];
       if (reserved) this.reservedNext = asBehind ? { ...this.reservedNext,
         then: this._behindCopy(this.reservedNext.then ? { ...reserved, then: this.reservedNext.then } : reserved, 0, cut) } :
-        backThen ? { ...reserved, then: backThen } : reserved;
+        backThen ? { ...reserved, then: backThen } :
+        promotedBack ? { ...reserved, then: this._behindCopy(this.reservedNext, 0, cut) } : reserved;
       for (const link of cut) this._dropBehind(link);
       if (reserved) this._rewaitEnded();
       // Chaque geste revient après ceux qui le précédaient encore, avant ceux
