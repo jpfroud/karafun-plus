@@ -4,27 +4,39 @@ import ai.timefold.solver.core.api.score.HardMediumSoftScore;
 import ai.timefold.solver.core.api.score.calculator.EasyScoreCalculator;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Same bar policy as lib/scheduler/rotation.js#_pick, evaluated on a whole planned queue.
  * Hard: the singer's own playlist order, first appearances of the evening
  * before anyone's return, at most roundCap stage appearances per person in a
  * round, and `spacing` other songs before a person returns when another
- * passage of the round allows it. Medium: once per round (with bonus/malus credits),
+ * passage of the round allows it. Medium: once per round (with bonus/malus credits,
+ * a bonus's extra passages spread out over the round),
  * nobody sees someone sing twice during their own wait when another allowed
- * passage avoids it (after the table rule in EQUAL and SQRT),
- * no table twice in a row when another can sing, spacing
- * of a returning person, and each table's share of the round. Soft: stability
- * versus the order proposed by the Node process.
+ * passage avoids it (after the table rule in EQUAL and SQRT), first
+ * appearances by a cycle of the tables, then first come, first served, and
+ * returns by the oldest wait (before the table rule in PEOPLE; in EQUAL and
+ * SQRT, first come, first served and the oldest wait only break ties of the
+ * table share), no table twice in a row
+ * when another can sing, spacing of a returning person, and each table's
+ * share of the round. Soft: stability versus the order proposed by the Node
+ * process.
  */
 public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoftScore> {
     private static final double EPS = 1e-9;
     private static final int UNKNOWN = -1000;
+    // Room, in songs, a spread-out bonus keeps between its last passages of a
+    // round, even when the spacing option is lower: a fixed rule, mirror of
+    // BONUS_SPREAD_MIN_SPACING in lib/scheduler/common.js (not the option's
+    // default value).
+    private static final int BONUS_SPREAD_MIN_SPACING = 3;
 
     @Override
     public HardMediumSoftScore calculateScore(QueuePlan plan) {
@@ -45,6 +57,10 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         final int cap = plan.getRoundCap(), spacing = plan.getSpacing();
         List<List<String>> history = new ArrayList<>(plan.getHistory());
         List<String> previous = plan.getLastGroups();
+        boolean anyBonus = false;
+        for (double w : plan.getPersonWeights().values()) anyBonus |= w > 1 + EPS;
+        // Tables that already had a first appearance in the current cycle.
+        Set<String> cycle = new HashSet<>(plan.getFirstCycle());
 
         for (int pos = 0; pos < n; pos++) {
             Performance current = order.get(pos);
@@ -72,18 +88,68 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 do { resetRound(round, roundUse); apps.clear(); resets++; }
                 while (resets < 4 && candidates.stream().allMatch(c -> capped(c, apps, cap) || allIn(c, round)));
             }
+            // Cycle of first appearances (rotation.js#_pick): each table (each
+            // solo singer is their own) brings one person per cycle; a new
+            // cycle starts when every table with a first appearance still
+            // waiting already had one in it. A passage counts for its owner's
+            // table (groups[0]); a duet also brings its guest's table.
+            List<Performance> waitingFirst = new ArrayList<>();
+            for (Performance c : candidates) if (freshCount(c, appeared) == c.getSingers().size()) waitingFirst.add(c);
+            if (waitingFirst.stream().allMatch(c -> cycle.contains(c.getGroups().get(0)))) cycle.clear();
             List<Performance> open = new ArrayList<>();
             for (Performance c : candidates) if (!capped(c, apps, cap)) open.add(c);
             if (open.isEmpty()) open.addAll(candidates);
 
+            // Bonus spread out (lib/scheduler/rotation.js#_pick, `early`): the
+            // owner of a title, weighing w > 1, whose round is not over comes
+            // back only about n/w passages after their last one (n: people of
+            // the current round, a title ready or already on stage in it),
+            // unless the round no longer has room for the passages they still
+            // owe it (their credit, plus the new duos they are invited to; one:
+            // no other new passage left; k >= 2: at most
+            // k * max(BONUS_SPREAD_MIN_SPACING, spacing) left, three songs at
+            // least). Room only counts new passages sharing nobody with the
+            // held one. A guest's bonus never holds the duo of the person who
+            // invites them. Spacing still wins (fallback below). Only computed
+            // when someone in the plan has a bonus. Released for lack of room
+            // before their rhythm, the owner is pressed: their wait counts as a
+            // whole round (waitKey).
+            final int at = pos;
+            Predicate<Performance> early = null, pressed = null;
+            int roundSize = 0;
+            if (anyBonus) {
+                List<Performance> fresh = new ArrayList<>();
+                for (Performance c : open) if (repeats(c, round, apps) == 0) fresh.add(c);
+                Set<String> people = new HashSet<>(owners);
+                people.addAll(apps.keySet());
+                final int size = people.size();
+                roundSize = size;
+                Map<Performance, Integer> spread = new HashMap<>();
+                java.util.function.Function<Performance, Integer> spreadOf = c -> spread.computeIfAbsent(c, held -> {
+                    String singer = held.getOwner();
+                    double w = weight(plan, singer);
+                    int last = lastSeen.getOrDefault(singer, UNKNOWN);
+                    if (w <= 1 + EPS || last <= UNKNOWN || round.contains(singer)) return 0;
+                    if (at - last >= size / w - EPS) return 0;
+                    int others = 0, invited = 0;
+                    for (Performance other : fresh) {
+                        if (other == held) continue;
+                        if (Collections.disjoint(other.getSingers(), held.getSingers())) others++;
+                        else if (other.getSingers().contains(singer) && !singer.equals(other.getOwner())) invited++;
+                    }
+                    int left = (int) Math.ceil((1 - roundUse.getOrDefault(singer, 0.0)) * w - EPS) + invited;
+                    return others > (left > 1 ? left * Math.max(BONUS_SPREAD_MIN_SPACING, spacing) : 0) ? 1 : 2;
+                });
+                early = c -> spreadOf.apply(c) == 1;
+                pressed = c -> spreadOf.apply(c) == 2;
+            }
             List<Performance> tier = firstAppearances(open, appeared);
-            List<Performance> choices = oncePerRound(preferOwed(tier, owed, round), round, apps);
+            List<Performance> choices = unhurried(oncePerRound(preferOwed(tier, owed, round), round, apps), early);
             // Spacing: when every fair passage brings back someone who sang
             // in the last `spacing` songs, another passage of the round goes
             // first, never someone who already sang in this round. The table
             // rule wins: spacing never hands the mic back to the last table.
             if (spacing > 0) {
-                final int at = pos;
                 List<Performance> wellSpaced = new ArrayList<>();
                 for (Performance c : choices) if (spaced(c, lastSeen, at, spacing)) wellSpaced.add(c);
                 List<Performance> spacedTier = tier;
@@ -92,7 +158,7 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                     for (Performance c : open) if (spaced(c, lastSeen, at, spacing) && repeats(c, round, apps) < c.getSingers().size()) others.add(c);
                     if (!others.isEmpty()) {
                         spacedTier = firstAppearances(others, appeared);
-                        wellSpaced = oncePerRound(preferOwed(spacedTier, owed, round), round, apps);
+                        wellSpaced = unhurried(oncePerRound(preferOwed(spacedTier, owed, round), round, apps), early);
                     }
                 }
                 if (!wellSpaced.isEmpty() && (offTable(wellSpaced, prior) || !offTable(choices, prior))) {
@@ -172,6 +238,41 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                     }
                 }
             }
+            // First appearances (rotation.js#_pick): among passages that only
+            // bring people never on stage yet, the tables not yet in the cycle,
+            // then the owner whose wait started first (addedOrder; a duet
+            // counts by its owner). Returns: the oldest wait first (waitKey).
+            // PEOPLE: right after patience, before the table rule, which then
+            // only breaks ties among the earliest; EQUAL and SQRT: first come,
+            // first served and the oldest wait only break ties of the table
+            // share (below), without the cycle.
+            boolean ordered = patient.size() > 1 && !plan.getAddedOrder().isEmpty();
+            boolean firstTurn = ordered &&
+                    patient.stream().allMatch(c -> freshCount(c, appeared) == c.getSingers().size());
+            boolean byTables = plan.getRotation() != QueuePlan.Rotation.PEOPLE;
+            List<Performance> fair = patient;
+            if (firstTurn && !byTables) {
+                List<Performance> turn = new ArrayList<>();
+                for (Performance c : patient) if (!cycle.contains(c.getGroups().get(0))) turn.add(c);
+                if (turn.isEmpty()) turn = patient;
+                int first = Integer.MAX_VALUE;
+                for (Performance c : turn) first = Math.min(first, added(plan, c));
+                fair = new ArrayList<>();
+                for (Performance c : turn) if (added(plan, c) == first) fair.add(c);
+            } else if (ordered && !byTables) {
+                // A rested bonus singer (two passages since their own) stays
+                // in: they may sing more often, as for patience.
+                long[] oldest = null;
+                for (Performance c : patient) {
+                    long[] key = waitKey(c, pos, lastSeen, plan, pressed, roundSize);
+                    if (oldest == null || Arrays.compare(key, oldest) < 0) oldest = key;
+                }
+                fair = new ArrayList<>();
+                for (Performance c : patient) {
+                    if (Arrays.compare(waitKey(c, pos, lastSeen, plan, pressed, roundSize), oldest) == 0 || restedBonus(c, pos, lastSeen, plan)) fair.add(c);
+                }
+            }
+            boolean earliest = fair.contains(current);
             if (!pinned && !allowedNow.contains(current)) {
                 if (!tier.contains(current)) hard -= 1;
                 else if (!choices.contains(current)) medium -= 5_000;
@@ -181,10 +282,19 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                 // a little more, never as much as breaking « once per round ».
                 int extra = doubles[allowedNow.indexOf(current)] - least;
                 medium -= 4_000L + Math.min(900L, 100L * Math.max(0, extra - 1));
+            } else if (!pinned && !earliest) {
+                // Below patience, above the table rule and the share it
+                // overrides in PEOPLE: a plan never serves a first appearance
+                // out of the cycle, or a later one before an earlier one, nor
+                // a return before an older wait.
+                medium -= 3_000;
             }
 
+            // PEOPLE serving the earliest first appearance: the table rule and
+            // the table share below only compare it with the other earliest.
+            final List<Performance> tableChoices = earliest && fair != patient ? fair : candidates;
             boolean overlapsPrevious = !prior.isEmpty() && overlaps(current.getGroups(), prior);
-            if (overlapsPrevious && candidates.stream().anyMatch(c -> !overlaps(c.getGroups(), prior))) {
+            if (overlapsPrevious && tableChoices.stream().anyMatch(c -> !overlaps(c.getGroups(), prior))) {
                 medium -= 1_500;
             }
 
@@ -211,10 +321,24 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
                         (recent.size() + 1) * entry.getValue() / total - served : -served);
             }
             double best = Double.NEGATIVE_INFINITY;
-            for (Performance c : patient) best = Math.max(best, need(c, deficits));
+            for (Performance c : earliest ? fair : patient) best = Math.max(best, need(c, deficits));
             double picked = need(current, deficits);
             if (best > picked + EPS && best != Double.NEGATIVE_INFINITY) {
                 medium -= Math.round((best - picked) * 150);
+            }
+            // EQUAL and SQRT: at the same share, and no worse for the table
+            // rule, the first appearance added first goes first, and among
+            // returns the oldest wait.
+            if (ordered && byTables && !pinned && patient.contains(current)) {
+                long[] mine = firstTurn ? new long[] { 0, 0, -1000, added(plan, current) } : waitKey(current, pos, lastSeen, plan, pressed, roundSize);
+                for (Performance c : patient) {
+                    long[] theirs = firstTurn ? new long[] { 0, 0, -1000, added(plan, c) } : waitKey(c, pos, lastSeen, plan, pressed, roundSize);
+                    if (Arrays.compare(theirs, mine) < 0 && Math.abs(need(c, deficits) - picked) <= EPS &&
+                            (overlapsPrevious || !overlaps(c.getGroups(), prior))) {
+                        medium -= 200;
+                        break;
+                    }
+                }
             }
 
             // A passage granted by the interleave rule to someone who already
@@ -224,6 +348,18 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             // that pinned head is not simulated here, and the local rule still
             // decides whether a plan is adopted.
             boolean borrowed = alternates.contains(current);
+            // The cycle after this passage: its tables had their turn; once no
+            // table with a first appearance still waiting is left out of it,
+            // the cycle is over and the next one starts empty.
+            if (freshCount(current, appeared) == current.getSingers().size()) {
+                cycle.addAll(current.getGroups());
+                boolean over = true;
+                for (Performance c : waitingFirst) {
+                    if (c == current || c.getSingers().stream().anyMatch(current.getSingers()::contains)) continue;
+                    if (!cycle.contains(c.getGroups().get(0))) { over = false; break; }
+                }
+                if (over) cycle.clear();
+            }
             for (String singer : current.getSingers()) {
                 lastSeen.put(singer, pos);
                 appeared.merge(singer, 1, Integer::sum);
@@ -253,6 +389,14 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
         }
         if (tier.isEmpty()) tier.addAll(candidates);
         return tier;
+    }
+
+    // Without the passages held back by the bonus spread, unless none is left.
+    private static List<Performance> unhurried(List<Performance> list, Predicate<Performance> early) {
+        if (early == null) return list;
+        List<Performance> due = new ArrayList<>();
+        for (Performance c : list) if (!early.test(c)) due.add(c);
+        return due.isEmpty() ? list : due;
     }
 
     private static List<Performance> oncePerRound(List<Performance> tier, Set<String> round, Map<String, Integer> apps) {
@@ -320,14 +464,18 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
     }
 
     // Last appearance of a singer of `c` who already sang, or UNKNOWN. A bonus
-    // singer counts only until rested (two other passages since), as in Node.
+    // singer counts only until rested (two other passages since), as in Node;
+    // so does the guest of a rested bonus owner's duet.
     private static int lastSung(Performance c, int pos, Map<String, Integer> lastSeen, Map<String, Integer> appeared,
                                 QueuePlan plan) {
         int seen = UNKNOWN;
+        String owner = c.getOwner();
+        boolean carried = c.getSingers().size() > 1 && weight(plan, owner) > 1 + EPS &&
+                pos - lastSeen.getOrDefault(owner, UNKNOWN) >= 3;
         for (String singer : c.getSingers()) {
             if (appeared.getOrDefault(singer, 0) == 0) continue;
             int last = lastSeen.getOrDefault(singer, UNKNOWN);
-            if (weight(plan, singer) > 1 + EPS && pos - last >= 3) continue;
+            if ((weight(plan, singer) > 1 + EPS || (carried && !singer.equals(owner))) && pos - last >= 3) continue;
             seen = Math.max(seen, last);
         }
         return seen;
@@ -351,6 +499,49 @@ public class QueueScore implements EasyScoreCalculator<QueuePlan, HardMediumSoft
             if (wait < seen && owners.contains(singer)) lo--;
         }
         return lo;
+    }
+
+    // Rank of the time the owner's wait started (first come, first served).
+    private static int added(QueuePlan plan, Performance c) {
+        return plan.getAddedOrder().getOrDefault(c.getOwner(), 0);
+    }
+
+    // When the wait of the owner of `c` started (rotation.js#_pick, waitKey):
+    // a malus owner after the others (not protected, as for patience), then
+    // max(last appearance, readyAt), then, at the same count, the strongest
+    // bonus among the singers, then by time (addedOrder: the rank of the end
+    // of Node's last passage, or of its readySince, a request made during a
+    // passage coming before its singer). A passage of this plan has not ended
+    // yet: after every request. A bonus owner (w > 1) who already sang waits
+    // w times faster (pos - (pos - start) * w), a pressed one at least a whole
+    // round (pos - roundSize). Weighted wait and bonus compared in thousandths,
+    // as rotation.js does: a product of weights is not exact in binary
+    // (1.5 * 0.8 = 1.2000000000000002, 2/3), and that noise must not break a
+    // tie that is exact on paper. Keys compare with Arrays.compare.
+    private static long[] waitKey(Performance c, int pos, Map<String, Integer> lastSeen, QueuePlan plan,
+                                  Predicate<Performance> pressed, int roundSize) {
+        String owner = c.getOwner();
+        int last = lastSeen.getOrDefault(owner, UNKNOWN);
+        int ready = plan.getReadyAt().getOrDefault(owner, UNKNOWN);
+        double w = weight(plan, owner);
+        int start = Math.max(last, ready);
+        long since = start * 1000L;
+        if (w > 1 + EPS && last > UNKNOWN) {
+            double weighted = pos - (pos - start) * w;
+            if (pressed != null && pressed.test(c)) weighted = Math.min(weighted, pos - roundSize);
+            since = Math.round(weighted * 1000);
+        }
+        double top = 1;
+        for (String singer : c.getSingers()) top = Math.max(top, weight(plan, singer));
+        return new long[] { w < 1 - EPS ? 1 : 0, since, -Math.round(top * 1000),
+                last >= 0 ? Long.MAX_VALUE : added(plan, c) };
+    }
+
+    // A bonus owner two passages after their own: free to sing before older waits.
+    private static boolean restedBonus(Performance c, int pos, Map<String, Integer> lastSeen, QueuePlan plan) {
+        String owner = c.getOwner();
+        Integer last = lastSeen.get(owner);
+        return weight(plan, owner) > 1 + EPS && (last == null || last <= UNKNOWN || pos - last >= 3);
     }
 
     private static double weight(QueuePlan plan, String person) {

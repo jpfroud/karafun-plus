@@ -767,7 +767,8 @@ function renderSocial() {
     h('p', { text: 'Invitations, demandes et votes de la soirée.' }))));
   el.appendChild(h('div', { class: 'st-mini' }, ...[
     [g.duoStages, 'duos chantés'], [d.invites, 'invitations'], [d.accepted, 'acceptées'], [d.declined, 'refusées'], [d.inviteExpired, 'sans réponse'],
-    [d.joinRequests, 'demandes « Duo ? »'], [d.joinAccepted, 'acceptées'], [d.joinExpired, 'expirées'], [d.improvisedStages, 'notés par le bar'],
+    [d.joinRequests, 'demandes « Duo ? »'], [d.joinAccepted, 'acceptées'], [d.joinExpired, 'expirées'],
+    [d.openRequests, 'duos ouverts'], [d.openAccepted, 'rejoints'], [d.openExpired, 'sans partenaire'], [d.improvisedStages, 'notés par le bar'],
     [g.crossTableDuos, 'entre tables'], [b.proposals, 'votes Battle'], [b.votes, 'voix'], [b.launched, 'Battles lancées']]
     .map(([value, label]) => h('div', {}, h('b', { text: String(value ?? 0) }), h('small', { text: label })))));
   const outcomes = { approved: 'acceptée', quorum: 'pas assez de votants', rejected: 'refusée', expired: 'sans vote' };

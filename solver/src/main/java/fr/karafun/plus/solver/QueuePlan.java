@@ -40,6 +40,23 @@ public class QueuePlan {
      * does not count as singing one of their own titles.
      */
     private Map<String, Double> groupSizes = Map.of();
+    /**
+     * Rank of the time each owner's wait started (Node rotation.js#_waitSince, sent by
+     * lib/scheduler/solver.js): the later of the end of their last stage passage and their request
+     * time (readySince), so a title asked again during their own song still waits for its end; while
+     * that passage has no known end (not ended yet), a request made up to it ranks its owner after
+     * every request. Same rank, same time. It orders first appearances first come, first served
+     * and breaks ties among returns by the oldest wait (rotation.js#_pick, QueueScore.waitKey; an
+     * owner already placed earlier in this plan comes after every rank). Empty from an older
+     * client: neither rule applies.
+     */
+    private Map<String, Integer> addedOrder = Map.of();
+    /**
+     * Tables (groups) that already had a first appearance in the current cycle of first appearances
+     * (Node firstCycle, rotation.js#_pick): each table brings one person per cycle. Empty from an
+     * older client: the cycle starts empty.
+     */
+    private Set<String> firstCycle = Set.of();
     private List<List<String>> history;
     private Rotation rotation;
     private boolean interleaveArrivals;
@@ -102,6 +119,10 @@ public class QueuePlan {
     public Map<String, Double> getTableWeights() { return tableWeights; }
     public Map<String, Double> getGroupSizes() { return groupSizes; }
     public void setGroupSizes(Map<String, Double> groupSizes) { this.groupSizes = groupSizes == null ? Map.of() : groupSizes; }
+    public Map<String, Integer> getAddedOrder() { return addedOrder; }
+    public void setAddedOrder(Map<String, Integer> addedOrder) { this.addedOrder = addedOrder == null ? Map.of() : addedOrder; }
+    public Set<String> getFirstCycle() { return firstCycle; }
+    public void setFirstCycle(Set<String> firstCycle) { this.firstCycle = firstCycle == null ? Set.of() : firstCycle; }
     public List<List<String>> getHistory() { return history; }
     public Rotation getRotation() { return rotation; }
     public boolean isInterleaveArrivals() { return interleaveArrivals; }

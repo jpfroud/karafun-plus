@@ -398,6 +398,108 @@ test('« Vider toutes les chansons » pendant qu’un passage emprunté attend d
   assert.equal(f.sched.roundPeople.has(ana.id), false, 'Ana repart à zéro dans le nouveau tour');
 });
 
+// Relecture (passe 12) : le vidage fait repartir le cycle des premiers
+// passages de zéro, mais le reçu d'un titre chargé qui fermait le cycle
+// gardait le cycle d'avant : retiré sans être chanté, il rendait les tables
+// déjà passées, et la table de ce titre passait devant les autres.
+test('« Vider toutes les chansons » pendant que le titre qui ferme le cycle attend dans KaraFun : le cycle repart de zéro', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const tick = () => { clock += 1000; };
+    const join = (tableId, name) => f.sched.join({ tableId, name, headcount: 2 });
+    const [w1, y1, x1] = [['1', 'W1'], ['2', 'Y1'], ['3', 'X1']].map(([tableId, name]) => join(tableId, name));
+    for (const p of [w1, y1, x1]) { tick(); f.sched.chooseSong(p, { songId: 9400 + clock % 97, title: `Titre ${p.name}` }, 'append'); }
+    const play = () => { const sel = f.sched.select(); f.sched.commit(sel); f.sched.songEnded(sel.ids); return sel; };
+    assert.deepEqual([play().names, play().names], [['W1'], ['Y1']]);
+    const sel = f.sched.select();
+    assert.deepEqual(sel.names, ['X1']);
+    f.sched.commit(sel); // X1 ferme le cycle, chargé dans KaraFun
+    f.getTracked().push({ queueId: 'q-cycle', sel, startedAt: null, addedAt: clock });
+    const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+    assert.equal(r.status, 200);
+    f.sched.rollbackUnplayed(sel); // KaraFun confirme le retrait
+    assert.deepEqual([...f.sched.firstCycle], [], 'le cycle reste vidé');
+    // Une deuxième personne par table ajoute son premier titre, table 1, 2 puis 3.
+    for (const [tableId, name] of [['1', 'W2'], ['2', 'Y2'], ['3', 'X2']]) {
+      const p = f.sched.join({ tableId, name });
+      tick(); f.sched.chooseSong(p, { songId: 9500 + clock % 97, title: `Titre ${name}` }, 'append');
+    }
+    assert.deepEqual(f.sched.readyView().map(item => item.name), ['W2', 'Y2', 'X2'], 'dans l’ordre des demandes, aucune table déjà servie');
+  } finally { Date.now = realNow; }
+});
+
+// Relecture (passe 13, cellule sans test) : même vidage avec un titre du
+// milieu du cycle chargé : le cycle reste vide quand il ressort.
+test('« Vider toutes les chansons » pendant qu’un titre du milieu du cycle attend dans KaraFun : le cycle reste vide', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const tick = () => { clock += 1000; };
+    const join = (tableId, name) => f.sched.join({ tableId, name, headcount: 2 });
+    const [w1, y1, x1] = [['1', 'W1'], ['2', 'Y1'], ['3', 'X1']].map(([tableId, name]) => join(tableId, name));
+    for (const p of [w1, y1, x1]) { tick(); f.sched.chooseSong(p, { songId: 9800 + clock % 97, title: `Titre ${p.name}` }, 'append'); }
+    const first = f.sched.select(); f.sched.commit(first); f.sched.songEnded(first.ids);
+    assert.deepEqual(first.names, ['W1']);
+    const sel = f.sched.select();
+    assert.deepEqual(sel.names, ['Y1']);
+    f.sched.commit(sel); // Y1 chargé dans KaraFun, cycle {1, 2}
+    f.getTracked().push({ queueId: 'q-milieu', sel, startedAt: null, addedAt: clock });
+    const r = await post(f, `/api/staff/queue-clear?key=${f.STAFF_KEY}`, { confirmation: 'VIDER TOUTES LES CHANSONS' });
+    assert.equal(r.status, 200);
+    f.sched.rollbackUnplayed(sel); // KaraFun confirme le retrait
+    assert.deepEqual([...f.sched.firstCycle], [], 'le cycle reste vidé');
+  } finally { Date.now = realNow; }
+});
+
+// Relecture (passe 13) : même chose pour « Nouvelle soirée ». Le titre de la
+// soirée close reste suivi pour être retiré de KaraFun ; son retrait,
+// confirmé après la réouverture des tables (mêmes numéros), rendait le cycle
+// de la soirée close : les tables 1 et 2 passaient pour déjà servies. Les
+// départs de tables de la soirée close ne restent pas non plus.
+test('« Nouvelle soirée » pendant que le titre qui ferme le cycle attend dans KaraFun : la soirée suivante ne reprend pas son cycle', async () => {
+  const f = harness();
+  f.loadTables();
+  f.setBridge(null);
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const tick = () => { clock += 1000; };
+    const join = (tableId, name) => f.sched.join({ tableId, name, headcount: 2 });
+    const [w1, y1, x1] = [['1', 'W1'], ['2', 'Y1'], ['3', 'X1']].map(([tableId, name]) => join(tableId, name));
+    for (const p of [w1, y1, x1]) { tick(); f.sched.chooseSong(p, { songId: 9600 + clock % 97, title: `Titre ${p.name}` }, 'append'); }
+    const play = () => { const sel = f.sched.select(); f.sched.commit(sel); f.sched.songEnded(sel.ids); return sel; };
+    assert.deepEqual([play().names, play().names], [['W1'], ['Y1']]);
+    join('4', 'Z1');
+    f.sched.tableLeft('4');
+    assert.equal(f.sched.groupDepartures.size, 1);
+    const sel = f.sched.select();
+    assert.deepEqual(sel.names, ['X1']);
+    f.sched.commit(sel); // X1 ferme le cycle, chargé dans KaraFun
+    f.getTracked().push({ queueId: 'q-soiree', sel, startedAt: null, addedAt: clock });
+    const r = await post(f, `/api/staff/tables-clear?key=${f.STAFF_KEY}`, { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+    assert.equal(r.status, 200);
+    assert.equal(f.sched.groupDepartures.size, 0, 'rien de la soirée close');
+    // Soirée suivante : les tables 1, 2 et 4 rouvrent, dans cet ordre.
+    for (const [tableId, name] of [['1', 'N1'], ['2', 'N2'], ['4', 'N4']]) {
+      const p = join(tableId, name);
+      tick(); f.sched.chooseSong(p, { songId: 9700 + clock % 97, title: `Titre ${name}` }, 'append');
+    }
+    f.sched.rollbackUnplayed(sel); // KaraFun confirme enfin le retrait du titre de la soirée close
+    assert.deepEqual([...f.sched.firstCycle], [], 'personne n’a chanté ce soir');
+    assert.deepEqual(f.sched.readyView().map(item => item.name), ['N1', 'N2', 'N4'], 'dans l’ordre des demandes');
+  } finally { Date.now = realNow; }
+});
+
 test('« Vider toutes les chansons » juste après un retrait : le titre rechoisi commence une nouvelle attente', async () => {
   const f = harness();
   f.loadTables();

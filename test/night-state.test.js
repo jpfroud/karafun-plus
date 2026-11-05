@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { Scheduler } = require('../scheduler');
 const { TableAccess } = require('../table-access');
 const { NightStateStore, snapshotNight, restoreNight, inspectRecoveredPending } = require('../night-state');
+const { STAGE_ENDS_LIMIT } = require('../lib/scheduler/passages');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-night-test-'));
 const song = (songId, title) => ({ songId, title, artist: 'Artiste' });
@@ -104,10 +105,32 @@ try {
   assert.deepEqual(resumed.manualOverrideState(), beforeManual,
     'après redémarrage, annuler restitue précisément l’état avant déplacement');
 
+  // Retours du 23 octobre : après la reprise, un titre ajouté par quelqu'un
+  // d'autre ne défait pas les gestes du bar, qui restent annulables.
+  const placedAgain = new Scheduler();
+  restoreNight(JSON.parse(JSON.stringify(newest)), { scheduler: placedAgain, access: new TableAccess(), settings: settings() });
+  const shown = () => placedAgain.presenceView().filter(turn => !turn.future).map(turn => turn.ids[0]);
+  const placedOrder = shown();
+  assert.equal(placedOrder[1], movableAgain.at(-1).ids[0]);
+  assert.ok(placedAgain.manualChanges.every(change => Number.isSafeInteger(change.serial)), 'le décompte des reports survit');
+  placedAgain.chooseSong(placedAgain.people.get(clara.id), song(107, 'Encore Clara'), 'append');
+  assert.deepEqual(shown().slice(0, 3), placedOrder.slice(0, 3), 'après la reprise, un ajout ne défait pas les gestes du bar');
+  assert.equal(placedAgain.manualChanges.length, 2);
+  placedAgain.undoLastManualChange(null, nativeFingerprint);
+  assert.equal(placedAgain.manualChanges.length, 1, 'le dernier geste s’annule encore après l’ajout');
+  assert.equal(shown().indexOf(movable.at(-1).ids[0]), 1, 'le geste plus ancien garde sa place');
+  const brokenSerial = JSON.parse(JSON.stringify(newest));
+  brokenSerial.scheduler.manualChanges[0].serial = 'x';
+  const loose = new Scheduler();
+  restoreNight(brokenSerial, { scheduler: loose, access: new TableAccess(), settings: settings() });
+  assert.equal('serial' in loose.manualChanges[0], false, 'décompte abîmé oublié, geste gardé');
   {
     // Une mise à jour en soirée redémarre le serveur : l'ordre adopté par
     // Timefold doit survivre aussi, sans devenir une intervention du bar.
-    const planned = new Scheduler();
+    // « Tables à tour de rôle » : quatre premiers passages de même part, que
+    // le plan départage (en « Chacun son tour », le cycle des tables puis
+    // premier ajouté, premier servi les range avant le plan).
+    const planned = new Scheduler({ tableRotation: true });
     const plannedAccess = new TableAccess();
     const singers = ['1', '2', '3', '4'].map((tableId, index) => {
       planned.table(tableId); plannedAccess.issue(tableId);
@@ -358,6 +381,47 @@ try {
   }
 
   {
+    // Relecture : en « Duos uniquement », un duo ouvert sans partenaire ne
+    // part pas (_openHeld) : ni lui ni les titres suivants de son auteur ne
+    // sont dans le plan de Timefold. Le plan doit quand même être sauvegardé
+    // et repris, sous la même règle qu'à la sauvegarde.
+    const rules = { duoOnly: true };
+    const planned = new Scheduler({ tableRotation: true });
+    planned.duoOnlyRule = () => !!rules.duoOnly;
+    const plannedAccess = new TableAccess();
+    const singers = ['1', '2', '3', '4'].map((tableId, index) => {
+      planned.table(tableId); plannedAccess.issue(tableId);
+      const person = planned.join({ tableId, name: `S0${index + 1}`, headcount: 1 });
+      planned.chooseSong(person, song(301 + index, `T${index + 1}`));
+      return person;
+    });
+    // S02 cherche un partenaire pour son second titre, S05 pour son premier.
+    planned.chooseSong(singers[1], song(311, 'Second'), 'append');
+    planned.openDuet(singers[1], { entryId: planned.songsOf(singers[1])[1].entryId });
+    planned.table('5'); plannedAccess.issue('5');
+    const held = planned.join({ tableId: '5', name: 'S05', headcount: 1 });
+    planned.openDuet(held, { song: song(321, 'Ouvert') });
+    planned.chooseSong(held, song(322, 'Après'), 'append');
+    const local = planned.readyView().map(row => row.entryId);
+    assert.equal(local.length, 4, 'les titres retenus sont hors de la file');
+    const desired = [local[2], local[0], local[3], local[1]];
+    planned.solverPlan = { version: planned.version, fingerprint: planned.solverContextFingerprint(),
+      ranks: new Map(desired.map((entryId, index) => [entryId, index])), source: 'timefold' };
+    assert.deepEqual(planned.readyView().map(row => row.entryId), desired);
+    const base = { ...settings(), duoOnly: true };
+    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: planned, access: plannedAccess, settings: base })));
+    assert.deepEqual(saved.scheduler.solverPlan?.order, desired, 'plan sauvegardé sans les titres retenus');
+    // Le serveur redémarre avec « Duos uniquement » coupé : la sauvegarde le rallume.
+    const target = { ...settings(), duoOnly: false };
+    const resumed = new Scheduler();
+    resumed.duoOnlyRule = () => !!target.duoOnly;
+    restoreNight(saved, { scheduler: resumed, access: new TableAccess(), settings: target });
+    assert.equal(resumed.solverPlan?.source, 'timefold', 'plan repris');
+    assert.deepEqual(resumed.readyView().map(row => row.entryId), desired, 'même ordre après le redémarrage');
+    assert.equal(resumed.manualOrderActive, false);
+  }
+
+  {
     // Relecture : une sauvegarde prise entre un passage annulé et le suivant
     // peut porter un début d'attente ou une marque d'échange au-delà du
     // compteur ; la reprise les ramène, sinon la personne perdrait la
@@ -381,6 +445,34 @@ try {
     assert.equal(back.readySerial, resumed.appearanceSerial, 'début d’attente ramené au compteur');
     assert.equal(back.emptiedAt, undefined, 'marque d’échange future abandonnée');
     assert.equal(resumed.people.get(ana.id).readySerial, 0, 'début d’attente invalide remis à zéro');
+  }
+
+  {
+    // Relecture (passe 4) : la reprise gardait les 200 dernières fins de
+    // passage (`stageEnds`) dans l'ordre de la sauvegarde, avec sa propre
+    // copie de la limite. Comme endStage, elle garde les STAGE_ENDS_LIMIT
+    // plus grands tours : les plus petits partent d'abord, quel que soit
+    // l'ordre des lignes (ici les plus grands tours d'abord).
+    const total = STAGE_ENDS_LIMIT + 50;
+    const rows = Array.from({ length: total }, (_, k) => [total - k, 1000 * (total - k)]);
+    const live = new Scheduler();
+    live.appearanceSerial = total;
+    for (const [turn, at] of rows) live.endStage({ turn }, at);
+    assert.equal(live.stageEnds.size, STAGE_ENDS_LIMIT);
+    const sched = new Scheduler();
+    const access = new TableAccess();
+    sched.table('1'); access.issue('1');
+    sched.appearanceSerial = total;
+    const saved = JSON.parse(JSON.stringify(snapshotNight({ scheduler: sched, access, settings: settings() })));
+    saved.scheduler.stageEnds = rows;
+    const resumed = new Scheduler();
+    restoreNight(saved, { scheduler: resumed, access: new TableAccess(), settings: settings() });
+    // En direct, endStage date la fin sur l'horloge des débuts d'attente :
+    // on compare les tours gardés, et les heures à celles de la sauvegarde.
+    const turns = map => [...map.keys()].sort((a, b) => a - b);
+    assert.deepEqual(turns(resumed.stageEnds), turns(live.stageEnds), 'mêmes tours gardés qu’en direct');
+    for (const [turn, at] of resumed.stageEnds) assert.equal(at, 1000 * turn, `heure de la sauvegarde gardée (tour ${turn})`);
+    assert.equal(Math.min(...resumed.stageEnds.keys()), total - STAGE_ENDS_LIMIT + 1, 'les plus petits tours partent d’abord');
   }
 
   console.log('ok - reprise après crash : file, titres, duos, téléphones, QR, écritures atomiques et envoi ambigu');

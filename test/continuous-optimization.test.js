@@ -44,7 +44,10 @@ function smallEvening(options = {}) {
     s.setHeadcount(tableId, names.length);
     for (const name of names) people.push(s.join({ tableId, name }));
   }
-  people.forEach((p, index) => s.chooseSong(p, song(index + 1), 'append'));
+  // Titres ajoutés tables mêlées : les premiers passages suivent l'ordre
+  // d'ajout, et la file de départ ne met pas deux fois de suite la même table.
+  const added = ['A1', 'B1', 'C1', 'A2', 'B2', 'A3'].map(name => people.find(p => p.name === name));
+  added.forEach(p => s.chooseSong(p, song(people.indexOf(p) + 1), 'append'));
   return { s, people };
 }
 

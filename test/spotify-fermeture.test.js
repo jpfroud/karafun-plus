@@ -684,7 +684,7 @@ test('soirée sauvegardée : une « Priorité » du bar le reste après un redé
   assert.equal(loose.reservedNext?.byStaff, undefined, 'valeur non booléenne ignorée');
 });
 
-test('« Recalculer » quand seule une « Priorité » reste active : le bar sait qu’elle est abandonnée', () => {
+test('« Recalculer » après une « Priorité » et une nouvelle table : le bar sait qu’elle est abandonnée', () => {
   const { Scheduler } = require('../scheduler');
   const s = new Scheduler();
   const people = ['Alice', 'Bruno', 'Chloé'].map((name, i) => {
@@ -693,14 +693,17 @@ test('« Recalculer » quand seule une « Priorité » reste active : le bar sai
     return p;
   });
   s.staffMove(people[2].id, 0);
-  // Une nouvelle table efface l'ordre manuel, pas la priorité.
+  // Une nouvelle table ne touche ni à la priorité ni à l'ordre fixé par le
+  // bar (retours du 23 octobre) ; seul l'ordre figé des autres est recalculé.
   s.chooseSong(s.join({ tableId: '4', name: 'Dan', headcount: 1 }), { songId: 950, title: 'Titre Dan' });
   s.presenceView();
-  assert.equal(s.manualOrderActive, false);
+  assert.equal(s.manualOrderActive, true);
+  assert.deepEqual(s.manualOrder, [people[2].id]);
   assert.notEqual(s.solverPlan?.source, 'manual');
   assert.equal(s.reservedNext?.byStaff, true);
   s.forceReplan();
   assert.equal(s.reservedNext, null);
+  assert.equal(s.manualOrderActive, false);
   assert.match(s.log.at(-1).msg, /déplacements manuels sont abandonnés/);
 });
 
@@ -1091,6 +1094,8 @@ const closingTimeOf = view => view.closing.at;
 function closingCase(f, { catalogSec, tempo = null, closingInSec }) {
   const kf = [];
   f.sched.opts.defaultSlotSec = 300;
+  // Écart entre deux titres du bar (la démo enchaîne sans écart).
+  f.sched.opts.defaultSongGapSec = 10;
   singers(f, ['Ana', 'Bea']);
   const onStage = f.sched.select(); f.sched.commit(onStage);
   const next = f.sched.select(); f.sched.commit(next);
@@ -1117,9 +1122,11 @@ test('fermeture : une durée du catalogue plus longue que le passage moyen fait 
 
 // Relecture du 12 octobre : titre en cours au-delà de sa durée du catalogue
 // (30 s, sur scène depuis 60 s) : la scène se libère au plus tôt maintenant,
-// jamais dans le passé.
+// jamais dans le passé, plus l'écart entre deux titres (10 s) : la moitié du
+// titre suivant finirait dans 160 s (130 s si la scène s'était libérée il y a
+// 30 s).
 test('fermeture : titre en cours qui dépasse sa durée du catalogue, la scène se libère au plus tôt maintenant', () => {
-  for (const [closingInSec, removed] of [[165, true], [200, false]]) {
+  for (const [closingInSec, removed] of [[155, true], [200, false]]) {
     const { kf } = closingCase(harness(), { catalogSec: 30, closingInSec });
     assert.equal(kf.some(call => call[0] === 'remove' && call[1] === 6), removed, `fermeture dans ${closingInSec} s`);
   }

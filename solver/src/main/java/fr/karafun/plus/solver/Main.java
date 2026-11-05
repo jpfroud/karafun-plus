@@ -178,6 +178,13 @@ public final class Main {
                 rotation(input), input.path("interleaveArrivals").asBoolean(true));
         // Absent chez un ancien client : la taille d'une table est alors ses chanteurs prêts.
         plan.setGroupSizes(doubles(input.path("groupSizes"), 0, 1000));
+        // Rang du début d'attente de chaque auteur (rotation.js#_waitSince : fin de son
+        // dernier passage ou heure de sa demande, la plus tardive). Absent chez un ancien
+        // client : ni premier ajouté premier servi pour les premiers passages, ni plus
+        // ancienne attente pour départager les retours.
+        plan.setAddedOrder(integers(input.path("addedOrder")));
+        // Absent chez un ancien client : le cycle des premiers passages part vide.
+        plan.setFirstCycle(new HashSet<>(strings(input.path("firstCycle"))));
         SolverFactory<QueuePlan> factory = factoryFor(budgetMs, randomSeed);
         SolutionManager<QueuePlan, HardMediumSoftScore> manager = SolutionManager.create(factory);
         HardMediumSoftScore seedScore = manager.update(plan);

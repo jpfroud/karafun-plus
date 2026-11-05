@@ -1016,8 +1016,10 @@ test('titre parti vers KaraFun vu par le téléphone : raison quand il ne se rè
   const link = kcsBridge(f);
   const tb = openTable(f, '1');
   const lea = singer(f, tb, 'Léa');
-  const tom = singer(f, tb, 'Tom', 201);
+  const tom = singer(f, tb, 'Tom');
   const duo = f.sched.inviteDuet(lea.person, tom.person.id, { songId: 102, title: 'Duo', artist: 'Artiste' });
+  // Titre de Tom ajouté après le duo : premiers passages dans l'ordre d'ajout.
+  f.sched.chooseSong(tom.person, { songId: 201, title: 'Titre 201', artist: 'Artiste' });
   assert.equal(lea.person.song.entryId, duo.entryId);
   const tr = sendNext(f, 'q-1');
   assert.deepEqual(tr.sel.ids, [lea.person.id, tom.person.id]);

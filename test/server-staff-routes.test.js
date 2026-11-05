@@ -175,6 +175,25 @@ test('priorité avec des titres déjà chargés dans KaraFun : première place l
     { message: 'Ce titre est déjà le prochain passage libre. 1 titre est déjà chargé dans KaraFun devant lui.' });
 });
 
+// Une priorité donnée à la personne encore sur scène (son titre suivant)
+// était remplacée au balayage suivant quand « Je suis là » est obligatoire :
+// quelqu'un d'autre était annoncé et passait devant.
+test('priorité pour la personne sur scène : elle reste la prochaine, « Je suis là » ne vise personne d’autre', async () => {
+  const f = harness();
+  const [alice] = singers(f, ['Alice', 'Bruno', 'Chloé']);
+  f.sched.chooseSong(alice, { songId: 990, title: 'Encore Alice' }, 'append');
+  f.sched.opts.requirePresence = true;
+  f.sched.confirm(alice);
+  const live = sendNext(f, 11, { startedAt: Date.now() - 20000 });
+  assert.equal(live.sel.ids[0], alice.id);
+  f.setBridge(fakeBridge([{ queueId: 11, songId: live.sel.song.songId, title: live.sel.song.title, status: 'playing' }], 11));
+  await f.call('POST /api/staff/move', { personId: alice.id, toIndex: 0, priority: true });
+  assert.equal(f.sched.reservedNext?.personId, alice.id, 'la priorité tient pendant sa chanson');
+  assert.equal(f.sched.reservedNext?.byStaff, true);
+  assert.deepEqual(plain(f.staffState().presencePending), [], '« Je suis là » n’est demandé à personne d’autre');
+  assert.deepEqual(plain(order(f)), ['Alice', 'Bruno', 'Chloé']);
+});
+
 test('recalcul de la file : toutes les interventions du bar sont défaites d’un coup', async () => {
   const f = harness();
   const [alice, , chloe] = singers(f, ['Alice', 'Bruno', 'Chloé']);
@@ -196,7 +215,10 @@ test('optimisation forcée sans optimiseur : la règle locale reprend et les dé
   const result = plain(await f.call('POST /api/staff/queue-optimize'));
   assert.deepEqual(result, { ok: true, started: false,
     message: 'Optimisation indisponible : la file a été recalculée par la règle locale.' });
-  assert.equal(lastNote(f).msg, 'Le bar relance le calcul de la file ; les déplacements manuels sont abandonnés');
+  // Les gestes sont d'abord annulés comme par « Annuler tous les changements
+  // manuels » (relecture, passe 8), puis le calcul repart.
+  assert.deepEqual(f.sched.log.slice(-2).map(line => line.msg),
+    ['Le bar a annulé 1 changement manuel dans la file', 'Le bar relance le calcul de la file']);
   assert.equal(f.sched.manualChanges.length, 0);
   assert.deepEqual(plain(order(f)), ['Alice', 'Bruno', 'Chloé']);
   assert.equal(f.staffState().solver.plan, 'local');
@@ -582,13 +604,15 @@ test('réglages : valeurs enregistrées et visibles dans l’état du bar', asyn
   assert.equal(f.settings.baseUrl, null);
 });
 
-test('réglages de rotation : chaque mode est annoncé et les déplacements manuels tombent', async () => {
+test('réglages de rotation : chaque mode est annoncé et les déplacements manuels tiennent', async () => {
   const f = harness();
   const [, , chloe] = singers(f, ['Alice', 'Bruno', 'Chloé']);
   await f.call('POST /api/staff/move', { personId: chloe.id, toIndex: 0, priority: true });
   await f.call('POST /api/staff/settings', { tableRotation: true, weightedTables: false });
   assert.equal(lastNote(f).msg, 'Rotation : tables à tour de rôle');
-  assert.equal(f.sched.manualChanges.length, 0, 'l’intervention du bar n’est plus annulable');
+  // Le geste du bar passe avant le calcul, quel que soit le mode.
+  assert.equal(f.sched.manualChanges.length, 1, 'l’intervention du bar reste annulable');
+  assert.equal(plain(order(f))[0], 'Chloé', 'la priorité reste la prochaine');
   assert.equal(f.staffState().settings.tableRotation, true);
   await f.call('POST /api/staff/settings', { weightedTables: true });
   assert.equal(lastNote(f).msg, 'Rotation : compromis, grandes tables un peu plus tôt dans le tour');
@@ -747,21 +771,28 @@ test('état du bar : titre en double et « Je suis là » manqués signalés sur
   assert.ok(!pub.some(line => 'presenceSkips' in line || 'repeat' in line));
 });
 
-test('état du bar : une intervention devient non annulable quand KaraFun change', async () => {
+// Retours du 23 octobre : « La file a changé depuis cette intervention »
+// refusait l'annulation après n'importe quel changement de la file.
+test('état du bar : une intervention reste annulable quand KaraFun change, sans toucher à KaraFun', async () => {
   const f = harness();
   const [, , chloe] = singers(f, ['Alice', 'Bruno', 'Chloé']);
   const bridge = fakeBridge([]);
   f.setBridge(bridge);
   await f.call('POST /api/staff/move', { personId: chloe.id, toIndex: 0, priority: true });
   assert.equal(f.staffState().manualChanges[0].canUndo, true);
+  const placed = f.staffState().queue.find(line => line.source === 'helper' && line.name === 'Chloé');
+  assert.equal(placed.placed, true, 'la page du bar montre la ligne placée');
+  assert.ok(!f.publicState(null, null).queue.some(line => 'placed' in line), 'repère réservé au bar');
   bridge.queue.push({ queueId: 71, songId: 3, title: 'Ajout natif', singer: 'Zoé' });
   const [change] = plain(f.staffState().manualChanges);
-  assert.equal(change.canUndo, false);
-  assert.equal(change.unavailableReason, 'La file a changé depuis cette intervention.');
-  assert.equal(f.staffState().priorityUndo, null);
-  await assert.rejects(f.call('POST /api/staff/manual-change-undo', { id: change.id }),
-    { message: 'La file a changé depuis cette intervention ; elle ne peut plus être annulée sans déplacer d’autres titres.' });
+  assert.equal(change.canUndo, true);
+  assert.equal(change.unavailableReason, null);
+  assert.deepEqual(plain(f.staffState().priorityUndo), { available: true, name: 'Chloé' });
+  await f.call('POST /api/staff/manual-change-undo', { id: change.id });
   assert.equal(f.sched.manualChanges.length, 0);
+  assert.equal(f.sched.reservedNext?.byStaff, undefined, 'la priorité est rendue au calcul');
+  assert.deepEqual(plain(order(f)), ['Alice', 'Bruno', 'Chloé']);
+  assert.deepEqual(bridge.calls, [], 'KaraFun ne reçoit aucune commande');
 });
 
 // ---------------------------------------------------------------- Spotify
@@ -1082,6 +1113,52 @@ test('duos uniquement : le blocage vise le duo nommé, pas un autre duo de la pe
   assert.equal(other.duet ?? null, null, 'duo d’une autre table quitté');
   await assert.rejects(f.call('POST /api/table/duet/leave', { ...as(ben), ownerId: ana.id, entryId: kept.entryId }),
     error => error.code === 'DUO_ONLY', 'duo de sa table : refusé');
+});
+
+// Regression: relecture (passe 6) — en « Duos uniquement », un duo ouvert
+// sans volontaire attend hors de la file, et les titres suivants de son
+// auteur avec lui (_openHeld) : un duo accepté avec une personne de sa table
+// n'apparaissait nulle part sur la page du bar, qui ne pouvait ni le retirer
+// ni le faire passer. L'état du bar donne ces titres (`waiting`) sur la ligne
+// du duo ouvert ; « Retirer » (remove-many) enlève l'un ou l'autre, et le
+// titre suivant reprend la place de son auteur dans la file.
+test('duos uniquement : duo ouvert retenu, titres de son auteur qui attendent derrière lui listés pour le bar et retirables', async () => {
+  const f = harness();
+  await f.call('POST /api/staff/settings', { duoOnly: true });
+  const zoe = f.sched.join({ tableId: '1', name: 'Zoé', headcount: 2 });
+  const ines = f.sched.join({ tableId: '1', name: 'Inès', headcount: 2 });
+  const gil = f.sched.join({ tableId: '2', name: 'Gil', headcount: 1 });
+  f.sched.chooseSong(gil, { songId: 4200, title: 'Titre Gil' });
+  const open = f.sched.openDuet(zoe, { song: { songId: 4201, title: 'Valse', artist: 'Strauss' } });
+  const tango = f.sched.inviteDuet(zoe, ines.id, { songId: 4202, title: 'Tango', artist: 'Piazzolla' });
+  const rock = f.sched.inviteDuet(zoe, gil.id, { songId: 4203, title: 'Rock', artist: 'Groupe' });
+  assert.equal(tango.duet?.state, 'accepted', 'même table : duo accepté d’office');
+  assert.equal(rock.duet?.state, 'pending', 'autre table : invitation en attente');
+  let state = plain(f.staffState());
+  assert.deepEqual(state.queue.map(line => line.name), ['Gil'], 'Zoé, son duo avec Inès et son invitation hors de la file');
+  let row = state.openDuets.find(item => item.entryId === open.entryId);
+  assert.equal(row.held, true);
+  assert.deepEqual(row.waiting, [
+    { entryId: tango.entryId, title: 'Tango', artist: 'Piazzolla', duo: 'accepted', partnerName: 'Inès' },
+    { entryId: rock.entryId, title: 'Rock', artist: 'Groupe', duo: 'pending', partnerName: 'Gil' }]);
+  // Le bar retire un titre en attente : les autres restent derrière le duo ouvert.
+  await f.call('POST /api/staff/remove-many', { items: [{ personId: zoe.id, entryId: rock.entryId }] });
+  row = plain(f.staffState()).openDuets.find(item => item.entryId === open.entryId);
+  assert.deepEqual(row.waiting.map(item => item.title), ['Tango']);
+  // Puis le duo ouvert : « Tango » reprend la place de Zoé dans la file, où
+  // « Priorité » et les déplacements s'appliquent.
+  await f.call('POST /api/staff/remove-many', { items: [{ personId: zoe.id, entryId: open.entryId }] });
+  state = plain(f.staffState());
+  assert.deepEqual(state.openDuets, []);
+  assert.deepEqual(state.queue.map(line => line.name).sort(), ['Gil', 'Zoé & Inès']);
+  await f.call('POST /api/staff/move', { personId: zoe.id, toIndex: 0, priority: true });
+  assert.deepEqual(order(f), ['Zoé & Inès', 'Gil'], 'priorité donnée au titre suivant');
+  // Hors « Duos uniquement », un duo ouvert passe comme un solo : rien n'attend derrière lui.
+  await f.call('POST /api/staff/settings', { duoOnly: false });
+  const free = f.sched.openDuet(zoe, { song: { songId: 4204, title: 'Slow', artist: 'Groupe' } });
+  row = plain(f.staffState()).openDuets.find(item => item.entryId === free.entryId);
+  assert.equal(row.held, false);
+  assert.equal(row.waiting, undefined);
 });
 
 // Retours du 11 octobre : remettre le système prêt pour une nouvelle soirée

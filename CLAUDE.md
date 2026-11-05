@@ -5,3 +5,22 @@ gstack est obligatoire pour les changements de code : chaque demande commence pa
 Après toute modification de la file, des duos, des présences ou des tables, lancer `node test/run-offline.js` et consigner le résultat dans `RAPPORT-TEST.md`. Le vrai KaraFun ne doit pas servir aux essais destructifs si son code de télécommande actuel n'a pas été vérifié.
 
 Tout changement de la rotation ou des temps d'attente (choix du passage, tours, dettes, duos, présences, Timefold, statistiques d'attente) se juge sur une vraie soirée, avec un **bilan chiffré avant/après** donné à l'utilisateur à chaque fois : rejouer la dernière soirée exportée qu'il a fournie (sinon `test/fixtures/soiree-2026-10-15-anonyme.json`) avec l'ancien et le nouveau code, `node test/rejeu-soiree.js <export.json> --avant <commit de départ> --solveur` (Timefold, comme au bar), et lui présenter le tableau : attentes, attente sans monter sur scène, équilibre des passages, anomalies, personnes qui y perdent ou y gagnent. Un changement qui déséquilibre les passages (indice de Jain en baisse, des gens qui passent plus que d'autres, quelqu'un qui perd un passage ou attend nettement plus) n'est pas bon, sauf accord explicite de l'utilisateur. Détails dans `AGENTS.md`.
+
+## Skill routing
+
+When the user's request matches an available skill, invoke it via the Skill tool. Route only to skills in the session's available-skills list; answer directly for quick questions or small scoped edits.
+
+Key routing rules:
+- Product ideas/brainstorming → invoke /office-hours
+- Strategy/scope → invoke /plan-ceo-review
+- Architecture → invoke /plan-eng-review
+- Design system/plan review → invoke /design-consultation or /plan-design-review
+- Full review pipeline → invoke /autoplan
+- Bugs/errors → invoke /investigate, unless one read-only check confirms the cause and a narrow fix (then fix it and run the focused test)
+- QA/testing site behavior → invoke /qa or /qa-only
+- Code review/diff check → invoke /review
+- Visual polish → invoke /design-review
+- Ship/deploy/PR → invoke /ship or /land-and-deploy
+- Save progress → invoke /context-save
+- Resume context → invoke /context-restore
+- Author a backlog-ready spec/issue → invoke /spec

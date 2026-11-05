@@ -196,10 +196,15 @@ test('titre passé dont la personne chante en invitée juste devant : présence 
 
 // Relecture : le guide dit qu'un titre retiré faute de « Je suis là »
 // n'envoie pas la personne en fin de tour (son titre suivant est annoncé
-// aussitôt, avec une nouvelle demande), que « Toujours là » ferme seulement
-// l'alerte, et que « Marquer parti » retire ses titres et arrête ces annonces.
-test('titre retiré faute de présence en cours de soirée : suivant annoncé aussitôt, « Toujours là » ne confirme rien, « Marquer parti » arrête', () => {
-  const { s, people, sing } = evening();
+// aussitôt, avec une nouvelle demande ; si elle n'a encore jamais chanté,
+// après les premiers passages qui attendaient déjà), que « Toujours là »
+// ferme seulement l'alerte, et que « Marquer parti » retire ses titres et
+// arrête ces annonces. Relecture (passe 5) : Bruno et Chloé ont déjà chanté
+// dans le tour, Driss est le dernier premier passage, donc « juste après
+// Driss » était aussi la fin du tour ; Emma, premier passage demandé après
+// le retrait, montre qu'Alice n'y est pas renvoyée.
+test('titre retiré faute de présence en cours de soirée : pas renvoyée en fin de tour, suivant annoncé après les premiers passages qui attendaient déjà, « Toujours là » ne confirme rien, « Marquer parti » arrête', () => {
+  const { s, people, names, sing } = evening();
   const alice = people.Alice;
   const next = () => {
     const r = s.reservePresenceNext();
@@ -215,7 +220,17 @@ test('titre retiré faute de présence en cours de soirée : suivant annoncé au
   assert.equal(s.skipUnconfirmed(alice.id, 3).removed, true, 'troisième manque : titre retiré');
   assert.ok(s.appearanceSerial >= 2, 'des passages ont eu lieu entre-temps');
   assert.equal(s.songsOf(alice).length, 1);
+  // Son titre suivant ouvre une nouvelle attente : elle garde la priorité
+  // des premiers passages, derrière Driss, qui attendait avant elle (premier
+  // ajouté, premier servi, constat du 25 octobre), devant Emma, arrivée
+  // après le retrait, et avant tout retour.
+  const emma = s.join({ tableId: '5', name: 'Emma', headcount: 1 });
+  s.chooseSong(emma, song());
+  assert.equal(s.reservePresenceNext().ids[0], people.Driss.id, 'Driss attendait avant sa nouvelle attente');
+  assert.deepEqual(names(s.presenceView()).slice(0, 3), ['Driss', 'Alice', 'Emma']);
+  next();
   assert.equal(s.reservePresenceNext().ids[0], alice.id, 'pas renvoyée en fin de tour : nouvelle demande aussitôt');
+  assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Alice', 'Emma'], 'Emma, arrivée après le retrait, passe après elle');
   const view = JSON.stringify(s.presenceView().map(v => v.ids));
   const state = JSON.stringify([s.Q, s.reservedNext.personId, s.manualContextFingerprint(), s.solverContextFingerprint()]);
   assert.equal(s.dismissMaybeGone(alice),
@@ -231,6 +246,7 @@ test('titre retiré faute de présence en cours de soirée : suivant annoncé au
   assert.equal(s.reservedNext, null);
   const after = s.reservePresenceNext();
   assert.ok(after && after.ids[0] !== alice.id, 'et arrête les annonces : la suite part sans elle');
+  assert.equal(after.ids[0], emma.id);
 });
 
 // Relecture : avec un seul titre, le retrait faute de « Je suis là » vide sa
@@ -259,8 +275,10 @@ test('« Toujours là » : prochain passage de la file, duo d’invitée, prése
   const zoe = s.join({ tableId: '1', name: 'Zoé', headcount: 3 });
   const alice = s.join({ tableId: '1', name: 'Alice', headcount: 3 });
   const olga = s.join({ tableId: '1', name: 'Olga', headcount: 3 });
-  s.chooseSong(alice, song());
+  // Le duo d'Olga est ajouté avant le titre d'Alice : premiers passages dans
+  // l'ordre d'ajout, il passe d'abord.
   s.inviteDuet(olga, alice.id, song()); // même table : duo accepté d'office
+  s.chooseSong(alice, song());
   s.chooseSong(zoe, song()); s.chooseSong(zoe, song(), 'append');
   s.inviteDuet(zoe, alice.id, song());
   alice.maybeGone = { at: Date.now(), title: 'x', skips: 3 };
@@ -279,4 +297,65 @@ test('« Toujours là » : prochain passage de la file, duo d’invitée, prése
   assert.equal(s.presenceFollowUp(alice), `${duo} Présence déjà confirmée.${own}`, 'la réponse de son partenaire suffit');
   s.opts.requirePresence = false;
   assert.equal(s.presenceFollowUp(alice), `${duo}${own}`);
+});
+
+// Relecture (passe 7) : « Priorité » du bar sur un titre passé faute de « Je
+// suis là ». Le geste du bar passe avant : la personne était encore retenue
+// comme un titre passé (choix du passage, prévision) alors que sa priorité
+// bloquait tout autre envoi ; la demande « Je suis là » allait au suivant,
+// elle ne pouvait plus confirmer et rien ne partait.
+test('« Priorité » sur un titre passé faute de « Je suis là » : annoncé, la demande lui revient, il part', () => {
+  const { s, people, names, sing } = evening();
+  s.reservePresenceNext();
+  s.skipUnconfirmed(people.Alice.id, 3);
+  assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Bruno', 'Alice']);
+  s.staffMove(people.Alice.id, 0);
+  assert.equal(s.reservedNext?.personId, people.Alice.id);
+  assert.equal(s.reservedNext.byStaff, true);
+  assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Alice', 'Bruno'], 'Alice d’abord, comme le geste');
+  assert.equal(s.reservePresenceNext().ids[0], people.Alice.id, 'la demande « Je suis là » va à Alice');
+  s.confirm(people.Bruno);
+  assert.equal(s.select(), null, 'Alice n’a pas confirmé : Bruno ne part pas devant la priorité');
+  s.confirm(people.Alice);
+  const sel = s.select();
+  assert.deepEqual(sel.ids, [people.Alice.id], 'Alice part');
+  sing(sel);
+  assert.equal(people.Alice.presenceRetry, false);
+  assert.equal(s.reservedNext, null);
+});
+
+test('« Priorité » sur un titre passé faute de « Je suis là », toujours sans réponse : la priorité prend fin', () => {
+  const { s, people, names } = evening();
+  s.reservePresenceNext();
+  s.skipUnconfirmed(people.Alice.id, 3);
+  s.staffMove(people.Alice.id, 0);
+  const skip = s.skipUnconfirmed(people.Alice.id, 3);
+  assert.deepEqual([skip.removed, skip.skips], [false, 2]);
+  assert.equal(s.reservedNext, null, 'sans réponse, la priorité prend fin');
+  assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Bruno', 'Alice'], 'Alice laisse passer le suivant');
+  assert.equal(s.reservePresenceNext().ids[0], people.Bruno.id);
+});
+
+// Relecture (passe 9, cellule sans test) : la « Priorité » donnée à un titre
+// passé faute de « Je suis là », puis annulée (exactement ou après un autre
+// changement) : l'annonce d'avant revient et le titre laisse de nouveau
+// passer le suivant ; la demande « Je suis là » repart vers lui.
+test('« Priorité » annulée sur un titre passé faute de « Je suis là » : il laisse de nouveau passer le suivant', () => {
+  const NATIVE = 'a'.repeat(64);
+  for (const mode of ['exact', 'recalculée']) {
+    const { s, people, names } = evening();
+    s.reservePresenceNext();
+    s.skipUnconfirmed(people.Alice.id, 3);
+    const visible = s.presenceView().filter(v => !v.future);
+    const before = s.manualOverrideState({ deferrals: true });
+    s.staffMove(people.Alice.id, 0);
+    s.recordManualChange({ kind: 'priority', personId: people.Alice.id, name: 'Alice',
+      from: visible.findIndex(v => v.ids[0] === people.Alice.id) + 1, to: 1, before, native: NATIVE });
+    assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Alice', 'Bruno'], `${mode} : la priorité tient`);
+    if (mode === 'recalculée') s.chooseSong(people.Bruno, song(), 'append');
+    s.undoLastManualChange(null, NATIVE);
+    assert.equal(s.reservedNext?.byStaff, undefined, `${mode} : plus de priorité`);
+    assert.deepEqual(names(s.presenceView()).slice(0, 2), ['Bruno', 'Alice'], `${mode} : Alice laisse passer le suivant`);
+    assert.equal(s.reservePresenceNext().ids[0], people.Bruno.id, `${mode} : la demande va à Bruno`);
+  }
 });

@@ -95,30 +95,54 @@ for (const [mode, options] of modes) {
   });
 }
 
-test('essai au bar (chacun son tour) : la grande table ne garde plus le micro', () => {
-  let same = 0, longest = 0, firstRound = 0, firstRoundLongest = 0;
+// Constats du gérant des 25 et 26 octobre : en « Chacun son tour », le tour
+// des solos, tous des premiers passages, fait tourner les tables (premier de
+// chaque table : un cycle où chaque table fait passer une personne, les tables
+// dans l'ordre d'ajout de leur candidat, dans une table ses personnes dans
+// l'ordre d'ajout). Tout le monde a ajouté avant le premier passage : le
+// cycle k fait passer le k-ième ajouté de chaque table. La grande table n'y
+// reprend le micro qu'en fin de tour, quand il ne reste qu'elle (premier
+// ajouté, premier servi pur : 143 reprises sur ces 25 soirées). Elle garde
+// alors le micro tant que seuls ses passages sont permis : ses derniers
+// premiers passages, puis des duos où elle chante, qui présentent encore une
+// personne ou parce qu'il ne reste qu'eux (graine 3 : A10 A4 A3 A5 A8, puis
+// C5&A9 A10&B1 A3&C3 A5&A10, neuf passages de suite). Les modes de tables
+// gardent l'alternance dès le premier tour.
+test('essai au bar (chacun son tour) : premiers passages par cycle des tables, séries de la grande table bornées sur toute la soirée', () => {
+  let rest = 0, longest = 0, firstRuns = 0;
   for (let seed = 1; seed <= 25; seed++) {
     const s = barEvening({}, seed);
+    const rank = new Map();
+    const cycles = [...s.people.values()].sort((a, b) => a.readySince - b.readySince)
+      .map(p => { const k = rank.get(p.group) || 0; rank.set(p.group, k + 1); return { p, k }; })
+      .sort((a, b) => a.k - b.k || a.p.readySince - b.p.readySince).map(({ p }) => p);
     const { played } = playAll(s);
-    const runs = tableRuns(played);
-    same += runs.same;
-    longest = Math.max(longest, runs.longest);
-    // Tour des 20 solos : 10 chanteurs de A pour 10 autres, une alternance
-    // parfaite est possible.
+    assert.deepEqual(played.slice(0, 20).map(item => item.ids[0]), cycles.map(p => p.id),
+      `graine ${seed} : le tour des solos suit le cycle des tables`);
     const round = tableRuns(played.slice(0, 20));
-    firstRound += round.same;
-    firstRoundLongest = Math.max(firstRoundLongest, round.longest);
+    assert.equal(round.same, tableRuns(cycles.map(p => ({ groups: [p.group] }))).same,
+      `graine ${seed} : pas d'autre reprise de table que celles du cycle`);
+    firstRuns += round.same;
+    rest += tableRuns(played).same - round.same;
+    longest = Math.max(longest, tableRuns(played).longest);
   }
-  // Mesures de l'ancien ordonnanceur sur ces 25 soirées : 100 reprises de
-  // table dans le tour des solos (séries de 5) et 165 sur toute la soirée
-  // (séries de 9), identiques en mode personnes et en rotation des tables.
-  assert.ok(firstRound <= 15, `tour des solos : ${firstRound} reprises de table sur 25 soirées`);
-  assert.ok(firstRoundLongest <= 2, `tour des solos : série la plus longue ${firstRoundLongest}`);
-  assert.ok(same <= 90, `soirée complète, duos compris : ${same} reprises`);
-  assert.ok(longest <= 6, `série la plus longue (duos entre tables en fin de liste compris) : ${longest}`);
+  // Tour des solos : la table de 10 enchaîne ses derniers chanteurs quand il
+  // ne reste qu'elle : 100 reprises sur ces 25 soirées, quatre par soirée.
+  assert.ok(firstRuns <= 100, `tour des solos : ${firstRuns} reprises`);
+  // Mesures de l'ancien ordonnanceur sur la suite de ces 25 soirées : 69
+  // reprises (63 avec l'ordre d'ajout), séries de 6 au plus.
+  assert.ok(rest <= 75, `après le tour des solos, duos compris : ${rest} reprises`);
+  // Série la plus longue sur toute la soirée : avec le cycle des tables, la
+  // fin du tour des solos, quand il ne reste que les passages de la grande
+  // table (ses premiers passages, puis des duos où elle chante) : 9 au plus
+  // sur ces 25 soirées (6 avant le cycle des tables).
+  assert.ok(longest <= 9, `série la plus longue de la soirée (fin du tour des solos et duos de la grande table compris) : ${longest}`);
 });
 
-test('les trois modes donnent réellement des parts différentes aux tables', () => {
+// Premiers passages : « Chacun son tour » fait tourner les tables comme
+// « Tables à tour de rôle » (cycle des tables, décision du gérant du
+// 26 octobre) ; « Compromis » donne à la grande table une part plus grande.
+test('les modes donnent des parts différentes aux tables ; chacun son tour fait tourner les tables aux premiers passages', () => {
   const shareOfA = options => {
     let a = 0, total = 0;
     for (let seed = 1; seed <= 10; seed++) {
@@ -132,9 +156,9 @@ test('les trois modes donnent réellement des parts différentes aux tables', ()
   };
   const people = shareOfA({}), tables = shareOfA({ tableRotation: true }),
     compromise = shareOfA({ tableRotation: true, weightedTables: true });
-  assert.ok(people > compromise && compromise > tables,
+  assert.ok(compromise > tables && compromise > people,
     `part de la table de 10 dans les 10 premiers passages : chacun ${people}, compromis ${compromise}, tables ${tables}`);
-  assert.ok(people >= 0.45, 'chacun son tour : la table de 10 a environ la moitié des passages');
+  assert.ok(people <= 0.35, `chacun son tour : un premier de chaque table par cycle (${people})`);
   assert.ok(tables <= 0.35, 'tables à tour de rôle : parts égales, les petites tables passent tôt');
 });
 
@@ -231,18 +255,25 @@ test('bonus et malus : fréquence réglable, premiers passages protégés', () =
   assert.throws(() => s.setTableBonus('inconnue', 1), /Table inconnue/);
 });
 
+// En « Chacun son tour », les premiers passages suivent l'ordre d'ajout
+// (constat du gérant du 25 octobre) : le bonus n'y change rien, il joue dès le
+// tour suivant. Les tables ajoutent leurs titres mêlées (A1, B1, C1, A2…).
 test('bonus de table : la table favorisée passe plus tôt dans le tour, sans reprendre le micro', () => {
   const build = bonus => {
     const s = new Scheduler();
+    for (const tableId of ['A', 'B', 'C']) s.setHeadcount(tableId, 4);
+    const people = [];
+    for (let i = 0; i < 4; i++) for (const tableId of ['A', 'B', 'C']) people.push(s.join({ tableId, name: `${tableId}${i + 1}` }));
     let n = 1;
-    for (const [tableId, count] of [['A', 4], ['B', 4], ['C', 4]]) {
-      s.setHeadcount(tableId, count);
-      for (let i = 0; i < count; i++) s.chooseSong(s.join({ tableId, name: `${tableId}${i + 1}` }), song(n++));
-    }
+    for (const p of people) s.chooseSong(p, song(n++));
+    for (const p of people) s.chooseSong(p, song(n++), 'append');
     if (bonus) s.setTableBonus('C', bonus);
     return s;
   };
-  const rank = s => s.readyView().map((item, index) => item.tableId === 'C' ? index : null).filter(x => x !== null);
+  const names = s => s.readyView().map(item => item.name);
+  const added = names(build(0)).slice(0, 12);
+  for (const bonus of [3, -3]) assert.deepEqual(names(build(bonus)).slice(0, 12), added, `bonus ${bonus} : premier tour`);
+  const rank = s => s.readyView().slice(12).map((item, index) => item.tableId === 'C' ? index : null).filter(x => x !== null);
   const neutral = rank(build(0)), favoured = rank(build(3)), penalised = rank(build(-3));
   const mean = list => list.reduce((a, b) => a + b, 0) / list.length;
   assert.ok(mean(favoured) < mean(neutral), `bonus : places ${favoured} contre ${neutral}`);
@@ -357,6 +388,27 @@ function twoTablesAndSolo() {
   return { s, more: () => song(1000 + n++) };
 }
 
+// Même soirée, mais la personne seule ajoute ses titres après les deux
+// premiers passages : le premier tour reste A1 B1 A2 B2 S A3 B3 A4 B4 (cycle
+// des tables : S rejoint le deuxième cycle, après A2 et B2). Joue `count`
+// passages en tout.
+function twoTablesAndLateSolo(count) {
+  const s = new Scheduler();
+  s.setHeadcount('A', 6);
+  s.setHeadcount('B', 6);
+  const solo = s.join({ tableId: 'Comptoir', name: 'S' });
+  const people = ['A1', 'B1', 'A2', 'B2', 'A3', 'B3', 'A4', 'B4'].map(name => s.join({ tableId: name[0], name }));
+  let n = 1;
+  for (const p of people) for (let k = 0; k < 2; k++) s.chooseSong(p, song(n++), 'append');
+  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel.names.join(' & '); };
+  const played = [];
+  for (let i = 0; i < count; i++) {
+    if (i === 2) for (let k = 0; k < 2; k++) s.chooseSong(solo, song(n++), 'append');
+    played.push(play());
+  }
+  return { s, play, played, more: () => song(1000 + n++) };
+}
+
 // Pour chaque passage, personnes vues deux fois depuis le passage précédent
 // du même chanteur.
 function doublesDuringWait(played) {
@@ -412,19 +464,20 @@ test('chacun rajoute un titre après avoir chanté : personne ne voit quelqu’u
 
 test('un plan adopté ne contourne pas la règle de patience', () => {
   const { s } = twoTablesAndSolo();
-  for (let i = 0; i < 12; i++) {
+  // Premier tour : A1 B1 S A2 B2 A3 B3 A4 B4 (cycle des tables), puis A1.
+  for (let i = 0; i < 10; i++) {
     const selected = s.select();
     s.commit(selected); s.songEnded(selected.ids);
   }
   const view = s.readyView();
-  assert.equal(view[0].name, 'B2', view.map(item => item.name).join(' '));
+  assert.equal(view[0].name, 'B1', view.map(item => item.name).join(' '));
   const solo = view.find(item => item.name === 'S');
   // Le plan met la personne seule en tête : elle chanterait une deuxième fois
-  // pendant l'attente de B2, passé avant elle au premier tour.
+  // pendant l'attente de B1, passé avant elle au premier tour.
   s.solverPlan = { version: s.version, ranks: new Map([
     [solo.entryId, 0], ...view.filter(item => item !== solo).map((item, index) => [item.entryId, index + 1]),
   ]) };
-  assert.deepEqual(s.select().names, ['B2']);
+  assert.deepEqual(s.select().names, ['B1']);
 });
 
 // Le bar retire le dernier titre d'une personne puis en ajoute un autre,
@@ -633,8 +686,8 @@ for (const [mode, opts] of [['tables à tour de rôle', { tableRotation: true }]
 // Un malus n'est pas protégé par la patience : la personne seule, passée
 // pendant l'attente de B2, peut repasser devant elle.
 test('malus : la personne n’est pas protégée par la patience', () => {
-  const { s } = twoTablesAndSolo();
-  for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
+  const { s, played } = twoTablesAndLateSolo(9);
+  assert.deepEqual(played, ['A1', 'B1', 'A2', 'B2', 'S', 'A3', 'B3', 'A4', 'B4']);
   const order = () => s.readyView().map(x => x.name);
   assert.ok(order().indexOf('B2') < order().indexOf('S'), order().join(' '));
   const b2 = [...s.people.values()].find(p => p.name === 'B2');
@@ -645,9 +698,7 @@ test('malus : la personne n’est pas protégée par la patience', () => {
 // Retrait du dernier titre, un passage, puis ajout : ce n'est pas un échange,
 // l'attente recommence et la personne seule passe devant.
 test('retrait du dernier titre, un passage, puis ajout : l’attente recommence', () => {
-  const { s, more } = twoTablesAndSolo();
-  const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); };
-  for (let i = 0; i < 9; i++) play();
+  const { s, more, play } = twoTablesAndLateSolo(9);
   const b2 = [...s.people.values()].find(p => p.name === 'B2');
   const swapped = s.readyView().map(x => x.name);
   assert.ok(swapped.indexOf('B2') < swapped.indexOf('S'), swapped.join(' '));
@@ -664,7 +715,8 @@ test('duo : ses propres chanteurs ne comptent pas comme doublés', () => {
   for (const t of ['A', 'B', 'C']) s.setHeadcount(t, 6);
   const [b0, c1, c2, b3] = [['B', 'B0'], ['C', 'C1'], ['C', 'C2'], ['B', 'B3']].map(([tableId, name]) => s.join({ tableId, name }));
   let n = 1;
-  for (const p of [b0, c1, c2, b3]) s.chooseSong(p, song(n++));
+  // Ordre d'ajout = ordre des premiers passages (« Chacun son tour »).
+  for (const p of [b0, c2, b3, c1]) s.chooseSong(p, song(n++));
   const play = () => { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); return sel.names; };
   assert.deepEqual(play(), ['B0']);
   s.inviteDuet(b0, b3.id, song(n++));
@@ -802,9 +854,20 @@ test('patience et compromis : pas de calcul inutile pendant une prévision', () 
 
 // Relecture : une personne avec bonus peut chanter plus souvent, sans
 // enchaîner deux de ses titres tant qu'un autre passage du tour est possible.
-// (En fin de tour, il peut ne rester qu'elle : invitée d'un duo puis son
-// propre titre, ou ses deux passages du tour, comme avant la patience.)
+// En fin de tour, il peut ne rester qu'elle : ses deux passages du tour, ou
+// invitée d'un duo puis son propre titre. Montage d'origine (Chloé ajoute en
+// dernier) rétabli à la relecture de la passe 4 : le cycle des tables la fait
+// passer la dernière du premier tour, et son passage en plus de ce tour ne
+// peut venir qu'après (Alice, Sam et Bruno y ont déjà chanté). Une règle qui
+// avançait le titre suivant d'un autre a été écartée : elle faisait perdre
+// des titres au bonus et creusait les écarts dans les petits groupes. Ordre
+// figé pour voir toute dérive.
 test('bonus : pas deux titres de suite de la même personne tant qu’un autre passage du tour est possible', () => {
+  const expected = {
+    1: 'Alice Sam Bruno Chloé Chloé Alice Bruno Sam&Chloé Alice Bruno Chloé Alice Bruno',
+    2: 'Alice Sam Bruno Chloé Chloé Alice Bruno Sam&Chloé Alice Bruno Chloé Alice Bruno',
+    3: 'Alice Sam Bruno Chloé Chloé Alice Bruno Sam&Chloé Chloé Alice Bruno Alice Bruno',
+  };
   for (const level of [1, 2, 3]) {
     const s = new Scheduler();
     s.setHeadcount('1', 5);
@@ -827,11 +890,287 @@ test('bonus : pas deux titres de suite de la même personne tant qu’un autre p
       s.commit(sel); s.songEnded(sel.ids);
       played.push(sel);
     }
-    const names = played.map(sel => sel.names.join(' & '));
-    played.forEach((sel, i) => {
-      if (i) assert.notEqual(sel.ids[0], played[i - 1].ids[0], `bonus ${level} : ${names.join(' ')}`);
-    });
+    assert.equal(played.map(sel => sel.names.join('&')).join(' '), expected[level], `bonus ${level}`);
   }
+});
+
+// Bonus étalé (soirée du 23 octobre, « le bonus ne fait rien ») : dix
+// chanteurs toujours prêts, tables A de 3, B de 3, C de 2 et deux solistes ;
+// le bonus est posé après le premier tour. `at` : rangs des passages de
+// chacun sur scène (titre ou invitée d'un duo), comptés après le bonus.
+function steadyTen(options, setup, passages = 230) {
+  const s = new Scheduler(options);
+  const people = {};
+  for (const [tableId, count] of [['A', 3], ['B', 3], ['C', 2], ['S1', 1], ['S2', 1]]) {
+    s.setHeadcount(tableId, count);
+    for (let i = 1; i <= count; i++) {
+      const name = count > 1 ? `${tableId}${i}` : tableId;
+      people[name] = s.join({ tableId, name });
+    }
+  }
+  let n = 1;
+  const refill = () => { for (const p of Object.values(people)) if (!s.songsOf(p).length) s.chooseSong(p, song(n++)); };
+  refill();
+  const at = new Map(Object.keys(people).map(name => [name, []]));
+  for (let i = 0; i < passages; i++) {
+    if (i === 10) setup(s, people);
+    const sel = s.select();
+    if (!sel) break;
+    s.commit(sel); s.songEnded(sel.ids);
+    if (i >= 10) for (const pid of sel.ids) at.get(s.people.get(pid).name).push(i);
+    refill();
+  }
+  return { s, people, at, more: () => song(n++) };
+}
+const gapsOf = list => list.slice(1).map((rank, i) => rank - list[i]);
+// Passages des chanteurs `names` rapportés à la moyenne des autres.
+const shareOf = (at, names) => {
+  const others = [...at.keys()].filter(name => !names.includes(name));
+  const mean = list => list.reduce((a, b) => a + b, 0) / list.length;
+  return mean(names.map(name => at.get(name).length)) / mean(others.map(name => at.get(name).length));
+};
+
+// Avant : +3 chantait deux fois à quatre chansons d'écart dès que
+// l'espacement le permettait, puis attendait sept chansons (dix personnes),
+// et bien plus avec des arrivées. Le total reste doublé ; le rythme devient
+// régulier : environ n/2 = 5 chansons entre deux passages.
+test('bonus étalé : +3 repasse environ toutes les 5 chansons sur 10 personnes, total doublé, trois modes', () => {
+  for (const [mode, options] of modes) {
+    for (const name of ['S1', 'A1']) {
+      const { at } = steadyTen(options, (s, p) => s.setPersonBonus(p[name].id, 3));
+      const gaps = gapsOf(at.get(name));
+      const label = `${mode}, ${name} +3 : écarts ${gaps.join(' ')}`;
+      assert.ok(Math.min(...gaps) >= 5, label);
+      assert.ok(Math.max(...gaps) <= 7, label);
+      const share = shareOf(at, [name]);
+      assert.ok(share >= 1.9 && share <= 2.1, `${label} ; part ×${share.toFixed(2)}`);
+    }
+  }
+});
+
+// Bonus de table : le poids vaut pour chaque personne de la table. +2 sur la
+// table C (deux personnes, ×1,5) : environ 10/1,5 ≈ 7 chansons entre deux
+// passages (avant : 6 puis 8) ; +3 sur la table A (trois personnes) déjà
+// régulier, inchangé.
+test('bonus étalé : bonus de table, passages réguliers et part gardée, trois modes', () => {
+  for (const [mode, options] of modes) {
+    const c = steadyTen(options, s => s.setTableBonus('C', 2));
+    for (const name of ['C1', 'C2']) {
+      const gaps = gapsOf(c.at.get(name));
+      assert.ok(Math.min(...gaps) >= 7 && Math.max(...gaps) <= 9, `${mode}, table C +2, ${name} : écarts ${gaps.join(' ')}`);
+    }
+    const shareC = shareOf(c.at, ['C1', 'C2']);
+    assert.ok(shareC >= 1.4 && shareC <= 1.6, `${mode}, table C +2 : part ×${shareC.toFixed(2)}`);
+    const a = steadyTen(options, s => s.setTableBonus('A', 3));
+    for (const name of ['A1', 'A2', 'A3']) {
+      const gaps = gapsOf(a.at.get(name));
+      assert.ok(Math.min(...gaps) >= 5, `${mode}, table A +3, ${name} : écarts ${gaps.join(' ')}`);
+    }
+    const shareA = shareOf(a.at, ['A1', 'A2', 'A3']);
+    assert.ok(shareA >= 1.85 && shareA <= 2.1, `${mode}, table A +3 : part ×${shareA.toFixed(2)}`);
+  }
+});
+
+// Malus : inchangé, il fait sauter des tours (rien ne le retient en plus).
+test('bonus étalé : un malus garde sa fréquence et saute des tours, trois modes', () => {
+  for (const [mode, options] of modes) {
+    for (const [level, low, high] of [[-3, 0.45, 0.56], [-1, 0.75, 0.9]]) {
+      const person = steadyTen(options, (s, p) => s.setPersonBonus(p.A1.id, level));
+      const share = shareOf(person.at, ['A1']);
+      assert.ok(share >= low && share <= high, `${mode}, A1 ${level} : part ×${share.toFixed(2)}`);
+      assert.ok(Math.min(...gapsOf(person.at.get('A1'))) >= 10, `${mode}, A1 ${level} : ${gapsOf(person.at.get('A1')).join(' ')}`);
+    }
+    const table = steadyTen(options, s => s.setTableBonus('A', -3));
+    const share = shareOf(table.at, ['A1', 'A2', 'A3']);
+    assert.ok(share >= 0.45 && share <= 0.56, `${mode}, table A -3 : part ×${share.toFixed(2)}`);
+  }
+});
+
+// Bonus retiré entre les deux passages du tour : la personne redevient une
+// chanteuse comme les autres, sans repasser aussitôt ni rester retenue.
+test('bonus étalé : bonus retiré en cours de tour, retour au rythme des autres', () => {
+  for (const name of ['S1', 'A1']) {
+    let removedAt = null;
+    const { at } = steadyTen({}, (s, p) => {
+      s.setPersonBonus(p[name].id, 3);
+      const commit = s.commit.bind(s);
+      s.commit = sel => {
+        commit(sel);
+        const pid = p[name].id;
+        if (removedAt === null && sel.ids.includes(pid) && s.appearanceSerial > 25 &&
+            (s.roundUse.get(pid) || 0) > 0 && !s.roundPeople.has(pid)) {
+          s.setPersonBonus(pid, 0);
+          removedAt = s.appearanceSerial - 1;
+        }
+      };
+    }, 90);
+    assert.ok(removedAt !== null, name);
+    const after = at.get(name).filter(rank => rank >= removedAt);
+    const gaps = gapsOf(after);
+    assert.ok(gaps.length >= 4 && Math.min(...gaps) >= 6, `${name} sans bonus depuis ${removedAt} : écarts ${gaps.join(' ')}`);
+    const later = list => list.filter(rank => rank > removedAt + 10).length;
+    const others = [...at.keys()].filter(other => other !== name).map(other => later(at.get(other)));
+    assert.ok(Math.abs(later(at.get(name)) - others.reduce((a, b) => a + b, 0) / others.length) <= 1,
+      `${name} : ${later(at.get(name))} passages contre ${others.join(',')}`);
+  }
+});
+
+// Duo avec une personne à bonus. Gus (sans bonus) invite Bea : un titre sur
+// deux (`every` 2) ou tous (`every` 1), à une autre table (invitation
+// acceptée) ou à la sienne (duo direct). `levels` : bonus de Bea et de Gus.
+// Rend les rangs de chacun sur scène (titre ou invitée). Fin de chaque
+// passage notée comme par le serveur (songEnded puis endStage) : un titre
+// redemandé ensuite compte de cette fin, pas d'une chanson encore en cours.
+function duoNight(options, { beaLevel = 0, gusLevel = 0, every = 2, sameTable = false, solos = 8, passages = 240 } = {}) {
+  const s = new Scheduler(options);
+  s.setHeadcount('T', sameTable ? 2 : 1);
+  const bea = s.join({ tableId: 'T', name: 'Bea' });
+  if (!sameTable) s.setHeadcount('G', 1);
+  const gus = s.join({ tableId: sameTable ? 'T' : 'G', name: 'Gus' });
+  const others = [];
+  for (let i = 1; i <= solos; i++) { s.setHeadcount(`S${i}`, 1); others.push(s.join({ tableId: `S${i}`, name: `X${i}` })); }
+  let n = 1, turn = 0;
+  const refill = () => {
+    for (const p of [bea, ...others]) if (!s.songsOf(p).length) s.chooseSong(p, song(n++));
+    if (s.songsOf(gus).length) return;
+    if (turn++ % every === every - 1) {
+      const duo = s.inviteDuet(gus, bea.id, song(n++));
+      if (duo.duet.state === 'pending') s.answerDuet(bea, true, duo.entryId);
+    } else s.chooseSong(gus, song(n++));
+  };
+  refill();
+  if (beaLevel) s.setPersonBonus(bea.id, beaLevel);
+  if (gusLevel) s.setPersonBonus(gus.id, gusLevel);
+  const at = new Map([['Bea', []], ['Gus', []], ...others.map(p => [p.name, []])]);
+  for (let i = 0; i < passages; i++) {
+    const sel = s.select();
+    if (!sel) break;
+    s.commit(sel); s.songEnded(sel.ids); s.endStage(sel);
+    for (const pid of sel.ids) at.get(s.people.get(pid).name).push(i);
+    refill();
+  }
+  return at;
+}
+
+// Relecture du bonus étalé : un bonus ne retient que les titres de la
+// personne. Invitée d'un duo, elle ne retarde pas la personne qui l'invite
+// (comme un malus) ; avant, le duo de Gus attendait le rythme étalé de Bea
+// (« Chacun son tour », 20 solistes : premier duo au rang 44 au lieu de 30 ;
+// 12 solistes : 3 passages de Gus au lieu de 4 avant la 60e chanson ;
+// « Tables à tour de rôle » : chaque passage 7 chansons plus tard). Les
+// passages en plus de Bea allongent chaque tour d'une chanson pour tout le
+// monde : Gus garde le rythme des solistes (même nombre de passages, écart
+// moyen au plus d'une demi-chanson de plus), sans retard de plus qu'eux.
+// Avant, à égalité d'attente, le propre titre de Bea passait devant son duo,
+// que l'espacement repoussait de trois chansons : un passage de moins.
+test('bonus étalé : l’invitée à bonus ne retarde pas la personne qui l’invite, trois modes', () => {
+  const meanGap = list => (list[list.length - 1] - list[0]) / (list.length - 1);
+  for (const [mode, options] of modes) {
+    for (const level of [3, 2]) {
+      const at = duoNight(options, { beaLevel: level, solos: 20, passages: 180 });
+      const gus = at.get('Gus');
+      const solos = [...at.keys()].filter(name => name.startsWith('X')).map(name => at.get(name));
+      const soloGap = solos.reduce((sum, list) => sum + meanGap(list), 0) / solos.length;
+      const label = `${mode}, Bea +${level} : Gus aux rangs ${gus.join(' ')} (écart moyen ${meanGap(gus).toFixed(1)}, solistes ${soloGap.toFixed(1)})`;
+      assert.ok(gus.length >= Math.min(...solos.map(list => list.length)), label);
+      assert.ok(meanGap(gus) <= soloGap + 0.5, label);
+    }
+    const gus = duoNight(options, { beaLevel: 3, solos: 12, passages: 61 }).get('Gus');
+    assert.ok(gus.length >= 4, `${mode}, 12 solistes : Gus aux rangs ${gus.join(' ')}`);
+  }
+});
+
+// Bea (+1 ou +2) invitée sur chaque titre de Gus : ses propres titres se
+// placent entre ses duos sans les serrer. Avant, retenu pour le rythme étalé,
+// son titre passait juste avant le duo de fin de tour (13 écarts de 2 ou 3
+// chansons avec +2 sur 240). Avec +3, seulement en « Chacun son tour » : dans
+// les modes par table, la table de Bea a plus de passages que sa part et les
+// serre déjà en fin de tour, avec ou sans étalement (écarts de 2, inchangés).
+test('bonus étalé : invitée à bonus sur chaque titre, l’espacement est gardé, trois modes', () => {
+  for (const [mode, options] of modes) {
+    for (const level of options.tableRotation ? [1, 2] : [1, 2, 3]) {
+      for (const sameTable of [false, true]) {
+        const at = duoNight(options, { beaLevel: level, every: 1, sameTable });
+        const gaps = gapsOf(at.get('Bea'));
+        const label = `${mode}, Bea +${level}${sameTable ? ', même table' : ''} : écarts ${gaps.join(' ')}`;
+        assert.ok(Math.min(...gaps) >= 4, label);
+        const solo = [...at.keys()].filter(name => name.startsWith('X')).map(name => at.get(name).length);
+        assert.ok(Math.max(...solo) - Math.min(...solo) <= 1, `${label} ; solistes ${solo.join(',')}`);
+        assert.ok(at.get('Gus').length >= Math.min(...solo) / 2, `${label} ; Gus ${at.get('Gus').length}, solistes ${solo.join(',')}`);
+      }
+    }
+  }
+});
+
+// Gus (+3) invite Bea (sans bonus) un titre sur deux, 20 solistes : Bea ne
+// chante pas plus que les autres (avant, en « Tables à tour de rôle », le duo
+// retenu en fin de tour laissait passer son titre juste avant : 19 passages
+// contre 11). Les passages de Gus sont étalés : l'invitée reposée d'un bonus
+// reposé ne retient plus son duo par la patience (avant, le duo attendait la
+// fin de chaque tour et le titre suivant de Gus passait deux chansons après
+// lui, puis vingt), en « Chacun son tour ». Gus est dernier du premier tour (premier ajouté, premier
+// servi) : ses passages s'étalent à partir du quatrième tour ; avant, dans
+// les deux premiers tours, Bea chante son titre et le duo (l'invitée garde
+// son titre), deux passages de plus que les solistes, puis plus aucun.
+test('bonus étalé : l’auteur du duo a le bonus, l’invitée garde son rythme', () => {
+  for (const [mode, options] of modes) {
+    const at = duoNight(options, { gusLevel: 3, solos: 20 });
+    const solo = [...at.keys()].filter(name => name.startsWith('X')).map(name => at.get(name).length);
+    const mean = solo.reduce((a, b) => a + b, 0) / solo.length;
+    const late = name => at.get(name).filter(rank => rank >= 70);
+    const lateSolo = [...at.keys()].filter(name => name.startsWith('X')).map(name => late(name).length);
+    const label = `${mode} : Gus ${at.get('Gus').length}, Bea ${at.get('Bea').length}, solistes ${solo.join(',')} ; ` +
+      `à partir du 70e : Gus ${late('Gus').length}, Bea ${late('Bea').length}, solistes ${lateSolo.join(',')}`;
+    assert.ok(at.get('Gus').length >= 1.8 * mean, label);
+    assert.ok(at.get('Bea').length - mean <= 2.5, label);
+    assert.ok(late('Bea').length <= Math.max(...lateSolo), label);
+    if (!options.tableRotation) assert.ok(Math.min(...gapsOf(late('Gus'))) >= 6, `${label} ; écarts de Gus ${gapsOf(late('Gus')).join(' ')}`);
+  }
+});
+
+// Espacement réglé à 0, 1 ou 2 (option de l'ordonnanceur, pas de la page du
+// bar) : un bonus garde au moins trois chansons de place en fin de tour
+// (BONUS_SPREAD_MIN_SPACING, lib/scheduler/common.js). Avant : +1 en « Tables
+// à tour de rôle », cinq écarts de 2 chansons ; sans ce plancher, cinq écarts
+// de 4 dans les modes de tables (relecture de la passe 4 : la borne de 4 ne
+// le voyait plus ; 7 au moins avec lui).
+test('bonus étalé : espacement réglé bas, pas de passages serrés en fin de tour', () => {
+  for (const spacingSongs of [0, 1, 2]) {
+    for (const [mode, options] of modes) {
+      const { at } = steadyTen({ ...options, spacingSongs }, (s, p) => s.setPersonBonus(p.A1.id, 1));
+      const gaps = gapsOf(at.get('A1'));
+      assert.ok(Math.min(...gaps) >= 6, `${mode}, espacement ${spacingSongs}, A1 +1 : écarts ${gaps.join(' ')}`);
+    }
+  }
+});
+
+// La règle ne retient jamais la scène : si plus personne d'autre ne peut
+// chanter, la personne à bonus repasse ; un premier passage de la soirée
+// passe toujours avant son passage en plus.
+test('bonus étalé : premiers passages d’abord, et la scène ne reste pas vide', () => {
+  // Dix chanteurs, S1 à +3, arrêtés juste après le premier passage d'un tour de S1.
+  const { s, people, more } = steadyTen({}, (sched, p) => {
+    sched.setPersonBonus(p.S1.id, 3);
+    const select = sched.select.bind(sched);
+    sched.select = (...args) => sched.appearanceSerial > 30 && sched.people.get(p.S1.id).lastAppearanceTurn === sched.appearanceSerial &&
+      !sched.roundPeople.has(p.S1.id) ? null : select(...args);
+  }, 80);
+  delete s.select;
+  assert.ok(!s.roundPeople.has(people.S1.id) && s.people.get(people.S1.id).lastAppearanceTurn === s.appearanceSerial);
+  // Son passage en plus vient environ 10/2 chansons après le dernier.
+  const view = s.readyView();
+  assert.ok(view.findIndex(item => item.ids.includes(people.S1.id)) >= 4, view.map(item => item.name).join(' '));
+  // Une arrivée passe d'abord.
+  s.setHeadcount('N', 1);
+  const newcomer = s.join({ tableId: 'N', name: 'Nouvelle' });
+  s.chooseSong(newcomer, more());
+  assert.deepEqual(s.select().ids, [newcomer.id]);
+  // Plus personne d'autre ne peut chanter : S1 repasse quand même.
+  for (const p of [...Object.values(people), newcomer]) {
+    if (p.id === people.S1.id) continue;
+    for (const entry of s.songsOf(p)) s.removeSong(p, entry.entryId);
+  }
+  assert.deepEqual(s.select().ids, [people.S1.id]);
 });
 
 // Relecture : « Je pars » vide la file de la personne ; un titre rechoisi
@@ -949,16 +1288,16 @@ test('échange de titre autour d’un passage annulé : l’attente continue', (
   for (const removeFirst of [true, false]) {
     const { s, more } = twoTablesAndSolo();
     for (let i = 0; i < 9; i++) { const sel = s.select(); s.commit(sel); s.songEnded(sel.ids); }
-    const b2 = [...s.people.values()].find(p => p.name === 'B2');
-    const before = b2.readySerial;
+    const b1 = [...s.people.values()].find(p => p.name === 'B1');
+    const before = b1.readySerial;
     let sent;
-    if (removeFirst) { s.removeSong(b2, s.songsOf(b2)[0].entryId, 'self'); sent = s.select(); s.commit(sent); }
-    else { sent = s.select(); s.commit(sent); s.removeSong(b2, s.songsOf(b2)[0].entryId, 'self'); }
+    if (removeFirst) { s.removeSong(b1, s.songsOf(b1)[0].entryId, 'self'); sent = s.select(); s.commit(sent); }
+    else { sent = s.select(); s.commit(sent); s.removeSong(b1, s.songsOf(b1)[0].entryId, 'self'); }
     s.rollbackUnplayed(sent, { requeue: true });
-    s.chooseSong(b2, more(), 'append');
-    assert.equal(b2.readySerial, before, `removeFirst=${removeFirst}`);
+    s.chooseSong(b1, more(), 'append');
+    assert.equal(b1.readySerial, before, `removeFirst=${removeFirst}`);
     const order = s.readyView().map(x => x.name);
-    assert.ok(order.indexOf('B2') < order.indexOf('S'), `removeFirst=${removeFirst}: ${order.join(' ')}`);
+    assert.ok(order.indexOf('B1') < order.indexOf('S'), `removeFirst=${removeFirst}: ${order.join(' ')}`);
   }
 });
 

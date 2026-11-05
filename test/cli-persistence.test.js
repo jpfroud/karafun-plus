@@ -718,15 +718,31 @@ test('Reprise : changements manuels du bar abîmés', () => {
   const broken = [
     { kind: 'swap' }, { id: 'XYZ' }, { personId: 'inconnu' }, { name: '' }, { from: 0 }, { to: 1.5 },
     { at: 'hier' }, { after: 'court' }, { native: null },
-    { before: { manualOrder: ['inconnu'], manualOrderActive: false, reservedNext: null } },
     { before: { manualOrder: [], manualOrderActive: 'non', reservedNext: null } },
-    { before: { manualOrder: [], manualOrderActive: false, reservedNext: { personId: 'inconnu', reservedAt: 1 } } },
+    { before: { manualOrder: [], manualOrderActive: false, reservedNext: { personId: bob.id } } },
     { before: { manualOrder: [], manualOrderActive: false } },
   ];
   for (const change of broken) {
     const snapshot = structuredClone(base);
     snapshot.scheduler.manualChanges = [validChange(bob.id, change)];
     assertRefused(snapshot, 'changement manuel mal formé');
+  }
+
+  // Personne supprimée depuis le geste (table partie) encore nommée dans
+  // l'état d'avant d'un autre geste (sauvegarde d'une version qui ne l'y
+  // effaçait pas) : oubliée avec un avertissement, la soirée reprend au lieu
+  // d'être refusée au démarrage.
+  for (const before of [
+    { manualOrder: ['inconnu', bob.id], manualOrderActive: true, reservedNext: null },
+    { manualOrder: [], manualOrderActive: false, reservedNext: { personId: 'inconnu', reservedAt: 1 } },
+  ]) {
+    const snapshot = structuredClone(base);
+    snapshot.scheduler.manualChanges = [validChange(bob.id, { before })];
+    const { scheduler, result } = restore(snapshot);
+    const kept = scheduler.manualChanges[0].before;
+    assert.deepEqual(kept.manualOrder, before.manualOrder.filter(pid => pid !== 'inconnu'));
+    assert.equal(kept.reservedNext, null);
+    assert.deepEqual(result.warnings, ['1 mention d’une personne supprimée oubliée dans les changements manuels du bar']);
   }
 
   // Reports « Pas prêt » mémorisés dans l'annulation : abîmés, ils sont oubliés.

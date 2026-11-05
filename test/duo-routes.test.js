@@ -278,6 +278,38 @@ for (const [how, leave] of [
   });
 }
 
+// Relecture de la correction : l'invitée d'un duo déjà chargé dans KaraFun,
+// dont le bar avait placé le propre titre, ne chante plus ce duo. Sa place,
+// terminée à l'envoi, ne revenait pas : son titre passait en dernier.
+for (const [how, leave] of [
+  ['l’invitée se retire', (f, s) => f.call('POST /api/table/duet/leave', { ...s.zoe.body, ownerId: s.bruno.p.id, entryId: s.duo.entryId })],
+  ['l’auteur chante seul', (f, s) => f.call('POST /api/table/duet/solo', { ...s.bruno.body, entryId: s.duo.entryId })],
+]) {
+  test(`duo envoyé devenu solo (${how}) : la place donnée par le bar au titre de l’invitée revient`, async () => {
+    const f = harness();
+    const bruno = person(f, '1', 'Bruno'), zoe = person(f, '2', 'Zoé');
+    const others = ['Inès', 'Max', 'Tess'].map((name, i) => person(f, String(i + 3), name));
+    const duo = f.sched.inviteDuet(bruno.p, zoe.p.id, song(1, 'Un')); // ajouté d'abord, il part d'abord
+    await f.call('POST /api/table/duet/answer', { ...zoe.body, accept: true, entryId: duo.entryId });
+    // Zoé ajoute son titre en dernier : seul le bar la fait passer avant les autres.
+    for (const [k, who] of [...others, zoe].entries()) f.sched.chooseSong(who.p, song(10 + k, `Titre ${k}`));
+    f.setBridge(fakeBridge([]));
+    await f.call('POST /api/staff/move', { personId: zoe.p.id, toIndex: 1 });
+    const view = () => f.sched.presenceView([]).filter(v => !v.future).map(v => v.name);
+    assert.deepEqual(view().slice(0, 2), ['Bruno & Zoé', 'Zoé']);
+    const sel = f.sched.select();
+    f.sched.commit(sel);
+    const tr = { queueId: 41, sel, addedAt: Date.now(), startedAt: null };
+    f.tracked().push(tr);
+    f.setBridge(fakeBridge([{ queueId: 41, songId: 1, singer: sel.label }]));
+    assert.deepEqual(view(), ['Inès', 'Max', 'Tess', 'Zoé'], 'à l’envoi, la place de Zoé prend fin');
+    assert.deepEqual(plain(await leave(f, { bruno, zoe, duo })), { ok: true, stage: 'sent' });
+    assert.deepEqual(view(), ['Zoé', 'Inès', 'Max', 'Tess'], `${how} : Zoé ne monte pas sur scène, sa place revient`);
+    assert.deepEqual(plain(f.sched.manualChanges.map(change => change.name)), ['Zoé']);
+    assert.equal(tr.sel.placedUndo, undefined, 'le reçu ne la rendra pas une seconde fois');
+  });
+}
+
 // Regression: relecture PR #11 — le bar marque partie l'invitée d'un duo en
 // cours d'envoi : l'auteur recevait deux avis « duoLeft » contradictoires.
 test('bar : invitée marquée partie pendant l’envoi de son duo, un seul avis pour l’auteur', async () => {
