@@ -1,0 +1,44 @@
+name: Défaut
+description: Quelque chose ne marche pas comme prévu au bar, sur un téléphone ou sur le serveur.
+labels: ["défaut"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Merci ! Ne colle ni code de télécommande KaraFun, ni clé ou lien du bar,
+        ni prénom de client. Une faille de sécurité se signale en privé (SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Affichée dans la page du bar (onglet Plus).
+      placeholder: v3.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Kit Windows (PC du bar)
+        - Serveur Linux (VPS)
+    validations:
+      required: true
+  - type: textarea
+    id: constat
+    attributes:
+      label: Ce qui s'est passé
+      description: Ce que tu as fait, ce que tu attendais, ce que tu as vu (heure approximative).
+    validations:
+      required: true
+  - type: textarea
+    id: reproduire
+    attributes:
+      label: Pour reproduire
+      description: Étapes, avec la démo (npm run demo) si possible.
+  - type: textarea
+    id: journal
+    attributes:
+      label: Journal
+      description: Extrait de journal/ ou de docker compose logs, prénoms retirés.
+      render: text

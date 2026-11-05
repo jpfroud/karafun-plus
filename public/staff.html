@@ -269,6 +269,10 @@
     <p class="small muted">Pendant une soirée, une confirmation est demandée avant une brève interruption. Les tables, les chansons et leur ordre sont conservés. La sauvegarde, l’installation et les vérifications sont automatiques. Si l’installation échoue, la version précédente est remise en place.</p>
     <p class="small" id="serverUpdateStatus" role="status" aria-live="polite"></p>
     <button type="button" class="btn primary" id="serverUpdateButton">Vérifier et mettre à jour</button>
+    <div class="update-choice" id="serverVersionChoice" hidden>
+      <p class="small muted">Un problème avec la version installée ? Installe une autre version publiée, par exemple la précédente, avec la même sauvegarde et le même retour automatique.</p>
+      <div class="row wrap"><label class="small" for="serverVersionSelect">Version</label><select id="serverVersionSelect"></select><button type="button" class="btn small" id="serverVersionButton">Installer cette version</button></div>
+    </div>
   </section>
 
   <section class="card end-panel" data-tab="plus">
@@ -555,6 +559,7 @@
       update.message || labels[update.phase] || `Version installée : ${S.app.version || update.currentVersion || 'inconnue'}.`;
     $('serverUpdateButton').disabled = updateSending || !!update.busy || !!update.blockedReason;
     $('serverUpdateButton').textContent = updateSending || update.busy ? 'Mise à jour en cours…' : 'Vérifier et mettre à jour';
+    renderVersionChoice(update);
     // L'ancien script est encore en mémoire après un redémarrage. Attendre la
     // validation de l'installation avant de charger les nouveaux fichiers.
     if (!update.busy && update.phase === 'succeeded' && updateWatchVersion && S.app.version &&
@@ -563,26 +568,72 @@
       location.reload?.();
     }
   }
-  $('serverUpdateButton').onclick = async () => {
-    if (updateSending || S?.app?.mode !== 'server' || !S?.update?.enabled || S.update.busy || S.update.blockedReason) return;
-    const confirmActive = !!S.update.requiresConfirmation;
-    if (confirmActive && !confirm('Une soirée est en cours. Mettre à jour maintenant entraîne une brève interruption. Les tables, les chansons et leur ordre sont conservés. Continuer ?')) return;
+  // Versions publiées par l'agent de l'hôte (la plus récente d'abord), sauf
+  // celle qui tourne : « vX.Y.Z » comparées nombre par nombre.
+  const versionNumbers = version => String(version || '').replace(/^v/, '').split('.').map(Number);
+  function compareVersions(a, b) {
+    const [x, y] = [versionNumbers(a), versionNumbers(b)];
+    for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+    return 0;
+  }
+  const PUBLISHED = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' });
+  function versionLabel(item, installed, previous) {
+    const date = item.publishedAt && Number.isFinite(Date.parse(item.publishedAt)) ? `, publiée le ${PUBLISHED.format(new Date(item.publishedAt))}` : '';
+    const role = item.version === previous ? ' — version précédente' : compareVersions(item.version, installed) > 0 ? ' — plus récente' : '';
+    return `${item.version}${role}${date}`;
+  }
+  function renderVersionChoice(update) {
+    const versions = Array.isArray(update.versions) ? update.versions : [];
+    $('serverVersionChoice').hidden = !update.versionChoice || !versions.length;
+    const locked = updateSending || !!update.busy || !!update.blockedReason;
+    $('serverVersionSelect').disabled = $('serverVersionButton').disabled = locked;
+    if ($('serverVersionChoice').hidden || document.activeElement === $('serverVersionSelect')) return;
+    const installed = S.app.version || update.currentVersion || '';
+    const previous = versions.find(item => compareVersions(item.version, installed) < 0)?.version || null;
+    const kept = $('serverVersionSelect').value;
+    $('serverVersionSelect').innerHTML = versions.map(item =>
+      `<option value="${esc(item.version)}">${esc(versionLabel(item, installed, previous))}</option>`).join('');
+    $('serverVersionSelect').value = versions.some(item => item.version === kept) ? kept : (previous || versions[0].version);
+  }
+  // Une seule demande à la fois ; même si la réponse s'est perdue, lire l'état
+  // avant de proposer un nouvel essai : l'installation a pu commencer.
+  async function sendUpdate(body) {
     updateSending = true;
     updateWatchVersion = S.app.version || null;
     renderServerUpdate();
     $('serverUpdateStatus').textContent = 'Envoi de la demande…';
     try {
-      const result = await post('/api/staff/update', confirmActive ? { confirmActive: true } : {});
+      const result = await post('/api/staff/update', body);
       if (result.update) S.update = result.update;
     } catch (error) {
       $('serverUpdateStatus').textContent = error.message || 'Connexion interrompue. La page vérifie automatiquement si la demande a été reçue.';
       toast(error.message || 'Connexion interrompue.', true);
     } finally {
       updateSending = false;
-      // Même si la réponse s'est perdue, lire l'état avant de proposer un
-      // nouvel essai : l'installation a pu commencer sur le serveur.
       await load();
     }
+  }
+  $('serverUpdateButton').onclick = async () => {
+    if (updateSending || S?.app?.mode !== 'server' || !S?.update?.enabled || S.update.busy || S.update.blockedReason) return;
+    const confirmActive = !!S.update.requiresConfirmation;
+    if (confirmActive && !confirm('Une soirée est en cours. Mettre à jour maintenant entraîne une brève interruption. Les tables, les chansons et leur ordre sont conservés. Continuer ?')) return;
+    await sendUpdate(confirmActive ? { confirmActive: true } : {});
+  };
+  // Choix d'une version : toujours confirmé, c'est un geste exceptionnel.
+  $('serverVersionButton').onclick = async () => {
+    const update = S?.update;
+    const version = $('serverVersionSelect').value;
+    if (updateSending || S?.app?.mode !== 'server' || !update?.enabled || !update.versionChoice || update.busy ||
+        update.blockedReason || !(update.versions || []).some(item => item.version === version)) return;
+    const installed = S.app.version || update.currentVersion || 'la version installée';
+    const older = compareVersions(version, installed) < 0;
+    const confirmActive = !!update.requiresConfirmation;
+    if (!confirm(`${older ? 'Revenir à' : 'Installer'} ${version} à la place de ${installed} ? ` +
+      'Une sauvegarde est faite avant l’installation, et la version en service revient automatiquement si celle-ci ne démarre pas. ' +
+      'Les tables, les chansons et leur ordre sont conservés' +
+      (older ? ' ; les fonctions apparues après cette version n’y existent pas' : '') + '. ' +
+      (confirmActive ? 'Une soirée est en cours : la file s’interrompt brièvement. ' : '') + 'Continuer ?')) return;
+    await sendUpdate(confirmActive ? { version, confirmActive: true } : { version });
   };
   // Copie d'un lien affiché. Sans API presse-papiers (page du bar ouverte en
   // http depuis un téléphone : contexte non sécurisé), copie de secours du

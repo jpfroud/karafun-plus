@@ -49,6 +49,13 @@ Pour tout changement qui touche la file, les duos, les présences ou les tables 
 - Un changement qui déséquilibre les passages (Jain en baisse, des gens qui passent plus que d'autres, quelqu'un qui perd un passage ou attend nettement plus) n'est pas bon, même si une autre attente baisse : le dire, et ne le livrer qu'avec l'accord explicite de l'utilisateur.
 - Reporter le bilan dans `RAPPORT-TEST.md` et dans la PR avec les clés S01… et T1… (option `--cles` de l'outil) : jamais de prénom ni de nom de table dans le dépôt, public. La sortie avec prénoms reste hors du dépôt.
 
+**Dépendances et sécurité** (détail dans `SECURITY.md`) :
+
+- PR de Dependabot : un correctif mineur fusionne seul une fois la CI verte. Une PR qui change Timefold (groupe `timefold`) change la rotation : lire le bilan du workflow « Bilan Timefold » sur la PR (ou le refaire avec `node test/rejeu-soiree.js <export.json> --avant <base> --solveur`) et le donner à l'utilisateur avant toute fusion, comme ci-dessus. Socket.IO reste en 2.x (protocole historique de KaraFun) : une version majeure demande des essais du protocole, jamais une fusion directe.
+- Une action GitHub s'ajoute épinglée par SHA complet avec sa version en commentaire ; chaque workflow déclare ses `permissions` au moindre droit, chaque job son `timeout-minutes` ; jamais d'expression `${{ }}` dans un script `run:` (passer par `env:`) ; `npm ci --ignore-scripts` ; aucun cache dans `release.yml`. `node test/workflows.test.js` le vérifie.
+- Une alerte de sécurité se traite par une mise à jour ; sinon, la consigner avec sa raison dans « Risques connus et acceptés » de `SECURITY.md`. Une nouvelle dépendance est justifiée dans la PR.
+- L'agent de mise à jour du VPS (`deploy/update-agent.py`) n'accepte du conteneur qu'un identifiant et, pour une version choisie, un numéro `vX.Y.Z` qu'il vérifie sur le dépôt officiel : ne jamais y faire passer une commande, une image ou une empreinte. Son code ne suit pas les mises à jour : tout changement de l'agent se signale dans la PR, avec la réinstallation (`DEPLOIEMENT-SERVEUR.md`, section 17).
+
 **Cohérence des deux modes** : la file tourne en mode PC (kit Windows, lanceurs `.bat`) ou en mode serveur (`--server` ou `KARAOKE_MODE=server`, image Docker derrière Caddy).
 
 - Un texte qui parle du PC, des `.bat`, du Wi-Fi local, de `localhost` ou d'une clé qui change à chaque démarrage a sa variante serveur : `app.mode === 'server'` dans la page, `SERVER` dans `server.js`, `DEPLOIEMENT-SERVEUR.md` dans les documents.

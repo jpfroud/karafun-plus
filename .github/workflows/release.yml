@@ -48,6 +48,8 @@ jobs:
             exit 1
           fi
       # Étapes du job linux de ci.yml ; suite hors ligne sans mesure de couverture.
+      # Aucun cache dans ce workflow : une publication part de sources et de
+      # dépendances téléchargées à neuf, jamais d'un cache écrit ailleurs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -56,16 +58,32 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
-          cache: npm
+          package-manager-cache: false
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
-          cache-dependency-path: solver/pom.xml
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Construire Timefold et les notices des dependances
-        run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:2.7.1:add-third-party org.codehaus.mojo:license-maven-plugin:2.7.1:download-licenses
+        run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:add-third-party org.codehaus.mojo:license-maven-plugin:download-licenses
+      # Inventaire des dépendances livrées (kit et image), joint à la release.
+      - name: SBOM CycloneDX (npm de production et optimiseur Java)
+        run: |
+          mkdir -p sbom
+          npm sbom --omit dev --sbom-format cyclonedx --package-lock-only > "sbom/karafun-plus-$RELEASE_VERSION-npm.cdx.json"
+          mvn -B -ntp -f solver/pom.xml org.cyclonedx:cyclonedx-maven-plugin:makeBom -DoutputFormat=json -DoutputName=sbom-solveur.cdx
+          cp solver/target/sbom-solveur.cdx.json "sbom/karafun-plus-$RELEASE_VERSION-solveur.cdx.json"
+          for fichier in sbom/*.cdx.json; do
+            node -e "const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')); if (s.bomFormat !== 'CycloneDX' || !s.components?.length) process.exit(1);" "$fichier"
+          done
+      - name: Garder les SBOM pour la publication
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom/*.cdx.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
       - name: Installer Playwright et Chromium
         run: |
           npm install --global playwright@1.56.1
@@ -85,21 +103,22 @@ jobs:
   kit-windows:
     needs: tests
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
-          cache: npm
-      - uses: actions/setup-java@v4
+          package-manager-cache: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
-          cache-dependency-path: solver/pom.xml
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Construire Timefold et les notices des dependances
-        run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:2.7.1:add-third-party org.codehaus.mojo:license-maven-plugin:2.7.1:download-licenses
+        run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:add-third-party org.codehaus.mojo:license-maven-plugin:download-licenses
       - name: Tests automatiques hors ligne
         run: node test/run-offline.js
       - name: Tester le hook gstack
@@ -191,9 +210,8 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILT_AT=${{ steps.date.outputs.built_at }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true
-          cache-from: type=gha,scope=image-linux-${{ matrix.suffixe }}
-          # Le cache ne fait qu’accélérer : une panne de son service ne fait pas échouer la construction.
-          cache-to: type=gha,scope=image-linux-${{ matrix.suffixe }},mode=max,ignore-error=true
+          # Sans cache de couches : l'image publiée est construite à neuf.
+          no-cache: true
       # Image vérifiée = image publiée : celle du registre, tirée par son empreinte.
       - name: Recuperer l'image poussee
         shell: bash
@@ -241,6 +259,9 @@ jobs:
     permissions:
       contents: write
       packages: write
+      # Attestations de provenance (Sigstore) du kit, des SBOM et de l'image.
+      id-token: write
+      attestations: write
     steps:
       # Identifiants gardés pour l'étape du tag (création et envoi du tag).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -251,6 +272,11 @@ jobs:
         with:
           name: kit-windows-${{ github.sha }}
           path: .
+      - name: Recuperer les SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom
       - name: Recuperer les empreintes de l'image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -427,3 +453,26 @@ jobs:
             exit 1
           fi
           gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"
+      # Après les notes : une attestation qui échoue laisse une release
+      # complète et installable ; relancer le job la refait.
+      - name: Attester la provenance du kit et des SBOM
+        id: attester-fichiers
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            KIT-BAR-KARAFUN.zip
+            sbom/*.cdx.json
+      - name: Joindre les SBOM et l'attestation à la release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attester-fichiers.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" KIT-BAR-KARAFUN.zip.sigstore.json
+          gh release upload "$RELEASE_TAG" sbom/*.cdx.json KIT-BAR-KARAFUN.zip.sigstore.json --clobber
+      - name: Attester la provenance de l'image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.publier-image.outputs.empreinte }}
+          push-to-registry: true

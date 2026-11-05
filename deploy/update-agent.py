@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""One fixed operation: install the latest stable karafun-plus release.
+"""Two fixed operations: install the latest stable karafun-plus release, or
+reinstall one earlier (or later) published stable release chosen by the bar.
 
-Runs on the Docker host, never in the application container. The only input
-from that container is a UUID receipt. Configuration, archives and recovery
-records stay in a separate, private directory owned by the operator.
+Runs on the Docker host, never in the application container. The inputs from
+that container are a UUID receipt and, for a chosen release, a version number
+(vX.Y.Z) that this agent checks against the fixed repository: a stable,
+complete release, at least MIN_VERSION. No command, repository, image or
+digest crosses the channel. Configuration, archives and recovery records stay
+in a separate, private directory owned by the operator. The agent also
+publishes, at most hourly, the list of installable releases for the bar page.
 """
 import argparse
 import contextlib
@@ -27,6 +32,15 @@ VERSION = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 TERMINAL = {"succeeded", "failed", "rolled-back"}
 MAX_JSON = 2 * 1024 * 1024
+# First release whose application holds the maintenance lock and answers the
+# start-up checks of healthy(): an older one could never be verified.
+MIN_VERSION = (3, 1, 2)
+# Installable releases published for the bar page, newest first.
+CATALOGUE_SIZE = 10
+CATALOGUE_REFRESH = 3600
+CATALOGUE_RETRY = 600
+PUBLISHED_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+GITHUB_PATH = re.compile(r"releases/latest|releases\?per_page=30|releases/tags/v\d+\.\d+\.\d+\Z")
 
 
 class UpdateError(Exception):
@@ -37,6 +51,10 @@ def now():
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
+def numbers(version):
+    return tuple(map(int, version[1:].split(".")))
+
+
 def atomic_bytes(path, value, mode=0o600):
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
@@ -45,7 +63,12 @@ def atomic_bytes(path, value, mode=0o600):
             stream.write(value)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, mode)
+            # Mode set on the open file, never by path: the IPC directory is
+            # writable by the container, which could swap the name for a link.
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), mode)
+            else:  # Windows test runs (Python < 3.13); never a production host
+                os.chmod(temporary, mode)
         os.replace(temporary, path)
         if hasattr(os, "O_DIRECTORY"):
             directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -134,9 +157,12 @@ class Agent:
             "message": message, "updatedAt": now(),
         }, 0o660)
 
-    def github(self):
+    def github(self, path="releases/latest"):
+        # Fixed repository; only three request shapes, the version already validated.
+        if not GITHUB_PATH.fullmatch(path):
+            raise UpdateError("Demande de version invalide.")
         request = urllib.request.Request(
-            f"https://api.github.com/repos/{REPOSITORY}/releases/latest",
+            f"https://api.github.com/repos/{REPOSITORY}/{path}",
             headers={"Accept": "application/vnd.github+json", "User-Agent": "karafun-plus-updater"})
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
@@ -147,8 +173,81 @@ class Agent:
             if len(raw) > MAX_JSON:
                 raise ValueError("large response")
             return json.loads(raw)
+        except urllib.error.HTTPError as error:
+            error.close()
+            if error.code == 404 and path.startswith("releases/tags/"):
+                raise UpdateError("Cette version n'est pas publiée sur le dépôt officiel.") from error
+            raise UpdateError("La dernière version est momentanément inaccessible. Réessaie plus tard.") from error
         except (OSError, ValueError) as error:
             raise UpdateError("La dernière version est momentanément inaccessible. Réessaie plus tard.") from error
+
+    def catalogue(self):
+        """Installable releases, newest first: stable, complete, at least MIN_VERSION.
+
+        A release withdrawn by the maintainer (draft, pre-release, image block
+        removed) disappears from this list and is refused by chosen installs.
+        """
+        payload = self.github("releases?per_page=30")
+        if not isinstance(payload, list):
+            raise UpdateError("La liste des versions publiées n'est pas reconnue.")
+        found = {}
+        for item in payload:
+            try:
+                version, _digest = release_info(item)
+            except UpdateError:
+                continue
+            if numbers(version) < MIN_VERSION or version in found:
+                continue
+            published = item.get("published_at")
+            found[version] = published if isinstance(published, str) and PUBLISHED_AT.fullmatch(published) else None
+        ordered = sorted(found, key=numbers, reverse=True)[:CATALOGUE_SIZE]
+        return [{"version": version, "publishedAt": found[version]} for version in ordered]
+
+    def refresh_catalogue(self):
+        """Publish versions.json for the bar page: hourly, retried 10 min after a failure."""
+        file = self.ipc / "versions.json"
+        attempt = self.private / "catalogue-attempt"
+        moment = time.time()
+        try:
+            # Our own file, in a directory the container can write: read it bounded.
+            previous = read_json(file, 16 * 1024)
+            checked = dt.datetime.fromisoformat(previous["checkedAt"].replace("Z", "+00:00"))
+            if 0 <= moment - checked.timestamp() < CATALOGUE_REFRESH:
+                return False
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, UpdateError):
+            pass
+        try:
+            if 0 <= moment - attempt.stat().st_mtime < CATALOGUE_RETRY:
+                return False
+        except FileNotFoundError:
+            pass
+        atomic_bytes(attempt, b"")
+        atomic_json(file, {"checkedAt": now(), "versions": self.catalogue()}, 0o660)
+        return True
+
+    def chosen_version(self):
+        """Release chosen by the bar for this request (target.json), None for the latest."""
+        try:
+            choice = read_json(self.ipc / "target.json", 4096)
+        except FileNotFoundError:
+            return None
+        unreadable = UpdateError("Le choix de version est illisible : aucune installation n'a été faite.")
+        if not isinstance(choice, dict) or set(choice) != {"requestId", "version"}:
+            raise unreadable
+        try:
+            owner = uuid.UUID(choice["requestId"])
+        except (ValueError, TypeError, AttributeError):
+            raise unreadable from None
+        if str(owner) != choice["requestId"]:
+            raise unreadable
+        if choice["requestId"] != self.request_id:
+            return None  # left by an earlier request
+        version = choice["version"]
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            raise unreadable
+        if numbers(version) < MIN_VERSION:
+            raise UpdateError("Cette version est antérieure au service de mise à jour : utiliser la procédure manuelle.")
+        return version
 
     def configured_version(self):
         values = re.findall(r"^KARAFUN_PLUS_VERSION=(v\d+\.\d+\.\d+)\s*$",
@@ -157,7 +256,7 @@ class Agent:
             raise UpdateError("La version installée n'est pas reconnue.")
         return values[0]
 
-    def prepare(self, digest):
+    def prepare(self, digest, older=False):
         self.status("downloading", "Téléchargement et vérification de la version…")
         origin = self.command(["git", "remote", "get-url", "origin"])
         if origin.rstrip("/").removesuffix(".git") not in {
@@ -173,7 +272,10 @@ class Agent:
         candidate_env = self.command(["git", "show", f"{commit}:deploy/.env.example"])
         existing_env = (self.deploy / ".env").read_text(encoding="utf-8")
         names = lambda text: set(re.findall(r"^([A-Z_][A-Z_0-9]*)=", text, re.M))
-        if names(candidate_env) != names(existing_env):
+        wanted, present = names(candidate_env), names(existing_env)
+        # An older release may need fewer settings: the extra ones stay for the
+        # next update. Any other difference needs the administrator first.
+        if not wanted <= present or (wanted != present and not older):
             raise UpdateError("Cette version nécessite un réglage du serveur avant son installation.")
         image = IMAGE + "@" + digest
         remote = self.command(["docker", "buildx", "imagetools", "inspect", "--format",
@@ -372,23 +474,34 @@ if(h.status!==200||r.mode!=='server'||r.persistence!=='ok'||r.solver!=='availabl
         if previous.get("requestId") == self.request_id and previous.get("phase") in TERMINAL:
             return
         transaction = None
+        choice = None
         try:
             self.current = self.configured_version()
-            self.status("checking", "Recherche d'une version stable publiée…")
-            self.target, digest = release_info(self.github())
-            current_numbers = tuple(map(int, self.current[1:].split(".")))
-            target_numbers = tuple(map(int, self.target[1:].split(".")))
-            if target_numbers <= current_numbers:
-                self.status("succeeded", "L'application est déjà à jour.")
-                return
-            commit, image = self.prepare(digest)
+            choice = self.chosen_version()
+            if choice:
+                self.target = choice
+                self.status("checking", "Vérification de la version choisie…")
+                published, digest = release_info(self.github("releases/tags/" + choice))
+                if published != choice:
+                    raise UpdateError("La release publiée ne correspond pas à la version choisie.")
+                if choice == self.current:
+                    self.status("succeeded", "Cette version est déjà installée.")
+                    return
+            else:
+                self.status("checking", "Recherche d'une version stable publiée…")
+                self.target, digest = release_info(self.github())
+                if numbers(self.target) <= numbers(self.current):
+                    self.status("succeeded", "L'application est déjà à jour.")
+                    return
+            commit, image = self.prepare(digest, numbers(self.target) < numbers(self.current))
             transaction = self.begin(commit, image)
             self.backup(transaction)
             self.install(transaction)
             self.status("verifying", "Vérification de la nouvelle version…")
             self.healthy(self.target, self.private / "new-image.json")
             self.current = self.target
-            self.finish(transaction, "succeeded", "Mise à jour installée. La soirée est conservée.")
+            self.finish(transaction, "succeeded", "Version choisie installée. La soirée est conservée." if choice
+                        else "Mise à jour installée. La soirée est conservée.")
         except Exception as error:
             message = str(error) if isinstance(error, UpdateError) else "La mise à jour n'a pas pu se terminer."
             if transaction:
@@ -396,12 +509,22 @@ if(h.status!==200||r.mode!=='server'||r.persistence!=='ok'||r.solver!=='availabl
                     if transaction.get("outcome"):
                         raise UpdateError("Le résultat sera publié à la prochaine vérification.")
                     self.restore(transaction)
-                    self.finish(transaction, "rolled-back", "Mise à jour annulée : l'ancienne version a été rétablie.")
+                    self.finish(transaction, "rolled-back", "Version choisie refusée : la version en service a été rétablie." if choice
+                                else "Mise à jour annulée : l'ancienne version a été rétablie.")
                 except Exception:
                     self.status("verifying", "Récupération en cours : une intervention technique est nécessaire.")
                     raise
             else:
                 self.status("failed", message)
+
+    def tick(self):
+        """One timer run: the pending request first, then the list of versions."""
+        self.execute()
+        try:
+            self.refresh_catalogue()
+        except Exception:
+            # Only a convenience for the bar page: keep the previous list.
+            print("La liste des versions publiées n'a pas pu être actualisée.", file=sys.stderr)
 
 
 def main():
@@ -417,7 +540,7 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        Agent(options.repo, options.state).execute()
+        Agent(options.repo, options.state).tick()
     return 0
 
 

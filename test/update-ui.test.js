@@ -183,3 +183,111 @@ test('mise à jour : les messages du service restent du texte, un refus API ne c
   assert.equal(page.$('serverUpdatePanel').hidden, false);
   assert.equal(page.$('serverUpdateButton').disabled, false);
 });
+
+// ---------------------------------------------------------------- choix de version
+const PUBLISHED = [{ version: 'v1.1.0', publishedAt: '2026-10-30T10:00:00Z' },
+  { version: 'v0.9.0', publishedAt: '2026-10-20T10:00:00Z' }, { version: 'v0.8.0', publishedAt: null }];
+const labels = page => page.$('serverVersionSelect').options.map(option => option.textContent.trim());
+
+test('choix de version : caché sans liste de l’agent, la version précédente présélectionnée', async () => {
+  for (const update of [{}, { versionChoice: false, versions: PUBLISHED }, { versionChoice: true, versions: [] }]) {
+    const page = await openPage({ world: serverWorld(update) });
+    assert.equal(page.$('serverVersionChoice').hidden, true, JSON.stringify(update));
+    await page.$('serverVersionButton').onclick();
+    assert.equal(page.postsTo('/api/staff/update').length, 0);
+  }
+  const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED }) });
+  assert.equal(page.$('serverVersionChoice').hidden, false);
+  assert.deepEqual(labels(page), ['v1.1.0 — plus récente, publiée le 30 octobre 2026',
+    'v0.9.0 — version précédente, publiée le 20 octobre 2026', 'v0.8.0']);
+  assert.equal(page.$('serverVersionSelect').value, 'v0.9.0');
+  assert.equal(page.$('serverVersionButton').disabled, false);
+  const newerOnly = await openPage({ world: serverWorld({ versionChoice: true, versions: [PUBLISHED[0]] }) });
+  assert.equal(newerOnly.$('serverVersionSelect').value, 'v1.1.0', 'sans version plus ancienne : la première proposée');
+});
+
+test('choix de version : toujours confirmé, annuler ne soumet rien', async () => {
+  const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED }) });
+  page.confirmAnswer = false;
+  const fetches = page.fetches.length;
+  await page.$('serverVersionButton').onclick();
+  assert.equal(page.confirms.length, 1, 'confirmation même hors soirée');
+  assert.match(page.confirms[0], /^Revenir à v0\.9\.0 à la place de v1\.0\.0 \?/);
+  assert.match(page.confirms[0], /sauvegarde.*revient automatiquement/);
+  assert.match(page.confirms[0], /tables, les chansons et leur ordre sont conservés ; les fonctions apparues après cette version n’y existent pas/);
+  assert.doesNotMatch(page.confirms[0], /soirée est en cours/);
+  assert.equal(page.fetches.length, fetches, 'annuler ne fait aucune requête');
+});
+
+test('choix de version : une seule demande, avec la confirmation de soirée si besoin', async () => {
+  for (const evening of [false, true]) {
+    const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED, requiresConfirmation: evening }) });
+    page.replies['/api/staff/update'] = () => {
+      Object.assign(page.world.update, { busy: true, phase: 'requested', chosenVersion: 'v0.8.0', requestId: 'request-choice',
+        message: 'Demande transmise. L’installation de la version choisie va commencer.' });
+      return { ok: true, update: page.world.update };
+    };
+    page.$('serverVersionSelect').value = 'v0.8.0';
+    const first = page.$('serverVersionButton').onclick();
+    const second = page.$('serverVersionButton').onclick();
+    await Promise.all([first, second]);
+    await page.flush();
+    assert.equal(page.confirms.length, 1);
+    assert.equal(page.confirms[0].includes('Une soirée est en cours : la file s’interrompt brièvement.'), evening);
+    assert.equal(page.postsTo('/api/staff/update').length, 1);
+    const request = page.lastPost('/api/staff/update');
+    assert.equal(request.headers['x-staff-key'], '123456');
+    assert.deepEqual(request.body, evening ? { version: 'v0.8.0', confirmActive: true } : { version: 'v0.8.0' });
+    assert.equal(page.$('serverVersionButton').disabled, true);
+    assert.equal(page.$('serverVersionSelect').disabled, true);
+    assert.equal(page.$('serverUpdateButton').disabled, true);
+    assert.match(page.$('serverUpdateStatus').textContent, /version choisie/);
+  }
+});
+
+test('choix de version : une version plus récente s’annonce comme une installation', async () => {
+  const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED }) });
+  page.confirmAnswer = false;
+  page.$('serverVersionSelect').value = 'v1.1.0';
+  await page.$('serverVersionButton').onclick();
+  assert.match(page.confirms[0], /^Installer v1\.1\.0 à la place de v1\.0\.0 \?/);
+  assert.doesNotMatch(page.confirms[0], /fonctions apparues/);
+});
+
+test('choix de version : verrouillé pendant une opération ou un blocage, sélection gardée au rafraîchissement', async () => {
+  const blocked = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED, blockedReason: 'Un envoi à KaraFun est en cours.' }) });
+  assert.equal(blocked.$('serverVersionButton').disabled, true);
+  await blocked.$('serverVersionButton').onclick();
+  assert.equal(blocked.postsTo('/api/staff/update').length, 0);
+  assert.equal(blocked.confirms.length, 0);
+  const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED }) });
+  page.$('serverVersionSelect').value = 'v0.8.0';
+  await page.poll();
+  assert.equal(page.$('serverVersionSelect').value, 'v0.8.0', 'le choix du gérant n’est pas remplacé');
+  page.world.update.versions = PUBLISHED.slice(0, 2);
+  await page.poll();
+  assert.equal(page.$('serverVersionSelect').value, 'v0.9.0', 'version retirée de la liste : retour à la précédente');
+  page.$('serverVersionSelect').value = 'v0.9.0';
+  page.$('serverVersionSelect').focus();
+  page.world.update.versions = [PUBLISHED[2]];
+  await page.poll();
+  assert.equal(labels(page).length, 2, 'pas de rafraîchissement de la liste pendant le choix');
+  await page.$('serverVersionButton').onclick();
+  assert.equal(page.postsTo('/api/staff/update').length, 0, 'une version qui n’est plus proposée n’est pas envoyée');
+});
+
+test('choix de version : rechargement une seule fois après l’installation validée', async () => {
+  const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED }) });
+  page.replies['/api/staff/update'] = () => {
+    Object.assign(page.world.update, { busy: true, phase: 'requested', chosenVersion: 'v0.9.0' });
+    return { ok: true, update: page.world.update };
+  };
+  await page.$('serverVersionButton').onclick();
+  await page.flush();
+  page.world.app.version = 'v0.9.0';
+  Object.assign(page.world.update, { busy: false, phase: 'succeeded', message: 'La version choisie est installée.' });
+  await page.poll();
+  assert.equal(page.reloads, 1);
+  await page.poll();
+  assert.equal(page.reloads, 1, 'pas de boucle de rechargement');
+});

@@ -1,0 +1,148 @@
+# Mises à jour automatiques des dépendances (Dependabot), sur le modèle de
+# RetroGemini. Les alertes de sécurité ouvrent leur PR tout de suite, sans
+# attendre le calendrier ni le délai ci-dessous. Le délai (cooldown) laisse
+# quelques jours à l'écosystème pour retirer une version piégée avant qu'elle
+# arrive ici. Fusion automatique des correctifs mineurs : workflow
+# « Dependabot : fusion automatique » ; règles et exceptions dans SECURITY.md.
+version: 2
+updates:
+  # Dépendances Node.js de l'application (kit et image).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "npm"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      npm-correctifs:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Le client Socket.IO 2.x parle le protocole historique de la
+      # télécommande KaraFun ; le serveur 2.x sert le faux KaraFun de la démo.
+      # Passer à 3.x ou 4.x demande des essais de protocole, pas une PR
+      # automatique (CONTEXTE-REPRISE.md, SECURITY.md).
+      - dependency-name: "socket.io-client"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "socket.io"
+        update-types: ["version-update:semver-major"]
+
+  # Optimiseur de file Java (Timefold) et extensions Maven.
+  - package-ecosystem: "maven"
+    directory: "/solver"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "maven"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "java"
+    groups:
+      # Timefold change la rotation : PR à part, jamais fusionnée sans le
+      # bilan avant/après d'une vraie soirée (AGENTS.md, workflow
+      # « Bilan Timefold »).
+      timefold:
+        patterns:
+          - "ai.timefold.solver:*"
+      maven-correctifs:
+        exclude-patterns:
+          - "ai.timefold.solver:*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Actions GitHub, épinglées par SHA : Dependabot met à jour le SHA et le
+  # commentaire de version ensemble.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      # init, analyze et upload-sarif partagent un fichier de configuration :
+      # une seule révision pour toute la famille, même pour une version majeure.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
+      actions-correctifs:
+        exclude-patterns:
+          - "github/codeql-action*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Images de base du Dockerfile, épinglées par empreinte : chaque correctif
+  # de Debian, de Node.js ou de Java arrive par une PR vérifiée par la CI.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "docker"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"
+    groups:
+      images-correctifs:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Caddy du VPS (deploy/compose.yaml), seule entrée exposée à Internet :
+  # épinglé par empreinte, il suit les releases de l'application.
+  - package-ecosystem: "docker-compose"
+    directory: "/deploy"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "compose"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"

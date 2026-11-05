@@ -1,0 +1,10 @@
+name: Configuration CodeQL de karafun-plus
+
+# Code livré et outils du dépôt. Les tests et leurs données ne sont pas
+# analysés : ils simulent volontairement des entrées hostiles (liens
+# symboliques, JSON invalide, commandes injectées) pour vérifier les refus.
+paths-ignore:
+  - test
+  - coverage
+  - node_modules
+  - solver/target

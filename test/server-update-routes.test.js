@@ -135,12 +135,48 @@ test('mise à jour confirmée : soirée, accès, listes et ordre manuel conserv�
   await ok('/api/table/song', { ...singers[0], song: { songId: 999, title: 'Après maintenance', artist: 'Test' } });
 });
 
+test('version choisie : seulement une version publiée par l’agent, écrite avant la demande', async t => {
+  const f = await fixture(t);
+  const installed = `v${JSON.parse(fs.readFileSync(path.join(f.cwd, 'package.json'), 'utf8')).version}`;
+  const state = () => f.call('/api/staff/state');
+  const request = body => f.call('/api/staff/update', { body });
+  assert.deepEqual([(await state()).body.update.versionChoice, (await state()).body.update.versions], [false, []]);
+  assert.equal((await request({ version: 'v3.1.2' })).status, 400, 'agent sans liste : aucun choix');
+  fs.writeFileSync(path.join(f.directory, 'versions.json'), JSON.stringify({ checkedAt: new Date().toISOString(), versions: [
+    { version: installed, publishedAt: '2026-10-30T10:00:00Z' }, { version: 'v3.1.3', publishedAt: '2026-10-28T10:00:00Z' },
+    { version: 'v3.1.2', publishedAt: null }] }));
+  const offered = (await state()).body.update;
+  assert.equal(offered.versionChoice, true);
+  assert.deepEqual(offered.versions.map(item => item.version), ['v3.1.3', 'v3.1.2'], 'la version installée n’est pas proposée');
+  for (const body of [{ version: installed }, { version: 'v9.9.9' }, { version: 'v3.1.2;id' }, { version: 3 },
+    { version: ['v3.1.2'] }, { version: 'v3.1.2', image: 'ghcr.io/elsewhere/app' }]) {
+    assert.equal((await request(body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal(fs.existsSync(path.join(f.directory, 'request.json')), false);
+  assert.equal(fs.existsSync(path.join(f.directory, 'target.json')), false);
+  const accepted = await request({ version: 'v3.1.2' });
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.update.busy, true);
+  assert.equal(accepted.body.update.chosenVersion, 'v3.1.2');
+  const record = JSON.parse(fs.readFileSync(path.join(f.directory, 'request.json'), 'utf8'));
+  assert.deepEqual(Object.keys(record).sort(), ['createdAt', 'id']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.directory, 'target.json'), 'utf8')), { requestId: record.id, version: 'v3.1.2' });
+  assert.equal((await request({ version: 'v3.1.3' })).status, 409, 'une seule opération à la fois');
+  assert.equal((await f.call('/api/staff/settings', { body: { auto: true } })).status, 503, 'verrou de maintenance');
+  fs.writeFileSync(path.join(f.directory, 'status.json'), JSON.stringify({ requestId: record.id, phase: 'rolled-back' }));
+  const after = (await state()).body.update;
+  assert.equal(after.busy, false);
+  assert.match(after.message, /version choisie n’a pas démarré/);
+});
+
 test('mise à jour absente en mode PC et sur serveur sans agent', async t => {
   for (const options of [{ enabled: false }, { pc: true }]) {
     await t.test(JSON.stringify(options), async subtest => {
       const f = await fixture(subtest, options);
       assert.equal((await f.call('/api/staff/state')).body.update.enabled, false);
+      assert.equal((await f.call('/api/staff/state')).body.update.versionChoice, false);
       assert.equal((await f.call('/api/staff/update', { body: {} })).status, 503);
+      assert.equal((await f.call('/api/staff/update', { body: { version: 'v3.1.2' } })).status, 400);
     });
   }
 });

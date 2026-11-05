@@ -1,0 +1,118 @@
+name: Dependabot - fusion automatique
+
+# Correctifs mineurs et de version (patch) de Dependabot : la fusion est
+# activée et GitHub l'attend jusqu'à ce que les contrôles exigés sur la branche
+# soient verts. Sans contrôle exigé, rien n'est activé (sinon la PR serait
+# fusionnée avant la fin de la CI). Jamais pour une version majeure, ni pour
+# Timefold (bilan avant/après d'une vraie soirée exigé par AGENTS.md).
+#
+# pull_request_target, comme le recommande dependabot/fetch-metadata : un
+# workflow lancé par Dependabot sur pull_request n'a qu'un jeton en lecture.
+# Aucune extraction ni exécution du code de la PR ici : seulement les
+# métadonnées de la PR, lues par l'API, et des commandes gh fixes.
+on:
+  # Exception déclarée dans .github/zizmor.yml (dangerous-triggers).
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-fusion-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  fusion:
+    name: Fusion automatique des correctifs
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'jpfroud/karafun-plus'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Vérifie aussi que tous les commits de la PR viennent de Dependabot.
+      - name: Lire la mise à jour proposée
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Décider
+        id: decision
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPENDENCIES: ${{ steps.meta.outputs.dependency-names }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          PREVIOUS: ${{ steps.meta.outputs.previous-version }}
+          NEW: ${{ steps.meta.outputs.new-version }}
+        run: |
+          decision=relire
+          raison="version majeure ou changement non classé : relecture humaine"
+          case "$UPDATE_TYPE" in
+            version-update:semver-patch | version-update:semver-minor)
+              decision=fusion; raison="correctif mineur ou de version" ;;
+            *)
+              # Image Docker : même étiquette, nouvelle empreinte (correctifs de sécurité de l'image).
+              if [[ $ECOSYSTEM == docker* ]] && [ -n "$PREVIOUS" ] && [ "$PREVIOUS" = "$NEW" ]; then
+                decision=fusion; raison="nouvelle empreinte de la même image"
+              fi ;;
+          esac
+          if [[ $DEPENDENCIES == *ai.timefold* ]]; then
+            decision=timefold; raison="Timefold change la rotation : bilan avant/après exigé"
+          fi
+          if [[ $DEPENDENCIES == *socket.io* ]]; then
+            decision=relire; raison="Socket.IO porte le protocole de KaraFun : essais exigés"
+          fi
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Dependabot : $decision"
+            echo
+            echo "- Dépendances : \`$DEPENDENCIES\`"
+            echo "- Type : \`${UPDATE_TYPE:-inconnu}\` ($ECOSYSTEM)"
+            echo "- Raison : $raison"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # La fusion automatique n'attend que les contrôles exigés : sans aucun,
+      # GitHub fusionnerait aussitôt, avant la CI.
+      - name: Vérifier que la branche exige la CI
+        id: protection
+        if: steps.decision.outputs.decision == 'fusion'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          classique=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BASE" \
+            --jq '[(.protection.required_status_checks.checks // [])[].context, (.protection.required_status_checks.contexts // [])[]] | unique | join(",")' || true)
+          regles=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/$BASE" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | unique | join(",")' || true)
+          exiges=$(printf '%s,%s' "$classique" "$regles" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)
+          if [ -z "$exiges" ]; then
+            echo "::warning::La branche $BASE n'exige aucun contrôle : fusion automatique non activée (SECURITY.md)."
+            echo "- Branche sans contrôle exigé : fusion automatique non activée." >> "$GITHUB_STEP_SUMMARY"
+            echo "protegee=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "- Contrôles exigés avant fusion : \`$exiges\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "protegee=oui" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Activer la fusion automatique
+        if: steps.decision.outputs.decision == 'fusion' && steps.protection.outputs.protegee == 'oui'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --merge "$PR_URL"
+
+      - name: Expliquer la relecture nécessaire
+        if: github.event.action == 'opened' && steps.decision.outputs.decision != 'fusion'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          DECISION: ${{ steps.decision.outputs.decision }}
+        run: |
+          if [ "$DECISION" = timefold ]; then
+            corps='**Fusion automatique désactivée : Timefold.** Une nouvelle version de Timefold peut changer la rotation. Avant de fusionner, lire le bilan avant/après de la soirée de référence produit par le workflow « Bilan Timefold » sur cette PR (attentes, équilibre des passages, anomalies), comme le demande AGENTS.md. Un déséquilibre des passages ne se fusionne pas sans accord explicite.'
+          else
+            corps='**Fusion automatique désactivée.** Version majeure ou dépendance sensible (Socket.IO et protocole KaraFun) : lire les notes de version, vérifier la CI et, pour Socket.IO, essayer la télécommande KaraFun avant de fusionner.'
+          fi
+          gh pr comment "$PR_URL" --body "$corps"

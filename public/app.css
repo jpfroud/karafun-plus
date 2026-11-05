@@ -382,6 +382,8 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .disclosure summary { cursor: pointer; font-weight: 700; padding: 3px 0; }
 .disclosure[open] summary { margin-bottom: 12px; }
 .access-panel .row > input, .access-panel .row > select { flex: 1 1 180px; width: auto; min-width: 0; }
+.update-choice { border-top: 1px solid var(--line); margin-top: 13px; padding-top: 12px; }
+.update-choice .row > select { flex: 1 1 220px; width: auto; min-width: 0; }
 .staff-access-inner { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .staff-access-inner > .small { flex: 1 1 170px; }
 .staff-qr { width: 208px; height: 208px; flex: none; padding: 8px; background: white; border-radius: 12px; }

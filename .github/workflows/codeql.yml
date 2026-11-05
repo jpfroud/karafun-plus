@@ -1,0 +1,51 @@
+name: CodeQL
+
+# Analyse de sécurité du code : JavaScript (serveur et pages), Java
+# (optimiseur Timefold), Python (agent de mise à jour du VPS) et les
+# workflows eux-mêmes. Résultats dans l'onglet Security → Code scanning.
+# Si « Default setup » de CodeQL est activé dans les réglages du dépôt, le
+# désactiver : il refuse les analyses de ce workflow (SECURITY.md).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Lundi 05:23 UTC : de nouvelles requêtes trouvent aussi d'anciens défauts.
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyse (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Aucune compilation nécessaire, Java compris (build-mode none).
+        language: [actions, java-kotlin, javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Préparer CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+          config-file: .github/codeql/codeql-config.yml
+      - name: Analyser
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:${{ matrix.language }}

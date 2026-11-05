@@ -1,0 +1,21 @@
+name: Idée ou besoin
+description: Une fonction qui manque à la file, au bar ou aux clients.
+labels: ["idée"]
+body:
+  - type: textarea
+    id: besoin
+    attributes:
+      label: Le besoin
+      description: Qui en a besoin (bar, clients, administrateur du serveur), quand, et pourquoi.
+    validations:
+      required: true
+  - type: textarea
+    id: idee
+    attributes:
+      label: Ce qui aiderait
+  - type: checkboxes
+    id: rotation
+    attributes:
+      label: Rotation
+      options:
+        - label: L'idée change l'ordre de passage ou les temps d'attente (bilan avant/après sur une vraie soirée exigé, AGENTS.md).

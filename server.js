@@ -5016,9 +5016,16 @@ const handlers = {
   // ---------------- bar
   // Un code vide est refusé : il effaçait le code retenu sans rien connecter.
   'POST /api/staff/update': async (req, res, body) => {
-    if (!body || Array.isArray(body) || Object.keys(body).some(key => key !== 'confirmActive') ||
-        ('confirmActive' in body && typeof body.confirmActive !== 'boolean')) {
-      throw new Error('Seule la confirmation de la soirée est acceptée pour la mise à jour.');
+    if (!body || Array.isArray(body) || Object.keys(body).some(key => key !== 'confirmActive' && key !== 'version') ||
+        ('confirmActive' in body && typeof body.confirmActive !== 'boolean') ||
+        ('version' in body && (typeof body.version !== 'string' || !/^v\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(body.version)))) {
+      throw new Error('Seuls la confirmation de la soirée et une version proposée sont acceptés pour la mise à jour.');
+    }
+    // Une version précise : seulement l'une de celles que l'agent de l'hôte
+    // publie (versions.json), qu'il vérifie encore sur le dépôt officiel.
+    const version = 'version' in body ? body.version : null;
+    if (version !== null && !serverUpdate.offers(version)) {
+      throw new Error('Cette version n’est pas proposée par le service de mise à jour.');
     }
     // Le refus technique prime sur la confirmation ; aucune action KaraFun
     // ou Spotify déjà lancée ne doit finir après notre instantané.
@@ -5030,7 +5037,7 @@ const handlers = {
       throw error;
     }
     saveNight({ required: true });
-    serverUpdate.request(blockedReason);
+    serverUpdate.request(blockedReason, { version });
     res.nightAlreadySaved = true;
     return { ok: true, update: updateState() };
   },

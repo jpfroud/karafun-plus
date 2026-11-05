@@ -4,13 +4,21 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-// The application can request one fixed operation. Only the host agent has
-// Docker access; no command, repository, image or version crosses this channel.
+// The application can request two fixed operations: install the latest
+// release, or one release of the list the host agent publishes (versions.json).
+// Only the host agent has Docker access and checks the chosen version against
+// the official repository; no command, repository, image or digest crosses
+// this channel. The choice (target.json) is written before the request that
+// refers to it, and request.json keeps the shape older versions read.
 const MAX_FILE_BYTES = 16 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const VERSION = /^v\d+\.\d+\.\d+$/;
 const TERMINAL = new Set(['succeeded', 'failed', 'rolled-back']);
 const PHASES = new Set(['idle', 'checking', 'downloading', 'backing-up', 'installing', 'verifying', ...TERMINAL]);
+// The agent rewrites its list hourly: an older list means an agent without
+// this choice (or stopped), so the choice is not offered.
+const CATALOGUE_MAX_AGE_MS = 48 * 3600 * 1000;
+const CATALOGUE_MAX_ITEMS = 20;
 const MESSAGES = {
   idle: 'Vérifie et installe la dernière version, avec sauvegarde et retour en arrière si nécessaire.',
   requested: 'Demande transmise. La mise à jour va commencer.',
@@ -23,8 +31,17 @@ const MESSAGES = {
   failed: 'La mise à jour a échoué. Un administrateur doit consulter le diagnostic du serveur.',
   'rolled-back': 'La nouvelle version n’a pas démarré. L’ancienne version a été rétablie.',
 };
+// Same steps for a version chosen by the bar; only these texts differ.
+const CHOICE_MESSAGES = {
+  requested: 'Demande transmise. L’installation de la version choisie va commencer.',
+  checking: 'Vérification de la version choisie…',
+  succeeded: 'La version choisie est installée.',
+  failed: 'La version choisie n’a pas pu être installée. Un administrateur doit consulter le diagnostic du serveur.',
+  'rolled-back': 'La version choisie n’a pas démarré. La version en service a été rétablie.',
+};
 const UNAVAILABLE = 'Le service de mise à jour n’est pas disponible sur ce serveur.';
 const INVALID = 'Le suivi de la mise à jour est illisible. Un administrateur doit vérifier le serveur.';
+const NOT_OFFERED = 'Cette version n’est pas proposée par le service de mise à jour.';
 
 function failure(message, status) {
   const error = new Error(message);
@@ -52,6 +69,23 @@ function validStatus(value) {
     (value.currentVersion == null || stableVersion(value.currentVersion)) &&
     (value.targetVersion == null || stableVersion(value.targetVersion)) &&
     (value.updatedAt == null || dateString(value.updatedAt));
+}
+
+const exactKeys = (value, keys) => !!value && typeof value === 'object' && !Array.isArray(value) &&
+  Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+
+function validTarget(value) {
+  return exactKeys(value, ['requestId', 'version']) && typeof value.requestId === 'string' &&
+    UUID.test(value.requestId) && stableVersion(value.version);
+}
+
+// versions.json, written by the host agent: installable releases, newest first.
+function validCatalogue(value) {
+  if (!exactKeys(value, ['checkedAt', 'versions']) || !dateString(value.checkedAt) ||
+      !Array.isArray(value.versions) || value.versions.length > CATALOGUE_MAX_ITEMS) return false;
+  const seen = new Set();
+  return value.versions.every(item => exactKeys(item, ['version', 'publishedAt']) && stableVersion(item.version) &&
+    !seen.has(item.version) && seen.add(item.version) && (item.publishedAt === null || dateString(item.publishedAt)));
 }
 
 function createServerUpdate({ directory, version, now = Date.now } = {}) {
@@ -95,39 +129,95 @@ function createServerUpdate({ directory, version, now = Date.now } = {}) {
     // Do not free the application after a corrupt record or a worker crash.
     // The host recovers its transaction on restart and writes a terminal status.
     if (request.invalid || status.invalid) return { enabled: true, busy: true, phase: 'requested', invalid: true };
+    // A choice only describes the request it names; an unreadable one is
+    // refused by the host agent with a terminal status.
+    const target = request.value ? readJson('target.json', validTarget) : {};
+    const choice = target.value && target.value.requestId === request.value.id ? target.value.version : null;
     if (request.value) {
       if (!status.value || status.value.requestId !== request.value.id) {
-        return { enabled: true, busy: true, phase: 'requested', request: request.value };
+        return { enabled: true, busy: true, phase: 'requested', request: request.value, choice };
       }
       return { enabled: true, busy: !TERMINAL.has(status.value.phase), phase: status.value.phase,
-        request: request.value, status: status.value };
+        request: request.value, status: status.value, choice };
     }
     const phase = status.value?.phase || 'idle';
     return { enabled: true, busy: phase !== 'idle' && !TERMINAL.has(phase), phase, status: status.value };
+  }
+
+  // Releases the bar may install instead of this one, or null when the host
+  // agent publishes no recent list (older agent, stopped timer, no network).
+  function catalogue() {
+    if (!enabled || !directoryReady()) return null;
+    const list = readJson('versions.json', validCatalogue).value;
+    if (!list) return null;
+    const age = now() - Date.parse(list.checkedAt);
+    if (!(age >= -3600 * 1000 && age <= CATALOGUE_MAX_AGE_MS)) return null;
+    return list.versions.filter(item => item.version !== currentVersion);
+  }
+
+  function offers(version) {
+    return stableVersion(version) && !!catalogue()?.some(item => item.version === version);
   }
 
   function view(blockedReason = null) {
     const state = snapshot();
     const reason = state.unavailable ? UNAVAILABLE : state.invalid ? INVALID :
       (typeof blockedReason === 'string' && blockedReason ? blockedReason.slice(0, 400) : null);
+    const versions = state.enabled ? catalogue() : null;
+    const messages = state.choice ? { ...MESSAGES, ...CHOICE_MESSAGES } : MESSAGES;
     return { enabled: state.enabled, busy: state.busy, phase: state.phase, currentVersion,
       targetVersion: state.status?.targetVersion || null,
       requestId: state.request?.id || state.status?.requestId || null,
+      chosenVersion: state.choice || null,
+      versionChoice: !!versions,
+      versions: versions ? versions.map(item => ({ version: item.version, publishedAt: item.publishedAt })) : [],
       blockedReason: reason,
       // Never forward worker stderr or free-form messages to the browser.
-      message: state.invalid ? INVALID : state.unavailable ? UNAVAILABLE : MESSAGES[state.phase] };
+      message: state.invalid ? INVALID : state.unavailable ? UNAVAILABLE : messages[state.phase] };
   }
 
-  function request(blockedReason = null) {
+  // Durable before the request that names it: rename over any earlier choice,
+  // then persist the directory entry.
+  function writeChoice(requestId, version) {
+    const temporary = path.join(root, `.target-${requestId}.tmp`);
+    let fd;
+    try {
+      fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL |
+        (fs.constants.O_NOFOLLOW || 0), 0o660);
+      fs.writeFileSync(fd, `${JSON.stringify({ requestId, version })}\n`, 'utf8');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd); fd = undefined;
+      fs.renameSync(temporary, path.join(root, 'target.json'));
+      syncDirectory();
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+      try { fs.unlinkSync(temporary); } catch (_) { /* already renamed, or not created */ }
+    }
+  }
+
+  function syncDirectory() {
+    if (process.platform === 'win32') return;
+    const directoryFd = fs.openSync(root, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0));
+    try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
+  }
+
+  function request(blockedReason = null, { version = null } = {}) {
     const state = snapshot();
     if (!state.enabled || state.unavailable) throw failure(UNAVAILABLE, 503);
     if (state.busy) throw failure(state.invalid ? INVALID : 'Une mise à jour est déjà en cours.', 409);
     if (blockedReason) throw failure(String(blockedReason).slice(0, 400), 409);
+    if (version !== null && !offers(version)) throw failure(NOT_OFFERED, 400);
     const pending = { id: crypto.randomUUID(), createdAt: new Date(now()).toISOString() };
     const file = path.join(root, 'request.json');
     const temporary = path.join(root, `.request-${pending.id}.tmp`);
     let fd;
     try {
+      if (version !== null) writeChoice(pending.id, version);
+      else {
+        // A choice of an earlier request can never name this new one; remove
+        // it anyway so the folder only describes the current operation.
+        try { fs.unlinkSync(path.join(root, 'target.json')); } catch (_) { /* absent */ }
+      }
       fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL |
         (fs.constants.O_NOFOLLOW || 0), 0o660);
       fs.writeFileSync(fd, `${JSON.stringify(pending)}\n`, 'utf8');
@@ -144,12 +234,9 @@ function createServerUpdate({ directory, version, now = Date.now } = {}) {
         // replacing a request created since snapshot().
         fs.linkSync(temporary, file);
       }
-      if (process.platform !== 'win32') {
-        // Persist the new directory entry too: a power loss must not free the
-        // maintenance lock after the worker has already begun its transaction.
-        const directoryFd = fs.openSync(root, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0));
-        try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
-      }
+      // Persist the new directory entry too: a power loss must not free the
+      // maintenance lock after the worker has already begun its transaction.
+      syncDirectory();
     } catch (error) {
       if (error.status) throw error;
       if (error.code === 'EEXIST') throw failure('Une mise à jour est déjà en cours.', 409);
@@ -161,7 +248,7 @@ function createServerUpdate({ directory, version, now = Date.now } = {}) {
     return view();
   }
 
-  return { view, request, isBusy: () => snapshot().busy };
+  return { view, request, offers, isBusy: () => snapshot().busy };
 }
 
 module.exports = { createServerUpdate };
