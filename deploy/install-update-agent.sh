@@ -32,6 +32,31 @@ source_file=$(realpath -- "$(dirname "$0")/update-agent.py")
 python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$source_file"
 
 library="$operator_home/.local/lib/karafun-plus"
+# AGENT_VERSION de l'agent, lu sans l'exécuter (1 pour un agent qui n'en a pas).
+agent_version() {
+  python3 - "$1" <<'PY'
+import ast, pathlib, sys
+for node in ast.parse(pathlib.Path(sys.argv[1]).read_text()).body:
+    if isinstance(node, ast.Assign) and [getattr(target, 'id', None) for target in node.targets] == ['AGENT_VERSION']:
+        value = getattr(node.value, 'value', None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            print(value)
+            break
+        raise SystemExit('AGENT_VERSION invalide.')
+else:
+    print(1)
+PY
+}
+# Après un retour à une version précédente, le dépôt contient l'ancien agent :
+# ne jamais remplacer l'agent installé par un plus ancien.
+if [ -f "$library/update-agent.py" ]; then
+  installed_version=$(agent_version "$library/update-agent.py")
+  candidate_version=$(agent_version "$source_file")
+  if [ "$candidate_version" -lt "$installed_version" ]; then
+    echo "L'agent de ce dépôt (version $candidate_version) est plus ancien que l'agent installé (version $installed_version) : réinstallation refusée. Lancer le script de la dernière release, extrait avec git show dans un dossier temporaire (DEPLOIEMENT-SERVEUR.md, section 17)." >&2
+    exit 1
+  fi
+fi
 state="$operator_home/.local/state/karafun-plus-update"
 install -d -o "$operator" -g "$operator" -m 0700 "$state"
 install -d -o "$operator" -g "$operator" -m 0755 "$library"

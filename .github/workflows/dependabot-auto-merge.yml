@@ -1,0 +1,183 @@
+name: Dependabot - fusion automatique
+
+# Correctifs mineurs et de version (patch) de Dependabot : la fusion est
+# activée et GitHub l'attend jusqu'à ce que les contrôles exigés sur la branche
+# soient verts. Sans « Tests OK » et « Sécurité OK » parmi eux, rien n'est
+# activé. Jamais pour une version majeure, l'optimiseur (Timefold et les autres
+# dépendances Maven de solver/ : bilan avant/après d'une vraie soirée exigé par
+# AGENTS.md), Socket.IO et sa pile (protocole KaraFun), une action GitHub
+# (droits de la publication) ni une PR dont un commit ne vient pas de
+# Dependabot ; une fusion activée plus tôt est alors retirée.
+#
+# pull_request_target : le workflow exécuté est toujours celui de main, jamais
+# celui de la PR (un commit poussé sur la branche de Dependabot ne peut pas
+# changer ces règles). Aucune extraction ni exécution du code de la PR ici :
+# seulement ses métadonnées, lues par l'API, et des commandes gh fixes.
+on:
+  # Exception déclarée dans .github/zizmor.yml (dangerous-triggers).
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-fusion-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  fusion:
+    name: Fusion automatique des correctifs
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'jpfroud/karafun-plus'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Vérifie que la PR et son premier commit viennent de Dependabot.
+      - name: Lire la mise à jour proposée
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      # fetch-metadata ne lit que le premier commit. Chaque commit doit avoir
+      # été créé par GitHub pour Dependabot : auteur Dependabot, committer
+      # « GitHub <noreply@github.com> » (compte web-flow) et signature vérifiée,
+      # donc celle de la clé de GitHub. Un auteur se déclare librement, pas
+      # cette signature : tout autre commit (amend, « Update branch », push
+      # d'un mainteneur, modification dans l'interface web) impose une
+      # relecture humaine (SECURITY.md).
+      - name: Vérifier chaque commit de la PR
+        id: commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          autres=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/commits" --paginate \
+            --jq '.[] | select(.author.login != "dependabot[bot]" or .committer.login != "web-flow" or .commit.verification.verified != true) | .sha')
+          if [ -n "$autres" ]; then
+            echo "::warning::Commit qui n'a pas été créé et signé par GitHub pour Dependabot : relecture humaine."
+            echo "dependabot=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "dependabot=oui" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Décider
+        id: decision
+        env:
+          COMMITS: ${{ steps.commits.outputs.dependabot }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPENDENCIES: ${{ steps.meta.outputs.dependency-names }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          PREVIOUS: ${{ steps.meta.outputs.previous-version }}
+          NEW: ${{ steps.meta.outputs.new-version }}
+        run: |
+          decision=relire
+          raison="version majeure ou changement non classé : relecture humaine"
+          case "$UPDATE_TYPE" in
+            version-update:semver-patch | version-update:semver-minor)
+              decision=fusion; raison="correctif mineur ou de version" ;;
+            *)
+              # Image Docker : même étiquette, nouvelle empreinte (correctifs de sécurité de
+              # l'image), quand fetch-metadata lit l'étiquette des deux côtés ; sinon (empreintes
+              # seules dans le message de Dependabot), relecture humaine.
+              if [[ $ECOSYSTEM == docker* ]] && [ -n "$PREVIOUS" ] && [ "$PREVIOUS" = "$NEW" ]; then
+                decision=fusion; raison="nouvelle empreinte de la même image"
+              fi ;;
+          esac
+          # Actions GitHub : la publication les exécute avec ses droits d'écriture
+          # (tag, paquets, attestations) sans que la CI de la PR les essaie toutes.
+          if [ "$ECOSYSTEM" = github_actions ]; then
+            decision=relire; raison="action GitHub exécutée par la publication avec ses droits d'écriture"
+          fi
+          # L'optimiseur calcule la rotation : Timefold, mais aussi Jackson, la
+          # journalisation et les extensions Maven qui le construisent (solver/).
+          if [ "$ECOSYSTEM" = maven ] || [[ $DEPENDENCIES == *ai.timefold* ]]; then
+            decision=timefold; raison="l'optimiseur (Timefold et ses dépendances Maven) calcule la rotation : bilan avant/après exigé"
+          fi
+          # Pile du protocole de la télécommande KaraFun : Socket.IO 2.x, Engine.IO
+          # et leurs transports (ws, xmlhttprequest-ssl).
+          liste=",${DEPENDENCIES// /},"
+          if [[ $liste == *socket.io* || $liste == *engine.io* || $liste == *,ws,* || $liste == *,xmlhttprequest-ssl,* ]]; then
+            decision=relire; raison="Socket.IO et sa pile portent le protocole de KaraFun : essais exigés"
+          fi
+          if [ "$COMMITS" != oui ]; then
+            decision=relire; raison="commit d'un autre auteur que Dependabot : relecture humaine"
+          fi
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          echo "raison=$raison" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Dependabot : $decision"
+            echo
+            echo "- Dépendances : \`$DEPENDENCIES\`"
+            echo "- Type : \`${UPDATE_TYPE:-inconnu}\` ($ECOSYSTEM)"
+            echo "- Raison : $raison"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # La fusion automatique n'attend que les contrôles exigés : sans « Tests OK »
+      # et « Sécurité OK » parmi eux, GitHub fusionnerait avant la CI ou malgré
+      # une analyse de sécurité en échec.
+      - name: Vérifier que la branche exige la CI
+        id: protection
+        if: steps.decision.outputs.decision == 'fusion'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          classique=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BASE" \
+            --jq '[(.protection.required_status_checks.checks // [])[].context, (.protection.required_status_checks.contexts // [])[]] | unique | join(",")' || true)
+          regles=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/$BASE" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | unique | join(",")' || true)
+          exiges=$(printf '%s,%s' "$classique" "$regles" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)
+          manque=''
+          for controle in 'Tests OK' 'Sécurité OK'; do
+            printf '%s\n' "$exiges" | tr ',' '\n' | grep -qxF "$controle" || manque="$manque « $controle »"
+          done
+          if [ -n "$manque" ]; then
+            echo "::warning::La branche $BASE n'exige pas$manque : fusion automatique non activée (SECURITY.md)."
+            echo "- Contrôles exigés manquants :$manque ; fusion automatique non activée." >> "$GITHUB_STEP_SUMMARY"
+            echo "protegee=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "- Contrôles exigés avant fusion : \`$exiges\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "protegee=oui" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Activer la fusion automatique
+        if: steps.decision.outputs.decision == 'fusion' && steps.protection.outputs.protegee == 'oui'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --merge "$PR_URL"
+
+      # Fusion activée plus tôt que les règles actuelles n'autorisent plus (commit
+      # d'un autre auteur, action GitHub, Socket.IO, main sans les contrôles
+      # exigés) : la retirer, aussi quand une étape précédente a échoué.
+      - name: Retirer la fusion automatique
+        if: always() && !(steps.decision.outputs.decision == 'fusion' && steps.protection.outputs.protegee == 'oui')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          # Affectation d'abord : une erreur de l'API fait échouer l'étape, visible.
+          etat=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$etat" = true ]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi
+
+      - name: Expliquer la relecture nécessaire
+        if: github.event.action == 'opened' && !(steps.decision.outputs.decision == 'fusion' && steps.protection.outputs.protegee == 'oui')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          DECISION: ${{ steps.decision.outputs.decision }}
+          RAISON: ${{ steps.decision.outputs.raison }}
+        run: |
+          if [ "$DECISION" = fusion ]; then
+            corps="**Fusion automatique non activée** : \`main\` n'exige pas les contrôles « Tests OK » et « Sécurité OK » (SECURITY.md, réglages GitHub à activer). Fusionner à la main une fois la CI verte."
+          elif [ "$DECISION" = timefold ]; then
+            corps="**Fusion automatique désactivée : optimiseur.** Une nouvelle version de Timefold ou d'une autre dépendance Maven de l'optimiseur (\`solver/\`) peut changer la rotation. Avant de fusionner, lire le bilan avant/après de la soirée de référence produit par le workflow « Bilan Timefold » sur cette PR (attentes, équilibre des passages, anomalies), comme le demande AGENTS.md. Un déséquilibre des passages ne se fusionne pas sans accord explicite."
+          else
+            corps="**Fusion automatique désactivée** ($RAISON). Lire les notes de version et vérifier la CI avant de fusionner ; pour Socket.IO, Engine.IO, ws ou xmlhttprequest-ssl (protocole KaraFun), essayer aussi la télécommande KaraFun."
+          fi
+          gh pr comment "$PR_URL" --body "$corps"

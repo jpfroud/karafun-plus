@@ -62,12 +62,23 @@ function copyParts(args) {
 const workdir = stage => path.posix.normalize(inStage(stage, 'WORKDIR').at(-1).args);
 
 test('D1 Dockerfile et contrat', () => {
-  assert.deepEqual(dockerfile.filter(i => i.op === 'FROM').map(i => i.args), [
+  // Chaque base épinglée par l'empreinte de son index (Dependabot la met à jour).
+  const froms = dockerfile.filter(i => i.op === 'FROM').map(i => i.args);
+  for (const from of froms) assert.match(from, /^(?:--platform=\$BUILDPLATFORM )?\S+:\S+@sha256:[0-9a-f]{64}(?: AS \w+)?$/, `base non épinglée : ${from}`);
+  assert.deepEqual(froms.map(from => from.replace(/@sha256:[0-9a-f]{64}/, '')), [
     '--platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-21 AS solveur',
     'eclipse-temurin:21-jdk AS jre',
     '--platform=$BUILDPLATFORM node:22-bookworm-slim AS deps',
     'node:22-bookworm-slim',
   ], 'bases et étapes');
+  assert.equal(froms[2].split(' ')[1].split('@')[1], froms[3].split('@')[1], 'même Node pour les dépendances et l’exécution');
+  // Dépendances installées sans leurs scripts ; ni npm ni yarn dans l'image d'exécution.
+  const install = inStage(stageNamed('deps'), 'RUN').find(i => /\bnpm ci\b/.test(i.args));
+  assert.ok(install && /--omit=dev\b/.test(install.args) && /--ignore-scripts\b/.test(install.args), 'npm ci --omit=dev --ignore-scripts');
+  const cleanup = inStage(Math.max(...dockerfile.map(i => i.stage)), 'RUN').map(i => i.args).join(' ');
+  for (const removed of ['/usr/local/lib/node_modules', '/usr/local/bin/npm', '/usr/local/bin/npx', '/usr/local/bin/corepack', '/opt/yarn-v*']) {
+    assert.ok(cleanup.includes(removed), `${removed} retiré de l’image d’exécution`);
+  }
 
   // Environnement de l'image : exactement ces cinq variables, aucune URL ni clé.
   const envs = dockerfile.filter(i => i.op === 'ENV');

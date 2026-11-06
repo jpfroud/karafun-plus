@@ -17,7 +17,7 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 const crypto = require('crypto');
-const { createServerUpdate } = require('./server-update');
+const { createServerUpdate, compareVersions, NOT_OFFERED } = require('./server-update');
 const zlib = require('zlib');
 const { spawn, execFileSync } = require('child_process');
 const QRCode = require('qrcode');
@@ -53,7 +53,7 @@ const { SoloInvitations } = require('./solo-invitations');
 const { PrivateEvent, clientKey } = require('./private-event');
 const { Catalog } = require('./catalog');
 const { BattleVote, VOTE_DURATION_MS, COOLDOWN_MS, REJECTED_COOLDOWN_MS, MIN_VOTERS } = require('./battle-vote');
-const { NightStateStore, snapshotNight, restoreNight } = require('./night-state');
+const { NightStateStore, snapshotNight, restoreNight, FULL_RESTORE_SINCE } = require('./night-state');
 const { DEFAULT_REPEAT_MIN, songNotice, queueRepeats } = require('./song-repeats');
 const { Lyrics } = require('./lyrics');
 const { SpotifyLink, SpotifyAutomation, OPTION_DEFAULTS: SPOTIFY_DEFAULTS } = require('./spotify');
@@ -671,8 +671,19 @@ function updateRequiresConfirmation() {
   return !!(current || q.length || sched.Q.length || [...sched.people.values()].some(person => !person.withdrawnAt));
 }
 
+// Soirée gardée en mémoire jusqu'à « Nouvelle soirée », même quand plus
+// personne n'est inscrit : une version antérieure à FULL_RESTORE_SINCE en
+// effacerait les priorités, le prochain annoncé et l'historique des passages.
+// Seulement l'état de l'application : un titre mis directement dans KaraFun,
+// qui reste après « Nouvelle soirée », n'en fait pas partie.
+function nightInMemory() {
+  return sched.people.size > 0 || sched.Q.length > 0 || sched.playedSongs.length > 0 || tracked.length > 0;
+}
+
 function updateState() {
-  return { ...serverUpdate.view(updateBlockedReason()), requiresConfirmation: updateRequiresConfirmation() };
+  return { ...serverUpdate.view(updateBlockedReason()), requiresConfirmation: updateRequiresConfirmation(),
+    // Plus ancienne version proposée tant qu'une soirée est en mémoire (voir la route).
+    fullRestoreSince: FULL_RESTORE_SINCE, nightInMemory: nightInMemory() };
 }
 
 function saveTables() {
@@ -5016,9 +5027,22 @@ const handlers = {
   // ---------------- bar
   // Un code vide est refusé : il effaçait le code retenu sans rien connecter.
   'POST /api/staff/update': async (req, res, body) => {
-    if (!body || Array.isArray(body) || Object.keys(body).some(key => key !== 'confirmActive') ||
-        ('confirmActive' in body && typeof body.confirmActive !== 'boolean')) {
-      throw new Error('Seule la confirmation de la soirée est acceptée pour la mise à jour.');
+    if (!body || Array.isArray(body) || Object.keys(body).some(key => key !== 'confirmActive' && key !== 'version') ||
+        ('confirmActive' in body && typeof body.confirmActive !== 'boolean') ||
+        ('version' in body && (typeof body.version !== 'string' || !/^v\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(body.version)))) {
+      throw new Error('Seuls la confirmation de la soirée et une version proposée sont acceptés pour la mise à jour.');
+    }
+    // Une version précise : seulement l'une de celles que l'agent de l'hôte
+    // publie (versions.json), qu'il vérifie encore sur le dépôt officiel.
+    const version = 'version' in body ? body.version : null;
+    if (version !== null && !serverUpdate.offers(version)) throw new Error(NOT_OFFERED);
+    // Tant qu'une soirée est en mémoire, seulement une version qui reprend
+    // toute la file : une plus ancienne perdrait priorités, prochain annoncé et
+    // historique des passages (FULL_RESTORE_SINCE, night-state.js).
+    if (version !== null && compareVersions(version, FULL_RESTORE_SINCE) < 0 && nightInMemory()) {
+      const error = new Error(`Tant que la soirée n’est pas remplacée par « Nouvelle soirée », choisis une version à partir de la ${FULL_RESTORE_SINCE} : une version plus ancienne perdrait les priorités, le prochain annoncé et l’équilibre des passages.`);
+      error.status = 409;
+      throw error;
     }
     // Le refus technique prime sur la confirmation ; aucune action KaraFun
     // ou Spotify déjà lancée ne doit finir après notre instantané.
@@ -5030,7 +5054,7 @@ const handlers = {
       throw error;
     }
     saveNight({ required: true });
-    serverUpdate.request(blockedReason);
+    serverUpdate.request(blockedReason, { version });
     res.nightAlreadySaved = true;
     return { ok: true, update: updateState() };
   },

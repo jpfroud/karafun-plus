@@ -36,6 +36,8 @@ PC du bar (Windows) : KaraFun et sa Télécommande, comme avant.
 
 Le serveur fait tourner deux conteneurs, décrits par `deploy/compose.yaml`. `caddy` reçoit tout le trafic d'Internet et obtient les certificats de Let's Encrypt. `app` est la file elle-même, en mode serveur.
 
+Les deux conteneurs tournent sans aucune capacité Linux ni élévation de privilèges ; `caddy` garde seulement le droit d'écouter les ports 80 et 443 et celui de lire son `Caddyfile`, quels que soient les droits de ce fichier sur l'hôte. Sa version est fixée par `deploy/compose.yaml`, avec l'empreinte de son image : chaque correctif de Caddy arrive avec une release de l'application, puis par la mise à jour de la section 17. L'image de l'application ne contient ni npm ni yarn.
+
 Le nom des clients (`clients.exemple.fr` dans ce guide) mène au port clients 3001. Le nom de la page du bar (`bar.exemple.fr`) mène au port 3000, derrière un mot de passe demandé par Caddy en plus de la clé du bar. Le port 3000 est aussi publié sur `127.0.0.1:3000` de l'hôte, pour le tunnel SSH de l'administrateur. Le port 3001 n'est jamais publié. Le pare-feu n'ouvre que 22, 80 et 443 (443 aussi en UDP).
 
 Une seule file à la fois : jamais le kit Windows en même temps que le serveur. Deux files se disputeraient la Télécommande de KaraFun, et leurs soirées divergeraient.
@@ -567,14 +569,84 @@ Le service et son minuteur `karafun-plus-update` tournent sur l'hôte. Le code d
 et son journal de transaction restent hors du dépôt remplacé ; son état privé est dans
 `~/.local/state/karafun-plus-update`. Seul le dossier d'échange `maintenance` est monté
 dans le conteneur. L'application n'obtient ni socket Docker, ni clé SSH, ni accès sudo.
-La demande ne contient qu'un identifiant et une date : aucune commande, adresse de
-registre, version ou option n'est fournie par le navigateur. Le dépôt de publication
-et le registre sont fixés dans l'agent. Le minuteur traite les demandes toutes les dix
-secondes, sans installer de version à l'insu du gérant.
+La demande ne contient qu'un identifiant et une date. Pour une version choisie (plus bas),
+seul son numéro `vX.Y.Z` s'y ajoute, dans un fichier à part que l'agent vérifie. Aucune
+commande, adresse de registre, image ou empreinte n'est fournie par le navigateur. Le dépôt
+de publication et le registre sont fixés dans l'agent. Le minuteur traite les demandes toutes
+les dix secondes, sans installer de version à l'insu du gérant.
 
 Cette fonction concerne l'application du VPS. Le mode PC reste sans bouton de mise
 à jour serveur ; sa mise à jour se fait en remplaçant le kit. Les correctifs du système
 Ubuntu et de Docker restent la maintenance de la section 18.
+
+### Revenir à une version précédente depuis la page du bar
+
+Si une nouvelle version pose problème, la carte **Plus → Mise à jour** propose aussi
+d'installer une autre version publiée. Choisis-la dans la liste, en général celle marquée
+« version précédente », puis touche **Installer cette version**. Une confirmation est
+toujours demandée. La suite est celle d'une mise à jour : sauvegarde, installation et
+contrôle du démarrage. Si la version choisie ne démarre pas, la version en service revient
+automatiquement, avec la sauvegarde des données.
+
+La liste vient de l'agent de l'hôte, qui relit les releases du dépôt une fois par heure.
+Elle ne garde que les releases stables et complètes, à partir de la v3.1.2, la première
+installée par cet agent. Avant tout téléchargement, l'agent vérifie encore la version choisie
+sur le dépôt, puis l'empreinte de son image, comme pour une mise à jour. Sans lecture
+réussie depuis 3 heures, la liste disparaît de la page.
+
+Les tables, les chansons et l'ordre de passage sont conservés. Une fonction apparue après
+la version choisie n'y existe pas. Tant que la soirée n'est pas remplacée par « Nouvelle
+soirée », même quand plus personne n'est inscrit, les versions antérieures à la v3.2.0 sont
+grisées (« après la soirée seulement ») et refusées : elles reprendraient la soirée sans les
+priorités, le prochain annoncé ni l'historique des passages, perdus aussi au retour à une
+version récente. Après « Nouvelle soirée », elles restent possibles. Les réglages de `.env`
+ajoutés depuis restent en place pour la mise à jour suivante ; une version qui demande un
+réglage absent est refusée avant remplacement.
+
+Après ce retour, **Vérifier et mettre à jour** réinstalle la dernière version, celle qui
+posait problème : ne le toucher qu'une fois une version corrigée publiée. Une version
+publiée avant ce choix n'a pas la liste ; ce bouton reste alors le moyen de revenir à la
+dernière version.
+
+La version choisie revient avec son `deploy/compose.yaml`. Jusqu'à la v3.2.0, ce fichier
+n'avait pas les protections décrites à la section 1 (aucune capacité Linux, aucune
+élévation de privilèges, image Caddy épinglée) : elles reviennent avec la mise à jour
+suivante.
+
+Pour retirer de la liste une release défectueuse ou vulnérable, le mainteneur la marque
+« Pre-release » sur GitHub. L'agent ne la propose plus et refuse alors de l'installer.
+
+Un agent installé avant cette fonction ne publie pas la liste : la carte montre seulement
+le bouton de mise à jour. Le code de l'agent ne suit pas les mises à jour. Après la mise à
+jour qui l'apporte, relance donc une fois son installation, hors soirée, quand aucune
+mise à jour n'est en cours. C'est aussi un correctif de sécurité : le nouvel agent fixe les
+droits de ses fichiers sur le fichier ouvert, plus par leur chemin dans le dossier partagé
+avec le conteneur.
+
+```bash
+sudo bash deploy/install-update-agent.sh --repo /home/karaoke/karafun-plus
+```
+
+Le script d'installation publié après la v3.2.0 refuse un agent plus ancien que celui déjà
+installé ; celui de la v3.2.0 ou d'avant ne le vérifie pas. Après un retour à une version
+précédente, le dépôt contient l'ancien script et l'ancien agent : lance alors ceux de la
+dernière release, extraits dans un dossier temporaire, sans changer la version du dépôt
+(la mise à jour suivante prend sa révision pour celle en service). Le script installe
+l'agent posé à côté de lui ; `vX.Y.Z` est la dernière release, page **Releases** du dépôt :
+
+```bash
+cd /home/karaoke/karafun-plus && git fetch --tags
+dossier=$(mktemp -d)
+git show vX.Y.Z:deploy/install-update-agent.sh > "$dossier/install-update-agent.sh"
+git show vX.Y.Z:deploy/update-agent.py > "$dossier/update-agent.py"
+sudo bash "$dossier/install-update-agent.sh" --repo /home/karaoke/karafun-plus
+```
+
+Cette première mise à jour vers une version qui fixe l'image de Caddy (après la v3.2.0) est
+faite par l'ancien agent, qui ne télécharge cette image qu'au moment du remplacement. Sur
+une connexion lente, télécharge-la d'abord, hors soirée : `docker pull` de l'image citée à
+la ligne `image: caddy:` du `deploy/compose.yaml` de la nouvelle version (lisible avec
+`git show` sur son tag). Les agents suivants la téléchargent avant tout arrêt.
 
 ### Procédure manuelle de maintenance
 

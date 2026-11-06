@@ -13,7 +13,7 @@ const exists = file => fs.existsSync(path.join(root, ...file.split('/')));
 const flat = text => text.replace(/\s+/g, ' ');
 
 const GUIDE = 'DEPLOIEMENT-SERVEUR.md';
-const DOCS = ['README.md', 'GUIDE-BAR.md', 'LISEZMOI.txt', 'CONTEXTE-REPRISE.md', '.github/RELEASE.md', 'AGENTS.md', GUIDE];
+const DOCS = ['README.md', 'GUIDE-BAR.md', 'LISEZMOI.txt', 'CONTEXTE-REPRISE.md', '.github/RELEASE.md', 'AGENTS.md', 'SECURITY.md', 'CONTRIBUTING.md', GUIDE];
 // Variables du mode serveur et de l'exploitation (épopée #18).
 const CONTRAT = ['KARAOKE_MODE', 'KARAOKE_BIND', 'KARAOKE_PUBLIC_BIND', 'KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL',
   'KARAOKE_STAFF_KEY_FILE', 'KARAOKE_CLIENT_IP_HEADER', 'KARAOKE_TRUSTED_PROXIES', 'KARAOKE_SOLVER_JVM_ARGS', 'KARAOKE_UPDATE_DIR'];
@@ -83,7 +83,7 @@ const TLD = ['[a-z]{2}', 'com', 'org', 'net', 'info', 'biz', 'app', 'dev', 'clou
   'bar', 'pub', 'fun', 'club', 'paris', 'bzh', 'live', 'events', 'music', 'pro', 'shop', 'store', 'top', 'cafe',
   'restaurant', 'party', 'karaoke', 'space', 'world'];
 // Extensions des fichiers cités par les documents : jamais un domaine visé.
-const EXTENSIONS = new Set(['md', 'js', 'sh', 'gz', 'conf', 'exe', 'bat', 'zip', 'json', 'yaml', 'txt', 'tar', 'log', 'html']);
+const EXTENSIONS = new Set(['md', 'js', 'sh', 'py', 'gz', 'conf', 'exe', 'bat', 'zip', 'json', 'yaml', 'txt', 'tar', 'log', 'html']);
 // Tout autre mot pointé, quel que soit son dernier niveau (.studio), accents
 // compris, sauf un membre de code : après « . », « / », « \ » ou « $ », ou
 // suivi de « ( ».
@@ -309,4 +309,43 @@ test('J10 phrases du guide', () => {
     const words = sentence.split(/\s+/).filter(Boolean);
     assert.ok(words.length <= 40, `${GUIDE} : phrase de ${words.length} mots : ${words.slice(0, 8).join(' ')}`);
   }
+});
+
+test('J14 la règle des tags v* laisse la publication manuelle créer son tag', () => {
+  // « Run workflow » crée le tag avec le jeton du workflow (github-actions[bot]),
+  // qui ne peut pas contourner une règle : restreindre la création bloquerait
+  // toute release manuelle. Un tag publié ne doit plus bouger ni disparaître.
+  const rule = flat(read('SECURITY.md')).match(/6\. \*\*Rulesets → tags `v\*`\*\*.*?(?= \d\. \*\*|$)/);
+  assert.ok(rule, 'SECURITY.md : réglage des tags v*');
+  assert.match(rule[0], /« Restrict updates »/);
+  assert.match(rule[0], /« Restrict deletions »/);
+  assert.doesNotMatch(rule[0], /création[^.]*réservée|« Restrict creations » activ/);
+  assert.match(read('.github/workflows/release.yml'), /git push origin "refs\/tags\/\$env:INPUT_VERSION"/, 'tag créé par le workflow');
+});
+
+test('J13 le guide donne l’âge au-delà duquel la page ignore la liste des versions', () => {
+  const declared = read('server-update.js').match(/CATALOGUE_MAX_AGE_MS = (\d+) \* 3600 \* 1000;/);
+  assert.ok(declared, 'server-update.js : CATALOGUE_MAX_AGE_MS en heures');
+  assert.match(flat(read(GUIDE)), new RegExp(`Sans lecture réussie depuis ${declared[1]} heures, la liste disparaît de la page`));
+});
+
+test('J12 le guide ne prête pas aux anciens scripts le refus d’un agent plus ancien', () => {
+  // Ce refus n'existe que dans les scripts publiés après la v3.2.0 : après un
+  // retour à une version précédente, le dépôt contient l'ancien script.
+  assert.match(flat(read(GUIDE)), /celui de la v3\.2\.0 ou d'avant ne le vérifie pas/);
+  // Remède : les fichiers de la dernière release extraits à part, le dépôt
+  // restant sur la version en service (sa révision sert au retour arrière).
+  for (const file of ['install-update-agent.sh', 'update-agent.py']) {
+    assert.match(read(GUIDE), new RegExp(`git show vX\\.Y\\.Z:deploy/${file.replace('.', '\\.')} > "\\$dossier/${file.replace('.', '\\.')}"`), file);
+  }
+  assert.doesNotMatch(flat(read(GUIDE)), /`git checkout` de son tag\) avant de relancer l'installation/);
+  const installer = read('deploy/install-update-agent.sh');
+  assert.match(installer, /source_file=\$\(realpath -- "\$\(dirname "\$0"\)\/update-agent\.py"\)/, 'agent pris à côté du script');
+  assert.match(installer, /réinstallation refusée\. Lancer le script de la dernière release, extrait avec git show dans un dossier temporaire/);
+});
+
+test('J11 le guide cite la limite des retours en soirée de night-state.js', () => {
+  const { FULL_RESTORE_SINCE } = require('../night-state');
+  assert.ok(flat(read(GUIDE)).includes(`versions antérieures à la ${FULL_RESTORE_SINCE}`),
+    `${GUIDE} §17 : citer FULL_RESTORE_SINCE (${FULL_RESTORE_SINCE}), la version sous laquelle un retour est refusé pendant une soirée`);
 });

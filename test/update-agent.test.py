@@ -1,11 +1,17 @@
 """Host updater regressions. No Docker, GitHub, SSH or real evening is used."""
+import datetime as dt
 import importlib.util
 import io
 import json
+import os
+import shutil
 from pathlib import Path
+import stat
 import subprocess
 import tarfile
 import tempfile
+import time
+import types
 import urllib.error
 import unittest
 from unittest.mock import MagicMock, patch
@@ -21,6 +27,7 @@ HASH = "sha256:" + "c" * 64
 OLD_IMAGE = "sha256:" + "d" * 64
 CONTAINER = "e" * 64
 ARCHIVE = "sauvegardes/karafun-plus-20260101-000000Z.tar.gz"
+CADDY = "caddy:2.11.8@sha256:" + "f" * 64
 
 
 def release(version="v1.1.0"):
@@ -49,15 +56,25 @@ class FakeAgent(MODULE.Agent):
         self.candidate_env = "KARAFUN_PLUS_VERSION=\nKEY=\n"
         self.origin = "https://github.com/" + MODULE.REPOSITORY + ".git"
         self.dirty = ""
+        # Answers per GitHub path (latest release otherwise), versions whose
+        # start-up checks fail, and the version label of the pulled image.
+        self.payloads = {}
+        self.github_paths = []
+        self.unhealthy = set()
+        self.image_version = "v1.1.0"
+        self.caddy_local = False  # image de Caddy épinglée déjà sur l'hôte
+        # deploy/compose.yaml de la version candidate : Caddy épinglé.
+        self.candidate_compose = "services:\n  caddy:\n    image: " + CADDY + "\n  app:\n    image: ghcr.io/x\n"
 
     def status(self, phase, message):
         self.phases.append(phase)
         super().status(phase, message)
 
-    def github(self):
+    def github(self, path="releases/latest"):
+        self.github_paths.append(path)
         if self.fail == "github":
             raise MODULE.UpdateError("Version inaccessible.")
-        return self.payload
+        return self.payloads.get(path, self.payload)
 
     def public_health(self):
         if self.fail == "proxy" and "KARAFUN_PLUS_VERSION=v1.1.0" in (self.deploy / ".env").read_text():
@@ -91,7 +108,7 @@ class FakeAgent(MODULE.Agent):
         if arguments[:2] == ["git", "rev-parse"]:
             return OLD if arguments[-1] == "HEAD" else NEW
         if arguments[:2] == ["git", "show"]:
-            return self.candidate_env
+            return self.candidate_compose if arguments[-1].endswith(":deploy/compose.yaml") else self.candidate_env
         if arguments[:2] == ["git", "checkout"]:
             if self.fail == "install" and arguments[-1] == NEW:
                 raise MODULE.UpdateError("Installation refusée.")
@@ -99,13 +116,17 @@ class FakeAgent(MODULE.Agent):
         if arguments[:3] == ["docker", "buildx", "imagetools"]:
             return json.dumps({"digest": self.remote_digest})
         if arguments[:2] == ["docker", "pull"]:
-            if self.fail == "pull":
+            if self.fail == "pull" or (self.fail == "caddy-pull" and arguments[-1].startswith("caddy:")):
                 raise MODULE.UpdateError("Téléchargement refusé.")
             return ""
+        if arguments[:3] == ["docker", "image", "inspect"] and arguments[-1].startswith("caddy:"):
+            if not self.caddy_local:
+                raise MODULE.UpdateError("Image absente.")
+            return '"sha256:' + "f" * 64 + '"'
         if arguments[:3] == ["docker", "image", "inspect"]:
             return json.dumps([{"Config": {"Labels": {
                 "org.opencontainers.image.revision": self.revision,
-                "org.opencontainers.image.version": "v1.1.0"}}}])
+                "org.opencontainers.image.version": self.image_version}}}])
         if arguments[:2] == ["docker", "inspect"]:
             return json.dumps([{"Image": OLD_IMAGE, "State": {"Running": self.running}}])
         if arguments[0] == "bash":
@@ -121,6 +142,8 @@ class FakeAgent(MODULE.Agent):
                 version = arguments[-1]
                 if version == "v1.1.0" or self.fail == "rollback-health":
                     raise MODULE.UpdateError("Contrôle refusé.")
+            if "exec" in arguments and arguments[-1] in self.unhealthy:
+                raise MODULE.UpdateError("Contrôle refusé.")
             if "run" in arguments:
                 if self.fail == "restore":
                     raise MODULE.UpdateError("Restauration refusée.")
@@ -381,6 +404,88 @@ class UpdateLifecycle(unittest.TestCase):
         self.assertEqual(self.agent.commands, [])
 
 
+class CaddyImage(unittest.TestCase):
+    """Caddy pinned by digest is downloaded before anything stops."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.agent = FakeAgent(self.temporary.name)
+        sleeper = patch.object(MODULE.time, "sleep")
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+    def first(self, predicate):
+        return next(i for i, command in enumerate(self.agent.commands) if predicate(command))
+
+    def test_pinned_caddy_is_pulled_before_anything_stops(self):
+        self.agent.execute()
+        self.assertEqual(self.agent.result()["phase"], "succeeded")
+        pulled = self.first(lambda command: command == ["docker", "pull", CADDY])
+        self.assertLess(pulled, self.first(lambda command: "stop" in command), "téléchargé avant tout arrêt")
+
+    def test_pinned_caddy_already_on_the_host_is_not_downloaded_again(self):
+        # Même empreinte que la version en service : Docker Hub injoignable ne
+        # doit pas refuser la mise à jour.
+        self.agent.caddy_local = True
+        self.agent.fail = "caddy-pull"
+        self.agent.execute()
+        self.assertEqual(self.agent.result()["phase"], "succeeded")
+        self.assertFalse(any(command[:2] == ["docker", "pull"] and command[-1].startswith("caddy") for command in self.agent.commands))
+
+    def test_older_release_with_floating_caddy_keeps_the_local_image(self):
+        self.agent.candidate_compose = "services:\n  caddy:\n    image: caddy:2\n"
+        self.agent.execute()
+        self.assertEqual(self.agent.result()["phase"], "succeeded")
+        self.assertFalse(any(command[:2] == ["docker", "pull"] and command[-1].startswith("caddy") for command in self.agent.commands))
+
+    def test_refused_caddy_download_or_ambiguous_compose_fails_before_stopping(self):
+        for name in ["téléchargement refusé", "deux images de Caddy"]:
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                agent = FakeAgent(directory)
+                if name == "téléchargement refusé":
+                    agent.fail = "caddy-pull"
+                else:
+                    agent.candidate_compose = f"    image: {CADDY}\n    image: {CADDY}\n"
+                agent.execute()
+                self.assertEqual(agent.result()["phase"], "failed")
+                self.assertFalse(any("stop" in command for command in agent.commands))
+                self.assertFalse(agent.transaction_file.exists())
+
+
+@unittest.skipIf(os.name == "nt" or not shutil.which("bash"), "bash absent")
+class AgentReinstall(unittest.TestCase):
+    """install-update-agent.sh never replaces the installed agent by an older one."""
+    SCRIPT = Path(__file__).resolve().parents[1] / "deploy" / "install-update-agent.sh"
+
+    def run_check(self, installed, candidate):
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        start = text.index("# AGENT_VERSION de l'agent")
+        end = text.index("\nfi\n", text.index('if [ -f "$library/update-agent.py" ]')) + 4
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "lib").mkdir()
+            if installed is not None:
+                (root / "lib" / "update-agent.py").write_text(installed)
+            (root / "candidate.py").write_text(candidate)
+            script = root / "check.sh"
+            script.write_text("set -euo pipefail\nlibrary=%s\nsource_file=%s\n%s\necho installable\n"
+                              % (root / "lib", root / "candidate.py", text[start:end]))
+            return subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=30)
+
+    def test_older_agent_is_refused_and_same_or_newer_installed(self):
+        current = "AGENT_VERSION = %d\n" % MODULE.AGENT_VERSION
+        self.assertGreaterEqual(MODULE.AGENT_VERSION, 2, "premier agent versionné : 2")
+        for installed, candidate, accepted in [(None, current, True), (current, current, True),
+                                               ("x = 1\n", current, True), (current, "x = 1\n", False),
+                                               ("AGENT_VERSION = 3\n", current, False)]:
+            with self.subTest(installed=installed, candidate=candidate):
+                result = self.run_check(installed, candidate)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                if not accepted:
+                    self.assertIn("réinstallation refusée", result.stderr)
+        self.assertNotEqual(self.run_check(current, "AGENT_VERSION = 'x'\n").returncode, 0, "version illisible refusée")
+
+
 class EveningPreservation(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -461,7 +566,498 @@ class EveningPreservation(unittest.TestCase):
         self.assertEqual(self.agent.terminal_trees, [after_success])
 
 
+def choosing(agent, version="v3.1.3", installed="v3.2.0", request_id=None):
+    """The bar chose `version` while `installed` runs (target.json, then request)."""
+    (agent.deploy / ".env").write_text(f"KARAFUN_PLUS_VERSION={installed}\nKEY=literal-secret\n")
+    MODULE.atomic_json(agent.ipc / "target.json", {"requestId": request_id or agent.receipt, "version": version})
+    agent.payloads["releases/tags/" + version] = release(version)
+    agent.image_version = version
+    return agent
+
+
+def interrupted(agent, current, target):
+    """Installation of `target` over `current` cut off after the candidate started."""
+    agent.private.mkdir()
+    agent.current, agent.target, agent.request_id = current, target, agent.receipt
+    transaction = agent.begin(NEW, MODULE.IMAGE + "@" + HASH)
+    agent.backup(transaction)
+    agent.install(transaction)
+    agent.commands.clear()
+    agent.github_paths.clear()
+    return transaction
+
+
+def stale(agent):
+    """target.json left by an earlier request beside a new request for the latest."""
+    choosing(agent, request_id=str(uuid.uuid4()))
+    (agent.deploy / ".env").write_text("KARAFUN_PLUS_VERSION=v1.0.0\nKEY=literal-secret\n")
+    agent.image_version = "v1.1.0"
+    return agent
+
+
+class ChosenVersion(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.agent = choosing(FakeAgent(self.temporary.name))
+        sleeper = patch.object(MODULE.time, "sleep")
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+    def test_older_release_is_installed_with_backup_and_checks(self):
+        self.agent.execute()
+        result = self.agent.result()
+        self.assertEqual(result["phase"], "succeeded")
+        self.assertEqual((result["currentVersion"], result["targetVersion"]), ("v3.1.3", "v3.1.3"))
+        self.assertEqual(self.agent.github_paths, ["releases/tags/v3.1.3"], "jamais la dernière version à la place du choix")
+        self.assertEqual(self.agent.phases, ["checking", "downloading", "backing-up", "installing", "verifying", "succeeded"])
+        self.assertIn("KARAFUN_PLUS_VERSION=v3.1.3\n", (self.agent.deploy / ".env").read_text())
+        self.assertIn(["git", "checkout", "--detach", NEW], self.agent.commands)
+        self.assertTrue(any(command[0] == "bash" for command in self.agent.commands), "sauvegarde avant installation")
+        health = [command for command in self.agent.commands if "exec" in command]
+        self.assertEqual(health[-1][-1], "v3.1.3", "la version choisie passe les contrôles de démarrage")
+        self.assertFalse(self.agent.transaction_file.exists())
+
+    def test_the_installed_release_is_never_restarted(self):
+        choosing(self.agent, version="v3.2.0")
+        self.agent.execute()
+        self.assertEqual(self.agent.result()["phase"], "succeeded")
+        self.assertEqual(self.agent.commands, [])
+
+    def test_a_chosen_release_failing_its_checks_brings_back_the_running_one(self):
+        self.agent.unhealthy = {"v3.1.3"}
+        self.agent.execute()
+        result = self.agent.result()
+        self.assertEqual(result["phase"], "rolled-back")
+        self.assertEqual(result["currentVersion"], "v3.2.0")
+        self.assertEqual((self.agent.deploy / ".env").read_text(), "KARAFUN_PLUS_VERSION=v3.2.0\nKEY=literal-secret\n")
+        restore = next(i for i, command in enumerate(self.agent.commands) if "run" in command)
+        self.assertIn("up", self.agent.commands[restore + 1], "données remises avant le redémarrage de la version en service")
+        self.assertEqual(self.agent.commands[-1][-1], "v3.2.0", "la version en service repasse les contrôles")
+
+    def test_unreadable_or_unsupported_choice_fails_without_any_command(self):
+        cases = [lambda r: {"requestId": r, "version": "v3.1.1"},
+                 lambda r: {"requestId": r, "version": "v3.1.3-rc.1"},
+                 lambda r: {"requestId": r, "version": "latest"},
+                 lambda r: {"requestId": r, "version": "v3.1.3;touch evil"},
+                 # Chiffre arabe-indien : refusé comme par l'application (ASCII seul).
+                 lambda r: {"requestId": r, "version": "v3.1.1\u0663"},
+                 lambda r: {"requestId": r, "version": ["v3.1.3"]},
+                 lambda r: {"requestId": r, "version": "v3.1.3", "image": "ghcr.io/elsewhere/app"},
+                 lambda r: {"requestId": r.upper(), "version": "v3.1.3"},
+                 lambda r: [r, "v3.1.3"], lambda r: "{", lambda r: "x" * 5000]
+        for number, case in enumerate(cases):
+            with self.subTest(case=number), tempfile.TemporaryDirectory() as directory:
+                agent = choosing(FakeAgent(directory))
+                content = case(agent.receipt)
+                (agent.ipc / "target.json").write_text(content if isinstance(content, str) else json.dumps(content))
+                agent.execute()
+                self.assertEqual(agent.result()["phase"], "failed", "le gérant est libéré avec un échec")
+                self.assertEqual(agent.commands, [])
+                self.assertEqual(agent.github_paths, [])
+                self.assertFalse(agent.transaction_file.exists())
+
+    def test_choice_of_another_request_is_ignored_whatever_its_shape(self):
+        # Seul le choix de cette demande compte : un fichier laissé par une autre,
+        # même illisible pour elle, ne bloque jamais les demandes suivantes.
+        for number, content in enumerate([{"requestId": str(uuid.uuid4()), "version": "v3.1.3", "image": "x"},
+                                          {"requestId": "not-a-uuid", "version": "v3.1.3"},
+                                          {"requestId": str(uuid.uuid4()).upper(), "version": ["v3.1.3"]},
+                                          {"requestId": str(uuid.uuid4())}]):
+            with self.subTest(case=number), tempfile.TemporaryDirectory() as directory:
+                agent = choosing(FakeAgent(directory))
+                (agent.ipc / "target.json").write_text(json.dumps(content))
+                agent.execute()
+                self.assertEqual(agent.github_paths, ["releases/latest"], "demande traitée comme une mise à jour")
+                self.assertEqual(agent.result()["phase"], "succeeded")
+
+    def test_choice_left_by_an_earlier_request_is_ignored(self):
+        choosing(self.agent, request_id=str(uuid.uuid4()))
+        (self.agent.deploy / ".env").write_text("KARAFUN_PLUS_VERSION=v1.0.0\nKEY=literal-secret\n")
+        self.agent.image_version = "v1.1.0"
+        self.agent.execute()
+        self.assertEqual(self.agent.github_paths, ["releases/latest"])
+        self.assertEqual(self.agent.result()["currentVersion"], "v1.1.0")
+
+    def test_withdrawn_or_mismatched_release_is_refused_before_stopping(self):
+        for payload in [dict(release("v3.1.3"), prerelease=True), dict(release("v3.1.3"), draft=True),
+                        release("v3.2.0"), dict(release("v3.1.3"), body="image retirée")]:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                agent = choosing(FakeAgent(directory))
+                agent.payloads["releases/tags/v3.1.3"] = payload
+                agent.execute()
+                self.assertEqual(agent.result()["phase"], "failed")
+                self.assertFalse(any("stop" in command for command in agent.commands))
+
+    def test_chosen_release_may_need_fewer_settings_but_never_more(self):
+        # Après un retour de vN à vN-2, vN-1 doit rester possible même si vN a
+        # ajouté un réglage : il reste dans .env pour la suite.
+        for version in ["v3.1.3", "v3.3.0"]:
+            with self.subTest(version=version, cas="moins de réglages"), tempfile.TemporaryDirectory() as directory:
+                agent = choosing(FakeAgent(directory), version=version)
+                agent.candidate_env = "KARAFUN_PLUS_VERSION=\n"
+                agent.execute()
+                self.assertEqual(agent.result()["phase"], "succeeded")
+                self.assertEqual((agent.deploy / ".env").read_text(),
+                                 f"KARAFUN_PLUS_VERSION={version}\nKEY=literal-secret\n", "réglage gardé pour la suite")
+            with self.subTest(version=version, cas="plus de réglages"), tempfile.TemporaryDirectory() as directory:
+                agent = choosing(FakeAgent(directory), version=version)
+                agent.candidate_env = "KARAFUN_PLUS_VERSION=\nKEY=\nNEW=\n"
+                agent.execute()
+                self.assertEqual(agent.result()["phase"], "failed")
+                self.assertFalse(any("stop" in command for command in agent.commands))
+
+    def test_latest_update_still_requires_the_same_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = FakeAgent(directory)
+            agent.candidate_env = "KARAFUN_PLUS_VERSION=\n"
+            agent.execute()
+            self.assertEqual(agent.result()["phase"], "failed")
+
+
+class ChosenVersionStates(unittest.TestCase):
+    """Each kind of request (older, newer, installed or stale choice) through
+    success, refusal, roll-back, recovery after an interruption and a failed
+    restore that keeps the lock."""
+    RUNNING_ENV = "KARAFUN_PLUS_VERSION=v3.2.0\nKEY=literal-secret\n"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        sleeper = patch.object(MODULE.time, "sleep")
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+    def agent(self, **choice):
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        return choosing(FakeAgent(directory), **choice)
+
+    def test_interrupted_chosen_install_restores_the_running_release(self):
+        for version in ["v3.1.3", "v3.3.0"]:
+            with self.subTest(version=version):
+                agent = self.agent(version=version)
+                interrupted(agent, "v3.2.0", version)
+                self.assertIn(f"KARAFUN_PLUS_VERSION={version}\n", (agent.deploy / ".env").read_text())
+                agent.execute()
+                result = agent.result()
+                self.assertEqual((result["phase"], result["requestId"], result["currentVersion"]),
+                                 ("rolled-back", agent.receipt, "v3.2.0"))
+                self.assertEqual((agent.deploy / ".env").read_text(), self.RUNNING_ENV)
+                self.assertTrue(any("run" in command for command in agent.commands), "soirée d'avant remise")
+                self.assertEqual(agent.github_paths, [], "aucune nouvelle recherche pendant la récupération")
+                self.assertFalse(any(command[:2] == ["docker", "pull"] for command in agent.commands))
+                self.assertFalse(agent.transaction_file.exists())
+
+    def test_failed_restore_after_a_chosen_release_keeps_the_lock_until_retried(self):
+        for version in ["v3.1.3", "v3.3.0"]:
+            with self.subTest(version=version):
+                agent = self.agent(version=version)
+                agent.fail = "rollback-health"
+                with self.assertRaises(MODULE.UpdateError):
+                    agent.execute()
+                self.assertEqual(agent.result()["phase"], "verifying", "les commandes restent bloquées")
+                self.assertTrue(agent.transaction_file.exists())
+                agent.fail = None
+                agent.execute()
+                result = agent.result()
+                self.assertEqual((result["phase"], result["currentVersion"]), ("rolled-back", "v3.2.0"))
+                self.assertEqual((agent.deploy / ".env").read_text(), self.RUNNING_ENV)
+                self.assertFalse(agent.transaction_file.exists())
+
+    def test_newer_chosen_release_is_installed_by_its_tag(self):
+        agent = self.agent(version="v3.3.0")
+        agent.execute()
+        result = agent.result()
+        self.assertEqual((result["phase"], result["currentVersion"], result["targetVersion"]),
+                         ("succeeded", "v3.3.0", "v3.3.0"))
+        self.assertEqual(agent.github_paths, ["releases/tags/v3.3.0"], "jamais la dernière version à la place du choix")
+        self.assertIn("KARAFUN_PLUS_VERSION=v3.3.0\n", (agent.deploy / ".env").read_text())
+        self.assertTrue(any(command[0] == "bash" for command in agent.commands), "sauvegarde avant installation")
+        self.assertFalse(agent.transaction_file.exists())
+
+    def test_newer_chosen_release_failing_its_checks_is_rolled_back(self):
+        agent = self.agent(version="v3.3.0")
+        agent.unhealthy = {"v3.3.0"}
+        agent.execute()
+        result = agent.result()
+        self.assertEqual((result["phase"], result["currentVersion"]), ("rolled-back", "v3.2.0"))
+        self.assertEqual((agent.deploy / ".env").read_text(), self.RUNNING_ENV)
+        restore = next(i for i, command in enumerate(agent.commands) if "run" in command)
+        self.assertIn("up", agent.commands[restore + 1], "données remises avant le redémarrage")
+        self.assertEqual(agent.commands[-1][-1], "v3.2.0", "la version en service repasse les contrôles")
+
+    def test_backup_failure_restarts_the_running_release_without_restoring_data(self):
+        for kind in ["plus ancienne", "plus récente", "choix d'une autre demande"]:
+            with self.subTest(kind):
+                if kind == "choix d'une autre demande":
+                    agent, running, env = stale(self.agent()), "v1.0.0", "KARAFUN_PLUS_VERSION=v1.0.0\nKEY=literal-secret\n"
+                else:
+                    agent = self.agent(version="v3.1.3" if kind == "plus ancienne" else "v3.3.0")
+                    running, env = "v3.2.0", self.RUNNING_ENV
+                agent.fail = "backup"
+                agent.execute()
+                result = agent.result()
+                self.assertEqual((result["phase"], result["currentVersion"]), ("rolled-back", running))
+                self.assertFalse(any("run" in command for command in agent.commands), "aucune donnée remise")
+                self.assertEqual((agent.deploy / ".env").read_text(), env)
+                self.assertFalse(agent.transaction_file.exists())
+                if kind == "choix d'une autre demande":
+                    self.assertNotIn("choisie", result["message"])
+
+    def test_committed_success_is_republished_after_an_interruption(self):
+        for kind, current, target in [("plus ancienne", "v3.2.0", "v3.1.3"), ("plus récente", "v3.2.0", "v3.3.0"),
+                                      ("choix d'une autre demande", "v1.0.0", "v1.1.0")]:
+            with self.subTest(kind):
+                agent = stale(self.agent()) if kind == "choix d'une autre demande" else self.agent(version=target)
+                transaction = interrupted(agent, current, target)
+                transaction["outcome"] = {"phase": "succeeded", "message": "Installée.", "currentVersion": target}
+                MODULE.atomic_json(agent.transaction_file, transaction)
+                agent.execute()
+                result = agent.result()
+                self.assertEqual((result["phase"], result["currentVersion"]), ("succeeded", target))
+                self.assertEqual(agent.commands, [], "ni commande ni données remises")
+                self.assertEqual(agent.github_paths, [])
+                self.assertFalse(agent.transaction_file.exists())
+
+    def test_installed_choice_withdrawn_or_unreachable_fails_without_command(self):
+        for name in ["release retirée", "GitHub injoignable"]:
+            with self.subTest(name):
+                agent = self.agent(version="v3.2.0")
+                if name == "release retirée":
+                    agent.payloads["releases/tags/v3.2.0"] = dict(release("v3.2.0"), prerelease=True)
+                else:
+                    agent.fail = "github"
+                agent.execute()
+                self.assertEqual(agent.result()["phase"], "failed")
+                self.assertEqual(agent.commands, [])
+                self.assertFalse(agent.transaction_file.exists())
+                self.assertEqual((agent.deploy / ".env").read_text(), self.RUNNING_ENV)
+
+    def test_stale_choice_with_a_refused_latest_fails_untouched(self):
+        agent = stale(self.agent())
+        before = (agent.ipc / "target.json").read_bytes()
+        agent.fail = "pull"
+        agent.execute()
+        self.assertEqual(agent.result()["phase"], "failed")
+        self.assertEqual(agent.github_paths, ["releases/latest"])
+        self.assertFalse(any("stop" in command for command in agent.commands))
+        self.assertEqual((agent.ipc / "target.json").read_bytes(), before)
+
+    def test_stale_choice_beside_a_failing_latest_is_rolled_back_with_generic_message(self):
+        agent = stale(self.agent())
+        agent.fail = "health"
+        agent.execute()
+        result = agent.result()
+        self.assertEqual((result["phase"], result["currentVersion"]), ("rolled-back", "v1.0.0"))
+        self.assertNotIn("choisie", result["message"])
+        self.assertEqual(agent.github_paths, ["releases/latest"])
+        self.assertEqual((agent.deploy / ".env").read_text(), "KARAFUN_PLUS_VERSION=v1.0.0\nKEY=literal-secret\n")
+
+    def test_stale_choice_beside_an_interrupted_latest_recovers_without_github(self):
+        agent = stale(self.agent())
+        interrupted(agent, "v1.0.0", "v1.1.0")
+        agent.execute()
+        result = agent.result()
+        self.assertEqual((result["phase"], result["currentVersion"]), ("rolled-back", "v1.0.0"))
+        self.assertEqual(agent.github_paths, [])
+
+    def test_stale_choice_beside_a_failed_restore_keeps_the_lock_until_retried(self):
+        agent = stale(self.agent())
+        agent.fail = "rollback-health"
+        with self.assertRaises(MODULE.UpdateError):
+            agent.execute()
+        self.assertEqual(agent.result()["phase"], "verifying")
+        self.assertTrue(agent.transaction_file.exists())
+        agent.fail = None
+        agent.execute()
+        self.assertEqual((agent.result()["phase"], agent.result()["currentVersion"]), ("rolled-back", "v1.0.0"))
+
+
+class VersionCatalogue(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.agent = FakeAgent(self.temporary.name)
+        self.agent.private.mkdir()
+        self.published = []
+        for version in ["v3.3.0", "v3.2.1", "v3.2.0", "v3.1.4", "v3.1.3", "v3.1.3", "v3.1.2", "v3.1.1", "v3.0.0"]:
+            item = dict(release(version), published_at="2026-10-26T15:04:05Z")
+            self.published.append(item)
+        self.published[0]["draft"] = True
+        self.published[1]["prerelease"] = True
+        self.published[3]["body"] = "publication interrompue"
+        self.published[4]["published_at"] = "hier"
+        self.published += [None, "v9.9.9", {"tag_name": "v9.9.9"}]
+        self.agent.payloads["releases?per_page=30"] = self.published
+
+    def test_lists_complete_stable_releases_from_the_minimum_newest_first(self):
+        self.assertEqual(self.agent.catalogue(), [
+            {"version": "v3.2.0", "publishedAt": "2026-10-26T15:04:05Z"},
+            {"version": "v3.1.3", "publishedAt": None},
+            {"version": "v3.1.2", "publishedAt": "2026-10-26T15:04:05Z"}])
+        self.agent.payloads["releases?per_page=30"] = [release(f"v3.{minor}.0") for minor in range(2, 20)]
+        self.assertEqual([item["version"] for item in self.agent.catalogue()],
+                         [f"v3.{minor}.0" for minor in range(19, 9, -1)])
+        self.agent.payloads["releases?per_page=30"] = {"message": "rate limited"}
+        with self.assertRaises(MODULE.UpdateError):
+            self.agent.catalogue()
+
+    def test_refresh_is_hourly_and_retried_ten_minutes_after_a_failure(self):
+        file = self.agent.ipc / "versions.json"
+        self.assertTrue(self.agent.refresh_catalogue())
+        written = MODULE.read_json(file)
+        self.assertEqual(set(written), {"checkedAt", "versions"})
+        self.assertEqual([item["version"] for item in written["versions"]], ["v3.2.0", "v3.1.3", "v3.1.2"])
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o660, "lisible par le conteneur, jamais par les autres")
+        self.assertFalse(self.agent.refresh_catalogue(), "une lecture par heure au plus")
+        self.assertEqual(self.agent.github_paths, ["releases?per_page=30"])
+        two_hours_ago = time.time() - 7200
+        MODULE.atomic_json(file, dict(written, checkedAt=dt.datetime.fromtimestamp(two_hours_ago, dt.timezone.utc).isoformat()), 0o660)
+        os.utime(self.agent.private / "catalogue-attempt", (two_hours_ago, two_hours_ago))
+        self.agent.fail = "github"
+        before = file.read_bytes()
+        with self.assertRaises(MODULE.UpdateError):
+            self.agent.refresh_catalogue()
+        self.assertEqual(file.read_bytes(), before, "la liste précédente reste en place")
+        self.assertFalse(self.agent.refresh_catalogue(), "pas de nouvel essai avant dix minutes")
+        self.assertEqual(len(self.agent.github_paths), 2)
+
+    def test_unreadable_list_left_in_the_shared_folder_is_replaced(self):
+        file = self.agent.ipc / "versions.json"
+        for content in ["{", "[]", json.dumps({"checkedAt": 42, "versions": []}), "x" * 20000]:
+            with self.subTest(content=content[:20]):
+                file.write_text(content)
+                (self.agent.private / "catalogue-attempt").unlink(missing_ok=True)
+                self.assertTrue(self.agent.refresh_catalogue())
+                self.assertEqual(len(MODULE.read_json(file)["versions"]), 3)
+
+    def test_tick_handles_the_request_first_and_never_fails_for_the_list(self):
+        order = []
+        with patch.object(self.agent, "execute", side_effect=lambda: order.append("execute")), \
+                patch.object(self.agent, "refresh_catalogue", side_effect=OSError("disque plein")), \
+                patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.agent.tick()
+        self.assertEqual(order, ["execute"])
+        self.assertIn("liste des versions", stderr.getvalue())
+        self.assertNotIn("disque plein", stderr.getvalue())
+
+    def test_tick_journals_why_the_list_was_refused_with_fixed_texts_only(self):
+        # Sans raison au journal, le choix disparaîtrait de la page au bout de
+        # 3 h sans rien pour le diagnostiquer. Les textes d'UpdateError sont fixes.
+        self.agent.fail = "github"
+        with patch.object(self.agent, "execute"), patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.agent.tick()
+        self.assertEqual(stderr.getvalue(), "La liste des versions publiées n'a pas pu être actualisée : Version inaccessible.\n")
+
+    def test_tick_leaves_the_list_alone_while_a_recovery_is_pending(self):
+        refreshed = []
+        with patch.object(self.agent, "execute", side_effect=MODULE.UpdateError("Récupération.")), \
+                patch.object(self.agent, "refresh_catalogue", side_effect=lambda: refreshed.append(True)):
+            with self.assertRaises(MODULE.UpdateError):
+                self.agent.tick()
+        self.assertEqual(refreshed, [])
+
+
+@unittest.skipIf(not shutil.which("node"), "node absent")
+class AppAgentContract(unittest.TestCase):
+    """The real app (server-update.js) and the real agent read each other's files."""
+    APP = Path(__file__).resolve().parents[1] / "server-update.js"
+    NODE = r"""
+const { createServerUpdate } = require(process.argv[1]);
+const update = createServerUpdate({ directory: process.argv[2], version: 'v3.2.0' });
+if (process.argv[3]) update.request(null, { version: process.argv[3] });
+const view = update.view();
+console.log(JSON.stringify({ versionChoice: view.versionChoice, versions: view.versions.map(item => item.version),
+  chosenVersion: view.chosenVersion, busy: view.busy, message: view.message }));
+"""
+
+    def app(self, ipc, version=""):
+        # Node écrit en UTF-8 ; sans encodage explicite, Windows lirait sa page de code.
+        run = subprocess.run(["node", "-e", self.NODE, str(self.APP), str(ipc), version],
+                             capture_output=True, encoding="utf-8", timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        return json.loads(run.stdout)
+
+    def test_list_choice_and_outcome_cross_the_shared_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = FakeAgent(directory)
+            (agent.ipc / "request.json").unlink()
+            (agent.deploy / ".env").write_text("KARAFUN_PLUS_VERSION=v3.2.0\nKEY=literal-secret\n")
+            published = [dict(release(version), published_at="2026-10-2%dT10:00:00Z" % day)
+                         for version, day in [("v3.2.0", 8), ("v3.1.3", 6)]]
+            agent.payloads[MODULE.CATALOGUE_PATH] = published
+            agent.private.mkdir(parents=True, exist_ok=True)
+            agent.refresh_catalogue()
+            listed = self.app(agent.ipc)
+            self.assertEqual((listed["versionChoice"], listed["versions"]), (True, ["v3.1.3"]), "liste de l'agent lue par l'application")
+            chosen = self.app(agent.ipc, "v3.1.3")
+            self.assertEqual((chosen["busy"], chosen["chosenVersion"]), (True, "v3.1.3"))
+            agent.request_id = json.loads((agent.ipc / "request.json").read_text())["id"]
+            self.assertEqual(agent.chosen_version(), "v3.1.3", "choix de l'application lu par l'agent")
+            agent.payloads["releases/tags/v3.1.3"] = release("v3.1.3")
+            agent.image_version = "v3.1.3"
+            agent.execute()
+            self.assertEqual(agent.result()["phase"], "succeeded")
+            done = self.app(agent.ipc)
+            self.assertEqual((done["busy"], done["chosenVersion"], done["message"]),
+                             (False, "v3.1.3", "La version choisie est installée."), "statut de l'agent lu par l'application")
+
+
+class SharedFolderWrites(unittest.TestCase):
+    def test_mode_is_set_on_the_open_file_never_by_path(self):
+        # Le conteneur peut remplacer un nom du dossier d'échange par un lien :
+        # aucun chmod par chemin, même sans os.fchmod (Python Windows avant 3.13,
+        # jamais un serveur), où le mode reste celui que pose os.open.
+        without_fchmod = types.SimpleNamespace(**{name: getattr(os, name) for name in dir(os)
+                                                  if name != "fchmod" and not name.startswith("__")})
+        for system in ([os] if hasattr(os, "fchmod") else []) + [without_fchmod]:
+            with self.subTest(fchmod=hasattr(system, "fchmod")), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "status.json"
+                with patch.object(MODULE, "os", system), \
+                        patch.object(system, "chmod", side_effect=AssertionError("chmod par chemin")):
+                    MODULE.atomic_json(target, {"phase": "idle"}, 0o660)
+                self.assertEqual(MODULE.read_json(target), {"phase": "idle"})
+                if os.name == "posix" and system is os:
+                    self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o660)
+
+
 class SystemBoundaries(unittest.TestCase):
+    def test_github_requests_only_fixed_paths_of_the_official_repository(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            agent = FakeAgent(temporary)
+            for path in ["releases/tags/v3.1.3;rm", "releases/tags/../../other/repo", "releases?per_page=100",
+                         "releases/tags/v3.1", "../../orgs/evil", ""]:
+                with self.subTest(path=path), patch.object(MODULE.urllib.request, "urlopen") as http:
+                    with self.assertRaises(MODULE.UpdateError):
+                        MODULE.Agent.github(agent, path)
+                    http.assert_not_called()
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.geturl.return_value = "https://api.github.com/repos/jpfroud/karafun-plus/releases/tags/v3.1.3"
+            response.read.return_value = json.dumps(release("v3.1.3")).encode()
+            with patch.object(MODULE.urllib.request, "urlopen", return_value=response) as http:
+                MODULE.Agent.github(agent, "releases/tags/v3.1.3")
+                self.assertEqual(http.call_args.args[0].full_url,
+                                 "https://api.github.com/repos/jpfroud/karafun-plus/releases/tags/v3.1.3")
+            # Le chemin de la liste des versions est celui que la liste autorise.
+            listing = "https://api.github.com/repos/jpfroud/karafun-plus/" + MODULE.CATALOGUE_PATH
+            response.geturl.return_value = listing
+            response.read.return_value = b"[]"
+            with patch.object(MODULE.urllib.request, "urlopen", return_value=response) as http:
+                self.assertEqual(MODULE.Agent.github(agent, MODULE.CATALOGUE_PATH), [])
+                self.assertEqual(http.call_args.args[0].full_url, listing)
+            missing = urllib.error.HTTPError("https://api.github.com", 404, "Not Found", {}, None)
+            with patch.object(MODULE.urllib.request, "urlopen", side_effect=missing):
+                with self.assertRaises(MODULE.UpdateError) as error:
+                    MODULE.Agent.github(agent, "releases/tags/v3.1.3")
+                self.assertIn("pas publiée", str(error.exception))
+            limited = urllib.error.HTTPError("https://api.github.com", 403, "rate limited", {}, None)
+            with patch.object(MODULE.urllib.request, "urlopen", side_effect=limited):
+                with self.assertRaises(MODULE.UpdateError) as error:
+                    MODULE.Agent.github(agent)
+                self.assertIn("momentanément inaccessible", str(error.exception))
+
     def test_public_health_verifies_tls_origin_status_and_body(self):
         with tempfile.TemporaryDirectory() as temporary:
             agent = FakeAgent(temporary)

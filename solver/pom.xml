@@ -19,7 +19,7 @@
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <version>2.19.2</version>
+      <version>2.22.4</version>
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
@@ -28,6 +28,23 @@
     </dependency>
   </dependencies>
   <build>
+    <!-- Extensions lancées à la demande par la CI, le Dockerfile et la release
+         (notices des licences du kit, SBOM CycloneDX) : versions fixées ici,
+         tenues à jour par Dependabot. -->
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>license-maven-plugin</artifactId>
+          <version>2.7.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.cyclonedx</groupId>
+          <artifactId>cyclonedx-maven-plugin</artifactId>
+          <version>2.9.3</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
