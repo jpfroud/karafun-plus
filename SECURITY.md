@@ -59,15 +59,22 @@ Le dépôt reste sur la dernière LTS de ses outils (décision du mainteneur, 6 
   planifiées d'un dépôt public après 60 jours sans activité, en l'annonçant par
   e-mail : les réactiver.
 - **Ce que Dependabot fait.** Il propose chaque nouvelle empreinte de la ligne en
-  service, 7 jours après sa publication, Maven et Temurin dans une seule PR. Ces PR
-  fusionnent seules une fois la CI verte, si le diff lu par l'API ne change que des
-  empreintes dans les lignes `FROM` du `Dockerfile` : leur message, lui, ne montre pas
-  l'étiquette (« from `abc` to `def` »). Une empreinte Temurin est un correctif de la
-  JVM, sans bilan avant/après : la CI rejoue la soirée de référence avec Timefold dans
-  l'image construite, et rien n'arrive au bar sans une publication, décidée à la main.
-  Dependabot ne reconnaît pas les LTS (il proposait Node 25 et Java 26, #48 à #50) : ses
-  montées de Node, de Temurin et de Maven sont écartées (`ignore`), et la fusion
-  automatique refuse toute autre étiquette de ces images.
+  service, 7 jours après sa publication. Ce délai court image par image : Maven et
+  Temurin arrivent dans une seule PR si les deux l'ont passé, sinon dans deux, avec les
+  mêmes étiquettes. Ces PR fusionnent seules une fois la CI verte, si le diff lu par
+  l'API ne change que des empreintes dans les lignes `FROM` du `Dockerfile` : leur
+  message, lui, ne montre pas l'étiquette (« from `abc` to `def` »). `main` exige une
+  branche à jour : après la première fusion, une autre PR ouverte reste en attente, et
+  `@dependabot rebase` la relance. Dependabot ne reconnaît pas les LTS (il proposait
+  Node 25 et Java 26, #48 à #50) : ses montées de Node, de Temurin et de Maven sont
+  écartées (`ignore`), et la fusion automatique refuse toute autre étiquette de ces
+  images.
+- **Ce que cette fusion ne couvre pas.** Une empreinte peut apporter une version
+  mineure de Node ou un correctif de la JVM, sans bilan avant/après ni essai de
+  KaraFun. La CI rejoue la soirée de référence dans l'image et compare ses décisions à
+  celles du Java du runner (V36 à V38 de `test/verifier-image.sh`) : elle voit une JVM
+  de l'image qui décide autrement, pas un changement commun aux deux. Le dernier
+  garde-fou est la publication, décidée à la main : rien n'arrive au bar avant.
 - **Comment monter.** D'un seul tenant, dans une PR : `Dockerfile`, CI, tests et
   documents ; le test W11 de `test/workflows.test.js` refuse une montée partielle.
   Java : bilan avant/après d'une vraie soirée (`AGENTS.md`). Node : essai réel de la

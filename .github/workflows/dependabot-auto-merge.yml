@@ -103,9 +103,9 @@ jobs:
             version-update:semver-patch | version-update:semver-minor)
               decision=fusion; raison="correctif mineur ou de version" ;;
             '')
-              # Caddy : même étiquette, nouvelle empreinte (correctifs de sécurité de l'image),
-              # quand fetch-metadata lit l'étiquette des deux côtés ; sinon (empreintes seules
-              # dans le message de Dependabot), relecture humaine. Dockerfile : voir plus bas.
+              # Caddy (compose.yaml) : une nouvelle empreinte de la même version s'écrit
+              # « from 2.11.8 to 2.11.8 », lue des deux côtés : elle fusionne comme ses
+              # correctifs. Version illisible : relecture humaine. Dockerfile : voir plus bas.
               if [[ $ECOSYSTEM == docker* ]] && [ -n "$PREVIOUS" ] && [ "$PREVIOUS" = "$NEW" ]; then
                 decision=fusion; raison="nouvelle empreinte de la même image"
               fi ;;

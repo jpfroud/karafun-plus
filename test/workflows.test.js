@@ -336,10 +336,11 @@ test('W6b la décision de fusion de Dependabot, exécutée', { skip: bash ? fals
   }
   assert.equal(decide({ ...docker, EMPREINTE_SEULE: 'oui', COMMITS: 'non' }).decision, 'relire', 'la preuve ne couvre pas un commit d’un autre auteur');
   assert.equal(decide({ ...docker, EMPREINTE_SEULE: 'oui', DEPENDENCIES: 'node, socket.io' }).decision, 'relire', 'ni la pile Socket.IO');
-  // Caddy (docker_compose) ne passe pas par cette preuve : ses règles ne changent pas.
+  // Caddy (compose.yaml) ne passe pas par cette preuve : ses règles ne changent pas. Une nouvelle
+  // empreinte y porte la version des deux côtés, « from 2.11.7 to 2.11.7 » (vraies PR publiques, novembre 2026).
   assert.equal(decide({ ...correctif, ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', PREVIOUS: '2.11.8', NEW: '2.11.9' }).decision, 'fusion', 'Caddy : correctif ordinaire');
-  assert.equal(decide({ ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', COMMITS: 'oui', PREVIOUS: '2.11.8', NEW: '2.11.8' }).decision, 'fusion', 'Caddy : même étiquette lue');
-  assert.equal(decide({ ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', COMMITS: 'oui', PREVIOUS: '', NEW: '2.11.8', EMPREINTE_SEULE: 'oui' }).decision, 'relire', 'Caddy : empreintes seules, à relire');
+  assert.equal(decide({ ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', COMMITS: 'oui', PREVIOUS: '2.11.8', NEW: '2.11.8' }).decision, 'fusion', 'Caddy : nouvelle empreinte, même version lue');
+  assert.equal(decide({ ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', COMMITS: 'oui', PREVIOUS: '', NEW: '2.11.8', EMPREINTE_SEULE: 'oui' }).decision, 'relire', 'Caddy : version illisible, à relire');
   assert.match(decide({ ...ok, COMMITS: 'non' }).raison, /autre auteur/);
 });
 

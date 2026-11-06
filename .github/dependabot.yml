@@ -128,7 +128,8 @@ updates:
       - dependency-name: "maven"
         update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
     groups:
-      # Même Java pour construire l'optimiseur et pour l'exécuter : une seule PR.
+      # Même Java pour construire l'optimiseur et pour l'exécuter : une seule PR si
+      # les deux images ont passé le délai de 7 jours, sinon deux (mêmes étiquettes).
       # Sans update-types : Dependabot sortirait du groupe une empreinte seule.
       java:
         patterns:
