@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TRIVY_VERSION: v0.70.0
+  TRIVY_VERSION: v0.76.1
 
 jobs:
   dependances:
@@ -30,7 +30,7 @@ jobs:
     # Refuse une PR qui ajoute ou met à jour une dépendance vulnérable
     # (gravité moyenne ou plus), quelle que soit sa source.
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
@@ -42,7 +42,7 @@ jobs:
   npm-audit:
     name: Audit npm (production)
     # Lit package-lock.json seulement : aucune installation, aucun script.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,7 +58,7 @@ jobs:
 
   trivy-depot:
     name: Trivy (dépendances, secrets, Dockerfile)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -98,7 +98,7 @@ jobs:
 
   trivy-image:
     name: Trivy (image construite)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -150,7 +150,7 @@ jobs:
     # Une image déjà installée sur un VPS devient vulnérable avec le temps :
     # un échec ici demande une nouvelle release (RELEASE.md).
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -185,7 +185,7 @@ jobs:
     name: zizmor (workflows)
     # Injections, droits trop larges, actions non épinglées, caches ou
     # déclencheurs dangereux dans .github/workflows.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -207,7 +207,7 @@ jobs:
     name: Sécurité OK
     if: always() && github.event_name == 'pull_request'
     needs: [dependances, npm-audit, trivy-depot, trivy-image, workflows]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Toutes les analyses ont réussi

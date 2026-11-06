@@ -23,9 +23,9 @@ env:
 
 jobs:
   tests:
-    # Version fixe, comme le job linux de ci.yml : Playwright 1.56.1 n'a pas de
-    # Chromium pour une Ubuntu plus récente que 24.04.
-    runs-on: ubuntu-24.04
+    # Version fixe, comme le job linux de ci.yml : Playwright ne fournit Chromium
+    # que pour les Ubuntu qu'il connaît : les monter ensemble.
+    runs-on: ubuntu-26.04
     # Publication sans cache : dépendances téléchargées à neuf, SBOM en plus.
     timeout-minutes: 60
     steps:
@@ -87,7 +87,7 @@ jobs:
           overwrite: true
       - name: Installer Playwright et Chromium
         run: |
-          npm install --global playwright@1.56.1
+          npm install --global playwright@1.64.1
           playwright install --with-deps chromium
       - name: Verifier que les mesures en navigateur tourneront
         run: |
@@ -167,10 +167,10 @@ jobs:
       matrix:
         include:
           - plateforme: linux/amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
             suffixe: amd64
           - plateforme: linux/arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
             suffixe: arm64
     runs-on: ${{ matrix.runner }}
     # Image construite sans cache, puis vérifiée (rejeu Timefold compris).
