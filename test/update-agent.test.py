@@ -11,6 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import types
 import urllib.error
 import unittest
 from unittest.mock import MagicMock, patch
@@ -972,8 +973,9 @@ console.log(JSON.stringify({ versionChoice: view.versionChoice, versions: view.v
 """
 
     def app(self, ipc, version=""):
+        # Node écrit en UTF-8 ; sans encodage explicite, Windows lirait sa page de code.
         run = subprocess.run(["node", "-e", self.NODE, str(self.APP), str(ipc), version],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, encoding="utf-8", timeout=60)
         self.assertEqual(run.returncode, 0, run.stderr)
         return json.loads(run.stdout)
 
@@ -1003,15 +1005,21 @@ console.log(JSON.stringify({ versionChoice: view.versionChoice, versions: view.v
 
 
 class SharedFolderWrites(unittest.TestCase):
-    @unittest.skipUnless(hasattr(os, "fchmod"), "fchmod absent de ce Python Windows")
     def test_mode_is_set_on_the_open_file_never_by_path(self):
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "status.json"
-            with patch.object(MODULE.os, "chmod", side_effect=AssertionError("chmod par chemin")):
-                MODULE.atomic_json(target, {"phase": "idle"}, 0o660)
-            self.assertEqual(MODULE.read_json(target), {"phase": "idle"})
-            if os.name == "posix":
-                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o660)
+        # Le conteneur peut remplacer un nom du dossier d'échange par un lien :
+        # aucun chmod par chemin, même sans os.fchmod (Python Windows avant 3.13,
+        # jamais un serveur), où le mode reste celui que pose os.open.
+        without_fchmod = types.SimpleNamespace(**{name: getattr(os, name) for name in dir(os)
+                                                  if name != "fchmod" and not name.startswith("__")})
+        for system in ([os] if hasattr(os, "fchmod") else []) + [without_fchmod]:
+            with self.subTest(fchmod=hasattr(system, "fchmod")), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "status.json"
+                with patch.object(MODULE, "os", system), \
+                        patch.object(system, "chmod", side_effect=AssertionError("chmod par chemin")):
+                    MODULE.atomic_json(target, {"phase": "idle"}, 0o660)
+                self.assertEqual(MODULE.read_json(target), {"phase": "idle"})
+                if os.name == "posix" and system is os:
+                    self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o660)
 
 
 class SystemBoundaries(unittest.TestCase):

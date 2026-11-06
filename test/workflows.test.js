@@ -241,7 +241,8 @@ test('W6 Dependabot suit chaque écosystème avec un délai', () => {
   assert.match(merge, /gh pr merge --auto --merge "\$PR_URL"/);
   // Chaque commit, pas seulement le premier lu par fetch-metadata.
   assert.match(merge, /pulls\/\$NUMBER\/commits" --paginate/, 'chaque commit de la PR vérifié');
-  assert.match(merge, /\.author\.login != "dependabot\[bot\]" or \.commit\.verification\.verified != true/);
+  assert.match(merge, /\.author\.login != "dependabot\[bot\]" or \.committer\.login != "web-flow" or \.commit\.verification\.verified != true/,
+    'commit créé et signé par GitHub pour Dependabot');
   assert.match(merge, /gh pr merge --disable-auto "\$PR_URL"/, 'fusion retirée après un commit d’un autre auteur');
   assert.match(merge, /etat=\$\(gh pr view "\$PR_URL" --json autoMergeRequest/, 'erreur de l’API visible avant le retrait');
   // Une PR non fusionnée automatiquement dit toujours pourquoi, contrôles exigés manquants compris.
@@ -355,6 +356,41 @@ test('W6d le commentaire d’une PR de Dependabot non fusionnée, exécuté', { 
   assert.match(comment('fusion'), /^\*\*Fusion automatique non activée\*\* : `main` n'exige pas les contrôles « Tests OK » et « Sécurité OK »/);
   assert.match(comment('timefold'), /optimiseur \(`solver\/`\).*« Bilan Timefold »/);
   assert.match(comment('relire', 'version majeure'), /^\*\*Fusion automatique désactivée\*\* \(version majeure\)\. .*télécommande KaraFun\.$/);
+});
+
+test('W6e seuls les commits que GitHub a signés pour Dependabot laissent la fusion automatique, exécuté', { skip: jq ? false : 'bash ou jq absent' }, () => {
+  const script = stepScript('dependabot-auto-merge.yml', 'Vérifier chaque commit de la PR');
+  // gh api <chemin> --paginate --jq <filtre> : commits simulés, filtrés par jq comme le fait gh.
+  const fakeGh = [
+    '#!/usr/bin/env bash',
+    '[ "$1" = api ] && [ "$2" = repos/proprietaire/depot/pulls/7/commits ] && [ "$3" = --paginate ] && [ "$4" = --jq ] || exit 2',
+    'printf "%s" "$FAUX_COMMITS" | jq -r "$5"',
+  ].join('\n') + '\n';
+  // Comme l'API les rend : un commit de Dependabot a pour committer « GitHub
+  // <noreply@github.com> » (compte web-flow) et la signature de GitHub.
+  const commit = (sha, author, committer, verified) => ({ sha, author: author && { login: author },
+    committer: committer && { login: committer }, commit: { verification: { verified, reason: verified ? 'valid' : 'unsigned' } } });
+  const dependabot = commit('a1', 'dependabot[bot]', 'web-flow', true);
+  const verdict = commits => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'commits-'));
+    try {
+      fs.writeFileSync(path.join(directory, 'gh'), fakeGh, { mode: 0o755 });
+      const output = path.join(directory, 'output');
+      const run = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], { encoding: 'utf8', env: {
+        PATH: `${directory}${path.delimiter}${process.env.PATH}`, GITHUB_OUTPUT: output, GITHUB_REPOSITORY: 'proprietaire/depot',
+        NUMBER: '7', FAUX_COMMITS: JSON.stringify(commits) } });
+      assert.equal(run.status, 0, run.stderr);
+      return fs.readFileSync(output, 'utf8').trim();
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  };
+  assert.equal(verdict([dependabot]), 'dependabot=oui');
+  assert.equal(verdict([dependabot, commit('b2', 'dependabot[bot]', 'web-flow', true)]), 'dependabot=oui', 'rebase par Dependabot');
+  for (const [other, cas] of [[commit('c3', 'dependabot[bot]', 'mainteneur', true), 'auteur Dependabot, signé par un autre compte'],
+    [commit('d4', 'mainteneur', 'web-flow', true), '« Update branch » ou modification dans l’interface web'],
+    [commit('e5', 'dependabot[bot]', 'web-flow', false), 'non signé'],
+    [commit('f6', null, null, true), 'auteur et committer inconnus de GitHub']]) {
+    assert.equal(verdict([dependabot, other]), 'dependabot=non', cas);
+  }
 });
 
 test('W7 analyses de sécurité en place', () => {

@@ -70,10 +70,10 @@ def atomic_bytes(path, value, mode=0o600):
             os.fsync(stream.fileno())
             # Mode set on the open file, never by path: the IPC directory is
             # writable by the container, which could swap the name for a link.
+            # Without os.fchmod (Windows test runs, Python < 3.13; never a
+            # production host), the mode stays the one os.open applied.
             if hasattr(os, "fchmod"):
                 os.fchmod(stream.fileno(), mode)
-            else:  # Windows test runs (Python < 3.13); never a production host
-                os.chmod(temporary, mode)
         os.replace(temporary, path)
         if hasattr(os, "O_DIRECTORY"):
             directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)

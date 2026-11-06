@@ -26,7 +26,7 @@ plus et refuse de l'installer.
 | Domaine | Mise en place | Où |
 |---|---|---|
 | Dépendances npm, Maven, actions, images Docker | Dependabot chaque lundi, alertes de sécurité aussitôt ; délai de 7 jours avant d'adopter une nouvelle version (une version piégée est souvent retirée entre-temps) | `.github/dependabot.yml` |
-| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que chaque commit de la PR vient de Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl) ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
+| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que GitHub a créé et signé chaque commit de la PR pour Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl) ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
 | Code | CodeQL (JavaScript, Java, Python, workflows), requêtes `security-extended`, chaque PR et chaque lundi | `.github/workflows/codeql.yml` |
 | Dépendances ajoutées par une PR | Revue des dépendances : refus d'une version vulnérable (gravité moyenne ou plus) | `.github/workflows/securite.yml` |
 | Dépendances de production | `npm audit --omit=dev --audit-level=high` | `.github/workflows/securite.yml` |
@@ -147,11 +147,11 @@ Réservé au propriétaire du dépôt (Settings) :
    « Sécurité OK », et les branches à jour ; sans ces deux contrôles exigés, la
    fusion automatique de Dependabot reste désactivée. Pour mettre à jour une PR
    de Dependabot, commenter `@dependabot rebase` : « Update branch » ajoute un
-   commit de fusion d'un autre auteur, qui retire la fusion automatique. Ce
-   contrôle des commits vise les commits ajoutés par erreur ; il n'arrête pas
-   un compte qui a le droit d'écriture (il peut se faire passer pour
-   Dependabot, mais aussi fusionner lui-même) : réserver ce droit au
-   mainteneur. Pour CodeQL, ajouter dans
+   commit de fusion d'un autre auteur, qui retire la fusion automatique. Seuls
+   les commits que GitHub crée et signe pour Dependabot (committer « GitHub »,
+   signature de la clé de GitHub) la gardent : un compte qui a le droit
+   d'écriture ne peut pas en imiter un, mais il peut fusionner lui-même ;
+   réserver ce droit au mainteneur. Pour CodeQL, ajouter dans
    un ruleset de `main` « Require code scanning results » (alertes élevées ou
    critiques).
 5. **Actions → General** : « Workflow permissions » en lecture seule

@@ -41,11 +41,13 @@ jobs:
         with:
           github-token: ${{ github.token }}
 
-      # fetch-metadata ne lit que le premier commit. Un commit poussé ensuite
-      # sur la branche (autre auteur ou commit non vérifié : amend, « Update
-      # branch », push d'un mainteneur) impose une relecture humaine. Ce
-      # contrôle n'arrête pas un compte qui a le droit d'écriture et se fait
-      # passer pour Dependabot : ce compte peut de toute façon fusionner (SECURITY.md).
+      # fetch-metadata ne lit que le premier commit. Chaque commit doit avoir
+      # été créé par GitHub pour Dependabot : auteur Dependabot, committer
+      # « GitHub <noreply@github.com> » (compte web-flow) et signature vérifiée,
+      # donc celle de la clé de GitHub. Un auteur se déclare librement, pas
+      # cette signature : tout autre commit (amend, « Update branch », push
+      # d'un mainteneur, modification dans l'interface web) impose une
+      # relecture humaine (SECURITY.md).
       - name: Vérifier chaque commit de la PR
         id: commits
         env:
@@ -53,9 +55,9 @@ jobs:
           NUMBER: ${{ github.event.pull_request.number }}
         run: |
           autres=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/commits" --paginate \
-            --jq '.[] | select(.author.login != "dependabot[bot]" or .commit.verification.verified != true) | .sha')
+            --jq '.[] | select(.author.login != "dependabot[bot]" or .committer.login != "web-flow" or .commit.verification.verified != true) | .sha')
           if [ -n "$autres" ]; then
-            echo "::warning::Commit d'un autre auteur que Dependabot, ou non signé : relecture humaine."
+            echo "::warning::Commit qui n'a pas été créé et signé par GitHub pour Dependabot : relecture humaine."
             echo "dependabot=non" >> "$GITHUB_OUTPUT"
           else
             echo "dependabot=oui" >> "$GITHUB_OUTPUT"
