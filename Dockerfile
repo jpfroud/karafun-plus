@@ -13,7 +13,7 @@ RUN mvn -B -ntp -f solver/pom.xml verify \
  && cp solver/target/generated-resources/licenses/* LICENCES-JAVA/textes/ \
  && test -s solver/target/karafun-solver.jar
 
-FROM eclipse-temurin:21-jdk@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a AS jre
+FROM eclipse-temurin:25-jdk@sha256:83f4a7fc27df94dcc7b8de04d14cbbba8da14406f921e966969c3b09000aa507 AS jre
 RUN jlink --add-modules java.base,java.xml,java.logging,java.management,jdk.management,jdk.unsupported \
       --strip-debug --no-header-files --no-man-pages --compress=zip-6 \
       --output /solver-runtime \
