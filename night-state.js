@@ -16,6 +16,16 @@ const { sanitizeSettings } = require('./song-settings');
 const { sanitizeClock, clientDuration, validMaxSong } = require('./stage-progress');
 
 const FORMAT = 1;
+// Plus ancienne version publiée qui reprend tout ce que cette sauvegarde
+// contient. v3.2.0 y a ajouté, sans changer FORMAT, l'historique des passages
+// (premiers passages, départs de tables, fins de passage), les priorités à
+// zéro report et la chaîne du prochain annoncé : une version plus ancienne
+// reprend la soirée sans eux et les efface à sa première sauvegarde. Tant
+// qu'une soirée est en mémoire (jusqu'à « Nouvelle soirée »), le retour à une
+// version précédente s'arrête donc à celle-ci (server.js, page du bar). Un champ, une valeur ou une règle de reprise de
+// plus : mettre ici la version qui le publiera (test/night-state-versions.test.js
+// le rappelle pour les champs de premier niveau et de l'ordonnanceur).
+const FULL_RESTORE_SINCE = 'v3.2.0';
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const clone = value => JSON.parse(JSON.stringify(value));
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -852,4 +862,4 @@ class NightStateStore {
   }
 }
 
-module.exports = { NightStateStore, snapshotNight, restoreNight, inspectRecoveredPending };
+module.exports = { NightStateStore, snapshotNight, restoreNight, inspectRecoveredPending, FULL_RESTORE_SINCE };

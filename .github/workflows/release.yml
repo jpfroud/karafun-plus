@@ -26,7 +26,8 @@ jobs:
     # Version fixe, comme le job linux de ci.yml : Playwright 1.56.1 n'a pas de
     # Chromium pour une Ubuntu plus récente que 24.04.
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    # Publication sans cache : dépendances téléchargées à neuf, SBOM en plus.
+    timeout-minutes: 60
     steps:
       # Refus avant tout autre travail : ni tag, ni kit, ni image.
       - name: Verifier la source et la version de la publication
@@ -172,7 +173,8 @@ jobs:
             runner: ubuntu-24.04-arm
             suffixe: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    # Image construite sans cache, puis vérifiée (rejeu Timefold compris).
+    timeout-minutes: 75
     permissions:
       contents: read
       packages: write
@@ -183,6 +185,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
+          package-manager-cache: false
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
@@ -263,10 +266,11 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # Identifiants gardés pour l'étape du tag (création et envoi du tag).
+      # Aucun identifiant git gardé : les actions lancées ensuite ne peuvent pas
+      # le lire. Seule l'étape du tag reçoit le jeton, dans son environnement.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: true
+          persist-credentials: false
       - name: Recuperer le kit Windows
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -308,8 +312,15 @@ jobs:
         shell: pwsh
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            # Identifiant git de cette étape seulement, comme actions/checkout le
+            # pose (en-tête http), jamais écrit dans .git/config.
+            $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GH_TOKEN"))
+            $env:GIT_CONFIG_COUNT = '1'
+            $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+            $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basic"
             if ($env:INPUT_VERSION -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
               throw 'La version doit ressembler à v0.1.0.'
             }

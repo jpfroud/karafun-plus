@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createServerUpdate } = require('../server-update');
+const { createServerUpdate, compareVersions } = require('../server-update');
 
 const NOW = Date.parse('2026-10-26T16:00:00.000Z');
 const OTHER_ID = 'a5bcd6d2-9780-424f-a824-23eb8845c088';
@@ -253,11 +253,14 @@ test('versions de l’agent : liste récente, sans la version installée', t => 
 
 test('liste trop ancienne, illisible ou en lien : aucun choix, aucun verrou', t => {
   const f = fixture(t);
-  const old = { checkedAt: new Date(NOW - 49 * 3600 * 1000).toISOString(), versions: RELEASES };
+  // Relue chaque heure : une liste de plus de 3 h vient d'un agent arrêté ou
+  // d'un agent plus ancien réinstallé, qui ne la tient plus à jour.
+  const old = { checkedAt: new Date(NOW - 3.5 * 3600 * 1000).toISOString(), versions: RELEASES };
+  f.write('versions.json', { ...old, checkedAt: new Date(NOW - 2.5 * 3600 * 1000).toISOString() });
+  assert.equal(f.update.view().versionChoice, true, 'deux relectures manquées : liste gardée');
   const future = { checkedAt: new Date(NOW + 2 * 3600 * 1000).toISOString(), versions: RELEASES };
-  for (const list of [old, future, { ...LIST(RELEASES), extra: 1 }, LIST([{ version: 'latest', publishedAt: null }]),
-    LIST([{ version: 'v3.2.0' }]), LIST([RELEASES[0], RELEASES[0]]), LIST(Array.from({ length: 21 }, (_, i) => ({ version: `v3.${i}.0`, publishedAt: null }))),
-    LIST([{ version: 'v3.2.0', publishedAt: 'hier' }]), { checkedAt: 'hier', versions: [] }, [RELEASES]]) {
+  for (const list of [old, future, LIST([{ version: 'latest', publishedAt: null }]),
+    LIST([RELEASES[0], RELEASES[0]]), LIST([{ publishedAt: null }]), { checkedAt: 'hier', versions: [] }, [RELEASES]]) {
     f.write('versions.json', list);
     assert.equal(f.update.view().versionChoice, false, JSON.stringify(list).slice(0, 80));
     assert.deepEqual(f.update.view().versions, []);
@@ -275,6 +278,33 @@ test('liste trop ancienne, illisible ou en lien : aucun choix, aucun verrou', t 
     throw error;
   }
   assert.equal(f.update.view().versionChoice, false, 'un lien n’est jamais suivi');
+});
+
+test('liste d’un agent plus récent : champs inconnus ignorés, jamais transmis à la page', t => {
+  const f = fixture(t);
+  f.write('versions.json', { ...LIST(RELEASES.map(item => ({ ...item, notes: 'https://exemple.fr' }))), format: 2 });
+  const view = f.update.view();
+  assert.equal(view.versionChoice, true);
+  assert.deepEqual(view.versions, [RELEASES[0], RELEASES[2]], 'seuls version et publishedAt passent');
+  assert.equal(f.update.offers('v3.1.0'), true);
+});
+
+test('liste d’un agent plus récent : plus de versions ou dates absentes, choix gardé', t => {
+  // L'agent ne suit pas les mises à jour de l'application : une version
+  // ancienne de l'application, après un retour, lit la liste d'un agent récent.
+  const f = fixture(t);
+  const many = Array.from({ length: 30 }, (_, i) => ({ version: `v3.${i}.0`, publishedAt: null }));
+  f.write('versions.json', LIST(many));
+  const shown = f.update.view().versions.map(item => item.version);
+  assert.equal(shown.length, 20, 'les 20 plus récentes');
+  assert.deepEqual([shown[0], shown.at(-1)], ['v3.29.0', 'v3.10.0']);
+  assert.equal(f.update.offers('v3.10.0'), true);
+  assert.equal(f.update.offers('v3.9.0'), false, 'une version non affichée ne se choisit pas');
+  f.write('versions.json', LIST([{ version: 'v3.2.0' }, { version: 'v3.1.0', publishedAt: 'hier' },
+    { version: 'v3.0.0', publishedAt: 42 }]));
+  assert.deepEqual(f.update.view().versions, [{ version: 'v3.2.0', publishedAt: null },
+    { version: 'v3.1.0', publishedAt: null }, { version: 'v3.0.0', publishedAt: null }], 'date absente ou illisible : sans date');
+  assert.equal(f.update.offers('v3.1.0'), true);
 });
 
 test('une version choisie est durable avant la demande qui la nomme', t => {
@@ -310,7 +340,7 @@ test('la dernière version demandée ensuite retire l’ancien choix', t => {
   const f = fixture(t);
   f.write('versions.json', LIST(RELEASES));
   const chosen = f.update.request(null, { version: 'v3.2.0' });
-  f.status('rolled-back');
+  f.status('rolled-back', { targetVersion: 'v3.2.0' });
   assert.equal(f.update.view().message, 'La version choisie n’a pas démarré. La version en service a été rétablie.');
   const latest = f.update.request();
   assert.notEqual(latest.requestId, chosen.requestId);
@@ -323,10 +353,10 @@ test('messages d’une version choisie, seulement pour la demande qu’elle nomm
   const f = fixture(t);
   f.write('versions.json', LIST(RELEASES));
   f.update.request(null, { version: 'v3.1.0' });
-  const expected = { checking: 'Vérification de la version choisie…', downloading: 'Téléchargement et vérification de la nouvelle version…',
+  const expected = { checking: 'Vérification de la version choisie…', downloading: 'Téléchargement et vérification de la version choisie…',
     succeeded: 'La version choisie est installée.', failed: 'La version choisie n’a pas pu être installée. Un administrateur doit consulter le diagnostic du serveur.' };
   for (const [phase, message] of Object.entries(expected)) {
-    f.status(phase);
+    f.status(phase, { targetVersion: 'v3.1.0' });
     assert.equal(f.update.view().message, message, phase);
   }
   f.write('target.json', { requestId: OTHER_ID, version: 'v3.1.0' });
@@ -334,6 +364,96 @@ test('messages d’une version choisie, seulement pour la demande qu’elle nomm
   assert.equal(f.update.view().chosenVersion, null);
   fs.writeFileSync(path.join(f.directory, 'target.json'), '{');
   assert.equal(f.update.isBusy(), false, 'un choix illisible ne bloque pas une demande terminée');
+});
+
+test('un agent d’avant le choix installe la dernière version : messages ordinaires', t => {
+  // Agent réinstallé depuis une version sans choix : il ignore target.json.
+  const f = fixture(t);
+  f.write('versions.json', LIST(RELEASES));
+  f.update.request(null, { version: 'v3.1.0' });
+  f.status('checking', { targetVersion: null });
+  assert.equal(f.update.view().chosenVersion, 'v3.1.0', 'cible pas encore connue : le choix vaut encore');
+  for (const [phase, message] of [['downloading', 'Téléchargement et vérification de la nouvelle version…'],
+    ['succeeded', 'L’application est à jour.'], ['rolled-back', 'La nouvelle version n’a pas démarré. L’ancienne version a été rétablie.']]) {
+    f.status(phase, { targetVersion: 'v3.2.0' });
+    assert.equal(f.update.view().chosenVersion, null, phase);
+    assert.equal(f.update.view().message, message, phase);
+  }
+});
+
+test('le verrou des commandes ne lit jamais le choix de version', t => {
+  // isBusy() est appelé à chaque commande et à chaque écriture : seul le
+  // statut de la demande compte, le choix ne sert qu’aux messages de la page.
+  const f = fixture(t);
+  f.write('versions.json', LIST(RELEASES));
+  f.update.request(null, { version: 'v3.1.0' });
+  f.status('downloading', { targetVersion: 'v3.1.0' });
+  const lstat = fs.lstatSync;
+  const seen = [];
+  fs.lstatSync = (file, ...rest) => { seen.push(path.basename(String(file))); return lstat(file, ...rest); };
+  try {
+    assert.equal(f.update.isBusy(), true);
+    assert.equal(seen.includes('target.json'), false, `fichiers lus : ${seen.join(', ')}`);
+    assert.equal(f.update.view().chosenVersion, 'v3.1.0', 'la page lit toujours le choix');
+    assert.equal(seen.includes('target.json'), true);
+  } finally { fs.lstatSync = lstat; }
+});
+
+test('demande terminée sans choix valable : messages ordinaires, aucune version choisie', t => {
+  // Dernière version, choix d'une demande précédente, choix illisible, agent
+  // d'avant le choix (sa cible est la dernière version) × chaque fin possible.
+  const generic = { succeeded: 'L’application est à jour.',
+    failed: 'La mise à jour a échoué. Un administrateur doit consulter le diagnostic du serveur.',
+    'rolled-back': 'La nouvelle version n’a pas démarré. L’ancienne version a été rétablie.' };
+  const kinds = {
+    'dernière version': f => f.update.request(),
+    'choix d’une demande précédente': f => { f.update.request(); f.write('target.json', { requestId: OTHER_ID, version: 'v3.1.0' }); },
+    'choix illisible': f => {
+      f.write('versions.json', LIST(RELEASES)); f.update.request(null, { version: 'v3.1.0' });
+      fs.writeFileSync(path.join(f.directory, 'target.json'), '{');
+    },
+    'agent d’avant le choix': f => { f.write('versions.json', LIST(RELEASES)); f.update.request(null, { version: 'v3.1.0' }); },
+  };
+  for (const [kind, setup] of Object.entries(kinds)) {
+    for (const [phase, message] of Object.entries(generic)) {
+      const f = fixture(t);
+      setup(f);
+      f.status(phase, { targetVersion: kind === 'agent d’avant le choix' ? 'v3.2.0' : 'v3.1.0' });
+      const view = f.update.view();
+      assert.deepEqual([view.busy, view.chosenVersion, view.message], [false, null, message], `${kind} × ${phase}`);
+    }
+  }
+});
+
+test('demande terminée avec son choix : verrou levé, version choisie gardée pour la page', t => {
+  const chosen = { succeeded: 'La version choisie est installée.',
+    failed: 'La version choisie n’a pas pu être installée. Un administrateur doit consulter le diagnostic du serveur.',
+    'rolled-back': 'La version choisie n’a pas démarré. La version en service a été rétablie.' };
+  for (const [phase, message] of Object.entries(chosen)) {
+    const f = fixture(t);
+    f.write('versions.json', LIST(RELEASES));
+    f.update.request(null, { version: 'v3.1.0' });
+    f.status(phase, { targetVersion: 'v3.1.0' });
+    const view = f.update.view();
+    assert.deepEqual([view.busy, f.update.isBusy(), view.chosenVersion, view.message], [false, false, 'v3.1.0', message], phase);
+  }
+});
+
+test('un choix qui ne s’écrit pas ne laisse aucune demande', t => {
+  // Sinon l'agent installerait la dernière version, celle qu'on quitte.
+  const f = fixture(t);
+  f.write('versions.json', LIST(RELEASES));
+  fs.mkdirSync(path.join(f.directory, 'target.json', 'occupé'), { recursive: true });
+  assert.throws(() => f.update.request(null, { version: 'v3.1.0' }), e => e.status === 503);
+  assert.equal(fs.existsSync(path.join(f.directory, 'request.json')), false);
+  assert.deepEqual(fs.readdirSync(f.directory).filter(name => name.endsWith('.tmp')), [], 'aucun fichier temporaire');
+});
+
+test('versions comparées nombre par nombre', () => {
+  assert.ok(compareVersions('v3.10.0', 'v3.9.0') > 0);
+  assert.ok(compareVersions('v3.1.2', 'v3.2.0') < 0);
+  assert.ok(compareVersions('v10.0.0', 'v9.99.99') > 0);
+  assert.equal(compareVersions('v3.2.0', 'v3.2.0'), 0);
 });
 
 test('mode PC : ni liste ni choix', () => {

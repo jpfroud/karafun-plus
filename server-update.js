@@ -15,9 +15,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const VERSION = /^v\d+\.\d+\.\d+$/;
 const TERMINAL = new Set(['succeeded', 'failed', 'rolled-back']);
 const PHASES = new Set(['idle', 'checking', 'downloading', 'backing-up', 'installing', 'verifying', ...TERMINAL]);
-// The agent rewrites its list hourly: an older list means an agent without
-// this choice (or stopped), so the choice is not offered.
-const CATALOGUE_MAX_AGE_MS = 48 * 3600 * 1000;
+// The agent rewrites its list hourly, retried ten minutes after a failure: a
+// list older than three hours means a stopped agent, or an older agent
+// reinstalled that ignores the choice, so the choice is not offered. A chosen
+// install needs GitHub anyway (the agent re-verifies the release).
+const CATALOGUE_MAX_AGE_MS = 3 * 3600 * 1000;
 const CATALOGUE_MAX_ITEMS = 20;
 const MESSAGES = {
   idle: 'Vérifie et installe la dernière version, avec sauvegarde et retour en arrière si nécessaire.',
@@ -35,6 +37,7 @@ const MESSAGES = {
 const CHOICE_MESSAGES = {
   requested: 'Demande transmise. L’installation de la version choisie va commencer.',
   checking: 'Vérification de la version choisie…',
+  downloading: 'Téléchargement et vérification de la version choisie…',
   succeeded: 'La version choisie est installée.',
   failed: 'La version choisie n’a pas pu être installée. Un administrateur doit consulter le diagnostic du serveur.',
   'rolled-back': 'La version choisie n’a pas démarré. La version en service a été rétablie.',
@@ -58,6 +61,13 @@ function stableVersion(value) {
   return typeof value === 'string' && value.length <= 40 && VERSION.test(value);
 }
 
+// Numerical order of two stable versions (vX.Y.Z): negative when a < b.
+function compareVersions(a, b) {
+  const [x, y] = [a, b].map(value => value.slice(1).split('.').map(Number));
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return 0;
+}
+
 function validRequest(value) {
   return value && typeof value === 'object' && !Array.isArray(value) &&
     Object.keys(value).length === 2 && typeof value.id === 'string' && UUID.test(value.id) && dateString(value.createdAt);
@@ -79,13 +89,18 @@ function validTarget(value) {
     UUID.test(value.requestId) && stableVersion(value.version);
 }
 
-// versions.json, written by the host agent: installable releases, newest first.
+// versions.json, written by the host agent: installable releases. The agent
+// is not updated with the app, and an older app (after a return) reads the
+// list of a later agent: unknown keys are ignored, a longer list shows its
+// CATALOGUE_MAX_ITEMS newest versions, a missing or unreadable date is left
+// out. Only version and publishedAt reach the page; the agent re-verifies
+// every choice.
+const plainObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 function validCatalogue(value) {
-  if (!exactKeys(value, ['checkedAt', 'versions']) || !dateString(value.checkedAt) ||
-      !Array.isArray(value.versions) || value.versions.length > CATALOGUE_MAX_ITEMS) return false;
+  if (!plainObject(value) || !dateString(value.checkedAt) || !Array.isArray(value.versions)) return false;
   const seen = new Set();
-  return value.versions.every(item => exactKeys(item, ['version', 'publishedAt']) && stableVersion(item.version) &&
-    !seen.has(item.version) && seen.add(item.version) && (item.publishedAt === null || dateString(item.publishedAt)));
+  return value.versions.every(item => plainObject(item) && stableVersion(item.version) &&
+    !seen.has(item.version) && seen.add(item.version));
 }
 
 function createServerUpdate({ directory, version, now = Date.now } = {}) {
@@ -129,16 +144,12 @@ function createServerUpdate({ directory, version, now = Date.now } = {}) {
     // Do not free the application after a corrupt record or a worker crash.
     // The host recovers its transaction on restart and writes a terminal status.
     if (request.invalid || status.invalid) return { enabled: true, busy: true, phase: 'requested', invalid: true };
-    // A choice only describes the request it names; an unreadable one is
-    // refused by the host agent with a terminal status.
-    const target = request.value ? readJson('target.json', validTarget) : {};
-    const choice = target.value && target.value.requestId === request.value.id ? target.value.version : null;
     if (request.value) {
       if (!status.value || status.value.requestId !== request.value.id) {
-        return { enabled: true, busy: true, phase: 'requested', request: request.value, choice };
+        return { enabled: true, busy: true, phase: 'requested', request: request.value };
       }
       return { enabled: true, busy: !TERMINAL.has(status.value.phase), phase: status.value.phase,
-        request: request.value, status: status.value, choice };
+        request: request.value, status: status.value };
     }
     const phase = status.value?.phase || 'idle';
     return { enabled: true, busy: phase !== 'idle' && !TERMINAL.has(phase), phase, status: status.value };
@@ -152,11 +163,26 @@ function createServerUpdate({ directory, version, now = Date.now } = {}) {
     if (!list) return null;
     const age = now() - Date.parse(list.checkedAt);
     if (!(age >= -3600 * 1000 && age <= CATALOGUE_MAX_AGE_MS)) return null;
-    return list.versions.filter(item => item.version !== currentVersion);
+    return list.versions.filter(item => item.version !== currentVersion)
+      .sort((a, b) => compareVersions(b.version, a.version)).slice(0, CATALOGUE_MAX_ITEMS)
+      .map(item => ({ version: item.version, publishedAt: dateString(item.publishedAt) ? item.publishedAt : null }));
   }
 
   function offers(version) {
     return stableVersion(version) && !!catalogue()?.some(item => item.version === version);
+  }
+
+  // Version chosen for this request, or null. Read for the page only, never
+  // by isBusy(): a choice only describes the request it names, and an
+  // unreadable one is refused by the host agent with a terminal status. An
+  // agent that predates the choice installs the latest release instead: its
+  // status then names another target, and the generic messages apply.
+  function chosenVersion(state) {
+    if (!state.request) return null;
+    const target = readJson('target.json', validTarget).value;
+    if (!target || target.requestId !== state.request.id) return null;
+    const named = state.status?.targetVersion;
+    return named == null || named === target.version ? target.version : null;
   }
 
   function view(blockedReason = null) {
@@ -164,13 +190,14 @@ function createServerUpdate({ directory, version, now = Date.now } = {}) {
     const reason = state.unavailable ? UNAVAILABLE : state.invalid ? INVALID :
       (typeof blockedReason === 'string' && blockedReason ? blockedReason.slice(0, 400) : null);
     const versions = state.enabled ? catalogue() : null;
-    const messages = state.choice ? { ...MESSAGES, ...CHOICE_MESSAGES } : MESSAGES;
+    const choice = chosenVersion(state);
+    const messages = choice ? { ...MESSAGES, ...CHOICE_MESSAGES } : MESSAGES;
     return { enabled: state.enabled, busy: state.busy, phase: state.phase, currentVersion,
       targetVersion: state.status?.targetVersion || null,
       requestId: state.request?.id || state.status?.requestId || null,
-      chosenVersion: state.choice || null,
+      chosenVersion: choice,
       versionChoice: !!versions,
-      versions: versions ? versions.map(item => ({ version: item.version, publishedAt: item.publishedAt })) : [],
+      versions: versions || [],
       blockedReason: reason,
       // Never forward worker stderr or free-form messages to the browser.
       message: state.invalid ? INVALID : state.unavailable ? UNAVAILABLE : messages[state.phase] };
@@ -251,4 +278,4 @@ function createServerUpdate({ directory, version, now = Date.now } = {}) {
   return { view, request, offers, isBusy: () => snapshot().busy };
 }
 
-module.exports = { createServerUpdate };
+module.exports = { createServerUpdate, compareVersions, NOT_OFFERED };

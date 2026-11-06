@@ -56,9 +56,10 @@ updates:
       - "dependencies"
       - "java"
     groups:
-      # Timefold change la rotation : PR à part, jamais fusionnée sans le
-      # bilan avant/après d'une vraie soirée (AGENTS.md, workflow
-      # « Bilan Timefold »).
+      # L'optimiseur calcule la rotation : aucune de ses PR ne fusionne sans
+      # le bilan avant/après d'une vraie soirée (AGENTS.md, workflow « Bilan
+      # Timefold »). Timefold à part, le reste (Jackson, journalisation,
+      # extensions Maven) groupé.
       timefold:
         patterns:
           - "ai.timefold.solver:*"

@@ -1,0 +1,4 @@
+# Failles acceptées par Trivy (workflow « Sécurité », contrôle « Sécurité OK »).
+# Une ligne par identifiant (CVE-… ou GHSA-…), précédée d'un commentaire qui
+# donne la raison et la date de réexamen ; consigner aussi le risque dans la
+# section « Risques connus et acceptés » de SECURITY.md. Aucune pour l'instant.

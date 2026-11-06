@@ -26,7 +26,7 @@ plus et refuse de l'installer.
 | Domaine | Mise en place | Où |
 |---|---|---|
 | Dépendances npm, Maven, actions, images Docker | Dependabot chaque lundi, alertes de sécurité aussitôt ; délai de 7 jours avant d'adopter une nouvelle version (une version piégée est souvent retirée entre-temps) | `.github/dependabot.yml` |
-| Correctifs mineurs | Fusion automatique, seulement quand la branche exige des contrôles et qu'ils sont verts ; jamais pour une version majeure, Timefold ou Socket.IO | `.github/workflows/dependabot-auto-merge.yml` |
+| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que chaque commit de la PR vient de Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl) ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
 | Code | CodeQL (JavaScript, Java, Python, workflows), requêtes `security-extended`, chaque PR et chaque lundi | `.github/workflows/codeql.yml` |
 | Dépendances ajoutées par une PR | Revue des dépendances : refus d'une version vulnérable (gravité moyenne ou plus) | `.github/workflows/securite.yml` |
 | Dépendances de production | `npm audit --omit=dev --audit-level=high` | `.github/workflows/securite.yml` |
@@ -44,8 +44,12 @@ plus et refuse de l'installer.
   son propriétaire, un SHA non.
 - **Jetons au moindre droit** : chaque workflow déclare ses `permissions`, les
   droits d'écriture ne sont donnés qu'aux jobs qui publient ou téléversent un
-  rapport. Aucune extraction n'y garde les identifiants git, sauf le job
-  `publier` de la release, qui envoie le tag.
+  rapport. Aucune extraction ne garde les identifiants git
+  (`persist-credentials: false`) : l'étape qui envoie le tag d'une publication
+  manuelle pose les siens dans son seul environnement. Le job `publier` se sert
+  pourtant du même jeton ailleurs (connexion au registre d'images, release,
+  attestations) : ce sont l'épinglage de ses actions par SHA et ses droits
+  limités qui le protègent.
 - **Aucune expression `${{ }}` dans un script** : les valeurs passent par `env:`.
 - **Aucun script d'installation npm** (`npm ci --ignore-scripts`) dans la CI et
   l'image : aucune dépendance n'en a besoin.
@@ -55,7 +59,9 @@ plus et refuse de l'installer.
   `deploy/compose.yaml`), mis à jour par Dependabot.
 - **Chaque release porte** l'empreinte SHA-256 du kit, l'empreinte de l'image,
   deux SBOM CycloneDX (dépendances npm de production et optimiseur Java) et des
-  attestations de provenance Sigstore pour le kit, les SBOM et l'image.
+  attestations de provenance Sigstore pour le kit, les SBOM et l'image. Les SBOM
+  ne listent ni Node.js, ni le Java intégré, ni les paquets Debian de l'image :
+  Trivy analyse l'image elle-même.
 
 Vérifier un kit téléchargé (GitHub CLI) :
 
@@ -74,7 +80,11 @@ gh attestation verify oci://ghcr.io/jpfroud/karafun-plus:vX.Y.Z --repo jpfroud/k
 - L'application tourne sous l'utilisateur `node`, son code appartient à root.
   L'image ne contient ni npm, ni npx, ni yarn.
 - Sur le VPS, `app` et `caddy` tournent sans capacité Linux ni élévation de
-  privilèges ; `caddy` garde seulement l'écoute des ports 80 et 443.
+  privilèges ; `caddy` garde seulement l'écoute des ports 80 et 443 et la
+  lecture de son `Caddyfile` monté depuis l'hôte (`DAC_OVERRIDE`, déjà parmi
+  les droits par défaut de Docker : l'agent de mise à jour l'écrit en 0660). Ce
+  `deploy/compose.yaml` vient avec les versions publiées après la v3.2.0 (voir
+  les risques acceptés pour un retour à une version plus ancienne).
 - L'agent de mise à jour tourne sur l'hôte. Le conteneur ne lui transmet qu'un
   identifiant de demande et, pour une version choisie, son numéro : l'agent
   vérifie ce numéro sur le dépôt officiel, avec l'empreinte de son image.
@@ -89,6 +99,32 @@ gh attestation verify oci://ghcr.io/jpfroud/karafun-plus:vX.Y.Z --repo jpfroud/k
   de KaraFun, lue en HTTPS. Une migration vers 4.x demande des essais du
   protocole KaraFun, pas une mise à jour automatique (Dependabot ignore ces
   versions majeures).
+- **Retour à une version plus ancienne** : la version choisie revient avec
+  son `deploy/compose.yaml`. Jusqu'à la v3.2.0, il n'avait ni `cap_drop`, ni
+  `no-new-privileges`, ni Caddy épinglé : ces protections reviennent à la mise
+  à jour suivante. Un conteneur compromis pourrait demander lui-même ce retour ;
+  il ne choisit pourtant ni commande, ni image, ni dépôt, et l'agent n'installe
+  qu'une release stable et complète, à partir de la v3.1.2. Une version
+  vulnérable se retire en la marquant « Pre-release » : elle n'est plus
+  installable. Quand assez de versions durcies seront publiées, relever
+  `MIN_VERSION` dans `deploy/update-agent.py`, puis réinstaller l'agent.
+- **Versions anciennes proposées au retour** : l'analyse hebdomadaire de Trivy
+  ne porte que sur `latest`. Une version plus ancienne garde les failles
+  corrigées depuis (la v3.2.0 embarque Jackson 2.19.2, sans entrée JSON
+  extérieure dans l'optimiseur). Si une faille atteignable est corrigée, marquer
+  les versions touchées « Pre-release » : elles ne sont plus proposées.
+- **Fusions automatiques et workflows de `main`** : la fusion est activée avec
+  le jeton du workflow ; GitHub ne relance alors ni « Tests », ni « CodeQL », ni
+  « Sécurité » sur `main` pour ce commit. Ils ont tourné sur la PR, à jour avec
+  `main`, et « CodeQL » et « Sécurité » repassent chaque lundi.
+- **Accepter une faille signalée** : « Sécurité OK » refuse toute faille élevée
+  ou critique corrigeable. Pour en accepter une (par exemple dans Socket.IO
+  2.x, corrigée seulement dans une version majeure), l'ajouter à `.trivyignore`
+  (son identifiant, précédé d'un commentaire avec la raison et la date de
+  réexamen) dans une PR relue, et la consigner ici. `npm audit` n'a pas
+  d'exception : corriger par `overrides` dans `package.json` ou, sans version
+  corrigée dans la branche gardée, rendre l'étape `npm-audit` non bloquante
+  dans une PR relue, avec sa raison ici.
 - **Paquets Debian sans correctif publié** : Trivy les montre dans l'onglet
   Security sans bloquer ; ils arrivent avec les nouvelles empreintes de l'image
   de base proposées par Dependabot.
@@ -107,8 +143,23 @@ Réservé au propriétaire du dépôt (Settings) :
    `codeql.yml`) ; désactiver « Default setup » s'il est actif.
 3. **General → Pull Requests** : « Allow auto-merge » ; « Automatically delete
    head branches ».
-4. **Branches → main** : exiger une PR, les contrôles « Tests OK » (ou
-   `offline-tests`, `linux` et `image`) et les branches à jour ; sans contrôle
-   exigé, la fusion automatique de Dependabot reste désactivée.
+4. **Branches → main** : exiger une PR, les contrôles « Tests OK » et
+   « Sécurité OK », et les branches à jour ; sans ces deux contrôles exigés, la
+   fusion automatique de Dependabot reste désactivée. Pour mettre à jour une PR
+   de Dependabot, commenter `@dependabot rebase` : « Update branch » ajoute un
+   commit de fusion d'un autre auteur, qui retire la fusion automatique. Ce
+   contrôle des commits vise les commits ajoutés par erreur ; il n'arrête pas
+   un compte qui a le droit d'écriture (il peut se faire passer pour
+   Dependabot, mais aussi fusionner lui-même) : réserver ce droit au
+   mainteneur. Pour CodeQL, ajouter dans
+   un ruleset de `main` « Require code scanning results » (alertes élevées ou
+   critiques).
 5. **Actions → General** : « Workflow permissions » en lecture seule
    (« Read repository contents and packages permissions »).
+6. **Rulesets → tags `v*`** : « Restrict updates » et « Restrict deletions »,
+   sans « Restrict creations ». Un tag publié ne peut plus être déplacé vers un
+   autre commit ni supprimé ; « Run workflow » crée le tag avec le jeton du
+   workflow, qui ne peut pas contourner une règle et serait bloqué. Un tag
+   envoyé publie une release depuis son commit, que l'agent du VPS installe
+   ensuite comme dernière version : réserver le droit d'écriture au mainteneur
+   (point 4).

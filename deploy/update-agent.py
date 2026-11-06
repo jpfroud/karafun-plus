@@ -26,9 +26,12 @@ import urllib.parse
 import urllib.error
 import uuid
 
+# Raised at each agent change that a reinstall from an older checkout must not
+# undo (install-update-agent.sh refuses to replace this agent by an older one).
+AGENT_VERSION = 2
 REPOSITORY = "jpfroud/karafun-plus"
 IMAGE = "ghcr.io/" + REPOSITORY
-VERSION = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
+VERSION = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 TERMINAL = {"succeeded", "failed", "rolled-back"}
 MAX_JSON = 2 * 1024 * 1024
@@ -39,8 +42,10 @@ MIN_VERSION = (3, 1, 2)
 CATALOGUE_SIZE = 10
 CATALOGUE_REFRESH = 3600
 CATALOGUE_RETRY = 600
-PUBLISHED_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
-GITHUB_PATH = re.compile(r"releases/latest|releases\?per_page=30|releases/tags/v\d+\.\d+\.\d+\Z")
+PUBLISHED_AT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
+# The only GitHub API requests the agent makes, all on the fixed repository.
+CATALOGUE_PATH = "releases?per_page=30"
+GITHUB_PATH = re.compile(r"releases/latest|" + re.escape(CATALOGUE_PATH) + r"|releases/tags/v[0-9]+\.[0-9]+\.[0-9]+")
 
 
 class UpdateError(Exception):
@@ -177,9 +182,9 @@ class Agent:
             error.close()
             if error.code == 404 and path.startswith("releases/tags/"):
                 raise UpdateError("Cette version n'est pas publiée sur le dépôt officiel.") from error
-            raise UpdateError("La dernière version est momentanément inaccessible. Réessaie plus tard.") from error
+            raise UpdateError("Les versions publiées sont momentanément inaccessibles. Réessaie plus tard.") from error
         except (OSError, ValueError) as error:
-            raise UpdateError("La dernière version est momentanément inaccessible. Réessaie plus tard.") from error
+            raise UpdateError("Les versions publiées sont momentanément inaccessibles. Réessaie plus tard.") from error
 
     def catalogue(self):
         """Installable releases, newest first: stable, complete, at least MIN_VERSION.
@@ -187,7 +192,7 @@ class Agent:
         A release withdrawn by the maintainer (draft, pre-release, image block
         removed) disappears from this list and is refused by chosen installs.
         """
-        payload = self.github("releases?per_page=30")
+        payload = self.github(CATALOGUE_PATH)
         if not isinstance(payload, list):
             raise UpdateError("La liste des versions publiées n'est pas reconnue.")
         found = {}
@@ -232,6 +237,11 @@ class Agent:
         except FileNotFoundError:
             return None
         unreadable = UpdateError("Le choix de version est illisible : aucune installation n'a été faite.")
+        # A choice naming another request is ignored whatever its shape: a file
+        # left by an earlier request never blocks the next ones.
+        owner = choice.get("requestId") if isinstance(choice, dict) else None
+        if isinstance(owner, str) and owner.lower() != self.request_id:
+            return None
         if not isinstance(choice, dict) or set(choice) != {"requestId", "version"}:
             raise unreadable
         try:
@@ -240,8 +250,6 @@ class Agent:
             raise unreadable from None
         if str(owner) != choice["requestId"]:
             raise unreadable
-        if choice["requestId"] != self.request_id:
-            return None  # left by an earlier request
         version = choice["version"]
         if not isinstance(version, str) or not VERSION.fullmatch(version):
             raise unreadable
@@ -250,13 +258,13 @@ class Agent:
         return version
 
     def configured_version(self):
-        values = re.findall(r"^KARAFUN_PLUS_VERSION=(v\d+\.\d+\.\d+)\s*$",
+        values = re.findall(r"^KARAFUN_PLUS_VERSION=(v[0-9]+\.[0-9]+\.[0-9]+)\s*$",
                             (self.deploy / ".env").read_text(encoding="utf-8"), re.M)
         if len(values) != 1 or not VERSION.fullmatch(values[0]):
             raise UpdateError("La version installée n'est pas reconnue.")
         return values[0]
 
-    def prepare(self, digest, older=False):
+    def prepare(self, digest, chosen=False):
         self.status("downloading", "Téléchargement et vérification de la version…")
         origin = self.command(["git", "remote", "get-url", "origin"])
         if origin.rstrip("/").removesuffix(".git") not in {
@@ -273,9 +281,11 @@ class Agent:
         existing_env = (self.deploy / ".env").read_text(encoding="utf-8")
         names = lambda text: set(re.findall(r"^([A-Z_][A-Z_0-9]*)=", text, re.M))
         wanted, present = names(candidate_env), names(existing_env)
-        # An older release may need fewer settings: the extra ones stay for the
-        # next update. Any other difference needs the administrator first.
-        if not wanted <= present or (wanted != present and not older):
+        # A chosen release, older or newer, may need fewer settings: the extra
+        # ones stay for the next update (after a return from vN to vN-2, vN-1
+        # remains possible). The latest release keeps the original rule, the
+        # same settings. Any missing setting needs the administrator first.
+        if not wanted <= present or (wanted != present and not chosen):
             raise UpdateError("Cette version nécessite un réglage du serveur avant son installation.")
         image = IMAGE + "@" + digest
         remote = self.command(["docker", "buildx", "imagetools", "inspect", "--format",
@@ -288,6 +298,19 @@ class Agent:
         if labels.get("org.opencontainers.image.revision") != commit or labels.get(
                 "org.opencontainers.image.version") != self.target:
             raise UpdateError("L'image téléchargée ne correspond pas à la révision publiée.")
+        # Caddy épinglé par empreinte (versions publiées après la v3.2.0) : une
+        # image absente est téléchargée ici, avant tout arrêt, et non pendant
+        # l'installation ; déjà présente, elle sert telle quelle, sans Docker
+        # Hub. Les versions plus anciennes gardent l'image locale.
+        compose = self.command(["git", "show", f"{commit}:deploy/compose.yaml"])
+        caddy = re.findall(r"^[ \t]+image:[ \t]*(caddy:[0-9][0-9A-Za-z.-]*@sha256:[0-9a-f]{64})[ \t]*$", compose, re.M)
+        if len(caddy) > 1:
+            raise UpdateError("Le fichier compose de cette version n'est pas reconnu.")
+        if caddy:
+            try:
+                self.command(["docker", "image", "inspect", "--format", "{{.Id}}", caddy[0]])
+            except UpdateError:
+                self.command(["docker", "pull", caddy[0]], timeout=600)
         return commit, image
 
     def override(self, name, image):
@@ -327,7 +350,7 @@ class Agent:
         # Stopping first prevents sauvegarde.sh from restarting the old process.
         self.compose("stop", "app")
         output = self.command(["bash", str(self.deploy / "sauvegarde.sh")], timeout=300)
-        archives = re.findall(r"Sauvegarde écrite : (sauvegardes/karafun-plus-\d{8}-\d{6}Z\.tar\.gz) ", output)
+        archives = re.findall(r"Sauvegarde écrite : (sauvegardes/karafun-plus-[0-9]{8}-[0-9]{6}Z\.tar\.gz) ", output)
         if len(archives) != 1 or not (self.deploy / archives[0]).is_file():
             raise UpdateError("La sauvegarde n'a pas été confirmée. Installation annulée.")
         transaction["backup"] = archives[0]
@@ -412,7 +435,7 @@ if(h.status!==200||r.mode!=='server'||r.persistence!=='ok'||r.solver!=='availabl
         old = self.private / "old-image.json"
         if transaction["changed"]:
             backup = transaction.get("backup")
-            if not backup or not re.fullmatch(r"sauvegardes/karafun-plus-\d{8}-\d{6}Z\.tar\.gz", backup):
+            if not backup or not re.fullmatch(r"sauvegardes/karafun-plus-[0-9]{8}-[0-9]{6}Z\.tar\.gz", backup):
                 raise UpdateError("La sauvegarde de récupération n'est pas disponible.")
             # Our own archive, verified by sauvegarde.sh, in a private host folder.
             with (self.deploy / backup).open("rb") as archive:
@@ -493,11 +516,11 @@ if(h.status!==200||r.mode!=='server'||r.persistence!=='ok'||r.solver!=='availabl
                 if numbers(self.target) <= numbers(self.current):
                     self.status("succeeded", "L'application est déjà à jour.")
                     return
-            commit, image = self.prepare(digest, numbers(self.target) < numbers(self.current))
+            commit, image = self.prepare(digest, chosen=choice is not None)
             transaction = self.begin(commit, image)
             self.backup(transaction)
             self.install(transaction)
-            self.status("verifying", "Vérification de la nouvelle version…")
+            self.status("verifying", "Vérification de la version choisie…" if choice else "Vérification de la nouvelle version…")
             self.healthy(self.target, self.private / "new-image.json")
             self.current = self.target
             self.finish(transaction, "succeeded", "Version choisie installée. La soirée est conservée." if choice
@@ -522,6 +545,9 @@ if(h.status!==200||r.mode!=='server'||r.persistence!=='ok'||r.solver!=='availabl
         self.execute()
         try:
             self.refresh_catalogue()
+        except UpdateError as error:
+            # Fixed, non-secret texts: the journal says why the list grows old.
+            print("La liste des versions publiées n'a pas pu être actualisée : " + str(error), file=sys.stderr)
         except Exception:
             # Only a convenience for the bar page: keep the previous list.
             print("La liste des versions publiées n'a pas pu être actualisée.", file=sys.stderr)

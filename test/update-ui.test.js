@@ -17,6 +17,10 @@ let fixtureSource = harnessSource.slice(0, harnessSource.indexOf(delimiter));
 assert.ok(fixtureSource.includes('assign: url => page.assigned.push(url)'));
 fixtureSource = fixtureSource.replace('assign: url => page.assigned.push(url)',
   'assign: url => page.assigned.push(url), reload: () => { page.reloads = (page.reloads || 0) + 1; }');
+// Intl d'un navigateur particulier (sans données de fuseaux horaires) pour un test.
+const contextEnd = 'console, Date, Number, String, Set, Map, Array, JSON, Math, Promise, Object, Error };';
+assert.ok(fixtureSource.includes(contextEnd));
+fixtureSource = fixtureSource.replace(contextEnd, contextEnd.replace(' };', ', ...(globalThis.intlForTest ? { Intl: globalThis.intlForTest } : {}) };'));
 const fixtureModule = { exports: {} };
 new Function('require', '__dirname', 'module', fixtureSource + '\nmodule.exports = { openPage, baseWorld, sessionMap };')(
   createRequire(harnessPath), __dirname, fixtureModule);
@@ -206,6 +210,21 @@ test('choix de version : caché sans liste de l’agent, la version précédente
   assert.equal(newerOnly.$('serverVersionSelect').value, 'v1.1.0', 'sans version plus ancienne : la première proposée');
 });
 
+test('choix de version : un navigateur sans fuseaux horaires garde la page, dates à l’heure de l’appareil', async t => {
+  class DateTimeFormat extends Intl.DateTimeFormat {
+    constructor(locale, options = {}) {
+      if (options.timeZone) throw new RangeError(`Invalid time zone specified: ${options.timeZone}`);
+      super(locale, options);
+    }
+  }
+  globalThis.intlForTest = Object.assign(Object.create(Intl), { DateTimeFormat });
+  t.after(() => { delete globalThis.intlForTest; });
+  const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED }) });
+  assert.equal(page.$('serverVersionChoice').hidden, false, 'la page du bar démarre');
+  assert.deepEqual(labels(page), ['v1.1.0 — plus récente, publiée le 30 octobre 2026',
+    'v0.9.0 — version précédente, publiée le 20 octobre 2026', 'v0.8.0']);
+});
+
 test('choix de version : toujours confirmé, annuler ne soumet rien', async () => {
   const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED }) });
   page.confirmAnswer = false;
@@ -252,6 +271,78 @@ test('choix de version : une version plus récente s’annonce comme une install
   await page.$('serverVersionButton').onclick();
   assert.match(page.confirms[0], /^Installer v1\.1\.0 à la place de v1\.0\.0 \?/);
   assert.doesNotMatch(page.confirms[0], /fonctions apparues/);
+  assert.doesNotMatch(page.confirms[0], /Vérifier et mettre à jour/);
+  assert.equal(page.postsTo('/api/staff/update').length, 0, 'annuler ne soumet rien');
+  page.confirmAnswer = true;
+  page.replies['/api/staff/update'] = () => {
+    Object.assign(page.world.update, { busy: true, phase: 'requested', chosenVersion: 'v1.1.0', requestId: 'request-newer',
+      message: 'Demande transmise. L’installation de la version choisie va commencer.' });
+    return { ok: true, update: page.world.update };
+  };
+  await page.$('serverVersionButton').onclick();
+  await page.flush();
+  assert.equal(page.confirms.length, 2);
+  assert.equal(page.postsTo('/api/staff/update').length, 1);
+  assert.deepEqual(page.lastPost('/api/staff/update').body, { version: 'v1.1.0' });
+  assert.deepEqual(['serverVersionButton', 'serverVersionSelect', 'serverUpdateButton'].map(id => page.$(id).disabled), [true, true, true]);
+});
+
+test('choix de version : revenir en arrière dit que le bouton de mise à jour remet la plus récente', async () => {
+  const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED }) });
+  page.confirmAnswer = false;
+  await page.$('serverVersionButton').onclick();
+  assert.match(page.confirms[0], /Ensuite, « Vérifier et mettre à jour » réinstallerait la version la plus récente\. Continuer \?$/);
+});
+
+test('choix de version : soirée en mémoire, une version qui ne reprend pas toute la file ne se choisit pas', async () => {
+  const later = ' — après la soirée seulement';
+  const disabled = page => page.$('serverVersionSelect').options.filter(option => option.disabled).map(option => option.value);
+  const evening = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED, nightInMemory: true, fullRestoreSince: 'v0.9.0' }) });
+  assert.deepEqual(disabled(evening), ['v0.8.0']);
+  assert.equal(evening.$('serverVersionEvening').hidden, false, 'la raison se lit sans ouvrir la liste');
+  assert.match(evening.$('serverVersionEvening').textContent, /« Nouvelle soirée », les versions antérieures à la v0\.9\.0 ne se choisissent pas/);
+  assert.equal(evening.$('serverVersionRow').hidden, false);
+  assert.equal(labels(evening)[2], `v0.8.0${later}`);
+  assert.equal(evening.$('serverVersionSelect').value, 'v0.9.0', 'la version précédente reste proposée');
+  assert.equal(evening.$('serverVersionButton').disabled, false);
+  // Liste affichée avant le début de la soirée : le clic ne l’envoie pas.
+  evening.$('serverVersionSelect').value = 'v0.8.0';
+  await evening.$('serverVersionButton').onclick();
+  assert.equal(evening.confirms.length, 0);
+  assert.equal(evening.postsTo('/api/staff/update').length, 0);
+  assert.deepEqual(evening.toast(), { text: 'Choisis une version à partir de la v0.9.0 tant que la soirée n’est pas remplacée par « Nouvelle soirée ».', bad: true });
+
+  const newer = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED, nightInMemory: true, fullRestoreSince: 'v1.0.0' }) });
+  assert.deepEqual(disabled(newer), ['v0.9.0', 'v0.8.0']);
+  assert.equal(labels(newer)[1], `v0.9.0 — version précédente, publiée le 20 octobre 2026${later}`);
+  assert.equal(newer.$('serverVersionSelect').value, 'v1.1.0', 'seule la version plus récente se choisit');
+  const none = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED.slice(1), nightInMemory: true, fullRestoreSince: 'v1.0.0' }) });
+  assert.equal(none.$('serverVersionButton').disabled, true, 'aucune version possible pendant la soirée');
+  assert.equal(none.$('serverVersionRow').hidden, true, 'ni liste vide ni bouton grisé sans raison');
+  assert.match(none.$('serverVersionEvening').textContent, /aucune version publiée ne reprend toute la file : le retour à une version précédente se fait ensuite/);
+
+  for (const update of [{ nightInMemory: false, requiresConfirmation: true, fullRestoreSince: 'v1.0.0' }, { nightInMemory: true }]) {
+    const page = await openPage({ world: serverWorld({ versionChoice: true, versions: PUBLISHED, ...update }) });
+    assert.deepEqual(disabled(page), [], JSON.stringify(update));
+    assert.ok(labels(page).every(label => !label.endsWith(later)));
+    assert.equal(page.$('serverVersionEvening').hidden, true);
+    assert.equal(page.$('serverVersionRow').hidden, false);
+  }
+});
+
+test('choix de version : numéros à deux chiffres comparés nombre par nombre', async () => {
+  const world = serverWorld({ versionChoice: true, currentVersion: 'v3.10.0', versions: [
+    { version: 'v3.10.1', publishedAt: null }, { version: 'v3.9.0', publishedAt: null }, { version: 'v3.2.0', publishedAt: null }] });
+  world.app.version = 'v3.10.0';
+  const page = await openPage({ world });
+  assert.deepEqual(labels(page), ['v3.10.1 — plus récente', 'v3.9.0 — version précédente', 'v3.2.0']);
+  assert.equal(page.$('serverVersionSelect').value, 'v3.9.0');
+  page.confirmAnswer = false;
+  await page.$('serverVersionButton').onclick();
+  assert.match(page.confirms[0], /^Revenir à v3\.9\.0 à la place de v3\.10\.0 \?/);
+  page.$('serverVersionSelect').value = 'v3.10.1';
+  await page.$('serverVersionButton').onclick();
+  assert.match(page.confirms[1], /^Installer v3\.10\.1 à la place de v3\.10\.0 \?/);
 });
 
 test('choix de version : verrouillé pendant une opération ou un blocage, sélection gardée au rafraîchissement', async () => {

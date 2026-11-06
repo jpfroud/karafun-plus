@@ -115,6 +115,11 @@ for entree in "$RACINE"/deploy/*; do
 done
 shopt -u dotglob nullglob
 cd "$DEPLOI"
+# Caddyfile comme après un git checkout de l'agent de mise à jour (UMask=0007,
+# propriétaire autre que root) : Caddy, root sans capacité de lecture forcée,
+# doit le lire quand même (DAC_OVERRIDE de deploy/compose.yaml).
+chmod 0660 Caddyfile
+if [ "$(id -u)" = 0 ]; then chown 1000:1000 Caddyfile; fi
 
 docker tag "$IMAGE" "$DEPOT_IMAGE:$TAG"
 ETIQUETTE=1

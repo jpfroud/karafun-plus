@@ -19,9 +19,9 @@ on:
   workflow_dispatch:
     inputs:
       avant:
-        description: Révision de comparaison (commit, tag ou branche)
+        description: Révision de comparaison (commit, tag ou branche distante comme origin/main)
         required: true
-        default: main
+        default: origin/main
 
 permissions:
   contents: read
@@ -51,7 +51,10 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Construire Timefold (version de la PR)
         run: mvn -B -ntp -f solver/pom.xml verify
+      # shell: bash ajoute pipefail : un rejeu qui échoue fait échouer l'étape
+      # malgré « | tee ».
       - name: Rejouer la soirée de référence
+        shell: bash
         env:
           AVANT: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.avant }}
         run: |

@@ -30,9 +30,14 @@ services:
     image: caddy:2.11.8@sha256:4fcafa98afd1c2e642e353e3c5cf9ddbe892fcee14bc990e7ba2c5b78e51f9cf
     restart: unless-stopped
     <<: *durci
-    # Seule capacité gardée : écouter sur les ports 80 et 443.
+    # Capacités gardées : écouter sur les ports 80 et 443, et lire le Caddyfile
+    # monté depuis l'hôte quels que soient ses droits (Caddy tourne en root ; un
+    # git checkout de l'agent de mise à jour l'écrit en 0660). DAC_OVERRIDE fait
+    # partie des droits par défaut de Docker ; jamais DAC_READ_SEARCH, qui
+    # permet open_by_handle_at et la sortie du conteneur.
     cap_add:
       - NET_BIND_SERVICE
+      - DAC_OVERRIDE
     depends_on:
       - app
     ports:

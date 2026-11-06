@@ -16,8 +16,9 @@ on:
 permissions:
   contents: read
 
+# Une analyse planifiée a son propre groupe : un envoi sur main ne l'annule pas.
 concurrency:
-  group: securite-${{ github.ref }}
+  group: securite-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -192,6 +193,28 @@ jobs:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
+          # Version fixée, comme TRIVY_VERSION : une nouvelle règle de zizmor ne
+          # bloque pas d'un coup toutes les PR ; la relever exprès.
+          version: 1.32.0
           advanced-security: false
           annotations: true
           config: .github/zizmor.yml
+
+  # Contrôle unique à exiger sur main avec « Tests OK » : la fusion
+  # automatique de Dependabot n'attend que les contrôles exigés. Il échoue si
+  # une analyse de la PR n'a pas réussi (échec, annulation ou saut).
+  securite-ok:
+    name: Sécurité OK
+    if: always() && github.event_name == 'pull_request'
+    needs: [dependances, npm-audit, trivy-depot, trivy-image, workflows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Toutes les analyses ont réussi
+        env:
+          RESULTATS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Résultats : $RESULTATS"
+          for resultat in $RESULTATS; do
+            [ "$resultat" = success ] || { echo "::error::Une analyse de sécurité n'a pas réussi ($resultat)."; exit 1; }
+          done

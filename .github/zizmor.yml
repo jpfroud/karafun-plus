@@ -3,11 +3,16 @@
 rules:
   dangerous-triggers:
     ignore:
-      # pull_request_target sans extraction ni exécution du code de la PR :
-      # métadonnées de Dependabot lues par l'API et commandes gh fixes.
+      # pull_request_target : le workflow exécuté est toujours celui de main
+      # (un commit poussé sur la branche ne peut pas changer ses règles), sans
+      # extraction ni exécution du code de la PR : métadonnées lues par l'API et
+      # commandes gh fixes.
       - dependabot-auto-merge.yml
-  artipacked:
+  adhoc-packages:
     ignore:
-      # Job publier : l'identifiant git sert à créer et envoyer le tag d'une
-      # publication manuelle ; aucun code tiers ne s'exécute après l'extraction.
+      # Seule installation hors fichier de verrouillage : Playwright, à version
+      # exacte, pour les mesures en navigateur des tests (il n'est pas une
+      # dépendance du projet). Le test W10 de test/workflows.test.js refuse
+      # toute autre installation de ce genre.
+      - ci.yml
       - release.yml
