@@ -67,6 +67,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Trivy lit d'abord les POM de l'optimiseur dans ~/.m2. Sans eux, il les
+      # demande à Maven Central, et un 429 arrête son analyse (essai du 6 novembre
+      # 2026 avec Trivy 0.76.1 : son client est refusé, un cache rempli passe).
+      - name: Remplir le cache Maven de l'optimiseur
+        run: mvn -B -ntp -f solver/pom.xml dependency:resolve
       - name: Rapport complet (onglet Security)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
