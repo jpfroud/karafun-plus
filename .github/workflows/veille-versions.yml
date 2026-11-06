@@ -1,0 +1,46 @@
+name: Veille des versions
+
+# Chaque lundi : une nouvelle LTS (Node, Temurin, Ubuntu), une nouvelle version
+# stable (Debian, Maven), une ligne en service hors LTS, une fin de support à moins
+# de 180 jours ou un outil en retard parmi ceux que Dependabot ne voit pas
+# (Playwright, Trivy, zizmor, actionlint) ouvrent ou mettent à jour une seule issue,
+# assignée au propriétaire du dépôt, qui se ferme seule quand tout est à jour. Une
+# source illisible fait échouer l'exécution : GitHub prévient alors par e-mail.
+# Règle : SECURITY.md.
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Une à la fois : deux exécutions en même temps ouvriraient deux issues.
+concurrency:
+  group: veille-versions
+  cancel-in-progress: false
+
+jobs:
+  veille:
+    name: Nouvelles versions et fins de support
+    # Sur main seulement : une autre branche lirait ses propres versions et pourrait
+    # fermer l'issue à tort. Pour essayer ailleurs : node scripts/veille-versions.js --simulation.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+      # Aucune dépendance : le script n'utilise que Node.
+      - name: Comparer les versions et tenir l'issue à jour
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/veille-versions.js
