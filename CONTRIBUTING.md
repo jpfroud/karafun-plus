@@ -5,8 +5,8 @@ donne l'essentiel pour ouvrir une PR.
 
 ## Préparer le poste
 
-- Node.js 22, puis `npm ci --ignore-scripts`.
-- Java 21 et Maven pour l'optimiseur : `mvn -B -f solver/pom.xml verify`.
+- Node.js 26, puis `npm ci --ignore-scripts`.
+- Java 25 et Maven pour l'optimiseur : `mvn -B -f solver/pom.xml verify`.
 - `npm run demo` lance une simulation sans toucher à KaraFun. La session
   KaraFun réelle ne sert jamais aux essais destructifs.
 

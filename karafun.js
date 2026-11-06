@@ -262,14 +262,14 @@ const DISCOVERY_ERRORS = {
   'bad-page': ['Page KaraFun inattendue', () => 'Page de télécommande KaraFun inattendue : nouvel essai automatique.'],
   network: ['Réseau coupé', () => 'Réseau coupé ou site KaraFun injoignable depuis ce PC : vérifie la connexion Internet.'],
   timeout: ['KaraFun trop lent', () => 'Le site KaraFun ne répond pas à temps (10 s) : réseau lent ou coupé.'],
-  'no-websocket': ['WebSocket indisponible', () => 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 22.'],
+  'no-websocket': ['WebSocket indisponible', () => 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 26.'],
 };
 // Mode serveur : messages des échecs qui parlent de « ce PC » ou du kit. Motif
 // court, délais et nature de l'échec restent ceux de DISCOVERY_ERRORS.
 const SERVER_DISCOVERY_MESSAGES = {
   refused: status => `Le site KaraFun refuse le serveur de la file (HTTP ${status || '?'}) : KaraFun limite les essais depuis sa connexion, la file réessaiera seule.`,
   network: () => 'Réseau coupé ou site KaraFun injoignable depuis le serveur de la file : vérifie sa connexion Internet.',
-  'no-websocket': () => 'WebSocket indisponible sur le serveur de la file : il faut Node 22.',
+  'no-websocket': () => 'WebSocket indisponible sur le serveur de la file : il faut Node 26.',
 };
 
 function duration(ms) {
