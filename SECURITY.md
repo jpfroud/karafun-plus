@@ -27,7 +27,7 @@ plus et refuse de l'installer.
 |---|---|---|
 | Dépendances npm, Maven, actions, images Docker | Dependabot chaque lundi, alertes de sécurité aussitôt ; délai de 7 jours avant d'adopter une nouvelle version (une version piégée est souvent retirée entre-temps) | `.github/dependabot.yml` |
 | Nouvelles LTS, fins de support, outils hors Dependabot | Veille chaque lundi : une seule issue, assignée au propriétaire du dépôt (ci-dessous) | `.github/workflows/veille-versions.yml` |
-| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que GitHub a créé et signé chaque commit de la PR pour Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl), une image Node ou Java sans la même étiquette lue des deux côtés ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
+| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que GitHub a créé et signé chaque commit de la PR pour Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl), une image du `Dockerfile` dont le diff change autre chose que ses empreintes ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
 | Code | CodeQL (JavaScript, Java, Python, workflows), requêtes `security-extended`, chaque PR et chaque lundi | `.github/workflows/codeql.yml` |
 | Dépendances ajoutées par une PR | Revue des dépendances : refus d'une version vulnérable (gravité moyenne ou plus) | `.github/workflows/securite.yml` |
 | Dépendances de production | `npm audit --omit=dev --audit-level=high` | `.github/workflows/securite.yml` |
@@ -60,12 +60,14 @@ Le dépôt reste sur la dernière LTS de ses outils (décision du mainteneur, 6 
   e-mail : les réactiver.
 - **Ce que Dependabot fait.** Il propose chaque nouvelle empreinte de la ligne en
   service, 7 jours après sa publication, Maven et Temurin dans une seule PR. Ces PR
-  se fusionnent à la main : leur message ne montre que des empreintes (« from `abc`
-  to `def` »), la fusion automatique ne peut pas y vérifier l'étiquette ; contrôler
-  que le diff ne change que l'empreinte. Il ne reconnaît pas les LTS (il proposait
-  Node 25 et Java 26, #48 à #50) : ses montées de Node, de Temurin et de Maven sont
-  écartées (`ignore`), et la fusion automatique refuse toute autre étiquette de ces
-  images.
+  fusionnent seules une fois la CI verte, si le diff lu par l'API ne change que des
+  empreintes dans les lignes `FROM` du `Dockerfile` : leur message, lui, ne montre pas
+  l'étiquette (« from `abc` to `def` »). Une empreinte Temurin est un correctif de la
+  JVM, sans bilan avant/après : la CI rejoue la soirée de référence avec Timefold dans
+  l'image construite, et rien n'arrive au bar sans une publication, décidée à la main.
+  Dependabot ne reconnaît pas les LTS (il proposait Node 25 et Java 26, #48 à #50) : ses
+  montées de Node, de Temurin et de Maven sont écartées (`ignore`), et la fusion
+  automatique refuse toute autre étiquette de ces images.
 - **Comment monter.** D'un seul tenant, dans une PR : `Dockerfile`, CI, tests et
   documents ; le test W11 de `test/workflows.test.js` refuse une montée partielle.
   Java : bilan avant/après d'une vraie soirée (`AGENTS.md`). Node : essai réel de la

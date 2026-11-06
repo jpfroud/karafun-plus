@@ -6,14 +6,14 @@ name: Dependabot - fusion automatique
 # activé. Jamais pour une version majeure, l'optimiseur (Timefold et les autres
 # dépendances Maven de solver/ : bilan avant/après d'une vraie soirée exigé par
 # AGENTS.md), Socket.IO et sa pile (protocole KaraFun), une action GitHub
-# (droits de la publication), une image Node ou Java sans la même étiquette lue des
-# deux côtés (règle de la dernière LTS, SECURITY.md) ni une PR dont un commit ne
-# vient pas de Dependabot ; une fusion activée plus tôt est alors retirée.
+# (droits de la publication), une image du Dockerfile dont le diff change autre
+# chose que ses empreintes (règle de la dernière LTS, SECURITY.md) ni une PR dont un
+# commit ne vient pas de Dependabot ; une fusion activée plus tôt est alors retirée.
 #
 # pull_request_target : le workflow exécuté est toujours celui de main, jamais
 # celui de la PR (un commit poussé sur la branche de Dependabot ne peut pas
 # changer ces règles). Aucune extraction ni exécution du code de la PR ici :
-# seulement ses métadonnées, lues par l'API, et des commandes gh fixes.
+# seulement ses métadonnées et son diff, lus par l'API, et des commandes gh fixes.
 on:
   # Exception déclarée dans .github/zizmor.yml (dangerous-triggers).
   pull_request_target:
@@ -64,10 +64,33 @@ jobs:
             echo "dependabot=oui" >> "$GITHUB_OUTPUT"
           fi
 
+      # Une image du Dockerfile ne fusionne seule que si seule son empreinte change.
+      # La preuve vient du diff, pas du message de Dependabot : une empreinte seule s'y
+      # écrit « from `abc` to `def` », sans étiquette, et previous-version ne couvre que
+      # la première image d'un groupe. Tout autre cas, panne de l'API comprise : non.
+      - name: Comparer les images
+        id: images
+        if: steps.meta.outputs.package-ecosystem == 'docker'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          fichiers=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/files" --paginate --jq '.[] | .status + " " + .filename' || true)
+          lignes=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/files" --paginate --jq '.[].patch // ""' | grep -E '^[-+]' || true)
+          avant=$(printf '%s\n' "$lignes" | sed -n 's/^-//p' | sed -E 's/@sha256:[0-9a-f]{64}//')
+          apres=$(printf '%s\n' "$lignes" | sed -n 's/^+//p' | sed -E 's/@sha256:[0-9a-f]{64}//')
+          forme='^[-+]FROM( --platform=[^ ]+)? [^ @]+:[^ @]+@sha256:[0-9a-f]{64}( AS [A-Za-z0-9_-]+)?$'
+          if [ "$fichiers" = "modified Dockerfile" ] && [ -n "$avant" ] && [ "$avant" = "$apres" ] && ! grep -qvE "$forme" <<<"$lignes"; then
+            echo "seule=oui" >> "$GITHUB_OUTPUT"
+          else
+            echo "seule=non" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Décider
         id: decision
         env:
           COMMITS: ${{ steps.commits.outputs.dependabot }}
+          EMPREINTE_SEULE: ${{ steps.images.outputs.seule }}
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
           DEPENDENCIES: ${{ steps.meta.outputs.dependency-names }}
           ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
@@ -80,9 +103,9 @@ jobs:
             version-update:semver-patch | version-update:semver-minor)
               decision=fusion; raison="correctif mineur ou de version" ;;
             '')
-              # Image Docker : même étiquette, nouvelle empreinte (correctifs de sécurité de
-              # l'image), quand fetch-metadata lit l'étiquette des deux côtés ; sinon (empreintes
-              # seules dans le message de Dependabot), relecture humaine.
+              # Caddy : même étiquette, nouvelle empreinte (correctifs de sécurité de l'image),
+              # quand fetch-metadata lit l'étiquette des deux côtés ; sinon (empreintes seules
+              # dans le message de Dependabot), relecture humaine. Dockerfile : voir plus bas.
               if [[ $ECOSYSTEM == docker* ]] && [ -n "$PREVIOUS" ] && [ "$PREVIOUS" = "$NEW" ]; then
                 decision=fusion; raison="nouvelle empreinte de la même image"
               fi ;;
@@ -98,16 +121,15 @@ jobs:
             decision=timefold; raison="l'optimiseur (Timefold et ses dépendances Maven) calcule la rotation : bilan avant/après exigé"
           fi
           liste=",${DEPENDENCIES// /},"
-          # Images Node et Java : seule la même étiquette, lue des deux côtés, fusionne
-          # seule. Une autre étiquette change d'outil, même si Dependabot la classe en
-          # correctif (3.9-eclipse-temurin-26 lu comme 3.9.26, #48). Une nouvelle empreinte
-          # s'écrit « from `abc` to `def` », sans étiquette à comparer : à vérifier.
-          if [[ $ECOSYSTEM == docker* ]] && { [ -z "$PREVIOUS" ] || [ "$PREVIOUS" != "$NEW" ]; } && [[ $liste == *,node,* || $liste == *,eclipse-temurin,* || $liste == *,maven,* ]]; then
-            decision=relire
-            case "$PREVIOUS" in
-              '' | \`*) raison="nouvelle empreinte d'image Node ou Java, sans étiquette dans le message de Dependabot : vérifier que le diff ne change que l'empreinte" ;;
-              *) raison="autre étiquette d'image Node ou Java : montée d'un seul tenant, règle de la dernière LTS (SECURITY.md)" ;;
-            esac
+          # Images du Dockerfile : une autre étiquette change d'outil, même si Dependabot la
+          # classe en correctif (3.9-eclipse-temurin-26 lu comme 3.9.26, #48). Seule une nouvelle
+          # empreinte de la même étiquette fusionne seule, prouvée par « Comparer les images ».
+          if [ "$ECOSYSTEM" = docker ]; then
+            if [ "$EMPREINTE_SEULE" = oui ]; then
+              decision=fusion; raison="nouvelle empreinte de la même étiquette : le diff ne change rien d'autre"
+            else
+              decision=relire; raison="diff de l'image non limité à de nouvelles empreintes : une montée se fait d'un seul tenant, règle de la dernière LTS (SECURITY.md)"
+            fi
           fi
           # Pile du protocole de la télécommande KaraFun : Socket.IO 2.x, Engine.IO
           # et leurs transports (ws, xmlhttprequest-ssl).
