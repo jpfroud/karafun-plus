@@ -26,7 +26,8 @@ plus et refuse de l'installer.
 | Domaine | Mise en place | Où |
 |---|---|---|
 | Dépendances npm, Maven, actions, images Docker | Dependabot chaque lundi, alertes de sécurité aussitôt ; délai de 7 jours avant d'adopter une nouvelle version (une version piégée est souvent retirée entre-temps) | `.github/dependabot.yml` |
-| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que GitHub a créé et signé chaque commit de la PR pour Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl) ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
+| Nouvelles LTS, fins de support, outils hors Dependabot | Veille chaque lundi : une seule issue, assignée au propriétaire du dépôt (ci-dessous) | `.github/workflows/veille-versions.yml` |
+| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que GitHub a créé et signé chaque commit de la PR pour Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl), une image Node ou Java sans la même étiquette lue des deux côtés ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
 | Code | CodeQL (JavaScript, Java, Python, workflows), requêtes `security-extended`, chaque PR et chaque lundi | `.github/workflows/codeql.yml` |
 | Dépendances ajoutées par une PR | Revue des dépendances : refus d'une version vulnérable (gravité moyenne ou plus) | `.github/workflows/securite.yml` |
 | Dépendances de production | `npm audit --omit=dev --audit-level=high` | `.github/workflows/securite.yml` |
@@ -36,6 +37,41 @@ plus et refuse de l'installer.
 | Bonnes pratiques | OpenSSF Scorecard chaque semaine | `.github/workflows/scorecard.yml` |
 | Rotation | Bilan avant/après d'une vraie soirée pour toute PR qui touche Timefold ou l'ordonnanceur | `.github/workflows/bilan-timefold.yml` |
 | Régressions de ces règles | `node test/workflows.test.js` (suite hors ligne) | `test/workflows.test.js` |
+
+## Règle de la dernière LTS
+
+Le dépôt reste sur la dernière LTS de ses outils (décision du mainteneur, 6 novembre 2026).
+
+| Outil | Version visée | Où elle se lit |
+|---|---|---|
+| Node.js, Java (Temurin), Ubuntu de la CI | dernière LTS | `Dockerfile`, workflows |
+| Debian des images, Maven de l'image | dernière version stable (pas de LTS) | `Dockerfile` |
+| Playwright, Trivy, zizmor, actionlint | dernière version parue depuis 7 jours | workflows |
+
+- **Qui prévient.** Chaque lundi, le workflow « Veille des versions » signale une
+  nouvelle version de ce tableau, une ligne en service hors LTS ou une fin de support
+  à moins de 180 jours : une seule issue, assignée au propriétaire du dépôt (GitHub
+  envoie alors une notification), mise à jour avec un message à chaque alerte nouvelle,
+  fermée seule quand tout est à jour ; fermée à la main, elle revient le lundi suivant
+  tant que l'alerte tient. Il lit endoflife.date, le registre npm et les releases
+  GitHub. Une source illisible fait échouer l'exécution, et GitHub prévient alors par
+  e-mail : le silence ne veut jamais dire « tout est à jour ». GitHub coupe les tâches
+  planifiées d'un dépôt public après 60 jours sans activité, en l'annonçant par
+  e-mail : les réactiver.
+- **Ce que Dependabot fait.** Il propose chaque nouvelle empreinte de la ligne en
+  service, 7 jours après sa publication, Maven et Temurin dans une seule PR. Ces PR
+  se fusionnent à la main : leur message ne montre que des empreintes (« from `abc`
+  to `def` »), la fusion automatique ne peut pas y vérifier l'étiquette ; contrôler
+  que le diff ne change que l'empreinte. Il ne reconnaît pas les LTS (il proposait
+  Node 25 et Java 26, #48 à #50) : ses montées de Node, de Temurin et de Maven sont
+  écartées (`ignore`), et la fusion automatique refuse toute autre étiquette de ces
+  images.
+- **Comment monter.** D'un seul tenant, dans une PR : `Dockerfile`, CI, tests et
+  documents ; le test W11 de `test/workflows.test.js` refuse une montée partielle.
+  Java : bilan avant/après d'une vraie soirée (`AGENTS.md`). Node : essai réel de la
+  télécommande KaraFun, car Socket.IO 2.x change de moteur. Laisser passer le délai
+  de 7 jours, sauf faille à corriger.
+- **Exception.** Socket.IO reste en 2.x (ci-dessous). Une migration se traite à part.
 
 ## Chaîne d'approvisionnement
 
@@ -97,8 +133,10 @@ gh attestation verify oci://ghcr.io/jpfroud/karafun-plus:vX.Y.Z --repo jpfroud/k
   (`parseuri`, déni de service par expression régulière) sans correctif dans
   la branche 2.x. L'adresse analysée par `parseuri` vient de la page officielle
   de KaraFun, lue en HTTPS. Une migration vers 4.x demande des essais du
-  protocole KaraFun, pas une mise à jour automatique (Dependabot ignore ces
-  versions majeures).
+  protocole KaraFun, pas une mise à jour automatique. Dependabot n'en propose plus
+  chaque semaine, mais son `ignore` ne s'applique pas à ses mises à jour de
+  sécurité (`update-types` ne concerne que les mises à jour de version, #52 et
+  #53) : ces PR ne fusionnent jamais seules ; les fermer en renvoyant ici.
 - **Retour à une version plus ancienne** : la version choisie revient avec
   son `deploy/compose.yaml`. Jusqu'à la v3.2.0, il n'avait ni `cap_drop`, ni
   `no-new-privileges`, ni Caddy épinglé : ces protections reviennent à la mise

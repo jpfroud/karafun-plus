@@ -4,6 +4,7 @@
 # quelques jours à l'écosystème pour retirer une version piégée avant qu'elle
 # arrive ici. Fusion automatique des correctifs mineurs : workflow
 # « Dependabot : fusion automatique » ; règles et exceptions dans SECURITY.md.
+# Aucun label réglé ici : Dependabot crée alors lui-même ses labels par défaut.
 version: 2
 updates:
   # Dépendances Node.js de l'application (kit et image).
@@ -20,9 +21,6 @@ updates:
     commit-message:
       prefix: "npm"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "npm"
     groups:
       npm-correctifs:
         update-types:
@@ -32,7 +30,8 @@ updates:
       # Le client Socket.IO 2.x parle le protocole historique de la
       # télécommande KaraFun ; le serveur 2.x sert le faux KaraFun de la démo.
       # Passer à 3.x ou 4.x demande des essais de protocole, pas une PR
-      # automatique (CONTEXTE-REPRISE.md, SECURITY.md).
+      # automatique (CONTEXTE-REPRISE.md, SECURITY.md). Écarte seulement les
+      # mises à jour de version : celles de sécurité restent proposées, à fermer.
       - dependency-name: "socket.io-client"
         update-types: ["version-update:semver-major"]
       - dependency-name: "socket.io"
@@ -52,9 +51,6 @@ updates:
     commit-message:
       prefix: "maven"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "java"
     groups:
       # L'optimiseur calcule la rotation : aucune de ses PR ne fusionne sans
       # le bilan avant/après d'une vraie soirée (AGENTS.md, workflow « Bilan
@@ -85,9 +81,6 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "github-actions"
     groups:
       # init, analyze et upload-sarif partagent un fichier de configuration :
       # une seule révision pour toute la famille, même pour une version majeure.
@@ -106,7 +99,11 @@ updates:
           - "patch"
 
   # Images de base du Dockerfile, épinglées par empreinte : chaque correctif
-  # de Debian, de Node.js ou de Java arrive par une PR vérifiée par la CI.
+  # de Debian, de Node.js ou de Java arrive par une PR vérifiée par la CI, une
+  # fois l'empreinte publiée depuis 7 jours (délai ci-dessous). Dependabot ne
+  # reconnaît pas les LTS : il proposait Node 25 et Java 26 (#48 à #50). Les
+  # montées se font d'un seul tenant, annoncées par le workflow « Veille des
+  # versions » (SECURITY.md, « Règle de la dernière LTS »).
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -120,14 +117,23 @@ updates:
     commit-message:
       prefix: "docker"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "docker"
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eclipse-temurin"
+        update-types: ["version-update:semver-major"]
+      # Dependabot lit 3.10-eclipse-temurin-25 comme la version 3.10.25 : un autre
+      # Java lui paraît un correctif, une autre ligne de Maven une version mineure.
+      # Toutes écartées ; les nouvelles empreintes de cette étiquette restent proposées.
+      - dependency-name: "maven"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
     groups:
-      images-correctifs:
-        update-types:
-          - "minor"
-          - "patch"
+      # Même Java pour construire l'optimiseur et pour l'exécuter : une seule PR.
+      # Sans update-types : Dependabot sortirait du groupe une empreinte seule.
+      java:
+        patterns:
+          - "maven"
+          - "eclipse-temurin"
 
   # Caddy du VPS (deploy/compose.yaml), seule entrée exposée à Internet :
   # épinglé par empreinte, il suit les releases de l'application.
@@ -144,6 +150,3 @@ updates:
     commit-message:
       prefix: "compose"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "docker"
