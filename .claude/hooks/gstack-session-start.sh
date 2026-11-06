@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Hook de Claude Code (.claude/settings.json) ; tout autre agent peut le
-# lancer lui-même, voir AGENTS.md.
+# Hook de Claude Code seul (.claude/settings.json) : il cherche les compétences
+# de Claude Code. Tout autre agent lance install-gstack.sh, voir AGENTS.md.
 #
 #   bash .claude/hooks/gstack-session-start.sh [SessionStart|UserPromptSubmit]
 #
@@ -20,16 +20,20 @@ case "$EVENT" in SessionStart|UserPromptSubmit) ;; *) EVENT=SessionStart ;; esac
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Même résolution que check-gstack.sh et que le mode équipe officiel.
+# Même résolution que install-gstack.sh claude : Claude Code ne lit que ses
+# propres compétences. La copie d'un autre agent (~/.codex/skills/gstack,
+# ~/.gstack/repos/gstack après sa migration…) ne lui en donne aucune, et elles
+# restent exigées même quand GSTACK_ROOT désigne la source.
+CLAUDE_SKILLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
 GSTACK_DIR=""
-for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
-  "$HOME/.factory/skills/gstack" "$HOME/.kiro/skills/gstack" "$HOME/.config/opencode/skills/gstack" \
-  "$HOME/.slate/skills/gstack" "$HOME/.cursor/skills/gstack" "$HOME/.openclaw/skills/gstack" \
-  "$HOME/.hermes/skills/gstack" "$HOME/.gbrain/skills/gstack" "$HOME/.copilot/skills/gstack" "$HOME/.gstack/repos/gstack"; do
+for candidate in "${GSTACK_ROOT:-}" "$CLAUDE_SKILLS/gstack"; do
   if [ -z "$GSTACK_DIR" ] && [ -n "$candidate" ] && [ -d "$candidate/bin" ]; then
     GSTACK_DIR="$candidate"
   fi
 done
+if [ ! -f "$CLAUDE_SKILLS/gstack-review/SKILL.md" ] && [ ! -f "$CLAUDE_SKILLS/review/SKILL.md" ]; then
+  GSTACK_DIR=""
+fi
 
 # Installation lancée par une autre session et pas encore finie : bin/ existe
 # déjà, mais gstack n'est prêt qu'à la fin de setup. install-gstack.sh attend
@@ -84,7 +88,7 @@ install_pre_push() {
 [ "$EVENT" = SessionStart ] && install_pre_push
 
 RULES="Parcours obligatoire du projet : investigate pour un défaut, qa pour les parcours navigateur, review avant livraison. Après toute modification de la file, des duos, des présences ou des tables : node test/run-offline.js, puis consigner le résultat dans RAPPORT-TEST.md."
-RETRY="L'utilisateur a donné son accord : pour réessayer, lancer bash .claude/hooks/install-gstack.sh puis redémarrer l'agent. En attendant, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence."
+RETRY="L'utilisateur a donné son accord : pour réessayer, lancer bash .claude/hooks/install-gstack.sh claude puis redémarrer l'agent. En attendant, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence."
 if [ "$EVENT" = UserPromptSubmit ]; then
   if [ -n "$GSTACK_DIR" ]; then
     MESSAGE="gstack : $ROUTING $RULES"
@@ -92,7 +96,8 @@ if [ "$EVENT" = UserPromptSubmit ]; then
     MESSAGE="GSTACK_MISSING : gstack est obligatoire mais pas installé. Le dire à l'utilisateur avant tout changement de code. $RETRY $RULES"
   fi
 elif [ -n "$INSTALLED" ]; then
-  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). $ROUTING $RULES"
+  # Claude Code ne surveille pas un dossier de compétences créé après son démarrage.
+  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). Si ses compétences n'apparaissent pas dans cette session, redémarrer l'agent. $ROUTING $RULES"
 elif [ -n "$GSTACK_DIR" ]; then
   MESSAGE="GSTACK_OK : gstack est installé ($GSTACK_DIR). $ROUTING $RULES"
 else

@@ -32,7 +32,7 @@ Le hook `pre-push` est copié dans le dossier des hooks du dépôt (`.git/hooks/
 
 **Au début de chaque session, quel que soit l'agent**, s'assurer que gstack est installé avant tout changement de code. L'utilisateur a donné son accord pour l'installer automatiquement :
 
-- Claude Code : son hook `SessionStart` (`.claude/hooks/gstack-session-start.sh`) lance `install-gstack.sh` si gstack manque ;
+- Claude Code : son hook `SessionStart` (`.claude/hooks/gstack-session-start.sh`) lance `install-gstack.sh` si gstack manque ou si ses compétences ne sont pas dans `~/.claude/skills` (`$CLAUDE_CONFIG_DIR/skills` si ce réglage existe, dossier que `check-gstack.sh` et `gstack-gate.js` lisent aussi) : la copie d'un autre agent (`~/.codex/skills/gstack`, `~/.gstack/repos/gstack`) ne lui en donne aucune ;
 - Codex : le hook `SessionStart` de `.codex/hooks.json` signale `GSTACK_MISSING` ; lancer alors `bash .claude/hooks/install-gstack.sh codex` depuis la racine du dépôt (Git Bash sous Windows), puis faire redémarrer Codex ;
 - tout autre agent : lancer lui-même `bash .claude/hooks/install-gstack.sh` (code 0 et dossier affiché : gstack est prêt).
 

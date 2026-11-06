@@ -79,10 +79,12 @@ function parseEvent(text) {
 
 function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
 
-// Même liste que le mode équipe officiel (gstack-team-init) ; GSTACK_ROOT
+// Même liste que le mode équipe officiel (gstack-team-init), plus le dossier de
+// Claude Code s'il est déplacé : install-gstack.sh y installe gstack. GSTACK_ROOT
 // relatif se lit depuis le dossier courant, comme dans les scripts shell.
 function gstackDir() {
   const candidates = [process.env.GSTACK_ROOT ? path.resolve(process.env.GSTACK_ROOT) : '',
+    process.env.CLAUDE_CONFIG_DIR ? path.resolve(process.env.CLAUDE_CONFIG_DIR, 'skills', 'gstack') : '',
     ...['.claude/skills/gstack', '.codex/skills/gstack', '.factory/skills/gstack', '.kiro/skills/gstack',
       '.config/opencode/skills/gstack', '.slate/skills/gstack', '.cursor/skills/gstack', '.openclaw/skills/gstack',
       '.hermes/skills/gstack', '.gbrain/skills/gstack', '.copilot/skills/gstack', '.gstack/repos/gstack']
@@ -176,14 +178,15 @@ function onEdit(event) {
     return;
   }
   if (!gstackDir()) {
-    deny('gstack est obligatoire dans ce dépôt mais n\'est pas installé : lancer bash .claude/hooks/install-gstack.sh ' +
+    deny('gstack est obligatoire dans ce dépôt mais n\'est pas installé : lancer bash .claude/hooks/install-gstack.sh claude ' +
       '(installation acceptée par l\'utilisateur), puis redémarrer l\'agent. Le dire à l\'utilisateur.');
     return;
   }
   if (recordedSkills(event).length) return;
   deny(`Modification de ${rel} refusée : aucune compétence gstack n'a encore été lancée dans cette session. ` +
     `Choisir celle qui convient à la demande et la lancer avec l'outil Skill (${ROUTES}), ` +
-    'en l\'annonçant en une ligne, puis reprendre la modification. /review reste exigé avant l\'envoi (git push).');
+    'en l\'annonçant en une ligne, puis reprendre la modification. /review reste exigé avant l\'envoi (git push). ' +
+    'Si Claude Code ne trouve aucune compétence gstack : lancer bash .claude/hooks/install-gstack.sh claude, puis redémarrer l\'agent.');
 }
 
 function git(args, cwd) {
@@ -254,7 +257,7 @@ function onPrePush(stdin) {
   }
   if (!pending.length) return 0;
   const gstack = gstackDir();
-  if (!gstack) return refuse('gstack est obligatoire mais n\'est pas installé (bash .claude/hooks/install-gstack.sh).');
+  if (!gstack) return refuse('gstack est obligatoire mais n\'est pas installé (bash .claude/hooks/install-gstack.sh claude).');
   let rows;
   try { rows = reviewRows(gstack, cwd); } catch (e) {
     return refuse(`le journal de relecture gstack est illisible (${e.message}).`);
