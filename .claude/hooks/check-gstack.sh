@@ -3,9 +3,10 @@
 # Empêche l'emploi des compétences de code si gstack n'est pas installé.
 set -eu
 
-# Même résolution que le mode équipe officiel (tous les hôtes gstack).
+# Même résolution que le mode équipe officiel (tous les hôtes gstack), plus le
+# dossier de Claude Code s'il est déplacé : install-gstack.sh y installe gstack.
 GSTACK_DIR=""
-for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
+for candidate in "${GSTACK_ROOT:-}" "${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/skills/gstack}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
   "$HOME/.factory/skills/gstack" "$HOME/.kiro/skills/gstack" "$HOME/.config/opencode/skills/gstack" \
   "$HOME/.slate/skills/gstack" "$HOME/.cursor/skills/gstack" "$HOME/.openclaw/skills/gstack" \
   "$HOME/.hermes/skills/gstack" "$HOME/.gbrain/skills/gstack" "$HOME/.copilot/skills/gstack" "$HOME/.gstack/repos/gstack"; do

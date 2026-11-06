@@ -67,7 +67,7 @@ fs.chmodSync(path.join(hooksDir, 'pre-push'), 0o755);
 const linked = path.join(work, 'worktree lié');
 git(project, 'worktree', 'add', '-q', linked, '-b', 'liee');
 
-const baseEnv = { HOME: home, USERPROFILE: home, FAUX_JOURNAL: reviews, GSTACK_ROOT: '', GSTACK_GATE: '' };
+const baseEnv = { HOME: home, USERPROFILE: home, FAUX_JOURNAL: reviews, GSTACK_ROOT: '', CLAUDE_CONFIG_DIR: '', GSTACK_GATE: '' };
 function gate(mode, event, env = {}) {
   const r = spawnSync(process.execPath, [GATE, mode], {
     input: typeof event === 'string' ? event : JSON.stringify({ cwd: project, ...event }),
@@ -148,6 +148,10 @@ const relRoot = spawnSync(process.execPath, [GATE, 'edit'], { cwd: path.dirname(
   input: JSON.stringify({ session_id: 's1', cwd: project, tool_name: 'Edit', tool_input: { file_path: path.join(project, 'server.js') } }),
   env: { ...gitEnv, ...baseEnv, HOME: empty, USERPROFILE: empty, GSTACK_ROOT: 'gstack', CLAUDE_PROJECT_DIR: project } });
 assert.strictEqual(relRoot.stdout.trim(), '', 'GSTACK_ROOT relatif résolu depuis le dossier courant');
+// Seule copie de gstack dans CLAUDE_CONFIG_DIR : compétence notée et modification permise.
+const seulConfig = { HOME: empty, USERPROFILE: empty, CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
+gate('skill', { session_id: 's-config', tool_name: 'Skill', tool_input: { skill: 'review', args: 'x' } }, seulConfig);
+assert.strictEqual(edit('s-config', path.join(project, 'server.js'), seulConfig), null, 'gstack de CLAUDE_CONFIG_DIR reconnu par la porte');
 
 // 3. Écriture par l'API GitHub : refusée pour le dépôt d'origin, libre ailleurs.
 for (const tool of ['mcp__github__push_files', 'mcp__github__create_or_update_file', 'mcp__github__delete_file']) {
@@ -305,12 +309,13 @@ assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstac
   const shellList = name => {
     const loop = /for candidate in ((?:[^;]|\\\n)*?); do/.exec(read(name));
     assert.ok(loop, `${name} : boucle « for candidate in … » introuvable`);
-    return [...loop[1].matchAll(/"([^"]*)"/g)].map(m => m[1].replace(/^\$HOME\//, '').replace(/^\$\{GSTACK_ROOT:-\}$/, 'GSTACK_ROOT'));
+    return [...loop[1].matchAll(/"([^"]*)"/g)].map(m => m[1].replace(/^\$HOME\//, '').replace(/^\$\{GSTACK_ROOT:-\}$/, 'GSTACK_ROOT')
+      .replace(/^\$\{CLAUDE_CONFIG_DIR:\+\$CLAUDE_CONFIG_DIR\/skills\/gstack\}$/, 'CLAUDE_CONFIG_DIR'));
   };
   const gate = /function gstackDir\(\) \{([\s\S]*?)\n\}/.exec(read('gstack-gate.js'));
   assert.ok(gate, 'gstack-gate.js : gstackDir() introuvable');
-  const gateList = ['GSTACK_ROOT', ...[.../\.\.\.\[([^\]]*)\]/.exec(gate[1])[1].matchAll(/'([^']*)'/g)].map(m => m[1])];
-  assert.match(gate[1], /process\.env\.GSTACK_ROOT \?[^,]*,\s*\.\.\.\[/, 'gstack-gate.js : GSTACK_ROOT en premier');
+  const gateList = ['GSTACK_ROOT', 'CLAUDE_CONFIG_DIR', ...[.../\.\.\.\[([^\]]*)\]/.exec(gate[1])[1].matchAll(/'([^']*)'/g)].map(m => m[1])];
+  assert.match(gate[1], /process\.env\.GSTACK_ROOT \?[^,]*,\s*process\.env\.CLAUDE_CONFIG_DIR \?[^\n]*\n\s*\.\.\.\[/, 'gstack-gate.js : GSTACK_ROOT puis CLAUDE_CONFIG_DIR en premier');
   assert.ok(gateList.length >= 13 && gateList.includes('.claude/skills/gstack'), `liste de la porte lue : ${gateList.join(', ')}`);
   for (const name of ['check-gstack.sh', 'install-gstack.sh']) {
     assert.deepStrictEqual(shellList(name), gateList, `${name} : même liste de dossiers gstack que gstack-gate.js`);

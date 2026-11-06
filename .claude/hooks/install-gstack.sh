@@ -38,7 +38,7 @@ find_gstack() {
     printf '%s\n' "$TARGET"
     return 0
   fi
-  for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
+  for candidate in "${GSTACK_ROOT:-}" "${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/skills/gstack}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
     "$HOME/.factory/skills/gstack" "$HOME/.kiro/skills/gstack" "$HOME/.config/opencode/skills/gstack" \
     "$HOME/.slate/skills/gstack" "$HOME/.cursor/skills/gstack" "$HOME/.openclaw/skills/gstack" \
     "$HOME/.hermes/skills/gstack" "$HOME/.gbrain/skills/gstack" "$HOME/.copilot/skills/gstack" "$HOME/.gstack/repos/gstack"; do

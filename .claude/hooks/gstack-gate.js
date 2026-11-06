@@ -79,10 +79,12 @@ function parseEvent(text) {
 
 function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
 
-// Même liste que le mode équipe officiel (gstack-team-init) ; GSTACK_ROOT
+// Même liste que le mode équipe officiel (gstack-team-init), plus le dossier de
+// Claude Code s'il est déplacé : install-gstack.sh y installe gstack. GSTACK_ROOT
 // relatif se lit depuis le dossier courant, comme dans les scripts shell.
 function gstackDir() {
   const candidates = [process.env.GSTACK_ROOT ? path.resolve(process.env.GSTACK_ROOT) : '',
+    process.env.CLAUDE_CONFIG_DIR ? path.resolve(process.env.CLAUDE_CONFIG_DIR, 'skills', 'gstack') : '',
     ...['.claude/skills/gstack', '.codex/skills/gstack', '.factory/skills/gstack', '.kiro/skills/gstack',
       '.config/opencode/skills/gstack', '.slate/skills/gstack', '.cursor/skills/gstack', '.openclaw/skills/gstack',
       '.hermes/skills/gstack', '.gbrain/skills/gstack', '.copilot/skills/gstack', '.gstack/repos/gstack']

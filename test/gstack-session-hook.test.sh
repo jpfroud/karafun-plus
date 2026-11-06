@@ -251,6 +251,13 @@ printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail
 out="$(run_auto "$home" CLAUDE_CONFIG_DIR="$conf")" || fail "installation dans CLAUDE_CONFIG_DIR"
 printf '%s' "$out" | field additionalContext |
   grep -q "^GSTACK_OK : gstack vient d'être installé automatiquement ($conf/skills/gstack)" || fail "installation hors de CLAUDE_CONFIG_DIR"
+# Seule copie de gstack : le garde-fou la reconnaît, sinon il refuserait toute compétence après ce GSTACK_OK.
+home="$WORK/config-seule"; conf="$home/conf-claude"; mkdir -p "$home"
+run_auto "$home" CLAUDE_CONFIG_DIR="$conf" >/dev/null || fail "installation dans le seul CLAUDE_CONFIG_DIR"
+[ ! -e "$home/.claude" ] || fail "gstack installé hors de CLAUDE_CONFIG_DIR"
+out="$(printf '%s' '{"tool_name":"Skill"}' | quiet_env HOME="$home" CLAUDE_CONFIG_DIR="$conf" bash "$CHECK" 2>/dev/null)"; code=$?
+[ "$code" = 0 ] && [ "$out" = "{}" ] || fail "compétences refusées avec gstack dans CLAUDE_CONFIG_DIR (code $code)"
+[ "$(quiet_env HOME="$home" CLAUDE_CONFIG_DIR="$conf" bash "$INSTALL" </dev/null)" = "$conf/skills/gstack" ] || fail "installateur sans argument : CLAUDE_CONFIG_DIR ignoré"
 # Sans argument (tout autre agent) : toute copie convient, rien n'est installé.
 home="$WORK/autre-agent-sans-argument"; mkdir -p "$home/.cursor/skills/gstack/bin"
 [ "$(quiet_env HOME="$home" bash "$INSTALL" </dev/null)" = "$home/.cursor/skills/gstack" ] || fail "copie de l'autre agent ignorée sans argument"
