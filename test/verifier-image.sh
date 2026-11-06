@@ -27,7 +27,7 @@ for commande in docker curl node java git; do
 done
 docker info > /dev/null 2>&1 || prerequis "Docker ne répond pas (docker info)."
 VERSION_NODE=$(node -v)
-[[ $VERSION_NODE == v22.* ]] || prerequis "Node 22 attendu, trouvé $VERSION_NODE"
+[[ $VERSION_NODE == v26.* ]] || prerequis "Node 26 attendu, trouvé $VERSION_NODE"
 # Première ligne de java --version (stdout ; JAVA_TOOL_OPTIONS s'annonce sur stderr).
 LIGNE_JAVA=$(java --version 2> /dev/null | sed -n 1p) || LIGNE_JAVA=''
 MOTIF_JAVA='^(openjdk|java) 25([. ]|$)'
@@ -171,7 +171,7 @@ ok
 # ---------------------------------------------------------------- V02
 controle V02 "point d'entrée"
 POINT=$(champ_json 'd[0].Config.Entrypoint' <<< "$INSPECT")
-[ "$POINT" = '["docker-entrypoint.sh"]' ] || echec "Entrypoint = $POINT, attendu [\"docker-entrypoint.sh\"] (celui de node:22-bookworm-slim)"
+[ "$POINT" = '["docker-entrypoint.sh"]' ] || echec "Entrypoint = $POINT, attendu [\"docker-entrypoint.sh\"] (celui de node:26-trixie-slim)"
 COMMANDE_IMAGE=$(champ_json 'd[0].Config.Cmd' <<< "$INSPECT")
 [ "$COMMANDE_IMAGE" = '["node","server.js","--no-open"]' ] || echec "Cmd = $COMMANDE_IMAGE, attendu [\"node\",\"server.js\",\"--no-open\"]"
 ok

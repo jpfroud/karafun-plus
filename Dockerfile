@@ -19,7 +19,7 @@ RUN jlink --add-modules java.base,java.xml,java.logging,java.management,jdk.mana
       --output /solver-runtime \
  && /solver-runtime/bin/java --version
 
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS deps
+FROM --platform=$BUILDPLATFORM node:26-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS deps
 ARG VERSION
 ARG COMMIT
 ARG BUILT_AT
@@ -32,7 +32,7 @@ COPY . .
 RUN node scripts/preparer-livrable.js /livrable \
  && cp -R node_modules /livrable/node_modules
 
-FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+FROM node:26-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072
 ARG VERSION
 ARG COMMIT
 ARG BUILT_AT

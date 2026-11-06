@@ -50,7 +50,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '26'
       # Alertes faibles ou modérées connues de la famille Socket.IO 2.x :
       # SECURITY.md. Une alerte élevée ou critique fait échouer ce contrôle.
       - name: npm audit --omit=dev --audit-level=high

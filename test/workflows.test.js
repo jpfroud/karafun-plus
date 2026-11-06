@@ -295,8 +295,8 @@ test('W6b la décision de fusion de Dependabot, exécutée', { skip: bash ? fals
   }
   assert.equal(decide({ ...ok, ECOSYSTEM: 'maven', DEPENDENCIES: 'org.slf4j:slf4j-simple', COMMITS: 'non' }).decision, 'relire');
   const docker = { ECOSYSTEM: 'docker', DEPENDENCIES: 'node', COMMITS: 'oui' };
-  assert.equal(decide({ ...docker, PREVIOUS: '22-bookworm-slim', NEW: '22-bookworm-slim' }).decision, 'fusion', 'même étiquette, nouvelle empreinte');
-  assert.equal(decide({ ...docker, PREVIOUS: '22-bookworm-slim', NEW: '24-bookworm-slim' }).decision, 'relire');
+  assert.equal(decide({ ...docker, PREVIOUS: '26-trixie-slim', NEW: '26-trixie-slim' }).decision, 'fusion', 'même étiquette, nouvelle empreinte');
+  assert.equal(decide({ ...docker, PREVIOUS: '26-trixie-slim', NEW: '28-trixie-slim' }).decision, 'relire');
   assert.match(decide({ ...ok, COMMITS: 'non' }).raison, /autre auteur/);
 });
 
