@@ -512,3 +512,40 @@ test('W10 aucune installation hors fichier de verrouillage, sauf Playwright à v
   const versions = new Set(WORKFLOWS.flatMap(name => [...workflow(name).matchAll(/playwright@(\d+\.\d+\.\d+)/g)].map(match => match[1])));
   assert.equal(versions.size, 1, `une seule version de Playwright : ${[...versions].join(', ')}`);
 });
+
+test('W11 une montée de version change tout le dépôt d’un seul tenant', () => {
+  // Une montée partielle (PR de Dependabot sur la seule image, par exemple)
+  // laisserait le Dockerfile, la CI, les tests et les documents sur deux versions.
+  const one = (text, pattern, label) => {
+    const found = new Set([...text.matchAll(pattern)].map(match => match[1]));
+    assert.equal(found.size, 1, `${label} : ${[...found].join(', ') || 'introuvable'}`);
+    return [...found][0];
+  };
+  const dockerfile = read('Dockerfile');
+  const node = one(dockerfile, /\bnode:(\d+)-/g, 'Node du Dockerfile');
+  const debian = one(dockerfile, /\bnode:\d+-(\w+)-slim@/g, 'Debian du Dockerfile');
+  const java = one(dockerfile, /\beclipse-temurin[:-](\d+)/g, 'Java du Dockerfile, image Maven comprise');
+  const all = WORKFLOWS.map(workflow).join('\n');
+  assert.equal(one(all, /node-version: '(\d+)'/g, 'node-version des workflows'), node);
+  assert.equal(one(all, /java-version: '(\d+)'/g, 'java-version des workflows'), java);
+  one(all, /\bubuntu-(\d+\.\d+)/g, 'Ubuntu des workflows');
+  assert.equal(/<maven\.compiler\.release>(\d+)</.exec(read('solver/pom.xml'))[1], java, 'solver/pom.xml');
+  assert.equal(JSON.parse(read('package.json')).engines.node, `>=${node}`, 'package.json');
+  assert.equal(JSON.parse(read('package-lock.json')).packages[''].engines.node, `>=${node}`, 'package-lock.json');
+  // Contrôles de la version réellement embarquée, dans l'image et le kit.
+  const image = read('test/verifier-image.sh');
+  assert.ok(image.includes(`$VERSION_NODE == v${node}.*`), 'test/verifier-image.sh : Node de cette machine');
+  assert.ok(image.includes(`MOTIF_JAVA='^(openjdk|java) ${java}(`), 'test/verifier-image.sh : Java de l’image');
+  assert.ok(read('test/verify-portable-kit.ps1').includes(`'^(openjdk|java) ${java}'`), 'test/verify-portable-kit.ps1 : Java du kit');
+  // Textes : documents, messages et commentaires.
+  for (const file of ['README.md', 'CONTRIBUTING.md', 'CONTEXTE-REPRISE.md', 'DEPLOIEMENT-SERVEUR.md', 'KIT-BAR-LISEZMOI.txt',
+    '.github/RELEASE.md', 'PREPARER-KIT-BAR.ps1', 'karafun.js', 'tools/diag-karafun.js', 'test/verifier-image.sh',
+    'test/verify-portable-kit.ps1', 'test/fixtures/compose.essai-caddy.yaml']) {
+    const text = read(file);
+    for (const [, version] of text.matchAll(/\bNode(?:\.js)? (\d+)\b/g)) assert.equal(version, node, `${file} : Node ${version}`);
+    for (const [, version] of text.matchAll(/\bJava (\d+)\b/g)) assert.equal(version, java, `${file} : Java ${version}`);
+    for (const [, version, name] of text.matchAll(/\bnode:(\d+)-(\w+)-slim\b/g)) {
+      assert.equal(`${version}-${name}`, `${node}-${debian}`, `${file} : node:${version}-${name}-slim`);
+    }
+  }
+});
