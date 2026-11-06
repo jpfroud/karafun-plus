@@ -183,7 +183,8 @@ function onEdit(event) {
   if (recordedSkills(event).length) return;
   deny(`Modification de ${rel} refusée : aucune compétence gstack n'a encore été lancée dans cette session. ` +
     `Choisir celle qui convient à la demande et la lancer avec l'outil Skill (${ROUTES}), ` +
-    'en l\'annonçant en une ligne, puis reprendre la modification. /review reste exigé avant l\'envoi (git push).');
+    'en l\'annonçant en une ligne, puis reprendre la modification. /review reste exigé avant l\'envoi (git push). ' +
+    'Si Claude Code ne trouve aucune compétence gstack : lancer bash .claude/hooks/install-gstack.sh claude, puis redémarrer l\'agent.');
 }
 
 function git(args, cwd) {

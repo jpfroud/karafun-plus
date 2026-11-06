@@ -88,6 +88,8 @@ assert.strictEqual(decision(reply), 'deny', 'modification sans compétence gstac
 assert.match(reason(reply), /server\.js/);
 assert.match(reason(reply), /investigate/);
 assert.match(reason(reply), /outil Skill/);
+// Copie d'un autre agent seule : Claude Code n'a aucune compétence à lancer, le refus nomme l'installateur.
+assert.match(reason(reply), /Si Claude Code ne trouve aucune compétence gstack : lancer bash \.claude\/hooks\/install-gstack\.sh claude/);
 reply = gate('edit', { session_id: 's1', tool_name: 'Write', tool_input: { file_path: 'public/nouveau.html' } });
 assert.strictEqual(decision(reply), 'deny', 'chemin relatif dans le dépôt, fichier pas encore créé');
 reply = gate('edit', { session_id: 's1', tool_name: 'NotebookEdit', tool_input: { notebook_path: path.join(project, 'a.ipynb') } });
@@ -292,10 +294,12 @@ assert.match(command(settings.PreToolUse, 'Skill'), /check-gstack\.sh/);
 assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstack karafun-plus/, 'marque reconnue par l\'installateur');
 
 // 7. Regression: M2-3 (seconde relecture) — la liste des dossiers où chercher
-//    gstack existe en quatre copies (porte, garde-fou des compétences, hook de
-//    démarrage, installateur) : une copie oubliée lors d'un ajout ferait
-//    refuser les compétences ou réinstaller gstack alors qu'il est présent.
-//    Les quatre listes doivent rester identiques, dans le même ordre.
+//    gstack existe en trois copies (porte, garde-fou des compétences,
+//    installateur) : une copie oubliée lors d'un ajout ferait refuser les
+//    compétences ou réinstaller gstack alors qu'il est présent. Les trois listes
+//    doivent rester identiques, dans le même ordre. Le hook de démarrage répond
+//    pour Claude Code, qui ne lit que ses propres compétences : GSTACK_ROOT puis
+//    ce seul dossier, comme la branche claude de l'installateur.
 {
   const read = name => fs.readFileSync(path.join(HOOKS, name), 'utf8');
   const shellList = name => {
@@ -308,9 +312,10 @@ assert.match(fs.readFileSync(path.join(HOOKS, 'pre-push'), 'utf8'), /Porte gstac
   const gateList = ['GSTACK_ROOT', ...[.../\.\.\.\[([^\]]*)\]/.exec(gate[1])[1].matchAll(/'([^']*)'/g)].map(m => m[1])];
   assert.match(gate[1], /process\.env\.GSTACK_ROOT \?[^,]*,\s*\.\.\.\[/, 'gstack-gate.js : GSTACK_ROOT en premier');
   assert.ok(gateList.length >= 13 && gateList.includes('.claude/skills/gstack'), `liste de la porte lue : ${gateList.join(', ')}`);
-  for (const name of ['check-gstack.sh', 'gstack-session-start.sh', 'install-gstack.sh']) {
+  for (const name of ['check-gstack.sh', 'install-gstack.sh']) {
     assert.deepStrictEqual(shellList(name), gateList, `${name} : même liste de dossiers gstack que gstack-gate.js`);
   }
+  assert.deepStrictEqual(shellList('gstack-session-start.sh'), ['GSTACK_ROOT', '$CLAUDE_SKILLS/gstack'], 'gstack-session-start.sh : Claude Code seul');
 }
 
 // 8. Regression: G1 (quatrième relecture finale, décision D3 du gérant) — les

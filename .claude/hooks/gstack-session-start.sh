@@ -20,16 +20,20 @@ case "$EVENT" in SessionStart|UserPromptSubmit) ;; *) EVENT=SessionStart ;; esac
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Même résolution que check-gstack.sh et que le mode équipe officiel.
+# Même résolution que install-gstack.sh claude : Claude Code ne lit que ses
+# propres compétences. La copie d'un autre agent (~/.codex/skills/gstack,
+# ~/.gstack/repos/gstack après sa migration…) ne lui en donne aucune, et elles
+# restent exigées même quand GSTACK_ROOT désigne la source.
+CLAUDE_SKILLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
 GSTACK_DIR=""
-for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
-  "$HOME/.factory/skills/gstack" "$HOME/.kiro/skills/gstack" "$HOME/.config/opencode/skills/gstack" \
-  "$HOME/.slate/skills/gstack" "$HOME/.cursor/skills/gstack" "$HOME/.openclaw/skills/gstack" \
-  "$HOME/.hermes/skills/gstack" "$HOME/.gbrain/skills/gstack" "$HOME/.copilot/skills/gstack" "$HOME/.gstack/repos/gstack"; do
+for candidate in "${GSTACK_ROOT:-}" "$CLAUDE_SKILLS/gstack"; do
   if [ -z "$GSTACK_DIR" ] && [ -n "$candidate" ] && [ -d "$candidate/bin" ]; then
     GSTACK_DIR="$candidate"
   fi
 done
+if [ ! -f "$CLAUDE_SKILLS/gstack-review/SKILL.md" ] && [ ! -f "$CLAUDE_SKILLS/review/SKILL.md" ]; then
+  GSTACK_DIR=""
+fi
 
 # Installation lancée par une autre session et pas encore finie : bin/ existe
 # déjà, mais gstack n'est prêt qu'à la fin de setup. install-gstack.sh attend
@@ -84,7 +88,7 @@ install_pre_push() {
 [ "$EVENT" = SessionStart ] && install_pre_push
 
 RULES="Parcours obligatoire du projet : investigate pour un défaut, qa pour les parcours navigateur, review avant livraison. Après toute modification de la file, des duos, des présences ou des tables : node test/run-offline.js, puis consigner le résultat dans RAPPORT-TEST.md."
-RETRY="L'utilisateur a donné son accord : pour réessayer, lancer bash .claude/hooks/install-gstack.sh puis redémarrer l'agent. En attendant, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence."
+RETRY="L'utilisateur a donné son accord : pour réessayer, lancer bash .claude/hooks/install-gstack.sh claude puis redémarrer l'agent. En attendant, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence."
 if [ "$EVENT" = UserPromptSubmit ]; then
   if [ -n "$GSTACK_DIR" ]; then
     MESSAGE="gstack : $ROUTING $RULES"

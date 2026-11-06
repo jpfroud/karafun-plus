@@ -6,7 +6,8 @@
 #
 #   bash .claude/hooks/install-gstack.sh [claude|codex]
 #
-# Sans effet si gstack est déjà prêt pour cet agent. Code 0 : gstack est prêt
+# Sans effet si gstack est déjà prêt pour cet agent ; sans argument (tout autre
+# agent), si une copie existe, quel qu'en soit l'agent. Code 0 : gstack est prêt
 # et la sortie standard donne son dossier. Code 1 : la raison est sur la
 # sortie d'erreur, le détail dans ~/.gstack/installation-auto.log.
 #
@@ -14,18 +15,29 @@
 # GSTACK_REPO_URL : autre dépôt que l'officiel (miroir, tests).
 # GSTACK_INSTALL_BUDGET_SEC : durée maximale (570 s par défaut).
 
-AGENT="${1:-claude}"
-case "$AGENT" in claude|codex) ;; *) echo "Agent inconnu : $AGENT (claude ou codex)." >&2; exit 1 ;; esac
+AGENT="${1:-}"
+case "$AGENT" in ""|claude|codex) ;; *) echo "Agent inconnu : $AGENT (claude ou codex)." >&2; exit 1 ;; esac
 
 REPO_URL="${GSTACK_REPO_URL:-https://github.com/garrytan/gstack.git}"
-TARGET="$HOME/.claude/skills/gstack"   # emplacement officiel, Codex compris
+# Dossier des compétences de Claude Code, comme setup.
+CLAUDE_SKILLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+TARGET="$CLAUDE_SKILLS/gstack"   # emplacement officiel, Codex compris
 STATE="$HOME/.gstack"
 LOG="$STATE/installation-auto.log"
 LOCK="$STATE/installation-auto.lock"
 
-# Même résolution que check-gstack.sh et que le mode équipe officiel.
+# Source de gstack. Claude Code ne lit que ses propres compétences : la copie
+# d'un autre agent (~/.codex/skills/gstack, ~/.gstack/repos/gstack après sa
+# migration…) ne lui en donne aucune, et setup y installerait pour cet autre
+# agent. Sinon : même résolution que check-gstack.sh et que le mode équipe officiel.
 find_gstack() {
   local candidate
+  if [ "$AGENT" = claude ]; then
+    if [ -n "${GSTACK_ROOT:-}" ] && [ -d "$GSTACK_ROOT/bin" ]; then printf '%s\n' "$GSTACK_ROOT"; return 0; fi
+    [ -d "$TARGET/bin" ] || return 1
+    printf '%s\n' "$TARGET"
+    return 0
+  fi
   for candidate in "${GSTACK_ROOT:-}" "$HOME/.claude/skills/gstack" "$HOME/.codex/skills/gstack" \
     "$HOME/.factory/skills/gstack" "$HOME/.kiro/skills/gstack" "$HOME/.config/opencode/skills/gstack" \
     "$HOME/.slate/skills/gstack" "$HOME/.cursor/skills/gstack" "$HOME/.openclaw/skills/gstack" \
@@ -35,15 +47,17 @@ find_gstack() {
   return 1
 }
 
-# Codex ne voit gstack que si ses compétences gstack-* sont installées (même
-# test que .codex/hooks/gstack-route.ps1), même quand GSTACK_ROOT désigne la
-# source.
+# Un agent ne voit gstack que si ses compétences sont installées, même quand
+# GSTACK_ROOT désigne la source. Codex : gstack-* (même test que
+# .codex/hooks/gstack-route.ps1). Claude Code : gstack-* ou noms courts, selon
+# le réglage skill_prefix de gstack (même test que gstack-session-start.sh).
 ready() {
   local dir
   dir="$(find_gstack)" || return 1
-  if [ "$AGENT" = codex ] && [ ! -f "${CODEX_HOME:-$HOME/.codex}/skills/gstack-review/SKILL.md" ]; then
-    return 1
-  fi
+  case "$AGENT" in
+    codex) [ -f "${CODEX_HOME:-$HOME/.codex}/skills/gstack-review/SKILL.md" ] || return 1 ;;
+    claude) [ -f "$CLAUDE_SKILLS/gstack-review/SKILL.md" ] || [ -f "$CLAUDE_SKILLS/review/SKILL.md" ] || return 1 ;;
+  esac
   printf '%s\n' "$dir"
 }
 
@@ -89,13 +103,15 @@ done
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 ready && exit 0
 
-{ echo; echo "== $(date -u '+%Y-%m-%dT%H:%M:%SZ') : installation de gstack pour $AGENT"; } >>"$LOG"
+{ echo; echo "== $(date -u '+%Y-%m-%dT%H:%M:%SZ') : installation de gstack pour ${AGENT:-un autre agent}"; } >>"$LOG"
 
 dir="$(find_gstack)"
 cloned=""
 if [ -z "$dir" ]; then
-  # Un dossier sans bin/ est un reste d'installation interrompue.
-  if [ -e "$TARGET" ]; then set_aside "$TARGET" || fail "dossier $TARGET inutilisable."; fi
+  # Un dossier sans bin/ est un reste d'installation interrompue, ou un dossier
+  # personnel : gardé à part sous un autre nom que les installations ratées, dont
+  # set_aside efface la précédente.
+  if [ -e "$TARGET" ]; then mv "$TARGET" "$STATE/gstack.ancien-$(date +%s)" || fail "dossier $TARGET inutilisable."; fi
   mkdir -p "$(dirname "$TARGET")"
   # Téléchargé hors du dossier des compétences : Claude Code n'y voit jamais
   # de gstack à moitié cloné.
@@ -126,4 +142,4 @@ if [ "$code" != 0 ]; then
   [ "$code" = 124 ] && fail "installation de gstack trop longue (plus de $BUDGET s, voir $LOG) ; elle sera reprise à la prochaine session."
   fail "installation de gstack échouée (code $code, voir $LOG)."
 fi
-ready || fail "gstack installé mais introuvable pour $AGENT (voir $LOG)."
+ready || fail "gstack installé mais introuvable pour ${AGENT:-cet agent} (voir $LOG)."
