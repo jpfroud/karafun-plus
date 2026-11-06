@@ -63,7 +63,7 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - run: npm ci --ignore-scripts
       - name: Construire Timefold et les notices des dependances
         run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:add-third-party org.codehaus.mojo:license-maven-plugin:download-licenses
@@ -116,7 +116,7 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - run: npm ci --ignore-scripts
       - name: Construire Timefold et les notices des dependances
         run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:add-third-party org.codehaus.mojo:license-maven-plugin:download-licenses
@@ -189,7 +189,7 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:

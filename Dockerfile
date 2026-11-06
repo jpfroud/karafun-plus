@@ -1,6 +1,6 @@
 # Images de base épinglées par empreinte (index multi-architecture) : même
 # construction partout ; Dependabot propose chaque nouvelle empreinte en PR.
-FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320 AS solveur
+FROM --platform=$BUILDPLATFORM maven:3.10-eclipse-temurin-25@sha256:047a82fc82c613266cfb1b66fd920be9c8ba51fd67edc68245e4542768f45e36 AS solveur
 WORKDIR /build
 COPY solver/pom.xml solver/pom.xml
 COPY solver/src solver/src
@@ -13,7 +13,7 @@ RUN mvn -B -ntp -f solver/pom.xml verify \
  && cp solver/target/generated-resources/licenses/* LICENCES-JAVA/textes/ \
  && test -s solver/target/karafun-solver.jar
 
-FROM eclipse-temurin:21-jdk@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a AS jre
+FROM eclipse-temurin:25-jdk@sha256:83f4a7fc27df94dcc7b8de04d14cbbba8da14406f921e966969c3b09000aa507 AS jre
 RUN jlink --add-modules java.base,java.xml,java.logging,java.management,jdk.management,jdk.unsupported \
       --strip-debug --no-header-files --no-man-pages --compress=zip-6 \
       --output /solver-runtime \
