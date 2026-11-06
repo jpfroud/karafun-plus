@@ -244,6 +244,8 @@ test('W6 Dependabot suit chaque écosystème avec un délai', () => {
   const merge = workflow('dependabot-auto-merge.yml');
   assert.match(merge, /version-update:semver-patch \| version-update:semver-minor\)/, 'seuls les correctifs mineurs fusionnent seuls');
   assert.match(merge, /\*ai\.timefold\*/, 'Timefold jamais fusionné automatiquement');
+  assert.match(merge, /EMPREINTE_SEULE: \$\{\{ steps\.images\.outputs\.seule \}\}/, 'preuve du diff transmise à la décision');
+  assert.ok(merge.indexOf('- name: Comparer les images') < merge.indexOf('- name: Décider'), 'la preuve avant la décision');
   assert.match(merge, /if \[ "\$ECOSYSTEM" = github_actions \]; then\n\s+decision=relire/, 'actions GitHub jamais fusionnées automatiquement');
   assert.match(merge, /\*socket\.io\*/, 'Socket.IO jamais fusionné automatiquement');
   for (const pattern of [/\*engine\.io\*/, /\*,ws,\*/, /\*,xmlhttprequest-ssl,\*/]) {
@@ -307,33 +309,38 @@ test('W6b la décision de fusion de Dependabot, exécutée', { skip: bash ? fals
     assert.equal(decide({ ...ok, ECOSYSTEM: 'maven', DEPENDENCIES: dependency }).decision, 'timefold', `${dependency} : l’optimiseur, bilan exigé`);
   }
   assert.equal(decide({ ...ok, ECOSYSTEM: 'maven', DEPENDENCIES: 'org.slf4j:slf4j-simple', COMMITS: 'non' }).decision, 'relire');
+  // Dockerfile : seule la preuve du diff (étape « Comparer les images ») laisse fusionner seul.
   const docker = { ECOSYSTEM: 'docker', DEPENDENCIES: 'node', COMMITS: 'oui' };
-  assert.equal(decide({ ...docker, PREVIOUS: '26-trixie-slim', NEW: '26-trixie-slim' }).decision, 'fusion', 'même étiquette, nouvelle empreinte');
-  assert.equal(decide({ ...docker, PREVIOUS: '26-trixie-slim', NEW: '28-trixie-slim' }).decision, 'relire');
-  // Règle de la dernière LTS : Dependabot lit le Java de l'étiquette Maven comme un correctif (#48).
+  // Formes réelles d'une empreinte seule, relevées sur des PR publiques le 6 novembre 2026 :
+  // « from `abc` to `def` », sans ancienne étiquette ; un type calculé majeur dans un groupe.
+  for (const cas of [{ PREVIOUS: '', NEW: '26-trixie-slim' }, { DEPENDENCIES: 'maven, eclipse-temurin', UPDATE_TYPE: 'version-update:semver-major', PREVIOUS: '`047a82f`', NEW: '3.10-eclipse-temurin-25' }]) {
+    const { decision, raison } = decide({ ...docker, ...cas, EMPREINTE_SEULE: 'oui' });
+    assert.equal(decision, 'fusion', JSON.stringify(cas));
+    assert.match(raison, /nouvelle empreinte/);
+  }
+  // Sans cette preuve, jamais de fusion seule, même classée en correctif (#48, 3.9-eclipse-temurin-26
+  // lu comme 3.9.26) ou avec la même étiquette annoncée dans le message.
   const correctif = { ...ok, ECOSYSTEM: 'docker' };
-  assert.equal(decide({ ...correctif, DEPENDENCIES: 'maven', PREVIOUS: '3.10-eclipse-temurin-25', NEW: '3.10-eclipse-temurin-27' }).decision, 'relire', 'autre Java');
-  assert.match(decide({ ...correctif, DEPENDENCIES: 'maven', PREVIOUS: '3.10-eclipse-temurin-25', NEW: '3.10-eclipse-temurin-27' }).raison, /dernière LTS/);
-  assert.equal(decide({ ...correctif, DEPENDENCIES: 'eclipse-temurin, maven', PREVIOUS: '25-jdk', NEW: '27-jdk' }).decision, 'relire', 'groupe java');
-  assert.equal(decide({ ...correctif, DEPENDENCIES: 'node', PREVIOUS: '26-trixie-slim', NEW: '27-trixie-slim' }).decision, 'relire', 'autre Node');
-  assert.equal(decide({ ...docker, DEPENDENCIES: 'eclipse-temurin, maven', PREVIOUS: '25-jdk', NEW: '25-jdk' }).decision, 'fusion', 'même étiquette lue dans le groupe java');
-  // Formes réelles, relevées sur des PR publiques et la PR 48 le 6 novembre 2026. Dependabot écrit
-  // une nouvelle empreinte « from `abc` to `def` », et fetch-metadata n'y lit aucune étiquette ancienne.
-  assert.match(decide({ ...correctif, UPDATE_TYPE: 'version-update:semver-minor', DEPENDENCIES: 'maven', PREVIOUS: '3.9-eclipse-temurin-21', NEW: '3.9-eclipse-temurin-26' }).raison, /autre étiquette/, 'la PR 48');
-  for (const empreinte of [{ PREVIOUS: '', NEW: '26-trixie-slim' },
-    { DEPENDENCIES: 'maven, eclipse-temurin', UPDATE_TYPE: 'version-update:semver-major', PREVIOUS: '`047a82f`', NEW: '3.10-eclipse-temurin-25' }]) {
-    const { decision, raison } = decide({ ...docker, ...empreinte });
-    assert.equal(decision, 'relire', JSON.stringify(empreinte));
-    assert.match(raison, /nouvelle empreinte/, 'pas « autre étiquette » : c’est la même');
+  for (const cas of [{ ...correctif, UPDATE_TYPE: 'version-update:semver-minor', DEPENDENCIES: 'maven', PREVIOUS: '3.9-eclipse-temurin-21', NEW: '3.9-eclipse-temurin-26' },
+    { ...correctif, DEPENDENCIES: 'eclipse-temurin, maven', PREVIOUS: '25-jdk', NEW: '27-jdk' },
+    { ...correctif, DEPENDENCIES: 'node', PREVIOUS: '26-trixie-slim', NEW: '27-trixie-slim' },
+    { ...correctif, DEPENDENCIES: 'node', PREVIOUS: '', NEW: '' },
+    { ...correctif, DEPENDENCIES: 'mirror.gcr.io/library/maven', PREVIOUS: '3.10-eclipse-temurin-25', NEW: '3.10-eclipse-temurin-26' },
+    { ...correctif, DEPENDENCIES: 'une-autre-image', PREVIOUS: '1.0.0', NEW: '1.0.1' },
+    { ...docker, PREVIOUS: '26-trixie-slim', NEW: '26-trixie-slim' }]) {
+    for (const EMPREINTE_SEULE of ['', 'non']) {
+      const { decision, raison } = decide({ ...cas, EMPREINTE_SEULE });
+      assert.equal(decision, 'relire', JSON.stringify({ ...cas, EMPREINTE_SEULE }));
+      assert.match(raison, /dernière LTS/);
+    }
   }
-  // fetch-metadata donne la version du premier du groupe et le type le plus fort de tous.
-  assert.equal(decide({ ...docker, DEPENDENCIES: 'maven, eclipse-temurin', UPDATE_TYPE: 'version-update:semver-major', PREVIOUS: '3.10-eclipse-temurin-25', NEW: '3.10-eclipse-temurin-25' }).decision, 'relire', 'version majeure sur le second');
-  // Étiquette illisible, même classée en correctif : jamais de fusion seule.
-  for (const NEW of ['', '26.13.0-trixie-slim']) {
-    assert.equal(decide({ ...correctif, DEPENDENCIES: 'node', PREVIOUS: '', NEW }).decision, 'relire', `vers « ${NEW} »`);
-  }
+  assert.equal(decide({ ...docker, EMPREINTE_SEULE: 'oui', COMMITS: 'non' }).decision, 'relire', 'la preuve ne couvre pas un commit d’un autre auteur');
+  assert.equal(decide({ ...docker, EMPREINTE_SEULE: 'oui', DEPENDENCIES: 'node, socket.io' }).decision, 'relire', 'ni la pile Socket.IO');
+  // Caddy (compose.yaml) ne passe pas par cette preuve : ses règles ne changent pas. Une nouvelle
+  // empreinte y porte la version des deux côtés, « from 2.11.7 to 2.11.7 » (vraies PR publiques, novembre 2026).
   assert.equal(decide({ ...correctif, ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', PREVIOUS: '2.11.8', NEW: '2.11.9' }).decision, 'fusion', 'Caddy : correctif ordinaire');
-  assert.equal(decide({ ...correctif, DEPENDENCIES: 'nodejs-outil', PREVIOUS: '1.0.0', NEW: '1.0.1' }).decision, 'fusion', 'node seul, jamais nodejs-outil');
+  assert.equal(decide({ ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', COMMITS: 'oui', PREVIOUS: '2.11.8', NEW: '2.11.8' }).decision, 'fusion', 'Caddy : nouvelle empreinte, même version lue');
+  assert.equal(decide({ ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', COMMITS: 'oui', PREVIOUS: '', NEW: '2.11.8', EMPREINTE_SEULE: 'oui' }).decision, 'relire', 'Caddy : version illisible, à relire');
   assert.match(decide({ ...ok, COMMITS: 'non' }).raison, /autre auteur/);
 });
 
@@ -374,6 +381,58 @@ test('W6c la fusion automatique n’est activée que si main exige « Tests OK �
     [protection(['Tests OK', 'Sécurité OK (pull_request)']), rules([]), 'nom voisin'], [protection([]), rules([]), 'branche non protégée']]) {
     assert.equal(protegee(branche, regles), 'protegee=non', cas);
   }
+});
+
+test('W6f seule une nouvelle empreinte dans le Dockerfile compte comme preuve, exécuté', { skip: jq ? false : 'bash ou jq absent' }, () => {
+  const script = stepScript('dependabot-auto-merge.yml', 'Comparer les images');
+  // gh api <chemin> --paginate --jq <filtre> : réponse simulée de l'API, filtrée par jq comme le fait gh.
+  const fakeGh = [
+    '#!/usr/bin/env bash',
+    '[ "$1" = api ] && [ "$3" = --paginate ] && [ "$4" = --jq ] || exit 2',
+    '[ "$FAUX_FICHIERS" = panne ] && { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }',
+    'printf "%s" "$FAUX_FICHIERS" | jq -r "$5"',
+  ].join('\n') + '\n';
+  const seule = fichiers => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'images-'));
+    try {
+      fs.writeFileSync(path.join(directory, 'gh'), fakeGh, { mode: 0o755 });
+      const output = path.join(directory, 'output');
+      const run = spawnSync('bash', ['--noprofile', '--norc', '-e', '-c', script], { encoding: 'utf8', env: {
+        PATH: `${directory}${path.delimiter}${process.env.PATH}`, GITHUB_OUTPUT: output, GITHUB_REPOSITORY: 'proprietaire/depot', NUMBER: '7',
+        FAUX_FICHIERS: typeof fichiers === 'string' ? fichiers : JSON.stringify(fichiers) } });
+      assert.equal(run.status, 0, run.stderr);
+      return fs.readFileSync(output, 'utf8').trim();
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  };
+  const a = `@sha256:${'a'.repeat(64)}`, b = `@sha256:${'b'.repeat(64)}`;
+  const fichier = (lignes, plus = {}) => ({ filename: 'Dockerfile', status: 'modified', patch: ['@@ -1,4 +1,4 @@', ' # contexte', ...lignes].join('\n'), ...plus });
+  const node = [`-FROM --platform=$BUILDPLATFORM node:26-trixie-slim${a} AS deps`, `+FROM --platform=$BUILDPLATFORM node:26-trixie-slim${b} AS deps`,
+    `-FROM node:26-trixie-slim${a}`, `+FROM node:26-trixie-slim${b}`];
+  const java = [`-FROM --platform=$BUILDPLATFORM maven:3.10-eclipse-temurin-25${a} AS solver`, `+FROM --platform=$BUILDPLATFORM maven:3.10-eclipse-temurin-25${b} AS solver`,
+    `-FROM eclipse-temurin:25-jdk${a} AS jre`, `+FROM eclipse-temurin:25-jdk${b} AS jre`];
+  assert.equal(seule([fichier(node)]), 'seule=oui', 'Node, deux lignes');
+  assert.equal(seule([fichier(java)]), 'seule=oui', 'groupe java, deux images');
+  for (const [cas, fichiers] of Object.entries({
+    'autre étiquette de Node': [fichier([`-FROM node:26-trixie-slim${a}`, `+FROM node:27-trixie-slim${b}`])],
+    'autre Java dans l’étiquette de Maven, seconde image du groupe': [fichier([...java.slice(2), `-FROM maven:3.10-eclipse-temurin-25${a} AS s`, `+FROM maven:3.10-eclipse-temurin-27${b} AS s`])],
+    'autre image': [fichier([`-FROM node:26-trixie-slim${a}`, `+FROM exemple/node:26-trixie-slim${b}`])],
+    'empreinte retirée': [fichier([`-FROM node:26-trixie-slim${a}`, '+FROM node:26-trixie-slim'])],
+    'empreinte courte': [fichier([`-FROM node:26-trixie-slim${a}`, '+FROM node:26-trixie-slim@sha256:abc'])],
+    'étape renommée': [fichier([`-FROM node:26-trixie-slim${a} AS deps`, `+FROM node:26-trixie-slim${b} AS autre`])],
+    'plateforme changée': [fichier([`-FROM node:26-trixie-slim${a}`, `+FROM --platform=linux/386 node:26-trixie-slim${b}`])],
+    'lignes échangées': [fichier([`-FROM node:26-trixie-slim${a}`, `-FROM eclipse-temurin:25-jdk${a} AS jre`, `+FROM eclipse-temurin:25-jdk${b} AS jre`, `+FROM node:26-trixie-slim${b}`])],
+    'ligne ajoutée': [fichier([...node, '+RUN echo ajout'])],
+    'ligne retirée': [fichier([...node, '-USER node'])],
+    'une autre instruction avec une empreinte': [fichier([`-RUN installe${a}`, `+RUN installe${b}`])],
+    'FROM sans étiquette': [fichier([`-FROM node${a}`, `+FROM node${b}`])],
+    'autre fichier en plus': [fichier(node), fichier(['-a', '+b'], { filename: 'package.json' })],
+    'autre fichier seul': [fichier(node, { filename: 'autre/Dockerfile' })],
+    'Dockerfile renommé': [fichier(node, { status: 'renamed' })],
+    'Dockerfile créé': [fichier(node, { status: 'added' })],
+    'diff absent, trop grand': [{ filename: 'Dockerfile', status: 'modified' }],
+    'aucun fichier': [],
+    'API en panne': 'panne',
+  })) assert.equal(seule(fichiers), 'seule=non', cas);
 });
 
 test('W6d le commentaire d’une PR de Dependabot non fusionnée, exécuté', { skip: bash ? false : 'bash absent' }, () => {
