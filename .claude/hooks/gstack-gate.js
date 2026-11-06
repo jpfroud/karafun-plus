@@ -178,7 +178,7 @@ function onEdit(event) {
     return;
   }
   if (!gstackDir()) {
-    deny('gstack est obligatoire dans ce dépôt mais n\'est pas installé : lancer bash .claude/hooks/install-gstack.sh ' +
+    deny('gstack est obligatoire dans ce dépôt mais n\'est pas installé : lancer bash .claude/hooks/install-gstack.sh claude ' +
       '(installation acceptée par l\'utilisateur), puis redémarrer l\'agent. Le dire à l\'utilisateur.');
     return;
   }
@@ -257,7 +257,7 @@ function onPrePush(stdin) {
   }
   if (!pending.length) return 0;
   const gstack = gstackDir();
-  if (!gstack) return refuse('gstack est obligatoire mais n\'est pas installé (bash .claude/hooks/install-gstack.sh).');
+  if (!gstack) return refuse('gstack est obligatoire mais n\'est pas installé (bash .claude/hooks/install-gstack.sh claude).');
   let rows;
   try { rows = reviewRows(gstack, cwd); } catch (e) {
     return refuse(`le journal de relecture gstack est illisible (${e.message}).`);

@@ -143,7 +143,7 @@ assert.match(reply.hookSpecificOutput.additionalContext, /impossible de noter la
 // gstack absent : refus avec l'installateur du projet ; GSTACK_ROOT relatif lu depuis le dossier courant.
 reply = edit('s1', path.join(project, 'server.js'), { HOME: empty, USERPROFILE: empty });
 assert.strictEqual(decision(reply), 'deny');
-assert.match(reason(reply), /install-gstack\.sh/);
+assert.match(reason(reply), /install-gstack\.sh claude/);
 const relRoot = spawnSync(process.execPath, [GATE, 'edit'], { cwd: path.dirname(gstack), encoding: 'utf8',
   input: JSON.stringify({ session_id: 's1', cwd: project, tool_name: 'Edit', tool_input: { file_path: path.join(project, 'server.js') } }),
   env: { ...gitEnv, ...baseEnv, HOME: empty, USERPROFILE: empty, GSTACK_ROOT: 'gstack', CLAUDE_PROJECT_DIR: project } });

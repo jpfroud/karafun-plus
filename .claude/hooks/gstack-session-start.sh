@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Hook de Claude Code (.claude/settings.json) ; tout autre agent peut le
-# lancer lui-même, voir AGENTS.md.
+# Hook de Claude Code seul (.claude/settings.json) : il cherche les compétences
+# de Claude Code. Tout autre agent lance install-gstack.sh, voir AGENTS.md.
 #
 #   bash .claude/hooks/gstack-session-start.sh [SessionStart|UserPromptSubmit]
 #
@@ -96,7 +96,8 @@ if [ "$EVENT" = UserPromptSubmit ]; then
     MESSAGE="GSTACK_MISSING : gstack est obligatoire mais pas installé. Le dire à l'utilisateur avant tout changement de code. $RETRY $RULES"
   fi
 elif [ -n "$INSTALLED" ]; then
-  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). $ROUTING $RULES"
+  # Claude Code ne surveille pas un dossier de compétences créé après son démarrage.
+  MESSAGE="GSTACK_OK : gstack vient d'être installé automatiquement ($GSTACK_DIR). Si ses compétences n'apparaissent pas dans cette session, redémarrer l'agent. $ROUTING $RULES"
 elif [ -n "$GSTACK_DIR" ]; then
   MESSAGE="GSTACK_OK : gstack est installé ($GSTACK_DIR). $ROUTING $RULES"
 else

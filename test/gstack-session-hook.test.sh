@@ -62,7 +62,7 @@ printf '%s' "$out" | field additionalContext | grep -q 'install-gstack.sh' || fa
 out="$(run_check "$empty")"; code=$?
 [ "$code" = "2" ] || fail "les compétences doivent être refusées sans gstack (code $code)"
 [ "$(printf '%s' "$out" | field permissionDecision)" = "deny" ] || fail "refus PreToolUse attendu"
-printf '%s' "$out" | field permissionDecisionReason | grep -q 'install-gstack.sh' || fail "le refus doit indiquer l'installateur"
+printf '%s' "$out" | field permissionDecisionReason | grep -q 'install-gstack.sh claude' || fail "le refus doit indiquer l'installateur pour Claude Code"
 
 # 2. gstack absent : le démarrage l'installe (mode équipe), une seule fois.
 home="$WORK/auto"; mkdir -p "$home"
@@ -251,6 +251,8 @@ printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail
 out="$(run_auto "$home" CLAUDE_CONFIG_DIR="$conf")" || fail "installation dans CLAUDE_CONFIG_DIR"
 printf '%s' "$out" | field additionalContext |
   grep -q "^GSTACK_OK : gstack vient d'être installé automatiquement ($conf/skills/gstack)" || fail "installation hors de CLAUDE_CONFIG_DIR"
+# Dossier de compétences créé après le démarrage de Claude Code : le message le dit.
+printf '%s' "$out" | field additionalContext | grep -q "Si ses compétences n'apparaissent pas dans cette session, redémarrer l'agent" || fail "redémarrage non signalé après une installation"
 # Seule copie de gstack : le garde-fou la reconnaît, sinon il refuserait toute compétence après ce GSTACK_OK.
 home="$WORK/config-seule"; conf="$home/conf-claude"; mkdir -p "$home"
 run_auto "$home" CLAUDE_CONFIG_DIR="$conf" >/dev/null || fail "installation dans le seul CLAUDE_CONFIG_DIR"
