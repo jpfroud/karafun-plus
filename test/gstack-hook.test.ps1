@@ -24,7 +24,7 @@ foreach ($directory in @($root, (Join-Path $root 'test'))) {
         throw "Le rappel gstack est absent dans $directory."
     }
     # Routing table: every route and the no-silent-skip rule.
-    if ($reply.hookSpecificOutput.additionalContext.Contains('-> gstack-investigate')) { throw "gstack-investigate (retire par gstack 1.98) encore annonce dans ${directory}." }
+    if ($reply.hookSpecificOutput.additionalContext.Contains('gstack-investigate') -or $reply.hookSpecificOutput.additionalContext.Contains('gstack-plan-eng-review')) { throw "Competence retiree par gstack 1.98 (investigate, plan-eng-review) encore annoncee dans ${directory}." }
     foreach ($route in @('-> gstack-verify', '-> gstack-spec', '-> gstack-qa', '-> gstack-review', 'no gstack command fits', 'never skip this choice silently')) {
         if (-not $reply.hookSpecificOutput.additionalContext.Contains($route)) { throw "Table de routage incomplete dans ${directory} : $route" }
     }

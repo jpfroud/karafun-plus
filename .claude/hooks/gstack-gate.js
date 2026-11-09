@@ -55,7 +55,7 @@ const REVIEW_READ_MS = 45000;
 
 // gstack 1.98 a retiré investigate (GST-1717) : un défaut se corrige test
 // d'abord, puis verify jusqu'au vert.
-const ROUTES = 'défaut signalé → verify (test ciblé d\'abord) ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; ' +
+const ROUTES = 'défaut signalé → verify (test ciblé d\'abord) ; fonctionnalité à préciser → spec (plan à challenger → autoplan) ; ' +
   'parcours dans l\'application → qa ; sécurité → cso ; état du code → health ; documentation → document-release';
 
 function out(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
@@ -119,14 +119,23 @@ function stateFile(event) {
 }
 
 // Nom de compétence gstack (« verify », « gstack:qa », « /review »…) ou ''.
-// Une compétence retirée de gstack (investigate depuis la 1.98) n'est plus
-// reconnue : son SKILL.md n'existe plus.
+// Une compétence retirée de gstack n'est plus reconnue : son SKILL.md n'existe
+// plus (investigate depuis la 1.98), ou gstack la nomme dans sa liste
+// GSTACK_RETIRED_SKILLS (plan-eng-review garde son dossier pour autoplan).
+function retiredSkills(dir) {
+  try {
+    const text = fs.readFileSync(path.join(dir, 'bin', 'gstack-install-registry.sh'), 'utf8');
+    const m = /^GSTACK_RETIRED_SKILLS="([^"]*)"/m.exec(text);
+    return new Set(m ? m[1].split(/\s+/).filter(Boolean) : []);
+  } catch { return new Set(); }
+}
+
 function gstackSkill(raw) {
   const given = String(raw || '').trim().replace(/^\//, '').split(/\s/)[0];
   const name = given.replace(/^gstack[:-](?=.)/, '');
   if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name) || ADMIN_SKILLS.has(name) || ADMIN_SKILLS.has(given)) return '';
   const dir = gstackDir();
-  if (!dir) return '';
+  if (!dir || retiredSkills(dir).has(name)) return '';
   const skillFile = name === 'gstack' ? path.join(dir, 'SKILL.md') : path.join(dir, name, 'SKILL.md');
   return fs.existsSync(skillFile) ? name : '';
 }
