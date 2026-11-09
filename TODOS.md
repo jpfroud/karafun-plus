@@ -29,3 +29,17 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P4
 **Depends on:** Lots B et E du plan du 8 novembre 2026.
+
+## Bar
+
+### « Annuler » exact d'un déplacement de personnes entre tables
+
+**What:** Un bouton « Annuler » de quelques secondes après un déplacement, qui rend l'état exact d'avant (tables, groupes et historique de rotation).
+
+**Why:** Aujourd'hui, défaire un déplacement se fait par un déplacement en sens inverse. La table d'origine revient alors comme une table nouvelle pour la rotation : son historique de groupe n'est pas restauré.
+
+**Context:** Proposé (X2) puis reporté par la relecture du 9 novembre 2026. Il faut un instantané pris avant le déplacement (`lastGroup`, `roundGroups`, `firstCycle`, `recentGroups`, `tableServeCounts`, `groupDepartures`, reçus des titres envoyés). Il ne doit être rendu que si rien n'a bougé depuis (aucun passage, aucun autre geste), sur le modèle de l'annulation des changements manuels (`canUndoManualChange`).
+
+**Effort:** M (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot C du plan du 8 novembre 2026.
