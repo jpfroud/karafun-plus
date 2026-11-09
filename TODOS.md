@@ -30,6 +30,18 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Priority:** P4
 **Depends on:** Lots B et E du plan du 8 novembre 2026.
 
+### Suivre un téléphone après plusieurs déplacements de table
+
+**What:** Garder la liste des tables quittées par une personne, pas seulement son dernier déplacement (`movedFrom`), pour qu'un téléphone resté sur la première table la suive aussi après A → B → C.
+
+**Why:** Dans le plan du 8 novembre (C3), ce téléphone oublie la personne et passe par le QR de reprise du bar.
+
+**Context:** Cas accepté par la relecture n° 3 du 9 novembre 2026 (point 1.8) : deux déplacements de la même personne avant que son téléphone ne suive sont rares. `relocated` et `POST /api/table/person/follow` comparent `movedFrom.tableId` à la table présentée ; une liste courte des tables quittées, sauvegardée avec la soirée (`night-state.js`), suffirait. Les règles d'accès ne changent pas : jeton valable, accès de la table présentée tant qu'elle est ouverte, personnes parties ignorées.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P4
+**Depends on:** Lot C du plan du 8 novembre 2026.
+
 ## Bar
 
 ### « Annuler » exact d'un déplacement de personnes entre tables
@@ -42,4 +54,4 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 
 **Effort:** M (humain) / S (Claude Code + gstack)
 **Priority:** P3
-**Depends on:** Lot C du plan du 8 novembre 2026.
+**Depends on:** Lot C du plan du 8 novembre 2026. Revient dans le lot C avant la livraison si l'aller-retour du bilan C6 (cas 5) est refusé dans l'un des trois réglages, sans défaut du code en cause.
