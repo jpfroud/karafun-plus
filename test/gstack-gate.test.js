@@ -33,7 +33,7 @@ function git(cwd, ...args) {
 const gstack = path.join(home, '.claude', 'skills', 'gstack');
 fs.mkdirSync(path.join(gstack, 'bin'), { recursive: true });
 fs.writeFileSync(path.join(gstack, 'SKILL.md'), '---\nname: gstack\n---\n');
-for (const skill of ['investigate', 'review', 'qa', 'retro', 'learn', 'gstack-upgrade']) {
+for (const skill of ['verify', 'review', 'qa', 'retro', 'learn', 'gstack-upgrade']) {
   fs.mkdirSync(path.join(gstack, skill), { recursive: true });
   fs.writeFileSync(path.join(gstack, skill, 'SKILL.md'), `---\nname: ${skill}\n---\n`);
 }
@@ -86,7 +86,9 @@ const skill = (session, name) => gate('skill', { session_id: session, tool_name:
 let reply = edit('s1', path.join(project, 'server.js'));
 assert.strictEqual(decision(reply), 'deny', 'modification sans compétence gstack');
 assert.match(reason(reply), /server\.js/);
-assert.match(reason(reply), /investigate/);
+assert.match(reason(reply), /défaut signalé → verify/);
+// Regression: gstack 1.98 (GST-1717) a retiré investigate : la porte ne doit plus l'annoncer.
+assert.doesNotMatch(reason(reply), /investigate/);
 assert.match(reason(reply), /outil Skill/);
 // Copie d'un autre agent seule : Claude Code n'a aucune compétence à lancer, le refus nomme l'installateur.
 assert.match(reason(reply), /Si Claude Code ne trouve aucune compétence gstack : lancer bash \.claude\/hooks\/install-gstack\.sh claude/);
@@ -113,13 +115,19 @@ for (const name of ['simplify', 'retro', 'gstack:learn', 'gstack-upgrade', 'gsta
 gate('prompt', { session_id: 's1', prompt: '/learn quelque chose' });
 assert.strictEqual(decision(edit('s1', path.join(project, 'server.js'))), 'deny', 'compétence hors parcours acceptée');
 
-// 2. Une compétence gstack lancée : la session (sous-agents compris) peut modifier.
+// Regression: gstack 1.98 (GST-1717) — une compétence retirée de gstack
+// (investigate, encore listée par une session ouverte avant la mise à jour
+// automatique) n'ouvre pas la porte.
 skill('s1', 'investigate');
-assert.strictEqual(edit('s1', path.join(project, 'server.js')), null, 'modification après investigate');
+assert.strictEqual(decision(edit('s1', path.join(project, 'server.js'))), 'deny', 'compétence absente de gstack acceptée');
+
+// 2. Une compétence gstack lancée : la session (sous-agents compris) peut modifier.
+skill('s1', 'verify');
+assert.strictEqual(edit('s1', path.join(project, 'server.js')), null, 'modification après verify');
 assert.strictEqual(gate('edit', { session_id: 's1', agent_id: 'sous-agent', tool_name: 'MultiEdit',
   tool_input: { file_path: path.join(project, 'scheduler.js') } }), null, 'sous-agent de la même session');
 const state = JSON.parse(fs.readFileSync(path.join(project, '.gstack', 'porte', 's1.json'), 'utf8'));
-assert.deepStrictEqual(state.skills.map(s => s.skill), ['investigate'], 'seule la compétence gstack est notée');
+assert.deepStrictEqual(state.skills.map(s => s.skill), ['verify'], 'seule la compétence gstack est notée');
 assert.strictEqual(decision(edit('s2', path.join(project, 'server.js'))), 'deny', 'une autre session repart de zéro');
 skill('s2', 'gstack:qa');
 assert.strictEqual(edit('s2', path.join(project, 'server.js')), null, 'nom préfixé gstack:');
@@ -129,8 +137,8 @@ assert.strictEqual(edit('s4', path.join(project, 'server.js')), null, 'routeur g
 // Commande tapée par l'utilisateur (/qa, /review…) : compte aussi.
 gate('prompt', { session_id: 's3', prompt: 'bonjour, corrige le bug' });
 assert.strictEqual(decision(edit('s3', path.join(project, 'server.js'))), 'deny', 'une demande ordinaire ne compte pas');
-gate('prompt', { session_id: 's3', prompt: '/investigate la file se bloque' });
-assert.strictEqual(edit('s3', path.join(project, 'server.js')), null, 'commande /investigate');
+gate('prompt', { session_id: 's3', prompt: '/verify la file se bloque' });
+assert.strictEqual(edit('s3', path.join(project, 'server.js')), null, 'commande /verify');
 
 // Trace impossible à écrire : l'agent en est averti au lieu de tourner en rond.
 const blocked = path.join(work, 'bloque');

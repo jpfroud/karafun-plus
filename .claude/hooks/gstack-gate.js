@@ -53,7 +53,9 @@ const GITHUB_WRITES = new Set(['mcp__github__push_files', 'mcp__github__create_o
 // Délai de gstack-review-read, qui calcule l'empreinte du contenu.
 const REVIEW_READ_MS = 45000;
 
-const ROUTES = 'défaut signalé → investigate ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; ' +
+// gstack 1.98 a retiré investigate (GST-1717) : un défaut se corrige test
+// d'abord, puis verify jusqu'au vert.
+const ROUTES = 'défaut signalé → verify (test ciblé d\'abord) ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; ' +
   'parcours dans l\'application → qa ; sécurité → cso ; état du code → health ; documentation → document-release';
 
 function out(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
@@ -116,7 +118,9 @@ function stateFile(event) {
   return path.join(projectDir(event), '.gstack', 'porte', `${id}.json`);
 }
 
-// Nom de compétence gstack (« investigate », « gstack:qa », « /review »…) ou ''.
+// Nom de compétence gstack (« verify », « gstack:qa », « /review »…) ou ''.
+// Une compétence retirée de gstack (investigate depuis la 1.98) n'est plus
+// reconnue : son SKILL.md n'existe plus.
 function gstackSkill(raw) {
   const given = String(raw || '').trim().replace(/^\//, '').split(/\s/)[0];
   const name = given.replace(/^gstack[:-](?=.)/, '');

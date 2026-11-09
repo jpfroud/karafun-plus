@@ -4,7 +4,7 @@ Ce projet utilise [gstack](https://github.com/garrytan/gstack) pour les changeme
 
 | La demande porte sur… | Commande |
 |---|---|
-| un défaut signalé, « pourquoi X » | `investigate` |
+| un défaut signalé, « pourquoi X » | `verify` : un contrôle en lecture de la cause ; si elle reste floue, un test ciblé qui échoue avant toute modification ; puis la correction de la cause et `verify` jusqu'au vert (règle « Failures » de gstack 1.98, qui a retiré `investigate`, GST-1717) |
 | une fonctionnalité à préciser | `spec` (un plan à challenger : `plan-eng-review`) |
 | un parcours à essayer dans l'application | `qa` (`qa-only` pour un simple constat) |
 | une modification écrite, avant commit, push ou PR | `review` |
@@ -12,7 +12,11 @@ Ce projet utilise [gstack](https://github.com/garrytan/gstack) pour les changeme
 | l'état du code | `health` |
 | la documentation après un changement | `document-release` |
 
-Dans Codex, ces compétences s'appellent `gstack-investigate`, `gstack-review`, etc. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. En cas d'indisponibilité d'une compétence, le signaler et faire la vérification équivalente ; ne jamais prétendre l'avoir exécutée.
+Dans Codex, ces compétences s'appellent `gstack-verify`, `gstack-review`, etc. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. En cas d'indisponibilité d'une compétence, le signaler et faire la vérification équivalente ; ne jamais prétendre l'avoir exécutée.
+
+**Mises à jour de gstack** : le mode équipe met gstack à jour tout seul au démarrage de chaque session, en arrière-plan (`gstack-session-update`). La liste des compétences vue par la session peut donc dater d'avant la mise à jour : une compétence retirée (comme `investigate` en 1.98) y figure encore mais est refusée (« Unknown skill »). Le hook du projet vérifie à chaque demande que les compétences de la table existent dans gstack et signale celles qui manquent (`GSTACK_INCOMPLET`) : le dire à l'utilisateur, faire la vérification équivalente, puis adapter cette table, `CLAUDE.md`, les hooks (`gstack-session-start.sh`, `gstack-gate.js`, `.codex/hooks/gstack-route.ps1`) et leurs tests à la nouvelle version.
+
+**Commande de vérification** : gstack (`verify`, `health`, `ship`) ne la lit que dans `CLAUDE.md` (ligne `gstack:verify:` et section `## Health Stack`), pas dans ce fichier : `node test/run-offline.js`. `verify` demande l'accord de l'utilisateur avant de l'exécuter la première fois (`gstack-checks trust`, à refaire si la commande change).
 
 **Application par les hooks de Claude Code** (`.claude/settings.json`, sur le modèle de [RetroGemini](https://github.com/republique-et-canton-de-geneve/RetroGemini)) :
 
@@ -21,14 +25,14 @@ Dans Codex, ces compétences s'appellent `gstack-investigate`, `gstack-review`, 
 | `gstack-session-start.sh` | `SessionStart` | installe gstack s'il manque (ci-dessous) et le hook git `pre-push` de la porte |
 | `gstack-session-start.sh` | `UserPromptSubmit` | ajoute la table de routage ci-dessus à chaque demande |
 | `check-gstack.sh` | `PreToolUse` sur `Skill` | garde-fou officiel du mode équipe : refuse les compétences sans gstack |
-| `gstack-gate.js` | `PostToolUse` sur `Skill`, `UserPromptSubmit` | note les compétences gstack lancées (outil `Skill` ou commande `/investigate` tapée) |
+| `gstack-gate.js` | `PostToolUse` sur `Skill`, `UserPromptSubmit` | note les compétences gstack lancées (outil `Skill` ou commande `/verify` tapée) |
 | `gstack-gate.js` | `PreToolUse` sur `Edit`, `Write`, `MultiEdit`, `NotebookEdit` | refuse toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session (sous-agents compris) ; `RAPPORT-TEST.md`, `.gstack/` (sauf `.gstack/porte/`, l'état de la porte), `data/`, `journal/` et `node_modules/` restent libres |
 | `pre-push` (hook git) | `git push` lancé par Claude Code (`CLAUDECODE=1`) | refuse l'envoi si le dernier commit envoyé sur une branche ou une étiquette n'a pas exactement l'arbre d'une relecture `/review` terminée et convergée (journal de relecture de gstack, `gstack-review-read`) ; les commits intermédiaires ne sont pas comparés ; un commit déjà présent sur le serveur, une étiquette de version déjà publiée et une suppression passent ; une relecture terminée avec des remarques laisse passer, à signaler à l'utilisateur |
 | `gstack-gate.js` | `PreToolUse` sur l'écriture de fichiers par l'API GitHub | refuse `push_files`, `create_or_update_file` et `delete_file` vers ce dépôt : les fichiers partent par `git push` |
 
 Le hook `pre-push` est copié dans le dossier des hooks du dépôt (`.git/hooks/`, commun aux worktrees) au démarrage de chaque session, sauf si un autre hook `pre-push` existe ou si `core.hooksPath` est réglé (le message de démarrage le signale). C'est git qui l'appelle : l'écriture de la commande (`git -C`, alias, worktree lié) n'y change rien, et les `git push` tapés par l'utilisateur ou lancés par Codex ne sont pas concernés. Les modifications faites par une commande `Bash` (redirection, `sed`) échappent à la porte des modifications, pas à celle de l'envoi. La porte guide l'agent ; ce n'est pas une barrière de sécurité : le journal de relecture repose sur ce que déclare la relecture. Le hook `pre-push` protège contre un envoi non relu fait **par mégarde** par Claude Code, pas contre un contournement voulu : `git push --no-verify`, une référence `refs/remotes/…` locale forgée (le commit paraît « déjà sur le serveur »), `CLAUDECODE` absent de l'environnement, `GSTACK_GATE=off`, ou une modification de la porte elle-même dans la copie de travail la font passer. La vraie barrière est la protection de branche de GitHub (relecture et CI exigées avant fusion). `GSTACK_GATE=off` dans l'environnement de Claude Code coupe la porte : décision réservée à l'utilisateur. Relancer `gstack-team-init required` réécrit `check-gstack.sh` et `.claude/settings.json` : rajouter ensuite les autres hooks. Tests : `bash test/gstack-session-hook.test.sh`, `node test/gstack-gate.test.js` et `test/gstack-hook.test.ps1` (lancés par la CI).
 
-**Verrou `freeze` de gstack et travail en parallèle** : `investigate` pose un verrou de modification global (`~/.gstack/freeze-dir.txt`) sur le dossier étudié. Avec plusieurs agents en parallèle dans des worktrees, le premier verrou bloque les autres ; choisir alors un verrou commun avec `/freeze` (décision de l'utilisateur) et le retirer avec `/unfreeze` à la fin.
+**Verrou `freeze` de gstack et travail en parallèle** : `/freeze` pose un verrou de modification global (`~/.gstack/freeze-dir.txt`) sur un dossier. Avec plusieurs agents en parallèle dans des worktrees, le premier verrou bloque les autres ; choisir alors un verrou commun avec `/freeze` (décision de l'utilisateur) et le retirer avec `/unfreeze` à la fin.
 
 **Au début de chaque session, quel que soit l'agent**, s'assurer que gstack est installé avant tout changement de code. L'utilisateur a donné son accord pour l'installer automatiquement :
 

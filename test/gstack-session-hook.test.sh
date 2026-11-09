@@ -77,7 +77,7 @@ rm -f "$home/setup-args"
 out="$(run_auto "$home")" || fail "second démarrage"
 printf '%s' "$out" | field additionalContext | grep -q "^GSTACK_OK : gstack est installé" || fail "second démarrage"
 # Au démarrage aussi, la table de routage accompagne GSTACK_OK.
-for route in "l'annoncer en une ligne" "→ investigate" "→ review" "ne jamais passer ce choix sous silence" \
+for route in "l'annoncer en une ligne" "→ verify" "→ review" "ne jamais passer ce choix sous silence" \
   "le dernier commit envoyé sur chaque branche"; do
   printf '%s' "$out" | field additionalContext | grep -qF "$route" || fail "table de routage absente au démarrage : $route"
 done
@@ -176,9 +176,27 @@ mkdir -p "$home/.claude/skills/gstack/bin"; skill_visible "$home"
 out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel avec gstack"
 printf '%s' "$out" | field additionalContext | grep -q '^gstack : .*review avant livraison' || fail "parcours non rappelé"
 # Table de routage (modèle RetroGemini) : choix annoncé, aucune omission silencieuse.
-for route in "l'annoncer en une ligne" "→ investigate" "→ spec" "→ qa" "→ review" "aucune commande gstack" "ne jamais passer ce choix sous silence"; do
+for route in "l'annoncer en une ligne" "→ verify" "→ spec" "→ qa" "→ review" "aucune commande gstack" "ne jamais passer ce choix sous silence"; do
   printf '%s' "$out" | field additionalContext | grep -qF "$route" || fail "table de routage incomplète : $route"
 done
+# Regression: gstack 1.98 (GST-1717) a retiré investigate ; la table ne doit
+# plus l'imposer, et un défaut suit la règle de gstack (test ciblé d'abord).
+printf '%s' "$out" | field additionalContext | grep -q 'investigate' && fail "investigate (retiré par gstack 1.98) encore imposé"
+printf '%s' "$out" | field additionalContext | grep -qF "test ciblé qui échoue" || fail "règle de gstack pour un défaut absente"
+# Regression: gstack 1.98 (GST-1717) — une compétence de la table absente de
+# gstack (retirée par une mise à jour automatique) est signalée à chaque
+# demande, sans bloquer ; ce faux gstack n'a encore aucune compétence.
+printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET : .*verify' || fail "compétences de la table absentes non signalées"
+for skill in verify spec plan-eng-review qa qa-only review cso health document-release; do
+  mkdir -p "$home/.claude/skills/gstack/$skill" && echo ok >"$home/.claude/skills/gstack/$skill/SKILL.md"
+done
+out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel avec gstack complet"
+printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET' && fail "gstack complet signalé incomplet"
+rm -rf "$home/.claude/skills/gstack/qa-only"
+out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel, une compétence manque"
+printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET : [^.]*qa-only' || fail "compétence qa-only manquante non signalée"
+printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET : [^.]*verify' && fail "seule qa-only manque"
+mkdir -p "$home/.claude/skills/gstack/qa-only" && echo ok >"$home/.claude/skills/gstack/qa-only/SKILL.md"
 # Regression: G1 (quatrième relecture finale, décision D3 du gérant) — le hook
 # pre-push ne compare que le dernier commit envoyé sur chaque branche ; le
 # rappel disait « refuse d'envoyer un commit dont le contenu… ».

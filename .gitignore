@@ -1,7 +1,9 @@
 # État de soirée, codes d'accès, journaux et captures locales.
 /data/
 /journal/
-/.gstack/
+/.gstack/*
+# Politique de sélection des tests de gstack (verify, ship) : versionnée.
+!/.gstack/pregate.json
 /RAPPORT-TEST.md
 /A-LIRE-AGENT.md
 
