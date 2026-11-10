@@ -54,15 +54,15 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 
 ### Essai à blanc de la réparation des soirées
 
-**What:** Une valeur `KARAOKE_REPAIR=essai` qui fait tourner la réparation sans rien écrire : pour chaque soirée, `eveningBreaks` et `planSplit` (lot A4) donnent les coupures prévues, écrites au journal du serveur en lignes « Réparation (essai) : … », sans copie, sans morceau et sans `.bornage.json`. Le découpage en direct reste coupé, comme avec `off`.
+**What:** Une commande d'aperçu en lecture seule, lancée avant le premier démarrage d'une version qui répare : pour chaque soirée de `data/soirees`, `eveningBreaks` et `planSplit` (lot A4) donnent les coupures prévues, en une ligne sans prénom, « <id> : N morceaux, coupures à HH:MM (JJ/MM)… », puis un bilan. Rien n'est écrit : ni copie, ni morceau, ni `.bornage.json`, ni sauvegarde de soirée. Sur le PC, dans le dossier du nouveau kit, par son `node`, après la copie de `data` et avant le premier lancement (étapes 3 et 5 de « Installer la v3.3.0 sur le PC ») ; sur le serveur, `docker run --rm` de la nouvelle image, le volume des données (`karafun-data`, `deploy/compose.yaml:72`) monté en lecture seule, avant « Vérifier et mettre à jour ».
 
-**Why:** La réparation réécrit les journaux au premier démarrage de la v3.3.0. Un essai à blanc, sur l'installation ou sur une copie de `data`, dirait d'avance au mainteneur quelles soirées seront coupées, et où.
+**Why:** La réparation réécrit les journaux au premier démarrage de la v3.3.0 : `eveningBreaks` et `planSplit` y voient pour la première fois l'historique réel du bar, et leurs morceaux deviennent la référence des statistiques. L'export des 6 et 7 novembre ne couvre qu'une soirée et peut ne jamais arriver. Un aperçu dirait d'avance au mainteneur quelles soirées seront coupées, et où ; une coupure douteuse se traiterait alors par `KARAOKE_REPAIR=off` avant le premier démarrage, plutôt que par un retour à l'original soirée par soirée (DEPLOIEMENT-SERVEUR, §18).
 
-**Context:** Proposé par la relecture DX du 10 novembre 2026 (M6) et reporté : c'est un mode nouveau, hors du périmètre de la relecture. La migration n'est pas à sens unique : la copie de `data/soirees-originales/` et le retour à l'original (DEPLOIEMENT-SERVEUR, §18) gardent chaque soirée, et une version d'avant la v3.3.0 lit les soirées découpées. Sur un export, `node test/rejeu-soiree.js <export> --soiree liste` montre déjà les coupures (lot A7). Aujourd'hui, `essai` est une valeur non reconnue, qui coupe la réparation par prudence (A4, « Coupure ») : la changer en essai à blanc ne rallume rien. `planSplit` étant pur, l'essai ne touche pas au disque et ne demande aucun second découpeur.
+**Context:** Proposé par la relecture DX du 10 novembre 2026 (M6), en valeur `KARAOKE_REPAIR=essai`, et reporté : c'est un mode nouveau, hors du périmètre de la relecture. Repris par la relecture d'ingénierie, relance du 10 novembre 2026 (TEST-4), en commande d'aperçu, et reporté de nouveau. La migration n'est pas à sens unique : la copie de `data/soirees-originales/` et le retour à l'original (§18) gardent chaque soirée, une version d'avant la v3.3.0 lit les soirées découpées, et l'agent de mise à jour sauvegarde `data` avant l'installation et la remet si le démarrage échoue (`deploy/update-agent.py:348-357`, `:430-441`). La liste « Après la mise à jour » du jalon 1 lit déjà, dans les cinq premières minutes, une ligne « Réparation : » par soirée et le bilan des soirées closes. L'aperçu sort aussi du chemin d'installation : le serveur se met à jour en un clic depuis la page du bar, sans étape où lancer l'image à la main. Ce doit être une commande à part, qui ne prend aucun port et sort avant `server.listen` : `KARAOKE_REPAIR=essai` au démarrage échouerait sur un volume en lecture seule à la première sauvegarde obligatoire (`saveNight({ required: true })`, lot A3), avant la passe des soirées closes. Sur un export, `node test/rejeu-soiree.js <export> --soiree liste` montre déjà les coupures (lot A7). `planSplit` étant pur, l'aperçu ne demande aucun second découpeur. Mêmes règles que les `node -e` du §18 (identifiant vérifié par `validEveningId`, aucun prénom) ; essais : aucun fichier écrit (disque en mémoire), et la commande dans `documentation.test.js`. Sa valeur tient surtout avant la première installation d'une version qui répare : la v3.3.0, puis une règle v2 (« Une règle de bornage nouvelle repart des originaux », plus haut).
 
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P3
-**Depends on:** Lot A du plan du 8 novembre 2026 (réparation et `KARAOKE_REPAIR`).
+**Depends on:** Lot A du plan du 8 novembre 2026 (réparation, `eveningBreaks` et `planSplit`).
 
 ## Page participant
 
@@ -248,7 +248,7 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 
 **Why:** `server.js` n'en a aucun : il ne rattrape que l'échec de `main()` (`server.js:6371`) et les erreurs d'écoute (`:6358-6368`). Une exception qui sort d'un rappel (`setImmediate`, minuterie, événement du pont KaraFun) arrête la file. Lancée par `KaraFun Plus.exe`, sans fenêtre (`launcher/KaraFunPlus.cs:28-29`), elle s'arrête alors sans trace : sa sortie d'erreur n'est lue par personne, et le bar ne voit que « Connexion perdue ».
 
-**Context:** Relevé par la relecture d'ingénierie du 10 novembre 2026 (registre des modes de défaillance). Le lot A garde ses propres rappels (garde de la fin de soirée, passe des soirées closes gardée en entier), mais `sync()` est déjà relancé par `setImmediate` à chaque changement du pont (`server.js:992`). Ne jamais continuer après l'exception, l'état étant inconnu : écrire la ligne, puis sortir ; en mode serveur, Docker relance `app` (`restart: unless-stopped`, `deploy/compose.yaml:61`). Essai en vrai processus : une copie retouchée lève dans un rappel ; la ligne est au journal, sans le message, et le code de sortie vaut 1.
+**Context:** Relevé par la relecture d'ingénierie du 10 novembre 2026 (registre des modes de défaillance). Le lot A garde ses propres rappels : garde de la fin de soirée, passe des soirées closes gardée en entier, et, depuis la relecture d'ingénierie (relance du 10 novembre), les deux rappels de démarrage, port du bar et port des clients, qui écrivent « Impossible de démarrer : … » puis sortent par `process.exit(1)` (plan du 8 novembre, A3, « Ordre du démarrage »). Restent les autres rappels : `sync()` est déjà relancé par `setImmediate` à chaque changement du pont (`server.js:992`), et les minuteries de 2 s, de 3 s et de la minute tournent hors de tout `try/catch`. Ne jamais continuer après l'exception, l'état étant inconnu : écrire la ligne, puis sortir ; en mode serveur, Docker relance `app` (`restart: unless-stopped`, `deploy/compose.yaml:61`). Essai en vrai processus : une copie retouchée lève dans un rappel ; la ligne est au journal, sans le message, et le code de sortie vaut 1.
 
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P3
@@ -258,27 +258,27 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 
 ### Suite hors ligne sous 10 minutes
 
-**What:** Mesurer à la fin de chaque lot la durée de `node test/run-offline.js` et, si elle passe 9 minutes, lancer ses fichiers en deux groupes en parallèle dans `run-offline.js` lui-même : les fichiers purs et les bacs à sable `vm` d'un côté, les démos et les vrais processus de l'autre, sur leurs plages de ports réservées.
+**What:** Lancer les fichiers de `node test/run-offline.js` en deux groupes en parallèle, dans `run-offline.js` lui-même : les fichiers purs et les bacs à sable `vm` d'un côté, les démos et les vrais processus de l'autre, sur leurs plages de ports réservées, pour que la suite repasse sous 10 minutes.
 
-**Why:** La suite a duré 7 min 52 s le 10 novembre. `verify` coupe sa commande à 600 s (`gstack-checks run`), et une commande au premier plan du terminal de travail s'arrête à 10 min. Les lots A à E ajoutent des essais en bac à sable et en vrai processus.
+**Why:** La suite a duré 7 min 52 s le 10 novembre. `verify` coupe sa commande à 600 s (`gstack-checks run`), et une commande au premier plan du terminal de travail s'arrête à 10 min. Les lots A à E ajoutent des essais en bac à sable et en vrai processus. Dans la CI de `main` à 1c15d72, le 6 novembre, le job `linux` a pris 9 min 27 s, dont 8 min 21 s de suite sous couverture (limite 40 min), et le job Windows 12 min, dont 9 min 23 s (limite 90 min).
 
-**Context:** Reporté par la relecture DX du 10 novembre 2026. En attendant, la suite se lance en arrière-plan, et `gstack-checks run --timeout 1200` de `verify` aussi (plan, « Vérifications rapides »). `run()` lance les fichiers l'un après l'autre et s'arrête au premier échec (`test/run-offline.js:12-27`) ; chaque démo a déjà son port (3100 à 3127).
+**Context:** Reporté par la relecture DX du 10 novembre 2026. En attendant, la suite se lance en arrière-plan, et `gstack-checks run --timeout 1200` de `verify` aussi (plan, « Vérifications rapides »). Le plan du 8 novembre relève la durée de la suite et de chaque fichier nouveau à la fin de chaque lot, et, depuis la relecture d'ingénierie (relance du 10 novembre 2026), il fixe des plafonds : si, à la fin d'un lot, la suite passe 15 min dans le conteneur, le job `linux` 30 min ou le job Windows 60 min, ce travail passe avant le lot suivant, et, si c'est à la fin du jalon 2, il devient la première entrée de ce fichier, en P1. `run()` lance les fichiers l'un après l'autre et s'arrête au premier échec (`test/run-offline.js:12-27`) ; chaque démo a déjà son port (3100 à 3127). La couverture de la CI (`test/coverage.js`) relance la même suite et en profite. La règle « Rien à côté » reste à tenir : les essais du vrai solveur à budget de temps (`timefold-integration.test.js:445`, 15 s) ne tournent pas en même temps que l'autre groupe.
 
 **Effort:** M (humain) / S (Claude Code + gstack)
 **Priority:** P3
-**Depends on:** Fin du jalon 2 du plan du 8 novembre 2026 (durée mesurée après les lots B à E).
+**Depends on:** Fin du jalon 2 du plan du 8 novembre 2026 (durée mesurée après les lots B à E), sauf plafond dépassé plus tôt.
 
 ### Même police pour les mesures en navigateur, dans le conteneur et dans la CI
 
-**What:** Relever dans le job `linux` de la CI la police de `system-ui` (`fc-match system-ui`) et les hauteurs que mesurent `staff-idle-layout` et `client-open-duo-layout`, puis donner aux deux endroits la même police : celle du conteneur de travail (Inter) installée dans la CI, ou une police fixée pour ces seuls essais.
+**What:** Donner aux mesures en navigateur de `staff-idle-layout` et de `client-open-duo-layout` la même police dans le conteneur de travail et dans la CI : une police fixée pour ces seuls essais, par exemple par un fichier fontconfig du dépôt donné à Chromium (`FONTCONFIG_FILE`), vers une police installée des deux côtés, choisie après comparaison avec les vrais téléphones du « Test sur place au bar ».
 
-**Why:** `app.css:17` écrit en `system-ui`. Le conteneur de travail la rend en Inter, avec Playwright 1.63.0 et Chromium 153 ; la CI a Playwright 1.56.1 sur Ubuntu 24.04, police non relevée. Des mesures du plan sont à quelques pixels de leur seuil (carte « Sur scène » : 145 px pour 150) : un critère peut être vert dans l'un et rouge dans l'autre.
+**Why:** `app.css:17` écrit en `system-ui`. Le conteneur de travail la rend en Inter (règle fontconfig du conteneur), avec Playwright 1.63.0 et Chromium 153 ; la CI a Playwright 1.56.1 et son Chromium 141 sur Ubuntu 24.04 (ci.yml:79, :105-106), et une police de `system-ui` que le jalon 1 relève ; `--with-deps` n'y installe pas Inter (sortie du job `linux` de `main`, le 6 novembre). Des mesures du plan sont à quelques pixels de leur seuil (carte « Sur scène » : 145 px pour 150) : un critère peut être vert dans l'un et rouge dans l'autre. La même version de Playwright aux deux endroits n'est pas possible : le conteneur de travail garde la sienne, sans `playwright install`.
 
-**Context:** Reporté par la relecture DX du 10 novembre 2026 (passe 6). Le relevé de la police dans le job `linux` (`fc-match system-ui`) entre au jalon 1 (relecture ingénierie du 10 novembre 2026, M5) ; restent le relevé des hauteurs et la même police aux deux endroits. En attendant, la CI fait foi (plan du 8 novembre, D6), et le compte rendu de chaque suite note Playwright, Chromium et la police. Une police fixée change ce qui est mesuré : la comparer d'abord aux vrais téléphones du « Test sur place au bar ».
+**Context:** Reporté par la relecture DX du 10 novembre 2026 (passe 6). Le relevé de la police dans le job `linux` (`fc-match system-ui`) entre au jalon 1 (relecture ingénierie du 10 novembre 2026, M5). Depuis la relance de la relecture d'ingénierie, chaque critère absolu écrit sa mesure aux deux endroits (« Mesure : … »), et le compte rendu note « à confirmer par la CI » ceux qui sont à moins de 23 px de leur seuil dans le conteneur ; reste la même police aux deux endroits. En attendant, la CI fait foi (plan du 8 novembre, D6). Une police fixée change ce qui est mesuré : la comparer d'abord aux vrais téléphones, puis refaire les valeurs des sondes de la phase design.
 
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P3
-**Depends on:** Lots D et E du plan du 8 novembre 2026 (critères absolus de D6 et d'E8).
+**Depends on:** Lots D et E du plan du 8 novembre 2026 (critères absolus de D6 et d'E8), et la police relevée dans la CI au jalon 1.
 
 ### Bilan C6 partiel pour chercher la cause d'un refus
 
@@ -294,27 +294,15 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 
 ### Une seule écriture durable pour les fichiers de données
 
-**What:** Une fonction commune d'écriture durable (`.tmp` propre au processus, synchronisé, renommé, puis dossier synchronisé hors de Windows), employée par la sauvegarde de soirée (`night-state.js`), la mise à jour (`server-update.js`) et la réparation des journaux (`evening-journal.js`).
+**What:** Une fonction commune d'écriture durable (`.tmp` propre au processus, synchronisé, renommé, puis dossier synchronisé hors de Windows ; sous Windows, renommage refusé par `EPERM`, `EBUSY` ou `EACCES` refait trois fois, après 10, 50 puis 200 ms), employée par la sauvegarde de soirée (`night-state.js`), la mise à jour (`server-update.js`) et la réparation des journaux (`evening-journal.js`).
 
-**Why:** Le plan du 8 novembre ajoute une troisième copie de ce schéma. `NightStateStore.save` synchronise son fichier sans son dossier (night-state.js:842-853), alors que `writeChoice` synchronise les deux (server-update.js:208-229) : un agent copie celle qu'il voit en premier.
+**Why:** Le plan du 8 novembre ajoute une troisième copie de ce schéma. `NightStateStore.save` synchronise son fichier sans son dossier (night-state.js:842-853), alors que `writeChoice` synchronise les deux (server-update.js:208-229) : un agent copie celle qu'il voit en premier. Seule la réparation refait un renommage refusé sous Windows (lot A4, « Ordre d'écriture ») : la sauvegarde de soirée, qui renomme à chaque passe où la soirée change, lève encore au premier verrou d'un antivirus ou d'un dossier synchronisé, et `saveNight` coupe alors l'envoi automatique (server.js:592-608).
 
-**Context:** Relevé par la relecture d'ingénierie du 10 novembre 2026 (étape 0). Sans la synchronisation du dossier, une coupure de courant peut perdre le dernier renommage de la sauvegarde de soirée ; la reprise retombe alors sur l'autre génération, d'où la priorité basse. Avec le lot A, le disque en mémoire des essais (`test/evening-stats-routes.test.js`) reçoit `openSync`, `fsyncSync` et `closeSync`. Garder les codes et les textes d'erreur de chaque appelant ; essais : les trois appelants, chacun avec une synchronisation en échec.
+**Context:** Relevé par la relecture d'ingénierie du 10 novembre 2026 (étape 0) ; le nouvel essai du renommage sous Windows vient de sa relance du même jour (EDGE-5). Sans la synchronisation du dossier, une coupure de courant peut perdre le dernier renommage de la sauvegarde de soirée ; la reprise retombe alors sur l'autre génération, d'où la priorité basse. Avec le lot A, le disque en mémoire des essais (`test/evening-stats-routes.test.js`) reçoit `openSync`, `fsyncSync` et `closeSync`, et `EveningJournal` reçoit `platform` et `sleep` : la fonction commune les reçoit de même. Garder les codes et les textes d'erreur de chaque appelant ; essais : les trois appelants, chacun avec une synchronisation en échec et, sous `platform: 'win32'`, un renommage refusé deux fois puis accepté.
 
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P3
 **Depends on:** Lot A du plan du 8 novembre 2026 (écritures synchronisées de la réparation).
-
-### Essais en vrai processus sans dépendre de 8 h
-
-**What:** Faire tourner `night-restart-api`, `server-mode-startup` et `server-update-routes` à une heure maîtrisée : quand le prochain 8 h local tombe pendant la durée d'un essai, l'essai attend 8 h et 1 min avant de lancer sa copie. Puis retirer la règle « relancer une fois » de la suite.
-
-**Why:** Depuis le lot A, ces trois fichiers lancent une copie hors démo à l'heure réelle, avec des tables et sans titre : à cheval sur 8 h, la remise à zéro du matin peut tomber en plein essai. La règle « relancer une fois » le couvre, mais un défaut qui ne se voit qu'à 8 h y passerait.
-
-**Context:** Reporté par la relecture ingénierie du 10 novembre 2026 (M6). La démo n'a plus de fin de soirée automatique, et `evening-end-process` prépare une soirée qu'aucun 8 h ne clôt (A7). Commencer par mesurer la durée de chaque essai de ces fichiers, puis écrire une aide commune dans `test/server-mode-startup.test.js`, qui exporte déjà `launch` et `sandboxCopy`.
-
-**Effort:** S (humain) / S (Claude Code + gstack)
-**Priority:** P3
-**Depends on:** Lot A du plan du 8 novembre 2026.
 
 ### Essai automatique du suivi d'une personne déplacée dans un vrai navigateur
 
