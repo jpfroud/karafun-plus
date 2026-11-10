@@ -79,8 +79,8 @@ try {
   $javaOutput = & $java --version
   $javaExit = $LASTEXITCODE
   $javaVersion = @($javaOutput)[0]
-  if ($javaExit -ne 0 -or $javaVersion -notmatch '^(openjdk|java) 21') {
-    throw "Java 21 intégré ne démarre pas : $javaVersion"
+  if ($javaExit -ne 0 -or $javaVersion -notmatch '^(openjdk|java) 25') {
+    throw "Java 25 intégré ne démarre pas : $javaVersion"
   }
   & $node (Join-Path $PSScriptRoot 'portable-solver-smoke.js') $java `
     (Join-Path $app 'solver\karafun-solver.jar')
@@ -102,7 +102,7 @@ try {
   if (-not $ready) { throw 'Le bar du kit ne répond pas sur le port 3290.' }
   $public = $client.GetAsync('http://127.0.0.1:3291/').GetAwaiter().GetResult()
   if ([int]$public.StatusCode -ne 403) { throw 'Le port clients du kit expose le bar.' }
-  Write-Host "Kit vérifié : $($names.Count) entrées, Node intégré $version, Java 21, bar 302, port clients 403."
+  Write-Host "Kit vérifié : $($names.Count) entrées, Node intégré $version, Java 25, bar 302, port clients 403."
 } finally {
   if ($process -and -not $process.HasExited) {
     Stop-Process -Id $process.Id -ErrorAction SilentlyContinue

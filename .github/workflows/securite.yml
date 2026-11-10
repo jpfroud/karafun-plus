@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TRIVY_VERSION: v0.70.0
+  TRIVY_VERSION: v0.76.1
 
 jobs:
   dependances:
@@ -30,7 +30,7 @@ jobs:
     # Refuse une PR qui ajoute ou met à jour une dépendance vulnérable
     # (gravité moyenne ou plus), quelle que soit sa source.
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
@@ -42,7 +42,7 @@ jobs:
   npm-audit:
     name: Audit npm (production)
     # Lit package-lock.json seulement : aucune installation, aucun script.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,7 +50,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '26'
       # Alertes faibles ou modérées connues de la famille Socket.IO 2.x :
       # SECURITY.md. Une alerte élevée ou critique fait échouer ce contrôle.
       - name: npm audit --omit=dev --audit-level=high
@@ -58,7 +58,7 @@ jobs:
 
   trivy-depot:
     name: Trivy (dépendances, secrets, Dockerfile)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -67,6 +67,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Trivy lit d'abord les POM de l'optimiseur dans ~/.m2. Sans eux, il les
+      # demande à Maven Central, et un 429 arrête son analyse (essai du 6 novembre
+      # 2026 avec Trivy 0.76.1 : son client est refusé, un cache rempli passe).
+      - name: Remplir le cache Maven de l'optimiseur
+        run: mvn -B -ntp -f solver/pom.xml dependency:resolve
       - name: Rapport complet (onglet Security)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -98,7 +103,7 @@ jobs:
 
   trivy-image:
     name: Trivy (image construite)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -150,7 +155,7 @@ jobs:
     # Une image déjà installée sur un VPS devient vulnérable avec le temps :
     # un échec ici demande une nouvelle release (RELEASE.md).
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -185,7 +190,7 @@ jobs:
     name: zizmor (workflows)
     # Injections, droits trop larges, actions non épinglées, caches ou
     # déclencheurs dangereux dans .github/workflows.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -207,7 +212,7 @@ jobs:
     name: Sécurité OK
     if: always() && github.event_name == 'pull_request'
     needs: [dependances, npm-audit, trivy-depot, trivy-image, workflows]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Toutes les analyses ont réussi

@@ -28,7 +28,7 @@ jobs:
   fusion:
     name: Fusion automatique des correctifs
     if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'jpfroud/karafun-plus'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write

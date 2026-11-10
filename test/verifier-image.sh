@@ -27,11 +27,11 @@ for commande in docker curl node java git; do
 done
 docker info > /dev/null 2>&1 || prerequis "Docker ne répond pas (docker info)."
 VERSION_NODE=$(node -v)
-[[ $VERSION_NODE == v22.* ]] || prerequis "Node 22 attendu, trouvé $VERSION_NODE"
+[[ $VERSION_NODE == v26.* ]] || prerequis "Node 26 attendu, trouvé $VERSION_NODE"
 # Première ligne de java --version (stdout ; JAVA_TOOL_OPTIONS s'annonce sur stderr).
 LIGNE_JAVA=$(java --version 2> /dev/null | sed -n 1p) || LIGNE_JAVA=''
-MOTIF_JAVA='^(openjdk|java) 21([. ]|$)'
-[[ $LIGNE_JAVA =~ $MOTIF_JAVA ]] || prerequis "Java 21 attendu sur cette machine pour le rejeu de référence, trouvé « $LIGNE_JAVA »"
+MOTIF_JAVA='^(openjdk|java) 25([. ]|$)'
+[[ $LIGNE_JAVA =~ $MOTIF_JAVA ]] || prerequis "Java 25 attendu sur cette machine pour le rejeu de référence, trouvé « $LIGNE_JAVA »"
 # solver/bridge.js préfère solver-runtime/bin/java près du code au Java du PATH.
 [ ! -e "$RACINE/solver-runtime" ] \
   || prerequis "solver-runtime/ existe à la racine du dépôt ; le rejeu de référence n'utiliserait pas le Java de cette machine. Le déplacer puis relancer."
@@ -171,7 +171,7 @@ ok
 # ---------------------------------------------------------------- V02
 controle V02 "point d'entrée"
 POINT=$(champ_json 'd[0].Config.Entrypoint' <<< "$INSPECT")
-[ "$POINT" = '["docker-entrypoint.sh"]' ] || echec "Entrypoint = $POINT, attendu [\"docker-entrypoint.sh\"] (celui de node:22-bookworm-slim)"
+[ "$POINT" = '["docker-entrypoint.sh"]' ] || echec "Entrypoint = $POINT, attendu [\"docker-entrypoint.sh\"] (celui de node:26-trixie-slim)"
 COMMANDE_IMAGE=$(champ_json 'd[0].Config.Cmd' <<< "$INSPECT")
 [ "$COMMANDE_IMAGE" = '["node","server.js","--no-open"]' ] || echec "Cmd = $COMMANDE_IMAGE, attendu [\"node\",\"server.js\",\"--no-open\"]"
 ok
@@ -266,12 +266,12 @@ for (const d of ["data", "journal"]) {
 ok
 
 # ---------------------------------------------------------------- V09
-controle V09 "Java 21 de l'image"
+controle V09 "Java 25 de l'image"
 code=0
 docker run --rm --name "$PREFIXE-java" "$IMAGE" /app/solver-runtime/bin/java --version > "$TMP/java.out" 2> "$TMP/java.err" || code=$?
 [ "$code" = 0 ] || echec "java --version : code $code, $(head -c 300 "$TMP/java.err")"
 LIGNE=$(sed -n 1p "$TMP/java.out")
-[[ $LIGNE =~ $MOTIF_JAVA ]] || echec "java --version : « $LIGNE », attendu openjdk 21"
+[[ $LIGNE =~ $MOTIF_JAVA ]] || echec "java --version : « $LIGNE », attendu openjdk 25"
 ok
 
 # ---------------------------------------------------------------- V10
