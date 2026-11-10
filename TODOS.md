@@ -52,6 +52,18 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Priority:** P3
 **Depends on:** Lot A du plan du 8 novembre 2026 (réparation et copies d'origine).
 
+### Essai à blanc de la réparation des soirées
+
+**What:** Une valeur `KARAOKE_REPAIR=essai` qui fait tourner la réparation sans rien écrire : pour chaque soirée, `eveningBreaks` et `planSplit` (lot A4) donnent les coupures prévues, écrites au journal du serveur en lignes « Réparation (essai) : … », sans copie, sans morceau et sans `.bornage.json`. Le découpage en direct reste coupé, comme avec `off`.
+
+**Why:** La réparation réécrit les journaux au premier démarrage de la v3.3.0. Un essai à blanc, sur l'installation ou sur une copie de `data`, dirait d'avance au mainteneur quelles soirées seront coupées, et où.
+
+**Context:** Proposé par la relecture DX du 10 novembre 2026 (M6) et reporté : c'est un mode nouveau, hors du périmètre de la relecture. La migration n'est pas à sens unique : la copie de `data/soirees-originales/` et le retour à l'original (DEPLOIEMENT-SERVEUR, §18) gardent chaque soirée, et une version d'avant la v3.3.0 lit les soirées découpées. Sur un export, `node test/rejeu-soiree.js <export> --soiree liste` montre déjà les coupures (lot A7). Aujourd'hui, `essai` est une valeur non reconnue, qui coupe la réparation par prudence (A4, « Coupure ») : la changer en essai à blanc ne rallume rien. `planSplit` étant pur, l'essai ne touche pas au disque et ne demande aucun second découpeur.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot A du plan du 8 novembre 2026 (réparation et `KARAOKE_REPAIR`).
+
 ## Page participant
 
 ### « Chercher un autre duo » depuis le message de refus
@@ -140,6 +152,18 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Priority:** P3
 **Depends on:** rien dans le plan du 8 novembre 2026.
 
+### Mise à jour du kit Windows sans gestes à la main
+
+**What:** Un script du kit, lancé depuis le dossier du kit neuf, qui arrête l'ancien kit (`ARRETER.bat`), copie son dossier `data` avant le premier lancement du kit neuf, remplace les raccourcis de `KaraFun Plus.exe` et garde l'ancien kit tel quel ; et le même script en sens inverse pour le retour arrière.
+
+**Why:** En mode PC, installer une version ou revenir à la précédente demande cinq gestes PowerShell (plan du 8 novembre, « Ordre de travail »). Un raccourci oublié relance l'ancien kit le soir suivant, et un premier lancement du kit neuf avant la copie crée un `data` vide.
+
+**Context:** Relevé par la relecture DX du 10 novembre 2026 (mise à jour et retour arrière). Le kit n'a aujourd'hui aucune procédure de mise à jour : `KIT-BAR-LISEZMOI.txt` dit seulement de sauvegarder `data`, et DEPLOIEMENT-SERVEUR (§19) refait un kit neuf depuis une archive du serveur. Le script reprendrait la vérification de `KIT-BAR-KARAFUN.zip.sha256` du §19 et ne toucherait jamais au `data` d'origine.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot A du plan du 8 novembre 2026 (installation de la v3.3.0).
+
 ## Design
 
 ### Un `DESIGN.md` tiré d'`app.css`
@@ -179,3 +203,55 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Effort:** M (humain) / S (Claude Code + gstack)
 **Priority:** P3
 **Depends on:** règles « Textes venus des clients ou du bar » et « En-têtes de sécurité » du plan du 8 novembre 2026.
+
+## Déploiement
+
+### Nommer les réglages dans le refus de l'agent de mise à jour
+
+**What:** Quand `deploy/.env` n'a pas les mêmes clés que le `deploy/.env.example` de la version visée, l'agent de mise à jour (`deploy/update-agent.py`) les nomme, jamais leur valeur : « Réglages à ajouter dans deploy/.env avant cette version : X, Y. » ; « deploy/.env contient KARAOKE_REPAIR, que cette version n'attend pas : retire la ligne entière, puis « Vérifier et mettre à jour » aussitôt (DEPLOIEMENT-SERVEUR §18, « Couper la réparation »). ».
+
+**Why:** Une clé en trop et une clé manquante donnent aujourd'hui le même refus, « Cette version nécessite un réglage du serveur avant son installation. » (deploy/update-agent.py:288-289). Pendant un dépannage par `KARAOKE_REPAIR`, il fait chercher un réglage manquant alors qu'il faut retirer une ligne, même vide.
+
+**Context:** Reporté par la relecture DX du 10 novembre 2026 (N2). Le code de l'agent ne suit pas les mises à jour (DEPLOIEMENT-SERVEUR.md:620-622) : le message n'arrive qu'après une réinstallation de l'agent par le mainteneur. En attendant, la carte « Mise à jour » dit, tant que `KARAOKE_REPAIR` est posée, de prévenir le mainteneur, qui retire la ligne (plan du 8 novembre, A6). La règle reste : la dernière version exige les mêmes clés, une version choisie peut en avoir moins. Essais dans `test/update-agent.test.py` (cas « moins de réglages » et « plus de réglages »).
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot A du plan du 8 novembre 2026 (`KARAOKE_REPAIR`).
+
+## Développement
+
+### Suite hors ligne sous 10 minutes
+
+**What:** Mesurer à la fin de chaque lot la durée de `node test/run-offline.js` et, si elle passe 9 minutes, lancer ses fichiers en deux groupes en parallèle dans `run-offline.js` lui-même : les fichiers purs et les bacs à sable `vm` d'un côté, les démos et les vrais processus de l'autre, sur leurs plages de ports réservées.
+
+**Why:** La suite a duré 7 min 52 s le 10 novembre. `verify` coupe sa commande à 600 s (`gstack-checks run`), et une commande au premier plan du terminal de travail s'arrête à 10 min. Les lots A à E ajoutent des essais en bac à sable et en vrai processus.
+
+**Context:** Reporté par la relecture DX du 10 novembre 2026. En attendant, la suite se lance en arrière-plan, et `gstack-checks run --timeout 1200` de `verify` aussi (plan, « Vérifications rapides »). `run()` lance les fichiers l'un après l'autre et s'arrête au premier échec (`test/run-offline.js:12-27`) ; chaque démo a déjà son port (3100 à 3127).
+
+**Effort:** M (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Fin du jalon 2 du plan du 8 novembre 2026 (durée mesurée après les lots B à E).
+
+### Même police pour les mesures en navigateur, dans le conteneur et dans la CI
+
+**What:** Relever dans le job `linux` de la CI la police de `system-ui` (`fc-match system-ui`) et les hauteurs que mesurent `staff-idle-layout` et `client-open-duo-layout`, puis donner aux deux endroits la même police : celle du conteneur de travail (Inter) installée dans la CI, ou une police fixée pour ces seuls essais.
+
+**Why:** `app.css:17` écrit en `system-ui`. Le conteneur de travail la rend en Inter, avec Playwright 1.63.0 et Chromium 153 ; la CI a Playwright 1.56.1 sur Ubuntu 24.04, police non relevée. Des mesures du plan sont à quelques pixels de leur seuil (carte « Sur scène » : 145 px pour 150) : un critère peut être vert dans l'un et rouge dans l'autre.
+
+**Context:** Reporté par la relecture DX du 10 novembre 2026 (passe 6). En attendant, la CI fait foi (plan du 8 novembre, D6), et le compte rendu de chaque suite note Playwright, Chromium et la police. Une police fixée change ce qui est mesuré : la comparer d'abord aux vrais téléphones du « Test sur place au bar ».
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lots D et E du plan du 8 novembre 2026 (critères absolus de D6 et d'E8).
+
+### Bilan C6 partiel pour chercher la cause d'un refus
+
+**What:** Deux options de `test/bilan-deplacements.js`, `--cas <n>[,<n>]` et `--reglage chacun|tables|compromis[,…]`, qui ne refont qu'une partie du bilan C6. Leur récapitulatif commence par « Bilan partiel : ne vaut pas bilan C6. », et le bilan entier reprend ces résultats s'ils ont la même empreinte de reprise.
+
+**Why:** Après la correction d'un défaut trouvé par un cas refusé, tout le bilan se refait : environ 40 min, 63 rejeux Timefold par soirée. Un bilan partiel donnerait en quelques minutes les tableaux du seul cas en cause, avant le bilan entier.
+
+**Context:** Proposé par la relecture DX du 10 novembre 2026 (N12, M4) et reporté par sa critique : aucune étape acceptée du plan du 8 novembre n'en a besoin. La cause d'un refus se cherche avec `node test/rejeu-soiree.js <cas>-gestes.json --libre --solveur --gestes --cles --trace HH:MM` ; un tableau se refait à la main après `--ecrire <dossier>` ; un défaut corrigé fait refaire tout le bilan (C6, « Seuils et classement »), et l'empreinte de reprise ne garde que les cas dont rien n'a changé.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot C du plan du 8 novembre 2026 (`test/bilan-deplacements.js`).
