@@ -102,6 +102,18 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Priority:** P3
 **Depends on:** Lot C du plan du 8 novembre 2026.
 
+### Refus motivé des demandes « Duo ? »
+
+**What:** Une étape « Que dire à {from} ? » au refus d'une demande « Duo ? » (quelqu'un qui demande à chanter sur le titre d'une personne), avec des réponses toutes faites propres à ce cas, choisies par le gérant.
+
+**Why:** Après le plan du 8 novembre, « Refuser » ouvre l'étape de la raison pour une invitation, mais refuse d'un appui une demande « Duo ? », dans la même fenêtre. Les trois réponses de G4 parlent de la chanson proposée (« Je ne la connais pas bien », « Trop dur pour moi ») et ne vont pas à un titre que la personne a choisi elle-même.
+
+**Context:** Reporté par la relecture design du 10 novembre 2026 (M14). Le bouton « Duo ? » s'appelle « Proposer un duo à {name} » (`public/client.html:737`, `:2361`), et la demande n° 1 du gérant parle de « la personne qui invite ». Points de départ : l'étape `decline` de la fenêtre `#attention` (lot B3), `declineWhy` et `DECLINE_TEXT_MAX` (B1), le message `joinRefused` (`public/client.html:1084`), la ligne `duo.joinAnswered` (`lib/scheduler/duets.js:847`), et la règle du petit mot hors de la sauvegarde (F7, `snapshotNight`). Mêmes essais de fuite que le lot B4, et un code de raison qui ne change plus après la livraison.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P4
+**Depends on:** Lot B du plan du 8 novembre 2026, et les réponses toutes faites choisies par le gérant.
+
 ## Bar
 
 ### « Annuler » exact d'un déplacement de personnes entre tables
@@ -127,6 +139,32 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Effort:** M (humain) / S (Claude Code + gstack)
 **Priority:** P3
 **Depends on:** rien dans le plan du 8 novembre 2026.
+
+## Design
+
+### Un `DESIGN.md` tiré d'`app.css`
+
+**What:** Écrire `DESIGN.md` avec `/design-consultation`, à partir d'`app.css`, du `<style>` de `client.html` et du thème clair de `stats.html` : variables de `:root` et leurs rôles, composants (`.btn` et ses variantes, `.badge`, `.pill`, `.staff-alert` et ses formes, `.disclosure`, `.link-btn`, `.switch`, `.tab-badge`, `.cover`), cibles de 44 px, grille de 12 colonnes du bar.
+
+**Why:** La relecture design du plan du 8 novembre a jugé ses classes contre `app.css`, faute de `DESIGN.md`. Les plans suivants pourront citer les jetons par leur nom, et une relecture vérifier un écart au lieu de le chercher.
+
+**Context:** Reporté par la phase design d'autoplan du 10 novembre 2026 (P5.8) : le gérant ne veut plus de questions, et le plan est figé. D'ici là, la règle transversale « Vocabulaire visuel » du plan tient lieu de garde. Y entrent les formes ajoutées par les lots A à E : `staff-alert info`, `song-more`, la règle commune `a.btn`, les titres de repli de 44 px.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lots D et E du plan du 8 novembre 2026 (les formes nouvelles d'abord).
+
+### Contraste des boutons principaux
+
+**What:** Le texte blanc des boutons principaux (`.btn.primary`, app.css:24 : « ＋ Chanson », « Commencer », « Personne seule : QR individuel », « Rejoindre la Battle », et les nouveaux « Déplacer » de Détails et « Envoyer » de l'étape du refus…) et du repère `.badge.live` du bar (app.css:221) a un contraste de 3,0:1 sur `--accent` (#ff4fa3), sous les 4,5:1 demandés pour un texte de 16 px.
+
+**Why:** C'est l'action principale de chaque écran, lue dans un bar sombre sur des téléphones souvent en luminosité basse ; le gérant veut une page qu'un enfant de 5 ans comprend.
+
+**Context:** Mesuré par la phase design du 10 novembre 2026 (passe 6). Le plan figé ne change que la pastille d'onglet et les infos urgentes, passées au texte `var(--bg)` (règle « Contraste »). Deux formes possibles : texte `var(--bg)` sur le même rose (6,3:1), ou un rose plus sombre sous le texte blanc. L'une ou l'autre change l'aspect de toutes les pages que les habitués connaissent : captures avant/après à montrer au gérant avant de choisir.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Jalon 2 livré ; choix du gérant sur l'aspect.
 
 ## Sécurité
 
