@@ -16,7 +16,8 @@ fail() { echo "ÉCHEC : $*" >&2; exit 1; }
 field() { node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(j.hookSpecificOutput[process.argv[1]]))' "$1"; }
 
 # Faux dépôt gstack : bin/ est versionné comme dans le vrai ; setup note ses
-# arguments et crée les compétences Codex quand on les lui demande.
+# arguments et crée les compétences de l'agent demandé (noms courts pour Claude
+# Code, le défaut de gstack hors terminal).
 FAKE="$WORK/faux-gstack"; mkdir -p "$FAKE/bin"
 echo '#!/usr/bin/env bash' >"$FAKE/bin/gstack-config"
 cat >"$FAKE/setup" <<'EOF'
@@ -25,9 +26,13 @@ printf '%s\n' "$*" >"$HOME/setup-args"
 printf '%s\n' "${GSTACK_SKIP_PLAYWRIGHT:-}" >"$HOME/setup-skip"
 [ "${FAUX_SETUP_ECHEC:-0}" = 1 ] && { echo "setup en échec" >&2; exit 3; }
 [ "${FAUX_SETUP_LENT:-0}" = 1 ] && sleep 20
-case " $* " in *" --host codex "*)
-  mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/gstack-review"
-  echo ok >"${CODEX_HOME:-$HOME/.codex}/skills/gstack-review/SKILL.md" ;;
+case " $* " in
+  *" --host codex "*)
+    mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/gstack-review"
+    echo ok >"${CODEX_HOME:-$HOME/.codex}/skills/gstack-review/SKILL.md" ;;
+  *)
+    mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/review"
+    echo ok >"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/review/SKILL.md" ;;
 esac
 exit 0
 EOF
@@ -37,12 +42,14 @@ TOOLS="$WORK/outils"; mkdir -p "$TOOLS"; printf '#!/usr/bin/env bash\nexit 0\n' 
 
 # Environnement maîtrisé : pas de session web ni de gstack existant, et pas
 # de CODEX_HOME réel (le faux setup y écrirait ses compétences de test).
-quiet_env() { env -u GSTACK_ROOT -u CODEX_HOME -u CLAUDE_CODE_REMOTE -u CLAUDE_ENV_FILE -u GSTACK_CHROMIUM_PATH -u GSTACK_SKIP_PLAYWRIGHT -u CLAUDE_PROJECT_DIR "$@"; }
+quiet_env() { env -u GSTACK_ROOT -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_REMOTE -u CLAUDE_ENV_FILE -u GSTACK_CHROMIUM_PATH -u GSTACK_SKIP_PLAYWRIGHT -u CLAUDE_PROJECT_DIR "$@"; }
 run_start() { local home="$1"; shift; printf '%s' '{"hook_event_name":"SessionStart","source":"startup"}' |
   quiet_env HOME="$home" GSTACK_AUTO_INSTALL=0 "$@" bash "$START" SessionStart; }
 run_auto() { local home="$1"; shift; printf '{}' |
   quiet_env HOME="$home" PATH="$TOOLS:$PATH" GSTACK_REPO_URL="$FAKE" "$@" bash "$START" SessionStart; }
 run_check() { printf '%s' '{"tool_name":"Skill"}' | quiet_env HOME="$1" bash "$CHECK" 2>/dev/null; }
+# Compétence visible par Claude Code : skill_visible <dossier personnel> [nom].
+skill_visible() { mkdir -p "$1/.claude/skills/${2:-review}"; echo ok >"$1/.claude/skills/${2:-review}/SKILL.md"; }
 
 # 1. Installation automatique désactivée : rappel non bloquant, rien n'est créé.
 empty="$WORK/vide"; mkdir -p "$empty"
@@ -55,7 +62,7 @@ printf '%s' "$out" | field additionalContext | grep -q 'install-gstack.sh' || fa
 out="$(run_check "$empty")"; code=$?
 [ "$code" = "2" ] || fail "les compétences doivent être refusées sans gstack (code $code)"
 [ "$(printf '%s' "$out" | field permissionDecision)" = "deny" ] || fail "refus PreToolUse attendu"
-printf '%s' "$out" | field permissionDecisionReason | grep -q 'install-gstack.sh' || fail "le refus doit indiquer l'installateur"
+printf '%s' "$out" | field permissionDecisionReason | grep -q 'install-gstack.sh claude' || fail "le refus doit indiquer l'installateur pour Claude Code"
 
 # 2. gstack absent : le démarrage l'installe (mode équipe), une seule fois.
 home="$WORK/auto"; mkdir -p "$home"
@@ -138,6 +145,7 @@ dir="$(quiet_env HOME="$home" GSTACK_ROOT="$home/source-gstack" PATH="$TOOLS:$PA
 # prêt même si bin/ existe (revue Codex de la PR #7).
 home="$WORK/concurrente"; mkdir -p "$home/.claude/skills" "$home/.gstack/installation-auto.lock"
 git clone -q "$FAKE" "$home/.claude/skills/gstack" 2>/dev/null || fail "installation en cours simulée"
+skill_visible "$home"
 out="$(run_auto "$home" GSTACK_LOCK_WAIT_SEC=0)" || fail "seconde session bloquée"
 printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING.*autre installation de gstack est en cours' ||
   fail "une installation en cours ne doit pas passer pour terminée"
@@ -164,7 +172,7 @@ out="$(printf '{}' | quiet_env HOME="$home" PATH="$TOOLS:$PATH" GSTACK_REPO_URL=
 [ "$(printf '%s' "$out" | field hookEventName)" = "UserPromptSubmit" ] || fail "événement UserPromptSubmit attendu"
 printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING.*install-gstack.sh' || fail "rappel sans gstack"
 [ -z "$(ls -A "$home")" ] || fail "le rappel ne doit rien installer"
-mkdir -p "$home/.claude/skills/gstack/bin"
+mkdir -p "$home/.claude/skills/gstack/bin"; skill_visible "$home"
 out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel avec gstack"
 printf '%s' "$out" | field additionalContext | grep -q '^gstack : .*review avant livraison' || fail "parcours non rappelé"
 # Table de routage (modèle RetroGemini) : choix annoncé, aucune omission silencieuse.
@@ -182,28 +190,101 @@ printf '%s' "$out" | field additionalContext | grep -qF "le dernier commit envoy
 ! printf '%s' "$out" | field additionalContext | grep -qF "envoyer un commit dont" || fail "le rappel laisse croire que chaque commit envoyé est comparé"
 ! printf '%s' "$out" | field additionalContext | grep -qF "contenu envoyé" || fail "le rappel laisse croire que tout le contenu envoyé a été relu"
 
-# 7. Installations existantes (Claude Code, Codex, dépôt migré) : acceptées sans rien relancer.
-for dir in .claude/skills/gstack .codex/skills/gstack .gstack/repos/gstack; do
-  home="$WORK/home-${dir//\//_}"; mkdir -p "$home/$dir/bin"
-  out="$(run_auto "$home")" || fail "démarrage ($dir)"
-  printf '%s' "$out" | field additionalContext | grep -q "^GSTACK_OK : gstack est installé ($home/$dir)" || fail "gstack non trouvé dans $dir"
-  [ ! -e "$home/setup-args" ] || fail "setup relancé alors que gstack est dans $dir"
-  [ "$(run_check "$home")" = "{}" ] || fail "compétences refusées alors que gstack est dans $dir"
+# 7. Installation existante pour Claude Code, compétences en noms courts ou
+#    gstack-* (réglage skill_prefix) : acceptée sans rien relancer.
+for skill in review gstack-review; do
+  home="$WORK/installe-$skill"; mkdir -p "$home/.claude/skills/gstack/bin"; skill_visible "$home" "$skill"
+  out="$(run_auto "$home")" || fail "démarrage ($skill)"
+  printf '%s' "$out" | field additionalContext | grep -q "^GSTACK_OK : gstack est installé ($home/.claude/skills/gstack)" || fail "gstack non trouvé avec $skill"
+  [ ! -e "$home/setup-args" ] || fail "setup relancé alors que $skill est visible"
+  [ "$(run_check "$home")" = "{}" ] || fail "compétences refusées avec $skill"
 done
+installed="$WORK/installe-review"
+
+# Regression: gstack-install-claude — GSTACK_OK répondait à Claude Code quand
+# seule une copie d'un autre agent existait, alors qu'il ne voyait aucune
+# compétence (PC où ~/.codex/skills/gstack et ~/.gstack/repos/gstack existaient
+# seuls, 6 novembre 2026). Absence signalée, puis installation pour Claude Code
+# dans son dossier, sans toucher à la copie de l'autre agent.
+for dir in .codex/skills/gstack .gstack/repos/gstack; do
+  home="$WORK/autre-agent-${dir//\//_}"; mkdir -p "$home/$dir/bin"
+  out="$(run_start "$home")" || fail "démarrage sans installation ($dir)"
+  printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail "GSTACK_OK avec la seule copie $dir"
+  out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel ($dir)"
+  printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail "rappel sans gstack avec la seule copie $dir"
+  [ "$(run_check "$home")" = "{}" ] || fail "check-gstack.sh doit garder la résolution officielle ($dir)"
+  out="$(run_auto "$home")" || fail "installation ($dir)"
+  printf '%s' "$out" | field additionalContext |
+    grep -q "^GSTACK_OK : gstack vient d'être installé automatiquement ($home/.claude/skills/gstack)" || fail "pas d'installation pour Claude Code ($dir)"
+  [ "$(cat "$home/setup-args")" = "--team" ] || fail "setup en mode équipe attendu ($dir)"
+  [ -d "$home/.claude/skills/gstack/bin" ] || fail "gstack absent de ~/.claude/skills ($dir)"
+  [ -d "$home/$dir/bin" ] && [ ! -e "$home/$dir/setup" ] || fail "copie de l'autre agent modifiée ($dir)"
+  [ "$(run_check "$home")" = "{}" ] || fail "compétences refusées après installation ($dir)"
+done
+# Dossier gstack sans compétences visibles (setup interrompu) : setup relancé sur place.
+home="$WORK/sans-competences"; mkdir -p "$home/.claude/skills"
+git clone -q "$FAKE" "$home/.claude/skills/gstack" 2>/dev/null || fail "clone sans compétences"
+out="$(run_auto "$home")" || fail "démarrage sans compétences"
+printf '%s' "$out" | field additionalContext |
+  grep -q "^GSTACK_OK : gstack vient d'être installé automatiquement ($home/.claude/skills/gstack)" || fail "setup non relancé sans compétences"
+[ "$(cat "$home/setup-args")" = "--team" ] || fail "setup en mode équipe attendu sans compétences"
+# Setup réussi sans compétences visibles : gstack n'est pas prêt pour autant.
+home="$WORK/setup-muet"; mkdir -p "$home/source/bin"; printf 'exit 0\n' >"$home/source/setup"
+out="$(run_auto "$home" GSTACK_ROOT="$home/source")" || fail "setup muet"
+printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING.*installé mais introuvable' || fail "GSTACK_OK sans compétences"
+# L'installateur accepte aussi les noms gstack-* (skill_prefix enregistré par une installation Codex).
+home="$WORK/prefixe"; mkdir -p "$home/.claude/skills/gstack/bin"; skill_visible "$home" gstack-review
+[ "$(quiet_env HOME="$home" bash "$INSTALL" claude </dev/null)" = "$home/.claude/skills/gstack" ] || fail "gstack-review refusé par l'installateur"
+# Réparation ratée d'une copie existante : elle reste en place, pour la session suivante.
+home="$WORK/reparation-ratee"; mkdir -p "$home/.claude/skills"
+git clone -q "$FAKE" "$home/.claude/skills/gstack" 2>/dev/null || fail "clone à réparer"
+run_auto "$home" FAUX_SETUP_ECHEC=1 >/dev/null || fail "réparation ratée : démarrage bloqué"
+[ -d "$home/.claude/skills/gstack/bin" ] || fail "copie existante déplacée après un setup en échec"
+# Dossier sans bin/, peut-être personnel : gardé à part, même si setup échoue ensuite.
+home="$WORK/dossier-perso"; mkdir -p "$home/.claude/skills/gstack" "$home/.gstack"; echo perso >"$home/.claude/skills/gstack/notes.md"
+run_auto "$home" FAUX_SETUP_ECHEC=1 >/dev/null || fail "dossier personnel : démarrage bloqué"
+grep -q perso "$home"/.gstack/gstack.ancien-*/notes.md || fail "dossier personnel perdu"
+# CLAUDE_CONFIG_DIR : le dossier des compétences suit ce réglage, comme setup.
+home="$WORK/config"; conf="$home/conf-claude"; mkdir -p "$home/.claude/skills/gstack/bin"; skill_visible "$home"
+out="$(run_start "$home" CLAUDE_CONFIG_DIR="$conf")" || fail "CLAUDE_CONFIG_DIR sans installation"
+printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail "compétences cherchées hors de CLAUDE_CONFIG_DIR"
+out="$(run_auto "$home" CLAUDE_CONFIG_DIR="$conf")" || fail "installation dans CLAUDE_CONFIG_DIR"
+printf '%s' "$out" | field additionalContext |
+  grep -q "^GSTACK_OK : gstack vient d'être installé automatiquement ($conf/skills/gstack)" || fail "installation hors de CLAUDE_CONFIG_DIR"
+# Dossier de compétences créé après le démarrage de Claude Code : le message le dit.
+printf '%s' "$out" | field additionalContext | grep -q "Si ses compétences n'apparaissent pas dans cette session, redémarrer l'agent" || fail "redémarrage non signalé après une installation"
+# Seule copie de gstack : le garde-fou la reconnaît, sinon il refuserait toute compétence après ce GSTACK_OK.
+home="$WORK/config-seule"; conf="$home/conf-claude"; mkdir -p "$home"
+run_auto "$home" CLAUDE_CONFIG_DIR="$conf" >/dev/null || fail "installation dans le seul CLAUDE_CONFIG_DIR"
+[ ! -e "$home/.claude" ] || fail "gstack installé hors de CLAUDE_CONFIG_DIR"
+out="$(printf '%s' '{"tool_name":"Skill"}' | quiet_env HOME="$home" CLAUDE_CONFIG_DIR="$conf" bash "$CHECK" 2>/dev/null)"; code=$?
+[ "$code" = 0 ] && [ "$out" = "{}" ] || fail "compétences refusées avec gstack dans CLAUDE_CONFIG_DIR (code $code)"
+[ "$(quiet_env HOME="$home" CLAUDE_CONFIG_DIR="$conf" bash "$INSTALL" </dev/null)" = "$conf/skills/gstack" ] || fail "installateur sans argument : CLAUDE_CONFIG_DIR ignoré"
+# Sans argument (tout autre agent) : toute copie convient, rien n'est installé.
+home="$WORK/autre-agent-sans-argument"; mkdir -p "$home/.cursor/skills/gstack/bin"
+[ "$(quiet_env HOME="$home" bash "$INSTALL" </dev/null)" = "$home/.cursor/skills/gstack" ] || fail "copie de l'autre agent ignorée sans argument"
+[ ! -e "$home/.claude" ] || fail "installation inutile sans argument"
+# Codex garde la résolution officielle, dépôt migré compris.
+home="$WORK/codex-migre"; mkdir -p "$home/.gstack/repos/gstack/bin" "$home/.codex/skills/gstack-review"; echo ok >"$home/.codex/skills/gstack-review/SKILL.md"
+[ "$(quiet_env HOME="$home" bash "$INSTALL" codex </dev/null)" = "$home/.gstack/repos/gstack" ] || fail "dépôt migré ignoré pour Codex"
 
 # 8. Chemin avec guillemets et barres obliques inverses : JSON toujours valide
 #    (noms interdits par Windows : vérifié ailleurs).
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) ;;
-  *) odd="$WORK/a\"b\\c"; mkdir -p "$odd/.claude/skills/gstack/bin"
+  *) odd="$WORK/a\"b\\c"; mkdir -p "$odd/.claude/skills/gstack/bin"; skill_visible "$odd"
      run_start "$odd" | field additionalContext | grep -q 'GSTACK_OK' || fail "JSON invalide pour un chemin inhabituel" ;;
 esac
 
 # 9. GSTACK_ROOT explicite et événement inconnu ramené à SessionStart.
 custom="$WORK/custom"; mkdir -p "$custom/bin"
-out="$(printf '{}' | HOME="$empty" GSTACK_ROOT="$custom" bash "$START" Autre)"
+home="$WORK/racine"; skill_visible "$home"
+out="$(printf '{}' | quiet_env HOME="$home" GSTACK_ROOT="$custom" bash "$START" Autre)"
 [ "$(printf '%s' "$out" | field hookEventName)" = "SessionStart" ] || fail "événement par défaut"
 printf '%s' "$out" | field additionalContext | grep -q "($custom)" || fail "GSTACK_ROOT ignoré"
+# GSTACK_ROOT ne dispense pas des compétences : Claude Code n'en verrait aucune.
+out="$(run_start "$empty" GSTACK_ROOT="$custom")" || fail "GSTACK_ROOT sans compétences"
+printf '%s' "$out" | field additionalContext | grep -q '^GSTACK_MISSING' || fail "GSTACK_ROOT sans compétences accepté"
 
 # 10. Lancé à la main par un agent dont l'entrée standard reste ouverte : le
 #     hook ne l'attend pas (auparavant bloqué jusqu'au délai de l'agent).
@@ -223,7 +304,6 @@ git_q() { git -c init.defaultBranch=main "$@" >/dev/null 2>&1; }
 # PID du hook. On cherche tout pre-push.tmp.* dans les dépôts de test.
 no_tmp() { local left; left="$(ls -d "$WORK"/*/.git/hooks/pre-push.tmp.* "$WORK"/*/.githooks/pre-push.tmp.* 2>/dev/null)"
   [ -z "$left" ] || fail "fichier temporaire laissé ($1) : $left"; }
-installed="$WORK/home-.claude_skills_gstack"
 repo="$WORK/projet"; git_q init "$repo" || fail "dépôt de test"
 out="$(quiet_env HOME="$installed" CLAUDE_PROJECT_DIR="$repo" bash "$START" SessionStart </dev/null)" || fail "démarrage avec projet"
 cmp -s "$ROOT/.claude/hooks/pre-push" "$repo/.git/hooks/pre-push" || fail "hook pre-push non installé"
