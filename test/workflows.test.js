@@ -117,6 +117,7 @@ test('W2 jetons au moindre droit', () => {
     'securite.yml/image-publiee/security-events',
     'securite.yml/trivy-depot/security-events',
     'securite.yml/trivy-image/security-events',
+    'veille-versions.yml/veille/issues',
   ], 'droits d’écriture des jobs');
 });
 
@@ -228,6 +229,18 @@ test('W6 Dependabot suit chaque écosystème avec un délai', () => {
     assert.match(text, new RegExp(`dependency-name: "${name.replace('.', '\\.')}"\\n\\s+update-types: \\["version-update:semver-major"\\]`),
       `${name} : version majeure ignorée (protocole KaraFun)`);
   }
+  // Règle de la dernière LTS : montées écartées, empreintes gardées, un seul Java.
+  const docker = updates.find(block => /package-ecosystem: "docker"\n/.test(block));
+  for (const name of ['node', 'eclipse-temurin']) {
+    assert.match(docker, new RegExp(`dependency-name: "${name}"\\n\\s+update-types: \\["version-update:semver-major"\\]`), `${name} : version majeure écartée`);
+  }
+  assert.match(docker, /dependency-name: "maven"\n\s+update-types: \["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"\]/, 'maven : Java dans l’étiquette, lu comme un correctif');
+  const java = /^ {6}java:\n((?: {8}.*\n)+)/m.exec(docker);
+  assert.ok(java, 'groupe java absent');
+  assert.match(java[1], /patterns:\n\s+- "maven"\n\s+- "eclipse-temurin"/, 'Maven et Temurin ensemble');
+  assert.doesNotMatch(java[1], /update-types/, 'une empreinte seule sortirait du groupe');
+  // Labels par défaut de Dependabot, qu'il crée lui-même : des labels absents le font se plaindre.
+  assert.doesNotMatch(text, /^\s+labels:/m, 'aucun label réglé');
   const merge = workflow('dependabot-auto-merge.yml');
   assert.match(merge, /version-update:semver-patch \| version-update:semver-minor\)/, 'seuls les correctifs mineurs fusionnent seuls');
   assert.match(merge, /\*ai\.timefold\*/, 'Timefold jamais fusionné automatiquement');
@@ -297,6 +310,30 @@ test('W6b la décision de fusion de Dependabot, exécutée', { skip: bash ? fals
   const docker = { ECOSYSTEM: 'docker', DEPENDENCIES: 'node', COMMITS: 'oui' };
   assert.equal(decide({ ...docker, PREVIOUS: '26-trixie-slim', NEW: '26-trixie-slim' }).decision, 'fusion', 'même étiquette, nouvelle empreinte');
   assert.equal(decide({ ...docker, PREVIOUS: '26-trixie-slim', NEW: '28-trixie-slim' }).decision, 'relire');
+  // Règle de la dernière LTS : Dependabot lit le Java de l'étiquette Maven comme un correctif (#48).
+  const correctif = { ...ok, ECOSYSTEM: 'docker' };
+  assert.equal(decide({ ...correctif, DEPENDENCIES: 'maven', PREVIOUS: '3.10-eclipse-temurin-25', NEW: '3.10-eclipse-temurin-27' }).decision, 'relire', 'autre Java');
+  assert.match(decide({ ...correctif, DEPENDENCIES: 'maven', PREVIOUS: '3.10-eclipse-temurin-25', NEW: '3.10-eclipse-temurin-27' }).raison, /dernière LTS/);
+  assert.equal(decide({ ...correctif, DEPENDENCIES: 'eclipse-temurin, maven', PREVIOUS: '25-jdk', NEW: '27-jdk' }).decision, 'relire', 'groupe java');
+  assert.equal(decide({ ...correctif, DEPENDENCIES: 'node', PREVIOUS: '26-trixie-slim', NEW: '27-trixie-slim' }).decision, 'relire', 'autre Node');
+  assert.equal(decide({ ...docker, DEPENDENCIES: 'eclipse-temurin, maven', PREVIOUS: '25-jdk', NEW: '25-jdk' }).decision, 'fusion', 'même étiquette lue dans le groupe java');
+  // Formes réelles, relevées sur des PR publiques et la PR 48 le 6 novembre 2026. Dependabot écrit
+  // une nouvelle empreinte « from `abc` to `def` », et fetch-metadata n'y lit aucune étiquette ancienne.
+  assert.match(decide({ ...correctif, UPDATE_TYPE: 'version-update:semver-minor', DEPENDENCIES: 'maven', PREVIOUS: '3.9-eclipse-temurin-21', NEW: '3.9-eclipse-temurin-26' }).raison, /autre étiquette/, 'la PR 48');
+  for (const empreinte of [{ PREVIOUS: '', NEW: '26-trixie-slim' },
+    { DEPENDENCIES: 'maven, eclipse-temurin', UPDATE_TYPE: 'version-update:semver-major', PREVIOUS: '`047a82f`', NEW: '3.10-eclipse-temurin-25' }]) {
+    const { decision, raison } = decide({ ...docker, ...empreinte });
+    assert.equal(decision, 'relire', JSON.stringify(empreinte));
+    assert.match(raison, /nouvelle empreinte/, 'pas « autre étiquette » : c’est la même');
+  }
+  // fetch-metadata donne la version du premier du groupe et le type le plus fort de tous.
+  assert.equal(decide({ ...docker, DEPENDENCIES: 'maven, eclipse-temurin', UPDATE_TYPE: 'version-update:semver-major', PREVIOUS: '3.10-eclipse-temurin-25', NEW: '3.10-eclipse-temurin-25' }).decision, 'relire', 'version majeure sur le second');
+  // Étiquette illisible, même classée en correctif : jamais de fusion seule.
+  for (const NEW of ['', '26.13.0-trixie-slim']) {
+    assert.equal(decide({ ...correctif, DEPENDENCIES: 'node', PREVIOUS: '', NEW }).decision, 'relire', `vers « ${NEW} »`);
+  }
+  assert.equal(decide({ ...correctif, ECOSYSTEM: 'docker_compose', DEPENDENCIES: 'caddy', PREVIOUS: '2.11.8', NEW: '2.11.9' }).decision, 'fusion', 'Caddy : correctif ordinaire');
+  assert.equal(decide({ ...correctif, DEPENDENCIES: 'nodejs-outil', PREVIOUS: '1.0.0', NEW: '1.0.1' }).decision, 'fusion', 'node seul, jamais nodejs-outil');
   assert.match(decide({ ...ok, COMMITS: 'non' }).raison, /autre auteur/);
 });
 
@@ -410,6 +447,12 @@ test('W7 analyses de sécurité en place', () => {
   assert.match(securite, /zizmor-action@[0-9a-f]{40} # v[\d.]+\n\s+with:\n(?:\s+#.*\n)*\s+version: \d+\.\d+\.\d+\n/, 'version de zizmor fixée');
   assert.match(securite, /cron: '\d+ \d+ \* \* 1'/, 'veille hebdomadaire');
   assert.match(workflow('scorecard.yml'), /publish_results: true/);
+  const veille = workflow('veille-versions.yml');
+  assert.match(veille, /cron: '\d+ \d+ \* \* 1'/, 'veille des versions chaque lundi');
+  assert.match(veille, /GITHUB_TOKEN: \$\{\{ github\.token \}\}\n\s+run: node scripts\/veille-versions\.js\n/, 'jeton dans la seule étape du script');
+  assert.match(veille, /concurrency:\n\s+group: veille-versions\n/, 'une seule exécution à la fois : une seule issue');
+  assert.match(veille, /if: github\.ref == 'refs\/heads\/main'\n/, 'une autre branche fermerait l’issue à tort');
+  assert.match(read('SECURITY.md'), /« Veille des versions »/, 'veille documentée');
   assert.match(workflow('bilan-timefold.yml'), /--avant "\$AVANT" --solveur --cles/, 'bilan avant/après avec Timefold et clés anonymes');
   // Fichier d'exceptions de Trivy, lu par défaut dans le dossier du dépôt.
   assert.ok(read('.trivyignore').split('\n').every(line => !line.trim() || line.startsWith('#') || /^(CVE|GHSA)-[\w-]+$/.test(line.trim())),
@@ -529,6 +572,7 @@ test('W11 une montée de version change tout le dépôt d’un seul tenant', () 
   assert.equal(one(all, /node-version: '(\d+)'/g, 'node-version des workflows'), node);
   assert.equal(one(all, /java-version: '(\d+)'/g, 'java-version des workflows'), java);
   one(all, /\bubuntu-(\d+\.\d+)/g, 'Ubuntu des workflows');
+  one(all, /rhysd\/actionlint:(\d+\.\d+\.\d+)@/g, 'actionlint des workflows');
   assert.equal(/<maven\.compiler\.release>(\d+)</.exec(read('solver/pom.xml'))[1], java, 'solver/pom.xml');
   assert.equal(JSON.parse(read('package.json')).engines.node, `>=${node}`, 'package.json');
   assert.equal(JSON.parse(read('package-lock.json')).packages[''].engines.node, `>=${node}`, 'package-lock.json');
