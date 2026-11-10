@@ -94,7 +94,7 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 
 **What:** D'abord, compter par soirée les téléphones qui ont autorisé les notifications, sans prénom ni identifiant dans le journal, et montrer ce nombre dans les statistiques. Ensuite, si ce nombre le justifie, envoyer les demandes et les messages de duo par Web Push (clés du serveur, abonnement par téléphone, envoi par le serveur), pour qu'ils arrivent aussi téléphone verrouillé ou page fermée.
 
-**Why:** Le service worker du plan du 8 novembre (F2a) n'affiche une notification que tant que la page vit en arrière-plan (Chrome Android, ordinateurs). Un iPhone ne la reçoit que depuis l'écran d'accueil, et un téléphone verrouillé ne reçoit rien (F2b). Le gérant ne veut rater aucune demande.
+**Why:** Le service worker du plan du 8 novembre (F2a) n'affiche une notification que tant que la page vit en arrière-plan (Chrome Android, ordinateurs). Un iPhone n'en reçoit aucune : Safari ne les donne qu'aux web apps de l'écran d'accueil, et la page n'en est pas une (entrée « Notifications sur iPhone : la page en web app de l'écran d'accueil ») ; un téléphone verrouillé ne reçoit rien (F2b). Le gérant ne veut rater aucune demande.
 
 **Context:** Reporté par la relecture CEO du 9 novembre 2026 (F2c) : infrastructure nouvelle (clés, abonnements, services de push des navigateurs), hors du rayon du plan. Le comptage dit d'abord si l'effort sert : sans téléphones qui autorisent, Web Push n'atteindrait personne. Points de départ : `public/sw.js` (F2a), `systemNotice` (`public/client.html:818-824`), `GUIDE-BAR.md:81` et `:97`. Mode serveur seulement : en mode PC, la page des chanteurs est en HTTP sur le Wi-Fi du bar, où le navigateur refuse notifications et push ; le dire pour les deux modes (AGENTS.md).
 
@@ -125,6 +125,18 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P4
 **Depends on:** Lot B du plan du 8 novembre 2026, et les réponses toutes faites choisies par le gérant.
+
+### Notifications sur iPhone : la page en web app de l'écran d'accueil
+
+**What:** Rendre la page des chanteurs installable sur l'écran d'accueil d'un iPhone (manifeste en `display: standalone`, icône), et y reprendre les personnes de ce téléphone, pour que les notifications du lot B y arrivent.
+
+**Why:** Après le plan du 8 novembre (B4, B5), un iPhone ne reçoit aucune notification : Safari ne les donne qu'aux web apps de l'écran d'accueil, et la page n'en est pas une (ni manifeste ni `apple-mobile-web-app-capable`, `public/client.html:3-9`).
+
+**Context:** Reporté par la relecture ingénierie du 10 novembre 2026. Une web app de l'écran d'accueil a son propre stockage, séparé de Safari : elle n'aurait ni les jetons des personnes (`kfPeople:…`) ni les réglages des notifications, à reprendre par le QR de reprise ou un code. Même installée, une page en arrière-plan s'arrête vite sur iPhone : l'entrée « Notifications sur un téléphone verrouillé (Web Push), après un comptage » décrit l'autre chemin. À vérifier sur un vrai iPhone, au bar.
+
+**Effort:** M (humain) / S (Claude Code + gstack)
+**Priority:** P4
+**Depends on:** Lot B du plan du 8 novembre 2026 (service worker, décision 2a) ; l'entrée « Notifications sur un téléphone verrouillé (Web Push) ».
 
 ## Bar
 
@@ -204,6 +216,18 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Priority:** P3
 **Depends on:** règles « Textes venus des clients ou du bar » et « En-têtes de sécurité » du plan du 8 novembre 2026.
 
+### La clé du bar hors du journal du serveur, en mode PC
+
+**What:** En mode PC, écrire au journal du serveur (`journal/serveur-<date>.log`) l'empreinte de la clé du bar, comme le mode serveur (`staffKeyFingerprint`, `server.js:6237`), et garder la clé en clair à la seule console de `DEMARRER.bat`.
+
+**Why:** `appLog` écrit la même ligne à la console et au journal (`server.js:619-623`) : la ligne « Clé du bar (autre appareil) » y met la clé en clair (`server.js:6338`). Ce journal sort maintenant du PC (DEPLOIEMENT-SERVEUR, §18, « Envoyer une soirée au développeur ») : sans le filtre `grep -v 'Clé du bar'`, la clé de la file qui tourne partirait avec.
+
+**Context:** Relevé par la relecture d'ingénierie du 10 novembre 2026 (L5). En mode PC, la clé est tirée à chaque démarrage (`server.js:289`) : la ligne d'un journal ancien ne sert plus après un redémarrage, et ce PC obtient de toute façon la page du bar par `GET /`. GUIDE-BAR dit déjà de ne jamais envoyer cette ligne (`GUIDE-BAR.md:263`). Une écriture à la seule console, à côté d'`appLog`, suffit ; texte du mode PC changé avec son test (AGENTS.md). Le lanceur `KaraFun Plus.exe` n'a pas de fenêtre (`launcher/KaraFunPlus.cs:28-29`) : un autre appareil passe déjà par le QR « Accès du bar depuis un téléphone ».
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** rien dans le plan du 8 novembre 2026 ; le filtre du §18 (lot A6) reste.
+
 ## Déploiement
 
 ### Nommer les réglages dans le refus de l'agent de mise à jour
@@ -217,6 +241,18 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P3
 **Depends on:** Lot A du plan du 8 novembre 2026 (`KARAOKE_REPAIR`).
+
+### Arrêt imprévu de la file écrit au journal du serveur
+
+**What:** Un gestionnaire `uncaughtException` et `unhandledRejection` dans `server.js`, qui écrit au journal du serveur « Arrêt imprévu : <nom>[, code <code>] » et la pile sans le message (chemins depuis le dossier de l'application), puis arrête le processus en code 1, comme Node le fait aujourd'hui.
+
+**Why:** `server.js` n'en a aucun : il ne rattrape que l'échec de `main()` (`server.js:6371`) et les erreurs d'écoute (`:6358-6368`). Une exception qui sort d'un rappel (`setImmediate`, minuterie, événement du pont KaraFun) arrête la file. Lancée par `KaraFun Plus.exe`, sans fenêtre (`launcher/KaraFunPlus.cs:28-29`), elle s'arrête alors sans trace : sa sortie d'erreur n'est lue par personne, et le bar ne voit que « Connexion perdue ».
+
+**Context:** Relevé par la relecture d'ingénierie du 10 novembre 2026 (registre des modes de défaillance). Le lot A garde ses propres rappels (garde de la fin de soirée, passe des soirées closes gardée en entier), mais `sync()` est déjà relancé par `setImmediate` à chaque changement du pont (`server.js:992`). Ne jamais continuer après l'exception, l'état étant inconnu : écrire la ligne, puis sortir ; en mode serveur, Docker relance `app` (`restart: unless-stopped`, `deploy/compose.yaml:61`). Essai en vrai processus : une copie retouchée lève dans un rappel ; la ligne est au journal, sans le message, et le code de sortie vaut 1.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot A du plan du 8 novembre 2026 (forme des piles du journal du serveur).
 
 ## Développement
 
@@ -238,7 +274,7 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 
 **Why:** `app.css:17` écrit en `system-ui`. Le conteneur de travail la rend en Inter, avec Playwright 1.63.0 et Chromium 153 ; la CI a Playwright 1.56.1 sur Ubuntu 24.04, police non relevée. Des mesures du plan sont à quelques pixels de leur seuil (carte « Sur scène » : 145 px pour 150) : un critère peut être vert dans l'un et rouge dans l'autre.
 
-**Context:** Reporté par la relecture DX du 10 novembre 2026 (passe 6). En attendant, la CI fait foi (plan du 8 novembre, D6), et le compte rendu de chaque suite note Playwright, Chromium et la police. Une police fixée change ce qui est mesuré : la comparer d'abord aux vrais téléphones du « Test sur place au bar ».
+**Context:** Reporté par la relecture DX du 10 novembre 2026 (passe 6). Le relevé de la police dans le job `linux` (`fc-match system-ui`) entre au jalon 1 (relecture ingénierie du 10 novembre 2026, M5) ; restent le relevé des hauteurs et la même police aux deux endroits. En attendant, la CI fait foi (plan du 8 novembre, D6), et le compte rendu de chaque suite note Playwright, Chromium et la police. Une police fixée change ce qui est mesuré : la comparer d'abord aux vrais téléphones du « Test sur place au bar ».
 
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P3
@@ -255,3 +291,39 @@ Travail reporté par les relectures de plan (gstack `autoplan`), avec son contex
 **Effort:** S (humain) / S (Claude Code + gstack)
 **Priority:** P3
 **Depends on:** Lot C du plan du 8 novembre 2026 (`test/bilan-deplacements.js`).
+
+### Une seule écriture durable pour les fichiers de données
+
+**What:** Une fonction commune d'écriture durable (`.tmp` propre au processus, synchronisé, renommé, puis dossier synchronisé hors de Windows), employée par la sauvegarde de soirée (`night-state.js`), la mise à jour (`server-update.js`) et la réparation des journaux (`evening-journal.js`).
+
+**Why:** Le plan du 8 novembre ajoute une troisième copie de ce schéma. `NightStateStore.save` synchronise son fichier sans son dossier (night-state.js:842-853), alors que `writeChoice` synchronise les deux (server-update.js:208-229) : un agent copie celle qu'il voit en premier.
+
+**Context:** Relevé par la relecture d'ingénierie du 10 novembre 2026 (étape 0). Sans la synchronisation du dossier, une coupure de courant peut perdre le dernier renommage de la sauvegarde de soirée ; la reprise retombe alors sur l'autre génération, d'où la priorité basse. Avec le lot A, le disque en mémoire des essais (`test/evening-stats-routes.test.js`) reçoit `openSync`, `fsyncSync` et `closeSync`. Garder les codes et les textes d'erreur de chaque appelant ; essais : les trois appelants, chacun avec une synchronisation en échec.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot A du plan du 8 novembre 2026 (écritures synchronisées de la réparation).
+
+### Essais en vrai processus sans dépendre de 8 h
+
+**What:** Faire tourner `night-restart-api`, `server-mode-startup` et `server-update-routes` à une heure maîtrisée : quand le prochain 8 h local tombe pendant la durée d'un essai, l'essai attend 8 h et 1 min avant de lancer sa copie. Puis retirer la règle « relancer une fois » de la suite.
+
+**Why:** Depuis le lot A, ces trois fichiers lancent une copie hors démo à l'heure réelle, avec des tables et sans titre : à cheval sur 8 h, la remise à zéro du matin peut tomber en plein essai. La règle « relancer une fois » le couvre, mais un défaut qui ne se voit qu'à 8 h y passerait.
+
+**Context:** Reporté par la relecture ingénierie du 10 novembre 2026 (M6). La démo n'a plus de fin de soirée automatique, et `evening-end-process` prépare une soirée qu'aucun 8 h ne clôt (A7). Commencer par mesurer la durée de chaque essai de ces fichiers, puis écrire une aide commune dans `test/server-mode-startup.test.js`, qui exporte déjà `launch` et `sandboxCopy`.
+
+**Effort:** S (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot A du plan du 8 novembre 2026.
+
+### Essai automatique du suivi d'une personne déplacée dans un vrai navigateur
+
+**What:** Un essai en vrai navigateur (Playwright) sur une démo : le bar déplace deux personnes d'un même téléphone vers une autre table par `POST /api/staff/people/move`, et la page de leur ancienne table, ouverte avec leurs jetons, suit seule jusqu'à la nouvelle (adresse, jetons sous la nouvelle clé, personnes gérées) ; puis le même geste vers « En solo », avec « Qui le garde ? ».
+
+**Why:** Dans le plan du 8 novembre (C6), la page et le serveur s'essaient chacun de leur côté, l'autre étant simulé ; le parcours entier n'est joué qu'au `qa` du jalon 2, une fois, sans garde contre une régression ensuite.
+
+**Context:** Reporté par la relecture ingénierie du 10 novembre 2026. En attendant, les formes exactes de `relocated` et de la réponse de `follow` sont essayées des deux côtés (C6). Un tel fichier s'ignore sans Playwright, comme les six de la règle « Rien d'ignoré en silence », qu'il faudrait alors compléter, et prend un port de démo libre (3100 à 3127 sont pris, `test/run-offline.js:60-77`). Modèle : `test/staff-idle-layout.test.js` (démo sur un port fixe, état lu par la page).
+
+**Effort:** M (humain) / S (Claude Code + gstack)
+**Priority:** P3
+**Depends on:** Lot C du plan du 8 novembre 2026.
