@@ -30,7 +30,8 @@ updates:
           - "patch"
     ignore:
       # Le client Socket.IO 2.x parle le protocole historique de la
-      # télécommande KaraFun ; le serveur 2.x sert le faux KaraFun de la démo.
+      # télécommande KaraFun ; le serveur 2.x, retiré par l'issue #59, servait
+      # le faux KaraFun de la démo (règle gardée jusqu'à l'étape 2 du retrait).
       # Passer à 3.x ou 4.x demande des essais de protocole, pas une PR
       # automatique (CONTEXTE-REPRISE.md, SECURITY.md).
       - dependency-name: "socket.io-client"

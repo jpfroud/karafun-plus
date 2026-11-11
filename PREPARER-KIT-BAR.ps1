@@ -67,7 +67,7 @@ foreach ($nom in $fichiers) {
     throw "Fichier indispensable absent : $nom"
   }
 }
-foreach ($nom in @('node\node.exe', 'node\LICENSE', 'node_modules\qrcode', 'node_modules\socket.io',
+foreach ($nom in @('node\node.exe', 'node\LICENSE', 'node_modules\qrcode',
     'node_modules\socket.io-client', 'public\client.html', 'public\client-i18n.js', 'public\staff.html', 'public\stats.html',
     'solver-runtime\bin\java.exe')) {
   if (-not (Test-Path -LiteralPath (Join-Path $racine $nom))) {

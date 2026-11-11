@@ -1,8 +1,8 @@
 'use strict';
 // Protocole de la télécommande KaraFun actuelle (KCS, JSON sur WebSocket).
-// C'est le chemin utilisé avec le VRAI KaraFun du bar ; le faux KaraFun de la
-// démo parle encore l'ancien socket.io, donc ce chemin n'était presque pas
-// essayé. Ici, tout est simulé : faux WebSocket global, faux fetch, faux
+// C'est le chemin utilisé avec le VRAI KaraFun du bar, et avec le faux KaraFun
+// de la démo (issue #59, test/fake-karafun.test.js pour la vraie connexion).
+// Ici, tout est simulé : faux WebSocket global, faux fetch, faux
 // socket.io-client. Aucun accès réseau, aucun vrai code de télécommande.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -877,17 +877,24 @@ test('recherche : demande JSON, repli sur l’autre site KaraFun, erreur claire 
 });
 
 // ---------------------------------------------------------------------------
-// Ancien protocole socket.io (faux KaraFun local) : cas d'erreur
+// Ancien protocole socket.io (page de KaraFun sans adresse KCS) : cas d'erreur
 // ---------------------------------------------------------------------------
 
-function legacy(t) {
+// Depuis l'issue #59, le faux KaraFun local parle KCS : l'ancien protocole ne
+// sert plus qu'à une page de télécommande sans `kcs_url`. Après un échec, le
+// nouvel essai relit donc la page (5 s pour le premier, DISCOVERY_STEPS_MS).
+const LEGACY_BASES = ['https://kf.exemple.invalid', 'https://kf2.exemple.invalid'];
+async function legacy(t) {
   mockTime(t);
   ioSockets.length = 0;
-  const bridge = new KaraFunBridge({ bases: ['http://localhost:1', 'http://127.0.0.1:2'] });
+  fakes(t, () => ok(page({ version: 2 })));
+  const bridge = new KaraFunBridge({ bases: LEGACY_BASES });
   t.after(() => bridge.disconnect());
   bridge.connect(CODE);
+  await flush();
   return bridge;
 }
+const nextTry = async t => { t.mock.timers.tick(5000); await flush(); };
 
 test('page de télécommande sans adresse KCS : repli sur l’ancien protocole socket.io', async t => {
   mockTime(t);
@@ -904,10 +911,10 @@ test('page de télécommande sans adresse KCS : repli sur l’ancien protocole s
   assert.deepEqual(ioSockets[0].options.query, { remote: `kf${CODE}` });
 });
 
-test('ancien protocole : connexion, authentification et file reçue', t => {
-  const bridge = legacy(t);
+test('ancien protocole : connexion, authentification et file reçue', async t => {
+  const bridge = await legacy(t);
   const socket = ioSockets[0];
-  assert.equal(socket.base, 'http://localhost:1');
+  assert.equal(socket.base, LEGACY_BASES[0]);
   assert.deepEqual(socket.options.query, { remote: `kf${CODE}` });
   assert.equal(bridge.protocol, 'socket.io');
   socket.fire('connect');
@@ -922,44 +929,46 @@ test('ancien protocole : connexion, authentification et file reçue', t => {
   assert.deepEqual(socket.outgoing.at(-1), { name: 'queueRemove', args: [5] });
 });
 
-test('ancien protocole : échec de connexion, autre adresse et nouvel essai', t => {
-  const bridge = legacy(t);
+test('ancien protocole : échec de connexion, autre adresse et nouvel essai', async t => {
+  const bridge = await legacy(t);
   ioSockets[0].fire('connect_error', new Error('xhr poll error'));
-  assert.equal(bridge.lastError, 'Connexion impossible à http://localhost:1 : xhr poll error');
+  assert.equal(bridge.lastError, `Connexion impossible à ${LEGACY_BASES[0]} : xhr poll error`);
   assert.equal(ioSockets[0].closed, true);
-  t.mock.timers.tick(3000);
+  await nextTry(t);
   assert.equal(ioSockets.length, 2);
-  assert.equal(ioSockets[1].base, 'http://127.0.0.1:2');
+  assert.equal(ioSockets[1].base, LEGACY_BASES[1]);
 });
 
-test('ancien protocole : déconnexion puis reconnexion 3 s plus tard', t => {
-  const bridge = legacy(t);
+test('ancien protocole : déconnexion puis reconnexion après une nouvelle lecture de la page', async t => {
+  const bridge = await legacy(t);
   ioSockets[0].fire('connect');
   ioSockets[0].fire('disconnect', 'transport close');
   assert.equal(bridge.connected, false);
   assert.ok(bridge.events.some(e => e.name === 'disconnect' && e.data === 'transport close'));
-  t.mock.timers.tick(3000);
+  await nextTry(t);
   assert.equal(ioSockets.length, 2);
-  assert.equal(ioSockets[1].base, 'http://localhost:1', 'simple coupure : même adresse');
+  assert.equal(ioSockets[1].base, LEGACY_BASES[0], 'simple coupure : même adresse');
 });
 
-test('ancien protocole : code inconnu de KaraFun, message au bar', t => {
+test('ancien protocole : code inconnu de KaraFun, message au bar', async t => {
   mockTime(t);
+  fakes(t, () => ok(page({ version: 2 })));
   for (const name of ['serverUnreacheable', 'serverUnreachable']) {
     ioSockets.length = 0;
-    const bridge = new KaraFunBridge({ bases: ['http://localhost:1', 'http://127.0.0.1:2'] });
+    const bridge = new KaraFunBridge({ bases: LEGACY_BASES });
     bridge.connect(CODE);
+    await flush();
     ioSockets[0].fire(name);
     assert.equal(bridge.unreachable, true, name);
     assert.match(bridge.lastError, /vérifie que KaraFun est ouvert et que le code est le bon/);
-    t.mock.timers.tick(5000);
-    assert.equal(ioSockets.at(-1).base, 'http://127.0.0.1:2');
+    await nextTry(t);
+    assert.equal(ioSockets.at(-1).base, LEGACY_BASES[1]);
     bridge.disconnect();
   }
 });
 
-test('ancien protocole : nom déjà pris, on redemande le même nom 4 s plus tard', t => {
-  const bridge = legacy(t);
+test('ancien protocole : nom déjà pris, on redemande le même nom 4 s plus tard', async t => {
+  const bridge = await legacy(t);
   const socket = ioSockets[0];
   socket.fire('connect');
   const name = bridge.username;
@@ -1268,28 +1277,6 @@ test('réglages de titre : pistes vocales des titres de la file et état en dire
   assert.deepEqual(bridge.status.current.songTracks, [5]);
   assert.deepEqual(bridge.snapshot().songSettings.live, { queueId: '4f0c2a1e-0000-4000-8000-000000000001', pitch: 0, tempo: 0,
     guide: 0, backing: null, voices: { 5: 0 }, tracks: [5] });
-});
-
-test('réglages de titre, ancien protocole : faux KaraFun local de la démo', t => {
-  const bridge = legacy(t);
-  const socket = ioSockets[0];
-  socket.fire('connect');
-  socket.receive('queue', []);
-  socket.receive('status', { state: 'idle' });
-  assert.deepEqual(bridge.add(70002, 'Léa · T1', 99999, { pitch: -2, guide: 30 }), { pitch: -2, guide: 30 });
-  bridge.setQueueItemOptions(4, { singer: 'Léa · T1', settings: { tempo: 5 }, tracksAvailable: [4, 5] });
-  bridge.setPitch(1);
-  bridge.setTempo(-5);
-  bridge.setTrackVolume(5, 75);
-  assert.deepEqual(socket.outgoing.slice(1).map(m => [m.name, ...m.args]), [
-    ['queueAdd', { songId: 70002, pos: 99999, singer: 'Léa · T1', options: { pitch: -2, tracks: [{ track: { type: 5 }, volume: 30 }] } }],
-    ['queueItemOptions', { queueId: 4, options: { singer: 'Léa · T1', pitch: 0, tempo: 5 } }],
-    ['pitch', 1], ['tempo', -5], ['trackVolume', { type: 5, volume: 75 }],
-  ]);
-  bridge.add(70003, 'Tom', 99999);
-  assert.deepEqual(socket.outgoing.at(-1), { name: 'queueAdd', args: [{ songId: 70003, pos: 99999, singer: 'Tom' }] },
-    'sans réglage : trame inchangée');
-  assert.equal(bridge.songSettingsState().available, true, 'faux KaraFun de la démo : réglages pris en charge');
 });
 
 test('réglages de titre, ancien protocole d’un vrai KaraFun : refusés, ajout sans réglage', async t => {
