@@ -17,8 +17,9 @@
  * Serveur WebSocket minimal (RFC 6455) écrit avec la bibliothèque standard de Node,
  * sans dépendance, sur la boucle locale seulement. Il tourne dans le processus de la
  * démo : un client maladroit ou hostile (page web, valeur piégée, options imbriquées
- * sans fin) est refusé, jamais une exception qui ferait tomber la démo. Rien ne
- * limite en revanche la longueur de la file ni le nombre de connexions.
+ * sans fin) est refusé, jamais une exception qui ferait tomber la démo ; les options
+ * d'un titre sont recopiées champ par champ, avec leur type. Rien ne limite en
+ * revanche la longueur de la file ni le nombre de connexions.
  */
 const http = require('http');
 const crypto = require('crypto');
@@ -204,9 +205,8 @@ const CONFIGURATION = Object.freeze({ pitchStep: 1, pitchMin: -6, pitchMax: 6, t
   compatibleMods: Object.freeze({ battle: Object.freeze([1, 2]) }) });
 
 // Options d'un titre : au plus 16 niveaux d'objets ou de listes, comptés sans
-// récursion ; celles de KaraFun en ont quatre (mode d'une Battle). Bien plus
-// profondes, JSON.stringify ou structuredClone dépasseraient la pile plus tard, au
-// changement de titre ou dans le pont du même processus, hors de toute demande.
+// récursion ; celles de KaraFun en ont quatre (mode d'une Battle). Au-delà, la
+// demande est refusée par une erreur, plutôt que tronquée sans bruit.
 const MAX_DEPTH = 16;
 function tooDeep(value) {
   for (const pending = [[value, 1]]; pending.length;) {
@@ -215,6 +215,27 @@ function tooDeep(value) {
     for (const child of Object.values(node)) if (child && typeof child === 'object') pending.push([child, depth + 1]);
   }
   return false;
+}
+
+// Options d'un titre recopiées champ par champ, avec leur type, telles que KaraFun
+// les montre : chanteur, tonalité, tempo, volumes des voix et mode d'une Battle. Le
+// reste est oublié : le pont du même processus ne reçoit jamais une valeur qu'il ne
+// saurait pas lire, un objet à la place d'un nombre ou d'un texte.
+function optionsFrom(given) {
+  const out = {};
+  if (typeof given.singer === 'string') out.singer = given.singer;
+  if (Number.isInteger(given.pitch)) out.pitch = given.pitch;
+  if (Number.isInteger(given.tempo)) out.tempo = given.tempo;
+  if (Array.isArray(given.tracks)) {
+    out.tracks = given.tracks.filter(row => Number.isInteger(row?.track?.type) && Number.isFinite(row.volume))
+      .map(row => ({ track: { type: row.track.type }, volume: row.volume }));
+  }
+  const { mod } = given;
+  if (Number.isSafeInteger(mod?.id) && Number.isInteger(mod.data?.battle?.subtype)) {
+    out.mod = { id: mod.id, ...(typeof mod.caption === 'string' ? { caption: mod.caption } : {}),
+      data: { battle: { subtype: mod.data.battle.subtype } } };
+  }
+  return out;
 }
 
 function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, pingMs = 1000, log = () => {} } = {}) {
@@ -343,7 +364,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
         const song = CATALOG.find(s => s.songId === songId) || { songId, title: `Chanson ${songId}`, artist: '?' };
         const given = objectOf(p.options);
         if (given && tooDeep(given)) { refuse('Invalid options'); return; }
-        const options = given ? structuredClone(given) : {};
+        const options = given ? optionsFrom(given) : {};
         const item = { queueId: qid++, songId: song.songId, title: song.title, artist: song.artist,
           singer: textOf(options.singer) || '', status: 'ready', songTracks: songTracksFor(song.songId), options };
         const pos = Math.max(0, Math.min(queue.length, numberOf(p.position) || queue.length));
@@ -373,7 +394,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
         if (given && tooDeep(given)) { refuse('Invalid options'); return; }
         const item = itemOf(p.queueItemId);
         if (item) {
-          item.options = { ...(given || {}) };
+          item.options = optionsFrom(given || {});
           if (item === playingItem()) live = liveFrom(item.options);
         }
         reply();

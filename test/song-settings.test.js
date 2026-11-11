@@ -184,7 +184,7 @@ test('état en direct : tonalité, tempo, volumes et pistes du titre en cours', 
   // Chaque voix guide annoncée, sans supposer leur nombre ; volume illisible ignoré.
   assert.deepEqual(liveFromStatus({ state: 4, tracks: [{ volume: 25, track: { type: 6 } }, { volume: 50, track: { type: 5 } },
     { volume: 75, track: { type: 7 } }, { volume: 'x', track: { type: 8 } }, { volume: 60, track: { type: 4 } }] }).voices, { 5: 50, 6: 25, 7: 75 });
-  // Faux KaraFun (ancien protocole) : titre en cours dans songPlaying.
+  // Ancienne télécommande (socket.io) : titre en cours dans songPlaying.
   assert.equal(liveFromStatus({ state: 'playing', songPlaying: { queueId: 4, songTracks: [4, 5] } }).queueId, 4);
   assert.deepEqual(songTracksOf({ songTracks: [{ type: 4 }, { type: 5 }, { type: 'x' }] }), [4, 5], 'trame brute KCS');
   assert.deepEqual(songTracksOf({ songTracks: [5, 6] }), [5, 6]);

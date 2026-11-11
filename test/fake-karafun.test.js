@@ -212,7 +212,8 @@ async function stillAlive(kf) {
 // protects=la démo face à un client maladroit ou hostile de la boucle locale : adresse illisible, page web d'un
 // navigateur (en-tête Origin), refus lu puis connexion coupée net ; fails_when=une exception non rattrapée fait
 // tomber le processus (la démo et ses pages), ou une page web ouvre le faux ; no_claim=les protections d'un
-// navigateur précis (accès au réseau local) : seul l'en-tête Origin, que le WebSocket de Node n'envoie pas, compte ici.
+// navigateur précis (accès au réseau local) : seul l'en-tête Origin, que le WebSocket de Node n'envoie pas, compte ici ;
+// ni la coupure pendant l'écriture du refus, qu'aucun essai ne reproduit (l'écouteur d'erreur reste par prudence).
 test('client maladroit ou hostile : refus propres, la démo ne tombe pas', async t => {
   const kf = await fake(t);
   for (const [name, request] of [
@@ -271,8 +272,9 @@ test('options imbriquées sans fin : refusées à l’entrée, la démo et le po
   bridge.add(70003, 'Essai · T2', 99999, {});
   await until(() => kf.state().queue.length === 2 && kf.state().state === 'playing', 'deux titres, le premier joue');
   const next = kf.state().queue[1], before = structuredClone(next.options);
-  // Assez profond pour la pile de JSON.stringify (Node 26), puis une Battle assez profonde pour structuredClone
-  // dans le pont, puis un ajout : moins de 1 Mio chacun.
+  // Mesures : JSON.stringify déborde vers 1 700 niveaux sous Node 22 (CI, image), jamais sous Node 26 avec ces
+  // clés ; structuredClone vers 1 350 partout. Sans le refus, le faux tomberait au changement de titre sous Node 22,
+  // et le pont sur la Battle sous Node 26. Moins de 1 Mio par message.
   const deep = n => '{"a":'.repeat(n) + '1' + '}'.repeat(n);
   c.ws.send(`{"id":2,"type":"remote.SetQueueItemOptionsRequest","payload":{"queueItemId":"${next.queueId}","options":${deep(100000)}}}`);
   c.ws.send(`{"id":3,"type":"remote.SetQueueItemOptionsRequest","payload":{"queueItemId":"${next.queueId}",`
@@ -285,6 +287,39 @@ test('options imbriquées sans fin : refusées à l’entrée, la démo et le po
   await until(() => bridge.status?.kcsState === 4 && bridge.status.current?.songId === 70003, 'titre suivant en lecture');
   assert.equal(bridge.ready, true, 'pont toujours prêt');
   c.ws.close();
+});
+
+// protects=le pont du même processus face à des options mal typées, envoyées par un programme local : le faux les
+// recopie champ par champ avec leur type, comme KaraFun les montre, et oublie le reste ; fails_when=une valeur
+// impossible à convertir (un objet à la place d'un nombre ou d'un texte) est gardée puis relayée, et le pont tombe
+// en la lisant, à l'arrivée de la file (isBattleMod de karafun.js) ou au chargement du titre (song-settings.js) ;
+// no_claim=ce que le vrai KaraFun fait de ces valeurs.
+test('options mal typées : recopiées champ par champ, le pont tient jusqu’à la lecture', async t => {
+  const trapped = { toString: 1 };
+  for (const [name, options, kept] of [
+    ['mode de Battle', { singer: 'Essai · T2', mod: { id: trapped, caption: 'Battle', data: { battle: { subtype: 1 } } } },
+      { singer: 'Essai · T2' }],
+    ['voix', { singer: 'Essai · T2', tracks: [{ track: { type: trapped }, volume: 1 }, { track: { type: 5 }, volume: 40 }] },
+      { singer: 'Essai · T2', tracks: [{ track: { type: 5 }, volume: 40 }] }],
+    ['chanteur, tonalité et tempo', { singer: trapped, pitch: trapped, tempo: '5', tracks: 'abc' }, {}],
+  ]) {
+    const kf = await fake(t);
+    const bridge = new KaraFunBridge({ bases: [kf.base] });
+    t.after(() => bridge.disconnect());
+    bridge.connect(CODE);
+    await until(() => bridge.ready, `${name} : pont prêt`);
+    const c = open(kf.url());
+    await c.opened;
+    c.send({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0002' } });
+    await until(() => c.received.some(m => m.type === 'remote.UpdateUsernameResponse'), `${name} : nom accepté`);
+    c.send({ id: 2, type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 70002 }, position: 99999, options } });
+    await until(() => bridge.queue.length === 1, `${name} : titre vu par le pont`);
+    assert.deepEqual(kf.state().queue[0].options, kept, `${name} : seuls les champs bien typés sont gardés`);
+    c.send({ id: 3, type: 'remote.PlayRequest', payload: {} });
+    await until(() => bridge.status?.kcsState === 4, `${name} : lecture`);
+    assert.equal(bridge.ready, true, `${name} : pont toujours prêt`);
+    c.ws.close();
+  }
 });
 
 // protects=la mémoire du faux après une fermeture ; fails_when=un pair qui garde la connexion ouverte et
