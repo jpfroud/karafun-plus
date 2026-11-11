@@ -3,6 +3,24 @@
 // Canal JSON de la télécommande actuelle. L'URL authentifiée reste en mémoire.
 const EventEmitter = require('events');
 
+// Profondeur d'un message de KaraFun : 10 niveaux au plus dans les vraies
+// trames (file avec un mode Battle, journaux de septembre et de novembre
+// 2026). Au-delà de 32, le message n'est pas lu : copier ou écrire un objet
+// aussi imbriqué épuiserait la pile (structuredClone, JSON.stringify).
+const MAX_DEPTH = 32;
+function deeperThan(value, limit) {
+  const stack = [[value, 1]];
+  while (stack.length) {
+    const [item, depth] = stack.pop();
+    if (item === null || typeof item !== 'object') continue;
+    if (depth > limit) return true;
+    for (const child of Object.values(item)) stack.push([child, depth + 1]);
+  }
+  return false;
+}
+// Raison d'une erreur pour le journal, sans rien convertir d'imprévu.
+const reasonOf = error => (typeof error === 'string' ? error : typeof error?.message === 'string' ? error.message : 'erreur inconnue');
+
 class KcsTransport extends EventEmitter {
   constructor(url) {
     super();
@@ -25,20 +43,28 @@ class KcsTransport extends EventEmitter {
       try { message = JSON.parse(String(event.data)); }
       catch { this.emit('transport-error', 'Message KaraFun illisible.'); return; }
       if (!message || typeof message.type !== 'string') return;
-      this.emit('message', message);
+      if (deeperThan(message, MAX_DEPTH)) { this._ignore(message.type, `message de plus de ${MAX_DEPTH} niveaux`); return; }
+      // Filet : l'erreur d'un écouteur du WebSocket, Node la relance hors de
+      // toute portée et le serveur du bar s'arrêterait. Le message est ignoré
+      // ('message-error') et la lecture continue : Ping et réponses servent.
+      try { this.emit('message', message); } catch (error) { this._ignore(message.type, error); }
       if (this.closed) return;
-      if (message.type === 'core.PingRequest') {
-        this._send('core.PingResponse', {}, message.id);
-      } else if (message.type === 'core.TimestampRequest') {
-        this._send('core.TimestampResponse', { timestamp: { _type: 'timestamp', value: new Date().toISOString() } }, message.id);
-      } else if (this.pending.has(message.id)) {
-        // Réponse (ou Error) portant l'identifiant d'une demande : elle est
-        // rattachée à cette demande, pour que le pont sache laquelle a réussi.
-        const request = this.pending.get(message.id);
-        clearTimeout(request.timer);
-        this.pending.delete(message.id);
-        this.emit('reply', request.type, message);
-      }
+      // Identifiant renvoyé tel quel : un nombre ou un texte, jamais un objet.
+      const id = typeof message.id === 'number' || typeof message.id === 'string' ? message.id : undefined;
+      try {
+        if (message.type === 'core.PingRequest') {
+          this._send('core.PingResponse', {}, id);
+        } else if (message.type === 'core.TimestampRequest') {
+          this._send('core.TimestampResponse', { timestamp: { _type: 'timestamp', value: new Date().toISOString() } }, id);
+        } else if (this.pending.has(id)) {
+          // Réponse (ou Error) portant l'identifiant d'une demande : elle est
+          // rattachée à cette demande, pour que le pont sache laquelle a réussi.
+          const request = this.pending.get(id);
+          clearTimeout(request.timer);
+          this.pending.delete(id);
+          this.emit('reply', request.type, message);
+        }
+      } catch (error) { this._ignore(message.type, error); }
     });
     this.ws.addEventListener('error', () => {
       if (!this.closed) this.emit('transport-error', 'Connexion WebSocket KaraFun interrompue.');
@@ -55,6 +81,12 @@ class KcsTransport extends EventEmitter {
       }
     }, 2000);
     this.watchdog.unref();
+  }
+
+  // Message ignoré : signalé au pont, qui le note dans ses journaux. Une erreur
+  // de ce signalement même ne sort pas non plus de l'écouteur.
+  _ignore(type, error) {
+    try { this.emit('message-error', type, reasonOf(error)); } catch { /* rien de plus à faire */ }
   }
 
   _send(type, payload, id) {

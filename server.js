@@ -987,11 +987,51 @@ function battleModeAnswer(answer) {
   failPlainBattleCopy(answer.queueId, analyze().current, `KaraFun : ${answer.message}`);
 }
 
-// Événements du pont KaraFun que la file suit.
+// Événements du pont KaraFun que la file suit. Ils tournent hors de
+// l'écouteur du WebSocket (setImmediate) : chacun a son filet.
 function wireBridge(b) {
-  b.on('change', () => setImmediate(sync));
-  b.on('add-options-refused', add => setImmediate(() => resendWithoutOptions(add)));
-  b.on('battle-mode-answer', answer => setImmediate(() => battleModeAnswer(answer)));
+  b.on('change', () => setImmediate(safeSync));
+  b.on('add-options-refused', add => setImmediate(() => shielded('Nouvel envoi sans réglages non traité', () => resendWithoutOptions(add))));
+  b.on('battle-mode-answer', answer => setImmediate(() => shielded('Réponse de KaraFun au mode Battle non traitée', () => battleModeAnswer(answer))));
+}
+
+// Raison d'une erreur pour le journal, sans rien convertir d'imprévu.
+const errorReason = error => (typeof error?.message === 'string' ? error.message : 'erreur inconnue');
+// Filet d'une suite d'événement du pont : l'erreur est notée dans le journal
+// du serveur au lieu d'arrêter la file.
+function shielded(label, run) {
+  try { run(); } catch (error) { appLog(`${label} : ${errorReason(error)}`); }
+}
+
+// Filet de la synchronisation avec KaraFun (événements du pont, minuterie de
+// 2 s) : une valeur imprévue qui ferait échouer sync() ne doit jamais arrêter
+// la file. Une panne est notée une fois pour le bar et dans le journal du
+// serveur, avec l'endroit du code (puis une ligne par minute au plus) ; la
+// synchronisation suivante réessaie, et son retour est noté.
+let syncFailure = null; // { count, loggedAt } pendant une panne
+function safeSync() {
+  try {
+    sync();
+  } catch (error) {
+    const reason = errorReason(error), now = Date.now();
+    if (!syncFailure) {
+      syncFailure = { count: 1, loggedAt: now };
+      const where = typeof error?.stack === 'string' ? error.stack.split('\n').find(line => /^\s+at /.test(line))?.trim() : null;
+      appLog(`Synchronisation avec KaraFun interrompue : ${reason}${where ? ` (${where})` : ''}`);
+      sched.note(`La mise à jour avec KaraFun a échoué (${reason}). La file continue ; vérifie la file dans KaraFun.`, 'error');
+    } else {
+      syncFailure.count++;
+      if (now - syncFailure.loggedAt >= 60000) {
+        syncFailure.loggedAt = now;
+        appLog(`Synchronisation avec KaraFun toujours en échec (${syncFailure.count} essais) : ${reason}`);
+      }
+    }
+    return;
+  }
+  if (syncFailure) {
+    appLog(`Synchronisation avec KaraFun rétablie après ${syncFailure.count} échec${syncFailure.count > 1 ? 's' : ''}.`);
+    syncFailure = null;
+  }
 }
 
 function syncBattle({ current, upcoming, q }, now) {
@@ -6349,7 +6389,7 @@ async function main() {
         // La version candidate attend le contrôle de santé de l'agent hôte
         // avant de retrouver la télécommande et ses automatismes.
         if (SERVER && !serverUpdate.isBusy() && CODE && !bridge) connectKaraFun();
-        sync();
+        safeSync();
       }, 2000);
       setInterval(() => { if (!serverUpdate.isBusy()) battleVote.tick(); }, 2000);
       setInterval(() => { if (!serverUpdate.isBusy()) spotifyTick().catch(() => {}); }, 3000);

@@ -535,9 +535,10 @@ test('faux KaraFun : options d’ajout, options d’un titre de la file et régl
 });
 
 test('module : rien d’autre n’est exporté par inadvertance', () => {
+  // kcsNumber : lecture typée des nombres de KaraFun, partagée avec karafun.js.
   assert.deepEqual(Object.keys(settingsModule).sort(), ['DEFAULTS', 'FIELDS', 'TRACK', 'VOLUME_STEP', 'addOptions', 'catchUpCommands',
-    'clampSettings', 'guideVoicesOf', 'liveFromStatus', 'neutralTarget', 'normalizeSettings', 'queueItemOptions', 'rangesFrom', 'sanitizeSettings',
-    'settingsFromLive', 'songTracksOf', 'validateField'].sort());
+    'clampSettings', 'guideVoicesOf', 'kcsNumber', 'liveFromStatus', 'neutralTarget', 'normalizeSettings', 'queueItemOptions', 'rangesFrom',
+    'sanitizeSettings', 'settingsFromLive', 'songTracksOf', 'validateField'].sort());
 });
 
 // Regression: relecture PR #11, revue au lot G2 (D6) — la voix 2 posée par
@@ -563,4 +564,22 @@ test('voix guide 2 posée par la file : notée à l’envoi, remise à 0 si son 
   assert.deepEqual(sanitizeSettings({ guideB: 50, guideVoices: { 7: 0 } }, { keepDefaults: true }), { guideVoices: { 6: 50, 7: 0 } });
   assert.deepEqual(sanitizeSettings({ guide: 30, guideB: 50 }), { guide: 30 }, 'réglages d’un titre : pas de piste B');
   assert.deepEqual(sanitizeSettings({ guideB: 150 }, { keepDefaults: true }), null);
+});
+
+// Regression: valeurs imprévues de KaraFun (suite de la relecture de l'étape 1
+// Socket.IO, issue #59) — une piste dont le type est un objet que Number() ne
+// sait pas convertir (`{ "toString": 1 }`) levait une exception dans les
+// lectures de l'état et des options de KaraFun, jusqu'à arrêter le serveur du
+// bar. Elle compte pour absente ; les autres pistes servent.
+test('valeurs imprévues de KaraFun : piste d’un type imprévu ignorée, sans exception', () => {
+  const trap = () => JSON.parse('{"toString":1}');
+  assert.deepEqual(songTracksOf({ songTracks: [{ type: trap() }, trap(), null, [6], { type: 4 }, '5', 6] }), [4, 5, 6]);
+  const rows = [{ track: { type: trap() }, volume: 80 }, { track: trap(), volume: 70 }, null,
+    { track: { type: 4 }, volume: 53 }, { track: { type: 5 }, volume: 25 }];
+  assert.deepEqual(liveFromStatus({ state: 'playing', pitch: trap(), tempo: 0, tracks: rows }),
+    { queueId: null, pitch: null, tempo: 0, guide: 25, backing: 53, voices: { 5: 25 }, tracks: [4, 5] });
+  assert.deepEqual(neutralTarget({ options: { pitch: trap(), tracks: rows } }), { pitch: 0, tempo: 0, guide: 25, backing: 53 });
+  const { options } = queueItemOptions({ singer: 'Léa', current: { pitch: trap(), tracks: rows }, ranges: rangesFrom(null) });
+  assert.deepEqual(options, { singer: 'Léa', pitch: 0, tempo: 0,
+    tracks: [{ track: { type: 4 }, volume: 53 }, { track: { type: 5 }, volume: 25 }] });
 });

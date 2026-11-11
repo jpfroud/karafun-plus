@@ -28,17 +28,21 @@ function harness() {
     readdirSync() { return []; }, unlinkSync() {} };
   const fixtureProcess = Object.create(process);
   fixtureProcess.argv = [process.argv[0], path.join(root, 'server.js'), '--demo'];
+  // Lignes du journal du serveur (appLog), gardées pour les essais.
+  const logs = [];
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
-    __dirname: root, process: fixtureProcess, console: { ...console, log() {} }, Buffer, URL,
+    __dirname: root, process: fixtureProcess, console: { ...console, log: (...args) => logs.push(args.join(' ')) }, Buffer, URL,
     setTimeout: () => ({ unref() {} }), clearTimeout() {}, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, handlers, access, journal, sync, staffState, publicState, battleVote, clearEvening,
       resendWithoutOptions, restoreKaraFunDefaults: typeof restoreKaraFunDefaults === 'function' ? restoreKaraFunDefaults : null,
+      safeSync: typeof safeSync === 'function' ? safeSync : null, wireBridge,
       connectKaraFun,
       tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
       handle: server.listeners('request')[0], STAFF_KEY, PORT };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
+  f.logs = logs;
   f.settings.auto = false;
   f.settings.autoPlay = false;
   f.settings.pushDelaySec = 0;
@@ -2120,4 +2124,55 @@ test('ancienne page du bar : la voix guide en direct d’un duo de la file règl
   await f.call('POST /api/staff/kf', { action: 'track', track: 'guide', value: 10, queueId: 'A-id' });
   assert.deepEqual(bare(frames(isoStatus(4, run.A, { guide: 10, guideB: 30 }))), [volumeTo(5, 10)]);
   assert.deepEqual(plain(trA.sel.song.settings), { guide: 10, guideVoices: { 6: 30 } });
+});
+
+// Regression: valeurs imprévues de KaraFun (suite de la relecture de l'étape 1
+// Socket.IO, issue #59) — titre ajouté dans KaraFun, sans pistes connues,
+// chargé avec une piste d'un type imprévu dans ses options : neutralTarget
+// levait une exception dans sync(), hors de l'écouteur du WebSocket, et le
+// serveur du bar s'arrêtait (sonde du 11 novembre 2026). La piste compte
+// pour absente.
+test('valeurs imprévues : titre ajouté dans KaraFun avec une piste d’un type imprévu dans ses options', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const trap = JSON.parse('{"toString":1}');
+  const item = isoItem('X-id', 901, { singer: 'Quelqu’un', tracks: [{ track: { type: trap }, volume: 50 }] }, []);
+  assert.deepEqual(bare(frames(queueEvent(item), isoStatus(1, item), isoStatus(3, item))), []);
+  assert.deepEqual(f.sched.log.filter(line => line.kind === 'error'), []);
+});
+
+// Filet de la synchronisation : sync() tourne hors de l'écouteur du WebSocket
+// (setImmediate à chaque changement du pont, minuterie de 2 s). Une erreur qui
+// y resterait ne doit jamais arrêter le serveur : notée dans le journal du
+// serveur, et une fois pour le bar ; la synchronisation suivante réessaie.
+// Les deux autres suites d'événements du pont ont le même filet.
+test('filet de la synchronisation : une erreur dans sync() n’arrête pas le serveur, signalée une fois au bar', async () => {
+  const f = harness();
+  const { bridge } = kcsBridge(f);
+  const status = bridge.status;
+  let fail = true;
+  Object.defineProperty(bridge, 'status', { configurable: true, get() {
+    if (fail) throw new TypeError('Cannot convert object to primitive value');
+    return status;
+  } });
+  const errors = () => f.sched.log.filter(line => line.kind === 'error').map(line => line.msg);
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  f.wireBridge(bridge);
+  bridge.emit('change');
+  await tick();
+  bridge.emit('change');
+  await tick();
+  assert.deepEqual(errors(), ['La mise à jour avec KaraFun a échoué (Cannot convert object to primitive value). La file continue ; vérifie la file dans KaraFun.']);
+  assert.equal(f.logs.filter(line => line.startsWith('Synchronisation avec KaraFun interrompue : Cannot convert object to primitive value')).length, 1,
+    'une ligne pour la panne, pas une par essai');
+  fail = false;
+  f.safeSync();
+  assert.ok(f.logs.includes('Synchronisation avec KaraFun rétablie après 2 échecs.'));
+  fail = true;
+  f.safeSync();
+  assert.equal(errors().length, 2, 'nouvelle panne après un retour à la normale : signalée de nouveau');
+  fail = false;
+  bridge.emit('battle-mode-answer', { get ok() { throw new Error('réponse piégée'); } });
+  await tick();
+  assert.ok(f.logs.includes('Réponse de KaraFun au mode Battle non traitée : réponse piégée'));
 });

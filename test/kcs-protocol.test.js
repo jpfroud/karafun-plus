@@ -314,6 +314,64 @@ test('KcsTransport : un message qui provoque la fermeture n’entraîne pas de r
   assert.equal(ws.closeCalls, 1);
 });
 
+// Regression: valeurs imprévues de KaraFun (suite de la relecture de l'étape 1
+// Socket.IO, issue #59) — une exception levée par un écouteur du message (le
+// pont) sortait de l'écouteur du WebSocket : Node la relance hors de toute
+// portée, et le serveur du bar s'arrêtait. Filet : le message est ignoré et
+// signalé ('message-error'), la lecture continue ; le Ping reçoit sa réponse,
+// une réponse attendue reste rattachée à sa demande.
+test('KcsTransport : un écouteur qui échoue n’arrête ni la lecture ni les réponses aux Ping', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  const errors = [], replies = [];
+  transport.on('message', m => { if (m.payload?.piege) throw new TypeError('Cannot convert object to primitive value'); });
+  transport.on('reply', (type, m) => {
+    replies.push([type, m.type]);
+    if (m.payload?.piege) throw new Error('réponse piégée');
+  });
+  transport.on('message-error', (type, reason) => errors.push([type, reason]));
+  ws.open();
+  assert.doesNotThrow(() => ws.receive({ id: 41, type: 'core.PingRequest', payload: { piege: true } }));
+  const id = transport.send('remote.PlayRequest');
+  assert.doesNotThrow(() => ws.receive({ id, type: 'remote.PlayResponse', payload: { piege: true } }));
+  ws.receive({ id: 42, type: 'core.PingRequest', payload: {} });
+  assert.deepEqual(errors, [['core.PingRequest', 'Cannot convert object to primitive value'],
+    ['remote.PlayResponse', 'Cannot convert object to primitive value'], ['remote.PlayResponse', 'réponse piégée']]);
+  assert.deepEqual(replies, [['remote.PlayRequest', 'remote.PlayResponse']], 'réponse rattachée à sa demande malgré l’échec');
+  assert.equal(transport.requestType(id), null);
+  assert.deepEqual(ws.sent.filter(m => m.type === 'core.PingResponse').map(m => m.id), [41, 42]);
+});
+
+// Regression: même relecture — un message imbriqué sur 100 000 niveaux
+// épuisait la pile du pont (structuredClone d'un mode Battle) ; gardé dans le
+// journal en mémoire, il aurait aussi cassé la page du bar (JSON.stringify).
+// Les vraies trames ont 10 niveaux au plus : au-delà de 32, le message n'est
+// pas lu. Un identifiant d'un type imprévu n'est jamais renvoyé à KaraFun.
+test('KcsTransport : message de plus de 32 niveaux ignoré, identifiant d’un type imprévu jamais renvoyé', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  const errors = [], messages = [];
+  transport.on('message', m => messages.push(m.type));
+  transport.on('message-error', (type, reason) => errors.push([type, reason]));
+  ws.open();
+  const nested = levels => '{"a":'.repeat(levels) + '1' + '}'.repeat(levels);
+  ws.receive(`{"type":"remote.QueueEvent","payload":${nested(31)}}`); // 32 niveaux avec le message
+  assert.deepEqual(messages, ['remote.QueueEvent'], '32 niveaux : lu');
+  for (const levels of [32, 100000]) ws.receive(`{"type":"remote.QueueEvent","payload":${nested(levels)}}`);
+  assert.deepEqual(messages, ['remote.QueueEvent'], 'au-delà : ignoré');
+  assert.deepEqual(errors, [['remote.QueueEvent', 'message de plus de 32 niveaux'], ['remote.QueueEvent', 'message de plus de 32 niveaux']]);
+  ws.receive({ id: { piege: 1 }, type: 'core.PingRequest', payload: {} });
+  ws.receive({ id: [7], type: 'core.TimestampRequest', payload: {} });
+  assert.deepEqual(ws.sent.map(m => [m.type, 'id' in m]), [['core.PingResponse', false], ['core.TimestampResponse', false]],
+    'réponse sans identifiant : un objet ou une liste n’est jamais renvoyé');
+});
+
 // ---------------------------------------------------------------------------
 // KaraFunBridge : découverte de la télécommande
 // ---------------------------------------------------------------------------
@@ -1984,4 +2042,129 @@ test('réglages de titre : valeur par défaut reprise remplacée par une remise 
   assert.equal(bridge.observedDefaults.backing, 70, 'KaraFun remet 70 au chargement : nouvelle valeur par défaut');
   assert.equal(bridge.provisionalDefaults, false);
   assert.equal(bridge.snapshot().songSettings.defaults.backing, 70);
+});
+
+// ---------------------------------------------------------------------------
+// Valeurs imprévues de KaraFun
+// ---------------------------------------------------------------------------
+
+// Regression: suite de la relecture de l'étape 1 Socket.IO (issue #59) — une
+// seule valeur d'un type imprévu dans une trame KCS (un titre null, un numéro
+// objet…) levait une exception dans le pont, que Node relançait hors de toute
+// portée : le serveur du bar s'arrêtait (sonde du 11 novembre 2026 : 11 cas
+// sur 16 avec le vrai WebSocket de Node). Chaque valeur est lue avec son
+// type : une valeur imprévue compte pour absente, le reste du message sert,
+// sans passer par le filet (aucun « message-ignore »).
+// `piege()` : un objet JSON qu'on ne peut convertir ni en texte ni en nombre
+// (sa clé toString n'est pas une fonction).
+const piege = () => JSON.parse('{"toString":1}');
+const kcsItem = (over = {}, song = {}) => ({ id: 'q-1', song: { id: { type: 1, id: 35369 }, title: 'Titre', artist: 'Artiste',
+  songTracks: [{ type: 4 }, { type: 5 }], options: { tracks: [], singer: 'Zoé' }, ...song }, ...over });
+const ignoredMessages = bridge => bridge.events.filter(e => e.name === 'message-ignore').map(e => e.data);
+
+test('valeurs imprévues : file de KaraFun lue avec ses types, les titres lisibles gardés', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const valid = kcsItem({ id: 'q-2' });
+  const odd = kcsItem({ id: 'q-3' }, { id: { type: 1, id: piege() }, title: piege(), artist: piege(),
+    songTracks: [{ type: piege() }, { type: 4 }, { type: '5' }],
+    options: { singer: piege(), tracks: [], mod: { id: piege(), caption: 'Battle', data: { battle: { subtype: 1 } } } } });
+  const items = [null, 'texte', kcsItem({ id: piege() }), kcsItem({ id: [1] }), odd, kcsItem({ id: 'q-4' }, { options: 'texte' }), valid];
+  assert.doesNotThrow(() => ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items } } }));
+  assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-3', 'q-4', 'q-2'], 'titres sans numéro lisible laissés de côté');
+  const [read, plain, kept] = bridge.queue;
+  assert.deepEqual([read.songId, read.title, read.artist, read.singer, read.songTracks], [undefined, '', '', '', [4, 5]]);
+  assert.equal(isBattleItem(read), false, 'mode Battle sans numéro lisible : pas une Battle');
+  assert.deepEqual(plain.options, {}, 'options d’un autre type : aucune');
+  assert.deepEqual(kept, normalizeKcsItem(valid));
+  assert.equal(normalizeKcsItem(null), null);
+  assert.deepEqual(ignoredMessages(bridge), [], 'lues avec leur type, sans le filet');
+  assert.equal(bridge.ready, true);
+});
+
+test('valeurs imprévues : état de KaraFun lu avec ses types, le titre en cours et ses pistes lisibles gardés', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const tracks = [{ track: { type: piege() }, volume: 53 }, null, { track: { type: 4 }, volume: 53 }, { track: { type: 5 }, volume: piege() }];
+  const status = (current, extra = {}) => ({ type: 'remote.StatusEvent', payload: { status: { state: 3, pitch: 0, tempo: 0, tracks, current, ...extra } } });
+  // Titre en cours sans numéro lisible : pas de titre en cours, l'état sert.
+  assert.doesNotThrow(() => ws.receive(status(kcsItem({ id: piege() }))));
+  assert.deepEqual([bridge.status.current, bridge.status.kcsState], [null, 3]);
+  assert.doesNotThrow(() => ws.receive(status('texte')));
+  assert.equal(bridge.status.current, null);
+  // Piste, volume, tonalité et options d'un type imprévu : ignorés, le reste sert.
+  const own = { singer: 'Zoé', tracks: [{ track: { type: piege() }, volume: 50 }] };
+  assert.doesNotThrow(() => ws.receive(status(kcsItem({}, { options: own }), { pitch: piege() })));
+  assert.equal(bridge.status.current.queueId, 'q-1');
+  assert.deepEqual(bridge.snapshot().songSettings.live,
+    { queueId: 'q-1', pitch: null, tempo: 0, guide: null, backing: 53, voices: {}, tracks: [4, 5] });
+  assert.equal(bridge.seenLoading('q-1'), true);
+  assert.deepEqual(ignoredMessages(bridge), []);
+  assert.equal(bridge.ready, true);
+});
+
+test('valeurs imprévues : refus de KaraFun dont la raison est d’un type imprévu', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  assert.doesNotThrow(() => ws.receive({ type: 'Error', payload: { type: 1, message: piege() } }));
+  assert.equal(bridge.lastError, 'Commande KaraFun refusée : 1');
+  assert.doesNotThrow(() => ws.receive({ type: 'Error', payload: { type: 4, message: piege() } }));
+  assert.equal(bridge.nameConflictSince, null, 'raison illisible : pas un conflit de nom');
+  // Réglage de titre refusé, mode Battle refusé : raison illisible, « erreur inconnue ».
+  bridge.setPitch(2);
+  const pitch = ws.sent.at(-1);
+  assert.equal(pitch.type, 'remote.PitchRequest');
+  assert.doesNotThrow(() => ws.receive({ id: pitch.id, type: 'Error', payload: { type: 1, message: piege() } }));
+  assert.equal(bridge.settingsNotices.pitch, 'KaraFun refuse de régler la tonalité : erreur inconnue');
+  const answers = [];
+  bridge.on('battle-mode-answer', answer => answers.push(answer));
+  bridge.setBattleMode('q-1', BATTLE_MOD);
+  const mode = ws.sent.at(-1);
+  assert.doesNotThrow(() => ws.receive({ id: mode.id, type: 'Error', payload: { type: piege(), message: piege() } }));
+  assert.deepEqual(answers.map(answer => [answer.ok, answer.message]), [[false, 'erreur inconnue']]);
+  assert.deepEqual(ignoredMessages(bridge), []);
+});
+
+// Filet du pont : un message que le pont ne peut pas lire jusqu'au bout est
+// ignoré, noté dans le journal de KaraFun (chaque fois) et dans celui du
+// serveur (une ligne par minute au plus) ; la connexion continue.
+test('filet du pont : un message qui fait échouer le pont est ignoré, noté au journal, la connexion continue', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const lines = [];
+  bridge.log = line => lines.push(line);
+  let fail = true;
+  bridge.on('queue', () => { if (fail) throw new TypeError('Cannot convert object to primitive value'); });
+  const queue = { type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem()] } } };
+  assert.doesNotThrow(() => ws.receive(queue));
+  assert.deepEqual(ignoredMessages(bridge), [{ type: 'remote.QueueEvent', reason: 'Cannot convert object to primitive value' }]);
+  assert.deepEqual(lines, ['KaraFun : message remote.QueueEvent ignoré (Cannot convert object to primitive value) ; la connexion continue.']);
+  ws.receive(queue);
+  assert.equal(ignoredMessages(bridge).length, 2);
+  assert.equal(lines.length, 1, 'une ligne par minute au plus dans le journal du serveur');
+  // Une minute plus tard, KaraFun parlant toujours (un Ping toutes les 5 s).
+  for (let i = 1; i <= 12; i++) {
+    t.mock.timers.tick(5000);
+    ws.receive({ id: i, type: 'core.PingRequest', payload: {} });
+  }
+  ws.receive(queue);
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /3 messages ignorés depuis le démarrage/);
+  // Message trop imbriqué (mode Battle sur 100 000 niveaux) : ignoré de même.
+  fail = false;
+  const battle = { singer: 'Zoé', mod: { id: 1, caption: 'Battle', data: { battle: { subtype: 1 } }, x: 'IMBRIQUE' } };
+  const deep = JSON.stringify({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem({ id: 'q-9' }, { options: battle })] } } })
+    .replace('"IMBRIQUE"', '{"a":'.repeat(100000) + '1' + '}'.repeat(100000));
+  assert.doesNotThrow(() => ws.receive(deep));
+  assert.deepEqual(ignoredMessages(bridge).at(-1), { type: 'remote.QueueEvent', reason: 'message de plus de 32 niveaux' });
+  assert.doesNotThrow(() => JSON.stringify(bridge.snapshot()), 'la page du bar reste lisible');
+  // La connexion sert toujours.
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem({ id: 'q-5' })] } } });
+  assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-5']);
+  assert.equal(bridge.ready, true);
+  assert.equal(ws.closeCalls, 0);
 });

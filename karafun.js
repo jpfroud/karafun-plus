@@ -7,7 +7,18 @@ const path = require('path');
 const io = require('socket.io-client');
 const { KcsTransport } = require('./kcs-transport');
 const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, guideVoicesOf, liveFromStatus, TRACK,
-  DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
+  kcsNumber, DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
+// Lectures typées des trames KaraFun : une valeur d'un type imprévu compte
+// pour absente, sans exception. String() et Number() échouent sur un objet
+// dont `toString` n'est pas une fonction (`{ "toString": 1 }`), et l'erreur
+// d'un écouteur du WebSocket arrêterait le serveur.
+const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+// Numéro d'un titre de la file, en texte comme avant ; null pour un objet ou une liste.
+const kcsKey = value => (value !== null && typeof value === 'object' ? null : String(value));
+// Valeur simple (texte, nombre, booléen, null) telle quelle ; un objet ou une liste ne compte pas.
+const kcsScalar = value => (value !== null && typeof value === 'object' ? undefined : value);
+// Texte : un texte, ou un nombre fini écrit en texte ; sinon vide.
+const kcsText = value => (typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '');
 // Valeur en direct d'un réglage essayé : 'pitch', 'tempo', 'backing' ou
 // 'voice:<type>' (volume d'une voix guide).
 const probedValue = (live, field) => (/^voice:/.test(field) ? live?.voices?.[field.slice(6)] : live?.[field]) ?? null;
@@ -40,8 +51,8 @@ function readSettings(html) {
 // jamais par le seul envoi.
 const BATTLE_MOD = Object.freeze({ id: 1, caption: 'Battle', data: Object.freeze({ battle: Object.freeze({ subtype: 1 }) }) });
 function isBattleMod(mod) {
-  const id = Number(mod?.id);
-  return Number.isSafeInteger(id) && id > 0 && Number(mod?.data?.battle?.subtype) === 1;
+  const id = kcsNumber(mod?.id);
+  return Number.isSafeInteger(id) && id > 0 && kcsNumber(mod?.data?.battle?.subtype) === 1;
 }
 function isBattleItem(item) {
   return isBattleMod(item?.options?.mod || item?.song?.options?.mod);
@@ -52,24 +63,30 @@ function isBattleItem(item) {
 // 10 octobre ; sinon « Battle ».
 function battleModFor(songTracks) {
   const tracks = Array.isArray(songTracks) ? songTracks : [];
-  const voices = guideVoicesOf(tracks.map(track => Number(track?.type))) || [];
-  const first = voices.length >= 2 ? tracks.find(track => Number(track?.type) === voices[0]) : null;
+  const voices = guideVoicesOf(tracks.map(track => kcsNumber(track?.type))) || [];
+  const first = voices.length >= 2 ? tracks.find(track => kcsNumber(track?.type) === voices[0]) : null;
   const caption = typeof first?.caption === 'string' ? first.caption.trim().slice(0, 100) : '';
   return caption ? { id: 2, caption, data: { battle: { subtype: 1 } } } : BATTLE_MOD;
 }
 
 // `songTracks` : pistes vocales du titre (4 chœurs, 5, 6… voix guides),
 // seulement si KaraFun les donne ; `battleMod` : mode Battle de ce titre
-// (battleModFor). `options` : réglages du titre dans KaraFun.
+// (battleModFor). `options` : réglages du titre dans KaraFun. Chaque valeur
+// est lue avec son type ; null pour un titre qui n'est pas un objet ou dont
+// le numéro est un objet ou une liste : on ne saurait pas le retrouver.
 function normalizeKcsItem(item) {
-  const song = item.song || {}, quiz = item.quiz || {};
+  if (!isRecord(item)) return null;
+  const queueId = kcsKey(item.id);
+  if (queueId == null) return null;
+  const song = isRecord(item.song) ? item.song : {}, quiz = isRecord(item.quiz) ? item.quiz : {};
+  const options = isRecord(song.options) ? song.options : {};
   const tracks = songTracksOf(song);
   return {
-    queueId: String(item.id), id: String(item.id), songId: song.id && song.id.id,
-    title: song.title || quiz.title || '', artist: song.artist || '',
-    singer: song.options && song.options.singer || '', options: song.options || {},
+    queueId, id: queueId, songId: song.id && kcsScalar(song.id.id),
+    title: kcsText(song.title) || kcsText(quiz.title), artist: kcsText(song.artist),
+    singer: kcsText(options.singer), options,
     ...(tracks ? { songTracks: tracks, battleMod: battleModFor(song.songTracks) } : {}),
-    ...(quiz.id ? { quizId: quiz.id.id } : {}),
+    ...(quiz.id ? { quizId: kcsScalar(quiz.id.id) } : {}),
   };
 }
 
@@ -402,6 +419,7 @@ class KaraFunBridge extends EventEmitter {
     this._observedBacking = null; // chœurs du premier état vu du titre `_observedFor`
     this._lastBacking = null; // chœurs du dernier état du titre `_observedFor`
     this._loadingSeen = new Set(); // titres vus annoncés ou se charger (états 1 à 3)
+    this._ignored = { count: 0, loggedAt: null }; // messages de KaraFun ignorés (_ignoredMessage)
     // Numéro de la session KCS (voir _forgetSession) et celui de la session
     // qui a donné `status` : le serveur ne confond pas deux sessions.
     this.kcsSession = 0;
@@ -668,7 +686,7 @@ class KaraFunBridge extends EventEmitter {
     if (message && message.type !== 'Error') this.settingsSupport[kind] = 'ok';
     else if (message) {
       this.settingsSupport[kind] = 'refused';
-      this.settingsNotices[kind] = `KaraFun refuse de régler ${what} : ${message.payload?.message || 'erreur inconnue'}`;
+      this.settingsNotices[kind] = `KaraFun refuse de régler ${what} : ${kcsText(message.payload?.message) || 'erreur inconnue'}`;
       this._record('info', 'reglage-refuse', { request: kind, message: this.settingsNotices[kind] });
     } else {
       if (this.settingsSupport[kind] !== 'ok') this.settingsSupport[kind] = 'silent';
@@ -693,6 +711,20 @@ class KaraFunBridge extends EventEmitter {
 
   _probeSetting(kind, field, value) {
     this._settingsProbe[kind] = { field, value, before: probedValue(liveFromStatus(this.status), field) };
+  }
+
+  // Filet : message de KaraFun que le pont n'a pas pu lire jusqu'au bout
+  // (valeur imprévue, plus de 32 niveaux imbriqués ; voir kcs-transport.js).
+  // Il est ignoré et la connexion continue : chaque fois dans le journal de
+  // KaraFun, une ligne par minute au plus dans celui du serveur.
+  _ignoredMessage(type, reason) {
+    this._ignored.count++;
+    this._record('info', 'message-ignore', { type, reason });
+    const now = Date.now();
+    if (this._ignored.loggedAt != null && now - this._ignored.loggedAt < 60000) return;
+    this._ignored.loggedAt = now;
+    const count = this._ignored.count > 1 ? ` ${this._ignored.count} messages ignorés depuis le démarrage.` : '';
+    this._log(`KaraFun : message ${type} ignoré (${reason}) ; la connexion continue.${count}`);
   }
 
   _record(dir, name, data, id) {
@@ -1053,7 +1085,7 @@ class KaraFunBridge extends EventEmitter {
         if (!p.queue || !Array.isArray(p.queue.items)) return;
         proven();
         this.raw.queue = p.queue;
-        const items = p.queue.items.map(normalizeKcsItem);
+        const items = p.queue.items.map(item => normalizeKcsItem(item)).filter(Boolean);
         this._learnBattleMods(items);
         this._accept('queue', items);
       } else if (m.type === 'remote.StatusEvent' || m.type === 'remote.StatusResponse') {
@@ -1061,7 +1093,9 @@ class KaraFunBridge extends EventEmitter {
         proven();
         const status = p.status || {};
         this.raw.status = status;
-        if (status.current) this._learnBattleMods([normalizeKcsItem(status.current)]);
+        // Titre en cours illisible (pas un objet, numéro objet) : aucun.
+        const current = status.current ? normalizeKcsItem(status.current) : null;
+        if (current) this._learnBattleMods([current]);
         this._noteLoading(status);
         this._observeDefaults(status);
         this._confirmFromStatus(status);
@@ -1071,15 +1105,16 @@ class KaraFunBridge extends EventEmitter {
           ...status,
           state: ({ 1: 'idle', 2: 'loading', 3: 'idle', 4: 'playing', 5: 'paused' })[status.state] || 'idle',
           kcsState: status.state,
-          current: status.current ? normalizeKcsItem(status.current) : null,
+          current,
         });
       } else if (m.type === 'remote.PermissionsUpdateEvent') {
         this.raw.permissions = p.permissions;
-        const v = p.permissions || {};
+        const v = isRecord(p.permissions) ? p.permissions : {};
         this._accept('permissions', { ...v, managePlayer: !!v.managePlayback, manageKaraoke: !!v.manageVolumes, uploadPicture: !!v.sendPhotos });
       } else if (m.type === 'remote.PreferencesUpdateEvent') {
         this.raw.preferences = p.preferences;
-        this._accept('preferences', { ...p.preferences, askSingerName: !!(p.preferences && p.preferences.askOptions) });
+        const v = isRecord(p.preferences) ? p.preferences : {};
+        this._accept('preferences', { ...v, askSingerName: !!v.askOptions });
       } else if (m.type === 'remote.ConfigurationUpdateEvent') {
         this.raw.configuration = p.configuration;
         this.emit('change');
@@ -1106,7 +1141,8 @@ class KaraFunBridge extends EventEmitter {
         this._forgetKcs(null, 'AppLeftEvent répétés');
         this._retry(reason, { mode: 'page' });
       } else if (m.type === 'Error') {
-        if (p.type === 4 && /username is already used/i.test(p.message || '')) {
+        const reason = kcsText(p.message);
+        if (p.type === 4 && /username is already used/i.test(reason)) {
           // L'Error répond à la demande de nom, même sans son identifiant.
           if (m.id === undefined) socket.settle('remote.UpdateUsernameRequest');
           this._nameUsed(askName);
@@ -1115,7 +1151,7 @@ class KaraFunBridge extends EventEmitter {
         // Réglage de titre refusé : traité avec sa demande (événement 'reply').
         if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id) ||
           this._battleModes.has(m.id))) return;
-        this.lastError = `Commande KaraFun refusée : ${p.message || p.type || 'erreur inconnue'}`;
+        this.lastError = `Commande KaraFun refusée : ${reason || kcsText(p.type) || 'erreur inconnue'}`;
         this.emit('change');
       }
     });
@@ -1179,6 +1215,7 @@ class KaraFunBridge extends EventEmitter {
       this._record('info', 'connect_error', message);
       this.emit('change');
     });
+    socket.on('message-error', (type, reason) => { if (active()) this._ignoredMessage(type, reason); });
     socket.on('close', ({ code }) => lost(`Télécommande KaraFun déconnectée (code ${code}). Vérifie le code affiché dans KaraFun.`,
       `KaraFun a fermé la connexion (code ${code})`, code ?? null));
   }
@@ -1426,7 +1463,7 @@ class KaraFunBridge extends EventEmitter {
     this._battleModes.delete(id);
     const refused = message?.type === 'Error';
     this.emit('battle-mode-answer', { ...request, ok: message ? !refused : null,
-      message: refused ? String(message.payload?.message || message.payload?.type || 'erreur inconnue') : null });
+      message: refused ? kcsText(message.payload?.message) || kcsText(message.payload?.type) || 'erreur inconnue' : null });
   }
   _localFake() { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(this.base).hostname); }
 
@@ -1492,9 +1529,9 @@ class KaraFunBridge extends EventEmitter {
   // trame par trame : un titre vu pour la première fois déjà en lecture (après
   // un redémarrage ou une coupure) n'en est pas un. Les derniers seulement.
   _noteLoading(status) {
-    const id = status.current?.id;
-    if (id == null || !(status.state >= 1 && status.state <= 3) || this._loadingSeen.has(String(id))) return;
-    this._loadingSeen.add(String(id));
+    const id = status.current?.id == null ? null : kcsKey(status.current.id);
+    if (id == null || !(status.state >= 1 && status.state <= 3) || this._loadingSeen.has(id)) return;
+    this._loadingSeen.add(id);
     if (this._loadingSeen.size > 50) this._loadingSeen.delete(this._loadingSeen.values().next().value);
   }
   seenLoading(id) { return id != null && this._loadingSeen.has(String(id)); }
@@ -1559,16 +1596,17 @@ class KaraFunBridge extends EventEmitter {
   // remise.
   _observeDefaults(status) {
     const current = status.current;
-    if (!current || current.id == null) return;
+    const id = current?.id == null ? null : kcsKey(current.id);
+    if (id == null) return;
     if (!(status.state >= 2) || !Array.isArray(status.tracks) || !status.tracks.length) return;
     const backing = liveFromStatus({ tracks: status.tracks }).backing;
-    if (String(current.id) === this._observedFor) {
+    if (id === this._observedFor) {
       if (backing !== this._observedBacking) this._backingChanged = true;
       this._lastBacking = backing;
       return;
     }
     const carried = this._lastBacking;
-    this._observedFor = String(current.id);
+    this._observedFor = id;
     this._observedBacking = backing;
     this._lastBacking = backing;
     const optionTracks = current.song?.options?.tracks;
@@ -1576,7 +1614,7 @@ class KaraFunBridge extends EventEmitter {
       if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
       return;
     }
-    if (status.state >= 4 && !this.seenLoading(current.id)) this._carriedUnseen = true;
+    if (status.state >= 4 && !this.seenLoading(id)) this._carriedUnseen = true;
     else if (backing == null) return;
     else if (carried != null && backing !== carried) {
       this.observedDefaults.backing = backing;
