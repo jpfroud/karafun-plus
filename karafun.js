@@ -1534,7 +1534,9 @@ class KaraFunBridge extends EventEmitter {
 
   // Valeur par défaut des chœurs sur ce KaraFun (celui du bar les met à 53) :
   // relevée à la première trame d'un titre chargé (état 2 ou plus, pistes
-  // reçues) sans volumes dans ses options. L'état 1 annonce le titre sans
+  // reçues) sans volumes dans ses options. Depuis les essais du 6 novembre
+  // 2026, KaraFun renvoie les options d'un titre ajouté sans volumes avec une
+  // liste vide (`tracks: []`) : elle ne règle rien. L'état 1 annonce le titre sans
   // l'avoir chargé : pistes vides, ou celles d'avant. Un titre vu pour la
   // première fois déjà en lecture peut porter un réglage en direct : rien
   // n'en est relevé. Un KaraFun peut garder les volumes d'un titre au
@@ -1570,7 +1572,7 @@ class KaraFunBridge extends EventEmitter {
     this._observedBacking = backing;
     this._lastBacking = backing;
     const optionTracks = current.song?.options?.tracks;
-    if (Array.isArray(optionTracks)) {
+    if (Array.isArray(optionTracks) && optionTracks.length) {
       if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
       return;
     }

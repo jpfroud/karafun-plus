@@ -1501,6 +1501,41 @@ test('réglages de titre : titre vu pour la première fois en lecture avec ses p
   assert.equal(bridge.observedDefaults.backing, undefined, 'chœurs de Léa gardés par KaraFun');
 });
 
+// Regression: relecture de l'étape 1 Socket.IO (issue #59) — le KaraFun des
+// essais réels du 6 novembre 2026 renvoie les options d'un titre ajouté sans
+// volumes avec une liste de pistes vide, `{ tracks: [], singer }`, dans la
+// file comme dans l'état. Celui des soirées de septembre n'envoyait que
+// `{ singer }`. Le relevé s'arrêtait sur toute liste, même vide : les chœurs
+// par défaut du bar n'étaient jamais appris, donc jamais remis entre deux
+// titres. Une liste vide ne règle rien ; une liste qui règle les chœurs
+// bloque toujours le relevé.
+test('réglages de titre : options du KaraFun de novembre 2026 (`tracks: []`) : chœurs par défaut relevés', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const status = backingStatus(ws);
+  const november = singer => ({ tracks: [], singer });
+  // Séquence du 6 novembre : annoncé (état 1, sans pistes), chargé (2), prêt (3).
+  status('n1', 1, 0, november('Zoé'));
+  status('n1', 2, 53, november('Zoé'));
+  status('n1', 3, 53, november('Zoé'));
+  assert.deepEqual([bridge.observedDefaults.backing, bridge.provisionalDefaults], [53, true], 'pont neuf : relevée, provisoire');
+  assert.equal(bridge.snapshot().songSettings.defaults.backing, 53);
+  // Titre suivant remis par KaraFun à une autre valeur au chargement : confirmée.
+  status('n2', 1, 0, november('Tom'));
+  status('n2', 2, 60, november('Tom'));
+  assert.deepEqual([bridge.observedDefaults.backing, bridge.provisionalDefaults], [60, false], 'remise par KaraFun');
+  // Un titre qui règle ses chœurs dans ses options ne donne toujours rien.
+  const own = { tracks: [{ track: { type: 4 }, volume: 75 }], singer: 'Léa' };
+  status('n3', 1, 0, own);
+  status('n3', 3, 75, own);
+  assert.equal(bridge.observedDefaults.backing, 60, 'chœurs réglés par le titre : pas une valeur par défaut');
+  // Un titre vu pour la première fois en pleine chanson, avec la liste vide :
+  // ses chœurs ne sont pas relevés non plus.
+  status('n4', 4, 20, november('Ana'));
+  assert.equal(bridge.observedDefaults.backing, 60, 'réglage en direct, pas une valeur par défaut');
+});
+
 // Regression: deuxième relecture finale R3 — nouveau code KaraFun (autre
 // installation) : les titres vus se charger avec l'ancien code étaient
 // gardés. Un identifiant de file repris par le nouveau KaraFun, vu pour la
