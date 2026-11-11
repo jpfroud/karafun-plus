@@ -544,11 +544,12 @@ test('faux KaraFun : options d’ajout, options d’un titre de la file et régl
   kf.send('remote.TrackVolumeRequest', { type: 5, volume: 75 });
   live = (await playing).payload.status;
   assert.equal(live.pitch, -3);
-  // Piste que le titre n'a pas : rien ne change. Titre inconnu : Error, même identifiant.
+  // Piste que le titre n'a pas, titre inconnu : rien ne change, et le faux répond
+  // quand même, sans inventer d'erreur que le vrai KaraFun n'a jamais montrée.
   kf.send('remote.TrackVolumeRequest', { type: 9, volume: 10 });
-  const refused = kf.next('Error');
+  const answered = kf.next('remote.SetQueueItemOptionsResponse');
   const unknown = kf.send('remote.SetQueueItemOptionsRequest', { queueItemId: '999', options: { pitch: 4 } });
-  assert.equal((await refused).id, unknown);
+  assert.equal((await answered).id, unknown);
   playing = live4(s => s.tempo === 15);
   kf.send('remote.TempoRequest', { tempo: 15 });
   live = (await playing).payload.status;

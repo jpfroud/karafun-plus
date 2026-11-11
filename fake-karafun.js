@@ -7,7 +7,7 @@
  * #59) : AuthenticatedEvent, puis, à la demande de nom, l'état, la file, les droits,
  * les préférences, la configuration et l'accord sur le nom ; un PingRequest chaque
  * seconde. Les réponses aux réglages de titre et les états 4 (lecture) et 5 (pause)
- * n'y ont pas été vus : ils restent modelés comme avant.
+ * n'y ont pas été vus : le faux répond à chaque commande, sans erreur inventée.
  * Commandes : ajout (options à l'ajout, Battle), retrait, déplacement, lecture,
  * suivant, options d'un titre de la file (remplacées en entier), tonalité, tempo et
  * volume des voix du titre en cours ; chaque titre annonce ses pistes vocales
@@ -15,7 +15,9 @@
  * charge (2), est prêt (3) puis joue (4). Les chansons « durent » songSeconds
  * secondes. La recherche passe par HTTP, comme sur le site de KaraFun.
  * Serveur WebSocket minimal (RFC 6455) écrit avec la bibliothèque standard de Node,
- * sans dépendance, sur la boucle locale seulement.
+ * sans dépendance, sur la boucle locale seulement. Il tourne dans le processus de la
+ * démo : un client maladroit ou hostile (page web, valeur piégée) est refusé, jamais
+ * une exception qui ferait tomber la démo.
  */
 const http = require('http');
 const crypto = require('crypto');
@@ -50,7 +52,7 @@ const DEFAULT_VOLUMES = Object.freeze({ 4: 100, 5: 0, 6: 0 });
 function liveFrom(options = {}) {
   const volumes = { ...DEFAULT_VOLUMES };
   for (const row of Array.isArray(options.tracks) ? options.tracks : []) {
-    if (Number.isInteger(row?.track?.type)) volumes[row.track.type] = Number(row.volume);
+    if (Number.isInteger(row?.track?.type) && Number.isFinite(row.volume)) volumes[row.track.type] = row.volume;
   }
   return { pitch: Number.isInteger(options.pitch) ? options.pitch : 0, tempo: Number.isInteger(options.tempo) ? options.tempo : 0, volumes };
 }
@@ -92,6 +94,11 @@ class WsConnection {
     this.notified = false;
     socket.on('data', chunk => this.read(chunk));
     socket.on('error', () => { /* la fermeture suit */ });
+    // Pair qui ferme son côté sans trame de fermeture : connexion coupée.
+    socket.on('end', () => {
+      this.open = false;
+      socket.destroy();
+    });
     socket.on('close', () => {
       this.open = false;
       this._notify(1006);
@@ -102,12 +109,16 @@ class WsConnection {
     if (this.open && !this.socket.destroyed) this.socket.write(wsFrame(0x1, text));
   }
 
+  // Trame de fermeture, puis plus rien n'est lu ; un pair qui ne ferme pas de son
+  // côté est coupé au bout d'une seconde, avec ce qu'il envoie encore.
   close(code = 1000) {
     if (!this.open) return;
     this.open = false;
+    this.buffer = Buffer.alloc(0);
     const status = Buffer.alloc(2);
     status.writeUInt16BE(code);
     this.socket.end(wsFrame(0x8, status));
+    setTimeout(() => this.socket.destroy(), 1000).unref();
     this._notify(code);
   }
 
@@ -118,6 +129,7 @@ class WsConnection {
   }
 
   read(chunk) {
+    if (!this.open) return;
     this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
     while (this.open && this.buffer.length >= 2) {
       const first = this.buffer[0], second = this.buffer[1];
@@ -145,26 +157,34 @@ class WsConnection {
       const payload = Buffer.from(this.buffer.subarray(offset + 4, offset + 4 + length));
       this.buffer = this.buffer.subarray(offset + 4 + length);
       for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
-      if (opcode === 0x1) this.onText(payload.toString('utf8'));
-      else if (opcode === 0x9) this.socket.write(wsFrame(0xa, payload));
+      if (opcode === 0x1) {
+        // Dernier filet : une demande imprévue ferme la connexion (1011), jamais la démo.
+        try { this.onText(payload.toString('utf8')); } catch { this.close(1011); }
+      } else if (opcode === 0x9) this.socket.write(wsFrame(0xa, payload));
       else if (opcode === 0x8) this.close(payload.length >= 2 ? payload.readUInt16BE(0) : 1000);
     }
   }
 }
 
 // Poignée de main : GET /kcs/<code>, WebSocket 13 et sous-protocole KCS demandés.
-// Rend le code de l'adresse, ou null après avoir refusé la demande (400).
+// Rend le code de l'adresse, ou null après avoir refusé la demande, puis coupé la
+// connexion. Le WebSocket de Node n'envoie pas d'en-tête Origin, un navigateur
+// toujours : une page web ne parle jamais au faux (403).
 function acceptUpgrade(req, socket) {
-  const refuse = () => { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return null; };
+  const refuse = status => {
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => socket.destroy());
+    return null;
+  };
+  if (req.headers.origin !== undefined) return refuse('403 Forbidden');
   const key = String(req.headers['sec-websocket-key'] || '');
   const protocols = String(req.headers['sec-websocket-protocol'] || '').split(',').map(protocol => protocol.trim());
-  const path = /^\/kcs\/([^/]+)$/.exec(new URL(req.url, 'http://localhost').pathname);
+  let path, code;
+  try { path = /^\/kcs\/([^/]+)$/.exec(new URL(req.url, 'http://localhost').pathname); } catch { return refuse('400 Bad Request'); }
   if (req.method !== 'GET' || !path || String(req.headers.upgrade || '').toLowerCase() !== 'websocket'
     || req.headers['sec-websocket-version'] !== '13' || !/^[A-Za-z0-9+/]{22}==$/.test(key) || !protocols.includes(SUBPROTOCOL)) {
-    return refuse();
+    return refuse('400 Bad Request');
   }
-  let code;
-  try { code = decodeURIComponent(path[1]); } catch { return refuse(); }
+  try { code = decodeURIComponent(path[1]); } catch { return refuse('400 Bad Request'); }
   socket.write(['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket', 'Connection: Upgrade',
     `Sec-WebSocket-Accept: ${crypto.createHash('sha1').update(key + WS_GUID).digest('base64')}`,
     `Sec-WebSocket-Protocol: ${SUBPROTOCOL}`, '', ''].join('\r\n'));
@@ -182,7 +202,8 @@ const CONFIGURATION = Object.freeze({ pitchStep: 1, pitchMin: -6, pitchMax: 6, t
 
 function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, pingMs = 1000, log = () => {} } = {}) {
   const server = http.createServer((req, res) => {
-    const u = new URL(req.url, 'http://localhost');
+    let u;
+    try { u = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400); return res.end(); }
     const m = u.pathname.match(/^\/(\d+)\/?$/);
     if (m && u.searchParams.get('type') === 'search') {
       const q = String(u.searchParams.get('q') || '').toLowerCase();
@@ -247,22 +268,30 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     }, songSeconds * 1000);
   }
 
+  // Valeurs des demandes, lues seulement si elles ont le bon type : jamais de
+  // conversion forcée d'un objet, qui pourrait lever une exception.
+  const textOf = value => (typeof value === 'string' ? value : Number.isFinite(value) ? String(value) : null);
+  const numberOf = value => (Number.isFinite(value) ? value
+    : typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : null);
+  const objectOf = value => (value && typeof value === 'object' && !Array.isArray(value) ? value : null);
+
   // Demandes du client. Chaque commande reçoit sa réponse (<Nom>Response, même
   // identifiant) avant les événements, comme AddToQueueResponse le 6 novembre.
   function receive(client, text) {
     let message;
     try { message = JSON.parse(text); } catch { client.ws.close(1002); return; }
     if (!message || typeof message.type !== 'string') { client.ws.close(1002); return; }
-    const { id, type } = message, p = message.payload && typeof message.payload === 'object' ? message.payload : {};
+    const { id, type } = message, p = objectOf(message.payload) || {};
     const reply = () => send(client, type.replace(/Request$/, 'Response'), {}, id);
     const refuse = reason => send(client, 'Error', { type: 1, message: reason }, id);
-    const itemOf = queueItemId => queue.find(it => String(it.queueId) === String(queueItemId));
+    const itemOf = queueItemId => queue.find(it => String(it.queueId) === textOf(queueItemId));
     switch (type) {
       case 'core.PingResponse':
       case 'core.TimestampResponse':
         return;
       case 'remote.UpdateUsernameRequest': {
-        const username = String(p.username || '');
+        const username = textOf(p.username);
+        if (!username) { refuse('Invalid username'); return; }
         // Nom tenu par une autre connexion : refus sans identifiant, comme KaraFun.
         if ([...clients].some(other => other !== client && other.username === username)) {
           send(client, 'Error', { type: 4, message: 'username is already used' });
@@ -283,37 +312,40 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
         return;
       }
       case 'remote.AddToQueueRequest': {
-        const songId = Number(p.song?.id);
+        const songId = numberOf(objectOf(p.song)?.id);
+        if (songId === null) { refuse('Invalid song'); return; }
         const song = CATALOG.find(s => s.songId === songId) || { songId, title: `Chanson ${songId}`, artist: '?' };
-        const options = p.options && typeof p.options === 'object' ? structuredClone(p.options) : {};
+        const options = objectOf(p.options) ? structuredClone(p.options) : {};
         const item = { queueId: qid++, songId: song.songId, title: song.title, artist: song.artist,
-          singer: String(options.singer || ''), status: 'ready', songTracks: songTracksFor(song.songId), options };
-        const pos = Math.max(0, Math.min(queue.length, Number(p.position) || queue.length));
+          singer: textOf(options.singer) || '', status: 'ready', songTracks: songTracksFor(song.songId), options };
+        const pos = Math.max(0, Math.min(queue.length, numberOf(p.position) || queue.length));
         queue.splice(Math.max(pos, state === 'playing' ? 1 : 0), 0, item);
         reply();
         if (state !== 'playing' && autoplay) playFirst(); else broadcast();
         return;
       }
       case 'remote.RemoveFromQueueRequest': {
-        const i = queue.findIndex(it => String(it.queueId) === String(p.queueItemId));
+        const i = queue.findIndex(it => String(it.queueId) === textOf(p.queueItemId));
         if (i > 0 || (i === 0 && state !== 'playing')) queue.splice(i, 1);
         reply();
         broadcast();
         return;
       }
       case 'remote.MoveInQueueRequest': {
-        const i = queue.findIndex(it => String(it.queueId) === String(p.queueItemId));
-        if (i > 0) { const [it] = queue.splice(i, 1); queue.splice(Math.max(1, Number(p.to) || 0), 0, it); }
+        const i = queue.findIndex(it => String(it.queueId) === textOf(p.queueItemId));
+        if (i > 0) { const [it] = queue.splice(i, 1); queue.splice(Math.max(1, numberOf(p.to) || 0), 0, it); }
         reply();
         broadcast();
         return;
       }
-      // Options d'un titre de la file : remplacées en entier, comme KaraFun.
+      // Options d'un titre de la file : remplacées en entier, comme KaraFun. Titre
+      // inconnu : rien ne change, et le faux répond quand même.
       case 'remote.SetQueueItemOptionsRequest': {
         const item = itemOf(p.queueItemId);
-        if (!item) { refuse('Unknown queue item'); return; }
-        item.options = { ...(p.options || {}) };
-        if (item === playingItem()) live = liveFrom(item.options);
+        if (item) {
+          item.options = { ...(objectOf(p.options) || {}) };
+          if (item === playingItem()) live = liveFrom(item.options);
+        }
         reply();
         broadcast();
         return;
@@ -329,8 +361,8 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
         broadcast();
         return;
       case 'remote.TrackVolumeRequest': {
-        const cur = playingItem();
-        if (cur && cur.songTracks.includes(p.type)) live.volumes[p.type] = Number(p.volume);
+        const cur = playingItem(), volume = numberOf(p.volume);
+        if (cur && cur.songTracks.includes(p.type) && volume !== null) live.volumes[p.type] = volume;
         reply();
         broadcast();
         return;
@@ -349,6 +381,9 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
   }
 
   server.on('upgrade', (req, socket, head) => {
+    // Le serveur HTTP retire son écouteur d'erreur avant « upgrade » : sans le
+    // nôtre, un client qui coupe pendant le refus ferait tomber toute la démo.
+    socket.on('error', () => { /* connexion coupée par le client */ });
     const wanted = acceptUpgrade(req, socket);
     if (wanted === null) return;
     const client = { ws: null, username: null, named: false, pingId: 0, pings: null };

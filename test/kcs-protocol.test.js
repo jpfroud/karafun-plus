@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 
-// --- Faux socket.io-client (ancien protocole, utilisé seulement en local) ---
+// --- Faux socket.io-client (ancien protocole, page de KaraFun sans kcs_url) ---
 const ioSockets = [];
 class FakeIoSocket {
   constructor(base, options) {

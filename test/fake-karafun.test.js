@@ -124,9 +124,10 @@ test('mauvais code : fermeture 4404', async t => {
 });
 
 // Poignée de main à la main, sur un socket TCP : trames que le WebSocket de Node n'enverrait jamais.
-function rawSocket(port) {
+// `allowHalfOpen` : le client garde son côté ouvert après la fermeture du faux, comme un pair qui traîne.
+function rawSocket(port, { allowHalfOpen = false } = {}) {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(port, '127.0.0.1', () => socket.write(`GET /kcs/${CODE} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n`
+    const socket = net.connect({ port, host: '127.0.0.1', allowHalfOpen }, () => socket.write(`GET /kcs/${CODE} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n`
       + `Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\n`
       + `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: ${SUBPROTOCOL}\r\n\r\n`));
     let data = Buffer.alloc(0), handshake = true, settled = false;
@@ -183,6 +184,127 @@ test('trames refusées : non masquée (1002), fragmentée (1002), plus de 1 Mio 
     socket.write(bytes);
     assert.equal(await closeCode, code, name);
   }
+});
+
+// Requête HTTP brute : rend la première ligne de la réponse et le socket, gardé ouvert.
+function rawRequest(port, text) {
+  return new Promise(resolve => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.write(text));
+    let data = '';
+    socket.on('data', chunk => {
+      data += chunk;
+      if (data.includes('\r\n')) resolve({ socket, status: data.split('\r\n')[0] });
+    });
+    socket.on('error', () => { /* coupé par le faux : la fermeture suit */ });
+    socket.on('close', () => resolve({ socket, status: data.split('\r\n')[0] || 'fermé sans réponse' }));
+  });
+}
+const upgradeHeaders = (extra = '') => `Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\n`
+  + `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: ${SUBPROTOCOL}\r\n${extra}`;
+// Le faux répond encore : une vraie connexion s'ouvre et reçoit AuthenticatedEvent.
+async function stillAlive(kf) {
+  const c = open(kf.url());
+  assert.equal(await c.opened, true, 'le faux répond encore');
+  await until(() => c.received.length >= 1, 'AuthenticatedEvent');
+  c.ws.close();
+}
+
+// protects=la démo face à un client maladroit ou hostile de la boucle locale : adresse illisible, page web d'un
+// navigateur (en-tête Origin), refus lu puis connexion coupée net ; fails_when=une exception non rattrapée fait
+// tomber le processus (la démo et ses pages), ou une page web ouvre le faux ; no_claim=les protections d'un
+// navigateur précis (accès au réseau local) : seul l'en-tête Origin, que le WebSocket de Node n'envoie pas, compte ici.
+test('client maladroit ou hostile : refus propres, la démo ne tombe pas', async t => {
+  const kf = await fake(t);
+  for (const [name, request] of [
+    ['upgrade, adresse illisible', `GET http://[ HTTP/1.1\r\nHost: x\r\n${upgradeHeaders()}\r\n`],
+    ['HTTP, adresse illisible', 'GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n'],
+  ]) {
+    const { socket, status } = await rawRequest(kf.port, request);
+    socket.destroy();
+    assert.match(status, /^HTTP\/1\.1 400 /, name);
+  }
+  const page = await rawRequest(kf.port, `GET /kcs/${CODE} HTTP/1.1\r\nHost: x\r\n${upgradeHeaders('Origin: https://exemple.invalid\r\n')}\r\n`);
+  page.socket.destroy();
+  assert.match(page.status, /^HTTP\/1\.1 403 /, 'page web : refusée');
+  const reset = await rawRequest(kf.port, `GET /autre HTTP/1.1\r\nHost: x\r\n${upgradeHeaders()}\r\n`);
+  assert.match(reset.status, /^HTTP\/1\.1 400 /);
+  reset.socket.resetAndDestroy();
+  await new Promise(resolve => setTimeout(resolve, 200));
+  await stillAlive(kf);
+});
+
+// protects=la lecture des demandes : une valeur d'un autre type est refusée ou ignorée, jamais convertie de force ;
+// fails_when=un nom ou un volume piégé (objet sans conversion possible) lève une exception qui fait tomber la démo,
+// tout de suite ou au démarrage du titre ; no_claim=la réaction du vrai KaraFun à ces valeurs.
+test('données piégées : nom refusé, volume ignoré, la démo ne tombe pas', async t => {
+  const kf = await fake(t);
+  const c = open(kf.url());
+  await c.opened;
+  c.send({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: { toString: 1 } } });
+  await until(() => c.received.some(m => m.type === 'Error' && m.id === 1), 'nom piégé refusé');
+  c.send({ id: 2, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0001' } });
+  c.send({ id: 3, type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 70002 }, position: 99999,
+    options: { singer: 'Essai', tracks: [{ track: { type: 5 }, volume: { valueOf: 1, toString: 1 } }] } } });
+  c.send({ id: 4, type: 'remote.PlayRequest', payload: {} });
+  await until(() => c.received.some(m => m.type === 'remote.StatusEvent' && m.payload.status.state === 4), 'lecture');
+  const live = c.received.findLast(m => m.type === 'remote.StatusEvent').payload.status;
+  assert.equal(live.tracks.find(row => row.track.type === 5).volume, 0, 'volume piégé ignoré : valeur de KaraFun');
+  c.ws.close();
+  await stillAlive(kf);
+});
+
+// protects=la mémoire du faux après une fermeture ; fails_when=un pair qui garde la connexion ouverte et
+// continue d'envoyer est gardé, et ses données avec, sans limite ; no_claim=le délai exact (1 s ici).
+test('après sa fermeture, le faux coupe un client qui ne ferme pas', async t => {
+  const kf = await fake(t);
+  const { socket, closeCode } = await rawSocket(kf.port, { allowHalfOpen: true });
+  t.after(() => socket.destroy());
+  const ended = new Promise(resolve => socket.on('close', () => resolve('coupé')));
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64BE(2n * 1024n * 1024n);
+  socket.write(frame(0x81, 0x80 | 127, length));
+  assert.equal(await closeCode, 1009);
+  const flood = setInterval(() => { if (!socket.destroyed) socket.write(Buffer.alloc(64 * 1024)); }, 20);
+  t.after(() => clearInterval(flood));
+  const outcome = await Promise.race([ended, new Promise(resolve => setTimeout(() => resolve('toujours ouvert'), 2500))]);
+  assert.equal(outcome, 'coupé');
+});
+
+// protects=le refus d'un nom tenu par une autre connexion, tel que karafun.js le lit (Error type 4 sans
+// identifiant) ; fails_when=le faux accepte le doublon ou change la forme du refus ; no_claim=le délai pendant
+// lequel le vrai KaraFun garde un ancien nom après une coupure.
+test('nom déjà pris : Error type 4 sans identifiant, sans état ni file', async t => {
+  const kf = await fake(t);
+  const a = open(kf.url());
+  await a.opened;
+  a.send({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0001' } });
+  await until(() => a.received.some(m => m.type === 'remote.UpdateUsernameResponse'), 'premier nom accepté');
+  const b = open(kf.url());
+  await b.opened;
+  b.send({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0001' } });
+  await until(() => b.received.some(m => m.type === 'Error'), 'doublon refusé');
+  assert.deepEqual(b.received.find(m => m.type === 'Error'), { type: 'Error', payload: { type: 4, message: 'username is already used' } });
+  assert.equal(b.received.some(m => /StatusEvent|QueueEvent|UsernameUpdate/.test(m.type)), false);
+  b.send({ id: 2, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0002' } });
+  await until(() => b.received.some(m => m.type === 'remote.UpdateUsernameResponse' && m.id === 2), 'autre nom accepté');
+  a.ws.close();
+  b.ws.close();
+});
+
+// protects=le vrai pont avec un mauvais code local : refus 4404, pas « prêt », relance prévue, puis prêt avec
+// le bon code ; fails_when=le pont se croit prêt, plante, ou reste bloqué après le bon code ; no_claim=le
+// calendrier des relances (karafun.js, DISCOVERY_STEPS_MS), essayé avec un faux WebSocket dans kcs-connection.
+test('pont local avec un mauvais code : refus 4404, relance prévue, puis prêt avec le bon code', async t => {
+  const kf = await fake(t);
+  const bridge = new KaraFunBridge({ bases: [kf.base] });
+  t.after(() => bridge.disconnect());
+  bridge.connect('000000');
+  await until(() => bridge.connectionState().phase === 'retry', 'refus du code');
+  assert.equal(bridge.ready, false);
+  assert.match(bridge.lastError, /code 4404/);
+  bridge.connect(CODE);
+  await until(() => bridge.ready, 'prêt avec le bon code');
+  assert.equal(bridge.protocol, 'kcs');
 });
 
 // protects=le vrai pont (karafun.js → kcs-transport.js → WebSocket de Node) avec le faux, comme la démo
