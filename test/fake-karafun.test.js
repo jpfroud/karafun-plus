@@ -253,6 +253,40 @@ test('données piégées : nom refusé, volume ignoré, la démo ne tombe pas', 
   await stillAlive(kf);
 });
 
+// protects=la démo et le pont du même processus face à des options imbriquées sans fin, envoyées par un programme
+// local : refusées à l'entrée, avant tout changement ; fails_when=le faux les garde puis tombe au changement de titre
+// (JSON.stringify), ou les relaie et le pont tombe (structuredClone de karafun.js) ; no_claim=la profondeur que le
+// vrai KaraFun accepte, ni ce qu'il relaie d'une autre télécommande.
+test('options imbriquées sans fin : refusées à l’entrée, la démo et le pont tiennent', async t => {
+  const kf = await fake(t, { autoplay: true, songSeconds: 2 });
+  const bridge = new KaraFunBridge({ bases: [kf.base] });
+  t.after(() => bridge.disconnect());
+  bridge.connect(CODE);
+  await until(() => bridge.ready, 'pont prêt');
+  const c = open(kf.url());
+  await c.opened;
+  c.send({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0002' } });
+  await until(() => c.received.some(m => m.type === 'remote.UpdateUsernameResponse'), 'nom accepté');
+  bridge.add(70002, 'Léa · T1', 99999, {});
+  bridge.add(70003, 'Essai · T2', 99999, {});
+  await until(() => kf.state().queue.length === 2 && kf.state().state === 'playing', 'deux titres, le premier joue');
+  const next = kf.state().queue[1], before = structuredClone(next.options);
+  // Assez profond pour la pile de JSON.stringify (Node 26), puis une Battle assez profonde pour structuredClone
+  // dans le pont, puis un ajout : moins de 1 Mio chacun.
+  const deep = n => '{"a":'.repeat(n) + '1' + '}'.repeat(n);
+  c.ws.send(`{"id":2,"type":"remote.SetQueueItemOptionsRequest","payload":{"queueItemId":"${next.queueId}","options":${deep(100000)}}}`);
+  c.ws.send(`{"id":3,"type":"remote.SetQueueItemOptionsRequest","payload":{"queueItemId":"${next.queueId}",`
+    + `"options":{"mod":{"id":1,"data":{"battle":{"subtype":1,"x":${deep(20000)}}}}}}}`);
+  c.ws.send(`{"id":4,"type":"remote.AddToQueueRequest","payload":{"song":{"type":1,"id":70004},"position":99999,`
+    + `"options":${deep(100000)}}}`);
+  await until(() => [2, 3, 4].every(id => c.received.some(m => m.type === 'Error' && m.id === id)), 'trois refus');
+  assert.equal(kf.state().queue.length, 2, 'rien d’ajouté');
+  assert.deepEqual(kf.state().queue[1].options, before, 'options du titre suivant inchangées');
+  await until(() => bridge.status?.kcsState === 4 && bridge.status.current?.songId === 70003, 'titre suivant en lecture');
+  assert.equal(bridge.ready, true, 'pont toujours prêt');
+  c.ws.close();
+});
+
 // protects=la mémoire du faux après une fermeture ; fails_when=un pair qui garde la connexion ouverte et
 // continue d'envoyer est gardé, et ses données avec, sans limite ; no_claim=le délai exact (1 s ici).
 test('après sa fermeture, le faux coupe un client qui ne ferme pas', async t => {
@@ -335,6 +369,8 @@ test('le vrai pont avec le faux KaraFun, par le WebSocket de Node', async t => {
   assert.equal(bridge.status.pitch, -2, 'réglage de l’ajout appliqué au démarrage');
   bridge.setPitch(1);
   await until(() => bridge.status.pitch === 1, 'tonalité en direct');
+  // Aucune coupure pendant le parcours : une demande qui ferait fermer le faux (1011) se verrait ici.
+  assert.equal(bridge.events.some(e => e.name === 'connexion-perdue'), false, 'aucune coupure avant la fermeture');
   // KaraFun fermé (AppLeftEvent), puis rouvert sur le même port : le pont se reconnecte seul.
   kf.close();
   await until(() => !bridge.ready, 'KaraFun fermé');

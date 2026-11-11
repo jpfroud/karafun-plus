@@ -16,8 +16,9 @@
  * secondes. La recherche passe par HTTP, comme sur le site de KaraFun.
  * Serveur WebSocket minimal (RFC 6455) écrit avec la bibliothèque standard de Node,
  * sans dépendance, sur la boucle locale seulement. Il tourne dans le processus de la
- * démo : un client maladroit ou hostile (page web, valeur piégée) est refusé, jamais
- * une exception qui ferait tomber la démo.
+ * démo : un client maladroit ou hostile (page web, valeur piégée, options imbriquées
+ * sans fin) est refusé, jamais une exception qui ferait tomber la démo. Rien ne
+ * limite en revanche la longueur de la file ni le nombre de connexions.
  */
 const http = require('http');
 const crypto = require('crypto');
@@ -85,10 +86,11 @@ function wsFrame(opcode, payload) {
 // la connexion par 1002, un message de plus de 1 Mio par 1009 : un faux qui
 // accepterait tout cacherait un client fautif.
 class WsConnection {
-  constructor(socket, { onText, onClose }) {
+  constructor(socket, { onText, onClose, onError = () => {} }) {
     this.socket = socket;
     this.onText = onText;
     this.onClose = onClose;
+    this.onError = onError;
     this.buffer = Buffer.alloc(0);
     this.open = true;
     this.notified = false;
@@ -158,8 +160,9 @@ class WsConnection {
       this.buffer = this.buffer.subarray(offset + 4 + length);
       for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
       if (opcode === 0x1) {
-        // Dernier filet : une demande imprévue ferme la connexion (1011), jamais la démo.
-        try { this.onText(payload.toString('utf8')); } catch { this.close(1011); }
+        // Dernier filet : une demande imprévue est notée et ferme sa connexion (1011),
+        // jamais la démo.
+        try { this.onText(payload.toString('utf8')); } catch (error) { this.onError(error); this.close(1011); }
       } else if (opcode === 0x9) this.socket.write(wsFrame(0xa, payload));
       else if (opcode === 0x8) this.close(payload.length >= 2 ? payload.readUInt16BE(0) : 1000);
     }
@@ -200,6 +203,20 @@ const PREFERENCES = Object.freeze({ askOptions: false, singerRotation: false });
 const CONFIGURATION = Object.freeze({ pitchStep: 1, pitchMin: -6, pitchMax: 6, tempoStep: 5, tempoMin: -50, tempoMax: 50,
   compatibleMods: Object.freeze({ battle: Object.freeze([1, 2]) }) });
 
+// Options d'un titre : au plus 16 niveaux d'objets ou de listes, comptés sans
+// récursion ; celles de KaraFun en ont quatre (mode d'une Battle). Bien plus
+// profondes, JSON.stringify ou structuredClone dépasseraient la pile plus tard, au
+// changement de titre ou dans le pont du même processus, hors de toute demande.
+const MAX_DEPTH = 16;
+function tooDeep(value) {
+  for (const pending = [[value, 1]]; pending.length;) {
+    const [node, depth] = pending.pop();
+    if (depth > MAX_DEPTH) return true;
+    for (const child of Object.values(node)) if (child && typeof child === 'object') pending.push([child, depth + 1]);
+  }
+  return false;
+}
+
 function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, autoplay = true, pingMs = 1000, log = () => {} } = {}) {
   const server = http.createServer((req, res) => {
     let u;
@@ -236,8 +253,13 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     return { state: kcsState, ...(cur ? { current: kcsItem(cur) } : {}), pitch: loaded ? live.pitch : 0, tempo: loaded ? live.tempo : 0,
       tracks: loaded ? cur.songTracks.map(type => ({ track: { type }, volume: live.volumes[type] ?? 0 })) : [] };
   };
-  const send = (client, type, payload = {}, id) => client.ws.send(JSON.stringify({ ...(id === undefined ? {} : { id }), type, payload }));
-  const toAll = (type, payload) => { for (const client of clients) if (client.named) send(client, type, payload); };
+  const frameOf = (type, payload = {}, id) => JSON.stringify({ ...(id === undefined ? {} : { id }), type, payload });
+  const send = (client, type, payload, id) => client.ws.send(frameOf(type, payload, id));
+  // Un seul JSON par diffusion : chaque client nommé reçoit le même message, ou aucun.
+  const toAll = (type, payload) => {
+    const text = frameOf(type, payload);
+    for (const client of clients) if (client.named) client.ws.send(text);
+  };
   const sendStatus = kcsState => toAll('remote.StatusEvent', { status: statusPayload(kcsState) });
   const broadcast = () => { toAll('remote.QueueEvent', { queue: { items: queue.map(kcsItem) } }); sendStatus(); };
 
@@ -262,9 +284,13 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     log(`[faux KaraFun] lecture : ${queue[0].title} (${queue[0].singer})`);
     sendStatus(4);
     timer = setTimeout(() => {
-      const wasBattle = !!queue.shift()?.options?.mod?.data?.battle;
-      if (autoplay && !wasBattle) playFirst();
-      else { state = 'infoscreen'; broadcast(); }
+      // Dernier filet, hors de toute demande : une erreur au changement de titre est
+      // notée, jamais la chute de la démo.
+      try {
+        const wasBattle = !!queue.shift()?.options?.mod?.data?.battle;
+        if (autoplay && !wasBattle) playFirst();
+        else { state = 'infoscreen'; broadcast(); }
+      } catch (error) { log(`[faux KaraFun] fin de titre : ${error.message}`); }
     }, songSeconds * 1000);
   }
 
@@ -315,7 +341,9 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
         const songId = numberOf(objectOf(p.song)?.id);
         if (songId === null) { refuse('Invalid song'); return; }
         const song = CATALOG.find(s => s.songId === songId) || { songId, title: `Chanson ${songId}`, artist: '?' };
-        const options = objectOf(p.options) ? structuredClone(p.options) : {};
+        const given = objectOf(p.options);
+        if (given && tooDeep(given)) { refuse('Invalid options'); return; }
+        const options = given ? structuredClone(given) : {};
         const item = { queueId: qid++, songId: song.songId, title: song.title, artist: song.artist,
           singer: textOf(options.singer) || '', status: 'ready', songTracks: songTracksFor(song.songId), options };
         const pos = Math.max(0, Math.min(queue.length, numberOf(p.position) || queue.length));
@@ -341,9 +369,11 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
       // Options d'un titre de la file : remplacées en entier, comme KaraFun. Titre
       // inconnu : rien ne change, et le faux répond quand même.
       case 'remote.SetQueueItemOptionsRequest': {
+        const given = objectOf(p.options);
+        if (given && tooDeep(given)) { refuse('Invalid options'); return; }
         const item = itemOf(p.queueItemId);
         if (item) {
-          item.options = { ...(objectOf(p.options) || {}) };
+          item.options = { ...(given || {}) };
           if (item === playingItem()) live = liveFrom(item.options);
         }
         reply();
@@ -390,6 +420,7 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
     client.ws = new WsConnection(socket, {
       onText: text => receive(client, text),
       onClose: () => { clearInterval(client.pings); clients.delete(client); },
+      onError: error => log(`[faux KaraFun] demande refusée (1011) : ${error.message}`),
     });
     // Mauvais code : KaraFun ferme la connexion (4404), le pont relit son code.
     if (wanted !== code) { client.ws.close(4404); return; }
