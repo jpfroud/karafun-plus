@@ -1006,9 +1006,11 @@ function shielded(label, run) {
 // Filet de la synchronisation avec KaraFun lancée hors d'une requête
 // (événements du pont, minuterie de 2 s, relance 300 ms après une commande du
 // bar ou « Connecter ») : une valeur imprévue qui ferait échouer sync() ne
-// doit jamais arrêter la file. Une panne est notée une fois pour le bar et dans le journal du
-// serveur, avec l'endroit du code (puis une ligne par minute au plus) ; la
-// synchronisation suivante réessaie, et son retour est noté.
+// doit jamais arrêter la file. Une panne est notée une fois pour le bar et
+// dans le journal du serveur, avec l'endroit du code (puis une ligne par
+// minute au plus) ; la synchronisation suivante réessaie. Son retour n'est
+// noté qu'après une mise à jour complète : pas quand sync() s'arrête tôt
+// (KaraFun pas prêt, mise à jour du serveur en cours).
 let syncFailure = null; // { count, loggedAt } pendant une panne
 function safeSync() {
   try {
@@ -1029,7 +1031,7 @@ function safeSync() {
     }
     return;
   }
-  if (syncFailure) {
+  if (syncFailure && bridge?.ready && !serverUpdate.isBusy()) {
     appLog(`Synchronisation avec KaraFun rétablie après ${syncFailure.count} échec${syncFailure.count > 1 ? 's' : ''}.`);
     syncFailure = null;
   }

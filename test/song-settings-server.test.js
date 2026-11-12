@@ -21,8 +21,9 @@ const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const fromServer = createRequire(path.join(root, 'server.js'));
 
-// `setTimeout` : minuterie donnée au serveur (par défaut, aucune ne part).
-function harness({ setTimeout: later = () => ({ unref() {} }) } = {}) {
+// `setTimeout` : minuterie donnée au serveur (par défaut, aucune ne part) ;
+// `Date` : horloge du serveur (par défaut, la vraie).
+function harness({ setTimeout: later = () => ({ unref() {} }), Date: clock = null } = {}) {
   const entry = source.lastIndexOf('main().catch(');
   assert.ok(entry > 0, 'point d’entrée du serveur introuvable');
   const quietFs = { ...fs, mkdirSync() {}, appendFileSync() {}, writeFileSync() {}, renameSync() {},
@@ -33,7 +34,7 @@ function harness({ setTimeout: later = () => ({ unref() {} }) } = {}) {
   const logs = [];
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console: { ...console, log: (...args) => logs.push(args.join(' ')) }, Buffer, URL,
-    setTimeout: later, clearTimeout() {}, setImmediate, AbortSignal };
+    setTimeout: later, clearTimeout() {}, setImmediate, AbortSignal, ...(clock ? { Date: clock } : {}) };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, handlers, access, journal, sync, staffState, publicState, battleVote, clearEvening,
       resendWithoutOptions, restoreKaraFunDefaults: typeof restoreKaraFunDefaults === 'function' ? restoreKaraFunDefaults : null,
@@ -2200,4 +2201,49 @@ test('filet de la synchronisation : mise à jour relancée 300 ms après une com
   fail = true;
   for (const { run } of later) assert.doesNotThrow(run, 'une mise à jour en échec ne sort pas de la minuterie');
   assert.equal(f.sched.log.filter(line => line.kind === 'error').length, 1, 'signalée une fois au bar');
+});
+
+// Deuxième tour de la relecture — une panne qui dure ne laisse qu'une ligne
+// par minute dans le journal du serveur, et le retour n'est noté qu'après une
+// mise à jour complète (pas quand sync() s'arrête tôt, KaraFun pas prêt).
+test('filet de la synchronisation : panne qui dure, une ligne par minute ; retour noté après une mise à jour complète', async () => {
+  let now = Date.parse('2026-11-12T21:00:00.000Z');
+  const Real = Date;
+  class Clock extends Real {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  }
+  const f = harness({ Date: Clock });
+  const { bridge } = kcsBridge(f);
+  const status = bridge.status;
+  let fail = true;
+  Object.defineProperty(bridge, 'status', { configurable: true, get() {
+    if (fail) throw new TypeError('Cannot convert object to primitive value');
+    return status;
+  } });
+  const still = () => f.logs.filter(line => line.startsWith('Synchronisation avec KaraFun toujours en échec'));
+  for (let i = 0; i < 30; i++) { f.safeSync(); now += 2000; } // 58 s de panne
+  assert.equal(still().length, 0, 'moins d’une minute : aucune ligne de plus');
+  f.safeSync(); // 60 s
+  assert.deepEqual(still(), ['Synchronisation avec KaraFun toujours en échec (31 essais) : Cannot convert object to primitive value']);
+  for (let i = 0; i < 29; i++) { now += 2000; f.safeSync(); }
+  assert.equal(still().length, 1, 'une ligne par minute au plus');
+  // KaraFun pas prêt : sync() s'arrête tôt, rien n'est rétabli.
+  fail = false;
+  bridge.ready = false;
+  f.safeSync();
+  assert.equal(f.logs.some(line => line.startsWith('Synchronisation avec KaraFun rétablie')), false);
+  bridge.ready = true;
+  f.safeSync();
+  assert.ok(f.logs.includes('Synchronisation avec KaraFun rétablie après 60 échecs.'));
+});
+
+// Deuxième tour de la relecture — main() ne tourne pas dans le banc d'essai :
+// rien n'essayait que la minuterie de 2 s passe par le filet, alors que deux
+// relances l'avaient déjà oublié. Aucune minuterie n'appelle sync() sans lui.
+test('filet de la synchronisation : aucune minuterie n’appelle sync() sans le filet', () => {
+  const main = source.slice(source.indexOf('async function main()'), source.lastIndexOf('main().catch('));
+  assert.match(main, /setInterval\(\(\) => \{[^}]*\bsafeSync\(\);\s*\}, 2000\)/, 'minuterie de 2 s');
+  assert.doesNotMatch(source, /set(?:Timeout|Immediate|Interval)\(\s*sync\b/, 'aucune minuterie sur sync() nu');
+  assert.match(source, /b\.on\('change', \(\) => setImmediate\(safeSync\)\)/, 'événements du pont');
 });

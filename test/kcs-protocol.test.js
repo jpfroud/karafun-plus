@@ -2070,8 +2070,10 @@ test('réglages de titre : valeur par défaut reprise remplacée par une remise 
 // objet…) levait une exception dans le pont, que Node relançait hors de toute
 // portée : le serveur du bar s'arrêtait (sonde du 11 novembre 2026 : 11 cas
 // sur 16 avec le vrai WebSocket de Node). Chaque valeur est lue avec son
-// type : une valeur imprévue compte pour absente, le reste du message sert,
-// sans passer par le filet (aucun « message-ignore »).
+// type : une valeur secondaire imprévue compte pour absente et le reste du
+// message sert, sans « message-ignore » ; un titre illisible (pas un objet,
+// numéro absent, objet ou liste) fait ignorer tout le message, et le pont
+// attend un message lisible avant que la file agisse de nouveau.
 // `piege()` : un objet JSON qu'on ne peut convertir ni en texte ni en nombre
 // (sa clé toString n'est pas une fonction).
 const piege = () => JSON.parse('{"toString":1}');
@@ -2082,20 +2084,35 @@ const ignoredMessages = bridge => bridge.events.filter(e => e.name === 'message-
 // Regression: relecture de cette correction — un titre illisible était
 // laissé de côté : la file croyait ensuite qu'il avait été retiré de KaraFun
 // (passage rendu, titre plus suivi, et un second passage possible). Toute la
-// file reçue est ignorée, et la file garde ce qu'elle savait.
+// file reçue est ignorée, et la file garde ce qu'elle savait. Regression:
+// deuxième tour de la relecture — le pont restait « prêt » sur cette file
+// figée : l'ajout suivant n'était jamais confirmé, et « J'ai vérifié la file
+// KaraFun : reprendre » renvoyait le même titre. Le pont attend désormais une
+// file lisible, et la page du bar le montre.
 test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisible fait ignorer toute la file reçue', async t => {
   mockTime(t);
   const { bridge, ws } = await adminBridge(t);
   t.after(() => bridge.disconnect());
+  const queue = items => ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items } } });
+  queue([kcsItem({ id: 'q-0' }), kcsItem({ id: 'q-1' })]);
+  const announced = [];
+  bridge.on('queue', items => announced.push(items));
   const valid = kcsItem({ id: 'q-2' });
-  // Titre qui n'est pas un objet, ou dont le numéro est un objet ou une liste.
-  for (const bad of [null, 'texte', kcsItem({ id: piege() }), kcsItem({ id: [1] })]) {
-    assert.doesNotThrow(() => ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [valid, bad] } } }));
-  }
-  assert.deepEqual(bridge.queue, [], 'file d’avant gardée');
-  assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), Array(4).fill('titre illisible dans la file'));
-  assert.match(bridge.lastError, /message illisible \(remote\.QueueEvent\)/, 'avis sur la page du bar');
+  // Titre qui n'est pas un objet, ou dont le numéro est absent, vide, objet,
+  // liste, booléen ou nombre non fini (les vrais numéros sont des textes).
+  const bads = [null, 'texte', kcsItem({ id: piege() }), kcsItem({ id: [1] }), kcsItem({ id: undefined }), kcsItem({ id: null }),
+    kcsItem({ id: '' }), kcsItem({ id: true })];
+  for (const bad of bads) assert.doesNotThrow(() => queue([valid, bad]));
+  assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-0', 'q-1'], 'file d’avant gardée telle quelle');
+  assert.deepEqual(announced, [], 'aucune file annoncée au serveur');
+  assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), Array(bads.length).fill('titre illisible dans la file'));
+  assert.match(bridge.lastError, /message de KaraFun illisible \(remote\.QueueEvent\)/, 'avis sur la page du bar');
+  assert.equal(bridge.ready, false, 'la file n’agit plus sur une file figée');
+  const waiting = bridge.connectionState();
+  assert.equal(waiting.level, 'error', 'bandeau rouge sur la page du bar');
+  assert.match(waiting.label, /illisible \(remote\.QueueEvent\)/);
   assert.equal(normalizeKcsItem(null), null);
+  assert.equal(normalizeKcsItem({ id: 42, song: {} }).queueId, '42', 'numéro en nombre fini : lisible');
   // Valeurs secondaires d'un type imprévu : ignorées, le reste du titre sert.
   const odd = kcsItem({ id: 'q-3' }, { id: { type: 1, id: piege() }, title: piege(), artist: piege(),
     songTracks: [{ type: piege() }, { type: 4 }, { type: '5' }],
@@ -2108,9 +2125,10 @@ test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisib
   assert.equal(isBattleItem(read), false, 'mode Battle sans numéro lisible : pas une Battle');
   assert.deepEqual(plain.options, {}, 'options d’un autre type : aucune');
   assert.deepEqual(kept, normalizeKcsItem(valid));
-  assert.equal(ignoredMessages(bridge).length, 4, 'lues avec leur type, sans le filet');
+  assert.equal(ignoredMessages(bridge).length, bads.length, 'lues avec leur type, sans le filet');
   assert.equal(bridge.lastError, null, 'une file lisible efface l’avis');
-  assert.equal(bridge.ready, true);
+  assert.equal(bridge.ready, true, 'prêt de nouveau');
+  assert.equal(bridge.connectionState().level, 'ok');
 });
 
 // Regression: relecture de cette correction — un titre en cours illisible
@@ -2123,9 +2141,11 @@ test('valeurs imprévues : état de KaraFun lu avec ses types ; un titre en cour
   t.after(() => bridge.disconnect());
   const tracks = [{ track: { type: piege() }, volume: 53 }, null, { track: { type: 4 }, volume: 53 }, { track: { type: 5 }, volume: piege() }];
   const status = (current, extra = {}) => ({ type: 'remote.StatusEvent', payload: { status: { state: 3, pitch: 0, tempo: 0, tracks, current, ...extra } } });
-  for (const current of [kcsItem({ id: piege() }), 'texte']) assert.doesNotThrow(() => ws.receive(status(current)));
+  for (const current of [kcsItem({ id: piege() }), 'texte', kcsItem({ id: undefined })]) assert.doesNotThrow(() => ws.receive(status(current)));
   assert.deepEqual([bridge.status.kcsState, bridge.status.current], [1, null], 'état d’avant gardé');
-  assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), ['titre en cours illisible', 'titre en cours illisible']);
+  assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), Array(3).fill('titre en cours illisible'));
+  assert.equal(bridge.ready, false, 'la file n’agit plus sur un état figé');
+  assert.match(bridge.connectionState().label, /illisible \(remote\.StatusEvent\)/);
   // Piste, volume, tonalité et options d'un type imprévu : ignorés, le reste sert.
   const own = { singer: 'Zoé', tracks: [{ track: { type: piege() }, volume: 50 }] };
   assert.doesNotThrow(() => ws.receive(status(kcsItem({}, { options: own }), { pitch: piege() })));
@@ -2133,9 +2153,9 @@ test('valeurs imprévues : état de KaraFun lu avec ses types ; un titre en cour
   assert.deepEqual(bridge.snapshot().songSettings.live,
     { queueId: 'q-1', pitch: null, tempo: 0, guide: null, backing: 53, voices: {}, tracks: [4, 5] });
   assert.equal(bridge.seenLoading('q-1'), true);
-  assert.equal(ignoredMessages(bridge).length, 2, 'lu avec ses types, sans le filet');
+  assert.equal(ignoredMessages(bridge).length, 3, 'lu avec ses types, sans le filet');
   assert.equal(bridge.lastError, null);
-  assert.equal(bridge.ready, true);
+  assert.equal(bridge.ready, true, 'un état lisible : prêt de nouveau');
 });
 
 // Regression: relecture de cette correction — un champ `songPlaying` (le nom
@@ -2191,7 +2211,8 @@ test('filet du pont : un message qui fait échouer le pont est ignoré, noté au
   assert.doesNotThrow(() => ws.receive(queue));
   assert.deepEqual(ignoredMessages(bridge), [{ type: 'remote.QueueEvent', reason: 'Cannot convert object to primitive value' }]);
   assert.deepEqual(lines, ['KaraFun : message remote.QueueEvent ignoré (Cannot convert object to primitive value) ; la connexion continue.']);
-  assert.match(bridge.lastError, /message illisible \(remote\.QueueEvent\)/, 'avis sur la page du bar');
+  assert.match(bridge.lastError, /message de KaraFun illisible \(remote\.QueueEvent\)/, 'avis sur la page du bar');
+  assert.equal(bridge.ready, false, 'file peut-être à moitié lue : le pont attend la suivante');
   ws.receive(queue);
   assert.equal(ignoredMessages(bridge).length, 2);
   assert.equal(lines.length, 1, 'une ligne par minute au plus dans le journal du serveur');
