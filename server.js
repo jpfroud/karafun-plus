@@ -1297,8 +1297,8 @@ function statusSeq() {
 // 4 (lecture) ou 5 (pause) de la télécommande KCS. À l'état 1, KaraFun
 // annonce déjà le titre suivant sans l'avoir chargé (pistes vides, ou celles
 // d'un autre titre) ; à l'état 2, il le charge encore : leurs valeurs ne
-// disent rien des réglages appliqués. Sans numéro d'état (faux KaraFun de la
-// démo), seule la lecture compte.
+// disent rien des réglages appliqués. Sans numéro d'état (ancienne
+// télécommande), seule la lecture compte.
 function loadedQueueId() {
   const status = bridge?.status;
   const item = status?.current || status?.songPlaying;

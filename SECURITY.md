@@ -92,10 +92,12 @@ gh attestation verify oci://ghcr.io/jpfroud/karafun-plus:vX.Y.Z --repo jpfroud/k
 ## Risques connus et acceptés
 
 - **Socket.IO 2.x** : le client parle le protocole historique de la
-  télécommande KaraFun ; le serveur sert seulement le faux KaraFun de la démo.
-  `npm audit` y signale des alertes faibles (`cookie`, `debug`) et modérées
-  (`parseuri`, déni de service par expression régulière) sans correctif dans
-  la branche 2.x. L'adresse analysée par `parseuri` vient de la page officielle
+  télécommande KaraFun, pour une page de télécommande sans adresse KCS. Le
+  serveur, qui servait le faux KaraFun de la démo, est retiré avec 12 autres
+  paquets depuis l'issue #59 : ce faux parle KCS. Le client partira à l'étape 2.
+  `npm audit` y signale 3 alertes modérées (`parseuri`, déni de service par
+  expression régulière, reprise par `engine.io-client` et `socket.io-client`),
+  sans correctif dans la branche 2.x. L'adresse analysée par `parseuri` vient de la page officielle
   de KaraFun, lue en HTTPS. Une migration vers 4.x demande des essais du
   protocole KaraFun, pas une mise à jour automatique (Dependabot ignore ces
   versions majeures).

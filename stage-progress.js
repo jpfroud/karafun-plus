@@ -35,7 +35,8 @@ function stageDuration({ demoSec = null, catalogSec = null, clientSec = null } =
   return trustedDuration(demoSec) ?? trustedDuration(catalogSec) ?? clientDuration(clientSec);
 }
 
-// Position en secondes (faux KaraFun de la démo : instantané à l'envoi).
+// Position en secondes, si l'état en donne une (seul l'ancien faux KaraFun
+// de la démo le faisait : instantané à l'envoi).
 // Au-delà d'une heure, l'unité n'est pas la seconde : ignorée.
 function protocolPosition(status) {
   const position = status?.position;

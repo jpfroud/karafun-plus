@@ -135,8 +135,8 @@ BON À SAVOIR
 ------------
 - Le programme utilise le canal de la télécommande web de KaraFun. Ce n'est
   pas une API officielle : une mise à jour de KaraFun peut le casser.
-  Le pont détecte le protocole KCS des versions Windows récentes ; le mode
-  démo et les anciennes télécommandes utilisent encore socket.io.
+  Le pont détecte le protocole KCS des versions Windows récentes, que le mode
+  démo parle aussi ; seules les anciennes télécommandes utilisent socket.io.
 - Avec une adresse locale, les téléphones doivent être sur le même réseau que
   le PC (certains Wi-Fi « invités » isolent les appareils). Pour des QR qui
   marchent sans Wi-Fi, configure un domaine HTTPS et un tunnel vers le port
